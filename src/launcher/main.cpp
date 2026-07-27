@@ -1,0 +1,311 @@
+// Ultralight AppCore launcher. UI in launcher.html; embeds one unified
+// window per running rs2client.exe via Dock. Boot phases land
+// in %USERPROFILE%\RuneToolsX\logs\launcher.log (see shared/Log.h).
+
+#include "Bridge.h"
+#include "Companion.h"
+#include "Dock.h"
+#include "MonitorFix.h"
+#include "Overlay.h"
+#include "Process.h"
+#include "WinNotify.h"
+#include "../shared/Log.h"
+
+#include <AppCore/AppCore.h>
+#include <Ultralight/Ultralight.h>
+
+#include <Windows.h>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <thread>
+
+using namespace ultralight;
+
+namespace {
+
+// Thin wrappers over the shared logger. launcher.log is the process-wide
+// destination; per-PID files come from the Reader / window manager.
+void boot_log(const std::string& msg) { rtx::log::Launcher(msg); }
+
+void fatal(const std::string& msg) {
+    rtx::log::Launcher("FATAL: " + msg);
+    MessageBoxA(nullptr, rtx::log::Redact(msg).c_str(), "RuneTools",
+                MB_OK | MB_ICONERROR | MB_TOPMOST);
+}
+
+std::filesystem::path exe_dir() {
+    wchar_t buf[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    return std::filesystem::path(buf).parent_path();
+}
+
+std::string read_file_utf8(const std::filesystem::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    if (!f.is_open()) return {};
+    std::stringstream ss; ss << f.rdbuf();
+    return ss.str();
+}
+
+// Must run before any Ultralight symbol is touched; otherwise
+// delay-load probing misses the Ultralight\ subdir and the process
+// dies with c0000139.
+bool preload_ultralight_dlls(const std::filesystem::path& self) {
+    const wchar_t* names[] = {
+        L"UltralightCore.dll",
+        L"WebCore.dll",
+        L"Ultralight.dll",
+        L"AppCore.dll",
+    };
+    auto ul_dir = self / L"Ultralight";
+    for (auto name : names) {
+        auto full = (ul_dir / name).wstring();
+        HMODULE m = LoadLibraryExW(full.c_str(), nullptr,
+                                   LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!m) {
+            DWORD err = GetLastError();
+            int n = WideCharToMultiByte(CP_UTF8, 0, full.c_str(), -1,
+                                        nullptr, 0, nullptr, nullptr);
+            std::string p(n, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, full.c_str(), -1,
+                                p.data(), n, nullptr, nullptr);
+            if (!p.empty() && p.back() == '\0') p.pop_back();
+            boot_log("LoadLibrary failed: " + p +
+                     " err=" + std::to_string(err));
+            return false;
+        }
+        boot_log("Preloaded: " +
+                 std::filesystem::path(name).string());
+    }
+    return true;
+}
+
+class LauncherApp : public WindowListener, public LoadListener, public AppListener {
+public:
+    bool ok = false;
+
+    LauncherApp() {
+        auto self = exe_dir();
+        boot_log("exe dir: " + self.string());
+        SetCurrentDirectoryW(self.c_str());
+
+        auto resources = (self / "Ultralight" / "resources").string() + "/";
+        for (auto& c : resources) if (c == '\\') c = '/';
+        boot_log("resource path: " + resources);
+
+        Settings settings;
+        settings.app_name       = String("RuneToolsX");
+        settings.developer_name = String("RuneTools");
+        // Render the UI on the CPU by DEFAULT, not D3D11: with ~8 game clients saturating VRAM the GPU
+        // path exhausts the GPU and the D3D11 device fails, crashing the games too. CPU rendering keeps
+        // VRAM free for the games; its cost is scroll-repaint artifacts. RTX_GPU_RENDER=1 switches to
+        // D3D11 -- keep it OFF.
+        bool useGpu = false;
+        {
+            char buf[8] = {0};
+            DWORD n = GetEnvironmentVariableA("RTX_GPU_RENDER", buf, (DWORD)sizeof(buf));
+            if (n > 0 && n < sizeof(buf))
+                useGpu = (buf[0] == '1' || buf[0] == 't' || buf[0] == 'T' || buf[0] == 'y' || buf[0] == 'Y');
+        }
+        settings.force_cpu_renderer = !useGpu;
+        boot_log(useGpu ? "renderer: GPU/D3D11 (RTX_GPU_RENDER set) -- watch for D3D11 crashes with many clients"
+                        : "renderer: CPU (default)");
+
+        Config config;
+        config.resource_path_prefix = String(resources.c_str());
+
+        boot_log("App::Create...");
+        app_ = App::Create(settings, config);
+        if (!app_) { fatal("App::Create returned null"); return; }
+
+        auto client_html = (self / "client.html").string();
+        // Dev override: point the in-game panel UI at a source checkout so the dock hot-reloads
+        // open panels on change (no rebuild/restart). Source order: RTX_UI_DIR env var, else the
+        // first line of `rtx_ui_dev.txt` next to the exe (survives launch methods that don't
+        // inherit fresh user env vars, e.g. a VS debugger opened before setx).
+        bool uiDev = false;
+        {
+            std::string dir;
+            char buf[512] = {0};
+            DWORD n = GetEnvironmentVariableA("RTX_UI_DIR", buf, (DWORD)sizeof(buf));
+            if (n > 0 && n < sizeof(buf)) dir = buf;
+            if (dir.empty()) {
+                std::ifstream mk(self / "rtx_ui_dev.txt");
+                if (mk) { std::getline(mk, dir);
+                          while (!dir.empty() && (dir.back() == '\r' || dir.back() == ' ')) dir.pop_back(); }
+            }
+            if (!dir.empty()) {
+                std::error_code ec;
+                std::filesystem::path dev(dir);
+                if (std::filesystem::exists(dev / "client.html", ec)) {
+                    client_html = (dev / "client.html").string();
+                    uiDev = true;
+                    boot_log("ui dev override: " + client_html);
+                } else {
+                    boot_log("ui dev dir set but no client.html at '" + dir + "'; using the exe dir");
+                }
+            }
+        }
+        rtx::launcher::dock::Init(app_.get(), client_html, uiDev);
+        app_->set_listener(this);
+
+        boot_log("Window::Create...");
+        window_ = Window::Create(app_->main_monitor(), 460, 600, false,
+                                 kWindowFlags_Titled |
+                                 kWindowFlags_Resizable |
+                                 kWindowFlags_Maximizable);
+        if (!window_) { fatal("Window::Create returned null"); return; }
+        window_->SetTitle("RuneTools");
+        window_->set_listener(this);
+
+        // Topmost-then-not bypasses anti-focus-stealing.
+        HWND hwnd = static_cast<HWND>(window_->native_handle());
+        if (hwnd) {
+            HMODULE hMod = GetModuleHandleW(nullptr);
+            HICON hBig = (HICON)LoadImageW(hMod, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                           GetSystemMetrics(SM_CXICON),
+                                           GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
+            HICON hSm  = (HICON)LoadImageW(hMod, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                           GetSystemMetrics(SM_CXSMICON),
+                                           GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+            if (hBig) SendMessageW(hwnd, WM_SETICON, ICON_BIG,   (LPARAM)hBig);
+            if (hSm)  SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hSm);
+
+            SetWindowPos(hwnd, HWND_TOPMOST,   0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            SetForegroundWindow(hwnd);
+            BringWindowToTop(hwnd);
+            SetActiveWindow(hwnd);
+
+            // Keep the AppCore run loop ticking when idle so OnUpdate (dock::Tick: embed retries,
+            // dead-client cleanup) runs without user input. 100 ms lets the single CPU render thread sit
+            // idle in GetMessage between ticks, so it can pump an embedded client's host activation
+            // immediately on a window switch instead of behind a forced render.
+            SetTimer(hwnd, 1, 100, nullptr);
+        }
+
+        overlay_ = Overlay::Create(window_, window_->width(),
+                                   window_->height(), 0, 0);
+        if (!overlay_) { fatal("Overlay::Create returned null"); return; }
+        overlay_->view()->set_load_listener(this);
+
+        auto html_path = self / "launcher.html";
+        auto html = read_file_utf8(html_path);
+        if (html.empty()) {
+            fatal("launcher.html not found or empty:\n" + html_path.string());
+            return;
+        }
+        boot_log("Loading " + std::to_string(html.size()) + " bytes of HTML");
+        overlay_->view()->LoadHTML(String(html.c_str()));
+        ok = true;
+    }
+
+    void Run() {
+        if (!ok) return;
+        boot_log("Running...");
+        app_->Run();
+        boot_log("Run returned");
+    }
+
+    void OnClose(Window*) override { app_->Quit(); }
+    void OnResize(Window*, uint32_t w, uint32_t h) override {
+        if (overlay_) overlay_->Resize(w, h);
+    }
+
+    // Fired each run-loop iteration. Keep each docked panel positioned/sized to track
+    // its game window (on the main thread).
+    void OnUpdate() override {
+        rtx::launcher::dock::Tick();
+    }
+
+    // Attach on both events: window-object-ready can fire only for the
+    // initial about:blank context, so DOM-ready is the fallback. Both
+    // are idempotent (property overwrite, not leak).
+    void OnWindowObjectReady(View* view, uint64_t, bool is_main,
+                             const String& url) override {
+        if (!is_main) return;
+        boot_log(std::string("window object ready (") +
+                 url.utf8().data() + "); attaching JS bridge");
+        rtx::launcher::AttachBridge(view);
+    }
+    void OnDOMReady(View* view, uint64_t, bool is_main,
+                    const String& url) override {
+        if (!is_main) return;
+        boot_log(std::string("DOM ready (") +
+                 url.utf8().data() + "); re-attaching JS bridge");
+        rtx::launcher::AttachBridge(view);
+    }
+
+private:
+    RefPtr<App>     app_;
+    RefPtr<Window>  window_;
+    RefPtr<Overlay> overlay_;
+};
+
+}  // namespace
+
+int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+    rtx::log::Init();
+    boot_log("=== RuneToolsX starting ===");
+
+    // Named mutex matching the installer's AppMutex (RuneToolsX.iss) so a silent
+    // in-place update can detect + close this launcher via the Restart Manager.
+    // Held for the process lifetime (handle intentionally leaked).
+    CreateMutexW(nullptr, FALSE, L"RuneToolsXLauncher");
+
+    auto self = exe_dir();
+    if (!preload_ultralight_dlls(self)) {
+        fatal("Failed to load Ultralight runtime DLLs from "
+              "Ultralight\\ subdir next to the exe. Rebuild to ensure "
+              "the StageRuntime MSBuild target copied them.");
+        return 1;
+    }
+
+    // Must run after AppCore.dll is loaded (above) and before App::Create so
+    // the very first monitor query is already routed through the fix.
+    boot_log(rtx::launcher::InstallMonitorInfoFix()
+                 ? "GetMonitorInfoW fix installed in AppCore.dll"
+                 : "GetMonitorInfoW fix NOT installed (import not found)");
+
+    // Bring the companion up the INSTANT a client process appears -- before it logs in or renders its
+    // first world scene -- so its observers are present from the start (a later setup misses the
+    // startup scene pass that records render-pass slots like the clue-scan ring). Idempotent.
+    std::thread([] {
+        for (;;) {
+            for (const auto& info : rtx::launcher::process::ScanRsClients()) {
+                if (_wcsicmp(info.name.c_str(), L"rs2client.exe") == 0)
+                    rtx::launcher::companion::EnsureLoaded(info.pid);
+            }
+            Sleep(100);
+        }
+    }).detach();
+
+    try {
+        LauncherApp app;
+        app.Run();
+        // Run() returned = the user closed the window. From here the render/overlay/reader threads
+        // get torn down; flag shutdown so a thread that faults in that race isn't logged as a crash.
+        rtx::log::BeginShutdown();
+        rtx::overlay::Stop();   // join the overlay render thread before teardown
+        rtx::launcher::dock::Shutdown();   // restore game windows + close docked panels
+        rtx::winnotify::Shutdown();   // remove the notification tray icon
+    } catch (const std::exception& e) {
+        fatal(std::string("Unhandled exception: ") + e.what());
+        return 1;
+    } catch (...) {
+        fatal("Unhandled non-std exception during startup");
+        return 1;
+    }
+    boot_log("=== Clean exit ===");
+    // HARD STOP -- same rule as the updater: TerminateProcess, never the CRT exit path. `return 0`
+    // runs static destructors and DLL detaches, and Ultralight/WebCore teardown or a worker parked
+    // in a synchronous send into a dead client (the embed worker blocks for minutes by design) keeps
+    // the PROCESS alive as a windowless corpse with the exe LOCKED. Everything above already shut
+    // down in order; the OS reclaims the rest instantly.
+    TerminateProcess(GetCurrentProcess(), 0);
+    return 0;   // unreachable
+}

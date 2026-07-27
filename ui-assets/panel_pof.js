@@ -1,0 +1,78 @@
+// RuneToolsX panel: Player-Owned Farm pens.
+// Spliced inline into client.html at load; shares its global scope (no IIFE).
+
+  // Animal = [item id, primary trait (var2 & 0x1F, trait enum 14340), species].
+  // Pens are read live only while their UI is open; otherwise from the native per-pen disk cache.
+  const POF_PENS = [
+    { id: 851, name: 'Small pen (South)',  size: 'Small' },
+    { id: 852, name: 'Small pen (West)',   size: 'Small' },
+    { id: 853, name: 'Medium pen (East)',  size: 'Medium' },
+    { id: 854, name: 'Medium pen (North)', size: 'Medium' },
+    { id: 855, name: 'Large pen (North)',  size: 'Large' },
+    { id: 856, name: 'Large pen (South)',  size: 'Large' },
+    { id: 857, name: 'Breeding pen',       size: 'Breeding' },
+  ];
+  const POF_TRAITS = { 1: 'Genetic Inferiority', 2: 'Young at Heart', 3: 'Fussy Eater', 4: 'Sullen',
+    5: 'Sickly', 6: 'Slowpoke', 7: 'Plain', 8: 'Stressed', 9: 'Taker', 10: 'Surly', 11: 'Stingy',
+    12: 'Constipated', 13: 'Old at Heart', 14: 'Big Boned', 15: 'Jovial', 16: 'Robust', 17: 'Hyperactive',
+    18: 'Handsome', 19: 'Virile', 20: 'Giver', 21: 'Lucky', 22: 'Producer', 23: 'Joyful', 24: 'Studly',
+    25: 'Sparkling', 26: 'Genetic Mutation', 27: 'Regular' };
+  let pofData = null, pofFetching = false, pofSig = '';
+
+  async function fetchPof() {
+    if (!bridge() || !bridge().pof || pofFetching) return; pofFetching = true;
+    try { const d = JSON.parse(await bridge().pof(myPid())); pofData = (d && Array.isArray(d.pens)) ? d.pens : []; }
+    catch (e) { /* keep previous */ }
+    pofFetching = false;
+    if (activeTab === 'pof') renderPof();
+  }
+
+  function renderPof() {
+    const c = $('content');
+    let wrap = $('pofWrap');
+    if (!wrap) { c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'pofWrap'; wrap.className = 'pane stor-wrap'; c.appendChild(wrap); pofSig = ''; }
+    const byId = {}; for (const p of (pofData || [])) byId[p.id] = p;
+    const sig = POF_PENS.map(d => { const p = byId[d.id] || {}; return d.id + ':' + (p.open ? 1 : 0) + ':' + ((p.animals || []).map(a => a[0] + '/' + a[1]).join(',')); }).join(';');
+    if (sig === pofSig) { sizeAllIcons(); return; }
+    pofSig = sig;
+    wrap.innerHTML = '';
+    let lastSize = '';
+    for (const def of POF_PENS) {
+      if (def.size !== lastSize) {
+        lastSize = def.size;
+        const gh = document.createElement('div'); gh.className = 'pof-group';
+        gh.textContent = def.size === 'Breeding' ? 'Breeding pen' : def.size + ' pens';
+        wrap.appendChild(gh);
+      }
+      const p = byId[def.id] || { animals: [], open: false, cached_at: 0 };
+      const animals = p.animals || [];
+      const box = document.createElement('div'); box.className = 'stor-box';
+      const hdr = document.createElement('div'); hdr.className = 'scene-hdr';
+      const t = document.createElement('div');
+      t.innerHTML = def.name + (p.open ? ' <span class="pof-live">live</span>' : (p.cached_at ? ' <span class="pof-cached">cached</span>' : ''));
+      const cnt = document.createElement('span'); cnt.className = 'cnt';
+      cnt.textContent = animals.length ? (animals.length + (animals.length > 1 ? ' animals' : ' animal')) : '-';
+      hdr.appendChild(t); hdr.appendChild(cnt); box.appendChild(hdr);
+      if (!animals.length) {
+        const e = document.createElement('div'); e.className = 'stor-empty';
+        e.textContent = p.cached_at ? 'empty' : 'Open this pen at the farm to capture it.';
+        box.appendChild(e);
+      } else {
+        const grid = document.createElement('div'); grid.className = 'pof-grid';
+        for (const a of animals) {
+          const item = a[0], traitId = a[1], species = a[2] || ('Item ' + a[0]);
+          const trait = (traitId >= 0 && POF_TRAITS[traitId]) ? POF_TRAITS[traitId] : (traitId > 0 ? ('Trait ' + traitId) : '');
+          const cell = document.createElement('div'); cell.className = 'bank-cell pof-cell';
+          cell.dataset.tip = species + (trait ? '\nTrait: ' + trait : '');
+          const ico = document.createElement('div'); ico.className = 'bank-icon'; ico.dataset.itemId = String(item);
+          attachBankIcon(ico, item);
+          cell.appendChild(ico);
+          if (trait) { const tb = document.createElement('span'); tb.className = 'pof-trait'; tb.textContent = trait; cell.appendChild(tb); }
+          grid.appendChild(cell);
+        }
+        box.appendChild(grid);
+      }
+      wrap.appendChild(box);
+    }
+    sizeAllIcons();
+  }

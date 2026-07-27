@@ -1,0 +1,389 @@
+// RuneToolsX panel: Storage boxes (ore/wood/soil/gem/essence/rune pouch/quiver/...).
+// Spliced inline into client.html at load; shares its global scope (no IIFE).
+
+  // Per-type counts live in varbits (ore/soil/upgraded gem bag), a container (wood 937) or the item's own Extra_ints (base gem bag).
+  const STORAGE = {
+    ore: {
+      boxes: { 44779: 'Bronze', 44781: 'Iron', 44783: 'Steel', 44785: 'Mithril', 44787: 'Adamant', 44789: 'Rune', 44791: 'Orikalkum', 44793: 'Necronium', 44795: 'Bane', 44797: 'Elder rune', 57172: 'Primal' },
+      vb: [['Copper', 43188], ['Tin', 43190], ['Iron', 43192], ['Coal', 43194], ['Silver', 43196], ['Mithril', 43198], ['Adamantite', 43200], ['Luminite', 43202], ['Gold', 43204], ['Runite', 43206], ['Orichalcite', 43208], ['Drakolith', 43210], ['Necrite', 43212], ['Phasmatite', 43214], ['Banite', 43216], ['Light animica', 43218], ['Dark animica', 43220], ['Novite', 55880], ['Bathus', 55883], ['Marmaros', 55886], ['Kratonium', 55889], ['Fractite', 55892], ['Zephyrium', 55895], ['Argonite', 55898], ['Katagon', 55901], ['Gorgonite', 55904], ['Promethium', 55907], ['Platinum', 58113]]
+    },
+    wood: {
+      boxes: { 54895: 'Wood', 54897: 'Oak', 54899: 'Willow', 54901: 'Teak', 54903: 'Maple', 54905: 'Acadia', 54907: 'Mahogany', 54909: 'Yew', 54911: 'Magic', 54913: 'Elder', 58253: 'Eternal magic' },
+      container: 937,
+      logs: [['Logs', 1511], ['Oak', 1521], ['Willow', 1519], ['Teak', 6333], ['Maple', 1517], ['Acadia', 40285], ['Eucalyptus', 12581], ['Mahogany', 6332], ['Yew', 1515], ['Magic', 1513], ['Elder', 29556], ['Eternal magic', 58250]]
+    },
+    soil: {
+      boxes: { 49538: 'Archaeological soil box' }, capVb: 47021,    // capacity varbit: 0->50,1->100,2->250,3->500
+      // soil counts are VARPS read DIRECTLY (the value IS the count) -- NOT varbits.
+      varp: [['Ancient gravel', 9370], ['Saltwater mud', 9371], ['Fiery brimstone', 9372], ['Aerated sediment', 9373], ['Earthen clay', 9374], ['Volcanic ash', 9578]]
+    },
+    gem: {
+      // The upgraded bag's counts live in varps 13475/13476, 7 bits each (CS2 clientscript-13776
+      // case 31455), listed in in-game display order (the ids are not sequential there).
+      boxes: { 31455: 'Upgraded' },                                // tier label; base bag 18338 = 'Basic'
+      vb: [['Sapphire', 61469], ['Emerald', 61470], ['Ruby', 61471], ['Diamond', 61472],
+           ['Dragonstone', 61473], ['Opal', 61475], ['Jade', 61474], ['Red topaz', 61476]]
+      // perCap unset: the 7-bit field caps at 127 and the cache states no real per-gem limit.
+    },
+    plank: {
+      boxes: { 51022: 'Plank box' }, container: 895,
+      logs: [['Plank', 960], ['Oak plank', 8778], ['Teak plank', 8780], ['Mahogany plank', 8782], ['Willow plank', 54860], ['Maple plank', 54862], ['Acadia plank', 54864], ['Yew plank', 54866]]
+    },
+    essence: {   // RC essence pouches; COUNT and stored TYPE are PER-POUCH.
+                 // Tuple = [name, countVb, typeVb, capacity, pouchItemId, decayVarp, decayMax].
+                 // Durability% = (decayMax - varp)*100/decayMax, integer div (Med/Large/Giant wear
+                 // on varps 3217/3218/3219, max 800/1000/1200); Small never decays and the
+                 // Conservation of Energy relic forces 100%. The Massive pouch (24205) packs count
+                 // (bits 0-4), durability (bits 6-15 of 756) and type (bits 29-31) in Extra_int key 0.
+      pouches: [
+        ['Small pouch',     16497, 16502, 3,  5509,  0,    0],
+        ['Medium pouch',    16498, 16503, 6,  5510,  3217, 800],
+        ['Large pouch',     16499, 16504, 9,  5512,  3218, 1000],
+        ['Giant pouch',     16500, 16505, 12, 5514,  3219, 1200],
+        ['Massive pouch',   'massive', 24205, 18, 24205, 0, 0],
+        ['Expansive pouch', 57685, 57686, 70, 58451, 0, 0]
+      ],
+      massive: { item: 24205, cap: 18, durMax: 756 },
+      types: { 0: ['Pure essence', 7936], 1: ['Rune essence', 1436], 2: ['Pure essence', 7936], 3: ['Impure essence', 55667] }
+    },
+    clue: {      // Charos' clue carrier: each tier's scroll + casket count is a VARP read directly (like soil)
+      boxes: { 47836: "Charos' clue carrier" },
+      varp: [['Easy clue', 8681], ['Medium clue', 8682], ['Hard clue', 8683], ['Elite clue', 8684], ['Master clue', 8685],
+             ['Easy casket', 8686], ['Medium casket', 8687], ['Hard casket', 8688], ['Elite casket', 8689], ['Master casket', 8690]]
+    },
+    rune: {      // rune pouches (Small/Large/Grasping + every dye): per-slot count in Extra_ints keys 0,2,3,4
+                 // (value=count); key 1 packs each slot's rune TYPE as 6-bit indices (LSB=first slot, RS3 order)
+      items: {
+        38451: 'Small rune pouch', 38453: 'Large rune pouch', 44390: 'Small rune pouch (red)',
+        44393: 'Large rune pouch (red)', 44395: 'Small rune pouch (blue)', 44398: 'Large rune pouch (blue)',
+        44400: 'Small rune pouch (yellow)', 44403: 'Large rune pouch (yellow)', 44405: 'Small rune pouch (green)',
+        44408: 'Large rune pouch (green)', 44410: 'Small rune pouch (purple)', 44413: 'Large rune pouch (purple)',
+        44415: 'Small rune pouch (orange)', 44418: 'Large rune pouch (orange)', 44420: 'Small rune pouch (black)',
+        44423: 'Large rune pouch (black)', 44425: 'Small rune pouch (pink)', 44428: 'Large rune pouch (pink)',
+        52215: 'Grasping rune pouch', 52217: 'Grasping rune pouch', 52218: 'Grasping rune pouch (blue)',
+        52220: 'Grasping rune pouch (blue)', 52221: 'Grasping rune pouch (black)', 52223: 'Grasping rune pouch (black)',
+        52224: 'Grasping rune pouch (green)', 52226: 'Grasping rune pouch (green)', 52227: 'Grasping rune pouch (orange)',
+        52229: 'Grasping rune pouch (orange)', 52230: 'Grasping rune pouch (pink)', 52232: 'Grasping rune pouch (pink)',
+        52233: 'Grasping rune pouch (purple)', 52235: 'Grasping rune pouch (purple)', 52236: 'Grasping rune pouch (red)',
+        52238: 'Grasping rune pouch (red)', 52239: 'Grasping rune pouch (yellow)', 52241: 'Grasping rune pouch (yellow)',
+        54122: 'Rune pouch'
+      }
+    },
+    quiver: {    // Pernix's quivers: ammo slot 0 packs (count<<8)|typeByte in key 0 -> count=(v>>8)&0xFFFF; key 1 = 2nd-ammo count
+      items: { 52581: "Pernix's quiver (blue)", 52583: "Pernix's quiver (green)", 52584: "Pernix's quiver (purple)" }
+    },
+    nexus:  { container: 953 },   // Necromancy nexus: Bone/Miasma/Flesh/Spirit rune + Ectoplasm (generic container read)
+    brooch: { container: 891 },   // Brooch of the Gods: decorated/exquisite urns + effigies (generic container read)
+    money:  { container: 623 },   // Money pouch: Coins (995) split across slots; total = remainder gp + billions*1e9
+    sandy:  { vb: [['Sandy Sand', 61090]] }   // Sandy Sand currency: count lives in varbit 61090 (no container; item 61835 is the icon)
+  };
+  // RS3 rune index -> name (1..21); combination runes (5..10) are a best-effort ordering.
+  const RUNE_NAMES = { 1: 'Air', 2: 'Water', 3: 'Earth', 4: 'Fire', 5: 'Dust', 6: 'Lava', 7: 'Mist', 8: 'Mud', 9: 'Smoke', 10: 'Steam', 11: 'Mind', 12: 'Body', 13: 'Cosmic', 14: 'Chaos', 15: 'Nature', 16: 'Law', 17: 'Death', 18: 'Astral', 19: 'Blood', 20: 'Soul', 21: 'Wrath' };
+  // Item NAME -> item id for grid icons of the varbit/varp-backed boxes; no entry = text cell.
+  const STOR_ICON = {
+    'Copper': 436, 'Tin': 438, 'Iron': 440, 'Coal': 453, 'Silver': 442, 'Mithril': 447, 'Adamantite': 449,
+    'Luminite': 44820, 'Gold': 444, 'Runite': 451, 'Orichalcite': 44822, 'Drakolith': 44824, 'Necrite': 44826,
+    'Phasmatite': 44828, 'Banite': 21778, 'Light animica': 44830, 'Dark animica': 44832, 'Novite': 17630,
+    'Bathus': 17632, 'Marmaros': 17634, 'Kratonium': 17636, 'Fractite': 17638, 'Zephyrium': 17640,
+    'Argonite': 17642, 'Katagon': 17644, 'Gorgonite': 17646, 'Promethium': 17648, 'Platinum': 59207,
+    'Sapphire': 1623, 'Emerald': 1621, 'Ruby': 1619, 'Diamond': 1617, 'Dragonstone': 1631,
+    'Opal': 1625, 'Jade': 1627, 'Red topaz': 1629,
+    'Ancient gravel': 49517, 'Saltwater mud': 49519, 'Fiery brimstone': 49521, 'Aerated sediment': 49523,
+    'Earthen clay': 49525, 'Volcanic ash': 50696,
+    'Air rune': 556, 'Water rune': 555, 'Earth rune': 557, 'Fire rune': 554, 'Dust rune': 4696, 'Lava rune': 4699,
+    'Mist rune': 4695, 'Mud rune': 4698, 'Smoke rune': 4697, 'Steam rune': 4694, 'Mind rune': 558, 'Body rune': 559,
+    'Cosmic rune': 564, 'Chaos rune': 562, 'Nature rune': 561, 'Law rune': 563, 'Death rune': 560, 'Astral rune': 9075,
+    'Blood rune': 565, 'Soul rune': 566,
+    'Small pouch': 5509, 'Medium pouch': 5510, 'Large pouch': 5512, 'Giant pouch': 5514, 'Expansive pouch': 58451,
+    'Coins': 995, 'Sandy Sand': 61835,
+    'Easy clue': 2677, 'Medium clue': 2801, 'Hard clue': 2722, 'Elite clue': 19043, 'Master clue': 41790,
+    'Easy casket': 42001, 'Medium casket': 42002, 'Hard casket': 42003, 'Elite casket': 42004, 'Master casket': 42005
+  };
+  // Quiver arrow-type byte (key0 & 0xFF) -> ammo name; byte is the key of cache enum 16608.
+  // The bolt slot stores only a count, no type byte, so bolts can't be named from quiver data.
+  const AMMO_TYPE = {
+    1: 'Abyssalbane arrow', 2: 'Abyssalbane bolt', 3: 'Adamant arrow', 4: 'Adamant bolts', 5: 'Adamant brutal', 6: 'Araxyte arrow',
+    7: 'Ascendri bolts', 8: 'Ascendri bolts (e)', 9: 'Ascension bolts', 10: 'Bakriminel bolts', 11: 'Barbed bolts', 12: 'Basiliskbane arrow',
+    13: 'Basiliskbane bolt', 14: 'Black bolts', 15: 'Black brutal', 16: 'Blurite bolts', 17: 'Bolt rack', 18: 'Bone bolts',
+    19: 'Broad-tipped bolts', 20: 'Broad arrow', 21: 'Bronze arrow', 22: 'Bronze bolts', 23: 'Bronze brutal', 24: 'Coral bolts',
+    25: 'Dark arrow', 26: 'Diamond bolts', 27: 'Diamond bolts (e)', 28: 'Dragon arrow', 29: 'Dragon bolts', 30: 'Dragon bolts (e)',
+    31: 'Dragonbane arrow', 32: 'Dragonbane bolt', 33: 'Emerald bolts', 34: 'Emerald bolts (e)', 35: 'Fragment arrows', 36: 'Fragment bolts',
+    37: 'Guthix arrows', 38: 'Hand cannon shot', 39: 'Ice arrows', 40: 'Iron arrow', 41: 'Iron bolts', 42: 'Iron brutal',
+    43: 'Jade bolts', 44: 'Jade bolts (e)', 45: 'Kebbit bolts', 46: 'Long kebbit bolts', 47: 'Mithril arrow', 48: 'Mithril bolts',
+    49: 'Mithril brutal', 50: 'Ogre arrow', 51: 'Onyx bolts', 52: 'Onyx bolts (e)', 53: 'Opal bolts', 54: 'Opal bolts (e)',
+    55: 'Pearl bolts', 56: 'Pearl bolts (e)', 57: 'Royal bolts', 58: 'Ruby bolts', 59: 'Ruby bolts (e)', 60: 'Rune arrow',
+    61: 'Rune brutal', 62: 'Rune bolts', 63: 'Sapphire bolts', 64: 'Sapphire bolts (e)', 65: 'Saradomin arrows', 66: 'Silver bolts',
+    67: 'Steel arrow', 68: 'Steel bolts', 69: 'Steel brutal', 70: 'Topaz bolts', 71: 'Topaz bolts (e)', 72: 'Wallasalkibane arrow',
+    73: 'Wallasalkibane bolt', 74: 'Zamorak arrows', 75: 'Wild arrow', 76: 'Blisterwood stakes (ammo)', 77: 'Wyvern spines', 78: 'Stalker arrow',
+    79: 'Opal bakriminel bolts', 80: 'Sapphire bakriminel bolts', 81: 'Jade bakriminel bolts', 82: 'Pearl bakriminel bolts', 83: 'Emerald bakriminel bolts', 84: 'Red topaz bakriminel bolts',
+    85: 'Ruby bakriminel bolts', 86: 'Diamond bakriminel bolts', 87: 'Dragonstone bakriminel bolts', 88: 'Onyx bakriminel bolts', 89: 'Hydrix bakriminel bolts', 90: 'Opal bakriminel bolts (e)',
+    91: 'Sapphire bakriminel bolts (e)', 92: 'Jade bakriminel bolts (e)', 93: 'Pearl bakriminel bolts (e)', 94: 'Emerald bakriminel bolts (e)', 95: 'Red topaz bakriminel bolts (e)', 96: 'Ruby bakriminel bolts (e)',
+    97: 'Diamond bakriminel bolts (e)', 98: 'Dragonstone bakriminel bolts (e)', 99: 'Onyx bakriminel bolts (e)', 100: 'Hydrix bakriminel bolts (e)', 101: 'Blight bolts', 102: 'Black stone arrows',
+    103: 'Deathspore arrows', 104: 'Splintering arrows', 105: 'Dinarrow', 106: 'Jas dragonbane arrow', 107: 'Jas demonbane arrow', 108: 'Ful arrow',
+    109: 'Wen arrow', 110: 'Bik arrow', 111: 'Primal arrow', 112: 'Primal bolts', 113: 'Havensilver bolt', 114: 'Havensilver bolt +1',
+    115: 'Havensilver bolt +2'
+  };
+  // Quiver ammo-type byte -> item id (enum 16608 value), for the ammo icon in the Storage grid.
+  const AMMO_ID = {
+    1: 21655, 2: 21675, 3: 890, 4: 9143, 5: 4798, 6: 31737, 7: 31868, 8: 31881, 9: 28465, 10: 24116,
+    11: 881, 12: 21650, 13: 21670, 14: 13083, 15: 4788, 16: 9139, 17: 4740, 18: 8882, 19: 13280, 20: 4160,
+    21: 882, 22: 877, 23: 4773, 24: 24304, 25: 29617, 26: 9340, 27: 9243, 28: 11212, 29: 9341, 30: 9244,
+    31: 21640, 32: 21660, 33: 9338, 34: 9241, 35: 28464, 36: 28463, 37: 19157, 38: 15243, 39: 78, 40: 884,
+    41: 9140, 42: 4778, 43: 9335, 44: 9237, 45: 10158, 46: 10159, 47: 888, 48: 9142, 49: 4793, 50: 2866,
+    51: 9342, 52: 9245, 53: 879, 54: 9236, 55: 880, 56: 9238, 57: 24336, 58: 9339, 59: 9242, 60: 892,
+    61: 4803, 62: 9144, 63: 9337, 64: 9240, 65: 19152, 66: 9145, 67: 886, 68: 9141, 69: 4783, 70: 9336,
+    71: 9239, 72: 21645, 73: 21665, 74: 19162, 75: 34235, 76: 35705, 77: 35989, 78: 41575, 79: 41634, 80: 41639,
+    81: 41644, 82: 41649, 83: 41654, 84: 41659, 85: 41664, 86: 41669, 87: 41674, 88: 41679, 89: 41684, 90: 41623,
+    91: 41624, 92: 41625, 93: 41626, 94: 41627, 95: 41628, 96: 41629, 97: 41630, 98: 41631, 99: 41632, 100: 41633,
+    101: 42748, 102: 47501, 103: 52299, 104: 52289, 105: 53038, 106: 53043, 107: 53050, 108: 53055, 109: 53060, 110: 53065,
+    111: 58036, 112: 58041, 113: 60312, 114: 60317, 115: 60322
+  };
+  const SOIL_CAP = [50, 100, 250, 500];
+  let storageData = null, storageVbMap = null, storageSig = '', storageFetching = false;
+
+  // varbitMap is keyed by varp -> [[varbitId,lsb,msb],..]; invert to varbitId -> {varp,lsb,msb}.
+  function buildVbReverse(vbm) { const m = {}; for (const vp in vbm) for (const d of vbm[vp]) m[d[0]] = { varp: +vp, lsb: d[1], msb: d[2] }; return m; }
+  async function ensureVbMap() {
+    if (storageVbMap || !bridge().varbitMap) return;
+    try { storageVbMap = buildVbReverse(JSON.parse(await bridge().varbitMap())); } catch (e) {}
+  }
+  function readVb(vbId, vpData) {
+    const r = storageVbMap && storageVbMap[vbId]; if (!r) return null;
+    const v = (vpData[r.varp] || 0) >>> 0, w = r.msb - r.lsb, mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1);
+    return (v >>> r.lsb) & mask;
+  }
+  function storHeldBox(cat, held) { for (const id in STORAGE[cat].boxes) if (held.has(+id)) return STORAGE[cat].boxes[id]; return null; }
+
+  async function fetchStorage() {
+    if (!bridge() || storageFetching) return; storageFetching = true;
+    try {
+      // Contents live in varbits/varps/containers, readable WITHOUT the box; inventory only LABELS the held tier.
+      let inv = null; try { inv = JSON.parse(await bridge().inventory(myPid())); } catch (e) {}
+      const held = new Set((inv && inv.items || []).map(it => it[1]));
+      let eq = null; try { eq = JSON.parse(await bridge().equipment(myPid())); } catch (e) {}   // worn items (rune pouch / quiver are equipped)
+      (eq && eq.items || []).forEach(it => held.add(it[1]));
+      await ensureVbMap();
+      const varpSet = new Set();
+      const addVb = (vb) => { const r = storageVbMap && storageVbMap[vb]; if (r) varpSet.add(r.varp); };
+      STORAGE.ore.vb.forEach(x => addVb(x[1]));
+      STORAGE.gem.vb.forEach(x => addVb(x[1]));
+      STORAGE.essence.pouches.forEach(p => { if (p[1] !== 'massive') { addVb(p[1]); addVb(p[2]); } if (p[5]) varpSet.add(p[5]); });
+      addVb(STORAGE.soil.capVb);
+      STORAGE.soil.varp.forEach(x => varpSet.add(x[1]));
+      STORAGE.clue.varp.forEach(x => varpSet.add(x[1]));
+      STORAGE.sandy.vb.forEach(x => addVb(x[1]));
+      let vp = {};
+      if (varpSet.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...varpSet].join(','))); } catch (e) {} }
+      // item tuple = [name, count, itemId, source] -- source is the provenance shown in the cell tooltip.
+      const vbSrc = (vb) => { const r = storageVbMap && storageVbMap[vb]; return r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb); };
+      const fromVb = (list) => list.map(x => [x[0], readVb(x[1], vp) || 0, STOR_ICON[x[0]] || 0, vbSrc(x[1])]).filter(x => x[1] > 0);
+      const fromVarp = (list) => list.map(x => [x[0], (vp[x[1]] || 0) >>> 0, STOR_ICON[x[0]] || 0, 'varp ' + x[1]]).filter(x => x[1] > 0);
+      const oreBox = storHeldBox('ore', held), woodBox = storHeldBox('wood', held), soilBox = storHeldBox('soil', held), gemBox = storHeldBox('gem', held);
+      const out = { ore: null, wood: null, soil: null, gem: null, plank: null, essence: null, clue: null, rune: null, quiver: null, nexus: null, brooch: null, money: null, currency: null, sandy: null };
+      const oreItems = fromVb(STORAGE.ore.vb);
+      if (oreBox || oreItems.length) out.ore = { name: oreBox || '', items: oreItems };
+      // Gem bag tier: the cache defines no "upgrade purchased" flag, so ownership is inferred from
+      // where the data lives; the base bag (18338) keeps its counts in its own Extra_ints (held only).
+      const gemItems = fromVb(STORAGE.gem.vb);
+      if (gemBox || gemItems.length) {
+        out.gem = { name: gemBox || STORAGE.gem.boxes[31455], items: gemItems };
+      } else if (held.has(18338) && bridge().itemExtraInts) {
+        let ei = null; try { ei = JSON.parse(await bridge().itemExtraInts(myPid(), 93, 18338)); } catch (e) {}
+        // Extra_ints is flat [key0,val0,key1,val1,..], so "Extra_ints[1]" = first VALUE = pos[0].
+        const packed = (ei && ei.pos && ei.pos.length ? ei.pos[0] : 0) || 0;
+        const gbyte = ['key 0 byte 0', 'key 0 byte 1', 'key 0 byte 2', 'key 0 byte 3'];
+        const gi = [['Sapphire', packed % 256], ['Emerald', Math.floor(packed / 256) % 256], ['Ruby', Math.floor(packed / 65536) % 256], ['Diamond', Math.floor(packed / 16777216) % 256]]
+          .map((x, i) => [x[0], x[1], STOR_ICON[x[0]] || 0, 'Extra_int ' + gbyte[i] + ' (item 18338)']).filter(x => x[1] > 0);
+        out.gem = { name: 'Basic', items: gi };
+      }
+      const soilItems = fromVarp(STORAGE.soil.varp);
+      if (soilBox || soilItems.length) out.soil = { name: soilBox || '', cap: SOIL_CAP[readVb(STORAGE.soil.capVb, vp) || 0] || 50, items: soilItems };
+      // Container-backed boxes: cfg.logs sums known content ids; no logs -> every filled slot by name.
+      const readContainer = async (cfg, heldName) => {
+        let r = null; try { if (bridge().containerItems) r = JSON.parse(await bridge().containerItems(myPid(), cfg.container)); } catch (e) {}
+        const rows = (r && r.items) || [];
+        let items = [];
+        if (cfg.logs) {
+          const byId = {}; rows.forEach(it => { byId[it[1]] = (byId[it[1]] || 0) + it[2]; });
+          items = cfg.logs.map(x => [x[0], byId[x[1]] || 0, x[1], 'container ' + cfg.container + ' · item ' + x[1]]).filter(x => x[1] > 0);
+        }
+        if (!items.length && rows.length) {
+          const byName = {}; rows.forEach(it => { const nm = it[3] || ('#' + it[1]); if (!byName[nm]) byName[nm] = { c: 0, id: it[1], slot: it[0] }; byName[nm].c += it[2]; });
+          items = Object.keys(byName).map(nm => [nm, byName[nm].c, byName[nm].id, 'container ' + cfg.container + ' slot ' + byName[nm].slot + ' · item ' + byName[nm].id]).filter(x => x[1] > 0);
+        }
+        return (heldName || items.length) ? { name: heldName || '', items } : null;
+      };
+      out.wood  = await readContainer(STORAGE.wood,  woodBox);
+      out.plank = await readContainer(STORAGE.plank, storHeldBox('plank', held));
+      out.nexus  = await readContainer(STORAGE.nexus,  null);
+      out.brooch = await readContainer(STORAGE.brooch, null);
+      // read an item's Extra_ints from the worn (94) or backpack (93) slot; ei.key[k] = value at key k.
+      const eiFor = async (id) => {
+        if (!bridge().itemExtraInts) return null;
+        for (const cid of [94, 93]) { try { const r = JSON.parse(await bridge().itemExtraInts(myPid(), cid, id)); if (r && r.present) return r; } catch (e) {} }
+        return null;
+      };
+      // Essence pouches: tuple = [name, count, pouchIconId, src, cap, durStr, essenceIconId],
+      // essenceIconId 0 = empty. The Massive pouch shows whenever held (durability matters empty).
+      const essType = (t) => STORAGE.essence.types[t & 7] || STORAGE.essence.types[0];
+      const eM = STORAGE.essence.massive;
+      const essItems = [];
+      for (const p of STORAGE.essence.pouches) {
+        const pname = p[0], cntVb = p[1], typeVb = p[2], cap = p[3], pouchIcon = p[4];
+        if (cntVb === 'massive') {
+          if (!held.has(eM.item)) continue;
+          const ei = await eiFor(eM.item);
+          const v = ((ei && ei.key && ei.key[0]) || 0) >>> 0;
+          const cnt = v & 0x1f, dur = (v >>> 6) & 0x3ff, tt = (v >>> 29) & 7, ty = essType(tt);
+          essItems.push([pname + (cnt > 0 ? ' · ' + ty[0] : ''), cnt, pouchIcon,
+            'item ' + eM.item + ' · Extra_int key 0 · count bits 0-4 · type bits 29-31 · durability bits 6-15',
+            cap, 'Durability ' + dur + ' / ' + eM.durMax + ' (' + Math.round(dur / eM.durMax * 100) + '%)',
+            cnt > 0 ? ty[1] : 0]);
+          continue;
+        }
+        const cnt = readVb(cntVb, vp) || 0; if (cnt <= 0) continue;
+        const ty = essType(readVb(typeVb, vp) || 0);
+        // decayVarp p[5] / decayMax p[6]; 0 = no decay (Small/Massive/Expansive).
+        const decayVarp = p[5], decayMax = p[6];
+        let durStr = '';
+        if (decayVarp && decayMax) {
+          const wear = (vp[decayVarp] || 0) >>> 0;
+          const pct = Math.max(0, Math.floor((decayMax - Math.min(wear, decayMax)) * 100 / decayMax));
+          durStr = 'Durability ' + pct + '% (' + (decayMax - wear) + ' / ' + decayMax +
+                   ' · varp ' + decayVarp + '; 100% if Conservation of Energy relic active)';
+        }
+        essItems.push([pname + ' · ' + ty[0], cnt, pouchIcon, 'count = ' + vbSrc(cntVb) + ' · type = ' + vbSrc(typeVb), cap, durStr, ty[1]]);
+      }
+      if (essItems.length) out.essence = { name: '', essence: true, items: essItems };
+      const clueItems = fromVarp(STORAGE.clue.varp);
+      if (storHeldBox('clue', held) || clueItems.length) out.clue = { name: storHeldBox('clue', held) || '', items: clueItems };
+      const runes = [];
+      for (const id in STORAGE.rune.items) {
+        if (!held.has(+id)) continue;
+        const ei = await eiFor(+id); if (!ei || !ei.key) continue;
+        const th = ei.key[1] >>> 0, slotKeys = [0, 2, 3, 4], items = [];   // key 1 packs each slot's rune type (6-bit, LSB first); counts at keys 0,2,3,4
+        for (let i = 0; i < slotKeys.length; i++) {
+          const idx = (th >> (6 * i)) & 0x3F; if (!idx) continue;
+          const cnt = (ei.key[slotKeys[i]] || 0) >>> 0; if (cnt <= 0) continue;
+          const rn = (RUNE_NAMES[idx] || ('Rune #' + idx)) + ' rune';
+          items.push([rn, cnt, STOR_ICON[rn] || 0, 'Extra_int key ' + slotKeys[i] + ' · type = key 1 bits ' + (6 * i) + '-' + (6 * i + 5)]);
+        }
+        runes.push({ name: STORAGE.rune.items[id], items });
+      }
+      if (runes.length) out.rune = runes;
+      const quivers = [];
+      for (const id in STORAGE.quiver.items) {
+        if (!held.has(+id)) continue;
+        const ei = await eiFor(+id); if (!ei || !ei.key) continue;
+        // key0 packs the equipped ammo AND the stored ammo's type: [secondaryType:9 | primaryCount:15 |
+        // primaryType:8]; both type fields are keys of cache enum 16608 (AMMO_TYPE). key1 = stored count.
+        const k0 = (ei.key[0] || 0) >>> 0, k1 = (ei.key[1] || 0) >>> 0;
+        const pType = k0 & 0xFF, pCount = (k0 >>> 8) & 0x7FFF, sType = (k0 >>> 23) & 0x1FF, sCount = k1 & 0xFFFF;
+        const items = [];
+        if (pType && AMMO_TYPE[pType] && pCount > 0) items.push([AMMO_TYPE[pType], pCount, AMMO_ID[pType] || 0, 'Extra_int key 0 · count bits 8-22, type bits 0-7 (enum 16608)']);
+        if (sType && AMMO_TYPE[sType] && sCount > 0) items.push([AMMO_TYPE[sType], sCount, AMMO_ID[sType] || 0, 'Extra_int key 0 type bits 23-31 + key 1 count (enum 16608)']);
+        quivers.push({ name: STORAGE.quiver.items[id], items });
+      }
+      if (quivers.length) out.quiver = quivers;
+      // Money pouch: item 995 holds the sub-billion remainder, item 54830 counts billions.
+      try {
+        let r = null; if (bridge().containerItems) r = JSON.parse(await bridge().containerItems(myPid(), STORAGE.money.container));
+        const rows = (r && r.items) || [];
+        const stackOf = (id) => (rows.find(it => it[1] === id) || [0, 0, 0])[2] >>> 0;
+        const total = stackOf(54830) * 1000000000 + stackOf(995);
+        if (total > 0) out.money = { name: '', items: [['Coins', total, 995, 'container 623 · item 995 (gp) + item 54830 (×1e9)']] };
+      } catch (e) {}
+      // Currency pouch: inventory interface group 1473, comp 20 = currency icons; item id at
+      // node+0x1a0, amount at node+0x1a8 (reader's "it"/"n"). Needs group 1473 present.
+      try {
+        const ig = bridge().interfaceGroup ? JSON.parse(await bridge().interfaceGroup(myPid(), 1473)) : null;
+        const cur = [];
+        for (const w of ((ig && ig.widgets) || [])) {
+          if (w.t && w.t[1] === 20 && w.it > 0 && (w.n || 0) > 0) {
+            const nm = (w.x || '').replace(/<[^>]*>/g, '').trim();
+            cur.push([nm || ('Item ' + w.it), w.n >>> 0, w.it, 'inventory currency pouch (group 1473)']);
+          }
+        }
+        if (cur.length) out.currency = { name: '', items: cur };
+      } catch (e) {}
+      const sandyItems = fromVb(STORAGE.sandy.vb);
+      if (sandyItems.length) out.sandy = { name: '', items: sandyItems };
+      storageData = out;
+    } finally { storageFetching = false; }
+    if (activeTab === 'storage') renderStorage();
+  }
+
+  // RS3-style count abbreviation: <100k full, 100k+ -> K, 1m+ -> M, 1b+ -> B, 1t+ -> T, 1q+ -> Q (2dp).
+  function storAbbr(n) {
+    return n >= 1e15 ? +(n / 1e15).toFixed(2) + 'Q' : n >= 1e12 ? +(n / 1e12).toFixed(2) + 'T'
+         : n >= 1e9 ? +(n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? +(n / 1e6).toFixed(2) + 'M'
+         : n >= 1e5 ? Math.floor(n / 1e3) + 'K' : ('' + n);
+  }
+  function renderStorage() {
+    const c = $('content');
+    let wrap = $('storWrap');
+    if (!wrap) {
+      c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'storWrap'; wrap.className = 'pane stor-wrap'; c.appendChild(wrap); storageSig = '';
+    }
+    const d = storageData;
+    const list = [];
+    const add = (title, b) => { if (b) list.push([title, b]); };
+    const many = (title, arr) => { if (Array.isArray(arr)) arr.forEach(b => list.push([title, b])); };
+    add('Ore box', d && d.ore); add('Wood box', d && d.wood); add('Plank box', d && d.plank);
+    add('Soil box', d && d.soil); add('Gem bag', d && d.gem); add('Essence pouches', d && d.essence);
+    add('Clue carrier', d && d.clue); many('Rune pouch', d && d.rune); many('Quiver', d && d.quiver);
+    add('Nexus', d && d.nexus); add('Brooch of the Gods', d && d.brooch); add('Money pouch', d && d.money);
+    add('Currency pouch', d && d.currency);
+    add('Sandy Sand', d && d.sandy);
+    const boxItems = (b) => b.items || [];
+    const sig = list.map(([t, b]) => t + '|' + (b.name || '') + '|' + (b.cap || '') + '|' + boxItems(b).map(it => it[0] + ':' + it[1] + ':' + (it[2] || 0)).join(',')).join(';');
+    if (sig === storageSig) { sizeAllIcons(); return; }
+    storageSig = sig;
+    const scrollAt = c.scrollTop;   // a rebuild resets the .content scroll; restored below
+    wrap.innerHTML = '';
+    if (!list.length) { wrap.innerHTML = '<div class="stor-empty">No storage box contents found.</div>'; return; }
+    const makeCell = (it, cap) => {
+      const name = it[0], count = it[1], id = it[2] || STOR_ICON[name] || 0, src = it[3] || '', icap = it[4] || cap, extra = it[5] || '';
+      const url = id ? resolveIcon(id) : '';
+      const cell = document.createElement('div'); cell.className = 'bank-cell stor-cell';
+      cell.dataset.tip = name + '\n' + count.toLocaleString() + (icap ? ' / ' + icap : '') + (extra ? '\n' + extra : '') + (src ? '\n' + src : '');  // -> #global-tip
+      if (url) { const ico = document.createElement('div'); ico.className = 'bank-icon'; ico.dataset.itemId = String(id); setIconBg(ico, url); cell.appendChild(ico); }
+      else { const tn = document.createElement('div'); tn.className = 'stor-tn'; tn.textContent = name; cell.appendChild(tn); }
+      const fa = fmtAmt(count);
+      const amt = document.createElement('span'); amt.className = 'bank-amt' + (fa.c ? ' ' + fa.c : ''); amt.textContent = fa.t || count; cell.appendChild(amt);
+      return cell;
+    };
+    const gridOf = (items, cap) => { const g = document.createElement('div'); g.className = 'stor-grid'; items.forEach(it => g.appendChild(makeCell(it, cap))); return g; };
+    // Essence cell: it = [name,count,pouchIcon,src,cap,durStr,essIcon].
+    const makeEssenceCell = (it) => {
+      const name = it[0], count = it[1], pouchId = it[2], src = it[3] || '', cap = it[4] || 0, dur = it[5] || '', essId = it[6] || 0;
+      const cell = document.createElement('div'); cell.className = 'stor-ecell';
+      cell.dataset.tip = name + '\n' + count.toLocaleString() + (cap ? ' / ' + cap : '') + (dur ? '\n' + dur : '') + (src ? '\n' + src : '');
+      const mkIcon = (id, cls) => { const u = id ? resolveIcon(id) : ''; const e = document.createElement('div'); e.className = 'bank-icon ' + cls; if (u) { e.dataset.itemId = String(id); setIconBg(e, u); } return e; };
+      cell.appendChild(mkIcon(pouchId, 'stor-epouch'));
+      if (essId) {
+        const ar = document.createElement('span'); ar.className = 'stor-earrow'; ar.textContent = '›'; cell.appendChild(ar);
+        cell.appendChild(mkIcon(essId, 'stor-eess'));
+      }
+      const cz = document.createElement('span'); cz.className = 'stor-ecap';
+      cz.innerHTML = count.toLocaleString() + (cap ? ' <span class="cap">/ ' + cap + '</span>' : '');
+      cell.appendChild(cz);
+      const dm = dur.match(/(\d+)%/); if (dm) { const db = document.createElement('span'); db.className = 'stor-edur'; db.textContent = dm[1] + '%'; cell.appendChild(db); }
+      return cell;
+    };
+    for (const [title, b] of list) {
+      const sec = document.createElement('div'); sec.className = 'stor-box';
+      const h = document.createElement('div'); h.className = 'stor-h';
+      h.innerHTML = title + (b.name ? ' · <span class="stor-tier">' + b.name + '</span>' : '');
+      sec.appendChild(h);
+      if (!b.items.length) {
+        const e = document.createElement('div'); e.className = 'stor-empty'; e.textContent = 'empty'; sec.appendChild(e);
+      } else if (b.essence) {
+        const g = document.createElement('div'); g.className = 'stor-egrid'; b.items.forEach(it => g.appendChild(makeEssenceCell(it))); sec.appendChild(g);
+      } else {
+        sec.appendChild(gridOf(b.items, b.cap));
+      }
+      wrap.appendChild(sec);
+    }
+    if (scrollAt > 0) c.scrollTop = scrollAt;
+  }

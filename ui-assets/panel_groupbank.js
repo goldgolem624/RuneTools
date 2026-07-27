@@ -1,0 +1,61 @@
+// RuneToolsX panel: Group Bank.
+// Spliced inline into client.html; bare classic script sharing one global scope.
+
+  // Group Ironman shared bank (container 963); same cache-while-open model as the bank.
+  async function fetchGroupBank() {
+    if (!bridge() || gbankFetching) return;
+    gbankFetching = true;
+    try {
+      const d = JSON.parse(await bridge().groupBankItems(myPid()));
+      gbankData = d && Array.isArray(d.items) ? d : { open: false, items: [], count: 0, cached_at: 0 };
+    } catch (e) { /* keep previous */ }
+    gbankFetching = false;
+    if (activeTab === 'groupbank') renderGroupBank();
+  }
+  function renderGroupBank() {
+    const c = $('content');
+    let wrap = $('gbankWrap');
+    if (!wrap) {
+      c.innerHTML = '';
+      wrap = document.createElement('div'); wrap.id = 'gbankWrap'; wrap.className = 'bank-wrap';
+      const top = document.createElement('div'); top.className = 'bank-top';
+      const inp = document.createElement('input'); inp.id = 'gbankSearch'; inp.className = 'bank-search';
+      inp.type = 'text'; inp.placeholder = 'Search group bank by name or id...'; inp.value = gbankTerm; inp.spellcheck = false;
+      inp.addEventListener('input', () => { gbankTerm = inp.value; gbankSig = ''; paintGroupBank(); });
+      const meta = document.createElement('div'); meta.id = 'gbankMeta'; meta.className = 'bank-meta';
+      top.appendChild(inp); top.appendChild(meta);
+      const body = document.createElement('div'); body.id = 'gbankBody'; body.className = 'mbank-body';
+      wrap.appendChild(top); wrap.appendChild(body); c.appendChild(wrap); gbankSig = '';
+    }
+    paintGroupBank();
+  }
+  function paintGroupBank() {
+    const body = $('gbankBody'); if (!body) return;
+    const items = (gbankData && gbankData.items) ? gbankData.items : [];
+    const t = gbankTerm.trim().toLowerCase();
+    const shown = !t ? items : items.filter(it => String(it[1]).indexOf(t) !== -1 || (it[3] || '').toLowerCase().indexOf(t) !== -1);
+    const sig = t + '|' + (gbankData ? gbankData.cached_at + '|' + gbankData.open + '|' + items.length : 'x');
+    if (sig === gbankSig) return; gbankSig = sig;
+    const meta = $('gbankMeta');
+    if (meta) {
+      const liveTxt = (gbankData && gbankData.open) ? '<span class="live">live</span>'
+        : (gbankData && gbankData.cached_at ? 'cached ' + new Date(gbankData.cached_at * 1000).toLocaleString() : '');
+      const total = (gbankData && gbankData.count) ? gbankData.count : 0;
+      meta.innerHTML = (total ? total + ' stacks' : '') + (liveTxt ? '<br>' + liveTxt : '');
+    }
+    body.innerHTML = '';
+    if (!gbankData) { body.innerHTML = '<div class="bank-empty" style="display:flex"><div class="warn" style="background:rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)">Reading...</div></div>'; return; }
+    if (!items.length) {
+      body.innerHTML = '<div class="bank-empty" style="display:flex"><div class="warn">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>' +
+        '<div><b>No group bank data cached yet.</b><br>Open your Group Ironman shared bank in game to populate this window.</div></div></div>';
+      return;
+    }
+    if (!shown.length) { body.innerHTML = '<div class="bank-empty" style="display:flex"><div class="warn" style="background:rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)">No item matches "' + gbankTerm.replace(/[<>&"]/g, '') + '".</div></div>'; return; }
+    const grid = document.createElement('div'); grid.className = 'stor-grid';
+    for (const it of shown) {
+      const [slot, id, stack, name] = it;
+      grid.appendChild(bankCell(id, stack, name, '\nGroup Ironman shared bank (container 963)'));
+    }
+    body.appendChild(grid);
+  }

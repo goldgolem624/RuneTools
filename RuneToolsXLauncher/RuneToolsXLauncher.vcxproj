@@ -1,0 +1,313 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    RuneToolsX standalone launcher. Native Ultralight (AppCore) app, x64,
+    static CRT. Expects the Ultralight 1.4 SDK at ThirdParty\Ultralight
+    (override the UltralightDir property to relocate). Runtime DLLs
+    + resources/ + launcher.html are post-build copied next to the exe.
+  -->
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{D8A7C3B0-9F12-4D8E-A1B2-7C4F2E3D5A61}</ProjectGuid>
+    <RootNamespace>RuneToolsXLauncher</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <TargetName>RuneToolsXLauncher</TargetName>
+    <!-- Path to the Ultralight 1.4 SDK. Defaults to ThirdParty\Ultralight in the
+         repo root; override this property (or place the SDK there) to build. -->
+    <UltralightDir>$(ProjectDir)..\ThirdParty\Ultralight</UltralightDir>
+    <IncludePath>$(UltralightDir)\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(UltralightDir)\lib;$(LibraryPath)</LibraryPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <PreprocessorDefinitions>WIN64;NDEBUG;_WINDOWS;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <WarningLevel>Level3</WarningLevel>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <AdditionalOptions>/Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <LargeAddressAware>true</LargeAddressAware>
+      <AdditionalDependencies>Ultralight.lib;UltralightCore.lib;WebCore.lib;AppCore.lib;Psapi.lib;Shell32.lib;Bcrypt.lib;Crypt32.lib;Winhttp.lib;CacheVendor.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)$(Platform)\$(Configuration)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <DelayLoadDLLs>Ultralight.dll;UltralightCore.dll;WebCore.dll;AppCore.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(ProjectDir)..\stage-sdk.ps1" powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\stage-sdk.ps1" -OutFile "$(TargetDir)plugin-sdk.js"</Command>
+      <Message>Staging RuneToolsX Plugin SDK</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <PreprocessorDefinitions>WIN64;_DEBUG;_WINDOWS;NOMINMAX;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Optimization>Disabled</Optimization>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <WarningLevel>Level3</WarningLevel>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <AdditionalOptions>/Zc:preprocessor %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <LargeAddressAware>true</LargeAddressAware>
+      <AdditionalDependencies>Ultralight.lib;UltralightCore.lib;WebCore.lib;AppCore.lib;Psapi.lib;Shell32.lib;Bcrypt.lib;Crypt32.lib;Winhttp.lib;CacheVendor.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)$(Platform)\$(Configuration)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <DelayLoadDLLs>Ultralight.dll;UltralightCore.dll;WebCore.dll;AppCore.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+    <PostBuildEvent>
+      <Command>if exist "$(ProjectDir)..\stage-sdk.ps1" powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\stage-sdk.ps1" -OutFile "$(TargetDir)plugin-sdk.js"</Command>
+      <Message>Staging RuneToolsX Plugin SDK</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClInclude Include="..\src\cache\Achievements.h" />
+    <ClInclude Include="..\src\cache\Bzip2.h" />
+    <ClInclude Include="..\src\cache\CacheReader.h" />
+    <ClInclude Include="..\src\cache\Constants.h" />
+    <ClInclude Include="..\src\cache\FileContainer.h" />
+    <ClInclude Include="..\src\cache\InputStream.h" />
+    <ClInclude Include="..\src\cache\ItemType.h" />
+    <ClInclude Include="..\src\cache\JagexContainer.h" />
+    <ClInclude Include="..\src\cache\LocationType.h" />
+    <ClInclude Include="..\src\cache\MapLocations.h" />
+    <ClInclude Include="..\src\cache\MapTiles.h" />
+    <ClInclude Include="..\src\cache\NpcType.h" />
+    <ClInclude Include="..\src\cache\ReferenceTable.h" />
+    <ClInclude Include="..\src\cache\Sprite.h" />
+    <ClInclude Include="..\src\cache\SqliteIndexFile.h" />
+    <ClInclude Include="..\src\cache\Store.h" />
+    <ClInclude Include="..\src\cache\Utils.h" />
+    <ClInclude Include="..\src\launcher\Accounts.h" />
+    <ClInclude Include="..\src\launcher\Bridge.h" />
+    <ClInclude Include="..\src\launcher\Cs2Browser.h" />
+    <ClInclude Include="..\src\launcher\Crypto.h" />
+    <ClInclude Include="..\src\launcher\Http.h" />
+    <ClInclude Include="..\src\launcher\Zip.h" />
+    <ClInclude Include="..\src\launcher\IconCache.h" />
+    <ClInclude Include="..\src\launcher\Loader.h" />
+    <ClInclude Include="..\src\launcher\MonitorFix.h" />
+    <ClInclude Include="..\src\launcher\Markers.h" />
+    <ClInclude Include="..\src\launcher\Overlay.h" />
+    <ClInclude Include="..\src\launcher\WinNotify.h" />
+    <ClInclude Include="..\src\launcher\Process.h" />
+    <ClInclude Include="..\src\reader\BankCache.h" />
+    <ClInclude Include="..\src\reader\Reader.h" />
+    <ClInclude Include="..\src\shared\Log.h" />
+    <ClInclude Include="..\src\shared\MachineFingerprint.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\cache\Achievements.cpp" />
+    <ClCompile Include="..\src\cache\Bzip2.cpp" />
+    <ClCompile Include="..\src\cache\CacheReader.cpp" />
+    <ClCompile Include="..\src\cache\FileContainer.cpp" />
+    <ClCompile Include="..\src\cache\InputStream.cpp" />
+    <ClCompile Include="..\src\cache\ItemType.cpp" />
+    <ClCompile Include="..\src\cache\JagexContainer.cpp" />
+    <ClCompile Include="..\src\cache\LocationType.cpp" />
+    <ClCompile Include="..\src\cache\MapLocations.cpp" />
+    <ClCompile Include="..\src\cache\MapTiles.cpp" />
+    <ClCompile Include="..\src\cache\NpcType.cpp" />
+    <ClCompile Include="..\src\cache\ReferenceTable.cpp" />
+    <ClCompile Include="..\src\cache\Sprite.cpp" />
+    <ClCompile Include="..\src\cache\SqliteIndexFile.cpp" />
+    <ClCompile Include="..\src\cache\Store.cpp" />
+    <ClCompile Include="..\src\cache\Utils.cpp" />
+    <ClCompile Include="..\src\launcher\Accounts.cpp" />
+    <ClCompile Include="..\src\launcher\Bridge.cpp" />
+    <ClCompile Include="..\src\launcher\Companion.cpp" />
+    <ClCompile Include="..\src\launcher\Cs2Browser.cpp" />
+    <ClCompile Include="..\src\launcher\Crypto.cpp" />
+    <ClCompile Include="..\src\launcher\Dock.cpp" />
+    <ClCompile Include="..\src\launcher\Http.cpp" />
+    <ClCompile Include="..\src\launcher\Zip.cpp" />
+    <ClCompile Include="..\src\launcher\IconCache.cpp" />
+    <ClCompile Include="..\src\launcher\Loader.cpp" />
+    <ClCompile Include="..\src\launcher\main.cpp" />
+    <ClCompile Include="..\src\launcher\Markers.cpp" />
+    <ClCompile Include="..\src\launcher\MonitorFix.cpp" />
+    <ClCompile Include="..\src\launcher\Overlay.cpp" />
+    <ClCompile Include="..\src\launcher\Process.cpp" />
+    <ClCompile Include="..\src\launcher\WinNotify.cpp" />
+    <ClCompile Include="..\src\reader\BankCache.cpp" />
+    <ClCompile Include="..\src\reader\Reader.cpp" />
+    <ClCompile Include="..\src\shared\Log.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\ui-assets\launcher.html" />
+    <None Include="..\ui-assets\client.html" />
+    <None Include="..\ui-assets\quest_guides.js" />
+    <None Include="..\ui-assets\panel_*.js" />
+    <None Include="app.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="app.rc" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <!--
+    Stage runtime artifacts next to the exe so the build output is
+    launchable without manual copying. AfterTargets="Build" so it
+    fires even when Link is skipped on an unchanged source tree.
+  -->
+  <Target Name="StageRuntime" AfterTargets="Build">
+    <ItemGroup>
+      <UltralightDlls Include="$(UltralightDir)\bin\*.dll" />
+      <UltralightRes  Include="$(UltralightDir)\resources\*" />
+      <UltralightLic  Include="$(UltralightDir)\license\*" />
+      <AlertSounds    Include="$(ProjectDir)..\ui-assets\sounds\*" />
+      <PanelScripts   Include="$(ProjectDir)..\ui-assets\panel_*.js" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutDir)Ultralight" />
+    <MakeDir Directories="$(OutDir)Ultralight\resources" />
+    <MakeDir Directories="$(OutDir)Ultralight\license" />
+    <Copy SourceFiles="@(UltralightDlls)"
+          DestinationFolder="$(OutDir)Ultralight"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(UltralightRes)"
+          DestinationFolder="$(OutDir)Ultralight\resources"
+          SkipUnchangedFiles="true" />
+    <!-- Ultralight licence terms ship beside the runtime: the SDK licence requires the
+         EULA to govern end-user distribution and NOTICES to accompany the product. -->
+    <Copy SourceFiles="@(UltralightLic)"
+          DestinationFolder="$(OutDir)Ultralight\license"
+          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\launcher.html"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\client.html"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\quest_guides.js"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true"
+          Condition="Exists('$(ProjectDir)..\ui-assets\quest_guides.js')" />
+    <Copy SourceFiles="@(PanelScripts)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true"
+          Condition="'@(PanelScripts)' != ''" />
+    <MakeDir Directories="$(OutDir)sounds" />
+    <Copy SourceFiles="@(AlertSounds)"
+          DestinationFolder="$(OutDir)sounds"
+          SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <Cs2Sidecar Include="$(ProjectDir)..\ThirdParty\cs2sidecar\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(Cs2Sidecar)"
+          DestinationFiles="@(Cs2Sidecar->'$(OutDir)cs2sidecar\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          Condition="'@(Cs2Sidecar)' != ''" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\items.pack"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(ProjectDir)..\ui-assets\items.pack')" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\wd_table.bin"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(ProjectDir)..\ui-assets\wd_table.bin')" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\pdb_5554.bin"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(ProjectDir)..\ui-assets\pdb_5554.bin')" />
+    <Message Text="Staged Ultralight runtime + launcher.html + alert sounds next to $(TargetName).exe"
+             Importance="high" />
+  </Target>
+
+  <!--
+    Auto-build the Inno Setup installer once the runtime payload is staged, so
+    installer\Output\RuneToolsXSetup.exe always matches the freshly built exe
+    (no more uploading a stale setup.exe). Release|x64 only; the .iss bundles
+    ..\x64\Release. Incremental: the Inputs/Outputs pair skips this when the
+    setup.exe is already newer than the exe/dll/UI assets/.iss, so unchanged
+    rebuilds pay nothing. If Inno Setup isn't installed it warns and skips (the
+    solution still builds). Auto-discovers ISCC.exe (per-user install dir, then
+    Program Files, then the registry); override with the ISCC property.
+  -->
+  <Target Name="BuildInstaller" AfterTargets="StageRuntime"
+          Condition="'$(Configuration)|$(Platform)'=='Release|x64'"
+          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
+          Outputs="$(ProjectDir)..\installer\Output\RuneToolsXSetup.exe">
+    <PropertyGroup>
+      <ISCC Condition="'$(ISCC)'=='' And Exists('$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe')">$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe</ISCC>
+      <ISCC Condition="'$(ISCC)'=='' And Exists('$(MSBuildProgramFiles32)\Inno Setup 6\ISCC.exe')">$(MSBuildProgramFiles32)\Inno Setup 6\ISCC.exe</ISCC>
+      <ISCC Condition="'$(ISCC)'=='' And Exists('$(ProgramW6432)\Inno Setup 6\ISCC.exe')">$(ProgramW6432)\Inno Setup 6\ISCC.exe</ISCC>
+      <_InnoDir Condition="'$(ISCC)'==''">$([MSBuild]::GetRegistryValueFromView('HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1', 'InstallLocation', null, RegistryView.Registry64, RegistryView.Registry32))</_InnoDir>
+      <ISCC Condition="'$(ISCC)'=='' And '$(_InnoDir)'!='' And Exists('$(_InnoDir)ISCC.exe')">$(_InnoDir)ISCC.exe</ISCC>
+      <IssFile>$(ProjectDir)..\installer\RuneToolsX.iss</IssFile>
+    </PropertyGroup>
+    <Warning Condition="'$(ISCC)'==''"
+             Text="Inno Setup (ISCC.exe) not found -- skipping installer build. Install Inno Setup 6 or pass -p:ISCC=&lt;path&gt; to auto-build RuneToolsXSetup.exe." />
+    <Message Condition="'$(ISCC)'!=''" Importance="high" Text="Compiling installer: $(ISCC)" />
+    <Exec Condition="'$(ISCC)'!=''"
+          Command="&quot;$(ISCC)&quot; /Q &quot;$(IssFile)&quot;"
+          WorkingDirectory="$(ProjectDir)..\installer" />
+    <Message Condition="'$(ISCC)'!=''" Importance="high"
+             Text="Installer built -> $(ProjectDir)..\installer\Output\RuneToolsXSetup.exe" />
+  </Target>
+</Project>

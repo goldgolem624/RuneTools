@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RuneTools</title>
+<style>
+  :root {
+    --bg:           #0b0d12;
+    --bg-elev:      #11141c;
+    --bg-elev-2:    #161a25;
+    --bg-glass:     rgba(22, 26, 37, 0.6);
+    --border:       #1f2433;
+    --border-hi:    #2d3447;
+    --border-glow:  rgba(124, 92, 252, 0.35);
+    --text:         #eef0f5;
+    --text-dim:     #99a0b3;
+    --text-mute:    #5e6580;
+    --accent:       #7c5cfc;
+    --accent-hi:    #9d83ff;
+    --accent-lo:    #5e3df0;
+    --accent-glow:  rgba(124, 92, 252, 0.45);
+    --ok:           #4ade80;
+    --ok-soft:      rgba(74, 222, 128, 0.14);
+    --err:          #f87171;
+    --err-soft:     rgba(248, 113, 113, 0.14);
+    --warn:         #fbbf24;
+    --warn-soft:    rgba(251, 191, 36, 0.14);
+
+    --btn-h:        34px;
+    --btn-px:       16px;
+    --btn-font:     12px;
+    --btn-radius:   8px;
+
+    --tx-fast:      140ms;
+    --tx-med:       260ms;
+    --tx-slow:      400ms;
+    --ease:         cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-out:     cubic-bezier(0.16, 1, 0.3, 1);
+
+    --shadow-sm:    0 2px 6px rgba(0,0,0,0.30);
+    --shadow-md:    0 8px 24px rgba(0,0,0,0.40);
+    --shadow-glow:  0 0 28px rgba(124, 92, 252, 0.30);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-user-select: none;   /* WebKit honours the prefixed form; plain user-select is ignored */
+    user-select: none;
+    overflow: hidden;
+    letter-spacing: 0.005em;
+  }
+  body::before {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% -10%, rgba(124, 92, 252, 0.10), transparent 60%);
+  }
+  input, textarea, [contenteditable="true"] { -webkit-user-select: text; user-select: text; }
+
+  #app { display: flex; flex-direction: column; height: 100%; position: relative; z-index: 1; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 26px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(17, 20, 28, 0.85), rgba(11, 13, 18, 0.55));
+    backdrop-filter: blur(10px);
+  }
+  header .brand { display: flex; align-items: center; gap: 14px; }
+  header .logo {
+    width: 48px; height: 48px;
+    display: block;
+    filter: drop-shadow(0 6px 18px rgba(124, 92, 252, 0.45));
+  }
+
+  button {
+    height: var(--btn-h);
+    padding: 0 var(--btn-px);
+    font: inherit; font-size: var(--btn-font); font-weight: 600;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border-hi);
+    color: var(--text);
+    border-radius: var(--btn-radius);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    transition: background  var(--tx-fast) var(--ease),
+                border-color var(--tx-fast) var(--ease),
+                color        var(--tx-fast) var(--ease);
+  }
+  button:hover:not(:disabled) {
+    background: #1b2030;
+    border-color: var(--accent);
+  }
+  button:active:not(:disabled) {
+    background: var(--bg-elev-2);
+  }
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  button.primary {
+    background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+    border-color: var(--accent);
+    color: white;
+  }
+  button.primary:hover:not(:disabled) {
+    background: linear-gradient(180deg, #b69dff, #8a6dff);
+    border-color: var(--accent-hi);
+  }
+
+  button.ghost {
+    background: transparent;
+    border-color: var(--border-hi);
+    color: var(--text-dim);
+  }
+  button.ghost:hover:not(:disabled) {
+    background: rgba(124, 92, 252, 0.10);
+    border-color: var(--accent);
+    color: var(--text);
+  }
+
+  button.danger { color: var(--err); border-color: rgba(248, 113, 113, 0.30); }
+  button.danger:hover:not(:disabled) {
+    background: var(--err-soft);
+    border-color: var(--err);
+    color: var(--err);
+  }
+  button.icon {
+    width: var(--btn-h);
+    padding: 0;
+  }
+  button.icon svg {
+    width: 14px; height: 14px;
+    stroke: currentColor; stroke-width: 1.8;
+    fill: none; stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  input[type=password], input[type=text] {
+    height: var(--btn-h);
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    color: var(--text);
+    border-radius: var(--btn-radius);
+    padding: 0 12px;
+    font: inherit;
+    width: 100%;
+    transition: border-color var(--tx-fast) var(--ease),
+                box-shadow var(--tx-fast) var(--ease);
+  }
+  input[type=password]:focus, input[type=text]:focus {
+    border-color: var(--accent);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(124, 92, 252, 0.15);
+  }
+  main { flex: 1; overflow: auto; padding: 28px 26px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+
+  .card {
+    position: relative;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: var(--shadow-md);
+    animation: card-in var(--tx-med) var(--ease-out);
+    width: 100%; max-width: 420px;
+  }
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0);   }
+  }
+  .card h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+  .card .hint { color: var(--text-dim); font-size: 12px; margin: 0 0 18px; }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block;
+    font-size: 10px;
+    color: var(--text-mute);
+    margin-bottom: 7px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+
+  .row { display: flex; gap: 10px; align-items: center; }
+  .row > * { flex: 1; }
+  .row > .primary { flex: 0 0 auto; padding: 0 22px; }
+
+  /* Collapsed when empty (no orphan box); expands when a status appears. */
+  .status {
+    margin: 0;
+    padding: 0 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    background: transparent;
+    color: transparent;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transition: max-height var(--tx-med) var(--ease),
+                padding    var(--tx-med) var(--ease),
+                margin     var(--tx-med) var(--ease),
+                opacity    var(--tx-fast) var(--ease);
+  }
+  .status.show {
+    margin: 12px 0 0;
+    padding: 11px 14px;
+    max-height: 80px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .status.ok    { background: var(--ok-soft);   color: var(--ok);   border-color: rgba(74,222,128,0.30); }
+  .status.err   { background: var(--err-soft);  color: var(--err);  border-color: rgba(248,113,113,0.30); }
+  .status.warn  { background: var(--warn-soft); color: var(--warn); border-color: rgba(251,191,36,0.30); }
+
+  /* Update banner: accent when optional, amber when below minVersion (Launch gated). */
+  .upd {
+    margin-top: 14px;
+    padding: 14px;
+    border: 1px solid var(--border-glow);
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(124,92,252,0.10), rgba(124,92,252,0.03));
+    box-shadow: var(--shadow-sm);
+    animation: card-in var(--tx-med) var(--ease-out);
+  }
+  .upd.mandatory {
+    border-color: rgba(251,191,36,0.50);
+    background: linear-gradient(180deg, rgba(251,191,36,0.10), rgba(251,191,36,0.03));
+  }
+  .upd.error { border-color: rgba(248,113,113,0.50); }
+  .upd-main { display: flex; align-items: center; gap: 12px; }
+  .upd-icon {
+    flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(124,92,252,0.16); color: var(--accent-hi);
+    border: 1px solid rgba(124,92,252,0.40);
+  }
+  .upd.mandatory .upd-icon {
+    background: rgba(251,191,36,0.16); color: var(--warn); border-color: rgba(251,191,36,0.40);
+  }
+  .upd-icon svg {
+    width: 17px; height: 17px;
+    stroke: currentColor; stroke-width: 1.8;
+    fill: none; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .upd-text { flex: 1; min-width: 0; }
+  .upd-title { font-size: 13px; font-weight: 600; }
+  .upd-sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .upd-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .upd-actions button { height: 30px; }
+  .upd-progress { margin-top: 12px; }
+  .upd-bar {
+    height: 7px; border-radius: 999px; background: var(--bg);
+    overflow: hidden; border: 1px solid var(--border);
+  }
+  .upd-bar-fill {
+    height: 100%; width: 0%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hi));
+    transition: width var(--tx-med) var(--ease);
+  }
+  .upd-phase { font-size: 11px; color: var(--text-dim); margin-top: 7px; }
+  .upd.error .upd-phase { color: var(--err); }
+  /* pre-update blocker: running game clients hold our files open */
+  .upd-warn {
+    margin-top: 12px; padding: 11px 12px; border-radius: 8px;
+    background: rgba(240, 181, 60, 0.10); border: 1px solid rgba(240, 181, 60, 0.45);
+    font-size: 12px; color: #f0d9a8; line-height: 1.5;
+  }
+  .upd-notes {
+    margin-top: 12px; padding: 11px 12px; border-radius: 8px;
+    background: var(--bg); border: 1px solid var(--border);
+    font-size: 12px; color: var(--text-dim); line-height: 1.5;
+    white-space: pre-wrap; max-height: 160px; overflow-y: auto;
+  }
+  .upd-notes::-webkit-scrollbar { width: 8px; }
+  .upd-notes::-webkit-scrollbar-track { background: transparent; }
+  .upd-notes::-webkit-scrollbar-thumb {
+    background: var(--border-hi); border-radius: 999px; border: 2px solid var(--bg);
+  }
+
+  .section-title {
+    margin: 22px 0 10px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-title .count {
+    background: var(--bg-elev-2);
+    color: var(--text-dim);
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--border);
+  }
+
+  .list {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    max-height: 128px;            /* fits 2 rows cleanly; scrolls at 3+ */
+    background: rgba(11, 13, 18, 0.3);
+  }
+  .list::-webkit-scrollbar { width: 8px; }
+  .list::-webkit-scrollbar-track { background: transparent; }
+  .list::-webkit-scrollbar-thumb {
+    background: var(--border-hi);
+    border-radius: 999px;
+    border: 2px solid var(--bg-elev);
+  }
+  .list::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+  .list-row {
+    display: flex; align-items: center;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+    position: relative;
+    transition: background var(--tx-fast) var(--ease);
+  }
+  .list-row:hover { background: rgba(255, 255, 255, 0.025); }
+  .list-row:last-child { border-bottom: none; }
+  .list-row .name { flex: 1; font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 10px; }
+  .list-row .name.muted { color: var(--text-mute); font-weight: 400; font-style: italic; }
+  .list-row .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .list-row .dot.live  { background: var(--ok);        box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+  .list-row .dot.idle  { background: var(--text-mute); }
+  .list-row .actions { display: flex; gap: 6px; }
+
+  .pill {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ok);
+    background: var(--ok-soft);
+    border: 1px solid rgba(74, 222, 128, 0.30);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-weight: 700;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+
+  .empty {
+    padding: 28px;
+    text-align: center;
+    color: var(--text-mute);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .empty svg {
+    display: block;
+    margin: 0 auto 10px;
+    width: 28px; height: 28px;
+    opacity: 0.4;
+    stroke: currentColor; stroke-width: 1.5;
+    fill: none; stroke-linecap: round; stroke-linejoin: round;
+  }
+
+  #snap-stack { display: flex; flex-direction: column; gap: 12px; }
+
+  .client-panel {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-elev);
+    overflow: hidden;
+    box-shadow: var(--shadow-md);
+    animation: card-in var(--tx-med) var(--ease-out);
+  }
+  .client-panel .cp-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: linear-gradient(180deg, rgba(124,92,252,0.07), transparent);
+    border-bottom: 1px solid var(--border);
+  }
+  .client-panel .cp-title {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 600; font-size: 13px;
+  }
+  .client-panel .cp-title .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--text-mute);
+  }
+  .client-panel .cp-title.is-in .dot { background: #4dd28a; }
+  .client-panel .cp-meta {
+    font-size: 11px; color: var(--text-mute);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .client-panel .cp-body {
+    display: grid;
+    grid-template-columns: 138px 1fr;
+    min-height: 168px;
+  }
+  .client-panel .cp-side {
+    background: rgba(11, 13, 18, 0.35);
+    border-right: 1px solid var(--border);
+    padding: 8px 6px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .client-panel .cp-tab {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    text-align: left;
+    padding: 9px 12px;
+    border-radius: 8px;
+    font: inherit; font-size: 12px;
+    cursor: pointer;
+    transition: background var(--tx-fast) var(--ease),
+                color var(--tx-fast) var(--ease);
+  }
+  .client-panel .cp-tab:hover { background: var(--bg-elev-2); color: var(--text); }
+  .client-panel .cp-tab.is-active {
+    background: rgba(124, 92, 252, 0.16);
+    color: var(--text);
+    box-shadow: inset 2px 0 0 var(--accent-hi);
+  }
+
+  .client-panel .cp-content {
+    padding: 14px 18px;
+  }
+  .cp-rows { display: flex; flex-direction: column; gap: 7px; }
+  .cp-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    font-size: 12px;
+  }
+  .cp-row .k { color: var(--text-mute); letter-spacing: 0.04em; text-transform: uppercase; font-size: 10px; font-weight: 600; }
+  .cp-row .v { color: var(--text); font-variant-numeric: tabular-nums; }
+  .cp-pane { display: none; }
+  .cp-pane.is-active { display: block; }
+
+  footer {
+    padding: 12px 26px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: flex-end; align-items: center;
+    font-size: 11px;
+    color: var(--text-mute);
+    background: rgba(11, 13, 18, 0.5);
+    backdrop-filter: blur(8px);
+  }
+  footer .foot-items { display: flex; align-items: center; gap: 9px; }
+  footer .foot-items .sep { color: var(--text-mute); opacity: 0.6; }
+  .credits-ov {
+    display: none; position: fixed; inset: 0; z-index: 60;
+    background: rgba(6, 8, 13, 0.72);
+    align-items: center; justify-content: center;
+  }
+  .credits-ov.on { display: flex; }
+  .credits-box {
+    width: min(560px, calc(100vw - 48px)); max-height: calc(100vh - 80px);
+    display: flex; flex-direction: column;
+    background: var(--bg-elev); border: 1px solid var(--border-hi); border-radius: 12px;
+  }
+  .credits-hd {
+    padding: 13px 18px; border-bottom: 1px solid var(--border);
+    color: var(--accent-hi); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .credits-body { padding: 6px 18px 14px; overflow-y: auto; font-size: 12px; line-height: 1.55; color: var(--text-dim); }
+  .credits-body p { margin: 12px 0 0; }
+  .credits-body b { color: var(--text); }
+  .credits-body code { color: var(--text); font-size: 11px; }
+  .credits-legend { color: var(--text); }
+  .credits-dim { color: var(--text-mute); font-size: 11px; }
+  .credits-ft { padding: 12px 18px; border-top: 1px solid var(--border); text-align: right; }
+  .btn-min {
+    display: inline-block; cursor: pointer; padding: 6px 16px; border-radius: 7px;
+    border: 1px solid var(--border-hi); color: var(--text); font-size: 12px;
+  }
+  .btn-min:hover { border-color: var(--accent); color: var(--accent-hi); }
+
+  footer .link {
+    color: var(--text-dim);
+    text-decoration: none;
+    cursor: pointer;
+    display: inline-flex; align-items: center;
+    transition: color var(--tx-fast) var(--ease);
+  }
+  footer .link:hover { color: var(--accent-hi); }
+</style>
+</head>
+<body>
+<svg style="display:none">
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/></symbol>
+  <symbol id="i-empty" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 12h6"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 7V4M15 7V4M5 11h14M7 11v3a5 5 0 0 0 10 0v-3M12 19v3"/></symbol>
+  <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M9.9 4.2A10.9 10.9 0 0 1 12 4c6.5 0 10 7 10 7a18.5 18.5 0 0 1-3 3.9M6.6 6.6A18.6 18.6 0 0 0 2 11s3.5 7 10 7a10.8 10.8 0 0 0 3.3-.5"/><path d="M3 3l18 18"/></symbol>
+</svg>
+
+<div id="app">
+  <header>
+    <div class="brand">
+      <img class="logo" alt="" src="data:image/png;base64,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" />
+    </div>
+  </header>
+
+  <main>
+    <div class="card" id="main-card">
+      <div class="status" id="main-status"></div>
+
+      <div class="upd" id="upd-banner" style="display:none">
+        <div class="upd-main">
+          <span class="upd-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 16v3a2 2 0 002 2h12a2 2 0 002-2v-3"/></svg>
+          </span>
+          <div class="upd-text">
+            <div class="upd-title" id="upd-title">Update available</div>
+            <div class="upd-sub" id="upd-sub"></div>
+          </div>
+          <div class="upd-actions">
+            <button class="ghost" id="upd-notes-btn" type="button">What's new</button>
+            <button class="primary" id="upd-now-btn" type="button">Update now</button>
+            <button class="icon ghost" id="upd-dismiss-btn" type="button" title="Update later">
+              <svg><use href="#i-x"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="upd-progress" id="upd-progress" style="display:none">
+          <div class="upd-bar"><div class="upd-bar-fill" id="upd-bar-fill"></div></div>
+          <div class="upd-phase" id="upd-phase"></div>
+        </div>
+        <div class="upd-warn" id="upd-warn" style="display:none"></div>
+        <div class="upd-notes" id="upd-notes" style="display:none"></div>
+      </div>
+
+      <h3 class="section-title">
+        Running clients
+        <span class="count" id="proc-count">0</span>
+      </h3>
+      <div class="list" id="proc-list">
+        <div class="empty">
+          <svg><use href="#i-plug"/></svg>
+          No running RS3 clients.
+        </div>
+      </div>
+
+      <h3 class="section-title">
+        Saved accounts
+        <span class="count" id="acct-count">0</span>
+      </h3>
+      <div class="list" id="acct-list">
+        <div class="empty">
+          <svg><use href="#i-empty"/></svg>
+          Saved accounts will appear here once you log into one.
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer>
+    <div class="foot-items">
+      <span id="version">v?</span>
+      <span class="sep">&middot;</span>
+      <span class="link" id="opencredits">Credits</span>
+      <span class="sep">&middot;</span>
+      <span class="link" id="openlog">Open log</span>
+      <span class="sep">&middot;</span>
+      <span class="link" id="opendiscord" title="Join the RuneTools Discord"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.865-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.058a.082.082 0 0 0 .031.056 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg></span>
+    </div>
+  </footer>
+</div>
+
+<div id="creditsOv" class="credits-ov">
+  <div class="credits-box">
+    <div class="credits-hd">Credits</div>
+    <div class="credits-body">
+      <p><b>RuneTools</b> <span id="creditsVer"></span> &mdash; released under the MIT License.
+         See <code>LICENSE</code> and <code>THIRD-PARTY-NOTICES.md</code> beside the application.</p>
+      <p><b>HTML UI engine:</b> Ultralight &copy; 2024 Ultralight, Inc. All rights reserved.
+         Ultralight is a trademark of Ultralight, Inc. Ultralight includes portions of WebKit
+         and other third-party software.</p>
+      <p class="credits-legend">Please see the accompanying NOTICES.txt for full text.</p>
+      <p class="credits-dim">Shipped at <code>Ultralight\license\</code> (NOTICES.md, LICENSE.txt, EULA.txt).</p>
+      <p><b>Game data</b> is decoded from your own local RuneScape cache. Quest and Treasure Trail
+         guide data is derived from the RuneScape Wiki under CC BY-NC-SA 3.0.</p>
+    </div>
+    <div class="credits-ft"><span class="btn-min" id="creditsClose">Close</span></div>
+  </div>
+</div>
+
+<script>
+  function bridge() { return window.rtx || {}; }
+
+  async function waitForBridge(timeoutMs) {
+    const deadline = Date.now() + (timeoutMs || 3000);
+    while (Date.now() < deadline) {
+      if (window.rtx && typeof window.rtx.scanProcesses === 'function') return true;
+      await new Promise(r => setTimeout(r, 25));
+    }
+    return false;
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  const _statusTimers = new WeakMap();
+  function showStatus(el, kind, msg) {
+    const prev = _statusTimers.get(el);
+    if (prev) { clearTimeout(prev); _statusTimers.delete(el); }
+    el.className = 'status show ' + kind;
+    el.textContent = msg;
+    // warns carry transient progress ("Signing in...") so they stay up longer
+    const ttl = (kind === 'warn') ? 3500 : 1800;
+    const t = setTimeout(() => hideStatus(el), ttl);
+    _statusTimers.set(el, t);
+  }
+  function hideStatus(el) {
+    const prev = _statusTimers.get(el);
+    if (prev) { clearTimeout(prev); _statusTimers.delete(el); }
+    el.className = 'status';
+    el.textContent = '';
+  }
+
+  function maskName(name) { return name || ''; }
+
+  function lcKey(s) { return (s || '').toLowerCase().trim(); }
+
+  function iconButton(symbolId, cls, title, onclick) {
+    const b = document.createElement('button');
+    b.className = (cls || '') + ' icon';
+    b.title = title || '';
+    b.innerHTML = '<svg><use href="#' + symbolId + '"/></svg>';
+    if (onclick) b.addEventListener('click', onclick);
+    return b;
+  }
+
+  function textButton(label, cls, onclick) {
+    const b = document.createElement('button');
+    if (cls) b.className = cls;
+    b.textContent = label;
+    if (onclick) b.addEventListener('click', onclick);
+    return b;
+  }
+
+  function renderProcs(list) {
+    const root = $('proc-list');
+    root.innerHTML = '';
+    $('proc-count').textContent = String(list ? list.length : 0);
+    if (!list || !list.length) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.innerHTML = '<svg><use href="#i-plug"/></svg>No running RS3 clients.';
+      root.appendChild(e);
+      return;
+    }
+    for (const p of list) {
+      const r = document.createElement('div');
+      r.className = 'list-row';
+
+      // Client launched elevated while we run unelevated: no access, so say so
+      // plainly instead of showing an inert row that never gets a panel.
+      if (p.accessible === false) {
+        const msg = document.createElement('span');
+        msg.className = 'name muted';
+        msg.title = 'This client is running with higher privileges than RuneToolsX. ' +
+                    'Close it, then either launch it from RuneToolsX, or run RuneToolsX as ' +
+                    'administrator to match it.';
+        const d0 = document.createElement('span');
+        d0.className = 'dot';
+        d0.style.background = '#e0524a';
+        msg.appendChild(d0);
+        msg.appendChild(document.createTextNode(
+          'Elevated client (run RuneToolsX as administrator to use it)'));
+        r.appendChild(msg);
+        root.appendChild(r);
+        continue;
+      }
+
+      const dot = document.createElement('span');
+      dot.className = 'dot ' + (p.display_name ? 'live' : 'idle');
+      const name = document.createElement('span');
+      name.className = 'name';
+      if (p.display_name) {
+        name.appendChild(dot);
+        name.appendChild(document.createTextNode(maskName(p.display_name)));
+      } else {
+        name.classList.add('muted');
+        name.appendChild(dot);
+        name.appendChild(document.createTextNode('login screen'));
+      }
+      r.appendChild(name);
+
+      const actions = document.createElement('span');
+      actions.className = 'actions';
+
+      // Per-account panel hide/show, persisted; hiding leaves the game running.
+      if (p.display_name) {
+        const hidden = isPanelHidden(p.display_name);
+        actions.appendChild(iconButton(
+          hidden ? 'i-eye-off' : 'i-eye',
+          'ghost' + (hidden ? ' danger' : ''),
+          hidden ? 'Panel hidden for this account - click to show' : "Hide this account's panel",
+          async (ev) => {
+            ev.currentTarget.disabled = true;
+            setPanelHidden(p.display_name, !hidden);
+            await syncClientWindows();
+            invalidateRenderCache(); refresh();
+          }));
+      }
+
+      // Reopen only for a window we opened that the user has since closed.
+      if (openPids.has(p.pid) && !p.win_open) {
+        actions.appendChild(iconButton('i-window', 'ghost', 'Reopen window', async (ev) => {
+          const b = ev.currentTarget; b.disabled = true;
+          const title = p.display_name || ('PID ' + p.pid);
+          try {
+            const ok = await bridge().openClientWindow(p.pid, title);
+            if (ok) openPids.add(p.pid);
+          } catch (e) {}
+          refresh();
+        }));
+      }
+
+      actions.appendChild(iconButton('i-x', 'ghost danger', 'Close client', async (ev) => {
+        const b = ev.currentTarget; b.disabled = true;
+        const res = JSON.parse(await bridge().closeProcess(p.pid));
+        if (res.success) showStatus($('main-status'), 'ok', 'Closed ' + (p.display_name || ('PID ' + p.pid)));
+        else             showStatus($('main-status'), 'err', res.detail || 'close failed');
+        refresh();
+      }));
+
+      r.appendChild(actions);
+      root.appendChild(r);
+    }
+  }
+
+  function renderAccounts(list, runningSet) {
+    const root = $('acct-list');
+    root.innerHTML = '';
+    const filtered = (list || []).filter(a => !runningSet.has(lcKey(a.display_name)));
+    $('acct-count').textContent = String(filtered.length);
+    if (!filtered.length) {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.innerHTML = '<svg><use href="#i-empty"/></svg>Saved accounts will appear here once you log into one.';
+      root.appendChild(e);
+      return;
+    }
+    for (const a of filtered) {
+      const r = document.createElement('div');
+      r.className = 'list-row';
+
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = maskName(a.display_name) || a.id;
+      r.appendChild(name);
+
+      const actions = document.createElement('span');
+      actions.className = 'actions';
+      if (a.display_name) {
+        const hidden = isPanelHidden(a.display_name);
+        actions.appendChild(iconButton(
+          hidden ? 'i-eye-off' : 'i-eye',
+          'ghost' + (hidden ? ' danger' : ''),
+          hidden ? 'Panel hidden for this account - click to show' : "Hide this account's panel",
+          () => { setPanelHidden(a.display_name, !hidden); invalidateRenderCache(); refresh(); }));
+      }
+      actions.appendChild(textButton('Launch', 'primary', async (ev) => {
+        if (updateMandatory) {
+          showStatus($('main-status'), 'err',
+                     'This version is out of date - click "Update now" above before launching.');
+          return;
+        }
+        const b = ev.currentTarget; b.disabled = true;
+        showStatus($('main-status'), 'warn', 'Launching ' + (a.display_name || 'account') + '...');
+        const res = JSON.parse(await bridge().launchAccount(a.id));
+        if (res.success) showStatus($('main-status'), 'ok', 'Launched (PID ' + res.pid + ')');
+        else             showStatus($('main-status'), 'err', res.detail || 'launch failed');
+        b.disabled = false;
+        setTimeout(refresh, 900);
+      }));
+      actions.appendChild(textButton('Remove', 'ghost', async () => {
+        await bridge().removeAccount(a.id);
+        refresh();
+      }));
+      r.appendChild(actions);
+      root.appendChild(r);
+    }
+  }
+
+  let _lastProcKey = '';
+  let _lastAcctKey = '';
+  function procKey(list) {
+    return list.map(p => p.pid + '|' + (p.display_name || '') +
+                         '|' + (p.win_open ? 1 : 0) +
+                         '|' + (p.accessible === false ? 1 : 0)).join(';');
+  }
+  function acctKey(list, runningSet) {
+    return list.map(a => a.id + '|' + (a.display_name || '') + '|' +
+                         (runningSet.has(lcKey(a.display_name)) ? 1 : 0)).join(';');
+  }
+
+  async function refresh() {
+    let procs = [];
+    try { procs = JSON.parse(await bridge().scanProcesses()); } catch (e) {}
+    // Tag each client with panel-window-open state; default to open on error
+    // so we never show a spurious reopen button.
+    for (const p of procs) {
+      try { p.win_open = !!(await bridge().clientWindowOpen(p.pid)); }
+      catch (e) { p.win_open = true; }
+    }
+    const pk = procKey(procs);
+    if (pk !== _lastProcKey) {
+      _lastProcKey = pk;
+      renderProcs(procs);
+    }
+    const runningSet = new Set(
+      procs.filter(p => p.display_name).map(p => lcKey(p.display_name))
+    );
+    let accts = [];
+    try { accts = JSON.parse(await bridge().listAccounts()); } catch (e) {}
+    const ak = acctKey(accts, runningSet);
+    if (ak !== _lastAcctKey) {
+      _lastAcctKey = ak;
+      renderAccounts(accts, runningSet);
+    }
+  }
+
+  function invalidateRenderCache() { _lastProcKey = ''; _lastAcctKey = ''; }
+
+  // Updates: banner when behind the manifest version; below its minVersion
+  // floor the update is mandatory and Launch is blocked.
+  let updateMandatory = false;
+  let updPollTimer = null;
+  // latestVersionCached() is an instant cache read (C++ refreshes the manifest
+  // on a background thread), so a 10s poll is cheap.
+  const UPDATE_POLL_MS = 10 * 1000;
+  let _updCheckTimer = null;
+  let _updDismissed  = false;   // user clicked "later" this session -> don't re-nag
+
+  // "a.b.c" compare -> -1|0|1; missing or non-numeric components count as 0.
+  function cmpVer(a, b) {
+    const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
+    const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x < y) return -1;
+      if (x > y) return 1;
+    }
+    return 0;
+  }
+
+  async function checkForUpdate() {
+    let cur = '';
+    try { cur = await bridge().version(); } catch (e) { return; }
+    let man = {};
+    try { man = JSON.parse(await bridge().latestVersion()); } catch (e) {}
+    const latest = man && man.version;
+    if (!latest || cmpVer(cur, latest) >= 0) { hideUpdateBanner(); return; }
+    const minV = man && man.minVersion;
+    const mandatory = !!(minV && cmpVer(cur, minV) < 0);
+    showUpdateBanner(latest, man && man.changelog, mandatory);
+  }
+
+  // Periodic cached check; skipped while the banner is up or after a dismiss
+  // (unless the new version is mandatory).
+  async function pollForUpdate() {
+    const banner = $('upd-banner');
+    if (!banner || banner.style.display !== 'none') return;   // already showing / downloading
+    let cur = '';
+    try { cur = await bridge().version(); } catch (e) { return; }
+    let man = {};
+    try { man = JSON.parse(await bridge().latestVersionCached()); } catch (e) { return; }
+    const latest = man && man.version;
+    if (!latest || cmpVer(cur, latest) >= 0) return;          // up to date / cache not warm yet
+    const minV = man && man.minVersion;
+    const mandatory = !!(minV && cmpVer(cur, minV) < 0);
+    if (_updDismissed && !mandatory) return;                  // honoured "later"; required updates ignore it
+    showUpdateBanner(latest, man.changelog, mandatory);
+  }
+  function startUpdateChecks() {
+    _updDismissed = false;
+    pollForUpdate();   // warms the C++ background checker (it spins up on first cached read)
+    if (!_updCheckTimer) _updCheckTimer = setInterval(pollForUpdate, UPDATE_POLL_MS);
+  }
+  function stopUpdateChecks() {
+    if (_updCheckTimer) { clearInterval(_updCheckTimer); _updCheckTimer = null; }
+  }
+  function dismissUpdate() { _updDismissed = true; hideUpdateBanner(); }
+
+  function showUpdateBanner(ver, changelog, mandatory) {
+    updateMandatory = !!mandatory;
+    const b = $('upd-banner');
+    b.classList.toggle('mandatory', updateMandatory);
+    b.classList.remove('error');
+    $('upd-title').textContent = updateMandatory ? 'Update required' : 'Update available';
+    $('upd-sub').textContent = updateMandatory
+      ? ('Version ' + ver + ' is required before you can launch RS3.')
+      : ('Version ' + ver + ' is ready to install.');
+
+    const cl = (changelog || '').trim();
+    $('upd-notes-btn').style.display = cl ? '' : 'none';
+    $('upd-notes').textContent = cl;
+    $('upd-notes').style.display = 'none';
+
+    $('upd-progress').style.display = 'none';
+    $('upd-bar-fill').style.width = '0%';
+    $('upd-phase').textContent = '';
+    $('upd-warn').style.display = 'none';
+    const now = $('upd-now-btn');
+    now.disabled = false;
+    now.textContent = 'Update now';
+    $('upd-dismiss-btn').style.display = updateMandatory ? 'none' : '';
+    b.style.display = 'block';
+  }
+
+  function hideUpdateBanner() {
+    updateMandatory = false;
+    if (updPollTimer) { clearTimeout(updPollTimer); updPollTimer = null; }
+    const b = $('upd-banner');
+    if (b) b.style.display = 'none';
+  }
+
+  async function beginUpdate() {
+    const now = $('upd-now-btn');
+    now.disabled = true;
+    // Running game clients keep our files loaded, so the installer can't
+    // replace them; warn until they're closed.
+    let clients = 0;
+    try { clients = Number(await bridge().clientsRunning()) || 0; } catch (e) {}
+    if (clients > 0) {
+      const w = $('upd-warn');
+      w.textContent = clients === 1
+        ? 'A RuneScape client is still running. Close it before updating, then press "Update now" again.'
+        : clients + ' RuneScape clients are still running. Close them before updating, then press "Update now" again.';
+      w.style.display = 'block';
+      now.disabled = false;
+      return;
+    }
+    $('upd-warn').style.display = 'none';
+    $('upd-notes-btn').style.display = 'none';
+    $('upd-dismiss-btn').style.display = 'none';   // committed; no bailing mid-download
+    $('upd-notes').style.display = 'none';
+    $('upd-banner').classList.remove('error');
+    $('upd-progress').style.display = 'block';
+    $('upd-phase').textContent = 'Starting...';
+    try { await bridge().startUpdate(); } catch (e) {}
+    pollUpdate();
+  }
+
+  function pollUpdate() {
+    if (updPollTimer) { clearTimeout(updPollTimer); updPollTimer = null; }
+    const tick = async () => {
+      let st = { phase: 'idle', pct: 0, detail: '' };
+      try { st = JSON.parse(await bridge().updateState()); } catch (e) {}
+      applyUpdateState(st);
+      if (st.phase === 'error') return;            // stop; user can retry
+      // 'launching' -> the installer closes us shortly; keep the message up.
+      updPollTimer = setTimeout(tick, st.phase === 'launching' ? 1000 : 500);
+    };
+    tick();
+  }
+
+  function applyUpdateState(st) {
+    const banner = $('upd-banner');
+    const fill = $('upd-bar-fill');
+    const phase = $('upd-phase');
+    banner.classList.remove('error');
+    if (st.phase === 'downloading') {
+      const pct = Math.max(0, Math.min(100, st.pct || 0));
+      fill.style.width = pct + '%';
+      phase.textContent = st.detail ? st.detail : ('Downloading... ' + pct + '%');
+    } else if (st.phase === 'verifying') {
+      fill.style.width = '100%';
+      phase.textContent = 'Verifying...';
+    } else if (st.phase === 'launching') {
+      fill.style.width = '100%';
+      phase.textContent = st.detail || 'Installing - RuneTools will restart...';
+    } else if (st.phase === 'error') {
+      banner.classList.add('error');
+      phase.textContent = st.detail || 'Update failed';
+      const now = $('upd-now-btn');
+      now.disabled = false;
+      now.textContent = 'Try again';
+      $('upd-dismiss-btn').style.display = updateMandatory ? 'none' : '';
+    }
+  }
+
+  $('upd-now-btn').addEventListener('click', beginUpdate);
+  $('upd-dismiss-btn').addEventListener('click', dismissUpdate);
+  $('upd-notes-btn').addEventListener('click', () => {
+    const n = $('upd-notes');
+    n.style.display = (n.style.display === 'none') ? 'block' : 'none';
+  });
+
+  const creditsSet = (on) => {
+    const ov = $('creditsOv');
+    if (on) $('creditsVer').textContent = ($('version').textContent || '').trim();
+    ov.classList.toggle('on', !!on);
+  };
+  $('opencredits').addEventListener('click', () => creditsSet(true));
+  $('creditsClose').addEventListener('click', () => creditsSet(false));
+  $('creditsOv').addEventListener('click', (e) => { if (e.target === $('creditsOv')) creditsSet(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') creditsSet(false); });
+
+  $('openlog').addEventListener('click', () => bridge().openLog && bridge().openLog());
+  // openExternal allows runetools.io URLs only; /discord 302s to the current invite, so the
+  // invite can rotate without a client update.
+  $('opendiscord').addEventListener('click', () => bridge().openExternal && bridge().openExternal('https://runetools.io/discord'));
+
+  // No account or API key required; runs against the public endpoints.
+  (async () => {
+    const ready = await waitForBridge(3000);
+    if (!ready) {
+      showStatus($('main-status'), 'err',
+                 'Native bridge did not attach. Reopen the launcher.');
+      return;
+    }
+    try {
+      const v = 'v' + await bridge().version();
+      $('version').textContent = v;   // footer only; the header pill was dropped as redundant
+    } catch (e) {}
+    refresh();
+    checkForUpdate();
+    startUpdateChecks();
+  })();
+
+  setInterval(refresh, 1000);
+
+  // NB: the Voice of Seren background reporter is C++ (Bridge.cpp vos_report_loop),
+  // NOT here -- JS-resident versions silently didn't run until their view existed.
+
+  // PIDs we've opened a window for; kept after a manual close so we don't
+  // immediately re-spawn it (the C++ side evicts the window, not this set).
+  const openPids = new Set();
+
+  // Persisted per-account panel-hidden setting, keyed by display name.
+  let hiddenPanels = null;   // { "<lcname>": true }
+  function ensureHidden() {
+    if (hiddenPanels) return;
+    hiddenPanels = {};
+    try { const d = JSON.parse(bridge().hiddenPanelsLoad() || '{}'); if (d && d.hidden) hiddenPanels = d.hidden; } catch (e) {}
+  }
+  function isPanelHidden(name) { ensureHidden(); return !!hiddenPanels[lcKey(name)]; }
+  function setPanelHidden(name, hidden) {
+    ensureHidden(); const k = lcKey(name); if (!k) return;
+    if (hidden) hiddenPanels[k] = true; else delete hiddenPanels[k];
+    try { bridge().hiddenPanelsSave(JSON.stringify({ hidden: hiddenPanels })); } catch (e) {}
+  }
+
+  async function syncClientWindows() {
+    if ($('main-card').style.display === 'none') return;
+    let snaps = null;
+    try { snaps = JSON.parse(await bridge().gameSnapshots()); } catch (e) { return; }
+    if (!Array.isArray(snaps)) snaps = [];
+
+    const live = new Set(snaps.map(s => s.pid));
+
+    for (const s of snaps) {
+      if (openPids.has(s.pid)) continue;
+      if (s.display_name && isPanelHidden(s.display_name)) continue;
+      const title = s.display_name || ('PID ' + s.pid);
+      try {
+        const ok = await bridge().openClientWindow(s.pid, title);
+        if (ok) openPids.add(s.pid);
+      } catch (e) {}
+    }
+
+    for (const pid of [...openPids]) {
+      const s = snaps.find(x => x.pid === pid);
+      const hidden = !!(s && s.display_name && isPanelHidden(s.display_name));
+      if (live.has(pid) && !hidden) continue;   // close if the client is gone OR now hidden
+      try { await bridge().closeClientWindow(pid); } catch (e) {}
+      openPids.delete(pid);
+    }
+  }
+  setInterval(syncClientWindows, 500);
+</script>
+</body>
+</html>

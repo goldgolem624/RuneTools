@@ -1,0 +1,20 @@
+#pragma once
+
+#include <string>
+
+// Resolves RS3 item icons from the bundled `items.pack` staged next to the exe
+// (noted items are composited as item-on-note PNGs). No network. Hot path is an
+// in-memory map of base64 data URLs so repeated JS polls don't re-read the pack.
+
+namespace rtx::launcher::icons {
+
+// Returns a `data:image/gif|png;base64,...` URL for the item icon, or an empty
+// string when the id isn't in the pack (or the pack is missing). Memoized.
+std::string ItemIconDataUrl(int item_id);
+
+// Returns an asset file staged next to the exe, base64-encoded (cached per name),
+// or an empty string if missing. Used to ship the puzzle-solver tables
+// (wd_table.bin, pdb_5554.bin); the JS solver decodes them once on puzzle open.
+std::string AssetFileBase64(const std::wstring& filename);
+
+}  // namespace rtx::launcher::icons

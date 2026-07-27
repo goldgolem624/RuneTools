@@ -1,0 +1,38 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "RuneToolsXLauncher", "RuneToolsXLauncher\RuneToolsXLauncher.vcxproj", "{D8A7C3B0-9F12-4D8E-A1B2-7C4F2E3D5A61}"
+	ProjectSection(ProjectDependencies) = postProject
+		{8F3C2A41-9D6E-4B27-AE10-6C2F9B7A41D2} = {8F3C2A41-9D6E-4B27-AE10-6C2F9B7A41D2}
+		{6E1B7D44-3F2A-4C8E-A1B2-7C4F2E3D5A63} = {6E1B7D44-3F2A-4C8E-A1B2-7C4F2E3D5A63}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CacheVendor", "CacheVendor\CacheVendor.vcxproj", "{6E1B7D44-3F2A-4C8E-A1B2-7C4F2E3D5A63}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "RuneToolsXCompanion", "companion\RuneToolsXCompanion.vcxproj", "{8F3C2A41-9D6E-4B27-AE10-6C2F9B7A41D2}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D8A7C3B0-9F12-4D8E-A1B2-7C4F2E3D5A61}.Debug|x64.ActiveCfg = Debug|x64
+		{D8A7C3B0-9F12-4D8E-A1B2-7C4F2E3D5A61}.Debug|x64.Build.0 = Debug|x64
+		{D8A7C3B0-9F12-4D8E-A1B2-7C4F2E3D5A61}.Release|x64.ActiveCfg = Release|x64
+		{D8A7C3B0-9F12-4D8E-A1B2-7C4F2E3D5A61}.Release|x64.Build.0 = Release|x64
+		{6E1B7D44-3F2A-4C8E-A1B2-7C4F2E3D5A63}.Debug|x64.ActiveCfg = Debug|x64
+		{6E1B7D44-3F2A-4C8E-A1B2-7C4F2E3D5A63}.Debug|x64.Build.0 = Debug|x64
+		{6E1B7D44-3F2A-4C8E-A1B2-7C4F2E3D5A63}.Release|x64.ActiveCfg = Release|x64
+		{6E1B7D44-3F2A-4C8E-A1B2-7C4F2E3D5A63}.Release|x64.Build.0 = Release|x64
+		{8F3C2A41-9D6E-4B27-AE10-6C2F9B7A41D2}.Debug|x64.ActiveCfg = Debug|x64
+		{8F3C2A41-9D6E-4B27-AE10-6C2F9B7A41D2}.Debug|x64.Build.0 = Debug|x64
+		{8F3C2A41-9D6E-4B27-AE10-6C2F9B7A41D2}.Release|x64.ActiveCfg = Release|x64
+		{8F3C2A41-9D6E-4B27-AE10-6C2F9B7A41D2}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

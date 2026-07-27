@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Cache">
+      <UniqueIdentifier>{00000004-a530-4106-0000-0004a5304106}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Cache\vendor">
+      <UniqueIdentifier>{de55023e-9620-c392-de55-023e9620c392}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Cache\vendor\sqlite">
+      <UniqueIdentifier>{7252fe98-c76f-bf82-7252-fe98c76fbf82}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Cache\vendor\zlib">
+      <UniqueIdentifier>{fe55fd54-66ae-9f79-fe55-fd5466ae9f79}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\cache\vendor\sqlite\sqlite3.c">
+      <Filter>Cache\vendor\sqlite</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\vendor\zlib\adler32.c">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\vendor\zlib\crc32.c">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\vendor\zlib\inffast.c">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\vendor\zlib\inflate.c">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\vendor\zlib\inftrees.c">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\vendor\zlib\uncompr.c">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\vendor\zlib\zutil.c">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\src\cache\vendor\sqlite\sqlite3.h">
+      <Filter>Cache\vendor\sqlite</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\crc32.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\deflate.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\gzguts.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\inffast.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\inffixed.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\inflate.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\inftrees.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\trees.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\zconf.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\zlib.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\vendor\zlib\zutil.h">
+      <Filter>Cache\vendor\zlib</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

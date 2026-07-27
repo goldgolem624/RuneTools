@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Cache">
+      <UniqueIdentifier>{00000004-a530-4106-0000-0004a5304106}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Launcher">
+      <UniqueIdentifier>{00b484d2-759c-5594-00b4-84d2759c5594}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Reader">
+      <UniqueIdentifier>{000002e7-8a62-e42b-0000-02e78a62e42b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resources">
+      <UniqueIdentifier>{63a21b13-726a-cde9-63a2-1b13726acde9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shared">
+      <UniqueIdentifier>{000002f0-ba93-fd01-0000-02f0ba93fd01}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="UI Assets">
+      <UniqueIdentifier>{66fb21f1-c3d6-f64b-66fb-21f1c3d6f64b}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\cache\Achievements.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\Bzip2.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\CacheReader.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\FileContainer.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\InputStream.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\ItemType.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\JagexContainer.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\LocationType.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\MapLocations.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\MapTiles.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\NpcType.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\ReferenceTable.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\Sprite.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\SqliteIndexFile.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\Store.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\cache\Utils.cpp">
+      <Filter>Cache</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Accounts.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Bridge.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Companion.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Crypto.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Cs2Browser.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Dock.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Http.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\IconCache.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Loader.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\main.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Markers.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\MonitorFix.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Overlay.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Process.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\WinNotify.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\launcher\Zip.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\reader\BankCache.cpp">
+      <Filter>Reader</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\reader\Reader.cpp">
+      <Filter>Reader</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\shared\Log.cpp">
+      <Filter>Shared</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\src\cache\Achievements.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\Bzip2.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\CacheReader.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\Constants.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\FileContainer.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\InputStream.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\ItemType.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\JagexContainer.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\LocationType.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\MapLocations.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\MapTiles.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\NpcType.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\ReferenceTable.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\Sprite.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\SqliteIndexFile.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\Store.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\cache\Utils.h">
+      <Filter>Cache</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Accounts.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Bridge.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Crypto.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Cs2Browser.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Http.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\IconCache.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Loader.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Markers.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\MonitorFix.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Overlay.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Process.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\WinNotify.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\Zip.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\reader\BankCache.h">
+      <Filter>Reader</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\reader\Reader.h">
+      <Filter>Reader</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\shared\Log.h">
+      <Filter>Shared</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\shared\MachineFingerprint.h">
+      <Filter>Shared</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="app.rc">
+      <Filter>Resources</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="app.ico">
+      <Filter>Resources</Filter>
+    </None>
+    <None Include="..\ui-assets\client.html">
+      <Filter>UI Assets</Filter>
+    </None>
+    <None Include="..\ui-assets\launcher.html">
+      <Filter>UI Assets</Filter>
+    </None>
+    <None Include="..\ui-assets\panel_*.js">
+      <Filter>UI Assets</Filter>
+    </None>
+    <None Include="..\ui-assets\quest_guides.js">
+      <Filter>UI Assets</Filter>
+    </None>
+  </ItemGroup>
+</Project>

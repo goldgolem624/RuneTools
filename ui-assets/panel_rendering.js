@@ -1,0 +1,26 @@
+// RuneToolsX panel: Rendering (hide NPCs/players/scene via the companion).
+// Spliced inline into client.html at load; shares its global scope (no IIFE).
+
+  function renderRendering() {
+    const c = $('content');
+    if ($('rndWrap')) return;          // built once; toggle state lives in renderHide
+    c.innerHTML = '';
+    const wrap = document.createElement('div'); wrap.id = 'rndWrap'; wrap.className = 'ov-wrap';
+    wrap.appendChild(ovToggleRow('rh_npcs', 'Hide NPCs', 'Stop drawing NPC models'));
+    wrap.appendChild(ovToggleRow('rh_players', 'Hide other players', 'Stop drawing other player models (keeps you)'));
+    wrap.appendChild(ovToggleRow('rh_all', 'Hide everything', 'Blank the whole 3D scene (legacy Insert key)'));
+    const hint = document.createElement('div'); hint.className = 'ov-hint';
+    hint.textContent = 'Client-side only - these never reach the game or other players, and reset when you ' +
+                       'restart. Needs the in-process companion (the same one that powers the Vars/Scene tabs).';
+    wrap.appendChild(hint);
+    c.appendChild(wrap);
+    [['rh_npcs', 'npcs', 0], ['rh_players', 'players', 1], ['rh_all', 'all', 2]].forEach(([id, key, which]) => {
+      const el = $(id); if (!el) return;
+      el.classList.toggle('on', !!renderHide[key]);
+      el.addEventListener('click', () => {
+        renderHide[key] = !renderHide[key];
+        el.classList.toggle('on', renderHide[key]);
+        try { if (bridge() && bridge().renderToggle) bridge().renderToggle(myPid(), which, renderHide[key]); } catch (e) {}
+      });
+    });
+  }

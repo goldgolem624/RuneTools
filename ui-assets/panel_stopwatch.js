@@ -1,0 +1,50 @@
+// RuneToolsX panel: Stopwatch.
+// Spliced inline into client.html at load; shares its global scope (no IIFE).
+
+  let swRunning = false, swAccum = 0, swStart = 0, swLaps = [], swTimer = 0;
+  function swElapsed() { return swAccum + (swRunning ? (performance.now() - swStart) : 0); }
+  function fmtSW(ms) {
+    const cs = Math.floor(ms / 10) % 100, s = Math.floor(ms / 1000) % 60, m = Math.floor(ms / 60000) % 60, h = Math.floor(ms / 3600000);
+    const p = n => String(n).padStart(2, '0');
+    return (h > 0 ? h + ':' : '') + p(m) + ':' + p(s) + '.' + p(cs);
+  }
+  // Tick only while running: an always-on interval wakes the single CPU render thread
+  // every frame and starves the embedded host's activation pump on a window switch.
+  function swTick() { const tm = document.getElementById('swTime'); if (tm) tm.textContent = fmtSW(swElapsed()); }
+  function swStopTimer() { if (swTimer) { clearInterval(swTimer); swTimer = 0; } }
+  function swStartStop() {
+    if (swRunning) { swAccum += performance.now() - swStart; swRunning = false; swStopTimer(); }
+    else { swStart = performance.now(); swRunning = true; if (!swTimer) swTimer = setInterval(swTick, 33); }
+    renderStopwatch();
+  }
+  function swReset() { swRunning = false; swAccum = 0; swLaps = []; swStopTimer(); renderStopwatch(); }
+  function swLap() { if (!swRunning && swAccum === 0) return; swLaps.unshift(swElapsed()); renderStopwatch(); }
+  function renderStopwatch() {
+    const c = $('content');
+    let wrap = $('swWrap');
+    if (!wrap) {
+      c.innerHTML = '';
+      wrap = document.createElement('div'); wrap.id = 'swWrap'; wrap.className = 'sw-wrap';
+      const tm = document.createElement('div'); tm.id = 'swTime'; tm.className = 'sw-time';
+      const btns = document.createElement('div'); btns.className = 'sw-btns';
+      const ss = document.createElement('button'); ss.id = 'swSS'; ss.className = 'sw-btn primary'; ss.addEventListener('click', swStartStop);
+      const lp = document.createElement('button'); lp.className = 'sw-btn'; lp.textContent = 'Lap'; lp.addEventListener('click', swLap);
+      const rs = document.createElement('button'); rs.className = 'sw-btn'; rs.textContent = 'Reset'; rs.addEventListener('click', swReset);
+      btns.appendChild(ss); btns.appendChild(lp); btns.appendChild(rs);
+      const laps = document.createElement('div'); laps.id = 'swLaps'; laps.className = 'sw-laps';
+      wrap.appendChild(tm); wrap.appendChild(btns); wrap.appendChild(laps);
+      c.appendChild(wrap);
+    }
+    const tm = $('swTime'); tm.textContent = fmtSW(swElapsed()); tm.classList.toggle('run', swRunning);
+    const ss = $('swSS'); ss.textContent = swRunning ? 'Stop' : 'Start'; ss.classList.toggle('stop', swRunning);
+    const laps = $('swLaps'); const sig = swLaps.join(',');
+    if (laps._sig !== sig) {
+      laps._sig = sig; laps.innerHTML = '';
+      for (let i = 0; i < swLaps.length; i++) {
+        const total = swLaps[i], prev = (i + 1 < swLaps.length) ? swLaps[i + 1] : 0, n = swLaps.length - i;
+        const r = document.createElement('div'); r.className = 'sw-lap';
+        r.innerHTML = '<span class="ix">Lap ' + n + '</span><span class="split">+' + fmtSW(total - prev) + '</span><span class="tot">' + fmtSW(total) + '</span>';
+        laps.appendChild(r);
+      }
+    }
+  }

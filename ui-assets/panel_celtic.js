@@ -1,0 +1,72 @@
+// RuneToolsX panel: Celtic-knot clue solver.
+// Spliced inline into client.html; bare classic script sharing one global scope.
+
+  // Ring rotation offset = varbit (4941 + ring index); solved when every offset is 0. Fewest clicks
+  // = offset (CW) or modulo-offset (CCW), whichever is smaller. 9 interface layouts; each ring is
+  // [cwComp, ccwComp, modulo]. The open layout is the one whose ring-0 CW component is present.
+  const KNOT_FIRST_VARBIT = 4941;
+  const CELTIC_KNOTS = {
+    394:  { u: 17,  r: [[22, 21, 28], [23, 24, 14], [26, 25, 14]] },
+    519:  { u: 176, r: [[10, 11, 16], [13, 12, 16], [14, 15, 16]] },
+    525:  { u: 214, r: [[11, 10, 16], [12, 13, 20], [15, 14, 24]] },
+    526:  { u: 232, r: [[10, 11, 18], [13, 12, 16], [14, 15, 10], [17, 16, 10]] },
+    529:  { u: 178, r: [[10, 11, 12], [12, 13, 12], [15, 14, 12], [17, 16, 12]] },
+    1000: { u: 190, r: [[10, 11, 16], [13, 12, 16], [14, 15, 16]] },
+    1001: { u: 176, r: [[11, 10, 16], [12, 13, 16], [15, 14, 16]] },
+    1002: { u: 17,  r: [[21, 22, 16], [23, 24, 16], [26, 25, 16]] },
+    1003: { u: 204, r: [[10, 11, 16], [12, 13, 16], [15, 14, 16]] }
+  };
+  let knotBusy = false, knotOpenGroup = -1, knotScanAt = 0;
+  async function knotGroupHasRing0(g) {
+    try { const w = (JSON.parse(await bridge().interfaceGroup(myPid(), g) || '{}').widgets) || []; return w.some(x => x.t && x.t[1] === CELTIC_KNOTS[g].r[0][0]); }
+    catch (e) { return false; }
+  }
+  // Runs on a GLOBAL interval (not just the clues tab) so the in-game arrow highlight never goes
+  // stale; the clueKnot banner only updates when its DOM exists.
+  async function knotTick() {
+    if (knotBusy || lockboxOwnsPanel || towersOwnsPanel || !bridge() || !bridge().interfaceGroup || !bridge().varbits) return;
+    knotBusy = true;
+    try {
+      const el = $('clueKnot');   // banner; absent when the clues tab isn't open
+      const clearKnot = () => { try { if (bridge().knotCells) bridge().knotCells(myPid(), ''); } catch (e) {} };
+      // resolve the open layout: cached group first, else a throttled scan of all 9
+      let g = (knotOpenGroup > 0 && await knotGroupHasRing0(knotOpenGroup)) ? knotOpenGroup : -1;
+      if (g < 0) {
+        const now = Date.now();
+        if (knotOpenGroup > 0 || now - knotScanAt >= 800) {
+          knotScanAt = now; knotOpenGroup = -1;
+          for (const k in CELTIC_KNOTS) { if (await knotGroupHasRing0(+k)) { knotOpenGroup = +k; g = +k; break; } }
+        }
+      }
+      if (g < 0) { if (el && el._h !== '') { el._h = ''; el.style.display = 'none'; } clearKnot(); return; }
+      const cfg = CELTIC_KNOTS[g];
+      let vb = {}; try { vb = JSON.parse(await bridge().varbits(myPid(), cfg.r.map((_, i) => KNOT_FIRST_VARBIT + i).join(',')) || '{}'); } catch (e) {}
+      const parts = [], arrows = []; let solved = true;   // arrows: {comp, count} the arrow to click + clicks remaining
+      cfg.r.forEach((ring, i) => {
+        const mod = ring[2]; let cur = ((((vb[KNOT_FIRST_VARBIT + i] | 0)) % mod) + mod) % mod;
+        if (cur === 0) return;
+        solved = false;
+        const ccw = cur >= mod / 2, clicks = ccw ? mod - cur : cur;
+        parts.push('Ring ' + (i + 1) + ': <b style="color:#ffd479">' + clicks + '×</b> ' + (ccw ? 'CCW ↺' : 'CW ↻'));
+        arrows.push({ comp: ccw ? ring[1] : ring[0], count: clicks });
+      });
+      if (el) {
+        el.style.display = '';
+        const html = '<span style="opacity:0.65;text-transform:uppercase;font-size:10px;letter-spacing:0.6px;margin-right:7px">Celtic knot</span>'
+          + (solved ? '<b>Solved.</b>' : 'rotate  ' + parts.join('  ·  '));
+        setHTML(el, html);
+      }
+      // Rects are re-read every tick so the highlight tracks the interface when it is moved.
+      if (bridge().ifaceCompRects && bridge().knotCells) {
+        if (solved || !arrows.length) { clearKnot(); }
+        else {
+          try {
+            const cr = JSON.parse(bridge().ifaceCompRects(myPid(), g, arrows.map(a => a.comp).join(','), 728) || '{}');
+            const segs = [];
+            if (cr.abs && cr.comps) for (const a of arrows) { const c = cr.comps[a.comp]; if (c) segs.push((c[0] - 2) + ',' + (c[1] - 2) + ',' + (c[2] + 4) + ',' + (c[3] + 4) + ',' + a.count); }
+            bridge().knotCells(myPid(), segs.join(';'));
+          } catch (e) {}
+        }
+      }
+    } catch (e) {} finally { knotBusy = false; }
+  }

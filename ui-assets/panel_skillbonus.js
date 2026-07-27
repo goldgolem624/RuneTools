@@ -1,0 +1,71 @@
+// RuneToolsX: Bonus XP for the Skills tab. Spliced inline into client.html; shares the
+// one global scope. The per-skill varp holds bonus XP x10, indexed by skill id == the
+// RuneToolsX skill-grid index (SKILL_NAMES order; idx 3 Hitpoints == stat 3 Constitution).
+
+  const SKILL_BONUS_VARP = [
+    3304, // 0  Attack
+    3306, // 1  Defence
+    3305, // 2  Strength
+    3324, // 3  Hitpoints (Constitution)
+    3308, // 4  Ranged
+    2850, // 5  Prayer
+    3307, // 6  Magic
+    3317, // 7  Cooking
+    3313, // 8  Woodcutting
+    3326, // 9  Fletching
+    3316, // 10 Fishing
+    3315, // 11 Firemaking
+    3312, // 12 Crafting
+    3311, // 13 Smithing
+    3310, // 14 Mining
+    3327, // 15 Herblore
+    3325, // 16 Agility
+    3322, // 17 Thieving
+    3319, // 18 Slayer
+    3314, // 19 Farming
+    3320, // 20 Runecrafting
+    3321, // 21 Hunter
+    3323, // 22 Construction
+    3309, // 23 Summoning
+    3318, // 24 Dungeoneering
+    3836, // 25 Divination
+    6092, // 26 Invention
+    9406, // 27 Archaeology
+    11202 // 28 Necromancy
+  ];
+  const SKILL_BONUS_CSV = SKILL_BONUS_VARP.join(',');
+
+  let skillBonusVp = {};        // varpId -> raw value (bonus xp x10)
+  let skillBonusAt = 0, skillBonusFetching = false, skillBonusSig = '';
+
+  async function fetchSkillBonus() {
+    if (skillBonusFetching || !bridge() || !bridge().varps) return;
+    const now = Date.now();
+    if (now - skillBonusAt < 2000) return;
+    skillBonusAt = now; skillBonusFetching = true;
+    try {
+      const d = JSON.parse(await bridge().varps(myPid(), SKILL_BONUS_CSV) || '{}');
+      if (d && typeof d === 'object') {
+        const sig = JSON.stringify(d);
+        if (sig !== skillBonusSig) {
+          skillBonusSig = sig; skillBonusVp = d;
+          if (activeTab === 'player') renderPane();
+        }
+      }
+    } catch (e) {} finally { skillBonusFetching = false; }
+  }
+
+  function skillBonusFor(i) {
+    const vp = SKILL_BONUS_VARP[i];
+    const raw = vp !== undefined ? (skillBonusVp[vp] | 0) : 0;
+    return raw > 0 ? raw / 10 : 0;
+  }
+  function skillBonusFmt(v) {
+    return Math.floor(v).toLocaleString();
+  }
+  // Compact badge for the small skill cell (1,033,436.5 -> "1m", 12,340 -> "12.3k").
+  function skillBonusBadge(v) {
+    if (v >= 1e6) { const s = (v / 1e6).toFixed(1); return (s.endsWith('.0') ? s.slice(0, -2) : s) + 'm'; }
+    if (v >= 1e3) { const s = (v / 1e3).toFixed(1); return (s.endsWith('.0') ? s.slice(0, -2) : s) + 'k'; }
+    return String(Math.round(v));
+  }

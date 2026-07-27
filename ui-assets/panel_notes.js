@@ -1,0 +1,55 @@
+// RuneToolsX panel: Notes (per-character, saved via bridge notesLoad/notesSave).
+// Spliced inline into client.html at load; shares its global scope.
+
+  let notesData = null, notesLoadedPid = -1, _notesSaveT = 0;
+  function loadNotes() {
+    if (notesLoadedPid === myPid() && notesData) return;
+    notesLoadedPid = myPid(); notesData = [];
+    try {
+      const a = JSON.parse((bridge() && bridge().notesLoad && bridge().notesLoad(myPid())) || '[]');
+      if (Array.isArray(a)) notesData = a;
+    } catch (e) { notesData = []; }
+  }
+  function saveNotesNow() { try { bridge().notesSave(myPid(), JSON.stringify(notesData)); } catch (e) {} }
+  function saveNotes() { clearTimeout(_notesSaveT); _notesSaveT = setTimeout(saveNotesNow, 400); }
+  function noteId() { return 'n' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); }
+  function addNote() { loadNotes(); notesData.unshift({ id: noteId(), title: '', body: '' }); saveNotesNow(); paintNotes(true); }
+  function delNote(id) { notesData = notesData.filter(n => n.id !== id); saveNotesNow(); paintNotes(false); }
+  function renderNotes() {
+    const c = $('content');
+    if ($('notesWrap')) return;   // built once; a rebuild would drop input focus
+    c.innerHTML = ''; loadNotes();
+    const wrap = document.createElement('div'); wrap.id = 'notesWrap'; wrap.className = 'notes-wrap';
+    const head = document.createElement('div'); head.className = 'notes-head';
+    const count = document.createElement('span'); count.id = 'notesCount'; count.className = 'notes-count';
+    const add = document.createElement('button'); add.className = 'notes-add'; add.textContent = '+ Add note';
+    add.addEventListener('click', addNote);
+    head.appendChild(count); head.appendChild(add);
+    const list = document.createElement('div'); list.id = 'notesList'; list.className = 'notes-list';
+    wrap.appendChild(head); wrap.appendChild(list);
+    c.appendChild(wrap);
+    paintNotes(false);
+  }
+  function paintNotes(focusFirst) {
+    const list = $('notesList'); if (!list) return;
+    const cnt = $('notesCount'); if (cnt) cnt.textContent = notesData.length + (notesData.length === 1 ? ' note' : ' notes');
+    list.innerHTML = '';
+    if (!notesData.length) {
+      const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'No notes yet. Click "Add note".';
+      list.appendChild(e); return;
+    }
+    notesData.forEach((n, idx) => {
+      const card = document.createElement('div'); card.className = 'note-card';
+      const top = document.createElement('div'); top.className = 'note-top';
+      const title = document.createElement('input'); title.className = 'note-title'; title.value = n.title || ''; title.placeholder = 'Title';
+      title.addEventListener('input', () => { n.title = title.value; saveNotes(); });
+      const del = document.createElement('button'); del.className = 'note-del'; del.title = 'Delete note'; del.innerHTML = '&times;';
+      del.addEventListener('click', () => delNote(n.id));
+      top.appendChild(title); top.appendChild(del);
+      const body = document.createElement('textarea'); body.className = 'note-body'; body.value = n.body || ''; body.placeholder = 'Write a note...';
+      body.addEventListener('input', () => { n.body = body.value; saveNotes(); });
+      card.appendChild(top); card.appendChild(body);
+      list.appendChild(card);
+      if (focusFirst && idx === 0) title.focus();
+    });
+  }

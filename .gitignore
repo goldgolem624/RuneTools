@@ -1,0 +1,73 @@
+# Visual Studio build output + IDE cache
+/x64/
+**/x64/
+**/Debug/
+**/Release/
+.vs/
+*.obj
+*.pdb
+*.ipdb
+*.iobj
+*.ilk
+*.exp
+*.idb
+*.tlog
+*.lastbuildstate
+*.recipe
+*.user
+*.aps
+*.pch
+*.res
+
+# Compiled binaries (built artifacts + vendored libs -- not source)
+*.exe
+*.dll
+*.lib
+
+# Third-party dependencies. ThirdParty is ignored by default; the bundled ones are
+# re-included below. Note *.dll/*.lib are ignored globally further up, so their
+# binaries need explicit negations too.
+ThirdParty/*
+!ThirdParty/README.md
+
+# Ultralight SDK and Microsoft Detours ship with the repo so the solution builds
+# from a fresh clone with no extra downloads.
+!ThirdParty/Ultralight/
+!ThirdParty/Ultralight/**/*.dll
+!ThirdParty/Ultralight/**/*.lib
+!ThirdParty/Detours/
+!ThirdParty/Detours/**/*.lib
+
+# The CS2 extractor sidecar source IS redistributed, with its reference-cache
+# database. Its dist/ is build output (run ThirdParty\cs2sidecar\build.cmd) and
+# node.exe is not redistributed: install Node.js to build and run it.
+!ThirdParty/cs2sidecar/
+ThirdParty/cs2sidecar/*
+!ThirdParty/cs2sidecar/NOTICE.md
+!ThirdParty/cs2sidecar/build.cmd
+!ThirdParty/cs2sidecar/src/
+!ThirdParty/cs2sidecar/cache/
+ThirdParty/cs2sidecar/src/node_modules/
+
+# Installer + plugin build artifacts
+installer/*.exe
+installer/*.msi
+dist/
+
+# OS junk
+Thumbs.db
+desktop.ini
+
+# Local research notes, capture scripts and session dumps (not redistributed)
+docs/
+scratchpad/
+
+# Sample/tutorial plugins ship through the plugin store, not with the client
+SamplePluginX/
+ArchTutorialPluginX/
+
+# Local working files, never redistributed. These were previously only in
+# .git/info/exclude, which is not committed and would not survive a re-clone.
+CHANGELOG.md
+tools/
+*.ps1
