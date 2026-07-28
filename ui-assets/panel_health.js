@@ -13,7 +13,7 @@
   // Developer aid: raw Extra_ints for backpack items that pack state into them (rune pouch,
   // quiver, jewellery boxes). Prints id, name and every key -> value so a new container's
   // layout can be read off a known in-game state.
-  let hcXBusy = false, hcXOut = '';
+  let hcXBusy = false, hcXOut = '', hcXTitle = 'Dump';
   async function hcDumpExtras() {
     if (hcXBusy || !bridge() || !bridge().itemExtraInts) return;
     hcXBusy = true; hcXOut = ''; renderHealth();
@@ -49,7 +49,8 @@
       if (!lines.length) lines.push('no backpack item carries Extra_ints');
     } catch (e) { lines.push('error: ' + e); }
     hcXOut = lines.join(String.fromCharCode(10));
-    hcShowDump(hcXOut, 'Item Extra_ints + cache params');
+    hcXTitle = 'Item Extra_ints + cache params';
+    hcShowDump(hcXOut, hcXTitle);
     hcXBusy = false; renderHealth();
   }
   // The dump is shown in a body-level overlay rather than inside the panel: renderHealth()
@@ -86,7 +87,7 @@
   // never depends on an out-of-date offline dump. Bulk reads (varbit map, varps, varcs)
   // have their own bridge calls; enums, structs and dbtables are per-id, so those accept
   // a single id or a "from-to" range and report only the ids that hold data.
-  let hcCBusy = false, hcCacheLast = '';
+  let hcCBusy = false, hcCacheKind = 'dbtable';   // last family used, so Enter repeats it
   const HC_RANGE_CAP = 400;      // per-id reads are a round trip each; keep a scan bounded
   const hcNum = (v) => { const n = parseInt(v, 10); return isFinite(n) ? n : null; };
   function hcParseRange(txt) {
@@ -190,7 +191,8 @@
       }
     } catch (e) { lines.push('error: ' + e); }
     hcCBusy = false;
-    hcShowDump(lines.join(String.fromCharCode(10)), title);
+    hcXOut = lines.join(String.fromCharCode(10)); hcXTitle = title;
+    hcShowDump(hcXOut, hcXTitle);
     renderHealth();
   }
   function renderHealth() {
@@ -232,58 +234,70 @@
       c.innerHTML = '';
       wrap = document.createElement('div'); wrap.id = 'hcWrap'; wrap.className = 'pane'; c.appendChild(wrap);
     }
-    wrap.innerHTML = '';
-    const head = document.createElement('div'); head.className = 'hc-head';
-    const t = document.createElement('span'); t.className = 'hc-title'; t.textContent = 'Reader health check';
-    const btn = document.createElement('button'); btn.className = 'vw-btn';
-    btn.textContent = hcBusy ? 'Checking...' : 'Run check';
-    btn.dataset.tip = 'Verify every feature can read the game correctly (useful after a game update)';
-    btn.addEventListener('click', hcRun);
-    head.appendChild(t); head.appendChild(btn);
-    const xbtn = document.createElement('button'); xbtn.className = 'vw-btn';
-    xbtn.textContent = hcXBusy ? 'Reading...' : 'Dump item Extra_ints';
-    xbtn.dataset.tip = 'Read the packed Extra_ints of every backpack item that has any (pouches, quivers, jewellery boxes)';
-    xbtn.addEventListener('click', hcDumpExtras);
-    if (hcXOut) {
-      const vbtn = document.createElement('button'); vbtn.className = 'vw-btn'; vbtn.textContent = 'View last dump';
-      vbtn.addEventListener('click', () => hcShowDump(hcXOut, 'Item Extra_ints + cache params'));
-      head.appendChild(vbtn);
-    }
-    head.appendChild(xbtn); wrap.appendChild(head);
+    // The chrome (buttons + the id field) is built ONCE and then only updated in place.
+    // renderHealth() runs on the 250 ms poll, so rebuilding it every tick would blow away
+    // the text field mid-keystroke and drop focus. Only #hcBody is re-rendered.
+    let body = document.getElementById('hcBody');
+    if (!body) {
+      wrap.innerHTML = '';
+      const head = document.createElement('div'); head.className = 'hc-head';
+      const t = document.createElement('span'); t.className = 'hc-title'; t.textContent = 'Reader health check';
+      const btn = document.createElement('button'); btn.className = 'vw-btn'; btn.id = 'hcRunBtn';
+      btn.dataset.tip = 'Verify every feature can read the game correctly (useful after a game update)';
+      btn.addEventListener('click', hcRun);
+      const vbtn = document.createElement('button'); vbtn.className = 'vw-btn'; vbtn.id = 'hcViewBtn';
+      vbtn.textContent = 'View last dump'; vbtn.style.display = 'none';
+      vbtn.addEventListener('click', () => hcShowDump(hcXOut, hcXTitle));
+      const xbtn = document.createElement('button'); xbtn.className = 'vw-btn'; xbtn.id = 'hcExtraBtn';
+      xbtn.dataset.tip = 'Read the packed Extra_ints of every backpack item that has any (pouches, quivers, jewellery boxes)';
+      xbtn.addEventListener('click', hcDumpExtras);
+      head.appendChild(t); head.appendChild(btn); head.appendChild(vbtn); head.appendChild(xbtn);
+      wrap.appendChild(head);
 
-    // Cache dump controls sit under the health header: they are the tool you reach for
-    // when a table or enum needs decoding, not part of the health check itself.
-    {
+      // Cache dump controls: the tool you reach for when a table or enum needs decoding.
       const cs = document.createElement('div'); cs.className = 'hc-head';
       const ct = document.createElement('span'); ct.className = 'hc-title'; ct.textContent = 'Cache dumps';
       cs.appendChild(ct); wrap.appendChild(cs);
       const bulk = document.createElement('div'); bulk.className = 'hc-btnrow';
       [['Varbit map', 'varbitmap'], ['Varps (live)', 'varps'], ['Varcs (live)', 'varcs']].forEach(([lbl, k]) => {
-        const b = document.createElement('button'); b.className = 'vw-btn'; b.textContent = hcCBusy ? '...' : lbl;
+        const b = document.createElement('button'); b.className = 'vw-btn hc-cbtn'; b.textContent = lbl;
+        b.dataset.lbl = lbl;
         b.addEventListener('click', () => hcCacheDump(k)); bulk.appendChild(b);
       });
       wrap.appendChild(bulk);
       const byId = document.createElement('div'); byId.className = 'hc-btnrow';
       const inp = document.createElement('input'); inp.id = 'hcCacheId'; inp.className = 'hc-idin';
-      inp.placeholder = 'id or range (e.g. 15018 or 326-336)'; inp.value = hcCacheLast;
-      inp.addEventListener('input', () => { hcCacheLast = inp.value; });
+      inp.placeholder = 'id or range (e.g. 15018 or 326-336)';
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') hcCacheDump(hcCacheKind); });
       byId.appendChild(inp);
       [['DBTable', 'dbtable'], ['Enum', 'enum'], ['Struct', 'struct'], ['Item', 'item'], ['Param', 'param']].forEach(([lbl, k]) => {
-        const b = document.createElement('button'); b.className = 'vw-btn'; b.textContent = lbl;
-        b.addEventListener('click', () => hcCacheDump(k)); byId.appendChild(b);
+        const b = document.createElement('button'); b.className = 'vw-btn hc-cbtn'; b.textContent = lbl;
+        b.dataset.lbl = lbl;
+        b.addEventListener('click', () => { hcCacheKind = k; hcCacheDump(k); }); byId.appendChild(b);
       });
       wrap.appendChild(byId);
+
+      body = document.createElement('div'); body.id = 'hcBody'; wrap.appendChild(body);
     }
+    // in-place label updates, so no element is replaced while it may hold focus
+    const runBtn = document.getElementById('hcRunBtn');
+    if (runBtn) runBtn.textContent = hcBusy ? 'Checking...' : 'Run check';
+    const exBtn = document.getElementById('hcExtraBtn');
+    if (exBtn) exBtn.textContent = hcXBusy ? 'Reading...' : 'Dump item Extra_ints';
+    const vwBtn = document.getElementById('hcViewBtn');
+    if (vwBtn) vwBtn.style.display = hcXOut ? '' : 'none';
+    wrap.querySelectorAll('.hc-cbtn').forEach(b => { b.textContent = hcCBusy ? '...' : b.dataset.lbl; });
+    body.innerHTML = '';
 
     if (!hcData || !Array.isArray(hcData.checks)) {
       const e2 = document.createElement('div'); e2.className = 'hc-hint';
       e2.textContent = 'Checks that every feature can read the game correctly. Worth running after a game update if something looks off.';
-      wrap.appendChild(e2);
+      body.appendChild(e2);
       return;
     }
     if (hcData.version) {
       const v = document.createElement('div'); v.className = 'hc-ver';
-      v.textContent = 'client ' + hcData.version; wrap.appendChild(v);
+      v.textContent = 'client ' + hcData.version; body.appendChild(v);
     }
     const card = document.createElement('div'); card.className = 'hc-card';
     for (const chk of hcData.checks) {
@@ -295,11 +309,11 @@
       r.appendChild(dot); r.appendChild(nm); r.appendChild(dt);
       card.appendChild(r);
     }
-    wrap.appendChild(card);
+    body.appendChild(card);
     const bad = hcData.checks.filter(x => x.ok === 0).length;
     const sum = document.createElement('div'); sum.className = 'hc-sum';
     sum.textContent = bad === 0 ? 'Everything is working.'
       : bad + ' check' + (bad === 1 ? '' : 's') + ' failing - a recent game update may be the cause. An app update will fix this.';
     sum.style.color = bad === 0 ? '#4dd28a' : '#e05656';
-    wrap.appendChild(sum);
+    body.appendChild(sum);
   }
