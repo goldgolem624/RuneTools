@@ -42,7 +42,8 @@
     if (!cxCacheable(k) || !bridge() || !bridge().cacheStoreSave) return;
     const st = cxSt(k);
     try {
-      const blob = JSON.stringify({ v: cxBuild(), lo: st.lo0, hi: st.hi0, at: st.at || Date.now(), rows: st.rows });
+      const slim = st.rows.map(r => ({ id: r.id, sum: r.sum, data: r.data, txt: r.txt }));
+      const blob = JSON.stringify({ v: cxBuild(), lo: st.lo0, hi: st.hi0, at: st.at || Date.now(), rows: slim });
       const ok = await bridge().cacheStoreSave('cx' + k, blob);
       st.cached = ok ? 'saved' : 'save failed';
     } catch (e) { st.cached = 'save failed'; }
@@ -141,6 +142,35 @@
       if (t.length <= CX_STR_WRAP && t.indexOf('\n') < 0) out.push(head + t);
       else { out.push('    [' + i + ']'); out.push(cxLines(x, '        ')); }
     });
+  }
+  // What the filter searches, and what a match snippet is cut from. Deliberately NOT raw
+  // JSON: slicing that produced snippets full of ","ge_limit":-1,"value": noise. This is the
+  // same labelled shape the detail view shows, flattened onto one line.
+  function cxIndexText(k, d) {
+    const out = [];
+    const add = v => {
+      if (v == null) return;
+      const arr = Array.isArray(v) ? v : [v];
+      for (const x of arr) out.push(typeof x === 'string' ? cxText(x).replace(/\s+/g, ' ') : String(x));
+    };
+    try {
+      if (k === 'enum') {
+        for (const key of Object.keys(d)) { out.push(key + '='); add(d[key]); }
+      } else if (k === 'struct' || k === 'item') {
+        if (d.name) out.push(d.name);
+        const I = d.ints || {}, S = d.strs || {};
+        for (const key of Object.keys(S)) { out.push('param ' + key); add(S[key]); }
+        for (const key of Object.keys(I)) { out.push('param ' + key); add(I[key]); }
+      } else if (k === 'dbtable') {
+        for (const r of d) {
+          out.push('row ' + r.f);
+          const I = r.i || {}, S = r.s || {};
+          for (const key of Object.keys(S)) { out.push('col ' + key); add(S[key]); }
+          for (const key of Object.keys(I)) { out.push('col ' + key); add(I[key]); }
+        }
+      } else add(d);
+    } catch (e) {}
+    return out.join(' ');
   }
   function cxDetail(k, d) {
     const out = [];
@@ -249,11 +279,7 @@
         const empty = !d || (Array.isArray(d) ? !d.length : !Object.keys(d).length);
         // Index the whole entry, not just the summary: the point of the filter is finding a
         // value buried in a column, which the one-line summary never shows.
-        if (!empty) {
-          let txt = '';
-          try { txt = JSON.stringify(d).toLowerCase(); } catch (e) {}
-          st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d, txt: txt });
-        }
+        if (!empty) st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d, txt: cxIndexText(k, d) });
         if (g[2] !== 'low') st.hi0 = id;                            // grew the top end
         st.done++;
         if (st.done % CX_CHUNK === 0) { cxPaint(); await new Promise(r => setTimeout(r, 0)); }
@@ -271,9 +297,11 @@
     const st = cxSt(k);
     const f = cxFilter.trim().toLowerCase();
     if (!f) return st.rows;
-    return st.rows.filter(r => String(r.id) === f || String(r.id).indexOf(f) === 0 ||
-                               (r.sum || '').toLowerCase().indexOf(f) >= 0 ||
-                               (r.txt || '').indexOf(f) >= 0);
+    return st.rows.filter(r => {
+      if (String(r.id) === f || String(r.id).indexOf(f) === 0) return true;
+      if (r._l === undefined) r._l = ((r.sum || '') + ' ' + (r.txt || '')).toLowerCase();
+      return r._l.indexOf(f) >= 0;
+    });
   }
 
   // Repaint only the parts that change; the chrome and the search box are never rebuilt.
@@ -318,8 +346,11 @@
       // surrounding text instead of leaving the row looking like a false positive.
       let label = r.sum || '';
       if (filt && r.txt && (r.sum || '').toLowerCase().indexOf(filt) < 0) {
-        const at = r.txt.indexOf(filt);
-        if (at >= 0) label = '...' + r.txt.slice(Math.max(0, at - 30), at + filt.length + 46) + '...';
+        const at = r.txt.toLowerCase().indexOf(filt);
+        if (at >= 0) {
+          const a = Math.max(0, at - 32), b = Math.min(r.txt.length, at + filt.length + 52);
+          label = (a ? '...' : '') + r.txt.slice(a, b).trim() + (b < r.txt.length ? '...' : '');
+        }
       }
       sum.textContent = label;
       row.appendChild(idEl); row.appendChild(sum);
