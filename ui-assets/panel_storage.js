@@ -152,6 +152,45 @@
     const v = (vpData[r.varp] || 0) >>> 0, w = r.msb - r.lsb, mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1);
     return (v >>> r.lsb) & mask;
   }
+  // Passage of the abyss: charges in Extra_int var 30214, and the filled slots packed into the
+  // next var as 4-bit nibbles (least significant first, one per slot, in the order the game
+  // lists them). Each nibble indexes enum 15018, which names the jewellery; unset slots are
+  // simply absent, so the nibble count is the fill count. Variants share the same layout.
+  const PASSAGE_IDS = [44543, 44542, 44540];
+  const PASSAGE_ENUM = 15018, PASSAGE_SLOTS = 6;
+  const PASSAGE_FREE_VB = 52159;   // Dark Facet of Passage: teleports stop consuming charges
+  let passageNames = null;
+  async function readPassage(held) {
+    if (!bridge().itemExtraInts || !held) return null;
+    let id = 0;
+    for (const pid of PASSAGE_IDS) if (held.has(pid)) { id = pid; break; }
+    if (!id) return null;
+    // held merges backpack + worn, so try the backpack first and fall back to equipment.
+    let k = null;
+    for (const cont of [93, 94]) {
+      let ei = null;
+      try { ei = JSON.parse(await bridge().itemExtraInts(myPid(), cont, id)); } catch (e) {}
+      if (ei && ei.key && ((ei.key['0'] | 0) || (ei.key['1'] | 0))) { k = ei.key; break; }
+    }
+    if (!k) return null;
+    const charges = k['0'] | 0, packed = (k['1'] | 0) >>> 0;
+    if (!passageNames && bridge().enumInfo) {
+      try { passageNames = JSON.parse(await bridge().enumInfo(PASSAGE_ENUM)) || null; } catch (e) {}
+    }
+    const items = [];
+    let v = packed;
+    while (v && items.length < PASSAGE_SLOTS) {
+      const ix = v & 15; v >>>= 4;
+      if (!ix) continue;
+      const nm = (passageNames && passageNames[String(ix)]) || ('Unknown (' + ix + ')');
+      items.push([nm, 1]);
+    }
+    // Dark Facet of Passage (varbit 52159) makes teleports free, so the counter stops mattering.
+    let unlimited = false;
+    try { const vb = await readVarbitValues([PASSAGE_FREE_VB]); unlimited = ((vb && vb[PASSAGE_FREE_VB]) | 0) === 1; } catch (e) {}
+    const label = unlimited ? 'Unlimited charges' : ('Charges ' + charges.toLocaleString());
+    return { name: label, cap: PASSAGE_SLOTS, items: items };
+  }
   function storHeldBox(cat, held) { for (const id in STORAGE[cat].boxes) if (held.has(+id)) return STORAGE[cat].boxes[id]; return null; }
 
   async function fetchStorage() {
@@ -308,6 +347,7 @@
       } catch (e) {}
       const sandyItems = fromVb(STORAGE.sandy.vb);
       if (sandyItems.length) out.sandy = { name: '', items: sandyItems };
+      out.passage = await readPassage(held);
       storageData = out;
     } finally { storageFetching = false; }
     if (activeTab === 'storage') renderStorage();
@@ -335,6 +375,7 @@
     add('Nexus', d && d.nexus); add('Brooch of the Gods', d && d.brooch); add('Money pouch', d && d.money);
     add('Currency pouch', d && d.currency);
     add('Sandy Sand', d && d.sandy);
+    add('Passage of the abyss', d && d.passage);
     const boxItems = (b) => b.items || [];
     const sig = list.map(([t, b]) => t + '|' + (b.name || '') + '|' + (b.cap || '') + '|' + boxItems(b).map(it => it[0] + ':' + it[1] + ':' + (it[2] || 0)).join(',')).join(';');
     if (sig === storageSig) { sizeAllIcons(); return; }
