@@ -7,6 +7,7 @@
 
   let lgData = null, lgFetching = false, lgFetchAt = 0, lgSig = '';
   const LG_T = { header: 326, tierOrder: 327, tiers: 328, relics: 329, tasks: 334, cats: 336 };
+  // dbRows emits each row as {f: fileid, i: ints, s: strings} -- the id key is `f`.
   const lgCol = (r, m, k) => { const t = (r && r[m]) || {}; return (t[k] && t[k][0] !== undefined) ? t[k][0] : null; };
   const lgList = (r, m, k) => { const t = (r && r[m]) || {}; return Array.isArray(t[k]) ? t[k] : []; };
 
@@ -21,9 +22,9 @@
         [LG_T.header, LG_T.tierOrder, LG_T.tiers, LG_T.relics, LG_T.tasks, LG_T.cats].map(grab));
       if (!tiers.length && !relics.length) return;        // cache not open yet; retry next poll
       const relicById = {};
-      for (const r of relics) relicById[r.id] = { name: lgCol(r, 's', '0') || ('#' + r.id), desc: lgCol(r, 's', '1') || '' };
-      const tierIds = order.length ? lgList(order[0], 'i', '0') : tiers.map(r => r.id);
-      const tierRows = tierIds.map(id => tiers.find(r => r.id === id)).filter(Boolean);
+      for (const r of relics) relicById[r.f] = { name: lgCol(r, 's', '0') || ('#' + r.f), desc: lgCol(r, 's', '1') || '' };
+      const tierIds = order.length ? lgList(order[0], 'i', '0') : tiers.map(r => r.f);
+      const tierRows = tierIds.map(id => tiers.find(r => r.f === id)).filter(Boolean);
       // categories: flat records of [?, sprite, name, categoryId]
       const catName = {};
       if (cats.length) {

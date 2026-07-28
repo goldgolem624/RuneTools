@@ -19,6 +19,8 @@
   const CX_CHUNK = 200;             // ids per yield, so a long scan stays responsive
   let cxTab = 'enum', cxFilter = '', cxOpen = null, cxSeq = 0;
   const cxState = {};               // per type: { rows:[{id,sum,data}], busy, done, total, err, loaded }
+  // Live var dumps key by DOMAIN:id ("4:1234" varp, "5:1234" varc); string varcs are bare.
+  const cxKeyId = k => { const p = String(k).split(':'); return parseInt(p[p.length - 1], 10); };
   const cxT = k => CX_TYPES.filter(t => t.k === k)[0];
   const cxSt = k => (cxState[k] = cxState[k] || { rows: [], busy: false, done: 0, total: 0, loaded: false });
   // The from/to boxes belong to the ACTIVE family: stash them on switch and restore, so a
@@ -76,7 +78,7 @@
         for (const cc of Object.keys(I)) cols[cc] = I[cc];
         for (const cc of Object.keys(S)) cols[cc] = S[cc];
         const parts = Object.keys(cols).sort(sortNum).map(cc => cc + ':' + JSON.stringify(cols[cc]));
-        out.push(pad + 'row ' + r.id + '  ' + parts.join('  '));
+        out.push(pad + 'row ' + r.f + '  ' + parts.join('  '));
       }
     } else {
       out.push(pad + JSON.stringify(d));
@@ -100,14 +102,14 @@
         const m = JSON.parse(await bridge().varpsDumpAll(myPid()) || 'null') || {};
         for (const key of Object.keys(m)) {
           const v = m[key] | 0;
-          rows.push({ id: +key, sum: v + '   0x' + (v >>> 0).toString(16), data: null });
+          rows.push({ id: cxKeyId(key), sum: v + '   0x' + (v >>> 0).toString(16), data: null });
         }
       } else if (k === 'varc') {
         let ints = {}, strs = {};
         try { ints = JSON.parse(await bridge().varcsDumpAll(myPid()) || 'null') || {}; } catch (e) {}
         if (bridge().varcStringsDumpAll) { try { strs = JSON.parse(await bridge().varcStringsDumpAll(myPid()) || 'null') || {}; } catch (e) {} }
-        for (const key of Object.keys(ints)) rows.push({ id: +key, sum: String(ints[key] | 0), data: null });
-        for (const key of Object.keys(strs)) rows.push({ id: +key, sum: '"' + strs[key] + '"  (string)', data: null });
+        for (const key of Object.keys(ints)) rows.push({ id: cxKeyId(key), sum: String(ints[key] | 0), data: null });
+        for (const key of Object.keys(strs)) rows.push({ id: cxKeyId(key), sum: '"' + strs[key] + '"  (string)', data: null });
       }
     } catch (e) { st.err = String(e); }
     rows.sort((a, b) => a.id - b.id);
@@ -223,8 +225,8 @@
       .cx-id { flex: 0 0 auto; min-width: 58px; color: var(--accent-hi); font-variant-numeric: tabular-nums; font-weight: 600; }
       .cx-sum { flex: 1; min-width: 0; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .cx-det { margin: 0; padding: 8px 11px 10px 69px; background: rgba(0,0,0,0.28); color: var(--text);
-          font-family: Consolas, monospace; font-size: 11px; line-height: 1.5; white-space: pre;
-          overflow-x: auto; user-select: text; }
+          font-family: Consolas, monospace; font-size: 11px; line-height: 1.5;
+          white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
       .cx-empty { padding: 12px; color: var(--text-dim); font-size: 12px; }`);
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'cxWrap'; wrap.className = 'cx-wrap'; c.appendChild(wrap);

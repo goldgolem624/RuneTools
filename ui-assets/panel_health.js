@@ -178,7 +178,7 @@
                   const v = (S[c] !== undefined) ? S[c] : I[c];
                   parts.push(c + ':' + JSON.stringify(v));
                 }
-                lines.push('    row ' + r.id + '  ' + parts.join('  '));
+                lines.push('    row ' + r.f + '  ' + parts.join('  '));
               }
             } else {
               lines.push(label + ' ' + id);
