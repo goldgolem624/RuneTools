@@ -1252,7 +1252,9 @@
   /* Scan-range square around the player on scan maps (Chebyshev distance -> square, not circle). */
   .clue-map-range { position: absolute; box-sizing: border-box; border: 1.5px dashed rgba(255,170,60,0.85);
     box-shadow: 0 0 4px rgba(0,0,0,0.45); pointer-events: none; z-index: 4; }
-  .cml-icon { width: 26px; height: 26px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.95)); }
+  .cml-icon { width: 26px; height: 26px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.95));
+      background-repeat: no-repeat; background-position: center; background-size: contain;
+      image-rendering: -webkit-optimize-contrast; }
   /* Every visible teleport gets its own marker; the container just spans the map. */
   .clue-map-teles { position: absolute; inset: 0; pointer-events: none; }
   /* Non-lodestone teleports (skills necklace and friends) share the lodestone marker
