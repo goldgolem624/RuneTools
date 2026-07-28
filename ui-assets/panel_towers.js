@@ -553,7 +553,11 @@
       else { icon.className = 'cml-dot'; }
       const kb = document.createElement('div'); kb.className = 'cml-kb'; kb.textContent = T.kb || '';
       m.appendChild(icon); m.appendChild(kb);
-      m.title = T.n + (T.src ? ' (' + T.src + ')' : '') + (T.kb ? ' [' + T.kb + ']' : '');
+      const parts = [];
+      if (T.src) parts.push(T.src);
+      if (T.kb) parts.push('option ' + T.kb);
+      parts.push(T.n);
+      m.title = parts.join(', ');
       el.appendChild(m);
       const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
       notes.push(T.n + (T.kb ? ' [' + T.kb + ']' : '') + ' (' + d + ')');
