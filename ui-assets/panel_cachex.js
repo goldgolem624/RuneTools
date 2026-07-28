@@ -28,13 +28,21 @@
   // far past what the renderer can hold. The game cache only changes on a game UPDATE, so the
   // client build is the cache key and a stored scan stays valid until the game moves.
   // Live player state (varps/varcs) is deliberately never stored.
+  function cxWhen(ms) {
+    try {
+      const d = new Date(ms);
+      const p = n => (n < 10 ? '0' : '') + n;
+      return d.getDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]
+             + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    } catch (e) { return ''; }
+  }
   const cxBuild = () => (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.client_version) || '';
   const cxCacheable = k => k !== 'varp' && k !== 'varc';
   async function cxSave(k) {
     if (!cxCacheable(k) || !bridge() || !bridge().cacheStoreSave) return;
     const st = cxSt(k);
     try {
-      const blob = JSON.stringify({ v: cxBuild(), lo: st.lo0, hi: st.hi0, rows: st.rows });
+      const blob = JSON.stringify({ v: cxBuild(), lo: st.lo0, hi: st.hi0, at: st.at || Date.now(), rows: st.rows });
       const ok = await bridge().cacheStoreSave('cx' + k, blob);
       st.cached = ok ? 'saved' : 'save failed';
     } catch (e) { st.cached = 'save failed'; }
@@ -53,7 +61,7 @@
   }
   async function cxClear(k) {
     const st = cxSt(k);
-    st.rows = []; st.loaded = false; st.cached = ''; st.reused = false;
+    st.rows = []; st.loaded = false; st.cached = ''; st.reused = false; st.at = 0;
     st.lo0 = undefined; st.hi0 = undefined;
     try { if (bridge() && bridge().cacheStoreSave) await bridge().cacheStoreSave('cx' + k, ''); } catch (e) {}
   }
@@ -167,7 +175,7 @@
     if (st.busy || st.loaded) return;
     if (k === 'varbit') {
       const saved = await cxLoad(k);
-      if (saved) { st.rows = saved.rows; st.loaded = true; st.cached = 'saved'; cxPaint(); return; }
+      if (saved) { st.rows = saved.rows; st.at = saved.at; st.loaded = true; st.cached = 'saved'; cxPaint(); return; }
     }
     st.busy = true; cxPaint();
     const rows = [];
@@ -209,28 +217,33 @@
     if (!st.loaded) {
       const saved = await cxLoad(k);
       if (saved) {
-        st.rows = saved.rows; st.lo0 = saved.lo; st.hi0 = saved.hi;
-        st.loaded = true; st.cached = 'cached';
+        st.rows = saved.rows; st.lo0 = saved.lo; st.hi0 = saved.hi; st.at = saved.at;
+        st.loaded = true; st.cached = 'saved';
       }
     }
+    // Coverage is only ever widened over ids we have ACTUALLY read. Claiming the whole
+    // requested range up front meant a cancelled scan looked complete, so every later press
+    // found nothing to do and the button appeared dead.
     const gaps = [];
-    if (st.loaded && st.lo0 !== undefined && st.hi0 !== undefined) {
-      if (lo < st.lo0) gaps.push([lo, Math.min(hi, st.lo0 - 1)]);
-      if (hi > st.hi0) gaps.push([Math.max(lo, st.hi0 + 1), hi]);
-      st.lo0 = Math.min(st.lo0, lo); st.hi0 = Math.max(st.hi0, hi);
+    const have = st.loaded && st.lo0 !== undefined && st.hi0 !== undefined;
+    if (have) {
+      if (lo < st.lo0) gaps.push([lo, Math.min(hi, st.lo0 - 1), 'low']);
+      if (hi > st.hi0) gaps.push([Math.max(lo, st.hi0 + 1), hi, 'high']);
     } else {
-      gaps.push([lo, hi]);
-      st.rows = []; st.lo0 = lo; st.hi0 = hi;
+      gaps.push([lo, hi, 'init']);
     }
     const total = gaps.reduce((a, g) => a + (g[1] - g[0] + 1), 0);
-    if (!total) { st.loaded = true; st.reused = true; cxPaint(); return; }   // fully covered
+    if (!total) { st.loaded = true; st.reused = true; cxPaint(); return; }   // already covered
 
     const seq = ++cxSeq;
     st.busy = true; st.done = 0; st.total = total; st.err = ''; st.loaded = true; st.reused = false;
     cxPaint();
+    let stopped = false;
     for (const g of gaps) {
+      if (stopped) break;
+      if (g[2] === 'init') { st.rows = []; st.lo0 = g[0]; st.hi0 = g[0] - 1; }
       for (let id = g[0]; id <= g[1]; id++) {
-        if (seq !== cxSeq) { st.busy = false; cxPaint(); return; }     // cancelled or retargeted
+        if (seq !== cxSeq) { stopped = true; break; }               // cancelled or retargeted
         let d = null;
         try { d = JSON.parse(await bridge()[t.fn](id) || 'null'); } catch (e) { d = null; }
         const empty = !d || (Array.isArray(d) ? !d.length : !Object.keys(d).length);
@@ -241,14 +254,17 @@
           try { txt = JSON.stringify(d).toLowerCase(); } catch (e) {}
           st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d, txt: txt });
         }
+        if (g[2] !== 'low') st.hi0 = id;                            // grew the top end
         st.done++;
         if (st.done % CX_CHUNK === 0) { cxPaint(); await new Promise(r => setTimeout(r, 0)); }
       }
+      if (!stopped && g[2] === 'low') st.lo0 = g[0];                // the low gap is contiguous
     }
     st.rows.sort((a, b) => a.id - b.id);
     st.busy = false;
+    st.at = Date.now();
     cxPaint();
-    cxSave(k);
+    cxSave(k);          // partial work is worth keeping: coverage records how far it got
   }
 
   function cxRows(k) {
@@ -273,12 +289,13 @@
     const stat = $('cxStat');
     if (stat) {
       const shown = cxRows(cxTab).length;
-      const tag = st.cached ? '  ·  ' + st.cached : '';
+      const when = st.at ? '  ·  scanned ' + cxWhen(st.at) : '';
+      const range = (!t.bulk && st.lo0 !== undefined) ? '  ·  ids ' + st.lo0 + '-' + st.hi0 : '';
       stat.textContent = st.busy
         ? (t.bulk ? 'loading...' : 'scanning ' + st.done + ' / ' + st.total + '  ·  ' + st.rows.length + ' found')
         : (!st.loaded ? (t.bulk ? 'press Load' : 'press Scan')
                       : shown + (shown === st.rows.length ? '' : ' of ' + st.rows.length) + ' entries'
-                        + (st.reused ? '  ·  reused' : '') + tag);
+                        + range + when + (st.reused ? '  ·  already covered' : ''));
     }
     const list = $('cxList');
     if (!list) return;
@@ -369,7 +386,7 @@
         if (!s.loaded && !s.busy) {
           cxLoad(t.k).then(saved => {
             if (saved) {
-              s.rows = saved.rows; s.lo0 = saved.lo; s.hi0 = saved.hi;
+              s.rows = saved.rows; s.lo0 = saved.lo; s.hi0 = saved.hi; s.at = saved.at;
               s.loaded = true; s.cached = 'saved';
               const l2 = $('cxList'); if (l2) l2._sig = '';
               cxPaint();
