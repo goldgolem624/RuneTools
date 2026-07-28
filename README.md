@@ -204,6 +204,7 @@ process are documented in [PLUGIN_SDK.md](PLUGIN_SDK.md).
 
 ## License
 
-RuneTools is released under the MIT License (see [LICENSE](LICENSE)). Bundled
+RuneTools is released under the Apache License 2.0 (see [LICENSE](LICENSE) and
+[NOTICE](NOTICE)). Bundled
 and build-time third-party components are listed in
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

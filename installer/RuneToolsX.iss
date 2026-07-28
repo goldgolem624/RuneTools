@@ -88,6 +88,7 @@ Source: "{#SrcDir}\sounds\*";       DestDir: "{app}\sounds"; Flags: ignoreversio
 Source: "{#SrcDir}\Ultralight\*";   DestDir: "{app}\Ultralight"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; RuneTools' own licence + third-party attributions, alongside the installed app
 Source: "..\LICENSE";                    DestDir: "{app}"; Flags: ignoreversion
+Source: "..\NOTICE";                     DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD-PARTY-NOTICES.md";     DestDir: "{app}"; Flags: ignoreversion
 ; CS2 extractor sidecar (GPL rsmv-based, runs as a separate process; ships node.exe + npm dep closure)
 Source: "{#SrcDir}\cs2sidecar\*";   DestDir: "{app}\cs2sidecar"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist

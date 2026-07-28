@@ -1,6 +1,7 @@
 # Third-Party Notices
 
-RuneTools is licensed under the MIT License (see [LICENSE](LICENSE)). It
+RuneTools is licensed under the Apache License 2.0 (see [LICENSE](LICENSE) and
+[NOTICE](NOTICE)). It
 bundles or depends on the third-party components below, each of which remains
 the property of its respective authors and is used under its own license.
 
@@ -104,4 +105,4 @@ dependency licences.
 The quest quick-guide step data and the Treasure Trail clue solutions are derived
 from RuneScape Wiki content and used under CC BY-NC-SA 3.0, with attribution. That
 license (non-commercial, share-alike) applies to this wiki-sourced data specifically
-and is independent of the project's MIT license.
+and is independent of the project's Apache 2.0 license.
