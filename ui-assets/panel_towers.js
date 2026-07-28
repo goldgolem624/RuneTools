@@ -542,31 +542,19 @@
                        - Math.max(Math.abs(b.x - ctx0), Math.abs(b.y - cty0)));
     el.style.display = '';
     el.innerHTML = '';
-    // Markers a couple of tiles apart land on top of each other once the map is zoomed out,
-    // so nudge any that collide. Placed positions are kept in percent, matching the style
-    // units; MIN_PCT is a marker's own footprint plus a little breathing room.
+    // Markers stay on their true tiles. Where two sit close enough that one icon would
+    // cover the other's keybind badge, the badge is moved instead of the marker.
     const MIN_PCT = 9, placed = [];
-    const spread = (lx, ty) => {
-      const hits = (x, y) => placed.some(q => Math.abs(q.x - x) < MIN_PCT && Math.abs(q.y - y) < MIN_PCT);
-      if (!hits(lx, ty)) { placed.push({ x: lx, y: ty }); return [lx, ty]; }
-      // Try progressively wider offsets, vertical first so labels stay legible side by side.
-      for (let step = 1; step <= 4; step++) {
-        for (const [dx, dy] of [[0, -MIN_PCT], [0, MIN_PCT], [-MIN_PCT, 0], [MIN_PCT, 0]]) {
-          const nx = lx + dx * step, ny = ty + dy * step;
-          if (nx < 0 || nx > 100 || ny < 0 || ny > 100) continue;
-          if (!hits(nx, ny)) { placed.push({ x: nx, y: ny }); return [nx, ny]; }
-        }
-      }
-      placed.push({ x: lx, y: ty });
-      return [lx, ty];
-    };
     const notes = [];
     for (const T of shown) {
       const m = document.createElement('div');
       m.className = 'clue-map-lode clue-map-tele';
-      const pos = spread(proj.projX(T.x) / proj.W * 100, proj.projY(T.y) / proj.W * 100);
-      m.style.left = pos[0] + '%';
-      m.style.top = pos[1] + '%';
+      const lx = proj.projX(T.x) / proj.W * 100, ty = proj.projY(T.y) / proj.W * 100;
+      m.style.left = lx + '%';
+      m.style.top = ty + '%';
+      const crowded = placed.some(q => Math.abs(q.x - lx) < MIN_PCT && Math.abs(q.y - ty) < MIN_PCT);
+      if (crowded) m.classList.add('cml-kb-side');
+      placed.push({ x: lx, y: ty });
       const icon = document.createElement('div');
       const url = T.item ? resolveIcon(T.item) : '';
       if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
@@ -578,7 +566,7 @@
       if (T.src) parts.push(T.src);
       if (T.kb) parts.push('option ' + T.kb);
       parts.push(T.n);
-      m.title = parts.join(', ');
+      m.dataset.tip = parts.join(', ');   // -> #global-tip (no native title tooltips here)
       el.insertBefore(m, el.firstChild);   // reverse of the nearest-first order -> nearest on top
       const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
       notes.push(T.n + (T.kb ? ' [' + T.kb + ']' : '') + ' (' + d + ')');

@@ -1260,6 +1260,10 @@
   /* The keybind badge sits over terrain, so it needs solid fill and a dark rim to stay
      readable rather than relying on the map behind it. */
   .clue-map-tele { pointer-events: auto; }
+  /* When two markers crowd, the covered one puts its badge to the side instead of below,
+     so the neighbouring icon cannot sit on top of it. */
+  .clue-map-tele.cml-kb-side { flex-direction: row; align-items: center; gap: 3px; }
+  .clue-map-tele.cml-kb-side .cml-kb { margin-top: 0; }
   .clue-map-tele .cml-kb { color: #06120b; background: #4dd28a; border: 1px solid #0b0d12;
       font-size: 11.5px; font-weight: 800; line-height: 15px; padding: 0 6px; border-radius: 5px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.95); text-shadow: none; }
