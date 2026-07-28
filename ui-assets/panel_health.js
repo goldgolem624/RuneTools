@@ -30,9 +30,16 @@
         seen.add(id);
         let ei = null;
         try { ei = JSON.parse(await bridge().itemExtraInts(myPid(), 93, id)); } catch (e) {}
+        let ip = null;
+        if (bridge().itemParams) { try { ip = JSON.parse(await bridge().itemParams(id) || 'null'); } catch (e) {} }
         const keys = (ei && ei.key) ? Object.keys(ei.key) : [];
-        if (!keys.length) continue;
+        const ipInts = (ip && ip.ints) || (ip && ip.int) || null;
+        const ipStrs = (ip && ip.strs) || (ip && ip.str) || null;
+        const hasParams = (ipInts && Object.keys(ipInts).length) || (ipStrs && Object.keys(ipStrs).length);
+        if (!keys.length && !hasParams) continue;
         lines.push(nm + '  (id ' + id + ')');
+        if (ipInts) for (const k of Object.keys(ipInts).sort((a, b) => (+a) - (+b))) lines.push('    param ' + k + ' = ' + ipInts[k]);
+        if (ipStrs) for (const k of Object.keys(ipStrs).sort((a, b) => (+a) - (+b))) lines.push('    param ' + k + ' = "' + ipStrs[k] + '"');
         for (const k of keys.sort((a, b) => (+a) - (+b))) {
           const v = ei.key[k] | 0;
           lines.push('    key ' + k + ' = ' + v + '   0x' + (v >>> 0).toString(16) + '   ' + (v >>> 0).toString(2));
@@ -83,8 +90,13 @@
     xbtn.addEventListener('click', hcDumpExtras);
     head.appendChild(xbtn); wrap.appendChild(head);
     if (hcXOut) {
-      const box = document.createElement('pre'); box.className = 'hc-xdump'; box.textContent = hcXOut;
+      // renderHealth() runs on the poll and wipes wrap, so carry the scroll offsets over
+      // or the dump snaps back to the top-left every tick while it is being read.
+      const prevBox = document.getElementById('hcXDump');
+      const sx = prevBox ? prevBox.scrollLeft : 0, sy = prevBox ? prevBox.scrollTop : 0;
+      const box = document.createElement('pre'); box.id = 'hcXDump'; box.className = 'hc-xdump'; box.textContent = hcXOut;
       wrap.appendChild(box);
+      box.scrollLeft = sx; box.scrollTop = sy;
     }
     if (!hcData || !Array.isArray(hcData.checks)) {
       const e2 = document.createElement('div'); e2.className = 'hc-hint';
