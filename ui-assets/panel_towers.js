@@ -536,17 +536,37 @@
       shown.push(T);
     }
     if (!shown.length) { el.style.display = 'none'; el.innerHTML = ''; return ''; }
-    // Nearest last so it paints over the others where markers overlap.
-    shown.sort((a, b) => Math.max(Math.abs(b.x - ctx0), Math.abs(b.y - cty0))
-                       - Math.max(Math.abs(a.x - ctx0), Math.abs(a.y - cty0)));
+    // Nearest first: it keeps its true tile and the others are nudged around it. The DOM
+    // order is reversed at append time so the nearest still paints on top.
+    shown.sort((a, b) => Math.max(Math.abs(a.x - ctx0), Math.abs(a.y - cty0))
+                       - Math.max(Math.abs(b.x - ctx0), Math.abs(b.y - cty0)));
     el.style.display = '';
     el.innerHTML = '';
+    // Markers a couple of tiles apart land on top of each other once the map is zoomed out,
+    // so nudge any that collide. Placed positions are kept in percent, matching the style
+    // units; MIN_PCT is a marker's own footprint plus a little breathing room.
+    const MIN_PCT = 9, placed = [];
+    const spread = (lx, ty) => {
+      const hits = (x, y) => placed.some(q => Math.abs(q.x - x) < MIN_PCT && Math.abs(q.y - y) < MIN_PCT);
+      if (!hits(lx, ty)) { placed.push({ x: lx, y: ty }); return [lx, ty]; }
+      // Try progressively wider offsets, vertical first so labels stay legible side by side.
+      for (let step = 1; step <= 4; step++) {
+        for (const [dx, dy] of [[0, -MIN_PCT], [0, MIN_PCT], [-MIN_PCT, 0], [MIN_PCT, 0]]) {
+          const nx = lx + dx * step, ny = ty + dy * step;
+          if (nx < 0 || nx > 100 || ny < 0 || ny > 100) continue;
+          if (!hits(nx, ny)) { placed.push({ x: nx, y: ny }); return [nx, ny]; }
+        }
+      }
+      placed.push({ x: lx, y: ty });
+      return [lx, ty];
+    };
     const notes = [];
     for (const T of shown) {
       const m = document.createElement('div');
       m.className = 'clue-map-lode clue-map-tele';
-      m.style.left = (proj.projX(T.x) / proj.W * 100) + '%';
-      m.style.top = (proj.projY(T.y) / proj.W * 100) + '%';
+      const pos = spread(proj.projX(T.x) / proj.W * 100, proj.projY(T.y) / proj.W * 100);
+      m.style.left = pos[0] + '%';
+      m.style.top = pos[1] + '%';
       const icon = document.createElement('div');
       const url = T.item ? resolveIcon(T.item) : '';
       if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
@@ -559,7 +579,7 @@
       if (T.kb) parts.push('option ' + T.kb);
       parts.push(T.n);
       m.title = parts.join(', ');
-      el.appendChild(m);
+      el.insertBefore(m, el.firstChild);   // reverse of the nearest-first order -> nearest on top
       const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
       notes.push(T.n + (T.kb ? ' [' + T.kb + ']' : '') + ' (' + d + ')');
     }
