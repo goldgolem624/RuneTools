@@ -470,8 +470,9 @@
   const MAP_TELEPORTS = [
     // Skills necklace charge variants all share one icon: 11105 (4), 11107 (3), 11109 (2), 11111 (1).
     { n: "Fishing Guild", src: "Skills necklace", x: 2615, y: 3385, p: 0, kb: "1", item: 11105 },
-    { n: "Fishing Guild", src: "Lunar spellbook", x: 2612, y: 3381, p: 0, kb: "", item: 0,
-      req: { skill: 6, level: 86, vb: SPELLBOOK_VB, vbVal: SPELLBOOK_LUNAR } }
+    // sp: set the Fishing Guild Teleport spell sprite (struct param spell_prayer_ability_sprite).
+    { n: "Fishing Guild", src: "Lunar spellbook", x: 2612, y: 3381, p: 0, kb: "", item: 0, sp: 0,
+      req: { skill: 6, level: 85, vb: SPELLBOOK_VB, vbVal: SPELLBOOK_LUNAR } }
   ];
   // Requirement gate. skill/level compares the live level (skill 6 = Magic); vb/vbVal requires a
   // varbit to equal a value. Values are prefetched into teleVbCache by clueMapTelePrefetch.
@@ -540,8 +541,10 @@
     el.style.top = (proj.projY(best.y) / proj.W * 100) + '%';
     const icon = el.querySelector('.cml-icon') || el.querySelector('.cml-dot');
     if (icon) {
+      // sp = a sprite id (spell icons); item = an item id; neither = a plain dot.
       const url = best.item ? resolveIcon(best.item) : '';
-      if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
+      if (best.sp) { icon.className = 'cml-icon'; icon.style.backgroundImage = ''; loadSpriteIcon(icon, best.sp); }
+      else if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
       else { icon.className = 'cml-dot'; icon.style.backgroundImage = ''; }
     }
     const kbEl = el.querySelector('.cml-kb'); if (kbEl) kbEl.textContent = best.kb || '';
