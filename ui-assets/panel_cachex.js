@@ -59,29 +59,65 @@
     } catch (e) {}
     return '';
   }
+  // Readable detail. Cache strings carry literal <br> markup and rows hold long parallel
+  // arrays, so values are unwrapped one per line and every column is labelled: cramming a
+  // whole row onto one line is what made this unreadable.
+  const CX_STR_WRAP = 96;
+  function cxText(v) {
+    return String(v).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim();
+  }
+  function cxLines(v, ind) {
+    const t = cxText(v);
+    if (!t) return ind + '""';
+    return t.split('\n').map(l => ind + l).join('\n');
+  }
+  // One value inline; several become a numbered list so parallel columns stay alignable.
+  function cxColumn(label, vals, out) {
+    const arr = Array.isArray(vals) ? vals : [vals];
+    if (!arr.length) { out.push('  ' + label + ': []'); return; }
+    if (arr.length === 1) {
+      const v = arr[0];
+      if (typeof v !== 'string') { out.push('  ' + label + ': ' + v); return; }
+      const t = cxText(v);
+      if (t.length <= CX_STR_WRAP && t.indexOf('\n') < 0) out.push('  ' + label + ': ' + t);
+      else { out.push('  ' + label + ':'); out.push(cxLines(v, '      ')); }
+      return;
+    }
+    if (arr.every(x => typeof x !== 'string') && arr.length <= 16) {
+      out.push('  ' + label + ': [' + arr.join(', ') + ']'); return;
+    }
+    out.push('  ' + label + ':  (' + arr.length + ')');
+    arr.forEach((x, i) => {
+      const head = '    [' + i + '] ';
+      if (typeof x !== 'string') { out.push(head + x); return; }
+      const t = cxText(x);
+      if (t.length <= CX_STR_WRAP && t.indexOf('\n') < 0) out.push(head + t);
+      else { out.push('    [' + i + ']'); out.push(cxLines(x, '        ')); }
+    });
+  }
   function cxDetail(k, d) {
     const out = [];
-    const pad = '    ';
     const sortNum = (a, b) => (isFinite(+a) && isFinite(+b)) ? (+a) - (+b) : (a < b ? -1 : 1);
     if (k === 'enum') {
-      for (const key of Object.keys(d).sort(sortNum)) out.push(pad + key + ' = ' + JSON.stringify(d[key]));
+      for (const key of Object.keys(d).sort(sortNum)) cxColumn(String(key), d[key], out);
     } else if (k === 'struct' || k === 'item') {
       const I = d.ints || {}, S = d.strs || {};
-      if (d.name) out.push(pad + 'name = ' + JSON.stringify(d.name));
-      for (const key of Object.keys(I).sort(sortNum)) out.push(pad + 'param ' + key + ' = ' + I[key]);
-      for (const key of Object.keys(S).sort(sortNum)) out.push(pad + 'param ' + key + ' = ' + JSON.stringify(S[key]));
-      if (!out.length) out.push(pad + JSON.stringify(d));
+      if (d.name) out.push('  name: ' + d.name);
+      for (const key of Object.keys(I).sort(sortNum)) cxColumn('param ' + key, I[key], out);
+      for (const key of Object.keys(S).sort(sortNum)) cxColumn('param ' + key, S[key], out);
+      if (!out.length) out.push('  ' + JSON.stringify(d));
     } else if (k === 'dbtable') {
       for (const r of d) {
+        out.push('row ' + r.f);
         const I = r.i || {}, S = r.s || {};
         const cols = {};
         for (const cc of Object.keys(I)) cols[cc] = I[cc];
         for (const cc of Object.keys(S)) cols[cc] = S[cc];
-        const parts = Object.keys(cols).sort(sortNum).map(cc => cc + ':' + JSON.stringify(cols[cc]));
-        out.push(pad + 'row ' + r.f + '  ' + parts.join('  '));
+        for (const cc of Object.keys(cols).sort(sortNum)) cxColumn('col ' + cc, cols[cc], out);
+        out.push('');
       }
     } else {
-      out.push(pad + JSON.stringify(d));
+      out.push('  ' + JSON.stringify(d));
     }
     return out.join('\n');
   }
@@ -224,7 +260,7 @@
       .cx-click:hover { background: rgba(255,255,255,0.04); }
       .cx-id { flex: 0 0 auto; min-width: 58px; color: var(--accent-hi); font-variant-numeric: tabular-nums; font-weight: 600; }
       .cx-sum { flex: 1; min-width: 0; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .cx-det { margin: 0; padding: 8px 11px 10px 69px; background: rgba(0,0,0,0.28); color: var(--text);
+      .cx-det { margin: 0; padding: 8px 12px 10px 18px; background: rgba(0,0,0,0.28); color: var(--text);
           font-family: Consolas, monospace; font-size: 11px; line-height: 1.5;
           white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
       .cx-empty { padding: 12px; color: var(--text-dim); font-size: 12px; }`);
