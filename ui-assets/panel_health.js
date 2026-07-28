@@ -49,13 +49,52 @@
       if (!lines.length) lines.push('no backpack item carries Extra_ints');
     } catch (e) { lines.push('error: ' + e); }
     hcXOut = lines.join(String.fromCharCode(10));
+    hcShowDump(hcXOut);
     hcXBusy = false; renderHealth();
+  }
+  // The dump is shown in a body-level overlay rather than inside the panel: renderHealth()
+  // runs on the 250 ms poll and rebuilds its whole subtree, which would destroy the element
+  // mid-scroll and cancel any in-progress text selection. A readonly textarea keeps its own
+  // scroll and supports native select-all + copy.
+  function hcShowDump(text) {
+    let ov = document.getElementById('hcXOv');
+    if (!ov) {
+      ov = document.createElement('div'); ov.id = 'hcXOv'; ov.className = 'hcx-ov';
+      const box = document.createElement('div'); box.className = 'hcx-box';
+      const hd = document.createElement('div'); hd.className = 'hcx-hd';
+      hd.innerHTML = '<span>Item Extra_ints + cache params</span>';
+      const cp = document.createElement('button'); cp.className = 'vw-btn'; cp.textContent = 'Copy';
+      const cl = document.createElement('button'); cl.className = 'vw-btn'; cl.textContent = 'Close';
+      hd.appendChild(cp); hd.appendChild(cl);
+      const ta = document.createElement('textarea'); ta.id = 'hcXTa'; ta.className = 'hcx-ta'; ta.readOnly = true; ta.spellcheck = false;
+      box.appendChild(hd); box.appendChild(ta); ov.appendChild(box); document.body.appendChild(ov);
+      cl.addEventListener('click', () => { ov.style.display = 'none'; });
+      cp.addEventListener('click', () => {
+        ta.focus(); ta.select();
+        let ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+        cp.textContent = ok ? 'Copied' : 'Select + Ctrl+C';
+        setTimeout(() => { cp.textContent = 'Copy'; }, 1600);
+      });
+      ov.addEventListener('click', (e) => { if (e.target === ov) ov.style.display = 'none'; });
+    }
+    ov.style.display = 'flex';
+    document.getElementById('hcXTa').value = text;
   }
   function renderHealth() {
     const c = $('content');
     let wrap = $('hcWrap');
     if (!wrap) {
       injectStyle('hcCss', `
+        .hcx-ov { position: fixed; inset: 0; z-index: 90; background: rgba(6,8,13,.72); display: none;
+            align-items: center; justify-content: center; }
+        .hcx-box { width: min(720px, calc(100vw - 40px)); height: min(70vh, 560px); display: flex; flex-direction: column;
+            background: var(--bg-elev); border: 1px solid var(--border-hi); border-radius: 10px; }
+        .hcx-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border);
+            color: var(--accent-hi); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+        .hcx-hd span { flex: 1; }
+        .hcx-ta { flex: 1; margin: 0; padding: 10px 12px; border: 0; background: transparent; resize: none;
+            color: var(--text); font-family: Consolas, monospace; font-size: 11px; line-height: 1.5;
+            white-space: pre; overflow: auto; outline: none; }
         .hc-xdump { margin: 10px 14px; padding: 10px 12px; background: var(--bg-elev); border: 1px solid var(--border);
             border-radius: 8px; color: var(--text); font-family: Consolas, monospace; font-size: 11px;
             line-height: 1.5; white-space: pre; overflow-x: auto; user-select: text; }
@@ -88,16 +127,13 @@
     xbtn.textContent = hcXBusy ? 'Reading...' : 'Dump item Extra_ints';
     xbtn.dataset.tip = 'Read the packed Extra_ints of every backpack item that has any (pouches, quivers, jewellery boxes)';
     xbtn.addEventListener('click', hcDumpExtras);
-    head.appendChild(xbtn); wrap.appendChild(head);
     if (hcXOut) {
-      // renderHealth() runs on the poll and wipes wrap, so carry the scroll offsets over
-      // or the dump snaps back to the top-left every tick while it is being read.
-      const prevBox = document.getElementById('hcXDump');
-      const sx = prevBox ? prevBox.scrollLeft : 0, sy = prevBox ? prevBox.scrollTop : 0;
-      const box = document.createElement('pre'); box.id = 'hcXDump'; box.className = 'hc-xdump'; box.textContent = hcXOut;
-      wrap.appendChild(box);
-      box.scrollLeft = sx; box.scrollTop = sy;
+      const vbtn = document.createElement('button'); vbtn.className = 'vw-btn'; vbtn.textContent = 'View last dump';
+      vbtn.addEventListener('click', () => hcShowDump(hcXOut));
+      head.appendChild(vbtn);
     }
+    head.appendChild(xbtn); wrap.appendChild(head);
+
     if (!hcData || !Array.isArray(hcData.checks)) {
       const e2 = document.createElement('div'); e2.className = 'hc-hint';
       e2.textContent = 'Checks that every feature can read the game correctly. Worth running after a game update if something looks off.';
