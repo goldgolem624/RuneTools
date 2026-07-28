@@ -470,8 +470,9 @@
   const MAP_TELEPORTS = [
     // Skills necklace charge variants all share one icon: 11105 (4), 11107 (3), 11109 (2), 11111 (1).
     { n: "Fishing Guild", src: "Skills necklace", x: 2615, y: 3385, p: 0, kb: "1", item: 11105 },
-    // sp: set the Fishing Guild Teleport spell sprite (struct param spell_prayer_ability_sprite).
-    { n: "Fishing Guild", src: "Lunar spellbook", x: 2612, y: 3381, p: 0, kb: "", item: 0, sp: 0,
+    // Struct 14857: sprite from spell_prayer_ability_sprite, level from spell_prayer_ability_req_value,
+    // tile decoded from teleport_destination_location 42814775 = (x << 14) | y.
+    { n: "Fishing Guild", src: "Lunar spellbook", x: 2613, y: 3383, p: 0, kb: "", item: 0, sp: 14414,
       req: { skill: 6, level: 85, vb: SPELLBOOK_VB, vbVal: SPELLBOOK_LUNAR } }
   ];
   // Requirement gate. skill/level compares the live level (skill 6 = Magic); vb/vbVal requires a
