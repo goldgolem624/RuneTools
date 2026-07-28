@@ -527,38 +527,38 @@
     const el = $('clueMapTele');
     if (!el) return '';
     await clueMapTelePrefetch();
-    let best = null, bestD = Infinity;
+    const shown = [];
     for (const T of MAP_TELEPORTS) {
       if ((T.p || 0) !== (plane || 0)) continue;
       if (T.x < vx0 || T.x > vx1 || T.y < vy0 || T.y > vy1) continue;
       if (!teleReqMet(T)) continue;
-      const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
-      // Two entries can mark the same destination (an item teleport and a spell). Within a few
-      // tiles they are interchangeable, so prefer whichever can actually draw an icon rather
-      // than letting a marginally-closer iconless entry win and render a bare dot.
-      if (best && Math.abs(d - bestD) <= 8) {
-        const hasIcon = (x) => !!(x.sp || x.item);
-        if (hasIcon(T) && !hasIcon(best)) { bestD = d; best = T; }
-        continue;
-      }
-      if (d < bestD) { bestD = d; best = T; }
+      shown.push(T);
     }
-    if (!best) { el.style.display = 'none'; return ''; }
+    if (!shown.length) { el.style.display = 'none'; el.innerHTML = ''; return ''; }
+    // Nearest last so it paints over the others where markers overlap.
+    shown.sort((a, b) => Math.max(Math.abs(b.x - ctx0), Math.abs(b.y - cty0))
+                       - Math.max(Math.abs(a.x - ctx0), Math.abs(a.y - cty0)));
     el.style.display = '';
-    el.style.left = (proj.projX(best.x) / proj.W * 100) + '%';
-    el.style.top = (proj.projY(best.y) / proj.W * 100) + '%';
-    const icon = el.querySelector('.cml-icon') || el.querySelector('.cml-dot');
-    if (icon) {
-      // sp = a sprite id (spell icons); item = an item id; neither = a plain dot.
-      const url = best.item ? resolveIcon(best.item) : '';
-      if (best.sp) { icon.className = 'cml-icon'; icon.style.backgroundImage = ''; loadSpriteIcon(icon, best.sp); }
+    el.innerHTML = '';
+    const notes = [];
+    for (const T of shown) {
+      const m = document.createElement('div');
+      m.className = 'clue-map-lode clue-map-tele';
+      m.style.left = (proj.projX(T.x) / proj.W * 100) + '%';
+      m.style.top = (proj.projY(T.y) / proj.W * 100) + '%';
+      const icon = document.createElement('div');
+      const url = T.item ? resolveIcon(T.item) : '';
+      if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
       else if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
-      else { icon.className = 'cml-dot'; icon.style.backgroundImage = ''; }
+      else { icon.className = 'cml-dot'; }
+      const kb = document.createElement('div'); kb.className = 'cml-kb'; kb.textContent = T.kb || '';
+      m.appendChild(icon); m.appendChild(kb);
+      m.title = T.n + (T.src ? ' (' + T.src + ')' : '') + (T.kb ? ' [' + T.kb + ']' : '');
+      el.appendChild(m);
+      const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
+      notes.push(T.n + (T.kb ? ' [' + T.kb + ']' : '') + ' (' + d + ')');
     }
-    const kbEl = el.querySelector('.cml-kb'); if (kbEl) kbEl.textContent = best.kb || '';
-    el.title = best.n + (best.src ? ' (' + best.src + ')' : '') + (best.kb ? ' [' + best.kb + ']' : '');
-    const dir = (best.y > cty0 ? 'N' : best.y < cty0 ? 'S' : '') + (best.x > ctx0 ? 'E' : best.x < ctx0 ? 'W' : '');
-    return '  \u00b7  tele: ' + best.n + (best.kb ? ' [' + best.kb + ']' : '') + ' (' + bestD + (dir ? ' ' + dir : '') + ')';
+    return '  ·  tele: ' + notes.join(', ');
   }
   async function drawScanMap(c0, opts) {
     const cv = $('clueMapCanvas'), cap = $('clueMapCap');

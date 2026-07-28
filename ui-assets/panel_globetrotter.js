@@ -177,8 +177,7 @@
       const mapLode = document.createElement('div'); mapLode.id = 'clueMapLode'; mapLode.className = 'clue-map-lode'; mapLode.style.display = 'none';
       mapLode.innerHTML = '<div class="cml-icon"></div><div class="cml-kb"></div>';
       mapInner.appendChild(mapLode);
-      const mapTele = document.createElement('div'); mapTele.id = 'clueMapTele'; mapTele.className = 'clue-map-lode clue-map-tele'; mapTele.style.display = 'none';
-      mapTele.innerHTML = '<div class="cml-icon"></div><div class="cml-kb"></div>';
+      const mapTele = document.createElement('div'); mapTele.id = 'clueMapTele'; mapTele.className = 'clue-map-teles'; mapTele.style.display = 'none';
       mapInner.appendChild(mapTele);
       const mapRange = document.createElement('div'); mapRange.id = 'clueMapRange'; mapRange.className = 'clue-map-range'; mapRange.style.display = 'none'; mapRange.title = 'Scan range'; mapInner.appendChild(mapRange);
       const mapPlayer = document.createElement('div'); mapPlayer.id = 'clueMapPlayer'; mapPlayer.className = 'clue-map-player'; mapPlayer.style.display = 'none'; mapPlayer.title = 'You'; mapInner.appendChild(mapPlayer);
