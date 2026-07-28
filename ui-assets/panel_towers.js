@@ -542,34 +542,45 @@
                        - Math.max(Math.abs(b.x - ctx0), Math.abs(b.y - cty0)));
     el.style.display = '';
     el.innerHTML = '';
-    // Markers stay on their true tiles. Where two sit close enough that one icon would
-    // cover the other's keybind badge, the badge is moved instead of the marker.
-    const MIN_PCT = 9, placed = [];
+    // Teleports closer together than a marker's own footprint are grouped into one box, each
+    // keeping its own icon, keybind and tooltip. Anchored at the group's centre so no single
+    // member is shown away from its tile by more than the group's own span.
+    const MIN_PCT = 9;
+    const pt = shown.map(T => ({ T: T, x: proj.projX(T.x) / proj.W * 100, y: proj.projY(T.y) / proj.W * 100 }));
+    const groups = [];
+    for (const p of pt) {
+      const g = groups.find(q => q.some(m => Math.abs(m.x - p.x) < MIN_PCT && Math.abs(m.y - p.y) < MIN_PCT));
+      if (g) g.push(p); else groups.push([p]);
+    }
     const notes = [];
-    for (const T of shown) {
-      const m = document.createElement('div');
-      m.className = 'clue-map-lode clue-map-tele';
-      const lx = proj.projX(T.x) / proj.W * 100, ty = proj.projY(T.y) / proj.W * 100;
-      m.style.left = lx + '%';
-      m.style.top = ty + '%';
-      const crowded = placed.some(q => Math.abs(q.x - lx) < MIN_PCT && Math.abs(q.y - ty) < MIN_PCT);
-      if (crowded) m.classList.add('cml-kb-side');
-      placed.push({ x: lx, y: ty });
-      const icon = document.createElement('div');
-      const url = T.item ? resolveIcon(T.item) : '';
-      if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
-      else if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
-      else { icon.className = 'cml-dot'; }
-      const kb = document.createElement('div'); kb.className = 'cml-kb'; kb.textContent = T.kb || '';
-      m.appendChild(icon); m.appendChild(kb);
-      const parts = [];
-      if (T.src) parts.push(T.src);
-      if (T.kb) parts.push('option ' + T.kb);
-      parts.push(T.n);
-      m.dataset.tip = parts.join(', ');   // -> #global-tip (no native title tooltips here)
-      el.insertBefore(m, el.firstChild);   // reverse of the nearest-first order -> nearest on top
-      const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
-      notes.push(T.n + (T.kb ? ' [' + T.kb + ']' : '') + ' (' + d + ')');
+    for (const g of groups) {
+      const cx0 = g.reduce((a, m) => a + m.x, 0) / g.length;
+      const cy0 = g.reduce((a, m) => a + m.y, 0) / g.length;
+      const box = document.createElement('div');
+      box.className = 'clue-map-lode clue-map-tele' + (g.length > 1 ? ' clue-map-telebox' : '');
+      box.style.left = cx0 + '%';
+      box.style.top = cy0 + '%';
+      for (const m of g) {
+        const T = m.T;
+        const cell = document.createElement('div');
+        cell.className = 'cml-cell';
+        const icon = document.createElement('div');
+        const url = T.item ? resolveIcon(T.item) : '';
+        if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
+        else if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
+        else { icon.className = 'cml-dot'; }
+        cell.appendChild(icon);
+        if (T.kb) { const kb = document.createElement('div'); kb.className = 'cml-kb'; kb.textContent = T.kb; cell.appendChild(kb); }
+        const parts = [];
+        if (T.src) parts.push(T.src);
+        if (T.kb) parts.push('option ' + T.kb);
+        parts.push(T.n);
+        cell.dataset.tip = parts.join(', ');   // -> #global-tip (no native title tooltips here)
+        box.appendChild(cell);
+        const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
+        notes.push(T.n + (T.kb ? ' [' + T.kb + ']' : '') + ' (' + d + ')');
+      }
+      el.appendChild(box);
     }
     return '  ·  tele: ' + notes.join(', ');
   }

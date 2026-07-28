@@ -1262,8 +1262,12 @@
   .clue-map-tele { pointer-events: auto; }
   /* When two markers crowd, the covered one puts its badge to the side instead of below,
      so the neighbouring icon cannot sit on top of it. */
-  .clue-map-tele.cml-kb-side { flex-direction: row; align-items: center; gap: 3px; }
-  .clue-map-tele.cml-kb-side .cml-kb { margin-top: 0; }
+  /* A single teleport is just icon over badge; two or more that would overlap are grouped
+     into one panelled box, side by side, each cell keeping its own tooltip. */
+  .clue-map-tele { flex-direction: row; align-items: flex-start; gap: 4px; }
+  .cml-cell { display: flex; flex-direction: column; align-items: center; pointer-events: auto; }
+  .clue-map-telebox { padding: 3px 4px; border-radius: 8px; background: rgba(10, 13, 20, 0.86);
+      border: 1px solid rgba(77, 210, 138, 0.55); box-shadow: 0 2px 8px rgba(0,0,0,0.75); }
   .clue-map-tele .cml-kb { color: #06120b; background: #4dd28a; border: 1px solid #0b0d12;
       font-size: 11.5px; font-weight: 800; line-height: 15px; padding: 0 6px; border-radius: 5px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.95); text-shadow: none; }
