@@ -19,6 +19,40 @@
   const CX_CHUNK = 200;             // ids per yield, so a long scan stays responsive
   let cxTab = 'enum', cxFilter = '', cxOpen = null, cxSeq = 0;
   const cxState = {};               // per type: { rows:[{id,sum,data}], busy, done, total, err, loaded }
+  // Persisted results. The game cache only changes on a game UPDATE, so a snapshot stays
+  // valid for as long as the client build does: the build string is the cache key, and a
+  // re-scan of an already-covered range costs nothing. Widening a range only scans the part
+  // that is missing. Live player state (varps/varcs) is deliberately NOT cached.
+  const CX_STORE_PREFIX = 'rtxCx:';
+  const CX_STORE_MAX = 4 * 1024 * 1024;      // localStorage is small; skip caching past this
+  const cxBuild = () => (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.client_version) || '';
+  const cxCacheable = k => k !== 'varp' && k !== 'varc';
+  function cxSave(k) {
+    if (!cxCacheable(k)) return;
+    const st = cxSt(k);
+    try {
+      const blob = JSON.stringify({ v: cxBuild(), lo: st.lo0, hi: st.hi0, rows: st.rows });
+      if (blob.length > CX_STORE_MAX) { st.cached = 'too large to cache'; return; }
+      localStorage.setItem(CX_STORE_PREFIX + k, blob);
+      st.cached = 'cached';
+    } catch (e) { st.cached = 'too large to cache'; }   // quota exceeded -> session only
+  }
+  function cxLoad(k) {
+    if (!cxCacheable(k)) return null;
+    try {
+      const raw = localStorage.getItem(CX_STORE_PREFIX + k);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      if (!o || o.v !== cxBuild() || !Array.isArray(o.rows)) return null;   // stale build
+      return o;
+    } catch (e) { return null; }
+  }
+  function cxClear(k) {
+    try { localStorage.removeItem(CX_STORE_PREFIX + k); } catch (e) {}
+    const st = cxSt(k);
+    st.rows = []; st.loaded = false; st.cached = ''; st.lo0 = undefined; st.hi0 = undefined;
+  }
+
   // Live var dumps key by DOMAIN:id ("4:1234" varp, "5:1234" varc); string varcs are bare.
   const cxKeyId = k => { const p = String(k).split(':'); return parseInt(p[p.length - 1], 10); };
   const cxT = k => CX_TYPES.filter(t => t.k === k)[0];
@@ -126,6 +160,10 @@
   async function cxLoadBulk(k) {
     const st = cxSt(k);
     if (st.busy || st.loaded) return;
+    if (k === 'varbit') {
+      const saved = cxLoad(k);
+      if (saved) { st.rows = saved.rows; st.loaded = true; st.cached = 'cached'; cxPaint(); return; }
+    }
     st.busy = true; cxPaint();
     const rows = [];
     try {
@@ -150,34 +188,62 @@
     } catch (e) { st.err = String(e); }
     rows.sort((a, b) => a.id - b.id);
     st.rows = rows; st.loaded = true; st.busy = false;
+    if (k === 'varbit') { st.lo0 = 0; st.hi0 = 0; cxSave(k); }   // cache-derived, so worth keeping
     cxPaint();
   }
 
-  // Scanned families: one bridge call per id, chunked so the UI keeps painting.
+  // Scanned families: one bridge call per id, chunked so the UI keeps painting. Anything the
+  // stored snapshot already covers is reused, so only genuinely new ids cost a round trip.
   async function cxScan(k) {
     const t = cxT(k), st = cxSt(k);
     if (!t || !t.fn || st.busy || !bridge() || !bridge()[t.fn]) return;
-    const lo = Math.max(0, parseInt((document.getElementById('cxLo') || {}).value, 10) || t.lo);
-    const hi = Math.max(lo, parseInt((document.getElementById('cxHi') || {}).value, 10) || t.hi);
-    const seq = ++cxSeq;
-    st.busy = true; st.rows = []; st.done = 0; st.total = hi - lo + 1; st.err = ''; st.loaded = true;
-    cxPaint();
-    for (let id = lo; id <= hi; id++) {
-      if (seq !== cxSeq) { st.busy = false; cxPaint(); return; }     // cancelled or retargeted
-      let d = null;
-      try { d = JSON.parse(await bridge()[t.fn](id) || 'null'); } catch (e) { d = null; }
-      const empty = !d || (Array.isArray(d) ? !d.length : !Object.keys(d).length);
-      // Index the whole entry, not just the summary: the point of the filter is finding a
-      // value buried in a column, which the one-line summary never shows.
-      if (!empty) {
-        let txt = '';
-        try { txt = JSON.stringify(d).toLowerCase(); } catch (e) {}
-        st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d, txt: txt });
+    const lo = Math.max(0, parseInt(($('cxLo') || {}).value, 10) || t.lo);
+    const hi = Math.max(lo, parseInt(($('cxHi') || {}).value, 10) || t.hi);
+
+    // Adopt a stored snapshot for this build before deciding what still needs scanning.
+    if (!st.loaded) {
+      const saved = cxLoad(k);
+      if (saved) {
+        st.rows = saved.rows; st.lo0 = saved.lo; st.hi0 = saved.hi;
+        st.loaded = true; st.cached = 'cached';
       }
-      st.done = id - lo + 1;
-      if (st.done % CX_CHUNK === 0) { cxPaint(); await new Promise(r => setTimeout(r, 0)); }
     }
-    st.busy = false; cxPaint();
+    const gaps = [];
+    if (st.loaded && st.lo0 !== undefined && st.hi0 !== undefined) {
+      if (lo < st.lo0) gaps.push([lo, Math.min(hi, st.lo0 - 1)]);
+      if (hi > st.hi0) gaps.push([Math.max(lo, st.hi0 + 1), hi]);
+      st.lo0 = Math.min(st.lo0, lo); st.hi0 = Math.max(st.hi0, hi);
+    } else {
+      gaps.push([lo, hi]);
+      st.rows = []; st.lo0 = lo; st.hi0 = hi;
+    }
+    const total = gaps.reduce((a, g) => a + (g[1] - g[0] + 1), 0);
+    if (!total) { st.loaded = true; st.reused = true; cxPaint(); return; }   // fully covered
+
+    const seq = ++cxSeq;
+    st.busy = true; st.done = 0; st.total = total; st.err = ''; st.loaded = true; st.reused = false;
+    cxPaint();
+    for (const g of gaps) {
+      for (let id = g[0]; id <= g[1]; id++) {
+        if (seq !== cxSeq) { st.busy = false; cxPaint(); return; }     // cancelled or retargeted
+        let d = null;
+        try { d = JSON.parse(await bridge()[t.fn](id) || 'null'); } catch (e) { d = null; }
+        const empty = !d || (Array.isArray(d) ? !d.length : !Object.keys(d).length);
+        // Index the whole entry, not just the summary: the point of the filter is finding a
+        // value buried in a column, which the one-line summary never shows.
+        if (!empty) {
+          let txt = '';
+          try { txt = JSON.stringify(d).toLowerCase(); } catch (e) {}
+          st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d, txt: txt });
+        }
+        st.done++;
+        if (st.done % CX_CHUNK === 0) { cxPaint(); await new Promise(r => setTimeout(r, 0)); }
+      }
+    }
+    st.rows.sort((a, b) => a.id - b.id);
+    st.busy = false;
+    cxSave(k);
+    cxPaint();
   }
 
   function cxRows(k) {
@@ -202,10 +268,12 @@
     const stat = $('cxStat');
     if (stat) {
       const shown = cxRows(cxTab).length;
+      const tag = st.cached === 'cached' ? '  ·  cached' : (st.cached ? '  ·  ' + st.cached : '');
       stat.textContent = st.busy
         ? (t.bulk ? 'loading...' : 'scanning ' + st.done + ' / ' + st.total + '  ·  ' + st.rows.length + ' found')
         : (!st.loaded ? (t.bulk ? 'press Load' : 'press Scan')
-                      : shown + (shown === st.rows.length ? '' : ' of ' + st.rows.length) + ' entries');
+                      : shown + (shown === st.rows.length ? '' : ' of ' + st.rows.length) + ' entries'
+                        + (st.reused ? '  ·  reused' : '') + tag);
     }
     const list = $('cxList');
     if (!list) return;
@@ -293,7 +361,15 @@
         const l = $('cxList'); if (l) l._sig = '';
         cxPaint();
         const s = cxSt(t.k);
-        if (t.bulk && !s.loaded && !s.busy) cxLoadBulk(t.k);
+        if (!s.loaded && !s.busy) {
+          const saved = cxLoad(t.k);
+          if (saved) {
+            s.rows = saved.rows; s.lo0 = saved.lo; s.hi0 = saved.hi;
+            s.loaded = true; s.cached = 'cached';
+            const l2 = $('cxList'); if (l2) l2._sig = '';
+            cxPaint();
+          } else if (t.bulk) cxLoadBulk(t.k);
+        }
       });
       tabs.appendChild(b);
     });
@@ -312,6 +388,14 @@
       if (t2.bulk) { s2.loaded = false; cxLoadBulk(cxTab); } else cxScan(cxTab);
     });
     ctl.appendChild(go);
+    const clr = document.createElement('button'); clr.className = 'vw-btn'; clr.textContent = 'Clear';
+    clr.dataset.tip = 'Drop the stored snapshot for this family and read it again from the cache';
+    clr.addEventListener('click', () => {
+      cxSeq++; cxClear(cxTab); cxOpen = null;
+      const l = $('cxList'); if (l) l._sig = '';
+      cxPaint();
+    });
+    ctl.appendChild(clr);
     const srch = document.createElement('input'); srch.id = 'cxSearch'; srch.className = 'cx-in cx-search';
     srch.placeholder = 'Filter by id or content';
     srch.addEventListener('input', () => { cxFilter = srch.value; cxOpen = null; cxPaint(); });
