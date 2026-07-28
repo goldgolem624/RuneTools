@@ -459,6 +459,37 @@
     const proj = { W: meta.w, projX: x => (x - x0) * TS + TS / 2, projY: y => (WT - (y - y0) - 1) * TS + TS / 2 };
     clueMapDrawLabels(ctx, proj, meta.p | 0, x0, y0, x0 + WT, y0 + WT);
   }
+  // Nearest UNLOCKED lodestone inside a map window, positioned on the shared marker element.
+  // Both map renderers use this; returns the caption suffix (empty when none is in view).
+  async function clueMapLodeDraw(vx0, vy0, vx1, vy1, ctx0, cty0, proj) {
+    const el = $('clueMapLode');
+    if (!el) return '';
+    let lvp = {};
+    if (bridge() && bridge().varps) {
+      try { lvp = JSON.parse(await bridge().varps(myPid(), LODE_VARPS.join(','))) || {}; } catch (e) {}
+    }
+    const unlocked = (l) => {
+      const raw = (lvp[l.vp] || 0) >>> 0, w = l.hi - l.lo + 1;
+      const m = w >= 32 ? 0xffffffff : ((1 << w) - 1);
+      return ((raw >>> l.lo) & m) >= l.th;
+    };
+    let best = null, bestD = Infinity;
+    for (const L of LODESTONES) {
+      if (!L.x || !unlocked(L)) continue;
+      if (L.x < vx0 || L.x > vx1 || L.y < vy0 || L.y > vy1) continue;
+      const d = Math.max(Math.abs(L.x - ctx0), Math.abs(L.y - cty0));
+      if (d < bestD) { bestD = d; best = L; }
+    }
+    if (!best) { el.style.display = 'none'; return ''; }
+    el.style.display = '';
+    el.style.left = (proj.projX(best.x) / proj.W * 100) + '%';
+    el.style.top = (proj.projY(best.y) / proj.W * 100) + '%';
+    const icon = el.querySelector('.cml-icon'); if (icon) loadSpriteIcon(icon, best.sp);
+    const kbEl = el.querySelector('.cml-kb'); if (kbEl) kbEl.textContent = best.kb || '';
+    el.title = best.n + ' lodestone' + (best.kb ? ' (' + best.kb + ')' : '');
+    const dir = (best.y > cty0 ? 'N' : best.y < cty0 ? 'S' : '') + (best.x > ctx0 ? 'E' : best.x < ctx0 ? 'W' : '');
+    return '  \u00b7  lode: ' + best.n + (best.kb ? ' [' + best.kb + ']' : '') + ' (' + bestD + (dir ? ' ' + dir : '') + ')';
+  }
   async function drawScanMap(c0, opts) {
     const cv = $('clueMapCanvas'), cap = $('clueMapCap');
     const myseq = ++clueMapDrawSeq;
@@ -525,6 +556,9 @@
     cx.strokeRect(Math.min(bx0, bx1) - 2, Math.min(by0, by1) - 2, Math.abs(bx1 - bx0) + 4, Math.abs(by1 - by0) + 4);
     cx.setLineDash([]);
     clueMapDrawLabels(cx, { projX: projX, projY: projY, W: W }, plane, lmBox[0], lmBox[1], lmBox[2], lmBox[3]);
+    const scanLodeNote = await clueMapLodeDraw(lmBox[0], lmBox[1], lmBox[2], lmBox[3], ccx, ccy,
+                                               { projX: projX, projY: projY, W: W });
+    if (myseq !== clueMapDrawSeq) return;   // a newer draw started while the varps were read
     let remain = 0; const last = (spots.length - elim.size) === 1;
     spots.forEach((s, i) => {
       if (!onPlane(s)) return;
@@ -542,7 +576,7 @@
     const nextTxt = (remain === 1) ? '  ·  SOLVED (dig the spot)' : '';
     const floorTxt = (Object.keys(planeCount).length > 1) ? ('  ·  floor ' + plane + (offFloors ? ' (' + offFloors + ' on other floors)' : '')) : '';
     const areaTxt = nearLabel(ccx, ccy, plane) ? ('  ·  ' + nearLabel(ccx, ccy, plane)) : '';
-    if (cap) cap.textContent = 'Scan ' + (opts.name || rec.key || '') + areaTxt + (Rr ? '  ·  range ' + Rr + (scanRangeBonus() ? ' (Meerkats +5)' : '') : '') + '  ·  ' + remain + ' of ' + (planeCount[plane] || spots.length) + ' spots' + floorTxt + nextTxt + (drewTerrain ? '' : '  ·  (overview)');
+    if (cap) cap.textContent = 'Scan ' + (opts.name || rec.key || '') + areaTxt + (Rr ? '  ·  range ' + Rr + (scanRangeBonus() ? ' (Meerkats +5)' : '') : '') + '  ·  ' + remain + ' of ' + (planeCount[plane] || spots.length) + ' spots' + floorTxt + nextTxt + scanLodeNote + (drewTerrain ? '' : '  ·  (overview)');
     { const tt = $('clueMapTitle'); if (tt) { tt.textContent = (opts.name || rec.key || 'Scan'); tt.style.display = ''; } }
     // Floor switcher: one button per floor with spots, disabled in-region (it follows your floor).
     const fl = $('clueMapFloors');
@@ -576,12 +610,11 @@
     { const tt = $('clueMapTitle'); if (tt) tt.style.display = 'none'; }
     const myseq = ++clueMapDrawSeq;
     clueMapMarks = []; clueMapTipBind(cv);
-    let meta = null, lvp = {};
+    let meta = null;
     if (bridge() && bridge().mapWindow) {
       try { meta = JSON.parse((await bridge().mapWindow(t.x, t.y, t.p || 0, 64, 4)) || '{}'); } catch (e) {}
     }
     if (myseq !== clueMapDrawSeq) return;
-    if (bridge() && bridge().varps) { try { lvp = JSON.parse(await bridge().varps(myPid(), LODE_VARPS.join(','))) || {}; } catch (e) {} }
     if (myseq !== clueMapDrawSeq) return;
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, H = (meta && meta.h) || 24;
     if (cv.width !== W) { cv.width = W; cv.height = W; }
@@ -598,29 +631,8 @@
     clueMapDrawLabels(cx, clueMapProj, t.p || 0, t.x - H, t.y - H, t.x + H, t.y + H);
     // Nearest UNLOCKED lodestone in the window (unlock read from the lodestone varbits) = the
     // teleport reference toward the spot.
-    let lodeNote = '';
-    const lodeEl = $('clueMapLode');
-    {
-      const unlocked = (l) => { const raw = (lvp[l.vp] || 0) >>> 0, w = l.hi - l.lo + 1, m = w >= 32 ? 0xffffffff : ((1 << w) - 1); return ((raw >>> l.lo) & m) >= l.th; };
-      let best = null, bestD = Infinity;
-      for (const L of LODESTONES) {
-        if (!L.x || !unlocked(L)) continue;
-        const wtx = L.x - (t.x - H), wty = L.y - (t.y - H);
-        if (wtx < 0 || wtx >= 2 * H || wty < 0 || wty >= 2 * H) continue;
-        const d = Math.max(Math.abs(L.x - t.x), Math.abs(L.y - t.y));
-        if (d < bestD) { bestD = d; best = L; }
-      }
-      if (best && lodeEl) {
-        const wtx = best.x - (t.x - H), wty = best.y - (t.y - H);
-        const lpx = wtx * TS + TS / 2, lpy = ((2 * H - 1) - wty) * TS + TS / 2;
-        lodeEl.style.display = ''; lodeEl.style.left = (lpx / W * 100) + '%'; lodeEl.style.top = (lpy / W * 100) + '%';
-        const icon = lodeEl.querySelector('.cml-icon'); if (icon) loadSpriteIcon(icon, best.sp);
-        const kbEl = lodeEl.querySelector('.cml-kb'); if (kbEl) kbEl.textContent = best.kb || '';
-        lodeEl.title = best.n + ' lodestone' + (best.kb ? ' (' + best.kb + ')' : '');
-        const dir = (best.y > t.y ? 'N' : best.y < t.y ? 'S' : '') + (best.x > t.x ? 'E' : best.x < t.x ? 'W' : '');
-        lodeNote = '  ·  lode: ' + best.n + (best.kb ? ' [' + best.kb + ']' : '') + ' (' + bestD + (dir ? ' ' + dir : '') + ')';
-      } else if (lodeEl) lodeEl.style.display = 'none';
-    }
+    const lodeNote = await clueMapLodeDraw(t.x - H, t.y - H, t.x + H, t.y + H, t.x, t.y, clueMapProj);
+    if (myseq !== clueMapDrawSeq) return;
     cx.lineCap = 'round';
     const gap = 10, len = 11;
     const tick = (dx, dy) => {
