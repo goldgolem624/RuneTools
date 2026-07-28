@@ -275,6 +275,38 @@ function decodeEnum(buf: Buffer): { keyType: number, valType: number, entries: M
     return { keyType, valType, entries };
 }
 
+// Full-row form of the same format, for the analysis dumps: every column's values,
+// strings and ints alike (0x24 = string, else i32).
+function decodeDbrowFull(buf: Buffer): { [col: number]: (number | string)[] } | null {
+    const r = new R(buf);
+    const cols: { [col: number]: (number | string)[] } = {};
+    let any = false;
+    while (r.p < r.len) {
+        const op = r.u8();
+        if (op === 0) break;
+        else if (op === 3) {
+            r.u8();
+            for (;;) {
+                const b = r.u8();
+                if (b === 0xFF) break;
+                const colid = b & 0x3F;
+                const nsub = r.u8();
+                const types: number[] = [];
+                for (let i = 0; i < nsub; i++) { types.push(r.usmart()); }
+                const rowcount = r.usmart();
+                for (let row = 0; row < rowcount; row++) {
+                    for (let sIx = 0; sIx < nsub; sIx++) {
+                        const v = types[sIx] === 0x24 ? r.cstr() : r.i32();
+                        const key = colid + sIx;
+                        (cols[key] = cols[key] || []).push(v);
+                        any = true;
+                    }
+                }
+            }
+        } else break;
+    }
+    return any ? cols : null;
+}
 // ---- dbrows (js5-2 arch 41): smart rowcount + row-major (validated 18394/18394) ----
 function decodeDbrowLabel(buf: Buffer): string | null {
     const r = new R(buf);
@@ -547,12 +579,14 @@ async function buildTables(engine: EngineCache, notes: string[],
     //    key-typed id-spaces the game itself declares (keyType 17 = stat, 41 =
     //    category; valType 36 = string; most-entries enum wins on key conflicts).
     progress("xref", 4, 6);
+    const enumDump: { id: number, keyType: number, valType: number, entries: [number, any][] }[] = [];
     const keyed: { [k: string]: Map<number, string>[] } = { stat: [], category: [] };
     const KEYTYPE: { [n: number]: string } = { 17: "stat", 41: "category" };
     for await (const { id, file } of iterateConfigFiles(engine, cacheMajors.enums)) {
         try {
             const e = decodeEnum(file);
             if (!e || !e.entries.size) { continue; }
+            enumDump.push({ id, keyType: e.keyType, valType: e.valType, entries: Array.from(e.entries) });
             if (e.valType === 36) {
                 enumTables.set(id, e.entries);
                 const dest = KEYTYPE[e.keyType];
@@ -568,6 +602,7 @@ async function buildTables(engine: EngineCache, notes: string[],
     }
     notes.push(`string enums: ${enumTables.size}, stat names: ${cast.stat.size}, category names: ${cast.category.size}`);
 
+    const dbrowDump: { id: number, cols: { [col: number]: (number | string)[] } }[] = [];
     // 8. dbrows
     progress("xref", 5, 6);
     const dbArch = await engine.getArchiveById(cacheMajors.config, 41);
@@ -575,6 +610,8 @@ async function buildTables(engine: EngineCache, notes: string[],
         try {
             const nm = decodeDbrowLabel(sub.buffer);
             if (nm) { cast.dbrow.set(sub.fileid, nm); }
+            const full = decodeDbrowFull(sub.buffer);
+            if (full) { dbrowDump.push({ id: sub.fileid, cols: full }); }
         } catch (e) { }
     }
     notes.push(`dbrow labels: ${cast.dbrow.size}`);
@@ -613,7 +650,7 @@ async function buildTables(engine: EngineCache, notes: string[],
     notes.push(`interface groups: ${ifaceGroups}, labeled comps: ${ifaceComps.size}`);
     progress("xref", 6, 6);
 
-    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, ifaceCounts, ifaceComps };
+    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, ifaceCounts, ifaceComps, dbrowDump, enumDump };
 }
 
 // ---- CS2 cross-reference tables (ver 3) --------------------------------------------------
@@ -1055,7 +1092,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     const buildnr = engine.getBuildNr();
 
     writeProgress("names", 0, 0);
-    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs,
+    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, dbrowDump, enumDump,
             ifaceCounts, ifaceComps } = await buildTables(engine, notes, writeProgress);
 
     // script-table renames (fills gaps only, so quest/morph names keep priority)...
@@ -1073,6 +1110,10 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     }
     notes.push(`ref_ fills: ${refN}, ach_ fills: ${achN}`);
 
+    // Analysis dumps: the full dbrow columns and every decoded enum, regenerated from the
+    // LIVE cache on every extraction so league/table analysis never relies on stale files.
+    fs.writeFileSync(path.join(outdir, "dbrows.json"), JSON.stringify(dbrowDump));
+    fs.writeFileSync(path.join(outdir, "enums.json"), JSON.stringify(enumDump));
     fs.writeFileSync(path.join(outdir, "names.json"), JSON.stringify({
         varbit: Object.fromEntries(names.varbit), varp: Object.fromEntries(names.varp),
         varc: Object.fromEntries(names.varc),
