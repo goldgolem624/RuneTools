@@ -156,6 +156,15 @@
   // next var as 4-bit nibbles (least significant first, one per slot, in the order the game
   // lists them). Each nibble indexes enum 15018, which names the jewellery; unset slots are
   // simply absent, so the nibble count is the fill count. Variants share the same layout.
+  // Icons for the Passage's slots: enum 15018 names the jewellery generically, so map each
+  // name to a representative item id (charge variants share one icon).
+  const PASSAGE_ICON = {
+    'Ferocious ring': 15400, 'Games necklace': 3863, 'Ring of duelling': 2562,
+    'Ring of wealth': 2572, 'Skills necklace': 11105, 'Ring of slaying': 13286,
+    'Amulet of glory': 1704, 'Combat bracelet': 11126, 'Dig Site pendant': 11190,
+    'Ring of respawn': 39366, 'Enlightened amulet': 39387, "Traveller's necklace": 39372,
+    "Delver's anklet": 59241
+  };
   const PASSAGE_IDS = [44543, 44542, 44540];
   const PASSAGE_ENUM = 15018, PASSAGE_SLOTS = 6;
   const PASSAGE_FREE_VB = 52159;   // Dark Facet of Passage: teleports stop consuming charges
@@ -183,7 +192,7 @@
       const ix = v & 15; v >>>= 4;
       if (!ix) continue;
       const nm = (passageNames && passageNames[String(ix)]) || ('Unknown (' + ix + ')');
-      items.push([nm, 1]);
+      items.push([nm, 1, PASSAGE_ICON[nm] || 0]);
     }
     // Dark Facet of Passage (varbit 52159) makes teleports free, so the counter stops mattering.
     let unlimited = false;
