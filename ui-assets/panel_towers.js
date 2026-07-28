@@ -533,6 +533,14 @@
       if (T.x < vx0 || T.x > vx1 || T.y < vy0 || T.y > vy1) continue;
       if (!teleReqMet(T)) continue;
       const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
+      // Two entries can mark the same destination (an item teleport and a spell). Within a few
+      // tiles they are interchangeable, so prefer whichever can actually draw an icon rather
+      // than letting a marginally-closer iconless entry win and render a bare dot.
+      if (best && Math.abs(d - bestD) <= 8) {
+        const hasIcon = (x) => !!(x.sp || x.item);
+        if (hasIcon(T) && !hasIcon(best)) { bestD = d; best = T; }
+        continue;
+      }
       if (d < bestD) { bestD = d; best = T; }
     }
     if (!best) { el.style.display = 'none'; return ''; }
