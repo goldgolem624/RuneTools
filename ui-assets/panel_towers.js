@@ -465,11 +465,10 @@
   // kb = the in-game keybind; item = optional item id for the marker icon (0 = plain dot).
   // req is checked before the marker shows: quest = quest id that must be complete,
   // skill/level = minimum live level, vb/vbVal = a varbit that must equal vbVal.
-  // Spellbook lives in varbit 0 (varp 4 bits 0-1); 0 = standard. SPELLBOOK_LUNAR is the value
-  // that book reports -- confirm it in Live Vars before trusting the Lunar entry below.
+  // Spellbook lives in varbit 0 (varp 4 bits 0-1): 0 standard, 1 ancient, 2 lunar.
   const SPELLBOOK_VB = 0, SPELLBOOK_LUNAR = 2;
   const MAP_TELEPORTS = [
-    { n: "Fishing Guild", src: "Skills necklace", x: 2615, y: 3385, p: 0, kb: "1", item: 0 },
+    { n: "Fishing Guild", src: "Skills necklace", x: 2615, y: 3385, p: 0, kb: "1", item: 0 },   // item: set the skills necklace id for its icon
     { n: "Fishing Guild", src: "Lunar spellbook", x: 2612, y: 3381, p: 0, kb: "", item: 0,
       req: { skill: 6, level: 86, vb: SPELLBOOK_VB, vbVal: SPELLBOOK_LUNAR } }
   ];
