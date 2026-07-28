@@ -23,34 +23,39 @@
   // valid for as long as the client build does: the build string is the cache key, and a
   // re-scan of an already-covered range costs nothing. Widening a range only scans the part
   // that is missing. Live player state (varps/varcs) is deliberately NOT cached.
-  const CX_STORE_PREFIX = 'rtxCx:';
-  const CX_STORE_MAX = 4 * 1024 * 1024;      // localStorage is small; skip caching past this
+  // Snapshots live in real files (%USERPROFILE%/RuneToolsX/cachex/<family>.json) via the
+  // bridge, the same way the CS2 extraction writes its output: a full struct scan is many MB,
+  // far past what the renderer can hold. The game cache only changes on a game UPDATE, so the
+  // client build is the cache key and a stored scan stays valid until the game moves.
+  // Live player state (varps/varcs) is deliberately never stored.
   const cxBuild = () => (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.client_version) || '';
   const cxCacheable = k => k !== 'varp' && k !== 'varc';
-  function cxSave(k) {
-    if (!cxCacheable(k)) return;
+  async function cxSave(k) {
+    if (!cxCacheable(k) || !bridge() || !bridge().cacheStoreSave) return;
     const st = cxSt(k);
     try {
       const blob = JSON.stringify({ v: cxBuild(), lo: st.lo0, hi: st.hi0, rows: st.rows });
-      if (blob.length > CX_STORE_MAX) { st.cached = 'too large to cache'; return; }
-      localStorage.setItem(CX_STORE_PREFIX + k, blob);
-      st.cached = 'cached';
-    } catch (e) { st.cached = 'too large to cache'; }   // quota exceeded -> session only
+      const ok = await bridge().cacheStoreSave('cx' + k, blob);
+      st.cached = ok ? 'saved' : 'save failed';
+    } catch (e) { st.cached = 'save failed'; }
+    cxPaint();
   }
-  function cxLoad(k) {
-    if (!cxCacheable(k)) return null;
+  async function cxLoad(k) {
+    if (!cxCacheable(k) || !bridge() || !bridge().cacheStoreLoad) return null;
     try {
-      const raw = localStorage.getItem(CX_STORE_PREFIX + k);
+      const raw = await bridge().cacheStoreLoad('cx' + k);
       if (!raw) return null;
       const o = JSON.parse(raw);
-      if (!o || o.v !== cxBuild() || !Array.isArray(o.rows)) return null;   // stale build
+      if (!o || !Array.isArray(o.rows)) return null;
+      if (o.v !== cxBuild()) return null;              // a game update invalidates the scan
       return o;
     } catch (e) { return null; }
   }
-  function cxClear(k) {
-    try { localStorage.removeItem(CX_STORE_PREFIX + k); } catch (e) {}
+  async function cxClear(k) {
     const st = cxSt(k);
-    st.rows = []; st.loaded = false; st.cached = ''; st.lo0 = undefined; st.hi0 = undefined;
+    st.rows = []; st.loaded = false; st.cached = ''; st.reused = false;
+    st.lo0 = undefined; st.hi0 = undefined;
+    try { if (bridge() && bridge().cacheStoreSave) await bridge().cacheStoreSave('cx' + k, ''); } catch (e) {}
   }
 
   // Live var dumps key by DOMAIN:id ("4:1234" varp, "5:1234" varc); string varcs are bare.
@@ -161,8 +166,8 @@
     const st = cxSt(k);
     if (st.busy || st.loaded) return;
     if (k === 'varbit') {
-      const saved = cxLoad(k);
-      if (saved) { st.rows = saved.rows; st.loaded = true; st.cached = 'cached'; cxPaint(); return; }
+      const saved = await cxLoad(k);
+      if (saved) { st.rows = saved.rows; st.loaded = true; st.cached = 'saved'; cxPaint(); return; }
     }
     st.busy = true; cxPaint();
     const rows = [];
@@ -202,7 +207,7 @@
 
     // Adopt a stored snapshot for this build before deciding what still needs scanning.
     if (!st.loaded) {
-      const saved = cxLoad(k);
+      const saved = await cxLoad(k);
       if (saved) {
         st.rows = saved.rows; st.lo0 = saved.lo; st.hi0 = saved.hi;
         st.loaded = true; st.cached = 'cached';
@@ -242,8 +247,8 @@
     }
     st.rows.sort((a, b) => a.id - b.id);
     st.busy = false;
-    cxSave(k);
     cxPaint();
+    cxSave(k);
   }
 
   function cxRows(k) {
@@ -268,7 +273,7 @@
     const stat = $('cxStat');
     if (stat) {
       const shown = cxRows(cxTab).length;
-      const tag = st.cached === 'cached' ? '  ·  cached' : (st.cached ? '  ·  ' + st.cached : '');
+      const tag = st.cached ? '  ·  ' + st.cached : '';
       stat.textContent = st.busy
         ? (t.bulk ? 'loading...' : 'scanning ' + st.done + ' / ' + st.total + '  ·  ' + st.rows.length + ' found')
         : (!st.loaded ? (t.bulk ? 'press Load' : 'press Scan')
@@ -362,13 +367,14 @@
         cxPaint();
         const s = cxSt(t.k);
         if (!s.loaded && !s.busy) {
-          const saved = cxLoad(t.k);
-          if (saved) {
-            s.rows = saved.rows; s.lo0 = saved.lo; s.hi0 = saved.hi;
-            s.loaded = true; s.cached = 'cached';
-            const l2 = $('cxList'); if (l2) l2._sig = '';
-            cxPaint();
-          } else if (t.bulk) cxLoadBulk(t.k);
+          cxLoad(t.k).then(saved => {
+            if (saved) {
+              s.rows = saved.rows; s.lo0 = saved.lo; s.hi0 = saved.hi;
+              s.loaded = true; s.cached = 'saved';
+              const l2 = $('cxList'); if (l2) l2._sig = '';
+              cxPaint();
+            } else if (t.bulk) cxLoadBulk(t.k);
+          });
         }
       });
       tabs.appendChild(b);
@@ -391,9 +397,8 @@
     const clr = document.createElement('button'); clr.className = 'vw-btn'; clr.textContent = 'Clear';
     clr.dataset.tip = 'Drop the stored snapshot for this family and read it again from the cache';
     clr.addEventListener('click', () => {
-      cxSeq++; cxClear(cxTab); cxOpen = null;
-      const l = $('cxList'); if (l) l._sig = '';
-      cxPaint();
+      cxSeq++; cxOpen = null;
+      cxClear(cxTab).then(() => { const l = $('cxList'); if (l) l._sig = ''; cxPaint(); });
     });
     ctl.appendChild(clr);
     const srch = document.createElement('input'); srch.id = 'cxSearch'; srch.className = 'cx-in cx-search';

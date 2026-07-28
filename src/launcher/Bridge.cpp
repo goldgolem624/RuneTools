@@ -2799,6 +2799,55 @@ JSValueRef GoalsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, f.good());
 }
 
+// ---- Cache Explorer snapshots -------------------------------------------------------------
+// Scans of the game cache are large and only change when the game does, so they are written
+// to %USERPROFILE%\RuneToolsX\cachex\<name>.json rather than kept in the renderer. Machine
+// wide on purpose: the cache is not per-account. `name` is reduced to [a-z0-9] so a caller
+// cannot walk out of the folder.
+std::filesystem::path cachex_path(const std::string& name) {
+    std::string safe;
+    for (char c : name) {
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) safe += c;
+    }
+    if (safe.empty() || safe.size() > 32) return {};
+    auto dir = runetools_dir() / L"cachex";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir / (std::wstring(safe.begin(), safe.end()) + L".json");
+}
+
+JSValueRef CacheStoreLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "");
+    auto p = cachex_path(js_to_utf8(ctx, argv[0]));
+    if (p.empty()) return utf8_to_js(ctx, "");
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return utf8_to_js(ctx, "");
+    std::stringstream ss; ss << f.rdbuf();
+    return utf8_to_js(ctx, ss.str());
+}
+
+JSValueRef CacheStoreSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto p = cachex_path(js_to_utf8(ctx, argv[0]));
+    if (p.empty()) return JSValueMakeBoolean(ctx, false);
+    std::string body = js_to_utf8(ctx, argv[1]);
+    // Empty body clears the snapshot, so the panel's Clear button needs no separate call.
+    if (body.empty()) {
+        std::error_code ec; std::filesystem::remove(p, ec);
+        return JSValueMakeBoolean(ctx, true);
+    }
+    auto tmp = p; tmp += L".tmp";
+    { std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+      if (!f) return JSValueMakeBoolean(ctx, false);
+      f.write(body.data(), (std::streamsize)body.size());
+      if (!f.good()) return JSValueMakeBoolean(ctx, false); }
+    std::error_code ec;
+    std::filesystem::rename(tmp, p, ec);          // atomic swap; a torn file would not parse
+    return JSValueMakeBoolean(ctx, !ec);
+}
+
 JSValueRef NotesLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -3801,6 +3850,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "goalsSave",         GoalsSave);
     install_fn(ctx, ns, "notesLoad",         NotesLoad);
     install_fn(ctx, ns, "notesSave",         NotesSave);
+    install_fn(ctx, ns, "cacheStoreLoad",    CacheStoreLoad);
+    install_fn(ctx, ns, "cacheStoreSave",    CacheStoreSave);
     install_fn(ctx, ns, "nameplatesLoad",    NameplatesLoad);
     install_fn(ctx, ns, "nameplatesSave",    NameplatesSave);
     install_fn(ctx, ns, "mystLoad",          MystLoad);
