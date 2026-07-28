@@ -1600,6 +1600,7 @@
     { id: 'toolbelt', label: 'Toolbelt',     cat: 'Character', icon: '<path d="M3 10h18v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M8 10V7a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v3M10 14h4"/>' },
     { id: 'abilities',label: 'Ability Bar',  cat: 'Character', icon: '<rect x="3" y="9" width="18" height="6" rx="1.5"/><path d="M7 9v6M11 9v6M15 9v6"/>' },
     { id: 'tasks',    label: 'Slayer & Reaper', cat: 'Character', icon: '<path d="M9 6h11M9 12h11M9 18h8"/><path d="M3.5 5.5l1 1 2-2.2M3.5 11.5l1 1 2-2.2M3.5 17.5l1 1 2-2.2"/>' },
+    { id: 'leagues', label: 'Leagues', cat: 'Character', icon: '<path d="M8 21h8M12 17v4"/><path d="M7 4h10v6a5 5 0 0 1-10 0V4z"/><path d="M7 6H4v2a4 4 0 0 0 3 3.87M17 6h3v2a4 4 0 0 1-3 3.87"/>' },
     { id: 'dailies',  label: 'D&D Tracker', cat: 'Character', icon: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M9 15l2 2 4-4"/>' },
     { id: 'xptracker',label: 'XP Tracker',   cat: 'Character', icon: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3.5-4 3 2.5L18 8"/><path d="M18 8h-3.5M18 8v3.5"/>' },
     { id: 'chatlog',  label: 'Chat Log',     cat: 'Character', icon: '<path d="M4 5h16v10H9l-4 4V15H4z"/><path d="M8 9h8M8 12h5"/>' },
@@ -2682,6 +2683,7 @@
     if (t.id === 'farmcol') { fcSig = ''; fetchFarmCol(); }
     if (t.id === 'archcol') { acSig = ''; fetchArchCol(); }
     if (t.id === 'collections') { clueColSig = ''; fetchClueCol(); }
+    if (t.id === 'leagues') { lgSig = ''; fetchLeagues(); }
     if (t.id === 'info' || t.id === 'player') fetchPlayerVp();
     if (t.id === 'player') fetchGameGoals();
     if (t.id === 'vars') { varsWatchSet(true); fetchVars(); }
@@ -3013,6 +3015,7 @@
     if (activeTab === 'farmcol') { renderFarmCol(); return; }
     if (activeTab === 'archcol') { renderArchCol(); return; }
     if (activeTab === 'collections') { renderClueCol(); return; }
+    if (activeTab === 'leagues') { renderLeagues(); return; }
     if (activeTab === 'health') { renderHealth(); return; }
     // Skills tab (the default landing tab): renderPane runs on every 250ms poll tick, but the grid
     // only depends on the skill array, the goal targets and the virtual-levels setting -- skip the
@@ -3446,6 +3449,7 @@
     if (activeTab === 'farmcol') fetchFarmCol();
     if (activeTab === 'archcol') fetchArchCol();
     if (activeTab === 'collections') fetchClueCol();
+    if (activeTab === 'leagues') fetchLeagues();
     if (activeTab === 'ports') fetchPorts();
     if (activeTab === 'info') fetchInfo();
     if (activeTab === 'info' || activeTab === 'player') fetchPlayerVp();
