@@ -184,7 +184,7 @@
     if (!wrap || !cv) return;
     const reads = compassReads, cands = compassCandidates();
     const pz = $('clueMapPulse'); if (pz) pz.style.display = 'none';
-    const lz = $('clueMapLode'); if (lz) lz.style.display = 'none';
+    const lz = $('clueMapLode'); if (lz) lz.style.display = 'none'; const tz = $('clueMapTele'); if (tz) tz.style.display = 'none';
     const fz = $('clueMapFloors'); if (fz) { fz.style.display = 'none'; fz._sig = ''; }
     if (!reads.length) { wrap.style.display = 'none'; return; }
     wrap.style.display = '';

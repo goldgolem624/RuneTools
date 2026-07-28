@@ -461,6 +461,37 @@
   }
   // Nearest UNLOCKED lodestone inside a map window, positioned on the shared marker element.
   // Both map renderers use this; returns the caption suffix (empty when none is in view).
+  // Non-lodestone teleport destinations drawn on the clue maps beside the nearest lodestone.
+  // kb = the in-game keybind; item = optional item id for the marker icon (0 = plain dot).
+  // req is checked before the marker shows: quest = quest id that must be complete,
+  // skill/level = minimum live level, vb/vbVal = a varbit that must equal vbVal.
+  // Spellbook lives in varbit 0 (varp 4 bits 0-1); 0 = standard. SPELLBOOK_LUNAR is the value
+  // that book reports -- confirm it in Live Vars before trusting the Lunar entry below.
+  const SPELLBOOK_VB = 0, SPELLBOOK_LUNAR = 2;
+  const MAP_TELEPORTS = [
+    { n: "Fishing Guild", src: "Skills necklace", x: 2615, y: 3385, p: 0, kb: "1", item: 0 },
+    { n: "Fishing Guild", src: "Lunar spellbook", x: 2612, y: 3381, p: 0, kb: "", item: 0,
+      req: { skill: 6, level: 86, vb: SPELLBOOK_VB, vbVal: SPELLBOOK_LUNAR } }
+  ];
+  // Requirement gate. skill/level compares the live level (skill 6 = Magic); vb/vbVal requires a
+  // varbit to equal a value. Values are prefetched into teleVbCache by clueMapTelePrefetch.
+  let teleVbCache = {};
+  async function clueMapTelePrefetch() {
+    const ids = [];
+    for (const T of MAP_TELEPORTS) if (T.req && T.req.vb != null && ids.indexOf(T.req.vb) < 0) ids.push(T.req.vb);
+    if (!ids.length) return;
+    try { teleVbCache = (await readVarbitValues(ids)) || {}; } catch (e) { teleVbCache = {}; }
+  }
+  function teleReqMet(T) {
+    const r = T.req;
+    if (!r) return true;
+    if (r.skill != null && r.level != null) {
+      const lvl = questSkillLevels();
+      if ((lvl(r.skill) | 0) < r.level) return false;
+    }
+    if (r.vb != null && (teleVbCache[r.vb] | 0) !== r.vbVal) return false;
+    return true;
+  }
   async function clueMapLodeDraw(vx0, vy0, vx1, vy1, ctx0, cty0, proj) {
     const el = $('clueMapLode');
     if (!el) return '';
@@ -490,12 +521,40 @@
     const dir = (best.y > cty0 ? 'N' : best.y < cty0 ? 'S' : '') + (best.x > ctx0 ? 'E' : best.x < ctx0 ? 'W' : '');
     return '  \u00b7  lode: ' + best.n + (best.kb ? ' [' + best.kb + ']' : '') + ' (' + bestD + (dir ? ' ' + dir : '') + ')';
   }
+  // Nearest non-lodestone teleport in the same window, on its own marker element.
+  async function clueMapTeleDraw(vx0, vy0, vx1, vy1, ctx0, cty0, proj, plane) {
+    const el = $('clueMapTele');
+    if (!el) return '';
+    await clueMapTelePrefetch();
+    let best = null, bestD = Infinity;
+    for (const T of MAP_TELEPORTS) {
+      if ((T.p || 0) !== (plane || 0)) continue;
+      if (T.x < vx0 || T.x > vx1 || T.y < vy0 || T.y > vy1) continue;
+      if (!teleReqMet(T)) continue;
+      const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
+      if (d < bestD) { bestD = d; best = T; }
+    }
+    if (!best) { el.style.display = 'none'; return ''; }
+    el.style.display = '';
+    el.style.left = (proj.projX(best.x) / proj.W * 100) + '%';
+    el.style.top = (proj.projY(best.y) / proj.W * 100) + '%';
+    const icon = el.querySelector('.cml-icon') || el.querySelector('.cml-dot');
+    if (icon) {
+      const url = best.item ? resolveIcon(best.item) : '';
+      if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
+      else { icon.className = 'cml-dot'; icon.style.backgroundImage = ''; }
+    }
+    const kbEl = el.querySelector('.cml-kb'); if (kbEl) kbEl.textContent = best.kb || '';
+    el.title = best.n + (best.src ? ' (' + best.src + ')' : '') + (best.kb ? ' [' + best.kb + ']' : '');
+    const dir = (best.y > cty0 ? 'N' : best.y < cty0 ? 'S' : '') + (best.x > ctx0 ? 'E' : best.x < ctx0 ? 'W' : '');
+    return '  \u00b7  tele: ' + best.n + (best.kb ? ' [' + best.kb + ']' : '') + ' (' + bestD + (dir ? ' ' + dir : '') + ')';
+  }
   async function drawScanMap(c0, opts) {
     const cv = $('clueMapCanvas'), cap = $('clueMapCap');
     const myseq = ++clueMapDrawSeq;
     clueMapMarks = []; clueMapTipBind(cv);
     const pz = $('clueMapPulse'); if (pz) pz.style.display = 'none';
-    const lz = $('clueMapLode'); if (lz) lz.style.display = 'none';
+    const lz = $('clueMapLode'); if (lz) lz.style.display = 'none'; const tz = $('clueMapTele'); if (tz) tz.style.display = 'none';
     const rec = opts.rec, elim = opts.elim || new Set(), spots = rec.spots;
     const Pnow = await scanPlayerTile();
     await refreshMeerkats();
@@ -558,6 +617,8 @@
     clueMapDrawLabels(cx, { projX: projX, projY: projY, W: W }, plane, lmBox[0], lmBox[1], lmBox[2], lmBox[3]);
     const scanLodeNote = await clueMapLodeDraw(lmBox[0], lmBox[1], lmBox[2], lmBox[3], ccx, ccy,
                                                { projX: projX, projY: projY, W: W });
+    const scanTeleNote = await clueMapTeleDraw(lmBox[0], lmBox[1], lmBox[2], lmBox[3], ccx, ccy,
+                                         { projX: projX, projY: projY, W: W }, plane);
     if (myseq !== clueMapDrawSeq) return;   // a newer draw started while the varps were read
     let remain = 0; const last = (spots.length - elim.size) === 1;
     spots.forEach((s, i) => {
@@ -576,7 +637,7 @@
     const nextTxt = (remain === 1) ? '  ·  SOLVED (dig the spot)' : '';
     const floorTxt = (Object.keys(planeCount).length > 1) ? ('  ·  floor ' + plane + (offFloors ? ' (' + offFloors + ' on other floors)' : '')) : '';
     const areaTxt = nearLabel(ccx, ccy, plane) ? ('  ·  ' + nearLabel(ccx, ccy, plane)) : '';
-    if (cap) cap.textContent = 'Scan ' + (opts.name || rec.key || '') + areaTxt + (Rr ? '  ·  range ' + Rr + (scanRangeBonus() ? ' (Meerkats +5)' : '') : '') + '  ·  ' + remain + ' of ' + (planeCount[plane] || spots.length) + ' spots' + floorTxt + nextTxt + scanLodeNote + (drewTerrain ? '' : '  ·  (overview)');
+    if (cap) cap.textContent = 'Scan ' + (opts.name || rec.key || '') + areaTxt + (Rr ? '  ·  range ' + Rr + (scanRangeBonus() ? ' (Meerkats +5)' : '') : '') + '  ·  ' + remain + ' of ' + (planeCount[plane] || spots.length) + ' spots' + floorTxt + nextTxt + scanLodeNote + scanTeleNote + (drewTerrain ? '' : '  ·  (overview)');
     { const tt = $('clueMapTitle'); if (tt) { tt.textContent = (opts.name || rec.key || 'Scan'); tt.style.display = ''; } }
     // Floor switcher: one button per floor with spots, disabled in-region (it follows your floor).
     const fl = $('clueMapFloors');
@@ -603,7 +664,7 @@
   async function drawClueMap(t, opts) {
     const wrap = $('clueMapWrap'), cv = $('clueMapCanvas'), cap = $('clueMapCap');
     if (!wrap || !cv) return;
-    if (!t) { wrap.style.display = 'none'; const pz = $('clueMapPulse'); if (pz) pz.style.display = 'none'; const lz = $('clueMapLode'); if (lz) lz.style.display = 'none'; const fz = $('clueMapFloors'); if (fz) { fz.style.display = 'none'; fz._sig = ''; } return; }
+    if (!t) { wrap.style.display = 'none'; const pz = $('clueMapPulse'); if (pz) pz.style.display = 'none'; const lz = $('clueMapLode'); if (lz) lz.style.display = 'none'; const tz = $('clueMapTele'); if (tz) tz.style.display = 'none'; const fz = $('clueMapFloors'); if (fz) { fz.style.display = 'none'; fz._sig = ''; } return; }
     wrap.style.display = '';
     { const fz = $('clueMapFloors'); if (fz) { fz.style.display = 'none'; fz._sig = ''; } }   // dig maps have no floor switcher (scan re-shows it)
     if (opts && opts.rec) { return drawScanMap(t, opts); }
@@ -632,6 +693,7 @@
     // Nearest UNLOCKED lodestone in the window (unlock read from the lodestone varbits) = the
     // teleport reference toward the spot.
     const lodeNote = await clueMapLodeDraw(t.x - H, t.y - H, t.x + H, t.y + H, t.x, t.y, clueMapProj);
+    const teleNote = await clueMapTeleDraw(t.x - H, t.y - H, t.x + H, t.y + H, t.x, t.y, clueMapProj, t.p || 0);
     if (myseq !== clueMapDrawSeq) return;
     cx.lineCap = 'round';
     const gap = 10, len = 11;

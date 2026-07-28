@@ -1253,6 +1253,11 @@
   .clue-map-range { position: absolute; box-sizing: border-box; border: 1.5px dashed rgba(255,170,60,0.85);
     box-shadow: 0 0 4px rgba(0,0,0,0.45); pointer-events: none; z-index: 4; }
   .cml-icon { width: 26px; height: 26px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.95)); }
+  /* Non-lodestone teleports (skills necklace and friends) share the lodestone marker
+     layout but carry a green badge so the two are told apart at a glance. */
+  .clue-map-tele .cml-kb { color: #d8ffe6; background: rgba(24, 92, 56, 0.92); border-color: rgba(77, 210, 138, 0.65); }
+  .clue-map-tele .cml-dot { width: 13px; height: 13px; border-radius: 50%; background: #4dd28a;
+      border: 2px solid #0b0d12; box-shadow: 0 1px 3px rgba(0,0,0,0.95); }
   .cml-kb { margin-top: 1px; font-size: 10px; font-weight: 700; line-height: 14px; white-space: nowrap; color: #dff3ff;
             background: rgba(8,18,28,0.88); border: 1px solid rgba(95,215,255,0.6); border-radius: 4px; padding: 0 4px; }
   .clue-map-cap { font-size: 10.5px; color: var(--text-dim); margin-top: 3px; }
