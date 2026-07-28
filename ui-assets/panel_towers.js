@@ -468,7 +468,8 @@
   // Spellbook lives in varbit 0 (varp 4 bits 0-1): 0 standard, 1 ancient, 2 lunar.
   const SPELLBOOK_VB = 0, SPELLBOOK_LUNAR = 2;
   const MAP_TELEPORTS = [
-    { n: "Fishing Guild", src: "Skills necklace", x: 2615, y: 3385, p: 0, kb: "1", item: 0 },   // item: set the skills necklace id for its icon
+    // Skills necklace charge variants all share one icon: 11105 (4), 11107 (3), 11109 (2), 11111 (1).
+    { n: "Fishing Guild", src: "Skills necklace", x: 2615, y: 3385, p: 0, kb: "1", item: 11105 },
     { n: "Fishing Guild", src: "Lunar spellbook", x: 2612, y: 3381, p: 0, kb: "", item: 0,
       req: { skill: 6, level: 86, vb: SPELLBOOK_VB, vbVal: SPELLBOOK_LUNAR } }
   ];
