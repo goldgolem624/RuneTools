@@ -10,11 +10,48 @@
     hcBusy = false;
     if (activeTab === 'health') renderHealth();
   }
+  // Developer aid: raw Extra_ints for backpack items that pack state into them (rune pouch,
+  // quiver, jewellery boxes). Prints id, name and every key -> value so a new container's
+  // layout can be read off a known in-game state.
+  let hcXBusy = false, hcXOut = '';
+  async function hcDumpExtras() {
+    if (hcXBusy || !bridge() || !bridge().itemExtraInts) return;
+    hcXBusy = true; hcXOut = ''; renderHealth();
+    const lines = [];
+    try {
+      let inv = null;
+      try { inv = JSON.parse(await bridge().inventory(myPid())); } catch (e) {}
+      const items = (inv && inv.items) || [];
+      if (!items.length) lines.push('backpack empty or unreadable');
+      const seen = new Set();
+      for (const it of items) {
+        const id = it[1] | 0, nm = it[3] || ('Item #' + id);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        let ei = null;
+        try { ei = JSON.parse(await bridge().itemExtraInts(myPid(), 93, id)); } catch (e) {}
+        const keys = (ei && ei.key) ? Object.keys(ei.key) : [];
+        if (!keys.length) continue;
+        lines.push(nm + '  (id ' + id + ')');
+        for (const k of keys.sort((a, b) => (+a) - (+b))) {
+          const v = ei.key[k] | 0;
+          lines.push('    key ' + k + ' = ' + v + '   0x' + (v >>> 0).toString(16) + '   ' + (v >>> 0).toString(2));
+        }
+        if (ei && ei.pos) lines.push('    pos: ' + JSON.stringify(ei.pos));
+      }
+      if (!lines.length) lines.push('no backpack item carries Extra_ints');
+    } catch (e) { lines.push('error: ' + e); }
+    hcXOut = lines.join(String.fromCharCode(10));
+    hcXBusy = false; renderHealth();
+  }
   function renderHealth() {
     const c = $('content');
     let wrap = $('hcWrap');
     if (!wrap) {
       injectStyle('hcCss', `
+        .hc-xdump { margin: 10px 14px; padding: 10px 12px; background: var(--bg-elev); border: 1px solid var(--border);
+            border-radius: 8px; color: var(--text); font-family: Consolas, monospace; font-size: 11px;
+            line-height: 1.5; white-space: pre; overflow-x: auto; user-select: text; }
           .hc-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
           .hc-title { flex: 1; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent-hi); }
           .hc-ver { padding: 0 14px 8px; font-size: 11px; color: var(--text-dim); }
@@ -39,7 +76,16 @@
     btn.textContent = hcBusy ? 'Checking...' : 'Run check';
     btn.dataset.tip = 'Verify every feature can read the game correctly (useful after a game update)';
     btn.addEventListener('click', hcRun);
-    head.appendChild(t); head.appendChild(btn); wrap.appendChild(head);
+    head.appendChild(t); head.appendChild(btn);
+    const xbtn = document.createElement('button'); xbtn.className = 'vw-btn';
+    xbtn.textContent = hcXBusy ? 'Reading...' : 'Dump item Extra_ints';
+    xbtn.dataset.tip = 'Read the packed Extra_ints of every backpack item that has any (pouches, quivers, jewellery boxes)';
+    xbtn.addEventListener('click', hcDumpExtras);
+    head.appendChild(xbtn); wrap.appendChild(head);
+    if (hcXOut) {
+      const box = document.createElement('pre'); box.className = 'hc-xdump'; box.textContent = hcXOut;
+      wrap.appendChild(box);
+    }
     if (!hcData || !Array.isArray(hcData.checks)) {
       const e2 = document.createElement('div'); e2.className = 'hc-hint';
       e2.textContent = 'Checks that every feature can read the game correctly. Worth running after a game update if something looks off.';
