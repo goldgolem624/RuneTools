@@ -49,20 +49,20 @@
       if (!lines.length) lines.push('no backpack item carries Extra_ints');
     } catch (e) { lines.push('error: ' + e); }
     hcXOut = lines.join(String.fromCharCode(10));
-    hcShowDump(hcXOut);
+    hcShowDump(hcXOut, 'Item Extra_ints + cache params');
     hcXBusy = false; renderHealth();
   }
   // The dump is shown in a body-level overlay rather than inside the panel: renderHealth()
   // runs on the 250 ms poll and rebuilds its whole subtree, which would destroy the element
   // mid-scroll and cancel any in-progress text selection. A readonly textarea keeps its own
   // scroll and supports native select-all + copy.
-  function hcShowDump(text) {
+  function hcShowDump(text, title) {
     let ov = document.getElementById('hcXOv');
     if (!ov) {
       ov = document.createElement('div'); ov.id = 'hcXOv'; ov.className = 'hcx-ov';
       const box = document.createElement('div'); box.className = 'hcx-box';
       const hd = document.createElement('div'); hd.className = 'hcx-hd';
-      hd.innerHTML = '<span>Item Extra_ints + cache params</span>';
+      hd.innerHTML = '<span id="hcXTitle"></span>';
       const cp = document.createElement('button'); cp.className = 'vw-btn'; cp.textContent = 'Copy';
       const cl = document.createElement('button'); cl.className = 'vw-btn'; cl.textContent = 'Close';
       hd.appendChild(cp); hd.appendChild(cl);
@@ -78,7 +78,120 @@
       ov.addEventListener('click', (e) => { if (e.target === ov) ov.style.display = 'none'; });
     }
     ov.style.display = 'flex';
+    document.getElementById('hcXTitle').textContent = title || 'Dump';
     document.getElementById('hcXTa').value = text;
+  }
+  // ---- cache dumps (Developer) -------------------------------------------------------
+  // Straight reads of the LIVE cache through the bridge, so table/enum/struct research
+  // never depends on an out-of-date offline dump. Bulk reads (varbit map, varps, varcs)
+  // have their own bridge calls; enums, structs and dbtables are per-id, so those accept
+  // a single id or a "from-to" range and report only the ids that hold data.
+  let hcCBusy = false, hcCacheLast = '';
+  const HC_RANGE_CAP = 400;      // per-id reads are a round trip each; keep a scan bounded
+  const hcNum = (v) => { const n = parseInt(v, 10); return isFinite(n) ? n : null; };
+  function hcParseRange(txt) {
+    const m = String(txt || '').trim().match(/^(\d+)\s*(?:-|\.\.|to)\s*(\d+)$/);
+    if (m) {
+      const a = hcNum(m[1]), b = hcNum(m[2]);
+      if (a == null || b == null) return null;
+      const lo = Math.min(a, b), hi = Math.min(Math.max(a, b), lo + HC_RANGE_CAP - 1);
+      const out = [];
+      for (let i = lo; i <= hi; i++) out.push(i);
+      return out;
+    }
+    const one = hcNum(txt);
+    return one == null ? null : [one];
+  }
+  // Compact, greppable rendering: scalars inline, arrays/objects one entry per line.
+  function hcFmt(v, indent) {
+    const pad = indent || '    ';
+    if (v == null) return pad + 'null';
+    if (Array.isArray(v)) return v.map((x, i) => pad + '[' + i + '] ' + JSON.stringify(x)).join('\n');
+    if (typeof v === 'object') {
+      const keys = Object.keys(v).sort((a, b) => (isFinite(+a) && isFinite(+b)) ? (+a) - (+b) : (a < b ? -1 : 1));
+      return keys.map(k => pad + k + ' = ' + JSON.stringify(v[k])).join('\n');
+    }
+    return pad + String(v);
+  }
+  async function hcCacheDump(kind) {
+    if (hcCBusy || !bridge()) return;
+    hcCBusy = true; renderHealth();
+    const lines = [];
+    let title = kind;
+    try {
+      if (kind === 'varbitmap') {
+        title = 'Varbit map (cache)';
+        const m = JSON.parse(await bridge().varbitMap() || 'null') || {};
+        const vps = Object.keys(m).sort((a, b) => (+a) - (+b));
+        let n = 0;
+        for (const vp of vps) {
+          for (const d of m[vp]) { lines.push('varbit ' + d[0] + ' = varp ' + vp + ' bits ' + d[1] + '-' + d[2]); n++; }
+        }
+        lines.unshift('# ' + n + ' varbits across ' + vps.length + ' varps');
+      } else if (kind === 'varps') {
+        title = 'Varps (live)';
+        const m = JSON.parse(await bridge().varpsDumpAll(myPid()) || 'null') || {};
+        const ks = Object.keys(m).sort((a, b) => (+a) - (+b));
+        lines.push('# ' + ks.length + ' varps with a non-default value');
+        for (const k of ks) { const v = m[k] | 0; lines.push('varp ' + k + ' = ' + v + '   0x' + (v >>> 0).toString(16)); }
+      } else if (kind === 'varcs') {
+        title = 'Varcs (live)';
+        let ints = {}, strs = {};
+        try { ints = JSON.parse(await bridge().varcsDumpAll(myPid()) || 'null') || {}; } catch (e) {}
+        if (bridge().varcStringsDumpAll) { try { strs = JSON.parse(await bridge().varcStringsDumpAll(myPid()) || 'null') || {}; } catch (e) {} }
+        const ik = Object.keys(ints).sort((a, b) => (+a) - (+b));
+        const sk = Object.keys(strs).sort((a, b) => (+a) - (+b));
+        lines.push('# ' + ik.length + ' int varcs, ' + sk.length + ' string varcs');
+        for (const k of ik) lines.push('varc ' + k + ' = ' + (ints[k] | 0));
+        for (const k of sk) lines.push('varc-str ' + k + ' = "' + strs[k] + '"');
+      } else {
+        // per-id families
+        const raw = (document.getElementById('hcCacheId') || {}).value;
+        const ids = hcParseRange(raw);
+        if (!ids) { lines.push('enter an id, or a range such as 320-345'); }
+        else {
+          const label = { dbtable: 'DBTable', enum: 'Enum', struct: 'Struct', item: 'Item params', param: 'Param def' }[kind] || kind;
+          title = label + ' ' + (ids.length > 1 ? (ids[0] + '-' + ids[ids.length - 1]) : ids[0]);
+          let found = 0;
+          for (const id of ids) {
+            let out = null;
+            try {
+              if (kind === 'dbtable') out = JSON.parse(await bridge().dbRows(id) || 'null');
+              else if (kind === 'enum') out = JSON.parse(await bridge().enumInfo(id) || 'null');
+              else if (kind === 'struct') out = JSON.parse(await bridge().structParams(id) || 'null');
+              else if (kind === 'item') out = JSON.parse(await bridge().itemParams(id) || 'null');
+              else if (kind === 'param' && bridge().paramDef) out = JSON.parse(await bridge().paramDef(id) || 'null');
+            } catch (e) { out = null; }
+            const empty = !out || (Array.isArray(out) ? !out.length : !Object.keys(out).length);
+            if (empty) continue;
+            found++;
+            if (kind === 'dbtable') {
+              lines.push(label + ' ' + id + '  (' + out.length + ' rows)');
+              for (const r of out) {
+                const I = r.i || {}, S = r.s || {};
+                const cols = Object.keys(I).concat(Object.keys(S)).map(Number).sort((a, b) => a - b);
+                const seen = {};
+                const parts = [];
+                for (const c of cols) {
+                  if (seen[c]) continue; seen[c] = 1;
+                  const v = (S[c] !== undefined) ? S[c] : I[c];
+                  parts.push(c + ':' + JSON.stringify(v));
+                }
+                lines.push('    row ' + r.id + '  ' + parts.join('  '));
+              }
+            } else {
+              lines.push(label + ' ' + id);
+              lines.push(hcFmt(out));
+            }
+          }
+          lines.unshift('# ' + found + ' of ' + ids.length + ' ids hold data');
+          if (ids.length >= HC_RANGE_CAP) lines.push('', '(range capped at ' + HC_RANGE_CAP + ' ids)');
+        }
+      }
+    } catch (e) { lines.push('error: ' + e); }
+    hcCBusy = false;
+    hcShowDump(lines.join(String.fromCharCode(10)), title);
+    renderHealth();
   }
   function renderHealth() {
     const c = $('content');
@@ -111,6 +224,10 @@
           .hc-k { flex: 0 0 auto; color: var(--text); }
           .hc-d { margin-left: auto; color: var(--text-dim); font-size: 11px; text-align: right; overflow: hidden; text-overflow: ellipsis; }
           .hc-sum { margin: 10px 14px 0; font-size: 11.5px; font-weight: 600; }
+          .hc-btnrow { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 14px 8px; align-items: center; }
+          .hc-idin { flex: 1 1 190px; min-width: 0; background: var(--bg-elev); border: 1px solid var(--border);
+              border-radius: 7px; color: var(--text); font-size: 12px; padding: 6px 9px; outline: none; }
+          .hc-idin:focus { border-color: var(--accent); }
           .hc-hint { margin: 10px 14px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }`);
       c.innerHTML = '';
       wrap = document.createElement('div'); wrap.id = 'hcWrap'; wrap.className = 'pane'; c.appendChild(wrap);
@@ -129,10 +246,34 @@
     xbtn.addEventListener('click', hcDumpExtras);
     if (hcXOut) {
       const vbtn = document.createElement('button'); vbtn.className = 'vw-btn'; vbtn.textContent = 'View last dump';
-      vbtn.addEventListener('click', () => hcShowDump(hcXOut));
+      vbtn.addEventListener('click', () => hcShowDump(hcXOut, 'Item Extra_ints + cache params'));
       head.appendChild(vbtn);
     }
     head.appendChild(xbtn); wrap.appendChild(head);
+
+    // Cache dump controls sit under the health header: they are the tool you reach for
+    // when a table or enum needs decoding, not part of the health check itself.
+    {
+      const cs = document.createElement('div'); cs.className = 'hc-head';
+      const ct = document.createElement('span'); ct.className = 'hc-title'; ct.textContent = 'Cache dumps';
+      cs.appendChild(ct); wrap.appendChild(cs);
+      const bulk = document.createElement('div'); bulk.className = 'hc-btnrow';
+      [['Varbit map', 'varbitmap'], ['Varps (live)', 'varps'], ['Varcs (live)', 'varcs']].forEach(([lbl, k]) => {
+        const b = document.createElement('button'); b.className = 'vw-btn'; b.textContent = hcCBusy ? '...' : lbl;
+        b.addEventListener('click', () => hcCacheDump(k)); bulk.appendChild(b);
+      });
+      wrap.appendChild(bulk);
+      const byId = document.createElement('div'); byId.className = 'hc-btnrow';
+      const inp = document.createElement('input'); inp.id = 'hcCacheId'; inp.className = 'hc-idin';
+      inp.placeholder = 'id or range (e.g. 15018 or 326-336)'; inp.value = hcCacheLast;
+      inp.addEventListener('input', () => { hcCacheLast = inp.value; });
+      byId.appendChild(inp);
+      [['DBTable', 'dbtable'], ['Enum', 'enum'], ['Struct', 'struct'], ['Item', 'item'], ['Param', 'param']].forEach(([lbl, k]) => {
+        const b = document.createElement('button'); b.className = 'vw-btn'; b.textContent = lbl;
+        b.addEventListener('click', () => hcCacheDump(k)); byId.appendChild(b);
+      });
+      wrap.appendChild(byId);
+    }
 
     if (!hcData || !Array.isArray(hcData.checks)) {
       const e2 = document.createElement('div'); e2.className = 'hc-hint';
