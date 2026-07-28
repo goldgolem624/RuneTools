@@ -226,11 +226,12 @@ function decodeAchievementName(buf: Buffer): { name: string | null, reqVbs: numb
 
 // ---- structs (js5-22): op249 params only; label = first string param by lowest key ----
 function decodeStructLabel(buf: Buffer, refKeys?: Set<number>):
-        { label: string | null, refs: Array<[number, number]>, strs: Map<number, string> } {
+        { label: string | null, refs: Array<[number, number]>, strs: Map<number, string>, ints: Map<number, number> } {
     const r = new R(buf);
     let best: { key: number, val: string } | null = null;
     const refs: Array<[number, number]> = [];
     const strs = new Map<number, string>();
+    const ints = new Map<number, number>();
     while (r.p < r.len) {
         const op = r.u8();
         if (op === 0) break;
@@ -244,13 +245,14 @@ function decodeStructLabel(buf: Buffer, refKeys?: Set<number>):
                     if (!best || key < best.key) { best = { key, val: v }; }
                 } else {
                     const v = r.i32();
+                    ints.set(key, v);
                     if (refKeys && refKeys.has(key)) { refs.push([key, v]); }
                 }
             }
         }
         else break;
     }
-    return { label: best ? best.val.slice(0, 60) : null, refs, strs };
+    return { label: best ? best.val.slice(0, 60) : null, refs, strs, ints };
 }
 
 // ---- enums (js5-17), build-949: op209 is a payload-less flag ----
@@ -556,12 +558,16 @@ async function buildTables(engine: EngineCache, notes: string[],
 
     // 6. structs (label + var_reference params + selected name-params kept for renames)
     progress("xref", 3, 6);
+    const structDump: { id: number, ints: [number, number][], strs: [number, string][] }[] = [];
     const structStrs = new Map<number, Map<number, string>>();   // struct id -> string params
     for await (const { id, file } of iterateConfigFiles(engine, cacheMajors.structs)) {
         try {
             const d = decodeStructLabel(file, refKeys);
             if (d.label) { cast.struct.set(id, d.label); }
             if (d.strs.size) { structStrs.set(id, d.strs); }
+            if (d.strs.size || d.ints.size) {
+                structDump.push({ id, ints: Array.from(d.ints), strs: Array.from(d.strs) });
+            }
             const ownerName = d.strs.get(2794) || d.strs.get(6410) || d.strs.get(4849) || d.label;
             if (ownerName) {
                 for (const [, v] of d.refs) {
@@ -650,7 +656,7 @@ async function buildTables(engine: EngineCache, notes: string[],
     notes.push(`interface groups: ${ifaceGroups}, labeled comps: ${ifaceComps.size}`);
     progress("xref", 6, 6);
 
-    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, ifaceCounts, ifaceComps, dbrowDump, enumDump };
+    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, ifaceCounts, ifaceComps, dbrowDump, enumDump, structDump };
 }
 
 // ---- CS2 cross-reference tables (ver 3) --------------------------------------------------
@@ -1092,7 +1098,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     const buildnr = engine.getBuildNr();
 
     writeProgress("names", 0, 0);
-    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, dbrowDump, enumDump,
+    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, dbrowDump, enumDump, structDump,
             ifaceCounts, ifaceComps } = await buildTables(engine, notes, writeProgress);
 
     // script-table renames (fills gaps only, so quest/morph names keep priority)...
@@ -1114,6 +1120,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     // LIVE cache on every extraction so league/table analysis never relies on stale files.
     fs.writeFileSync(path.join(outdir, "dbrows.json"), JSON.stringify(dbrowDump));
     fs.writeFileSync(path.join(outdir, "enums.json"), JSON.stringify(enumDump));
+    fs.writeFileSync(path.join(outdir, "structs.json"), JSON.stringify(structDump));
     fs.writeFileSync(path.join(outdir, "names.json"), JSON.stringify({
         varbit: Object.fromEntries(names.varbit), varp: Object.fromEntries(names.varp),
         varc: Object.fromEntries(names.varc),
