@@ -167,7 +167,13 @@
       let d = null;
       try { d = JSON.parse(await bridge()[t.fn](id) || 'null'); } catch (e) { d = null; }
       const empty = !d || (Array.isArray(d) ? !d.length : !Object.keys(d).length);
-      if (!empty) st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d });
+      // Index the whole entry, not just the summary: the point of the filter is finding a
+      // value buried in a column, which the one-line summary never shows.
+      if (!empty) {
+        let txt = '';
+        try { txt = JSON.stringify(d).toLowerCase(); } catch (e) {}
+        st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d, txt: txt });
+      }
       st.done = id - lo + 1;
       if (st.done % CX_CHUNK === 0) { cxPaint(); await new Promise(r => setTimeout(r, 0)); }
     }
@@ -179,7 +185,8 @@
     const f = cxFilter.trim().toLowerCase();
     if (!f) return st.rows;
     return st.rows.filter(r => String(r.id) === f || String(r.id).indexOf(f) === 0 ||
-                               (r.sum || '').toLowerCase().indexOf(f) >= 0);
+                               (r.sum || '').toLowerCase().indexOf(f) >= 0 ||
+                               (r.txt || '').indexOf(f) >= 0);
   }
 
   // Repaint only the parts that change; the chrome and the search box are never rebuilt.
@@ -203,6 +210,7 @@
     const list = $('cxList');
     if (!list) return;
     const rows = cxRows(cxTab);
+    const filt = cxFilter.trim().toLowerCase();
     const sig = cxTab + '|' + st.rows.length + '|' + cxFilter + '|' + cxOpen + '|' + st.busy;
     if (list._sig === sig) return;
     list._sig = sig;
@@ -215,7 +223,15 @@
     for (const r of rows.slice(0, CX_MAX_ROWS)) {
       const row = document.createElement('div'); row.className = 'cx-row';
       const idEl = document.createElement('span'); idEl.className = 'cx-id'; idEl.textContent = r.id;
-      const sum = document.createElement('span'); sum.className = 'cx-sum'; sum.textContent = r.sum || '';
+      const sum = document.createElement('span'); sum.className = 'cx-sum';
+      // When the hit is buried in a column the summary will not show it, so echo the
+      // surrounding text instead of leaving the row looking like a false positive.
+      let label = r.sum || '';
+      if (filt && r.txt && (r.sum || '').toLowerCase().indexOf(filt) < 0) {
+        const at = r.txt.indexOf(filt);
+        if (at >= 0) label = '...' + r.txt.slice(Math.max(0, at - 30), at + filt.length + 46) + '...';
+      }
+      sum.textContent = label;
       row.appendChild(idEl); row.appendChild(sum);
       const key = cxTab + ':' + r.id;
       if (r.data) {
