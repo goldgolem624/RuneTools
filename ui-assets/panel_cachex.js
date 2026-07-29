@@ -28,6 +28,15 @@
   // far past what the renderer can hold. The game cache only changes on a game UPDATE, so the
   // client build is the cache key and a stored scan stays valid until the game moves.
   // Live player state (varps/varcs) is deliberately never stored.
+  // Several varcs carry a world tile packed as (plane<<28)|(x<<14)|y -- the compass-clue
+  // target (1323) among them. Decoding any value that lands in a sane tile range makes those
+  // obvious at a glance instead of reading as an arbitrary integer.
+  function cxCoord(v) {
+    if (!(v > 16384)) return '';
+    const x = (v >> 14) & 0x3FFF, y = v & 0x3FFF, z = (v >> 28) & 0x3;
+    if (x < 1000 || x > 16000 || y < 1000 || y > 16000) return '';
+    return '   -> tile ' + x + ', ' + y + (z ? ' plane ' + z : '');
+  }
   function cxWhen(ms) {
     try {
       const d = new Date(ms);
@@ -225,7 +234,10 @@
         let ints = {}, strs = {};
         try { ints = JSON.parse(await bridge().varcsDumpAll(myPid()) || 'null') || {}; } catch (e) {}
         if (bridge().varcStringsDumpAll) { try { strs = JSON.parse(await bridge().varcStringsDumpAll(myPid()) || 'null') || {}; } catch (e) {} }
-        for (const key of Object.keys(ints)) rows.push({ id: cxKeyId(key), sum: String(ints[key] | 0), data: null });
+        for (const key of Object.keys(ints)) {
+          const v = ints[key] | 0;
+          rows.push({ id: cxKeyId(key), sum: v + cxCoord(v), data: null });
+        }
         for (const key of Object.keys(strs)) rows.push({ id: cxKeyId(key), sum: '"' + strs[key] + '"  (string)', data: null });
       }
     } catch (e) { st.err = String(e); }
