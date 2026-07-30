@@ -15,6 +15,7 @@
 #include <Ultralight/Ultralight.h>
 
 #include <Windows.h>
+#include <ShlObj.h>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -115,6 +116,26 @@ public:
 
         Config config;
         config.resource_path_prefix = String(resources.c_str());
+        // Persistent WebCore storage (localStorage / IndexedDB / cookies): without a writable
+        // cache_path WebKit's storage is a SILENT NO-OP - every panel's localStorage read
+        // returned null, which made "stored" state (ports plan, gear, alert bells, snapshots)
+        // evaporate between repaints. %LOCALAPPDATA%\RuneToolsX\webcache, exe-relative fallback.
+        {
+            std::filesystem::path cacheDir;
+            wchar_t* lad = nullptr;
+            if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &lad))) {
+                cacheDir = std::filesystem::path(lad) / L"RuneToolsX" / L"webcache";
+                CoTaskMemFree(lad);
+            } else {
+                cacheDir = self / "webcache";
+            }
+            std::error_code ec;
+            std::filesystem::create_directories(cacheDir, ec);
+            std::string cp = cacheDir.string();
+            for (auto& c : cp) if (c == '\\') c = '/';
+            config.cache_path = String(cp.c_str());
+            boot_log("webcore cache path: " + cp);
+        }
 
         boot_log("App::Create...");
         app_ = App::Create(settings, config);
