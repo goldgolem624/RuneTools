@@ -3973,6 +3973,12 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 1001, 6310, 6311, 0, 0, 728, true }, { 1002, 6310, 6311, 0, 0, 728, true }, { 1003, 6310, 6311, 0, 0, 728, true },
     { 1934, 6463, 6464, 0, 0, 0, true },  // Towers (Skyscrapers, master clue). Positioned by VARC 6463 (x) / 6464 (y).
     { 518,  6463, 6464, 0, 0, 0, true },  // Deduction notes (Secrets of Amberfell). Same position varcs as the towers panel.
+    // Player-Owned Ports composite screens: their trees are SLOT-RELATIVE to the 800x600
+    // central-LARGE slot (1477 comp 724), whose live position is varcs 6463/6464 - proven by
+    // matching the varcs against comp 724's accumulated rect at two window positions
+    // (2026-07-29). Same varc family as the towers/lodestone panels above.
+    { 916,  6463, 6464, 0, 0, 0, true },  // Ports ship view (shipyard / crew window / voyages)
+    { 1276, 6463, 6464, 0, 0, 0, true },  // Ports Crew Roster
     { 1933, 3089, 3090, 0, -8, 0, true },  // Lockbox (master clue). Positioned by VARC 3089 (x) / 3090 (y) --
                                   // the live panel origin. is_varc=true so the varp path can't shadow it with a 0.
                                   // No mount fallback (the position varc is reliably published when the box is open).
@@ -4183,8 +4189,12 @@ static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t 
         // lives in read_panel_pos_var: the companion observer tracks a moving panel live, but
         // its transient zeros must never beat a direct varp/varc read.
         int vx = 0, vy = 0; bool okx = false, oky = false;
-        if (s.var_x > 0) okx = read_panel_pos_var(h, main_data, pid, s.var_x, s.is_varc, vx);
-        if (s.var_y > 0) oky = read_panel_pos_var(h, main_data, pid, s.var_y, s.is_varc, vy);
+        if (s.var_x < 0 && s.var_y < 0) {
+            okx = oky = true;   // identity spec: the group's tree is already screen-absolute
+        } else {
+            if (s.var_x > 0) okx = read_panel_pos_var(h, main_data, pid, s.var_x, s.is_varc, vx);
+            if (s.var_y > 0) oky = read_panel_pos_var(h, main_data, pid, s.var_y, s.is_varc, vy);
+        }
         if (okx && oky) {
             ox = vx - s.off_left; oy = vy - s.off_top;
         } else if (s.mount_comp) {
