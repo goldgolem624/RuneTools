@@ -144,6 +144,8 @@
       heldList.addEventListener('click', e => {
         const r = e.target.closest('[data-hid]'); if (!r) return;
         const id = +r.dataset.hid; if (id === activeClueId) return;
+        const pin = clueVarcPinned();   // the varc owns the compass/tetracompass choice, not the click
+        if (pin >= 0 && pin !== id && clueVarcIsPair(id)) return;
         activeClueId = id; clueMapZoom = 1; compassMapSig = ''; selectClue(); renderClueHeld();
       });
       const tb = document.createElement('div'); tb.id = 'clueToolbar'; tb.className = 'pet-toolbar';
@@ -215,8 +217,10 @@
         clueMapZoom = 1; compassMapSig = ''; selectClue(); clueListSig = ''; renderCluesList();
       });
     }
+    clueVarcRoute();   // varc 1323 decides whether the compass clue or the tetracompass is showing
     clueRenderFocus();
     compassTick();   // poll the compass needle while this page is open; drives the banner + dig tile
+    tetraTick();     // powered tetracompass: shares the compass varc, marks its own dig tile
     puzzleTick();    // poll the puzzle-box board (interface 1931); drives the optimal-solver guide
     clueScrollTick();   // poll the open clue scroll (interface 345); auto-identifies emote/cryptic clues
   }
@@ -264,17 +268,20 @@
       const want = list.length ? list[0].i : -1;
       if (activeClueId !== want) { activeClueId = want; clueMapZoom = 1; compassMapSig = ''; selectClue(); }
     }
-    const sig = 'H|' + clueLiveTier + '|' + activeClueId + '|' + (g_scanMeerkats ? 'm' : '') + '|' + list.map(c => c.i).join(',');
+    const pin = clueVarcPinned();   // pinned rows render inert, so the lockout is visible not silent
+    const sig = 'H|' + clueLiveTier + '|' + activeClueId + '|' + pin + '|' + (g_scanMeerkats ? 'm' : '') + '|' + list.map(c => c.i).join(',');
     if (el._hsig === sig) return; el._hsig = sig;
     const esc = s => String(s).replace(/[&<>]/g, x => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[x]));
     if (!hl.length) { el.innerHTML = '<div style="text-align:center;padding:14px 6px;opacity:0.7;font-size:12px;line-height:1.5">No clue scrolls held.<br>Hold a clue and it appears here. Use <b>Browse all</b> for the full database.</div>'; return; }
     if (!list.length) { el.innerHTML = '<div style="text-align:center;padding:12px 6px;opacity:0.6;font-size:12px">No ' + esc(CLUE_TIERS[clueLiveTier]) + ' clues held.</div>'; return; }
     let h = '';
     for (const c of list) { const on = c.i === activeClueId;
-      h += '<div data-hid="' + c.i + '" style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;cursor:pointer;margin-bottom:4px;background:' + (on ? 'rgba(120,180,255,0.14)' : 'rgba(255,255,255,0.04)') + ';border:1px solid ' + (on ? 'rgba(120,180,255,0.45)' : 'rgba(255,255,255,0.08)') + '">'
+      const lock = pin >= 0 && pin !== c.i && clueVarcIsPair(c.i);   // the other half of the pair
+      h += '<div data-hid="' + c.i + '"' + (lock ? ' data-tip="The game is pointing at the other one right now - it switches back on its own."' : '') + ' style="display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:7px;cursor:' + (lock ? 'default' : 'pointer') + ';margin-bottom:4px;' + (lock ? 'opacity:0.45;' : '') + 'background:' + (on ? 'rgba(120,180,255,0.14)' : 'rgba(255,255,255,0.04)') + ';border:1px solid ' + (on ? 'rgba(120,180,255,0.45)' : 'rgba(255,255,255,0.08)') + '">'
         + '<span class="clue-tier t' + c.t + '">' + CLUE_TIERS[c.t] + '</span>'
         + '<div style="flex:1;min-width:0;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(clueActionText(c)) + '</div>'
-        + (on ? '<span style="color:#7fb0ff;font-size:11px;flex:none">solving</span>' : '') + '</div>';
+        + (on ? '<span style="color:#7fb0ff;font-size:11px;flex:none">solving</span>'
+              : lock ? '<span style="color:#8c93a8;font-size:11px;flex:none">on hold</span>' : '') + '</div>';
     }
     el.innerHTML = h;
   }

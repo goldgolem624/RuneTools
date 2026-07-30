@@ -165,7 +165,12 @@
     'Ring of respawn': 39366, 'Enlightened amulet': 39387, "Traveller's necklace": 39372,
     "Delver's anklet": 59241
   };
-  const PASSAGE_IDS = [44543, 44542, 44540];
+  // One item id per colour, all sharing the same Extra_ints layout. Confirmed in-game:
+  // 44542 red, 44543 purple, 44544 green, 44545 yellow.
+  const PASSAGE_IDS = [44542, 44543, 44544, 44545];
+  // The unattuned form cannot teleport, so it stores no jewellery and holds no charges. Listed
+  // separately rather than dropped: holding one should say why the panel is empty.
+  const PASSAGE_UNATTUNED = 44540;
   const PASSAGE_ENUM = 15018, PASSAGE_SLOTS = 6;
   const PASSAGE_FREE_VB = 52159;   // Dark Facet of Passage: teleports stop consuming charges
   let passageNames = null;
@@ -173,7 +178,10 @@
     if (!bridge().itemExtraInts || !held) return null;
     let id = 0;
     for (const pid of PASSAGE_IDS) if (held.has(pid)) { id = pid; break; }
-    if (!id) return null;
+    if (!id) {
+      if (held.has(PASSAGE_UNATTUNED)) return { name: 'Unattuned - attune it to teleport', cap: PASSAGE_SLOTS, items: [] };
+      return null;
+    }
     // held merges backpack + worn, so try the backpack first and fall back to equipment.
     let k = null;
     for (const cont of [93, 94]) {

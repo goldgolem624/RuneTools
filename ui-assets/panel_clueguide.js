@@ -14,10 +14,11 @@
   // Held puzzle boxes are real items but NOT clue-database entries: they get synthetic carousel
   // entries ({i:itemId, t:tier-from-name, a:'puzzle'}) rebuilt each fetch.
   let cluePuzzleHeld = [];
+  let tetraHeldEntry = null;   // synthetic held entry for a carried tetracompass (same idea as above)
   let cluePuzzleOpen = false, cluePuzzleWasOpen = false;
   function clueHeldList() {   // held clues + held puzzle boxes, ordered by tier (easy -> master -> special)
     const base = clueData ? clueData.filter(c => clueHeld.has(c.i)) : [];
-    return base.concat(cluePuzzleHeld).sort((a, b) => a.t - b.t || a.i - b.i);
+    return base.concat(cluePuzzleHeld, tetraHeldEntry || []).sort((a, b) => a.t - b.t || a.i - b.i);
   }
   let activeClueId = -1;   // the clue whose tile is pinned on the map + highlighted in-world (-1 = none)
   let clueEmoteSel = -1, clueEmoteSearch = '', clueEmoteTier = -1;
@@ -273,6 +274,9 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     const c = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
     const eel = $('clueEmote'); if (eel && !(c && c.a === 'emote')) { eel.style.display = 'none'; eel._h = ''; }
     if (c && isCompassClue(c)) { compassTick(); return; }   // compass field: needle-driven; the compass owns the map + in-world tile
+    // Synthetic entry: not in CLUE_DATA, so c is null here and the fallthrough would clear the
+    // mark tetraTick just set.
+    if (activeClueId === TETRA_POWERED) { tetraTick(); return; }
     if (c && c.a === 'emote') {                                  // emote clue -> the hidey-hole reference + map
       if (clueEmoteTier !== c.t) { clueEmoteTier = c.t; clueEmoteSel = -1; clueEmoteSearch = ''; }
       renderEmotePanel(); return;

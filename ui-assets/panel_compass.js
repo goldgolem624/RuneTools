@@ -117,6 +117,138 @@
     for (const sp of COMPASS_SPOTS_G) { const d = Math.abs(sp[0] - p[0]) + Math.abs(sp[1] - p[1]); if (d < bd) { bd = d; best = sp; } }
     return bd <= 2 ? best : null;                               // garbage won't land within 2 tiles of a real spot
   }
+  // ---- Tetracompass ------------------------------------------------------------------
+  // A powered tetracompass drives the SAME engine field as a compass clue: varc 1323 holds its
+  // dig tile packed (plane<<28)|(x<<14)|y, so the spot reads exactly, with no hint text and no
+  // needle triangulation. Because one varc serves both, the TILE is what says which of the two
+  // is live: a tetracompass site is never a compass-clue spot and vice versa, so the spot lists
+  // are the discriminator. That doubles as the guard the compass path already gets -- a stale
+  // post-update memory offset lands on a tile in neither list, and is dropped.
+  // The site list is reference data, NOT the answer: the tile actually dug always comes from the
+  // varc. The list only has to say which KIND of target is loaded, so an entry being a tile out
+  // costs nothing but a missed match. A plain threshold cannot do that job -- tetra (2722, 3577)
+  // and compass spot (2721, 3577) are one tile apart, so any tolerance wide enough to absorb a
+  // stale entry also merges those two. Instead the lists COMPETE: whichever has the nearer entry
+  // claims the target. Being a comparison rather than a cutoff, it splits the adjacent pair
+  // correctly from either side AND tolerates drift, and where it cannot tell it returns nothing,
+  // so an unrecognised tile goes unmarked rather than mismarked.
+  const TETRA_SITES = [
+    [2935,3489],[2946,3462],[2945,3274],[2896,3550],[2595,2932],[2623,3001],
+    [2462,2897],[2573,2922],[2600,2934],[2553,2985],[2614,3624],[2713,3628],
+    [2674,3710],[2729,3606],[2720,3468],[2704,3453],[2708,3449],[2722,3577],
+    [2632,3489],[2764,3478],[2590,3263],[2680,3370],[2468,3278],[2557,3370],
+    [2752,3394],[2482,3357],[2609,3383],[2554,3467],[2546,3522],[2534,3429],
+    [2425,3187],[2460,3198],[2305,3544],[2322,3548],[2269,3537],[2363,3574],
+    [2357,3551],[2365,3545],[2315,3548],[2450,3516],[2453,3554],[2358,3483],
+    [2419,3395],[2516,3187],[2504,3205],[2578,3118],[2578,3139],[2587,3076],
+    [2857,2970],[2779,3100],[2910,3075],[2705,3157],[2726,3223],[2835,2927],
+    [3256,3195],[3142,3251],[3356,3396],[3200,3200],[3731,3164],[2196,3101],
+    [2255,3119],[2207,3156],[2281,3190],[2893,3656],[2860,3662],[3162,3542],
+    [3430,3649],[2961,3821],[3236,3665],[2992,3686],[2965,3746],
+    [2606,2956],                                // Feldip Hills; read live from varc 1323
+  ];
+  const TETRA_POWERED = 49957;                  // Tetracompass (powered) -- confirmed in-game
+  const TETRA_SNAP = 3;                         // furthest a target may sit from its listed site
+  let tetraLast = null;
+  // Held state rides on the clue panel's existing backpack scan (clueHeldInv, filled by
+  // fetchClues) rather than a second container read: the tetracompass is only ever solved from
+  // that same panel, so a separate poll would duplicate the round trip.
+  const tetraHeld = () => typeof clueHeldInv !== 'undefined' && clueHeldInv.has(TETRA_POWERED);
+  function tetraNearest(list, x, y) {
+    let d = 1e9;
+    for (const sp of list) { const e = Math.abs(sp[0] - x) + Math.abs(sp[1] - y); if (e < d) d = e; }
+    return d;
+  }
+  function tetraIsSite(x, y) {
+    const dt = tetraNearest(TETRA_SITES, x, y);
+    if (dt > TETRA_SNAP) return false;                            // near no dig site -> not ours
+    return dt < tetraNearest(COMPASS_SPOTS_G, x, y);              // else the nearer list claims it
+  }
+  function tetraRead() {                                          // varc 1323 -> {x,y,p}, or null
+    let s = ''; try { s = bridge().compassTarget(myPid()) || ''; } catch (e) {}
+    if (!s) return null;
+    const p = s.split(',').map(Number);
+    if (p.length < 2 || !(p[0] > 0 && p[1] > 0)) return null;
+    return { x: p[0], y: p[1], p: p[2] | 0 };
+  }
+  // varc 1323 KEEPS its last value after the interface is closed, so the varc alone cannot say
+  // whether a target is still live -- read on its own it leaves a stale tile marked long after the
+  // compass is put away. compassHeading returns -1 unless interface group 996 is open AND its
+  // needle component is present, so it doubles as the open-probe. Memoised just under the poll
+  // interval: it walks the interface group list, and several callers want it each tick.
+  let tetraOpenAt = 0, tetraOpenV = false;
+  function tetraOpen() {
+    const now = Date.now();
+    if (now - tetraOpenAt < 200) return tetraOpenV;
+    tetraOpenAt = now;
+    let v = false;
+    try { v = parseInt(bridge().compassHeading(myPid()), 10) >= 0; } catch (e) {}
+    tetraOpenV = v;
+    return v;
+  }
+  function tetraTarget() {
+    if (!tetraOpen()) return null;                      // closed -> whatever the varc still holds is stale
+    const t = tetraRead();
+    return (t && tetraIsSite(t.x, t.y)) ? t : null;
+  }
+  // Polled alongside compassTick. Only the SELECTED tetracompass drives the mark + map, on the
+  // same rule the compass follows: whatever is picked in the held list owns them, so a carried
+  // tetracompass cannot overwrite the tile of the clue you are actually solving. Deselection is
+  // handled by selectClue, which redraws for whatever took its place.
+  async function tetraTick() {
+    if (!bridge() || !bridge().compassTarget) return;
+    if (activeClueId !== TETRA_POWERED || !tetraHeld()) { tetraLast = null; return; }
+    const t = tetraTarget();
+    if (!t) { if (tetraLast) { tetraLast = null; clueGuide(null); drawClueMap(null); } return; }
+    // Standing on the tile, the label has done its job and is only blocking the view, so it drops
+    // to an empty string -- the overlay draws the marker alone for those (Overlay.cpp skips the
+    // text plate when the label is empty).
+    const pos = await scanPlayerTile();
+    const onSpot = !!pos && pos.x === t.x && pos.y === t.y && (pos.p | 0) === (t.p | 0);
+    // Re-mark when the target moves, when you step on or off it, and when the shared clue map has
+    // been hidden by another path without the target changing, else the dig map stays blank.
+    const tileSig = t.x + ',' + t.y + ',' + t.p;
+    const sig = tileSig + (onSpot ? '|on' : '');
+    const mw = $('clueMapWrap');
+    const mapHidden = !mw || mw.style.display === 'none';
+    if (sig === tetraLast && !mapHidden) return;
+    const moved = !tetraLast || tetraLast.split('|')[0] !== tileSig;
+    tetraLast = sig;
+    clueGuide(t, onSpot ? '' : 'Tetracompass - dig here - (' + t.x + ', ' + t.y + ')');
+    if (moved || mapHidden) drawClueMap({ x: t.x, y: t.y, p: t.p });   // stepping on/off needs no redraw
+  }
+
+  // Both solvers publish through varc 1323, and only the one it points at can actually be acted
+  // on -- so the varc, not the click, decides which of the two is showing. It is checked every
+  // poll rather than once on change: an edge-triggered version let a click sit on the inert entry
+  // until the target happened to move. Returns the pinned held-entry id, or -1 for neither.
+  function clueVarcPinned() {
+    if (!bridge() || !bridge().compassTarget || !tetraOpen()) return -1;   // nothing open -> nothing pinned
+    const t = tetraRead(); if (!t) return -1;
+    const held = clueHeldList();
+    if (tetraIsSite(t.x, t.y)) return held.some(c => c.i === TETRA_POWERED) ? TETRA_POWERED : -1;
+    const cc = held.find(c => isCompassClue(c));
+    return cc ? cc.i : -1;
+  }
+  // Is this entry one the varc arbitrates? Only those two are pinned; every other clue stays
+  // freely selectable, since the varc says nothing about them.
+  function clueVarcIsPair(id) {
+    if (id === TETRA_POWERED) return true;
+    const c = (id >= 0) ? CLUE_DATA.find(z => z.i === id) : null;
+    return !!(c && isCompassClue(c));
+  }
+  function clueVarcRoute() {
+    if (clueBrowse) return;                               // browse mode owns no selection
+    const want = clueVarcPinned();
+    if (want < 0 || want === activeClueId) return;
+    if (activeClueId >= 0 && !clueVarcIsPair(activeClueId)) return;   // deliberate pick elsewhere; leave it
+    const e = clueHeldList().find(c => c.i === want);
+    // A tier filter that hides the entry would defeat the whole point, so widen to All in that case.
+    if (e && clueLiveTier >= 0 && e.t !== clueLiveTier) clueLiveTier = -1;
+    activeClueId = want; clueMapZoom = 1; compassMapSig = '';
+    selectClue();
+  }
+
   async function compassTick() {
     if (compassBusy) return;
     // Only the SELECTED compass clue drives the in-world mark + panel map, else a held compass clue
