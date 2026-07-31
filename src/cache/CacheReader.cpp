@@ -1836,13 +1836,54 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             size_t j = (size_t)qx * PW + py; if (!rawM[j]) continue; sR += rawR[j]; sG += rawG[j]; sB += rawB[j]; ++sC; }
         size_t i = (size_t)px * PW + py; hR[i] = sR; hG[i] = sG; hB[i] = sB; hC[i] = sC;
     }
-    std::vector<int> blendUl((size_t)WT * WT, -1);
-    for (int wx = 0; wx < WT; ++wx) for (int wy = 0; wy < WT; ++wy) {
+    // Blend colours are kept for a 1-tile ring beyond the window (index (wx+1)*BW+(wy+1)) so the
+    // per-pixel bilinear sampling below stays continuous across adjacent windows (no chunk seams).
+    const int BW = WT + 2;
+    std::vector<int> blendUl((size_t)BW * BW, -1);
+    for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
         int px = wx + PAD, py = wy + PAD, sR = 0, sG = 0, sB = 0, sC = 0;
         for (int dz = -4; dz <= 5; ++dz) { int qy = py + dz; if (qy < 0 || qy >= PW) continue;
             size_t j = (size_t)px * PW + qy; sR += hR[j]; sG += hG[j]; sB += hB[j]; sC += hC[j]; }
-        if (sC > 0) blendUl[(size_t)wx * WT + wy] = ((sR / sC) << 16) | ((sG / sC) << 8) | (sB / sC);
+        if (sC > 0) blendUl[(size_t)(wx + 1) * BW + (wy + 1)] = ((sR / sC) << 16) | ((sG / sC) << 8) | (sB / sC);
     }
+    // Height-relief hillshade factor per tile (mejrs/rsmv lighting): brighten NW-facing slopes,
+    // darken SE-facing ones. Precomputed with the same 1-tile ring so it interpolates seamlessly.
+    std::vector<float> shadeF((size_t)BW * BW, 1.0f);
+    for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
+        int gx = cx - HALF + wx, gy = cy - HALF + wy;
+        int hc = heightAt(gx, gy);
+        if (hc == kNoH) continue;
+        int hE = heightAt(gx + 1, gy), hW = heightAt(gx - 1, gy), hN = heightAt(gx, gy + 1), hS = heightAt(gx, gy - 1);
+        int dxh = (hE != kNoH && hW != kNoH) ? (hE - hW) : 0;
+        int dyh = (hN != kNoH && hS != kNoH) ? (hN - hS) : 0;
+        double d = 0.02 * (double)(dxh - dyh);
+        if (d < -0.28) d = -0.28; else if (d > 0.28) d = 0.28;
+        shadeF[(size_t)(wx + 1) * BW + (wy + 1)] = (float)(1.0 + d);
+    }
+    // Bilinear underlay sample at a pixel centre: interpolates both the blended colour and the
+    // hillshade between the four surrounding tile centres. This is what stops the ground looking
+    // like a flat-tile mosaic at large TS; a void corner just renormalises over the rest.
+    auto sampleUl = [&](int wx, int wy, int a, int bb) -> int {
+        double u = wx + (a + 0.5) / (double)TS - 0.5;
+        double v = wy + 1.0 - (bb + 0.5) / (double)TS - 0.5;   // bb runs south; v is in world-y tile units
+        int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
+        double fx = u - x0, fy = v - y0;
+        double r = 0, g = 0, b = 0, wsum = 0;
+        for (int dy2 = 0; dy2 < 2; ++dy2) for (int dx2 = 0; dx2 < 2; ++dx2) {
+            double wgt = (dx2 ? fx : 1.0 - fx) * (dy2 ? fy : 1.0 - fy);
+            if (wgt <= 0.0) continue;
+            int tx = x0 + dx2, ty = y0 + dy2;
+            if (tx < -1 || tx > WT || ty < -1 || ty > WT) continue;
+            int cc = blendUl[(size_t)(tx + 1) * BW + (ty + 1)];
+            if (cc < 0) continue;
+            double ff = shadeF[(size_t)(tx + 1) * BW + (ty + 1)];
+            r += wgt * ((cc >> 16) & 0xff) * ff; g += wgt * ((cc >> 8) & 0xff) * ff; b += wgt * (cc & 0xff) * ff;
+            wsum += wgt;
+        }
+        if (wsum <= 0.0) return -1;
+        auto cl = [](double q) { int i = (int)(q + 0.5); return i < 0 ? 0 : (i > 255 ? 255 : i); };
+        return (cl(r / wsum) << 16) | (cl(g / wsum) << 8) | cl(b / wsum);
+    };
     // Boardwalk / pier deck: settings 0x2 on plane 1 marks the bridge column. The terrain under the
     // deck is water/void, so paint the deck or a pier reads as open water. Plane 0 only.
     auto isDeckTile = [&](int gx, int gy) -> bool {
@@ -1860,34 +1901,29 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             int ul, ov, sh; tileAt(gx, gy, ul, ov, sh);
             bool deck = (plane == 0) && isDeckTile(gx, gy);        // boardwalk / pier deck over water or void
             if (ul < 1 && ov < 1 && !deck) continue;               // no tile data and no deck -> genuine void
-            int ucol = (ul >= 1) ? blendUl[(size_t)wx * WT + wy] : -1;
+            int ucol = (ul >= 1) ? blendUl[(size_t)(wx + 1) * BW + (wy + 1)] : -1;
             int ocol = (ov >= 1) ? ConfigColourLocked(4, ov - 1) : -1;
             if (ocol == 0xFF00FF) ocol = -1;                       // magenta = transparent overlay
             if (ov == 112 && ocol == 0xFFFFFF) ocol = 0x3D4E63;    // ocean (white -> blue, per rs3cache)
             if (deck) { ucol = 0x6E5436; ocol = -1; }              // paint the wooden deck on top of the water/void beneath
             if (ucol < 0 && ocol < 0) ucol = 0x534E47;             // tile HAS data but no resolvable colour (textured city/dungeon floor) -> neutral, not black
             any = true;
-            {   // height-relief hillshade (mejrs/rsmv lighting from the heightmap): brighten NW-facing slopes,
-                // darken SE-facing ones. Gradient from valid neighbours only; flat where height data is absent.
-                int hc = heightAt(gx, gy);
-                if (hc != kNoH) {
-                    int hE = heightAt(gx + 1, gy), hW = heightAt(gx - 1, gy), hN = heightAt(gx, gy + 1), hS = heightAt(gx, gy - 1);
-                    int dxh = (hE != kNoH && hW != kNoH) ? (hE - hW) : 0;
-                    int dyh = (hN != kNoH && hS != kNoH) ? (hN - hS) : 0;
-                    double d = 0.02 * (double)(dxh - dyh);
-                    if (d < -0.28) d = -0.28; else if (d > 0.28) d = 0.28;
-                    double f = 1.0 + d;
-                    if (ucol >= 0) ucol = shade(ucol, f);
-                    if (ocol >= 0) ocol = shade(ocol, f);
-                }
-            }
+            const double tf = shadeF[(size_t)(wx + 1) * BW + (wy + 1)];
+            // Overlays (water/roads/floors) stay flat per tile; the underlay ground gets the
+            // per-pixel gradient at TS >= 4 (at TS 2 a tile is 4 px, flat is indistinguishable).
+            const bool smoothUl = (TS >= 4) && (ul >= 1) && !deck;
+            int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
+            if (ocol >= 0) ocol = shade(ocol, tf);
             int px0 = wx * TS, py0 = ((WT - 1) - wy) * TS;          // north-up tile origin
             bool useMask = (ocol >= 0);
             if (useMask) OverlayMaskLocal(sh < 0 ? 0 : sh, TS, mask);
             for (int a = 0; a < TS; ++a) {
                 for (int bb = 0; bb < TS; ++bb) {
-                    int col = (useMask && mask[a * TS + bb]) ? ocol : ucol;
-                    if (col < 0) col = (ucol >= 0 ? ucol : ocol);  // no holes inside a tile
+                    int col;
+                    if (useMask && mask[a * TS + bb]) col = ocol;
+                    else if (smoothUl) { col = sampleUl(wx, wy, a, bb); if (col < 0) col = ucolFlat; }
+                    else col = ucolFlat;
+                    if (col < 0) col = (ucolFlat >= 0 ? ucolFlat : ocol);  // no holes inside a tile
                     if (col < 0) continue;
                     size_t p = ((size_t)(py0 + bb) * W + (px0 + a)) * 4;
                     rgba[p] = (col >> 16) & 0xff; rgba[p + 1] = (col >> 8) & 0xff; rgba[p + 2] = col & 0xff; rgba[p + 3] = 255;
