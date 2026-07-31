@@ -81,7 +81,8 @@
                          17220, 17224, 17225,   // captain for hire: name-enum picker + first/surname indices
                          17462, 17463,          // black market: offered resource id + stock
                          17461, 17420,          // crew rerolls available, +5-reroll tokens
-                         21322, 21323, 21324]); // the Trader: offered good, stock, payment resource
+                         21322, 21323, 21324,   // the Trader: offered good, stock, payment resource
+                         33141]);               // Arc: chimes earned toward the 20k daily sale cap (live-validated 2026-07-30)
 
     for (const s of PP_SHIPS) { s.nm.forEach(x => ids.add(x)); ids.add(s.voy); ids.add(s.ret); ids.add(s.idx); }
     for (let k = 0; k < 5; k++) {   // ship captain k+1: name picker/first/surname + 4 traits
@@ -1542,6 +1543,11 @@
               ppStepsShownSig = stepSig; ppStepsView = view;   // confirmed twice: accept
             } else {
               ppStepsPendingSig = stepSig;                     // first sighting: keep showing the old list
+              // Repaints are sig-gated, so one game change yields exactly ONE recompute -
+              // without this the confirming second read only came from the minute tick
+              // (up to 60s of "not responding"). Clearing ppSig makes the next poll
+              // recompute; it keeps clearing until the pending list confirms or reverts.
+              ppSig = '';
             }
           }
           const shown = (ppStepsShownSig === stepSig) ? view : ppStepsView;
@@ -1708,6 +1714,18 @@
         grid.appendChild(cell);
       });
       tg.appendChild(grid);
+    }
+
+    {   // The Arc: daily cap on chimes earned by selling goods to Arc traders. vb 33141 counts
+        // UP and matches the game's own "(19,999/20,000)" sale messages (live-validated 2026-07-30).
+      const cap = 20000, sold = ppV(33141);
+      const arc = sec('The Arc', 'resets in ' + ppDayText());
+      arc.appendChild(row('Daily chime limit',
+        sold >= cap ? 'Cap reached - sales earn no more chimes today' : 'Chimes earned from sales today',
+        sold.toLocaleString() + ' / ' + cap.toLocaleString(), sold >= cap ? 'warn' : null));
+      const bar = document.createElement('div'); bar.className = 'pp-bar';
+      const fill = document.createElement('div'); fill.style.width = Math.max(0, Math.min(100, sold * 100 / cap)) + '%';
+      bar.appendChild(fill); arc.appendChild(bar);
     }
 
     {
