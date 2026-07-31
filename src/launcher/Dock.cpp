@@ -166,6 +166,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_scene.js",
         "panel_overlay.js",
         "panel_markers.js",
+        "panel_worldmap.js",   // World Map (full-world terrain browser: pan/zoom/search/layers)
         "panel_rendering.js",
         "panel_storage.js",
         "panel_containers.js",
