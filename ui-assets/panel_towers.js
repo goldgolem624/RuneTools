@@ -662,6 +662,7 @@
     if (MAP_TELEPORTS.some(T => T.req && T.req.portal != null))
       for (const v of GOTE_PORTAL_VBS) if (ids.indexOf(v) < 0) ids.push(v);
     for (const k in TELE_CHARGES) { const c = TELE_CHARGES[k]; if (c.vb != null && ids.indexOf(c.vb) < 0) ids.push(c.vb); }
+    for (const k in TELE_DAILY_LEFT) { const v = TELE_DAILY_LEFT[k]; if (ids.indexOf(v) < 0) ids.push(v); }
     if (ids.indexOf(TELE_PASSAGE_FREE_VB) < 0) ids.push(TELE_PASSAGE_FREE_VB);
     if (ids.length) { try { teleVbCache = (await readVarbitValues(ids)) || {}; } catch (e) { teleVbCache = {}; } }
     // Containers: worn (94) for outfit set gates, backpack (93) for held gates, and BOTH
@@ -855,6 +856,8 @@
     if (T.rq) out.push('req: ' + teleRqAnnotate(T, mode));
     const lines = teleReqLines(T, mode);
     for (const ln of lines) out.push(ln);
+    const left = teleDailyLeft(T);
+    if (left > 0) out.push(left + (left === 1 ? ' teleport' : ' teleports') + ' left today');
     const why = (typeof teleWhyCached === 'function') ? teleWhyCached(T) : teleWhyFull(T);
     if (why) {
       // Strip markup before comparing: a line carrying a dot still states its requirement.
@@ -1152,6 +1155,7 @@
   function teleWhyFull(T) {
     const parts = [];
     const cw = teleChargeWhy(T); if (cw) parts.push(cw);
+    if (teleDailyLeft(T) === 0) parts.push('no teleports left today');
     const w = teleReqWhy(T); if (w) parts.push(w);
     // A set row already reports its own progress ("full outfit worn (0/5)"), so naming one
     // missing piece on top of that says the same thing twice.
@@ -2574,6 +2578,18 @@
     23643: { key: 0, caps: {} },                                  // TokKul-Zo (Charged)
     39387: { key: 0, caps: { 39385: 5, 39387: 5, 41066: 100 } },  // Enlightened amulet / (new) / (c)
   };
+  // Items whose daily teleports are tracked as a REMAINING count (the opposite of
+  // TELE_CHARGES, which counts uses spent). itemId -> varbit holding what is left today.
+  // The daily allowance is not stated anywhere we can read, so only the remaining figure is
+  // shown; at 0 the row gates like any other unmet requirement.
+  const TELE_DAILY_LEFT = {
+    34926: 28311,   // Modified farmer's hat (live-captured)
+  };
+  function teleDailyLeft(T) {
+    const vb = (T && T.item > 0) ? TELE_DAILY_LEFT[T.item] : null;
+    if (vb == null || !teleVbCache || teleVbCache[vb] === undefined) return null;
+    return teleVbCache[vb] | 0;
+  }
   let teleItemCharges = null;   // itemId -> current charge value (worn or backpack)
   function teleChargeInfo(T) {
     const c = T && T.src ? TELE_CHARGES[T.src] : null;
