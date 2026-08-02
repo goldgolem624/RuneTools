@@ -161,7 +161,12 @@
           const okq = cur >= q.v; if (okq) sat++;
           lines.push({ label: q.n, cur: cur, req: q.v, ok: okq, src: 'varp ' + q.vps.join(' + ') });
         }
-        if (sat >= achNeed(a)) done.add(a.id);
+        // A ROLLUP with no direct requirements is decided by its children, below. Without
+        // this guard sat 0 >= need 0 marked it done here, and the rollup pass skips anything
+        // already done - so e.g. "Ardougne Set Tasks - Easy" read as complete at 6/23.
+        // Non-rollups keep their previous behaviour.
+        const isRollup = !!(a.subach && a.subach.length);
+        if (!(isRollup && achNeed(a) === 0) && sat >= achNeed(a)) done.add(a.id);
         prog[a.id] = lines;
       }
       // Rollups (a `subach` list) are complete when `needN` (else all) of their subs are; run to a

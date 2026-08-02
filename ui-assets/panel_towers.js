@@ -762,7 +762,7 @@
     if (r.vb != null && (teleVbCache[r.vb] | 0) !== r.vbVal) return false;
     if (!teleWornOk(r)) return false;
     if (!telePortalOk(r)) return false;
-    if (teleTaskSetWhy(T)) return false;
+    { const w2 = teleTaskSetWhy(T); if (w2 && w2 !== '?') return false; }
     if (teleRqSkillWhy(T)) return false;
     if (teleRqQuestWhy(T)) return false;
     if (teleSpellWhy(r)) return false;
@@ -835,13 +835,13 @@
     const ts = (T.req && T.req.taskSet) || teleRqGates(T).taskSet;
     if (!ts) return '';
     try {
-      if (typeof achDefs === 'undefined' || !achDefs || typeof achState === 'undefined' || !achState) return '';
+      if (typeof achDefs === 'undefined' || !achDefs || typeof achState === 'undefined' || !achState) return '?';
       const want = (ts.area + ' set tasks - ' + ts.tier).toLowerCase();
       let parent = null;
       for (const a of achDefs) {
         if ((a.name || '').toLowerCase() === want) { parent = a; break; }
       }
-      if (!parent) return '';                       // set not in the cache -> never fade
+      if (!parent) return '?';                      // set not in the cache -> unknown, never fade
       return (achState.done && achState.done.has(parent.id)) ? ''
            : ('needs ' + ts.area + ' ' + tier + ' tasks');
     } catch (e) { return ''; }
@@ -914,7 +914,7 @@
       why.push(r.vb === SPELLBOOK_VB ? 'wrong spellbook' : 'not unlocked');
     if (!teleWornOk(r)) why.push('full outfit not worn');
     if (!telePortalOk(r)) why.push('portal not attuned');
-    const tw = teleTaskSetWhy(T); if (tw) why.push(tw);
+    const tw = teleTaskSetWhy(T); if (tw && tw !== '?') why.push(tw);
     const kw = teleRqSkillWhy(T); if (kw) why.push(kw);
     const qw = teleRqQuestWhy(T); if (qw) why.push(qw);
     const sw = teleSpellWhy(r); if (sw) why.push(sw);
@@ -1061,7 +1061,9 @@
         if (why) { cell.style.opacity = '0.45'; parts.push(why); }
         // Status dot: green = every requirement satisfied, red = something is missing (the
         // reason follows on the same line). tipHtml renders <col=..> tags, so no raw markup.
-        const line = (why ? '<col=ff6b6b>●</col> ' : '<col=4dd28a>●</col> ') + parts.join(', ');
+        const unk = teleTaskSetWhy(T) === '?';
+        const line = (why ? '<col=ff6b6b>●</col> ' : unk ? '<col=fbbf24>●</col> ' : '<col=4dd28a>●</col> ')
+                   + parts.join(', ') + (unk && !why ? ' (requirement not read yet)' : '');
         cell.dataset.tip = line; cell.dataset.tipHtml = '1';
         gCells.push(cell); gLines.push(line);
         box.appendChild(cell);
