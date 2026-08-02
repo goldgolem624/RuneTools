@@ -14,6 +14,7 @@
   let ffRows = [];          // [{species, habitat, weight, bait, hook, distance}]
   let ffCatch = [];         // [{item, n}] catch strip, most recent first
   let ffBig = [];           // big fish in scene
+  let ffTackle = [];        // current tackle slots
   let ffSeenAt = 0;
 
   function ffText(w) { return String(w.x || '').replace(/<[^>]*>/g, '').trim(); }
@@ -75,11 +76,37 @@
     return out;
   }
 
+  // Current tackle: each slot is a LAYER holding one graphic and (for the numeric slots) a
+  // TEXT. The graphics are DYNAMIC - the reader emits no sprite id for a pointer-backed
+  // graphic - so the icon cannot be named. Its pixel size and offset ARE readable and differ
+  // per slot, so they stand in as a fingerprint until the mapping is learned.
+  function ffFindTackle(ws) {
+    const layers = ws.filter(function (w) { return w.ty === 'layer'; });
+    const out = [];
+    for (const L of layers) {
+      const lt = L.t || [0, 0, 0], lr = L.r || [0, 0, 0, 0];
+      if (lr[2] !== 30 || lr[3] !== 30) continue;            // the tackle slots are 30x30
+      const kids = ws.filter(function (w) {
+        const t = w.t || [0, 0, 0];
+        return w !== L && (w.d || 0) > (L.d || 0) && Math.abs(t[1] - lt[1]) <= 3;
+      });
+      const g = kids.find(function (w) { return w.ty === 'graphic'; });
+      const tx = kids.find(function (w) { return w.ty === 'text' && /^\d+$/.test(ffText(w)); });
+      if (!g && !tx) continue;
+      const gr = g ? (g.r || [0, 0, 0, 0]) : null;
+      out.push({ comp: lt[1], y: lr[1],
+                 n: tx ? +ffText(tx) : null,
+                 icon: gr ? (gr[2] + 'x' + gr[3]) : null,
+                 spr: g && g.s ? g.s : null });
+    }
+    return out.sort(function (a, b) { return a.y - b.y; });
+  }
+
   async function ffScan() {
     if (typeof activeTab === 'undefined' || activeTab !== 'flingers' || !bridge()) return;
     try { ffGroups = (JSON.parse(bridge().interfaceGroups(myPid()) || '{}').groups) || []; } catch (e) { ffGroups = []; }
 
-    let timer = null, rows = [], catches = [];
+    let timer = null, rows = [], catches = [], tackle = [];
     for (const g of ffGroups) {
       let ws = [];
       try { ws = (JSON.parse(bridge().interfaceGroup(myPid(), g.id) || '{}').widgets) || []; } catch (e) { continue; }
@@ -87,10 +114,12 @@
       if (!timer) { const t = ffFindTimer(ws); if (t) timer = t; }
       if (!rows.length && (g.id === FF_RATINGS_GROUP || g.id === FF_RESULTS_GROUP)) rows = ffFindRatings(ws);
       if (!catches.length) { const c = ffFindCatches(ws); if (c.length) catches = c; }
+      if (!tackle.length) { const k = ffFindTackle(ws); if (k.length) tackle = k; }
     }
     if (timer) ffTimer = timer;
     if (rows.length) { ffRows = rows; ffSeenAt = Date.now(); }
     if (catches.length) ffCatch = catches;
+    if (tackle.length) ffTackle = tackle;
 
     if (bridge().sceneEntities) {
       try {
@@ -138,6 +167,16 @@
       html += '<div class="ff-empty">Open the Discovered Ratings window to read the table.</div>';
     }
 
+    if (ffTackle.length) {
+      html += '<div class="ff-sec">current tackle</div><div class="ff-tack">';
+      for (const t of ffTackle) {
+        html += '<span class="ff-slot">'
+          + (t.n != null ? '<b>' + t.n + '</b>' : '<b class="ff-dim">&mdash;</b>')
+          + '<i>' + (t.spr ? 'spr ' + t.spr : (t.icon || 'no icon')) + '</i></span>';
+      }
+      html += '</div><div class="ff-note">icons are dynamic, so the sprite id is not exposed; '
+        + 'the size shown is a fingerprint of which icon is up.</div>';
+    }
     if (ffCatch.length) {
       let tot = 0;
       for (const c of ffCatch) tot += c.n;
@@ -180,7 +219,12 @@
       + 'background:rgba(255,255,255,.04);display:grid;place-items:center}'
       + '.ff-cat i{width:22px;height:22px;background-size:contain;background-repeat:no-repeat;'
       + 'background-position:center}'
-      + '.ff-cat b{position:absolute;right:1px;bottom:0;font-size:9px;color:#fbbf24}');
+      + '.ff-cat b{position:absolute;right:1px;bottom:0;font-size:9px;color:#fbbf24}'
+      + '.ff-tack{display:flex;gap:8px;flex-wrap:wrap}'
+      + '.ff-slot{display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 9px;'
+      + 'border-radius:5px;background:rgba(255,255,255,.04);min-width:46px}'
+      + '.ff-slot b{font-size:15px;font-variant-numeric:tabular-nums}'
+      + '.ff-slot i{font-style:normal;font-size:9px;opacity:.45}');
     const w = document.createElement('div');
     w.className = 'ff-wrap';
     w.innerHTML = '<div id="ffBody"></div>';
