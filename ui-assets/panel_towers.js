@@ -155,6 +155,9 @@
     const c = CLUE_DATA.find(z => z.i === activeClueId);
     if (!c || c.a !== 'scan') return;
     const rec = scanSpotsFor(c); if (!rec || !rec.spots || !rec.spots.length) return;
+    // A compass clue is solved by the needle, not the orb - bail before any scan logic,
+    // otherwise the compass's own target varc gets read as a scan solution.
+    if (rec.spots.length > COMPASS_FIELD_MIN || (typeof isCompassClue === 'function' && isCompassClue(c))) return;
     // PRIMARY (exact): the scan proximity ring is placed at the TRUE dig tile whenever the
     // player is within orb range (<=11 paces, red pulse). The reader reads that ring straight
     // from the LIVE scene-graphic registry, so it is readable for as long as the ring is on
@@ -209,7 +212,6 @@
         }
       }
     } catch (e) {}
-    if (rec.spots.length > COMPASS_FIELD_MIN) return;         // compass field: solved by the needle, not the scan orb
     const band = await scanRingBand();
     scanBandNote = band ? 'ring: ' + band : '';
     scanBandSetCap();

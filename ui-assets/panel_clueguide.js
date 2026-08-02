@@ -51,7 +51,25 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
   // really a COMPASS clue, solved by the needle (compassTick): it must bypass the scan renderer
   // and the O(n^2) next-scan optimiser, which would freeze on ~486 spots.
   const COMPASS_FIELD_MIN = 100;
-  function isCompassClue(c) { const r = scanSpotsFor(c); return !!(r && r.spots && r.spots.length > COMPASS_FIELD_MIN); }
+  // Compass clues are normally recognised by their huge candidate field, but the Eastern
+  // Lands compass has only ~31 sites, which is scan-sized. So also treat a clue as a compass
+  // once the compass interface has actually been seen open while it was the active clue -
+  // remembered for the session, since the needle is only open while you are using it.
+  const clueCompassSeen = new Set();
+  function isCompassClue(c) {
+    if (!c) return false;
+    if (clueCompassSeen.has(c.i)) return true;
+    const r = scanSpotsFor(c);
+    return !!(r && r.spots && r.spots.length > COMPASS_FIELD_MIN);
+  }
+  // Called from the clue tick: the needle being open identifies the held clue as a compass.
+  function clueNoteCompassOpen() {
+    if (activeClueId < 0 || clueCompassSeen.has(activeClueId)) return;
+    const c = CLUE_DATA.find(z => z.i === activeClueId);
+    if (!c || c.a !== 'scan') return;                  // only the scan/compass family can be one
+    try { if (typeof tetraOpen === 'function' && tetraOpen()) clueCompassSeen.add(activeClueId); }
+    catch (e) {}
+  }
   function scanCentroid(rec) {
     if (!rec || !rec.spots || !rec.spots.length) return null;
     let sx = 0, sy = 0; for (const s of rec.spots) { sx += s[0]; sy += s[1]; }
@@ -342,6 +360,7 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     clueGuide(null); drawClueMap(null);
   }
   function selectClue() {
+    clueNoteCompassOpen();          // a live needle identifies an Eastern Lands compass clue
     const c = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
     const eel = $('clueEmote'); if (eel && !(c && c.a === 'emote')) { eel.style.display = 'none'; eel._h = ''; }
     if (c && isCompassClue(c)) { compassTick(); return; }   // compass field: needle-driven; the compass owns the map + in-world tile
