@@ -637,6 +637,7 @@
         for (const grp of (T.req && T.req.any) || []) {   // quests named inside an alternative route
           for (const c of grp) if (c.questId != null) wantIds.add(c.questId);
         }
+        if (T.req && T.req.vp != null) vps.add(T.req.vp);   // direct varp gates
       }
       for (const qid of wantIds) {
         const q = QUEST_BY_ID.get(qid);
@@ -739,6 +740,7 @@
                 let raw = kk[String(spec.key)] | 0;
                 if (spec.shift) raw >>>= spec.shift;      // the field can share a key with others
                 if (spec.mask) raw &= spec.mask;
+                if (spec.per > 1) raw = Math.floor(raw / spec.per);   // units banked per use
                 cc[iid] = { v: spec.spent ? Math.max(0, cap - raw) : raw, max: cap }; hit = true; break;
               }
             } catch (e) {}
@@ -899,6 +901,7 @@
         const k = w.toLowerCase().replace(/^needs /, '').replace(/\s*\(\d+\/\d+\)/, '');
         if (/^full outfit not worn/.test(k)) return false;   // the set line already shows n/5
         if (/ not complete$/.test(k)) return false;          // the quest line already says so
+        if (k === 'item not in backpack' && / carried/.test(shown)) return false;
         return shown.indexOf(k) < 0;
       }).join(', ');
       if (rest) out.push(mode === 'html' ? htmlEsc(rest) : rest);
@@ -973,7 +976,11 @@
     }
     if (r.heldAny && r.heldAny.length) {
       const ok = !teleInvSet || r.heldAny.some(function (id) { return teleInvSet.has(id); });
-      add('item carried', ok);
+      // Name the item: an unnamed "item carried" beside "needs portable fairy ring" reads as
+      // two different facts when it is one, and says nothing about WHICH item is missing.
+      let nm = teleItemNames[T.item];
+      if (!nm) for (const id of r.heldAny) { if (teleItemNames[id]) { nm = teleItemNames[id]; break; } }
+      add(nm ? nm + ' carried' : 'item carried', ok);
     }
     const tw = teleTaskSetWhy(T);
     if (tw && tw !== '?' && !rqTxt) add(tw.replace(/^needs /, ''), false);
@@ -994,6 +1001,7 @@
     }
     if (!teleWornOk(r)) return false;
     if (!telePortalOk(r)) return false;
+    if (!teleVpOk(r)) return false;
     { const w2 = teleTaskSetWhy(T); if (w2 && w2 !== '?') return false; }
     if (teleRqSkillWhy(T)) return false;
     if (teleRqQuestWhy(T)) return false;
@@ -1147,6 +1155,14 @@
     if (r.wornAny && r.wornAny.some(id => teleWornSet.has(id))) return true;
     return r.wornAll.every(id => teleWornSet.has(id));
   }
+  // Some gates sit on a VARP rather than a varbit (quest progress trackers the fairy-ring
+  // resolver reads directly). Unread never fades the row.
+  function teleVpOk(r) {
+    if (!r || r.vp == null) return true;
+    const cur = teleQuestVp ? teleQuestVp[r.vp] : undefined;
+    if (cur === undefined) return true;
+    return (cur | 0) >= (r.vpMin != null ? r.vpMin : 1);
+  }
   // Portal attunement: available while EITHER Max Guild portal is tuned to the
   // destination. Fades only once both varbits have actually been read.
   function telePortalOk(r) {
@@ -1181,6 +1197,7 @@
       why.push('full outfit not worn' + (r.wornAll ? ' (' + got + '/' + r.wornAll.length + ')' : ''));
     }
     if (!telePortalOk(r)) why.push('portal not attuned');
+    if (!teleVpOk(r)) why.push(r.vpWhy || 'not unlocked');
     if (!teleAnyOk(r)) why.push(r.anyWhy || 'destination not unlocked');
     const tw = teleTaskSetWhy(T); if (tw && tw !== '?') why.push(tw);
     const kw = teleRqSkillWhy(T); if (kw) why.push(kw);
@@ -2562,6 +2579,22 @@
     }
   }
   for (const T of MAP_TELEPORTS) if (T.src === 'Grouping System') T.iconUrl = TELE_GROUP_ICON;
+  // Fairy ring rows carry their code in kb; give each one the unlock its code requires.
+  for (const T of MAP_TELEPORTS) {
+    if (!/fairy ring/i.test(T.src || '')) continue;
+    const g = TELE_FAIRY_UNLOCK[String(T.kb || '').replace(/\s+/g, '').toUpperCase()];
+    if (!g) continue;
+    T.req = T.req || {};
+    if (g.vb != null) {
+      if (T.req.vb != null) continue;
+      T.req.vb = g.vb;
+      if (g.min != null) T.req.vbMin = g.min; else T.req.vbVal = g.val;
+      T.req.vbWhy = g.why;
+    } else {
+      if (T.req.vp != null) continue;
+      T.req.vp = g.vp; T.req.vpMin = g.min; T.req.vpWhy = g.why;
+    }
+  }
   // Spell rows resolve to their cache struct by DESTINATION (within 3 tiles): the struct
   // gives spellbook + level + rune costs, all live-checkable.
   for (const T of MAP_TELEPORTS) {
@@ -2602,6 +2635,28 @@
   // What the passage currently holds, and its shared charge pool (Extra_ints key 0). A
   // piece stored inside draws on this pool rather than its own count.
   let telePassage = null;      // { charges: n, names: Set<baseName> }
+  // Per-ring unlock, taken from the client's own fairy-ring availability resolver and
+  // keyed by the code the ring dials. Codes map to the resolver's numbers through the
+  // game's own ring table, whose letter order is A D C B / I L K J / P S R Q.
+  const TELE_FAIRY_UNLOCK = {
+    AIS: { vb:18021, min:225, why:'needs progress through The World Wakes' },
+    AJQ: { vb:11533, min:13, why:'needs progress through Death To The Dorgeshuun' },
+    ALQ: { vb:9663, min:1, why:'needs the If it Bleeds achievement' },
+    BIR: { vb:9929, min:1, why:'needs the Fairy Godfather to be spoken to' },
+    BJQ: { vb:12078, min:1, why:'ring not grown here' },
+    BJR: { vp:2330, min:8, why:'needs progress through Holy Grail' },
+    BJS: { vb:30276, min:1, why:'ring not restored (plant 5 bittercap mushrooms)' },
+    BKR: { vb:9663, min:1, why:'needs the If it Bleeds achievement' },
+    BKS: { vb:60595, min:51, why:'needs progress through Visions Of Havenhythe' },
+    BLQ: { vb:13322, min:18, why:'needs progress through Land Of The Goblins' },
+    CIP: { vp:2262, min:9, why:'needs progress through The Fremennik Trials' },
+    CJS: { vb:36856, val:1, why:'ring not grown here' },
+    CKQ: { vb:36140, min:50, why:'needs progress through The Jack Of Spades' },
+    CKS: { vb:9663, min:1, why:'needs the If it Bleeds achievement' },
+    DKQ: { vb:11610, min:400, why:'needs progress through Ritual Of The Mahjarrat' },
+    DLP: { vb:52651, min:35, why:'needs progress through Secrets Of Amberfell' },
+    DLS: { vp:2696, min:101, why:'needs progress through In Search Of The Myreque' },
+  };
   const TELE_ITEM_ALIASES = {
     39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
     13562: [19760],                    // Explorer's ring: 4 also has the cabbage-port
@@ -2620,6 +2675,11 @@
     // Spirit tree re-rooter counts USES SPENT, packed at bit 5 of key 0 (live: 32/64/96 for
     // 1/2/3 used) and reported as "10 - used". shift/mask carve the field out of the key.
     41078: { key: 0, shift: 5, mask: 0xF, spent: true, caps: { 41078: 10 } },
+    // Locators bank two units per teleport in key 0, so 100 = 50 of 50 spent = empty.
+    15005: { key: 0, per: 2, spent: true, caps: { 15005: 50 } },   // Inferior locator
+    15006: { key: 0, per: 2, spent: true, caps: { 15006: 50 } },   // Poor locator
+    15007: { key: 0, per: 2, spent: true, caps: { 15007: 50 } },   // Good locator
+    15008: { key: 0, per: 2, spent: true, caps: { 15008: 50 } },   // Superior locator
   };
   // Items whose daily teleports are tracked as a REMAINING count (the opposite of
   // TELE_CHARGES, which counts uses spent). itemId -> varbit holding what is left today.

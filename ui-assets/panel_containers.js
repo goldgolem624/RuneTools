@@ -147,10 +147,18 @@
       if (!bridge() || !bridge().itemExtraInts || !myPid()) return;
       const r = JSON.parse(await bridge().itemExtraInts(myPid(), +parts[0], +parts[1])) || {};
       const k = r.key || {};
-      const keys = Object.keys(k);
-      const line = keys.length
-        ? 'Extra_ints: ' + keys.map(x => x + '=' + k[x]).join('  ')
-        : 'Extra_ints: (none)';
+      // A wall of "0=0 1=0 2=0 ..." buries the one key that carries anything. Lead with the
+      // keys that HOLD a value, one per line, and fold the empty ones into a single tail.
+      const keys = Object.keys(k).sort((a, b) => a - b);
+      const set = keys.filter(x => (k[x] | 0) !== 0);
+      const zero = keys.filter(x => (k[x] | 0) === 0);
+      let line;
+      if (!keys.length) line = 'Extra_ints: (none)';
+      else if (!set.length) line = 'Extra_ints: all ' + keys.length + ' keys 0';
+      else {
+        line = 'Extra_ints:\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
+        if (zero.length) line += '\n   (' + zero.length + ' other key' + (zero.length === 1 ? '' : 's') + ' 0)';
+      }
       const base = cell.dataset.tip.split('\nExtra_ints')[0];
       cell.dataset.tip = base + '\n' + line;
       if (typeof showTipFor === 'function' && cell.matches(':hover')) showTipFor(cell);
