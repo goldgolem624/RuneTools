@@ -958,6 +958,13 @@
       if (teleWornSet) for (const id of r.wornAll) if (teleWornSet.has(id)) got++;
       add('full outfit worn (' + got + '/' + r.wornAll.length + ')', teleWornOk(r));
     }
+    // A spell bought from a shop (the Livid Farm lunars) is a plain yes/no: the tracker says
+    // whether it was purchased, so state that rather than the price.
+    const su = r.spell && r.spell[3];
+    if (su) {
+      const cur = su[0] === 0 ? teleVbCache[su[1]] : teleQuestVp[su[1]];
+      if (cur !== undefined) add('spell unlocked', (cur | 0) >= su[2]);
+    }
     if (r.vb != null) {
       const cur = teleVbCache[r.vb] | 0;
       const ok = (r.vbMin != null) ? cur >= r.vbMin : cur === r.vbVal;
@@ -2013,18 +2020,18 @@
     {n:'Tele-group Fishing Guild',src:'Lunar Spellbook',x:2612,y:3381,p:0,sp:14432,rq:'85 Magic, Lunar Diplomacy'},
     {n:'Tele-group Catherby',src:'Lunar Spellbook',x:2789,y:3454,p:0,sp:14433,rq:'88 Magic, Lunar Diplomacy'},
     {n:'Tele-group Ice Plateau',src:'Lunar Spellbook',x:2973,y:3940,p:0,sp:14434,rq:'89 Magic, Lunar Diplomacy'},
-    {n:'Tele-group Trollheim',src:'Lunar Spellbook',x:2817,y:3676,p:0,su:10,rq:'92 Magic, Lunar Diplomacy, unlocked at Livid Farm'},
+    {n:'Tele-group Trollheim',src:'Lunar Spellbook',x:2817,y:3676,p:0,su:10,rq:'92 Magic, Lunar Diplomacy'},
     {n:'Moonclan',src:'Lunar Spellbook',x:2112,y:3916,p:0,sp:14403,rq:'69 Magic, Lunar Diplomacy'},
     {n:'Ourania',src:'Lunar Spellbook',x:2466,y:3245,p:0,sp:14442,rq:'71 Magic, Lunar Diplomacy'},
     {n:'Waterbirth',src:'Lunar Spellbook',x:2547,y:3754,p:0,sp:14404,rq:'72 Magic, Lunar Diplomacy'},
-    {n:'South Falador (Livid)',src:'Lunar Spellbook',x:3053,y:3309,p:0,sp:14444,rq:'72 Magic, Lunar Diplomacy, 35000 produce points'},
+    {n:'South Falador (Livid)',src:'Lunar Spellbook',x:3053,y:3309,p:0,sp:14444,rq:'72 Magic, Lunar Diplomacy'},
     {n:'Barbarian',src:'Lunar Spellbook',x:2542,y:3571,p:0,sp:14406,rq:'75 Magic, Lunar Diplomacy'},
-    {n:'North Ardougne (Livid)',src:'Lunar Spellbook',x:2672,y:3378,p:0,sp:14446,rq:'76 Magic, Lunar Diplomacy, 110000 produce points'},
+    {n:'North Ardougne (Livid)',src:'Lunar Spellbook',x:2672,y:3378,p:0,sp:14446,rq:'76 Magic, Lunar Diplomacy'},
     {n:'Khazard',src:'Lunar Spellbook',x:2635,y:3168,p:0,sp:14408,rq:'78 Magic, Lunar Diplomacy'},
     {n:'Fishing Guild',src:'Lunar Spellbook',x:2612,y:3381,p:0,sp:14414,rq:'86 Magic, Lunar Diplomacy'},
     {n:'Catherby',src:'Lunar Spellbook',x:2789,y:3454,p:0,sp:14415,rq:'87 Magic, Lunar Diplomacy'},
     {n:'Ice Plateau',src:'Lunar Spellbook',x:2973,y:3940,p:0,sp:14416,rq:'89 Magic, Lunar Diplomacy'},
-    {n:'Trollheim (Livid)',src:'Lunar Spellbook',x:2817,y:3676,p:0,su:9,rq:'92 Magic, Lunar Diplomacy, unlocked at Livid Farm'},
+    {n:'Trollheim (Livid)',src:'Lunar Spellbook',x:2817,y:3676,p:0,su:9,rq:'92 Magic, Lunar Diplomacy'},
     {n:'Zanaris',src:'Portable fairy ring',x:2412,y:4434,p:0,item:41076,rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Asgarnia: Mudskipper Point',src:'Portable fairy ring',x:2996,y:3114,p:0,item:41076,kb:'AIQ',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Dungeons: Ancient cavern',src:'Portable fairy ring',x:1737,y:5342,p:0,item:41076,kb:'BJQ',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
