@@ -11,20 +11,9 @@
 
   const AGI_SKILL = 16;                 // Agility
   const AGI_FIRST = 113687, AGI_LAST = 113738;
-  let agiRec = null;      // record mode: {vars:{id:value}, marks:[], startedAt}
   let agiCleared = [];    // obstacle index -> true once taken this lap
   let agiLastIdx = -1;    // last obstacle we saw the player at
-  let agiMoves = {};      // obstacle index -> 'surge' | 'dive', positions the player marked
   let agiPos = null;      // {x,y,plane}
-  let agiCds = { surge: 0, dive: 0 };   // seconds remaining, 0 = ready
-
-  try {
-    const m = JSON.parse(localStorage.getItem('rtxAgiMoves') || 'null');
-    if (m && typeof m === 'object') agiMoves = m;
-  } catch (e) {}
-  function agiSaveMoves() {
-    try { localStorage.setItem('rtxAgiMoves', JSON.stringify(agiMoves)); } catch (e) {}
-  }
 
   function agiSectionOf(i) { return ANACH_SECTIONS[ANACH_COURSE[i][6]]; }
   function agiLevel() {
@@ -72,13 +61,6 @@
     }
   }
   function agiPopcount(v) { let n = 0; while (v) { n += v & 1; v >>>= 1; } return n; }
-  function agiRearmDives() {
-    for (let i = 0; i < ANACH_COURSE.length; i++) {
-      const loc = ANACH_COURSE[i][0];
-      if (agiDiveUsed[loc] && agiIsDone(i)) delete agiDiveUsed[loc];
-    }
-  }
-
   // The BIT is tied to the obstacle, not to the order it was taken: obstacle j (0-based, in
   // forward route order) owns bit (n-1-j). Live-proven by running section A both ways - going
   // forward the mask fills 32,48,56,60,62 (downward from bit 5), going backward it fills
@@ -182,170 +164,13 @@
     if (best < 0 || best === agiLastIdx) return;
     agiLastIdx = best;
     agiCleared[best] = true;
-    if (agiRec) agiRecSnap(best);
-  }
-
-  // ---- record mode: which vars move as each obstacle is taken -------------------
-  // Every varp comes back in ONE dump, and the varbit map gives each varp's bit layout, so a
-  // changed varp is decoded down to the individual VARBITS that moved inside it. Nothing is
-  // assumed about which var tracks the course: the deltas name themselves.
-  let agiVbMap = null;      // varp id -> [[varbitId, lsb, msb], ...]
-
-  function agiBits(varpId, value) {
-    const defs = agiVbMap && agiVbMap[varpId];
-    if (!defs) return null;
-    const out = {};
-    for (const d of defs) {
-      const lsb = d[1], w = d[2] - d[1];
-      const mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1);
-      out[d[0]] = (value >>> lsb) & mask;
-    }
-    return out;
-  }
-  async function agiDumpVarps() {
-    try { return JSON.parse(await bridge().varpsDumpAll(myPid())) || {}; } catch (e) { return {}; }
-  }
-  async function agiRecSnap(idx) {
-    if (!agiRec || !bridge() || !bridge().varpsDumpAll) return;
-    const vp = await agiDumpVarps();
-    const moved = [];
-    for (const k in vp) {
-      const was = agiRec.vars[k];
-      if (was === undefined || was === vp[k]) continue;
-      const a = agiBits(+k, was | 0), b = agiBits(+k, vp[k] | 0);
-      const bits = [];
-      if (a && b) for (const id in b) if (a[id] !== b[id]) bits.push({ vb: +id, from: a[id], to: b[id] });
-      moved.push({ vp: +k, from: was, to: vp[k], bits: bits });
-    }
-    agiRec.vars = vp;
-    if (moved.length) agiRec.log.push({ idx: idx, loc: ANACH_COURSE[idx][0], moved: moved });
-  }
-  async function agiRecStart() {
-    if (!bridge() || !bridge().varpsDumpAll) return;
-    agiRec = { vars: {}, log: [], startedAt: Date.now() };
-    if (!agiVbMap && bridge().varbitMap) {
-      try { agiVbMap = JSON.parse(await bridge().varbitMap()) || {}; } catch (e) { agiVbMap = {}; }
-    }
-    agiRec.vars = await agiDumpVarps();
-    agiPaint();
-  }
-  function agiRecStop() { agiRec = null; agiPaint(); }
-  // Rank by how many obstacles moved the var: the course counters should rise to the top,
-  // and per-varbit rows are what you actually want to keep.
-  function agiRecText() {
-    if (!agiRec) return '';
-    const vps = {}, vbs = {};
-    for (const e of agiRec.log) for (const m of e.moved) {
-      vps[m.vp] = (vps[m.vp] || 0) + 1;
-      for (const b of m.bits) vbs[b.vb] = (vbs[b.vb] || 0) + 1;
-    }
-    const fmt = function (o, tag) {
-      return Object.keys(o).sort(function (a, b) { return o[b] - o[a]; }).slice(0, 8)
-        .map(function (id) { return tag + ' ' + id + ' &times;' + o[id]; }).join(', ');
-    };
-    const a = fmt(vbs, 'vb'), b = fmt(vps, 'vp');
-    if (!a && !b) return '';
-    return (a ? 'varbits: ' + a + '<br>' : '') + (b ? 'varps: ' + b : '');
-  }
-
-  // ---- movement abilities ------------------------------------------------------
-  // Cooldowns come from the ability's own varc clock pair, so a prompt never suggests an
-  // ability that is still recharging.
-  async function agiReadCds() {
-    agiCds.surge = 0; agiCds.dive = 0;
-    if (!bridge() || !bridge().abilityCooldowns) return;
-    try {
-      const a = JSON.parse(await bridge().abilityCooldowns(myPid())) || {};
-      // remaining is in client-clock cycles (50/s); only abilities actually ticking appear.
-      for (const c of (a.cooldowns || [])) {
-        const nm = String(c.name || '').toLowerCase();
-        const secs = Math.max(0, (+c.remaining || 0) / 50);
-        if (nm.indexOf('surge') >= 0) agiCds.surge = Math.max(agiCds.surge, secs);
-        else if (nm.indexOf('dive') >= 0) agiCds.dive = Math.max(agiCds.dive, secs);
-      }
-    } catch (e) {}
-  }
-  // Dive covers up to ten tiles. That figure is the ability's in-game reach, NOT something the
-  // cache states - the Dive struct carries no readable range - so it lives here as one constant.
-  const AGI_DIVE_REACH = 10;
-  const AGI_MOVE_MIN = 4;          // below this, walking is not worth an ability charge
-  // What to suggest for the obstacle we are pointing at: a position the player marked wins,
-  // otherwise offer Dive when the gap is worth it AND the ability is actually off cooldown.
-  // Verified dive spots, keyed by the loc id of the obstacle they serve: [x, y, plane].
-  // The dive target is a CHOSEN tile, not the obstacle - the obstacle can sit well beyond
-  // Dive's reach while the spot you actually dive to is a few tiles away - so distance is
-  // measured player -> dive tile, never player -> obstacle. Only tiles confirmed in game go
-  // in here; an obstacle with no entry simply gets no suggestion.
-  const AGI_DIVE_TILES = {
-    113690: [5402, 2320, 0],   // Cross vines (G) - confirmed in game
-  };
-  // Standing on the dive tile means that step is spent, however you got there - dived or
-  // walked, it makes no difference - so the prompt goes away and stays away for this
-  // obstacle. It re-arms once the obstacle itself is taken, ready for the next lap.
-  const agiDiveUsed = {};
-  function agiDiveTarget(i) {
-    const loc = ANACH_COURSE[i][0];
-    const t = AGI_DIVE_TILES[loc];
-    if (!t || !agiPos) return null;
-    if (agiDiveUsed[loc]) return null;
-    const d = Math.max(Math.abs(t[0] - agiPos.x), Math.abs(t[1] - agiPos.y));
-    if (d <= 0) { agiDiveUsed[loc] = true; return null; }
-    return { x: t[0], y: t[1], p: t[2] == null ? ANACH_COURSE[i][5] : t[2], dist: d };
-  }
-  function agiMoveFor(i) {
-    if (i < 0) return null;
-    const marked = agiMoves[ANACH_COURSE[i][0]];
-    if (marked) return { kind: marked, cd: marked === 'surge' ? agiCds.surge : agiCds.dive, marked: true };
-    const t = agiDiveTarget(i);
-    if (!t) return null;
-    return { kind: 'dive', cd: agiCds.dive, marked: false, dist: t.dist, tgt: t,
-             reach: t.dist <= AGI_DIVE_REACH };
-  }
-  function agiMoveHint(i) {
-    const m = agiMoveFor(i);
-    if (!m) return '';
-    const lead = m.marked ? m.kind
-      : (m.reach ? 'dive spot ' + m.dist + ' tiles away'
-                 : 'dive spot ' + m.dist + ' tiles - out of reach, walk closer');
-    if (m.cd > 0) return '<span class="agi-cd">' + lead + ' &middot; ' + m.cd.toFixed(1) + 's</span>';
-    return '<span class="agi-go">' + lead + ' &middot; ready</span>';
-  }
-  function agiMarkMove(kind) {
-    const i = agiLastIdx >= 0 ? agiLastIdx : agiNextIdx();
-    if (i < 0) return;
-    const key = ANACH_COURSE[i][0];
-    if (agiMoves[key] === kind) delete agiMoves[key]; else agiMoves[key] = kind;
-    agiSaveMoves(); agiPaint();
   }
 
   // ---- in-game highlight -------------------------------------------------------
-  // Dive's own icon, from its ability struct (param 2802, the same field the spell icons use).
-  const AGI_DIVE_SPRITE = 23714;
-  let agiHudSig = '';
-  // Put the ability on screen the moment a dive is called for, so the prompt is where the
-  // player is looking rather than in a panel they are not reading mid-run. Only pushed when
-  // the caption actually changes: this runs every tick.
-  function agiHudPush(mv) {
-    if (!bridge() || !bridge().hudSprite) return;
-    let sig = '', cap = '';
-    if (mv && mv.tgt) {
-      cap = mv.cd > 0 ? 'DIVE  ' + mv.cd.toFixed(1) + 's' : 'DIVE';
-      sig = cap;
-    }
-    if (sig === agiHudSig) return;
-    agiHudSig = sig;
-    try { bridge().hudSprite(myPid(), sig ? AGI_DIVE_SPRITE : 0, cap, !!sig); } catch (e) {}
-  }
-  function agiHudClear() {
-    if (!agiHudSig) return;
-    agiHudSig = '';
-    try { if (bridge() && bridge().hudSprite) bridge().hudSprite(myPid(), 0, '', false); } catch (e) {}
-  }
-
   function agiHighlight() {
     if (!bridge() || !bridge().guideMarks) return;
     const i = agiNextIdx();
-    if (i < 0) { try { bridge().guideMarks(myPid(), ''); } catch (e) {} agiHudClear(); return; }
+    if (i < 0) { try { bridge().guideMarks(myPid(), ''); } catch (e) {} return; }
     const o = ANACH_COURSE[i];
     const enc = function (x, y, p, lab, rgb) {
       return (x | 0) + '\x1f' + (y | 0) + '\x1f' + (p | 0) + '\x1f'
@@ -353,17 +178,11 @@
     };
     // First line NAMES the loc: the host boxes that loc's footprint near the tile.
     const marks = [enc(o[3], o[4], o[5], o[1] + '\n' + o[2] + '  (' + agiSectionOf(i)[0] + ')')];
-    // A usable movement ability gets its landing tile marked too, in its own colour so it
-    // never takes the direction arrow away from the obstacle itself.
-    const mv = agiMoveFor(i);
-    if (mv && mv.tgt && mv.cd <= 0)
-      marks.push(enc(mv.tgt.x, mv.tgt.y, mv.tgt.p, 'DIVE to here', 0x7C6DF2));
-    agiHudPush(mv);
     try { bridge().guideMarks(myPid(), marks.join('\x1e')); } catch (e) {}
   }
 
   async function agiTick() {
-    if (typeof activeTab === 'undefined' || activeTab !== 'agility') { agiHudClear(); return; }
+    if (typeof activeTab === 'undefined' || activeTab !== 'agility') return;
     if (typeof scanPlayerTile === 'function') {
       try {
         const p = await scanPlayerTile();          // shared helper: {x, y, p}
@@ -372,8 +191,6 @@
     }
     agiSeen();
     await agiReadVb();
-    agiRearmDives();
-    await agiReadCds();
     agiHighlight();
     agiPaint();
   }
@@ -399,7 +216,7 @@
       + '</header>';
 
     if (next >= 0) {
-      const o = ANACH_COURSE[next], sec = agiSectionOf(next), hint = agiMoveHint(next);
+      const o = ANACH_COURSE[next], sec = agiSectionOf(next);
       html += '<div class="agi-next">'
         + '<div class="agi-nh">next obstacle</div>'
         + '<div class="agi-nn">' + htmlEsc(o[2] + ' ' + o[1].toLowerCase()) + '</div>'
@@ -407,7 +224,6 @@
         + '<span>loc ' + o[0] + '</span>'
         + '<span>' + o[3] + ', ' + o[4] + (o[5] ? ' p' + o[5] : '') + '</span>'
         + (agiPos ? '<span>' + agiDist(o) + ' tiles</span>' : '') + '</div>'
-        + (hint ? '<div class="agi-nx">' + hint + '</div>' : '')
         + '</div>';
     } else {
       html += '<div class="agi-next is-complete"><div class="agi-nn">lap complete</div>'
@@ -480,8 +296,6 @@
       + '.agi-nh{font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-dim)}'
       + '.agi-nn{font-size:16px;margin:3px 0 5px}'
       + '.agi-nm{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)}'
-      + '.agi-nx{margin-top:7px;font-size:11.5px}'
-      + '.agi-cd{color:#fbbf24}.agi-go{color:#4dd28a}'
       // tools
       + '.agi-tools{display:flex;gap:7px;flex-wrap:wrap}'
       + '.agi-b{flex:1 1 0;min-width:92px;padding:7px 10px;font:inherit;font-size:11.5px;'
@@ -491,9 +305,6 @@
       + '.agi-b:focus-visible{outline:2px solid #7c6df2;outline-offset:1px}'
       + '.agi-b.ghost{flex:0 0 auto;color:var(--text-dim)}'
       + '.agi-b.ghost.on{color:#fbbf24;border-color:rgba(251,191,36,.45)}'
-      + '.agi-rec{font-size:11px;color:var(--text-dim);line-height:1.5;padding:9px 12px;'
-      + 'border-radius:8px;background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.25)}'
-      + '.agi-rec b{color:#fbbf24}'
 );
     const w = document.createElement('div');
     w.className = 'agi-wrap';
