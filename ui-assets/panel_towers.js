@@ -1000,7 +1000,12 @@
     }
     if (r.vb != null && (teleVbCache[r.vb] | 0) !== r.vbVal)
       why.push(r.vb === SPELLBOOK_VB ? 'wrong spellbook' : 'not unlocked');
-    if (!teleWornOk(r)) why.push('full outfit not worn');
+    if (!teleWornOk(r)) {
+      // Say HOW FAR along the set is - "1/5" is far more useful than "not worn".
+      let got = 0;
+      if (r.wornAll && teleWornSet) for (const id of r.wornAll) if (teleWornSet.has(id)) got++;
+      why.push('full outfit not worn' + (r.wornAll ? ' (' + got + '/' + r.wornAll.length + ')' : ''));
+    }
     if (!telePortalOk(r)) why.push('portal not attuned');
     const tw = teleTaskSetWhy(T); if (tw && tw !== '?') why.push(tw);
     const kw = teleRqSkillWhy(T); if (kw) why.push(kw);
@@ -2477,8 +2482,29 @@
   }
   // Volcanic Trapper teleports are the outfit's SET BONUS (5) - all five pieces worn
   // (game's own set tooltip; piece ids from the item name table, 41769 is the combined token).
-  for (const T of MAP_TELEPORTS) if (T.src === 'Volcanic Trapper outfit')
-    T.req = { wornAll: [41023, 41024, 41025, 41026, 41027], wornAny: [41769] };
+  // Outfit teleports are a SET BONUS: every piece must be worn (or the combined-outfit
+  // token, which counts as all of them). Listing one piece as the row's item only proved
+  // you owned that piece.
+  const TELE_OUTFIT_SETS = {
+    'Volcanic Trapper outfit':     [41023, 41024, 41025, 41026, 41027],
+    'Master Archaeologist outfit': [49941, 49942, 49943, 49944, 49945],
+    'Elder divination outfit':     [35978, 35979, 35980, 35981, 35982],
+    'Master camouflage outfit':    [37358, 37359, 37360, 37361, 37362],
+    "Nature's sentinel outfit":    [39745, 39746, 39747, 39748, 39749],
+  };
+  for (const T of MAP_TELEPORTS) {
+    const pieces = TELE_OUTFIT_SETS[T.src];
+    if (pieces) T.req = Object.assign({}, T.req, { wornAll: pieces });
+  }
+  // Familiar teleports need the Summoning level to call the familiar. The pouch item config
+  // carries no level, so these are listed by pouch id; add a row as each is confirmed.
+  const TELE_FAMILIAR_LEVEL = {
+    12810: 57,        // Spirit graahk pouch
+  };
+  for (const T of MAP_TELEPORTS) {
+    const lv = (T.item > 0) ? TELE_FAMILIAR_LEVEL[T.item] : 0;
+    if (lv) T.req = Object.assign({}, T.req, { skill: 23, level: lv });   // 23 = Summoning
+  }
   // Portable fairy ring: needs A Fairy Tale II done (via the quest system's live tracker -
   // the quest ACHIEVEMENT 44 carries no requirement data), 94 Invention (skill 26), and
   // the ACTIVE ring (41076) in the backpack (41075 is the uncharged form).
