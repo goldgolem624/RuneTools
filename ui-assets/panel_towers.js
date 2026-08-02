@@ -250,6 +250,8 @@
   // Map zoom: the inner div is sized to (stageWidth * zoom) and the stage scrolls, so the canvas
   // and the DOM markers scale and pan together.
   let clueMapZoom = 1, clueMapDrag = null, clueMapStageEl = null, clueMapZoomBound = false;
+  // Nearest lodestone / teleport for the caption, so it can lead with whichever is closer.
+  let clueMapLodeBest = null, clueMapTeleBest = null;
   function applyMapZoom() {
     const stage = clueMapStageEl || document.querySelector('.clue-map-stage'), inner = $('clueMapInner');
     if (!stage || !inner) return;
@@ -1054,7 +1056,9 @@
     const kbEl = el.querySelector('.cml-kb'); if (kbEl) kbEl.textContent = best.kb || '';
     el.title = best.n + ' lodestone' + (best.kb ? ' (' + best.kb + ')' : '');
     const dir = (best.y > cty0 ? 'N' : best.y < cty0 ? 'S' : '') + (best.x > ctx0 ? 'E' : best.x < ctx0 ? 'W' : '');
-    return '  \u00b7  lode: ' + best.n + (best.kb ? ' [' + best.kb + ']' : '') + ' (' + bestD + (dir ? ' ' + dir : '') + ')';
+    const note = '  \u00b7  lode: ' + best.n + (best.kb ? ' [' + best.kb + ']' : '') + ' (' + bestD + (dir ? ' ' + dir : '') + ')';
+    clueMapLodeBest = { txt: note, d: bestD };
+    return note;
   }
   // Nearest non-lodestone teleport in the same window, on its own marker element.
   // Nearest USABLE teleport anywhere on a plane - the caption's answer to "how do I get
@@ -1086,7 +1090,8 @@
       const g = teleNearestGlobal(ctx0, cty0, plane);
       if (!g) return '';
       const gk = teleKb(g.T);
-      return '  ·  tele: ' + g.T.n + (gk ? ' [' + gk + ']' : '') + ' (' + g.d + ', off-map)';
+      { const note0 = '  ·  tele: ' + g.T.n + (gk ? ' [' + gk + ']' : '') + ' (' + g.d + ', off-map)';
+        clueMapTeleBest = { txt: note0, d: g.d }; return note0; }
     }
     // Nearest first: it keeps its true tile and the others are nudged around it. The DOM
     // order is reversed at append time so the nearest still paints on top.
@@ -1110,7 +1115,13 @@
     }
     // The nearest USABLE teleport is the answer to "how do I get there" - it renders at
     // full strength with its keybind showing; every other marker stays faded reference.
-    const primaryT = shown.find(T2 => !teleWhyFull(T2)) || null;
+    let primaryT = shown.find(T2 => !teleWhyFull(T2)) || null;
+    // Do not spotlight a teleport when the lodestone is actually the closer way in - the
+    // lodestone marker already carries its own keybind chip.
+    if (primaryT && clueMapLodeBest) {
+      const pd = Math.max(Math.abs(primaryT.x - ctx0), Math.abs(primaryT.y - cty0));
+      if (clueMapLodeBest.d < pd) primaryT = null;
+    }
     const notes = [];
     for (const g of groups) {
       let cx0 = g.reduce((a, m) => a + m.x, 0) / g.length;
@@ -1186,6 +1197,7 @@
     if (!pick) pick = notes.sort((a2, b2) => a2.d - b2.d)[0] || null;
     if (!pick) return '';
     const kbTxt2 = teleKb(pick.T);
+    clueMapTeleBest = { d: pick.d };
     return '  ·  tele: ' + pick.T.n + (kbTxt2 ? ' [' + kbTxt2 + ']' : '') + ' (' + pick.d + (off ? ', off-map' : '') + ')'
          + (notes.length > (off ? 0 : 1) ? ' +' + (notes.length - (off ? 0 : 1)) + ' more' : '');
   }
@@ -1395,7 +1407,12 @@
     const pulse = $('clueMapPulse');
     if (pulse) { pulse.style.display = ''; pulse.style.left = (mx / W * 100) + '%'; pulse.style.top = (my / W * 100) + '%'; }
     const nearTxt = nearLabel(t.x, t.y, t.p || 0) ? ('  ·  ' + nearLabel(t.x, t.y, t.p || 0)) : '';
-    if (cap) cap.textContent = 'tile (' + t.x + ', ' + t.y + ')' + (t.p ? '  ·  floor ' + t.p : '') + nearTxt + lodeNote + hideyNote + ((meta && meta.b64) ? '' : '  ·  no map data (rebuild launcher)');
+    // Lead with whichever way in is actually closer - the caption used to show the
+    // lodestone only, even when a teleport landed nearer (or the reverse).
+    let ways = lodeNote + teleNote;
+    if (lodeNote && teleNote && clueMapLodeBest && clueMapTeleBest
+        && clueMapTeleBest.d < clueMapLodeBest.d) ways = teleNote + lodeNote;
+    if (cap) cap.textContent = 'tile (' + t.x + ', ' + t.y + ')' + (t.p ? '  ·  floor ' + t.p : '') + nearTxt + ways + hideyNote + ((meta && meta.b64) ? '' : '  ·  no map data (rebuild launcher)');
     applyMapZoom();
   }
   const CLUE_ACT_LBL = { coordinate: 'Coordinate', map: 'Map', npc: 'NPC', scan: 'Scan', keyitem: 'Key item', emote: 'Emote/cryptic' };
