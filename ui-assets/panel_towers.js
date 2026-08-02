@@ -846,6 +846,29 @@
       return part;
     }).join(', ');
   }
+  // THE requirement block for a teleport: annotated requirement text, then the curated gates
+  // the text cannot express, then whatever reason is left over. Every tooltip builds its
+  // requirement lines from here - two call sites drifting apart is what let the same gate be
+  // printed twice. Returns plain strings ('html' mode returns markup).
+  function teleReqBlock(T, mode) {
+    const out = [];
+    if (T.rq) out.push('req: ' + teleRqAnnotate(T, mode));
+    const lines = teleReqLines(T, mode);
+    for (const ln of lines) out.push(ln);
+    const why = (typeof teleWhyCached === 'function') ? teleWhyCached(T) : teleWhyFull(T);
+    if (why) {
+      // Strip markup before comparing: a line carrying a dot still states its requirement.
+      const shown = (lines.join(' | ') + ' | ' + (T.rq || '')).replace(/<[^>]*>/g, '').toLowerCase();
+      const rest = why.split(', ').filter(function (w) {
+        const k = w.toLowerCase().replace(/^needs /, '').replace(/\s*\(\d+\/\d+\)/, '');
+        if (/^full outfit not worn/.test(k)) return false;   // the set line already shows n/5
+        if (/ not complete$/.test(k)) return false;          // the quest line already says so
+        return shown.indexOf(k) < 0;
+      }).join(', ');
+      if (rest) out.push(mode === 'html' ? htmlEsc(rest) : rest);
+    }
+    return out;
+  }
   // Curated requirements rendered the same way the requirement TEXT is: each one listed
   // with a met/unmet dot, so a satisfied requirement is visible rather than silently
   // dropped (only failures used to appear at all).
@@ -1267,9 +1290,7 @@
         if (T.src) parts.push(T.src);
         if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
         parts.push(T.n);
-        if (T.rq) parts.push('req: ' + teleRqAnnotate(T));   // each requirement with its status
-        const reqLines = teleReqLines(T);
-        for (const ln of reqLines) parts.push(ln);
+        const reqBlock = teleReqBlock(T);   // requirements + reasons, each stated once
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
         if (teleInPassage(T) && telePassage.free) parts.push('unlimited charges (in the passage)');
@@ -1277,21 +1298,8 @@
           if (iv !== null) { const mx = teleItemChargeMax(T);
             parts.push(iv.toLocaleString() + (mx ? '/' + mx : '') + ' charges'
                        + (teleInPassage(T) ? ' (in the passage)' : '')); } }
-        const why = teleWhyFull(T);
-        if (why) {
-          cell.style.opacity = '0.45';
-          // Reasons already spelled out in the requirement list must not be repeated.
-          // Anything the lines above already state (outfit progress, a named quest, a level,
-          // a task set) must not be echoed as a second sentence.
-          const shown = (reqLines.join(' | ') + ' | ' + (T.rq || '')).toLowerCase();
-          const rest = why.split(', ').filter(function (w) {
-            const k = w.toLowerCase().replace(/^needs /, '').replace(/\s*\(\d+\/\d+\)/, '');
-            if (/^full outfit not worn/.test(w.toLowerCase())) return false;
-            if (/ not complete$/.test(k)) return false;
-            return shown.indexOf(k) < 0;
-          }).join(', ');
-          if (rest) parts.push(rest);
-        }
+        for (const ln of reqBlock) parts.push(ln);
+        if (teleWhyFull(T)) cell.style.opacity = '0.45';
         // Status dot: green = every requirement satisfied, red = something is missing (the
         // reason follows on the same line). tipHtml renders <col=..> tags, so no raw markup.
         const unk = teleTaskSetWhy(T) === '?';
@@ -1762,7 +1770,10 @@
     {n:'Desert amulet 4 - Uzer',src:'Achievement tasks set',x:3475,y:3096,p:0,item:27096,kb:'2'},
     {n:'Enchanted lyre - Waterbirth',src:'Achievement tasks set',x:2528,y:3741,p:0,item:3690,rq:'Fremennik hard achievements'},
     {n:'Enchanted lyre - Jatizso',src:'Achievement tasks set',x:2404,y:3781,p:0,item:3690,rq:'Fremennik elite achievements'},
-    {n:'Enchanted lyre - Rellekka Market',src:'Achievement tasks set',x:2654,y:3693,p:0,item:3690,rq:'Fremennik hard achievements'},
+    {n:'Enchanted lyre - Rellekka',src:'Achievement tasks set',x:2654,y:3693,p:0,item:3690,rq:'The Fremennik Trials'},
+    {n:'Enchanted lyre - Neitiznot',src:'Achievement tasks set',x:2310,y:3785,p:0,item:3690,rq:'Fremennik elite achievements'},
+    {n:'Enchanted lyre - Miscellania',src:'Achievement tasks set',x:2519,y:3860,p:0,item:3690,rq:'Fremennik elite achievements'},
+    {n:'Enchanted lyre - Etceteria',src:'Achievement tasks set',x:2594,y:3880,p:0,item:3690,rq:'Fremennik elite achievements'},
     {n:'Fremennik sea boots 4 - Rellekka',src:'Achievement tasks set',x:2643,y:3678,p:0,item:19766},
     {n:'Karamja gloves 3+ - Shilo Village gem dungeon',src:'Achievement tasks set',x:2840,y:9386,p:0,item:11140},
     {n:'Morytania legs 2+ - Ectofuntus slime pit',src:'Achievement tasks set',x:3683,y:9887,p:0,item:24135},
@@ -2337,7 +2348,6 @@
     {n:'Fist of Guthix',src:'Grouping System',x:1689,y:5600,p:0},
     {n:'TzHaar Fight Pit',src:'Grouping System',x:4600,y:5062,p:0},
     {n:'Clan Wars (dangerous)',src:'Grouping System',x:2993,y:9679,p:0},
-    {n:'Deathmatch',src:'Grouping System',x:3119,y:3517,p:0},
     {n:'Burthorpe Games Room',src:'Grouping System',x:2208,y:4949,p:0},
     {n:'Conquest',src:'Grouping System',x:2645,y:2678,p:0,rq:'Conquest Tutorial'},
     {n:'Fishing Trawler',src:'Grouping System',x:2663,y:3161,p:0},
@@ -2360,7 +2370,6 @@
     {n:'Twin Furies',src:'Grouping System',x:3131,y:7044,p:1,sp:22453},
     {n:'Vindicta and Gorvek',src:'Grouping System',x:3122,y:6901,p:1,rq:'80 Attack'},
     {n:'Castle Wars',src:'Grouping System',x:2444,y:3088,p:0},
-    {n:'Stealing Creation',src:'Grouping System',x:2968,y:9699,p:0},
     {n:'Soul Wars',src:'Grouping System',x:1890,y:3177,p:0},
     {n:'Pest Control',src:'Grouping System',x:2649,y:2648,p:0},
     {n:'Blast Furnace',src:'Grouping System',x:1940,y:4961,p:0},

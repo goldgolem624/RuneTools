@@ -488,7 +488,7 @@
 
   function wmTeleTip(ts) {
     return ts.map(function (t2) {
-      const rq = (typeof teleRqLive === 'function') ? teleRqLive(t2, 'html') : htmlEsc(teleRqText(t2)), why = teleWhyCached(t2);
+      const why = teleWhyCached(t2);
       const ci = (typeof teleChargeInfo === 'function') ? teleChargeInfo(t2) : null;
       // green = usable now, red = a requirement is unmet (named below)
       const unk = (typeof teleTaskSetWhy === 'function') && teleTaskSetWhy(t2) === '?';
@@ -502,10 +502,11 @@
                  ? '<br>' + teleItemChargeVal(t2).toLocaleString()
                    + (teleItemChargeMax(t2) ? '/' + teleItemChargeMax(t2) : '') + ' charges'
                    + ((typeof teleInPassage === 'function' && teleInPassage(t2)) ? ' (in the passage)' : '') : ''))
-        + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : rq) : '')
-        + ((typeof teleReqLines === 'function')
-             ? teleReqLines(t2, 'html').map(function (l) { return '<br>' + l; }).join('') : '')
-        + (why ? '<br>' + htmlEsc(why) : '') + '</span>';
+        // One shared builder, so the requirement block cannot drift from the clue map's.
+        + ((typeof teleReqBlock === 'function')
+             ? teleReqBlock(t2, 'html').map(function (l) {
+                 return '<br>' + (l === 'req: unverified' ? 'req: <span style="color:#fbbf24">unverified</span>' : l);
+               }).join('') : '') + '</span>';
     }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
   }
   // The hovered TILE outlined at the map's own scale. A positioned div, so pointing at
