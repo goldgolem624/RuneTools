@@ -763,21 +763,29 @@
   }
   // Requirement text with the player's LIVE value beside each skill level, so a tooltip
   // says how far off you are ("99 Slayer (87/99)") instead of just naming the bar.
-  function teleRqLive(T) {
+  // mode 'col' = the clue maps' tooltip markup (<col=..>), 'html' = plain HTML for the
+  // World Map. Same dot vocabulary as the per-entry status dot: green met, red unmet.
+  function teleRqDot(ok, mode) {
+    const c = ok ? '4dd28a' : 'ff6b6b';
+    return mode === 'html' ? '<span style="color:#' + c + '">●</span>' : '<col=' + c + '>●</col>';
+  }
+  function teleRqLive(T, mode) {
     const txt = teleRqText(T);
     if (!txt || txt === 'unverified' || typeof SKILL_NAMES === 'undefined') return txt;
+    const esc = function (v) { return mode === 'html' ? htmlEsc(v) : v; };
     let lvl = null;
-    try { lvl = questSkillLevels(); } catch (e) { return txt; }
-    if (!lvl) return txt;
+    try { lvl = questSkillLevels(); } catch (e) { return esc(txt); }
+    if (!lvl) return esc(txt);
     return txt.split(/\s*,\s*/).map(function (part) {
       const t = part.trim().replace(/\s*\[[^\]]*\]\s*$/, '');
       const m = t.match(/^(?:level\s+)?(\d{1,3})\s+([A-Za-z]+)$/);
-      if (!m) return part;
+      if (!m) return esc(part);
       const si = SKILL_NAMES.findIndex(function (n) { return (n || '').toLowerCase() === m[2].toLowerCase(); });
-      if (si < 0) return part;
+      if (si < 0) return esc(part);
       const cur = lvl(si) | 0;
-      if (cur <= 0) return part;                       // level not read yet -> say nothing
-      return part + (cur < +m[1] ? ' (' + cur + '/' + m[1] + ')' : ' ✓');
+      if (cur <= 0) return esc(part);                  // level not read yet -> say nothing
+      const ok = cur >= +m[1];
+      return esc(part) + (ok ? '' : ' (' + cur + '/' + m[1] + ')') + ' ' + teleRqDot(ok, mode);
     }).join(', ');
   }
   function teleReqMet(T) {

@@ -497,7 +497,7 @@
         + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
         + (ci && ci.used < ci.max ? '<br>daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn() : '')
         + (typeof teleItemChargeVal === 'function' && teleItemChargeVal(t2) !== null ? '<br>' + teleItemChargeVal(t2).toLocaleString() + ' charges' : '')
-        + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : htmlEsc(rq)) : '')
+        + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : rq) : '')
         + (why ? '<br>' + htmlEsc(why) : '') + '</span>';
     }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
   }
