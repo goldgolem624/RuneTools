@@ -371,9 +371,14 @@
     const inview = MAP_LABELS.filter(d => (d.p || 0) === plane && d.x >= vx0 - 1 && d.x <= vx1 + 1 && d.y >= vy0 - 1 && d.y <= vy1 + 1);
     inview.sort((a, b) => (Math.abs(a.x - ccx) + Math.abs(a.y - ccy)) - (Math.abs(b.x - ccx) + Math.abs(b.y - ccy)));
     cx.save();
-    cx.font = '600 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.font = '500 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    try { cx.letterSpacing = '0.35px'; } catch (e) {}
     const placed = [];
-    for (const d of inview.slice(0, 24)) {
+    // Density follows zoom: a wide view only needs the big landmarks, and fewer labels is
+    // the single biggest thing that stops them competing with the map.
+    const cap = Math.max(8, Math.min(24, Math.round(9 + 5 * (typeof clueMapZoom === 'number' ? clueMapZoom : 1))));
+    const half = proj.W / 2;
+    for (const d of inview.slice(0, cap)) {
       const sx = proj.projX(d.x), sy = proj.projY(d.y);
       if (sx < -proj.W || sx > proj.W * 2 || sy < -proj.W || sy > proj.W * 2) continue;
       const tw = Math.ceil(cx.measureText(d.n).width), bw = tw + 8, bh = 15;
@@ -384,7 +389,10 @@
       placed.push({ x: x0, y: y0, w: bw, h: bh });
       const lx = x0 + bw / 2, ly = y0 + bh / 2;
       // Same treatment as the world map: soft halo, cool-white glyphs, no boxed chip.
-      if (typeof wmLabelText === 'function') wmLabelText(cx, d.n, lx, ly, false, x0, y0, bw, bh);
+      // Labels away from the focus fade back, so the area being read stays dominant.
+      const off = Math.max(Math.abs(lx - half), Math.abs(ly - half)) / half;
+      const dim = off > 0.55 ? Math.max(0.55, 1 - (off - 0.55) * 0.9) : 1;
+      if (typeof wmLabelText === 'function') wmLabelText(cx, d.n, lx, ly, false, x0, y0, bw, bh, dim);
       else {
         cx.lineWidth = 2.25; cx.strokeStyle = 'rgba(4,7,12,0.8)'; cx.strokeText(d.n, lx, ly);
         cx.fillStyle = 'rgba(233,240,250,0.94)'; cx.fillText(d.n, lx, ly);

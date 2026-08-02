@@ -253,8 +253,9 @@
   // Place-label styling, shared by both map surfaces: a soft dark halo carries the text over
   // any terrain without a boxed chip, and the glyphs sit slightly cool-white so they read as
   // chrome rather than map content. The pinned label gets a teal tint + faint plate.
-  function wmLabelText(cx, text, x, y, hot, bx, by, bw, bh) {
+  function wmLabelText(cx, text, x, y, hot, bx, by, bw, bh, dim) {
     cx.save();
+    if (dim != null) cx.globalAlpha = dim;
     if (hot && bw) {                                   // selection: faint rounded plate
       cx.fillStyle = 'rgba(8,12,20,0.5)';
       cx.beginPath();
@@ -265,19 +266,22 @@
       cx.lineTo(bx, by + r); cx.quadraticCurveTo(bx, by, bx + r, by);
       cx.closePath(); cx.fill();
     }
-    // halo: wide soft pass, then a tighter one, so edges stay crisp without a hard outline
+    // Contrast comes from the HALO, not from a bright glyph: a wide blurred pass sinks the
+    // label into the terrain, a tight pass keeps the edges legible, and the fill is a warm
+    // ivory that sits with the map's palette instead of glaring off it.
     cx.lineJoin = 'round'; cx.miterLimit = 2;
-    cx.shadowColor = 'rgba(0,0,0,0.65)'; cx.shadowBlur = 5; cx.shadowOffsetY = 1;
-    cx.lineWidth = 4.5; cx.strokeStyle = 'rgba(4,7,12,0.55)'; cx.strokeText(text, x, y);
+    cx.shadowColor = 'rgba(0,0,0,0.7)'; cx.shadowBlur = 6; cx.shadowOffsetY = 1;
+    cx.lineWidth = 5; cx.strokeStyle = 'rgba(6,9,14,0.6)'; cx.strokeText(text, x, y);
     cx.shadowBlur = 0; cx.shadowOffsetY = 0;
-    cx.lineWidth = 2.25; cx.strokeStyle = 'rgba(4,7,12,0.8)'; cx.strokeText(text, x, y);
-    cx.fillStyle = hot ? '#7ff2dc' : 'rgba(233,240,250,0.94)';
+    cx.lineWidth = 2.5; cx.strokeStyle = 'rgba(6,9,14,0.85)'; cx.strokeText(text, x, y);
+    cx.fillStyle = hot ? '#8ef0d8' : 'rgba(228,219,197,0.92)';
     cx.fillText(text, x, y);
     cx.restore();
   }
   const wmTextW = new Map();   // label -> measured px width (font is constant)
   function wmChip(cx, sxp, syp, text, placed, hot) {
-    cx.font = '600 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.font = '500 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    try { cx.letterSpacing = '0.35px'; } catch (e) {}
     let tw = wmTextW.get(text);
     if (tw === undefined) { tw = Math.ceil(cx.measureText(text).width); wmTextW.set(text, tw); }
     const bw = tw + 8, bh = 15;
