@@ -416,6 +416,22 @@
       + '<div class="agi-bar"><i style="width:' + pct + '%"></i></div>'
       + '</header>';
 
+    if (next >= 0) {
+      const o = ANACH_COURSE[next], sec = agiSectionOf(next), hint = agiMoveHint(next);
+      html += '<div class="agi-next">'
+        + '<div class="agi-nh">next obstacle</div>'
+        + '<div class="agi-nn">' + htmlEsc(o[2] + ' ' + o[1].toLowerCase()) + '</div>'
+        + '<div class="agi-nm"><span>section ' + sec[0] + '</span>'
+        + '<span>loc ' + o[0] + '</span>'
+        + '<span>' + o[3] + ', ' + o[4] + (o[5] ? ' p' + o[5] : '') + '</span>'
+        + (agiPos ? '<span>' + agiDist(o) + ' tiles</span>' : '') + '</div>'
+        + (hint ? '<div class="agi-nx">' + hint + '</div>' : '')
+        + '</div>';
+    } else {
+      html += '<div class="agi-next is-complete"><div class="agi-nn">lap complete</div>'
+        + '<div class="agi-nm"><span>all 52 obstacles taken</span></div></div>';
+    }
+
     html += '<div class="agi-secs">';
     for (let si = 0; si < ANACH_SECTIONS.length; si++) {
       const s = ANACH_SECTIONS[si], p = prog[si];
@@ -432,21 +448,6 @@
     }
     html += '</div>';
 
-    if (next >= 0) {
-      const o = ANACH_COURSE[next], sec = agiSectionOf(next), hint = agiMoveHint(next);
-      html += '<div class="agi-next">'
-        + '<div class="agi-nh">next obstacle</div>'
-        + '<div class="agi-nn">' + htmlEsc(o[2] + ' ' + o[1].toLowerCase()) + '</div>'
-        + '<div class="agi-nm"><span>section ' + sec[0] + '</span>'
-        + '<span>loc ' + o[0] + '</span>'
-        + '<span>' + o[3] + ', ' + o[4] + (o[5] ? ' p' + o[5] : '') + '</span>'
-        + (agiPos ? '<span>' + agiDist(o) + ' tiles</span>' : '') + '</div>'
-        + (hint ? '<div class="agi-nx">' + hint + '</div>' : '')
-        + '</div>';
-    } else {
-      html += '<div class="agi-next is-complete"><div class="agi-nn">lap complete</div>'
-        + '<div class="agi-nm"><span>all 52 obstacles taken</span></div></div>';
-    }
 
     el.innerHTML = html;
   }
