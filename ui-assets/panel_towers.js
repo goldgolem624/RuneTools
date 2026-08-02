@@ -1960,7 +1960,7 @@
     {n:'Book of Char',src:'Other teleports',x:2356,y:3437,p:0,item:23027},
     {n:'Invitation box',src:'Other teleports',x:3787,y:4360,p:1,item:29742,kb:'1'},
     {n:'Big Book o\' Piracy - Mos Le\'Harmless',src:'Other teleports',x:3684,y:2958,p:0,item:42379,kb:'1',rq:'Pieces of Hate'},
-    {n:'Big Book o\' Piracy - Braindeath Isle',src:'Other teleports',x:2162,y:5114,p:1,item:42379,kb:'2',rq:'Pieces of Hate'},
+    {n:'Big Book o\' Piracy - Braindeath Isle',src:'Other teleports',x:2162,y:5114,p:0,item:42379,kb:'2',rq:'Pieces of Hate'},
     {n:'Big Book o\' Piracy - Dragontooth Isle',src:'Other teleports',x:3792,y:3559,p:0,item:42379,kb:'3',rq:'Pieces of Hate'},
     {n:'Big Book o\' Piracy - Harmony Isle',src:'Other teleports',x:3797,y:2836,p:0,item:42379,kb:'4',rq:'Pieces of Hate'},
     {n:'TokKul-Zo - Main Plaza',src:'Other teleports',x:4668,y:5151,p:1,item:23643,kb:'1'},
