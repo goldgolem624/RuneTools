@@ -1525,6 +1525,7 @@
 {n:"Leela's favour - Worker district",src:"Leela's favour",x:3156,y:2796,p:0,item:58702,kb:'4'},
 {n:"Leela's favour - Sophanem Slayer Dungeon",src:"Leela's favour",x:3289,y:2708,p:0,item:58702,kb:'7'},
 {n:'Mazcab teleport (tablet)',src:'Teleport tablet',x:4316,y:819,p:0,item:40987,req:{vb:36971,vbVal:1}},
+{n:'Dragonkin Laboratory',src:'Teleport tablet',x:3368,y:3889,p:0,item:43375},
 {n:'North-western Anachronia',src:'Standard Spellbook',x:5314,y:2495,p:0,sp:10370},
 {n:'Eastern Anachronia',src:'Standard Spellbook',x:5599,y:2331,p:0,sp:10369},
 {n:'Northern Lost Grove',src:'Standard Spellbook',x:1402,y:5724,p:0,sp:11316},
