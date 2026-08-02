@@ -133,16 +133,47 @@
 
   // The next obstacle to take: the one after the furthest cleared, skipping sections the
   // player has no level for (they can start anywhere, so an unreachable section is not a wall).
-  // The course can be run in either direction, so the next obstacle is the NEAREST one still
-  // outstanding rather than the next in route order.
+  // Index range of a section, as [first, last] in route order.
+  function agiSectionRange(si) {
+    let a = -1, b = -1;
+    for (let i = 0; i < ANACH_COURSE.length; i++)
+      if (ANACH_COURSE[i][6] === si) { if (a < 0) a = i; b = i; }
+    return [a, b];
+  }
+  // Which obstacle to point at. A section only scores as a consecutive run, so the choice is
+  // NOT simply the nearest outstanding obstacle - that can land mid-section, which is no use
+  // as a starting point and sends you to the wrong cliff face when several share a name.
+  //   - a section already under way continues from where it left off, in the direction it is
+  //     being run (the mask says which end has been eaten)
+  //   - otherwise the target is the nearest section ENTRY, meaning the first or last obstacle
+  //     of a section that is not finished
   function agiNextIdx() {
+    const okSec = function (si) { return agiSectionOk(si) && !agiSectionComplete(si); };
+    // 1. a section in progress
+    for (let si = 0; si < ANACH_SECTIONS.length; si++) {
+      if (!okSec(si)) continue;
+      const r = agiSectionRange(si);
+      let done = 0;
+      for (let i = r[0]; i <= r[1]; i++) if (agiIsDone(i)) done++;
+      if (!done || done === r[1] - r[0] + 1) continue;      // untouched or finished
+      // running forward eats the low indices first, backward eats the high ones
+      const fwd = agiIsDone(r[0]);
+      for (let k = 0; k <= r[1] - r[0]; k++) {
+        const i = fwd ? r[0] + k : r[1] - k;
+        if (!agiIsDone(i)) return i;
+      }
+    }
+    // 2. nothing under way: the nearest entry point of an unfinished section
     let best = -1, bd = 1e9;
-    for (let i = 0; i < ANACH_COURSE.length; i++) {
-      if (agiIsDone(i)) continue;
-      if (!agiSectionOk(ANACH_COURSE[i][6])) continue;
-      if (!agiPos) return i;
-      const d = agiDist(ANACH_COURSE[i]);
-      if (d < bd) { bd = d; best = i; }
+    for (let si = 0; si < ANACH_SECTIONS.length; si++) {
+      if (!okSec(si)) continue;
+      const r = agiSectionRange(si);
+      for (const i of [r[0], r[1]]) {
+        if (agiIsDone(i)) continue;
+        if (!agiPos) { if (best < 0) best = i; continue; }
+        const d = agiDist(ANACH_COURSE[i]);
+        if (d < bd) { bd = d; best = i; }
+      }
     }
     return best;
   }
@@ -328,7 +359,9 @@
       html += '<div class="agi-next">'
         + '<div class="agi-nh">next obstacle</div>'
         + '<div class="agi-nn">' + htmlEsc(o[2] + ' ' + o[1].toLowerCase()) + '</div>'
-        + '<div class="agi-nm"><span>section ' + sec[0] + '</span><span>' + o[3] + ', ' + o[4] + '</span>'
+        + '<div class="agi-nm"><span>section ' + sec[0] + '</span>'
+        + '<span>loc ' + o[0] + '</span>'
+        + '<span>' + o[3] + ', ' + o[4] + (o[5] ? ' p' + o[5] : '') + '</span>'
         + (agiPos ? '<span>' + agiDist(o) + ' tiles</span>' : '') + '</div>'
         + (hint ? '<div class="agi-nx">' + hint + '</div>' : '')
         + '</div>';
