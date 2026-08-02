@@ -314,8 +314,22 @@
     el.querySelectorAll('.agi-side button').forEach(function (b) {
       b.onclick = function () { agiSetSide(b.dataset.side); };
     });
-    const sel = el.querySelector('#agiCourseSel');
-    if (sel) sel.onchange = function () { agiSetCourse(sel.value); };
+    const slot = el.querySelector('#agiCourseDD');
+    if (slot && !slot.firstChild) {
+      if (typeof mkDropdown === 'function') {
+        const dd = mkDropdown(agiCourse, function (v) { agiSetCourse(v); });
+        dd.setItems(AGI_COURSES.map(function (c) { return { value: c[0], label: c[1] }; }), agiCourse);
+        slot.appendChild(dd);
+      } else {
+        // older build without the shared dropdown: a plain select still works
+        const sel = document.createElement('select');
+        sel.innerHTML = AGI_COURSES.map(function (c) {
+          return '<option value="' + c[0] + '"' + (agiCourse === c[0] ? ' selected' : '') + '>' + c[1] + '</option>';
+        }).join('');
+        sel.onchange = function () { agiSetCourse(sel.value); };
+        slot.appendChild(sel);
+      }
+    }
   }
   function agiPaint() {
     const el = $('agiBody'); if (!el) return;
@@ -326,13 +340,7 @@
     const secDone = ANACH_SECTIONS.filter(function (_, si) { return agiSectionComplete(si); }).length;
     const pct = Math.round(done / rows.length * 100);
 
-    let html = '<div class="agi-courses"><label for="agiCourseSel">Course</label>'
-      + '<select id="agiCourseSel">'
-      + AGI_COURSES.map(function (c) {
-          return '<option value="' + c[0] + '"' + (agiCourse === c[0] ? ' selected' : '')
-               + '>' + c[1] + '</option>';
-        }).join('')
-      + '</select></div>';
+    let html = '<div class="agi-courses"><label>Course</label><div id="agiCourseDD"></div></div>';
     html += '<header class="agi-hd">'
       + '<div class="agi-fig"><b>' + done + '</b><span>/ ' + rows.length + '</span></div>'
       + '<div class="agi-cap">obstacles this lap</div>'
@@ -414,10 +422,7 @@
       '.agi-courses{display:flex;align-items:center;gap:8px}'
       + '.agi-courses label{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;'
       + 'color:var(--text-dim)}'
-      + '.agi-courses select{flex:1;padding:7px 9px;font:inherit;font-size:12.5px;border-radius:8px;'
-      + 'cursor:pointer;border:1px solid var(--border);background:rgba(255,255,255,.04);'
-      + 'color:var(--text)}'
-      + '.agi-courses select:focus-visible{outline:2px solid #7c6df2;outline-offset:1px}'
+      + '.agi-courses #agiCourseDD{flex:1;display:flex}'
       + '.agi-sec.is-next{border-color:#7c6df2;background:rgba(124,109,242,.09)}'
       + '.agi-note{font-size:11px;color:var(--text-dim)}'
       + '.agi-wrap{display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;'
