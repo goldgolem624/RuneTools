@@ -1237,10 +1237,12 @@
   .pet-row.clue-active { box-shadow: inset 0 0 0 1px var(--accent-hi); background: rgba(124,92,252,0.12); }
   .clue-map-wrap { margin: 4px 0 8px; }
   .clue-map-stage { position: relative; width: 100%; aspect-ratio: 1 / 1; overflow: auto; cursor: grab;
+    scrollbar-width: none; -ms-overflow-style: none;
               border: 1px solid var(--border); border-radius: 6px; background: #0b0d12; }
+  .clue-map-stage::-webkit-scrollbar { width: 0; height: 0; display: none; }   /* pan by dragging, no bars */
   .clue-map-stage.grabbing { cursor: grabbing; }
   .clue-map-inner { position: relative; width: 100%; height: 100%; }
-  .clue-map { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+  .clue-map { display: block; width: 100%; height: 100%; }
   .clue-map-pulse { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; pointer-events: none; }
   .clue-map-pulse::before, .clue-map-pulse::after { content: ''; position: absolute; inset: 0; border-radius: 50%;
               border: 2px solid rgba(255,45,149,0.9); box-shadow: 0 0 4px 1px rgba(0,0,0,0.6); animation: cluePulse 1.6s ease-out infinite; }

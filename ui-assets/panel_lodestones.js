@@ -856,9 +856,8 @@
     if (!h || !(h.x > 0) || !bridge() || !bridge().mapWindow) { wrap.style.display = 'none'; return; }
     let meta = null; try { meta = JSON.parse((await bridge().mapWindow(h.x, h.y, h.p || 0, 64, 4)) || '{}'); } catch (e) {}
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, HH = (meta && meta.h) || 24;
-    if (cv.width !== W) { cv.width = W; cv.height = W; }
-    const cx = cv.getContext('2d'); cx.clearRect(0, 0, W, W);
-    if (meta && meta.b64) { try { const bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); cx.putImageData(new ImageData(a, W, W), 0, 0); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {} }
+    const cx = clueMapCtx(cv, W);
+    if (meta && meta.b64) { try { clueMapBlit(cx, meta, W); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {} }
     const mx = HH * TS + TS / 2, my = (HH - 1) * TS + TS / 2;   // the hole's tile sits at the window centre
     cx.lineWidth = 5; cx.strokeStyle = 'rgba(0,0,0,0.6)'; cx.beginPath(); cx.arc(mx, my, 11, 0, 6.2832); cx.stroke();
     cx.lineWidth = 2.6; cx.strokeStyle = '#46e0c0'; cx.beginPath(); cx.arc(mx, my, 11, 0, 6.2832); cx.stroke();

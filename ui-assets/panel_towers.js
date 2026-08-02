@@ -256,6 +256,15 @@
     const sz = Math.round((stage.clientWidth || 280) * clueMapZoom);
     inner.style.width = sz + 'px'; inner.style.height = sz + 'px';
   }
+  // Zooming resizes the canvas on screen; the backing store only follows on a redraw, so
+  // schedule one (coalesced) or the text is left upscaled and soft.
+  let _clueZoomT = 0;
+  function clueMapRedrawSoon() {
+    clearTimeout(_clueZoomT);
+    _clueZoomT = setTimeout(function () {
+      try { if (typeof selectClue === 'function') selectClue(); } catch (e) {}
+    }, 90);
+  }
   function clueMapBindZoom(stage) {
     clueMapStageEl = stage;
     stage.addEventListener('wheel', e => {
@@ -267,6 +276,7 @@
       const px = e.clientX - rect.left + stage.scrollLeft, py = e.clientY - rect.top + stage.scrollTop;
       applyMapZoom();
       stage.scrollLeft = px * r - (e.clientX - rect.left); stage.scrollTop = py * r - (e.clientY - rect.top);
+      clueMapRedrawSoon();          // re-render at the new size so labels stay sharp
     }, { passive: false });
     stage.addEventListener('mousedown', e => { clueMapDrag = { x: e.clientX, y: e.clientY, sl: stage.scrollLeft, st: stage.scrollTop }; stage.classList.add('grabbing'); e.preventDefault(); });
     stage.addEventListener('contextmenu', e => { e.preventDefault(); scanReset(); });   // right-click = reset this scan's eliminated spots
@@ -537,6 +547,34 @@
       ctx.strokeRect(wtx * TS + 0.5, (WT - wty - dy) * TS + 0.5, dx * TS - 1, dy * TS - 1);   // north-up footprint box
     }
     ctx.restore();
+  }
+  // The map canvases are CSS-stretched to the panel width, so a fixed backing store gets
+  // resampled and TEXT comes out soft. Size the backing store to the real display
+  // resolution and scale the context, so every drawing call still works in 0..W space
+  // while glyphs render at native sharpness.
+  function clueMapCtx(cv, W) {
+    const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio > 0) ? devicePixelRatio : 1;
+    const cssW = cv.clientWidth || W;
+    const back = Math.max(W, Math.round(cssW * dpr));
+    if (cv.width !== back || cv.height !== back) { cv.width = back; cv.height = back; }
+    const cx = cv.getContext('2d');
+    cx.setTransform(back / W, 0, 0, back / W, 0, 0);
+    cx.clearRect(0, 0, W, W);
+    return cx;
+  }
+  // Terrain arrives as raw pixels at W; putImageData ignores the transform, so blit it
+  // through an offscreen canvas. Kept unsmoothed so tiles stay crisp, as before.
+  let _clueOff = null;
+  function clueMapBlit(cx, meta, W) {
+    const bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length);
+    for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+    if (!_clueOff) _clueOff = document.createElement('canvas');
+    if (_clueOff.width !== W) { _clueOff.width = W; _clueOff.height = W; }
+    _clueOff.getContext('2d').putImageData(new ImageData(a, W, W), 0, 0);
+    const sm = cx.imageSmoothingEnabled;
+    cx.imageSmoothingEnabled = false;
+    cx.drawImage(_clueOff, 0, 0, W, W);
+    cx.imageSmoothingEnabled = sm;
   }
   // Place-label overlay: clueMapDrawLabels with a tile->pixel projection from the window meta.
   function clueDrawLabelsWindow(ctx, meta) {
@@ -1089,7 +1127,7 @@
       W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || half;
       if (cv.width !== W) { cv.width = W; cv.height = W; }
       cx = cv.getContext('2d'); cx.clearRect(0, 0, W, W);
-      if (meta && meta.b64) { try { const bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); cx.putImageData(new ImageData(a, W, W), 0, 0); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
+      if (meta && meta.b64) { try { clueMapBlit(cx, meta, W); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
       projX = sx => (sx - (ccx - H)) * TS + TS / 2;
       projY = sy => ((2 * H - 1) - (sy - (ccy - H))) * TS + TS / 2;
       lmBox = [ccx - H, ccy - H, ccx + H, ccy + H];           // the full rendered window -> show all visible landmarks
@@ -1198,10 +1236,9 @@
     if (myseq !== clueMapDrawSeq) return;
     if (myseq !== clueMapDrawSeq) return;
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, H = (meta && meta.h) || 24;
-    if (cv.width !== W) { cv.width = W; cv.height = W; }
-    const cx = cv.getContext('2d'); cx.clearRect(0, 0, W, W);
+    const cx = clueMapCtx(cv, W);
     if (meta && meta.b64) {
-      try { const bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); cx.putImageData(new ImageData(a, W, W), 0, 0); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {}
+      try { clueMapBlit(cx, meta, W); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {}
     }
     // the clue tile is rendered at the window centre: window tile (H,H) -> image (H*TS,(H-1)*TS).
     const mx = H * TS + TS / 2, my = (H - 1) * TS + TS / 2;
