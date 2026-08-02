@@ -2586,6 +2586,7 @@
     34926: 28311,   // Modified farmer's hat (live-captured)
     32281: 25198,   // Modified artisan's bandana (live-captured)
     32278: 25194,   // Modified shaman's headdress (live-captured)
+    32279: 25206,   // Modified diviner's headwear (live-captured)
   };
   function teleDailyLeft(T) {
     const vb = (T && T.item > 0) ? TELE_DAILY_LEFT[T.item] : null;
