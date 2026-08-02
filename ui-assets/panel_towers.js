@@ -2589,6 +2589,7 @@
     32279: 25206,   // Modified diviner's headwear (live-captured)
     34923: 28299,   // Modified botanist's mask (live-captured)
     34924: 28303,   // Modified sous chef's toque (live-captured)
+    32280: 25202,   // Modified blacksmith's helmet (live-captured)
   };
   function teleDailyLeft(T) {
     const vb = (T && T.item > 0) ? TELE_DAILY_LEFT[T.item] : null;
