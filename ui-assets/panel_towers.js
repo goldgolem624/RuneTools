@@ -755,8 +755,10 @@
     return bn ? teleHeldBase.has(bn) : true;
   }
   function teleReqMet(T) {
-    const r = T.req;
-    if (!r) return true;
+    // NOTE: a row may carry no curated `req` at all and still be gated - most rows state
+    // their requirements as TEXT, which teleRqGates turns into real checks. Bailing out on
+    // a missing req object skipped every one of those.
+    const r = T.req || {};
     if (r.skill != null && r.level != null) {
       const lvl = questSkillLevels();
       if ((lvl(r.skill) | 0) < r.level) return false;
@@ -917,8 +919,7 @@
   // Why a gated teleport is unavailable right now ('' = available). Names the actual failing
   // gate: the spellbook varbit means "wrong spellbook", not a locked unlock.
   function teleReqWhy(T) {
-    const r = T.req;
-    if (!r) return '';
+    const r = T.req || {};      // text-only rows are still gated (see teleReqMet)
     const why = [];
     if (r.skill != null && r.level != null) {
       const lvl = questSkillLevels();
