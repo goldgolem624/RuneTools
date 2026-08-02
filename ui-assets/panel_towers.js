@@ -719,14 +719,21 @@
       const cc = {};
       for (const idStr in TELE_ITEM_CHARGES) {
         const iid = +idStr, spec = TELE_ITEM_CHARGES[idStr];
-        for (const cont of [94, 93]) {
-          const set = cont === 94 ? teleWornSet : teleInvSet;
-          if (!set || !set.has(iid)) continue;
-          try {
-            const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), cont, iid)) || {};
-            const kk = r2.key || {};
-            if (kk[String(spec.key)] !== undefined) { cc[iid] = kk[String(spec.key)] | 0; break; }
-          } catch (e) {}
+        const ids = [iid].concat(TELE_ITEM_ALIASES[iid] || []);
+        for (const vid of ids) {
+          let hit = false;
+          for (const cont of [94, 93]) {
+            const set = cont === 94 ? teleWornSet : teleInvSet;
+            if (!set || !set.has(vid)) continue;
+            try {
+              const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), cont, vid)) || {};
+              const kk = r2.key || {};
+              if (kk[String(spec.key)] !== undefined) { cc[iid] = kk[String(spec.key)] | 0; hit = true; break; }
+            } catch (e) {}
+            // An unused variant carries no charge field yet: it is simply full.
+            if (spec.max) { cc[iid] = spec.max; hit = true; break; }
+          }
+          if (hit) break;
         }
       }
       teleItemCharges = cc;
@@ -757,7 +764,7 @@
   // The universal item gate. Unknowns (containers or names unresolved) never fade.
   function teleItemOk(T) {
     if (!(T.item > 0) || !teleHeldBase || !teleWornSet || !teleInvSet) return true;
-    if (teleWornSet.has(T.item) || teleInvSet.has(T.item)) return true;
+    for (const id of teleItemIds(T)) if (teleWornSet.has(id) || teleInvSet.has(id)) return true;
     const bn = teleItemNames[T.item];
     return bn ? teleHeldBase.has(bn) : true;
   }
@@ -1106,7 +1113,8 @@
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
         const iv = teleItemChargeVal(T);
-        if (iv !== null) parts.push(iv.toLocaleString() + ' charges');
+        if (iv !== null) { const mx = teleItemChargeMax(T);
+          parts.push(iv.toLocaleString() + (mx ? '/' + mx : '') + ' charges'); }
         const why = teleWhyFull(T);
         if (why) { cell.style.opacity = '0.45'; parts.push(why); }
         // Status dot: green = every requirement satisfied, red = something is missing (the
@@ -1525,7 +1533,7 @@
     {n:'Traveller\'s necklace - Wizard\'s Tower',src:'Enchanted Jewellery',x:3101,y:3180,p:0,item:39372,kb:'1'},
     {n:'Traveller\'s necklace - The Outpost',src:'Enchanted Jewellery',x:2444,y:3348,p:0,item:39372,kb:'2'},
     {n:'Traveller\'s necklace - South of the Desert Eagle\'s Eyrie',src:'Enchanted Jewellery',x:3421,y:3141,p:0,item:39372,kb:'3'},
-    {n:'Enlightened amulet - Nexus',src:'Enchanted Jewellery',x:3216,y:3180,p:0,item:39387,kb:'1'},
+    {n:'Enlightened amulet - Lumbridge Swamp',src:'Enchanted Jewellery',x:3219,y:3183,p:0,item:39387,kb:'1'},
     {n:'Enlightened amulet - South of the Graveyard of Shadows',src:'Enchanted Jewellery',x:3232,y:3657,p:0,item:39387,kb:'2'},
     {n:'Enlightened amulet - Desert bandit camp entrance',src:'Enchanted Jewellery',x:3168,y:2993,p:0,item:39387,kb:'3'},
     {n:'Combat bracelet - Warriors\' Guild',src:'Enchanted Jewellery',x:2880,y:3542,p:0,item:11118,kb:'1'},
@@ -2368,7 +2376,19 @@
   // Extra_ints (live-verified via the hover inspector). itemId -> {key}. Display
   // ONLY - TokKul-Zo charges are spent by COMBAT, not teleporting (user-corrected
   // 2026-08-02), so charges never gate a teleport.
-  const TELE_ITEM_CHARGES = { 23643: { key: 0 } };   // TokKul-Zo (Charged): key 0 (4000 max)
+  const TELE_ITEM_ALIASES = {
+    39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
+  };
+  function teleItemIds(T) {
+    const ids = [T.item];
+    const al = TELE_ITEM_ALIASES[T.item];
+    if (al) for (const a of al) ids.push(a);
+    return ids;
+  }
+  const TELE_ITEM_CHARGES = {
+    23643: { key: 0 },                 // TokKul-Zo (Charged)
+    39387: { key: 0, max: 5 },         // Enlightened amulet (the unused "(new)" 39385 stores none yet)
+  };
   let teleItemCharges = null;   // itemId -> current charge value (worn or backpack)
   function teleChargeInfo(T) {
     const c = T && T.src ? TELE_CHARGES[T.src] : null;
@@ -2379,6 +2399,10 @@
     if (!(T.item > 0) || !TELE_ITEM_CHARGES[T.item] || !teleItemCharges) return null;
     const v = teleItemCharges[T.item];
     return v === undefined ? null : v;
+  }
+  function teleItemChargeMax(T) {
+    const spec = (T.item > 0) ? TELE_ITEM_CHARGES[T.item] : null;
+    return (spec && spec.max) ? spec.max : 0;
   }
   function teleChargeWhy(T) {
     const ci = teleChargeInfo(T);
