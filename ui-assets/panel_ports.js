@@ -1523,18 +1523,24 @@
               const curSt = curP ? curP.st : [0, 0, 0, 0];
               const own = ownWordOf[eid];
               const ownedBit = i2 => (((own[1] ? ppV(own[0]) : ppP(own[0])) >>> i2) & 1);
-              const otherDeck = eid === 1011 ? ppV(PP_EQUIP[si === 1 ? 2 : 1][2][b]) : -1;
               const taken = suggested[eid] || (suggested[eid] = {});
-              let bestP = null, bestC = cur0, bestOwned = false;
+              let bestP = null, bestC = cur0, bestOwned = false, bestS = -1;
               for (const p of parts) {
-                if (p.idx === curIdx || p.idx === otherDeck || taken[p.idx]) continue;
                 const owned = !!ownedBit(p.idx);
+                // an OWNED part can sit in both deck slots at once (user-verified
+                // 2026-08-02), so only a still-to-buy part is withheld from a second
+                // slot (one purchase per suggestion list)
+                if (p.idx === curIdx || (taken[p.idx] && !owned)) continue;
                 if (!owned && !p.cost.every(c2 => haveRes(c2[0]) >= c2[1])) continue;
                 const t2 = [0, 1, 2].map(j => tot0[j] + p.st[j] - curSt[j]);
                 const c2 = cov(t2, req);
-                // an owned part wins ties against an equally good purchase
-                if (c2 > bestC + 1e-9 || (owned && !bestOwned && bestP && c2 > bestC - 1e-9)) {
-                  bestC = c2; bestP = p; bestOwned = owned;
+                // raw contribution toward the voyage's required stats: breaks coverage ties,
+                // so a Large Crate beats a Small Crate even once morale is already saturated
+                const s2 = [0, 1, 2].reduce((a2, j) => a2 + (req[j] > 0 ? p.st[j] : 0), 0);
+                const tie = bestP && c2 > bestC - 1e-9 && c2 < bestC + 1e-9;
+                if (c2 > bestC + 1e-9
+                    || (tie && ((owned && !bestOwned) || (owned === bestOwned && s2 > bestS)))) {
+                  bestC = c2; bestP = p; bestOwned = owned; bestS = s2;
                 }
               }
               if (bestP && Math.floor(Math.min(bestC, 1) * 100) > Math.floor(Math.min(cur0, 1) * 100)) {
@@ -1582,15 +1588,49 @@
             const subs = await ppRefitScan(b, v.req, best.tot[b]);
             if (subs.length) refitRow('Refit ' + shLabel(b) + ' for ' + v.name, subs, refitTip);
           }
-          // Assign/remove moves against the aboard masks. Order: CAPTAIN placements first -
-          // the game locks a captainless ship's crew slots entirely, so until the captain
-          // is aboard nothing else can be placed (user-reported 2026-08-01; the captain
-          // socket is its own slot, so no removal has to precede it and a taken socket goes
-          // through the game's replace-on-assign). Then removals (free sockets), then crew.
+          // Assign/remove moves against the aboard masks. The list finishes one ship at a
+          // time starting with the ship whose crew window is OPEN (vb 17132, 1-based):
+          // that ship's removals, then its placements (captain first - the game locks a
+          // captainless ship's crew slots entirely, user-reported 2026-08-01), then the
+          // next ship. A step needing a different window than the previous one says so.
+          const raw = [];
+          mem.forEach((m, i) => { if (m.aboard !== best.asg[i]) raw.push({ m, from: m.aboard, to: best.asg[i] }); });
+          // Remove+add on the same ship is ONE in-game action: assigning onto an occupied
+          // socket replaces the occupant (kicks them ashore). Pair each arrival with a
+          // same-ship member headed fully ashore into a single REPLACE step - captain
+          // socket pairs only with the captain leaver. Only leavers going ASHORE pair;
+          // ship-to-ship transfers stay single direct steps (the game frees the old
+          // socket on assign anyway).
           const steps = [];
-          mem.forEach((m, i) => { if (m.aboard !== best.asg[i]) steps.push({ m, from: m.aboard, to: best.asg[i] }); });
-          const stepRank = s2 => (s2.m.cap && s2.to >= 0) ? 0 : s2.to < 0 ? 1 : 2;
-          steps.sort((a2, b2) => stepRank(a2) - stepRank(b2));
+          {
+            const shipSet = new Set();
+            raw.forEach(s2 => { if (s2.to >= 0) shipSet.add(s2.to); });
+            const consumed = new Set();
+            for (const b of shipSet) {
+              const outCap = raw.filter(s2 => s2.from === b && s2.to < 0 && s2.m.cap);
+              const outCrew = raw.filter(s2 => s2.from === b && s2.to < 0 && !s2.m.cap);
+              for (const arr of raw.filter(s2 => s2.to === b)) {
+                const pool = arr.m.cap ? outCap : outCrew;
+                const leaver = pool.find(s2 => !consumed.has(s2));
+                if (leaver) { consumed.add(leaver); arr.rep = leaver.m; }
+              }
+            }
+            for (const s2 of raw) if (!consumed.has(s2)) steps.push(s2);
+          }
+          // Finish EACH ship completely before switching windows: the viewed ship's
+          // removals then its placements, then the next ship's. A placement is done from
+          // its DESTINATION ship's window wherever the member currently stands (the game
+          // frees the old socket / replaces on assign), so per-ship grouping stays valid.
+          const viewedB = ppV(17132) - 1;
+          const visitIdx = b => b === viewedB ? 0 : b + 1;
+          const stepWin = s2 => s2.to < 0 ? s2.from : s2.to;
+          steps.sort((a2, b2) => {
+            const wa = visitIdx(stepWin(a2)), wb = visitIdx(stepWin(b2));
+            if (wa !== wb) return wa - wb;                        // one ship at a time, viewed first
+            const pa = a2.to < 0 ? 0 : 1, pb = b2.to < 0 ? 0 : 1;
+            if (pa !== pb) return pa - pb;                        // its removals before its placements
+            return (b2.m.cap ? 1 : 0) - (a2.m.cap ? 1 : 0);       // captain leads the placements
+          });
           // Build the display view-model, then gate it behind double-read confirmation:
           // a list differing from the shown one renders only after two polls agree.
           let view = null;
@@ -1600,7 +1640,8 @@
             // crew the other five). When the ship is FULL, the game replaces on assign, so
             // point at the socket of a member the plan moves OFF that ship instead.
             let destSl = -1, replaceNm = '';
-            if (steps[0].to >= 0) {
+            if (steps[0].rep) { destSl = steps[0].rep.sl; replaceNm = steps[0].rep.nm; }
+            else if (steps[0].to >= 0) {
               const b = steps[0].to, taken = {};
               mem.forEach(m2 => { if (m2.aboard === b) taken[m2.sl] = 1; });
               if (m0.cap) {
@@ -1618,11 +1659,13 @@
             view = {
               srcSl: m0.sl, destSl,
               lines: steps.map((s2, mi) => {
-                const what = s2.to < 0 ? 'take off ' + shLabel(s2.from)
+                const what = s2.rep ? 'replace ' + s2.rep.nm + ' on ' + shLabel(s2.to)
+                           : s2.to < 0 ? 'take off ' + shLabel(s2.from)
                            : s2.from < 0 ? 'put on ' + shLabel(s2.to)
                            : shLabel(s2.from) + ' → ' + shLabel(s2.to);
                 return (mi === 0 ? '▶ ' : '') + s2.m.nm + (s2.m.cap ? ' (captain)' : '')
                      + ' · Lv ' + lv(s2.m) + ' · ' + s2.m.st.join('/') + ' · ' + what
+                     + (stepWin(s2) !== (mi > 0 ? stepWin(steps[mi - 1]) : viewedB) ? ' · SWITCH the crew window to ' + shLabel(stepWin(s2)) + ' first' : '')
                      + (mi === 0 && replaceNm ? ' · replacing ' + replaceNm : '');
               }),
             };
