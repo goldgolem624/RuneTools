@@ -2012,7 +2012,12 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             const double tf = shadeF[(size_t)(wx + 1) * BW + (wy + 1)];
             // Overlays (water/roads/floors) stay flat per tile; the underlay ground gets the
             // per-pixel gradient at TS >= 4 (at TS 2 a tile is 4 px, flat is indistinguishable).
-            const bool smoothUl = (TS >= 4) && (ul >= 1);
+            // Per-pixel bilinear ground only when a tile is BIG on screen. The game's own map
+            // paints each tile flat, which is what keeps small grass patches reading as grass;
+            // interpolating between tile centres at map zoom washes isolated tiles into their
+            // neighbours (Tuai Leit lost two thirds of its green that way). At TS >= 8 a tile
+            // is large enough that flat shading looks blocky, so smoothing earns its keep.
+            const bool smoothUl = (TS >= 8) && (ul >= 1);
             const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
             // Overlays stay UNSHADED (reference renderer parity): roads/floors/plazas are
