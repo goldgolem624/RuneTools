@@ -1844,8 +1844,18 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         if (gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return;
         const MapTileData& td = RegionTilesLocked(gx >> 6, gy >> 6);
         if (td.underlay.empty()) return;
-        int idx = (effPlaneAt(gx, gy) * 64 + (gx & 63)) * 64 + (gy & 63);
+        int ep = effPlaneAt(gx, gy);
+        int idx = (ep * 64 + (gx & 63)) * 64 + (gy & 63);
         ul = td.underlay[idx]; ov = td.overlay[idx]; sh = td.shape[idx];
+        // A shifted column only OVERRIDES the base plane where the upper plane actually has
+        // ground. Bridges and the Daemonheim platform do; over open terrain the 0x2 flag is
+        // set on columns whose upper plane is EMPTY (8% of Tuai Leit), and taking that empty
+        // tile dropped the real ground to the neutral fallback - which then blurred into the
+        // surrounding grass and turned whole hillsides grey-olive.
+        if (ep != plane && ul < 1 && ov < 1) {
+            int b = (plane * 64 + (gx & 63)) * 64 + (gy & 63);
+            ul = td.underlay[b]; ov = td.overlay[b]; sh = td.shape[b];
+        }
     };
     const int kNoH = -32768;                        // INT16_MIN sentinel = tile carried no height
     auto heightAt = [&](int gx, int gy) -> int {
@@ -1982,7 +1992,9 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         for (int wy = 0; wy < WT; ++wy) {
             int gx = cx - HALF + wx, gy = cy - HALF + wy;
             int ul, ov, sh; tileAt(gx, gy, ul, ov, sh);            // column-shifted tiles resolve to plane+1 inside tileAt
-            bool deck = effPlaneAt(gx, gy) != plane;               // shifted column (pier, bridge, Daemonheim platform)
+            // "deck" = a shifted column that really is carried by the upper plane (tileAt falls
+            // back to the base plane when the upper one is empty, and those are NOT decks).
+            bool deck = effPlaneAt(gx, gy) != plane && (ul >= 1 || ov >= 1);
             if (ul < 1 && ov < 1 && !deck) continue;               // no tile data and no shifted column -> genuine void
             int ucol = (ul >= 1) ? blendUl[(size_t)(wx + 1) * BW + (wy + 1)] : -1;
             int ocol = (ov >= 1) ? ConfigColourLocked(4, ov - 1) : -1;
