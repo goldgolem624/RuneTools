@@ -78,7 +78,7 @@
     sandy:  { vb: [['Sandy Sand', 61090]] }   // Sandy Sand currency: count lives in varbit 61090 (no container; item 61835 is the icon)
   };
   // RS3 rune index -> name (1..21); combination runes (5..10) are a best-effort ordering.
-  const RUNE_NAMES = { 1: 'Air', 2: 'Water', 3: 'Earth', 4: 'Fire', 5: 'Dust', 6: 'Lava', 7: 'Mist', 8: 'Mud', 9: 'Smoke', 10: 'Steam', 11: 'Mind', 12: 'Body', 13: 'Cosmic', 14: 'Chaos', 15: 'Nature', 16: 'Law', 17: 'Death', 18: 'Astral', 19: 'Blood', 20: 'Soul', 21: 'Wrath' };
+  const RUNE_NAMES = { 1: 'Air', 2: 'Water', 3: 'Earth', 4: 'Fire', 5: 'Dust', 6: 'Lava', 7: 'Mist', 8: 'Mud', 9: 'Smoke', 10: 'Steam', 11: 'Mind', 12: 'Body', 13: 'Cosmic', 14: 'Chaos', 15: 'Nature', 16: 'Law', 17: 'Death', 18: 'Astral', 19: 'Blood', 20: 'Soul', 21: 'Wrath', 22: 'Time' };
   // Item NAME -> item id for grid icons of the varbit/varp-backed boxes; no entry = text cell.
   const STOR_ICON = {
     'Copper': 436, 'Tin': 438, 'Iron': 440, 'Coal': 453, 'Silver': 442, 'Mithril': 447, 'Adamantite': 449,
@@ -96,7 +96,7 @@
     'Blood rune': 565, 'Soul rune': 566,
     'Small pouch': 5509, 'Medium pouch': 5510, 'Large pouch': 5512, 'Giant pouch': 5514, 'Expansive pouch': 58451,
     'Coins': 995, 'Sandy Sand': 61835,
-    'Easy clue': 2677, 'Medium clue': 2801, 'Hard clue': 2722, 'Elite clue': 19043, 'Master clue': 41790,
+    'Easy clue': 42006, 'Medium clue': 42007, 'Hard clue': 42008, 'Elite clue': 42009, 'Master clue': 42010,
     'Easy casket': 42001, 'Medium casket': 42002, 'Hard casket': 42003, 'Elite casket': 42004, 'Master casket': 42005
   };
   // Quiver arrow-type byte (key0 & 0xFF) -> ammo name; byte is the key of cache enum 16608.

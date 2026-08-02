@@ -524,6 +524,7 @@ let dungIcePlan = null;      // {sig, anchor:'lx,ly', stops:[{k:'lx,ly', press}.
                             // sig = room + sorted UNPRESSED-pad set, so a pressed pad (id change) re-solves
 let dungIceSettle = null;    // {key:'lx,ly', n} consecutive reconciles on the same tile (settle detector)
 let dungIceDump = null;      // ice room model + plan, copyable JSON (map tab) -- live verification beats re-reasoning
+let dungMazeDump = null;     // poison-maze model + route, same paste-back loop (bad routes get fixed against data)
 let dungBarrelDump = null;   // barrel room: live pad-relative geometry + the rotation fit's per-turn scores
 let dungColFerret = null;    // latched colour in the coloured-ferret room: one target at a time
 // Plate marks MUST carry an rgb. The reader hides plain (rgb 0) destination tiles
@@ -648,7 +649,7 @@ function dungClearOverlays() {
   dungWasIn = false;
   dungHighlightList([]); dungGuideTiles([]); dungHerbClear(); dungInvClear();
   dungLodeKey = ''; dungLodeTick = -1; dungLodeWarnAt = -1; dungLodeCenter = null;
-  dungIcePlan = null; dungIceSettle = null; dungIceDump = null; dungFerretPlan = null; dungFerretSettle = null; dungColFerret = null;
+  dungIcePlan = null; dungIceSettle = null; dungIceDump = null; dungMazeDump = null; dungFerretPlan = null; dungFerretSettle = null; dungColFerret = null;
   dungLodeMarkAt = 0; dungLodeWinMs = 0; dungLodeSuppress = false; dungLodeInRoom = false;
   if (dungLodeCenterOn) { dungLodeCenterOn = false; try { bridge().centerText(myPid(), ''); } catch (e) {} }
 }
@@ -828,15 +829,53 @@ function dungReconcileScene(npcs, objs) {
         if ((o.actions || []).some(a => a === 'Mine')) mineable[lx + ',' + ly] = 1;
         else blk[lx + ',' + ly] = 1;
       }
-      const band = (x, y) => { const r = Math.max(Math.abs(x - 6.5), Math.abs(y - 6.5)); return r <= 1.5 ? 0 : (r - 1.5); };
-      const open = (x, y) => x >= 0 && x <= 13 && y >= 0 && y <= 13 && !blk[x + ',' + y];
+      // GROUND-TRUTH walls (js5-5 room bank, region 2_66..2_75; every template cell and
+      // both themes share ONE interior). Template = 16x16 with a 1-tile shared border, so
+      // live local = rot(template) - (1,1); a live dump validated the mapping 100% (chest,
+      // switch, entry door and all 16 ring barriers matched at rotation 1). The previous
+      // concentric-band abstraction routed through geometry the real room does not have.
+      // Wall entries are [x, y, type, rot]: type 0 = one edge, 2 = corner (rot and rot+1);
+      // edge dirs 0=W 1=N 2=E 3=S; rotation r maps (x,y)->(y,15-x) and d->(d+1)&3.
+      const TPL_WALLS = [[0,1,0,2],[0,2,0,2],[0,3,0,2],[0,4,0,2],[0,5,0,2],[0,6,0,2],[0,7,0,2],[0,8,0,2],[0,9,0,2],[0,10,0,2],[0,11,0,2],[0,12,0,2],[0,13,0,2],[0,14,0,2],[1,0,0,1],[1,2,0,2],[1,3,0,2],[1,5,0,2],[1,6,0,2],[1,7,0,2],[1,8,0,2],[1,9,0,2],[1,10,0,2],[1,11,0,2],[1,13,0,2],[1,15,0,3],[2,0,0,1],[2,1,0,1],[2,3,0,2],[2,4,0,2],[2,5,0,2],[2,6,0,2],[2,7,0,2],[2,9,0,2],[2,10,0,2],[2,11,0,2],[2,12,0,2],[2,14,0,3],[2,15,0,3],[3,0,0,1],[3,1,0,1],[3,2,0,1],[3,4,0,2],[3,5,0,2],[3,6,0,2],[3,7,0,2],[3,8,0,2],[3,9,0,2],[3,10,0,2],[3,11,0,2],[3,13,0,3],[3,14,0,3],[3,15,0,3],[4,0,0,1],[4,2,0,1],[4,3,0,1],[4,5,0,2],[4,7,0,2],[4,8,0,2],[4,9,0,2],[4,10,0,2],[4,12,0,3],[4,13,0,3],[4,14,0,3],[4,15,0,3],[5,0,0,1],[5,1,0,1],[5,2,0,1],[5,4,0,1],[5,6,0,2],[5,7,0,2],[5,8,0,2],[5,9,0,2],[5,11,0,3],[5,12,0,3],[5,13,0,3],[5,14,0,3],[5,15,0,3],[6,0,0,1],[6,1,0,1],[6,2,0,1],[6,3,0,1],[6,4,0,1],[6,5,0,1],[6,10,0,3],[6,11,0,3],[6,13,0,3],[6,14,0,3],[6,15,0,3],[7,0,0,1],[7,1,0,1],[7,2,0,1],[7,3,0,1],[7,4,0,1],[7,5,0,1],[7,11,0,3],[7,12,0,3],[7,13,0,3],[7,14,0,3],[7,15,0,3],[8,0,0,1],[8,2,0,1],[8,3,0,1],[8,4,0,1],[8,10,0,3],[8,11,0,3],[8,12,0,3],[8,13,0,3],[8,15,0,3],[9,0,0,1],[9,1,0,1],[9,2,0,1],[9,3,0,1],[9,4,0,1],[9,5,0,1],[9,10,0,3],[9,11,0,3],[9,12,0,3],[9,13,0,3],[9,14,0,3],[9,15,0,3],[10,0,0,1],[10,1,0,1],[10,3,0,1],[10,4,0,1],[10,6,0,0],[10,7,0,0],[10,8,0,0],[10,9,0,0],[10,11,0,3],[10,13,0,3],[10,14,0,3],[10,15,0,3],[11,0,0,1],[11,1,2,0],[11,2,0,1],[11,3,0,1],[11,5,0,0],[11,6,0,0],[11,7,0,0],[11,9,0,0],[11,10,0,0],[11,12,0,3],[11,13,0,3],[11,14,0,3],[11,15,0,3],[12,0,0,1],[12,1,0,1],[12,2,0,1],[12,4,0,0],[12,5,0,0],[12,6,0,0],[12,7,0,0],[12,8,0,0],[12,9,0,0],[12,10,0,0],[12,11,0,0],[12,13,0,3],[12,14,0,3],[12,15,0,3],[13,0,0,1],[13,1,0,1],[13,3,0,0],[13,4,0,0],[13,5,0,0],[13,6,0,0],[13,8,0,0],[13,9,0,0],[13,10,0,0],[13,11,0,0],[13,12,0,0],[13,14,0,3],[13,15,0,3],[14,0,0,1],[14,2,0,0],[14,4,0,0],[14,5,0,0],[14,6,0,0],[14,7,0,0],[14,8,0,0],[14,9,0,0],[14,11,0,0],[14,12,0,0],[14,13,0,0],[14,15,0,3],[15,1,0,0],[15,2,0,0],[15,3,0,0],[15,4,0,0],[15,5,0,0],[15,6,0,0],[15,7,0,0],[15,8,0,0],[15,9,0,0],[15,10,0,0],[15,11,0,0],[15,12,0,0],[15,13,0,0],[15,14,0,0]];
+      const TPL_BLOCK = [[6,6],[6,9],[7,6],[9,6],[9,9]];   // centre pillars + rock (scenery on the outer walkway is outside the playfield)
+      const TPL_BARS = [[1,4,2],[1,12,2],[2,8,2],[4,1,1],[4,6,2],[5,3,1],[6,12,3],[7,10,3],[8,5,1],[8,14,3],[10,2,1],[10,12,3],[11,8,0],[13,7,0],[14,3,0],[14,10,0]];
+      const TPL_DOOR = [8, 1, 1], TPL_CHEST = [8, 8];
+      const rotP = (x, y, r) => { for (let i2 = 0; i2 < r; i2++) { const t2 = x; x = y; y = 15 - t2; } return [x, y]; };
+      const toLive = (x, y, r) => { const p4 = rotP(x, y, r); return [p4[0] - 1, p4[1] - 1]; };
       const gx = chest.x - swx, gy = chest.y - swy, sx = dungSelfPos.x - swx, sy = dungSelfPos.y - swy;
-      // SYMMETRIC crossings, and that is not a shortcut: the real maze DOES require
-      // leaving a ring back OUTWARD to reach a gap that is only approachable from the
-      // outer side, then coming round: an inward-only search misses the door back out to
-      // the outer ring. So a boundary step in EITHER direction is allowed, gated on a
-      // Barrier standing on the OUTER (higher-band) tile of the pair. Plain BFS, so
-      // whatever route that admits, the shortest one wins -- backtracking included.
+      // Rotation = the one that puts the template chest on the live chest and the ring
+      // barriers on live barrier tiles (>= 12 of 16: captures can miss a couple).
+      let mrot = -1;
+      for (let r = 0; r < 4; r++) {
+        const c2 = toLive(TPL_CHEST[0], TPL_CHEST[1], r);
+        if (c2[0] !== gx || c2[1] !== gy) continue;
+        let hits = 0;
+        for (const b2 of TPL_BARS) { const p4 = toLive(b2[0], b2[1], r); if (barSet[p4[0] + ',' + p4[1]]) hits++; }
+        if (hits >= 12) { mrot = r; break; }
+      }
+      const wallE = {}, passE = {};   // "x,y,d" -> 1 / owner tile key ("x,y")
+      if (mrot >= 0) {
+        for (const w of TPL_WALLS) {
+          const p4 = toLive(w[0], w[1], mrot), d0 = (w[3] + mrot) & 3;
+          wallE[p4[0] + ',' + p4[1] + ',' + d0] = 1;
+          if (w[2] === 2) wallE[p4[0] + ',' + p4[1] + ',' + ((d0 + 1) & 3)] = 1;
+        }
+        for (const b2 of TPL_BLOCK) { const p4 = toLive(b2[0], b2[1], mrot); blk[p4[0] + ',' + p4[1]] = 1; }
+        for (const b2 of TPL_BARS.concat([TPL_DOOR])) {
+          const p4 = toLive(b2[0], b2[1], mrot), d0 = (b2[2] + mrot) & 3;
+          passE[p4[0] + ',' + p4[1] + ',' + d0] = p4[0] + ',' + p4[1];
+        }
+      }
+      // A step is blocked when a wall edge sits on EITHER side of the boundary (edge d
+      // from the source tile, or the opposite edge d^... from the destination). Barrier
+      // and entry-door edges are the passable exceptions - they are the route's marks.
+      const OPP = { 0: 2, 1: 3, 2: 0, 3: 1 };   // W<->E, N<->S
+      const DIRD = { '1,0': 2, '-1,0': 0, '0,1': 1, '0,-1': 3 };   // step vector -> edge dir from source (world axes: +y = N)
+      const edgeAt = (x, y, d, nx, ny) => {
+        const k1 = x + ',' + y + ',' + d, k2 = nx + ',' + ny + ',' + OPP[d];
+        return { wall: wallE[k1] || wallE[k2], pass: passE[k1] || passE[k2] };
+      };
+      const open = (x, y) => x >= 0 && x <= 13 && y >= 0 && y <= 13 && !blk[x + ',' + y];
       // Costed search (not plain BFS) so "mine through" and "run around" compete on
       // TIME: one tile of running = 1, mining a pedestal = DUNG_MAZE_MINE_TILES more.
       // 14x14 = 196 nodes, so scanning for the cheapest open node is plenty fast.
@@ -844,38 +883,63 @@ function dungReconcileScene(npcs, objs) {
       const startK = sx + ',' + sy, goalK = gx + ',' + gy;
       dist[startK] = 0; mprev[startK] = null;
       let mg = null;
-      while (true) {
+      if (mrot >= 0) while (true) {
         let bk = null, bd = Infinity;
         for (const k in dist) if (!done[k] && dist[k] < bd) { bd = dist[k]; bk = k; }
         if (bk === null) break;
         if (bk === goalK) { mg = bk; break; }
         done[bk] = 1;
-        const p0 = bk.split(',').map(Number), x = p0[0], y = p0[1], bA = band(x, y);
+        const p0 = bk.split(',').map(Number), x = p0[0], y = p0[1];
         for (const dd of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
           const nx = x + dd[0], ny = y + dd[1], k = nx + ',' + ny;
           if (!open(nx, ny) || done[k]) continue;
-          const bB = band(nx, ny);
-          // crossing either way needs the Barrier on the OUTER tile of the pair:
-          // inward -> it is the tile being stood on; outward -> it is the destination
-          if (bA !== bB && !(bA > bB ? barSet[bk] : barSet[k])) continue;
+          const e = edgeAt(x, y, DIRD[dd[0] + ',' + dd[1]], nx, ny);
+          if (e.wall && !e.pass) continue;
           const nd = bd + 1 + (mineable[k] ? DUNG_MAZE_MINE_TILES : 0);
           if (dist[k] === undefined || nd < dist[k]) { dist[k] = nd; mprev[k] = bk; }
         }
       }
+      // Room dump for the paste-back loop: everything the router SAW plus the route it
+      // chose, so a nonsensical path gets diagnosed against data instead of screenshots.
+      dungMazeDump = {
+        origin: [swx, swy], self: [sx, sy], chest: [gx, gy], rot: mrot, timer: dungMazeTimer,
+        barriers: Object.keys(barSet), mineable: Object.keys(mineable), blocked: Object.keys(blk),
+        objsIn: (objs || []).filter(o => typeof o.x === 'number'
+            && o.x - swx >= 0 && o.x - swx <= 13 && o.y - swy >= 0 && o.y - swy <= 13)
+          .map(o => [o.id, o.x - swx, o.y - swy, (o.actions || []).filter(Boolean).join('/'), o.name || '']),
+        route: mg ? (() => { const c = []; for (let k = mg; k; k = mprev[k]) c.unshift(k); return c; })() : null,
+        cost: mg ? dist[mg] : null
+      };
       if (mg) {
         const chain = [];
         for (let k = mg; k; k = mprev[k]) chain.unshift(k);
+        // Mark only what the walk actually USES: the outer barrier tile of each band
+        // crossing, plus mine tolls on the path. Marking every path tile that happened
+        // to hold a barrier numbered the START tile when the route never crossed there
+        // (user dump 2026-07-31: mark "1" at the player's feet, route walking away).
+        // Marks follow the ACTUAL crossings: each barrier/door edge the walk passes gets a
+        // number at the loc's own tile ('enter' for the outer door), mine tolls get MINE.
         let step = 1;
-        for (const k of chain) {
-          if (mineable[k] && marks.length < 16) {
-            const p3 = k.split(',').map(Number);
+        const marked = {};
+        const doorTile = (() => { const b = mbars.find(b2 => b2.id === 49344); return b ? (b.x - swx) + ',' + (b.y - swy) : ''; })();
+        for (let ci = 0; ci < chain.length; ci++) {
+          const k = chain[ci], p3 = k.split(',').map(Number);
+          if (mineable[k] && !marked[k] && marks.length < 16) {
+            marked[k] = 1;
             marks.push({ x: swx + p3[0], y: swy + p3[1], plane: 0,
                          label: step + ' - MINE through', rgb: 0xe8b34b, snap: 1 });
             step++;
-          } else if (barSet[k] && marks.length < 16) {
-            const p2 = k.split(',').map(Number);
-            marks.push({ x: swx + p2[0], y: swy + p2[1], plane: 0, label: String(step), rgb: 0x5ab8f0, snap: 1 });
-            step++;
+          }
+          if (ci > 0) {
+            const pp = chain[ci - 1].split(',').map(Number);
+            const e = edgeAt(pp[0], pp[1], DIRD[(p3[0] - pp[0]) + ',' + (p3[1] - pp[1])], p3[0], p3[1]);
+            if (e.pass && !marked[e.pass] && marks.length < 16) {
+              marked[e.pass] = 1;
+              const po = e.pass.split(',').map(Number);
+              marks.push({ x: swx + po[0], y: swy + po[1], plane: 0,
+                           label: e.pass === doorTile ? step + ' - enter' : String(step), rgb: 0x5ab8f0, snap: 1 });
+              step++;
+            }
           }
         }
       }
@@ -2156,14 +2220,22 @@ function dungReconcileScene(npcs, objs) {
   // pad whose nearest statue is done/broken needs nobody), only ACTIVE is ever
   // watched or numbered. No active statue left -> the block does not claim the room
   // and the function tail clears the channels.
-  const DUNG_EMOTE_STATUE = { 10966: 1, 10967: 1, 10968: 1 };
-  const DUNG_EMOTE_DONE   = { 10969: 1, 10970: 1, 10971: 1 };
-  const DUNG_EMOTE_BROKEN = { 10972: 1, 10973: 1, 10974: 1 };
+  // Theme families from js5-18 (blocks anchored by the "Broken statue" ids 10972-74 /
+  // 12116 / 12962). The 121xx and 129xx themes ship only TWO non-broken ids each, so all
+  // active instances share one id (live-confirmed: an unsolved room shows two 12114s);
+  // the second id is the done re-id by positional analogy with the validated 109xx block.
+  const DUNG_EMOTE_STATUE = { 10966: 1, 10967: 1, 10968: 1, 12114: 1, 12960: 1 };
+  const DUNG_EMOTE_DONE   = { 10969: 1, 10970: 1, 10971: 1, 12115: 1, 12961: 1 };
+  const DUNG_EMOTE_BROKEN = { 10972: 1, 10973: 1, 10974: 1, 12116: 1, 12962: 1 };
   const emoteStatues = npcs.filter(n =>
     (DUNG_EMOTE_STATUE[n.id] || DUNG_EMOTE_DONE[n.id] || DUNG_EMOTE_BROKEN[n.id])
     && typeof n.x === 'number' && here(n));
   if (emoteStatues.some(n => DUNG_EMOTE_STATUE[n.id])) {
-    const pads = (objs || []).filter(o => o.id === 52206 && typeof o.x === 'number' && here(o));
+    // Every "Pressure pad" loc the cache ships for these rooms: 52206 (model 54793, the
+    // original theme), 54282 (59262, the 121xx theme), 35232/97487 (61706). Without the
+    // theme's pad id the watch fell back to "first statue" and boxed the wrong one.
+    const DUNG_EMOTE_PADS = { 52206: 1, 54282: 1, 35232: 1, 97487: 1 };
+    const pads = (objs || []).filter(o => DUNG_EMOTE_PADS[o.id] && typeof o.x === 'number' && here(o));
     const nearest = (x, y) => {
       let s = null, sd = Infinity;
       for (const st of emoteStatues) {
@@ -5486,6 +5558,11 @@ function renderDungeoneering() {
         try { if (dungBarrelDump && bridge() && bridge().copyClipboard) { bridge().copyClipboard(JSON.stringify(dungBarrelDump)); bb.textContent = 'Copied'; } } catch (e) {}
         return;
       }
+      const mb2 = t && t.closest ? t.closest('[data-mazedump]') : null;
+      if (mb2) {
+        try { if (dungMazeDump && bridge() && bridge().copyClipboard) { bridge().copyClipboard(JSON.stringify(dungMazeDump)); mb2.textContent = 'Copied'; } } catch (e) {}
+        return;
+      }
       // key chip -> toggle critical: promote a held key / demote a critical one
       // (a manual demotion is remembered so the auto-latch can't re-add it)
       const keyEl = t && t.closest ? t.closest('.dg-key[data-kidx]') : null;
@@ -6017,6 +6094,9 @@ function renderDungeoneering() {
   if (dungIceDump) html += '<div class="dg-dbg"><button class="dg-sync-btn" data-icedump="1">Copy ice-room dump</button> ice: '
     + dungIceDump.padsUn.length + ' pad(s) left, plan '
     + (dungIceDump.plan ? dungIceDump.plan.length + ' slide(s)' : 'NONE') + '</div>';
+  if (dungMazeDump) html += '<div class="dg-dbg"><button class="dg-sync-btn" data-mazedump="1">Copy maze dump</button> maze: '
+    + dungMazeDump.barriers.length + ' barrier(s), route '
+    + (dungMazeDump.route ? dungMazeDump.route.length + ' tile(s), cost ' + dungMazeDump.cost : 'NONE') + '</div>';
   // Same paste-back loop for the barrel room's rotation fit -- the scores say whether the
   // orientation was actually determined or just won a tie.
   if (dungBarrelDump) html += '<div class="dg-dbg"><button class="dg-sync-btn" data-barreldump="1">Copy barrel-room dump</button> barrels: '

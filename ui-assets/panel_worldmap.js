@@ -194,7 +194,7 @@
     }
     if (typeof LODESTONES !== 'undefined') for (const l of LODESTONES) {
       const sc = wmScore(l.n + ' lodestone', s); if (sc < 0) continue;
-      out.push({ sc: sc, ty: 'Lodestone', nm: l.n, dt: l.kb ? 'key ' + l.kb : '', x: l.x, y: l.y, p: 0 });
+      out.push({ sc: sc, ty: 'Lodestone', nm: l.n, dt: l.kb ? 'key ' + l.kb : '', x: l.x, y: l.y, p: l.p | 0 });
     }
     for (const T of MAP_TELEPORTS) {
       let sc = wmScore(T.n, s); const ss = wmScore(T.src || '', s);
@@ -353,7 +353,7 @@
         b.ts.push(T);
       }
       for (const b of buckets.values()) {
-        const T = b.ts[0], met = teleReqMet(T);
+        const T = b.ts[0], met = !teleWhyFull(T);
         cx.globalAlpha = met ? 1 : 0.45;
         const url = T.iconUrl || (T.item ? resolveIcon(T.item) : (T.sp ? wmSpriteUrl(T.sp) : ''));
         const img = url ? wmImg(url) : null;
@@ -376,7 +376,7 @@
         }
         cx.globalAlpha = 1;
         const tip = b.ts.map(function (t2) {
-          const rq = teleRqText(t2), why = teleReqWhy(t2);
+          const rq = teleRqText(t2), why = teleWhyFull(t2);
           return '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
             + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
             + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : htmlEsc(rq)) : '')
@@ -386,9 +386,10 @@
       }
     }
     // lodestones (sparse: always drawn; grey until the unlock varbit says otherwise)
-    if (wmLayer.lodes && typeof LODESTONES !== 'undefined' && plane === 0) {
+    if (wmLayer.lodes && typeof LODESTONES !== 'undefined') {
       const lookup = (typeof lodeData !== 'undefined' && lodeData) ? lodeData : null;
       for (const l of LODESTONES) {
+        if ((l.p | 0) !== plane) continue;   // Prifddinas / City of Um are plane-1 destinations
         if (l.x < vx0 || l.x > vx1 || l.y < vy0 || l.y > vy1) continue;
         const mx = sx(l.x + 0.5), my = sy(l.y + 0.5);
         let unlocked = true;
@@ -461,7 +462,7 @@
   function wmPaintStatus() {
     const st = $('wmStatus'); if (!st) return;
     const near = (wmHover.x >= 0) ? (nearLabel(wmHover.x, wmHover.y, wmCam.p) || '') : '';
-    let html = (wmHover.x >= 0 ? '<b>' + wmHover.x + ', ' + wmHover.y + '</b>' + (near ? ' <span>' + htmlEsc(near) + '</span>' : '') : '<span>hover the map for coordinates</span>')
+    let html = (wmHover.x >= 0 ? '<b>' + wmHover.x + ', ' + wmHover.y + '</b>' + (near ? ' <span class="wm-near">' + htmlEsc(near) + '</span>' : '') : '<span>hover the map for coordinates</span>')
       + '<span style="margin-left:auto">floor ' + wmCam.p + ' - ' + (Math.round(wmCam.z * 100) / 100) + ' px/tile</span>';
     if (wmSel) html += '<span class="wm-x" id="wmSelClear" title="Clear pin">&times;</span>';
     setHTML(st, html);
@@ -490,8 +491,10 @@
     + '.wm-stage.grabbing{cursor:grabbing}'
     + '#wmCanvas{position:absolute;left:0;top:0;width:100%;height:100%}'
     + '.wm-tip{position:absolute;z-index:20;display:none;pointer-events:none;background:rgba(9,11,17,0.94);border:1px solid var(--border-hi);border-radius:6px;padding:5px 8px;font-size:11px;line-height:1.45;max-width:240px}'
-    + '.wm-status{flex:0 0 auto;font-size:10.5px;color:var(--text-dim);min-height:14px;display:flex;gap:8px;align-items:center}'
-    + '.wm-status b{color:var(--text)}'
+    + '.wm-status{flex:0 0 18px;height:18px;overflow:hidden;font-size:10.5px;color:var(--text-dim);display:flex;gap:8px;align-items:center}'
+    + '.wm-status span{white-space:nowrap}'
+    + '.wm-status .wm-near{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}'
+    + '.wm-status b{color:var(--text);white-space:nowrap}'
     + '.wm-x{cursor:pointer;color:var(--text-mute);font-weight:800;padding:0 4px;font-size:13px}';
   let wmDrag = null, wmWinBound = false;
   function renderWorldMap() {

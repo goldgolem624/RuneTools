@@ -1165,7 +1165,27 @@
             const info = await ppVoyageInfo(vid);
             if (info && (info.req[0] + info.req[1] + info.req[2]) > 0)
               voys.push({ vid, name: info.name || ('Voyage #' + vid), req: info.req,
-                          sp: vbid >= 17118 });   // special-tab slots: story/adventurer voyages
+                          sp: vbid >= 17118,      // special-tab slots: story/adventurer voyages
+                          // In-list position (the game's voyage list renders slots in this
+                          // exact order, script1885). Many DIFFERENT voyages share one name
+                          // ("Supply and Demand" exists in 18 stat variants), so the name
+                          // alone can send the user to the wrong offer - every display of a
+                          // voyage carries its list number.
+                          slot: ((vbid - 17115) % 3) + 1 });
+          }
+          // Same-named offers get a CACHE-DERIVED disambiguator appended (their requirement
+          // profile differs per variant - 18 structs are all called "Supply and Demand").
+          // The id chain is already exact internally (slot varbit -> enum 1022 -> struct);
+          // this makes the DISPLAY exact too, with the raw ids surfaced in tooltips.
+          {
+            const byName = {};
+            for (const v of voys) (byName[v.name] = byName[v.name] || []).push(v);
+            for (const nm3 in byName) if (byName[nm3].length > 1)
+              for (const v of byName[nm3]) {
+                const parts = ['morale', 'combat', 'seafaring']
+                  .map((lab, i) => v.req[i] > 0 ? lab + ' ' + v.req[i].toLocaleString() : '').filter(Boolean);
+                v.dis = ' (' + (parts.join(', ') || 'no stat needs') + ')';
+              }
           }
           if (!voys.length || !shipList.length) return;
           const cov = (t, req) => {
@@ -1399,6 +1419,39 @@
             });
             hdr.appendChild(rp);
           }
+          {   // plan dump -> clipboard: the paste-back loop for "optimized the wrong stats"
+            // reports - captures exactly what the solver SAW (slots, resolved structs +
+            // reqs, frozen plan, members, gear) so a bad plan is diagnosed against data.
+            const dp = document.createElement('button');
+            dp.className = 'pp-bell';
+            dp.dataset.tip = 'Copy a plan diagnostic dump (paste it in a bug report)';
+            dp.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>';
+            dp.addEventListener('click', async () => {
+              try {
+                const slots = {};
+                for (const vbid of [17115, 17116, 17117, 17118, 17119, 17120]) slots[vbid] = ppV(vbid);
+                const resolved = [];
+                for (const vbid in slots) {
+                  const vid = slots[vbid];
+                  if (vid > 0) {
+                    const inf = await ppVoyageInfo(vid);
+                    resolved.push({ slot: +vbid, vid: vid, struct: (ppVoyEnum && ppVoyEnum[vid]) | 0,
+                                    name: (inf && inf.name) || '', req: (inf && inf.req) || null });
+                  }
+                }
+                const dump = {
+                  at: new Date().toISOString(), slots: slots, resolved: resolved,
+                  plan: plan, planPairs: best.map.map(pq => ({ vid: pq.v.vid, name: pq.v.name, req: pq.v.req, ship: pq.b, tot: best.tot[pq.b] })),
+                  members: mem.map(m => ({ id: m.id, nm: m.nm, st: m.st, cap: !!m.cap, aboard: m.aboard })),
+                  gear: shipList.map(b => ({ ship: b, g: gearOf(b) })),
+                  successVbs: { m: ppV(17126), c: ppV(17127), s: ppV(17128) },
+                  viewed: { tab: ppV(17129), slot: ppV(17130), ship: ppV(17132) }
+                };
+                if (bridge() && bridge().copyClipboard) { bridge().copyClipboard(JSON.stringify(dump)); dp.dataset.tip = 'Copied'; }
+              } catch (e) {}
+            });
+            hdr.appendChild(dp);
+          }
           yc.appendChild(hdr);
           for (const { v, b } of best.map.slice().sort((p, q) => (q.v.sp | 0) - (p.v.sp | 0))) {
             const bm = mem.filter((m, i) => best.asg[i] === b);
@@ -1408,11 +1461,47 @@
             const need = ['morale', 'combat', 'seafaring']
               .map((lab, i) => v.req[i] > 0 ? lab + ' ' + best.tot[b][i] + '/' + v.req[i] : '')
               .filter(Boolean).join(' · ');
-            const r = row((v.sp ? '★ ' : '') + v.name,
-                          shLabel(b) + (shipLocked[b] ? ' (at sea)' : '') + ' · ' + names.join(', '),
+            // The needed stats render IN the row (not only the tooltip): a plan aimed at the
+            // wrong stat family must be visible at a glance (user bug report 2026-08-01).
+            // The voyage's LIST NUMBER leads the row so same-named variants can't be mixed up.
+            const cur = byId[v.vid];   // today's slot for this vid (undefined once it sails)
+            const slotTag = cur && cur.slot ? (cur.sp ? '★' : '#') + cur.slot + ' · ' : (v.sp ? '★ ' : '');
+            const dis = (cur && cur.dis) || v.dis || '';
+            const r = row(slotTag + v.name + dis,
+                          shLabel(b) + (shipLocked[b] ? ' (at sea)' : '') + ' · ' + names.join(', ')
+                          + (need ? ' · needs ' + need : ''),
                           pct + '%', pct >= 100 ? 'ok' : 'warn');
-            r.dataset.tip = v.name + (v.sp ? ' (special voyage - prioritised)' : '') + '\n' + need;
+            r.dataset.tip = v.name + (cur && cur.slot ? '\nVoyage #' + cur.slot + ' in the game\'s '
+                            + (cur.sp ? 'special' : 'standard') + ' voyage list - several different voyages can share one name, so match by number.' : '')
+                          + '\nvoyage id ' + v.vid + ' · struct ' + ((ppVoyEnum && ppVoyEnum[v.vid]) | 0)
+                          + (v.sp ? '\n(special voyage - prioritised)' : '') + '\n' + need;
             yc.appendChild(r);
+          }
+          // Assign-screen guard: while a crew window is open on a voyage, state plainly
+          // whether THAT offer is in the plan and which ship the plan wants on it. This is
+          // the moment name collisions bite - two same-named offers with different stats.
+          {
+            const tab = ppV(17129), slot = ppV(17130);
+            if (slot >= 1 && slot <= 3) {
+              const vbid = (tab === 1 ? [17118, 17119, 17120] : [17115, 17116, 17117])[slot - 1];
+              const vvid = ppV(vbid);
+              if (vvid > 0) {
+                const pair = best.map.find(pq => pq.v.vid === vvid);
+                const inf = byId[vvid];
+                const nm2 = ((inf && inf.name) || ('Voyage #' + vvid)) + ((inf && inf.dis) || '');
+                const tag = (tab === 1 ? '★' : '#') + slot;
+                let gr;
+                if (pair) {
+                  gr = row('Assign screen: ' + tag + ' · ' + nm2,
+                    'planned ship: ' + shLabel(pair.b), 'planned', 'ok');
+                } else {
+                  gr = row('Assign screen: ' + tag + ' · ' + nm2,
+                    'NOT the planned voyage - a same-named offer with different stats may sit in another slot; match the # number', 'off-plan', 'warn');
+                }
+                gr.dataset.tip = 'voyage id ' + vvid + ' · struct ' + ((ppVoyEnum && ppVoyEnum[vvid]) | 0);
+                yc.appendChild(gr);
+              }
+            }
           }
           // Refit scan: for ship b and a voyage requirement, the best part per equip slot -
           // OWNED parts as plain swaps, unowned-but-AFFORDABLE parts tagged with their cost.
@@ -1493,11 +1582,14 @@
             const subs = await ppRefitScan(b, v.req, best.tot[b]);
             if (subs.length) refitRow('Refit ' + shLabel(b) + ' for ' + v.name, subs, refitTip);
           }
-          // Assign/remove moves against the aboard masks. Order: removals (free sockets),
-          // then CAPTAINS (the game refuses crew on a captainless ship), then crew.
+          // Assign/remove moves against the aboard masks. Order: CAPTAIN placements first -
+          // the game locks a captainless ship's crew slots entirely, so until the captain
+          // is aboard nothing else can be placed (user-reported 2026-08-01; the captain
+          // socket is its own slot, so no removal has to precede it and a taken socket goes
+          // through the game's replace-on-assign). Then removals (free sockets), then crew.
           const steps = [];
           mem.forEach((m, i) => { if (m.aboard !== best.asg[i]) steps.push({ m, from: m.aboard, to: best.asg[i] }); });
-          const stepRank = s2 => s2.to < 0 ? 0 : s2.m.cap ? 1 : 2;
+          const stepRank = s2 => (s2.m.cap && s2.to >= 0) ? 0 : s2.to < 0 ? 1 : 2;
           steps.sort((a2, b2) => stepRank(a2) - stepRank(b2));
           // Build the display view-model, then gate it behind double-read confirmation:
           // a list differing from the shown one renders only after two polls agree.

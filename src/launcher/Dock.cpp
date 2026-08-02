@@ -167,6 +167,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_overlay.js",
         "panel_markers.js",
         "panel_worldmap.js",   // World Map (full-world terrain browser: pan/zoom/search/layers)
+        "panel_zygomites.js",  // Ancient Zygomites (Anachronia hidden-zygomite map + tracker)
         "panel_rendering.js",
         "panel_storage.js",
         "panel_containers.js",

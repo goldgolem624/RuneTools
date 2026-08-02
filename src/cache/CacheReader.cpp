@@ -1795,12 +1795,22 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     const int WT = 2 * HALF, W = WT * TS;
     std::vector<unsigned char> rgba((size_t)W * W * 4, 0);
 
+    // Column shift (bridge flag): settings bit 0x2 on PLANE 1 lifts the whole column one plane,
+    // so the tile you SEE on plane p is stored at p+1. Same rule as EffPlaneLocked (heights).
+    // This is piers and bridges, but also the whole Daemonheim castle platform - painting those
+    // as flat "deck wood" erased the platform's real ground; render the shifted tile instead.
+    auto effPlaneAt = [&](int gx, int gy) -> int {
+        if (plane >= 3 || gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return plane;
+        const auto& s = RegionTilesLocked(gx >> 6, gy >> 6).settings;
+        if (s.empty()) return plane;
+        return (s[(std::size_t)(64 + (gx & 63)) * 64 + (gy & 63)] & 0x2) ? plane + 1 : plane;
+    };
     auto tileAt = [&](int gx, int gy, int& ul, int& ov, int& sh) {
         ul = ov = sh = -1;
         if (gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return;
         const MapTileData& td = RegionTilesLocked(gx >> 6, gy >> 6);
         if (td.underlay.empty()) return;
-        int idx = (plane * 64 + (gx & 63)) * 64 + (gy & 63);
+        int idx = (effPlaneAt(gx, gy) * 64 + (gx & 63)) * 64 + (gy & 63);
         ul = td.underlay[idx]; ov = td.overlay[idx]; sh = td.shape[idx];
     };
     const int kNoH = -32768;                        // INT16_MIN sentinel = tile carried no height
@@ -1884,13 +1894,52 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         auto cl = [](double q) { int i = (int)(q + 0.5); return i < 0 ? 0 : (i > 255 ? 255 : i); };
         return (cl(r / wsum) << 16) | (cl(g / wsum) << 8) | cl(b / wsum);
     };
-    // Boardwalk / pier deck: settings 0x2 on plane 1 marks the bridge column. The terrain under the
-    // deck is water/void, so paint the deck or a pier reads as open water. Plane 0 only.
-    auto isDeckTile = [&](int gx, int gy) -> bool {
-        if (gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return false;
-        const auto& s = RegionTilesLocked(gx >> 6, gy >> 6).settings;
-        if (s.empty()) return false;
-        return (s[(std::size_t)(64 + (gx & 63)) * 64 + (gy & 63)] & 0x2) != 0;
+    // Shoreline softening: WATER pixels bilinear-sample a combined water/land colour field, so a
+    // coast melts from land into water over ~1 tile (a shallow fringe) instead of snapping at hard
+    // tile steps. waterCol (1-tile ring) = the shaded colour of a water tile, -1 elsewhere; water =
+    // the ocean overlay 112 or a blue-dominant overlay colour (rivers/ponds; heuristic, visual-only).
+    // Non-water overlays (roads, floors) keep their crisp flat edges.
+    std::vector<int> waterCol((size_t)BW * BW, -1);
+    if (TS >= 4) {
+        for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
+            int gx = cx - HALF + wx, gy = cy - HALF + wy;
+            int ul, ov, sh; tileAt(gx, gy, ul, ov, sh);
+            if (ov < 1) continue;
+            int oc = ConfigColourLocked(4, ov - 1);
+            if (oc == 0xFF00FF) oc = -1;
+            if (ov == 112 && oc == 0xFFFFFF) oc = 0x3D4E63;
+            if (oc < 0) continue;
+            int rr = (oc >> 16) & 0xff, gg = (oc >> 8) & 0xff, bb2 = oc & 0xff;
+            if (!(ov == 112 || (bb2 > rr + 20 && bb2 > gg + 10))) continue;
+            waterCol[(size_t)(wx + 1) * BW + (wy + 1)] = shade(oc, shadeF[(size_t)(wx + 1) * BW + (wy + 1)]);
+        }
+    }
+    auto surfAt = [&](int tx, int ty) -> int {   // water colour on water tiles, else shaded ground blend
+        int wc = waterCol[(size_t)(tx + 1) * BW + (ty + 1)];
+        if (wc >= 0) return wc;
+        int cc = blendUl[(size_t)(tx + 1) * BW + (ty + 1)];
+        if (cc < 0) return -1;
+        return shade(cc, shadeF[(size_t)(tx + 1) * BW + (ty + 1)]);
+    };
+    auto sampleSurf = [&](int wx, int wy, int a, int bb) -> int {
+        double u = wx + (a + 0.5) / (double)TS - 0.5;
+        double v = wy + 1.0 - (bb + 0.5) / (double)TS - 0.5;
+        int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
+        double fx = u - x0, fy = v - y0;
+        double r = 0, g = 0, b = 0, wsum = 0;
+        for (int dy2 = 0; dy2 < 2; ++dy2) for (int dx2 = 0; dx2 < 2; ++dx2) {
+            double wgt = (dx2 ? fx : 1.0 - fx) * (dy2 ? fy : 1.0 - fy);
+            if (wgt <= 0.0) continue;
+            int tx = x0 + dx2, ty = y0 + dy2;
+            if (tx < -1 || tx > WT || ty < -1 || ty > WT) continue;
+            int cc = surfAt(tx, ty);
+            if (cc < 0) continue;
+            r += wgt * ((cc >> 16) & 0xff); g += wgt * ((cc >> 8) & 0xff); b += wgt * (cc & 0xff);
+            wsum += wgt;
+        }
+        if (wsum <= 0.0) return -1;
+        auto cl = [](double q) { int i = (int)(q + 0.5); return i < 0 ? 0 : (i > 255 ? 255 : i); };
+        return (cl(r / wsum) << 16) | (cl(g / wsum) << 8) | cl(b / wsum);
     };
 
     std::vector<unsigned char> mask((size_t)TS * TS);
@@ -1898,20 +1947,21 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     for (int wx = 0; wx < WT; ++wx) {
         for (int wy = 0; wy < WT; ++wy) {
             int gx = cx - HALF + wx, gy = cy - HALF + wy;
-            int ul, ov, sh; tileAt(gx, gy, ul, ov, sh);
-            bool deck = (plane == 0) && isDeckTile(gx, gy);        // boardwalk / pier deck over water or void
-            if (ul < 1 && ov < 1 && !deck) continue;               // no tile data and no deck -> genuine void
+            int ul, ov, sh; tileAt(gx, gy, ul, ov, sh);            // column-shifted tiles resolve to plane+1 inside tileAt
+            bool deck = effPlaneAt(gx, gy) != plane;               // shifted column (pier, bridge, Daemonheim platform)
+            if (ul < 1 && ov < 1 && !deck) continue;               // no tile data and no shifted column -> genuine void
             int ucol = (ul >= 1) ? blendUl[(size_t)(wx + 1) * BW + (wy + 1)] : -1;
             int ocol = (ov >= 1) ? ConfigColourLocked(4, ov - 1) : -1;
             if (ocol == 0xFF00FF) ocol = -1;                       // magenta = transparent overlay
             if (ov == 112 && ocol == 0xFFFFFF) ocol = 0x3D4E63;    // ocean (white -> blue, per rs3cache)
-            if (deck) { ucol = 0x6E5436; ocol = -1; }              // paint the wooden deck on top of the water/void beneath
+            if (deck && ucol < 0 && ocol < 0) ucol = 0x6E5436;     // shifted tile with no colourable floor (plank piers) -> deck wood
             if (ucol < 0 && ocol < 0) ucol = 0x534E47;             // tile HAS data but no resolvable colour (textured city/dungeon floor) -> neutral, not black
             any = true;
             const double tf = shadeF[(size_t)(wx + 1) * BW + (wy + 1)];
             // Overlays (water/roads/floors) stay flat per tile; the underlay ground gets the
             // per-pixel gradient at TS >= 4 (at TS 2 a tile is 4 px, flat is indistinguishable).
-            const bool smoothUl = (TS >= 4) && (ul >= 1) && !deck;
+            const bool smoothUl = (TS >= 4) && (ul >= 1);
+            const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
             if (ocol >= 0) ocol = shade(ocol, tf);
             int px0 = wx * TS, py0 = ((WT - 1) - wy) * TS;          // north-up tile origin
@@ -1920,7 +1970,10 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             for (int a = 0; a < TS; ++a) {
                 for (int bb = 0; bb < TS; ++bb) {
                     int col;
-                    if (useMask && mask[a * TS + bb]) col = ocol;
+                    if (useMask && mask[a * TS + bb]) {
+                        col = tileWater ? sampleSurf(wx, wy, a, bb) : ocol;
+                        if (col < 0) col = ocol;
+                    }
                     else if (smoothUl) { col = sampleUl(wx, wy, a, bb); if (col < 0) col = ucolFlat; }
                     else col = ucolFlat;
                     if (col < 0) col = (ucolFlat >= 0 ? ucolFlat : ocol);  // no holes inside a tile
@@ -1944,8 +1997,10 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             for (int rgy = rloY; rgy <= rhiY; ++rgy) {
                 const auto& locs = RegionLocationsLocked(rgx, rgy);
                 for (const auto& p : locs) {
-                    if (p.plane != plane) continue;
                     int gx = rgx * 64 + p.x, gy = rgy * 64 + p.y;
+                    // Shifted columns also pull their plane+1 locs down (bridge rails, the walls
+                    // and map icons on the Daemonheim platform).
+                    if (p.plane != plane && !(p.plane == plane + 1 && effPlaneAt(gx, gy) != plane)) continue;
                     int wtx = gx - (cx - HALF), wty = gy - (cy - HALF);
                     if (wtx < 0 || wtx >= WT || wty < 0 || wty >= WT) continue;
                     int px0 = wtx * TS, py0 = ((WT - 1) - wty) * TS;
@@ -2486,6 +2541,13 @@ std::string DbRowsJson(int masterTable) {
     auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
     if (!index || !index->ready()) return "[]";
     constexpr int kDbRowsArchive = 41;
+    // Table ids are CS2-space: id = sub*128 + master, while the row's op-4 tag is
+    // master*256 + sub. Ids < 128 keep the historical any-subtable match (their callers
+    // predate this and their data sits at sub 0); ids >= 128 - e.g. the Leagues tables
+    // 326-336 = masters 70-80 at sub 2 - REQUIRE the exact (master, sub) pair, because
+    // the same master's other subtables hold unrelated rows (verified live: master 72
+    // sub 0 has 871 foreign rows beside the 7 sub-2 league tiers).
+    const int wantMaster = masterTable & 127, wantSub = masterTable >> 7;
     const auto& entries = index->ref().entries();
     if ((int)entries.size() <= kDbRowsArchive) return "[]";
     auto jstr = [](const std::string& v) {
@@ -2500,7 +2562,7 @@ std::string DbRowsJson(int masterTable) {
         auto bytes = index->ReadFile(kDbRowsArchive, fid);
         if (bytes.size() < 2) continue;
         InputStream s(std::move(bytes));
-        int master = -1; bool bad = false;
+        int master = -1, sub = 0; bool bad = false;
         std::map<int, std::vector<int>>         icols;
         std::map<int, std::vector<std::string>> scols;
         while (s.remaining() > 0 && !bad) {
@@ -2509,6 +2571,7 @@ std::string DbRowsJson(int masterTable) {
             if (op == 4) {                       // table tag: (master<<8)|subtable when >= 256
                 int t = s.ReadUnsignedSmart();
                 master = t >= 256 ? (t >> 8) : t;
+                sub    = t >= 256 ? (t & 0xff) : 0;
                 continue;
             }
             if (op != 3) break;
@@ -2532,7 +2595,8 @@ std::string DbRowsJson(int masterTable) {
                 }
             }
         }
-        if (master != masterTable || (icols.empty() && scols.empty())) continue;
+        if (master != wantMaster || (icols.empty() && scols.empty())) continue;
+        if (wantSub && sub != wantSub) continue;
         out += (emitted ? "," : ""); ++emitted;
         out += "{\"f\":" + std::to_string(fid) + ",\"i\":{";
         bool f1 = true;

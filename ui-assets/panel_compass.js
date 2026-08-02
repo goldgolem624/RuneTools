@@ -258,14 +258,23 @@
     compassBusy = true;
     try {
       let raw = -1; try { raw = parseInt(bridge().compassHeading(myPid()), 10); } catch (e) {}
-      const open = raw >= 0;
+      let open = raw >= 0;
       if (open) compassLastRaw = raw;
+      // PRIMARY: exact target from varc 1323 (instant). It does NOT need the needle, and
+      // the row only exists while the clue is HELD, so a broken or lagging heading reader
+      // must never blank the solver (user-caught: needle spinning, no answer shown). The
+      // spot-list snap already rejects stale/garbage varc values; a valid snap implies the
+      // target is loaded, so it also counts as "open".
+      const tgt = compassTargetSpot();
+      if (tgt) open = true;
       const pos = open ? await scanPlayerTile() : null;         // current tile (for the player marker only; capture is manual)
-      // PRIMARY: exact target from varc 1323 (instant), trusted only while the compass is open;
-      // falls back to the needle solver when unavailable or it fails the spot-list check.
-      const tgt = open ? compassTargetSpot() : null;
       const res = tgt ? { state: 'solved', spot: tgt, best: tgt, err: 0, cands: 1, via: 'varc' }
                       : (open || compassReads.length) ? compassSolve() : null;
+      // Selection can change DURING the awaits above (the scroll turns into a puzzle box
+      // and the held list reselects): a stale tick finishing late must not re-mark the
+      // world or redraw the map the new clue just cleared (user-caught 2026-08-01).
+      const ac2 = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
+      if (!ac2 || !isCompassClue(ac2)) return;
       compassResult = { open: open, res: res, pos: pos };
       if (res && res.state === 'solved') {                      // locked to one tile -> mark it in-world like a dig
         clueGuide({ x: res.spot[0], y: res.spot[1], p: 0 }, 'Compass clue - dig here');

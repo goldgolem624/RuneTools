@@ -1261,7 +1261,20 @@
      layout but carry a green badge so the two are told apart at a glance. */
   /* The keybind badge sits over terrain, so it needs solid fill and a dark rim to stay
      readable rather than relying on the map behind it. */
-  .clue-map-tele { pointer-events: auto; }
+  /* Teleports are REFERENCE, not the subject: quiet by default so the scan spots own the
+     map, full-strength on hover for reading a specific marker. */
+  .clue-map-tele { pointer-events: auto; opacity: 0.5; transition: opacity 120ms var(--ease); }
+  .clue-map-tele:hover { opacity: 1; }
+  .clue-map-tele .cml-icon { width: 19px; height: 19px; }
+  /* Keybind badges only materialise on hover - dozens of bright green chips were the
+     map's loudest layer while carrying information the tooltip already has. */
+  .clue-map-tele .cml-kb { display: none; font-size: 9.5px; line-height: 12px; padding: 0 4px; }
+  .clue-map-tele:hover .cml-kb { display: block; }
+  /* The nearest teleport the player can actually use: full strength, badge showing -
+     it IS the route; everything else stays faded reference. */
+  .clue-map-tele.cml-primary { opacity: 1; }
+  .clue-map-tele.cml-primary .cml-icon { width: 24px; height: 24px; }
+  .clue-map-tele.cml-primary .cml-kb { display: block; }
   /* When two markers crowd, the covered one puts its badge to the side instead of below,
      so the neighbouring icon cannot sit on top of it. */
   /* A single teleport keeps the stacked icon-over-badge look. Only a GROUP lays its cells
@@ -1607,7 +1620,7 @@
   // DUNGEONEERING VISIBILITY. One flag gates the nav entry, the poll, the render and the
   // tab-select handler, so the panel can be withheld from a build without removing any of its
   // code. false -> hidden, true -> shown.
-  const DUNG_ENABLED = true;
+  const DUNG_ENABLED = false;
   // Server Packets (panel_netprobe.js): the inbound protocol view + live framer feed.
   // false -> hidden, true -> shown.
   const NETPROBE_ENABLED = false;
@@ -1669,6 +1682,8 @@
     { id: 'archshop', label: 'Guild Shop', cat: 'Archaeology', icon: '<path d="M4 9 5.5 4h13L20 9"/><path d="M4 9h16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M5.5 13v7h13v-7"/><path d="M9.5 20v-4h5v4"/>' },
     // World
     { id: 'worldmap', label: 'World Map', cat: 'World', icon: '<path d="M9 5 3 7v12l6-2 6 2 6-2V5l-6 2-6-2z"/><path d="M9 5v12M15 7v12"/><circle cx="12" cy="11" r="1.6"/>' },
+    { id: 'zygomites', label: 'Zygomites', cat: 'World', icon: '<circle cx="12" cy="8" r="4.5"/><path d="M12 12.5V21M9.5 16c-2.5 0-4-1.5-4.5-3M14.5 18c2.5 0 4-1.5 4.5-3"/>' },
+    { id: 'anachronia', label: 'Anachronia', cat: 'World', icon: '<path d="M12 3 4 9v12h16V9l-8-6z"/><path d="M9 21v-6h6v6M4 9h16"/>' },
     { id: 'scene',    label: 'Scene',   cat: 'World', icon: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M16 6.2a3 3 0 0 1 0 5.6M20.5 19c0-2.2-1.3-3.9-3.3-4.6"/>' },
     { id: 'farming',  label: 'Farming', cat: 'World', icon: '<path d="M12 21V9M12 9c0-3 2-5 5-5 0 3-2 5-5 5M12 12C12 9 10 7 7 7c0 3 2 5 5 5M5 21h14"/>' },
     { id: 'pof',      label: 'Farm Pens', cat: 'World', icon: '<path d="M4 8v12M9 8v12M14 8v12M19 8v12"/><path d="M3 12h17M3 16h17"/>' },
@@ -2142,8 +2157,9 @@
     if (CUSTOM_ICON[itemId]) return CUSTOM_ICON[itemId];
     let url = ICONS.get(itemId);
     if (url === undefined) {
+      if (!bridge()) return '';   // bridge not up yet: do NOT memoize the miss (it froze icons as placeholders)
       url = '';
-      if (bridge()) { try { const r = bridge().itemIcon(itemId); url = (typeof r === 'string') ? r : ''; } catch (e) { url = ''; } }
+      try { const r = bridge().itemIcon(itemId); url = (typeof r === 'string') ? r : ''; } catch (e) { url = ''; }
       ICONS.set(itemId, url);
     }
     return url;
@@ -2698,6 +2714,8 @@
     if (t.id === 'clues') { clueListSig = ''; fetchClues(true); }
     if (t.id === 'lodestones') { lodeListSig = ''; fetchLodestones(true); }
     if (t.id === 'worldmap') { if (typeof wmOpen === 'function') wmOpen(); }
+    if (t.id === 'zygomites') { if (typeof zygOpen === 'function') zygOpen(); }
+    if (t.id === 'anachronia') { if (typeof anaOpen === 'function') anaOpen(); }
     if (t.id === 'scene') fetchScene();
     if (t.id === 'info') fetchInfo();
     if (t.id === 'dailies') fetchDailies(true);
@@ -3018,6 +3036,12 @@
     // typeof-guard: panel_worldmap.js is only spliced by rebuilt launchers; an older binary
     // with hot-synced ui-assets must not throw here.
     if (activeTab === 'worldmap') { if (typeof renderWorldMap === 'function') renderWorldMap(); return; }
+    if (activeTab === 'anachronia') { if (typeof renderAnachronia === 'function') renderAnachronia(); return; }
+    if (activeTab === 'zygomites') {
+      if (typeof renderZygomites === 'function') renderZygomites();
+      else { const zc = $('content'); if (zc && !zc.querySelector('.zyg-stale')) zc.innerHTML = '<div class="empty zyg-stale">Zygomites panel arrives with the next launcher build.</div>'; }
+      return;
+    }
     if (activeTab === 'markers') { renderMarkers(); return; }
     if (activeTab === 'rendering') { renderRendering(); return; }
     if (activeTab === 'alerts') { renderAlerts(); return; }
@@ -3836,10 +3860,23 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
 
   const PLUGIN_TAB_ICON = '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13.5 17h6.5M16.75 13.75v6.5"/>';
   const PLUGIN_BROWSE_ICON = '<circle cx="11" cy="11" r="7"/><path d="M20.5 20.5l-4.2-4.2"/><path d="M11 8v6M8 11h6"/>';
+  // Group Bank only applies to group-ironman accounts: varp 4818 bit 19 (varbit 56612,
+  // "in a GIM group") flips to 1 for every GIM variant. Unknown state (null, nothing read
+  // yet) keeps the tab visible - hiding is only ever done on a confirmed non-GIM read.
+  let gimInGroup = null;
+  setInterval(async () => {
+    try {
+      if (!bridge() || !bridge().varps || !myPid()) return;
+      const vp = JSON.parse(await bridge().varps(myPid(), '4818')) || {};
+      if (vp['4818'] === undefined) return;
+      const inG = ((vp['4818'] >> 19) & 1) === 1;
+      if (inG !== gimInGroup) { gimInGroup = inG; try { renderSidebar(); } catch (e) {} }
+    } catch (e) {}
+  }, 10000);
   function allTabs() {
     const extra = [{ id: 'pluginbrowse', label: 'Browse plugins', cat: 'Plugins', icon: PLUGIN_BROWSE_ICON }];
     pluginTabs.forEach(p => extra.push({ id: 'plugin:' + p.id, label: p.manifest.name, cat: 'Plugins', icon: PLUGIN_TAB_ICON }));
-    return TABS.filter(t => t.id !== 'dung' || DUNG_ENABLED).concat(extra);
+    return TABS.filter(t => (t.id !== 'dung' || DUNG_ENABLED) && (t.id !== 'groupbank' || gimInGroup !== false)).concat(extra);
   }
 
   // Splice the host CSP + the SDK shim into the plugin's entry HTML head.
