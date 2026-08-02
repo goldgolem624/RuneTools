@@ -77,6 +77,96 @@
     if (activeTab === 'netprobe') npUpdateDynamic();
   }
 
+
+  // ---- Fish Flingers packet recording ------------------------------------------
+  // Runs independently of the tab so the capture keeps going while the minigame is on
+  // screen. Arms the feed, records every packet for FFREC_MINS, and snapshots to
+  // cachex/ffrec.json every few seconds so a partial run is still readable.
+  const FFREC_MINS = 10;
+  let ffrecEnd = 0, ffrecRows = [], ffrecCursor = 0, ffrecSavedAt = 0, ffrecUi = null;
+
+  function ffrecStart() {
+    ffrecEnd = Date.now() + FFREC_MINS * 60000;
+    ffrecRows = []; ffrecCursor = 0; ffrecSavedAt = 0;
+  }
+  // Interface text for the six species rows, so a rating appearing on screen can be lined
+  // up against the packets that arrived just before it.
+  // Self-contained: the Flingers panel is a new file and is not in a running client until a
+  // rebuild, so this must not depend on it.
+  const FFREC_TYPES = ['herring', 'cod', 'bass', 'trout', 'pike', 'salmon'];
+  function ffrecUiSnap() {
+    if (!bridge() || !bridge().interfaceGroup) return null;
+    for (const gid of [1286, 922]) {
+      let ws = [];
+      try { ws = (JSON.parse(bridge().interfaceGroup(myPid(), gid) || '{}').widgets) || []; } catch (e) { continue; }
+      if (!ws.length) continue;
+      const cells = [];
+      for (const w of ws) {
+        if (w.ty !== 'text') continue;
+        const t = String(w.x || '').replace(/<[^>]*>/g, '').trim();
+        if (!t) continue;
+        const r = w.r || [0, 0, 0, 0];
+        cells.push({ x: r[0], y: r[1], s: t });
+      }
+      const byRow = {};
+      for (const c of cells) { const k = Math.round(c.y / 6); (byRow[k] = byRow[k] || []).push(c); }
+      const rows = [];
+      for (const k of Object.keys(byRow).sort(function (a, b) { return a - b; })) {
+        const line = byRow[k].sort(function (a, b) { return a.x - b.x; }).map(function (c) { return c.s; });
+        const first = (line[0] || '').toLowerCase();
+        if (!FFREC_TYPES.some(function (ft) { return first.indexOf(ft) >= 0; })) continue;
+        rows.push(line.join('|'));
+      }
+      if (rows.length) return { gid: gid, rows: rows };
+    }
+    return null;
+  }
+  async function ffrecTick() {
+    if (!ffrecEnd || Date.now() > ffrecEnd) return;
+    if (!bridge() || !bridge().serverPacketFeed) return;
+    npArm(true);
+    let d = null;
+    try { d = JSON.parse(await bridge().serverPacketFeed(myPid(), ffrecCursor) || 'null'); } catch (e) { return; }
+    if (d && d.ok && Array.isArray(d.packets)) {
+      for (const r of d.packets) {
+        if (r.seq <= ffrecCursor) continue;
+        ffrecCursor = r.seq;
+        ffrecRows.push({ t: Date.now(), op: r.op, len: r.len, kept: r.kept, hex: r.hex || r.data || '' });
+      }
+    }
+    // note the moment the on-screen ratings change
+    const snap = ffrecUiSnap();
+    if (snap) ffrecEnd = Math.max(ffrecEnd, Date.now() + FFREC_MINS * 60000);   // stay on while the minigame is up
+    if (snap) {
+      const sig = snap.gid + ':' + snap.rows.join(';');
+      if (sig !== ffrecUi) { ffrecUi = sig; ffrecRows.push({ t: Date.now(), ui: snap }); }
+    }
+    if (Date.now() - ffrecSavedAt > 4000) {
+      ffrecSavedAt = Date.now();
+      try {
+        bridge().cacheStoreSave('ffrec', JSON.stringify({
+          startedEnd: ffrecEnd, now: Date.now(), n: ffrecRows.length,
+          rows: ffrecRows.slice(-40000)
+        }));
+      } catch (e) {}
+    }
+  }
+  // OFF by default: this capture is expensive (packet feed + interface walks + a full
+  // re-serialise of the log on every save) and it visibly cost frames. Turn it on
+  // deliberately with ffrecOn() from the console, and it stops itself when done.
+  let ffrecTimer = null;
+  function ffrecOn() {
+    if (ffrecTimer) return 'already recording';
+    ffrecStart();
+    ffrecTimer = setInterval(function () { ffrecTick(); }, 1200);
+    return 'recording for ' + FFREC_MINS + ' min';
+  }
+  function ffrecOff() {
+    if (ffrecTimer) clearInterval(ffrecTimer);
+    ffrecTimer = null; ffrecEnd = 0;
+    return 'stopped';
+  }
+
   function npParseFilter() {
     const f = npFilter.trim().toLowerCase();
     if (!f) return null;

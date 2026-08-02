@@ -33,11 +33,41 @@
   // Section is runnable only at its own Agility level; a full lap needs the highest of them.
   function agiSectionOk(si) { const lv = agiLevel(); return lv <= 0 || lv >= ANACH_SECTIONS[si][3]; }
 
-  // Progress per section, counted from the obstacles actually cleared this lap.
+  // The game's own progress: one varbit per section holding a BITMASK that fills from bit
+  // (n-1) downward, one bit per obstacle taken, and resets to 0 the moment the section
+  // completes. Live-captured on a section A lap: 32, 48, 56, 60, 62, then 0.
+  // Only section A's varbit is confirmed; the rest fall back to proximity until captured.
+  const ANACH_SECTION_VB = { 0: 44261 };
+  let agiVb = {};          // varbit id -> value
+  let agiVbWas = {};       // last mask seen, to catch the full -> 0 completion flip
+  let agiSectionDone = {}; // section index -> completed this lap
+
+  async function agiReadVb() {
+    const ids = [];
+    for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
+    if (!ids.length || !bridge() || !bridge().varbits) return;
+    try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) { return; }
+    for (const k in ANACH_SECTION_VB) {
+      const id = ANACH_SECTION_VB[k], cur = agiVb[id] | 0, was = agiVbWas[id];
+      const total = ANACH_SECTIONS[k][4];
+      // a mask one bit short of full, then 0, means the last obstacle completed the section
+      if (was !== undefined && cur === 0 && was >= ((1 << total) - 1) - (1 << (total - 1)))
+        agiSectionDone[k] = true;
+      agiVbWas[id] = cur;
+    }
+  }
+  function agiPopcount(v) { let n = 0; while (v) { n += v & 1; v >>>= 1; } return n; }
+
+  // Progress per section: the game's mask where we have it, else the obstacles we saw.
   function agiSectionProgress() {
-    const out = ANACH_SECTIONS.map(function (s) { return { done: 0, total: s[4] }; });
+    const out = ANACH_SECTIONS.map(function (s) { return { done: 0, total: s[4], live: false }; });
     for (let i = 0; i < ANACH_COURSE.length; i++)
       if (agiCleared[i]) out[ANACH_COURSE[i][6]].done++;
+    for (const k in ANACH_SECTION_VB) {
+      const si = +k, o = out[si];
+      o.live = true;
+      o.done = agiSectionDone[si] ? o.total : agiPopcount(agiVb[ANACH_SECTION_VB[k]] | 0);
+    }
     return out;
   }
   function agiLapDone() { let n = 0; for (const c of agiCleared) if (c) n++; return n; }
@@ -187,6 +217,7 @@
       } catch (e) {}
     }
     agiSeen();
+    await agiReadVb();
     await agiReadCds();
     agiHighlight();
     agiPaint();
@@ -213,7 +244,7 @@
         + '<span class="agi-let">' + s[0] + '</span>'
         + '<span class="agi-tier">' + s[2] + '<em>' + s[1] + '</em></span>'
         + '<span class="agi-req">' + s[3] + '</span>'
-        + '<span class="agi-cnt">' + p.done + '/' + p.total + '</span>'
+        + '<span class="agi-cnt">' + p.done + '/' + p.total + (p.live ? '' : '<em>~</em>') + '</span>'
         + '<span class="agi-mini"><i style="width:' + Math.round(p.done / p.total * 100) + '%"></i></span>'
         + '</div>';
     }
@@ -243,7 +274,7 @@
     const b = function (id, fn) { const n = $(id); if (n) n.onclick = fn; };
     b('agiSurge', function () { agiMarkMove('surge'); });
     b('agiDive', function () { agiMarkMove('dive'); });
-    b('agiReset', function () { agiCleared = []; agiLastIdx = -1; agiPaint(); });
+    b('agiReset', function () { agiCleared = []; agiLastIdx = -1; agiSectionDone = {}; agiPaint(); });
     b('agiRec', function () { if (agiRec) agiRecStop(); else agiRecStart(); });
   }
 
@@ -267,7 +298,8 @@
       + '.agi-tier{flex:1;display:flex;flex-direction:column;line-height:1.15}'
       + '.agi-tier em{font-style:normal;opacity:.45;font-size:10px}'
       + '.agi-req{opacity:.5;font-size:11px;width:22px;text-align:right}'
-      + '.agi-cnt{width:30px;text-align:right;font-variant-numeric:tabular-nums}'
+      + '.agi-cnt{width:34px;text-align:right;font-variant-numeric:tabular-nums}'
+      + '.agi-cnt em{font-style:normal;opacity:.4;font-size:10px}'
       + '.agi-mini{width:52px;height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}'
       + '.agi-mini>i{display:block;height:100%;background:#4dd28a}'
       + '.agi-next{padding:8px 10px;border-radius:6px;background:rgba(255,255,255,.04)}'
