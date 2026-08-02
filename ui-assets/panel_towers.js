@@ -674,6 +674,7 @@
     if (MAP_TELEPORTS.some(T => T.req && T.req.portal != null))
       for (const v of GOTE_PORTAL_VBS) if (ids.indexOf(v) < 0) ids.push(v);
     for (const k in TELE_CHARGES) { const c = TELE_CHARGES[k]; if (c.vb != null && ids.indexOf(c.vb) < 0) ids.push(c.vb); }
+    if (ids.indexOf(TELE_PASSAGE_FREE_VB) < 0) ids.push(TELE_PASSAGE_FREE_VB);
     if (ids.length) { try { teleVbCache = (await readVarbitValues(ids)) || {}; } catch (e) { teleVbCache = {}; } }
     // Containers: worn (94) for outfit set gates, backpack (93) for held gates, and BOTH
     // feed the universal item rule below. Names ride along for charge-variant matching.
@@ -746,10 +747,15 @@
       // held. The passage stores its pieces in Extra_ints key 1 as 4-bit indices (least
       // significant first) into the jewellery catalogue enum; the enum is read live rather
       // than hardcoded so a game update cannot silently shift the mapping.
+      telePassage = null;
       for (const pid2 of TELE_PASSAGE_IDS) {
         if (!(teleInvSet && teleInvSet.has(pid2)) && !(teleWornSet && teleWornSet.has(pid2))) continue;
         try {
           const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), teleInvSet.has(pid2) ? 93 : 94, pid2)) || {};
+          const held = new Set();
+          // The Dark Facet makes passage teleports free, which OUTRANKS the charge count.
+          telePassage = { charges: ((r2.key && r2.key['0']) | 0), names: held,
+                          free: (teleVbCache[TELE_PASSAGE_FREE_VB] | 0) > 0 };
           let packed = (r2.key && r2.key['1']) >>> 0;
           if (!packed) continue;
           if (!telePassageEnum && bridge().enumInfo) {
@@ -762,7 +768,7 @@
             let nm = null;
             if (Array.isArray(names)) { const e2 = names.find(function (q) { return +q[0] === ix; }); nm = e2 && e2[1]; }
             else if (names) nm = names[ix] || names[String(ix)];
-            if (nm) base.add(teleItemBase(String(nm)));
+            if (nm) { const bn2 = teleItemBase(String(nm)); base.add(bn2); held.add(bn2); }
           }
         } catch (e) {}
       }
@@ -1137,16 +1143,19 @@
         if (T.rq) parts.push('req: ' + teleRqLive(T));   // requirement text + your current level
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
-        const iv = teleItemChargeVal(T);
-        if (iv !== null) { const mx = teleItemChargeMax(T);
-          parts.push(iv.toLocaleString() + (mx ? '/' + mx : '') + ' charges'); }
+        if (teleInPassage(T) && telePassage.free) parts.push('unlimited charges (in the passage)');
+        else { const iv = teleItemChargeVal(T);
+          if (iv !== null) { const mx = teleItemChargeMax(T);
+            parts.push(iv.toLocaleString() + (mx ? '/' + mx : '') + ' charges'
+                       + (teleInPassage(T) ? ' (in the passage)' : '')); } }
         const why = teleWhyFull(T);
         if (why) { cell.style.opacity = '0.45'; parts.push(why); }
         // Status dot: green = every requirement satisfied, red = something is missing (the
         // reason follows on the same line). tipHtml renders <col=..> tags, so no raw markup.
         const unk = teleTaskSetWhy(T) === '?';
-        const line = (why ? '<col=ff6b6b>●</col> ' : unk ? '<col=fbbf24>●</col> ' : '<col=4dd28a>●</col> ')
-                   + parts.join(', ') + (unk && !why ? ' (requirement not read yet)' : '');
+        // Spell out the state on the first line - a bare dot does not say what it means.
+        const head = why ? '<col=ff6b6b>● unavailable</col> ' : unk ? '<col=fbbf24>● checking</col> ' : '<col=4dd28a>● usable</col> ';
+        const line = head + parts.join(', ') + (unk && !why ? ' (requirement not read yet)' : '');
         cell.dataset.tip = line; cell.dataset.tipHtml = '1';
         gCells.push(cell); gLines.push(line);
         box.appendChild(cell);
@@ -2401,9 +2410,13 @@
   // Extra_ints (live-verified via the hover inspector). itemId -> {key}. Display
   // ONLY - TokKul-Zo charges are spent by COMBAT, not teleporting (user-corrected
   // 2026-08-02), so charges never gate a teleport.
-  const TELE_PASSAGE_IDS = [44540, 44542, 44543];   // Passage of the abyss (+ unattuned/sibling)
-  const TELE_PASSAGE_ENUM = 15018;                 // slot index -> jewellery name
+  const TELE_PASSAGE_IDS = [44542, 44543, 44544, 44545];   // attuned Passage of the abyss
+  const TELE_PASSAGE_ENUM = 15018;                        // slot index -> jewellery name
+  const TELE_PASSAGE_FREE_VB = 52159;                     // Dark Facet: teleports cost no charges
   let telePassageEnum = null;
+  // What the passage currently holds, and its shared charge pool (Extra_ints key 0). A
+  // piece stored inside draws on this pool rather than its own count.
+  let telePassage = null;      // { charges: n, names: Set<baseName> }
   const TELE_ITEM_ALIASES = {
     39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
   };
@@ -2425,13 +2438,22 @@
     if (!c || c.vb == null || !teleVbCache || teleVbCache[c.vb] === undefined) return null;
     return { used: teleVbCache[c.vb] | 0, max: c.max };
   }
+  // True when this row's item is not carried directly but sits inside the passage.
+  function teleInPassage(T) {
+    if (!telePassage || !(T.item > 0)) return false;
+    for (const id of teleItemIds(T)) if ((teleWornSet && teleWornSet.has(id)) || (teleInvSet && teleInvSet.has(id))) return false;
+    const bn = teleItemNames[T.item];
+    return !!(bn && telePassage.names.has(bn));
+  }
   function teleItemChargeVal(T) {
-    if (!(T.item > 0) || !TELE_ITEM_CHARGES[T.item] || !teleItemCharges) return null;
+    if (!(T.item > 0)) return null;
+    if (teleInPassage(T)) return telePassage.charges;      // the passage's shared pool
+    if (!TELE_ITEM_CHARGES[T.item] || !teleItemCharges) return null;
     const r = teleItemCharges[T.item];
     return r === undefined ? null : r.v;
   }
   function teleItemChargeMax(T) {
-    if (!(T.item > 0) || !teleItemCharges) return 0;
+    if (!(T.item > 0) || teleInPassage(T) || !teleItemCharges) return 0;
     const r = teleItemCharges[T.item];
     return (r && r.max) ? r.max : 0;
   }

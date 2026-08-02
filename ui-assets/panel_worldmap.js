@@ -488,15 +488,21 @@
 
   function wmTeleTip(ts) {
     return ts.map(function (t2) {
-      const rq = (typeof teleRqLive === 'function') ? teleRqLive(t2) : teleRqText(t2), why = teleWhyCached(t2);
+      const rq = (typeof teleRqLive === 'function') ? teleRqLive(t2, 'html') : htmlEsc(teleRqText(t2)), why = teleWhyCached(t2);
       const ci = (typeof teleChargeInfo === 'function') ? teleChargeInfo(t2) : null;
       // green = usable now, red = a requirement is unmet (named below)
       const unk = (typeof teleTaskSetWhy === 'function') && teleTaskSetWhy(t2) === '?';
-      const dot = '<span style="color:' + (why ? '#ff6b6b' : unk ? '#fbbf24' : '#4dd28a') + '">●</span> ';
+      const dot = '<span style="color:' + (why ? '#ff6b6b' : unk ? '#fbbf24' : '#4dd28a') + '">● '
+                + (why ? 'unavailable' : unk ? 'checking' : 'usable') + '</span> ';
       return dot + '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
         + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
         + (ci && ci.used < ci.max ? '<br>daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn() : '')
-        + (typeof teleItemChargeVal === 'function' && teleItemChargeVal(t2) !== null ? '<br>' + teleItemChargeVal(t2).toLocaleString() + ' charges' : '')
+        + ((typeof teleInPassage === 'function' && teleInPassage(t2) && telePassage && telePassage.free)
+             ? '<br>unlimited charges (in the passage)'
+             : (typeof teleItemChargeVal === 'function' && teleItemChargeVal(t2) !== null
+                 ? '<br>' + teleItemChargeVal(t2).toLocaleString()
+                   + (teleItemChargeMax(t2) ? '/' + teleItemChargeMax(t2) : '') + ' charges'
+                   + ((typeof teleInPassage === 'function' && teleInPassage(t2)) ? ' (in the passage)' : '') : ''))
         + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : rq) : '')
         + (why ? '<br>' + htmlEsc(why) : '') + '</span>';
     }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
