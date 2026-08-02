@@ -634,6 +634,9 @@
         const qid = T.req ? teleQuestIdOf(T.req) : null;
         if (qid != null) wantIds.add(qid);
         for (const nm of teleRqGates(T).quests) if (TELE_QUEST_IDS[nm] != null) wantIds.add(TELE_QUEST_IDS[nm]);
+        for (const grp of (T.req && T.req.any) || []) {   // quests named inside an alternative route
+          for (const c of grp) if (c.questId != null) wantIds.add(c.questId);
+        }
       }
       for (const qid of wantIds) {
         const q = QUEST_BY_ID.get(qid);
@@ -648,6 +651,11 @@
         && typeof achState !== 'undefined' && !achState) { try { await fetchAchievements(); } catch (e) {} }
     const ids = [];
     for (const T of MAP_TELEPORTS) if (T.req && T.req.vb != null && ids.indexOf(T.req.vb) < 0) ids.push(T.req.vb);
+    for (const T of MAP_TELEPORTS) {                  // alternative-route gates read their own varbits
+      for (const grp of (T.req && T.req.any) || []) {
+        for (const c of grp) if (c.vb != null && ids.indexOf(c.vb) < 0) ids.push(c.vb);
+      }
+    }
     if (MAP_TELEPORTS.some(T => T.req && T.req.spell) && ids.indexOf(SPELLBOOK_VB) < 0) ids.push(SPELLBOOK_VB);
     const uVps = [];
     for (const T of MAP_TELEPORTS) {
@@ -795,6 +803,26 @@
   const teleItemNames = {};    // teleport item id -> normalized base name (null until resolved)
   let teleHeldBase = null;     // normalized names of everything worn or carried
   // The universal item gate. Unknowns (containers or names unresolved) never fade.
+  // A destination can be reachable by more than one route (the tree grown in that patch, or
+  // the account-wide unlock), so its gate is a list of alternatives: any ONE group fully
+  // satisfied passes. Groups are AND-ed inside. Nothing readable yet never fades the row.
+  function teleAnyOk(r) {
+    if (!r || !r.any || !r.any.length) return true;
+    let known = false;
+    for (const grp of r.any) {
+      let ok = true, grpKnown = true;
+      for (const c of grp) {
+        if (c.vb != null) {
+          const cur = teleVbCache ? teleVbCache[c.vb] : undefined;
+          if (cur === undefined) { grpKnown = false; ok = false; break; }
+          if (c.min != null ? (cur | 0) < c.min : (cur | 0) !== c.val) { ok = false; break; }
+        } else if (c.questId != null && !teleQuestOk({ questId: c.questId })) { ok = false; break; }
+      }
+      if (grpKnown) known = true;
+      if (ok) return true;
+    }
+    return !known;
+  }
   function teleItemOk(T) {
     if (!(T.item > 0) || !teleHeldBase || !teleWornSet || !teleInvSet) return true;
     for (const id of teleItemIds(T)) if (teleWornSet.has(id) || teleInvSet.has(id)) return true;
@@ -963,6 +991,7 @@
     if (teleRqSkillWhy(T)) return false;
     if (teleRqQuestWhy(T)) return false;
     if (teleSpellWhy(r)) return false;
+    if (!teleAnyOk(r)) return false;
     if (!teleQuestOk(r)) return false;
     if (r.heldAny && teleInvSet && !r.heldAny.some(id => teleInvSet.has(id))) return false;
     return true;
@@ -1145,6 +1174,7 @@
       why.push('full outfit not worn' + (r.wornAll ? ' (' + got + '/' + r.wornAll.length + ')' : ''));
     }
     if (!telePortalOk(r)) why.push('portal not attuned');
+    if (!teleAnyOk(r)) why.push(r.anyWhy || 'destination not unlocked');
     const tw = teleTaskSetWhy(T); if (tw && tw !== '?') why.push(tw);
     const kw = teleRqSkillWhy(T); if (kw) why.push(kw);
     const qw = teleRqQuestWhy(T); if (qw) why.push(qw);
@@ -2072,14 +2102,14 @@
     {n:'Tree Gnome Village',src:'Spirit tree re-rooter',x:2542,y:3169,p:0,item:41078,kb:'1',rq:'92 Invention, Tree Gnome Village'},
     {n:'Tree Gnome Stronghold',src:'Spirit tree re-rooter',x:2462,y:3444,p:0,item:41078,kb:'2',rq:'92 Invention, Tree Gnome Village'},
     {n:'Battlefield of Khazard',src:'Spirit tree re-rooter',x:2557,y:3259,p:0,item:41078,kb:'3',rq:'92 Invention, Tree Gnome Village'},
-    {n:'Grand Exchange',src:'Spirit tree re-rooter',x:3185,y:3511,p:0,item:41078,kb:'4',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Grand Exchange',src:'Spirit tree re-rooter',x:3187,y:3507,p:0,item:41078,kb:'4',rq:'92 Invention, Tree Gnome Village'},
     {n:'South Feldip Hills',src:'Spirit tree re-rooter',x:2416,y:2851,p:0,item:41078,kb:'5',rq:'92 Invention, Tree Gnome Village'},
-    {n:'Port Sarim',src:'Spirit tree re-rooter',x:3058,y:3257,p:0,item:41078,kb:'6',rq:'92 Invention, Tree Gnome Village'},
-    {n:'Etceteria',src:'Spirit tree re-rooter',x:2613,y:3855,p:0,item:41078,kb:'7',rq:'92 Invention, Tree Gnome Village'},
-    {n:'Brimhaven',src:'Spirit tree re-rooter',x:2800,y:3203,p:0,item:41078,kb:'8',rq:'92 Invention, Tree Gnome Village'},
-    {n:'Poison Waste',src:'Spirit tree re-rooter',x:2338,y:3109,p:0,item:41078,kb:'9',rq:'92 Invention, Tree Gnome Village'},
-    {n:'Prifddinas',src:'Spirit tree re-rooter',x:2275,y:3371,p:1,item:41078,kb:'0',rq:'92 Invention, Tree Gnome Village'},
-    {n:'Manor Farm',src:'Spirit tree re-rooter',x:2661,y:3383,p:0,item:41078,kb:'M',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Port Sarim',src:'Spirit tree re-rooter',x:3058,y:3257,p:0,item:41078,kb:'6',rq:'92 Invention, Tree Gnome Village',req:{any:[[{vb:64,val:20}],[{vb:58466,val:1}]],anyWhy:'no spirit tree grown here'}},
+    {n:'Etceteria',src:'Spirit tree re-rooter',x:2613,y:3855,p:0,item:41078,kb:'7',rq:'92 Invention, Tree Gnome Village',req:{any:[[{vb:66,val:20}],[{vb:58466,val:1},{questId:280}]],anyWhy:'no spirit tree grown here'}},
+    {n:'Brimhaven',src:'Spirit tree re-rooter',x:2800,y:3203,p:0,item:41078,kb:'8',rq:'92 Invention, Tree Gnome Village',req:{any:[[{vb:68,val:20}],[{vb:58466,val:1}]],anyWhy:'no spirit tree grown here'}},
+    {n:'Poison Waste',src:'Spirit tree re-rooter',x:2338,y:3109,p:0,item:41078,kb:'9',rq:'92 Invention, Tree Gnome Village',req:{vb:10479,vbMin:3,vbWhy:'needs progress through The Path of Glouphrie'}},
+    {n:'Prifddinas',src:'Spirit tree re-rooter',x:2275,y:3371,p:1,item:41078,kb:'0',rq:'92 Invention, Tree Gnome Village',req:{vb:25045,vbMin:1,vbWhy:'needs three grown spirit trees'}},
+    {n:'Manor Farm',src:'Spirit tree re-rooter',x:2661,y:3383,p:0,item:41078,kb:'M',rq:'92 Invention, Tree Gnome Village',req:{any:[[{vb:45329,val:20}],[{vb:58466,val:1}]],anyWhy:'no spirit tree grown here'}},
     {n:'Shifting Tombs',src:'Teletabs (excluding ones with spell versions)',x:2076,y:6952,p:0,item:40264},
     {n:'Sophanem Slayer Dungeon',src:'Teletabs (excluding ones with spell versions)',x:3288,y:2706,p:0,item:40263},
     {n:'Merchant District',src:'Teletabs (excluding ones with spell versions)',x:3207,y:2781,p:0,item:40261},
