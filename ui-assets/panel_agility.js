@@ -37,24 +37,11 @@
   // (n-1) downward, one bit per obstacle taken, and resets to 0 the moment the section
   // completes. Live-captured on a section A lap: 32, 48, 56, 60, 62, then 0.
   // Only section A's varbit is confirmed; the rest fall back to proximity until captured.
-  // A, B, C are varp 8587's three 8-bit fields; D and E are the top two of varp 8586's four.
-  // All five live-captured, and the ids run strictly downward in section order.
-  // F and G take the two remaining fields on that pattern - NOT captured, so they are checked
-  // at runtime: section F has six obstacles, so a mask above 63 proves the id is wrong and the
-  // row falls back to the position estimate. G is eight obstacles, where every byte is legal,
-  // so no such check is possible and it stays marked estimated until captured.
-  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259, 3: 44258, 4: 44257, 5: 44256 };
-  const ANACH_SECTION_VB_GUESS = { 6: 44255 };
-  function agiVbFor(si) {
-    if (ANACH_SECTION_VB[si] != null) return { id: ANACH_SECTION_VB[si], sure: true };
-    const g = ANACH_SECTION_VB_GUESS[si];
-    if (g == null) return null;
-    const total = ANACH_SECTIONS[si][4];
-    const v = agiVb[g];
-    if (v === undefined) return null;
-    if ((v | 0) > (1 << total) - 1) return null;      // impossible for this section: wrong id
-    return { id: g, sure: false };
-  }
+  // Every section's obstacle mask, all live-captured. A, B and C are varp 8587's three 8-bit
+  // fields; D through G are varp 8586's four. The ids run strictly downward in section order.
+  const ANACH_SECTION_VB = {
+    0: 44261, 1: 44260, 2: 44259, 3: 44258, 4: 44257, 5: 44256, 6: 44255,
+  };
   // Varp 8585 is the LAP tracker: one bit per section, filling downward from bit 6, so
   // section i owns bit (6 - i) and a full lap reads 127. Live: 96 = A+B, 112 = A+B+C.
   // The same shape as the per-section masks, and far better than inferring completion from a
@@ -73,7 +60,6 @@
     if (!bridge()) return;
     const ids = [];
     for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
-    for (const k in ANACH_SECTION_VB_GUESS) ids.push(ANACH_SECTION_VB_GUESS[k]);
     if (ids.length && bridge().varbits) {
       try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) {}
     }
@@ -104,9 +90,8 @@
     return -1;
   }
   function agiVbDone(i) {
-    const si = ANACH_COURSE[i][6], f = agiVbFor(si);
-    const vb = f && f.id;
-    if (vb == null) return null;                       // no usable varbit for this section
+    const si = ANACH_COURSE[i][6], vb = ANACH_SECTION_VB[si];
+    if (vb == null) return null;
     if (agiSectionComplete(si)) return true;           // whole section finished this lap
     const total = ANACH_SECTIONS[si][4];
     let first = -1;
@@ -125,10 +110,7 @@
     const out = ANACH_SECTIONS.map(function (s) { return { done: 0, total: s[4], live: false }; });
     for (let i = 0; i < ANACH_COURSE.length; i++)
       if (agiIsDone(i)) out[ANACH_COURSE[i][6]].done++;
-    for (let si = 0; si < ANACH_SECTIONS.length; si++) {
-      const f = agiVbFor(si);
-      out[si].live = !!(f && f.sure);
-    }
+    for (const k in ANACH_SECTION_VB) out[+k].live = true;
     return out;
   }
   function agiLapDone() {
@@ -443,7 +425,6 @@
         + '<span class="agi-lvl' + (ok ? '' : ' short') + '">' + s[3] + '</span>'
         + '<span class="agi-track"><i style="width:' + Math.round(p.done / p.total * 100) + '%"></i></span>'
         + '<span class="agi-cnt">' + p.done + '<em>/' + p.total + '</em></span>'
-        + (p.live ? '<span class="agi-est"></span>' : '<span class="agi-est" title="estimated from your position; this section\'s varbit is not captured yet">est</span>')
         + '</div>';
     }
     html += '</div>';
@@ -475,7 +456,7 @@
       + '.agi-bar>i{display:block;height:100%;background:#4dd28a;transition:width .25s ease}'
       // section rows
       + '.agi-secs{display:flex;flex-direction:column;gap:5px}'
-      + '.agi-sec{display:grid;grid-template-columns:26px 1fr auto 76px 46px 26px;align-items:center;'
+      + '.agi-sec{display:grid;grid-template-columns:26px 1fr auto 76px 46px;align-items:center;'
       + 'gap:11px;padding:9px 12px;border-radius:9px;border:1px solid var(--border);'
       + 'background:rgba(255,255,255,.022)}'
       + '.agi-sec.is-done{border-color:rgba(77,210,138,.32);background:rgba(77,210,138,.07)}'
@@ -492,8 +473,6 @@
       + '.agi-track>i{display:block;height:100%;background:#4dd28a;transition:width .25s ease}'
       + '.agi-cnt{font-size:12px;text-align:right;font-variant-numeric:tabular-nums}'
       + '.agi-cnt em{font-style:normal;color:var(--text-dim)}'
-      + '.agi-est{font-size:8.5px;letter-spacing:.04em;text-transform:uppercase;text-align:right;'
-      + 'color:var(--text-dim);opacity:.6}'
       // next obstacle
       + '.agi-next{padding:12px 14px;border-radius:10px;border:1px solid var(--border);'
       + 'border-left:3px solid #7c6df2;background:rgba(124,109,242,.06)}'
