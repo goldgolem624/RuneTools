@@ -373,10 +373,12 @@
       if (placed.some(p => x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y)) continue;   // would overlap a closer label -> skip it
       placed.push({ x: x0, y: y0, w: bw, h: bh });
       const lx = x0 + bw / 2, ly = y0 + bh / 2;
-      // Labels are reference, not content: outlined text only, no filled chip, so they read
-      // clearly without covering the map underneath.
-      cx.lineWidth = 3; cx.strokeStyle = 'rgba(0,0,0,0.75)'; cx.strokeText(d.n, lx, ly);
-      cx.fillStyle = 'rgba(255,255,255,0.88)'; cx.fillText(d.n, lx, ly);
+      // Same treatment as the world map: soft halo, cool-white glyphs, no boxed chip.
+      if (typeof wmLabelText === 'function') wmLabelText(cx, d.n, lx, ly, false, x0, y0, bw, bh);
+      else {
+        cx.lineWidth = 2.25; cx.strokeStyle = 'rgba(4,7,12,0.8)'; cx.strokeText(d.n, lx, ly);
+        cx.fillStyle = 'rgba(233,240,250,0.94)'; cx.fillText(d.n, lx, ly);
+      }
       clueMapMarks.push({ sx: lx, sy: ly, r: 7, label: '<b>' + clueMapEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
     }
     cx.restore();
@@ -787,12 +789,10 @@
     if (!ts) return '';
     try {
       if (typeof achDefs === 'undefined' || !achDefs || typeof achState === 'undefined' || !achState) return '';
-      const area = ts.area.toLowerCase(), tier = ts.tier.toLowerCase();
+      const want = (ts.area + ' set tasks - ' + ts.tier).toLowerCase();
       let parent = null;
       for (const a of achDefs) {
-        const nm = (a.name || '').toLowerCase();
-        if (nm.indexOf('set tasks') < 0 || nm.indexOf(area) < 0 || nm.indexOf(tier) < 0) continue;
-        parent = a; break;
+        if ((a.name || '').toLowerCase() === want) { parent = a; break; }
       }
       if (!parent) return '';                       // set not in the cache -> never fade
       return (achState.done && achState.done.has(parent.id)) ? ''
@@ -1654,7 +1654,7 @@
     {n:'Anachronia - Southeast totem',src:'Standard Spellbook',x:5635,y:2234,p:0,sp:10371,rq:'72 Magic'},
     {n:'Max guild Teleport - Outside',src:'Standard Spellbook',x:2276,y:3327,p:1,sp:36145,rq:'99 in all skills'},
     {n:'Max guild Teleport - Inside',src:'Standard Spellbook',x:2276,y:3313,p:1,sp:36145,rq:'99 in all skills'},
-    {n:'Kandarin Monastery',src:'Standard Spellbook',x:2606,y:3219,p:0,sp:36143,rq:'Ardougne medium achievements'},
+    {n:'Kandarin Monastery',src:'Standard Spellbook',x:2606,y:3219,p:0,sp:36143,rq:'Ardougne easy achievements'},
     {n:'Manor Farm',src:'Standard Spellbook',x:2671,y:3376,p:0,sp:36144,rq:'Ardougne easy achievements'},
     {n:'Skeletal horror',src:'Standard Spellbook',x:3362,y:3503,p:0,sp:36142,rq:'Fur \'n Seek'},
     {n:'War\'s Retreat',src:'Standard Spellbook',x:3294,y:10127,p:0,sp:35042,rq:'10 boss kills'},

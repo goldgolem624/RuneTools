@@ -250,6 +250,31 @@
     const dw = Math.max(1, Math.round(w * s)), dh = Math.max(1, Math.round(h * s));
     cx.drawImage(img, Math.round(mx - dw / 2), Math.round(my - dh / 2), dw, dh);
   }
+  // Place-label styling, shared by both map surfaces: a soft dark halo carries the text over
+  // any terrain without a boxed chip, and the glyphs sit slightly cool-white so they read as
+  // chrome rather than map content. The pinned label gets a teal tint + faint plate.
+  function wmLabelText(cx, text, x, y, hot, bx, by, bw, bh) {
+    cx.save();
+    if (hot && bw) {                                   // selection: faint rounded plate
+      cx.fillStyle = 'rgba(8,12,20,0.5)';
+      cx.beginPath();
+      const r = 4;
+      cx.moveTo(bx + r, by); cx.lineTo(bx + bw - r, by); cx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+      cx.lineTo(bx + bw, by + bh - r); cx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+      cx.lineTo(bx + r, by + bh); cx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+      cx.lineTo(bx, by + r); cx.quadraticCurveTo(bx, by, bx + r, by);
+      cx.closePath(); cx.fill();
+    }
+    // halo: wide soft pass, then a tighter one, so edges stay crisp without a hard outline
+    cx.lineJoin = 'round'; cx.miterLimit = 2;
+    cx.shadowColor = 'rgba(0,0,0,0.65)'; cx.shadowBlur = 5; cx.shadowOffsetY = 1;
+    cx.lineWidth = 4.5; cx.strokeStyle = 'rgba(4,7,12,0.55)'; cx.strokeText(text, x, y);
+    cx.shadowBlur = 0; cx.shadowOffsetY = 0;
+    cx.lineWidth = 2.25; cx.strokeStyle = 'rgba(4,7,12,0.8)'; cx.strokeText(text, x, y);
+    cx.fillStyle = hot ? '#7ff2dc' : 'rgba(233,240,250,0.94)';
+    cx.fillText(text, x, y);
+    cx.restore();
+  }
   const wmTextW = new Map();   // label -> measured px width (font is constant)
   function wmChip(cx, sxp, syp, text, placed, hot) {
     cx.font = '600 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
@@ -259,14 +284,7 @@
     const x0 = sxp - bw / 2, y0 = syp - bh / 2;
     if (placed.some(function (p) { return x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y; })) return false;
     placed.push({ x: x0, y: y0, w: bw, h: bh });
-    // Outlined text only (no filled chip) so labels stay readable without hiding the map.
-    // The pinned label keeps a faint chip so the selection is still obvious.
-    if (hot) {
-      cx.fillStyle = 'rgba(7,9,14,0.55)'; cx.fillRect(x0, y0, bw, bh);
-      cx.lineWidth = 1; cx.strokeStyle = 'rgba(70,224,192,0.5)'; cx.strokeRect(x0 + 0.5, y0 + 0.5, bw - 1, bh - 1);
-    }
-    cx.lineWidth = 3; cx.strokeStyle = 'rgba(0,0,0,0.75)'; cx.strokeText(text, sxp, syp);
-    cx.fillStyle = hot ? '#ffffff' : 'rgba(255,255,255,0.88)'; cx.fillText(text, sxp, syp);
+    wmLabelText(cx, text, sxp, syp, hot, x0, y0, bw, bh);
     return true;
   }
   function wmDraw() {
