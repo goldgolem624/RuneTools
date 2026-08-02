@@ -161,12 +161,11 @@
           const okq = cur >= q.v; if (okq) sat++;
           lines.push({ label: q.n, cur: cur, req: q.v, ok: okq, src: 'varp ' + q.vps.join(' + ') });
         }
-        // A ROLLUP with no direct requirements is decided by its children, below. Without
-        // this guard sat 0 >= need 0 marked it done here, and the rollup pass skips anything
-        // already done - so e.g. "Ardougne Set Tasks - Easy" read as complete at 6/23.
-        // Non-rollups keep their previous behaviour.
-        const isRollup = !!(a.subach && a.subach.length);
-        if (!(isRollup && achNeed(a) === 0) && sat >= achNeed(a)) done.add(a.id);
+        // Completion must be PROVEN, never assumed. With no requirements to check, sat 0 >=
+        // need 0 marked the entry done, which (a) reported achievements we cannot evaluate as
+        // complete and (b) pre-empted the rollup pass below, since it skips anything already
+        // done - so a set like "Ardougne Set Tasks - Easy" read complete at 6/23 tasks.
+        if (achNeed(a) > 0 && sat >= achNeed(a)) done.add(a.id);
         prog[a.id] = lines;
       }
       // Rollups (a `subach` list) are complete when `needN` (else all) of their subs are; run to a
@@ -181,7 +180,14 @@
           if (sub >= need) { done.add(p.id); chg = true; }
         }
       }
-      achState = { done: done, prog: prog };
+      // Anything with no requirements of its own and no sub-achievements cannot be judged
+      // either way; callers should treat these as unknown rather than incomplete.
+      const unknown = new Set();
+      for (const a of achDefs) {
+        if (done.has(a.id) || achIsLeagues(a)) continue;
+        if (achNeed(a) === 0 && !(a.subach && a.subach.length)) unknown.add(a.id);
+      }
+      achState = { done: done, prog: prog, unknown: unknown };
     } finally { achFetching = false; }
     if (activeTab === 'achievements') renderAchievements2();
     else if (activeTab === 'combatmastery') renderCombatMastery();

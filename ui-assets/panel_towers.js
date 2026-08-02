@@ -842,8 +842,9 @@
         if ((a.name || '').toLowerCase() === want) { parent = a; break; }
       }
       if (!parent) return '?';                      // set not in the cache -> unknown, never fade
-      return (achState.done && achState.done.has(parent.id)) ? ''
-           : ('needs ' + ts.area + ' ' + tier + ' tasks');
+      if (achState.done && achState.done.has(parent.id)) return '';
+      if (achState.unknown && achState.unknown.has(parent.id)) return '?';   // cannot be judged
+      return 'needs ' + ts.area + ' ' + tier + ' tasks';
     } catch (e) { return ''; }
   }
   // Skill levels named in the requirement text, checked against live levels.
