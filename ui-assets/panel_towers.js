@@ -728,7 +728,9 @@
               const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), cont, vid)) || {};
               const kk = r2.key || {};
               if (kk[String(spec.key)] !== undefined) {
-                const raw = kk[String(spec.key)] | 0;
+                let raw = kk[String(spec.key)] | 0;
+                if (spec.shift) raw >>>= spec.shift;      // the field can share a key with others
+                if (spec.mask) raw &= spec.mask;
                 cc[iid] = { v: spec.spent ? Math.max(0, cap - raw) : raw, max: cap }; hit = true; break;
               }
             } catch (e) {}
@@ -2578,9 +2580,9 @@
   const TELE_ITEM_CHARGES = {
     23643: { key: 0, caps: {} },                                  // TokKul-Zo (Charged)
     39387: { key: 0, caps: { 39385: 5, 39387: 5, 41066: 100 } },  // Enlightened amulet / (new) / (c)
-    // These two store USES SPENT, not charges left: the game shows "10 - value".
-    41078: { key: 37519, spent: true, caps: { 41078: 10 } },       // Spirit tree re-rooter
-    41076: { key: 37518, spent: true, caps: { 41076: 10 } },       // Portable fairy ring
+    // Spirit tree re-rooter counts USES SPENT, packed at bit 5 of key 0 (live: 32/64/96 for
+    // 1/2/3 used) and reported as "10 - used". shift/mask carve the field out of the key.
+    41078: { key: 0, shift: 5, mask: 0xF, spent: true, caps: { 41078: 10 } },
   };
   // Items whose daily teleports are tracked as a REMAINING count (the opposite of
   // TELE_CHARGES, which counts uses spent). itemId -> varbit holding what is left today.
