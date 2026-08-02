@@ -636,7 +636,8 @@
       if (!teleQuestIds) {
         teleQuestIds = {};
         for (const nm of qNames) {
-          const q = QUESTS.find(q2 => (q2.name || '').toLowerCase() === nm.toLowerCase());
+          const key = teleQuestKey(nm);
+          const q = QUESTS.find(q2 => teleQuestKey(q2.name) === key);
           if (q) teleQuestIds[nm] = q.id;
         }
         // Rows may pin the quest-system id directly (quest struct param 8224) - the
@@ -701,10 +702,18 @@
         if (n > 0) for (const rid of TELE_COMBO_ITEMS[cid]) rc[rid] = (rc[rid] || 0) + n;
       }
       if (bridge().itemExtraInts) {
-        for (const pid of TELE_RUNE_POUCHES) {
-          if (!inv.ids.has(pid)) continue;
+        // Take the pouch list from the Storage panel's own table when it is loaded, so the
+        // two can never drift; fall back to the local copy otherwise. Worn counts too.
+        let pouchIds = TELE_RUNE_POUCHES;
+        try {
+          if (typeof STORAGE !== 'undefined' && STORAGE.rune && STORAGE.rune.items)
+            pouchIds = Object.keys(STORAGE.rune.items).map(Number);
+        } catch (e) {}
+        for (const pid of pouchIds) {
+          const inInv = inv.ids.has(pid), inWorn = teleWornSet && teleWornSet.has(pid);
+          if (!inInv && !inWorn) continue;
           try {
-            const r0 = JSON.parse(await bridge().itemExtraInts(myPid(), 93, pid)) || {};
+            const r0 = JSON.parse(await bridge().itemExtraInts(myPid(), inInv ? 93 : 94, pid)) || {};
             const ei = r0.key || {};
             const types = ei['1'] >>> 0;
             [0, 2, 3, 4].forEach((key, slot) => {
@@ -828,6 +837,58 @@
       return esc(part) + (ok ? '' : ' (' + cur + '/' + m[1] + ')') + ' ' + teleRqDot(ok, mode);
     }).join(', ');
   }
+  // Curated requirements rendered the same way the requirement TEXT is: each one listed
+  // with a met/unmet dot, so a satisfied requirement is visible rather than silently
+  // dropped (only failures used to appear at all).
+  // Rune item id -> display name, for shortfall messages.
+  const TELE_RUNE_NAME = { 554: 'fire', 555: 'water', 556: 'air', 557: 'earth', 558: 'mind',
+    559: 'body', 560: 'death', 561: 'nature', 562: 'chaos', 563: 'law', 564: 'cosmic',
+    565: 'blood', 566: 'soul', 9075: 'astral', 21773: 'elemental', 58450: 'time',
+    4694: 'steam', 4695: 'mist', 4696: 'dust', 4697: 'smoke', 4698: 'mud', 4699: 'lava' };
+  function teleRuneName(id) { return (TELE_RUNE_NAME[id] || ('rune ' + id)) + ' rune' + '' ; }
+  // Quest names appear in two forms: "A Fairy Tale II - Cure a Queen" in some sources and
+  // the list form "Fairy Tale II - Cure a Queen, A" in others. Compare with the article
+  // stripped from either end, or a gate silently matches nothing and lets the row through.
+  function teleQuestKey(n) {
+    let t = String(n || '').toLowerCase().trim();
+    t = t.replace(/^(?:a|an|the)\s+/, '').replace(/,\s*(?:a|an|the)$/, '');
+    return t.replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  function teleReqLines(T, mode) {
+    const r = T.req;
+    if (!r) return [];
+    const out = [];
+    const add = function (label, ok) { out.push(teleRqDot(ok, mode) + ' ' + label); };
+    if (r.questName) add(r.questName, teleQuestOk(r));
+    if (r.skill != null && r.level != null) {
+      const cur = questSkillLevels()(r.skill) | 0;
+      const nm = (typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[r.skill]) || ('skill ' + r.skill);
+      add(r.level + ' ' + nm + (cur > 0 && cur < r.level ? ' (' + cur + '/' + r.level + ')' : ''),
+          !(cur > 0 && cur < r.level));
+    }
+    if (r.wornAll && r.wornAll.length) {
+      let got = 0;
+      if (teleWornSet) for (const id of r.wornAll) if (teleWornSet.has(id)) got++;
+      add('full outfit worn (' + got + '/' + r.wornAll.length + ')', teleWornOk(r));
+    }
+    if (r.vb != null) {
+      const cur = teleVbCache[r.vb] | 0;
+      const ok = (r.vbMin != null) ? cur >= r.vbMin : cur === r.vbVal;
+      add(ok ? (r.vbWhy ? r.vbWhy.replace(/^ring not restored.*/, 'ring restored') : 'unlocked')
+             : (r.vbWhy || 'not unlocked'), ok);
+    }
+    if (r.heldAny && r.heldAny.length) {
+      const ok = !teleInvSet || r.heldAny.some(function (id) { return teleInvSet.has(id); });
+      add('item carried', ok);
+    }
+    const tw = teleTaskSetWhy(T);
+    if (tw && tw !== '?') add(tw.replace(/^needs /, ''), false);
+    else if (tw !== '?' && teleRqGates(T).taskSet) {
+      const ts = teleRqGates(T).taskSet;
+      add(ts.area + ' ' + String(ts.tier).toLowerCase() + ' tasks', true);
+    }
+    return out;
+  }
   function teleReqMet(T) {
     // NOTE: a row may carry no curated `req` at all and still be gated - most rows state
     // their requirements as TEXT, which teleRqGates turns into real checks. Bailing out on
@@ -862,7 +923,14 @@
     if (r.spell[0] >= 0 && sb !== undefined && (sb | 0) !== r.spell[0]) out.push('wrong spellbook');
     if (r.spell[1] > 0) { const lvl = questSkillLevels(); const cur = lvl(6) | 0; if (cur > 0 && cur < r.spell[1]) out.push('needs ' + r.spell[1] + ' Magic'); }
     if (r.spell[2] && r.spell[2].length && teleRuneCounts) {
-      if (r.spell[2].some(rq2 => (teleRuneCounts[rq2[0]] | 0) < rq2[1])) out.push('missing runes');
+      // Name WHICH rune is short and by how much - "missing runes" alone gives nothing to
+      // check against, and the shortfall is exactly what you need to know.
+      const short = [];
+      for (const rq2 of r.spell[2]) {
+        const have = teleRuneCounts[rq2[0]] | 0;
+        if (have < rq2[1]) short.push((rq2[1] - have) + ' ' + teleRuneName(rq2[0]));
+      }
+      if (short.length) out.push('missing ' + short.join(', '));
     }
     const u = r.spell[3];
     if (u) {
@@ -1151,7 +1219,7 @@
         const cell = document.createElement('div');
         cell.className = 'cml-cell';
         const icon = document.createElement('div');
-        const url = T.iconUrl || (T.item ? resolveIcon(T.item) : '');
+        const url = T.iconUrl || (T.ico ? resolveIcon(T.ico) : (T.item ? resolveIcon(T.item) : ''));
         if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
         else if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
         else { icon.className = 'cml-dot'; }
@@ -1163,6 +1231,7 @@
         if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
         parts.push(T.n);
         if (T.rq) parts.push('req: ' + teleRqLive(T));   // requirement text + your current level
+        for (const ln of teleReqLines(T)) parts.push(ln);
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
         if (teleInPassage(T) && telePassage.free) parts.push('unlimited charges (in the passage)');
@@ -1550,7 +1619,7 @@
 {n:'Mazcab teleport (tablet)',src:'Teleport tablet',x:4316,y:819,p:0,item:40987,req:{vb:36971,vbVal:1}},
 {n:'Dragonkin Laboratory',src:'Teleport tablet',x:3368,y:3889,p:0,item:43375},
 {n:'Shadow Reef',src:'Teleport tablet',x:3510,y:3694,p:0,item:47529},
-{n:'Fairy ring BJS - The Lost Grove',src:'Fairy rings',x:1359,y:5635,p:0,kb:'BJS',req:{questName:'A Fairy Tale II - Cure a Queen',vb:30276,vbMin:1,vbWhy:'ring not restored (plant 5 bittercap mushrooms)'}},
+{n:'Fairy ring BJS - The Lost Grove',src:'Fairy rings',x:1359,y:5635,p:0,kb:'BJS',ico:41076,req:{questName:'A Fairy Tale II - Cure a Queen',vb:30276,vbMin:1,vbWhy:'ring not restored (plant 5 bittercap mushrooms)'}},
 {n:'North-western Anachronia',src:'Standard Spellbook',x:5314,y:2495,p:0,sp:10370},
 {n:'Eastern Anachronia',src:'Standard Spellbook',x:5599,y:2331,p:0,sp:10369},
 {n:'Northern Lost Grove',src:'Standard Spellbook',x:1402,y:5724,p:0,sp:11316},

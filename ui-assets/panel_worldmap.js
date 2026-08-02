@@ -396,7 +396,7 @@
         for (let i = 0; i < n; i++) {
           const T2 = show[i];
           cx.globalAlpha = !teleWhyCached(T2) ? 1 : 0.45;
-          const url = T2.iconUrl || (T2.item ? resolveIcon(T2.item) : (T2.sp ? wmSpriteUrl(T2.sp) : ''));
+          const url = T2.iconUrl || (T2.ico ? resolveIcon(T2.ico) : (T2.item ? resolveIcon(T2.item) : (T2.sp ? wmSpriteUrl(T2.sp) : '')));
           const img = url ? wmImg(url) : null;
           const ox = b.mx + (i - (n - 1) / 2) * sp;
           if (img) wmDrawIcon(cx, img, ox, b.my, n === 1 ? 20 : 17);
@@ -503,6 +503,8 @@
                    + (teleItemChargeMax(t2) ? '/' + teleItemChargeMax(t2) : '') + ' charges'
                    + ((typeof teleInPassage === 'function' && teleInPassage(t2)) ? ' (in the passage)' : '') : ''))
         + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : rq) : '')
+        + ((typeof teleReqLines === 'function')
+             ? teleReqLines(t2, 'html').map(function (l) { return '<br>' + l; }).join('') : '')
         + (why ? '<br>' + htmlEsc(why) : '') + '</span>';
     }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
   }

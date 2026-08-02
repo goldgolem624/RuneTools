@@ -204,7 +204,13 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     if (!c || !c.alt || !c.alt.q) return c;
     try {
       if (typeof QUESTS === 'undefined' || typeof questStatus !== 'function') return c;
-      const qd = QUESTS.find(z => (z.name || '').toLowerCase() === c.alt.q.toLowerCase());
+      const qk = function (n) {
+        return String(n || '').toLowerCase().trim()
+          .replace(/^(?:a|an|the)\s+/, '').replace(/,\s*(?:a|an|the)$/, '')
+          .replace(/[^a-z0-9]+/g, ' ').trim();
+      };
+      const want = qk(c.alt.q);
+      const qd = QUESTS.find(z => qk(z.name) === want);
       if (!qd) return c;
       if (questStatus(qd, (typeof teleQuestVp !== 'undefined' && teleQuestVp) || {}) !== 2) return c;
       const o = Object.assign({}, c);
