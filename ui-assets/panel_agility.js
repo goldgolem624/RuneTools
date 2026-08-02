@@ -1,4 +1,4 @@
-// RuneToolsX panel: Anachronia Agility Course (route guide, section progress, movement helper).
+// RuneToolsX panel: Agility Courses (Anachronia and Burthorpe: route, progress, next obstacle).
 // Spliced inline into client.html at load; bare classic script sharing one global scope.
 // Obstacle highlighting uses the OBJECT primitive (guideMarks) - there is no object outline.
 
@@ -9,8 +9,47 @@
   // the game's own seven sections. [locId, name, action, x, y, plane, sectionIndex]
   const ANACH_COURSE = [[113738,"Cliff face","Traverse",5428,2384,0,0],[113737,"Cliff face","Traverse",5426,2388,0,0],[113736,"Ruined temple","Traverse",5425,2398,1,0],[113735,"Ruined temple","Traverse",5431,2408,1,0],[113734,"Cave entrance","Enter",5431,2418,0,0],[113733,"Roots","Cross",5485,2456,1,0],[113732,"Ruined temple","Traverse",5505,2463,0,1],[113731,"Ruined temple","Jump across",5505,2469,1,1],[113730,"Ruined temple","Traverse",5505,2479,1,1],[113729,"Ruined temple","Climb",5529,2492,1,1],[113728,"Ruined temple","Jump across",5537,2492,1,1],[113727,"Bones","Traverse",5565,2452,1,1],[113726,"Spine","Cross",5575,2453,1,1],[113725,"Bones","Traverse",5585,2452,1,1],[113724,"Cliff face","Traverse",5591,2448,0,2],[113723,"Ruined temple","Traverse",5602,2433,0,2],[113722,"Ruined temple","Traverse",5609,2433,1,2],[113721,"Ruined temple","Traverse",5617,2433,1,2],[113720,"Ruined temple","Traverse",5627,2433,0,2],[113719,"Roots","Traverse",5642,2425,1,2],[113718,"Vines","Cross",5644,2420,1,2],[113717,"Vines","Cross",5653,2399,1,2],[113716,"Vines","Cross",5655,2371,1,3],[113715,"Roots","Climb over",5676,2363,1,3],[113714,"Sunken column","Jump across",5696,2339,1,3],[113713,"Big block","Climb over",5693,2317,1,3],[113712,"Roots","Jump across",5686,2303,1,3],[113711,"Roots","Traverse",5684,2292,0,3],[113710,"Vines","Cross",5674,2290,1,3],[113709,"Vines","Cross",5663,2288,1,3],[113708,"Block","Climb over",5627,2287,1,4],[113707,"Ruins","Traverse",5594,2295,1,4],[113706,"Vines","Cross",5581,2295,1,4],[113705,"Bones","Climb over",5577,2289,1,4],[113704,"Rock","Traverse",5563,2272,1,4],[113703,"Root","Traverse",5553,2246,1,4],[113702,"Vines","Cross",5548,2237,1,4],[113701,"Vines","Cross",5548,2214,1,4],[113700,"Ruins","Traverse",5524,2182,0,5],[113699,"Ruins","Jump across",5495,2171,1,5],[113698,"Plank","Cross",5483,2171,1,5],[113697,"Ruined temple","Traverse",5474,2171,0,5],[113696,"Ruined column","Traverse",5456,2180,1,5],[113695,"Cliff face","Traverse",5437,2217,0,5],[113694,"Tree","Jump across",5390,2240,1,6],[113693,"Cliff face","Traverse",5376,2248,1,6],[113692,"Vines","Cross",5363,2282,1,6],[113691,"Root","Climb over",5368,2304,0,6],[113690,"Vines","Cross",5394,2320,1,6],[113689,"Cliff face","Traverse",5408,2324,0,6],[113688,"Cliff face","Traverse",5411,2325,0,6],[113687,"Temple wall","Traverse",5415,2324,1,6]];
 
+  // Burthorpe. Owner-confirmed route order: the loc ids are NOT in route order here, unlike
+  // Anachronia, so this sequence cannot be re-derived by sorting.
+  // [locId, name, action, x, y, plane]
+  const BURTH_COURSE = [
+    [66894, 'Log beam', 'Walk', 2917, 3578, 0],
+    [66912, 'Wall', 'Climb-up', 2913, 3578, 0],
+    [66909, 'Balancing ledge', 'Walk-across', 2910, 3572, 1],
+    [66902, 'Obstacle low wall', 'Climb-over', 2911, 3570, 1],
+    [66904, 'Rope swing', 'Swing-on', 2912, 3573, 1],
+    [66897, 'Monkey bars', 'Swing-across', 2914, 3575, 1],
+    [66910, 'Ledge', 'Jump-down', 2921, 3575, 0],
+  ];
+  const BURTH_ALT_TILES = {
+    66909: [[2910, 3572, 1], [2910, 3574, 1]],
+    66897: [[2914, 3575, 1], [2920, 3575, 1]],
+    66910: [[2921, 3575, 0], [2921, 3575, 1]],
+  };
+  // A plain COUNTER of obstacles cleared, 0..6, back to 0 when the lap completes - so the
+  // next obstacle's index IS the value. Unlike Anachronia's per-section bitmasks it cannot
+  // say WHICH obstacles are done, so entering mid-course tells it nothing.
+  const BURTH_VB = 16731;
+  const BURTH_LAPS_VB = 16729;        // Burthorpe laps completed
+
+  const AGI_COURSES = [['anachronia', 'Anachronia'], ['burthorpe', 'Burthorpe']];
+  let agiCourse = 'anachronia';
+  try { const c = localStorage.getItem('rtxAgiCourse'); if (c) agiCourse = c; } catch (e) {}
+  function agiSetCourse(v) {
+    agiCourse = v;
+    try { localStorage.setItem('rtxAgiCourse', v); } catch (e) {}
+    agiPaint();
+  }
+  function agiIsBurth() { return agiCourse === 'burthorpe'; }
+  // The obstacle table for whichever course is selected.
+  function agiRows() { return agiIsBurth() ? BURTH_COURSE : ANACH_COURSE; }
+  function agiAlts() { return agiIsBurth() ? BURTH_ALT_TILES : ANACH_ALT_TILES; }
+  function agiBurthDone() {
+    const v = agiVb[BURTH_VB];
+    return v === undefined ? -1 : (v | 0);
+  }
+
   const AGI_SKILL = 16;                 // Agility
-  const AGI_FIRST = 113687, AGI_LAST = 113738;
   let agiCleared = [];    // obstacle index -> true once taken this lap
   let agiLastIdx = -1;    // last obstacle we saw the player at
   let agiPos = null;      // {x,y,plane}
@@ -35,7 +74,6 @@
   // The game's own progress: one varbit per section holding a BITMASK that fills from bit
   // (n-1) downward, one bit per obstacle taken, and resets to 0 the moment the section
   // completes. Live-captured on a section A lap: 32, 48, 56, 60, 62, then 0.
-  // Only section A's varbit is confirmed; the rest fall back to proximity until captured.
   // Every section's obstacle mask, all live-captured. A, B and C are varp 8587's three 8-bit
   // fields; D through G are varp 8586's four. The ids run strictly downward in section order.
   const ANACH_SECTION_VB = {
@@ -74,7 +112,7 @@
 
   async function agiReadVb() {
     if (!bridge()) return;
-    const ids = [ANACH_LAP_MIN_VB, ANACH_LAP_SEC_VB, ANACH_LAPS_VB, ANACH_LAP_TICK_VB];
+    const ids = [ANACH_LAP_MIN_VB, ANACH_LAP_SEC_VB, ANACH_LAPS_VB, ANACH_LAP_TICK_VB, BURTH_VB, BURTH_LAPS_VB];
     for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
     if (ids.length && bridge().varbits) {
       try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) {}
@@ -110,6 +148,8 @@
   }
   // True when this obstacle is done: the game's own bit where we have it, else what we saw.
   function agiIsDone(i) {
+    // Burthorpe counts rather than flags: everything below the count is done.
+    if (agiIsBurth()) { const n = agiBurthDone(); return n < 0 ? !!agiCleared[i] : i < n; }
     const v = agiVbDone(i);
     return v === null ? !!agiCleared[i] : v;
   }
@@ -124,7 +164,7 @@
   }
   function agiLapDone() {
     let n = 0;
-    for (let i = 0; i < ANACH_COURSE.length; i++) if (agiIsDone(i)) n++;
+    for (let i = 0; i < agiRows().length; i++) if (agiIsDone(i)) n++;
     return n;
   }
 
@@ -145,6 +185,13 @@
   //   - otherwise the target is the nearest section ENTRY, meaning the first or last obstacle
   //     of a section that is not finished
   function agiNextIdx() {
+    if (agiIsBurth()) {
+      const rows = BURTH_COURSE;
+      const n = agiBurthDone();
+      if (n >= 0) return n >= rows.length ? 0 : n;   // the count IS the next index
+      for (let i = 0; i < rows.length; i++) if (!agiCleared[i]) return i;
+      return 0;
+    }
     const okSec = function (si) { return agiSectionOk(si) && !agiSectionComplete(si); };
     // 1. a section in progress
     for (let si = 0; si < ANACH_SECTIONS.length; si++) {
@@ -193,8 +240,8 @@
   };
   // The tile to aim at for this obstacle: its own, or the closest of its alternates.
   function agiTileOf(i) {
-    const o = ANACH_COURSE[i];
-    const alts = ANACH_ALT_TILES[o[0]];
+    const o = agiRows()[i];
+    const alts = agiAlts()[o[0]];
     if (!alts || !agiPos) return [o[3], o[4], o[5]];
     let best = null, bd = 1e9;
     for (const a of alts) {
@@ -213,7 +260,7 @@
   function agiSeen() {
     if (!agiPos) return;
     let best = -1, bd = 5;
-    for (let i = 0; i < ANACH_COURSE.length; i++) {
+    for (let i = 0; i < agiRows().length; i++) {
       const d = agiDistAt(i);
       if (d < bd) { bd = d; best = i; }
     }
@@ -227,14 +274,15 @@
     if (!bridge() || !bridge().guideMarks) return;
     const i = agiNextIdx();
     if (i < 0) { try { bridge().guideMarks(myPid(), ''); } catch (e) {} return; }
-    const o = ANACH_COURSE[i];
+    const o = agiRows()[i];
     const enc = function (x, y, p, lab, rgb) {
       return (x | 0) + '\x1f' + (y | 0) + '\x1f' + (p | 0) + '\x1f'
            + String(lab).replace(/[\x1e\x1f]/g, ' ').slice(0, 80) + (rgb ? '\x1f0\x1f' + rgb : '');
     };
     // First line NAMES the loc: the host boxes that loc's footprint near the tile.
     const t = agiTileOf(i);
-    const marks = [enc(t[0], t[1], t[2], o[1] + '\n' + o[2] + '  (' + agiSectionOf(i)[0] + ')')];
+    const tag = agiIsBurth() ? '' : '  (' + agiSectionOf(i)[0] + ')';
+    const marks = [enc(t[0], t[1], t[2], o[1] + '\n' + o[2] + tag)];
     try { bridge().guideMarks(myPid(), marks.join('\x1e')); } catch (e) {}
   }
 
@@ -253,39 +301,58 @@
   }
   setInterval(function () { agiTick(); }, 700);
 
+  function agiWire(el) {
+    el.querySelectorAll('.agi-side button').forEach(function (b) {
+      b.onclick = function () { agiSetSide(b.dataset.side); };
+    });
+    el.querySelectorAll('.agi-courses button').forEach(function (b) {
+      b.onclick = function () { agiSetCourse(b.dataset.course); };
+    });
+  }
   function agiPaint() {
     const el = $('agiBody'); if (!el) return;
     const lv = agiLevel();
     const prog = agiSectionProgress();
     const done = agiLapDone(), next = agiNextIdx();
+    const rows = agiRows(), burth = agiIsBurth();
     const secDone = ANACH_SECTIONS.filter(function (_, si) { return agiSectionComplete(si); }).length;
-    const pct = Math.round(done / ANACH_COURSE.length * 100);
+    const pct = Math.round(done / rows.length * 100);
 
-    let html = '<header class="agi-hd">'
-      + '<div class="agi-fig"><b>' + done + '</b><span>/ ' + ANACH_COURSE.length + '</span></div>'
+    let html = '<div class="agi-courses">'
+      + AGI_COURSES.map(function (c) {
+          return '<button data-course="' + c[0] + '"' + (agiCourse === c[0] ? ' class="on"' : '')
+               + '>' + c[1] + '</button>';
+        }).join('')
+      + '</div>';
+    html += '<header class="agi-hd">'
+      + '<div class="agi-fig"><b>' + done + '</b><span>/ ' + rows.length + '</span></div>'
       + '<div class="agi-cap">obstacles this lap</div>'
       + '<div class="agi-chips">'
-      + (agiLapMask != null
+      + (!burth && agiLapMask != null
           ? '<span class="agi-chip' + (secDone === 7 ? ' ok' : '') + '">' + secDone + ' / 7 sections</span>' : '')
-      + (agiVb[ANACH_LAPS_VB] ? '<span class="agi-chip">' + agiVb[ANACH_LAPS_VB]
-          + (agiVb[ANACH_LAPS_VB] === 1 ? ' lap' : ' laps') + '</span>' : '')
-      + (agiLapTime() ? '<span class="agi-chip">lap ' + agiLapTime() + '</span>' : '')
+      + (function () {
+          const n = burth ? agiVb[BURTH_LAPS_VB] : agiVb[ANACH_LAPS_VB];
+          return n ? '<span class="agi-chip">' + n + (n === 1 ? ' lap' : ' laps') + '</span>' : '';
+        }())
+      + (!burth && agiLapTime() ? '<span class="agi-chip">lap ' + agiLapTime() + '</span>' : '')
       + (lv > 0 ? '<span class="agi-chip">' + lv + ' Agility</span>' : '')
       + '</div>'
-      + '<div class="agi-side">start'
+      + (burth ? '' : '<div class="agi-side">start'
       + ['auto', 'north', 'south'].map(function (k) {
           return '<button data-side="' + k + '"' + (agiSide === k ? ' class="on"' : '') + '>' + k + '</button>';
         }).join('')
-      + '</div>'
+      + '</div>')
       + '<div class="agi-bar"><i style="width:' + pct + '%"></i></div>'
       + '</header>';
 
     if (next >= 0) {
-      const o = ANACH_COURSE[next], sec = agiSectionOf(next), nt = agiTileOf(next);
+      const o = rows[next], nt = agiTileOf(next);
       html += '<div class="agi-next">'
         + '<div class="agi-nh">next obstacle</div>'
         + '<div class="agi-nn">' + htmlEsc(o[2] + ' ' + o[1].toLowerCase()) + '</div>'
-        + '<div class="agi-nm"><span>section ' + sec[0] + '</span>'
+        + '<div class="agi-nm">'
+        + (burth ? '<span>' + (next + 1) + ' of ' + rows.length + '</span>'
+                 : '<span>section ' + agiSectionOf(next)[0] + '</span>')
         + '<span>loc ' + o[0] + '</span>'
         + '<span>' + nt[0] + ', ' + nt[1] + (nt[2] ? ' p' + nt[2] : '') + '</span>'
         + (agiPos ? '<span>' + agiDistAt(next) + ' tiles</span>' : '') + '</div>'
@@ -295,6 +362,23 @@
         + '<div class="agi-nm"><span>all 52 obstacles taken</span></div></div>';
     }
 
+    if (burth) {
+      html += '<div class="agi-secs">';
+      for (let i = 0; i < rows.length; i++) {
+        const o = rows[i], isNext = i === next, ok = agiIsDone(i);
+        html += '<div class="agi-sec' + (ok ? ' is-done' : '') + (isNext ? ' is-next' : '') + '">'
+          + '<span class="agi-let">' + (i + 1) + '</span>'
+          + '<span class="agi-name"><b>' + htmlEsc(o[1]) + '</b><em>' + htmlEsc(o[2]) + '</em></span>'
+          + '<span class="agi-lvl">' + o[3] + ', ' + o[4] + '</span>'
+          + '</div>';
+      }
+      html += '</div>';
+      if (agiBurthDone() < 0)
+        html += '<div class="agi-note">progress not read yet</div>';
+      el.innerHTML = html;
+      agiWire(el);
+      return;
+    }
     html += '<div class="agi-secs">';
     for (let si = 0; si < ANACH_SECTIONS.length; si++) {
       const s = ANACH_SECTIONS[si], p = prog[si];
@@ -312,9 +396,7 @@
 
 
     el.innerHTML = html;
-    el.querySelectorAll('.agi-side button').forEach(function (b) {
-      b.onclick = function () { agiSetSide(b.dataset.side); };
-    });
+    agiWire(el);
   }
 
   function renderAgility() {
@@ -322,7 +404,16 @@
     if ($('agiBody')) { agiPaint(); return; }   // renderPane polls: never rebuild a live mount
     c.innerHTML = '';
     injectStyle('agiCss',
-      '.agi-wrap{display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;'
+      '.agi-courses{display:flex;gap:6px}'
+      + '.agi-courses button{flex:1;padding:7px 10px;font:inherit;font-size:12px;border-radius:8px;'
+      + 'cursor:pointer;border:1px solid var(--border);background:rgba(255,255,255,.03);'
+      + 'color:var(--text-dim)}'
+      + '.agi-courses button:hover{color:var(--text);background:rgba(255,255,255,.07)}'
+      + '.agi-courses button.on{color:var(--text);border-color:#7c6df2;background:rgba(124,109,242,.12)}'
+      + '.agi-courses button:focus-visible{outline:2px solid #7c6df2;outline-offset:1px}'
+      + '.agi-sec.is-next{border-color:#7c6df2;background:rgba(124,109,242,.09)}'
+      + '.agi-note{font-size:11px;color:var(--text-dim)}'
+      + '.agi-wrap{display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;'
       + 'overflow:auto;padding:2px}'
       // header: the figure carries the weight, everything else stays quiet
       + '.agi-hd{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto auto;'
