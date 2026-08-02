@@ -42,11 +42,16 @@
   // identical either way. Labelled plainly until a slower lap settles it.
   const ANACH_LAP_MIN_VB = 44253, ANACH_LAP_SEC_VB = 44254;
   const ANACH_LAPS_VB = 44251;        // total laps completed
+  // Ticks are the real figure: mm:ss is a rounded display of it, so 8:31 covers a spread
+  // of ticks and only this shows sub-second progress between laps. 852 ticks = 8:31.
+  const ANACH_LAP_TICK_VB = 44252;
   function agiLapTime() {
     const m = agiVb[ANACH_LAP_MIN_VB], sec = agiVb[ANACH_LAP_SEC_VB];
     if (m === undefined || sec === undefined) return '';
     if (!m && !sec) return '';
-    return (m | 0) + ':' + String(sec | 0).padStart(2, '0');
+    const t = agiVb[ANACH_LAP_TICK_VB] | 0;
+    return (m | 0) + ':' + String(sec | 0).padStart(2, '0')
+         + (t ? ' <em>' + t + 't</em>' : '');
   }
   let agiLapMask = null;
   function agiSectionComplete(si) {
@@ -59,7 +64,7 @@
 
   async function agiReadVb() {
     if (!bridge()) return;
-    const ids = [ANACH_LAP_MIN_VB, ANACH_LAP_SEC_VB, ANACH_LAPS_VB];
+    const ids = [ANACH_LAP_MIN_VB, ANACH_LAP_SEC_VB, ANACH_LAPS_VB, ANACH_LAP_TICK_VB];
     for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
     if (ids.length && bridge().varbits) {
       try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) {}
@@ -302,6 +307,7 @@
       + '.agi-chip{font-size:10px;padding:2px 7px;border-radius:999px;color:var(--text-dim);'
       + 'border:1px solid var(--border);white-space:nowrap}'
       + '.agi-chip.ok{color:#4dd28a;border-color:rgba(77,210,138,.4)}'
+      + '.agi-chip em{font-style:normal;opacity:.55;margin-left:3px}'
       + '.agi-bar{grid-column:1/3;height:5px;border-radius:3px;margin-top:8px;'
       + 'background:rgba(255,255,255,.07);overflow:hidden}'
       + '.agi-bar>i{display:block;height:100%;background:#4dd28a;transition:width .25s ease}'
