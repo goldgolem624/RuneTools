@@ -722,16 +722,17 @@
         const ids = [iid].concat(TELE_ITEM_ALIASES[iid] || []);
         for (const vid of ids) {
           let hit = false;
+          const cap = (spec.caps && spec.caps[vid]) || 0;
           for (const cont of [94, 93]) {
             const set = cont === 94 ? teleWornSet : teleInvSet;
             if (!set || !set.has(vid)) continue;
             try {
               const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), cont, vid)) || {};
               const kk = r2.key || {};
-              if (kk[String(spec.key)] !== undefined) { cc[iid] = kk[String(spec.key)] | 0; hit = true; break; }
+              if (kk[String(spec.key)] !== undefined) { cc[iid] = { v: kk[String(spec.key)] | 0, max: cap }; hit = true; break; }
             } catch (e) {}
             // An unused variant carries no charge field yet: it is simply full.
-            if (spec.max) { cc[iid] = spec.max; hit = true; break; }
+            if (cap) { cc[iid] = { v: cap, max: cap }; hit = true; break; }
           }
           if (hit) break;
         }
@@ -741,6 +742,30 @@
     if (worn && inv) {
       const base = new Set();
       for (const nm of worn.names.concat(inv.names)) base.add(teleItemBase(nm));
+      // Jewellery kept INSIDE the Passage of the abyss is still usable, so it counts as
+      // held. The passage stores its pieces in Extra_ints key 1 as 4-bit indices (least
+      // significant first) into the jewellery catalogue enum; the enum is read live rather
+      // than hardcoded so a game update cannot silently shift the mapping.
+      for (const pid2 of TELE_PASSAGE_IDS) {
+        if (!(teleInvSet && teleInvSet.has(pid2)) && !(teleWornSet && teleWornSet.has(pid2))) continue;
+        try {
+          const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), teleInvSet.has(pid2) ? 93 : 94, pid2)) || {};
+          let packed = (r2.key && r2.key['1']) >>> 0;
+          if (!packed) continue;
+          if (!telePassageEnum && bridge().enumInfo) {
+            try { telePassageEnum = JSON.parse(await bridge().enumInfo(TELE_PASSAGE_ENUM)) || null; } catch (e) {}
+          }
+          const names = (telePassageEnum && (telePassageEnum.values || telePassageEnum)) || null;
+          while (packed) {
+            const ix = packed & 0xF; packed >>>= 4;
+            if (!ix) continue;
+            let nm = null;
+            if (Array.isArray(names)) { const e2 = names.find(function (q) { return +q[0] === ix; }); nm = e2 && e2[1]; }
+            else if (names) nm = names[ix] || names[String(ix)];
+            if (nm) base.add(teleItemBase(String(nm)));
+          }
+        } catch (e) {}
+      }
       teleHeldBase = base;
     }
     // UNIVERSAL RULE: an item teleport needs its item worn or carried. Charge variants
@@ -2376,6 +2401,9 @@
   // Extra_ints (live-verified via the hover inspector). itemId -> {key}. Display
   // ONLY - TokKul-Zo charges are spent by COMBAT, not teleporting (user-corrected
   // 2026-08-02), so charges never gate a teleport.
+  const TELE_PASSAGE_IDS = [44540, 44542, 44543];   // Passage of the abyss (+ unattuned/sibling)
+  const TELE_PASSAGE_ENUM = 15018;                 // slot index -> jewellery name
+  let telePassageEnum = null;
   const TELE_ITEM_ALIASES = {
     39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
   };
@@ -2385,9 +2413,11 @@
     if (al) for (const a of al) ids.push(a);
     return ids;
   }
+  // key = where the charge count sits in the item's own Extra_ints; caps are PER VARIANT,
+  // since a charged variant holds many full pieces (the (c) amulet takes 20 x 5 = 100).
   const TELE_ITEM_CHARGES = {
-    23643: { key: 0 },                 // TokKul-Zo (Charged)
-    39387: { key: 0, max: 5 },         // Enlightened amulet (the unused "(new)" 39385 stores none yet)
+    23643: { key: 0, caps: {} },                                  // TokKul-Zo (Charged)
+    39387: { key: 0, caps: { 39385: 5, 39387: 5, 41066: 100 } },  // Enlightened amulet / (new) / (c)
   };
   let teleItemCharges = null;   // itemId -> current charge value (worn or backpack)
   function teleChargeInfo(T) {
@@ -2397,12 +2427,13 @@
   }
   function teleItemChargeVal(T) {
     if (!(T.item > 0) || !TELE_ITEM_CHARGES[T.item] || !teleItemCharges) return null;
-    const v = teleItemCharges[T.item];
-    return v === undefined ? null : v;
+    const r = teleItemCharges[T.item];
+    return r === undefined ? null : r.v;
   }
   function teleItemChargeMax(T) {
-    const spec = (T.item > 0) ? TELE_ITEM_CHARGES[T.item] : null;
-    return (spec && spec.max) ? spec.max : 0;
+    if (!(T.item > 0) || !teleItemCharges) return 0;
+    const r = teleItemCharges[T.item];
+    return (r && r.max) ? r.max : 0;
   }
   function teleChargeWhy(T) {
     const ci = teleChargeInfo(T);
