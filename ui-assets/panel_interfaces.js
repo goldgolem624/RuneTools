@@ -49,6 +49,74 @@
     try { if (bridge() && bridge().ifaceOffset) bridge().ifaceOffset(gid, o.x | 0, o.y | 0); } catch (e) {}
   }
   function pushAllIfaceOff() { for (const k in ifaceOff) pushIfaceOff(parseInt(k, 10)); }
+  // ---- component watch ---------------------------------------------------------
+  // Clicking a row's id samples THAT component ~5x/s and logs every change to its rect or
+  // sprite. Built for hover-driven state: the swap only shows while the mouse is on the
+  // widget, so a still inspector never catches it.
+  let ifWatch = null;   // {gid, key, label, until, seen:[], last:'', t}
+  function ifWatchKey(w) {
+    const t = w.t || [0, 0, 0];
+    return t[0] + ':' + t[1] + (t[2] >= 0 ? ':' + t[2] : '');
+  }
+  function ifWatchSig(w) {
+    const r = w.r || [0, 0, 0, 0];
+    return r[0] + ',' + r[1] + ' ' + r[2] + 'x' + r[3] + ' spr:' + (w.s || '-')
+         + (w.x ? ' txt:' + String(w.x).replace(/<[^>]*>/g, '').trim() : '');
+  }
+  function ifWatchStart(gid, key, label) {
+    ifWatchStop();
+    ifWatch = { gid: gid, key: key, label: label, until: Date.now() + 30000, seen: [], last: '' };
+    ifWatch.t = setInterval(ifWatchTick, 200);
+    ifWatchTick();
+  }
+  function ifWatchStop() {
+    if (ifWatch && ifWatch.t) clearInterval(ifWatch.t);
+    if (ifWatch) ifWatch.t = null;
+    ifWatchPaint();
+  }
+  function ifWatchTick() {
+    if (!ifWatch || !bridge()) return;
+    let ws = [];
+    try { ws = (JSON.parse(bridge().interfaceGroup(myPid(), ifWatch.gid) || '{}').widgets) || []; } catch (e) {}
+    for (const w of ws) {
+      if (ifWatchKey(w) !== ifWatch.key) continue;
+      const sig = ifWatchSig(w);
+      if (sig !== ifWatch.last) {
+        ifWatch.last = sig;
+        ifWatch.seen.push({ at: Date.now(), sig: sig, s: w.s || 0 });
+      }
+      break;
+    }
+    if (Date.now() > ifWatch.until) { clearInterval(ifWatch.t); ifWatch.t = null; }
+    ifWatchPaint();
+  }
+  function ifWatchPaint() {
+    const el = document.getElementById('ifWatchBox');
+    if (!el) return;
+    if (!ifWatch) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.style.display = 'block';
+    const live = !!ifWatch.t;
+    const left = Math.max(0, Math.ceil((ifWatch.until - Date.now()) / 1000));
+    let html = '<div class="ifw-head"><b>' + ifWatch.label + '</b>'
+      + '<span class="ifw-st">' + (live ? 'watching, ' + left + 's left' : 'finished') + '</span>'
+      + '<button id="ifWatchEnd">' + (live ? 'stop' : 'clear') + '</button></div>';
+    if (!ifWatch.seen.length) html += '<div class="ifw-none">no sample yet</div>';
+    else {
+      const t0 = ifWatch.seen[0].at;
+      html += '<div class="ifw-list">';
+      for (const e of ifWatch.seen) {
+        html += '<div class="ifw-row"><span class="ifw-t">+' + ((e.at - t0) / 1000).toFixed(1) + 's</span>'
+          + (e.s ? '<span class="if-sprico" data-spr="' + e.s + '"></span>' : '')
+          + '<span class="ifw-sig">' + e.sig + '</span></div>';
+      }
+      html += '</div><div class="ifw-sum">' + ifWatch.seen.length + ' distinct states</div>';
+    }
+    el.innerHTML = html;
+    el.querySelectorAll('.if-sprico').forEach(function (n) { loadSpriteIcon(n, +n.dataset.spr); });
+    const b = document.getElementById('ifWatchEnd');
+    if (b) b.onclick = function () { if (ifWatch && ifWatch.t) ifWatchStop(); else { ifWatch = null; ifWatchPaint(); } };
+  }
+
   function refetchIfaceGroup(gid) {   // re-pull widget rects so the inspector hover-highlight reflects the new offset
     if (!bridge()) return;
     try { ifaceWidgets[gid] = (JSON.parse(bridge().interfaceGroup(myPid(), gid) || '{}').widgets) || []; }
@@ -146,6 +214,19 @@
           + '.if-item{color:#79d6a6;flex:none;font-size:10px;opacity:.9}'
           + '.if-txt{color:#e3d5a2;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
           + '.if-rect{color:#8a8a96;flex:none;margin-left:auto;padding-left:12px;white-space:nowrap}'
+          + '.if-watchable{cursor:pointer;text-decoration:underline dotted rgba(255,255,255,.25)}'
+          + '.if-watchable:hover{color:#7c6df2}'
+          + '#ifWatchBox{margin:6px 8px;padding:8px 10px;border:1px solid rgba(124,109,242,.35);'
+          + 'border-radius:6px;background:rgba(124,109,242,.07);font-size:12px}'
+          + '.ifw-head{display:flex;align-items:center;gap:8px}'
+          + '.ifw-st{margin-left:auto;color:#8a8a96;font-size:11px}'
+          + '.ifw-head button{font:inherit;font-size:11px;padding:2px 8px;border-radius:4px;cursor:pointer;'
+          + 'border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:inherit}'
+          + '.ifw-list{margin-top:5px;display:flex;flex-direction:column;gap:2px;max-height:220px;overflow:auto}'
+          + '.ifw-row{display:flex;align-items:center;gap:7px}'
+          + '.ifw-t{color:#8a8a96;width:46px;flex:none;font-variant-numeric:tabular-nums}'
+          + '.ifw-sig{font-family:ui-monospace,Menlo,monospace}'
+          + '.ifw-none,.ifw-sum{color:#8a8a96;font-size:11px;margin-top:4px}'
           + '.if-empty{color:#9a9aa6;padding:6px}'
           + '.if-off{display:flex;align-items:center;gap:5px;padding:4px 12px 5px 24px;color:#9a9aa6;font-size:11px}'
           + '.if-off b{color:#cfcfe0;font-weight:600}'
@@ -171,6 +252,7 @@
         + '<button id="ifMonTog" title="Pause/resume the open/close scan">Monitor: on</button>'
         + '<button id="ifMonClear" title="Clear the monitor log">Clear</button></div>'
         + '<div class="if-mon" id="ifMon"></div>'
+        + '<div id="ifWatchBox" style="display:none"></div>'
         + '<div class="if-list" id="ifaceList"></div>';
       c.appendChild(wrap);
       $('ifaceSearch').addEventListener('input', renderIfaceList);
@@ -253,7 +335,8 @@
           const absAttr = (a && r[2] > 0 && r[3] > 0) ? ' data-ax="' + a[0] + '" data-ay="' + a[1] + '" data-aw="' + r[2] + '" data-ah="' + r[3] + '"' : '';
           const sizeAttr = (r[2] > 0 && r[3] > 0) ? ' data-w="' + r[2] + '" data-h="' + r[3] + '"' : '';
           html += '<div class="if-row"' + absAttr + sizeAttr + ' title="' + full + (sizeAttr ? '  (click: find this size everywhere' + (absAttr ? '; hover: highlight in-game' : '') + ')' : '') + '" style="padding-left:' + pad + 'px">'
-            + '<span class="if-id">' + idtxt + '</span>'
+            + '<span class="if-id if-watchable" data-wg="' + t[0] + '" data-wk="' + full + '"'
+            + ' title="click: watch this component for 30s">' + idtxt + '</span>'
             + (w.ty ? '<span class="if-ty t-' + w.ty + '">' + w.ty + '</span>' : '')
             + (w.it ? '<span class="if-itemico" data-item="' + w.it + '"></span><span class="if-item">#' + w.it + '</span>' : '')
             + (w.n ? '<span class="if-amt">×' + Number(w.n).toLocaleString() + '</span>' : '')
@@ -270,6 +353,10 @@
       }
     }
     host.innerHTML = html || '<div class="if-empty">No interface groups - be in-world, then hit Refresh.</div>';
+    host.querySelectorAll('.if-watchable').forEach(el => el.addEventListener('click', ev => {
+      ev.stopPropagation();
+      ifWatchStart(+el.dataset.wg, el.dataset.wk, el.dataset.wk);
+    }));
     host.querySelectorAll('.if-sprico').forEach(el => loadSpriteIcon(el, +el.dataset.spr));
     host.querySelectorAll('.if-itemico').forEach(el => { const u = resolveIcon(+el.dataset.item); if (u) el.style.backgroundImage = "url('" + u + "')"; });
     const meta = $('ifaceMeta');
