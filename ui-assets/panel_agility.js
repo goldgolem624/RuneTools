@@ -271,48 +271,61 @@
     const lv = agiLevel();
     const prog = agiSectionProgress();
     const done = agiLapDone(), next = agiNextIdx();
-
     const secDone = ANACH_SECTIONS.filter(function (_, si) { return agiSectionComplete(si); }).length;
-    let html = '<div class="agi-lap">'
-      + '<b>' + done + '</b>/' + ANACH_COURSE.length + ' obstacles this lap'
-      + (agiLapMask != null ? '<span class="agi-sd">' + secDone + '/7 sections</span>' : '')
-      + (lv > 0 ? '<span class="agi-lv">' + lv + ' Agility</span>' : '')
-      + '</div><div class="agi-bar"><div style="width:'
-      + Math.round(done / ANACH_COURSE.length * 100) + '%"></div></div>';
+    const pct = Math.round(done / ANACH_COURSE.length * 100);
+
+    let html = '<header class="agi-hd">'
+      + '<div class="agi-fig"><b>' + done + '</b><span>/ ' + ANACH_COURSE.length + '</span></div>'
+      + '<div class="agi-cap">obstacles this lap</div>'
+      + '<div class="agi-chips">'
+      + (agiLapMask != null
+          ? '<span class="agi-chip' + (secDone === 7 ? ' ok' : '') + '">' + secDone + ' / 7 sections</span>' : '')
+      + (lv > 0 ? '<span class="agi-chip">' + lv + ' Agility</span>' : '')
+      + '</div>'
+      + '<div class="agi-bar"><i style="width:' + pct + '%"></i></div>'
+      + '</header>';
 
     html += '<div class="agi-secs">';
     for (let si = 0; si < ANACH_SECTIONS.length; si++) {
       const s = ANACH_SECTIONS[si], p = prog[si];
       const ok = agiSectionOk(si), full = p.done >= p.total;
-      html += '<div class="agi-sec' + (full ? ' done' : '') + (ok ? '' : ' locked') + '">'
+      const cls = 'agi-sec' + (full ? ' is-done' : '') + (ok ? '' : ' is-locked');
+      html += '<div class="' + cls + '">'
         + '<span class="agi-let">' + s[0] + '</span>'
-        + '<span class="agi-tier">' + s[2] + '<em>' + s[1] + '</em></span>'
-        + '<span class="agi-req">' + s[3] + '</span>'
-        + '<span class="agi-cnt">' + p.done + '/' + p.total + (p.live ? '' : '<em>~</em>') + '</span>'
-        + '<span class="agi-mini"><i style="width:' + Math.round(p.done / p.total * 100) + '%"></i></span>'
+        + '<span class="agi-name"><b>' + s[2] + '</b><em>' + s[1] + '</em></span>'
+        + '<span class="agi-lvl' + (ok ? '' : ' short') + '">' + s[3] + '</span>'
+        + '<span class="agi-track"><i style="width:' + Math.round(p.done / p.total * 100) + '%"></i></span>'
+        + '<span class="agi-cnt">' + p.done + '<em>/' + p.total + '</em></span>'
+        + (p.live ? '<span class="agi-est"></span>' : '<span class="agi-est" title="estimated from your position; this section\'s varbit is not captured yet">est</span>')
         + '</div>';
     }
     html += '</div>';
 
     if (next >= 0) {
-      const o = ANACH_COURSE[next], s = agiSectionOf(next);
-      html += '<div class="agi-next"><div class="agi-nh">next</div>'
+      const o = ANACH_COURSE[next], sec = agiSectionOf(next), hint = agiMoveHint(next);
+      html += '<div class="agi-next">'
+        + '<div class="agi-nh">next obstacle</div>'
         + '<div class="agi-nn">' + htmlEsc(o[2] + ' ' + o[1].toLowerCase()) + '</div>'
-        + '<div class="agi-nm">section ' + s[0] + ' &middot; ' + o[3] + ', ' + o[4]
-        + (agiPos ? ' &middot; ' + agiDist(o) + ' tiles' : '') + '</div>'
-        + (agiMoveHint(next) ? '<div class="agi-nx">' + agiMoveHint(next) + '</div>' : '')
+        + '<div class="agi-nm"><span>section ' + sec[0] + '</span><span>' + o[3] + ', ' + o[4] + '</span>'
+        + (agiPos ? '<span>' + agiDist(o) + ' tiles</span>' : '') + '</div>'
+        + (hint ? '<div class="agi-nx">' + hint + '</div>' : '')
         + '</div>';
     } else {
-      html += '<div class="agi-next"><div class="agi-nn">lap complete</div></div>';
+      html += '<div class="agi-next is-complete"><div class="agi-nn">lap complete</div>'
+        + '<div class="agi-nm"><span>all 52 obstacles taken</span></div></div>';
     }
 
-    html += '<div class="agi-btns">'
-      + '<button id="agiSurge">mark surge here</button>'
-      + '<button id="agiDive">mark dive here</button>'
-      + '<button id="agiReset">reset lap</button>'
-      + '<button id="agiRec">' + (agiRec ? 'stop recording' : 'record vars') + '</button>'
+    html += '<div class="agi-tools">'
+      + '<button id="agiSurge" class="agi-b">mark surge</button>'
+      + '<button id="agiDive" class="agi-b">mark dive</button>'
+      + '<button id="agiReset" class="agi-b">reset lap</button>'
+      + '<button id="agiRec" class="agi-b ghost' + (agiRec ? ' on' : '') + '">'
+      + (agiRec ? 'stop recording' : 'record vars') + '</button>'
       + '</div>';
-    if (agiRec) html += '<div class="agi-rec"><b>recording</b> &middot; ' + agiRec.log.length + ' obstacle events<br>' + (agiRecText() || 'no var has moved yet') + '</div>';
+    if (agiRec) {
+      html += '<div class="agi-rec"><b>recording</b> ' + agiRec.log.length + ' obstacle events'
+        + '<div>' + (agiRecText() || 'no var has moved yet') + '</div></div>';
+    }
 
     el.innerHTML = html;
     const b = function (id, fn) { const n = $(id); if (n) n.onclick = fn; };
@@ -327,37 +340,65 @@
     if ($('agiBody')) { agiPaint(); return; }   // renderPane polls: never rebuild a live mount
     c.innerHTML = '';
     injectStyle('agiCss',
-      '.agi-wrap{display:flex;flex-direction:column;gap:8px;height:100%;min-height:0;overflow:auto}'
-      + '.agi-lap{display:flex;align-items:baseline;gap:8px;font-size:13px}'
-      + '.agi-lap b{font-size:18px}'
-      + '.agi-sd{margin-left:auto;font-size:11px;opacity:.75}'
-      + '.agi-lv{opacity:.6;font-size:11px}'
-      + '.agi-bar{height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}'
-      + '.agi-bar>div{height:100%;background:#4dd28a;transition:width .2s}'
-      + '.agi-secs{display:flex;flex-direction:column;gap:3px}'
-      + '.agi-sec{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;'
-      + 'background:rgba(255,255,255,.03);font-size:12px}'
-      + '.agi-sec.done{background:rgba(77,210,138,.10)}'
-      + '.agi-sec.locked{opacity:.42}'
-      + '.agi-let{width:14px;font-weight:600;opacity:.7}'
-      + '.agi-tier{flex:1;display:flex;flex-direction:column;line-height:1.15}'
-      + '.agi-tier em{font-style:normal;opacity:.45;font-size:10px}'
-      + '.agi-req{opacity:.5;font-size:11px;width:22px;text-align:right}'
-      + '.agi-cnt{width:34px;text-align:right;font-variant-numeric:tabular-nums}'
-      + '.agi-cnt em{font-style:normal;opacity:.4;font-size:10px}'
-      + '.agi-mini{width:52px;height:3px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}'
-      + '.agi-mini>i{display:block;height:100%;background:#4dd28a}'
-      + '.agi-next{padding:8px 10px;border-radius:6px;background:rgba(255,255,255,.04)}'
-      + '.agi-nh{font-size:10px;text-transform:uppercase;letter-spacing:.08em;opacity:.45}'
-      + '.agi-nn{font-size:14px;margin:1px 0}'
-      + '.agi-nm{font-size:11px;opacity:.55}'
-      + '.agi-nx{margin-top:4px;font-size:11px}'
+      '.agi-wrap{display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;'
+      + 'overflow:auto;padding:2px}'
+      // header: the figure carries the weight, everything else stays quiet
+      + '.agi-hd{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto auto;'
+      + 'column-gap:10px;row-gap:2px;align-items:baseline}'
+      + '.agi-fig{grid-row:1/3;display:flex;align-items:baseline;gap:3px}'
+      + '.agi-fig b{font-size:30px;line-height:1;font-variant-numeric:tabular-nums}'
+      + '.agi-fig span{font-size:13px;color:var(--text-dim)}'
+      + '.agi-cap{font-size:12px;color:var(--text-dim);align-self:center}'
+      + '.agi-chips{grid-column:2;display:flex;gap:6px;flex-wrap:wrap}'
+      + '.agi-chip{font-size:10px;padding:2px 7px;border-radius:999px;color:var(--text-dim);'
+      + 'border:1px solid var(--border);white-space:nowrap}'
+      + '.agi-chip.ok{color:#4dd28a;border-color:rgba(77,210,138,.4)}'
+      + '.agi-bar{grid-column:1/3;height:5px;border-radius:3px;margin-top:8px;'
+      + 'background:rgba(255,255,255,.07);overflow:hidden}'
+      + '.agi-bar>i{display:block;height:100%;background:#4dd28a;transition:width .25s ease}'
+      // section rows
+      + '.agi-secs{display:flex;flex-direction:column;gap:5px}'
+      + '.agi-sec{display:grid;grid-template-columns:26px 1fr auto 76px 46px 26px;align-items:center;'
+      + 'gap:11px;padding:9px 12px;border-radius:9px;border:1px solid var(--border);'
+      + 'background:rgba(255,255,255,.022)}'
+      + '.agi-sec.is-done{border-color:rgba(77,210,138,.32);background:rgba(77,210,138,.07)}'
+      + '.agi-sec.is-locked{opacity:.4}'
+      + '.agi-let{display:grid;place-items:center;width:26px;height:26px;border-radius:7px;'
+      + 'background:rgba(255,255,255,.06);font-size:12px;font-weight:600;color:var(--text-dim)}'
+      + '.agi-sec.is-done .agi-let{background:rgba(77,210,138,.18);color:#4dd28a}'
+      + '.agi-name{display:flex;flex-direction:column;line-height:1.25;min-width:0}'
+      + '.agi-name b{font-size:13px;font-weight:550}'
+      + '.agi-name em{font-style:normal;font-size:10.5px;color:var(--text-dim)}'
+      + '.agi-lvl{font-size:11px;color:var(--text-dim);font-variant-numeric:tabular-nums}'
+      + '.agi-lvl.short{color:#ff6b6b}'
+      + '.agi-track{height:4px;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden}'
+      + '.agi-track>i{display:block;height:100%;background:#4dd28a;transition:width .25s ease}'
+      + '.agi-cnt{font-size:12px;text-align:right;font-variant-numeric:tabular-nums}'
+      + '.agi-cnt em{font-style:normal;color:var(--text-dim)}'
+      + '.agi-est{font-size:8.5px;letter-spacing:.04em;text-transform:uppercase;text-align:right;'
+      + 'color:var(--text-dim);opacity:.6}'
+      // next obstacle
+      + '.agi-next{padding:12px 14px;border-radius:10px;border:1px solid var(--border);'
+      + 'border-left:3px solid #7c6df2;background:rgba(124,109,242,.06)}'
+      + '.agi-next.is-complete{border-left-color:#4dd28a;background:rgba(77,210,138,.06)}'
+      + '.agi-nh{font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-dim)}'
+      + '.agi-nn{font-size:16px;margin:3px 0 5px}'
+      + '.agi-nm{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)}'
+      + '.agi-nx{margin-top:7px;font-size:11.5px}'
       + '.agi-cd{color:#fbbf24}.agi-go{color:#4dd28a}'
-      + '.agi-btns{display:flex;gap:6px;flex-wrap:wrap}'
-      + '.agi-btns button{flex:1;min-width:96px;padding:5px 8px;font-size:11px;border-radius:5px;'
-      + 'border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:inherit;cursor:pointer}'
-      + '.agi-btns button:hover{background:rgba(255,255,255,.10)}'
-      + '.agi-rec{font-size:11px;opacity:.6;line-height:1.4}');
+      // tools
+      + '.agi-tools{display:flex;gap:7px;flex-wrap:wrap}'
+      + '.agi-b{flex:1 1 0;min-width:92px;padding:7px 10px;font:inherit;font-size:11.5px;'
+      + 'border-radius:7px;border:1px solid var(--border);background:rgba(255,255,255,.045);'
+      + 'color:var(--text);cursor:pointer;transition:background .15s}'
+      + '.agi-b:hover{background:rgba(255,255,255,.09)}'
+      + '.agi-b:focus-visible{outline:2px solid #7c6df2;outline-offset:1px}'
+      + '.agi-b.ghost{flex:0 0 auto;color:var(--text-dim)}'
+      + '.agi-b.ghost.on{color:#fbbf24;border-color:rgba(251,191,36,.45)}'
+      + '.agi-rec{font-size:11px;color:var(--text-dim);line-height:1.5;padding:9px 12px;'
+      + 'border-radius:8px;background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.25)}'
+      + '.agi-rec b{color:#fbbf24}'
+);
     const w = document.createElement('div');
     w.className = 'agi-wrap';
     w.innerHTML = '<div id="agiBody"></div>';
