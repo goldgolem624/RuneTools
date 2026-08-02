@@ -1,4 +1,4 @@
-// CS2 Scripts panel backend: runs the cs2export sidecar (rsmv, separate GPL
+// CS2 Scripts panel backend: runs the cs2export sidecar (the game map, separate GPL
 // process) against the user's live cache, tracks its progress, and serves
 // search/read over the extracted clientscript-<id>.ts files.
 #pragma once

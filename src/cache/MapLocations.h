@@ -18,7 +18,7 @@ struct LocPlacement {
 };
 
 // Decode a MAPSV2 LOCATIONS file (index 5, file 0 or 1) into placements.
-// Faithful to rs3cache Location::dump (feature "rs3"): id-delta loop +
+// Faithful to the reference decode Location::dump (feature "rs3"): id-delta loop +
 // per-id position-delta loop, attribute byte, and the RS3 sub-data extra
 // block read when the attribute byte has bit 0x80 set.
 std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_bytes);

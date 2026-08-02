@@ -222,7 +222,7 @@ int LocMapFunctionLocked(int loc_id) {
     return it != g_loc_mapfunc.end() ? it->second : -1;
 }
 // MAPLABELS config (index 2 / archive 36): maplabel id -> {sprite, category, text}. Opcode table
-// per rsmv. Assumes g_mu held.
+// per the game. Assumes g_mu held.
 void EnsureMaplabelsLocked() {
     if (g_maplabels_loaded) return;
     auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
@@ -898,7 +898,7 @@ namespace {
 // table's schema is FILE subtable*128 + master. Live subtables are 0/1/2.
 //
 // File format: every non-empty live file uses op 2 (op 1 = the older variant
-// per rsmv, kept but unobserved on 949). op 2: u32 unknown, u8 column count,
+// per the game, kept but unobserved on 949). op 2: u32 unknown, u8 column count,
 // then per column: id byte (0xFF ends the list; id = b & 0x3F), u8 unknown,
 // u8 subcolumn count, per-sub usmart type, u8 flags; flags & 2 -> default
 // values (u8, first value, u8, then the remaining values; string when type
@@ -1078,7 +1078,7 @@ namespace {
 // Varbit definitions: CONFIGS index 2, archive 69 (file_id = varbit id). Each
 // varbit is the bit-slice [lsb,msb] of a var. We decode the whole archive once
 // into a varp-id -> [[varbitId,lsb,msb],..] map so the watcher can name which
-// varbit owns a changed bit. Per the rs3cache VarbitConfig decode:
+// varbit owns a changed bit. Per the varbit config decode:
 //   opcode 1 -> u8 var DOMAIN + u16 var index
 //   opcode 2 -> u8 lsb + u8 msb
 //   opcode 16 -> boolean flag, no payload ; opcode 0 ends.
@@ -1518,7 +1518,7 @@ namespace {
 // serialized component is FIXED-LAYOUT (no opcodes): a header (version, type,
 // content-type, geometry, parent, hidden) then a type-specific block; the tail
 // after that block (option strings, script hooks) is never entered. Layout per
-// rsmv interfaces.jsonc, live-validated on build 949: all 104103 components in
+// interface config, live-validated on build 949: all 104103 components in
 // 1871 groups decode (version bytes -1..11) and every parent id resolves within
 // its group (17 dangling refs exist in the cache data itself). Types 10-16
 // carry undocumented variable-size payloads; their headers still decode and the
@@ -1688,16 +1688,13 @@ static int ConfigColourLocked(int archive, int id) {
             }
         }
     }
-    // A TEXTURED overlay is painted from its texture in game, and its flat RGB is only a
-    // neutral tint - Tuai Leit's stone paths carry [68,68,68], which rendered as near-black
-    // while the game shows light stone. Prefer the material's average texture colour, so
-    // textured floors/paths/water read the way the world map does.
+    // Textured overlays are painted from their texture in game; their flat RGB is only a
+    // neutral tint, so prefer the material's average texture colour.
     if (archive == 4 && material >= 0) {
         int flat = (col2 >= 0) ? col2 : (col >= 0) ? col : col3;
         if (flat == 0xFF00FF) flat = -1;
-        // Only substitute where the flat value cannot be the intended look: no colour at all,
-        // or a NEUTRAL GREY tint (Tuai Leit's paths are [68,68,68]). Overlays that carry a
-        // real colour - water, grass, roads - keep rendering exactly as they do today.
+        // Only where the flat value cannot be the intended look: absent, or a neutral grey
+        // tint. Overlays carrying a real colour keep rendering as they are.
         bool neutral = false;
         if (flat >= 0) {
             int r = (flat >> 16) & 0xff, g = (flat >> 8) & 0xff, b = flat & 0xff;
@@ -1713,7 +1710,7 @@ static int ConfigColourLocked(int archive, int id) {
             if (found >= 0) { cache[key] = kOverlayMatCols[found]; return kOverlayMatCols[found]; }
         }
     }
-    // Overlays (archive 4) take SECONDARY colour first (per rsmv getOverlayColor); everything
+    // Overlays (archive 4) take SECONDARY colour first (per the game map); everything
     // else takes the primary.
     int out = (archive == 4) ? ((col2 >= 0) ? col2 : (col >= 0) ? col : col3)
                              : ((col >= 0) ? col : (col2 >= 0) ? col2 : col3);
@@ -1739,7 +1736,7 @@ static std::string Base64Std(const std::vector<unsigned char>& d) {
 }
 
 // Overlay pixel mask for a tile shape: m[a*size+b]=1 where the OVERLAY covers (underlay = the rest).
-// Faithful port of rs3cache tileshape::draw_overlay (size even). a = east, b = top-down within the tile.
+// Faithful port of the overlay tile-shape draw (size even). a = east, b = top-down within the tile.
 static void OverlayMaskLocal(int shape, int size, std::vector<unsigned char>& m) {
     for (auto& v : m) v = 0;
     auto set = [&](int x, int y0, int y1) {
@@ -1790,7 +1787,7 @@ static void OverlayMaskLocal(int shape, int size, std::vector<unsigned char>& m)
 static const std::vector<LocPlacement>& RegionLocationsLocked(int region_x, int region_y);
 
 // Wall line pixels for a location of type 0/2/9 at a rotation: a strip along one tile edge (type 0),
-// an L of two edges (type 2), or a diagonal band (type 9). Mirrors rs3cache lineshape::draw; widths
+// an L of two edges (type 2), or a diagonal band (type 9). Mirrors the wall line draw; widths
 // floor at 1 px so walls still show at small tile sizes. Emits tile-local (a,b) into out.
 static void WallLine(int ty, int rot, int size, std::vector<std::pair<int, int>>& out) {
     out.clear();
@@ -1847,11 +1844,8 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         int ep = effPlaneAt(gx, gy);
         int idx = (ep * 64 + (gx & 63)) * 64 + (gy & 63);
         ul = td.underlay[idx]; ov = td.overlay[idx]; sh = td.shape[idx];
-        // A shifted column only OVERRIDES the base plane where the upper plane actually has
-        // ground. Bridges and the Daemonheim platform do; over open terrain the 0x2 flag is
-        // set on columns whose upper plane is EMPTY (8% of Tuai Leit), and taking that empty
-        // tile dropped the real ground to the neutral fallback - which then blurred into the
-        // surrounding grass and turned whole hillsides grey-olive.
+        // A shifted column only overrides the base plane where the upper plane really has
+        // ground; over open terrain the flag is set on columns whose upper plane is empty.
         if (ep != plane && ul < 1 && ov < 1) {
             int b = (plane * 64 + (gx & 63)) * 64 + (gy & 63);
             ul = td.underlay[b]; ov = td.overlay[b]; sh = td.shape[b];
@@ -1872,27 +1866,23 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     // Underlay blend: each tile's colour is the average underlay RGB over a (2*UBR+1)^2 box,
     // precomputed over a padded window with a separable box blur (O(1) per tile). Overlays /
     // walls / map-scene icons draw crisply ON TOP.
-    // RADIUS: a 10-wide box (the old rsmv-parity value) is far too wide for terrain whose
-    // ground types interleave finely - on Tuai Leit it averaged grass into sand until only 7%
-    // of land still read as green against the game map's 31%, i.e. the island went olive.
-    // The blur also runs BEFORE the per-pixel bilinear pass, so its width compounds. Radius 1
-    // keeps the transition soft while preserving each ground type's own colour.
-    const int UBR = 1;
-    const int PAD = UBR + 1, PW = WT + 2 * PAD;
+    // Blend kernel: dx,dz in -4..+5 (asymmetric, 10 wide), as the game's map uses.
+    const int UBLO = -4, UBHI = 5;
+    const int PAD = 5, PW = WT + 2 * PAD;
     std::vector<int> rawR((size_t)PW * PW, 0), rawG((size_t)PW * PW, 0), rawB((size_t)PW * PW, 0);
     std::vector<unsigned char> rawM((size_t)PW * PW, 0);
     for (int px = 0; px < PW; ++px) for (int py = 0; py < PW; ++py) {
         int u, o, s; tileAt(cx - HALF - PAD + px, cy - HALF - PAD + py, u, o, s);
         if (u < 1) continue;
         int c = ConfigColourLocked(1, u - 1);
-        if (c < 0) continue;
+        if (c < 0 || c == 0xFF00FF) continue;      // magenta = not a real ground colour
         size_t i = (size_t)px * PW + py;
         rawR[i] = (c >> 16) & 0xff; rawG[i] = (c >> 8) & 0xff; rawB[i] = c & 0xff; rawM[i] = 1;
     }
     std::vector<int> hR((size_t)PW * PW, 0), hG((size_t)PW * PW, 0), hB((size_t)PW * PW, 0), hC((size_t)PW * PW, 0);
     for (int py = 0; py < PW; ++py) for (int px = 0; px < PW; ++px) {
         int sR = 0, sG = 0, sB = 0, sC = 0;
-        for (int dx = -UBR; dx <= UBR; ++dx) { int qx = px + dx; if (qx < 0 || qx >= PW) continue;
+        for (int dx = UBLO; dx <= UBHI; ++dx) { int qx = px + dx; if (qx < 0 || qx >= PW) continue;
             size_t j = (size_t)qx * PW + py; if (!rawM[j]) continue; sR += rawR[j]; sG += rawG[j]; sB += rawB[j]; ++sC; }
         size_t i = (size_t)px * PW + py; hR[i] = sR; hG[i] = sG; hB[i] = sB; hC[i] = sC;
     }
@@ -1902,11 +1892,11 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     std::vector<int> blendUl((size_t)BW * BW, -1);
     for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
         int px = wx + PAD, py = wy + PAD, sR = 0, sG = 0, sB = 0, sC = 0;
-        for (int dz = -UBR; dz <= UBR; ++dz) { int qy = py + dz; if (qy < 0 || qy >= PW) continue;
+        for (int dz = UBLO; dz <= UBHI; ++dz) { int qy = py + dz; if (qy < 0 || qy >= PW) continue;
             size_t j = (size_t)px * PW + qy; sR += hR[j]; sG += hG[j]; sB += hB[j]; sC += hC[j]; }
         if (sC > 0) blendUl[(size_t)(wx + 1) * BW + (wy + 1)] = ((sR / sC) << 16) | ((sG / sC) << 8) | (sB / sC);
     }
-    // Height-relief hillshade factor per tile (mejrs/rsmv lighting): brighten NW-facing slopes,
+    // Height-relief hillshade factor per tile (map lighting): brighten NW-facing slopes,
     // darken SE-facing ones. Precomputed with the same 1-tile ring so it interpolates seamlessly.
     std::vector<float> shadeF((size_t)BW * BW, 1.0f);
     for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
@@ -1998,25 +1988,21 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         for (int wy = 0; wy < WT; ++wy) {
             int gx = cx - HALF + wx, gy = cy - HALF + wy;
             int ul, ov, sh; tileAt(gx, gy, ul, ov, sh);            // column-shifted tiles resolve to plane+1 inside tileAt
-            // "deck" = a shifted column that really is carried by the upper plane (tileAt falls
-            // back to the base plane when the upper one is empty, and those are NOT decks).
+            // deck = a shifted column actually carried by the upper plane.
             bool deck = effPlaneAt(gx, gy) != plane && (ul >= 1 || ov >= 1);
             if (ul < 1 && ov < 1 && !deck) continue;               // no tile data and no shifted column -> genuine void
             int ucol = (ul >= 1) ? blendUl[(size_t)(wx + 1) * BW + (wy + 1)] : -1;
             int ocol = (ov >= 1) ? ConfigColourLocked(4, ov - 1) : -1;
             if (ocol == 0xFF00FF) ocol = -1;                       // magenta = transparent overlay
-            if (ov == 112 && ocol == 0xFFFFFF) ocol = 0x3D4E63;    // ocean (white -> blue, per rs3cache)
+            if (ov == 112 && ocol == 0xFFFFFF) ocol = 0x3D4E63;    // ocean (white -> blue, per the game map)
             if (deck && ucol < 0 && ocol < 0) ucol = 0x6E5436;     // shifted tile with no colourable floor (plank piers) -> deck wood
             if (ucol < 0 && ocol < 0) ucol = 0x534E47;             // tile HAS data but no resolvable colour (textured city/dungeon floor) -> neutral, not black
             any = true;
             const double tf = shadeF[(size_t)(wx + 1) * BW + (wy + 1)];
             // Overlays (water/roads/floors) stay flat per tile; the underlay ground gets the
             // per-pixel gradient at TS >= 4 (at TS 2 a tile is 4 px, flat is indistinguishable).
-            // Per-pixel bilinear ground only when a tile is BIG on screen. The game's own map
-            // paints each tile flat, which is what keeps small grass patches reading as grass;
-            // interpolating between tile centres at map zoom washes isolated tiles into their
-            // neighbours (Tuai Leit lost two thirds of its green that way). At TS >= 8 a tile
-            // is large enough that flat shading looks blocky, so smoothing earns its keep.
+            // Ground paints FLAT per tile at map zoom, as the game's map does; interpolating
+            // between tile centres washes small terrain patches into their neighbours.
             const bool smoothUl = (TS >= 8) && (ul >= 1);
             const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
@@ -2044,7 +2030,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         }
     }
     // ---- locs: map-scene ICONS (trees/anvils/rocks/... via loc opcode 102) composited at the tile, plus
-    //      light WALL lines from type-0/2/9 locs. rsmv parity: a loc with a map-scene draws its icon INSTEAD
+    //      light WALL lines from type-0/2/9 locs. map parity: a loc with a map-scene draws its icon INSTEAD
     //      of a wall. One pass over the regions' locs handles both. ----
     std::vector<unsigned char> objsOut;   // objects layer: scenery footprints (wtx u16, wty u16, dx u8, dy u8, id u32) for the toggleable client overlay
     {
@@ -2413,7 +2399,7 @@ std::string LookupBuffNameAdj(int id, const std::unordered_map<int, std::string>
 // resolver: one switch over ability STRUCT ids where each case body pushes the two
 // varc-int ids ([castClock, readyClock], CLIENTCLOCK 50/s cycles) and returns.
 //
-// CS2 opcode ids are build-shuffled (rsmv's "calibration" problem), so this decodes NO
+// CS2 opcode ids are build-shuffled (the game map's "calibration" problem), so this decodes NO
 // opcodes at all. Two structural facts carry the whole parse:
 //  - the FOOTER layout is stable: ...ops... [6x u16 + u32 arg/local/op counts]
 //    [switch block] [u16 switch-block size]. Switch block = u8 switch count, per switch

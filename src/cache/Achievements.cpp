@@ -21,7 +21,7 @@ namespace {
 
 using std::uint8_t; using std::uint16_t; using std::uint32_t;
 
-// Big-endian reader over a cache file, mirroring rs3cache's Buf helpers exactly so the
+// Big-endian reader over a cache file, mirroring the reference decode's Buf helpers exactly so the
 // opcode offsets never drift. Bounds-checked: past the end every read yields 0 / "" and the
 // decode loop stops on the next opcode read.
 struct Reader {
@@ -74,7 +74,7 @@ struct Ach {
     std::vector<int> subreqCount;   // op 30: how many subreqs must be satisfied (per group)
 };
 
-// Decode one achievement file (rs3cache opcode loop, re-validated in full on build 949:
+// Decode one achievement file (the reference decode opcode loop, re-validated in full on build 949:
 // 5009/5009 decode clean and the Quest Cape's 273 sub-achievement names all match quest
 // config names). On an unknown opcode keep what was parsed and stop; stop_op (optional)
 // receives that opcode (0 = clean end) for the cache parse-health check.

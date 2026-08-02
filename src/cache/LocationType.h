@@ -11,7 +11,7 @@ namespace rtx::cache {
 // Decoded location ("object") definition (index 16). We keep the fields the
 // Scene panel needs (name, right-click options, footprint); every other opcode
 // is consumed to its correct width so the stream stays aligned. Faithful to the
-// RS3 LocationConfig opcode table (rs3cache src/definitions/location_configs.rs,
+// RS3 LocationConfig opcode table (the reference decode src/definitions/location_configs.rs,
 // feature "rs3").
 struct LocDef {
     int                        id = -1;

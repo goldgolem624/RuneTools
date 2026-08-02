@@ -23,7 +23,7 @@ MapTileData DecodeMapTiles(std::vector<std::uint8_t> file_bytes, int* leftover) 
     InputStream s(std::move(file_bytes));
     if (is936) s.skip(5);
 
-    // rs3cache (4,64,64) C-order: plane, x, y.
+    // the reference decode (4,64,64) C-order: plane, x, y.
     for (int plane = 0; plane < 4; ++plane) {
         for (int x = 0; x < 64; ++x) {
             for (int y = 0; y < 64; ++y) {
@@ -40,10 +40,10 @@ MapTileData DecodeMapTiles(std::vector<std::uint8_t> file_bytes, int* leftover) 
         }
     }
     // After the full 4*64*64 walk the file continues with an 8-byte non-members
-    // bitmask and an opcode-based ENVIRONMENT section (rsmv mapsquare_tiles.jsonc:
+    // bitmask and an opcode-based ENVIRONMENT section (the game map mapsquare_tiles.jsonc:
     // ops 0x80 env id, 0x00/0x01 lighting records, 0x02 three floats, 0x81 4x256B
     // blocks...). It is intentionally NOT consumed: op 0x01's record format varies
-    // per entry in ways neither rsmv nor empirical brute-forcing resolves, and none
+    // per entry in ways neither the game map nor empirical brute-forcing resolves, and none
     // of it feeds a feature. The tile walk above was validated complete on all 5120
     // regions. `leftover` reports the trailer size for the health check;
     // -1 above (ran SHORT mid-walk) is the only misparse signal.

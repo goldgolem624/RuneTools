@@ -6,7 +6,7 @@
 namespace rtx::cache {
 
 // Decoded MAPSV2 land tiles (index 5, file 3). Both arrays are flat 4*64*64,
-// indexed (plane*64 + x)*64 + y. Faithful to rs3cache Tile::dump (feature "rs3").
+// indexed (plane*64 + x)*64 + y. Faithful to the reference decode Tile::dump (feature "rs3").
 struct MapTileData {
     std::vector<std::uint8_t> settings;  // 0 default; bit 0x1 = blocked/void, 0x2 = bridge
     std::vector<std::int16_t> heights;    // cache height units; INT16_MIN where the tile carried none

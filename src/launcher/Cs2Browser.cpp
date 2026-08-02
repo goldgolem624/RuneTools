@@ -74,7 +74,7 @@ std::wstring sidecar_dir() {
 }
 
 // Actual game revision = the installed rs2client.exe's VERSIONINFO (the cache
-// itself stores no build number; rsmv's meta.json buildnr is a format cap).
+// itself stores no build number; the game map's meta.json buildnr is a format cap).
 std::string game_client_version() {
     const wchar_t* path = L"C:\\ProgramData\\Jagex\\launcher\\rs2client.exe";
     DWORD ignored = 0, sz = GetFileVersionInfoSizeW(path, &ignored);
