@@ -324,10 +324,33 @@
   }
 
   // ---- in-game highlight -------------------------------------------------------
+  // Dive's own icon, from its ability struct (param 2802, the same field the spell icons use).
+  const AGI_DIVE_SPRITE = 23714;
+  let agiHudSig = '';
+  // Put the ability on screen the moment a dive is called for, so the prompt is where the
+  // player is looking rather than in a panel they are not reading mid-run. Only pushed when
+  // the caption actually changes: this runs every tick.
+  function agiHudPush(mv) {
+    if (!bridge() || !bridge().hudSprite) return;
+    let sig = '', cap = '';
+    if (mv && mv.tgt) {
+      cap = mv.cd > 0 ? 'DIVE  ' + mv.cd.toFixed(1) + 's' : 'DIVE';
+      sig = cap;
+    }
+    if (sig === agiHudSig) return;
+    agiHudSig = sig;
+    try { bridge().hudSprite(myPid(), sig ? AGI_DIVE_SPRITE : 0, cap, !!sig); } catch (e) {}
+  }
+  function agiHudClear() {
+    if (!agiHudSig) return;
+    agiHudSig = '';
+    try { if (bridge() && bridge().hudSprite) bridge().hudSprite(myPid(), 0, '', false); } catch (e) {}
+  }
+
   function agiHighlight() {
     if (!bridge() || !bridge().guideMarks) return;
     const i = agiNextIdx();
-    if (i < 0) { try { bridge().guideMarks(myPid(), ''); } catch (e) {} return; }
+    if (i < 0) { try { bridge().guideMarks(myPid(), ''); } catch (e) {} agiHudClear(); return; }
     const o = ANACH_COURSE[i];
     const enc = function (x, y, p, lab, rgb) {
       return (x | 0) + '\x1f' + (y | 0) + '\x1f' + (p | 0) + '\x1f'
@@ -340,11 +363,12 @@
     const mv = agiMoveFor(i);
     if (mv && mv.tgt && mv.cd <= 0)
       marks.push(enc(mv.tgt.x, mv.tgt.y, mv.tgt.p, 'DIVE to here', 0x7C6DF2));
+    agiHudPush(mv);
     try { bridge().guideMarks(myPid(), marks.join('\x1e')); } catch (e) {}
   }
 
   async function agiTick() {
-    if (typeof activeTab === 'undefined' || activeTab !== 'agility') return;
+    if (typeof activeTab === 'undefined' || activeTab !== 'agility') { agiHudClear(); return; }
     if (typeof scanPlayerTile === 'function') {
       try {
         const p = await scanPlayerTile();          // shared helper: {x, y, p}
