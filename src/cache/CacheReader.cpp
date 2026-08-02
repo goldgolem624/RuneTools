@@ -52,7 +52,7 @@ bool                                  g_buffs_loaded   = false;
 bool                                  g_init_attempted = false;
 
 // Collision: loc clip info + per-region unwalkable grids, both memoized.
-struct LocClip { bool no_clip = false; int dim_x = 1, dim_y = 1; bool bare = false; };   // bare = no name AND no actions (barrier scenery)
+struct LocClip { bool no_clip = false; int dim_x = 1, dim_y = 1; };
 std::unordered_map<int, LocClip>      g_locclip_cache;
 std::unordered_map<int, std::vector<std::uint8_t>> g_blocked_cache;  // key = rx<<8 | ry
 std::unordered_map<int, MapTileData>  g_tiles_cache;                 // key = rx<<8 | ry
@@ -146,11 +146,6 @@ LocClip LocClipLocked(int loc_id) {
             clip.no_clip = def.no_clip;
             clip.dim_x = def.dim_x;
             clip.dim_y = def.dim_y;
-            clip.bare = def.name.empty();
-            if (clip.bare) {
-                for (const auto& o : def.options)         if (!o.empty()) { clip.bare = false; break; }
-                if (clip.bare) for (const auto& o : def.members_options) if (!o.empty()) { clip.bare = false; break; }
-            }
         }
     }
     g_locclip_cache[loc_id] = clip;
@@ -2141,37 +2136,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
                             }
                         }
                         any = true;
-                        continue;
-                    }
-                    // Barrier scenery (e.g. the Goshima fort fence, loc 90861): a freestanding
-                    // type-10/11 loc with NO name and NO actions but a multi-tile footprint is a
-                    // fence/barricade. It carries no wall type and no mapscene, so nothing else
-                    // draws it - the game's prerendered map shows these as dark walls. Named
-                    // scenery (trees, tents, rocks) never matches.
-                    if (p.type == 10 || p.type == 11) {
-                        LocClip bc = LocClipLocked(p.id);
-                        int bdx = bc.dim_x, bdy = bc.dim_y;
-                        if (p.rotation == 1 || p.rotation == 3) { int t = bdx; bdx = bdy; bdy = t; }
-                        if (bc.bare && !bc.no_clip && (bdx >= 2 || bdy >= 2)) {
-                            for (int tyy = 0; tyy < bdy; ++tyy) {
-                                int fy = wty + tyy; if (fy < 0 || fy >= WT) continue;
-                                int bpy = ((WT - 1) - fy) * TS;
-                                for (int txx = 0; txx < bdx; ++txx) {
-                                    int fx = wtx + txx; if (fx < 0 || fx >= WT) continue;
-                                    int bpx = fx * TS;
-                                    for (int yy = 0; yy < TS; ++yy) {
-                                        for (int xx = 0; xx < TS; ++xx) {
-                                            size_t pp = ((size_t)(bpy + yy) * W + (bpx + xx)) * 4;
-                                            rgba[pp]     = (std::uint8_t)((0x4e * 170 + rgba[pp]     * 85) / 255);
-                                            rgba[pp + 1] = (std::uint8_t)((0x48 * 170 + rgba[pp + 1] * 85) / 255);
-                                            rgba[pp + 2] = (std::uint8_t)((0x42 * 170 + rgba[pp + 2] * 85) / 255);
-                                            rgba[pp + 3] = 255;
-                                        }
-                                    }
-                                }
-                            }
-                            any = true;
-                        }
                         continue;
                     }
                     if (p.type != 0 && p.type != 2 && p.type != 9) continue;
