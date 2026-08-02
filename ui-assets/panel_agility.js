@@ -141,16 +141,35 @@
       for (const i of [r[0], r[1]]) {
         if (agiIsDone(i)) continue;
         if (!agiPos) { if (best < 0) best = i; continue; }
-        const d = agiDist(ANACH_COURSE[i]);
+        const d = agiDistAt(i);
         if (d < bd) { bd = d; best = i; }
       }
     }
     return best;
   }
 
-  function agiDist(o) {
+  // One obstacle is placed twice: the cave entrance has a mouth at each end, so which tile is
+  // correct depends on which way the section is being run. Picking either one outright is
+  // wrong half the time, so both are listed and the nearer is used.
+  const ANACH_ALT_TILES = {
+    113734: [[5431, 2418, 0], [5481, 2456, 0]],   // Cave entrance, west and east mouths
+  };
+  // The tile to aim at for this obstacle: its own, or the closest of its alternates.
+  function agiTileOf(i) {
+    const o = ANACH_COURSE[i];
+    const alts = ANACH_ALT_TILES[o[0]];
+    if (!alts || !agiPos) return [o[3], o[4], o[5]];
+    let best = null, bd = 1e9;
+    for (const a of alts) {
+      const d = Math.max(Math.abs(a[0] - agiPos.x), Math.abs(a[1] - agiPos.y));
+      if (d < bd) { bd = d; best = a; }
+    }
+    return best || [o[3], o[4], o[5]];
+  }
+  function agiDistAt(i) {
     if (!agiPos) return 1e9;
-    return Math.max(Math.abs(o[3] - agiPos.x), Math.abs(o[4] - agiPos.y));
+    const t = agiTileOf(i);
+    return Math.max(Math.abs(t[0] - agiPos.x), Math.abs(t[1] - agiPos.y));
   }
   // Standing on an obstacle counts it as taken. Obstacles are far apart, so a 4-tile window
   // is unambiguous and tolerates the tile you land on rather than the tile of the loc.
@@ -158,7 +177,7 @@
     if (!agiPos) return;
     let best = -1, bd = 5;
     for (let i = 0; i < ANACH_COURSE.length; i++) {
-      const d = agiDist(ANACH_COURSE[i]);
+      const d = agiDistAt(i);
       if (d < bd) { bd = d; best = i; }
     }
     if (best < 0 || best === agiLastIdx) return;
@@ -177,7 +196,8 @@
            + String(lab).replace(/[\x1e\x1f]/g, ' ').slice(0, 80) + (rgb ? '\x1f0\x1f' + rgb : '');
     };
     // First line NAMES the loc: the host boxes that loc's footprint near the tile.
-    const marks = [enc(o[3], o[4], o[5], o[1] + '\n' + o[2] + '  (' + agiSectionOf(i)[0] + ')')];
+    const t = agiTileOf(i);
+    const marks = [enc(t[0], t[1], t[2], o[1] + '\n' + o[2] + '  (' + agiSectionOf(i)[0] + ')')];
     try { bridge().guideMarks(myPid(), marks.join('\x1e')); } catch (e) {}
   }
 
@@ -216,14 +236,14 @@
       + '</header>';
 
     if (next >= 0) {
-      const o = ANACH_COURSE[next], sec = agiSectionOf(next);
+      const o = ANACH_COURSE[next], sec = agiSectionOf(next), nt = agiTileOf(next);
       html += '<div class="agi-next">'
         + '<div class="agi-nh">next obstacle</div>'
         + '<div class="agi-nn">' + htmlEsc(o[2] + ' ' + o[1].toLowerCase()) + '</div>'
         + '<div class="agi-nm"><span>section ' + sec[0] + '</span>'
         + '<span>loc ' + o[0] + '</span>'
-        + '<span>' + o[3] + ', ' + o[4] + (o[5] ? ' p' + o[5] : '') + '</span>'
-        + (agiPos ? '<span>' + agiDist(o) + ' tiles</span>' : '') + '</div>'
+        + '<span>' + nt[0] + ', ' + nt[1] + (nt[2] ? ' p' + nt[2] : '') + '</span>'
+        + (agiPos ? '<span>' + agiDistAt(next) + ' tiles</span>' : '') + '</div>'
         + '</div>';
     } else {
       html += '<div class="agi-next is-complete"><div class="agi-nn">lap complete</div>'
