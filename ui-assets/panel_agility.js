@@ -37,9 +37,24 @@
   // (n-1) downward, one bit per obstacle taken, and resets to 0 the moment the section
   // completes. Live-captured on a section A lap: 32, 48, 56, 60, 62, then 0.
   // Only section A's varbit is confirmed; the rest fall back to proximity until captured.
-  // A, B, C live in varp 8587 (three 8-bit fields, high bits = earlier section); D starts
-  // varp 8586, which has four fields. All live-captured.
-  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259, 3: 44258 };
+  // A, B, C are varp 8587's three 8-bit fields; D and E are the top two of varp 8586's four.
+  // All five live-captured, and the ids run strictly downward in section order.
+  // F and G take the two remaining fields on that pattern - NOT captured, so they are checked
+  // at runtime: section F has six obstacles, so a mask above 63 proves the id is wrong and the
+  // row falls back to the position estimate. G is eight obstacles, where every byte is legal,
+  // so no such check is possible and it stays marked estimated until captured.
+  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259, 3: 44258, 4: 44257 };
+  const ANACH_SECTION_VB_GUESS = { 5: 44256, 6: 44255 };
+  function agiVbFor(si) {
+    if (ANACH_SECTION_VB[si] != null) return { id: ANACH_SECTION_VB[si], sure: true };
+    const g = ANACH_SECTION_VB_GUESS[si];
+    if (g == null) return null;
+    const total = ANACH_SECTIONS[si][4];
+    const v = agiVb[g];
+    if (v === undefined) return null;
+    if ((v | 0) > (1 << total) - 1) return null;      // impossible for this section: wrong id
+    return { id: g, sure: false };
+  }
   // Varp 8585 is the LAP tracker: one bit per section, filling downward from bit 6, so
   // section i owns bit (6 - i) and a full lap reads 127. Live: 96 = A+B, 112 = A+B+C.
   // The same shape as the per-section masks, and far better than inferring completion from a
@@ -58,6 +73,7 @@
     if (!bridge()) return;
     const ids = [];
     for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
+    for (const k in ANACH_SECTION_VB_GUESS) ids.push(ANACH_SECTION_VB_GUESS[k]);
     if (ids.length && bridge().varbits) {
       try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) {}
     }
@@ -82,8 +98,9 @@
     return -1;
   }
   function agiVbDone(i) {
-    const si = ANACH_COURSE[i][6], vb = ANACH_SECTION_VB[si];
-    if (vb == null) return null;                       // no captured varbit for this section
+    const si = ANACH_COURSE[i][6], f = agiVbFor(si);
+    const vb = f && f.id;
+    if (vb == null) return null;                       // no usable varbit for this section
     if (agiSectionComplete(si)) return true;           // whole section finished this lap
     const total = ANACH_SECTIONS[si][4];
     let first = -1;
@@ -102,7 +119,10 @@
     const out = ANACH_SECTIONS.map(function (s) { return { done: 0, total: s[4], live: false }; });
     for (let i = 0; i < ANACH_COURSE.length; i++)
       if (agiIsDone(i)) out[ANACH_COURSE[i][6]].done++;
-    for (const k in ANACH_SECTION_VB) out[+k].live = true;
+    for (let si = 0; si < ANACH_SECTIONS.length; si++) {
+      const f = agiVbFor(si);
+      out[si].live = !!(f && f.sure);
+    }
     return out;
   }
   function agiLapDone() {
