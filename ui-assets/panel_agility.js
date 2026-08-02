@@ -37,7 +37,9 @@
   // (n-1) downward, one bit per obstacle taken, and resets to 0 the moment the section
   // completes. Live-captured on a section A lap: 32, 48, 56, 60, 62, then 0.
   // Only section A's varbit is confirmed; the rest fall back to proximity until captured.
-  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259 };   // A, B, C - all live-captured
+  // A, B, C live in varp 8587 (three 8-bit fields, high bits = earlier section); D starts
+  // varp 8586, which has four fields. All live-captured.
+  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259, 3: 44258 };
   // Varp 8585 is the LAP tracker: one bit per section, filling downward from bit 6, so
   // section i owns bit (6 - i) and a full lap reads 127. Live: 96 = A+B, 112 = A+B+C.
   // The same shape as the per-section masks, and far better than inferring completion from a
