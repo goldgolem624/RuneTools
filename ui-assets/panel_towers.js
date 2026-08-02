@@ -844,6 +844,17 @@
         if ((a.name || '').toLowerCase() === want) { parent = a; break; }
       }
       if (!parent) return '?';                      // set not in the cache -> unknown, never fade
+      // Judge the set from its TASKS, not from its own rolled-up flag: the tasks are what we
+      // can actually verify, and the progress is worth showing.
+      const kids = parent.subach || [];
+      if (kids.length) {
+        const need = (parent.needN && parent.needN.length)
+                   ? parent.needN.reduce(function (t2, x) { return t2 + x; }, 0) : kids.length;
+        let got = 0;
+        for (const c of kids) if (achState.done && achState.done.has(c)) got++;
+        if (got >= need) return '';
+        return 'needs ' + ts.area + ' ' + tier + ' tasks (' + got + '/' + need + ')';
+      }
       if (achState.done && achState.done.has(parent.id)) return '';
       if (achState.unknown && achState.unknown.has(parent.id)) return '?';   // cannot be judged
       return 'needs ' + ts.area + ' ' + tier + ' tasks';
