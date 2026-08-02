@@ -37,23 +37,34 @@
   // (n-1) downward, one bit per obstacle taken, and resets to 0 the moment the section
   // completes. Live-captured on a section A lap: 32, 48, 56, 60, 62, then 0.
   // Only section A's varbit is confirmed; the rest fall back to proximity until captured.
-  const ANACH_SECTION_VB = { 0: 44261, 1: 44260 };   // A and B, both live-captured
+  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259 };   // A, B, C - all live-captured
+  // Varp 8585 is the LAP tracker: one bit per section, filling downward from bit 6, so
+  // section i owns bit (6 - i) and a full lap reads 127. Live: 96 = A+B, 112 = A+B+C.
+  // The same shape as the per-section masks, and far better than inferring completion from a
+  // section mask resetting to 0 - that reset is indistinguishable from "not started".
+  const ANACH_LAP_VP = 8585;
+  let agiLapMask = null;
+  function agiSectionComplete(si) {
+    if (agiLapMask == null) return !!agiSectionDone[si];
+    return (agiLapMask & (1 << (ANACH_SECTIONS.length - 1 - si))) !== 0;
+  }
   let agiVb = {};          // varbit id -> value
   let agiVbWas = {};       // last mask seen, to catch the full -> 0 completion flip
   let agiSectionDone = {}; // section index -> completed this lap
 
   async function agiReadVb() {
+    if (!bridge()) return;
     const ids = [];
     for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
-    if (!ids.length || !bridge() || !bridge().varbits) return;
-    try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) { return; }
-    for (const k in ANACH_SECTION_VB) {
-      const id = ANACH_SECTION_VB[k], cur = agiVb[id] | 0, was = agiVbWas[id];
-      const total = ANACH_SECTIONS[k][4];
-      // a mask one bit short of full, then 0, means the last obstacle completed the section
-      if (was !== undefined && cur === 0 && was >= ((1 << total) - 1) - (1 << (total - 1)))
-        agiSectionDone[k] = true;
-      agiVbWas[id] = cur;
+    if (ids.length && bridge().varbits) {
+      try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) {}
+    }
+    if (bridge().varps) {
+      try {
+        const vp = JSON.parse(await bridge().varps(myPid(), String(ANACH_LAP_VP))) || {};
+        const v = vp[ANACH_LAP_VP];
+        if (v !== undefined) agiLapMask = v | 0;
+      } catch (e) {}
     }
   }
   function agiPopcount(v) { let n = 0; while (v) { n += v & 1; v >>>= 1; } return n; }
@@ -71,7 +82,7 @@
   function agiVbDone(i) {
     const si = ANACH_COURSE[i][6], vb = ANACH_SECTION_VB[si];
     if (vb == null) return null;                       // no captured varbit for this section
-    if (agiSectionDone[si]) return true;               // whole section finished this lap
+    if (agiSectionComplete(si)) return true;           // whole section finished this lap
     const total = ANACH_SECTIONS[si][4];
     let first = -1;
     for (let k = 0; k < ANACH_COURSE.length; k++) if (ANACH_COURSE[k][6] === si) { first = k; break; }
@@ -261,8 +272,10 @@
     const prog = agiSectionProgress();
     const done = agiLapDone(), next = agiNextIdx();
 
+    const secDone = ANACH_SECTIONS.filter(function (_, si) { return agiSectionComplete(si); }).length;
     let html = '<div class="agi-lap">'
       + '<b>' + done + '</b>/' + ANACH_COURSE.length + ' obstacles this lap'
+      + (agiLapMask != null ? '<span class="agi-sd">' + secDone + '/7 sections</span>' : '')
       + (lv > 0 ? '<span class="agi-lv">' + lv + ' Agility</span>' : '')
       + '</div><div class="agi-bar"><div style="width:'
       + Math.round(done / ANACH_COURSE.length * 100) + '%"></div></div>';
@@ -317,7 +330,8 @@
       '.agi-wrap{display:flex;flex-direction:column;gap:8px;height:100%;min-height:0;overflow:auto}'
       + '.agi-lap{display:flex;align-items:baseline;gap:8px;font-size:13px}'
       + '.agi-lap b{font-size:18px}'
-      + '.agi-lv{margin-left:auto;opacity:.6;font-size:11px}'
+      + '.agi-sd{margin-left:auto;font-size:11px;opacity:.75}'
+      + '.agi-lv{opacity:.6;font-size:11px}'
       + '.agi-bar{height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden}'
       + '.agi-bar>div{height:100%;background:#4dd28a;transition:width .2s}'
       + '.agi-secs{display:flex;flex-direction:column;gap:3px}'
