@@ -1750,6 +1750,7 @@
     {n:'Luck of the dwarves - Grand Exchange',src:'Enchanted Jewellery',x:3162,y:3464,p:0,item:39812,kb:'1'},
     {n:'Luck of the Dwarves - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39812,kb:'2'},
     {n:'Luck of the Dwarves - Keldagrim',src:'Enchanted Jewellery',x:2857,y:10199,p:0,item:39812,kb:'3'},
+    {n:'Luck of the Dwarves - Dwarven Outpost',src:'Enchanted Jewellery',x:2554,y:3475,p:0,item:39812,kb:'5',req:{vb:52158,vbMin:1,vbWhy:'needs the Dark Facet of Luck'}},
     {n:'Hazelmere\'s signet ring - Grand Exchange',src:'Enchanted Jewellery',x:3162,y:3464,p:0,item:39814,kb:'1'},
     {n:'Hazelmere\'s signet ring - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39814,kb:'2'},
     {n:'Hazelmere\'s signet ring - Keldagrim',src:'Enchanted Jewellery',x:2857,y:10199,p:0,item:39814,kb:'3'},
@@ -2666,6 +2667,8 @@
     }
   }
   const TELE_ITEM_ALIASES = {
+    39812: [44559],                    // Luck of the Dwarves -> imbued
+    39814: [44560],                    // Hazelmere's signet ring -> imbued
     39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
     13562: [19760],                    // Explorer's ring: 4 also has the cabbage-port
   };
