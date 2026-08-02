@@ -274,7 +274,7 @@
   function agiHighlight() {
     if (!bridge() || !bridge().guideMarks) return;
     const i = agiNextIdx();
-    if (i < 0) { try { bridge().guideMarks(myPid(), ''); } catch (e) {} return; }
+    if (i < 0) { agiClearMarks(); return; }
     const o = agiRows()[i];
     const enc = function (x, y, p, lab, rgb) {
       return (x | 0) + '\x1f' + (y | 0) + '\x1f' + (p | 0) + '\x1f'
@@ -284,11 +284,19 @@
     const t = agiTileOf(i);
     const tag = agiIsBurth() ? '' : '  (' + agiSectionOf(i)[0] + ')';
     const marks = [enc(t[0], t[1], t[2], o[1] + '\n' + o[2] + tag)];
-    try { bridge().guideMarks(myPid(), marks.join('\x1e')); } catch (e) {}
+    try { bridge().guideMarks(myPid(), marks.join('\x1e')); agiMarked = true; } catch (e) {}
   }
 
+  let agiMarked = false;
+  function agiClearMarks() {
+    if (!agiMarked) return;                 // only clear marks this panel actually placed
+    agiMarked = false;
+    try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
+  }
   async function agiTick() {
-    if (typeof activeTab === 'undefined' || activeTab !== 'agility') return;
+    // Leaving the tab has to take the highlight with it, or the last obstacle stays boxed in
+    // world while another panel is open.
+    if (typeof activeTab === 'undefined' || activeTab !== 'agility') { agiClearMarks(); return; }
     if (typeof scanPlayerTile === 'function') {
       try {
         const p = await scanPlayerTile();          // shared helper: {x, y, p}
