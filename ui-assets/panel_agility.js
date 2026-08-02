@@ -283,19 +283,35 @@
   const AGI_MOVE_MIN = 4;          // below this, walking is not worth an ability charge
   // What to suggest for the obstacle we are pointing at: a position the player marked wins,
   // otherwise offer Dive when the gap is worth it AND the ability is actually off cooldown.
+  // Verified dive spots, keyed by the loc id of the obstacle they serve: [x, y, plane].
+  // The dive target is a CHOSEN tile, not the obstacle - the obstacle can sit well beyond
+  // Dive's reach while the spot you actually dive to is a few tiles away - so distance is
+  // measured player -> dive tile, never player -> obstacle. Only tiles confirmed in game go
+  // in here; an obstacle with no entry simply gets no suggestion.
+  const AGI_DIVE_TILES = {
+    113690: [5402, 2320, 0],   // Cross vines (G) - confirmed in game
+  };
+  function agiDiveTarget(i) {
+    const t = AGI_DIVE_TILES[ANACH_COURSE[i][0]];
+    if (!t || !agiPos) return null;
+    const d = Math.max(Math.abs(t[0] - agiPos.x), Math.abs(t[1] - agiPos.y));
+    return { x: t[0], y: t[1], p: t[2] == null ? ANACH_COURSE[i][5] : t[2], dist: d };
+  }
   function agiMoveFor(i) {
     if (i < 0) return null;
     const marked = agiMoves[ANACH_COURSE[i][0]];
     if (marked) return { kind: marked, cd: marked === 'surge' ? agiCds.surge : agiCds.dive, marked: true };
-    if (!agiPos) return null;
-    const d = agiDist(ANACH_COURSE[i]);
-    if (d < AGI_MOVE_MIN || d > AGI_DIVE_REACH) return null;
-    return { kind: 'dive', cd: agiCds.dive, marked: false, dist: d };
+    const t = agiDiveTarget(i);
+    if (!t) return null;
+    return { kind: 'dive', cd: agiCds.dive, marked: false, dist: t.dist, tgt: t,
+             reach: t.dist <= AGI_DIVE_REACH };
   }
   function agiMoveHint(i) {
     const m = agiMoveFor(i);
     if (!m) return '';
-    const lead = m.marked ? m.kind : m.kind + ' reaches it (' + m.dist + ' tiles)';
+    const lead = m.marked ? m.kind
+      : (m.reach ? 'dive spot ' + m.dist + ' tiles away'
+                 : 'dive spot ' + m.dist + ' tiles - out of reach, walk closer');
     if (m.cd > 0) return '<span class="agi-cd">' + lead + ' &middot; ' + m.cd.toFixed(1) + 's</span>';
     return '<span class="agi-go">' + lead + ' &middot; ready</span>';
   }
@@ -322,7 +338,8 @@
     // A usable movement ability gets its landing tile marked too, in its own colour so it
     // never takes the direction arrow away from the obstacle itself.
     const mv = agiMoveFor(i);
-    if (mv && mv.cd <= 0) marks.push(enc(o[3], o[4], o[5], mv.kind.toUpperCase() + ' here', 0x7C6DF2));
+    if (mv && mv.tgt && mv.cd <= 0)
+      marks.push(enc(mv.tgt.x, mv.tgt.y, mv.tgt.p, 'DIVE to here', 0x7C6DF2));
     try { bridge().guideMarks(myPid(), marks.join('\x1e')); } catch (e) {}
   }
 
@@ -393,24 +410,7 @@
         + '<div class="agi-nm"><span>all 52 obstacles taken</span></div></div>';
     }
 
-    html += '<div class="agi-tools">'
-      + '<button id="agiSurge" class="agi-b">mark surge</button>'
-      + '<button id="agiDive" class="agi-b">mark dive</button>'
-      + '<button id="agiReset" class="agi-b">reset lap</button>'
-      + '<button id="agiRec" class="agi-b ghost' + (agiRec ? ' on' : '') + '">'
-      + (agiRec ? 'stop recording' : 'record vars') + '</button>'
-      + '</div>';
-    if (agiRec) {
-      html += '<div class="agi-rec"><b>recording</b> ' + agiRec.log.length + ' obstacle events'
-        + '<div>' + (agiRecText() || 'no var has moved yet') + '</div></div>';
-    }
-
     el.innerHTML = html;
-    const b = function (id, fn) { const n = $(id); if (n) n.onclick = fn; };
-    b('agiSurge', function () { agiMarkMove('surge'); });
-    b('agiDive', function () { agiMarkMove('dive'); });
-    b('agiReset', function () { agiCleared = []; agiLastIdx = -1; agiSectionDone = {}; agiPaint(); });
-    b('agiRec', function () { if (agiRec) agiRecStop(); else agiRecStart(); });
   }
 
   function renderAgility() {
