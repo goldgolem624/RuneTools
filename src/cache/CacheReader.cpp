@@ -2029,6 +2029,36 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             }
         }
     }
+    // Structures built on the levels ABOVE this one (walkways, platforms, building floors)
+    // belong on the map: the game's map shows them over the ground, not hidden on their own
+    // level. They sit on top, so they draw over this level's overlays too.
+    if (plane < 3) {
+        std::vector<unsigned char> umask((size_t)TS * TS);
+        for (int up = plane + 1; up <= 3; ++up) {
+            for (int wx = 0; wx < WT; ++wx) {
+                for (int wy = 0; wy < WT; ++wy) {
+                    int gx = cx - HALF + wx, gy = cy - HALF + wy;
+                    if (gx < 0 || gy < 0 || gx > 16383 || gy > 16383) continue;
+                    const MapTileData& td = RegionTilesLocked(gx >> 6, gy >> 6);
+                    if (td.overlay.empty()) continue;
+                    int uix = (up * 64 + (gx & 63)) * 64 + (gy & 63);
+                    int uo = td.overlay[uix];
+                    if (uo < 1) continue;
+                    int c = ConfigColourLocked(4, uo - 1);
+                    if (c < 0 || c == 0xFF00FF) continue;
+                    int ush = td.shape[uix];
+                    OverlayMaskLocal(ush < 0 ? 0 : ush, TS, umask);
+                    int px0 = wx * TS, py0 = ((WT - 1) - wy) * TS;
+                    for (int a = 0; a < TS; ++a) for (int bb = 0; bb < TS; ++bb) {
+                        if (!umask[a * TS + bb]) continue;
+                        size_t p = ((size_t)(py0 + bb) * W + (px0 + a)) * 4;
+                        rgba[p] = (c >> 16) & 0xff; rgba[p + 1] = (c >> 8) & 0xff; rgba[p + 2] = c & 0xff; rgba[p + 3] = 255;
+                    }
+                    any = true;
+                }
+            }
+        }
+    }
     // ---- locs: map-scene ICONS (trees/anvils/rocks/... via loc opcode 102) composited at the tile, plus
     //      light WALL lines from type-0/2/9 locs. map parity: a loc with a map-scene draws its icon INSTEAD
     //      of a wall. One pass over the regions' locs handles both. ----
