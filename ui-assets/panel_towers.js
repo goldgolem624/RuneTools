@@ -1763,7 +1763,7 @@
     {n:'Tirannwn quiver 3+ - Elf Camp',src:'Achievement tasks set',x:2203,y:3256,p:0,item:33721,kb:'6'},
     {n:'Tirannwn quiver 4 - Harmony Pillars',src:'Achievement tasks set',x:2221,y:3399,p:1,item:33722,kb:'8'},
     {n:'Tirannwn quiver 3 - Mushroom patch',src:'Achievement tasks set',x:2227,y:3135,p:0,item:33721,kb:'7'},
-    {n:'Explorer\'s ring - Cabbage-port',src:'Achievement tasks set',x:3053,y:3291,p:0,item:13560},
+    {n:'Explorer\'s ring 3+ - Cabbage-port',src:'Achievement tasks set',x:3053,y:3291,p:0,item:13562,rq:'Lumbridge medium achievements'},
     {n:'Wilderness sword - Wilderness herb patch',src:'Achievement tasks set',x:3141,y:3816,p:0,item:37904,kb:'1, 1',rq:'Wilderness easy achievements'},
     {n:'Wilderness sword - Edgeville',src:'Achievement tasks set',x:3084,y:3502,p:0,item:37904,kb:'1, 2',rq:'Wilderness easy achievements'},
     {n:'Wilderness sword 2+ - Forinthry Dungeon',src:'Achievement tasks set',x:3083,y:10060,p:0,item:37905,kb:'1, 3',rq:'Wilderness medium achievements'},
@@ -2565,6 +2565,7 @@
   let telePassage = null;      // { charges: n, names: Set<baseName> }
   const TELE_ITEM_ALIASES = {
     39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
+    13562: [19760],                    // Explorer's ring: 4 also has the cabbage-port
   };
   function teleItemIds(T) {
     const ids = [T.item];
