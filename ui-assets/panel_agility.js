@@ -302,13 +302,20 @@
   }
   setInterval(function () { agiTick(); }, 700);
 
+  // Only touch the DOM when the markup changed: a repaint between mousedown and mouseup
+  // eats the click, which made the course selector unusable.
+  function agiApply(el, html) {
+    if (el._agiHtml === html) return;
+    el._agiHtml = html;
+    el.innerHTML = html;
+    agiWire(el);
+  }
   function agiWire(el) {
     el.querySelectorAll('.agi-side button').forEach(function (b) {
       b.onclick = function () { agiSetSide(b.dataset.side); };
     });
-    el.querySelectorAll('.agi-courses button').forEach(function (b) {
-      b.onclick = function () { agiSetCourse(b.dataset.course); };
-    });
+    const sel = el.querySelector('#agiCourseSel');
+    if (sel) sel.onchange = function () { agiSetCourse(sel.value); };
   }
   function agiPaint() {
     const el = $('agiBody'); if (!el) return;
@@ -319,12 +326,13 @@
     const secDone = ANACH_SECTIONS.filter(function (_, si) { return agiSectionComplete(si); }).length;
     const pct = Math.round(done / rows.length * 100);
 
-    let html = '<div class="agi-courses">'
+    let html = '<div class="agi-courses"><label for="agiCourseSel">Course</label>'
+      + '<select id="agiCourseSel">'
       + AGI_COURSES.map(function (c) {
-          return '<button data-course="' + c[0] + '"' + (agiCourse === c[0] ? ' class="on"' : '')
-               + '>' + c[1] + '</button>';
+          return '<option value="' + c[0] + '"' + (agiCourse === c[0] ? ' selected' : '')
+               + '>' + c[1] + '</option>';
         }).join('')
-      + '</div>';
+      + '</select></div>';
     html += '<header class="agi-hd">'
       + '<div class="agi-fig"><b>' + done + '</b><span>/ ' + rows.length + '</span></div>'
       + '<div class="agi-cap">obstacles this lap</div>'
@@ -376,8 +384,7 @@
       html += '</div>';
       if (agiBurthDone() < 0)
         html += '<div class="agi-note">progress not read yet</div>';
-      el.innerHTML = html;
-      agiWire(el);
+      agiApply(el, html);
       return;
     }
     html += '<div class="agi-secs">';
@@ -396,8 +403,7 @@
     html += '</div>';
 
 
-    el.innerHTML = html;
-    agiWire(el);
+    agiApply(el, html);
   }
 
   function renderAgility() {
@@ -405,13 +411,13 @@
     if ($('agiBody')) { agiPaint(); return; }   // renderPane polls: never rebuild a live mount
     c.innerHTML = '';
     injectStyle('agiCss',
-      '.agi-courses{display:flex;gap:6px}'
-      + '.agi-courses button{flex:1;padding:7px 10px;font:inherit;font-size:12px;border-radius:8px;'
-      + 'cursor:pointer;border:1px solid var(--border);background:rgba(255,255,255,.03);'
+      '.agi-courses{display:flex;align-items:center;gap:8px}'
+      + '.agi-courses label{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;'
       + 'color:var(--text-dim)}'
-      + '.agi-courses button:hover{color:var(--text);background:rgba(255,255,255,.07)}'
-      + '.agi-courses button.on{color:var(--text);border-color:#7c6df2;background:rgba(124,109,242,.12)}'
-      + '.agi-courses button:focus-visible{outline:2px solid #7c6df2;outline-offset:1px}'
+      + '.agi-courses select{flex:1;padding:7px 9px;font:inherit;font-size:12.5px;border-radius:8px;'
+      + 'cursor:pointer;border:1px solid var(--border);background:rgba(255,255,255,.04);'
+      + 'color:var(--text)}'
+      + '.agi-courses select:focus-visible{outline:2px solid #7c6df2;outline-offset:1px}'
       + '.agi-sec.is-next{border-color:#7c6df2;background:rgba(124,109,242,.09)}'
       + '.agi-note{font-size:11px;color:var(--text-dim)}'
       + '.agi-wrap{display:flex;flex-direction:column;gap:14px;height:100%;min-height:0;'
