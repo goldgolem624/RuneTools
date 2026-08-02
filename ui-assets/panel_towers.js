@@ -555,7 +555,9 @@
   function clueMapCtx(cv, W) {
     const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio > 0) ? devicePixelRatio : 1;
     const cssW = cv.clientWidth || W;
-    const back = Math.max(W, Math.round(cssW * dpr));
+    // EXACTLY the displayed pixel count: any mismatch makes the browser resample the whole
+    // canvas, which is what left the map soft at rest.
+    const back = Math.max(64, Math.round(cssW * dpr));
     if (cv.width !== back || cv.height !== back) { cv.width = back; cv.height = back; }
     const cx = cv.getContext('2d');
     cx.setTransform(back / W, 0, 0, back / W, 0, 0);
@@ -565,14 +567,16 @@
   // Terrain arrives as raw pixels at W; putImageData ignores the transform, so blit it
   // through an offscreen canvas. Kept unsmoothed so tiles stay crisp, as before.
   let _clueOff = null;
-  function clueMapBlit(cx, meta, W) {
+  function clueMapBlit(cx, meta, W, cv0) {
     const bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length);
     for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
     if (!_clueOff) _clueOff = document.createElement('canvas');
     if (_clueOff.width !== W) { _clueOff.width = W; _clueOff.height = W; }
     _clueOff.getContext('2d').putImageData(new ImageData(a, W, W), 0, 0);
+    // Upscaling keeps hard tile edges (nearest); downscaling smooths, or the minified
+    // terrain aliases badly.
     const sm = cx.imageSmoothingEnabled;
-    cx.imageSmoothingEnabled = false;
+    cx.imageSmoothingEnabled = (cv0 && cv0.width < W);
     cx.drawImage(_clueOff, 0, 0, W, W);
     cx.imageSmoothingEnabled = sm;
   }
@@ -1127,7 +1131,7 @@
       W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || half;
       if (cv.width !== W) { cv.width = W; cv.height = W; }
       cx = cv.getContext('2d'); cx.clearRect(0, 0, W, W);
-      if (meta && meta.b64) { try { clueMapBlit(cx, meta, W); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
+      if (meta && meta.b64) { try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
       projX = sx => (sx - (ccx - H)) * TS + TS / 2;
       projY = sy => ((2 * H - 1) - (sy - (ccy - H))) * TS + TS / 2;
       lmBox = [ccx - H, ccy - H, ccx + H, ccy + H];           // the full rendered window -> show all visible landmarks
@@ -1238,7 +1242,7 @@
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, H = (meta && meta.h) || 24;
     const cx = clueMapCtx(cv, W);
     if (meta && meta.b64) {
-      try { clueMapBlit(cx, meta, W); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {}
+      try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {}
     }
     // the clue tile is rendered at the window centre: window tile (H,H) -> image (H*TS,(H-1)*TS).
     const mx = H * TS + TS / 2, my = (H - 1) * TS + TS / 2;

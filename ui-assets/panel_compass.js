@@ -346,7 +346,7 @@
       W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || half;
       if (cv.width !== W) { cv.width = W; cv.height = W; }
       g = cv.getContext('2d'); g.clearRect(0, 0, W, W);
-      if (meta && meta.b64) { try { clueMapBlit(g, meta, W); clueDrawNomove(g, meta); clueDrawObjects(g, meta); clueDrawTeleports(g, meta); clueDrawLabelsWindow(g, meta); drewTerrain = true; } catch (e) {} }
+      if (meta && meta.b64) { try { clueMapBlit(g, meta, W, cv); clueDrawNomove(g, meta); clueDrawObjects(g, meta); clueDrawTeleports(g, meta); clueDrawLabelsWindow(g, meta); drewTerrain = true; } catch (e) {} }
       projX = sx => (sx - (cx0 - H)) * TS + TS / 2;
       projY = sy => ((2 * H - 1) - (sy - (cy0 - H))) * TS + TS / 2;
     }
