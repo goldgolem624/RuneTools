@@ -2363,7 +2363,7 @@
     {n:'Modified farmer\'s hat',src:'Modified skilling outfits',x:3598,y:3523,p:0,item:34926},
     {n:'Modified artisan\'s bandana',src:'Modified skilling outfits',x:2933,y:3290,p:0,item:32281},
     {n:'Modified blacksmith\'s helmet',src:'Modified skilling outfits',x:3033,y:3339,p:0,item:32280},
-    {n:'Modified diviner\'s headwear',src:'Modified skilling outfits',x:1923,y:5987,p:1,item:32279},
+    {n:'Modified diviner\'s headwear',src:'Modified skilling outfits',x:1923,y:5987,p:0,item:32279},
     {n:'Modified botanist\'s mask',src:'Modified skilling outfits',x:2790,y:3463,p:0,item:34923},
     {n:'Modified sous chef\'s toque',src:'Modified skilling outfits',x:3143,y:3441,p:0,item:34924},
     {n:'Modified shaman\'s headdress',src:'Modified skilling outfits',x:2523,y:3061,p:0,item:32278},
