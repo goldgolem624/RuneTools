@@ -43,8 +43,8 @@
   // at runtime: section F has six obstacles, so a mask above 63 proves the id is wrong and the
   // row falls back to the position estimate. G is eight obstacles, where every byte is legal,
   // so no such check is possible and it stays marked estimated until captured.
-  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259, 3: 44258, 4: 44257 };
-  const ANACH_SECTION_VB_GUESS = { 5: 44256, 6: 44255 };
+  const ANACH_SECTION_VB = { 0: 44261, 1: 44260, 2: 44259, 3: 44258, 4: 44257, 5: 44256 };
+  const ANACH_SECTION_VB_GUESS = { 6: 44255 };
   function agiVbFor(si) {
     if (ANACH_SECTION_VB[si] != null) return { id: ANACH_SECTION_VB[si], sure: true };
     const g = ANACH_SECTION_VB_GUESS[si];
