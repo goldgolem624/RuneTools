@@ -73,35 +73,66 @@
   }
 
   // ---- record mode: which vars move as each obstacle is taken -------------------
+  // Every varp comes back in ONE dump, and the varbit map gives each varp's bit layout, so a
+  // changed varp is decoded down to the individual VARBITS that moved inside it. Nothing is
+  // assumed about which var tracks the course: the deltas name themselves.
+  let agiVbMap = null;      // varp id -> [[varbitId, lsb, msb], ...]
+
+  function agiBits(varpId, value) {
+    const defs = agiVbMap && agiVbMap[varpId];
+    if (!defs) return null;
+    const out = {};
+    for (const d of defs) {
+      const lsb = d[1], w = d[2] - d[1];
+      const mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1);
+      out[d[0]] = (value >>> lsb) & mask;
+    }
+    return out;
+  }
+  async function agiDumpVarps() {
+    try { return JSON.parse(await bridge().varpsDumpAll(myPid())) || {}; } catch (e) { return {}; }
+  }
   async function agiRecSnap(idx) {
-    if (!agiRec || !bridge()) return;
-    try {
-      const raw = await bridge().varps(myPid(), agiRec.watch.join(','));
-      const vp = JSON.parse(raw) || {};
-      const moved = [];
-      for (const k in vp) if (agiRec.vars[k] !== undefined && agiRec.vars[k] !== vp[k])
-        moved.push({ v: +k, from: agiRec.vars[k], to: vp[k] });
-      agiRec.vars = vp;
-      if (moved.length) agiRec.log.push({ idx: idx, loc: ANACH_COURSE[idx][0], moved: moved });
-    } catch (e) {}
+    if (!agiRec || !bridge() || !bridge().varpsDumpAll) return;
+    const vp = await agiDumpVarps();
+    const moved = [];
+    for (const k in vp) {
+      const was = agiRec.vars[k];
+      if (was === undefined || was === vp[k]) continue;
+      const a = agiBits(+k, was | 0), b = agiBits(+k, vp[k] | 0);
+      const bits = [];
+      if (a && b) for (const id in b) if (a[id] !== b[id]) bits.push({ vb: +id, from: a[id], to: b[id] });
+      moved.push({ vp: +k, from: was, to: vp[k], bits: bits });
+    }
+    agiRec.vars = vp;
+    if (moved.length) agiRec.log.push({ idx: idx, loc: ANACH_COURSE[idx][0], moved: moved });
   }
   async function agiRecStart() {
-    if (!bridge()) return;
-    // Watch a broad band of varps and let the deltas name themselves; the course counters
-    // are unknown, so nothing is assumed about which one moves.
-    const watch = [];
-    for (let v = 0; v < 6000; v++) watch.push(v);
-    agiRec = { watch: watch, vars: {}, log: [], startedAt: Date.now() };
-    try { agiRec.vars = JSON.parse(await bridge().varps(myPid(), watch.join(','))) || {}; } catch (e) {}
+    if (!bridge() || !bridge().varpsDumpAll) return;
+    agiRec = { vars: {}, log: [], startedAt: Date.now() };
+    if (!agiVbMap && bridge().varbitMap) {
+      try { agiVbMap = JSON.parse(await bridge().varbitMap()) || {}; } catch (e) { agiVbMap = {}; }
+    }
+    agiRec.vars = await agiDumpVarps();
     agiPaint();
   }
   function agiRecStop() { agiRec = null; agiPaint(); }
+  // Rank by how many obstacles moved the var: the course counters should rise to the top,
+  // and per-varbit rows are what you actually want to keep.
   function agiRecText() {
     if (!agiRec) return '';
-    const seen = {};
-    for (const e of agiRec.log) for (const m of e.moved) seen[m.v] = (seen[m.v] || 0) + 1;
-    const ids = Object.keys(seen).sort(function (a, b) { return seen[b] - seen[a]; });
-    return ids.slice(0, 12).map(function (v) { return 'vp ' + v + ' moved ' + seen[v] + 'x'; }).join(', ');
+    const vps = {}, vbs = {};
+    for (const e of agiRec.log) for (const m of e.moved) {
+      vps[m.vp] = (vps[m.vp] || 0) + 1;
+      for (const b of m.bits) vbs[b.vb] = (vbs[b.vb] || 0) + 1;
+    }
+    const fmt = function (o, tag) {
+      return Object.keys(o).sort(function (a, b) { return o[b] - o[a]; }).slice(0, 8)
+        .map(function (id) { return tag + ' ' + id + ' &times;' + o[id]; }).join(', ');
+    };
+    const a = fmt(vbs, 'vb'), b = fmt(vps, 'vp');
+    if (!a && !b) return '';
+    return (a ? 'varbits: ' + a + '<br>' : '') + (b ? 'varps: ' + b : '');
   }
 
   // ---- movement abilities ------------------------------------------------------
@@ -206,7 +237,7 @@
       + '<button id="agiReset">reset lap</button>'
       + '<button id="agiRec">' + (agiRec ? 'stop recording' : 'record vars') + '</button>'
       + '</div>';
-    if (agiRec) html += '<div class="agi-rec">recording &middot; ' + (agiRecText() || 'no var has moved yet') + '</div>';
+    if (agiRec) html += '<div class="agi-rec"><b>recording</b> &middot; ' + agiRec.log.length + ' obstacle events<br>' + (agiRecText() || 'no var has moved yet') + '</div>';
 
     el.innerHTML = html;
     const b = function (id, fn) { const n = $(id); if (n) n.onclick = fn; };
