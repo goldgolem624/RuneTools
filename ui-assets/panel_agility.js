@@ -36,6 +36,17 @@
   // The same shape as the per-section masks, and far better than inferring completion from a
   // section mask resetting to 0 - that reset is indistinguishable from "not started".
   const ANACH_LAP_VP = 8585;
+  // Lap time, split across two varbits: minutes and seconds. Captured against the game's own
+  // "Lap time: 8:31 - New Personal Record!" message, which is also why it is not yet certain
+  // whether these hold the BEST lap or merely the LAST one - a single record-setting lap looks
+  // identical either way. Labelled plainly until a slower lap settles it.
+  const ANACH_LAP_MIN_VB = 44253, ANACH_LAP_SEC_VB = 44254;
+  function agiLapTime() {
+    const m = agiVb[ANACH_LAP_MIN_VB], sec = agiVb[ANACH_LAP_SEC_VB];
+    if (m === undefined || sec === undefined) return '';
+    if (!m && !sec) return '';
+    return (m | 0) + ':' + String(sec | 0).padStart(2, '0');
+  }
   let agiLapMask = null;
   function agiSectionComplete(si) {
     if (agiLapMask == null) return !!agiSectionDone[si];
@@ -47,7 +58,7 @@
 
   async function agiReadVb() {
     if (!bridge()) return;
-    const ids = [];
+    const ids = [ANACH_LAP_MIN_VB, ANACH_LAP_SEC_VB];
     for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
     if (ids.length && bridge().varbits) {
       try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) {}
@@ -230,6 +241,7 @@
       + '<div class="agi-chips">'
       + (agiLapMask != null
           ? '<span class="agi-chip' + (secDone === 7 ? ' ok' : '') + '">' + secDone + ' / 7 sections</span>' : '')
+      + (agiLapTime() ? '<span class="agi-chip">lap ' + agiLapTime() + '</span>' : '')
       + (lv > 0 ? '<span class="agi-chip">' + lv + ' Agility</span>' : '')
       + '</div>'
       + '<div class="agi-bar"><i style="width:' + pct + '%"></i></div>'
