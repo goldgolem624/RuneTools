@@ -628,6 +628,7 @@ async function buildTables(engine: EngineCache, notes: string[],
         try { dbschema.set(sub.fileid, decodeDbtable(sub.buffer)); } catch (e) { }
     }
     notes.push(`dbtables: ${dbschema.size}`);
+    notes.push(`interface group names: ${Object.keys(IFACE_NAMES).length}`);
 
     // 10. interface components (js5-3) for the packed if-ref annotation rule: IF_* ops
     //     address components as (group << 16) | comp int literals. Labels are the comp's
@@ -809,6 +810,18 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     notes.push(`script-table varbit names: ${n}, varc names: ${names.varc.size}`);
 }
 
+// The decompiler already prints "/* if 517:12 */" for interface literals; name the group
+// where we know it, leaving the id in place so nothing becomes harder to grep.
+let ifaceAnnotated = 0;
+function applyIfaceNames(text: string): string {
+    return text.replace(/\/\* if (\d+):(-?\d+) \*\//g, (m, g, c) => {
+        const nm = IFACE_NAMES[parseInt(g, 10)];
+        if (!nm) { return m; }
+        ifaceAnnotated++;
+        return `/* if ${g}:${c} ${nm} */`;
+    });
+}
+
 function applyNames(text: string, names: NameTables) {
     const PREFIX: { [k: string]: string } = { varbitplayer: "vb", varplayer: "vp", varclient: "vc" };
     return text.replace(/\b(varbitplayer|varplayer|varclient)_(\d+)\b/g, (m, kind, ids) => {
@@ -818,6 +831,41 @@ function applyNames(text: string, names: NameTables) {
         return `${PREFIX[kind]}${id}_${nm}`;
     });
 }
+
+// Interface GROUP names. The cache carries none - js5-3 holds component defs only - so
+// these are the curated set the Interfaces panel maintains, each observed live. Names a
+// third of the busiest groups and roughly a tenth of all interface references, turning
+// "if 517:12" into something readable at a glance.
+const IFACE_NAMES: { [k: number]: string } = {
+    13: "Bank PIN", 37: "Smithing / Smelting", 91: "Dungeoneering party",
+    105: "Grand Exchange", 107: "Grand Exchange inventory", 109: "GE collection box",
+    137: "Chat box", 190: "Quest list", 284: "Buff bar", 291: "Debuff bar",
+    345: "Mysterious clue scroll", 364: "Treasure trails", 517: "Bank", 590: "Emote",
+    660: "Archaeology material storage", 662: "Familiar / Summoning", 720: "Teleports",
+    906: "Lobby frame", 907: "Lobby news", 910: "Lobby world select", 945: "Dungeoneering",
+    1029: "Community", 1030: "Murder on the Border investigation",
+    1049: "Dungeoneering select", 1092: "Lodestone network", 1117: "Citadel work",
+    1145: "Spirit tree map", 1179: "Select tool", 1184: "NPC dialogue",
+    1186: "Server message dialogue", 1188: "Dialogue option select",
+    1189: "Clue scroll continue", 1191: "Player dialogue", 1213: "XP circle",
+    1219: "Necromancy spellbook", 1222: "Well of Souls talent tree", 1223: "Active ritual",
+    1224: "Ritual selection", 1234: "Time counter", 1251: "Progress bar",
+    1253: "Treasure Hunter (removed)", 1265: "Shop", 1299: "Group Ironman list",
+    1308: "Rewards shop", 1317: "Group Ironman chat", 1370: "Crafting menu",
+    1371: "Crafting menu", 1416: "Music player", 1417: "Notes", 1430: "Main action bar",
+    1431: "Ribbon bar", 1433: "Main options menu", 1446: "Hero", 1449: "Defence abilities",
+    1452: "Ranged abilities", 1454: "Powers", 1458: "Prayer book", 1460: "Melee abilities",
+    1461: "Magic spellbook", 1464: "Equipment", 1465: "Minimap", 1466: "Skills",
+    1467: "Private chat", 1470: "Guest clan chat", 1471: "Clan chat", 1472: "Friends chat",
+    1473: "Inventory", 1494: "Marketplace", 1514: "Fullscreen window frame",
+    1516: "Furniture Construction", 1518: "Furniture Storage", 1519: "Group list",
+    1529: "Group chat", 1572: "Quiver map", 1587: "World select", 1588: "RuneMetrics",
+    1591: "Boss instance", 1622: "Loot window", 1639: "Slayer counter", 1665: "House Controls",
+    1670: "Second action bar", 1671: "Third action bar", 1672: "Fourth action bar",
+    1673: "Fifth action bar", 1708: "Invention discovery", 1843: "Customisations",
+    1854: "Activity tracker", 1882: "Constitution abilities", 1883: "Defensive abilities",
+    1894: "Achievement path", 1929: "Aura manager",
+};
 
 // ---- annotation pass (ports the verified offline cs2_annotate.py rules 1-6) ----
 const SWITCH_TYPES = ["obj", "npc", "loc", "quest", "stat", "achievement", "dbrow", "struct"];
@@ -1154,6 +1202,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
                 text = await renderClientScript(engine.rawsource, buf, id);
             }
             text = applyNames(text, names);
+            text = applyIfaceNames(text);
             text = annotate(text, cast, enumTables, paramtypes, dbschema, ifaceCounts, ifaceComps, annCounts);
             fs.writeFileSync(path.join(scriptsdir, `clientscript-${id}.ts`), text);
             ok++;
