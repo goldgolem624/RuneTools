@@ -837,7 +837,10 @@
       const lvl = questSkillLevels();
       if ((lvl(r.skill) | 0) < r.level) return false;
     }
-    if (r.vb != null && (teleVbCache[r.vb] | 0) !== r.vbVal) return false;
+    if (r.vb != null) {
+      const cur = teleVbCache[r.vb] | 0;
+      if (!(r.vbMin != null ? cur >= r.vbMin : cur === r.vbVal)) return false;
+    }
     if (!teleWornOk(r)) return false;
     if (!telePortalOk(r)) return false;
     { const w2 = teleTaskSetWhy(T); if (w2 && w2 !== '?') return false; }
@@ -1000,8 +1003,11 @@
       const lvl = questSkillLevels();
       if ((lvl(r.skill) | 0) < r.level) why.push('needs ' + r.level + ' ' + (SKILL_NAMES[r.skill] || ('skill ' + r.skill)));
     }
-    if (r.vb != null && (teleVbCache[r.vb] | 0) !== r.vbVal)
-      why.push(r.vb === SPELLBOOK_VB ? 'wrong spellbook' : 'not unlocked');
+    if (r.vb != null) {
+      const cur = teleVbCache[r.vb] | 0;
+      if (!(r.vbMin != null ? cur >= r.vbMin : cur === r.vbVal))
+        why.push(r.vbWhy || (r.vb === SPELLBOOK_VB ? 'wrong spellbook' : 'not unlocked'));
+    }
     if (!teleWornOk(r)) {
       // Say HOW FAR along the set is - "1/5" is far more useful than "not worn".
       let got = 0;
@@ -1544,6 +1550,7 @@
 {n:'Mazcab teleport (tablet)',src:'Teleport tablet',x:4316,y:819,p:0,item:40987,req:{vb:36971,vbVal:1}},
 {n:'Dragonkin Laboratory',src:'Teleport tablet',x:3368,y:3889,p:0,item:43375},
 {n:'Shadow Reef',src:'Teleport tablet',x:3510,y:3694,p:0,item:47529},
+{n:'Fairy ring BJS - The Lost Grove',src:'Fairy rings',x:1359,y:5635,p:0,kb:'BJS',req:{questName:'A Fairy Tale II - Cure a Queen',vb:30276,vbMin:1,vbWhy:'ring not restored (plant 5 bittercap mushrooms)'}},
 {n:'North-western Anachronia',src:'Standard Spellbook',x:5314,y:2495,p:0,sp:10370},
 {n:'Eastern Anachronia',src:'Standard Spellbook',x:5599,y:2331,p:0,sp:10369},
 {n:'Northern Lost Grove',src:'Standard Spellbook',x:1402,y:5724,p:0,sp:11316},
