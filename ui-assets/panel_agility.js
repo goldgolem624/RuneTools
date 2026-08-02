@@ -37,7 +37,7 @@
   // (n-1) downward, one bit per obstacle taken, and resets to 0 the moment the section
   // completes. Live-captured on a section A lap: 32, 48, 56, 60, 62, then 0.
   // Only section A's varbit is confirmed; the rest fall back to proximity until captured.
-  const ANACH_SECTION_VB = { 0: 44261 };
+  const ANACH_SECTION_VB = { 0: 44261, 1: 44260 };   // A and B, both live-captured
   let agiVb = {};          // varbit id -> value
   let agiVbWas = {};       // last mask seen, to catch the full -> 0 completion flip
   let agiSectionDone = {}; // section index -> completed this lap
