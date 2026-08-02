@@ -430,7 +430,10 @@
     return (teleWornSet ? [...teleWornSet].sort().join(',') : 'w?') + '|'
          + (teleInvSet ? [...teleInvSet].sort().join(',') : 'i?') + '|'
          + JSON.stringify(teleVbCache) + '|' + JSON.stringify(teleQuestVp) + '|'
-         + (teleHeldBase ? [...teleHeldBase].sort().join(',') : 'h?') + '|' + JSON.stringify(teleRuneCounts) + '|' + JSON.stringify(teleItemCharges);
+         + (teleHeldBase ? [...teleHeldBase].sort().join(',') : 'h?') + '|' + JSON.stringify(teleRuneCounts) + '|' + JSON.stringify(teleItemCharges)
+         // Achievement state arrives LATER than the rest. Without it in the signature, a
+         // "not read yet" answer computed before it loaded stays cached forever.
+         + '|a' + ((typeof achState !== 'undefined' && achState && achState.done) ? achState.done.size : -1);
   }
   let _teleGateSig = '', _teleGateTick = 0;
   let _teleWhyMap = new Map(), _teleWhyVer = '', _teleWhyVerAt = 0;
@@ -442,7 +445,11 @@
       if (gs !== _teleWhyVer) { _teleWhyVer = gs; _teleWhyMap = new Map(); }
     }
     let v = _teleWhyMap.get(T);
-    if (v === undefined) { v = teleWhyFull(T); _teleWhyMap.set(T, v); }
+    if (v === undefined) {
+      v = teleWhyFull(T);
+      // Only memoise a settled answer: an unresolved gate must be retried, not frozen.
+      if (!(typeof teleTaskSetWhy === 'function' && teleTaskSetWhy(T) === '?')) _teleWhyMap.set(T, v);
+    }
     return v;
   }
   // Keep the player marker live on whatever clue map is open.
@@ -840,6 +847,7 @@
     if (!ts) return '';
     try {
       if (typeof achDefs === 'undefined' || !achDefs || typeof achState === 'undefined' || !achState) return '?';
+      const tier = String(ts.tier).toLowerCase();
       const want = (ts.area + ' set tasks - ' + ts.tier).toLowerCase();
       let parent = null;
       for (const a of achDefs) {
@@ -860,7 +868,7 @@
       if (achState.done && achState.done.has(parent.id)) return '';
       if (achState.unknown && achState.unknown.has(parent.id)) return '?';   // cannot be judged
       return 'needs ' + ts.area + ' ' + tier + ' tasks';
-    } catch (e) { return ''; }
+    } catch (e) { return '?'; }   // never let a failure read as "requirement met"
   }
   // Skill levels named in the requirement text, checked against live levels.
   function teleRqSkillWhy(T) {
