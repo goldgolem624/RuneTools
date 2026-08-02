@@ -2215,7 +2215,7 @@
     {n:'Rune Dragons',src:'Metallic dragon trinkets',x:2367,y:3358,p:0,item:37193,kb:'6'},
     {n:'Incandescent [2]',src:'Elder divination outfit',x:2281,y:3049,p:0,item:35978},
     {n:'Luminous [3]',src:'Elder divination outfit',x:3314,y:2659,p:0,item:35978},
-    {n:'Radiant [4]',src:'Elder divination outfit',x:3806,y:3553,p:1,item:35978},
+    {n:'Radiant [4]',src:'Elder divination outfit',x:3806,y:3553,p:0,item:35978},
     {n:'Brilliant [5]',src:'Elder divination outfit',x:3406,y:3295,p:0,item:35978},
     {n:'Elder [6]',src:'Elder divination outfit',x:4268,y:6318,p:0,item:35978},
     {n:'Lustrous [7]',src:'Elder divination outfit',x:3467,y:3536,p:0,item:35978},
