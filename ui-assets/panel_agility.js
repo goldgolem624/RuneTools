@@ -277,12 +277,27 @@
       }
     } catch (e) {}
   }
+  // Dive covers up to ten tiles. That figure is the ability's in-game reach, NOT something the
+  // cache states - the Dive struct carries no readable range - so it lives here as one constant.
+  const AGI_DIVE_REACH = 10;
+  const AGI_MOVE_MIN = 4;          // below this, walking is not worth an ability charge
+  // What to suggest for the obstacle we are pointing at: a position the player marked wins,
+  // otherwise offer Dive when the gap is worth it AND the ability is actually off cooldown.
+  function agiMoveFor(i) {
+    if (i < 0) return null;
+    const marked = agiMoves[ANACH_COURSE[i][0]];
+    if (marked) return { kind: marked, cd: marked === 'surge' ? agiCds.surge : agiCds.dive, marked: true };
+    if (!agiPos) return null;
+    const d = agiDist(ANACH_COURSE[i]);
+    if (d < AGI_MOVE_MIN || d > AGI_DIVE_REACH) return null;
+    return { kind: 'dive', cd: agiCds.dive, marked: false, dist: d };
+  }
   function agiMoveHint(i) {
-    const m = agiMoves[ANACH_COURSE[i][0]];
+    const m = agiMoveFor(i);
     if (!m) return '';
-    const cd = m === 'surge' ? agiCds.surge : agiCds.dive;
-    if (cd > 0) return '<span class="agi-cd">' + m + ' in ' + cd.toFixed(1) + 's</span>';
-    return '<span class="agi-go">' + m + ' ready</span>';
+    const lead = m.marked ? m.kind : m.kind + ' reaches it (' + m.dist + ' tiles)';
+    if (m.cd > 0) return '<span class="agi-cd">' + lead + ' &middot; ' + m.cd.toFixed(1) + 's</span>';
+    return '<span class="agi-go">' + lead + ' &middot; ready</span>';
   }
   function agiMarkMove(kind) {
     const i = agiLastIdx >= 0 ? agiLastIdx : agiNextIdx();
@@ -298,9 +313,17 @@
     const i = agiNextIdx();
     if (i < 0) { try { bridge().guideMarks(myPid(), ''); } catch (e) {} return; }
     const o = ANACH_COURSE[i];
+    const enc = function (x, y, p, lab, rgb) {
+      return (x | 0) + '\x1f' + (y | 0) + '\x1f' + (p | 0) + '\x1f'
+           + String(lab).replace(/[\x1e\x1f]/g, ' ').slice(0, 80) + (rgb ? '\x1f0\x1f' + rgb : '');
+    };
     // First line NAMES the loc: the host boxes that loc's footprint near the tile.
-    const label = o[1] + '\n' + o[2] + '  (' + agiSectionOf(i)[0] + ')';
-    try { bridge().guideMarks(myPid(), o[3] + '\x1f' + o[4] + '\x1f' + o[5] + '\x1f' + label); } catch (e) {}
+    const marks = [enc(o[3], o[4], o[5], o[1] + '\n' + o[2] + '  (' + agiSectionOf(i)[0] + ')')];
+    // A usable movement ability gets its landing tile marked too, in its own colour so it
+    // never takes the direction arrow away from the obstacle itself.
+    const mv = agiMoveFor(i);
+    if (mv && mv.cd <= 0) marks.push(enc(o[3], o[4], o[5], mv.kind.toUpperCase() + ' here', 0x7C6DF2));
+    try { bridge().guideMarks(myPid(), marks.join('\x1e')); } catch (e) {}
   }
 
   async function agiTick() {
