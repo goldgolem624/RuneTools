@@ -1154,7 +1154,7 @@
         // reason follows on the same line). tipHtml renders <col=..> tags, so no raw markup.
         const unk = teleTaskSetWhy(T) === '?';
         // Spell out the state on the first line - a bare dot does not say what it means.
-        const head = why ? '<col=ff6b6b>● unavailable</col> ' : unk ? '<col=fbbf24>● checking</col> ' : '<col=4dd28a>● usable</col> ';
+        const head = why ? '<col=ff6b6b>●</col> ' : unk ? '<col=fbbf24>●</col> ' : '<col=4dd28a>●</col> ';
         const line = head + parts.join(', ') + (unk && !why ? ' (requirement not read yet)' : '');
         cell.dataset.tip = line; cell.dataset.tipHtml = '1';
         gCells.push(cell); gLines.push(line);
@@ -2441,7 +2441,6 @@
   // True when this row's item is not carried directly but sits inside the passage.
   function teleInPassage(T) {
     if (!telePassage || !(T.item > 0)) return false;
-    for (const id of teleItemIds(T)) if ((teleWornSet && teleWornSet.has(id)) || (teleInvSet && teleInvSet.has(id))) return false;
     const bn = teleItemNames[T.item];
     return !!(bn && telePassage.names.has(bn));
   }

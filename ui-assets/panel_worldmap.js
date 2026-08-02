@@ -492,8 +492,7 @@
       const ci = (typeof teleChargeInfo === 'function') ? teleChargeInfo(t2) : null;
       // green = usable now, red = a requirement is unmet (named below)
       const unk = (typeof teleTaskSetWhy === 'function') && teleTaskSetWhy(t2) === '?';
-      const dot = '<span style="color:' + (why ? '#ff6b6b' : unk ? '#fbbf24' : '#4dd28a') + '">● '
-                + (why ? 'unavailable' : unk ? 'checking' : 'usable') + '</span> ';
+      const dot = '<span style="color:' + (why ? '#ff6b6b' : unk ? '#fbbf24' : '#4dd28a') + '">●</span> ';
       return dot + '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
         + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
         + (ci && ci.used < ci.max ? '<br>daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn() : '')
