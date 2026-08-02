@@ -252,17 +252,21 @@
   }
   const wmTextW = new Map();   // label -> measured px width (font is constant)
   function wmChip(cx, sxp, syp, text, placed, hot) {
-    cx.font = '700 11px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.font = '600 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
     let tw = wmTextW.get(text);
     if (tw === undefined) { tw = Math.ceil(cx.measureText(text).width); wmTextW.set(text, tw); }
     const bw = tw + 8, bh = 15;
     const x0 = sxp - bw / 2, y0 = syp - bh / 2;
     if (placed.some(function (p) { return x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y; })) return false;
     placed.push({ x: x0, y: y0, w: bw, h: bh });
-    cx.fillStyle = 'rgba(7,9,14,0.82)'; cx.fillRect(x0, y0, bw, bh);
-    cx.lineWidth = 1; cx.strokeStyle = hot ? 'rgba(70,224,192,0.6)' : 'rgba(120,200,255,0.35)'; cx.strokeRect(x0 + 0.5, y0 + 0.5, bw - 1, bh - 1);
-    cx.lineWidth = 2.5; cx.strokeStyle = 'rgba(0,0,0,0.9)'; cx.strokeText(text, sxp, syp);
-    cx.fillStyle = '#ffffff'; cx.fillText(text, sxp, syp);
+    // Outlined text only (no filled chip) so labels stay readable without hiding the map.
+    // The pinned label keeps a faint chip so the selection is still obvious.
+    if (hot) {
+      cx.fillStyle = 'rgba(7,9,14,0.55)'; cx.fillRect(x0, y0, bw, bh);
+      cx.lineWidth = 1; cx.strokeStyle = 'rgba(70,224,192,0.5)'; cx.strokeRect(x0 + 0.5, y0 + 0.5, bw - 1, bh - 1);
+    }
+    cx.lineWidth = 3; cx.strokeStyle = 'rgba(0,0,0,0.75)'; cx.strokeText(text, sxp, syp);
+    cx.fillStyle = hot ? '#ffffff' : 'rgba(255,255,255,0.88)'; cx.fillText(text, sxp, syp);
     return true;
   }
   function wmDraw() {

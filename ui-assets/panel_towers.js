@@ -361,7 +361,7 @@
     const inview = MAP_LABELS.filter(d => (d.p || 0) === plane && d.x >= vx0 - 1 && d.x <= vx1 + 1 && d.y >= vy0 - 1 && d.y <= vy1 + 1);
     inview.sort((a, b) => (Math.abs(a.x - ccx) + Math.abs(a.y - ccy)) - (Math.abs(b.x - ccx) + Math.abs(b.y - ccy)));
     cx.save();
-    cx.font = '700 11px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    cx.font = '600 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
     const placed = [];
     for (const d of inview.slice(0, 24)) {
       const sx = proj.projX(d.x), sy = proj.projY(d.y);
@@ -373,10 +373,10 @@
       if (placed.some(p => x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y)) continue;   // would overlap a closer label -> skip it
       placed.push({ x: x0, y: y0, w: bw, h: bh });
       const lx = x0 + bw / 2, ly = y0 + bh / 2;
-      cx.fillStyle = 'rgba(7,9,14,0.82)'; cx.fillRect(x0, y0, bw, bh);
-      cx.lineWidth = 1; cx.strokeStyle = 'rgba(120,200,255,0.35)'; cx.strokeRect(x0 + 0.5, y0 + 0.5, bw - 1, bh - 1);
-      cx.lineWidth = 2.5; cx.strokeStyle = 'rgba(0,0,0,0.9)'; cx.strokeText(d.n, lx, ly);
-      cx.fillStyle = '#ffffff'; cx.fillText(d.n, lx, ly);
+      // Labels are reference, not content: outlined text only, no filled chip, so they read
+      // clearly without covering the map underneath.
+      cx.lineWidth = 3; cx.strokeStyle = 'rgba(0,0,0,0.75)'; cx.strokeText(d.n, lx, ly);
+      cx.fillStyle = 'rgba(255,255,255,0.88)'; cx.fillText(d.n, lx, ly);
       clueMapMarks.push({ sx: lx, sy: ly, r: 7, label: '<b>' + clueMapEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
     }
     cx.restore();
