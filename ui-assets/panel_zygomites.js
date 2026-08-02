@@ -206,6 +206,25 @@
     }
   }
 
+  // Hovered-tile outline, scaled to the current zoom; a positioned div so pointing at the
+  // map never repaints the canvas.
+  function zygHoverTile(stage, mx, my) {
+    let box = document.getElementById('zygHoverTile');
+    if (!box) {
+      box = document.createElement('div'); box.id = 'zygHoverTile';
+      box.style.cssText = 'position:absolute;pointer-events:none;z-index:5;display:none;'
+        + 'border:1.5px solid rgba(255,170,60,0.95);box-shadow:0 0 0 1px rgba(0,0,0,0.5);border-radius:1px';
+      stage.appendChild(box);
+    }
+    const z = zygCam.z, w = stage.clientWidth, h = stage.clientHeight;
+    if (z < 1.2) { box.style.display = 'none'; return; }
+    const tx = Math.floor(zygCam.x + (mx - w / 2) / z);
+    const ty = Math.floor(zygCam.y - (my - h / 2) / z);
+    box.style.left = ((tx - zygCam.x) * z + w / 2) + 'px';
+    box.style.top = ((zygCam.y - (ty + 1)) * z + h / 2) + 'px';
+    box.style.width = z + 'px'; box.style.height = z + 'px';
+    box.style.display = 'block';
+  }
   function zygPaintHead() {
     const el = $('zygHead'); if (!el) return;
     const found = ZYG_SPOTS.filter(zygFound).length;
@@ -296,9 +315,10 @@
       stage.classList.add('grabbing'); e.preventDefault();
     });
     stage.addEventListener('mousemove', function (e) {
-      const tip = $('zygTip'); if (!tip || zygDrag) return;
       const r = stage.getBoundingClientRect();
       const mx = e.clientX - r.left, my = e.clientY - r.top;
+      zygHoverTile(stage, mx, my);
+      const tip = $('zygTip'); if (!tip || zygDrag) return;
       let hit = null, hd = Infinity;
       for (const m of (zygDraw._marks || [])) {
         const d = Math.hypot(m.sx - mx, m.sy - my);
@@ -319,7 +339,10 @@
         tip.style.left = lx + 'px'; tip.style.top = ty + 'px';
       } else tip.style.display = 'none';
     });
-    stage.addEventListener('mouseleave', function () { const tip = $('zygTip'); if (tip) tip.style.display = 'none'; });
+    stage.addEventListener('mouseleave', function () {
+      const tip = $('zygTip'); if (tip) tip.style.display = 'none';
+      const box = document.getElementById('zygHoverTile'); if (box) box.style.display = 'none';
+    });
     if (!zygWinBound) {
       zygWinBound = true;
       window.addEventListener('mousemove', function (e) {

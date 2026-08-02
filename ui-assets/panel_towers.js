@@ -155,24 +155,32 @@
     const c = CLUE_DATA.find(z => z.i === activeClueId);
     if (!c || c.a !== 'scan') return;
     const rec = scanSpotsFor(c); if (!rec || !rec.spots || !rec.spots.length) return;
-    // PRIMARY (exact): the server places the scan proximity ring at the true dig tile via inbound
-    // opcode 83, but only while the player is within orb range (<=11 paces, red pulse). op83 is a
-    // generic scene-graphic opcode, so the coord counts only when it matches a candidate (<=2 tiles).
+    // PRIMARY (exact): the scan proximity ring is placed at the TRUE dig tile whenever the
+    // player is within orb range (<=11 paces, red pulse). The reader reads that ring straight
+    // from the LIVE scene-graphic registry, so it is readable for as long as the ring is on
+    // screen. The registry is a generic graphics channel, so a coordinate counts only when it
+    // lands ON a candidate spot; that check is what makes a false positive impossible, and it
+    // lets us accept the whole candidate list the reader returns.
     try {
       if (bridge().scanSolution) {
         const sol = JSON.parse(bridge().scanSolution(myPid()) || '{}');
-        if (sol && sol.ok && sol.x > 0 && sol.y > 0) {
-          let bi = -1, bd = 1e9;
-          rec.spots.forEach((s, i) => { const d = Math.max(Math.abs(s[0] - sol.x), Math.abs(s[1] - sol.y)); if (d < bd) { bd = d; bi = i; } });
-          if (bi >= 0 && bd <= 2) {
-            const elim = scanElimGet(rec.key || ('en' + c.en));
-            let changed = false;
-            rec.spots.forEach((s, i) => { if (i !== bi && !elim.has(i)) { elim.add(i); changed = true; } });
-            scanBandNote = 'exact dig tile from orb (' + sol.x + ', ' + sol.y + ')';
-            if (changed) { scanElimSave(); selectClue(); }
-            scanBandSetCap();
-            return;
-          }
+        const pts = (sol && sol.ok) ? (Array.isArray(sol.cands) && sol.cands.length ? sol.cands : [[sol.x, sol.y]]) : [];
+        let bi = -1, bd = 1e9, bp = null;
+        for (const q of pts) {
+          if (!(q[0] > 0 && q[1] > 0)) continue;
+          rec.spots.forEach((s, i) => {
+            const d = Math.max(Math.abs(s[0] - q[0]), Math.abs(s[1] - q[1]));
+            if (d < bd) { bd = d; bi = i; bp = q; }
+          });
+        }
+        if (bi >= 0 && bd <= 2) {
+          const elim = scanElimGet(rec.key || ('en' + c.en));
+          let changed = false;
+          rec.spots.forEach((s, i) => { if (i !== bi && !elim.has(i)) { elim.add(i); changed = true; } });
+          scanBandNote = 'exact dig tile from orb (' + bp[0] + ', ' + bp[1] + ')';
+          if (changed) { scanElimSave(); selectClue(); }
+          scanBandSetCap();
+          return;
         }
       }
     } catch (e) {}
@@ -314,10 +322,37 @@
         tip.style.top = ty + 'px';
       } else tip.style.display = 'none';
     });
-    cv.addEventListener('mouseleave', () => { const tip = $('clueMapTip'); if (tip) tip.style.display = 'none'; });
+    cv.addEventListener('mousemove', e => {
+      if (!clueMapProj) return;
+      const rect = cv.getBoundingClientRect(); if (!rect.width) return;
+      const W = clueMapProj.W;
+      const mx = (e.clientX - rect.left) / rect.width * W, my = (e.clientY - rect.top) / rect.height * W;
+      const tS = clueMapProj.projX(1) - clueMapProj.projX(0);
+      if (!(tS > 0)) return;
+      const tx = Math.floor((mx - (clueMapProj.projX(0) - tS / 2)) / tS);
+      const ty = Math.floor(((clueMapProj.projY(0) + tS / 2) - my) / tS);
+      const mi = cv.parentElement; if (!mi) return;
+      let box = mi.querySelector('.clue-map-hovertile');
+      if (!box) {
+        box = document.createElement('div'); box.className = 'clue-map-hovertile';
+        box.style.cssText = 'position:absolute;pointer-events:none;z-index:4;'
+          + 'border:1.5px solid rgba(255,170,60,0.95);box-shadow:0 0 0 1px rgba(0,0,0,0.5);border-radius:1px';
+        mi.appendChild(box);
+      }
+      box.style.left = ((clueMapProj.projX(tx) - tS / 2) / W * 100) + '%';
+      box.style.top = ((clueMapProj.projY(ty) - tS / 2) / W * 100) + '%';
+      box.style.width = (tS / W * 100) + '%';
+      box.style.height = (tS / W * 100) + '%';
+      box.style.display = 'block';
+    });
+    cv.addEventListener('mouseleave', () => {
+      const tip = $('clueMapTip'); if (tip) tip.style.display = 'none';
+      const mi = cv.parentElement, box = mi && mi.querySelector('.clue-map-hovertile');
+      if (box) box.style.display = 'none';
+    });
   }
   // Curated world-map place labels, drawn as TEXT on the clue maps (dark-outlined name at the tile).
-  const MAP_LABELS = [{"n":"Picatoris Fishing Colony","x":2335,"y":3681,"p":0},{"n":"Falconer","x":2377,"y":3598,"p":0},{"n":"Memorial to Guthix","x":2273,"y":3554,"p":0},{"n":"Eagles' Peak","x":2329,"y":3488,"p":0},{"n":"Poison Waste","x":2240,"y":3098,"p":0},{"n":"Tyras Camp","x":2188,"y":3145,"p":0},{"n":"Port Tyras","x":2154,"y":3122,"p":0},{"n":"Lletya","x":2339,"y":3172,"p":0},{"n":"Isafdar","x":2240,"y":3193,"p":0},{"n":"Elf Camp","x":2197,"y":3251,"p":0},{"n":"Arandar","x":2345,"y":3292,"p":0},{"n":"Observatory","x":2440,"y":3163,"p":0},{"n":"Battlefield","x":2517,"y":3243,"p":0},{"n":"West Ardougne","x":2523,"y":3305,"p":0},{"n":"Underground Pass Entrance","x":2435,"y":3315,"p":0},{"n":"Combat Training Camp","x":2518,"y":3370,"p":0},{"n":"Gnome Agility Training Area","x":2481,"y":3426,"p":0},{"n":"Gnome Ball Field","x":2397,"y":3489,"p":0},{"n":"Grand Tree","x":2465,"y":3494,"p":0},{"n":"Baxtorian Falls","x":2511,"y":3465,"p":0},{"n":"Barbarian outpost","x":2542,"y":3564,"p":0},{"n":"Warforge Dig Site","x":2410,"y":2838,"p":0},{"n":"Oo'glog","x":2564,"y":2849,"p":0},{"n":"Feldip Hills","x":2559,"y":2978,"p":0},{"n":"Gu'Tanoth","x":2522,"y":3038,"p":0},{"n":"Jiggig","x":2467,"y":3046,"p":0},{"n":"Yanile","x":2553,"y":3093,"p":0},{"n":"Wizards' Guild","x":2590,"y":3087,"p":0},{"n":"Fight Arena","x":2593,"y":3164,"p":0},{"n":"Tree Gnome Village","x":2529,"y":3169,"p":0},{"n":"Ardougne Monastery","x":2607,"y":3213,"p":0},{"n":"Port Khazard","x":2653,"y":3162,"p":0},{"n":"Tower of Life","x":2649,"y":3219,"p":0},{"n":"Clocktower","x":2570,"y":3242,"p":0},{"n":"East Ardougne","x":2615,"y":3306,"p":0},{"n":"Witchhaven","x":2719,"y":3285,"p":0},{"n":"Manor Farm","x":2655,"y":3357,"p":0},{"n":"Legends' Guild","x":2729,"y":3370,"p":0},{"n":"Catherby","x":2802,"y":3444,"p":0},{"n":"Sorcerer's Tower","x":2703,"y":3405,"p":0},{"n":"Stormguard Citadel Dig Site","x":2678,"y":3401,"p":0},{"n":"Ranging Guild","x":2669,"y":3430,"p":0},{"n":"Mcgrubor's Wood","x":2645,"y":3482,"p":0},{"n":"Seers Village","x":2705,"y":3483,"p":0},{"n":"Camelot","x":2758,"y":3502,"p":0},{"n":"Sinclair Mansion","x":2742,"y":3568,"p":0},{"n":"Golden Apple Tree","x":2765,"y":3609,"p":0},{"n":"Rellekka","x":2649,"y":3676,"p":0},{"n":"Keldagrim Entrance","x":2732,"y":3712,"p":0},{"n":"Rellekka Hunter Area","x":2721,"y":3785,"p":0},{"n":"Waterbirth Island","x":2534,"y":3741,"p":0},{"n":"Etceteria","x":2607,"y":3875,"p":0},{"n":"Miscellania","x":2529,"y":3867,"p":0},{"n":"Jatizso","x":2402,"y":3805,"p":0},{"n":"Neitiznot","x":2329,"y":3803,"p":0},{"n":"Lighthouse","x":2508,"y":3635,"p":0},{"n":"Void Knights' Outpost","x":2653,"y":2656,"p":0},{"n":"Ape Atoll","x":2749,"y":2749,"p":0},{"n":"Crash Island","x":2915,"y":2720,"p":0},{"n":"Kharazi Jungle","x":2857,"y":2920,"p":0},{"n":"Shilo Village","x":2848,"y":2984,"p":0},{"n":"Tai Bwo Wannai","x":2792,"y":3067,"p":0},{"n":"Karamja","x":2864,"y":3059,"p":0},{"n":"Musa Point","x":2908,"y":3163,"p":0},{"n":"Tzhaar City","x":2844,"y":3173,"p":0},{"n":"Brimhaven","x":2768,"y":3180,"p":0},{"n":"Crandor","x":2837,"y":3272,"p":0},{"n":"Fishing Platform","x":2774,"y":3283,"p":0},{"n":"Entrana","x":2836,"y":3361,"p":0},{"n":"Lunar Isle","x":2109,"y":3907,"p":0},{"n":"Taverley","x":2906,"y":3463,"p":0},{"n":"Heroes guild","x":2907,"y":3514,"p":0},{"n":"Burthorpe","x":2856,"y":3542,"p":0},{"n":"Warriors' Guild","x":2857,"y":3541,"p":0},{"n":"Dark Wizards' Tower","x":2907,"y":3341,"p":0},{"n":"White Wolf Mountain","x":2831,"y":3502,"p":0},{"n":"Death Plateau","x":2861,"y":3593,"p":0},{"n":"Trollheim","x":2888,"y":3673,"p":0},{"n":"Troll Stronghold","x":2830,"y":3675,"p":0},{"n":"God Wars Dungeon","x":2916,"y":3742,"p":0},{"n":"Wilderness Agility Training Area","x":2997,"y":3950,"p":0},{"n":"Pirates' Hideout","x":3041,"y":3953,"p":0},{"n":"Mage Arena","x":3104,"y":3934,"p":0},{"n":"Deserted Keep","x":3154,"y":3933,"p":0},{"n":"Lava Maze","x":3076,"y":3857,"p":0},{"n":"Red Dragon Isle","x":3199,"y":3830,"p":0},{"n":"The Forgotten Cemetary","x":2976,"y":3751,"p":0},{"n":"Scorpion Pit","x":3233,"y":3945,"p":0},{"n":"Chaos Elemental (boss)","x":3270,"y":3955,"p":0},{"n":"Rogues' Castle","x":3287,"y":3932,"p":0},{"n":"Volcano (Wilderness)","x":3369,"y":3950,"p":0},{"n":"Dragonkin Laboratory","x":3368,"y":3888,"p":0},{"n":"Demonic Ruins","x":3288,"y":3887,"p":0},{"n":"Ruins East","x":3228,"y":3737,"p":0},{"n":"Ruins West","x":2974,"y":3695,"p":0},{"n":"Bandit Camp","x":3039,"y":3689,"p":0},{"n":"Dark Warriors' Fortress","x":3029,"y":3633,"p":0},{"n":"Black Knights' Fortress","x":3019,"y":3558,"p":0},{"n":"Abyss Entrance","x":3100,"y":3554,"p":0},{"n":"Graveyard of Shadows","x":3225,"y":3684,"p":0},{"n":"Wilderness Chaos Alter","x":3240,"y":3610,"p":0},{"n":"Daemonheim","x":3450,"y":3711,"p":0},{"n":"Fort Forinthry","x":3306,"y":3554,"p":0},{"n":"Goblin Village","x":2956,"y":3505,"p":0},{"n":"Captured Temple","x":2950,"y":3476,"p":0},{"n":"Falador","x":2965,"y":3382,"p":0},{"n":"White Knights' Castle","x":2967,"y":3341,"p":0},{"n":"Artisans' Workshop","x":3045,"y":3340,"p":0},{"n":"Party Room","x":3046,"y":3377,"p":0},{"n":"Ice Mountain","x":3008,"y":3485,"p":0},{"n":"Dwarven Mine","x":3009,"y":3451,"p":0},{"n":"Invention Guild","x":2995,"y":3438,"p":0},{"n":"Edgeville Monastery","x":3052,"y":3490,"p":0},{"n":"Barbarian Village","x":3079,"y":3421,"p":0},{"n":"Edgeville","x":3088,"y":3491,"p":0},{"n":"Crafting Guild","x":2933,"y":3286,"p":0},{"n":"Remmington","x":2957,"y":3208,"p":0},{"n":"White Knight Camp","x":2995,"y":3237,"p":0},{"n":"Port Sarim","x":3027,"y":3222,"p":0},{"n":"Mudskipper Point","x":2995,"y":3117,"p":0},{"n":"Asgarnian Ice Dungeon Entrance","x":3008,"y":3149,"p":0},{"n":"Falador Farm","x":3034,"y":3287,"p":0},{"n":"Draynor Manor","x":3109,"y":3348,"p":0},{"n":"Draynor Village","x":3104,"y":3263,"p":0},{"n":"Wizards' Tower","x":3102,"y":3157,"p":0},{"n":"Lumbridge Swamp","x":3196,"y":3171,"p":0},{"n":"Lumbridge","x":3223,"y":3240,"p":0},{"n":"Champions' Guild","x":3192,"y":3358,"p":0},{"n":"Varrock","x":3213,"y":3429,"p":0},{"n":"Cooks' Guild","x":3143,"y":3448,"p":0},{"n":"Grand Exchange","x":3163,"y":3493,"p":0},{"n":"Infernal Source Dig Site","x":3261,"y":3503,"p":0},{"n":"Exam Centre","x":3361,"y":3347,"p":0},{"n":"Archeology Guild","x":3323,"y":3378,"p":0},{"n":"Varrock Digsite","x":3358,"y":3428,"p":0},{"n":"Silvarea","x":3364,"y":3484,"p":0},{"n":"Temple","x":3411,"y":3485,"p":0},{"n":"God Wars Dungeon 3 Entrance","x":3328,"y":3449,"p":0},{"n":"Mage Training Arena","x":3363,"y":3309,"p":0},{"n":"Garden of Kharid","x":3314,"y":3302,"p":0},{"n":"Het's Oasis","x":3364,"y":3234,"p":0},{"n":"Kharid-et Dig Site","x":3357,"y":3194,"p":0},{"n":"Citharede Abbey","x":3422,"y":3164,"p":0},{"n":"Al Kharid","x":3290,"y":3169,"p":0},{"n":"Shantay Pass","x":3304,"y":3124,"p":0},{"n":"Kalphite Hive","x":3220,"y":3115,"p":0},{"n":"Bedabin Camp","x":3169,"y":3039,"p":0},{"n":"Desert Mining Camp","x":3289,"y":3026,"p":0},{"n":"Bandit Camp","x":3175,"y":2981,"p":0},{"n":"Pollinivneach","x":3358,"y":2970,"p":0},{"n":"Quarry","x":3172,"y":2911,"p":0},{"n":"Pyramid","x":3233,"y":2898,"p":0},{"n":"Goebie Camp","x":3090,"y":2863,"p":0},{"n":"Whale's Maw","x":1973,"y":11805,"p":0},{"n":"Sanguinesti Region","x":3648,"y":3343,"p":0},{"n":"Castle Drakan","x":3557,"y":3356,"p":0},{"n":"Meiyerditch","x":3618,"y":3263,"p":0},{"n":"Vinecrawlers","x":1313,"y":5623,"p":0},{"n":"The Lost Grove","x":1375,"y":5662,"p":0},{"n":"Wisps of the Grove","x":1391,"y":5618,"p":0},{"n":"Moss Golems","x":1428,"y":5602,"p":0},{"n":"Bulbous Crawlers","x":1376,"y":5724,"p":0},{"n":"Waiko","x":1822,"y":11605,"p":0},{"n":"Cyclosis","x":2308,"y":11202,"p":0},{"n":"Moksha ritual site","x":5513,"y":2199,"p":0},{"n":"Xolo city","x":5673,"y":2156,"p":0},{"n":"Devil's snares","x":5599,"y":2128,"p":0},{"n":"Ripper dinosaurs","x":5666,"y":2191,"p":0},{"n":"Lampenfloras","x":5599,"y":2272,"p":0},{"n":"Liverworts","x":5593,"y":2391,"p":0},{"n":"Spirit grove (Rex Matriarchs)","x":5541,"y":2338,"p":0},{"n":"Feral dinosaurs","x":5526,"y":2517,"p":0},{"n":"Brutish dinosaurs","x":5524,"y":2546,"p":0},{"n":"Observation outpost","x":5596,"y":2529,"p":0},{"n":"Venomous dinosaurs","x":5424,"y":2522,"p":0},{"n":"Crypt of Varanus","x":5326,"y":2414,"p":0},{"n":"Luminous snagglers","x":5284,"y":2386,"p":0},{"n":"Fish Farm","x":3368,"y":1501,"p":0},{"n":"Lighthouse","x":3455,"y":1499,"p":0},{"n":"Highweald Forest","x":3521,"y":1651,"p":0},{"n":"Hollow Hill","x":3629,"y":1653,"p":0},{"n":"Shrine of Inanna","x":3556,"y":1423,"p":0},{"n":"Marigold Farm","x":3562,"y":1487,"p":0},{"n":"Eastfold Farm","x":3618,"y":1439,"p":0},{"n":"Blighted Cave","x":3647,"y":1490,"p":0},{"n":"Moonrise Dig Site","x":3742,"y":1655,"p":0},{"n":"Deserted Mine","x":3648,"y":1361,"p":0},{"n":"Crabs","x":3569,"y":1337,"p":0},{"n":"Havenhythe","x":3630,"y":1523,"p":0},{"n":"Mini Obelisk","x":3563,"y":1573,"p":0},{"n":"Eternal Magic Trees","x":3493,"y":1408,"p":0},{"n":"Hermit Cave","x":3454,"y":1621,"p":0},{"n":"Exiled Kalphite Hive","x":3238,"y":2858,"p":0},{"n":"Workers District","x":3156,"y":2797,"p":0},{"n":"Merchant District","x":3228,"y":2782,"p":0},{"n":"Imperial District","x":3098,"y":2688,"p":0},{"n":"Port District","x":3152,"y":2641,"p":0},{"n":"Menaphos","x":3226,"y":2728,"p":0},{"n":"Sophanem","x":3299,"y":2785,"p":0},{"n":"Agility Pyramid","x":3364,"y":2840,"p":0},{"n":"God Wars Dungeon 2","x":3378,"y":2882,"p":0},{"n":"Nardah","x":3426,"y":2914,"p":0},{"n":"Uzer","x":3478,"y":3091,"p":0},{"n":"Mausoleum","x":3502,"y":3573,"p":0},{"n":"Fenkenstrain's Castle","x":3548,"y":3552,"p":0},{"n":"Slayer Tower","x":3423,"y":3538,"p":0},{"n":"Canifis","x":3492,"y":3488,"p":0},{"n":"Haunted Woods","x":3564,"y":3493,"p":0},{"n":"Ectofuntus","x":3661,"y":3519,"p":0},{"n":"Port Phasmatys","x":3667,"y":3487,"p":0},{"n":"Mort Myre Swamp","x":3436,"y":3400,"p":0},{"n":"Meiyerditch","x":3616,"y":3264,"p":0},{"n":"Barrows","x":3565,"y":3288,"p":0},{"n":"Mort'ton","x":3489,"y":3289,"p":0},{"n":"Burgh De Rott","x":3501,"y":3224,"p":0},{"n":"Abandoned Mine","x":3447,"y":3234,"p":0},{"n":"EverLight Dig Site","x":3695,"y":3208,"p":0},{"n":"Harmony","x":3797,"y":2858,"p":0},{"n":"Mos Le'Harmless","x":3711,"y":3027,"p":0},{"n":"Dragontooth Island","x":3803,"y":3546,"p":0},{"n":"Wendlewick","x":3481,"y":1557,"p":0},{"n":"Amberfell","x":3709,"y":1558,"p":0},{"n":"Anachronia","x":5432,"y":2339,"p":0},{"n":"Observation Output","x":5594,"y":2528,"p":0},{"n":"Crypt of Varanus","x":5320,"y":2414,"p":0},{"n":"Anachronia Dinosaur Farm","x":5198,"y":2373,"p":0},{"n":"Tuai Leit","x":1813,"y":11929,"p":0},{"n":"Archaeology Campus","x":3359,"y":3377,"p":0},{"n":"Death's Office","x":414,"y":674,"p":0},{"n":"Trahaearn","x":2231,"y":3311,"p":1},{"n":"Ardougne Zoo","x":2614,"y":3272,"p":0},{"n":"City of Um","x":1108,"y":1777,"p":1},{"n":"Distilleries","x":3783,"y":2999,"p":0},{"n":"Melzar's Maze","x":2937,"y":3255,"p":0},{"n":"Rimmington","x":2955,"y":3222,"p":0},{"n":"Custom's Office","x":2966,"y":3194,"p":0},{"n":"Jail","x":3125,"y":3243,"p":0},{"n":"Market","x":3081,"y":3250,"p":0},{"n":"Park","x":3004,"y":3381,"p":0},{"n":"Um Ritual Site","x":1037,"y":1774,"p":1},{"n":"The Heart","x":3200,"y":6970,"p":1},{"n":"Zaros's Bastion","x":3129,"y":6911,"p":1},{"n":"Zamorak's Rampart","x":3138,"y":7039,"p":1},{"n":"Sliske's Necropolis","x":3270,"y":7045,"p":1},{"n":"Seren's Encampment","x":3256,"y":6912,"p":1},{"n":"Skinweaver","x":4643,"y":5382,"p":0},{"n":"Commander Akhomet","x":3166,"y":2729,"p":0},{"n":"Grand Vizier Ehsan","x":3197,"y":2769,"p":0},{"n":"Admiral Wadud","x":3178,"y":2648,"p":0},{"n":"Outpost","x":2436,"y":3347,"p":0},{"n":"Tree Gnome Stronghold","x":2440,"y":3468,"p":0},{"n":"Otto's Grotto","x":2502,"y":3488,"p":0},{"n":"Swamp","x":2419,"y":3512,"p":0},{"n":"Barbarian Assault","x":2521,"y":3571,"p":0},{"n":"Fremennik Province","x":2670,"y":3629,"p":0},{"n":"Courthouse","x":2736,"y":3468,"p":0},{"n":"Flax","x":2742,"y":3443,"p":0},{"n":"Beehives","x":2759,"y":3443,"p":0},{"n":"Necromancer","x":2669,"y":3240,"p":0},{"n":"Trawler","x":2687,"y":3168,"p":0},{"n":"Castle Wars","x":2442,"y":3090,"p":0},{"n":"South Feldip Hills","x":2469,"y":2852,"p":0},{"n":"Tirannwn","x":2240,"y":3219,"p":0},{"n":"Wilderness Crater","x":3136,"y":3712,"p":0},{"n":"Frozen Waste Plateau","x":2964,"y":3925,"p":0},{"n":"Trollweiss Mountain","x":2782,"y":3859,"p":0},{"n":"Ice Path","x":2855,"y":3809,"p":0},{"n":"Boneyard","x":3272,"y":3677,"p":0},{"n":"River Lum","x":3168,"y":3351,"p":0},{"n":"Aquanites","x":2724,"y":9974,"p":0},{"n":"Kurask","x":2699,"y":9998,"p":0},{"n":"Turoth","x":2723,"y":10004,"p":0},{"n":"Jellies","x":2704,"y":10027,"p":0},{"n":"Basilisks","x":2742,"y":10010,"p":0},{"n":"Pyrefiends","x":2761,"y":10004,"p":0},{"n":"Cockatrice","x":2791,"y":10036,"p":0},{"n":"Rock slugs","x":2800,"y":10017,"p":0},{"n":"Cave crawlers","x":2790,"y":9997,"p":0},{"n":"Giant frogs","x":3226,"y":9547,"p":0},{"n":"Swamp cave","x":3192,"y":9569,"p":0},{"n":"Keep Le Faye","x":2770,"y":3400,"p":0},{"n":"Ewan's Grove","x":2916,"y":3483,"p":0},{"n":"Astram Farm","x":2885,"y":3487,"p":0},{"n":"Rogue's Den","x":2891,"y":3443,"p":0},{"n":"Fight Pit","x":4571,"y":5091,"p":0},{"n":"Fight Cave","x":4611,"y":5130,"p":0},{"n":"Library","x":4629,"y":5170,"p":0},{"n":"Main Plaza","x":4671,"y":5156,"p":0},{"n":"Birthing Pool","x":4717,"y":5165,"p":0},{"n":"Fight Kiln","x":4743,"y":5170,"p":0},{"n":"Celestial Dragon Dungeon","x":2268,"y":5980,"p":0},{"n":"Puro-Puro","x":2427,"y":4445,"p":0},{"n":"Otherworldly beings","x":2384,"y":4424,"p":0},{"n":"Beware of the mushrooms","x":2418,"y":4377,"p":0},{"n":"The market","x":2483,"y":4448,"p":0},{"n":"Throne room","x":2446,"y":4426,"p":0},{"n":"River Elid","x":3369,"y":3069,"p":0},{"n":"The Islands that Once Were Turtles","x":2188,"y":11456,"p":0},{"n":"Lizards","x":3422,"y":3043,"p":0},{"n":"Prifddinas","x":2208,"y":3360,"p":1},{"n":"Iorwerth","x":2186,"y":3312,"p":1},{"n":"Ithell","x":2157,"y":3340,"p":1},{"n":"Cadarn","x":2261,"y":3339,"p":1},{"n":"Amlodd","x":2157,"y":3382,"p":1},{"n":"Hefin","x":2185,"y":3410,"p":1},{"n":"Crwys","x":2263,"y":3384,"p":1},{"n":"Meilyr","x":2232,"y":3410,"p":1}];
+  const MAP_LABELS = [{"n":"Picatoris Fishing Colony","x":2335,"y":3681,"p":0},{"n":"Falconer","x":2377,"y":3598,"p":0},{"n":"Memorial to Guthix","x":2273,"y":3554,"p":0},{"n":"Eagles' Peak","x":2329,"y":3488,"p":0},{"n":"Poison Waste","x":2240,"y":3098,"p":0},{"n":"Tyras Camp","x":2188,"y":3145,"p":0},{"n":"Port Tyras","x":2154,"y":3122,"p":0},{"n":"Lletya","x":2339,"y":3172,"p":0},{"n":"Isafdar","x":2240,"y":3193,"p":0},{"n":"Elf Camp","x":2197,"y":3251,"p":0},{"n":"Arandar","x":2345,"y":3292,"p":0},{"n":"Observatory","x":2440,"y":3163,"p":0},{"n":"Battlefield","x":2517,"y":3243,"p":0},{"n":"West Ardougne","x":2523,"y":3305,"p":0},{"n":"Underground Pass Entrance","x":2435,"y":3315,"p":0},{"n":"Combat Training Camp","x":2518,"y":3370,"p":0},{"n":"Gnome Agility Training Area","x":2481,"y":3426,"p":0},{"n":"Gnome Ball Field","x":2397,"y":3489,"p":0},{"n":"Grand Tree","x":2465,"y":3494,"p":0},{"n":"Baxtorian Falls","x":2511,"y":3465,"p":0},{"n":"Barbarian outpost","x":2542,"y":3564,"p":0},{"n":"Warforge Dig Site","x":2410,"y":2838,"p":0},{"n":"Oo'glog","x":2564,"y":2849,"p":0},{"n":"Feldip Hills","x":2559,"y":2978,"p":0},{"n":"Gu'Tanoth","x":2522,"y":3038,"p":0},{"n":"Jiggig","x":2467,"y":3046,"p":0},{"n":"Yanile","x":2553,"y":3093,"p":0},{"n":"Wizards' Guild","x":2590,"y":3087,"p":0},{"n":"Fight Arena","x":2593,"y":3164,"p":0},{"n":"Tree Gnome Village","x":2529,"y":3169,"p":0},{"n":"Ardougne Monastery","x":2607,"y":3213,"p":0},{"n":"Port Khazard","x":2653,"y":3162,"p":0},{"n":"Tower of Life","x":2649,"y":3219,"p":0},{"n":"Clocktower","x":2570,"y":3242,"p":0},{"n":"East Ardougne","x":2615,"y":3306,"p":0},{"n":"Witchhaven","x":2719,"y":3285,"p":0},{"n":"Manor Farm","x":2655,"y":3357,"p":0},{"n":"Legends' Guild","x":2729,"y":3370,"p":0},{"n":"Catherby","x":2802,"y":3444,"p":0},{"n":"Sorcerer's Tower","x":2703,"y":3405,"p":0},{"n":"Stormguard Citadel Dig Site","x":2678,"y":3401,"p":0},{"n":"Ranging Guild","x":2669,"y":3430,"p":0},{"n":"Mcgrubor's Wood","x":2645,"y":3482,"p":0},{"n":"Seers Village","x":2705,"y":3483,"p":0},{"n":"Camelot","x":2758,"y":3502,"p":0},{"n":"Sinclair Mansion","x":2742,"y":3568,"p":0},{"n":"Golden Apple Tree","x":2765,"y":3609,"p":0},{"n":"Rellekka","x":2649,"y":3676,"p":0},{"n":"Keldagrim Entrance","x":2732,"y":3712,"p":0},{"n":"Rellekka Hunter Area","x":2721,"y":3785,"p":0},{"n":"Waterbirth Island","x":2534,"y":3741,"p":0},{"n":"Etceteria","x":2607,"y":3875,"p":0},{"n":"Miscellania","x":2529,"y":3867,"p":0},{"n":"Jatizso","x":2402,"y":3805,"p":0},{"n":"Neitiznot","x":2329,"y":3803,"p":0},{"n":"Lighthouse","x":2508,"y":3635,"p":0},{"n":"Void Knights' Outpost","x":2653,"y":2656,"p":0},{"n":"Ape Atoll","x":2749,"y":2749,"p":0},{"n":"Crash Island","x":2915,"y":2720,"p":0},{"n":"Kharazi Jungle","x":2857,"y":2920,"p":0},{"n":"Shilo Village","x":2848,"y":2984,"p":0},{"n":"Tai Bwo Wannai","x":2792,"y":3067,"p":0},{"n":"Karamja","x":2864,"y":3059,"p":0},{"n":"Musa Point","x":2908,"y":3163,"p":0},{"n":"Tzhaar City","x":2844,"y":3173,"p":0},{"n":"Brimhaven","x":2768,"y":3180,"p":0},{"n":"Crandor","x":2837,"y":3272,"p":0},{"n":"Fishing Platform","x":2774,"y":3283,"p":0},{"n":"Entrana","x":2836,"y":3361,"p":0},{"n":"Lunar Isle","x":2109,"y":3907,"p":0},{"n":"Taverley","x":2906,"y":3463,"p":0},{"n":"Heroes guild","x":2907,"y":3514,"p":0},{"n":"Burthorpe","x":2856,"y":3542,"p":0},{"n":"Warriors' Guild","x":2857,"y":3541,"p":0},{"n":"Dark Wizards' Tower","x":2907,"y":3341,"p":0},{"n":"White Wolf Mountain","x":2831,"y":3502,"p":0},{"n":"Death Plateau","x":2861,"y":3593,"p":0},{"n":"Trollheim","x":2888,"y":3673,"p":0},{"n":"Troll Stronghold","x":2830,"y":3675,"p":0},{"n":"God Wars Dungeon","x":2916,"y":3742,"p":0},{"n":"Wilderness Agility Training Area","x":2997,"y":3950,"p":0},{"n":"Pirates' Hideout","x":3041,"y":3953,"p":0},{"n":"Mage Arena","x":3104,"y":3934,"p":0},{"n":"Deserted Keep","x":3154,"y":3933,"p":0},{"n":"Lava Maze","x":3076,"y":3857,"p":0},{"n":"Red Dragon Isle","x":3199,"y":3830,"p":0},{"n":"The Forgotten Cemetary","x":2976,"y":3751,"p":0},{"n":"Scorpion Pit","x":3233,"y":3945,"p":0},{"n":"Chaos Elemental (boss)","x":3270,"y":3955,"p":0},{"n":"Rogues' Castle","x":3287,"y":3932,"p":0},{"n":"Volcano (Wilderness)","x":3369,"y":3950,"p":0},{"n":"Dragonkin Laboratory","x":3368,"y":3888,"p":0},{"n":"Demonic Ruins","x":3288,"y":3887,"p":0},{"n":"Ruins East","x":3228,"y":3737,"p":0},{"n":"Ruins West","x":2974,"y":3695,"p":0},{"n":"Bandit Camp","x":3039,"y":3689,"p":0},{"n":"Dark Warriors' Fortress","x":3029,"y":3633,"p":0},{"n":"Black Knights' Fortress","x":3019,"y":3558,"p":0},{"n":"Abyss Entrance","x":3100,"y":3554,"p":0},{"n":"Graveyard of Shadows","x":3225,"y":3684,"p":0},{"n":"Wilderness Chaos Alter","x":3240,"y":3610,"p":0},{"n":"Daemonheim","x":3450,"y":3711,"p":0},{"n":"Fort Forinthry","x":3306,"y":3554,"p":0},{"n":"Goblin Village","x":2956,"y":3505,"p":0},{"n":"Captured Temple","x":2950,"y":3476,"p":0},{"n":"Falador","x":2965,"y":3382,"p":0},{"n":"White Knights' Castle","x":2967,"y":3341,"p":0},{"n":"Artisans' Workshop","x":3045,"y":3340,"p":0},{"n":"Party Room","x":3046,"y":3377,"p":0},{"n":"Ice Mountain","x":3008,"y":3485,"p":0},{"n":"Dwarven Mine","x":3009,"y":3451,"p":0},{"n":"Invention Guild","x":2995,"y":3438,"p":0},{"n":"Edgeville Monastery","x":3052,"y":3490,"p":0},{"n":"Barbarian Village","x":3079,"y":3421,"p":0},{"n":"Edgeville","x":3088,"y":3491,"p":0},{"n":"Crafting Guild","x":2933,"y":3286,"p":0},{"n":"Remmington","x":2957,"y":3208,"p":0},{"n":"White Knight Camp","x":2995,"y":3237,"p":0},{"n":"Port Sarim","x":3027,"y":3222,"p":0},{"n":"Mudskipper Point","x":2995,"y":3117,"p":0},{"n":"Asgarnian Ice Dungeon Entrance","x":3008,"y":3149,"p":0},{"n":"Falador Farm","x":3034,"y":3287,"p":0},{"n":"Draynor Manor","x":3109,"y":3348,"p":0},{"n":"Draynor Village","x":3104,"y":3263,"p":0},{"n":"Wizards' Tower","x":3102,"y":3157,"p":0},{"n":"Lumbridge Swamp","x":3196,"y":3171,"p":0},{"n":"Lumbridge","x":3223,"y":3240,"p":0},{"n":"Champions' Guild","x":3192,"y":3358,"p":0},{"n":"Varrock","x":3213,"y":3429,"p":0},{"n":"Cooks' Guild","x":3143,"y":3448,"p":0},{"n":"Grand Exchange","x":3163,"y":3493,"p":0},{"n":"Infernal Source Dig Site","x":3261,"y":3503,"p":0},{"n":"Exam Centre","x":3361,"y":3347,"p":0},{"n":"Archeology Guild","x":3323,"y":3378,"p":0},{"n":"Varrock Digsite","x":3358,"y":3428,"p":0},{"n":"Silvarea","x":3364,"y":3484,"p":0},{"n":"Temple","x":3411,"y":3485,"p":0},{"n":"God Wars Dungeon 3 Entrance","x":3328,"y":3449,"p":0},{"n":"Mage Training Arena","x":3363,"y":3309,"p":0},{"n":"Garden of Kharid","x":3314,"y":3302,"p":0},{"n":"Het's Oasis","x":3364,"y":3234,"p":0},{"n":"Kharid-et Dig Site","x":3357,"y":3194,"p":0},{"n":"Citharede Abbey","x":3422,"y":3164,"p":0},{"n":"Al Kharid","x":3290,"y":3169,"p":0},{"n":"Shantay Pass","x":3304,"y":3124,"p":0},{"n":"Kalphite Hive","x":3220,"y":3115,"p":0},{"n":"Bedabin Camp","x":3169,"y":3039,"p":0},{"n":"Desert Mining Camp","x":3289,"y":3026,"p":0},{"n":"Bandit Camp","x":3175,"y":2981,"p":0},{"n":"Pollinivneach","x":3358,"y":2970,"p":0},{"n":"Quarry","x":3172,"y":2911,"p":0},{"n":"Pyramid","x":3233,"y":2898,"p":0},{"n":"Goebie Camp","x":3090,"y":2863,"p":0},{"n":"Whale's Maw","x":1973,"y":11805,"p":0},{"n":"Sanguinesti Region","x":3648,"y":3343,"p":0},{"n":"Castle Drakan","x":3557,"y":3356,"p":0},{"n":"Meiyerditch","x":3618,"y":3263,"p":0},{"n":"Vinecrawlers","x":1313,"y":5623,"p":0},{"n":"The Lost Grove","x":1375,"y":5662,"p":0},{"n":"Wisps of the Grove","x":1391,"y":5618,"p":0},{"n":"Moss Golems","x":1428,"y":5602,"p":0},{"n":"Bulbous Crawlers","x":1376,"y":5724,"p":0},{"n":"Waiko","x":1822,"y":11605,"p":0},{"n":"Cyclosis","x":2308,"y":11202,"p":0},{"n":"Moksha ritual site","x":5513,"y":2199,"p":0},{"n":"Xolo city","x":5673,"y":2156,"p":0},{"n":"Devil's snares","x":5599,"y":2128,"p":0},{"n":"Ripper dinosaurs","x":5666,"y":2191,"p":0},{"n":"Lampenfloras","x":5599,"y":2272,"p":0},{"n":"Liverworts","x":5593,"y":2391,"p":0},{"n":"Spirit grove (Rex Matriarchs)","x":5541,"y":2338,"p":0},{"n":"Feral dinosaurs","x":5526,"y":2517,"p":0},{"n":"Brutish dinosaurs","x":5524,"y":2546,"p":0},{"n":"Observation outpost","x":5596,"y":2529,"p":0},{"n":"Venomous dinosaurs","x":5424,"y":2522,"p":0},{"n":"Crypt of Varanus","x":5326,"y":2414,"p":0},{"n":"Luminous snagglers","x":5284,"y":2386,"p":0},{"n":"Fish Farm","x":3368,"y":1501,"p":0},{"n":"Lighthouse","x":3455,"y":1499,"p":0},{"n":"Highweald Forest","x":3521,"y":1651,"p":0},{"n":"Hollow Hill","x":3629,"y":1653,"p":0},{"n":"Shrine of Inanna","x":3556,"y":1423,"p":0},{"n":"Marigold Farm","x":3562,"y":1487,"p":0},{"n":"Eastfold Farm","x":3618,"y":1439,"p":0},{"n":"Blighted Cave","x":3647,"y":1490,"p":0},{"n":"Moonrise Dig Site","x":3742,"y":1655,"p":0},{"n":"Deserted Mine","x":3648,"y":1361,"p":0},{"n":"Crabs","x":3569,"y":1337,"p":0},{"n":"Havenhythe","x":3630,"y":1523,"p":0},{"n":"Mini Obelisk","x":3563,"y":1573,"p":0},{"n":"Eternal Magic Trees","x":3493,"y":1408,"p":0},{"n":"Hermit Cave","x":3454,"y":1621,"p":0},{"n":"Goshima","x":2499,"y":11577,"p":0},{"n":"Exiled Kalphite Hive","x":3238,"y":2858,"p":0},{"n":"Workers District","x":3156,"y":2797,"p":0},{"n":"Merchant District","x":3228,"y":2782,"p":0},{"n":"Imperial District","x":3098,"y":2688,"p":0},{"n":"Port District","x":3152,"y":2641,"p":0},{"n":"Menaphos","x":3226,"y":2728,"p":0},{"n":"Sophanem","x":3299,"y":2785,"p":0},{"n":"Agility Pyramid","x":3364,"y":2840,"p":0},{"n":"God Wars Dungeon 2","x":3378,"y":2882,"p":0},{"n":"Nardah","x":3426,"y":2914,"p":0},{"n":"Uzer","x":3478,"y":3091,"p":0},{"n":"Mausoleum","x":3502,"y":3573,"p":0},{"n":"Fenkenstrain's Castle","x":3548,"y":3552,"p":0},{"n":"Slayer Tower","x":3423,"y":3538,"p":0},{"n":"Canifis","x":3492,"y":3488,"p":0},{"n":"Haunted Woods","x":3564,"y":3493,"p":0},{"n":"Ectofuntus","x":3661,"y":3519,"p":0},{"n":"Port Phasmatys","x":3667,"y":3487,"p":0},{"n":"Mort Myre Swamp","x":3436,"y":3400,"p":0},{"n":"Meiyerditch","x":3616,"y":3264,"p":0},{"n":"Barrows","x":3565,"y":3288,"p":0},{"n":"Mort'ton","x":3489,"y":3289,"p":0},{"n":"Burgh De Rott","x":3501,"y":3224,"p":0},{"n":"Abandoned Mine","x":3447,"y":3234,"p":0},{"n":"EverLight Dig Site","x":3695,"y":3208,"p":0},{"n":"Harmony","x":3797,"y":2858,"p":0},{"n":"Mos Le'Harmless","x":3711,"y":3027,"p":0},{"n":"Dragontooth Island","x":3803,"y":3546,"p":0},{"n":"Wendlewick","x":3481,"y":1557,"p":0},{"n":"Amberfell","x":3709,"y":1558,"p":0},{"n":"Anachronia","x":5432,"y":2339,"p":0},{"n":"Observation Output","x":5594,"y":2528,"p":0},{"n":"Crypt of Varanus","x":5320,"y":2414,"p":0},{"n":"Anachronia Dinosaur Farm","x":5198,"y":2373,"p":0},{"n":"Tuai Leit","x":1753,"y":11976,"p":0},{"n":"Archaeology Campus","x":3359,"y":3377,"p":0},{"n":"Death's Office","x":414,"y":674,"p":0},{"n":"Trahaearn","x":2231,"y":3311,"p":1},{"n":"Ardougne Zoo","x":2614,"y":3272,"p":0},{"n":"City of Um","x":1108,"y":1777,"p":1},{"n":"Distilleries","x":3783,"y":2999,"p":0},{"n":"Melzar's Maze","x":2937,"y":3255,"p":0},{"n":"Rimmington","x":2955,"y":3222,"p":0},{"n":"Custom's Office","x":2966,"y":3194,"p":0},{"n":"Jail","x":3125,"y":3243,"p":0},{"n":"Market","x":3081,"y":3250,"p":0},{"n":"Park","x":3004,"y":3381,"p":0},{"n":"Um Ritual Site","x":1037,"y":1774,"p":1},{"n":"The Heart","x":3200,"y":6970,"p":1},{"n":"Zaros's Bastion","x":3129,"y":6911,"p":1},{"n":"Zamorak's Rampart","x":3138,"y":7039,"p":1},{"n":"Sliske's Necropolis","x":3270,"y":7045,"p":1},{"n":"Seren's Encampment","x":3256,"y":6912,"p":1},{"n":"Skinweaver","x":4643,"y":5382,"p":0},{"n":"Commander Akhomet","x":3166,"y":2729,"p":0},{"n":"Grand Vizier Ehsan","x":3197,"y":2769,"p":0},{"n":"Admiral Wadud","x":3178,"y":2648,"p":0},{"n":"Outpost","x":2436,"y":3347,"p":0},{"n":"Tree Gnome Stronghold","x":2440,"y":3468,"p":0},{"n":"Otto's Grotto","x":2502,"y":3488,"p":0},{"n":"Swamp","x":2419,"y":3512,"p":0},{"n":"Barbarian Assault","x":2521,"y":3571,"p":0},{"n":"Fremennik Province","x":2670,"y":3629,"p":0},{"n":"Courthouse","x":2736,"y":3468,"p":0},{"n":"Flax","x":2742,"y":3443,"p":0},{"n":"Beehives","x":2759,"y":3443,"p":0},{"n":"Necromancer","x":2669,"y":3240,"p":0},{"n":"Trawler","x":2687,"y":3168,"p":0},{"n":"Castle Wars","x":2442,"y":3090,"p":0},{"n":"South Feldip Hills","x":2469,"y":2852,"p":0},{"n":"Tirannwn","x":2240,"y":3219,"p":0},{"n":"Wilderness Crater","x":3136,"y":3712,"p":0},{"n":"Frozen Waste Plateau","x":2964,"y":3925,"p":0},{"n":"Trollweiss Mountain","x":2782,"y":3859,"p":0},{"n":"Ice Path","x":2855,"y":3809,"p":0},{"n":"Boneyard","x":3272,"y":3677,"p":0},{"n":"River Lum","x":3168,"y":3351,"p":0},{"n":"Aquanites","x":2724,"y":9974,"p":0},{"n":"Kurask","x":2699,"y":9998,"p":0},{"n":"Turoth","x":2723,"y":10004,"p":0},{"n":"Jellies","x":2704,"y":10027,"p":0},{"n":"Basilisks","x":2742,"y":10010,"p":0},{"n":"Pyrefiends","x":2761,"y":10004,"p":0},{"n":"Cockatrice","x":2791,"y":10036,"p":0},{"n":"Rock slugs","x":2800,"y":10017,"p":0},{"n":"Cave crawlers","x":2790,"y":9997,"p":0},{"n":"Giant frogs","x":3226,"y":9547,"p":0},{"n":"Swamp cave","x":3192,"y":9569,"p":0},{"n":"Keep Le Faye","x":2770,"y":3400,"p":0},{"n":"Ewan's Grove","x":2916,"y":3483,"p":0},{"n":"Astram Farm","x":2885,"y":3487,"p":0},{"n":"Rogue's Den","x":2891,"y":3443,"p":0},{"n":"Fight Pit","x":4571,"y":5091,"p":0},{"n":"Fight Cave","x":4611,"y":5130,"p":0},{"n":"Library","x":4629,"y":5170,"p":0},{"n":"Main Plaza","x":4671,"y":5156,"p":0},{"n":"Birthing Pool","x":4717,"y":5165,"p":0},{"n":"Fight Kiln","x":4743,"y":5170,"p":0},{"n":"Celestial Dragon Dungeon","x":2268,"y":5980,"p":0},{"n":"Puro-Puro","x":2427,"y":4445,"p":0},{"n":"Otherworldly beings","x":2384,"y":4424,"p":0},{"n":"Beware of the mushrooms","x":2418,"y":4377,"p":0},{"n":"The market","x":2483,"y":4448,"p":0},{"n":"Throne room","x":2446,"y":4426,"p":0},{"n":"River Elid","x":3369,"y":3069,"p":0},{"n":"The Islands that Once Were Turtles","x":2188,"y":11456,"p":0},{"n":"Lizards","x":3422,"y":3043,"p":0},{"n":"Prifddinas","x":2208,"y":3360,"p":1},{"n":"Iorwerth","x":2186,"y":3312,"p":1},{"n":"Ithell","x":2157,"y":3340,"p":1},{"n":"Cadarn","x":2261,"y":3339,"p":1},{"n":"Amlodd","x":2157,"y":3382,"p":1},{"n":"Hefin","x":2185,"y":3410,"p":1},{"n":"Crwys","x":2263,"y":3384,"p":1},{"n":"Meilyr","x":2232,"y":3410,"p":1}];
   // Draw MAP_LABELS in the view tile-box as outlined text, capped and nearest-to-centre first.
   function clueMapDrawLabels(cx, proj, plane, vx0, vy0, vx1, vy1) {
     const ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
@@ -376,9 +411,21 @@
     return (teleWornSet ? [...teleWornSet].sort().join(',') : 'w?') + '|'
          + (teleInvSet ? [...teleInvSet].sort().join(',') : 'i?') + '|'
          + JSON.stringify(teleVbCache) + '|' + JSON.stringify(teleQuestVp) + '|'
-         + (teleHeldBase ? [...teleHeldBase].sort().join(',') : 'h?') + '|' + JSON.stringify(teleRuneCounts);
+         + (teleHeldBase ? [...teleHeldBase].sort().join(',') : 'h?') + '|' + JSON.stringify(teleRuneCounts) + '|' + JSON.stringify(teleItemCharges);
   }
   let _teleGateSig = '', _teleGateTick = 0;
+  let _teleWhyMap = new Map(), _teleWhyVer = '', _teleWhyVerAt = 0;
+  function teleWhyCached(T) {
+    const now = Date.now();
+    if (now - _teleWhyVerAt > 500) {
+      _teleWhyVerAt = now;
+      const gs = teleGateSig();
+      if (gs !== _teleWhyVer) { _teleWhyVer = gs; _teleWhyMap = new Map(); }
+    }
+    let v = _teleWhyMap.get(T);
+    if (v === undefined) { v = teleWhyFull(T); _teleWhyMap.set(T, v); }
+    return v;
+  }
   // Keep the player marker live on whatever clue map is open.
   setInterval(async function () {
     const wrap = $('clueMapWrap');
@@ -521,13 +568,24 @@
     // Quest gates ride the quest system (bridge().quests defs + questStatus): the quest
     // achievement for e.g. A Fairy Tale II carries no live requirement at all (just
     // "Complete this quest."), so completion must come from the quest progress trackers.
-    const qNames = [...new Set(MAP_TELEPORTS.filter(T => T.req && T.req.questName).map(T => T.req.questName))];
+    const qNames = [...new Set([].concat(
+      MAP_TELEPORTS.filter(T => T.req && T.req.questName).map(T => T.req.questName),
+      // quests named in free requirement text resolve too (exact cache-name match only)
+      MAP_TELEPORTS.reduce((a, T) => a.concat(teleRqGates(T).quests), [])))];
     if (qNames.length && await questEnsureDefs()) {
       if (!teleQuestIds) {
         teleQuestIds = {};
         for (const nm of qNames) {
           const q = QUESTS.find(q2 => (q2.name || '').toLowerCase() === nm.toLowerCase());
           if (q) teleQuestIds[nm] = q.id;
+        }
+        // Rows may pin the quest-system id directly (quest struct param 8224) - the
+        // Arc miniquests miss the by-name match, but their ids resolve fine.
+        for (const T of MAP_TELEPORTS) {
+          const r2 = T.req;
+          if (r2 && r2.questName && r2.questId != null
+              && teleQuestIds[r2.questName] === undefined && QUEST_BY_ID.get(r2.questId))
+            teleQuestIds[r2.questName] = r2.questId;
         }
       }
       const vps = new Set([1297, 2615, 2339, 2695, 2675, 1295, 2793, 2426, 2427]);   // questStatus special-case varps
@@ -537,6 +595,9 @@
       }
       try { teleQuestVp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))) || {}; } catch (e) {}
     }
+    // Task-set gates read the achievements cache; ask for it once (self-throttled).
+    if (MAP_TELEPORTS.some(T => teleTaskSetOf(T)) && typeof fetchAchievements === 'function'
+        && typeof achDefs !== 'undefined' && !achDefs) { try { fetchAchievements(); } catch (e) {} }
     const ids = [];
     for (const T of MAP_TELEPORTS) if (T.req && T.req.vb != null && ids.indexOf(T.req.vb) < 0) ids.push(T.req.vb);
     if (MAP_TELEPORTS.some(T => T.req && T.req.spell) && ids.indexOf(SPELLBOOK_VB) < 0) ids.push(SPELLBOOK_VB);
@@ -552,6 +613,7 @@
     }
     if (MAP_TELEPORTS.some(T => T.req && T.req.portal != null))
       for (const v of GOTE_PORTAL_VBS) if (ids.indexOf(v) < 0) ids.push(v);
+    for (const k in TELE_CHARGES) { const c = TELE_CHARGES[k]; if (c.vb != null && ids.indexOf(c.vb) < 0) ids.push(c.vb); }
     if (ids.length) { try { teleVbCache = (await readVarbitValues(ids)) || {}; } catch (e) { teleVbCache = {}; } }
     // Containers: worn (94) for outfit set gates, backpack (93) for held gates, and BOTH
     // feed the universal item rule below. Names ride along for charge-variant matching.
@@ -593,6 +655,22 @@
       }
       teleRuneCounts = rc;
     }
+    if (bridge().itemExtraInts && (teleWornSet || teleInvSet)) {
+      const cc = {};
+      for (const idStr in TELE_ITEM_CHARGES) {
+        const iid = +idStr, spec = TELE_ITEM_CHARGES[idStr];
+        for (const cont of [94, 93]) {
+          const set = cont === 94 ? teleWornSet : teleInvSet;
+          if (!set || !set.has(iid)) continue;
+          try {
+            const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), cont, iid)) || {};
+            const kk = r2.key || {};
+            if (kk[String(spec.key)] !== undefined) { cc[iid] = kk[String(spec.key)] | 0; break; }
+          } catch (e) {}
+        }
+      }
+      teleItemCharges = cc;
+    }
     if (worn && inv) {
       const base = new Set();
       for (const nm of worn.names.concat(inv.names)) base.add(teleItemBase(nm));
@@ -633,6 +711,9 @@
     if (r.vb != null && (teleVbCache[r.vb] | 0) !== r.vbVal) return false;
     if (!teleWornOk(r)) return false;
     if (!telePortalOk(r)) return false;
+    if (teleTaskSetWhy(T)) return false;
+    if (teleRqSkillWhy(T)) return false;
+    if (teleRqQuestWhy(T)) return false;
     if (teleSpellWhy(r)) return false;
     if (!teleQuestOk(r)) return false;
     if (r.heldAny && teleInvSet && !r.heldAny.some(id => teleInvSet.has(id))) return false;
@@ -657,6 +738,89 @@
       if (cur !== undefined && (cur | 0) < u[2]) out.push('spell not unlocked');
     }
     return out.join(', ');
+  }
+  // ---- requirement-text parser -------------------------------------------------------
+  // Every sheet row carries its requirement as free text ("58 Magic, Watchtower, Hard
+  // Ardougne Achievements"). Rather than hand-tagging rows one at a time, parse that text
+  // ONCE per row into real, checkable gates: skill levels, achievement task sets, and
+  // quests whose name matches the cache exactly. Anything unrecognised stays display-only,
+  // and any gate whose live data has not been read yet never fades a marker.
+  function teleTaskSetOf(T) { return (T.req && T.req.taskSet) || teleRqGates(T).taskSet; }
+  const TELE_TIERS = ['beginner', 'easy', 'medium', 'hard', 'elite', 'master'];
+  function teleRqGates(T) {
+    if (T._rqg !== undefined) return T._rqg;
+    const g = { skills: [], taskSet: null, quests: [] };
+    const txt = String(T.rq || '');
+    if (!txt || txt === 'todo') { T._rqg = g; return g; }
+    for (const part of txt.split(/\s*,\s*/)) {
+      // rows embed keybinds in the text ("94 Invention [B]"); strip them before parsing
+      const t = part.trim().replace(/\s*\[[^\]]*\]\s*$/, '').trim();
+      if (!t) continue;
+      // "58 Magic" / "level 58 Magic"
+      const sk = t.match(/^(?:level\s+)?(\d{1,3})\s+([A-Za-z]+)$/);
+      if (sk && typeof SKILL_NAMES !== 'undefined') {
+        const si = SKILL_NAMES.findIndex(n => (n || '').toLowerCase() === sk[2].toLowerCase());
+        if (si >= 0) { g.skills.push({ skill: si, level: +sk[1] }); continue; }
+      }
+      // "Ardougne medium achievements" / "Easy Varrock Achievements" (either word order)
+      const ach = t.match(/^(.*?)\s+achievements?$/i);
+      if (ach) {
+        const ws = ach[1].trim().split(/\s+/);
+        let tier = '', area = [];
+        for (const w of ws) {
+          if (TELE_TIERS.indexOf(w.toLowerCase()) >= 0) tier = w; else area.push(w);
+        }
+        if (tier && area.length) { g.taskSet = { area: area.join(' '), tier: tier }; continue; }
+      }
+      g.quests.push(t);           // resolved against the cache's own quest names below
+    }
+    T._rqg = g;
+    return g;
+  }
+  // Achievement task-set gate: a "<Area> Set Tasks - <Tier>" parent achievement (cache
+  // category 4766, the data the Area Tasks panel lists) is itself trackable, so its
+  // completion IS the set's completion.
+  function teleTaskSetWhy(T) {
+    const ts = (T.req && T.req.taskSet) || teleRqGates(T).taskSet;
+    if (!ts) return '';
+    try {
+      if (typeof achDefs === 'undefined' || !achDefs || typeof achState === 'undefined' || !achState) return '';
+      const area = ts.area.toLowerCase(), tier = ts.tier.toLowerCase();
+      let parent = null;
+      for (const a of achDefs) {
+        const nm = (a.name || '').toLowerCase();
+        if (nm.indexOf('set tasks') < 0 || nm.indexOf(area) < 0 || nm.indexOf(tier) < 0) continue;
+        parent = a; break;
+      }
+      if (!parent) return '';                       // set not in the cache -> never fade
+      return (achState.done && achState.done.has(parent.id)) ? ''
+           : ('needs ' + ts.area + ' ' + tier + ' tasks');
+    } catch (e) { return ''; }
+  }
+  // Skill levels named in the requirement text, checked against live levels.
+  function teleRqSkillWhy(T) {
+    const gs = teleRqGates(T).skills;
+    if (!gs.length) return '';
+    const lvl = questSkillLevels();
+    for (const q of gs) {
+      const cur = lvl(q.skill) | 0;
+      if (cur > 0 && cur < q.level)
+        return 'needs ' + q.level + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[q.skill]) || ('skill ' + q.skill));
+    }
+    return '';
+  }
+  // Quests named in the requirement text, but ONLY when the name matches a cache quest
+  // exactly - free text like "Watchtower" resolves, prose like "in his cave" does not.
+  function teleRqQuestWhy(T) {
+    const qs = teleRqGates(T).quests;
+    if (!qs.length || !teleQuestIds || typeof QUEST_BY_ID === 'undefined') return '';
+    for (const nm of qs) {
+      const id = teleQuestIds[nm];
+      if (id === undefined) continue;
+      const q = QUEST_BY_ID.get(id);
+      if (q && questStatus(q, teleQuestVp) !== 2) return nm + ' not complete';
+    }
+    return '';
   }
   // Quest gate: complete per the quest system's own tracker (questStatus === 2).
   // Anything unresolved (defs not loaded, name not in the cache) never fades.
@@ -701,6 +865,9 @@
       why.push(r.vb === SPELLBOOK_VB ? 'wrong spellbook' : 'not unlocked');
     if (!teleWornOk(r)) why.push('full outfit not worn');
     if (!telePortalOk(r)) why.push('portal not attuned');
+    const tw = teleTaskSetWhy(T); if (tw) why.push(tw);
+    const kw = teleRqSkillWhy(T); if (kw) why.push(kw);
+    const qw = teleRqQuestWhy(T); if (qw) why.push(qw);
     const sw = teleSpellWhy(r); if (sw) why.push(sw);
     if (!teleQuestOk(r)) why.push('quest not complete');
     if (r.heldAny && teleInvSet && !r.heldAny.some(id => teleInvSet.has(id))) why.push('item not in backpack');
@@ -709,6 +876,7 @@
   // Full unavailability reason: curated gates plus the universal item rule.
   function teleWhyFull(T) {
     const parts = [];
+    const cw = teleChargeWhy(T); if (cw) parts.push(cw);
     const w = teleReqWhy(T); if (w) parts.push(w);
     if (!teleItemOk(T)) {
       const bn = teleItemNames[T.item];
@@ -836,6 +1004,10 @@
         if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
         parts.push(T.n);
         if (T.rq) parts.push('req: ' + teleRqText(T));   // sheet requirement text (display-only, ungated)
+        const ci = teleChargeInfo(T);
+        if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
+        const iv = teleItemChargeVal(T);
+        if (iv !== null) parts.push(iv.toLocaleString() + ' charges');
         const why = teleWhyFull(T);
         if (why) { cell.style.opacity = '0.45'; parts.push(why); }
         cell.dataset.tip = parts.join(', ');   // -> #global-tip (no native title tooltips here)
@@ -1363,7 +1535,7 @@
     {n:'Varrock Museum',src:'Master Quest Cape',x:3253,y:3449,p:0,item:36166,kb:'9'},
     {n:'The World Gate',src:'Master Quest Cape',x:2367,y:3361,p:0,item:36166,kb:'0'},
     {n:'Lletya',src:'Crystal teleport seed',x:2332,y:3170,p:0,item:39786,kb:'1',rq:'Mourning\'s End Part I'},
-    {n:'Temple of Light',src:'Crystal teleport seed',x:1940,y:4640,p:0,item:39786,kb:'2',rq:'Within The Light'},
+    {n:'Temple of Light',src:'Crystal teleport seed',x:1940,y:4640,p:0,item:39786,kb:'2',rq:'Within the Light'},
     {n:'Amlodd',src:'Crystal teleport seed',x:2157,y:3382,p:1,item:39786,kb:'3',rq:'Plague\'s End'},
     {n:'Cadarn',src:'Crystal teleport seed',x:2261,y:3339,p:1,item:39786,kb:'4',rq:'Plague\'s End'},
     {n:'Crwys',src:'Crystal teleport seed',x:2263,y:3384,p:1,item:39786,kb:'5',rq:'Plague\'s End'},
@@ -1471,7 +1643,7 @@
     {n:'Ardougne',src:'Standard Spellbook',x:2660,y:3303,p:0,sp:35028,rq:'51 Magic, Plague City'},
     {n:'Watchtower',src:'Standard Spellbook',x:2933,y:4714,p:2,sp:35033,rq:'58 Magic, Watchtower'},
     {n:'Watchtower (Hard Ardougne Achievements)',src:'Standard Spellbook',x:2574,y:3090,p:0,sp:35033,rq:'58 Magic, Watchtower, Hard Ardougne Achievements'},
-    {n:'Trollheim',src:'Standard Spellbook',x:2880,y:3669,p:0,sp:35032,rq:'61 Magic, Edgar\'s Ruse'},
+    {n:'Trollheim',src:'Standard Spellbook',x:2880,y:3669,p:0,sp:35032,rq:'61 Magic, Eadgar\'s Ruse'},
     {n:'God Wars Dungeon',src:'Standard Spellbook',x:2908,y:3714,p:0,sp:35029,rq:'61 Magic, The Mighty Fall'},
     {n:'Ape Atoll',src:'Standard Spellbook',x:2796,y:2797,p:1,sp:35027,rq:'64 Magic, Recipe for Disaster: Freeing King Awowogei'},
     {n:'Mazcab',src:'Standard Spellbook',x:4317,y:820,p:0,sp:35030,rq:'70 Magic, unlocked using a Mazcab teleport codex or Mazcab ability codex'},
@@ -1482,7 +1654,7 @@
     {n:'Max guild Teleport - Inside',src:'Standard Spellbook',x:2276,y:3313,p:1,sp:36145,rq:'99 in all skills'},
     {n:'Kandarin Monastery',src:'Standard Spellbook',x:2606,y:3219,p:0,sp:36143,rq:'Ardougne medium achievements'},
     {n:'Manor Farm',src:'Standard Spellbook',x:2671,y:3376,p:0,sp:36144,rq:'Ardougne easy achievements'},
-    {n:'Skeletal horror',src:'Standard Spellbook',x:3362,y:3503,p:0,sp:36142,rq:'Fur \'n\' Seek Wish list'},
+    {n:'Skeletal horror',src:'Standard Spellbook',x:3362,y:3503,p:0,sp:36142,rq:'Fur \'n Seek'},
     {n:'War\'s Retreat',src:'Standard Spellbook',x:3294,y:10127,p:0,sp:35042,rq:'10 boss kills'},
     {n:'Paddewwa (Edgeville Dungeon)',src:'Ancient Spellbook',x:3097,y:9884,p:0,sp:36128,rq:'54 Magic, Desert Treasure'},
     {n:'Senntisten (Digsite)',src:'Ancient Spellbook',x:3375,y:3404,p:0,sp:36129,rq:'60 Magic, Desert Treasure'},
@@ -1630,11 +1802,11 @@
     {n:'Arc Journal - Port Sarim',src:'Teletabs (excluding ones with spell versions)',x:3050,y:3245,p:1,item:37729},
     {n:'Waiko',src:'Teletabs (excluding ones with spell versions)',x:1820,y:11616,p:1,item:37903},
     {n:'Whale\'s Maw',src:'Teletabs (excluding ones with spell versions)',x:2060,y:11800,p:0,item:38576},
-    {n:'Tuai Leit',src:'Teletabs (excluding ones with spell versions)',x:1800,y:11961,p:0,item:38578},
-    {n:'The Islands That Once Were Turtles',src:'Teletabs (excluding ones with spell versions)',x:2279,y:11503,p:0,item:38579},
+    {n:'Tuai Leit',src:'Teletabs (excluding ones with spell versions)',x:1800,y:11961,p:0,item:38578,req:{questName:"Tuai Leit's Own (miniquest)",questId:446}},
+    {n:'The Islands That Once Were Turtles',src:'Teletabs (excluding ones with spell versions)',x:2279,y:11503,p:0,item:38579,req:{questName:'Ghosts from the Past (miniquest)',questId:447}},
     {n:'Aminishi',src:'Teletabs (excluding ones with spell versions)',x:2085,y:11276,p:0,item:38575},
-    {n:'Goshima',src:'Teletabs (excluding ones with spell versions)',x:2462,y:11546,p:0,item:38580},
-    {n:'Cyclosis',src:'Teletabs (excluding ones with spell versions)',x:2316,y:11224,p:0,item:38577},
+    {n:'Goshima',src:'Teletabs (excluding ones with spell versions)',x:2462,y:11546,p:0,item:38580,req:{questName:'Final Destination (miniquest)',questId:449}},
+    {n:'Cyclosis',src:'Teletabs (excluding ones with spell versions)',x:2316,y:11224,p:0,item:38577,req:{questName:'Eye for an Eye (miniquest)',questId:444}},
     {n:'Dagannoth Kings',src:'Teletabs (excluding ones with spell versions)',x:1958,y:4375,p:1,item:38203},
     {n:'Dorgesh-kaan sphere',src:'Teletabs (excluding ones with spell versions)',x:2721,y:5275,p:0,item:10972},
     {n:'Goblin Village sphere',src:'Teletabs (excluding ones with spell versions)',x:2961,y:3506,p:0,item:11060},
@@ -2081,6 +2253,39 @@
   // 92239/92240): each is a multiloc whose varbit VALUE (vb 25054 / 25055) indexes the
   // morph list, and each morph names a destination - so the value IS the attunement.
   // A destination is reachable only while one of the portals is tuned to it.
+  // Daily-limited outfit teleports: src -> {vb: used-today counter varbit, max}. The
+  // counters are SERVER-side (no CS2 readers) so each vb comes from a live Vars-panel
+  // capture; vb null = machinery dormant until captured. Reset is the daily reset (00:00
+  // UTC). At the cap the rows fade like any other unmet gate, so the nearest-usable
+  // teleport pick skips them.
+  const TELE_CHARGES = {
+    'Volcanic Trapper outfit': { vb: null, max: 5 },
+  };
+  // Charge-bearing teleport items: the charge count lives in the item's OWN
+  // Extra_ints (live-verified via the hover inspector). itemId -> {key}. Display
+  // ONLY - TokKul-Zo charges are spent by COMBAT, not teleporting (user-corrected
+  // 2026-08-02), so charges never gate a teleport.
+  const TELE_ITEM_CHARGES = { 23643: { key: 0 } };   // TokKul-Zo (Charged): key 0 (4000 max)
+  let teleItemCharges = null;   // itemId -> current charge value (worn or backpack)
+  function teleChargeInfo(T) {
+    const c = T && T.src ? TELE_CHARGES[T.src] : null;
+    if (!c || c.vb == null || !teleVbCache || teleVbCache[c.vb] === undefined) return null;
+    return { used: teleVbCache[c.vb] | 0, max: c.max };
+  }
+  function teleItemChargeVal(T) {
+    if (!(T.item > 0) || !TELE_ITEM_CHARGES[T.item] || !teleItemCharges) return null;
+    const v = teleItemCharges[T.item];
+    return v === undefined ? null : v;
+  }
+  function teleChargeWhy(T) {
+    const ci = teleChargeInfo(T);
+    return ci && ci.used >= ci.max ? ('out of daily teleports (' + ci.used + '/' + ci.max + ', ' + teleResetIn() + ')') : '';
+  }
+  function teleResetIn() {
+    const now = new Date();
+    const mins = (24 * 60) - (now.getUTCHours() * 60 + now.getUTCMinutes());
+    return 'resets in ' + (mins >= 60 ? Math.floor(mins / 60) + 'h ' : '') + (mins % 60) + 'm';
+  }
   const GOTE_PORTAL_VBS = [25054, 25055];
   const GOTE_PORTAL_IDX = { 'Jadinko Lair': 2, 'Lava Flow Mine': 3, 'Living Rock Caverns': 4,
     'Brilliant wisps': 5, 'Radiant wisps': 6, 'Luminous wisps': 7, 'Incandescent wisps': 8,

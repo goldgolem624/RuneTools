@@ -100,9 +100,34 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     EMOTE_CLUES.forEach((c, i) => m.push({ kind: 'emote', i, n: CLUE_NORM(c.tx) }));
     CRYPTIC_CLUES.forEach((c, i) => m.push({ kind: 'cryptic', i, n: CLUE_NORM(c.tx) }));
     return m; })();
+  // An anagram clue prints the scramble in ALL CAPS, and a scramble is by definition a
+  // permutation of the solution's letters. Matching those letter multisets identifies the
+  // clue EXACTLY, with no dependence on our stored wording - which drifts (Jagex adds and
+  // removes lead-ins like "He often preaches of", and our sheet's casing is inconsistent).
+  const CLUE_LETTERS = s2 => String(s2).toUpperCase().replace(/[^A-Z]/g, '').split('').sort().join('');
+  const CLUE_ANAGRAMS = (() => {
+    const m = {};
+    CRYPTIC_CLUES.forEach((c, i) => {
+      if (!c.tgt || !/anagram/i.test(c.tx || '')) return;
+      const k = CLUE_LETTERS(c.tgt);
+      if (k.length >= 4 && m[k] === undefined) m[k] = i;
+    });
+    return m;
+  })();
+  function matchAnagramText(text) {
+    if (!/anagram/i.test(text || '')) return null;
+    // the scramble = every ALL-CAPS word in the scroll (the lead-in is sentence case)
+    const caps = String(text).replace(/<[^>]*>/g, '').split(/\s+/)
+      .filter(w => /[A-Z]/.test(w) && !/[a-z]/.test(w)).join('');
+    const k = CLUE_LETTERS(caps);
+    if (k.length < 4) return null;
+    const i = CLUE_ANAGRAMS[k];
+    return i === undefined ? null : { kind: 'cryptic', i: i };
+  }
   function matchClueText(text) {
     const n = CLUE_NORM(text); if (n.length < 8) return null;
     for (const e of CLUE_MATCH) if (e.n === n) return e;
+    const ana = matchAnagramText(text); if (ana) return ana;
     for (const e of CLUE_MATCH) if (e.n.length > 14 && (e.n.indexOf(n) === 0 || n.indexOf(e.n) === 0)) return e;
     for (const e of CLUE_MATCH) if (e.n.length > 20 && n.indexOf(e.n) >= 0) return e;   // scroll WRAPS the riddle (skill clues: "Complete the action to solve the clue: <riddle>")
     return null;
@@ -138,6 +163,49 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     const c = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
     if (c && c.a === 'emote') renderEmotePanel(); else { const el = $('clueEmote'); if (el) { el.style.display = 'none'; el._h = ''; } clueGuide(null); } }
   // Outline the talk-to target NPC by name via the shared overlay-highlight channel.
+  // Skill-clue instructions are full sentences whose first word is frequently an adverb or
+  // article ("Completely use up a cleansing crystal on...", "Carefully search..."), so the
+  // marker verb is the first recognised ACTION word, not blindly word[0].
+  const CLUE_VERBS = ['use', 'mine', 'chop', 'cut', 'catch', 'fish', 'search', 'dig', 'talk',
+    'smith', 'smelt', 'craft', 'burn', 'cook', 'fletch', 'pickpocket', 'steal', 'kill', 'slay',
+    'pray', 'cast', 'climb', 'enter', 'open', 'plant', 'harvest', 'pick', 'clean', 'cleanse',
+    'repair', 'build', 'light', 'fill', 'drink', 'eat', 'wear', 'equip', 'teleport', 'craft'];
+  function clueVerbOf(text, fallback) {
+    const ws = String(text || '').trim().split(/\s+/);
+    for (const w of ws) {
+      const t = w.toLowerCase().replace(/[^a-z]/g, '');
+      if (CLUE_VERBS.indexOf(t) >= 0) return t.toUpperCase();
+    }
+    return fallback;
+  }
+  // Some clue NPCs relocate permanently once a quest is done (Philipe Carnillean moves out of
+  // the Carnillean household after Carnillean Rising). A row's optional `alt` carries the
+  // post-quest tile; it is applied only when the quest system CONFIRMS completion, so an
+  // unresolved quest state always leaves the pre-quest location in place.
+  function clueApplyAlt(c) {
+    if (!c || !c.alt || !c.alt.q) return c;
+    try {
+      if (typeof QUESTS === 'undefined' || typeof questStatus !== 'function') return c;
+      const qd = QUESTS.find(z => (z.name || '').toLowerCase() === c.alt.q.toLowerCase());
+      if (!qd) return c;
+      if (questStatus(qd, (typeof teleQuestVp !== 'undefined' && teleQuestVp) || {}) !== 2) return c;
+      const o = Object.assign({}, c);
+      o.x = c.alt.x; o.y = c.alt.y; o.p = c.alt.p || 0;
+      if (c.alt.d) o.d = c.alt.d;
+      return o;
+    } catch (e) { return c; }
+  }
+  // Challenge scroll: some clue NPCs ask a counting/maths question before handing over the
+  // next step. The answer is fixed per NPC (a few vary with quest state, noted inline).
+  function clueChallengeHtml(c) {
+    if (!c || !c.ca) return '';
+    return '<div style="margin-top:6px;padding:6px 8px;border-radius:6px;background:rgba(255,196,64,0.08);'
+         + 'border:1px solid rgba(255,196,64,0.25)">'
+         + '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;opacity:0.65">Challenge scroll</div>'
+         + (c.cq ? '<div style="font-size:12px;opacity:0.85;margin-top:2px">' + esc(c.cq) + '</div>' : '')
+         + '<div style="margin-top:3px;font-size:14px"><b style="color:#ffd479">' + esc(c.ca) + '</b></div>'
+         + '</div>';
+  }
   function clueSetNpc(name) { name = name || ''; if (name === clueHighlightNpc) return; clueHighlightNpc = name; try { syncOverlayHighlight(); } catch (e) {} }
   // Match an emote clue to its HIDEY entry by fill-item set (a hidey hole stores exactly the
   // clue's equipped items). Spelling differs slightly between the sources: compare normalized
@@ -181,7 +249,7 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     let fromAuto = false;
     const _autoC = clueAuto ? (clueAuto.kind === 'emote' ? EMOTE_CLUES : CRYPTIC_CLUES)[clueAuto.i] : null;
     const _tierOk = _autoC && (clueEmoteTier < 0 || _autoC.t === clueEmoteTier || (_autoC.t >= 3 && clueEmoteTier >= 3));
-    if (_tierOk) { kind = clueAuto.kind; c = _autoC; fromAuto = true; }
+    if (_tierOk) { kind = clueAuto.kind; c = clueApplyAlt(_autoC); fromAuto = true; }
     else if (clueEmoteSel >= 0) { kind = 'emote'; c = EMOTE_CLUES[clueEmoteSel]; }
     if (c) {
       const head = fromAuto
@@ -222,14 +290,16 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
             + (c.lvl ? '<div style="margin-top:4px;font-size:12px;opacity:0.9;line-height:18px">' + reqHtml + '</div>' : '')
             + '<div style="opacity:0.8;margin-top:4px">' + esc(c.tx) + '</div>'
             + (hasLoc ? '<div style="margin-top:6px"><span style="opacity:0.6">at</span> <b>' + c.x + ', ' + c.y + '</b>' + (c.p ? ' <span style="opacity:0.6">floor ' + c.p + '</span>' : '') + '</div>' : '')
-            + (c.m ? '<div style="margin-top:5px;opacity:0.78;font-size:12px;line-height:1.4">' + esc(c.m) + '</div>' : '');
+            + (c.m ? '<div style="margin-top:5px;opacity:0.78;font-size:12px;line-height:1.4">' + esc(c.m) + '</div>' : '')
+            + clueChallengeHtml(c);
           if (setHTML(el, html)) { el.querySelectorAll('.sk-icon[data-skill]').forEach(s => attachSkillIcon(s, +s.dataset.skill)); }
           if (hasLoc) {
-            const verb = (esc(c.tgt).trim().split(/\s+/)[0] || 'GO').toUpperCase();
+            const verb = clueVerbOf(c.tgt, 'GO');
             clueGuide({ x: c.x, y: c.y, p: c.p || 0 }, c.tgt); drawClueMap({ x: c.x, y: c.y, p: c.p || 0, mark: verb + ' HERE' });
           } else { clueGuide(null); drawClueMap(null); }
           // Once in range the reader drops the tile and moves the arrow + label onto the NPC.
-          clueSetNpc(c.npc ? (c.npc + '|' + (((c.tgt || '').trim().split(/\s+/)[0]) || 'Use') + ' ' + c.npc) : '');
+          clueSetNpc(c.npc ? (c.npc + '|' + clueVerbOf(c.tgt, 'USE').charAt(0)
+                     + clueVerbOf(c.tgt, 'USE').slice(1).toLowerCase() + ' ' + c.npc) : '');
         } else if (c.ch && holdingPuzzleBox()) {
           // Holding the puzzle box means the talk-to/travel step is done; the puzzle panel reads the live
           // board (interface 1931) and highlights the tile to click.
@@ -242,7 +312,8 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
           html = head + '<div style="margin-top:6px;font-size:14px"><b>' + esc(ACT[c.act] || c.act) + (c.tgt ? ' ' + esc(c.tgt) : '') + '</b></div>'
             + '<div style="opacity:0.8;margin-top:2px">' + esc(c.tx) + '</div>'
             + '<div style="margin-top:6px"><span style="opacity:0.6">at</span> <b>' + c.x + ', ' + c.y + '</b>' + (c.p ? ' <span style="opacity:0.6">floor ' + c.p + '</span>' : '') + (c.d ? ' <span style="opacity:0.6">· ' + esc(c.d) + '</span>' : '') + '</div>'
-            + (c.ch ? '<div style="margin-top:4px;color:#46e0c0">→ then solve a ' + esc(FOLLOW[c.ch] || c.ch) + (c.ch === 'slider' ? ' (the panel auto-solves it)' : '') + '</div>' : '');
+            + (c.ch ? '<div style="margin-top:4px;color:#46e0c0">→ then solve a ' + esc(FOLLOW[c.ch] || c.ch) + (c.ch === 'slider' ? ' (the panel auto-solves it)' : '') + '</div>' : '')
+            + clueChallengeHtml(c);
           setHTML(el, html);
           const guideLabel = (ACT[c.act] || c.act) + (c.tgt ? ' ' + c.tgt : '');
           clueGuide({ x: c.x, y: c.y, p: c.p || 0 }, guideLabel);   // static destination tile (shown until the NPC is in scene)
@@ -322,7 +393,7 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
         recs = enc(spots[0], scanTitle(rec) + ' DIG HERE');
       } else {                                               // solving -> mark the remaining candidates, COLOURED so none of them takes the direction arrow
 // (an arrow to "spot 1" reads as the answer)
-        recs = spots.slice(0, 24).map((s, k) => enc(s, scanTitle(rec) + ' spot ' + ((idx ? idx[k] : k) + 1), 0xFF2D95)).join('\x1e');
+        recs = spots.slice(0, 24).map((s, k) => enc(s, 'Scan spot ' + ((idx ? idx[k] : k) + 1) + (rec.key ? ' - ' + scanTitle(rec) : ''), 0xFF2D95)).join('\x1e');
       }
       bridge().guideMarks(myPid(), recs);
     } catch (e) {}

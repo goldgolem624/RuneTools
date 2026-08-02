@@ -119,6 +119,7 @@
             const slot = it[0], iid = it[1], stack = it[2] || 0, name = it[3] || ('Item #' + it[1]);
             const cell = document.createElement('div'); cell.className = 'bank-cell stor-cell';
             cell.dataset.tip = name + '\nID ' + iid + '\nx' + stack.toLocaleString() + '\nSlot ' + slot;
+            cell.dataset.ei = id + ':' + iid;
             const url = iid ? resolveIcon(iid) : '';
             if (url) { const ico = document.createElement('div'); ico.className = 'bank-icon'; ico.dataset.itemId = String(iid); setIconBg(ico, url); cell.appendChild(ico); }
             else { const tn = document.createElement('div'); tn.className = 'stor-tn'; tn.textContent = name; cell.appendChild(tn); }
@@ -133,3 +134,25 @@
     }
     sizeAllIcons();
   }
+
+  // Live Extra_ints inspector: hovering any tagged item cell (data-ei = "container:item")
+  // fetches bridge().itemExtraInts and appends the raw key/value pairs to the tooltip -
+  // the discovery surface for unmapped charge/state storage on items.
+  document.addEventListener('mouseover', async e => {
+    const cell = e.target.closest ? e.target.closest('[data-ei]') : null;
+    if (!cell || cell._eiBusy) return;
+    cell._eiBusy = 1;
+    try {
+      const parts = cell.dataset.ei.split(':');
+      if (!bridge() || !bridge().itemExtraInts || !myPid()) return;
+      const r = JSON.parse(await bridge().itemExtraInts(myPid(), +parts[0], +parts[1])) || {};
+      const k = r.key || {};
+      const keys = Object.keys(k);
+      const line = keys.length
+        ? 'Extra_ints: ' + keys.map(x => x + '=' + k[x]).join('  ')
+        : 'Extra_ints: (none)';
+      const base = cell.dataset.tip.split('\nExtra_ints')[0];
+      cell.dataset.tip = base + '\n' + line;
+      if (typeof showTipFor === 'function' && cell.matches(':hover')) showTipFor(cell);
+    } catch (e2) {} finally { setTimeout(() => { cell._eiBusy = 0; }, 800); }
+  });

@@ -214,7 +214,7 @@
     if (sig === tetraLast && !mapHidden) return;
     const moved = !tetraLast || tetraLast.split('|')[0] !== tileSig;
     tetraLast = sig;
-    clueGuide(t, onSpot ? '' : 'Tetracompass - dig here - (' + t.x + ', ' + t.y + ')');
+    clueGuide(t, onSpot ? '' : 'TETRACOMPASS DIG HERE - (' + t.x + ', ' + t.y + ')');
     if (moved || mapHidden) drawClueMap({ x: t.x, y: t.y, p: t.p });   // stepping on/off needs no redraw
   }
 
@@ -277,7 +277,7 @@
       if (!ac2 || !isCompassClue(ac2)) return;
       compassResult = { open: open, res: res, pos: pos };
       if (res && res.state === 'solved') {                      // locked to one tile -> mark it in-world like a dig
-        clueGuide({ x: res.spot[0], y: res.spot[1], p: 0 }, 'Compass clue - dig here');
+        clueGuide({ x: res.spot[0], y: res.spot[1], p: 0 }, 'COMPASS DIG HERE');
       } else if (open) {                                        // ambiguous, on a compass clue -> clear the in-world tile
         try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
       }

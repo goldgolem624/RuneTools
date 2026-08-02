@@ -250,9 +250,12 @@
     const dw = Math.max(1, Math.round(w * s)), dh = Math.max(1, Math.round(h * s));
     cx.drawImage(img, Math.round(mx - dw / 2), Math.round(my - dh / 2), dw, dh);
   }
+  const wmTextW = new Map();   // label -> measured px width (font is constant)
   function wmChip(cx, sxp, syp, text, placed, hot) {
     cx.font = '700 11px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
-    const tw = Math.ceil(cx.measureText(text).width), bw = tw + 8, bh = 15;
+    let tw = wmTextW.get(text);
+    if (tw === undefined) { tw = Math.ceil(cx.measureText(text).width); wmTextW.set(text, tw); }
+    const bw = tw + 8, bh = 15;
     const x0 = sxp - bw / 2, y0 = syp - bh / 2;
     if (placed.some(function (p) { return x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y; })) return false;
     placed.push({ x: x0, y: y0, w: bw, h: bh });
@@ -342,47 +345,52 @@
         wmMarks.push({ sx: sx(gx + 0.5), sy: sy(gy + 0.5), r: s0 / 2 + 3, tip: '<b>' + htmlEsc(m.label || 'Tile marker') + '</b><br>' + gx + ', ' + gy });
       }
     }
-    // teleport destinations (dense: only at close zoom, bucket-grouped so stacks stay readable)
+    // teleport destinations (dense: only at close zoom, distance-clustered so stacks stay
+    // readable - grid-cell bucketing split same-spot stacks landing across a cell border)
     if (wmLayer.teles && z >= 1.6) {
-      const buckets = new Map();
+      const buckets = [];
       for (const T of MAP_TELEPORTS) {
         if ((T.p | 0) !== plane || T.x < vx0 || T.x > vx1 || T.y < vy0 || T.y > vy1) continue;
         const mx = sx(T.x + 0.5), my = sy(T.y + 0.5);
-        const bk = Math.round(mx / 18) + ':' + Math.round(my / 18);
-        let b = buckets.get(bk); if (!b) { b = { mx: mx, my: my, ts: [] }; buckets.set(bk, b); }
+        let b = null;
+        for (let i = 0; i < buckets.length; i++) {
+          const q = buckets[i], dx = q.mx - mx, dy = q.my - my;
+          if (dx * dx + dy * dy <= 289) { b = q; break; }   // within 17px of a group anchor
+        }
+        if (!b) { b = { mx: mx, my: my, ts: [] }; buckets.push(b); }
         b.ts.push(T);
       }
-      for (const b of buckets.values()) {
-        const T = b.ts[0], met = !teleWhyFull(T);
-        cx.globalAlpha = met ? 1 : 0.45;
-        const url = T.iconUrl || (T.item ? resolveIcon(T.item) : (T.sp ? wmSpriteUrl(T.sp) : ''));
-        const img = url ? wmImg(url) : null;
-        if (img) wmDrawIcon(cx, img, b.mx, b.my, 20);
-        else {
-          cx.fillStyle = '#4dd28a'; cx.strokeStyle = '#0b0d12'; cx.lineWidth = 2;
-          cx.beginPath(); cx.arc(b.mx, b.my, 5.5, 0, 6.2832); cx.fill(); cx.stroke();
+      for (const b of buckets) {
+        // Stacked groups show EACH member's own icon (up to three, fanned around the
+        // anchor) instead of one icon hiding the rest; bigger stacks add a +N badge.
+        const show = b.ts.slice(0, 3), n = show.length, sp = 13;
+        for (let i = 0; i < n; i++) {
+          const T2 = show[i];
+          cx.globalAlpha = !teleWhyCached(T2) ? 1 : 0.45;
+          const url = T2.iconUrl || (T2.item ? resolveIcon(T2.item) : (T2.sp ? wmSpriteUrl(T2.sp) : ''));
+          const img = url ? wmImg(url) : null;
+          const ox = b.mx + (i - (n - 1) / 2) * sp;
+          if (img) wmDrawIcon(cx, img, ox, b.my, n === 1 ? 20 : 17);
+          else {
+            cx.fillStyle = '#4dd28a'; cx.strokeStyle = '#0b0d12'; cx.lineWidth = 2;
+            cx.beginPath(); cx.arc(ox, b.my, 5, 0, 6.2832); cx.fill(); cx.stroke();
+          }
         }
-        const kb = teleKb(T);
-        if (b.ts.length > 1) {
+        cx.globalAlpha = 1;
+        const kb = teleKb(b.ts[0]);
+        if (b.ts.length > 3) {
+          const extra = '+' + (b.ts.length - 3);
           cx.font = '700 9px system-ui, sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
-          cx.beginPath(); cx.arc(b.mx + 8, b.my - 8, 6, 0, 6.2832); cx.fillStyle = '#4dd28a'; cx.fill();
-          cx.fillStyle = '#06120b'; cx.fillText(String(b.ts.length), b.mx + 8, b.my - 7.5);
-        } else if (kb && z >= 2.4) {
+          cx.beginPath(); cx.arc(b.mx + (n / 2) * sp + 5, b.my - 8, 7, 0, 6.2832); cx.fillStyle = '#4dd28a'; cx.fill();
+          cx.fillStyle = '#06120b'; cx.fillText(extra, b.mx + (n / 2) * sp + 5, b.my - 7.5);
+        } else if (b.ts.length === 1 && kb && z >= 2.4) {
           cx.font = '700 10px system-ui, sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'top';
           const kw = Math.ceil(cx.measureText(kb).width + 6);
           const bx = Math.round(b.mx - kw / 2), by = Math.round(b.my + 10);
           cx.fillStyle = '#4dd28a'; cx.fillRect(bx, by, kw, 13);
           cx.fillStyle = '#06120b'; cx.fillText(kb, bx + kw / 2, by + 1.5);
         }
-        cx.globalAlpha = 1;
-        const tip = b.ts.map(function (t2) {
-          const rq = teleRqText(t2), why = teleWhyFull(t2);
-          return '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
-            + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
-            + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : htmlEsc(rq)) : '')
-            + (why ? '<br>' + htmlEsc(why) : '') + '</span>';
-        }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
-        wmMarks.push({ sx: b.mx, sy: b.my, r: 10, tip: tip });
+        wmMarks.push({ sx: b.mx, sy: b.my, r: 10 + (n - 1) * sp / 2 + 3, ts: b.ts });   // tooltip built lazily on hover
       }
     }
     // lodestones (sparse: always drawn; grey until the unlock varbit says otherwise)
@@ -446,8 +454,40 @@
       }
     }
     wmPaintStatus();
+    wmHoverBox();
   }
 
+  function wmTeleTip(ts) {
+    return ts.map(function (t2) {
+      const rq = teleRqText(t2), why = teleWhyCached(t2);
+      const ci = (typeof teleChargeInfo === 'function') ? teleChargeInfo(t2) : null;
+      return '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
+        + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
+        + (ci && ci.used < ci.max ? '<br>daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn() : '')
+        + (typeof teleItemChargeVal === 'function' && teleItemChargeVal(t2) !== null ? '<br>' + teleItemChargeVal(t2).toLocaleString() + ' charges' : '')
+        + (rq ? '<br>req: ' + (rq === 'unverified' ? '<span style="color:#fbbf24">unverified</span>' : htmlEsc(rq)) : '')
+        + (why ? '<br>' + htmlEsc(why) : '') + '</span>';
+    }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
+  }
+  // The hovered TILE outlined at the map's own scale. A positioned div, so pointing at
+  // tiles never forces a canvas repaint; wmDraw re-syncs it after pan/zoom.
+  function wmHoverBox() {
+    const stage = document.getElementById('wmStage'); if (!stage) return;
+    let box = document.getElementById('wmHoverTile');
+    if (!box) {
+      box = document.createElement('div'); box.id = 'wmHoverTile';
+      box.style.cssText = 'position:absolute;pointer-events:none;z-index:6;display:none;'
+        + 'border:1.5px solid rgba(255,170,60,0.95);box-shadow:0 0 0 1px rgba(0,0,0,0.55);border-radius:1px';
+      stage.appendChild(box);
+    }
+    const z = wmCam.z;
+    if (wmHover.x < 0 || z < 2) { box.style.display = 'none'; return; }
+    const px = (wmHover.x - wmCam.x) * z + stage.clientWidth / 2;
+    const py = (wmCam.y - (wmHover.y + 1)) * z + stage.clientHeight / 2;
+    box.style.left = px + 'px'; box.style.top = py + 'px';
+    box.style.width = z + 'px'; box.style.height = z + 'px';
+    box.style.display = 'block';
+  }
   // ---- chrome: bar chips + status line ----
   function wmPaintBar() {
     const bar = $('wmBar'); if (!bar) return;
@@ -552,13 +592,13 @@
       const mx = e.clientX - r.left, my = e.clientY - r.top;
       const tx = Math.floor(wmCam.x + (mx - stage.clientWidth / 2) / wmCam.z);
       const ty = Math.floor(wmCam.y - (my - stage.clientHeight / 2) / wmCam.z);
-      if (tx !== wmHover.x || ty !== wmHover.y) { wmHover = { x: tx, y: ty }; wmPaintStatus(); }
+      if (tx !== wmHover.x || ty !== wmHover.y) { wmHover = { x: tx, y: ty }; wmPaintStatus(); wmHoverBox(); }
       const tip = $('wmTip');
       if (tip && !wmDrag) {
         let hit = null, hd = Infinity;
         for (const m of wmMarks) { const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= m.r + 5 && d < hd) { hd = d; hit = m; } }
         if (hit) {
-          tip.innerHTML = hit.tip; tip.style.display = 'block';
+          tip.innerHTML = hit.ts ? wmTeleTip(hit.ts) : hit.tip; tip.style.display = 'block';
           let lx = mx + 12, ty2 = my + 10;
           const tw = tip.offsetWidth, th = tip.offsetHeight;
           if (lx + tw > r.width - 2) lx = mx - tw - 12;
@@ -569,7 +609,7 @@
         } else tip.style.display = 'none';
       }
     });
-    stage.addEventListener('mouseleave', function () { const tip = $('wmTip'); if (tip) tip.style.display = 'none'; wmHover = { x: -1, y: -1 }; wmPaintStatus(); });
+    stage.addEventListener('mouseleave', function () { const tip = $('wmTip'); if (tip) tip.style.display = 'none'; wmHover = { x: -1, y: -1 }; wmPaintStatus(); wmHoverBox(); });
     if (!wmWinBound) {
       wmWinBound = true;
       window.addEventListener('mousemove', function (e) {

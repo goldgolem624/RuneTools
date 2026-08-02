@@ -492,6 +492,10 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
 
     const h0 = eng.init(src);
     let bound = h0, top = 0, finished = false, moves = null, nodes = 1, childMin = Infinity;
+    // Optimality CERTIFICATE bound: a known solution of length ub (the displayed fallback
+    // plan) is proven optimal the moment the next IDA* bound reaches ub - every bound is a
+    // true lower bound on the optimal length, so bound >= ub => optimal >= ub = ub exactly.
+    let ub = (opts.ub == null) ? Infinity : opts.ub;
     function resetIteration() {
       eng.init(src);
       top = 0; fg[0] = 0; fh[0] = h0; fprev[0] = -1; fent[0] = 0; fmin[0] = Infinity;
@@ -539,6 +543,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     // Run up to `nodeBudget` loop iterations, then yield. Returns a status object.
     function step(nodeBudget) {
       if (finished) return { done: true, moves, optimal: true, nodes, bound };
+      if (bound >= ub) { finished = true; moves = null; return { done: true, moves: null, optimal: true, provedUB: true, nodes, bound }; }
       let work = 0;
       while (top >= 0) {
         if (++work > nodeBudget) return { done: false, optimal: true, nodes, bound };
@@ -574,7 +579,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
       bound = childMin; resetIteration();
       return { done: false, optimal: true, nodes, bound };
     }
-    return { step, dbg: function () { return { checks: dbgChecks, fail: dbgFail }; } };
+    return { step, setUb: function (v) { if (v < ub) ub = v; }, dbg: function () { return { checks: dbgChecks, fail: dbgFail }; } };
   }
 
   // ---- synchronous IDA*; same core as the session ----
@@ -612,8 +617,10 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
   // puzzleState -> 25 raw cell sprites); tables lazy-loaded from wd_table.bin / pdb_5554.bin
   // via the puzzleWdTable / puzzlePdbTable bridges. Re-solve only when the live board
   // diverges from the planned next state.
-  const PUZZLE_OPT_MS = 2000;       // optimal-proof budget; past this, weighted A* wins
+  const PUZZLE_OPT_MS = 2000;       // publish a fallback past this; the proof continues in the background
+  const PUZZLE_PROOF_MAX_MS = 90000; // total background-proof budget per board before giving up
   let puzzleFailedSig = null;       // board that beat both searches; retried when it moves
+  let puzzleProofSpentSig = null;   // board whose optimal-proof budget expired (fallback shown; no proof restarts)
   let puzzleSolver = null;
   let puzzleTableState = 0;         // 0 untried, 1 loading, 2 ready/failed
   let puzzlePlan = null;            // {moves, states:[sig...], idx, optimal}
@@ -712,15 +719,32 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     if (puzzleImp && puzzleSolver) {
       // Every rung runs BEFORE anything is published, so a displayed plan is never swapped.
       const imp = puzzleImp, better = puzzleWeighted(imp.board, [imp.ws[imp.i++]], 1200);
+      if (puzzleImp !== imp) {                       // rebased mid-rung: this result is stale
+        if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
+        return;
+      }
       if (better && (!imp.best || better.moves.length < imp.best.moves.length)) imp.best = better;
       if (imp.i >= imp.ws.length) {
         puzzleImp = null;
-        if (imp.best) puzzleAdopt(imp.board, imp.best.moves, false, imp.best.weight);
+        let adopted = false;
+        if (imp.best) adopted = puzzleAdopt(imp.board, imp.best.moves, false, imp.best.weight);
+        if (adopted && puzzleSess && puzzleSess.stepper.setUb && puzzlePlan
+            && puzzlePlan.states[0] === puzzleSess.sig)
+          puzzleSess.stepper.setUb(puzzlePlan.moves.length);
+        const liveSig = puzzleLastBoard ? puzzleLastBoard.join(',') : '';
+        if (!adopted && imp.best && liveSig && liveSig !== imp.sig
+            && puzzleSolvable(puzzleLastBoard) && !puzzleIsGoal(puzzleLastBoard)) {
+          // The player moved while the fallback computed, so the answer no longer attaches
+          // to the screen - REBASE on the live board instead of dropping all guidance and
+          // burning another full optimal-proof budget from scratch.
+          puzzleImp = { board: puzzleLastBoard.slice(), sig: liveSig, ws: [8, 4], i: 0, best: null };
+        }
         // Nothing found even greedily: remember the board so the poll does not restart the
         // same doomed search until it moves.
-        else if (!puzzlePlan) puzzleFailedSig = imp.sig;
+        else if (!imp.best && !puzzlePlan) puzzleFailedSig = imp.sig;
         puzzleDrawSig = null; puzzlePaint();
         if (puzzleLastBoard) puzzleHighlight(puzzlePlan);
+        if (puzzleImp && !puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
       } else if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
       return;
     }
@@ -733,29 +757,45 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     do { r = puzzleSess.stepper.step(20000); puzzleSess.nodes = r.nodes; } while (!r.done && (Date.now() - t0) < 30);
     // Give up on the proof at PUZZLE_OPT_MS: the search is exponential in the IDA* bound and
     // hard boards need 1e8-1e9+ nodes, while weighted A* answers in ms a few moves longer.
-    if (!r.done && (Date.now() - puzzleSess.startedAt) >= PUZZLE_OPT_MS) {
-      // Solve from the board that is ON SCREEN NOW: the player may have moved a tile during
-      // the proof, and a plan built from a stale board is discarded on the next poll.
-      const board = (puzzleLastBoard && puzzleSolvable(puzzleLastBoard)) ? puzzleLastBoard : puzzleSess.board;
-      const sig = board.join(',');
-      puzzleSess = null;
-      // Weighted A* DIRECTLY, not solveGuide: solveGuide would spend its first optSlice
-      // re-running the optimal search that just failed.
-      puzzleImp = { board: board, sig: sig, ws: [8, 4, 2], i: 0, best: null };
+    if (!r.done && !puzzleSess.fallback && (Date.now() - puzzleSess.startedAt) >= PUZZLE_OPT_MS) {
+      const liveSig = puzzleLastBoard ? puzzleLastBoard.join(',') : puzzleSess.sig;
+      if (liveSig === puzzleSess.sig) {
+        // Board untouched: publish a fast fallback NOW but KEEP the resumable proof running
+        // in the background (throttled). Once the fallback plan lands, its length becomes
+        // the proof's upper bound; reaching it certifies the shown plan optimal without
+        // ever finding a second solution.
+        puzzleSess.fallback = true;
+        puzzleSess.hardStopAt = puzzleSess.startedAt + PUZZLE_PROOF_MAX_MS;
+        puzzleImp = { board: puzzleSess.board.slice(), sig: puzzleSess.sig, ws: [8, 4, 2], i: 0, best: null };
+      } else {
+        // The player moved during the proof: the session board is stale - drop the proof
+        // and fall back from the live board (a plan built from a stale board is discarded
+        // on the next poll anyway).
+        const board = (puzzleLastBoard && puzzleSolvable(puzzleLastBoard)) ? puzzleLastBoard : puzzleSess.board;
+        puzzleProofSpentSig = puzzleSess.sig;
+        puzzleSess = null;
+        puzzleImp = { board: board.slice(), sig: board.join(','), ws: [8, 4, 2], i: 0, best: null };
+      }
       puzzleDrawSig = null; puzzlePaint();
       if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
       return;
     }
+    if (puzzleSess.fallback && puzzleSess.hardStopAt && Date.now() >= puzzleSess.hardStopAt) {
+      puzzleProofSpentSig = puzzleSess.sig; puzzleSess = null;   // proof budget exhausted for good
+      return;
+    }
     if (r.done) {
-      const board = puzzleSess.board;
+      const board = puzzleSess.board, sSig = puzzleSess.sig;
       puzzleSess = null;
       if (r.moves && r.moves.length) puzzleAdopt(board, r.moves, true, 0);
       else if (r.moves) puzzlePlan = null;                       // already solved
+      else if (r.provedUB && puzzlePlan && puzzlePlan.states[0] === sSig)
+        puzzlePlan.optimal = true;                               // certified: the shown plan IS optimal
       puzzleDrawSig = null; puzzlePaint();
       if (puzzleLastBoard) puzzleHighlight(puzzlePlan);
       return;
     }
-    if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }   // keep going next frame
+    if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, puzzleSess && puzzleSess.fallback ? 45 : 0); }   // background proof runs at ~40% duty
     // Repainting rebuilds the grid and re-crosses the C++ bridge, costing more than a 30ms
     // search slice; only the node counter moves, so refresh it a few times a second.
     if (Date.now() - (puzzleSess.paintedAt || 0) >= 250) {
@@ -846,12 +886,24 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
         if (puzzlePlan.states[puzzlePlan.idx] !== sig) {
           const k = puzzlePlan.states.indexOf(sig);
           if (k >= 0 && k < puzzlePlan.states.length - 1) puzzlePlan.idx = k;
-          else puzzlePlan = null;                     // reached goal, or diverged
+          else {
+            puzzlePlan = null;                        // reached goal, or diverged
+            puzzleSess = null;                        // a proof of the abandoned plan's root is moot
+            // Diverged mid-solve: reseed guidance IMMEDIATELY from the live board with fast
+            // weighted rungs instead of going dark for the whole optimal-proof budget. The
+            // optimal session below still runs and upgrades the plan when it lands.
+            if (sig !== puzzleFailedSig && puzzleSolvable(board) && !puzzleIsGoal(board)) {
+              puzzleImp = { board: board.slice(), sig: sig, ws: [8, 4], i: 0, best: null };
+              if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
+            }
+          }
         }
       }
       // A new solution is needed: (re)start the resumable session, unless this exact board
-      // already exhausted its budget (it would relaunch every poll) or is parity-unsolvable.
-      if (!puzzlePlan && !puzzleImp && sig !== puzzleFailedSig && puzzleSolvable(board)
+      // already exhausted its proof budget (it would relaunch every poll), beat both
+      // searches outright, or is parity-unsolvable. A running reseed does NOT block the
+      // proof - the fallback publishes fast and the proof upgrades it.
+      if (!puzzlePlan && sig !== puzzleFailedSig && sig !== puzzleProofSpentSig && puzzleSolvable(board)
           && (!puzzleSess || puzzleSess.sig !== sig)) {
         puzzleSess = { stepper: puzzleSolver.createSession(board), sig: sig, board: board, nodes: 0, startedAt: Date.now() };
         if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
@@ -885,9 +937,12 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     else if (!plan && puzzleFailedSig === board.join(',')) head = 'no solution found within budget <span style="opacity:0.55">(move a tile to retry)</span>';
     else if (!plan && puzzleImp) head = 'no optimal proof in time; finding the shortest fallback...';
     else if (!plan) head = 'solving...';
-    else head = 'click the highlighted tile  ·  <b>' + clicks.length + '</b> click' + (clicks.length === 1 ? '' : 's') + ' <span style="opacity:0.55">(' + remaining + ' move' + (remaining === 1 ? '' : 's') + (plan.optimal ? ' optimal' : ', near-optimal') + ')</span>'
-              + (seq.length ? '  ·  next: ' + seq.map((p, n) => '<b style="color:' + (n === 0 ? '#ffd479' : n === 1 ? 'rgba(255,212,121,0.8)' : 'rgba(255,212,121,0.6)') + '">' + p + '</b>').join(' <span style="opacity:0.4">→</span> ') : '')
-              ;
+    else {
+      const proving = !plan.optimal && puzzleSess && puzzleSess.fallback && plan.states && plan.states[0] === puzzleSess.sig;
+      head = 'click the highlighted tile  ·  <b>' + clicks.length + '</b> click' + (clicks.length === 1 ? '' : 's') + ' <span style="opacity:0.55">(' + remaining + ' move' + (remaining === 1 ? '' : 's') + (plan.optimal ? ' optimal' : ', near-optimal') + ')</span>'
+           + (proving ? ' <span style="opacity:0.4">· proving…</span>' : '')
+           + (seq.length ? '  ·  next: ' + seq.map((p, n) => '<b style="color:' + (n === 0 ? '#ffd479' : n === 1 ? 'rgba(255,212,121,0.8)' : 'rgba(255,212,121,0.6)') + '">' + p + '</b>').join(' <span style="opacity:0.4">→</span> ') : '');
+    }
     let grid = '<div style="margin-top:8px">';
     for (let r = 0; r < 5; r++) {
       grid += '<div style="display:flex;gap:3px;margin-bottom:3px">';

@@ -52,7 +52,7 @@ bool                                  g_buffs_loaded   = false;
 bool                                  g_init_attempted = false;
 
 // Collision: loc clip info + per-region unwalkable grids, both memoized.
-struct LocClip { bool no_clip = false; int dim_x = 1, dim_y = 1; };
+struct LocClip { bool no_clip = false; int dim_x = 1, dim_y = 1; bool bare = false; };   // bare = no name AND no actions (barrier scenery)
 std::unordered_map<int, LocClip>      g_locclip_cache;
 std::unordered_map<int, std::vector<std::uint8_t>> g_blocked_cache;  // key = rx<<8 | ry
 std::unordered_map<int, MapTileData>  g_tiles_cache;                 // key = rx<<8 | ry
@@ -146,6 +146,11 @@ LocClip LocClipLocked(int loc_id) {
             clip.no_clip = def.no_clip;
             clip.dim_x = def.dim_x;
             clip.dim_y = def.dim_y;
+            clip.bare = def.name.empty();
+            if (clip.bare) {
+                for (const auto& o : def.options)         if (!o.empty()) { clip.bare = false; break; }
+                if (clip.bare) for (const auto& o : def.members_options) if (!o.empty()) { clip.bare = false; break; }
+            }
         }
     }
     g_locclip_cache[loc_id] = clip;
@@ -1649,6 +1654,8 @@ std::string IfaceGroupDefsJson(int group_id) {
     return out;
 }
 
+#include "OverlayTexColours.h"
+
 // ---- Map terrain colours + flat region render (cache-native) ---------------------------------
 // Resolve an underlay (archive 1) / overlay (archive 4) tile colour from the CONFIG index (2)
 // -> 0xRRGGBB, or -1 (none). opcode 1 = primary RGB, 7 = secondary, 13 = ternary. Many textured
@@ -1661,6 +1668,7 @@ static int ConfigColourLocked(int archive, int id) {
     auto hit = cache.find(key);
     if (hit != cache.end()) return hit->second;
     int col = -1, col2 = -1, col3 = -1;
+    int material = -1;                                                            // overlay op 3 = material id
     auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
     if (index && index->ready()) {
         auto bytes = index->ReadFile(archive, id);
@@ -1672,11 +1680,37 @@ static int ConfigColourLocked(int archive, int id) {
                 else if (op == 1)  { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col  = (r << 16) | (g << 8) | b; }
                 else if (op == 7)  { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col2 = (r << 16) | (g << 8) | b; }   // secondary RGB
                 else if (op == 13) { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col3 = (r << 16) | (g << 8) | b; }   // ternary RGB
-                else if (op == 2 || op == 3 || op == 9) s.ReadUnsignedShort();    // u16 fields (incl. texture)
+                else if (op == 3)  { material = s.ReadUnsignedShort(); }
+                else if (op == 2 || op == 9) s.ReadUnsignedShort();               // u16 fields
                 else if (op == 11 || op == 14 || op == 16) s.ReadUnsignedByte();  // u8 fields
                 else if (op == 4 || op == 5 || op == 8 || op == 10 || op == 12) { /* bool flag, no payload */ }
                 else break;                                                       // unknown opcode -> length unknown, stop
             }
+        }
+    }
+    // A TEXTURED overlay is painted from its texture in game, and its flat RGB is only a
+    // neutral tint - Tuai Leit's stone paths carry [68,68,68], which rendered as near-black
+    // while the game shows light stone. Prefer the material's average texture colour, so
+    // textured floors/paths/water read the way the world map does.
+    if (archive == 4 && material >= 0) {
+        int flat = (col2 >= 0) ? col2 : (col >= 0) ? col : col3;
+        if (flat == 0xFF00FF) flat = -1;
+        // Only substitute where the flat value cannot be the intended look: no colour at all,
+        // or a NEUTRAL GREY tint (Tuai Leit's paths are [68,68,68]). Overlays that carry a
+        // real colour - water, grass, roads - keep rendering exactly as they do today.
+        bool neutral = false;
+        if (flat >= 0) {
+            int r = (flat >> 16) & 0xff, g = (flat >> 8) & 0xff, b = flat & 0xff;
+            int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+            int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+            neutral = (mx - mn) <= 12;
+        }
+        if (flat < 0 || neutral) {
+            int lo = 0, hi = kOverlayMatCount - 1, found = -1;
+            while (lo <= hi) { int mid = (lo + hi) / 2;
+                if (kOverlayMatIds[mid] == material) { found = mid; break; }
+                if (kOverlayMatIds[mid] < material) lo = mid + 1; else hi = mid - 1; }
+            if (found >= 0) { cache[key] = kOverlayMatCols[found]; return kOverlayMatCols[found]; }
         }
     }
     // Overlays (archive 4) take SECONDARY colour first (per rsmv getOverlayColor); everything
@@ -1866,8 +1900,8 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         int hE = heightAt(gx + 1, gy), hW = heightAt(gx - 1, gy), hN = heightAt(gx, gy + 1), hS = heightAt(gx, gy - 1);
         int dxh = (hE != kNoH && hW != kNoH) ? (hE - hW) : 0;
         int dyh = (hN != kNoH && hS != kNoH) ? (hN - hS) : 0;
-        double d = 0.02 * (double)(dxh - dyh);
-        if (d < -0.28) d = -0.28; else if (d > 0.28) d = 0.28;
+        double d = 0.014 * (double)(dxh - dyh);
+        if (d < -0.18) d = -0.18; else if (d > 0.18) d = 0.18;
         shadeF[(size_t)(wx + 1) * BW + (wy + 1)] = (float)(1.0 + d);
     }
     // Bilinear underlay sample at a pixel centre: interpolates both the blended colour and the
@@ -1911,7 +1945,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             if (oc < 0) continue;
             int rr = (oc >> 16) & 0xff, gg = (oc >> 8) & 0xff, bb2 = oc & 0xff;
             if (!(ov == 112 || (bb2 > rr + 20 && bb2 > gg + 10))) continue;
-            waterCol[(size_t)(wx + 1) * BW + (wy + 1)] = shade(oc, shadeF[(size_t)(wx + 1) * BW + (wy + 1)]);
+            waterCol[(size_t)(wx + 1) * BW + (wy + 1)] = oc;   // flat, like every overlay
         }
     }
     auto surfAt = [&](int tx, int ty) -> int {   // water colour on water tiles, else shaded ground blend
@@ -1963,7 +1997,9 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             const bool smoothUl = (TS >= 4) && (ul >= 1);
             const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
-            if (ocol >= 0) ocol = shade(ocol, tf);
+            // Overlays stay UNSHADED (reference renderer parity): roads/floors/plazas are
+            // flat colour in the game map; relief-shading them bleaches paths white along
+            // height cliffs (worst in Prifddinas, whose whole city is a raised platform).
             int px0 = wx * TS, py0 = ((WT - 1) - wy) * TS;          // north-up tile origin
             bool useMask = (ocol >= 0);
             if (useMask) OverlayMaskLocal(sh < 0 ? 0 : sh, TS, mask);
@@ -2066,6 +2102,37 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
                             }
                         }
                         any = true;
+                        continue;
+                    }
+                    // Barrier scenery (e.g. the Goshima fort fence, loc 90861): a freestanding
+                    // type-10/11 loc with NO name and NO actions but a multi-tile footprint is a
+                    // fence/barricade. It carries no wall type and no mapscene, so nothing else
+                    // draws it - the game's prerendered map shows these as dark walls. Named
+                    // scenery (trees, tents, rocks) never matches.
+                    if (p.type == 10 || p.type == 11) {
+                        LocClip bc = LocClipLocked(p.id);
+                        int bdx = bc.dim_x, bdy = bc.dim_y;
+                        if (p.rotation == 1 || p.rotation == 3) { int t = bdx; bdx = bdy; bdy = t; }
+                        if (bc.bare && !bc.no_clip && (bdx >= 2 || bdy >= 2)) {
+                            for (int tyy = 0; tyy < bdy; ++tyy) {
+                                int fy = wty + tyy; if (fy < 0 || fy >= WT) continue;
+                                int bpy = ((WT - 1) - fy) * TS;
+                                for (int txx = 0; txx < bdx; ++txx) {
+                                    int fx = wtx + txx; if (fx < 0 || fx >= WT) continue;
+                                    int bpx = fx * TS;
+                                    for (int yy = 0; yy < TS; ++yy) {
+                                        for (int xx = 0; xx < TS; ++xx) {
+                                            size_t pp = ((size_t)(bpy + yy) * W + (bpx + xx)) * 4;
+                                            rgba[pp]     = (std::uint8_t)((0x4e * 170 + rgba[pp]     * 85) / 255);
+                                            rgba[pp + 1] = (std::uint8_t)((0x48 * 170 + rgba[pp + 1] * 85) / 255);
+                                            rgba[pp + 2] = (std::uint8_t)((0x42 * 170 + rgba[pp + 2] * 85) / 255);
+                                            rgba[pp + 3] = 255;
+                                        }
+                                    }
+                                }
+                            }
+                            any = true;
+                        }
                         continue;
                     }
                     if (p.type != 0 && p.type != 2 && p.type != 9) continue;

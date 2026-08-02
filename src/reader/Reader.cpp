@@ -4436,50 +4436,72 @@ std::string CompassTargetJson(std::uint32_t pid) {
     return buf;
 }
 
-// Scan-clue SOLUTION tile from inbound opcode 83. op83 (14-byte fixed) is RS3's slot-indexed
-// scene-graphic placement message (handler FUN_140107b00 -> FUN_1400f9160: byte0 = slot<<5|type,
-// record stored at MainData+0x198b0 + 0x90 + slot*0x2c). The scan orb uses it to place the proximity
-// ring at the exact dig tile, so its payload carries that tile:
-//   02 00 00  <xHi xLo>  <yHi yLo>  14 00 96  FF FF FF FF   (x/y = big-endian u16 at offsets +3 / +5).
-// The server only sends it while the player is within orb range (<=11 paces, red pulse), so this is a
-// FRESHNESS-GATED read of the companion netprobe ring: arm the framer capture, then return the newest
-// op83 record seen in the last ~2.5s (older = out of range -> report nothing). op83 is NOT
-// scan-exclusive (other graphics can use it with a different slot/type), so the payload signature is
-// checked here and the JS side additionally validates the coord against the active clue's candidate
-// spots. Requires the companion (the netprobe framer hook).
-std::string ScanSolutionJson(std::uint32_t pid) {
-    wchar_t name[64];
-    rtx::netprobe::MakeSectionName(pid, name);
-    HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
-    if (!h) return "{\"ok\":false,\"reason\":\"companion not loaded\"}";
-    auto* sh = reinterpret_cast<rtx::netprobe::Share*>(
-        MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::netprobe::Share)));
-    if (!sh) { CloseHandle(h); return "{\"ok\":false,\"reason\":\"map failed\"}"; }
-    std::string out = "{\"ok\":false}";
-    if (sh->magic == rtx::netprobe::kMagic && sh->version == rtx::netprobe::kVersion) {
-        sh->enable = (std::uint32_t)GetTickCount64();    // arm the framer capture (auto-disarms ~3s later)
-        const std::uint64_t written = sh->written;
-        const std::uint64_t oldest  = written > rtx::netprobe::kMaxRecords
-                                     ? written - rtx::netprobe::kMaxRecords : 0;
-        const std::uint64_t nowTick = GetTickCount64();
-        // Newest-first: the freshest op83 carrying the scan signature wins.
-        for (std::uint64_t s = written; s-- > oldest; ) {
-            const rtx::netprobe::Record& r = sh->recs[s % rtx::netprobe::kMaxRecords];
-            if (r.seq != s + 1) continue;                       // slot lapped mid-read
-            if (r.opcode != 83 || r.kept < 14) continue;
-            if (nowTick - r.tick > 2500) break;           // newest op83 is stale -> out of range now
-            const std::uint8_t* d = r.data;
-            if (d[0] != 0x02 || d[1] || d[2] || d[7] != 0x14 || d[9] != 0x96 ||
-                d[10] != 0xFF || d[11] != 0xFF || d[12] != 0xFF || d[13] != 0xFF) continue;
-            int x = (d[3] << 8) | d[4], y = (d[5] << 8) | d[6];
-            if (x <= 0 || y <= 0 || x > 16383 || y > 16383) continue;
-            char b[64]; std::snprintf(b, sizeof(b), "{\"ok\":true,\"x\":%d,\"y\":%d}", x, y);
-            out = b; break;
+// LIVE read of the scan orb's ring graphic from the scene-graphic REGISTRY, the second read
+// path recorded when op83 was reverse-engineered: op83's handler stores its 0x2c-byte record
+// at MainData+0x198b0 (+0x90 + slot*0x2c) with the coordinate converted to a FINE world
+// position (0x100 + tile*512) as floats. Reading the registry beats reading the packet: the
+// record PERSISTS for as long as the ring is drawn, while the packet only exists on the tick
+// it arrived (so a 2.5s freshness window either misses it or goes stale mid-scan).
+// The registry base may be the struct itself or a pointer to it (both forms are probed), and
+// op83 is generic, so every plausible tile found is returned for the caller to validate
+// against the clue's own candidate spots.
+static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<std::pair<int,int>>& out) {
+    constexpr std::uint64_t kOffRegistry = 0x198b0, kRecBase = 0x90, kRecSize = 0x2c, kSlots = 8;
+    // A fine coordinate is 0x100 + tile*512, so a valid one is positive, under the world edge,
+    // and lands on a tile centre.
+    auto fine_to_tile = [](float f) -> int {
+        if (!(f > 0.0f) || f > 16383.0f * 512.0f + 512.0f) return -1;
+        double t = ((double)f - 256.0) / 512.0;
+        int ti = (int)(t + 0.5);
+        if (ti <= 0 || ti > 16383) return -1;
+        if (t - (double)ti > 0.02 || (double)ti - t > 0.02) return -1;   // must sit ON a tile centre
+        return ti;
+    };
+    std::uint64_t bases[2] = { root + kOffRegistry, 0 };
+    if (auto pv = rpm<std::uint64_t>(h, root + kOffRegistry); pv && *pv > 0x10000) bases[1] = *pv;
+    for (std::uint64_t bi = 0; bi < 2; ++bi) {
+        if (!bases[bi]) continue;
+        std::uint8_t blk[kRecSize * kSlots];
+        if (!rpm_bytes(h, bases[bi] + kRecBase, blk, (int)sizeof(blk))) continue;
+        for (std::uint64_t slot = 0; slot < kSlots; ++slot) {
+            const std::uint8_t* rec = blk + slot * kRecSize;
+            // Fine x and y sit in the record as floats; their exact offsets are not pinned, so
+            // take the first aligned pair (allowing one field between them for height) that
+            // decodes to two on-centre tiles.
+            for (std::size_t o = 0; o + 8 <= kRecSize; o += 4) {
+                float fx; std::memcpy(&fx, rec + o, 4);
+                int tx = fine_to_tile(fx);
+                if (tx < 0) continue;
+                for (std::size_t g = 4; g <= 8 && o + g + 4 <= kRecSize; g += 4) {
+                    float fy; std::memcpy(&fy, rec + o + g, 4);
+                    int ty = fine_to_tile(fy);
+                    if (ty < 0) continue;
+                    bool dup = false;
+                    for (auto& q : out) if (q.first == tx && q.second == ty) { dup = true; break; }
+                    if (!dup) out.emplace_back(tx, ty);
+                    break;
+                }
+            }
         }
     }
-    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
-    CloseHandle(h);
-    return out;
+}
+
+std::string ScanSolutionJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "{\"ok\":false}";
+    auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{\"ok\":false}";
+    std::vector<std::pair<int,int>> tiles;
+    ScanRingTilesFromMemory(ps.h, *root, tiles);
+    if (tiles.empty()) return "{\"ok\":false}";
+    std::string js = "{\"ok\":true,\"src\":\"scene\",\"x\":" + std::to_string(tiles[0].first)
+                   + ",\"y\":" + std::to_string(tiles[0].second) + ",\"cands\":[";
+    for (std::size_t i = 0; i < tiles.size(); ++i) {
+        if (i) js += ',';
+        js += '[' + std::to_string(tiles[i].first) + ',' + std::to_string(tiles[i].second) + ']';
+    }
+    js += "]}";
+    return js;
 }
 
 // Entity under the mouse, from the engine's stable hover-target slot: input_proc = *(root+0x198E8),

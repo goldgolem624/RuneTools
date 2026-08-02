@@ -93,7 +93,7 @@
     'Air rune': 556, 'Water rune': 555, 'Earth rune': 557, 'Fire rune': 554, 'Dust rune': 4696, 'Lava rune': 4699,
     'Mist rune': 4695, 'Mud rune': 4698, 'Smoke rune': 4697, 'Steam rune': 4694, 'Mind rune': 558, 'Body rune': 559,
     'Cosmic rune': 564, 'Chaos rune': 562, 'Nature rune': 561, 'Law rune': 563, 'Death rune': 560, 'Astral rune': 9075,
-    'Blood rune': 565, 'Soul rune': 566,
+    'Blood rune': 565, 'Soul rune': 566, 'Wrath rune': 21773, 'Time rune': 58450,
     'Small pouch': 5509, 'Medium pouch': 5510, 'Large pouch': 5512, 'Giant pouch': 5514, 'Expansive pouch': 58451,
     'Coins': 995, 'Sandy Sand': 61835,
     'Easy clue': 42006, 'Medium clue': 42007, 'Hard clue': 42008, 'Elite clue': 42009, 'Master clue': 42010,
