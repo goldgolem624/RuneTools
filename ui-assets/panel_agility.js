@@ -41,6 +41,7 @@
   // whether these hold the BEST lap or merely the LAST one - a single record-setting lap looks
   // identical either way. Labelled plainly until a slower lap settles it.
   const ANACH_LAP_MIN_VB = 44253, ANACH_LAP_SEC_VB = 44254;
+  const ANACH_LAPS_VB = 44251;        // total laps completed
   function agiLapTime() {
     const m = agiVb[ANACH_LAP_MIN_VB], sec = agiVb[ANACH_LAP_SEC_VB];
     if (m === undefined || sec === undefined) return '';
@@ -58,7 +59,7 @@
 
   async function agiReadVb() {
     if (!bridge()) return;
-    const ids = [ANACH_LAP_MIN_VB, ANACH_LAP_SEC_VB];
+    const ids = [ANACH_LAP_MIN_VB, ANACH_LAP_SEC_VB, ANACH_LAPS_VB];
     for (const k in ANACH_SECTION_VB) ids.push(ANACH_SECTION_VB[k]);
     if (ids.length && bridge().varbits) {
       try { agiVb = JSON.parse(await bridge().varbits(myPid(), ids.join(','))) || {}; } catch (e) {}
@@ -241,6 +242,8 @@
       + '<div class="agi-chips">'
       + (agiLapMask != null
           ? '<span class="agi-chip' + (secDone === 7 ? ' ok' : '') + '">' + secDone + ' / 7 sections</span>' : '')
+      + (agiVb[ANACH_LAPS_VB] ? '<span class="agi-chip">' + agiVb[ANACH_LAPS_VB]
+          + (agiVb[ANACH_LAPS_VB] === 1 ? ' lap' : ' laps') + '</span>' : '')
       + (agiLapTime() ? '<span class="agi-chip">lap ' + agiLapTime() + '</span>' : '')
       + (lv > 0 ? '<span class="agi-chip">' + lv + ' Agility</span>' : '')
       + '</div>'
