@@ -646,9 +646,11 @@
       }
       try { teleQuestVp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))) || {}; } catch (e) {}
     }
-    // Task-set gates read the achievements cache; ask for it once (self-throttled).
+    // Task-set gates need the achievement STATE, not just the definitions - and they need it
+    // before this pass reports anything, or every set reads as "not read yet". Waiting on the
+    // (self-throttled) fetch is what makes the gate answer on the first draw.
     if (MAP_TELEPORTS.some(T => teleTaskSetOf(T)) && typeof fetchAchievements === 'function'
-        && typeof achDefs !== 'undefined' && !achDefs) { try { fetchAchievements(); } catch (e) {} }
+        && typeof achState !== 'undefined' && !achState) { try { await fetchAchievements(); } catch (e) {} }
     const ids = [];
     for (const T of MAP_TELEPORTS) if (T.req && T.req.vb != null && ids.indexOf(T.req.vb) < 0) ids.push(T.req.vb);
     if (MAP_TELEPORTS.some(T => T.req && T.req.spell) && ids.indexOf(SPELLBOOK_VB) < 0) ids.push(SPELLBOOK_VB);
