@@ -1754,6 +1754,7 @@
     {n:'Hazelmere\'s signet ring - Miscellania',src:'Enchanted Jewellery',x:2508,y:3861,p:1,item:39814,kb:'2'},
     {n:'Hazelmere\'s signet ring - Keldagrim',src:'Enchanted Jewellery',x:2857,y:10199,p:0,item:39814,kb:'3'},
     {n:'Hazelmere\'s signet ring - Hazelmere\'s Statue',src:'Enchanted Jewellery',x:2424,y:3396,p:0,item:39814,kb:'4'},
+    {n:'Hazelmere\'s signet ring - Dwarven Outpost',src:'Enchanted Jewellery',x:2554,y:3475,p:0,item:39814,kb:'5',req:{vb:52158,vbMin:1,vbWhy:'needs the Dark Facet of Luck'}},
     {n:'Amulet of glory - Edgeville',src:'Enchanted Jewellery',x:3087,y:3496,p:0,item:1712,kb:'1'},
     {n:'Amulet of glory - Draynor',src:'Enchanted Jewellery',x:3080,y:3250,p:0,item:1712,kb:'2'},
     {n:'Amulet of glory - Al Kharid',src:'Enchanted Jewellery',x:3305,y:3123,p:0,item:1712,kb:'3'},
@@ -2617,7 +2618,11 @@
   // 2026-08-02), so charges never gate a teleport.
   const TELE_PASSAGE_IDS = [44542, 44543, 44544, 44545];   // attuned Passage of the abyss
   const TELE_PASSAGE_ENUM = 15018;                        // slot index -> jewellery name
-  const TELE_PASSAGE_FREE_VB = 52159;                     // Dark Facet: teleports cost no charges
+  // The three Dark Facets are three consecutive bits, in the same order as the items
+  // (53921 Grace, 53923 Luck, 53925 Passage). The Passage bit was verified live, and it
+  // sits third in both lists, which pins the other two.
+  const TELE_FACET_LUCK_VB = 52158;                      // unlimited Dwarven Outpost teleports
+  const TELE_PASSAGE_FREE_VB = 52159;                    // Dark Facet: teleports cost no charges
   let telePassageEnum = null;
   // What the passage currently holds, and its shared charge pool (Extra_ints key 0). A
   // piece stored inside draws on this pool rather than its own count.
