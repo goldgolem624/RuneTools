@@ -2584,6 +2584,7 @@
   // shown; at 0 the row gates like any other unmet requirement.
   const TELE_DAILY_LEFT = {
     34926: 28311,   // Modified farmer's hat (live-captured)
+    32281: 25198,   // Modified artisan's bandana (live-captured)
   };
   function teleDailyLeft(T) {
     const vb = (T && T.item > 0) ? TELE_DAILY_LEFT[T.item] : null;
