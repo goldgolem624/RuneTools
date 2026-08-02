@@ -922,6 +922,7 @@
     "Lunar Diplomacy": 24,
     "Mourning's End Part I": 289,
     "Pieces of Hate": 397,
+    "Pharaoh's Folly": 519,
     "Plague City": 58,
     "Plague's End": 222,
     "Recipe for Disaster: Freeing King Awowogei": 306,
@@ -1731,11 +1732,11 @@
   // ---- BEGIN generated mejrs teleport data (tools/pull_map_teleports.py) ----
   // 798 teleports from the crowdsourced map sheet; regenerate with the tool, do not hand-edit.
   const MAP_TELEPORTS_EXT = [
-{n:"Leela's favour - Imperial district",src:"Leela's favour",x:3176,y:2729,p:0,item:58702,kb:'1'},
-{n:"Leela's favour - Merchant district",src:"Leela's favour",x:3223,y:2782,p:0,item:58702,kb:'2'},
-{n:"Leela's favour - Port district",src:"Leela's favour",x:3213,y:2627,p:0,item:58702,kb:'3'},
-{n:"Leela's favour - Worker district",src:"Leela's favour",x:3156,y:2796,p:0,item:58702,kb:'4'},
-{n:"Leela's favour - Sophanem Slayer Dungeon",src:"Leela's favour",x:3289,y:2708,p:0,item:58702,kb:'7'},
+{n:"Leela's favour - Imperial district",src:"Leela's favour",x:3176,y:2729,p:0,item:58702,kb:'1',rq:"Pharaoh's Folly"},
+{n:"Leela's favour - Merchant district",src:"Leela's favour",x:3223,y:2782,p:0,item:58702,kb:'2',rq:"Pharaoh's Folly"},
+{n:"Leela's favour - Port district",src:"Leela's favour",x:3213,y:2627,p:0,item:58702,kb:'3',rq:"Pharaoh's Folly"},
+{n:"Leela's favour - Worker district",src:"Leela's favour",x:3156,y:2796,p:0,item:58702,kb:'4',rq:"Pharaoh's Folly"},
+{n:"Leela's favour - Sophanem Slayer Dungeon",src:"Leela's favour",x:3289,y:2708,p:0,item:58702,kb:'7',rq:"Pharaoh's Folly"},
 {n:'Mazcab teleport (tablet)',src:'Teleport tablet',x:4316,y:819,p:0,item:40987,req:{vb:36971,vbVal:1}},
 {n:'Dragonkin Laboratory',src:'Teleport tablet',x:3368,y:3889,p:0,item:43375},
 {n:'Shadow Reef',src:'Teleport tablet',x:3510,y:3694,p:0,item:47529},
