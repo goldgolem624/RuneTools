@@ -86,6 +86,12 @@
     }
   }
   function agiPopcount(v) { let n = 0; while (v) { n += v & 1; v >>>= 1; } return n; }
+  function agiRearmDives() {
+    for (let i = 0; i < ANACH_COURSE.length; i++) {
+      const loc = ANACH_COURSE[i][0];
+      if (agiDiveUsed[loc] && agiIsDone(i)) delete agiDiveUsed[loc];
+    }
+  }
 
   // The BIT is tied to the obstacle, not to the order it was taken: obstacle j (0-based, in
   // forward route order) owns bit (n-1-j). Live-proven by running section A both ways - going
@@ -291,10 +297,17 @@
   const AGI_DIVE_TILES = {
     113690: [5402, 2320, 0],   // Cross vines (G) - confirmed in game
   };
+  // Standing on the dive tile means that step is spent, however you got there - dived or
+  // walked, it makes no difference - so the prompt goes away and stays away for this
+  // obstacle. It re-arms once the obstacle itself is taken, ready for the next lap.
+  const agiDiveUsed = {};
   function agiDiveTarget(i) {
-    const t = AGI_DIVE_TILES[ANACH_COURSE[i][0]];
+    const loc = ANACH_COURSE[i][0];
+    const t = AGI_DIVE_TILES[loc];
     if (!t || !agiPos) return null;
+    if (agiDiveUsed[loc]) return null;
     const d = Math.max(Math.abs(t[0] - agiPos.x), Math.abs(t[1] - agiPos.y));
+    if (d <= 0) { agiDiveUsed[loc] = true; return null; }
     return { x: t[0], y: t[1], p: t[2] == null ? ANACH_COURSE[i][5] : t[2], dist: d };
   }
   function agiMoveFor(i) {
@@ -377,6 +390,7 @@
     }
     agiSeen();
     await agiReadVb();
+    agiRearmDives();
     await agiReadCds();
     agiHighlight();
     agiPaint();

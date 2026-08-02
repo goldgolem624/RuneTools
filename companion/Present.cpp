@@ -184,16 +184,31 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                             rtx::composite::UploadHud(g_hud->rgba, g_hud->w, g_hud->h);
                             s_hudImg = g_hud->imgSeq;
                         }
-                        int sw = 48;                                   // sprite ~48px wide, aspect-preserved
-                        int sh = (g_hud->w > 0) ? (sw * g_hud->h / g_hud->w) : 48;
-                        int sx = (fbw - sw) / 2, sy = fbh / 3;         // centered, a third down (clear of the player at screen center)
-                        rtx::composite::DrawHud(sx, sy, sw, sh, fbw, fbh);
                         char cap[rtx::hud::kCaptionMax + 1];
                         std::memcpy(cap, g_hud->caption, rtx::hud::kCaptionMax);
                         cap[rtx::hud::kCaptionMax] = '\0';
+                        // A bare sprite on the game view reads as scenery. Seat it in a framed
+                        // card: dark rounded panel, accent edge, icon above its caption. The
+                        // frame is what makes it register as a prompt rather than decoration.
+                        const int sw = 56;                             // icon width, aspect-preserved
+                        const int sh = (g_hud->w > 0) ? (sw * g_hud->h / g_hud->w) : sw;
+                        const int pad = 10;
+                        const int capH = cap[0] ? 20 : 0;
+                        const int cw = sw + pad * 2;
+                        const int ch = sh + capH + pad * 2;
+                        const int cx = (fbw - cw) / 2, cy = fbh / 3 - pad;
+                        // shadow, panel, then a 2px accent rule along the top edge
+                        rtx::composite::DrawRoundRect((float)(cx + 2), (float)(cy + 3), (float)cw, (float)ch,
+                                                      9.0f, 0.0f, 0.0f, 0.0f, 0.35f, fbw, fbh);
+                        rtx::composite::DrawRoundRect((float)cx, (float)cy, (float)cw, (float)ch,
+                                                      9.0f, 0.055f, 0.055f, 0.075f, 0.90f, fbw, fbh);
+                        rtx::composite::DrawRoundRect((float)(cx + 8), (float)cy, (float)(cw - 16), 2.0f,
+                                                      1.0f, 0.486f, 0.427f, 0.949f, 0.95f, fbw, fbh);
+                        rtx::composite::DrawHud(cx + pad, cy + pad, sw, sh, fbw, fbh);
                         if (cap[0])
-                            rtx::composite::DrawLabel(cap, (float)(fbw / 2), (float)(sy + sh + 14),
-                                                      16.0f, 0.96f, 0.88f, 1.0f, 0.97f, fbw, fbh);
+                            rtx::composite::DrawPlainText(cap, (float)(fbw / 2),
+                                                          (float)(cy + pad + sh + capH / 2 + 1),
+                                                          15.0f, 1, 0.96f, 0.93f, 1.0f, 0.98f, fbw, fbh);
                     }
                     rtx::composite::End();
                 }
