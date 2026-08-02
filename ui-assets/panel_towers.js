@@ -622,36 +622,21 @@
   let teleVbCache = {};
   let teleWornSet = null;      // equipped item ids (container 94); null until the first read
   let teleInvSet = null;       // backpack item ids (container 93); null until the first read
-  let teleQuestIds = null;     // req.questName -> quest id, resolved ONCE against the cache's own quest names
   let teleQuestVp = {};        // live varps for the gated quests (the quest system's own trackers)
   async function clueMapTelePrefetch() {
     // Quest gates ride the quest system (bridge().quests defs + questStatus): the quest
     // achievement for e.g. A Fairy Tale II carries no live requirement at all (just
     // "Complete this quest."), so completion must come from the quest progress trackers.
-    const qNames = [...new Set([].concat(
-      MAP_TELEPORTS.filter(T => T.req && T.req.questName).map(T => T.req.questName),
-      // quests named in free requirement text resolve too (exact cache-name match only)
-      MAP_TELEPORTS.reduce((a, T) => a.concat(teleRqGates(T).quests), [])))];
-    if (qNames.length && await questEnsureDefs()) {
-      if (!teleQuestIds) {
-        teleQuestIds = {};
-        for (const nm of qNames) {
-          const key = teleQuestKey(nm);
-          const q = QUESTS.find(q2 => teleQuestKey(q2.name) === key);
-          if (q) teleQuestIds[nm] = q.id;
-        }
-        // Rows may pin the quest-system id directly (quest struct param 8224) - the
-        // Arc miniquests miss the by-name match, but their ids resolve fine.
-        for (const T of MAP_TELEPORTS) {
-          const r2 = T.req;
-          if (r2 && r2.questName && r2.questId != null
-              && teleQuestIds[r2.questName] === undefined && QUEST_BY_ID.get(r2.questId))
-            teleQuestIds[r2.questName] = r2.questId;
-        }
-      }
+    if (await questEnsureDefs()) {
       const vps = new Set([1297, 2615, 2339, 2695, 2675, 1295, 2793, 2426, 2427]);   // questStatus special-case varps
-      for (const nm in teleQuestIds) {
-        const q = QUEST_BY_ID.get(teleQuestIds[nm]);
+      const wantIds = new Set();
+      for (const T of MAP_TELEPORTS) {
+        const qid = T.req ? teleQuestIdOf(T.req) : null;
+        if (qid != null) wantIds.add(qid);
+        for (const nm of teleRqGates(T).quests) if (TELE_QUEST_IDS[nm] != null) wantIds.add(TELE_QUEST_IDS[nm]);
+      }
+      for (const qid of wantIds) {
+        const q = QUEST_BY_ID.get(qid);
         if (q) { if (q.v) vps.add(q.v[0]); if (q.b) vps.add(q.b[0]); }
       }
       try { teleQuestVp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))) || {}; } catch (e) {}
@@ -840,26 +825,45 @@
   // Curated requirements rendered the same way the requirement TEXT is: each one listed
   // with a met/unmet dot, so a satisfied requirement is visible rather than silently
   // dropped (only failures used to appear at all).
+  // Quest NAME -> quest id, resolved from the game's own quest configs (the same ids the
+  // Quests panel shows). Baked so nothing has to match names at runtime.
+  const TELE_QUEST_IDS = {
+    "A Fairy Tale II - Cure a Queen": 309,
+    "Cabin Fever": 296,
+    "Desert Treasure": 135,
+    "Eadgar's Ruse": 75,
+    "Fur 'n Seek": 33,
+    "Gower Quest": 385,
+    "Lunar Diplomacy": 24,
+    "Mourning's End Part I": 289,
+    "Plague City": 58,
+    "Plague's End": 222,
+    "Priest in Peril": 276,
+    "Recipe for Disaster: Freeing King Awowogei": 306,
+    "Shades of Mort'ton": 279,
+    "Summer's End": 95,
+    "The Fremennik Trials": 280,
+    "The Jack of Spades": 390,
+    "The Mighty Fall": 368,
+    "Watchtower": 16,
+    "Within the Light": 167
+  };
   // Rune item id -> display name, for shortfall messages.
   const TELE_RUNE_NAME = { 554: 'fire', 555: 'water', 556: 'air', 557: 'earth', 558: 'mind',
     559: 'body', 560: 'death', 561: 'nature', 562: 'chaos', 563: 'law', 564: 'cosmic',
     565: 'blood', 566: 'soul', 9075: 'astral', 21773: 'elemental', 58450: 'time',
     4694: 'steam', 4695: 'mist', 4696: 'dust', 4697: 'smoke', 4698: 'mud', 4699: 'lava' };
   function teleRuneName(id) { return (TELE_RUNE_NAME[id] || ('rune ' + id)) + ' rune' + '' ; }
-  // Quest names appear in two forms: "A Fairy Tale II - Cure a Queen" in some sources and
-  // the list form "Fairy Tale II - Cure a Queen, A" in others. Compare with the article
-  // stripped from either end, or a gate silently matches nothing and lets the row through.
-  function teleQuestKey(n) {
-    let t = String(n || '').toLowerCase().trim();
-    t = t.replace(/^(?:a|an|the)\s+/, '').replace(/,\s*(?:a|an|the)$/, '');
-    return t.replace(/[^a-z0-9]+/g, ' ').trim();
-  }
   function teleReqLines(T, mode) {
     const r = T.req;
     if (!r) return [];
     const out = [];
     const add = function (label, ok) { out.push(teleRqDot(ok, mode) + ' ' + label); };
-    if (r.questName) add(r.questName, teleQuestOk(r));
+    const qid = teleQuestIdOf(r);
+    if (qid != null || r.questName) {
+      const q = (qid != null && typeof QUEST_BY_ID !== 'undefined') ? QUEST_BY_ID.get(qid) : null;
+      add((q && q.name) || r.questName || ('quest ' + qid), teleQuestOk(r));
+    }
     if (r.skill != null && r.level != null) {
       const cur = questSkillLevels()(r.skill) | 0;
       const nm = (typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[r.skill]) || ('skill ' + r.skill);
@@ -1024,10 +1028,10 @@
   // exactly - free text like "Watchtower" resolves, prose like "in his cave" does not.
   function teleRqQuestWhy(T) {
     const qs = teleRqGates(T).quests;
-    if (!qs.length || !teleQuestIds || typeof QUEST_BY_ID === 'undefined') return '';
+    if (!qs.length || typeof QUEST_BY_ID === 'undefined') return '';
     for (const nm of qs) {
-      const id = teleQuestIds[nm];
-      if (id === undefined) continue;
+      const id = TELE_QUEST_IDS[nm];
+      if (id == null) continue;
       const q = QUEST_BY_ID.get(id);
       if (q && questStatus(q, teleQuestVp) !== 2) return nm + ' not complete';
     }
@@ -1035,10 +1039,17 @@
   }
   // Quest gate: complete per the quest system's own tracker (questStatus === 2).
   // Anything unresolved (defs not loaded, name not in the cache) never fades.
+  // Resolve a row's quest to an id. Prefer req.questId: quest NAMES differ between sources
+  // ("A Fairy Tale II - Cure a Queen" vs the list's "Fairy Tale II - Cure a Queen, A"), and
+  // an unmatched name silently passes the gate.
+  function teleQuestIdOf(r) {
+    if (r.questId != null) return r.questId;
+    if (r.questName && TELE_QUEST_IDS[r.questName] != null) return TELE_QUEST_IDS[r.questName];
+    return null;
+  }
   function teleQuestOk(r) {
-    if (!r.questName || !teleQuestIds) return true;
-    const id = teleQuestIds[r.questName];
-    if (id === undefined) return true;
+    const id = teleQuestIdOf(r);
+    if (id == null) return true;
     const q = QUEST_BY_ID.get(id);
     return !q || questStatus(q, teleQuestVp) === 2;
   }
@@ -1231,7 +1242,8 @@
         if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
         parts.push(T.n);
         if (T.rq) parts.push('req: ' + teleRqLive(T));   // requirement text + your current level
-        for (const ln of teleReqLines(T)) parts.push(ln);
+        const reqLines = teleReqLines(T);
+        for (const ln of reqLines) parts.push(ln);
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
         if (teleInPassage(T) && telePassage.free) parts.push('unlimited charges (in the passage)');
@@ -1240,7 +1252,13 @@
             parts.push(iv.toLocaleString() + (mx ? '/' + mx : '') + ' charges'
                        + (teleInPassage(T) ? ' (in the passage)' : '')); } }
         const why = teleWhyFull(T);
-        if (why) { cell.style.opacity = '0.45'; parts.push(why); }
+        if (why) {
+          cell.style.opacity = '0.45';
+          // Reasons already spelled out in the requirement list must not be repeated.
+          const shown = reqLines.join(' | ');
+          const rest = why.split(', ').filter(function (w) { return shown.indexOf(w) < 0; }).join(', ');
+          if (rest) parts.push(rest);
+        }
         // Status dot: green = every requirement satisfied, red = something is missing (the
         // reason follows on the same line). tipHtml renders <col=..> tags, so no raw markup.
         const unk = teleTaskSetWhy(T) === '?';
@@ -1619,7 +1637,7 @@
 {n:'Mazcab teleport (tablet)',src:'Teleport tablet',x:4316,y:819,p:0,item:40987,req:{vb:36971,vbVal:1}},
 {n:'Dragonkin Laboratory',src:'Teleport tablet',x:3368,y:3889,p:0,item:43375},
 {n:'Shadow Reef',src:'Teleport tablet',x:3510,y:3694,p:0,item:47529},
-{n:'Fairy ring BJS - The Lost Grove',src:'Fairy rings',x:1359,y:5635,p:0,kb:'BJS',ico:41076,req:{questName:'A Fairy Tale II - Cure a Queen',vb:30276,vbMin:1,vbWhy:'ring not restored (plant 5 bittercap mushrooms)'}},
+{n:'Fairy ring BJS - The Lost Grove',src:'Fairy rings',x:1359,y:5635,p:0,kb:'BJS',ico:41076,req:{questName:'A Fairy Tale II - Cure a Queen',questId:309,vb:30276,vbMin:1,vbWhy:'ring not restored (plant 5 bittercap mushrooms)'}},
 {n:'North-western Anachronia',src:'Standard Spellbook',x:5314,y:2495,p:0,sp:10370},
 {n:'Eastern Anachronia',src:'Standard Spellbook',x:5599,y:2331,p:0,sp:10369},
 {n:'Northern Lost Grove',src:'Standard Spellbook',x:1402,y:5724,p:0,sp:11316},
@@ -2048,10 +2066,10 @@
     {n:'Waiko',src:'Teletabs (excluding ones with spell versions)',x:1820,y:11616,p:1,item:37903},
     {n:'Whale\'s Maw',src:'Teletabs (excluding ones with spell versions)',x:2060,y:11800,p:0,item:38576},
     {n:'Tuai Leit',src:'Teletabs (excluding ones with spell versions)',x:1800,y:11961,p:0,item:38578,req:{questName:"Tuai Leit's Own (miniquest)",questId:446}},
-    {n:'The Islands That Once Were Turtles',src:'Teletabs (excluding ones with spell versions)',x:2279,y:11503,p:0,item:38579,req:{questName:'Ghosts from the Past (miniquest)',questId:447}},
+    {n:'The Islands That Once Were Turtles',src:'Teletabs (excluding ones with spell versions)',x:2279,y:11503,p:0,item:38579,req:{questName:'Ghosts from the Past (miniquest)',questId:447,questId:447}},
     {n:'Aminishi',src:'Teletabs (excluding ones with spell versions)',x:2086,y:11273,p:0,item:38575},
-    {n:'Goshima',src:'Teletabs (excluding ones with spell versions)',x:2462,y:11546,p:0,item:38580,req:{questName:'Final Destination (miniquest)',questId:449}},
-    {n:'Cyclosis',src:'Teletabs (excluding ones with spell versions)',x:2316,y:11224,p:0,item:38577,req:{questName:'Eye for an Eye (miniquest)',questId:444}},
+    {n:'Goshima',src:'Teletabs (excluding ones with spell versions)',x:2462,y:11546,p:0,item:38580,req:{questName:'Final Destination (miniquest)',questId:449,questId:449}},
+    {n:'Cyclosis',src:'Teletabs (excluding ones with spell versions)',x:2316,y:11224,p:0,item:38577,req:{questName:'Eye for an Eye (miniquest)',questId:444,questId:444}},
     {n:'Dagannoth Kings',src:'Teletabs (excluding ones with spell versions)',x:1958,y:4375,p:1,item:38203},
     {n:'Dorgesh-kaan sphere',src:'Teletabs (excluding ones with spell versions)',x:2721,y:5275,p:0,item:10972},
     {n:'Goblin Village sphere',src:'Teletabs (excluding ones with spell versions)',x:2961,y:3506,p:0,item:11060},
@@ -2607,5 +2625,5 @@
   // the quest ACHIEVEMENT 44 carries no requirement data), 94 Invention (skill 26), and
   // the ACTIVE ring (41076) in the backpack (41075 is the uncharged form).
   for (const T of MAP_TELEPORTS) if (T.src === 'Portable fairy ring')
-    T.req = { questName: 'A Fairy Tale II - Cure a Queen', skill: 26, level: 94, heldAny: [41076] };
+    T.req = { questName: 'A Fairy Tale II - Cure a Queen',questId:309, skill: 26, level: 94, heldAny: [41076] };
   // ---- END generated mejrs teleport data ----
