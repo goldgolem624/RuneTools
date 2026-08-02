@@ -14,6 +14,16 @@
   let agiCleared = [];    // obstacle index -> true once taken this lap
   let agiLastIdx = -1;    // last obstacle we saw the player at
   let agiPos = null;      // {x,y,plane}
+  // Which end of the loop to start from. 'auto' takes whichever entry is nearest; north and
+  // south pin it to that side's sections, which is what you want when running a partial lap
+  // (the level bands mirror around the Eastern section, so each side has its own beginner end).
+  let agiSide = 'auto';
+  try { const v = localStorage.getItem('rtxAgiSide'); if (v) agiSide = v; } catch (e) {}
+  function agiSetSide(v) {
+    agiSide = v;
+    try { localStorage.setItem('rtxAgiSide', v); } catch (e) {}
+    agiPaint();
+  }
 
   function agiSectionOf(i) { return ANACH_SECTIONS[ANACH_COURSE[i][6]]; }
   function agiLevel() {
@@ -150,19 +160,29 @@
         if (!agiIsDone(i)) return i;
       }
     }
-    // 2. nothing under way: the nearest entry point of an unfinished section
-    let best = -1, bd = 1e9;
-    for (let si = 0; si < ANACH_SECTIONS.length; si++) {
-      if (!okSec(si)) continue;
-      const r = agiSectionRange(si);
-      for (const i of [r[0], r[1]]) {
-        if (agiIsDone(i)) continue;
-        if (!agiPos) { if (best < 0) best = i; continue; }
-        const d = agiDistAt(i);
-        if (d < bd) { bd = d; best = i; }
+    // 2. nothing under way: the nearest entry point of an unfinished section. With a side
+    // chosen, only that side's sections are considered - unless none is left to run, in which
+    // case the preference is spent and the rest of the track is fair game.
+    const pick = function (sideOnly) {
+      let best = -1, bd = 1e9;
+      for (let si = 0; si < ANACH_SECTIONS.length; si++) {
+        if (!okSec(si)) continue;
+        if (sideOnly && String(ANACH_SECTIONS[si][1]).toLowerCase() !== sideOnly) continue;
+        const r = agiSectionRange(si);
+        for (const i of [r[0], r[1]]) {
+          if (agiIsDone(i)) continue;
+          if (!agiPos) { if (best < 0) best = i; continue; }
+          const d = agiDistAt(i);
+          if (d < bd) { bd = d; best = i; }
+        }
       }
+      return best;
+    };
+    if (agiSide === 'north' || agiSide === 'south') {
+      const want = pick(agiSide === 'north' ? 'northern' : 'southern');
+      if (want >= 0) return want;
     }
-    return best;
+    return pick(null);
   }
 
   // One obstacle is placed twice: the cave entrance has a mouth at each end, so which tile is
@@ -252,6 +272,11 @@
       + (agiLapTime() ? '<span class="agi-chip">lap ' + agiLapTime() + '</span>' : '')
       + (lv > 0 ? '<span class="agi-chip">' + lv + ' Agility</span>' : '')
       + '</div>'
+      + '<div class="agi-side">start'
+      + ['auto', 'north', 'south'].map(function (k) {
+          return '<button data-side="' + k + '"' + (agiSide === k ? ' class="on"' : '') + '>' + k + '</button>';
+        }).join('')
+      + '</div>'
       + '<div class="agi-bar"><i style="width:' + pct + '%"></i></div>'
       + '</header>';
 
@@ -287,6 +312,9 @@
 
 
     el.innerHTML = html;
+    el.querySelectorAll('.agi-side button').forEach(function (b) {
+      b.onclick = function () { agiSetSide(b.dataset.side); };
+    });
   }
 
   function renderAgility() {
@@ -308,6 +336,15 @@
       + 'border:1px solid var(--border);white-space:nowrap}'
       + '.agi-chip.ok{color:#4dd28a;border-color:rgba(77,210,138,.4)}'
       + '.agi-chip em{font-style:normal;opacity:.55;margin-left:3px}'
+      + '.agi-side{grid-column:1/3;display:flex;align-items:center;gap:4px;margin-top:7px;'
+      + 'font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-dim)}'
+      + '.agi-side button{font:inherit;font-size:9.5px;text-transform:uppercase;'
+      + 'letter-spacing:.09em;padding:3px 9px;border-radius:999px;cursor:pointer;'
+      + 'border:1px solid var(--border);background:transparent;color:var(--text-dim)}'
+      + '.agi-side button:hover{color:var(--text)}'
+      + '.agi-side button.on{color:#4dd28a;border-color:rgba(77,210,138,.45);'
+      + 'background:rgba(77,210,138,.08)}'
+      + '.agi-side button:focus-visible{outline:2px solid #7c6df2;outline-offset:1px}'
       + '.agi-bar{grid-column:1/3;height:5px;border-radius:3px;margin-top:8px;'
       + 'background:rgba(255,255,255,.07);overflow:hidden}'
       + '.agi-bar>i{display:block;height:100%;background:#4dd28a;transition:width .25s ease}'
