@@ -1567,24 +1567,37 @@
           // The voyage screen's SELECTED mission gets first-class treatment: whatever mission
           // the user is inspecting (vb 17129 tab / 17130 slot -> offer slot, vb 17132 = the
           // selected ship, per script2022), recommend the parts that raise ITS success.
+          let viewedRefit = null;   // {b, vid}: lets the plan loop skip a duplicate scan
           if ((ppV(17126) || ppV(17127) || ppV(17128)) && ppV(17130) >= 1 && ppV(17132) >= 1) {
             const slotVb = (ppV(17129) === 1 ? [17118, 17119, 17120] : [17115, 17116, 17117])[ppV(17130) - 1];
+            const vvid2 = slotVb ? ppV(slotVb) : 0;
             const vShipB = ppV(17132) - 1;
-            const vInfo = slotVb ? await ppVoyageInfo(ppV(slotVb)) : null;
+            const vInfo = vvid2 > 0 ? await ppVoyageInfo(vvid2) : null;
             if (vInfo && vShipB >= 0 && vShipB < shipList.length
                 && (vInfo.req[0] + vInfo.req[1] + vInfo.req[2]) > 0) {
               const t0 = gearOf(vShipB).slice();
               mem.forEach(m => { if (m.aboard === vShipB) for (let j = 0; j < 3; j++) t0[j] += m.st[j]; });
               const subs = await ppRefitScan(vShipB, vInfo.req, t0);
+              viewedRefit = { b: vShipB, vid: vvid2 };
+              // The two refit blocks optimise DIFFERENT voyages and can trade against each
+              // other (mount cannons for the planned run, then this block says crates for
+              // the viewed one) - when the viewed voyage is not this ship's planned pairing,
+              // say so on the row instead of silently contradicting the plan.
+              const pair2 = best.map.find(pq => pq.b === vShipB);
+              const offPlan = pair2 && pair2.v.vid !== vvid2;
               if (subs.length) {
-                refitRow('Refit for viewed voyage: ' + (vInfo.name || '?') + ' (' + shLabel(vShipB) + ')',
-                         subs, refitTip);
+                refitRow('Refit for viewed voyage: ' + (vInfo.name || '?') + ' (' + shLabel(vShipB) + ')'
+                         + (offPlan ? ' · off-plan' : ''),
+                         subs, refitTip + (offPlan ? '\nOFF-PLAN: the plan sends ' + shLabel(vShipB) + ' on '
+                         + pair2.v.name + ' - refitting for this voyage instead trades away that success.' : ''));
               }
             }
           }
-          // And the plan's pairing gets the same scan per ship (a ship at sea can't refit).
+          // And the plan's pairing gets the same scan per ship (a ship at sea can't refit;
+          // the viewed-voyage block above already covered its own ship+voyage combination).
           for (const { v, b } of best.map) {
             if (!(best.capN[b] > 0) || shipLocked[b]) continue;
+            if (viewedRefit && viewedRefit.b === b && viewedRefit.vid === v.vid) continue;
             const subs = await ppRefitScan(b, v.req, best.tot[b]);
             if (subs.length) refitRow('Refit ' + shLabel(b) + ' for ' + v.name, subs, refitTip);
           }
