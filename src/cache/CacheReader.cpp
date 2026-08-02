@@ -1845,6 +1845,18 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             int b = (plane * 64 + (gx & 63)) * 64 + (gy & 63);
             ul = td.underlay[b]; ov = td.overlay[b]; sh = td.shape[b];
         }
+        // Settings bit 0x8 marks an upper-plane tile that belongs on the GROUND map: cave
+        // rims, overhangs and raised structures. Without this they read as void and paint
+        // black. Highest flagged plane wins, matching the order the tiles are drawn in.
+        if (plane == 0 && !td.settings.empty()) {
+            for (int p = 3; p >= 1; --p) {
+                std::size_t i2 = (std::size_t)(p * 64 + (gx & 63)) * 64 + (gy & 63);
+                if (!(td.settings[i2] & 0x8)) continue;
+                if (td.underlay[i2] < 1 && td.overlay[i2] < 1) continue;
+                ul = td.underlay[i2]; ov = td.overlay[i2]; sh = td.shape[i2];
+                break;
+            }
+        }
     };
     const int kNoH = -32768;                        // INT16_MIN sentinel = tile carried no height
     auto heightAt = [&](int gx, int gy) -> int {

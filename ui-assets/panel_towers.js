@@ -838,7 +838,10 @@
       const g = teleRqGates(T).taskSet;
       if (g && /achievements?$/i.test(t)) {
         const tw = teleTaskSetWhy(T);
-        if (tw !== '?') return part + ' ' + teleRqDot(!tw, mode);
+        if (tw !== '?') {
+          const pg = tw.match(/\((\d+\/\d+)\)/);        // how far into the set the player is
+          return part + (pg ? ' (' + pg[1] + ')' : '') + ' ' + teleRqDot(!tw, mode);
+        }
       }
       return part;
     }).join(', ');
@@ -1749,10 +1752,10 @@
     {n:'Tirannwn quiver 4 - Harmony Pillars',src:'Achievement tasks set',x:2221,y:3399,p:1,item:33722,kb:'8'},
     {n:'Tirannwn quiver 3 - Mushroom patch',src:'Achievement tasks set',x:2227,y:3135,p:0,item:33721,kb:'7'},
     {n:'Explorer\'s ring - Cabbage-port',src:'Achievement tasks set',x:3053,y:3291,p:0,item:13560},
-    {n:'Wilderness sword - Wilderness herb patch',src:'Achievement tasks set',x:3141,y:3816,p:0,item:37904,kb:'1, 1'},
-    {n:'Wilderness sword - Edgeville',src:'Achievement tasks set',x:3084,y:3502,p:0,item:37904,kb:'1, 2'},
-    {n:'Wilderness sword 2+ - Forinthry Dungeon',src:'Achievement tasks set',x:3083,y:10060,p:0,item:37905,kb:'1, 3'},
-    {n:'Wilderness sword 4 - Wilderness Agility course',src:'Achievement tasks set',x:3000,y:3913,p:0,item:37907,kb:'1, 4'},
+    {n:'Wilderness sword - Wilderness herb patch',src:'Achievement tasks set',x:3141,y:3816,p:0,item:37904,kb:'1, 1',rq:'Wilderness easy achievements'},
+    {n:'Wilderness sword - Edgeville',src:'Achievement tasks set',x:3084,y:3502,p:0,item:37904,kb:'1, 2',rq:'Wilderness easy achievements'},
+    {n:'Wilderness sword 2+ - Forinthry Dungeon',src:'Achievement tasks set',x:3083,y:10060,p:0,item:37905,kb:'1, 3',rq:'Wilderness medium achievements'},
+    {n:'Wilderness sword 4 - Wilderness Agility course',src:'Achievement tasks set',x:3000,y:3913,p:0,item:37907,kb:'1, 4',rq:'Wilderness elite achievements'},
     {n:'Ardougne cloak - Kandarin Monastery',src:'Achievement tasks set',x:2606,y:3219,p:0,item:15345,kb:'1'},
     {n:'Ardougne cloak 2+ - Ardougne allotment',src:'Achievement tasks set',x:2671,y:3376,p:0,item:15347,kb:'2'},
     {n:'Desert amulet 2+ - Nardah',src:'Achievement tasks set',x:3428,y:2919,p:0,item:27094,kb:'1'},
