@@ -58,29 +58,60 @@
   }
   function agiPopcount(v) { let n = 0; while (v) { n += v & 1; v >>>= 1; } return n; }
 
+  // The BIT is tied to the obstacle, not to the order it was taken: obstacle j (0-based, in
+  // forward route order) owns bit (n-1-j). Live-proven by running section A both ways - going
+  // forward the mask fills 32,48,56,60,62 (downward from bit 5), going backward it fills
+  // 1,3,7,15,31 (upward from bit 0). So the mask says exactly WHICH obstacles are done, and
+  // the course reads correctly whichever direction it is run.
+  function agiSectionOffset(si) {
+    let n = 0;
+    for (let i = 0; i < ANACH_COURSE.length; i++) { if (ANACH_COURSE[i][6] === si) return n; n = i + 1; }
+    return -1;
+  }
+  function agiVbDone(i) {
+    const si = ANACH_COURSE[i][6], vb = ANACH_SECTION_VB[si];
+    if (vb == null) return null;                       // no captured varbit for this section
+    if (agiSectionDone[si]) return true;               // whole section finished this lap
+    const total = ANACH_SECTIONS[si][4];
+    let first = -1;
+    for (let k = 0; k < ANACH_COURSE.length; k++) if (ANACH_COURSE[k][6] === si) { first = k; break; }
+    const j = i - first;                               // position within the section
+    return ((agiVb[vb] | 0) & (1 << (total - 1 - j))) !== 0;
+  }
+  // True when this obstacle is done: the game's own bit where we have it, else what we saw.
+  function agiIsDone(i) {
+    const v = agiVbDone(i);
+    return v === null ? !!agiCleared[i] : v;
+  }
+
   // Progress per section: the game's mask where we have it, else the obstacles we saw.
   function agiSectionProgress() {
     const out = ANACH_SECTIONS.map(function (s) { return { done: 0, total: s[4], live: false }; });
     for (let i = 0; i < ANACH_COURSE.length; i++)
-      if (agiCleared[i]) out[ANACH_COURSE[i][6]].done++;
-    for (const k in ANACH_SECTION_VB) {
-      const si = +k, o = out[si];
-      o.live = true;
-      o.done = agiSectionDone[si] ? o.total : agiPopcount(agiVb[ANACH_SECTION_VB[k]] | 0);
-    }
+      if (agiIsDone(i)) out[ANACH_COURSE[i][6]].done++;
+    for (const k in ANACH_SECTION_VB) out[+k].live = true;
     return out;
   }
-  function agiLapDone() { let n = 0; for (const c of agiCleared) if (c) n++; return n; }
+  function agiLapDone() {
+    let n = 0;
+    for (let i = 0; i < ANACH_COURSE.length; i++) if (agiIsDone(i)) n++;
+    return n;
+  }
 
   // The next obstacle to take: the one after the furthest cleared, skipping sections the
   // player has no level for (they can start anywhere, so an unreachable section is not a wall).
+  // The course can be run in either direction, so the next obstacle is the NEAREST one still
+  // outstanding rather than the next in route order.
   function agiNextIdx() {
+    let best = -1, bd = 1e9;
     for (let i = 0; i < ANACH_COURSE.length; i++) {
-      if (agiCleared[i]) continue;
+      if (agiIsDone(i)) continue;
       if (!agiSectionOk(ANACH_COURSE[i][6])) continue;
-      return i;
+      if (!agiPos) return i;
+      const d = agiDist(ANACH_COURSE[i]);
+      if (d < bd) { bd = d; best = i; }
     }
-    return -1;
+    return best;
   }
 
   function agiDist(o) {
