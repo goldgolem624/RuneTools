@@ -761,6 +761,25 @@
     const bn = teleItemNames[T.item];
     return bn ? teleHeldBase.has(bn) : true;
   }
+  // Requirement text with the player's LIVE value beside each skill level, so a tooltip
+  // says how far off you are ("99 Slayer (87/99)") instead of just naming the bar.
+  function teleRqLive(T) {
+    const txt = teleRqText(T);
+    if (!txt || txt === 'unverified' || typeof SKILL_NAMES === 'undefined') return txt;
+    let lvl = null;
+    try { lvl = questSkillLevels(); } catch (e) { return txt; }
+    if (!lvl) return txt;
+    return txt.split(/\s*,\s*/).map(function (part) {
+      const t = part.trim().replace(/\s*\[[^\]]*\]\s*$/, '');
+      const m = t.match(/^(?:level\s+)?(\d{1,3})\s+([A-Za-z]+)$/);
+      if (!m) return part;
+      const si = SKILL_NAMES.findIndex(function (n) { return (n || '').toLowerCase() === m[2].toLowerCase(); });
+      if (si < 0) return part;
+      const cur = lvl(si) | 0;
+      if (cur <= 0) return part;                       // level not read yet -> say nothing
+      return part + (cur < +m[1] ? ' (' + cur + '/' + m[1] + ')' : ' ✓');
+    }).join(', ');
+  }
   function teleReqMet(T) {
     // NOTE: a row may carry no curated `req` at all and still be gated - most rows state
     // their requirements as TEXT, which teleRqGates turns into real checks. Bailing out on
@@ -1075,7 +1094,7 @@
         if (T.src) parts.push(T.src);
         if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
         parts.push(T.n);
-        if (T.rq) parts.push('req: ' + teleRqText(T));   // sheet requirement text (display-only, ungated)
+        if (T.rq) parts.push('req: ' + teleRqLive(T));   // requirement text + your current level
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
         const iv = teleItemChargeVal(T);

@@ -488,7 +488,7 @@
 
   function wmTeleTip(ts) {
     return ts.map(function (t2) {
-      const rq = teleRqText(t2), why = teleWhyCached(t2);
+      const rq = (typeof teleRqLive === 'function') ? teleRqLive(t2) : teleRqText(t2), why = teleWhyCached(t2);
       const ci = (typeof teleChargeInfo === 'function') ? teleChargeInfo(t2) : null;
       // green = usable now, red = a requirement is unmet (named below)
       const unk = (typeof teleTaskSetWhy === 'function') && teleTaskSetWhy(t2) === '?';
