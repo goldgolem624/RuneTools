@@ -250,31 +250,34 @@
     const dw = Math.max(1, Math.round(w * s)), dh = Math.max(1, Math.round(h * s));
     cx.drawImage(img, Math.round(mx - dw / 2), Math.round(my - dh / 2), dw, dh);
   }
-  // Place-label styling, shared by both map surfaces: a soft dark halo carries the text over
-  // any terrain without a boxed chip, and the glyphs sit slightly cool-white so they read as
-  // chrome rather than map content. The pinned label gets a teal tint + faint plate.
+  // Place-label styling, shared by both map surfaces.
+  // A halo alone cannot hold up here: the basemap's brightness changes under every glyph, so
+  // legibility swings wildly. Instead each label gets its own PLATE - a dark translucent pill
+  // with no border - which fixes text contrast at a constant, high value while the plate
+  // itself is dark enough to recede into the map. Type stays small and light so the plates
+  // read as chrome, not content.
+  function wmLabelPlate(cx, x, y, w, h, r, fill) {
+    cx.beginPath();
+    cx.moveTo(x + r, y); cx.lineTo(x + w - r, y); cx.quadraticCurveTo(x + w, y, x + w, y + r);
+    cx.lineTo(x + w, y + h - r); cx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    cx.lineTo(x + r, y + h); cx.quadraticCurveTo(x, y + h, x, y + h - r);
+    cx.lineTo(x, y + r); cx.quadraticCurveTo(x, y, x + r, y);
+    cx.closePath(); cx.fillStyle = fill; cx.fill();
+  }
   function wmLabelText(cx, text, x, y, hot, bx, by, bw, bh, dim) {
     cx.save();
     if (dim != null) cx.globalAlpha = dim;
-    if (hot && bw) {                                   // selection: faint rounded plate
-      cx.fillStyle = 'rgba(8,12,20,0.5)';
-      cx.beginPath();
-      const r = 4;
-      cx.moveTo(bx + r, by); cx.lineTo(bx + bw - r, by); cx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
-      cx.lineTo(bx + bw, by + bh - r); cx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
-      cx.lineTo(bx + r, by + bh); cx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
-      cx.lineTo(bx, by + r); cx.quadraticCurveTo(bx, by, bx + r, by);
-      cx.closePath(); cx.fill();
+    if (bw) {
+      cx.shadowColor = 'rgba(0,0,0,0.45)'; cx.shadowBlur = 4; cx.shadowOffsetY = 1;
+      wmLabelPlate(cx, bx, by, bw, bh, 3, hot ? 'rgba(10,26,24,0.86)' : 'rgba(9,12,17,0.72)');
+      cx.shadowBlur = 0; cx.shadowOffsetY = 0;
+      if (hot) {
+        cx.lineWidth = 1; cx.strokeStyle = 'rgba(126,240,216,0.55)';
+        wmLabelPlate(cx, bx + 0.5, by + 0.5, bw - 1, bh - 1, 3, 'rgba(0,0,0,0)');
+        cx.stroke();
+      }
     }
-    // Contrast comes from the HALO, not from a bright glyph: a wide blurred pass sinks the
-    // label into the terrain, a tight pass keeps the edges legible, and the fill is a warm
-    // ivory that sits with the map's palette instead of glaring off it.
-    cx.lineJoin = 'round'; cx.miterLimit = 2;
-    cx.shadowColor = 'rgba(0,0,0,0.7)'; cx.shadowBlur = 6; cx.shadowOffsetY = 1;
-    cx.lineWidth = 5; cx.strokeStyle = 'rgba(6,9,14,0.6)'; cx.strokeText(text, x, y);
-    cx.shadowBlur = 0; cx.shadowOffsetY = 0;
-    cx.lineWidth = 2.5; cx.strokeStyle = 'rgba(6,9,14,0.85)'; cx.strokeText(text, x, y);
-    cx.fillStyle = hot ? '#8ef0d8' : 'rgba(228,219,197,0.92)';
+    cx.fillStyle = hot ? '#8ef0d8' : 'rgba(232,237,244,0.96)';
     cx.fillText(text, x, y);
     cx.restore();
   }
@@ -284,7 +287,7 @@
     try { cx.letterSpacing = '0.35px'; } catch (e) {}
     let tw = wmTextW.get(text);
     if (tw === undefined) { tw = Math.ceil(cx.measureText(text).width); wmTextW.set(text, tw); }
-    const bw = tw + 8, bh = 15;
+    const bw = tw + 9, bh = 14;
     const x0 = sxp - bw / 2, y0 = syp - bh / 2;
     if (placed.some(function (p) { return x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y; })) return false;
     placed.push({ x: x0, y: y0, w: bw, h: bh });
@@ -487,7 +490,9 @@
     return ts.map(function (t2) {
       const rq = teleRqText(t2), why = teleWhyCached(t2);
       const ci = (typeof teleChargeInfo === 'function') ? teleChargeInfo(t2) : null;
-      return '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
+      // green = usable now, red = a requirement is unmet (named below)
+      const dot = '<span style="color:' + (why ? '#ff6b6b' : '#4dd28a') + '">●</span> ';
+      return dot + '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
         + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
         + (ci && ci.used < ci.max ? '<br>daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn() : '')
         + (typeof teleItemChargeVal === 'function' && teleItemChargeVal(t2) !== null ? '<br>' + teleItemChargeVal(t2).toLocaleString() + ' charges' : '')

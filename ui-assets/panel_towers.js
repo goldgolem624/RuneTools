@@ -381,7 +381,7 @@
     for (const d of inview.slice(0, cap)) {
       const sx = proj.projX(d.x), sy = proj.projY(d.y);
       if (sx < -proj.W || sx > proj.W * 2 || sy < -proj.W || sy > proj.W * 2) continue;
-      const tw = Math.ceil(cx.measureText(d.n).width), bw = tw + 8, bh = 15;
+      const tw = Math.ceil(cx.measureText(d.n).width), bw = tw + 9, bh = 14;
       // Clamp the chip fully inside the canvas so edge places pin to the border, not clip off.
       const x0 = Math.max(2, Math.min(sx - bw / 2, proj.W - bw - 2));
       const y0 = Math.max(2, Math.min(sy - bh / 2, proj.W - bh - 2));
@@ -393,10 +393,7 @@
       const off = Math.max(Math.abs(lx - half), Math.abs(ly - half)) / half;
       const dim = off > 0.55 ? Math.max(0.55, 1 - (off - 0.55) * 0.9) : 1;
       if (typeof wmLabelText === 'function') wmLabelText(cx, d.n, lx, ly, false, x0, y0, bw, bh, dim);
-      else {
-        cx.lineWidth = 2.25; cx.strokeStyle = 'rgba(4,7,12,0.8)'; cx.strokeText(d.n, lx, ly);
-        cx.fillStyle = 'rgba(233,240,250,0.94)'; cx.fillText(d.n, lx, ly);
-      }
+      else { cx.fillStyle = 'rgba(232,237,244,0.96)'; cx.fillText(d.n, lx, ly); }
       clueMapMarks.push({ sx: lx, sy: ly, r: 7, label: '<b>' + clueMapEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
     }
     cx.restore();
@@ -1062,8 +1059,11 @@
         if (iv !== null) parts.push(iv.toLocaleString() + ' charges');
         const why = teleWhyFull(T);
         if (why) { cell.style.opacity = '0.45'; parts.push(why); }
-        cell.dataset.tip = parts.join(', ');   // -> #global-tip (no native title tooltips here)
-        gCells.push(cell); gLines.push(parts.join(', '));
+        // Status dot: green = every requirement satisfied, red = something is missing (the
+        // reason follows on the same line). tipHtml renders <col=..> tags, so no raw markup.
+        const line = (why ? '<col=ff6b6b>●</col> ' : '<col=4dd28a>●</col> ') + parts.join(', ');
+        cell.dataset.tip = line; cell.dataset.tipHtml = '1';
+        gCells.push(cell); gLines.push(line);
         box.appendChild(cell);
         const d = Math.max(Math.abs(T.x - ctx0), Math.abs(T.y - cty0));
         notes.push({ T: T, d: d, why: why });
