@@ -15,17 +15,18 @@
   const BURTH_COURSE = [
     [66894, 'Log beam', 'Walk', 2917, 3578, 0],
     [66912, 'Wall', 'Climb-up', 2913, 3578, 0],
-    [66909, 'Balancing ledge', 'Walk-across', 2910, 3572, 1],
+    [66909, 'Balancing ledge', 'Walk-across', 2910, 3574, 1],
     [66902, 'Obstacle low wall', 'Climb-over', 2911, 3570, 1],
     [66904, 'Rope swing', 'Swing-on', 2912, 3573, 1],
     [66897, 'Monkey bars', 'Swing-across', 2914, 3575, 1],
-    [66910, 'Ledge', 'Jump-down', 2921, 3575, 0],
+    [66910, 'Ledge', 'Jump-down', 2921, 3575, 1],
   ];
-  const BURTH_ALT_TILES = {
-    66909: [[2910, 3572, 1], [2910, 3574, 1]],
-    66897: [[2914, 3575, 1], [2920, 3575, 1]],
-    66910: [[2921, 3575, 0], [2921, 3575, 1]],
-  };
+  // Balancing ledge, Monkey bars and Ledge each have a START and an END object. Burthorpe runs
+  // one way only, so the tile above is always the START - the one you interact with - and no
+  // nearest-of-two choice applies. (Anachronia's cave entrance is different: its section can be
+  // run either way, so there the nearer mouth is correct.)
+  //   ledge   end 2910,3572 p1   monkey bars end 2920,3575 p1   ledge-down end 2921,3575 p0
+  const BURTH_ALT_TILES = {};
   // A plain COUNTER of obstacles cleared, 0..6, back to 0 when the lap completes - so the
   // next obstacle's index IS the value. Unlike Anachronia's per-section bitmasks it cannot
   // say WHICH obstacles are done, so entering mid-course tells it nothing.
