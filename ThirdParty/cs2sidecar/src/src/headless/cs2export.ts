@@ -799,8 +799,9 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     ];
     for (const [vc, nm] of CURATED_VARCS) { if (!names.varc.has(vc)) { names.varc.set(vc, nm); } }
     // curated varbits, named from their decompiled usage where no cache label exists:
-    //   36034 gates the Shifting Tombs briefing in script13475 - "< 2" and "< 3" each release
-    //   a further round of Ozan's warning lines, so it counts how often they have been shown
+    //   36034 counts how often the Shifting Tombs briefing has been shown (live: 0 -> 1 on
+    //   being shown it). script13478 hint lines in script13475 are SUPPRESSED as it rises:
+    //   the basic set while it is < 2, the power-up set while < 3. 2 and 3 are not pinned down.
     const CURATED_VARBITS: Array<[number, string]> = [
         [36034, "shifting_tombs_ozan_warning"],
     ];
