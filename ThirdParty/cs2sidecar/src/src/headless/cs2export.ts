@@ -798,6 +798,13 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
         [4488, "boss_best_time"], [4489, "boss_best_time2"],
     ];
     for (const [vc, nm] of CURATED_VARCS) { if (!names.varc.has(vc)) { names.varc.set(vc, nm); } }
+    // curated varbits, named from their decompiled usage where no cache label exists:
+    //   36034 gates the Shifting Tombs briefing in script13475 - "< 2" and "< 3" each release
+    //   a further round of Ozan's warning lines, so it counts how often they have been shown
+    const CURATED_VARBITS: Array<[number, string]> = [
+        [36034, "shifting_tombs_ozan_warning"],
+    ];
+    for (const [vb, nm] of CURATED_VARBITS) { if (!names.varbit.has(vb)) { names.varbit.set(vb, nm); } }
     notes.push(`script-table varbit names: ${n}, varc names: ${names.varc.size}`);
 }
 

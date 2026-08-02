@@ -2341,8 +2341,6 @@
     {n:'Elite Dungeon 3',src:'Grouping System',x:3510,y:3691,p:0},
     {n:'Anima Islands',src:'Grouping System',x:3104,y:3021,p:3},
     {n:'Solak',src:'Grouping System',x:1373,y:5640,p:0},
-    {n:'Dungeoneering',src:'Grouping System',x:3450,y:3728,p:0},
-    {n:'Shifting Tombs',src:'Grouping System',x:2074,y:6946,p:0,rq:'50 Agility, The Jack of Spades'},
     {n:'Araxxor',src:'Grouping System',x:3700,y:3418,p:0,rq:'Morytania access'},
     {n:'Corporeal Beast',src:'Grouping System',x:2884,y:4373,p:2,sp:8133,rq:'Summer\'s End'},
     {n:'Dagannoth Kings',src:'Grouping System',x:2546,y:3758,p:0,sp:2883},
