@@ -727,7 +727,10 @@
             try {
               const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), cont, vid)) || {};
               const kk = r2.key || {};
-              if (kk[String(spec.key)] !== undefined) { cc[iid] = { v: kk[String(spec.key)] | 0, max: cap }; hit = true; break; }
+              if (kk[String(spec.key)] !== undefined) {
+                const raw = kk[String(spec.key)] | 0;
+                cc[iid] = { v: spec.spent ? Math.max(0, cap - raw) : raw, max: cap }; hit = true; break;
+              }
             } catch (e) {}
             // An unused variant carries no charge field yet: it is simply full.
             if (cap) { cc[iid] = { v: cap, max: cap }; hit = true; break; }
@@ -879,7 +882,6 @@
   // Quests panel shows). Baked so nothing has to match names at runtime.
   const TELE_QUEST_IDS = {
     "A Fairy Tale II - Cure a Queen": 309,
-    "Cabin Fever": 296,
     "Desert Treasure": 135,
     "Eadgar's Ruse": 75,
     "Fur 'n Seek": 33,
@@ -888,13 +890,11 @@
     "Mourning's End Part I": 289,
     "Plague City": 58,
     "Plague's End": 222,
-    "Priest in Peril": 276,
     "Recipe for Disaster: Freeing King Awowogei": 306,
-    "Shades of Mort'ton": 279,
     "Summer's End": 95,
     "The Fremennik Trials": 280,
-    "The Jack of Spades": 390,
     "The Mighty Fall": 368,
+    "Tree Gnome Village": 267,
     "Watchtower": 16,
     "Within the Light": 167
   };
@@ -2067,17 +2067,17 @@
     {n:'Clocktower',src:'Globetrotter arm guards',x:2593,y:3254,p:0,item:42103,kb:'3'},
     {n:'Gu\'Tanoth',src:'Globetrotter arm guards',x:2521,y:3062,p:0,item:42103,kb:'4'},
     {n:'Grand Exchange',src:'Globetrotter arm guards',x:3162,y:3464,p:0,item:42103,kb:'1'},
-    {n:'Tree Gnome Village',src:'Spirit tree re-rooter',x:2542,y:3169,p:0,item:41078,kb:'1'},
-    {n:'Tree Gnome Stronghold',src:'Spirit tree re-rooter',x:2462,y:3444,p:0,item:41078,kb:'2'},
-    {n:'Battlefield of Khazard',src:'Spirit tree re-rooter',x:2557,y:3259,p:0,item:41078,kb:'3'},
-    {n:'Grand Exchange',src:'Spirit tree re-rooter',x:3185,y:3511,p:0,item:41078,kb:'4'},
-    {n:'South Feldip Hills',src:'Spirit tree re-rooter',x:2416,y:2851,p:0,item:41078,kb:'5'},
-    {n:'Port Sarim',src:'Spirit tree re-rooter',x:3058,y:3257,p:0,item:41078,kb:'6'},
-    {n:'Etceteria',src:'Spirit tree re-rooter',x:2613,y:3855,p:0,item:41078,kb:'7'},
-    {n:'Brimhaven',src:'Spirit tree re-rooter',x:2800,y:3203,p:0,item:41078,kb:'8'},
-    {n:'Poison Waste',src:'Spirit tree re-rooter',x:2338,y:3109,p:0,item:41078,kb:'9'},
-    {n:'Prifddinas',src:'Spirit tree re-rooter',x:2275,y:3371,p:1,item:41078,kb:'0'},
-    {n:'Manor Farm',src:'Spirit tree re-rooter',x:2661,y:3383,p:0,item:41078,kb:'M'},
+    {n:'Tree Gnome Village',src:'Spirit tree re-rooter',x:2542,y:3169,p:0,item:41078,kb:'1',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Tree Gnome Stronghold',src:'Spirit tree re-rooter',x:2462,y:3444,p:0,item:41078,kb:'2',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Battlefield of Khazard',src:'Spirit tree re-rooter',x:2557,y:3259,p:0,item:41078,kb:'3',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Grand Exchange',src:'Spirit tree re-rooter',x:3185,y:3511,p:0,item:41078,kb:'4',rq:'92 Invention, Tree Gnome Village'},
+    {n:'South Feldip Hills',src:'Spirit tree re-rooter',x:2416,y:2851,p:0,item:41078,kb:'5',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Port Sarim',src:'Spirit tree re-rooter',x:3058,y:3257,p:0,item:41078,kb:'6',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Etceteria',src:'Spirit tree re-rooter',x:2613,y:3855,p:0,item:41078,kb:'7',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Brimhaven',src:'Spirit tree re-rooter',x:2800,y:3203,p:0,item:41078,kb:'8',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Poison Waste',src:'Spirit tree re-rooter',x:2338,y:3109,p:0,item:41078,kb:'9',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Prifddinas',src:'Spirit tree re-rooter',x:2275,y:3371,p:1,item:41078,kb:'0',rq:'92 Invention, Tree Gnome Village'},
+    {n:'Manor Farm',src:'Spirit tree re-rooter',x:2661,y:3383,p:0,item:41078,kb:'M',rq:'92 Invention, Tree Gnome Village'},
     {n:'Shifting Tombs',src:'Teletabs (excluding ones with spell versions)',x:2076,y:6952,p:0,item:40264},
     {n:'Sophanem Slayer Dungeon',src:'Teletabs (excluding ones with spell versions)',x:3288,y:2706,p:0,item:40263},
     {n:'Merchant District',src:'Teletabs (excluding ones with spell versions)',x:3207,y:2781,p:0,item:40261},
@@ -2578,6 +2578,9 @@
   const TELE_ITEM_CHARGES = {
     23643: { key: 0, caps: {} },                                  // TokKul-Zo (Charged)
     39387: { key: 0, caps: { 39385: 5, 39387: 5, 41066: 100 } },  // Enlightened amulet / (new) / (c)
+    // These two store USES SPENT, not charges left: the game shows "10 - value".
+    41078: { key: 37519, spent: true, caps: { 41078: 10 } },       // Spirit tree re-rooter
+    41076: { key: 37518, spent: true, caps: { 41076: 10 } },       // Portable fairy ring
   };
   // Items whose daily teleports are tracked as a REMAINING count (the opposite of
   // TELE_CHARGES, which counts uses spent). itemId -> varbit holding what is left today.
