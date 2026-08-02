@@ -2579,22 +2579,6 @@
     }
   }
   for (const T of MAP_TELEPORTS) if (T.src === 'Grouping System') T.iconUrl = TELE_GROUP_ICON;
-  // Fairy ring rows carry their code in kb; give each one the unlock its code requires.
-  for (const T of MAP_TELEPORTS) {
-    if (!/fairy ring/i.test(T.src || '')) continue;
-    const g = TELE_FAIRY_UNLOCK[String(T.kb || '').replace(/\s+/g, '').toUpperCase()];
-    if (!g) continue;
-    T.req = T.req || {};
-    if (g.vb != null) {
-      if (T.req.vb != null) continue;
-      T.req.vb = g.vb;
-      if (g.min != null) T.req.vbMin = g.min; else T.req.vbVal = g.val;
-      T.req.vbWhy = g.why;
-    } else {
-      if (T.req.vp != null) continue;
-      T.req.vp = g.vp; T.req.vpMin = g.min; T.req.vpWhy = g.why;
-    }
-  }
   // Spell rows resolve to their cache struct by DESTINATION (within 3 tiles): the struct
   // gives spellbook + level + rune costs, all live-checkable.
   for (const T of MAP_TELEPORTS) {
@@ -2657,6 +2641,22 @@
     DLP: { vb:52651, min:35, why:'needs progress through Secrets Of Amberfell' },
     DLS: { vp:2696, min:101, why:'needs progress through In Search Of The Myreque' },
   };
+  // Fairy ring rows carry their code in kb; give each one the unlock its code requires.
+  for (const T of MAP_TELEPORTS) {
+    if (!/fairy ring/i.test(T.src || '')) continue;
+    const g = TELE_FAIRY_UNLOCK[String(T.kb || '').replace(/\s+/g, '').toUpperCase()];
+    if (!g) continue;
+    T.req = T.req || {};
+    if (g.vb != null) {
+      if (T.req.vb != null) continue;
+      T.req.vb = g.vb;
+      if (g.min != null) T.req.vbMin = g.min; else T.req.vbVal = g.val;
+      T.req.vbWhy = g.why;
+    } else {
+      if (T.req.vp != null) continue;
+      T.req.vp = g.vp; T.req.vpMin = g.min; T.req.vpWhy = g.why;
+    }
+  }
   const TELE_ITEM_ALIASES = {
     39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
     13562: [19760],                    // Explorer's ring: 4 also has the cabbage-port
