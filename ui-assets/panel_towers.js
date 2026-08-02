@@ -822,6 +822,27 @@
       return esc(part) + (ok ? '' : ' (' + cur + '/' + m[1] + ')') + ' ' + teleRqDot(ok, mode);
     }).join(', ');
   }
+  // Quest and achievement-set tokens in the requirement text get the same treatment; the
+  // status has to be visible for EVERY requirement, not just skills.
+  function teleRqAnnotate(T, mode) {
+    const txt = teleRqLive(T, mode);
+    if (!txt || txt === 'unverified') return txt;
+    return txt.split(/\s*,\s*/).map(function (part) {
+      if (part.indexOf('\u25cf') >= 0) return part;    // already carries a dot
+      const t = part.replace(/<[^>]*>/g, '').trim();
+      const qid = TELE_QUEST_IDS[t];
+      if (qid != null && typeof QUEST_BY_ID !== 'undefined') {
+        const q = QUEST_BY_ID.get(qid);
+        if (q) return part + ' ' + teleRqDot(questStatus(q, teleQuestVp) === 2, mode);
+      }
+      const g = teleRqGates(T).taskSet;
+      if (g && /achievements?$/i.test(t)) {
+        const tw = teleTaskSetWhy(T);
+        if (tw !== '?') return part + ' ' + teleRqDot(!tw, mode);
+      }
+      return part;
+    }).join(', ');
+  }
   // Curated requirements rendered the same way the requirement TEXT is: each one listed
   // with a met/unmet dot, so a satisfied requirement is visible rather than silently
   // dropped (only failures used to appear at all).
@@ -859,16 +880,19 @@
     if (!r) return [];
     const out = [];
     const add = function (label, ok) { out.push(teleRqDot(ok, mode) + ' ' + label); };
+    const rqTxt = String(T.rq || '').toLowerCase();
     const qid = teleQuestIdOf(r);
     if (qid != null || r.questName) {
       const q = (qid != null && typeof QUEST_BY_ID !== 'undefined') ? QUEST_BY_ID.get(qid) : null;
-      add((q && q.name) || r.questName || ('quest ' + qid), teleQuestOk(r));
+      const label = (q && q.name) || r.questName || ('quest ' + qid);
+      if (rqTxt.indexOf(String(label).toLowerCase()) < 0) add(label, teleQuestOk(r));
     }
     if (r.skill != null && r.level != null) {
       const cur = questSkillLevels()(r.skill) | 0;
       const nm = (typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[r.skill]) || ('skill ' + r.skill);
-      add(r.level + ' ' + nm + (cur > 0 && cur < r.level ? ' (' + cur + '/' + r.level + ')' : ''),
-          !(cur > 0 && cur < r.level));
+      if (rqTxt.indexOf((r.level + ' ' + nm).toLowerCase()) < 0)
+        add(r.level + ' ' + nm + (cur > 0 && cur < r.level ? ' (' + cur + '/' + r.level + ')' : ''),
+            !(cur > 0 && cur < r.level));
     }
     if (r.wornAll && r.wornAll.length) {
       let got = 0;
@@ -886,11 +910,7 @@
       add('item carried', ok);
     }
     const tw = teleTaskSetWhy(T);
-    if (tw && tw !== '?') add(tw.replace(/^needs /, ''), false);
-    else if (tw !== '?' && teleRqGates(T).taskSet) {
-      const ts = teleRqGates(T).taskSet;
-      add(ts.area + ' ' + String(ts.tier).toLowerCase() + ' tasks', true);
-    }
+    if (tw && tw !== '?' && !rqTxt) add(tw.replace(/^needs /, ''), false);
     return out;
   }
   function teleReqMet(T) {
@@ -1107,7 +1127,10 @@
     const parts = [];
     const cw = teleChargeWhy(T); if (cw) parts.push(cw);
     const w = teleReqWhy(T); if (w) parts.push(w);
-    if (!teleItemOk(T)) {
+    // A set row already reports its own progress ("full outfit worn (0/5)"), so naming one
+    // missing piece on top of that says the same thing twice.
+    const wa = T.req && T.req.wornAll;
+    if (!teleItemOk(T) && !(wa && wa.indexOf(T.item) >= 0)) {
       const bn = teleItemNames[T.item];
       parts.push(bn ? 'needs ' + bn : 'item not held');
     }
@@ -1241,7 +1264,7 @@
         if (T.src) parts.push(T.src);
         if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
         parts.push(T.n);
-        if (T.rq) parts.push('req: ' + teleRqLive(T));   // requirement text + your current level
+        if (T.rq) parts.push('req: ' + teleRqAnnotate(T));   // each requirement with its status
         const reqLines = teleReqLines(T);
         for (const ln of reqLines) parts.push(ln);
         const ci = teleChargeInfo(T);
@@ -1255,8 +1278,15 @@
         if (why) {
           cell.style.opacity = '0.45';
           // Reasons already spelled out in the requirement list must not be repeated.
-          const shown = reqLines.join(' | ');
-          const rest = why.split(', ').filter(function (w) { return shown.indexOf(w) < 0; }).join(', ');
+          // Anything the lines above already state (outfit progress, a named quest, a level,
+          // a task set) must not be echoed as a second sentence.
+          const shown = (reqLines.join(' | ') + ' | ' + (T.rq || '')).toLowerCase();
+          const rest = why.split(', ').filter(function (w) {
+            const k = w.toLowerCase().replace(/^needs /, '').replace(/\s*\(\d+\/\d+\)/, '');
+            if (/^full outfit not worn/.test(w.toLowerCase())) return false;
+            if (/ not complete$/.test(k)) return false;
+            return shown.indexOf(k) < 0;
+          }).join(', ');
           if (rest) parts.push(rest);
         }
         // Status dot: green = every requirement satisfied, red = something is missing (the
@@ -1722,15 +1752,14 @@
     {n:'Wilderness sword - Wilderness herb patch',src:'Achievement tasks set',x:3141,y:3816,p:0,item:37904,kb:'1, 1'},
     {n:'Wilderness sword - Edgeville',src:'Achievement tasks set',x:3084,y:3502,p:0,item:37904,kb:'1, 2'},
     {n:'Wilderness sword 2+ - Forinthry Dungeon',src:'Achievement tasks set',x:3083,y:10060,p:0,item:37905,kb:'1, 3'},
-    {n:'Wilderness sword 4  - Warband camp RDI',src:'Achievement tasks set',x:3298,y:3781,p:0,item:37907,kb:'1, 4'},
-    {n:'Wilderness sword 4 - Wilderness Agility course',src:'Achievement tasks set',x:3000,y:3913,p:0,item:37907,kb:'1, 5'},
+    {n:'Wilderness sword 4 - Wilderness Agility course',src:'Achievement tasks set',x:3000,y:3913,p:0,item:37907,kb:'1, 4'},
     {n:'Ardougne cloak - Kandarin Monastery',src:'Achievement tasks set',x:2606,y:3219,p:0,item:15345,kb:'1'},
     {n:'Ardougne cloak 2+ - Ardougne allotment',src:'Achievement tasks set',x:2671,y:3376,p:0,item:15347,kb:'2'},
     {n:'Desert amulet 2+ - Nardah',src:'Achievement tasks set',x:3428,y:2919,p:0,item:27094,kb:'1'},
     {n:'Desert amulet 4 - Uzer',src:'Achievement tasks set',x:3475,y:3096,p:0,item:27096,kb:'2'},
     {n:'Enchanted lyre - Waterbirth',src:'Achievement tasks set',x:2528,y:3741,p:0,item:3690,rq:'Fremennik hard achievements'},
     {n:'Enchanted lyre - Jatizso',src:'Achievement tasks set',x:2404,y:3781,p:0,item:3690,rq:'Fremennik elite achievements'},
-    {n:'Enchanted lyre - Rellekka Market',src:'Achievement tasks set',x:2654,y:3693,p:0,item:3690,rq:'The Fremennik Trials'},
+    {n:'Enchanted lyre - Rellekka Market',src:'Achievement tasks set',x:2654,y:3693,p:0,item:3690,rq:'Fremennik hard achievements'},
     {n:'Fremennik sea boots 4 - Rellekka',src:'Achievement tasks set',x:2643,y:3678,p:0,item:19766},
     {n:'Karamja gloves 3+ - Shilo Village gem dungeon',src:'Achievement tasks set',x:2840,y:9386,p:0,item:11140},
     {n:'Morytania legs 2+ - Ectofuntus slime pit',src:'Achievement tasks set',x:3683,y:9887,p:0,item:24135},
@@ -1934,7 +1963,7 @@
     {n:'Tele-group Fishing Guild',src:'Lunar Spellbook',x:2612,y:3381,p:0,sp:14432,rq:'85 Magic, Lunar Diplomacy'},
     {n:'Tele-group Catherby',src:'Lunar Spellbook',x:2789,y:3454,p:0,sp:14433,rq:'88 Magic, Lunar Diplomacy'},
     {n:'Tele-group Ice Plateau',src:'Lunar Spellbook',x:2973,y:3940,p:0,sp:14434,rq:'89 Magic, Lunar Diplomacy'},
-    {n:'Tele-group Trollheim',src:'Lunar Spellbook',x:2818,y:3677,p:0,rq:'92 Magic, Lunar Diplomacy, 4000000 produce points'},
+    {n:'Tele-group Trollheim',src:'Lunar Spellbook',x:2817,y:3676,p:0,su:10,rq:'92 Magic, Lunar Diplomacy, unlocked at Livid Farm'},
     {n:'Moonclan',src:'Lunar Spellbook',x:2112,y:3916,p:0,sp:14403,rq:'69 Magic, Lunar Diplomacy'},
     {n:'Ourania',src:'Lunar Spellbook',x:2466,y:3245,p:0,sp:14442,rq:'71 Magic, Lunar Diplomacy'},
     {n:'Waterbirth',src:'Lunar Spellbook',x:2547,y:3754,p:0,sp:14404,rq:'72 Magic, Lunar Diplomacy'},
@@ -1945,7 +1974,7 @@
     {n:'Fishing Guild',src:'Lunar Spellbook',x:2612,y:3381,p:0,sp:14414,rq:'86 Magic, Lunar Diplomacy'},
     {n:'Catherby',src:'Lunar Spellbook',x:2789,y:3454,p:0,sp:14415,rq:'87 Magic, Lunar Diplomacy'},
     {n:'Ice Plateau',src:'Lunar Spellbook',x:2973,y:3940,p:0,sp:14416,rq:'89 Magic, Lunar Diplomacy'},
-    {n:'Trollheim (Livid)',src:'Lunar Spellbook',x:2818,y:3677,p:0,rq:'92 Magic, Lunar Diplomacy, 370000 produce points'},
+    {n:'Trollheim (Livid)',src:'Lunar Spellbook',x:2817,y:3676,p:0,su:9,rq:'92 Magic, Lunar Diplomacy, unlocked at Livid Farm'},
     {n:'Zanaris',src:'Portable fairy ring',x:2412,y:4434,p:0,item:41076,rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Asgarnia: Mudskipper Point',src:'Portable fairy ring',x:2996,y:3114,p:0,item:41076,kb:'AIQ',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Dungeons: Ancient cavern',src:'Portable fairy ring',x:1737,y:5342,p:0,item:41076,kb:'BJQ',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
@@ -2446,7 +2475,7 @@
   // from the game's own per-spell unlock resolver script15411: [0 varbit | 1 varp, id, min],
   // unlocked while value >= min. Keyed by destination tile; regenerate after game updates
   // alongside the other baked cache tables.
-  const TELE_SPELLS = {"1404,5725":[0,85,[[561,4],[563,3],[58450,1]]],"2114,3915":[2,70,[[557,4],[563,1],[9075,2]]],"2413,2847":[0,10,[[555,1],[556,1],[563,1]]],"2467,3245":[2,71,[[557,6],[563,1],[9075,2]],[0,6,1]],"2543,3569":[2,76,[[554,6],[563,2],[9075,2]]],"2546,3756":[2,73,[[555,5],[563,1],[9075,2]]],"2613,3383":[2,86,[[555,10],[563,3],[9075,3]]],"2636,3167":[2,79,[[555,8],[563,2],[9075,2]]],"2661,3302":[0,51,[[555,2],[563,2]],[1,2386,30]],"2665,3375":[2,76,[[555,5],[563,1],[9075,2]],[0,16374,3]],"2757,3478":[0,90,[[563,1],[566,2]]],"2785,3664":[2,83,[[563,3],[9075,3],[58450,1]]],"2790,3452":[2,88,[[555,12],[563,3],[9075,3]]],"2797,2798":[0,64,[[554,2],[555,2],[563,2]]],"2803,2917":[2,81,[[563,2],[9075,3],[58450,1]],[1,2265,50]],"2817,3676":[2,92,[[555,20],[563,3],[9075,3]]],"2882,3668":[0,61,[[554,2],[563,2]],[1,2549,110]],"2910,3713":[0,61,[[554,2],[563,2]],[0,4291,200]],"2912,3423":[0,19,[[554,1],[556,3],[563,1]]],"2933,4712":[0,58,[[557,2],[563,2]]],"2953,3224":[3,1,[]],"2965,3378":[0,82,[[555,1],[563,1],[566,1]]],"2968,3696":[1,78,[[554,3],[556,2],[563,2]]],"2975,3938":[2,90,[[555,16],[563,3],[9075,3]]],"2976,3872":[1,96,[[555,8],[563,2]]],"3004,3470":[1,72,[[555,4],[563,2]]],"3055,3310":[2,72,[[556,2],[563,1],[9075,2]],[0,16374,1]],"3098,9882":[1,54,[[554,1],[556,1],[563,2]]],"3212,3434":[0,25,[[554,1],[556,3],[563,1]]],"3219,3248":[0,72,[[557,1],[561,3],[563,1]]],"3222,3666":[1,84,[[563,2],[566,2]]],"3288,3886":[1,90,[[563,2],[565,2]]],"3377,3402":[1,60,[[563,2],[566,1]]],"3378,2876":[0,61,[[554,2],[563,2]]],"3481,1554":[0,28,[[555,1],[556,3],[563,1]]],"3501,3484":[1,66,[[563,2],[565,1]]],"4316,819":[0,70,[[563,1],[564,3],[566,1]],[0,36971,1]],"5316,2494":[0,75,[[561,2],[563,1],[58450,1]],[0,44469,50]],"5600,2331":[0,78,[[561,2],[563,1],[58450,1]],[0,44469,50]]};
+  const TELE_SPELLS = {"1404,5725":[0,85,[[561,4],[563,3],[58450,1]],null,11316],"2114,3915":[2,70,[[557,4],[563,1],[9075,2]],null,14403],"2413,2847":[0,10,[[555,1],[556,1],[563,1]],null,36136],"2467,3245":[2,71,[[557,6],[563,1],[9075,2]],[0,6,1],14442],"2543,3569":[2,76,[[554,6],[563,2],[9075,2]],null,14406],"2546,3756":[2,73,[[555,5],[563,1],[9075,2]],null,14404],"2613,3383":[2,86,[[555,10],[563,3],[9075,3]],null,14414],"2636,3167":[2,79,[[555,8],[563,2],[9075,2]],null,14408],"2661,3302":[0,51,[[555,2],[563,2]],[1,2386,30],35028],"2665,3375":[2,76,[[555,5],[563,1],[9075,2]],[0,16374,3],14446],"2757,3478":[0,90,[[563,1],[566,2]],null,36130],"2785,3664":[2,83,[[563,3],[9075,3],[58450,1]],null,1780],"2790,3452":[2,88,[[555,12],[563,3],[9075,3]],null,14415],"2797,2798":[0,64,[[554,2],[555,2],[563,2]]],"2803,2917":[2,81,[[563,2],[9075,3],[58450,1]],[1,2265,50],1779],"2817,3676":[2,92,[[555,20],[563,3],[9075,3]],[0,16374,10],14453],"2882,3668":[0,61,[[554,2],[563,2]],[1,2549,110],35032],"2910,3713":[0,61,[[554,2],[563,2]],[0,4291,200],35029],"2912,3423":[0,19,[[554,1],[556,3],[563,1]],null,35031],"2933,4712":[0,58,[[557,2],[563,2]]],"2953,3224":[3,1,[],null,36133],"2965,3378":[0,82,[[555,1],[563,1],[566,1]],null,36132],"2968,3696":[1,78,[[554,3],[556,2],[563,2]],null,36124],"2975,3938":[2,90,[[555,16],[563,3],[9075,3]],null,14416],"2976,3872":[1,96,[[555,8],[563,2]],null,36125],"3004,3470":[1,72,[[555,4],[563,2]],null,36127],"3055,3310":[2,72,[[556,2],[563,1],[9075,2]],[0,16374,1],14444],"3098,9882":[1,54,[[554,1],[556,1],[563,2]],null,36128],"3212,3434":[0,25,[[554,1],[556,3],[563,1]],null,36137],"3219,3248":[0,72,[[557,1],[561,3],[563,1]],null,36135],"3222,3666":[1,84,[[563,2],[566,2]],null,36123],"3288,3886":[1,90,[[563,2],[565,2]],null,36122],"3377,3402":[1,60,[[563,2],[566,1]],null,36129],"3378,2876":[0,61,[[554,2],[563,2]],null,35029],"3481,1554":[0,28,[[555,1],[556,3],[563,1]],null,35665],"3501,3484":[1,66,[[563,2],[565,1]],null,36126],"4316,819":[0,70,[[563,1],[564,3],[566,1]],[0,36971,1],35030],"5316,2494":[0,75,[[561,2],[563,1],[58450,1]],[0,44469,50],10370],"5600,2331":[0,78,[[561,2],[563,1],[58450,1]],[0,44469,50],10369]};
   // Rune-pouch slot TYPE index (Extra_ints key 1, 6-bit per slot) -> rune item id(s);
   // combination runes credit both elements.
   const TELE_RUNE_IDX = { 1: [556], 2: [555], 3: [557], 4: [554], 5: [556, 557], 6: [557, 554],
@@ -2510,7 +2539,12 @@
       const d = Math.max(Math.abs(p[0] - T.x), Math.abs(p[1] - T.y));
       if (d < bd) { bd = d; best = TELE_SPELLS[k]; }
     }
-    if (best) T.req = Object.assign(T.req || {}, { spell: best });
+    if (!best) continue;
+    // A row may override the unlock threshold: two spells can share one arrival tile
+    // (the single and tele-group forms) while unlocking at different points.
+    if (T.su != null && best[3]) best = best.slice(0, 3).concat([[best[3][0], best[3][1], T.su]], best.slice(4));
+    T.req = Object.assign(T.req || {}, { spell: best });
+    if (T.sp == null && best[4] != null) T.sp = best[4];   // spell icon from its own struct
   }
   // Grace of the Elves teleports go through the two Max Guild garden portals (locs
   // 92239/92240): each is a multiloc whose varbit VALUE (vb 25054 / 25055) indexes the
