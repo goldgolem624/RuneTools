@@ -2500,6 +2500,9 @@
   // carries no level, so these are listed by pouch id; add a row as each is confirmed.
   const TELE_FAMILIAR_LEVEL = {
     12810: 57,        // Spirit graahk pouch
+    12812: 57,        // Spirit kyatt pouch
+    12788: 83,        // Lava titan pouch
+    32829: 88,        // Light creature pouch (both destinations)
   };
   for (const T of MAP_TELEPORTS) {
     const lv = (T.item > 0) ? TELE_FAMILIAR_LEVEL[T.item] : 0;
