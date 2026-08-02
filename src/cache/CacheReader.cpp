@@ -1869,10 +1869,16 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         auto cl = [](double v){ int i = (int)(v + 0.5); return i < 0 ? 0 : (i > 255 ? 255 : i); };
         return (cl(((col >> 16) & 0xff) * f) << 16) | (cl(((col >> 8) & 0xff) * f) << 8) | cl((col & 0xff) * f);
     };
-    // Underlay blend (rsmv parity): each tile's colour is the average underlay RGB over a 10x10 box
-    // (dx,dz in -4..+5), precomputed over a padded window with a separable box blur (O(1) per tile).
-    // Overlays / walls / map-scene icons draw crisply ON TOP.
-    const int PAD = 5, PW = WT + 2 * PAD;
+    // Underlay blend: each tile's colour is the average underlay RGB over a (2*UBR+1)^2 box,
+    // precomputed over a padded window with a separable box blur (O(1) per tile). Overlays /
+    // walls / map-scene icons draw crisply ON TOP.
+    // RADIUS: a 10-wide box (the old rsmv-parity value) is far too wide for terrain whose
+    // ground types interleave finely - on Tuai Leit it averaged grass into sand until only 7%
+    // of land still read as green against the game map's 31%, i.e. the island went olive.
+    // The blur also runs BEFORE the per-pixel bilinear pass, so its width compounds. Radius 1
+    // keeps the transition soft while preserving each ground type's own colour.
+    const int UBR = 1;
+    const int PAD = UBR + 1, PW = WT + 2 * PAD;
     std::vector<int> rawR((size_t)PW * PW, 0), rawG((size_t)PW * PW, 0), rawB((size_t)PW * PW, 0);
     std::vector<unsigned char> rawM((size_t)PW * PW, 0);
     for (int px = 0; px < PW; ++px) for (int py = 0; py < PW; ++py) {
@@ -1886,7 +1892,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     std::vector<int> hR((size_t)PW * PW, 0), hG((size_t)PW * PW, 0), hB((size_t)PW * PW, 0), hC((size_t)PW * PW, 0);
     for (int py = 0; py < PW; ++py) for (int px = 0; px < PW; ++px) {
         int sR = 0, sG = 0, sB = 0, sC = 0;
-        for (int dx = -4; dx <= 5; ++dx) { int qx = px + dx; if (qx < 0 || qx >= PW) continue;
+        for (int dx = -UBR; dx <= UBR; ++dx) { int qx = px + dx; if (qx < 0 || qx >= PW) continue;
             size_t j = (size_t)qx * PW + py; if (!rawM[j]) continue; sR += rawR[j]; sG += rawG[j]; sB += rawB[j]; ++sC; }
         size_t i = (size_t)px * PW + py; hR[i] = sR; hG[i] = sG; hB[i] = sB; hC[i] = sC;
     }
@@ -1896,7 +1902,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     std::vector<int> blendUl((size_t)BW * BW, -1);
     for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
         int px = wx + PAD, py = wy + PAD, sR = 0, sG = 0, sB = 0, sC = 0;
-        for (int dz = -4; dz <= 5; ++dz) { int qy = py + dz; if (qy < 0 || qy >= PW) continue;
+        for (int dz = -UBR; dz <= UBR; ++dz) { int qy = py + dz; if (qy < 0 || qy >= PW) continue;
             size_t j = (size_t)px * PW + qy; sR += hR[j]; sG += hG[j]; sB += hB[j]; sC += hC[j]; }
         if (sC > 0) blendUl[(size_t)(wx + 1) * BW + (wy + 1)] = ((sR / sC) << 16) | ((sG / sC) << 8) | (sB / sC);
     }
