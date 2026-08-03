@@ -2577,9 +2577,12 @@ std::string StructParamsJson(int structId) {
 
 // ---- HUD panel mount registry (enum 7716 + panel structs) -------------------------------------
 namespace {
-// Content-slot id -> mount comp SUB under group 1477. Enum 7716 (js5-17) maps each HUD
-// content-slot id to a panel StructType (js5-22) whose param 3503 packs the panel's mount
-// comp as (group<<16)|sub; every registered mount sits under 1477 (the gameframe), so only
+// Content INTERFACE GROUP id -> mount comp SUB under group 1477. Enum 7716 (js5-17) maps each
+// HUD content-slot id to a panel StructType (js5-22); the slot ids themselves are NOT group
+// ids (live-disproven 2026-08-02: keys are 0-46/1000-1053/2000-2008). The group link is params
+// 3514-3517 = the panel's CONTENT interface comps packed (group<<16)|sub (Skills 320:0,
+// Prayers 1457:2, Backpack 1474:0; some panels carry none). Param 3503 packs the panel's
+// mount comp the same way; every registered mount sits under 1477 (the gameframe), so only
 // the sub is kept (a non-1477 mount is skipped rather than guessed at). Built once the
 // enum + struct indexes are ready; until then every lookup retries the build.
 std::unordered_map<int, int> g_panel_mounts;
@@ -2621,9 +2624,15 @@ void BuildPanelMountsLocked() {
         DecodedStruct ds;
         if (!DecodeStructFile(structs->ReadFile(a, f), ds)) continue;
         auto it = ds.ints.find(3503);
-        if (it == ds.ints.end()) continue;
-        int packed = it->second;
-        if ((packed >> 16) == 1477) g_panel_mounts[slot] = packed & 0xFFFF;
+        if (it == ds.ints.end() || (it->second >> 16) != 1477) continue;
+        int mount_sub = it->second & 0xFFFF;
+        for (int p = 3514; p <= 3517; ++p) {                 // content comps -> hosted group ids
+            auto ct = ds.ints.find(p);
+            if (ct == ds.ints.end()) continue;
+            int cg = ct->second >> 16;
+            if (cg > 0 && cg != 1477 && !g_panel_mounts.count(cg)) g_panel_mounts[cg] = mount_sub;
+        }
+        (void)slot;   // slot ids are registry-internal, not group ids -- never key on them
     }
     g_panel_mounts_built = true;
 }

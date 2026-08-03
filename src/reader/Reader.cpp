@@ -3928,11 +3928,7 @@ static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
 // req_group: this spec only applies while that group is ALSO open -- variant routing for groups
 // that render inside different window frames with different position vars (0 = always applies).
 // A group may have several specs; iface_panel_origin tries them in table order.
-// \ center_in_mount: centre the group's ROOT layer inside the mount slot's rect. For a central
-// interface whose content is NOT pre-laid-out for the slot (1286's root is 512x218 in the
-// 512x352 overlay frame), the engine centres the root itself -- origin = slot TL + (slot-root)/2.
-// Leave false for content pre-centred for its slot (720) -- centring there double-applies.
-struct PanelOriginSpec { int group; int var_x; int var_y; int off_left; int off_top; int mount_comp; bool is_varc; int req_group; bool center_in_mount; };
+struct PanelOriginSpec { int group; int var_x; int var_y; int off_left; int off_top; int mount_comp; bool is_varc; int req_group; };
 static const PanelOriginSpec kPanelOrigins[] = {
     { 1188, 3082, 3083, 0, 0, 0, true },   // Choose dialog (option select) -- centered; position via live VARC 3082/3083
     { 1184, 3082, 3083, 0, 0, 0, true },   // NPC dialog
@@ -3945,11 +3941,9 @@ static const PanelOriginSpec kPanelOrigins[] = {
                                   // 3089/3090.
     { 13,   3089, 3090, 0, 31, 0, true },  // Bank pin -- window-frame varcs 3089/3090
     { 1224, 3089, 3090, 0, 0, 0, true },   // Ritual selection (Necromancy! communion ritual) -- window-frame varcs 3089/3090
-    { 1286, 0, 0, 0, 0, 728, false, 0, true }, // Discovered Ratings (Fish Flingers) -- a CENTRED central interface in the
-                                  // 512x352 "Central Interface (Overlay)" frame, comp 1477:728 (live 403,133; title
-                                  // text 731:14). Root layer 512x218 is NOT pre-centred for the slot, so
-                                  // center_in_mount centres it: origin = slot TL + (0, (352-218)/2). The old varc
-                                  // 3089/3090 spec mis-anchored (those track the make-x window family, not 1286).
+    { 1286, 3089, 3090, 0, 0, 0, true },   // Discovered Ratings (Fish Flingers) -- window-frame varcs 3089/3090.
+                                  // 2026-08-02: anchoring it to the central-overlay frame 1477:728 (centred) was
+                                  // tried and REVERTED -- the box did not track the live window. Keep the varcs.
     // House Controls (POH rework): group 1665 is a sub-overlay that mounts into a resizable
     // window frame whose SLOT COMP VARIES with docking (comp 376 when floating, 116/171/...
     // when docked into a tabbed slot) -- so a fixed mount comp is wrong the moment it docks.
@@ -4056,8 +4050,7 @@ void SetIfaceOffset(int gid, int dx, int dy) {
 // Absolute screen position of a component in the game frame (group 1477) -- the accumulated +0x70/74
 // down the widget tree. Used to anchor a central-interface sub-interface (e.g. the donation window 656)
 // to the slot it renders into. false when group 1477 / the component isn't found.
-static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount_comp, int& ox, int& oy,
-                                    int* ow = nullptr, int* oh = nullptr) {
+static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount_comp, int& ox, int& oy) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
@@ -4069,13 +4062,13 @@ static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a) return false;
-        bool found = false; int fx = 0, fy = 0, fw = 0, fh = 0;
+        bool found = false; int fx = 0, fy = 0;
         std::function<void(std::uint64_t,int,int,int)> walk =
             [&](std::uint64_t node, int bx, int by, int depth) {
             if (found || depth > 14) return;
             int ax = bx + r32(node + 0x70), ay = by + r32(node + 0x74);
             if (r16(node + 0x2a) == mount_comp && r32(node + 0x78) > 0 && r32(node + 0x7c) > 0) {
-                fx = ax; fy = ay; fw = r32(node + 0x78); fh = r32(node + 0x7c); found = true; return;
+                fx = ax; fy = ay; found = true; return;
             }
             const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
             for (int k = 0; k < 3 && !found; ++k) {
@@ -4095,38 +4088,7 @@ static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount
             std::uint64_t nd = r64(wn);
             if (nd > 0x10000) walk(nd, 0, 0, 0);
         }
-        if (found) { ox = fx; oy = fy; if (ow) *ow = fw; if (oh) *oh = fh; return true; }
-        return false;
-    }
-    return false;
-}
-
-// Size of an open group's ROOT layer (comp 0's live +0x78/+0x7c) -- the fixed canvas a central
-// interface lays its whole tree out in (1286 = 512x218). This is what the engine centres inside
-// the mount slot, so it is the size center_in_mount needs. Falls back to the first sized root
-// when comp 0 itself carries no rect. false = group absent / no sized root.
-static bool read_iface_group_root_size(HANDLE h, std::uint64_t main_data, int gid, int& w, int& hh) {
-    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
-    auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
-    std::uint64_t gs, ge; iface_groups_range(h, main_data, gs, ge);
-    if (!gs) return false;
-    for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
-        std::uint64_t ap2 = r64(g + 8);
-        if (ap2 <= 0x10000 || r32(ap2) != gid) continue;
-        std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
-        std::uint64_t a = ws + 8, b = we + 8;
-        if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) return false;
-        int fw = 0, fh = 0;   // first sized root = fallback if comp 0 has no rect
-        for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
-            std::uint64_t nd = r64(wn);
-            if (nd <= 0x10000) continue;
-            int nw = r32(nd + 0x78), nh = r32(nd + 0x7c);
-            if (nw <= 0 || nh <= 0) continue;
-            if (r16(nd + 0x2a) == 0) { w = nw; hh = nh; return true; }
-            if (!fw) { fw = nw; fh = nh; }
-        }
-        if (fw) { w = fw; hh = fh; return true; }
+        if (found) { ox = fx; oy = fy; return true; }
         return false;
     }
     return false;
@@ -4242,16 +4204,8 @@ static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t 
         if (okx && oky) {
             ox = vx - s.off_left; oy = vy - s.off_top;
         } else if (s.mount_comp) {
-            int cx, cy, cw = 0, ch = 0;
-            if (!read_iface_mount_origin(h, main_data, s.mount_comp, cx, cy, &cw, &ch)) continue;   // next spec
-            if (s.center_in_mount) {
-                // Centre the group's root layer inside the slot rect (see PanelOriginSpec).
-                // Root-size read failure keeps the plain slot TL -- degraded, never lost.
-                int gw = 0, gh = 0;
-                if (read_iface_group_root_size(h, main_data, gid, gw, gh)) {
-                    cx += (cw - gw) / 2; cy += (ch - gh) / 2;
-                }
-            }
+            int cx, cy;
+            if (!read_iface_mount_origin(h, main_data, s.mount_comp, cx, cy)) continue;   // next spec
             ox = cx - s.off_left; oy = cy - s.off_top;
         } else {
             continue;   // this spec can't resolve -> try the group's next spec
@@ -4276,14 +4230,13 @@ static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t 
     }
     // DEV EXPERIMENT (2026-08-02, dev branch only) -- cache-driven panel mounts. Flip
     // kCachePanelMounts to false to revert to table-only origins; no other change needed.
-    // The HUD panel registry (enum 7716, js5-17) maps each content-slot id to a panel struct
-    // whose param 3503 packs the panel's mount comp as (1477<<16)|sub. Slot ids are BELIEVED
-    // to be the interface group ids they host (unverified hypothesis, see memory
-    // project_rs3_interface_layout_model); if that holds, every registered HUD panel resolves
-    // its origin from the mount comp's LIVE 1477 rect with no kPanelOrigins entry. Runs ONLY
-    // when the table above missed, so every hand-tuned spec keeps priority. Position still
-    // comes from the live tree (read_iface_mount_origin accumulation); the cache supplies
-    // nothing but the group -> mount-comp link.
+    // The HUD panel registry (enum 7716, js5-17) maps each content-slot id to a panel struct;
+    // params 3514-3517 pack the panel's CONTENT interface comps as (group<<16)|sub (Skills
+    // 320:0, Prayers 1457:2, Backpack 1474:0 -- cache-verified 2026-08-02) and param 3503
+    // packs its mount comp under 1477 the same way, so the registry yields hosted-group ->
+    // 1477 mount sub with no kPanelOrigins entry. Runs ONLY when the table above missed, so
+    // every hand-tuned spec keeps priority. Position still comes from the live tree
+    // (read_iface_mount_origin accumulation); the cache supplies nothing but the linking.
     static constexpr bool kCachePanelMounts = true;
     if (kCachePanelMounts) {
         int mc = rtx::cache::PanelMountComp(gid);
