@@ -2575,6 +2575,68 @@ std::string StructParamsJson(int structId) {
     return out;
 }
 
+// ---- HUD panel mount registry (enum 7716 + panel structs) -------------------------------------
+namespace {
+// Content-slot id -> mount comp SUB under group 1477. Enum 7716 (js5-17) maps each HUD
+// content-slot id to a panel StructType (js5-22) whose param 3503 packs the panel's mount
+// comp as (group<<16)|sub; every registered mount sits under 1477 (the gameframe), so only
+// the sub is kept (a non-1477 mount is skipped rather than guessed at). Built once the
+// enum + struct indexes are ready; until then every lookup retries the build.
+std::unordered_map<int, int> g_panel_mounts;
+bool                         g_panel_mounts_built = false;
+
+void BuildPanelMountsLocked() {
+    if (g_panel_mounts_built) return;
+    auto* enums   = g_store ? g_store->Get(kIndexEnums)   : nullptr;
+    auto* structs = g_store ? g_store->Get(kIndexStructs) : nullptr;
+    if (!enums || !enums->ready() || !structs || !structs->ready()) return;
+    auto bytes = enums->ReadFile(7716 >> 8, 7716 & 0xff);
+    if (bytes.empty()) return;
+    // Same opcode walk as EnumJson, int maps only (ops 6/8) -- 7716 is slot id -> struct id.
+    std::vector<std::pair<int, int>> pairs;
+    InputStream s(std::move(bytes));
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if      (op == 1 || op == 101) s.ReadUnsignedByte();
+        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        else if (op == 3) s.ReadString();
+        else if (op == 4) s.ReadInt();
+        else if (op == 5) { int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadString(); } }
+        else if (op == 6) { int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { int k = s.ReadInt(); pairs.emplace_back(k, s.ReadInt()); } }
+        else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
+        else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); pairs.emplace_back(k, s.ReadInt()); } }
+        else if (op == 131 || op == 207 || op == 209) { }
+        else break;
+    }
+    const auto& entries = structs->ref().entries();
+    for (auto& [slot, structId] : pairs) {
+        if (structId < 0) continue;
+        int a = structId >> 5, f = structId & 31;
+        if (a < 0 || a >= (int)entries.size()) continue;
+        DecodedStruct ds;
+        if (!DecodeStructFile(structs->ReadFile(a, f), ds)) continue;
+        auto it = ds.ints.find(3503);
+        if (it == ds.ints.end()) continue;
+        int packed = it->second;
+        if ((packed >> 16) == 1477) g_panel_mounts[slot] = packed & 0xFFFF;
+    }
+    g_panel_mounts_built = true;
+}
+}  // namespace
+
+int PanelMountComp(int group_id) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    BuildPanelMountsLocked();
+    auto it = g_panel_mounts.find(group_id);
+    return it == g_panel_mounts.end() ? -1 : it->second;
+}
+
 // Raw op-249 param map of ONE item (js5-19; archive = id>>8, file = id&0xff):
 // {"ints":{"<key>":v,..},"strs":{"<key>":"v",..}}, {} when absent. ItemInfoJson only
 // carries name/limit/value, and ItemType.cpp parses params purely to sniff the

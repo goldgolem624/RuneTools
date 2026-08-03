@@ -185,6 +185,12 @@ std::string MapWindowJson(int cx, int cy, int plane, int half = 0, int ts = 0);
 // {"ints":{key:v},"strs":{key:"v"}}. Generic cache-struct accessor for panels.
 std::string StructParamsJson(int structId);
 
+// HUD panel registry lookup: mount comp SUB under group 1477 for a content-slot id
+// (enum 7716 slot -> panel struct, param 3503 = packed mount comp). -1 when the slot
+// isn't registered / mounts outside 1477 / the cache isn't open yet. Built once; the
+// reader uses it to anchor panels with no hand-written kPanelOrigins entry.
+int PanelMountComp(int group_id);
+
 // All DBRows of one master table (archive 41): [{"f":fid,"i":{col:[ints]},"s":{col:[strs]}}].
 std::string DbRowsJson(int masterTable);
 
