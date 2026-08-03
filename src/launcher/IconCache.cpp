@@ -14,34 +14,37 @@
 
 #pragma comment(lib, "crypt32.lib")
 
-// Item icons are served from a single bundled pack (items.pack, staged next to the exe); it
-// composites noted items as item-on-note PNGs. Format:
-//   "RTIP", u32 version(1), u32 N, then N*(u32 offset, u32 len) indexed by item
+// Icons are served from bundled packs staged next to the exe: items.pack (item icons, noted
+// items composited as item-on-note PNGs) and modelicons.pack (interface type-6 MODEL comps
+// rendered with their def cameras, indexed by MODEL id). Shared format:
+//   "RTIP", u32 version(1), u32 N, then N*(u32 offset, u32 len) indexed by
 //   id (len 0 = absent), then the raw image blobs (gif or png).
 
 namespace rtx::launcher::icons {
 
 namespace {
 
-std::mutex                           g_mu;
-std::unordered_map<int, std::string> g_mem_url;     // id -> data URL ("" = known miss)
-bool                                 g_tried  = false;
-bool                                 g_ready  = false;
-std::wstring                         g_pack_path;
-std::vector<std::uint32_t>           g_off, g_len;   // per item id
+// One bundled RTIP pack: lazily indexed, per-id data URLs memoized ("" = known miss).
+struct Pack {
+    const wchar_t*                       file;
+    std::mutex                           mu;
+    std::unordered_map<int, std::string> mem_url;
+    bool                                 tried = false;
+    bool                                 ready = false;
+    std::wstring                         path;
+    std::vector<std::uint32_t>           off, len;
+};
+Pack g_items_pack { L"items.pack" };
+Pack g_model_pack { L"modelicons.pack" };
 
-std::wstring pack_path() {
+// Load a pack's index once. Caller holds p.mu.
+void ensure_index(Pack& p) {
+    if (p.tried) return;
+    p.tried = true;
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    return (std::filesystem::path(exe).parent_path() / L"items.pack").wstring();
-}
-
-// Load the pack index once. Caller holds g_mu.
-void ensure_index() {
-    if (g_tried) return;
-    g_tried = true;
-    g_pack_path = pack_path();
-    std::ifstream f(g_pack_path, std::ios::binary);
+    p.path = (std::filesystem::path(exe).parent_path() / p.file).wstring();
+    std::ifstream f(p.path, std::ios::binary);
     if (!f) return;
     char magic[4] = {};
     f.read(magic, 4);
@@ -53,9 +56,9 @@ void ensure_index() {
     std::vector<std::uint32_t> idx((std::size_t)N * 2);
     f.read(reinterpret_cast<char*>(idx.data()), (std::streamsize)N * 8);
     if ((std::uint32_t)(f.gcount() / 8) != N) return;
-    g_off.resize(N); g_len.resize(N);
-    for (std::uint32_t i = 0; i < N; ++i) { g_off[i] = idx[i * 2]; g_len[i] = idx[i * 2 + 1]; }
-    g_ready = true;
+    p.off.resize(N); p.len.resize(N);
+    for (std::uint32_t i = 0; i < N; ++i) { p.off[i] = idx[i * 2]; p.len[i] = idx[i * 2 + 1]; }
+    p.ready = true;
 }
 
 std::string base64_encode(const std::vector<unsigned char>& bytes) {
@@ -77,30 +80,40 @@ const char* sniff_mime(const std::vector<unsigned char>& b) {
 
 }  // namespace
 
-std::string ItemIconDataUrl(int item_id) {
-    if (item_id <= 0) return {};
-    std::lock_guard<std::mutex> lk(g_mu);
-    auto it = g_mem_url.find(item_id);
-    if (it != g_mem_url.end()) return it->second;
+namespace {
+std::string pack_icon_url(Pack& p, int id) {
+    if (id <= 0) return {};
+    std::lock_guard<std::mutex> lk(p.mu);
+    auto it = p.mem_url.find(id);
+    if (it != p.mem_url.end()) return it->second;
 
-    ensure_index();
-    if (!g_ready || (std::size_t)item_id >= g_off.size() || g_len[item_id] == 0) {
-        g_mem_url[item_id] = "";    // cache the miss so the pack isn't re-checked
+    ensure_index(p);
+    if (!p.ready || (std::size_t)id >= p.off.size() || p.len[id] == 0) {
+        p.mem_url[id] = "";    // cache the miss so the pack isn't re-checked
         return {};
     }
-    std::ifstream f(g_pack_path, std::ios::binary);
+    std::ifstream f(p.path, std::ios::binary);
     std::string url;
     if (f) {
-        f.seekg((std::streamoff)g_off[item_id], std::ios::beg);
-        std::vector<unsigned char> bytes(g_len[item_id]);
-        f.read(reinterpret_cast<char*>(bytes.data()), (std::streamsize)g_len[item_id]);
-        if ((std::uint32_t)f.gcount() == g_len[item_id]) {
+        f.seekg((std::streamoff)p.off[id], std::ios::beg);
+        std::vector<unsigned char> bytes(p.len[id]);
+        f.read(reinterpret_cast<char*>(bytes.data()), (std::streamsize)p.len[id]);
+        if ((std::uint32_t)f.gcount() == p.len[id]) {
             std::string b64 = base64_encode(bytes);
             if (!b64.empty()) url = std::string("data:") + sniff_mime(bytes) + ";base64," + b64;
         }
     }
-    g_mem_url[item_id] = url;
+    p.mem_url[id] = url;
     return url;
+}
+}  // namespace
+
+std::string ItemIconDataUrl(int item_id) {
+    return pack_icon_url(g_items_pack, item_id);
+}
+
+std::string ModelIconDataUrl(int model_id) {
+    return pack_icon_url(g_model_pack, model_id);
 }
 
 std::string AssetFileBase64(const std::wstring& filename) {

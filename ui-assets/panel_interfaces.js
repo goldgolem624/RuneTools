@@ -34,6 +34,10 @@
   };
   let ifaceGroups = null;          // [{id, n}, ..]  (n = top-level widget count)
   const ifaceWidgets = {};         // gid -> [{t,d,r}, ..]  (cached on first expand)
+  const ifaceDefModels = {};       // gid -> {compId: modelId} for type-6 MODEL comps (js5-3 defs).
+                                   // A model comp's live node only holds a runtime render handle
+                                   // ("dynamic"); the cache def carries the model id, which keys
+                                   // the pre-rendered modelicons.pack (bridge modelIcon).
   const ifaceOpen = {};            // gid -> bool (expanded)
   let ifaceOff = {};               // gid -> {x,y}  live origin nudge (persisted; pushed to the reader)
   let ifaceOffLoaded = false;
@@ -175,6 +179,14 @@
       try { ifaceWidgets[gid] = (JSON.parse(bridge().interfaceGroup(myPid(), gid) || '{}').widgets) || []; }
       catch (e) { ifaceWidgets[gid] = []; }
     }
+    if (ifaceOpen[gid] && !ifaceDefModels[gid] && bridge() && bridge().cacheIfaceGroup) {
+      // model ids live only in the cache DEFS (type 6), never in the live tree
+      const m = {};
+      try { for (const c of (JSON.parse(bridge().cacheIfaceGroup(gid) || '{}').comps || []))
+              if (c.t === 6 && c.model > 0) m[c.id] = c.model; }
+      catch (e) {}
+      ifaceDefModels[gid] = m;
+    }
     renderIfaceList();
   }
   function renderInterfaces() {
@@ -213,6 +225,8 @@
           + '.if-sprico{flex:none;width:18px;height:18px;border-radius:3px;background:rgba(255,255,255,.05)}'
           + '.if-itemico{flex:none;width:18px;height:18px;border-radius:3px;background-color:rgba(255,255,255,.05);background-size:contain;background-repeat:no-repeat;background-position:center;image-rendering:-webkit-optimize-contrast}'
           + '.if-dyn{flex:none;font-size:10px;font-style:italic;color:#8a8a96}'
+          + '.if-modelico{flex:none;width:18px;height:18px;border-radius:3px;background-color:rgba(255,255,255,.05);background-size:contain;background-repeat:no-repeat;background-position:center;image-rendering:-webkit-optimize-contrast}'
+          + '.if-mdl{color:#d6a679;flex:none;font-size:10px;opacity:.9}'
           + '.if-item{color:#79d6a6;flex:none;font-size:10px;opacity:.9}'
           + '.if-txt{color:#e3d5a2;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
           + '.if-rect{color:#8a8a96;flex:none;margin-left:auto;padding-left:12px;white-space:nowrap}'
@@ -348,7 +362,13 @@
             + (w.s ? (w.s >= 131072
                    ? '<span class="if-itemico" data-item="' + (w.s - 131072) + '"></span><span class="if-spr">item icon ' + (w.s - 131072) + '</span>'
                    : '<span class="if-sprico" data-spr="' + w.s + '"></span><span class="if-spr">spr ' + w.s + '</span>')
-                   : (w.ty === 'graphic' ? '<span class="if-dyn">dynamic</span>' : ''))
+                   // a graphic with no sprite id: if the cache DEF says this comp is a type-6 MODEL,
+                   // show the model id + its pre-rendered icon (modelicons.pack); else plain "dynamic"
+                   : (w.ty === 'graphic'
+                   ? (((ifaceDefModels[g.id] || {})[t[1]])
+                      ? '<span class="if-modelico" data-model="' + ifaceDefModels[g.id][t[1]] + '"></span><span class="if-mdl">model ' + ifaceDefModels[g.id][t[1]] + '</span>'
+                      : '<span class="if-dyn">dynamic</span>')
+                   : ''))
             + (tx ? '<span class="if-txt">' + tx + '</span>' : '')
             + '<span class="if-rect">' + r[0] + ',' + r[1] + ' · ' + r[2] + '×' + r[3] + '</span></div>';
         }
@@ -361,6 +381,10 @@
     }));
     host.querySelectorAll('.if-sprico').forEach(el => loadSpriteIcon(el, +el.dataset.spr));
     host.querySelectorAll('.if-itemico').forEach(el => { const u = resolveIcon(+el.dataset.item); if (u) el.style.backgroundImage = "url('" + u + "')"; });
+    host.querySelectorAll('.if-modelico').forEach(el => {
+      let u = ''; try { u = bridge() && bridge().modelIcon ? bridge().modelIcon(+el.dataset.model) : ''; } catch (e) {}
+      if (u) el.style.backgroundImage = "url('" + u + "')";
+    });
     const meta = $('ifaceMeta');
     if (meta) meta.textContent = groups.length + ' groups' + (q ? ' · ' + shown + ' shown' : '');
   }

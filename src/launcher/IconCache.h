@@ -12,6 +12,11 @@ namespace rtx::launcher::icons {
 // string when the id isn't in the pack (or the pack is missing). Memoized.
 std::string ItemIconDataUrl(int item_id);
 
+// Same, from modelicons.pack: pre-rendered interface type-6 MODEL comps keyed by
+// MODEL id (the live widget only holds a runtime render handle; the model id comes
+// from the js5-3 def, so the UI joins live group:comp -> cache def -> this pack).
+std::string ModelIconDataUrl(int model_id);
+
 // Returns an asset file staged next to the exe, base64-encoded (cached per name),
 // or an empty string if missing. Used to ship the puzzle-solver tables
 // (wd_table.bin, pdb_5554.bin); the JS solver decodes them once on puzzle open.

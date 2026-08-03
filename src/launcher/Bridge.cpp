@@ -390,6 +390,13 @@ JSValueRef ItemIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, icons::ItemIconDataUrl(id));
 }
 
+JSValueRef ModelIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "");
+    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    return utf8_to_js(ctx, icons::ModelIconDataUrl(id));
+}
+
 JSValueRef ItemInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
@@ -3723,6 +3730,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
+    install_fn(ctx, ns, "modelIcon",         ModelIcon);
     install_fn(ctx, ns, "itemInfo",          ItemInfo);
     install_fn(ctx, ns, "sprite",            Sprite);
     install_fn(ctx, ns, "hudSprite",         HudSprite);

@@ -132,6 +132,8 @@
     cache: {
       itemInfo:  function (id) { return call('cache.itemInfo', [id]); },
       itemIcon:  function (id) { return call('cache.itemIcon', [id]); },
+      // Interface type-6 MODEL comp icon by MODEL id (see cacheIfaceGroup defs "model" field).
+      modelIcon: function (id) { return call('cache.modelIcon', [id]); },
       sprite:    function (id) { return call('cache.sprite', [id]); },
       varbitMap: function () { return call('cache.varbitMap', []); },
       enumInfo:  function (id) { return call('cache.enumInfo', [id]); },

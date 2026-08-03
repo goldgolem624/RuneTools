@@ -3631,6 +3631,8 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                                        fillItems: h.fi || [], state: v, built: v >= 1, filled: v === 2 }; }); } },
     'cache.itemInfo':   { scope: 'cache.read', json: true,    run: (a) => bridge().itemInfo(pClampId(a[0])) },
     'cache.itemIcon':   { scope: 'cache.read', json: false,   run: (a) => bridge().itemIcon(pClampId(a[0])) },
+    // Pre-rendered interface type-6 MODEL comp icons, keyed by MODEL id (from cacheIfaceGroup defs).
+    'cache.modelIcon':  { scope: 'cache.read', json: false,   run: (a) => (bridge().modelIcon ? bridge().modelIcon(pClampId(a[0])) : '') },
     'cache.sprite':     { scope: 'cache.read', json: false,   run: (a) => bridge().sprite(pClampId(a[0])) },
     'cache.varbitMap':  { scope: 'cache.read', json: true,    run: () => bridge().varbitMap() },
     'cache.enumInfo':   { scope: 'cache.read', json: true,    run: (a) => bridge().enumInfo(pClampId(a[0])) },
