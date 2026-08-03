@@ -3941,6 +3941,7 @@ static const PanelOriginSpec kPanelOrigins[] = {
                                   // 3089/3090.
     { 13,   3089, 3090, 0, 31, 0, true },  // Bank pin -- window-frame varcs 3089/3090
     { 1224, 3089, 3090, 0, 0, 0, true },   // Ritual selection (Necromancy! communion ritual) -- window-frame varcs 3089/3090
+    { 1286, 3089, 3090, 0, 0, 0, true },   // Discovered Ratings (Fish Flingers) -- window-frame varcs 3089/3090
     // House Controls (POH rework): group 1665 is a sub-overlay that mounts into a resizable
     // window frame whose SLOT COMP VARIES with docking (comp 376 when floating, 116/171/...
     // when docked into a tabbed slot) -- so a fixed mount comp is wrong the moment it docks.
