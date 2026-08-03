@@ -523,6 +523,11 @@ export class ClientscriptObfuscation {
             await r.loadCandidates();
             r.parseCandidateContents();
             callibrateSubtypes(r, r.candidates);//TODO is this needed?
+            // A game update shifts the script-index hash while the opcode table still
+            // matches, landing here every run. Without the script-args snapshot each
+            // decompile re-derives callee signatures (~1000x slower overall), so persist
+            // the recalibrated state under the CURRENT names to self-heal (2026-08-03).
+            await r.save();
         }
         return r;
     }

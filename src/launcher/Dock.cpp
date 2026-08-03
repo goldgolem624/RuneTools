@@ -131,8 +131,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_groupbank.js",
         "panel_pets.js",
         "panel_bosses.js",
-        "panel_bgh.js",        // Big Game Hunter (Anachronia)
-        "panel_havenbgh.js",   // Big Game Hunter (Havenhythe)
+        // panel_bgh.js / panel_havenbgh.js moved out to marketplace plugins (2026-08-03)
         "panel_compass.js",    // Clues: compass solver
         "panel_puzzle.js",     // Clues: puzzle-box solver
         "panel_celtic.js",     // Clues: celtic-knot solver
@@ -167,8 +166,8 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_overlay.js",
         "panel_markers.js",
         "panel_worldmap.js",   // World Map (full-world terrain browser: pan/zoom/search/layers)
-        "panel_zygomites.js",  // Ancient Zygomites (Anachronia hidden-zygomite map + tracker)
-        "panel_agility.js",    // Anachronia Agility Course (route, section progress, movement)
+        "panel_zygomites.js",  // Anachronia base camp guide (zygomite tracker moved to a plugin 2026-08-03)
+        // panel_agility.js moved out to a marketplace plugin (2026-08-03)
         "panel_rendering.js",
         "panel_storage.js",
         "panel_containers.js",
@@ -187,7 +186,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_screenshot.js", // Screenshot capture (user keybind + game-window PNG)
         "panel_scarabs.js",    // Corrupted Scarabs community world tracker
         "panel_obelisks.js",   // Soul Obelisk community world+district tracker
-        "panel_ports.js",      // Player-Owned Ports (voyages/ships/visitors/resources + alerts)
+        // panel_ports.js moved out to a marketplace plugin (2026-08-03)
         "panel_kingdom.js",    // Miscellania kingdom management (approval/coffer/workers)
         "panel_rituals.js",    // Necromancy ritual site HUD + City of Um talents
         "panel_toolbelt.js",   // Toolbelt contents + tool tiers (missing tools first)

@@ -58,6 +58,8 @@ my-plugin/
 | `overlay`    | `rtx.plugin.overlay.*` (overlay visuals)         |
 | `sound`      | `rtx.plugin.sound.play`                           |
 | `storage`    | `rtx.plugin.storage.*` (per-plugin settings)     |
+| `notify.os`  | `rtx.plugin.notify.windows` (Windows notifications; 1 per 10s) |
+| `clipboard`  | `rtx.plugin.clipboard.copy` (copy-only; nothing is read back) |
 
 `rtx.plugin.ui.*` and the meta/event helpers are always available. The user approves scopes
 on first enable, and the host enforces them on every call regardless of the manifest.
@@ -73,7 +75,8 @@ use `window.rtx.plugin`.
 - **Don't poll in a loop.** The host pushes a `tick` event on its refresh cadence (about 4x/second); do your reads in that handler.
 - **Handle rejections and nulls.** A call rejects when a scope is not granted (`scope not granted: <scope>`), you exceed a rate limit (`rate limited`), or it times out after 15s. A state call that can't read (not logged in / not in-game) resolves to `null` -- check before using it.
 
-Rate limits per method, per plugin (token bucket): `storage.*` 4/s, `overlay.*` 6/s, everything else 20/s.
+Rate limits per method, per plugin (token bucket): `storage.*` 4/s, `overlay.*` 6/s,
+`notify.*` 1 per 10s, `clipboard.*` 1/s, everything else 20/s.
 
 ```js
 await rtx.plugin.ready();
@@ -146,6 +149,16 @@ await rtx.plugin.state.interface(1184, [4, 10, 15]); // group id + component ids
 //    Live text + absolute screen rect of named components of an open interface. e.g. the NPC chat
 //    box (1184): comp 4 = NPC name, comp 10 = message, comp 15 = the continue button. open:false
 //    when that interface isn't showing; x/y/w/h present only when hasAbs (movable-panel origin known).
+
+await rtx.plugin.state.interfaceGroup(919); // one OPEN interface group id
+// -> { widgets:[ { t:[group,comp,sub], d:<depth>, r:[x,y,w,h], ty, x:<text>, s:<sprite>,
+//                  it:<itemId>, n:<amount>, a:[absX,absY]? }, ... ] }
+//    The FULL live widget tree of one open group (what the Interfaces tab shows) --
+//    use when you need every component rather than a few named ones. Heavier than
+//    state.interface; poll it sparingly.
+
+await rtx.plugin.state.varcs([1118, 1119]); // array of varc-int ids (<=64)
+// -> { "1118": 384, "1119": 2 }            map of id -> live varc value (0 when absent)
 
 await rtx.plugin.state.buffs();
 // -> { buffs:[ ... ], debuffs:[ ... ] }     active buff/debuff entries
@@ -257,6 +270,14 @@ await rtx.plugin.cache.varbitMap();   // -> { "<varpId>": [[varbitId, lsb, msb],
 await rtx.plugin.cache.enumInfo(id);  // -> { "<key>": value, ... }  (id->name/value roster)
 await rtx.plugin.cache.paramDef(id);  // -> { type[, int][, str] }  param definition
 //    ({} while the host's param reader is unavailable)
+await rtx.plugin.cache.modelIcon(id); // -> string: PNG data URL for an interface type-6
+//    MODEL comp, keyed by MODEL id ("" if not in the pack)
+await rtx.plugin.cache.structParams(id); // -> { ints:{ k:v }, strs:{ k:"v" } } one StructType's params
+await rtx.plugin.cache.itemParams(id);   // -> { ints:{ k:v }, strs:{ k:"v" } } one item's op-249 params
+await rtx.plugin.cache.mapWindow(cx, cy, plane, half, ts);
+// -> { w, t, h, b64 }  top-down terrain render centred on world tile (cx,cy):
+//    w = image px, t = px per tile, h = half-size in tiles; b64 = base64 RGBA to
+//    putImageData onto a canvas. half <= 96 tiles each side, ts <= 8 px/tile.
 ```
 
 `itemIcon`/`sprite` return data-URL strings you can put straight in `img.src` or a CSS
@@ -312,7 +333,28 @@ if (d.hasAbs && d.comps[0]) { const c = d.comps[0]; rtx.plugin.overlay.highlight
 rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"dig here" }]);
 
 rtx.plugin.overlay.clearHighlight();         // clear both highlight layers
+
+// Big centre-screen banner text (the Dungeoneering boss-warning channel). '' clears.
+rtx.plugin.overlay.centerText("DODGE - icicles!");
 ```
+
+### notify.os (Windows notifications)
+
+```js
+rtx.plugin.notify.windows("RuneToolsX", "A ship has returned");
+```
+
+An OS-level toast outside the game window. Hard-capped at one per 10 seconds -- send it
+on real events (a ship returned, a rare drop), never on a timer.
+
+### clipboard (copy-only)
+
+```js
+rtx.plugin.clipboard.copy(JSON.stringify(plan));
+```
+
+Copies text to the user's clipboard (capped 64 KB). Nothing can be read back; to accept
+pasted data, give the user a textarea to paste into.
 
 ### sound
 

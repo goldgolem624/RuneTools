@@ -125,7 +125,12 @@
       // One quest in full: status + requirements (judged live) + cache journal info.
       quest:        function (id) { return call('state.quest', [id]); },
       // Archaeology mysteries: [{site,name,points,solved,stage:{value,max}|null}].
-      mysteries:    function () { return call('state.mysteries', []); }
+      mysteries:    function () { return call('state.mysteries', []); },
+      // Full live widget tree of one open interface group (the Interfaces-tab walk):
+      // {widgets:[{t:[group,comp,sub],d,r:[x,y,w,h],ty,...}]}. Heavier than state.interface.
+      interfaceGroup: function (groupId) { return call('state.interfaceGroup', [groupId]); },
+      // Live VARC-int values by id -> { "<id>": value } (max 64 ids), like state.varbits.
+      varcs:        function (ids) { return call('state.varcs', [ids]); }
     },
 
     // ---- scope: cache.read (static game data) ----
@@ -138,7 +143,14 @@
       varbitMap: function () { return call('cache.varbitMap', []); },
       enumInfo:  function (id) { return call('cache.enumInfo', [id]); },
       // Param definition: {type[,int][,str]} ({} until the reader is available).
-      paramDef:  function (id) { return call('cache.paramDef', [id]); }
+      paramDef:  function (id) { return call('cache.paramDef', [id]); },
+      // Raw param map of one StructType (js5-22): {ints:{key:val}, strs:{key:"val"}}.
+      structParams: function (id) { return call('cache.structParams', [id]); },
+      // Raw op-249 param map of one item (js5-19): {ints:{key:val}, strs:{key:"val"}}.
+      itemParams: function (id) { return call('cache.itemParams', [id]); },
+      // Top-down cache terrain render centred on world tile (cx,cy): {w,t,h,b64} RGBA
+      // (putImageData it into a canvas). half = tiles each side (<=96), ts = px/tile (<=8).
+      mapWindow: function (cx, cy, plane, half, ts) { return call('cache.mapWindow', [cx, cy, plane, half, ts]); }
     },
 
     // ---- scope: overlay (non-interactive visuals only) ----
@@ -158,7 +170,19 @@
       // Mark world tiles as guide objectives: [{x, y, plane, label}, ...]; [] clears.
       guideTiles: function (marks) { return call('overlay.guideTiles', [marks]); },
       clearHighlight: function () { return call('overlay.clearHighlight', []); },
+      // Big centre-screen banner text ('' clears) - the Dungeoneering boss-warning channel.
+      centerText: function (text) { return call('overlay.centerText', [text]); },
       flashGame: function () { return call('overlay.flashGame', []); }
+    },
+
+    // ---- scope: notify.os (Windows notifications; rate-capped to 1 per 10s) ----
+    notify: {
+      windows: function (title, body) { return call('notify.windows', [title, body]); }
+    },
+
+    // ---- scope: clipboard (copy-only; nothing is read back) ----
+    clipboard: {
+      copy: function (text) { return call('clipboard.copy', [text]); }
     },
 
     // ---- scope: sound (bundled WAV allowlist) ----

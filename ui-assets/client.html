@@ -147,6 +147,12 @@
   /* min-width: 0 is load-bearing: without it this flex child refuses to shrink below its
      widest descendant, so fixed-width content (metronome, clock) slides UNDER the rail. */
   .content { flex: 1; padding: 18px 22px; overflow-y: auto; overflow-x: hidden; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  /* Sub-tab strip for consolidated panels: lives OUTSIDE #content so panel repaints never wipe it. */
+  #subbar { flex: none; display: flex; gap: 4px; padding: 8px 22px 0; flex-wrap: wrap; }
+  #subbar button { font: inherit; font-size: 11px; padding: 4px 11px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--text-dim); white-space: nowrap; }
+  #subbar button:hover { color: var(--text); }
+  #subbar button.on { color: #b9a6ff; border-color: rgba(124, 92, 252, 0.5); background: rgba(124, 92, 252, 0.1); }
   @media (max-width: 380px) { .content { padding: 12px 12px; } }
   .pane    { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .rows { display: flex; flex-direction: column; gap: 8px; }
@@ -1582,6 +1588,7 @@
   </header>
 
   <main>
+    <div id="subbar" style="display:none"></div>
     <section class="content" id="content">
       <div class="empty">Waiting for game data...</div>
     </section>
@@ -1684,8 +1691,6 @@
     { id: 'archshop', label: 'Guild Shop', cat: 'Archaeology', icon: '<path d="M4 9 5.5 4h13L20 9"/><path d="M4 9h16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M5.5 13v7h13v-7"/><path d="M9.5 20v-4h5v4"/>' },
     // World
     { id: 'worldmap', label: 'World Map', cat: 'World', icon: '<path d="M9 5 3 7v12l6-2 6 2 6-2V5l-6 2-6-2z"/><path d="M9 5v12M15 7v12"/><circle cx="12" cy="11" r="1.6"/>' },
-    { id: 'zygomites', label: 'Zygomites', cat: 'World', icon: '<circle cx="12" cy="8" r="4.5"/><path d="M12 12.5V21M9.5 16c-2.5 0-4-1.5-4.5-3M14.5 18c2.5 0 4-1.5 4.5-3"/>' },
-    { id: 'agility', label: 'Agility Course', cat: 'World', icon: '<path d="M4 18l4-6 4 3 4-7 4 4"/><circle cx="8" cy="12" r="1.5"/><circle cx="16" cy="8" r="1.5"/>' },
     { id: 'anachronia', label: 'Anachronia', cat: 'World', icon: '<path d="M12 3 4 9v12h16V9l-8-6z"/><path d="M9 21v-6h6v6M4 9h16"/>' },
     { id: 'scene',    label: 'Scene',   cat: 'World', icon: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M16 6.2a3 3 0 0 1 0 5.6M20.5 19c0-2.2-1.3-3.9-3.3-4.6"/>' },
     { id: 'farming',  label: 'Farming', cat: 'World', icon: '<path d="M12 21V9M12 9c0-3 2-5 5-5 0 3-2 5-5 5M12 12C12 9 10 7 7 7c0 3 2 5 5 5M5 21h14"/>' },
@@ -1698,10 +1703,7 @@
     { id: 'scarabs',   label: 'Corrupted Scarabs', cat: 'World', icon: '<ellipse cx="12" cy="13" rx="5" ry="6"/><path d="M12 7V4M8 9L5 6M16 9l3-3M7 13H3M21 13h-4M8 18l-3 3M16 18l3 3"/>' },
     { id: 'obelisks',  label: 'Soul Obelisk', cat: 'World', icon: '<path d="M10 3h4l1.5 13h-7z"/><path d="M7 19h10M9 16h6"/>' },
     // Boss & minigame
-    { id: 'ports',    label: 'Player-Owned Ports', cat: 'Boss & Minigame', icon: '<path d="M12 3v13"/><path d="M12 6a3 3 0 1 0 .01 0"/><path d="M5 13c0 4 3.5 7 7 8 3.5-1 7-4 7-8"/><path d="M3 13h4M17 13h4"/>' },
-    { id: 'bossinfo', label: 'Boss Info',   cat: 'Boss & Minigame', icon: '<path d="M12 3 L19 7 L19 13 C19 17 16 20 12 21 C8 20 5 17 5 13 L5 7 Z"/><path d="M12 8v5M12 16h.01"/>' },
-    { id: 'bgh',      label: 'Big Game Hunter (Anachronia)', cat: 'Boss & Minigame', icon: '<path d="M12 3l2.5 4.5L19 9l-3.5 3 .8 5L12 14.5 7.7 17l.8-5L5 9l4.5-1.5z"/>' },
-    { id: 'havenbgh', label: 'Big Game Hunter (Havenhythe)', cat: 'Boss & Minigame', icon: '<path d="M12 3l2.5 4.5L19 9l-3.5 3 .8 5L12 14.5 7.7 17l.8-5L5 9l4.5-1.5z"/>' },
+    { id: 'bossinfo', label: 'Boss Info',   cat: 'World', icon: '<path d="M12 3 L19 7 L19 13 C19 17 16 20 12 21 C8 20 5 17 5 13 L5 7 Z"/><path d="M12 8v5M12 16h.01"/>' },
     // Utility
     { id: 'alerts',    label: 'Alerts',    cat: 'Utility', icon: '<path d="M18 16v-5a6 6 0 1 0-12 0v5l-1.5 2h15z"/><path d="M10 20a2 2 0 0 0 4 0"/>' },
     { id: 'ticks',     label: 'Ticks',     cat: 'Utility', icon: '<circle cx="12" cy="12" r="8"/><path d="M12 8.5V12l2.5 1.5"/>' },
@@ -1724,12 +1726,10 @@
   const CAT_META = [
     { id: 'Character',   icon: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>' },
     { id: 'Items',       icon: '<path d="M4 8h16l-1 12H5z"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/>' },
-    { id: 'Quests',      icon: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-3-2-3 2-3-2-3 2V4a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6"/>' },
-    { id: 'Achievements', icon: '<circle cx="12" cy="9" r="5"/><path d="M8.5 13.5L7 21l5-3 5 3-1.5-7.5"/><path d="M12 7.2l.6 1.2 1.3.2-1 1 .2 1.3-1.1-.6-1.1.6.2-1.3-1-1 1.3-.2z"/>' },
+    { id: 'Progress',    icon: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-3-2-3 2-3-2-3 2V4a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6"/>' },
     { id: 'Clues',       icon: '<path d="M7 4h10a1 1 0 0 1 1 1v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M9 8h6M9 11h6M9 14h4"/>' },
     { id: 'Collections', icon: '<path d="M7 4h10v3a5 5 0 0 1-10 0z"/><path d="M5 4H4v1a3 3 0 0 0 3 3M19 4h1v1a3 3 0 0 1-3 3"/><path d="M10 12h4v3h-4z"/><path d="M8 20h8M9.5 20l.5-2.5h4l.5 2.5"/>' },
     { id: 'Archaeology', icon: '<path d="M4 9c4.5-4 11.5-4 16 0"/><path d="M12 6v15"/>' },
-    { id: 'Boss & Minigame', icon: '<path d="M5 4l12 12M19 4L7 16"/><path d="M4 14l6 6M20 14l-6 6"/>' },
     { id: 'World',       icon: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13 13 0 0 1 0 18 13 13 0 0 1 0-18z"/>' },
     { id: 'Utility',     icon: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>' },
     { id: 'Developer',   icon: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/>' },
@@ -2659,6 +2659,35 @@
   //      railCat = null shows the categories. ----
   let railCat = null;
   let railInited = false;
+  // ---- Panel consolidation (2026-08-03): related tabs share ONE rail entry; the members
+  // render as a sub-tab strip ABOVE the content area (#subbar, outside #content so panel
+  // repaints never wipe it). Every member keeps its tab id, so per-tab fetch/leave hooks,
+  // tick gates and localStorage keys all keep working; only the navigation collapses.
+  // A group's `cat` overrides its members' categories (allTabs applies it).
+  const TAB_GROUPS = [
+    { id: 'quests',  label: 'Quests',         cat: 'Progress',    tabs: ['quests', 'questfocus'],                                subs: ['All Quests', 'Focused'] },
+    { id: 'achieve', label: 'Achievements',   cat: 'Progress',    tabs: ['achievements', 'combatmastery', 'areatasks', 'gimtasks'], subs: ['Achievements', 'Combat Mastery', 'Area Tasks', 'GIM Journey'] },
+    { id: 'collect', label: 'Collection Log', cat: 'Collections', tabs: ['collections', 'pets', 'farmcol', 'bosses', 'archcol'], subs: ['Collections', 'Pets', 'Farm Breeds', 'Boss KC', 'Artefacts'] },
+    { id: 'cluehub', label: 'Clues',          cat: 'Clues',       tabs: ['clues', 'hideyholes', 'globetrotter', 'cluestats'],    subs: ['Clue Guide', 'Hidey-holes', 'Globetrotter', 'Stats'] },
+    { id: 'arch',    label: 'Archaeology',    cat: 'Archaeology', tabs: ['archmysteries', 'artefacts', 'mystfocus', 'materials', 'archresearch', 'archshop'], subs: ['Mysteries', 'Artefacts', 'Focused', 'Materials', 'Research', 'Guild Shop'] },
+    { id: 'banks',   label: 'Banks',          cat: 'Items',       tabs: ['bank', 'metalbank', 'groupbank', 'baitbox'],           subs: ['Bank', 'Metal Bank', 'Group Bank', 'Bait Box'] },
+    { id: 'inv',     label: 'Inventory',      cat: 'Items',       tabs: ['inventory', 'equipment'],                              subs: ['Backpack', 'Equipment'] },
+    { id: 'economy', label: 'Economy',        cat: 'Items',       tabs: ['exchange', 'currencies', 'shopcaps'],                  subs: ['Grand Exchange', 'Currencies', 'Shop Caps'] },
+    { id: 'overlay', label: 'Overlay',        cat: 'World',       tabs: ['overlay', 'markers', 'rendering'],                     subs: ['Overlay', 'Markers', 'Rendering'] },
+    { id: 'wevents', label: 'World Events',   cat: 'World',       tabs: ['scarabs', 'obelisks'],                                 subs: ['Scarabs', 'Obelisks'] },
+    { id: 'farm',    label: 'Farming',        cat: 'World',       tabs: ['farming', 'pof'],                                      subs: ['Patches', 'Animal Pens'] },
+    { id: 'utils',   label: 'Utilities',      cat: 'Utility',     tabs: ['notes', 'counter', 'stopwatch'],                       subs: ['Notes', 'Counter', 'Stopwatch'] },
+    { id: 'taskhub', label: 'Tasks & Dailies', cat: 'Character',  tabs: ['tasks', 'dailies'],                                    subs: ['Slayer & Reaper', 'Dailies'] },
+  ];
+  const TAB_GROUP_OF = {};   // tab id -> group
+  for (const g of TAB_GROUPS) for (const id of g.tabs) TAB_GROUP_OF[id] = g;
+  // The member to open when the rail entry is clicked: last used, else the group's first.
+  function groupEntryTab(g) {
+    let last = null;
+    try { last = localStorage.getItem('rtxGrpLast:' + g.id); } catch (e) {}
+    const id = (last && g.tabs.indexOf(last) >= 0) ? last : g.tabs[0];
+    return allTabs().find(t => t.id === id) || allTabs().find(t => t.id === g.tabs[0]);
+  }
   function tabCat(id) { const t = allTabs().find(x => x.id === id); return t ? (t.cat || 'General') : null; }
   function railCategories() {
     const present = new Set(allTabs().map(t => t.cat || 'General'));
@@ -2671,8 +2700,18 @@
     if (activeTab === 'vars' && t.id !== 'vars') { varsWatchSet(false); hideVarbitPop(); try { hideVarIgnoredModal(); } catch (e) {} }   // stop the observer on leave
     if (activeTab === 'netprobe' && t.id !== 'netprobe') { try { npArm(false); } catch (e) {} }   // disarm the framer capture on leave
     if (activeTab === 'clues' && t.id !== 'clues') { activeClueId = -1; try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {} clueSetNpc(''); }   // clear the in-world clue tile + NPC outline on leave
-    if (activeTab === 'bgh' && t.id !== 'bgh' && !bghGuideOn) { try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {} }   // clear trap boxes on leave (guide keeps its own marks)
     if (activeTab === 'hideyholes' && t.id !== 'hideyholes') { try { hideyMapClose(); } catch (e) {} }   // close the inline map + clear its in-world guide mark on leave
+    // Leaving a plugin tab: clear every overlay channel plugins can write, so a converted
+    // panel's guide marks / boxes / banners don't outlive the iframe (mirrors the per-panel
+    // clears above; the iframe itself is torn down by renderPane).
+    if (String(activeTab).indexOf('plugin:') === 0 && activeTab !== t.id) {
+      try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
+      try { if (bridge() && bridge().uiHighlight) bridge().uiHighlight(myPid(), 0, 0, 0, 0); } catch (e) {}
+      try { if (bridge() && bridge().panelViz) bridge().panelViz(myPid(), ''); } catch (e) {}
+      try { if (bridge() && bridge().overlayHighlight) bridge().overlayHighlight(myPid(), ''); } catch (e) {}
+      try { if (bridge() && bridge().centerText) bridge().centerText(myPid(), ''); } catch (e) {}
+      pluginMounted = null;
+    }
     activeTab = t.id;
     sideCollapsed = closing;
     try { localStorage.setItem('rtxDevTab', activeTab); } catch (e) {}   // dev hot-reload continuity (read only on reload)
@@ -2688,8 +2727,6 @@
     if (t.id === 'materials') { matFetchKey = ''; fetchMaterials(); }
     if (t.id === 'baitbox') { baitFetchKey = ''; fetchBaitBox(); }
     if (t.id === 'artefacts') { wbFetchKey = ''; fetchWorkbench(); fetchArchShop(); }
-    if (t.id === 'bgh') { bghStructSig = ''; fetchBgh(); }
-    if (t.id === 'havenbgh') { havenBghSig = ''; fetchHavenBgh(); }
     if (t.id === 'inventory') { invSig = ''; fetchInv(); }
     if (t.id === 'components') { compSig = ''; fetchComponents(); }
     if (t.id === 'equipment') { equipSig = ''; fetchEquip(); }
@@ -2717,8 +2754,6 @@
     if (t.id === 'clues') { clueListSig = ''; fetchClues(true); }
     if (t.id === 'lodestones') { lodeListSig = ''; fetchLodestones(true); }
     if (t.id === 'worldmap') { if (typeof wmOpen === 'function') wmOpen(); }
-    if (t.id === 'zygomites') { if (typeof zygOpen === 'function') zygOpen(); }
-    if (t.id === 'agility') { if (typeof renderAgility === 'function') renderAgility(); }
     if (t.id === 'anachronia') { if (typeof anaOpen === 'function') anaOpen(); }
     if (t.id === 'scene') fetchScene();
     if (t.id === 'info') fetchInfo();
@@ -2793,8 +2828,19 @@
     } else {
       list.appendChild(mkBtn('<path d="M15 5l-7 7 7 7"/>', 'Back to categories', false, 'rail-back', () => { railCat = null; renderSidebar(); }));
       const sep = document.createElement('div'); sep.className = 'rail-sep'; list.appendChild(sep);
+      const emitted = {};   // group id -> true (one rail entry per group, at its first member's slot)
       for (const t of allTabs()) {
         if ((t.cat || 'General') !== railCat) continue;
+        const g = TAB_GROUP_OF[t.id];
+        if (g) {
+          if (emitted[g.id]) continue;
+          emitted[g.id] = true;
+          list.appendChild(mkBtn(t.icon, g.label, g.tabs.indexOf(activeTab) >= 0, '', () => {
+            const et = groupEntryTab(g);
+            if (et) openTab(et);
+          }));
+          continue;
+        }
         list.appendChild(mkBtn(t.icon, t.label, t.id === activeTab, '', () => openTab(t)));
       }
     }
@@ -2990,7 +3036,33 @@
 
 
   let _playerPaneSig = '';   // Skills-grid dedup (see the guard in renderPane)
+  // The consolidated-panel sub-tab strip (see TAB_GROUPS). Rebuilt only when the active
+  // group/member changes so the 250ms renderPane poll doesn't eat clicks.
+  let subbarSig = '';
+  function renderSubbar() {
+    const bar = $('subbar'); if (!bar) return;
+    const g = TAB_GROUP_OF[activeTab];
+    const sig = g ? (g.id + ':' + activeTab) : '';
+    if (sig === subbarSig) return;
+    subbarSig = sig;
+    if (!g) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+    try { localStorage.setItem('rtxGrpLast:' + g.id, activeTab); } catch (e) {}
+    bar.style.display = 'flex';
+    bar.innerHTML = '';
+    const avail = allTabs();
+    g.tabs.forEach((id, i) => {
+      const t = avail.find(x => x.id === id);
+      if (!t) return;   // conditionally hidden members (dung / groupbank) stay off the strip
+      const b = document.createElement('button');
+      b.textContent = (g.subs && g.subs[i]) || t.label;
+      if (id === activeTab) b.className = 'on';
+      b.addEventListener('click', () => { if (id !== activeTab) openTab(t); });
+      bar.appendChild(b);
+    });
+  }
+
   function renderPane() {
+    renderSubbar();
     // Plugins own their (sandboxed iframe) DOM; mount before any content wipe.
     if (activeTab === 'pluginbrowse') { renderPluginBrowse(); return; }
     if (activeTab.indexOf('plugin:') === 0) { renderPlugin(activeTab.slice(7)); return; }
@@ -3002,8 +3074,6 @@
     if (activeTab === 'materials') { renderMaterials(); return; }
     if (activeTab === 'baitbox') { renderBaitBox(); return; }
     if (activeTab === 'artefacts') { renderWorkbench(); return; }
-    if (activeTab === 'bgh') { renderBgh(); return; }
-    if (activeTab === 'havenbgh') { renderHavenBgh(); return; }
     if (activeTab === 'components') { renderComponents(); return; }
     if (activeTab === 'inventory') { renderInventory(); return; }
     if (activeTab === 'equipment') { renderEquipment(); return; }
@@ -3041,16 +3111,6 @@
     // with hot-synced ui-assets must not throw here.
     if (activeTab === 'worldmap') { if (typeof renderWorldMap === 'function') renderWorldMap(); return; }
     if (activeTab === 'anachronia') { if (typeof renderAnachronia === 'function') renderAnachronia(); return; }
-    if (activeTab === 'agility') {
-      if (typeof renderAgility === 'function') renderAgility();
-      else { const ac = $('content'); if (ac && !ac.querySelector('.agi-stale')) ac.innerHTML = '<div class="empty agi-stale">Agility Course panel arrives with the next launcher build.</div>'; }
-      return;
-    }
-    if (activeTab === 'zygomites') {
-      if (typeof renderZygomites === 'function') renderZygomites();
-      else { const zc = $('content'); if (zc && !zc.querySelector('.zyg-stale')) zc.innerHTML = '<div class="empty zyg-stale">Zygomites panel arrives with the next launcher build.</div>'; }
-      return;
-    }
     if (activeTab === 'markers') { renderMarkers(); return; }
     if (activeTab === 'rendering') { renderRendering(); return; }
     if (activeTab === 'alerts') { renderAlerts(); return; }
@@ -3070,7 +3130,6 @@
     if (activeTab === 'counter') { renderCounter(); return; }
     if (activeTab === 'screenshot') { renderScreenshot(); return; }
     if (activeTab === 'dailies') { renderDailies(); return; }
-    if (activeTab === 'ports') { renderPorts(); return; }
     if (activeTab === 'kingdom') { renderKingdom(); return; }
     if (activeTab === 'rituals') { renderRituals(); return; }
     if (activeTab === 'toolbelt') { renderToolbelt(); return; }
@@ -3414,7 +3473,6 @@
     // Dailies availability bells: keep the activity varbits polled (10s background
     // throttle inside fetchDailies) so armed notifications fire with the tab closed.
     if (typeof dwNotifyAny === 'function' && dwNotifyAny() && activeTab !== 'dailies') fetchDailies(false, true);
-    if (typeof ppNotifyAny === 'function' && ppNotifyAny() && activeTab !== 'ports') fetchPorts(true);
     // World-event spawn bells (scarabs / soul obelisk): pure cache reads, so this is
     // cheap and runs regardless of the visible tab or a collapsed sidebar.
     if (typeof scNotifyPoll === 'function') scNotifyPoll();
@@ -3474,8 +3532,6 @@
     if (activeTab === 'inventory') fetchInv();
     if (activeTab === 'equipment') fetchEquip();
     if (activeTab === 'components') fetchComponents();   // Invention component counts (live varps)
-    if (activeTab === 'bgh') fetchBgh();                 // Big Game Hunter (Anachronia) live varps/varbits
-    if (activeTab === 'havenbgh') fetchHavenBgh();       // Big Game Hunter (Havenhythe) live varbits/varps
     if (activeTab === 'storage') fetchStorage();
     if (activeTab === 'containers') fetchContainers();
     if (activeTab === 'farming') fetchFarming();
@@ -3515,7 +3571,6 @@
     if (activeTab === 'archcol') fetchArchCol();
     if (activeTab === 'collections') fetchClueCol();
     if (activeTab === 'leagues') fetchLeagues();
-    if (activeTab === 'ports') fetchPorts();
     if (activeTab === 'info') fetchInfo();
     if (activeTab === 'info' || activeTab === 'player') fetchPlayerVp();
     if (activeTab === 'player') fetchGameGoals();
@@ -3545,7 +3600,7 @@
   // See PLUGIN_SDK.md. A plugin only ever reaches the read, overlay, sound, and
   // storage methods its granted scopes allow.
   const PLUGIN_PROTO  = 'rtx.plugin/1';
-  const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage']);
+  const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'clipboard']);
   let   pluginTabs    = [];     // [{ id, manifest:{id,name,version,author,entry,description}, scopes:[] }]
   let   pluginMounted = null;   // { id, frame, scopes } currently mounted (one at a time)
   const pluginBuckets = {};     // "id|method" -> token bucket
@@ -3566,9 +3621,11 @@ function g(o){return o;}
 var api={apiVersion:function(){return S.apiVersion;},id:function(){return S.pluginId;},grantedScopes:function(){return S.scopes.slice();},hasScope:function(s){return S.scopes.indexOf(s)!==-1;},
 ready:function(cb){if(typeof cb!=='function'){return new Promise(function(r){S.ready?r():rcb.push(r);});}S.ready?cb():rcb.push(cb);},
 on:function(e,cb){if(L[e]&&typeof cb==='function')L[e].push(cb);},
-state:{player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);}},
-cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);}},
-overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);}},
+state:{player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);},interfaceGroup:function(g){return call('state.interfaceGroup',[g]);},varcs:function(ids){return call('state.varcs',[ids]);}},
+cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);}},
+notify:{windows:function(title,body){return call('notify.windows',[title,body]);}},
+clipboard:{copy:function(t){return call('clipboard.copy',[t]);}},
+overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t){return call('overlay.centerText',[t]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);}},
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);}}};
@@ -3638,6 +3695,26 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'cache.enumInfo':   { scope: 'cache.read', json: true,    run: (a) => bridge().enumInfo(pClampId(a[0])) },
     // Param definition from the cache: {type[,int][,str]} ({} until the reader ships).
     'cache.paramDef':   { scope: 'cache.read', json: true,    run: (a) => (bridge().paramDef ? bridge().paramDef(pClampId(a[0])) : '{}') },
+    // Raw param map of one StructType (js5-22): {"ints":{k:v},"strs":{k:"v"}}.
+    'cache.structParams':{ scope: 'cache.read', json: true,   run: (a) => (bridge().structParams ? bridge().structParams(pClampId(a[0])) : '{}') },
+    // Raw op-249 param map of one item (js5-19): {"ints":{k:v},"strs":{k:"v"}}.
+    'cache.itemParams': { scope: 'cache.read', json: true,    run: (a) => (bridge().itemParams ? bridge().itemParams(pClampId(a[0])) : '{}') },
+    // Top-down cache terrain render centred on a world tile (the World Map / Zygomites imagery):
+    // {"w","t","h","b64"} RGBA. Pure cache data; clamps keep single calls bounded.
+    'cache.mapWindow':  { scope: 'cache.read', json: true,    run: (a) => (bridge().mapWindow
+                            ? bridge().mapWindow(pClampNum(a[0], 0, 16000), pClampNum(a[1], 0, 16000),
+                                                 pClampNum(a[2], 0, 3), pClampNum(a[3], 0, 96), pClampNum(a[4], 0, 8))
+                            : '{}') },
+    // Full live widget tree of ONE open interface group (id/type/rect/text/sprite per node) --
+    // what the Interfaces tab shows. Heavier than state.interface; same read-only data.
+    'state.interfaceGroup':{ scope: 'state.read', json: true, run: (a, pid) => bridge().interfaceGroup(pid, pClampId(a[0])) },
+    // Live VARC-int values by id -> {"<id>": value}. Reads the full varc hashmap dump and
+    // filters to the requested ids (<=64), mirroring state.varbits' shape.
+    'state.varcs':      { scope: 'state.read', json: false,   run: async (a, pid) => {
+                            const ids = (Array.isArray(a[0]) ? a[0] : []).slice(0, 64)
+                              .map(x => parseInt(x, 10)).filter(n => isFinite(n) && n >= 0 && n < 200000);
+                            let all = {}; try { all = JSON.parse(await bridge().varcsDumpAll(pid) || '{}'); } catch (e) {}
+                            const out = {}; for (const id of ids) out[id] = (all[id] | 0) || 0; return out; } },
     // Achievements: full roster with live completion + per-requirement progress, or a single
     // achievement by id (state.achievement(id) -> {id,name,complete,...}). state.read scope.
     'state.achievements':{ scope: 'state.read', json: false,  run: (a, pid) => pluginAchievements(pid) },
@@ -3711,6 +3788,13 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                                        stage: st ? { value: st[0], max: st[1] } : null }; })); } },
     'overlay.toast':    { scope: 'overlay',    json: false,   run: (a, pid) => bridge().overlayToast(pid, pClampStr(a[0], 200)) },
     'overlay.notify':   { scope: 'overlay',    json: false,   run: (a, pid) => bridge().overlayNotify(pid, pClampStr(a[0], 200), pClampNum(a[1], 0, 60000)) },
+    // Big centre-screen banner text ('' clears). Same in-frame channel the Dungeoneering
+    // boss warnings use.
+    'overlay.centerText':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().centerText ? bridge().centerText(pid, pClampStr(a[0], 80)) : null) },
+    // OS toast (Windows notification). Own manifest scope + a 1-per-10s rate cap.
+    'notify.windows':   { scope: 'notify.os',  json: false,   run: (a) => (bridge().notifyWindows ? bridge().notifyWindows(pClampStr(a[0], 60), pClampStr(a[1], 200)) : null) },
+    // Copy text to the user's clipboard. Own manifest scope; sized for plan exports.
+    'clipboard.copy':   { scope: 'clipboard',  json: false,   run: (a) => (bridge().copyClipboard ? bridge().copyClipboard(pClampStr(a[0], 65536)) : null) },
     'overlay.highlight':{ scope: 'overlay',    json: false,   run: (a, pid) => bridge().overlayHighlight(pid, pClampList(a[0])) },
     // Box a single NPC by name (case-insensitive) with an optional pill label. Unlike
     // overlay.highlight (which strips punctuation), this keeps the label intact and only
@@ -3791,11 +3875,17 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   };
 
   function pluginRateOk(id, method) {
-    const cap = method.indexOf('storage.') === 0 ? 4 : (method.indexOf('overlay.') === 0 ? 6 : 20); // per second
+    // rate = tokens refilled per second; capacity = max burst (>=1 so slow rates still fire).
+    const rate = method.indexOf('storage.') === 0 ? 4
+               : method.indexOf('overlay.') === 0 ? 6
+               : method.indexOf('notify.') === 0 ? 0.1     // OS toasts: 1 per 10s
+               : method.indexOf('clipboard.') === 0 ? 1
+               : 20;
+    const cap = Math.max(1, rate);
     const k = id + '|' + method, now = Date.now();
     let b = pluginBuckets[k];
     if (!b) { b = { t: cap, ts: now }; pluginBuckets[k] = b; }
-    b.t = Math.min(cap, b.t + ((now - b.ts) / 1000) * cap); b.ts = now;
+    b.t = Math.min(cap, b.t + ((now - b.ts) / 1000) * rate); b.ts = now;
     if (b.t < 1) return false;
     b.t -= 1; return true;
   }
@@ -3887,7 +3977,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   function allTabs() {
     const extra = [{ id: 'pluginbrowse', label: 'Browse plugins', cat: 'Plugins', icon: PLUGIN_BROWSE_ICON }];
     pluginTabs.forEach(p => extra.push({ id: 'plugin:' + p.id, label: p.manifest.name, cat: 'Plugins', icon: PLUGIN_TAB_ICON }));
-    return TABS.filter(t => (t.id !== 'dung' || DUNG_ENABLED) && (t.id !== 'groupbank' || gimInGroup !== false)).concat(extra);
+    return TABS.filter(t => (t.id !== 'dung' || DUNG_ENABLED) && (t.id !== 'groupbank' || gimInGroup !== false))
+      .map(t => { const g = TAB_GROUP_OF[t.id]; return (g && g.cat && g.cat !== t.cat) ? Object.assign({}, t, { cat: g.cat }) : t; })
+      .concat(extra);
   }
 
   // Splice the host CSP + the SDK shim into the plugin's entry HTML head.
@@ -3911,7 +4003,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     const card = document.createElement('div');
     card.dataset.pluginPerm = id;
     card.style.cssText = 'max-width:420px;margin:24px auto;background:#1a1b23;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:20px;';
-    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings' };
+    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings', 'notify.os': 'Show Windows notifications', 'clipboard': 'Copy text to your clipboard' };
     let h = '<div style="font-size:1.1em;font-weight:600;">' + pluginEsc(m.name) + '</div>';
     h += '<div style="color:#8b8b9e;font-size:.85em;margin:2px 0 6px;">v' + pluginEsc(m.version) + (m.author ? (' - ' + pluginEsc(m.author)) : '') + '</div>';
     if (tab.source === 'dev')
