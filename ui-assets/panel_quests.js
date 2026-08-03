@@ -186,7 +186,7 @@
         b.textContent = nm; b.dataset.val = i; chips.appendChild(b);
       });
       const search = document.createElement('input'); search.className = 'pet-search'; search.id = 'questSearch';
-      search.placeholder = 'Search quest or id...'; search.value = questFSearch;
+      search.placeholder = 'Search quest, id, or "guided"...'; search.value = questFSearch;
       tb.appendChild(chips); tb.appendChild(search); wrap.appendChild(tb);
       const cnt = document.createElement('div'); cnt.id = 'questCnt'; cnt.className = 'pet-count'; wrap.appendChild(cnt);
       const list = document.createElement('div'); list.id = 'questList'; list.className = 'pet-list'; wrap.appendChild(list);
@@ -200,16 +200,25 @@
     }
     renderQuestList();
   }
+  // True when this quest has full in-world VISUAL guidance (NPC/object/dialogue/item
+  // highlighting) - the step-fn registry panel_visions.js declares. typeof-guarded so an
+  // older build without that splice never throws here.
+  function questHasVisualGuide(name) {
+    try { return typeof QUEST_GUIDES === 'object' && !!QUEST_GUIDES[name]; } catch (e) { return false; }
+  }
   function renderQuestList() {
     const list = $('questList'); if (!list) return;
     const d = questsData;
     if (!d) { list.innerHTML = '<div class="empty">Reading... (be in-world)</div>'; questListSig = ''; return; }
     const ready = {};   // computed lazily only for not-started quests (closure walk)
     const idSearch = /^\d+$/.test(questFSearch);   // digits = also match config ids by prefix
+    // Typing "guided" (any 3+ char prefix) filters to the visually-guided quests.
+    const guidedSearch = questFSearch.length >= 3 && 'guided'.indexOf(questFSearch) === 0;
     const items = QUESTS.filter(q => {
       if (questFSearch) {
         const idHit = idSearch && String(q.id).indexOf(questFSearch) === 0;
-        if (!idHit && q.n.toLowerCase().indexOf(questFSearch) < 0) return false;
+        const gHit = guidedSearch && questHasVisualGuide(q.n);
+        if (!idHit && !gHit && q.n.toLowerCase().indexOf(questFSearch) < 0) return false;
       }
       const st = d.st[q.id];
       if (questFStatus === 1) return st === 2;
@@ -242,6 +251,7 @@
       top.appendChild(nm); info.appendChild(top);
       const chips = document.createElement('div'); chips.className = 'bs-chips';
       const chip = (cls, txt) => { const s = document.createElement('span'); s.className = 'bs-chip ' + cls; s.textContent = txt; chips.appendChild(s); };
+      if (questHasVisualGuide(q.n)) chip('qg', 'Guided');
       if (q.p) chip('m1', q.p + ' QP');
       if (q.d !== undefined) chip('lg', QDIFF[q.d] || ('Diff ' + q.d));
       if (q.mq) chip('lg', 'Miniquest');
@@ -309,6 +319,7 @@
     }
     const meta = document.createElement('div'); meta.className = 'bs-chips'; meta.style.marginBottom = '10px';
     const mchip = (cls, txt) => { const s = document.createElement('span'); s.className = 'bs-chip ' + cls; s.textContent = txt; meta.appendChild(s); };
+    if (questHasVisualGuide(q.n)) mchip('qg', 'Guided in-world');
     mchip('m1', (q.p || 0) + ' quest point' + (q.p === 1 ? '' : 's'));
     mchip('lg', 'ID ' + q.id);
     if (q.d !== undefined) mchip('lg', QDIFF[q.d] || ('Difficulty ' + q.d));
