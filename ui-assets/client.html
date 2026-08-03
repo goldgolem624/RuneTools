@@ -1726,7 +1726,8 @@
   const CAT_META = [
     { id: 'Character',   icon: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>' },
     { id: 'Items',       icon: '<path d="M4 8h16l-1 12H5z"/><path d="M8 8V6a4 4 0 0 1 8 0v2"/>' },
-    { id: 'Progress',    icon: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-3-2-3 2-3-2-3 2V4a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6"/>' },
+    { id: 'Quests',      icon: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-3-2-3 2-3-2-3 2V4a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6"/>' },
+    { id: 'Achievements', icon: '<circle cx="12" cy="9" r="5"/><path d="M8.5 13.5L7 21l5-3 5 3-1.5-7.5"/><path d="M12 7.2l.6 1.2 1.3.2-1 1 .2 1.3-1.1-.6-1.1.6.2-1.3-1-1 1.3-.2z"/>' },
     { id: 'Clues',       icon: '<path d="M7 4h10a1 1 0 0 1 1 1v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M9 8h6M9 11h6M9 14h4"/>' },
     { id: 'Collections', icon: '<path d="M7 4h10v3a5 5 0 0 1-10 0z"/><path d="M5 4H4v1a3 3 0 0 0 3 3M19 4h1v1a3 3 0 0 1-3 3"/><path d="M10 12h4v3h-4z"/><path d="M8 20h8M9.5 20l.5-2.5h4l.5 2.5"/>' },
     { id: 'Archaeology', icon: '<path d="M4 9c4.5-4 11.5-4 16 0"/><path d="M12 6v15"/>' },
@@ -2665,8 +2666,8 @@
   // tick gates and localStorage keys all keep working; only the navigation collapses.
   // A group's `cat` overrides its members' categories (allTabs applies it).
   const TAB_GROUPS = [
-    { id: 'quests',  label: 'Quests',         cat: 'Progress',    tabs: ['quests', 'questfocus'],                                subs: ['All Quests', 'Focused'] },
-    { id: 'achieve', label: 'Achievements',   cat: 'Progress',    tabs: ['achievements', 'combatmastery', 'areatasks', 'gimtasks'], subs: ['Achievements', 'Combat Mastery', 'Area Tasks', 'GIM Journey'] },
+    { id: 'quests',  label: 'Quests',         cat: 'Quests',      tabs: ['quests', 'questfocus'],                                subs: ['All Quests', 'Focused'] },
+    { id: 'achieve', label: 'Achievements',   cat: 'Achievements', tabs: ['achievements', 'combatmastery', 'areatasks', 'gimtasks'], subs: ['Achievements', 'Combat Mastery', 'Area Tasks', 'GIM Journey'] },
     { id: 'collect', label: 'Collection Log', cat: 'Collections', tabs: ['collections', 'pets', 'farmcol', 'bosses', 'archcol'], subs: ['Collections', 'Pets', 'Farm Breeds', 'Boss KC', 'Artefacts'] },
     { id: 'cluehub', label: 'Clues',          cat: 'Clues',       tabs: ['clues', 'hideyholes', 'globetrotter', 'cluestats'],    subs: ['Clue Guide', 'Hidey-holes', 'Globetrotter', 'Stats'] },
     { id: 'arch',    label: 'Archaeology',    cat: 'Archaeology', tabs: ['archmysteries', 'artefacts', 'mystfocus', 'materials', 'archresearch', 'archshop'], subs: ['Mysteries', 'Artefacts', 'Focused', 'Materials', 'Research', 'Guild Shop'] },
@@ -2821,27 +2822,44 @@
       return b;
     };
 
+    // A category's collapsed entry list: groups count once (at their first member's slot).
+    const catEntries = (catId) => {
+      const out = [], emitted = {};
+      for (const t of allTabs()) {
+        if ((t.cat || 'General') !== catId) continue;
+        const g = TAB_GROUP_OF[t.id];
+        if (g) { if (!emitted[g.id]) { emitted[g.id] = true; out.push({ g, t }); } continue; }
+        out.push({ t });
+      }
+      return out;
+    };
+    // Never show a drilled-in one-item list: single-entry categories are direct-open,
+    // so any state that lands there (first render, tab search) snaps back to the top level.
+    if (railCat !== null && catEntries(railCat).length <= 1) railCat = null;
     if (railCat === null) {
       const openCat = (!sideCollapsed && activeTab) ? tabCat(activeTab) : null;
-      for (const c of railCategories())
-        list.appendChild(mkBtn(c.icon, c.id, c.id === openCat, 'rail-cat', () => { railCat = c.id; renderSidebar(); }));
+      for (const c of railCategories()) {
+        const entries = catEntries(c.id);
+        // One entry = the category IS that panel: open it directly instead of drilling
+        // into a one-item list (Archaeology, Clues, Collections, Quests, Achievements).
+        const direct = entries.length === 1 ? entries[0] : null;
+        list.appendChild(mkBtn(c.icon, c.id, c.id === openCat, 'rail-cat', () => {
+          if (direct) { openTab(direct.g ? groupEntryTab(direct.g) : direct.t); renderSidebar(); return; }
+          railCat = c.id; renderSidebar();
+        }));
+      }
     } else {
       list.appendChild(mkBtn('<path d="M15 5l-7 7 7 7"/>', 'Back to categories', false, 'rail-back', () => { railCat = null; renderSidebar(); }));
       const sep = document.createElement('div'); sep.className = 'rail-sep'; list.appendChild(sep);
-      const emitted = {};   // group id -> true (one rail entry per group, at its first member's slot)
-      for (const t of allTabs()) {
-        if ((t.cat || 'General') !== railCat) continue;
-        const g = TAB_GROUP_OF[t.id];
-        if (g) {
-          if (emitted[g.id]) continue;
-          emitted[g.id] = true;
-          list.appendChild(mkBtn(t.icon, g.label, g.tabs.indexOf(activeTab) >= 0, '', () => {
-            const et = groupEntryTab(g);
+      for (const e of catEntries(railCat)) {
+        if (e.g) {
+          list.appendChild(mkBtn(e.t.icon, e.g.label, e.g.tabs.indexOf(activeTab) >= 0, '', () => {
+            const et = groupEntryTab(e.g);
             if (et) openTab(et);
           }));
-          continue;
+        } else {
+          list.appendChild(mkBtn(e.t.icon, e.t.label, e.t.id === activeTab, '', () => openTab(e.t)));
         }
-        list.appendChild(mkBtn(t.icon, t.label, t.id === activeTab, '', () => openTab(t)));
       }
     }
     side.appendChild(list);
