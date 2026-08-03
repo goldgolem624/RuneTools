@@ -5,7 +5,9 @@
   // whole tree is never walked or polled.
   // Hand-curated group names; ids without a confident name stay bare numbers.
   const IFACE_NAMES = {
-    13:'Bank PIN', 1253:'Treasure Hunter (removed)', 37:'Smithing / Smelting', 91:'Dungeoneering party', 105:'Grand Exchange',
+    13:'Bank PIN', 1253:'Treasure Hunter (removed)',
+    919:'Fish Flingers scoreboard', 922:'Fish Flingers results', 923:'Fish Flingers details',
+    1286:'Fish Flingers discovered ratings', 37:'Smithing / Smelting', 91:'Dungeoneering party', 105:'Grand Exchange',
     107:'Grand Exchange inventory', 109:'GE collection box', 137:'Chat box', 190:'Quest list',
     284:'Buff bar', 291:'Debuff bar', 345:'Mysterious clue scroll', 364:'Treasure trails',
     517:'Bank', 590:'Emote', 660:'Archaeology material storage', 662:'Familiar / Summoning',

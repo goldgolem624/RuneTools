@@ -3952,6 +3952,8 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 1665, 3096, 3097, -4, -16, 0, true },
     { 1223, 3096, 3097, 0, 0, 0, true },   // Active ritual (Necromancy!) -- position varcs 3096/3097
     { 923,  3096, 3097, 0, 0, 0, true },   // Fish Flingers competition results -- position varcs 3096/3097
+    { 919,  3047, 3048, 0, 0, 0, true },   // Fish Flingers live scoreboard (heaviest / total fish /
+                                  // total weight / assists, habitat depletion bar) -- varcs 3047/3048
     { 1222, 6463, 6464, 0, 0, 0, true },   // Well of Souls talent tree (Necromancy!) -- varcs 6463/6464 (central-overlay family)
     { 660,  9121, 9122, 0, -9 },  // Material storage -- UNVERIFIED varp path (flip to its varcs once live-checked)
     { 656,  6310, 6311, 0, 0, 728, true }, // Museum / Training Weapons donation -- varcs 6310/6311 (the knot family). Mount
