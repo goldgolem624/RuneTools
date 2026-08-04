@@ -3598,16 +3598,36 @@ std::string install_plugin(const std::string& slug) {
     return {};
 }
 
+// Marketplace list: fetched on a DETACHED background thread so the HTTP round-trip NEVER
+// runs on the Ultralight JS/render thread (a blocking http::Get there froze the panel grey
+// and faulted). served()/ReadAsync is NOT usable here: its cold path builds inline, so the
+// first call would still block on the network. The bridge call returns the cached body
+// immediately ("{}" until the first fetch lands); the JS Browse view polls until it fills.
+std::mutex   g_pluginListMu;
+std::string  g_pluginListBody;              // last good JSON ("" = never fetched)
+bool         g_pluginListInFlight = false;
+ULONGLONG    g_pluginListAt = 0;            // GetTickCount64() of the last success
+
 JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t, const JSValueRef[], JSValueRef*) {
-    // The marketplace list is an HTTP round-trip; run it on the reader's worker thread via
-    // served() -- a blocking http::Get on the Ultralight JS/render thread froze the panel
-    // (single-threaded UI) and could fault when the JS await re-entered it. served() returns
-    // "" until the fetch completes, then the real body; the JS treats "" as "still loading".
-    return served(ctx, "pluginmarketlist", "{}", [] {
-        auto r = http::Get(kUpdateHost, kPluginListPath, {});   // public endpoint; no auth
-        return (r.ok && r.status == 200) ? r.body : std::string("{}");
-    });
+    std::string body;
+    {
+        std::lock_guard<std::mutex> lk(g_pluginListMu);
+        body = g_pluginListBody;
+        const ULONGLONG now = GetTickCount64();
+        // Kick a refresh when nothing is cached or the cache is >60s old, one at a time.
+        if (!g_pluginListInFlight && (g_pluginListBody.empty() || now - g_pluginListAt > 60000)) {
+            g_pluginListInFlight = true;
+            std::thread([] {
+                auto r = http::Get(kUpdateHost, kPluginListPath, {});   // public endpoint; no auth
+                std::string fetched = (r.ok && r.status == 200) ? r.body : std::string();
+                std::lock_guard<std::mutex> lk(g_pluginListMu);
+                if (!fetched.empty()) { g_pluginListBody = std::move(fetched); g_pluginListAt = GetTickCount64(); }
+                g_pluginListInFlight = false;
+            }).detach();
+        }
+    }
+    return utf8_to_js(ctx, body.empty() ? std::string("{}") : body);
 }
 
 JSValueRef PluginMarketInstall(JSContextRef ctx, JSObjectRef, JSObjectRef,
