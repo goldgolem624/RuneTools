@@ -187,6 +187,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_scarabs.js",    // Corrupted Scarabs community world tracker
         "panel_obelisks.js",   // Soul Obelisk community world+district tracker
         // panel_ports.js moved out to a marketplace plugin (2026-08-03)
+        "panel_portsinfo.js",  // Ports state reference panel + the state.ports broker decode
         "panel_kingdom.js",    // Miscellania kingdom management (approval/coffer/workers)
         "panel_rituals.js",    // Necromancy ritual site HUD + City of Um talents
         "panel_toolbelt.js",   // Toolbelt contents + tool tiers (missing tools first)

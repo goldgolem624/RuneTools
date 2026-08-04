@@ -130,7 +130,12 @@
       // {widgets:[{t:[group,comp,sub],d,r:[x,y,w,h],ty,...}]}. Heavier than state.interface.
       interfaceGroup: function (groupId) { return call('state.interfaceGroup', [groupId]); },
       // Live VARC-int values by id -> { "<id>": value } (max 64 ids), like state.varbits.
-      varcs:        function (ids) { return call('state.varcs', [ids]); }
+      varcs:        function (ids) { return call('state.varcs', [ids]); },
+      // Player-Owned Ports account state (host-decoded): {resources:[{name,qty,sprite}],
+      // tradeGoods:[{name,qty,item}], buildings:[{name,level}], ships:[{nameParts,voyageId,
+      // status:'ready'|'sailing'|'returned'|'damaged', etaMinutes|null}], shipCount,
+      // scrollPieces, distance, zone}. null until readable.
+      ports:        function () { return call('state.ports', []); }
     },
 
     // ---- scope: cache.read (static game data) ----

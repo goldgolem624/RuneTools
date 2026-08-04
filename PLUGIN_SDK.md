@@ -160,6 +160,17 @@ await rtx.plugin.state.interfaceGroup(919); // one OPEN interface group id
 await rtx.plugin.state.varcs([1118, 1119]); // array of varc-int ids (<=64)
 // -> { "1118": 384, "1119": 2 }            map of id -> live varc value (0 when absent)
 
+await rtx.plugin.state.ports();
+// -> { resources:[ { name:"Chimes", qty, sprite }, ...9 ],
+//      tradeGoods:[ { name:"Plate", qty, item }, ...7 ],
+//      buildings:[ { name:"Bar", level }, ...14 ],
+//      ships:[ { nameParts:[a,b,c], voyageId,
+//                status:'ready'|'sailing'|'returned'|'damaged', etaMinutes|null }, ... ],
+//      shipCount, scrollPieces, distance, zone }
+//    Player-Owned Ports account state, decoded by the host (one shared decode) so any
+//    plugin can act on it. Ship/voyage NAMES are enum lookups left to the consumer.
+//    null until readable (not in-world / port not started).
+
 await rtx.plugin.state.buffs();
 // -> { buffs:[ ... ], debuffs:[ ... ] }     active buff/debuff entries
 
