@@ -3630,10 +3630,37 @@ JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, body.empty() ? std::string("{}") : body);
 }
 
+// Install downloads + verifies + extracts the bundle -- also an HTTP round-trip, so it runs
+// on a DETACHED thread for the same reason as the list fetch (a blocking install froze the
+// panel on click). Returns "pending"|"busy" immediately; the JS polls pluginInstallStatus().
+std::mutex   g_installMu;
+std::string  g_installResult;               // "" while running, "ok" on success, else error text
+bool         g_installInFlight = false;
+
 JSValueRef PluginMarketInstall(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, std::string("Bad request"));
-    return utf8_to_js(ctx, install_plugin(js_to_utf8(ctx, argv[0])));
+    std::string slug = js_to_utf8(ctx, argv[0]);
+    std::lock_guard<std::mutex> lk(g_installMu);
+    if (g_installInFlight) return utf8_to_js(ctx, std::string("busy"));
+    g_installInFlight = true;
+    g_installResult.clear();
+    std::thread([slug] {
+        std::string err = install_plugin(slug);             // "" = success
+        std::lock_guard<std::mutex> lk(g_installMu);
+        g_installResult = err.empty() ? std::string("ok") : err;
+        g_installInFlight = false;
+    }).detach();
+    return utf8_to_js(ctx, std::string("pending"));
+}
+
+// Poll the background install: "pending" while running, "ok" on success, "idle" when nothing
+// has run, else the error text from the last attempt.
+JSValueRef PluginInstallStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                               size_t, const JSValueRef[], JSValueRef*) {
+    std::lock_guard<std::mutex> lk(g_installMu);
+    if (g_installInFlight) return utf8_to_js(ctx, std::string("pending"));
+    return utf8_to_js(ctx, g_installResult.empty() ? std::string("idle") : g_installResult);
 }
 
 // Installed (signed) plugins live under plugins/<id>/ -- list/read mirror the dev ones.
@@ -3932,6 +3959,7 @@ void AttachBridge(ultralight::View* view) {
 
     install_fn(ctx, ns, "pluginMarketList",        PluginMarketList);
     install_fn(ctx, ns, "pluginMarketInstall",     PluginMarketInstall);
+    install_fn(ctx, ns, "pluginInstallStatus",     PluginInstallStatus);
     install_fn(ctx, ns, "pluginInstalledList",     PluginInstalledList);
     install_fn(ctx, ns, "pluginInstalledManifest", PluginInstalledManifest);
     install_fn(ctx, ns, "pluginInstalledEntry",    PluginInstalledEntry);

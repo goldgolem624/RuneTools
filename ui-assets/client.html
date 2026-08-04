@@ -4225,7 +4225,20 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   async function marketInstall(slug, btn) {
     btn.disabled = true; btn.textContent = 'Installing...';
     let err = 'error';
-    try { err = await bridge().pluginMarketInstall(slug); } catch (e) { err = String(e); }
+    try {
+      // Install runs on a background thread now: kick it, then poll the status so the download
+      // never blocks the UI thread. '' = success (matches the pre-async contract below).
+      const start = await bridge().pluginMarketInstall(slug);
+      if (start === 'busy') { btn.disabled = false; btn.textContent = 'Install'; return; }
+      err = 'pending';
+      for (let i = 0; i < 120 && err === 'pending'; i++) {   // up to ~30s
+        await new Promise(r => setTimeout(r, 250));
+        let st = 'pending'; try { st = await bridge().pluginInstallStatus(); } catch (e) {}
+        if (st === 'ok') err = '';
+        else if (st !== 'pending' && st !== 'idle') err = st;
+      }
+      if (err === 'pending') err = 'timed out';
+    } catch (e) { err = String(e); }
     if (!err) {
       pluginClearGranted(slug);       // require a fresh permission consent on every (re)install
       await loadPlugins();
