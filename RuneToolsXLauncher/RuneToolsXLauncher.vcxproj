@@ -257,7 +257,11 @@
           DestinationFolder="$(OutDir)sounds"
           SkipUnchangedFiles="true" />
     <ItemGroup>
-      <Cs2Sidecar Include="$(ProjectDir)..\ThirdParty\cs2sidecar\**\*" />
+      <!-- src\node_modules is the rsmv DEV install (electron etc., ~400MB); the shipped
+           runtime is node.exe + the root node_modules + dist. Staging it once ballooned
+           the installer 85MB -> 188MB. -->
+      <Cs2Sidecar Include="$(ProjectDir)..\ThirdParty\cs2sidecar\**\*"
+                  Exclude="$(ProjectDir)..\ThirdParty\cs2sidecar\src\node_modules\**\*" />
     </ItemGroup>
     <Copy SourceFiles="@(Cs2Sidecar)"
           DestinationFiles="@(Cs2Sidecar->'$(OutDir)cs2sidecar\%(RecursiveDir)%(Filename)%(Extension)')"
