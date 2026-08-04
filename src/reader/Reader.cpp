@@ -6273,10 +6273,16 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     // ordered SW,SE,NE,NW in world-fine coords. The base is LEVEL at the lowest
     // corner of the footprint (one bridge/layer decision at the centre column):
     // terrain-following the corners shears prisms on slopes and at deck seams.
-    auto fillBox = [&](OverlayPoint& op, int swx, int swy, int W, int H) {
+    // forPlane: the plane the box belongs to (a guide mark's own plane, not necessarily the
+    // player's). atTop: level the plate at the HIGHEST corner instead of the lowest -- the
+    // walk surface for area marks that span a pit or gap (an agility log's rect otherwise
+    // sinks to the pit floor and reads as beside the log).
+    auto fillBox = [&](OverlayPoint& op, int swx, int swy, int W, int H,
+                       int forPlane = -1, bool atTop = false) {
         if (W < 1) W = 1;
         if (H < 1) H = 1;
-        const int ep = rtx::cache::TileEffPlane(swx + W / 2, swy + H / 2, out.plane);
+        if (forPlane < 0) forPlane = out.plane;
+        const int ep = rtx::cache::TileEffPlane(swx + W / 2, swy + H / 2, forPlane);
         const int cx[4] = { swx, swx + W, swx + W, swx };
         const int cy[4] = { swy, swy, swy + H, swy + H };
         float base = out.player_z, top = out.player_z; bool haveBase = false;
@@ -6287,10 +6293,11 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             if (!haveBase) { base = top = z; haveBase = true; }
             else { if (z < base) base = z; if (z > top) top = z; }
         }
+        const float lev = atTop ? top : base;
         for (int i = 0; i < 4; ++i) {
             op.box[i * 3 + 0] = cx[i] * 512.f;
             op.box[i * 3 + 1] = cy[i] * 512.f;
-            op.box[i * 3 + 2] = base;
+            op.box[i * 3 + 2] = lev;
         }
         op.has_box = true;
         // Static locs carry no model height -- extrude by a footprint-scaled stand-in
@@ -6298,7 +6305,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         // footprint's upslope side stays enclosed.
         int m = (W > H ? W : H);
         if (m > 4) m = 4;
-        op.box_h = 280.f + 120.f * (float)(m - 1) + (top - base);
+        op.box_h = 280.f + 120.f * (float)(m - 1) + (atTop ? 0.f : (top - base));
     };
 
     // Guide sites (focused-mystery guidance): independent of the object toggle.
@@ -6352,7 +6359,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     // picks the orientation (which axis carries the longer dim) and the centre.
                     int bestD2 = 6 * 6 + 1; const RuntimeObj* bestR = nullptr;
                     for (const auto& r : gobjs) {
-                        if (r.config_id <= 0 || r.plane != out.plane) continue;
+                        if (r.config_id <= 0 || r.plane != s->plane) continue;
                         if (!(r.bmax[0] > r.bmin[0])) continue;
                         int dx = r.x - s->gx, dy = r.y - s->gy;
                         int d2 = dx * dx + dy * dy;
@@ -6416,7 +6423,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     op.rgb = first->rgb;
                     op.wx = t.first * 512.f + 256.f; op.wy = t.second * 512.f + 256.f;
                     op.wz = cornerZ(t.first, t.second);
-                    fillBox(op, t.first, t.second, 1, 1);
+                    fillBox(op, t.first, t.second, 1, 1, first->plane);
                     op.box_h = 0.f;                               // floor-level only
                     int mask = 0;
                     if (!tiles.count(tkey(t.first, t.second - 1))) mask |= 1;   // south
@@ -6443,11 +6450,16 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             }
             op.rgb = gs.rgb;
             op.wx = gs.gx * 512.f + 256.f; op.wy = gs.gy * 512.f + 256.f;
-            op.wz = cornerZ(gs.gx, gs.gy);
+            {   // label anchor height on the MARK's plane (not the player's)
+                std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane);
+                op.wz = (hh == kNoH) ? out.player_z : kHScale * (float)hh;
+            }
             // AREA mark: a flat ground rect spanning (gx,gy)..(gx2,gy2) -- e.g. the BGH
             // tall/burnt-grass region. No loc matching, no prism (flat reads as a zone decal).
+            // Levelled at the rect's HIGHEST corner on the mark's own plane: the walk surface
+            // (a pit-crossing log / an upper-course pole row would otherwise sink).
             if (gs.gx2 >= gs.gx && gs.gy2 >= gs.gy && gs.gx2 > 0 && gs.gy2 > 0) {
-                fillBox(op, gs.gx, gs.gy, gs.gx2 - gs.gx + 1, gs.gy2 - gs.gy + 1);
+                fillBox(op, gs.gx, gs.gy, gs.gx2 - gs.gx + 1, gs.gy2 - gs.gy + 1, gs.plane, true);
                 op.box_h = 0.f;
                 op.wx = (gs.gx + gs.gx2 + 1) * 0.5f * 512.f;
                 op.wy = (gs.gy + gs.gy2 + 1) * 0.5f * 512.f;
@@ -6464,7 +6476,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 // it at the bogus cache height). Matched by tile, not name (the morph name varies).
                 int bestD2 = 5 * 5 + 1; const RuntimeObj* bestR = nullptr;
                 for (const auto& r : gobjs) {
-                    if (r.config_id <= 0 || r.plane != out.plane) continue;
+                    if (r.config_id <= 0 || r.plane != gs.plane) continue;
                     if (!(r.bmax[0] > r.bmin[0])) continue;       // need a real AABB
                     int dx = r.x - gs.gx, dy = r.y - gs.gy;
                     int d2 = dx * dx + dy * dy;
@@ -6486,7 +6498,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 // and its stand-in height is a guess.)
                 int bestD2 = 8 * 8 + 1; const RuntimeObj* bestR = nullptr;
                 for (const auto& r : gobjs) {
-                    if (r.config_id <= 0 || r.plane != out.plane) continue;
+                    if (r.config_id <= 0 || r.plane != gs.plane) continue;
                     if (!(r.bmax[0] > r.bmin[0])) continue;       // need a real AABB
                     int dx = r.x - gs.gx, dy = r.y - gs.gy;
                     int d2 = dx * dx + dy * dy;
@@ -6514,7 +6526,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 for (int key : rkeys) {
                     int rx = (key >> 8) & 0xff, ry = key & 0xff;
                     for (const auto& p : rtx::cache::RegionLocations(rx, ry)) {
-                        if (p.plane != out.plane) continue;
+                        if (p.plane != gs.plane) continue;
                         auto meta = resolve_loc(h, groot, p.id);
                         if (meta.name != oname) continue;
                         int wx = rx * 64 + p.x, wy = ry * 64 + p.y;
@@ -6526,13 +6538,13 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     }
                 }
                 if (bestD <= 8 * 8) {
-                    fillBox(op, bswx, bswy, bW, bH);
+                    fillBox(op, bswx, bswy, bW, bH, gs.plane);
                     op.wx = (bswx + bW * 0.5f) * 512.f;
                     op.wy = (bswy + bH * 0.5f) * 512.f;
                     found = true;
                 }
             }
-            if (!found) { fillBox(op, gs.gx, gs.gy, 1, 1); op.box_h = 0.f; }   // flat tile fallback
+            if (!found) { fillBox(op, gs.gx, gs.gy, 1, 1, gs.plane); op.box_h = 0.f; }   // flat tile fallback
             out.guides.push_back(op);
         }
 

@@ -170,7 +170,9 @@ struct OverlayPoint {
 // extent -- the mark becomes a flat ground rect spanning (gx,gy)..(gx2,gy2), skipping
 // loc matching. region: sites sharing (label, rgb) merge into one flat zone, the
 // union of each site's resolved loc footprint, perimeter outlined with one label.
-struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false; int rgb = 0; int gx2 = 0, gy2 = 0; int region = 0; };
+// plane: the MARK's plane (may differ from the player's) -- matching and heights use it,
+// so an obstacle above/below the player still boxes correctly.
+struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false; int rgb = 0; int gx2 = 0, gy2 = 0; int region = 0; int plane = 0; };
 
 // Everything the overlay needs for one frame of one client, gathered in a
 // single locked pass. `matrix` is the live view-projection matrix (16 floats

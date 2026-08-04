@@ -2157,7 +2157,7 @@ void RenderLoop() {
             { std::lock_guard<std::mutex> lk(g_mu);
               auto git = g_guides.find(cpid);
               if (git != g_guides.end())
-                  for (const auto& m : git->second) gsites.push_back({ m.gx, m.gy, m.label, m.snapObj, m.rgb, m.gx2, m.gy2, m.region });
+                  for (const auto& m : git->second) gsites.push_back({ m.gx, m.gy, m.label, m.snapObj, m.rgb, m.gx2, m.gy2, m.region, m.plane });
               auto uit = g_uiHighlights.find(cpid);
               hasUiHl = (uit != g_uiHighlights.end() && uit->second.w > 0);
               auto ctit = g_centerTexts.find(cpid);
