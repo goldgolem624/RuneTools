@@ -3600,8 +3600,14 @@ std::string install_plugin(const std::string& slug) {
 
 JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t, const JSValueRef[], JSValueRef*) {
-    auto r = http::Get(kUpdateHost, kPluginListPath, {});   // public endpoint; no auth
-    return utf8_to_js(ctx, (r.ok && r.status == 200) ? r.body : std::string("{}"));
+    // The marketplace list is an HTTP round-trip; run it on the reader's worker thread via
+    // served() -- a blocking http::Get on the Ultralight JS/render thread froze the panel
+    // (single-threaded UI) and could fault when the JS await re-entered it. served() returns
+    // "" until the fetch completes, then the real body; the JS treats "" as "still loading".
+    return served(ctx, "pluginmarketlist", "{}", [] {
+        auto r = http::Get(kUpdateHost, kPluginListPath, {});   // public endpoint; no auth
+        return (r.ok && r.status == 200) ? r.body : std::string("{}");
+    });
 }
 
 JSValueRef PluginMarketInstall(JSContextRef ctx, JSObjectRef, JSObjectRef,

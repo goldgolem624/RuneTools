@@ -4147,11 +4147,21 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
       '<div id="pbList"><div class="empty">Loading plugins...</div></div>';
     c.appendChild(wrap);
     const se = $('pbSearch'); if (se) se.addEventListener('input', renderBrowseList);
-    try {
-      const raw = JSON.parse(await bridge().pluginMarketList());
-      const d = (raw && raw.data) ? raw.data : raw;
-      pluginBrowseList = (d && d.plugins) || [];
-    } catch (e) { pluginBrowseList = []; }
+    // pluginMarketList() is served ASYNC (the HTTP fetch runs off the UI thread): it returns
+    // "{}" until the worker has the response, so poll a few times before giving up. The build-
+    // once guard above means this only runs on a fresh mount.
+    pluginBrowseList = [];
+    for (let attempt = 0; attempt < 20; attempt++) {
+      let got = [];
+      try {
+        const raw = JSON.parse((await bridge().pluginMarketList()) || '{}');
+        const d = (raw && raw.data) ? raw.data : raw;
+        got = (d && d.plugins) || [];
+      } catch (e) { got = []; }
+      if (got.length) { pluginBrowseList = got; break; }
+      if (!$('pbList')) return;                 // user navigated away
+      await new Promise(r => setTimeout(r, 250));
+    }
     renderBrowseList();
   }
 
