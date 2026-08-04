@@ -10,6 +10,10 @@
   function specialName(g) { return SPECIAL_NAMES[g] || ('Special (gfx ' + g + ')'); }
   let sceneRange    = 20;
   let sceneTerm     = '';     // list filter: name or id substring (list-only; overlay/nameplates keep the full set)
+  // Dev hot-reload is a full LoadHTML, which resets every panel's JS state. Carry the
+  // transient filter across THAT reload only (__rtxDevReload marker): a normal session
+  // boot must start unfiltered, or a stale persisted filter would silently hide entities.
+  try { if (window.__rtxDevReload) sceneTerm = localStorage.getItem('rtxSceneTerm') || ''; } catch (e) {}
   let sceneTotal    = 0;      // pre-filter count, shown as "matches / total" while filtering
   let sceneInteractable = false;
   let sceneNameplates = false;
@@ -66,14 +70,14 @@
       for (const p of sceneData.players) {
         if (p.self) continue;
         const d = cheby(p.x, p.y); if (!inRange(d)) continue;
-        out.push({ type: 'player', name: p.name, x: p.x, y: p.y, dist: d, uid: p.uid, combat: p.combat });
+        out.push({ type: 'player', name: p.name, x: p.x, y: p.y, plane: p.plane, dist: d, uid: p.uid, combat: p.combat, anim: p.anim });
       }
     const hasActs = e => e && Array.isArray(e.actions) && e.actions.length > 0;
     if (sceneShow.npcs && Array.isArray(sceneData.npcs))
       for (const n of sceneData.npcs) {
         if (sceneInteractable && !hasActs(n)) continue;
         const d = cheby(n.x, n.y); if (!inRange(d)) continue;
-        out.push({ type: 'npc', name: n.name, x: n.x, y: n.y, dist: d, id: n.id, uid: n.uid, combat: n.combat, anim: n.anim, actions: n.actions });
+        out.push({ type: 'npc', name: n.name, x: n.x, y: n.y, plane: n.plane, dist: d, id: n.id, uid: n.uid, combat: n.combat, anim: n.anim, actions: n.actions });
       }
     if (sceneShow.objects && Array.isArray(sceneData.objects))
       for (const o of sceneData.objects) {
@@ -207,14 +211,15 @@
       srch.id = 'sceneSearch'; srch.className = 'bank-search';
       srch.type = 'text'; srch.placeholder = 'Filter by name or id...';
       srch.value = sceneTerm; srch.spellcheck = false;
-      srch.addEventListener('input', () => { sceneTerm = srch.value; renderScene(); });
-      srch.addEventListener('keydown', e => { if (e.key === 'Escape' && srch.value) { srch.value = ''; sceneTerm = ''; renderScene(); e.stopPropagation(); } });
+      srch.addEventListener('input', () => { sceneTerm = srch.value; try { localStorage.setItem('rtxSceneTerm', sceneTerm); } catch (e) {} renderScene(); });
+      srch.addEventListener('keydown', e => { if (e.key === 'Escape' && srch.value) { srch.value = ''; sceneTerm = ''; try { localStorage.setItem('rtxSceneTerm', ''); } catch (e2) {} renderScene(); e.stopPropagation(); } });
       const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.id = 'sceneCnt'; cnt.textContent = '...';
       srow.appendChild(srch); srow.appendChild(cnt);
       const rangeRow = document.createElement('div'); rangeRow.className = 'scene-range';
       const rlbl = document.createElement('span'); rlbl.className = 'lbl'; rlbl.textContent = 'Range';
       const rng = document.createElement('input');
-      rng.type = 'range'; rng.min = '1'; rng.max = '50'; rng.id = 'sceneRangeInput'; rng.value = String(sceneRange);
+      // 64 = the plugin-SDK scene cap; the native reader itself accepts up to 128.
+      rng.type = 'range'; rng.min = '1'; rng.max = '64'; rng.id = 'sceneRangeInput'; rng.value = String(sceneRange);
       const rval = document.createElement('span'); rval.className = 'val'; rval.id = 'sceneRangeVal';
       rval.textContent = sceneRange + ' tiles';
       rng.addEventListener('input', () => {
@@ -266,8 +271,13 @@
       : (sceneTerm.trim() && items.length !== sceneTotal) ? items.length + ' / ' + sceneTotal : items.length;
 
     // Length-prefixed so an empty set never collides with the '' init/toggle sentinel.
-    const sig = (items === null) ? 'null'
-      : items.length + '|q' + sceneTerm.trim().toLowerCase() + '|ol' + [...outlineSet].join(',') + '|np' + [...nameplateNames].join(',') + '|' +
+    // Status AND pre-filter total are part of the sig: the empty-state message uses
+    // both ("Not in-game - Lobby", 'no match (N in range)'), so a Lobby -> In-game
+    // flip or the first data arriving after a reload must repaint even while the
+    // FILTERED count stays 0 (the "0 / 17 yet still 'Nothing in range'" bug).
+    const st = 'st' + (lastSnap ? (lastSnap.status | 0) : -1) + ',' + sceneTotal + '|';
+    const sig = (items === null) ? 'null' + st
+      : st + items.length + '|q' + sceneTerm.trim().toLowerCase() + '|ol' + [...outlineSet].join(',') + '|np' + [...nameplateNames].join(',') + '|' +
         items.map(n => n.type + (n.id || 0) + ':' + (n.uid || 0) + ':' +
           n.x + ',' + n.y + ':' + n.dist + ':' + (n.combat || 0) + ':' + (n.anim == null ? -1 : n.anim) + ':' + (n.name || '') + ':' + (n.actions || []).join('|')).join(';');
     if (sig === sceneSig) return;
@@ -288,7 +298,14 @@
       const sd = sceneData && sceneData.sdiag;
       const vd = sceneData && sceneData.vdiag;
       if (sd && sceneShow.specials) dg = '<br><span style="color:var(--text-dim);font-size:10.5px">observer: installed ' + (sd[3] | 0) + ' &nbsp;fires ' + (sd[0] | 0) + ' &nbsp;type-4 ' + (sd[1] | 0) + ' &nbsp;gfx ' + (sd[2] | 0) + ' &nbsp;types 0x' + ((sd[4] | 0) >>> 0).toString(16) + ' &nbsp;@0x' + ((sd[5] | 0) >>> 0).toString(16) + '<br>tracked ptrs: ' + (sd[6] | 0) + ' &nbsp;hook uptime: ' + (sd[8] | 0) + 's' + '</span>';
-      list.innerHTML = '<div class="empty">Nothing in range (or not in-world).' + dg + '</div>'; return;
+      // The snapshot already knows WHY the scene is empty - say which it is instead
+      // of hedging. Status 30 = In-game (see status_label in Reader.cpp); anything
+      // else (Lobby, Logging in, Changing worlds) means the scene CANNOT have data.
+      let why;
+      if (!lastSnap) why = 'No client data - is the reader attached?';
+      else if ((lastSnap.status | 0) !== 30) why = 'Not in-game - ' + fmtStatus(lastSnap) + '.';
+      else why = 'Nothing in range.';
+      list.innerHTML = '<div class="empty">' + why + dg + '</div>'; return;
     }
 
     const BADGE = { player: ['P', 'b-player'], npc: ['N', 'b-npc'], object: ['O', 'b-object'], special: ['S', 'b-special'], ground: ['I', 'b-object'] };
@@ -336,7 +353,7 @@
                    : n.type === 'object' ? 'id ' + n.id + (n.plane ? ' · p' + n.plane : '')
                    : n.type === 'ground' ? 'item ' + n.id + (n.plane ? ' · p' + n.plane : '')
                    : n.type === 'special' ? 'gfx ' + n.gfx + (n.uid ? ' · uid ' + n.uid : '') + (n.plane ? ' · p' + n.plane : '')
-                   : 'uid ' + n.uid;
+                   : 'uid ' + n.uid + (typeof n.anim === 'number' && n.anim >= 0 ? ' · anim ' + n.anim : '');
       const acts = (n.actions && n.actions.length) ? n.actions.map(a => String(a).replace(/[<>&]/g, '')).join(', ') : '';
       const live = n.rt ? ' · <span class="act" style="color:#34d399">live</span>' : '';
       sub.innerHTML = subTxt + live + (acts ? ' · <span class="act">' + acts + '</span>' : '');
@@ -345,7 +362,7 @@
       const tipLines = [dispName, subTxt.replace(' · ', ', ')];
       if (n.combat && n.combat > 0) tipLines.push('Combat level ' + n.combat);
       if (n.dist >= 0) tipLines.push('Distance ' + n.dist + (n.dist === 1 ? ' tile' : ' tiles'));
-      tipLines.push('Tile (' + n.x + ', ' + n.y + ')');
+      tipLines.push('Tile (' + n.x + ', ' + n.y + (typeof n.plane === 'number' ? ', ' + n.plane : '') + ')');
       if (acts) tipLines.push('Actions: ' + acts);
       if (n.rt) tipLines.push('Live-tracked');
       row.dataset.tip = tipLines.join('\n');
@@ -354,7 +371,7 @@
       const distc = document.createElement('div'); distc.className = 'num';
       distc.textContent = (n.dist >= 0) ? n.dist : '-';
       const tilec = document.createElement('div'); tilec.className = 'tile';
-      tilec.textContent = '(' + n.x + ', ' + n.y + ')';
+      tilec.textContent = '(' + n.x + ', ' + n.y + (typeof n.plane === 'number' ? ', ' + n.plane : '') + ')';
       row.appendChild(bd); row.appendChild(namec); row.appendChild(lvlc); row.appendChild(distc); row.appendChild(tilec);
       frag.appendChild(row);
     }

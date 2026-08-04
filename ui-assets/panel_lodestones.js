@@ -42,6 +42,10 @@
     {n:"Yanille",sp:22243,vp:3,lo:12,hi:12,th:1,x:2529,y:3094,kb:"Y"},
   ];
   const LODE_VARPS = [...new Set(LODESTONES.map(l => l.vp))];
+  // Quick teleports (owner var-capture): varp 5773 bit 0 = vb 28622 quick-charges
+  // enabled, bits 1-12 = vb 28623 charge amount.
+  const LODE_QUICK_VP = 5773;
+  let lodeQuick = null;   // {on, n}
   let lodeData = null, lodeFetching = false, lodeListSig = '', lodeFetchAt = 0;
   let lodeFStatus = 0, lodeFSearch = '';   // status 0=all 1=unlocked 2=locked
   async function fetchLodestones(force) {
@@ -50,7 +54,9 @@
     lodeFetching = true;
     try {
       let vp = {};
-      if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), LODE_VARPS.join(','))); } catch (e) {} }
+      if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), LODE_VARPS.concat(LODE_QUICK_VP).join(','))); } catch (e) {} }
+      const qraw = (vp[LODE_QUICK_VP] || 0) >>> 0;
+      lodeQuick = { on: (qraw & 1) === 1, n: (qraw >>> 1) & 0xfff };
       lodeData = LODESTONES.map(l => {
         const raw = (vp[l.vp] || 0) >>> 0, width = l.hi - l.lo + 1;
         const mask = width >= 32 ? 0xffffffff : ((1 << width) - 1);
@@ -71,6 +77,7 @@
       ['All', 'Unlocked', 'Locked'].forEach((nm, i) => stRow.appendChild(mkchip(nm, i, lodeFStatus)));
       const search = document.createElement('input'); search.className = 'pet-search'; search.id = 'lodeSearch'; search.placeholder = 'Search lodestone\u2026'; search.value = lodeFSearch;
       tb.appendChild(stRow); tb.appendChild(search); wrap.appendChild(tb);
+      const qk = document.createElement('div'); qk.id = 'lodeQuick'; qk.className = 'pet-count'; wrap.appendChild(qk);
       const cnt = document.createElement('div'); cnt.id = 'lodeCnt'; cnt.className = 'pet-count'; wrap.appendChild(cnt);
       const list = document.createElement('div'); list.id = 'lodeList'; list.className = 'pet-list'; wrap.appendChild(list);
       tb.addEventListener('click', e => {
@@ -84,6 +91,11 @@
     renderLodeList();
   }
   function renderLodeList() {
+    const qk = $('lodeQuick');
+    if (qk) qk.innerHTML = !lodeQuick ? ''
+      : 'Quick teleport charges: <b style="color:var(--text)">' + lodeQuick.n.toLocaleString() + '</b>'
+        + ' <span class="pet-st ' + (lodeQuick.on ? 'q-done' : 'm2') + '" style="margin-left:6px">'
+        + (lodeQuick.on ? 'enabled' : 'disabled') + '</span>';
     const list = $('lodeList'); if (!list) return;
     const d = lodeData;
     if (!d) { list.innerHTML = '<div class="empty">Reading\u2026 (be in-world)</div>'; lodeListSig = ''; return; }

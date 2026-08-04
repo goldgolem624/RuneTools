@@ -3388,10 +3388,12 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                                 player_plane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0); }
                     int combat = rpm<std::int32_t>(h, *sec + kCombat).value_or(-1);
                     if (combat < 0 || combat > 5000) combat = -1;
+                    int anim = rpm<std::int32_t>(h, *sec + 0xA90).value_or(-1);  // shared actor anim
+                    int plane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);   // shared actor plane
                     if (pc) players.push_back(',');
                     std::snprintf(buf, sizeof(buf),
-                        "{\"uid\":%d,\"x\":%d,\"y\":%d,\"combat\":%d,\"self\":%s,\"name\":\"",
-                        uid, tx, ty, combat, self ? "true" : "false");
+                        "{\"uid\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"combat\":%d,\"anim\":%d,\"self\":%s,\"name\":\"",
+                        uid, tx, ty, plane, combat, anim, self ? "true" : "false");
                     players += buf; players += json_escape(name); players += "\"}";
                     ++pc;
                 } else {                                      // NPC
@@ -3442,9 +3444,10 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                             face = static_cast<int>(deg + 0.5) % 360;
                         }
                     }
+                    int npcPlane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);   // shared actor plane
                     std::snprintf(buf, sizeof(buf),
-                        "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
-                        reportId, uid, tx, ty, meta.combat_level, anim, face, meta.size);
+                        "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
+                        reportId, uid, tx, ty, npcPlane, meta.combat_level, anim, face, meta.size);
                     npcs += buf; npcs += json_escape(npcName);
                     npcs += "\",\"actions\":["; npcs += acts; npcs += "]}";
                     ++nc;
@@ -3935,6 +3938,8 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 1191, 3082, 3083, 0, 0, 0, true },   // Player dialog
     { 1189, 3082, 3083, 0, 0, 0, true },   // Clue continue
     { 1186, 3082, 3083, 0, 0, 0, true },   // Server message dialog
+    { 1552, 3096, 3097, 0, 0, 0, true },   // Serenity posts pose-select window (owner-captured varcs). Chrome inset
+                                  // (2,16) is applied by the Agility plugin, NOT here - do not double-add.
     { 1603, 9102, 9103, 0, 0 },   // Input text
     { 1370, 3089, 3090, 0, -9, 0, true },  // Item Production content: ALWAYS renders inside the 1371 window frame
                                   // (there is no standalone 1370 variant), so its origin is the frame's varcs

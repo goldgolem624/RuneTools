@@ -1895,9 +1895,13 @@
   let activeTab = 'player';
   // Dev hot-reload continuity: a reload sets __rtxDevReload; reopen the tab that was open.
   // Normal launches ignore the stored tab. Never restore into a tab hidden in this build (that
-  // would render a panel with no rail entry) -- checked against TABS itself.
+  // would render a panel with no rail entry) -- checked against TABS itself. plugin:* tabs
+  // can't be validated here (pluginTabs loads async at boot): accept them now, and
+  // loadPlugins() re-renders or falls back once the real list exists.
   try { if (window.__rtxDevReload) { const t = localStorage.getItem('rtxDevTab');
-        if (t && TABS.some(x => x.id === t) && (t !== 'dung' || DUNG_ENABLED)) activeTab = t; } } catch (e) {}
+        if (t && (String(t).indexOf('plugin:') === 0 || (TABS.some(x => x.id === t) && (t !== 'dung' || DUNG_ENABLED)))) { activeTab = t; console.log('[devreload] restored tab ' + t); }
+        else console.log('[devreload] restore rejected, stored=' + t);
+      } } catch (e) { console.log('[devreload] restore threw: ' + e); }
   let lastSnap  = null;
   let host      = null;   // cached after first hostInfo() call
 
@@ -2724,60 +2728,67 @@
     renderSidebar();
     if (closing) return;
     renderPane();
-    // Pull the relevant data immediately on entering the tab rather than waiting for the next poll.
-    if (t.id === 'bank') { bankFetchKey = ''; fetchBank(); }
-    if (t.id === 'metalbank') { mbankFetchKey = ''; fetchMetalBank(); }
-    if (t.id === 'groupbank') { gbankFetchKey = ''; fetchGroupBank(); }
-    if (t.id === 'materials') { matFetchKey = ''; fetchMaterials(); }
-    if (t.id === 'baitbox') { baitFetchKey = ''; fetchBaitBox(); }
-    if (t.id === 'artefacts') { wbFetchKey = ''; fetchWorkbench(); fetchArchShop(); }
-    if (t.id === 'inventory') { invSig = ''; fetchInv(); }
-    if (t.id === 'components') { compSig = ''; fetchComponents(); }
-    if (t.id === 'equipment') { equipSig = ''; fetchEquip(); }
-    if (t.id === 'storage') { storageSig = ''; fetchStorage(); }
-    if (t.id === 'abilities') fetchAbilities();
-    if (t.id === 'pets') { petsListSig = ''; fetchPets(true); }
-    if (t.id === 'bosses') { bossListSig = ''; fetchBosses(true); }
-    if (t.id === 'quests') { questListSig = ''; fetchQuests(true); qgEnsureLoaded(); }
-    if (t.id === 'questfocus') { qgSig = ''; fetchQuests(true); qgEnsureLoaded(); }
-    if (t.id === 'xptracker') { applyXpOverlay(); fetchXpTracker(true); }   // apply even when hidden: it starts the 1 Hz sampler
-    if (t.id === 'chatlog') { chatSig = ''; fetchChat(true); }
-    if (t.id === 'achievements') { achListSig = ''; fetchAchievements(true); }
-    if (t.id === 'combatmastery') { cmListSig = ''; fetchAchievements(true); }
-    if (t.id === 'areatasks') { areaState.sig = ''; fetchAreaTasks(true); }
-    if (t.id === 'gimtasks') { gimState.sig = ''; fetchGimTasks(true); }
-    if (t.id === 'archmysteries') { mystSig = ''; mystSteps = null; fetchArchMysteries(true); }   // steps reload per account
-    if (t.id === 'mystfocus') { mfSig = ''; fetchArchMysteries(true); }
-    if (t.id === 'archshop') { matUnlockSig = ''; fetchArchShop(); }
-    if (t.id === 'familiar') { famSig = ''; fetchFamiliar(); }
-    if (t.id === 'dung' && DUNG_ENABLED) { dungSig = ''; fetchDungeoneering(); }
-    if (t.id === 'archresearch') { archResSig = ''; fetchArchResearch(); }
-    if (t.id === 'reputation') { repSig = ''; fetchReputation(); }
-    if (t.id === 'bossinfo') { biSig = ''; fetchBossInfo(); }
-    if (t.id === 'hideyholes') { hideyListSig = ''; fetchHidey(true); }
-    if (t.id === 'clues') { clueListSig = ''; fetchClues(true); }
-    if (t.id === 'lodestones') { lodeListSig = ''; fetchLodestones(true); }
-    if (t.id === 'worldmap') { if (typeof wmOpen === 'function') wmOpen(); }
-    if (t.id === 'anachronia') { if (typeof anaOpen === 'function') anaOpen(); }
-    if (t.id === 'scene') fetchScene();
-    if (t.id === 'info') fetchInfo();
-    if (t.id === 'dailies') fetchDailies(true);
-    if (t.id === 'tasks') fetchTasks();
-    if (t.id === 'kingdom') { kdSig = ''; fetchKingdom(); }
-    if (t.id === 'rituals') { rtSig = ''; fetchRituals(); }
-    if (t.id === 'toolbelt') { tbSig = ''; fetchToolbelt(); }
-    if (t.id === 'shopcaps') { scSig = ''; fetchShopCaps(); }
-    if (t.id === 'currencies') { cySig = ''; fetchCurrencies(); }
-    if (t.id === 'farmcol') { fcSig = ''; fetchFarmCol(); }
-    if (t.id === 'archcol') { acSig = ''; fetchArchCol(); }
-    if (t.id === 'collections') { clueColSig = ''; fetchClueCol(); }
-    if (t.id === 'leagues') { lgSig = ''; fetchLeagues(); }
-    if (t.id === 'cachex') { const l = $('cxList'); if (l) l._sig = ''; }
-    if (t.id === 'info' || t.id === 'player') fetchPlayerVp();
-    if (t.id === 'player') fetchGameGoals();
-    if (t.id === 'vars') { varsWatchSet(true); fetchVars(); }
-    if (t.id === 'netprobe') { try { npArm(true); npFetch(); } catch (e) {} }
-    if (t.id === 'farming') { farmSig = ''; _farmAt = 0; fetchFarming(); }
+    tabEntryKicks(t.id);
+  }
+  // Pull the relevant data immediately on entering a tab rather than waiting for the next
+  // poll -- and ARM anything the tab owns (vars observer, netprobe capture). Split out of
+  // openTab so the dev hot-reload boot restore runs the SAME entry actions: a restored
+  // Vars tab must arm its observer or varWatchOn stays false while the host observer from
+  // the pre-reload page stays armed forever (the mismatched disarm early-returns).
+  function tabEntryKicks(id) {
+    if (id === 'bank') { bankFetchKey = ''; fetchBank(); }
+    if (id === 'metalbank') { mbankFetchKey = ''; fetchMetalBank(); }
+    if (id === 'groupbank') { gbankFetchKey = ''; fetchGroupBank(); }
+    if (id === 'materials') { matFetchKey = ''; fetchMaterials(); }
+    if (id === 'baitbox') { baitFetchKey = ''; fetchBaitBox(); }
+    if (id === 'artefacts') { wbFetchKey = ''; fetchWorkbench(); fetchArchShop(); }
+    if (id === 'inventory') { invSig = ''; fetchInv(); }
+    if (id === 'components') { compSig = ''; fetchComponents(); }
+    if (id === 'equipment') { equipSig = ''; fetchEquip(); }
+    if (id === 'storage') { storageSig = ''; fetchStorage(); }
+    if (id === 'abilities') fetchAbilities();
+    if (id === 'pets') { petsListSig = ''; fetchPets(true); }
+    if (id === 'bosses') { bossListSig = ''; fetchBosses(true); }
+    if (id === 'quests') { questListSig = ''; fetchQuests(true); qgEnsureLoaded(); }
+    if (id === 'questfocus') { qgSig = ''; fetchQuests(true); qgEnsureLoaded(); }
+    if (id === 'xptracker') { applyXpOverlay(); fetchXpTracker(true); }   // apply even when hidden: it starts the 1 Hz sampler
+    if (id === 'chatlog') { chatSig = ''; fetchChat(true); }
+    if (id === 'achievements') { achListSig = ''; fetchAchievements(true); }
+    if (id === 'combatmastery') { cmListSig = ''; fetchAchievements(true); }
+    if (id === 'areatasks') { areaState.sig = ''; fetchAreaTasks(true); }
+    if (id === 'gimtasks') { gimState.sig = ''; fetchGimTasks(true); }
+    if (id === 'archmysteries') { mystSig = ''; mystSteps = null; fetchArchMysteries(true); }   // steps reload per account
+    if (id === 'mystfocus') { mfSig = ''; fetchArchMysteries(true); }
+    if (id === 'archshop') { matUnlockSig = ''; fetchArchShop(); }
+    if (id === 'familiar') { famSig = ''; fetchFamiliar(); }
+    if (id === 'dung' && DUNG_ENABLED) { dungSig = ''; fetchDungeoneering(); }
+    if (id === 'archresearch') { archResSig = ''; fetchArchResearch(); }
+    if (id === 'reputation') { repSig = ''; fetchReputation(); }
+    if (id === 'bossinfo') { biSig = ''; fetchBossInfo(); }
+    if (id === 'hideyholes') { hideyListSig = ''; fetchHidey(true); }
+    if (id === 'clues') { clueListSig = ''; fetchClues(true); }
+    if (id === 'lodestones') { lodeListSig = ''; fetchLodestones(true); }
+    if (id === 'worldmap') { if (typeof wmOpen === 'function') wmOpen(); }
+    if (id === 'anachronia') { if (typeof anaOpen === 'function') anaOpen(); }
+    if (id === 'scene') fetchScene();
+    if (id === 'info') fetchInfo();
+    if (id === 'dailies') fetchDailies(true);
+    if (id === 'tasks') fetchTasks();
+    if (id === 'kingdom') { kdSig = ''; fetchKingdom(); }
+    if (id === 'rituals') { rtSig = ''; fetchRituals(); }
+    if (id === 'toolbelt') { tbSig = ''; fetchToolbelt(); }
+    if (id === 'shopcaps') { scSig = ''; fetchShopCaps(); }
+    if (id === 'currencies') { cySig = ''; fetchCurrencies(); }
+    if (id === 'farmcol') { fcSig = ''; fetchFarmCol(); }
+    if (id === 'archcol') { acSig = ''; fetchArchCol(); }
+    if (id === 'collections') { clueColSig = ''; fetchClueCol(); }
+    if (id === 'leagues') { lgSig = ''; fetchLeagues(); }
+    if (id === 'cachex') { const l = $('cxList'); if (l) l._sig = ''; }
+    if (id === 'info' || id === 'player') fetchPlayerVp();
+    if (id === 'player') fetchGameGoals();
+    if (id === 'vars') { varsWatchSet(true); fetchVars(); }
+    if (id === 'netprobe') { try { npArm(true); npFetch(); } catch (e) {} }
+    if (id === 'farming') { farmSig = ''; _farmAt = 0; fetchFarming(); }
   }
   function renderSidebar() {
     const side = $('sidebar');
@@ -3741,7 +3752,10 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                             const ids = (Array.isArray(a[0]) ? a[0] : []).slice(0, 64)
                               .map(x => parseInt(x, 10)).filter(n => isFinite(n) && n >= 0 && n < 200000);
                             let all = {}; try { all = JSON.parse(await bridge().varcsDumpAll(pid) || '{}'); } catch (e) {}
-                            const out = {}; for (const id of ids) out[id] = (all[id] | 0) || 0; return out; } },
+                            // varcsDumpAll keys are scope-prefixed "5:<id>" (5 = varc-int); a bare-id
+                            // lookup always missed and served 0 for every varc (owner-caught via the
+                            // Hefin lap timer reading 0:00 while the watcher showed varc 7416 counting).
+                            const out = {}; for (const id of ids) out[id] = (all['5:' + id] | 0) || 0; return out; } },
     // Achievements: full roster with live completion + per-requirement progress, or a single
     // achievement by id (state.achievement(id) -> {id,name,complete,...}). state.read scope.
     'state.achievements':{ scope: 'state.read', json: false,  run: (a, pid) => pluginAchievements(pid) },
@@ -4130,6 +4144,17 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     }
     pluginTabs = Object.keys(byId).map(k => byId[k]);
     renderSidebar();
+    // Dev hot-reload restored a plugin:* tab before this list existed: render it now
+    // that the plugin is real, or fall back to the default tab if it no longer is
+    // (renderPane on an unknown plugin id would show an empty pane with no rail entry).
+    if (String(activeTab).indexOf('plugin:') === 0) {
+      const id = String(activeTab).slice('plugin:'.length);
+      if (pluginTabs.some(p => p.id === id)) renderPane();
+      else {
+        console.log('[devreload] plugin tab ' + id + ' not in loaded list [' + pluginTabs.map(p => p.id).join(',') + '] - falling back');
+        activeTab = 'player'; renderSidebar(); renderPane();
+      }
+    }
   }
 
   // ---- in-client marketplace (browse + install signed plugins) ----
@@ -4297,6 +4322,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     pluginBrokerInit();
     renderSidebar();
     renderPane();
+    // Dev hot-reload restored the working tab without a click, so openTab's entry
+    // actions never ran - run them here (first fetch + anything the tab arms).
+    try { if (window.__rtxDevReload) tabEntryKicks(activeTab); } catch (e) {}
     refresh();
     setInterval(refresh, 250);
     // Keep the companion var-capture observer ON at all times (not just on the Vars

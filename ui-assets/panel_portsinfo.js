@@ -96,52 +96,67 @@
   const PI_SHIP_STATUS = { ready: ['q-ready', 'Ready to sail'], sailing: ['q-prog', 'Sailing'],
                            returned: ['q-done', 'Returned - collect!'], damaged: ['m2', 'Damaged'] };
   let piSig = '';
+  function piIconRow(iconAttr, name, qty) {
+    return '<div class="pi-row"><span class="pi-ic" ' + iconAttr + '></span>'
+      + '<span class="pi-nm" data-tip="' + name + '">' + name + '</span>'
+      + '<b class="pi-qty">' + qty.toLocaleString() + '</b></div>';
+  }
   async function renderPortsInfo() {
     const c = $('content'); if (!c) return;
     const d = await portsStateRead();
     if (activeTab !== 'portsinfo') return;   // await raced a tab switch
     if (!d) { c.innerHTML = '<div class="empty">Reading... (be in-world)</div>'; piSig = ''; return; }
+    injectStyle('piCss',
+      '.pi-wrap{display:flex;flex-direction:column;gap:8px}'
+      + '.pi-title{font-weight:700;font-size:14px}'
+      + '.pi-sub{font-size:11.5px;color:var(--text-dim);margin-top:2px}'
+      + '.pi-sub b{color:var(--text)}'
+      + '.pi-sec{font-weight:700;font-size:13px;margin-bottom:6px}'
+      + '.pi-ship{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05)}'
+      + '.pi-ship:last-child{border-bottom:none}'
+      + '.pi-shipn{flex:1;font-size:12.5px;font-weight:600}'
+      + '.pi-voy{color:var(--text-dim);font-size:11px}'
+      + '.pi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px 14px}'
+      + '.pi-row{display:flex;align-items:center;gap:6px;font-size:12px;min-width:0}'
+      + '.pi-ic{width:18px;height:18px;flex:none;background-size:contain;background-repeat:no-repeat;background-position:center}'
+      + '.pi-nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '.pi-qty{font-variant-numeric:tabular-nums}'
+      + '.pi-brow{display:flex;justify-content:space-between;gap:8px;font-size:12px}'
+      + '.pi-brow b{font-variant-numeric:tabular-nums}'
+      + '.pi-brow .off{color:var(--text-mute);font-weight:400}'
+      + '.pi-note{color:var(--text-dim);font-size:11px;line-height:1.5}');
     const sig = JSON.stringify(d);
     if (sig === piSig && $('piWrap')) return;
     piSig = sig;
-    let h = '<div id="piWrap" class="pane stor-wrap">';
-    h += '<div class="card"><div class="ana-sec" style="font-weight:700;font-size:13px;margin-bottom:6px">Ships'
-      + (d.shipCount ? ' - zone ' + d.zone : '') + '</div>';
+    let h = '<div id="piWrap" class="pi-wrap">';
+    h += '<div class="card"><div class="pi-title">Player-Owned Ports</div>'
+      + '<div class="pi-sub">Zone <b>' + d.zone + '</b> &nbsp;-&nbsp; distance explored <b>'
+      + d.distance.toLocaleString() + '</b> &nbsp;-&nbsp; scroll pieces <b>' + d.scrollPieces + '</b></div></div>';
+    h += '<div class="card"><div class="pi-sec">Ships</div>';
     if (!d.shipCount) h += '<div class="empty">No port yet (or not read).</div>';
-    for (const s of d.ships) {
+    d.ships.forEach((s, i) => {
       const st = PI_SHIP_STATUS[s.status] || ['lg', s.status];
-      h += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0">'
+      h += '<div class="pi-ship"><span class="pi-shipn">Ship ' + (i + 1) + '</span>'
+        + (s.voyageId > 0 && s.status === 'sailing' ? '<span class="pi-voy">voyage ' + s.voyageId + '</span>' : '')
         + '<span class="pet-st ' + st[0] + '">' + st[1] + (s.etaMinutes != null ? ' - ' + piEta(s.etaMinutes) : '') + '</span>'
-        + (s.voyageId > 0 && s.status === 'sailing' ? '<span style="color:var(--text-dim);font-size:11px">voyage ' + s.voyageId + '</span>' : '')
         + '</div>';
-    }
+    });
     h += '</div>';
-    h += '<div class="card"><div style="font-weight:700;font-size:13px;margin-bottom:6px">Resources</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:4px 10px">';
-    for (const r of d.resources)
-      h += '<div style="display:flex;align-items:center;gap:6px;font-size:12px">'
-        + '<span class="pi-spr" data-spr="' + r.sprite + '" style="width:18px;height:18px;flex:none;background-size:contain;background-repeat:no-repeat;background-position:center"></span>'
-        + '<span style="flex:1">' + r.name + '</span><b style="font-variant-numeric:tabular-nums">' + r.qty.toLocaleString() + '</b></div>';
+    h += '<div class="card"><div class="pi-sec">Resources</div><div class="pi-grid">';
+    for (const r of d.resources) h += piIconRow('data-spr="' + r.sprite + '"', r.name, r.qty);
     h += '</div></div>';
-    h += '<div class="card"><div style="font-weight:700;font-size:13px;margin-bottom:6px">Trade goods</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:4px 10px">';
-    for (const t of d.tradeGoods)
-      h += '<div style="display:flex;align-items:center;gap:6px;font-size:12px">'
-        + '<span class="pi-it" data-item="' + t.item + '" style="width:18px;height:18px;flex:none;background-size:contain;background-repeat:no-repeat;background-position:center"></span>'
-        + '<span style="flex:1">' + t.name + '</span><b style="font-variant-numeric:tabular-nums">' + t.qty.toLocaleString() + '</b></div>';
+    h += '<div class="card"><div class="pi-sec">Trade goods</div><div class="pi-grid">';
+    for (const t of d.tradeGoods) h += piIconRow('data-item="' + t.item + '"', t.name, t.qty);
     h += '</div></div>';
-    h += '<div class="card"><div style="font-weight:700;font-size:13px;margin-bottom:6px">Buildings</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:4px 10px">';
+    h += '<div class="card"><div class="pi-sec">Buildings</div><div class="pi-grid">';
     for (const b of d.buildings)
-      h += '<div style="display:flex;justify-content:space-between;font-size:12px"><span>' + b.name
-        + '</span><b>' + (b.level > 0 ? 'Tier ' + b.level : '-') + '</b></div>';
+      h += '<div class="pi-brow"><span>' + b.name + '</span>'
+        + (b.level > 0 ? '<b>Tier ' + b.level + '</b>' : '<b class="off">-</b>') + '</div>';
     h += '</div></div>';
-    h += '<div style="color:var(--text-dim);font-size:11px">Scroll pieces found: ' + d.scrollPieces
-      + '  -  distance explored: ' + d.distance.toLocaleString()
-      + '<br>Voyage planning, crew, visitors and alerts live in the Player-Owned Ports plugin (Plugins - Browse).</div>';
+    h += '<div class="pi-note">Voyage planning, crew, visitors and alerts live in the Player-Owned Ports plugin (Plugin Hub).</div>';
     h += '</div>';
     if (c.firstElementChild && c.firstElementChild.id === 'piWrap') { c.firstElementChild.outerHTML = h; }
     else c.innerHTML = h;
-    c.querySelectorAll('.pi-spr').forEach(el => loadSpriteIcon(el, +el.dataset.spr));
-    c.querySelectorAll('.pi-it').forEach(el => { const u = resolveIcon(+el.dataset.item); if (u) el.style.backgroundImage = "url('" + u + "')"; });
+    c.querySelectorAll('.pi-ic[data-spr]').forEach(el => loadSpriteIcon(el, +el.dataset.spr));
+    c.querySelectorAll('.pi-ic[data-item]').forEach(el => { const u = resolveIcon(+el.dataset.item); if (u) el.style.backgroundImage = "url('" + u + "')"; });
   }
