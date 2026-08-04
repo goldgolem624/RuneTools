@@ -173,6 +173,8 @@
       // Highlight an arbitrary screen rect (e.g. from state.interface); w/h <= 0 clears.
       highlightRect: function (x, y, w, h) { return call('overlay.highlightRect', [x, y, w, h]); },
       // Mark world tiles as guide objectives: [{x, y, plane, label}, ...]; [] clears.
+      // Optional x2/y2 on a mark (x/y = SW corner, x2/y2 = NE corner) draws one flat
+      // ground rect over the whole span instead of a single-tile mark.
       guideTiles: function (marks) { return call('overlay.guideTiles', [marks]); },
       clearHighlight: function () { return call('overlay.clearHighlight', []); },
       // Big centre-screen banner text ('' clears) - the Dungeoneering boss-warning channel.

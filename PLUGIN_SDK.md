@@ -343,6 +343,11 @@ if (d.hasAbs && d.comps[0]) { const c = d.comps[0]; rtx.plugin.overlay.highlight
 // tiles, each { x, y, plane, label }. Replaces the previous set; pass [] to clear.
 rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"dig here" }]);
 
+// Optional x2/y2 (x/y = SW corner, x2/y2 = NE corner) turns a mark into one flat ground
+// rect spanning those tiles -- use for long walkways or zones whose interactable loc is
+// only a 1x1 end piece (e.g. an agility log).
+rtx.plugin.overlay.guideTiles([{ x:2474, y:3430, x2:2474, y2:3435, plane:0, label:"Log balance" }]);
+
 rtx.plugin.overlay.clearHighlight();         // clear both highlight layers
 
 // Big centre-screen banner text (the Dungeoneering boss-warning channel). '' clears.

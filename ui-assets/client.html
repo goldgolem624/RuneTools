@@ -3879,7 +3879,13 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                               const x = pClampNum(m.x, 0, 16383) | 0, y = pClampNum(m.y, 0, 16383) | 0, plane = pClampNum(m.plane, 0, 3) | 0;
                               if (x < 1 || y < 1) continue;
                               const label = pClampStr(m.label == null ? '' : m.label, 95).replace(/[\x1e\x1f]/g, ' ');   // 95 = the overlay's kTextMax (the loc name + '\n' share the same budget)
-                              recs.push(x + '\x1f' + y + '\x1f' + plane + '\x1f' + label);
+                              let rec = x + '\x1f' + y + '\x1f' + plane + '\x1f' + label;
+                              // Optional AREA extent: x/y = SW corner, x2/y2 = NE corner -> the host
+                              // draws one flat ground rect spanning the tiles (long walkways, zones)
+                              // instead of matching a 1x1 loc footprint.
+                              const x2 = pClampNum(m.x2, 0, 16383) | 0, y2 = pClampNum(m.y2, 0, 16383) | 0;
+                              if (x2 >= x && y2 >= y && (x2 > x || y2 > y)) rec += '\x1f0\x1f0\x1f' + x2 + '\x1f' + y2;
+                              recs.push(rec);
                             }
                             return bridge().guideMarks(pid, recs.join('\x1e')); } },
     'overlay.clearHighlight':{ scope: 'overlay', json: false, run: (a, pid) => {
