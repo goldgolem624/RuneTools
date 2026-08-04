@@ -72,3 +72,8 @@ CHANGELOG.md
 tools/
 *.ps1
 plugin-uploads/
+AgilityPluginX/
+BghPluginX/
+HavenBghPluginX/
+PortsPluginX/
+ZygomitesPluginX/
