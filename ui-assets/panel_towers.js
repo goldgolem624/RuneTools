@@ -133,6 +133,18 @@
     const rec = scanSpotsFor(c); if (!rec) return;
     scanElimByArea[rec.key || ('en' + c.en)] = new Set(); scanElimSave(); selectClue();
   }
+  // Not persisting was only half the fix: the key is the AREA, so a second scan clue in an area
+  // already solved THIS SESSION opened pre-solved on the previous dig tile (each clue rolls its
+  // own spot). Wipe an area's eliminations the moment its clue leaves the backpack.
+  function scanElimClearFor(clueId) {
+    const c = CLUE_DATA.find(z => z.i === clueId);
+    if (!c || c.a !== 'scan') return false;
+    const rec = scanSpotsFor(c); if (!rec) return false;
+    const k = rec.key || ('en' + c.en);
+    if (!scanElimByArea[k] || !scanElimByArea[k].size) return false;
+    scanElimByArea[k] = new Set();
+    return true;
+  }
   // The scan ring is a type-4 scene "special": gfx 6841 = blue (d > 2R), 6842 = orange (R < d <=
   // 2R), 6843 = red (d <= R), giving the exact band for per-band elimination.
   async function scanRingBand() {
@@ -158,7 +170,37 @@
     // A compass clue is solved by the needle, not the orb - bail before any scan logic,
     // otherwise the compass's own target varc gets read as a scan solution.
     if (rec.spots.length > COMPASS_FIELD_MIN || (typeof isCompassClue === 'function' && isCompassClue(c))) return;
-    // PRIMARY (exact): the scan proximity ring is placed at the TRUE dig tile whenever the
+    // PRIMARY: the type-13 "scan coordinate" ground marker. It only spawns once the orb goes
+    // RED (same window as op83), but unlike op83 it needs no packet hook - the reader picks it
+    // straight out of the worldview vector and classifies it by data shape (specials t=13,
+    // k='scan'; its fine position at sub+0x74/0x7C equals its own tile). Its presence IS the
+    // answer, so it is taken as the solution outright, not weighed against anything.
+    try {
+      const sc13 = JSON.parse((await bridge().sceneEntities(myPid(), 64)) || '{}');
+      const mk = ((sc13 && sc13.specials) || []).find(s => s && s.t === 13 && s.k === 'scan' && s.w);
+      if (mk && mk.x > 0 && mk.y > 0) {
+        let bi = -1, bd = 1e9;
+        rec.spots.forEach((s, i) => {
+          const d = Math.max(Math.abs(s[0] - mk.x), Math.abs(s[1] - mk.y));
+          if (d < bd) { bd = d; bi = i; }
+        });
+        if (bi >= 0 && bd <= 2) {                            // the usual case: it lands on a candidate
+          const elim = scanElimGet(rec.key || ('en' + c.en));
+          let changed = false;
+          rec.spots.forEach((s, i) => { if (i !== bi && !elim.has(i)) { elim.add(i); changed = true; } });
+          scanBandNote = 'exact dig tile from scan marker (' + mk.x + ', ' + mk.y + ')';
+          if (changed) { scanElimSave(); selectClue(); }
+        } else if (bridge().guideMarks) {
+          // The game is pointing at a tile our candidate list does not contain: the GAME wins.
+          // Mark it directly so the answer is never withheld over a stale spot table.
+          scanBandNote = 'exact dig tile from scan marker (' + mk.x + ', ' + mk.y + ') - outside the known spot list';
+          bridge().guideMarks(myPid(), (mk.x | 0) + '\x1f' + (mk.y | 0) + '\x1f' + (mk.p | 0) + '\x1fScan DIG HERE');
+        }
+        scanBandSetCap();
+        return;
+      }
+    } catch (e) {}
+    // FALLBACK (exact, red only): the scan proximity ring is placed at the TRUE dig tile whenever the
     // player is within orb range (<=11 paces, red pulse). The reader reads that ring straight
     // from the LIVE scene-graphic registry, so it is readable for as long as the ring is on
     // screen. The registry is a generic graphics channel, so a coordinate counts only when it
@@ -168,9 +210,17 @@
       if (bridge().scanSolution) {
         const sol = JSON.parse(bridge().scanSolution(myPid()) || '{}');
         const pts = (sol && sol.ok) ? (Array.isArray(sol.cands) && sol.cands.length ? sol.cands : [[sol.x, sol.y]]) : [];
+        // The ring is only PLACED while the player stands within orb range of the dig tile, so
+        // a reading from far away cannot be this clue's ring - it is a leftover graphic, and
+        // accepting it eliminated 16 of 17 real candidates and declared a false SOLVED from
+        // 2000 tiles away. Require the point to be in range (with slack) and on our plane.
+        const Porb = await scanPlayerTile();
+        const ORB_MAX = 24;
         let bi = -1, bd = 1e9, bp = null;
         for (const q of pts) {
           if (!(q[0] > 0 && q[1] > 0)) continue;
+          if (!Porb) continue;                       // no player fix -> cannot vouch for the ring
+          if (Math.max(Math.abs(q[0] - Porb.x), Math.abs(q[1] - Porb.y)) > ORB_MAX) continue;
           rec.spots.forEach((s, i) => {
             const d = Math.max(Math.abs(s[0] - q[0]), Math.abs(s[1] - q[1]));
             if (d < bd) { bd = d; bi = i; bp = q; }
@@ -252,11 +302,40 @@
   let clueMapZoom = 1, clueMapDrag = null, clueMapStageEl = null, clueMapZoomBound = false;
   // Nearest lodestone / teleport for the caption, so it can lead with whichever is closer.
   let clueMapLodeBest = null, clueMapTeleBest = null;
+  // How much terrain the stage shows at zoom 1, and how much the last fetch actually covered.
+  // They differ once a deep zoom forces a narrower window (see mapRes) - the on-screen scale
+  // has to stay tied to the FORMER or the map would jump when the window narrows.
+  let clueMapSpan = 192, clueMapHalfGot = 96;
+  const MAP_MAX_BACK = 2048;      // px per side of the terrain image; it travels as base64 RGBA
+  // Pick the pixels-per-tile the display actually needs, then the widest window that fits the
+  // byte budget at that resolution. Asking for less is an upscale, which is what left the map
+  // soft when zoomed; asking for more just inflates the transfer.
+  function mapRes(spanTiles, maxHalf) {
+    const stageW = (clueMapStageEl && clueMapStageEl.clientWidth) || 320;
+    const pxTile = stageW * (clueMapZoom || 1) / Math.max(1, spanTiles);
+    let ts = Math.ceil(pxTile); if (ts & 1) ts++;
+    ts = Math.max(2, Math.min(16, ts));
+    const half = Math.max(8, Math.min(maxHalf, Math.floor(MAP_MAX_BACK / (2 * ts))));
+    return { ts: ts, half: half, pxTile: pxTile };
+  }
   function applyMapZoom() {
     const stage = clueMapStageEl || document.querySelector('.clue-map-stage'), inner = $('clueMapInner');
     if (!stage || !inner) return;
-    const sz = Math.round((stage.clientWidth || 280) * clueMapZoom);
+    const pxTile = (stage.clientWidth || 280) * clueMapZoom / Math.max(1, clueMapSpan);
+    const sz = Math.round(2 * clueMapHalfGot * pxTile);
+    const was = parseFloat(inner.style.width) || 0;
+    // A re-fetch can narrow the window, which resizes the canvas by a factor the wheel
+    // handler did not anticipate. Hold the point that was in the middle of the stage.
+    let fx = 0.5, fy = 0.5;
+    if (was > 0) {
+      fx = (stage.scrollLeft + stage.clientWidth / 2) / was;
+      fy = (stage.scrollTop + stage.clientHeight / 2) / was;
+    }
     inner.style.width = sz + 'px'; inner.style.height = sz + 'px';
+    if (was > 0 && Math.abs(sz - was) > 1) {
+      stage.scrollLeft = fx * sz - stage.clientWidth / 2;
+      stage.scrollTop = fy * sz - stage.clientHeight / 2;
+    }
   }
   // Zooming resizes the canvas on screen; the backing store only follows on a redraw, so
   // schedule one (coalesced) or the text is left upscaled and soft.
@@ -321,7 +400,10 @@
       const rect = cv.getBoundingClientRect(); if (!rect.width) { tip.style.display = 'none'; return; }
       const W = clueMapProj.W, mx = (e.clientX - rect.left) / rect.width * W, my = (e.clientY - rect.top) / rect.height * W;
       let hit = null, hd = Infinity;
-      for (const m of clueMapMarks) { const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= (m.r || 6) + 7 && d < hd) { hd = d; hit = m; } }
+      // Marks carry radii in the same 0..W space the map draws in, so the grab margin has to
+      // scale with it too - a flat 7 is invisible once the terrain is oversampled.
+      const grab = 7 * (W / Math.max(1, rect.width));
+      for (const m of clueMapMarks) { const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= (m.r || 6) + grab && d < hd) { hd = d; hit = m; } }
       if (hit) {
         const mi = cv.parentElement, mr = mi.getBoundingClientRect();
         tip.innerHTML = hit.label; tip.style.display = 'block';
@@ -373,8 +455,13 @@
     const inview = MAP_LABELS.filter(d => (d.p || 0) === plane && d.x >= vx0 - 1 && d.x <= vx1 + 1 && d.y >= vy0 - 1 && d.y <= vy1 + 1);
     inview.sort((a, b) => (Math.abs(a.x - ccx) + Math.abs(a.y - ccy)) - (Math.abs(b.x - ccx) + Math.abs(b.y - ccy)));
     cx.save();
-    cx.font = '500 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
-    try { cx.letterSpacing = '0.35px'; } catch (e) {}
+    // Sized in DISPLAY pixels (see clueMapCtx._upx): the drawing space is the terrain image,
+    // which is deliberately larger than the element on screen, so a literal 10.5 here would
+    // render as a couple of pixels once the terrain is oversampled.
+    const U = cx._upx || 1;
+    cx.font = '500 ' + (10.5 * U).toFixed(2) + 'px system-ui, "Segoe UI", sans-serif';
+    cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    try { cx.letterSpacing = (0.35 * U).toFixed(2) + 'px'; } catch (e) {}
     const placed = [];
     // Density follows zoom: a wide view only needs the big landmarks, and fewer labels is
     // the single biggest thing that stops them competing with the map.
@@ -383,11 +470,11 @@
     for (const d of inview.slice(0, cap)) {
       const sx = proj.projX(d.x), sy = proj.projY(d.y);
       if (sx < -proj.W || sx > proj.W * 2 || sy < -proj.W || sy > proj.W * 2) continue;
-      const tw = Math.ceil(cx.measureText(d.n).width), bw = tw + 9, bh = 14;
+      const tw = Math.ceil(cx.measureText(d.n).width), bw = tw + 9 * U, bh = 14 * U;
       // Clamp the chip fully inside the canvas so edge places pin to the border, not clip off.
-      const x0 = Math.max(2, Math.min(sx - bw / 2, proj.W - bw - 2));
-      const y0 = Math.max(2, Math.min(sy - bh / 2, proj.W - bh - 2));
-      if (placed.some(p => x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y)) continue;   // would overlap a closer label -> skip it
+      const x0 = Math.max(2 * U, Math.min(sx - bw / 2, proj.W - bw - 2 * U));
+      const y0 = Math.max(2 * U, Math.min(sy - bh / 2, proj.W - bh - 2 * U));
+      if (placed.some(p => x0 < p.x + p.w + 2 * U && x0 + bw + 2 * U > p.x && y0 < p.y + p.h + 2 * U && y0 + bh + 2 * U > p.y)) continue;   // would overlap a closer label -> skip it
       placed.push({ x: x0, y: y0, w: bw, h: bh });
       const lx = x0 + bw / 2, ly = y0 + bh / 2;
       // Same treatment as the world map: soft halo, cool-white glyphs, no boxed chip.
@@ -396,7 +483,7 @@
       const dim = off > 0.55 ? Math.max(0.55, 1 - (off - 0.55) * 0.9) : 1;
       if (typeof wmLabelText === 'function') wmLabelText(cx, d.n, lx, ly, false, x0, y0, bw, bh, dim);
       else { cx.fillStyle = 'rgba(232,237,244,0.96)'; cx.fillText(d.n, lx, ly); }
-      clueMapMarks.push({ sx: lx, sy: ly, r: 7, label: '<b>' + clueMapEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
+      clueMapMarks.push({ sx: lx, sy: ly, r: 7 * U, label: '<b>' + clueMapEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
     }
     cx.restore();
   }
@@ -415,6 +502,8 @@
     if (px < 0 || px > pr.W || py < 0 || py > pr.W) { hide(); return; }
     el.style.display = 'block'; el.style.left = (px / pr.W * 100) + '%'; el.style.top = (py / pr.W * 100) + '%';
     // Scan bands measure horizontal Chebyshev distance, so the orb range draws as a square.
+    // The radius is the CLUE'S OWN range from its scan enum (rec.r, the header's "range N"),
+    // NOT a fixed band - every clue has its own scan distance.
     if (rg) {
       if (!pr.scanR) { rg.style.display = 'none'; }
       else {
@@ -505,15 +594,19 @@
   function scanRangeBonus() { return g_scanMeerkats ? 5 : 0; }
   // Walkability (nomove) overlay (after mejrs): mapWindow `nomove` = one flag byte per window
   // tile (0x10 = full block, 0x01/02/04/08 = N/S/E/W wall edge), row-major wx*WT+wy, north-up.
-  const clueWalk = false;   // draw code kept; no toggle UI
+  // ON by default: knowing which tiles you cannot stand on is the whole point of a
+  // top-down clue map - it turns "near that rock" into an actual reachable tile.
+  let clueWalk = true;
   function clueDrawNomove(ctx, meta) {
     if (!clueWalk || !ctx || !meta || !meta.nomove || !meta.wt || !meta.t) return;
     let b; try { const s = atob(meta.nomove); b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); } catch (e) { return; }
     const WT = meta.wt, TS = meta.t;
     ctx.save();
-    ctx.fillStyle = 'rgba(214,64,64,0.38)';
+    // Blocked tiles read as DARKENED TERRAIN, not an alarm colour: they are the normal
+    // state of half the map, and a red wash would fight the markers that actually matter.
+    ctx.fillStyle = 'rgba(8,10,16,0.50)';
     for (let wx = 0; wx < WT; wx++) for (let wy = 0; wy < WT; wy++) { if (b[wx * WT + wy] & 0x10) ctx.fillRect(wx * TS, ((WT - 1) - wy) * TS, TS, TS); }
-    ctx.strokeStyle = 'rgba(255,86,86,0.92)'; ctx.lineWidth = Math.max(1, TS * 0.2);
+    ctx.strokeStyle = 'rgba(8,10,16,0.85)'; ctx.lineWidth = Math.max(1, TS * 0.2);
     for (let wx = 0; wx < WT; wx++) for (let wy = 0; wy < WT; wy++) {
       const f = b[wx * WT + wy]; if (!(f & 0x0f)) continue;
       const px = wx * TS, py = ((WT - 1) - wy) * TS, e = TS - 0.5;
@@ -576,6 +669,11 @@
     const cx = cv.getContext('2d');
     cx.setTransform(back / W, 0, 0, back / W, 0, 0);
     cx.clearRect(0, 0, W, W);
+    // Everything draws in 0..W space, but W is the TERRAIN resolution, which is now often far
+    // larger than the element on screen (we oversample so the map stays sharp). Text and
+    // stroke widths must be sized in DISPLAY pixels or they shrink as the terrain sharpens:
+    // multiply any on-screen pixel figure by this.
+    cx._upx = W / Math.max(1, cssW);
     return cx;
   }
   // Terrain arrives as raw pixels at W; putImageData ignores the transform, so blit it
@@ -593,6 +691,29 @@
     cx.imageSmoothingEnabled = (cv0 && cv0.width < W);
     cx.drawImage(_clueOff, 0, 0, W, W);
     cx.imageSmoothingEnabled = sm;
+    clueMapGrid(cx, meta, W);
+  }
+  // Tile grid over the terrain: it turns "somewhere near that building" into a countable
+  // number of tiles, which is the whole job on a scan/dig map. Drawn at EVERY zoom - the
+  // spacing adapts instead of the grid disappearing (see below).
+  function clueMapGrid(cx, meta, W) {
+    const TS = (meta && meta.t) | 0;
+    if (TS < 1) return;
+    // The grid is ALWAYS drawn - it used to vanish below 4 px/tile, so a wide area looked
+    // ungridded until you zoomed (owner-caught). At 1 px per line and 2 px tiles the lines
+    // would be half the image, so tiny tiles get a COARSER grid instead: the step grows to
+    // at least ~6 px, and those coarse lines draw fainter so they read as a reference
+    // lattice rather than noise. Per-tile spacing returns as soon as tiles are big enough.
+    const perTile = TS >= 5;
+    const step = perTile ? TS : TS * Math.ceil(6 / TS);
+    cx.save();
+    cx.strokeStyle = perTile ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.07)';
+    cx.lineWidth = cx._upx || 1;
+    cx.beginPath();
+    for (let x = 0; x <= W; x += step) { cx.moveTo(x + 0.5, 0); cx.lineTo(x + 0.5, W); }
+    for (let y = 0; y <= W; y += step) { cx.moveTo(0, y + 0.5); cx.lineTo(W, y + 0.5); }
+    cx.stroke();
+    cx.restore();
   }
   // Place-label overlay: clueMapDrawLabels with a tile->pixel projection from the window meta.
   function clueDrawLabelsWindow(ctx, meta) {
@@ -616,12 +737,15 @@
     // tile decoded from teleport_destination_location 42814775 = (x << 14) | y.
     { n: "Fishing Guild", src: "Lunar spellbook", x: 2613, y: 3383, p: 0, kb: "", item: 0, sp: 14414,
       req: { skill: 6, level: 85, vb: SPELLBOOK_VB, vbVal: SPELLBOOK_LUNAR } }
-  ];
+];
   // Requirement gate. skill/level compares the live level (skill 6 = Magic); vb/vbVal requires a
   // varbit to equal a value. Values are prefetched into teleVbCache by clueMapTelePrefetch.
   let teleVbCache = {};
   let teleWornSet = null;      // equipped item ids (container 94); null until the first read
   let teleInvSet = null;       // backpack item ids (container 93); null until the first read
+  // Raw [slot, id, stack, name] rows for both, so a per-SLOT instance read is possible
+  // (two stacks of one id hold different Extra_ints).
+  let teleWornRows = null, teleInvRows = null;
   let teleQuestVp = {};        // live varps for the gated quests (the quest system's own trackers)
   async function clueMapTelePrefetch() {
     // Quest gates ride the quest system (bridge().quests defs + questStatus): the quest
@@ -678,13 +802,13 @@
     // feed the universal item rule below. Names ride along for charge-variant matching.
     const readCont = async cid => {
       const r = JSON.parse(await bridge().containerItems(myPid(), cid));
-      const ids = new Set(); const names = []; const stacks = {};
-      (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { ids.add(x[1]); if (x[3]) names.push(x[3]); stacks[x[1]] = (stacks[x[1]] || 0) + (x[2] | 0 || 1); } });
-      return { ids, names, stacks };
+      const ids = new Set(); const names = []; const stacks = {}; const rows = [];
+      (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { ids.add(x[1]); rows.push(x); if (x[3]) names.push(x[3]); stacks[x[1]] = (stacks[x[1]] || 0) + (x[2] | 0 || 1); } });
+      return { ids, names, stacks, rows };
     };
     let worn = null, inv = null;
-    try { worn = await readCont(94); teleWornSet = worn.ids; } catch (e) {}
-    try { inv = await readCont(93); teleInvSet = inv.ids; } catch (e) {}
+    try { worn = await readCont(94); teleWornSet = worn.ids; teleWornRows = worn.rows; } catch (e) {}
+    try { inv = await readCont(93); teleInvSet = inv.ids; teleInvRows = inv.rows; } catch (e) {}
     // Rune availability = loose inventory stacks + rune-pouch contents (Extra_ints keys
     // 0/2/3/4 = per-slot counts, key 1 = 6-bit slot type indices; the Storage panel's
     // proven layout). Combination runes credit both elements.
@@ -759,15 +883,32 @@
       // held. The passage stores its pieces in Extra_ints key 1 as 4-bit indices (least
       // significant first) into the jewellery catalogue enum; the enum is read live rather
       // than hardcoded so a game update cannot silently shift the mapping.
+      // Slots in a container holding this item id (the live inventory/equipment reads
+      // already carry [slot, id, ...] rows, so no extra bridge call is needed).
+      const telePassageSlots = (cid, iid) => {
+        const rows = (cid === 93 ? teleInvRows : teleWornRows) || [];
+        const out = [];
+        for (const it of rows) if ((it[1] | 0) === iid) out.push(it[0] | 0);
+        return out;
+      };
       telePassage = null;
+      // MERGE across every passage carried: a player can hold more than one (a plain and a
+      // recoloured one), and each has its own slots. The loop used to REPLACE telePassage
+      // per item, so the last one seen won - and an empty one wiped the contents of the
+      // one that actually held the jewellery.
+      const passNames = new Set();
+      let passCharges = 0, passAny = false;
       for (const pid2 of TELE_PASSAGE_IDS) {
-        if (!(teleInvSet && teleInvSet.has(pid2)) && !(teleWornSet && teleWornSet.has(pid2))) continue;
-        try {
-          const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), teleInvSet.has(pid2) ? 93 : 94, pid2)) || {};
-          const held = new Set();
-          // The Dark Facet makes passage teleports free, which OUTRANKS the charge count.
-          telePassage = { charges: ((r2.key && r2.key['0']) | 0), names: held,
-                          free: (teleVbCache[TELE_PASSAGE_FREE_VB] | 0) > 0 };
+        const inInv = !!(teleInvSet && teleInvSet.has(pid2));
+        if (!inInv && !(teleWornSet && teleWornSet.has(pid2))) continue;
+        // EVERY slot holding this id: two passages share one item id, and an id-only read
+        // returns the first slot's contents, so the second passage's jewellery was invisible.
+        const slots = telePassageSlots(inInv ? 93 : 94, pid2);
+        for (const sl of (slots.length ? slots : [-1])) try {
+          const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), inInv ? 93 : 94, pid2, sl)) || {};
+          passAny = true;
+          const ch = ((r2.key && r2.key['0']) | 0);
+          if (ch > passCharges) passCharges = ch;   // charges are per-passage; report the best
           let packed = (r2.key && r2.key['1']) >>> 0;
           if (!packed) continue;
           if (!telePassageEnum && bridge().enumInfo) {
@@ -780,10 +921,13 @@
             let nm = null;
             if (Array.isArray(names)) { const e2 = names.find(function (q) { return +q[0] === ix; }); nm = e2 && e2[1]; }
             else if (names) nm = names[ix] || names[String(ix)];
-            if (nm) { const bn2 = teleItemBase(String(nm)); base.add(bn2); held.add(bn2); }
+            if (nm) { const bn2 = teleItemBase(String(nm)); base.add(bn2); passNames.add(bn2); }
           }
         } catch (e) {}
       }
+      // The Dark Facet makes passage teleports free, which OUTRANKS the charge count.
+      if (passAny) telePassage = { charges: passCharges, names: passNames,
+                                   free: (teleVbCache[TELE_PASSAGE_FREE_VB] | 0) > 0 };
       teleHeldBase = base;
     }
     // UNIVERSAL RULE: an item teleport needs its item worn or carried. Charge variants
@@ -801,7 +945,23 @@
   }
   // Normalized base name: lowercase, trailing "(4)"-style charge suffix stripped. "(inactive)"
   // and similar WORD suffixes stay - those are genuinely different items.
-  function teleItemBase(nm) { return String(nm).toLowerCase().replace(/\s*\(\d+\)$/, ''); }
+  // Normalise an item name to the thing the teleport actually needs. Charge variants
+  // ("Skills necklace (3)") drop their count, and SKILL-CAPE variants all reduce to the
+  // parent cape: every one of them keeps the cape's teleport, so requiring the exact
+  // "Slayer cape" made a held "Inverted Slayer master cape" read as missing (owner-caught).
+  //   inverted slayer master cape -> slayer master cape -> slayer cape
+  //   slayer cape (t) / hooded slayer cape                -> slayer cape
+  function teleItemBase(nm) {
+    let s = String(nm).toLowerCase().replace(/\s*\(\d+\)$/, '').trim();
+    if (/\bcape\b/.test(s)) {
+      s = s.replace(/^inverted\s+/, '')
+           .replace(/^hooded\s+/, '')
+           .replace(/\s*\(t\)$/, '')
+           .replace(/\bmaster\s+cape\b/, 'cape')
+           .trim();
+    }
+    return s;
+  }
   const teleItemNames = {};    // teleport item id -> normalized base name (null until resolved)
   let teleHeldBase = null;     // normalized names of everything worn or carried
   // The universal item gate. Unknowns (containers or names unresolved) never fade.
@@ -1276,9 +1436,13 @@
     if (!el) return '';
     await clueMapTelePrefetch();
     let shown = [];
+    // OTHER FLOORS still show, greyed out, instead of vanishing: a teleport that lands one
+    // level up is still the way in, and hiding it made a well-served area look unreachable.
+    // The floor is named in the tooltip, and off-plane markers never win "nearest".
+    const teleOffPlane = new Set();
     for (const T of MAP_TELEPORTS) {
-      if ((T.p || 0) !== (plane || 0)) continue;
       if (T.x < vx0 || T.x > vx1 || T.y < vy0 || T.y > vy1) continue;
+      if ((T.p || 0) !== (plane || 0)) teleOffPlane.add(T);
       shown.push(T);   // unmet gates still show (faded, reason in the tooltip), same as the World Map
     }
     if (!shown.length) {
@@ -1291,8 +1455,9 @@
     }
     // Nearest first: it keeps its true tile and the others are nudged around it. The DOM
     // order is reversed at append time so the nearest still paints on top.
-    shown.sort((a, b) => Math.max(Math.abs(a.x - ctx0), Math.abs(a.y - cty0))
-                       - Math.max(Math.abs(b.x - ctx0), Math.abs(b.y - cty0)));
+    shown.sort((a, b) => (teleOffPlane.has(a) ? 1 : 0) - (teleOffPlane.has(b) ? 1 : 0)
+                       || Math.max(Math.abs(a.x - ctx0), Math.abs(a.y - cty0))
+                        - Math.max(Math.abs(b.x - ctx0), Math.abs(b.y - cty0)));
     // A busy region offers 40+ teleports; past the nearest few they are pure noise on a
     // scan map, so the caller caps the markers (everything stays reachable via the maps
     // in Hidey-holes / World Map).
@@ -1311,7 +1476,7 @@
     }
     // The nearest USABLE teleport is the answer to "how do I get there" - it renders at
     // full strength with its keybind showing; every other marker stays faded reference.
-    let primaryT = shown.find(T2 => !teleWhyFull(T2)) || null;
+    let primaryT = shown.find(T2 => !teleOffPlane.has(T2) && !teleWhyFull(T2)) || null;   // never spotlight another floor
     // Do not spotlight a teleport when the lodestone is actually the closer way in - the
     // lodestone marker already carries its own keybind chip.
     if (primaryT && clueMapLodeBest) {
@@ -1330,13 +1495,37 @@
         if (dd < 0.5) { cx0 = tpx; cy0 = tpy + CLEAR; }
         else { cx0 = tpx + ddx / dd * CLEAR; cy0 = tpy + ddy / dd * CLEAR; }
       }
+      // Several ways to ONE tile - the fairy code reachable from the ring network and from a
+      // portable, or a boss lair offered by both the grouping system and the portal - are one
+      // destination, not several. Keep the least-gated route and name the others on its line;
+      // listing each as its own marker AND its own tooltip row just says the same thing twice.
+      const cellFor = new Set(), teleAlso = new Map();
+      {
+        const pick = new Map();
+        const rank = T => (teleOffPlane.has(T) ? 2 : 0) + (teleWhyFull(T) ? 1 : 0);
+        for (const m of g) {
+          const k = m.T.x + ',' + m.T.y + ',' + (m.T.p || 0) + '|' + (teleKb(m.T) || '');
+          const prev = pick.get(k);
+          if (!prev) { pick.set(k, m); continue; }
+          const loser = rank(m.T) < rank(prev.T) ? prev : m;
+          if (rank(m.T) < rank(prev.T)) pick.set(k, m);
+          const win = pick.get(k);
+          if (!teleAlso.has(win)) teleAlso.set(win, []);
+          teleAlso.get(win).push(loser);
+          // the demoted entry's own alternatives move across with it
+          for (const q of (teleAlso.get(loser) || [])) teleAlso.get(win).push(q);
+          teleAlso.delete(loser);
+        }
+        for (const m of pick.values()) cellFor.add(m);
+      }
       const box = document.createElement('div');
-      box.className = 'clue-map-lode clue-map-tele' + (g.length > 1 ? ' clue-map-telebox' : '')
+      box.className = 'clue-map-lode clue-map-tele' + (cellFor.size > 1 ? ' clue-map-telebox' : '')
                     + (primaryT && g.some(m => m.T === primaryT) ? ' cml-primary' : '');
       box.style.left = cx0 + '%';
       box.style.top = cy0 + '%';
       const gCells = [], gLines = [];
       for (const m of g) {
+        if (!cellFor.has(m)) continue;          // folded into another route's line above
         const T = m.T;
         const cell = document.createElement('div');
         cell.className = 'cml-cell';
@@ -1349,7 +1538,10 @@
         const kbTxt = teleKb(T);
         if (kbTxt) { const kb = document.createElement('div'); kb.className = 'cml-kb'; kb.textContent = kbTxt; cell.appendChild(kb); }
         const parts = [];
-        if (T.src) parts.push(T.src);
+        // Sources that reach this same tile the same way are named together on one line
+        // ("Grouping System / Boss portal, Solak") instead of repeating the destination.
+        const alsoSrc = [...new Set((teleAlso.get(m) || []).map(q => q.T.src).filter(v => v && v !== T.src))];
+        if (T.src) parts.push(alsoSrc.length ? T.src + ' / ' + alsoSrc.join(' / ') : T.src);
         if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
         parts.push(T.n);
         const reqBlock = teleReqBlock(T);   // requirements + reasons, each stated once
@@ -1361,10 +1553,17 @@
             parts.push(iv.toLocaleString() + (mx ? '/' + mx : '') + ' charges'
                        + (teleInPassage(T) ? ' (in the passage)' : '')); } }
         for (const ln of reqBlock) parts.push(ln);
-        if (teleWhyFull(T)) cell.style.opacity = '0.45';
+        // CAPTURE the reason - the three uses below (dot colour, the "not read yet" note and
+        // notes[].why) all read `why`, which was never declared here: the call's result was
+        // discarded, so every marker draw threw "Can't find variable: why" and aborted this
+        // function mid-loop. That is why the teleport layer rendered nothing at all.
+        const why = (typeof teleWhyCached === 'function') ? teleWhyCached(T) : teleWhyFull(T);
+        const offPl = teleOffPlane.has(T);
+        if (why || offPl) cell.style.opacity = offPl ? '0.32' : '0.45';
+        if (offPl) parts.push('floor ' + (T.p | 0) + ' (different floor)');
         // Status dot: green = every requirement satisfied, red = something is missing (the
         // reason follows on the same line). tipHtml renders <col=..> tags, so no raw markup.
-        const unk = teleTaskSetWhy(T) === '?';
+        const unk = teleTaskSetWhy(T) === '?' || !!T.rqUnk;   // rqUnk = gate only partly readable
         // Spell out the state on the first line - a bare dot does not say what it means.
         const head = why ? '<col=ff6b6b>●</col> ' : unk ? '<col=fbbf24>●</col> ' : '<col=4dd28a>●</col> ';
         const line = head + parts.join(', ') + (unk && !why ? ' (requirement not read yet)' : '');
@@ -1439,13 +1638,26 @@
     {                                                          // always render real terrain (window capped to MAXHALF); the scaled-dots
       // overview below is only the last resort when the cache has no map data.
       const half = Math.max(56, Math.min(MAXHALF, Math.ceil(ext / 2) + Math.round(ext * 0.2) + 8));   // min 56 -> even a solved single spot keeps enough surroundings to tell WHERE it is
-      let ts = Math.max(2, Math.min(8, Math.round(384 / (2 * half)))); if (ts & 1) ts++;
+      // Backing-store resolution FOLLOWS THE ZOOM. The canvas is stretched to the zoomed
+      // stage by CSS, so a fixed ~384 px render turned into blur (and unreadable labels)
+      // the moment you zoomed in. Ask the reader for more pixels per tile instead, capped
+      // so a deep zoom on a wide area cannot explode the decode.
+      // Target the pixels actually ON SCREEN: the canvas is stretched to (stage width x
+      // zoom) by CSS, so anything less than that is an upscale and looks soft - the grid
+      // worst of all, being 1 px lines. Capped so a deep zoom cannot ask for a huge decode.
+      clueMapSpan = 2 * half;
+      const R = mapRes(clueMapSpan, half);
+      const ts = R.ts;
       let meta = null;
-      try { meta = JSON.parse((await bridge().mapWindow(ccx, ccy, plane, half, ts)) || '{}'); } catch (e) {}
+      try { meta = JSON.parse((await bridge().mapWindow(ccx, ccy, plane, R.half, ts)) || '{}'); } catch (e) {}
       if (myseq !== clueMapDrawSeq) return;
-      W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || half;
-      if (cv.width !== W) { cv.width = W; cv.height = W; }
-      cx = cv.getContext('2d'); cx.clearRect(0, 0, W, W);
+      W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || R.half;
+      clueMapHalfGot = H; applyMapZoom();
+      // Backing store at DISPLAY resolution, not terrain resolution. The reader tops out at
+      // 16 px per tile, so a deep zoom on a small scan area outruns the terrain image; going
+      // through clueMapCtx means only the terrain is upscaled (unsmoothed, so it stays
+      // blocky rather than soft) while labels, rings and the grid render natively.
+      cx = clueMapCtx(cv, W);
       if (meta && meta.b64) { try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
       projX = sx => (sx - (ccx - H)) * TS + TS / 2;
       projY = sy => ((2 * H - 1) - (sy - (ccy - H))) * TS + TS / 2;
@@ -1472,45 +1684,54 @@
     cx.fillStyle = 'rgba(4,7,13,0.42)'; cx.fill('evenodd');
     cx.restore();
     cx.save();
-    cx.lineWidth = 1.5; cx.strokeStyle = 'rgba(70,224,192,0.85)';
-    cx.shadowColor = 'rgba(70,224,192,0.6)'; cx.shadowBlur = 8;
+    const Ub = cx._upx || 1;
+    cx.lineWidth = 1.5 * Ub; cx.strokeStyle = 'rgba(70,224,192,0.85)';
+    cx.shadowColor = 'rgba(70,224,192,0.6)'; cx.shadowBlur = 8 * Ub;
     cx.strokeRect(fx0, fy0, fw, fh);
     cx.restore();
-    const scanLodeNote = await clueMapLodeDraw(lmBox[0], lmBox[1], lmBox[2], lmBox[3], ccx, ccy,
-                                               { projX: projX, projY: projY, W: W }, plane, 10);
-    const scanTeleNote = await clueMapTeleDraw(lmBox[0], lmBox[1], lmBox[2], lmBox[3], ccx, ccy,
-                                         { projX: projX, projY: projY, W: W }, plane);
-    if (myseq !== clueMapDrawSeq) return;   // a newer draw started while the varps were read
     // Spots are the map's HERO layer: live candidates glow, eliminated ones fade to
     // near-nothing, and the final DIG spot gets a double halo.
+    // PAINTED BEFORE the awaited lodestone/teleport reads ON PURPOSE. They used to come
+    // after, behind a "newer draw started -> return" guard, so whenever draws repeated
+    // faster than those varp reads completed, every draw was cancelled at that point and
+    // the map kept the terrain + search box with NO candidate dots (owner-reported "the
+    // scan markers aren't showing"). Nothing cancellable may sit between the box and the
+    // spots; the lodestone/teleport markers are reference layers and can be starved safely.
     let remain = 0; const last = (spots.length - elim.size) === 1;
+    const Us = cx._upx || 1;               // spot sizes are display px, not terrain px
     spots.forEach((s, i) => {
       if (!onPlane(s)) return;
       const px = projX(s[0]), py = projY(s[1]), out = elim.has(i); if (!out) remain++;
       if (out) {
-        cx.beginPath(); cx.arc(px, py, 2, 0, 6.2832);
+        cx.beginPath(); cx.arc(px, py, 2 * Us, 0, 6.2832);
         cx.fillStyle = 'rgba(130,130,140,0.35)'; cx.fill();
       } else {
         cx.save();
-        cx.shadowColor = 'rgba(255,45,149,0.9)'; cx.shadowBlur = 10;
-        cx.beginPath(); cx.arc(px, py, 5, 0, 6.2832);
+        cx.shadowColor = 'rgba(255,45,149,0.9)'; cx.shadowBlur = 10 * Us;
+        cx.beginPath(); cx.arc(px, py, 5 * Us, 0, 6.2832);
         cx.fillStyle = '#ff2d95'; cx.fill();
         cx.restore();
-        cx.lineWidth = 1.6; cx.strokeStyle = 'rgba(255,255,255,0.95)';
-        cx.beginPath(); cx.arc(px, py, 5, 0, 6.2832); cx.stroke();
+        cx.lineWidth = 1.6 * Us; cx.strokeStyle = 'rgba(255,255,255,0.95)';
+        cx.beginPath(); cx.arc(px, py, 5 * Us, 0, 6.2832); cx.stroke();
         if (last) {
-          cx.lineWidth = 2.2; cx.strokeStyle = '#fff';
-          cx.beginPath(); cx.arc(px, py, 9.5, 0, 6.2832); cx.stroke();
-          cx.lineWidth = 1.2; cx.strokeStyle = 'rgba(255,45,149,0.8)';
-          cx.beginPath(); cx.arc(px, py, 12, 0, 6.2832); cx.stroke();
+          cx.lineWidth = 2.2 * Us; cx.strokeStyle = '#fff';
+          cx.beginPath(); cx.arc(px, py, 9.5 * Us, 0, 6.2832); cx.stroke();
+          cx.lineWidth = 1.2 * Us; cx.strokeStyle = 'rgba(255,45,149,0.8)';
+          cx.beginPath(); cx.arc(px, py, 12 * Us, 0, 6.2832); cx.stroke();
         }
       }
-      clueMapMarks.push({ sx: px, sy: py, r: out ? 3 : 6, label: 'Scan spot<br>' + s[0] + ', ' + s[1] + '<br><span style="opacity:.65">' + nearLabel(s[0], s[1], plane) + (out ? ' · ruled out' : '') + '</span>' });
+      clueMapMarks.push({ sx: px, sy: py, r: (out ? 3 : 6) * Us, label: 'Scan spot<br>' + s[0] + ', ' + s[1] + '<br><span style="opacity:.65">' + nearLabel(s[0], s[1], plane) + (out ? ' · ruled out' : '') + '</span>' });
     });
     // The player marker shares the spots' projection; scanR carries the scan-range square.
     clueMapProj = { projX: projX, projY: projY, W: W, plane: plane, scanR: Rr };
     if (Pnow && (Pnow.p || 0) === plane) clueMapMarks.push({ sx: projX(Pnow.x), sy: projY(Pnow.y), r: 6, label: 'You<br>' + Pnow.x + ', ' + Pnow.y });
     clueMapPlayerDraw(Pnow);
+    // Reference layers last: these read varps, so they are the cancellable part of the draw.
+    const scanLodeNote = await clueMapLodeDraw(lmBox[0], lmBox[1], lmBox[2], lmBox[3], ccx, ccy,
+                                               { projX: projX, projY: projY, W: W }, plane, 10);
+    const scanTeleNote = await clueMapTeleDraw(lmBox[0], lmBox[1], lmBox[2], lmBox[3], ccx, ccy,
+                                         { projX: projX, projY: projY, W: W }, plane);
+    if (myseq !== clueMapDrawSeq) return;   // a newer draw started while the varps were read
     const nextTxt = (remain === 1) ? '  ·  SOLVED (dig the spot)' : '';
     const floorTxt = (Object.keys(planeCount).length > 1) ? ('  ·  floor ' + plane + (offFloors ? ' (' + offFloors + ' on other floors)' : '')) : '';
     const areaTxt = nearLabel(ccx, ccy, plane) ? ('  ·  ' + nearLabel(ccx, ccy, plane)) : '';
@@ -1550,11 +1771,18 @@
     clueMapMarks = []; clueMapTipBind(cv);
     let meta = null;
     if (bridge() && bridge().mapWindow) {
-      try { meta = JSON.parse((await bridge().mapWindow(t.x, t.y, t.p || 0, 96, 2)) || '{}'); } catch (e) {}   // island-scale context: +-96 tiles at 2px/tile (384px cap)
+      // Island-scale context: the stage shows +-96 tiles at zoom 1. Resolution and window both
+      // follow the zoom - deep in, the window narrows so the pixels-per-tile can rise without
+      // the image outgrowing its byte budget. You can pan less far when zoomed, but only over
+      // ground that is off-screen anyway.
+      clueMapSpan = 192;
+      const R = mapRes(clueMapSpan, 96);
+      try { meta = JSON.parse((await bridge().mapWindow(t.x, t.y, t.p || 0, R.half, R.ts)) || '{}'); } catch (e) {}
     }
     if (myseq !== clueMapDrawSeq) return;
     if (myseq !== clueMapDrawSeq) return;
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, H = (meta && meta.h) || 24;
+    clueMapHalfGot = H; applyMapZoom();
     const cx = clueMapCtx(cv, W);
     if (meta && meta.b64) {
       try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {}
@@ -1572,29 +1800,30 @@
     const teleNote = await clueMapTeleDraw(t.x - H, t.y - H, t.x + H, t.y + H, t.x, t.y, clueMapProj, t.p || 0);
     if (myseq !== clueMapDrawSeq) return;
     cx.lineCap = 'round';
-    const gap = 10, len = 11;
+    const U = cx._upx || 1;                 // draw the marker in display px, not terrain px
+    const gap = 10 * U, len = 11 * U;
     const tick = (dx, dy) => {
       cx.beginPath();
       cx.moveTo(mx + dx * gap, my + dy * gap); cx.lineTo(mx + dx * (gap + len), my + dy * (gap + len));
-      cx.lineWidth = 4; cx.strokeStyle = 'rgba(0,0,0,0.55)'; cx.stroke();
-      cx.lineWidth = 2; cx.strokeStyle = 'rgba(255,255,255,0.95)'; cx.stroke();
+      cx.lineWidth = 4 * U; cx.strokeStyle = 'rgba(0,0,0,0.55)'; cx.stroke();
+      cx.lineWidth = 2 * U; cx.strokeStyle = 'rgba(255,255,255,0.95)'; cx.stroke();
     };
     tick(0, -1); tick(0, 1); tick(-1, 0); tick(1, 0);
     const ring = (r, lw, col) => { cx.lineWidth = lw; cx.strokeStyle = col; cx.beginPath(); cx.arc(mx, my, r, 0, 6.2832); cx.stroke(); };
-    ring(11, 5, 'rgba(0,0,0,0.6)'); ring(11, 2.6, '#ff2d95'); ring(13.5, 1.2, 'rgba(255,255,255,0.85)');
-    cx.beginPath(); cx.arc(mx, my, 2.8, 0, 6.2832); cx.fillStyle = '#ff2d95'; cx.fill();
-    cx.lineWidth = 1.4; cx.strokeStyle = '#fff'; cx.stroke();
-    clueMapMarks.push({ sx: mx, sy: my, r: 13, label: '<b>' + (t.mark || 'DIG HERE') + '</b><br>' + t.x + ', ' + t.y + '<br><span style="opacity:.65">' + nearLabel(t.x, t.y, t.p || 0) + '</span>' });
+    ring(11 * U, 5 * U, 'rgba(0,0,0,0.6)'); ring(11 * U, 2.6 * U, '#ff2d95'); ring(13.5 * U, 1.2 * U, 'rgba(255,255,255,0.85)');
+    cx.beginPath(); cx.arc(mx, my, 2.8 * U, 0, 6.2832); cx.fillStyle = '#ff2d95'; cx.fill();
+    cx.lineWidth = 1.4 * U; cx.strokeStyle = '#fff'; cx.stroke();
+    clueMapMarks.push({ sx: mx, sy: my, r: 13 * U, label: '<b>' + (t.mark || 'DIG HERE') + '</b><br>' + t.x + ', ' + t.y + '<br><span style="opacity:.65">' + nearLabel(t.x, t.y, t.p || 0) + '</span>' });
     // Hidey-hole marker (emote clues): opts.hidey = [x, y, plane], drawn when on this plane.
     let hideyNote = '';
     if (opts && opts.hidey && (opts.hidey[2] || 0) === (t.p || 0)) {
       const hx = clueMapProj.projX(opts.hidey[0]), hy = clueMapProj.projY(opts.hidey[1]);
       if (hx >= 0 && hx <= W && hy >= 0 && hy <= W) {
-        cx.lineWidth = 2; cx.strokeStyle = 'rgba(70,224,192,0.7)'; cx.setLineDash([5, 4]);
+        cx.lineWidth = 2 * U; cx.strokeStyle = 'rgba(70,224,192,0.7)'; cx.setLineDash([5 * U, 4 * U]);
         cx.beginPath(); cx.moveTo(mx, my); cx.lineTo(hx, hy); cx.stroke(); cx.setLineDash([]);
-        cx.fillStyle = '#46e0c0'; cx.strokeStyle = 'rgba(0,0,0,0.8)'; cx.lineWidth = 1.5;
-        cx.beginPath(); cx.rect(hx - 5, hy - 4, 10, 8); cx.fill(); cx.stroke();
-        cx.fillStyle = 'rgba(0,0,0,0.85)'; cx.fillRect(hx - 5, hy - 1.5, 10, 1.5);
+        cx.fillStyle = '#46e0c0'; cx.strokeStyle = 'rgba(0,0,0,0.8)'; cx.lineWidth = 1.5 * U;
+        cx.beginPath(); cx.rect(hx - 5 * U, hy - 4 * U, 10 * U, 8 * U); cx.fill(); cx.stroke();
+        cx.fillStyle = 'rgba(0,0,0,0.85)'; cx.fillRect(hx - 5 * U, hy - 1.5 * U, 10 * U, 1.5 * U);
       }
       const d = Math.max(Math.abs(opts.hidey[0] - t.x), Math.abs(opts.hidey[1] - t.y));
       hideyNote = '  ·  hidey ' + (hx >= 0 && hx <= W && hy >= 0 && hy <= W ? '' : '(off-map) ') + d + ' tiles';
@@ -1777,7 +2006,9 @@
     {n:'Games necklace - Gamer\'s Grotto',src:'Enchanted Jewellery',x:2967,y:9678,p:0,item:3853,kb:'3'},
     {n:'Games necklace - Agoroth',src:'Enchanted Jewellery',x:3860,y:6827,p:0,item:3853,kb:'4'},
     {n:'Games necklace - Corporeal Beast',src:'Enchanted Jewellery',x:2885,y:4372,p:2,item:3853,kb:'5'},
-    {n:'Games necklace - Burgh De Rott',src:'Enchanted Jewellery',x:3487,y:3237,p:0,item:3853,kb:'6'},
+    // Burgh de Rott is the one games-necklace destination that is not open from the start:
+    // it appears once you have reached the town during In Aid of the Myreque.
+    {n:'Games necklace - Burgh De Rott',src:'Enchanted Jewellery',x:3487,y:3237,p:0,item:3853,kb:'6',req:{questName:'In Aid of the Myreque',questId:21}},
     {n:'Games necklace - Tears of Guthix',src:'Enchanted Jewellery',x:3250,y:9517,p:2,item:3853,kb:'7'},
     {n:'Ring of duelling - Al Kharid Duel Arena',src:'Enchanted Jewellery',x:3316,y:3234,p:0,item:2552,kb:'1'},
     {n:'Ring of duelling - Castle Wars Arena',src:'Enchanted Jewellery',x:2442,y:3089,p:0,item:2552,kb:'2'},
@@ -1835,23 +2066,35 @@
     {n:'Desert amulet 4 - Uzer',src:'Achievement tasks set',x:3475,y:3096,p:0,item:27096,kb:'2',rq:'Desert elite achievements'},
     {n:'Enchanted lyre - Waterbirth',src:'Achievement tasks set',x:2528,y:3741,p:0,item:3690,rq:'Fremennik hard achievements'},
     {n:'Enchanted lyre - Jatizso',src:'Achievement tasks set',x:2404,y:3781,p:0,item:3690,rq:'Fremennik elite achievements'},
-    {n:'Enchanted lyre - Rellekka',src:'Achievement tasks set',x:2654,y:3693,p:0,item:3690,rq:'The Fremennik Trials'},
+    {n:'Enchanted lyre - Rellekka',src:'Achievement tasks set',kb:'1',x:2654,y:3693,p:0,item:3690,rq:'The Fremennik Trials'},
     {n:'Enchanted lyre - Neitiznot',src:'Achievement tasks set',x:2310,y:3785,p:0,item:3690,rq:'Fremennik elite achievements'},
-    {n:'Enchanted lyre - Miscellania',src:'Achievement tasks set',x:2519,y:3860,p:0,item:3690,rq:'Fremennik elite achievements'},
+    {n:'Enchanted lyre - Miscellania',src:'Achievement tasks set',kb:'5',x:2519,y:3860,p:0,item:3690,rq:'Fremennik elite achievements'},
     {n:'Enchanted lyre - Etceteria',src:'Achievement tasks set',x:2594,y:3880,p:0,item:3690,rq:'Fremennik elite achievements'},
     {n:'Fremennik sea boots 4 - Rellekka',src:'Achievement tasks set',x:2643,y:3678,p:0,item:19766,rq:'Fremennik elite achievements'},
     {n:'Karamja gloves 3+ - Shilo Village gem dungeon',src:'Achievement tasks set',x:2840,y:9386,p:0,item:11140,rq:'Karamja hard achievements'},
     {n:'Morytania legs 2+ - Ectofuntus slime pit',src:'Achievement tasks set',x:3683,y:9887,p:0,item:24135,rq:'Morytania medium achievements'},
-    {n:'Tureal/Spria',src:'Slayer cape',x:2889,y:3547,p:0,item:9786,kb:'1',rq:'99 Slayer'},
-    {n:'Jacquelyn',src:'Slayer cape',x:3221,y:3223,p:0,item:9786,kb:'2',rq:'99 Slayer'},
-    {n:'Vannaka and Mandrith',src:'Slayer cape',x:3093,y:3478,p:0,item:9786,kb:'3',rq:'99 Slayer'},
-    {n:'Mazchna',src:'Slayer cape',x:3508,y:3508,p:0,item:9786,kb:'4',rq:'99 Slayer'},
-    {n:'Chaeldar',src:'Slayer cape',x:2445,y:4431,p:0,item:9786,kb:'5',rq:'99 Slayer'},
+    // Slayer cape "Choose a slayer master" keybinds, corrected against the LIVE dialog
+    // (owner capture 2026-08-04). The old numbers ran the list in the opposite order, so
+    // every one of them was wrong (Chaeldar read 5, is really 7). True order, 9 per page:
+    //   page 1: 1 Mandrith  2 Laniakea  3 Morvran  4 Kuradal  5 Duradel
+    //           6 Sumona    7 Chaeldar  8 Mazchna  9 The Raptor    0 = next page
+    //   page 2: 1 Vannaka   2 Jacquelyn 3 Turael                   4 = previous page
+    // Page-2 masters are written "0 > N" (next page, then N). NB positions assume the
+    // master is LISTED - the dialog omits masters an account cannot use, which shifts
+    // everything below them.
+    {n:'Turael/Spria',src:'Slayer cape',x:2889,y:3547,p:0,item:9786,kb:'0 > 3',rq:'99 Slayer'},
+    {n:'Jacquelyn',src:'Slayer cape',x:3221,y:3223,p:0,item:9786,kb:'0 > 2',rq:'99 Slayer'},
+    // Mandrith is option 1; Vannaka is 0 > 1 but teleports to Edgeville DUNGEON, a different
+    // tile that is not mapped here - so this entry is Mandrith's surface destination.
+    {n:'Mandrith (Vannaka: 0 > 1)',src:'Slayer cape',x:3093,y:3478,p:0,item:9786,kb:'1',rq:'99 Slayer'},
+    {n:'The Raptor',src:'Slayer cape',x:3290,y:3543,p:0,item:9786,kb:'9',rq:'99 Slayer'},   // destination owner-captured
+    {n:'Mazchna',src:'Slayer cape',x:3508,y:3508,p:0,item:9786,kb:'8',rq:'99 Slayer'},
+    {n:'Chaeldar',src:'Slayer cape',x:2445,y:4431,p:0,item:9786,kb:'7',rq:'99 Slayer'},
     {n:'Sumona',src:'Slayer cape',x:3360,y:2993,p:0,item:9786,kb:'6',rq:'99 Slayer'},
-    {n:'Duradel/Lapalok',src:'Slayer cape',x:2869,y:2982,p:1,item:9786,kb:'7',rq:'99 Slayer'},
-    {n:'Kuradal',src:'Slayer cape',x:1686,y:5287,p:1,item:9786,kb:'8',rq:'99 Slayer'},
-    {n:'Morvran',src:'Slayer cape',x:2195,y:3327,p:1,item:9786,kb:'9',rq:'99 Slayer'},
-    {n:'Laniakea',src:'Slayer cape',x:5669,y:2137,p:1,item:9786,kb:'0',rq:'99 Slayer'},
+    {n:'Duradel/Lapalok',src:'Slayer cape',x:2869,y:2982,p:1,item:9786,kb:'5',rq:'99 Slayer'},
+    {n:'Kuradal',src:'Slayer cape',x:1686,y:5287,p:1,item:9786,kb:'4',rq:'99 Slayer'},
+    {n:'Morvran',src:'Slayer cape',x:2195,y:3327,p:1,item:9786,kb:'3',rq:'99 Slayer'},
+    {n:'Laniakea',src:'Slayer cape',x:5669,y:2137,p:1,item:9786,kb:'2',rq:'99 Slayer'},
     {n:'Edgeville Dungeon chaos druids dungeon',src:'Dungeoneering cape',x:3134,y:9915,p:0,item:15706,kb:'1',rq:'99 Dungeoneering'},
     {n:'Dwarven mine hidden mine',src:'Dungeoneering cape',x:3036,y:9774,p:0,item:15706,kb:'2',rq:'99 Dungeoneering'},
     {n:'Edgeville hill giant dungeon',src:'Dungeoneering cape',x:3105,y:9829,p:0,item:15706,kb:'3',rq:'99 Dungeoneering'},
@@ -2172,7 +2415,7 @@
     {n:'Chipped house - Otot',src:'Teletabs (excluding ones with spell versions)',x:4196,y:920,p:0,item:35136},
     {n:'Chipped house - Menaphos',src:'Teletabs (excluding ones with spell versions)',x:3124,y:2634,p:1,item:40671},
     {n:'Chipped house - Anachronia',src:'Teletabs (excluding ones with spell versions)',x:5436,y:2375,p:1,item:48171},
-    {n:'Arc Journal - Port Sarim',src:'Teletabs (excluding ones with spell versions)',x:3050,y:3245,p:1,item:37729},
+    {n:'Port Sarim',src:'Arc Journal',kb:'1',x:3050,y:3245,p:1,item:37729,rq:'Arc journal (this one destination needs no charges)'},
     {n:'Waiko',src:'Teletabs (excluding ones with spell versions)',x:1820,y:11616,p:1,item:37903},
     {n:'Whale\'s Maw',src:'Teletabs (excluding ones with spell versions)',x:2060,y:11800,p:0,item:38576},
     {n:'Tuai Leit',src:'Teletabs (excluding ones with spell versions)',x:1800,y:11961,p:0,item:38578,req:{questName:"Tuai Leit's Own (miniquest)",questId:446}},
@@ -2207,13 +2450,15 @@
     {n:'Astral Rune - Teleport',src:'Wicked hood, rune ethereal outfit',x:2155,y:3866,p:0,item:22332},
     {n:'Blood Rune - Teleport',src:'Wicked hood, rune ethereal outfit',x:3559,y:9778,p:0,item:22332},
     {n:'Soul Rune - Teleport',src:'Wicked hood, rune ethereal outfit',x:2016,y:6877,p:0,item:22332},
-    {n:'Green Dragons > Green Dragons',src:'Dragon trinkets',x:3303,y:5468,p:0,item:34808,kb:'1,1'},
-    {n:'Green Dragons > Brutal Green Dragons',src:'Dragon trinkets',x:2512,y:3511,p:1,item:34808,kb:'1,2'},
-    {n:'Blue Dragons',src:'Dragon trinkets',x:2891,y:9769,p:1,item:34808,kb:'2'},
-    {n:'Red Dragons',src:'Dragon trinkets',x:2731,y:9529,p:0,item:34808,kb:'3'},
-    {n:'Black Dragons > Black Dragons',src:'Dragon trinkets',x:1565,y:4356,p:0,item:34808,kb:'4,1'},
-    {n:'Black Dragons > King Black Dragon',src:'Dragon trinkets',x:3051,y:3519,p:0,item:34808,kb:'4,2'},
-    {n:'Black Dragons > Queen Black Dragon',src:'Dragon trinkets',x:1198,y:6499,p:0,item:34808,kb:'4,3'},
+    // Dragon trinkets: the destination menu is FLAT (7 options + Cancel), owner-captured live.
+    // It used to be modelled as submenus ('1,1', '4,2'), which printed the wrong option numbers.
+    {n:'Green Dragons - Chaos Tunnels',src:'Dragon trinkets',x:3303,y:5468,p:0,item:34808,kb:'1'},
+    {n:'Brutal Green Dragons - Baxtorian Falls',src:'Dragon trinkets',x:2512,y:3511,p:0,item:34808,kb:'2'},
+    {n:'Blue Dragons - Taverley Dungeon',src:'Dragon trinkets',x:2891,y:9769,p:0,item:34808,kb:'3'},
+    {n:'Red Dragons - Brimhaven Dungeon',src:'Dragon trinkets',x:2731,y:9529,p:0,item:34808,kb:'4'},
+    {n:'Black Dragons - Taverley Dungeon',src:'Dragon trinkets',x:1565,y:4356,p:0,item:34808,kb:'5'},
+    {n:'King Black Dragon - Edgeville',src:'Dragon trinkets',x:3051,y:3519,p:0,item:34808,kb:'6'},
+    {n:'Queen Black Dragon - Grotworm Lair',src:'Dragon trinkets',x:1198,y:6499,p:0,item:34808,kb:'7'},
     {n:'Bronze Dragons',src:'Metallic dragon trinkets',x:2723,y:9486,p:0,item:37193,kb:'1'},
     {n:'Iron Dragons',src:'Metallic dragon trinkets',x:2694,y:9443,p:0,item:37193,kb:'2'},
     {n:'Steel Dragons',src:'Metallic dragon trinkets',x:2708,y:9468,p:0,item:37193,kb:'3'},
@@ -2525,6 +2770,163 @@
     {n:'Fish 2 - Chaos druid tower north of Ardougne',src:'Resource locator (random destination for each resource)',x:2563,y:3368,p:0,item:15007},
     {n:'Fish 2 - Hemenster',src:'Resource locator (random destination for each resource)',x:2645,y:3446,p:0,item:15007},
     {n:'Fish 2 - Musa Point',src:'Resource locator (random destination for each resource)',x:2925,y:3174,p:0,item:15007},
+    // --- Destinations refreshed from the current teleport tables (2026-08-04). Only rows we
+    // did NOT already carry were added: de-dup is per SOURCE FAMILY + tile, so distinct ROUTES
+    // to one destination are kept (a sceptre and a wicked hood reaching the same spot are two
+    // entries) while the same route listed twice is not. `rq` carries the access text; these
+    // rows carry no `item` gate, so they never fade (unknown = shown), same as the rest.
+    {n:'Aminishi',src:'Arc Journal',x:2085,y:11273,p:0,kb:'4',rq:'Arc journal + charges for this destination',item:37729,rqUnk:1},
+    {n:'Cyclosis',src:'Arc Journal',x:2314,y:11222,p:0,kb:'5',rq:'Arc journal + charges for this destination',item:37729,rqUnk:1},
+    {n:'Goshima',src:'Arc Journal',x:2459,y:11546,p:0,kb:'8',rq:'Arc journal + charges for this destination',item:37729,rqUnk:1},
+    {n:'Tuai Leit',src:'Arc Journal',x:1797,y:11959,p:0,kb:'6',rq:'Arc journal + charges for this destination',item:37729,rqUnk:1},
+    {n:'Turtle Islands',src:'Arc Journal',x:2277,y:11501,p:0,kb:'7',rq:'Arc journal + charges for this destination',item:37729,rqUnk:1},
+    {n:'Waiko',src:'Arc Journal',x:1820,y:11613,p:0,kb:'2',rq:'Arc journal + charges for this destination',item:37729,rqUnk:1},
+    {n:'Whale\'s Maw',src:'Arc Journal',x:2058,y:11797,p:0,kb:'3',rq:'Arc journal + charges for this destination',item:37729,rqUnk:1},
+    {n:'Gregorovic',src:'Boss portal',x:3277,y:7053,p:1,rq:'Boss portal/Boss portal'},
+    {n:'Helwyr',src:'Boss portal',x:3270,y:6905,p:1,rq:'Boss portal/Boss portal'},
+    {n:'Shadow Reef',src:'Boss portal',x:3511,y:3692,p:0,rq:'Boss portal/Boss portal'},
+    {n:'Solak',src:'Boss portal',x:1373,y:5640,p:0,rq:'Boss portal/Boss portal'},
+    {n:'Temple of Aminishi',src:'Boss portal',x:2094,y:11352,p:0,rq:'Boss portal/Boss portal'},
+    {n:'The Twin Furies',src:'Boss portal',x:3128,y:7047,p:1,rq:'Boss portal/Boss portal'},
+    {n:'Vindicta & Gorvek',src:'Boss portal',x:3119,y:6903,p:1,rq:'Boss portal/Boss portal'},
+    {n:'Zamorakian Undercity',src:'Boss portal',x:1759,y:1341,p:0,rq:'Boss portal/Boss portal'},
+    {n:'Brimhaven',src:'Charter Ships',x:2760,y:3238,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Catherby',src:'Charter Ships',x:2796,y:3406,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Karamja',src:'Charter Ships',x:2954,y:3158,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Menaphos',src:'Charter Ships',x:3140,y:2662,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Mos Le\'Harmless',src:'Charter Ships',x:3671,y:2931,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Oo\'glog',src:'Charter Ships',x:2623,y:2857,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Port Khazard',src:'Charter Ships',x:2674,y:3144,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Port Phasmatys',src:'Charter Ships',x:3702,y:3503,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Port Sarim',src:'Charter Ships',x:3043,y:3191,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Port Tyras',src:'Charter Ships',x:2142,y:3122,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Shipyard',src:'Charter Ships',x:3001,y:3032,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Grand Exchange',src:'Clan vexillum',x:3177,y:3470,p:0,kb:'1',rq:'Clan vexillum',item:20709},
+    // Dave's spellbook (42604, pocket slot; from Evil Dave's Big Day Out) does not teleport by
+    // itself - it REDIRECTS a chipped teleport tablet, and each destination needs its own chipped
+    // tablet stored in the book (up to 1000 each). That per-destination count is an instance value
+    // on the book we have NOT decoded (same shape as the Passage of the abyss: itemExtraInts on
+    // 42604), so these rows carry the readable half - holding the book - plus rqUnk for the half we
+    // cannot read, which shows AMBER rather than a confident green.
+    {n:'Ardougne',src:'Dave\'s spellbook',x:2538,y:3306,p:0,kb:'4',rq:'Dave\'s spellbook + the chipped tablet for this destination',item:42604,rqUnk:1},
+    {n:'Camelot',src:'Dave\'s spellbook',x:2794,y:3418,p:0,kb:'2',rq:'Dave\'s spellbook + the chipped tablet for this destination',item:42604,rqUnk:1},
+    {n:'Falador',src:'Dave\'s spellbook',x:3006,y:3319,p:0,kb:'3',rq:'Dave\'s spellbook + the chipped tablet for this destination',item:42604,rqUnk:1},
+    {n:'Lumbridge',src:'Dave\'s spellbook',x:3168,y:3199,p:0,kb:'5',rq:'Dave\'s spellbook + the chipped tablet for this destination',item:42604,rqUnk:1},
+    {n:'Varrock',src:'Dave\'s spellbook',x:3254,y:3449,p:0,kb:'6',rq:'Dave\'s spellbook + the chipped tablet for this destination',item:42604,rqUnk:1},
+    {n:'Watchtower',src:'Dave\'s spellbook',x:2443,y:3180,p:0,kb:'1',rq:'Dave\'s spellbook + the chipped tablet for this destination',item:42604,rqUnk:1},
+    {n:'Life Altar',src:'Disk of returning',x:1065,y:5544,p:0,kb:'3',rq:'Disk of returning',item:981},
+    {n:'Return',src:'Disk of returning',x:2982,y:9804,p:0,rq:'Disk of returning',item:981},
+    {n:'East',src:'Dorgesh-kaan sphere',x:2734,y:5296,p:1,kb:'3',rq:'Dorgesh-kaan sphere',item:10972},
+    {n:'North',src:'Dorgesh-kaan sphere',x:2710,y:5349,p:0,kb:'1',rq:'Dorgesh-kaan sphere',item:10972},
+    {n:'South',src:'Dorgesh-kaan sphere',x:2721,y:5260,p:0,kb:'2',rq:'Dorgesh-kaan sphere',item:10972},
+    {n:'West',src:'Dorgesh-kaan sphere',x:2692,y:5299,p:1,kb:'4',rq:'Dorgesh-kaan sphere',item:10972},
+    {n:'Brimhaven Dungeon',src:'Enchanted Jewellery',x:2638,y:9593,p:2,kb:'1',rq:'Delver\'s anklet',ico:20659,item:59241},
+    {n:'City of Um: Hanging Gardens',src:'Enchanted Jewellery',x:1169,y:1787,p:1,kb:'1',rq:'Passing bracelet',ico:20659,item:56416},
+    {n:'City of Um: Haunt on the Hill',src:'Enchanted Jewellery',x:1164,y:1838,p:1,kb:'2',rq:'Passing bracelet',ico:20659,item:56416},
+    {n:'City of Um: Reflection Pool',src:'Enchanted Jewellery',x:1134,y:1723,p:1,kb:'3',rq:'Passing bracelet',ico:20659,item:56416},
+    {n:'Falador Tree Patch',src:'Enchanted Jewellery',x:3002,y:3371,p:0,rq:'Amulet of nature',ico:20659,item:6040},
+    {n:'Fremennik Slayer Dungeon',src:'Enchanted Jewellery',x:2729,y:10021,p:0,kb:'2',rq:'Delver\'s anklet',ico:20659,item:59241},
+    {n:'Harmony Island Allotment Patch',src:'Enchanted Jewellery',x:3795,y:2833,p:0,rq:'Amulet of nature',ico:20659,item:6040},
+    {n:'Hops Patch north of McGrubor\'s Wood',src:'Enchanted Jewellery',x:2663,y:3522,p:0,rq:'Amulet of nature',ico:20659,item:6040},
+    {n:'Nightshade Patch',src:'Enchanted Jewellery',x:3084,y:3353,p:0,rq:'Amulet of nature',ico:20659,item:6040},
+    {n:'Polypore Dungeon',src:'Enchanted Jewellery',x:4654,y:5427,p:1,kb:'3',rq:'Delver\'s anklet',ico:20659,item:59241},
+    {n:'Tree Gnome Stronghold Tree Patch',src:'Enchanted Jewellery',x:2434,y:3413,p:0,rq:'Amulet of nature',ico:20659,item:6040},
+    {n:'Tree Gnome Village Fruit Tree Patch',src:'Enchanted Jewellery',x:2488,y:3178,p:0,rq:'Amulet of nature',ico:20659,item:6040},
+    {n:'Vine Bush Patch',src:'Enchanted Jewellery',x:2946,y:2904,p:0,rq:'Amulet of nature',ico:20659,item:6040},
+    {n:'Rellekka Market',src:'Enchanted lyre',x:2641,y:3675,p:0,kb:'7',rq:'Enchanted lyre',item:3690},
+    {n:'Dylandra',src:'Gnome gliders',x:2208,y:3445,p:1,kb:'8',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Gandius',src:'Gnome gliders',x:2971,y:2969,p:0,kb:'5',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Kal-Undri',src:'Gnome gliders',x:1772,y:11920,p:0,kb:'9',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Kar-Hewo',src:'Gnome gliders',x:3284,y:3211,p:0,kb:'4',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Lemanto Andra',src:'Gnome gliders',x:3319,y:3438,p:0,kb:'3',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Lemantolly Undri',src:'Gnome gliders',x:2549,y:2971,p:0,kb:'6',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Priw Gnomo Andralo',src:'Gnome gliders',x:2496,y:3191,p:0,kb:'7',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Sindarpos',src:'Gnome gliders',x:2850,y:3494,p:1,kb:'2',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Ta Quir Priw',src:'Gnome gliders',x:2465,y:3501,p:3,kb:'1',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    {n:'Anachronia',src:'House Teleports',x:5434,y:2374,p:0,kb:'0,2',rq:'spellbook/House Teleport Tablet'},
+    {n:'Brimhaven',src:'House Teleports',x:2757,y:3176,p:0,kb:'5',rq:'spellbook/House Teleport Tablet'},
+    {n:'Menaphos',src:'House Teleports',x:3123,y:2633,p:0,kb:'0,1',rq:'spellbook/House Teleport Tablet'},
+    {n:'Otot (Mazcab)',src:'House Teleports',x:4193,y:919,p:0,kb:'9',rq:'spellbook/House Teleport Tablet'},
+    {n:'Pollnivneach',src:'House Teleports',x:3338,y:3003,p:0,kb:'3',rq:'spellbook/House Teleport Tablet'},
+    {n:'Prifddinas',src:'House Teleports',x:2166,y:3333,p:1,kb:'8',rq:'spellbook/House Teleport Tablet'},
+    {n:'Rellekka',src:'House Teleports',x:2668,y:3631,p:0,kb:'4',rq:'spellbook/House Teleport Tablet'},
+    {n:'Rimmington',src:'House Teleports',x:2953,y:3222,p:0,kb:'1',rq:'spellbook/House Teleport Tablet'},
+    {n:'Taverley',src:'House Teleports',x:2882,y:3450,p:0,kb:'2',rq:'spellbook/House Teleport Tablet'},
+    {n:'Trollheim',src:'House Teleports',x:2889,y:3672,p:0,kb:'7',rq:'spellbook/House Teleport Tablet'},
+    {n:'Yanille',src:'House Teleports',x:2542,y:3093,p:0,kb:'6',rq:'spellbook/House Teleport Tablet'},
+    {n:'Imperial District',src:'Leela\'s favour',x:3176,y:2729,p:0,kb:'1',rq:'Leela\'s favour',item:58702},
+    {n:'Merchant District',src:'Leela\'s favour',x:3223,y:2782,p:0,kb:'2',rq:'Leela\'s favour',item:58702},
+    {n:'Port District',src:'Leela\'s favour',x:3213,y:2627,p:0,kb:'3',rq:'Leela\'s favour',item:58702},
+    {n:'Shifting Tombs',src:'Leela\'s favour',x:2078,y:6952,p:0,kb:'6',rq:'Leela\'s favour',item:58702},
+    {n:'Sophanem Slayer Dungeon',src:'Leela\'s favour',x:3289,y:2708,p:0,kb:'7',rq:'Leela\'s favour',item:58702},
+    {n:'Worker District',src:'Leela\'s favour',x:3156,y:2796,p:0,kb:'4',rq:'Leela\'s favour',item:58702},
+    {n:'Mountain Camp',src:'Lunar Spellbook',x:2783,y:3662,p:0,rq:'spellbook',sp:14428},
+    {n:'Western Kharazi Jungle',src:'Lunar Spellbook',x:2801,y:2915,p:0,rq:'spellbook',sp:14428},
+    {n:'Return',src:'Magic whistle',x:2741,y:3235,p:0,rq:'Magic whistle',item:16},
+    {n:'Collectors - Artiefax',src:'Master Archaeologist outfit',x:2893,y:3415,p:0,kb:'2,2',rq:'Archaeology teleport',ico:49941,item:49935},
+    {n:'Collectors - Lowse',src:'Master Archaeologist outfit',x:2991,y:699,p:0,kb:'2,6',rq:'Archaeology teleport',ico:49941,item:49935},
+    {n:'Collectors - Sharrigan',src:'Master Archaeologist outfit',x:5456,y:2344,p:0,kb:'2,7',rq:'Archaeology teleport',ico:49941,item:49935},
+    {n:'Daemonheim',src:'Master Archaeologist outfit',x:3428,y:3699,p:0,kb:'1,8',rq:'Archaeology teleport',ico:49941,item:49935},
+    {n:'Moonrise',src:'Master Archaeologist outfit',x:3714,y:1651,p:0,kb:'1,5',rq:'Archaeology teleport',ico:49941,item:49935},
+    {n:'Orthen',src:'Master Archaeologist outfit',x:5457,y:2339,p:0,kb:'1,0',rq:'Archaeology teleport',ico:49941,item:49935},
+    {n:'Senntisten',src:'Master Archaeologist outfit',x:1784,y:1296,p:0,kb:'1,6',rq:'Archaeology teleport',ico:49941,item:49935},
+    {n:'Hall of Memories entrance',src:'Memory strands',x:2265,y:3551,p:0,rq:'Memory stands',item:39486},
+    {n:'Garden of Kharid',src:'Mystical sand seed',x:3320,y:3307,p:0,rq:'Mystical sand seed',item:54004},
+    {n:'Acadia Trees - Het\'s Oasis',src:'Nature\'s sentinel outfit',x:3307,y:3245,p:0,kb:'0,3,1',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Creeping Ivy - Geva\'s Cabin',src:'Nature\'s sentinel outfit',x:3446,y:1683,p:0,kb:'7,2',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Creeping Ivy - Raz\'s Hut',src:'Nature\'s sentinel outfit',x:3576,y:1637,p:0,kb:'7,3',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Creeping Ivy - Wendlewick',src:'Nature\'s sentinel outfit',x:3463,y:1537,p:0,kb:'7,1',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Elder Trees - Fort Forinthry Grove',src:'Nature\'s sentinel outfit',x:3375,y:3545,p:0,kb:'2,9,3',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Eternal Magic Trees - Dalia\'s Tree Nursery',src:'Nature\'s sentinel outfit',x:3493,y:1408,p:0,kb:'1, 1',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Eternal Magic Trees - Piscatoris',src:'Nature\'s sentinel outfit',x:2329,y:3585,p:0,kb:'1, 0',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Teak Trees - Musa Point',src:'Nature\'s sentinel outfit',x:2896,y:3152,p:0,kb:'0,5,1',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Willow Trees - Marigold Farm',src:'Nature\'s sentinel outfit',x:3528,y:1515,p:0,kb:'0,7,4',rq:'Nature\'s sentinel helm',item:39745},
+    {n:'Fairy Resistance HQ',src:'Portable fairy ring',x:2254,y:4426,p:0,rq:'Portable Fairy Ring',item:41076},
+    {n:'Fort Forinthry',src:'Portable fairy ring',x:3347,y:3540,p:0,kb:'BJP',rq:'Portable Fairy Ring',item:41076},
+    {n:'Havenhythe: North of Amberfell',src:'Portable fairy ring',x:3742,y:1601,p:0,kb:'DLP',rq:'Portable Fairy Ring',item:41076},
+    {n:'Inanna\'s shrine',src:'Portable fairy ring',x:3599,y:1410,p:0,kb:'BKS',rq:'Portable Fairy Ring',item:41076},
+    {n:'Level 13',src:'Portable obelisk',x:3155,y:3619,p:0,kb:'1',rq:'Portable obelisk',item:53919},
+    {n:'Level 18',src:'Portable obelisk',x:3218,y:3655,p:0,kb:'2',rq:'Portable obelisk',item:53919},
+    {n:'Level 27',src:'Portable obelisk',x:3034,y:3731,p:0,kb:'3',rq:'Portable obelisk',item:53919},
+    {n:'Level 35',src:'Portable obelisk',x:3105,y:3793,p:0,kb:'4',rq:'Portable obelisk',item:53919},
+    {n:'Level 44',src:'Portable obelisk',x:2979,y:3865,p:0,kb:'5',rq:'Portable obelisk',item:53919},
+    {n:'Level 50',src:'Portable obelisk',x:3306,y:3915,p:0,kb:'6',rq:'Portable obelisk',item:53919},
+    {n:'Crondis\' Pyramid',src:'Portmaster Kags',x:3273,y:2644,p:0,kb:'3',rq:'Portmaster Kags'},
+    {n:'Dominion Tower',src:'Portmaster Kags',x:3373,y:3080,p:0,kb:'7',rq:'Portmaster Kags'},
+    {n:'Jaldraocht',src:'Portmaster Kags',x:3254,y:2882,p:0,kb:'4',rq:'Portmaster Kags'},
+    {n:'Nardah',src:'Portmaster Kags',x:3373,y:2931,p:0,kb:'5',rq:'Portmaster Kags'},
+    {n:'Pollnivneach',src:'Portmaster Kags',x:3377,y:2962,p:0,kb:'6',rq:'Portmaster Kags'},
+    {n:'Sunken Pyramid',src:'Portmaster Kags',x:3032,y:2672,p:0,kb:'2',rq:'Portmaster Kags'},
+    {n:'Shattered Worlds',src:'Shattered Worlds teleport',x:2675,y:2673,p:0,rq:'Shattered Worlds teleport',item:50218},
+    {n:'Mandrith',src:'Slayer cape',x:3050,y:3949,p:0,kb:'1',rq:'Slayer cape',item:9786},
+    {n:'Camelot (Seer\'s Village)',src:'Standard Spellbook',x:2704,y:3481,p:0,rq:'spellbook',sp:10370},
+    {n:'Wendlewick',src:'Standard Spellbook',x:3479,y:1552,p:0,rq:'spellbook',sp:10370},
+    {n:'Wendlewick (Marigold Farm)',src:'Standard Spellbook',x:3560,y:1486,p:0,rq:'spellbook',sp:10370},
+    {n:'Wizard\'s Tower',src:'Stardust',x:3102,y:3140,p:2,rq:'Stardust',item:13727},
+    {n:'Forintry Teleport',src:'Teleport scrolls',x:3301,y:3548,p:0,kb:'6',rq:'Forinthry teleport scroll / Globetrotter arm guards',ico:19477,item:42103},
+
+    // Underworld Grimoire (City of Um). TIER is readable two ways (clientscript-17826):
+    //   worn pocket slot (94:17) item 55675/6/7/8 = tier 1/2/3/4, or the unlock varbits
+    //   vb 53990/53991/53992/53993 == 2 for tier 1/2/3/4 (highest that reads 2 wins).
+    //   Tier 4 additionally needs achievement 3468 'Underworld Set Tasks - Elite'.
+    // Teleport access by tier: 1 = 10 Um smithy/day; 2 = unlimited smithy + 10 ritual
+    // site/day; 3 = unlimited ritual site. Gated on the tier's own unlock varbit.
+    {n:'Um Smithy',src:'Underworld Grimoire',x:1145,y:1805,p:1,kb:'1,1',ico:55675,
+      rq:'Underworld Grimoire 1 (10/day, unlimited from tier 2)',
+      req:{ vb:53990, vbVal:2, vbWhy:'needs Underworld Grimoire 1 (Um tasks)' }},
+    {n:'Um Ritual Site',src:'Underworld Grimoire',x:1038,y:1760,p:1,kb:'1,2',ico:55676,
+      rq:'Underworld Grimoire 2 (10/day, unlimited from tier 3)',
+      req:{ vb:53991, vbVal:2, vbWhy:'needs Underworld Grimoire 2 (hard Um tasks)' }},
+    {n:'Water',src:'Wicked hood, rune ethereal outfit',x:3183,y:3156,p:0,kb:'Water',rq:'Wicked hood',item:22332},
+    {n:'Aminishi Docks',src:'arcsailing',x:2062,y:11271,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Cyclosis Docks',src:'arcsailing',x:2256,y:11180,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Goshima Docks',src:'arcsailing',x:2453,y:11591,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Port Sarim',src:'arcsailing',x:3052,y:3246,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Tua Leit Docks',src:'arcsailing',x:1761,y:12010,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Turtle Islands Docks',src:'arcsailing',x:2242,y:11424,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Uncharted Isle',src:'arcsailing',x:1203,y:7374,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Waiko Docks',src:'arcsailing',x:1810,y:11652,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
+    {n:'Whale\'s Maw Docks',src:'arcsailing',x:2011,y:11782,p:0,rq:'Quartermaster Gully (Port Sarim)/Quartermaster Gully (Menaphos)/Quartermaster Gully (Tuaei Leit)/Quartermaster Gully (Whale\'s Maw)/Quartermaster Gully (Waiko)/Quartermaster Gully (Turtle Islands)/Quartermaster Gully (Aminishi)/Quartermaster Gully (Cyclosis)/Quartermaster Gully (Goshima)'},
   ];
   // Spell-teleport gates, extracted from the spells' own cache structs (param 2941 =
   // destination coordgrid, 2871 = spellbook, 2807 = level, rune counts via the param map
@@ -2619,7 +3021,11 @@
   // Extra_ints (live-verified via the hover inspector). itemId -> {key}. Display
   // ONLY - TokKul-Zo charges are spent by COMBAT, not teleporting (user-corrected
   // 2026-08-02), so charges never gate a teleport.
-  const TELE_PASSAGE_IDS = [44542, 44543, 44544, 44545];   // attuned Passage of the abyss
+  // Attuned Passage of the abyss. The RECOLOURS are separate item ids (item params
+  // 6846/6847/6848 on 44543 = 46318/46319/53925) - leaving them out meant a recoloured
+  // passage was invisible, so its stored jewellery read as "not held" (owner-caught while
+  // carrying two passages, only one of which was recognised).
+  const TELE_PASSAGE_IDS = [44542, 44543, 44544, 44545, 46318, 46319, 53925];
   const TELE_PASSAGE_ENUM = 15018;                        // slot index -> jewellery name
   // The three Dark Facets are three consecutive bits, in the same order as the items
   // (53921 Grace, 53923 Luck, 53925 Passage). The Passage bit was verified live, and it
@@ -2683,7 +3089,8 @@
   // key = where the charge count sits in the item's own Extra_ints; caps are PER VARIANT,
   // since a charged variant holds many full pieces (the (c) amulet takes 20 x 5 = 100).
   const TELE_ITEM_CHARGES = {
-    23643: { key: 0, caps: {} },                                  // TokKul-Zo (Charged)
+    // TokKul-Zo is deliberately absent: its charges are spent in COMBAT, not by teleporting,
+    // so printing them beside a teleport reads as a limit that does not exist.
     39387: { key: 0, caps: { 39385: 5, 39387: 5, 41066: 100 } },  // Enlightened amulet / (new) / (c)
     // Spirit tree re-rooter counts USES SPENT, packed at bit 5 of key 0 (live: 32/64/96 for
     // 1/2/3 used) and reported as "10 - used". shift/mask carve the field out of the key.

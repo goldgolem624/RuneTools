@@ -260,9 +260,24 @@
   }
   // Auto-selects a held clue so the solver always shows one. Puzzle clues (slider / lockbox /
   // towers) list here too and route through selectClue.
+  // Clue ids seen in the backpack, so a clue LEAVING it can be detected (= completed).
+  // Confirmed over two polls: a single empty read during a bridge hiccup must not wipe the
+  // eliminations of a scan you are still solving.
+  const clueHeldSeen = new Set(), clueGoneCnt = {};
   function renderClueHeld() {
     const el = $('clueHeld'); if (!el) return;
     const hl = clueHeldList();
+    {
+      const now = new Set(hl.map(c => c.i));
+      for (const id of now) { clueHeldSeen.add(id); clueGoneCnt[id] = 0; }
+      for (const id of [...clueHeldSeen]) {
+        if (now.has(id)) continue;
+        clueGoneCnt[id] = (clueGoneCnt[id] || 0) + 1;
+        if (clueGoneCnt[id] < 2) continue;
+        clueHeldSeen.delete(id); delete clueGoneCnt[id];
+        try { if (typeof scanElimClearFor === 'function') scanElimClearFor(id); } catch (e) {}
+      }
+    }
     const list = (clueLiveTier < 0) ? hl : hl.filter(c => c.t === clueLiveTier);
     if (!list.some(c => c.i === activeClueId)) {                  // keep the active clue if in view, else pick the first
       const want = list.length ? list[0].i : -1;

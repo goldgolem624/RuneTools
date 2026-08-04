@@ -140,6 +140,11 @@
   };
   const SOIL_CAP = [50, 100, 250, 500];
   let storageData = null, storageVbMap = null, storageSig = '', storageFetching = false;
+  // Runecrafting pouches never degrade while Conservation of Energy is harnessed
+  // (panel_archresearch.js reads the live relic slots).
+  function storNoDecay() {
+    return typeof archRelicActive === 'function' && archRelicActive('Conservation of Energy');
+  }
 
   // varbitMap is keyed by varp -> [[varbitId,lsb,msb],..]; invert to varbitId -> {varp,lsb,msb}.
   function buildVbReverse(vbm) { const m = {}; for (const vp in vbm) for (const d of vbm[vp]) m[d[0]] = { varp: +vp, lsb: d[1], msb: d[2] }; return m; }
@@ -219,6 +224,9 @@
       let eq = null; try { eq = JSON.parse(await bridge().equipment(myPid())); } catch (e) {}   // worn items (rune pouch / quiver are equipped)
       (eq && eq.items || []).forEach(it => held.add(it[1]));
       await ensureVbMap();
+      // Harnessed relic powers gate what some rows should SAY (pouch decay); own throttle,
+      // so calling it here is a no-op most polls and needs no tab to have been opened.
+      try { if (typeof archRelicEnsure === 'function') await archRelicEnsure(); } catch (e) {}
       const varpSet = new Set();
       const addVb = (vb) => { const r = storageVbMap && storageVbMap[vb]; if (r) varpSet.add(r.varp); };
       STORAGE.ore.vb.forEach(x => addVb(x[1]));
@@ -297,7 +305,10 @@
             cnt > 0 ? ty[1] : 0]);
           continue;
         }
-        const cnt = readVb(cntVb, vp) || 0; if (cnt <= 0) continue;
+        // A HELD pouch stays rendered at count 0: dropping the cell made the strip
+        // reflow on every fill/empty cycle mid-training (owner-reported jitter).
+        const cnt = readVb(cntVb, vp) || 0;
+        if (cnt <= 0 && !held.has(pouchIcon)) continue;
         const ty = essType(readVb(typeVb, vp) || 0);
         // decayVarp p[5] / decayMax p[6]; 0 = no decay (Small/Massive/Expansive).
         const decayVarp = p[5], decayMax = p[6];
@@ -305,10 +316,15 @@
         if (decayVarp && decayMax) {
           const wear = (vp[decayVarp] || 0) >>> 0;
           const pct = Math.max(0, Math.floor((decayMax - Math.min(wear, decayMax)) * 100 / decayMax));
-          durStr = 'Durability ' + pct + '% (' + (decayMax - wear) + ' / ' + decayMax +
-                   ' · varp ' + decayVarp + '; 100% if Conservation of Energy relic active)';
+          // Conservation of Energy stops pouch decay outright, so the wear varp is moot while
+          // it is harnessed. The relic state is READ (varp 12086 + its preset's varbits), so
+          // state the effect as fact instead of hedging "100% if the relic is active".
+          durStr = storNoDecay()
+            ? 'Durability 100% - Conservation of Energy is harnessed, so pouches do not degrade'
+            : 'Durability ' + pct + '% (' + (decayMax - wear) + ' / ' + decayMax + ' · varp ' + decayVarp + ')';
         }
-        essItems.push([pname + ' · ' + ty[0], cnt, pouchIcon, 'count = ' + vbSrc(cntVb) + ' · type = ' + vbSrc(typeVb), cap, durStr, ty[1]]);
+        essItems.push([pname + (cnt > 0 ? ' · ' + ty[0] : ''), cnt, pouchIcon,
+          'count = ' + vbSrc(cntVb) + ' · type = ' + vbSrc(typeVb), cap, durStr, cnt > 0 ? ty[1] : 0]);
       }
       if (essItems.length) out.essence = { name: '', essence: true, items: essItems };
       const clueItems = fromVarp(STORAGE.clue.varp);
@@ -394,7 +410,9 @@
     add('Sandy Sand', d && d.sandy);
     add('Passage of the abyss', d && d.passage);
     const boxItems = (b) => b.items || [];
-    const sig = list.map(([t, b]) => t + '|' + (b.name || '') + '|' + (b.cap || '') + '|' + boxItems(b).map(it => it[0] + ':' + it[1] + ':' + (it[2] || 0)).join(',')).join(';');
+    // it[5] (durability text) is part of the signature so wear ticks - and the relic
+    // flipping pouch decay off - actually repaint instead of waiting for a count change.
+    const sig = storNoDecay() + '|' + list.map(([t, b]) => t + '|' + (b.name || '') + '|' + (b.cap || '') + '|' + boxItems(b).map(it => it[0] + ':' + it[1] + ':' + (it[2] || 0) + ':' + (it[5] || '')).join(',')).join(';');
     if (sig === storageSig) { sizeAllIcons(); return; }
     storageSig = sig;
     const scrollAt = c.scrollTop;   // a rebuild resets the .content scroll; restored below
@@ -419,11 +437,16 @@
       cell.dataset.tip = name + '\n' + count.toLocaleString() + (cap ? ' / ' + cap : '') + (dur ? '\n' + dur : '') + (src ? '\n' + src : '');
       const mkIcon = (id, cls) => { const u = id ? resolveIcon(id) : ''; const e = document.createElement('div'); e.className = 'bank-icon ' + cls; if (u) { e.dataset.itemId = String(id); setIconBg(e, u); } return e; };
       cell.appendChild(mkIcon(pouchId, 'stor-epouch'));
-      if (essId) {
-        const ar = document.createElement('span'); ar.className = 'stor-earrow'; ar.textContent = '›'; cell.appendChild(ar);
-        cell.appendChild(mkIcon(essId, 'stor-eess'));
-      }
+      // The arrow + essence slot ALWAYS renders (empty box when essId 0): appearing and
+      // vanishing with the contents resized the cell every fill/empty (owner-reported).
+      const ar = document.createElement('span'); ar.className = 'stor-earrow'; ar.textContent = '›';
+      if (!essId) ar.style.opacity = '0.35';
+      cell.appendChild(ar);
+      cell.appendChild(mkIcon(essId, 'stor-eess'));
       const cz = document.createElement('span'); cz.className = 'stor-ecap';
+      cz.style.fontVariantNumeric = 'tabular-nums';
+      // Reserve the full-count width ("12 / 12") so 1- vs 2-digit counts don't shift the row.
+      if (cap) cz.style.minWidth = (2 * String(cap).length + 3) + 'ch';
       cz.innerHTML = count.toLocaleString() + (cap ? ' <span class="cap">/ ' + cap + '</span>' : '');
       cell.appendChild(cz);
       const dm = dur.match(/(\d+)%/); if (dm) { const db = document.createElement('span'); db.className = 'stor-edur'; db.textContent = dm[1] + '%'; cell.appendChild(db); }

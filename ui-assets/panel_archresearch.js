@@ -19,6 +19,63 @@ const ARCH_CULTURES = [
   [3, 'Dragonkin',    10575], [4, 'Guthixian',   3016], [5, 'Saradominist', 14086],
   [6, 'Zamorakian',   14087], [7, 'Zarosian',   14088],
 ];
+// Active monolith relic powers (CS2 clientscript-14862/19772/14614/14596, decoded 2026-08-04):
+// varp 12086 = the active PRESET (0-3); the 3 harnessed powers of a preset are varbits laid
+// out in a stride-4 block, vb = 57207 + preset*4 + slot(0-2). Each varbit's VALUE is a key
+// into DBTable 94 (col 0 = key, col 1 = the power's name string) - resolved live, no bake.
+const ARCH_RELIC_PRESET_VP = 12086, ARCH_RELIC_VB_BASE = 57207, ARCH_RELIC_SLOTS = 3;
+function archRelicVbs(preset) {
+  const out = [];
+  for (let s = 0; s < ARCH_RELIC_SLOTS; s++) out.push(ARCH_RELIC_VB_BASE + preset * 4 + s);
+  return out;
+}
+let archRelicNames = null;   // db94 key -> power name, built once from the cache
+let archRelicPreset = 0, archRelicVals = [];   // active preset + its 3 varbit values
+let archRelicAt = 0, archRelicBusy = false;
+
+// Relic-only read, split out of archResearchEnsure so ANY panel can ask "is this relic
+// harnessed?" cheaply (one varp + three varbits; names cached after the first call).
+async function archRelicEnsure(force) {
+  if (archRelicBusy || !bridge()) return;
+  const now = Date.now();
+  if (!force && now - archRelicAt < 1500) return;
+  archRelicBusy = true; archRelicAt = now;
+  try {
+    if (archRelicNames === null && bridge().dbRows) {
+      try {
+        const rows = JSON.parse(await bridge().dbRows(94) || 'null');
+        if (Array.isArray(rows) && rows.length) {
+          const map = {};
+          for (const r of rows) {
+            const key = (r.i && r.i['0'] && r.i['0'][0] !== undefined) ? (r.i['0'][0] | 0) : (r.f | 0);
+            const nm = r.s && r.s['1'] && r.s['1'][0];
+            if (nm) map[key] = nm;
+          }
+          archRelicNames = map;
+        }
+      } catch (e) { /* retry next call until the cache is open */ }
+    }
+    try {
+      const pv = JSON.parse(await bridge().varps(myPid(), String(ARCH_RELIC_PRESET_VP)));
+      archRelicPreset = (pv && pv[ARCH_RELIC_PRESET_VP] | 0) || 0;
+    } catch (e) {}
+    if (bridge().varbits) {
+      try {
+        const vbs = archRelicVbs(archRelicPreset);
+        const vb = JSON.parse(await bridge().varbits(myPid(), vbs.join(',')) || 'null');
+        archRelicVals = vbs.map(id => (vb && vb[id]) | 0);
+      } catch (e) {}
+    }
+  } finally { archRelicBusy = false; }
+}
+// Is a named relic power harnessed right now? Panels use this to state effects as FACT
+// instead of hedging ("100% if Conservation of Energy is active").
+function archRelicActive(name) {
+  if (!name || !archRelicNames) return false;
+  const want = String(name).toLowerCase();
+  return archRelicVals.some(v => v > 0 && String(archRelicNames[v] || '').toLowerCase() === want);
+}
+
 const ARCH_GRP_SITE = 'Dig sites', ARCH_GRP_OTHER = 'Other research';
 let archResCult = null;      // DBRow id -> culture name, built once from the cache enums
 
@@ -56,6 +113,7 @@ async function archResearchEnsure(force) {
       if (d && typeof d === 'object') archResVp = d;
     } catch (e) {}
   } finally { archResBusy = false; }
+  await archRelicEnsure(force);   // active preset + harnessed powers (own throttle)
 }
 
 // bit -> is it set in this varp bank? (banks hold 32 bits each, in order)
@@ -224,4 +282,39 @@ function paintArchResearch() {
   }
   if (!rows.length) html = '<div class="dg-none">Nothing matches that filter.</div>';
   list.innerHTML = html;
+}
+
+// ---- Active Relics tab (Archaeology) -----------------------------------------
+// Its own panel: the monolith's active preset + its 3 harnessed powers, all read via
+// archResearchEnsure() (varp 12086 + varbits 57207+preset*4+slot -> DBTable 94 names).
+async function fetchRelics() {
+  await archRelicEnsure();   // relic-only: archResearchEnsure can early-return on old builds
+  if (activeTab === 'relics') renderRelics();
+}
+let relicsSig = '';
+function renderRelics() {
+  const c = $('content');
+  let wrap = $('relicWrap');
+  if (!wrap) {
+    c.innerHTML = '';
+    wrap = document.createElement('div'); wrap.id = 'relicWrap'; wrap.className = 'pk-wrap';
+    wrap.innerHTML = '<div class="dg-head"><div><div class="dg-title">Active Relics</div>'
+      + '<div class="dg-sub" id="relicSub"></div></div></div><div id="relicList"></div>';
+    c.appendChild(wrap); relicsSig = '';
+  }
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const sig = JSON.stringify([archRelicPreset, archRelicVals, !!archRelicNames]);
+  if (sig === relicsSig) return;
+  relicsSig = sig;
+  const sub = $('relicSub'); if (sub) sub.textContent = 'Monolith preset ' + (archRelicPreset + 1);
+  const list = $('relicList'); if (!list) return;
+  if (!archRelicVals.length) { list.innerHTML = '<div class="stor-empty">Reading the monolith...</div>'; return; }
+  const rows = archRelicVals.map((v, i) => {
+    const nm = v > 0 ? ((archRelicNames && archRelicNames[v]) || ('Power #' + v)) : 'Empty';
+    return '<div class="ar-row ar-' + (v > 0 ? 'report' : 'none') + '">'
+         + '<span class="ar-dot"></span>'
+         + '<span class="ar-name">' + esc(nm) + '</span>'
+         + '<span class="ar-state">Slot ' + (i + 1) + '</span></div>';
+  }).join('');
+  list.innerHTML = '<div class="ar-list">' + rows + '</div>';
 }

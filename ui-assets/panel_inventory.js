@@ -117,7 +117,9 @@
         const amt = fmtAmt(stack);
         if (amt.t) { const a = document.createElement('span'); a.className = 'bank-amt' + (amt.c ? ' ' + amt.c : ''); a.textContent = amt.t; cell.appendChild(a); }
         cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() + '\nSlot ' + slot;
-        cell.dataset.ei = '93:' + id;   // hover loads the item's live Extra_ints into the tip
+        // slot included: two stacks of one id hold DIFFERENT instance vars, and an
+        // id-only read always returned the first slot's (owner-caught on two passages).
+        cell.dataset.ei = '93:' + id + ':' + slot;
       }
       grid.appendChild(cell);
     }
@@ -171,7 +173,7 @@
           const amt = fmtAmt(stack);
           if (amt.t) { const a = document.createElement('span'); a.className = 'bank-amt' + (amt.c ? ' ' + amt.c : ''); a.textContent = amt.t; cell.appendChild(a); }
           cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + (stack > 1 ? '\nx' + stack.toLocaleString() : '') + '\n' + label;
-          cell.dataset.ei = '94:' + id;
+          cell.dataset.ei = '94:' + id + ':' + slot;
         } else {
           cell.classList.add('eq-empty');
           cell.dataset.tip = label + '\n(empty)';

@@ -275,7 +275,10 @@ std::string OpenContainersJson(std::uint32_t pid);
 // {"pens":[{"id":N,"open":bool,"cached_at":sec,"animals":[[item,trait,"species"],..]},..]}
 std::string PofJson(std::uint32_t pid);
 // Per-slot Extra_ints of an item -> {"present":bool,"key":[..],"pos":[..]} (base gem bag = packed counts).
-std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id);
+// slot < 0 = the first slot holding item_id (legacy behaviour). Pass a slot to read THAT
+// slot: two stacks of the same id (e.g. two Passages of the abyss) carry different
+// per-instance values, and an id-only lookup always returned the first one's.
+std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, int slot = -1);
 
 // Read player varps live from the MainData+0x36040 hashmap. `ids_csv` = comma-
 // separated varp ids; returns {"<id>":value,..}. Unset varps read back as 0 (engine

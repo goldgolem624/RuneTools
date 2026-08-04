@@ -119,7 +119,7 @@
             const slot = it[0], iid = it[1], stack = it[2] || 0, name = it[3] || ('Item #' + it[1]);
             const cell = document.createElement('div'); cell.className = 'bank-cell stor-cell';
             cell.dataset.tip = name + '\nID ' + iid + '\nx' + stack.toLocaleString() + '\nSlot ' + slot;
-            cell.dataset.ei = id + ':' + iid;
+            cell.dataset.ei = id + ':' + iid + ':' + slot;
             const url = iid ? resolveIcon(iid) : '';
             if (url) { const ico = document.createElement('div'); ico.className = 'bank-icon'; ico.dataset.itemId = String(iid); setIconBg(ico, url); cell.appendChild(ico); }
             else { const tn = document.createElement('div'); tn.className = 'stor-tn'; tn.textContent = name; cell.appendChild(tn); }
@@ -145,7 +145,11 @@
     try {
       const parts = cell.dataset.ei.split(':');
       if (!bridge() || !bridge().itemExtraInts || !myPid()) return;
-      const r = JSON.parse(await bridge().itemExtraInts(myPid(), +parts[0], +parts[1])) || {};
+      // parts[2] = the SLOT. Two stacks of one id carry different instance vars, so an
+      // id-only read showed the FIRST slot's values on every one of them (owner-caught
+      // hovering two Passages of the abyss). -1 keeps the old first-match behaviour.
+      const eiSlot = (parts.length > 2 && parts[2] !== '') ? +parts[2] : -1;
+      const r = JSON.parse(await bridge().itemExtraInts(myPid(), +parts[0], +parts[1], eiSlot)) || {};
       const k = r.key || {};
       // A wall of "0=0 1=0 2=0 ..." buries the one key that carries anything. Lead with the
       // keys that HOLD a value, one per line, and fold the empty ones into a single tail.
@@ -159,8 +163,40 @@
         line = 'Extra_ints:\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
         if (zero.length) line += '\n   (' + zero.length + ' other key' + (zero.length === 1 ? '' : 's') + ' 0)';
       }
-      const base = cell.dataset.tip.split('\nExtra_ints')[0];
-      cell.dataset.tip = base + '\n' + line;
+      // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
+      // count (varobj 18550), key 3 = stored-spec index (varobj 47702) resolved through
+      // enum 15970 -> weapon obj. Charge permille = 1000 - wear/(max/1000), max = item
+      // param 3385 (100,000 on EoF). Owner-validated: wear 669 + idx 76 = 99.4% Zamorak staff.
+      let eof = '';
+      if (/essence of finality/i.test(cell.dataset.tip)) {
+        try {
+          const wear = k[0] | 0, idx = k[3] | 0;
+          let pct = '';
+          try {
+            const pp = JSON.parse(await bridge().itemParams(+parts[1]) || 'null');
+            const mx = (pp && pp.ints && pp.ints['3385']) | 0;
+            if (mx >= 1000) {
+              const pm = wear === 0 ? 1000 : Math.max(0, Math.min(999, 1000 - Math.floor(wear / (mx / 1000))));
+              pct = (pm / 10).toFixed(1) + '% (' + wear.toLocaleString() + '/' + mx.toLocaleString() + ' wear)';
+            }
+          } catch (e5) {}
+          let wname = '';
+          if (idx > 0 && bridge().enumInfo) {
+            try {
+              const en = JSON.parse(await bridge().enumInfo(15970) || '{}');
+              const wid = en[idx] | 0;
+              if (wid > 0) {
+                const ii = JSON.parse(await bridge().itemInfo(wid) || 'null');
+                wname = (ii && ii.name) ? ii.name : ('item ' + wid);
+              }
+            } catch (e6) {}
+          }
+          eof = '\nEoF: ' + (wname ? 'stored ' + wname : idx > 0 ? 'stored spec index ' + idx : 'no spec stored')
+              + (pct ? '\nCharge: ' + pct : '');
+        } catch (e4) {}
+      }
+      const base = cell.dataset.tip.split('\nEoF:')[0].split('\nExtra_ints')[0];
+      cell.dataset.tip = base + eof + '\n' + line;
       if (typeof showTipFor === 'function' && cell.matches(':hover')) showTipFor(cell);
     } catch (e2) {} finally { setTimeout(() => { cell._eiBusy = 0; }, 800); }
   });

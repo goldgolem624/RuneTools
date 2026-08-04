@@ -1856,7 +1856,7 @@ std::string PofJson(std::uint32_t pid) {
 // perks reader uses: entry+0x30 -> slot*0x38 -> {ptrArr@+0x10, count@+0x18}; each ptr = key@+0,
 // value@+8). Returns {"present":bool,"key":[v@key0..15],"pos":[v in pointer order]} so callers can use
 // whichever indexing is correct (base gem bag = Extra_ints[1] = packed sapphire/em/ruby/diamond).
-std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id) {
+std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, int slot_want) {
     const char* kAbsent = "{\"present\":false,\"key\":[],\"pos\":[]}";
     auto ps = snap_proc(pid);
     if (!ps) return kAbsent;
@@ -1880,6 +1880,7 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id) 
         int nslot = (int)((*iend - *istart) / 0x8);
         if (nslot > kMaxBankSlots) nslot = kMaxBankSlots;
         for (int s = 0; s < nslot; ++s) {
+            if (slot_want >= 0 && s != slot_want) continue;   // read THIS slot's instance vars
             if (rpm<std::int32_t>(h, *istart + (std::uint64_t)s * 0x8).value_or(0) != item_id) continue;
             std::uint64_t X = *xstart + (std::uint64_t)s * 0x38;
             int count = rpm<std::int32_t>(h, X + 0x18).value_or(0);
@@ -1895,7 +1896,9 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id) 
                     std::snprintf(buf, sizeof(buf), "%s%d", np ? "," : "", v); pos += buf; ++np;
                 }
             }
-            std::string out = "{\"present\":true,\"key\":[";
+            char shdr[48];
+            std::snprintf(shdr, sizeof(shdr), "{\"present\":true,\"slot\":%d,\"key\":[", s);
+            std::string out = shdr;
             for (int k = 0; k < 16; ++k) { std::snprintf(buf, sizeof(buf), "%s%d", k ? "," : "", byKey[k]); out += buf; }
             out += "],\"pos\":["; out += pos; out += "]}";
             return out;
@@ -3358,6 +3361,39 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         // tile, so the panel must not treat every special the same way.
                         std::snprintf(sbuf, sizeof(sbuf),
                             "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":%d,\"uid\":%d,\"w\":1}", sx4, sy4, pl4, gfx, uid4);
+                        specials += sbuf; ++sc4;
+                    }
+                    continue;
+                }
+                if (type == 13) {
+                    // Type-13 world entities are ground MARKERS. Two distinct classes share the
+                    // type (live-probed, different vtables at sub+0x00: RVA 0xB5ED70 vs 0xB5E878):
+                    //   - the CLUE-SCAN coordinate marker, which stores its own destination as a
+                    //     FINE position at sub+0x74 (x) / sub+0x7C (y) decoding to exactly its tile
+                    //   - the walk-destination marker (where you clicked), whose 0x74/0x7C are
+                    //     0.0 / NaN.
+                    // Classified by that DATA SHAPE, not by the vtable RVA, so a game build that
+                    // moves the vtable cannot silently mislabel them. The scan marker's tile IS
+                    // the dig coordinate, so it solves a scan outright.
+                    auto ex = rpm<float>(h, *ep + 0x30);
+                    auto ey = rpm<float>(h, *ep + 0x38);
+                    int sx13 = ex ? (int)(*ex / 512.f) : 0;
+                    int sy13 = ey ? (int)(*ey / 512.f) : 0;
+                    if (sx13 > 0 && sy13 > 0) {
+                        auto dxf = rpm<float>(h, *sec + 0x74);
+                        auto dyf = rpm<float>(h, *sec + 0x7C);
+                        // NaN fails every comparison, so this also rejects the walk marker's junk.
+                        bool hasDest = dxf && dyf && *dxf > 0.f && *dxf < 1e9f && *dyf > 0.f && *dyf < 1e9f;
+                        int dtx = hasDest ? (int)(*dxf / 512.f) : 0;
+                        int dty = hasDest ? (int)(*dyf / 512.f) : 0;
+                        bool isScan = hasDest && dtx == sx13 && dty == sy13;
+                        int pl13 = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);
+                        if (pl13 < 0 || pl13 > 3) pl13 = 0;
+                        if (sc4) specials.push_back(',');
+                        char sbuf[192];
+                        std::snprintf(sbuf, sizeof(sbuf),
+                            "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":-1,\"t\":13,\"k\":\"%s\",\"w\":1}",
+                            sx13, sy13, pl13, isScan ? "scan" : "dest");
                         specials += sbuf; ++sc4;
                     }
                     continue;

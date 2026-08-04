@@ -346,6 +346,10 @@
           const full = t[0] + ':' + t[1] + (t[2] >= 0 ? ':' + t[2] : '');  // full path on hover
           // text: strip RS3 colour tags, then HTML-escape for safe display
           const tx = (w.x || '').replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').trim();
+          // Tip copy keeps the game's LINE BREAKS (<br> -> newline) before the other tags
+          // are stripped, so a multi-line scroll/dialogue reads as written.
+          const txFull = (w.x || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')
+                                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').trim();
           // absolute screen rect (only known for movable panels whose position varc is resolved, e.g.
           // dialogues / inventory) -> hovering the row boxes the widget in-game
           const a = w.a;
@@ -370,7 +374,10 @@
                       ? '<span class="if-modelico" data-model="' + ifaceDefModels[g.id][t[1]] + '"></span><span class="if-mdl">model ' + ifaceDefModels[g.id][t[1]] + '</span>'
                       : '<span class="if-dyn">dynamic</span>')
                    : ''))
-            + (tx ? '<span class="if-txt">' + tx + '</span>' : '')
+            // The row ellipsizes long strings, so carry the FULL text in a tip - scroll/
+            // dialogue widgets are exactly the ones worth reading in full. Newlines are
+            // kept (the tip renders them), and quotes escaped for the attribute.
+            + (tx ? '<span class="if-txt" data-tip="' + txFull.replace(/"/g, '&quot;').replace(/\n/g, '&#10;') + '">' + tx + '</span>' : '')
             + '<span class="if-rect">' + r[0] + ',' + r[1] + ' · ' + r[2] + '×' + r[3] + '</span></div>';
         }
       }

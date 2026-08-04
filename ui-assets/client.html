@@ -146,7 +146,20 @@
 
   /* min-width: 0 is load-bearing: without it this flex child refuses to shrink below its
      widest descendant, so fixed-width content (metronome, clock) slides UNDER the rail. */
-  .content { flex: 1; padding: 18px 22px; overflow-y: auto; overflow-x: hidden; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  /* overflow-y: SCROLL (not auto) on purpose: panels rebuild their DOM wholesale on data
+     changes, and with auto the scrollbar vanished for the empty frame and reappeared after -
+     a width change that reflowed every flexible cell twice per repaint (the "panel zooms
+     in/out when my money pouch ticks" bug). A permanently reserved scrollbar lane keeps the
+     content width constant no matter what the repaint does. (scrollbar-gutter would be the
+     modern fix; this WebKit predates it.) */
+  .content { flex: 1; padding: 18px 22px; overflow-y: scroll; overflow-x: hidden; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  .content::-webkit-scrollbar { width: 10px; }
+  .content::-webkit-scrollbar-track { background: transparent; }
+  .content::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 5px;
+    border: 2px solid transparent; background-clip: padding-box;
+  }
+  .content::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: padding-box; }
   /* Sub-tab strip for consolidated panels: lives OUTSIDE #content so panel repaints never wipe it. */
   #subbar { flex: none; display: flex; gap: 4px; padding: 8px 22px 0; flex-wrap: wrap; }
   #subbar button { font: inherit; font-size: 11px; padding: 4px 11px; border-radius: 999px; cursor: pointer;
@@ -410,14 +423,18 @@
     overflow-y: auto;
     overflow-x: hidden;
   }
+  /* auto-fit, NOT a hard 3 columns: total XP is 13 characters at 4.7B and a fixed third of a
+     narrow panel clipped it. Tracks now drop to 2 (or 1) as the panel narrows, and auto-fit
+     collapses the spare tracks so 4 tiles still span the full width when there is room. */
   .skill-stats {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
     gap: 5px;
     margin-top: 6px;
     flex: 0 0 auto;
   }
   .skill-stat {
+    min-width: 0;
     display: flex; flex-direction: column; align-items: center; gap: 1px;
     padding: 5px 4px;
     background: var(--bg-elev);
@@ -425,7 +442,12 @@
     border-radius: 6px;
   }
   .skill-stat .ss-label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
-  .skill-stat .ss-val   { color: var(--accent-hi); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; }
+  .skill-stat .ss-val   { color: var(--accent-hi); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600;
+                          max-width: 100%; white-space: nowrap; }
+  /* Long figures (total XP past a billion) step down instead of being clipped; the exact
+     value is always in the tile's tooltip either way. */
+  .skill-stat .ss-val.ss-long  { font-size: 11px; letter-spacing: -0.2px; }
+  .skill-stat .ss-val.ss-long2 { font-size: 9.5px; letter-spacing: -0.3px; }
   .skill-stat .ss-virtual { color: var(--text-dim); font-size: 9.5px; font-weight: 600;
     font-variant-numeric: tabular-nums; white-space: nowrap; letter-spacing: .02em; }
   .skill-cell {
@@ -1049,8 +1071,13 @@
   .stor-cell .bank-amt { font-size: 11px; top: 2px; left: 3px; }
   .stor-cell .stor-tn { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
                         text-align: center; font-size: 8.5px; line-height: 1.05; color: var(--text-dim); padding: 3px 2px 12px; overflow: hidden; }
-  .stor-egrid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-  .stor-ecell { display: flex; align-items: center; gap: 5px; padding: 4px 9px 4px 5px;
+  /* GRID, not flex-wrap: the cells used to be content-sized with the default flex-shrink,
+     so every value change (count digits, durability chip, essence icon appearing) altered
+     cell widths and re-packed the row - the panel visibly "zoomed" on each repaint while
+     runecrafting. Fixed tracks make cell geometry depend ONLY on the container width. */
+  .stor-egrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+                gap: 6px; margin-top: 4px; }
+  .stor-ecell { display: flex; align-items: center; gap: 5px; padding: 4px 9px 4px 5px; min-width: 0;
                 background: var(--bg); border: 1px solid var(--border); border-radius: 9px; }
   .stor-ecell .bank-icon { position: relative; inset: auto; flex: 0 0 30px; width: 30px; height: 30px; padding-bottom: 0;
                            background-repeat: no-repeat; background-position: center; background-size: contain; }
@@ -1250,7 +1277,12 @@
   .clue-map-stage::-webkit-scrollbar { width: 0; height: 0; display: none; }   /* pan by dragging, no bars */
   .clue-map-stage.grabbing { cursor: grabbing; }
   .clue-map-inner { position: relative; width: 100%; height: 100%; }
-  .clue-map { display: block; width: 100%; height: 100%; }
+  /* The canvas is rendered at the zoomed size (see the zoomPx maths in the draw paths), but a
+     redraw is coalesced, so between the zoom gesture and the redraw the browser stretches the
+     old bitmap. Nearest-neighbour keeps that interim frame CRISP instead of smearing the
+     terrain and the 1 px grid lines into a blur. */
+  .clue-map { display: block; width: 100%; height: 100%;
+              image-rendering: -webkit-optimize-contrast; image-rendering: pixelated; }
   .clue-map-pulse { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; pointer-events: none; }
   .clue-map-pulse::before, .clue-map-pulse::after { content: ''; position: absolute; inset: 0; border-radius: 50%;
               border: 2px solid rgba(255,45,149,0.9); box-shadow: 0 0 4px 1px rgba(0,0,0,0.6); animation: cluePulse 1.6s ease-out infinite; }
@@ -1690,6 +1722,7 @@
     { id: 'materials', label: 'Material Storage', cat: 'Archaeology', icon: '<path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>' },
     { id: 'archresearch', label: 'Research', cat: 'Archaeology', icon: '<path d="M4 5h11l5 5v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M15 5v5h5"/><path d="M7 13h8M7 16h5"/>' },
     { id: 'archcol',  label: 'Artefact Collections', cat: 'Archaeology', icon: '<path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M6 9.5v5l6 3 6-3v-5"/><path d="M12 12v8"/>' },
+    { id: 'relics',   label: 'Active Relics', cat: 'Archaeology', icon: '<path d="M12 2l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z"/>' },
     { id: 'archshop', label: 'Guild Shop', cat: 'Archaeology', icon: '<path d="M4 9 5.5 4h13L20 9"/><path d="M4 9h16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M5.5 13v7h13v-7"/><path d="M9.5 20v-4h5v4"/>' },
     // World
     { id: 'worldmap', label: 'World Map', cat: 'World', icon: '<path d="M9 5 3 7v12l6-2 6 2 6-2V5l-6 2-6-2z"/><path d="M9 5v12M15 7v12"/><circle cx="12" cy="11" r="1.6"/>' },
@@ -2677,7 +2710,7 @@
     { id: 'achieve', label: 'Achievements',   cat: 'Achievements', tabs: ['achievements', 'combatmastery', 'areatasks', 'gimtasks'], subs: ['Achievements', 'Combat Mastery', 'Area Tasks', 'GIM Journey'] },
     { id: 'collect', label: 'Collection Log', cat: 'Collections', tabs: ['collections', 'pets', 'farmcol', 'bosses', 'archcol'], subs: ['Collections', 'Pets', 'Farm Breeds', 'Boss KC', 'Artefacts'] },
     { id: 'cluehub', label: 'Clues',          cat: 'Clues',       tabs: ['clues', 'hideyholes', 'globetrotter', 'cluestats'],    subs: ['Clue Guide', 'Hidey-holes', 'Globetrotter', 'Stats'] },
-    { id: 'arch',    label: 'Archaeology',    cat: 'Archaeology', tabs: ['archmysteries', 'artefacts', 'mystfocus', 'materials', 'archresearch', 'archshop'], subs: ['Mysteries', 'Artefacts', 'Focused', 'Materials', 'Research', 'Guild Shop'] },
+    { id: 'arch',    label: 'Archaeology',    cat: 'Archaeology', tabs: ['archmysteries', 'artefacts', 'mystfocus', 'materials', 'archresearch', 'relics', 'archshop'], subs: ['Mysteries', 'Artefacts', 'Focused', 'Materials', 'Research', 'Relics', 'Guild Shop'] },
     { id: 'banks',   label: 'Banks',          cat: 'Items',       tabs: ['bank', 'metalbank', 'groupbank', 'baitbox'],           subs: ['Bank', 'Metal Bank', 'Group Bank', 'Bait Box'] },
     { id: 'inv',     label: 'Inventory',      cat: 'Items',       tabs: ['inventory', 'equipment'],                              subs: ['Backpack', 'Equipment'] },
     { id: 'economy', label: 'Economy',        cat: 'Items',       tabs: ['exchange', 'currencies', 'shopcaps'],                  subs: ['Grand Exchange', 'Currencies', 'Shop Caps'] },
@@ -2763,6 +2796,7 @@
     if (id === 'familiar') { famSig = ''; fetchFamiliar(); }
     if (id === 'dung' && DUNG_ENABLED) { dungSig = ''; fetchDungeoneering(); }
     if (id === 'archresearch') { archResSig = ''; fetchArchResearch(); }
+    if (id === 'relics') { relicsSig = ''; fetchRelics(); }
     if (id === 'reputation') { repSig = ''; fetchReputation(); }
     if (id === 'bossinfo') { biSig = ''; fetchBossInfo(); }
     if (id === 'hideyholes') { hideyListSig = ''; fetchHidey(true); }
@@ -2967,6 +3001,17 @@
       else if (e.key === 'ArrowUp')   { e.preventDefault(); if (es.length) { tspSel = (tspSel + es.length - 1) % es.length; tspRenderList(); } }
       else if (e.key === 'Enter')     { e.preventDefault(); if (es[tspSel]) tspJump(es[tspSel]); }
       else if (e.key === 'Escape')    { e.preventDefault(); closeTabSearch(); }
+      else if (e.key === 'Backspace' && (e.ctrlKey || e.altKey)) {
+        // Delete the previous word. The host drops the control character this combo produces
+        // (it would otherwise be typed as a box), so without this the key would do nothing.
+        e.preventDefault();
+        const end = inp.selectionStart === inp.selectionEnd ? inp.selectionStart : inp.selectionEnd;
+        const head = inp.value.slice(0, end);
+        const cut = head.replace(/[^\s]*\s*$/, '');
+        inp.value = cut + inp.value.slice(end);
+        inp.selectionStart = inp.selectionEnd = cut.length;
+        tspSel = 0; tspRenderList();
+      }
       e.stopPropagation();
     });
     box.appendChild(inp); box.appendChild(list);
@@ -3128,6 +3173,7 @@
     if (activeTab === 'familiar') { renderFamiliar(); return; }
     if (activeTab === 'dung') { if (DUNG_ENABLED) renderDungeoneering(); return; }
     if (activeTab === 'archresearch') { renderArchResearch(); return; }
+    if (activeTab === 'relics') { renderRelics(); return; }
     if (activeTab === 'reputation') { renderReputation(); return; }
     if (activeTab === 'bossinfo') { renderBossInfo(); return; }
     if (activeTab === 'portsinfo') { if (typeof renderPortsInfo === 'function') renderPortsInfo(); return; }
@@ -3271,10 +3317,14 @@
       wrap.appendChild(grid);
 
       const stats = document.createElement('div'); stats.className = 'skill-stats';
+      // Long values shrink a step (or two) so they never get clipped in a narrow tile.
       const stat = (label, val) => {
         const d = document.createElement('div'); d.className = 'skill-stat';
+        const s = String(val);
+        const cls = s.length >= 13 ? ' ss-long2' : s.length >= 10 ? ' ss-long' : '';
         d.innerHTML = '<span class="ss-label">' + label + '</span>' +
-                      '<span class="ss-val">' + val + '</span>';
+                      '<span class="ss-val' + cls + '">' + s + '</span>';
+        d.dataset.tip = label + ': ' + s;
         return d;
       };
       stats.appendChild(stat('Combat', combatLevel(sk)));
@@ -3295,8 +3345,9 @@
       stats.appendChild(stat('Total XP', totalXp.toLocaleString()));
       if (totalBonus > 0) {
         const bd = document.createElement('div'); bd.className = 'skill-stat';
+        const bs = String(skillBonusFmt(totalBonus));
         bd.innerHTML = '<span class="ss-label">Bonus XP</span>' +
-                       '<span class="ss-val ss-bonus">' + skillBonusFmt(totalBonus) + '</span>';
+                       '<span class="ss-val ss-bonus' + (bs.length >= 13 ? ' ss-long2' : bs.length >= 10 ? ' ss-long' : '') + '">' + bs + '</span>';
         bd.dataset.tip = 'Total unspent bonus XP across all skills\nSource: the game\'s bonus-xp varps (script11151);\ntotal matches the in-game figure (script9202: per-skill truncation)';
         stats.appendChild(bd);
       }
@@ -3584,6 +3635,7 @@
     if (activeTab === 'familiar') fetchFamiliar();
     if (activeTab === 'dung' && DUNG_ENABLED) fetchDungeoneering();
     if (activeTab === 'archresearch') fetchArchResearch();
+    if (activeTab === 'relics') fetchRelics();
     if (activeTab === 'reputation') fetchReputation();
     if (activeTab === 'bossinfo') fetchBossInfo();
     if (activeTab === 'hideyholes') fetchHidey();

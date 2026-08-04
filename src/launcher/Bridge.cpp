@@ -675,7 +675,10 @@ JSValueRef ItemExtraInts(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     int cid  = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
     int iid  = static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr));
-    return utf8_to_js(ctx, rtx::reader::ItemExtraIntsJson(pid, cid, iid));
+    // Optional 4th arg = the SLOT to read. Two stacks of one id hold different instance
+    // vars, and without this every read returned the first slot's.
+    int slot = (argc >= 4) ? static_cast<int>(JSValueToNumber(ctx, argv[3], nullptr)) : -1;
+    return utf8_to_js(ctx, rtx::reader::ItemExtraIntsJson(pid, cid, iid, slot));
 }
 
 JSValueRef Varps(JSContextRef ctx, JSObjectRef, JSObjectRef,

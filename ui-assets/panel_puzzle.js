@@ -662,23 +662,38 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     for (const click of moves) { const blank = b.indexOf(24); b[blank] = b[click]; b[click] = 24; states.push(b.join(',')); }
     return states;
   }
-  // Lazy solver build: decode the tables and construct the solver on a deferred tick, so
-  // the "loading" banner paints first.
+  // Solver build: decode the tables and construct the solver on a deferred tick, so the
+  // "loading" banner paints first if a box is already open. Normally this has run at
+  // start-up (see below) and opening a box is instant.
   function puzzleEnsureSolver() {
     if (puzzleTableState === 2) return !!puzzleSolver;
     if (puzzleTableState === 1) return false;
     puzzleTableState = 1;
     setTimeout(function () {
+      let reachedBridge = true;
       try {
-        const dec = name => { const b64 = (bridge() && bridge()[name]) ? bridge()[name]() : ''; if (!b64) return null;
+        const dec = name => { const fn = bridge() && bridge()[name]; if (!fn) { reachedBridge = false; return null; }
+          const b64 = fn(); if (!b64) return null;
           const bin = atob(b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return u8; };
         const wd = dec('puzzleWdTable'), pdb = dec('puzzlePdbTable');
         if (wd && pdb) puzzleSolver = PuzzleKit.createPuzzleSolver(wd, pdb);
-      } catch (e) { puzzleSolver = null; }
-      puzzleTableState = 2; puzzleDrawSig = null;     // force a repaint with the result
+      } catch (e) { puzzleSolver = null; reachedBridge = false; }
+      // A bridge that was not up yet is not a missing table: stay untried so the next call
+      // retries, or the panel would report "tables missing" for the rest of the session.
+      puzzleTableState = (!puzzleSolver && !reachedBridge) ? 0 : 2;
+      puzzleDrawSig = null;                           // force a repaint with the result
     }, 0);
     return false;
   }
+  // Warm the tables at start-up rather than on the first box: decoding them takes long enough
+  // to show a banner, and it costs nothing to have done it already. Retries while the bridge
+  // is still coming up, then stops.
+  (function puzzleWarm(tries) {
+    setTimeout(function () {
+      puzzleEnsureSolver();
+      setTimeout(function () { if (puzzleTableState === 0 && tries < 10) puzzleWarm(tries + 1); }, 400);
+    }, tries ? 1000 : 1500);
+  })(0);
   // Weighted-A* ladder over one board, keeping the SHORTEST result (high W answers almost
   // instantly, low W runs closer to optimal). msTotal caps the ladder, which blocks the panel.
   function puzzleWeighted(board, Ws, msTotal) {

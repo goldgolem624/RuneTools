@@ -97,12 +97,22 @@
         // Only the SCAN RING has no world tile (x/y is scan-internal), so it anchors to the player
         // at distance 0 and the colour alone is the signal; every other type-4 has a real tile ("w":1).
         const ring = s.gfx >= 6841 && s.gfx <= 6843;
+        // Type-13 entities carry no gfx id - the TILE is the whole payload. The reader
+        // splits the two classes that share the type: k='scan' is the clue-scan
+        // coordinate marker (its tile IS the dig spot), k='dest' is your walk target.
+        // NO k at all = a launcher built before that classifier: say UNKNOWN rather than
+        // guessing one of them (defaulting to 'dest' mislabelled the scan marker).
+        const nm = (s.t === 13)
+          ? (s.k === 'scan' ? 'Scan coordinate (dig here)'
+             : s.k === 'dest' ? 'Walk destination'
+             : 'Ground marker (type 13, rebuild to classify)')
+          : specialName(s.gfx);
         if (ring || !s.w) {
-          out.push({ type: 'special', name: specialName(s.gfx), x: (px != null ? px : s.x),
+          out.push({ type: 'special', name: nm, x: (px != null ? px : s.x),
                      y: (py != null ? py : s.y), dist: 0, id: s.gfx, gfx: s.gfx, uid: s.uid });
         } else {
           const d = cheby(s.x, s.y); if (!inRange(d)) continue;
-          out.push({ type: 'special', name: specialName(s.gfx), x: s.x, y: s.y, dist: d,
+          out.push({ type: 'special', name: nm, x: s.x, y: s.y, dist: d,
                      id: s.gfx, gfx: s.gfx, uid: s.uid, plane: s.p });
         }
       }

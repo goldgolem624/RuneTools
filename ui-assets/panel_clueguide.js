@@ -58,8 +58,15 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
   const clueCompassSeen = new Set();
   function isCompassClue(c) {
     if (!c) return false;
-    if (clueCompassSeen.has(c.i)) return true;
     const r = scanSpotsFor(c);
+    // A resolved SMALL spot list is a real SCAN area, so this is not a compass - and that
+    // outranks the latch. clueCompassSeen is keyed by the clue's ITEM id, which every clue
+    // of that tier shares, so one compass clue used to mark every later elite clue as a
+    // compass: the scan then followed the needle and reported a stale varc target as
+    // "DIG HERE (exact, from clue)" hundreds of tiles from the scan area (owner-caught:
+    // an "East or West Ardougne" scan answered with South Feldip Hills).
+    if (r && r.spots && r.spots.length && r.spots.length <= COMPASS_FIELD_MIN) return false;
+    if (clueCompassSeen.has(c.i)) return true;
     return !!(r && r.spots && r.spots.length > COMPASS_FIELD_MIN);
   }
   // Called from the clue tick: the needle being open identifies the held clue as a compass.
@@ -389,7 +396,12 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
         if (elim.size >= rec.spots.length) { elim.clear(); }
         const remain = [], idx = [];
         rec.spots.forEach((s, i) => { if (!elim.has(i)) { remain.push(s); idx.push(i); } });
-        (async () => { await drawClueMap(scanCentroid(rec), { rec, elim, name: scanTitle(rec) }); scanGuide(remain, rec, idx); })();
+        // IN-WORLD MARKS FIRST, and never behind the map render: scanGuide used to run only
+        // after `await drawClueMap(...)`, so any throw or stall inside the map draw (canvas
+        // not ready, a bridge read hanging) silently left the game world unmarked. The map
+        // is the secondary surface here - the tiles are the point.
+        scanGuide(remain, rec, idx);
+        (async () => { try { await drawClueMap(scanCentroid(rec), { rec, elim, name: scanTitle(rec) }); } catch (e) {} })();
       } else { clueGuide(null); drawClueMap(null); }   // enum not resolved yet
       return;
     }
@@ -417,8 +429,9 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
       if (spots.length === 1) {                              // solved -> mark the actual dig tile (default mark = gets the direction arrow)
         recs = enc(spots[0], scanTitle(rec) + ' DIG HERE');
       } else {                                               // solving -> mark the remaining candidates, COLOURED so none of them takes the direction arrow
-// (an arrow to "spot 1" reads as the answer)
-        recs = spots.slice(0, 24).map((s, k) => enc(s, 'Scan spot ' + ((idx ? idx[k] : k) + 1) + (rec.key ? ' - ' + scanTitle(rec) : ''), 0xFF2D95)).join('\x1e');
+// (an arrow to "spot 1" reads as the answer). Candidates are numbered only: up to 24 of
+// these are on screen at once, and repeating the area name on every one buries the world.
+        recs = spots.slice(0, 24).map((s, k) => enc(s, 'Scan ' + ((idx ? idx[k] : k) + 1), 0xFF2D95)).join('\x1e');
       }
       bridge().guideMarks(myPid(), recs);
     } catch (e) {}

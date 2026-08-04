@@ -486,6 +486,16 @@ void SyncPanelDpi(Dock* d) {
     if (!ph) return;
     unsigned dpi = DpiForWindow(d->host);   // the unified window's true current-monitor DPI
     if (!dpi) return;
+    // Idempotence guard: when AppCore's cached scale() already matches this DPI, the
+    // synthetic WM_DPICHANGED only forces a same-scale re-render - and every caller
+    // (embed, expand, OS dpi-change) funnels here, so unconditional sends made panel
+    // content visibly flip between two sizes whenever callers alternated inputs
+    // (owner-reported). When it DOES change, the log line names both values: a panel
+    // that still flip-flops means the host's reported DPI itself is alternating.
+    double want = dpi / 96.0, have = d->panel->scale(), diff = have - want;
+    if (diff < 0.01 && diff > -0.01) return;
+    rtx::log::Launcher("panel dpi sync: scale " + std::to_string(have) + " -> " +
+                       std::to_string(want) + " (host dpi " + std::to_string(dpi) + ")");
     RECT pr{}; GetWindowRect(ph, &pr);      // pass the panel's current rect as the "suggested" rect
     SendMessageW(ph, 0x02E0 /*WM_DPICHANGED*/, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&pr));
     Layout(d);                              // re-place the panel + resize the overlay at the new scale
@@ -684,6 +694,16 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_ACTIVATEAPP:
             // App-level deactivation (switching to another process entirely). Same stuck-key risk.
             if (d && wp == FALSE) ReleaseHeldKeysToGame(d);
+            break;
+        case WM_INPUTLANGCHANGE:
+            // Keyboard layout is PER-THREAD on Windows. With the game's input queue detached it
+            // never sees the host's layout switch, so its own key-NAME lookups (the keybind
+            // config list) resolve against whatever layout its thread started with, and can show
+            // a different key than the one being pressed. Ask it to follow the host's layout.
+            if (d && d->gameIsChild && d->kbToGame) {
+                HWND kbl = (d->gameInput && IsWindow(d->gameInput)) ? d->gameInput : d->game;
+                if (kbl && IsWindow(kbl)) PostMessageW(kbl, WM_INPUTLANGCHANGEREQUEST, 0, lp);
+            }
             break;
         case WM_KEYDOWN: case WM_KEYUP: case WM_CHAR: case WM_DEADCHAR:
         case WM_SYSKEYDOWN: case WM_SYSKEYUP: case WM_SYSCHAR:
@@ -1131,6 +1151,17 @@ std::unordered_map<HWND, PanelHook> g_panelHooks;   // main-thread only, like g_
 LRESULT CALLBACK PanelMouseProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     auto it = g_panelHooks.find(h);
     if (it == g_panelHooks.end()) return DefWindowProcW(h, msg, wp, lp);   // unreachable while subclassed
+    // Control characters must never reach the view as TEXT. Ctrl+<key> combinations translate to
+    // WM_CHAR 0x01-0x1A, and Ctrl+Backspace to 0x7F (DEL); the view has no editing command bound
+    // to those, so it inserted them literally and the field filled up with .notdef boxes
+    // (user-reported: "a square appears when I press Ctrl+Backspace"). Nothing is lost by
+    // dropping them - the matching WM_KEYDOWN still arrives, so the page can act on the combo.
+    // Backspace, Tab and Return are deliberately kept: those ARE the editing keys.
+    if (msg == WM_CHAR || msg == WM_SYSCHAR) {
+        const wchar_t c = static_cast<wchar_t>(wp);
+        const bool keep = (c == L'\b' || c == L'\t' || c == L'\r' || c == L'\n');
+        if (!keep && (c < 0x20 || c == 0x7F)) return 0;
+    }
     if (msg == WM_LBUTTONDOWN) {
         Dock* d = it->second.dock;
         if (d) {
