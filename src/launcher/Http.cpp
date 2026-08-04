@@ -5,6 +5,11 @@
 
 #pragma comment(lib, "winhttp.lib")
 
+// Not in older SDK winhttp.h; value per current SDKs.
+#ifndef WINHTTP_OPTION_IPV6_FAST_FALLBACK
+#define WINHTTP_OPTION_IPV6_FAST_FALLBACK 140
+#endif
+
 namespace rtx::launcher::http {
 
 namespace {
@@ -72,6 +77,13 @@ void do_request(Response& out,
     DWORD secProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
     WinHttpSetOption(sess.h, WINHTTP_OPTION_SECURE_PROTOCOLS,
                      &secProtocols, sizeof(secProtocols));
+    // On a network whose IPv6 routes are dead, the AAAA-first connect attempts eat the
+    // whole connect budget and EVERY request dies with 12002 before IPv4 is tried
+    // (live-hit: runetools.io behind Cloudflare AAAA). Fast fallback races IPv4 in
+    // parallel, browser-style; verified 12002/11.6s -> 200/0.4s on such a network.
+    BOOL fastFallback = TRUE;
+    WinHttpSetOption(sess.h, WINHTTP_OPTION_IPV6_FAST_FALLBACK,
+                     &fastFallback, sizeof(fastFallback));
     // Long receive timeout: the update download can be tens of MB.
     WinHttpSetTimeouts(sess.h, 10000, 10000, 30000, 120000);
 

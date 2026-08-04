@@ -3605,28 +3605,40 @@ std::string install_plugin(const std::string& slug) {
 // immediately ("{}" until the first fetch lands); the JS Browse view polls until it fills.
 std::mutex   g_pluginListMu;
 std::string  g_pluginListBody;              // last good JSON ("" = never fetched)
+std::string  g_pluginListErr;               // last fetch failure ("" = none); shown by the UI
 bool         g_pluginListInFlight = false;
 ULONGLONG    g_pluginListAt = 0;            // GetTickCount64() of the last success
 
 JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t, const JSValueRef[], JSValueRef*) {
-    std::string body;
+    std::string body, err;
     {
         std::lock_guard<std::mutex> lk(g_pluginListMu);
         body = g_pluginListBody;
+        err  = g_pluginListErr;
         const ULONGLONG now = GetTickCount64();
         // Kick a refresh when nothing is cached or the cache is >60s old, one at a time.
         if (!g_pluginListInFlight && (g_pluginListBody.empty() || now - g_pluginListAt > 60000)) {
             g_pluginListInFlight = true;
             std::thread([] {
                 auto r = http::Get(kUpdateHost, kPluginListPath, {});   // public endpoint; no auth
-                std::string fetched = (r.ok && r.status == 200) ? r.body : std::string();
                 std::lock_guard<std::mutex> lk(g_pluginListMu);
-                if (!fetched.empty()) { g_pluginListBody = std::move(fetched); g_pluginListAt = GetTickCount64(); }
+                if (r.ok && r.status == 200 && !r.body.empty()) {
+                    g_pluginListBody = std::move(r.body);
+                    g_pluginListAt   = GetTickCount64();
+                    g_pluginListErr.clear();
+                } else {
+                    g_pluginListErr = r.detail.empty()
+                        ? ("HTTP " + std::to_string(r.status)) : r.detail;
+                }
                 g_pluginListInFlight = false;
             }).detach();
         }
     }
+    // A stale-but-good body still beats an error: only report failure when we have
+    // nothing to show, so a blip during the 60s refresh doesn't blank the panel.
+    if (body.empty() && !err.empty())
+        return utf8_to_js(ctx, "{\"error\":\"" + json_escape(err) + "\"}");
     return utf8_to_js(ctx, body.empty() ? std::string("{}") : body);
 }
 

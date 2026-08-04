@@ -4148,19 +4148,31 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     c.appendChild(wrap);
     const se = $('pbSearch'); if (se) se.addEventListener('input', renderBrowseList);
     // pluginMarketList() is served ASYNC (the HTTP fetch runs off the UI thread): it returns
-    // "{}" until the worker has the response, so poll a few times before giving up. The build-
-    // once guard above means this only runs on a fresh mount.
+    // "{}" until the worker has the response, {"error":...} if the last fetch failed, and the
+    // catalog once it lands. Poll until one of the latter two arrives; the first fetch can
+    // outlive a short window (proxy autodetect), so never give up while the panel is open.
+    // An empty plugins ARRAY is a real answer (catalog empty), unlike a missing one.
     pluginBrowseList = [];
-    for (let attempt = 0; attempt < 20; attempt++) {
-      let got = [];
+    for (let attempt = 0; ; attempt++) {
+      let got = null, err = '', diag = '';
       try {
-        const raw = JSON.parse((await bridge().pluginMarketList()) || '{}');
-        const d = (raw && raw.data) ? raw.data : raw;
-        got = (d && d.plugins) || [];
-      } catch (e) { got = []; }
-      if (got.length) { pluginBrowseList = got; break; }
-      if (!$('pbList')) return;                 // user navigated away
-      await new Promise(r => setTimeout(r, 250));
+        if (!bridge() || typeof bridge().pluginMarketList !== 'function') {
+          diag = 'bridge missing pluginMarketList (launcher build predates the marketplace?)';
+        } else {
+          const raw = JSON.parse(String((await bridge().pluginMarketList()) || '{}'));
+          const d = (raw && raw.data) ? raw.data : raw;
+          if (d && Array.isArray(d.plugins)) got = d.plugins;
+          else if (d && d.error) err = String(d.error);
+        }
+      } catch (e) { diag = 'exception: ' + String((e && e.message) || e); }
+      const host = $('pbList');
+      if (!host) return;                        // user navigated away
+      if (got) { pluginBrowseList = got; break; }
+      if (err && attempt >= 4)
+        host.innerHTML = '<div class="empty">Couldn\'t reach runetools.io: ' + err.replace(/[<>&"']/g, '') + '. Retrying...</div>';
+      else if (diag && attempt >= 8)
+        host.innerHTML = '<div class="empty">Loading plugins...<br>' + diag.replace(/[<>&"']/g, '') + '</div>';
+      await new Promise(r => setTimeout(r, attempt < 20 ? 250 : 2000));
     }
     renderBrowseList();
   }
