@@ -988,6 +988,9 @@
   function teleItemOk(T) {
     if (!(T.item > 0) || !teleHeldBase || !teleWornSet || !teleInvSet) return true;
     for (const id of teleItemIds(T)) if (teleWornSet.has(id) || teleInvSet.has(id)) return true;
+    // The name fallback drops a trailing "(N)", which is the charge count on some items - so
+    // a spent variant sharing the bare name would satisfy the gate. Those are ids-only.
+    if (typeof TELE_ITEM_STRICT !== 'undefined' && TELE_ITEM_STRICT.has(T.item)) return false;
     const bn = teleItemNames[T.item];
     return bn ? teleHeldBase.has(bn) : true;
   }
@@ -3079,7 +3082,22 @@
     39814: [44560],                    // Hazelmere's signet ring -> imbued
     39387: [39385, 41066],             // Enlightened amulet: (new) and (c) teleport the same
     13562: [19760],                    // Explorer's ring: 4 also has the cabbage-port
+    // Crystal teleport seed: every CHARGED variant plus the attuned (unlimited) seed. The
+    // charge count is part of the item NAME here - "(8)" down to "(1)" - and the SPENT seed
+    // (6103) is a separate item that keeps the bare name. It is listed as STRICT below
+    // because the name fallback strips "(N)" and so matched the spent seed as if it worked.
+    39786: [39788, 39790, 39792, 6099, 6100, 6101, 6102, 39784],
+    1712: [1706, 1708, 1710, 10354, 10356, 10358, 10360], // Amulet of glory: charged variants only - the bare name is the spent item
+    11105: [11107, 11109, 11111],   // Skills necklace: charged variants only - the bare name is the spent item
+    11118: [11120, 11122, 11124],   // Combat bracelet: charged variants only - the bare name is the spent item
+    11666: [11667, 11668, 11669, 11670, 11671, 11672, 11673], // Void knight seal: charged variants only - the bare name is the spent item
+    20659: [20653, 20655, 20657],   // Ring of Wealth: charged variants only - the bare name is the spent item
+    27090: [9044, 9046, 9048, 27091, 27092], // Pharaoh's sceptre: charged variants only - the bare name is the spent item
+    28588: [28581, 28582, 28583, 28584, 28585, 28586, 28587], // Hoardstalker ring: charged variants only - the bare name is the spent item
   };
+  // Items whose gate is ids-ONLY: their base name is shared with a variant that cannot
+  // teleport, so falling back to a name match would pass on the wrong item.
+  const TELE_ITEM_STRICT = new Set([39786, 1712, 11105, 11118, 11666, 20659, 27090, 28588]);
   function teleItemIds(T) {
     const ids = [T.item];
     const al = TELE_ITEM_ALIASES[T.item];
