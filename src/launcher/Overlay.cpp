@@ -163,7 +163,7 @@ RECT g_xp_hit{0, 0, 0, 0};                      // last-frame panel bbox (guarde
 RECT g_xp_min{0, 0, 0, 0};                      // minimize-box rect (guarded by g_mu)
 
 std::map<DWORD, std::vector<GuideMark>> g_guides;   // transient guide marks per pid (guarded by g_mu)
-std::map<DWORD, UiHighlight> g_uiHighlights;        // transient screen-space UI highlight per pid (guarded by g_mu)
+std::map<DWORD, std::vector<UiHighlight>> g_uiHighlights;   // transient screen-space UI highlights per pid (guarded by g_mu)
 std::map<DWORD, std::string> g_centerTexts;         // transient screen-centre text per pid (guarded by g_mu)
 std::map<DWORD, std::vector<PanelBox>> g_panelViz;  // Interfaces-tab panel visualizer boxes per pid (guarded by g_mu)
 std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;  // puzzle-box next-moves cells per pid (guarded by g_mu)
@@ -360,33 +360,38 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
     //     by walkability: blocked tiles tinted red, or hidden when walk_only ---
     if (cfg.grid && f.grid_r > 0) {
         const int R = f.grid_r;
-        const int N = 2 * R + 2;          // corner lattice per axis
         const int T = 2 * R + 1;          // tiles per axis
+        // PER-TILE corners (SW,SE,NE,NW), not a shared lattice. A shared corner cannot hold
+        // two heights, so at a bridge edge the deck quad was dragged down to the ravine.
         static thread_local std::vector<float> px, py;   // reused each frame (render thread only)
         static thread_local std::vector<char>  vis;
-        px.assign((size_t)N * N, 0.0f); py.assign((size_t)N * N, 0.0f); vis.assign((size_t)N * N, 0);
+        px.assign((size_t)T * T * 4, 0.0f); py.assign((size_t)T * T * 4, 0.0f);
+        vis.assign((size_t)T * T * 4, 0);
         // Terrain-follow: heights are ABSOLUTE -- live fine-z = 32 * cache surface
         // height (bridge-aware cumulative, see CacheReader::AbsHeightLocked).
         const float kHScale = 32.0f;
         const std::int16_t kNoH = -32768;
-        bool haveH = (int)f.heights.size() == N * N;
-        for (int gx = 0; gx < N; ++gx) {
-            for (int gy = 0; gy < N; ++gy) {
-                float wx = (float)(f.player_tx - R + gx) * 512.0f;
-                float wy = (float)(f.player_ty - R + gy) * 512.0f;
-                size_t i = (size_t)gx * N + gy;
-                // Tiles with no cache height belong to a region with no map data, so leave
-                // the corner invisible instead of drawing a fake flat grid over unmapped
-                // space (cells need all 4 corners visible).
-                if (haveH && f.heights[i] == kNoH) continue;
-                float cz = (haveH && f.heights[i] != kNoH)
-                         ? kHScale * (float)f.heights[i] : f.player_z;
-                float sx, sy;
-                // Corners closest to the camera have tiny w and project to huge coords at
-                // grazing angles -- clip anything more than ~one screen off-edge.
-                if (WorldToScreen(f.matrix, vpX, vpY, vpW, vpH, wx, wy, cz, sx, sy) &&
-                    sx > -(float)W && sx < 2.0f * W && sy > -(float)H && sy < 2.0f * H) {
-                    px[i] = sx; py[i] = sy; vis[i] = 1;
+        bool haveH = (int)f.heights.size() == T * T * 4;
+        static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
+        for (int tgx = 0; tgx < T; ++tgx) {
+            for (int tgy = 0; tgy < T; ++tgy) {
+                for (int c = 0; c < 4; ++c) {
+                    size_t i = ((size_t)tgx * T + tgy) * 4 + c;
+                    float wx = (float)(f.player_tx - R + tgx + CX[c]) * 512.0f;
+                    float wy = (float)(f.player_ty - R + tgy + CY[c]) * 512.0f;
+                    // Corners with no cache height belong to a region with no map data, so leave
+                    // them invisible instead of drawing a fake flat grid over unmapped space
+                    // (cells need all 4 corners visible).
+                    if (haveH && f.heights[i] == kNoH) continue;
+                    float cz = (haveH && f.heights[i] != kNoH)
+                             ? kHScale * (float)f.heights[i] : f.player_z;
+                    float sx, sy;
+                    // Corners closest to the camera have tiny w and project to huge coords at
+                    // grazing angles -- clip anything more than ~one screen off-edge.
+                    if (WorldToScreen(f.matrix, vpX, vpY, vpW, vpH, wx, wy, cz, sx, sy) &&
+                        sx > -(float)W && sx < 2.0f * W && sy > -(float)H && sy < 2.0f * H) {
+                        px[i] = sx; py[i] = sy; vis[i] = 1;
+                    }
                 }
             }
         }
@@ -404,8 +409,8 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                 int fl = flagAt(tgx, tgy);
                 bool full = (fl & 0x10) != 0;
                 if (full && cfg.walk_only) continue;
-                size_t a = (size_t)tgx * N + tgy, b = (size_t)(tgx + 1) * N + tgy,
-                       c = (size_t)(tgx + 1) * N + (tgy + 1), d = (size_t)tgx * N + (tgy + 1);
+                const size_t base = ((size_t)tgx * T + tgy) * 4;   // this tile's own corners
+                size_t a = base + 0, b = base + 1, c = base + 2, d = base + 3;   // SW,SE,NE,NW
                 if (!(vis[a] && vis[b] && vis[c] && vis[d])) continue;
                 if (full) {
                     PointF poly[4] = { {px[a],py[a]}, {px[b],py[b]}, {px[c],py[c]}, {px[d],py[d]} };
@@ -640,7 +645,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     // Mystery guide marks draw INDEPENDENTLY of the overlay toggles (like alert highlights), so they
     // must count as content here or the early-out below publishes an empty frame first.
     bool hasGuides = false;   // gate only -- drawing uses the frame's RESOLVED guides
-    UiHighlight uihl{};
+    std::vector<UiHighlight> uihls;
     std::string ctext;
     std::vector<PanelBox> pviz;
     std::vector<PuzzleCell> pcells;
@@ -649,7 +654,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       auto git = g_guides.find(cfg.pid);
       hasGuides = (git != g_guides.end() && !git->second.empty());
       auto uit = g_uiHighlights.find(cfg.pid);
-      if (uit != g_uiHighlights.end()) uihl = uit->second;
+      if (uit != g_uiHighlights.end()) uihls = uit->second;
       auto ctit = g_centerTexts.find(cfg.pid);
       if (ctit != g_centerTexts.end()) ctext = ctit->second;
       auto pit = g_panelViz.find(cfg.pid);
@@ -659,7 +664,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       auto kcit = g_knotCells.find(cfg.pid);
       if (kcit != g_knotCells.end()) kcells = kcit->second; }
 
-    bool wantContent = flashAlpha > 0.0f || (uihl.w > 0) || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() ||
+    bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() ||
                        (widgets && !widgets->empty()) ||
                        (f && (cfg.enabled || cfg.markers || cfg.nameplates || !f->highlights.empty() || hasGuides));
     if (!wantContent) {
@@ -702,35 +707,39 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     // --- tile grid: corner lattice projected at plane height; walls + blocked ---
     if (f && cfg.enabled && cfg.grid && f->grid_r > 0) {
         const int R = f->grid_r;
-        const int N = 2 * R + 2;
         const int T = 2 * R + 1;
+        // PER-TILE corners (SW,SE,NE,NW). A shared lattice corner can hold only one height,
+        // so where a bridge deck meets the ravine beside it the deck quad was pulled down
+        // into the water; each tile now carries its own four, decided at its own plane.
         static thread_local std::vector<float> px, py, wz;   // reused each frame (render thread only)
         static thread_local std::vector<char>  vis;
-        px.assign((size_t)N * N, 0.0f); py.assign((size_t)N * N, 0.0f);
-        wz.assign((size_t)N * N, 0.0f); vis.assign((size_t)N * N, 0);
+        const size_t NC = (size_t)T * T * 4;
+        px.assign(NC, 0.0f); py.assign(NC, 0.0f); wz.assign(NC, 0.0f); vis.assign(NC, 0);
         const float kHScale = 32.0f;       // absolute: live fine-z = 32 * cache height
         const std::int16_t kNoH = -32768;
-        bool haveH = (int)f->heights.size() == N * N;
+        bool haveH = f->heights.size() == NC;
+        static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
         // Corner classes: 0 = unusable (no height / projects far off-screen), 1 = drawable,
         // 2 = behind the near plane (edges to it get clipped instead of dropped, so the
-        // lattice stays continuous down to the screen edge when the camera tilts low).
-        for (int gx = 0; gx < N; ++gx)
-            for (int gy = 0; gy < N; ++gy) {
-                float wx = (float)(f->player_tx - R + gx) * 512.0f;
-                float wy = (float)(f->player_ty - R + gy) * 512.0f;
-                size_t i = (size_t)gx * N + gy;
-                if (haveH && f->heights[i] == kNoH) continue;
-                float cz = (haveH && f->heights[i] != kNoH)
-                         ? kHScale * (float)f->heights[i] : f->player_z;
-                wz[i] = cz;
-                const float wpt[3] = { wx, wy, cz };
-                if (ProjW(f->matrix, wpt) < kNearW) { vis[i] = 2; continue; }
-                float sx, sy;
-                if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, wx, wy, cz, sx, sy) &&
-                    sx > -(float)W && sx < 2.0f * W && sy > -(float)H && sy < 2.0f * H) {
-                    px[i] = sx; py[i] = sy; vis[i] = 1;
+        // grid stays continuous down to the screen edge when the camera tilts low).
+        for (int tgx = 0; tgx < T; ++tgx)
+            for (int tgy = 0; tgy < T; ++tgy)
+                for (int c = 0; c < 4; ++c) {
+                    size_t i = ((size_t)tgx * T + tgy) * 4 + c;
+                    float wx = (float)(f->player_tx - R + tgx + CX[c]) * 512.0f;
+                    float wy = (float)(f->player_ty - R + tgy + CY[c]) * 512.0f;
+                    if (haveH && f->heights[i] == kNoH) continue;
+                    float cz = (haveH && f->heights[i] != kNoH)
+                             ? kHScale * (float)f->heights[i] : f->player_z;
+                    wz[i] = cz;
+                    const float wpt[3] = { wx, wy, cz };
+                    if (ProjW(f->matrix, wpt) < kNearW) { vis[i] = 2; continue; }
+                    float sx, sy;
+                    if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, wx, wy, cz, sx, sy) &&
+                        sx > -(float)W && sx < 2.0f * W && sy > -(float)H && sy < 2.0f * H) {
+                        px[i] = sx; py[i] = sy; vis[i] = 1;
+                    }
                 }
-            }
         auto flagAt = [&](int tgx, int tgy) -> int {
             size_t idx = (size_t)tgx * T + tgy;
             return idx < f->blocked.size() ? f->blocked[idx] : 0;
@@ -740,8 +749,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             for (int tgx = 0; tgx < T; ++tgx)
                 for (int tgy = 0; tgy < T; ++tgy) {
                     if (!(flagAt(tgx, tgy) & 0x10)) continue;
-                    size_t a = (size_t)tgx * N + tgy, b = (size_t)(tgx + 1) * N + tgy,
-                           c = (size_t)(tgx + 1) * N + (tgy + 1), d = (size_t)tgx * N + (tgy + 1);
+                    const size_t base = ((size_t)tgx * T + tgy) * 4;
+                    size_t a = base + 0, b = base + 1, c = base + 2, d = base + 3;
                     if (vis[a] != 1 || vis[b] != 1 || vis[c] != 1 || vis[d] != 1) continue;
                     marker::Command q{}; q.type = marker::kFillQuad;
                     q.x0 = px[a]; q.y0 = py[a]; q.x1 = px[b]; q.y1 = py[b];
@@ -758,44 +767,48 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             shown = true;
             self = (tgx == R && tgy == R);
         };
-        auto cornerWorld = [&](size_t c, float* out) {
-            out[0] = (float)(f->player_tx - R + (int)(c / N)) * 512.0f;
-            out[1] = (float)(f->player_ty - R + (int)(c % N)) * 512.0f;
-            out[2] = wz[c];
+        auto cornerWorld = [&](size_t i, float* out) {
+            const size_t tile = i / 4; const int c = (int)(i % 4);
+            out[0] = (float)(f->player_tx - R + (int)(tile / T) + CX[c]) * 512.0f;
+            out[1] = (float)(f->player_ty - R + (int)(tile % T) + CY[c]) * 512.0f;
+            out[2] = wz[i];
         };
-        auto edge = [&](size_t c0, size_t c1, int t0x, int t0y, int t1x, int t1y) {
+        auto edge = [&](size_t c0, size_t c1, bool self) {
             bool clipped = (vis[c0] == 1 && vis[c1] == 2) || (vis[c0] == 2 && vis[c1] == 1);
             if (!clipped && !(vis[c0] == 1 && vis[c1] == 1)) return;
-            bool v0, s0, v1, s1;
-            tileShown(t0x, t0y, v0, s0);
-            tileShown(t1x, t1y, v1, s1);
-            if (!v0 && !v1) return;
             float x0 = px[c0], y0 = py[c0], x1 = px[c1], y1 = py[c1];
             if (clipped) {                     // one corner behind the camera
                 float A[3], B[3];
                 cornerWorld(c0, A); cornerWorld(c1, B);
                 if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, A, B, x0, y0, x1, y1)) return;
             }
-            if ((v0 && s0) || (v1 && s1))
-                line(x0, y0, x1, y1, 2.4f, 150, 250, 150, 255);
-            else
-                line(x0, y0, x1, y1, 1.3f, 150, 215, 255, 175);
+            if (self) line(x0, y0, x1, y1, 2.4f, 150, 250, 150, 255);
+            else      line(x0, y0, x1, y1, 1.3f, 150, 215, 255, 175);
         };
-        for (int cx = 0; cx < N; ++cx)
-            for (int cy = 0; cy < N; ++cy) {
-                if (cx + 1 < N)   // west-east edge at y=cy: tiles south/north of it
-                    edge((size_t)cx * N + cy, (size_t)(cx + 1) * N + cy, cx, cy - 1, cx, cy);
-                if (cy + 1 < N)   // south-north edge at x=cx: tiles west/east of it
-                    edge((size_t)cx * N + cy, (size_t)cx * N + (cy + 1), cx - 1, cy, cx, cy);
-            }
+        // Each tile draws its OWN four edges, so a bridge seam can be a step rather than a
+        // shared corner both sides have to agree on. Interior edges are therefore drawn twice
+        // (identical colour, so no visual change); the player's tile is drawn in a second pass
+        // so its green edges land on top of a neighbour's cyan.
+        for (int pass = 0; pass < 2; ++pass)
+            for (int tgx = 0; tgx < T; ++tgx)
+                for (int tgy = 0; tgy < T; ++tgy) {
+                    bool shown = false, self = false;
+                    tileShown(tgx, tgy, shown, self);
+                    if (!shown || self != (pass == 1)) continue;
+                    const size_t base = ((size_t)tgx * T + tgy) * 4;
+                    edge(base + 0, base + 1, self);      // S
+                    edge(base + 1, base + 2, self);      // E
+                    edge(base + 2, base + 3, self);      // N
+                    edge(base + 3, base + 0, self);      // W
+                }
         // directional wall edges on top (a=SW b=SE c=NE d=NW)
         for (int tgx = 0; tgx < T; ++tgx)
             for (int tgy = 0; tgy < T; ++tgy) {
                 int fl = flagAt(tgx, tgy);
                 if (!(fl & 0x0f)) continue;
                 if ((fl & 0x10) && cfg.walk_only) continue;
-                size_t a = (size_t)tgx * N + tgy, b = (size_t)(tgx + 1) * N + tgy,
-                       c = (size_t)(tgx + 1) * N + (tgy + 1), d = (size_t)tgx * N + (tgy + 1);
+                const size_t base = ((size_t)tgx * T + tgy) * 4;
+                size_t a = base + 0, b = base + 1, c = base + 2, d = base + 3;
                 if (vis[a] != 1 || vis[b] != 1 || vis[c] != 1 || vis[d] != 1) continue;
                 if (fl & 0x08) line(px[a], py[a], px[d], py[d], 2.6f, 95, 175, 255, 255);
                 if (fl & 0x04) line(px[b], py[b], px[c], py[c], 2.6f, 95, 175, 255, 255);
@@ -1467,8 +1480,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     // --- UI highlight: a screen-space accent box over a game UI element. Coords are already client
     //     pixels (panel-position varc + within-group offset, x uiScale), so NO world projection.
-    //     Pulses so it reads as a "click here" cue. ---
-    if (uihl.w > 0 && uihl.h > 0) {
+    //     Pulses so it reads as a "click here" cue. A caller may set SEVERAL at once
+    //     (SetUiHighlights); they all draw the same way, in the order given. ---
+    for (const auto& uihl : uihls) {
+        if (uihl.w <= 0 || uihl.h <= 0) continue;
         float uipulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
         // A small target (a puzzle-box CELL, ~49px) INSETS so the highlight clearly sits inside that one
         // tile and never bleeds into its neighbours; a larger box (a dialogue option) keeps a slight outset.
@@ -2159,7 +2174,7 @@ void RenderLoop() {
               if (git != g_guides.end())
                   for (const auto& m : git->second) gsites.push_back({ m.gx, m.gy, m.label, m.snapObj, m.rgb, m.gx2, m.gy2, m.region, m.plane });
               auto uit = g_uiHighlights.find(cpid);
-              hasUiHl = (uit != g_uiHighlights.end() && uit->second.w > 0);
+              hasUiHl = (uit != g_uiHighlights.end() && !uit->second.empty());
               auto ctit = g_centerTexts.find(cpid);
               hasCenter = (ctit != g_centerTexts.end() && !ctit->second.empty());
               auto pit = g_panelViz.find(cpid);
@@ -2457,14 +2472,21 @@ void SetGuideMarks(std::uint32_t pid, std::vector<GuideMark> marks) {
 }
 
 void SetUiHighlight(std::uint32_t pid, UiHighlight hl) {
+    if (hl.w <= 0 || hl.h <= 0) { SetUiHighlights(pid, {}); return; }
+    SetUiHighlights(pid, std::vector<UiHighlight>{ hl });
+}
+
+void SetUiHighlights(std::uint32_t pid, const std::vector<UiHighlight>& rects) {
     if (!pid) return;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        if (hl.w <= 0 || hl.h <= 0) g_uiHighlights.erase((DWORD)pid);
+        std::vector<UiHighlight> keep;
+        for (const auto& r : rects) if (r.w > 0 && r.h > 0) keep.push_back(r);
+        if (keep.empty()) g_uiHighlights.erase((DWORD)pid);
         else {
             Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
             dst.pid = pid;
-            g_uiHighlights[(DWORD)pid] = hl;
+            g_uiHighlights[(DWORD)pid] = keep;
         }
     }
     ensure_thread();

@@ -153,7 +153,8 @@
       structParams: function (id) { return call('cache.structParams', [id]); },
       // Raw op-249 param map of one item (js5-19): {ints:{key:val}, strs:{key:"val"}}.
       itemParams: function (id) { return call('cache.itemParams', [id]); },
-      // Top-down cache terrain render centred on world tile (cx,cy): {w,t,h,b64} RGBA
+      // Top-down cache terrain render centred on world tile (cx,cy): {w,t,h,png} where png is
+      // a base64 PNG (RGB). Older clients returned `b64` = raw RGBA; handle both if you must.
       // (putImageData it into a canvas). half = tiles each side (<=96), ts = px/tile (<=8).
       mapWindow: function (cx, cy, plane, half, ts) { return call('cache.mapWindow', [cx, cy, plane, half, ts]); }
     },
@@ -172,6 +173,9 @@
       highlightItem: function (itemId, label) { return call('overlay.highlightItem', [itemId, label]); },
       // Highlight an arbitrary screen rect (e.g. from state.interface); w/h <= 0 clears.
       highlightRect: function (x, y, w, h) { return call('overlay.highlightRect', [x, y, w, h]); },
+      // Several boxes at once: [[x,y,w,h], ...] or [{x,y,w,h}, ...]. Replaces the whole set;
+      // [] clears. Shares one set per client with highlightRect, so the last caller wins.
+      highlightRects: function (list) { return call('overlay.highlightRects', [list || []]); },
       // Mark world tiles as guide objectives: [{x, y, plane, label}, ...]; [] clears.
       // Optional x2/y2 on a mark (x/y = SW corner, x2/y2 = NE corner) draws one flat
       // ground rect over the whole span instead of a single-tile mark.

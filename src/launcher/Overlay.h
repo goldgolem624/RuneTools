@@ -94,6 +94,10 @@ void SetCenterText(std::uint32_t pid, const std::string& text);
 // soft fill over a game UI element. Replaces the pid's rect on each call; w<=0 clears.
 struct UiHighlight { int x = 0, y = 0, w = 0, h = 0; };
 void SetUiHighlight(std::uint32_t pid, UiHighlight hl);
+// SEVERAL screen-space highlights at once. Replaces the pid's set each call; an empty vector
+// clears. SetUiHighlight is the one-rect form and shares this storage, so the two overwrite
+// each other - there is one highlight set per client, not one per caller.
+void SetUiHighlights(std::uint32_t pid, const std::vector<UiHighlight>& rects);
 
 // Puzzle-box "click these in order" cells: screen-pixel rects, step 0 = the immediate next move.
 // Replaces the pid's set each call; empty vector clears.

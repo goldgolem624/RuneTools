@@ -39,6 +39,11 @@ void SetKeepFocused(std::uint32_t pid, bool on);
 // panel window can't draw tooltips out over the game beside it). clientX/clientY are the
 // icon's position inside the panel window. Empty text hides it.
 void ShowRailTip(std::uint32_t pid, const std::string& text, int clientX, int clientY);
+
+// Text of a sibling UI asset (same directory as client.html), for data the page loads ON
+// DEMAND rather than having spliced in at startup. `name` must be a bare file name - any
+// path separator or "." segment is rejected. Empty string if absent or not readable.
+std::string ReadUiAsset(const std::string& name);
 void HideRailTip();
 
 // Reposition/resize each panel to track its game window. Call from AppListener::OnUpdate.

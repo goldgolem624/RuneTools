@@ -119,7 +119,9 @@ std::string read_file(const std::string& path) {
 // The panel files are bare classic scripts sharing one global scope with client.html (no IIFE).
 void inject_panel_scripts(std::string& html, const std::string& html_path) {
     static const char* kFiles[] = {
-        "quest_guides.js",     // generated wiki quick-guide data
+        // quest_guides.js is DELIBERATELY not spliced: at ~1.3MB of one line it was half of
+        // everything the page parsed at startup, for data only the quest guides need. It is
+        // pulled through bridge().uiAsset() the first time a guide is shown.
         "panel_stopwatch.js",
         "panel_notes.js",
         "panel_counter.js",
@@ -203,13 +205,29 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
     std::string dir = (slash == std::string::npos) ? std::string() : html_path.substr(0, slash + 1);
     auto pos = html.find("<script>");
     if (pos == std::string::npos) return;
-    std::string blob;
+    // quest_guides.js used to be the FIRST spliced file, so window.QUEST_GUIDES existed before
+    // any panel ran. It is lazy now, but a few panels still register their own guide into that
+    // object at load time - create it up front so those assignments have something to write to.
+    std::string blob = "<script>window.QUEST_GUIDES = window.QUEST_GUIDES || {};</script>\n";
     for (const char* f : kFiles) {
         std::string js = read_file(dir + f);
         if (js.empty()) continue;
         blob += "<script>\n" + js + "\n</script>\n";
     }
-    if (!blob.empty()) html.insert(pos, blob);
+    html.insert(pos, blob);
+}
+
+// Sibling UI asset by bare name, for lazily-loaded page data. Rejects anything with a path
+// separator or a dot segment so the page can only ever reach its own asset directory.
+std::string ReadUiAssetImpl(const std::string& name) {
+    if (name.empty() || name.size() > 64) return {};
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return {};
+    if (name.find("..") != std::string::npos) return {};
+    for (char c : name)
+        if (!(std::isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-')) return {};
+    auto slash = g_client_html_path.find_last_of("\\/");
+    std::string dir = (slash == std::string::npos) ? std::string() : g_client_html_path.substr(0, slash + 1);
+    return read_file(dir + name);
 }
 
 // Newest write time (raw tick count) across client.html and its sibling .js files.
@@ -1405,6 +1423,8 @@ void* GameWindowHandle(std::uint32_t pid) {
 void HideRailTip() {
     if (g_tipWnd) ShowWindow(g_tipWnd, SW_HIDE);
 }
+
+std::string ReadUiAsset(const std::string& name) { return ReadUiAssetImpl(name); }
 
 void ShowRailTip(std::uint32_t pid, const std::string& text, int clientX, int clientY) {
     if (text.empty()) { HideRailTip(); return; }

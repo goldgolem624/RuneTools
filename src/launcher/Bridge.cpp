@@ -309,6 +309,33 @@ std::string get_string_arg(JSContextRef ctx, size_t argc,
     return js_to_utf8(ctx, argv[idx]);
 }
 
+// Sanitised, per-account identity used for every per-account file and for vote dedupe.
+// Defined up here because the vote handler needs it long before the storage helpers below.
+// Mirrors BankCache's sanitize so the same account maps predictably to a file:
+// keep [A-Za-z0-9-_], space -> '_', drop everything else.
+std::string sanitize_account(const std::string& name) {
+    std::string out;
+    for (char c : name) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_') out.push_back(c);
+        else if (c == ' ') out.push_back('_');
+    }
+    return out;
+}
+
+// Reader::AccountKey first (JX_DISPLAY_NAME when the Jagex Launcher set it, else the in-memory
+// character name), with a direct env read as the last resort before the reader has attached.
+// The STEAM client sets no JX_ vars, so an env-only lookup resolved to nothing there and every
+// per-account store silently did nothing - markers, alerts, goals, plugin storage.
+std::string account_key_for(std::uint32_t pid) {
+    if (!pid) return {};
+    std::string acct = sanitize_account(rtx::reader::AccountKey(pid));
+    if (!acct.empty()) return acct;
+    auto env = process::ReadJxEnv(pid);
+    auto it = env.find("JX_DISPLAY_NAME");
+    return (it != env.end()) ? sanitize_account(it->second) : std::string();
+}
+
 // ---- Callbacks ----
 
 // Open a URL in the user's default browser. Allowlist runetools.io
@@ -376,6 +403,14 @@ JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
     return utf8_to_js(ctx, rtx::reader::ReaderHealthJson(pid));
+}
+
+// Text of a sibling UI asset, so the page can load bulky data ON DEMAND instead of having it
+// spliced in at startup (quest_guides.js alone is 1.3MB of the 2.7MB the page parses).
+JSValueRef UiAsset(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "");
+    return utf8_to_js(ctx, rtx::launcher::dock::ReadUiAsset(js_to_utf8(ctx, argv[0])));
 }
 
 JSValueRef HostInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2283,12 +2318,16 @@ JSValueRef WorldEventVote(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string v = voter_id();
     std::thread([kind, world, yes, v, pid] {
         std::string voter = v;
-        if (pid) {                        // PEB read, deliberately off the UI thread
-            auto env = process::ReadJxEnv(pid);
-            auto it = env.find("JX_DISPLAY_NAME");
-            if (it != env.end() && !it->second.empty()) {
+        if (pid) {                        // may hit the PEB, deliberately off the UI thread
+            // Same identity as every per-account store (see account_key_for): an RSN is unique,
+            // so hashing it dedupes one vote per ACCOUNT. Env-only left Steam clients with no
+            // account component at all, which deduped them per install instead of per player.
+            // The Jagex-launcher value is unchanged - AccountKey prefers JX_DISPLAY_NAME - so
+            // existing voter hashes stay stable.
+            std::string acct = account_key_for(pid);
+            if (!acct.empty()) {
                 unsigned long long h = 1469598103934665603ULL;          // FNV-1a 64
-                for (unsigned char c : it->second) { h ^= c; h *= 1099511628211ULL; }
+                for (unsigned char c : acct) { h ^= c; h *= 1099511628211ULL; }
                 char hex[17];
                 std::snprintf(hex, sizeof hex, "%016llx", h);
                 voter += hex;
@@ -2715,26 +2754,12 @@ std::filesystem::path alerts_user_dir() {
     return std::filesystem::path(up) / L"RuneToolsX";
 }
 
-// Mirror BankCache's sanitize so the same account maps predictably to a file:
-// keep [A-Za-z0-9-_], space -> '_', drop everything else.
-std::string sanitize_account(const std::string& name) {
-    std::string out;
-    for (char c : name) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_') out.push_back(c);
-        else if (c == ' ') out.push_back('_');
-    }
-    return out;
-}
-
-// Per-account config path, keyed on the game's JX_DISPLAY_NAME (same identity as the bank cache).
+// Per-account config path, keyed on the account identity above (same as the bank cache).
 // EMPTY when the account can't be resolved, so no other account's file is read and nothing shared is
 // written. A panel always passes its myPid(); pid 0 = no game.
 std::filesystem::path alerts_cfg_path(std::uint32_t pid) {
     if (!pid) return {};
-    auto env = process::ReadJxEnv(pid);
-    auto it = env.find("JX_DISPLAY_NAME");
-    std::string acct = (it != env.end()) ? sanitize_account(it->second) : std::string();
+    std::string acct = account_key_for(pid);
     if (acct.empty()) return {};
     auto dir = alerts_user_dir();
     if (dir.empty()) return {};
@@ -2755,9 +2780,7 @@ std::string alerts_read_file(const std::filesystem::path& p) {
 // keyed on JX_DISPLAY_NAME like the alerts/bank caches. Empty when unresolved.
 std::filesystem::path account_store_path(std::uint32_t pid, const wchar_t* sub) {
     if (!pid) return {};
-    auto env = process::ReadJxEnv(pid);
-    auto it = env.find("JX_DISPLAY_NAME");
-    std::string acct = (it != env.end()) ? sanitize_account(it->second) : std::string();
+    std::string acct = account_key_for(pid);
     if (acct.empty()) return {};
     auto dir = alerts_user_dir();
     if (dir.empty()) return {};
@@ -3199,6 +3222,40 @@ JSValueRef UiHighlightFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
+// SEVERAL boxes at once: "x,y,w,h" records separated by ';'. An empty string clears.
+// guideMarks). An empty string clears. Replaces the whole set, so a caller redraws its own
+// rects each update rather than adding to them.
+JSValueRef UiHighlightsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::string s = (argc >= 2) ? js_to_utf8(ctx, argv[1]) : std::string();
+    std::vector<rtx::overlay::UiHighlight> v;
+    std::size_t pos = 0;
+    while (pos < s.size() && v.size() < 64) {          // cap: a plugin cannot flood the frame
+        std::size_t end = s.find(';', pos);
+        if (end == std::string::npos) end = s.size();
+        std::string rec = s.substr(pos, end - pos);
+        pos = end + 1;
+        int f[4] = { 0, 0, 0, 0 };
+        std::size_t at = 0;
+        int n = 0;
+        while (n < 4 && at <= rec.size()) {
+            std::size_t comma = rec.find(',', at);
+            if (comma == std::string::npos) comma = rec.size();
+            f[n++] = std::atoi(rec.substr(at, comma - at).c_str());
+            if (comma >= rec.size()) break;
+            at = comma + 1;
+        }
+        if (n < 4 || f[2] <= 0 || f[3] <= 0) continue;
+        rtx::overlay::UiHighlight hl{};
+        hl.x = f[0]; hl.y = f[1]; hl.w = f[2]; hl.h = f[3];
+        v.push_back(hl);
+    }
+    rtx::overlay::SetUiHighlights(pid, v);
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef PanelRectsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "[]");
@@ -3371,9 +3428,7 @@ std::filesystem::path plugin_store_dir(std::uint32_t pid, const std::string& plu
     if (!pid) return {};
     std::string id = sanitize_plugin_id(pluginId);
     if (id.empty()) return {};
-    auto env = process::ReadJxEnv(pid);
-    auto it = env.find("JX_DISPLAY_NAME");
-    std::string acct = (it != env.end()) ? sanitize_account(it->second) : std::string();
+    std::string acct = account_key_for(pid);
     if (acct.empty()) return {};
     auto dir = alerts_user_dir();
     if (dir.empty()) return {};
@@ -3795,6 +3850,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "openExternal",           OpenExternal);
     install_fn(ctx, ns, "scanProcesses",     ScanProcesses);
     install_fn(ctx, ns, "gameSnapshots",     GameSnapshots);
+    install_fn(ctx, ns, "uiAsset",           UiAsset);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
@@ -3865,6 +3921,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "ifaceOffset",        IfaceOffset);
     install_fn(ctx, ns, "dialog",            Dialog);
     install_fn(ctx, ns, "uiHighlight",       UiHighlightFn);
+    install_fn(ctx, ns, "uiHighlights",      UiHighlightsFn);
     install_fn(ctx, ns, "centerText",        CenterTextFn);
     install_fn(ctx, ns, "panelRects",        PanelRectsFn);
     install_fn(ctx, ns, "panelViz",          PanelVizFn);

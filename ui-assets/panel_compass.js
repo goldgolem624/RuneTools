@@ -340,19 +340,29 @@
     const plane = (reads[0] && reads[0].p) || 0;
     let W = 384, g, projX, projY, drewTerrain = false;
     if (ext <= 160 && bridge() && bridge().mapWindow) {
-      const half = Math.max(12, Math.min(80, Math.ceil(ext / 2) + 10)), ts = ext <= 80 ? 6 : 4;
-      let meta = null; try { meta = JSON.parse((await bridge().mapWindow(cx0, cy0, plane, half, ts)) || '{}'); } catch (e) {}
+      const half = Math.max(12, Math.min(80, Math.ceil(ext / 2) + 10));
+      // Resolution follows the DISPLAY, like the scan/dig maps: a fixed 6 px per tile over a
+      // small window is a ~144 px image stretched across the whole panel, which is what left a
+      // solved compass looking like a mosaic. mapRes also sizes for device pixels.
+      clueMapSpan = 2 * half;
+      const R = mapRes(clueMapSpan, half);
+      const ts = R.ts;
+      let meta = await mapWindowCached(cx0, cy0, plane, R.half, ts);
       if (myseq !== clueMapDrawSeq) return;                              // newer draw started during the terrain fetch -> bail
-      W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || half;
-      if (cv.width !== W) { cv.width = W; cv.height = W; }
-      g = cv.getContext('2d'); g.clearRect(0, 0, W, W);
-      if (meta && meta.b64) { try { clueMapBlit(g, meta, W, cv); clueDrawNomove(g, meta); clueDrawObjects(g, meta); clueDrawTeleports(g, meta); clueDrawLabelsWindow(g, meta); drewTerrain = true; } catch (e) {} }
+      W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || R.half;
+      // Scale from the window we actually GOT: mapRes may widen it past the requested half to
+      // reach display resolution, and sizing against the requested span would push the extra
+      // ground off the stage instead of showing it.
+      clueMapSpan = 2 * H; clueMapHalfGot = H; applyMapZoom();
+      // Backing store at display resolution so labels/markers are not upscaled with the terrain.
+      g = clueMapCtx(cv, W);
+      if (meta && (meta.png || meta.b64 || meta._k)) { try { clueMapBlit(g, meta, W, cv); clueDrawNomove(g, meta); clueDrawObjects(g, meta); clueDrawTeleports(g, meta); clueDrawLabelsWindow(g, meta); drewTerrain = true; } catch (e) {} }
       projX = sx => (sx - (cx0 - H)) * TS + TS / 2;
       projY = sy => ((2 * H - 1) - (sy - (cy0 - H))) * TS + TS / 2;
     }
     if (!drewTerrain) {
-      W = 384; if (cv.width !== W) { cv.width = W; cv.height = W; }
-      g = cv.getContext('2d'); g.clearRect(0, 0, W, W); g.fillStyle = '#0b0d12'; g.fillRect(0, 0, W, W);
+      W = 384;
+      g = clueMapCtx(cv, W); g.fillStyle = '#0b0d12'; g.fillRect(0, 0, W, W);
       const pad = 30, sc = (W - 2 * pad) / Math.max(1, ext || 1);
       projX = sx => W / 2 + (sx - cx0) * sc;
       projY = sy => W / 2 - (sy - cy0) * sc;

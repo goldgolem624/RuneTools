@@ -286,9 +286,13 @@ await rtx.plugin.cache.modelIcon(id); // -> string: PNG data URL for an interfac
 await rtx.plugin.cache.structParams(id); // -> { ints:{ k:v }, strs:{ k:"v" } } one StructType's params
 await rtx.plugin.cache.itemParams(id);   // -> { ints:{ k:v }, strs:{ k:"v" } } one item's op-249 params
 await rtx.plugin.cache.mapWindow(cx, cy, plane, half, ts);
-// -> { w, t, h, b64 }  top-down terrain render centred on world tile (cx,cy):
-//    w = image px, t = px per tile, h = half-size in tiles; b64 = base64 RGBA to
-//    putImageData onto a canvas. half <= 96 tiles each side, ts <= 8 px/tile.
+// -> { w, t, h, wt, cx, cy, p, png, blk, nomove, objs }  top-down terrain render centred on
+//    world tile (cx,cy). w = image px, t = px per tile, h = half-size in tiles.
+//    png = base64 PNG (RGB, no alpha) - set img.src = 'data:image/png;base64,' + png and
+//    drawImage it. half <= 384 tiles each side, ts <= 32 px/tile.
+//    CHANGED: this used to return `b64`, base64 RAW RGBA for putImageData. A PNG is ~4x
+//    smaller and the browser decodes it natively instead of you walking the string. If you
+//    support both client versions, prefer `png` and fall back to `b64` when it is absent.
 ```
 
 `itemIcon`/`sprite` return data-URL strings you can put straight in `img.src` or a CSS
@@ -338,6 +342,13 @@ await rtx.plugin.overlay.highlightItem(995);
 // continue button, etc.). w/h <= 0 clears.
 const d = await rtx.plugin.state.interface(1184, [15]);
 if (d.hasAbs && d.comps[0]) { const c = d.comps[0]; rtx.plugin.overlay.highlightRect(c.x, c.y, c.w, c.h); }
+
+// SEVERAL boxes at once. Accepts [[x,y,w,h], ...] or [{x,y,w,h}, ...], max 64; [] clears.
+// The call REPLACES the whole set, so redraw your own rects each update rather than adding
+// to them. Note there is ONE highlight set per game client, shared with highlightRect and
+// with the panel's own guides - the last caller wins, and clearing clears everything.
+await rtx.plugin.overlay.highlightRects(d.comps.map(c => [c.x, c.y, c.w, c.h]));
+await rtx.plugin.overlay.highlightRects([]);   // clear
 
 // Draw ground markers on world tiles (the same primitive the clue/quest guides use). Up to 16
 // tiles, each { x, y, plane, label }. Replaces the previous set; pass [] to clear.

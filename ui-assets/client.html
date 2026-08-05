@@ -2585,10 +2585,19 @@
   // stale data): Divination (varp 3839), Invention (6095), Archaeology (9410), Necromancy
   // (11204). The dedicated var holds the LEVEL when <= the skill's cap, else the raw XP target;
   // 0 = no goal. For these the table is NEVER consulted.
-  const GOAL_VAR_OVERRIDES = { 25: [3839, 120], 26: [6095, 150], 27: [9410, 120], 28: [11204, 120] };   // skill index -> [varp, level cap]
+  // Skill index -> the varp holding that skill's TARGET VALUE, for the four skills that are not
+  // on the arithmetic table. Decoded from clientscript-4037, which maps stat id -> value varp:
+  // case 26 -> 3839 (Divination), 27 -> 6095 (Invention), 28 -> 9410 (Archaeology),
+  // 29 -> 11204 (Necromancy). Those stat ids line up with GOAL_STAT_SKILLID above.
+  //
+  // Each of these varps has a PARTNER (3840 / 6096 / 9411 / 11205, and value+25 on the classic
+  // table). The partner is NOT a goal-type flag - live capture showed 9411 = 10 with no target
+  // set at all - and neither varp is cleared when a target is removed, which is why stale values
+  // sit in them. Whether a target EXISTS is not stored in either: see the has-bit below.
+  const GOAL_VAR_OVERRIDES = { 25: 3839, 26: 6095, 27: 9410, 28: 11204 };
   const GOAL_VARP_IDS = (function () {
     const a = [1115, 1117]; for (let s = 1; s <= 29; s++) a.push(1117 + s);
-    for (const k in GOAL_VAR_OVERRIDES) a.push(GOAL_VAR_OVERRIDES[k][0]);
+    for (const k in GOAL_VAR_OVERRIDES) a.push(GOAL_VAR_OVERRIDES[k]);
     return a.join(',');
   })();
   let gameGoals = {};
@@ -2606,20 +2615,22 @@
     try { if (bridge().varsDump) dc = JSON.parse(await bridge().varsDump(myPid())); } catch (e) {}
     const has = (d['1115'] || 0) >>> 0, typ = (d['1117'] || 0) >>> 0;
     const g = {};
+    // Mirrors the game's own pair of accessors:
+    //   script4036(stat) = TESTBIT(varp 1115, stat)  -> IS a target set
+    //   script4037(stat) = [TESTBIT(varp 1117, stat), valueVarp, partnerVarp]  -> 1 = level goal
+    // Both bitmasks are indexed by STAT ID, and they cover the dedicated-varp skills exactly as
+    // they cover the classic ones - only the value's location differs. Earlier this code skipped
+    // the has-bit for those four and inferred a target purely from "value is nonzero", which
+    // reported a target for anyone whose varp still held a cleared goal's value (owner-reported:
+    // "In-game target: level 20" on Archaeology with no target set, varp 9410 stale at 20).
     for (let i = 0; i < GOAL_STAT_SKILLID.length; i++) {
-      const ov = GOAL_VAR_OVERRIDES[i];
-      if (ov) {   // dedicated goal var (Div/Inv/Arch/Necro) is the EXCLUSIVE source for these:
-                  // their arithmetic slot (1117+skillId) carries stale/unrelated data with the
-                  // has-bit set (Invention slot 1144 = 77 shadowing the real 6095 = 145), so
-                  // never consult the table for them. Nonzero = goal; <= cap = level, else XP.
-        const v = ((d[String(ov[0])] || 0) >>> 0) || ((dc && (dc['4:' + ov[0]] >>> 0)) || 0);
-        if (v > 0) g[i] = { mode: v > ov[1] ? 'xp' : 'level', target: v, game: true };
-        continue;
-      }
-      // arithmetic table (classic skills + Dungeoneering): has-bit + value at 1117+skillId.
       const sk = GOAL_STAT_SKILLID[i];
-      if (!((has >>> sk) & 1)) continue;
-      const val = d[String(1117 + sk)] | 0;
+      if (!((has >>> sk) & 1)) continue;                 // no target set for this skill
+      const ov = GOAL_VAR_OVERRIDES[i];
+      // Dedicated-varp skills must NOT read the arithmetic slot (1117+skillId): it holds stale,
+      // unrelated data for them (Invention's slot 1144 = 77, shadowing the real 6095 = 145).
+      const val = ov ? (((d[String(ov)] || 0) >>> 0) || ((dc && (dc['4:' + ov] >>> 0)) || 0))
+                     : (d[String(1117 + sk)] | 0);
       if (val <= 0) continue;
       g[i] = { mode: ((typ >>> sk) & 1) ? 'level' : 'xp', target: val, game: true };
     }
@@ -3710,7 +3721,7 @@ state:{player:function(){return call('state.player',[]);},info:function(){return
 cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);}},
 notify:{windows:function(title,body){return call('notify.windows',[title,body]);}},
 clipboard:{copy:function(t){return call('clipboard.copy',[t]);}},
-overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t){return call('overlay.centerText',[t]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);}},
+overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t){return call('overlay.centerText',[t]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},highlightRects:function(l){return call('overlay.highlightRects',[l||[]]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);}},
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);}}};
@@ -3960,6 +3971,20 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                             return true; } },
     // Highlight an arbitrary screen rect (e.g. a component rect from state.interface -- the continue
     // button, a slot, etc.). w/h <= 0 clears. Overlay-only; the plugin computes the rect.
+    // Several boxes at once. Array of [x,y,w,h] (or {x,y,w,h}); an empty array clears. The set
+    // REPLACES the previous one, and it is shared with highlightRect - there is one highlight
+    // set per client, not one per plugin.
+    'overlay.highlightRects':{ scope: 'overlay', json: false, run: (a, pid) => {
+                            const list = Array.isArray(a[0]) ? a[0] : [];
+                            const recs = [];
+                            for (const r of list.slice(0, 64)) {
+                              const q = Array.isArray(r) ? r : [r && r.x, r && r.y, r && r.w, r && r.h];
+                              const x = pClampNum(q[0], -9999, 99999), y = pClampNum(q[1], -9999, 99999);
+                              const w = pClampNum(q[2], 0, 9999), h = pClampNum(q[3], 0, 9999);
+                              if (w > 0 && h > 0) recs.push(x + ',' + y + ',' + w + ',' + h);
+                            }
+                            try { bridge().uiHighlights(pid, recs.join(';')); } catch (e) {}
+                            return recs.length > 0; } },
     'overlay.highlightRect':{ scope: 'overlay', json: false, run: (a, pid) => {
                             const x = pClampNum(a[0], -9999, 99999), y = pClampNum(a[1], -9999, 99999);
                             const w = pClampNum(a[2], 0, 9999), h = pClampNum(a[3], 0, 9999);

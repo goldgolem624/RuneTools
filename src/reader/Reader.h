@@ -110,6 +110,12 @@ std::string HostJson();
 //   {"version":"..","checks":[{"k":..,"ok":0|1|2,"d":..},..]}   (2 = warn/informational)
 std::string ReaderHealthJson(std::uint32_t pid);
 
+// Stable per-account key for anything stored per character. JX_DISPLAY_NAME when the Jagex
+// Launcher set it, else the in-memory character name - the STEAM client sets no JX_ vars, so
+// the env var alone silently yields no identity there (markers, per-account settings). Empty
+// only before login, when neither source exists yet.
+std::string AccountKey(std::uint32_t pid);
+
 // Serve a per-panel read from a background cache so the UI thread never does the cross-process
 // read itself (keeps it free to pump the embedded host's activation -> no window-switch hitch).
 // Returns the last cached value, or "" before the first background build (caller substitutes its

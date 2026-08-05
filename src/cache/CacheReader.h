@@ -273,4 +273,16 @@ void TileCornerHeights(int wx, int wy, int plane, std::int16_t out[4]);
 int TileEffPlane(int wx, int wy, int plane);
 std::int16_t TileHeightAtPlane(int wx, int wy, int eff_plane);
 
+// PER-TILE corner heights for the whole grid, (2*radius+1)^2 tiles x 4 corners
+// (SW,SE,NE,NW), indexed ((tx * T) + ty) * 4 + corner. Each tile decides its own
+// effective plane ONCE and samples all four corners there -- the same rule as
+// TileCornerHeights, in a single locked pass.
+//
+// This exists because a SHARED corner lattice cannot represent a bridge. A lattice
+// point on a deck edge is owned by both the deck column and the ravine column beside
+// it, but holds one height, so whichever column's bridge flag won dragged the deck
+// quad down to the ravine floor. Per-tile corners let the seam be a clean step.
+void RegionCornerHeightsFill(int player_x, int player_y, int plane, int radius,
+                             std::vector<std::int16_t>& out);
+
 }  // namespace rtx::cache

@@ -6707,8 +6707,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         out.grid_r = grid_radius;
         rtx::cache::RegionBlockedFill(out.player_tx, out.player_ty, out.plane,
                                       grid_radius, out.blocked);
-        rtx::cache::RegionHeightsFill(out.player_tx, out.player_ty, out.plane,
-                                      grid_radius, out.heights);
+        // PER-TILE corners, not a shared lattice: a bridge deck and the ravine beside it
+        // disagree about a shared corner's height, and the lattice could only hold one -
+        // which pulled deck quads down into the ravine (owner-reported on the Lumbridge
+        // bridge). Layout is T*T*4, SW/SE/NE/NW per tile.
+        rtx::cache::RegionCornerHeightsFill(out.player_tx, out.player_ty, out.plane,
+                                            grid_radius, out.heights);
     }
 
     // Drawable when the player was found (needed for the grid + markers) OR a highlight
@@ -7052,6 +7056,17 @@ std::string PerksJson(std::uint32_t pid) {
 // anchor or offset chain broke instead of features silently reading garbage. Checks are
 // ordered root-first: a failure high in the list explains everything below it.
 //   {"version":"..","checks":[{"k":name,"ok":0|1|2,"d":detail},..]}   ok 2 = warn/informational.
+// See Reader.h: the identity every per-account store should use. Mirrors the choice the bank
+// cache has always made (display_name preferred, in-memory character name as the fallback) so
+// one account keys the same whichever launcher started the client.
+std::string AccountKey(std::uint32_t pid) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_states.find((DWORD)pid);
+    if (it == g_states.end()) return {};
+    const auto& s = it->second;
+    return !s.display_name.empty() ? s.display_name : s.character;
+}
+
 std::string ReaderHealthJson(std::uint32_t pid) {
     std::string checks;
     auto add = [&](const char* k, int ok, const std::string& d) {

@@ -866,14 +866,24 @@
     const cv = wrap.querySelector('#hideyMapCanvas'), cap = wrap.querySelector('#hideyMapCap');
     if (!wrap || !cv) return;
     if (!h || !(h.x > 0) || !bridge() || !bridge().mapWindow) { wrap.style.display = 'none'; return; }
-    let meta = null; try { meta = JSON.parse((await bridge().mapWindow(h.x, h.y, h.p || 0, 64, 4)) || '{}'); } catch (e) {}
+    // Fixed 4 px per tile over 128 tiles is a 512 px image; on a scaled display the canvas
+    // backing is larger than that and the terrain gets upscaled. Ask for what the element
+    // actually shows (this map has no zoom, so it is a one-off calculation).
+    // Same oversample as mapRes: the panel View renders at the monitor scale and JS is not
+    // told, so a reported ratio of 1 would under-render this map on any scaled display.
+    const hDpr = Math.max(1.5, Math.min(2, (typeof devicePixelRatio === 'number' && devicePixelRatio > 0) ? devicePixelRatio : 1));
+    let hTs = Math.ceil(((cv.clientWidth || 384) * hDpr) / 128);
+    if (hTs & 1) hTs++;
+    hTs = Math.max(2, Math.min(16, hTs));
+    let meta = await mapWindowCached(h.x, h.y, h.p || 0, 64, hTs);
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, HH = (meta && meta.h) || 24;
     const cx = clueMapCtx(cv, W);
-    if (meta && meta.b64) { try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {} }
+    const hU = cx._upx || 1;   // marker sizes in display px, not terrain px
+    if (meta && (meta.png || meta.b64 || meta._k)) { try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {} }
     const mx = HH * TS + TS / 2, my = (HH - 1) * TS + TS / 2;   // the hole's tile sits at the window centre
-    cx.lineWidth = 5; cx.strokeStyle = 'rgba(0,0,0,0.6)'; cx.beginPath(); cx.arc(mx, my, 11, 0, 6.2832); cx.stroke();
-    cx.lineWidth = 2.6; cx.strokeStyle = '#46e0c0'; cx.beginPath(); cx.arc(mx, my, 11, 0, 6.2832); cx.stroke();
-    cx.beginPath(); cx.arc(mx, my, 2.8, 0, 6.2832); cx.fillStyle = '#46e0c0'; cx.fill();
+    cx.lineWidth = 5 * hU; cx.strokeStyle = 'rgba(0,0,0,0.6)'; cx.beginPath(); cx.arc(mx, my, 11 * hU, 0, 6.2832); cx.stroke();
+    cx.lineWidth = 2.6 * hU; cx.strokeStyle = '#46e0c0'; cx.beginPath(); cx.arc(mx, my, 11 * hU, 0, 6.2832); cx.stroke();
+    cx.beginPath(); cx.arc(mx, my, 2.8 * hU, 0, 6.2832); cx.fillStyle = '#46e0c0'; cx.fill();
     wrap.style.display = '';
     if (cap) cap.textContent = (h.n || 'Hidey-hole') + '  ·  ' + h.x + ', ' + h.y + (h.p ? '  ·  floor ' + h.p : '')
       + (typeof nearLabel === 'function' ? ('  ·  ' + nearLabel(h.x, h.y, h.p || 0)) : '');

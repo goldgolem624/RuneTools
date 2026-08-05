@@ -60,10 +60,24 @@
     const L = WM_LEVELS.find(v => v.ts === ts), ch = L.ch;
     wmQueued.set(k, { key: k, ts: ts, plane: plane, ix: ix, iy: iy, half: ch / 2, cx: ix * ch + ch / 2, cy: iy * ch + ch / 2, pri: pri, busy: false });
   }
-  function wmDecode(meta) {
-    const W = meta.w | 0, bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length);
-    for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  // The reader sends terrain as a PNG (`png`); older builds sent raw RGBA (`b64`). Both are
+  // handled so a panel reload works either side of a rebuild. The PNG decodes natively, which
+  // also skips the per-character base64 walk the raw form needs.
+  async function wmDecode(meta) {
+    const W = meta.w | 0;
     const cv = document.createElement('canvas'); cv.width = W; cv.height = W;
+    if (meta.png) {
+      const img = await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = rej;
+        im.src = 'data:image/png;base64,' + meta.png;
+      });
+      cv.getContext('2d').drawImage(img, 0, 0);
+      return cv;
+    }
+    const bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length);
+    for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
     cv.getContext('2d').putImageData(new ImageData(a, W, W), 0, 0);
     return cv;
   }
@@ -77,7 +91,7 @@
     let rec = null;
     try {
       const meta = JSON.parse((await bridge().mapWindow(best.cx, best.cy, best.plane, best.half, best.ts)) || '{}');
-      rec = { cv: (meta && meta.b64) ? wmDecode(meta) : null };   // "{}" = genuinely no map data here
+      rec = { cv: (meta && (meta.png || meta.b64)) ? await wmDecode(meta) : null };   // "{}" = genuinely no map data here
     } catch (e) {
       rec = null; wmFailAt = Date.now();
       // A static view only pumps from wmDraw; without this a transient bridge failure

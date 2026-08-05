@@ -5,7 +5,32 @@
   let questGSteps = null;            // {"<quest name>":[stepIdx,..], "__focus": name}
   let qgFetching = false, qgSig = '';
   let _qgByLower = null;
+  // The bulk guide data is NOT spliced into the page (see Dock.cpp kFiles): 1.3MB of one line
+  // was half of everything the client parsed at startup, for data only these tabs use. It is
+  // fetched on first use instead. Panels that register their own guide (Murder on the Border,
+  // No Place Like Home) write into window.QUEST_GUIDES at startup, so the load MERGES into
+  // whatever is already there rather than replacing the object.
+  let qgDataState = 0;              // 0 = untried, 1 = loading, 2 = done (or failed)
+  function questGuidesReady() { return qgDataState === 2; }
+  async function questGuidesLoad() {
+    if (qgDataState) return qgDataState === 2;
+    qgDataState = 1;
+    try {
+      const txt = (bridge() && bridge().uiAsset) ? await bridge().uiAsset('quest_guides.js') : '';
+      const a = txt.indexOf('{'), b = txt.lastIndexOf('}');
+      if (a >= 0 && b > a) {
+        const data = JSON.parse(txt.slice(a, b + 1));
+        window.QUEST_GUIDES = window.QUEST_GUIDES || {};
+        for (const k in data) if (!window.QUEST_GUIDES[k]) window.QUEST_GUIDES[k] = data[k];
+        _qgByLower = null;          // rebuilt on the next lookup now the set has grown
+      }
+    } catch (e) { /* leave whatever panels registered themselves */ }
+    qgDataState = 2;
+    qgSig = '';                     // the guide list was rendered without this data: force a repaint
+    return true;
+  }
   function questGuideFor(name) {
+    if (!qgDataState) questGuidesLoad();      // first ask kicks the load; this call returns null
     const G = window.QUEST_GUIDES;
     if (!G || !name) return null;
     if (G[name]) return G[name];

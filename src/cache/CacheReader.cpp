@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <queue>
@@ -1810,13 +1811,35 @@ static void WallLine(int ty, int rot, int size, std::vector<std::pair<int, int>>
     }
 }
 
+// Rendering a window is expensive - an underlay box blur, a hillshade pass and a per-pixel
+// bilinear sample over the whole image - and the panel redraws on a poll, asking for the SAME
+// window again while the player stands still. Keep the last few results; the inputs are static
+// cache data, so a hit stays valid for the life of the process.
+namespace {
+struct MapWinCacheEntry { int cx, cy, plane, half, ts; std::string json; };
+std::deque<MapWinCacheEntry> g_mapWinCache;      // most-recent first; guarded by g_mu
+constexpr std::size_t kMapWinCacheMax = 3;
+}  // namespace
+
 std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
     if (plane < 0 || plane > 3) plane = 0;
     if (half < 8 || half > 384) half = 40;       // tiles each side of the centre (panel-controlled zoom)
-    if (ts < 2 || ts > 16) ts = 6;               // px per tile
+    if (ts < 2 || ts > 32) ts = 6;               // px per tile (32 = ~3x zoom before upscaling)
     if (ts & 1) ++ts;                            // even keeps the tile-shape split exact
+    // Looked up AFTER the clamps, so two requests differing only in an out-of-range argument
+    // still share an entry.
+    for (std::size_t i = 0; i < g_mapWinCache.size(); ++i) {
+        const auto& e = g_mapWinCache[i];
+        if (e.cx == cx && e.cy == cy && e.plane == plane && e.half == half && e.ts == ts) {
+            if (i == 0) return e.json;
+            MapWinCacheEntry tmp = e;
+            g_mapWinCache.erase(g_mapWinCache.begin() + (std::ptrdiff_t)i);
+            g_mapWinCache.push_front(tmp);
+            return g_mapWinCache.front().json;
+        }
+    }
     const int HALF = half, TS = ts;
     const int WT = 2 * HALF, W = WT * TS;
     std::vector<unsigned char> rgba((size_t)W * W * 4, 0);
@@ -2178,12 +2201,15 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             blkOut[(std::size_t)wx * WT + wy] = (f & kTileBlockFull) ? 1 : 0;
             nomove[(std::size_t)wx * WT + wy] = f & (kTileBlockFull | kTileBlockN | kTileBlockS | kTileBlockE | kTileBlockW);
         }
-    return "{\"w\":" + std::to_string(W) + ",\"t\":" + std::to_string(TS) +
+    std::string out = "{\"w\":" + std::to_string(W) + ",\"t\":" + std::to_string(TS) +
            ",\"h\":" + std::to_string(HALF) + ",\"wt\":" + std::to_string(WT) +
            ",\"cx\":" + std::to_string(cx) + ",\"cy\":" + std::to_string(cy) + ",\"p\":" + std::to_string(plane) +
-           ",\"b64\":\"" + Base64Std(rgba) + "\",\"blk\":\"" + Base64Std(blkOut) +
+           ",\"png\":\"" + Base64Std(EncodePngRgb(rgba.data(), W, W)) + "\",\"blk\":\"" + Base64Std(blkOut) +
            "\",\"nomove\":\"" + Base64Std(nomove) +
            "\",\"objs\":\"" + Base64Std(objsOut) + "\"}";
+    g_mapWinCache.push_front(MapWinCacheEntry{ cx, cy, plane, half, ts, out });
+    while (g_mapWinCache.size() > kMapWinCacheMax) g_mapWinCache.pop_back();
+    return out;
 }
 
 
@@ -2961,6 +2987,35 @@ std::int16_t TileHeight(int wx, int wy, int plane) {
     EnsureInit();
     const auto& td = RegionTilesLocked(rx, ry);
     return AbsHeightLocked(td, wx & 0x3f, wy & 0x3f, plane);
+}
+
+void RegionCornerHeightsFill(int player_x, int player_y, int plane, int radius,
+                             std::vector<std::int16_t>& out) {
+    if (radius < 1) radius = 1;
+    const int T = 2 * radius + 1;          // tiles per axis
+    out.assign((std::size_t)T * T * 4, (std::int16_t)-32768);
+    if (plane < 0 || plane > 3) plane = 0;
+    static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };   // SW,SE,NE,NW
+
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    for (int tx = 0; tx < T; ++tx) {
+        for (int ty = 0; ty < T; ++ty) {
+            const int wx = player_x - radius + tx, wy = player_y - radius + ty;
+            if (wx < 0 || wy < 0) continue;
+            const int rx = wx >> 6, ry = wy >> 6;
+            if (rx > 127 || ry > 255) continue;
+            // ONE layer decision for this tile column, then all four corners read at it.
+            const int ep = EffPlaneLocked(RegionTilesLocked(rx, ry), wx & 0x3f, wy & 0x3f, plane);
+            const std::size_t base = ((std::size_t)tx * T + ty) * 4;
+            for (int c = 0; c < 4; ++c) {
+                const int cwx = wx + CX[c], cwy = wy + CY[c];
+                const int crx = cwx >> 6, cry = cwy >> 6;
+                if (crx > 127 || cry > 255) continue;
+                out[base + c] = AbsSumLocked(RegionTilesLocked(crx, cry), cwx & 0x3f, cwy & 0x3f, ep);
+            }
+        }
+    }
 }
 
 void RegionHeightsFill(int player_x, int player_y, int plane, int radius,

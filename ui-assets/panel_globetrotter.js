@@ -193,9 +193,14 @@
       mapWrap.appendChild(mapStage);
       const mapCap = document.createElement('div'); mapCap.id = 'clueMapCap'; mapCap.className = 'clue-map-cap'; mapWrap.appendChild(mapCap);
       const mapFloors = document.createElement('div'); mapFloors.id = 'clueMapFloors'; mapFloors.style.cssText = 'display:none;gap:5px;align-items:center;margin-top:4px;font-size:11px;flex-wrap:wrap'; mapWrap.appendChild(mapFloors);
-      mapFloors.addEventListener('click', e => {   // manual floor switch for a multi-floor scan map (ignored while you're in the region)
+      // Manual floor switch for a multi-floor scan map. Clicking the floor you are already
+      // viewing releases the pick and goes back to following the player's own floor.
+      mapFloors.addEventListener('click', e => {
         const b = e.target.closest('button[data-floor]'); if (!b) return;
-        scanPlaneSel = +b.dataset.floor; scanPlaneSelFor = activeClueId; selectClue();
+        const want = +b.dataset.floor;
+        scanPlaneSel = (scanPlaneSel === want) ? null : want;
+        scanPlaneSelFor = activeClueId;
+        selectClue();
       });
       wrap.appendChild(mapWrap);
       const list = document.createElement('div'); list.id = 'clueList'; list.className = 'pet-list'; wrap.appendChild(list);
@@ -261,6 +266,8 @@
   // Auto-selects a held clue so the solver always shows one. Puzzle clues (slider / lockbox /
   // towers) list here too and route through selectClue.
   // Clue ids seen in the backpack, so a clue LEAVING it can be detected (= completed).
+  // fetchClues already resets on the ARRIVAL edge (a clue id re-entering the inventory); this
+  // is the departure edge, which also covers a swap that completes inside one poll interval.
   // Confirmed over two polls: a single empty read during a bridge hiccup must not wipe the
   // eliminations of a scan you are still solving.
   const clueHeldSeen = new Set(), clueGoneCnt = {};
@@ -275,7 +282,7 @@
         clueGoneCnt[id] = (clueGoneCnt[id] || 0) + 1;
         if (clueGoneCnt[id] < 2) continue;
         clueHeldSeen.delete(id); delete clueGoneCnt[id];
-        try { if (typeof scanElimClearFor === 'function') scanElimClearFor(id); } catch (e) {}
+        try { scanElimResetFor(id); } catch (e) {}   // same reset the arrival edge uses
       }
     }
     const list = (clueLiveTier < 0) ? hl : hl.filter(c => c.t === clueLiveTier);

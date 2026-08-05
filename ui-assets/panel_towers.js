@@ -133,18 +133,6 @@
     const rec = scanSpotsFor(c); if (!rec) return;
     scanElimByArea[rec.key || ('en' + c.en)] = new Set(); scanElimSave(); selectClue();
   }
-  // Not persisting was only half the fix: the key is the AREA, so a second scan clue in an area
-  // already solved THIS SESSION opened pre-solved on the previous dig tile (each clue rolls its
-  // own spot). Wipe an area's eliminations the moment its clue leaves the backpack.
-  function scanElimClearFor(clueId) {
-    const c = CLUE_DATA.find(z => z.i === clueId);
-    if (!c || c.a !== 'scan') return false;
-    const rec = scanSpotsFor(c); if (!rec) return false;
-    const k = rec.key || ('en' + c.en);
-    if (!scanElimByArea[k] || !scanElimByArea[k].size) return false;
-    scanElimByArea[k] = new Set();
-    return true;
-  }
   // The scan ring is a type-4 scene "special": gfx 6841 = blue (d > 2R), 6842 = orange (R < d <=
   // 2R), 6843 = red (d <= R), giving the exact band for per-band elimination.
   async function scanRingBand() {
@@ -157,6 +145,8 @@
     return null;
   }
   let scanBandNote = '';
+  // Tile the orb path claimed per area, so a claim the game later contradicts can be undone.
+  const scanOrbClaim = {};
   function scanBandSetCap() {
     const cap = $('clueMapCap'); if (!cap || cap.textContent.indexOf('Scan') !== 0) return;
     const base = cap.textContent.replace(/\s*·\s*(ring:|exact dig tile).*$/, '');
@@ -170,6 +160,26 @@
     // A compass clue is solved by the needle, not the orb - bail before any scan logic,
     // otherwise the compass's own target varc gets read as a scan solution.
     if (rec.spots.length > COMPASS_FIELD_MIN || (typeof isCompassClue === 'function' && isCompassClue(c))) return;
+    // Drop an orb answer once you are well away from it. An orb claim is only meaningful where
+    // it was read - you cannot dig a tile 50+ tiles behind you - so walking off releases it and
+    // the candidates re-open. This also clears a WRONG claim without needing a manual reset,
+    // which the earlier "in range but no red ring" test only caught if you happened to stand
+    // next to the bad tile.
+    const ORB_CLAIM_DROP = 50;
+    try {
+      const key0 = rec.key || ('en' + c.en);
+      const claim = scanOrbClaim[key0];
+      if (claim) {
+        const P0 = await scanPlayerTile();
+        if (P0 && Math.max(Math.abs(P0.x - claim[0]), Math.abs(P0.y - claim[1])) > ORB_CLAIM_DROP) {
+          delete scanOrbClaim[key0];
+          scanElimByArea[key0] = new Set();
+          scanBandNote = '';
+          selectClue();
+          return;
+        }
+      }
+    } catch (e) {}
     // PRIMARY: the type-13 "scan coordinate" ground marker. It only spawns once the orb goes
     // RED (same window as op83), but unlike op83 it needs no packet hook - the reader picks it
     // straight out of the worldview vector and classifies it by data shape (specials t=13,
@@ -204,16 +214,22 @@
     // player is within orb range (<=11 paces, red pulse). The reader reads that ring straight
     // from the LIVE scene-graphic registry, so it is readable for as long as the ring is on
     // screen. The registry is a generic graphics channel, so a coordinate counts only when it
-    // lands ON a candidate spot; that check is what makes a false positive impossible, and it
-    // lets us accept the whole candidate list the reader returns.
+    // lands ON a candidate spot. That check NARROWS false positives but does not remove them -
+    // near a candidate, an unrelated graphic passes it - so the red ring below is the real gate.
     try {
       if (bridge().scanSolution) {
         const sol = JSON.parse(bridge().scanSolution(myPid()) || '{}');
         const pts = (sol && sol.ok) ? (Array.isArray(sol.cands) && sol.cands.length ? sol.cands : [[sol.x, sol.y]]) : [];
-        // The ring is only PLACED while the player stands within orb range of the dig tile, so
-        // a reading from far away cannot be this clue's ring - it is a leftover graphic, and
-        // accepting it eliminated 16 of 17 real candidates and declared a false SOLVED from
-        // 2000 tiles away. Require the point to be in range (with slack) and on our plane.
+        // The registry this reads is a GENERIC graphics channel, and the dig tile is published
+        // to it only while the ring is RED (d <= R; op83 is absent at orange and out of range).
+        // Landing within 2 tiles of a candidate is NOT enough on its own: standing near a
+        // candidate, an unrelated graphic satisfied that and declared SOLVED while the game was
+        // still saying "You are too far away and nothing scans". So require the red ring, which
+        // is the same condition the game uses to reveal the tile at all.
+        const bandNow = await scanRingBand();
+        if (bandNow !== 'red') throw 0;                // no red ring -> nothing to read; fall through
+        // A red ring is by definition within orb range, so a point far from the player belongs
+        // to something else entirely.
         const Porb = await scanPlayerTile();
         const ORB_MAX = 24;
         let bi = -1, bd = 1e9, bp = null;
@@ -231,6 +247,7 @@
           let changed = false;
           rec.spots.forEach((s, i) => { if (i !== bi && !elim.has(i)) { elim.add(i); changed = true; } });
           scanBandNote = 'exact dig tile from orb (' + bp[0] + ', ' + bp[1] + ')';
+          scanOrbClaim[rec.key || ('en' + c.en)] = [bp[0], bp[1]];
           if (changed) { scanElimSave(); selectClue(); }
           scanBandSetCap();
           return;
@@ -307,14 +324,29 @@
   // has to stay tied to the FORMER or the map would jump when the window narrows.
   let clueMapSpan = 192, clueMapHalfGot = 96;
   const MAP_MAX_BACK = 2048;      // px per side of the terrain image; it travels as base64 RGBA
+  const MAP_MAX_TS = 32;          // reader's px-per-tile ceiling (CacheReader MapWindowJson)
   // Pick the pixels-per-tile the display actually needs, then the widest window that fits the
   // byte budget at that resolution. Asking for less is an upscale, which is what left the map
   // soft when zoomed; asking for more just inflates the transfer.
   function mapRes(spanTiles, maxHalf) {
     const stageW = (clueMapStageEl && clueMapStageEl.clientWidth) || 320;
     const pxTile = stageW * (clueMapZoom || 1) / Math.max(1, spanTiles);
-    let ts = Math.ceil(pxTile); if (ts & 1) ts++;
-    ts = Math.max(2, Math.min(16, ts));
+    // Ask for DEVICE pixels. clueMapCtx sizes the canvas backing to cssW * devicePixelRatio, so
+    // on a scaled display a terrain image measured in CSS pixels is SMALLER than the canvas and
+    // gets nearest-neighbour upscaled - blocky terrain under crisp (canvas-drawn) labels.
+    const dprRep = (typeof devicePixelRatio === 'number' && devicePixelRatio > 0) ? devicePixelRatio : 1;
+    // The panel View renders at the MONITOR scale (Dock.cpp SyncPanelDpi) and nothing tells JS,
+    // so a reported 1 on a scaled display would silently under-render. Oversample to cover it.
+    const dpr = Math.max(1.5, Math.min(2, dprRep));
+    // The whole requirement is ts >= pxTile * dpr, and the WINDOW SIZE CANCELS OUT of it: the
+    // canvas is sized to 2*half*pxTile CSS px and the image is 2*half*ts, so covering the
+    // display needs only enough pixels PER TILE. Earlier versions widened the window to chase a
+    // display size that grows with zoom - that was measuring the wrong thing, and it changed the
+    // framing to compensate for a resolution ceiling.
+    let ts = Math.ceil(pxTile * dpr); if (ts & 1) ts++;
+    ts = Math.max(2, Math.min(MAP_MAX_TS, ts));
+    // Window: the widest that fits the transfer budget at that resolution. Narrower than the
+    // caller asked for only when the budget binds, which costs pan range, never sharpness.
     const half = Math.max(8, Math.min(maxHalf, Math.floor(MAP_MAX_BACK / (2 * ts))));
     return { ts: ts, half: half, pxTile: pxTile };
   }
@@ -563,8 +595,8 @@
         const ac = CLUE_DATA.find(z => z.i === activeClueId);
         if (ac && ac.a === 'scan') {
           const r = scanSpotsFor(ac), Rr = ((r && r.r) || 14) + scanRangeBonus();
-          if (r && r.spots && r.spots.some(s => (s[2] || 0) === (P.p || 0) && Math.abs(s[0] - P.x) <= 2 * Rr && Math.abs(s[1] - P.y) <= 2 * Rr)) {
-            scanPlaneSel = null; selectClue();
+          if (scanPlaneSel == null && r && r.spots && r.spots.some(s => (s[2] || 0) === (P.p || 0) && Math.abs(s[0] - P.x) <= 2 * Rr && Math.abs(s[1] - P.y) <= 2 * Rr)) {
+            selectClue();   // following: redraw on the floor you walked onto
           }
         }
       }
@@ -664,7 +696,10 @@
     const cssW = cv.clientWidth || W;
     // EXACTLY the displayed pixel count: any mismatch makes the browser resample the whole
     // canvas, which is what left the map soft at rest.
-    const back = Math.max(64, Math.round(cssW * dpr));
+    // The backing must never be SMALLER than the terrain image: downsampling here and then
+    // letting the compositor scale the canvas back up is how a correctly-sized terrain still
+    // arrived blurry. Bounded so a deep zoom cannot allocate an absurd surface.
+    const back = Math.max(64, Math.min(4096, Math.max(Math.round(cssW * dpr), W)));
     if (cv.width !== back || cv.height !== back) { cv.width = back; cv.height = back; }
     const cx = cv.getContext('2d');
     cx.setTransform(back / W, 0, 0, back / W, 0, 0);
@@ -676,20 +711,80 @@
     cx._upx = W / Math.max(1, cssW);
     return cx;
   }
+  // mapWindow is the most expensive call the panel makes: the reader re-renders the whole
+  // window and the terrain comes back as a base64 RGBA string (megabytes at a wide window).
+  // The maps redraw on a poll, so a stationary player was paying that repeatedly for a window
+  // that had not changed. Cache by the EXACT request - both the parsed result and the decoded
+  // bitmap, so a repeat draw costs neither the bridge call nor the base64 decode.
+  const MAP_WIN_CACHE = new Map();      // key -> {meta, img}
+  const MAP_WIN_MAX = 2;                // each held bitmap can be ~16MB; two covers scan + dig
+  async function mapWindowCached(cx, cy, plane, half, ts) {
+    if (!bridge() || !bridge().mapWindow) return null;
+    const k = cx + ',' + cy + ',' + plane + ',' + half + ',' + ts;
+    const hit = MAP_WIN_CACHE.get(k);
+    if (hit) { MAP_WIN_CACHE.delete(k); MAP_WIN_CACHE.set(k, hit); return hit.meta; }   // LRU touch
+    let meta = null;
+    try { meta = JSON.parse((await bridge().mapWindow(cx, cy, plane, half, ts)) || '{}'); } catch (e) { return null; }
+    if (!meta || !meta.w) return meta;
+    meta._k = k;
+    const ent = { meta: meta, img: null };
+    MAP_WIN_CACHE.set(k, ent);
+    while (MAP_WIN_CACHE.size > MAP_WIN_MAX) MAP_WIN_CACHE.delete(MAP_WIN_CACHE.keys().next().value);
+    // The reader sends the terrain as a PNG (alpha dropped - the map is opaque). Let the browser
+    // decode it: native, off the base64-per-character path the raw-RGBA form needed. Older
+    // builds still send `b64`, so that path stays as the fallback.
+    if (meta.png) {
+      try {
+        const img = await new Promise((res, rej) => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = rej;
+          im.src = 'data:image/png;base64,' + meta.png;
+        });
+        const own = document.createElement('canvas');
+        own.width = meta.w; own.height = meta.w;
+        own.getContext('2d').drawImage(img, 0, 0);
+        ent.img = own;
+      } catch (e) { ent.img = null; }
+      meta.png = '';                 // decoded; the string is the bulk of the memory
+    }
+    return meta;
+  }
   // Terrain arrives as raw pixels at W; putImageData ignores the transform, so blit it
   // through an offscreen canvas. Kept unsmoothed so tiles stay crisp, as before.
   let _clueOff = null;
   function clueMapBlit(cx, meta, W, cv0) {
+    const ent = meta._k ? MAP_WIN_CACHE.get(meta._k) : null;
+    if (ent && ent.img) {                 // already decoded once: straight to the draw
+      const sm0 = cx.imageSmoothingEnabled;
+      cx.imageSmoothingEnabled = (cv0 && cv0.width < W);
+      cx.drawImage(ent.img, 0, 0, W, W);
+      cx.imageSmoothingEnabled = sm0;
+      clueMapGrid(cx, meta, W);
+      return;
+    }
+    if (!meta.b64) { clueMapGrid(cx, meta, W); return; }   // PNG path decoded (or failed) in mapWindowCached
     const bin = atob(meta.b64), a = new Uint8ClampedArray(bin.length);
     for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
     if (!_clueOff) _clueOff = document.createElement('canvas');
     if (_clueOff.width !== W) { _clueOff.width = W; _clueOff.height = W; }
     _clueOff.getContext('2d').putImageData(new ImageData(a, W, W), 0, 0);
+    let src = _clueOff;
+    if (ent) {
+      // Keep this window's decoded bitmap and DROP its base64: the string is the bulk of the
+      // memory and nothing reads it again once decoded. _clueOff stays the scratch buffer for
+      // uncached windows, so the cached one needs its own canvas.
+      const own = document.createElement('canvas');
+      own.width = W; own.height = W;
+      own.getContext('2d').drawImage(_clueOff, 0, 0);
+      ent.img = own; src = own;
+      meta.b64 = '';
+    }
     // Upscaling keeps hard tile edges (nearest); downscaling smooths, or the minified
     // terrain aliases badly.
     const sm = cx.imageSmoothingEnabled;
     cx.imageSmoothingEnabled = (cv0 && cv0.width < W);
-    cx.drawImage(_clueOff, 0, 0, W, W);
+    cx.drawImage(src, 0, 0, W, W);
     cx.imageSmoothingEnabled = sm;
     clueMapGrid(cx, meta, W);
   }
@@ -747,6 +842,36 @@
   // (two stacks of one id hold different Extra_ints).
   let teleWornRows = null, teleInvRows = null;
   let teleQuestVp = {};        // live varps for the gated quests (the quest system's own trackers)
+  // Currency-pouch balances, by the currency's ITEM id. Some teleports are paid for with a
+  // pouch currency (memory strands), which never appears in the backpack - a held-item check
+  // reports "you don't have any" to everyone. The game's own registry (DBTable 66) names each
+  // currency's backing var and the Currencies panel already decodes it, so read through that
+  // rather than baking a second mapping. undefined = not resolved yet -> the gate stays unread
+  // rather than failing.
+  let teleCurVal = {}, teleCurName = {};
+  async function teleCurEnsure(items) {
+    if (!items.length || typeof cyLoadRegistry !== 'function' || typeof CY_VARS === 'undefined') return;
+    try { await cyLoadRegistry(); } catch (e) { return; }
+    if (typeof cyRows === 'undefined' || !cyRows) return;
+    const vps = [], vbs = [], want = [];
+    for (const obj of items) {
+      const r = cyRows.find(x => x.obj === obj);
+      if (!r) continue;
+      const d = CY_VARS[r.row];
+      if (!d) continue;                                   // no baked mapping -> leave unread
+      (d[0] === 'p' ? vps : vbs).push(d.slice(1));
+      want.push({ obj: obj, kind: d[0], id: d.slice(1) });
+      if (r.name) teleCurName[obj] = r.name.toLowerCase();
+    }
+    if (!want.length) return;
+    let vp = {}, vb = {};
+    try { if (vps.length) vp = JSON.parse(await bridge().varps(myPid(), vps.join(','))) || {}; } catch (e) {}
+    try { if (vbs.length) vb = JSON.parse(await bridge().varbits(myPid(), vbs.join(','))) || {}; } catch (e) {}
+    for (const w of want) {
+      const v = (w.kind === 'p') ? vp[w.id] : vb[w.id];
+      if (v !== undefined) teleCurVal[w.obj] = v | 0;
+    }
+  }
   async function clueMapTelePrefetch() {
     // Quest gates ride the quest system (bridge().quests defs + questStatus): the quest
     // achievement for e.g. A Fairy Tale II carries no live requirement at all (just
@@ -755,8 +880,7 @@
       const vps = new Set([1297, 2615, 2339, 2695, 2675, 1295, 2793, 2426, 2427]);   // questStatus special-case varps
       const wantIds = new Set();
       for (const T of MAP_TELEPORTS) {
-        const qid = T.req ? teleQuestIdOf(T.req) : null;
-        if (qid != null) wantIds.add(qid);
+        if (T.req) for (const qid of teleQuestIdsOf(T.req)) wantIds.add(qid);   // every candidate: the varp prefetch must cover whichever resolves
         for (const nm of teleRqGates(T).quests) if (TELE_QUEST_IDS[nm] != null) wantIds.add(TELE_QUEST_IDS[nm]);
         for (const grp of (T.req && T.req.any) || []) {   // quests named inside an alternative route
           for (const c of grp) if (c.questId != null) wantIds.add(c.questId);
@@ -768,6 +892,12 @@
         if (q) { if (q.v) vps.add(q.v[0]); if (q.b) vps.add(q.b[0]); }
       }
       try { teleQuestVp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))) || {}; } catch (e) {}
+    }
+    // Pouch currencies named by any row's req.cur
+    {
+      const cur = new Set();
+      for (const T of MAP_TELEPORTS) if (T.req && T.req.cur) cur.add(T.req.cur);
+      if (cur.size) await teleCurEnsure([...cur]);
     }
     // Task-set gates need the achievement STATE, not just the definitions - and they need it
     // before this pass reports anything, or every set reads as "not read yet". Waiting on the
@@ -1302,10 +1432,22 @@
   // Resolve a row's quest to an id. Prefer req.questId: quest NAMES differ between sources
   // ("A Fairy Tale II - Cure a Queen" vs the list's "Fairy Tale II - Cure a Queen, A"), and
   // an unmatched name silently passes the gate.
+  // questId may be an ARRAY when the quest-config archive holds more than one entry under a
+  // name (Cabin Fever is in there twice). Only the entry carrying param 1345 reaches the
+  // client's list, so resolve to whichever candidate the client actually knows - an id that
+  // is not in the list resolves to nothing and would let the gate pass unchecked.
+  function teleQuestIdsOf(r) {
+    if (r.questId != null) return Array.isArray(r.questId) ? r.questId : [r.questId];
+    if (r.questName && TELE_QUEST_IDS[r.questName] != null) return [TELE_QUEST_IDS[r.questName]];
+    return [];
+  }
   function teleQuestIdOf(r) {
-    if (r.questId != null) return r.questId;
-    if (r.questName && TELE_QUEST_IDS[r.questName] != null) return TELE_QUEST_IDS[r.questName];
-    return null;
+    const ids = teleQuestIdsOf(r);
+    if (!ids.length) return null;
+    if (typeof QUEST_BY_ID !== 'undefined' && QUEST_BY_ID) {
+      for (const id of ids) if (QUEST_BY_ID.get(id)) return id;
+    }
+    return ids[0];
   }
   function teleQuestOk(r) {
     const id = teleQuestIdOf(r);
@@ -1504,22 +1646,38 @@
       // listing each as its own marker AND its own tooltip row just says the same thing twice.
       const cellFor = new Set(), teleAlso = new Map();
       {
-        const pick = new Map();
         const rank = T => (teleOffPlane.has(T) ? 2 : 0) + (teleWhyFull(T) ? 1 : 0);
+        // Bucket by tile + chip, then by SOURCE. Folding only ever happens ACROSS sources: two
+        // rows from one source on one tile are two options of that source (a spell and its
+        // tele-group form, the five slayer masks) and both must show - collapsing them dropped
+        // one with nothing to name it, since an "also via" line of the same source says nothing.
+        // Plane is deliberately not in the key: sources disagree about the floor of a shared
+        // tile (Lost Grove BJS), and rank already prefers the on-plane row.
+        const bucket = new Map();
         for (const m of g) {
-          const k = m.T.x + ',' + m.T.y + ',' + (m.T.p || 0) + '|' + (teleKb(m.T) || '');
-          const prev = pick.get(k);
-          if (!prev) { pick.set(k, m); continue; }
-          const loser = rank(m.T) < rank(prev.T) ? prev : m;
-          if (rank(m.T) < rank(prev.T)) pick.set(k, m);
-          const win = pick.get(k);
-          if (!teleAlso.has(win)) teleAlso.set(win, []);
-          teleAlso.get(win).push(loser);
-          // the demoted entry's own alternatives move across with it
-          for (const q of (teleAlso.get(loser) || [])) teleAlso.get(win).push(q);
-          teleAlso.delete(loser);
+          const k = m.T.x + ',' + m.T.y + '|' + (teleKb(m.T) || '');
+          if (!bucket.has(k)) bucket.set(k, new Map());
+          const bySrc = bucket.get(k), sk = m.T.src || '';
+          if (!bySrc.has(sk)) bySrc.set(sk, []);
+          bySrc.get(sk).push(m);
         }
-        for (const m of pick.values()) cellFor.add(m);
+        for (const bySrc of bucket.values()) {
+          let bestKey = null, bestR = 99;
+          for (const [sk, arr] of bySrc) {
+            let r = 99;
+            for (const m of arr) r = Math.min(r, rank(m.T));
+            if (r < bestR) { bestR = r; bestKey = sk; }
+          }
+          const keep = bySrc.get(bestKey);
+          for (const m of keep) cellFor.add(m);          // every option of the winning source
+          let head = keep[0];
+          for (const m of keep) if (rank(m.T) < rank(head.T)) head = m;
+          for (const [sk, arr] of bySrc) {
+            if (sk === bestKey) continue;
+            if (!teleAlso.has(head)) teleAlso.set(head, []);
+            for (const m of arr) teleAlso.get(head).push(m);
+          }
+        }
       }
       const box = document.createElement('div');
       box.className = 'clue-map-lode clue-map-tele' + (cellFor.size > 1 ? ' clue-map-telebox' : '')
@@ -1534,7 +1692,8 @@
         cell.className = 'cml-cell';
         const icon = document.createElement('div');
         const url = T.iconUrl || (T.ico ? resolveIcon(T.ico) : (T.item ? resolveIcon(T.item) : ''));
-        if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
+        if (T.iconUrl) { icon.className = 'cml-icon'; setIconBg(icon, T.iconUrl); }
+        else if (T.sp) { icon.className = 'cml-icon'; loadSpriteIcon(icon, T.sp); }
         else if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
         else { icon.className = 'cml-dot'; }
         cell.appendChild(icon);
@@ -1550,6 +1709,12 @@
         const reqBlock = teleReqBlock(T);   // requirements + reasons, each stated once
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
+        // Pouch currency: report the LIVE balance rather than gating on it. The count is the
+        // useful fact ("9,900 memory strands"); a red dot would only repeat what 0 already says.
+        if (T.req && T.req.cur != null) {
+          const bal = teleCurVal[T.req.cur];
+          if (bal !== undefined) parts.push(bal.toLocaleString() + ' ' + (teleCurName[T.req.cur] || 'in the pouch'));
+        }
         if (teleInPassage(T) && telePassage.free) parts.push('unlimited charges (in the passage)');
         else { const iv = teleItemChargeVal(T);
           if (iv !== null) { const mx = teleItemChargeMax(T);
@@ -1618,8 +1783,8 @@
     const inArea = Pnow && planeCount[Pnow.p] && Pnow.x >= aminx - 2 * Rr && Pnow.x <= amaxx + 2 * Rr && Pnow.y >= aminy - 2 * Rr && Pnow.y <= amaxy + 2 * Rr;
     if (scanPlaneSelFor !== activeClueId) { scanPlaneSel = null; scanPlaneSelFor = activeClueId; }   // a manual pick is per-clue
     let plane;
-    if (inArea) { plane = Pnow.p; scanPlaneSel = null; }
-    else if (scanPlaneSel != null && planeCount[scanPlaneSel]) plane = scanPlaneSel;   // remote -> honour the manual floor switch
+    if (scanPlaneSel != null && planeCount[scanPlaneSel]) plane = scanPlaneSel;   // manual pick wins, in the area or not
+    else if (inArea) plane = Pnow.p;
     else { plane = 0; let bc = -1; for (const p in planeCount) if (planeCount[p] > bc) { bc = planeCount[p]; plane = +p; } }
     const onPlane = s => (s[2] || 0) === plane;
     const offFloors = spots.length - (planeCount[plane] || 0);  // spots on other floors (shown in the caption)
@@ -1652,7 +1817,7 @@
       const R = mapRes(clueMapSpan, half);
       const ts = R.ts;
       let meta = null;
-      try { meta = JSON.parse((await bridge().mapWindow(ccx, ccy, plane, R.half, ts)) || '{}'); } catch (e) {}
+      meta = await mapWindowCached(ccx, ccy, plane, R.half, ts);
       if (myseq !== clueMapDrawSeq) return;
       W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || R.half;
       clueMapHalfGot = H; applyMapZoom();
@@ -1661,7 +1826,7 @@
       // through clueMapCtx means only the terrain is upscaled (unsmoothed, so it stays
       // blocky rather than soft) while labels, rings and the grid render natively.
       cx = clueMapCtx(cv, W);
-      if (meta && meta.b64) { try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
+      if (meta && (meta.png || meta.b64 || meta._k)) { try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
       projX = sx => (sx - (ccx - H)) * TS + TS / 2;
       projY = sy => ((2 * H - 1) - (sy - (ccy - H))) * TS + TS / 2;
       lmBox = [ccx - H, ccy - H, ccx + H, ccy + H];           // the full rendered window -> show all visible landmarks
@@ -1746,15 +1911,17 @@
       const floors = Object.keys(planeCount).map(Number).sort((a, b) => a - b);
       if (floors.length <= 1) { fl.style.display = 'none'; fl._sig = ''; }
       else {
-        const fsig = floors.join(',') + '|' + plane + '|' + (inArea ? 1 : 0);
+        const pinned = scanPlaneSel != null;
+        const fsig = floors.join(',') + '|' + plane + '|' + (inArea ? 1 : 0) + '|' + (pinned ? 1 : 0);
         if (fl._sig !== fsig) {
           fl._sig = fsig; fl.style.display = 'flex';
-          const lab = '<span style="opacity:0.6;margin-right:2px">' + (inArea ? 'floor (following you):' : 'view floor:') + '</span>';
+          const lab = '<span style="opacity:0.6;margin-right:2px">'
+                    + (pinned ? 'viewing floor (click again to follow you):' : inArea ? 'floor (following you):' : 'view floor:') + '</span>';
           fl.innerHTML = lab + floors.map(p => {
             const on = p === plane;
             const st = 'padding:1px 8px;border-radius:5px;border:1px solid ' + (on ? '#46e0c0' : 'rgba(255,255,255,0.14)')
-              + ';background:' + (on ? 'rgba(70,224,192,0.18)' : 'rgba(255,255,255,0.05)') + ';color:inherit;cursor:' + (inArea ? 'default' : 'pointer') + ';font-size:11px';
-            return '<button data-floor="' + p + '"' + (inArea ? ' disabled' : '') + ' style="' + st + '">' + p + ' <span style="opacity:0.55">(' + planeCount[p] + ')</span></button>';
+              + ';background:' + (on ? 'rgba(70,224,192,0.18)' : 'rgba(255,255,255,0.05)') + ';color:inherit;cursor:pointer;font-size:11px';
+            return '<button data-floor="' + p + '" style="' + st + '">' + p + ' <span style="opacity:0.55">(' + planeCount[p] + ')</span></button>';
           }).join('');
         }
       }
@@ -1780,14 +1947,14 @@
       // ground that is off-screen anyway.
       clueMapSpan = 192;
       const R = mapRes(clueMapSpan, 96);
-      try { meta = JSON.parse((await bridge().mapWindow(t.x, t.y, t.p || 0, R.half, R.ts)) || '{}'); } catch (e) {}
+      meta = await mapWindowCached(t.x, t.y, t.p || 0, R.half, R.ts);
     }
     if (myseq !== clueMapDrawSeq) return;
     if (myseq !== clueMapDrawSeq) return;
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, H = (meta && meta.h) || 24;
     clueMapHalfGot = H; applyMapZoom();
     const cx = clueMapCtx(cv, W);
-    if (meta && meta.b64) {
+    if (meta && (meta.png || meta.b64 || meta._k)) {
       try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {}
     }
     // the clue tile is rendered at the window centre: window tile (H,H) -> image (H*TS,(H-1)*TS).
@@ -1840,7 +2007,7 @@
     let ways = lodeNote + teleNote;
     if (lodeNote && teleNote && clueMapLodeBest && clueMapTeleBest
         && clueMapTeleBest.d < clueMapLodeBest.d) ways = teleNote + lodeNote;
-    if (cap) cap.textContent = 'tile (' + t.x + ', ' + t.y + ')' + (t.p ? '  ·  floor ' + t.p : '') + nearTxt + ways + hideyNote + ((meta && meta.b64) ? '' : '  ·  no map data (rebuild launcher)');
+    if (cap) cap.textContent = 'tile (' + t.x + ', ' + t.y + ')' + (t.p ? '  ·  floor ' + t.p : '') + nearTxt + ways + hideyNote + ((meta && (meta.png || meta.b64 || meta._k)) ? '' : '  ·  no map data (rebuild launcher)');
     applyMapZoom();
   }
   const CLUE_ACT_LBL = { coordinate: 'Coordinate', map: 'Map', npc: 'NPC', scan: 'Scan', keyitem: 'Key item', emote: 'Emote/cryptic' };
@@ -1873,7 +2040,7 @@
       if (bridge().containerItems) {
         for (const cid of [93, 95]) {   // inventory (always) + bank (only while open)
           // items: [[slot, item_id, stack, name], ..] -- item id is index 1, name is index 3.
-          try { const r = JSON.parse(await bridge().containerItems(myPid(), cid)); (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); if (x[3] && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
+          try { const r = JSON.parse(await bridge().containerItems(myPid(), cid)); (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); const isTicket = x[3] && /skipping ticket/i.test(x[3]); if (x[3] && !isTicket && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && !isTicket && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
         }
       }
       // A clue must leave the inventory to be replaced, so a not-held -> held transition is a fresh
@@ -2182,7 +2349,7 @@
     {n:'Ring of kinship',src:'Other teleports',x:3442,y:3694,p:0,item:15707},
     {n:'Sixth-Age circuit - Guthix\'s shrine',src:'Other teleports',x:1923,y:5987,p:1,item:27477,kb:'1'},
     {n:'Sixth-Age circuit - World Gate',src:'Other teleports',x:2367,y:3358,p:0,item:27477,kb:'2'},
-    {n:'Sixth-Age circuit - Guthix Memorial',src:'Other teleports',x:2264,y:3554,p:1,item:27477,kb:'3'},
+    {n:'Sixth-Age circuit - Guthix Memorial',src:'Other teleports',x:2264,y:3554,p:0,item:27477,kb:'3'},
     {n:'Sixth-Age circuit - Temple of Guthix (Tormented Demons)',src:'Other teleports',x:2540,y:5773,p:0,item:27477,kb:'4'},
     {n:'Drakan\'s medallion - Barrows',src:'Other teleports',x:3561,y:3311,p:0,item:21576,kb:'1'},
     {n:'Drakan\'s medallion - Burgh de Rott',src:'Other teleports',x:3496,y:3202,p:0,item:21576,kb:'2'},
@@ -2232,7 +2399,6 @@
     {n:'Dominion medallion',src:'Other teleports',x:3741,y:6428,p:0,item:22338},
     {n:'Grand seed pod',src:'Other teleports',x:2465,y:3495,p:0,item:9469},
     {n:'Captain\'s log',src:'Other teleports',x:4447,y:7524,p:1,item:26358},
-    {n:'Memory strand',src:'Other teleports',x:2295,y:3552,p:0,item:39486},
     {n:'Fang of Mohegan - Taverley (Pikkupstix)',src:'Other teleports',x:2930,y:3447,p:0,item:29000,kb:'1'},
     {n:'Fang of Mohegan - Gu\'Tanoth (Bogrog)',src:'Other teleports',x:2524,y:3055,p:0,item:29000,kb:'2'},
     {n:'Ancient seed',src:'Other teleports',x:5611,y:2456,p:0,item:49265},
@@ -2351,7 +2517,7 @@
     {n:'Other realms: ScapeRune (Evil Bob\'s island)',src:'Portable fairy ring',x:3419,y:4772,p:0,item:41076,kb:'CIS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Other realms: Sparse Plane',src:'Portable fairy ring',x:2455,y:4396,p:0,item:41076,kb:'BIR',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Other realms: Yu\'biusk',src:'Portable fairy ring',x:2229,y:4244,p:1,item:41076,kb:'BLQ',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
-    {n:'The Lost Grove',src:'Portable fairy ring',x:1359,y:5635,p:1,item:41076,kb:'BJS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
+    {n:'The Lost Grove',src:'Portable fairy ring',x:1359,y:5635,p:0,item:41076,kb:'BJS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Tirannwn: Prifddinas (Clan Amlodd)',src:'Portable fairy ring',x:2130,y:3369,p:1,item:41076,kb:'DJS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Kethsi',src:'Portable fairy ring',x:4026,y:5699,p:0,item:41076,kb:'DIR, AKS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Fairy Queen\'s Hideout',src:'Portable fairy ring',x:1560,y:4234,p:0,item:41076,kb:'AIR, DLS, DJQ, AJS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
@@ -2407,17 +2573,6 @@
     {n:'Death altar teleport',src:'Teletabs (excluding ones with spell versions)',x:1864,y:4638,p:0,item:13609},
     {n:'Blood altar teleport',src:'Teletabs (excluding ones with spell versions)',x:3559,y:9778,p:0,item:13610},
     {n:'Runecrafting guild teleport',src:'Teletabs (excluding ones with spell versions)',x:1696,y:5465,p:2,item:13598},
-    {n:'Chipped house - Rimmington',src:'Teletabs (excluding ones with spell versions)',x:2954,y:3225,p:0,item:18809},
-    {n:'Chipped house - Taverley',src:'Teletabs (excluding ones with spell versions)',x:2882,y:3451,p:0,item:18810},
-    {n:'Chipped house - Pollnivneach',src:'Teletabs (excluding ones with spell versions)',x:3339,y:3004,p:0,item:18811},
-    {n:'Chipped house - Rellekka',src:'Teletabs (excluding ones with spell versions)',x:2668,y:3631,p:0,item:18812},
-    {n:'Chipped house - Brimhaven',src:'Teletabs (excluding ones with spell versions)',x:2757,y:3177,p:0,item:18813},
-    {n:'Chipped house - Yanille',src:'Teletabs (excluding ones with spell versions)',x:2546,y:3095,p:0,item:18814},
-    {n:'Chipped house - Trollheim',src:'Teletabs (excluding ones with spell versions)',x:2891,y:3676,p:0,item:20175},
-    {n:'Chipped house - Prifddinas',src:'Teletabs (excluding ones with spell versions)',x:2166,y:3336,p:1,item:32285},
-    {n:'Chipped house - Otot',src:'Teletabs (excluding ones with spell versions)',x:4196,y:920,p:0,item:35136},
-    {n:'Chipped house - Menaphos',src:'Teletabs (excluding ones with spell versions)',x:3124,y:2634,p:1,item:40671},
-    {n:'Chipped house - Anachronia',src:'Teletabs (excluding ones with spell versions)',x:5436,y:2375,p:1,item:48171},
     {n:'Port Sarim',src:'Arc Journal',kb:'1',x:3050,y:3245,p:1,item:37729,rq:'Arc journal (this one destination needs no charges)'},
     {n:'Waiko',src:'Teletabs (excluding ones with spell versions)',x:1820,y:11616,p:1,item:37903},
     {n:'Whale\'s Maw',src:'Teletabs (excluding ones with spell versions)',x:2060,y:11800,p:0,item:38576},
@@ -2657,20 +2812,20 @@
     {n:'Anima Islands',src:'Grouping System',x:3104,y:3021,p:3},
     {n:'Solak',src:'Grouping System',x:1373,y:5640,p:0},
     {n:'Araxxor',src:'Grouping System',x:3700,y:3418,p:0,rq:'Morytania access'},
-    {n:'Corporeal Beast',src:'Grouping System',x:2884,y:4373,p:2,sp:8133,rq:'Summer\'s End'},
-    {n:'Dagannoth Kings',src:'Grouping System',x:2546,y:3758,p:0,sp:2883},
-    {n:'Giant Mole',src:'Grouping System',x:2989,y:3380,p:0,sp:18932},
+    {n:'Corporeal Beast',src:'Grouping System',x:2884,y:4373,p:2,rq:'Summer\'s End'},
+    {n:'Dagannoth Kings',src:'Grouping System',x:2546,y:3758,p:0},
+    {n:'Giant Mole',src:'Grouping System',x:2989,y:3380,p:0},
     {n:'God Wars Dungeon',src:'Grouping System',x:2884,y:3668,p:0},
-    {n:'Gregorovic',src:'Grouping System',x:3276,y:7051,p:1,sp:22442},
-    {n:'Helwyr',src:'Grouping System',x:3266,y:6907,p:1,sp:22438},
-    {n:'Kalphite King',src:'Grouping System',x:3232,y:2857,p:0,sp:16697},
-    {n:'Kalphite Queen',src:'Grouping System',x:3227,y:3103,p:0,sp:1158},
-    {n:'King Black Dragon',src:'Grouping System',x:3051,y:3518,p:0,sp:50},
+    {n:'Gregorovic',src:'Grouping System',x:3276,y:7051,p:1},
+    {n:'Helwyr',src:'Grouping System',x:3266,y:6907,p:1},
+    {n:'Kalphite King',src:'Grouping System',x:3232,y:2857,p:0},
+    {n:'Kalphite Queen',src:'Grouping System',x:3227,y:3103,p:0},
+    {n:'King Black Dragon',src:'Grouping System',x:3051,y:3518,p:0},
     {n:'Nex: Angel of Death',src:'Grouping System',x:2884,y:3668,p:0},
-    {n:'Twin Furies',src:'Grouping System',x:3131,y:7044,p:1,sp:22453},
+    {n:'Twin Furies',src:'Grouping System',x:3131,y:7044,p:1},
     {n:'Vindicta and Gorvek',src:'Grouping System',x:3122,y:6901,p:1,rq:'80 Attack'},
-    {n:'Barrows: Rise of the Six',src:'Grouping System',x:3540,y:3307,p:0,sp:18538},
-    {n:'Vorago',src:'Grouping System',x:2972,y:3428,p:0,sp:17182},
+    {n:'Barrows: Rise of the Six',src:'Grouping System',x:3540,y:3307,p:0},
+    {n:'Vorago',src:'Grouping System',x:2972,y:3428,p:0},
     {n:'Modified farmer\'s hat',src:'Modified skilling outfits',x:3598,y:3523,p:0,item:34926},
     {n:'Modified artisan\'s bandana',src:'Modified skilling outfits',x:2933,y:3290,p:0,item:32281},
     {n:'Modified blacksmith\'s helmet',src:'Modified skilling outfits',x:3033,y:3339,p:0,item:32280},
@@ -2793,17 +2948,17 @@
     {n:'The Twin Furies',src:'Boss portal',x:3128,y:7047,p:1,rq:'Boss portal/Boss portal'},
     {n:'Vindicta & Gorvek',src:'Boss portal',x:3119,y:6903,p:1,rq:'Boss portal/Boss portal'},
     {n:'Zamorakian Undercity',src:'Boss portal',x:1759,y:1341,p:0,rq:'Boss portal/Boss portal'},
-    {n:'Brimhaven',src:'Charter Ships',x:2760,y:3238,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Catherby',src:'Charter Ships',x:2796,y:3406,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Karamja',src:'Charter Ships',x:2954,y:3158,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Menaphos',src:'Charter Ships',x:3140,y:2662,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Mos Le\'Harmless',src:'Charter Ships',x:3671,y:2931,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Oo\'glog',src:'Charter Ships',x:2623,y:2857,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Port Khazard',src:'Charter Ships',x:2674,y:3144,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Port Phasmatys',src:'Charter Ships',x:3702,y:3503,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Port Sarim',src:'Charter Ships',x:3043,y:3191,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Port Tyras',src:'Charter Ships',x:2142,y:3122,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
-    {n:'Shipyard',src:'Charter Ships',x:3001,y:3032,p:0,rq:'Trader Crewmember (Port Sarim)/Trader Crewmember (Catherby)/Trader Crewmember (Port Tyras)/Trader Crewmember (Brimhaven)/Trader Crewmember (Port Khazard)/Trader Crewmember (Oo\'glog)/Trader Crewmember (Musa Point)/Trader Crewmember (Shipyard)/Trader Crewmember (Port Phasmatys)/Trader Crewmember (Menaphos)'},
+    {n:'Brimhaven',src:'Charter Ships',x:2760,y:3238,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Catherby',src:'Charter Ships',x:2796,y:3406,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Karamja',src:'Charter Ships',x:2954,y:3158,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Menaphos',src:'Charter Ships',x:3140,y:2662,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Mos Le\'Harmless',src:'Charter Ships',x:3671,y:2931,p:0,rq:'a Trader Crewmember at any charter port, Cabin Fever',req:{questName:'Cabin Fever',questId:[296,0]}},
+    {n:'Oo\'glog',src:'Charter Ships',x:2623,y:2857,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Port Khazard',src:'Charter Ships',x:2674,y:3144,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Port Phasmatys',src:'Charter Ships',x:3702,y:3503,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Port Sarim',src:'Charter Ships',x:3043,y:3191,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Port Tyras',src:'Charter Ships',x:2142,y:3122,p:0,rq:'a Trader Crewmember at any charter port'},
+    {n:'Shipyard',src:'Charter Ships',x:3001,y:3032,p:0,rq:'a Trader Crewmember at any charter port'},
     {n:'Grand Exchange',src:'Clan vexillum',x:3177,y:3470,p:0,kb:'1',rq:'Clan vexillum',item:20709},
     // Dave's spellbook (42604, pocket slot; from Evil Dave's Big Day Out) does not teleport by
     // itself - it REDIRECTS a chipped teleport tablet, and each destination needs its own chipped
@@ -2846,17 +3001,17 @@
     {n:'Priw Gnomo Andralo',src:'Gnome gliders',x:2496,y:3191,p:0,kb:'7',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
     {n:'Sindarpos',src:'Gnome gliders',x:2850,y:3494,p:1,kb:'2',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
     {n:'Ta Quir Priw',src:'Gnome gliders',x:2465,y:3501,p:3,kb:'1',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Anachronia',src:'House Teleports',x:5434,y:2374,p:0,kb:'0,2',rq:'spellbook/House Teleport Tablet'},
-    {n:'Brimhaven',src:'House Teleports',x:2757,y:3176,p:0,kb:'5',rq:'spellbook/House Teleport Tablet'},
-    {n:'Menaphos',src:'House Teleports',x:3123,y:2633,p:0,kb:'0,1',rq:'spellbook/House Teleport Tablet'},
-    {n:'Otot (Mazcab)',src:'House Teleports',x:4193,y:919,p:0,kb:'9',rq:'spellbook/House Teleport Tablet'},
-    {n:'Pollnivneach',src:'House Teleports',x:3338,y:3003,p:0,kb:'3',rq:'spellbook/House Teleport Tablet'},
-    {n:'Prifddinas',src:'House Teleports',x:2166,y:3333,p:1,kb:'8',rq:'spellbook/House Teleport Tablet'},
-    {n:'Rellekka',src:'House Teleports',x:2668,y:3631,p:0,kb:'4',rq:'spellbook/House Teleport Tablet'},
-    {n:'Rimmington',src:'House Teleports',x:2953,y:3222,p:0,kb:'1',rq:'spellbook/House Teleport Tablet'},
-    {n:'Taverley',src:'House Teleports',x:2882,y:3450,p:0,kb:'2',rq:'spellbook/House Teleport Tablet'},
-    {n:'Trollheim',src:'House Teleports',x:2889,y:3672,p:0,kb:'7',rq:'spellbook/House Teleport Tablet'},
-    {n:'Yanille',src:'House Teleports',x:2542,y:3093,p:0,kb:'6',rq:'spellbook/House Teleport Tablet'},
+    {n:'Anachronia',src:'House Teleports',x:5434,y:2374,p:0,kb:'0,2',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Brimhaven',src:'House Teleports',x:2757,y:3176,p:0,kb:'5',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Menaphos',src:'House Teleports',x:3123,y:2633,p:0,kb:'0,1',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Otot (Mazcab)',src:'House Teleports',x:4193,y:919,p:0,kb:'9',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Pollnivneach',src:'House Teleports',x:3338,y:3003,p:0,kb:'3',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Prifddinas',src:'House Teleports',x:2166,y:3333,p:1,kb:'8',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Rellekka',src:'House Teleports',x:2668,y:3631,p:0,kb:'4',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Rimmington',src:'House Teleports',x:2953,y:3222,p:0,kb:'1',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Taverley',src:'House Teleports',x:2882,y:3450,p:0,kb:'2',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Trollheim',src:'House Teleports',x:2889,y:3672,p:0,kb:'7',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
+    {n:'Yanille',src:'House Teleports',x:2542,y:3093,p:0,kb:'6',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
     {n:'Imperial District',src:'Leela\'s favour',x:3176,y:2729,p:0,kb:'1',rq:'Leela\'s favour',item:58702},
     {n:'Merchant District',src:'Leela\'s favour',x:3223,y:2782,p:0,kb:'2',rq:'Leela\'s favour',item:58702},
     {n:'Port District',src:'Leela\'s favour',x:3213,y:2627,p:0,kb:'3',rq:'Leela\'s favour',item:58702},
@@ -2873,7 +3028,7 @@
     {n:'Moonrise',src:'Master Archaeologist outfit',x:3714,y:1651,p:0,kb:'1,5',rq:'Archaeology teleport',ico:49941,item:49935},
     {n:'Orthen',src:'Master Archaeologist outfit',x:5457,y:2339,p:0,kb:'1,0',rq:'Archaeology teleport',ico:49941,item:49935},
     {n:'Senntisten',src:'Master Archaeologist outfit',x:1784,y:1296,p:0,kb:'1,6',rq:'Archaeology teleport',ico:49941,item:49935},
-    {n:'Hall of Memories entrance',src:'Memory strands',x:2265,y:3551,p:0,rq:'Memory stands',item:39486},
+    {n:'Hall of Memories entrance',src:'Memory strands',x:2265,y:3551,p:0,rq:'memory strands (currency pouch)',ico:39486,req:{cur:39486}},
     {n:'Garden of Kharid',src:'Mystical sand seed',x:3320,y:3307,p:0,rq:'Mystical sand seed',item:54004},
     {n:'Acadia Trees - Het\'s Oasis',src:'Nature\'s sentinel outfit',x:3307,y:3245,p:0,kb:'0,3,1',rq:'Nature\'s sentinel helm',item:39745},
     {n:'Creeping Ivy - Geva\'s Cabin',src:'Nature\'s sentinel outfit',x:3446,y:1683,p:0,kb:'7,2',rq:'Nature\'s sentinel helm',item:39745},
@@ -2990,6 +3145,7 @@
           && Math.abs(c.x - T.x) <= 2 && Math.abs(c.y - T.y) <= 2)) MAP_TELEPORTS.push(T);
     }
   }
+  // One icon for the whole grouping system: it is one interface, not per-boss art.
   for (const T of MAP_TELEPORTS) if (T.src === 'Grouping System') T.iconUrl = TELE_GROUP_ICON;
   // Spell rows resolve to their cache struct by DESTINATION (within 3 tiles): the struct
   // gives spellbook + level + rune costs, all live-checkable.
@@ -3007,6 +3163,27 @@
     if (T.su != null && best[3]) best = best.slice(0, 3).concat([[best[3][0], best[3][1], T.su]], best.slice(4));
     T.req = Object.assign(T.req || {}, { spell: best });
     if (T.sp == null && best[4] != null) T.sp = best[4];   // spell icon from its own struct
+  }
+  // A spell with more than one landing spot lists each as its own row, but only the one on the
+  // struct's tile matched above - "Wendlewick (Marigold Farm)" sits 80 tiles from the Wendlewick
+  // struct, so it ended up with NO gate and read as castable by anyone. An alternate spot is the
+  // same spell, so inherit the resolved sibling's requirements by name.
+  {
+    const base = n => String(n).split(/\s+[(\-]/)[0].trim().toLowerCase();
+    const done = new Map();
+    for (const T of MAP_TELEPORTS) {
+      if (T.req && T.req.spell) done.set((T.src || '') + '|' + base(T.n), T);
+    }
+    for (const T of MAP_TELEPORTS) {
+      if (!/spellbook/i.test(T.src || '') || (T.req && T.req.spell)) continue;
+      const src2 = done.get((T.src || '') + '|' + base(T.n));
+      if (src2 && src2 !== T) {
+        T.req = Object.assign(T.req || {}, { spell: src2.req.spell });
+        if (T.sp == null && src2.sp != null) T.sp = src2.sp;
+      } else if (!/dave/i.test(T.src || '')) {
+        T.rqUnk = 1;      // no struct and no sibling: say the requirement is unread, not met
+      }
+    }
   }
   // Grace of the Elves teleports go through the two Max Guild garden portals (locs
   // 92239/92240): each is a multiloc whose varbit VALUE (vb 25054 / 25055) indexes the

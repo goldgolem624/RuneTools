@@ -4,6 +4,7 @@
 #include "Dock.h"                    // game window handle for cursor mapping
 #include "../reader/Reader.h"        // BuildOverlayFrame (live camera matrix)
 #include "../cache/CacheReader.h"    // TileHeight (terrain-followed tile corners)
+#include "Overlay.h"                 // Toast (tell the user when there is no account to store to)
 
 #include <Windows.h>
 #include <cmath>
@@ -75,10 +76,18 @@ std::string account_for(std::uint32_t pid) {
         auto it = g_pid_acct.find(pid);
         if (it != g_pid_acct.end()) return it->second;
     }
-    auto env = process::ReadJxEnv(pid);
-    auto it = env.find("JX_DISPLAY_NAME");
-    std::string acct = (it != env.end()) ? sanitize_account(it->second) : std::string();
-    // Only cache a resolved name; a momentary empty (env not ready yet) should be retried.
+    // Reader::AccountKey, NOT the JX env var directly: the STEAM client sets no JX_ vars, so an
+    // env-only lookup returned empty there and every marker Add() bailed silently - the key was
+    // swallowed and nothing ever saved (owner-reported: markers work on the Jagex launcher,
+    // do nothing on Steam). AccountKey falls back to the in-memory character name, which both
+    // launchers have, so one account keys the same either way.
+    std::string acct = sanitize_account(rtx::reader::AccountKey(pid));
+    if (acct.empty()) {                       // reader not attached yet: last-resort direct read
+        auto env = process::ReadJxEnv(pid);
+        auto it = env.find("JX_DISPLAY_NAME");
+        if (it != env.end()) acct = sanitize_account(it->second);
+    }
+    // Only cache a resolved name; a momentary empty (pre-login, no name anywhere yet) retries.
     if (!acct.empty()) {
         std::lock_guard<std::mutex> lk(g_acct_mu);
         g_pid_acct[pid] = acct;
@@ -403,6 +412,12 @@ bool KeybindArmed(std::uint32_t pid) {
 
 bool MarkAtCursor(std::uint32_t pid, int action) {
     if (!KeybindArmed(pid)) return false;             // Markers panel not open -> key falls through to the game
+    // No identity = nowhere to store a marker. SAY SO: this used to fail silently, which on the
+    // Steam client (no JX_ env vars, see account_for) looked exactly like the key being ignored.
+    if (account_for(pid).empty()) {
+        rtx::overlay::Toast(pid, "Markers need a logged-in character - none detected yet");
+        return false;
+    }
     int tx = 0, ty = 0, plane = 0;
     if (!cursor_tile(pid, tx, ty, plane)) return false;
     int region = ((tx >> 6) << 8) | (ty >> 6);
