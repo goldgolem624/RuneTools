@@ -245,7 +245,7 @@
     const e = clueHeldList().find(c => c.i === want);
     // A tier filter that hides the entry would defeat the whole point, so widen to All in that case.
     if (e && clueLiveTier >= 0 && e.t !== clueLiveTier) clueLiveTier = -1;
-    activeClueId = want; clueMapZoom = 1; compassMapSig = '';
+    activeClueId = want; clueMapZoom = 1; clueMapPin = null; compassMapSig = '';
     selectClue();
   }
 
@@ -353,7 +353,7 @@
       // Scale from the window we actually GOT: mapRes may widen it past the requested half to
       // reach display resolution, and sizing against the requested span would push the extra
       // ground off the stage instead of showing it.
-      clueMapSpan = 2 * H; clueMapHalfGot = H; applyMapZoom();
+      clueMapSpan = 2 * H; clueMapWinCx = cx0; clueMapWinCy = cy0; clueMapHalfGot = H; applyMapZoom();
       // Backing store at display resolution so labels/markers are not upscaled with the terrain.
       g = clueMapCtx(cv, W);
       if (meta && (meta.png || meta.b64 || meta._k)) { try { clueMapBlit(g, meta, W, cv); clueDrawNomove(g, meta); clueDrawObjects(g, meta); clueDrawTeleports(g, meta); clueDrawLabelsWindow(g, meta); drewTerrain = true; } catch (e) {} }

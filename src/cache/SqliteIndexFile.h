@@ -37,6 +37,11 @@ public:
     // with DecompressStandard.
     std::vector<std::uint8_t> ReadRawArchive(int archive_id);
 
+    // Archive ids present in the SQLite table, ascending from `from_key`, at most `limit`.
+    // Read straight from the table rather than the reference table, so it works for indexes
+    // whose ref table this build does not parse. Thread-safe (own transient connection).
+    std::vector<int> ArchiveIdsFrom(int from_key, int limit) const;
+
 private:
     std::vector<std::uint8_t> FetchReferenceTableBlob();
     std::vector<std::uint8_t> FetchArchiveBlob(int archive_id);

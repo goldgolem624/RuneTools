@@ -6357,6 +6357,40 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         std::uint64_t groot = (root && *root > 0x10000) ? *root : 0;
         std::vector<RuntimeObj> gobjs;                    // live placements: true model AABBs
         ReadRuntimeObjects(pid, gobjs);
+        // A single-tile mark laid ON the terrain: one height PER CORNER, so it sits on a slope
+        // the way the tile grid and the user tile markers already do. fillBox deliberately
+        // levels its whole footprint (a multi-tile walk surface must not warp), which is why
+        // this is separate rather than a change there.
+        //
+        // Where the cache has no height for the tile, take the base of the nearest live scene
+        // object instead. That is the true rendered ground - it is right inside instances and
+        // unmapped areas, where the cache heightmap is either absent or wrong - and it is only
+        // consulted when the cache had nothing, so it can never override good map data.
+        auto fillTileOnGround = [&](OverlayPoint& op, int gx, int gy, int plane) {
+            const int cx[4] = { gx, gx + 1, gx + 1, gx };
+            const int cy[4] = { gy, gy, gy + 1, gy + 1 };
+            std::int16_t ch[4];
+            rtx::cache::TileCornerHeights(gx, gy, plane, ch);
+            float fallback = out.player_z;
+            if (ch[0] == kNoH || ch[1] == kNoH || ch[2] == kNoH || ch[3] == kNoH) {
+                int bestD2 = 4 * 4 + 1;                            // within 4 tiles or not at all
+                for (const auto& r : gobjs) {
+                    if (r.config_id <= 0 || r.plane != plane) continue;
+                    if (!(r.bmax[0] > r.bmin[0])) continue;        // need a real AABB
+                    int dx = r.x - gx, dy = r.y - gy;
+                    int d2 = dx * dx + dy * dy;
+                    if (d2 >= bestD2) continue;
+                    bestD2 = d2; fallback = r.bmin[2];
+                }
+            }
+            for (int i = 0; i < 4; ++i) {
+                op.box[i * 3 + 0] = cx[i] * 512.f;
+                op.box[i * 3 + 1] = cy[i] * 512.f;
+                op.box[i * 3 + 2] = (ch[i] != kNoH) ? kHScale * (float)ch[i] : fallback;
+            }
+            op.has_box = true;
+            op.box_h = 0.f;                                        // ground tile, not a prism
+        };
         // --- REGION marks: coloured sites sharing (label, rgb) merge into ONE flat zone.
         //     Each site resolves to its loc's covered tiles (live AABB span, else the anchor
         //     tile); the union draws floor-level, per tile, with only the PERIMETER outlined
@@ -6585,7 +6619,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     found = true;
                 }
             }
-            if (!found) { fillBox(op, gs.gx, gs.gy, 1, 1, gs.plane); op.box_h = 0.f; }   // flat tile fallback
+            if (!found) fillTileOnGround(op, gs.gx, gs.gy, gs.plane);   // terrain-followed tile
             out.guides.push_back(op);
         }
 

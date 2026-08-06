@@ -79,6 +79,7 @@
     <ClCompile Include="SceneData.cpp" />
     <ClCompile Include="Composite.cpp" />
     <ClCompile Include="Present.cpp" />
+    <ClCompile Include="SoundFilter.cpp" />
     <ClCompile Include="InputFilter.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -92,6 +93,8 @@
     <ClInclude Include="InputShare.h" />
     <ClInclude Include="Composite.h" />
     <ClInclude Include="Present.h" />
+    <ClInclude Include="SoundFilter.h" />
+    <ClInclude Include="SoundShare.h" />
     <ClInclude Include="InputFilter.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

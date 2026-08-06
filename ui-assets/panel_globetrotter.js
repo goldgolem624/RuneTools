@@ -146,7 +146,7 @@
         const id = +r.dataset.hid; if (id === activeClueId) return;
         const pin = clueVarcPinned();   // the varc owns the compass/tetracompass choice, not the click
         if (pin >= 0 && pin !== id && clueVarcIsPair(id)) return;
-        activeClueId = id; clueMapZoom = 1; compassMapSig = ''; selectClue(); renderClueHeld();
+        activeClueId = id; clueMapZoom = 1; clueMapPin = null; compassMapSig = ''; selectClue(); renderClueHeld();
       });
       const tb = document.createElement('div'); tb.id = 'clueToolbar'; tb.className = 'pet-toolbar';
       const mkchip = (label, grp, val, cur) => { const b = document.createElement('button'); b.className = 'pet-chip' + (val === cur ? ' on' : ''); b.textContent = label; b.dataset.grp = grp; b.dataset.val = val; return b; };
@@ -219,7 +219,7 @@
         const id = +r.dataset.cid, c = CLUE_DATA.find(z => z.i === id);
         if (!clueTile(c) && !(c && c.a === 'emote')) return;   // selectable if it has a tile, or is an emote clue (hidey-hole reference)
         activeClueId = (activeClueId === id) ? -1 : id;
-        clueMapZoom = 1; compassMapSig = ''; selectClue(); clueListSig = ''; renderCluesList();
+        clueMapZoom = 1; clueMapPin = null; compassMapSig = ''; selectClue(); clueListSig = ''; renderCluesList();
       });
     }
     clueVarcRoute();   // varc 1323 decides whether the compass clue or the tetracompass is showing
@@ -288,7 +288,7 @@
     const list = (clueLiveTier < 0) ? hl : hl.filter(c => c.t === clueLiveTier);
     if (!list.some(c => c.i === activeClueId)) {                  // keep the active clue if in view, else pick the first
       const want = list.length ? list[0].i : -1;
-      if (activeClueId !== want) { activeClueId = want; clueMapZoom = 1; compassMapSig = ''; selectClue(); }
+      if (activeClueId !== want) { activeClueId = want; clueMapZoom = 1; clueMapPin = null; compassMapSig = ''; selectClue(); }
     }
     const pin = clueVarcPinned();   // pinned rows render inert, so the lockout is visible not silent
     const sig = 'H|' + clueLiveTier + '|' + activeClueId + '|' + pin + '|' + (g_scanMeerkats ? 'm' : '') + '|' + list.map(c => c.i).join(',');

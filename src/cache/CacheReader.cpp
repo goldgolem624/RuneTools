@@ -2,7 +2,9 @@
 
 #include "Achievements.h"
 #include "Constants.h"
+#include "CachePath.h"   // Jagex / Steam / moved-cache resolution
 #include "ItemType.h"
+#include "JagexContainer.h"   // Decompress (NXT "ZL" wrapper) for the raw audio archives
 #include "LocationType.h"
 #include "MapLocations.h"
 #include "MapTiles.h"
@@ -15,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -78,7 +81,7 @@ bool                                  g_maplabels_loaded = false;
 void EnsureInit() {
     if (g_init_attempted) return;
     g_init_attempted = true;
-    g_store = std::make_unique<Store>(kDefaultCacheRoot);
+    g_store = std::make_unique<Store>(ResolveCacheRoot());
     g_store->Add(kIndexItems,     kDefaultFilesPerArchive_Items);
     g_store->Add(kIndexNpcs,      kDefaultFilesPerArchive_Npcs);
     g_store->Add(kIndexLocations, kDefaultFilesPerArchive_Locations);
@@ -90,7 +93,60 @@ void EnsureInit() {
     g_store->Add(kIndexAchievements, 0); // achievement defs (varbit-driven completion)
     g_store->Add(kIndexInterfaces, 0);  // static interface-component defs
     g_store->Add(kIndexClientScript, 0); // CS2 scripts (script 6506 = ability cooldown varc pairs)
+    g_store->Add(kIndexSoundEffects, 0); // JAGA-wrapped Ogg Vorbis, archive id = sound id
+    g_store->Add(kIndexMusic,        0); // ditto, music streams
 }
+
+// ---------------------------------------------------------------------------
+// Audio (js5-14 sound effects, js5-40 music).
+//
+// Archives are JAGA containers wrapping ordinary Ogg Vorbis. Header, big-endian:
+//     +0   'JAGA'
+//     +4   u32  0
+//     +8   u32  total samples
+//     +12  u32  sample rate        22050 (effects) / 22050-44100 (music)
+//     +16  u32  channels           1 = effects, 2 = music
+//     +20  u32  chunk count N
+//     +24  N x (u32 length, u32 offset)
+//     +24+8N  the Ogg stream(s)
+// Verified against archive length on index 14 (header + chunk length == archive size exactly)
+// and by the Ogg being valid Vorbis once the header is skipped.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct JagaInfo {
+    bool ok = false;
+    std::uint32_t samples = 0, rate = 0, channels = 0, chunks = 0;
+    std::size_t   ogg_off = 0;               // where the Ogg data starts
+    std::vector<std::uint32_t> lens;         // per-chunk byte length, in order
+};
+
+std::uint32_t be32(const std::uint8_t* p) {
+    return ((std::uint32_t)p[0] << 24) | ((std::uint32_t)p[1] << 16) |
+           ((std::uint32_t)p[2] << 8) | p[3];
+}
+
+JagaInfo ParseJaga(const std::vector<std::uint8_t>& raw) {
+    JagaInfo j;
+    if (raw.size() < 24 || raw[0] != 'J' || raw[1] != 'A' || raw[2] != 'G' || raw[3] != 'A')
+        return j;
+    j.samples  = be32(&raw[8]);
+    j.rate     = be32(&raw[12]);
+    j.channels = be32(&raw[16]);
+    j.chunks   = be32(&raw[20]);
+    if (j.chunks > 4096) return j;                       // implausible: treat as corrupt
+    j.ogg_off = 24 + (std::size_t)j.chunks * 8;
+    if (j.ogg_off + 4 > raw.size()) return j;
+    j.lens.reserve(j.chunks);
+    for (std::uint32_t c = 0; c < j.chunks; ++c)
+        j.lens.push_back(be32(&raw[24 + (std::size_t)c * 8]));   // (length, offset) pairs
+    if (std::memcmp(&raw[j.ogg_off], "OggS", 4) != 0) return j;
+    j.ok = true;
+    return j;
+}
+
+}  // namespace
+
 
 std::string base64(const std::vector<std::uint8_t>& bytes) {
     DWORD n = 0;
@@ -1811,6 +1867,100 @@ static void WallLine(int ty, int rot, int size, std::vector<std::pair<int, int>>
     }
 }
 
+// Every chunk of a sound, in order. Each chunk is a COMPLETE Ogg stream carrying its own vorbis
+// headers, so concatenating them and handing the result to a decoder yields only the first chunk -
+// which is how a 32.7s effect played as 3.5s. Decode each separately and join the PCM.
+std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id) {
+    SqliteIndexFile* idx = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        EnsureInit();
+        idx = g_store ? g_store->Get(index_id) : nullptr;
+    }
+    if (!idx) return {};
+    auto raw = idx->ReadRawArchive(sound_id);
+    if (raw.empty()) return {};
+    auto bytes = Decompress(raw);
+    if (bytes.empty()) return {};
+    JagaInfo j = ParseJaga(bytes);
+    if (!j.ok) return {};
+
+    std::vector<std::vector<std::uint8_t>> out;
+    std::size_t pos = j.ogg_off;
+    for (std::uint32_t c = 0; c < j.chunks && c < j.lens.size() && pos < bytes.size(); ++c) {
+        const std::size_t len = j.lens[c];
+        if (!len || pos + len > bytes.size()) break;
+        out.emplace_back(bytes.begin() + (std::ptrdiff_t)pos,
+                         bytes.begin() + (std::ptrdiff_t)(pos + len));
+        pos += len;
+    }
+    // If the table looks wrong, fall back to "everything after the header" so the sound still
+    // plays as far as its first stream rather than not at all.
+    if (out.empty() && j.ogg_off < bytes.size())
+        out.emplace_back(bytes.begin() + (std::ptrdiff_t)j.ogg_off, bytes.end());
+    return out;
+}
+
+// One sound's Ogg bytes, header stripped -- a complete, playable .ogg file.
+std::vector<std::uint8_t> SoundOgg(int index_id, int sound_id) {
+    SqliteIndexFile* idx = nullptr;          // same reasoning as SoundListJson: do not hold
+    {                                        // g_mu across the read + inflate
+        std::lock_guard<std::mutex> lk(g_mu);
+        EnsureInit();
+        idx = g_store ? g_store->Get(index_id) : nullptr;
+    }
+    if (!idx) return {};
+    auto raw = idx->ReadRawArchive(sound_id);
+    if (raw.empty()) return {};
+    auto bytes = Decompress(raw);   // audio indexes use the NXT "ZL" wrapper, not the
+                                        // standard container (that is the sprite index)
+    if (bytes.empty()) return {};
+    JagaInfo j = ParseJaga(bytes);
+    if (!j.ok) return {};
+    return std::vector<std::uint8_t>(bytes.begin() + (std::ptrdiff_t)j.ogg_off, bytes.end());
+}
+
+// Metadata for a page of sounds: [{id, rate, ch, ms, bytes}, ...]. Reading every archive of
+// index 14 would decompress ~250MB, so the caller pages through it.
+std::string SoundListJson(int index_id, int start_id, int limit) {
+    if (limit < 1) limit = 1;
+    if (limit > 512) limit = 512;
+    // Take the cache mutex ONLY to resolve the index. The scan below reads and inflates up to
+    // `limit` archives, and g_mu is the same lock the overlay's per-frame terrain lookups use -
+    // holding it across the scan stalled the game's render thread for the whole listing.
+    // SqliteIndexFile opens its own transient connection per call, so the reads are safe here.
+    SqliteIndexFile* idx = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        EnsureInit();
+        idx = g_store ? g_store->Get(index_id) : nullptr;
+    }
+    if (!idx) return "[]";
+    // Ids come from the SQLite table, not the reference table: the audio indexes list fine this
+    // way whether or not their ref table parsed.
+    const auto ids = idx->ArchiveIdsFrom(start_id, limit);
+    std::string out = "[";
+    int emitted = 0;
+    for (int id : ids) {
+        auto raw = idx->ReadRawArchive(id);
+        if (raw.empty()) continue;
+        auto bytes = Decompress(raw);   // audio indexes use the NXT "ZL" wrapper, not the
+                                        // standard container (that is the sprite index)
+        JagaInfo j2 = ParseJaga(bytes);
+        if (!j2.ok) continue;
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "%s{\"id\":%d,\"rate\":%u,\"ch\":%u,\"ms\":%u,\"bytes\":%u}",
+                      emitted ? "," : "", id, j2.rate, j2.channels,
+                      j2.rate ? (unsigned)((std::uint64_t)j2.samples * 1000ull / j2.rate) : 0u,
+                      (unsigned)(bytes.size() - j2.ogg_off));
+        out += buf;
+        ++emitted;
+    }
+    out += "]";
+    return out;
+}
+
 // Rendering a window is expensive - an underlay box blur, a hillshade pass and a per-pixel
 // bilinear sample over the whole image - and the panel redraws on a poll, asking for the SAME
 // window again while the player stands still. Keep the last few results; the inputs are static
@@ -1896,9 +2046,15 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     // Underlay blend: each tile's colour is the average underlay RGB over a (2*UBR+1)^2 box,
     // precomputed over a padded window with a separable box blur (O(1) per tile). Overlays /
     // walls / map-scene icons draw crisply ON TOP.
-    // Blend kernel: dx,dz in -4..+5 (asymmetric, 10 wide), as the game's map uses.
-    const int UBLO = -4, UBHI = 5;
-    const int PAD = 5, PW = WT + 2 * PAD;
+    // Underlay blend kernel, in tiles. The game map blends ground colour very widely, which is
+    // right when a tile is a few pixels - it hides the tile grid. Held at that width while zoomed
+    // IN it is why terrain looked low-resolution: every pixel was the average of a 10x10 tile
+    // neighbourhood, so no local variation survived however many pixels the tile was drawn at.
+    // Tighten the kernel as tiles grow, so zooming in actually reveals terrain instead of a
+    // bigger smear. Tiles still blend into their neighbours - just over a smaller radius.
+    const int UBR  = (TS >= 24) ? 1 : (TS >= 16) ? 2 : (TS >= 10) ? 3 : 4;
+    const int UBLO = -UBR, UBHI = UBR + 1;
+    const int PAD = 5, PW = WT + 2 * PAD;   // padding sized for the widest kernel; over-pad is free
     std::vector<int> rawR((size_t)PW * PW, 0), rawG((size_t)PW * PW, 0), rawB((size_t)PW * PW, 0);
     std::vector<unsigned char> rawM((size_t)PW * PW, 0);
     for (int px = 0; px < PW; ++px) for (int py = 0; py < PW; ++py) {
@@ -1943,6 +2099,43 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     // Bilinear underlay sample at a pixel centre: interpolates both the blended colour and the
     // hillshade between the four surrounding tile centres. This is what stops the ground looking
     // like a flat-tile mosaic at large TS; a void corner just renormalises over the rest.
+    // Per-pixel shade factor, interpolated exactly like the underlay colour but CLAMPED.
+    // Overlays were left flat because full relief shading bleached paths white along height
+    // cliffs (Prifddinas, a whole raised platform, was the worst case). A narrow band gives
+    // them form and a gradient across the tile without that failure.
+    auto sampleShade = [&](int wx, int wy, int a, int bb, double lo, double hi) -> double {
+        double u = wx + (a + 0.5) / (double)TS - 0.5;
+        double v = wy + 1.0 - (bb + 0.5) / (double)TS - 0.5;
+        int x0 = (int)std::floor(u), y0 = (int)std::floor(v);
+        double fx = u - x0, fy = v - y0, acc = 0, wsum = 0;
+        for (int dy2 = 0; dy2 < 2; ++dy2) for (int dx2 = 0; dx2 < 2; ++dx2) {
+            double wgt = (dx2 ? fx : 1.0 - fx) * (dy2 ? fy : 1.0 - fy);
+            if (wgt <= 0.0) continue;
+            int tx = x0 + dx2, ty = y0 + dy2;
+            if (tx < -1 || tx > WT || ty < -1 || ty > WT) continue;
+            acc += wgt * shadeF[(size_t)(tx + 1) * BW + (ty + 1)];
+            wsum += wgt;
+        }
+        if (wsum <= 0.0) return 1.0;
+        double f = acc / wsum;
+        return f < lo ? lo : (f > hi ? hi : f);
+    };
+    // Deterministic dither, keyed on the tile and the pixel within it. Ground here is ONE colour
+    // per tile - there is no sub-tile detail in the cache to sample - so at high zoom a tile
+    // reads as a solid block however many pixels it is given. A tiny stable jitter breaks that
+    // up without inventing features: it never moves, and it is invisible below ~8 px per tile.
+    auto dither = [](int tx, int ty, int a, int bb) -> int {
+        unsigned h = (unsigned)tx * 73856093u ^ (unsigned)ty * 19349663u
+                   ^ (unsigned)a * 83492791u ^ (unsigned)bb * 2971215073u;
+        h ^= h >> 13; h *= 1274126177u; h ^= h >> 16;
+        return (int)(h % 5) - 2;                       // -2..+2 per channel
+    };
+    auto jitter = [](int col, int d) -> int {
+        if (col < 0 || !d) return col;
+        auto cl = [](int q) { return q < 0 ? 0 : (q > 255 ? 255 : q); };
+        return (cl(((col >> 16) & 0xff) + d) << 16) | (cl(((col >> 8) & 0xff) + d) << 8)
+             | cl((col & 0xff) + d);
+    };
     auto sampleUl = [&](int wx, int wy, int a, int bb) -> int {
         double u = wx + (a + 0.5) / (double)TS - 0.5;
         double v = wy + 1.0 - (bb + 0.5) / (double)TS - 0.5;   // bb runs south; v is in world-y tile units
@@ -2036,23 +2229,34 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             const bool smoothUl = (TS >= 8) && (ul >= 1);
             const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
-            // Overlays stay UNSHADED (reference renderer parity): roads/floors/plazas are
-            // flat colour in the game map; relief-shading them bleaches paths white along
-            // height cliffs (worst in Prifddinas, whose whole city is a raised platform).
+            // Overlays take a CLAMPED relief light, not the full one. Unshaded (which is what
+            // the game map does) they read as solid blocks once a tile is 16-32 px; fully shaded,
+            // they bleach white along height cliffs - Prifddinas, a whole raised platform, was
+            // the case that forced them flat before. The narrow band gives shape without that.
             int px0 = wx * TS, py0 = ((WT - 1) - wy) * TS;          // north-up tile origin
             bool useMask = (ocol >= 0);
             if (useMask) OverlayMaskLocal(sh < 0 ? 0 : sh, TS, mask);
+            // Detail only where a tile is big enough for it to read; below this a tile is a few
+            // pixels and both effects are noise.
+            const bool detail = (TS >= 8);
             for (int a = 0; a < TS; ++a) {
                 for (int bb = 0; bb < TS; ++bb) {
                     int col;
                     if (useMask && mask[a * TS + bb]) {
-                        col = tileWater ? sampleSurf(wx, wy, a, bb) : ocol;
-                        if (col < 0) col = ocol;
+                        if (tileWater) { col = sampleSurf(wx, wy, a, bb); if (col < 0) col = ocol; }
+                        else if (detail) {
+                            // Overlays now take a GENTLE, interpolated light instead of being
+                            // flat: enough to give a path or a swamp patch shape across the
+                            // tile, tight enough not to bleach at cliffs.
+                            col = shade(ocol, sampleShade(wx, wy, a, bb, 0.93, 1.07));
+                        }
+                        else col = ocol;
                     }
                     else if (smoothUl) { col = sampleUl(wx, wy, a, bb); if (col < 0) col = ucolFlat; }
                     else col = ucolFlat;
                     if (col < 0) col = (ucolFlat >= 0 ? ucolFlat : ocol);  // no holes inside a tile
                     if (col < 0) continue;
+                    if (detail) col = jitter(col, dither(cx - HALF + wx, cy - HALF + wy, a, bb));
                     size_t p = ((size_t)(py0 + bb) * W + (px0 + a)) * 4;
                     rgba[p] = (col >> 16) & 0xff; rgba[p + 1] = (col >> 8) & 0xff; rgba[p + 2] = col & 0xff; rgba[p + 3] = 255;
                 }

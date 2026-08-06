@@ -10,6 +10,9 @@
 #include "WinNotify.h"
 #include "Process.h"
 #include "../cache/CacheReader.h"
+#include "../cache/Constants.h"     // kIndexSoundEffects / kIndexMusic for the audio bridges
+#include "Audio.h"                  // in-process Ogg Vorbis playback
+#include "SoundFilter.h"            // in-client sound observation + muting (companion channel)
 #include "../cache/Achievements.h"
 #include "../../companion/HudShare.h"
 #include "../reader/Reader.h"
@@ -35,6 +38,7 @@ using std::min;
 #include <algorithm>
 #include <atomic>
 #include <ctime>
+#include <cstdio>
 #include <cstdlib>
 #include <bcrypt.h>
 #include <cctype>
@@ -411,6 +415,134 @@ JSValueRef UiAsset(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
     return utf8_to_js(ctx, rtx::launcher::dock::ReadUiAsset(js_to_utf8(ctx, argv[0])));
+}
+
+// ---- Cache audio (js5-14 effects / js5-40 music) ----
+// Defined further down (next to the other per-user paths); declared here because the sound
+// exporters below need it and they sit up with the other cache accessors.
+std::filesystem::path alerts_user_dir();
+
+// soundList(index, startId, limit) -> [{id,rate,ch,ms,bytes}, ...]
+JSValueRef SoundList(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "[]");
+    int idx   = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int start = (argc >= 2) ? (int)JSValueToNumber(ctx, argv[1], nullptr) : 0;
+    int lim   = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 200;
+    if (idx != rtx::cache::kIndexSoundEffects && idx != rtx::cache::kIndexMusic)
+        return utf8_to_js(ctx, "[]");
+    return utf8_to_js(ctx, rtx::cache::SoundListJson(idx, start, lim));
+}
+
+// soundExport(index, id) -> absolute path of a written .ogg, or "".
+// The client ships no Vorbis decoder (and Windows has none), so a sound is made audible by
+// writing the real .ogg and handing it to whatever the user already has - browsers all decode
+// Vorbis. soundPlay() below does that in one step.
+JSValueRef SoundExport(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, "");
+    int idx = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id  = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    if (idx != rtx::cache::kIndexSoundEffects && idx != rtx::cache::kIndexMusic)
+        return utf8_to_js(ctx, "");
+    auto ogg = rtx::cache::SoundOgg(idx, id);
+    if (ogg.empty()) return utf8_to_js(ctx, "");
+    auto dir = alerts_user_dir();
+    if (dir.empty()) return utf8_to_js(ctx, "");
+    dir /= L"sounds-cache";
+    std::error_code ec; std::filesystem::create_directories(dir, ec);
+    auto path = dir / ((idx == rtx::cache::kIndexMusic ? L"music_" : L"sfx_") +
+                       std::to_wstring(id) + L".ogg");
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.wstring().c_str(), L"wb") != 0 || !f) return utf8_to_js(ctx, "");
+    std::fwrite(ogg.data(), 1, ogg.size(), f);
+    std::fclose(f);
+    return utf8_to_js(ctx, path.string());
+}
+
+// soundPlay(index, id, volumePct) -> true if it decoded and started. Decoded and mixed IN
+// PROCESS (Audio.cpp / stb_vorbis) - nothing is written to disk and no external player opens.
+JSValueRef SoundPlay(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    int idx = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id  = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    int vol = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 100;
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    if (idx != rtx::cache::kIndexSoundEffects && idx != rtx::cache::kIndexMusic)
+        return JSValueMakeBoolean(ctx, false);
+    auto chunks = rtx::cache::SoundOggChunks(idx, id);   // every stream, not just the first
+    if (chunks.empty()) return JSValueMakeBoolean(ctx, false);
+    return JSValueMakeBoolean(ctx, rtx::audio::Play(chunks, vol));
+}
+
+// Transport. All return immediately; the decode/mix work lives on Audio.cpp's worker.
+JSValueRef SoundStop(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t, const JSValueRef[], JSValueRef*) {
+    rtx::audio::Stop();
+    return JSValueMakeBoolean(ctx, true);
+}
+JSValueRef SoundPause(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t, const JSValueRef[], JSValueRef*) {
+    rtx::audio::Pause();
+    return JSValueMakeBoolean(ctx, true);
+}
+JSValueRef SoundResume(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t, const JSValueRef[], JSValueRef*) {
+    rtx::audio::Resume();
+    return JSValueMakeBoolean(ctx, true);
+}
+JSValueRef SoundSeek(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) rtx::audio::Seek((int)JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, true);
+}
+JSValueRef SoundVolume(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) rtx::audio::SetVolume((int)JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, true);
+}
+// soundStatus() -> {state,pos,dur,vol,rate,ch}; the panel polls this to drive its transport.
+JSValueRef SoundStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, rtx::audio::StatusJson());
+}
+
+// ---- in-client sound: observe what the game plays, and mute ids (companion channel) ----
+// Distinct from the SoundPlay family above: those play cache audio in the LAUNCHER, these act
+// on the game's own playback. Both key on the same js5-14 id space if the companion's observed
+// id proves to be the archive id - which "verified" in the status reports.
+
+JSValueRef SoundFilterStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                             size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return utf8_to_js(ctx, rtx::launcher::soundfilter::StatusJson(pid));
+}
+
+JSValueRef SoundFilterEnable(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                             size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    bool on = JSValueToBoolean(ctx, argv[1]);
+    return JSValueMakeBoolean(ctx, rtx::launcher::soundfilter::SetEnabled(pid, on));
+}
+
+// ids: comma-separated, same convention as the other list-valued bridge args.
+JSValueRef SoundMute(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::string csv = js_to_utf8(ctx, argv[1]);
+    std::vector<int> ids;
+    for (std::size_t i = 0; i < csv.size();) {
+        while (i < csv.size() && (csv[i] < '0' || csv[i] > '9')) ++i;
+        int v = 0; bool got = false;
+        while (i < csv.size() && csv[i] >= '0' && csv[i] <= '9') { v = v * 10 + (csv[i++] - '0'); got = true; }
+        if (got) ids.push_back(v);
+    }
+    return JSValueMakeBoolean(ctx, rtx::launcher::soundfilter::SetMuted(pid, std::move(ids)));
 }
 
 JSValueRef HostInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -3851,6 +3983,18 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "scanProcesses",     ScanProcesses);
     install_fn(ctx, ns, "gameSnapshots",     GameSnapshots);
     install_fn(ctx, ns, "uiAsset",           UiAsset);
+    install_fn(ctx, ns, "soundList",         SoundList);
+    install_fn(ctx, ns, "soundExport",       SoundExport);
+    install_fn(ctx, ns, "soundPlay",         SoundPlay);
+    install_fn(ctx, ns, "soundStop",         SoundStop);
+    install_fn(ctx, ns, "soundPause",        SoundPause);
+    install_fn(ctx, ns, "soundResume",       SoundResume);
+    install_fn(ctx, ns, "soundSeek",         SoundSeek);
+    install_fn(ctx, ns, "soundVolume",       SoundVolume);
+    install_fn(ctx, ns, "soundStatus",       SoundStatus);
+    install_fn(ctx, ns, "soundFilterStatus", SoundFilterStatus);
+    install_fn(ctx, ns, "soundFilterEnable", SoundFilterEnable);
+    install_fn(ctx, ns, "soundMute",         SoundMute);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);

@@ -35,7 +35,34 @@ std::vector<std::uint8_t> FetchBlob(const std::string& jcache_path,
     return out;
 }
 
+// Archive ids present in the SQLite table itself, independent of the reference table. The
+// audio indexes are browsed this way: the ref table is the authority for archive CONTENTS, but
+// listing what exists only needs the keys, and it works even where the ref table is absent.
+std::vector<int> FetchKeys(const std::string& jcache_path, int from_key, int limit) {
+    std::vector<int> out;
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(jcache_path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return out;
+    }
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT `KEY` FROM `cache` WHERE `KEY` >= ? ORDER BY `KEY` LIMIT ?;";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, from_key);
+        sqlite3_bind_int(stmt, 2, limit);
+        while (sqlite3_step(stmt) == SQLITE_ROW) out.push_back(sqlite3_column_int(stmt, 0));
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_close(db);
+    return out;
+}
+
 }  // namespace
+
+std::vector<int> SqliteIndexFile::ArchiveIdsFrom(int from_key, int limit) const {
+    if (limit < 1) return {};
+    return FetchKeys(jcache_path_, from_key < 0 ? 0 : from_key, limit);
+}
 
 SqliteIndexFile::SqliteIndexFile(int index_id, std::string jcache_path,
                                  int default_files_per_archive)

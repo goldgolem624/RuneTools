@@ -151,6 +151,25 @@ std::string QuestsJson();
 // journal's default-icon lookup.
 std::string ParamDefJson(int param_id);
 
+// ---- Audio (js5-14 sound effects, js5-40 music) ----------------------------
+// Archives are JAGA containers wrapping ordinary Ogg Vorbis, and the ARCHIVE ID IS THE SOUND
+// ID that CS2 passes to SOUND_SYNTH / SOUND_VORBIS_VOLUME.
+//
+// SoundOgg returns a complete, playable .ogg (JAGA header stripped). Note the client has no
+// Vorbis DECODER - Windows ships none either (verified: no codec, MediaPlayer reports
+// HasAudio=false) - so these bytes are for export/preview, not for direct PCM playback.
+std::vector<std::uint8_t> SoundOgg(int index_id, int sound_id);
+
+// Every chunk of a sound, in order. A JAGA container splits longer audio into SEPARATE, complete
+// Ogg streams (each with its own vorbis headers), so a decoder handed the concatenation stops at
+// the end of the first one - effect 14873 played 3.5s of its 32.7s that way. Decode each and
+// concatenate the PCM. Single-chunk sounds return one element.
+std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id);
+
+// One page of sound metadata: [{id, rate, ch, ms, bytes}, ...] from start_id upward.
+// Paged because reading every archive of index 14 would decompress hundreds of MB.
+std::string SoundListJson(int index_id, int start_id, int limit);
+
 // Static interface-component defs for one group (js5-3: archive = group id) as
 // JSON `{"group":N,"comps":[{"id","t","par","x","y","w","h"[,"ct"][,"hid"]
 // [,"text"][,"sprite"][,"model"]},..]}`: per component the type, parent (-1 =

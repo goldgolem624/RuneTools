@@ -21,6 +21,11 @@ constexpr int kIndexItems      = 19;   // archive = id >> 8, file = id & 0xff
 constexpr int kIndexSeqs       = 20;
 constexpr int kIndexStructs    = 22;
 constexpr int kIndexAchievements = 57;  // archive = id >> 7, file = id & 0x7f
+// Audio. Both hold JAGA-wrapped Ogg Vorbis, one stream per archive, and the ARCHIVE ID IS THE
+// SOUND ID - the ids CS2 passes to SOUND_SYNTH / SOUND_VORBIS_VOLUME resolve directly here
+// (verified: 9705, 31334, 35046, 41269, 48065, 48233 all present in index 14).
+constexpr int kIndexSoundEffects = 14;  // 7427 archives, mono 22050 Hz
+constexpr int kIndexMusic        = 40;  // 1095 archives, stereo 22050/44100 Hz
 
 // Default files-per-archive when the reference table doesn't carry an
 // explicit count. 256 covers items/locs; 128 covers npcs/seqs.

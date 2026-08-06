@@ -198,6 +198,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_farmcol.js",    // Player-Owned Farm breed collections (needs panel_bosses.js loader)
         "panel_archcol.js",    // Archaeology faction artefact collections (needs panel_bosses.js loader)
         "panel_leagues.js",    // Leagues tiers/relics/tasks from the live cache DBTables
+        "panel_sounds.js",     // Sounds: cache audio browser (js5-14 effects / js5-40 music)
         "panel_cachex.js",     // Cache Explorer (Developer): enums/structs/dbtables/vars
         "panel_health.js",     // Reader health check (Developer; moved out of Player State)
     };

@@ -317,6 +317,7 @@
   // Map zoom: the inner div is sized to (stageWidth * zoom) and the stage scrolls, so the canvas
   // and the DOM markers scale and pan together.
   let clueMapZoom = 1, clueMapDrag = null, clueMapStageEl = null, clueMapZoomBound = false;
+  let clueMapHover = false;   // keyboard zoom only applies while the map is under the pointer
   // Nearest lodestone / teleport for the caption, so it can lead with whichever is closer.
   let clueMapLodeBest = null, clueMapTeleBest = null;
   // How much terrain the stage shows at zoom 1, and how much the last fetch actually covered.
@@ -350,24 +351,77 @@
     const half = Math.max(8, Math.min(maxHalf, Math.floor(MAP_MAX_BACK / (2 * ts))));
     return { ts: ts, half: half, pxTile: pxTile };
   }
+  // ---- Map view model -------------------------------------------------------------------
+  // ONE source of truth: a world tile pinned to a point on the stage. Everything that can move
+  // the view - zoom, a re-fetch that resizes the window, a panel resize - restores that pin
+  // afterwards, so the map never wanders off what you were looking at.
+  //
+  // The old code had three mechanisms disagreeing: the wheel anchored on the cursor assuming the
+  // canvas scaled by exactly newZoom/oldZoom, applyMapZoom independently re-anchored on the stage
+  // CENTRE, and the debounced re-fetch could change the window size (breaking the wheel's
+  // assumption) and then re-run the centre snap. Zooming therefore jumped.
+  let clueMapWinCx = 0, clueMapWinCy = 0;   // world centre of the window currently drawn
+  let clueMapPin = null;                    // {wx, wy, ox, oy} = world tile at stage offset ox,oy
+
+  function mapPxTile(stage) {
+    const st = stage || clueMapStageEl || document.querySelector('.clue-map-stage');
+    if (!st) return 1;
+    return (st.clientWidth || 280) * (clueMapZoom || 1) / Math.max(1, clueMapSpan);
+  }
+  // World tile -> pixel inside the inner (scrolling) surface. The window is drawn north-up with
+  // its centre at (clueMapWinCx, clueMapWinCy) and clueMapHalfGot tiles each side.
+  function mapWorldToInner(wx, wy) {
+    const p = mapPxTile();
+    const H = clueMapHalfGot || 1;
+    return { x: (wx - (clueMapWinCx - H)) * p,
+             y: ((2 * H - 1) - (wy - (clueMapWinCy - H))) * p };
+  }
+  function mapInnerToWorld(ix, iy) {
+    const p = mapPxTile() || 1;
+    const H = clueMapHalfGot || 1;
+    return { wx: (clueMapWinCx - H) + ix / p,
+             wy: (clueMapWinCy - H) + ((2 * H - 1) - iy / p) };
+  }
+  // Pin whatever is under a stage-relative point (defaults to the stage centre).
+  function mapPinAt(ox, oy) {
+    const stage = clueMapStageEl || document.querySelector('.clue-map-stage');
+    if (!stage) return;
+    if (ox == null) { ox = stage.clientWidth / 2; oy = stage.clientHeight / 2; }
+    const w = mapInnerToWorld(stage.scrollLeft + ox, stage.scrollTop + oy);
+    clueMapPin = { wx: w.wx, wy: w.wy, ox: ox, oy: oy };
+  }
+  // Put the pinned tile back under its point. Called after ANY resize of the surface.
+  function mapApplyPin() {
+    const stage = clueMapStageEl || document.querySelector('.clue-map-stage');
+    if (!stage || !clueMapPin) return;
+    const i = mapWorldToInner(clueMapPin.wx, clueMapPin.wy);
+    stage.scrollLeft = i.x - clueMapPin.ox;
+    stage.scrollTop  = i.y - clueMapPin.oy;
+  }
+  // World tile at the centre of the stage right now, or null before anything is drawn.
+  function mapViewCentre() {
+    const stage = clueMapStageEl || document.querySelector('.clue-map-stage');
+    if (!stage || !clueMapHalfGot) return null;
+    return mapInnerToWorld(stage.scrollLeft + stage.clientWidth / 2,
+                           stage.scrollTop + stage.clientHeight / 2);
+  }
+  // Centre the NEXT fetch on what is being looked at. The window narrows as zoom rises (to hold
+  // the transfer budget), so a window fixed on the clue tile simply ran out of terrain when you
+  // panned - the map ended mid-desert. Following the view means the fetched window is always the
+  // ground you can actually see. Clamped so it never wanders far outside the area of interest.
+  function mapFetchCentre(defCx, defCy, half, limit) {
+    const v = (clueMapZoom > 1.01) ? mapViewCentre() : null;
+    if (!v) return { cx: defCx, cy: defCy };
+    const lim = limit == null ? half : limit;
+    const cl = (val, def) => Math.round(Math.max(def - lim, Math.min(def + lim, val)));
+    return { cx: cl(v.wx, defCx), cy: cl(v.wy, defCy) };
+  }
   function applyMapZoom() {
     const stage = clueMapStageEl || document.querySelector('.clue-map-stage'), inner = $('clueMapInner');
     if (!stage || !inner) return;
-    const pxTile = (stage.clientWidth || 280) * clueMapZoom / Math.max(1, clueMapSpan);
-    const sz = Math.round(2 * clueMapHalfGot * pxTile);
-    const was = parseFloat(inner.style.width) || 0;
-    // A re-fetch can narrow the window, which resizes the canvas by a factor the wheel
-    // handler did not anticipate. Hold the point that was in the middle of the stage.
-    let fx = 0.5, fy = 0.5;
-    if (was > 0) {
-      fx = (stage.scrollLeft + stage.clientWidth / 2) / was;
-      fy = (stage.scrollTop + stage.clientHeight / 2) / was;
-    }
+    const sz = Math.round(2 * (clueMapHalfGot || 1) * mapPxTile(stage));
     inner.style.width = sz + 'px'; inner.style.height = sz + 'px';
-    if (was > 0 && Math.abs(sz - was) > 1) {
-      stage.scrollLeft = fx * sz - stage.clientWidth / 2;
-      stage.scrollTop = fy * sz - stage.clientHeight / 2;
-    }
+    mapApplyPin();          // the pin is in WORLD space, so it survives any size change
   }
   // Zooming resizes the canvas on screen; the backing store only follows on a redraw, so
   // schedule one (coalesced) or the text is left upscaled and soft.
@@ -380,23 +434,76 @@
   }
   function clueMapBindZoom(stage) {
     clueMapStageEl = stage;
+    // Zoom about the CURSOR: pin the world tile under it, change zoom, put that tile back under
+    // the cursor. Because the pin is in world space it also survives the re-fetch that follows,
+    // so the view stays put instead of snapping to the middle.
     stage.addEventListener('wheel', e => {
       e.preventDefault();
-      const old = clueMapZoom;
+      // ORDER MATTERS: the pin resolves a screen point to a world tile using the CURRENT
+      // pixels-per-tile, so it has to be taken before clueMapZoom changes. Taking it after
+      // resolved the wrong tile and the view crept west/north on every notch.
+      const rect = stage.getBoundingClientRect();
+      mapPinAt(e.clientX - rect.left, e.clientY - rect.top);
+      const prev = clueMapZoom;
       clueMapZoom = Math.max(1, Math.min(6, clueMapZoom * (e.deltaY < 0 ? 1.18 : 1 / 1.18)));
-      if (clueMapZoom === old) return;
-      const rect = stage.getBoundingClientRect(), r = clueMapZoom / old;
-      const px = e.clientX - rect.left + stage.scrollLeft, py = e.clientY - rect.top + stage.scrollTop;
+      if (clueMapZoom === prev) return;
       applyMapZoom();
-      stage.scrollLeft = px * r - (e.clientX - rect.left); stage.scrollTop = py * r - (e.clientY - rect.top);
       clueMapRedrawSoon();          // re-render at the new size so labels stay sharp
     }, { passive: false });
     stage.addEventListener('mousedown', e => { clueMapDrag = { x: e.clientX, y: e.clientY, sl: stage.scrollLeft, st: stage.scrollTop }; stage.classList.add('grabbing'); e.preventDefault(); });
+    // Double-click zooms in about the cursor, the standard map gesture. Same pin as the wheel,
+    // so it lands exactly where you pointed.
+    stage.addEventListener('dblclick', e => {
+      e.preventDefault();
+      const rect = stage.getBoundingClientRect();
+      mapPinAt(e.clientX - rect.left, e.clientY - rect.top);   // before the zoom, as above
+      const prev = clueMapZoom;
+      clueMapZoom = Math.min(6, clueMapZoom * 1.6);
+      if (clueMapZoom === prev) return;
+      applyMapZoom();
+      clueMapRedrawSoon();
+    });
+    // Keyboard: +/- step the zoom about the stage centre, 0 resets to fit. Only while the
+    // pointer is over the map, so it never steals keys from the rest of the panel.
+    stage.addEventListener('mouseenter', () => { clueMapHover = true; });
+    stage.addEventListener('mouseleave', () => { clueMapHover = false; });
     stage.addEventListener('contextmenu', e => { e.preventDefault(); scanReset(); });   // right-click = reset this scan's eliminated spots
     if (!clueMapZoomBound) {
       clueMapZoomBound = true;
-      window.addEventListener('mousemove', e => { if (!clueMapDrag || !clueMapStageEl) return; clueMapStageEl.scrollLeft = clueMapDrag.sl - (e.clientX - clueMapDrag.x); clueMapStageEl.scrollTop = clueMapDrag.st - (e.clientY - clueMapDrag.y); });
-      window.addEventListener('mouseup', () => { if (clueMapDrag) { clueMapDrag = null; if (clueMapStageEl) clueMapStageEl.classList.remove('grabbing'); } });
+      window.addEventListener('mousemove', e => {
+        if (!clueMapDrag || !clueMapStageEl) return;
+        clueMapStageEl.scrollLeft = clueMapDrag.sl - (e.clientX - clueMapDrag.x);
+        clueMapStageEl.scrollTop = clueMapDrag.st - (e.clientY - clueMapDrag.y);
+        mapPinAt();   // panning MOVES the view: re-pin, or the next redraw would undo the drag
+      });
+      window.addEventListener('mouseup', () => {
+        if (!clueMapDrag) return;
+        clueMapDrag = null;
+        if (clueMapStageEl) clueMapStageEl.classList.remove('grabbing');
+        // Pull in terrain for wherever the pan landed. Only when the view has moved a real
+        // fraction of the window, so a nudge does not trigger a fetch.
+        const v = mapViewCentre();
+        if (v && clueMapHalfGot) {
+          const moved = Math.max(Math.abs(v.wx - clueMapWinCx), Math.abs(v.wy - clueMapWinCy));
+          if (moved > clueMapHalfGot * 0.35) clueMapRedrawSoon();
+        }
+      });
+      window.addEventListener('keydown', e => {
+        if (!clueMapHover || e.ctrlKey || e.altKey || e.metaKey) return;
+        const tgt = e.target && e.target.tagName;
+        if (tgt === 'INPUT' || tgt === 'TEXTAREA') return;
+        let z = clueMapZoom;
+        if (e.key === '+' || e.key === '=') z = Math.min(6, clueMapZoom * 1.25);
+        else if (e.key === '-' || e.key === '_') z = Math.max(1, clueMapZoom / 1.25);
+        else if (e.key === '0') { z = 1; clueMapPin = null; }        // reset to fit
+        else return;
+        e.preventDefault();
+        if (z === clueMapZoom && clueMapPin) return;
+        if (clueMapPin) mapPinAt();          // hold the centre when stepping
+        clueMapZoom = z;
+        applyMapZoom();
+        clueMapRedrawSoon();
+      });
     }
   }
   // Scan map: every candidate spot (+ bbox) over terrain, else a self-scaled overview.
@@ -926,6 +1033,7 @@
       for (const v of GOTE_PORTAL_VBS) if (ids.indexOf(v) < 0) ids.push(v);
     for (const k in TELE_CHARGES) { const c = TELE_CHARGES[k]; if (c.vb != null && ids.indexOf(c.vb) < 0) ids.push(c.vb); }
     for (const k in TELE_DAILY_LEFT) { const v = TELE_DAILY_LEFT[k]; if (ids.indexOf(v) < 0) ids.push(v); }
+    for (const k in TELE_DAILY_USED) { const v = TELE_DAILY_USED[k].vb; if (ids.indexOf(v) < 0) ids.push(v); }
     if (ids.indexOf(TELE_PASSAGE_FREE_VB) < 0) ids.push(TELE_PASSAGE_FREE_VB);
     if (ids.length) { try { teleVbCache = (await readVarbitValues(ids)) || {}; } catch (e) { teleVbCache = {}; } }
     // Containers: worn (94) for outfit set gates, backpack (93) for held gates, and BOTH
@@ -1069,7 +1177,8 @@
         try {
           const d = JSON.parse(await bridge().itemInfo(T.item) || 'null');
           if (d && d.name) teleItemNames[T.item] = teleItemBase(d.name);
-        } catch (e) {}
+          else delete teleItemNames[T.item];      // no name yet: let a later pass retry
+        } catch (e) { delete teleItemNames[T.item]; }
       }
     }
   }
@@ -1122,7 +1231,12 @@
     // a spent variant sharing the bare name would satisfy the gate. Those are ids-only.
     if (typeof TELE_ITEM_STRICT !== 'undefined' && TELE_ITEM_STRICT.has(T.item)) return false;
     const bn = teleItemNames[T.item];
-    return bn ? teleHeldBase.has(bn) : true;
+    // No resolved name means the VARIANT match below cannot run - and the id check above already
+    // said this item is not in the backpack or worn. Claiming "held" on no evidence showed
+    // unowned teleports as available (owner-reported on a Pollnivneach teleport scroll); an
+    // unresolved name now reads as not held, which at worst states a requirement you can check.
+    if (!bn) return false;
+    return teleHeldBase.has(bn);
   }
   // Requirement text with the player's LIVE value beside each skill level, so a tooltip
   // says how far off you are ("99 Slayer (87/99)") instead of just naming the bar.
@@ -1185,7 +1299,11 @@
     const lines = teleReqLines(T, mode);
     for (const ln of lines) out.push(ln);
     const left = teleDailyLeft(T);
-    if (left > 0) out.push(left + (left === 1 ? ' teleport' : ' teleports') + ' left today');
+    if (left > 0) {
+      const mx = teleDailyMax(T);
+      out.push(mx ? (left + ' of ' + mx + ' teleports left today')
+                  : (left + (left === 1 ? ' teleport' : ' teleports') + ' left today'));
+    }
     const why = (typeof teleWhyCached === 'function') ? teleWhyCached(T) : teleWhyFull(T);
     if (why) {
       // Strip markup before comparing: a line carrying a dot still states its requirement.
@@ -1709,6 +1827,18 @@
         const reqBlock = teleReqBlock(T);   // requirements + reasons, each stated once
         const ci = teleChargeInfo(T);
         if (ci && ci.used < ci.max) parts.push('daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn());
+        // Daily allowance from a varbit (Mask of Reflection and the modified skilling hats).
+        // The map marker showed charges but never this, so a row could read as freely usable
+        // while its allowance was spent - the gate below already knew, the tooltip did not.
+        {
+          const dl = teleDailyLeft(T);
+          if (dl !== null) {
+            const dm = teleDailyMax(T);
+            parts.push(dl > 0 ? (dm ? dl + ' of ' + dm + ' teleports left today'
+                                    : dl + (dl === 1 ? ' teleport' : ' teleports') + ' left today')
+                              : 'no teleports left today');
+          }
+        }
         // Pouch currency: report the LIVE balance rather than gating on it. The count is the
         // useful fact ("9,900 memory strands"); a red dot would only repeat what 0 already says.
         if (T.req && T.req.cur != null) {
@@ -1816,20 +1946,26 @@
       clueMapSpan = 2 * half;
       const R = mapRes(clueMapSpan, half);
       const ts = R.ts;
+      // Follow the view once zoomed in, clamped to the spot spread so it cannot drift off the
+      // scan area entirely.
+      const fc = mapFetchCentre(ccx, ccy, R.half, Math.max(half, ext));
       let meta = null;
-      meta = await mapWindowCached(ccx, ccy, plane, R.half, ts);
+      meta = await mapWindowCached(fc.cx, fc.cy, plane, R.half, ts);
       if (myseq !== clueMapDrawSeq) return;
       W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || R.half;
-      clueMapHalfGot = H; applyMapZoom();
+      clueMapWinCx = fc.cx; clueMapWinCy = fc.cy; clueMapHalfGot = H; applyMapZoom();
       // Backing store at DISPLAY resolution, not terrain resolution. The reader tops out at
       // 16 px per tile, so a deep zoom on a small scan area outruns the terrain image; going
       // through clueMapCtx means only the terrain is upscaled (unsmoothed, so it stays
       // blocky rather than soft) while labels, rings and the grid render natively.
       cx = clueMapCtx(cv, W);
       if (meta && (meta.png || meta.b64 || meta._k)) { try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); drewTerrain = true; } catch (e) {} }
-      projX = sx => (sx - (ccx - H)) * TS + TS / 2;
-      projY = sy => ((2 * H - 1) - (sy - (ccy - H))) * TS + TS / 2;
-      lmBox = [ccx - H, ccy - H, ccx + H, ccy + H];           // the full rendered window -> show all visible landmarks
+      // Geometry follows the window that was actually fetched (fc), NOT the scan-area centre -
+      // otherwise every spot, label and marker shifts by the difference once the view is
+      // following the pan. ccx/ccy stay the reference for "nearest to the scan area" below.
+      projX = sx => (sx - (fc.cx - H)) * TS + TS / 2;
+      projY = sy => ((2 * H - 1) - (sy - (fc.cy - H))) * TS + TS / 2;
+      lmBox = [fc.cx - H, fc.cy - H, fc.cx + H, fc.cy + H];   // the full rendered window -> show all visible landmarks
     }
     if (!drewTerrain) {                                        // region too large for terrain (or no map data): scaled overview
       W = 384; if (cv.width !== W) { cv.width = W; cv.height = W; }
@@ -1939,7 +2075,7 @@
     { const tt = $('clueMapTitle'); if (tt) tt.style.display = 'none'; }
     const myseq = ++clueMapDrawSeq;
     clueMapMarks = []; clueMapTipBind(cv);
-    let meta = null;
+    let meta = null, digFc = { cx: t.x, cy: t.y };
     if (bridge() && bridge().mapWindow) {
       // Island-scale context: the stage shows +-96 tiles at zoom 1. Resolution and window both
       // follow the zoom - deep in, the window narrows so the pixels-per-tile can rise without
@@ -1947,21 +2083,28 @@
       // ground that is off-screen anyway.
       clueMapSpan = 192;
       const R = mapRes(clueMapSpan, 96);
-      meta = await mapWindowCached(t.x, t.y, t.p || 0, R.half, R.ts);
+      // Follow the view once zoomed in (same reason as the scan map: a window fixed on the clue
+      // tile runs out of terrain when you pan). Clamped to the island-scale radius.
+      digFc = mapFetchCentre(t.x, t.y, R.half, 96);
+      meta = await mapWindowCached(digFc.cx, digFc.cy, t.p || 0, R.half, R.ts);
     }
     if (myseq !== clueMapDrawSeq) return;
     if (myseq !== clueMapDrawSeq) return;
     const W = (meta && meta.w) || 384, TS = (meta && meta.t) || 8, H = (meta && meta.h) || 24;
-    clueMapHalfGot = H; applyMapZoom();
+    clueMapWinCx = digFc.cx; clueMapWinCy = digFc.cy; clueMapHalfGot = H; applyMapZoom();
     const cx = clueMapCtx(cv, W);
     if (meta && (meta.png || meta.b64 || meta._k)) {
       try { clueMapBlit(cx, meta, W, cv); clueDrawNomove(cx, meta); clueDrawObjects(cx, meta); clueDrawTeleports(cx, meta); clueDrawLabelsWindow(cx, meta); } catch (e) {}
     }
-    // the clue tile is rendered at the window centre: window tile (H,H) -> image (H*TS,(H-1)*TS).
-    const mx = H * TS + TS / 2, my = (H - 1) * TS + TS / 2;
+    // The clue tile is NO LONGER always the window centre (the window follows the view when
+    // zoomed), so project it properly instead of assuming the middle.
+    const mx = (t.x - (digFc.cx - H)) * TS + TS / 2;
+    const my = ((2 * H - 1) - (t.y - (digFc.cy - H))) * TS + TS / 2;
     // expose the projection so the live player marker can place itself on this map too.
-    clueMapProj = { projX: function (sx) { return (sx - (t.x - H)) * TS + TS / 2; },
-                    projY: function (sy) { return ((2 * H - 1) - (sy - (t.y - H))) * TS + TS / 2; }, W: W, plane: t.p || 0 };
+    // Geometry follows the FETCHED window centre, not the clue tile - they differ once the view
+    // is being followed, and using the clue tile would offset every marker by the difference.
+    clueMapProj = { projX: function (sx) { return (sx - (digFc.cx - H)) * TS + TS / 2; },
+                    projY: function (sy) { return ((2 * H - 1) - (sy - (digFc.cy - H))) * TS + TS / 2; }, W: W, plane: t.p || 0 };
     const _digP = await scanPlayerTile(); if (myseq !== clueMapDrawSeq) return; clueMapPlayerDraw(_digP);
     clueMapDrawLabels(cx, clueMapProj, t.p || 0, t.x - H, t.y - H, t.x + H, t.y + H);
     // Nearest UNLOCKED lodestone in the window (unlock read from the lodestone varbits) = the
@@ -2131,11 +2274,6 @@
   // ---- BEGIN generated mejrs teleport data (tools/pull_map_teleports.py) ----
   // 798 teleports from the crowdsourced map sheet; regenerate with the tool, do not hand-edit.
   const MAP_TELEPORTS_EXT = [
-{n:"Leela's favour - Imperial district",src:"Leela's favour",x:3176,y:2729,p:0,item:58702,kb:'1',rq:"Pharaoh's Folly"},
-{n:"Leela's favour - Merchant district",src:"Leela's favour",x:3223,y:2782,p:0,item:58702,kb:'2',rq:"Pharaoh's Folly"},
-{n:"Leela's favour - Port district",src:"Leela's favour",x:3213,y:2627,p:0,item:58702,kb:'3',rq:"Pharaoh's Folly"},
-{n:"Leela's favour - Worker district",src:"Leela's favour",x:3156,y:2796,p:0,item:58702,kb:'4',rq:"Pharaoh's Folly"},
-{n:"Leela's favour - Sophanem Slayer Dungeon",src:"Leela's favour",x:3289,y:2708,p:0,item:58702,kb:'7',rq:"Pharaoh's Folly"},
 {n:'Mazcab teleport (tablet)',src:'Teleport tablet',x:4316,y:819,p:0,item:40987,req:{vb:36971,vbVal:1}},
 {n:'Dragonkin Laboratory',src:'Teleport tablet',x:3368,y:3889,p:0,item:43375},
 {n:'Shadow Reef',src:'Teleport tablet',x:3510,y:3694,p:0,item:47529},
@@ -2522,16 +2660,16 @@
     {n:'Kethsi',src:'Portable fairy ring',x:4026,y:5699,p:0,item:41076,kb:'DIR, AKS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Fairy Queen\'s Hideout',src:'Portable fairy ring',x:1560,y:4234,p:0,item:41076,kb:'AIR, DLS, DJQ, AJS',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
     {n:'Orks Rift',src:'Portable fairy ring',x:1626,y:4176,p:0,item:41076,kb:'BIR, DIP, CLR, ALP',rq:'A Fairy Tale II - Cure a Queen, 94 Invention [B]'},
-    {n:'Miscellania',src:'Teleport scrolls',x:2513,y:3858,p:0,item:19477},
+    {n:'Miscellania',src:'Teleport scrolls',x:2513,y:3858,p:0,item:19477,rq:'the matching teleport scroll'},
     {n:'Lumber Yard',src:'Teleport scrolls',x:3306,y:3489,p:0},
-    {n:'Bandit Camp',src:'Teleport scrolls',x:3172,y:2983,p:0,item:19476},
-    {n:'Pollnivneach',src:'Teleport scrolls',x:3361,y:2970,p:0,item:19475},
-    {n:'Phoenix Lair',src:'Teleport scrolls',x:2292,y:3620,p:0,item:19478},
-    {n:'Tai Bwo Wannai',src:'Teleport scrolls',x:2805,y:3086,p:0,item:19479},
-    {n:'Lighthouse',src:'Teleport scrolls',x:2508,y:3634,p:0,item:41804},
-    {n:'Clocktower',src:'Teleport scrolls',x:2593,y:3254,p:0,item:41803},
-    {n:'Gu\'Tanoth',src:'Teleport scrolls',x:2521,y:3062,p:0,item:41802},
-    {n:'Grand Exchange',src:'Teleport scrolls',x:3162,y:3464,p:0,item:41801},
+    {n:'Bandit Camp',src:'Teleport scrolls',x:3172,y:2983,p:0,item:19476,rq:'the matching teleport scroll'},
+    {n:'Pollnivneach',src:'Teleport scrolls',x:3361,y:2970,p:0,item:19475,rq:'the matching teleport scroll'},
+    {n:'Phoenix Lair',src:'Teleport scrolls',x:2292,y:3620,p:0,item:19478,rq:'the matching teleport scroll'},
+    {n:'Tai Bwo Wannai',src:'Teleport scrolls',x:2805,y:3086,p:0,item:19479,rq:'the matching teleport scroll'},
+    {n:'Lighthouse',src:'Teleport scrolls',x:2508,y:3634,p:0,item:41804,rq:'the matching teleport scroll'},
+    {n:'Clocktower',src:'Teleport scrolls',x:2593,y:3254,p:0,item:41803,rq:'the matching teleport scroll'},
+    {n:'Gu\'Tanoth',src:'Teleport scrolls',x:2521,y:3062,p:0,item:41802,rq:'the matching teleport scroll'},
+    {n:'Grand Exchange',src:'Teleport scrolls',x:3162,y:3464,p:0,item:41801,rq:'the matching teleport scroll'},
     {n:'Miscellania',src:'Globetrotter arm guards',x:2513,y:3858,p:0,item:42103,kb:'7'},
     {n:'Lumber Yard',src:'Globetrotter arm guards',x:3306,y:3489,p:0,item:42103,kb:'6'},
     {n:'Bandit Camp',src:'Globetrotter arm guards',x:3172,y:2983,p:0,item:42103,kb:'2'},
@@ -3012,12 +3150,12 @@
     {n:'Taverley',src:'House Teleports',x:2882,y:3450,p:0,kb:'2',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
     {n:'Trollheim',src:'House Teleports',x:2889,y:3672,p:0,kb:'7',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
     {n:'Yanille',src:'House Teleports',x:2542,y:3093,p:0,kb:'6',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
-    {n:'Imperial District',src:'Leela\'s favour',x:3176,y:2729,p:0,kb:'1',rq:'Leela\'s favour',item:58702},
-    {n:'Merchant District',src:'Leela\'s favour',x:3223,y:2782,p:0,kb:'2',rq:'Leela\'s favour',item:58702},
-    {n:'Port District',src:'Leela\'s favour',x:3213,y:2627,p:0,kb:'3',rq:'Leela\'s favour',item:58702},
-    {n:'Shifting Tombs',src:'Leela\'s favour',x:2078,y:6952,p:0,kb:'6',rq:'Leela\'s favour',item:58702},
-    {n:'Sophanem Slayer Dungeon',src:'Leela\'s favour',x:3289,y:2708,p:0,kb:'7',rq:'Leela\'s favour',item:58702},
-    {n:'Worker District',src:'Leela\'s favour',x:3156,y:2796,p:0,kb:'4',rq:'Leela\'s favour',item:58702},
+    {n:'Imperial District',src:'Leela\'s favour',x:3176,y:2729,p:0,kb:'1',rq:'Pharaoh\'s Folly',item:58702},
+    {n:'Merchant District',src:'Leela\'s favour',x:3223,y:2782,p:0,kb:'2',rq:'Pharaoh\'s Folly',item:58702},
+    {n:'Port District',src:'Leela\'s favour',x:3213,y:2627,p:0,kb:'3',rq:'Pharaoh\'s Folly',item:58702},
+    {n:'Shifting Tombs',src:'Leela\'s favour',x:2078,y:6952,p:0,kb:'6',rq:'Pharaoh\'s Folly',item:58702},
+    {n:'Sophanem Slayer Dungeon',src:'Leela\'s favour',x:3289,y:2708,p:0,kb:'7',rq:'Pharaoh\'s Folly',item:58702},
+    {n:'Worker District',src:'Leela\'s favour',x:3156,y:2796,p:0,kb:'4',rq:'Pharaoh\'s Folly',item:58702},
     {n:'Mountain Camp',src:'Lunar Spellbook',x:2783,y:3662,p:0,rq:'spellbook',sp:14428},
     {n:'Western Kharazi Jungle',src:'Lunar Spellbook',x:2801,y:2915,p:0,rq:'spellbook',sp:14428},
     {n:'Return',src:'Magic whistle',x:2741,y:3235,p:0,rq:'Magic whistle',item:16},
@@ -3300,6 +3438,13 @@
   // TELE_CHARGES, which counts uses spent). itemId -> varbit holding what is left today.
   // The daily allowance is not stated anywhere we can read, so only the remaining figure is
   // shown; at 0 the row gates like any other unmet requirement.
+  // Items whose daily teleports are tracked as USES SPENT rather than what is left, with a
+  // known daily cap. Owner-verified live: the Mask of Reflection's varbit read 1, and using a
+  // teleport took it to 2 of 2 - it counts UP. Kept separate from TELE_DAILY_LEFT because the
+  // same number means the opposite thing in each.
+  const TELE_DAILY_USED = {
+    27620: { vb: 18245, max: 2 },   // Mask of Reflection (live-captured)
+  };
   const TELE_DAILY_LEFT = {
     34926: 28311,   // Modified farmer's hat (live-captured)
     32281: 25198,   // Modified artisan's bandana (live-captured)
@@ -3309,10 +3454,26 @@
     34924: 28303,   // Modified sous chef's toque (live-captured)
     32280: 25202,   // Modified blacksmith's helmet (live-captured)
   };
+  // Teleports left today, from whichever direction the game happens to store it. null = unknown.
   function teleDailyLeft(T) {
-    const vb = (T && T.item > 0) ? TELE_DAILY_LEFT[T.item] : null;
-    if (vb == null || !teleVbCache || teleVbCache[vb] === undefined) return null;
-    return teleVbCache[vb] | 0;
+    if (!T || !(T.item > 0) || !teleVbCache) return null;
+    const vb = TELE_DAILY_LEFT[T.item];
+    if (vb != null) {
+      if (teleVbCache[vb] === undefined) return null;
+      return teleVbCache[vb] | 0;
+    }
+    const u = TELE_DAILY_USED[T.item];
+    if (u && teleVbCache[u.vb] !== undefined) {
+      const left = u.max - (teleVbCache[u.vb] | 0);
+      return left < 0 ? 0 : left;
+    }
+    return null;
+  }
+  // The daily cap, when the game states one (the spent-counter items). null = not known, which
+  // is why the remaining-count items only ever print a bare number.
+  function teleDailyMax(T) {
+    const u = (T && T.item > 0) ? TELE_DAILY_USED[T.item] : null;
+    return u ? u.max : null;
   }
   let teleItemCharges = null;   // itemId -> current charge value (worn or backpack)
   function teleChargeInfo(T) {

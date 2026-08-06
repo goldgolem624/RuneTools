@@ -34,6 +34,7 @@
 #include "NetShare.h"       // raw inbound socket bytes (recv/WSARecv), for wire capture
 #include "NetProbeShare.h"  // DECODED server->client packets, captured at the inbound framer
 #include "Present.h"     // in-frame compositor (draws the launcher UI into the game frame)
+#include "SoundFilter.h" // cache-sound observation + muting (audio-chunk mix hook)
 
 namespace {
 
@@ -1797,6 +1798,12 @@ DWORD WINAPI Worker(LPVOID) {
     OutputDebugStringA(rtx::present::Install()
                            ? "RuneToolsX: in-frame compositor active"
                            : "RuneToolsX: buffer-swap entry not found (compositor off)");
+
+    // Cache-sound channel: publishes the sound id behind each mixed chunk so the Sounds panel
+    // can name what just played, and silences ids the launcher has muted. Idle until the panel
+    // sets `enable`, so a failure here costs nothing but the feature.
+    RingLog(rtx::soundfilter::Install() ? "sound: mix hook ATTACHED"
+                                        : "sound: mix fn not found (observation/mute off)");
 
     // Stable capture: prune only dead containers each tick (no flicker), and discover
     // NEW ones (accumulating) when first empty, after the player has walked far enough
