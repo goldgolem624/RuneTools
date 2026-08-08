@@ -16,7 +16,7 @@
   ];
   const WM_ZMIN = 0.3, WM_ZMAX = 12, WM_CACHE_MAX = 130, WM_INFLIGHT_MAX = 2;
   let wmCam = { x: 3213.5, y: 3429.5, z: 1.4, p: 0 };   // world tile centre + px/tile + floor
-  let wmLayer = { labels: true, lodes: true, teles: true, hidey: false, marks: true };
+  let wmLayer = { labels: true, lodes: true, teles: true, hidey: false, marks: true, grid: false };
   let wmCamSaved = false;   // a persisted camera skips the centre-on-player of the first open
   try {
     const c = JSON.parse(localStorage.getItem('rtxWmCam') || 'null');
@@ -215,7 +215,8 @@
       if (ss >= 0 && (sc < 0 || ss + 1 < sc)) sc = ss + 1;
       if (sc < 0) continue;
       const rq = teleRqText(T);
-      out.push({ sc: sc, ty: 'Teleport', nm: T.n, dt: (T.src || '') + (T.kb ? ' [' + T.kb + ']' : '') + (rq ? ' - req ' + rq : ''), x: T.x, y: T.y, p: T.p | 0 });
+      const tkb = (typeof teleKeySeq === 'function') ? teleKeySeq(T) : teleKb(T);
+      out.push({ sc: sc, ty: 'Teleport', nm: T.n, dt: (T.src || '') + (tkb ? ' [' + tkb + ']' : '') + (rq ? ' - req ' + rq : ''), x: T.x, y: T.y, p: T.p | 0 });
     }
     if (typeof HIDEY !== 'undefined') for (const hh of HIDEY) {
       const sc = wmScore(hh.loc + ' ' + hh.n + ' hidey', s); if (sc < 0) continue;
@@ -364,6 +365,42 @@
       }
     }
     wmPump();
+    // World tile grid. Spacing ADAPTS rather than the grid vanishing when zoomed out: at a few
+    // px/tile a per-tile lattice would be mostly lines, so the step grows to the next power of
+    // two that clears ~7 px and those coarser lines draw fainter, reading as a reference grid
+    // instead of noise. Drawn over the terrain but under every marker.
+    if (wmLayer.grid) {
+      let step = 1;
+      while (step * z < 7) step *= 2;                 // in world tiles
+      const gx0 = Math.floor(vx0 / step) * step, gy0 = Math.floor(vy0 / step) * step;
+      cx.save();
+      cx.strokeStyle = (step === 1) ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.07)';
+      cx.lineWidth = 1;
+      cx.beginPath();
+      for (let tx = gx0; tx <= vx1; tx += step) {
+        const px = Math.round(sx(tx)) + 0.5;          // half-pixel: a 1px line lands on one row
+        cx.moveTo(px, 0); cx.lineTo(px, h);
+      }
+      for (let ty = gy0; ty <= vy1; ty += step) {
+        const py = Math.round(sy(ty)) + 0.5;
+        cx.moveTo(0, py); cx.lineTo(w, py);
+      }
+      cx.stroke();
+      // Region edges (64 tiles) stay readable at any zoom - they are the unit the coordinates
+      // in a clue or a marker are actually grouped by.
+      if (z >= 0.35) {
+        cx.strokeStyle = 'rgba(120,190,255,0.22)';
+        cx.beginPath();
+        for (let tx = Math.floor(vx0 / 64) * 64; tx <= vx1; tx += 64) {
+          const px = Math.round(sx(tx)) + 0.5; cx.moveTo(px, 0); cx.lineTo(px, h);
+        }
+        for (let ty = Math.floor(vy0 / 64) * 64; ty <= vy1; ty += 64) {
+          const py = Math.round(sy(ty)) + 0.5; cx.moveTo(0, py); cx.lineTo(w, py);
+        }
+        cx.stroke();
+      }
+      cx.restore();
+    }
     // hidey-holes (built state from the 2-bit varbit: 0 none, 1 built, 2 stocked)
     if (wmLayer.hidey && z >= 1.1 && typeof HIDEY !== 'undefined') {
       for (const hh of HIDEY) {
@@ -420,7 +457,7 @@
           }
         }
         cx.globalAlpha = 1;
-        const kb = teleKb(b.ts[0]);
+        const kb = (typeof teleKeySeq === 'function') ? teleKeySeq(b.ts[0]) : teleKb(b.ts[0]);
         if (b.ts.length > 3) {
           const extra = '+' + (b.ts.length - 3);
           cx.font = '700 9px system-ui, sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
@@ -508,14 +545,14 @@
       const unk = (typeof teleTaskSetWhy === 'function') && teleTaskSetWhy(t2) === '?';
       const dot = '<span style="color:' + (why ? '#ff6b6b' : unk ? '#fbbf24' : '#4dd28a') + '">●</span> ';
       return dot + '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
-        + (t2.kb ? ' [' + htmlEsc(t2.kb) + ']' : '')
+        + ((typeof teleKeySeq === 'function' ? teleKeySeq(t2) : teleKb(t2)) ? ' [' + htmlEsc(typeof teleKeySeq === 'function' ? teleKeySeq(t2) : teleKb(t2)) + ']' : '')
         + (ci && ci.used < ci.max ? '<br>daily teleports ' + ci.used + '/' + ci.max + ' · ' + teleResetIn() : '')
         + ((typeof teleInPassage === 'function' && teleInPassage(t2) && telePassage && telePassage.free)
-             ? '<br>unlimited charges (in the passage)'
+             ? '<br>unlimited charges (passage' + ((typeof telePassageSlot === 'function' && telePassageSlot(t2)) ? ' slot ' + telePassageSlot(t2) : '') + ')'
              : (typeof teleItemChargeVal === 'function' && teleItemChargeVal(t2) !== null
                  ? '<br>' + teleItemChargeVal(t2).toLocaleString()
                    + (teleItemChargeMax(t2) ? '/' + teleItemChargeMax(t2) : '') + ' charges'
-                   + ((typeof teleInPassage === 'function' && teleInPassage(t2)) ? ' (in the passage)' : '') : ''))
+                   + ((typeof teleInPassage === 'function' && teleInPassage(t2)) ? ' (passage' + ((typeof telePassageSlot === 'function' && telePassageSlot(t2)) ? ' slot ' + telePassageSlot(t2) : '') + ')' : '') : ''))
         // One shared builder, so the requirement block cannot drift from the clue map's.
         + ((typeof teleReqBlock === 'function')
              ? teleReqBlock(t2, 'html').map(function (l) {
@@ -614,6 +651,7 @@
       + '  <div class="wm-chip" data-wm="teles" title="Teleport destinations (zoom in)">Teles</div>'
       + '  <div class="wm-chip" data-wm="hidey" title="Hidey-holes (zoom in)">Hidey</div>'
       + '  <div class="wm-chip" data-wm="marks" title="Your tile markers">Marks</div>'
+      + '  <div class="wm-chip" data-wm="grid" title="World tile grid">Grid</div>'
       + '  <div class="wm-sep"></div>'
       + '  <div class="wm-chip" id="wmZoomOut" title="Zoom out">&minus;</div>'
       + '  <div class="wm-chip" id="wmZoomIn" title="Zoom in">+</div>'

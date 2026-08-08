@@ -201,6 +201,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_sounds.js",     // Sounds: cache audio browser (js5-14 effects / js5-40 music)
         "panel_cachex.js",     // Cache Explorer (Developer): enums/structs/dbtables/vars
         "panel_health.js",     // Reader health check (Developer; moved out of Player State)
+        "panel_menuswap.js",   // Right-click menu inspector + reorder (Developer)
     };
     auto slash = html_path.find_last_of("\\/");
     std::string dir = (slash == std::string::npos) ? std::string() : html_path.substr(0, slash + 1);

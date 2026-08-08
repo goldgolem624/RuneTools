@@ -312,7 +312,7 @@
     if (!clueData) { list.innerHTML = '<div class="empty">Reading... (be in-world)</div>'; clueListSig = ''; return; }
     const items = clueData.filter(c =>
       (clueFTier < 0 || c.t === clueFTier) &&
-      (!clueFAction || c.a === clueFAction) &&
+      (!clueFAction || clueAct(c) === clueFAction) &&
       (!clueFHeld || clueHeld.has(c.i)) &&
       (!clueFSearch || String(c.i).indexOf(clueFSearch) >= 0 || clueActionText(c).toLowerCase().indexOf(clueFSearch) >= 0));
     const heldCount = clueData.filter(c => clueHeld.has(c.i)).length;
@@ -333,7 +333,7 @@
       const nm = document.createElement('div'); nm.className = 'pet-nm'; nm.textContent = clueActionText(c); info.appendChild(nm);
       const ni = (c.a === 'npc') ? (CLUE_NPC_INFO[c.npc] || {}) : {};
       const sub = document.createElement('div'); sub.className = 'hh-loc';
-      sub.textContent = (ni.l ? ni.l + '  ·  ' : '') + CLUE_ACT_LBL[c.a] + ' clue · #' + c.i; info.appendChild(sub);
+      sub.textContent = (ni.l ? ni.l + '  ·  ' : '') + CLUE_ACT_LBL[clueAct(c)] + ' clue · #' + c.i; info.appendChild(sub);
       row.appendChild(info);
       if (held) { const st = document.createElement('div'); st.className = 'hh-st hh-filled'; st.textContent = 'Held'; row.appendChild(st); }
       return row;

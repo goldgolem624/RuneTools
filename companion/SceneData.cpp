@@ -35,6 +35,7 @@
 #include "NetProbeShare.h"  // DECODED server->client packets, captured at the inbound framer
 #include "Present.h"     // in-frame compositor (draws the launcher UI into the game frame)
 #include "SoundFilter.h" // cache-sound observation + muting (audio-chunk mix hook)
+#include "MenuProbe.h"  // right-click menu entry-layout probe (diagnostic, opt-in)
 
 namespace {
 
@@ -1805,6 +1806,11 @@ DWORD WINAPI Worker(LPVOID) {
     RingLog(rtx::soundfilter::Install() ? "sound: mix hook ATTACHED"
                                         : "sound: mix fn not found (observation/mute off)");
 
+    // Right-click menu probe. Attaches one detour that records the manager pointer and does
+    // nothing else; the dump only runs with RTX_MENU_PROBE=1 set.
+    RingLog(rtx::menuprobe::Install() ? "menu: probe installed"
+                                      : "menu: string-init pattern not found");
+
     // Stable capture: prune only dead containers each tick (no flicker), and discover
     // NEW ones (accumulating) when first empty, after the player has walked far enough
     // that fresh containers can be in range, OR periodically -- objects can spawn into
@@ -1818,6 +1824,7 @@ DWORD WINAPI Worker(LPVOID) {
         float cpx = 0, cpy = 0;
         bool havePos = PlayerFineOrLast(cpx, cpy);
         PruneInvalid();                                  // drop only freed containers; keep live ones
+        rtx::menuprobe::Poll();                          // no-op unless RTX_MENU_PROBE=1
         bool stale = GetTickCount64() - lastScanMs > kRescanMs;
         // The fast path is ungated: a few hundred pointer reads, so a container is picked up
         // on the very next pass after the hook sees an entity in it.

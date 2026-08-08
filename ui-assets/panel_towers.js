@@ -1135,6 +1135,7 @@
       // per item, so the last one seen won - and an empty one wiped the contents of the
       // one that actually held the jewellery.
       const passNames = new Set();
+      const passSlots = new Map();      // base name -> its slot number in the passage menu
       let passCharges = 0, passAny = false;
       for (const pid2 of TELE_PASSAGE_IDS) {
         const inInv = !!(teleInvSet && teleInvSet.has(pid2));
@@ -1153,18 +1154,24 @@
             try { telePassageEnum = JSON.parse(await bridge().enumInfo(TELE_PASSAGE_ENUM)) || null; } catch (e) {}
           }
           const names = (telePassageEnum && (telePassageEnum.values || telePassageEnum)) || null;
+          let slot = 0;
           while (packed) {
             const ix = packed & 0xF; packed >>>= 4;
             if (!ix) continue;
+            slot++;                       // 1-based, in the order the "Pick an item" menu lists
             let nm = null;
             if (Array.isArray(names)) { const e2 = names.find(function (q) { return +q[0] === ix; }); nm = e2 && e2[1]; }
             else if (names) nm = names[ix] || names[String(ix)];
-            if (nm) { const bn2 = teleItemBase(String(nm)); base.add(bn2); passNames.add(bn2); }
+            if (nm) {
+              const bn2 = teleItemBase(String(nm));
+              base.add(bn2); passNames.add(bn2);
+              if (!passSlots.has(bn2)) passSlots.set(bn2, slot);   // first passage holding it wins
+            }
           }
         } catch (e) {}
       }
       // The Dark Facet makes passage teleports free, which OUTRANKS the charge count.
-      if (passAny) telePassage = { charges: passCharges, names: passNames,
+      if (passAny) telePassage = { charges: passCharges, names: passNames, slots: passSlots,
                                    free: (teleVbCache[TELE_PASSAGE_FREE_VB] | 0) > 0 };
       teleHeldBase = base;
     }
@@ -1815,14 +1822,16 @@
         else if (url) { icon.className = 'cml-icon'; setIconBg(icon, url); }
         else { icon.className = 'cml-dot'; }
         cell.appendChild(icon);
-        const kbTxt = teleKb(T);
+        const kbTxt = teleKeySeq(T);
         if (kbTxt) { const kb = document.createElement('div'); kb.className = 'cml-kb'; kb.textContent = kbTxt; cell.appendChild(kb); }
         const parts = [];
         // Sources that reach this same tile the same way are named together on one line
         // ("Grouping System / Boss portal, Solak") instead of repeating the destination.
         const alsoSrc = [...new Set((teleAlso.get(m) || []).map(q => q.T.src).filter(v => v && v !== T.src))];
         if (T.src) parts.push(alsoSrc.length ? T.src + ' / ' + alsoSrc.join(' / ') : T.src);
-        if (T.kb) parts.push('option ' + T.kb);   // name-embedded keys already read in the name itself
+        { const sl2 = telePassageSlot(T), kb2 = teleKb(T);   // never the stored field: it can be stale
+          if (sl2) parts.push('passage slot ' + sl2 + (kb2 ? ', then option ' + kb2 : ''));
+          else if (kb2) parts.push('option ' + kb2); }   // name-embedded keys already read in the name itself
         parts.push(T.n);
         const reqBlock = teleReqBlock(T);   // requirements + reasons, each stated once
         const ci = teleChargeInfo(T);
@@ -1845,11 +1854,14 @@
           const bal = teleCurVal[T.req.cur];
           if (bal !== undefined) parts.push(bal.toLocaleString() + ' ' + (teleCurName[T.req.cur] || 'in the pouch'));
         }
-        if (teleInPassage(T) && telePassage.free) parts.push('unlimited charges (in the passage)');
+        if (teleInPassage(T) && telePassage.free) {
+          const sl = telePassageSlot(T);
+          parts.push('unlimited charges (passage' + (sl ? ' slot ' + sl : '') + ')');
+        }
         else { const iv = teleItemChargeVal(T);
           if (iv !== null) { const mx = teleItemChargeMax(T);
             parts.push(iv.toLocaleString() + (mx ? '/' + mx : '') + ' charges'
-                       + (teleInPassage(T) ? ' (in the passage)' : '')); } }
+                       + (teleInPassage(T) ? ' (passage' + (telePassageSlot(T) ? ' slot ' + telePassageSlot(T) : '') + ')' : '')); } }
         for (const ln of reqBlock) parts.push(ln);
         // CAPTURE the reason - the three uses below (dot colour, the "not read yet" note and
         // notes[].why) all read `why`, which was never declared here: the call's result was
@@ -1889,7 +1901,7 @@
     }
     if (!pick) pick = notes.sort((a2, b2) => a2.d - b2.d)[0] || null;
     if (!pick) return '';
-    const kbTxt2 = teleKb(pick.T);
+    const kbTxt2 = teleKeySeq(pick.T);
     clueMapTeleBest = { d: pick.d };
     return '  ·  tele: ' + pick.T.n + (kbTxt2 ? ' [' + kbTxt2 + ']' : '') + ' (' + pick.d + (off ? ', off-map' : '') + ')'
          + (notes.length > (off ? 0 : 1) ? ' +' + (notes.length - (off ? 0 : 1)) + ' more' : '');
@@ -2153,7 +2165,7 @@
     if (cap) cap.textContent = 'tile (' + t.x + ', ' + t.y + ')' + (t.p ? '  ·  floor ' + t.p : '') + nearTxt + ways + hideyNote + ((meta && (meta.png || meta.b64 || meta._k)) ? '' : '  ·  no map data (rebuild launcher)');
     applyMapZoom();
   }
-  const CLUE_ACT_LBL = { coordinate: 'Coordinate', map: 'Map', npc: 'NPC', scan: 'Scan', keyitem: 'Key item', emote: 'Emote/cryptic' };
+  const CLUE_ACT_LBL = { coordinate: 'Coordinate', search: 'Map', npc: 'NPC', scan: 'Scan', keyitem: 'Key item', emote: 'Emote/cryptic' };
   const CLUE_SCAN = new Map();   // scan-enum id -> resolved area (lazy, live cache)
   let clueResolving = false;
   // A few NPC challenge-scroll answers change with quest/world state: read the controlling varbits
@@ -2255,6 +2267,49 @@
     } finally { clueResolving = false; }
     if (activeTab === 'clues') { clueListSig = ''; renderCluesList(); }
   }
+  // ---- key clues -------------------------------------------------------------------------
+  // 11 clue items carry item param 4685 = a Key item, and that param IS the "this is locked"
+  // marker (409 clue items in the cache, exactly these 11 have it, every target named "Key").
+  // The key item's own cache text states where the key comes from, so the wording below is the
+  // game's, not ours: 'You can get a replacement from <src>, but only while solving...'.
+  //
+  // The TILE is the one thing the cache does not state: these 11 clues carry no coordinate
+  // param, unlike the 96 search and 114 coordinate clues. Each tile here was checked against
+  // the map and resolves to the named container (all 11), so the object name is still read
+  // live via clueSearchTarget rather than repeated here.
+  const CLUE_KEYS = {
+    2831:  {k:2832,  x:3256, y:3487, p:0, src:'an Ardougne Monastery monk'},
+    2833:  {k:2834,  x:2575, y:3326, p:1, src:'a Handlemort Mansion guard dog'},
+    2835:  {k:2836,  x:2610, y:3324, p:1, src:'an Ardougne guard'},
+    2837:  {k:2838,  x:2709, y:3478, p:0, src:'a chicken'},
+    2839:  {k:2840,  x:2593, y:3108, p:1, src:"a man in the house north of the Wizards' Guild"},
+    3605:  {k:3606,  x:2809, y:3165, p:1, src:'a Brimhaven pirate'},
+    3607:  {k:3608,  x:2928, y:3552, p:0, src:'Penda'},
+    7296:  {k:7297,  x:3354, y:3349, p:0, src:'a barbarian'},
+    7298:  {k:7299,  x:2512, y:3641, p:1, src:'a Rellekka market guard'},
+    7301:  {k:7302,  x:3113, y:3153, p:2, src:'a spellwisp'},
+    13072: {k:13073, x:3056, y:3497, p:0, src:'a monk of Zamorak'},
+  };
+  // The action a clue should be FILTERED and LABELLED as. 8 of the 11 key clues carry an NPC
+  // param in their item def and so decode as 'npc', which buried them among the 71 genuine
+  // talk-to clues and left the Key item filter showing only 3. Carrying a key item is what
+  // makes a clue a key clue, whatever else its def happens to name.
+  function clueAct(c) { return (c && CLUE_KEYS[c.i]) ? 'keyitem' : (c ? c.a : ''); }
+
+  // Resolved clue objects, keyed by tile. The reader reads the map for these, so cache the
+  // answer: a clue's target never moves within a session.
+  const CLUE_OBJ = new Map();          // "x,y,p" -> {id,name,action,dx,dy} | null (looked up, absent)
+  const clueObjKey = (x, y, p) => x + ',' + y + ',' + (p || 0);
+  function clueObjAt(x, y, p) { return CLUE_OBJ.get(clueObjKey(x, y, p)) || null; }
+  async function clueResolveObj(x, y, p) {
+    const k = clueObjKey(x, y, p);
+    if (CLUE_OBJ.has(k) || !bridge() || !bridge().clueSearchTarget) return;
+    CLUE_OBJ.set(k, null);             // claim the slot first so a re-render cannot double-fetch
+    let o = null;
+    try { o = JSON.parse(await bridge().clueSearchTarget(x, y, p || 0) || '{}'); } catch (e) {}
+    CLUE_OBJ.set(k, (o && o.name) ? o : null);
+    clueListSig = ''; if (activeTab === 'clues') renderCluesList();
+  }
   function clueActionText(c) {
     let s;
     if (c.a === 'puzzle') return (c.nm || 'Puzzle box') + ' · solve it in the panel below';
@@ -2262,13 +2317,31 @@
       if (!tetraOpen()) return nm + ' \u00b7 open it to read the dig site';
       const t = tetraTarget();
       return nm + (t ? ' \u00b7 dig at (' + t.x + ', ' + t.y + ')' : ' \u00b7 charge it to reveal a dig site'); }
-    if (c.a === 'coordinate' || c.a === 'map') s = (c.a === 'coordinate' ? 'Dig at ' : 'Go to ') + '(' + c.x + ', ' + c.y + ')' + (c.p ? ' · floor ' + c.p : '');
-    else if (c.a === 'search') s = 'Go to (' + c.x + ', ' + c.y + ') and search the clue object (drawers/crate/etc.)' + (c.p ? ' · floor ' + c.p : '');
-    else if (c.a === 'npc') { const ni = CLUE_NPC_INFO[c.npc] || {}; const ans = clueLiveAnswer(c.npc) || ni.a; s = 'Talk to ' + (c.nn || ('NPC #' + c.npc)) + (c.gd ? ' [quest-gated]' : '') + (ans ? ' · answer: ' + ans : ''); }
+    if (c.a === 'coordinate') s = 'Dig at (' + c.x + ', ' + c.y + ')' + (c.p ? ' · floor ' + c.p : '');
+    else if (c.a === 'search') {
+      const o = clueObjAt(c.x, c.y, c.p);
+      if (!o) clueResolveObj(c.x, c.y, c.p);
+      s = 'Go to (' + c.x + ', ' + c.y + ') and search the '
+        + (o ? o.name : 'clue object') + (c.p ? ' · floor ' + c.p : '');
+    }
+    else if (c.a === 'npc' || c.a === 'keyitem') {
+      const kk = CLUE_KEYS[c.i];
+      if (kk) {                      // locked container: the clue's own NPC param is not the task
+        const o = clueObjAt(kk.x, kk.y, kk.p);
+        if (!o) clueResolveObj(kk.x, kk.y, kk.p);
+        s = 'Locked ' + (o ? o.name : 'container') + ' at (' + kk.x + ', ' + kk.y + ')'
+          + (kk.p ? ' · floor ' + kk.p : '') + ' · key from ' + kk.src;
+      } else if (c.a === 'keyitem') {
+        s = 'Search for key (' + (c.req || 'key item') + ')';
+      } else {
+        const ni = CLUE_NPC_INFO[c.npc] || {}; const ans = clueLiveAnswer(c.npc) || ni.a;
+        s = 'Talk to ' + (c.nn || ('NPC #' + c.npc)) + (c.gd ? ' [quest-gated]' : '')
+          + (ans ? ' · answer: ' + ans : '');
+      }
+    }
     else if (c.a === 'scan') { if (isCompassClue(c)) { s = 'Compass clue (follow the needle)'; } else { const ar = CLUE_SCAN.get(c.en), r = CLUE_SCAN_RESOLVED.get(c.en); s = 'Scan ' + (ar || ('area (enum ' + c.en + ')')) + (r ? ' · ' + r.spots.length + ' spots' + (r.r ? ' · range ' + r.r : '') : ''); } }
-    else if (c.a === 'keyitem') s = 'Search for key (' + (c.req || 'key item') + ')';
     else s = 'Emote / cryptic  ·  tap for the emote-clue guide (location, items, hidey-hole)';
-    if (c.req && c.a !== 'keyitem') s += ' · needs ' + c.req;
+    if (c.req && !CLUE_KEYS[c.i]) s += ' · needs ' + c.req;
     return s;
   }
   // ---- BEGIN generated mejrs teleport data (tools/pull_map_teleports.py) ----
@@ -3249,7 +3322,58 @@
   function teleRqText(T) { return T.rq === 'todo' ? 'unverified' : (T.rq || ''); }
   // Keybind for a teleport marker: the explicit kb field, else the bracketed tokens many
   // sheet rows carry in the NAME ("Vibrant [8]", "Choking Ivy [0][5] > Church [6]" -> "0,5,6").
+  // ---- teleport option numbers, read from the ITEM ---------------------------------------
+  // An item's destination options live in params 528-531 / 1211 / 6712-6714 IN MENU ORDER, so
+  // the number to press is a row's position in that list. Reading it live rather than storing
+  // it means a Jagex reorder corrects itself: the Amulet of glory rows had Karamja on 4 when
+  // the item says 2 (Edgeville, Karamja, Draynor Village, Al Kharid).
+  //
+  // Some items lead with an option that is not a destination ("Teleport", "Rub", "Kills-left")
+  // and open a dialog listing only the destinations. Rather than keep a list of those words,
+  // the offset is taken from the data: the FIRST option any of our rows for that item matches
+  // is destination 1, so whatever precedes it is skipped whatever it happens to be called.
+  const TELE_OPT_PARAMS = ['528', '529', '530', '531', '1211', '6712', '6713', '6714'];
+  const teleKbByItem = new Map();     // item id -> Map(normalised destination -> keybind)
+  const teleKbAsked = new Set();
+  const teleNorm = s2 => String(s2 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const teleDest = T => teleNorm(String(T.n || '').split(' - ').pop());
+  async function teleKbLoad(item) {
+    if (teleKbAsked.has(item) || !bridge() || !bridge().itemParams) return;
+    teleKbAsked.add(item);
+    let p = null;
+    try { p = JSON.parse(await bridge().itemParams(item) || 'null'); } catch (e) {}
+    const opts = [];
+    if (p) for (const k of TELE_OPT_PARAMS) {
+      const v = p[k];
+      if (typeof v === 'string' && v.trim()) opts.push(v.trim());
+    }
+    if (!opts.length) { teleKbByItem.set(item, new Map()); return; }
+    const rows = MAP_TELEPORTS.filter(z => z.item === item && z.n);
+    const at = new Map();               // row destination -> option index (1-based)
+    let first = 0;
+    for (const T of rows) {
+      const d = teleDest(T);
+      if (!d) continue;
+      for (let i = 0; i < opts.length; i++) {
+        const o = teleNorm(opts[i]);
+        // Prefix match both ways: a row says "Draynor", the option says "Draynor Village".
+        if (!(o.startsWith(d.slice(0, 6)) || d.startsWith(o.slice(0, 6)))) continue;
+        at.set(d, i + 1);
+        if (!first || i + 1 < first) first = i + 1;
+        break;
+      }
+    }
+    const m = new Map();
+    at.forEach((i, d) => m.set(d, String(i - first + 1)));
+    teleKbByItem.set(item, m);
+    if (typeof wmKick === 'function') try { wmKick(); } catch (e) {}   // repaint with the real numbers
+  }
   function teleKb(T) {
+    if (T && T.item) {
+      const m = teleKbByItem.get(T.item);
+      if (m) { const k = m.get(teleDest(T)); if (k) return k; }
+      else teleKbLoad(T.item);          // first ask kicks the read; the stored value shows until then
+    }
     if (T.kb) return T.kb;
     const m = String(T.n || '').match(/\[([^\]]+)\]/g);
     return m ? m.map(function (s) { return s.slice(1, -1); }).join(',') : '';
@@ -3486,6 +3610,20 @@
     if (!telePassage || !(T.item > 0)) return false;
     const bn = teleItemNames[T.item];
     return !!(bn && telePassage.names.has(bn));
+  }
+  // Teleporting from the passage is two presses: pick the piece by its slot, then the
+  // destination by its option number. Both come from the cache - the slot from the passage's
+  // own nibble order, the option from the item's params - so neither is written down here.
+  function telePassageSlot(T) {
+    if (!telePassage || !telePassage.slots || !(T.item > 0)) return 0;
+    const bn = teleItemNames[T.item];
+    return bn ? (telePassage.slots.get(bn) | 0) : 0;
+  }
+  // "1 -> 2" for a stored piece, else just the item's own option number.
+  function teleKeySeq(T) {
+    const kb = teleKb(T), sl = telePassageSlot(T);
+    if (!sl) return kb;
+    return kb ? (sl + ', ' + kb) : String(sl);
   }
   function teleItemChargeVal(T) {
     if (!(T.item > 0)) return null;

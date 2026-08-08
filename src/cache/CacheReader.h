@@ -92,6 +92,29 @@ struct LocMeta {
 // when unnamed (most static scenery). Memoized.
 LocMeta GetLoc(int loc_id);
 
+// ---- menu-rule authoring ----------------------------------------------------
+// `kind`: 0 = item (js5-19), 1 = loc (js5-16), 2 = npc (js5-18).
+//
+// Definition for one id as `{"id":N,"name":"..","options":["..",..]}` ("{}" when
+// the id has no def or no name). Lets a right-click reorder rule be written from
+// an id alone, without hovering the thing in game -- the options come from the
+// same cache defs the client builds its menu from.
+std::string MenuDefJson(int kind, int id);
+
+// Reverse lookup: every id of `kind` whose def name matches `name` exactly, as
+// `{"ids":[..]}`. A hovered NPC only exposes a runtime instance index, which is
+// useless as a durable rule key (it changes on every respawn), so the panel keys
+// such a rule on the config id instead -- and that needs name -> id. The index is
+// decoded once per kind and memoized; the first call is slow (tens of thousands
+// of defs), later ones are a map lookup.
+std::string MenuFindJson(int kind, const std::string& name);
+
+// Name search over the same index: every def of `kind` whose name CONTAINS `query`
+// (case-insensitive), as `{"hits":[{"id":N,"name":".."},..]}`, capped at `limit`.
+// Names are not unique - several ids share "Bank booth" - so the caller shows every
+// match and picks, rather than the panel guessing which one was meant.
+std::string MenuSearchJson(int kind, const std::string& query, int limit);
+
 // Morph table for a loc (opcodes 77/92): the placed loc carries a morph BASE id
 // whose on-screen variant is picked live by a varbit/varp. Returns false when the
 // loc has no morph. `variants` is value-indexed (may hold -1 = "no change");
@@ -249,6 +272,13 @@ int ItemLevelFromXp(int item_xp);
 // (water), local 0..63 coords. The static map never changes during a session,
 // so this is memoized per region. Empty when the region isn't in the cache.
 std::vector<LocPlacement> RegionLocations(int region_x, int region_y);
+
+// The searchable object a clue points at. Clue items carry the tile but never the object's
+// name, so it is resolved from the map: the placement covering (x,y) on `plane` whose
+// right-click options include Search or Open. Open (rather than Search) is what a LOCKED
+// container exposes, which is why the action is reported rather than assumed.
+// {"id":n,"name":"Crate","action":"Search","dx":n,"dy":n} - "{}" when nothing is found.
+std::string ClueSearchTargetJson(int x, int y, int plane);
 
 // Tile collision flags packed into the RegionBlockedFill output byte. Walls
 // block a single edge (directional); scenery/void/diagonal block the whole tile.

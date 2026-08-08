@@ -79,6 +79,7 @@
     <ClCompile Include="SceneData.cpp" />
     <ClCompile Include="Composite.cpp" />
     <ClCompile Include="Present.cpp" />
+    <ClCompile Include="MenuProbe.cpp" />
     <ClCompile Include="SoundFilter.cpp" />
     <ClCompile Include="InputFilter.cpp" />
   </ItemGroup>
@@ -93,6 +94,8 @@
     <ClInclude Include="InputShare.h" />
     <ClInclude Include="Composite.h" />
     <ClInclude Include="Present.h" />
+    <ClInclude Include="MenuProbe.h" />
+    <ClInclude Include="MenuShare.h" />
     <ClInclude Include="SoundFilter.h" />
     <ClInclude Include="SoundShare.h" />
     <ClInclude Include="InputFilter.h" />

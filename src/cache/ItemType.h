@@ -27,6 +27,11 @@ struct ItemDef {
     // stats, 3093/3094 + 3095/3096 cost pairs).
     std::map<int, int>         params_i;
     std::map<int, std::string> params_s;
+    // Right-click options, kept in slot order (empty slots stay empty): opcodes 30-34 are the
+    // ground/floor set, 35-39 the carried/worn set. Needed to author a menu-reorder rule from an
+    // item id without hovering the item in game.
+    std::string options[5];
+    std::string worn_options[5];
 };
 
 // Parses the file bytes for one item id. Walks opcode-by-opcode until

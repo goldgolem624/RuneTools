@@ -151,6 +151,7 @@
     <ClInclude Include="..\src\launcher\Loader.h" />
     <ClInclude Include="..\src\launcher\MonitorFix.h" />
     <ClInclude Include="..\src\launcher\Markers.h" />
+    <ClInclude Include="..\src\launcher\MenuSwap.h" />
     <ClInclude Include="..\src\launcher\Overlay.h" />
     <ClInclude Include="..\src\launcher\WinNotify.h" />
     <ClInclude Include="..\src\launcher\Process.h" />
@@ -161,6 +162,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\launcher\Audio.cpp" />
+    <ClCompile Include="..\src\launcher\MenuSwap.cpp" />
     <ClCompile Include="..\src\launcher\SoundFilter.cpp" />
     <ClCompile Include="..\src\cache\Achievements.cpp" />
     <ClCompile Include="..\src\cache\Bzip2.cpp" />

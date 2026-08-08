@@ -13,6 +13,7 @@
 #include "../cache/Constants.h"     // kIndexSoundEffects / kIndexMusic for the audio bridges
 #include "Audio.h"                  // in-process Ogg Vorbis playback
 #include "SoundFilter.h"            // in-client sound observation + muting (companion channel)
+#include "MenuSwap.h"               // right-click menu inspector + reorder (companion channel)
 #include "../cache/Achievements.h"
 #include "../../companion/HudShare.h"
 #include "../reader/Reader.h"
@@ -543,6 +544,40 @@ JSValueRef SoundMute(JSContextRef ctx, JSObjectRef, JSObjectRef,
         if (got) ids.push_back(v);
     }
     return JSValueMakeBoolean(ctx, rtx::launcher::soundfilter::SetMuted(pid, std::move(ids)));
+}
+
+// The searchable object a clue points at, resolved from the map. Clue items carry the tile but
+// never the object's name, so the panel asks for it per target tile and caches the answer.
+JSValueRef ClueSearchTarget(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                            size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, "{}");
+    int x = static_cast<int>(JSValueToNumber(ctx, argv[0], nullptr));
+    int y = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int p = (argc >= 3) ? static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr)) : 0;
+    return utf8_to_js(ctx, rtx::cache::ClueSearchTargetJson(x, y, p));
+}
+
+// ---- right-click menu (Developer) ----
+JSValueRef MenuStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return utf8_to_js(ctx, rtx::launcher::menuswap::StatusJson(pid));
+}
+
+JSValueRef MenuEnable(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetEnabled(pid, JSValueToBoolean(ctx, argv[1])));
+}
+
+// verbs: newline-separated, in the order they should appear at the top of the menu.
+JSValueRef MenuSwapFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetPins(pid, js_to_utf8(ctx, argv[1])));
 }
 
 JSValueRef HostInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -3234,6 +3269,51 @@ JSValueRef VarPinsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, f.good());
 }
 
+// Menu-rule authoring from an id alone (no hovering): name + right-click options for
+// kind 0 item / 1 loc / 2 npc, and the reverse name -> ids lookup used to key a hovered
+// NPC on its config id instead of its throwaway instance index.
+JSValueRef MenuDef(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, "{}");
+    int kind = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id   = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    return utf8_to_js(ctx, rtx::cache::MenuDefJson(kind, id));
+}
+JSValueRef MenuFind(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                    size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, "{\"ids\":[]}");
+    int kind = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    return utf8_to_js(ctx, rtx::cache::MenuFindJson(kind, js_to_utf8(ctx, argv[1])));
+}
+
+JSValueRef MenuSearch(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, "{\"hits\":[]}");
+    int kind  = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int limit = argc > 2 ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 60;
+    return utf8_to_js(ctx, rtx::cache::MenuSearchJson(kind, js_to_utf8(ctx, argv[1]), limit));
+}
+
+// Global (not per-account) right-click menu reorder rules. Same reasoning as the Vars pins:
+// the dock's localStorage does not survive a ui-asset re-extract, and on a build without the
+// WebCore cache path it does not survive a reload at all, so the rules have to live on disk.
+JSValueRef MenuRulesLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    std::string s = alerts_read_file(launcher_cfg_path(L"menurules.json"));
+    return utf8_to_js(ctx, s.empty() ? std::string("{}") : s);
+}
+JSValueRef MenuRulesSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto p = launcher_cfg_path(L"menurules.json");
+    if (p.empty()) return JSValueMakeBoolean(ctx, false);
+    std::string s = js_to_utf8(ctx, argv[0]);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    if (!f) return JSValueMakeBoolean(ctx, false);
+    f.write(s.data(), (std::streamsize)s.size());
+    return JSValueMakeBoolean(ctx, f.good());
+}
+
 JSValueRef FlashGame(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -3995,6 +4075,10 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "soundFilterStatus", SoundFilterStatus);
     install_fn(ctx, ns, "soundFilterEnable", SoundFilterEnable);
     install_fn(ctx, ns, "soundMute",         SoundMute);
+    install_fn(ctx, ns, "clueSearchTarget", ClueSearchTarget);
+    install_fn(ctx, ns, "menuStatus",        MenuStatus);
+    install_fn(ctx, ns, "menuEnable",        MenuEnable);
+    install_fn(ctx, ns, "menuPins",          MenuSwapFn);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
@@ -4151,6 +4235,11 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "hiddenPanelsSave",  HiddenPanelsSave);
     install_fn(ctx, ns, "varPinsLoad",       VarPinsLoad);
     install_fn(ctx, ns, "varPinsSave",       VarPinsSave);
+    install_fn(ctx, ns, "menuRulesLoad",     MenuRulesLoad);
+    install_fn(ctx, ns, "menuRulesSave",     MenuRulesSave);
+    install_fn(ctx, ns, "menuDef",           MenuDef);
+    install_fn(ctx, ns, "menuFind",          MenuFind);
+    install_fn(ctx, ns, "menuSearch",        MenuSearch);
     install_fn(ctx, ns, "flashGame",         FlashGame);
     install_fn(ctx, ns, "metronome",         Metronome);
     install_fn(ctx, ns, "guideMarks",        GuideMarksFn);

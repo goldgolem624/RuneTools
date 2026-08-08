@@ -34,13 +34,14 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 23: case 24: case 25: case 26: s.ReadBigSmart(); return true;
         case 27: s.ReadUnsignedByte();                        return true;
         case 30: case 31: case 32: case 33: case 34:
-                 (void)s.ReadString();                        return true;
+                 d.options[opcode - 30] = s.ReadString();         return true;
         case 35: case 36: case 37: case 38: case 39: {
             // Worn (equipped) right-click options. Augmented gear uniquely carries
             // a "Disassemble" worn option (to recover the augmentor); plain worn
             // gear has "Destroy"/"Drop" instead.
             std::string opt = s.ReadString();
             if (opt == "Disassemble") d.augmented = true;
+            d.worn_options[opcode - 35] = opt;
             return true;
         }
         case 40: case 41: {

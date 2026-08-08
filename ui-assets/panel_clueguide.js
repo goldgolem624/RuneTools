@@ -84,7 +84,11 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
   }
   function clueTile(c) {
     if (!c) return null;
-    if (c.a === 'coordinate' || c.a === 'map' || c.a === 'search') return c.x > 0 ? { x: c.x, y: c.y, p: c.p || 0 } : null;
+    // A key clue's tile is the LOCKED CONTAINER, not the NPC its item def names - the def's NPC
+    // param is incidental for these, and pointing the map at it sent you to the wrong place.
+    const kk = (typeof CLUE_KEYS !== 'undefined') ? CLUE_KEYS[c.i] : null;
+    if (kk) return { x: kk.x, y: kk.y, p: kk.p || 0 };
+    if (c.a === 'coordinate' || c.a === 'search') return c.x > 0 ? { x: c.x, y: c.y, p: c.p || 0 } : null;
     if (c.a === 'npc') { const ni = CLUE_NPC_INFO[c.npc]; return (ni && ni.x > 0) ? { x: ni.x, y: ni.y, p: ni.p || 0 } : null; }
     if (c.a === 'scan') return scanCentroid(scanSpotsFor(c));   // centroid of candidate spots (selectable once resolved)
     return null;   // emote/keyitem have no single tile yet
@@ -92,8 +96,10 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
   // In-world label: ASCII only (the companion glyph atlas is 32..126).
   function clueLabel(c) {
     const t = CLUE_TIERS[c.t] + ' clue';
-    if (c.a === 'coordinate' || c.a === 'map') return t + ' - dig - (' + c.x + ', ' + c.y + ')';
-    if (c.a === 'search') return t + ' - search here - (' + c.x + ', ' + c.y + ')';   // clue_tele_location: go + search the object (not dig)
+    if (c.a === 'coordinate') return t + ' - dig - (' + c.x + ', ' + c.y + ')';
+    const kk = (typeof CLUE_KEYS !== 'undefined') ? CLUE_KEYS[c.i] : null;
+    if (kk) { const o = clueObjAt(kk.x, kk.y, kk.p); return t + ' - locked ' + (o ? o.name : 'container'); }
+    if (c.a === 'search') { const o = clueObjAt(c.x, c.y, c.p); return t + ' - search ' + (o ? o.name : 'here') + ' - (' + c.x + ', ' + c.y + ')'; }
     if (c.a === 'npc') return t + ' - talk: ' + (c.nn || ('NPC #' + c.npc));
     return t;
   }

@@ -527,6 +527,169 @@ NpcMeta GetNpc(int npc_id) {
     return meta;
 }
 
+// ---- menu-rule authoring ------------------------------------------------------------------
+namespace {
+
+void JsonEscTo(std::string& out, const std::string& in) {
+    for (char c : in) {
+        if (c == '"' || c == '\\') out.push_back('\\');
+        if ((unsigned char)c < 0x20) { out.push_back(' '); continue; }
+        out.push_back(c);
+    }
+}
+
+// name -> ids, one map per kind, decoded on first use. Guarded by g_mu like every other cache.
+std::map<std::string, std::vector<int>> g_name_index[3];
+bool g_name_index_built[3] = { false, false, false };
+
+void BuildNameIndexLocked(int kind) {
+    if (kind < 0 || kind > 2 || g_name_index_built[kind]) return;
+    g_name_index_built[kind] = true;                 // one attempt: a failed sweep must not loop
+    const int idx = kind == 0 ? kIndexItems : kind == 1 ? kIndexLocations : kIndexNpcs;
+    auto* index = g_store ? g_store->Get(idx) : nullptr;
+    if (!index) return;
+    // Archives are 256 files; walk until a run of empty archives says the index is exhausted.
+    int emptyRun = 0;
+    for (int archive = 0; archive < 512 && emptyRun < 8; ++archive) {
+        bool any = false;
+        for (int file = 0; file < 256; ++file) {
+            auto bytes = index->ReadFile(archive, file);
+            if (bytes.empty()) continue;
+            any = true;
+            const int id = (archive << 8) | file;
+            std::string nm;
+            if (kind == 0)      nm = DecodeItem(id, std::move(bytes)).name;
+            else if (kind == 1) nm = DecodeLoc(id, std::move(bytes)).name;
+            else                nm = DecodeNpc(id, std::move(bytes)).name;
+            if (!nm.empty()) g_name_index[kind][nm].push_back(id);
+        }
+        emptyRun = any ? 0 : emptyRun + 1;
+    }
+}
+
+}  // namespace
+
+std::string MenuDefJson(int kind, int id) {
+    if (id < 0 || kind < 0 || kind > 2) return "{}";
+    std::string name;
+    std::vector<std::string> opts;
+    if (kind == 1) {
+        LocMeta m = GetLoc(id);
+        name = m.name;
+        opts = m.actions;
+    } else if (kind == 2) {
+        NpcMeta m = GetNpc(id);
+        name = m.name;
+        opts = m.actions;
+    } else {
+        std::lock_guard<std::mutex> lk(g_mu);
+        EnsureInit();
+        auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+        if (index) {
+            auto bytes = index->ReadFile(id >> 8, id & 0xff);
+            if (!bytes.empty()) {
+                ItemDef d = DecodeItem(id, std::move(bytes));
+                name = d.name;
+                // The carried set is what a backpack menu draws; fall back to the ground set
+                // for items that only exist on the floor.
+                for (const auto& o : d.worn_options) if (!o.empty()) opts.push_back(o);
+                if (opts.empty())
+                    for (const auto& o : d.options) if (!o.empty()) opts.push_back(o);
+            }
+        }
+    }
+    // Options the CLIENT appends rather than the def carrying them - without these the authored
+    // list disagreed with the real menu (Pharaoh's sceptre offered Teleport/Wield/Examine here
+    // while the game drew Teleport/Wield/Use/Drop/Examine). Live menus put Use and Drop after the
+    // def's own options and Examine last, for every kind; skipped if the def already names one.
+    {
+        auto addTail = [&opts](const char* v) {
+            for (const auto& o : opts) if (o == v) return;
+            opts.push_back(v);
+        };
+        if (kind == 0) {
+            addTail("Use");
+            // DESTROY REPLACES DROP: an item that can be destroyed cannot be dropped, so the
+            // client appends no Drop for it. Live: TokKul-Zo (Charged) draws Teleport / Wear /
+            // Check-charge / Destroy / Use / Examine - Destroy comes from the def and there is
+            // no Drop at all.
+            bool destroyable = false;
+            for (const auto& o : opts) if (o == "Destroy") destroyable = true;
+            if (!destroyable) addTail("Drop");
+        }
+        addTail("Examine");
+    }
+    if (name.empty()) return "{}";
+    std::string out = "{\"id\":" + std::to_string(id) + ",\"name\":\"";
+    JsonEscTo(out, name);
+    out += "\",\"options\":[";
+    for (std::size_t i = 0; i < opts.size(); ++i) {
+        if (i) out += ',';
+        out += '"';
+        JsonEscTo(out, opts[i]);
+        out += '"';
+    }
+    out += "]}";
+    return out;
+}
+
+std::string MenuFindJson(int kind, const std::string& name) {
+    if (kind < 0 || kind > 2 || name.empty()) return "{\"ids\":[]}";
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    BuildNameIndexLocked(kind);
+    std::string out = "{\"ids\":[";
+    auto hit = g_name_index[kind].find(name);
+    if (hit != g_name_index[kind].end())
+        for (std::size_t i = 0; i < hit->second.size(); ++i) {
+            if (i) out += ',';
+            out += std::to_string(hit->second[i]);
+        }
+    out += "]}";
+    return out;
+}
+
+std::string MenuSearchJson(int kind, const std::string& query, int limit) {
+    if (kind < 0 || kind > 2 || query.empty()) return "{\"hits\":[]}";
+    if (limit <= 0 || limit > 200) limit = 60;
+    std::string needle;
+    for (char c : query) needle.push_back((char)std::tolower((unsigned char)c));
+
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    BuildNameIndexLocked(kind);
+
+    // Exact and prefix matches first: searching "bank" should lead with "Bank booth", not with
+    // whatever alphabetically-first def merely contains the word.
+    struct Hit { int id; const std::string* name; int rank; };
+    std::vector<Hit> hits;
+    for (const auto& kv : g_name_index[kind]) {
+        std::string low;
+        low.reserve(kv.first.size());
+        for (char c : kv.first) low.push_back((char)std::tolower((unsigned char)c));
+        const std::size_t at = low.find(needle);
+        if (at == std::string::npos) continue;
+        const int rank = (low == needle) ? 0 : (at == 0 ? 1 : 2);
+        for (int id : kv.second) hits.push_back({ id, &kv.first, rank });
+        if ((int)hits.size() > limit * 4) break;      // enough to rank from; the cap applies below
+    }
+    std::stable_sort(hits.begin(), hits.end(),
+                     [](const Hit& a, const Hit& b) { return a.rank < b.rank; });
+
+    std::string out = "{\"hits\":[";
+    int n = 0;
+    for (const Hit& h : hits) {
+        if (n >= limit) break;
+        if (n) out += ',';
+        out += "{\"id\":" + std::to_string(h.id) + ",\"name\":\"";
+        JsonEscTo(out, *h.name);
+        out += "\"}";
+        ++n;
+    }
+    out += "]}";
+    return out;
+}
+
 LocMeta GetLoc(int loc_id) {
     if (loc_id < 0) return {};
     std::lock_guard<std::mutex> lk(g_mu);
@@ -1970,6 +2133,55 @@ struct MapWinCacheEntry { int cx, cy, plane, half, ts; std::string json; };
 std::deque<MapWinCacheEntry> g_mapWinCache;      // most-recent first; guarded by g_mu
 constexpr std::size_t kMapWinCacheMax = 3;
 }  // namespace
+
+// See the header. A clue item states the tile but never the object, so the object is read back
+// off the map. Matched by right-click option rather than by name: "Search" is the ordinary case
+// and "Open" is what a LOCKED container shows, and those two together are exactly the set of
+// clue-searchable things - which beats maintaining a list of names like Crate/Drawers/Chest.
+std::string ClueSearchTargetJson(int x, int y, int plane) {
+    if (x <= 0 || y <= 0 || plane < 0 || plane > 3) return "{}";
+    // A multi-tile object is anchored at its SW corner, so the placement covering this tile can
+    // be up to a few tiles away; widen to the neighbouring regions for one on a boundary.
+    struct Best { int id = -1; std::string name, action; int dx = 1, dy = 1; int rank = 99; };
+    Best best;
+    for (int rgx = (x - 4) >> 6; rgx <= ((x + 4) >> 6); ++rgx) {
+        for (int rgy = (y - 4) >> 6; rgy <= ((y + 4) >> 6); ++rgy) {
+            for (const auto& p : RegionLocations(rgx, rgy)) {
+                if (p.plane != plane || p.id < 0) continue;
+                LocMeta m = GetLoc(p.id);
+                if (m.name.empty()) continue;
+                int dx = m.dim_x < 1 ? 1 : m.dim_x, dy = m.dim_y < 1 ? 1 : m.dim_y;
+                if (p.rotation == 1 || p.rotation == 3) { int t = dx; dx = dy; dy = t; }
+                const int gx = rgx * 64 + p.x, gy = rgy * 64 + p.y;
+                if (x < gx || x >= gx + dx || y < gy || y >= gy + dy) continue;
+                // Prefer Search over Open: a room can hold both a searchable object and an
+                // ordinary door, and only the former is ever the clue target.
+                for (std::size_t a = 0; a < m.actions.size(); ++a) {
+                    const std::string& act = m.actions[a];
+                    int rank = (act == "Search") ? 0 : (act == "Open") ? 1 : 99;
+                    if (rank >= best.rank) continue;
+                    best.rank = rank; best.id = p.id; best.name = m.name;
+                    best.action = act; best.dx = dx; best.dy = dy;
+                }
+            }
+        }
+    }
+    if (best.id < 0) return "{}";
+    auto esc = [](const std::string& in) {          // same inline escaping the other producers use
+        std::string o;
+        o.reserve(in.size() + 8);
+        for (char c : in) {
+            if (c == '"' || c == '\\') o.push_back('\\');
+            o.push_back(c);
+        }
+        return o;
+    };
+    std::string out = "{\"id\":" + std::to_string(best.id);
+    out += ",\"name\":\"" + esc(best.name) + "\"";
+    out += ",\"action\":\"" + esc(best.action) + "\"";
+    out += ",\"dx\":" + std::to_string(best.dx) + ",\"dy\":" + std::to_string(best.dy) + "}";
+    return out;
+}
 
 std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     std::lock_guard<std::mutex> lk(g_mu);
