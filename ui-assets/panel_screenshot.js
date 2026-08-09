@@ -111,11 +111,19 @@
 
     const kbtns = document.createElement('div'); kbtns.className = 'ss-row';
     const set = document.createElement('button'); set.className = 'ss-btn'; set.id = 'ssSet';
-    set.addEventListener('click', () => { ssCapturing = !ssCapturing; ssPaint(); });
+    set.addEventListener('click', () => {
+      // Claim the game's keystrokes while armed: this is a BUTTON, so the focus-based capture
+      // in client.html cannot see it and every key would go to the game instead of here.
+      ssCapturing = !ssCapturing;
+      if (typeof kbGrab === 'function') kbGrab(ssCapturing);
+      ssPaint();
+    });
     const clr = document.createElement('button'); clr.className = 'ss-btn'; clr.id = 'ssClear'; clr.textContent = 'Clear keybind';
     clr.addEventListener('click', () => {
       if (!ssKeybind) return;
-      ssKeybind = 0; ssCapturing = false; ssSaveKb(); ssPaint(); ssSetStatus('Keybind cleared.');
+      ssKeybind = 0;
+      if (ssCapturing && typeof kbGrab === 'function') kbGrab(false);
+      ssCapturing = false; ssSaveKb(); ssPaint(); ssSetStatus('Keybind cleared.');
     });
     kbtns.appendChild(set); kbtns.appendChild(clr); card.appendChild(kbtns);
 
@@ -141,5 +149,7 @@
     e.preventDefault(); e.stopPropagation();
     const vk = e.keyCode || e.which || 0;
     if (vk && vk !== 27) { ssKeybind = vk; ssSaveKb(); ssSetStatus('Bound to ' + ssVkName(vk) + '.', 'ok'); }
-    ssCapturing = false; ssPaint();
+    ssCapturing = false;
+    if (typeof kbGrab === 'function') kbGrab(false);
+    ssPaint();
   }, true);

@@ -5687,6 +5687,23 @@ std::string BuffsJson(std::uint32_t pid) {
             if (slotArr <= 0x10000) continue;
             std::uint64_t icon = r64(slotArr + 0x8), textw = r64(slotArr + 0x20);
             if (icon <= 0x10000) continue;
+            // DANGLING-ICON FILTER, and the only one that catches every leftover. widget+0x30 is
+            // the PARENT backlink (widget+0x38 is parent+0x20 throughout the tree), so a live
+            // icon's parent is the slot you reached it through. When a buff ends the engine
+            // recycles its icon widget into some other interface and RE-PARENTS it, but the buff
+            // slot keeps pointing at it - so the stale icon still reads a valid sprite, a valid
+            // content count and a "shown" visible-state, and its text widget still reads a string.
+            //
+            // Measured live: the Hefin pickpocket-cooldown phantom held sprite 24207 with the
+            // timer column reading "Load Pr" - the first 7 bytes of "Load Preset:", because the
+            // icon had been re-parented into the preset panel. Its parent read 0x1c7e8c12208 while
+            // its slot was 0x1c7e8a299c8. All three real buffs matched their slot exactly; all
+            // three leftovers (including one reading "No sear", from "No search results") did not.
+            //
+            // Kept ALONGSIDE the two filters below rather than replacing them, even though it
+            // subsumes both: if a real buff is ever sampled mid-attach this drops it for one
+            // frame, which is the safe direction, but the older guards stay as a second net.
+            if (r64(icon + 0x30) != slot) continue;
             int sprite = r16(icon + 0x188);
             int item   = r32(icon + 0x1a0);
             std::string timer;

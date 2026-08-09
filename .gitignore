@@ -69,6 +69,7 @@ ArchTutorialPluginX/
 # Local working files, never redistributed. These were previously only in
 # .git/info/exclude, which is not committed and would not survive a re-clone.
 CHANGELOG.md
+release-notes-*.md
 tools/
 *.ps1
 plugin-uploads/

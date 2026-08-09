@@ -140,6 +140,7 @@
   };
   const SOIL_CAP = [50, 100, 250, 500];
   let storageData = null, storageVbMap = null, storageSig = '', storageFetching = false;
+  let storageVbMapTry = 0;    // last varbitMap attempt (ms) -- bridge().varbitMap is SYNCHRONOUS native work
   // Runecrafting pouches never degrade while Conservation of Energy is harnessed
   // (panel_archresearch.js reads the live relic slots).
   function storNoDecay() {
@@ -149,8 +150,16 @@
   // varbitMap is keyed by varp -> [[varbitId,lsb,msb],..]; invert to varbitId -> {varp,lsb,msb}.
   function buildVbReverse(vbm) { const m = {}; for (const vp in vbm) for (const d of vbm[vp]) m[d[0]] = { varp: +vp, lsb: d[1], msb: d[2] }; return m; }
   async function ensureVbMap() {
+    // VarbitMapJson returns "{}" while the CONFIGS index is not open (CacheReader.cpp:1363,1404),
+    // and buildVbReverse({}) is a TRUTHY empty object -- caching that latched EVERY varbit in the
+    // app to 0 for the rest of the session: the lockbox reads "Solved." forever, and achievements /
+    // farming / abilities / quests / mysteries all silently read zero. Only accept a non-empty map,
+    // and back off between retries, because bridge().varbitMap does NOT go through served()/
+    // ReadAsync like varps does (Bridge.cpp:921-924) -- it runs cache work synchronously on the
+    // render thread, and an unthrottled retry would do that on every readVarbitValues call.
     if (storageVbMap || !bridge().varbitMap) return;
-    try { storageVbMap = buildVbReverse(JSON.parse(await bridge().varbitMap())); } catch (e) {}
+    const now = Date.now(); if (now - storageVbMapTry < 2000) return; storageVbMapTry = now;
+    try { const m = buildVbReverse(JSON.parse(await bridge().varbitMap())); if (Object.keys(m).length) storageVbMap = m; } catch (e) {}
   }
   function readVb(vbId, vpData) {
     const r = storageVbMap && storageVbMap[vbId]; if (!r) return null;

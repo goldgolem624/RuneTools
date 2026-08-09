@@ -9,32 +9,48 @@
   const TOWERS_VB_IDS = Array.from({ length: 25 }, (_, i) => 39675 + i);
   function towersVis(line) { let m = 0, c = 0; for (const v of line) { if (v > m) { m = v; c++; } } return c; }
   const TOWERS_PERMS = (function () { const out = []; (function gen(a) { if (a.length === 5) { out.push(a.slice()); return; } for (let v = 1; v <= 5; v++) if (a.indexOf(v) < 0) { a.push(v); gen(a); a.pop(); } })([]); return out; })();
+  // Column clues get the same candidate-list treatment as the rows, and each partial column is
+  // matched against the PREFIXES of its candidates -- so a row that can never satisfy a top/bottom
+  // clue dies at the row it is placed in instead of at the leaf, and the prefix test subsumes the
+  // latin-square column check. Counting to 2 is what made the old version walk the whole tree on a
+  // uniquely-solvable board; with the pruning it is nearly free, so it is kept and now reported.
+  const TOWERS_PFX = new Int32Array(5 * 7776);         // 6^5; prefixes of length 1..5 cannot collide
+  let towersPfxGen = 0, towersAmbiguous = false;
   function towersSolve(top, bottom, left, right) {
     const N = 5, rows = [];
+    towersAmbiguous = false;
     for (let r = 0; r < N; r++) {
       rows[r] = TOWERS_PERMS.filter(p => (!left[r] || towersVis(p) === left[r]) && (!right[r] || towersVis(p.slice().reverse()) === right[r]));
       if (!rows[r].length) return null;
     }
-    const sol = []; let found = null, count = 0;
-    (function bt(r) {
-      if (count > 1) return;
-      if (r === N) {
-        for (let c = 0; c < N; c++) { const col = sol.map(row => row[c]);
-          if (top[c] && towersVis(col) !== top[c]) return;
-          if (bottom[c] && towersVis(col.slice().reverse()) !== bottom[c]) return; }
-        count++; if (!found) found = sol.map(row => row.slice()); return;
+    if (++towersPfxGen > 2000000000) { TOWERS_PFX.fill(0); towersPfxGen = 1; }
+    const gen = towersPfxGen;
+    for (let c = 0; c < N; c++) {
+      const off = c * 7776; let any = false;
+      for (const q of TOWERS_PERMS) {
+        if (top[c] && towersVis(q) !== top[c]) continue;
+        if (bottom[c] && towersVis(q.slice().reverse()) !== bottom[c]) continue;
+        any = true; let k = 0;
+        for (let d = 0; d < N; d++) { k = k * 6 + q[d]; TOWERS_PFX[off + k] = gen; }
       }
-      for (const p of rows[r]) {
-        let ok = true;
-        for (let c = 0; c < N && ok; c++) for (let rr = 0; rr < r; rr++) if (sol[rr][c] === p[c]) { ok = false; break; }
-        if (!ok) continue;
+      if (!any) return null;
+    }
+    const sol = [], key = [0, 0, 0, 0, 0], save = []; let found = null, count = 0;
+    (function bt(r) {
+      if (r === N) { count++; if (!found) found = sol.map(row => row.slice()); return; }
+      outer: for (const p of rows[r]) {
+        for (let c = 0; c < N; c++) if (TOWERS_PFX[c * 7776 + key[c] * 6 + p[c]] !== gen) continue outer;
+        for (let c = 0; c < N; c++) { save[r * N + c] = key[c]; key[c] = key[c] * 6 + p[c]; }
         sol.push(p); bt(r + 1); sol.pop();
+        for (let c = 0; c < N; c++) key[c] = save[r * N + c];
         if (count > 1) return;
       }
     })(0);
+    towersAmbiguous = count > 1;
     return found;                                            // first solution (the clues normally make it unique)
   }
   let towersBusy = false, towersOwnsPanel = false, towersDrawSig = '', towersHl = false, towersSupersede = false;
+  let towersSolveSig = '', towersSolveCache = null, towersCacheAmb = false;   // clue-vector gate: the clues cannot change while one puzzle is up
   function towersClearHl() { if (!towersHl) return; try { if (bridge() && bridge().puzzleCells) bridge().puzzleCells(myPid(), ''); } catch (e) {} towersHl = false; }
   async function towersTick() {
     if (towersBusy || !bridge() || !bridge().interfaceGroup) return;
@@ -69,7 +85,9 @@
       }
       let vals = {}; try { vals = await readVarbitValues(TOWERS_VB_IDS); } catch (e) {}
       const grid = TOWERS_VB_IDS.map(id => { const v = vals[id] | 0; return (v >= 1 && v <= 5) ? v : 0; });
-      const sol = towersSolve(top, bottom, left, right);
+      const ssig = top.join() + '|' + bottom.join() + '|' + left.join() + '|' + right.join();
+      if (ssig !== towersSolveSig) { towersSolveSig = ssig; towersSolveCache = towersSolve(top, bottom, left, right); towersCacheAmb = towersAmbiguous; }
+      const sol = towersSolveCache; towersAmbiguous = towersCacheAmb;   // clues are fixed for the puzzle; only the placed grid moves
       towersDraw(grid, sol);
       towersHighlight(grid, sol, topXc, leftYc);
     } catch (e) {} finally { towersBusy = false; }
@@ -78,13 +96,20 @@
   function towersDraw(grid, sol) {
     const el = $('cluePuzzle'); if (!el) return;
     el.style.display = ''; el._phId = -1; el._lbph = -1;
-    const sig = grid.join('') + '|' + (sol ? sol.join('|') : 'x');
+    const sig = grid.join('') + '|' + (sol ? sol.join('|') : 'x') + (towersAmbiguous ? '|a' : '');
     if (sig === towersDrawSig) return; towersDrawSig = sig;
     const ar = sol ? towersActiveRow(grid, sol) : -1;
+    // These clues admit more than one grid, and the solver detects it for free (it already counts
+    // to 2). 57.6% of all 5x5 latin squares are not pinned down even by all twenty clues, and any
+    // clue widget that did not parse silently drops out (line 51 -> NaN -> stays 0 = no constraint).
+    // The warning belongs on the ROW-GUIDANCE branch, not only on "Solved.": by the time the grid
+    // matches, the user has already entered the possibly-wrong answer. The ambiguity term is in the
+    // draw signature too, so a change in ambiguity with an unchanged solution still repaints.
+    const amb = towersAmbiguous ? '<div style="color:#ffb45c;font-size:11px;margin-top:2px">these clues allow more than one grid - this is one valid answer, not the only one</div>' : '';
     let head;
     if (!sol) head = 'no solution - are all edge clues readable?';
-    else if (ar < 0) head = '<b>Solved.</b>';
-    else head = 'set each cell to the height shown<div style="opacity:0.6;font-size:11px;margin-top:2px">in-game badges show one row at a time, bottom-up (so the right-click menu stays clear)</div>';
+    else if (ar < 0) head = '<b>Solved.</b>' + amb;
+    else head = 'set each cell to the height shown' + amb + '<div style="opacity:0.6;font-size:11px;margin-top:2px">in-game badges show one row at a time, bottom-up (so the right-click menu stays clear)</div>';
     let g = '<div style="margin-top:8px">';
     for (let r = 0; r < 5; r++) {
       g += '<div style="display:flex;gap:3px;margin-bottom:3px">';

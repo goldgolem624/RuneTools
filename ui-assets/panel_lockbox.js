@@ -61,7 +61,14 @@
       const open = cr && cr.comps && Object.keys(cr.comps).length > 0;
       if (!open) { lockboxOwnsPanel = false; lockboxTarget = null; lockboxDrawSig = ''; lockboxClearHl(); return; }
       lockboxOwnsPanel = true;                                          // take the puzzle panel + overlay (puzzleTick/knotTick defer)
-      let vals = {}; try { vals = await readVarbitValues(LOCKBOX_VB_IDS); } catch (e) {}
+      // A failed varp read and a solved board are the SAME 25 zeros, so the values cannot decide
+      // between them -- trust the out-of-band flag instead of printing a confident "Solved." over
+      // an unsolved lockbox. Two of the modes this catches are PERMANENT, not one-tick hiccups, so
+      // say so on screen rather than silently freezing the last frame: lockboxOwnsPanel is already
+      // true above, which keeps puzzleTick/knotTick deferred, and a bare return would leave another
+      // solver's stale click plan sitting over an open lockbox.
+      let vals = null; try { vals = await readVarbitValues(LOCKBOX_VB_IDS); } catch (e) {}
+      if (!vals || vals._ok !== true) { lockboxTarget = null; lockboxDrawWait(); lockboxClearHl(); return; }
       const grid = LOCKBOX_VB_IDS.map(id => (((vals[id] | 0) % 3) + 3) % 3);
       if (grid.every(v => v === grid[0])) { lockboxTarget = null; lockboxDraw(grid, null, 0, null); lockboxClearHl(); return; }
       const sol = lockboxSolve(grid, lockboxTarget);
@@ -102,6 +109,15 @@
     g += '</div>';
     const html = '<span style="opacity:0.65;text-transform:uppercase;font-size:10px;letter-spacing:0.6px">Lockbox</span><div style="margin-top:4px">' + head + '</div>' + g;
     setHTML(el, html);
+  }
+  // No usable read this tick (see lockboxTick). Neutral placeholder, guarded by lockboxDrawSig so
+  // the permanent-failure case does not rebuild the DOM 11x/second on the render thread.
+  function lockboxDrawWait() {
+    const el = $('cluePuzzle'); if (!el) return;
+    el.style.display = ''; el._phId = -1; el._lbph = -1;
+    if (lockboxDrawSig === 'wait') return; lockboxDrawSig = 'wait';
+    setHTML(el, '<span style="opacity:0.65;text-transform:uppercase;font-size:10px;letter-spacing:0.6px">Lockbox</span>'
+              + '<div style="margin-top:4px;opacity:0.7">reading the board...</div>');
   }
   // In-game: box EVERY tile that needs clicking (component id = slot+1) via puzzleCells, click
   // count inside, brightness by reading order. Re-sent each tick; order does not matter (clicks

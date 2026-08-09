@@ -4144,10 +4144,18 @@
   let menubarHidden = false;   // reserved: a future hide-UI toggle
 
   // Keyboard capture: claim the game's keystrokes only while a text field has focus.
-  let _kbCaptured = false;
+  let _kbCaptured = false, _kbGrabs = 0;
+  // Explicit claim, for panels that need the keystroke WITHOUT a focused text field -- a
+  // "press any key" keybind listener is a button, so the focus test below can never see it and
+  // every key went to the game instead of being captured. Refcounted: two listeners armed at
+  // once must not have the first one to finish drop capture for both.
+  function kbGrab(on) {
+    _kbGrabs = Math.max(0, _kbGrabs + (on ? 1 : -1));
+    syncKbCapture();
+  }
   function syncKbCapture() {
     const t = document.activeElement;
-    const typing = !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+    const typing = _kbGrabs > 0 || !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
                             t.tagName === 'SELECT' || t.isContentEditable));
     if (typing === _kbCaptured) return;
     _kbCaptured = typing;

@@ -602,9 +602,45 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     return r1.optimal && r1.moves ? { moves: r1.moves, optimal: true, nodes: r1.nodes, via: "pdb" } : { moves: null, optimal: false, nodes: r1.nodes };
   }
 
+function solveWAStarMax(src, dl, W) {
+    let done = true; for (let q = 0; q < N; q++) if (src[q] !== q) { done = false; break; }
+    if (done) return { moves: [], expanded: 0 };
+    const eng = createEngine();
+    const kOf = a => String.fromCharCode(a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7],a[8],a[9],a[10],a[11],a[12],a[13],a[14],a[15],a[16],a[17],a[18],a[19],a[20],a[21],a[22],a[23],a[24]);
+    const startKey = kOf(src);
+    const g = new Map([[startKey, 0]]), pkey = new Map(), pclick = new Map(), closed = new Set();
+    const hf = [], hk = []; let hn = 0;
+    function push(f,k){ let i=hn++; hf[i]=f; hk[i]=k; while(i>0){ const p=(i-1)>>1; if(hf[p]<=hf[i])break; const tf=hf[p];hf[p]=hf[i];hf[i]=tf; const tk=hk[p];hk[p]=hk[i];hk[i]=tk; i=p; } }
+    function pop(){ const k=hk[0]; hn--; if(hn>0){ hf[0]=hf[hn]; hk[0]=hk[hn]; let i=0; while(true){ const l=2*i+1,r=l+1; let m=i; if(l<hn&&hf[l]<hf[m])m=l; if(r<hn&&hf[r]<hf[m])m=r; if(m===i)break; const tf=hf[m];hf[m]=hf[i];hf[i]=tf; const tk=hk[m];hk[m]=hk[i];hk[i]=tk; i=m; } } return k; }
+    push(W * eng.init(src), startKey);
+    const arr = new Int32Array(N); let expanded = 0;
+    while (hn > 0) {
+      if ((++expanded & 2047) === 0 && Date.now() >= dl) return { moves: null, expanded };
+      const k = pop();
+      if (closed.has(k)) continue;                     // stale heap entry, or a reopen we refuse
+      closed.add(k);
+      const cg = g.get(k);
+      let goalHit = true, blank = -1;
+      for (let i = 0; i < N; i++) { const v = k.charCodeAt(i); arr[i] = v; if (v !== i) goalHit = false; if (v === 24) blank = i; }
+      if (goalHit) { const moves = []; let cur = k; while (cur !== startKey) { moves.push(pclick.get(cur)); cur = pkey.get(cur); } moves.reverse(); return { moves, expanded }; }
+      const bx = blank % 5, by = (blank / 5) | 0;
+      const nb = []; if (bx > 0) nb.push(blank - 1); if (bx < 4) nb.push(blank + 1); if (by > 0) nb.push(blank - 5); if (by < 4) nb.push(blank + 5);
+      eng.init(arr);                                   // O(1) peek per child after this
+      for (let j = 0; j < nb.length; j++) {
+        const click = nb[j], hv = eng.peek(click);
+        const t = arr[click]; arr[blank] = t; arr[click] = 24;
+        const nk = kOf(arr); arr[click] = t; arr[blank] = 24;
+        const ng = cg + 1, old = g.get(nk);
+        if (old !== undefined && old <= ng) continue;
+        g.set(nk, ng); pkey.set(nk, k); pclick.set(nk, click);
+        push(ng + W * hv, nk);
+      }
+    }
+    return { moves: null, expanded };
+  }
   // solveGuide is re-exported so the panel can bail out of an optimal proof that can take
   // billions of nodes, while weighted A* answers in ms.
-  return { solve, createSession, solveGuide: WD.solveGuide, solveWAStar: WD.solveWAStar,
+  return { solve, createSession, solveGuide: WD.solveGuide, solveWAStar: solveWAStarMax,
            rootH, verify: WD.verify, _pdbOf: pdbOf, _hMax: hMax,
            _wdOf: WD.wdOf, _wdOfRaw: WD.wdOfRaw };
 }
@@ -733,7 +769,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     // weight would freeze the panel unless each rung runs from its own capped callback.
     if (puzzleImp && puzzleSolver) {
       // Every rung runs BEFORE anything is published, so a displayed plan is never swapped.
-      const imp = puzzleImp, better = puzzleWeighted(imp.board, [imp.ws[imp.i++]], 1200);
+      const imp = puzzleImp, better = puzzleWeighted(imp.board, [imp.ws[imp.i++]], 250);
       if (puzzleImp !== imp) {                       // rebased mid-rung: this result is stale
         if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
         return;
@@ -752,7 +788,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
           // The player moved while the fallback computed, so the answer no longer attaches
           // to the screen - REBASE on the live board instead of dropping all guidance and
           // burning another full optimal-proof budget from scratch.
-          puzzleImp = { board: puzzleLastBoard.slice(), sig: liveSig, ws: [8, 4], i: 0, best: null };
+          puzzleImp = { board: puzzleLastBoard.slice(), sig: liveSig, ws: [3, 2], i: 0, best: null };
         }
         // Nothing found even greedily: remember the board so the poll does not restart the
         // same doomed search until it moves.
@@ -781,7 +817,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
         // ever finding a second solution.
         puzzleSess.fallback = true;
         puzzleSess.hardStopAt = puzzleSess.startedAt + PUZZLE_PROOF_MAX_MS;
-        puzzleImp = { board: puzzleSess.board.slice(), sig: puzzleSess.sig, ws: [8, 4, 2], i: 0, best: null };
+        puzzleImp = { board: puzzleSess.board.slice(), sig: puzzleSess.sig, ws: [3, 2], i: 0, best: null };
       } else {
         // The player moved during the proof: the session board is stale - drop the proof
         // and fall back from the live board (a plan built from a stale board is discarded
@@ -789,7 +825,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
         const board = (puzzleLastBoard && puzzleSolvable(puzzleLastBoard)) ? puzzleLastBoard : puzzleSess.board;
         puzzleProofSpentSig = puzzleSess.sig;
         puzzleSess = null;
-        puzzleImp = { board: board.slice(), sig: board.join(','), ws: [8, 4, 2], i: 0, best: null };
+        puzzleImp = { board: board.slice(), sig: board.join(','), ws: [3, 2], i: 0, best: null };
       }
       puzzleDrawSig = null; puzzlePaint();
       if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
@@ -908,7 +944,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
             // weighted rungs instead of going dark for the whole optimal-proof budget. The
             // optimal session below still runs and upgrades the plan when it lands.
             if (sig !== puzzleFailedSig && puzzleSolvable(board) && !puzzleIsGoal(board)) {
-              puzzleImp = { board: board.slice(), sig: sig, ws: [8, 4], i: 0, best: null };
+              puzzleImp = { board: board.slice(), sig: sig, ws: [3, 2], i: 0, best: null };
               if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
             }
           }

@@ -301,7 +301,13 @@
   // Manual capture: record the CURRENT player tile + current needle reading as one point.
   async function compassCapture() {
     try {
-      let raw = compassLastRaw;
+      // The needle must be read LIVE. compassLastRaw is whatever the needle said at some EARLIER
+      // tile (:262 only writes it while open), so falling back to it logs that old bearing against
+      // the tile you are standing on now -- a fabricated reading, with no warning. One is enough to
+      // take the true spot from RMS 0.24 / 1 candidate to RMS 394 / 0 candidates, and since the
+      // reads array is sticky the user has no way back except the Clear button. This leaves
+      // compassLastRaw written at :262 and never read; kept as-is rather than widening the diff.
+      let raw = -1;
       try { const v = parseInt(bridge().compassHeading(myPid()), 10); if (v >= 0) raw = v; } catch (e) {}
       if (raw < 0) { compassFlash('open the compass clue first'); return; }
       const pos = await scanPlayerTile();

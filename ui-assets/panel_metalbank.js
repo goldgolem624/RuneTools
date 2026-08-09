@@ -102,10 +102,20 @@
     await ensureVbMap();
     const vps = new Set();
     for (const vb of vbIds) { const r = storageVbMap && storageVbMap[vb]; if (r) vps.add(r.varp); }
-    let vp = {};
-    if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
+    // VarpsJson (Reader.cpp:2043-2057) emits exactly one key per requested id, and "{}" when the
+    // process snapshot or root-pointer read fails. So key-count === requested-count is the "the
+    // varps answered" signal -- the one thing a caller cannot infer from the VALUES, since a failed
+    // read and a genuinely-zero var are both 0. It catches five of the six ways this can fail (empty
+    // varbit map, absent map bridge, varps "{}", varps throw, varbit missing from the map); it does
+    // NOT catch a bad varp-hashmap base, where read_varp (Reader.cpp:1920) returns 0 per var with
+    // the key count intact -- that one needs a bool out-param on the native side. Published
+    // NON-ENUMERABLY so every existing caller (Object.keys / Object.assign / for..in) is unaffected.
+    let vp = {}, ok = vps.size > 0 && !!bridge().varps;
+    if (ok) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) { ok = false; } }
+    if (ok && Object.keys(vp).length !== vps.size) ok = false;
     const out = {};
     for (const vb of vbIds) out[vb] = readVb(vb, vp) || 0;
+    Object.defineProperty(out, '_ok', { value: ok, enumerable: false });
     return out;
   }
   // Archaeology mysteries. Completion lives in two VARP BITMASKS: varp 9302 (bits 0-31) and varp
