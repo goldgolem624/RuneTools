@@ -24,7 +24,7 @@
     try { const d = JSON.parse(await bridge().pof(myPid())); pofData = (d && Array.isArray(d.pens)) ? d.pens : []; }
     catch (e) { /* keep previous */ }
     pofFetching = false;
-    if (activeTab === 'pof') renderPof();
+    paneRun('pof', renderPof);
   }
 
   function renderPof() {

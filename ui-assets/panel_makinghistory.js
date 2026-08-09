@@ -151,7 +151,7 @@
   }
   function mhMonRefresh() {
     if (mhMonBusy) return;
-    if (activeTab !== 'quests' && activeTab !== 'questfocus') return;   // monitor not on screen
+    if (!paneVisible('quests') && !paneVisible('questfocus')) return;   // monitor not on screen
     if (!bridge() || typeof PLUGIN_API === 'undefined') return;
     mhMonBusy = true;
     (async () => {
@@ -160,8 +160,8 @@
         const changed = !mhMonVb || MH_MON_VBS.some(id => (vb[id] | 0) !== (mhMonVb[id] | 0));
         mhMonVb = vb;
         if (changed) {
-          if (activeTab === 'questfocus') { qgSig = ''; renderQuestFocus(); }
-          else if (activeTab === 'quests') { questDetailSig = ''; renderQuests(); }
+          paneRun('questfocus', () => { qgSig = ''; renderQuestFocus(); });
+          paneRun('quests', () => { questDetailSig = ''; renderQuests(); });
         }
       } catch (e) {}
       mhMonBusy = false;

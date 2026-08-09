@@ -66,7 +66,7 @@
       if (tbEnums) for (const e of tbEnums) for (const k in e) await tbName(e[k] | 0);
     } catch (e) { /* keep previous */ }
     tbFetching = false;
-    if (activeTab === 'toolbelt') renderToolbelt();
+    paneRun('toolbelt', renderToolbelt);
   }
   const tbV = k => ((tbVb && tbVb[String(k)]) | 0);
 

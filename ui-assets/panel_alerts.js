@@ -12,6 +12,10 @@
     { id: 'target',  name: 'Skill target reached', desc: 'An in-game skill target (level/XP) is hit' },
     { id: 'ge',      name: 'GE offer complete', desc: 'A Grand Exchange offer finishes' },
     { id: 'idle',    name: 'Player idle',       desc: 'You stop moving and stop animating', param: { label: 'After', suffix: 's', def: 5, min: 1, max: 600 }, repeatable: true },
+    // Distinct from 'Player idle' above: that one watches your AVATAR standing still, this one
+    // watches the server's own logout clock, which runs on INPUT (cursor movement inside the
+    // game window, clicks, keys) and does not run at all while you are in combat.
+    { id: 'logout',  name: 'Idle logout warning', desc: 'The idle-logout timer is nearly up (the server sends you to the lobby)', param: { label: 'Under', suffix: 's left', def: 10, min: 3, max: 300 }, repeatable: true, repeatHint: 'Keep warning every 5s while the timer is still under the threshold' },
   ];
   // How an alert is delivered: in the game overlay, a native Windows notification, or both.
   const NOTIFY_TYPES = ['ingame', 'windows', 'both'];
@@ -24,6 +28,7 @@
       target:  { enabled: false, sound: 'alert 2', flash: true,  notify: 'ingame' },
       ge:      { enabled: false, sound: 'alert 3', flash: false, notify: 'ingame' },
       idle:    { enabled: false, sound: 'alert 4', flash: false, val: 5, repeat: false, notify: 'ingame' },
+      logout:  { enabled: false, sound: 'alert 9', flash: true,  val: 10, repeat: false, notify: 'both' },
     },
     custom: [],
   };
@@ -127,13 +132,14 @@
     if (cfg.sound && cfg.sound !== 'none') { try { bridge().playSound(cfg.sound); } catch (e) {} }
     if (nt === 'ingame' || nt === 'both') {
       if (cfg.flash) screenFlash();
-      if (msg) { try { bridge().overlayNotify(myPid(), msg, sticky ? 0 : 5000); } catch (e) {} }
+      // Rendered by the in-game UI layer (uiNotify), not the companion's GL cards.
+      if (msg) { try { uiNotify(msg, { sticky: sticky, ttl: sticky ? 0 : 5000 }); } catch (e) {} }
     }
     if (nt === 'windows' || nt === 'both') winNotify(msg);
   }
   function logAlert(now, msg) {
     alertLog.unshift({ t: now, msg: msg }); if (alertLog.length > 5) alertLog.pop();
-    if (activeTab === 'alerts') renderAlertLog();
+    paneRun('alerts', renderAlertLog);
   }
   function fireAlert(id, msg, force) {
     const r = alertCfg.rules[id]; if (!r) return;
@@ -281,11 +287,11 @@
     deliverAlert(w, msg, true);
     logAlert(now, msg);
   }
-  // Card over the GAME window (auto-dismiss ~5s, click to close); repeats are deduped
-  // overlay-side by text.
+  // Card over the GAME window (auto-dismiss ~5s); repeats are deduped by text and
+  // shown with a repeat count. Rendered by the in-game UI layer.
   function fireToast(msg) {
     if (!msg) return;
-    try { bridge().overlayNotify(myPid(), msg, 5000); } catch (e) {}
+    try { uiNotify(msg, { ttl: 5000 }); } catch (e) {}
   }
   function customNeedsScene(w) { return w.enabled && (w.type === 'nanim' || (w.type === 'name' && !!w.text)); }
   function customNeedsInfo(w)  { return w.enabled && w.type === 'panim'; }
@@ -320,6 +326,9 @@
   function alertsNeedInfo() {
     if (!alertCfg || !alertCfg.master) return false;
     if (alertCfg.rules.idle && alertCfg.rules.idle.enabled) return true;
+    // The logout warning reads infoMember.idleMs, which fetchInfo() populates -- so it must
+    // keep the poll alive with the Player State window closed, which is the whole point.
+    if (alertCfg.rules.logout && alertCfg.rules.logout.enabled) return true;
     return Array.isArray(alertCfg.custom) && alertCfg.custom.some(customNeedsInfo);
   }
   // Claim the overlay highlight only while THIS client has a random event in range. The overlay
@@ -341,12 +350,14 @@
     _hiLast = s;
     try { bridge().overlayHighlight(pid, parts.join(',')); } catch (e) {}
   }
+  // Re-assert after someone else cleared the shared channel (e.g. a plugin's paneLeave wipe).
+  function overlayHighlightResync() { _hiLast = null; try { syncOverlayHighlight(); } catch (e) {} }
   function evalAlerts() {
     if (!alertCfg) loadAlertCfg();
     if (!alertCfg || !alertCfg.master) { alertState.ready = false; return; }
     const pid = myPid();
     if (pid !== alertState.pid)
-      alertState = { ready: false, pid: pid, prevSkills: null, prevGeDone: {}, prevRandom: false, idleSince: null, idleFired: false, custom: {}, augSeen: {}, farmSeen: {}, goalTgt: {} };
+      alertState = { ready: false, pid: pid, prevSkills: null, prevGeDone: {}, prevRandom: false, idleSince: null, idleFired: false, logoutFired: false, custom: {}, augSeen: {}, farmSeen: {}, goalTgt: {} };
     if (!alertState.custom) alertState.custom = {};
     if (!alertState.augSeen) alertState.augSeen = {};
     if (!alertState.farmSeen) alertState.farmSeen = {};
@@ -358,7 +369,7 @@
     const inw = !!(snap && snap.status === 30);
     if (!inw) {   // baseline so re-entry doesn't burst-fire
       alertState.prevSkills = null; alertState.prevGeDone = {}; alertState.prevRandom = false;
-      alertState.idleSince = null; alertState.idleFired = false; alertState.custom = {}; alertState.augSeen = {}; alertState.farmSeen = {}; alertState.goalTgt = {};
+      alertState.idleSince = null; alertState.idleFired = false; alertState.logoutFired = false; alertState.custom = {}; alertState.augSeen = {}; alertState.farmSeen = {}; alertState.goalTgt = {};
       alertState.ready = !!snap; return;
     }
     const sk = snap.skills;
@@ -412,6 +423,26 @@
         }
       } else { alertState.idleSince = null; alertState.idleFired = false; }
     } else { alertState.idleSince = null; alertState.idleFired = false; }
+    // Idle LOGOUT warning. Unlike the rule above (which watches the avatar), this reads the
+    // server's own clock: idleMs is how long since the client last REPORTED input, which is
+    // what the logout timer runs on. Rearms itself the moment input resets the clock.
+    if (en('logout')) {
+      const lr = alertCfg.rules.logout, warn = lr.val || 10;
+      const m = infoMember;
+      const live = !!(m && m.resolved && typeof m.idleMs === 'number' && m.idleMs >= 0 &&
+                      typeof m.idleLogoutSeconds === 'number' && m.idleLogoutSeconds > 0);
+      const left = live ? (m.idleLogoutSeconds - Math.floor(m.idleMs / 1000)) : -1;
+      if (live && left > 0 && left <= warn) {
+        if (!alertState.logoutFired) {
+          fireAlert('logout', 'Logout in ' + left + 's');
+          alertState.logoutFired = true; alertState.logoutLast = tnow;
+        } else if (lr.repeat && tnow - (alertState.logoutLast || 0) >= 5000) {
+          fireAlert('logout', 'Logout in ' + left + 's', true); alertState.logoutLast = tnow;
+        }
+      } else if (!live || left > warn) {
+        alertState.logoutFired = false;   // input reset the clock (or it went unreadable)
+      }
+    } else { alertState.logoutFired = false; }
     const [px, py] = sceneSelfPos();
     const within = (x, y) => px == null ? true : Math.max(Math.abs(x - px), Math.abs(y - py)) <= sceneRange;
     if (sceneData && Array.isArray(sceneData.npcs)) {
@@ -496,7 +527,7 @@
   function alertPill(on) { const p = document.createElement('div'); p.className = 'al-pill' + (on ? ' on' : ''); p.appendChild(document.createElement('span')); return p; }
 
   // ---- sound select popup (native <select> renders poorly in Ultralight) ----
-  function closeSoundMenu() { const m = document.getElementById('sndMenu'); if (m) m.remove(); }
+  function closeSoundMenu() { const m = document.getElementById('sndMenu'); if (m) { m.remove(); try { wmRectsSoon(); } catch (e) {} } }
   function placeMenu(pop, anchor) {
     const r = anchor.getBoundingClientRect();
     const W = window.innerWidth, H = window.innerHeight;
@@ -530,6 +561,7 @@
     }
     document.body.appendChild(pop);                         // body-level so the scroll pane can't clip it
     placeMenu(pop, anchor);
+    try { wmRectsSoon(); } catch (e) {}
     const selIt = pop.querySelector('.sndmenu-it.sel'); if (selIt) selIt.scrollIntoView({ block: 'nearest' });
   }
   function soundTrigger(getVal, setVal) {
@@ -887,7 +919,7 @@
         const rp = document.createElement('div'); rp.className = 'al-flash';
         const rlab = document.createElement('span'); rlab.className = 'lab'; rlab.textContent = 'Repeat';
         const rpp = alertPill(r.repeat); rpp.id = 'al_' + meta.id + '_repeat';
-        rpp.title = 'Keep notifying every ' + (r.val || 5) + 's while still idle';
+        rpp.title = meta.repeatHint || ('Keep notifying every ' + (r.val || 5) + 's while still idle');
         rpp.addEventListener('click', e => { e.stopPropagation(); r.repeat = !r.repeat; reflectAlerts(); saveAlertCfg(); });
         rp.appendChild(rlab); rp.appendChild(rpp); ctl.appendChild(rp);
       }

@@ -143,6 +143,7 @@
     <ClInclude Include="..\src\cache\Utils.h" />
     <ClInclude Include="..\src\launcher\Accounts.h" />
     <ClInclude Include="..\src\launcher\Bridge.h" />
+    <ClInclude Include="..\src\launcher\GameUi.h" />
     <ClInclude Include="..\src\launcher\Cs2Browser.h" />
     <ClInclude Include="..\src\launcher\Crypto.h" />
     <ClInclude Include="..\src\launcher\Http.h" />
@@ -187,6 +188,7 @@
     <ClCompile Include="..\src\launcher\Cs2Browser.cpp" />
     <ClCompile Include="..\src\launcher\Crypto.cpp" />
     <ClCompile Include="..\src\launcher\Dock.cpp" />
+    <ClCompile Include="..\src\launcher\GameUi.cpp" />
     <ClCompile Include="..\src\launcher\Http.cpp" />
     <ClCompile Include="..\src\launcher\Zip.cpp" />
     <ClCompile Include="..\src\launcher\IconCache.cpp" />

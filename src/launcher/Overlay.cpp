@@ -62,9 +62,20 @@ std::atomic<DWORD>     g_toast_pid{0};         // game pid for the on-screen not
 std::atomic<long long> g_toast_until_ms{0};    // toast visible while now < this
 std::string            g_toast_text;           // notification text (guarded by g_mu)
 
-// Primary guide-marker colour: the NPC highlight box, the ground tile marker, the direction ring +
-// arrow and their labels all draw in it. SINGLE SOURCE OF TRUTH -- do not hardcode per site.
-constexpr int kMarkerR = 80, kMarkerG = 195, kMarkerB = 255;
+// In-world design tokens, mirroring the panel palette in ui-assets/client.html :root. Deep
+// neutral surfaces, hairline borders, and TWO semantic accents where there used to be one
+// colour saying both "the thing you are going to" and "which way you are facing":
+//   accent purple = the OBJECTIVE      ok green = YOU and your heading
+// SINGLE SOURCE OF TRUTH -- do not hardcode per site.
+constexpr int kSurfR = 11,  kSurfG = 13,  kSurfB = 18;    // #0B0D12  plate / scrim fill
+constexpr int kInkR  = 5,   kInkG  = 7,   kInkB  = 11;    // #05070B  contour underlay
+constexpr int kTxtR  = 232, kTxtG  = 237, kTxtB  = 244;   // #E8EDF4  primary type
+constexpr int kAccR  = 140, kAccG  = 111, kAccB  = 253;   // #8C6FFD  --accent-hi
+constexpr int kOkR   = 77,  kOkG   = 210, kOkB   = 138;   // #4DD28A  --ok
+constexpr int kOkTxR = 142, kOkTxG = 240, kOkTxB = 192;   // #8EF0C0  green type on dark
+// Mix a hue 1:3 into the surface -> a dark tinted scrim that still reads as that hue. A
+// saturated wash competes with the scene at the same luminance; a dark one never does.
+inline int MixSurf(int c, int s) { return (c + s * 3) / 4; }
 
 // Persistent, manually-dismissed notifications: they stack at the top-right of the game window and
 // are removed by clicking them (the overlay turns interactive only while the cursor is over one).
@@ -901,8 +912,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         // are exact. Width is estimated from the label length (the atlas is proportional).
         const float npTextPx = 11.0f;
         const float cellH  = 34.0f * (npTextPx / 21.0f);     // atlas cell -> screen px
-        const float pillH  = cellH * 0.78f + 8.0f;           // + padY*2
-        const float padX   = 7.0f;                           // pill horizontal padding
+        // MIRRORS Composite.cpp DrawLabel's plate metrics -- these must move in lockstep with
+        // it or nameplate stacking silently drifts from what is actually drawn.
+        const float pillH  = cellH * 0.78f + 10.0f;          // + padY*2  (padY 5)
+        const float padX   = 8.0f;                           // pill horizontal padding
         const float avgAdv = npTextPx * 0.62f;               // over-estimate of a glyph's advance
         const float slotH  = pillH + 3.0f;                   // vertical pitch inside a column
         const float gap    = 2.0f;                           // min gap enforced by de-collision
@@ -1060,22 +1073,27 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             return true;
         };
         for (const auto& hp : f->highlights) {
-            if (hp.has_box3d && hp.label.empty()) {       // Scene-tab outline: teal box only
-                if (box3d(hp, 2.0f, 70, 224, 192, 245)) continue;
+            // NEUTRAL, not an accent: an inspected entity is not an objective, and the two must
+            // never be confusable. Discriminated on an EMPTY label -- do not give this path a
+            // default caption or it silently reroutes into the objective style below.
+            if (hp.has_box3d && hp.label.empty()) {       // Scene-tab outline
+                if (box3d(hp, 1.4f, kTxtR, kTxtG, kTxtB, 190)) continue;
             }
             float sx, sy;
             if (!WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, hp.wx, hp.wy, hp.wz, sx, sy)) continue;
             if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) continue;
-            // NPC highlight = the sky-blue marker model box (colour from kMarker) + the
-            // label above the head; the pulsing square is only the fallback when no live AABB is known.
-            const bool boxed = hp.has_box3d && box3d(hp, 1.8f, kMarkerR, kMarkerG, kMarkerB, 235);
+            // A labelled highlight IS the objective (guide/alert NPC), so it takes the same
+            // accent as the guide box. The pulsing square is only the fallback when no live
+            // AABB is known -- pulse stays here because it is a "look here" cue, but it is
+            // tightened so it reads as a beacon rather than a throb.
+            const bool boxed = hp.has_box3d && box3d(hp, 1.6f, kAccR, kAccG, kAccB, 235);
             if (!boxed) {
-                float rad = 13.0f + 6.0f * pulse;
-                line(sx - rad, sy - rad, sx + rad, sy - rad, 3.0f, kMarkerR, kMarkerG, kMarkerB, 255);
-                line(sx + rad, sy - rad, sx + rad, sy + rad, 3.0f, kMarkerR, kMarkerG, kMarkerB, 255);
-                line(sx + rad, sy + rad, sx - rad, sy + rad, 3.0f, kMarkerR, kMarkerG, kMarkerB, 255);
-                line(sx - rad, sy + rad, sx - rad, sy - rad, 3.0f, kMarkerR, kMarkerG, kMarkerB, 255);
-                dot(sx, sy, 4.0f, kMarkerR, kMarkerG, kMarkerB, 235);
+                float rad = 14.0f + 3.0f * pulse;
+                line(sx - rad, sy - rad, sx + rad, sy - rad, 2.4f, kAccR, kAccG, kAccB, 255);
+                line(sx + rad, sy - rad, sx + rad, sy + rad, 2.4f, kAccR, kAccG, kAccB, 255);
+                line(sx + rad, sy + rad, sx - rad, sy + rad, 2.4f, kAccR, kAccG, kAccB, 255);
+                line(sx - rad, sy + rad, sx - rad, sy - rad, 2.4f, kAccR, kAccG, kAccB, 255);
+                dot(sx, sy, 2.5f, kAccR, kAccG, kAccB, 235);
             }
             // label above the head (model-box top when known); one kText command,
             // '\n' renders module-side as a single multi-line panel
@@ -1091,10 +1109,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 for (char ch : hp.label) if (ch == '\n') ++nl;
                 if (nl > 4) nl = 4;
                 marker::Command t{}; t.type = marker::kText;
-                const float estH = 13.0f * (float)nl + 8.0f;    // rough panel height for placement
+                const float estH = 13.0f * (float)nl + 10.0f;   // rough panel height (padY 5, mirrors DrawLabel)
                 t.x0 = lx; t.y0 = ly - 6.0f - estH * 0.5f;
                 t.x1 = 10.5f;                                   // compact: stay out of the way
-                t.r = kMarkerR; t.g = kMarkerG; t.b = kMarkerB; t.a = 230;     // sky-blue marker (match the box)
+                t.r = kAccR; t.g = kAccG; t.b = kAccB; t.a = 230;              // match the box: OBJECTIVE accent
                 int n = (int)hp.label.size();
                 if (n > marker::kTextMax) {
                     std::memcpy(t.text, hp.label.data(), marker::kTextMax - 2);
@@ -1147,11 +1165,18 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     marker::Command q{}; q.type = marker::kFillQuad;
                     q.x0 = qx[0]; q.y0 = qy[0]; q.x1 = qx[i]; q.y1 = qy[i];
                     q.x2 = qx[i + 1]; q.y2 = qy[i + 1]; q.x3 = qx[j]; q.y3 = qy[j];
-                    q.r = (std::uint8_t)cr; q.g = (std::uint8_t)cg; q.b = (std::uint8_t)cb; q.a = 70;
+                    // Denser but far darker: a tinted scrim in the user's hue rather than a
+                    // coloured wash, so the tile reads as a lit outline instead of a stain.
+                    q.r = (std::uint8_t)MixSurf(cr, kSurfR); q.g = (std::uint8_t)MixSurf(cg, kSurfG);
+                    q.b = (std::uint8_t)MixSurf(cb, kSurfB); q.a = 110;
                     push(q);
                 }
-                for (int i = 0; i < nq; ++i)
-                    line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 2.2f, cr, cg, cb, 240);
+                // No corner ticks here: a single tile's perimeter already IS four short edges,
+                // and ticking it would leave nothing. Ticks are for prisms only.
+                for (int i = 0; i < nq; ++i) {
+                    line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 3.0f, kInkR, kInkG, kInkB, 140);
+                    line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 1.6f, cr, cg, cb, 255);   // USER COLOUR, verbatim
+                }
             }
             if (!m.label.empty()) {
                 float zc = (zSW + zSE + zNE + zNW) * 0.25f;
@@ -1180,154 +1205,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 }
             }
         }
-    }
-
-    // --- mystery guide marks: resolved guide sites from the frame build -- the named object's
-    //     footprint prism with the label above its top, or a flat tile when no cache loc matched.
-    //     Labels are collected first and placed in a declutter pass below (co-located marks
-    //     otherwise stack their pills on top of each other). ---
-    struct GuideLbl { float cx, cy; int nl, mc; const std::string* text; int r, g, b; bool hazard; };
-    std::vector<GuideLbl> glbls;
-    if (f) for (const auto& p : f->guides) {
-        // World corners: base ring 0-3 (SW,SE,NE,NW), top ring 4-7. Each edge and the base
-        // fill are near-plane clipped individually, so walking INTO a mark (or tilting the
-        // camera across it) trims the shape instead of blinking it out.
-        float wc[8][3]; int nv;
-        if (p.has_box3d) {
-            // live model AABB: the object's true visual volume
-            nv = 8;
-            static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
-            for (int i = 0; i < 8; ++i) {
-                wc[i][0] = CX[i & 3] ? p.bmax[0] : p.bmin[0];
-                wc[i][1] = CY[i & 3] ? p.bmax[1] : p.bmin[1];
-                wc[i][2] = (i >> 2) ? p.bmax[2] : p.bmin[2];
-            }
-        } else {
-            nv = (p.box_h > 0.f) ? 8 : 4;                // corners 0-3 ground, 4-7 top
-            for (int i = 0; i < nv; ++i) {
-                wc[i][0] = p.box[(i & 3) * 3];
-                wc[i][1] = p.box[(i & 3) * 3 + 1];
-                wc[i][2] = p.box[(i & 3) * 3 + 2] + ((i & 4) ? p.box_h : 0.f);
-            }
-        }
-        // Per-mark colour: rgb 0 = the default sky-blue marker (single source of truth);
-        // hazard/area marks carry their own 0xRRGGBB (BGH: red bones, green/yellow grass).
-        const int mr = p.rgb ? ((p.rgb >> 16) & 255) : kMarkerR;
-        const int mg = p.rgb ? ((p.rgb >> 8) & 255)  : kMarkerG;
-        const int mb = p.rgb ? (p.rgb & 255)         : kMarkerB;
-        float qx[9], qy[9];
-        int nq = ClipProjectPoly(f->matrix, vpX, vpY, vpW, vpH, wc, 4, qx, qy);
-        bool onscr = false;
-        for (int i = 0; i < nq; ++i)
-            if (qx[i] > -2.f * W && qx[i] < 3.f * W && qy[i] > -2.f * H && qy[i] < 3.f * H) onscr = true;
-        if (nq >= 3 && onscr) {
-            for (int i = 1; i + 1 < nq; i += 2) {        // fan fill (see tile markers)
-                int j = (i + 2 < nq) ? i + 2 : i + 1;
-                marker::Command q{}; q.type = marker::kFillQuad;
-                q.x0 = qx[0]; q.y0 = qy[0]; q.x1 = qx[i]; q.y1 = qy[i];
-                q.x2 = qx[i + 1]; q.y2 = qy[i + 1]; q.x3 = qx[j]; q.y3 = qy[j];
-                q.r = (std::uint8_t)mr; q.g = (std::uint8_t)mg; q.b = (std::uint8_t)mb; q.a = 90;
-                push(q);
-            }
-        }
-        auto edgeLine = [&](int i0, int i1, float th, int alpha) {
-            float ax, ay, bx, by;
-            if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH,
-                                    wc[i0], wc[i1], ax, ay, bx, by)) return;
-            if ((ax < -2.f * W || ax > 3.f * W || ay < -2.f * H || ay > 3.f * H) &&
-                (bx < -2.f * W || bx > 3.f * W || by < -2.f * H || by > 3.f * H)) return;
-            line(ax, ay, bx, by, th, mr, mg, mb, alpha);
-        };
-        for (int i = 0; i < 4; ++i) {
-            // Flat region tiles mask off edges shared with a neighbouring tile of the same
-            // zone (bit i: 0 south, 1 east, 2 north, 3 west -- corner order SW,SE,NE,NW), so
-            // the union outlines as ONE shape. Prisms always draw every edge.
-            if (nv == 4 && !((p.edge_mask >> i) & 1)) continue;
-            edgeLine(i, (i + 1) & 3, 3.0f, 255);
-            if (nv == 8) {
-                edgeLine(4 + i, 4 + ((i + 1) & 3), 3.0f, 255);
-                edgeLine(i, 4 + i, 2.0f, 220);
-            }
-        }
-        if (p.label.empty()) continue;
-        // anchor the label off the projected IN-FRONT corners (robust for both AABB
-        // and prism shapes): centred horizontally, just above the box's screen top
-        float cx = 0.f, cy = 0.f; int np = 0;
-        for (int i = 0; i < nv; ++i) {
-            float sxx, syy;
-            if (!WorldToScreen(f->matrix, vpX, vpY, vpW, vpH,
-                               wc[i][0], wc[i][1], wc[i][2], sxx, syy)) continue;
-            cx += sxx;
-            if (!np || syy < cy) cy = syy;
-            ++np;
-        }
-        if (!np) continue;
-        cx /= (float)np;
-        if (cx < -200.f || cx > W + 200.f || cy < -120.f || cy > H + 120.f) continue;
-        int nl = 1, mc = 0, run = 0;
-        for (char ch : p.label) { if (ch == '\n') { ++nl; run = 0; } else if (++run > mc) mc = run; }
-        if (nl > 4) nl = 4;
-        glbls.push_back({ cx, cy, nl, mc, &p.label, mr, mg, mb, p.rgb != 0 });
-    }
-
-    // Label DECLUTTER: marks that sit together would stack their pills unreadably. Objective
-    // (default-colour) labels place first and keep their natural spot; every later pill is nudged
-    // straight UP until it clears what's already placed. Same-text pills anchored within ~70 px
-    // collapse into one. Sizes are estimates, but good enough for collision.
-    if (!glbls.empty()) {
-        std::stable_sort(glbls.begin(), glbls.end(),
-                         [](const GuideLbl& a, const GuideLbl& b){ return !a.hazard && b.hazard; });
-        struct LblRect { float l, t, r, b; };
-        std::vector<LblRect> placedR;
-        std::vector<const GuideLbl*> placedL;
-        for (const auto& l : glbls) {
-            bool dup = false;
-            for (const GuideLbl* d : placedL)
-                if (*d->text == *l.text && std::fabs(d->cx - l.cx) < 70.f && std::fabs(d->cy - l.cy) < 70.f) { dup = true; break; }
-            if (dup) continue;
-            placedL.push_back(&l);
-            const float estH = 13.0f * (float)l.nl + 8.0f;
-            const float estW = 0.62f * 10.5f * (float)l.mc + 22.0f;   // proportional-font estimate + pill padding
-            float y = l.cy - 8.0f - estH * 0.5f;
-            for (int guard = 0; guard < 12; ++guard) {                // shift up past each collision
-                bool hit = false;
-                for (const auto& r : placedR)
-                    if (l.cx - estW * 0.5f < r.r && l.cx + estW * 0.5f > r.l &&
-                        y - estH * 0.5f < r.b && y + estH * 0.5f > r.t) { y = r.t - estH * 0.5f - 4.0f; hit = true; break; }
-                if (!hit) break;
-            }
-            placedR.push_back({ l.cx - estW * 0.5f, y - estH * 0.5f, l.cx + estW * 0.5f, y + estH * 0.5f });
-            marker::Command t{}; t.type = marker::kText;
-            t.x0 = l.cx; t.y0 = y;
-            t.x1 = 10.5f;                                    // compact: stay out of the way
-            t.r = (std::uint8_t)l.r; t.g = (std::uint8_t)l.g; t.b = (std::uint8_t)l.b; t.a = 230;
-            int n = (int)l.text->size();
-            if (n > marker::kTextMax) {
-                std::memcpy(t.text, l.text->data(), marker::kTextMax - 2);
-                t.text[marker::kTextMax - 2] = '.';
-                t.text[marker::kTextMax - 1] = '.';
-                t.text[marker::kTextMax]     = '\0';
-            } else {
-                std::memcpy(t.text, l.text->data(), (size_t)n);
-                t.text[n] = '\0';
-            }
-            push(t);
-        }
-    }
-
-    // --- screen-centre text (e.g. the BGH "Bound - 2s" stun countdown): one big kText
-    //     pill above the gameview centre, no world projection. Red accent = warning. ---
-    if (!ctext.empty()) {
-        marker::Command t{}; t.type = marker::kText;
-        t.x0 = vpX + vpW * 0.5f;
-        t.y0 = vpY + vpH * 0.35f;                        // above centre: clear of the player model
-        t.x1 = 22.0f;                                    // big: must read at a glance mid-fight
-        t.r = 235; t.g = 90; t.b = 90; t.a = 245;
-        int n = (int)ctext.size();
-        if (n > marker::kTextMax) n = marker::kTextMax;
-        std::memcpy(t.text, ctext.data(), (size_t)n);
-        t.text[n] = '\0';
-        push(t);
     }
 
     // --- guide path: the BFS walkable route drawn as the actual tiles walked,
@@ -1388,6 +1265,191 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
+    // --- mystery guide marks: resolved guide sites from the frame build -- the named object's
+    //     footprint prism with the label above its top, or a flat tile when no cache loc matched.
+    //     Labels are collected first and placed in a declutter pass below (co-located marks
+    //     otherwise stack their pills on top of each other). ---
+    struct GuideLbl { float cx, cy; int nl, mc; const std::string* text; int r, g, b; bool hazard; };
+    std::vector<GuideLbl> glbls;
+    if (f) for (const auto& p : f->guides) {
+        // World corners: base ring 0-3 (SW,SE,NE,NW), top ring 4-7. Each edge and the base
+        // fill are near-plane clipped individually, so walking INTO a mark (or tilting the
+        // camera across it) trims the shape instead of blinking it out.
+        float wc[8][3]; int nv;
+        if (p.has_box3d) {
+            // live model AABB: the object's true visual volume
+            nv = 8;
+            static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
+            for (int i = 0; i < 8; ++i) {
+                wc[i][0] = CX[i & 3] ? p.bmax[0] : p.bmin[0];
+                wc[i][1] = CY[i & 3] ? p.bmax[1] : p.bmin[1];
+                wc[i][2] = (i >> 2) ? p.bmax[2] : p.bmin[2];
+            }
+        } else {
+            nv = (p.box_h > 0.f) ? 8 : 4;                // corners 0-3 ground, 4-7 top
+            for (int i = 0; i < nv; ++i) {
+                wc[i][0] = p.box[(i & 3) * 3];
+                wc[i][1] = p.box[(i & 3) * 3 + 1];
+                wc[i][2] = p.box[(i & 3) * 3 + 2] + ((i & 4) ? p.box_h : 0.f);
+            }
+        }
+        // Per-mark colour: rgb 0 = the default OBJECTIVE accent (single source of truth);
+        // hazard/area marks carry their own 0xRRGGBB (BGH: red bones, green/yellow grass).
+        // A caller's hue is passed through UNCHANGED -- rgb is load-bearing beyond paint
+        // (it gates the direction arrow and drives the declutter hazard priority).
+        const int mr = p.rgb ? ((p.rgb >> 16) & 255) : kAccR;
+        const int mg = p.rgb ? ((p.rgb >> 8) & 255)  : kAccG;
+        const int mb = p.rgb ? (p.rgb & 255)         : kAccB;
+        float qx[9], qy[9];
+        int nq = ClipProjectPoly(f->matrix, vpX, vpY, vpW, vpH, wc, 4, qx, qy);
+        bool onscr = false;
+        for (int i = 0; i < nq; ++i)
+            if (qx[i] > -2.f * W && qx[i] < 3.f * W && qy[i] > -2.f * H && qy[i] < 3.f * H) onscr = true;
+        if (nq >= 3 && onscr) {
+            // Dark TINTED scrim rather than a coloured wash: the ground under a marker is
+            // whatever the scene happens to be, so a saturated fill washes out on bright
+            // terrain and the object we are pointing at fights its own highlight.
+            const int sr = MixSurf(mr, kSurfR), sg = MixSurf(mg, kSurfG), sb = MixSurf(mb, kSurfB);
+            for (int i = 1; i + 1 < nq; i += 2) {        // fan fill (see tile markers)
+                int j = (i + 2 < nq) ? i + 2 : i + 1;
+                marker::Command q{}; q.type = marker::kFillQuad;
+                q.x0 = qx[0]; q.y0 = qy[0]; q.x1 = qx[i]; q.y1 = qy[i];
+                q.x2 = qx[i + 1]; q.y2 = qy[i + 1]; q.x3 = qx[j]; q.y3 = qy[j];
+                q.r = (std::uint8_t)sr; q.g = (std::uint8_t)sg; q.b = (std::uint8_t)sb; q.a = 96;
+                push(q);
+            }
+        }
+        // Two techniques carry the legibility here, both forced by what the renderer can do:
+        // there is no anti-aliasing and no depth test, so contrast has to be BUILT rather
+        // than sampled. (1) every silhouette stroke gets a dark CONTOUR underneath it, the
+        // same trick the guide path already uses to stay readable on sand. (2) `ticks` draws
+        // only the ENDS of an edge, so a prism reads as corner brackets and the object shows
+        // through its own outline instead of being caged by twelve opaque lines.
+        auto edgeLine = [&](int i0, int i1, float th, int alpha, bool contour, bool ticks) {
+            float ax, ay, bx, by;
+            if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH,
+                                    wc[i0], wc[i1], ax, ay, bx, by)) return;
+            if ((ax < -2.f * W || ax > 3.f * W || ay < -2.f * H || ay > 3.f * H) &&
+                (bx < -2.f * W || bx > 3.f * W || by < -2.f * H || by > 3.f * H)) return;
+            const float dx = bx - ax, dy = by - ay;
+            const float len = std::sqrt(dx * dx + dy * dy);
+            float f0 = 1.0f;
+            if (ticks && len >= 26.0f) {              // short edges: the whole edge IS the tick
+                f0 = 14.0f / len;                     // ~14px minimum bracket
+                if (f0 < 0.18f) f0 = 0.18f;
+                if (f0 > 0.38f) f0 = 0.38f;           // never more than ~a third of the edge
+            }
+            auto seg = [&](float t0, float t1) {
+                const float x0 = ax + dx * t0, y0 = ay + dy * t0;
+                const float x1 = ax + dx * t1, y1 = ay + dy * t1;
+                if (contour) line(x0, y0, x1, y1, th + 1.6f, kInkR, kInkG, kInkB, 140);
+                line(x0, y0, x1, y1, th, mr, mg, mb, alpha);
+            };
+            if (f0 >= 0.999f) { seg(0.0f, 1.0f); return; }
+            // Corners alone lose the SHAPE on a long thin prism -- the two ends stop reading
+            // as one object. A faint full-length edge underneath keeps the silhouette legible
+            // while the brackets carry the emphasis and still let the model show through.
+            line(ax, ay, bx, by, th * 0.75f, mr, mg, mb, alpha / 4);
+            seg(0.0f, f0); seg(1.0f - f0, 1.0f);
+        };
+        // Prisms tick; flat zone tiles must NOT, because edge_mask merges them into one shape
+        // and a zone's continuous perimeter is precisely the information it carries.
+        const bool tick = (nv == 8);
+        for (int i = 0; i < 4; ++i) {
+            // Flat region tiles mask off edges shared with a neighbouring tile of the same
+            // zone (bit i: 0 south, 1 east, 2 north, 3 west -- corner order SW,SE,NE,NW), so
+            // the union outlines as ONE shape. Prisms always draw every edge.
+            if (nv == 4 && !((p.edge_mask >> i) & 1)) continue;
+            edgeLine(i, (i + 1) & 3, 2.2f, 245, true, tick);              // base ring: silhouette
+            if (nv == 8) {
+                edgeLine(4 + i, 4 + ((i + 1) & 3), 1.9f, 215, true, tick);   // top ring
+                // Verticals draw WHOLE, never ticked: they are short, they are what joins the
+                // two rings into a solid, and bracketing them just scattered loose fragments.
+                edgeLine(i, 4 + i, 1.5f, 140, false, false);                 // depth cue
+            }
+        }
+        if (p.label.empty()) continue;
+        // anchor the label off the projected IN-FRONT corners (robust for both AABB
+        // and prism shapes): centred horizontally, just above the box's screen top
+        float cx = 0.f, cy = 0.f; int np = 0;
+        for (int i = 0; i < nv; ++i) {
+            float sxx, syy;
+            if (!WorldToScreen(f->matrix, vpX, vpY, vpW, vpH,
+                               wc[i][0], wc[i][1], wc[i][2], sxx, syy)) continue;
+            cx += sxx;
+            if (!np || syy < cy) cy = syy;
+            ++np;
+        }
+        if (!np) continue;
+        cx /= (float)np;
+        if (cx < -200.f || cx > W + 200.f || cy < -120.f || cy > H + 120.f) continue;
+        int nl = 1, mc = 0, run = 0;
+        for (char ch : p.label) { if (ch == '\n') { ++nl; run = 0; } else if (++run > mc) mc = run; }
+        if (nl > 4) nl = 4;
+        glbls.push_back({ cx, cy, nl, mc, &p.label, mr, mg, mb, p.rgb != 0 });
+    }
+
+    // Label DECLUTTER: marks that sit together would stack their pills unreadably. Objective
+    // (default-colour) labels place first and keep their natural spot; every later pill is nudged
+    // straight UP until it clears what's already placed. Same-text pills anchored within ~70 px
+    // collapse into one. Sizes are estimates, but good enough for collision.
+    if (!glbls.empty()) {
+        std::stable_sort(glbls.begin(), glbls.end(),
+                         [](const GuideLbl& a, const GuideLbl& b){ return !a.hazard && b.hazard; });
+        struct LblRect { float l, t, r, b; };
+        std::vector<LblRect> placedR;
+        std::vector<const GuideLbl*> placedL;
+        for (const auto& l : glbls) {
+            bool dup = false;
+            for (const GuideLbl* d : placedL)
+                if (*d->text == *l.text && std::fabs(d->cx - l.cx) < 70.f && std::fabs(d->cy - l.cy) < 70.f) { dup = true; break; }
+            if (dup) continue;
+            placedL.push_back(&l);
+            const float estH = 13.0f * (float)l.nl + 10.0f;           // padY 5, mirrors DrawLabel
+            const float estW = 0.62f * 10.5f * (float)l.mc + 24.0f;   // proportional-font estimate + pill padding (padX 8)
+            float y = l.cy - 8.0f - estH * 0.5f;
+            for (int guard = 0; guard < 12; ++guard) {                // shift up past each collision
+                bool hit = false;
+                for (const auto& r : placedR)
+                    if (l.cx - estW * 0.5f < r.r && l.cx + estW * 0.5f > r.l &&
+                        y - estH * 0.5f < r.b && y + estH * 0.5f > r.t) { y = r.t - estH * 0.5f - 4.0f; hit = true; break; }
+                if (!hit) break;
+            }
+            placedR.push_back({ l.cx - estW * 0.5f, y - estH * 0.5f, l.cx + estW * 0.5f, y + estH * 0.5f });
+            marker::Command t{}; t.type = marker::kText;
+            t.x0 = l.cx; t.y0 = y;
+            t.x1 = 10.5f;                                    // compact: stay out of the way
+            t.r = (std::uint8_t)l.r; t.g = (std::uint8_t)l.g; t.b = (std::uint8_t)l.b; t.a = 230;
+            int n = (int)l.text->size();
+            if (n > marker::kTextMax) {
+                std::memcpy(t.text, l.text->data(), marker::kTextMax - 2);
+                t.text[marker::kTextMax - 2] = '.';
+                t.text[marker::kTextMax - 1] = '.';
+                t.text[marker::kTextMax]     = '\0';
+            } else {
+                std::memcpy(t.text, l.text->data(), (size_t)n);
+                t.text[n] = '\0';
+            }
+            push(t);
+        }
+    }
+
+    // --- screen-centre text (e.g. the BGH "Bound - 2s" stun countdown): one big kText
+    //     pill above the gameview centre, no world projection. Red accent = warning. ---
+    if (!ctext.empty()) {
+        marker::Command t{}; t.type = marker::kText;
+        t.x0 = vpX + vpW * 0.5f;
+        t.y0 = vpY + vpH * 0.35f;                        // above centre: clear of the player model
+        t.x1 = 22.0f;                                    // big: must read at a glance mid-fight
+        t.r = 235; t.g = 90; t.b = 90; t.a = 245;
+        int n = (int)ctext.size();
+        if (n > marker::kTextMax) n = marker::kTextMax;
+        std::memcpy(t.text, ctext.data(), (size_t)n);
+        t.text[n] = '\0';
+        push(t);
+    }
+
+
     // --- direction indicator: a marker ring on the ground UNDER THE PLAYER, with a sleek arrowhead
     //     on its edge pointing toward the objective. Centred on the player's FINE (sub-tile) world
     //     position, so it never jumps tile-to-tile as the player walks. Drawn in-world. ---
@@ -1403,6 +1465,18 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const float* m = f->matrix;
         const float z = f->player_z;
         const float cwx = f->player_fx, cwy = f->player_fy;   // ring centre = under the player (smooth fine pos)
+        // The cue is deliberately FLAT, drawn on the player's own ground plane.
+        //
+        // Terrain-following was tried and removed. Sampling the ground per vertex is correct on
+        // open hillside and wrong on everything this cue actually appears over: stairs, wall
+        // tops, ledges and bridges all change height by a full step INSIDE the ring's 0.59-tile
+        // radius, so the dashes scatter to different heights and the circle reads as debris.
+        // The arrow was worse -- its tip sits ~0.84 tile out, so on a descending flight it
+        // landed a step below its own wings and projection sheared the dart across the screen.
+        // Clamping the deviation, and adaptively draping only over smooth ground, each fixed one
+        // case and left the others; every guard added complexity for a benefit nobody had asked
+        // for. A flat cue may clip a step, which reads as a cue drawn on the ground. A torn one
+        // reads as a bug. Keep it flat.
         {
             float ccsx, ccsy;
             if (WorldToScreen(m, vpX, vpY, vpW, vpH, cwx, cwy, z, ccsx, ccsy)) {   // player is in front of camera
@@ -1412,7 +1486,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 if (wlen > 1.0f) {
                     wdx /= wlen; wdy /= wlen;
                     const float perpx = -wdy, perpy = wdx;
-                    const float R = 340.f;                  // ring radius in world-fine units (~0.66 tile)
+                    // Pulled in from 340: with the arrow base pushed out (below) this opens a
+                    // real gap between ring and dart instead of welding them into one blob.
+                    const float R = 300.f;                  // ring radius in world-fine units (~0.59 tile)
                     // Lowest on-screen point of the whole cue (ring + arrow): the distance pill anchors
                     // just below it. Measuring the real projected extent keeps the gap constant at any
                     // camera pitch/yaw/zoom.
@@ -1424,31 +1500,52 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         double a = (double)i / NSEG * 6.28318530717959;
                         float wx = cwx + (float)std::cos(a) * R, wy = cwy + (float)std::sin(a) * R;
                         float sx, sy; bool ok = WorldToScreen(m, vpX, vpY, vpW, vpH, wx, wy, z, sx, sy);
-                        if (ok && prevOk) line(prevX, prevY, sx, sy, 2.6f, kMarkerR, kMarkerG, kMarkerB, 205);
+                        // DASHED, and that is structural rather than decorative: the ring is 32
+                        // independent butt-ended quads with no joins, so a solid stroke notches
+                        // visibly at every seam. Emitting alternate segments turns the seam into
+                        // the design and halves the segment count, which pays for the dark
+                        // contour underneath -- needed because the ring sits on whatever ground
+                        // the player happens to be standing on.
+                        if (ok && prevOk && (i & 1)) {
+                            line(prevX, prevY, sx, sy, 3.2f, kInkR, kInkG, kInkB, 130);
+                            line(prevX, prevY, sx, sy, 1.8f, kOkR, kOkG, kOkB, 225);
+                        }
                         if (ok && sy > cueMaxY) cueMaxY = sy;
                         prevX = sx; prevY = sy; prevOk = ok;
                     }
                     // Arrowhead just past the ring, pointing at the objective. Local coords = (along-heading,
                     // sideways), projected to the ground; filled as two triangles so the back notch stays open.
+                    // Same plane as the ring: the dart is a rigid POINTER, and its proportions
+                    // must not depend on what the ground happens to do 0.84 tile ahead.
                     auto W2S = [&](float along, float side, float& sx, float& sy) {
                         return WorldToScreen(m, vpX, vpY, vpW, vpH,
-                                             cwx + wdx * along + perpx * side, cwy + wdy * along + perpy * side, z, sx, sy);
+                                             cwx + wdx * along + perpx * side,
+                                             cwy + wdy * along + perpy * side, z, sx, sy);
                     };
                     float Tx, Ty, Lx, Ly, Nx, Ny, Rx, Ry;
-                    if (W2S(R + 360.f,   0.f, Tx, Ty) &&    // tip (longer / more visible)
-                        W2S(R +  60.f,  96.f, Lx, Ly) &&    // left wing (widest, at the back)
-                        W2S(R + 185.f,   0.f, Nx, Ny) &&    // back notch (forward of the wings -> concave)
-                        W2S(R +  60.f, -96.f, Rx, Ry)) {    // right wing
+                    // Base pushed from R+60 to R+150 (0.29 tile clear of the ring) so the dart
+                    // reads as a separate pointer rather than a spur welded onto the circle.
+                    if (W2S(R + 430.f,   0.f, Tx, Ty) &&    // tip (longer / more visible)
+                        W2S(R + 150.f,  96.f, Lx, Ly) &&    // left wing (widest, at the back)
+                        W2S(R + 275.f,   0.f, Nx, Ny) &&    // back notch (forward of the wings -> concave)
+                        W2S(R + 150.f, -96.f, Rx, Ry)) {    // right wing
                         marker::Command q1{}; q1.type = marker::kFillQuad;
                         q1.x0 = Tx; q1.y0 = Ty; q1.x1 = Lx; q1.y1 = Ly; q1.x2 = Nx; q1.y2 = Ny; q1.x3 = Tx; q1.y3 = Ty;
-                        q1.r = kMarkerR; q1.g = kMarkerG; q1.b = kMarkerB; q1.a = 240; push(q1);
+                        // Painter's algorithm IS the mechanism here (no depth test): lay the dark
+                        // contour down FIRST so the fills cover its inner half and only an outer
+                        // rim survives, then the bright edge last.
+                        line(Tx, Ty, Lx, Ly, 3.0f, kInkR, kInkG, kInkB, 170);
+                        line(Lx, Ly, Nx, Ny, 3.0f, kInkR, kInkG, kInkB, 170);
+                        line(Nx, Ny, Rx, Ry, 3.0f, kInkR, kInkG, kInkB, 170);
+                        line(Rx, Ry, Tx, Ty, 3.0f, kInkR, kInkG, kInkB, 170);
+                        q1.r = kOkR; q1.g = kOkG; q1.b = kOkB; q1.a = 235; push(q1);
                         marker::Command q2{}; q2.type = marker::kFillQuad;
                         q2.x0 = Tx; q2.y0 = Ty; q2.x1 = Nx; q2.y1 = Ny; q2.x2 = Rx; q2.y2 = Ry; q2.x3 = Tx; q2.y3 = Ty;
-                        q2.r = kMarkerR; q2.g = kMarkerG; q2.b = kMarkerB; q2.a = 240; push(q2);
-                        line(Tx, Ty, Lx, Ly, 2.2f, kMarkerR, kMarkerG, kMarkerB, 255);   // crisp outline: tip -> L -> notch -> R -> tip
-                        line(Lx, Ly, Nx, Ny, 2.2f, kMarkerR, kMarkerG, kMarkerB, 255);
-                        line(Nx, Ny, Rx, Ry, 2.2f, kMarkerR, kMarkerG, kMarkerB, 255);
-                        line(Rx, Ry, Tx, Ty, 2.2f, kMarkerR, kMarkerG, kMarkerB, 255);
+                        q2.r = kOkR; q2.g = kOkG; q2.b = kOkB; q2.a = 235; push(q2);
+                        line(Tx, Ty, Lx, Ly, 1.3f, kOkR, kOkG, kOkB, 255);   // crisp outline: tip -> L -> notch -> R -> tip
+                        line(Lx, Ly, Nx, Ny, 1.3f, kOkR, kOkG, kOkB, 255);
+                        line(Nx, Ny, Rx, Ry, 1.3f, kOkR, kOkG, kOkB, 255);
+                        line(Rx, Ry, Tx, Ty, 1.3f, kOkR, kOkG, kOkB, 255);
                         // The arrow can extend below the ring when the objective is screen-down;
                         // include it so the pill clears the whole cue.
                         if (Ty > cueMaxY) cueMaxY = Ty;
@@ -1460,12 +1557,29 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     // point, so the gap never changes with camera pitch/yaw/zoom.
                     const int dist = arrowDist;
                     {
-                        marker::Command t{}; t.type = marker::kText;
-                        t.x0 = ccsx; t.y0 = cueMaxY + 12.0f;
-                        t.x1 = 10.5f;                                   // compact, same as the NPC label
-                        t.r = kMarkerR; t.g = kMarkerG; t.b = kMarkerB; t.a = 220;
-                        std::snprintf(t.text, sizeof(t.text), "%d tile%s", dist, dist == 1 ? "" : "s");
-                        push(t);
+                        // Composed badge rather than a kText pill, because this is the one label
+                        // that wants COLOURED type and kText hardcodes its glyph colour module
+                        // side. Three commands gets the World Map badge exactly: dark plate,
+                        // accent hairline, accent text. Short fixed string, so the 0.62 advance
+                        // over-estimate is a couple of px and always errs toward not cropping.
+                        char dtxt[24];
+                        std::snprintf(dtxt, sizeof(dtxt), "%d tile%s", dist, dist == 1 ? "" : "s");
+                        int dn = 0; for (const char* q = dtxt; *q; ++q) ++dn;
+                        const float dpx = 10.5f;
+                        const float dw = (float)dn * dpx * 0.62f + 16.0f, dh = 19.0f;
+                        const float dx = ccsx - dw * 0.5f, dy = cueMaxY + 12.0f;
+                        { marker::Command c{}; c.type = marker::kRoundFill;
+                          c.x0 = dx - 1.0f; c.y0 = dy - 1.0f; c.x1 = dw + 2.0f; c.y1 = dh + 2.0f;
+                          c.thickness = 5.0f;
+                          c.r = kOkR; c.g = kOkG; c.b = kOkB; c.a = 190; push(c); }        // hairline
+                        { marker::Command c{}; c.type = marker::kRoundFill;
+                          c.x0 = dx; c.y0 = dy; c.x1 = dw; c.y1 = dh; c.thickness = 4.0f;
+                          c.r = kSurfR; c.g = kSurfG; c.b = kSurfB; c.a = 235; push(c); }  // #0B0D12
+                        { marker::Command c{}; c.type = marker::kText;
+                          c.glyph = (std::uint16_t)(marker::kTextPlain | marker::kTextAlignCentre);
+                          c.x0 = ccsx; c.y0 = dy + dh * 0.5f; c.x1 = dpx;
+                          c.r = kOkTxR; c.g = kOkTxG; c.b = kOkTxB; c.a = 255;
+                          std::snprintf(c.text, sizeof(c.text), "%s", dtxt); push(c); }
                     }
                 }
             }
@@ -1494,20 +1608,20 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         // Translucent fill -- stronger on a cell (no text to keep readable).
         marker::Command q{}; q.type = marker::kFillRect;
         q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
-        q.r = kMarkerR; q.g = kMarkerG; q.b = kMarkerB;
+        q.r = kAccR; q.g = kAccG; q.b = kAccB;
         q.a = (std::uint8_t)((cell ? 105 : 58) + (int)((cell ? 70.0f : 46.0f) * uipulse));
         push(q);
         // Soft outer glow (wider, lower alpha) just OUTSIDE the border, so the text inside isn't darkened.
         float g = 2.5f, gx0 = x0 - g, gy0 = y0 - g, gx1 = x1 + g, gy1 = y1 + g;
         int ga = 80 + (int)(45.0f * uipulse);
-        line(gx0, gy0, gx1, gy0, 4.5f, kMarkerR, kMarkerG, kMarkerB, ga);
-        line(gx1, gy0, gx1, gy1, 4.5f, kMarkerR, kMarkerG, kMarkerB, ga);
-        line(gx1, gy1, gx0, gy1, 4.5f, kMarkerR, kMarkerG, kMarkerB, ga);
-        line(gx0, gy1, gx0, gy0, 4.5f, kMarkerR, kMarkerG, kMarkerB, ga);
-        line(x0, y0, x1, y0, 3.4f, kMarkerR, kMarkerG, kMarkerB, 255);
-        line(x1, y0, x1, y1, 3.4f, kMarkerR, kMarkerG, kMarkerB, 255);
-        line(x1, y1, x0, y1, 3.4f, kMarkerR, kMarkerG, kMarkerB, 255);
-        line(x0, y1, x0, y0, 3.4f, kMarkerR, kMarkerG, kMarkerB, 255);
+        line(gx0, gy0, gx1, gy0, 4.5f, kAccR, kAccG, kAccB, ga);
+        line(gx1, gy0, gx1, gy1, 4.5f, kAccR, kAccG, kAccB, ga);
+        line(gx1, gy1, gx0, gy1, 4.5f, kAccR, kAccG, kAccB, ga);
+        line(gx0, gy1, gx0, gy0, 4.5f, kAccR, kAccG, kAccB, ga);
+        line(x0, y0, x1, y0, 3.4f, kAccR, kAccG, kAccB, 255);
+        line(x1, y0, x1, y1, 3.4f, kAccR, kAccG, kAccB, 255);
+        line(x1, y1, x0, y1, 3.4f, kAccR, kAccG, kAccB, 255);
+        line(x0, y1, x0, y0, 3.4f, kAccR, kAccG, kAccB, 255);
         // Corner brackets: disambiguate a single grid cell.
         if (cell) {
             float L = (x1 - x0) * 0.34f;
@@ -1564,9 +1678,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             if (kc.w <= 0 || kc.h <= 0) continue;
             float x0 = (float)kc.x, y0 = (float)kc.y, x1 = (float)(kc.x + kc.w), y1 = (float)(kc.y + kc.h);
             marker::Command q{}; q.type = marker::kFillRect; q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
-            q.r = kMarkerR; q.g = kMarkerG; q.b = kMarkerB; q.a = (std::uint8_t)(50 + (int)(45.0f * kpulse)); push(q);
-            line(x0, y0, x1, y0, 2.4f, kMarkerR, kMarkerG, kMarkerB, 235); line(x1, y0, x1, y1, 2.4f, kMarkerR, kMarkerG, kMarkerB, 235);
-            line(x1, y1, x0, y1, 2.4f, kMarkerR, kMarkerG, kMarkerB, 235); line(x0, y1, x0, y0, 2.4f, kMarkerR, kMarkerG, kMarkerB, 235);
+            q.r = kAccR; q.g = kAccG; q.b = kAccB; q.a = (std::uint8_t)(50 + (int)(45.0f * kpulse)); push(q);
+            line(x0, y0, x1, y0, 2.4f, kAccR, kAccG, kAccB, 235); line(x1, y0, x1, y1, 2.4f, kAccR, kAccG, kAccB, 235);
+            line(x1, y1, x0, y1, 2.4f, kAccR, kAccG, kAccB, 235); line(x0, y1, x0, y0, 2.4f, kAccR, kAccG, kAccB, 235);
             float L = (x1 - x0) * 0.34f; const float bw = 3.4f;
             line(x0, y0, x0 + L, y0, bw, 255, 255, 255, 255); line(x0, y0, x0, y0 + L, bw, 255, 255, 255, 255);
             line(x1, y0, x1 - L, y0, bw, 255, 255, 255, 255); line(x1, y0, x1, y0 + L, bw, 255, 255, 255, 255);
@@ -1579,8 +1693,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             float px0 = cx - pw * 0.5f, py1 = y0 - 7.0f, py0 = py1 - ph, px1 = px0 + pw;
             marker::Command pb{}; pb.type = marker::kFillRect; pb.x0 = px0; pb.y0 = py0; pb.x1 = px1; pb.y1 = py1;
             pb.r = 16; pb.g = 18; pb.b = 24; pb.a = 238; push(pb);
-            line(px0, py0, px1, py0, 1.8f, kMarkerR, kMarkerG, kMarkerB, 255); line(px1, py0, px1, py1, 1.8f, kMarkerR, kMarkerG, kMarkerB, 255);
-            line(px1, py1, px0, py1, 1.8f, kMarkerR, kMarkerG, kMarkerB, 255); line(px0, py1, px0, py0, 1.8f, kMarkerR, kMarkerG, kMarkerB, 255);
+            line(px0, py0, px1, py0, 1.8f, kAccR, kAccG, kAccB, 255); line(px1, py0, px1, py1, 1.8f, kAccR, kAccG, kAccB, 255);
+            line(px1, py1, px0, py1, 1.8f, kAccR, kAccG, kAccB, 255); line(px0, py1, px0, py0, 1.8f, kAccR, kAccG, kAccB, 255);
             marker::Command t{}; t.type = marker::kText; t.x0 = cx; t.y0 = (py0 + py1) * 0.5f; t.x1 = 17.0f;
             t.r = 255; t.g = 255; t.b = 255; t.a = 255; std::snprintf(t.text, sizeof(t.text), "%s", lbl); push(t);
         }

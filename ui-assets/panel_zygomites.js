@@ -68,7 +68,7 @@
   }
   function anaOpen() { anaRefresh(); }
   setInterval(function () {
-    if (typeof activeTab === 'undefined' || activeTab !== 'anachronia' || !document.getElementById('anaWrap')) return;
+    if (typeof paneVisible === 'undefined' || !paneVisible('anachronia') || !document.getElementById('anaWrap')) return;
     if (++anaTick % 4 === 0) anaRefresh();
   }, 700);
 

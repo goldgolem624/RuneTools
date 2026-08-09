@@ -154,7 +154,7 @@
     } finally {
       repFetching = false;
     }
-    if (activeTab === 'reputation') renderReputation();
+    paneRun('reputation', renderReputation);
   }
 
   function renderReputation() {

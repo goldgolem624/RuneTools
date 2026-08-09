@@ -11,7 +11,7 @@
     try { const d = JSON.parse(await bridge().perks(myPid())); perksData = (d && Array.isArray(d.items)) ? d : { items: [] }; }
     catch (e) { /* keep previous */ }
     perksFetching = false;
-    if (activeTab === 'perks') renderPerks();
+    paneRun('perks', renderPerks);
   }
   // Annotate a "per rank" description with the computed total: "1.5% per rank" at rank 6 ->
   // "1.5% per rank <col=ffffff>(9% at rank 6)</col>". Shapes handled:

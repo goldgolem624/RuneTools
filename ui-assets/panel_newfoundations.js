@@ -257,7 +257,7 @@
   }
   function nfMonRefresh() {
     if (nfMonBusy) return;
-    if (activeTab !== 'quests' && activeTab !== 'questfocus') return;
+    if (!paneVisible('quests') && !paneVisible('questfocus')) return;
     if (!bridge() || typeof PLUGIN_API === 'undefined') return;
     nfMonBusy = true;
     (async () => {
@@ -266,8 +266,8 @@
         const changed = !nfMonVb || NF_MON_VBS.some(id => (vb[id] | 0) !== (nfMonVb[id] | 0));
         nfMonVb = vb;
         if (changed) {
-          if (activeTab === 'questfocus') { qgSig = ''; renderQuestFocus(); }
-          else if (activeTab === 'quests') { questDetailSig = ''; renderQuests(); }
+          paneRun('questfocus', () => { qgSig = ''; renderQuestFocus(); });
+          paneRun('quests', () => { questDetailSig = ''; renderQuests(); });
         }
       } catch (e) {}
       nfMonBusy = false;

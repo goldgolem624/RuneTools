@@ -128,7 +128,7 @@
       for (const vpid of [11175, 11176, 11177]) await rtGlyphName(rtP(vpid));
     } catch (e) { /* keep previous */ }
     rtFetching = false;
-    if (activeTab === 'rituals') renderRituals();
+    paneRun('rituals', renderRituals);
   }
 
   const rtV = k => ((rtVb && rtVb[String(k)]) | 0);

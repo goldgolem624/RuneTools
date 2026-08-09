@@ -52,10 +52,11 @@ void append_escaped(std::string& out, const char* s, std::size_t cap) {
 
 }  // namespace
 
-bool SetEnabled(std::uint32_t pid, bool on) {
+bool SetEnabled(std::uint32_t pid, std::uint32_t mode) {
     View v(pid);
     if (!v) return false;
-    v.sh->enable = on ? 1u : 0u;
+    if (mode > rtx::menu::kEnableBackground) mode = rtx::menu::kEnablePanel;
+    v.sh->enable = mode;
     return true;
 }
 

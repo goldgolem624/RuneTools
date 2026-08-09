@@ -18,11 +18,21 @@
     --ok:           #4dd28a;
     --tx-fast:      120ms;
     --ease:         cubic-bezier(.4,0,.2,1);
+    /* In-game window system */
+    --win-bg:       rgba(12, 14, 20, 0.93);
+    --win-radius:   10px;
+    --win-shadow:   0 14px 44px rgba(0,0,0,0.55), 0 3px 10px rgba(0,0,0,0.40);
+    --win-shadow-f: 0 16px 50px rgba(0,0,0,0.60), 0 0 0 1px rgba(124,92,252,0.28),
+                    0 3px 12px rgba(0,0,0,0.45);
+    --bar-bg:       rgba(12, 14, 20, 0.90);
+    --tx-med:       160ms;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; height: 100%;
-    background: var(--bg);
+    /* TRANSPARENT on purpose: this page is composited OVER the game frame; only
+       the menu bar and windows paint pixels. An opaque body hides the game. */
+    background: transparent;
     color: var(--text);
     font: 13px/1.5 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
     /* WebKit (Ultralight) honours the -webkit- prefix; the unprefixed form alone
@@ -34,125 +44,390 @@
     -webkit-user-select: text; user-select: text;
   }
 
-  /* Full-height left icon rail; header + content fill the right column. The host reveals the
-       panel left-to-right, so collapsed shows exactly the rail. */
-  #app {
-    display: grid;
-    grid-template-columns: 56px 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
-    grid-template-areas: "rail header" "rail content";
-    height: 100%;
-  }
+  /* ==================== In-game desktop: menu bar + floating windows ==================== */
+  #desktop { position: fixed; inset: 0; overflow: hidden; }
 
-  header {
-    grid-area: header;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, rgba(124,92,252,0.08), transparent);
-  }
-  header .title {
-    display: flex; align-items: center; gap: 10px;
-    font-weight: 600; font-size: 14px;
-  }
-  header .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--text-mute);
-    transition: background var(--tx-fast) var(--ease);
-  }
-  header .title.is-in .dot { background: var(--ok); }
-  header .meta {
-    font-size: 11px; color: var(--text-mute);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.02em;
-  }
-
-  main { grid-area: content; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
-  /* Content + header stay laid out when collapsed; the host clips the panel window to the rail
-       (window-region clip via dockCollapse). body.side-collapsed only drives the chevron. */
-
-  .sidebar {
-    grid-area: rail;
-    background: rgba(0,0,0,0.18);
-    border-right: 1px solid var(--border);
-    padding: 12px 8px;
-    display: flex; flex-direction: column; gap: 6px;
-    min-height: 0; overflow: hidden;
-    /* Own compositing layer + paint containment: the CPU renderer otherwise smears the rail
-       when an adjacent scroller repaints. Promote with will-change, NOT a real transform:
-       a transform offsets CPU hit-testing so rail clicks land on the wrong icon. */
+  /* --- Menu bar: slim glass pill, draggable, edge-dockable --- */
+  #menubar {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: stretch; gap: 2px;
+    height: 38px; padding: 4px 6px;
+    background: var(--bar-bg);
+    border: 1px solid var(--border-hi);
+    border-radius: 12px;
+    box-shadow: var(--win-shadow);
+    z-index: 100000;
     will-change: transform;
     contain: paint;
   }
-  .sidebar.collapsed { padding: 12px 6px; }
-  .side-top { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: none; }
-  .side-collapse {
-    appearance: none; background: transparent; border: none; color: var(--text-mute);
-    cursor: pointer; display: flex; align-items: center; justify-content: center;
-    width: 30px; height: 30px; border-radius: 8px; margin-right: auto;
+  #menubar.dragging { transition: none; }
+  #menubar.pill { padding: 4px; }
+  /* Collapsed: drop the category rail, status readout and restore chips, but KEEP
+     search -- it is the one control that still reaches every panel from the pill,
+     so without it the collapsed bar can only be expanded again. */
+  #menubar.pill .mb-cats, #menubar.pill .mb-status, #menubar.pill .mb-chips { display: none; }
+  .mb-drag {
+    display: flex; align-items: center; padding: 0 7px 0 5px;
+    color: var(--text-mute); cursor: grab; border-radius: 8px;
+  }
+  .mb-drag:active { cursor: grabbing; }
+  .mb-drag svg { width: 14px; height: 14px; }
+  .mb-cats { display: flex; align-items: stretch; gap: 2px; }
+  .mb-cat {
+    appearance: none; background: transparent; border: none; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    width: 36px; border-radius: 8px; color: var(--text-mute); cursor: pointer;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
-  .side-collapse:hover { background: var(--bg-elev-2); color: var(--text); }
-  .side-collapse:active { transform: scale(0.9); }
-  .side-collapse svg { width: 17px; height: 17px; transition: transform 260ms var(--ease); transform: rotate(180deg); }
-  body.side-collapsed .side-collapse svg { transform: none; }
-  .sidebar.collapsed .side-collapse { margin: 0 auto; }
-  .side-search svg { transform: none; }
-  .side-list {
-    flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
-    display: flex; flex-direction: column; gap: 3px;
+  .mb-cat { width: auto; padding: 0 10px; font: inherit; font-size: 11.5px; font-weight: 500; }
+  .mb-cat:hover { background: var(--bg-elev-2); color: var(--text); }
+  .mb-cat.open { background: linear-gradient(180deg, rgba(124,92,252,0.30), rgba(124,92,252,0.12)); color: #fff; }
+  .mb-cat.has-open::after {
+    content: ''; position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
+    width: 4px; height: 4px; border-radius: 50%; background: var(--accent-hi);
   }
-  /* Hidden scrollbar on the thin rail; wheel still scrolls. */
-  .side-list::-webkit-scrollbar { width: 0; height: 0; }
-  .rail-sep { height: 1px; margin: 7px 10px; background: var(--border); flex: none; }
-  .tab.rail-back svg { color: var(--accent-hi); }
-  .tab.rail-cat.is-active svg { color: var(--accent-hi); }
-  .side-group {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--text-mute); padding: 10px 12px 4px; user-select: none; cursor: pointer;
+  .mb-status {
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 0 12px; margin: 0 2px; min-width: 110px;
+    border-left: 1px solid var(--border); border-right: 1px solid var(--border);
   }
-  .side-group:hover { color: var(--text-dim); }
-  .grp-chev { width: 11px; height: 11px; flex: 0 0 11px; transition: transform 140ms var(--ease); }
-  .side-group.collapsed .grp-chev { transform: rotate(-90deg); }
-  .sidebar.collapsed .side-group { display: none; }
+  .mb-status .title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 12px; line-height: 1.25; }
+  .mb-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-mute);
+                    transition: background var(--tx-fast) var(--ease); flex: none; }
+  .mb-status .title.is-in .dot { background: var(--ok); box-shadow: 0 0 6px rgba(77,210,138,0.7); }
+  .mb-status .meta { font-size: 10px; color: var(--text-mute); font-variant-numeric: tabular-nums;
+                     letter-spacing: 0.02em; line-height: 1.25; white-space: nowrap; }
+  /* Restore chips for minimized windows. Capped so the bar can never grow with the number of
+     open windows, but SCROLLABLE rather than clipped: overflow:hidden alone silently swallowed
+     every chip past the cap, so with enough windows minimized the later ones simply vanished
+     from the bar. (They were never unreachable - their category menu still restores them - but
+     a control that disappears with no trace reads as a bug.) Scrollbar hidden: a 24px strip has
+     no room for one, and the chips scroll on the wheel. */
+  .mb-chips {
+    display: flex; align-items: center; gap: 3px;
+    padding: 0 4px; margin: 0 2px;
+    border-left: 1px solid var(--border);
+    max-width: 260px; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none; overscroll-behavior-x: contain;
+  }
+  .mb-chips::-webkit-scrollbar { display: none; }
+  .mb-chip {
+    appearance: none; border: 1px solid var(--border); background: rgba(124,92,252,0.08);
+    display: flex; align-items: center; gap: 5px;
+    height: 24px; padding: 0 9px 0 6px; border-radius: 999px;
+    color: var(--text-dim); cursor: pointer;
+    font: inherit; font-size: 10.5px; white-space: nowrap;
+    transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease),
+                border-color var(--tx-fast) var(--ease);
+  }
+  .mb-chip svg { width: 12px; height: 12px; flex: none; color: var(--accent-hi); opacity: 0.85; }
+  .mb-chip:hover { background: rgba(124,92,252,0.18); color: var(--text); border-color: rgba(124,92,252,0.5); }
+  .mb-chip span { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
+  .mb-btn {
+    appearance: none; background: transparent; border: none;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 10px; border-radius: 8px; color: var(--text-mute); cursor: pointer;
+    font: inherit; font-size: 11.5px; font-weight: 500; white-space: nowrap;
+    transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
+  }
+  .mb-btn:hover { background: var(--bg-elev-2); color: var(--text); }
+
+  /* --- Category dropdown --- */
+  #mbdrop {
+    position: absolute; z-index: 100001;
+    min-width: 210px; max-height: 60vh; overflow-y: auto;
+    background: var(--bar-bg);
+    border: 1px solid var(--border-hi); border-radius: 12px;
+    box-shadow: var(--win-shadow);
+    padding: 6px;
+    animation: mbdrop-in var(--tx-med) var(--ease);
+  }
+  @keyframes mbdrop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  #mbdrop::-webkit-scrollbar { width: 8px; }
+  #mbdrop::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
   .tab {
     appearance: none; background: transparent; border: none;
-    color: var(--text-mute); text-align: left;
+    color: var(--text-dim); text-align: left; width: 100%;
     display: flex; align-items: center; gap: 10px;
-    padding: 9px 12px; border-radius: 8px;
+    padding: 8px 10px; border-radius: 8px;
     font: inherit; font-size: 12px; font-weight: 500;
     cursor: pointer; position: relative;
-    transition: background var(--tx-fast) var(--ease),
-                color      var(--tx-fast) var(--ease);
+    transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
-  .tab svg { width: 16px; height: 16px; flex: 0 0 16px; opacity: 0.85;
-             transition: opacity var(--tx-fast) var(--ease), transform var(--tx-fast) var(--ease); }
-  .tab .tab-label { line-height: 1; }
+  .tab svg { width: 16px; height: 16px; flex: 0 0 16px; opacity: 0.85; }
+  .tab .tab-label { line-height: 1; flex: 1; }
   .tab:hover { background: var(--bg-elev-2); color: var(--text); }
-  .tab:hover svg { opacity: 1; }
-  .tab.is-active {
-    background: linear-gradient(90deg, rgba(124,92,252,0.22), rgba(124,92,252,0.08));
-    color: #fff; font-weight: 600;
+  .tab.is-active { color: #fff; }
+  .tab.is-active svg { opacity: 1; color: var(--accent-hi); }
+  .tab .tab-on { width: 5px; height: 5px; border-radius: 50%; background: var(--accent-hi); flex: none; }
+
+  /* --- Floating windows --- */
+  .win {
+    position: absolute;
+    display: flex; flex-direction: column;
+    min-width: 240px; min-height: 140px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-hi);
+    border-radius: var(--win-radius);
+    box-shadow: var(--win-shadow);
+    overflow: hidden;
+    contain: paint;
+    will-change: transform;
   }
-  .tab.is-active svg { opacity: 1; color: var(--accent-hi); transform: scale(1.05); }
-  .tab.is-active::before {
-    content: ''; position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-    width: 3px; height: 16px; border-radius: 2px; background: var(--accent-hi);
-    transition: opacity 200ms var(--ease);
+  .win.focus { border-color: rgba(124,92,252,0.55); box-shadow: var(--win-shadow-f); }
+  .win.opening { animation: win-in var(--tx-med) var(--ease); }
+  @keyframes win-in { from { opacity: 0; transform: scale(0.965); } to { opacity: 1; transform: none; } }
+  .win.dragging, .win.sizing { transition: none; }
+  .win-title {
+    flex: none; display: flex; align-items: center; gap: 8px;
+    height: 34px; padding: 0 6px 0 11px;
+    background: linear-gradient(180deg, rgba(124,92,252,0.10), rgba(124,92,252,0.02));
+    border-bottom: 1px solid var(--border);
+    cursor: grab;
   }
-  .sidebar.collapsed .tab { justify-content: center; padding: 9px 0; gap: 0; }
-  .sidebar.collapsed .tab-label { display: none; }
+  .win-title:active { cursor: grabbing; }
+  .win.focus .win-title { background: linear-gradient(180deg, rgba(124,92,252,0.18), rgba(124,92,252,0.04)); }
+  .win-title { padding-left: 12px; }
+  .win-name {
+    flex: 1; min-width: 0;
+    font-size: 12px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Tab strip (group members AND docked panels): its OWN row under the title bar, so it
+     never squeezes the window name and never clips its tail -- pills wrap at narrow
+     widths. A solo window renders no pills, so :empty hides the row entirely. */
+  /* EVERY tab is the same shape -- an equal pill of equal height -- so the row reads
+     as one control and only fill/weight marks the active one. Styling just the active
+     tab as a pill left the row ragged, and a wrapped active tab looked like a stray
+     control on its own line. */
+  .win-tabs {
+    flex: none; display: flex; flex-wrap: wrap; gap: 3px;
+    padding: 7px 10px 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .win-tabs:empty { display: none; }
+  .win.rolled .win-tabs { display: none; }
+  .win-tabs button {
+    display: inline-flex; align-items: center; gap: 4px;
+    height: 23px; padding: 0 5px 0 9px;
+    font: inherit; font-size: 11px; font-weight: 500;
+    border-radius: 6px; cursor: pointer; white-space: nowrap;
+    border: 1px solid transparent; background: transparent; color: var(--text-mute);
+    transition: color var(--tx-fast) var(--ease), background var(--tx-fast) var(--ease),
+                border-color var(--tx-fast) var(--ease);
+  }
+  .win-tabs button.solo { padding-right: 9px; }        /* nothing to close: no reserved slot */
+  .win-tabs button:hover { color: var(--text); background: var(--bg-elev-2); }
+  .win-tabs button.on {
+    color: #cfc2ff; font-weight: 600;
+    background: rgba(124,92,252,0.16); border-color: rgba(124,92,252,0.42);
+  }
+  .win-tabs button.tabdrag { opacity: 0.45; }
+  /* Close mark: its slot is ALWAYS reserved (only the glyph fades in), so hovering a
+     tab cannot reflow the row -- which would make tabs shuffle under the cursor while
+     you are dragging one. */
+  .win-tabs .win-tabx {
+    font-style: normal; font-size: 13px; line-height: 1;
+    width: 14px; height: 14px; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--text-mute); opacity: 0;
+    transition: opacity var(--tx-fast) var(--ease), background var(--tx-fast) var(--ease),
+                color var(--tx-fast) var(--ease);
+  }
+  .win-tabs button:hover .win-tabx, .win-tabs button.on .win-tabx { opacity: 0.7; }
+  .win-tabs .win-tabx:hover { opacity: 1; color: #ff9b9b; background: rgba(240,82,82,0.22); }
+  /* UI Settings chips. Defined HERE, not borrowed from a panel's injectStyle: those
+     only exist once that panel has rendered, so a shell-owned view must own its CSS. */
+  .uis-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .uis-chip {
+    font: inherit; font-size: 11px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border-hi); background: var(--bg-elev-2); color: var(--text-dim);
+    white-space: nowrap;
+    transition: color var(--tx-fast) var(--ease), background var(--tx-fast) var(--ease),
+                border-color var(--tx-fast) var(--ease);
+  }
+  .uis-chip:hover { color: var(--text); border-color: var(--text-mute); }
+  .uis-chip.on {
+    color: #cfc2ff; background: rgba(124,92,252,0.18); border-color: rgba(124,92,252,0.5);
+    font-weight: 600;
+  }
+  .uis-row { display: flex; align-items: center; gap: 8px; }
+  .uis-row input[type=range] { flex: 1; min-width: 90px; }
+  .uis-row b { min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* ---- Shell glyphs, drawn in CSS -------------------------------------------
+     This renderer proved unreliable with fine SVG line work: identical close
+     paths came out as strays or specks depending on how the path data was
+     written, and no amount of sizing fixed it. These use gradients and shadows
+     only - no path parsing, no font dependency, no transforms (a transform on a
+     hit-tested element also offsets this engine's CPU hit-testing). They inherit
+     currentColor and scale with their box. */
+  .g { display: inline-block; flex: none; width: 12px; height: 12px; }
+  .g-x {
+    background:
+      linear-gradient(45deg,  transparent 43%, currentColor 43%, currentColor 57%, transparent 57%),
+      linear-gradient(-45deg, transparent 43%, currentColor 43%, currentColor 57%, transparent 57%);
+  }
+  .g-min {
+    background: linear-gradient(to bottom, transparent 43%, currentColor 43%, currentColor 57%, transparent 57%);
+  }
+  .g-grip {
+    width: 2px; height: 2px; border-radius: 50%; background: currentColor;
+    margin: 0 4px 0 2px;
+    box-shadow: 0 -5px currentColor, 0 5px currentColor,
+                5px 0 currentColor, 5px -5px currentColor, 5px 5px currentColor;
+  }
+  .g-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+
+  /* Drop target: a dragged window is hovering this one's title / tab strip. */
+  .win.dock-target { outline: 2px solid var(--accent-hi); outline-offset: -2px; }
+  .win-btns { display: flex; gap: 2px; margin-left: auto; }
+  .win-btns button {
+    appearance: none; border: none; background: transparent; cursor: pointer;
+    width: 26px; height: 26px; border-radius: 7px; color: var(--text-mute);
+    display: flex; align-items: center; justify-content: center;
+    transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
+  }
+  .win-btns button svg { width: 13px; height: 13px; }
+  .win-btns button:hover { background: var(--bg-elev-2); color: var(--text); }
+  .win-btns button.win-close:hover { background: rgba(240,82,82,0.18); color: #ff8b8b; }
+  .win-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  /* Rolled up (window shade): only the title strip remains. */
+  .win.rolled .win-body { display: none; }
+  .win.rolled { min-height: 0; }
+
+  /* Resize handles: invisible 7px strips on edges/corners. */
+  /* ---- In-game notifications ------------------------------------------------
+     These used to be drawn by the companion as GL primitives from the marker
+     command list: rounded rects plus a fixed-cell ASCII-only bitmap atlas, so no
+     real type, no wrapping, no styling. They are DOM now, composited by the same
+     UI layer as the windows. The stack is pointer-events:none so a transient
+     toast can never eat a click meant for the game; only a dismissible card opts
+     back in (and only those publish an input rect). */
+  #toaster {
+    position: absolute;
+    display: flex; flex-direction: column; gap: 8px;
+    z-index: 99000;
+    pointer-events: none;
+  }
+  /* Placement mode (UI Settings): the stack itself becomes draggable and shows a
+     dashed frame so an EMPTY stack is still visible and grabbable. */
+  #toaster.placing { pointer-events: auto; cursor: grab; }
+  #toaster.placing:active { cursor: grabbing; }
+  /* A REAL element, not ::before: it carries a width grip, and a pseudo-element
+     cannot take events. order:-1 keeps it at the stack's leading edge whichever
+     flex direction the current anchor uses. */
+  /* Deliberately loud: it is a transient editing affordance over a busy game scene,
+     so it has to win against whatever is behind it. */
+  #toastGhost {
+    position: relative; order: -1;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    min-height: 42px; padding: 9px 30px 9px 14px;
+    border-radius: 10px;
+    border: 2px dashed #a78bfa;
+    background: linear-gradient(180deg, rgba(124,92,252,0.34), rgba(124,92,252,0.20));
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.55), 0 0 22px rgba(124,92,252,0.55),
+                0 10px 28px rgba(0,0,0,0.5);
+    color: #fff; font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    user-select: none;
+  }
+  /* Whole stack gets a faint field while placing, so its extent is obvious even
+     when it holds live cards. */
+  #toaster.placing { outline: 1px dashed rgba(167,139,250,0.5); outline-offset: 6px; border-radius: 6px; }
+  .ghost-rz {
+    position: absolute; top: 2px; right: 2px; bottom: 2px; width: 22px;
+    cursor: ew-resize; border-radius: 0 8px 8px 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.20);
+  }
+  .ghost-rz::after {
+    content: ''; width: 2px; height: 17px; border-radius: 1px; background: #fff;
+    box-shadow: 5px 0 0 -0.5px rgba(255,255,255,0.8), -5px 0 0 -0.5px rgba(255,255,255,0.8);
+  }
+  .ghost-rz:hover { background: rgba(255,255,255,0.16); }
+  .toast {
+    position: relative; width: 100%;
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 11px 12px 12px;
+    background: var(--win-bg);
+    border: 1px solid var(--border-hi);
+    border-left: 3px solid var(--accent-hi);
+    border-radius: 9px;
+    box-shadow: var(--win-shadow);
+    overflow: hidden;
+    animation: toast-in 220ms var(--ease);
+  }
+  .toast.out { animation: toast-out 200ms var(--ease) forwards; }
+  .toast.sticky { pointer-events: auto; border-left-color: #f0b429; }
+  @keyframes toast-in  { from { opacity: 0; transform: translateY(-10px) scale(0.97); }
+                         to   { opacity: 1; transform: none; } }
+  @keyframes toast-out { from { opacity: 1; transform: none; }
+                         to   { opacity: 0; transform: translateY(-6px) scale(0.98); } }
+  /* Icon, text and close all share the 18px first-line box so they sit level. */
+  .toast-ico { flex: none; width: 10px; height: 18px; color: var(--accent-hi);
+               display: flex; align-items: center; }
+  .toast.sticky .toast-ico { color: #f0b429; }
+  .toast-msg {
+    flex: 1; min-width: 0;
+    font-size: 12.5px; line-height: 1.45; color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .toast-n {
+    flex: none; align-self: flex-start; margin-top: 1px;
+    font-size: 10px; font-weight: 600; line-height: 16px; color: var(--text-mute);
+    background: var(--bg-elev-2); border-radius: 999px; padding: 0 7px;
+  }
+  /* Sits at the card's top-right whatever the card's height, with a comfortable
+     hit target rather than a token glyph. */
+  /* Full-height dismiss column on the card's trailing edge. The negative margins
+     cancel the card's own padding so it reaches the true edges; .toast has
+     overflow:hidden, so the corner radius clips it. */
+  .toast-x {
+    flex: none; align-self: stretch;
+    appearance: none; padding: 0; border: none; border-left: 1px solid var(--border-hi);
+    /* A tint, not transparent: an unfilled column reads as a floating glyph rather
+       than a button, which is what made it look unfinished. */
+    background: rgba(255,255,255,0.055); cursor: pointer;
+    width: 36px; margin: -11px -12px -12px 0; border-radius: 0;
+    color: var(--text); line-height: 0;
+    display: flex; align-items: center; justify-content: center;
+    transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
+  }
+  /* WIN_SVG bakes in stroke-width 1.8, which reads as a speck at this size in a
+     34px column -- CSS overrides the presentation attribute. */
+  .toast-x .g-x { width: 13px; height: 13px; }
+  .toast-x:hover { background: rgba(240,82,82,0.22); color: #ff9b9b; }
+  /* Remaining-time rule along the bottom edge; width is set inline per frame. */
+  .toast-bar { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%;
+               background: rgba(255,255,255,0.06); }
+  .toast-bar i { display: block; height: 100%; background: var(--accent-hi); opacity: 0.65; }
+
+  /* Resize grab bands, entirely INSIDE the border box. They must not overhang:
+     .win is overflow:hidden + contain:paint (which CLIPS anything outside), and
+     the rect we publish as the input-consume region is getBoundingClientRect --
+     the border box -- so a handle sticking out is both invisible AND lands its
+     clicks in the GAME. Edges stay slim (5px) so they barely graze the content
+     scrollbar; corners are generous since that is where people aim. */
+  .rz { position: absolute; z-index: 5; }
+  .rz-n  { top: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
+  .rz-s  { bottom: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
+  .rz-w  { left: 0; top: 12px; bottom: 12px; width: 5px; cursor: ew-resize; }
+  .rz-e  { right: 0; top: 12px; bottom: 12px; width: 5px; cursor: ew-resize; }
+  .rz-nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+  .rz-se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+  .rz-ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+  .rz-sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
 
   /* min-width: 0 is load-bearing: without it this flex child refuses to shrink below its
-     widest descendant, so fixed-width content (metronome, clock) slides UNDER the rail. */
+     widest descendant, so fixed-width content slides out of the window. */
   /* overflow-y: SCROLL (not auto) on purpose: panels rebuild their DOM wholesale on data
      changes, and with auto the scrollbar vanished for the empty frame and reappeared after -
      a width change that reflowed every flexible cell twice per repaint (the "panel zooms
      in/out when my money pouch ticks" bug). A permanently reserved scrollbar lane keeps the
      content width constant no matter what the repaint does. (scrollbar-gutter would be the
      modern fix; this WebKit predates it.) */
-  .content { flex: 1; padding: 18px 22px; overflow-y: scroll; overflow-x: hidden; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  .content { flex: 1; padding: 14px 16px; overflow-y: scroll; overflow-x: hidden; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
   .content::-webkit-scrollbar { width: 10px; }
   .content::-webkit-scrollbar-track { background: transparent; }
   .content::-webkit-scrollbar-thumb {
@@ -160,15 +435,19 @@
     border: 2px solid transparent; background-clip: padding-box;
   }
   .content::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: padding-box; }
-  /* Sub-tab strip for consolidated panels: lives OUTSIDE #content so panel repaints never wipe it. */
-  #subbar { flex: none; display: flex; gap: 4px; padding: 8px 22px 0; flex-wrap: wrap; }
-  #subbar button { font: inherit; font-size: 11px; padding: 4px 11px; border-radius: 999px; cursor: pointer;
-    border: 1px solid var(--border); background: transparent; color: var(--text-dim); white-space: nowrap; }
-  #subbar button:hover { color: var(--text); }
-  #subbar button.on { color: #b9a6ff; border-color: rgba(124, 92, 252, 0.5); background: rgba(124, 92, 252, 0.1); }
-  @media (max-width: 380px) { .content { padding: 12px 12px; } }
+  /* Width classes replace the old viewport media queries (the view now spans the whole
+     game client, so per-WINDOW width drives responsive layout). */
+  .win.narrow .content { padding: 10px 12px; }
   .pane    { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .rows { display: flex; flex-direction: column; gap: 8px; }
+  /* Section heading inside a .rows list (see secRow). */
+  .rows .sec {
+    margin: 10px 0 -1px; padding-bottom: 5px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-mute);
+  }
+  .rows .sec:first-child { margin-top: 0; }
   .row {
     display: flex; align-items: baseline; justify-content: space-between;
     gap: 16px;
@@ -225,10 +504,8 @@
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
-  @media (max-width: 380px) {
-    .scene-toggle { flex: 1 1 100%; }
-    .scene-toggle button { flex: 1 1 0; padding: 3px 4px; }
-  }
+  .win.narrow .scene-toggle { flex: 1 1 100%; }
+  .win.narrow .scene-toggle button { flex: 1 1 0; padding: 3px 4px; }
   .scene-toggle button:hover { color: var(--text); }
   .scene-toggle button.is-active {
     background: linear-gradient(90deg, rgba(124,92,252,0.35), rgba(124,92,252,0.18));
@@ -246,11 +523,9 @@
     display: grid; grid-template-columns: 18px minmax(0,1fr) 30px 38px 80px;
     gap: 6px; align-items: center;
   }
-  @media (max-width: 360px) {
-    .scene-thead, .scene-trow { grid-template-columns: 18px minmax(0,1fr) 34px 78px; gap: 5px; }
-    .scene-thead .h-lvl, .scene-trow .lvl { display: none; }
-    .scene-trow .num, .scene-trow .tile { font-size: 10px; }
-  }
+  .win.tight .scene-thead, .win.tight .scene-trow { grid-template-columns: 18px minmax(0,1fr) 34px 78px; gap: 5px; }
+  .win.tight .scene-thead .h-lvl, .win.tight .scene-trow .lvl { display: none; }
+  .win.tight .scene-trow .num, .win.tight .scene-trow .tile { font-size: 10px; }
   .scene-thead {
     position: sticky; top: 0; z-index: 1; background: var(--bg);
     color: var(--text-dim); font-size: 10px; font-weight: 600;
@@ -1036,6 +1311,36 @@
     box-shadow: 0 4px 14px rgba(0,0,0,0.45);
   }
 
+  /* Icon-grid tooltips (collection logs). Reading forty item NAMES tells you far less than
+     seeing the loot, so Missing/Collected render as two grids of item icons instead.
+     #global-tip is body-level and pointer-events:none, so it can stand taller than the window
+     that spawned it -- but it can never be scrolled, so the builder budgets its cell count to
+     the viewport rather than letting overflow:hidden silently eat the tail. */
+  /* A DEFINITE width, not just max-width. #global-tip is shrink-to-fit, and inside an
+     intrinsically-sized container `repeat(auto-fill, minmax(34px, 1fr))` resolves to its
+     minimum - the grid collapsed to two columns, turning 55 items into 28 rows of
+     full-screen-tall tooltip. With a definite inline size auto-fill gets nine columns. */
+  #global-tip.tg { width: 356px; max-width: calc(100vw - 24px); }
+  #global-tip.tg .tg-body { white-space: normal; }   /* the tip itself is pre-line */
+  .tg-h { color: var(--text-dim); font-size: 10px; font-weight: 700; text-transform: uppercase;
+          letter-spacing: 0.05em; margin: 8px 0 4px; padding-top: 7px;
+          border-top: 1px solid var(--border); }
+  .tg-h:first-child { margin-top: 2px; padding-top: 0; border-top: 0; }
+  .tg-h.miss { color: var(--accent-hi); }
+  .tg-h.have { color: var(--ok); }
+  .tg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+             gap: 4px; align-content: start; }
+  .tg-cell { height: 34px; border-radius: 8px; position: relative;
+             background: var(--bg-elev) no-repeat center; border: 1px solid var(--border);
+             box-shadow: inset 0 1px 0 rgba(255,255,255,0.03); }
+  .tg-cell.have { border-color: rgba(77,210,138,0.34); background-color: rgba(77,210,138,0.07); }
+  .tg-cell.miss { opacity: 0.55; }
+  /* Not every id has a bundled icon; initials keep the cell from reading as a blank hole. */
+  .tg-cell .tg-tn { position: absolute; inset: 0; display: flex; align-items: center;
+                    justify-content: center; font-size: 11px; font-weight: 700;
+                    color: var(--text-mute); }
+  .tg-more { color: var(--text-mute); font-size: 10px; margin-top: 5px; }
+
   .stor-wrap { display: flex; flex-direction: column; gap: 10px; }
   .stor-box { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
   .stor-h { font-size: 12px; font-weight: 700; color: var(--text); padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
@@ -1471,14 +1776,25 @@
   .tsp-in { width: 100%; box-sizing: border-box; background: #14151c; color: var(--text);
     border: 1px solid var(--border-hi); border-radius: 8px; padding: 7px 10px; font-size: 12.5px; outline: none; }
   .tsp-in:focus { border-color: var(--accent-lo); }
-  .tsp-list { overflow-y: auto; max-height: 46vh; display: flex; flex-direction: column; gap: 2px; }
+  /* padding-right leaves a lane for the scrollbar: this list overflows, and the
+     rows' right-aligned category text ran underneath the thumb without it. */
+  .tsp-list { overflow-y: auto; max-height: 46vh; display: flex; flex-direction: column; gap: 2px;
+    padding-right: 8px; }
+  .tsp-list::-webkit-scrollbar { width: 8px; }
+  .tsp-list::-webkit-scrollbar-track { background: transparent; }
+  .tsp-list::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 4px; }
+  .tsp-list::-webkit-scrollbar-thumb:hover { background: var(--text-mute); }
   .tsp-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px;
     font-size: 12px; color: var(--text); cursor: pointer; border: 1px solid transparent;
     background: rgba(255,255,255,0.03); }
   .tsp-row:hover { background: var(--bg-elev-2); }
   .tsp-row.sel { background: var(--bg-elev-2); border-color: var(--accent-lo); }
   .tsp-row svg { width: 14px; height: 14px; flex: 0 0 auto; color: var(--text-dim); }
-  .tsp-row .tsp-cat { margin-left: auto; color: var(--text-mute); font-size: 10.5px; }
+  /* The panel name flexes and ellipsises; the category never shrinks or wraps. */
+  .tsp-row > span:not(.tsp-cat) { flex: 1; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .tsp-row .tsp-cat { margin-left: auto; flex: none; padding-left: 10px;
+    color: var(--text-mute); font-size: 10.5px; white-space: nowrap; }
   .tsp-empty { padding: 8px; font-size: 11.5px; color: var(--text-mute); text-align: center; }
   .vw-pop { position: fixed; z-index: 9999; display: none; min-width: 170px; max-width: 300px; max-height: 60vh;
     overflow-y: auto; padding: 6px; background: var(--bg-elev); border: 1px solid var(--border-hi);
@@ -1612,22 +1928,10 @@
 </head>
 <body>
 
-<div id="app">
-  <header>
-    <div class="title" id="hdr-title">
-      <span class="dot"></span>
-      <span id="hdr-name">--</span>
-    </div>
-    <div class="meta" id="hdr-meta">--</div>
-  </header>
-
-  <main>
-    <div id="subbar" style="display:none"></div>
-    <section class="content" id="content">
-      <div class="empty">Waiting for game data...</div>
-    </section>
-  </main>
-  <nav class="sidebar" id="sidebar"></nav>
+<div id="desktop">
+  <div id="menubar"></div>
+  <div id="winlayer"></div>
+  <div id="toaster"></div>
 </div>
 
 <script>
@@ -1757,6 +2061,7 @@
     { id: 'cachex',     label: 'Cache Explorer', cat: 'Developer', icon: '<path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>' },
     { id: 'menuswap',   label: 'Right-click menu', cat: 'Developer', icon: '<path d="M4 5h16v4H4z"/><path d="M4 11h16v8H4z"/><path d="M7 14h7"/><path d="M7 17h5"/>' },
     { id: 'health',     label: 'Health Check', cat: 'Developer', icon: '<path d="M3 12h4l2-6 4 12 2-6h6"/>' },
+    { id: 'uisettings', label: 'UI Settings', cat: 'Developer', icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M8 14h8M8 17h5"/>' },
     { id: 'system',     label: 'System',     cat: 'Developer', icon: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.4 5.4l2.1 2.1M16.5 16.5l2.1 2.1M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1"/>' },
   ];
 
@@ -1925,9 +2230,18 @@
     })();
   }
 
-  const $ = id => document.getElementById(id);
+  // ---- Per-window pane roots. Panels were written against ONE shared #content;
+  // each floating window now owns a .content element, registered here by tab id.
+  // During synchronous shell dispatch (renderPaneFor / per-window refresh tick),
+  // __paneRoot points at the dispatching window's pane so the untouched panel
+  // code's $('content') resolves to ITS window. Panels' own async callbacks use
+  // paneRoot('<tab>') directly (see the window-manager notes).
+  let __paneRoot = null;
+  const __paneRoots = Object.create(null);   // tab id -> .content element
+  function paneRoot(id) { return __paneRoots[id] || null; }
+  const $ = id => (id === 'content' && __paneRoot) ? __paneRoot : document.getElementById(id);
   const myPid = () => Number((window.__rtx_pid || 0));
-  let activeTab = 'player';
+  let activeTab = 'player';   // the FOCUSED window's tab (panel self-gates + dev reload)
   // Dev hot-reload continuity: a reload sets __rtxDevReload; reopen the tab that was open.
   // Normal launches ignore the stored tab. Never restore into a tab hidden in this build (that
   // would render a panel with no rail entry) -- checked against TABS itself. plugin:* tabs
@@ -1967,11 +2281,79 @@
       .replace(/&lt;col=([0-9a-fA-F]{6})&gt;/g, '<span style="color:#$1">')
       .replace(/&lt;\/col&gt;/gi, '</span>');
   }
+  // ---- icon-grid tooltips (collection logs) ----
+  // A panel registers STRUCTURED data, never markup: [{label, cls, items:[{id,name}]}]. The
+  // cells are built below with createElement/textContent/setIconBg, so the no-panel-markup
+  // guarantee documented on tipHtml() is untouched -- item names now land in textContent
+  // instead of being concatenated into a tip string, which is strictly tighter than before.
+  const TIP_GRIDS = new WeakMap();   // row node -> groups[]
+  function setTipGrids(node, groups) {
+    if (groups && groups.length) TIP_GRIDS.set(node, groups); else TIP_GRIDS.delete(node);
+  }
+  // The bubble is pointer-events:none and therefore unscrollable, and overflow:hidden would
+  // eat the tail SILENTLY. So budget the cells to what actually fits and say what was elided.
+  // Capped at six rows regardless of screen height: a 55-item log is a reference list, not
+  // something to read at a glance, and a tooltip spanning the whole display is unusable even
+  // when it technically fits. The remainder is reported as "+N more".
+  const TIP_GRID_COLS = 9;                  // 356px inner width / (34px cell + 4px gap)
+  function tipGridBudget() {
+    const rows = Math.floor((window.innerHeight - 170) / 38);
+    return Math.max(TIP_GRID_COLS, Math.min(TIP_GRID_COLS * 6, rows * TIP_GRID_COLS));
+  }
+  function buildTipGrids(groups) {
+    const body = document.createElement('div');
+    body.className = 'tg-body';
+    const live = groups.filter(g => g && g.items && g.items.length);
+    const total = live.reduce((n, g) => n + g.items.length, 0);
+    const budget = tipGridBudget();
+    for (const g of live) {
+      // Split the budget in proportion to each group's size, so the longer list (usually
+      // Missing - the one you act on) keeps the bigger share without a hardcoded 20/12 rule.
+      const cap = total <= budget ? g.items.length
+                                  : Math.max(6, Math.round(budget * g.items.length / total));
+      const h = document.createElement('div');
+      h.className = 'tg-h' + (g.cls ? ' ' + g.cls : '');
+      h.textContent = g.label + ' (' + g.items.length + ')';
+      body.appendChild(h);
+      const grid = document.createElement('div');
+      grid.className = 'tg-grid';
+      for (const it of g.items.slice(0, cap)) {
+        const cell = document.createElement('div');
+        cell.className = 'tg-cell' + (g.cls ? ' ' + g.cls : '');
+        const url = (typeof resolveIcon === 'function') ? resolveIcon(it.id) : '';
+        if (url) setIconBg(cell, url);
+        else {
+          const ini = document.createElement('span');
+          ini.className = 'tg-tn';
+          ini.textContent = String(it.name || '?').slice(0, 2).toUpperCase();
+          cell.appendChild(ini);
+        }
+        grid.appendChild(cell);
+      }
+      body.appendChild(grid);
+      if (g.items.length > cap) {
+        const more = document.createElement('div');
+        more.className = 'tg-more';
+        more.textContent = '+ ' + (g.items.length - cap) + ' more';
+        body.appendChild(more);
+      }
+    }
+    return body;
+  }
+
   function showTipFor(node) {
     const text = node.dataset.tip;
-    if (!text) { hideTip(); return; }
-    if (node.dataset.tipHtml === '1') tipEl.innerHTML = tipHtml(text);
-    else tipEl.textContent = text;
+    const grids = TIP_GRIDS.get(node);
+    if (!text && !grids) { hideTip(); return; }
+    if (grids) {
+      tipEl.classList.add('tg');
+      tipEl.textContent = text || '';            // head line stays plain text
+      tipEl.appendChild(buildTipGrids(grids));
+    } else {
+      tipEl.classList.remove('tg');
+      if (node.dataset.tipHtml === '1') tipEl.innerHTML = tipHtml(text);
+      else tipEl.textContent = text;
+    }
     tipEl.style.opacity = '1';
     const r = node.getBoundingClientRect();
     // MEASURE AT THE ORIGIN FIRST. #global-tip is position:fixed with only `left` set, so its
@@ -2245,7 +2627,7 @@
       bankData = d && Array.isArray(d.items) ? d : { open:false, items:[], count:0, cached_at:0 };
     } catch (e) { /* keep previous bankData */ }
     bankFetching = false;
-    if (activeTab === 'bank') paintBankPage();
+    paneRun('bank', paintBankPage);
   }
 
   // ---- Archaeology material storage (container 885) -- same cache-while-open model as the bank ----
@@ -2257,7 +2639,7 @@
       matData = d && Array.isArray(d.items) ? d : { open: false, items: [], count: 0, cached_at: 0 };
     } catch (e) { /* keep previous */ }
     matFetching = false;
-    if (activeTab === 'materials') renderMaterials();
+    paneRun('materials', renderMaterials);
   }
   // ---- Guild Shop tab: Archaeology Guild permanent-unlock states (own tab). ----
   let ashopFetching = false;
@@ -2276,7 +2658,7 @@
       }
     } catch (e) { /* keep previous unlock state */ }
     ashopFetching = false;
-    if (activeTab === 'archshop') renderArchShop();
+    paneRun('archshop', renderArchShop);
   }
   function renderArchShop() {
     const c = $('content');
@@ -2398,7 +2780,7 @@
       baitData = d && Array.isArray(d.items) ? d : { open: false, items: [], count: 0, cached_at: 0 };
     } catch (e) { /* keep previous */ }
     baitFetching = false;
-    if (activeTab === 'baitbox') renderBaitBox();
+    paneRun('baitbox', renderBaitBox);
   }
   function renderBaitBox() {
     const c = $('content');
@@ -2471,7 +2853,7 @@
       }
     } catch (e) { if (!wbData) wbData = empty; }   // never leave the tab stuck on "Reading..."
     wbFetching = false;
-    if (activeTab === 'artefacts') renderWorkbench();
+    paneRun('artefacts', renderWorkbench);
   }
   function renderWorkbench() {
     const c = $('content');
@@ -2539,10 +2921,15 @@
   let infoVb = null;   // extra Player State varbits: 4163 = total penguin points
   let infoCam = null;  // live camera varcs: 1971 zoom, 5114 pitch, 5115 yaw (0..16284 = full circle)
   let infoHover = null;   // engine hover slot (hoverEntity bridge): live id/name/action/tile verification
+  // Membership tier. Free-vs-member is NOT var state - it is the PLAYERMEMBER engine op - so it
+  // needs its own bridge call rather than riding the varp/varbit fetches below. Premier IS a
+  // varbit (50572) but is folded into the same call so the tier arrives consistent.
+  let infoMember = null;
   async function fetchInfo() {
     if (!bridge() || !bridge().playerInfo) return;
     try { infoData = JSON.parse(await bridge().playerInfo(myPid())); } catch (e) { infoData = null; }
     if (bridge().hoverEntity) { try { infoHover = JSON.parse(bridge().hoverEntity(myPid()) || '{}'); } catch (e) { infoHover = null; } }
+    if (bridge().membership) { try { infoMember = JSON.parse(await bridge().membership(myPid()) || 'null'); } catch (e) { infoMember = null; } }
     if (bridge().varbits) { try { infoVb = JSON.parse(await bridge().varbits(myPid(), '4163') || 'null'); } catch (e) {} }
     if (bridge().varcsDumpAll) {
       try {
@@ -2551,7 +2938,7 @@
         infoCam = { zoom: vc['5:1971'], pitch: vc['5:5114'], yaw: vc['5:5115'] };
       } catch (e) { infoCam = null; }
     }
-    if (activeTab === 'info') renderInfo();
+    paneRun('info', renderInfo);
   }
 
   // Player-state varps shared by the Player State panel and the Skills footer
@@ -2699,20 +3086,18 @@
   // host, which gates the keys. Called on every tab switch + collapse toggle.
   let _markerArmed = null;
   function syncMarkerArm() {
-    const on = (activeTab === 'markers') && !sideCollapsed;
+    const on = paneVisible('markers');
     if (on === _markerArmed) return; _markerArmed = on;
     try { if (bridge() && bridge().markerKeybindsArm) bridge().markerKeybindsArm(myPid(), on); } catch (e) {}
   }
-  function setMetroMode(m) { metroMode = m; try { localStorage.setItem('rtxMetroMode', m); } catch (e) {} applyMetroOverlay(); if (activeTab === 'ticks') renderTicks(); }
-  function setMetroInterval(n) { metroInterval = n; try { localStorage.setItem('rtxMetroIv', String(n)); } catch (e) {} applyMetroOverlay(); if (activeTab === 'ticks') renderTicks(); }
+  function setMetroMode(m) { metroMode = m; try { localStorage.setItem('rtxMetroMode', m); } catch (e) {} applyMetroOverlay(); paneRun('ticks', renderTicks); }
+  function setMetroInterval(n) { metroInterval = n; try { localStorage.setItem('rtxMetroIv', String(n)); } catch (e) {} applyMetroOverlay(); paneRun('ticks', renderTicks); }
   // ---- Tasks tab -> panel_tasks.js (spliced inline at load) ----
   // ---- Vars Watcher -> panel_varswatcher.js (spliced inline at load) ----
   // ---- Bank -> panel_bank.js (spliced inline at load) ----
   // ---- Inventory & Equipment tab -> panel_inventory.js (spliced inline at load) ----
   // ---- Two-level rail: category icons, then that category's children once selected.
-  //      railCat = null shows the categories. ----
-  let railCat = null;
-  let railInited = false;
+  //      (rail removed: the menu bar + dropdowns replaced it) ----
   // ---- Panel consolidation (2026-08-03): related tabs share ONE rail entry; the members
   // render as a sub-tab strip ABOVE the content area (#subbar, outside #content so panel
   // repaints never wipe it). Every member keeps its tab id, so per-tab fetch/leave hooks,
@@ -2747,35 +3132,1140 @@
     const present = new Set(allTabs().map(t => t.cat || 'General'));
     return CAT_META.filter(c => present.has(c.id));
   }
-  // Open a panel (shared by the rail children). Preserves click-active-to-collapse + per-tab fetch.
-  function openTab(t) {
-    try { if (bridge() && bridge().railTip) bridge().railTip(myPid(), '', 0, 0); } catch (e) {}
-    const closing = (!sideCollapsed && activeTab === t.id);
-    if (activeTab === 'vars' && t.id !== 'vars') { varsWatchSet(false); hideVarbitPop(); try { hideVarIgnoredModal(); } catch (e) {} }   // stop the observer on leave
-    if (activeTab === 'netprobe' && t.id !== 'netprobe') { try { npArm(false); } catch (e) {} }   // disarm the framer capture on leave
-    if (activeTab === 'clues' && t.id !== 'clues') { activeClueId = -1; try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {} clueSetNpc(''); }   // clear the in-world clue tile + NPC outline on leave
-    if (activeTab === 'hideyholes' && t.id !== 'hideyholes') { try { hideyMapClose(); } catch (e) {} }   // close the inline map + clear its in-world guide mark on leave
-    // Leaving a plugin tab: clear every overlay channel plugins can write, so a converted
-    // panel's guide marks / boxes / banners don't outlive the iframe (mirrors the per-panel
-    // clears above; the iframe itself is torn down by renderPane).
-    if (String(activeTab).indexOf('plugin:') === 0 && activeTab !== t.id) {
+  // =================== In-game window manager ===================
+  // Every panel opens as its own floating window inside the game frame; consolidated
+  // groups (TAB_GROUPS) open as ONE window with the member strip in the title bar.
+  // The window set, geometry and menu-bar placement persist per account (layoutLoad/
+  // layoutSave). Input regions are published to the host via rtx.uiRects so the
+  // companion routes clicks over windows to this view and everything else to the game.
+  const WIN_DEF = { w: 440, h: 560, minW: 330, minH: 240 };
+  const WIN_SIZES = {
+    player: { w: 470, h: 540 },
+    worldmap: { w: 740, h: 580, minW: 460, minH: 340 },
+    dung: { w: 560, h: 620 },
+    'g:banks': { w: 520, h: 600, minW: 380 },
+    'g:inv': { w: 400, h: 560 },
+    'g:cluehub': { w: 500, h: 620 },
+    'g:utils': { w: 390, h: 440, minH: 200 },
+    interfaces: { w: 540, h: 620, minW: 420 },
+    cachex: { w: 580, h: 640, minW: 440 },
+    cs2: { w: 620, h: 640, minW: 460 },
+    menuswap: { w: 540, h: 600, minW: 420 },
+    netprobe: { w: 580, h: 620, minW: 440 },
+    chatlog: { w: 520, h: 400 },
+    scene: { w: 470, h: 560, minW: 360 },
+    alerts: { w: 470, h: 600 },
+    ticks: { w: 360, h: 330, minH: 200 },
+    screenshot: { w: 400, h: 350, minH: 220 },
+    xptracker: { w: 420, h: 480 },
+  };
+  const wm = {
+    wins: new Map(),        // wid -> win {wid, tab, tabs[], group, el, body, pane, tabsEl, x,y,w,h,z,min}
+    zTop: 10,
+    focused: null,          // wid
+    barX: null, barY: null, barPill: false,
+    restored: false,        // layout restore ran (or gave up)
+    dirty: false,           // user changed layout since restore (enables saves)
+  };
+  // Tabs DOCK between windows, so a wid is only the Map key minted when a window is
+  // born -- never a way to find a tab. w.tabs is the truth; every lookup goes through
+  // wmWinOf. widFor/wmMintWid exist purely to name a NEW window.
+  function widFor(tabId) { const g = TAB_GROUP_OF[tabId]; return g ? ('g:' + g.id) : tabId; }
+  function wmMintWid(tabId) {
+    const base = widFor(tabId);
+    if (!wm.wins.has(base)) return base;
+    let i = 2;                                  // undocked group member: 'g:<id>' is still taken
+    while (wm.wins.has(base + '#' + i)) i++;
+    return base + '#' + i;
+  }
+  function wmWinOf(tabId) {
+    for (const w of wm.wins.values()) if (w.tabs.indexOf(tabId) >= 0) return w;
+    return null;
+  }
+  // A group counts as open if ANY member is docked somewhere; prefer a shown window so
+  // the menu entry toggles what the user can actually see.
+  function wmWinOfAny(ids) {
+    let hidden = null;
+    for (const id of ids) {
+      const w = wmWinOf(id);
+      if (w && !w.min) return w;
+      if (w && !hidden) hidden = w;
+    }
+    return hidden;
+  }
+  // Rolled counts as hidden: `.win.rolled .win-body` is display:none, so the pane is as
+  // unseen as a minimized one (and must not keep its keybinds armed).
+  function paneVisible(id) {
+    const w = wmWinOf(id);
+    return !!(w && !w.min && !w.rolled && w.tab === id);
+  }
+  function paneRoot(id) { return __paneRoots[id] || null; }
+  // Drives the 4 Hz fetch/repaint sweep: a rolled window's pane is display:none, so
+  // refreshing it burns polls on DOM nobody can see.
+  function wmVisibleWins() {
+    const out = [];
+    for (const w of wm.wins.values()) if (!w.min && !w.rolled) out.push(w);
+    return out;
+  }
+  // Run fn with the pane-dispatch context pointed at `w` (activeTab + $('content')
+  // both resolve to that window for the synchronous duration of fn).
+  function withPane(w, fn) {
+    const pa = activeTab, pr = __paneRoot;
+    activeTab = w.tab;
+    __paneRoot = w.pane;
+    try { return fn(); } finally { activeTab = pa; __paneRoot = pr; }
+  }
+  // Async-callback repaint helper: "if my panel is visible, repaint it against ITS
+  // window". Replaces the old `if (activeTab === 'x') renderX()` self-gates.
+  function paneRun(id, fn) {
+    const w = wmWinOf(id);
+    if (!w || w.min || w.tab !== id) return;
+    withPane(w, fn);
+  }
+  function renderPaneFor(w) { withPane(w, () => { renderPane(); wmRenderTabs(w); }); }
+
+  // Per-panel close/switch-away hooks (were openTab's leave cleanups).
+  function paneLeave(id) {
+    if (id === 'vars') { try { varsWatchSet(false); hideVarbitPop(); hideVarIgnoredModal(); } catch (e) {} }
+    if (id === 'netprobe') { try { npArm(false); } catch (e) {} }
+    if (id === 'clues') { try { activeClueId = -1; if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); clueSetNpc(''); } catch (e) {} }
+    if (id === 'hideyholes') { try { hideyMapClose(); } catch (e) {} }
+    if (String(id).indexOf('plugin:') === 0) {
+      // Clear every overlay channel plugins can write, so a plugin's guide marks /
+      // boxes / banners don't outlive its window.
       try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
       try { if (bridge() && bridge().uiHighlight) bridge().uiHighlight(myPid(), 0, 0, 0, 0); } catch (e) {}
       try { if (bridge() && bridge().panelViz) bridge().panelViz(myPid(), ''); } catch (e) {}
       try { if (bridge() && bridge().overlayHighlight) bridge().overlayHighlight(myPid(), ''); } catch (e) {}
+      try { overlayHighlightResync(); } catch (e) {}
       try { if (bridge() && bridge().centerText) bridge().centerText(myPid(), ''); } catch (e) {}
-      pluginMounted = null;
+      pluginUnmount(id.slice(7));
     }
-    activeTab = t.id;
-    sideCollapsed = closing;
-    try { localStorage.setItem('rtxDevTab', activeTab); } catch (e) {}   // dev hot-reload continuity (read only on reload)
-    try { localStorage.setItem('rtx_side_collapsed', sideCollapsed ? '1' : '0'); } catch (e) {}
-    syncMarkerArm();   // tile-mark keys only fire while the Markers panel is the open (non-collapsed) tab
-    renderSidebar();
-    if (closing) return;
-    renderPane();
-    tabEntryKicks(t.id);
   }
+
+  function wmClamp(w) {
+    const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+    const sz = winSizeFor(w.wid, w.tab);
+    if (w.w < sz.minW) w.w = sz.minW;
+    if (w.w > vw) w.w = vw;
+    // Rolled windows render title-strip-high: clamp against the effective rendered
+    // height and never rewrite the stored h while rolled.
+    const eh = w.rolled ? ((w.el && w.el.offsetHeight) || 36) : w.h;
+    if (!w.rolled) {
+      if (w.h < sz.minH) w.h = sz.minH;
+      if (w.h > vh) w.h = vh;
+    }
+    if (w.x + w.w > vw) w.x = vw - w.w;
+    if (w.y + eh > vh) w.y = vh - eh;
+    if (w.x < 0) w.x = 0;
+    if (w.y < 0) w.y = 0;
+  }
+  function winSizeFor(wid, tab) {
+    return Object.assign({}, WIN_DEF, WIN_SIZES[wid] || WIN_SIZES[tab] || {});
+  }
+  function wmApplyGeom(w) {
+    w.el.style.left = w.x + 'px';
+    w.el.style.top = w.y + 'px';
+    w.el.style.width = w.w + 'px';
+    // Rolled up (window shade): only the title strip shows.
+    w.el.style.height = w.rolled ? 'auto' : (w.h + 'px');
+    // Width classes replace the old viewport media queries.
+    w.el.classList.toggle('narrow', w.w < 400);
+    w.el.classList.toggle('tight', w.w < 350);
+  }
+  function wmToggleRoll(w) {
+    w.rolled = !w.rolled;
+    w.el.classList.toggle('rolled', !!w.rolled);
+    wmApplyGeom(w);
+    // Rolled == hidden (paneVisible/wmVisibleWins), so rolling changes arm state and the
+    // menu-bar dots; and UNrolling must repaint by hand -- the refresh sweep skipped this
+    // pane the whole time it was rolled, so its DOM is stale.
+    if (!w.rolled) renderPaneFor(w);
+    syncMarkerArm();
+    renderMenubar();
+    wmRectsSoon(); wmSaveSoon();
+  }
+  function wmFocus(w) {
+    if (!w) return;
+    if (wm.focused && wm.focused !== w.wid) {
+      const p = wm.wins.get(wm.focused);
+      if (p) p.el.classList.remove('focus');
+    }
+    wm.focused = w.wid;
+    w.el.classList.add('focus');
+    w.z = ++wm.zTop;
+    w.el.style.zIndex = String(w.z);
+    activeTab = w.tab;
+    try { localStorage.setItem('rtxDevTab', activeTab); } catch (e) {}
+    syncMarkerArm();
+  }
+  // Cascade spawn position: below the menu bar, stepping down-right, clamped.
+  let _spawnN = 0;
+  function wmSpawnPos(sz) {
+    const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+    const step = 30, n = _spawnN++ % 8;
+    let x = Math.max(12, Math.min(24 + n * step, vw - sz.w - 12));
+    let y = Math.max(60, Math.min(64 + n * step, vh - sz.h - 12));
+    return { x, y };
+  }
+
+  const WIN_SVG = (p) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+    'stroke-linecap="round" stroke-linejoin="round">' + (p || '') + '</svg>';
+
+  function wmCreateWindow(wid, tab, group, geom, noAnim) {
+    const sz = winSizeFor(wid, tab.id);
+    const pos = geom ? { x: geom.x, y: geom.y } : wmSpawnPos(sz);
+    const w = {
+      wid, tab: tab.id, tabs: [tab.id], group: group || null,
+      groupIco: group ? tab.icon : null,   // the icon an intact group reverts to (wmSyncTitle)
+      x: pos.x, y: pos.y,
+      w: geom ? geom.w : sz.w, h: geom ? geom.h : sz.h,
+      z: ++wm.zTop, min: !!(geom && geom.min),
+      el: null, body: null, pane: null, tabsEl: null, nameEl: null, titleEl: null, icoEl: null,
+    };
+    // A group opens with its members already docked; anything else opens solo. Members
+    // this build/account hides (dung, groupbank) stay out -- and so does one the user
+    // has already undocked into a window of its own, since a tab lives in exactly one.
+    if (group) {
+      const avail = allTabs();
+      w.tabs = group.tabs.filter(id => avail.some(t => t.id === id) && !wmWinOf(id));
+      if (w.tabs.indexOf(tab.id) < 0) w.tabs.push(tab.id);
+    }
+    const el = document.createElement('section');
+    el.className = noAnim ? 'win' : 'win opening';
+    el.dataset.wid = wid;
+    el.style.zIndex = String(w.z);
+    const title = document.createElement('div');
+    title.className = 'win-title';
+    const name = document.createElement('span');
+    name.className = 'win-name';
+    name.textContent = group ? group.label : tab.label;
+    title.appendChild(name);
+    w.nameEl = name;
+    w.titleEl = title;
+    const tabs = document.createElement('div');
+    tabs.className = 'win-tabs';   // appended BELOW the title, before the body
+    w.tabsEl = tabs;
+    const btns = document.createElement('div');
+    btns.className = 'win-btns';
+    const mkB = (glyph, tip, fn, cls) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      if (cls) b.className = cls;
+      b.title = tip;
+      const g = document.createElement('i'); g.className = 'g ' + glyph;
+      b.appendChild(g);
+      b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+      return b;
+    };
+    btns.appendChild(mkB('g-min', 'Minimize', () => wmMinimize(w)));
+    btns.appendChild(mkB('g-x', 'Close', () => wmClose(wid), 'win-close'));
+    title.appendChild(btns);
+    // Double-click the title = roll the window up to its title strip (window shade).
+    title.addEventListener('dblclick', (e) => {
+      if (e.target && e.target.closest && (e.target.closest('.win-btns') || e.target.closest('.win-tabs'))) return;
+      wmToggleRoll(w);
+    });
+    el.appendChild(title);
+    el.appendChild(tabs);   // group member strip row (empty + hidden for solo panels)
+    const body = document.createElement('div');
+    body.className = 'win-body';
+    const pane = document.createElement('section');
+    pane.className = 'content';
+    body.appendChild(pane);
+    el.appendChild(body);
+    w.body = body;
+    w.pane = pane;
+    // Resize handles.
+    for (const dir of ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se']) {
+      const h = document.createElement('div');
+      h.className = 'rz rz-' + dir;
+      h.dataset.dir = dir;
+      h.addEventListener('mousedown', (e) => wmResizeStart(w, dir, e));
+      el.appendChild(h);
+    }
+    // Focus on any press inside; drag from the title bar.
+    el.addEventListener('mousedown', () => { if (wm.focused !== wid) { wmFocus(w); wmRectsSoon(); wmSaveSoon(); } }, true);
+    title.addEventListener('mousedown', (e) => wmDragStart(w, e));
+    // Republish rects once the class is gone: win-in starts at scale(0.965), so any rect
+    // measured while it runs is the SCALED box -- a consume region several px inside the
+    // real border box, i.e. inside the resize grab bands, sending edge clicks to the game.
+    el.addEventListener('animationend', () => { el.classList.remove('opening'); wmRectsSoon(); });
+    $('winlayer').appendChild(el);
+    w.el = el;
+    wm.wins.set(wid, w);
+    __paneRoots[w.tab] = pane;
+    wmClamp(w);
+    wmApplyGeom(w);
+    if (w.min) el.style.display = 'none';
+    wmRenderTabs(w);
+    return w;
+  }
+  // A member of this window's group keeps the group's short label ('Clue Guide', not
+  // 'Clues'); anything docked in from elsewhere shows its own.
+  function wmTabLabel(w, id) {
+    const t = allTabs().find(x => x.id === id);
+    if (w.group) {
+      const i = w.group.tabs.indexOf(id);
+      if (i >= 0 && w.group.subs && w.group.subs[i]) return w.group.subs[i];
+    }
+    return t ? t.label : id;
+  }
+  // Still exactly the group it opened as -> keep the group name in the title; a docked
+  // or thinned-out set names itself after whatever tab is showing.
+  function wmIsWholeGroup(w) {
+    if (!w.group) return false;
+    const avail = allTabs();
+    const mem = w.group.tabs.filter(id => avail.some(t => t.id === id));
+    // Filter BOTH sides: allTabs() can drop a member after the window was built (groupbank
+    // once the gimInGroup poll resolves), and that leftover id in w.tabs would otherwise
+    // make the group look thinned-out forever -- losing its name, icon and chip label.
+    const have = w.tabs.filter(id => avail.some(t => t.id === id));
+    return have.length === mem.length && mem.every(id => have.indexOf(id) >= 0);
+  }
+  function wmSyncTitle(w) {
+    if (!w.nameEl) return;
+    const t = allTabs().find(x => x.id === w.tab);
+    const whole = wmIsWholeGroup(w);
+    w.nameEl.textContent = whole ? w.group.label : (t ? t.label : w.tab);
+  }
+  // The tab strip under the title bar: one pill per docked tab (hidden while solo).
+  function wmRenderTabs(w) {
+    if (!w.tabsEl) return;
+    const avail = allTabs();
+    // Conditionally hidden members (dung / groupbank) stay off the strip -- and while
+    // they are the only siblings, the lone pill is inert: closing or tearing it out
+    // would leave the window showing a panel this build hides.
+    const shown = w.tabs.filter(id => avail.some(x => x.id === id));
+    const multi = w.tabs.length > 1;
+    // Sign what is actually RENDERED, not w.tabs: allTabs() shifts under us (gimInGroup
+    // resolving, plugin manifests arriving), and a w.tabs-only signature would freeze the
+    // strip -- and the title, which rides this same guard -- against those changes.
+    const sig = multi ? (shown.join(',') + '|' + w.tab + '|' + w.tabs.length) : '';
+    if (w.tabsEl._sig === sig) return;
+    w.tabsEl._sig = sig;
+    w.tabsEl.innerHTML = '';
+    wmSyncTitle(w);   // title tracks the same inputs, so it rides this guard
+    if (!multi) return;
+    shown.forEach((id) => {
+      const t = avail.find(x => x.id === id);
+      const b = document.createElement('button');
+      if (id === w.tab) b.className = 'on';
+      const lab = document.createElement('span');
+      lab.textContent = wmTabLabel(w, id);
+      b.appendChild(lab);
+      b.dataset.tab = id;                       // reorder needs to map an element back to its tab
+      if (_tabDrag && _tabDrag.w === w && _tabDrag.id === id) b.className += ' tabdrag';
+      if (shown.length > 1) {
+        const x = document.createElement('i');
+        x.className = 'win-tabx';
+        x.textContent = '×';
+        x.title = 'Close ' + lab.textContent;
+        x.addEventListener('mousedown', (e) => e.stopPropagation());   // never starts a drag
+        x.addEventListener('click', (e) => { e.stopPropagation(); wmCloseTabIn(w, id); });
+        b.appendChild(x);
+        b.addEventListener('mousedown', (e) => wmTabDragStart(w, id, e));
+      } else {
+        b.className += (b.className ? ' ' : '') + 'solo';
+      }
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (_tabDragged) { _tabDragged = false; return; }   // that press undocked instead
+        if (id !== w.tab) wmSwitchTab(w, t);
+      });
+      w.tabsEl.appendChild(b);
+    });
+    if (w.group && w.group.tabs.indexOf(w.tab) >= 0)
+      try { localStorage.setItem('rtxGrpLast:' + w.group.id, w.tab); } catch (e) {}
+  }
+  // Live reorder while a pill is dragged along its strip: find the pill under the
+  // cursor (same wrapped row only) and move the dragged id to its slot.
+  function wmReorderTabAt(w, id, x, y) {
+    if (!w.tabsEl) return;
+    let overId = null;
+    for (const p of Array.from(w.tabsEl.children)) {
+      const pid2 = p.dataset && p.dataset.tab;
+      if (!pid2 || pid2 === id) continue;
+      const r = p.getBoundingClientRect();
+      if (y < r.top - 4 || y > r.bottom + 4) continue;      // a different wrapped row
+      if (x >= r.left && x <= r.right) { overId = pid2; break; }
+    }
+    if (!overId) return;
+    const from = w.tabs.indexOf(id), to = w.tabs.indexOf(overId);
+    if (from < 0 || to < 0 || from === to) return;
+    w.tabs.splice(from, 1);
+    w.tabs.splice(to, 0, id);
+    wmRenderTabs(w);
+    wmSaveSoon();
+  }
+  // Replace a window's docked set wholesale (layout restore, undock source).
+  function wmSetTabs(w, ids) {
+    w.tabs = ids.slice();
+    if (w.tabs.indexOf(w.tab) < 0) w.tabs.unshift(w.tab);
+    wmRenderTabs(w);
+  }
+  function wmSwitchTab(w, t) {
+    if (w.tab === t.id) return;
+    paneLeave(w.tab);
+    delete __paneRoots[w.tab];
+    w.tab = t.id;
+    __paneRoots[w.tab] = w.pane;
+    w.pane.innerHTML = '';
+    if (wm.focused === w.wid) { activeTab = w.tab; try { localStorage.setItem('rtxDevTab', activeTab); } catch (e) {} }
+    wmRenderTabs(w);
+    renderPaneFor(w);
+    withPane(w, () => tabEntryKicks(w.tab));
+    syncMarkerArm();
+    wmSaveSoon();
+  }
+  function wmMinimize(w) {
+    w.min = true;
+    w.el.style.display = 'none';
+    if (wm.focused === w.wid) { wm.focused = null; }
+    syncMarkerArm();
+    renderMenubar();
+    wmRectsSoon(); wmSaveSoon();
+  }
+  function wmRestore(w) {
+    w.min = false;
+    w.el.style.display = '';
+    wmClamp(w); wmApplyGeom(w);
+    renderPaneFor(w);
+    renderMenubar();
+    wmRectsSoon(); wmSaveSoon();
+    syncMarkerArm();
+  }
+  function wmClose(wid) {
+    const w = wm.wins.get(wid);
+    if (!w) return;
+    // Only the SHOWN tab needs leaving: the others were left when they were switched away.
+    paneLeave(w.tab);
+    delete __paneRoots[w.tab];
+    wm.wins.delete(wid);
+    try { const a = document.activeElement; if (a && w.el.contains(a)) a.blur(); } catch (e) {}
+    if (w.el && w.el.parentNode) w.el.parentNode.removeChild(w.el);
+    if (wm.focused === wid) wm.focused = null;
+    syncMarkerArm();
+    renderMenubar();
+    wmRectsSoon(); wmSaveSoon();
+  }
+  // Show `id` WITHOUT leaving the outgoing tab -- the caller already dealt with it
+  // (closed it, or moved it to another window). Mounts + kicks like a switch.
+  function wmMountTab(w, id) {
+    w.tab = id;
+    __paneRoots[id] = w.pane;
+    w.pane.innerHTML = '';
+    if (wm.focused === w.wid) { activeTab = id; try { localStorage.setItem('rtxDevTab', id); } catch (e) {} }
+    wmRenderTabs(w);
+    renderPaneFor(w);
+    withPane(w, () => tabEntryKicks(id));
+  }
+  // Which tab to show after the one at index `i` was spliced out: nearest surviving id
+  // on either side, AVAILABLE ones only. A member this build hides can linger in w.tabs
+  // (allTabs() drops groupbank only once the gimInGroup poll resolves, ~10s after boot),
+  // and mounting it would title the window 'groupbank' and start its 250ms fetches.
+  // null = nothing left this build can show.
+  function wmNeighbourTab(w, i) {
+    const avail = allTabs();
+    const ok = (id) => avail.some(t => t.id === id);
+    for (let d = 0; d < w.tabs.length; d++) {
+      const r = i + d, l = i - 1 - d;
+      if (r < w.tabs.length && ok(w.tabs[r])) return w.tabs[r];
+      if (l >= 0 && ok(w.tabs[l])) return w.tabs[l];
+    }
+    return null;
+  }
+  // Close ONE docked tab (its pill's ✕); the title-bar ✕ still closes the whole window.
+  function wmCloseTabIn(w, id) {
+    const i = w.tabs.indexOf(id);
+    if (i < 0) return;
+    if (w.tabs.length <= 1) { wmClose(w.wid); return; }
+    const wasShown = (w.tab === id);
+    w.tabs.splice(i, 1);
+    const nx = wasShown ? wmNeighbourTab(w, i) : null;
+    if (wasShown && !nx) { wmClose(w.wid); return; }   // only build-hidden leftovers: nothing to mount
+    // Only a MOUNTED tab gets left. paneLeave clears SINGLETON host channels (guideMarks,
+    // uiHighlight, panelViz, overlayHighlight, centerText), so running it for a background
+    // pill would wipe in-world marks another window owns and only republishes on user
+    // action. The __paneRoots delete is already a no-op for a background tab.
+    if (wasShown) paneLeave(id);
+    delete __paneRoots[id];
+    if (wasShown) wmMountTab(w, nx);
+    else wmRenderTabs(w);
+    syncMarkerArm();
+    renderMenubar();
+    wmRectsSoon(); wmSaveSoon();
+  }
+  // Close a tab wherever it lives (plugin uninstall / denial): the window goes with it
+  // only if that tab was the last one in it.
+  function wmCloseTabId(id) {
+    const w = wmWinOf(id);
+    if (w) wmCloseTabIn(w, id);
+  }
+
+  // ---- window-to-window docking ----
+  // Drop zone = the target's title bar + tab strip; its body belongs to the panel.
+  function wmPtIn(el, x, y) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+  function wmDockTargetAt(x, y, skip) {
+    let best = null;
+    for (const w of wmVisibleWins()) {
+      if (w === skip || w.rolled) continue;
+      if (!wmPtIn(w.titleEl, x, y) && !wmPtIn(w.tabsEl, x, y)) continue;
+      if (!best || w.z > best.z) best = w;   // overlapping title bars: the top one wins
+    }
+    // Hit-testing the title bar alone ignores occlusion: another window's BODY can be
+    // painted over that point, so the drop would land in a window the user cannot see and
+    // the .dock-target outline would be drawn under it. Rolled windows still paint their
+    // title strip, so they occlude too (hence wm.wins, not wmVisibleWins).
+    if (best) for (const w of wm.wins.values()) {
+      if (w === best || w === skip || w.min) continue;
+      if (w.z > best.z && wmPtIn(w.el, x, y)) return null;
+    }
+    return best;
+  }
+  // Merge src INTO tgt: the tabs move, so they are never paneLeave'd -- only the src
+  // pane's DOM goes, and the shown one remounts in its new home.
+  function wmDockInto(src, tgt) {
+    const act = src.tab;
+    delete __paneRoots[act];
+    for (const id of src.tabs) if (tgt.tabs.indexOf(id) < 0) tgt.tabs.push(id);
+    wm.wins.delete(src.wid);
+    try { const a = document.activeElement; if (a && src.el.contains(a)) a.blur(); } catch (e) {}
+    if (src.el && src.el.parentNode) src.el.parentNode.removeChild(src.el);
+    if (wm.focused === src.wid) wm.focused = null;
+    const t = allTabs().find(x => x.id === act);
+    if (t) wmSwitchTab(tgt, t);   // normal switch path: leaves tgt's tab, mounts + kicks ours
+    else wmRenderTabs(tgt);
+    wmFocus(tgt);
+    syncMarkerArm();
+    renderMenubar();
+    wmRectsSoon(); wmSaveSoon();
+  }
+  // Tear a pill out into its own window under the cursor. Returns it so the press can
+  // carry on as a normal window move.
+  function wmUndockTab(w, id, ev) {
+    if (w.tabs.length <= 1) return null;
+    const t = allTabs().find(x => x.id === id);
+    if (!t) return null;
+    const i = w.tabs.indexOf(id);
+    const wasShown = (w.tab === id);
+    w.tabs.splice(i, 1);
+    const nx = wasShown ? wmNeighbourTab(w, i) : null;
+    if (wasShown) delete __paneRoots[id];   // moving, not closing: no paneLeave
+    if (wasShown && !nx) {
+      // Every leftover is build-hidden, so the source has nothing to show. Torn down by
+      // hand, not wmClose -- that would paneLeave the tab we are MOVING.
+      wm.wins.delete(w.wid);
+      if (w.el && w.el.parentNode) w.el.parentNode.removeChild(w.el);
+      if (wm.focused === w.wid) wm.focused = null;
+    } else if (wasShown) {
+      wmMountTab(w, nx);
+    } else {
+      wmRenderTabs(w);
+    }
+    const geom = { x: Math.round(ev.clientX - 70), y: Math.round(ev.clientY - 14),
+                   w: w.w, h: w.h, min: false };
+    // noAnim: this window is born mid-drag, and win-in's scale(0.965) would shrink every
+    // rect it publishes for the whole animation.
+    const nw = wmCreateWindow(wmMintWid(id), t, TAB_GROUP_OF[id] || null, geom, true);
+    wmSetTabs(nw, [id]);        // one member of its group, not the whole group again
+    wmFocus(nw);
+    renderPaneFor(nw);
+    withPane(nw, () => tabEntryKicks(id));
+    syncMarkerArm();
+    renderMenubar();
+    wmRectsSoon(); wmSaveSoon();
+    return nw;
+  }
+
+  // ---- drag / resize (mouse capture rides the companion's consume-until-release) ----
+  let _wmDrag = null;
+  let _tabDrag = null;        // pill pressed, not yet dragged far enough to undock
+  let _tabDragged = false;    // that press became an undock -> swallow its click
+  function wmDragStart(w, e) {
+    if (e.button !== 0) return;
+    if (e.target && (e.target.closest && (e.target.closest('.win-btns') || e.target.closest('.win-tabs')))) return;
+    _wmDrag = { w, mode: 'move', sx: e.clientX, sy: e.clientY, ox: w.x, oy: w.y, dock: null };
+    w.el.classList.add('dragging');
+    e.preventDefault();
+  }
+  // Pills arm a POTENTIAL undock only: no preventDefault, so a press that never moves
+  // still lands as a plain tab-switching click.
+  function wmTabDragStart(w, id, e) {
+    if (e.button !== 0) return;
+    if (e.target && e.target.closest && e.target.closest('.win-tabx')) return;
+    _tabDragged = false;
+    _tabDrag = { w, id, sx: e.clientX, sy: e.clientY };
+  }
+  function wmResizeStart(w, dir, e) {
+    if (e.button !== 0) return;
+    wmFocus(w);
+    _wmDrag = { w, mode: 'size', dir, sx: e.clientX, sy: e.clientY, ox: w.x, oy: w.y, ow: w.w, oh: w.h };
+    w.el.classList.add('sizing');
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  document.addEventListener('mousemove', (e) => {
+    // A pill press that travels ~8px tears that tab out and hands the press to the
+    // window-move code below -- same event, so the new window tracks the cursor at once.
+    if (_tabDrag && !_wmDrag) {
+      // Inside its own strip the press REORDERS instead of tearing out: dragging a tab
+      // sideways is how people expect to rearrange them, and tearing out on the first
+      // few pixels of that gesture made reordering impossible.
+      const td0 = _tabDrag;
+      const sr = td0.w.tabsEl ? td0.w.tabsEl.getBoundingClientRect() : null;
+      if (sr && e.clientX >= sr.left - 28 && e.clientX <= sr.right + 28 &&
+                e.clientY >= sr.top - 14 && e.clientY <= sr.bottom + 14) {
+        if (Math.abs(e.clientX - td0.sx) < 6 && Math.abs(e.clientY - td0.sy) < 6) return;
+        _tabDragged = true;                       // this press is a drag, not a plain click
+        wmReorderTabAt(td0.w, td0.id, e.clientX, e.clientY);
+        return;
+      }
+      if (Math.abs(e.clientX - _tabDrag.sx) < 8 && Math.abs(e.clientY - _tabDrag.sy) < 8) return;
+      const td = _tabDrag; _tabDrag = null;
+      const nw = wmUndockTab(td.w, td.id, e);
+      if (!nw) return;
+      _tabDragged = true;
+      _wmDrag = { w: nw, mode: 'move', sx: e.clientX, sy: e.clientY, ox: nw.x, oy: nw.y, dock: null };
+      nw.el.classList.add('dragging');
+    }
+    const d = _wmDrag;
+    if (!d) return;
+    const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+    const w = d.w;
+    if (d.mode === 'move') {
+      w.x = d.ox + dx; w.y = d.oy + dy;
+      // Edge snap (desktop bounds), 10px threshold.
+      const vw = window.innerWidth, vh = window.innerHeight;
+      if (Math.abs(w.x) < 10) w.x = 0;
+      if (Math.abs(w.y) < 10) w.y = 0;
+      if (Math.abs(vw - (w.x + w.w)) < 10) w.x = vw - w.w;
+      if (Math.abs(vh - (w.y + w.h)) < 10) w.y = vh - w.h;
+      // Hovering another window's title / tab strip = drop it in there on release.
+      const tgt = wmDockTargetAt(e.clientX, e.clientY, w);
+      if (tgt !== d.dock) {
+        if (d.dock) d.dock.el.classList.remove('dock-target');
+        d.dock = tgt;
+        if (tgt) tgt.el.classList.add('dock-target');
+      }
+    } else {
+      const dir = d.dir, sz = winSizeFor(w.wid, w.tab);
+      if (dir.indexOf('e') >= 0) w.w = Math.max(sz.minW, d.ow + dx);
+      if (dir.indexOf('s') >= 0) w.h = Math.max(sz.minH, d.oh + dy);
+      if (dir.indexOf('w') >= 0) { const nw = Math.max(sz.minW, d.ow - dx); w.x = d.ox + (d.ow - nw); w.w = nw; }
+      if (dir.indexOf('n') >= 0) { const nh = Math.max(sz.minH, d.oh - dy); w.y = d.oy + (d.oh - nh); w.h = nh; }
+    }
+    wmClamp(w);
+    wmApplyGeom(w);
+    wmRectsSoon();
+  });
+  document.addEventListener('mouseup', () => {
+    _tabDrag = null;            // press ended without travelling: it was a plain click
+    if (!_wmDrag) return;
+    const d = _wmDrag, w = d.w;
+    w.el.classList.remove('dragging');
+    w.el.classList.remove('sizing');
+    _wmDrag = null;
+    wm.dirty = true;
+    if (d.dock) {
+      d.dock.el.classList.remove('dock-target');
+      if (wm.wins.get(d.dock.wid) === d.dock && wm.wins.get(w.wid) === w) wmDockInto(w, d.dock);
+    }
+    wmRectsSoon(); wmSaveSoon();
+  });
+
+  // ==================== In-game notifications ====================
+  // Replaces the companion's GL-primitive notification cards (marker command list,
+  // fixed-cell ASCII atlas). Same delivery contract as before -- a message and a
+  // time-to-live, 0 = sticky until dismissed -- but rendered in the UI layer, so
+  // it gets real type, wrapping and the window design language.
+  const TOAST_MAX = 4;
+  const toasts = [];               // { el, msg, until, sticky, n, barEl, countEl }
+  let _toastTimer = 0;
+  // Placement, persisted with the layout (per account). Anchor + offset rather than a
+  // raw x/y so the stack keeps its corner when the game window is resized.
+  const TOAST_DEF = { anchor: 'top-center', dx: 0, dy: 58, w: 420 };
+  let toastCfg = Object.assign({}, TOAST_DEF);
+  let toastPlacing = false;        // UI Settings "position on screen" mode
+
+  function applyToastPos() {
+    const el = $('toaster');
+    if (!el) return;
+    const c = toastCfg, a = String(c.anchor || 'top-center');
+    const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+    const w = Math.max(220, Math.min(Number(c.w) || TOAST_DEF.w, Math.max(220, vw - 20)));
+    const dx = Number(c.dx) || 0, dy = Number(c.dy) || 0;
+    el.style.width = w + 'px';
+    el.style.top = el.style.bottom = el.style.left = el.style.right = 'auto';
+    el.style.transform = 'none';
+    // Vertical edge
+    if (a.indexOf('bottom') === 0) el.style.bottom = Math.max(0, dy) + 'px';
+    else el.style.top = Math.max(0, dy) + 'px';
+    // Horizontal edge; centre keeps its own translate so dx nudges from the middle.
+    if (a.indexOf('left') > 0) el.style.left = Math.max(0, dx) + 'px';
+    else if (a.indexOf('right') > 0) el.style.right = Math.max(0, dx) + 'px';
+    else { el.style.left = '50%'; el.style.transform = 'translateX(calc(-50% + ' + dx + 'px))'; }
+    // Newest-first at the top edge, newest-nearest-the-edge at the bottom.
+    el.style.flexDirection = (a.indexOf('bottom') === 0) ? 'column-reverse' : 'column';
+    el.classList.toggle('placing', !!toastPlacing);
+    // The placement frame is a real element so it can carry a width grip.
+    let g = $('toastGhost');
+    if (toastPlacing && !g) {
+      g = document.createElement('div');
+      g.id = 'toastGhost';
+      const lab = document.createElement('span');
+      lab.textContent = 'Drag to position alerts';
+      const rz = document.createElement('i');
+      rz.className = 'ghost-rz'; rz.title = 'Drag to set width';
+      rz.addEventListener('mousedown', (e) => {
+        e.preventDefault(); e.stopPropagation();          // not a move-drag
+        const sx = e.clientX, ow = Number(toastCfg.w) || TOAST_DEF.w;
+        const a = String(toastCfg.anchor || 'top-center');
+        // Right-anchored stacks grow leftwards, so the grip reads inverted there.
+        const dir = (a.indexOf('right') > 0) ? -1 : 1;
+        const mv = (ev) => {
+          const vwNow = window.innerWidth || 1280;
+          toastCfg.w = Math.max(220, Math.min(vwNow - 20, ow + (ev.clientX - sx) * dir));
+          applyToastPos(); reflectUiSettings();
+        };
+        const up = () => {
+          document.removeEventListener('mousemove', mv);
+          document.removeEventListener('mouseup', up);
+          wmSaveSoon();
+        };
+        document.addEventListener('mousemove', mv);
+        document.addEventListener('mouseup', up);
+      });
+      g.appendChild(lab); g.appendChild(rz);
+      el.appendChild(g);
+    } else if (!toastPlacing && g) {
+      g.parentNode.removeChild(g);
+    }
+    wmRectsSoon();
+  }
+
+  // Drag the stack itself while in placement mode; converts the drop point back into
+  // an offset from whichever edge the current anchor uses.
+  (function toastDragInit() {
+    document.addEventListener('mousedown', (e) => {
+      if (!toastPlacing) return;
+      const el = $('toaster');
+      if (!el || !e.target.closest || !e.target.closest('#toaster')) return;
+      // The width grip is inside the stack, and THIS listener is on the capture
+      // phase, so it would otherwise start a move-drag before the grip ever sees
+      // the press and stopPropagation could not save it.
+      if (e.target.closest('.ghost-rz')) return;
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const ox = e.clientX - r.left, oy = e.clientY - r.top;
+      const mv = (ev) => {
+        const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+        const left = Math.max(0, Math.min(vw - r.width, ev.clientX - ox));
+        const top = Math.max(0, Math.min(vh - r.height, ev.clientY - oy));
+        const a = String(toastCfg.anchor || 'top-center');
+        toastCfg.dy = Math.round((a.indexOf('bottom') === 0) ? (vh - top - r.height) : top);
+        toastCfg.dx = Math.round(a.indexOf('left') > 0 ? left
+                              : a.indexOf('right') > 0 ? (vw - left - r.width)
+                              : (left + r.width / 2 - vw / 2));
+        applyToastPos();
+        reflectUiSettings();      // values only: a rebuild here would kill this drag
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', mv);
+        document.removeEventListener('mouseup', up);
+        wmSaveSoon();
+      };
+      document.addEventListener('mousemove', mv);
+      document.addEventListener('mouseup', up);
+    }, true);
+  })();
+
+  // A colour-coded dot rather than a drawn icon: amber = needs dismissing, accent =
+  // it will clear itself. Reads instantly and cannot mis-render.
+  function toastIcon(sticky) { return '<i class="g g-dot"></i>'; }
+
+  // msg: text. opts: { ttl: ms (0/omitted-with-sticky = until dismissed), sticky: bool }
+  function uiNotify(msg, opts) {
+    msg = String(msg == null ? '' : msg).slice(0, 300);
+    if (!msg) return;
+    opts = opts || {};
+    const sticky = !!opts.sticky || opts.ttl === 0;
+    const ttl = sticky ? 0 : Math.max(1200, Number(opts.ttl) || 5000);
+    const now = Date.now();
+    // Repeat of a message already on screen: bump its count and restart its clock
+    // instead of stacking duplicates (alert rules can re-fire quickly).
+    const dup = toasts.find(t => t.msg === msg && !t.closing);
+    if (dup) {
+      dup.n++;
+      dup.until = ttl ? now + ttl : 0;
+      dup.ttl = ttl;
+      dup.start = now;
+      if (dup.countEl) { dup.countEl.textContent = '×' + dup.n; dup.countEl.style.display = ''; }
+      toastTick();
+      return;
+    }
+    const el = document.createElement('div');
+    el.className = 'toast' + (sticky ? ' sticky' : '');
+    const ico = document.createElement('span');
+    ico.className = 'toast-ico'; ico.innerHTML = toastIcon(sticky);
+    const body = document.createElement('div');
+    body.className = 'toast-msg'; body.textContent = msg;
+    const cnt = document.createElement('span');
+    cnt.className = 'toast-n'; cnt.style.display = 'none';
+    el.appendChild(ico); el.appendChild(body); el.appendChild(cnt);
+    let barEl = null;
+    if (sticky) {
+      const x = document.createElement('button');
+      x.className = 'toast-x'; x.title = 'Dismiss';
+      x.innerHTML = '<i class="g g-x"></i>';
+      x.addEventListener('click', () => toastClose(rec));
+      el.appendChild(x);
+    } else {
+      const bar = document.createElement('div'); bar.className = 'toast-bar';
+      barEl = document.createElement('i'); bar.appendChild(barEl);
+      el.appendChild(bar);
+    }
+    const rec = { el, msg, sticky, n: 1, ttl, start: now,
+                  until: ttl ? now + ttl : 0, barEl, countEl: cnt, closing: false };
+    $('toaster').appendChild(el);
+    toasts.push(rec);
+    // Cap the stack: retire the oldest NON-sticky first so a dismissible warning
+    // is never silently pushed out by routine chatter.
+    while (toasts.filter(t => !t.closing).length > TOAST_MAX) {
+      const victim = toasts.find(t => !t.closing && !t.sticky) ||
+                     toasts.find(t => !t.closing);
+      if (!victim) break;
+      toastClose(victim);
+    }
+    toastTick();
+    wmRectsSoon();                 // a sticky card is clickable -> claim its rect
+  }
+
+  function toastClose(rec) {
+    if (!rec || rec.closing) return;
+    rec.closing = true;
+    rec.el.classList.add('out');
+    setTimeout(() => {
+      const i = toasts.indexOf(rec);
+      if (i >= 0) toasts.splice(i, 1);
+      if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el);
+      wmRectsSoon();
+    }, 200);
+  }
+
+  // Drives expiry + the remaining-time rule. Runs ONLY while toasts are on screen.
+  function toastTick() {
+    const now = Date.now();
+    for (const t of toasts.slice()) {
+      if (t.closing || t.sticky) continue;
+      if (now >= t.until) { toastClose(t); continue; }
+      if (t.barEl && t.ttl > 0)
+        t.barEl.style.width = Math.max(0, Math.min(100, (t.until - now) / t.ttl * 100)) + '%';
+    }
+    const live = toasts.some(t => !t.closing && !t.sticky);
+    if (live && !_toastTimer) _toastTimer = setInterval(toastTick, 100);
+    else if (!live && _toastTimer) { clearInterval(_toastTimer); _toastTimer = 0; }
+  }
+
+  // ---- UI Settings panel (Developer): live placement of in-game chrome ----
+  const TOAST_ANCHORS = [
+    ['top-left', 'Top left'], ['top-center', 'Top centre'], ['top-right', 'Top right'],
+    ['bottom-left', 'Bottom left'], ['bottom-center', 'Bottom centre'], ['bottom-right', 'Bottom right'],
+  ];
+  // BUILD-ONCE. renderPane() runs this every 250 ms for a visible window, and the
+  // placement drag calls it per mousemove -- rebuilding the DOM either time destroyed
+  // the control the user was actively dragging, so slider input went nowhere. Build
+  // the markup once, then only reflect values into it.
+  function renderUiSettings() {
+    const c = $('content'); if (!c) return;
+    if ($('uisWrap')) { reflectUiSettings(); return; }
+    c.innerHTML = '';
+    const wrap = document.createElement('div'); wrap.id = 'uisWrap'; wrap.className = 'pane';
+    const rows = document.createElement('div'); rows.className = 'rows';
+
+    rows.appendChild(secRow('Alert popups'));
+
+    // Anchor.
+    const aRow = document.createElement('div'); aRow.className = 'row';
+    const aLab = document.createElement('span'); aLab.className = 'k'; aLab.textContent = 'Anchor';
+    const aWrap = document.createElement('span'); aWrap.className = 'v';
+    const seg = document.createElement('div');
+    seg.className = 'uis-chips'; seg.id = 'uis_anchor'; seg.style.justifyContent = 'flex-end';
+    for (const [id, label] of TOAST_ANCHORS) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = label; b.className = 'uis-chip'; b.dataset.anchor = id;
+      b.addEventListener('click', () => {
+        toastCfg.anchor = id;
+        // Reset the offsets: one measured from a different edge would jump the stack.
+        toastCfg.dx = 0;
+        toastCfg.dy = (id.indexOf('top') === 0) ? 58 : 24;
+        applyToastPos(); wmSaveSoon(); reflectUiSettings();
+      });
+      seg.appendChild(b);
+    }
+    aWrap.appendChild(seg); aRow.appendChild(aLab); aRow.appendChild(aWrap);
+    rows.appendChild(aRow);
+
+    const num = (label, key) => {
+      const r = document.createElement('div'); r.className = 'row';
+      const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
+      const v = document.createElement('span'); v.className = 'v uis-row'; v.style.width = '210px';
+      const inp = document.createElement('input');
+      inp.type = 'range'; inp.id = 'uis_' + key;
+      const out = document.createElement('b'); out.id = 'uis_' + key + 'v';
+      inp.addEventListener('input', () => {
+        toastCfg[key] = Number(inp.value) | 0;
+        out.textContent = inp.value + 'px';
+        applyToastPos(); wmSaveSoon();
+      });
+      v.appendChild(inp); v.appendChild(out);
+      r.appendChild(k); r.appendChild(v);
+      return r;
+    };
+    rows.appendChild(num('Offset X', 'dx'));
+    rows.appendChild(num('Offset Y', 'dy'));
+    rows.appendChild(num('Width', 'w'));
+
+    // Actions, grouped by what they do rather than piled into one wrapping row.
+    const btnRow = (label, id, buttons) => {
+      const r = document.createElement('div'); r.className = 'row';
+      const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
+      const v = document.createElement('span'); v.className = 'v';
+      const g = document.createElement('div');
+      g.className = 'uis-chips'; g.id = id; g.style.justifyContent = 'flex-end';
+      for (const [text, fn, bid] of buttons) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'uis-chip'; b.textContent = text;
+        if (bid) b.id = bid;
+        b.addEventListener('click', fn);
+        g.appendChild(b);
+      }
+      v.appendChild(g); r.appendChild(k); r.appendChild(v);
+      return r;
+    };
+    rows.appendChild(btnRow('Placement', 'uis_place', [
+      ['Position on screen', () => { toastPlacing = !toastPlacing; applyToastPos(); reflectUiSettings(); }, 'uis_placeBtn'],
+      ['Reset', () => { toastCfg = Object.assign({}, TOAST_DEF); applyToastPos(); wmSaveSoon(); reflectUiSettings(); }],
+    ]));
+    rows.appendChild(btnRow('Preview', 'uis_prev', [
+      ['Timed', () => uiNotify('Test alert - this is how an in-game alert looks.', { ttl: 5000 })],
+      ['Sticky', () => uiNotify('Sticky alert - stays until dismissed.', { sticky: true })],
+      ['Clear', () => { for (const t of toasts.slice()) toastClose(t); }],
+    ]));
+
+    wrap.appendChild(rows);
+    c.appendChild(wrap);
+    reflectUiSettings();
+  }
+
+  // Values only. Never rewrites structure, and never fights a control the user is
+  // currently dragging (that input keeps its own value until released).
+  function reflectUiSettings() {
+    if (!$('uisWrap')) return;
+    const seg = $('uis_anchor');
+    if (seg) for (const b of Array.from(seg.children))
+      b.classList.toggle('on', b.dataset.anchor === toastCfg.anchor);
+    const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+    const range = {
+      dx: [-Math.round(vw / 2), Math.round(vw / 2)],
+      dy: [0, Math.max(40, vh - 80)],
+      w:  [220, Math.max(260, vw - 40)],
+    };
+    for (const key of ['dx', 'dy', 'w']) {
+      const inp = $('uis_' + key), out = $('uis_' + key + 'v');
+      if (!inp) continue;
+      inp.min = String(range[key][0]);
+      inp.max = String(range[key][1]);
+      const val = Number(toastCfg[key]) || 0;
+      if (document.activeElement !== inp) inp.value = String(val);
+      if (out) out.textContent = val + 'px';
+    }
+    const pb = $('uis_placeBtn');
+    if (pb) {
+      pb.textContent = toastPlacing ? 'Done positioning' : 'Position on screen';
+      pb.classList.toggle('on', !!toastPlacing);
+    }
+  }
+
+  // ---- input-region + keyboard publishing to the host ----
+  // null, not '': an empty first payload (menubar not laid out yet) must still
+  // reach the host, or the dedup below swallows the very first publish.
+  let _rectsQueued = false, _lastRectsPayload = null;
+  function wmPushRects() {
+    _rectsQueued = false;
+    const b = bridge();
+    if (!b || !b.uiRects) return;
+    const rects = [];
+    // Grow each rect by a hairline margin. Windows carry a soft drop shadow, so the
+    // panel READS as bigger than its border box; without this, a click aimed at the
+    // visual edge falls outside the consume region and the GAME acts on it (camera
+    // spin / walk) instead of the panel. Inside the margin nothing happens, which is
+    // the right outcome for a near-miss on a window edge.
+    const PAD = 3;
+    const add = (el) => {
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0)
+        rects.push(Math.floor(r.left - PAD) + ',' + Math.floor(r.top - PAD) + ',' +
+                   Math.ceil(r.width + PAD * 2) + ',' + Math.ceil(r.height + PAD * 2));
+    };
+    if (!menubarHidden) add($('menubar'));
+    add($('mbdrop'));
+    for (const w of wm.wins.values()) if (!w.min) add(w.el);
+    // Body-level popovers: they float outside any window rect, so they need their own.
+    add($('sndMenu')); add($('vrPop'));
+    add($('ctxCopy'));
+    // Only DISMISSIBLE toasts claim input. A transient toast stays click-through so
+    // it can never swallow a click meant for the game underneath it. Placement mode
+    // is the exception: the whole stack must be grabbable, empty or not.
+    if (toastPlacing) add($('toaster'));
+    else for (const t of toasts) if (t.sticky && !t.closing) add(t.el);
+    // Modal surfaces (tab search, tooltips are transient/hover-only) claim the whole
+    // client: they dim everything and must swallow every click.
+    if ($('tspOv') || $('vrModalOv')) {
+      rects.length = 0;
+      rects.push('0,0,' + (window.innerWidth || 1280) + ',' + (window.innerHeight || 720));
+    }
+    const payload = rects.join(';');
+    if (payload === _lastRectsPayload) return;
+    _lastRectsPayload = payload;
+    try { b.uiRects(myPid(), payload, !menubarHidden || rects.length > 0); } catch (e) {}
+  }
+  // Coalesce rect pushes to one per task; drags call wmPushRects directly per move.
+  function wmRectsSoon() {
+    if (_rectsQueued) return;
+    _rectsQueued = true;
+    setTimeout(wmPushRects, 0);
+  }
+  let menubarHidden = false;   // reserved: a future hide-UI toggle
+
+  // Keyboard capture: claim the game's keystrokes only while a text field has focus.
+  let _kbCaptured = false;
+  function syncKbCapture() {
+    const t = document.activeElement;
+    const typing = !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                            t.tagName === 'SELECT' || t.isContentEditable));
+    if (typing === _kbCaptured) return;
+    _kbCaptured = typing;
+    try { if (bridge() && bridge().uiKeyboard) bridge().uiKeyboard(myPid(), typing); } catch (e) {}
+  }
+  document.addEventListener('focusin', () => setTimeout(syncKbCapture, 0));
+  document.addEventListener('focusout', () => setTimeout(syncKbCapture, 0));
+  // Companion-signalled: a click went to the GAME while we held keyboard capture --
+  // drop focus so typing returns to the game immediately.
+  window.__rtxGameClick = function () {
+    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
+    setTimeout(syncKbCapture, 0);
+  };
+
+  // ---- layout persistence (per-account host store; atomic tmp+rename native side) ----
+  let _wmSaveT = 0;
+  function wmSnapshot() {
+    const wins = {};
+    for (const [wid, w] of wm.wins) {
+      wins[wid] = { tab: w.tab, tabs: w.tabs.slice(), x: Math.round(w.x), y: Math.round(w.y),
+                    w: Math.round(w.w), h: Math.round(w.h), z: w.z, min: w.min ? 1 : 0,
+                    roll: w.rolled ? 1 : 0 };
+    }
+    return { v: 1, bar: { x: wm.barX, y: wm.barY, pill: wm.barPill ? 1 : 0 },
+             toast: { anchor: toastCfg.anchor, dx: toastCfg.dx | 0, dy: toastCfg.dy | 0, w: toastCfg.w | 0 },
+             wins };
+  }
+  function wmSaveSoon() {
+    if (!wm.restored) return;   // never clobber a saved layout with boot state
+    if (_wmSaveT) return;
+    _wmSaveT = setTimeout(() => {
+      _wmSaveT = 0;
+      try {
+        if (bridge() && bridge().layoutSave)
+          bridge().layoutSave(myPid(), JSON.stringify(wmSnapshot()));
+      } catch (e) {}
+    }, 500);
+  }
+  async function wmLayoutRestore() {
+    let saved = null;
+    try {
+      const s = await bridge().layoutLoad(myPid());
+      saved = s ? JSON.parse(s) : null;
+    } catch (e) {}
+    if (!saved || saved.v !== 1) return false;   // first run, or account not resolved yet
+    if (saved.bar) {
+      if (typeof saved.bar.x === 'number') wm.barX = saved.bar.x;
+      if (saved.bar.y === 'bottom' || saved.bar.y === 'top') wm.barY = saved.bar.y;
+      wm.barPill = !!saved.bar.pill;
+    }
+    if (saved.toast && typeof saved.toast === 'object') {
+      const t = saved.toast;
+      if (TOAST_ANCHORS.some(a => a[0] === t.anchor)) toastCfg.anchor = t.anchor;
+      if (typeof t.dx === 'number') toastCfg.dx = t.dx | 0;
+      if (typeof t.dy === 'number') toastCfg.dy = t.dy | 0;
+      if (typeof t.w === 'number' && t.w >= 220) toastCfg.w = t.w | 0;
+      applyToastPos();
+    }
+    const ws = saved.wins || {};
+    const order = Object.keys(ws).sort((a, b) => (ws[a].z || 0) - (ws[b].z || 0));
+    for (const wid of order) {
+      const st = ws[wid] || {};
+      const avail = allTabs();
+      // Docked set as saved, minus anything this build/account no longer shows and
+      // anything an earlier window already claimed (a tab lives in exactly one window).
+      const docked = Array.isArray(st.tabs) && st.tabs.length > 0;
+      const ids = (docked ? st.tabs : [st.tab || wid])
+        .filter(id => avail.some(x => x.id === id) && !wmWinOf(id));
+      if (!ids.length) continue;              // nothing left to show -> no empty window
+      const t = avail.find(x => x.id === (ids.indexOf(st.tab) >= 0 ? st.tab : ids[0]));
+      const geom = (st.w > 0 && st.h > 0)
+        ? { x: st.x | 0, y: st.y | 0, w: st.w | 0, h: st.h | 0, min: !!st.min } : null;
+      const w2 = openTab(t, { noFocus: true, geom });
+      // Only a docking-era save overrides the set openTab built; a pre-docking layout
+      // has no `tabs` and must keep its group's members.
+      if (w2 && docked) wmSetTabs(w2, ids);
+      if (w2 && st.roll) wmToggleRoll(w2);
+    }
+    wm.restored = true;
+    renderMenubar();
+    syncMarkerArm();
+    wmRectsSoon();
+    return true;
+  }
+
+  // Open (or focus) the window for a tab. `t` = a tab object from allTabs().
+  // opts: { noFocus, geom:{x,y,w,h,min} } for layout restore.
+  function openTab(t, opts) {
+    opts = opts || {};
+    const g = TAB_GROUP_OF[t.id] || null;
+    let w = wmWinOf(t.id);   // wherever it is docked, not where its group would put it
+    if (w) {
+      if (w.tab !== t.id) wmSwitchTab(w, t);
+      if (w.min) wmRestore(w);
+      wmFocus(w);
+      closeMbDrop();
+      wmRectsSoon(); wmSaveSoon();
+      return w;
+    }
+    w = wmCreateWindow(wmMintWid(t.id), t, g, opts.geom || null);
+    if (g) { try { localStorage.setItem('rtxGrpLast:' + g.id, t.id); } catch (e) {} }
+    if (!opts.noFocus && !w.min) wmFocus(w);
+    if (!w.min) renderPaneFor(w);
+    withPane(w, () => tabEntryKicks(w.tab));
+    renderMenubar();
+    closeMbDrop();
+    wmRectsSoon(); wmSaveSoon();
+    return w;
+  }
+
+  // Keep every window reachable when the client shrinks or DPI changes.
+  window.addEventListener('resize', () => {
+    for (const w of wm.wins.values()) { wmClamp(w); wmApplyGeom(w); }
+    positionMenubar();
+    applyToastPos();     // anchored, so it re-derives from the new client size
+    wmRectsSoon();
+  });
+
   // Pull the relevant data immediately on entering a tab rather than waiting for the next
   // poll -- and ARM anything the tab owns (vars observer, netprobe capture). Split out of
   // openTab so the dev hot-reload boot restore runs the SAME entry actions: a restored
@@ -2837,100 +4327,197 @@
     if (id === 'netprobe') { try { npArm(true); npFetch(); } catch (e) {} }
     if (id === 'farming') { farmSig = ''; _farmAt = 0; fetchFarming(); }
   }
-  function renderSidebar() {
-    const side = $('sidebar');
-    const prevList = side.querySelector('.side-list');
-    const prevScroll = prevList ? prevList.scrollTop : 0;   // keep scroll across rebuilds
-    // First render: drill into the open panel's category so the rail reflects what's shown.
-    if (!railInited) { railInited = true; if (!sideCollapsed && activeTab) railCat = tabCat(activeTab); }
-    side.innerHTML = '';
-    side.classList.add('collapsed');
-    document.body.classList.toggle('side-collapsed', sideCollapsed);
-    try { if (bridge() && bridge().dockCollapse) bridge().dockCollapse(myPid(), sideCollapsed); } catch (e) {}
-    syncMarkerArm();   // collapsing the panel disarms the tile-mark keys
-    const top = document.createElement('div'); top.className = 'side-top';
-    const tg = document.createElement('button'); tg.type = 'button'; tg.className = 'side-collapse';
-    tg.title = 'Toggle panel';
-    tg.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" ' +
-      'stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l5 5-5 5"/><path d="M14 7l5 5-5 5"/></svg>';
-    tg.addEventListener('click', toggleSidebar);
-    top.appendChild(tg);
-    const sb = document.createElement('button'); sb.type = 'button'; sb.className = 'side-collapse side-search';
-    sb.title = 'Search panels (Ctrl+K)';
-    sb.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
-      'stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>';
-    sb.addEventListener('click', openTabSearch);
-    top.appendChild(sb);
-    side.appendChild(top);
-
-    const list = document.createElement('div'); list.className = 'side-list';
-    // A rail icon button with the host-drawn tooltip (the panel window can't overflow its own
-    // tooltip onto the game beside it, so the host draws it as a top-most window).
-    const mkBtn = (icon, label, active, cls, onClick) => {
-      const b = document.createElement('button');
-      b.className = 'tab' + (active ? ' is-active' : '') + (cls ? ' ' + cls : '');
-      b.addEventListener('mouseenter', () => {
-        try {
-          const r = b.getBoundingClientRect();
-          if (bridge() && bridge().railTip)
-            bridge().railTip(myPid(), label, Math.round(r.left), Math.round(r.top + r.height / 2));
-        } catch (e) {}
-      });
-      b.addEventListener('mouseleave', () => { try { if (bridge() && bridge().railTip) bridge().railTip(myPid(), '', 0, 0); } catch (e) {} });
-      b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
-        'stroke-linecap="round" stroke-linejoin="round">' + (icon || '') + '</svg><span class="tab-label">' + label + '</span>';
-      b.addEventListener('click', () => { try { if (bridge() && bridge().railTip) bridge().railTip(myPid(), '', 0, 0); } catch (e) {} onClick(); });
-      return b;
-    };
-
-    // A category's collapsed entry list: groups count once (at their first member's slot).
-    const catEntries = (catId) => {
-      const out = [], emitted = {};
-      for (const t of allTabs()) {
-        if ((t.cat || 'General') !== catId) continue;
-        const g = TAB_GROUP_OF[t.id];
-        if (g) { if (!emitted[g.id]) { emitted[g.id] = true; out.push({ g, t }); } continue; }
-        out.push({ t });
-      }
-      return out;
-    };
-    // Never show a drilled-in one-item list: single-entry categories are direct-open,
-    // so any state that lands there (first render, tab search) snaps back to the top level.
-    if (railCat !== null && catEntries(railCat).length <= 1) railCat = null;
-    if (railCat === null) {
-      const openCat = (!sideCollapsed && activeTab) ? tabCat(activeTab) : null;
-      for (const c of railCategories()) {
-        const entries = catEntries(c.id);
-        // One entry = the category IS that panel: open it directly instead of drilling
-        // into a one-item list (Archaeology, Clues, Collections, Quests, Achievements).
-        const direct = entries.length === 1 ? entries[0] : null;
-        list.appendChild(mkBtn(c.icon, c.id, c.id === openCat, 'rail-cat', () => {
-          if (direct) { openTab(direct.g ? groupEntryTab(direct.g) : direct.t); renderSidebar(); return; }
-          railCat = c.id; renderSidebar();
-        }));
-      }
-    } else {
-      list.appendChild(mkBtn('<path d="M15 5l-7 7 7 7"/>', 'Back to categories', false, 'rail-back', () => { railCat = null; renderSidebar(); }));
-      const sep = document.createElement('div'); sep.className = 'rail-sep'; list.appendChild(sep);
-      for (const e of catEntries(railCat)) {
-        if (e.g) {
-          list.appendChild(mkBtn(e.t.icon, e.g.label, e.g.tabs.indexOf(activeTab) >= 0, '', () => {
-            const et = groupEntryTab(e.g);
-            if (et) openTab(et);
-          }));
-        } else {
-          list.appendChild(mkBtn(e.t.icon, e.t.label, e.t.id === activeTab, '', () => openTab(e.t)));
-        }
-      }
-    }
-    side.appendChild(list);
-    list.scrollTop = prevScroll;
+  // ==================== Menu bar ====================
+  // Slim glass bar: category launchers + player status + search. Draggable to any
+  // x position along the top or bottom edge; collapsible to a pill. State rides
+  // the layout store. renderSidebar stays as an alias -- panel code and the GIM
+  // visibility poll still call it.
+  function positionMenubar() {
+    const bar = $('menubar');
+    if (!bar) return;
+    const vw = window.innerWidth || 1280;
+    const bw = bar.offsetWidth || 320;
+    let x = (typeof wm.barX === 'number') ? Math.round(vw * wm.barX - bw / 2) : Math.round((vw - bw) / 2);
+    x = Math.max(6, Math.min(vw - bw - 6, x));
+    bar.style.left = x + 'px';
+    bar.style.transform = 'none';
+    if (wm.barY === 'bottom') { bar.style.top = 'auto'; bar.style.bottom = '10px'; }
+    else { bar.style.bottom = 'auto'; bar.style.top = '10px'; }
+    // The toast stack sits under the bar when it is docked top, and at the top of
+    // the screen when the bar moves to the bottom.
+    document.body.classList.toggle('bar-bottom', wm.barY === 'bottom');
   }
+  function closeMbDrop() {
+    wm.mbDrop = null;
+    const dd = $('mbdrop');
+    if (dd) dd.remove();
+    const bar = $('menubar');
+    if (bar) bar.querySelectorAll('.mb-cat.open').forEach(b => b.classList.remove('open'));
+    wmRectsSoon();
+  }
+  function openMbDrop(catId, btn) {
+    closeMbDrop();
+    wm.mbDrop = catId;
+    btn.classList.add('open');
+    const dd = document.createElement('div');
+    dd.id = 'mbdrop';
+    // No category heading: the bar button above it is the label, and it stays lit
+    // while its menu is open. (It earned its place when the button was an icon.)
+    const emitted = {};
+    for (const t of allTabs()) {
+      if ((t.cat || 'General') !== catId) continue;
+      const g = TAB_GROUP_OF[t.id];
+      if (g && emitted[g.id]) continue;
+      if (g) emitted[g.id] = true;
+      const w = g ? wmWinOfAny(g.tabs) : wmWinOf(t.id);
+      const target = g ? groupEntryTab(g) : t;
+      const b = document.createElement('button');
+      // Lit only when the requested TAB is on screen -- after docking, w can hold it while
+      // showing something else, and rolled hides the body just like minimized does.
+      b.className = 'tab' + ((w && !w.min && !w.rolled && target && w.tab === target.id) ? ' is-active' : '');
+      b.innerHTML = '<span class="tab-label"></span>' + (w ? '<span class="tab-on"></span>' : '');
+      b.querySelector('.tab-label').textContent = g ? g.label : t.label;
+      b.addEventListener('click', () => {
+        // Route through the TAB, not the window: after docking, w may be showing an
+        // UNRELATED tab, and toggling it there minimizes the host instead of showing what
+        // was asked for. Only toggle visibility when the requested tab is ALREADY shown.
+        // NEVER close from the menu -- closing is the window's own ✕ (minimize looked like
+        // "closed" when the menu quick-toggled a close here).
+        if (w && (!target || w.tabs.indexOf(target.id) >= 0)) {
+          const wasMin = w.min;
+          if (wasMin) wmRestore(w);
+          if (target && w.tab !== target.id) { wmSwitchTab(w, target); wmFocus(w); closeMbDrop(); return; }
+          if (!wasMin) { wmMinimize(w); return; }
+          wmFocus(w); closeMbDrop(); return;
+        }
+        if (target) openTab(target);   // lives in another window (or nowhere): openTab finds it
+      });
+      dd.appendChild(b);
+    }
+    document.body.appendChild(dd);
+    const br = btn.getBoundingClientRect();
+    const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+    let x = Math.round(br.left - 8);
+    x = Math.max(6, Math.min(vw - (dd.offsetWidth || 220) - 6, x));
+    dd.style.left = x + 'px';
+    if (wm.barY === 'bottom') dd.style.bottom = Math.round(vh - br.top + 8) + 'px';
+    else dd.style.top = Math.round(br.bottom + 8) + 'px';
+    wmRectsSoon();
+  }
+  document.addEventListener('mousedown', (e) => {
+    if (!wm.mbDrop) return;
+    if (e.target && e.target.closest && (e.target.closest('#mbdrop') || e.target.closest('#menubar'))) return;
+    closeMbDrop();
+  }, true);
+
+  function renderMenubar() {
+    const bar = $('menubar');
+    if (!bar) return;
+    const keepDrop = wm.mbDrop;
+    bar.classList.toggle('pill', !!wm.barPill);
+    bar.innerHTML = '';
+    // Drag handle (grip dots): move along the top/bottom edges.
+    const drag = document.createElement('div');
+    drag.className = 'mb-drag';
+    drag.title = 'Move bar';
+    drag.innerHTML = '<i class="g g-grip"></i>';
+    drag.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      bar.classList.add('dragging');
+      const mv = (ev) => {
+        const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+        wm.barX = Math.min(0.98, Math.max(0.02, ev.clientX / Math.max(1, vw)));
+        wm.barY = (ev.clientY > vh / 2) ? 'bottom' : 'top';
+        positionMenubar();
+        wmPushRects();
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', mv);
+        document.removeEventListener('mouseup', up);
+        bar.classList.remove('dragging');
+        wmSaveSoon();
+      };
+      document.addEventListener('mousemove', mv);
+      document.addEventListener('mouseup', up);
+    });
+    bar.appendChild(drag);
+    // Category launchers (a dot marks categories with open windows).
+    const cats = document.createElement('nav');
+    cats.className = 'mb-cats';
+    const openCats = new Set();
+    for (const w of wm.wins.values()) for (const id of w.tabs) {
+      const t = allTabs().find(x => x.id === id);   // every docked tab, not just the shown one
+      if (t) openCats.add(t.cat || 'General');
+    }
+    for (const c of railCategories()) {
+      const b = document.createElement('button');
+      b.className = 'mb-cat' + (openCats.has(c.id) ? ' has-open' : '');
+      b.title = c.id;
+      b.dataset.cat = c.id;
+      b.textContent = c.id;          // a legible word beats a 17px line glyph
+      b.addEventListener('click', () => {
+        if (wm.mbDrop === c.id) { closeMbDrop(); return; }
+        openMbDrop(c.id, b);
+      });
+      cats.appendChild(b);
+    }
+    bar.appendChild(cats);
+    // Minimized-window chips: a minimized window stays visibly PRESENT here (it
+    // looked "completely closed" without an affordance); click restores it.
+    const minimized = Array.from(wm.wins.values()).filter(w => w.min);
+    if (minimized.length && !wm.barPill) {
+      const chips = document.createElement('div');
+      chips.className = 'mb-chips';
+      for (const w of minimized) {
+        const t = allTabs().find(x => x.id === w.tab) || { label: w.tab, icon: '' };
+        const lbl = wmIsWholeGroup(w) ? w.group.label : t.label;   // same rule as the title bar
+        const chip = document.createElement('button');
+        chip.className = 'mb-chip';
+        chip.title = 'Restore ' + lbl;
+        chip.innerHTML = '<span></span>';
+        chip.querySelector('span').textContent = lbl;
+        chip.addEventListener('click', () => { wmRestore(w); wmFocus(w); });
+        chips.appendChild(chip);
+      }
+      bar.appendChild(chips);
+    }
+    // Player status: renderHeader() writes these ids (kept from the old header).
+    const st = document.createElement('div');
+    st.className = 'mb-status';
+    st.innerHTML = '<div class="title" id="hdr-title"><span class="dot"></span>' +
+                   '<span id="hdr-name">--</span></div><div class="meta" id="hdr-meta">--</div>';
+    bar.appendChild(st);
+    // Search + pill toggle.
+    const search = document.createElement('button');
+    search.className = 'mb-btn mb-search';
+    search.title = 'Search panels (Ctrl+K)';
+    search.textContent = 'Search';
+    search.addEventListener('click', openTabSearch);
+    bar.appendChild(search);
+    const pill = document.createElement('button');
+    pill.className = 'mb-btn';
+    pill.title = wm.barPill ? 'Expand bar' : 'Collapse bar';
+    // Guillemets: plain Latin-1 text, so they cannot mis-render the way paths did.
+    pill.textContent = wm.barPill ? '»' : '«';
+    pill.addEventListener('click', () => { wm.barPill = !wm.barPill; closeMbDrop(); renderMenubar(); wmSaveSoon(); });
+    bar.appendChild(pill);
+    positionMenubar();
+    _hdrSig = '';                       // status ids were rebuilt: force a header repaint
+    try { renderHeader(); } catch (e) {}
+    // Keep an open dropdown alive across rebuilds (open-state dots change under it).
+    if (keepDrop) {
+      const btn = bar.querySelector('.mb-cat[data-cat="' + keepDrop + '"]');
+      wm.mbDrop = null;
+      if (btn) openMbDrop(keepDrop, btn);
+    }
+    wmRectsSoon();
+  }
+  function renderSidebar() { renderMenubar(); }
 
   // ---- Tab search palette (Ctrl+K / '/' / the rail magnifier): type to jump to any
   //      panel, plugin tabs included. Arrow keys + Enter select; Esc / backdrop close. ----
   let tspSel = 0;
-  let tspReCollapse = false;   // palette auto-expanded a collapsed dock; restore on plain close
   function tspEntries(q) {
     const all = allTabs();
     if (!q) return all;
@@ -2948,10 +4535,7 @@
               .sort((a, b) => a[0] - b[0]).map(p => p[1]);
   }
   function tspJump(t) {
-    tspReCollapse = false;
     closeTabSearch();
-    railCat = t.cat || 'General';
-    if (activeTab === t.id && !sideCollapsed) { renderSidebar(); return; }   // already open: don't collapse
     openTab(t);
   }
   function tspRenderList() {
@@ -2980,24 +4564,17 @@
     if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
   }
   function closeTabSearch() {
-    const ov = $('tspOv'); if (ov) ov.remove();
-    if (tspReCollapse) {
-      tspReCollapse = false;
-      sideCollapsed = true;
-      try { localStorage.setItem('rtx_side_collapsed', '1'); } catch (e) {}
-      renderSidebar();
+    // Blur any focused field first, or the host keeps keyboard capture forever
+    // (focusout never fires for removed nodes in Ultralight).
+    const ov = $('tspOv');
+    if (ov) {
+      try { const a = document.activeElement; if (a && ov.contains(a)) a.blur(); } catch (e) {}
+      ov.remove();
     }
+    wmRectsSoon();
   }
   function openTabSearch() {
     if ($('tspOv')) { closeTabSearch(); return; }     // second Ctrl+K toggles it away
-    // A collapsed dock window is only rail-wide, which clips the palette -- expand it
-    // for the search and let closeTabSearch put it back if nothing is picked.
-    if (sideCollapsed) {
-      tspReCollapse = true;
-      sideCollapsed = false;
-      try { localStorage.setItem('rtx_side_collapsed', '0'); } catch (e) {}
-      renderSidebar(); renderPane(); sizeAllIcons();
-    }
     tspSel = 0;
     const ov = document.createElement('div'); ov.className = 'tsp-ov'; ov.id = 'tspOv';
     ov.addEventListener('click', e => { if (e.target === ov) closeTabSearch(); });
@@ -3032,12 +4609,22 @@
     document.body.appendChild(ov);
     tspRenderList();
     inp.focus();
+    wmRectsSoon();   // the palette is modal: claim the whole client for input
   }
   document.addEventListener('keydown', e => {
     if (typeof markerCapturing !== 'undefined' && markerCapturing) return;  // a keybind field is armed
     if (typeof ssCapturing !== 'undefined' && ssCapturing) return;          // screenshot keybind armed
     const k = (e.key || '').toLowerCase();
     if (k === 'escape' && $('tspOv')) { closeTabSearch(); return; }
+    if (k === 'escape') {
+      // Esc in a text field: drop focus so keyboard capture returns to the game.
+      const t0 = e.target;
+      if (t0 && (t0.tagName === 'INPUT' || t0.tagName === 'TEXTAREA' || t0.isContentEditable)) {
+        t0.blur();
+        return;
+      }
+      if (wm.mbDrop) { closeMbDrop(); return; }
+    }
     if ((e.ctrlKey || e.metaKey) && k === 'k') { e.preventDefault(); openTabSearch(); return; }
     if ((e.ctrlKey || e.metaKey) && k === 'c') { if (copySelection()) e.preventDefault(); return; }
     if (k === '/' && !e.ctrlKey && !e.altKey && !e.metaKey) {
@@ -3062,7 +4649,7 @@
     return false;
   }
   document.addEventListener('contextmenu', e => {
-    const old = $('ctxCopy'); if (old) old.remove();
+    const old = $('ctxCopy'); if (old) { old.remove(); try { wmRectsSoon(); } catch (e2) {} }
     let sel = '';
     try { sel = String(window.getSelection() || ''); } catch (e2) {}
     if (!sel.trim()) return;
@@ -3070,14 +4657,16 @@
     const m = document.createElement('button'); m.id = 'ctxCopy'; m.className = 'ctx-copy'; m.textContent = 'Copy';
     m.style.left = Math.min(e.clientX, window.innerWidth - 70) + 'px';
     m.style.top = Math.min(e.clientY, window.innerHeight - 34) + 'px';
-    const onDown = (ev) => { if (ev.target !== m) { m.remove(); document.removeEventListener('mousedown', onDown, true); } };
+    const onDown = (ev) => { if (ev.target !== m) { m.remove(); try { wmRectsSoon(); } catch (e2) {} document.removeEventListener('mousedown', onDown, true); } };
     // mousedown (not click): fires before the page mousedown clears the selection
     m.addEventListener('mousedown', ev => {
       ev.preventDefault(); ev.stopPropagation();
       copySelection(); m.remove();
+      try { wmRectsSoon(); } catch (e2) {}
       document.removeEventListener('mousedown', onDown, true);
     });
     document.body.appendChild(m);
+    try { wmRectsSoon(); } catch (e2) {}
     document.addEventListener('mousedown', onDown, true);
   });
 
@@ -3087,6 +4676,12 @@
     const vs = document.createElement('span'); vs.className = 'v'; vs.textContent = v;
     r.appendChild(ks); r.appendChild(vs);
     return r;
+  }
+  // Section heading for a .rows list, so a long readout can be grouped instead of
+  // reading as one undifferentiated column.
+  function secRow(label) {
+    const d = document.createElement('div'); d.className = 'sec'; d.textContent = label;
+    return d;
   }
 
   // ---- Storage tab -> panel_storage.js (spliced inline at load) ----
@@ -3126,33 +4721,11 @@
 
 
   let _playerPaneSig = '';   // Skills-grid dedup (see the guard in renderPane)
-  // The consolidated-panel sub-tab strip (see TAB_GROUPS). Rebuilt only when the active
-  // group/member changes so the 250ms renderPane poll doesn't eat clicks.
-  let subbarSig = '';
-  function renderSubbar() {
-    const bar = $('subbar'); if (!bar) return;
-    const g = TAB_GROUP_OF[activeTab];
-    const sig = g ? (g.id + ':' + activeTab) : '';
-    if (sig === subbarSig) return;
-    subbarSig = sig;
-    if (!g) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
-    try { localStorage.setItem('rtxGrpLast:' + g.id, activeTab); } catch (e) {}
-    bar.style.display = 'flex';
-    bar.innerHTML = '';
-    const avail = allTabs();
-    g.tabs.forEach((id, i) => {
-      const t = avail.find(x => x.id === id);
-      if (!t) return;   // conditionally hidden members (dung / groupbank) stay off the strip
-      const b = document.createElement('button');
-      b.textContent = (g.subs && g.subs[i]) || t.label;
-      if (id === activeTab) b.className = 'on';
-      b.addEventListener('click', () => { if (id !== activeTab) openTab(t); });
-      bar.appendChild(b);
-    });
-  }
+  // (The consolidated-panel sub-tab strip moved into each window's title bar --
+  // see wmRenderTabs. renderPane runs with activeTab/__paneRoot pointed at ONE
+  // window by renderPaneFor/withPane; it must not touch shell chrome.)
 
   function renderPane() {
-    renderSubbar();
     // Plugins own their (sandboxed iframe) DOM; mount before any content wipe.
     if (activeTab === 'pluginbrowse') { renderPluginBrowse(); return; }
     if (activeTab.indexOf('plugin:') === 0) { renderPlugin(activeTab.slice(7)); return; }
@@ -3235,6 +4808,7 @@
     if (activeTab === 'cachex') { renderCachex(); return; }
     if (activeTab === 'menuswap') { renderMenuSwap(); return; }
     if (activeTab === 'health') { renderHealth(); return; }
+    if (activeTab === 'uisettings') { renderUiSettings(); return; }
     // Skills tab (the default landing tab): renderPane runs on every 250ms poll tick, but the grid
     // only depends on the skill array, the goal targets and the virtual-levels setting -- skip the
     // full ~29-cell rebuild (and the icon re-attachment churn) when none of that changed.
@@ -3566,27 +5140,47 @@
     // Chat log accumulates in the background so it's complete even if the tab was
     // never opened; in-world only.
     if (lastSnap && lastSnap.in_world) fetchChat(false);
-    if ((alertsNeedScene() || (typeof nameplatesActive === 'function' && nameplatesActive())) && activeTab !== 'scene') fetchScene();
-    if (alertsNeedInfo() && activeTab !== 'info') fetchInfo();
-    if (alertsNeedVitals() && activeTab !== 'info' && activeTab !== 'player') fetchPlayerVp();
+    if ((alertsNeedScene() || (typeof nameplatesActive === 'function' && nameplatesActive())) && !paneVisible('scene')) fetchScene();
+    if (alertsNeedInfo() && !paneVisible('info')) fetchInfo();
+    if (alertsNeedVitals() && !paneVisible('info') && !paneVisible('player')) fetchPlayerVp();
     // Dailies availability bells: keep the activity varbits polled (10s background
-    // throttle inside fetchDailies) so armed notifications fire with the tab closed.
-    if (typeof dwNotifyAny === 'function' && dwNotifyAny() && activeTab !== 'dailies') fetchDailies(false, true);
+    // throttle inside fetchDailies) so armed notifications fire with the window closed.
+    if (typeof dwNotifyAny === 'function' && dwNotifyAny() && !paneVisible('dailies')) fetchDailies(false, true);
     // World-event spawn bells (scarabs / soul obelisk): pure cache reads, so this is
-    // cheap and runs regardless of the visible tab or a collapsed sidebar.
+    // cheap and runs regardless of which windows are open.
     if (typeof scNotifyPoll === 'function') scNotifyPoll();
-    if (alertsNeedGoals() && activeTab !== 'player') fetchGameGoals();
-    if (alertsNeedPerks() && activeTab !== 'perks') fetchPerks();
-    if (alertsNeedInv() && activeTab !== 'inventory') fetchInv();
-    if (alertsNeedBuffs() && activeTab !== 'buffs') fetchBuffs();
-    if (alertsNeedFarming() && activeTab !== 'farming') fetchFarming();
+    if (alertsNeedGoals() && !paneVisible('player')) fetchGameGoals();
+    if (alertsNeedPerks() && !paneVisible('perks')) fetchPerks();
+    if (alertsNeedInv() && !paneVisible('inventory')) fetchInv();
+    if (alertsNeedBuffs() && !paneVisible('buffs')) fetchBuffs();
+    if (alertsNeedFarming() && !paneVisible('farming')) fetchFarming();
     evalAlerts();
     syncOverlayHighlight();
-    // ---- Live PANEL fetches: only while the sidebar is OPEN. When collapsed, activeTab
-    // still points at the last-open panel; without this guard its full memory walk runs
-    // every tick per client. Background work that must survive collapse (alerts above;
-    // step-NPC marking + XP sampler below; the plugin overlay) stays OUT of this guard.
-    if (!sideCollapsed) {
+    // ---- Live PANEL fetches: once per OPEN window, with the dispatch context
+    // (activeTab + $('content')) bound to that window so refreshPaneTick's
+    // untouched per-tab gates fire exactly once for their own panel.
+    for (const _w of wmVisibleWins()) withPane(_w, refreshPaneTick);
+    // Self-gating fetches: window-visible OR a background need (quest / mystery
+    // step-NPC marking follows progress even with the window closed).
+    if (paneVisible('quests') || paneVisible('questfocus') ||
+        (questGSteps && questGSteps.__focus)) fetchQuests();
+    if (paneVisible('xptracker')) fetchXpTracker();
+    if (paneVisible('archmysteries') || paneVisible('mystfocus') ||
+        mystSteps === null || !!mystFocusName()) fetchArchMysteries();
+    // Host info changes slowly; refresh it once per second to keep RAM live.
+    if (!host || (refresh._hostT = (refresh._hostT||0) + 1) % 4 === 0) {
+      try { host = JSON.parse(await bridge().hostInfo()); } catch (e) {}
+    }
+    renderHeader();
+    for (const _w of wmVisibleWins()) renderPaneFor(_w);
+    sizeAllIcons();
+    pluginPush();     // feed the host tick/state to every mounted plugin window
+  }
+
+  // One open window's per-poll fetches; activeTab/__paneRoot are bound to it by
+  // the caller (withPane), so the per-tab gates below read as before.
+  function refreshPaneTick() {
+    {
     // Markers tab: keep the list live so keybind-added markers appear.
     if (activeTab === 'markers') fetchMarkers(false);
     // Bank: fetch on first view and when content changes (cached_at bumps only on
@@ -3675,21 +5269,7 @@
     if (activeTab === 'info' || activeTab === 'player') fetchPlayerVp();
     if (activeTab === 'player') fetchGameGoals();
     if (activeTab === 'vars') fetchVars();
-    }   // end !sideCollapsed live-panel fetches
-    // Self-gating fetches: visible part gated by !sideCollapsed, but quest / mystery
-    // step-NPC marking must survive collapse so the in-world mark follows progress.
-    if ((!sideCollapsed && (activeTab === 'quests' || activeTab === 'questfocus')) ||
-        (questGSteps && questGSteps.__focus)) fetchQuests();
-    if (!sideCollapsed && activeTab === 'xptracker') fetchXpTracker();
-    if ((!sideCollapsed && (activeTab === 'archmysteries' || activeTab === 'mystfocus')) ||
-        mystSteps === null || !!mystFocusName()) fetchArchMysteries();
-    // Host info changes slowly; refresh it once per second to keep RAM live.
-    if (!host || (refresh._hostT = (refresh._hostT||0) + 1) % 4 === 0) {
-      try { host = JSON.parse(await bridge().hostInfo()); } catch (e) {}
     }
-    renderHeader();
-    if (!sideCollapsed) { renderPane(); sizeAllIcons(); }   // nothing visible to render/size when collapsed
-    pluginPush();     // feed the host tick/state to the mounted plugin (overlay work runs even collapsed)
   }
 
   // ===================== Plugin SDK (host broker) =====================
@@ -3702,8 +5282,9 @@
   const PLUGIN_PROTO  = 'rtx.plugin/1';
   const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'clipboard']);
   let   pluginTabs    = [];     // [{ id, manifest:{id,name,version,author,entry,description}, scopes:[] }]
-  let   pluginMounted = null;   // { id, frame, scopes } currently mounted (one at a time)
+  const pluginMounts  = new Map();   // plugin id -> { id, frame, scopes }; one per open plugin window
   const pluginBuckets = {};     // "id|method" -> token bucket
+  function pluginUnmount(id) { pluginMounts.delete(id); }
 
   function pluginEsc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
   // Canonical HTML-text escape shared by the panels (global scope). Escapes & < > and ".
@@ -3894,8 +5475,10 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                               const st = mystStageVal(name, vb, vp);
                               return { site: g.site, name, points: pts, solved: mystDone(varp, bit, vp),
                                        stage: st ? { value: st[0], max: st[1] } : null }; })); } },
-    'overlay.toast':    { scope: 'overlay',    json: false,   run: (a, pid) => bridge().overlayToast(pid, pClampStr(a[0], 200)) },
-    'overlay.notify':   { scope: 'overlay',    json: false,   run: (a, pid) => bridge().overlayNotify(pid, pClampStr(a[0], 200), pClampNum(a[1], 0, 60000)) },
+    // Both render through the in-game UI layer now (same contract: notify's second
+    // arg is a ttl in ms, 0 = sticky until dismissed).
+    'overlay.toast':    { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: 5000 }) },
+    'overlay.notify':   { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: pClampNum(a[1], 0, 60000) }) },
     // Big centre-screen banner text ('' clears). Same in-frame channel the Dungeoneering
     // boss warnings use.
     'overlay.centerText':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().centerText ? bridge().centerText(pid, pClampStr(a[0], 80)) : null) },
@@ -4018,29 +5601,32 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     b.t -= 1; return true;
   }
 
-  function pluginSendEvent(event, data) {
-    const m = pluginMounted;
+  function pluginSendEvent(m, event, data) {
     if (!m || !m.frame || !m.frame.contentWindow) return;
     try { m.frame.contentWindow.postMessage({ __rtxPlugin: PLUGIN_PROTO, kind: 'event', event, data }, '*'); } catch (e) {}
   }
 
-  // Push the host poll cadence to the mounted plugin (no free-polling in plugins).
+  // Push the host poll cadence to every mounted plugin (no free-polling in plugins).
   function pluginPush() {
-    const m = pluginMounted;
-    if (!m || !m.frame) return;
-    pluginSendEvent('tick', null);
-    if (m.scopes.indexOf('state.read') !== -1) pluginSendEvent('state', lastSnap);
+    for (const m of pluginMounts.values()) {
+      if (!m.frame) continue;
+      pluginSendEvent(m, 'tick', null);
+      if (m.scopes.indexOf('state.read') !== -1) pluginSendEvent(m, 'state', lastSnap);
+    }
   }
 
   function pluginBrokerInit() {
     window.addEventListener('message', async (ev) => {
       const m = ev.data;
       if (!m || m.__rtxPlugin !== PLUGIN_PROTO) return;
-      const mounted = pluginMounted;
-      // Only ever talk to the single mounted plugin frame.
-      if (!mounted || !mounted.frame || ev.source !== mounted.frame.contentWindow) return;
+      // Route by SOURCE frame: several plugin windows can be mounted at once, and
+      // an unknown source is ignored exactly like before.
+      let mounted = null;
+      for (const pm of pluginMounts.values())
+        if (pm.frame && ev.source === pm.frame.contentWindow) { mounted = pm; break; }
+      if (!mounted) return;
       if (m.kind === 'hello') {
-        pluginSendEvent('ready', { scopes: mounted.scopes, apiVersion: '1.0', pluginId: mounted.id });
+        pluginSendEvent(mounted, 'ready', { scopes: mounted.scopes, apiVersion: '1.0', pluginId: mounted.id });
         return;
       }
       if (m.kind !== 'call') return;
@@ -4148,11 +5734,20 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     const btn = document.createElement('button');
     btn.textContent = 'Enable plugin';
     btn.style.cssText = 'background:#7c5cfc;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-weight:600;cursor:pointer;';
-    btn.addEventListener('click', () => { pluginSetGranted(id, tab.scopes); renderPlugin(id); });
+    btn.addEventListener('click', () => {
+      pluginSetGranted(id, tab.scopes);
+      const w = wmWinOf('plugin:' + id);
+      if (w && !w.min && w.tab === ('plugin:' + id)) renderPaneFor(w);
+    });
     const deny = document.createElement('button');
     deny.textContent = 'Deny';
     deny.style.cssText = 'background:rgba(255,255,255,.06);color:#f0f0f5;border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:9px 18px;font-weight:600;cursor:pointer;';
-    deny.addEventListener('click', () => { pluginClearGranted(id); activeTab = 'pluginbrowse'; railCat = 'Plugins'; renderSidebar(); renderPane(); });
+    deny.addEventListener('click', () => {
+      pluginClearGranted(id);
+      wmCloseTabId('plugin:' + id);
+      const bt = allTabs().find(x => x.id === 'pluginbrowse');
+      if (bt) openTab(bt);
+    });
     row.appendChild(btn); row.appendChild(deny);
     card.appendChild(row);
     c.appendChild(card);
@@ -4160,19 +5755,20 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
 
   function renderPlugin(id) {
     const c = $('content');
+    if (!c) return;
     const tab = pluginTabs.find(p => p.id === id);
-    if (!tab) { c.innerHTML = '<div class="empty">Plugin not found.</div>'; pluginMounted = null; return; }
+    if (!tab) { c.innerHTML = '<div class="empty">Plugin not found.</div>'; pluginMounts.delete(id); return; }
     const granted = pluginGetGranted(id);
     if (!granted) {
       const cur = c.firstElementChild;
       if (cur && cur.dataset && cur.dataset.pluginPerm === id) return;   // build-once
-      renderPluginPermission(id, tab); pluginMounted = null; return;
+      renderPluginPermission(id, tab); pluginMounts.delete(id); return;
     }
     const cur = c.firstElementChild;
     if (cur && cur.dataset && cur.dataset.pluginHost === id) return;      // already mounted
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.dataset.pluginHost = id;
-    // Fill the panel area; the plugin scrolls inside itself. A plugin can opt into a
+    // Fill the window; the plugin scrolls inside itself. A plugin can opt into a
     // fixed height via rtx.plugin.ui.setHeight(px).
     wrap.style.cssText = 'padding:0;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;';
     const fr = document.createElement('iframe');
@@ -4180,13 +5776,14 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     fr.setAttribute('referrerpolicy', 'no-referrer');
     fr.style.cssText = 'border:0;display:block;width:100%;flex:1 1 auto;min-height:0;background:#14151c;';
     wrap.appendChild(fr); c.appendChild(wrap);
-    pluginMounted = { id, frame: fr, scopes: granted };
+    pluginMounts.set(id, { id, frame: fr, scopes: granted });
     (async () => {
       let entry = '';
       const entryFn = (tab.source === 'installed') ? bridge().pluginInstalledEntry : bridge().pluginDevEntry;
       try { entry = await entryFn.call(bridge(), id, tab.manifest.entry); } catch (e) {}
-      if (!pluginMounted || pluginMounted.id !== id) return;             // tab switched while loading
-      if (!entry) { c.innerHTML = '<div class="empty">Failed to load plugin entry file.</div>'; pluginMounted = null; return; }
+      const m = pluginMounts.get(id);
+      if (!m || m.frame !== fr) return;             // window closed / remounted while loading
+      if (!entry) { c.innerHTML = '<div class="empty">Failed to load plugin entry file.</div>'; pluginMounts.delete(id); return; }
       fr.srcdoc = pluginBuildSrcdoc(entry);
     })();
   }
@@ -4225,15 +5822,18 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     }
     pluginTabs = Object.keys(byId).map(k => byId[k]);
     renderSidebar();
-    // Dev hot-reload restored a plugin:* tab before this list existed: render it now
-    // that the plugin is real, or fall back to the default tab if it no longer is
-    // (renderPane on an unknown plugin id would show an empty pane with no rail entry).
-    if (String(activeTab).indexOf('plugin:') === 0) {
-      const id = String(activeTab).slice('plugin:'.length);
-      if (pluginTabs.some(p => p.id === id)) renderPane();
-      else {
-        console.log('[devreload] plugin tab ' + id + ' not in loaded list [' + pluginTabs.map(p => p.id).join(',') + '] - falling back');
-        activeTab = 'player'; renderSidebar(); renderPane();
+    // Windows restored (or opened) before this list existed now have real manifests:
+    // re-render each open plugin tab; drop any whose plugin no longer exists. Scans
+    // w.tabs, since a plugin can be docked alongside anything.
+    for (const w of Array.from(wm.wins.values())) {
+      for (const tid of w.tabs.slice()) {
+        if (String(tid).indexOf('plugin:') !== 0) continue;
+        const id = String(tid).slice('plugin:'.length);
+        if (pluginTabs.some(p => p.id === id)) { if (!w.min && w.tab === tid) renderPaneFor(w); }
+        else {
+          console.log('plugin window ' + id + ' not in loaded list [' + pluginTabs.map(p => p.id).join(',') + '] - closing');
+          wmCloseTabIn(w, tid);
+        }
       }
     }
   }
@@ -4360,16 +5960,18 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     if (!err) {
       pluginClearGranted(slug);       // require a fresh permission consent on every (re)install
       await loadPlugins();
-      activeTab = 'plugin:' + slug;   // jump to the freshly installed plugin (shows its permission prompt)
-      railCat = 'Plugins';            // keep the rail on the Plugins category
-      renderSidebar(); renderPane();
+      // Open the freshly installed plugin's window (shows its permission prompt).
+      const pt = allTabs().find(x => x.id === 'plugin:' + slug);
+      if (pt) openTab(pt);
     } else {
       btn.disabled = false; btn.textContent = 'Install';
-      const c = $('content');
-      const note = document.createElement('div');
-      note.style.cssText = 'color:#ef4444;font-size:0.82em;margin:8px 4px;';
-      note.textContent = 'Install failed: ' + err;
-      if (c.firstChild) c.insertBefore(note, c.firstChild); else c.appendChild(note);
+      const c = paneRoot('pluginbrowse');   // async continuation: resolve the browse window's pane
+      if (c) {
+        const note = document.createElement('div');
+        note.style.cssText = 'color:#ef4444;font-size:0.82em;margin:8px 4px;';
+        note.textContent = 'Install failed: ' + err;
+        if (c.firstChild) c.insertBefore(note, c.firstChild); else c.appendChild(note);
+      }
     }
   }
 
@@ -4377,9 +5979,10 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     btn.disabled = true; btn.textContent = '...';
     try { await bridge().pluginUninstallLocal(slug); } catch (e) {}
     pluginClearGranted(slug);         // forget consent so a reinstall re-prompts
-    if (activeTab === 'plugin:' + slug) activeTab = 'pluginbrowse';
+    wmCloseTabId('plugin:' + slug);
     await loadPlugins();
-    $('content').innerHTML = ''; renderPluginBrowse();
+    const bw = wmWinOf('pluginbrowse');
+    if (bw && !bw.min && bw.tab === 'pluginbrowse') { bw.pane.innerHTML = ''; renderPaneFor(bw); }
   }
 
   function attachBridge() {
@@ -4401,11 +6004,28 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     // highlights need a target window even with the grid disabled.
     pushOverlay();
     pluginBrokerInit();
-    renderSidebar();
-    renderPane();
-    // Dev hot-reload restored the working tab without a click, so openTab's entry
-    // actions never ran - run them here (first fetch + anything the tab arms).
-    try { if (window.__rtxDevReload) tabEntryKicks(activeTab); } catch (e) {}
+    renderMenubar();
+    applyToastPos();   // defaults until wmLayoutRestore supplies the saved placement
+    // Layout restore: layoutLoad returns "{}" until the account resolves (per-account
+    // store), so retry for up to a minute; then fall back to a fresh default layout.
+    // A user opening windows meanwhile marks the layout dirty and wins.
+    (async function bootLayout(tries) {
+      if (wm.restored) return;
+      if (wm.dirty) { wm.restored = true; wmSaveSoon(); return; }
+      // Plugin tabs must exist before the first restore attempt, or saved plugin
+      // windows are silently dropped by the allTabs() lookup.
+      if (!bootLayout._plugins) { bootLayout._plugins = 1; try { await loadPlugins(); } catch (e) {} }
+      let ok = false;
+      try { ok = await wmLayoutRestore(); } catch (e) {}
+      if (ok) return;
+      if (tries > 0 && !wm.dirty) { setTimeout(() => bootLayout(tries - 1), 2000); return; }
+      wm.restored = true;                       // enable saves from here on
+      if (!wm.wins.size && !wm.dirty) {
+        const t = allTabs().find(x => x.id === 'player');
+        if (t) openTab(t);                      // first run: a single Skills window
+      }
+    })(30);
+    wmRectsSoon();
     refresh();
     setInterval(refresh, 250);
     // Keep the companion var-capture observer ON at all times (not just on the Vars

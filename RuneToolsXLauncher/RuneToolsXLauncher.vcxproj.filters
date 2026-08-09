@@ -87,6 +87,9 @@
     <ClCompile Include="..\src\launcher\Dock.cpp">
       <Filter>Launcher</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\launcher\GameUi.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\launcher\Http.cpp">
       <Filter>Launcher</Filter>
     </ClCompile>

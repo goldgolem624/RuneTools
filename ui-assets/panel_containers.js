@@ -75,7 +75,7 @@
       }
     } catch (e) { /* keep previous */ }
     containersFetching = false;
-    if (activeTab === 'containers') renderContainers();
+    paneRun('containers', renderContainers);
   }
 
   function renderContainers() {

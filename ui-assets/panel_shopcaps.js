@@ -48,7 +48,7 @@
       await scLoadStructs();
     } catch (e) { /* keep previous */ }
     scFetching = false;
-    if (activeTab === 'shopcaps') renderShopCaps();
+    paneRun('shopcaps', renderShopCaps);
   }
   const scV = k => ((scVb && scVb[String(k)]) | 0);
   // Reset clocks: daily = next 00:00 UTC; weekly = next Wednesday 00:00 UTC.

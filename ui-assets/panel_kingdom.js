@@ -72,7 +72,7 @@
       }
     } catch (e) { /* keep previous */ }
     kdFetching = false;
-    if (activeTab === 'kingdom') renderKingdom();
+    paneRun('kingdom', renderKingdom);
   }
 
   const kdV = k => ((kdVb && kdVb[String(k)]) | 0);

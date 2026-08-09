@@ -63,7 +63,7 @@
         return { ...l, unlocked: ((raw >>> l.lo) & mask) >= l.th };
       });
     } finally { lodeFetching = false; }
-    if (activeTab === 'lodestones') renderLodestones();
+    paneRun('lodestones', renderLodestones);
   }
   function renderLodestones() {
     const c = $('content');
@@ -718,8 +718,8 @@
       if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), HIDEY_VARPS.join(','))); } catch (e) {} }
       hideyData = HIDEY.map(h => { const v = (((vp[h.vp] || 0) >>> 0) >>> h.b) & 3; return { ...h, state: v, built: v >= 1, filled: v === 2 }; });
     } finally { hideyFetching = false; }
-    if (activeTab === 'hideyholes') renderHidey();
-    else { const eel = $('clueEmote'); if (eel && eel.style.display !== 'none') renderEmotePanel(); }
+    paneRun('hideyholes', renderHidey);
+    { const eel = $('clueEmote'); if (eel && eel.style.display !== 'none') renderEmotePanel(); }
   }
   // Inline location map: ONE persistent map node inserted directly UNDER the clicked row.
   // hideyMapFor = the hole it is open for; clicking the same row again closes it. The node

@@ -72,10 +72,25 @@ bool                                  g_mapscenes_loaded = false;
 // World-map labels: a loc with a mapFunction (loc opcode 0x6B/107) draws a worldmap label icon
 // (bank/altar/teleport/...). mapFunction id -> sprite via the MAPLABELS config (index 2, archive 36,
 // opcode 1 = sprite). Memoized.
-struct MaplabelDef { int sprite = -1; int category = -1; std::string text; };
+// The icon is NOT always op 1. 1,917 of the 5,809 elements carry no sprite of their own and
+// draw one of the op-0x1a switch's CHILDREN instead (child 0 = the 23x23 HD plate, child 1 =
+// the 15x15 legacy glyph) -- which is why bank, altar, anvil, shortcut and fishing-spot symbols
+// drew nothing while the switch was being skipped over.
+struct MaplabelSwitch { int varbit = -1, varp = -1; std::vector<int> kids; };
+struct MaplabelDef {
+    int sprite = -1; int category = -1; std::string text;
+    int bg_sprite = -1;                        // op 0x19: backing plate behind the icon
+    MaplabelSwitch sw;                         // op 0x1a
+    std::unordered_map<int, int>         pi;   // op 0xF9 int params (4147 db row, 4148 coord, ...)
+    std::unordered_map<int, std::string> ps;   // op 0xF9 string params (4149 = tooltip body)
+};
 std::unordered_map<int, MaplabelDef>  g_maplabel_def;       // maplabel id -> {sprite, category, text}
 std::unordered_map<int, MapsceneIcon> g_maplabel_px;        // maplabel id -> decoded RGBA icon
 std::unordered_map<int, int>          g_loc_mapfunc;        // loc id -> mapFunction (maplabel) id (-1 = none)
+// loc id -> the loc's own name, filled by the same decode as the two above. The world map's
+// last-resort tooltip text for an element that has no name of its own -- see the pin blob comment
+// in MapWindowJson. DecodeLoc already parses it and used to throw it away.
+std::unordered_map<int, std::string>  g_loc_name;
 bool                                  g_maplabels_loaded = false;
 
 void EnsureInit() {
@@ -256,13 +271,18 @@ int LocMapsceneLocked(int loc_id) {
     auto hit = g_loc_mapscene.find(loc_id);
     if (hit != g_loc_mapscene.end()) return hit->second;
     int ms = -1, mf = -1;
+    std::string nm;
     auto* index = g_store ? g_store->Get(kIndexLocations) : nullptr;
     if (index) {
         auto bytes = index->ReadFile(loc_id >> 8, loc_id & 0xff);
-        if (!bytes.empty()) { LocDef def = DecodeLoc(loc_id, std::move(bytes)); ms = def.mapscene; mf = def.mapFunction; }
+        if (!bytes.empty()) {
+            LocDef def = DecodeLoc(loc_id, std::move(bytes));
+            ms = def.mapscene; mf = def.mapFunction; nm = def.name;
+        }
     }
     g_loc_mapscene[loc_id] = ms;
     g_loc_mapfunc[loc_id] = mf;
+    if (!nm.empty()) g_loc_name[loc_id] = nm;   // absent == no name; saves an entry per nameless loc
     return ms;
 }
 // loc id -> mapFunction (worldmap maplabel) id (-1 = none); shares LocMapsceneLocked's decode. Assumes g_mu held.
@@ -303,14 +323,52 @@ void EnsureMaplabelsLocked() {
                 case 0x0f: { int pc = s.ReadUnsignedByte(); s.skip(pc * 4); s.skip(4); s.skip(1); s.skip(4); s.skip(pc); break; }  // polygon
                 case 0x13: def.category = s.ReadUnsignedShort(); break;      // category
                 case 0x15: case 0x16: s.skip(4); break;
-                case 0x19: s.ReadBigSmart(); break;                          // background_sprite
-                case 0x1a: s.skip(9); break;                                 // legacy_switch
-                case 0xF9: { int n = s.ReadUnsignedByte(); for (int i = 0; i < n; ++i) { bool str = s.ReadUnsignedByte() == 1; s.Read24BitInt(); if (str) s.ReadString(); else s.ReadInt(); } break; }
+                case 0x19: def.bg_sprite = s.ReadBigSmart(); break;          // backing plate behind the icon
+                case 0x1a: {                             // icon SWITCH -- see MaplabelDef above.
+                    def.sw.varbit = s.ReadUnsignedShort();
+                    def.sw.varp   = s.ReadUnsignedShort();
+                    int n = s.ReadUnsignedByte();        // children = n + 1
+                    def.sw.kids.reserve((std::size_t)n + 1);
+                    for (int i = 0; i <= n; ++i) def.sw.kids.push_back(s.ReadUnsignedShort());
+                    break;                               // n is 1 in every record today, which is
+                }                                        // the only reason a flat skip(9) stayed aligned.
+                case 0xF9: { int n = s.ReadUnsignedByte(); for (int i = 0; i < n; ++i) { bool str = s.ReadUnsignedByte() == 1; int k = s.Read24BitInt(); if (str) def.ps[k] = s.ReadString(); else def.pi[k] = s.ReadInt(); } break; }
                 default: stop = true; break;                                 // unknown -> stop (alignment lost)
             }
         }
-        if (def.sprite >= 0 || !def.text.empty()) g_maplabel_def[fid] = std::move(def);
+        // Keep every record that can produce a pixel or a word. The old test (sprite or text)
+        // dropped 2,437 of the 5,809 elements -- including 579 of the 594 ids the world actually
+        // places -- because their icon hangs off the 0x1a switch and their tooltip off a param.
+        if (def.sprite >= 0 || !def.text.empty() || !def.sw.kids.empty()
+            || def.category >= 0 || !def.pi.empty() || !def.ps.empty())
+            g_maplabel_def[fid] = std::move(def);
     }
+}
+// Every sprite an element could draw, best first: its own if it has one, then each switch child
+// (child 0 is the 23x23 HD plate, child 1 the 15x15 legacy glyph). Returns ALL candidates rather
+// than one pick, because either can be absent: an element whose HD child carries no sprite must
+// still fall back to the legacy one, and a sprite id that exists can still fail to decode, so the
+// panel needs a second option to try. Assumes g_mu held.
+void MaplabelSpritesLocked(int id, std::vector<int>& out) {
+    out.clear();
+    EnsureMaplabelsLocked();
+    auto it = g_maplabel_def.find(id);
+    if (it == g_maplabel_def.end()) return;
+    auto add = [&out](int s) {
+        if (s < 0) return;
+        for (int v : out) if (v == s) return;
+        out.push_back(s);
+    };
+    add(it->second.sprite);
+    for (int kid : it->second.sw.kids) {
+        auto ch = g_maplabel_def.find(kid);
+        if (ch != g_maplabel_def.end()) add(ch->second.sprite);
+    }
+}
+int MaplabelSpriteLocked(int id, bool /*prefer_hd*/) {
+    std::vector<int> s;
+    MaplabelSpritesLocked(id, s);
+    return s.empty() ? -1 : s.front();
 }
 // Decoded RGBA icon for a maplabel id (lazy; failures cached empty). Assumes g_mu held.
 const MapsceneIcon& MaplabelIconLocked(int maplabel_id) {
@@ -1592,6 +1650,11 @@ void LoadQuestsLocked() {
         if (q.members) out += ",\"m\":1";
         if (q.has_diff) out += ",\"d\":" + std::to_string(q.difficulty);
         out += ",\"p\":" + std::to_string(q.points);
+        // Journal id (quest config param 1345), already parsed for the legacy-drop filter above and
+        // otherwise unused. A map element's requirement struct names a prerequisite quest by its
+        // JOURNAL id, not by the archive-35 file id this list is keyed on, so without this the
+        // world map cannot turn "requires quest 204" into "Plague's End".
+        if (q.journal >= 0) out += ",\"j\":" + std::to_string(q.journal);
         if (q.vp >= 0) {
             out += ",\"v\":[" + std::to_string(q.vp) + "," + std::to_string(q.vp_start) + "," +
                    std::to_string(q.vp_end) + "]";
@@ -1895,8 +1958,15 @@ static int ConfigColourLocked(int archive, int id) {
                 else if (op == 1)  { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col  = (r << 16) | (g << 8) | b; }
                 else if (op == 7)  { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col2 = (r << 16) | (g << 8) | b; }   // secondary RGB
                 else if (op == 13) { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col3 = (r << 16) | (g << 8) | b; }   // ternary RGB
-                else if (op == 3)  { material = s.ReadUnsignedShort(); }
-                else if (op == 2 || op == 9) s.ReadUnsignedShort();               // u16 fields
+                // The material id lives at a DIFFERENT opcode per archive: overlays (4) carry the
+                // material at 3 and the texture scale at 9; underlays (1) carry the material at 2
+                // and the scale at 3. Reading 3 as the material for both made every underlay's
+                // "material" actually a scale (measured 48..2048, overwhelmingly 512/256/1024)
+                // and discarded the real texture id. Byte consumption is unchanged: all three
+                // fields are u16, so the walk stayed aligned and the bug was invisible.
+                else if (op == 3)  { int v = s.ReadUnsignedShort(); if (archive == 4) material = v; }
+                else if (op == 2)  { int v = s.ReadUnsignedShort(); if (archive == 1) material = v; }
+                else if (op == 9)  s.ReadUnsignedShort();                          // texture scale
                 else if (op == 11 || op == 14 || op == 16) s.ReadUnsignedByte();  // u8 fields
                 else if (op == 4 || op == 5 || op == 8 || op == 10 || op == 12) { /* bool flag, no payload */ }
                 else break;                                                       // unknown opcode -> length unknown, stop
@@ -1922,7 +1992,12 @@ static int ConfigColourLocked(int archive, int id) {
             while (lo <= hi) { int mid = (lo + hi) / 2;
                 if (kOverlayMatIds[mid] == material) { found = mid; break; }
                 if (kOverlayMatIds[mid] < material) lo = mid + 1; else hi = mid - 1; }
-            if (found >= 0) { cache[key] = kOverlayMatCols[found]; return kOverlayMatCols[found]; }
+            // A ZERO entry is a failed texture average, not a black overlay. Thirteen of the
+            // generated materials carry 0x000000 (see OverlayTexColours.h); taking those
+            // literally painted overlay 561 - 17% of the Anachronia island - pure black.
+            // Fall through to the flat RGB instead, which is the neutral tint we came here
+            // to improve on but is still enormously better than a black hole in the map.
+            if (found >= 0 && kOverlayMatCols[found] != 0) { cache[key] = kOverlayMatCols[found]; return kOverlayMatCols[found]; }
         }
     }
     // Overlays (archive 4) take SECONDARY colour first (per the game map); everything
@@ -2204,7 +2279,22 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     }
     const int HALF = half, TS = ts;
     const int WT = 2 * HALF, W = WT * TS;
-    std::vector<unsigned char> rgba((size_t)W * W * 4, 0);
+    // Void is pre-filled with the panels' backdrop colour rather than left at {0,0,0,0}.
+    // EncodePngRgb DROPS alpha (it documents the render as "fully opaque"), so transparent
+    // void encoded as OPAQUE BLACK: every chunk holding even one real tile stamped a black
+    // rectangle over its void, while chunks with no data at all fell through to the canvas
+    // backdrop - which is what produced the hard rectangular seams at chunk boundaries.
+    // Filling here also fixes the icon blend below, which composites src over dst and so
+    // haloed dark wherever a map icon overhung void. Must stay byte-identical to the JS
+    // backdrop (panel_worldmap.js wmDraw / .wm-stage) or the seams come straight back.
+    constexpr int kMapVoidCol = 0x0B0D12;
+    std::vector<unsigned char> rgba((size_t)W * W * 4);
+    for (std::size_t p = 0; p < rgba.size(); p += 4) {
+        rgba[p]     = (kMapVoidCol >> 16) & 0xff;
+        rgba[p + 1] = (kMapVoidCol >> 8) & 0xff;
+        rgba[p + 2] = kMapVoidCol & 0xff;
+        rgba[p + 3] = 255;
+    }
 
     // Column shift (bridge flag): settings bit 0x2 on PLANE 1 lifts the whole column one plane,
     // so the tile you SEE on plane p is stored at p+1. Same rule as EffPlaneLocked (heights).
@@ -2215,6 +2305,56 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         const auto& s = RegionTilesLocked(gx >> 6, gy >> 6).settings;
         if (s.empty()) return plane;
         return (s[(std::size_t)(64 + (gx & 63)) * 64 + (gy & 63)] & 0x2) ? plane + 1 : plane;
+    };
+    // Does this tile actually put anything on screen? An underlay always does. An overlay only
+    // does if it resolves to a colour: overlays 42 and 43 are the cache's authored "there is no
+    // ground here" markers, whose whole config is the 0xFF00FF magenta sentinel with no secondary
+    // colour and no material. Same resolution the paint loop uses, kept in step with it.
+    auto drawableTile = [&](int u, int o) -> bool {
+        if (u >= 1) return true;
+        if (o < 1)  return false;
+        const int c = ConfigColourLocked(4, o - 1);
+        if (c == 0xFF00FF) return false;                  // transparent overlay = a hole
+        if (o == 112 && c == 0xFFFFFF) return true;       // ocean is remapped to blue, not dropped
+        return c >= 0;
+    };
+    // Plane 0 explicitly says "hole" here: an authored void, not merely an absent tile. Nothing
+    // may be promoted over it.
+    auto groundHoleAt = [&](const MapTileData& td, int gx, int gy) -> bool {
+        const std::size_t b0 = (std::size_t)(gx & 63) * 64 + (gy & 63);
+        return (td.underlay[b0] >= 1 || td.overlay[b0] >= 1) &&
+               !drawableTile(td.underlay[b0], td.overlay[b0]);
+    };
+    // Highest plane 1..3 at this column that is flagged "belongs on the GROUND map" (settings bit
+    // 0x8) and actually carries ground; 0 when there is none. The LOC-side companion to the
+    // promotion tileAt already does for TERRAIN below - without it the two halves disagree and a
+    // promoted city renders its ground with none of its objects on it.
+    //
+    // Prifddinas is the case that exposed this. Its geometry lives on plane 1 and the cache ships a
+    // near-duplicate copy on plane 3 flagged 0x8 purely so the ground map has something to draw
+    // (region 34,52: plane 0 has no drawn tiles at all, 2009 tiles flagged on plane 3, and plane 3
+    // matches plane 1 on 1630 of 2010 tiles). Terrain promoted and drew; all 5,728 plane-1 locs
+    // failed the filter below. Ithell kept 0 of its 14 map-scene icons and 0 of 557 wall lines.
+    //
+    // The worldmap index does NOT remap Prifddinas - archive 1 file 231 is all srcPlane 0 ->
+    // dstPlane 0 once its 11-byte records are parsed correctly. The 0x8 duplicate is the whole
+    // mechanism, which is why this rule has to exist rather than reading a remap table.
+    //
+    // Accepts any plane UP TO the promoted one, not the promoted plane alone: the flagged copy and
+    // the locs are on different planes (3 and 1 here), which is the whole reason a
+    // p.plane == promoted test does nothing.
+    auto promoPlaneAt = [&](int gx, int gy) -> int {
+        if (plane != 0 || gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return 0;
+        const MapTileData& td = RegionTilesLocked(gx >> 6, gy >> 6);
+        if (td.settings.empty() || td.underlay.empty()) return 0;
+        if (groundHoleAt(td, gx, gy)) return 0;      // terrain won't promote here, so nor may locs
+        for (int p = 3; p >= 1; --p) {
+            std::size_t i2 = (std::size_t)(p * 64 + (gx & 63)) * 64 + (gy & 63);
+            if (!(td.settings[i2] & 0x8)) continue;
+            if (!drawableTile(td.underlay[i2], td.overlay[i2])) continue;
+            return p;
+        }
+        return 0;
     };
     auto tileAt = [&](int gx, int gy, int& ul, int& ov, int& sh) {
         ul = ov = sh = -1;
@@ -2233,11 +2373,16 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
         // Settings bit 0x8 marks an upper-plane tile that belongs on the GROUND map: cave
         // rims, overhangs and raised structures. Without this they read as void and paint
         // black. Highest flagged plane wins, matching the order the tiles are drawn in.
-        if (plane == 0 && !td.settings.empty()) {
+        // An authored hole on plane 0 outranks the promotion: the cache is saying "no ground here",
+        // and a flagged upper plane must not fill it in. 6,317 tiles world-wide had their void
+        // overwritten this way, which is what laid terrain across every moat and chasm - the
+        // Wilderness moated fortress, the Clan Wars arena, the walkways in Small cave.
+        if (plane == 0 && !td.settings.empty() && !groundHoleAt(td, gx, gy)) {
             for (int p = 3; p >= 1; --p) {
                 std::size_t i2 = (std::size_t)(p * 64 + (gx & 63)) * 64 + (gy & 63);
                 if (!(td.settings[i2] & 0x8)) continue;
-                if (td.underlay[i2] < 1 && td.overlay[i2] < 1) continue;
+                // An INVISIBLE upper tile is not content worth promoting (~3,280 tiles).
+                if (!drawableTile(td.underlay[i2], td.overlay[i2])) continue;
                 ul = td.underlay[i2]; ov = td.overlay[i2]; sh = td.shape[i2];
                 break;
             }
@@ -2431,7 +2576,16 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             if (ocol == 0xFF00FF) ocol = -1;                       // magenta = transparent overlay
             if (ov == 112 && ocol == 0xFFFFFF) ocol = 0x3D4E63;    // ocean (white -> blue, per the game map)
             if (deck && ucol < 0 && ocol < 0) ucol = 0x6E5436;     // shifted tile with no colourable floor (plank piers) -> deck wood
-            if (ucol < 0 && ocol < 0) ucol = 0x534E47;             // tile HAS data but no resolvable colour (textured city/dungeon floor) -> neutral, not black
+            // A tile whose ONLY data is an invisible overlay is an authored HOLE, and must stay
+            // backdrop. This used to paint 0x534E47 on the theory that such a tile was a textured
+            // city/dungeon floor; no tile in the live cache supports that. Every plane-0 tile that
+            // reaches here carries overlay 42 or 43 (144,393 and 28 of them) - and overlay 42's
+            // whole config is `05 01 ff00ff 0b 7f 00`: magenta, no secondary colour, no material.
+            // That is Jagex's "there is no ground here" marker, the same 0xFF00FF sentinel already
+            // honoured just above and in the underlay pass. Filling it is what put terrain across
+            // every chasm and moat, and painted five entire map squares that are 100% overlay 42
+            // ("Dream world", "Korasi's dream", "Silas's Dream") as solid grey slabs.
+            if (ucol < 0 && ocol < 0) continue;                    // authored void -> backdrop
             any = true;
             const double tf = shadeF[(size_t)(wx + 1) * BW + (wy + 1)];
             // Overlays (water/roads/floors) stay flat per tile; the underlay ground gets the
@@ -2441,6 +2595,23 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             const bool smoothUl = (TS >= 8) && (ul >= 1);
             const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
+            // Relief ceiling that cannot CLIP. Prifddinas paths are #EEEEEE straight from the
+            // cache (overlay 135, op7); at the fixed 1.07 ceiling that is 254.66 -> 255, so the
+            // lit half of every path tile went pure white and the map read as bleached. Cap the
+            // ceiling at whatever leaves the brightest channel just under 255: dark overlays keep
+            // the full band, near-white ones simply get no highlight, which is what the game
+            // shows anyway. Black is unaffected either way, since shade() is a multiply.
+            double ovHi = 1.07;
+            if (ocol >= 0) {
+                int mxc = (ocol >> 16) & 0xff;
+                if (((ocol >> 8) & 0xff) > mxc) mxc = (ocol >> 8) & 0xff;
+                if ((ocol & 0xff) > mxc) mxc = ocol & 0xff;
+                if (mxc > 0) {
+                    ovHi = 254.5 / (double)mxc;
+                    if (ovHi > 1.07) ovHi = 1.07;
+                    if (ovHi < 1.0)  ovHi = 1.0;
+                }
+            }
             // Overlays take a CLAMPED relief light, not the full one. Unshaded (which is what
             // the game map does) they read as solid blocks once a tile is 16-32 px; fully shaded,
             // they bleach white along height cliffs - Prifddinas, a whole raised platform, was
@@ -2460,7 +2631,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
                             // Overlays now take a GENTLE, interpolated light instead of being
                             // flat: enough to give a path or a swamp patch shape across the
                             // tile, tight enough not to bleach at cliffs.
-                            col = shade(ocol, sampleShade(wx, wy, a, bb, 0.93, 1.07));
+                            col = shade(ocol, sampleShade(wx, wy, a, bb, 0.93, ovHi));
                         }
                         else col = ocol;
                     }
@@ -2509,6 +2680,24 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     //      light WALL lines from type-0/2/9 locs. map parity: a loc with a map-scene draws its icon INSTEAD
     //      of a wall. One pass over the regions' locs handles both. ----
     std::vector<unsigned char> objsOut;   // objects layer: scenery footprints (wtx u16, wty u16, dx u8, dy u8, id u32) for the toggleable client overlay
+    // Map ELEMENT pins: (wtx u16, wty u16, maplabel id u16, loc id u32) LE, 10 bytes each.
+    // Deliberately carries no sprite/category/text -- those are per-ELEMENT, not per-placement, and
+    // all 5,809 of them come down once via bridge().mapLabels(). Repeating them per chunk would
+    // multiply the payload for no gain.
+    //
+    // The loc id IS per-placement, so it has to travel here. It is the tooltip's name of last
+    // resort: 22 elements carry no name by any route (no param 4149, no op-3 text, no category in
+    // enum 8586) and hover as the "MAP SYMBOL" placeholder, which is 597 pins. The placing loc's
+    // own name rescues 142 of them - including the 107-pin "Dungeon exit" cluster - and gets none
+    // of them wrong. It cannot rescue the other 450: elements 1089/4129/709 sit on locs that
+    // genuinely have no op-2 name (verified byte-for-byte on loc 12678), so those stay placeholder
+    // until someone finds where the game gets their text.
+    //
+    // Per-PLACEMENT, not the element's majority loc name. The majority shortcut needs no blob
+    // change and names more pins, but it stamps one loc's name onto unrelated placements of the
+    // same element - measured at 36 mislabelled, e.g. "Impling manager" spread over 30 pins that
+    // are not one.
+    std::vector<unsigned char> iconsOut;
     {
         EnsureMapscenesLocked();
         std::vector<std::pair<int, int>> wl;
@@ -2519,9 +2708,37 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
                 const auto& locs = RegionLocationsLocked(rgx, rgy);
                 for (const auto& p : locs) {
                     int gx = rgx * 64 + p.x, gy = rgy * 64 + p.y;
+                    // Map ELEMENT pins are exported BEFORE the plane filter below, and from every
+                    // plane. The game's world map shows a symbol wherever it is in the building --
+                    // a bank or altar on an upper floor still appears on the ground view -- but
+                    // this loop's filter is built for TERRAIN (walls, mapscenes), which genuinely
+                    // is per-plane. Filtering symbols with it dropped every one that happens to
+                    // live above the floor you are looking at, which is most of them indoors.
+                    // The panel dedupes a symbol that repeats across planes at the same tile.
+                    {
+                        int mfAny = LocMapFunctionLocked(p.id);
+                        if (mfAny >= 0) {
+                            int wtxA = gx - (cx - HALF), wtyA = gy - (cy - HALF);
+                            if (wtxA >= 0 && wtxA < WT && wtyA >= 0 && wtyA < WT) {
+                                iconsOut.push_back((unsigned char)(wtxA & 0xff)); iconsOut.push_back((unsigned char)((wtxA >> 8) & 0xff));
+                                iconsOut.push_back((unsigned char)(wtyA & 0xff)); iconsOut.push_back((unsigned char)((wtyA >> 8) & 0xff));
+                                iconsOut.push_back((unsigned char)(mfAny & 0xff)); iconsOut.push_back((unsigned char)((mfAny >> 8) & 0xff));
+                                unsigned lid = (unsigned)p.id;
+                                iconsOut.push_back((unsigned char)(lid & 0xff)); iconsOut.push_back((unsigned char)((lid >> 8) & 0xff));
+                                iconsOut.push_back((unsigned char)((lid >> 16) & 0xff)); iconsOut.push_back((unsigned char)((lid >> 24) & 0xff));
+                            }
+                            continue;   // an element replaces the wall, on any plane
+                        }
+                    }
                     // Shifted columns also pull their plane+1 locs down (bridge rails, the walls
-                    // and map icons on the Daemonheim platform).
-                    if (p.plane != plane && !(p.plane == plane + 1 && effPlaneAt(gx, gy) != plane)) continue;
+                    // and map icons on the Daemonheim platform), and a column whose ground map is
+                    // PROMOTED from an upper plane brings that plane's locs with it (see
+                    // promoPlaneAt) - otherwise Prifddinas and its like draw as empty ground.
+                    // promoPlaneAt is only reached for a loc the first two rules already rejected,
+                    // so the common case still costs one effPlaneAt.
+                    if (p.plane != plane
+                        && !(p.plane == plane + 1 && effPlaneAt(gx, gy) != plane)
+                        && !(plane == 0 && p.plane >= 1 && p.plane <= promoPlaneAt(gx, gy))) continue;
                     int wtx = gx - (cx - HALF), wty = gy - (cy - HALF);
                     if (wtx < 0 || wtx >= WT || wty < 0 || wty >= WT) continue;
                     int px0 = wtx * TS, py0 = ((WT - 1) - wty) * TS;
@@ -2536,32 +2753,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
                         objsOut.push_back((unsigned char)(oid & 0xff)); objsOut.push_back((unsigned char)((oid >> 8) & 0xff));
                         objsOut.push_back((unsigned char)((oid >> 16) & 0xff)); objsOut.push_back((unsigned char)((oid >> 24) & 0xff));
                     }
-                    int mf = LocMapFunctionLocked(p.id);
-                    if (mf >= 0) {                                     // worldmap MAPLABEL icon (bank/altar/teleport/shop/...)
-                        const MapsceneIcon& lic = MaplabelIconLocked(mf);
-                        if (lic.w > 0 && lic.h > 0 && !lic.rgba.empty()) {
-                            int dw = lic.w, dh = lic.h;                // worldmap icons draw at native sprite size, capped
-                            int maxpx = 5 * TS; if (dw > maxpx) dw = maxpx; if (dh > maxpx) dh = maxpx;
-                            if (dw < 6) dw = 6; if (dh < 6) dh = 6;
-                            int lcx = px0 + TS / 2, lcy = py0 + TS / 2, ix0 = lcx - dw / 2, iy0 = lcy - dh / 2;
-                            for (int yy = 0; yy < dh; ++yy) {
-                                int iy = iy0 + yy; if (iy < 0 || iy >= W) continue;
-                                int sy = yy * lic.h / dh;
-                                for (int xx = 0; xx < dw; ++xx) {
-                                    int ix = ix0 + xx; if (ix < 0 || ix >= W) continue;
-                                    const std::uint8_t* sp = &lic.rgba[((size_t)sy * lic.w + (xx * lic.w / dw)) * 4];
-                                    int a = sp[3]; if (a < 8) continue;
-                                    size_t pp = ((size_t)iy * W + ix) * 4;
-                                    rgba[pp]     = (std::uint8_t)((sp[0] * a + rgba[pp]     * (255 - a)) / 255);
-                                    rgba[pp + 1] = (std::uint8_t)((sp[1] * a + rgba[pp + 1] * (255 - a)) / 255);
-                                    rgba[pp + 2] = (std::uint8_t)((sp[2] * a + rgba[pp + 2] * (255 - a)) / 255);
-                                    rgba[pp + 3] = 255;
-                                }
-                            }
-                            any = true;
-                            continue;
-                        }
-                    }
+                    // (map ELEMENT pins were exported above, before the plane filter)
                     int ms = LocMapsceneLocked(p.id);
                     if (ms >= 0) {                                     // map-scene icon: composite, no wall
                         const MapsceneIcon& ic = MapsceneIconLocked(ms);
@@ -2602,7 +2794,17 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             }
         }
     }
-    if (!any) return "{}";
+    // Emptiness is decided AFTER the collision grids below used to be built, which meant any
+    // window returning "{}" silently dropped its walkability data too. `any` tracks only
+    // whether there is something to LOOK at; a window can be visually blank yet still carry
+    // scenery footprints the objects overlay needs, so objs is part of the test now.
+    // Deliberately NOT part of it: "has a blocked tile". Void counts as full-blocked, so that
+    // test is true for every empty window in the world and would turn each one into a
+    // multi-hundred-KB collision payload instead of two bytes.
+    // iconsOut is part of the test: map elements no longer set `any` (they are exported, not
+    // painted), so a window whose only content is pins would otherwise report itself empty and
+    // the panel would cache it as "no data here" and never draw them.
+    if (!any && objsOut.empty() && iconsOut.empty()) return "{}";
     // Per-tile "cannot stand here" grid for the window (1 = full-blocked: trees, scenery footprints, void,
     // diagonal walls). Edge-only walls are NOT counted (the tile is still standable). Row-major by wx
     // (index = wx*WT + wy); the panel uses it so suggested scan tiles are always walkable.
@@ -2620,9 +2822,13 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     std::string out = "{\"w\":" + std::to_string(W) + ",\"t\":" + std::to_string(TS) +
            ",\"h\":" + std::to_string(HALF) + ",\"wt\":" + std::to_string(WT) +
            ",\"cx\":" + std::to_string(cx) + ",\"cy\":" + std::to_string(cy) + ",\"p\":" + std::to_string(plane) +
-           ",\"png\":\"" + Base64Std(EncodePngRgb(rgba.data(), W, W)) + "\",\"blk\":\"" + Base64Std(blkOut) +
+           // A visually blank window that only reached here for its objs/collision ships NO
+           // png: it would be a whole chunk of flat backdrop. Consumers already treat a
+           // missing png as "no terrain" and fall back to the canvas backdrop.
+           ",\"png\":\"" + (any ? Base64Std(EncodePngRgb(rgba.data(), W, W)) : std::string()) + "\",\"blk\":\"" + Base64Std(blkOut) +
            "\",\"nomove\":\"" + Base64Std(nomove) +
-           "\",\"objs\":\"" + Base64Std(objsOut) + "\"}";
+           "\",\"objs\":\"" + Base64Std(objsOut) +
+           "\",\"icons\":\"" + Base64Std(iconsOut) + "\"}";
     g_mapWinCache.push_front(MapWinCacheEntry{ cx, cy, plane, half, ts, out });
     while (g_mapWinCache.size() > kMapWinCacheMax) g_mapWinCache.pop_back();
     return out;
@@ -3014,6 +3220,187 @@ std::string StructParamsJson(int structId) {
         out += "\"" + std::to_string(kv.first) + "\":" + jstr(kv.second);
     }
     out += "}}";
+    return out;
+}
+
+namespace {
+// Shared JSON string escaper for the world-map element tables below.
+std::string JStr(const std::string& v) {
+    std::string r = "\"";
+    for (char c : v) {
+        if (c == '"' || c == '\\') r += '\\';
+        if ((unsigned char)c >= 0x20) r += c;
+    }
+    r += '"';
+    return r;
+}
+}  // namespace
+
+// Every world-map ELEMENT, sent to the panel once at open: id -> {s sprite, c category,
+// t op-3 text, n param 4149 (the tooltip body the game prefers over the category name)}.
+// Per-ELEMENT data lives here rather than in each chunk's icons blob because there are only
+// ~5,800 of them in the entire game, against thousands of placements.
+std::string MapLabelsJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    EnsureMaplabelsLocked();
+    std::string out = "{";
+    bool first = true;
+    std::vector<int> sprites;
+    for (const auto& kv : g_maplabel_def) {
+        MaplabelSpritesLocked(kv.first, sprites);
+        int sp = sprites.empty() ? -1 : sprites.front();
+        const auto& d = kv.second;
+        auto n4149 = d.ps.find(4149);
+        // Nothing to draw and nothing to say -> not worth the payload.
+        if (sp < 0 && d.text.empty() && d.category < 0 && n4149 == d.ps.end()) continue;
+        out += first ? "" : ","; first = false;
+        out += "\"" + std::to_string(kv.first) + "\":{\"s\":" + std::to_string(sp) +
+               ",\"c\":" + std::to_string(d.category);
+        // Alternate sprite: the panel tries this when the preferred one yields no image.
+        if (sprites.size() > 1) out += ",\"s2\":" + std::to_string(sprites[1]);
+        if (!d.text.empty())      out += ",\"t\":" + JStr(d.text);
+        if (n4149 != d.ps.end())  out += ",\"n\":" + JStr(n4149->second);
+        // Int params, verbatim. 4147 is the DB key the game's per-category tooltip layouts look
+        // up (fishing spots, trees, mining sites...) and 4148 is a packed coordgrid for dungeon
+        // links, so the panel needs them to build the structured tooltips the game shows.
+        if (!d.pi.empty()) {
+            out += ",\"p\":{";
+            bool pf = true;
+            for (const auto& p : d.pi) {
+                out += pf ? "" : ","; pf = false;
+                out += "\"" + std::to_string(p.first) + "\":" + std::to_string(p.second);
+            }
+            out += "}";
+        }
+        out += "}";
+    }
+    out += "}";
+    return out;
+}
+
+// Every map-symbol PLACEMENT in the world, for search: 7 bytes each, little-endian
+// (element u16, x u16, y u16, plane u8), base64'd as {"n":count,"b":"..."}.
+//
+// Search has to reach symbols the panel has never fetched a chunk for, so this walks every
+// region once. It deliberately does NOT go through RegionLocationsLocked: that memoises each
+// region's placements, and touching all ~5,000 of them would pin the entire world's locs in
+// memory for a one-shot index. Decode, harvest, discard. The result is memoised as a string,
+// so the walk happens once per session and the panel persists it across sessions itself.
+std::string MapSymbolsJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    EnsureMaplabelsLocked();
+    auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
+    if (!index || !index->ready()) return "{\"n\":0,\"b\":\"\"}";
+    const auto& entries = index->ref().entries();
+    std::string raw;
+    int n = 0;
+    for (int archive = 0; archive < (int)entries.size(); ++archive) {
+        if (entries[archive].valid_file_ids.empty()) continue;
+        const int rx = archive & 127, ry = archive >> 7;
+        if (rx < 0 || rx > 127 || ry < 0 || ry > 255) continue;
+        for (int file : {0, 1}) {                       // 0 = land, 1 = water
+            auto bytes = index->ReadFile(archive, file);
+            if (bytes.empty()) continue;
+            auto part = DecodeMapLocations(std::move(bytes));
+            for (const auto& p : part) {
+                int ml = LocMapFunctionLocked(p.id);
+                if (ml < 0) continue;
+                const int gx = rx * 64 + p.x, gy = ry * 64 + p.y;
+                if (gx < 0 || gy < 0 || gx > 65535 || gy > 65535) continue;
+                raw.push_back((char)(ml & 0xff));  raw.push_back((char)((ml >> 8) & 0xff));
+                raw.push_back((char)(gx & 0xff));  raw.push_back((char)((gx >> 8) & 0xff));
+                raw.push_back((char)(gy & 0xff));  raw.push_back((char)((gy >> 8) & 0xff));
+                raw.push_back((char)(p.plane & 0xff));
+                ++n;
+            }
+        }
+    }
+    std::vector<unsigned char> bytes(raw.begin(), raw.end());
+    cached = "{\"n\":" + std::to_string(n) + ",\"b\":\"" + Base64Std(bytes) + "\"}";
+    return cached;
+}
+
+// Loc id -> the placing loc's own name, for the world map's last-resort tooltip text. Only locs
+// that actually carry a mapFunction are included: ~349 named entries of the 1,051 such locs, a few
+// KB, fetched once at panel open. Sending it up front rather than resolving per hover keeps the
+// tooltip synchronous - a round-trip on mouseover would land after the cursor had moved on.
+//
+// Piggybacks on MapSymbolsJson's world walk instead of decoding all ~89k locs: that walk already
+// calls LocMapFunctionLocked for every placement, which fills g_loc_mapfunc and g_loc_name in the
+// same decode. Called BEFORE the lock below - it takes g_mu itself, and its result is cached after
+// the first call, so this is a map read on every path but the first.
+std::string MapLocNamesJson() {
+    MapSymbolsJson();
+    std::lock_guard<std::mutex> lk(g_mu);
+    std::string out = "{";
+    bool first = true;
+    for (const auto& kv : g_loc_name) {
+        if (kv.second.empty()) continue;
+        auto mf = g_loc_mapfunc.find(kv.first);
+        if (mf == g_loc_mapfunc.end() || mf->second < 0) continue;
+        out += first ? "" : ","; first = false;
+        out += "\"" + std::to_string(kv.first) + "\":" + JStr(kv.second);
+    }
+    out += "}";
+    return out;
+}
+
+// Map element CATEGORY names -- the caps header the game shows above a map tooltip ("BANK",
+// "SHORTCUT", "DUNGEON"). Enum 8586 maps category id -> StructType id, and struct param 596 is
+// the display name. Resolved here rather than in JS because it is 167 struct reads; one call
+// returning a few KB beats 167 bridge round-trips at panel open.
+std::string MapCategoriesJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* enums   = g_store ? g_store->Get(kIndexEnums)   : nullptr;
+    auto* structs = g_store ? g_store->Get(kIndexStructs) : nullptr;
+    if (!enums || !enums->ready() || !structs || !structs->ready()) return "{}";
+    constexpr int kMapCatEnum = 8586;
+    auto bytes = enums->ReadFile(kMapCatEnum >> 8, kMapCatEnum & 0xff);
+    if (bytes.empty()) return "{}";
+    // Same opcode walk as the panel-mount registry: int->int maps are ops 6 and 8.
+    std::vector<std::pair<int, int>> pairs;
+    InputStream s(std::move(bytes));
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if      (op == 1 || op == 101) s.ReadUnsignedByte();
+        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        else if (op == 3) s.ReadString();
+        else if (op == 4) s.ReadInt();
+        else if (op == 5) { int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadString(); } }
+        else if (op == 6) { int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { int k = s.ReadInt(); pairs.emplace_back(k, s.ReadInt()); } }
+        else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
+        else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); pairs.emplace_back(k, s.ReadInt()); } }
+        else if (op == 131 || op == 207 || op == 209) { }
+        else break;
+    }
+    const auto& entries = structs->ref().entries();
+    std::string out = "{";
+    bool first = true;
+    for (const auto& [cat, structId] : pairs) {
+        if (structId < 0) continue;
+        int a = structId >> 5, f = structId & 31;
+        if (a < 0 || a >= (int)entries.size()) continue;
+        DecodedStruct ds;
+        if (!DecodeStructFile(structs->ReadFile(a, f), ds)) continue;
+        auto nm = ds.strs.find(596);
+        if (nm == ds.strs.end() || nm->second.empty()) continue;
+        out += first ? "" : ","; first = false;
+        out += "\"" + std::to_string(cat) + "\":{\"n\":" + JStr(nm->second);
+        auto grp = ds.ints.find(597);                       // legend grouping, for a filter UI
+        if (grp != ds.ints.end()) out += ",\"g\":" + std::to_string(grp->second);
+        out += "}";
+    }
+    out += "}";
     return out;
 }
 
@@ -3471,7 +3858,12 @@ std::string SpriteDataUrl(int sprite_id) {
             if (!b64.empty()) url = "data:image/png;base64," + b64;
         }
     }
-    g_sprite_cache[sprite_id] = url;
+    // Only a SUCCESS is memoised. Caching the empty string poisoned the entry permanently: a
+    // request that arrives before the sprites index is open (or during any transient failure)
+    // returned empty, and every later request for that sprite was then served the cached empty
+    // rather than retrying. With the world map asking for hundreds of icon sprites the moment it
+    // opens, that silently and permanently blanked whichever ones lost the race.
+    if (!url.empty()) g_sprite_cache[sprite_id] = url;
     return url;
 }
 

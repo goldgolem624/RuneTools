@@ -5442,7 +5442,7 @@ async function fetchDungeoneering() {
     if (inDung) dungSaveMarks();   // marks survive a panel rebuild (restored above)
     dungData = d;
   } finally { dungFetching = false; }
-  if (activeTab === 'dung') renderDungeoneering();
+  paneRun('dung', renderDungeoneering);
 }
 
 // Party roster list + collapsible "Party best" hiscore-validation grid. Shared by the
@@ -5531,7 +5531,8 @@ function dungPartyBestHtml(party92, alwaysOpen) {
 }
 
 function renderDungeoneering() {
-  const c = $('content');
+  const c = paneRoot('dung');
+  if (!c) return;
   let wrap = $('dgWrap');
   if (!wrap) {
     c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'dgWrap'; wrap.className = 'pk-wrap'; c.appendChild(wrap); dungSig = '';
@@ -5590,7 +5591,7 @@ function renderDungeoneering() {
       document.addEventListener('keydown', ev => {
         if (ev.key !== 'h' && ev.key !== 'H') return;
         if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA')) return;
-        if (typeof activeTab === 'undefined' || activeTab !== 'dung' || !dungHoverCell) return;
+        if (typeof paneVisible === 'undefined' || !paneVisible('dung') || !dungHoverCell) return;
         dungRouteTarget = (dungRouteTarget === dungHoverCell) ? '' : dungHoverCell;
         dungSig = ''; renderDungeoneering();
       });
@@ -6131,7 +6132,7 @@ function dungLodeTimerTick() {
 }
 
 async function dungSceneTick() {
-  if (dungTickBusy || (typeof activeTab !== 'undefined' && activeTab === 'dung')) return;
+  if (dungTickBusy || (typeof paneVisible !== 'undefined' && paneVisible('dung'))) return;
   if (!bridge() || !bridge().sceneEntities || typeof PLUGIN_API === 'undefined') return;
   dungTickBusy = true;
   try {

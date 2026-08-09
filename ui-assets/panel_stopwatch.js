@@ -20,7 +20,7 @@
   function swReset() { swRunning = false; swAccum = 0; swLaps = []; swStopTimer(); renderStopwatch(); }
   function swLap() { if (!swRunning && swAccum === 0) return; swLaps.unshift(swElapsed()); renderStopwatch(); }
   function renderStopwatch() {
-    const c = $('content');
+    const c = paneRoot('stopwatch'); if (!c) return;
     let wrap = $('swWrap');
     if (!wrap) {
       c.innerHTML = '';

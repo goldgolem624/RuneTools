@@ -127,7 +127,7 @@
       musicUnlocked = set;
     } catch (e) {}
     sndSig = '';
-    if (activeTab === 'sounds') renderSounds();
+    paneRun('sounds', renderSounds);
   }
 
   async function sndFetch(reset) {
@@ -138,7 +138,7 @@
       sndRows = JSON.parse(await bridge().soundList(SND_IDX[sndKind], sndStart, sndPageSize) || '[]') || [];
     } catch (e) { sndRows = []; }
     sndBusy = false; sndSig = '';
-    if (activeTab === 'sounds') renderSounds();
+    paneRun('sounds', renderSounds);
   }
 
   // Filtering the 60 rows on screen cannot answer "which effects are long?" - there are 7427.
@@ -214,7 +214,7 @@
     // Observation runs on the game's audio thread, so it follows the tab: on while the panel is
     // open, off the moment it is not. Re-push the mute list on every enable - the companion's
     // copy lives in the client process and is gone if that process restarted.
-    const want = (activeTab === 'sounds');
+    const want = paneVisible('sounds');
     if (want !== sndFxOn && bridge().soundFilterEnable) {
       sndFxOn = want;
       try { await bridge().soundFilterEnable(myPid(), want); } catch (e) {}
@@ -316,7 +316,7 @@
   }
 
   function renderSounds() {
-    const c = $('content'); if (!c) return;
+    const c = paneRoot('sounds'); if (!c) return;
     let wrap = $('sndWrap');
     if (!wrap) {
       c.innerHTML = '';

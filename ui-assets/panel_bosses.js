@@ -439,7 +439,7 @@
       await bcLoadCols();
       await bcLoadVarps();
     } finally { bossFetching = false; }
-    if (activeTab === 'bosses') renderBosses();
+    paneRun('bosses', renderBosses);
   }
   function renderBosses() {
     const c = $('content');
@@ -517,13 +517,12 @@
       p.className = 'bc-pill' + (complete ? ' ok' : n > 0 ? ' go' : '');
       p.textContent = n + ' / ' + m;
       r.appendChild(p);
-      // Cap each list: an unbounded missing list makes the bubble taller than the window. Missing is
-      // what you act on, so it keeps the bigger share; both say how many were elided.
-      const tipList = (label, arr, cap) => !arr.length ? '' :
-        '\n\n' + label + ' (' + arr.length + '):\n' +
-        arr.slice(0, cap).map(d => '  ' + d.name).join('\n') +
-        (arr.length > cap ? '\n  ... and ' + (arr.length - cap) + ' more' : '');
-      r.dataset.tip = col.name + tipList('Missing', missing, 20) + tipList('Collected', have, 12);
+      // Two grids of item ICONS rather than two capped lists of names (see setTipGrids in
+      // client.html, which budgets the cell count to the viewport and reports the remainder).
+      r.dataset.tip = col.name;
+      if (typeof setTipGrids === 'function')
+        setTipGrids(r, [{ label: 'Missing', cls: 'miss', items: missing },
+                        { label: 'Collected', cls: 'have', items: have }]);
       box.appendChild(r);
     }
     return done;
@@ -566,7 +565,7 @@
     ccFetchAt = t; ccFetching = true;
     try { await bcLoadCols(); await bcLoadVarps(); } catch (e) {}
     ccFetching = false;
-    if (activeTab === 'collections') renderClueCol();
+    paneRun('collections', renderClueCol);
   }
   function renderClueCol() {
     const c = $('content');
@@ -668,8 +667,12 @@
       const ci = colInfo(b);
       if (ci) {
         tip.push('Collection log: ' + ci.n + ' / ' + ci.m + (b.logDone ? ' (complete)' : ''));
-        if (ci.missing.length) tip.push('Missing: ' + ci.missing.map(x => x.name).join(', '));
-        if (ci.have.length) tip.push('Collected: ' + ci.have.map(x => x.name).join(', '));
+        // The drop lists render as two grids of item ICONS below the text (see setTipGrids in
+        // client.html). A comma-joined run of forty item names told you far less than seeing
+        // the loot, and it made the bubble taller than the window it came from.
+        if (typeof setTipGrids === 'function')
+          setTipGrids(row, [{ label: 'Missing', cls: 'miss', items: ci.missing },
+                            { label: 'Collected', cls: 'have', items: ci.have }]);
       } else {
         tip.push(b.logDone !== null
           ? 'Collection log: ' + (b.logDone ? 'complete' : 'incomplete') +

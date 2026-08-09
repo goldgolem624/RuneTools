@@ -131,7 +131,7 @@
       }
     } catch (e) { /* keep previous */ }
     dwFetching = false;
-    if (activeTab === 'dailies') renderDailies();
+    paneRun('dailies', renderDailies);
   }
 
   // Next reset instants (all 00:00 UTC): daily = tomorrow, weekly = next Wednesday, monthly = the
@@ -310,7 +310,7 @@
       };
       for (const k in avail) {
         if (avail[k] && !dwPrev[k] && dwNotify[k]) {
-          try { bridge().overlayNotify(myPid(), MSG[k], 8000); } catch (e) {}
+          try { uiNotify(MSG[k], { ttl: 8000 }); } catch (e) {}
           try { if (bridge().notifyWindows) bridge().notifyWindows('RuneToolsX', MSG[k]); } catch (e) {}
         }
       }

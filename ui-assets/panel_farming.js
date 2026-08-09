@@ -77,7 +77,7 @@
     }
     catch (e) { /* keep previous */ }
     farmFetching = false;
-    if (activeTab === 'farming') renderFarming();
+    paneRun('farming', renderFarming);
   }
   // Decode one patch varbit -> {key, code, name, badge, actionable, locked}. A value with no entry
   // in the patch enum means the patch is not built/unlocked -> "Locked".
@@ -203,18 +203,10 @@
     }
   }
 
-  // The dock always starts COLLAPSED: rtx_side_collapsed is written in-session but deliberately
-  // not restored at startup. Dev hot-reload (RTX_UI_DIR) keeps the live collapsed state so a
-  // reload does not force a collapse/re-expand resize cycle.
-  let sideCollapsed = window.__rtxDevReload ? !!window.__rtxDevReload.collapsed : true;
-  function toggleSidebar() {
-    sideCollapsed = !sideCollapsed;
-    try { localStorage.setItem('rtx_side_collapsed', sideCollapsed ? '1' : '0'); } catch (e) {}
-    // CSS-only toggle so the chevron/highlight animate and rail icons do not flicker.
-    document.body.classList.toggle('side-collapsed', sideCollapsed);
-    try { if (bridge() && bridge().dockCollapse) bridge().dockCollapse(myPid(), sideCollapsed); } catch (e) {}
-    if (!sideCollapsed) renderPane();
-  }
+  // Legacy dock-collapse compat: panels are floating windows now, so there is no dock to
+  // collapse. Other panels still read sideCollapsed, so it stays permanently false.
+  var sideCollapsed = false;
+  function toggleSidebar() {}
 
   // Privacy: mask the player name in the panel header; persisted (rtxHideName).
   let nameHidden = false;

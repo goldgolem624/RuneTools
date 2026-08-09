@@ -30,7 +30,7 @@
       sceneItemNames[g.id] = '';
       try { const info = JSON.parse(await bridge().itemInfo(g.id)); sceneItemNames[g.id] = (info && info.name) || ('Item ' + g.id); any = true; } catch (e) {}
     }
-    if (any && activeTab === 'scene') { sceneSig = ''; renderScene(); }
+    if (any) paneRun('scene', () => { sceneSig = ''; renderScene(); });
   }
 
   async function fetchScene() {
@@ -48,7 +48,7 @@
     } else { sceneGround = []; }
     sceneFetching = false;
     reconcileNameplates();   // keep pinned nameplates applied to the current uids (even when the tab is closed)
-    if (activeTab === 'scene') renderScene();
+    paneRun('scene', renderScene);
   }
 
   function sceneSelfPos() {

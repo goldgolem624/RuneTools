@@ -189,8 +189,8 @@
       }
       achState = { done: done, prog: prog, unknown: unknown };
     } finally { achFetching = false; }
-    if (activeTab === 'achievements') renderAchievements2();
-    else if (activeTab === 'combatmastery') renderCombatMastery();
+    paneRun('achievements', renderAchievements2);
+    paneRun('combatmastery', renderCombatMastery);
   }
 
   async function pluginAchievements(pid) {

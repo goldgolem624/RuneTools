@@ -13,11 +13,15 @@
     { k: 'item',    label: 'Items',    fn: 'itemInfo',     lo: 0, hi: 63500 },
     { k: 'varbit',  label: 'Varbits',  bulk: 'varbitMap' },
     { k: 'varp',    label: 'Varps',    bulk: 'varpsDumpAll' },
-    { k: 'varc',    label: 'Varcs',    bulk: 'varcsDumpAll' }
+    { k: 'varc',    label: 'Varcs',    bulk: 'varcsDumpAll' },
+    // Achievements come back as ONE array (index 57 walked whole), so this is a bulk family
+    // rather than a scanned id range - there is no per-id bridge call to chunk over.
+    { k: 'ach',     label: 'Achievements', bulk: 'achievements' }
   ];
-  const CX_MAX_ROWS = 800;          // rendering every hit would stall the view; note the rest
+  const CX_MAX_ROWS = 200;          // rows per PAGE: rendering every hit would stall the view
   const CX_CHUNK = 200;             // ids per yield, so a long scan stays responsive
   let cxTab = 'enum', cxFilter = '', cxOpen = null, cxSeq = 0;
+  const cxPageOf = {};              // per tab: current 0-based page, kept when you switch away
   const cxState = {};               // per type: { rows:[{id,sum,data}], busy, done, total, err, loaded }
   // Persisted results. The game cache only changes on a game UPDATE, so a snapshot stays
   // valid for as long as the client build does: the build string is the cache key, and a
@@ -202,6 +206,35 @@
         for (const cc of Object.keys(cols).sort(sortNum)) cxColumn('col ' + cc, cols[cc], out);
         out.push('');
       }
+    } else if (k === 'ach') {
+      // No "name:" line: the row above already IS the name, and repeating it pushed the
+      // description down for nothing. Description leads, because it is what you are reading for.
+      if (d.desc) out.push(cxLines(d.desc, '  '));
+      if (d.reward) { out.push(''); out.push('  Reward: ' + cxText(d.reward)); }
+      const meta = [];
+      if (d.points) meta.push(d.points + (d.points === 1 ? ' point' : ' points'));
+      if (d.cat >= 0) meta.push('cat ' + d.cat);
+      if (d.subcat >= 0) meta.push('subcat ' + d.subcat);
+      if (d.sprite >= 0) meta.push('sprite ' + d.sprite);
+      if (d.cm >= 0) meta.push('combat mastery ' + d.cm);
+      if (d.hidden) meta.push('hidden');
+      if (meta.length) { out.push(''); out.push('  ' + meta.join('  ·  ')); }
+      // The completion RULE from the cache, not your progress against it: which varbit the game
+      // watches and the value it must reach. Naming those varbits is the whole reason to look an
+      // achievement up here rather than in the Achievements panel, so spell the condition out
+      // in words instead of printing a bare "value" field nobody can interpret.
+      const rq = d.reqs || [];
+      if (rq.length) {
+        out.push('');
+        out.push('  Completes when' + (rq.length > 1 ? ' all ' + rq.length + ' hold' : ''));
+        for (const q of rq) {
+          const vb = (q.varbits || []);
+          if (vb.length === 1)      out.push('    varbit ' + vb[0] + ' reaches ' + q.value);
+          else if (vb.length > 1)   out.push('    varbits ' + vb.join(', ') + ' reach ' + q.value);
+          else                      out.push('    value ' + q.value + ' (no varbit recorded)');
+          if (q.desc) out.push(cxLines(q.desc, '      '));
+        }
+      }
     } else {
       out.push('  ' + JSON.stringify(d));
     }
@@ -239,6 +272,28 @@
           rows.push({ id: cxKeyId(key), sum: v + cxCoord(v), data: null });
         }
         for (const key of Object.keys(strs)) rows.push({ id: cxKeyId(key), sum: '"' + strs[key] + '"  (string)', data: null });
+      } else if (k === 'ach') {
+        const arr = JSON.parse(await bridge().achievements() || 'null') || [];
+        for (const a of arr) {
+          // txt feeds the search box, so a filter matches the description, the reward and every
+          // requirement line, not just the title.
+          const txt = [a.name, a.desc, a.reward]
+            .concat((a.reqs || []).map(q => q && q.desc))
+            .filter(Boolean).join(' ');
+          // Separated with the same middot the detail uses. "N req" read as a progress count;
+          // the number of completion CONDITIONS is what it actually is, and one is the norm, so
+          // it is only worth stating when there is more than one.
+          const nq = (a.reqs || []).length;
+          // HIDDEN achievements carry the name OPCODE but an empty string (the game withholds
+          // the title until you complete it), so they arrived as a wall of "Achievement 4804".
+          // The description is the only human-readable thing they have, so label them with it.
+          const desc1 = cxText(a.desc || '').split('\n')[0].trim();
+          const bits = [a.name || desc1 || ('Achievement ' + a.id)];
+          if (a.points) bits.push(a.points + ' pts');
+          if (nq > 1) bits.push(nq + ' conditions');
+          if (a.hidden) bits.push('hidden');
+          rows.push({ id: a.id | 0, sum: bits.join('  ·  '), txt: cxText(txt), data: a });
+        }
       }
     } catch (e) { st.err = String(e); }
     rows.sort((a, b) => a.id - b.id);
@@ -319,7 +374,7 @@
   // Repaint only the parts that change; the chrome and the search box are never rebuilt.
   function cxPaint() {
     const wrap = $('cxWrap');
-    if (!wrap || activeTab !== 'cachex') return;
+    if (!wrap || !paneVisible('cachex')) return;
     const t = cxT(cxTab), st = cxSt(cxTab);
     wrap.querySelectorAll('.cx-chip').forEach(b => b.classList.toggle('on', b.dataset.k === cxTab));
     const rangeRow = $('cxRange');
@@ -341,7 +396,14 @@
     if (!list) return;
     const rows = cxRows(cxTab);
     const filt = cxFilter.trim().toLowerCase();
-    const sig = cxTab + '|' + st.rows.length + '|' + cxFilter + '|' + cxOpen + '|' + st.busy;
+    // Clamp BEFORE the signature: a filter that shrinks the result set must not leave the view
+    // parked on a page that no longer exists, showing nothing with no way back.
+    const pages = Math.max(1, Math.ceil(rows.length / CX_MAX_ROWS));
+    let page = cxPageOf[cxTab] | 0;
+    if (page >= pages) page = pages - 1;
+    if (page < 0) page = 0;
+    cxPageOf[cxTab] = page;
+    const sig = cxTab + '|' + st.rows.length + '|' + cxFilter + '|' + cxOpen + '|' + st.busy + '|' + page;
     if (list._sig === sig) return;
     list._sig = sig;
     list.innerHTML = '';
@@ -350,7 +412,8 @@
       e.textContent = st.busy ? 'Working...' : (st.loaded ? 'Nothing matches.' : 'Nothing loaded yet.');
       list.appendChild(e); return;
     }
-    for (const r of rows.slice(0, CX_MAX_ROWS)) {
+    const from = page * CX_MAX_ROWS, to = Math.min(rows.length, from + CX_MAX_ROWS);
+    for (const r of rows.slice(from, to)) {
       const row = document.createElement('div'); row.className = 'cx-row';
       const idEl = document.createElement('span'); idEl.className = 'cx-id'; idEl.textContent = r.id;
       const sum = document.createElement('span'); sum.className = 'cx-sum';
@@ -378,11 +441,40 @@
         list.appendChild(det);
       }
     }
-    if (rows.length > CX_MAX_ROWS) {
-      const more = document.createElement('div'); more.className = 'cx-empty';
-      more.textContent = 'Showing the first ' + CX_MAX_ROWS + ' of ' + rows.length + '. Narrow the search to see the rest.';
-      list.appendChild(more);
-    }
+    // Pager. Always rendered (even on a single page) so the row count is always stated: the old
+    // "showing the first 800, narrow your search" was a dead end with no way to reach the rest.
+    const go = function (p) {
+      cxPageOf[cxTab] = Math.max(0, Math.min(pages - 1, p));
+      cxOpen = null;                       // an expanded row on the page you just left is noise
+      cxPaint();
+    };
+    const bar = document.createElement('div'); bar.className = 'cx-pager';
+    const btn = function (label, title, enabled, fn) {
+      const b = document.createElement('button');
+      b.className = 'vw-btn cx-pg'; b.textContent = label; b.title = title;
+      if (!enabled) b.disabled = true; else b.addEventListener('click', fn);
+      return b;
+    };
+    bar.appendChild(btn('«', 'First page', page > 0, () => go(0)));
+    bar.appendChild(btn('‹', 'Previous page', page > 0, () => go(page - 1)));
+    const jump = document.createElement('input');
+    jump.className = 'cx-in cx-num cx-jump';
+    jump.value = String(page + 1);
+    jump.title = 'Type a page number and press Enter';
+    jump.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      const n = parseInt(jump.value, 10);
+      if (isFinite(n)) go(n - 1); else jump.value = String(page + 1);
+    });
+    jump.addEventListener('blur', function () { jump.value = String(cxPageOf[cxTab] + 1); });
+    bar.appendChild(jump);
+    const of = document.createElement('span'); of.className = 'cx-pgof';
+    of.textContent = '/ ' + pages + '   ·   ' + (from + 1).toLocaleString() + '-' + to.toLocaleString()
+                   + ' of ' + rows.length.toLocaleString();
+    bar.appendChild(of);
+    bar.appendChild(btn('›', 'Next page', page < pages - 1, () => go(page + 1)));
+    bar.appendChild(btn('»', 'Last page', page < pages - 1, () => go(pages - 1)));
+    list.appendChild(bar);
   }
 
   function renderCachex() {
@@ -412,7 +504,16 @@
       .cx-det { margin: 0; padding: 8px 12px 10px 18px; background: rgba(0,0,0,0.28); color: var(--text);
           font-family: Consolas, monospace; font-size: 11px; line-height: 1.5;
           white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-      .cx-empty { padding: 12px; color: var(--text-dim); font-size: 12px; }`);
+      .cx-empty { padding: 12px; color: var(--text-dim); font-size: 12px; }
+      /* Pager: sticks to the bottom of the scroll box so it stays reachable without scrolling
+         to the end of 200 rows first. */
+      .cx-pager { position: sticky; bottom: 0; z-index: 2;
+          display: flex; align-items: center; gap: 6px; padding: 7px 10px;
+          border-top: 1px solid var(--border); background: var(--bg-elev); }
+      .cx-pg { min-width: 30px; padding: 4px 8px; font-size: 12px; line-height: 1; }
+      .cx-pg:disabled { opacity: 0.35; cursor: default; }
+      .cx-jump { width: 54px; flex: 0 0 auto; text-align: center; padding: 4px 6px; font-variant-numeric: tabular-nums; }
+      .cx-pgof { font-size: 11px; color: var(--text-mute); white-space: nowrap; font-variant-numeric: tabular-nums; }`);
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'cxWrap'; wrap.className = 'cx-wrap'; c.appendChild(wrap);
 
@@ -463,7 +564,9 @@
     ctl.appendChild(clr);
     const srch = document.createElement('input'); srch.id = 'cxSearch'; srch.className = 'cx-in cx-search';
     srch.placeholder = 'Filter by id or content';
-    srch.addEventListener('input', () => { cxFilter = srch.value; cxOpen = null; cxPaint(); });
+    // A new filter means a new result set, so page 1: staying on page 14 of the old one is
+    // never what you meant, and the clamp in cxPaint would only rescue the overshoot case.
+    srch.addEventListener('input', () => { cxFilter = srch.value; cxOpen = null; cxPageOf[cxTab] = 0; cxPaint(); });
     ctl.appendChild(srch);
     const stat = document.createElement('span'); stat.id = 'cxStat'; stat.className = 'cx-stat';
     ctl.appendChild(stat);

@@ -314,7 +314,7 @@
     const set = a.done(vb, inv, vp), sig = [...set].sort((x, y) => x - y).join(',');
     if (qgAutoDone[nm] && qgAutoDone[nm].sig === sig) return;   
     set.sig = sig; qgAutoDone[nm] = set;
-    try { if (activeTab === 'questfocus') { qgSig = ''; renderQuestFocus(); } else if (activeTab === 'quests') { questDetailSig = ''; renderQuests(); } } catch (e) {}
+    try { paneRun('questfocus', () => { qgSig = ''; renderQuestFocus(); }); paneRun('quests', () => { questDetailSig = ''; renderQuests(); }); } catch (e) {}
   }
   async function hosStep() {
     let vbm = {}; try { vbm = await readVarbitValues([HOS_PROG, HOS_SUB, HOS_ALE, HOS_GIVE, HOS_MIRIAM, HOS_JACOB, HOS_GEFEN2]); } catch (e) { return; }

@@ -5,10 +5,10 @@
   let hcData = null, hcBusy = false;
   async function hcRun() {
     if (hcBusy || !bridge() || !bridge().readerHealth) return;
-    hcBusy = true; renderHealth();
+    hcBusy = true; paneRun('health', renderHealth);
     try { hcData = JSON.parse(await bridge().readerHealth(myPid())); } catch (e) { hcData = null; }
     hcBusy = false;
-    if (activeTab === 'health') renderHealth();
+    paneRun('health', renderHealth);
   }
   function renderHealth() {
     const c = $('content');

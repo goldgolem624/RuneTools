@@ -12,7 +12,7 @@
     fcFetchAt = t; fcFetching = true;
     try { await bcLoadCols(); await bcLoadVarps(); } catch (e) {}
     fcFetching = false;
-    if (activeTab === 'farmcol') renderFarmCol();
+    paneRun('farmcol', renderFarmCol);
   }
   function renderFarmCol() {
     const c = $('content');

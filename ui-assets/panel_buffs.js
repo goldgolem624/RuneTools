@@ -14,7 +14,7 @@
     try { const d = JSON.parse(await bridge().buffs(myPid())); buffsData = (d && Array.isArray(d.buffs)) ? d : { buffs: [], debuffs: [] }; }
     catch (e) { /* keep previous */ }
     buffsFetching = false;
-    if (activeTab === 'buffs') renderBuffs();
+    paneRun('buffs', renderBuffs);
   }
   // Item buffs use the bundled item pack, sprite buffs the cache sprite; an item buff missing
   // from the pack falls through to its sprite.

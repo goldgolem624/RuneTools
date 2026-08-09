@@ -8,7 +8,7 @@
     xpFetching = true;
     try { const r = await bridge().xpPanelState(myPid()); xpStateData = JSON.parse(r); xpStateRaw = r; }
     catch (e) {} finally { xpFetching = false; }
-    if (activeTab === 'xptracker') renderXpLive();
+    paneRun('xptracker', renderXpLive);
   }
   function fmtXpNum(v) {
     v = +v || 0;

@@ -127,7 +127,7 @@
         }
       }
     } catch (e) {} finally { chatFetching = false; }
-    if (activeTab === 'chatlog') renderChatList();
+    paneRun('chatlog', renderChatList);
   }
   function renderChat() {
     const c = $('content');

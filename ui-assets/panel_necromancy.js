@@ -79,7 +79,7 @@
   }
   function necroMonRefresh() {
     if (necroMonBusy) return;
-    if (activeTab !== 'quests' && activeTab !== 'questfocus') return;   
+    if (!paneVisible('quests') && !paneVisible('questfocus')) return;   
     if (!bridge() || typeof PLUGIN_API === 'undefined') return;
     necroMonBusy = true;
     (async () => {
@@ -88,8 +88,8 @@
         const changed = !necroMonVb || NECRO_MON_VBS.some(id => (vb[id] | 0) !== (necroMonVb[id] | 0));
         necroMonVb = vb;
         if (changed) {
-          if (activeTab === 'questfocus') { qgSig = ''; renderQuestFocus(); }
-          else if (activeTab === 'quests') { questDetailSig = ''; renderQuests(); }
+          paneRun('questfocus', () => { qgSig = ''; renderQuestFocus(); });
+          paneRun('quests', () => { questDetailSig = ''; renderQuests(); });
         }
       } catch (e) {}
       necroMonBusy = false;

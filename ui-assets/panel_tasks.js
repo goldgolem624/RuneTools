@@ -412,9 +412,11 @@
       p.className = 'st-pill' + (complete ? ' ok' : n > 0 ? ' go' : '');
       p.textContent = n + ' / ' + m;
       r.appendChild(p);
-      r.dataset.tip = col.name + (col.title ? '\nReward: the title \'' + col.title + '\'' : '') +
-        (missing.length ? '\n\nMissing (' + missing.length + '):\n' + missing.map(d => '  ' + d.name).join('\n') : '') +
-        (have.length ? '\n\nCollected (' + have.length + '):\n' + have.map(d => '  ' + d.name).join('\n') : '');
+      // Drop lists render as two grids of item ICONS under the text (setTipGrids, client.html).
+      r.dataset.tip = col.name + (col.title ? '\nReward: the title \'' + col.title + '\'' : '');
+      if (typeof setTipGrids === 'function')
+        setTipGrids(r, [{ label: 'Missing', cls: 'miss', items: missing },
+                        { label: 'Collected', cls: 'have', items: have }]);
       box.appendChild(r);
     }
     const head = document.getElementById('stColHead');
@@ -501,6 +503,15 @@
     if (!wrap) { c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'infoWrap'; wrap.className = 'pane'; c.appendChild(wrap); }
     const d = infoData;
     const rows = document.createElement('div'); rows.className = 'rows';
+    // Grouped, not one long column. A heading is only emitted once something actually
+    // lands under it, so a section whose every value is unreadable stays hidden.
+    let secPending = null;
+    const sec = (name) => { secPending = name; };
+    const add = (r) => {
+      if (!r) return;
+      if (secPending) { rows.appendChild(secRow(secPending)); secPending = null; }
+      rows.appendChild(r);
+    };
     if (!d || !d.in) {
       rows.appendChild(row('Status', 'not in-world'));
     } else {
@@ -518,79 +529,108 @@
                                               : gimType === 1 ? 'Competitive Group Ironman'
                                                               : 'Group Ironman')
                                : (hc ? 'Hardcore Ironman' : 'Ironman');
-        rows.appendChild(row('Account', acct));
+        sec('Account');
+        add(row('Account', acct));
+        // Membership: engine state (PLAYERMEMBER op) for free-vs-member, varbit 50572 for
+        // premier. `resolved` is false before the account object exists, when every other
+        // field would read as free rather than as unknown - so skip the row entirely then.
+        if (infoMember && infoMember.resolved) {
+          add(row('Membership', infoMember.tier === 2 ? 'Premier'
+                              : infoMember.member ? 'Member' : 'Free'));
+          // Idle logout: the budget is additive (5 base +5 member +5 Jagex account, max 15) and
+          // enforced server-side. idleMs IS live though - the client stamps when it last
+          // reported input to the server, which is what that timer runs on - so show the real
+          // remaining time and fall back to the bare budget only when it is unavailable (-1).
+          // Cursor movement inside the game window resets it even unfocused; keys only count
+          // while the game window is active. NOTE it does not run at all while in combat.
+          const idleBudget = Math.floor(infoMember.idleLogoutSeconds / 60) + ' min';
+          if (typeof infoMember.idleMs === 'number' && infoMember.idleMs >= 0) {
+            const left = Math.max(0, infoMember.idleLogoutSeconds - Math.floor(infoMember.idleMs / 1000));
+            const mm = Math.floor(left / 60), ss = left % 60;
+            add(row('Idle logout', mm + ':' + (ss < 10 ? '0' : '') + ss + ' left of ' + idleBudget));
+          } else {
+            add(row('Idle logout', idleBudget));
+          }
+        }
+        sec('Vitals');
         // Combat level comes from the player entity section (psec+0x10BC); -1 = unavailable.
         if (typeof d.combat === 'number' && d.combat >= 3)
-          rows.appendChild(row('Combat level', String(d.combat)));
-        rows.appendChild(row('Hitpoints',  L(Math.floor((hp & 0xffff) / 2)) + ' / ' + L((hp >>> 16) & 0xffff)));
-        rows.appendChild(row('Prayer',     L(Math.floor((pr & 0x7fff) / 10)) + ' / ' + L(((pr >>> 16) & 0x7f) * 10)));
-        rows.appendChild(row('Summoning',  L(Math.floor((su & 0x7fff) / 10)) + ' / ' + L(((su >>> 16) & 0x7f) * 10)));
+          add(row('Combat level', String(d.combat)));
+        add(row('Hitpoints',  L(Math.floor((hp & 0xffff) / 2)) + ' / ' + L((hp >>> 16) & 0xffff)));
+        add(row('Prayer',     L(Math.floor((pr & 0x7fff) / 10)) + ' / ' + L(((pr >>> 16) & 0x7f) * 10)));
+        add(row('Summoning',  L(Math.floor((su & 0x7fff) / 10)) + ' / ' + L(((su >>> 16) & 0x7f) * 10)));
         // Familiar special-move points: varp 1787 raw current, fixed max 60.
-        rows.appendChild(row('Spell points', L(u('1787')) + ' / 60'));
-        rows.appendChild(row('Adrenaline', Math.floor(u('679') / 10) + '%'));
-        rows.appendChild(row('Run',        u('463') ? 'on' : 'off'));
+        add(row('Spell points', L(u('1787')) + ' / 60'));
+        add(row('Adrenaline', Math.floor(u('679') / 10) + '%'));
+        add(row('Run',        u('463') ? 'on' : 'off'));
+        // Server-packet values off the skill block, not vars; weight is a signed i16 whose
+        // "missing" sentinel is -100000.
+        if (typeof d.energy === 'number' && d.energy >= 0)
+          add(row('Run energy', d.energy + '%'));
+        if (typeof d.weight === 'number' && d.weight > -32769)
+          add(row('Weight', d.weight + ' kg'));
+        sec('Progress');
+        add(row('Quest points', L(vp['1297'] | 0)));
+        // Total penguin points: varbit 4163, hard cap 250.
+        if (infoVb && infoVb['4163'] !== undefined)
+          add(row('Penguin points', L(infoVb['4163'] | 0) + ' / 250'));
         // All-time Dungeoneering floors (varbit 39152, bits 0-15); omitted when unreadable, since 0 would read as "never".
         {
           const fv = playerVb && (playerVb['39152'] !== undefined ? playerVb['39152'] : playerVb[39152]);
           if (typeof fv === 'number' && fv >= 0)
-            rows.appendChild(row('Dungeoneering floors', L(fv)));
+            add(row('Dungeoneering floors', L(fv)));
         }
-        // Server-packet values off the skill block, not vars; weight is a signed i16 whose
-        // "missing" sentinel is -100000.
-        if (typeof d.energy === 'number' && d.energy >= 0)
-          rows.appendChild(row('Run energy', d.energy + '%'));
-        if (typeof d.weight === 'number' && d.weight > -32769)
-          rows.appendChild(row('Weight', d.weight + ' kg'));
-        rows.appendChild(row('Quest points', L(vp['1297'] | 0)));
-        // Total penguin points: varbit 4163, hard cap 250.
-        if (infoVb && infoVb['4163'] !== undefined)
-          rows.appendChild(row('Penguin points', L(infoVb['4163'] | 0) + ' / 250'));
+        sec('Charge pack');
         // Charge pack: varp 5984 raw charge is in 1/3000 units; max tier = bits 19-23 of varp 5982.
         const cv = u('5982'), tb = b => (cv >>> b) & 1;
         const maxRaw = !tb(19) ? 600000000 : !tb(20) ? 750000000 : !tb(21) ? 900000000
                      : !tb(22) ? 1050000000 : !tb(23) ? 1200000000 : 1500000000;
-        rows.appendChild(row('Charge pack', L(Math.floor(u('5984') / 3000)) + ' / ' + L(Math.floor(maxRaw / 3000))));
+        add(row('Charge pack', L(Math.floor(u('5984') / 3000)) + ' / ' + L(Math.floor(maxRaw / 3000))));
         // Combat drain rate = varp 5991 / 1800 charges/s; drain is 0 without augmented gear.
         const drainPerSec = (u('5991') * 10 / 6) / 3000;
-        rows.appendChild(row('Drain rate', drainPerSec.toFixed(2) + '/s'));
+        add(row('Drain rate', drainPerSec.toFixed(2) + '/s'));
         if (drainPerSec > 0) {
           const t = Math.floor((u('5984') / 3000) / drainPerSec);
           const dd = Math.floor(t / 86400), hh = Math.floor(t % 86400 / 3600), mm = Math.floor(t % 3600 / 60), ss = t % 60;
-          rows.appendChild(row('Time remaining', dd > 0 ? (dd + 'd ' + hh + 'h') : hh > 0 ? (hh + 'h ' + mm + 'm') : mm > 0 ? (mm + 'm ' + ss + 's') : (ss + 's')));
+          add(row('Time remaining', dd > 0 ? (dd + 'd ' + hh + 'h') : hh > 0 ? (hh + 'h ' + mm + 'm') : mm > 0 ? (mm + 'm ' + ss + 's') : (ss + 's')));
         } else {
-          rows.appendChild(row('Time remaining', 'n/a'));
+          add(row('Time remaining', 'n/a'));
         }
       }
-      rows.appendChild(row('Position', d.x + ', ' + d.y));
-      if (d.region != null) rows.appendChild(row('Region', d.region + ' (' + (d.region >> 8) + ', ' + (d.region & 0xFF) + ')'));
-      if (d.lx != null) rows.appendChild(row('Local tile', d.lx + ', ' + d.ly));
-      rows.appendChild(row('Plane', String(d.plane)));
-      rows.appendChild(row('Animation', d.anim === -1 ? 'none' : String(d.anim)));
-      rows.appendChild(row('Moving', d.moving ? 'yes' : 'no'));
+      sec('Location');
+      add(row('Position', d.x + ', ' + d.y));
+      if (d.region != null) add(row('Region', d.region + ' (' + (d.region >> 8) + ', ' + (d.region & 0xFF) + ')'));
+      if (d.lx != null) add(row('Local tile', d.lx + ', ' + d.ly));
+      add(row('Plane', String(d.plane)));
+      sec('Activity');
+      add(row('Animation', d.anim === -1 ? 'none' : String(d.anim)));
+      add(row('Moving', d.moving ? 'yes' : 'no'));
       // Scenery/objects aren't in the live entity list, so they show as none here.
       const it = d.interact;
-      rows.appendChild(row('Interacting',
+      add(row('Interacting',
         it ? (it.name || '?') + (it.type === 1 && it.id >= 0 ? ' (' + it.id + ')' : '') : 'none'));
       // Camera varcs: 5115 yaw (0..16284 = full circle), 5114 pitch, 1971 zoom (raw engine units).
       if (infoCam) {
+        sec('Camera');
         if (typeof infoCam.yaw === 'number')
-          rows.appendChild(row('Camera yaw', Math.round(((infoCam.yaw % 16284) + 16284) % 16284 / 16284 * 360) + '° (' + infoCam.yaw + ')'));
-        if (typeof infoCam.pitch === 'number') rows.appendChild(row('Camera pitch', String(infoCam.pitch)));
-        if (typeof infoCam.zoom === 'number') rows.appendChild(row('Camera zoom', String(infoCam.zoom)));
+          add(row('Yaw', Math.round(((infoCam.yaw % 16284) + 16284) % 16284 / 16284 * 360) + '° (' + infoCam.yaw + ')'));
+        if (typeof infoCam.pitch === 'number') add(row('Pitch', String(infoCam.pitch)));
+        if (typeof infoCam.zoom === 'number') add(row('Zoom', String(infoCam.zoom)));
       }
       // Whatever the engine hover slot resolves right now, one subrow per decoded field.
       {
         const hv = infoHover;
         const kind = hv && hv.ok ? (hv.kind || (hv.name ? 'unresolved' : 'no target')) : 'none';
-        rows.appendChild(row('Mouse hover', kind));
+        sec('Mouse hover');
+        add(row('Target', kind));
         if (hv && hv.ok) {
-          if (hv.verb) rows.appendChild(row('· Action', hv.verb));
-          if (hv.name) rows.appendChild(row('· Name', hv.name));
-          if (hv.id != null && hv.id >= 0) rows.appendChild(row('· Id', String(hv.id)));
-          if (hv.uid != null) rows.appendChild(row('· Uid', String(hv.uid)));
-          if (hv.x != null) rows.appendChild(row('· Tile', hv.x + ', ' + hv.y + (hv.p != null ? ' · floor ' + hv.p : '')));
-          if (hv.slot != null) rows.appendChild(row('· Slot', hv.slot + ' · in ' + hv.iface + ':' + hv.comp));
-          else if (hv.kind === 'iface') rows.appendChild(row('· Component', hv.iface + ':' + hv.comp + (hv.comp2 ? ' (' + hv.comp2 + ')' : '')));
+          if (hv.verb) add(row('· Action', hv.verb));
+          if (hv.name) add(row('· Name', hv.name));
+          if (hv.id != null && hv.id >= 0) add(row('· Id', String(hv.id)));
+          if (hv.uid != null) add(row('· Uid', String(hv.uid)));
+          if (hv.x != null) add(row('· Tile', hv.x + ', ' + hv.y + (hv.p != null ? ' · floor ' + hv.p : '')));
+          if (hv.slot != null) add(row('· Slot', hv.slot + ' · in ' + hv.iface + ':' + hv.comp));
+          else if (hv.kind === 'iface') add(row('· Component', hv.iface + ':' + hv.comp + (hv.comp2 ? ' (' + hv.comp2 + ')' : '')));
         }
       }
     }

@@ -49,7 +49,7 @@
         const sig = JSON.stringify(d);
         if (sig !== skillBonusSig) {
           skillBonusSig = sig; skillBonusVp = d;
-          if (activeTab === 'player') renderPane();
+          paneRun('player', renderPane);
         }
       }
     } catch (e) {} finally { skillBonusFetching = false; }

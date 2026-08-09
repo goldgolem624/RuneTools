@@ -348,8 +348,8 @@
     try { await mystReqPrefetch(); } catch (e) {}     // requirement-line live values
     mystFetching = false;
     updateMystHighlight();
-    if (activeTab === 'archmysteries') renderArchMysteries();
-    if (activeTab === 'mystfocus') renderMystFocus();
+    paneRun('archmysteries', renderArchMysteries);
+    paneRun('mystfocus', renderMystFocus);
   }
   function renderArchMysteries() {
     const c = $('content');
@@ -591,7 +591,7 @@
       mbankData = d && Array.isArray(d.items) ? d : { open: false, items: [], count: 0, cached_at: 0 };
     } catch (e) { /* keep previous */ }
     mbankFetching = false;
-    if (activeTab === 'metalbank') renderMetalBank();
+    paneRun('metalbank', renderMetalBank);
   }
 
   function renderMetalBank() {

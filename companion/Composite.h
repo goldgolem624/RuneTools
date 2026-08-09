@@ -44,11 +44,17 @@ void DrawPlainText(const char* s, float x, float y, float text_px, int align,
 void DrawRoundRect(float x, float y, float w, float h, float rad,
                    float r, float g, float b, float a, int fb_w, int fb_h);
 
-// Pixels are premultiplied BGRA, `stride` bytes per source row. Call only on an
-// actual content change -- this is the only per-frame upload.
-void UploadSidebar(const void* bgra, int w, int h, int stride);
+// UI-layer texture (the launcher's off-screen window UI). Pixels are
+// premultiplied BGRA, `stride` bytes per source row, `bgra` = the FULL surface
+// base pointer. On a size change the whole surface is (re)uploaded; otherwise
+// only the dirty sub-rect (dx,dy,dw,dh) is pushed with glTexSubImage2D. Call
+// only on an actual content change -- this is the only per-frame upload.
+void UploadUiLayer(const void* bgra, int w, int h, int stride,
+                   int dx, int dy, int dw, int dh);
 
-void DrawSidebar(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h);
+// Draws the uploaded layer at ITS OWN pixel size (1:1, top-left anchored) --
+// never scaled, so a mid-resize stale texture stays anchored instead of swimming.
+void DrawUiLayer(int dst_x, int dst_y, int fb_w, int fb_h);
 
 void UploadHud(const void* rgba, int w, int h);
 void DrawHud(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h);

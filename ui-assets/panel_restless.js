@@ -63,7 +63,7 @@
   }
   function rgMonRefresh() {
     if (rgMonBusy) return;
-    if (activeTab !== 'quests' && activeTab !== 'questfocus') return;
+    if (!paneVisible('quests') && !paneVisible('questfocus')) return;
     if (!bridge()) return;
     rgMonBusy = true;
     (async () => {
@@ -71,8 +71,8 @@
         const nv = await rgVarp();
         if (nv !== rgMonV) {
           rgMonV = nv;
-          if (activeTab === 'questfocus') { qgSig = ''; renderQuestFocus(); }
-          else if (activeTab === 'quests') { questDetailSig = ''; renderQuests(); }
+          paneRun('questfocus', () => { qgSig = ''; renderQuestFocus(); });
+          paneRun('quests', () => { questDetailSig = ''; renderQuests(); });
         }
       } catch (e) {}
       rgMonBusy = false;

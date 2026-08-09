@@ -62,7 +62,7 @@
     npFetchEnum();
     let d = null;
     try { d = JSON.parse(await bridge().serverPacketFeed(myPid(), npCursor) || 'null'); } catch (e) { return; }
-    if (!d || !d.ok) { npMeta = d || null; if (activeTab === 'netprobe') npUpdateDynamic(); return; }
+    if (!d || !d.ok) { npMeta = d || null; paneRun('netprobe', npUpdateDynamic); return; }
     npMeta = d;
     if (Array.isArray(d.packets)) {
       for (const r of d.packets) {
@@ -74,7 +74,7 @@
       }
       if (npRecords.length > NP_CAP) npRecords.splice(0, npRecords.length - NP_CAP);
     }
-    if (activeTab === 'netprobe') npUpdateDynamic();
+    paneRun('netprobe', npUpdateDynamic);
   }
 
 
@@ -441,7 +441,7 @@
   }
 
   function npPaint() {
-    const c = $('content'); if (!c) return;
+    const c = paneRoot('netprobe'); if (!c) return;   // also reached from event handlers, outside shell dispatch
     const flt = npParseFilter();
 
     let html = '';

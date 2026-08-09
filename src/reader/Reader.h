@@ -294,6 +294,20 @@ std::string VarpsJson(std::uint32_t pid, const std::string& ids_csv);
 // Read varbit ids (cache def -> backing varp + bit slice) -> {"<id>":value,..}.
 std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv);
 
+// Membership tier + live idle time ->
+//   {"resolved":bool,"member":0|1,"premier":0|1,"jagexAccount":0|1,"tier":0|1|2,
+//    "idleLogoutSeconds":300|600|900,"idleMs":<ms or -1>,"expiryRaw":<u64>}
+// tier: 0 = free, 1 = member, 2 = premier. NOTE this is not script19385's ordering (that one
+// returns 1 for premier and 2 for member); this ascends with entitlement instead.
+// member comes from engine state, NOT a var -- it reproduces the PLAYERMEMBER op's own two
+// dereferences off MainData. premier is varbit 50572. `resolved` is false before login, when
+// the account object is still null; treat every other field as meaningless then.
+// idleLogoutSeconds is the ADDITIVE idle budget: 5 min base, +5 members, +5 Jagex account,
+// capped at 15 (premier is NOT part of it). The timer only runs OUT OF COMBAT.
+// idleMs IS live -- ms since the client last reported input to the server (pointer flush or key
+// batch), which is what the server's timer actually runs on; -1 while unavailable.
+std::string MembershipJson(std::uint32_t pid);
+
 // Dump EVERY currently-set player varp by polling the varp hashmap directly, keyed
 // "4:<id>" (scope 4 = varp). The Vars tab uses this for varp/varbit rows: server-updated
 // varps (box counts, etc.) the companion push-observer never re-captures are always current

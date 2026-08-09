@@ -12,7 +12,7 @@
     acFetchAt = t; acFetching = true;
     try { await bcLoadCols(); await bcLoadVarps(); } catch (e) {}
     acFetching = false;
-    if (activeTab === 'archcol') renderArchCol();
+    paneRun('archcol', renderArchCol);
   }
   function renderArchCol() {
     const c = $('content');

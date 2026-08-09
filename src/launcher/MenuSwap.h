@@ -10,9 +10,11 @@
 
 namespace rtx::launcher::menuswap {
 
-// Publish the live entry list while the panel is open. The companion's read walks pointers on
-// the game's thread, so it stays off otherwise.
-bool SetEnabled(std::uint32_t pid, bool on);
+// Publish the live entry list. `mode` is rtx::menu::kEnable*: 0 off, 1 panel open, 2 background.
+// The companion's read walks pointers on the game's thread, so it stays off when there is neither
+// a panel to draw nor a rule to apply - but it must stay ON for the latter, because the panel
+// chooses which stored rule to send from the entities in the published menu.
+bool SetEnabled(std::uint32_t pid, std::uint32_t mode);
 
 // Ordered reorder rules, one per line as "verb<TAB>target". Line i draws above line i+1;
 // anything unlisted keeps its existing relative order below them. An empty target applies to

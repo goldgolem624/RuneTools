@@ -49,12 +49,19 @@ inline constexpr std::uint32_t kPromoOtherClass  = 3;   // demoted, but not the 
 inline constexpr std::uint32_t kPromoNoPartner   = 4;   // derived counterpart failed its fingerprint
 inline constexpr std::uint32_t kPromoWriteFailed = 5;
 
+// Share::enable. Both non-zero values publish; they differ only in whether a human is watching,
+// which is what the diagnostic dump budget re-arms on. Kept as values of the existing field
+// rather than a new one so an older companion still reads a truthy enable and keeps working.
+inline constexpr std::uint32_t kEnableOff        = 0;
+inline constexpr std::uint32_t kEnablePanel      = 1;   // panel on screen: publish + re-arm dumps
+inline constexpr std::uint32_t kEnableBackground = 2;   // rules exist but panel closed: publish only
+
 inline constexpr int kMaxEntries = 32;   // real menus are well under this
 inline constexpr int kVerbLen    = 64;
 inline constexpr int kTargetLen  = 128;  // targets carry colour tags and can be long
-// The companion holds EVERY rule, not just the hovered one's: pushing only the captured menu's
-// rules meant a newly hovered thing drew the game's default for the first tick and flipped to
-// the override a poll later. One pin per verb, so this is "all rules x their options".
+// Sized for every rule x its options, though the panel sends only the hovered entity's rules -
+// it is the side that knows the config ids, and two same-named variants' pins in the list at
+// once would let the first match win for the wrong one.
 inline constexpr int kMaxPins    = 256;
 
 // One reorder rule. `target` is the plain object/NPC/item name with colour tags stripped;
@@ -85,9 +92,14 @@ struct Share {
     std::uint32_t pid;
     std::uint32_t flags;
 
-    // Launcher -> companion: publish only while the panel is open. The read walks pointers on
-    // the game's thread, so it costs nothing when nobody is looking.
-    volatile std::uint32_t enable;
+    // Launcher -> companion: publish the live entry list. The read walks pointers on the game's
+    // thread, so it costs nothing when nobody is looking - but "nobody is looking" is NOT the
+    // same as "the panel is closed". The panel picks WHICH stored rule to send from the entities
+    // in the published menu, so with publishing off it is choosing from a frozen snapshot and a
+    // newly hovered thing never gets its rule pushed - reordering silently stopped whenever the
+    // panel was not open. kEnableBackground keeps the feed alive for that, and is distinct from
+    // kEnablePanel only so the probe can still tell the two apart (see Poll's dump re-arm).
+    volatile std::uint32_t enable;      // kEnable* below
 
     volatile std::uint32_t seq;         // bumped after a publish completes
     std::uint32_t count;                // valid entries[0..count), DISPLAY order

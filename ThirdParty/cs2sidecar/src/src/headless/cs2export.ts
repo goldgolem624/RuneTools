@@ -22,9 +22,11 @@
 //   <outdir>/progress.json   {stage, done, total, startedAt}  (updated ~1/s)
 //   <outdir>/meta.json       {date, buildnr, total, ok, failed[], names, annotations, notes[]}
 //   <outdir>/names.json      generated rename tables
+//   <outdir>/opcodes.json    [{op, id, name}] scrambled client opcode -> canonical rsmv id
 import { EngineCache, iterateConfigFiles } from "3d/modeltothree";
 import { GameCacheLoader } from "cache/sqlite";
-import { renderClientScript } from "clientscript/index";
+import { renderClientScript, prepareClientScript } from "clientscript/index";
+import { getOpName } from "clientscript/definitions";
 import { parse } from "opdecoder";
 import { cacheMajors } from "../constants";
 import * as fs from "fs";
@@ -1213,6 +1215,21 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
             lastProg = Date.now();
             writeProgress("decompile", i + 1, ids.length);
         }
+    }
+
+    // Opcode map: the callibrator's scrambled(cache/client) -> canonical(rsmv) opcode
+    // table, warm after the decompile pass. `op` is the id the client VM dispatches on;
+    // `id`/`name` are the stable rsmv identity (e.g. 10146 PLAYERMEMBER). Consumed by the
+    // companion to locate engine-op handlers in the client binary.
+    try {
+        const calli = await prepareClientScript(engine.rawsource);
+        const opcodes = [...calli.mappings.values()]
+            .map(o => ({ op: o.scrambledid, id: o.id, name: getOpName(o.id) }))
+            .sort((a, b) => a.op - b.op);
+        fs.writeFileSync(path.join(outdir, "opcodes.json"), JSON.stringify(opcodes));
+        notes.push(`opcode mappings: ${opcodes.length}`);
+    } catch (e) {
+        notes.push(`opcode mappings: FAILED ${e}`);
     }
 
     const annTotal = Object.values(annCounts).reduce((a, b) => a + b, 0);

@@ -44,7 +44,7 @@
       invData = (d && Array.isArray(d.items)) ? d : { present: false, count: 0, cap: 0, items: [] };
     } catch (e) { /* keep previous */ }
     invFetching = false;
-    if (activeTab === 'inventory') renderInventory();
+    paneRun('inventory', renderInventory);
   }
   async function fetchEquip() {
     if (!bridge() || !bridge().equipment || equipFetching) return;
@@ -62,7 +62,7 @@
       } catch (e) { /* keep previous */ }
     }
     equipFetching = false;
-    if (activeTab === 'equipment') renderEquipment();
+    paneRun('equipment', renderEquipment);
   }
 
   function invPresent() { return !!(invData && invData.present); }

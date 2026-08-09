@@ -146,8 +146,8 @@
       for (let i = 0; i < 29; i++) sig += ',' + lvl(i);
       const changed = !questsData || questsData.sig !== sig;
       questsData = { vp, st, qp: vp[1297] || 0, sig };
-      if (activeTab === 'quests' && (changed || (!$('questWrap') && !$('questDetailWrap')))) renderQuests();
-      if (activeTab === 'questfocus' && (changed || !$('qfWrap'))) renderQuestFocus();
+      if (paneVisible('quests') && (changed || (!$('questWrap') && !$('questDetailWrap')))) renderQuests();
+      if (paneVisible('questfocus') && (changed || !$('qfWrap'))) renderQuestFocus();
       if (changed) updateQuestHighlight();   // completion can clear the step NPC mark
     } finally { questFetching = false; }
   }
@@ -174,7 +174,7 @@
   }
   function renderQuests() {
     if (questView !== null) { renderQuestDetail(); return; }
-    const c = $('content');
+    const c = paneRoot('quests'); if (!c) return;   // also reached from event handlers, outside shell dispatch
     let wrap = $('questWrap');
     if (!wrap) {
       c.innerHTML = ''; questListSig = '';
@@ -271,11 +271,16 @@
     }
   }
   function renderQuestDetail() {
-    const c = $('content');
+    const c = paneRoot('quests'); if (!c) return;
     const q = QUEST_BY_ID ? QUEST_BY_ID.get(questView) : null;
     const d = questsData;
     // renderPane() polls every 250 ms; rebuild only on real change or hover flickers and scroll resets.
-    const sig = questView + '|' + questNav.join(',') + '|' + (d ? d.sig : '');
+    // The guide-ready flag is PART of the signature: the 1.3MB guide data is lazy-loaded, and the
+    // first render of a quest is what kicks that load -- so it necessarily paints with no Quick
+    // guide. Without this term nothing about the quest changes when the data lands, the signature
+    // still matches, and the section stays empty until some unrelated interaction invalidates it.
+    const sig = questView + '|' + questNav.join(',') + '|' + (d ? d.sig : '') + '|' +
+                ((typeof questGuidesReady === 'function' && questGuidesReady()) ? 1 : 0);
     if (sig === questDetailSig && $('questDetailWrap')) return;
     questDetailSig = sig;
     c.innerHTML = '';

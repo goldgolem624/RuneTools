@@ -1372,9 +1372,13 @@ void Poll() {
     // deleting the log does not reset it (the counter lives here, not in the file). The panel
     // already drives `enable` off->on when you switch to the tab, so switching away and back is
     // the re-arm gesture and no new plumbing is needed.
+    //
+    // kEnablePanel exactly, not any truthy enable: publishing now also runs in the background so
+    // stored rules keep applying with the panel closed, and counting that as "panel opened" would
+    // burn the whole dump budget on the first menu after login.
     {
         static bool wasOn = false;
-        const bool on = g_share && g_share->enable;
+        const bool on = g_share && g_share->enable == rtx::menu::kEnablePanel;
         if (on && !wasOn) {
             g_dumps   = 0;
             g_lastSig = 0;      // else a menu still on screen counts as already dumped

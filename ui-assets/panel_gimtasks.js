@@ -17,6 +17,6 @@
   async function fetchGimTasks(force) {
     await fetchAchievements(force);
     gimTasksData = buildCategoryTasks(GIM_CFG);
-    if (activeTab === 'gimtasks') renderGimTasks();
+    paneRun('gimtasks', renderGimTasks);
   }
   function renderGimTasks() { renderTaskScaffold(GIM_CFG); }

@@ -93,7 +93,7 @@
         const what = kind === 'scarabs' ? 'Corrupted Scarabs' : 'Soul Obelisk';
         const where = (kind === 'obelisks' && districtName) ? ' (' + districtName(r.district) + ')' : '';
         const msg = what + ' active on world ' + r.world + where;
-        try { bridge().overlayNotify(myPid(), msg, 10000); } catch (e) {}
+        try { uiNotify(msg, { ttl: 10000 }); } catch (e) {}
         try { if (bridge().notifyWindows) bridge().notifyWindows('RuneToolsX', msg); } catch (e) {}
       }
     }

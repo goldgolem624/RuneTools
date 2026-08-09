@@ -10,7 +10,7 @@
       gbankData = d && Array.isArray(d.items) ? d : { open: false, items: [], count: 0, cached_at: 0 };
     } catch (e) { /* keep previous */ }
     gbankFetching = false;
-    if (activeTab === 'groupbank') renderGroupBank();
+    paneRun('groupbank', renderGroupBank);
   }
   function renderGroupBank() {
     const c = $('content');

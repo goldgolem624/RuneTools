@@ -16,7 +16,7 @@
   ];
   const WM_ZMIN = 0.3, WM_ZMAX = 12, WM_CACHE_MAX = 130, WM_INFLIGHT_MAX = 2;
   let wmCam = { x: 3213.5, y: 3429.5, z: 1.4, p: 0 };   // world tile centre + px/tile + floor
-  let wmLayer = { labels: true, lodes: true, teles: true, hidey: false, marks: true, grid: false };
+  let wmLayer = { labels: true, lodes: true, teles: true, hidey: false, marks: true, grid: false, icons: true };
   let wmCamSaved = false;   // a persisted camera skips the centre-on-player of the first open
   try {
     const c = JSON.parse(localStorage.getItem('rtxWmCam') || 'null');
@@ -81,6 +81,543 @@
     cv.getContext('2d').putImageData(new ImageData(a, W, W), 0, 0);
     return cv;
   }
+  // Map ELEMENT pins: 10 bytes each - wtx u16 LE, wty u16 LE, element id u16 LE, loc id u32 LE.
+  // Fixed stride, no header. Tile coords are WINDOW-relative; the chunk's ox/oy turn them into
+  // world tiles. The loc id is per-PLACEMENT and only used as the tooltip's name of last resort.
+  function wmIcons(b64) {
+    if (!b64) return null;
+    const bin = atob(b64), n = (bin.length / 10) | 0;
+    if (!n) return null;
+    const out = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const o = i * 10;
+      out[i] = { tx: bin.charCodeAt(o)     | (bin.charCodeAt(o + 1) << 8),
+                 ty: bin.charCodeAt(o + 2) | (bin.charCodeAt(o + 3) << 8),
+                 ml: bin.charCodeAt(o + 4) | (bin.charCodeAt(o + 5) << 8),
+                 // >>> 0: loc ids run past 2^31 and a signed shift would wrap them negative.
+                 id: (bin.charCodeAt(o + 6)        | (bin.charCodeAt(o + 7) << 8) |
+                     (bin.charCodeAt(o + 8) << 16) | (bin.charCodeAt(o + 9) << 24)) >>> 0 };
+    }
+    return out;
+  }
+  // The per-ELEMENT tables the pins index into: sprite, category, tooltip text. ~5,800 entries
+  // for the whole game, so they come down ONCE rather than riding along in every chunk.
+  let WM_ML = null, WM_CAT = null, WM_LOCNM = null, wmMlPend = false;
+  function wmLoadElements() {
+    if (WM_ML || wmMlPend || !bridge() || !bridge().mapLabels) return;
+    wmMlPend = true;
+    (async function () {
+      try {
+        const a = JSON.parse((await bridge().mapLabels()) || '{}');
+        if (a && Object.keys(a).length) WM_ML = a;
+      } catch (e) {}
+      try {
+        const c = JSON.parse((await bridge().mapCategories()) || '{}');
+        if (c) WM_CAT = c;
+      } catch (e) {}
+      // Names of the locs that PLACE the elements, for the 22 elements that have no name by any
+      // other route. A few KB; loaded here so the tooltip stays synchronous on hover.
+      try {
+        if (bridge().mapLocNames) {
+          const ln = JSON.parse((await bridge().mapLocNames()) || '{}');
+          if (ln) WM_LOCNM = ln;
+        }
+      } catch (e) {}
+      wmMlPend = false;
+      wmKick();
+      wmPrefetchDb();   // DB tables for the structured tooltips, one gated slice at a time
+    })();
+  }
+  // ================= structured element tooltips =================
+  // ~24% of map tooltips are built by per-category LAYOUT scripts rather than the plain
+  // "param 4149 else category name" rule: a willow shows "WILLOW TREE / Willow logs / Lvl 20",
+  // not "Trees - Uncommon". clientscript-7590 maps category -> KIND, clientscript-9566 maps
+  // KIND -> layout. Both are tables here, so a new kind is a row rather than a branch. Every
+  // structured layout keys off element param 4147; with no 4147 the game falls through to the
+  // plain rule, and so do we.
+  const WM_KIND = { 1159: 7, 4551: 9, 4624: 10, 4625: 11, 1184: 14, 5121: 14,
+                    1176: 15, 3032: 16, 1205: 17, 5699: 21 };
+  // Kind 19 = skill-training spots. 4387 and 4391 are deliberately absent: they appear in
+  // neither the 7590 switch nor enum 8586.
+  '1199 2579 4383 4384 4385 4386 4388 4389 4390 4392 4393 4394 4395 4396 4397 4398 4399 4400 4401 4402'
+    .split(' ').forEach(function (c) { WM_KIND[c | 0] = 19; });
+
+  const WM_DB  = Object.create(null);   // cs2 table id -> rows
+  const WM_DBI = Object.create(null);   // "table:col"  -> Map(colValue -> first row)
+  const WM_DBF = Object.create(null);   // table        -> Map(fileId -> row)
+  const WM_ST  = new Map();             // struct id -> {ints,strs}; null while in flight
+  const WM_EN  = new Map();             // enum id   -> {k:v};       null while in flight
+  const WM_IN  = new Map();             // item id   -> name;        null while in flight
+  let WM_SKSPR = null, wmSkPend = false;   // enum 8548: skill index -> sprite id
+
+  // DbRowsJson has NO cache: it decodes all ~19,560 files of configs archive 41 per call, holds
+  // the same mutex MapWindowJson takes, and is bound SYNCHRONOUSLY - so `await` does not yield,
+  // it blocks. Pull each table exactly once, one per slice, and never while the user is panning
+  // or a terrain chunk is in flight. Order is the "which kind arms first" knob: trees lead so
+  // the common case works within a slice.
+  const WM_DB_ORDER = [172, 171, 34, 170, 180, 169, 358, 86, 93, 53, 88, 89];
+  let wmDbAt = 0, wmDbBusy = false;
+  function wmPrefetchDb() {
+    if (wmDbBusy || wmDbAt >= WM_DB_ORDER.length) return;
+    if (!bridge() || !bridge().dbRows) return;
+    if (wmDrag || wmFly || wmInflight || wmQueued.size) { setTimeout(wmPrefetchDb, 300); return; }
+    wmDbBusy = true;
+    const t = WM_DB_ORDER[wmDbAt++];
+    (async function () {
+      try { WM_DB[t] = JSON.parse((await bridge().dbRows(t)) || '[]') || []; } catch (e) { WM_DB[t] = []; }
+      wmDbBusy = false;
+      setTimeout(wmPrefetchDb, 60);      // one archive walk per slice, never two in a frame
+    })();
+  }
+  // DB_FIND takes the FIRST match and dbRows emits in ascending file id, so first-wins is right.
+  function wmDbIdx(t, colKey) {
+    const ck = t + ':' + colKey;
+    let m = WM_DBI[ck]; if (m) return m;
+    const rows = WM_DB[t]; if (!rows) return null;
+    m = new Map();
+    for (const r of rows) {
+      const v = r.i && r.i[colKey];
+      if (v && v.length && !m.has(v[0])) m.set(v[0], r);
+    }
+    WM_DBI[ck] = m; return m;
+  }
+
+  // ---- lazy, memoised cache reads. A miss repaints the tooltip when it lands. ----
+  function wmStruct(id) {
+    if (id == null || id < 0) return null;
+    if (WM_ST.has(id)) return WM_ST.get(id);
+    WM_ST.set(id, null);
+    (async function () {
+      let v = null; try { v = JSON.parse((await bridge().structParams(id)) || 'null'); } catch (e) {}
+      WM_ST.set(id, v || { ints: {}, strs: {} }); wmTipRefresh();
+    })();
+    return null;
+  }
+  function wmEnum(id) {
+    if (id == null || id < 0) return null;
+    if (WM_EN.has(id)) return WM_EN.get(id);
+    WM_EN.set(id, null);
+    (async function () {
+      let v = null; try { v = JSON.parse((await bridge().enumInfo(id)) || 'null'); } catch (e) {}
+      WM_EN.set(id, v || {}); wmTipRefresh();
+    })();
+    return null;
+  }
+  // undefined = still loading, '' = genuinely nameless. Eighteen referenced items really have no
+  // name, and the game prints "XP training method - no resource" for exactly those, so the two
+  // states must not collapse.
+  function wmItemName(id) {
+    if (!id || id < 0) return '';
+    if (WM_IN.has(id)) { const v = WM_IN.get(id); return v === null ? undefined : v; }
+    WM_IN.set(id, null);
+    (async function () {
+      let n = '';
+      try { const o = JSON.parse((await bridge().itemInfo(id)) || 'null'); n = (o && o.name) || ''; } catch (e) {}
+      WM_IN.set(id, n); wmTipRefresh();
+    })();
+    return undefined;
+  }
+  // Skill icons come from enum 8548[skill] -> a real sprite. NOT struct param 1998, which is an
+  // animation sequence: using it would put a shield beside "Raw mackerel".
+  //
+  // `sk` is the game's 1-BASED skill id, which is NOT the SKILL_NAMES index: 8548 is keyed 1..29
+  // and 10 there is Thieving, not Fishing. Enum 681 is the translation (skill id -> SKILL_NAMES
+  // index) if you ever need to print a name next to one of these.
+  function wmSkillSprite(sk) {
+    if (!sk || sk <= 0) return '';
+    if (!WM_SKSPR) {
+      if (!wmSkPend) {
+        wmSkPend = true;
+        (async function () {
+          try { WM_SKSPR = JSON.parse((await bridge().enumInfo(8548)) || '{}') || {}; } catch (e) { WM_SKSPR = {}; }
+          wmTipRefresh();
+        })();
+      }
+      return '';
+    }
+    return wmSpriteUrl(WM_SKSPR[sk] | 0);
+  }
+
+  // Kinds 14/16/17/19/21 share one shape: rows in STORED order, no sort and no merge. (Table 172
+  // stores 1,10,20,70,68,90 for one row - ivy 68 after yew 70 - so any level sort would be wrong.)
+  function wmStructRows(list, skill, useAlt) {
+    const rows = [];
+    for (const sid of list) {
+      const p = wmStruct(sid);
+      if (!p) { rows.push(null); continue; }          // placeholder until it lands
+      let obj = -1;
+      if (useAlt && p.ints['9417'] != null && p.ints['9417'] !== -1) obj = p.ints['9417'] | 0;
+      else if (p.ints['2213'] != null) obj = p.ints['2213'] | 0;
+      const nm = obj > 0 ? wmItemName(obj) : '';
+      rows.push({ sk: (p.ints['2215'] != null ? p.ints['2215'] | 0 : skill),
+                  lvl: (p.ints['2212'] != null ? p.ints['2212'] | 0 : null),
+                  name: p.strs['2210'] || '',
+                  obj: (obj > 0 && nm) ? obj : 0,
+                  objName: (obj > 0 && nm) ? nm : '',
+                  note: (obj > 0 && nm === '') ? 'XP training method' : '' });
+    }
+    return rows;
+  }
+  function wmLayStructList(t, key, skill, useAlt) {
+    const ix = wmDbIdx(t, '0'); if (!ix) return null;
+    const r = ix.get(key); if (!r) return { head: '', rows: [] };
+    const list = ((r.i && r.i['2']) || []).filter(function (v) { return v !== -1; });
+    let head = (r.s && r.s['1'] && r.s['1'][0]) || '';
+    if (!head && list.length) { const p = wmStruct(list[list.length - 1]); head = p ? (p.strs['2210'] || '') : ''; }
+    return { head: head, rows: wmStructRows(list, skill, useAlt), one: list.length <= 1 };
+  }
+  // Farming differs only in that col 2 is an ENUM id whose values are the structs.
+  function wmLayFarm(key) {
+    const ix = wmDbIdx(170, '0'); if (!ix) return null;
+    const r = ix.get(key); if (!r) return { head: '', rows: [] };
+    let head = (r.s && r.s['1'] && r.s['1'][0]) || '';
+    const eid = r.i && r.i['2'] && r.i['2'][0];
+    const en = (eid != null) ? wmEnum(eid) : null;
+    if (!en) return { head: head, rows: [] };
+    const list = Object.keys(en).map(Number).sort(function (a, b) { return a - b; })
+                       .map(function (i) { return en[i]; });
+    if (!head && list.length) { const p = wmStruct(list[list.length - 1]); head = p ? (p.strs['2210'] || '') : ''; }
+    return { head: head, rows: wmStructRows(list, 21, false), one: list.length <= 1 };
+  }
+  // Mining: the header is the element's OWN param 4149 passed through VERBATIM - it is not split
+  // on <br>/": " the way the plain rule splits, and it is not the DB col 1 (that is the rock name).
+  function wmLayMine(key, el) {
+    const ix = wmDbIdx(34, '0'); if (!ix) return null;
+    const p = (el && el.p) || {}, keys = [key], rows = [];
+    ['7774', '7775', '7776', '7777', '7778', '7779', '7780'].forEach(function (k2) {
+      const v = p[k2]; if (v != null && v !== -1) keys.push(v | 0);
+    });
+    for (const kk of keys) {
+      const r = ix.get(kk); if (!r) continue;          // unmatched keys are silently skipped
+      const objs = (r.i && r.i['3']) || [], lv = (r.i && r.i['4']) || [];
+      const first = objs.length ? objs[0] : 0;
+      const nm = first ? wmItemName(first) : '';
+      rows.push({ sk: 13, lvl: lv.length ? lv[0] : null,
+                  name: (r.s && r.s['1'] && r.s['1'][0]) || '',
+                  obj: (first && nm) ? first : 0, objName: (first && nm) ? nm : '',
+                  more: objs.length > 1 ? objs.length - 1 : 0, note: '' });
+    }
+    return { head: (el && el.n) || '', rows: rows, rawHead: true, alwaysName: true,
+             reqs: wmReqs(el) };
+  }
+  // ---- element REQUIREMENTS ("Requirements:" under a map tooltip) ----
+  // Element param 7781 names a STRUCT holding up to 20 (type, value) pairs. The game reads them in
+  // clientscripts 13327 (text) / 13290 (met) and prints them under the tooltip. Param 478 is NOT
+  // the source - it is a constant 1 and only drives the membership fallback line below.
+  //
+  // Only the Mining Site layout (kind 7) has a real requirements block: the other kinds route
+  // through script 16461, which emits nothing but the membership line. So this is wired into
+  // wmLayMine, not into every layout.
+  const WM_REQ_SLOTS = [
+    [1294, 1295], [1296, 1297], [1298, 1299], [1300, 1301], [1302, 1303], [1304, 1305],
+    [1306, 1307], [1308, 1309], [1310, 1311], [1312, 1313], [2227, 2228], [2229, 2230],
+    [4474, 4475], [6434, 6435], [6436, 6437], [6438, 6439], [6440, 6441], [6442, 6443],
+    [6444, 6445], [6446, 6447]
+  ];
+  let WM_QJ = null;   // quest JOURNAL id -> quest row; the struct names quests by journal id
+  function wmQuestByJournal(j) {
+    if (typeof QUESTS === 'undefined' || !QUESTS) return null;
+    if (!WM_QJ) {
+      WM_QJ = {};
+      for (const q of QUESTS) if (q && q.j != null) WM_QJ[q.j] = q;
+    }
+    return WM_QJ[j] || null;
+  }
+  // Returns [{text, ok}] with ok true/false/null (null = we cannot tell), or null while a cache
+  // read is still in flight - the tooltip repaints itself when it lands (wmTipRefresh).
+  function wmReqs(el) {
+    const p = (el && el.p) || {};
+    const sid = p['7781'];
+    const skills = [], other = [];
+    if (sid != null && sid !== -1) {
+      const st = wmStruct(sid);
+      if (!st) return null;
+      const stat = wmEnum(681);             // requirement type -> SKILL_NAMES index
+      if (!stat) return null;
+      const sk = (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills))
+                 ? lastSnap.skills : null;
+      const qst = (typeof questsData !== 'undefined' && questsData) ? questsData.st : null;
+      for (const pr of WM_REQ_SLOTS) {
+        const ty = st.ints[String(pr[0])];
+        const v  = st.ints[String(pr[1])];
+        if (ty == null || ty === -1) continue;
+        if (ty >= 1 && ty <= 59) {
+          const idx = stat[String(ty)];
+          if (idx == null) continue;
+          const nm = (typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[idx]) || ('skill ' + idx);
+          const have = (sk && sk[idx]) ? (sk[idx][0] | 0) : null;
+          skills.push({ text: 'Level ' + v + ' ' + nm, ok: have == null ? null : have >= v });
+        } else if (ty === 60) {             // achievement: enum 12251 id -> struct, param 6410 = name
+          const en = wmEnum(12251);
+          if (!en) return null;
+          const asid = en[String(v)];
+          if (asid == null) continue;
+          const ast = wmStruct(asid | 0);
+          if (!ast) return null;
+          const an = ast.strs['6410'];
+          if (an) other.push({ text: an, ok: null });
+        } else if (ty === 61) {             // quest, named by JOURNAL id (see the "j" field)
+          const q = wmQuestByJournal(v | 0);
+          if (!q) continue;
+          other.push({ text: q.n, ok: qst ? (qst[q.id] === 2) : null });
+        } else if (ty === 63) {
+          other.push({ text: 'Combat level ' + v, ok: null });
+        } else if (ty === 64) {
+          const have = (typeof questsData !== 'undefined' && questsData) ? (questsData.qp | 0) : null;
+          other.push({ text: v + ' Quest points', ok: have == null ? null : have >= v });
+        } else if (ty === 65) {
+          other.push({ text: v + ' Varrock Museum kudos', ok: null });
+        }
+        // type 62 routes through clientscript 13302, which is not decoded. Skipping it prints a
+        // short list rather than a wrong one; it affects one struct (Ancient Cavern Mine).
+      }
+    }
+    // Non-skill requirements first, then skills - the order the game's own two passes produce.
+    const out = other.concat(skills);
+    // Members fallback: only when the struct said nothing at all, matching the game's guard.
+    if (!out.length && p['478']) out.push({ text: 'Membership', ok: null });
+    return out;
+  }
+  function wmDbByFile(t) {
+    let m = WM_DBF[t]; if (m) return m;
+    const rows = WM_DB[t]; if (!rows) return null;
+    m = new Map(); for (const r of rows) m.set(r.f, r);
+    WM_DBF[t] = m; return m;
+  }
+  function wmGrp(label, ids) {
+    return { label: label, items: (ids || []).filter(function (i) { return i > 0; })
+      .map(function (i) { const n = wmItemName(i); return { id: i, name: (n == null ? '' : n) || ('#' + i) }; }) };
+  }
+  function wmLayExcav(key) {
+    const ix = wmDbIdx(86, '0'), by88 = wmDbByFile(88), by89 = wmDbByFile(89);
+    if (!ix || !by88 || !by89) return null;
+    const r = ix.get(key); if (!r) return { head: '', rows: [] };
+    if (((r.i['1'] || [0])[0]) !== 2) return { head: '', rows: [] };     // type guard: 2 = excavation
+    const rows = [];
+    for (const cf of (r.i['17'] || [])) {
+      const c = by88.get(cf); if (!c) continue;
+      // dbRows flattens tuple members onto CONSECUTIVE column indices, and table 88 has three
+      // adjacent tuple columns (15,16,17), so i[16] and i[17] each hold two concatenated lists.
+      // Peel by length.
+      const m15 = c.i['15'] || [], m16 = c.i['16'] || [], m17 = c.i['17'] || [];
+      const arts = m17.slice(Math.max(0, m16.length - m15.length));
+      let nm = (c.s && c.s['2'] && c.s['2'][0]) || '';
+      if (!nm && ((c.i['1'] || [0])[0]) === 2) {
+        const f = m15.length ? wmItemName(m15[0]) : '';
+        nm = 'Material cache' + (m15.length && f ? ' (' + f + ')' : '');
+      }
+      rows.push({ sk: 28, lvl: (c.i['4'] || [null])[0], name: nm, groups: [
+        wmGrp('Materials', m15),
+        wmGrp('Artefacts', arts.map(function (a) { const x = by89.get(a);
+                 return (x && x.i['6']) ? x.i['6'][0] : 0; })) ] });
+    }
+    return { head: (r.s['2'] || [''])[0], rows: rows, alwaysName: true, wide: true };
+  }
+  // Dig-site manager names are HARDCODED in CS2, switched on the row's archive-41 FILE ID rather
+  // than any column, so a cache renumber breaks this silently.
+  const WM_DIG_MGR = { 2802: 'Dr Nabanik', 2803: 'Vanescula Drakan', 2804: 'Movario',
+                       2805: "Gee'ka", 2806: 'Zanik', 3703: 'Mr Mordaut', 4408: 'Jimmy',
+                       13665: 'Skaldrun', 18292: 'Utu' };
+  function wmLayDig(key) {
+    const ix = wmDbIdx(86, '0'), q = wmDbIdx(93, '0');
+    if (!ix || !q) return null;
+    const r = ix.get(key); if (!r) return { head: '', rows: [] };
+    if (((r.i['1'] || [0])[0]) !== 1) return { head: '', rows: [] };     // type guard: 1 = dig site
+    const facts = [], mgr = WM_DIG_MGR[r.f];
+    if (mgr) facts.push([r.f === 4408 ? 'Assistant Manager' : 'Manager', mgr]);
+    if (r.i['6']) facts.push(['Archaeology Level', String(r.i['6'][0])]);
+    if (r.i['7']) { const qr = q.get(r.i['7'][0]); if (qr && qr.s['1']) facts.push(['Qualification', qr.s['1'][0]]); }
+    if (r.i['13']) { const s = wmItemName(r.i['13'][0]); if (s) facts.push(['Soil', s]); }
+    if (((r.i['4'] || [0])[0]) === 1) facts.push(['Status', 'Members-only']);
+    return { head: ((r.s['2'] || [''])[0]) + ' Dig Site',
+             desc: (r.s['3'] || [''])[0], facts: facts, rows: [] };
+  }
+  // Big Game Hunter keys off column 3, NOT 0. The sub-1 junk rows carry no col 3, which
+  // conveniently filters them out.
+  function wmLayHunt(key) {
+    const ix = wmDbIdx(53, '3'); if (!ix) return null;
+    const r = ix.get(key); if (!r) return { head: '', rows: [] };
+    const rows = [];
+    if (r.i['10']) rows.push({ sk: 23, lvl: r.i['10'][0], name: 'Hunter', objs: [] });
+    if (r.i['11']) rows.push({ sk: 20, lvl: r.i['11'][0], name: 'Slayer', objs: [] });
+    return { head: (r.s['2'] || [''])[0], rows: rows, alwaysName: true,
+             groups: [wmGrp('Bait', r.i['9'] || []), wmGrp('Rewards', r.i['13'] || [])] };
+  }
+  // Fishing spots. Each column of the game's table is one METHOD (Net / Harpoon / ...): col 3 is
+  // a (struct, methodCode) list whose length IS the column count. Each method struct carries up
+  // to 8 catches on a 7-key stride - level at 2001+7k, item at 2003+7k. Method icons are
+  // HARDCODED item ids switched on the method code; struct param 1998 is an animation, not an
+  // icon, and using it would put a shield beside "Raw mackerel".
+  const WM_FISH_TOOL = { 1: 52868, 2: 52869, 3: 307, 4: 309, 5: 309, 6: 311, 7: 13431, 8: 301 };
+  function wmLayFish(key) {
+    const ix = wmDbIdx(171, '0'); if (!ix) return null;
+    const r = ix.get(key); if (!r) return { head: '', rows: [] };
+    const a = r.i['3'] || [], b = r.i['4'] || [];
+    let structs = a, codes = b;
+    if (!b.length && a.length > 1 && (a.length % 2) === 0) {      // both members on one column
+      structs = a.slice(0, a.length / 2); codes = a.slice(a.length / 2);
+    }
+    const rows = [];
+    for (let i = 0; i < structs.length; i++) {
+      const p = wmStruct(structs[i]);
+      if (!p) { rows.push(null); continue; }
+      const catches = [];
+      for (let k = 0; k < 8; k++) {
+        const lv = p.ints[String(2001 + 7 * k)], it = p.ints[String(2003 + 7 * k)];
+        if (it == null || it <= 0 || it === 3157) continue;        // 3157 is skipped by the game
+        catches.push({ lvl: lv == null ? null : (lv | 0), id: it | 0 });
+      }
+      catches.sort(function (x, y) { return (x.lvl || 0) - (y.lvl || 0); });
+      const tool = WM_FISH_TOOL[codes[i] | 0] || 0;
+      // 15, not 10. `sk` is the game's 1-BASED skill id (the key space of enum 8548 and enum 681),
+      // not the 0-based SKILL_NAMES index - and 10 in that space is Thieving, which is what every
+      // fishing spot drew. Fishing is 15. Every other layout here was already in the right space;
+      // the Hunter (23) and Slayer (20) rows below self-check, since they carry their own labels.
+      rows.push({ sk: 15, lvl: catches.length ? catches[0].lvl : null,
+                  name: (tool ? (wmItemName(tool) || '') : '') || 'Fishing',
+                  groups: [wmGrp('', catches.map(function (c) { return c.id; }))] });
+    }
+    return { head: (r.s['1'] || [''])[0], rows: rows, alwaysName: true, wide: rows.length > 1 };
+  }
+  const WM_LAY = {
+    7:  { t: [34],         b: wmLayMine },
+    9:  { t: [53],         b: wmLayHunt },
+    10: { t: [86, 93],     b: wmLayDig },
+    11: { t: [86, 88, 89], b: wmLayExcav },
+    14: { t: [172], b: function (k) { return wmLayStructList(172, k, 18, false); } },
+    15: { t: [171],        b: wmLayFish },
+    16: { t: [169], b: function (k) { return wmLayStructList(169, k, 26, false); } },
+    17: { t: [170],        b: wmLayFarm },
+    19: { t: [180], b: function (k) { return wmLayStructList(180, k,  0, false); } },
+    21: { t: [358], b: function (k) { return wmLayStructList(358, k, 23, true); } }
+  };
+  // The structured payload for an element, or null to use the plain rule.
+  function wmElemRich(ml) {
+    const e = WM_ML && WM_ML[ml]; if (!e) return null;
+    const kind = WM_KIND[e.c]; if (!kind) return null;
+    const lay = WM_LAY[kind]; if (!lay) return null;
+    const key = e.p && e.p['4147'];
+    if (key == null || key === -1) return null;        // no 4147 -> the plain rule is correct
+    for (const t of lay.t) if (!WM_DB[t]) { wmPrefetchDb(); return null; }
+    let r = null;
+    try { r = lay.b(key | 0, e); } catch (err) { r = null; }
+    if (!r || !r.rows || !r.rows.length) return null;
+    return r;
+  }
+
+  // ---- searchable symbol index ----
+  // Search must reach symbols in chunks that were never fetched, so placements come from one
+  // world-wide walk (bridge().mapSymbols) rather than the loaded chunks. The walk is expensive,
+  // so it is memoised in C++ for the session and persisted here per client build.
+  let WM_SYM = null, wmSymPend = false;       // [{ml,x,y,p}]
+  const WM_SYM_TXT = new Map();               // element id -> lowercase haystack
+  // Skill names for type search: "woodcutting", "fishing" and friends map to the skill each
+  // layout reports, so a type query finds every spot of that kind even before its rows resolve.
+  const WM_SKILL_NM = { 0: 'attack', 1: 'defence', 2: 'strength', 3: 'constitution', 4: 'ranged',
+    5: 'prayer', 6: 'magic', 7: 'cooking', 8: 'woodcutting', 9: 'fletching', 10: 'fishing',
+    11: 'firemaking', 12: 'crafting', 13: 'mining', 14: 'smithing', 15: 'herblore', 16: 'agility',
+    17: 'thieving', 18: 'slayer', 19: 'farming', 20: 'runecrafting', 21: 'hunter', 22: 'construction',
+    23: 'summoning', 24: 'dungeoneering', 25: 'divination', 26: 'invention', 27: 'archaeology',
+    28: 'necromancy' };
+  // The layout each kind reports its rows against, so "woodcutting" matches trees even when the
+  // per-row skill has not been resolved yet.
+  const WM_KIND_SKILL = { 7: 13, 9: 21, 10: 27, 11: 27, 14: 8, 15: 10, 16: 25, 17: 19, 21: 23 };
+  function wmLoadSymbols() {
+    if (WM_SYM || wmSymPend || !bridge() || !bridge().mapSymbols) return;
+    wmSymPend = true;
+    (async function () {
+      let o = null;
+      try {
+        const k = 'wmsym';
+        if (bridge().cacheStoreLoad) {                       // persisted from a previous session
+          const raw = await bridge().cacheStoreLoad(k);
+          if (raw) { const j = JSON.parse(raw); if (j && j.v === wmBuild() && j.b) o = j; }
+        }
+        if (!o) {
+          o = JSON.parse((await bridge().mapSymbols()) || 'null');
+          if (o && o.b && bridge().cacheStoreSave)
+            try { await bridge().cacheStoreSave(k, JSON.stringify({ v: wmBuild(), b: o.b })); } catch (e) {}
+        }
+      } catch (e) { o = null; }
+      if (o && o.b) {
+        const bin = atob(o.b), n = (bin.length / 7) | 0, out = new Array(n);
+        for (let i = 0; i < n; i++) {
+          const q = i * 7;
+          out[i] = { ml: bin.charCodeAt(q)     | (bin.charCodeAt(q + 1) << 8),
+                     x:  bin.charCodeAt(q + 2) | (bin.charCodeAt(q + 3) << 8),
+                     y:  bin.charCodeAt(q + 4) | (bin.charCodeAt(q + 5) << 8),
+                     p:  bin.charCodeAt(q + 6) };
+        }
+        WM_SYM = out;
+      }
+      wmSymPend = false;
+    })();
+  }
+  const wmBuild = function () {
+    return (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.client_version) || '';
+  };
+  // Everything an element can be found by: its category ("fishing spot"), its own tooltip text,
+  // its skill name ("woodcutting"), and every resource its layout lists ("willow", "yew"). Built
+  // lazily per element and rebuilt while its rows are still resolving, so it sharpens as the
+  // structured data lands rather than caching a half-empty haystack.
+  function wmSymText(ml) {
+    const e = WM_ML && WM_ML[ml]; if (!e) return '';
+    const done = WM_SYM_TXT.get(ml);
+    if (done) return done;
+    const bits = [];
+    if (e.n) bits.push(e.n);
+    if (e.t) bits.push(e.t);
+    if (WM_CAT && WM_CAT[e.c] && WM_CAT[e.c].n) bits.push(WM_CAT[e.c].n);
+    const kind = WM_KIND[e.c];
+    if (kind != null && WM_SKILL_NM[WM_KIND_SKILL[kind]]) bits.push(WM_SKILL_NM[WM_KIND_SKILL[kind]]);
+    let settled = true;
+    const r = wmElemRich(ml);
+    if (r) {
+      if (r.head) bits.push(r.head);
+      for (const row of r.rows) {
+        if (!row) { settled = false; continue; }             // still resolving
+        if (row.name) bits.push(row.name);
+        if (row.objName) bits.push(row.objName);
+        if (row.sk && WM_SKILL_NM[row.sk]) bits.push(WM_SKILL_NM[row.sk]);
+        for (const g of (row.groups || [])) for (const it of g.items) if (it.name) bits.push(it.name);
+      }
+    } else if (kind != null) {
+      settled = false;                                       // tables not in yet
+    }
+    const txt = bits.join(' ').toLowerCase();
+    if (settled) WM_SYM_TXT.set(ml, txt);                    // only freeze a COMPLETE haystack
+    return txt;
+  }
+
+  // "Heist: Asuran Arsenal" -> ["HEIST", "Asuran Arsenal"]. The game splits on the first <br>,
+  // and only if there is none, on the first ": " (clientscript 16446). Order matters:
+  // "Dungeon link<br>To Dig Site: Orthen" must split at the <br> so the colon inside the
+  // destination stays in the body.
+  function wmElemTip(ml) {
+    const e = WM_ML && WM_ML[ml];
+    if (!e) return null;
+    const catNm = (WM_CAT && WM_CAT[e.c] && WM_CAT[e.c].n) || '';
+    let s = '';
+    // SHORTCUTS build their string as category + "<br>" + requirement, so the header stays
+    // "Shortcut" and the requirement drops to the body. Taking 4149 alone (the generic rule)
+    // promoted the requirement INTO the header, which is why one read "LEVEL 37 RANGED".
+    // Of 169 shortcut elements only 53 carry a text requirement (4149) and 4 a bare level
+    // (4150); the remaining 112 genuinely record none, and header-only is correct for those.
+    if (e.c === 1217) {
+      const lv = e.p && e.p['4150'];
+      const req = e.n || ((lv != null && lv !== -1) ? ('Level ' + lv) : '');
+      s = catNm ? (req ? catNm + '<br>' + req : catNm) : req;
+    } else {
+      s = e.n || e.t || '';
+      if (!s) s = catNm;
+    }
+    if (!s) return null;
+    let i = s.indexOf('<br>'), sep = 4;
+    if (i < 0) { i = s.indexOf(': '); sep = 2; }
+    const head = i < 0 ? s : s.slice(0, i);
+    const body = i < 0 ? '' : s.slice(i + sep);
+    return { head: head, body: body };
+  }
   async function wmPump() {
     if (wmInflight >= WM_INFLIGHT_MAX) return;
     if (Date.now() - wmFailAt < 1500) return;                  // bridge hiccup: brief backoff, the next draw retries
@@ -91,7 +628,10 @@
     let rec = null;
     try {
       const meta = JSON.parse((await bridge().mapWindow(best.cx, best.cy, best.plane, best.half, best.ts)) || '{}');
-      rec = { cv: (meta && (meta.png || meta.b64)) ? await wmDecode(meta) : null };   // "{}" = genuinely no map data here
+      // ox/oy = the window's SW origin in world tiles: pin coords arrive window-relative.
+      rec = { cv: (meta && (meta.png || meta.b64)) ? await wmDecode(meta) : null,     // "{}" = genuinely no map data here
+              icons: wmIcons(meta && meta.icons),
+              ox: best.cx - best.half, oy: best.cy - best.half };
     } catch (e) {
       rec = null; wmFailAt = Date.now();
       // A static view only pumps from wmDraw; without this a transient bridge failure
@@ -109,7 +649,7 @@
     if (wmRafOn) return; wmRafOn = true;
     (typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (cb) { setTimeout(cb, 16); })(function () {
       wmRafOn = false;
-      if (activeTab !== 'worldmap') return;
+      if (!paneVisible('worldmap')) return;
       try { wmDraw(); } catch (e) {}
       if (wmFly) wmKick();
     });
@@ -166,8 +706,8 @@
   // Player marker + follow. Cheap and self-guarding, so a plain interval is fine.
   let wmTickN = 0;
   setInterval(async function () {
-    // typeof-guard: this can fire before the main script has run (activeTab not yet defined)
-    if (typeof activeTab === 'undefined' || activeTab !== 'worldmap' || !document.getElementById('wmStage')) return;
+    // typeof-guard: this can fire before the main script has run (paneVisible not yet defined)
+    if (typeof paneVisible === 'undefined' || !paneVisible('worldmap') || !document.getElementById('wmStage')) return;
     // Teleport gate varbits (spellbook etc.) can change while the map is open; refresh
     // every ~5s so "wrong spellbook" clears right after switching books.
     if (++wmTickN % 10 === 0) { try { await clueMapTelePrefetch(); wmKick(); } catch (e) {} }
@@ -227,6 +767,36 @@
       const nm = m.label || ('Marker (' + gx + ', ' + gy + ')');
       const sc = wmScore(nm + ' marker', s); if (sc < 0) continue;
       out.push({ sc: sc, ty: 'Marker', nm: nm, dt: gx + ', ' + gy + (m.plane ? ' f' + m.plane : ''), x: gx, y: gy, p: m.plane | 0 });
+    }
+    // ---- map symbols: by TYPE ("fishing", "woodcutting", "bank") and by RESOURCE ("willow") ----
+    // Grouped per element so one query does not return four hundred identical willow pins; the
+    // nearest placement to the view centre wins and the rest are reported as a count.
+    wmLoadSymbols();
+    if (WM_SYM && WM_ML) {
+      const best = new Map();
+      for (const sy of WM_SYM) {
+        const hay = wmSymText(sy.ml);
+        if (!hay || hay.indexOf(s) < 0) continue;
+        const d = Math.abs(sy.x - wmCam.x) + Math.abs(sy.y - wmCam.y);
+        const b = best.get(sy.ml);
+        if (!b) best.set(sy.ml, { at: sy, d: d, n: 1 });
+        else { b.n++; if (d < b.d) { b.at = sy; b.d = d; } }
+      }
+      for (const [ml, b] of best) {
+        const e = WM_ML[ml];
+        const cat = (WM_CAT && WM_CAT[e.c] && WM_CAT[e.c].n) || '';
+        const r = wmElemRich(ml);
+        // Score by the sharpest field that matched, so "willow" ranks the willow tree above a
+        // generic "Trees" spot that merely lists one.
+        const nm = (r && r.head) || (e.n ? String(e.n).split('<br>')[0].split(': ')[0] : '') || cat || 'Map symbol';
+        let sc = wmScore(nm, s);
+        if (sc < 0) sc = wmScore(cat, s);
+        if (sc < 0) sc = 6;                                   // matched only deeper in the rows
+        out.push({ sc: sc + 1, ty: cat || 'Symbol', nm: nm,
+                   dt: b.at.x + ', ' + b.at.y + (b.at.p ? ' f' + b.at.p : '')
+                       + (b.n > 1 ? '  -  ' + b.n + ' locations' : ''),
+                   x: b.at.x, y: b.at.y, p: b.at.p | 0 });
+      }
     }
     out.sort(function (a, b) { return (a.sc - b.sc) || (a.nm < b.nm ? -1 : 1); });
     return out.slice(0, 40);
@@ -296,21 +866,66 @@
     cx.fillText(text, x, y);
     cx.restore();
   }
+  // Small map badge (teleport keybind, "+N more"). Same plate language as the place
+  // labels - dark translucent, rounded, no heavy fill - with a coloured hairline and
+  // coloured type so it reads as chrome instead of a flat sticker. Returns its rect so
+  // the label pass can route around it.
+  function wmBadge(cx, text, cxp, topY, accent) {
+    cx.save();
+    cx.font = '700 9.5px system-ui, "Segoe UI", sans-serif';
+    cx.textAlign = 'center'; cx.textBaseline = 'middle';
+    const w = Math.ceil(cx.measureText(text).width) + 11, h = 14;
+    const x = Math.round(cxp - w / 2), y = Math.round(topY);
+    cx.shadowColor = 'rgba(0,0,0,0.5)'; cx.shadowBlur = 4; cx.shadowOffsetY = 1;
+    wmLabelPlate(cx, x, y, w, h, 4, 'rgba(9,12,17,0.90)');
+    cx.shadowBlur = 0; cx.shadowOffsetY = 0;
+    cx.lineWidth = 1; cx.strokeStyle = accent.line;
+    wmLabelPlate(cx, x + 0.5, y + 0.5, w - 1, h - 1, 4, 'rgba(0,0,0,0)');
+    cx.stroke();
+    cx.fillStyle = accent.text;
+    cx.fillText(text, x + w / 2, y + h / 2 + 0.5);
+    cx.restore();
+    return { x: x, y: y, w: w, h: h };
+  }
+  const WM_ACC_KEY = { line: 'rgba(77,210,138,0.75)', text: '#8ef0c0' };   // keybind
+  const WM_ACC_MORE = { line: 'rgba(140,111,253,0.75)', text: '#cfc2ff' }; // "+N more"
   const wmTextW = new Map();   // label -> measured px width (font is constant)
-  function wmChip(cx, sxp, syp, text, placed, hot) {
+  // Candidate offsets, in preference order: on the anchor, then the four sides, then the
+  // diagonals. A label that collides used to just VANISH, which got much worse once the
+  // teleport/lodestone icons started claiming space - the name you wanted was the one that
+  // disappeared. Nudging it a plate-width away keeps it on the map; a moved plate gets a
+  // small dot back at its true tile so it still reads as belonging there.
+  const WM_CHIP_TRY = [[0, 0], [0, -1], [0, 1], [1, 0], [-1, 0], [1, -1], [-1, 1], [1, 1], [-1, -1]];
+  // Returns the plate CENTRE {x,y} (so the caller can hit-test where the label actually
+  // landed), or null when every candidate was blocked.
+  function wmChip(cx, sxp, syp, text, placed, hot, w, h) {
     cx.font = '500 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
     try { cx.letterSpacing = '0.35px'; } catch (e) {}
     let tw = wmTextW.get(text);
     if (tw === undefined) { tw = Math.ceil(cx.measureText(text).width); wmTextW.set(text, tw); }
-    const bw = tw + 9, bh = 14;
-    const x0 = sxp - bw / 2, y0 = syp - bh / 2;
-    if (placed.some(function (p) { return x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y; })) return false;
-    placed.push({ x: x0, y: y0, w: bw, h: bh });
-    wmLabelText(cx, text, sxp, syp, hot, x0, y0, bw, bh);
-    return true;
+    const bw = tw + 9, bh = 14, stepX = bw / 2 + 8, stepY = bh + 4;
+    for (let t = 0; t < WM_CHIP_TRY.length; t++) {
+      const o = WM_CHIP_TRY[t];
+      let px = sxp + o[0] * stepX, py = syp + o[1] * stepY;
+      if (w) {                                  // keep edge-of-view places fully on screen
+        px = Math.max(bw / 2 + 2, Math.min(px, w - bw / 2 - 2));
+        py = Math.max(bh / 2 + 2, Math.min(py, h - bh / 2 - 2));
+      }
+      const x0 = px - bw / 2, y0 = py - bh / 2;
+      if (placed.some(function (p) { return x0 < p.x + p.w + 2 && x0 + bw + 2 > p.x && y0 < p.y + p.h + 2 && y0 + bh + 2 > p.y; })) continue;
+      placed.push({ x: x0, y: y0, w: bw, h: bh });
+      if (t) {
+        cx.save(); cx.fillStyle = 'rgba(232,237,244,0.55)';
+        cx.beginPath(); cx.arc(sxp, syp, 1.6, 0, 6.2832); cx.fill(); cx.restore();
+      }
+      wmLabelText(cx, text, px, py, hot, x0, y0, bw, bh);
+      return { x: px, y: py };
+    }
+    return null;
   }
   function wmDraw() {
     const stage = $('wmStage'), cv = $('wmCanvas'); if (!stage || !cv) return;
+    wmLoadElements();   // self-guarding: fetches the element tables once, then no-ops
     const w = stage.clientWidth | 0, h = stage.clientHeight | 0; if (!w || !h) return;
     // Back the canvas at DEVICE resolution: a CSS-resolution store gets stretched by display
     // scaling and everything (icons, text, terrain) renders soft. All drawing below stays in
@@ -425,6 +1040,44 @@
         wmMarks.push({ sx: sx(gx + 0.5), sy: sy(gy + 0.5), r: s0 / 2 + 3, tip: '<b>' + htmlEsc(m.label || 'Tile marker') + '</b><br>' + gx + ', ' + gy });
       }
     }
+    // Occupancy for the label pass. Icons and badges draw BEFORE the place labels, so
+    // without this the labels would paint straight over them (the keybind badge was the
+    // usual casualty). Seeding their rects here makes wmChip's existing overlap-culling
+    // route labels around the icons instead of on top of them.
+    const placed = [];
+    // ---- world-map ELEMENT symbols (bank, altar, shortcut, fishing spot, dungeon, ...) ----
+    // Drawn HERE rather than baked into the terrain PNG by the cache reader, which is what lets
+    // them hover, hold a constant screen size at every zoom, and keep place labels off them.
+    // Below ~1.5 px/tile the view is a whole continent and several hundred symbols is noise, so
+    // they drop out alongside the other dense layers.
+    if (wmLayer.icons && z >= 1.5 && WM_ML) {
+      // The reader exports a symbol from EVERY plane (the game shows an upper-floor bank on the
+      // ground view), so the same element can arrive several times on one tile. Collapse those.
+      const seenPin = new Set();
+      for (let ix = ix0; ix <= ix1; ix++) for (let iy = iy0; iy <= iy1; iy++) {
+        const r0 = wmGet(L.ts, plane, ix, iy, true);
+        if (!r0 || !r0.icons) continue;
+        for (const p of r0.icons) {
+          const gx = r0.ox + p.tx, gy = r0.oy + p.ty;
+          if (gx < vx0 || gx > vx1 || gy < vy0 || gy > vy1) continue;
+          const pinKey = gx + ',' + gy + ',' + p.ml;
+          if (seenPin.has(pinKey)) continue;
+          seenPin.add(pinKey);
+          const e = WM_ML[p.ml];
+          if (!e || e.s < 0) continue;
+          const mx = sx(gx + 0.5), my = sy(gy + 0.5);
+          // Try the preferred sprite, then the alternate: an id can resolve to an empty URL
+          // (missing or undecodable in the sprite index) while the element's other candidate
+          // is perfectly good, which left most symbols blank.
+          let url = wmSpriteUrl(e.s);
+          if (!url && e.s2 != null && e.s2 >= 0) url = wmSpriteUrl(e.s2);
+          const img = url ? wmImg(url) : null;
+          if (img) wmDrawIcon(cx, img, mx, my, 18);
+          placed.push({ x: mx - 9, y: my - 9, w: 18, h: 18 });
+          wmMarks.push({ sx: mx, sy: my, r: 10, ml: p.ml, id: p.id, x: gx, y: gy });
+        }
+      }
+    }
     // teleport destinations (dense: only at close zoom, distance-clustered so stacks stay
     // readable - grid-cell bucketing split same-spot stacks landing across a cell border)
     if (wmLayer.teles && z >= 1.6) {
@@ -457,19 +1110,13 @@
           }
         }
         cx.globalAlpha = 1;
+        const iw = n === 1 ? 20 : 17, half = (n - 1) / 2 * sp + iw / 2;
+        placed.push({ x: b.mx - half, y: b.my - iw / 2, w: half * 2, h: iw });
         const kb = (typeof teleKeySeq === 'function') ? teleKeySeq(b.ts[0]) : teleKb(b.ts[0]);
-        if (b.ts.length > 3) {
-          const extra = '+' + (b.ts.length - 3);
-          cx.font = '700 9px system-ui, sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
-          cx.beginPath(); cx.arc(b.mx + (n / 2) * sp + 5, b.my - 8, 7, 0, 6.2832); cx.fillStyle = '#4dd28a'; cx.fill();
-          cx.fillStyle = '#06120b'; cx.fillText(extra, b.mx + (n / 2) * sp + 5, b.my - 7.5);
-        } else if (b.ts.length === 1 && kb && z >= 2.4) {
-          cx.font = '700 10px system-ui, sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'top';
-          const kw = Math.ceil(cx.measureText(kb).width + 6);
-          const bx = Math.round(b.mx - kw / 2), by = Math.round(b.my + 10);
-          cx.fillStyle = '#4dd28a'; cx.fillRect(bx, by, kw, 13);
-          cx.fillStyle = '#06120b'; cx.fillText(kb, bx + kw / 2, by + 1.5);
-        }
+        if (b.ts.length > 3)
+          placed.push(wmBadge(cx, '+' + (b.ts.length - 3), b.mx + half + 2, b.my - iw / 2 - 4, WM_ACC_MORE));
+        else if (b.ts.length === 1 && kb && z >= 2.4)
+          placed.push(wmBadge(cx, kb, b.mx, b.my + iw / 2 + 1, WM_ACC_KEY));
         wmMarks.push({ sx: b.mx, sy: b.my, r: 10 + (n - 1) * sp / 2 + 3, ts: b.ts });   // tooltip built lazily on hover
       }
     }
@@ -492,6 +1139,7 @@
           cx.lineWidth = 1.5; cx.strokeStyle = '#fff'; cx.stroke();
         }
         cx.globalAlpha = 1;
+        placed.push({ x: mx - 11, y: my - 11, w: 22, h: 22 });
         wmMarks.push({ sx: mx, sy: my, r: 11, tip: '<b>' + htmlEsc(l.n) + ' lodestone</b><br><span style="opacity:.75">' + (l.kb ? 'key ' + htmlEsc(l.kb) + ' - ' : '') + (unlocked ? 'unlocked' : 'locked') + '</span>' });
       }
     }
@@ -499,11 +1147,11 @@
     if (wmLayer.labels) {
       const inview = MAP_LABELS.filter(function (d) { return (d.p || 0) === plane && d.x >= vx0 && d.x <= vx1 && d.y >= vy0 && d.y <= vy1; });
       inview.sort(function (a, b) { return (Math.abs(a.x - ccx) + Math.abs(a.y - ccy)) - (Math.abs(b.x - ccx) + Math.abs(b.y - ccy)); });
-      const placed = [];
       cx.save();
       for (const d of inview.slice(0, 34)) {
-        if (wmChip(cx, sx(d.x + 0.5), sy(d.y + 0.5), d.n, placed, false))
-          wmMarks.push({ sx: sx(d.x + 0.5), sy: sy(d.y + 0.5), r: 8, tip: '<b>' + htmlEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
+        // Hit-test where the plate LANDED, not the anchor: a nudged label is hoverable.
+        const at = wmChip(cx, sx(d.x + 0.5), sy(d.y + 0.5), d.n, placed, false, w, h);
+        if (at) wmMarks.push({ sx: at.x, sy: at.y, r: 8, tip: '<b>' + htmlEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
       }
       cx.restore();
     }
@@ -559,6 +1207,124 @@
                  return '<br>' + (l === 'req: unverified' ? 'req: <span style="color:#fbbf24">unverified</span>' : l);
                }).join('') : '') + '</span>';
     }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
+  }
+  // A map symbol's tooltip, in the game's own shape: a caps CATEGORY header over a body line.
+  // A horizontal icon strip: the shape for a set of drops/materials where the LEVEL is not the
+  // point. Built from the same .tg-cell plate the collection-log grids use, so map tooltips and
+  // panel tooltips share one vocabulary.
+  function wmStripNode(g) {
+    const s = document.createElement('div'); s.className = 'wm-strip';
+    if (g.label) { const h = document.createElement('span'); h.className = 'wm-glab'; h.textContent = g.label; s.appendChild(h); }
+    for (const it of g.items.slice(0, 4)) {
+      const c = document.createElement('div'); c.className = 'tg-cell wm-cell';
+      const u = resolveIcon(it.id);
+      if (u) setIconBg(c, u);
+      else { const t = document.createElement('span'); t.className = 'tg-tn';
+             t.textContent = String(it.name || '?').slice(0, 2).toUpperCase(); c.appendChild(t); }
+      s.appendChild(c);
+    }
+    if (g.items.length === 1 && g.items[0].name) {
+      const n = document.createElement('span'); n.className = 'wm-inm'; n.textContent = g.items[0].name; s.appendChild(n);
+    }
+    const extra = g.more || Math.max(0, g.items.length - 4);
+    if (extra) { const p = document.createElement('span'); p.className = 'wm-glab'; p.textContent = '+' + extra; s.appendChild(p); }
+    return s;
+  }
+  const WM_ROW_CAP = 12;   // #wmStage is overflow:hidden -- an uncapped 20-row farming patch clips
+  function wmRowsNode(m) {
+    const box = document.createElement('div');
+    box.className = 'wm-rows' + (m.wide ? ' wide' : '');
+    for (const r of m.rows.slice(0, WM_ROW_CAP)) {
+      const row = document.createElement('div'); row.className = 'wm-row';
+      if (!r) { row.className += ' wait'; box.appendChild(row); continue; }
+      const lv = document.createElement('div'); lv.className = 'wm-lv';
+      const su = wmSkillSprite(r.sk);
+      if (su) { const i = document.createElement('div'); i.className = 'wm-sk'; setIconBg(i, su); lv.appendChild(i); }
+      const lt = document.createElement('span'); lt.textContent = (r.lvl == null) ? '' : ('Lvl ' + r.lvl);
+      lv.appendChild(lt); row.appendChild(lv);
+      const mid = document.createElement('div'); mid.className = 'wm-mid';
+      if (r.name && (m.alwaysName || !m.one)) {
+        const n = document.createElement('div'); n.className = 'wm-nm'; n.textContent = r.name; mid.appendChild(n);
+      }
+      if (r.groups) { for (const g of r.groups) if (g.items.length) mid.appendChild(wmStripNode(g)); }
+      else if (r.obj) mid.appendChild(wmStripNode({ items: [{ id: r.obj, name: r.objName }], more: r.more }));
+      else if (r.note) { const n = document.createElement('div'); n.className = 'wm-note'; n.textContent = r.note; mid.appendChild(n); }
+      row.appendChild(mid); box.appendChild(row);
+    }
+    if (m.rows.length > WM_ROW_CAP) {
+      const mo = document.createElement('div'); mo.className = 'tg-more';
+      mo.textContent = '+ ' + (m.rows.length - WM_ROW_CAP) + ' more'; box.appendChild(mo);
+    }
+    return box;
+  }
+  let wmTipHit = null;
+  function wmTipPaintElem(tip, hit) {
+    const m = wmElemRich(hit.ml);
+    tip.classList.toggle('wide', !!(m && m.wide));
+    if (!m || (!m.head && !(m.rows || []).length)) { wmTipHit = null; tip.innerHTML = wmElemTipHtml(hit); return; }
+    wmTipHit = hit;
+    tip.innerHTML = '';
+    const h = document.createElement('b'); h.className = 'wm-h';
+    h.textContent = m.head || wmLocName(hit) || 'Map symbol';
+    tip.appendChild(h);
+    if (m.desc) { const d = document.createElement('div'); d.className = 'wm-desc'; d.textContent = m.desc; tip.appendChild(d); }
+    if (m.facts) for (const f of m.facts) {
+      const fr = document.createElement('div'); fr.className = 'wm-fact';
+      const a = document.createElement('span'); a.textContent = f[0];
+      const b = document.createElement('span'); b.className = 'v'; b.textContent = f[1];
+      fr.appendChild(a); fr.appendChild(b); tip.appendChild(fr);
+    }
+    // Requirements sit between the header and the resource rows, as they do in game. Satisfied
+    // entries are dimmed rather than hidden - the game marks them <str=FFFFFE> and still shows
+    // them, because "what does this need" is the question even once you meet it.
+    if (m.reqs && m.reqs.length) {
+      const rq = document.createElement('div'); rq.className = 'wm-reqs';
+      const rh = document.createElement('div'); rh.className = 'wm-reqh';
+      rh.textContent = 'Requirements:'; rq.appendChild(rh);
+      for (const r of m.reqs) {
+        const li = document.createElement('div');
+        li.className = 'wm-req' + (r.ok === true ? ' met' : r.ok === false ? ' unmet' : '');
+        li.textContent = r.text;
+        rq.appendChild(li);
+      }
+      tip.appendChild(rq);
+    }
+    if (m.rows && m.rows.length) tip.appendChild(wmRowsNode(m));
+    // Genuine icon SETS go through the collection-log grid builder rather than a bespoke one.
+    // Note buildTipGrids, NOT setTipGrids: the latter targets the global #global-tip, and the
+    // map owns its own #wmTip.
+    if (m.groups && typeof buildTipGrids === 'function') {
+      const live = m.groups.filter(function (g) { return g.items.length; });
+      if (live.length) tip.appendChild(buildTipGrids(live));
+    }
+    const c = document.createElement('div'); c.className = 'wm-xy'; c.textContent = hit.x + ', ' + hit.y;
+    tip.appendChild(c);
+  }
+  // A build that had to go to the cache repaints in place once the data lands, but only while
+  // the pointer is still on the same symbol.
+  function wmTipRefresh() {
+    const tip = document.getElementById('wmTip');
+    if (!tip || tip.style.display === 'none' || !wmTipHit) return;
+    wmTipPaintElem(tip, wmTipHit);
+  }
+  // Last-resort header: the name of the loc that PLACED this pin. 22 elements have no name by any
+  // other route (no param 4149, no op-3 text, no category in enum 8586) and would otherwise all
+  // read "MAP SYMBOL" - 597 pins. This names 142 of them and gets none wrong. The rest stay
+  // placeholder because their locs are genuinely nameless in the cache, not because of this code.
+  function wmLocName(m) {
+    return (m && WM_LOCNM && WM_LOCNM[m.id]) || '';
+  }
+  function wmElemTipHtml(m) {
+    const t = wmElemTip(m.ml);
+    const head = (t ? t.head : '') || wmLocName(m);
+    const body = t ? t.body : '';
+    // Only the FIRST <br> is the header/body split; a body legitimately carries more of them
+    // ("Level 19 Strength<br>Level 8 Agility<br>Requires a grapple"). Escape everything first,
+    // then re-allow just <br>, so cache text can never inject markup but still breaks lines.
+    const esc = function (s) { return htmlEsc(s).replace(/&lt;br\s*\/?&gt;/gi, '<br>'); };
+    return '<b style="text-transform:uppercase;letter-spacing:.5px">' + esc(head || 'Map symbol') + '</b>'
+         + (body ? '<br>' + esc(body) : '')
+         + '<br><span style="opacity:.6">' + m.x + ', ' + m.y + '</span>';
   }
   // The hovered TILE outlined at the map's own scale. A positioned div, so pointing at
   // tiles never forces a canvas repaint; wmDraw re-syncs it after pan/zoom.
@@ -621,7 +1387,44 @@
     + '.wm-stage{position:relative;flex:1 1 auto;min-height:220px;overflow:hidden;border:1px solid var(--border);border-radius:8px;background:#0b0d12;cursor:grab}'
     + '.wm-stage.grabbing{cursor:grabbing}'
     + '#wmCanvas{position:absolute;left:0;top:0;width:100%;height:100%}'
-    + '.wm-tip{position:absolute;z-index:20;display:none;pointer-events:none;background:rgba(9,11,17,0.94);border:1px solid var(--border-hi);border-radius:6px;padding:5px 8px;font-size:11px;line-height:1.45;max-width:240px}'
+    + '.wm-tip{position:absolute;z-index:20;display:none;pointer-events:none;background:rgba(9,11,17,0.94);border:1px solid var(--border-hi);border-radius:8px;padding:7px 9px;font-size:11px;line-height:1.45;max-width:320px;box-shadow:0 10px 28px rgba(0,0,0,0.55)}'
+    /* Structured symbol tooltip: same vocabulary as the panels - caps accent header over a
+       hairline rule, then dark row plates. Wider than the plain tooltip because a resource table
+       needs the room; `.wide` again for two-column sets. .tg-body's white-space rule is scoped to
+       #global-tip, so the grid builder's node needs it re-declared here. */
+    + '.wm-tip.wide{max-width:392px}'
+    + '.wm-tip .tg-body{white-space:normal}'
+    + '.wm-h{display:block;font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;'
+    +   'color:var(--accent-hi);padding-bottom:5px;margin-bottom:6px;border-bottom:1px solid var(--border)}'
+    + '.wm-desc{color:var(--text-dim);margin-bottom:6px;white-space:normal}'
+    + '.wm-fact{display:flex;justify-content:space-between;gap:12px;padding:2px 0;color:var(--text-mute)}'
+    + '.wm-fact .v{color:var(--text);font-weight:600}'
+    + '.wm-reqs{margin:2px 0 7px}'
+    + '.wm-reqh{color:var(--text-mute);font-size:10px;font-weight:700;letter-spacing:.4px;'
+    +   'text-transform:uppercase;margin-bottom:3px}'
+    /* The bullet is drawn with a pseudo-element so the text wraps flush under itself. */
+    + '.wm-req{position:relative;padding-left:11px;color:var(--text);white-space:normal}'
+    + '.wm-req:before{content:"";position:absolute;left:2px;top:7px;width:4px;height:4px;'
+    +   'border-radius:50%;background:currentColor;opacity:.55}'
+    + '.wm-req.met{color:var(--text-mute)}'
+    + '.wm-req.unmet{color:var(--warn,#e0a44a)}'
+    + '.wm-rows{display:flex;flex-direction:column;gap:3px}'
+    + '.wm-rows.wide{display:grid;grid-template-columns:1fr 1fr;gap:3px 5px}'
+    + '.wm-row{display:flex;align-items:center;gap:8px;min-height:26px;padding:3px 8px 3px 5px;'
+    +   'border-radius:7px;background:rgba(255,255,255,0.035);border:1px solid var(--border)}'
+    + '.wm-row.wait{opacity:.3}'
+    + '.wm-lv{flex:0 0 auto;display:flex;align-items:center;gap:5px;min-width:52px;'
+    +   'font-size:10px;font-weight:800;color:var(--ok);font-variant-numeric:tabular-nums}'
+    + '.wm-sk{width:15px;height:15px;background:no-repeat center/contain}'
+    + '.wm-mid{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px}'
+    + '.wm-nm{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+    + '.wm-note{color:var(--text-mute);font-size:10px}'
+    + '.wm-strip{display:flex;align-items:center;gap:4px;min-width:0}'
+    + '.wm-cell{width:22px;height:22px;flex:0 0 auto}'
+    + '.wm-glab{font-size:9.5px;font-weight:700;color:var(--text-mute);white-space:nowrap}'
+    + '.wm-inm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim)}'
+    + '.wm-xy{margin-top:6px;padding-top:5px;border-top:1px solid var(--border);'
+    +   'font-size:10px;color:var(--text-mute);font-variant-numeric:tabular-nums}'
     + '.wm-status{flex:0 0 18px;height:18px;overflow:hidden;font-size:10.5px;color:var(--text-dim);display:flex;gap:8px;align-items:center}'
     + '.wm-status span{white-space:nowrap}'
     + '.wm-status .wm-near{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}'
@@ -646,6 +1449,7 @@
       + '  <div class="wm-chip" data-wm="follow" title="Keep the view centred on you">Follow</div>'
       + '  <div class="wm-chip" id="wmYou" title="Centre on your position">You</div>'
       + '  <div class="wm-sep"></div>'
+      + '  <div class="wm-chip" data-wm="icons" title="Map symbols (banks, altars, shortcuts...)">Symbols</div>'
       + '  <div class="wm-chip" data-wm="labels" title="Place names">Labels</div>'
       + '  <div class="wm-chip" data-wm="lodes" title="Lodestones">Lodes</div>'
       + '  <div class="wm-chip" data-wm="teles" title="Teleport destinations (zoom in)">Teles</div>'
@@ -690,7 +1494,22 @@
         let hit = null, hd = Infinity;
         for (const m of wmMarks) { const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= m.r + 5 && d < hd) { hd = d; hit = m; } }
         if (hit) {
-          tip.innerHTML = hit.ts ? wmTeleTip(hit.ts) : hit.tip; tip.style.display = 'block';
+          // Rebuild the CONTENT only when the hovered mark changes; the position still follows
+          // the cursor every move. Repainting per mousemove also broke icon sizing: setIconBg ->
+          // sizeIcon picks native-vs-contain from the element's clientWidth, and a freshly built
+          // node has none yet, so every rebuild reset the icons to native and the next poll's
+          // sizeAllIcons pushed them back to contain - they visibly oscillated while the mouse
+          // moved.
+          const hsig = hit.ts ? ('ts:' + hit.sx + ',' + hit.sy)
+                     : (hit.ml != null ? ('ml:' + hit.ml + ',' + hit.x + ',' + hit.y)
+                                       : ('tp:' + (hit.tip || '')));
+          if (tip._hsig !== hsig) {
+            tip._hsig = hsig;
+            if (hit.ts) { wmTipHit = null; tip.classList.remove('wide'); tip.innerHTML = wmTeleTip(hit.ts); }
+            else if (hit.ml != null) wmTipPaintElem(tip, hit);
+            else { wmTipHit = null; tip.classList.remove('wide'); tip.innerHTML = hit.tip; }
+          }
+          tip.style.display = 'block';
           let lx = mx + 12, ty2 = my + 10;
           const tw = tip.offsetWidth, th = tip.offsetHeight;
           if (lx + tw > r.width - 2) lx = mx - tw - 12;
@@ -698,10 +1517,13 @@
           if (ty2 + th > r.height - 2) ty2 = r.height - th - 2;
           if (ty2 < 2) ty2 = 2;
           tip.style.left = lx + 'px'; tip.style.top = ty2 + 'px';
-        } else tip.style.display = 'none';
+        } else { tip.style.display = 'none'; tip._hsig = ''; wmTipHit = null; }
       }
     });
-    stage.addEventListener('mouseleave', function () { const tip = $('wmTip'); if (tip) tip.style.display = 'none'; wmHover = { x: -1, y: -1 }; wmPaintStatus(); wmHoverBox(); });
+    stage.addEventListener('mouseleave', function () { const tip = $('wmTip'); if (tip) { tip.style.display = 'none'; tip._hsig = ''; } wmTipHit = null; wmHover = { x: -1, y: -1 }; wmPaintStatus(); wmHoverBox(); });
+    // The pane resizes on its own now (floating window), so a viewport resize listener
+    // alone misses it: watch the stage itself and redraw at the new size.
+    if (typeof ResizeObserver === 'function') new ResizeObserver(function () { wmKick(); }).observe(stage);
     if (!wmWinBound) {
       wmWinBound = true;
       window.addEventListener('mousemove', function (e) {
@@ -727,7 +1549,7 @@
         }
         if (wmDrag) { wmDrag = null; if (st2) st2.classList.remove('grabbing'); wmSaveCam(); }
       });
-      window.addEventListener('resize', function () { if (activeTab === 'worldmap') wmKick(); });
+      window.addEventListener('resize', function () { paneRun('worldmap', wmKick); });
     }
     $('wmBar').addEventListener('click', function (e) {
       const chip = e.target.closest ? e.target.closest('.wm-chip') : null; if (!chip) return;

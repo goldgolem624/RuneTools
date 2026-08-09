@@ -45,8 +45,8 @@
     catch (e) { questGSteps = {}; }
     qgFetching = false;
     updateQuestHighlight();
-    if (activeTab === 'questfocus') renderQuestFocus();
-    if (activeTab === 'quests') { questDetailSig = ''; renderQuests(); }
+    paneRun('questfocus', renderQuestFocus);
+    if (paneVisible('quests')) { questDetailSig = ''; renderQuests(); }
   }
   function qgSave() { try { bridge().questSave(myPid(), JSON.stringify(questGSteps || {})); } catch (e) {} }
   function qgFocusName() { return (questGSteps && typeof questGSteps.__focus === 'string') ? questGSteps.__focus : ''; }
@@ -208,7 +208,7 @@
     return h;
   }
   function renderQuestFocus() {
-    const c = $('content');
+    const c = paneRoot('questfocus'); if (!c) return;   // also reached from event handlers, outside shell dispatch
     let wrap = $('qfWrap');
     if (!wrap) {
       c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'qfWrap'; wrap.className = 'pk-wrap'; c.appendChild(wrap); qgSig = '';

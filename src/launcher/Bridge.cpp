@@ -3,6 +3,7 @@
 #include "Companion.h"
 #include "Cs2Browser.h"
 #include "Dock.h"
+#include "GameUi.h"
 #include "IconCache.h"
 #include "Loader.h"
 #include "Overlay.h"
@@ -229,12 +230,72 @@ void ss_save_locked() {
 
 constexpr const char* kAppVersion = "1.0.0";   // fallback; real version read from FILEVERSION (app.rc)
 
-// The saved-accounts vault is sealed at rest with a machine-bound secret; unlocked once at startup.
+std::filesystem::path vault_key_path() { return runetools_dir() / L"vault.key"; }
+
+// The vault passphrase: a random 32-byte secret held on disk under DPAPI, bound to the WINDOWS
+// USER ACCOUNT.
+//
+// It used to be the machine fingerprint - SHA-256(volume serial | MachineGuid | computer name).
+// Every one of those inputs is readable by any process on the box, so the "passphrase" was a
+// value an attacker could simply recompute: the vault resisted a stolen FILE COPY and nothing
+// else, while holding live JX_ session tokens. Under DPAPI the key material cannot be derived
+// from machine facts at all - decrypting it requires running as this Windows user on this
+// machine, which is a materially higher bar and the platform's intended answer here.
+//
+// Empty return means DPAPI was unavailable; the caller falls back to the old secret rather than
+// locking the user out of their own accounts.
+std::string vault_secret() {
+    const auto path = vault_key_path();
+    {
+        std::ifstream f(path, std::ios::binary);
+        if (f) {
+            std::stringstream ss; ss << f.rdbuf();
+            const auto blob = ss.str();
+            if (!blob.empty()) {
+                std::vector<std::uint8_t> bytes(blob.begin(), blob.end());
+                std::string s = crypto::UnprotectForCurrentUser(bytes);
+                if (!s.empty()) return s;
+                rtx::log::Launcher("vault key present but not unprotectable by this user");
+            }
+        }
+    }
+    std::uint8_t raw[32];
+    if (!crypto::RandomBytes(raw, sizeof(raw))) return {};
+    static const char* kHex = "0123456789abcdef";
+    std::string secret;
+    secret.reserve(sizeof(raw) * 2);
+    for (std::uint8_t b : raw) { secret.push_back(kHex[b >> 4]); secret.push_back(kHex[b & 0xf]); }
+    SecureZeroMemory(raw, sizeof(raw));
+    auto sealed = crypto::ProtectForCurrentUser(secret);
+    if (sealed.empty()) return {};
+    std::error_code ec; std::filesystem::create_directories(runetools_dir(), ec);
+    std::ofstream o(path, std::ios::binary | std::ios::trunc);
+    if (!o) return {};
+    o.write(reinterpret_cast<const char*>(sealed.data()), (std::streamsize)sealed.size());
+    o.flush();
+    if (!o) return {};       // a half-written key would orphan the vault on the next run
+    return secret;
+}
+
+// The saved-accounts vault is sealed at rest; unlocked once at startup.
 void unlock_or_create_vault(const std::string& secret) {
     if (accounts::HasVault()) {
         if (accounts::Unlock(secret)) return;
-        // Vault sealed with a different secret (other machine / older build):
-        // start fresh, otherwise every account-save would silently no-op.
+        // A vault from before the DPAPI key was sealed with the machine fingerprint. Migrate it in
+        // place: ChangePassphrase re-seals the accounts already decrypted in memory, so nobody
+        // loses saved logins over a key-management change they never asked for.
+        const std::string& legacy = shared::GetMachineFingerprint();
+        if (!legacy.empty() && legacy != secret && accounts::Unlock(legacy)) {
+            if (accounts::ChangePassphrase(secret)) {
+                rtx::log::Launcher("accounts vault migrated to the per-user (DPAPI) key");
+            } else {
+                // Still unlocked and usable, just not re-sealed. Retried next launch.
+                rtx::log::Launcher("accounts vault re-seal failed; staying on the legacy key");
+            }
+            return;
+        }
+        // Sealed by another machine or another Windows user: start fresh, otherwise every
+        // account-save would silently no-op. DiscardVault keeps the old file as .bak.
         rtx::log::Launcher("accounts vault not unlockable; starting a fresh vault");
         accounts::DiscardVault();
     }
@@ -245,7 +306,12 @@ void unlock_or_create_vault(const std::string& secret) {
 void ensure_vault_unlocked() {
     static std::once_flag once;
     std::call_once(once, [] {
-        unlock_or_create_vault(shared::GetMachineFingerprint());
+        std::string secret = vault_secret();
+        if (secret.empty()) {
+            rtx::log::Launcher("DPAPI vault key unavailable; falling back to the machine key");
+            secret = shared::GetMachineFingerprint();
+        }
+        unlock_or_create_vault(secret);
     });
 }
 
@@ -359,10 +425,13 @@ JSValueRef OpenExternal(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeUndefined(ctx);
 }
 
+bool account_capture_get();      // defined with the rest of the accounts bridge, below
+
 JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
     auto procs = process::ScanRsClients();
     const bool unlocked = accounts::IsUnlocked();
+    const bool capture  = account_capture_get();
 
     std::ostringstream os;
     os << "[";
@@ -370,8 +439,9 @@ JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
         const auto& p = procs[i];
         if (i) os << ",";
 
-        // Peek JX_ env so the row can show the account name and a running client is
-        // auto-saved into the vault while the PEB read is already being paid.
+        // Peek JX_ env so the row can show the account name, and - only when the user has left
+        // capture on - save a running client into the vault while the PEB read is already being
+        // paid. The name is shown either way; that is a label, not a credential.
         auto env = process::ReadJxEnv(p.pid);
         std::string display_name, character_id;
         auto it = env.find("JX_DISPLAY_NAME");
@@ -380,7 +450,7 @@ JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
         if (it != env.end()) character_id = it->second;
         const bool has_env = !env.empty();
 
-        if (unlocked && has_env &&
+        if (capture && unlocked && has_env &&
             (!display_name.empty() || !character_id.empty())) {
             accounts::Upsert(accounts::FromEnv(env));
         }
@@ -569,7 +639,12 @@ JSValueRef MenuEnable(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetEnabled(pid, JSValueToBoolean(ctx, argv[1])));
+    // A number (rtx::menu::kEnable*), though a bool still works: JSValueToNumber maps it to 1/0,
+    // which are exactly kEnablePanel and kEnableOff.
+    const double raw = JSValueToNumber(ctx, argv[1], nullptr);
+    // NaN (undefined) casts to an unsigned as undefined behaviour, so decide the value here.
+    const auto mode = (raw >= 1.0 && raw <= 2.0) ? static_cast<std::uint32_t>(raw) : 0u;
+    return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetEnabled(pid, mode));
 }
 
 // verbs: newline-separated, in the order they should appear at the top of the menu.
@@ -754,6 +829,27 @@ JSValueRef MapWindow(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::MapWindowJson(cx, cy, plane, half, ts));
 }
 
+// World-map ELEMENT tables. Both walk the whole config archive once, so they are served off the
+// UI thread and memoised by key -- the panel asks for them a single time when it opens.
+JSValueRef MapLabels(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t, const JSValueRef[], JSValueRef*) {
+    return served(ctx, "maplabels", "{}", [] { return rtx::cache::MapLabelsJson(); });
+}
+JSValueRef MapCategories(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    return served(ctx, "mapcategories", "{}", [] { return rtx::cache::MapCategoriesJson(); });
+}
+// A full region walk: always off the UI thread, and memoised on both sides.
+JSValueRef MapSymbols(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t, const JSValueRef[], JSValueRef*) {
+    return served(ctx, "mapsymbols", "{\"n\":0,\"b\":\"\"}", [] { return rtx::cache::MapSymbolsJson(); });
+}
+// Piggybacks on the same region walk (see MapLocNamesJson), so it is served the same way.
+JSValueRef MapLocNames(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t, const JSValueRef[], JSValueRef*) {
+    return served(ctx, "maplocnames", "{}", [] { return rtx::cache::MapLocNamesJson(); });
+}
+
 JSValueRef BankItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
@@ -904,6 +1000,16 @@ JSValueRef Varbits(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef VarbitMap(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, rtx::cache::VarbitMapJson());
+}
+
+// Membership tier. Free-vs-member is engine state (the PLAYERMEMBER op), not a var, so this
+// cannot be served from varps/varbits like the rest of the Player State panel.
+JSValueRef Membership(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return served(ctx, "membership:" + std::to_string(pid), "{}",
+                  [pid]{ return rtx::reader::MembershipJson(pid); });
 }
 
 JSValueRef Quests(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1807,7 +1913,7 @@ JSValueRef OpenClientWindow(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(
         JSValueToNumber(ctx, argv[0], nullptr));
-    // Reserve-space sidebar: a borderless panel docked beside the (shrunk) game window.
+    // Unified host window + in-game window UI layer for this client.
     dock::EnsureClient(pid);
     return JSValueMakeBoolean(ctx, true);
 }
@@ -1829,12 +1935,10 @@ JSValueRef ClientWindowOpen(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, dock::IsOpen(pid));
 }
 
+// Legacy no-op: the sidebar dock is gone (panels render in-game). Kept registered so
+// any stale JS caller degrades silently instead of throwing.
 JSValueRef DockCollapse(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                        size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 2) return JSValueMakeUndefined(ctx);
-    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    bool collapsed = JSValueToBoolean(ctx, argv[1]);
-    dock::SetCollapsed(pid, collapsed);
+                        size_t, const JSValueRef[], JSValueRef*) {
     return JSValueMakeUndefined(ctx);
 }
 
@@ -1847,17 +1951,41 @@ JSValueRef KeepFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeUndefined(ctx);
 }
 
-// Rail tooltip drawn over the game: the panel window cannot overflow onto it.
+// Legacy no-op: tooltips render inside the in-game UI layer now (one DOM = no
+// window-bounds limit). Kept registered for stale callers.
 JSValueRef RailTip(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                   size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return JSValueMakeUndefined(ctx);
-    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    std::string text = (argc >= 2) ? js_to_utf8(ctx, argv[1]) : "";
-    int x = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 0;
-    int y = (argc >= 4) ? (int)JSValueToNumber(ctx, argv[3], nullptr) : 0;
-    if (text.empty()) dock::HideRailTip();
-    else dock::ShowRailTip(pid, text, x, y);
+                   size_t, const JSValueRef[], JSValueRef*) {
     return JSValueMakeUndefined(ctx);
+}
+
+// ---- In-game window manager -------------------------------------------------
+// rtx.uiRects(pid, "x,y,w,h;..." CSS px, visible): publish the regions the UI
+// claims for input + whether the layer composites at all.
+JSValueRef UiRects(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::string csv = js_to_utf8(ctx, argv[1]);
+    bool visible = (argc >= 3) ? JSValueToBoolean(ctx, argv[2]) : true;
+    gameui::SetConsumeRects(pid, csv, visible);
+    return JSValueMakeBoolean(ctx, true);
+}
+
+// rtx.uiKeyboard(pid, on): a UI text field gained/lost focus; capture keys.
+JSValueRef UiKeyboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    gameui::SetKeyboardCapture(pid, JSValueToBoolean(ctx, argv[1]));
+    return JSValueMakeBoolean(ctx, true);
+}
+
+// rtx.uiClientInfo(pid) -> {"pw","ph","cw","ch","scale","mod"}
+JSValueRef UiClientInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return utf8_to_js(ctx, gameui::ClientInfoJson(pid).c_str());
 }
 
 JSValueRef MyPid(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1915,6 +2043,46 @@ JSValueRef RemoveAccount(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::ostringstream os;
     os << "{\"success\":" << (ok ? "true" : "false") << "}";
     return utf8_to_js(ctx, os.str());
+}
+
+// Whether a running client's JX_ credentials are captured into the vault automatically.
+//
+// This used to happen unconditionally the first time a client was listed, with no prompt and no
+// way to switch it off - the launcher took bearer tokens for an account you had merely logged
+// into. Capture stays ON by default so nobody's existing multi-client setup silently stops
+// working, but it is now the user's call to make.
+//
+// Its own tiny file, matching the screenshot keybind: one flag does not justify a settings store.
+std::filesystem::path account_capture_cfg() { return runetools_dir() / L"account_capture.txt"; }
+std::mutex g_cap_mu;
+bool       g_cap_on = true, g_cap_loaded = false;
+
+bool account_capture_get() {
+    std::lock_guard<std::mutex> lk(g_cap_mu);
+    if (!g_cap_loaded) {
+        g_cap_loaded = true;
+        std::ifstream f(account_capture_cfg());
+        int v = 1;
+        if (f && (f >> v)) g_cap_on = (v != 0);
+    }
+    return g_cap_on;
+}
+
+void account_capture_set(bool on) {
+    std::lock_guard<std::mutex> lk(g_cap_mu);
+    g_cap_loaded = true;
+    g_cap_on = on;
+    std::error_code ec; std::filesystem::create_directories(runetools_dir(), ec);
+    std::ofstream f(account_capture_cfg(), std::ios::trunc);
+    if (f) f << (on ? 1 : 0);
+}
+
+// accountCapture()      -> current state
+// accountCapture(bool)  -> set, returns the new state
+JSValueRef AccountCapture(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) account_capture_set(JSValueToBoolean(ctx, argv[0]));
+    return JSValueMakeBoolean(ctx, account_capture_get());
 }
 
 JSValueRef LaunchAccount(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2076,18 +2244,24 @@ void run_update() {
     log("download ok=" + std::to_string(dl.ok) + " status=" + std::to_string(dl.status) + " detail=" + dl.detail);
     if (!dl.ok || dl.status != 200) { log("abort: download failed"); set_upd("error", 0, "Download failed"); return; }
 
-    if (!hash.empty()) {
-        set_upd("verifying", 100, "Verifying");
-        std::string got = sha256_hex(dest);
-        log("verify expected=" + hash + " got=" + got);
-        if (got.empty() || _stricmp(got.c_str(), hash.c_str()) != 0) {
-            DeleteFileW(dest.c_str());
-            log("abort: hash mismatch");
-            set_upd("error", 0, "Update verification failed");
-            return;
-        }
-    } else {
-        log("verify skipped (no hash in manifest)");
+    // FAIL CLOSED. A manifest without a usable hash used to skip verification and run the
+    // downloaded exe anyway, which made "omit the hash" a way to turn verification off - the one
+    // thing an attacker who could serve the manifest would do first. client_versions.hash is NOT
+    // NULL server-side, so a missing hash is a broken manifest, never a normal update.
+    set_upd("verifying", 100, "Verifying");
+    if (hash.size() != 64 || hash.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        DeleteFileW(dest.c_str());
+        log("abort: manifest hash missing or malformed (len=" + std::to_string(hash.size()) + ")");
+        set_upd("error", 0, "Update verification failed");
+        return;
+    }
+    std::string got = sha256_hex(dest);
+    log("verify expected=" + hash + " got=" + got);
+    if (got.empty() || _stricmp(got.c_str(), hash.c_str()) != 0) {
+        DeleteFileW(dest.c_str());
+        log("abort: hash mismatch");
+        set_upd("error", 0, "Update verification failed");
+        return;
     }
 
     set_upd("launching", 100, "Installing v" + ver);
@@ -2997,6 +3171,40 @@ JSValueRef GoalsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (!f) return JSValueMakeBoolean(ctx, false);
     f.write(s.data(), (std::streamsize)s.size());
     return JSValueMakeBoolean(ctx, f.good());
+}
+
+// In-game window-manager layout ({v:1, menu:{...}, windows:{tab:{x,y,w,h,...}}}). Written
+// ATOMICALLY (tmp + rename): a drag session rewrites this file often, and a torn write here
+// would lose the user's whole window arrangement.
+JSValueRef LayoutLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    std::string s = alerts_read_file(account_store_path(pid, L"layout"));
+    return utf8_to_js(ctx, s.empty() ? std::string("{}") : s);
+}
+
+JSValueRef LayoutSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    std::uint32_t pid = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
+    auto p = account_store_path(pid, L"layout");
+    if (p.empty()) return JSValueMakeBoolean(ctx, false);
+    std::string s = js_to_utf8(ctx, argv[1]);
+    auto tmp = p;
+    tmp += L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return JSValueMakeBoolean(ctx, false);
+        f.write(s.data(), (std::streamsize)s.size());
+        if (!f.good()) return JSValueMakeBoolean(ctx, false);
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, p, ec);
+    if (ec) {   // cross-volume or locked target: fall back to replace-in-place
+        std::filesystem::remove(p, ec);
+        std::filesystem::rename(tmp, p, ec);
+    }
+    return JSValueMakeBoolean(ctx, !ec);
 }
 
 // ---- Cache Explorer snapshots -------------------------------------------------------------
@@ -4097,6 +4305,10 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "paramDef",          ParamDef);
     install_fn(ctx, ns, "cacheIfaceGroup",   CacheIfaceGroup);
     install_fn(ctx, ns, "mapWindow",         MapWindow);
+    install_fn(ctx, ns, "mapLabels",         MapLabels);
+    install_fn(ctx, ns, "mapCategories",     MapCategories);
+    install_fn(ctx, ns, "mapSymbols",        MapSymbols);
+    install_fn(ctx, ns, "mapLocNames",       MapLocNames);
     install_fn(ctx, ns, "achievements",      Achievements);
     install_fn(ctx, ns, "bankItems",         BankItems);
     install_fn(ctx, ns, "metalBankItems",    MetalBankItems);
@@ -4117,6 +4329,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "varps",             Varps);
     install_fn(ctx, ns, "varbits",           Varbits);
     install_fn(ctx, ns, "varbitMap",         VarbitMap);
+    install_fn(ctx, ns, "membership",        Membership);
     install_fn(ctx, ns, "quests",            Quests);
     install_fn(ctx, ns, "varpsDumpAll",      VarpsDumpAll);
     install_fn(ctx, ns, "varcsDumpAll",      VarcsDumpAll);
@@ -4180,9 +4393,12 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "openClientWindow",  OpenClientWindow);
     install_fn(ctx, ns, "closeClientWindow", CloseClientWindow);
     install_fn(ctx, ns, "clientWindowOpen",  ClientWindowOpen);
-    install_fn(ctx, ns, "dockCollapse",      DockCollapse);
+    install_fn(ctx, ns, "dockCollapse",      DockCollapse);   // legacy no-op
     install_fn(ctx, ns, "keepFocused",       KeepFocused);
-    install_fn(ctx, ns, "railTip",           RailTip);
+    install_fn(ctx, ns, "railTip",           RailTip);        // legacy no-op
+    install_fn(ctx, ns, "uiRects",           UiRects);
+    install_fn(ctx, ns, "uiKeyboard",        UiKeyboard);
+    install_fn(ctx, ns, "uiClientInfo",      UiClientInfo);
     install_fn(ctx, ns, "myPid",             MyPid);
     install_fn(ctx, ns, "closeProcess",      CloseProcess);
     install_fn(ctx, ns, "openLog",           OpenLog);
@@ -4209,6 +4425,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "alertsSave",        AlertsSave);
     install_fn(ctx, ns, "goalsLoad",         GoalsLoad);
     install_fn(ctx, ns, "goalsSave",         GoalsSave);
+    install_fn(ctx, ns, "layoutLoad",        LayoutLoad);
+    install_fn(ctx, ns, "layoutSave",        LayoutSave);
     install_fn(ctx, ns, "notesLoad",         NotesLoad);
     install_fn(ctx, ns, "notesSave",         NotesSave);
     install_fn(ctx, ns, "cacheStoreLoad",    CacheStoreLoad);
@@ -4251,6 +4469,7 @@ void AttachBridge(ultralight::View* view) {
 
     install_fn(ctx, ns, "listAccounts",      ListAccounts);
     install_fn(ctx, ns, "removeAccount",     RemoveAccount);
+    install_fn(ctx, ns, "accountCapture",    AccountCapture);
     install_fn(ctx, ns, "launchAccount",     LaunchAccount);
 
     // Plugin SDK host functions: reachable by the trusted in-panel broker only -- plugin

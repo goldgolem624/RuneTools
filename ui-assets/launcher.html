@@ -308,6 +308,36 @@
     letter-spacing: 0.04em;
     border: 1px solid var(--border);
   }
+  /* Pushed to the right of the row so it reads as a control on the section, not part of its name. */
+  .section-title .acct-cap {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 7px;
+    text-transform: none; letter-spacing: normal;
+    font-size: 11px; font-weight: 500; color: var(--text-dim);
+    cursor: pointer;
+  }
+  /* The native checkbox draws as an unthemed white box here, so it is kept only for semantics and
+     keyboard focus, and the visible box is its sibling. Not `appearance: none` -- that leaves the
+     control drawn as-is on engines that do not honour it, which is the bug it was meant to fix. */
+  .section-title .acct-cap input {
+    position: absolute; opacity: 0; width: 0; height: 0; margin: 0;
+  }
+  .section-title .acct-cap .box {
+    flex: none; width: 13px; height: 13px; border-radius: 4px; position: relative;
+    background: var(--bg-elev-2); border: 1px solid var(--border-hi);
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .section-title .acct-cap:hover .box { border-color: var(--accent); }
+  .section-title .acct-cap input:checked + .box {
+    background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+    border-color: var(--accent);
+  }
+  /* Tick drawn as two borders on a rotated box -- no glyph font, so it cannot fall back to tofu. */
+  .section-title .acct-cap input:checked + .box::after {
+    content: ""; position: absolute; left: 4px; top: 1px; width: 3px; height: 6px;
+    border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  .section-title .acct-cap input:focus + .box { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   .list {
     border: 1px solid var(--border);
@@ -493,6 +523,13 @@
     border: 1px solid var(--border-hi); color: var(--text); font-size: 12px;
   }
   .btn-min:hover { border-color: var(--accent); color: var(--accent-hi); }
+  /* .btn-min is a span, not a <button>, so button.danger above does not reach it. */
+  .btn-min.danger { color: var(--err); border-color: rgba(248, 113, 113, 0.30); }
+  .btn-min.danger:hover { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+  .credits-ft .btn-min + .btn-min { margin-left: 8px; }
+  .cap-list { margin: 6px 0 0; padding-left: 18px; }
+  .cap-list li { margin-top: 5px; }
+  .cap-list b { color: var(--text); }
 
   footer .link {
     color: var(--text-dim);
@@ -566,6 +603,11 @@
       <h3 class="section-title">
         Saved accounts
         <span class="count" id="acct-count">0</span>
+        <label class="acct-cap" title="When off, logging into a client no longer saves its session to this machine. Accounts already saved are kept - remove them individually below.">
+          <input type="checkbox" id="acct-capture" checked>
+          <span class="box"></span>
+          <span class="lbl">Save accounts automatically</span>
+        </label>
       </h3>
       <div class="list" id="acct-list">
         <div class="empty">
@@ -596,7 +638,7 @@
   <div class="credits-box">
     <div class="credits-hd">Credits</div>
     <div class="credits-body">
-      <p><b>RuneTools</b> <span id="creditsVer"></span> &mdash; released under the Apache License 2.0.
+      <p><b>RuneTools</b> <span id="creditsVer"></span> - released under the Apache License 2.0.
          See <code>LICENSE</code>, <code>NOTICE</code> and <code>THIRD-PARTY-NOTICES.md</code> beside the application.</p>
       <p><b>HTML UI engine:</b> Ultralight &copy; 2024 Ultralight, Inc. All rights reserved.
          Ultralight is a trademark of Ultralight, Inc. Ultralight includes portions of WebKit
@@ -607,6 +649,32 @@
          guide data is derived from the RuneScape Wiki under CC BY-NC-SA 3.0.</p>
     </div>
     <div class="credits-ft"><span class="btn-min" id="creditsClose">Close</span></div>
+  </div>
+</div>
+
+<!-- Confirm before turning account capture OFF. Only on the way off: switching it back on takes
+     nothing away, so it needs no ceremony. -->
+<div id="capOv" class="credits-ov">
+  <div class="credits-box">
+    <div class="credits-hd">Stop saving accounts?</div>
+    <div class="credits-body">
+      <p>The launcher will stop saving a session when you log into a client.
+         <span id="capKept"></span></p>
+      <p class="credits-legend">What this turns off:</p>
+      <ul class="cap-list">
+        <li>New accounts you log into will not appear under <b>Saved accounts</b>.</li>
+        <li><b>Launch</b> only works for accounts saved before now. Anything else has to be logged
+            in through the game.</li>
+        <li>Opening a second client for another account means signing in again each time, rather
+            than launching it from here.</li>
+      </ul>
+      <p class="credits-dim">Not affected: detecting running clients, showing their account names,
+         and hiding a client's panel. You can turn this back on whenever you like.</p>
+    </div>
+    <div class="credits-ft">
+      <span class="btn-min" id="capCancel">Keep saving</span>
+      <span class="btn-min danger" id="capConfirm">Stop saving</span>
+    </div>
   </div>
 </div>
 
@@ -849,6 +917,42 @@
 
   function invalidateRenderCache() { _lastProcKey = ''; _lastAcctKey = ''; }
 
+  // Auto-capture toggle. The launcher reads a running client's JX_ session env to show its name;
+  // this decides whether that session is also SAVED to disk. Reflect the C++ value rather than the
+  // markup's default, so the box matches what the launcher will actually do.
+  async function setAccountCapture(box, on) {
+    try { box.checked = !!(await bridge().accountCapture(on)); } catch (e) { return; }
+    invalidateRenderCache();
+    refresh();
+  }
+  async function initAccountCapture() {
+    const box = $('acct-capture');
+    if (!box || !bridge() || !bridge().accountCapture) { if (box) box.parentElement.style.display = 'none'; return; }
+    try { box.checked = !!(await bridge().accountCapture()); } catch (e) { return; }
+    box.addEventListener('change', async () => {
+      // Turning it ON takes nothing away, so it applies straight through. Turning it OFF loses a
+      // capability, so it is confirmed first - and the box is reverted immediately rather than
+      // left showing a state the launcher is not in while the dialog is open.
+      if (box.checked) { setAccountCapture(box, true); return; }
+      box.checked = true;
+      let saved = 0;
+      try { saved = (JSON.parse(await bridge().listAccounts()) || []).length; } catch (e) {}
+      $('capKept').textContent = saved
+        ? ('The ' + saved + ' account' + (saved === 1 ? '' : 's') + ' already saved '
+           + (saved === 1 ? 'is' : 'are') + ' kept and can still be launched. Nothing is deleted.')
+        : '';
+      capSet(true, () => setAccountCapture(box, false));
+    });
+  }
+  // Shared open/close for the capture dialog. The confirm handler is rebound per open so a
+  // dismissed dialog can never leave a stale one attached.
+  let capOnConfirm = null;
+  function capSet(on, onConfirm) {
+    if (on) capOnConfirm = onConfirm || null;
+    $('capOv').classList.toggle('on', !!on);
+    if (!on) capOnConfirm = null;
+  }
+
   // Updates: banner when behind the manifest version; below its minVersion
   // floor the update is mandatory and Launch is blocked.
   let updateMandatory = false;
@@ -1025,7 +1129,14 @@
   $('opensource').addEventListener('click', () => bridge().openExternal && bridge().openExternal('https://runetools.io/github'));
   $('creditsClose').addEventListener('click', () => creditsSet(false));
   $('creditsOv').addEventListener('click', (e) => { if (e.target === $('creditsOv')) creditsSet(false); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') creditsSet(false); });
+
+  // Dismissing the capture dialog any other way keeps capture on, which is the safe default: the
+  // checkbox was already put back before the dialog opened.
+  $('capCancel').addEventListener('click', () => capSet(false));
+  $('capOv').addEventListener('click', (e) => { if (e.target === $('capOv')) capSet(false); });
+  $('capConfirm').addEventListener('click', () => { const f = capOnConfirm; capSet(false); if (f) f(); });
+
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { creditsSet(false); capSet(false); } });
 
   $('openlog').addEventListener('click', () => bridge().openLog && bridge().openLog());
   // openExternal allows runetools.io URLs only; /discord 302s to the current invite, so the
@@ -1044,6 +1155,9 @@
       const v = 'v' + await bridge().version();
       $('version').textContent = v;   // footer only; the header pill was dropped as redundant
     } catch (e) {}
+    // Display only - C++ reads the saved choice itself, so capture is already correct on the
+    // first scan whether or not this has resolved yet.
+    initAccountCapture();
     refresh();
     checkForUpdate();
     startUpdateChecks();

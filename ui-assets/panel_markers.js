@@ -39,7 +39,7 @@
     if (!force && ver === markerVer) return;
     markerVer = ver;
     try { const a = JSON.parse(bridge().markersGet(pid)); if (Array.isArray(a)) markerList = a; } catch (e) {}
-    if (activeTab === 'markers') paintMarkerList();
+    paneRun('markers', paintMarkerList);
   }
   function mkBtn(label, fn, cls) {
     const b = document.createElement('button'); b.className = 'mk-btn' + (cls ? ' ' + cls : '');

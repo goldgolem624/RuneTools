@@ -81,7 +81,7 @@
   }
 
   async function fetchBossInfo() {
-    if (activeTab !== 'bossinfo') return;
+    if (!paneVisible('bossinfo')) return;
     await biLoadRotsEnum();
     if (bridge() && bridge().varbits && !biFetching) {
       const t = Date.now();
@@ -96,7 +96,7 @@
         biFetching = false;
       }
     }
-    renderBossInfo();
+    paneRun('bossinfo', renderBossInfo);
   }
 
   function renderBossInfo() {

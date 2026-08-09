@@ -104,7 +104,7 @@
   async function renderPortsInfo() {
     const c = $('content'); if (!c) return;
     const d = await portsStateRead();
-    if (activeTab !== 'portsinfo') return;   // await raced a tab switch
+    if (!paneVisible('portsinfo')) return;   // await raced the window closing
     if (!d) { c.innerHTML = '<div class="empty">Reading... (be in-world)</div>'; piSig = ''; return; }
     injectStyle('piCss',
       '.pi-wrap{display:flex;flex-direction:column;gap:8px}'

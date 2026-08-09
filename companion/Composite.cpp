@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <GL/gl.h>          // brings the GL 1.1 names (GL_BLEND, GL_VIEWPORT, GL_FLOAT, ...)
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -70,6 +71,10 @@ using PFN_glBlendEquationSeparate   = void (APIENTRY*)(GLenum_l, GLenum_l);
 #define GL_TEXTURE_BINDING_2D_E  0x8069
 #define GL_UNPACK_ROW_LENGTH_E   0x0CF2
 #define GL_UNPACK_ALIGNMENT_E    0x0CF5
+#define GL_UNPACK_SKIP_ROWS_E    0x0CF3
+#define GL_UNPACK_SKIP_PIXELS_E  0x0CF4
+#define GL_PIXEL_UNPACK_BUFFER_E         0x88EC
+#define GL_PIXEL_UNPACK_BUFFER_BINDING_E 0x88EF
 #define GL_RED_E                 0x1903
 #define GL_R8_E                  0x8229
 
@@ -215,6 +220,9 @@ struct SavedState {
     GLint viewport[4];
     GLint blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
     GLint blend_equation_rgb, blend_equation_alpha;
+    GLint unpack_row_length, unpack_alignment, unpack_skip_rows, unpack_skip_pixels;
+    GLint pixel_unpack_buffer;
+    GLint scissor_box[4];
     GLboolean blend, scissor, depth, cull, stencil;
 };
 
@@ -228,12 +236,24 @@ void SaveState(SavedState& s) {
     if (pActiveTexture) pActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D_E, &s.texture_2d);
     glGetIntegerv(GL_VIEWPORT,             s.viewport);
+    // Pixel-unpack state: the game may leave a nonzero ROW_LENGTH/SKIP or a bound
+    // PBO, which would garble (or crash) every texture upload below; captured here,
+    // normalized in Begin(), restored in RestoreState().
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH_E,           &s.unpack_row_length);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT_E,            &s.unpack_alignment);
+    glGetIntegerv(GL_UNPACK_SKIP_ROWS_E,            &s.unpack_skip_rows);
+    glGetIntegerv(GL_UNPACK_SKIP_PIXELS_E,          &s.unpack_skip_pixels);
+    glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING_E, &s.pixel_unpack_buffer);
     glGetIntegerv(GL_BLEND_SRC_RGB,        &s.blend_src_rgb);
     glGetIntegerv(GL_BLEND_DST_RGB,        &s.blend_dst_rgb);
     glGetIntegerv(GL_BLEND_SRC_ALPHA,      &s.blend_src_alpha);
     glGetIntegerv(GL_BLEND_DST_ALPHA,      &s.blend_dst_alpha);
     glGetIntegerv(GL_BLEND_EQUATION_RGB,   &s.blend_equation_rgb);
     glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &s.blend_equation_alpha);
+    // The scissor BOX, not just its enable bit: Begin() disables the test but leaves the
+    // rectangle alone, so any future scissored draw here would overwrite the game's box and
+    // silently clip its own rendering once it re-enables the test.
+    glGetIntegerv(GL_SCISSOR_BOX, s.scissor_box);
     s.blend   = glIsEnabled(GL_BLEND);
     s.scissor = glIsEnabled(GL_SCISSOR_TEST);
     s.depth   = glIsEnabled(GL_DEPTH_TEST);
@@ -260,6 +280,12 @@ void RestoreState(const SavedState& s) {
     if (s.cull)    glEnable(GL_CULL_FACE);    else glDisable(GL_CULL_FACE);
     if (s.stencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
     glViewport(s.viewport[0], s.viewport[1], s.viewport[2], s.viewport[3]);
+    glScissor(s.scissor_box[0], s.scissor_box[1], s.scissor_box[2], s.scissor_box[3]);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_E,  s.unpack_row_length);
+    glPixelStorei(GL_UNPACK_ALIGNMENT_E,   s.unpack_alignment);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS_E,   s.unpack_skip_rows);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS_E, s.unpack_skip_pixels);
+    if (pBindBuffer) pBindBuffer(GL_PIXEL_UNPACK_BUFFER_E, (GLuint_l)s.pixel_unpack_buffer);
 }
 
 // Rasterise the ASCII glyph atlas once (GDI) into a GL_RED coverage texture. Called from
@@ -436,6 +462,14 @@ void Begin() {
     glDisable(GL_CULL_FACE);
     glDisable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);
+    // Normalize pixel-unpack state once per frame (captured by SaveState, put back
+    // by RestoreState): every upload below assumes tightly-packed client memory,
+    // and a game-left PBO binding would reinterpret upload pointers as offsets.
+    if (pBindBuffer) pBindBuffer(GL_PIXEL_UNPACK_BUFFER_E, 0);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_E, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS_E, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS_E, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT_E, 4);
     pUseProgram(g_solid_prog);
     pBindVertexArray(g_vao);
     pBindBuffer(GL_ARRAY_BUFFER, g_vbo);
@@ -637,23 +671,29 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     }
     if (glyphsTotal == 0) return;
 
-    // One rounded panel behind all lines: dark fill, accent border, soft drop shadow.
-    const float padX = 7.0f, padY = 4.0f;
+    // One rounded panel behind all lines, in the panel design language: a deep neutral
+    // surface at 0.90, a 1px accent hairline, a small radius and a drop shadow straight down.
+    // The old radius was 0.42x the pill height, i.e. 84% of a capsule -- that lozenge, plus a
+    // 1.2px full-bright ring, is what read as "debug". A FIXED 5px radius is on-language and
+    // short enough that the un-AA'd 5-segment corner arc never shows.
+    // ar/ag/ab/aa is the CALLER's colour (a user's tile-marker colour, or a plugin's guide
+    // rgb) arriving from the launcher -- it is passed through untouched. Only chrome is set here.
+    const float padX = 8.0f, padY = 5.0f;
     const float lineH = cellH * 0.92f;                                   // line pitch
     const float pillW = maxW + padX * 2.0f;
     const float pillH = cellH * 0.78f + lineH * (float)(nl - 1) + padY * 2.0f;
     const float pillX = cx - pillW * 0.5f;
     const float pillY = cy - pillH * 0.5f;
-    const float rad   = (cellH * 0.78f + padY * 2.0f) * 0.42f;
-    DrawRoundFill(pillX + 1.0f, pillY + 2.5f, pillW, pillH, rad, 0.0f, 0.0f, 0.0f, 0.40f, fb_w, fb_h);          // shadow
-    DrawRoundFill(pillX - 1.2f, pillY - 1.2f, pillW + 2.4f, pillH + 2.4f, rad + 1.2f, ar, ag, ab, aa, fb_w, fb_h); // accent border
-    DrawRoundFill(pillX, pillY, pillW, pillH, rad, 0.055f, 0.070f, 0.100f, 0.92f, fb_w, fb_h);                  // fill
+    const float rad   = 5.0f;
+    DrawRoundFill(pillX, pillY + 2.0f, pillW, pillH, rad, 0.0f, 0.0f, 0.0f, 0.45f, fb_w, fb_h);                 // shadow: straight down = elevation
+    DrawRoundFill(pillX - 1.0f, pillY - 1.0f, pillW + 2.0f, pillH + 2.0f, rad + 1.0f, ar, ag, ab, aa, fb_w, fb_h); // 1px hairline
+    DrawRoundFill(pillX, pillY, pillW, pillH, rad, 0.043f, 0.051f, 0.071f, 0.90f, fb_w, fb_h);                  // #0B0D12 @ 0.90
 
     // Accumulate every glyph quad and submit the whole label in one upload + draw.
     SetViewport(fb_w, fb_h);
     pUseProgram(g_glyph_prog);
     if (g_loc_glyph_tex >= 0) pUniform1i(g_loc_glyph_tex, 0);
-    if (g_loc_glyph_color >= 0 && pUniform4f) pUniform4f(g_loc_glyph_color, 0.93f, 0.95f, 0.97f, 1.0f);
+    if (g_loc_glyph_color >= 0 && pUniform4f) pUniform4f(g_loc_glyph_color, 0.910f, 0.929f, 0.957f, 1.0f);  // #E8EDF4
     pActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g_glyph_tex);
     pBindVertexArray(g_tex_vao);
@@ -782,25 +822,42 @@ void DrawRoundRect(float x, float y, float w, float h, float rad,
     DrawRoundFill(x, y, w, h, rad, r, g, b, a, fb_w, fb_h);
 }
 
-void UploadSidebar(const void* bgra, int w, int h, int stride) {
+void UploadUiLayer(const void* bgra, int w, int h, int stride,
+                   int dx, int dy, int dw, int dh) {
     if (!g_have_gl || !bgra || w <= 0 || h <= 0) return;
+    if (stride <= 0) stride = w * 4;
     // Begin() left the active unit at GL_TEXTURE0 and saved its binding; End() restores it.
     glBindTexture(GL_TEXTURE_2D, g_tex);
-    bool rowset = (stride > 0 && stride != w * 4);
-    if (rowset) glPixelStorei(GL_UNPACK_ROW_LENGTH_E, stride / 4);
     if (w != g_tex_w || h != g_tex_h) {
+        // Size change: the whole surface content is fresh; upload it all. ROW_LENGTH
+        // is set explicitly on every path (Begin() normalized it to 0).
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_E, stride / 4);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, bgra);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_E, 0);
         g_tex_w = w;
         g_tex_h = h;
-    } else {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, bgra);
+        return;
     }
-    if (rowset) glPixelStorei(GL_UNPACK_ROW_LENGTH_E, 0);
+    // Same size: push only the dirty sub-rect (clamped). An empty rect = no-op.
+    if (dx < 0) { dw += dx; dx = 0; }
+    if (dy < 0) { dh += dy; dy = 0; }
+    if (dx + dw > w) dw = w - dx;
+    if (dy + dh > h) dh = h - dy;
+    if (dw <= 0 || dh <= 0) return;
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_E, stride / 4);
+    const std::uint8_t* p = static_cast<const std::uint8_t*>(bgra) +
+                            (std::size_t)dy * (std::size_t)stride + (std::size_t)dx * 4u;
+    glTexSubImage2D(GL_TEXTURE_2D, 0, dx, dy, dw, dh, GL_BGRA, GL_UNSIGNED_BYTE, p);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_E, 0);
 }
 
-void DrawSidebar(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h) {
-    if (!g_have_gl || dst_w <= 0 || dst_h <= 0 || fb_w <= 0 || fb_h <= 0) return;
+void DrawUiLayer(int dst_x, int dst_y, int fb_w, int fb_h) {
+    if (!g_have_gl || fb_w <= 0 || fb_h <= 0) return;
     if (g_tex_w <= 0 || g_tex_h <= 0) return;   // nothing uploaded yet
+    // ALWAYS the texture's own size: 1:1 pixels, top-left anchored. Sizing from
+    // the share's live fields would scale a stale texture during a resize (the
+    // share updates before the upload happens) -- visible swimming.
+    int dst_w = g_tex_w, dst_h = g_tex_h;
 
     float L = (float)dst_x / (float)fb_w * 2.0f - 1.0f;
     float R = (float)(dst_x + dst_w) / (float)fb_w * 2.0f - 1.0f;
@@ -882,7 +939,11 @@ void DrawHud(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h) {
     pBindBuffer(GL_ARRAY_BUFFER, g_tex_vbo);
     pBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    // Restore the solid-marker state Begin() established (mirror DrawGlyph's tail).
+    // Restore the solid-marker state Begin() established (mirror DrawGlyph's tail) --
+    // INCLUDING the premultiplied blend func this path switched to straight alpha,
+    // or every later draw this frame (HUD caption, UI layer) blends alpha twice.
+    if (pBlendFuncSeparate) pBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
+                                               GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glBindTexture(GL_TEXTURE_2D, 0);
     pUseProgram(g_solid_prog);
     pBindVertexArray(g_vao);

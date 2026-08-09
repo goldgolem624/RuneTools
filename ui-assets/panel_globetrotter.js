@@ -30,7 +30,7 @@
       let vp = null; try { vp = JSON.parse(await bridge().varps(myPid(), '12314') || 'null'); } catch (e) {}
       if (vb) { gtVb = vb; gtVp = vp; }
     } finally { gtChFetching = false; }
-    if (activeTab === 'globetrotter') renderGlobetrotter();
+    paneRun('globetrotter', renderGlobetrotter);
   }
   async function fetchGlobetrotter() {
     if (!bridge() || gtFetching) return; gtFetching = true;
@@ -45,7 +45,7 @@
       }
       gtWorn = worn;
     } finally { gtFetching = false; }
-    if (activeTab === 'globetrotter') renderGlobetrotter();
+    paneRun('globetrotter', renderGlobetrotter);
   }
   function renderGlobetrotterTab() {
     const c = $('content');

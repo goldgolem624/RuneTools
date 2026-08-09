@@ -227,6 +227,25 @@ std::string MapWindowJson(int cx, int cy, int plane, int half = 0, int ts = 0);
 // {"ints":{key:v},"strs":{key:"v"}}. Generic cache-struct accessor for panels.
 std::string StructParamsJson(int structId);
 
+// Every world-map ELEMENT: {"<id>":{"s":sprite,"c":category,"t":"text","n":"body"}}. The map
+// window's `icons` blob carries (tile, element id, loc id) per placement; this is the table it
+// indexes into, fetched once when the World Map panel opens.
+std::string MapLabelsJson();
+
+// Loc id -> the placing loc's own name, for elements that have no name of their own: {"<id>":"Gate"}.
+// The tooltip's last resort, keyed by the loc id in the `icons` blob. Only mapFunction-bearing
+// locs, so a few KB; fetched once alongside MapLabelsJson.
+std::string MapLocNamesJson();
+
+// Map element CATEGORY names (the caps tooltip header): {"<id>":{"n":"Bank","g":group}}.
+// Enum 8586 category -> struct, struct param 596 = name, 597 = legend group.
+std::string MapCategoriesJson();
+
+// Every map-symbol PLACEMENT in the world, for search: {"n":count,"b":"<base64>"} where the
+// blob is 7 bytes each, little-endian (element u16, x u16, y u16, plane u8). One full region
+// walk, memoised for the session; the panel persists it per client build.
+std::string MapSymbolsJson();
+
 // HUD panel registry lookup: mount comp SUB under group 1477 for a content-slot id
 // (enum 7716 slot -> panel struct, param 3503 = packed mount comp). -1 when the slot
 // isn't registered / mounts outside 1477 / the cache isn't open yet. Built once; the

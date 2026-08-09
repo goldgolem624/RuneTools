@@ -279,7 +279,7 @@
       }
     } catch (e) { /* keep previous */ }
     cyFetching = false;
-    if (activeTab === 'currencies') renderCurrencies();
+    paneRun('currencies', renderCurrencies);
   }
 
   const cyInvTotal = (inv, obj) => {

@@ -54,7 +54,7 @@
       for (const k in varNamesData.varp) varNamesLower.varp[k] = varNamesData.varp[k].toLowerCase();
       for (const k in varNamesData.varc) varNamesLower.varc[k] = varNamesData.varc[k].toLowerCase();
       varRowEls.forEach(el => { el._sig = ''; });
-      if (activeTab === 'vars') paintVars();
+      paneRun('vars', paintVars);
     } catch (e) { varNamesData = null; }
   }
   function varpName(id)   { return (varNamesData && varNamesData.varp[id]) || (varAchData && varAchData.vp[id]) || ''; }
@@ -95,7 +95,7 @@
         const joinL = (o) => { const r = {}; for (const k in o) r[k] = o[k].map(b => b.label.toLowerCase()).join('\n'); return r; };
         varAchData = { vb, vp, bits, vpbits, vbL: low(vb), vpL: low(vp), bitsL: joinL(bits), vpbitsL: joinL(vpbits) };
         varRowEls.forEach(el => { el._sig = ''; });
-        if (activeTab === 'vars') paintVars();
+        paneRun('vars', paintVars);
       } catch (e) { varAchData = null; }
     })();
   }
@@ -112,7 +112,7 @@
     if (on) { varNamesLoad(); varAchLoad(); varPinsSync(); }
     if (on && !varbitMapData && bridge() && bridge().varbitMap) {     // for the varp -> varbit hover decode
       try { Promise.resolve(bridge().varbitMap()).then(j => {
-        try { varbitMapData = JSON.parse(j); varRowEls.forEach(el => { el._sig = ''; }); if (activeTab === 'vars') paintVars(); } catch (e) {}
+        try { varbitMapData = JSON.parse(j); varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); } catch (e) {}
       }); } catch (e) {}
     }
   }
@@ -160,7 +160,7 @@
       }
     }
     varLast = d; varDump = d;
-    if (activeTab === 'vars') renderVars();
+    paneRun('vars', renderVars);
   }
   function renderVars() {
     const c = $('content');
@@ -451,6 +451,7 @@
     if (top + pop.offsetHeight + 8 > window.innerHeight) top = Math.max(6, rc.top - pop.offsetHeight - 4);
     pop.style.top = top + 'px';
     pop.style.left = Math.max(6, Math.min(rc.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
+    try { wmRectsSoon(); } catch (e) {}
   }
   // Re-render the open popover on every paint so its varbit values stay live without mouse motion.
   function updateVarPop() {
@@ -459,7 +460,7 @@
     if (!varPopAnchor || !varPopAnchor.isConnected) { hideVarbitPop(); return; }
     fillVarbitPop(pop, varPopKey);
   }
-  function hideVarbitPop() { const pop = $('vrPop'); if (pop) pop.style.display = 'none'; varPopKey = ''; varPopAnchor = null; }
+  function hideVarbitPop() { const pop = $('vrPop'); if (pop) { pop.style.display = 'none'; try { wmRectsSoon(); } catch (e) {} } varPopKey = ''; varPopAnchor = null; }
   // Session-scoped list of hidden vars (manual or auto-hidden timer noise), with unhide controls.
   function showVarIgnoredModal() {
     hideVarIgnoredModal();
@@ -511,5 +512,6 @@
     box.appendChild(h); box.appendChild(list);
     ov.appendChild(box);
     document.body.appendChild(ov);
+    try { wmRectsSoon(); } catch (e) {}
   }
-  function hideVarIgnoredModal() { const ov = $('vrModalOv'); if (ov) ov.remove(); }
+  function hideVarIgnoredModal() { const ov = $('vrModalOv'); if (ov) { ov.remove(); try { wmRectsSoon(); } catch (e) {} } }

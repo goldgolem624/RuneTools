@@ -2087,6 +2087,99 @@ std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
+// ---- membership tier ---------------------------------------------------------------------
+// Free-vs-member is NOT var state, which is why no varp/varbit ever shows it: clientscripts
+// ask the engine via the PLAYERMEMBER op. That op's handler (client opcode 686, build 940) is
+// literally
+//     acct = *(MainData + 0x19F68);   push(acct && *(u8*)(acct + 0x28) != 0)
+// so the same two dereferences reproduce it exactly. The account object at +0x19F68 backs the
+// whole USERDETAIL_* op family (QUICKCHAT, LOBBY_UNREADMESSAGES, LOBBY_LASTLOGINDAY, ...), and
+// USERDETAIL_LOBBY_MEMBERSHIP reads its +0x30 as the subscription expiry, hence the neutral
+// field names. Offsets come from the client's op-handler registration table -- see
+// docs/CS2_OPCODES.md for how to re-derive them after a game update.
+//
+// PREMIER is the other half and IS ordinary var state: varbit 50572 (varp 10287 bit 5), set
+// from "entitlement 45". The legacy Premier Club varp 12864 reads 0 on live premier accounts,
+// so it is deliberately not consulted. script15757 gates premier behind membership; that AND is
+// mirrored here so a stale varbit cannot report premier on a lapsed account.
+//
+// idleLogoutSeconds is DERIVED, not read: enforcement is server-side (the client carries no
+// idle opcode, no idle string and no threshold constant). The budget is ADDITIVE, not tiered:
+// 5 min base, +5 for members, +5 for a JAGEX ACCOUNT, capped at 15. PREMIER HAS NOTHING TO DO
+// WITH IT -- an earlier version keyed the third tier off premier, which produced the right
+// number only for the premier-and-migrated case and was wrong for everyone else (notably f2p
+// on a Jagex account, which gets 10 min, not 5). The timer also only runs OUT OF COMBAT.
+// Jagex-account detection = JX_DISPLAY_NAME present in the target's environment (the Jagex
+// Launcher sets it; legacy logins leave it empty). A non-launcher start-up would read as
+// legacy and merely UNDER-state the budget, which is the safe direction.
+constexpr std::uint32_t kOffAccount      = 0x19F68;   // MainData -> account / user-detail object
+constexpr std::uint32_t kOffAcctIsMember = 0x28;      // u8, nonzero = members
+constexpr std::uint32_t kOffAcctExpiry   = 0x30;      // u64, raw value LOBBY_MEMBERSHIP divides down
+constexpr int           kPremierVarbit   = 50572;
+
+// Live idle time, in the client's own ms domain. The client streams the user's input to the
+// server (pointer position, key batches) and stamps WHEN it last flushed each -- so this is
+// "time since the server was last told about input", which is exactly what its timer runs on,
+// and strictly better than timing from our own input hook. Both pointer recorders and the
+// keyboard stamp count: cursor movement inside the game window resets the timer even while the
+// window is inactive (the client watches the mouse through a GLOBAL low-level hook), whereas
+// keys only count while the game window is active (they arrive as ordinary window messages).
+constexpr std::uint32_t kOffInputReporter = 0x19870;  // MainData -> input reporter
+constexpr std::uint32_t kOffRepPointerA   = 0x28;     // u64 ms, last pointer flush (recorder A)
+constexpr std::uint32_t kOffRepPointerB   = 0x50;     // u64 ms, last pointer flush (recorder B)
+constexpr std::uint32_t kOffRepKeyboard   = 0x2858;   // u64 ms, last key batch (0 = none yet)
+
+std::string MembershipJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "{}";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{}";
+
+    std::uint64_t acct = rpm<std::uint64_t>(h, *root + kOffAccount).value_or(0);
+    bool resolved = acct > 0x10000 && acct <= 0x00007FFFFFFFFFFFull;
+    int member = 0; std::uint64_t expiry = 0;
+    if (resolved) {
+        member = rpm<std::uint8_t>(h, acct + kOffAcctIsMember).value_or(0) ? 1 : 0;
+        expiry = rpm<std::uint64_t>(h, acct + kOffAcctExpiry).value_or(0);
+    }
+
+    int premier = 0, wvp = -1, lsb = -1, msb = -1;
+    if (rtx::cache::GetVarbit(kPremierVarbit, wvp, lsb, msb) && wvp >= 0 && lsb >= 0 && msb >= lsb && msb < 32) {
+        int raw = read_varp(h, *root, wvp);
+        unsigned mask = (msb - lsb + 1 >= 32) ? 0xFFFFFFFFu : ((1u << (msb - lsb + 1)) - 1);
+        premier = (((unsigned)raw >> lsb) & mask) ? 1 : 0;
+    }
+    premier = (premier && member) ? 1 : 0;
+
+    // Jagex account = the launcher populated JX_DISPLAY_NAME (legacy logins leave it empty).
+    int jagex = read_target_env(h, L"JX_DISPLAY_NAME").empty() ? 0 : 1;
+    int budget = 300 + (member ? 300 : 0) + (jagex ? 300 : 0);   // additive, capped at 900
+
+    // Live idle: clock - most recent input flush. -1 when the reporter is not up yet.
+    long long idleMs = -1;
+    std::uint64_t rep = rpm<std::uint64_t>(h, *root + kOffInputReporter).value_or(0);
+    if (rep > 0x10000 && rep <= 0x00007FFFFFFFFFFFull) {
+        std::uint64_t now = rpm<std::uint64_t>(h, ps.mgva + 8).value_or(0);
+        std::uint64_t pa  = rpm<std::uint64_t>(h, rep + kOffRepPointerA).value_or(0);
+        std::uint64_t pb  = rpm<std::uint64_t>(h, rep + kOffRepPointerB).value_or(0);
+        std::uint64_t kb  = rpm<std::uint64_t>(h, rep + kOffRepKeyboard).value_or(0);
+        std::uint64_t last = pa > pb ? pa : pb;
+        if (kb > last) last = kb;
+        if (now && last && now >= last && now - last < 86400000ull) idleMs = (long long)(now - last);
+    }
+
+    char buf[320];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"resolved\":%s,\"member\":%d,\"premier\":%d,\"jagexAccount\":%d,\"tier\":%d,"
+                  "\"idleLogoutSeconds\":%d,\"idleMs\":%lld,\"expiryRaw\":%llu}",
+                  resolved ? "true" : "false", member, premier, jagex,
+                  member ? (premier ? 2 : 1) : 0,
+                  budget, idleMs,
+                  (unsigned long long)expiry);
+    return buf;
+}
+
 // Dump EVERY currently-set player varp by polling the MainData+0x36040 hashmap directly
 // (every bucket -> chain), keyed "4:<id>" (scope 4 = varp) to match the Vars tab. A varp the
 // SERVER updates but no CS2 script re-reads (ore/wood/soil/gem box counts) is never re-pushed,

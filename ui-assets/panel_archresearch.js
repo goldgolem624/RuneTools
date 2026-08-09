@@ -168,7 +168,7 @@ function archResSigVal() {
 
 async function fetchArchResearch() {
   await archResearchEnsure();
-  if (activeTab === 'archresearch') renderArchResearch();
+  paneRun('archresearch', renderArchResearch);
 }
 
 // Culture grouping joins the book enums on the DBRow id, which only a launcher build carrying
@@ -289,7 +289,7 @@ function paintArchResearch() {
 // archResearchEnsure() (varp 12086 + varbits 57207+preset*4+slot -> DBTable 94 names).
 async function fetchRelics() {
   await archRelicEnsure();   // relic-only: archResearchEnsure can early-return on old builds
-  if (activeTab === 'relics') renderRelics();
+  paneRun('relics', renderRelics);
 }
 let relicsSig = '';
 function renderRelics() {

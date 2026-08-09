@@ -98,7 +98,7 @@
       lgVbKick();
       lgEnsureAch();
     } finally { lgFetching = false; }
-    if (activeTab === 'leagues') renderLeagues();
+    paneRun('leagues', renderLeagues);
   }
 
   // Achievement defs (shared cache with the Achievements tab): the task's col-2 id points
@@ -328,8 +328,14 @@
         .lg-search { flex: 1 1 130px; height: 26px; padding: 0 9px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font-size: 11.5px; outline: none; }
         .lg-search:focus { border-color: var(--border-hi); }
         .lg-cap { color: var(--text-mute); font-size: 10.5px; margin: 2px 2px 6px; }
-        .lg-relics { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
-        .lg-relic { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev-2); font-size: 11px; color: var(--text); }
+        /* A GRID, not flex-wrap: relics are equal-rank choices, and variable-width
+           chips wrapped ragged (a tier of three broke 2 + 1 with the orphan a
+           different width). Equal columns line the tiers up with each other, and
+           auto-fit puts a whole tier on one row as soon as the window is wide
+           enough. */
+        .lg-relics { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 5px; margin-top: 6px; }
+        .lg-relic { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 8px 3px 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev-2); font-size: 11px; color: var(--text); }
+        .lg-relic > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .lg-relic.on { border-color: var(--accent-hi); background: linear-gradient(90deg, rgba(124,92,252,0.28), rgba(124,92,252,0.10)); color: #fff; }
         .lg-avail { color: var(--warn, #fbbf24); border-color: var(--warn, #fbbf24); }
         .lg-rico { width: 18px; height: 18px; flex: 0 0 auto; background-size: contain; background-repeat: no-repeat; background-position: center; }`);

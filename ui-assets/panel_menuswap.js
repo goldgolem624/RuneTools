@@ -26,7 +26,9 @@
 // LEFT-CLICK is fed by a different one: reordering the menu alone moved the menu while hover
 // still read the old verb. The status line reports which lists a change landed in.
 
-  let mnuData = null, mnuSig = '', mnuListSig = '', mnuOn = false, mnuNote = '', mnuPinCtx = '';
+  // mnuOn is the companion's publish mode (rtx::menu::kEnable*), -1 until the first tick has told
+  // it one - the companion boots at 0, but so does "off", and the first push has to happen.
+  let mnuData = null, mnuSig = '', mnuListSig = '', mnuOn = -1, mnuNote = '', mnuPinCtx = '';
   let mnuLoaded = false;    // durable store read once, before any rule is written back
   let mnuView = 'menu';     // 'menu' = the latched menu | 'rules' = every saved rule | 'add'
   let mnuNames = {};        // rule key -> display name, so a saved rule reads as more than an id
@@ -347,7 +349,10 @@
     // change takes effect even while the cursor is elsewhere.
     const live = (mnuData && mnuData.entries) || [];
     const parts = [mnuFlatten(live)];
-    if (mnuSel) {
+    // The edited capture only counts while the panel is on screen. It survives the panel closing,
+    // and a latch left on one same-named variant would then keep leaking its order onto whatever
+    // is actually hovered, for as long as the client runs.
+    if (mnuSel && paneVisible('menuswap')) {
       const sel = mnuFlatten(mnuActiveEnts());
       if (sel && parts.indexOf(sel) < 0) parts.push(sel);
     }
@@ -358,28 +363,34 @@
   async function mnuTick() {
     if (!bridge() || !bridge().menuStatus) return;
     await mnuLoadRules();          // once, before anything can overwrite the durable copy
-    const want = (activeTab === 'menuswap');
-    if (want !== mnuOn && bridge().menuEnable) {
-      mnuOn = want;
-      try { await bridge().menuEnable(myPid(), want); } catch (e) {}
-      if (want) mnuPush();          // re-arm: the companion's copy dies with the client
+    const vis = paneVisible('menuswap');
+    // PUBLISHING IS NOT A UI CONCERN. mnuPush sends only the rules for the entities in the
+    // published menu, so with publishing off the panel is choosing from a frozen snapshot: a
+    // newly hovered thing never gets its rule pushed and the game draws its own order. That is
+    // the "rules only work while the panel is open" report. Keep the feed alive whenever a rule
+    // could apply; kEnablePanel vs kEnableBackground only tells the probe whether to re-arm its
+    // dump budget.
+    const want = vis || !!Object.keys(mnuRules).length;
+    const mode = !want ? 0 : vis ? 1 : 2;
+    if (mode !== mnuOn && bridge().menuEnable) {
+      // Re-arm on every transition INTO publishing (including the first tick, mnuOn -1): the
+      // companion's pin copy dies with the client. Panel<->background is not such a transition,
+      // and re-pushing there would send the closed panel's stale selection.
+      const wasOff = mnuOn <= 0;
+      mnuOn = mode;
+      try { await bridge().menuEnable(myPid(), mode); } catch (e) {}
+      if (wasOff && want) mnuPush();
     }
-    // KEEP POLLING WITH THE TAB CLOSED. Rules match on the config id under the cursor, and that
-    // id reaches the companion only through the launcher's handle -> id table, which is filled by
-    // this very status call. Gating the call on the tab being open meant reordering quietly
-    // stopped whenever the panel was not in front - reported as "went to lobby, came back, none
-    // of the changes stayed until I clicked the panel a few times". The call is cheap; only the
-    // rendering below is skipped.
-    let d = null;
-    try { d = JSON.parse(await bridge().menuStatus(myPid()) || '{}'); } catch (e) { return; }
+    // KEEP POLLING WITH THE TAB CLOSED, and keep acting on what comes back. Which rule to send is
+    // decided from the entities in this payload, so a tick that skips the decision leaves the
+    // companion holding the previous menu's pins and the game draws its own order - reported as
+    // "the reordering isn't taking place without the panel open", and before that as "went to
+    // lobby, came back, none of the changes stayed until I clicked the panel a few times".
     // Rules also have to be re-pushed after the client rebuilds its menu state (a lobby trip
     // clears the companion's copy), which the pin-context check below detects via seq.
-    if (!want) {
-      mnuData = d || {};
-      const bgCtx = (mnuData.seq | 0) + '|' + (mnuData.locId | 0) + '|' + (mnuData.handle | 0);
-      if (bgCtx !== mnuPinCtx) { mnuPinCtx = bgCtx; mnuPush(); }
-      return;
-    }
+    let d = null;
+    try { d = JSON.parse(await bridge().menuStatus(myPid()) || '{}'); } catch (e) { return; }
+    if (!want) return;               // no rules stored: nothing to resolve, nothing to push
     // A new menu discards the working order - it belonged to the menu it was built from.
     if (d && mnuData && d.seq !== mnuData.seq) mnuOrder = null;
     mnuData = d || {};
@@ -396,11 +407,13 @@
     // entity except the topmost one.
     mnuResolveFromScene(mnuTargets((mnuData.entries) || []));
     mnuUpgradeKeys((mnuData.entries) || []);
-    mnuNoteRecent();
-    mnuReconcileRecent();
+    // Everything above resolves the rule KEY and so has to run either way. The recent-menu list
+    // and the render exist only for the panel, and mnuNoteRecent would otherwise accumulate every
+    // menu opened all session with nobody to read it.
+    if (vis) { mnuNoteRecent(); mnuReconcileRecent(); }
     const ctx = (mnuData.seq | 0) + '|' + (mnuData.locId | 0) + '|' + (mnuData.handle | 0);
     if (ctx !== mnuPinCtx) { mnuPinCtx = ctx; mnuPush(); }
-    renderMenuSwap();
+    if (vis) renderMenuSwap();
   }
 
   // Fixed = the bottom row, plus any TARGETLESS row in a menu that HAS targets. Must match the
@@ -585,7 +598,7 @@
   }
 
   function renderMenuSwap() {
-    const c = $('content'); if (!c) return;
+    const c = paneRoot('menuswap'); if (!c) return;
     let wrap = $('mnuWrap');
     if (!wrap) {
       c.innerHTML = '';

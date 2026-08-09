@@ -580,7 +580,7 @@
       if (!vp || !Object.keys(vp).length) return;
       petsData = PETS.map(p => ({ ...p, owned: petOwned(p, vp) }));   // null = untracked (legacy pets, no unlock bit)
     } finally { petsFetching = false; }
-    if (activeTab === 'pets') renderPets();
+    paneRun('pets', renderPets);
   }
   function renderPets() {
     const c = $('content');

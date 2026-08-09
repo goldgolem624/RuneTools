@@ -25,7 +25,7 @@
         inv: (items && items.present) ? items : { present: false, count: 0, cap: 0, items: [] },
       };
     } finally { famFetching = false; }
-    if (activeTab === 'familiar') renderFamiliar();
+    paneRun('familiar', renderFamiliar);
   }
   function renderFamiliar() {
     const c = $('content');

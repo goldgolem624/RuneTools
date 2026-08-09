@@ -77,7 +77,7 @@
       const adren = (vp[AB_ADREN_VARP] !== undefined) ? vp[AB_ADREN_VARP] : null;
       abarData = { bars, preset, clock, adren, vc };
     } finally { abarFetching = false; }
-    if (activeTab === 'abilities') renderAbilities();
+    paneRun('abilities', renderAbilities);
   }
   // Ability slots render the cache sprite whose id == the ability id (cache idx 8).
   function attachAbilityIcon(el, s) {

@@ -98,7 +98,7 @@
     compFetching = true;
     try { const d = JSON.parse(await bridge().varps(myPid(), COMP_VARP_CSV)); if (d && typeof d === 'object') compVp = d; } catch (e) {}
     compFetching = false;
-    if (activeTab === 'components') paintComponents();
+    paneRun('components', paintComponents);
   }
   // Component icon = a cache sprite (not an item icon). Same cache+async pattern as attachBuffIcon.
   function attachCompIcon(el, sid) {

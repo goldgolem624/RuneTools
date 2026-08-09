@@ -383,7 +383,7 @@
       out.passage = await readPassage(held);
       storageData = out;
     } finally { storageFetching = false; }
-    if (activeTab === 'storage') renderStorage();
+    paneRun('storage', renderStorage);
   }
 
   // RS3-style count abbreviation: <100k full, 100k+ -> K, 1m+ -> M, 1b+ -> B, 1t+ -> T, 1q+ -> Q (2dp).

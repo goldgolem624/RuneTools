@@ -23,7 +23,7 @@
   async function fetchAreaTasks(force) {
     await fetchAchievements(force);
     areaTasksData = buildCategoryTasks(AREA_CFG);
-    if (activeTab === 'areatasks') renderAreaTasks();
+    paneRun('areatasks', renderAreaTasks);
   }
   function renderAreaTasks() { renderTaskScaffold(AREA_CFG); }
 

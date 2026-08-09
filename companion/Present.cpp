@@ -8,6 +8,7 @@
 #include "InputFilter.h"   // window-message filter for render continuity (keep-focused)
 #include "MarkerShare.h"   // launcher-published world-marker command list
 #include "HudShare.h"      // launcher-published HUD-reminder (top-center sprite + caption)
+#include "FrameShare.h"    // launcher-published in-game window UI layer (pixel surface)
 
 #include <windows.h>
 #include <detours.h>
@@ -53,6 +54,29 @@ void EnsureHudMapped() {
     g_hud = reinterpret_cast<rtx::hud::Share*>(
         MapViewOfFile(g_hudMap, FILE_MAP_READ, 0, 0, sizeof(rtx::hud::Share)));
     if (!g_hud) { CloseHandle(g_hudMap); g_hudMap = nullptr; }
+}
+
+// In-game window UI layer; the launcher creates it. Mapped read+write because this
+// side publishes the live client size + a liveness counter back (resize handshake).
+// Retry is backed off: OpenFileMapping every present before the launcher creates
+// the section would be a per-frame syscall.
+rtx::frame::Share* g_frame    = nullptr;
+HANDLE             g_frameMap = nullptr;
+void EnsureFrameMapped() {
+    if (g_frame) return;
+    static ULONGLONG s_nextTry = 0;
+    ULONGLONG now = GetTickCount64();
+    if (now < s_nextTry) return;
+    s_nextTry = now + 1000;
+    wchar_t name[64];
+    rtx::frame::MakeSectionName(GetCurrentProcessId(), name);
+    g_frameMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
+    if (!g_frameMap) return;
+    g_frame = reinterpret_cast<rtx::frame::Share*>(
+        MapViewOfFile(g_frameMap, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+                      sizeof(rtx::frame::Share)));
+    if (!g_frame) { CloseHandle(g_frameMap); g_frameMap = nullptr; return; }
+    OutputDebugStringA("RuneToolsX: ui-layer channel mapped");
 }
 
 // Draw one command. Coords are client pixels in the projected space (cw x ch).
@@ -140,6 +164,16 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
             if (fbw > 0 && fbh > 0) {
                 EnsureMarkerMapped();
                 EnsureHudMapped();
+                EnsureFrameMapped();
+                // Resize handshake + liveness: publish the authoritative client size
+                // every present (even while the layer is hidden) so the launcher can
+                // size its off-screen UI view and detect a live v2 companion.
+                if (g_frame && g_frame->magic == rtx::frame::kMagic &&
+                    g_frame->version == rtx::frame::kVersion) {
+                    g_frame->client_w = fbw;
+                    g_frame->client_h = fbh;
+                    g_frame->module_seq = g_frame->module_seq + 1;
+                }
                 // Decide whether there's anything to draw BEFORE touching GL: overlay
                 // off = skip Begin()/End(), zero GL state save/restore on idle frames.
                 bool haveMarkers = g_marker && g_marker->magic == rtx::marker::kMagic &&
@@ -150,10 +184,17 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                                g_hud->version == rtx::hud::kVersion &&
                                (g_hud->seq & 1u) == 0 && g_hud->enable &&
                                g_hud->w > 0 && g_hud->h > 0;
+                // Drawing the UI layer only needs the last-uploaded texture, so a
+                // mid-write seq (odd) still draws; only the UPLOAD requires a stable
+                // snapshot.
+                bool haveUi = g_frame && g_frame->magic == rtx::frame::kMagic &&
+                              g_frame->version == rtx::frame::kVersion &&
+                              g_frame->visible &&
+                              g_frame->width > 0 && g_frame->height > 0;
 #if RTX_MARKER_SELFTEST
                 const bool draw = true;
 #else
-                const bool draw = haveMarkers || haveHud;
+                const bool draw = haveMarkers || haveHud || haveUi;
 #endif
                 if (draw) {
                     rtx::composite::Begin();
@@ -209,6 +250,40 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                             rtx::composite::DrawPlainText(cap, (float)(fbw / 2),
                                                           (float)(cy + pad + sh + capH / 2 + 1),
                                                           15.0f, 1, 0.96f, 0.93f, 1.0f, 0.98f, fbw, fbh);
+                    }
+                    if (haveUi) {
+                        // Upload only when the content generation changed AND the writer
+                        // is not mid-publish. If the launcher writes during our copy,
+                        // leave frame_id unlatched so the next present re-uploads clean.
+                        static std::uint32_t s_uiFrameId = 0xFFFFFFFFu;
+                        std::uint32_t seq0 = g_frame->seq;
+                        std::uint32_t fid0 = g_frame->frame_id;
+                        if ((seq0 & 1u) == 0 && fid0 != s_uiFrameId) {
+                            int lw = (int)g_frame->width;
+                            int lh = (int)g_frame->height;
+                            if (lw <= (int)rtx::frame::kMaxWidth &&
+                                lh <= (int)rtx::frame::kMaxHeight) {
+                                // The share's dirty rect describes only the LATEST
+                                // publish; if more than one publish happened since
+                                // our last upload the earlier rects are lost --
+                                // upload the whole surface in that case.
+                                bool contiguous = (fid0 == s_uiFrameId + 1);
+                                int dx = contiguous ? g_frame->dirty_x : 0;
+                                int dy = contiguous ? g_frame->dirty_y : 0;
+                                int dw = contiguous ? g_frame->dirty_w : lw;
+                                int dh = contiguous ? g_frame->dirty_h : lh;
+                                rtx::composite::UploadUiLayer(
+                                    g_frame->pixels, lw, lh, (int)g_frame->stride,
+                                    dx, dy, dw, dh);
+                                if (g_frame->seq == seq0 && g_frame->frame_id == fid0)
+                                    s_uiFrameId = fid0;
+                            }
+                        }
+                        // Always 1:1 pixels, top-left anchored: DrawUiLayer sizes the
+                        // quad from its own uploaded texture, so a mid-resize stale
+                        // frame renders unscaled instead of swimming.
+                        rtx::composite::DrawUiLayer(g_frame->origin_x, g_frame->origin_y,
+                                                    fbw, fbh);
                     }
                     rtx::composite::End();
                 }

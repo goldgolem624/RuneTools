@@ -128,7 +128,7 @@
     if (!bridge()) return;
     try { ifaceWidgets[gid] = (JSON.parse(bridge().interfaceGroup(myPid(), gid) || '{}').widgets) || []; }
     catch (e) {}
-    if (activeTab === 'interfaces') renderIfaceList();
+    paneRun('interfaces', renderIfaceList);
   }
   function ifaceStep(st) {
     const gid = parseInt(st.dataset.gid, 10);
@@ -145,12 +145,12 @@
     try { ifaceGroups = (JSON.parse(bridge().interfaceGroups(myPid()) || '{}').groups) || []; }
     catch (e) { ifaceGroups = []; }
     for (const k in ifaceWidgets) delete ifaceWidgets[k];   // re-scan invalidates cached widgets
-    if (activeTab === 'interfaces') renderIfaceList();
+    paneRun('interfaces', renderIfaceList);
   }
   // Open/close monitor: every 0.6s, diff the set of loaded interface groups and log what opened or
   // closed, so an in-game action immediately shows which interface it toggled.
   function ifaceMonTick() {
-    if (!ifaceMonOn || activeTab !== 'interfaces' || !bridge()) return;
+    if (!ifaceMonOn || !paneVisible('interfaces') || !bridge()) return;
     let cur;
     try { cur = (JSON.parse(bridge().interfaceGroups(myPid()) || '{}').groups) || []; } catch (e) { return; }
     const now = new Set(cur.map(g => g.id));
