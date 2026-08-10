@@ -9,8 +9,7 @@
     },
     wood: {
       boxes: { 54895: 'Wood', 54897: 'Oak', 54899: 'Willow', 54901: 'Teak', 54903: 'Maple', 54905: 'Acadia', 54907: 'Mahogany', 54909: 'Yew', 54911: 'Magic', 54913: 'Elder', 58253: 'Eternal magic' },
-      container: 937,
-      logs: [['Logs', 1511], ['Oak', 1521], ['Willow', 1519], ['Teak', 6333], ['Maple', 1517], ['Acadia', 40285], ['Eucalyptus', 12581], ['Mahogany', 6332], ['Yew', 1515], ['Magic', 1513], ['Elder', 29556], ['Eternal magic', 58250]]
+      container: 937, roster: 7206   // logs + wood spirits + bird's nests
     },
     soil: {
       boxes: { 49538: 'Archaeological soil box' }, capVb: 47021,    // capacity varbit: 0->50,1->100,2->250,3->500
@@ -26,8 +25,7 @@
       // perCap unset: the 7-bit field caps at 127 and the cache states no real per-gem limit.
     },
     plank: {
-      boxes: { 51022: 'Plank box' }, container: 895,
-      logs: [['Plank', 960], ['Oak plank', 8778], ['Teak plank', 8780], ['Mahogany plank', 8782], ['Willow plank', 54860], ['Maple plank', 54862], ['Acadia plank', 54864], ['Yew plank', 54866]]
+      boxes: { 51022: 'Plank box' }, container: 895, roster: 16107
     },
     essence: {   // RC essence pouches; COUNT and stored TYPE are PER-POUCH.
                  // Tuple = [name, countVb, typeVb, capacity, pouchItemId, decayVarp, decayMax].
@@ -141,6 +139,28 @@
   const SOIL_CAP = [50, 100, 250, 500];
   let storageData = null, storageVbMap = null, storageSig = '', storageFetching = false;
   let storageVbMapTry = 0;    // last varbitMap attempt (ms) -- bridge().varbitMap is SYNCHRONOUS native work
+  // cfg.roster -> ordered item ids, read from the SAME cache enum the game's own fill script walks
+  // (Plank box CS2 case 51022 does enum_getvalue(0, 33, 16107, i) for i < ENUM_GETOUTPUTCOUNT).
+  // Hardcoding these rosters is what hid Magic/Elder/Eternal planks: the list was the whitelist, so
+  // a tier Jagex added and we never transcribed was dropped without a trace. Cached per session --
+  // enumInfo is synchronous native cache work and must not run on every poll tick.
+  const storRoster = {}, storRosterTry = {};
+  async function storRosterIds(eid) {
+    if (!eid) return null;
+    if (storRoster[eid]) return storRoster[eid];
+    if (!bridge() || !bridge().enumInfo) return null;
+    // Same guard as ensureVbMap: EnumJson runs cache work SYNCHRONOUSLY on the render thread, so a
+    // permanently closed cache must not re-read it four times a second for the life of the session.
+    const now = Date.now(); if (now - (storRosterTry[eid] || 0) < 2000) return null; storRosterTry[eid] = now;
+    let m = null; try { m = JSON.parse(await bridge().enumInfo(eid) || 'null'); } catch (e) {}
+    if (!m) return null;
+    // Enum keys are the game's display order; they are not guaranteed to start at 0 (enum 7206
+    // does, enum 6544 starts at 1), so sort numerically rather than counting from zero.
+    const ids = Object.keys(m).map(Number).sort((a, b) => a - b).map(k => m[k] | 0).filter(v => v > 0);
+    if (!ids.length) return null;      // CONFIGS index not open yet -> retry next poll, do NOT cache
+    storRoster[eid] = ids;
+    return ids;
+  }
   // Runecrafting pouches never degrade while Conservation of Energy is harnessed
   // (panel_archresearch.js reads the live relic slots).
   function storNoDecay() {
@@ -271,19 +291,29 @@
       }
       const soilItems = fromVarp(STORAGE.soil.varp);
       if (soilBox || soilItems.length) out.soil = { name: soilBox || '', cap: SOIL_CAP[readVb(STORAGE.soil.capVb, vp) || 0] || 50, items: soilItems };
-      // Container-backed boxes: cfg.logs sums known content ids; no logs -> every filled slot by name.
+      // Container-backed boxes. cfg.roster (a cache enum) fixes the game's display ORDER; the counts
+      // and names come from the container itself, so the roster decides sequence, never membership.
+      // Anything in the container the roster does not list is appended rather than dropped -- the old
+      // code filtered by a hardcoded list whose "show everything" fallback only fired when the list
+      // matched NOTHING, so a partial match (5 of 7 plank types) silently swallowed the rest.
       const readContainer = async (cfg, heldName) => {
         let r = null; try { if (bridge().containerItems) r = JSON.parse(await bridge().containerItems(myPid(), cfg.container)); } catch (e) {}
         const rows = (r && r.items) || [];
-        let items = [];
-        if (cfg.logs) {
-          const byId = {}; rows.forEach(it => { byId[it[1]] = (byId[it[1]] || 0) + it[2]; });
-          items = cfg.logs.map(x => [x[0], byId[x[1]] || 0, x[1], 'container ' + cfg.container + ' · item ' + x[1]]).filter(x => x[1] > 0);
-        }
-        if (!items.length && rows.length) {
-          const byName = {}; rows.forEach(it => { const nm = it[3] || ('#' + it[1]); if (!byName[nm]) byName[nm] = { c: 0, id: it[1], slot: it[0] }; byName[nm].c += it[2]; });
-          items = Object.keys(byName).map(nm => [nm, byName[nm].c, byName[nm].id, 'container ' + cfg.container + ' slot ' + byName[nm].slot + ' · item ' + byName[nm].id]).filter(x => x[1] > 0);
-        }
+        // One id can span several slots; sum the stacks and keep every slot for the cell tooltip.
+        const byId = {}, nameOf = {}, slotsOf = {};
+        rows.forEach(it => {
+          const id = it[1];
+          byId[id] = (byId[id] || 0) + it[2];
+          if (!(id in nameOf)) { nameOf[id] = it[3] || ('#' + id); slotsOf[id] = []; }
+          slotsOf[id].push(it[0]);
+        });
+        const order = (await storRosterIds(cfg.roster)) || [];
+        const seen = new Set(), ids = [];
+        order.forEach(id => { if (!seen.has(id)) { seen.add(id); ids.push(id); } });
+        Object.keys(byId).map(Number).forEach(id => { if (!seen.has(id)) { seen.add(id); ids.push(id); } });
+        const items = ids.filter(id => (byId[id] || 0) > 0).map(id =>
+          [nameOf[id], byId[id], id,
+           'container ' + cfg.container + ' · item ' + id + ' · slot ' + slotsOf[id].join(', ')]);
         return (heldName || items.length) ? { name: heldName || '', items } : null;
       };
       out.wood  = await readContainer(STORAGE.wood,  woodBox);
