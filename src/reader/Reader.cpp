@@ -4075,6 +4075,9 @@ static const PanelOriginSpec kPanelOrigins[] = {
                                   // 3089/3090.
     { 13,   3089, 3090, 0, 31, 0, true },  // Bank pin -- window-frame varcs 3089/3090
     { 1224, 3089, 3090, 0, 0, 0, true },   // Ritual selection (Necromancy! communion ritual) -- window-frame varcs 3089/3090
+    { 533,  3089, 3090, 0, 0, 0, true },   // Display case -- window-frame varcs 3089/3090; content renders CENTRED in
+                                  // the frame (owner-calibrated 2026-08-11). Origin is still the frame's top-left;
+                                  // nudge via the Interfaces tab offsets if the box sits off.
     { 1286, 3089, 3090, 0, 0, 0, true },   // Discovered Ratings (Fish Flingers) -- window-frame varcs 3089/3090.
                                   // 2026-08-02: anchoring it to the central-overlay frame 1477:728 (centred) was
                                   // tried and REVERTED -- the box did not track the live window. Keep the varcs.

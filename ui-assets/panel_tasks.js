@@ -518,7 +518,7 @@
       const vp = playerVp || {};
       const u = (k) => (vp[k] || 0) >>> 0;
       if (playerVp) {
-        const hp = u('659'), pr = u('3274'), su = u('8040');
+        const hp = u('13537'), pr = u('3274'), su = u('8040');   // 13537 = current lifepoints, raw
         const L = (n) => n.toLocaleString();
         // Account status varp 4818: bit0 ironman, bit1 hardcore, bit19 in-GIM, bit25 unranked group,
         // bits21-23 GIM type via enum 5733 {0 Regular, 1 Competitive}; unranked wins over the type.
@@ -552,11 +552,40 @@
             add(row('Idle logout', idleBudget));
           }
         }
+        // Leagues account identity: varp 12314 = league number (script20117 matches it
+        // against db 326.0; 0 = normal character). Points varp is per league (db 326.28
+        // var_reference: L1 12426, L2 13521); vb 58389 = league tasks completed
+        // (script21081). The XP multiplier is NOT a var: the game prints db 328.4 of
+        // the tier row (script20255), so it is derived here as the highest tier whose
+        // points cost is reached, using the leagues panel's shared table data.
+        {
+          const lg = u('12314');
+          if (lg > 0) {
+            const LG_NAMES = { 1: 'Leagues I (Catalyst)', 2: 'Leagues II (Equilibrium)' };
+            sec('League');
+            add(row('League', LG_NAMES[lg] || ('League ' + lg)));
+            const ptsVp = { 1: '12426', 2: '13521' }[lg];
+            const pts = (ptsVp && vp[ptsVp] !== undefined) ? u(ptsVp) : null;
+            if (pts !== null) add(row('League points', L(pts)));
+            const lgRec = (typeof lgData === 'object' && lgData && lgData.leagues)
+              ? lgData.leagues.find(x => x.num === lg) : null;
+            if (!lgRec && typeof fetchLeagues === 'function') fetchLeagues();   // fills on a later poll
+            if (lgRec && pts !== null) {
+              let mult = 0;
+              for (const t of lgRec.tiers) if (pts >= t.cost && t.xp > mult) mult = t.xp;
+              if (mult > 0) add(row('XP multiplier', mult + 'x'));
+            }
+            const td = playerVb && playerVb['58389'];
+            if (typeof td === 'number' && td > 0) add(row('League tasks done', L(td)));
+          }
+        }
         sec('Vitals');
         // Combat level comes from the player entity section (psec+0x10BC); -1 = unavailable.
         if (typeof d.combat === 'number' && d.combat >= 3)
           add(row('Combat level', String(d.combat)));
-        add(row('Hitpoints',  L(Math.floor((hp & 0xffff) / 2)) + ' / ' + L((hp >>> 16) & 0xffff)));
+        // Current only: varp 13537 carries no max, and the max-lifepoints source is not yet known.
+        // Showing "x / 0" read as an injured player at zero max, which is worse than showing less.
+        add(row('Hitpoints',  playerVp['13537'] === undefined ? 'unknown' : L(hp)));
         add(row('Prayer',     L(Math.floor((pr & 0x7fff) / 10)) + ' / ' + L(((pr >>> 16) & 0x7f) * 10)));
         add(row('Summoning',  L(Math.floor((su & 0x7fff) / 10)) + ' / ' + L(((su >>> 16) & 0x7f) * 10)));
         // Familiar special-move points: varp 1787 raw current, fixed max 60.

@@ -327,8 +327,10 @@
   // to send. Preloading every rule is what forced id matching into the companion, and that whole
   // path was removed after it kept resolving inconsistently.
   //
-  // Cost: the first tick of a newly hovered thing can draw the game's own order before the next
-  // poll pushes its rule. That is a visible flicker, not a wrong menu.
+  // The latch-follow cost was WORSE than a visible flicker: for a launcher poll round-trip the
+  // game's own default was live in the hover slot, and a click inside that window DISPATCHED it
+  // (owner-reported: pinned Drop, fast click ran the original option). mnuPrearm below closes
+  // the window for every rule whose display name is unambiguous.
   function mnuFlatten(ents) {
     const out = [];
     const seen = {};
@@ -341,12 +343,41 @@
     return out.join('\n');
   }
 
+  // Pre-arm pins for every stored rule whose display NAME is claimed by exactly one
+  // rule (or by several rules with an identical verb order). Those cannot leak across
+  // same-named variants - the hazard that made pins latch-only - so the companion can
+  // hold them permanently and reorder on the FIRST build tick of a new hover, instead
+  // of waiting a poll round-trip during which the game's own default is clickable.
+  // Ambiguous names (two variants, different orders) stay latch-follow as before.
+  function mnuPrearm() {
+    const byName = {};
+    for (const k in mnuRules) {
+      if (k === '*') continue;
+      // id-keyed rules need their recorded name; legacy keys carry the name in the key
+      const nm = mnuPlain(mnuNames[k] || (/^(item|loc|npc):/.test(k) ? '' : k.split(mnuVarSep)[0]));
+      if (!nm) continue;
+      (byName[nm] = byName[nm] || []).push(k);
+    }
+    const out = [];
+    for (const nm in byName) {
+      const keys = byName[nm];
+      const first = JSON.stringify(mnuRules[keys[0]] || []);
+      if (keys.some(k => JSON.stringify(mnuRules[k] || []) !== first)) continue;
+      for (const verb of mnuRules[keys[0]] || []) out.push(verb + '\t' + nm);
+    }
+    // global rule: empty target matches any (Pin.target semantics in MenuShare.h)
+    for (const verb of mnuRules['*'] || []) out.push(verb + '\t');
+    return out.join('\n');
+  }
+
   async function mnuPush() {
     mnuSaveRules();
-    // Send the rules for every entity under the cursor, PLUS the one being edited. A merged menu
-    // needs all of them: pins carry the target name, so the companion applies each entity's rule
-    // to its own rows and the two never blend into one order. The edited capture is included so a
-    // change takes effect even while the cursor is elsewhere.
+    // Send the rules for every entity under the cursor, PLUS the one being edited, PLUS the
+    // pre-armed unambiguous set. A merged menu needs all of them: pins carry the target name,
+    // so the companion applies each entity's rule to its own rows and the two never blend into
+    // one order. The edited capture is included so a change takes effect even while the cursor
+    // is elsewhere. ORDER MATTERS: the companion takes the first matching pin per row, so the
+    // latch-resolved pins go first and win over a pre-armed line for the same name.
     const live = (mnuData && mnuData.entries) || [];
     const parts = [mnuFlatten(live)];
     // The edited capture only counts while the panel is on screen. It survives the panel closing,
@@ -356,8 +387,14 @@
       const sel = mnuFlatten(mnuActiveEnts());
       if (sel && parts.indexOf(sel) < 0) parts.push(sel);
     }
-    const pins = parts.filter(Boolean).join('\n');
-    try { await bridge().menuPins(myPid(), pins); } catch (e) {}
+    parts.push(mnuPrearm());
+    // Dedupe verb+target lines and cap to the share buffer (kMaxPins = 256); the
+    // latch-first order means anything dropped at the tail is pre-armed surplus.
+    const seen = {};
+    const lines = parts.filter(Boolean).join('\n').split('\n')
+      .filter(ln => ln && (seen[ln] ? false : (seen[ln] = 1)))
+      .slice(0, 256);
+    try { await bridge().menuPins(myPid(), lines.join('\n')); } catch (e) {}
   }
 
   async function mnuTick() {

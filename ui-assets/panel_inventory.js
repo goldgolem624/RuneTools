@@ -108,19 +108,25 @@
     for (let s = 0; s < cap; s++) {
       const cell = document.createElement('div'); cell.className = 'bank-cell';
       const it = bySlot[s];
+      // every cell gets the icon-box + name-strip structure so empty and filled
+      // cells keep the same height and the grid rows stay aligned
+      const box = document.createElement('div'); box.className = 'inv-ico-box';
+      const nm = document.createElement('div'); nm.className = 'inv-name';
       if (it) {
         const [slot, id, stack, name] = it;
         if (stack === 0) cell.classList.add('placeholder');
         const ico = document.createElement('div'); ico.className = 'bank-icon';
         ico.dataset.itemId = String(id); attachBankIcon(ico, id);
-        cell.appendChild(ico);
+        box.appendChild(ico);
         const amt = fmtAmt(stack);
-        if (amt.t) { const a = document.createElement('span'); a.className = 'bank-amt' + (amt.c ? ' ' + amt.c : ''); a.textContent = amt.t; cell.appendChild(a); }
+        if (amt.t) { const a = document.createElement('span'); a.className = 'bank-amt' + (amt.c ? ' ' + amt.c : ''); a.textContent = amt.t; box.appendChild(a); }
+        nm.textContent = name || ('Item #' + id);
         cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() + '\nSlot ' + slot;
         // slot included: two stacks of one id hold DIFFERENT instance vars, and an
         // id-only read always returned the first slot's (owner-caught on two passages).
         cell.dataset.ei = '93:' + id + ':' + slot;
       }
+      cell.appendChild(box); cell.appendChild(nm);
       grid.appendChild(cell);
     }
   }

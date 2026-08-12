@@ -522,7 +522,11 @@ export class ClientscriptObfuscation {
         } else {
             await r.loadCandidates();
             r.parseCandidateContents();
-            callibrateSubtypes(r, r.candidates);//TODO is this needed?
+            try {
+                callibrateSubtypes(r, r.candidates);//TODO is this needed?
+            } catch (e) {
+                console.log("subtype callibration failed, types info might not be accurate");
+            }
             // A game update shifts the script-index hash while the opcode table still
             // matches, landing here every run. Without the script-args snapshot each
             // decompile re-derives callee signatures (~1000x slower overall), so persist
@@ -601,7 +605,9 @@ export class ClientscriptObfuscation {
                 if (file) {
                     let json = JSON.parse(file);
                     let scriptjson = (scriptfile ? JSON.parse(scriptfile) : null);
-                    return this.fromJson(source, json, scriptjson);
+                    // await so a failed load falls through to the fresh-callibration
+                    // fallback below instead of rejecting create() itself
+                    return await this.fromJson(source, json, scriptjson);
                 }
             } catch { }
         }

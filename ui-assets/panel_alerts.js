@@ -178,13 +178,23 @@
   }
   function vitalsName(stat) { const t = VITALS.find(s => s[0] === stat); return t ? t[1] : 'Hitpoints'; }
   function vitalsLabel(w) { return vitalsName(w.stat) + ' ' + buffCondText(w.cond) + ' ' + (w.num || 0); }
+  // null = NO READING, which is not the same as zero, and vitalsMatch drops null so an unread
+  // vital cannot fire an alert.
+  //
+  // HITPOINTS MOVED. Varp 659 used to pack cur/max as (v & 0xffff)/2 and (v>>>16)&0xffff; it now
+  // reads 0 forever, and no clientscript in the cache references it any more. Live lifepoints are
+  // varp 13537, holding the CURRENT value directly (user-observed ticking 1434 -> 1462 with regen;
+  // no scaling, and nothing packed in the high bits). Reading the dead varp is what produced
+  // "Hitpoints less than 550" on repeat at full health: the 0 was the reading, not the player.
+  // Prayer and summoning still pack their max in the high bits, so a zero there is still no
+  // reading. Adrenaline has no packed max and 0% is normal, so only a missing key counts.
   function vitalValue(stat) {
     if (!playerVp) return null;
     const u = k => (playerVp[k] || 0) >>> 0;
-    if (stat === 'hp')     return Math.floor((u('659') & 0xffff) / 2);
-    if (stat === 'prayer') return Math.floor((u('3274') & 0x7fff) / 10);
-    if (stat === 'summon') return Math.floor((u('8040') & 0x7fff) / 10);
-    if (stat === 'adren')  return Math.floor(u('679') / 10);
+    if (stat === 'hp')     return playerVp['13537'] === undefined ? null : u('13537');
+    if (stat === 'prayer') { const v = u('3274'); return ((v >>> 16) & 0x7f) ? Math.floor((v & 0x7fff) / 10) : null; }
+    if (stat === 'summon') { const v = u('8040'); return ((v >>> 16) & 0x7f) ? Math.floor((v & 0x7fff) / 10) : null; }
+    if (stat === 'adren')  return playerVp['679'] === undefined ? null : Math.floor(u('679') / 10);
     return null;
   }
   function cmpNum(v, cond, n) {

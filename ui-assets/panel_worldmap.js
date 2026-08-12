@@ -1409,8 +1409,14 @@
     + '.wm-req.met{color:var(--text-mute)}'
     + '.wm-req.unmet{color:var(--warn,#e0a44a)}'
     + '.wm-rows{display:flex;flex-direction:column;gap:3px}'
-    + '.wm-rows.wide{display:grid;grid-template-columns:1fr 1fr;gap:3px 5px}'
+    /* minmax(0,1fr), NOT 1fr: a plain 1fr track is minmax(auto,1fr), so its floor is the item's
+       min-content and a long cache name (.wm-nm is white-space:nowrap) forces the track wider than
+       its half, pushing the second card out through the tip's own border. minmax(0,1fr) pins both
+       tracks to an exact half; min-width:0 lets the row shrink into it and overflow:hidden clips at
+       the card's rounded edge, so the worst case is a truncated chip instead of a broken box. */
+    + '.wm-rows.wide{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:3px 5px}'
     + '.wm-row{display:flex;align-items:center;gap:8px;min-height:26px;padding:3px 8px 3px 5px;'
+    +   'min-width:0;overflow:hidden;'
     +   'border-radius:7px;background:rgba(255,255,255,0.035);border:1px solid var(--border)}'
     + '.wm-row.wait{opacity:.3}'
     + '.wm-lv{flex:0 0 auto;display:flex;align-items:center;gap:5px;min-width:52px;'

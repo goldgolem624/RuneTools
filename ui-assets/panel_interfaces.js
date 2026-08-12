@@ -10,7 +10,7 @@
     1286:'Fish Flingers discovered ratings', 37:'Smithing / Smelting', 91:'Dungeoneering party', 105:'Grand Exchange',
     107:'Grand Exchange inventory', 109:'GE collection box', 137:'Chat box', 190:'Quest list',
     284:'Buff bar', 291:'Debuff bar', 345:'Mysterious clue scroll', 364:'Treasure trails',
-    517:'Bank', 590:'Emote', 660:'Archaeology material storage', 662:'Familiar / Summoning',
+    517:'Bank', 533:'Display case', 590:'Emote', 660:'Archaeology material storage', 662:'Familiar / Summoning',
     720:'Teleports', 906:'Lobby frame', 907:'Lobby news', 910:'Lobby world select',
     945:'Dungeoneering', 1029:'Community',
     1030:'Murder on the Border investigation',

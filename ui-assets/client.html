@@ -1162,6 +1162,15 @@
        so `contain` blows small items up. */
   .inv-grid .bank-icon { inset: 0; }   /* size is set per-icon (downscale-only) */
   .inv-grid .bank-amt { font-size: 13px; top: 3px; left: 4px; }
+  /* Inventory cells stack an icon box over a name strip; the square-by-padding trick
+     moves onto the inner icon box so the name can extend the cell downward. */
+  .inv-grid .bank-cell { height: auto; padding-bottom: 0; display: flex; flex-direction: column; }
+  .inv-ico-box { position: relative; width: 100%; height: 0; padding-bottom: 86%; flex: 0 0 auto; }
+  .inv-name {
+    font-size: 9.5px; line-height: 1.2; color: var(--text-dim); text-align: center;
+    padding: 0 2px 3px; min-height: 2.4em; word-break: break-word;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
   .inv-grid::-webkit-scrollbar { width: 10px; }
   .inv-grid::-webkit-scrollbar-track { background: transparent; }
   .inv-grid::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
@@ -2944,21 +2953,40 @@
   // Player-state varps shared by the Player State panel and the Skills footer
   // (virtual-levels-enabled). Varp-hashmap decodes:
   //   458  bit30 = "virtual levels" display setting (varbit 19007)
-  //   659  HP:        cur = (v & 0xffff)/2,  max = (v>>>16)&0xffff   (lifepoints)
+  //   13537 HP: the CURRENT lifepoints, raw (no scaling, nothing packed above bit 15).
+  //         Varp 659 used to carry cur = (v & 0xffff)/2, max = (v>>>16)&0xffff; it now reads 0
+  //         permanently and no clientscript in the cache mentions it, so it is gone, not merely
+  //         idle. It is left OUT of the request list rather than kept as a fallback: a dead varp
+  //         reads 0, and 0 is indistinguishable from a real low reading. NOTE the max lifepoints
+  //         source has NOT been identified yet, so callers show the current value alone.
   //   3274 Prayer:    cur = (v & 0x7fff)/10, max = ((v>>>16)&0x7f)*10 (points)
   //   8040 Summoning: cur = (v & 0x7fff)/10, max = ((v>>>16)&0x7f)*10 (points)
   //   1787 Familiar special-move (spell) points: raw current value, max const 60 (CS2 script777/11687)
   //   679  Adrenaline = v/10 (%)            463 Run toggle (0 walk / 1 run)
   //   1297 Quest points earned
-  const PLAYER_VARP_IDS = '458,659,3274,8040,1787,679,463,1297,4818,5984,5982,5991';   // 4818 = account-mode flags; 5984 = charge-pack charge (raw, /3000), 5982 = capacity blueprints, 5991 = combat drain rate (CS2-confirmed)
+  // 4818 = account-mode flags; 5984 = charge-pack charge (raw, /3000), 5982 = capacity
+  // blueprints, 5991 = combat drain rate (CS2-confirmed). Leagues identity (CS2-reviewed):
+  // 12314 = league NUMBER, matched against db 326.0 by script20117 (0 = not a league
+  // character; gates read "> 0" everywhere, "== 2" for Equilibrium paths); league points
+  // varp per the header's db 326.28 var_reference: L1 12426, L2 13521.
+  const PLAYER_VARP_IDS = '458,13537,3274,8040,1787,679,463,1297,4818,5984,5982,5991,12314,12426,13521';
   let playerVp = null;
   // Account-wide varbits shown on the Info tab. 39152 (bits 0-15) = TOTAL Dungeoneering floors
   // completed all-time: player state, not per-floor state, so it belongs here.
-  const PLAYER_VARBIT_IDS = '39152';
+  // 58389 = league tasks completed (script21081's region-unlock counter). NOTE
+  // vb 58421 is NOT fetched: it is a server multiplier used only by the archaeology
+  // restoration XP preview (script14688/20151) and does not match the headline tier
+  // multiplier (observed 10 while the tier table said 12). The displayed multiplier
+  // is derived from the tier table (db 328.4) against live points instead.
+  const PLAYER_VARBIT_IDS = '39152,58389';
   let playerVb = null;
   async function fetchPlayerVp() {
     if (!bridge() || !bridge().varps) return;
-    try { const d = JSON.parse(await bridge().varps(myPid(), PLAYER_VARP_IDS)); if (d && typeof d === 'object') playerVp = d; } catch (e) {}
+    // Require a NON-EMPTY object: VarpsJson returns "{}" when it cannot attach to the game, and
+    // accepting that set playerVp to an empty map where every vital read 0 -- which reads as a
+    // real value everywhere downstream rather than as "not read".
+    try { const d = JSON.parse(await bridge().varps(myPid(), PLAYER_VARP_IDS));
+          if (d && typeof d === 'object' && Object.keys(d).length) playerVp = d; } catch (e) {}
     if (!bridge().varbits) return;
     try { const v = JSON.parse(await bridge().varbits(myPid(), PLAYER_VARBIT_IDS)); if (v && typeof v === 'object') playerVb = v; } catch (e) {}
   }
@@ -3906,7 +3934,7 @@
       dup.start = now;
       if (dup.countEl) { dup.countEl.textContent = '×' + dup.n; dup.countEl.style.display = ''; }
       toastTick();
-      return;
+      return dup;
     }
     const el = document.createElement('div');
     el.className = 'toast' + (sticky ? ' sticky' : '');
@@ -3943,6 +3971,9 @@
     }
     toastTick();
     wmRectsSoon();                 // a sticky card is clickable -> claim its rect
+    // The record is returned so callers (pinned league tasks) can live-update a
+    // sticky card's text in place instead of stacking new toasts.
+    return rec;
   }
 
   function toastClose(rec) {
@@ -4118,6 +4149,7 @@
     for (const w of wm.wins.values()) if (!w.min) add(w.el);
     // Body-level popovers: they float outside any window rect, so they need their own.
     add($('sndMenu')); add($('vrPop'));
+    add($('lgMenu'));
     add($('ctxCopy'));
     // Only DISMISSIBLE toasts claim input. A transient toast stays click-through so
     // it can never swallow a click meant for the game underneath it. Placement mode
@@ -4363,6 +4395,50 @@
     if (bar) bar.querySelectorAll('.mb-cat.open').forEach(b => b.classList.remove('open'));
     wmRectsSoon();
   }
+  // The rows a category's menu shows. A TAB_GROUP collapses to ONE row, so this is what the user
+  // actually sees rather than the raw tab list. Shared by the dropdown and by the single-entry
+  // shortcut in renderMenubar, so a click behaves identically whichever path it arrives through.
+  // Recomputed per click, never cached: Plugins grows and shrinks as plugins are installed.
+  function mbCatEntries(catId) {
+    const out = [], emitted = {};
+    for (const t of allTabs()) {
+      if ((t.cat || 'General') !== catId) continue;
+      const g = TAB_GROUP_OF[t.id];
+      if (g && emitted[g.id]) continue;
+      if (g) emitted[g.id] = true;
+      out.push({ label: g ? g.label : t.label,
+                 win:    g ? wmWinOfAny(g.tabs) : wmWinOf(t.id),
+                 target: g ? groupEntryTab(g)   : t,
+                 // Every tab this row owns, so closing can scope itself to them. Copied: closing
+                 // splices tab arrays, and g.tabs is the shared TAB_GROUPS definition.
+                 ids:    g ? g.tabs.slice()     : [t.id] });
+    }
+    return out;
+  }
+  // Route through the TAB, not the window: after docking, w may be showing an UNRELATED tab, and
+  // acting on it there hits the host instead of what was asked for. Only toggle when the requested
+  // tab is ALREADY shown.
+  function mbActivate(e) {
+    const w = e.win, target = e.target;
+    if (w && (!target || w.tabs.indexOf(target.id) >= 0)) {
+      const wasMin = w.min;
+      if (wasMin) wmRestore(w);
+      if (target && w.tab !== target.id) { wmSwitchTab(w, target); wmFocus(w); closeMbDrop(); return; }
+      if (!wasMin) {
+        // Open and showing: the menu entry is a toggle and it CLOSES. This used to minimize, which
+        // left the window alive behind a restore chip and read as the click having done nothing.
+        // Scope it to the tabs this ROW owns: a window can hold panels docked in from elsewhere,
+        // and those must survive. Only when the row accounts for every tab does the window go.
+        const mine = e.ids || (target ? [target.id] : []);
+        if (mine.length && w.tabs.every(id => mine.indexOf(id) >= 0)) wmClose(w.wid);
+        else mine.forEach(id => { if (w.tabs.indexOf(id) >= 0) wmCloseTabIn(w, id); });
+        closeMbDrop();
+        return;
+      }
+      wmFocus(w); closeMbDrop(); return;
+    }
+    if (target) openTab(target);   // lives in another window (or nowhere): openTab finds it
+  }
   function openMbDrop(catId, btn) {
     closeMbDrop();
     wm.mbDrop = catId;
@@ -4371,35 +4447,15 @@
     dd.id = 'mbdrop';
     // No category heading: the bar button above it is the label, and it stays lit
     // while its menu is open. (It earned its place when the button was an icon.)
-    const emitted = {};
-    for (const t of allTabs()) {
-      if ((t.cat || 'General') !== catId) continue;
-      const g = TAB_GROUP_OF[t.id];
-      if (g && emitted[g.id]) continue;
-      if (g) emitted[g.id] = true;
-      const w = g ? wmWinOfAny(g.tabs) : wmWinOf(t.id);
-      const target = g ? groupEntryTab(g) : t;
+    for (const e of mbCatEntries(catId)) {
+      const w = e.win, target = e.target;
       const b = document.createElement('button');
       // Lit only when the requested TAB is on screen -- after docking, w can hold it while
       // showing something else, and rolled hides the body just like minimized does.
       b.className = 'tab' + ((w && !w.min && !w.rolled && target && w.tab === target.id) ? ' is-active' : '');
       b.innerHTML = '<span class="tab-label"></span>' + (w ? '<span class="tab-on"></span>' : '');
-      b.querySelector('.tab-label').textContent = g ? g.label : t.label;
-      b.addEventListener('click', () => {
-        // Route through the TAB, not the window: after docking, w may be showing an
-        // UNRELATED tab, and toggling it there minimizes the host instead of showing what
-        // was asked for. Only toggle visibility when the requested tab is ALREADY shown.
-        // NEVER close from the menu -- closing is the window's own ✕ (minimize looked like
-        // "closed" when the menu quick-toggled a close here).
-        if (w && (!target || w.tabs.indexOf(target.id) >= 0)) {
-          const wasMin = w.min;
-          if (wasMin) wmRestore(w);
-          if (target && w.tab !== target.id) { wmSwitchTab(w, target); wmFocus(w); closeMbDrop(); return; }
-          if (!wasMin) { wmMinimize(w); return; }
-          wmFocus(w); closeMbDrop(); return;
-        }
-        if (target) openTab(target);   // lives in another window (or nowhere): openTab finds it
-      });
+      b.querySelector('.tab-label').textContent = e.label;
+      b.addEventListener('click', () => mbActivate(e));
       dd.appendChild(b);
     }
     document.body.appendChild(dd);
@@ -4466,6 +4522,12 @@
       b.textContent = c.id;          // a legible word beats a 17px line glyph
       b.addEventListener('click', () => {
         if (wm.mbDrop === c.id) { closeMbDrop(); return; }
+        // A category holding one panel would open a menu of one row repeating the button's own
+        // label (Quests > Quests), which is a question with a single answer. Open it directly.
+        // Five of the ten categories are like this, and Plugins joins them when nothing is
+        // installed, so the count is measured here per click rather than declared in CAT_META.
+        const es = mbCatEntries(c.id);
+        if (es.length === 1) { closeMbDrop(); mbActivate(es[0]); return; }
         openMbDrop(c.id, b);
       });
       cats.appendChild(b);
@@ -5157,6 +5219,9 @@
     // World-event spawn bells (scarabs / soul obelisk): pure cache reads, so this is
     // cheap and runs regardless of which windows are open.
     if (typeof scNotifyPoll === 'function') scNotifyPoll();
+    // Pinned league tasks: sticky progress toasts stay live with every poll,
+    // whichever windows are open (self-gating: immediate no-op without pins).
+    if (typeof lgPinsPoll === 'function') lgPinsPoll();
     if (alertsNeedGoals() && !paneVisible('player')) fetchGameGoals();
     if (alertsNeedPerks() && !paneVisible('perks')) fetchPerks();
     if (alertsNeedInv() && !paneVisible('inventory')) fetchInv();

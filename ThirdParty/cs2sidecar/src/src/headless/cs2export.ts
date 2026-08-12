@@ -258,10 +258,12 @@ function decodeStructLabel(buf: Buffer, refKeys?: Set<number>):
 }
 
 // ---- enums (js5-17), build-949: op209 is a payload-less flag ----
-function decodeEnum(buf: Buffer): { keyType: number, valType: number, entries: Map<number, string> } | null {
+function decodeEnum(buf: Buffer): { keyType: number, valType: number, entries: Map<number, string | number> } | null {
     const r = new R(buf);
     let keyType = -1, valType = -1;
-    const entries = new Map<number, string>();
+    // int values are kept alongside strings for the analysis dump; the annotation
+    // tables only consume valType-36 (string) enums so they are unaffected
+    const entries = new Map<number, string | number>();
     while (r.p < r.len) {
         const op = r.u8();
         if (op === 0) break;
@@ -270,9 +272,9 @@ function decodeEnum(buf: Buffer): { keyType: number, valType: number, entries: M
         else if (op === 3) r.cstr();
         else if (op === 4) r.i32();
         else if (op === 5) { const n = r.u16(); for (let i = 0; i < n; i++) { const k = r.i32(); entries.set(k, r.cstr()); } }
-        else if (op === 6) { const n = r.u16(); for (let i = 0; i < n; i++) { r.i32(); r.i32(); } }
+        else if (op === 6) { const n = r.u16(); for (let i = 0; i < n; i++) { const k = r.i32(); entries.set(k, r.i32()); } }
         else if (op === 7) { r.u16(); const n = r.u16(); for (let i = 0; i < n; i++) { const k = r.u16(); entries.set(k, r.cstr()); } }
-        else if (op === 8) { r.u16(); const n = r.u16(); for (let i = 0; i < n; i++) { r.u16(); r.i32(); } }
+        else if (op === 8) { r.u16(); const n = r.u16(); for (let i = 0; i < n; i++) { const k = r.u16(); entries.set(k, r.i32()); } }
         else if (op === 131 || op === 209) { }
         else return null;
     }
@@ -281,9 +283,12 @@ function decodeEnum(buf: Buffer): { keyType: number, valType: number, entries: M
 
 // Full-row form of the same format, for the analysis dumps: every column's values,
 // strings and ints alike (0x24 = string, else i32).
-function decodeDbrowFull(buf: Buffer): { [col: number]: (number | string)[] } | null {
+function decodeDbrowFull(buf: Buffer): { table: number, cols: { [col: number]: (number | string)[] } } | null {
     const r = new R(buf);
     const cols: { [col: number]: (number | string)[] } = {};
+    // op4 tag: (master<<8)|subtable when >= 256, else the bare master. Reported in
+    // CS2-space (sub*128 + master) to match the launcher bridge's dbRows() ids.
+    let table = -1;
     let any = false;
     while (r.p < r.len) {
         const op = r.u8();
@@ -307,9 +312,16 @@ function decodeDbrowFull(buf: Buffer): { [col: number]: (number | string)[] } | 
                     }
                 }
             }
-        } else break;
+        }
+        else if (op === 4) {
+            const t = r.usmart();
+            const master = t >= 256 ? (t >> 8) : t;
+            const sub = t >= 256 ? (t & 0xFF) : 0;
+            table = sub * 128 + master;
+        }
+        else break;
     }
-    return any ? cols : null;
+    return any ? { table, cols } : null;
 }
 // ---- dbrows (js5-2 arch 41): smart rowcount + row-major (validated 18394/18394) ----
 function decodeDbrowLabel(buf: Buffer): string | null {
@@ -462,6 +474,11 @@ async function buildTables(engine: EngineCache, notes: string[],
     notes.push(`quest tracker vars: ${questVars}, quest names: ${cast.quest.size}`);
 
     // 2/3. npc then loc: names + morph vars (rename priority 2/3)
+    // locs also feed the locs.json analysis dump: {id, name, ops, vb, vp, kids} for
+    // every loc with a name or a morph block, so server-side morph vars (which never
+    // appear in clientscripts) can be tied back to the world object that switches on
+    // them (e.g. varswatcher research on caps/state machines).
+    const locDump: { id: number, name?: string, ops?: string[], vb?: number, vp?: number, kids?: number[] }[] = [];
     for (const { major, kind, castKey } of [
         { major: cacheMajors.npcs, kind: "npcmorph", castKey: "npc" },
         { major: cacheMajors.objects, kind: "locmorph", castKey: "loc" },
@@ -471,6 +488,27 @@ async function buildTables(engine: EngineCache, notes: string[],
             try {
                 cfgs.set(id, major === cacheMajors.npcs ? parse.npc.read(file, engine.rawsource) : parse.object.read(file, engine.rawsource));
             } catch (e) { }
+        }
+        if (castKey === "loc") {
+            for (const [id, cfg] of cfgs) {
+                const ops: string[] = [];
+                for (const k of ["actions_0", "actions_1", "actions_2", "actions_3", "actions_4",
+                                 "members_action_1", "members_action_2", "members_action_3",
+                                 "members_action_4", "members_action_5"]) {
+                    if (cfg[k]) { ops.push(String(cfg[k])); }
+                }
+                const mv = morphVars(cfg.morphs_1) ?? morphVars(cfg.morphs_2);
+                if (!cfg.name && !mv) { continue; }
+                const e: typeof locDump[0] = { id };
+                if (cfg.name && cfg.name !== "null") { e.name = cfg.name; }
+                if (ops.length) { e.ops = ops; }
+                if (mv) {
+                    if (mv.vb >= 0) { e.vb = mv.vb; }
+                    if (mv.vp >= 0) { e.vp = mv.vp; }
+                    if (mv.kids.length) { e.kids = mv.kids; }
+                }
+                locDump.push(e);
+            }
         }
         for (const [id, cfg] of cfgs) {
             if (cfg.name && cfg.name !== "null") { cast[castKey].set(id, cfg.name); }
@@ -596,9 +634,11 @@ async function buildTables(engine: EngineCache, notes: string[],
             if (!e || !e.entries.size) { continue; }
             enumDump.push({ id, keyType: e.keyType, valType: e.valType, entries: Array.from(e.entries) });
             if (e.valType === 36) {
-                enumTables.set(id, e.entries);
+                // valType 36 = string, so the entry values are all strings here
+                const strEntries = e.entries as Map<number, string>;
+                enumTables.set(id, strEntries);
                 const dest = KEYTYPE[e.keyType];
-                if (dest) { keyed[dest].push(e.entries); }
+                if (dest) { keyed[dest].push(strEntries); }
             }
         } catch (e) { }
     }
@@ -610,7 +650,7 @@ async function buildTables(engine: EngineCache, notes: string[],
     }
     notes.push(`string enums: ${enumTables.size}, stat names: ${cast.stat.size}, category names: ${cast.category.size}`);
 
-    const dbrowDump: { id: number, cols: { [col: number]: (number | string)[] } }[] = [];
+    const dbrowDump: { id: number, table: number, cols: { [col: number]: (number | string)[] } }[] = [];
     // 8. dbrows
     progress("xref", 5, 6);
     const dbArch = await engine.getArchiveById(cacheMajors.config, 41);
@@ -619,7 +659,7 @@ async function buildTables(engine: EngineCache, notes: string[],
             const nm = decodeDbrowLabel(sub.buffer);
             if (nm) { cast.dbrow.set(sub.fileid, nm); }
             const full = decodeDbrowFull(sub.buffer);
-            if (full) { dbrowDump.push({ id: sub.fileid, cols: full }); }
+            if (full) { dbrowDump.push({ id: sub.fileid, table: full.table, cols: full.cols }); }
         } catch (e) { }
     }
     notes.push(`dbrow labels: ${cast.dbrow.size}`);
@@ -659,7 +699,7 @@ async function buildTables(engine: EngineCache, notes: string[],
     notes.push(`interface groups: ${ifaceGroups}, labeled comps: ${ifaceComps.size}`);
     progress("xref", 6, 6);
 
-    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, ifaceCounts, ifaceComps, dbrowDump, enumDump, structDump };
+    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, ifaceCounts, ifaceComps, dbrowDump, enumDump, structDump, locDump };
 }
 
 // ---- CS2 cross-reference tables (ver 3) --------------------------------------------------
@@ -842,7 +882,7 @@ const IFACE_NAMES: { [k: number]: string } = {
     13: "Bank PIN", 37: "Smithing / Smelting", 91: "Dungeoneering party",
     105: "Grand Exchange", 107: "Grand Exchange inventory", 109: "GE collection box",
     137: "Chat box", 190: "Quest list", 284: "Buff bar", 291: "Debuff bar",
-    345: "Mysterious clue scroll", 364: "Treasure trails", 517: "Bank", 590: "Emote",
+    345: "Mysterious clue scroll", 364: "Treasure trails", 517: "Bank", 533: "Display case", 590: "Emote",
     660: "Archaeology material storage", 662: "Familiar / Summoning", 720: "Teleports",
     906: "Lobby frame", 907: "Lobby news", 910: "Lobby world select", 945: "Dungeoneering",
     1029: "Community", 1030: "Murder on the Border investigation",
@@ -1156,7 +1196,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     const buildnr = engine.getBuildNr();
 
     writeProgress("names", 0, 0);
-    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, dbrowDump, enumDump, structDump,
+    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, dbrowDump, enumDump, structDump, locDump,
             ifaceCounts, ifaceComps } = await buildTables(engine, notes, writeProgress);
 
     // script-table renames (fills gaps only, so quest/morph names keep priority)...
@@ -1179,6 +1219,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     fs.writeFileSync(path.join(outdir, "dbrows.json"), JSON.stringify(dbrowDump));
     fs.writeFileSync(path.join(outdir, "enums.json"), JSON.stringify(enumDump));
     fs.writeFileSync(path.join(outdir, "structs.json"), JSON.stringify(structDump));
+    fs.writeFileSync(path.join(outdir, "locs.json"), JSON.stringify(locDump));
     fs.writeFileSync(path.join(outdir, "names.json"), JSON.stringify({
         varbit: Object.fromEntries(names.varbit), varp: Object.fromEntries(names.varp),
         varc: Object.fromEntries(names.varc),

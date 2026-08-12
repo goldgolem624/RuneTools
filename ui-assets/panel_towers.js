@@ -2393,15 +2393,19 @@
     {n:'Digsite pendant - Digsite',src:'Enchanted Jewellery',x:3355,y:3395,p:0,item:11194,kb:'1'},
     {n:'Digsite pendant - Senntisten',src:'Enchanted Jewellery',x:3378,y:3444,p:0,item:11194,kb:'2'},
     {n:'Digsite pendant - Exam Centre',src:'Enchanted Jewellery',x:3362,y:3345,p:0,item:11194,kb:'3'},
+    // Games necklace. Unlike the gnome gliders, NOTHING is gated client-side here: script3290
+    // builds this dialog from the item's params alone (an option shows if item_getparam is a
+    // non-empty string) and item 3853 is not among the items it special-cases, so all seven
+    // rows always appear in game and the requirements below are enforced server-side only.
+    // Quest ids are decoded from the cache quest configs; the four gated destinations are
+    // user-confirmed. Troll Invasion, Barbarian Outpost and Gamer's Grotto have no requirement.
     {n:'Games necklace - Troll Invasion',src:'Enchanted Jewellery',x:2877,y:3560,p:0,item:3853,kb:'1'},
     {n:'Games necklace - Barbarian Outpost',src:'Enchanted Jewellery',x:2520,y:3571,p:0,item:3853,kb:'2'},
     {n:'Games necklace - Gamer\'s Grotto',src:'Enchanted Jewellery',x:2967,y:9678,p:0,item:3853,kb:'3'},
-    {n:'Games necklace - Agoroth',src:'Enchanted Jewellery',x:3860,y:6827,p:0,item:3853,kb:'4'},
-    {n:'Games necklace - Corporeal Beast',src:'Enchanted Jewellery',x:2885,y:4372,p:2,item:3853,kb:'5'},
-    // Burgh de Rott is the one games-necklace destination that is not open from the start:
-    // it appears once you have reached the town during In Aid of the Myreque.
-    {n:'Games necklace - Burgh De Rott',src:'Enchanted Jewellery',x:3487,y:3237,p:0,item:3853,kb:'6',req:{questName:'In Aid of the Myreque',questId:21}},
-    {n:'Games necklace - Tears of Guthix',src:'Enchanted Jewellery',x:3250,y:9517,p:2,item:3853,kb:'7'},
+    {n:'Games necklace - Agoroth',src:'Enchanted Jewellery',x:3860,y:6827,p:0,item:3853,kb:'4',req:{questName:'A Shadow over Ashdale',questId:367}},
+    {n:'Games necklace - Corporeal Beast',src:'Enchanted Jewellery',x:2885,y:4372,p:2,item:3853,kb:'5',req:{questName:"Summer's End",questId:95}},
+    {n:'Games necklace - Burgh De Rott',src:'Enchanted Jewellery',x:3487,y:3237,p:0,item:3853,kb:'6',req:{questName:'The Darkness of Hallowvale',questId:311}},
+    {n:'Games necklace - Tears of Guthix',src:'Enchanted Jewellery',x:3250,y:9517,p:2,item:3853,kb:'7',req:{questName:'Tears of Guthix',questId:81}},
     {n:'Ring of duelling - Al Kharid Duel Arena',src:'Enchanted Jewellery',x:3316,y:3234,p:0,item:2552,kb:'1'},
     {n:'Ring of duelling - Castle Wars Arena',src:'Enchanted Jewellery',x:2442,y:3089,p:0,item:2552,kb:'2'},
     {n:'Ring of duelling - South Feldip Hills',src:'Enchanted Jewellery',x:2413,y:2847,p:0,item:2552,kb:'3'},
@@ -3214,15 +3218,28 @@
     {n:'Tree Gnome Village Fruit Tree Patch',src:'Enchanted Jewellery',x:2488,y:3178,p:0,rq:'Amulet of nature',ico:20659,item:6040},
     {n:'Vine Bush Patch',src:'Enchanted Jewellery',x:2946,y:2904,p:0,rq:'Amulet of nature',ico:20659,item:6040},
     {n:'Rellekka Market',src:'Enchanted lyre',x:2641,y:3675,p:0,kb:'7',rq:'Enchanted lyre',item:3690},
-    {n:'Dylandra',src:'Gnome gliders',x:2208,y:3445,p:1,kb:'8',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Gandius',src:'Gnome gliders',x:2971,y:2969,p:0,kb:'5',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Kal-Undri',src:'Gnome gliders',x:1772,y:11920,p:0,kb:'9',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Kar-Hewo',src:'Gnome gliders',x:3284,y:3211,p:0,kb:'4',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Lemanto Andra',src:'Gnome gliders',x:3319,y:3438,p:0,kb:'3',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Lemantolly Undri',src:'Gnome gliders',x:2549,y:2971,p:0,kb:'6',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Priw Gnomo Andralo',src:'Gnome gliders',x:2496,y:3191,p:0,kb:'7',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Sindarpos',src:'Gnome gliders',x:2850,y:3494,p:1,kb:'2',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
-    {n:'Ta Quir Priw',src:'Gnome gliders',x:2465,y:3501,p:3,kb:'1',rq:'Captain Errdo/Captain Bleemadge/Captain Dalbur/Captain Klemfoodle/Gnormadium Avlafrim/Captain Belmondo/Captain Muggin/Azalea Oakhart'},
+    // Gnome gliders. The five ungated destinations (Ta Quir Priw, Sindarpos, Lemanto Andra,
+    // Kar-Hewo, Gandius) are always on the map; the other four are hidden by the glider map's
+    // own script until their gate passes. Gates are read straight out of clientscript-10747,
+    // which hides interface 138 containers 12-15; clientscript-10748 binds the destination
+    // buttons whose PARENTS are those containers, which is what ties a gate to a destination:
+    //   12 -> key 6 Lemantolly Undri   varp 2671 q_one_small_favour_progress        >= 200
+    //   13 -> key 7 Priw Gnomo Andralo varbit 9547 q_the_prisoner_of_glouphrie_progress >= 120
+    //   14 -> key 8 Dylandra           varbit 25043 != 0 AND varbit 23198 q_plague_s_end >= 400
+    //   15 -> key 9 Kai-Undri          varbit 33889 locmorph_old_spike             >= 1
+    // Var NAMES are the cache's own labels (cs2 names.json), not guesses. Varbit 25043 has no
+    // cache label, so its meaning is unknown -- it is kept because the game ANDs it in.
+    // These are PROGRESS thresholds, not quest completion, so they are gated on the varbit
+    // rather than on a quest-complete check, which would be stricter than the game itself.
+    {n:'Dylandra',src:'Gnome gliders',x:2208,y:3445,p:1,kb:'8',rq:'Plague\'s End progress',req:{any:[[{vb:25043,min:1},{vb:23198,min:400}]],anyWhy:'Plague\'s End not far enough'}},
+    {n:'Gandius',src:'Gnome gliders',x:2971,y:2969,p:0,kb:'5'},
+    {n:'Kai-Undri',src:'Gnome gliders',x:1772,y:11920,p:0,kb:'9',rq:'Kai-Undri spike activated',req:{vb:33889,vbMin:1,vbWhy:'Kai-Undri glider not activated'}},
+    {n:'Kar-Hewo',src:'Gnome gliders',x:3284,y:3211,p:0,kb:'4'},
+    {n:'Lemanto Andra',src:'Gnome gliders',x:3319,y:3438,p:0,kb:'3'},
+    {n:'Lemantolly Undri',src:'Gnome gliders',x:2549,y:2971,p:0,kb:'6',rq:'One Small Favour',req:{vp:2671,vpMin:200,vpWhy:'One Small Favour not far enough'}},
+    {n:'Priw Gnomo Andralo',src:'Gnome gliders',x:2496,y:3191,p:0,kb:'7',rq:'The Prisoner of Glouphrie',req:{vb:9547,vbMin:120,vbWhy:'The Prisoner of Glouphrie not far enough'}},
+    {n:'Sindarpos',src:'Gnome gliders',x:2850,y:3494,p:1,kb:'2'},
+    {n:'Ta Quir Priw',src:'Gnome gliders',x:2465,y:3501,p:3,kb:'1'},
     {n:'Anachronia',src:'House Teleports',x:5434,y:2374,p:0,kb:'0,2',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
     {n:'Brimhaven',src:'House Teleports',x:2757,y:3176,p:0,kb:'5',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
     {n:'Menaphos',src:'House Teleports',x:3123,y:2633,p:0,kb:'0,1',rq:'house teleport spell / House Teleport Tablet / chipped house tablet'},
@@ -3345,20 +3362,34 @@
   // is destination 1, so whatever precedes it is skipped whatever it happens to be called.
   const TELE_OPT_PARAMS = ['528', '529', '530', '531', '1211', '6712', '6713', '6714'];
   const teleKbByItem = new Map();     // item id -> Map(normalised destination -> keybind)
-  const teleKbAsked = new Set();
+  const teleKbTry = new Map();        // item id -> { n: attempts, at: ms } -- a failed read RETRIES
+  const TELE_KB_TRIES = 3;            // ... but not forever: most items simply have no options
   const teleNorm = s2 => String(s2 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const teleDest = T => teleNorm(String(T.n || '').split(' - ').pop());
   async function teleKbLoad(item) {
-    if (teleKbAsked.has(item) || !bridge() || !bridge().itemParams) return;
-    teleKbAsked.add(item);
+    if (teleKbByItem.has(item) || !bridge() || !bridge().itemParams) return;
+    const st = teleKbTry.get(item) || { n: 0, at: 0 };
+    const now = Date.now();
+    // itemParams is SYNCHRONOUS native cache work on the render thread, so never hammer it.
+    if (st.n >= TELE_KB_TRIES || now - st.at < 2000) return;
+    st.n++; st.at = now; teleKbTry.set(item, st);
     let p = null;
     try { p = JSON.parse(await bridge().itemParams(item) || 'null'); } catch (e) {}
+    // The bridge returns { ints:{k:v}, strs:{k:"v"} } (PLUGIN_SDK.md:287; panel_bosses,
+    // panel_containers and panel_tasks all read .ints that way). This read used p[k] FLAT, which
+    // matched nothing for every item ever asked, so the whole live ordering below silently
+    // degraded to the stored kb -- the one thing it exists to correct. That is why the Amulet of
+    // glory showed Al Kharid as option 3: the item says Edgeville/Karamja/Draynor Village/
+    // Al Kharid, so it is 4, and the stale stored row was never overridden.
+    const strs = (p && p.strs) || null;
     const opts = [];
-    if (p) for (const k of TELE_OPT_PARAMS) {
-      const v = p[k];
+    if (strs) for (const k of TELE_OPT_PARAMS) {
+      const v = strs[k];
       if (typeof v === 'string' && v.trim()) opts.push(v.trim());
     }
-    if (!opts.length) { teleKbByItem.set(item, new Map()); return; }
+    // Only REMEMBER an empty answer once the decoder actually ran. A bare {} also means "cache not
+    // open yet", and caching that would freeze every teleport on its stored number for the session.
+    if (!opts.length) { if (strs || (p && p.ints)) teleKbByItem.set(item, new Map()); return; }
     const rows = MAP_TELEPORTS.filter(z => z.item === item && z.n);
     const at = new Map();               // row destination -> option index (1-based)
     let first = 0;
@@ -3384,6 +3415,8 @@
       const m = teleKbByItem.get(T.item);
       if (m) { const k = m.get(teleDest(T)); if (k) return k; }
       else teleKbLoad(T.item);          // first ask kicks the read; the stored value shows until then
+      // note: no `else` on the hit path -- an item whose map lacks THIS destination still falls
+      // through to the stored kb below, which is right for rows the option list does not name.
     }
     if (T.kb) return T.kb;
     const m = String(T.n || '').match(/\[([^\]]+)\]/g);

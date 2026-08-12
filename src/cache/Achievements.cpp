@@ -65,7 +65,9 @@ struct VarpReq { std::vector<int> varps; uint32_t value = 0; std::string desc; }
 struct Ach {
     int id; std::string name, desc, reward;
     int cat = -1, subcat = -1, sprite = -1, points = 0, hidden = 0, combatMastery = -1;
-    bool members = false, named = false;
+    // members defaults TRUE: op 19's presence marks an achievement free-to-play,
+    // so entries without it are members content.
+    bool members = true; bool named = false;
     std::vector<Req> reqs; std::vector<int> subach;
     std::vector<SkillReq> skills;   // op 12
     std::vector<BitReq> bitreqs23;  // op 23 (varp bits)
@@ -197,6 +199,7 @@ const std::string& AchievementsJson() {
             if (a.sprite >= 0) out += ",\"sprite\":" + std::to_string(a.sprite);
             if (a.points > 0)  out += ",\"points\":" + std::to_string(a.points);
             if (a.hidden > 0)  out += ",\"hidden\":" + std::to_string(a.hidden);
+            if (a.members)     out += ",\"members\":1";
             if (a.combatMastery >= 0) out += ",\"cm\":" + std::to_string(a.combatMastery);
             if (!a.reqs.empty()) {
                 out += ",\"reqs\":[";
