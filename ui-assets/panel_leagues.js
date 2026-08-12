@@ -36,6 +36,7 @@
   const lgList = (r, m, k) => { const t = (r && r[m]) || {}; return Array.isArray(t[k]) ? t[k] : []; };
 
   let lgCurNum = 0;            // selected league number; 0 = auto (newest with tasks)
+  let lgSection = 'tasks';     // active sub-tab: tasks | regions | relics | blessings | trophies
   let lgVbVals = null;         // varbit id -> live value (current league's vars)
   let lgVpVals = {};           // varp id -> live value
   let lgAchById = null;        // achievement id -> def (incl. the hidden league entries)
@@ -442,8 +443,10 @@
     // Completion is shown by the card turning GREEN (.done), not by a glyph in the
     // text - a "/" prefix read as part of the task name and told you nothing the
     // colour does not.
+    // No separator glyph: the count just follows the sentence, spaced with
+    // non-breaking spaces (plain ones collapse to a single space in HTML).
     const msg = lgTaskText(t)
-      + (showN ? '  ·  ' + st.v.toLocaleString() + ' / ' + st.tgt.toLocaleString() : '');
+      + (showN ? '\u00a0\u00a0' + st.v.toLocaleString() + ' / ' + st.tgt.toLocaleString() : '');
     let rec = lgPinToasts[t.f];
     if (rec && rec.closing) {          // user hit the X: dismiss = untrack
       delete lgPinToasts[t.f];
@@ -455,6 +458,7 @@
       rec = uiNotify(msg, { sticky: true });
       if (rec) {
         lgPinToasts[t.f] = rec;
+        if (rec.el) rec.el.classList.add('nodot');   // the left edge already carries the state
         if (st.done && rec.el) rec.el.classList.add('done');
         // Unpin the moment the card is dismissed instead of waiting for the next
         // poll to notice rec.closing, so the star in the task list tracks the card
@@ -766,7 +770,8 @@
         .lg-search { flex: 1 1 130px; height: 26px; padding: 0 9px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font-size: 11.5px; outline: none; }
         .lg-search:focus { border-color: var(--border-hi); }
         .lg-cap { color: var(--text-mute); font-size: 10.5px; margin: 2px 2px 6px; }
-        .lg-tabs { display: flex; gap: 5px; margin: 4px 0 2px; }
+        .lg-tabs { display: flex; gap: 5px; margin: 4px 0 2px; flex-wrap: wrap; }
+        .lg-subtabs { margin: 2px 0 8px; }
         .lg-tab { font-size: 11px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--text-dim); cursor: pointer; }
         .lg-tab.on { border-color: var(--accent-hi); color: #fff; background: linear-gradient(90deg, rgba(124,92,252,0.28), rgba(124,92,252,0.10)); }
         /* A GRID, not flex-wrap: relics are equal-rank choices, and variable-width
@@ -793,8 +798,22 @@
       if (lgSig !== 'wait') { lgSig = 'wait'; wrap.innerHTML = '<div class="lg-empty">Reading league data from the cache... (be in-world). Before a league is live the cache holds placeholder data only.</div>'; }
       return;
     }
+    // Sections available for THIS league, in the game's own tab order. The section
+    // is part of the signature below, so switching tabs rebuilds the body.
+    const sections = [];
+    if (l.tasks.length) sections.push(['tasks', 'Tasks']);
+    if (l.hasRegions && l.regionEnum) sections.push(['regions', 'Regions']);
+    if (l.tiers.length) sections.push(['relics', 'Relics']);
+    if (l.blessTiers.length) sections.push(['blessings', 'Blessings']);
+    if (l.trophies.length) sections.push(['trophies', 'Trophies']);
+    if (!sections.length) sections.push(['tasks', 'Tasks']);
+    // A league without the selected section (Leagues I has no regions/blessings)
+    // falls back to its first, rather than rendering an empty body.
+    if (!sections.some(s => s[0] === lgSection)) lgSection = sections[0][0];
+
     const sig = l.num + '|' + l.name + '|' + l.tasks.length + '|'
-      + l.tiers.map(t => t.cost + ':' + t.relics.length).join(',') + '|' + l.blessTiers.length;
+      + l.tiers.map(t => t.cost + ':' + t.relics.length).join(',') + '|' + l.blessTiers.length
+      + '|' + lgSection;
     if (sig === lgSig) {
       if (!lgAchById) lgEnsureAch();   // achievements may load after the tables did
       if (lgListDirty) { lgListDirty = false; lgPaintTiers(); lgPaintList(); }
@@ -828,13 +847,34 @@
 
     sec(l.name + (l.sub ? ' · ' + l.sub : ''));
     wrap.lastChild.id = 'lgHead';
-    const tc = card(); tc.id = 'lgTierCard';
-    if (l.blessTiers.length) { sec('Blessings'); const bc = card(); bc.id = 'lgBlessCard'; }
-    if (l.hasRegions && l.regionEnum) { sec('Region unlocks'); const rc = card(); rc.id = 'lgRegionCard'; }
-    if (l.trophies.length) { sec('Trophies'); const trc = card(); trc.id = 'lgTrophyCard'; }
-    lgPaintTiers();
 
-    sec('Tasks');
+    // Section tabs: one area on screen at a time instead of one long scroll.
+    if (sections.length > 1) {
+      const stabs = document.createElement('div'); stabs.className = 'lg-tabs lg-subtabs';
+      for (const [key, label] of sections) {
+        const b = document.createElement('button'); b.type = 'button';
+        b.className = 'lg-tab' + (key === lgSection ? ' on' : '');
+        b.textContent = label;
+        b.addEventListener('click', () => {
+          if (lgSection === key) return;
+          lgSection = key;
+          lgShowMax = 80;
+          paneRun('leagues', renderLeagues);   // sig carries the section: rebuilds
+        });
+        stabs.appendChild(b);
+      }
+      wrap.appendChild(stabs);
+    }
+
+    // Only the active section's cards exist; the paint helpers look their card up by
+    // id and skip whatever is absent, so they need no per-section branching.
+    if (lgSection === 'relics')    { const tc = card();  tc.id  = 'lgTierCard'; }
+    if (lgSection === 'blessings') { const bc = card();  bc.id  = 'lgBlessCard'; }
+    if (lgSection === 'regions')   { const rc = card();  rc.id  = 'lgRegionCard'; }
+    if (lgSection === 'trophies')  { const trc = card(); trc.id = 'lgTrophyCard'; }
+    lgPaintTiers();
+    if (lgSection !== 'tasks') return;
+
     // controls (built once per data signature; the list repaints without touching them)
     const ctl = document.createElement('div'); ctl.className = 'lg-ctl';
     const inp = document.createElement('input'); inp.className = 'lg-search'; inp.type = 'text';

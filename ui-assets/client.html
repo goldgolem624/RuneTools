@@ -373,6 +373,9 @@
                display: flex; align-items: center; }
   .toast.sticky .toast-ico { color: #f0b429; }
   .toast.sticky.done .toast-ico { color: var(--ok); }
+  /* Owner-driven cards (pinned league tasks) carry their state on the coloured
+     left edge, so the status dot is redundant there. */
+  .toast.nodot .toast-ico { display: none; }
   .toast-msg {
     flex: 1; min-width: 0;
     font-size: 12.5px; line-height: 1.45; color: var(--text);

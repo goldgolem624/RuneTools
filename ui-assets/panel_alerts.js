@@ -5,9 +5,13 @@
   // the C++ bridge (Ultralight has no HTML5 audio); the flash is drawn on the game window by
   // the overlay.
   const ALERT_SOUNDS = ['alert 1', 'alert 2', 'alert 3', 'alert 4', 'alert 5', 'alert 6', 'alert 7', 'alert 8', 'alert 9', 'alert 10', 'alert 11', 'alert 12', 'alert 13', 'alert 14', 'alert 15', 'alert 16', 'alert 17', 'alert 18', 'alert 19', 'none'];
-  const RANDOM_EVENT_NAMES = ['Divine blessing', 'Seren spirit', 'Catalyst of alteration', 'Fire spirit'];
+  // Matched as a case-insensitive SUBSTRING of the NPC name, and shared by the alert
+  // and the on-screen highlight (syncOverlayHighlight sends this same list), so an
+  // entry added here lights the event up as well as announcing it.
+  const RANDOM_EVENT_NAMES = ['Divine blessing', 'Seren spirit', 'Catalyst of alteration',
+                              'Fire spirit', 'Manifested knowledge'];
   const ALERT_META = [
-    { id: 'random',  name: 'Random events',     desc: 'Divine blessing · Seren spirit · Catalyst of alteration · Fire spirit (highlighted on screen)' },
+    { id: 'random',  name: 'Random events',     desc: 'Divine blessing · Seren spirit · Catalyst of alteration · Fire spirit · Manifested knowledge (highlighted on screen)' },
     { id: 'levelup', name: 'Level up',          desc: 'A skill level increases' },
     { id: 'target',  name: 'Skill target reached', desc: 'An in-game skill target (level/XP) is hit' },
     { id: 'ge',      name: 'GE offer complete', desc: 'A Grand Exchange offer finishes' },
