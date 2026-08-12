@@ -360,6 +360,10 @@
   }
   .toast.out { animation: toast-out 200ms var(--ease) forwards; }
   .toast.sticky { pointer-events: auto; border-left-color: #f0b429; }
+  /* A sticky card that has reached its goal (a completed pinned task): the amber
+     "still needs you" edge turns green, which is the same done colour the panels
+     use. Set by the owner via rec.el.classList, so uiNotify stays generic. */
+  .toast.sticky.done { border-left-color: var(--ok); }
   @keyframes toast-in  { from { opacity: 0; transform: translateY(-10px) scale(0.97); }
                          to   { opacity: 1; transform: none; } }
   @keyframes toast-out { from { opacity: 1; transform: none; }
@@ -368,6 +372,7 @@
   .toast-ico { flex: none; width: 10px; height: 18px; color: var(--accent-hi);
                display: flex; align-items: center; }
   .toast.sticky .toast-ico { color: #f0b429; }
+  .toast.sticky.done .toast-ico { color: var(--ok); }
   .toast-msg {
     flex: 1; min-width: 0;
     font-size: 12.5px; line-height: 1.45; color: var(--text);

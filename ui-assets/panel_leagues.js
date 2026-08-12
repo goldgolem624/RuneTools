@@ -54,11 +54,33 @@
   // for Equilibrium; Catalyst's is dead weight now that the league ended).
   const LG_PICK_ENUM = 9082, LG_BONUS_VB = 58460;
   const LG_TASKSDONE_VB = { 2: 58389 };
-  // Region unlock state: varp 12327 is a locality BIT ARRAY (script20136 =
-  // unk10982(varplayer_12327, bit); a region counts as unlocked when every bit of
-  // its table-382 col-1 enum is set - script20133). Bit indexes run past 31, so
-  // the array continues into the next varp: bit b -> varp 12327+(b>>5), bit b&31.
+  // Region unlock state: varp 12327 is a locality BITMASK indexed by locality id
+  // (script20136 = unk10982(varplayer_12327, bit); script20133 requires every bit of
+  // the region's table-382 col-1 enum - so locality id IS the bit index).
+  //
+  // WHAT IS PROVEN: the 32-bit read of 12327 resolves every region whose bits are all
+  // below 32, and it does so correctly in both directions (Karamja/Tirannwn unlocked,
+  // Fremennik/Wilderness locked, live-verified).
+  //
+  // BITS 32-40 live in the HIGH DWORD of the same varp node, read through varpsLong,
+  // with one catch: the high dword carries a 0x80000000 MARKER BIT that is not data.
+  // Live capture settled it - varp 12327 read 0x8000001C_08AC2046, i.e.
+  //   low  0x08AC2046 -> bits 1,2,6,13,18,19,21,23,27
+  //   high 0x8000001C -> marker + bits 34,35,36
+  // and 34/35 (Misthalin) + 36 (Havenhythe) are exactly the two regions the game had
+  // open while the panel drew them locked. Clearing the marker yields the four
+  // unlocked regions the game shows and locks the other seven, all eleven correct.
+  //
+  // The halves are kept SEPARATE and tested with integer ops on purpose. Number() on
+  // the raw i64 string loses the low bits (19 digits vs ~16 of precision), and the
+  // earlier "one double" version was worse than useless: any double >= 2^54 is even,
+  // so every bit tested 0 and the whole card went dark. The high dword survives that
+  // rounding (its error is far below 2^32), so it is taken from the wide read while
+  // the low half comes from the exact 32-bit read.
   const LG_REGION_VP = 12327;
+  const LG_REGION_MAXBIT = 41;                 // locality ids seen up to 40
+  let lgRegionLow = null;     // bits 0-31, from the plain varp read
+  let lgRegionHigh = null;    // bits 32-40, from the wide read minus the marker
   let lgPickVbs = null;        // tier index (0-based) -> varbit id
   let lgPoints = null;         // live league points (header var_reference)
   let lgEnums = {};            // enum id -> {k: v} via bridge enumInfo, fetched once
@@ -159,17 +181,19 @@
       for (const h of hdrs) {
         const num = lgCol(h, 'i', '0') | 0;
         if (!num) continue;
-        // localities: cfg col 6 tuple's 3rd entry names the 336 row; its (id, sprite,
-        // name) triples flatten to i1/i2/s3, and its col 0 holds the "Global" id.
+        // localities: cfg col 6 tuple's 3rd entry names the 336 row. Its col 1 is a
+        // FOUR-sub tuple (int, graphic, string, int) flattening to keys 1/2/3/4, and
+        // the game matches a task's locality against sub [4] and shows sub [3]
+        // (script20120), so the id list is key '4'. Key '1' is a different int with
+        // duplicates; pairing on it scrambled the labels (owner-caught: a Kandarin:
+        // Ardougne task tagged Misthalin: City of Um).
         const cfg = cfgBy[lgCol(h, 'i', '13')];
         const catRow = cfg ? catBy[lgList(cfg, 'i', '6')[2]] : null;
         const catName = {};
         if (catRow) {
-          const ids = lgList(catRow, 'i', '1'), names = lgList(catRow, 's', '3');
+          const ids = lgList(catRow, 'i', '4'), names = lgList(catRow, 's', '3');
           for (let i = 0; i < ids.length && i < names.length; i++)
             if (catName[ids[i]] === undefined) catName[ids[i]] = names[i];
-          const g = lgCol(catRow, 'i', '0');
-          if (g != null && catName[g] === undefined) catName[g] = 'Global';
         }
         const memberCol = String(num);
         const trophyRow = trophyBy[lgCol(h, 'i', '12')];
@@ -179,6 +203,10 @@
           sub: lgCol(h, 's', '2') || '',
           barMax: lgCol(h, 'i', '6') | 0,
           ptsRef: (lgCol(h, 'i', '28') | 0) >>> 0,
+          // db 326.21 = this league HAS region locking (script20129 gates the game's
+          // own Regions features on it; Catalyst carries 0, Equilibrium 1). The region
+          // enum in col 22 sits on BOTH headers, so it alone cannot gate the card.
+          hasRegions: (lgCol(h, 'i', '21') | 0) === 1,
           regionEnum: lgCol(h, 'i', '22') | 0,
           ptsEnum: cfg ? (lgList(cfg, 'i', '2')[0] | 0) : 0,
           tiers: mkTiers(lgCol(h, 'i', '9')),
@@ -277,8 +305,8 @@
     if (lgPickVbs) { for (const k in lgPickVbs) vbs.add(lgPickVbs[k]); vbs.add(LG_BONUS_VB); }
     if (LG_TASKSDONE_VB[l.num]) vbs.add(LG_TASKSDONE_VB[l.num]);
     if (l.ptsRef > 0) addRef(l.ptsRef);
-    if (lgData.regions && lgData.regions.length) {
-      vps.add(LG_REGION_VP); vps.add(LG_REGION_VP + 1);   // bit array spans two varps (bits 0-40)
+    if (l.hasRegions && lgData.regions && lgData.regions.length) {
+      vps.add(LG_REGION_VP);                       // 32-bit read: the proven source
       for (const rg of lgData.regions) await lgEnum(rg.bitsEnum);
     }
     const ids = [...vbs];
@@ -292,6 +320,29 @@
     }
     lgVbVals = out; lgVpVals = vpOut;
     lgPoints = l.ptsRef > 0 ? lgRefVal(l.ptsRef) : null;
+    // Region mask: keep the 32-bit value, then try to widen it. The wide read is
+    // adopted ONLY if it is in range for a locality mask AND its low half matches
+    // what the 32-bit read already returned - a garbage high dword fails both.
+    if (l.hasRegions && vpOut[LG_REGION_VP] !== undefined) {
+      lgRegionLow = (vpOut[LG_REGION_VP] | 0) >>> 0;
+      lgRegionHigh = null;
+      if (bridge().varpsLong) {
+        try {
+          const d = JSON.parse(await bridge().varpsLong(myPid(), String(LG_REGION_VP))) || {};
+          const raw = d[String(LG_REGION_VP)];
+          if (raw !== undefined) {
+            let u = Number(raw);
+            if (isFinite(u)) {
+              if (u < 0) u += 18446744073709551616;          // i64 -> unsigned
+              let hi = Math.floor(u / 4294967296);           // exact: error << 2^32
+              hi = hi % 2147483648;                          // drop the 0x80000000 marker
+              // only bits 32-40 can be real, so anything wider is a bad read
+              if (hi >= 0 && hi < (1 << (LG_REGION_MAXBIT - 32))) lgRegionHigh = hi;
+            }
+          }
+        } catch (e) {}
+      }
+    }
     lgListDirty = true;
     paneRun('leagues', renderLeagues);
   }
@@ -306,16 +357,25 @@
     }
     return true;
   }
-  // null = live data not in yet; else script20133's rule: every locality bit set.
+  // script20133's rule: unlocked <=> every locality bit of the region is set.
+  // Returns true / false / null, where null means "not knowable from what we can
+  // read" - either the mask has not arrived, or the region needs a bit above 31 and
+  // the wide read did not validate. Never guesses locked for an unread bit.
   function lgRegionUnlocked(reg) {
     const em = reg.bitsEnum ? lgEnums[reg.bitsEnum] : null;
-    if (!em || lgVpVals[LG_REGION_VP] === undefined) return null;
+    if (!em || lgRegionLow === null) return null;
+    let unknown = false;
     for (const k in em) {
       const bit = em[k] | 0;
-      const v = lgVpVals[LG_REGION_VP + (bit >>> 5)] | 0;
-      if (!((v >>> (bit & 31)) & 1)) return false;
+      if (bit < 32) {
+        if (!((lgRegionLow >>> bit) & 1)) return false;
+      } else if (lgRegionHigh !== null) {
+        if (!((lgRegionHigh >>> (bit - 32)) & 1)) return false;
+      } else {
+        unknown = true;              // wide read unavailable; keep checking the rest
+      }
     }
-    return true;
+    return unknown ? null : true;
   }
   function lgTierPicks(i) {   // script20141: pick var + the tiers-1-3 bonus
     if (!lgPickVbs || !lgVbVals) return 0;
@@ -379,7 +439,10 @@
   function lgPinToastSync(t) {
     const st = lgTaskState(t);
     const showN = st.tgt > 1 || st.v > 0;
-    const msg = (st.done ? '✓ ' : '') + lgTaskText(t)
+    // Completion is shown by the card turning GREEN (.done), not by a glyph in the
+    // text - a "/" prefix read as part of the task name and told you nothing the
+    // colour does not.
+    const msg = lgTaskText(t)
       + (showN ? '  ·  ' + st.v.toLocaleString() + ' / ' + st.tgt.toLocaleString() : '');
     let rec = lgPinToasts[t.f];
     if (rec && rec.closing) {          // user hit the X: dismiss = untrack
@@ -390,7 +453,21 @@
     }
     if (!rec) {
       rec = uiNotify(msg, { sticky: true });
-      if (rec) lgPinToasts[t.f] = rec;
+      if (rec) {
+        lgPinToasts[t.f] = rec;
+        if (st.done && rec.el) rec.el.classList.add('done');
+        // Unpin the moment the card is dismissed instead of waiting for the next
+        // poll to notice rec.closing, so the star in the task list tracks the card
+        // immediately. The closing check below still covers cards retired some
+        // other way (e.g. the toast-stack cap).
+        const x = rec.el && rec.el.querySelector('.toast-x');
+        if (x) x.addEventListener('click', () => {
+          delete lgPinToasts[t.f];
+          lgPinSet(t.f, false);
+          lgListDirty = true;
+          paneRun('leagues', renderLeagues);
+        });
+      }
       return;
     }
     if (rec.msg !== msg) {
@@ -398,6 +475,7 @@
       const b = rec.el && rec.el.querySelector('.toast-msg');
       if (b) b.textContent = msg;
     }
+    if (rec.el) rec.el.classList.toggle('done', !!st.done);
   }
   async function lgPinsPoll() {
     const pins = lgPinsList();
@@ -407,8 +485,16 @@
     lgPinsAt = now;
     if (!lgData) { fetchLeagues(); return; }    // table data first; toasts next tick
     if (!lgAchById) lgEnsureAch();
-    const tasks = [];
-    for (const l of lgData.leagues) for (const t of l.tasks) if (pins.indexOf(t.f) >= 0) tasks.push(t);
+    // ONE entry per pinned ROW. Table 334 is shared, and 997 rows are flagged for
+    // both leagues, so the same row is present in two leagues' task lists. Without
+    // this dedupe a pinned row synced twice per tick, and dismissing its card
+    // reopened it immediately: the first pass saw the close and unpinned, the
+    // second found no record and built a fresh toast.
+    const tasks = [], seenRow = {};
+    for (const l of lgData.leagues) for (const t of l.tasks) {
+      if (seenRow[t.f] || pins.indexOf(t.f) < 0) continue;
+      seenRow[t.f] = 1; tasks.push(t);
+    }
     if (!tasks.length) return;
     const vbs = new Set();
     for (const t of tasks) {
@@ -628,20 +714,32 @@
         // Which regions are actually open (varp 12327 bit array; the picks are a
         // bitmask, so the ORDER slots were chosen in is not recoverable - this
         // list is the ground truth of what is unlocked right now).
-        if (lgData.regions && lgData.regions.length && lgVpVals[LG_REGION_VP] !== undefined) {
+        if (lgData.regions && lgData.regions.length && lgRegionLow !== null) {
           const r = document.createElement('div'); r.className = 'lg-row';
           const nm = document.createElement('div'); nm.className = 'lg-nm';
           const head = document.createElement('div'); head.textContent = 'Unlocked regions'; nm.appendChild(head);
           const chips = document.createElement('div'); chips.className = 'lg-relics';
+          let unknownN = 0;
           for (const rg of lgData.regions) {
             const st = lgRegionUnlocked(rg);
-            const ch = document.createElement('span'); ch.className = 'lg-relic' + (st ? ' on' : '');
+            if (st === null) unknownN++;
+            const ch = document.createElement('span');
+            ch.className = 'lg-relic' + (st === true ? ' on' : st === null ? ' unk' : '');
             const tx = document.createElement('span'); tx.textContent = rg.name; ch.appendChild(tx);
-            ch.dataset.tip = rg.name + (st === null ? ' (state unknown)' : (st ? ' (unlocked)' : ' (locked)'))
-              + '\nRow ' + rg.row + ' · bits enum ' + rg.bitsEnum;
+            const bits = Object.keys(lgEnums[rg.bitsEnum] || {}).map(k => lgEnums[rg.bitsEnum][k]);
+            ch.dataset.tip = rg.name
+              + (st === null ? ' (unknown: needs locality bit 32+, which is not readable yet)'
+                             : (st ? ' (unlocked)' : ' (locked)'))
+              + '\nRow ' + rg.row + ' · localities ' + bits.join(', ');
             chips.appendChild(ch);
           }
           nm.appendChild(chips);
+          if (unknownN) {
+            const note = document.createElement('div'); note.className = 'lg-sub';
+            note.textContent = unknownN + ' region' + (unknownN === 1 ? '' : 's')
+              + ' need a locality bit above 31, which this build cannot read yet - shown as unknown rather than locked.';
+            nm.appendChild(note);
+          }
           r.appendChild(nm);
           rgc.appendChild(r);
         }
@@ -680,6 +778,8 @@
         .lg-relic { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 8px 3px 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev-2); font-size: 11px; color: var(--text); }
         .lg-relic > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .lg-relic.on { border-color: var(--accent-hi); background: linear-gradient(90deg, rgba(124,92,252,0.28), rgba(124,92,252,0.10)); color: #fff; }
+        /* unknown, NOT locked: a dashed edge reads as "no answer" at a glance */
+        .lg-relic.unk { border-style: dashed; color: var(--text-mute); }
         .lg-avail { color: var(--warn, #fbbf24); border-color: var(--warn, #fbbf24); }
         .lg-pin { background: none; border: none; padding: 0 3px; margin-top: -1px; flex: 0 0 auto;
                   font-size: 14px; line-height: 1; color: var(--text-mute); cursor: pointer; }
@@ -730,7 +830,7 @@
     wrap.lastChild.id = 'lgHead';
     const tc = card(); tc.id = 'lgTierCard';
     if (l.blessTiers.length) { sec('Blessings'); const bc = card(); bc.id = 'lgBlessCard'; }
-    if (l.regionEnum) { sec('Region unlocks'); const rc = card(); rc.id = 'lgRegionCard'; }
+    if (l.hasRegions && l.regionEnum) { sec('Region unlocks'); const rc = card(); rc.id = 'lgRegionCard'; }
     if (l.trophies.length) { sec('Trophies'); const trc = card(); trc.id = 'lgTrophyCard'; }
     lgPaintTiers();
 

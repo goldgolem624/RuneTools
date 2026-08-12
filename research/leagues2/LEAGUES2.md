@@ -70,9 +70,23 @@ extraction plus scratch script gen.js (see git history of this file).
   script17445/18542 when vp 12314 == 2 (likely free deaths/services).
 - Regions: table 382 (19861-19871, alphabetical Anachronia..Wilderness): col 1 =
   locality-bit enum, col 2 = table-383 info row (name parsed from 'The X region
-  covers'). Unlock state = varp 12327 locality BIT ARRAY (script20136 tests one
-  bit; script20133 requires all of a region's bits; bits run 0-40 so the array
-  continues into varp 12328). First unlock slot is always Karamja (script21081).
+  covers'). Unlock state = varp 12327, a locality BITMASK indexed by locality id
+  (script20136 tests one bit; script20133 requires all of a region's bits).
+  It is a 64-BIT varp: bits 0-31 come back from the ordinary varp read, bits
+  32-40 from the node's wide read (launcher varpsLong). SOLVED 2026-08-11 from a
+  live capture: varp 12327 = 0x8000001C_08AC2046, where
+    low  0x08AC2046 = bits 1,2,6,13,18,19,21,23,27
+    high 0x8000001C = a 0x80000000 MARKER BIT (not data) + bits 34,35,36
+  Clearing the marker resolves all eleven regions exactly as the game shows them
+  (unlocked: Karamja, Tirannwn, Misthalin, Havenhythe).
+  TWO TRAPS, both hit live before the capture settled it:
+    * varp 12328 is NOT the bit-32 continuation - it reads 0.
+    * Number() on the raw i64 string loses the low bits (19 digits vs ~16 of
+      precision), and any double >= 2^54 is even, so testing bits on one double
+      returns 0 for EVERY bit. Keep the halves separate and use integer ops:
+      low from the 32-bit read, high = floor(unsigned/2^32) % 2^31 (that floor
+      survives the rounding, since the error is far below 2^32).
+  First unlock slot is always Karamja (script21081).
   Pick ORDER is not stored anywhere client-visible, only the accumulated mask.
 - The in-app Leagues panel (ui-assets/panel_leagues.js) renders all of this per
   league with a league picker; updated 2026-08-10 for the multi-league schema.
