@@ -33,6 +33,23 @@ bool IsOpen(std::uint32_t pid);
 // WS_CHILD window, so EnumWindows (top-level only) can no longer find it.
 void* GameWindowHandle(std::uint32_t pid);
 
+// Scale from this process's physical pixels into `game`'s own pixel space -- the space its
+// backbuffer, memory-read viewport values and in-frame drawing all use. 1.0 in the normal
+// case (the game's DPI context matches its monitor); less when the game runs DPI-virtualized,
+// e.g. a DPI-unaware client on a 125% display renders at 96 DPI and DWM upscales it, so its
+// space is smaller than the physical client rect this process measures. Thread-safe (any
+// thread), unlike the rest of this header.
+double GameSpaceFactor(void* gameHwnd);
+
+// Borderless fullscreen for the client's host window: it takes the whole monitor it is on, frame
+// and taskbar included, and the embedded game (which fills the host client area) comes with it.
+// The GAME's own Screen Sizing / Fullscreen option cannot work once embedded -- it is a WS_CHILD,
+// clipped to our client area -- so this is the fullscreen for an embedded client. No display-mode
+// change, so alt-tab and multi-client are unaffected. Leaving restores the exact previous frame
+// and placement.
+void SetHostFullscreen(std::uint32_t pid, bool on);
+bool IsHostFullscreen(std::uint32_t pid);
+
 // Keep the client rendering at full rate when its window isn't focused. Loads the companion and
 // re-pushes the flag until it takes. Off by default.
 void SetKeepFocused(std::uint32_t pid, bool on);

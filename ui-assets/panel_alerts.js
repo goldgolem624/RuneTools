@@ -9,9 +9,26 @@
   // and the on-screen highlight (syncOverlayHighlight sends this same list), so an
   // entry added here lights the event up as well as announcing it.
   const RANDOM_EVENT_NAMES = ['Divine blessing', 'Seren spirit', 'Catalyst of alteration',
-                              'Fire spirit', 'Manifested knowledge'];
+                              'Fire spirit', 'Manifested knowledge', 'Guthixian butterfly'];
+  // Per-event opt-out. Stored as an "off" set rather than an "on" set so a config saved
+  // before this existed (and any event added later) defaults to ON.
+  function randomEventOff() {
+    const r = alertCfg && alertCfg.rules && alertCfg.rules.random;
+    if (!r) return {};
+    if (!r.off || typeof r.off !== 'object') r.off = {};
+    return r.off;
+  }
+  function randomEventOn(name) { return !randomEventOff()[name]; }
+  function randomEventSet(name, on) {
+    const off = randomEventOff();
+    if (on) delete off[name]; else off[name] = 1;
+  }
+  // The events actually being watched: shared by the alert test and the on-screen
+  // highlight, so a chip switched off stops doing both.
+  function randomEventNames() { return RANDOM_EVENT_NAMES.filter(randomEventOn); }
+
   const ALERT_META = [
-    { id: 'random',  name: 'Random events',     desc: 'Divine blessing · Seren spirit · Catalyst of alteration · Fire spirit · Manifested knowledge (highlighted on screen)' },
+    { id: 'random',  name: 'Random events',     desc: 'Pick which events alert and highlight on screen' },
     { id: 'levelup', name: 'Level up',          desc: 'A skill level increases' },
     { id: 'target',  name: 'Skill target reached', desc: 'An in-game skill target (level/XP) is hit' },
     { id: 'ge',      name: 'GE offer complete', desc: 'A Grand Exchange offer finishes' },
@@ -357,7 +374,7 @@
                   && alertCfg.rules.random.enabled && alertState.prevRandom);
     // Shared by-name channel: the host outlines every scene NPC matching a listed name.
     const parts = [];
-    if (on) parts.push(RANDOM_EVENT_NAMES.join(','));
+    if (on) { const en = randomEventNames(); if (en.length) parts.push(en.join(',')); }
     if (clueHighlightNpc) parts.push(clueHighlightNpc);
     const s = pid + '|' + parts.join(',');
     if (s === _hiLast) return;
@@ -460,7 +477,7 @@
     const [px, py] = sceneSelfPos();
     const within = (x, y) => px == null ? true : Math.max(Math.abs(x - px), Math.abs(y - py)) <= sceneRange;
     if (sceneData && Array.isArray(sceneData.npcs)) {
-      const lc = RANDOM_EVENT_NAMES.map(s => s.toLowerCase());
+      const lc = randomEventNames().map(s => s.toLowerCase());
       const hit = sceneData.npcs.find(n => within(n.x, n.y)
                     && lc.some(nm => (n.name || '').toLowerCase().indexOf(nm) >= 0));
       if (en('random') && alertState.ready && hit && !alertState.prevRandom)
@@ -911,6 +928,25 @@
         pc.appendChild(plab); pc.appendChild(pin);
         if (meta.param.suffix) { const su = document.createElement('span'); su.className = 'lab'; su.textContent = meta.param.suffix; pc.appendChild(su); }
         ctl.appendChild(pc);
+      }
+      // Per-event picker: which of the tracked events actually alert + highlight.
+      // Absent from a saved config means "all on", so upgrading changes nothing.
+      if (meta.id === 'random') {
+        const pick = document.createElement('div'); pick.className = 'al-events';
+        for (const nm2 of RANDOM_EVENT_NAMES) {
+          const ch = document.createElement('button'); ch.type = 'button';
+          ch.className = 'al-evt' + (randomEventOn(nm2) ? ' on' : '');
+          ch.textContent = nm2;
+          ch.addEventListener('click', e => {
+            e.stopPropagation();
+            randomEventSet(nm2, !randomEventOn(nm2));
+            ch.classList.toggle('on', randomEventOn(nm2));
+            syncOverlayHighlight();          // the highlight list changed
+            saveAlertCfg();
+          });
+          pick.appendChild(ch);
+        }
+        ctl.appendChild(pick);
       }
       const fl = document.createElement('div'); fl.className = 'al-flash';
       const flab = document.createElement('span'); flab.className = 'lab'; flab.textContent = 'Flash';

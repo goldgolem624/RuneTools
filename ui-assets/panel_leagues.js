@@ -37,6 +37,7 @@
 
   let lgCurNum = 0;            // selected league number; 0 = auto (newest with tasks)
   let lgSection = 'tasks';     // active sub-tab: tasks | regions | relics | blessings | trophies
+  const lgPassOpen = {};       // "<kind><tierIndex>" -> tier passives expanded
   let lgVbVals = null;         // varbit id -> live value (current league's vars)
   let lgVpVals = {};           // varp id -> live value
   let lgAchById = null;        // achievement id -> def (incl. the hidden league entries)
@@ -78,6 +79,14 @@
   // so every bit tested 0 and the whole card went dark. The high dword survives that
   // rounding (its error is far below 2^32), so it is taken from the wide read while
   // the low half comes from the exact 32-bit read.
+  // The league this character is actually IN (script20117 matches it against db 326.0).
+  // Relic "picked" state is derived from EFFECT VARS (script20144), and those vars are
+  // heavily SHARED between leagues - L1 Production Master reuses all five of L2's - so
+  // the check is only meaningful for the live league. On a finished league it reports
+  // the current league's picks (false positives, two lit in one tier) while the real
+  // picks read inactive, their vars having been cleared. Owner-caught on Catalyst.
+  const LG_ACTIVE_VP = 12314;
+  let lgActiveLeague = null;   // varp 12314, null until read
   const LG_REGION_VP = 12327;
   const LG_REGION_MAXBIT = 41;                 // locality ids seen up to 40
   let lgRegionLow = null;     // bits 0-31, from the plain varp read
@@ -306,6 +315,7 @@
     if (lgPickVbs) { for (const k in lgPickVbs) vbs.add(lgPickVbs[k]); vbs.add(LG_BONUS_VB); }
     if (LG_TASKSDONE_VB[l.num]) vbs.add(LG_TASKSDONE_VB[l.num]);
     if (l.ptsRef > 0) addRef(l.ptsRef);
+    vps.add(LG_ACTIVE_VP);
     if (l.hasRegions && lgData.regions && lgData.regions.length) {
       vps.add(LG_REGION_VP);                       // 32-bit read: the proven source
       for (const rg of lgData.regions) await lgEnum(rg.bitsEnum);
@@ -321,6 +331,7 @@
     }
     lgVbVals = out; lgVpVals = vpOut;
     lgPoints = l.ptsRef > 0 ? lgRefVal(l.ptsRef) : null;
+    lgActiveLeague = vpOut[LG_ACTIVE_VP] !== undefined ? (vpOut[LG_ACTIVE_VP] | 0) : null;
     // Region mask: keep the 32-bit value, then try to widen it. The wide read is
     // adopted ONLY if it is in range for a locality mask AND its low half matches
     // what the 32-bit read already returned - a garbage high dword fails both.
@@ -592,7 +603,7 @@
       r.appendChild(p);
       const a = lgAchById && lgAchById[t.ach];
       const tipParts = [];
-      if (a && (a.name || '').trim() && (a.desc || '').trim() && a.name.trim() !== a.desc.trim()) tipParts.push(a.desc.trim());
+      if (a && (a.name || '').trim() && (a.desc || '').trim() && a.name.trim() !== a.desc.trim()) tipParts.push(lgCleanText(a.desc));
       // one line per requirement counter, so each task's live varbit tracker is
       // reviewable in place (value/target + which varbit feeds it)
       for (const q of (st.reqs || [])) {
@@ -613,13 +624,33 @@
     }
   }
 
+  // Game strings carry Jagex markup: <br> is a LINE BREAK, <col=...> and friends are
+  // styling. Convert the breaks to \n (the tooltip renders them), then strip the rest.
+  // Stripping everything in one pass deleted the breaks too and ran sentences together
+  // ("...the Icyene.When worn:- The tome provides...").
+  function lgCleanText(s) {
+    return String(s == null ? '' : s).replace(/<\/?br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '').trim();
+  }
+
   // One relic/blessing tier list card (shared by the Relics and Blessings sections).
-  function lgPaintTierList(tc, tierList, kind) {
+  // `live` = this league is the one the character is in; only then does the effect-var
+  // pick state mean anything (see LG_ACTIVE_VP).
+  function lgPaintTierList(tc, tierList, kind, live) {
     tc.innerHTML = '';
+    if (!live) {
+      const n = document.createElement('div'); n.className = 'lg-row';
+      const t0 = document.createElement('div'); t0.className = 'lg-nm';
+      const h = document.createElement('div'); h.textContent = 'Past league - picks not shown';
+      const s = document.createElement('div'); s.className = 'lg-sub';
+      s.textContent = 'Which ' + (kind === 'relic' ? 'relics' : 'blessings') + ' you chose is not recoverable: '
+        + 'the game marks them from their effect vars, and those are shared with the current league '
+        + 'and cleared when a league ends.';
+      t0.appendChild(h); t0.appendChild(s); n.appendChild(t0); tc.appendChild(n);
+    }
     tierList.forEach((t, i) => {
-      const reached = kind === 'relic' && lgPoints != null && lgPoints >= t.cost;
-      const picks = kind === 'relic' ? lgTierPicks(i) : 0;
-      const anyActive = t.relics.some(x => lgRelicActive(x));
+      const reached = live && kind === 'relic' && lgPoints != null && lgPoints >= t.cost;
+      const picks = live && kind === 'relic' ? lgTierPicks(i) : 0;
+      const anyActive = live && t.relics.some(x => lgRelicActive(x));
       const r = document.createElement('div'); r.className = 'lg-row';
       const nm = document.createElement('div'); nm.className = 'lg-nm';
       const ttl = document.createElement('div');
@@ -627,7 +658,7 @@
       nm.appendChild(ttl);
       const chips = document.createElement('div'); chips.className = 'lg-relics';
       for (const x of t.relics) {
-        const on = lgRelicActive(x);
+        const on = live && lgRelicActive(x);
         const ch = document.createElement('span'); ch.className = 'lg-relic' + (on ? ' on' : '');
         const sprId = on && x.sprOn ? x.sprOn : x.spr;
         if (sprId || x.item) {
@@ -637,14 +668,39 @@
         }
         const tx = document.createElement('span'); tx.textContent = x.name; ch.appendChild(tx);
         const tip = [x.name + (on ? ' (active)' : '')];
-        if (x.desc) tip.push(x.desc.replace(/<[^>]*>/g, ''));
-        for (const f of (x.fx || [])) if (f.txt) tip.push('- ' + f.txt.replace(/<[^>]*>/g, ''));
+        if (x.desc) tip.push(lgCleanText(x.desc));
+        for (const f of (x.fx || [])) if (f.txt) tip.push('- ' + lgCleanText(f.txt));
         tip.push('Row ' + x.row);
         ch.dataset.tip = tip.join('\n');
         chips.appendChild(ch);
       }
       nm.appendChild(chips);
-      if (t.passives.length) { const sb = document.createElement('div'); sb.className = 'lg-sub'; sb.textContent = t.passives.length + ' tier passives'; nm.appendChild(sb); }
+      // Tier passives (db 328.7) + any unlock notes (328.10), collapsed by default:
+      // a tier can carry six of them, and expanded-by-default buried the relics.
+      if (t.passives.length || t.notes.length) {
+        const key = kind + i, open = !!lgPassOpen[key];
+        const sb = document.createElement('div'); sb.className = 'lg-sub lg-exp';
+        sb.textContent = (open ? '▾ ' : '▸ ') + (t.passives.length
+          ? t.passives.length + ' tier passive' + (t.passives.length === 1 ? '' : 's')
+          : t.notes.length + ' note' + (t.notes.length === 1 ? '' : 's'));
+        sb.addEventListener('click', ev => {
+          ev.stopPropagation();
+          lgPassOpen[key] = !open;
+          lgPaintTiers();
+        });
+        nm.appendChild(sb);
+        if (open) {
+          const box = document.createElement('div'); box.className = 'lg-pass';
+          const line = (txt, cls) => {
+            const d = document.createElement('div'); d.className = 'lg-pass-it' + (cls ? ' ' + cls : '');
+            d.textContent = '• ' + lgCleanText(txt);
+            box.appendChild(d);
+          };
+          for (const p of t.passives) line(p);
+          for (const n2 of t.notes) line(n2, 'lg-note');
+          nm.appendChild(box);
+        }
+      }
       r.appendChild(nm);
       if (reached && picks > 0 && !anyActive) {
         const av = document.createElement('span'); av.className = 'lg-pill lg-avail';
@@ -663,10 +719,14 @@
     const l = lgCur(), hd = $('lgHead');
     if (!l) return;
     if (hd) hd.textContent = l.name + (l.sub ? ' · ' + l.sub : '') + (lgPoints != null ? ' · ' + lgPoints.toLocaleString() + ' pts' : '');
+    // Pick state is only meaningful for the league the character is actually in.
+    // Unknown (var not read yet) is treated as live, so nothing regresses while the
+    // first poll is still in flight.
+    const live = (lgActiveLeague === null) || (lgActiveLeague === l.num);
     const tc = $('lgTierCard');
-    if (tc) lgPaintTierList(tc, l.tiers, 'relic');
+    if (tc) lgPaintTierList(tc, l.tiers, 'relic', live);
     const bc = $('lgBlessCard');
-    if (bc) lgPaintTierList(bc, l.blessTiers, 'blessing');
+    if (bc) lgPaintTierList(bc, l.blessTiers, 'blessing', live);
     // trophies + region unlocks repaint with live values
     const trc = $('lgTrophyCard');
     if (trc) {
@@ -767,8 +827,15 @@
         .lg-pill { font-size: 10.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
         .lg-empty { margin: 10px 14px; color: var(--text-dim); font-size: 12px; }
         .lg-ctl { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 8px; }
+        .lg-searchbox { position: relative; flex: 1 1 130px; display: flex; min-width: 0; }
         .lg-search { flex: 1 1 130px; height: 26px; padding: 0 9px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font-size: 11.5px; outline: none; }
         .lg-search:focus { border-color: var(--border-hi); }
+        /* the field owns the row's flex; leave room on the right for the x */
+        .lg-searchbox .lg-search { flex: 1 1 auto; min-width: 0; padding-right: 22px; }
+        .lg-clear { position: absolute; right: 1px; top: 0; height: 26px; display: flex; align-items: center;
+                    padding: 0 6px; border: none; background: none; color: var(--text-mute);
+                    font-size: 15px; line-height: 1; cursor: pointer; }
+        .lg-clear:hover { color: var(--text); }
         .lg-cap { color: var(--text-mute); font-size: 10.5px; margin: 2px 2px 6px; }
         .lg-tabs { display: flex; gap: 5px; margin: 4px 0 2px; flex-wrap: wrap; }
         .lg-subtabs { margin: 2px 0 8px; }
@@ -786,6 +853,11 @@
         /* unknown, NOT locked: a dashed edge reads as "no answer" at a glance */
         .lg-relic.unk { border-style: dashed; color: var(--text-mute); }
         .lg-avail { color: var(--warn, #fbbf24); border-color: var(--warn, #fbbf24); }
+        .lg-exp { cursor: pointer; }
+        .lg-exp:hover { color: var(--text); }
+        .lg-pass { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 1px; }
+        .lg-pass-it { color: var(--text-dim); font-size: 10.5px; line-height: 1.4; }
+        .lg-pass-it.lg-note { color: var(--warn, #fbbf24); }
         .lg-pin { background: none; border: none; padding: 0 3px; margin-top: -1px; flex: 0 0 auto;
                   font-size: 14px; line-height: 1; color: var(--text-mute); cursor: pointer; }
         .lg-pin:hover { color: var(--text); }
@@ -877,10 +949,32 @@
 
     // controls (built once per data signature; the list repaints without touching them)
     const ctl = document.createElement('div'); ctl.className = 'lg-ctl';
+    // Search + a clear button that only appears once there is something to clear
+    // (an always-on x reads as part of the field and invites a stray click).
+    const sbox = document.createElement('div'); sbox.className = 'lg-searchbox';
     const inp = document.createElement('input'); inp.className = 'lg-search'; inp.type = 'text';
     inp.placeholder = 'Search tasks, objectives, localities...'; inp.value = lgFilter.q;
-    inp.addEventListener('input', () => { lgFilter.q = inp.value.trim(); lgShowMax = 80; lgPaintList(); });
-    ctl.appendChild(inp);
+    const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'lg-clear';
+    clr.textContent = '×'; clr.dataset.tip = 'Clear search (Esc)';
+    const syncClr = () => { clr.style.display = inp.value ? '' : 'none'; };
+    const applyQ = () => { lgFilter.q = inp.value.trim(); lgShowMax = 80; syncClr(); lgPaintList(); };
+    inp.addEventListener('input', applyQ);
+    // Esc clears. Matched on keyCode as well as `key`: Ultralight's WebKit does not
+    // reliably report key === 'Escape', and a name-only test silently never fired.
+    // stopPropagation keeps client.html's global Esc handler from blurring the field
+    // (it drops focus to hand the keyboard back to the game), so focus survives the
+    // clear and you can keep typing.
+    inp.addEventListener('keydown', e => {
+      const esc = e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27 || e.which === 27;
+      if (!esc || !inp.value) return;
+      e.stopPropagation();
+      e.preventDefault();
+      inp.value = ''; applyQ();
+    });
+    clr.addEventListener('click', () => { inp.value = ''; applyQ(); inp.focus(); });
+    syncClr();
+    sbox.appendChild(inp); sbox.appendChild(clr);
+    ctl.appendChild(sbox);
     // Themed dropdown (native <select> renders with system chrome in Ultralight): the
     // alerts panel's trigger + body-level .sndmenu popup pattern, via its shared placeMenu.
     const mkSel = (opts, cur, set) => {

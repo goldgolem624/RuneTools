@@ -109,6 +109,13 @@ void SetPuzzleCells(std::uint32_t pid, const std::vector<PuzzleCell>& cells);
 struct KnotCell { int x = 0, y = 0, w = 0, h = 0, count = 0; };
 void SetKnotCells(std::uint32_t pid, const std::vector<KnotCell>& cells);
 
+// XP progress bars on the in-game Skills panel: one thin bar along the bottom edge of each skill
+// cell, filled by progress to the next level. Rect is the CELL (interface space, same as the other
+// interface-anchored channels); the bar is inset within it. pct = 0..1000 (tenths of a percent, so
+// the channel stays integer). Replaces the pid's set each call; empty clears.
+struct SkillBar { int x = 0, y = 0, w = 0, h = 0, pct = 0, rgb = 0; };
+void SetSkillBars(std::uint32_t pid, const std::vector<SkillBar>& bars);
+
 // Interfaces-tab panel visualizer: labeled boxes at panels' true screen rects (client pixels).
 struct PanelBox { int x = 0, y = 0, w = 0, h = 0; std::string label; };
 void SetPanelViz(std::uint32_t pid, const std::vector<PanelBox>& boxes);

@@ -269,9 +269,40 @@ private:
 
 }  // namespace
 
+// Per-monitor DPI awareness, declared BEFORE any window exists. The dock/overlay
+// pipeline mixes coordinates from this process (GetClientRect / ClientToScreen on
+// the game window) with pixel data read out of the game itself (gameview viewport,
+// panel varcs), and the game renders in physical pixels. Without this declaration
+// the process runs DPI-virtualized on scaled displays (125%...): the two spaces
+// disagree by the scale factor and overlays land off target -- and the existing
+// per-monitor plumbing (SyncUiDpi, WM_DPICHANGED) never fires because
+// GetDpiForWindow reports 96 to an unaware process. Resolved dynamically so the
+// build works on any SDK; falls back v2 -> per-monitor v1 -> system-aware.
+void DeclareDpiAwareness() {
+    using SetCtxFn = BOOL(WINAPI*)(HANDLE);
+    auto setCtx = reinterpret_cast<SetCtxFn>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"));
+    // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (DPI_AWARENESS_CONTEXT)-4
+    if (setCtx && setCtx(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)))) {
+        boot_log("dpi: per-monitor v2");
+        return;
+    }
+    using SetAwFn = HRESULT(WINAPI*)(int);
+    HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    auto setAw = shcore ? reinterpret_cast<SetAwFn>(
+        GetProcAddress(shcore, "SetProcessDpiAwareness")) : nullptr;
+    if (setAw && SUCCEEDED(setAw(2 /* PROCESS_PER_MONITOR_DPI_AWARE */))) {
+        boot_log("dpi: per-monitor v1");
+        return;
+    }
+    boot_log(SetProcessDPIAware() ? "dpi: system-aware (legacy fallback)"
+                                  : "dpi: awareness NOT set -- overlays may misalign on scaled displays");
+}
+
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     rtx::log::Init();
     boot_log("=== RuneToolsX starting ===");
+    DeclareDpiAwareness();
 
     // Named mutex matching the installer's AppMutex (RuneToolsX.iss) so a silent
     // in-place update can detect + close this launcher via the Restart Manager.

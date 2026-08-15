@@ -150,7 +150,11 @@ bool ClientSize(Ui* u, int& w, int& h) {
     HWND game = reinterpret_cast<HWND>(dock::GameWindowHandle(u->pid));
     RECT rc;
     if (game && GetClientRect(game, &rc) && rc.right > 0 && rc.bottom > 0) {
-        w = rc.right; h = rc.bottom;
+        // GetClientRect is this process's physical px; convert into the game's own pixel
+        // space so the fallback agrees with the companion's client_w/h feedback above.
+        double f = dock::GameSpaceFactor(game);
+        w = (int)(rc.right * f + 0.5);
+        h = (int)(rc.bottom * f + 0.5);
         return true;
     }
     return false;

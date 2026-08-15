@@ -352,9 +352,13 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     if (!GetCursorPos(&pt) || !ScreenToClient(hwnd, &pt)) return false;
     RECT rc;
     if (!GetClientRect(hwnd, &rc)) return false;
-    float W = (float)(rc.right - rc.left), H = (float)(rc.bottom - rc.top);
+    // Cursor + client rect are this process's physical px; the projection viewport (gv_*)
+    // is in the game's own pixel space. Convert both once so every comparison is same-space.
+    const float gsf = (float)rtx::launcher::dock::GameSpaceFactor(hwnd);
+    float W = (float)(rc.right - rc.left) * gsf, H = (float)(rc.bottom - rc.top) * gsf;
     if (W < 16 || H < 16) return false;
-    if (pt.x < 0 || pt.y < 0 || pt.x > W || pt.y > H) return false;   // cursor outside the game
+    const float curX = (float)pt.x * gsf, curY = (float)pt.y * gsf;
+    if (curX < 0 || curY < 0 || curX > W || curY > H) return false;   // cursor outside the game
 
     rtx::reader::OverlayFrame f;
     std::vector<std::string> none;
@@ -368,7 +372,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     float vpX = f.gv_w > 0 ? (float)f.gv_x : 0.f; if (vpX < 0) vpX = 0; if (vpX + vpW > W) vpX = W - vpW;
     float vpY = f.gv_h > 0 ? (float)f.gv_y : 0.f; if (vpY < 0) vpY = 0; if (vpY + vpH > H) vpY = H - vpH;
 
-    const float mx = (float)pt.x, my = (float)pt.y;
+    const float mx = curX, my = curY;
     // Cursor isn't over the 3D viewport (e.g. it's on the chat box / a panel) -> not a tile pick,
     // and skip the per-tile search entirely so the key falls through to the game cheaply.
     if (mx < vpX || my < vpY || mx > vpX + vpW || my > vpY + vpH) return false;

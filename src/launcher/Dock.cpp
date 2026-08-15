@@ -244,6 +244,15 @@ struct Dock {
     bool      keyHeld[256] = {};  // keys the host has relayed down to the game (true embed). On
                                           // focus loss the physical key-up lands in the window tabbed to, so
                                           // the game never gets it; the matching key-ups are synthesized
+    // Borderless fullscreen (host-side). The GAME cannot do this itself once embedded: it is a
+    // WS_CHILD, so it is clipped to our client area no matter what its own Screen Sizing setting
+    // says -- which is why the in-game Fullscreen button appears to do nothing. The host takes
+    // the whole monitor instead and the game, which already fills the host client area, comes
+    // with it. Style + placement are saved so leaving restores exactly what was there (including
+    // a maximised window).
+    bool             fullscreen = false;
+    LONG_PTR         savedStyle = 0;
+    WINDOWPLACEMENT  savedPlace{};
     bool      keepFocused = true;  // keep the client rendering when unfocused. Always on: true embed
                                           // REQUIRES it, the glued fallback wants it for smooth switching
     bool      keepFocusedApplied = false;  // push once even when off, so the companion's render section EXISTS
@@ -333,11 +342,60 @@ void Layout(Dock* d) {
     PositionGame(d, cw, ch);   // the game fills the entire host client area
 }
 
+void SyncUiDpi(Dock* d);   // fwd
+
+// Borderless fullscreen on the monitor the host currently sits on. Deliberately NOT
+// exclusive/mode-changing: no display-mode switch, so alt-tab stays instant, the overlay keeps
+// compositing, and multi-client is unaffected.
+//
+// rcMonitor (not rcWork) is the target -- covering the taskbar is the point. HWND_TOP rather than
+// HWND_TOPMOST: the shell drops the taskbar behind a foreground window that covers its monitor,
+// and TOPMOST would also pin this client above every other window including our own other
+// clients. SWP_FRAMECHANGED is required for the style change to be recalculated.
+void SetFullscreen(Dock* d, bool on) {
+    if (!d || !d->host || !IsWindow(d->host) || d->fullscreen == on) return;
+    if (on) {
+        d->savedPlace.length = sizeof(d->savedPlace);
+        if (!GetWindowPlacement(d->host, &d->savedPlace)) d->savedPlace.length = 0;
+        d->savedStyle = GetWindowLongPtrW(d->host, GWL_STYLE);
+        HMONITOR mon = MonitorFromWindow(d->host, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{ sizeof(mi) };
+        if (!GetMonitorInfoW(mon, &mi)) return;
+        // Drop the whole frame (caption, thick border, min/max/sysmenu) and keep the child clip.
+        LONG_PTR st = d->savedStyle;
+        st &= ~(WS_OVERLAPPEDWINDOW);
+        st |= WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN;
+        SetWindowLongPtrW(d->host, GWL_STYLE, st);
+        SetWindowPos(d->host, HWND_TOP,
+                     mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        d->fullscreen = true;
+    } else {
+        SetWindowLongPtrW(d->host, GWL_STYLE,
+                          d->savedStyle ? d->savedStyle
+                                        : (LONG_PTR)(WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE));
+        // Frame first, then the saved placement -- restoring geometry before the style change is
+        // recalculated leaves the client area short by the frame it is about to regain.
+        SetWindowPos(d->host, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        if (d->savedPlace.length) SetWindowPlacement(d->host, &d->savedPlace);
+        d->fullscreen = false;
+    }
+    Layout(d);        // refit the game child to the new client area
+    SyncUiDpi(d);     // the new monitor/size may carry a different scale
+}
+
 // The unified window moved to a monitor with a different DPI (or the DPI changed): drive the
-// in-game UI view's device scale to the host's true monitor scale so text renders crisp.
+// in-game UI view's device scale so text renders crisp. The layer composites into the GAME's
+// swapchain, so the scale follows the GAME window's DPI space -- identical to the host's except
+// when the game runs DPI-virtualized: then its space is 96 DPI and DWM upscales the whole frame,
+// our layer included, so scaling the layer by the monitor DPI too would double-scale it.
 void SyncUiDpi(Dock* d) {
     if (!d || !d->host) return;
-    unsigned dpi = DpiForWindow(d->host);
+    unsigned dpi = (d->game && IsWindow(d->game)) ? DpiForWindow(d->game) : 0;
+    if (!dpi) dpi = DpiForWindow(d->host);
     if (!dpi) return;
     gameui::SetDeviceScale(d->pid, dpi / 96.0);
 }
@@ -997,6 +1055,30 @@ void Detach(Dock* d, bool closeGame) {
 
 }  // namespace
 
+double GameSpaceFactor(void* gameHwnd) {
+    HWND game = reinterpret_cast<HWND>(gameHwnd);
+    if (!game || !IsWindow(game)) return 1.0;
+    unsigned gd = DpiForWindow(game);   // the game window's DPI context (96 when it is unaware)
+    if (!gd) return 1.0;                // pre-1607 Windows: no per-window virtualization to bridge
+    unsigned md = 0;
+    using MonFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);   // shcore!GetDpiForMonitor (8.1+)
+    static MonFn monFn = []() -> MonFn {
+        HMODULE m = LoadLibraryW(L"shcore.dll");
+        return m ? reinterpret_cast<MonFn>(GetProcAddress(m, "GetDpiForMonitor")) : nullptr;
+    }();
+    if (monFn) {
+        UINT dx = 0, dy = 0;
+        HMONITOR mon = MonitorFromWindow(game, MONITOR_DEFAULTTONEAREST);
+        if (mon && SUCCEEDED(monFn(mon, 0 /* MDT_EFFECTIVE_DPI */, &dx, &dy)) && dx) md = dx;
+    }
+    if (!md) {   // fallback: the system DPI, reported truthfully to this DPI-aware process
+        HDC dc = GetDC(nullptr);
+        if (dc) { md = (unsigned)GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(nullptr, dc); }
+    }
+    if (!md || md == gd) return 1.0;
+    return (double)gd / (double)md;
+}
+
 void Init(App* app, std::string client_html_path, bool uiDevWatch) {
     g_app = app;
     g_client_html_path = std::move(client_html_path);
@@ -1047,6 +1129,17 @@ void RemoveClient(std::uint32_t pid) {
 
 bool IsOpen(std::uint32_t pid) {
     return g_docks.count(pid) != 0;
+}
+
+void SetHostFullscreen(std::uint32_t pid, bool on) {
+    auto it = g_docks.find(pid);
+    if (it == g_docks.end() || !it->second) return;
+    SetFullscreen(it->second, on);
+}
+
+bool IsHostFullscreen(std::uint32_t pid) {
+    auto it = g_docks.find(pid);
+    return (it != g_docks.end() && it->second) ? it->second->fullscreen : false;
 }
 
 void SetKeepFocused(std::uint32_t pid, bool on) {

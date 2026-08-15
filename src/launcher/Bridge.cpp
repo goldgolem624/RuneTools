@@ -1199,6 +1199,17 @@ JSValueRef IfaceCompRects(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::IfaceCompRectsJson(pid, gid, comps, mount));
 }
 
+// Rect of the layer holding a sprite -- addresses window chrome by sprite rather than by
+// component id, which is not stable across layouts.
+JSValueRef IfaceSpriteParent(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                             size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return utf8_to_js(ctx, "{\"ok\":0}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    int gid = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int spr = static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr));
+    return utf8_to_js(ctx, rtx::reader::IfaceSpriteParentRectJson(pid, gid, spr));
+}
+
 JSValueRef CompassHeading(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "-1");
@@ -1451,6 +1462,31 @@ JSValueRef HiscoresJson(JSContextRef ctx, JSObjectRef, JSObjectRef,
 // The RuneTools server host, shared by the party-sync section below and the self-update /
 // VoS / world-event code further down. Declared here because party-sync uses it first.
 constexpr wchar_t kUpdateHost[]   = L"runetools.io";
+
+// ---- Leagues-only worlds ---------------------------------------------------------------
+// Leagues runs its own copy of the world state, so a leagues world's Voice of Seren, world
+// events and so on are INDEPENDENT of the main game's. Crowdsourced data must therefore be
+// kept apart: a leagues client reporting the Priffdinas hour into the shared pool would
+// publish a voice pair nobody on a normal world can act on, and vice versa.
+// Owner-captured from the world list (the trophy-marked worlds).
+const int kLeaguesWorlds[] = {
+    143, 144, 145, 146, 147,
+    172, 173, 174, 175,
+    190,
+    208, 209,
+    220, 221, 222, 223, 224,
+    230, 231, 232, 233, 234,
+    240, 241, 242, 243, 244,
+    248,
+    260, 261, 262, 263, 264, 265, 266,
+    270, 271, 272, 273, 274, 275, 276, 277,
+    279, 280, 281, 282, 283, 284, 285, 286, 287, 288,
+    292, 293, 294, 295, 296, 297, 298,
+};
+bool is_leagues_world(int w) {
+    for (int lw : kLeaguesWorlds) if (lw == w) return true;
+    return false;
+}
 
 // ---- Dungeoneering party-sync: relay facts (examined door levels, fetched hiscores) between
 //      party members' clients across PCs via the RuneTools server, keyed by a shared manual CODE.
@@ -1951,6 +1987,18 @@ JSValueRef KeepFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeUndefined(ctx);
 }
 
+// Borderless fullscreen for this client's host window. With one arg, TOGGLES; with two, sets.
+// Returns the resulting state, so the caller can paint its control without a second call.
+JSValueRef HostFullscreen(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    const bool on = (argc >= 2) ? JSValueToBoolean(ctx, argv[1])
+                                : !dock::IsHostFullscreen(pid);
+    dock::SetHostFullscreen(pid, on);
+    return JSValueMakeBoolean(ctx, dock::IsHostFullscreen(pid));
+}
+
 // Legacy no-op: tooltips render inside the in-game UI layer now (one DOM = no
 // window-bounds limit). Kept registered for stale callers.
 JSValueRef RailTip(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2349,6 +2397,8 @@ std::atomic<long long> g_vos_fetched_ms{ 0 };
 std::atomic<long long> g_vos_get_ms{ 0 };
 std::atomic<bool>      g_vos_fetching{ false };
 std::atomic<long long> g_vos_reported_ms{ 0 };
+// Leagues worlds report into their own pool, so they carry their own 5-minute floor.
+std::atomic<long long> g_vos_reported_lg_ms{ 0 };
 // True while the SSE stream is delivering (only 200 streams reach the data callback;
 // heartbeats arrive every ~25s). While alive, the push + connect handshake fully cover
 // VoS/tracker delivery, so the GET fallbacks stay off.
@@ -2425,6 +2475,24 @@ long long json_ll(const std::string& j, const char* key) {
     return any ? v : 0;
 }
 
+// The braced body of a nested object, e.g. section "lg" of {"a":1,...,"lg":{"a":3,"b":5}}.
+// The VoS payload serves the main pool at the top level and leagues under "lg", so a plain
+// key search would find the main "a" first; callers scope to the section, then read keys
+// from it. Empty when absent. Depth-counted, so a nested object inside would not truncate it.
+std::string vos_json_section(const std::string& j, const char* name) {
+    const std::string needle = "\"" + std::string(name) + "\":{";
+    auto p = j.find(needle);
+    if (p == std::string::npos) return {};
+    p += needle.size();
+    int depth = 1;
+    const auto start = p;
+    for (; p < j.size() && depth > 0; ++p) {
+        if (j[p] == '{') ++depth;
+        else if (j[p] == '}') --depth;
+    }
+    return depth == 0 ? j.substr(start, p - start - 1) : std::string();
+}
+
 // True when the cached value is too old to cover the current hour: `h` is only 0-23, so a day-old
 // value whose hour number matches again would otherwise pass the hour check.
 bool vos_cache_stale() {
@@ -2454,7 +2522,10 @@ bool vos_cache_has_current_hour() {
 }
 
 // Fire-and-forget report under the shared 5-minute floor (also the JS vosReport path).
-bool vos_post_report(int a, int b) {
+// `leagues` selects the pool: leagues worlds rotate their own Voice of Seren, so the two
+// are reported and served independently. The floor is PER POOL, or a main report would
+// silence a leagues one for five minutes.
+bool vos_post_report(int a, int b, bool leagues) {
     if (a < 1 || a > 8 || b < 1 || b > 8 || a == b) return false;
     // Hour-boundary guard: the server stamps a report with ITS OWN arrival hour, so a pair read moments
     // before the top of the hour can land just after it and be served as the NEW hour's voice.
@@ -2464,11 +2535,13 @@ bool vos_post_report(int a, int b) {
         if (st.wMinute == 59 && st.wSecond >= 57) return false;
     }
     long long now = (long long)GetTickCount64();
-    long long prev = g_vos_reported_ms.load();
+    std::atomic<long long>& floorMs = leagues ? g_vos_reported_lg_ms : g_vos_reported_ms;
+    long long prev = floorMs.load();
     if (prev != 0 && now - prev < 5 * 60'000) return false;
-    if (!g_vos_reported_ms.compare_exchange_strong(prev, now)) return false;
-    std::thread([a, b, now] {
-        std::string body = "{\"a\":" + std::to_string(a) + ",\"b\":" + std::to_string(b) + "}";
+    if (!floorMs.compare_exchange_strong(prev, now)) return false;
+    std::thread([a, b, now, leagues, &floorMs] {
+        std::string body = "{\"a\":" + std::to_string(a) + ",\"b\":" + std::to_string(b) +
+                           (leagues ? ",\"l\":1" : "") + "}";
         std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
         auto r = http::PostJson(kUpdateHost, kVosReportPath, hdrs, body);
         if (!r.ok || r.status != 200) {
@@ -2476,7 +2549,7 @@ bool vos_post_report(int a, int b) {
             // may retry ~30s after the failed attempt (CAS: only if no newer report claimed the floor).
             rtx::log::Launcher("vos report failed: status " + std::to_string(r.status) + " " + r.detail);
             long long cur = now;
-            g_vos_reported_ms.compare_exchange_strong(cur, now - (5 * 60'000 - 30'000));
+            floorMs.compare_exchange_strong(cur, now - (5 * 60'000 - 30'000));
         }
     }).detach();
     return true;
@@ -2763,18 +2836,23 @@ void vos_report_loop() {
         // The cached community pair for THIS hour (0/0 = none). Report to FILL an empty slot OR to CORRECT
         // a mismatch: a live in-Priff read that DISAGREES with the cache must still post, otherwise a
         // wrong-but-present value silences every client for the hour.
-        int ca = 0, cb = 0;
+        // Both pools: leagues rotates its own voice, so a leagues client is compared against
+        // the leagues consensus (nested under "lg") and a normal one against the main value.
+        int ca = 0, cb = 0, la = 0, lb = 0;
         bool cacheCurrent = vos_cache_has_current_hour();
         if (cacheCurrent) {
             std::lock_guard<std::mutex> lk(g_vos_mu);
             ca = vos_json_int(g_vos_json, "a");
             cb = vos_json_int(g_vos_json, "b");
+            const std::string lg = vos_json_section(g_vos_json, "lg");
+            if (!lg.empty()) { la = vos_json_int(lg, "a"); lb = vos_json_int(lg, "b"); }
         }
         // Hour 0 is fine: the pair+stamp varbits stay STALE (never cleared) on leaving Priff, so the
         // `stamp == hr` check below only passes when the client is genuinely in Priff this hour.
         auto snaps = rtx::reader::SampleAll();
         for (const auto& s : snaps) {
             if (s.status != 30) continue;                 // In-game clients only
+            const bool lgWorld = is_leagues_world(s.world);
             // Only a client CURRENTLY in Prifddinas has a live varp 4783: it freezes at the last in-Priff value
             // on leaving, so `stamp == hr` alone would re-report a days-old pair (varbit 26416 is only 0-23, no
             // date). Gate on the player being IN the Priff region box (region = tile>>6; X 32-35, Y 51-54).
@@ -2786,8 +2864,11 @@ void vos_report_loop() {
             int a = vos_json_int(vb, "25158"), b = vos_json_int(vb, "25159");
             int stamp = vos_json_int(vb, "26416");
             if (a >= 1 && a <= 8 && b >= 1 && b <= 8 && a != b && stamp == hr) {
-                if (!cacheCurrent || a != ca || b != cb) vos_post_report(a, b);   // fill OR correct
-                break;   // a valid live in-Priff read this hour: reported (or already matches) -- stop scanning
+                const int pa = lgWorld ? la : ca, pb = lgWorld ? lb : cb;
+                if (!cacheCurrent || a != pa || b != pb) vos_post_report(a, b, lgWorld);   // fill OR correct
+                // Do NOT stop the scan here: with clients on both a normal and a leagues
+                // world, breaking after the first would leave the other pool unreported.
+                continue;
             }
         }
         for (int slept = 0; slept < 15'000; slept += 1000)
@@ -2927,11 +3008,34 @@ JSValueRef VosCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_vos_json);
 }
 
+// Is `world` a leagues-only world? One source of truth for the launcher and the panels,
+// so the two can never disagree about which pool a report belongs to.
+JSValueRef IsLeaguesWorld(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    return JSValueMakeBoolean(ctx, is_leagues_world((int)JSValueToNumber(ctx, argv[0], nullptr)));
+}
+
+// The whole list, for panels that want to show or filter by it.
+JSValueRef LeaguesWorlds(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < sizeof(kLeaguesWorlds) / sizeof(kLeaguesWorlds[0]); ++i) {
+        if (i) out += ',';
+        out += std::to_string(kLeaguesWorlds[i]);
+    }
+    out += "]";
+    return utf8_to_js(ctx, out);
+}
+
+// vosReport(a, b [, leagues]) -- the third argument selects the leagues pool. Omitted =
+// main, so an older caller keeps its existing behaviour.
 JSValueRef VosReport(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     int a = (argc >= 1) ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 0;
     int b = (argc >= 2) ? (int)JSValueToNumber(ctx, argv[1], nullptr) : 0;
-    return JSValueMakeBoolean(ctx, vos_post_report(a, b));
+    bool lg = (argc >= 3) && JSValueToBoolean(ctx, argv[2]);
+    return JSValueMakeBoolean(ctx, vos_post_report(a, b, lg));
 }
 
 // Number of running rs2client.exe processes. The update banner checks this BEFORE
@@ -3756,6 +3860,39 @@ JSValueRef PuzzleCellsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 
 // Payload "x,y,w,h,count;..."; empty clears.
+// Skills-panel XP bars: "x,y,w,h,pct[,rgb];..." per cell (pct = tenths of a percent, 0..1000).
+// Empty payload clears. Same shape as knotCells, one optional field.
+JSValueRef SkillBarsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::vector<rtx::overlay::SkillBar> bars;
+    if (argc >= 2) {
+        std::string s = js_to_utf8(ctx, argv[1]);
+        std::size_t pos = 0;
+        while (pos < s.size() && bars.size() < 64) {
+            std::size_t semi = s.find(';', pos);
+            std::string seg = s.substr(pos, semi == std::string::npos ? std::string::npos : semi - pos);
+            pos = (semi == std::string::npos) ? s.size() : semi + 1;
+            if (seg.empty()) continue;
+            int v[6] = {0,0,0,0,0,0}; std::size_t fp = 0; int fi = 0;
+            for (; fi < 6; ++fi) {
+                std::size_t comma = seg.find(',', fp);
+                std::string tok = seg.substr(fp, comma == std::string::npos ? std::string::npos : comma - fp);
+                v[fi] = std::atoi(tok.c_str());
+                if (comma == std::string::npos) { ++fi; break; }
+                fp = comma + 1;
+            }
+            if (fi < 5) continue;               // rgb optional
+            rtx::overlay::SkillBar sb{};
+            sb.x = v[0]; sb.y = v[1]; sb.w = v[2]; sb.h = v[3]; sb.pct = v[4]; sb.rgb = v[5];
+            bars.push_back(sb);
+        }
+    }
+    rtx::overlay::SetSkillBars(pid, bars);
+    return JSValueMakeBoolean(ctx, !bars.empty());
+}
+
 JSValueRef KnotCellsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -3948,6 +4085,42 @@ JSValueRef PluginDevManifest(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto root = plugin_dev_root();
     if (id.empty() || root.empty()) return utf8_to_js(ctx, std::string());
     return utf8_to_js(ctx, alerts_read_file(root / id / "manifest.json"));
+}
+
+// Cheap change fingerprint of the dev-sideload root, polled by the UI so a folder
+// dropped into plugins-dev (or an edited entry file) shows up without a client
+// restart. One token per plugin dir: <id>:<fileCount>:<maxWriteTime>;. Any
+// create, edit or delete changes the string; the UI only reacts when it differs.
+JSValueRef PluginDevStamp(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t, const JSValueRef[], JSValueRef*) {
+    auto root = plugin_dev_root();
+    std::string out;
+    if (!root.empty()) {
+        std::error_code ec;
+        for (auto& e : std::filesystem::directory_iterator(root, ec)) {
+            if (ec) break;
+            if (!e.is_directory()) continue;
+            std::string id = sanitize_plugin_id(e.path().filename().string());
+            if (id.empty()) continue;
+            std::error_code ec2;
+            if (!std::filesystem::exists(e.path() / "manifest.json", ec2)) continue;
+            long long maxT = 0; int n = 0;
+            std::error_code itEc;
+            for (auto& f : std::filesystem::recursive_directory_iterator(e.path(), itEc)) {
+                if (itEc) break;
+                if (++n > 512) break;              // runaway-dir guard; count change still stamps
+                std::error_code fec;
+                if (!f.is_regular_file(fec) || fec) continue;
+                auto t = std::filesystem::last_write_time(f.path(), fec);
+                if (fec) continue;
+                long long v = (long long)t.time_since_epoch().count();
+                if (v > maxT) maxT = v;
+            }
+            out += id; out += ':'; out += std::to_string(n); out += ':';
+            out += std::to_string(maxT); out += ';';
+        }
+    }
+    return utf8_to_js(ctx, out);
 }
 
 // entryFile must be a bare filename inside the plugin dir (no separators, no "..").
@@ -4349,6 +4522,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "interfaceGroups",   InterfaceGroups);
     install_fn(ctx, ns, "interfaceGroup",     InterfaceGroup);
     install_fn(ctx, ns, "ifaceCompRects",     IfaceCompRects);
+    install_fn(ctx, ns, "ifaceSpriteParent",  IfaceSpriteParent);
     install_fn(ctx, ns, "compassHeading",     CompassHeading);
     install_fn(ctx, ns, "compassTarget",      CompassTarget);
     install_fn(ctx, ns, "scanSolution",       ScanSolution);
@@ -4368,6 +4542,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "panelViz",          PanelVizFn);
     install_fn(ctx, ns, "puzzleCells",        PuzzleCellsFn);
     install_fn(ctx, ns, "knotCells",          KnotCellsFn);
+    install_fn(ctx, ns, "skillBars",          SkillBarsFn);
     install_fn(ctx, ns, "invSlotRect",       InvSlotRectFn);
     install_fn(ctx, ns, "chat",              Chat);
     install_fn(ctx, ns, "buffs",             Buffs);
@@ -4395,6 +4570,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "clientWindowOpen",  ClientWindowOpen);
     install_fn(ctx, ns, "dockCollapse",      DockCollapse);   // legacy no-op
     install_fn(ctx, ns, "keepFocused",       KeepFocused);
+    install_fn(ctx, ns, "hostFullscreen",    HostFullscreen);
     install_fn(ctx, ns, "railTip",           RailTip);        // legacy no-op
     install_fn(ctx, ns, "uiRects",           UiRects);
     install_fn(ctx, ns, "uiKeyboard",        UiKeyboard);
@@ -4413,6 +4589,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "latestVersionCached", LatestVersionCached);
     install_fn(ctx, ns, "vosCached", VosCached);
     install_fn(ctx, ns, "vosReport", VosReport);
+    install_fn(ctx, ns, "isLeaguesWorld",     IsLeaguesWorld);
+    install_fn(ctx, ns, "leaguesWorlds",      LeaguesWorlds);
     install_fn(ctx, ns, "scarabCached", ScarabCached);
     install_fn(ctx, ns, "obeliskCached", ObeliskCached);
     install_fn(ctx, ns, "worldEventVote", WorldEventVote);
@@ -4480,6 +4658,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pluginDevList",     PluginDevList);
     install_fn(ctx, ns, "pluginDevManifest", PluginDevManifest);
     install_fn(ctx, ns, "pluginDevEntry",    PluginDevEntry);
+    install_fn(ctx, ns, "pluginDevStamp",    PluginDevStamp);
 
     install_fn(ctx, ns, "pluginMarketList",        PluginMarketList);
     install_fn(ctx, ns, "pluginMarketInstall",     PluginMarketInstall);

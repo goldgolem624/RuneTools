@@ -4074,6 +4074,9 @@ static const PanelOriginSpec kPanelOrigins[] = {
                                   // (there is no standalone 1370 variant), so its origin is the frame's varcs
                                   // 3089/3090.
     { 13,   3089, 3090, 0, 31, 0, true },  // Bank pin -- window-frame varcs 3089/3090
+    { 1466, 3166, 3167, 0, 0, 0, true },   // Skills. Owner-captured: position varcs 3166 (x) / 3167 (y), and
+                                  // varc 3165 == 1 while the panel is OPEN -- the draw gate for the XP
+                                  // progress bars (a stale rect must not paint bars over a closed panel).
     { 1224, 3089, 3090, 0, 0, 0, true },   // Ritual selection (Necromancy! communion ritual) -- window-frame varcs 3089/3090
     { 533,  3089, 3090, 0, 0, 0, true },   // Display case -- window-frame varcs 3089/3090; content renders CENTRED in
                                   // the frame (owner-calibrated 2026-08-11). Origin is still the frame's top-left;
@@ -5018,6 +5021,77 @@ std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& 
     for (std::uint64_t w = ws + 8; w + 0x18 <= we + 8; w += 0x18) { std::uint64_t nd = r64(w); if (nd > 0x10000) walk(nd, ox, oy, 0); }
     std::string out = "{\"abs\":"; out += haveAbs ? "1" : "0"; out += ",\"comps\":{" + comps + "}}";
     return out;
+}
+
+// Absolute screen rect of the LAYER CONTAINING a given sprite, within `group`.
+//
+// Component ids are not stable across layouts -- the same tab strip is comp 109 in one and
+// 306 in another, because the frame assigns a window whatever slot is free -- so the caller
+// names a SPRITE instead and gets its containing layer. A full InterfaceGroupJson walk
+// cannot be used for this: it caps its output at 4000 widgets and the game frame runs well
+// past that. Search-only, so there is no output cap here; it stops at the first match.
+//
+// CAVEAT, learned the hard way while placing the skill bars: a sprite does NOT identify a
+// window. The skills tab icon appears in the tab strip of every window the panel could be
+// tabbed into, so a hit may belong to some other window entirely (live capture: the icon
+// sat 67px ABOVE the skills panel's own origin), and it can appear more than once. Its
+// visibility bit is no help either -- it reads 0 while the tabs are plainly on screen.
+// Use this to find chrome you can already prove is yours, not to identify ownership.
+// {"ok":1,"x":..,"y":..,"w":..,"h":..} or {"ok":0}.
+std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite) {
+    const char* kEmpty = "{\"ok\":0}";
+    auto ps = snap_proc(pid); if (!ps) return kEmpty;
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return kEmpty;
+    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
+    auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
+    std::uint64_t gs, ge; iface_groups_range(h, *root, gs, ge);
+    if (!gs) return kEmpty;
+    std::uint64_t ap2 = 0;
+    for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
+        std::uint64_t a = r64(g + 8);
+        if (a > 0x10000 && r32(a) == group) { ap2 = a; break; }
+    }
+    if (!ap2) return kEmpty;
+    int ox = 0, oy = 0;
+    iface_panel_origin(h, *root, pid, group, ox, oy);   // 1477 seeds at 0,0 -> already screen
+    bool found = false; int fx = 0, fy = 0, fw = 0, fh = 0, fv = 0;
+    // Each level passes ITS OWN rect down, so a match reports the container it sits in.
+    // Visibility travels with it: a window's tab strip stays in the tree while the window
+    // is UNTABBED, just hidden, so a rect alone cannot tell "tabbed" from "not tabbed".
+    std::function<void(std::uint64_t,int,int,int,int,int,int,int,int)> walk =
+        [&](std::uint64_t node, int bx, int by, int depth, int px, int py, int pw, int ph, int pv) {
+        if (found || depth > 16) return;
+        int ax = bx + r32(node + 0x70), ay = by + r32(node + 0x74);
+        int w = r32(node + 0x78), hh = r32(node + 0x7c);
+        int vis = (((std::uint32_t)r32(node + 0x50) & 0x01010000u) == 0x01010000u) ? 1 : 0;
+        std::uint64_t sprRaw = r64(node + 0x188);
+        if (sprRaw > 0 && sprRaw < 0x100000 && (int)sprRaw == sprite && pw > 0 && ph > 0) {
+            fx = px; fy = py; fw = pw; fh = ph; fv = pv; found = true; return;
+        }
+        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        for (int k = 0; k < 3 && !found; ++k) {
+            std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8), ca = cs + 8, cb = ce + 8;
+            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
+            for (std::uint64_t c = ca; c + 0x18 <= cb && !found; c += 0x18) {
+                std::uint64_t ch = r64(c); if (ch <= 0x10000) continue;
+                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
+                if (d <= 0x3000) continue;
+                walk(ch, ax, ay, depth + 1, ax, ay, w, hh, vis);
+            }
+        }
+    };
+    std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
+    for (std::uint64_t wn = ws + 8; wn + 0x18 <= we + 8 && !found; wn += 0x18) {
+        std::uint64_t nd = r64(wn);
+        if (nd > 0x10000) walk(nd, ox, oy, 0, 0, 0, 0, 0, 0);
+    }
+    if (!found) return kEmpty;
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "{\"ok\":1,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"v\":%d}",
+                  fx, fy, fw, fh, fv);
+    return buf;
 }
 
 std::string InterfaceGroupJson(std::uint32_t pid, int groupId) {
@@ -6142,21 +6216,45 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     std::uint64_t rootv = (root && *root > 0x10000) ? *root : 0;
     if (!read_view_matrix(h, pid, rootv, *wv, mprobes, out.matrix)) return false;
 
-    // Gameview viewport rect (the camera renders into this sub-rect, not the
-    // whole client). The rect only changes on resize/layout, so cache it and
-    // re-read at most ~2x/sec rather than walking the group list every overlay
-    // frame. Left at 0 when unresolved -> the overlay falls back to the window.
+    // Gameview viewport rect (the camera renders into this sub-rect, not the whole
+    // client). The rect only changes on resize/layout, so cache it and re-read at
+    // most ~2x/sec rather than walking the group list every overlay frame.
+    //
+    // TAKEN FROM THE VARCS, NOT THE WIDGET TREE. The game publishes the viewport as
+    // a uniform x,y,w,h record per view (view 1000 = the gameview: x 3005, y 3006,
+    // w 3001, h 3002; script8701 reads that record, script8709 writes it) and those
+    // values are PHYSICAL PIXELS. The interface widget 1477:27->28 carries the same
+    // rect in the SCALED UI space, so with Interface Scaling at anything but 100%
+    // it is smaller than the real viewport and every world-projected overlay landed
+    // short - the reported "objects drawn wrong at different scales". The tree walk
+    // stays as the fallback, and as the way ui_scale is derived: pixel width over
+    // tree width is exactly the interface->pixel factor, so neither the scaling
+    // setting nor the sub-800x600 downscale has to be located separately.
     {
         static std::uint32_t s_pid = 0; static unsigned long long s_ms = 0;
-        static int s_x = 0, s_y = 0, s_w = 0, s_h = 0;
+        static int s_x = 0, s_y = 0, s_w = 0, s_h = 0; static float s_ui = 0.0f;
         unsigned long long nowms = GetTickCount64();
         if (s_pid != pid || nowms - s_ms > 500) {
-            int gx, gy, gw, gh;
-            if (root && read_gameview_rect(h, *root, gx, gy, gw, gh)) { s_x = gx; s_y = gy; s_w = gw; s_h = gh; }
-            else { s_w = 0; s_h = 0; }
+            int gx = 0, gy = 0, gw = 0, gh = 0;
+            const bool tree = (root && read_gameview_rect(h, *root, gx, gy, gw, gh));
+            int vx = 0, vy = 0, vw = 0, vh = 0;
+            if (rootv) {
+                vx = read_varc(h, rootv, 3005); vy = read_varc(h, rootv, 3006);
+                vw = read_varc(h, rootv, 3001); vh = read_varc(h, rootv, 3002);
+            }
+            if (vw > 0 && vh > 0)  { s_x = vx; s_y = vy; s_w = vw; s_h = vh; }
+            else if (tree)         { s_x = gx; s_y = gy; s_w = gw; s_h = gh; }
+            else                   { s_w = 0; s_h = 0; }
+            // Sanity-bound the ratio: a torn/stale read must not scale the whole UI.
+            s_ui = 0.0f;
+            if (tree && gw > 0 && vw > 0) {
+                const float r = (float)vw / (float)gw;
+                if (r > 0.2f && r < 5.0f) s_ui = r;
+            }
             s_pid = pid; s_ms = nowms;
         }
         out.gv_x = s_x; out.gv_y = s_y; out.gv_w = s_w; out.gv_h = s_h;
+        out.ui_scale = s_ui;
     }
 
     auto vb = deref(worker, kVecBegin);

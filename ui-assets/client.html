@@ -131,6 +131,7 @@
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
   .mb-btn:hover { background: var(--bg-elev-2); color: var(--text); }
+  .mb-btn.on { color: var(--accent-hi); border-color: var(--accent-hi); }
 
   /* --- Category dropdown --- */
   #mbdrop {
@@ -614,6 +615,13 @@
   .al-ctl { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); transition: opacity 140ms; }
   .al-ctl .lab { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
   .al-flash { display: flex; align-items: center; gap: 7px; }
+  /* Per-event chips (random events): full row of its own so the names stay readable. */
+  .al-events { display: flex; flex-wrap: wrap; gap: 5px; flex: 1 1 100%; }
+  .al-evt { appearance: none; cursor: pointer; font-size: 11px; padding: 3px 9px; border-radius: 999px;
+            background: var(--bg-elev); border: 1px solid var(--border); color: var(--text-mute); }
+  .al-evt:hover { color: var(--text); border-color: var(--border-hi); }
+  .al-evt.on { color: #fff; border-color: var(--accent-hi);
+               background: linear-gradient(90deg, rgba(124,92,252,0.28), rgba(124,92,252,0.10)); }
   .al-snd { display: flex; align-items: center; gap: 6px; margin-left: auto; }
   .al-play { appearance: none; border: none; background: transparent; color: var(--accent-hi); font-size: 13px; cursor: pointer; padding: 2px 4px; }
   .al-param { display: flex; align-items: center; gap: 6px; }
@@ -2068,6 +2076,7 @@
     { id: 'notes',     label: 'Notes',     cat: 'Utility', icon: '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/>' },
     { id: 'counter',   label: 'Counter',   cat: 'Utility', icon: '<path d="M9 3L7 21M17 3l-2 18M4 8h16M3 16h16"/>' },
     { id: 'screenshot',label: 'Screenshot', cat: 'Utility', icon: '<rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8 7l1.5-2.5h5L16 7"/>' },
+    { id: 'fullscreen',label: 'Fullscreen', cat: 'Utility', icon: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>' },
     // Developer
     { id: 'interfaces', label: 'Interfaces', cat: 'Developer', icon: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18M8 9v11"/>' },
     { id: 'vars',       label: 'Vars',       cat: 'Developer', icon: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h4"/>' },
@@ -2148,6 +2157,237 @@
       if (t[L] > xp) return { next: t[L] - xp, level: L };
     }
     return { next: 0, level: t.length - 1 };  // at/over the table max
+  }
+
+  // ---- in-game Skills XP bars (RuneLite-style) --------------------------------
+  // A thin progress bar along the bottom of every cell of the game's own Skills panel
+  // (interface 1466, comp 2 subs 0..28). Sub order is row-major, which is exactly the
+  // order SKILL_LAYOUT is written in, so cell k is SKILL_LAYOUT[k] with no inference.
+  //
+  // Gated on varc 3165 == 1 (panel open) so a stale rect can never paint bars over a
+  // closed panel; positioned from varcs 3166/3167 via the group's panel-origin entry.
+  const SK_GROUP = 1466, SK_OPEN_VARC = 3165, SK_CELL_COMP = 2;
+  // The panel CHROME is not part of 1466: the brown title bar and the tab strip are
+  // layers in the game frame (1477), so the position varcs point at the window's outer
+  // top-left and everything inside 1466 lands that much too high. Rather than a constant,
+  // find the tab layer by the skills-tab sprite and take its BOTTOM as the content top --
+  // that measures whatever chrome is actually present, which matters because the brown
+  // bar is hidden while the UI is locked (with "hide title bars when locked",
+  // varbit 19928). Frame widgets are positioned from screen 0,0, so accumulating their
+  // relative rects down the tree gives absolute pixels directly.
+  // CHROME FROM GEOMETRY, not from hunting the tab strip. Live capture of the running
+  // client settled it: the window record reads 224x291 while group 1466's root -- the
+  // content -- is 216x243. The content is inset 4px each side, and the 48px height
+  // difference is the chrome: 44 above (title bar + tab strip) and a 4px bottom border
+  // matching the sides. So:
+  //     inset  = (panelW - contentW) / 2
+  //     offset = panelH - contentH - inset
+  // That is self-correcting for every state we chased separately before -- tabbed,
+  // untabbed, and title-bar-hidden-while-locked all change the panel/content height
+  // difference, and the formula follows. It also needs no sprite, no component id and no
+  // visibility flag, each of which turned out to be unreliable: the tab strip is comp 109
+  // in one layout and 306 in another, its sprite appears twice, and it reports vis=0 even
+  // while the tabs are on screen.
+  // The panel's own window record (it decodes as w,h,?,x,y -- see the Leagues research
+  // notes on script8701). All four are needed: the position seeds the walk, the size gives
+  // the chrome.
+  const SK_POS_VARC_X = 3166, SK_POS_VARC_Y = 3167;
+  const SK_SIZE_VARC_W = 3162, SK_SIZE_VARC_H = 3163;
+  let skContentDx = 0, skContentDy = 0, skChromeAt = 0, skChromeSeen = '';
+  let skChromeOk = false;   // a varc-derived chrome measurement from SANE inputs exists
+  // Returns {dx,dy}, or null if either rect was unreadable -- in which case the caller
+  // keeps its last good value rather than snapping the bars to a wrong place.
+  // panelW/panelH from the window record, contentW/contentH from group 1466's root node.
+  // The side border is the same 4px top-to-bottom, so the width gap gives it directly and
+  // the leftover height is the top chrome. Two live captures at different panel sizes
+  // (224x291/216x243 and 206x291/198x243) both yield inset 4 and dy 44, and 44 is also what
+  // measuring the tab strip's bottom edge gave for the first of them.
+  function skMeasureChrome(panelW, panelH, contentW, contentH) {
+    if (!(panelW > 0 && panelH > 0 && contentW > 0 && contentH > 0)) return null;
+    if (contentW > panelW || contentH > panelH) return null;      // torn read
+    const inset = Math.max(0, Math.round((panelW - contentW) / 2));
+    skChromeSeen = panelW + 'x' + panelH + ' vs content ' + contentW + 'x' + contentH;
+    return { dx: inset, dy: panelH - contentH - inset };
+  }
+  let skBarsOn = false, skBarsDrawn = false, skBarsAt = 0, skBarsLoaded = false;
+  let skBarsDiag = null;                       // last tick's findings (see skBarsWhy)
+  function skBarsWhy() { return JSON.stringify(skBarsDiag); }
+  // One sentence naming the stage that failed, so "nothing is drawn" is never silent.
+  function skBarsWhyText() {
+    const d = skBarsDiag;
+    if (!skBarsOn || !d) return 'Progress to the next level, under each skill in the game\'s own panel';
+    const tail = '  [open var ' + (d.openVar === null ? '?' : d.openVar) + ']';
+    if (d.openVar === 0) return 'Skills panel not on screen - bars hidden' + tail;
+    if (!d.skills)       return 'Waiting for skill data' + tail;
+    if (!d.widgets)      return 'Skills interface (group ' + SK_GROUP + ') not open / not found' + tail;
+    if (!d.comp2)        return d.widgets + ' widgets, but none are comp ' + SK_CELL_COMP + ' cells' + tail;
+    if (!d.withAbs)      return d.comp2 + ' cells found, but no screen position (panel origin unresolved)' + tail;
+    return d.comp2 + ' cells · chrome ' + skContentDy + 'px · '
+         + (d.anchor ? ('frame ' + d.anchor) : 'no 1477 frame anchor')
+         + (skChromeSeen ? (' · ' + skChromeSeen) : '') + tail;
+  }
+  function skBarsPaintWhy() {
+    const el = document.querySelector('#skBarsTgl .ov-sub');
+    if (el) el.textContent = skBarsWhyText();
+  }
+  function skBarsLoad() {
+    if (skBarsLoaded) return; skBarsLoaded = true;
+    try { skBarsOn = localStorage.getItem('rtxSkillBars') === '1'; } catch (e) {}
+  }
+  function skBarsSet(on) {
+    skBarsOn = !!on;
+    try { localStorage.setItem('rtxSkillBars', skBarsOn ? '1' : '0'); } catch (e) {}
+    if (!skBarsOn) skBarsClear();
+    else { skBarsAt = 0; skBarsTick(); }
+  }
+  function skBarsClear() {
+    if (!skBarsDrawn) return;
+    try { if (bridge() && bridge().skillBars) bridge().skillBars(myPid(), ''); } catch (e) {}
+    skBarsDrawn = false;
+  }
+  // Red -> yellow -> green across the level. Ramped through yellow at the halfway
+  // point rather than blending red to green directly, which passes through a muddy
+  // brown and reads as "broken" rather than "half way".
+  function skBarColour(pct) {
+    let f = pct / 1000; if (f < 0) f = 0; if (f > 1) f = 1;
+    const r = f < 0.5 ? 235 : Math.round(235 - 190 * ((f - 0.5) / 0.5));
+    const g = f < 0.5 ? Math.round(70 + 165 * (f / 0.5)) : 235;
+    return (r << 16) | (g << 8) | 45;      // a little blue keeps it from going neon
+  }
+  // Progress to the NEXT level as tenths of a percent. Uses the same caps the grid
+  // uses (120, or 150 for Invention's elite curve); a maxed skill reads full.
+  function skBarPct(xp, elite) {
+    if (!(xp >= 0)) return -1;
+    const t = xpTable(elite), cap = elite ? 150 : 120;
+    let lv = levelFromXp(xp, elite);
+    if (lv >= cap || lv + 1 >= t.length) return 1000;
+    const a = t[lv], b = t[lv + 1];
+    if (!(b > a)) return 1000;
+    let f = (xp - a) / (b - a);
+    if (f < 0) f = 0; if (f > 1) f = 1;
+    return Math.round(f * 1000);
+  }
+  async function skBarsTick() {
+    skBarsLoad();
+    if (!bridge() || !bridge().skillBars || !bridge().interfaceGroup) return;
+    if (!skBarsOn) { skBarsClear(); return; }
+    const now = Date.now(); if (now - skBarsAt < 400) return; skBarsAt = now;
+    // Open state is the REAL gate. Group 1466's widgets stay in the tree when the panel
+    // is tabbed away - they are hidden, not removed - so "has widgets" is not a test for
+    // visible, and relying on it drew bars over whatever tab replaced Skills. An
+    // unreadable var still does NOT disable the feature: only an explicit 0 closes us.
+    // SANITY-GATED: on some game builds these varcs hold packed or garbage 64-bit values
+    // (seen live: 19-digit numbers where w/h should be), so a value only counts when it
+    // is a plausible small int. Anything else reads as "unknown", never as pixels.
+    let openVar = null, originX = null, originY = null, panelW = 0, panelH = 0;
+    try {
+      const d = JSON.parse(await bridge().varcLongs(myPid(),
+                  SK_OPEN_VARC + ',' + SK_POS_VARC_X + ',' + SK_POS_VARC_Y
+                  + ',' + SK_SIZE_VARC_W + ',' + SK_SIZE_VARC_H) || '{}');
+      const sane = v => (typeof v === 'number' && isFinite(v) && Number.isInteger(v) && v >= 0 && v < 16384);
+      const ov = Number(d[String(SK_OPEN_VARC)]);
+      if (sane(ov) && ov <= 8) openVar = ov;
+      const rx = Number(d[String(SK_POS_VARC_X)]);  if (sane(rx)) originX = rx;
+      const ry = Number(d[String(SK_POS_VARC_Y)]);  if (sane(ry)) originY = ry;
+      const rw = Number(d[String(SK_SIZE_VARC_W)]); if (sane(rw)) panelW = rw;
+      const rh = Number(d[String(SK_SIZE_VARC_H)]); if (sane(rh)) panelH = rh;
+    } catch (e) {}
+    const sk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
+    let ws = [];
+    try { ws = (JSON.parse(bridge().interfaceGroup(myPid(), SK_GROUP) || '{}').widgets) || []; } catch (e) {}
+    // Diagnostics are recorded BEFORE any bail-out, and painted live onto the toggle
+    // row -- the skills pane is signature-deduped, so leaving this to the next pane
+    // render meant the row kept showing its default text and explained nothing.
+    skBarsDiag = { widgets: ws.length, openVar: openVar, skills: sk ? sk.length : 0,
+                   px: originX, py: originY, pw: panelW,
+                   comp2: ws.filter(w => w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0).length,
+                   withAbs: ws.filter(w => w.a).length };
+    skBarsPaintWhy();
+    if (openVar === 0) { skBarsClear(); return; }        // tabbed away / closed
+    if (!sk || !sk.length) { skBarsClear(); return; }
+    // The skill cells are comp 2's SUBS (owner-captured: 2:0..2:28, 60x27, three per
+    // row at x 7/79/151). Sub order is already row-major, which is the order
+    // SKILL_LAYOUT is written in, so no sorting by position and no guessing.
+    // Only widgets the reader resolved to an absolute position can be drawn on.
+    const ok = w => w && w.r && w.a && w.r[2] > 8 && w.r[3] > 8;
+    let cells = ws.filter(w => ok(w) && w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0)
+                  .sort((p, q) => p.t[2] - q.t[2]);
+    // Primary path: each cell CARRIES its skill slot (the sub index). Pairing cells[k]
+    // with SKILL_LAYOUT[k] positionally instead broke as soon as ONE mid-list cell was
+    // filtered out (no resolved rect on that tick): every bar after it shifted onto the
+    // wrong skill. The fallback path has no sub index, so only it stays positional.
+    let bySub = true;
+    if (cells.length < 20) {
+      // Fallback if the interface is ever restructured: the one widget size that
+      // repeats ~29 times is the cell grid. Ordered by position, not by sub.
+      const bySize = {};
+      for (const w of ws) { if (!ok(w)) continue; const k = w.r[2] + 'x' + w.r[3]; (bySize[k] = bySize[k] || []).push(w); }
+      let best = null;
+      for (const k in bySize) if (!best || bySize[k].length > best.length) best = bySize[k];
+      if (!best || best.length < 20) { skBarsClear(); return; }
+      cells = best.sort((p, q) => (p.a[1] - q.a[1]) || (p.a[0] - q.a[0]));
+      bySub = false;
+    }
+    cells = cells.slice(0, SKILL_LAYOUT.length);
+    // TRUE ORIGIN + CHROME FROM THE LIVE 1477 FRAME, mirroring the C++ inventory-slot
+    // solution (Reader.cpp InvSlotRectJson). The window-record varcs proved unreliable
+    // across game builds, so instead: group 1477's walk seeds at 0,0 (true screen px),
+    // and the frame window that OWNS this grid is the 1477 widget slightly larger than
+    // 1466's content root, nearest the varc origin hint. border = (frameW - contentW)/2,
+    // header = the vertical rest. Cells position as frame + (cell - contentRoot), so the
+    // 1466 seed cancels out and even a stale or garbage origin varc cannot displace bars.
+    const root = ws.find(w => w.d === 0 && w.r && w.r[2] > 0 && w.r[3] > 0);
+    let anchor = null;
+    if (root && root.a) {
+      const cw = root.r[2], ch = root.r[3];
+      let fr = [];
+      try { fr = (JSON.parse(bridge().interfaceGroup(myPid(), 1477) || '{}').widgets) || []; } catch (e) {}
+      let best = null, bestD = 1e9;
+      for (const f of fr) {
+        if (!f || !f.a || !f.r) continue;
+        const fw = f.r[2], fh = f.r[3];
+        if (!(fw > cw && fw < cw + 120 && fh > ch && fh < ch + 300)) continue;
+        const dist = Math.abs(f.a[0] - root.a[0]) + Math.abs(f.a[1] - root.a[1]);
+        if (dist > 200 || dist > bestD) continue;
+        if (dist === bestD && best && fw * fh >= best.r[2] * best.r[3]) continue;
+        bestD = dist; best = f;
+      }
+      if (best) {
+        const bd = Math.round((best.r[2] - cw) / 2);
+        const hd = best.r[3] - ch - bd;
+        if (hd >= 0 && hd < 400) {
+          anchor = { x: best.a[0] + bd, y: best.a[1] + hd, rx: root.a[0], ry: root.a[1] };
+          skContentDx = bd; skContentDy = hd;   // reported by the diagnostic sub-line
+        }
+      }
+    }
+    skBarsDiag.anchor = anchor ? (anchor.x + ',' + anchor.y) : null;
+    skBarsPaintWhy();
+    // Fallback: varc-measured chrome, accepted only from SANE inputs. With garbage varcs
+    // (openVar unknown) the live frame is also the presence gate: no frame, no bars --
+    // strictly better than drawing them displaced or over another tab.
+    if (!anchor) {
+      if (now - skChromeAt > 1500) {
+        skChromeAt = now;
+        const c = root ? skMeasureChrome(panelW, panelH, root.r[2], root.r[3]) : null;
+        if (c && c.dy >= 0 && c.dy < 400) { skContentDx = c.dx; skContentDy = c.dy; skChromeOk = true; }
+      }
+      if (!skChromeOk || openVar === null) { skBarsClear(); return; }
+    }
+    const segs = [];
+    for (let n = 0; n < cells.length; n++) {
+      const c = cells[n];
+      const k = bySub ? c.t[2] : n;               // skill slot: the cell's own sub index when known
+      if (k >= SKILL_LAYOUT.length) continue;
+      const i = SKILL_LAYOUT[k], t = sk[i];
+      if (!t) continue;
+      const pct = skBarPct(t[2] === undefined ? -1 : t[2], i === 26);
+      if (pct < 0) continue;
+      const bx = anchor ? (anchor.x + (c.a[0] - anchor.rx)) : (c.a[0] + skContentDx);
+      const by = anchor ? (anchor.y + (c.a[1] - anchor.ry)) : (c.a[1] + skContentDy);
+      segs.push(bx + ',' + by + ',' + c.r[2] + ',' + c.r[3] + ',' + pct + ',' + skBarColour(pct));
+    }
+    try { bridge().skillBars(myPid(), segs.join(';')); skBarsDrawn = segs.length > 0; } catch (e) {}
   }
 
   // Skill -> cache sprite id (from the game's SkillData table).
@@ -3200,6 +3440,9 @@
     zTop: 10,
     focused: null,          // wid
     barX: null, barY: null, barPill: false,
+    // Host borderless fullscreen. NOT persisted: it is a per-session view state, and the host
+    // window's own saved placement is what restores on next launch.
+    fullscreen: false,
     restored: false,        // layout restore ran (or gave up)
     dirty: false,           // user changed layout since restore (enables saves)
   };
@@ -4573,6 +4816,8 @@
     search.textContent = 'Search';
     search.addEventListener('click', openTabSearch);
     bar.appendChild(search);
+    // Borderless fullscreen moved off the bar into its own panel (Utility > Fullscreen,
+    // renderFullscreen) -- the bar keeps only window chrome: search, chips, collapse.
     const pill = document.createElement('button');
     pill.className = 'mb-btn';
     pill.title = wm.barPill ? 'Expand bar' : 'Collapse bar';
@@ -4592,6 +4837,38 @@
     wmRectsSoon();
   }
   function renderSidebar() { renderMenubar(); }
+
+  // Fullscreen panel (Utility): borderless fullscreen for the embedded client. It was a
+  // button on the main bar; it lives in its own panel now. The GAME's own Fullscreen
+  // option cannot work while embedded (its window is our child, clipped to the host),
+  // so this drives the HOST: it takes the whole monitor and the game comes with it.
+  function renderFullscreen() {
+    const c = $('content');
+    if ($('fsWrap')) {
+      const r = $('fsTgl'); if (r) r.classList.toggle('on', wm.fullscreen);
+      return;
+    }
+    c.innerHTML = '';
+    const wrap = document.createElement('div'); wrap.id = 'fsWrap'; wrap.className = 'ov-wrap';
+    if (!bridge() || !bridge().hostFullscreen) {
+      const e = document.createElement('div'); e.className = 'empty';
+      e.textContent = 'Fullscreen needs an embedded client window.';
+      wrap.appendChild(e); c.appendChild(wrap); return;
+    }
+    const row = ovToggleRow('fsTgl', 'Borderless fullscreen',
+                            'The client window takes the whole monitor, title bar hidden');
+    row.classList.toggle('on', wm.fullscreen);
+    row.addEventListener('click', () => {
+      try { wm.fullscreen = !!bridge().hostFullscreen(myPid()); } catch (e) {}
+      row.classList.toggle('on', wm.fullscreen);
+      wmRectsSoon();
+    });
+    wrap.appendChild(row);
+    const hint = document.createElement('div'); hint.className = 'ov-hint';
+    hint.textContent = 'Per-session view state: it is not saved, and the game\'s own Fullscreen setting stays unavailable while embedded.';
+    wrap.appendChild(hint);
+    c.appendChild(wrap);
+  }
 
   // ---- Tab search palette (Ctrl+K / '/' / the rail magnifier): type to jump to any
   //      panel, plugin tabs included. Arrow keys + Enter select; Esc / backdrop close. ----
@@ -4872,6 +5149,7 @@
     if (activeTab === 'notes') { renderNotes(); return; }
     if (activeTab === 'counter') { renderCounter(); return; }
     if (activeTab === 'screenshot') { renderScreenshot(); return; }
+    if (activeTab === 'fullscreen') { renderFullscreen(); return; }
     if (activeTab === 'dailies') { renderDailies(); return; }
     if (activeTab === 'kingdom') { renderKingdom(); return; }
     if (activeTab === 'rituals') { renderRituals(); return; }
@@ -4914,6 +5192,23 @@
         const e = document.createElement('div'); e.className = 'empty';
         e.textContent = 'Skill data appears once in-world.';
         wrap.appendChild(e); c.appendChild(wrap); return;
+      }
+      // In-game XP bars toggle: draws a progress bar on each cell of the GAME's Skills
+      // panel (not this grid), so it is useful with this window closed.
+      if (bridge() && bridge().skillBars) {
+        skBarsLoad();
+        // The shared toggle row (same control the Rendering panel uses), and it flips its
+        // OWN class rather than re-rendering the pane -- the grid rebuild is signature-
+        // deduped, so asking it to repaint just to show a toggle state did nothing.
+        // The sub-line doubles as the diagnostic when nothing appears: it names which
+        // stage failed rather than leaving a silent toggle. Repainted live by the tick.
+        const row = ovToggleRow('skBarsTgl', 'XP bars on the in-game skills panel', skBarsWhyText());
+        row.classList.toggle('on', skBarsOn);
+        row.addEventListener('click', () => {
+          skBarsSet(!skBarsOn);
+          row.classList.toggle('on', skBarsOn);
+        });
+        wrap.appendChild(row);
       }
       const grid = document.createElement('div'); grid.className = 'skill-grid';
       let totalLevel = 0, totalXp = 0, virtualTotal = 0, totalBonus = 0;
@@ -5188,7 +5483,15 @@
     } else {
       inWorld = !!s.in_world;
       nameTxt = nameHidden ? 'Hidden' : (s.display_name || ('PID ' + s.pid));
-      metaTxt = (s.world > 0 ? ('World ' + s.world + ' • ') : '') + fmtStatus(s);
+      // Leagues worlds are flagged: their Voice of Seren / world events are a separate
+      // pool, so knowing which one you are on explains why the crowdsourced values differ.
+      let wtag = '';
+      if (s.world > 0) {
+        let lg = false;
+        try { lg = !!(bridge() && bridge().isLeaguesWorld && bridge().isLeaguesWorld(s.world)); } catch (e) {}
+        wtag = 'World ' + s.world + (lg ? ' (Leagues)' : '') + ' • ';
+      }
+      metaTxt = wtag + fmtStatus(s);
     }
     const sig = (inWorld ? '1' : '0') + '|' + nameTxt + '|' + metaTxt;
     if (sig === _hdrSig) return;                 // unchanged -> no DOM writes this poll
@@ -5230,6 +5533,9 @@
     // Pinned league tasks: sticky progress toasts stay live with every poll,
     // whichever windows are open (self-gating: immediate no-op without pins).
     if (typeof lgPinsPoll === 'function') lgPinsPoll();
+    // In-game Skills XP bars: drawn on the GAME's panel, so this runs regardless of
+    // which of our windows are open (self-gating: immediate no-op when off).
+    skBarsTick();
     if (alertsNeedGoals() && !paneVisible('player')) fetchGameGoals();
     if (alertsNeedPerks() && !paneVisible('perks')) fetchPerks();
     if (alertsNeedInv() && !paneVisible('inventory')) fetchInv();
@@ -5919,6 +6225,35 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     }
   }
 
+  // Dev-plugin hot reload: poll a cheap host-side fingerprint of plugins-dev so a
+  // folder dropped in (or an edited entry file) shows up without a client restart.
+  // The first poll only seeds the baseline; later changes reload the plugin list
+  // and remount any open dev plugin whose own folder changed.
+  let pluginDevStampLast = null;
+  async function pluginDevWatch() {
+    try {
+      if (!bridge() || typeof bridge().pluginDevStamp !== 'function') return;
+      const stamp = String(await bridge().pluginDevStamp());
+      if (pluginDevStampLast === null) { pluginDevStampLast = stamp; return; }
+      if (stamp === pluginDevStampLast) return;
+      const prev = pluginDevStampLast; pluginDevStampLast = stamp;
+      await loadPlugins();
+      const tok = s => {
+        const m = {};
+        String(s).split(';').forEach(t => { const i = t.indexOf(':'); if (i > 0) m[t.slice(0, i)] = t.slice(i + 1); });
+        return m;
+      };
+      const before = tok(prev), after = tok(stamp);
+      for (const id of Array.from(pluginMounts.keys())) {
+        const tab = pluginTabs.find(p => p.id === id);
+        if (!tab || tab.source !== 'dev' || before[id] === after[id]) continue;
+        pluginMounts.delete(id);
+        const w = wmWinOf('plugin:' + id);
+        if (w && !w.min && w.tab === ('plugin:' + id)) { w.pane.innerHTML = ''; renderPaneFor(w); }
+      }
+    } catch (e) {}
+  }
+
   // ---- in-client marketplace (browse + install signed plugins) ----
   let pluginBrowseList = [];
   async function renderPluginBrowse() {
@@ -6131,6 +6466,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     (function towersLoop() { try { towersTick(); } catch (e) {} setTimeout(towersLoop, towersOwnsPanel ? 120 : 400); })();
     setInterval(ifaceMonTick, 600);   // Interfaces tab: open/close monitor (no-op unless that tab is active)
     loadPlugins();   // discover installed (signed) + sideloaded dev plugins -> Plugins category
+    setInterval(pluginDevWatch, 2000);   // hot-reload sideloaded dev plugins on folder changes
   }
   attachBridge();
 </script>

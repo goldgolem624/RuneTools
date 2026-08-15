@@ -202,11 +202,20 @@ struct OverlayFrame {
     // (the active highlighted NPC, or the first guide site). Shows DIRECTION, not a path.
     bool        has_arrow = false;
     int         arrow_tx = 0, arrow_ty = 0;
-    // Gameview (3D viewport) rect within the window, read from interface widget
-    // 1477:27->28. The camera renders into THIS rect, not the whole client, so
-    // the projection must use it (tiles drift otherwise when UI is docked).
+    // Gameview (3D viewport) rect within the window, in PHYSICAL PIXELS. The game
+    // publishes it in varcs (view 1000: x 3005, y 3006, w 3001, h 3002 -- see
+    // script8701/8709, which read/write a uniform x,y,w,h record per view); the
+    // interface widget 1477:27->28 is the fallback. The camera renders into THIS
+    // rect, not the whole client, so the projection must use it (tiles drift
+    // otherwise when UI is docked).
     // gv_w/gv_h == 0 means "not resolved" -> overlay falls back to the window.
     int gv_x = 0, gv_y = 0, gv_w = 0, gv_h = 0;
+    // Interface-space -> physical-pixel scale, derived live as the published pixel
+    // gameview width over the same rect measured in the interface widget tree. That
+    // ratio IS the Interface Scaling setting (70%..300%, setting 481 -> enum 488)
+    // combined with any sub-800x600 downscale, without having to locate either.
+    // 0 = underivable this frame -> callers fall back to the 800x600 model.
+    float ui_scale = 0.0f;
 };
 
 // Gather a frame for `pid`. Entities are walked live; objects come from the
@@ -385,6 +394,12 @@ std::string InterfaceGroupsJson(std::uint32_t pid);
 std::string InterfaceGroupJson(std::uint32_t pid, int groupId);
 // Screen rects of specific components in a group, anchored to a 1477 mount slot (celtic-knot arrow boxes).
 std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& compsCsv, int mountComp);
+// Absolute screen rect of the layer CONTAINING `sprite` in `group`. Window chrome has no
+// stable component id (the same tab strip is comp 109 in one layout, 306 in another), but
+// its sprite does, so this addresses it by sprite and returns the container. Search-only,
+// so it is not subject to InterfaceGroupJson's 4000-widget output cap.
+// {"ok":1,"x":..,"y":..,"w":..,"h":..} or {"ok":0}.
+std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite);
 // Compass-clue needle rotation (group 996 / comp 5 / +0x180), or -1 if not open. bearing_N = raw/5.8127.
 int CompassHeadingValue(std::uint32_t pid);
 // Compass-clue dig tile straight from varc 1323 (packed (plane<<28)|(x<<14)|y) -> "x,y,plane" or "" if unset.

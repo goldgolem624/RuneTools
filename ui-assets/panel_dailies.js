@@ -245,10 +245,23 @@
   // Community value for hour `hr`, or null. The cache is fed passively by the SSE `vos` push (plus
   // the connect handshake); pass allowRefresh ONLY when displaying with a stale cache, which lets
   // the C++ kick its slow GET fallback (floored to 1 per 5 min).
+  // True while this client sits on a leagues world. Leagues rotates its OWN Voice of Seren,
+  // so both the value we read and the value we report belong to a separate pool, served
+  // under `lg` in the same payload.
+  function dwOnLeaguesWorld() {
+    try {
+      return !!(lastSnap && lastSnap.world && bridge() && bridge().isLeaguesWorld
+                && bridge().isLeaguesWorld(lastSnap.world));
+    } catch (e) { return false; }
+  }
   function dwVosCommunity(hr, allowRefresh) {
     if (!bridge() || !bridge().vosCached) return null;
+    const lg = dwOnLeaguesWorld();
     const read = (refresh) => {
-      try { return JSON.parse(bridge().vosCached(refresh ? 1 : 0) || '{}'); } catch (e) { return null; }
+      try {
+        const j = JSON.parse(bridge().vosCached(refresh ? 1 : 0) || '{}');
+        return lg ? (j && j.lg) : j;      // leagues value rides under `lg`
+      } catch (e) { return null; }
     };
     // `c.d` (UTC day number) rejects a value from a previous day at the same hour -- the hour stamp
     // alone (0-23) cannot. `c.d == null` = a server without the date stamp (accept on the hour
@@ -290,7 +303,9 @@
     if (!c && dwVosReportedHour === s.hourKey) dwVosReportedHour = '';
     if (dwVosReportedHour === s.hourKey) return;
     dwVosReportedHour = s.hourKey;
-    try { bridge().vosReport(s.a, s.b); } catch (e) {}
+    // Reported INTO the pool this world belongs to, so leagues readings build the leagues
+    // consensus rather than contradicting the main one.
+    try { bridge().vosReport(s.a, s.b, dwOnLeaguesWorld()); } catch (e) {}
   }
 
   function dwCheckNotify() {

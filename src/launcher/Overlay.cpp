@@ -106,6 +106,10 @@ struct Metro {
 };
 Metro g_metro;                                  // guarded by g_mu
 RECT  g_metro_hit{0, 0, 0, 0};                  // last-frame widget bbox, client coords (guarded by g_mu)
+// Physical px -> game-space px for the external input window (widget rects live in the game's
+// pixel space, the window in physical px; they differ when the game runs DPI-virtualized).
+// Written by the render loop, read by OverlayWndProc.
+std::atomic<double> g_inputScale{1.0};
 
 // Play the metronome click (sounds/metronome.wav next to the exe). SND_ASYNC so it
 // never blocks the render loop; a new call pre-empts a still-playing one.
@@ -179,6 +183,7 @@ std::map<DWORD, std::string> g_centerTexts;         // transient screen-centre t
 std::map<DWORD, std::vector<PanelBox>> g_panelViz;  // Interfaces-tab panel visualizer boxes per pid (guarded by g_mu)
 std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;  // puzzle-box next-moves cells per pid (guarded by g_mu)
 std::map<DWORD, std::vector<KnotCell>> g_knotCells;      // celtic-knot arrow highlights per pid (guarded by g_mu)
+std::map<DWORD, std::vector<SkillBar>> g_skillBars;      // Skills-panel XP progress bars per pid (guarded by g_mu)
 
 void ResetXpSession() {   // caller holds g_mu
     g_xp.haveBase = false;
@@ -661,6 +666,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     std::vector<PanelBox> pviz;
     std::vector<PuzzleCell> pcells;
     std::vector<KnotCell> kcells;
+    std::vector<SkillBar> sbars;
     { std::lock_guard<std::mutex> lk(g_mu);
       auto git = g_guides.find(cfg.pid);
       hasGuides = (git != g_guides.end() && !git->second.empty());
@@ -673,9 +679,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       auto pcit = g_puzzleCells.find(cfg.pid);
       if (pcit != g_puzzleCells.end()) pcells = pcit->second;
       auto kcit = g_knotCells.find(cfg.pid);
-      if (kcit != g_knotCells.end()) kcells = kcit->second; }
+      if (kcit != g_knotCells.end()) kcells = kcit->second;
+      auto sbit = g_skillBars.find(cfg.pid);
+      if (sbit != g_skillBars.end()) sbars = sbit->second; }
 
-    bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() ||
+    bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
                        (widgets && !widgets->empty()) ||
                        (f && (cfg.enabled || cfg.markers || cfg.nameplates || !f->highlights.empty() || hasGuides));
     if (!wantContent) {
@@ -1589,6 +1597,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     // RS3 UI scale: interface coords are in 800x600 DESIGN SPACE. At/above an 800x600 window the UI is
     // 1:1 (scale 1.0); below it the engine keeps design coords and renders downscaled by
     // min(w/800, h/600). Overlays draw in real pixels, so multiply design-space UI coords by this.
+    //
+    // NOT the reader's derived ui_scale. Every rect that reaches this function through
+    // iface_panel_origin already carries a PIXEL panel origin (the position varcs) plus
+    // tree-relative offsets, so scaling the whole thing multiplies the origin too and
+    // throws it off-screen -- observed live at 150% Interface Scaling. Getting that right
+    // means scaling only the tree-relative part, which has to happen in the reader where
+    // the two are still separate; ui_scale is published for that work but unused here.
     float uiScale;
     { float sx = (float)W / 800.0f, sy = (float)H / 600.0f; uiScale = sx < sy ? sx : sy; if (uiScale > 1.0f) uiScale = 1.0f; }
 
@@ -1697,6 +1712,37 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             line(px1, py1, px0, py1, 1.8f, kAccR, kAccG, kAccB, 255); line(px0, py1, px0, py0, 1.8f, kAccR, kAccG, kAccB, 255);
             marker::Command t{}; t.type = marker::kText; t.x0 = cx; t.y0 = (py0 + py1) * 0.5f; t.x1 = 17.0f;
             t.r = 255; t.g = 255; t.b = 255; t.a = 255; std::snprintf(t.text, sizeof(t.text), "%s", lbl); push(t);
+        }
+    }
+
+    // --- Skills XP progress bars: a thin track along the bottom edge of each skill cell, filled by
+    //     progress to the next level. Rects arrive as screen pixels (panel origin + walk), like the
+    //     puzzle/knot cells, so NO uiScale. No pulse and no label: this is ambient information
+    //     sitting under the game's own numbers, and it has to stay readable at a glance across
+    //     29 cells without competing with them. ---
+    for (const auto& sb : sbars) {
+        if (sb.w <= 0 || sb.h <= 0) continue;
+        float x0 = (float)sb.x, y1 = (float)(sb.y + sb.h);
+        float x1 = (float)(sb.x + sb.w);
+        // Inset from the cell edge, and a height that scales with the cell but stays legible.
+        float inset = 2.0f;
+        float bh = (float)sb.h * 0.10f; if (bh < 2.5f) bh = 2.5f; if (bh > 5.0f) bh = 5.0f;
+        float bx0 = x0 + inset, bx1 = x1 - inset, by1 = y1 - inset, by0 = by1 - bh;
+        if (bx1 <= bx0) continue;
+        // Track: dark plate so the fill reads on any cell art.
+        { marker::Command q{}; q.type = marker::kFillRect;
+          q.x0 = bx0; q.y0 = by0; q.x1 = bx1; q.y1 = by1;
+          q.r = 0; q.g = 0; q.b = 0; q.a = 165; push(q); }
+        int pct = sb.pct; if (pct < 0) pct = 0; if (pct > 1000) pct = 1000;
+        const float fw = (bx1 - bx0) * (float)pct / 1000.0f;
+        if (fw > 0.0f) {
+            std::uint8_t r = (std::uint8_t)((sb.rgb >> 16) & 0xFF);
+            std::uint8_t g2 = (std::uint8_t)((sb.rgb >> 8) & 0xFF);
+            std::uint8_t b = (std::uint8_t)(sb.rgb & 0xFF);
+            if (!sb.rgb) { r = kOkR; g2 = kOkG; b = kOkB; }     // default: the same green as "done"
+            marker::Command q{}; q.type = marker::kFillRect;
+            q.x0 = bx0; q.y0 = by0; q.x1 = bx0 + fw; q.y1 = by1;
+            q.r = r; q.g = g2; q.b = b; q.a = 240; push(q);
         }
     }
 
@@ -2090,8 +2136,18 @@ void BuildWidgetCommands(DWORD pid, int W, int H, long long tnow,
 // notification. The window is made interactive only while the cursor is over a
 // widget (see the render loop), so these only fire for deliberate clicks.
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // Window coords are physical px; every widget rect and position (g_metro.x ...) is in
+    // the game's pixel space -- convert incoming points once, then all math is same-space.
+    auto toGameSpace = [](POINT& pt) {
+        double f = g_inputScale.load();
+        if (f > 0.0 && f != 1.0) {
+            pt.x = (LONG)std::lround(pt.x * f);
+            pt.y = (LONG)std::lround(pt.y * f);
+        }
+    };
     if (msg == WM_LBUTTONDOWN) {
         POINT pt{ (LONG)(short)LOWORD(lp), (LONG)(short)HIWORD(lp) };
+        toGameSpace(pt);
         std::lock_guard<std::mutex> lk(g_mu);
         if (g_metro.on && !g_metro.locked && PtInRect(&g_metro_hit, pt)) {  // start dragging the metronome
             g_metro.dragging = true;
@@ -2128,6 +2184,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_MOUSEMOVE) {
         std::lock_guard<std::mutex> lk(g_mu);
         POINT pt{ (LONG)(short)LOWORD(lp), (LONG)(short)HIWORD(lp) };
+        toGameSpace(pt);
         if (g_metro.dragging) {
             g_metro.x = pt.x - g_metro.dragOff.x;
             g_metro.y = pt.y - g_metro.dragOff.y;
@@ -2149,6 +2206,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_MOUSEWHEEL) {                       // wheel over the widget = resize
         POINT pt{ (LONG)(short)LOWORD(lp), (LONG)(short)HIWORD(lp) };
         ScreenToClient(hwnd, &pt);                    // wheel coords are screen-relative
+        toGameSpace(pt);
         std::lock_guard<std::mutex> lk(g_mu);
         if (g_metro.on && !g_metro.locked && PtInRect(&g_metro_hit, pt)) {
             int d = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 5 : -5;
@@ -2309,7 +2367,12 @@ void RenderLoop() {
                 continue;
             }
             RECT rc2; GetClientRect(gw, &rc2);
-            int W2 = rc2.right - rc2.left, H2 = rc2.bottom - rc2.top;
+            // Command coordinates live in the GAME's pixel space: they are drawn into its frame
+            // beside viewport values read from its memory. GetClientRect here is this process's
+            // physical px, which differs when the game runs DPI-virtualized -- convert.
+            double gsf = rtx::launcher::dock::GameSpaceFactor(gw);
+            int W2 = (int)std::lround((rc2.right - rc2.left) * gsf);
+            int H2 = (int)std::lround((rc2.bottom - rc2.top) * gsf);
             if (W2 < 16 || H2 < 16) continue;
             rtx::launcher::companion::EnsureLoaded(cpid);   // hosts the present layer
             std::vector<rtx::marker::Command> wcmds;
@@ -2383,15 +2446,22 @@ void RenderLoop() {
         RECT cr; GetClientRect(game, &cr);
         POINT tl{cr.left, cr.top};
         ClientToScreen(game, &tl);
-        int W = cr.right - cr.left, H = cr.bottom - cr.top;
+        int W = cr.right - cr.left, H = cr.bottom - cr.top;   // PHYSICAL px: this window's space
         if (W < 16 || H < 16) { std::this_thread::sleep_for(std::chrono::milliseconds(60)); continue; }
+        // Widget hit rects were computed in the game's pixel space; this window lives in
+        // physical px. gsfIn maps physical -> game space; pads convert the other way.
+        double gsfIn = rtx::launcher::dock::GameSpaceFactor(game);
+        if (gsfIn <= 0.0) gsfIn = 1.0;
+        g_inputScale.store(gsfIn);
 
         if (dib.ensure(W, H)) {
             dib.clear();
             // Alpha-2 pads over the interactive rects: invisible, but they receive
             // clicks once the window drops WS_EX_TRANSPARENT. Premultiplied black at
             // alpha 2 is (B,G,R,A) = (0,0,0,2), so no premultiply pass is needed.
-            auto pad = [&](const RECT& rc) {
+            auto pad = [&](const RECT& rcG) {   // rcG: game-space px -> convert to physical
+                RECT rc{ (LONG)std::lround(rcG.left  / gsfIn), (LONG)std::lround(rcG.top    / gsfIn),
+                         (LONG)std::lround(rcG.right / gsfIn), (LONG)std::lround(rcG.bottom / gsfIn) };
                 int x0 = rc.left < 0 ? 0 : rc.left, y0 = rc.top < 0 ? 0 : rc.top;
                 int x1 = rc.right > W ? W : rc.right, y1 = rc.bottom > H ? H : rc.bottom;
                 auto* px = (std::uint32_t*)dib.bits;
@@ -2428,6 +2498,9 @@ void RenderLoop() {
         bool overUi = false;
         if (shown) {
             POINT cur; GetCursorPos(&cur); ScreenToClient(hwnd, &cur);
+            // Into game space: the hit rects below are in the game's px, cur is physical.
+            cur.x = (LONG)std::lround(cur.x * gsfIn);
+            cur.y = (LONG)std::lround(cur.y * gsfIn);
             std::lock_guard<std::mutex> lk(g_mu);
             if (g_metro.dragging || g_xp.dragging) overUi = true;
             if (!overUi && padMetro && PtInRect(&g_metro_hit, cur)) overUi = true;
@@ -2643,6 +2716,20 @@ void SetPuzzleCells(std::uint32_t pid, const std::vector<PuzzleCell>& cells) {
             Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
             dst.pid = pid;
             g_puzzleCells[(DWORD)pid] = cells;
+        }
+    }
+    ensure_thread();
+}
+
+void SetSkillBars(std::uint32_t pid, const std::vector<SkillBar>& bars) {
+    if (!pid) return;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (bars.empty()) g_skillBars.erase((DWORD)pid);
+        else {
+            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            dst.pid = pid;
+            g_skillBars[(DWORD)pid] = bars;
         }
     }
     ensure_thread();

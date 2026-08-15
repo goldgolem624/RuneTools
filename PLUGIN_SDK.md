@@ -14,8 +14,8 @@ my-plugin/
 ```
 
 1. Put the folder in `%USERPROFILE%\RuneToolsX\plugins-dev\<your-id>\` so its manifest lives at `...\plugins-dev\com.yourname.tool\manifest.json`.
-2. Open the **Plugins** tab in RuneTools; your plugin is listed automatically. Enable it and approve the permission prompt.
-3. Edit your files and reopen the tab to reload. No signing required for local development.
+2. Open the **Plugins** tab in RuneTools; your plugin appears within a couple of seconds, no client restart needed. Enable it and approve the permission prompt.
+3. Edit your files and save; an open plugin window reloads itself automatically. No signing required for local development.
 
 ## manifest.json
 

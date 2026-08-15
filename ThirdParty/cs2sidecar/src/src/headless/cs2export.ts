@@ -513,31 +513,72 @@ async function buildTables(engine: EngineCache, notes: string[],
         for (const [id, cfg] of cfgs) {
             if (cfg.name && cfg.name !== "null") { cast[castKey].set(id, cfg.name); }
         }
+        // PLACEHOLDER MORPH STATES must not name a var. One config is reused as the
+        // "nothing here" state under hundreds of unrelated parents - loc 32767 "Old
+        // spike" sits under 1301 of them - and because the object's own visible state
+        // is usually UNNAMED in the cache, the placeholder was the only candidate and
+        // won the vote. That labelled 482 different varbits locmorph_old_spike, none
+        // of which are a spike (owner-caught: 45326 is a boulder, child loc 101304).
+        // Rule is data-driven rather than a hardcoded id: a child reused across many
+        // parents describes none of them, so it does not get to name anything.
+        const kSharedChildMax = 25;
+        const childParents = new Map<number, number>();
+        for (const [, cfg] of cfgs) {
+            for (const key of ["morphs_1", "morphs_2"]) {
+                const mv = morphVars(cfg[key]);
+                if (!mv) { continue; }
+                for (const kid of new Set(mv.kids)) { childParents.set(kid, (childParents.get(kid) ?? 0) + 1); }
+            }
+        }
         const tied = { varbit: new Map<number, Map<string, number>>(), varp: new Map<number, Map<string, number>>() };
+        // A representative parent loc per var, so an unnamed or ambiguous var can still
+        // point at something you can look up in locs.json.
+        const tiedLoc = { varbit: new Map<number, number>(), varp: new Map<number, number>() };
         for (const [id, cfg] of cfgs) {
             for (const key of ["morphs_1", "morphs_2"]) {
                 const mv = morphVars(cfg[key]);
                 if (!mv) { continue; }
                 const nms: string[] = [];
                 if (cfg.name) { nms.push(cfg.name); }
-                for (const kid of mv.kids) { const knm = cfgs.get(kid)?.name; if (knm) { nms.push(knm); } }
-                if (!nms.length) { continue; }
+                for (const kid of mv.kids) {
+                    if ((childParents.get(kid) ?? 0) > kSharedChildMax) { continue; }   // placeholder state
+                    const knm = cfgs.get(kid)?.name;
+                    if (knm) { nms.push(knm); }
+                }
                 for (const [vk, vid] of [["varbit", mv.vb], ["varp", mv.vp]] as const) {
                     if (vid < 0) { continue; }
+                    if (!tiedLoc[vk].has(vid)) { tiedLoc[vk].set(vid, id); }
                     let cnt = tied[vk].get(vid);
                     if (!cnt) { cnt = new Map(); tied[vk].set(vid, cnt); }
                     for (const n of nms) { cnt.set(n, (cnt.get(n) ?? 0) + 1); }
                 }
             }
         }
+        // Two passes: pick each var's base name, then DISAMBIGUATE. A base claimed by
+        // more than one var says nothing about either (that is what made every
+        // locmorph_old_spike indistinguishable), so those carry their loc id. A var
+        // whose only candidates were placeholders gets no invented name at all - just
+        // the loc reference, which is honest and still traceable.
         let added = 0;
+        const picks: { vk: "varbit" | "varp", vid: number, base: string, loc: number | undefined }[] = [];
         for (const vk of ["varbit", "varp"] as const) {
             for (const [vid, cnt] of tied[vk]) {
                 if (names[vk].has(vid)) { continue; }
+                const loc = tiedLoc[vk].get(vid);
+                if (!cnt.size) {
+                    if (loc !== undefined) { picks.push({ vk, vid, base: `${kind}_loc${loc}`, loc: undefined }); }
+                    continue;
+                }
                 const top = [...cnt.entries()].sort((a, b) => b[1] - a[1])[0][0];
-                names[vk].set(vid, `${kind}_${slug(top)}${cnt.size > 1 ? "_etc" : ""}`);
-                added++;
+                picks.push({ vk, vid, base: `${kind}_${slug(top)}${cnt.size > 1 ? "_etc" : ""}`, loc });
             }
+        }
+        const baseUse = new Map<string, number>();
+        for (const p of picks) { baseUse.set(p.base, (baseUse.get(p.base) ?? 0) + 1); }
+        for (const p of picks) {
+            const amb = (baseUse.get(p.base) ?? 0) > 1 && p.loc !== undefined;
+            names[p.vk].set(p.vid, amb ? `${p.base}_${p.loc}` : p.base);
+            added++;
         }
         notes.push(`${kind} vars: ${added}, ${castKey} names: ${cast[castKey].size}`);
         if (major === cacheMajors.npcs) {
