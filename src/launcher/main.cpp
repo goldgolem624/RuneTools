@@ -207,6 +207,11 @@ public:
             // idle in GetMessage between ticks, so it can pump an embedded client's host activation
             // immediately on a window switch instead of behind a forced render.
             SetTimer(hwnd, 1, 100, nullptr);
+
+            // Tray icon + minimize-to-tray for the launcher window: minimizing hides it
+            // from the taskbar, the tray icon (click or Open) brings it back. Game host
+            // windows are untouched -- they minimize normally.
+            rtx::winnotify::EnableTray(hwnd);
         }
 
         overlay_ = Overlay::Create(window_, window_->width(),
