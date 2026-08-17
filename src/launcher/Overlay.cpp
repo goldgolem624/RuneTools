@@ -1602,8 +1602,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     // iface_panel_origin already carries a PIXEL panel origin (the position varcs) plus
     // tree-relative offsets, so scaling the whole thing multiplies the origin too and
     // throws it off-screen -- observed live at 150% Interface Scaling. Getting that right
-    // means scaling only the tree-relative part, which has to happen in the reader where
-    // the two are still separate; ui_scale is published for that work but unused here.
+    // means scaling only the tree-relative part, which has to happen where the two are
+    // still separate: the reader publishes the factor as InterfaceGroupJson's "ui" field
+    // and the skills XP bars (client.html skBarsTick) apply it to their pure-tree anchor
+    // math. The iface_panel_origin-based rects below still await that per-path work.
     float uiScale;
     { float sx = (float)W / 800.0f, sy = (float)H / 600.0f; uiScale = sx < sy ? sx : sy; if (uiScale > 1.0f) uiScale = 1.0f; }
 
@@ -1716,10 +1718,44 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     }
 
     // --- Skills XP progress bars: a thin track along the bottom edge of each skill cell, filled by
-    //     progress to the next level. Rects arrive as screen pixels (panel origin + walk), like the
+    //     progress to the next level. Rects arrive as screen pixels (client.html converts its
+    //     tree-walk coords by the reader-published interface scale), like the
     //     puzzle/knot cells, so NO uiScale. No pulse and no label: this is ambient information
     //     sitting under the game's own numbers, and it has to stay readable at a glance across
-    //     29 cells without competing with them. ---
+    //     29 cells without competing with them.
+    //
+    //     OVERLAP GUARD: this layer composites ABOVE the finished game frame, so the bars can
+    //     never render "under" the game's own pixels -- a hover tooltip or the cell numbers
+    //     would always lose. Instead the bars step aside: while the cursor is inside the
+    //     bars' panel area (exactly when the game shows its skill tooltip, and when the
+    //     player is actually reading the panel), they are skipped for the frame; they return
+    //     the moment the cursor leaves. Publish runs every ~33ms, so it feels instant. ---
+    bool sbarsHide = false;
+    if (!sbars.empty()) {
+        if (HWND sgw = FindGameWindow(cfg.pid)) {
+            POINT cur;
+            if (GetCursorPos(&cur) && ScreenToClient(sgw, &cur)) {
+                // Cursor is this process's physical px; the bar rects are game-space px.
+                const double sgsf = rtx::launcher::dock::GameSpaceFactor(sgw, cfg.pid);
+                const float cx = (float)(cur.x * sgsf), cy = (float)(cur.y * sgsf);
+                float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0; bool any = false;
+                for (const auto& sb : sbars) {
+                    if (sb.w <= 0 || sb.h <= 0) continue;
+                    const float sx0 = (float)sb.x, sy0 = (float)sb.y;
+                    const float sx1 = (float)(sb.x + sb.w), sy1 = (float)(sb.y + sb.h);
+                    if (!any) { bx0 = sx0; by0 = sy0; bx1 = sx1; by1 = sy1; any = true; }
+                    else {
+                        if (sx0 < bx0) bx0 = sx0; if (sy0 < by0) by0 = sy0;
+                        if (sx1 > bx1) bx1 = sx1; if (sy1 > by1) by1 = sy1;
+                    }
+                }
+                const float pad = 8.0f;   // a tooltip anchors just past the hovered cell edge
+                sbarsHide = any && cx >= bx0 - pad && cx <= bx1 + pad &&
+                                   cy >= by0 - pad && cy <= by1 + pad;
+            }
+        }
+    }
+    if (!sbarsHide)
     for (const auto& sb : sbars) {
         if (sb.w <= 0 || sb.h <= 0) continue;
         float x0 = (float)sb.x, y1 = (float)(sb.y + sb.h);
@@ -2369,8 +2405,11 @@ void RenderLoop() {
             RECT rc2; GetClientRect(gw, &rc2);
             // Command coordinates live in the GAME's pixel space: they are drawn into its frame
             // beside viewport values read from its memory. GetClientRect here is this process's
-            // physical px, which differs when the game runs DPI-virtualized -- convert.
-            double gsf = rtx::launcher::dock::GameSpaceFactor(gw);
+            // physical px, which differs when the game runs DPI-virtualized -- convert. The pid
+            // overload uses the companion's MEASURED backbuffer size (the DPI inference reads
+            // 1.0 once the game is our embedded child, which put every overlay at 2/3 scale on
+            // a 150% display).
+            double gsf = rtx::launcher::dock::GameSpaceFactor(gw, cpid);
             int W2 = (int)std::lround((rc2.right - rc2.left) * gsf);
             int H2 = (int)std::lround((rc2.bottom - rc2.top) * gsf);
             if (W2 < 16 || H2 < 16) continue;
@@ -2450,7 +2489,7 @@ void RenderLoop() {
         if (W < 16 || H < 16) { std::this_thread::sleep_for(std::chrono::milliseconds(60)); continue; }
         // Widget hit rects were computed in the game's pixel space; this window lives in
         // physical px. gsfIn maps physical -> game space; pads convert the other way.
-        double gsfIn = rtx::launcher::dock::GameSpaceFactor(game);
+        double gsfIn = rtx::launcher::dock::GameSpaceFactor(game, pid);
         if (gsfIn <= 0.0) gsfIn = 1.0;
         g_inputScale.store(gsfIn);
 

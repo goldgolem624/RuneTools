@@ -354,7 +354,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     if (!GetClientRect(hwnd, &rc)) return false;
     // Cursor + client rect are this process's physical px; the projection viewport (gv_*)
     // is in the game's own pixel space. Convert both once so every comparison is same-space.
-    const float gsf = (float)rtx::launcher::dock::GameSpaceFactor(hwnd);
+    const float gsf = (float)rtx::launcher::dock::GameSpaceFactor(hwnd, pid);
     float W = (float)(rc.right - rc.left) * gsf, H = (float)(rc.bottom - rc.top) * gsf;
     if (W < 16 || H < 16) return false;
     const float curX = (float)pt.x * gsf, curY = (float)pt.y * gsf;

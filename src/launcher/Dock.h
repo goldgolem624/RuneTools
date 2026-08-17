@@ -39,7 +39,21 @@ void* GameWindowHandle(std::uint32_t pid);
 // e.g. a DPI-unaware client on a 125% display renders at 96 DPI and DWM upscales it, so its
 // space is smaller than the physical client rect this process measures. Thread-safe (any
 // thread), unlike the rest of this header.
+//
+// The hwnd-only form INFERS the factor from DPI contexts. That inference LIES once the game
+// is our embedded WS_CHILD: the child adopts the host's per-monitor-v2 context, so both DPIs
+// read the monitor's value and the factor collapses to 1.0 while the game process is still
+// virtualized and rendering a smaller backbuffer (seen live: every overlay at 2/3 scale on a
+// 150% display). Prefer the pid overload wherever a pid is known: it uses the MEASURED ratio
+// companion-backbuffer-size / physical-client-size (ground truth, published every present via
+// PublishGameClientSize) and only falls back to the DPI inference while the companion is absent.
 double GameSpaceFactor(void* gameHwnd);
+double GameSpaceFactor(void* gameHwnd, std::uint32_t pid);
+
+// Publish the companion-reported live client size (the game's own GetClientRect, i.e. its
+// backbuffer size in ITS pixel space) for cross-thread GameSpaceFactor consumers. Called from
+// gameui::Tick while the companion heartbeat is fresh; (0,0) clears. Thread-safe.
+void PublishGameClientSize(std::uint32_t pid, int w, int h);
 
 // Borderless fullscreen for the client's host window: it takes the whole monitor it is on, frame
 // and taskbar included, and the embedded game (which fills the host client area) comes with it.

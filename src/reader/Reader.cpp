@@ -3781,6 +3781,49 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
     return false;                                                     // group 1477 absent (not in-world / login)
 }
 
+// Interface->pixel scale: the in-game Interface Scaling setting (e.g. 1.35 at 135%).
+// Widget-tree rects (+0x70..+0x7C) live in the game's UNSCALED interface space while the
+// view-1000 varcs publish the same gameview rect in real pixels (see BuildOverlayFrame's
+// viewport read): pixel width over tree width is exactly the interface->pixel factor.
+// Returns 1.0 whenever either source is unavailable or the ratio is implausible, so every
+// consumer degrades to the pre-scaling behavior. Cached ~500ms per pid; any thread.
+// outVw/outGw report the raw inputs (varc px width / tree width; 0 when unread) so
+// consumers can surface them in diagnostics and cross-check the ratio against other
+// full-client measures (seen live: the two rects disagreed after a runtime Windows-DPI
+// change, so the ratio alone must not be trusted blindly).
+static float iface_ui_scale(HANDLE h, std::uint64_t root, std::uint32_t pid,
+                            int* outVw = nullptr, int* outGw = nullptr) {
+    static std::mutex mu;
+    struct Ent { unsigned long long ms; float ui; int vw, gw; };
+    static std::unordered_map<std::uint32_t, Ent> cache;
+    const unsigned long long now = GetTickCount64();
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = cache.find(pid);
+        if (it != cache.end() && now - it->second.ms < 500) {
+            if (outVw) *outVw = it->second.vw;
+            if (outGw) *outGw = it->second.gw;
+            return it->second.ui;
+        }
+    }
+    float ui = 1.0f;
+    int gx = 0, gy = 0, gw = 0, gh = 0, vw = 0;
+    if (read_gameview_rect(h, root, gx, gy, gw, gh) && gw > 0) {
+        vw = read_varc(h, root, 3001);   // view 1000 (gameview) width, physical px
+        if (vw > 0) {
+            float r = (float)vw / (float)gw;
+            if (r > 0.2f && r < 5.0f) ui = r;
+        }
+    } else {
+        gw = 0;
+    }
+    if (outVw) *outVw = vw;
+    if (outGw) *outGw = gw;
+    std::lock_guard<std::mutex> lk(mu);
+    cache[pid] = { now, ui, vw, gw };
+    return ui;
+}
+
 // Read a widget's display text: *(node+0x90) -> char* (legacy I_textP). The live
 // string is usually already UTF-8 (player names use U+00A0 = 0xC2 0xA0); valid UTF-8
 // passes through byte-for-byte and only genuinely non-UTF-8 (legacy CP-1252) bytes
@@ -4062,6 +4105,10 @@ static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
 // A group may have several specs; iface_panel_origin tries them in table order.
 struct PanelOriginSpec { int group; int var_x; int var_y; int off_left; int off_top; int mount_comp; bool is_varc; int req_group; };
 static const PanelOriginSpec kPanelOrigins[] = {
+    { 1477, -1, -1, 0, 0, 0 },    // The HUD root / game frame. Its tree IS screen-absolute (the walk
+                                  // seeds at 0,0), so an identity spec (var_x/var_y = -1) makes
+                                  // InterfaceGroupJson emit "a" for frame windows -- the skills-bars
+                                  // frame anchor and the Interfaces tab both read them.
     { 1188, 3082, 3083, 0, 0, 0, true },   // Choose dialog (option select) -- centered; position via live VARC 3082/3083
     { 1184, 3082, 3083, 0, 0, 0, true },   // NPC dialog
     { 1191, 3082, 3083, 0, 0, 0, true },   // Player dialog
@@ -5110,7 +5157,17 @@ std::string InterfaceGroupJson(std::uint32_t pid, int groupId) {
     // group has no panel spec or its position varcs aren't published.
     int ox = 0, oy = 0;
     bool haveAbs = iface_panel_origin(h, *root, pid, groupId, ox, oy);
-    std::string out = "{\"widgets\":["; int count = 0; bool first = true;
+    // "ui" = interface->pixel scale (Interface Scaling). The widget rects below are in the
+    // game's unscaled interface space; consumers that draw in PIXELS (e.g. the skills XP
+    // bars) multiply their tree-derived coordinates by this. 1.0 when unresolved.
+    // "uiw"/"uig" = the raw varc-px / tree-width inputs behind it, for diagnostics and
+    // for consumers that cross-check the ratio against another full-client measure.
+    int uiVw = 0, uiGw = 0;
+    const float uiSc = iface_ui_scale(h, *root, pid, &uiVw, &uiGw);
+    std::string out = "{\"ui\":" + std::to_string(uiSc) +
+                      ",\"uiw\":" + std::to_string(uiVw) +
+                      ",\"uig\":" + std::to_string(uiGw) +
+                      ",\"widgets\":["; int count = 0; bool first = true;
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
         std::uint64_t ap2 = r64(g + 8);
         if (ap2 <= 0x10000 || r32(ap2) != groupId) continue;

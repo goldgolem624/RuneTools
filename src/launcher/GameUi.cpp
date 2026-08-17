@@ -524,6 +524,7 @@ void Destroy(std::uint32_t pid) {
     if (u->inputEvt) { CloseHandle(u->inputEvt); u->inputEvt = nullptr; }
     g_uis.erase(pid);
     delete u;
+    dock::PublishGameClientSize(pid, 0, 0);   // drop the measured game-space size for this pid
 }
 
 bool IsOpen(std::uint32_t pid) { return g_uis.count(pid) != 0; }
@@ -549,6 +550,15 @@ void Tick() {
         if (u->frame) {
             std::uint32_t ms = u->frame->module_seq;
             if (ms != u->lastModSeq) { u->lastModSeq = ms; u->lastModChangeMs = now; }
+            // Publish the companion-measured client size (the game's own backbuffer size)
+            // for dock::GameSpaceFactor's measured path: ground truth for the game's pixel
+            // space, where the DPI inference lies once the game is our embedded child. Only
+            // while the heartbeat is fresh -- a dead companion's stale size must not steer
+            // overlay scaling; cleared entries fall back to the DPI inference.
+            const bool live = u->lastModChangeMs && now - u->lastModChangeMs < 2000;
+            dock::PublishGameClientSize(u->pid,
+                                        live ? (int)u->frame->client_w : 0,
+                                        live ? (int)u->frame->client_h : 0);
             if (!u->moduleWarned && !u->lastModChangeMs && u->boundMs &&
                 now - u->boundMs > 5000) {
                 u->moduleWarned = true;

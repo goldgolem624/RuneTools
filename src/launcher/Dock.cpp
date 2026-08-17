@@ -17,6 +17,7 @@
 #include <shobjidl.h>   // SHGetPropertyStoreForWindow (per-window AppUserModelID)
 #pragma comment(lib, "shell32.lib")
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -259,6 +260,7 @@ struct Dock {
                                           // (it then maps it once instead of retrying OpenFileMapping per message)
     HWND      lastGroupFg = nullptr;      // last foreground z-grouped for
     ULONGLONG lastDetachMs = 0;           // last queue-detach re-assert (throttled in Tick)
+    ULONGLONG lastDpiSyncMs = 0;          // last SyncUiDpi re-run (throttled in Tick)
     bool      inRaise = false;            // re-entrancy guard: RaiseGame's own SetWindowPos sends
                                           // WM_WINDOWPOSCHANGED back into HostProc
 };
@@ -269,6 +271,11 @@ std::unordered_map<std::uint32_t, Dock*> g_docks;
 // g_docks is main-thread-only. Mirror just pid->game HWND under its own small lock.
 std::mutex                              g_embedded_mu;
 std::unordered_map<std::uint32_t, HWND> g_embedded_games;
+
+// Cross-thread published companion client size (the game's own backbuffer size, from the
+// FrameShare client_w/client_h feedback): ground truth for GameSpaceFactor's measured path.
+std::mutex                                                g_gamesize_mu;
+std::unordered_map<std::uint32_t, std::pair<int, int>>    g_game_sizes;
 
 void SetEmbeddedGame(std::uint32_t pid, HWND game) {   // main thread only
     std::lock_guard<std::mutex> lk(g_embedded_mu);
@@ -389,15 +396,22 @@ void SetFullscreen(Dock* d, bool on) {
 
 // The unified window moved to a monitor with a different DPI (or the DPI changed): drive the
 // in-game UI view's device scale so text renders crisp. The layer composites into the GAME's
-// swapchain, so the scale follows the GAME window's DPI space -- identical to the host's except
+// swapchain, so the scale follows the GAME window's PIXEL space -- identical to the host's except
 // when the game runs DPI-virtualized: then its space is 96 DPI and DWM upscales the whole frame,
 // our layer included, so scaling the layer by the monitor DPI too would double-scale it.
+//
+// host DPI x GameSpaceFactor IS that space's DPI: the factor is 1.0 when the game renders at
+// physical resolution and gamePx/physicalPx when virtualized (measured from the companion's
+// backbuffer feedback -- see GameSpaceFactor's pid overload; asking DpiForWindow(game) instead
+// reads the host's context back once the game is our embedded child). Re-run from Tick: the
+// measured factor only becomes available once the companion starts presenting.
 void SyncUiDpi(Dock* d) {
     if (!d || !d->host) return;
-    unsigned dpi = (d->game && IsWindow(d->game)) ? DpiForWindow(d->game) : 0;
-    if (!dpi) dpi = DpiForWindow(d->host);
+    unsigned dpi = DpiForWindow(d->host);
     if (!dpi) return;
-    gameui::SetDeviceScale(d->pid, dpi / 96.0);
+    double gsf = (d->game && IsWindow(d->game)) ? GameSpaceFactor(d->game, d->pid) : 1.0;
+    if (gsf <= 0.0) gsf = 1.0;
+    gameui::SetDeviceScale(d->pid, (dpi / 96.0) * gsf);
 }
 
 void Detach(Dock* d, bool closeGame = false);   // fwd
@@ -1079,6 +1093,37 @@ double GameSpaceFactor(void* gameHwnd) {
     return (double)gd / (double)md;
 }
 
+double GameSpaceFactor(void* gameHwnd, std::uint32_t pid) {
+    HWND game = reinterpret_cast<HWND>(gameHwnd);
+    if (pid && game && IsWindow(game)) {
+        int cw = 0, ch = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_gamesize_mu);
+            auto it = g_game_sizes.find(pid);
+            if (it != g_game_sizes.end()) { cw = it->second.first; ch = it->second.second; }
+        }
+        RECT rc{};
+        if (cw > 0 && ch > 0 && GetClientRect(game, &rc) && rc.right > 0 && rc.bottom > 0) {
+            const double fx = (double)cw / (double)rc.right;
+            const double fy = (double)ch / (double)rc.bottom;
+            // DPI virtualization scales both axes by the SAME factor; a non-uniform or
+            // out-of-range ratio is a torn measurement (companion lagging a live resize
+            // by a present) -> fall through to the DPI inference for this call.
+            if (fx > 0.2 && fx < 5.0 && fy > 0.2 && fy < 5.0 && std::fabs(fx - fy) < 0.02) {
+                const double f = (fx + fy) * 0.5;
+                return (std::fabs(f - 1.0) < 0.005) ? 1.0 : f;   // snap rounding jitter to exact 1.0
+            }
+        }
+    }
+    return GameSpaceFactor(gameHwnd);
+}
+
+void PublishGameClientSize(std::uint32_t pid, int w, int h) {
+    std::lock_guard<std::mutex> lk(g_gamesize_mu);
+    if (w > 0 && h > 0) g_game_sizes[pid] = { w, h };
+    else                g_game_sizes.erase(pid);
+}
+
 void Init(App* app, std::string client_html_path, bool uiDevWatch) {
     g_app = app;
     g_client_html_path = std::move(client_html_path);
@@ -1211,6 +1256,14 @@ void Tick() {
         }
         // Game process exited -> its window is gone; drop the client.
         if (!d->game || !IsWindow(d->game)) { dead.push_back(kv.first); continue; }
+        // Re-drive the UI layer's device scale: the MEASURED game-space factor only exists
+        // once the companion presents (and can change when the game toggles its own
+        // resolution handling), so the embed-time SyncUiDpi value may be provisional.
+        // SetDeviceScale dedups, so a settled scale costs nothing.
+        {
+            ULONGLONG nowMs = GetTickCount64();
+            if (nowMs - d->lastDpiSyncMs >= 500) { d->lastDpiSyncMs = nowMs; SyncUiDpi(d); }
+        }
         // Push the keep-focused flag once the companion's channel exists (creating the render section so
         // the companion maps it once instead of polling OpenFileMapping per input). True embed REQUIRES
         // it (the game's detached queue never gets real focus again), so it overrides the user toggle.

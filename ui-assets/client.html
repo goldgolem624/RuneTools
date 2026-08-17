@@ -2224,6 +2224,8 @@
     if (!d.withAbs)      return d.comp2 + ' cells found, but no screen position (panel origin unresolved)' + tail;
     return d.comp2 + ' cells · chrome ' + skContentDy + 'px · '
          + (d.anchor ? ('frame ' + d.anchor) : 'no 1477 frame anchor')
+         + (d.ui ? (' · ui ' + d.ui.sc + ' (pw ' + d.ui.pw + ' root ' + d.ui.rootW
+                    + ' rd ' + d.ui.rd + ' ' + d.ui.vw + '/' + d.ui.gw + ')') : '')
          + (skChromeSeen ? (' · ' + skChromeSeen) : '') + tail;
   }
   function skBarsPaintWhy() {
@@ -2293,8 +2295,21 @@
       const rh = Number(d[String(SK_SIZE_VARC_H)]); if (sane(rh)) panelH = rh;
     } catch (e) {}
     const sk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
-    let ws = [];
-    try { ws = (JSON.parse(bridge().interfaceGroup(myPid(), SK_GROUP) || '{}').widgets) || []; } catch (e) {}
+    // uiSc = interface->pixel scale (the game's Interface Scaling setting, e.g. 1.35 at
+    // 135%). Widget-tree coords are in the UNSCALED interface space; the overlay draws in
+    // pixels, so the anchor-path output below multiplies through by this. Two sources:
+    //  - PRIMARY (set in the anchor block): companion client width / 1477 root frame
+    //    width. Both span the full client, one in the overlay's pixel space and one in
+    //    tree space, so their ratio IS the tree->pixel factor by construction.
+    //  - FALLBACK: the reader's gameview-varc / gameview-tree ratio ("ui"). Seen live
+    //    reading 2/3 after a runtime Windows-DPI change while bars were anchored fine,
+    //    so it only fills in when the 1477 root is unavailable.
+    let ws = [], uiSc = 1, gj = null;
+    try {
+      gj = JSON.parse(bridge().interfaceGroup(myPid(), SK_GROUP) || '{}');
+      ws = gj.widgets || [];
+      if (typeof gj.ui === 'number' && gj.ui > 0.2 && gj.ui < 5) uiSc = gj.ui;
+    } catch (e) {}
     // Diagnostics are recorded BEFORE any bail-out, and painted live onto the toggle
     // row -- the skills pane is signature-deduped, so leaving this to the next pane
     // render meant the row kept showing its default text and explained nothing.
@@ -2342,16 +2357,52 @@
       const cw = root.r[2], ch = root.r[3];
       let fr = [];
       try { fr = (JSON.parse(bridge().interfaceGroup(myPid(), 1477) || '{}').widgets) || []; } catch (e) {}
-      let best = null, bestD = 1e9;
+      // PRIMARY interface->pixel scale: companion client width (the overlay's pixel
+      // space) over the 1477 ROOT frame width (tree space). 1477 hosts the whole HUD at
+      // screen 0,0, so its widest depth-0 frame spans the full client and the ratio is
+      // exactly the factor the bar coords below need. Overrides the reader's varc-based
+      // guess whenever both measures resolve sanely.
+      let rootW = 0;
+      for (const f of fr)
+        if (f && f.d === 0 && f.r && f.r[2] > rootW) rootW = f.r[2];
+      let pw = 0;
+      try {
+        const ci = JSON.parse(bridge().uiClientInfo(myPid()) || '{}');
+        if (typeof ci.pw === 'number' && ci.pw > 0) pw = ci.pw;
+      } catch (e) {}
+      if (pw > 0 && rootW > 200) {
+        const r = pw / rootW;
+        if (r > 0.2 && r < 5) uiSc = r;
+      }
+      skBarsDiag.ui = { sc: Math.round(uiSc * 1000) / 1000, pw: pw, rootW: rootW,
+                        rd: gj ? gj.ui : null, vw: gj ? gj.uiw : null, gw: gj ? gj.uig : null };
+      // 1477's walk seeds at screen 0,0, but the group has no panel-origin spec, so its
+      // widgets can arrive WITHOUT `a` (seen live: "no 1477 frame anchor" with bars
+      // hidden). The JSON is a strict depth-first walk with parent-relative rects, so
+      // absolutes reconstruct from a depth stack: abs = parent's abs + own r offset.
+      const stk = [];
+      for (const f of fr) {
+        if (!f || !f.r) continue;
+        const par = (f.d > 0 && stk[f.d - 1]) ? stk[f.d - 1] : [0, 0];
+        const fax = par[0] + f.r[0], fay = par[1] + f.r[1];
+        stk[f.d] = f.a ? [f.a[0], f.a[1]] : [fax, fay];
+        if (!f.a) f.a = [fax, fay];
+      }
+      let best = null, bestD = 1e9, sizeMatches = 0;
       for (const f of fr) {
         if (!f || !f.a || !f.r) continue;
         const fw = f.r[2], fh = f.r[3];
         if (!(fw > cw && fw < cw + 120 && fh > ch && fh < ch + 300)) continue;
+        sizeMatches++;
         const dist = Math.abs(f.a[0] - root.a[0]) + Math.abs(f.a[1] - root.a[1]);
-        if (dist > 200 || dist > bestD) continue;
+        if (dist > bestD) continue;
         if (dist === bestD && best && fw * fh >= best.r[2] * best.r[3]) continue;
         bestD = dist; best = f;
       }
+      // The distance gate disambiguates when SEVERAL frames match the size; a unique
+      // match is trusted at any distance (a stale origin hint can drift far past 200px,
+      // e.g. a docked panel whose drag varc kept its old spot).
+      if (best && bestD > 200 && sizeMatches > 1) best = null;
       if (best) {
         const bd = Math.round((best.r[2] - cw) / 2);
         const hd = best.r[3] - ch - bd;
@@ -2383,9 +2434,16 @@
       if (!t) continue;
       const pct = skBarPct(t[2] === undefined ? -1 : t[2], i === 26);
       if (pct < 0) continue;
+      // Anchor path: every term is a pure widget-TREE coordinate (the 1477 frame walk
+      // seeds at 0,0 and the 1466 varc origin cancels in c.a - anchor.rx), so the whole
+      // rect converts to pixels by uiSc. The varc-chrome fallback mixes a pixel origin
+      // with tree offsets and cannot be converted exactly -> left unscaled, as before.
       const bx = anchor ? (anchor.x + (c.a[0] - anchor.rx)) : (c.a[0] + skContentDx);
       const by = anchor ? (anchor.y + (c.a[1] - anchor.ry)) : (c.a[1] + skContentDy);
-      segs.push(bx + ',' + by + ',' + c.r[2] + ',' + c.r[3] + ',' + pct + ',' + skBarColour(pct));
+      const s = anchor ? uiSc : 1;
+      segs.push(Math.round(bx * s) + ',' + Math.round(by * s) + ','
+              + Math.round(c.r[2] * s) + ',' + Math.round(c.r[3] * s) + ','
+              + pct + ',' + skBarColour(pct));
     }
     try { bridge().skillBars(myPid(), segs.join(';')); skBarsDrawn = segs.length > 0; } catch (e) {}
   }
