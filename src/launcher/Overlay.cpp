@@ -27,6 +27,7 @@ using std::min;
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <tuple>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -183,7 +184,13 @@ std::map<DWORD, std::string> g_centerTexts;         // transient screen-centre t
 std::map<DWORD, std::vector<PanelBox>> g_panelViz;  // Interfaces-tab panel visualizer boxes per pid (guarded by g_mu)
 std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;  // puzzle-box next-moves cells per pid (guarded by g_mu)
 std::map<DWORD, std::vector<KnotCell>> g_knotCells;      // celtic-knot arrow highlights per pid (guarded by g_mu)
-std::map<DWORD, std::vector<SkillBar>> g_skillBars;      // Skills-panel XP progress bars per pid (guarded by g_mu)
+// Skills-panel XP progress bars per pid (guarded by g_mu). at_ms is the last publish
+// time: the UI layer refreshes every ~400ms while the feature is ON, so bars older
+// than kSkillBarsTtlMs mean the publisher is gone (page reloaded, plugin crashed,
+// feature toggled off in a dead page) and they must NOT keep drawing on stale data.
+struct SkillBarsEntry { std::vector<SkillBar> bars; long long at_ms = 0; };
+constexpr long long kSkillBarsTtlMs = 5000;
+std::map<DWORD, SkillBarsEntry> g_skillBars;
 
 void ResetXpSession() {   // caller holds g_mu
     g_xp.haveBase = false;
@@ -681,7 +688,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       auto kcit = g_knotCells.find(cfg.pid);
       if (kcit != g_knotCells.end()) kcells = kcit->second;
       auto sbit = g_skillBars.find(cfg.pid);
-      if (sbit != g_skillBars.end()) sbars = sbit->second; }
+      if (sbit != g_skillBars.end() && now_ms() - sbit->second.at_ms <= kSkillBarsTtlMs)
+          sbars = sbit->second.bars; }
 
     bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
                        (widgets && !widgets->empty()) ||
@@ -695,12 +703,22 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     }
 
     // Same gameview viewport math as DrawFrame (full client area when flash-only).
-    float vpW = (f && f->gv_w > 0) ? (float)f->gv_w : (float)W;
-    float vpH = (f && f->gv_h > 0) ? (float)f->gv_h : (float)H;
+    // gv_* is in the game's LOGICAL interface space; W/H is the backbuffer. They differ
+    // when a per-monitor-aware client sits on an OS-scaled monitor (seen live: viewport
+    // 1707x890 inside a 2560-wide backbuffer at 150% -- every world overlay compressed
+    // toward the top-left). lc_w is the full client in the SAME logical space, so
+    // W / lc_w converts exactly; snapped to 1 within noise, bounded against torn reads.
+    float gvScale = 1.0f;
+    if (f && f->gv_w > 0 && f->lc_w > 0) {
+        const float s = (float)W / (float)f->lc_w;
+        if (s > 0.2f && s < 5.0f && (s < 0.995f || s > 1.005f)) gvScale = s;
+    }
+    float vpW = (f && f->gv_w > 0) ? (float)f->gv_w * gvScale : (float)W;
+    float vpH = (f && f->gv_h > 0) ? (float)f->gv_h * gvScale : (float)H;
     if (vpW > (float)W) vpW = (float)W;
     if (vpH > (float)H) vpH = (float)H;
-    float vpX = (f && f->gv_w > 0) ? (float)f->gv_x : 0.0f;
-    float vpY = (f && f->gv_h > 0) ? (float)f->gv_y : 0.0f;
+    float vpX = (f && f->gv_w > 0) ? (float)f->gv_x * gvScale : 0.0f;
+    float vpY = (f && f->gv_h > 0) ? (float)f->gv_y * gvScale : 0.0f;
     if (vpX < 0.0f) vpX = 0.0f;
     if (vpY < 0.0f) vpY = 0.0f;
     if (vpX + vpW > (float)W) vpX = (float)W - vpW;
@@ -2413,6 +2431,21 @@ void RenderLoop() {
             int W2 = (int)std::lround((rc2.right - rc2.left) * gsf);
             int H2 = (int)std::lround((rc2.bottom - rc2.top) * gsf);
             if (W2 < 16 || H2 < 16) continue;
+            // Diagnostic sibling of the reader's [gv] line: the overlay-side frame size and
+            // the factor that produced it, logged only when they change. Together the two
+            // lines fully describe the projection inputs on a user's machine.
+            {
+                static std::map<DWORD, std::tuple<int, int, int>> l_sz;   // pid -> {W2, H2, gsf*1000}
+                auto cur = std::make_tuple(W2, H2, (int)std::lround(gsf * 1000.0));
+                auto it2 = l_sz.find(cpid);
+                if (it2 == l_sz.end() || it2->second != cur) {
+                    l_sz[cpid] = cur;
+                    rtx::log::Client(cpid,
+                        "[ovl] frame " + std::to_string(W2) + "x" + std::to_string(H2) +
+                        " (physical " + std::to_string(rc2.right - rc2.left) + "x" +
+                        std::to_string(rc2.bottom - rc2.top) + " x gsf " + std::to_string(gsf) + ")");
+                }
+            }
             rtx::launcher::companion::EnsureLoaded(cpid);   // hosts the present layer
             std::vector<rtx::marker::Command> wcmds;
             if (wantWidgets)
@@ -2768,7 +2801,7 @@ void SetSkillBars(std::uint32_t pid, const std::vector<SkillBar>& bars) {
         else {
             Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
             dst.pid = pid;
-            g_skillBars[(DWORD)pid] = bars;
+            g_skillBars[(DWORD)pid] = { bars, now_ms() };
         }
     }
     ensure_thread();

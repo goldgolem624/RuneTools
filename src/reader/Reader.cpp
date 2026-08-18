@@ -2313,6 +2313,57 @@ std::string VarcLongsJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
+// Read specific varcs as 32-bit INTS, external-only. Same hashmap walk as VarcLongsJson,
+// but the value union at +0x08 is read as i32 -- the correct width for int-typed varcs
+// (window records, open/closed toggles). Reading those through the i64 path widens
+// whatever sits in the union's high 4 bytes into the value (seen live: varc 3165's 0/1
+// arriving as 19-digit numbers), which is exactly what this avoids. Plain JSON numbers.
+std::string VarcIntsJson(std::uint32_t pid, const std::string& ids_csv) {
+    std::unordered_set<int> want;
+    std::size_t i = 0;
+    while (i < ids_csv.size()) {
+        std::size_t j = ids_csv.find(',', i);
+        if (j == std::string::npos) j = ids_csv.size();
+        int id = std::atoi(ids_csv.substr(i, j - i).c_str());
+        if (id >= 0 && id < 100000) want.insert(id);
+        i = j + 1;
+    }
+    if (want.empty()) return "{}";
+    auto ps = snap_proc(pid);
+    if (!ps) return "{}";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{}";
+    std::uint64_t store = rpm<std::uint64_t>(h, *root + 0x198E0).value_or(0);
+    if (store <= 0x10000) return "{}";
+    std::uint64_t hashRoot = store + 0x7630;
+    std::uint64_t ba = rpm<std::uint64_t>(h, hashRoot + 0x8).value_or(0);
+    int div = rpm<std::int32_t>(h, hashRoot + 0x10).value_or(0);
+    if (ba <= 0x10000 || div <= 0 || div > 131072) return "{}";
+
+    std::vector<std::uint64_t> buckets((std::size_t)div);
+    if (!rpm_bytes(h, ba, buckets.data(), (std::size_t)div * 8)) return "{}";
+
+    std::string out = "{"; bool first = true; char buf[48];
+    for (int b = 0; b < div; ++b) {
+        std::uint64_t node = buckets[(std::size_t)b];
+        for (int steps = 0; steps < 512 && node > 0x10000; ++steps) {
+            std::uint8_t nb[0x30];
+            if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
+            int id = *reinterpret_cast<const std::int32_t*>(nb + 0x00);
+            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + 0x28);
+            if (want.count(id)) {
+                int val = *reinterpret_cast<const std::int32_t*>(nb + 0x08);
+                std::snprintf(buf, sizeof(buf), "%s\"%d\":%d", first ? "" : ",", id, val);
+                out += buf; first = false;
+            }
+            node = next;
+        }
+    }
+    out += "}";
+    return out;
+}
+
 // 64-BIT VARPS: some varps are long-typed (GE offer price vp137, market price vp140,
 // recent trading price vp13483, snapshot vp9458). The varp hashmap node has the same
 // shape as the varc node -- value union at +0x8 -- and read_varp only takes the low 4
@@ -3737,7 +3788,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
 // y@+0x74 w@+0x78 h@+0x7C. Returns false (caller leaves gv_* = 0 -> use window)
 // unless the full chain validates and yields a positive rect.
 static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
-                               int& gx, int& gy, int& gw, int& gh) {
+                               int& gx, int& gy, int& gw, int& gh,
+                               int* rootW = nullptr, int* rootH = nullptr) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
@@ -3752,6 +3804,20 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) return false;
+        // The LARGEST top-level 1477 frame spans the full client in the tree's own
+        // (logical interface) space: the caller divides the backbuffer width by it to
+        // convert this function's rect into pixels. Scanned before the comp-27 descent
+        // so it resolves even on layouts where the gameview chain is absent.
+        if (rootW && rootH) {
+            long long best = 0;
+            for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
+                std::uint64_t nd = r64(wn);
+                if (nd <= 0x10000) continue;
+                int w = r32(nd + 0x78), hh = r32(nd + 0x7c);
+                long long area = (long long)w * hh;
+                if (w > 0 && hh > 0 && area > best) { best = area; *rootW = w; *rootH = hh; }
+            }
+        }
         for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
             std::uint64_t nd = r64(wn);
             if (nd <= 0x10000) continue;
@@ -6290,10 +6356,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     {
         static std::uint32_t s_pid = 0; static unsigned long long s_ms = 0;
         static int s_x = 0, s_y = 0, s_w = 0, s_h = 0; static float s_ui = 0.0f;
+        static int s_lcw = 0, s_lch = 0;
         unsigned long long nowms = GetTickCount64();
         if (s_pid != pid || nowms - s_ms > 500) {
-            int gx = 0, gy = 0, gw = 0, gh = 0;
-            const bool tree = (root && read_gameview_rect(h, *root, gx, gy, gw, gh));
+            int gx = 0, gy = 0, gw = 0, gh = 0, lw = 0, lh = 0;
+            const bool tree = (root && read_gameview_rect(h, *root, gx, gy, gw, gh, &lw, &lh));
+            s_lcw = lw; s_lch = lh;
             int vx = 0, vy = 0, vw = 0, vh = 0;
             if (rootv) {
                 vx = read_varc(h, rootv, 3005); vy = read_varc(h, rootv, 3006);
@@ -6308,9 +6376,30 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 const float r = (float)vw / (float)gw;
                 if (r > 0.2f && r < 5.0f) s_ui = r;
             }
+            // Diagnostic: log the projection viewport inputs whenever they CHANGE (world
+            // overlays offset "toward a corner, worse off-centre" means THESE are wrong,
+            // and reports arrive from machines we cannot inspect -- e.g. a mid-session
+            // monitor/DPI move where the varc record and the widget tree fall out of
+            // step). Change-gated, so a stable session logs this once.
+            {
+                static int l_vx = -99999, l_vy = -99999, l_vw = -99999, l_vh = -99999,
+                           l_gx = -99999, l_gw = -99999, l_gh = -99999;
+                static std::uint32_t l_pid = 0;
+                if (l_pid != pid || vx != l_vx || vy != l_vy || vw != l_vw || vh != l_vh ||
+                    gx != l_gx || gw != l_gw || gh != l_gh) {
+                    l_pid = pid; l_vx = vx; l_vy = vy; l_vw = vw; l_vh = vh;
+                    l_gx = gx; l_gw = gw; l_gh = gh;
+                    char gb[224];
+                    std::snprintf(gb, sizeof(gb),
+                        "[gv] varc=%d,%d %dx%d tree=%d,%d %dx%d root=%dx%d ui=%.3f (varc wins when set)",
+                        vx, vy, vw, vh, gx, gy, gw, gh, lw, lh, (double)s_ui);
+                    rtx::log::Client(pid, gb);
+                }
+            }
             s_pid = pid; s_ms = nowms;
         }
         out.gv_x = s_x; out.gv_y = s_y; out.gv_w = s_w; out.gv_h = s_h;
+        out.lc_w = s_lcw; out.lc_h = s_lch;
         out.ui_scale = s_ui;
     }
 

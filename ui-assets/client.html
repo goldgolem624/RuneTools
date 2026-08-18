@@ -2221,8 +2221,9 @@
     if (!d.skills)       return 'Waiting for skill data' + tail;
     if (!d.widgets)      return 'Skills interface (group ' + SK_GROUP + ') not open / not found' + tail;
     if (!d.comp2)        return d.widgets + ' widgets, but none are comp ' + SK_CELL_COMP + ' cells' + tail;
+    if (d.visible === 0) return 'Skills panel tabbed away (0 of ' + d.comp2 + ' cells visible) - bars hidden' + tail;
     if (!d.withAbs)      return d.comp2 + ' cells found, but no screen position (panel origin unresolved)' + tail;
-    return d.comp2 + ' cells · chrome ' + skContentDy + 'px · '
+    return d.comp2 + ' cells · ' + d.visible + ' vis · chrome ' + skContentDy + 'px · '
          + (d.anchor ? ('frame ' + d.anchor) : 'no 1477 frame anchor')
          + (d.ui ? (' · ui ' + d.ui.sc + ' (pw ' + d.ui.pw + ' root ' + d.ui.rootW
                     + ' rd ' + d.ui.rd + ' ' + d.ui.vw + '/' + d.ui.gw + ')') : '')
@@ -2242,8 +2243,12 @@
     if (!skBarsOn) skBarsClear();
     else { skBarsAt = 0; skBarsTick(); }
   }
-  function skBarsClear() {
-    if (!skBarsDrawn) return;
+  let skBarsBootCleared = false;   // one unconditional wipe per page life (see below)
+  function skBarsClear(force) {
+    // `force` clears even when THIS page never drew: the overlay keeps the last
+    // published commands, so after a UI reload (dev hot-reload, panel restart) a
+    // previous page's bars would otherwise survive with the toggle off forever.
+    if (!skBarsDrawn && !force) return;
     try { if (bridge() && bridge().skillBars) bridge().skillBars(myPid(), ''); } catch (e) {}
     skBarsDrawn = false;
   }
@@ -2272,7 +2277,12 @@
   async function skBarsTick() {
     skBarsLoad();
     if (!bridge() || !bridge().skillBars || !bridge().interfaceGroup) return;
-    if (!skBarsOn) { skBarsClear(); return; }
+    if (!skBarsOn) {
+      skBarsClear(!skBarsBootCleared);   // first off-tick wipes unconditionally
+      skBarsBootCleared = true;
+      return;
+    }
+    skBarsBootCleared = true;   // drawing path owns the channel from here on
     const now = Date.now(); if (now - skBarsAt < 400) return; skBarsAt = now;
     // Open state is the REAL gate. Group 1466's widgets stay in the tree when the panel
     // is tabbed away - they are hidden, not removed - so "has widgets" is not a test for
@@ -2283,7 +2293,12 @@
     // is a plausible small int. Anything else reads as "unknown", never as pixels.
     let openVar = null, originX = null, originY = null, panelW = 0, panelH = 0;
     try {
-      const d = JSON.parse(await bridge().varcLongs(myPid(),
+      // varcInts, NOT varcLongs: these are int-typed varcs, and the 64-bit read widens
+      // adjacent union bytes into the value (seen live: 3165's clean 0/1 arriving as
+      // 19-digit garbage, which blinded the open gate). Fall back to the longs read
+      // only while running against an older host without varcInts.
+      const rd = bridge().varcInts || bridge().varcLongs;
+      const d = JSON.parse(await rd(myPid(),
                   SK_OPEN_VARC + ',' + SK_POS_VARC_X + ',' + SK_POS_VARC_Y
                   + ',' + SK_SIZE_VARC_W + ',' + SK_SIZE_VARC_H) || '{}');
       const sane = v => (typeof v === 'number' && isFinite(v) && Number.isInteger(v) && v >= 0 && v < 16384);
@@ -2316,6 +2331,7 @@
     skBarsDiag = { widgets: ws.length, openVar: openVar, skills: sk ? sk.length : 0,
                    px: originX, py: originY, pw: panelW,
                    comp2: ws.filter(w => w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0).length,
+                   visible: ws.filter(w => w.v === 1).length,
                    withAbs: ws.filter(w => w.a).length };
     skBarsPaintWhy();
     if (openVar === 0) { skBarsClear(); return; }        // tabbed away / closed
@@ -2324,7 +2340,14 @@
     // row at x 7/79/151). Sub order is already row-major, which is the order
     // SKILL_LAYOUT is written in, so no sorting by position and no guessing.
     // Only widgets the reader resolved to an absolute position can be drawn on.
-    const ok = w => w && w.r && w.a && w.r[2] > 8 && w.r[3] > 8;
+    // VISIBILITY IS PART OF THE GATE. When the Skills panel is tabbed away, its 1466
+    // widgets stay in the tree (hidden, not removed) and the frame anchor still finds
+    // the interface slot, which is now hosting whatever tab replaced Skills; on builds
+    // where the open varc reads as garbage (openVar unknown) that drew bars over the
+    // backpack. The reader flags each rendered widget with v:1, so require it on every
+    // cell: zero visible cells reads as "tabbed away", and if the flag ever breaks on
+    // a future build the failure is hidden bars, never bars over the wrong panel.
+    const ok = w => w && w.r && w.a && w.r[2] > 8 && w.r[3] > 8 && w.v === 1;
     let cells = ws.filter(w => ok(w) && w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0)
                   .sort((p, q) => p.t[2] - q.t[2]);
     // Primary path: each cell CARRIES its skill slot (the sub index). Pairing cells[k]

@@ -367,10 +367,17 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, none, noOutline, noGuides, f) || !f.ok)
         return false;
 
-    float vpW = f.gv_w > 0 ? (float)f.gv_w : W; if (vpW > W) vpW = W;
-    float vpH = f.gv_h > 0 ? (float)f.gv_h : H; if (vpH > H) vpH = H;
-    float vpX = f.gv_w > 0 ? (float)f.gv_x : 0.f; if (vpX < 0) vpX = 0; if (vpX + vpW > W) vpX = W - vpW;
-    float vpY = f.gv_h > 0 ? (float)f.gv_y : 0.f; if (vpY < 0) vpY = 0; if (vpY + vpH > H) vpY = H - vpH;
+    // gv_* is logical interface space, W/H backbuffer px; convert like PublishMarkers
+    // (per-monitor-aware client on an OS-scaled monitor lays out at physical/scale).
+    float gvScale = 1.0f;
+    if (f.gv_w > 0 && f.lc_w > 0) {
+        const float s = W / (float)f.lc_w;
+        if (s > 0.2f && s < 5.0f && (s < 0.995f || s > 1.005f)) gvScale = s;
+    }
+    float vpW = f.gv_w > 0 ? (float)f.gv_w * gvScale : W; if (vpW > W) vpW = W;
+    float vpH = f.gv_h > 0 ? (float)f.gv_h * gvScale : H; if (vpH > H) vpH = H;
+    float vpX = f.gv_w > 0 ? (float)f.gv_x * gvScale : 0.f; if (vpX < 0) vpX = 0; if (vpX + vpW > W) vpX = W - vpW;
+    float vpY = f.gv_h > 0 ? (float)f.gv_y * gvScale : 0.f; if (vpY < 0) vpY = 0; if (vpY + vpH > H) vpY = H - vpH;
 
     const float mx = curX, my = curY;
     // Cursor isn't over the 3D viewport (e.g. it's on the chat box / a panel) -> not a tile pick,

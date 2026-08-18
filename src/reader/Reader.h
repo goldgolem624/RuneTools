@@ -209,7 +209,14 @@ struct OverlayFrame {
     // rect, not the whole client, so the projection must use it (tiles drift
     // otherwise when UI is docked).
     // gv_w/gv_h == 0 means "not resolved" -> overlay falls back to the window.
+    // The rect is in the game's LOGICAL interface space: identical to the backbuffer
+    // in the normal case, but a per-monitor-aware client on an OS-scaled monitor lays
+    // its interface out at physical/scale and upscales (seen live: viewport 1707x890
+    // inside a 2560-wide backbuffer on a 150% monitor). lc_w/lc_h is the full client
+    // in that SAME space (the 1477 root frame), so backbufferW / lc_w is the exact
+    // logical->pixel conversion for this rect; 0 = unresolved (assume 1:1).
     int gv_x = 0, gv_y = 0, gv_w = 0, gv_h = 0;
+    int lc_w = 0, lc_h = 0;
     // Interface-space -> physical-pixel scale, derived live as the published pixel
     // gameview width over the same rect measured in the interface widget tree. That
     // ratio IS the Interface Scaling setting (70%..300%, setting 481 -> enum 488)
@@ -327,6 +334,10 @@ std::string VarcsDumpAllJson(std::uint32_t pid);
 // Read specific varcs as 64-bit values from the same global map -> {"<id>":"<i64 as string>",..}.
 // For long-typed varcs (death-interface item prices 4829-4875/7109-7111, at-risk varc 4876).
 std::string VarcLongsJson(std::uint32_t pid, const std::string& ids_csv);
+// Read specific varcs as 32-bit INTS from the same global map -> {"<id>":<i32>,..}. The right
+// read for int-typed varcs (window records, toggles): the i64 read picks up adjacent union
+// bytes in the high half and turns a clean 0/1 into 19-digit garbage.
+std::string VarcIntsJson(std::uint32_t pid, const std::string& ids_csv);
 std::string VarpsLongJson(std::uint32_t pid, const std::string& ids_csv);
 // Read specific varc-STRINGS by id from the same global map -> {"<id>":"<string>",..} (present+parseable
 // ids only). The targeted read for a known string var, e.g. 2251 = the interface-1177 hover tooltip.
