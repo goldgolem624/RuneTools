@@ -4,6 +4,7 @@
 #include "Cs2Browser.h"
 #include "Dock.h"
 #include "GameUi.h"
+#include "WikiBrowser.h"
 #include "IconCache.h"
 #include "Loader.h"
 #include "Overlay.h"
@@ -14,6 +15,8 @@
 #include "../cache/Constants.h"     // kIndexSoundEffects / kIndexMusic for the audio bridges
 #include "Audio.h"                  // in-process Ogg Vorbis playback
 #include "SoundFilter.h"            // in-client sound observation + muting (companion channel)
+#include "../../companion/FrameShare.h"   // health check: in-game UI layer heartbeat
+#include "../../companion/NetProbeShare.h" // health check: chat packet capture ring
 #include "MenuSwap.h"               // right-click menu inspector + reorder (companion channel)
 #include "../cache/Achievements.h"
 #include "../../companion/HudShare.h"
@@ -200,14 +203,18 @@ std::wstring capture_for_pid(std::uint32_t pid) {
     if (!hwnd) return {};
     std::wstring path = capture_to_screenshots(hwnd);
     if (path.empty()) {
-        rtx::overlay::Toast(pid, "Screenshot failed");
+        // Modern alert card first; the legacy in-frame toast only as the fallback while
+        // the UI layer isn't up, so keybind feedback never goes silent.
+        if (!rtx::launcher::gameui::Notify(pid, "Screenshot failed", 5000))
+            rtx::overlay::Toast(pid, "Screenshot failed");
         return {};
     }
     std::wstring name = std::filesystem::path(path).filename().wstring();
     int n = WideCharToMultiByte(CP_UTF8, 0, name.c_str(), -1, nullptr, 0, nullptr, nullptr);
     std::string u8(n > 0 ? n - 1 : 0, '\0');
     if (n > 0) WideCharToMultiByte(CP_UTF8, 0, name.c_str(), -1, u8.data(), n, nullptr, nullptr);
-    rtx::overlay::Toast(pid, "Screenshot saved: " + u8);
+    if (!rtx::launcher::gameui::Notify(pid, "Screenshot saved: " + u8, 5000))
+        rtx::overlay::Toast(pid, "Screenshot saved: " + u8);
     return path;
 }
 
@@ -477,7 +484,83 @@ JSValueRef GameSnapshots(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
-    return utf8_to_js(ctx, rtx::reader::ReaderHealthJson(pid));
+    std::string j = rtx::reader::ReaderHealthJson(pid);
+    // Launcher-side stream checks appended here (they are not reader chains): the
+    // companion present/UI pipeline and the sound observation hook, both of which a
+    // game update can break independently of every memory read above.
+    auto tail = j.rfind("]}");
+    if (pid && tail != std::string::npos) {
+        std::string extra;
+        auto add = [&](const char* k, int ok, const std::string& d) {
+            extra += ",{\"k\":\""; extra += k; extra += "\",\"ok\":" + std::to_string(ok) +
+                     ",\"d\":\"" + d + "\"}";
+        };
+        {
+            wchar_t name[64]; rtx::frame::MakeSectionName(pid, name);
+            HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+            int ok = 2; std::string d = "inactive (loads with the game client)";
+            if (m) {
+                auto* sh = reinterpret_cast<const rtx::frame::Share*>(
+                    MapViewOfFile(m, FILE_MAP_READ, 0, 0, sizeof(rtx::frame::Share)));
+                if (sh) {
+                    if (sh->magic == rtx::frame::kMagic && sh->module_seq > 0 &&
+                        sh->client_w > 0 && sh->client_h > 0) {
+                        ok = 1;
+                        d = "compositing at " + std::to_string(sh->client_w) + "x" +
+                            std::to_string(sh->client_h);
+                    } else if (sh->magic == rtx::frame::kMagic) {
+                        ok = 0; d = "layer mapped but the game never presented through it";
+                    }
+                    UnmapViewOfFile((void*)sh);
+                }
+                CloseHandle(m);
+            }
+            add("Companion: in-game UI frame", ok, d);
+        }
+        {
+            std::string st = rtx::launcher::soundfilter::StatusJson(pid);
+            int ok; std::string d;
+            if (st.find("\"hooked\":true") != std::string::npos) { ok = 1; d = "observing playback"; }
+            else if (st.find("\"ok\":true") != std::string::npos) {
+                ok = 0; d = "play function not found in this game build";
+            } else { ok = 2; d = "inactive (loads with the game client)"; }
+            add("Companion: sound observation", ok, d);
+        }
+        {
+            // Chat packet capture: the framer hook + always-on op-0x15 ring. A game
+            // update can move the framer signature or the connection-object offsets;
+            // either shows up here as hook-missing or a message count stuck at 0.
+            wchar_t name[64]; rtx::netprobe::MakeSectionName(pid, name);
+            HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+            int ok = 2; std::string d = "inactive (loads with the game client)";
+            if (m) {
+                auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
+                    MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
+                if (sh) {
+                    if (sh->magic == rtx::netprobe::kMagic && sh->version >= 3) {
+                        if (!(sh->flags & 1)) {
+                            ok = 0; d = "framer hook not attached (signature may have moved)";
+                        } else if (sh->chatSeen == 0) {
+                            // Not a failure by itself: an idle character can genuinely
+                            // receive nothing for a while after injection.
+                            ok = 2; d = "hooked; no chat messages observed yet";
+                        } else {
+                            ok = 1;
+                            d = std::to_string((unsigned long long)sh->chatSeen) +
+                                " messages captured";
+                        }
+                    } else if (sh->magic == rtx::netprobe::kMagic) {
+                        ok = 0; d = "companion predates chat capture (restart the game client)";
+                    }
+                    UnmapViewOfFile((void*)sh);
+                }
+                CloseHandle(m);
+            }
+            add("Companion: chat packet capture", ok, d);
+        }
+        j.insert(tail, extra);
+    }
+    return utf8_to_js(ctx, j);
 }
 
 // Text of a sibling UI asset, so the page can load bulky data ON DEMAND instead of having it
@@ -948,7 +1031,11 @@ JSValueRef ContainerItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc < 2) return utf8_to_js(ctx, "{\"present\":false,\"count\":0,\"cap\":0,\"items\":[]}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     int id   = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
-    return utf8_to_js(ctx, rtx::reader::ContainerItemsJson(pid, id));
+    // served(): the container walk is a real cross-process read polled per open panel;
+    // it must not run inline on the UI thread (see the served() contract above).
+    return served(ctx, "cont:" + std::to_string(pid) + ":" + std::to_string(id),
+                  "{\"present\":false,\"count\":0,\"cap\":0,\"items\":[]}",
+                  [pid, id]{ return rtx::reader::ContainerItemsJson(pid, id); });
 }
 
 JSValueRef OpenContainers(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1287,7 +1374,8 @@ JSValueRef Dialog(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return utf8_to_js(ctx, rtx::reader::DialogJson(pid));
+    return served(ctx, "dialog:" + std::to_string(pid), "{}",
+                  [pid]{ return rtx::reader::DialogJson(pid); });
 }
 
 
@@ -1297,7 +1385,10 @@ JSValueRef InterfaceComps(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     int group = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
     std::string comps = js_to_utf8(ctx, argv[2]);
-    return utf8_to_js(ctx, rtx::reader::InterfaceCompsJson(pid, group, comps));
+    // Poll sites re-request the same (group, comps) tuple, so the key is stable and the
+    // interface-tree walk stays off the UI thread.
+    return served(ctx, "ifcomps:" + std::to_string(pid) + ":" + std::to_string(group) + ":" + comps,
+                  "{}", [pid, group, comps]{ return rtx::reader::InterfaceCompsJson(pid, group, comps); });
 }
 
 JSValueRef IfaceOffset(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1314,7 +1405,8 @@ JSValueRef Chat(JSContextRef ctx, JSObjectRef, JSObjectRef,
                 size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{\"lines\":[]}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return utf8_to_js(ctx, rtx::reader::ChatJson(pid));
+    return served(ctx, "chat:" + std::to_string(pid), "{\"lines\":[]}",
+                  [pid]{ return rtx::reader::ChatJson(pid); });
 }
 
 JSValueRef Buffs(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1895,7 +1987,8 @@ JSValueRef MarkerSetColor(JSContextRef ctx, JSObjectRef, JSObjectRef,
     int ly     = (int)JSValueToNumber(ctx, argv[3], nullptr);
     int plane  = (int)JSValueToNumber(ctx, argv[4], nullptr);
     std::uint32_t color = (std::uint32_t)JSValueToNumber(ctx, argv[5], nullptr);
-    return JSValueMakeBoolean(ctx, rtx::markers::SetColor(pid, region, lx, ly, plane, color));
+    std::uint32_t color2 = (argc >= 7) ? (std::uint32_t)JSValueToNumber(ctx, argv[6], nullptr) : 0;
+    return JSValueMakeBoolean(ctx, rtx::markers::SetColor(pid, region, lx, ly, plane, color, color2));
 }
 JSValueRef MarkersClear(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -3146,6 +3239,33 @@ JSValueRef CaptureScreenshot(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, u8);
 }
 
+// ---- wiki browser (in-client, runescape.wiki only) ----
+JSValueRef WikiOpen(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                    size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::string term = argc > 1 ? js_to_utf8(ctx, argv[1]) : "";
+    if (term.size() > 200) term.resize(200);
+    rtx::launcher::wiki::Open(pid, term);
+    return JSValueMakeBoolean(ctx, true);
+}
+JSValueRef WikiClose(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1)
+        rtx::launcher::wiki::Close(static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr)));
+    return JSValueMakeBoolean(ctx, true);
+}
+JSValueRef WikiKeybindGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t, const JSValueRef[], JSValueRef*) {
+    return JSValueMakeNumber(ctx, rtx::launcher::wiki::KeybindVk());
+}
+JSValueRef WikiKeybindSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1)
+        rtx::launcher::wiki::KeybindSet((int)JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef ScreenshotKeybindGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                 size_t, const JSValueRef[], JSValueRef*) {
     std::lock_guard<std::mutex> lk(g_ss_mu);
@@ -3715,15 +3835,15 @@ JSValueRef GuideMarksFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
             gmk.label = rec.substr(c + 1);
         } else {
             gmk.label = rec.substr(c + 1, d - c - 1);
-            int extra[5] = { 0, 0, 0, 0, 0 };   // snap, rgb, gx2, gy2, region
+            int extra[6] = { 0, 0, 0, 0, 0, 0 };   // snap, rgb, gx2, gy2, region, rgb2
             std::size_t p2 = d;
-            for (int i = 0; i < 5 && p2 != std::string::npos; ++i) {
+            for (int i = 0; i < 6 && p2 != std::string::npos; ++i) {
                 std::size_t n2 = rec.find('\x1f', p2 + 1);
                 extra[i] = std::atoi(rec.substr(p2 + 1, (n2 == std::string::npos ? rec.size() : n2) - p2 - 1).c_str());
                 p2 = n2;
             }
             gmk.snapObj = extra[0] != 0;
-            gmk.rgb = extra[1]; gmk.gx2 = extra[2]; gmk.gy2 = extra[3]; gmk.region = extra[4];
+            gmk.rgb = extra[1]; gmk.gx2 = extra[2]; gmk.gy2 = extra[3]; gmk.region = extra[4]; gmk.rgb2 = extra[5];
         }
         if (gmk.gx > 0 && gmk.gy > 0) v.push_back(std::move(gmk));
     }
@@ -4591,6 +4711,10 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pasteClipboard",    PasteClipboard);
     install_fn(ctx, ns, "copyClipboard",     CopyClipboard);
     install_fn(ctx, ns, "captureScreenshot", CaptureScreenshot);
+    install_fn(ctx, ns, "wikiOpen",           WikiOpen);
+    install_fn(ctx, ns, "wikiClose",          WikiClose);
+    install_fn(ctx, ns, "wikiKeybindGet",     WikiKeybindGet);
+    install_fn(ctx, ns, "wikiKeybindSet",     WikiKeybindSet);
     install_fn(ctx, ns, "screenshotKeybindGet", ScreenshotKeybindGet);
     install_fn(ctx, ns, "screenshotKeybindSet", ScreenshotKeybindSet);
     install_fn(ctx, ns, "openScreenshots",    OpenScreenshots);

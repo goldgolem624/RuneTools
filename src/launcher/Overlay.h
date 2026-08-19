@@ -84,7 +84,7 @@ std::string XpPanelStateJson(std::uint32_t pid);
 // rgb: 0 = default marker colour, else 0xRRGGBB; a coloured mark never takes the direction arrow.
 // gx2/gy2: optional area extent -- draws a flat ground rect spanning (gx,gy)..(gx2,gy2).
 // region: marks sharing (label, rgb) merge into ONE flat zone (single perimeter outline + label).
-struct GuideMark { int gx = 0; int gy = 0; int plane = 0; std::string label; bool snapObj = false; int rgb = 0; int gx2 = 0; int gy2 = 0; int region = 0; };
+struct GuideMark { int gx = 0; int gy = 0; int plane = 0; std::string label; bool snapObj = false; int rgb = 0; int gx2 = 0; int gy2 = 0; int region = 0; int rgb2 = 0; };
 void SetGuideMarks(std::uint32_t pid, std::vector<GuideMark> marks);
 
 // Big screen-centre text, drawn as a kText pill at the gameview centre; empty clears.

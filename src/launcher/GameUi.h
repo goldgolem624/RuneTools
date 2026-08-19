@@ -66,4 +66,13 @@ std::string ClientInfoJson(std::uint32_t pid);
 // Dev hot-reload: replace the layer's HTML (re-spliced client.html).
 void ReloadHtml(std::uint32_t pid, const std::string& html);
 
+// Raise an in-game alert card through the UI layer's notification system (uiNotify in
+// client.html): the same styled, animated cards every panel alert uses. ttl_ms 0 =
+// sticky until dismissed. Returns false when the layer isn't up (caller falls back to
+// the legacy in-frame toast so keybind feedback never goes silent). Main thread.
+bool Notify(std::uint32_t pid, const std::string& msg, int ttl_ms);
+
+// Open the wiki search palette (dimmed overlay + input) in the UI layer. Main thread.
+void OpenWikiPalette(std::uint32_t pid);
+
 }  // namespace rtx::launcher::gameui

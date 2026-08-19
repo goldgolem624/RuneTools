@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <mutex>
 #include <atomic>
 #include <utility>
@@ -1516,21 +1517,43 @@ static Framer_t g_origFramer = nullptr;
 static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
     auto* sh = g_netProbeShare;
     if (!sh) return;
+    if (!out || out[0] == 0) return;                          // no message completed this call
     const std::uint32_t now = (std::uint32_t)GetTickCount64();
-    if (sh->enable == 0 || (std::uint32_t)(now - sh->enable) > 3000) return;   // not armed
-    if (!out || out[0] == 0) return;                                           // no message completed this call
+    // Diag ring only records while the netprobe panel keeps this stamp fresh; the chat
+    // ring below is always-on so the chat log never depends on a panel being open.
+    const bool armed = sh->enable != 0 && (std::uint32_t)(now - sh->enable) <= 3000;
     __try {
-        sh->diag[0]++;                                        // framer calls seen while armed
         const std::int32_t op = *(const std::int32_t*)(conn + 0x2c);
-        if (op < 0 || op > 0xE5) { sh->diag[2]++; return; }   // invalid/none: not a real packet
+        if (op < 0 || op > 0xE5) { if (armed) sh->diag[2]++; return; }   // invalid/none
         const std::int32_t  len = *(const std::int32_t*)(conn + 0x30);
         const std::uint32_t rx  = *(const std::uint32_t*)(conn + 0x2e8);
         // The framer is re-entered on the same pending message until the dispatcher
         // consumes it; a genuinely new packet advanced the byte counter.
         static std::uint32_t s_lastRx = 0xFFFFFFFFu; static std::int32_t s_lastOp = -1;
-        if (rx == s_lastRx && op == s_lastOp) { sh->diag[3]++; return; }
+        if (rx == s_lastRx && op == s_lastOp) { if (armed) sh->diag[3]++; return; }
         s_lastRx = rx; s_lastOp = op;
+        const std::uint8_t* p =
+            len > 0 ? *(const std::uint8_t* const*)(conn + 0x2d0) : nullptr;
 
+        if (op == 0x15) {                                     // message_game -> chat ring
+            rtx::netprobe::ChatRecord& c =
+                sh->chat[sh->chatWritten % rtx::netprobe::kChatRecords];
+            c.tick   = GetTickCount64();
+            c.seq    = sh->chatWritten + 1;
+            c.length = len;
+            std::uint32_t ck = 0;
+            if (p) {
+                ck = (std::uint32_t)(len < rtx::netprobe::kChatSnip
+                                     ? len : rtx::netprobe::kChatSnip);
+                std::memcpy(c.data, p, ck);
+            }
+            c.kept = ck;
+            sh->chatSeen++;
+            ++sh->chatWritten;                                // publish LAST
+        }
+
+        if (!armed) return;
+        sh->diag[0]++;                                        // framer messages seen while armed
         rtx::netprobe::Record& r = sh->recs[sh->written % rtx::netprobe::kMaxRecords];
         r.tick   = GetTickCount64();
         r.seq    = sh->written + 1;
@@ -1538,12 +1561,9 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
         r.length = len;
         r.gtick  = 0;
         std::uint32_t kept = 0;
-        if (len > 0) {
-            const std::uint8_t* p = *(const std::uint8_t* const*)(conn + 0x2d0);
-            if (p) {
-                kept = (std::uint32_t)(len < rtx::netprobe::kSnip ? len : rtx::netprobe::kSnip);
-                std::memcpy(r.data, p, kept);
-            }
+        if (p) {
+            kept = (std::uint32_t)(len < rtx::netprobe::kSnip ? len : rtx::netprobe::kSnip);
+            std::memcpy(r.data, p, kept);
         }
         r.kept = kept;
         sh->seen++;
@@ -1576,6 +1596,7 @@ void ResolveNetProbe() {
     sh->magic = rtx::netprobe::kMagic; sh->version = rtx::netprobe::kVersion;
     sh->pid = GetCurrentProcessId(); sh->enable = 0; sh->written = 0; sh->seen = 0;
     sh->flags = 0; sh->framerRva = 0;
+    sh->chatWritten = 0; sh->chatSeen = 0;
     for (int i = 0; i < 8; ++i) sh->diag[i] = 0;
     // Framer entry prologue:
     //   push rbx; push rsi; push r14; push r15; sub rsp,0x28; xor esi,esi; mov rbx,rcx;
@@ -1817,15 +1838,31 @@ DWORD WINAPI Worker(LPVOID) {
     // BRAND-NEW containers right next to a stationary player (portables, player-placed
     // scenery), which a movement-only trigger never sees. Accumulation means a rescan
     // can only add; captured objects never flicker or revert.
-    constexpr ULONGLONG kRescanMs = 12000;               // periodic catch-up for new spawns
-    ULONGLONG lastScanMs = 0;
+    // Deep-sweep cadence: the sweep walks every committed R/W region in the process
+    // ("gigabytes... takes seconds" per FindContainers), so re-running it on a fixed
+    // 12s timer forever saturated memory bandwidth inside the game for the whole
+    // session. Its only remaining job is entities that PRE-DATE the spawn hook (the
+    // ungated tracked pass right below catches every post-hook spawn, portables and
+    // player-placed scenery included), so: back off exponentially while sweeps find
+    // nothing new, reset to the base period the moment one adds a container, and
+    // re-arm immediately when the player moves far enough for pre-hook entities to
+    // have entered scan range. Accumulation semantics make rarer sweeps safe.
+    constexpr ULONGLONG kRescanMs = 12000;               // base deep-sweep period
+    constexpr ULONGLONG kRescanMaxMs = 300000;           // backoff ceiling (5 min)
+    ULONGLONG lastScanMs = 0, rescanMs = kRescanMs;
+    float scanPx = 0, scanPy = 0; bool haveScanPos = false;
     int emptyTicks = 0;
     for (;;) {
         float cpx = 0, cpy = 0;
         bool havePos = PlayerFineOrLast(cpx, cpy);
         PruneInvalid();                                  // drop only freed containers; keep live ones
         rtx::menuprobe::Poll();                          // no-op unless RTX_MENU_PROBE=1
-        bool stale = GetTickCount64() - lastScanMs > kRescanMs;
+        // Moved more than half the scan range since the last deep sweep: pre-hook
+        // entities can now be in range, so sweep NOW regardless of backoff.
+        const float kMoveArm = 32.f * 512.f;
+        const bool moved = havePos && haveScanPos &&
+            (std::fabs(cpx - scanPx) > kMoveArm || std::fabs(cpy - scanPy) > kMoveArm);
+        bool stale = moved || GetTickCount64() - lastScanMs > rescanMs;
         // The fast path is ungated: a few hundred pointer reads, so a container is picked up
         // on the very next pass after the hook sees an entity in it.
         if (havePos) FindContainersFromTracked();
@@ -1833,8 +1870,12 @@ DWORD WINAPI Worker(LPVOID) {
         // is the genuinely expensive one. It exists to catch entities that were already in
         // the scene before the hook attached, which is not a latency-critical case.
         if (havePos && (g_mgrCount == 0 || stale)) {
+            const int before = g_mgrCount;
             FindContainers(true);                        // accumulate newly in-range containers
             lastScanMs = GetTickCount64();
+            scanPx = cpx; scanPy = cpy; haveScanPos = true;
+            if (g_mgrCount > before || moved) rescanMs = kRescanMs;                 // productive: stay eager
+            else rescanMs = rescanMs >= kRescanMaxMs ? kRescanMaxMs : rescanMs * 2; // fruitless: back off
         }
         if (g_mgrCount > 0) {
             Publish(sh, sh->diag_len < 0x260);           // keep dumping until a sub of each type captured

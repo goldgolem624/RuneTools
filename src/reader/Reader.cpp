@@ -16,7 +16,9 @@
 #include <winternl.h>
 
 #include <algorithm>
+#include <fstream>
 #include <atomic>
+#include <deque>
 #include <tuple>
 #include <chrono>
 #include <cmath>
@@ -1134,11 +1136,122 @@ std::string BuildSamplesJson() {
     return out;
 }
 
+// ---- packet chat log (companion netprobe chat ring -> per-pid session log) --------
+// The companion copies every decoded op-0x15 (message_game) payload into a dedicated
+// always-on ring; this drains it on the sampler thread so the log accumulates from the
+// moment of injection, independent of any panel (or the game chat window) being open.
+// Wire format, from the handler decompile (docs/server_packets_handler_map.md):
+//   [type: 1B smart if <0x80, else 2B BE + 0x8000][u32][flags:1]
+//   flags&1 -> NUL sender string (flags&2 -> a second NUL string: the channel name)
+//   then the NUL message text.
+struct ChatPkt {
+    std::uint64_t seq;      // ring seq (monotonic per pid; the UI dedupes on it)
+    std::uint64_t wall;     // epoch ms at capture (converted from the game's tick clock)
+    int           type;     // message type id (109 = game/spam, 138 = broadcast, ...)
+    std::string   name;     // sender ("" on system/game lines)
+    std::string   chan;     // channel/clan name when the wire carried one, else ""
+    std::string   text;     // raw message text, RS3 markup intact
+};
+std::mutex s_chat_mu;
+struct ChatAcc { std::uint64_t drained = 0; std::uint64_t seen = 0; bool hook = false;
+                 std::deque<ChatPkt> log; };
+std::unordered_map<std::uint32_t, ChatAcc> s_chatAcc;
+
+// Packet strings should be UTF-8 but the encoding is not contractual; emit valid JSON
+// either way: well-formed UTF-8 passes through, anything else is escaped as latin-1.
+std::string chat_pkt_escape(const std::uint8_t* s, std::uint32_t n) {
+    std::string o; o.reserve(n + 8);
+    for (std::uint32_t i = 0; i < n; ++i) {
+        std::uint8_t c = s[i];
+        if (c == '"') o += "\\\"";
+        else if (c == '\\') o += "\\\\";
+        else if (c < 0x20) { char b[8]; std::snprintf(b, 8, "\\u%04x", c); o += b; }
+        else if (c < 0x80) o.push_back((char)c);
+        else {
+            int ext = (c >= 0xF0) ? 3 : (c >= 0xE0) ? 2 : (c >= 0xC2) ? 1 : 0;
+            bool ok = ext > 0 && i + (std::uint32_t)ext < n;
+            for (int k = 1; ok && k <= ext; ++k) ok = (s[i + k] & 0xC0) == 0x80;
+            if (ok) { for (int k = 0; k <= ext; ++k) o.push_back((char)s[i + k]); i += ext; }
+            else { char b[8]; std::snprintf(b, 8, "\\u%04x", c); o += b; }
+        }
+    }
+    return o;
+}
+
+void drain_chat_rings() {
+    std::vector<std::uint32_t> pids;
+    { std::lock_guard<std::mutex> lk(g_mu);
+      for (auto& kv : g_states) pids.push_back((std::uint32_t)kv.first); }
+    const std::uint64_t nowTick = GetTickCount64();
+    const std::uint64_t nowWall = (std::uint64_t)
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    for (std::uint32_t pid : pids) {
+        wchar_t name[64];
+        rtx::netprobe::MakeSectionName(pid, name);
+        HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        if (!h) continue;
+        // Map the WHOLE section (size 0): a stale pre-v3 companion created a smaller
+        // section and a fixed v3-sized map would fail against it.
+        auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
+            MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0));
+        if (!sh) { CloseHandle(h); continue; }
+        if (sh->magic == rtx::netprobe::kMagic && sh->version >= 3) {
+            const std::uint64_t written = sh->chatWritten;
+            std::lock_guard<std::mutex> lk(s_chat_mu);
+            ChatAcc& acc = s_chatAcc[pid];
+            acc.seen = sh->chatSeen;
+            acc.hook = (sh->flags & 1) != 0;
+            std::uint64_t oldest = written > rtx::netprobe::kChatRecords
+                                   ? written - rtx::netprobe::kChatRecords : 0;
+            std::uint64_t from = acc.drained > oldest ? acc.drained : oldest;
+            for (std::uint64_t sq = from; sq < written; ++sq) {
+                const rtx::netprobe::ChatRecord& r =
+                    sh->chat[sq % rtx::netprobe::kChatRecords];
+                if (r.seq != sq + 1) continue;                // slot lapped mid-read
+                std::uint32_t n = r.kept;
+                if (n > rtx::netprobe::kChatSnip) n = rtx::netprobe::kChatSnip;
+                const std::uint8_t* b = r.data;
+                std::uint32_t p = 0;
+                if (n < 6) continue;
+                int type;
+                if (b[0] < 0x80) { type = b[0]; p = 1; }
+                else { type = (((b[0] << 8) | b[1]) + 0x8000) & 0xFFFF; p = 2; }
+                p += 4;                                        // u32 field (unused)
+                if (p >= n) continue;
+                std::uint8_t fl = b[p++];
+                auto takeStr = [&](std::uint32_t& at) {
+                    std::uint32_t s0 = at;
+                    while (at < n && b[at] != 0) ++at;
+                    std::string v = chat_pkt_escape(b + s0, at - s0);
+                    if (at < n) ++at;                          // skip NUL
+                    return v;
+                };
+                ChatPkt pk;
+                pk.seq  = r.seq;
+                pk.type = type;
+                pk.wall = nowWall - (nowTick > r.tick ? nowTick - r.tick : 0);
+                if (fl & 1) { pk.name = takeStr(p); if (fl & 2) pk.chan = takeStr(p); }
+                pk.text = takeStr(p);
+                if (!pk.text.empty()) acc.log.push_back(std::move(pk));
+            }
+            acc.drained = written;
+            while (acc.log.size() > 5000) acc.log.pop_front();
+        }
+        UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+        CloseHandle(h);
+    }
+}
+
 void sample_loop() {
     // ~150 ms keeps the snapshot as fresh as the 250 ms UI refresh needs without spinning.
+    std::uint64_t lastChatDrain = 0;
     while (true) {
         std::string j = BuildSamplesJson();
         { std::lock_guard<std::mutex> lk(s_samples_mu); s_samples_json.swap(j); }
+        // The chat ring holds 256 records; draining every ~1 s leaves enormous headroom.
+        const std::uint64_t t = GetTickCount64();
+        if (t - lastChatDrain >= 1000) { lastChatDrain = t; drain_chat_rings(); }
         Sleep(150);
     }
 }
@@ -2679,11 +2792,14 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
     rtx::netprobe::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return "{\"ok\":false,\"reason\":\"companion not loaded / panel not built in\"}";
+    // Whole-section map (size 0): works for both the v3 layout and a stale smaller one.
     auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
-        MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(rtx::netprobe::Share)));
+        MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0));
     if (!sh) { CloseHandle(h); return "{\"ok\":false,\"reason\":\"map failed\"}"; }
     std::string out;
-    if (sh->magic != rtx::netprobe::kMagic || sh->version != rtx::netprobe::kVersion) {
+    // Accept any version >= 2: the diag ring layout is a stable prefix (v3 appended the
+    // chat ring after it), so an older companion still injected across an update works.
+    if (sh->magic != rtx::netprobe::kMagic || sh->version < 2) {
         out = "{\"ok\":false,\"reason\":\"share magic/version mismatch\"}";
     } else {
         const std::uint64_t written = sh->written;
@@ -2736,9 +2852,9 @@ bool ServerPacketFeedEnable(std::uint32_t pid, bool on) {
     HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
     if (!h) return false;
     auto* sh = reinterpret_cast<rtx::netprobe::Share*>(
-        MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::netprobe::Share)));
+        MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, 0));
     if (!sh) { CloseHandle(h); return false; }
-    bool ok = (sh->magic == rtx::netprobe::kMagic && sh->version == rtx::netprobe::kVersion);
+    bool ok = (sh->magic == rtx::netprobe::kMagic && sh->version >= 2);
     if (ok) sh->enable = on ? (std::uint32_t)GetTickCount64() : 0u;
     UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
     CloseHandle(h);
@@ -5727,19 +5843,25 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
 // per-channel colour </col> resets to). The UI parses the time, renders the
 // colours, and accumulates a deduped searchable log. Lines are read live from the
 // widget tree. Empty when the chatbox isn't open / not in-world.
-//   {"lines":[{"raw":"<raw markup>","base":RRGGBB},..]}
+// Since the packet transition the response carries BOTH sources; the UI merges them:
+//   {"lines":[{"raw":"<raw markup>","base":RRGGBB,"name":".."},..],   <- chatbox widgets
+//    "phook":true,"pseen":N,                                          <- capture health
+//    "packets":[{"seq":N,"t":epochMs,"type":109,"name":"..","chan":"..","raw":".."},..]}
+// `lines` is empty when the chatbox isn't open; `packets` (newest-first, op-0x15
+// message_game from the companion's always-on ring) is independent of any game UI state.
 std::string ChatJson(std::uint32_t pid) {
-    const char* kEmpty = "{\"lines\":[]}";
+    std::string ifaceArr = "[]";
+    do {
     auto ps = snap_proc(pid);
-    if (!ps) return kEmpty;
+    if (!ps) break;
     HANDLE h = ps.h;
     auto root = rpm<std::uint64_t>(h, ps.mgva);
-    if (!root || *root <= 0x10000) return kEmpty;
+    if (!root || *root <= 0x10000) break;
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     auto r16 = [&](std::uint64_t a){ return (int)rpm<std::uint16_t>(h, a).value_or(0); };
     std::uint64_t gs, ge; iface_groups_range(h, *root, gs, ge);
-    if (!gs) return kEmpty;
+    if (!gs) break;
 
     std::uint64_t top = 0;
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
@@ -5750,7 +5872,7 @@ std::string ChatJson(std::uint32_t pid) {
             break;
         }
     }
-    if (!top) return kEmpty;
+    if (!top) break;
 
     auto kids = [&](std::uint64_t node, std::vector<std::uint64_t>& dst) {
         const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
@@ -5772,7 +5894,7 @@ std::string ChatJson(std::uint32_t pid) {
     // </col> resets to this per-channel base (white for system lines, the channel
     // colour for clan/public/etc.), NOT to white -- so the UI must know it to
     // colour message bodies that have no inline <col=..>.
-    std::string out = "{\"lines\":["; bool first = true; int emitted = 0;
+    std::string a = "["; bool first = true; int emitted = 0;
     std::vector<std::pair<std::uint64_t, int>> stk{ { top, 0 } };
     int guard = 0;
     while (!stk.empty() && guard++ < 20000 && emitted < 500) {
@@ -5786,16 +5908,46 @@ std::string ChatJson(std::uint32_t pid) {
                 // on system/game lines -- the UI uses it (with the [CC]/[FC]/[GC]
                 // labels in the text) to attribute the channel.
                 std::string nm = iface_text_at(h, cur.first, 0x90, 96);
-                out += first ? "" : ","; first = false;
-                out += "{\"raw\":\"" + msg + "\",\"base\":" + std::to_string(basecol) +
-                       ",\"name\":\"" + nm + "\"}";
+                a += first ? "" : ","; first = false;
+                a += "{\"raw\":\"" + msg + "\",\"base\":" + std::to_string(basecol) +
+                     ",\"name\":\"" + nm + "\"}";
                 ++emitted;
             }
         }
         std::vector<std::uint64_t> cs; kids(cur.first, cs);
         for (auto c : cs) stk.push_back({ c, cur.second + 1 });
     }
-    out += "]}";
+    a += "]";
+    ifaceArr = std::move(a);
+    } while (false);
+
+    // Packet-sourced log (accumulated by drain_chat_rings on the sampler thread).
+    // Newest-first to match the interface array; the UI dedupes on seq, so a bounded
+    // tail is enough: anything older was already delivered on an earlier poll.
+    std::string out = "{\"lines\":" + ifaceArr;
+    {
+        std::lock_guard<std::mutex> lk(s_chat_mu);
+        auto it = s_chatAcc.find(pid);
+        if (it != s_chatAcc.end()) {
+            const ChatAcc& acc = it->second;
+            out += ",\"phook\":"; out += acc.hook ? "true" : "false";
+            out += ",\"pseen\":" + std::to_string(acc.seen);
+            out += ",\"packets\":[";
+            const std::size_t nlog = acc.log.size();
+            const std::size_t take = nlog < 300 ? nlog : 300;
+            for (std::size_t i = 0; i < take; ++i) {
+                const ChatPkt& p = acc.log[nlog - 1 - i];      // newest first
+                if (i) out += ",";
+                out += "{\"seq\":" + std::to_string(p.seq) +
+                       ",\"t\":" + std::to_string(p.wall) +
+                       ",\"type\":" + std::to_string(p.type) +
+                       ",\"name\":\"" + p.name + "\",\"chan\":\"" + p.chan +
+                       "\",\"raw\":\"" + p.text + "\"}";
+            }
+            out += "]";
+        }
+    }
+    out += "}";
     return out;
 }
 
@@ -6853,6 +7005,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     OverlayPoint op;
                     op.kind = 4;
                     op.rgb = first->rgb;
+                    op.rgb2 = first->rgb2;
                     op.wx = t.first * 512.f + 256.f; op.wy = t.second * 512.f + 256.f;
                     op.wz = cornerZ(t.first, t.second);
                     fillBox(op, t.first, t.second, 1, 1, first->plane);
@@ -6881,6 +7034,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 op.label = (nl == std::string::npos) ? std::string() : gs.label.substr(nl + 1);
             }
             op.rgb = gs.rgb;
+            op.rgb2 = gs.rgb2;
             op.wx = gs.gx * 512.f + 256.f; op.wy = gs.gy * 512.f + 256.f;
             {   // label anchor height on the MARK's plane (not the player's)
                 std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane);
@@ -7475,10 +7629,33 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         if (it != g_states.end()) version = it->second.client_version;
     }
 
+    // GAME-UPDATE EARLY WARNING: every offset chain below is validated against a build;
+    // the moment the build string changes, flag it prominently even while everything
+    // still passes, so breakage that surfaces minutes later is pre-explained.
+    std::string buildNote; int buildOk = 1;
+    if (!version.empty()) {
+        wchar_t up[MAX_PATH] = {};
+        if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) {
+            std::wstring bp = std::wstring(up) + L"\RuneToolsX\lastbuild.txt";
+            std::string prev;
+            { std::ifstream f(bp.c_str()); if (f) std::getline(f, prev); }
+            if (prev.empty()) {
+                buildNote = "build " + version;
+            } else if (prev != version) {
+                buildOk = 2;
+                buildNote = "GAME UPDATED (" + prev + " -> " + version + "): watch the rows below";
+            } else {
+                buildNote = "build " + version + " (unchanged)";
+            }
+            if (prev != version) { std::ofstream f(bp.c_str(), std::ios::trunc); if (f) f << version; }
+        }
+    }
+
     // Check names/details are USER-FACING: plain language only, no offsets or internals
     // (those live in this file's comments; the row order maps 1:1 to the chains below).
     auto ps = snap_proc(pid);
     add("Game client", ps ? 1 : 0, ps ? "connected" : "not connected");
+    if (!buildNote.empty()) add("Game build", buildOk, buildNote);
     if (!ps) return "{\"version\":\"" + json_escape(version) + "\",\"checks\":[" + checks + "]}";
     HANDLE h = ps.h;
 
@@ -7490,8 +7667,11 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     {
         std::uint32_t tc = 0; double age = 0;
         bool ok = TickState(pid, tc, age);
-        add("Game tick", ok ? 1 : 0,
-            ok ? ("tick " + std::to_string(tc)) : "not found");
+        // Present AND advancing: a counter frozen for several seconds means the game
+        // loop stalled or the pattern drifted, both of which starve every live read.
+        const bool stale = ok && age > 5000.0;
+        add("Game tick", ok ? (stale ? 0 : 1) : 0,
+            !ok ? "not found" : stale ? "found but not advancing" : ("tick " + std::to_string(tc)));
     }
     if (!rootOk) return "{\"version\":\"" + json_escape(version) + "\",\"checks\":[" + checks + "]}";
 
@@ -7545,8 +7725,47 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     }
     {
         std::string sc = SceneJson(pid, 2);
-        bool ok = sc.find("\"players\":[{") != std::string::npos;
-        add("Nearby players & NPCs", ok ? 1 : 0, ok ? "" : "not readable");
+        // Split verdicts: player and NPC walks break independently (different offset
+        // chains), and a game update usually takes out one before the other.
+        bool pOk = sc.find("\"players\":[{") != std::string::npos;
+        bool nOk = sc.find("\"npcs\":[{") != std::string::npos;
+        add("Nearby players", pOk ? 1 : 0, pOk ? "" : "not readable");
+        add("Nearby NPCs", nOk ? 1 : pOk ? 2 : 0,
+            nOk ? "" : pOk ? "none nearby (or walk broken; re-run near NPCs)" : "not readable");
+    }
+    // Overlay viewport: the varc record and the widget-tree rect describe the same
+    // gameview in their own spaces, and the 1477 root frame supplies the logical
+    // client width the projection converts through. Any of the three going missing
+    // or wildly disagreeing displaces every world overlay (both live scaling bugs
+    // this month were exactly this class).
+    {
+        int gx = 0, gy = 0, gw = 0, gh = 0, lw = 0, lh = 0;
+        const bool tree = read_gameview_rect(h, *root, gx, gy, gw, gh, &lw, &lh);
+        const int vw = read_varc(h, *root, 3001), vh = read_varc(h, *root, 3002);
+        std::string d2;
+        int ok2 = 0;
+        if (vw > 0 && vh > 0 && tree && gw > 0) {
+            const double r = (double)vw / (double)gw;
+            const bool sane = r > 0.2 && r < 5.0;
+            ok2 = sane ? 1 : 0;
+            d2 = std::to_string(vw) + "x" + std::to_string(vh) + " px, layout " +
+                 std::to_string(gw) + "x" + std::to_string(gh) +
+                 (lw > 0 ? ", window " + std::to_string(lw) : "");
+            if (!sane) d2 += " (spaces disagree)";
+        } else if (tree && gw > 0) { ok2 = 2; d2 = "layout only (viewport record missing)"; }
+        else if (vw > 0)           { ok2 = 2; d2 = "record only (layout tree missing)"; }
+        else                        { ok2 = 0; d2 = "not readable (world overlays will misplace)"; }
+        add("Overlay viewport", ok2, d2);
+    }
+    // Life points varps (13537 current / 13538 max): a remap by a game update makes
+    // vitals lie quietly, so sanity-check the pair.
+    {
+        const int cur = read_varp(h, *root, 13537), mx = read_varp(h, *root, 13538);
+        const bool logged = cur > 0 || mx > 0;
+        const bool sane = logged && mx >= cur && mx > 0 && mx < 100000;
+        add("Life points", !logged ? 2 : sane ? 1 : 0,
+            !logged ? "not logged in" :
+            sane ? (std::to_string(cur) + " / " + std::to_string(mx)) : "values look wrong");
     }
     // World-to-screen view matrix: finite, non-zero.
     {

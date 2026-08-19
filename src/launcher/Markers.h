@@ -18,6 +18,7 @@ struct TileMarker {
     int           lx = 0, ly = 0;   // local tile within the region (0..63)
     int           plane = 0;        // 0..3
     std::uint32_t color = 0;        // 0xRRGGBB
+    std::uint32_t color2 = 0;       // 0 = single-colour; else 0xRRGGBB second tone (two-tone tile)
     std::string   label;            // may be empty
 };
 
@@ -37,7 +38,8 @@ bool Add(std::uint32_t pid, int region, int lx, int ly, int plane,
          std::uint32_t color, const std::string& label);
 bool Remove(std::uint32_t pid, int region, int lx, int ly, int plane);
 bool SetLabel(std::uint32_t pid, int region, int lx, int ly, int plane, const std::string& label);
-bool SetColor(std::uint32_t pid, int region, int lx, int ly, int plane, std::uint32_t color);
+bool SetColor(std::uint32_t pid, int region, int lx, int ly, int plane, std::uint32_t color,
+              std::uint32_t color2 = 0);
 bool Clear(std::uint32_t pid);
 
 // Keybind handler entry: add (action > 0, idempotent) or remove (action < 0) a marker at the

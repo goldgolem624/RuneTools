@@ -369,14 +369,31 @@
                          to   { opacity: 1; transform: none; } }
   @keyframes toast-out { from { opacity: 1; transform: none; }
                          to   { opacity: 0; transform: translateY(-6px) scale(0.98); } }
-  /* Icon, text and close all share the 18px first-line box so they sit level. */
-  .toast-ico { flex: none; width: 10px; height: 18px; color: var(--accent-hi);
-               display: flex; align-items: center; }
-  .toast.sticky .toast-ico { color: #f0b429; }
-  .toast.sticky.done .toast-ico { color: var(--ok); }
-  /* Owner-driven cards (pinned league tasks) carry their state on the coloured
-     left edge, so the status dot is redundant there. */
-  .toast.nodot .toast-ico { display: none; }
+  /* Every card carries its state on the coloured left edge, so the status dot is
+     redundant on ALL of them (it used to show on non-owner cards only). The element
+     is still built by uiNotify; hiding it here keeps that path generic. */
+  .toast-ico { display: none; }
+
+  /* ---- wiki palette: hotkey-opened search over a dimmed backdrop ---- */
+  #wikiPal { position: fixed; inset: 0; z-index: 12000; display: flex; align-items: flex-start;
+    justify-content: center; background: rgba(5, 7, 11, 0.62); animation: wkfade 140ms ease; }
+  @keyframes wkfade { from { opacity: 0; } }
+  .wk-card { margin-top: 16vh; width: min(560px, 86vw); background: var(--win-bg);
+    border: 1px solid rgba(140, 111, 253, 0.5); border-radius: 14px; padding: 14px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6); animation: wkpop 170ms var(--ease); }
+  @keyframes wkpop { from { transform: translateY(-12px) scale(0.98); opacity: 0; } }
+  .wk-row { display: flex; gap: 8px; align-items: center; }
+  .wk-in { flex: 1; min-width: 0; background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 9px; color: var(--text);
+    font: 500 15px/1.2 inherit; padding: 11px 12px; outline: none; }
+  .wk-in:focus { border-color: rgba(140, 111, 253, 0.6); }
+  .wk-go { background: var(--accent-hi); border: none; color: #fff; border-radius: 9px;
+    padding: 11px 16px; font: 600 14px/1.2 inherit; cursor: pointer; }
+  .wk-go:hover { filter: brightness(1.1); }
+  .wk-hint { margin-top: 9px; display: flex; justify-content: space-between; gap: 10px;
+    color: var(--text-mute); font-size: 11.5px; }
+  .wk-kb { cursor: pointer; white-space: nowrap; }
+  .wk-kb:hover { color: var(--text); }
   .toast-msg {
     flex: 1; min-width: 0;
     font-size: 12.5px; line-height: 1.45; color: var(--text);
@@ -2076,6 +2093,7 @@
     { id: 'notes',     label: 'Notes',     cat: 'Utility', icon: '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/>' },
     { id: 'counter',   label: 'Counter',   cat: 'Utility', icon: '<path d="M9 3L7 21M17 3l-2 18M4 8h16M3 16h16"/>' },
     { id: 'screenshot',label: 'Screenshot', cat: 'Utility', icon: '<rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8 7l1.5-2.5h5L16 7"/>' },
+    { id: 'wiki',      label: 'Wiki',      cat: 'Utility', icon: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/><path d="M9 7h6M9 10.5h6"/>' },
     { id: 'fullscreen',label: 'Fullscreen', cat: 'Utility', icon: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>' },
     // Developer
     { id: 'interfaces', label: 'Interfaces', cat: 'Developer', icon: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18M8 9v11"/>' },
@@ -2872,17 +2890,28 @@
   function sizeIcon(el) {
     const url = el.dataset.icoUrl; if (!url) return;
     const nat = pngSize(url);
-    let want;
-    if (!nat) {
-      want = 'contain';                                   // not a decodable PNG -> fit the box
-    } else {
-      // Default to native size (avoids a flash where `contain` blows the icon up
-      // before the box is measurable); fit DOWN only when confirmed larger.
-      const bw = el.clientWidth, bh = el.clientHeight;
-      want = (bw && bh && (nat.w > bw || nat.h > bh)) ? 'contain'
-                                                      : (nat.w + 'px ' + nat.h + 'px');
+    const commit = (want) => {
+      if (el.dataset.icoSized !== want) { el.style.backgroundSize = want; el.dataset.icoSized = want; }
+    };
+    if (!nat) { commit('contain'); return; }              // not a decodable PNG -> fit the box
+    const bw = el.clientWidth, bh = el.clientHeight;
+    if (!bw || !bh) {
+      // Not laid out yet: committing native size here painted oversized sprites for a
+      // beat before the next sizing pass shrank them (visible on every panel as icons
+      // flashing huge). Paint NOTHING for the pre-layout instant and decide with real
+      // box dimensions on the next frame, which fires before paint in this renderer.
+      // A box that stays unmeasurable (hidden tab) settles on contain, which is the
+      // correct rendering for any box size.
+      commit('0px 0px');
+      const tries = (parseInt(el.dataset.icoTries || '0', 10) || 0) + 1;
+      el.dataset.icoTries = String(tries);
+      if (tries <= 3) requestAnimationFrame(() => sizeIcon(el));
+      else commit('contain');
+      return;
     }
-    if (el.dataset.icoSized !== want) { el.style.backgroundSize = want; el.dataset.icoSized = want; }
+    el.dataset.icoTries = '';
+    // Native size when it fits (pixel-crisp); fit down only when confirmed larger.
+    commit((nat.w > bw || nat.h > bh) ? 'contain' : (nat.w + 'px ' + nat.h + 'px'));
   }
   // Re-size only icons whose URL changed: icon boxes are a fixed CSS size, so
   // background-size can't change unless the URL did. Skips per-poll PNG parses.
@@ -3259,6 +3288,7 @@
   let infoVb = null;   // extra Player State varbits: 4163 = total penguin points
   let infoCam = null;  // live camera varcs: 1971 zoom, 5114 pitch, 5115 yaw (0..16284 = full circle)
   let infoHover = null;   // engine hover slot (hoverEntity bridge): live id/name/action/tile verification
+  let infoHoverHeld = null;   // last REAL hover target, held so the panel stays readable after unhover
   // Membership tier. Free-vs-member is NOT var state - it is the PLAYERMEMBER engine op - so it
   // needs its own bridge call rather than riding the varp/varbit fetches below. Premier IS a
   // varbit (50572) but is folded into the same call so the tier arrives consistent.
@@ -3283,11 +3313,13 @@
   // (virtual-levels-enabled). Varp-hashmap decodes:
   //   458  bit30 = "virtual levels" display setting (varbit 19007)
   //   13537 HP: the CURRENT lifepoints, raw (no scaling, nothing packed above bit 15).
+  //   13538 HP MAX: the maximum lifepoints, raw. Located live (2026-08-17) by value-search
+  //         over the varp map at 1,068/1,500 (only 13538 held 1500) and confirmed on a second
+  //         account at 5,600/5,600. Engine-fed like 13537; no clientscript references either.
   //         Varp 659 used to carry cur = (v & 0xffff)/2, max = (v>>>16)&0xffff; it now reads 0
   //         permanently and no clientscript in the cache mentions it, so it is gone, not merely
   //         idle. It is left OUT of the request list rather than kept as a fallback: a dead varp
-  //         reads 0, and 0 is indistinguishable from a real low reading. NOTE the max lifepoints
-  //         source has NOT been identified yet, so callers show the current value alone.
+  //         reads 0, and 0 is indistinguishable from a real low reading. Max lives in 13538 (above).
   //   3274 Prayer:    cur = (v & 0x7fff)/10, max = ((v>>>16)&0x7f)*10 (points)
   //   8040 Summoning: cur = (v & 0x7fff)/10, max = ((v>>>16)&0x7f)*10 (points)
   //   1787 Familiar special-move (spell) points: raw current value, max const 60 (CS2 script777/11687)
@@ -3298,7 +3330,7 @@
   // 12314 = league NUMBER, matched against db 326.0 by script20117 (0 = not a league
   // character; gates read "> 0" everywhere, "== 2" for Equilibrium paths); league points
   // varp per the header's db 326.28 var_reference: L1 12426, L2 13521.
-  const PLAYER_VARP_IDS = '458,13537,3274,8040,1787,679,463,1297,4818,5984,5982,5991,12314,12426,13521';
+  const PLAYER_VARP_IDS = '458,13537,13538,3274,8040,1787,679,463,1297,4818,5984,5982,5991,12314,12426,13521';
   let playerVp = null;
   // Account-wide varbits shown on the Info tab. 39152 (bits 0-15) = TOTAL Dungeoneering floors
   // completed all-time: player state, not per-floor state, so it belongs here.
@@ -4490,7 +4522,7 @@
     else for (const t of toasts) if (t.sticky && !t.closing) add(t.el);
     // Modal surfaces (tab search, tooltips are transient/hover-only) claim the whole
     // client: they dim everything and must swallow every click.
-    if ($('tspOv') || $('vrModalOv')) {
+    if ($('tspOv') || $('vrModalOv') || $('wikiPal')) {
       rects.length = 0;
       rects.push('0,0,' + (window.innerWidth || 1280) + ',' + (window.innerHeight || 720));
     }
@@ -4533,6 +4565,76 @@
     try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
     setTimeout(syncKbCapture, 0);
   };
+
+  // ---- Wiki palette: dimmed search overlay -> the wiki-locked in-client browser. ------
+  // Opened by the host on the user's hotkey (gameui::OpenWikiPalette evaluates
+  // wikiPaletteOpen()) or from any panel. Enter / the button opens the term in the
+  // dedicated wiki pane; exact titles land directly on their page. The chip in the
+  // footer binds the hotkey inline: click it, press a key (Esc unbinds).
+  let _wkKbListen = false;
+  function wikiPaletteOpen() {
+    const existing = $('wikiPal');
+    if (existing) { const i0 = $('wkIn'); if (i0) i0.focus(); return; }
+    const ov = document.createElement('div'); ov.id = 'wikiPal';
+    ov.innerHTML =
+        '<div class="wk-card">'
+      +   '<div class="wk-row">'
+      +     '<input id="wkIn" class="wk-in" placeholder="Search the RuneScape Wiki..." autocomplete="off" spellcheck="false">'
+      +     '<button id="wkGo" class="wk-go">Search</button>'
+      +   '</div>'
+      +   '<div class="wk-hint">'
+      +     '<span>Enter opens in-game &middot; exact titles open directly &middot; Esc closes</span>'
+      +     '<span class="wk-kb" id="wkKb" title="Click, then press the key to bind (Esc unbinds)">Hotkey: &hellip;</span>'
+      +   '</div>'
+      + '</div>';
+    document.body.appendChild(ov);
+    kbGrab(true);
+    wmRectsSoon();
+    // The opening hotkey's WM_CHAR arrives AFTER the palette focuses its input (the host
+    // consumes the key-down, but TranslateMessage already queued the character), so the
+    // bound key used to type itself into the search box. Swallow input for the first beat.
+    const openedAt = performance.now();
+    const done = () => {
+      if (!$('wikiPal')) return;
+      _wkKbListen = false;
+      kbGrab(false);
+      ov.remove();
+      wmRectsSoon();
+    };
+    const go = () => {
+      const t = ($('wkIn').value || '').trim();
+      done();
+      try { if (bridge() && bridge().wikiOpen) bridge().wikiOpen(myPid(), t); } catch (e) {}
+    };
+    const kbEl = $('wkKb');
+    const kbPaint = () => {
+      let vk = 0;
+      try { vk = (bridge() && bridge().wikiKeybindGet) ? (bridge().wikiKeybindGet() | 0) : 0; } catch (e) {}
+      kbEl.textContent = 'Hotkey: ' + (vk ? ssVkName(vk) : 'not set');
+    };
+    kbEl.addEventListener('click', () => { _wkKbListen = true; kbEl.textContent = 'Press a key…'; });
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(); });
+    $('wkGo').addEventListener('click', go);
+    ov.addEventListener('keydown', (e) => {
+      if (_wkKbListen) {
+        e.preventDefault(); e.stopPropagation();
+        _wkKbListen = false;
+        const vk = e.key === 'Escape' ? 0 : (e.keyCode | 0);
+        try { if (bridge() && bridge().wikiKeybindSet) bridge().wikiKeybindSet(vk); } catch (e2) {}
+        kbPaint();
+        $('wkIn').focus();   // palette stays open; capture is still correctly held here
+        return;
+      }
+      if (e.key === 'Enter') { e.preventDefault(); go(); }
+      else if (e.key === 'Escape') { e.preventDefault(); done(); }
+    }, true);
+    const wkInp = $('wkIn');
+    const swallow = (e) => { if (performance.now() - openedAt < 180) e.preventDefault(); };
+    wkInp.addEventListener('beforeinput', swallow);
+    wkInp.addEventListener('keypress', swallow);   // WebKit char path, in case beforeinput is absent
+    kbPaint();
+    wkInp.focus();
+  }
 
   // ---- layout persistence (per-account host store; atomic tmp+rename native side) ----
   let _wmSaveT = 0;
@@ -4923,6 +5025,73 @@
   // button on the main bar; it lives in its own panel now. The GAME's own Fullscreen
   // option cannot work while embedded (its window is our child, clipped to the host),
   // so this drives the HOST: it takes the whole monitor and the game comes with it.
+  // ---- Wiki pane: launcher + settings for the in-client wiki browser. The browser
+  //      itself is a native pane locked to runescape.wiki; this panel just starts it,
+  //      binds the palette hotkey, and explains the feature. ----
+  function renderWikiPane() {
+    const c = $('content');
+    if ($('wkWrap')) { return; }
+    c.innerHTML = '';
+    const wrap = document.createElement('div'); wrap.id = 'wkWrap'; wrap.className = 'ov-wrap';
+    if (!bridge() || !bridge().wikiOpen) {
+      const e = document.createElement('div'); e.className = 'empty';
+      e.textContent = 'The wiki browser needs an updated host.';
+      wrap.appendChild(e); c.appendChild(wrap); return;
+    }
+    const desc = document.createElement('div'); desc.className = 'ov-hint';
+    desc.textContent = 'Browse the RuneScape Wiki in a pane docked inside the client. '
+      + 'Locked to runescape.wiki: navigation anywhere else is blocked. '
+      + 'The hotkey opens a search overlay from anywhere in game.';
+    wrap.appendChild(desc);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;margin:10px 0';
+    const inp = document.createElement('input');
+    inp.className = 'pet-search'; inp.placeholder = 'Search the wiki…';
+    inp.style.flex = '1'; inp.spellcheck = false;
+    const go = document.createElement('button'); go.className = 'dg-sync-btn'; go.textContent = 'Open';
+    const open = () => { try { bridge().wikiOpen(myPid(), (inp.value || '').trim()); } catch (e) {} };
+    go.addEventListener('click', open);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); open(); } });
+    row.appendChild(inp); row.appendChild(go);
+    wrap.appendChild(row);
+    // Hotkey row, same interaction as the screenshot keybind: click, press a key.
+    const kbRow = document.createElement('div');
+    kbRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin:6px 0';
+    const kbLbl = document.createElement('span'); kbLbl.className = 'ov-hint'; kbLbl.style.margin = '0';
+    const kbBtn = document.createElement('button'); kbBtn.className = 'dg-sync-btn';
+    let listening = false;
+    const paint = () => {
+      let vk = 0; try { vk = (bridge().wikiKeybindGet() | 0); } catch (e) {}
+      kbLbl.textContent = 'Search hotkey:'; kbBtn.textContent = vk ? ssVkName(vk) : 'Not set';
+    };
+    kbBtn.addEventListener('click', () => {
+      if (listening) return; listening = true; kbGrab(true);
+      kbBtn.textContent = 'Press a key… (Esc clears)';
+      const cap = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        document.removeEventListener('keydown', cap, true);
+        listening = false; kbGrab(false);
+        try { bridge().wikiKeybindSet(e.key === 'Escape' ? 0 : (e.keyCode | 0)); } catch (e2) {}
+        paint();
+        // Release focus + capture NOW: with either still held, the freshly-bound key
+        // reads as "typing" on its next press and feeds the UI instead of the keybind
+        // (seen live as "I had to press the hotkey twice").
+        try { if (document.activeElement) document.activeElement.blur(); } catch (e3) {}
+        syncKbCapture();
+      };
+      document.addEventListener('keydown', cap, true);
+    });
+    paint();
+    kbRow.appendChild(kbLbl); kbRow.appendChild(kbBtn);
+    wrap.appendChild(kbRow);
+    const closeBtn = document.createElement('button'); closeBtn.className = 'dg-sync-btn';
+    closeBtn.textContent = 'Close wiki pane';
+    closeBtn.style.marginTop = '4px';
+    closeBtn.addEventListener('click', () => { try { bridge().wikiClose(myPid()); } catch (e) {} });
+    wrap.appendChild(closeBtn);
+    c.appendChild(wrap);
+  }
+
   function renderFullscreen() {
     const c = $('content');
     if ($('fsWrap')) {
@@ -5231,6 +5400,7 @@
     if (activeTab === 'counter') { renderCounter(); return; }
     if (activeTab === 'screenshot') { renderScreenshot(); return; }
     if (activeTab === 'fullscreen') { renderFullscreen(); return; }
+    if (activeTab === 'wiki') { renderWikiPane(); return; }
     if (activeTab === 'dailies') { renderDailies(); return; }
     if (activeTab === 'kingdom') { renderKingdom(); return; }
     if (activeTab === 'rituals') { renderRituals(); return; }
@@ -6012,11 +6182,20 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                               if (x < 1 || y < 1) continue;
                               const label = pClampStr(m.label == null ? '' : m.label, 95).replace(/[\x1e\x1f]/g, ' ');   // 95 = the overlay's kTextMax (the loc name + '\n' share the same budget)
                               let rec = x + '\x1f' + y + '\x1f' + plane + '\x1f' + label;
-                              // Optional AREA extent: x/y = SW corner, x2/y2 = NE corner -> the host
-                              // draws one flat ground rect spanning the tiles (long walkways, zones)
-                              // instead of matching a 1x1 loc footprint.
+                              // Optional tail (field order fixed by the host parser): snap, rgb,
+                              // areaX2, areaY2, region, rgb2. Emitted whenever a colour or an
+                              // AREA extent (x/y = SW corner, x2/y2 = NE corner: one flat ground
+                              // rect spanning the tiles) is present. color/color2 accept
+                              // '#rrggbb' or a packed int; color2 makes a two-tone tile split
+                              // diagonally, exactly like two-tone user markers.
                               const x2 = pClampNum(m.x2, 0, 16383) | 0, y2 = pClampNum(m.y2, 0, 16383) | 0;
-                              if (x2 >= x && y2 >= y && (x2 > x || y2 > y)) rec += '\x1f0\x1f0\x1f' + x2 + '\x1f' + y2;
+                              const hasArea = x2 >= x && y2 >= y && (x2 > x || y2 > y);
+                              const pcol = (v) => { if (typeof v === 'number') return v & 0xFFFFFF;
+                                if (typeof v === 'string') { const n = parseInt(String(v).replace('#', ''), 16); return isNaN(n) ? 0 : (n & 0xFFFFFF); }
+                                return 0; };
+                              const col = pcol(m.color), col2 = pcol(m.color2);
+                              if (hasArea || col || col2)
+                                rec += '\x1f0\x1f' + col + '\x1f' + (hasArea ? x2 : 0) + '\x1f' + (hasArea ? y2 : 0) + '\x1f0\x1f' + col2;
                               recs.push(rec);
                             }
                             return bridge().guideMarks(pid, recs.join('\x1e')); } },
@@ -6046,6 +6225,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                             if (w > 0 && h > 0) { try { bridge().uiHighlight(pid, x, y, w, h); } catch (e) {} return true; }
                             try { bridge().uiHighlight(pid, 0, 0, 0, 0); } catch (e) {} return false; } },
     'sound.play':       { scope: 'sound',      json: false,   run: (a, pid) => bridge().playSound(pClampStr(a[0], 64)) },
+    // Open the wiki-locked in-client browser on a search term (empty = wiki home). A
+    // visual surface, so it shares the overlay scope and rate bucket.
+    'overlay.wikiSearch':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().wikiOpen ? bridge().wikiOpen(pid, pClampStr(a[0], 200)) : null) },
     'storage.get':      { scope: 'storage',    json: 'maybe', run: (a, pid, id) => bridge().pluginStoreLoad(pid, id, pClampStr(a[0], 64)) },
     'storage.set':      { scope: 'storage',    json: false,   run: (a, pid, id) => bridge().pluginStoreSave(pid, id, pClampStr(a[0], 64), JSON.stringify(a[1] === undefined ? null : a[1])) },
     'storage.keys':     { scope: 'storage',    json: true,    run: (a, pid, id) => bridge().pluginStoreKeys(pid, id) },

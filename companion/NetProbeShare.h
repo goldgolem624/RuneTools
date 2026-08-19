@@ -17,11 +17,17 @@ namespace rtx::netprobe {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXNetProbe_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5450524E;   // 'NRPT'
-inline constexpr std::uint32_t kVersion = 2;
+inline constexpr std::uint32_t kVersion = 3;            // v3: dedicated chat ring appended
 inline constexpr int kMaxRecords = 1024;    // ring depth (drained by the panel each poll)
 // Payload bytes kept per record; sized for the largest packet worth decoding (0x5D
 // rebuild_scene_dyn reaches ~880 bytes). Costs shared memory only: Record = 32 + kSnip.
 inline constexpr int kSnip       = 1024;
+// Chat ring (v3): opcode 0x15 message_game payloads, captured whenever the framer hook
+// is installed -- NOT gated by the diag `enable` stamp, because the chat log must not
+// depend on a panel being open to arm it. Sized for the drain cadence (launcher drains
+// ~1/s; 256 chat lines per second is far beyond any real burst).
+inline constexpr int kChatRecords = 256;
+inline constexpr int kChatSnip    = 512;    // one message: type+u32+flags+sender+text
 
 // One decoded inbound message. `opcode` is the deciphered server opcode (0..0xE5);
 // `length` is the resolved payload length in bytes; `kept` is how much landed in `data`.
@@ -33,6 +39,15 @@ struct Record {
     std::uint32_t kept;      // min(length, kSnip) actually copied into data
     std::uint32_t gtick;     // game tick counter at capture (0 if unavailable) -- groups a burst
     std::uint8_t  data[kSnip];
+};
+
+// One captured chat message (raw op-0x15 wire payload; the launcher decodes it).
+struct ChatRecord {
+    std::uint64_t tick;      // GetTickCount64 at capture
+    std::uint64_t seq;       // monotonic (== its slot's chatWritten value + 1)
+    std::int32_t  length;    // wire payload length
+    std::uint32_t kept;      // min(length, kChatSnip) copied into data
+    std::uint8_t  data[kChatSnip];
 };
 
 struct Share {
@@ -52,6 +67,10 @@ struct Share {
     // [2]=opcode-out-of-range skips, [3]=dup skips, [4..7]=spare.
     std::uint32_t diag[8];
     Record recs[kMaxRecords];
+    // ---- v3 chat ring (always-on while the framer hook lives) ----
+    volatile std::uint64_t chatWritten;   // published AFTER each ChatRecord body is filled
+    std::uint64_t chatSeen;               // op-0x15 messages observed (incl. any lapped)
+    ChatRecord chat[kChatRecords];
 };
 
 inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {

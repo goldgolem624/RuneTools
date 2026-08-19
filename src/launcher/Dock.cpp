@@ -3,6 +3,7 @@
 #include "Companion.h"
 #include "GameUi.h"             // in-game window UI layer (off-screen view + shares)
 #include "Overlay.h"            // QuiesceMarkers (stop the in-frame layer before teardown)
+#include "WikiBrowser.h"        // in-client wiki pane (docked child window, wiki-locked)
 #include "Markers.h"            // configurable mark/remove-tile keybinds
 #include "../reader/Reader.h"   // RenderToggle (keep-focused / embed flag channel)
 #include "../../companion/RenderShare.h"   // kMsgGameClicked (companion -> host click routing)
@@ -586,6 +587,12 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         rtx::launcher::CaptureScreenshotForPid(d->pid);
                         return 0;
                     }
+                    // Wiki palette keybind: opens the dimmed search overlay in the UI layer.
+                    int wkVk = rtx::launcher::wiki::KeybindVk();
+                    if (wkVk && (int)wp == wkVk) {
+                        gameui::OpenWikiPalette(d->pid);
+                        return 0;
+                    }
                     auto kb2 = rtx::markers::GetKeybinds();
                     // Consume the key ONLY when it actually marks/deletes a tile under the cursor; otherwise
                     // MarkAtCursor returns false and the key falls through so it still reaches the game.
@@ -1033,6 +1040,7 @@ void Detach(Dock* d, bool closeGame) {
     //    render toggle off, and -- critically -- keep-focused OFF. Keep-focused swallows the
     //    game's focus-loss messages and fakes its foreground state; if still active while the game
     //    shuts down, RS3's close path waits on activation state it can never observe and hangs.
+    rtx::launcher::wiki::Close(d->pid);
     gameui::Destroy(d->pid);
     rtx::overlay::QuiesceMarkers(d->pid);
     SetEmbeddedGame(d->pid, nullptr);
@@ -1129,6 +1137,7 @@ void Init(App* app, std::string client_html_path, bool uiDevWatch) {
     g_client_html_path = std::move(client_html_path);
     g_uiWatch = uiDevWatch;   // resolved in main.cpp (RTX_UI_DIR env var or rtx_ui_dev.txt marker)
     gameui::Init(app);
+    rtx::launcher::wiki::Init(app);
 }
 
 std::string BuildClientHtml() {
@@ -1211,6 +1220,7 @@ std::string ReadUiAsset(const std::string& name) { return ReadUiAssetImpl(name);
 void Tick() {
     if (g_docks.empty()) return;
     gameui::Tick();   // resize handshake + dirty-surface publish + pump pacing
+    rtx::launcher::wiki::Tick();   // wiki pane follows the host; reaps closed/dead windows
     // Dev UI hot-reload: with RTX_UI_DIR active, re-splice and reload every open panel when the
     // ui dir's newest mtime settles on a new value. Panel JS state resets on reload.
     if (g_uiWatch) {
@@ -1310,6 +1320,7 @@ void Tick() {
 }
 
 void Shutdown() {
+    rtx::launcher::wiki::Shutdown();
     std::vector<Dock*> ds;
     for (auto& kv : g_docks) ds.push_back(kv.second);
     g_docks.clear();

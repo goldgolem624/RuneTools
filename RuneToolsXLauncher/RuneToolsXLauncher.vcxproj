@@ -154,6 +154,7 @@
     <ClInclude Include="..\src\launcher\Markers.h" />
     <ClInclude Include="..\src\launcher\MenuSwap.h" />
     <ClInclude Include="..\src\launcher\Overlay.h" />
+    <ClInclude Include="..\src\launcher\WikiBrowser.h" />
     <ClInclude Include="..\src\launcher\WinNotify.h" />
     <ClInclude Include="..\src\launcher\Process.h" />
     <ClInclude Include="..\src\reader\BankCache.h" />
@@ -197,6 +198,7 @@
     <ClCompile Include="..\src\launcher\Markers.cpp" />
     <ClCompile Include="..\src\launcher\MonitorFix.cpp" />
     <ClCompile Include="..\src\launcher\Overlay.cpp" />
+    <ClCompile Include="..\src\launcher\WikiBrowser.cpp" />
     <ClCompile Include="..\src\launcher\Process.cpp" />
     <ClCompile Include="..\src\launcher\WinNotify.cpp" />
     <ClCompile Include="..\src\reader\BankCache.cpp" />

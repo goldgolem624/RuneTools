@@ -1,17 +1,50 @@
 // RuneToolsX panel: Chat Log (searchable, colour-rendered chatbox history).
 // Spliced inline into client.html; bare classic script sharing one global scope.
 
-  // Lines come from the chatbox interface (group 137) via bridge.chat(); raw lines keep RS3
-  // markup + a "[HH:MM:SS]" timestamp. Dedupe by raw string (the rotating chatbox pool re-sends
-  // lines). RS3 encodes literal angle brackets as <lt>/<gt>, so every real "<..>" is an engine
-  // tag: whitelist <col>, drop the rest, HTML-escape all text.
-  const chatLogs = {};   // pid -> { seen:Set, lines:[{raw, ts, tokens, plain, chan}] }
+  // TWO sources merged into one log:
+  //  - packets: op-0x15 message_game from the companion's always-on capture ring; arrives
+  //    regardless of which chat tab is open (or whether the chatbox is visible at all),
+  //    with a structured channel type id and the sender split out. Deduped by seq.
+  //  - interface: the chatbox widget walk (group 137), the pre-packet source; still covers
+  //    any channel that rides a different opcode, and only sees what the chatbox renders.
+  //    Deduped by raw string (the rotating chatbox pool re-sends lines).
+  // A game message lands in BOTH, so each side suppresses a line whose plain text the other
+  // side delivered within the last 2 minutes. RS3 encodes literal angle brackets as
+  // <lt>/<gt>, so every real "<..>" is an engine tag: whitelist <col>, drop the rest,
+  // HTML-escape all text.
+  const chatLogs = {};   // pid -> { seen:Set, pseq, pkPlain:Map, ifPlain:Map, lines:[{raw, ts, tokens, plain, chan, src}] }
   let chatFetching = false, chatFetchAt = 0, chatSearch = '', chatSig = '', chatChan = 'All';
+  let chatPkHook = false;
   const CHAT_CHANS = ['All', 'Game', 'Public', 'Private', 'Friends', 'Clan', 'Guest', 'Group'];
   function chatStore() {
     const p = myPid();
-    if (!chatLogs[p]) chatLogs[p] = { seen: new Set(), lines: [] };
+    if (!chatLogs[p]) chatLogs[p] = { seen: new Set(), pseq: 0, pkPlain: new Map(), ifPlain: new Map(), lines: [] };
     return chatLogs[p];
+  }
+  // Cross-source dedup ledgers: plain text -> ms shown by that source. Consume-once with a
+  // short window: each shown line suppresses exactly ONE copy of the same text from the
+  // other source (delivery skew between the sources is ~2s), so a message the player
+  // GENUINELY repeats moments later still shows. Bounded by Map insertion order.
+  function chatMark(map, plain) { map.set(plain, Date.now()); if (map.size > 600) map.delete(map.keys().next().value); }
+  function chatConsume(map, plain) {
+    const t = map.get(plain);
+    if (t === undefined || Date.now() - t >= 6000) return false;
+    map.delete(plain);
+    return true;
+  }
+  // Channel from the wire type id. Verified live: 109 = game/spam, 138 = broadcast news,
+  // 96/98/99 = specials. 0/2/3/6 are the long-standing engine message-type ids (game,
+  // public, private-from, private-to). Anything unknown falls back on structure: a line
+  // that carried a channel name is clan-flavoured, a bare sender is public, else system.
+  const CHAT_PKT_TYPES = { 0:'Game', 96:'Game', 98:'Game', 99:'Game', 109:'Game', 138:'Game', 2:'Public', 3:'Private', 6:'Private' };
+  function chatClassifyPkt(type, name, chan) {
+    if (CHAT_PKT_TYPES[type]) return CHAT_PKT_TYPES[type];
+    if (chan) return 'Clan';
+    return name ? 'Public' : 'Game';
+  }
+  function chatFmtTime(ms) {
+    const d = new Date(ms), p2 = n => (n < 10 ? '0' : '') + n;
+    return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
   }
   // Classify a line by the fixed label the engine writes per channel (abbreviation display mode,
   // RS3's default):
@@ -109,15 +142,42 @@
     try {
       const j = JSON.parse(await bridge().chat(myPid()));
       const lines = (j && Array.isArray(j.lines)) ? j.lines : [];
+      const pkts = (j && Array.isArray(j.packets)) ? j.packets : [];
+      chatPkHook = !!(j && j.phook);
       const store = chatStore();
-      // Bridge returns newest-first as {raw, base, name}; prepend new lines to stay newest-first.
       const fresh = [];
+      // First fill only: the packet backlog and the chatbox scrollback overlap far outside
+      // the rolling dedup window, so reconcile the whole initial batch against each other.
+      const bootPk = (store.pseq === 0 && store.lines.length === 0) ? new Set() : null;
+      // Packet lines first (newest-first, deduped by ring seq). The sender is split out on
+      // the wire, so rebuild the familiar "Name: msg" plain form -- it is also what makes
+      // the cross-source dedup line up with the interface rendering of the same message.
+      for (const pk of pkts) {
+        if (!pk || !(pk.seq > store.pseq)) continue;
+        const p = chatParse(String(pk.raw || ''), null);
+        if (!p.plain) continue;
+        const name = chatNormSpace(String(pk.name || '').replace(/<[^>]*>/g, '')).trim();
+        if (name) {
+          p.tokens.unshift({ text: name + ': ', color: null });
+          p.plain = name + ': ' + p.plain;
+        }
+        if (bootPk) bootPk.add(p.plain);
+        if (chatConsume(store.ifPlain, p.plain)) continue;  // chatbox walk already delivered it
+        chatMark(store.pkPlain, p.plain);
+        fresh.push({ raw: 'pk:' + pk.seq, ts: pk.t ? chatFmtTime(pk.t) : '', tokens: p.tokens,
+                     plain: p.plain, chan: chatClassifyPkt(pk.type, name, String(pk.chan || '')), src: 'pk' });
+      }
+      if (pkts.length) for (const pk of pkts) if (pk && pk.seq > store.pseq) store.pseq = pk.seq;
+      // Interface lines (newest-first as {raw, base, name}); prepend to stay newest-first.
       for (const ln of lines) {
         const raw = ln && ln.raw; if (!raw || store.seen.has(raw)) continue;
         store.seen.add(raw);
         const p = chatParse(raw, ln.base);
+        if (bootPk && bootPk.has(p.plain)) continue;        // first fill: packet backlog wins
+        if (chatConsume(store.pkPlain, p.plain)) continue;  // packet capture already delivered it
+        chatMark(store.ifPlain, p.plain);
         const name = chatNormSpace(String(ln.name || '').replace(/<[^>]*>/g, '')).trim();
-        fresh.push({ raw, ts: p.ts, tokens: p.tokens, plain: p.plain, chan: chatClassify(p.plain, name) });
+        fresh.push({ raw, ts: p.ts, tokens: p.tokens, plain: p.plain, chan: chatClassify(p.plain, name), src: 'if' });
       }
       if (fresh.length) {
         store.lines = fresh.concat(store.lines);
@@ -170,7 +230,7 @@
     const q = chatSearch.trim().toLowerCase();
     // Signature FIRST: this runs every 250ms poll, so when nothing shown has changed it must do
     // ZERO DOM work or the chips + list rebuild every tick.
-    const sig = q + '|' + chatChan + '|' + store.lines.length + '|' + (store.lines[0] ? store.lines[0].raw : '');
+    const sig = q + '|' + chatChan + '|' + (chatPkHook ? 1 : 0) + '|' + store.lines.length + '|' + (store.lines[0] ? store.lines[0].raw : '');
     if (sig === chatSig) return;
     chatSig = sig;
     const counts = {}; for (const l of store.lines) counts[l.chan] = (counts[l.chan] || 0) + 1;
@@ -192,9 +252,12 @@
     const cnt = $('chatCnt');
     if (cnt) cnt.textContent = store.lines.length + ' lines captured' +
       (chatChan !== 'All' || q ? '  ·  ' + shown.length + ' shown' : '') +
-      (store.lines.length === 0 ? '  ·  open the game chat to capture' : '');
+      (chatPkHook ? '  ·  live packet capture' :
+        (store.lines.length === 0 ? '  ·  open the game chat to capture' : ''));
     if (!shown.length) {
-      list.innerHTML = '<div class="chat-empty">' + (store.lines.length ? 'No lines match.' : 'No chat captured yet. Be in-world with the chatbox visible.') + '</div>';
+      list.innerHTML = '<div class="chat-empty">' + (store.lines.length ? 'No lines match.' :
+        (chatPkHook ? 'No chat captured yet. Messages are logged as they arrive, even with the chatbox closed.'
+                    : 'No chat captured yet. Be in-world with the chatbox visible.')) + '</div>';
       return;
     }
     const MAX = 1500;   // cap DOM nodes; search narrows beyond this

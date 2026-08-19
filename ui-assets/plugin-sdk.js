@@ -179,7 +179,12 @@
       // Mark world tiles as guide objectives: [{x, y, plane, label}, ...]; [] clears.
       // Optional x2/y2 on a mark (x/y = SW corner, x2/y2 = NE corner) draws one flat
       // ground rect over the whole span instead of a single-tile mark.
+      // Optional color ('#rrggbb' or packed int) tints the mark; optional color2 makes
+      // a TWO-TONE tile split diagonally between the two colours (single tiles only).
       guideTiles: function (marks) { return call('overlay.guideTiles', [marks]); },
+      // Open the in-client wiki browser on a search term ('' = wiki home). The pane is
+      // hard-locked to runescape.wiki; a plugin can only pick the page, never the site.
+      wikiSearch: function (term) { return call('overlay.wikiSearch', [term || '']); },
       clearHighlight: function () { return call('overlay.clearHighlight', []); },
       // Big centre-screen banner text ('' clears) - the Dungeoneering boss-warning channel.
       centerText: function (text) { return call('overlay.centerText', [text]); },

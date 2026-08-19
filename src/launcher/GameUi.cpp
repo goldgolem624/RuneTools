@@ -638,6 +638,30 @@ bool FireHostKey(std::uint32_t pid, unsigned msg, std::uintptr_t wparam, std::in
     return true;
 }
 
+bool Notify(std::uint32_t pid, const std::string& msg, int ttl_ms) {
+    Ui* u = find(pid);
+    if (!u || !u->view) return false;
+    // JSON-escape into a JS string literal; uiNotify handles the rest (card, edge
+    // colour, animation, stacking) exactly like every panel-raised alert.
+    std::string js = "typeof uiNotify==='function'&&uiNotify(\"";
+    for (unsigned char c : msg) {
+        if (c == '"' || c == '\\') { js += '\\'; js += (char)c; }
+        else if (c < 0x20) { char b[8]; std::snprintf(b, sizeof(b), "\\u%04x", c); js += b; }
+        else js += (char)c;
+    }
+    js += "\",{ttl:" + std::to_string(ttl_ms) + (ttl_ms == 0 ? ",sticky:true" : "") + "})";
+    u->view->EvaluateScript(String(js.c_str()));
+    u->lastActivityMs = GetTickCount64();   // wake the pump so the card animates in promptly
+    return true;
+}
+
+void OpenWikiPalette(std::uint32_t pid) {
+    Ui* u = find(pid);
+    if (!u || !u->view) return;
+    u->view->EvaluateScript("typeof wikiPaletteOpen==='function'&&wikiPaletteOpen()");
+    u->lastActivityMs = GetTickCount64();
+}
+
 void SetDeviceScale(std::uint32_t pid, double scale) {
     Ui* u = find(pid);
     if (!u || !u->view || scale <= 0.01) return;

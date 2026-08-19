@@ -161,6 +161,7 @@ struct OverlayPoint {
     bool        is_self = false;  // local player (nameplates skip it)
     int         uid = 0;                  // entity uid (sec+0x88) -- lets the launcher nameplate specific players
     int         rgb = 0;                  // guide marks only: 0 = default marker colour, else 0xRRGGBB
+    int         rgb2 = 0;                 // guide marks only: optional second tone (two-tone flat tile)
     int         edge_mask = 15;           // flat guide tiles only: which outline edges to draw
                                           // (bit 0 south, 1 east, 2 north, 3 west) -- region
                                           // interiors skip shared edges so a zone reads as ONE shape
@@ -178,7 +179,7 @@ struct OverlayPoint {
 // union of each site's resolved loc footprint, perimeter outlined with one label.
 // plane: the MARK's plane (may differ from the player's) -- matching and heights use it,
 // so an obstacle above/below the player still boxes correctly.
-struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false; int rgb = 0; int gx2 = 0, gy2 = 0; int region = 0; int plane = 0; };
+struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false; int rgb = 0; int gx2 = 0, gy2 = 0; int region = 0; int plane = 0; int rgb2 = 0; };
 
 // Everything the overlay needs for one frame of one client, gathered in a
 // single locked pass. `matrix` is the live view-projection matrix (16 floats

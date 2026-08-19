@@ -166,6 +166,12 @@ struct XpPanelState {
     bool  minimized = false;
     bool  dragging = false;
     POINT dragOff{0, 0};
+    float scale = 1.0f;                         // mouse-wheel resize (0.7..1.8), persisted
+    // presentation state (render-loop only): eased minimize progress + count-up values,
+    // so the card animates instead of snapping.
+    double animMin = 0.0;                       // 0 = fully expanded, 1 = fully minimized
+    double disp[29] = {};                       // displayed session-gain per skill (eases to target)
+    double dispTotal = 0.0;
     // session (all guarded by g_mu)
     bool      haveBase = false;
     long long startMs = 0;                      // first observed gain (total-row basis)
@@ -208,15 +214,17 @@ std::wstring xp_path() {
 void SaveXp() {   // caller holds g_mu
     auto p = xp_path(); if (p.empty()) return;
     std::ofstream f(p.c_str(), std::ios::trunc);
-    if (f) f << g_xp.x << ' ' << g_xp.y << ' ' << (g_xp.minimized ? 1 : 0);
+    if (f) f << g_xp.x << ' ' << g_xp.y << ' ' << (g_xp.minimized ? 1 : 0) << ' ' << g_xp.scale;
 }
 void LoadXp() {   // caller holds g_mu
     auto p = xp_path(); if (p.empty()) return;
     std::ifstream f(p.c_str());
-    int x = -1, y = -1, m = 0;
+    int x = -1, y = -1, m = 0; float sc = 1.0f;
     if (f && (f >> x >> y >> m)) {
         g_xp.x = x; g_xp.y = y; g_xp.minimized = (m != 0);
+        g_xp.animMin = g_xp.minimized ? 1.0 : 0.0;   // start settled, no open animation on boot
         g_xp.placed = true;   // a saved position exists -> honour it (else default spot)
+        if (f >> sc) g_xp.scale = (sc < 0.7f ? 0.7f : (sc > 1.8f ? 1.8f : sc));   // pre-scale files simply omit it
     }
 }
 
@@ -1183,26 +1191,81 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             bool any = false;
             for (int i = 0; i < nq; ++i)
                 if (qx[i] > -(float)W && qx[i] < 2.f * W && qy[i] > -(float)H && qy[i] < 2.f * H) any = true;
-            if (nq >= 3 && any) {
-                // The clipped polygon can carry up to 5 verts; kFillQuad takes 4,
-                // so fill as a fan of quads off vert 0 (tail duplicated when odd).
-                for (int i = 1; i + 1 < nq; i += 2) {
-                    int j = (i + 2 < nq) ? i + 2 : i + 1;
+            // Fill helper: fan of kFillQuads off vert 0 in the marker's scrim mix
+            // (denser but far darker than a colour wash - the tile reads as a lit
+            // outline instead of a stain).
+            // `bright` (two-tone halves): a 50% colour mix at slightly higher alpha, so the
+            // two hues actually read as two hues - the standard 25% scrim made both halves
+            // near-identical dark panes (owner feedback).
+            auto fillPoly = [&](const float* px2, const float* py2, int n, int r2, int g2, int b2,
+                                bool bright) {
+                for (int i = 1; i + 1 < n; i += 2) {
+                    int j = (i + 2 < n) ? i + 2 : i + 1;
                     marker::Command q{}; q.type = marker::kFillQuad;
-                    q.x0 = qx[0]; q.y0 = qy[0]; q.x1 = qx[i]; q.y1 = qy[i];
-                    q.x2 = qx[i + 1]; q.y2 = qy[i + 1]; q.x3 = qx[j]; q.y3 = qy[j];
-                    // Denser but far darker: a tinted scrim in the user's hue rather than a
-                    // coloured wash, so the tile reads as a lit outline instead of a stain.
-                    q.r = (std::uint8_t)MixSurf(cr, kSurfR); q.g = (std::uint8_t)MixSurf(cg, kSurfG);
-                    q.b = (std::uint8_t)MixSurf(cb, kSurfB); q.a = 110;
+                    q.x0 = px2[0]; q.y0 = py2[0]; q.x1 = px2[i]; q.y1 = py2[i];
+                    q.x2 = px2[i + 1]; q.y2 = py2[i + 1]; q.x3 = px2[j]; q.y3 = py2[j];
+                    if (bright) {
+                        q.r = (std::uint8_t)((r2 + kSurfR) / 2); q.g = (std::uint8_t)((g2 + kSurfG) / 2);
+                        q.b = (std::uint8_t)((b2 + kSurfB) / 2); q.a = 125;
+                    } else {
+                        q.r = (std::uint8_t)MixSurf(r2, kSurfR); q.g = (std::uint8_t)MixSurf(g2, kSurfG);
+                        q.b = (std::uint8_t)MixSurf(b2, kSurfB); q.a = 110;
+                    }
                     push(q);
+                }
+            };
+            if (nq >= 3 && any) {
+                if (m.color2) {
+                    // TWO-TONE: split the tile along its SW->NE diagonal in WORLD space
+                    // (stable under any camera angle) - primary colour keeps the NW half,
+                    // the second colour takes the SE half. Each half projects and clips
+                    // independently; the outline below stays in the primary colour.
+                    const int c2r = (m.color2 >> 16) & 0xFF, c2g = (m.color2 >> 8) & 0xFF, c2b = m.color2 & 0xFF;
+                    const float triSE[3][3] = { { wc[0][0], wc[0][1], wc[0][2] },
+                                                { wc[1][0], wc[1][1], wc[1][2] },
+                                                { wc[2][0], wc[2][1], wc[2][2] } };
+                    const float triNW[3][3] = { { wc[0][0], wc[0][1], wc[0][2] },
+                                                { wc[2][0], wc[2][1], wc[2][2] },
+                                                { wc[3][0], wc[3][1], wc[3][2] } };
+                    float tx[9], ty[9];
+                    int tn = ClipProjectPoly(f->matrix, vpX, vpY, vpW, vpH, triSE, 3, tx, ty);
+                    if (tn >= 3) fillPoly(tx, ty, tn, c2r, c2g, c2b, true);
+                    tn = ClipProjectPoly(f->matrix, vpX, vpY, vpW, vpH, triNW, 3, tx, ty);
+                    if (tn >= 3) fillPoly(tx, ty, tn, cr, cg, cb, true);
+                } else {
+                    fillPoly(qx, qy, nq, cr, cg, cb, false);
                 }
                 // No corner ticks here: a single tile's perimeter already IS four short edges,
                 // and ticking it would leave nothing. Ticks are for prisms only.
-                for (int i = 0; i < nq; ++i) {
-                    line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 3.0f, kInkR, kInkG, kInkB, 140);
-                    line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 1.6f, cr, cg, cb, 255);   // USER COLOUR, verbatim
-                }
+                //
+                // TWO-TONE outline: the bright 255-alpha outline is what actually carries the
+                // colours (the fill is a dark scrim), so each half owns its two perimeter
+                // edges - S+E in the second tone, N+W in the primary - with the diagonal
+                // seam inked between them. Needs all four corners on screen; a clipped tile
+                // falls back to the single-colour perimeter below.
+                if (m.color2) {
+                    // Per-edge clip-projection, so the split border survives a partially
+                    // clipped tile too (the earlier all-corners-or-fallback version dropped
+                    // the split at screen edges). Edge i runs corner i -> i+1 in SW,SE,NE,NW
+                    // order: S(0) + E(1) belong to the second tone, N(2) + W(3) to the primary.
+                    const int c2r = (m.color2 >> 16) & 0xFF, c2g = (m.color2 >> 8) & 0xFF, c2b = m.color2 & 0xFF;
+                    for (int i = 0; i < 4; ++i) {
+                        float ax2, ay2, bx2, by2;
+                        if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH,
+                                                wc[i], wc[(i + 1) % 4], ax2, ay2, bx2, by2)) continue;
+                        const bool second = i < 2;
+                        line(ax2, ay2, bx2, by2, 3.0f, kInkR, kInkG, kInkB, 140);
+                        line(ax2, ay2, bx2, by2, 1.8f,
+                             second ? c2r : cr, second ? c2g : cg, second ? c2b : cb, 255);
+                    }
+                    float sx2, sy2, ex2, ey2;   // the diagonal seam, inked between the halves
+                    if (ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, wc[0], wc[2], sx2, sy2, ex2, ey2))
+                        line(sx2, sy2, ex2, ey2, 1.4f, kInkR, kInkG, kInkB, 170);
+                } else
+                    for (int i = 0; i < nq; ++i) {
+                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 3.0f, kInkR, kInkG, kInkB, 140);
+                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 1.6f, cr, cg, cb, 255);   // USER COLOUR, verbatim
+                    }
             }
             if (!m.label.empty()) {
                 float zc = (zSW + zSE + zNE + zNW) * 0.25f;
@@ -1336,13 +1399,33 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             // whatever the scene happens to be, so a saturated fill washes out on bright
             // terrain and the object we are pointing at fights its own highlight.
             const int sr = MixSurf(mr, kSurfR), sg = MixSurf(mg, kSurfG), sb = MixSurf(mb, kSurfB);
-            for (int i = 1; i + 1 < nq; i += 2) {        // fan fill (see tile markers)
-                int j = (i + 2 < nq) ? i + 2 : i + 1;
-                marker::Command q{}; q.type = marker::kFillQuad;
-                q.x0 = qx[0]; q.y0 = qy[0]; q.x1 = qx[i]; q.y1 = qy[i];
-                q.x2 = qx[i + 1]; q.y2 = qy[i + 1]; q.x3 = qx[j]; q.y3 = qy[j];
-                q.r = (std::uint8_t)sr; q.g = (std::uint8_t)sg; q.b = (std::uint8_t)sb; q.a = 96;
-                push(q);
+            auto gfan = [&](const float* fx, const float* fy, int n, int r3, int g3, int b3) {
+                for (int i = 1; i + 1 < n; i += 2) {
+                    int j = (i + 2 < n) ? i + 2 : i + 1;
+                    marker::Command q{}; q.type = marker::kFillQuad;
+                    q.x0 = fx[0]; q.y0 = fy[0]; q.x1 = fx[i]; q.y1 = fy[i];
+                    q.x2 = fx[i + 1]; q.y2 = fy[i + 1]; q.x3 = fx[j]; q.y3 = fy[j];
+                    q.r = (std::uint8_t)r3; q.g = (std::uint8_t)g3; q.b = (std::uint8_t)b3; q.a = 96;
+                    push(q);
+                }
+            };
+            if (p.rgb2 && p.box_h <= 0.f) {
+                // TWO-TONE flat guide tile (SDK color2): SW->NE world-space diagonal,
+                // primary keeps the NW half - identical split to two-tone user markers.
+                const int r2c = (p.rgb2 >> 16) & 255, g2c = (p.rgb2 >> 8) & 255, b2c = p.rgb2 & 255;
+                const float tSE[3][3] = { { wc[0][0], wc[0][1], wc[0][2] },
+                                          { wc[1][0], wc[1][1], wc[1][2] },
+                                          { wc[2][0], wc[2][1], wc[2][2] } };
+                const float tNW[3][3] = { { wc[0][0], wc[0][1], wc[0][2] },
+                                          { wc[2][0], wc[2][1], wc[2][2] },
+                                          { wc[3][0], wc[3][1], wc[3][2] } };
+                float hx[9], hy[9];
+                int hn = ClipProjectPoly(f->matrix, vpX, vpY, vpW, vpH, tSE, 3, hx, hy);
+                if (hn >= 3) gfan(hx, hy, hn, MixSurf(r2c, kSurfR), MixSurf(g2c, kSurfG), MixSurf(b2c, kSurfB));
+                hn = ClipProjectPoly(f->matrix, vpX, vpY, vpW, vpH, tNW, 3, hx, hy);
+                if (hn >= 3) gfan(hx, hy, hn, sr, sg, sb);
+            } else {
+                gfan(qx, qy, nq, sr, sg, sb);
             }
         }
         // Two techniques carry the legibility here, both forced by what the renderer can do:
@@ -1351,7 +1434,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         // same trick the guide path already uses to stay readable on sand. (2) `ticks` draws
         // only the ENDS of an edge, so a prism reads as corner brackets and the object shows
         // through its own outline instead of being caged by twelve opaque lines.
-        auto edgeLine = [&](int i0, int i1, float th, int alpha, bool contour, bool ticks) {
+        // er/eg/eb: this edge's colour (-1 = the mark's colour). Lets a two-tone flat
+        // tile give each perimeter edge to its own half.
+        auto edgeLine = [&](int i0, int i1, float th, int alpha, bool contour, bool ticks,
+                            int er = -1, int eg = -1, int eb = -1) {
+            if (er < 0) { er = mr; eg = mg; eb = mb; }
             float ax, ay, bx, by;
             if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH,
                                     wc[i0], wc[i1], ax, ay, bx, by)) return;
@@ -1369,13 +1456,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 const float x0 = ax + dx * t0, y0 = ay + dy * t0;
                 const float x1 = ax + dx * t1, y1 = ay + dy * t1;
                 if (contour) line(x0, y0, x1, y1, th + 1.6f, kInkR, kInkG, kInkB, 140);
-                line(x0, y0, x1, y1, th, mr, mg, mb, alpha);
+                line(x0, y0, x1, y1, th, er, eg, eb, alpha);
             };
             if (f0 >= 0.999f) { seg(0.0f, 1.0f); return; }
             // Corners alone lose the SHAPE on a long thin prism -- the two ends stop reading
             // as one object. A faint full-length edge underneath keeps the silhouette legible
             // while the brackets carry the emphasis and still let the model show through.
-            line(ax, ay, bx, by, th * 0.75f, mr, mg, mb, alpha / 4);
+            line(ax, ay, bx, by, th * 0.75f, er, eg, eb, alpha / 4);
             seg(0.0f, f0); seg(1.0f - f0, 1.0f);
         };
         // Prisms tick; flat zone tiles must NOT, because edge_mask merges them into one shape
@@ -1386,7 +1473,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             // zone (bit i: 0 south, 1 east, 2 north, 3 west -- corner order SW,SE,NE,NW), so
             // the union outlines as ONE shape. Prisms always draw every edge.
             if (nv == 4 && !((p.edge_mask >> i) & 1)) continue;
-            edgeLine(i, (i + 1) & 3, 2.2f, 245, true, tick);              // base ring: silhouette
+            // Two-tone flat tile: the border splits with the fill - S(0)+E(1) edges carry
+            // the second tone, N(2)+W(3) the primary (corner order SW,SE,NE,NW).
+            if (p.rgb2 && nv == 4 && p.box_h <= 0.f && i < 2)
+                edgeLine(i, (i + 1) & 3, 2.2f, 245, true, tick,
+                         (p.rgb2 >> 16) & 255, (p.rgb2 >> 8) & 255, p.rgb2 & 255);
+            else
+                edgeLine(i, (i + 1) & 3, 2.2f, 245, true, tick);          // base ring: silhouette
             if (nv == 8) {
                 edgeLine(4 + i, 4 + ((i + 1) & 3), 1.9f, 215, true, tick);   // top ring
                 // Verticals draw WHOLE, never ticked: they are short, they are what joins the
@@ -2085,9 +2178,23 @@ void BuildXpCmds(std::vector<marker::Command>& out, int W, int H) {
             return g_xp.firstGain[a.id] < g_xp.firstGain[b.id];   // stable: rows never reorder
         });
 
-    const float bw = 238.0f, rowH = 19.0f, hdrH = 27.0f;
+    const float S = g_xp.scale;                            // wheel-resize factor (0.7..1.8)
+    const float bw = 238.0f * S, rowH = 19.0f * S, hdrH = 27.0f * S;
     int nRows = (int)rows.size() + (g_xp.showTotal ? 1 : 0);
-    float bh = g_xp.minimized ? hdrH : hdrH + nRows * rowH + (nRows ? 7.0f : 0.0f);
+
+    // Minimize/restore EASES between states instead of snapping: animMin runs toward the
+    // target each frame (render loop publishes ~30/s while the widget is on) and the body
+    // height, row alpha and separator all follow it.
+    {
+        const double tgt = g_xp.minimized ? 1.0 : 0.0;
+        g_xp.animMin += (tgt - g_xp.animMin) * 0.28;
+        if (g_xp.animMin < 0.005) g_xp.animMin = 0.0;
+        if (g_xp.animMin > 0.995) g_xp.animMin = 1.0;
+    }
+    const float bodyFull = nRows ? nRows * rowH + 7.0f * S : 0.0f;
+    const float body = bodyFull * (float)(1.0 - g_xp.animMin);
+    const float bodyA = (float)((1.0 - g_xp.animMin) * (1.0 - g_xp.animMin));   // rows fade faster than they shrink
+    float bh = hdrH + body;
     if (!g_xp.placed) { g_xp.x = 14; g_xp.y = 84; }                  // default spot until dragged
     if (g_xp.x < 0) g_xp.x = 0;
     if (g_xp.y < 0) g_xp.y = 0;
@@ -2095,42 +2202,86 @@ void BuildXpCmds(std::vector<marker::Command>& out, int W, int H) {
     if (g_xp.y > H - (int)bh) g_xp.y = H - (int)bh;
     float bx = (float)g_xp.x, by = (float)g_xp.y;
 
-    WCard(out, bx, by, bw, bh, 9.0f, 124, 92, 252, 1.0f);
+    WCard(out, bx, by, bw, bh, 10.0f * S, 124, 92, 252, 1.0f);
+    // faint top inner highlight: reads as depth without a second border
+    WLine(out, bx + 10.0f * S, by + 1.5f, bx + bw - 10.0f * S, by + 1.5f, 1.0f, 255, 255, 255, 22);
 
-    WRound(out, bx + 11.0f, by + hdrH * 0.5f - 3.0f, 6.0f, 6.0f, 3.0f, 140, 111, 253, 255);
-    WText(out, "XP / hr", bx + 23.0f, by + hdrH * 0.5f, 12.0f, 0, 245, 245, 250, 255);
+    // Status dot breathes; its glow ring answers "is this live" at a glance.
+    const double pulse = 0.5 + 0.5 * std::sin((double)(t % 2200) / 2200.0 * 6.2831853);
+    WRound(out, bx + 9.0f * S - 2.0f, by + hdrH * 0.5f - 5.0f, 10.0f, 10.0f, 5.0f,
+           140, 111, 253, (int)(30.0 + 40.0 * pulse));
+    WRound(out, bx + 11.0f * S, by + hdrH * 0.5f - 3.0f, 6.0f, 6.0f, 3.0f,
+           160, 135, 255, (int)(200.0 + 55.0 * pulse));
+    WText(out, "XP / hr", bx + 23.0f * S, by + hdrH * 0.5f, 12.0f * S, 0, 245, 245, 250, 255);
+
+    // The header ALWAYS carries the total rate (count-up eased), so the minimized card
+    // still answers the only question that matters. Elapsed sits beside it, dimmer.
+    const long long totalPh = XpRatePerHour(totalGained, g_xp.startMs, t);
+    g_xp.dispTotal += ((double)totalGained - g_xp.dispTotal) * 0.25;
+    if (g_xp.startMs > 0 && totalGained > 0) {
+        std::string rs = FmtXp(totalPh) + "/h";
+        WText(out, rs.c_str(), bx + bw - 84.0f * S, by + hdrH * 0.5f, 11.5f * S, 2, 170, 145, 255, 255);
+    }
     if (g_xp.startMs > 0) {
         long long el = (t - g_xp.startMs) / 1000;
         char b[32];
         if (el >= 3600) std::snprintf(b, sizeof(b), "%lldh %02lldm", el / 3600, (el % 3600) / 60);
         else            std::snprintf(b, sizeof(b), "%lldm %02llds", el / 60, el % 60);
-        WText(out, b, bx + bw - 34.0f, by + hdrH * 0.5f, 11.5f, 2, 150, 153, 165, 255);
+        WText(out, b, bx + bw - 34.0f * S, by + hdrH * 0.5f, 10.5f * S, 2, 150, 153, 165, 230);
     }
-    float mbX = bx + bw - 24.0f, mbY = by + hdrH * 0.5f - 7.0f;
+    float mbX = bx + bw - 24.0f * S, mbY = by + hdrH * 0.5f - 7.0f;
     WRect(out, mbX, mbY, mbX + 14.0f, mbY + 14.0f, 1.5f, 200, 200, 210, 220);
     WLine(out, mbX + 3.5f, mbY + 7.0f, mbX + 10.5f, mbY + 7.0f, 1.5f, 200, 200, 210, 220);
     if (g_xp.minimized)
         WLine(out, mbX + 7.0f, mbY + 3.5f, mbX + 7.0f, mbY + 10.5f, 1.5f, 200, 200, 210, 220);
     g_xp_min = RECT{ (LONG)(mbX - 3), (LONG)(mbY - 3), (LONG)(mbX + 17), (LONG)(mbY + 17) };
 
-    if (!g_xp.minimized && nRows) {
-        WLine(out, bx + 9.0f, by + hdrH, bx + bw - 9.0f, by + hdrH, 1.0f, 124, 92, 252, 70);
-        float y = by + hdrH + 3.0f;
-        const float colGain = bw - 96.0f;   // right edge of the "gained" column
-        auto row = [&](const char* name, long long gained, long long ph,
+    if (body > 1.0f && nRows) {
+        const int sepA = (int)(70.0f * bodyA);
+        WLine(out, bx + 9.0f * S, by + hdrH, bx + bw - 9.0f * S, by + hdrH, 1.0f, 124, 92, 252, sepA);
+        // shimmer: a slow light glint travelling the separator, so the card reads alive
+        {
+            const float span = bw - 18.0f * S;
+            const float gx = bx + 9.0f * S + span * (float)((double)(t % 3400) / 3400.0);
+            const float gw = 26.0f * S;
+            WLine(out, gx, by + hdrH, gx + gw > bx + bw - 9.0f * S ? bx + bw - 9.0f * S : gx + gw,
+                  by + hdrH, 1.0f, 200, 180, 255, (int)(120.0f * bodyA));
+        }
+        float y = by + hdrH + 3.0f * S;
+        const float colGain = bw - 96.0f * S;   // right edge of the "gained" column
+        long long maxPh = 1;
+        for (const auto& rw : rows) if (rw.ph > maxPh) maxPh = rw.ph;
+        auto row = [&](const char* name, long long gained, double dispGained, long long ph,
+                       bool bar, long long born,
                        int nr, int ng, int nb, int vr, int vg, int vb) {
-            WText(out, name, bx + 12.0f, y + rowH * 0.5f, 11.5f, 0, nr, ng, nb, 255);
-            std::string gs = "+" + FmtXp(gained);
-            WText(out, gs.c_str(), bx + colGain, y + rowH * 0.5f, 11.5f, 2, vr, vg, vb, 255);
+            if (y + rowH > by + bh - 2.0f) return;                    // clipped while animating shut
+            // appear: a freshly-added row fades and slides in over its first 300ms
+            float ap = 1.0f;
+            if (born > 0 && t - born < 300) ap = (float)(t - born) / 300.0f;
+            const int a = (int)(255.0f * bodyA * ap);
+            const float sl = 6.0f * (1.0f - ap);                      // slide-in offset
+            // relative-rate bar behind the row: instantly shows which skill carries the session
+            if (bar && ph > 0) {
+                float frac = (float)ph / (float)maxPh; if (frac > 1.0f) frac = 1.0f;
+                WRound(out, bx + 8.0f * S, y + 2.0f, (bw - 16.0f * S) * frac, rowH - 4.0f,
+                       3.0f, 140, 111, 253, (int)(26.0f * bodyA * ap));
+            }
+            WText(out, name, bx + 12.0f * S + sl, y + rowH * 0.5f, 11.5f * S, 0, nr, ng, nb, a);
+            std::string gs = "+" + FmtXp((long long)(dispGained + 0.5));
+            (void)gained;
+            WText(out, gs.c_str(), bx + colGain, y + rowH * 0.5f, 11.5f * S, 2, vr, vg, vb, a);
             std::string ps = FmtXp(ph) + "/h";
-            WText(out, ps.c_str(), bx + bw - 12.0f, y + rowH * 0.5f, 11.5f, 2, vr, vg, vb, 255);
+            WText(out, ps.c_str(), bx + bw - 12.0f * S, y + rowH * 0.5f, 11.5f * S, 2, vr, vg, vb, a);
             y += rowH;
         };
         if (g_xp.showTotal)
-            row("Total", totalGained, XpRatePerHour(totalGained, g_xp.startMs, t),
+            row("Total", totalGained, g_xp.dispTotal, totalPh, false, 0,
                 170, 145, 255, 170, 145, 255);
-        for (const auto& rw : rows)
-            row(kXpSkillNames[rw.id], rw.gained, rw.ph, 208, 210, 220, 245, 245, 250);
+        for (const auto& rw : rows) {
+            g_xp.disp[rw.id] += ((double)rw.gained - g_xp.disp[rw.id]) * 0.25;   // count-up ease
+            row(kXpSkillNames[rw.id], rw.gained, g_xp.disp[rw.id], rw.ph, true,
+                g_xp.firstGain[rw.id], 208, 210, 220, 245, 245, 250);
+        }
     }
     g_xp_hit = RECT{ (LONG)bx, (LONG)by, (LONG)(bx + bw), (LONG)(by + bh) };
 }
@@ -2269,6 +2420,13 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SaveMetro();
             return 0;
         }
+        if (g_xp.on && !g_xp.locked && PtInRect(&g_xp_hit, pt)) {   // wheel over the XP card = resize
+            float d = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 0.08f : -0.08f;
+            float s = g_xp.scale + d;
+            g_xp.scale = (s < 0.7f ? 0.7f : (s > 1.8f ? 1.8f : s));
+            SaveXp();
+            return 0;
+        }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
@@ -2398,7 +2556,7 @@ void RenderLoop() {
             { std::lock_guard<std::mutex> lk(g_mu);
               auto git = g_guides.find(cpid);
               if (git != g_guides.end())
-                  for (const auto& m : git->second) gsites.push_back({ m.gx, m.gy, m.label, m.snapObj, m.rgb, m.gx2, m.gy2, m.region, m.plane });
+                  for (const auto& m : git->second) gsites.push_back({ m.gx, m.gy, m.label, m.snapObj, m.rgb, m.gx2, m.gy2, m.region, m.plane, m.rgb2 });
               auto uit = g_uiHighlights.find(cpid);
               hasUiHl = (uit != g_uiHighlights.end() && !uit->second.empty());
               auto ctit = g_centerTexts.find(cpid);
@@ -2526,7 +2684,40 @@ void RenderLoop() {
         if (gsfIn <= 0.0) gsfIn = 1.0;
         g_inputScale.store(gsfIn);
 
-        if (dib.ensure(W, H)) {
+        // Repaint/upload ONLY when the visual state changed: the pads are static for
+        // seconds at a time, but this used to clear + repaint + UpdateLayeredWindow the
+        // full client-sized surface every iteration (~0.5-1 GB/s of memset + a 30-60Hz
+        // DWM upload on a 1440p client). Fingerprint the inputs; a pure window move
+        // takes the position-only UpdateLayeredWindow form, which uploads nothing.
+        static std::vector<long long> fpPrev; static POINT tlPrev{ LONG_MIN, LONG_MIN };
+        std::vector<long long> fp;
+        fp.reserve(16);
+        fp.push_back(W); fp.push_back(H);
+        fp.push_back((long long)std::llround(gsfIn * 10000.0));
+        fp.push_back((padMetro ? 1 : 0) | (padXp ? 2 : 0) | (padNotif ? 4 : 0));
+        auto fpRect = [&](const RECT& r) {
+            fp.push_back(((long long)r.left << 32) ^ (unsigned)r.top);
+            fp.push_back(((long long)r.right << 32) ^ (unsigned)r.bottom);
+        };
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            if (padMetro) fpRect(g_metro_hit);
+            if (padXp)    fpRect(g_xp_hit);
+            if (padNotif) for (const auto& hit : g_notif_hit) fpRect(hit.rect);
+        }
+        const bool fpChanged = fp != fpPrev;
+        const bool moved = tl.x != tlPrev.x || tl.y != tlPrev.y;
+        if (!fpChanged && !moved && shown) {
+            // visually identical, same place: nothing to paint or upload
+        } else if (!fpChanged && shown) {
+            // same pixels, new place: move the layered window without re-uploading
+            POINT dst{ tl.x, tl.y };
+            UpdateLayeredWindow(hwnd, nullptr, &dst, nullptr, nullptr, nullptr, 0, nullptr, 0);
+            tlPrev = tl;
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        } else if (dib.ensure(W, H)) {
+            fpPrev = std::move(fp); tlPrev = tl;
             dib.clear();
             // Alpha-2 pads over the interactive rects: invisible, but they receive
             // clicks once the window drops WS_EX_TRANSPARENT. Premultiplied black at
@@ -2537,9 +2728,8 @@ void RenderLoop() {
                 int x0 = rc.left < 0 ? 0 : rc.left, y0 = rc.top < 0 ? 0 : rc.top;
                 int x1 = rc.right > W ? W : rc.right, y1 = rc.bottom > H ? H : rc.bottom;
                 auto* px = (std::uint32_t*)dib.bits;
-                for (int yy = y0; yy < y1; ++yy)
-                    for (int xx = x0; xx < x1; ++xx)
-                        px[(size_t)yy * W + xx] = 0x02000000u;
+                for (int yy = y0; yy < y1; ++yy)                       // row-span fills
+                    std::fill(px + (size_t)yy * W + x0, px + (size_t)yy * W + x1, 0x02000000u);
             };
             {
                 std::lock_guard<std::mutex> lk(g_mu);

@@ -130,9 +130,16 @@ void save_locked(const std::string& acct, const Account& a) {
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) return;
     for (const auto& m : a.markers) {
-        char hdr[64];
-        std::snprintf(hdr, sizeof(hdr), "%d\t%d\t%d\t%d\t%06X\t",
-                      m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF);
+        char hdr[80];
+        // Two-tone markers write "RRGGBB/RRGGBB" in the colour field: older builds'
+        // hex parse stops at the '/', so they read the primary colour and keep the
+        // label column intact (forward-compatible by construction).
+        if (m.color2)
+            std::snprintf(hdr, sizeof(hdr), "%d\t%d\t%d\t%d\t%06X/%06X\t",
+                          m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF, m.color2 & 0xFFFFFF);
+        else
+            std::snprintf(hdr, sizeof(hdr), "%d\t%d\t%d\t%d\t%06X\t",
+                          m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF);
         f << hdr << m.label << '\n';
     }
 }
@@ -164,6 +171,9 @@ Account& get_or_load(const std::string& acct) {   // caller holds g_mu
             m.lx = std::stoi(lx); m.ly = std::stoi(ly);
             m.plane = std::stoi(plane);
             m.color = (std::uint32_t)std::stoul(color, nullptr, 16) & 0xFFFFFF;
+            auto slash = color.find('/');
+            if (slash != std::string::npos && slash + 1 < color.size())
+                m.color2 = (std::uint32_t)std::stoul(color.substr(slash + 1), nullptr, 16) & 0xFFFFFF;
         } catch (...) { continue; }
         m.label = clean_label(label);
         if (m.lx < 0 || m.lx > 63 || m.ly < 0 || m.ly > 63 || m.plane < 0 || m.plane > 3) continue;
@@ -225,10 +235,17 @@ std::string GetJson(std::uint32_t pid) {
     std::string out = "[";
     for (size_t i = 0; i < a.markers.size(); ++i) {
         const auto& m = a.markers[i];
-        char buf[128];
-        std::snprintf(buf, sizeof(buf),
-            "%s{\"region\":%d,\"lx\":%d,\"ly\":%d,\"plane\":%d,\"color\":\"#%06X\",\"label\":\"",
-            i ? "," : "", m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF);
+        char buf[192];
+        if (m.color2)
+            std::snprintf(buf, sizeof(buf),
+                "%s{\"region\":%d,\"lx\":%d,\"ly\":%d,\"plane\":%d,\"color\":\"#%06X\","
+                "\"color2\":\"#%06X\",\"label\":\"",
+                i ? "," : "", m.region, m.lx, m.ly, m.plane,
+                m.color & 0xFFFFFF, m.color2 & 0xFFFFFF);
+        else
+            std::snprintf(buf, sizeof(buf),
+                "%s{\"region\":%d,\"lx\":%d,\"ly\":%d,\"plane\":%d,\"color\":\"#%06X\",\"label\":\"",
+                i ? "," : "", m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF);
         out += buf; out += json_escape(m.label); out += "\"}";
     }
     out += "]";
@@ -289,7 +306,8 @@ bool SetLabel(std::uint32_t pid, int region, int lx, int ly, int plane, const st
     return true;
 }
 
-bool SetColor(std::uint32_t pid, int region, int lx, int ly, int plane, std::uint32_t color) {
+bool SetColor(std::uint32_t pid, int region, int lx, int ly, int plane, std::uint32_t color,
+              std::uint32_t color2) {
     std::string acct = account_for(pid);
     if (acct.empty()) return false;
     std::lock_guard<std::mutex> lk(g_mu);
@@ -297,6 +315,7 @@ bool SetColor(std::uint32_t pid, int region, int lx, int ly, int plane, std::uin
     int idx = find_idx(a, region, lx, ly, plane);
     if (idx < 0) return false;
     a.markers[idx].color = color & 0xFFFFFF;
+    a.markers[idx].color2 = color2 & 0xFFFFFF;   // 0 = back to single-colour
     a.version++;
     save_locked(acct, a);
     return true;

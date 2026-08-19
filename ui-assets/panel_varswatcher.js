@@ -170,7 +170,7 @@
       wrap = document.createElement('div'); wrap.id = 'vrWrap'; wrap.className = 'vw-wrap';
       const top = document.createElement('div'); top.className = 'vw-top';
       const inp = document.createElement('input'); inp.id = 'vrSearch'; inp.className = 'vw-search';
-      inp.type = 'text'; inp.placeholder = 'Search id, value, or name (amber, q_making_history...)'; inp.spellcheck = false; inp.value = varFilter;
+      inp.type = 'text'; inp.placeholder = 'Search id, value, name, or =N for value-only (=1500 finds where 1500 lives)'; inp.spellcheck = false; inp.value = varFilter;
       inp.addEventListener('input', () => { varFilter = inp.value; paintVars(); });
       const clearBtn = (fn) => { varRowEls.forEach(el => el.remove()); varRowEls.clear(); fn(); };
       const pause = document.createElement('button'); pause.id = 'vrPause'; pause.className = 'vw-btn';
@@ -238,7 +238,20 @@
           const want = +varTypeFilter;
           if (want === 5 ? (scope !== 5 && scope !== 2) : (scope !== want)) continue;
         }
-        if (f) {
+        if (f && f[0] === '=') {
+          // STRICT VALUE SEARCH: '=1500' matches by VALUE only, never by id. Covers the
+          // raw value, either 16-bit half, x10/x100 scalings (prayer-style packings) and
+          // every varbit decoded out of a varp. For hunting where an on-screen number
+          // lives: search '=N', change the number in game, search again, intersect.
+          const want = parseInt(f.slice(1), 10);
+          if (!Number.isFinite(want)) continue;
+          const v = varDump[k] | 0;
+          let m2 = v === want || (v & 0xffff) === want || ((v >>> 16) & 0xffff) === want
+                || v === want * 10 || v === want * 100;
+          if (!m2 && scope === 4 && varbitMapData)
+            m2 = varpVarbits(id, v).some(b => b.val === want || b.val === want * 10);
+          if (!m2) continue;
+        } else if (f) {
           // Match by id substring, or (for a varp) an exact varbit # it owns.
           let m = String(id).indexOf(f) >= 0;
           if (!m && scope === 4 && varbitMapData) { const defs = varbitMapData[id]; if (defs && defs.some(d => d[0] === +f)) m = true; }

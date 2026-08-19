@@ -497,10 +497,23 @@
   // No always-on UI-thread loop: the stopwatch is on-demand and the metronome runs in the
   // overlay, so an idle panel never wakes the render thread.
 
+  let _infoSig = '';
   function renderInfo() {
     const c = $('content');
     let wrap = $('infoWrap');
-    if (!wrap) { c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'infoWrap'; wrap.className = 'pane'; c.appendChild(wrap); }
+    if (!wrap) { c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'infoWrap'; wrap.className = 'pane'; c.appendChild(wrap); _infoSig = ''; }
+    // Rebuild only when an input actually changed (same dedup the Skills grid uses):
+    // this pane used to tear down and rebuild its whole DOM 4x/s, one of the largest
+    // steady-state raster costs in the UI. The idle countdown is quantized to seconds
+    // in the signature so it still ticks visibly without forcing 4 rebuilds/s.
+    try {
+      const im = infoMember && typeof infoMember.idleMs === 'number'
+        ? Object.assign({}, infoMember, { idleMs: Math.floor(infoMember.idleMs / 1000) })
+        : infoMember;
+      const sig = JSON.stringify([infoData, playerVp, playerVb, im, infoCam, infoHover, infoHoverHeld]);
+      if (sig === _infoSig && wrap.firstChild) return;
+      _infoSig = sig;
+    } catch (e) { /* unstringifiable input: fall through and rebuild */ }
     const d = infoData;
     const rows = document.createElement('div'); rows.className = 'rows';
     // Grouped, not one long column. A heading is only emitted once something actually
@@ -583,9 +596,16 @@
         // Combat level comes from the player entity section (psec+0x10BC); -1 = unavailable.
         if (typeof d.combat === 'number' && d.combat >= 3)
           add(row('Combat level', String(d.combat)));
-        // Current only: varp 13537 carries no max, and the max-lifepoints source is not yet known.
-        // Showing "x / 0" read as an injured player at zero max, which is worse than showing less.
-        add(row('Hitpoints',  playerVp['13537'] === undefined ? 'unknown' : L(hp)));
+        // varp 13537 = current lifepoints, varp 13538 = MAX lifepoints (both raw). The max
+        // was located live 2026-08-17 by value-searching the varp map at 1,068/1,500 (only
+        // 13538 held 1500) and cross-checked on a second account at 5,600/5,600 (13537 and
+        // 13538 both 5600). Neither varp is referenced by any clientscript; engine-fed.
+        // Max shown only when it reads sane, so a missing read never paints "x / 0".
+        {
+          const mx = playerVp['13538'];
+          add(row('Hitpoints', playerVp['13537'] === undefined ? 'unknown'
+                 : (typeof mx === 'number' && mx > 0 ? L(hp) + ' / ' + L(mx) : L(hp))));
+        }
         add(row('Prayer',     L(Math.floor((pr & 0x7fff) / 10)) + ' / ' + L(((pr >>> 16) & 0x7f) * 10)));
         add(row('Summoning',  L(Math.floor((su & 0x7fff) / 10)) + ' / ' + L(((su >>> 16) & 0x7f) * 10)));
         // Familiar special-move points: varp 1787 raw current, fixed max 60.
@@ -647,11 +667,19 @@
         if (typeof infoCam.zoom === 'number') add(row('Zoom', String(infoCam.zoom)));
       }
       // Whatever the engine hover slot resolves right now, one subrow per decoded field.
+      // STICKY: moving the mouse from the NPC to THIS panel clears the engine's hover
+      // slot, which used to blank the section the instant you tried to read it. The
+      // last real target is therefore held and shown (tagged "last") until a new one
+      // replaces it, so hover something, then come read the details at leisure.
       {
-        const hv = infoHover;
+        let hv = infoHover;
+        const isReal = hv && hv.ok && (hv.kind || hv.name);
+        if (isReal) infoHoverHeld = hv;
+        let held = false;
+        if (!isReal && infoHoverHeld) { hv = infoHoverHeld; held = true; }
         const kind = hv && hv.ok ? (hv.kind || (hv.name ? 'unresolved' : 'no target')) : 'none';
         sec('Mouse hover');
-        add(row('Target', kind));
+        add(row('Target', kind + (held ? '  (last)' : '')));
         if (hv && hv.ok) {
           if (hv.verb) add(row('· Action', hv.verb));
           if (hv.name) add(row('· Name', hv.name));

@@ -44,9 +44,10 @@
   // music track that share a number stay distinct.
   const sndKey = function (idx, id) { return (idx * 0x1000000) + (id & 0xFFFFFF); };
   let sndMuted = new Set();
-  let sndLive = new Map();       // key -> {id, idx, ms, hits}; keyed so a repeat never re-adds
+  let sndLive = new Map();       // key -> {id, idx, ms, hits, heardAt}; keyed so a repeat never re-adds
   let sndLiveSig = '';           // last painted chip set, so the strip only repaints when it changes
   let sndLiveSeq = 0;            // highest companion sequence merged into sndLive
+  const SND_HOT_MS = 1200;       // a chip pulses this long after its sound fires (wall clock)
   let sndFx = {};                // last soundFilterStatus payload
   let sndFxOn = false;           // observation currently requested of the companion
   let sndScanRows = null;        // results of a whole-index scan, when one has been run
@@ -233,11 +234,12 @@
           const fresh = (fx.recent || []).filter(function (e2) { return e2.n >= sndLiveSeq; });
           if (fresh.length) {
             sndLiveSeq = fresh[fresh.length - 1].n + 1;
+            const nowWall = Date.now();
             for (const ev of fresh) {
               const k = sndKey(ev.idx, ev.id);
               const prev = sndLive.get(k);
-              if (prev) { prev.ms = ev.ms; prev.hits++; }
-              else sndLive.set(k, { id: ev.id, idx: ev.idx, ms: ev.ms, hits: 1 });
+              if (prev) { prev.ms = ev.ms; prev.hits++; prev.heardAt = nowWall; }
+              else sndLive.set(k, { id: ev.id, idx: ev.idx, ms: ev.ms, hits: 1, heardAt: nowWall });
             }
             // Cap by dropping the least recently heard, so a long session cannot grow the strip
             // without bound. Note this does NOT dirty sndSig: the row list must not repaint
@@ -287,32 +289,48 @@
     }
     const keys = Array.from(sndLive.keys()).sort(function (a, b) { return a - b; });
     const d = sndFx.diag || [];
-    // Repaint only when the chip SET or the mute set changes. Further hits on ids already shown
-    // are deliberately not a repaint - a count is not worth rebuilding the DOM mid-click.
-    const sig = keys.join(',') + '|' + Array.from(sndMuted).sort().join(',')
-              + '|' + (d.length >= 2 ? d[1] : 0);
-    if (sig === sndLiveSig) return;
-    sndLiveSig = sig;
-    let h = '<div style="opacity:0.75;margin-bottom:4px">Heard in game'
-          + (sndMuted.size ? '  ·  ' + sndMuted.size + ' muted' : '')
-          + (d.length >= 2 ? '  ·  ' + d[0] + ' played, ' + d[1] + ' silenced' : '')
-          + '</div>';
-    if (!keys.length) {
-      h += '<div style="opacity:0.55">Nothing heard yet</div>';
-    } else {
-      h += '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">';
-      for (const k of keys) {
-        const e = sndLive.get(k);
-        const m = sndMuted.has(k);
-        const tag = (e.idx === SND_IDX.music ? 'M' : 'E') + e.id;
-        h += '<button class="pet-chip" data-liveplay="' + e.idx + ':' + e.id + '">'
-           + tag + (e.hits > 1 ? ' &times;' + e.hits : '') + ' &#9654;</button>'
-           + '<button class="pet-chip' + (m ? ' on' : '') + '" data-live="' + k + '">'
-           + (m ? 'Unmute' : 'Mute') + '</button>';
+    // DOM REBUILD only when the chip SET or the mute set changes - rebuilding mid-click
+    // destroys the button under the cursor. Everything that moves faster than that
+    // (hit counts, the just-fired pulse, the played counter) is patched IN PLACE on
+    // every tick below, so the strip reads as live without ever re-shuffling.
+    const sig = keys.join(',') + '|' + Array.from(sndMuted).sort().join(',');
+    if (sig !== sndLiveSig) {
+      sndLiveSig = sig;
+      let h = '<div style="opacity:0.75;margin-bottom:4px">Heard in game'
+            + '<span class="snd-live-dot" title="observing the game\'s audio in real time"></span>'
+            + (sndMuted.size ? '  ·  ' + sndMuted.size + ' muted' : '')
+            + '<span id="sndLiveCounts"></span>'
+            + '</div>';
+      if (!keys.length) {
+        h += '<div style="opacity:0.55">Nothing heard yet - sounds appear the moment the game plays them</div>';
+      } else {
+        h += '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">';
+        for (const k of keys) {
+          const e = sndLive.get(k);
+          const m = sndMuted.has(k);
+          const tag = (e.idx === SND_IDX.music ? 'M' : 'E') + e.id;
+          h += '<button class="pet-chip snd-heard" data-liveplay="' + e.idx + ':' + e.id + '" data-tag="' + tag + '">'
+             + tag + (e.hits > 1 ? ' &times;' + e.hits : '') + ' &#9654;</button>'
+             + '<button class="pet-chip' + (m ? ' on' : '') + '" data-live="' + k + '">'
+             + (m ? 'Unmute' : 'Mute') + '</button>';
+        }
+        h += '</div>';
       }
-      h += '</div>';
+      live.innerHTML = h;
     }
-    live.innerHTML = h;
+    // In-place patch pass, every tick: counts and the "just fired" pulse. Touching
+    // textContent/classList never destroys an element, so clicks stay safe.
+    const cts = $('sndLiveCounts');
+    if (cts && d.length >= 2) cts.textContent = '  ·  ' + d[0] + ' played, ' + d[1] + ' silenced';
+    const nowWall = Date.now();
+    live.querySelectorAll('.snd-heard').forEach(function (btn) {
+      const pp2 = (btn.getAttribute('data-liveplay') || ':').split(':');
+      const e = sndLive.get(sndKey(Number(pp2[0]), Number(pp2[1])));
+      if (!e) return;
+      const want = btn.getAttribute('data-tag') + (e.hits > 1 ? ' ×' + e.hits : '') + ' ▶';
+      if (btn.textContent !== want) btn.textContent = want;
+      btn.classList.toggle('snd-hot', nowWall - (e.heardAt || 0) < SND_HOT_MS);
+    });
   }
 
   function renderSounds() {
@@ -320,6 +338,20 @@
     let wrap = $('sndWrap');
     if (!wrap) {
       c.innerHTML = '';
+      // Live-strip styling: a breathing "observing" dot and a glow pulse on the chip
+      // whose sound just fired, so the strip visibly reacts the moment the game plays.
+      if (!document.getElementById('sndFxCss')) {
+        const st = document.createElement('style'); st.id = 'sndFxCss';
+        st.textContent =
+            '.snd-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;'
+          +   'background:var(--ok,#4dd28a);margin-left:8px;vertical-align:1px;'
+          +   'animation:sndLivePulse 2s ease-in-out infinite}'
+          + '@keyframes sndLivePulse{0%,100%{opacity:.4}50%{opacity:1}}'
+          + '.pet-chip.snd-heard{transition:box-shadow 250ms,border-color 250ms,color 250ms}'
+          + '.pet-chip.snd-hot{border-color:var(--accent-hi,#a78bfa);color:var(--accent-hi,#a78bfa);'
+          +   'box-shadow:0 0 9px rgba(140,111,253,.5)}';
+        document.head.appendChild(st);
+      }
       wrap = document.createElement('div'); wrap.id = 'sndWrap'; wrap.className = 'pk-wrap';
       c.appendChild(wrap);
       wrap.innerHTML =

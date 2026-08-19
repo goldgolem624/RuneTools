@@ -85,7 +85,18 @@
   function mkCycleColor(m) {
     const cur = mkParseColor(m.color);
     const next = MK_COLORS[(MK_COLORS.indexOf(cur) + 1 + MK_COLORS.length) % MK_COLORS.length];
-    try { bridge().markerSetColor(myPid(), m.region, m.lx, m.ly, m.plane, next); } catch (e) {}
+    // Preserve the second tone across primary-colour cycles.
+    const c2 = m.color2 ? mkParseColor(m.color2) : 0;
+    try { bridge().markerSetColor(myPid(), m.region, m.lx, m.ly, m.plane, next, c2); } catch (e) {}
+    fetchMarkers(true); pushOverlay();
+  }
+  // Second tone: cycles OFF -> each palette colour -> OFF. Off = a classic single-colour
+  // tile; set = the tile splits diagonally between the two colours in-world.
+  function mkCycleColor2(m) {
+    const cur2 = m.color2 ? mkParseColor(m.color2) : 0;
+    const ring = [0].concat(MK_COLORS);
+    const next2 = ring[(ring.indexOf(cur2) + 1 + ring.length) % ring.length];
+    try { bridge().markerSetColor(myPid(), m.region, m.lx, m.ly, m.plane, mkParseColor(m.color), next2); } catch (e) {}
     fetchMarkers(true); pushOverlay();
   }
   function mkDelete(m) {
@@ -97,7 +108,8 @@
     const g = $('mk_lgrp'); if (g) g.textContent = 'Markers (' + markerList.length + ')';
     // Only rebuild when the marker SET changes (tiles + colours). Labels are edited live on the
     // input, so the 250ms refresh never wipes what is being typed.
-    const sig = markerList.map(m => m.region + '/' + m.lx + '/' + m.ly + '/' + m.plane + ':' + mkParseColor(m.color)).join(',');
+    const sig = markerList.map(m => m.region + '/' + m.lx + '/' + m.ly + '/' + m.plane + ':' + mkParseColor(m.color)
+      + (m.color2 ? '~' + mkParseColor(m.color2) : '')).join(',');
     if (sig === _mkListSig && list.childElementCount) return;
     _mkListSig = sig;
     const act = document.activeElement;
@@ -113,21 +125,33 @@
       const key = m.region + '/' + m.lx + '/' + m.ly + '/' + m.plane;
       const row = document.createElement('div'); row.className = 'mk-item';
       const sw = document.createElement('div'); sw.className = 'mk-sw'; sw.title = 'Click to change colour';
-      sw.style.background = mkHex(mkParseColor(m.color));
+      // Two-tone markers show their diagonal split right on the swatch.
+      sw.style.background = m.color2
+        ? 'linear-gradient(135deg, ' + mkHex(mkParseColor(m.color)) + ' 50%, ' + mkHex(mkParseColor(m.color2)) + ' 50%)'
+        : mkHex(mkParseColor(m.color));
       sw.addEventListener('click', () => mkCycleColor(m));
+      const sw2 = document.createElement('div'); sw2.className = 'mk-sw';
+      sw2.title = 'Second colour (two-tone tile) - click to cycle, back to off';
+      sw2.style.cssText = 'width:11px;height:11px;flex:0 0 auto;';
+      if (m.color2) sw2.style.background = mkHex(mkParseColor(m.color2));
+      else { sw2.style.background = 'transparent'; sw2.style.border = '1px dashed rgba(255,255,255,0.35)'; }
+      sw2.addEventListener('click', () => mkCycleColor2(m));
       const lbl = document.createElement('input'); lbl.className = 'mk-lbl'; lbl.value = m.label || ''; lbl.placeholder = 'Label...'; lbl.dataset.k = key; lbl.maxLength = 64;
       lbl.addEventListener('input', () => mkSaveLabel(m, lbl.value));
       const co = document.createElement('div'); co.className = 'mk-co';
       co.textContent = 'R' + m.region + ' (' + m.lx + ',' + m.ly + ')' + (m.plane ? ' p' + m.plane : '');
       const del = document.createElement('button'); del.className = 'mk-del'; del.innerHTML = '&times;'; del.title = 'Delete';
       del.addEventListener('click', () => mkDelete(m));
-      row.appendChild(sw); row.appendChild(lbl); row.appendChild(co); row.appendChild(del);
+      row.appendChild(sw); row.appendChild(sw2); row.appendChild(lbl); row.appendChild(co); row.appendChild(del);
       list.appendChild(row);
       if (focusKey === key) { lbl.focus(); try { lbl.setSelectionRange(caret, caret); } catch (e) {} }
     });
   }
   function mkExport() {
-    const payload = { v: 1, m: markerList.map(x => [x.region, x.lx, x.ly, x.plane, mkParseColor(x.color), x.label || '']) };
+    // Element 6 = the optional second tone; older builds' import reads a[0..5] and
+    // simply ignores it, so shared codes stay cross-version compatible.
+    const payload = { v: 1, m: markerList.map(x => [x.region, x.lx, x.ly, x.plane, mkParseColor(x.color), x.label || '',
+                                                    x.color2 ? mkParseColor(x.color2) : 0]) };
     let code;
     try { code = 'RTXM1:' + btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); } catch (e) { code = JSON.stringify(payload); }
     const ta = $('mk_share'); if (ta) { ta.value = code; ta.focus(); ta.select(); }
@@ -142,11 +166,14 @@
       obj = JSON.parse(json);
     } catch (e) { obj = null; }
     let rows = [];
-    if (obj && Array.isArray(obj.m)) rows = obj.m.map(a => ({ region: a[0] | 0, lx: a[1] | 0, ly: a[2] | 0, plane: a[3] | 0, color: (a[4] | 0) || 0x46E0C0, label: a[5] || '' }));
+    if (obj && Array.isArray(obj.m)) rows = obj.m.map(a => ({ region: a[0] | 0, lx: a[1] | 0, ly: a[2] | 0, plane: a[3] | 0, color: (a[4] | 0) || 0x46E0C0, label: a[5] || '', color2: a[6] | 0 }));
     else if (Array.isArray(obj)) rows = obj.map(a => ({ region: a.region | 0, lx: a.lx | 0, ly: a.ly | 0, plane: a.plane | 0, color: mkParseColor(a.color), label: a.label || '' }));
     if (!rows.length) { ta.value = '(nothing to import)'; return; }
     const pid = myPid();
-    rows.forEach(r => { try { bridge().markerAdd(pid, r.region, r.lx, r.ly, r.plane, r.color, r.label); } catch (e) {} });
+    rows.forEach(r => { try {
+      bridge().markerAdd(pid, r.region, r.lx, r.ly, r.plane, r.color, r.label);
+      if (r.color2) bridge().markerSetColor(pid, r.region, r.lx, r.ly, r.plane, r.color, r.color2);
+    } catch (e) {} });
     fetchMarkers(true); pushOverlay(); ta.value = '';
   }
   function mkClearAll() {

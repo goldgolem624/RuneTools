@@ -359,6 +359,16 @@ rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"dig here" }]);
 // only a 1x1 end piece (e.g. an agility log).
 rtx.plugin.overlay.guideTiles([{ x:2474, y:3430, x2:2474, y2:3435, plane:0, label:"Log balance" }]);
 
+// Optional color tints a mark ('#rrggbb' or a packed int; omit for the default accent).
+// Optional color2 makes a TWO-TONE tile: the fill splits along the tile's SW->NE diagonal,
+// color keeping the north-west half -- the same rendering as two-tone user tile markers.
+// (Two-tone applies to single tiles; an area rect uses color alone.)
+rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"swap", color:"#57C6E0", color2:"#C07AE0" }]);
+
+// Open the in-client wiki browser on a search term ('' = the wiki home page). The pane is
+// hard-locked to runescape.wiki: a plugin chooses the page, never the site.
+rtx.plugin.overlay.wikiSearch("Abyssal whip");
+
 rtx.plugin.overlay.clearHighlight();         // clear both highlight layers
 
 // Big centre-screen banner text (the Dungeoneering boss-warning channel). '' clears.
