@@ -4,10 +4,15 @@
   let counterVal = 0, counterLoadedPid = -1, counterStep = 1;
   function loadCounter() {
     if (counterLoadedPid === myPid()) return;
-    counterLoadedPid = myPid(); counterVal = 0;
-    try { const o = JSON.parse((bridge() && bridge().counterLoad && bridge().counterLoad(myPid())) || '{}'); if (o && typeof o.value === 'number') counterVal = o.value | 0; } catch (e) {}
+    counterLoadedPid = myPid(); counterVal = 0; counterStep = 1;
+    try {
+      const o = JSON.parse((bridge() && bridge().counterLoad && bridge().counterLoad(myPid())) || '{}');
+      if (o && typeof o.value === 'number') counterVal = o.value | 0;
+      // The step was never saved, so a counter set to +100 came back at +1 every reload.
+      if (o && typeof o.step === 'number' && o.step > 0) counterStep = o.step | 0;
+    } catch (e) {}
   }
-  function saveCounter() { try { bridge().counterSave(myPid(), JSON.stringify({ value: counterVal })); } catch (e) {} }
+  function saveCounter() { try { bridge().counterSave(myPid(), JSON.stringify({ value: counterVal, step: counterStep })); } catch (e) {} }
   function counterUpdate() { const v = $('ctrVal'); if (v) v.textContent = counterVal.toLocaleString(); }
   function counterInc(d) { counterVal += d; saveCounter(); counterUpdate(); }
   function counterReset() { counterVal = 0; saveCounter(); counterUpdate(); }
@@ -33,7 +38,7 @@
     const stepRow = document.createElement('div'); stepRow.className = 'ctr-field';
     const stepLab = document.createElement('span'); stepLab.className = 'ctr-lab'; stepLab.textContent = 'Step';
     const stepIn = document.createElement('input'); stepIn.type = 'number'; stepIn.className = 'ctr-input'; stepIn.value = String(counterStep); stepIn.min = '1';
-    stepIn.addEventListener('change', () => { const n = parseInt(stepIn.value, 10); counterStep = (isFinite(n) && n > 0) ? n : 1; stepIn.value = String(counterStep); });
+    stepIn.addEventListener('change', () => { const n = parseInt(stepIn.value, 10); counterStep = (isFinite(n) && n > 0) ? n : 1; stepIn.value = String(counterStep); saveCounter(); });
     stepRow.appendChild(stepLab); stepRow.appendChild(stepIn);
     panel.appendChild(stepRow);
 

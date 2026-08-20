@@ -1,10 +1,41 @@
 // RuneToolsX panel: Overlay tab (drives the external world-grid window).
 // Spliced inline into client.html at load; shares its global scope (no IIFE).
   let overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, interactable: false, radius: 12, markers: true };
+  // overlayConfig is a SETTER only -- the host keeps no copy to read back -- so nothing
+  // remembered any of this and every reload silently reset the whole tab, including "Show
+  // markers", which is why a user's tile markers looked like they had vanished (they are
+  // stored host-side and were fine; the master switch had turned itself off).
+  // Display preferences, so machine-wide is the right scope.
+  function ovAdopt(raw) {
+    try {
+      const sv = JSON.parse(raw || 'null');
+      if (!sv || typeof sv !== 'object') return false;
+      for (const k in overlayState) {
+        if (typeof sv[k] === typeof overlayState[k]) overlayState[k] = sv[k];
+      }
+      overlayState.radius = Math.max(1, Math.min(64, overlayState.radius | 0)) || 12;
+      return true;
+    } catch (e) { return false; }
+  }
+  // Panel files run BEFORE client.html's script (Dock.cpp splices them at the first
+  // <script>), so prefGet is not defined yet and calling it here would throw out of this
+  // entire file, taking pushOverlay with it. Seed from localStorage; ovApplyDurablePrefs
+  // re-adopts the durable copy once prefsInit has loaded it.
+  ovAdopt((function () { try { return localStorage.getItem('rtxOverlayCfg'); } catch (e) { return null; } })());
+  // The durable store loads asynchronously, after this file has already read its seed, so
+  // re-adopt once it lands. Only meaningful right after an app update, when localStorage has
+  // been wiped and prefs.json is the only surviving copy.
+  function ovApplyDurablePrefs() {
+    if (!ovAdopt(prefGet('rtxOverlayCfg', null))) return;
+    try { pushOverlay(); } catch (e) {}
+    try { paneRun('overlay', renderOverlay); } catch (e) {}
+  }
+  function saveOverlayCfg() { prefSet('rtxOverlayCfg', JSON.stringify(overlayState)); }
   // Companion-driven render toggles: hide entities from the game's own rendering. Session-only.
   let renderHide = { npcs: false, players: false, all: false };
   function pushOverlay() {
     const b = bridge();
+    saveOverlayCfg();          // every control routes through here, so this is the one hook
     if (!b || !b.overlayConfig) return;
     const s = overlayState;
     // Nameplates mirror the Scene panel's globals (panel_scene.js, shared scope); the typeof

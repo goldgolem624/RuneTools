@@ -128,8 +128,42 @@
                            String(n.id != null ? n.id : (n.uid != null ? n.uid : '')).indexOf(t) !== -1);
   }
 
+  // Which kinds show, the range and the interactable filter are DISPLAY prefs (machine-wide),
+  // unlike the pinned nameplate names, which are per-character and stay in the nameplates
+  // blob. None of the three was persisted, so the Nameplates pill came back on after a reload
+  // with every kind switched off and the range reset -- the switch said on and drew nothing.
+  function saveSceneView() {
+    prefSet('rtxSceneView', JSON.stringify(
+      { show: sceneShow, range: sceneRange, inter: !!sceneInteractable }));
+  }
+  function sceneAdoptView(raw) {
+    try {
+      const sv = JSON.parse(raw || 'null');
+      if (!sv || typeof sv !== 'object') return false;
+      if (sv.show && typeof sv.show === 'object')
+        for (const k in sceneShow) if (typeof sv.show[k] === 'boolean') sceneShow[k] = sv.show[k];
+      if (typeof sv.range === 'number') sceneRange = Math.max(1, Math.min(64, sv.range | 0)) || 20;
+      if (typeof sv.inter === 'boolean') sceneInteractable = sv.inter;
+      return true;
+    } catch (e) { return false; }
+  }
+  // Panel files are spliced BEFORE client.html's own script (Dock.cpp inserts them at the
+  // first <script>), so prefGet does not exist yet at this point and calling it would throw
+  // out of this whole file. Read the localStorage seed directly here; the durable value is
+  // re-applied by sceneApplyDurablePrefs once prefsInit has loaded it.
+  sceneAdoptView(sceneSeed('rtxSceneView'));
+  function sceneSeed(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  // Re-adopt when the durable store finishes loading (see prefsInit): this file reads its
+  // seed at parse time, which is empty on the first run after an app update wiped localStorage.
+  function sceneApplyDurablePrefs() {
+    if (!sceneAdoptView(prefGet('rtxSceneView', null))) return;
+    sceneSig = '';
+    try { if (sceneNameplates) pushOverlay(); } catch (e) {}
+    try { paneRun('scene', renderScene); } catch (e) {}
+  }
   function toggleSceneKind(kind) {
     sceneShow[kind] = !sceneShow[kind];
+    saveSceneView();
     sceneSig = '';
     if ((kind === 'objects' && sceneShow.objects) || (kind === 'ground' && sceneShow.ground)) fetchScene();
     renderScene();
@@ -235,6 +269,7 @@
       rng.addEventListener('input', () => {
         sceneRange = parseInt(rng.value, 10) || 20;
         rval.textContent = sceneRange + ' tiles';
+        saveSceneView();
         sceneSig = '';
         fetchScene();          // re-pull objects; players/NPCs re-filter on render
         if (sceneNameplates) pushOverlay();
@@ -249,6 +284,7 @@
       intc.addEventListener('click', () => {
         sceneInteractable = !sceneInteractable;
         ipill.classList.toggle('on', sceneInteractable);
+        saveSceneView();
         sceneSig = ''; renderScene();
         pushOverlay();   // overlay markers respect the same filter
       });

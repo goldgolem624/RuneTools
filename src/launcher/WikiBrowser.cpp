@@ -322,6 +322,24 @@ RECT default_rect(HWND host) {
     return r;
 }
 
+// Fit a host-client-relative box inside the host's client area: never bigger than the host,
+// never hanging off an edge. WM_MOVING/WM_SIZING already do this, but only while the USER is
+// dragging -- so the initial placement and any host resize could leave the pane overhanging
+// until it was touched. Deliberately allowed to go under the 360x300 minimum: that minimum
+// is about usability during a resize, and a host smaller than it should still get a pane
+// that fits rather than one that hangs off the screen.
+void fit_to_host(HWND host, int& dx, int& dy, int& w, int& h) {
+    RECT hc{}; GetClientRect(host, &hc);
+    const int cw = hc.right, ch = hc.bottom;
+    if (cw <= 0 || ch <= 0) return;
+    if (w > cw) w = cw;
+    if (h > ch) h = ch;
+    if (dx + w > cw) dx = cw - w;
+    if (dy + h > ch) dy = ch - h;
+    if (dx < 0) dx = 0;
+    if (dy < 0) dy = 0;
+}
+
 // Native chrome: caption-strip paint, drag/resize hit-testing, min size, persist on drop.
 LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR ref) {
     auto* it = reinterpret_cast<Instance*>(ref);
@@ -532,12 +550,23 @@ void Open(std::uint32_t pid, const std::string& term) {
         sv.dx < hc.right - 40 && sv.dy < hc.bottom - 40) {
         r.left = sv.dx; r.top = sv.dy; r.right = sv.dx + sv.w; r.bottom = sv.dy + sv.h;
     }
+    // Fit before creating: a rect saved while the host was larger (or saved against a right
+    // dock and reopened on a smaller client) would otherwise hang off the edge until the
+    // first drag clamped it.
+    { int dx = r.left, dy = r.top, rw = r.right - r.left, rh = r.bottom - r.top;
+      fit_to_host(host, dx, dy, rw, rh);
+      r.left = dx; r.top = dy; r.right = dx + rw; r.bottom = dy + rh; }
     POINT o{ 0, 0 }; ClientToScreen(host, &o);
     const int w = r.right - r.left, h = r.bottom - r.top;
     if (w < 200 || h < 200) return;
 
     auto* it = new Instance();
     it->pid = pid; it->host = host;
+    // Seed the geometry Tick holds the pane to. Without this `rel` stayed zeroed until the
+    // first user drag, so the very next tick moved a restored pane to the DEFAULT dock
+    // origin while keeping its restored SIZE -- which is what pushed a wider saved pane off
+    // the right edge on open.
+    it->rel = SavedRect{ r.left, r.top, w, h };
     it->win = Window::Create(g_app->main_monitor(), (uint32_t)w, (uint32_t)h, false,
                              kWindowFlags_Borderless | kWindowFlags_Hidden);
     if (!it->win) { delete it; return; }
@@ -615,12 +644,21 @@ void Tick() {
         RECT wr{}; GetWindowRect(it->hwnd, &wr);
         POINT o{ 0, 0 }; ClientToScreen(it->host, &o);
         const int curDx = wr.left - o.x, curDy = wr.top - o.y;
-        int wantDx, wantDy;
-        if (it->rel.w >= 360) { wantDx = it->rel.dx; wantDy = it->rel.dy; }
-        else { RECT d = default_rect(it->host); wantDx = d.left; wantDy = d.top; }
-        if (curDx != wantDx || curDy != wantDy)
-            SetWindowPos(it->hwnd, nullptr, o.x + wantDx, o.y + wantDy, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        const int curW = wr.right - wr.left, curH = wr.bottom - wr.top;
+        int wantDx, wantDy, wantW, wantH;
+        if (it->rel.w >= 360) {
+            wantDx = it->rel.dx; wantDy = it->rel.dy; wantW = it->rel.w; wantH = it->rel.h;
+        } else {
+            RECT d = default_rect(it->host);
+            wantDx = d.left; wantDy = d.top; wantW = d.right - d.left; wantH = d.bottom - d.top;
+        }
+        // Re-fit every tick against the CURRENT host: shrinking the game window must pull the
+        // pane back in. `rel` keeps the user's wish untouched, so growing the host again
+        // restores the size they chose rather than the shrunken one.
+        fit_to_host(it->host, wantDx, wantDy, wantW, wantH);
+        if (curDx != wantDx || curDy != wantDy || curW != wantW || curH != wantH)
+            SetWindowPos(it->hwnd, nullptr, o.x + wantDx, o.y + wantDy, wantW, wantH,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 

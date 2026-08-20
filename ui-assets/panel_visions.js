@@ -33,10 +33,28 @@
     if (loaded || !tx) { qgClrTiles(); qgOv('overlay.highlightNpc', name, label, tx, ty); }   // pass the target tile -> box the focused instance, not the nearest to the player
     else { qgClrNpc(); qgOv('overlay.guideTiles', [{ x: tx, y: ty, plane: tp || 0, label: label }]); }
   }
+  // Compose a guide-tile label that reads ACTION first, then the object.
+  //
+  // The first line is NOT free text: the host matches it against the cache loc near the tile
+  // to give the mark that object's 3D footprint prism, falling back to a flat tile when it
+  // does not resolve (Reader.cpp, "when the label's first line names a cache loc..."). So the
+  // name has to stay on line 1 -- but a leading '-' makes that line MATCH-ONLY and hides it,
+  // and every later line still draws. Emitting '-name\naction\nname' therefore renders
+  //     Climb
+  //     Cliffside
+  // while keeping the prism. Over the 95-char label cap we drop the repeated name rather than
+  // let the host truncate mid-word; the box itself still identifies the object.
+  function qgLabel(locName, action) {
+    const n = String(locName || ''), a = String(action || '');
+    if (!n) return a;
+    if (!a) return n;
+    const full = '-' + n + '\n' + a + '\n' + n;
+    return full.length <= 95 ? full : ('-' + n + '\n' + a);
+  }
   function qgObject(locName, label, x, y, p) {
     qgClrNpc(); qgClrDlg(); qgClrItem();
     const ax = (x != null) ? x : (qgP ? qgP.x : 0), ay = (x != null) ? y : (qgP ? qgP.y : 0), ap = (x != null) ? (p || 0) : (qgP ? (qgP.p || 0) : 0);
-    if (ax) qgOv('overlay.guideTiles', [{ x: ax, y: ay, plane: ap, label: locName + '\n' + label }]); else qgClrTiles();
+    if (ax) qgOv('overlay.guideTiles', [{ x: ax, y: ay, plane: ap, label: qgLabel(locName, label) }]); else qgClrTiles();
   }
   function qgTile(x, y, p, label) { qgClrNpc(); qgClrDlg(); qgClrItem(); qgOv('overlay.guideTiles', [{ x: x, y: y, plane: p || 0, label: label }]); }
   async function qgScene(range) {

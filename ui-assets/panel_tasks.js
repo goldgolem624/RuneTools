@@ -481,7 +481,8 @@
       lockBtn.addEventListener('click', () => setMetroLock(!metroLocked));
       lockRow.appendChild(lockBtn);
       const hint = document.createElement('div'); hint.className = 'metro-next';
-      hint.innerHTML = 'Visual draws over the game - <b>drag</b> to move, <b>scroll wheel</b> to resize.';
+      hint.innerHTML = 'Visual opens the <b>Metronome</b> window over the game - drag its title bar to move, ' +
+                       'resize from any edge. Audio clicks on the tick itself, with or without the dial.';
       m.appendChild(lab); m.appendChild(modes); m.appendChild(ivLab); m.appendChild(ivs); m.appendChild(lockRow); m.appendChild(hint);
       wrap.appendChild(m);
       c.appendChild(wrap);
@@ -491,7 +492,15 @@
     rows.appendChild(row('Last tick', (s && s.last_tick_ms > 0) ? s.last_tick_ms.toFixed(0) + ' ms' : '--'));
     wrap.querySelectorAll('.metro-modes button[data-m]').forEach(b => b.classList.toggle('on', b.dataset.m === metroMode));
     wrap.querySelectorAll('.metro-modes button[data-iv]').forEach(b => b.classList.toggle('on', Number(b.dataset.iv) === metroInterval));
-    const lb = $('metroLockBtn'); if (lb) { lb.textContent = metroLocked ? 'Locked (click-through)' : 'Lock position'; lb.classList.toggle('on', metroLocked); }
+    const lb = $('metroLockBtn');
+    if (lb) {
+      lb.textContent = metroLocked ? 'Locked (click-through)' : 'Lock position';
+      lb.classList.toggle('on', metroLocked);
+      // A locked window publishes no consume rect, so its own lock button is unreachable:
+      // this is the only way back. Disabling it while the dial is closed would strand that.
+      lb.title = metroLocked ? 'Unlock the Metronome window so it can be moved again'
+                             : 'Make the Metronome window click-through';
+    }
   }
 
   // No always-on UI-thread loop: the stopwatch is on-demand and the metronome runs in the
@@ -599,7 +608,13 @@
         // varp 13537 = current lifepoints, varp 13538 = MAX lifepoints (both raw). The max
         // was located live 2026-08-17 by value-searching the varp map at 1,068/1,500 (only
         // 13538 held 1500) and cross-checked on a second account at 5,600/5,600 (13537 and
-        // 13538 both 5600). Neither varp is referenced by any clientscript; engine-fed.
+        // 13538 both 5600).
+        // 13537 is now CONFIRMED in CS2 (build 940, 11 scripts): the game moved current
+        // lifepoints off varbit 1668 (varp 659 bits 1-15, hence the old 32767 ceiling) onto
+        // this varp, and script16860 lifts the cap to 2^31-1 while varp 12314 > 0, so
+        // in-league values above 32000 are legitimate. 13538 stays live-observation only:
+        // it is referenced by zero clientscripts, which read max via script2915 instead.
+        // Do NOT reintroduce varbit 1668 as HP; leagues reuses it (see LEAGUES2.md).
         // Max shown only when it reads sane, so a missing read never paints "x / 0".
         {
           const mx = playerVp['13538'];

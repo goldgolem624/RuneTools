@@ -51,6 +51,10 @@
   #menubar {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     display: flex; align-items: stretch; gap: 2px;
+    /* The bar is content-sized, so on a small client it used to run off the edge: the
+       position clamp could only pin it to x=6 and the overflow stayed. Cap it to the client
+       and let the middle sections give way instead (see .mb-cats / .mb-status). */
+    max-width: calc(100vw - 12px); box-sizing: border-box;
     height: 38px; padding: 4px 6px;
     background: var(--bar-bg);
     border: 1px solid var(--border-hi);
@@ -68,35 +72,48 @@
   #menubar.pill .mb-cats, #menubar.pill .mb-status, #menubar.pill .mb-chips { display: none; }
   .mb-drag {
     display: flex; align-items: center; padding: 0 7px 0 5px;
-    color: var(--text-mute); cursor: grab; border-radius: 8px;
+    color: var(--text-mute); cursor: grab; border-radius: 8px; flex: none;
   }
   .mb-drag:active { cursor: grabbing; }
   .mb-drag svg { width: 14px; height: 14px; }
-  .mb-cats { display: flex; align-items: stretch; gap: 2px; }
+  /* Categories scroll rather than force the bar wider, the same trade the chip strip
+     already makes. They shrink last: the status readout gives way first. */
+  .mb-cats {
+    display: flex; align-items: stretch; gap: 2px;
+    min-width: 0; flex: 1 1 auto; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none; overscroll-behavior-x: contain;
+  }
+  .mb-cats::-webkit-scrollbar { display: none; }
   .mb-cat {
     appearance: none; background: transparent; border: none; position: relative;
     display: flex; align-items: center; justify-content: center;
     width: 36px; border-radius: 8px; color: var(--text-mute); cursor: pointer;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
-  .mb-cat { width: auto; padding: 0 10px; font: inherit; font-size: 11.5px; font-weight: 500; }
+  .mb-cat { width: auto; padding: 0 10px; font: inherit; font-size: 11.5px; font-weight: 500;
+            flex: none; white-space: nowrap; }
   .mb-cat:hover { background: var(--bg-elev-2); color: var(--text); }
   .mb-cat.open { background: linear-gradient(180deg, rgba(124,92,252,0.30), rgba(124,92,252,0.12)); color: #fff; }
   .mb-cat.has-open::after {
     content: ''; position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
     width: 4px; height: 4px; border-radius: 50%; background: var(--accent-hi);
   }
+  /* Shrinks BEFORE the categories do (flex-shrink 3 vs their 1): a truncated character name
+     costs less than losing access to a panel. Both texts ellipsis rather than wrap, because
+     the bar is a fixed 38px tall. */
   .mb-status {
     display: flex; flex-direction: column; justify-content: center;
-    padding: 0 12px; margin: 0 2px; min-width: 110px;
+    padding: 0 12px; margin: 0 2px; min-width: 0; flex: 0 3 auto; overflow: hidden;
     border-left: 1px solid var(--border); border-right: 1px solid var(--border);
   }
-  .mb-status .title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 12px; line-height: 1.25; }
+  .mb-status .title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 12px; line-height: 1.25; min-width: 0; }
+  .mb-status .title > span:not(.dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mb-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-mute);
                     transition: background var(--tx-fast) var(--ease); flex: none; }
   .mb-status .title.is-in .dot { background: var(--ok); box-shadow: 0 0 6px rgba(77,210,138,0.7); }
   .mb-status .meta { font-size: 10px; color: var(--text-mute); font-variant-numeric: tabular-nums;
-                     letter-spacing: 0.02em; line-height: 1.25; white-space: nowrap; }
+                     letter-spacing: 0.02em; line-height: 1.25; white-space: nowrap;
+                     overflow: hidden; text-overflow: ellipsis; }
   /* Restore chips for minimized windows. Capped so the bar can never grow with the number of
      open windows, but SCROLLABLE rather than clipped: overflow:hidden alone silently swallowed
      every chip past the cap, so with enough windows minimized the later ones simply vanished
@@ -107,7 +124,8 @@
     display: flex; align-items: center; gap: 3px;
     padding: 0 4px; margin: 0 2px;
     border-left: 1px solid var(--border);
-    max-width: 260px; overflow-x: auto; overflow-y: hidden;
+    max-width: 260px; min-width: 0; flex: 0 2 auto;
+    overflow-x: auto; overflow-y: hidden;
     scrollbar-width: none; overscroll-behavior-x: contain;
   }
   .mb-chips::-webkit-scrollbar { display: none; }
@@ -123,8 +141,10 @@
   .mb-chip svg { width: 12px; height: 12px; flex: none; color: var(--accent-hi); opacity: 0.85; }
   .mb-chip:hover { background: rgba(124,92,252,0.18); color: var(--text); border-color: rgba(124,92,252,0.5); }
   .mb-chip span { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
+  /* Search and the collapse pill never shrink: the pill is the only way back from a
+     squeezed bar, and search is the only control that still reaches every panel. */
   .mb-btn {
-    appearance: none; background: transparent; border: none;
+    appearance: none; background: transparent; border: none; flex: none;
     display: flex; align-items: center; justify-content: center;
     padding: 0 10px; border-radius: 8px; color: var(--text-mute); cursor: pointer;
     font: inherit; font-size: 11.5px; font-weight: 500; white-space: nowrap;
@@ -279,6 +299,19 @@
                 5px 0 currentColor, 5px -5px currentColor, 5px 5px currentColor;
   }
   .g-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  /* Padlock: shackle (::before) over body (::after). Open state tilts the shackle so the
+     two states are distinguishable without relying on colour alone. */
+  .g-lock { position: relative; }
+  .g-lock::after {
+    content: ''; position: absolute; left: 1px; right: 1px; bottom: 0; height: 7px;
+    background: currentColor; border-radius: 2px;
+  }
+  .g-lock::before {
+    content: ''; position: absolute; left: 3px; right: 3px; top: 0; height: 6px;
+    border: 1.6px solid currentColor; border-bottom: 0; border-radius: 4px 4px 0 0;
+    transition: transform var(--tx-fast) var(--ease);
+  }
+  .win-lock:not(.on) .g-lock::before { transform: translate(1px, -1px) rotate(-14deg); }
 
   /* Drop target: a dragged window is hovering this one's title / tab strip. */
   .win.dock-target { outline: 2px solid var(--accent-hi); outline-offset: -2px; }
@@ -296,6 +329,32 @@
   /* Rolled up (window shade): only the title strip remains. */
   .win.rolled .win-body { display: none; }
   .win.rolled { min-height: 0; }
+
+  /* ---- HUD widgets (XP Meter, Metronome) ----
+     Read-at-a-glance overlays rather than data panels. They keep the full window
+     machinery (drag, 8-way resize, snap, persistence) but shed the visual weight: the
+     normal 240x140 floor is lifted, the chrome collapses to a slim strip that only
+     appears on hover/focus, and the body is transparent so the widget itself is the
+     window. Locked = click-through (see wmApplyLock). */
+  .win.hud { min-width: 0; min-height: 0; background: transparent; border-color: transparent;
+             box-shadow: none; }
+  .win.hud .win-title {
+    height: 20px; min-height: 20px; padding: 0 2px 0 7px; background: transparent;
+    border-bottom: 0; opacity: 0; transition: opacity var(--tx-fast) var(--ease);
+  }
+  .win.hud:hover .win-title, .win.hud.focus .win-title { opacity: 1; }
+  .win.hud .win-name { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+  .win.hud .win-btns button { width: 18px; height: 18px; border-radius: 5px; }
+  .win.hud .win-btns button svg { width: 11px; height: 11px; }
+  .win.hud .win-lock.on { color: var(--accent); }
+  .win.hud .win-tabs { display: none; }
+  .win.hud .win-body { background: transparent; }
+  .win.hud .content { padding: 0; overflow: hidden; }
+  /* Locked: no input on this side, and wmPushRects drops it so the companion passes the
+     click to the game. Chrome is hidden outright -- a control you cannot click is noise. */
+  .win.hud.locked { pointer-events: none; }
+  .win.hud.locked .win-title { display: none; }
+  .win.hud.locked .rz { display: none; }
 
   /* Resize handles: invisible 7px strips on edges/corners. */
   /* ---- In-game notifications ------------------------------------------------
@@ -2006,6 +2065,54 @@
     try { Object.defineProperty(window, 'localStorage', { value: shim, configurable: true }); } catch (e) {}
     try { console.error('localStorage is a no-op in this build - using the in-memory shim'); } catch (e) {}
   })();
+  // ---- durable UI preferences ----
+  // localStorage above is session-grade at best: the shim makes it in-memory on a broken
+  // build, and even when it works it is wiped whenever ui-assets are re-extracted, which is
+  // every app update. That is fine for a scroll position and NOT fine for a hand-collected
+  // sound mute list. Anything a user would resent re-doing goes here instead, in prefs.json.
+  //
+  // The localStorage value is still the seed: on first load each key is migrated across, so
+  // nobody loses what they already had, and the localStorage copy is kept in step so an older
+  // launcher (no prefsLoad) still reads something sane.
+  const rtxPrefs = Object.create(null);
+  let _prefsReady = false, _prefsSaveT = 0;
+  const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView'];
+  function prefGet(key, def) {
+    if (Object.prototype.hasOwnProperty.call(rtxPrefs, key)) return rtxPrefs[key];
+    try { const s = localStorage.getItem(key); if (s !== null) return s; } catch (e) {}
+    return def === undefined ? null : def;
+  }
+  function prefSet(key, val) {
+    rtxPrefs[key] = String(val);
+    try { localStorage.setItem(key, String(val)); } catch (e) {}   // keep the seed in step
+    if (_prefsSaveT) return;
+    _prefsSaveT = setTimeout(() => {
+      _prefsSaveT = 0;
+      try { if (bridge() && bridge().prefsSave) bridge().prefsSave(JSON.stringify(rtxPrefs)); } catch (e) {}
+    }, 400);
+  }
+  async function prefsInit() {
+    if (_prefsReady || !bridge() || !bridge().prefsLoad) return;
+    let disk = null;
+    try { const s = await bridge().prefsLoad(); const v = JSON.parse(s || '{}'); if (v && typeof v === 'object') disk = v; } catch (e) {}
+    if (!disk) return;
+    _prefsReady = true;
+    let migrated = 0;
+    for (const k of PREF_DURABLE) {
+      if (Object.prototype.hasOwnProperty.call(disk, k)) { rtxPrefs[k] = disk[k]; continue; }
+      // Not on disk yet: adopt whatever localStorage still holds, so an upgrade keeps it.
+      try { const s = localStorage.getItem(k); if (s !== null) { rtxPrefs[k] = s; migrated++; } } catch (e) {}
+    }
+    // Push the migrated values back into localStorage too, so the panels that read it
+    // directly at parse time (before this runs) see the durable value on the next start.
+    for (const k in rtxPrefs) { try { localStorage.setItem(k, rtxPrefs[k]); } catch (e) {} }
+    if (migrated) { try { if (bridge().prefsSave) bridge().prefsSave(JSON.stringify(rtxPrefs)); } catch (e) {} }
+    // Anything read at parse time needs a nudge now that the durable value is in hand.
+    try { sndApplyDurablePrefs(); } catch (e) {}
+    try { ovApplyDurablePrefs(); } catch (e) {}
+    try { sceneApplyDurablePrefs(); } catch (e) {}
+  }
+
   // DUNGEONEERING VISIBILITY. One flag gates the nav entry, the poll, the render and the
   // tab-select handler, so the panel can be withheld from a build without removing any of its
   // code. false -> hidden, true -> shown.
@@ -2029,6 +2136,7 @@
     { id: 'leagues', label: 'Leagues', cat: 'Character', icon: '<path d="M8 21h8M12 17v4"/><path d="M7 4h10v6a5 5 0 0 1-10 0V4z"/><path d="M7 6H4v2a4 4 0 0 0 3 3.87M17 6h3v2a4 4 0 0 1-3 3.87"/>' },
     { id: 'dailies',  label: 'D&D Tracker', cat: 'Character', icon: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M9 15l2 2 4-4"/>' },
     { id: 'xptracker',label: 'XP Tracker',   cat: 'Character', icon: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3.5-4 3 2.5L18 8"/><path d="M18 8h-3.5M18 8v3.5"/>' },
+    { id: 'xpmeter',  label: 'XP Meter',     cat: 'Character', icon: '<path d="M4 17h16"/><path d="M6 17v-4"/><path d="M11 17V9"/><path d="M16 17v-6"/>' },
     { id: 'chatlog',  label: 'Chat Log',     cat: 'Character', icon: '<path d="M4 5h16v10H9l-4 4V15H4z"/><path d="M8 9h8M8 12h5"/>' },
     // Items
     { id: 'inventory', label: 'Inventory', cat: 'Items', icon: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>' },
@@ -2089,6 +2197,7 @@
     // Utility
     { id: 'alerts',    label: 'Alerts',    cat: 'Utility', icon: '<path d="M18 16v-5a6 6 0 1 0-12 0v5l-1.5 2h15z"/><path d="M10 20a2 2 0 0 0 4 0"/>' },
     { id: 'ticks',     label: 'Ticks',     cat: 'Utility', icon: '<circle cx="12" cy="12" r="8"/><path d="M12 8.5V12l2.5 1.5"/>' },
+    { id: 'metronome', label: 'Metronome', cat: 'Utility', icon: '<path d="M10 3h4l4 18H6z"/><path d="M8.5 14h7"/><path d="M12 18V8"/>' },
     { id: 'stopwatch', label: 'Stopwatch', cat: 'Utility', icon: '<circle cx="12" cy="13" r="8"/><path d="M12 13V9"/><path d="M9 2h6M12 2v3"/>' },
     { id: 'notes',     label: 'Notes',     cat: 'Utility', icon: '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/>' },
     { id: 'counter',   label: 'Counter',   cat: 'Utility', icon: '<path d="M9 3L7 21M17 3l-2 18M4 8h16M3 16h16"/>' },
@@ -3449,7 +3558,48 @@
   } catch (e) {}
   function metroVisual() { return metroMode === 'visual' || metroMode === 'both'; }
   function metroAudio()  { return metroMode === 'audio'  || metroMode === 'both'; }
-  function applyMetroOverlay() { try { bridge().metronome(myPid(), metroVisual(), metroAudio(), metroInterval, metroLocked); _metroAppliedPid = myPid(); } catch (e) {} }
+  // The DIAL is now the 'metronome' HUD window; only the audio click stays native, because
+  // it fires off the confirmed tick edge on the reader's 5 ms poll thread and routing that
+  // through the page would put the UI pump between the tick and the sound. So the visual
+  // flag passed to the companion is permanently false: nothing else drives that drawing.
+  function applyMetroOverlay() {
+    try { bridge().metronome(myPid(), false, metroAudio(), metroInterval, true); _metroAppliedPid = myPid(); } catch (e) {}
+  }
+  // Open/close the dial window to match the mode. Opening is idempotent (openTab focuses an
+  // existing window), so this is safe to call from any settings change.
+  // `adopt` is passed once, right after a layout restore. The layout is per-account but the
+  // mode is machine-wide, so without it turning the dial off on one character would close the
+  // window another character had saved open -- and write that closure into their layout.
+  // A restored window is that account's own answer, so it wins and the mode follows it.
+  function metroSyncWindow(adopt) {
+    const want = metroVisual();
+    const w = wmWinOf('metronome');
+    if (adopt && w && !want) {
+      metroMode = metroAudio() ? 'both' : 'visual';
+      try { localStorage.setItem('rtxMetroMode', metroMode); } catch (e) {}
+      applyMetroOverlay();
+      paneRun('ticks', renderTicks);
+      return;
+    }
+    if (want && !w) {
+      const t = allTabs().find(x => x.id === 'metronome');
+      if (t) {
+        const nw = openTab(t, { noFocus: metroLocked });
+        if (nw && metroLocked) { nw.locked = true; wmApplyLock(nw); wmRectsSoon(); wmSaveSoon(); }
+      }
+    } else if (!want && w) {
+      wmCloseTabId('metronome');
+    }
+  }
+  // Was missing entirely: panel_tasks.js called setMetroLock() and threw a ReferenceError,
+  // so the lock button never worked and rtxMetroLock was never written.
+  function setMetroLock(v) {
+    metroLocked = !!v;
+    try { localStorage.setItem('rtxMetroLock', metroLocked ? '1' : '0'); } catch (e) {}
+    const w = wmWinOf('metronome');
+    if (w) { w.locked = metroLocked; wmApplyLock(w); wmRectsSoon(); wmSaveSoon(); }
+    paneRun('ticks', renderTicks);
+  }
   // ---- XP tracker overlay config; the panel itself is drawn + sampled by the host
   //      overlay, this is only its configuration. ----
   let xpOn = false, xpLock = false, xpTotal = true, xpAuto = true, xpMask = 0, _xpAppliedPid = 0;
@@ -3469,7 +3619,37 @@
       localStorage.setItem('rtxXpMask', String(xpMask));
     } catch (e) {}
   }
-  function applyXpOverlay() { try { bridge().xpPanel(myPid(), xpOn, xpLock, xpTotal, xpAuto, xpMask); _xpAppliedPid = myPid(); } catch (e) {} }
+  // The CARD is now the 'xpmeter' HUD window. The call still goes out with visible=false
+  // because it is what configures and keeps alive the native 1 Hz sampler + session
+  // baseline, which the meter reads back through xpPanelState; only the drawing moved.
+  function applyXpOverlay() {
+    try { bridge().xpPanel(myPid(), false, true, xpTotal, xpAuto, xpMask); _xpAppliedPid = myPid(); } catch (e) {}
+  }
+  function xpSyncWindow(adopt) {          // see metroSyncWindow for what `adopt` is for
+    const w = wmWinOf('xpmeter');
+    if (adopt && w && !xpOn) {
+      xpOn = true;
+      saveXpCfg();
+      paneRun('xptracker', () => { const wr = $('xpWrap'); if (wr) buildXpConfig(wr); });
+      return;
+    }
+    if (xpOn && !w) {
+      const t = allTabs().find(x => x.id === 'xpmeter');
+      if (t) {
+        const nw = openTab(t, { noFocus: xpLock });
+        if (nw && xpLock) { nw.locked = true; wmApplyLock(nw); wmRectsSoon(); wmSaveSoon(); }
+      }
+    } else if (!xpOn && w) {
+      wmCloseTabId('xpmeter');
+    }
+  }
+  function setXpLock(v) {
+    xpLock = !!v;
+    saveXpCfg();
+    const w = wmWinOf('xpmeter');
+    if (w) { w.locked = xpLock; wmApplyLock(w); wmRectsSoon(); wmSaveSoon(); }
+    paneRun('xptracker', renderXpTracker);
+  }
   // Tile-marker keybinds fire (default A/D = movement) only while the Markers panel is the OPEN,
   // non-collapsed tab -- otherwise they'd place tiles during normal play. Push that state to the
   // host, which gates the keys. Called on every tab switch + collapse toggle.
@@ -3479,7 +3659,7 @@
     if (on === _markerArmed) return; _markerArmed = on;
     try { if (bridge() && bridge().markerKeybindsArm) bridge().markerKeybindsArm(myPid(), on); } catch (e) {}
   }
-  function setMetroMode(m) { metroMode = m; try { localStorage.setItem('rtxMetroMode', m); } catch (e) {} applyMetroOverlay(); paneRun('ticks', renderTicks); }
+  function setMetroMode(m) { metroMode = m; try { localStorage.setItem('rtxMetroMode', m); } catch (e) {} applyMetroOverlay(); metroSyncWindow(); paneRun('ticks', renderTicks); }
   function setMetroInterval(n) { metroInterval = n; try { localStorage.setItem('rtxMetroIv', String(n)); } catch (e) {} applyMetroOverlay(); paneRun('ticks', renderTicks); }
   // ---- Tasks tab -> panel_tasks.js (spliced inline at load) ----
   // ---- Vars Watcher -> panel_varswatcher.js (spliced inline at load) ----
@@ -3547,7 +3727,18 @@
     ticks: { w: 360, h: 330, minH: 200 },
     screenshot: { w: 400, h: 350, minH: 220 },
     xptracker: { w: 420, h: 480 },
+    // HUD widgets (see WIN_HUD): these are read-at-a-glance overlays, not data panels,
+    // so they open small and are allowed to go far below the normal window floor.
+    xpmeter: { w: 264, h: 210, minW: 172, minH: 78 },
+    metronome: { w: 132, h: 132, minW: 84, minH: 84 },
   };
+  // HUD windows: minimal chrome, a lock (click-through) mode, and their own z-band above
+  // the normal windows. These replace the companion-drawn metronome/XP widgets, which were
+  // marker commands composited under this layer; both now live in the same DOM as every
+  // other panel, so they inherit dragging, resizing, snapping and layout persistence.
+  const WIN_HUD = new Set(['xpmeter', 'metronome']);
+  const Z_HUD = 900000;              // HUD band: a HUD never hides behind a data panel
+  function wmZ(w) { return (w.hud ? Z_HUD : 0) + w.z; }
   const wm = {
     wins: new Map(),        // wid -> win {wid, tab, tabs[], group, el, body, pane, tabsEl, x,y,w,h,z,min}
     zTop: 10,
@@ -3607,17 +3798,102 @@
     __paneRoot = w.pane;
     try { return fn(); } finally { activeTab = pa; __paneRoot = pr; }
   }
+  // ---- scroll preservation across repaints ----
+  // Panels repaint by wiping and rebuilding their subtree, which resets scrollTop to 0. The
+  // per-panel signature guards only skip a repaint when NOTHING changed, so any panel whose
+  // data ticks (Containers counts, Scene entities, Alerts) legitimately rebuilds under the
+  // user and threw them back to the top mid-scroll. Rather than rework every panel to patch
+  // in place, remember the offsets and put them back after the repaint.
+  //
+  // Three things this has to get right:
+  //  - Offsets are recorded ON SCROLL, not sampled before each repaint. Sampling would mean
+  //    reading scrollTop across the subtree every 250 ms per visible window, and scrollTop is
+  //    a layout-flushing read: the fix for a scroll jump would have bought a reflow storm.
+  //    Scroll events do not bubble but they do CAPTURE, so one listener on the pane sees
+  //    every descendant scroller (~22 panels scroll an inner list rather than .content).
+  //  - Only offsets that were reset TO ZERO are restored, so a panel that deliberately
+  //    scrolls somewhere during its own render is left alone.
+  //  - Memory is scoped PER TAB, because docked tabs share one .content: without that,
+  //    switching tabs would paste the previous tab's offset onto the new one.
+  function paneTabOf(root) {
+    for (const w of wm.wins.values()) if (w.pane === root) return w.tab;
+    return '';
+  }
+  function paneScrollTrack(root) {
+    if (!root || root.__rtxScrollBound) return;
+    root.__rtxScrollBound = 1;
+    root.__rtxScrollMem = new Map();
+    root.addEventListener('scroll', (e) => {
+      const el = e.target;
+      if (!el || (el !== root && !root.contains(el))) return;
+      const mem = root.__rtxScrollMem;
+      const tab = paneTabOf(root);
+      let key = null, sel = null, i = 0;
+      if (el === root) { key = tab + '||'; }
+      else {
+        if (el.id) sel = '#' + CSS_esc(el.id);
+        else if (typeof el.className === 'string' && el.className.trim())
+          sel = '.' + el.className.trim().split(/\s+/).map(CSS_esc).join('.');
+        else return;                       // no stable handle -> cannot match it back
+        // Index among ALL matches: restore resolves the same selector, so a panel with
+        // several same-class lists must not collapse onto the first one.
+        try { i = Array.prototype.indexOf.call(root.querySelectorAll(sel), el); } catch (err) { return; }
+        if (i < 0) return;
+        key = tab + '|' + sel + '|' + i;
+      }
+      if (mem.size > 48 && !mem.has(key)) return;   // bounded: stale entries are harmless
+      mem.set(key, { tab, sel, i, top: el.scrollTop, left: el.scrollLeft });
+    }, true);
+  }
+  // Minimal identifier escape: panel ids/classes here are plain, but a stray character would
+  // otherwise throw out of querySelectorAll and take the whole repaint with it.
+  function CSS_esc(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '\\$&'); }
+  function paneScrollRestore(root, tab) {
+    const mem = root && root.__rtxScrollMem;
+    if (!mem || !mem.size) return;
+    for (const s of mem.values()) {
+      if (s.tab !== tab) continue;          // another docked tab's offsets, not this one's
+      let el = null;
+      if (s.sel === null) el = root;
+      else { let list; try { list = root.querySelectorAll(s.sel); } catch (e) { continue; }
+             el = list[s.i] || null; }
+      if (!el) continue;
+      if (s.top > 0 && el.scrollTop === 0) {
+        const max = el.scrollHeight - el.clientHeight;
+        if (max > 0) el.scrollTop = Math.min(s.top, max);
+      }
+      if (s.left > 0 && el.scrollLeft === 0) {
+        const max = el.scrollWidth - el.clientWidth;
+        if (max > 0) el.scrollLeft = Math.min(s.left, max);
+      }
+    }
+  }
+  function withScrollKeep(root, tab, fn) {
+    paneScrollTrack(root);
+    try { return fn(); } finally { paneScrollRestore(root, tab); }
+  }
   // Async-callback repaint helper: "if my panel is visible, repaint it against ITS
   // window". Replaces the old `if (activeTab === 'x') renderX()` self-gates.
   function paneRun(id, fn) {
     const w = wmWinOf(id);
     if (!w || w.min || w.tab !== id) return;
-    withPane(w, fn);
+    withPane(w, () => withScrollKeep(w.pane, id, fn));
   }
-  function renderPaneFor(w) { withPane(w, () => { renderPane(); wmRenderTabs(w); }); }
+  function renderPaneFor(w) { withPane(w, () => withScrollKeep(w.pane, w.tab, () => { renderPane(); wmRenderTabs(w); })); }
 
   // Per-panel close/switch-away hooks (were openTab's leave cleanups).
   function paneLeave(id) {
+    // Closing a HUD window IS turning the widget off, so fold the state back into the
+    // setting that owns it -- otherwise the Ticks / XP Tracker panels would still claim it
+    // is showing, and the next settings change would pop it back open. Guarded on the
+    // setting still being on, which also stops the recursion when the close was OUR doing
+    // (metroSyncWindow/xpSyncWindow close the window precisely because it was turned off).
+    if (id === 'metronome' && metroVisual()) {
+      try { setMetroMode(metroAudio() ? 'audio' : 'off'); } catch (e) {}
+    }
+    if (id === 'xpmeter' && xpOn) {
+      try { xpOn = false; saveXpCfg(); paneRun('xptracker', () => { const wr = $('xpWrap'); if (wr) buildXpConfig(wr); }); } catch (e) {}
+    }
     if (id === 'vars') { try { varsWatchSet(false); hideVarbitPop(); hideVarIgnoredModal(); } catch (e) {} }
     if (id === 'netprobe') { try { npArm(false); } catch (e) {} }
     if (id === 'clues') { try { activeClueId = -1; if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); clueSetNpc(''); } catch (e) {} }
@@ -3677,6 +3953,36 @@
     renderMenubar();
     wmRectsSoon(); wmSaveSoon();
   }
+  // HUD lock = click-through. Two halves, and BOTH are needed: pointer-events:none stops
+  // this view reacting, and dropping the window from wmPushRects stops the companion
+  // consuming the click at all, so it reaches the game. Drawing is unaffected -- the layer
+  // composites whenever pixels exist, independent of the consume-rect list.
+  function wmApplyLock(w) {
+    if (!w.el) return;
+    w.el.classList.toggle('locked', !!w.locked);
+    const b = w.el.querySelector('.win-lock');
+    if (b) b.classList.toggle('on', !!w.locked);
+  }
+  function wmToggleLock(w) {
+    w.locked = !w.locked;
+    wmApplyLock(w);
+    wmRectsSoon(); wmSaveSoon();
+    // Keep the owning setting in step. It is the same state, stored twice by necessity: the
+    // window carries it so the layout restores locked, the setting carries it so a widget
+    // reopened later comes back locked. Letting them drift would leave the settings panel
+    // offering to "lock" something already locked -- and that panel is the ONLY way back
+    // once locked, since a locked window publishes no consume rect.
+    if (w.tab === 'metronome') {
+      metroLocked = w.locked;
+      try { localStorage.setItem('rtxMetroLock', metroLocked ? '1' : '0'); } catch (e) {}
+      paneRun('ticks', renderTicks);
+    }
+    if (w.tab === 'xpmeter') {
+      xpLock = w.locked;
+      saveXpCfg();
+      paneRun('xptracker', () => { const wr = $('xpWrap'); if (wr) buildXpConfig(wr); });
+    }
+  }
   function wmFocus(w) {
     if (!w) return;
     if (wm.focused && wm.focused !== w.wid) {
@@ -3686,7 +3992,7 @@
     wm.focused = w.wid;
     w.el.classList.add('focus');
     w.z = ++wm.zTop;
-    w.el.style.zIndex = String(w.z);
+    w.el.style.zIndex = String(wmZ(w));
     activeTab = w.tab;
     try { localStorage.setItem('rtxDevTab', activeTab); } catch (e) {}
     syncMarkerArm();
@@ -3706,13 +4012,16 @@
 
   function wmCreateWindow(wid, tab, group, geom, noAnim) {
     const sz = winSizeFor(wid, tab.id);
-    const pos = geom ? { x: geom.x, y: geom.y } : wmSpawnPos(sz);
+    // `geom.nogeom` = a restore that carried state (min/lock) but no usable box.
+    const hasBox = !!(geom && !geom.nogeom);
+    const pos = hasBox ? { x: geom.x, y: geom.y } : wmSpawnPos(sz);
     const w = {
       wid, tab: tab.id, tabs: [tab.id], group: group || null,
       groupIco: group ? tab.icon : null,   // the icon an intact group reverts to (wmSyncTitle)
       x: pos.x, y: pos.y,
-      w: geom ? geom.w : sz.w, h: geom ? geom.h : sz.h,
+      w: hasBox ? geom.w : sz.w, h: hasBox ? geom.h : sz.h,
       z: ++wm.zTop, min: !!(geom && geom.min),
+      hud: WIN_HUD.has(tab.id), locked: !!(geom && geom.lock),
       el: null, body: null, pane: null, tabsEl: null, nameEl: null, titleEl: null, icoEl: null,
     };
     // A group opens with its members already docked; anything else opens solo. Members
@@ -3724,9 +4033,9 @@
       if (w.tabs.indexOf(tab.id) < 0) w.tabs.push(tab.id);
     }
     const el = document.createElement('section');
-    el.className = noAnim ? 'win' : 'win opening';
+    el.className = (noAnim ? 'win' : 'win opening') + (w.hud ? ' hud' : '');
     el.dataset.wid = wid;
-    el.style.zIndex = String(w.z);
+    el.style.zIndex = String(wmZ(w));
     const title = document.createElement('div');
     title.className = 'win-title';
     const name = document.createElement('span');
@@ -3750,6 +4059,11 @@
       b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
       return b;
     };
+    // HUD windows get a lock toggle: locked = click-through, so the widget keeps drawing
+    // over the game but stops claiming input. Unlocking from here is impossible once
+    // locked (the window publishes no consume rect), so the owning settings panel keeps
+    // its own lock control as the way back -- same contract the companion widget had.
+    if (w.hud) btns.appendChild(mkB('g-lock', 'Lock (click-through)', () => wmToggleLock(w), 'win-lock'));
     btns.appendChild(mkB('g-min', 'Minimize', () => wmMinimize(w)));
     btns.appendChild(mkB('g-x', 'Close', () => wmClose(wid), 'win-close'));
     title.appendChild(btns);
@@ -3789,6 +4103,7 @@
     __paneRoots[w.tab] = pane;
     wmClamp(w);
     wmApplyGeom(w);
+    wmApplyLock(w);
     if (w.min) el.style.display = 'none';
     wmRenderTabs(w);
     return w;
@@ -3930,6 +4245,7 @@
   function wmClose(wid) {
     const w = wm.wins.get(wid);
     if (!w) return;
+    wm.dirty = true;            // closing is a layout change; see the note in openTab
     // Only the SHOWN tab needs leaving: the others were left when they were switched away.
     paneLeave(w.tab);
     delete __paneRoots[w.tab];
@@ -4003,9 +4319,12 @@
     return r.width > 0 && r.height > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
   function wmDockTargetAt(x, y, skip) {
+    // HUD widgets never dock, in either direction: they are single-purpose overlays with
+    // their own chrome and z-band, and a tab strip inside one makes no sense.
+    if (skip && skip.hud) return null;
     let best = null;
     for (const w of wmVisibleWins()) {
-      if (w === skip || w.rolled) continue;
+      if (w === skip || w.rolled || w.hud) continue;
       if (!wmPtIn(w.titleEl, x, y) && !wmPtIn(w.tabsEl, x, y)) continue;
       if (!best || w.z > best.z) best = w;   // overlapping title bars: the top one wins
     }
@@ -4510,7 +4829,9 @@
     };
     if (!menubarHidden) add($('menubar'));
     add($('mbdrop'));
-    for (const w of wm.wins.values()) if (!w.min) add(w.el);
+    // A locked HUD is deliberately absent: no consume rect means the companion never
+    // swallows the click, so it lands in the game underneath. It keeps drawing regardless.
+    for (const w of wm.wins.values()) if (!w.min && !w.locked) add(w.el);
     // Body-level popovers: they float outside any window rect, so they need their own.
     add($('sndMenu')); add($('vrPop'));
     add($('lgMenu'));
@@ -4643,23 +4964,30 @@
     for (const [wid, w] of wm.wins) {
       wins[wid] = { tab: w.tab, tabs: w.tabs.slice(), x: Math.round(w.x), y: Math.round(w.y),
                     w: Math.round(w.w), h: Math.round(w.h), z: w.z, min: w.min ? 1 : 0,
-                    roll: w.rolled ? 1 : 0 };
+                    roll: w.rolled ? 1 : 0, lock: w.locked ? 1 : 0 };
     }
     return { v: 1, bar: { x: wm.barX, y: wm.barY, pill: wm.barPill ? 1 : 0 },
              toast: { anchor: toastCfg.anchor, dx: toastCfg.dx | 0, dy: toastCfg.dy | 0, w: toastCfg.w | 0 },
              wins };
   }
+  function wmSaveNow() {
+    try {
+      if (bridge() && bridge().layoutSave)
+        bridge().layoutSave(myPid(), JSON.stringify(wmSnapshot()));
+    } catch (e) {}
+  }
   function wmSaveSoon() {
     if (!wm.restored) return;   // never clobber a saved layout with boot state
     if (_wmSaveT) return;
-    _wmSaveT = setTimeout(() => {
-      _wmSaveT = 0;
-      try {
-        if (bridge() && bridge().layoutSave)
-          bridge().layoutSave(myPid(), JSON.stringify(wmSnapshot()));
-      } catch (e) {}
-    }, 500);
+    _wmSaveT = setTimeout(() => { _wmSaveT = 0; wmSaveNow(); }, 500);
   }
+  // The 500 ms debounce means a change made just before the view goes away was never written.
+  // Flush any pending save on teardown.
+  window.addEventListener('pagehide', () => {
+    if (!wm.restored || !_wmSaveT) return;
+    clearTimeout(_wmSaveT); _wmSaveT = 0;
+    wmSaveNow();
+  });
   async function wmLayoutRestore() {
     let saved = null;
     try {
@@ -4692,9 +5020,13 @@
         .filter(id => avail.some(x => x.id === id) && !wmWinOf(id));
       if (!ids.length) continue;              // nothing left to show -> no empty window
       const t = avail.find(x => x.id === (ids.indexOf(st.tab) >= 0 ? st.tab : ids[0]));
+      // min and lock are NOT geometry: gating them on a sane w/h meant a window saved without
+      // usable dimensions came back un-minimized and unlocked. Pass them either way and let
+      // wmCreateWindow fall back to the default size/position when the box is unusable.
       const geom = (st.w > 0 && st.h > 0)
-        ? { x: st.x | 0, y: st.y | 0, w: st.w | 0, h: st.h | 0, min: !!st.min } : null;
-      const w2 = openTab(t, { noFocus: true, geom });
+        ? { x: st.x | 0, y: st.y | 0, w: st.w | 0, h: st.h | 0, min: !!st.min, lock: !!st.lock }
+        : { min: !!st.min, lock: !!st.lock, nogeom: 1 };
+      const w2 = openTab(t, { noFocus: true, geom, restoring: true });
       // Only a docking-era save overrides the set openTab built; a pre-docking layout
       // has no `tabs` and must keep its group's members.
       if (w2 && docked) wmSetTabs(w2, ids);
@@ -4711,6 +5043,12 @@
   // opts: { noFocus, geom:{x,y,w,h,min} } for layout restore.
   function openTab(t, opts) {
     opts = opts || {};
+    // Opening a window IS a layout change, but wmSaveSoon refuses to write until wm.restored,
+    // and wm.dirty was only ever set by a drag or resize. So on a first run -- or during the
+    // up-to-60s window while the account is still resolving and layoutLoad returns {} -- every
+    // window the user opened was discarded unless they happened to drag one. Restores pass
+    // `restoring` so replaying a saved layout does not mark it dirty.
+    if (!opts.restoring) wm.dirty = true;
     const g = TAB_GROUP_OF[t.id] || null;
     let w = wmWinOf(t.id);   // wherever it is docked, not where its group would put it
     if (w) {
@@ -4762,6 +5100,8 @@
     if (id === 'quests') { questListSig = ''; fetchQuests(true); qgEnsureLoaded(); }
     if (id === 'questfocus') { qgSig = ''; fetchQuests(true); qgEnsureLoaded(); }
     if (id === 'xptracker') { applyXpOverlay(); fetchXpTracker(true); }   // apply even when hidden: it starts the 1 Hz sampler
+    if (id === 'xpmeter') { applyXpOverlay(); fetchXpTracker(true); }     // same sampler; the meter is the readout
+    if (id === 'metronome') { applyMetroOverlay(); metroTickKick(); }
     if (id === 'chatlog') { chatSig = ''; fetchChat(true); }
     if (id === 'achievements') { achListSig = ''; fetchAchievements(true); }
     if (id === 'combatmastery') { cmListSig = ''; fetchAchievements(true); }
@@ -4943,6 +5283,18 @@
     // Category launchers (a dot marks categories with open windows).
     const cats = document.createElement('nav');
     cats.className = 'mb-cats';
+    // A vertical wheel over an x-only scroller is not reliably translated for us, and the
+    // categories only overflow on a small client -- exactly when the user most needs to
+    // reach them. Map the wheel by hand, and only consume it when there is somewhere to go.
+    cats.addEventListener('wheel', (e) => {
+      const max = cats.scrollWidth - cats.clientWidth;
+      if (max <= 0) return;
+      const d = (Math.abs(e.deltaX) > Math.abs(e.deltaY)) ? e.deltaX : e.deltaY;
+      if (!d) return;
+      const before = cats.scrollLeft;
+      cats.scrollLeft = Math.max(0, Math.min(max, before + d));
+      if (cats.scrollLeft !== before) e.preventDefault();
+    }, { passive: false });
     const openCats = new Set();
     for (const w of wm.wins.values()) for (const id of w.tabs) {
       const t = allTabs().find(x => x.id === id);   // every docked tab, not just the shown one
@@ -5353,6 +5705,7 @@
     if (activeTab === 'quests') { renderQuests(); return; }
     if (activeTab === 'questfocus') { renderQuestFocus(); return; }
     if (activeTab === 'xptracker') { renderXpTracker(); return; }
+    if (activeTab === 'xpmeter') { renderXpMeter(); return; }
     if (activeTab === 'chatlog') { renderChat(); return; }
     if (activeTab === 'achievements') { renderAchievements2(); return; }
     if (activeTab === 'combatmastery') { renderCombatMastery(); return; }
@@ -5395,6 +5748,7 @@
     if (activeTab === 'netprobe') { renderNetProbe(); return; }
     if (activeTab === 'cs2') { renderCs2(); return; }
     if (activeTab === 'ticks') { renderTicks(); return; }
+    if (activeTab === 'metronome') { renderMetronome(); return; }
     if (activeTab === 'stopwatch') { renderStopwatch(); return; }
     if (activeTab === 'notes') { renderNotes(); return; }
     if (activeTab === 'counter') { renderCounter(); return; }
@@ -5760,6 +6114,10 @@
     if (!Array.isArray(snaps)) return;
     const me = snaps.find(s => Number(s.pid) === myPid());
     lastSnap = me || null;
+    // Rebind plugin consent to the logged-in character. Driven from here, not only from
+    // renderPlugin, because a minimized plugin window keeps its frame mounted and can still
+    // make calls -- so a character switch has to be noticed even when nothing is repainting.
+    try { pluginGrantsEnsure(); } catch (e) {}
     // Keep the overlay metronome pointed at the current client.
     if ((metroVisual() || metroAudio()) && myPid() !== _metroAppliedPid) applyMetroOverlay();
     // Keep the XP tracker sampler on the active client across relogs, shown or not.
@@ -5802,7 +6160,7 @@
     // step-NPC marking follows progress even with the window closed).
     if (paneVisible('quests') || paneVisible('questfocus') ||
         (questGSteps && questGSteps.__focus)) fetchQuests();
-    if (paneVisible('xptracker')) fetchXpTracker();
+    if (paneVisible('xptracker') || paneVisible('xpmeter')) fetchXpTracker();
     if (paneVisible('archmysteries') || paneVisible('mystfocus') ||
         mystSteps === null || !!mystFocusName()) fetchArchMysteries();
     // Host info changes slowly; refresh it once per second to keep RAM live.
@@ -5940,7 +6298,7 @@ function g(o){return o;}
 var api={apiVersion:function(){return S.apiVersion;},id:function(){return S.pluginId;},grantedScopes:function(){return S.scopes.slice();},hasScope:function(s){return S.scopes.indexOf(s)!==-1;},
 ready:function(cb){if(typeof cb!=='function'){return new Promise(function(r){S.ready?r():rcb.push(r);});}S.ready?cb():rcb.push(cb);},
 on:function(e,cb){if(L[e]&&typeof cb==='function')L[e].push(cb);},
-state:{player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);},interfaceGroup:function(g){return call('state.interfaceGroup',[g]);},varcs:function(ids){return call('state.varcs',[ids]);},ports:function(){return call('state.ports',[]);}},
+state:{player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);},interfaceGroup:function(g){return call('state.interfaceGroup',[g]);},varcs:function(ids){return call('state.varcs',[ids]);},ports:function(){return call('state.ports',[]);},gameTick:function(){return call('state.gameTick',[]);}},
 cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);}},
 notify:{windows:function(title,body){return call('notify.windows',[title,body]);}},
 clipboard:{copy:function(t){return call('clipboard.copy',[t]);}},
@@ -6005,9 +6363,16 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
                             return HIDEY.map(h => { const v = (((vp[h.vp] || 0) >>> 0) >>> h.b) & 3;
                               return { name: h.n, tier: HIDEY_TIERS[h.t], location: h.loc, build: HIDEY_BUILD[h.t],
                                        fillItems: h.fi || [], state: v, built: v >= 1, filled: v === 2 }; }); } },
+    // Server tick counter. Returns a NUMBER, not JSON, hence json:false; the host returns -1
+    // when the client is not tracked, which is normalised to null so a plugin sees the same
+    // "cannot read" shape every other state call uses rather than a magic number.
+    'state.gameTick':   { scope: 'state.read', json: false,
+                          run: (a, pid) => { const t = bridge().gameTick(pid); return (typeof t === 'number' && t >= 0) ? t : null; } },
     'cache.itemInfo':   { scope: 'cache.read', json: true,    run: (a) => bridge().itemInfo(pClampId(a[0])) },
     'cache.itemIcon':   { scope: 'cache.read', json: false,   run: (a) => bridge().itemIcon(pClampId(a[0])) },
-    // Pre-rendered interface type-6 MODEL comp icons, keyed by MODEL id (from cacheIfaceGroup defs).
+    // Pre-rendered interface type-6 MODEL comp icons, keyed by MODEL id (from cacheIfaceGroup
+    // defs). cacheIfaceGroup itself is host-only and not brokered, and state.interfaceGroup
+    // carries no model field, so a plugin can only use this with a model id it already has.
     'cache.modelIcon':  { scope: 'cache.read', json: false,   run: (a) => (bridge().modelIcon ? bridge().modelIcon(pClampId(a[0])) : '') },
     'cache.sprite':     { scope: 'cache.read', json: false,   run: (a) => bridge().sprite(pClampId(a[0])) },
     'cache.varbitMap':  { scope: 'cache.read', json: true,    run: () => bridge().varbitMap() },
@@ -6304,23 +6669,80 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     });
   }
 
-  // Grants live in memory for the session (localStorage is unreliable in the
-  // LoadHTML panel -- opaque origin throws), with localStorage as best-effort
-  // cross-session persistence only.
-  const pluginGrants = Object.create(null);
-  function pluginGrantKey(id) { return 'rtxPluginGrant:' + id; }
-  function pluginGetGranted(id) {
-    if (pluginGrants[id]) return pluginGrants[id];
-    try { const s = localStorage.getItem(pluginGrantKey(id)); if (s) { const v = JSON.parse(s); pluginGrants[id] = v; return v; } } catch (e) {}
-    return null;
+  // ---- plugin permission grants ----
+  // PER ACCOUNT, and deliberately not migrated from the old machine-wide localStorage key.
+  // Consent is a security decision about "this plugin may read this character's data", and
+  // the old store answered it once for every character on the machine. Carrying those grants
+  // forward would re-create exactly that: silent authorisation on accounts that never
+  // consented. Users consent once more per character instead, which is the point.
+  //
+  // Grants live in memory for the session as well (localStorage was unreliable in the
+  // LoadHTML panel, and the per-account file cannot be written until the character name
+  // resolves), so a grant is never lost mid-session just because the store is not ready.
+  let pluginGrants = Object.create(null);   // plugin id -> granted scope array
+  // The account the in-memory map belongs to. NOT the pid: logging into a different
+  // character reuses the same client (same pid) while changing which account's grants apply,
+  // so a pid check would happily keep the previous character's consents in memory.
+  let pluginGrantsAcct = null;              // null = never bound to an account yet
+  let _pgSaveT = 0, _pgSaveTries = 0, _pgLoading = false;
+  function pluginAcctKey() { return (lastSnap && lastSnap.display_name) || ''; }
+  async function pluginGrantsEnsure() {
+    const acct = pluginAcctKey();
+    if (!acct || _pgLoading || pluginGrantsAcct === acct) return;
+    _pgLoading = true;
+    let loaded = null;
+    try {
+      const s = await bridge().pluginGrantsLoad(myPid());
+      const v = JSON.parse(s || '{}');
+      if (v && typeof v === 'object') loaded = v;
+    } catch (e) {}
+    _pgLoading = false;
+    if (!loaded) return;                    // store not readable yet: retry on the next call
+    const first = (pluginGrantsAcct === null);
+    const merged = Object.create(null);
+    for (const k in loaded) if (Array.isArray(loaded[k])) merged[k] = loaded[k];
+    // Only on the FIRST binding do session grants survive: those were made moments earlier by
+    // this user, before the character name resolved, and dropping them would re-prompt for a
+    // consent just given. On an account CHANGE the in-memory map belongs to the previous
+    // character and must not carry over -- that is the whole bug being fixed.
+    if (first) for (const k in pluginGrants) merged[k] = pluginGrants[k];
+    pluginGrants = merged;
+    pluginGrantsAcct = acct;
+    if (first) pluginGrantsSaveSoon();
+    // A different character's grants are now in force, so anything mounted under the old
+    // ones must be re-evaluated rather than left running.
+    if (!first) for (const w of wm.wins.values())
+      if (String(w.tab).indexOf('plugin:') === 0) { pluginMounts.delete(w.tab.slice(7)); renderPaneFor(w); }
   }
+  function pluginGrantsSaveSoon(delay) {
+    if (_pgSaveT) return;
+    _pgSaveT = setTimeout(() => {
+      _pgSaveT = 0;
+      let ok = false;
+      try { ok = !!bridge().pluginGrantsSave(myPid(), JSON.stringify(pluginGrants)); } catch (e) {}
+      // Refused until the account resolves (the file is per-character). Retry rather than
+      // silently losing the consent, backing off to 2s so we are not spinning every 400ms.
+      if (ok) { _pgSaveTries = 0; return; }
+      if (_pgSaveTries < 10) { _pgSaveTries++; pluginGrantsSaveSoon(2000); }
+    }, delay || 400);
+  }
+  function pluginGetGranted(id) { return pluginGrants[id] || null; }
   function pluginSetGranted(id, scopes) {
     pluginGrants[id] = scopes || [];
-    try { localStorage.setItem(pluginGrantKey(id), JSON.stringify(scopes || [])); } catch (e) {}
+    pluginGrantsSaveSoon();
   }
   function pluginClearGranted(id) {
     delete pluginGrants[id];
-    try { localStorage.removeItem(pluginGrantKey(id)); } catch (e) {}
+    pluginGrantsSaveSoon();
+  }
+  // A grant only covers the scopes it was given for. If a plugin update asks for anything
+  // new, the old consent does NOT cover it: re-prompt with the new list. (The per-call gate
+  // already refuses an ungranted scope, so this was never an escalation -- but the user was
+  // never asked, and the plugin just failed silently.)
+  function pluginGrantCovers(granted, want) {
+    if (!Array.isArray(granted)) return false;
+    for (const s of (want || [])) if (granted.indexOf(s) === -1) return false;
+    return true;
   }
 
   const PLUGIN_TAB_ICON = '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13.5 17h6.5M16.75 13.75v6.5"/>';
@@ -6361,9 +6783,12 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     return '<!DOCTYPE html><html><head>' + inject + '</head><body>' + html + '</body></html>';
   }
 
-  function renderPluginPermission(id, tab) {
+  function renderPluginPermission(id, tab, prev) {
     const c = $('content'); c.innerHTML = '';
     const m = tab.manifest;
+    // prev = scopes already consented to for THIS character, when the prompt is a re-ask
+    // because the plugin now wants more than it did.
+    const isUpdate = Array.isArray(prev) && prev.length > 0;
     const card = document.createElement('div');
     card.dataset.pluginPerm = id;
     card.style.cssText = 'max-width:420px;margin:24px auto;background:#1a1b23;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:20px;';
@@ -6375,9 +6800,20 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     else
         h += '<div style="color:#34d399;font-size:.8em;margin-bottom:12px;">Verified - signed by RuneTools.</div>';
     if (m.description) h += '<div style="font-size:.9em;margin-bottom:12px;">' + pluginEsc(m.description) + '</div>';
+    if (isUpdate)
+      h += '<div style="color:#e0b000;font-size:.82em;margin-bottom:10px;">This plugin now asks for more access than you allowed. Review the new items before enabling it.</div>';
     h += '<div style="font-size:.82em;color:#8b8b9e;margin-bottom:6px;">This plugin can:</div><ul style="margin:0 0 14px 18px;font-size:.88em;line-height:1.6;">';
-    (tab.scopes.length ? tab.scopes : ['(no special access)']).forEach(s => { h += '<li>' + pluginEsc(labels[s] || s) + '</li>'; });
+    (tab.scopes.length ? tab.scopes : ['(no special access)']).forEach(s => {
+      const isNew = isUpdate && prev.indexOf(s) === -1;
+      h += '<li' + (isNew ? ' style="color:#e0b000;font-weight:600;"' : '') + '>' + pluginEsc(labels[s] || s) +
+           (isNew ? ' <span style="font-weight:400;font-size:.85em;">(new)</span>' : '') + '</li>';
+    });
     h += '</ul>';
+    // Consent is per character, so name the one being authorised: the same plugin on another
+    // character is a separate decision, and the user should not be surprised by that.
+    { const acct = pluginAcctKey();
+      h += '<div style="font-size:.78em;color:#8b8b9e;margin:-6px 0 12px;">Applies to ' +
+           (acct ? pluginEsc(acct) : 'this character') + ' only.</div>'; }
     card.innerHTML = h;
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;';
@@ -6408,11 +6844,14 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     if (!c) return;
     const tab = pluginTabs.find(p => p.id === id);
     if (!tab) { c.innerHTML = '<div class="empty">Plugin not found.</div>'; pluginMounts.delete(id); return; }
+    pluginGrantsEnsure();               // async; a not-yet-loaded store just prompts once more
     const granted = pluginGetGranted(id);
-    if (!granted) {
+    // Consent must cover everything the CURRENT manifest asks for: an update that adds a
+    // scope has not been consented to, even though an older grant exists.
+    if (!granted || !pluginGrantCovers(granted, tab.scopes)) {
       const cur = c.firstElementChild;
       if (cur && cur.dataset && cur.dataset.pluginPerm === id) return;   // build-once
-      renderPluginPermission(id, tab); pluginMounts.delete(id); return;
+      renderPluginPermission(id, tab, granted); pluginMounts.delete(id); return;
     }
     const cur = c.firstElementChild;
     if (cur && cur.dataset && cur.dataset.pluginHost === id) return;      // already mounted
@@ -6426,7 +6865,10 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     fr.setAttribute('referrerpolicy', 'no-referrer');
     fr.style.cssText = 'border:0;display:block;width:100%;flex:1 1 auto;min-height:0;background:#14151c;';
     wrap.appendChild(fr); c.appendChild(wrap);
-    pluginMounts.set(id, { id, frame: fr, scopes: granted });
+    // Least privilege: the mount carries the INTERSECTION of what was granted and what the
+    // manifest still asks for, so a scope dropped from a later manifest stops working even
+    // though the older grant still lists it. The per-call gate reads this list.
+    pluginMounts.set(id, { id, frame: fr, scopes: granted.filter(s => tab.scopes.indexOf(s) !== -1) });
     (async () => {
       let entry = '';
       const entryFn = (tab.source === 'installed') ? bridge().pluginInstalledEntry : bridge().pluginDevEntry;
@@ -6666,6 +7108,10 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
 
   function attachBridge() {
     if (!bridge()) { setTimeout(attachBridge, 100); return; }
+    // Durable preferences first: several panels read their seed at parse time, and this is
+    // what restores them on the first run after an app update wiped localStorage. Async, so
+    // each of those panels also gets a re-apply hook (see prefsInit).
+    prefsInit();
     // Load tile-marker state first so the initial pushOverlay() reflects whether markers
     // should render; this starts the overlay thread for accounts that already have
     // markers, without opening the tab.
@@ -6696,13 +7142,17 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
       if (!bootLayout._plugins) { bootLayout._plugins = 1; try { await loadPlugins(); } catch (e) {} }
       let ok = false;
       try { ok = await wmLayoutRestore(); } catch (e) {}
-      if (ok) return;
+      // The HUD widgets are driven by their own saved settings, not only by the window
+      // layout: a user upgrading from the companion-drawn versions has rtxXpOn/rtxMetroMode
+      // set but no window saved for them, and would otherwise see them silently disappear.
+      if (ok) { try { xpSyncWindow(true); metroSyncWindow(true); } catch (e) {} return; }
       if (tries > 0 && !wm.dirty) { setTimeout(() => bootLayout(tries - 1), 2000); return; }
       wm.restored = true;                       // enable saves from here on
       if (!wm.wins.size && !wm.dirty) {
         const t = allTabs().find(x => x.id === 'player');
         if (t) openTab(t);                      // first run: a single Skills window
       }
+      try { xpSyncWindow(); metroSyncWindow(); } catch (e) {}
     })(30);
     wmRectsSoon();
     refresh();

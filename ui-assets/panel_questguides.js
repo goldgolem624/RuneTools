@@ -38,9 +38,14 @@
     return _qgByLower[name.toLowerCase()] ||
            _qgByLower[(name + ' (miniquest)').toLowerCase()] || null;
   }
+  // Which account the blob was read for. Without this the guard was "have I loaded anything
+  // at all", so switching character kept the previous one's ticked steps in memory and the
+  // next save wrote them into the new character's file. Same guard as notes/mysteries.
+  let qgLoadedPid = -1;
   async function qgEnsureLoaded() {
-    if (questGSteps !== null || qgFetching || !bridge() || !bridge().questLoad) return;
+    if ((questGSteps !== null && qgLoadedPid === myPid()) || qgFetching || !bridge() || !bridge().questLoad) return;
     qgFetching = true;
+    qgLoadedPid = myPid();
     try { const d = JSON.parse(await bridge().questLoad(myPid())); questGSteps = (d && typeof d === 'object') ? d : {}; }
     catch (e) { questGSteps = {}; }
     qgFetching = false;
@@ -48,7 +53,10 @@
     paneRun('questfocus', renderQuestFocus);
     if (paneVisible('quests')) { questDetailSig = ''; renderQuests(); }
   }
-  function qgSave() { try { bridge().questSave(myPid(), JSON.stringify(questGSteps || {})); } catch (e) {} }
+  function qgSave() {
+    if (qgLoadedPid !== myPid()) return;   // never write one character's progress to another
+    try { bridge().questSave(myPid(), JSON.stringify(questGSteps || {})); } catch (e) {}
+  }
   function qgFocusName() { return (questGSteps && typeof questGSteps.__focus === 'string') ? questGSteps.__focus : ''; }
   function setQuestFocus(nm) {
     if (questGSteps === null) questGSteps = {};

@@ -1009,6 +1009,22 @@ JSValueRef GameTick(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeNumber(ctx, static_cast<double>(count));
 }
 
+// Tick count PLUS the ms since that tick landed, which GameTick throws away. The metronome
+// widget needs the age: a 600 ms beat sampled at the UI's poll rate would jitter by more
+// than a third of a beat, so the page samples this occasionally and interpolates the phase
+// locally from its own clock. age = -1 when the tick time is unknown.
+JSValueRef GameTickState(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{\"count\":-1,\"age\":-1}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::uint32_t count = 0; double age_ms = 0;
+    if (!rtx::reader::TickState(pid, count, age_ms))
+        return utf8_to_js(ctx, "{\"count\":-1,\"age\":-1}");
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "{\"count\":%u,\"age\":%.1f}", count, age_ms);
+    return utf8_to_js(ctx, buf);
+}
+
 JSValueRef Perks(JSContextRef ctx, JSObjectRef, JSObjectRef,
                  size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{\"items\":[]}");
@@ -3496,6 +3512,31 @@ JSValueRef NotesLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, s.empty() ? std::string("[]") : s);
 }
 
+// Plugin permission grants, PER ACCOUNT. They used to live in localStorage under a bare
+// plugin id, which is machine-wide: consenting once on one character silently authorised the
+// plugin for every character on the machine, including ones the user never opened it on.
+// Per-account also means the consent survives the ui-assets re-extract that wipes
+// localStorage on every app update, so users are not re-prompted for everything on upgrade.
+JSValueRef PluginGrantsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                            size_t argc, const JSValueRef argv[], JSValueRef*) {
+    std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    std::string s = alerts_read_file(account_store_path(pid, L"plugin-grants"));
+    return utf8_to_js(ctx, s.empty() ? std::string("{}") : s);
+}
+
+JSValueRef PluginGrantsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                            size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    std::uint32_t pid = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
+    auto p = account_store_path(pid, L"plugin-grants");
+    if (p.empty()) return JSValueMakeBoolean(ctx, false);   // account unresolved: refuse, JS retries
+    std::string s = js_to_utf8(ctx, argv[1]);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    if (!f) return JSValueMakeBoolean(ctx, false);
+    f.write(s.data(), (std::streamsize)s.size());
+    return JSValueMakeBoolean(ctx, f.good());
+}
+
 JSValueRef NotesSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -3608,6 +3649,11 @@ JSValueRef Cs2Names(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, cs2browser::NamesJson());
 }
 
+JSValueRef Cs2Switches(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, cs2browser::SwitchesJson());
+}
+
 JSValueRef CounterLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -3698,6 +3744,38 @@ JSValueRef VarPinsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string s = alerts_read_file(launcher_cfg_path(L"varpins.json"));
     return utf8_to_js(ctx, s.empty() ? std::string("[]") : s);
 }
+// Durable UI preferences, machine-wide. localStorage is NOT durable here: it is wiped
+// whenever ui-assets are re-extracted, which happens on every app update, so anything a user
+// would resent re-doing (a hand-collected sound mute list, overlay toggles) has to live on
+// disk. Var pins and menu rules were moved off localStorage for exactly this reason; this is
+// the general store so the next setting does not need its own bridge pair.
+JSValueRef PrefsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t, const JSValueRef[], JSValueRef*) {
+    std::string s = alerts_read_file(launcher_cfg_path(L"prefs.json"));
+    return utf8_to_js(ctx, s.empty() ? std::string("{}") : s);
+}
+
+JSValueRef PrefsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto p = launcher_cfg_path(L"prefs.json");
+    if (p.empty()) return JSValueMakeBoolean(ctx, false);
+    std::string s = js_to_utf8(ctx, argv[0]);
+    // Temp-plus-rename: this is rewritten on every preference change, and a torn write
+    // would lose every setting at once rather than the one being changed.
+    auto tmp = p; tmp += L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return JSValueMakeBoolean(ctx, false);
+        f.write(s.data(), (std::streamsize)s.size());
+        if (!f.good()) return JSValueMakeBoolean(ctx, false);
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, p, ec);
+    if (ec) { std::filesystem::remove(p, ec); std::filesystem::rename(tmp, p, ec); }
+    return JSValueMakeBoolean(ctx, !ec);
+}
+
 JSValueRef VarPinsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4621,6 +4699,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "sceneEntities",     SceneEntities);
     install_fn(ctx, ns, "playerInfo",        PlayerInfo);
     install_fn(ctx, ns, "gameTick",          GameTick);
+    install_fn(ctx, ns, "gameTickState",     GameTickState);
     install_fn(ctx, ns, "perks",             Perks);
     install_fn(ctx, ns, "inventory",         Inventory);
     install_fn(ctx, ns, "containerItems",    ContainerItems);
@@ -4741,6 +4820,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "layoutSave",        LayoutSave);
     install_fn(ctx, ns, "notesLoad",         NotesLoad);
     install_fn(ctx, ns, "notesSave",         NotesSave);
+    install_fn(ctx, ns, "pluginGrantsLoad",  PluginGrantsLoad);
+    install_fn(ctx, ns, "pluginGrantsSave",  PluginGrantsSave);
     install_fn(ctx, ns, "cacheStoreLoad",    CacheStoreLoad);
     install_fn(ctx, ns, "cacheStoreSave",    CacheStoreSave);
     install_fn(ctx, ns, "nameplatesLoad",    NameplatesLoad);
@@ -4757,6 +4838,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "cs2Search",         Cs2Search);
     install_fn(ctx, ns, "cs2Script",         Cs2Script);
     install_fn(ctx, ns, "cs2Names",          Cs2Names);
+    install_fn(ctx, ns, "cs2Switches",       Cs2Switches);
     install_fn(ctx, ns, "sidebarLoad",       SidebarLoad);
     install_fn(ctx, ns, "sidebarSave",       SidebarSave);
     install_fn(ctx, ns, "keepFocusedLoad",   KeepFocusedLoad);
@@ -4765,6 +4847,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "hiddenPanelsSave",  HiddenPanelsSave);
     install_fn(ctx, ns, "varPinsLoad",       VarPinsLoad);
     install_fn(ctx, ns, "varPinsSave",       VarPinsSave);
+    install_fn(ctx, ns, "prefsLoad",         PrefsLoad);
+    install_fn(ctx, ns, "prefsSave",         PrefsSave);
     install_fn(ctx, ns, "menuRulesLoad",     MenuRulesLoad);
     install_fn(ctx, ns, "menuRulesSave",     MenuRulesSave);
     install_fn(ctx, ns, "menuDef",           MenuDef);

@@ -47,6 +47,9 @@ ThirdParty/cs2sidecar/*
 !ThirdParty/cs2sidecar/build.cmd
 !ThirdParty/cs2sidecar/src/
 !ThirdParty/cs2sidecar/cache/
+# ...but not its per-build calibration caches. The extractor regenerates these on any run
+# against a new client build (a couple of MB each), and they are worthless to anyone else.
+ThirdParty/cs2sidecar/cache/*-build*.json
 ThirdParty/cs2sidecar/src/node_modules/
 
 # Installer + plugin build artifacts
@@ -60,6 +63,7 @@ desktop.ini
 
 # Local research notes, capture scripts and session dumps (not redistributed)
 docs/
+research/
 scratchpad/
 
 # Sample/tutorial plugins ship through the plugin store, not with the client

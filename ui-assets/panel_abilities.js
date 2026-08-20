@@ -55,7 +55,10 @@
     if (!r || !r.v || !d || !d.vc || !d.clock) return null;
     const a = d.vc['5:' + r.v[0]], b = d.vc['5:' + r.v[1]];
     if (typeof a !== 'number' || typeof b !== 'number' || a <= 0 || b <= a) return null;
-    const cyc = Math.floor(d.clock / 20);
+    // The varc stamps are in CLIENTCLOCK cycles, so use that counter directly when the host
+    // reports it. clock/20 was always an approximation of this exact value, derived from a
+    // hardcoded module offset; it stays as the fallback for an older host.
+    const cyc = (d.cycles > 0) ? d.cycles : Math.floor(d.clock / 20);
     const dur = b - a, el = cyc - a;
     if (el < 0 || el >= dur || dur > 360000) return null;
     return Math.floor((dur + 50 - el) / 50);

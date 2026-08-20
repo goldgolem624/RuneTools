@@ -56,6 +56,15 @@ const std::uint8_t  kMainAnchorBytes[] =
     { 0x48, 0x2D, 0xA8, 0x00, 0x00, 0x00, 0x48, 0x83 };
 const std::size_t   kMainAnchorLen     = sizeof(kMainAnchorBytes);
 constexpr int       kMainAnchorAdjust  = -32;
+// CLIENT cycle counter: u32 at root + this, advancing 50/s (one CLIENTCLOCK unit = 20ms).
+// Recovered from the CLIENTCLOCK engine op (scrambled 1708, handler 0x14009e9d0), whose whole
+// body is `mov edx,[rcx+0x528]` with rcx = MainData -- so unlike a raw module offset this one
+// is re-derivable from the cache after any game update (docs/cs2_opcodes.md).
+//
+// NOT the server tick. That is a different counter (kTickCounterOff below, +1 per 600ms from
+// inbound packet 0xB4) and it has no engine op, because scripts never read it -- so its
+// byte-pattern anchor cannot be replaced by this and must stay.
+constexpr std::uint32_t kOffClientClock = 0x528;
 constexpr std::uint32_t kOffWorld   = 0x19970;   // root + this -> ptr -> +0x20 -> +0x8 = world(int)
 constexpr std::uint32_t kOffStatus  = 0x19F60;   // root + this = status(int8)
 constexpr std::uint32_t kOffStats   = 0x198E0;   // root + this -> stats container
@@ -164,6 +173,39 @@ std::optional<T> rpm(HANDLE h, std::uint64_t addr) {
     T v{};
     if (!rpm_bytes(h, addr, &v, sizeof(T))) return std::nullopt;
     return v;
+}
+
+// Read one JagString, the client's 24-byte std::string-alike. Layout proven against
+// CHAT_PLAYERNAME (op 220) plus six other handlers, 2026-08-18:
+//   tag byte at +0x17, bit 7 set  -> HEAP:   char* at +0x00, byte length at +0x08
+//                      bit 7 clear-> INLINE: up to 23 chars at +0x00, and the tag is the
+//                                    REMAINING capacity, so length = 0x17 - tag
+// 23 is the hard inline maximum; assign() spills to the heap past that. Text is UTF-8.
+// Bytes past the length are uninitialised heap, so a fixed-size read is never correct:
+// that is exactly the bug this replaces. Returns "" for empty/unreadable, which callers
+// must treat as "not set" rather than as a name.
+std::string read_jagstring(HANDLE h, std::uint64_t str, std::uint64_t max_len = 64) {
+    auto tag = rpm<std::uint8_t>(h, str + 0x17);
+    if (!tag) return {};
+    std::uint64_t len = 0, data = 0;
+    if (*tag & 0x80) {                       // heap
+        auto ptr = rpm<std::uint64_t>(h, str + 0x00);
+        auto n   = rpm<std::uint64_t>(h, str + 0x08);
+        if (!ptr || !n || *ptr <= 0x10000) return {};
+        data = *ptr;
+        len  = *n;
+    } else {                                 // inline
+        if (*tag > 0x17) return {};          // impossible for a real string: torn read
+        len  = 0x17u - *tag;
+        data = str;
+    }
+    char buf[64];
+    if (len == 0 || len > max_len || len > sizeof(buf)) return {};
+    if (!rpm_bytes(h, data, buf, (SIZE_T)len)) return {};
+    std::string out;
+    for (std::uint64_t i = 0; i < len; ++i)
+        if ((unsigned char)buf[i] >= 32) out.push_back(buf[i]);
+    return out;
 }
 
 // Search the target's .text for a literal byte pattern. Returns RVA (offset
@@ -799,17 +841,33 @@ Snapshot sample_one(State& s) {
                 }
             }
 
-            // In-game character name (inline ASCII at data ptr +0x68), kept
-            // only as a legacy-login fallback for the bank-cache key.
-            auto dptr = rpm<std::uint64_t>(s.proc, *root + (kOffStatus + 0x8));
-            if (dptr && *dptr > 0x10000) {
-                char nm[16] = {0};
-                if (rpm_bytes(s.proc, *dptr + 0x68, nm, 15)) {
-                    std::string name;
-                    for (int ci = 0; ci < 15 && nm[ci]; ++ci)
-                        if ((unsigned char)nm[ci] >= 32) name.push_back(nm[ci]);
-                    if (!name.empty()) s.character = name;
+            // In-game character name: the account object's JagString at +0x68 (kOffStatus+8
+            // is the account pointer, 0x19F68). Kept only as a legacy-login fallback for the
+            // bank-cache key; display_name wins below when it is set.
+            //
+            // This used to read 15 raw bytes and keep the printable ones, which was wrong for
+            // EVERY name: the field is a JagString, so past the string's length the bytes are
+            // uninitialised heap (the account block is operator new(0xF0) and the ctor writes
+            // only the tag and a NUL). A 12-char name left 2 junk bytes, a 5-char name left 9,
+            // and whether they showed up depended on whether they happened to be printable.
+            // Worse, +0x68 is legitimately EMPTY for much of a session, and reading 15 bytes
+            // of an empty string could yield a plausible-looking fake name.
+            //
+            // The engine (CHAT_PLAYERNAME, op 220) treats an empty +0x68 as "not set" and
+            // falls back to the Player object's own name at Player+0xF8, reached through
+            // account+0x58; we mirror that. We do NOT implement its further fallback through
+            // the player list (account+0x48 index into MainData+0x19910 -> +0x10 -> [idx*8]
+            // -> +0x38) or the global playerRef, since both only matter when no Player is
+            // resolvable at all, and an empty name is handled correctly anyway.
+            auto acct = rpm<std::uint64_t>(s.proc, *root + (kOffStatus + 0x8));
+            if (acct && *acct > 0x10000) {
+                std::string name = read_jagstring(s.proc, *acct + 0x68);
+                if (name.empty()) {
+                    auto player = rpm<std::uint64_t>(s.proc, *acct + 0x58);
+                    if (player && *player > 0x10000)
+                        name = read_jagstring(s.proc, *player + 0xF8);
                 }
+                if (!name.empty()) s.character = name;
             }
             // Prefer JX_DISPLAY_NAME: it's stable and set before the bank can
             // open, whereas the memory name populates lazily and would split
@@ -6329,9 +6387,11 @@ static void abar_collect(HANDLE h, std::uint64_t node, std::uint64_t parent, std
 // game draws): "cd" = the REAL per-ability cooldown text the game prints on the icon (exact
 // seconds / M:SS, empty when ready -- the box+12 component, see box_keybind); "castable" = the
 // engine's enabled byte (greyed/uncastable when false). Pure read. mod: 0/1/2/3.
-//   {"clock":N,"bars":[{"bar":0,"group":1430,"slots":[{"slot":N,"id":K,..,"cd":"","castable":true},..]},..]}
+//   {"clock":N,"cycles":N,"bars":[{"bar":0,"group":1430,"slots":[{"slot":N,"id":K,..,"cd":"","castable":true},..]},..]}
+// clock = engine wall-clock ms; cycles = CLIENTCLOCK units (50/s), the unit the cooldown
+// varcs are stamped in. Prefer cycles; clock/20 is the older approximation of it.
 std::string ActionBarJson(std::uint32_t pid) {
-    const char* kEmpty = "{\"clock\":0,\"bars\":[]}";
+    const char* kEmpty = "{\"clock\":0,\"cycles\":0,\"bars\":[]}";
     auto ps = snap_proc(pid);
     if (!ps) return kEmpty;
     HANDLE h = ps.h;
@@ -6344,8 +6404,15 @@ std::string ActionBarJson(std::uint32_t pid) {
     // Engine wall-clock in milliseconds (ticks +1000/sec), emitted as "clock".
     long long clock = (long long)(ps.mod_base
         ? rpm<std::uint64_t>(h, ps.mod_base + 0xED2FF8).value_or(0) : 0);
+    // CLIENTCLOCK cycles, emitted as "cycles". The ability-cooldown varcs store their stamps
+    // in THIS unit, and the panel used to approximate it as clock/20 off the hardcoded
+    // module offset above. This is the value itself, read off the resolved MainData root, so
+    // it neither drifts from the stamps nor depends on 0xED2FF8 staying put across builds.
+    // 0 = unreadable, which the panel treats as "fall back to clock/20".
+    long long cycles = (long long)rpm<std::uint32_t>(h, *rootv + kOffClientClock).value_or(0);
     const int bars[5] = { 1430, 1670, 1671, 1672, 1673 };
-    std::string out = "{\"clock\":" + std::to_string(clock) + ",\"bars\":["; bool firstBar = true;
+    std::string out = "{\"clock\":" + std::to_string(clock) +
+                      ",\"cycles\":" + std::to_string(cycles) + ",\"bars\":["; bool firstBar = true;
     for (int bi = 0; bi < 5; ++bi) {
         for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
             std::uint64_t ap2 = r64(g + 8);
@@ -7636,7 +7703,11 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     if (!version.empty()) {
         wchar_t up[MAX_PATH] = {};
         if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) {
-            std::wstring bp = std::wstring(up) + L"\RuneToolsX\lastbuild.txt";
+            // NB: both separators must be escaped. Unescaped, \R and \l are not valid
+            // escapes, so the path silently collapsed to "<profile>RuneToolsXlastbuild.txt",
+            // the write failed, prev stayed empty and the GAME UPDATED row below could
+            // never fire. Compiler warning C4129 was the only symptom.
+            std::wstring bp = std::wstring(up) + L"\\RuneToolsX\\lastbuild.txt";
             std::string prev;
             { std::ifstream f(bp.c_str()); if (f) std::getline(f, prev); }
             if (prev.empty()) {

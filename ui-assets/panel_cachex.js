@@ -247,7 +247,11 @@
     if (st.busy || st.loaded) return;
     if (k === 'varbit') {
       const saved = await cxLoad(k);
-      if (saved) { st.rows = saved.rows; st.at = saved.at; st.loaded = true; st.cached = 'saved'; cxPaint(); return; }
+      // lo/hi are the scanned id bounds. The other two cxLoad sites restore them; this one
+      // did not, so after a reload the "ids N-M" label vanished and the gap-fill treated the
+      // range as unknown and rescanned.
+      if (saved) { st.rows = saved.rows; st.at = saved.at; st.lo0 = saved.lo; st.hi0 = saved.hi;
+                   st.loaded = true; st.cached = 'saved'; cxPaint(); return; }
     }
     st.busy = true; cxPaint();
     const rows = [];

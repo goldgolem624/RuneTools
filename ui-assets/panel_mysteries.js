@@ -280,8 +280,14 @@
       return mystEsc(tt);
     }).join(', ');
   }
+  // Which account the in-memory blob was read for. mystSteps is per-character, but it was
+  // only reset on entering the Mysteries tab, so switching account with the tab already open
+  // (or while working in Focused Mystery) left the previous character's steps loaded -- and
+  // the next save wrote them into the NEW character's file. Same guard the Notes panel uses.
+  let mystLoadedPid = -1;
   function mystSaveSteps() {
     if (mystSteps === null || !bridge() || !bridge().mystSave) return;
+    if (mystLoadedPid !== myPid()) return;   // never write one character's blob to another
     try { bridge().mystSave(myPid(), JSON.stringify(mystSteps)); } catch (e) {}
   }
   // ---- focused mystery: pinned per account (stored in the same blob under "__focus"); gets its
@@ -337,7 +343,8 @@
     mystFetching = true; mystAt = now;
     // keep the research bits fresh so steps naming a special research tick themselves
     try { if (typeof archResearchEnsure === 'function') await archResearchEnsure(); } catch (e) {}
-    if (mystSteps === null && bridge().mystLoad) {
+    if ((mystSteps === null || mystLoadedPid !== myPid()) && bridge().mystLoad) {
+      mystLoadedPid = myPid();
       try { const d = JSON.parse(await bridge().mystLoad(myPid())); mystSteps = (d && typeof d === 'object') ? d : {}; }
       catch (e) { mystSteps = {}; }
     }

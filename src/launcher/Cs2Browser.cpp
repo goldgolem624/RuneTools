@@ -237,6 +237,15 @@ std::string NamesJson() {
     return s.empty() ? "{}" : s;
 }
 
+// Baked CS2 switch maps (case -> var), emitted by the extractor. Panels otherwise
+// hand-transcribe these same switches and have to be re-transcribed after a game update.
+// Absent until an extraction has been run, so a consumer MUST keep its baked fallback:
+// "{}" here is "not extracted yet", not "the game has no such data".
+std::string SwitchesJson() {
+    std::string s = read_file(fs::path(OutDir()) / L"switches.json");
+    return s.empty() ? "{}" : s;
+}
+
 std::string ScriptJson(int id, size_t offset) {
     fs::path p = fs::path(OutDir()) / L"scripts" /
                  (L"clientscript-" + std::to_wstring(id) + L".ts");

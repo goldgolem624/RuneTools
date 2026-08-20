@@ -116,10 +116,20 @@
         if (typeof s.notify === 'string' && NOTIFY_TYPES.indexOf(s.notify) >= 0) alertCfg.rules[id].notify = s.notify;
         if (typeof s.repeat === 'boolean' && 'repeat' in alertCfg.rules[id]) alertCfg.rules[id].repeat = s.repeat;
         if (typeof s.val === 'number' && 'val' in alertCfg.rules[id]) alertCfg.rules[id].val = s.val;
+        // Per-event opt-out (Random events: Fire spirit and friends). Stored as an "off" set
+        // so an event added in a later build defaults to ON, and so a config written before
+        // this existed still loads. Was previously dropped on save, which is why switching a
+        // single event off never survived a reload.
+        if (s.off && typeof s.off === 'object') {
+          const off = {};
+          for (const k in s.off) if (s.off[k]) off[k] = 1;
+          alertCfg.rules[id].off = off;
+        }
       }
       if (Array.isArray(saved.custom)) alertCfg.custom = saved.custom.map(normCustom).filter(w => w && w.id !== 'seed_catalyst');
     }
   }
+  let _alertSaveT = 0, _alertSaveTries = 0;
   function saveAlertCfg() {
     if (!alertCfg) return;
     const out = { master: alertCfg.master, rules: {}, custom: [] };
@@ -128,9 +138,25 @@
       out.rules[id] = { enabled: r.enabled, sound: r.sound, flash: r.flash, notify: r.notify };
       if ('repeat' in r) out.rules[id].repeat = r.repeat;
       if ('val' in r) out.rules[id].val = r.val;
+      // Only written when something is actually switched off, so the file stays clean for
+      // the default (everything on) and an empty map never masks a later default change.
+      if (r.off && typeof r.off === 'object') {
+        const off = {};
+        for (const k in r.off) if (r.off[k]) off[k] = 1;
+        if (Object.keys(off).length) out.rules[id].off = off;
+      }
     }
     out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, repeat: w.repeat, enabled: w.enabled }));
-    try { bridge().alertsSave(myPid(), JSON.stringify(out)); } catch (e) {}
+    let ok = false;
+    try { ok = !!bridge().alertsSave(myPid(), JSON.stringify(out)); } catch (e) {}
+    // The host REFUSES the write (returns false) until it can resolve the account, since the
+    // file is per-character. That refusal used to be discarded, so a change made before the
+    // character name was readable was silently lost and came back as the default on reload.
+    // Retry a bounded number of times instead of dropping it.
+    if (ok) { _alertSaveTries = 0; return; }
+    if (_alertSaveT || _alertSaveTries >= 10) return;
+    _alertSaveTries++;
+    _alertSaveT = setTimeout(() => { _alertSaveT = 0; saveAlertCfg(); }, 2000);
   }
   function screenFlash() {
     // Flash the GAME window (drawn by the overlay over the game), not the launcher.

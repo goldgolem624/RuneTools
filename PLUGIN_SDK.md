@@ -64,6 +64,21 @@ my-plugin/
 `rtx.plugin.ui.*` and the meta/event helpers are always available. The user approves scopes
 on first enable, and the host enforces them on every call regardless of the manifest.
 
+**Consent is per character, and covers only the scopes it was given for.** Two consequences
+for you:
+
+- The same plugin enabled on one character is **not** enabled on another. Each character
+  approves it separately, and grants are stored per account. Expect `grantedScopes()` to be
+  empty on a character that has not approved you yet.
+- **Adding a scope in an update re-prompts.** The host compares your manifest's scopes against
+  what that character actually approved; anything new triggers the permission card again, with
+  the added items highlighted, and your plugin does not mount until it is approved. Removing a
+  scope needs no re-prompt, and the removed scope stops working immediately (the host serves
+  the intersection of what was granted and what the current manifest asks for).
+
+So request the scopes you need up front rather than adding them later, and always branch on
+`hasScope()` instead of assuming a call will succeed.
+
 ## How calls work
 
 The host injects the SDK into your frame -- **do not** ship `plugin-sdk.js` yourself, and do
@@ -159,6 +174,12 @@ await rtx.plugin.state.interfaceGroup(919); // one OPEN interface group id
 
 await rtx.plugin.state.varcs([1118, 1119]); // array of varc-int ids (<=64)
 // -> { "1118": 384, "1119": 2 }            map of id -> live varc value (0 when absent)
+
+await rtx.plugin.state.gameTick();
+// -> number: the server tick counter, advancing once per 600ms game tick
+// -> null    when the client cannot be read (not logged in / not tracked)
+//    Tick-aligned timing: sample it and act on the CHANGE, never on the absolute value,
+//    which is not zeroed at login and is not comparable between clients.
 
 await rtx.plugin.state.ports();
 // -> { resources:[ { name:"Chimes", qty, sprite }, ...9 ],
@@ -283,6 +304,9 @@ await rtx.plugin.cache.paramDef(id);  // -> { type[, int][, str] }  param defini
 //    ({} while the host's param reader is unavailable)
 await rtx.plugin.cache.modelIcon(id); // -> string: PNG data URL for an interface type-6
 //    MODEL comp, keyed by MODEL id ("" if not in the pack)
+//    Model ids come only from the host-side cacheIfaceGroup defs, which are NOT brokered;
+//    state.interfaceGroup carries no model field. So this is usable only with a model id you
+//    already hold (e.g. one you baked into the plugin), not one you can look up at runtime.
 await rtx.plugin.cache.structParams(id); // -> { ints:{ k:v }, strs:{ k:"v" } } one StructType's params
 await rtx.plugin.cache.itemParams(id);   // -> { ints:{ k:v }, strs:{ k:"v" } } one item's op-249 params
 await rtx.plugin.cache.mapWindow(cx, cy, plane, half, ts);
@@ -353,6 +377,18 @@ await rtx.plugin.overlay.highlightRects([]);   // clear
 // Draw ground markers on world tiles (the same primitive the clue/quest guides use). Up to 16
 // tiles, each { x, y, plane, label }. Replaces the previous set; pass [] to clear.
 rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"dig here" }]);
+
+// THE FIRST LINE OF A LABEL IS A MATCH KEY, NOT JUST TEXT. If it names a cache loc near
+// the tile, the mark takes that object's 3D footprint prism; otherwise it stays a flat
+// 1x1 tile. A leading '-' makes that line MATCH-ONLY: it still resolves the footprint but
+// is not drawn, and every line after it still shows. That is how you put the ACTION first
+// while keeping the prism -- the house style for guide tiles:
+//
+//   label: "-Cliffside\nClimb\nCliffside"   ->  renders "Climb" over "Cliffside"
+//   label: "-Cliffside\nClimb"              ->  renders "Climb" alone
+//   label: "Cliffside\nClimb"               ->  renders "Cliffside" over "Climb" (old order)
+//
+// Labels are capped at 95 characters and 4 drawn lines; compose accordingly.
 
 // Optional x2/y2 (x/y = SW corner, x2/y2 = NE corner) turns a mark into one flat ground
 // rect spanning those tiles -- use for long walkways or zones whose interactable loc is
@@ -454,7 +490,7 @@ rtx.plugin.ui.setTitle("My Tool");// reserved (no-op for now)
 
 Plugins run in a sandboxed frame and use the `rtx.plugin` APIs documented above:
 
-- A plugin sees only the data its manifest scopes grant, and has no access to the host page, other plugins, or other accounts.
+- A plugin sees only the data the scopes it was granted allow, and has no access to the host page, other plugins, or other accounts. Consent is recorded per character, so being enabled on one character grants nothing on another.
 - The frame CSP blocks network and dynamic code (`fetch`/XHR/WebSocket/`eval`/`Function`), so bundles must be fully self-contained (local `.html/.css/.js/.svg/.png/.woff2`).
 
 ## Packaging

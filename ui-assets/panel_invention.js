@@ -93,6 +93,8 @@
   const COMP_RARITY = { 2: 'Common', 3: 'Uncommon', 4: 'Rare', 5: 'Ancient', 6: 'Refined', 1: 'Junk' };
   const COMP_VARP_CSV = INV_COMPONENTS.map(c => c[1]).join(',');
   let compVp = null, compSig = '', compTerm = '', compHideEmpty = false, compFetching = false;
+  // compTerm is a search box (transient); "Hide empty" is a deliberate view choice, so keep it.
+  try { compHideEmpty = localStorage.getItem('rtxCompHideEmpty') === '1'; } catch (e) {}
   async function fetchComponents() {
     if (!bridge() || !bridge().varps || compFetching) return;
     compFetching = true;
@@ -126,7 +128,11 @@
       inp.addEventListener('input', () => { compTerm = inp.value; compSig = ''; paintComponents(); });
       const he = document.createElement('label'); he.className = 'comp-toggle';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = compHideEmpty;
-      cb.addEventListener('change', () => { compHideEmpty = cb.checked; compSig = ''; paintComponents(); });
+      cb.addEventListener('change', () => {
+        compHideEmpty = cb.checked; compSig = '';
+        try { localStorage.setItem('rtxCompHideEmpty', compHideEmpty ? '1' : '0'); } catch (e) {}
+        paintComponents();
+      });
       he.appendChild(cb); he.appendChild(document.createTextNode('Hide empty'));
       const meta = document.createElement('div'); meta.id = 'compMeta'; meta.className = 'bank-meta';
       top.appendChild(inp); top.appendChild(he); top.appendChild(meta);

@@ -98,6 +98,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_stopwatch.js",
         "panel_notes.js",
         "panel_counter.js",
+        "panel_metronome.js",      // HUD window: tick dial (was drawn by the companion)
         "panel_familiar.js",
         "panel_dungeoneering.js",  // Daemonheim floor status + explored map
         "panel_archresearch.js",   // Archaeology Field Study / Report status
@@ -153,6 +154,9 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_quests.js",
         "panel_questguides.js",
         "panel_xptracker.js",
+        "panel_xpmeter.js",        // HUD window: XP readout (was drawn by the companion).
+                                   // Must follow panel_xptracker.js -- it reads the state
+                                   // that panel's fetchXpTracker owns.
         "panel_varswatcher.js",
         "panel_netprobe.js",   // Server Packets (server->client protocol + live inbound feed)
         "panel_cs2.js",        // CS2 Scripts browser (extraction + search/view)

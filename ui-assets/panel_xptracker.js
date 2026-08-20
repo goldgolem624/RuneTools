@@ -37,7 +37,9 @@
     const live = $('xpLive');
     if (live) wrap.insertBefore(box, live); else wrap.appendChild(box);
     const h = document.createElement('div'); h.className = 'stor-h'; h.textContent = 'On-screen panel'; box.appendChild(h);
-    const rebuild = () => { saveXpCfg(); applyXpOverlay(); buildXpConfig(wrap); };
+    // applyXpOverlay keeps the native sampler pointed at this client; xpSyncWindow opens or
+    // closes the XP Meter HUD window, which is what actually draws now.
+    const rebuild = () => { saveXpCfg(); applyXpOverlay(); xpSyncWindow(); buildXpConfig(wrap); };
     const settingRow = (name, desc, mkControl, onClick) => {
       const r = document.createElement('div');
       r.style.cssText = 'display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:7px;background:var(--bg-elev);margin-bottom:5px;' + (onClick ? 'cursor:pointer;' : '');
@@ -56,11 +58,11 @@
       return p;
     };
     settingRow('Show on game',
-               'Draws the panel over the game window. Drag it to move; the small box in its header minimizes it.',
+               'Opens the XP Meter as its own window over the game. Drag its title bar to move it, resize from any edge, and double-click the title to roll it up.',
                () => pill(xpOn), () => { xpOn = !xpOn; rebuild(); });
     settingRow('Lock panel',
-               'Locked panels are click-through: the mouse never interacts with them (no dragging or minimizing).',
-               () => pill(xpLock), () => { xpLock = !xpLock; rebuild(); });
+               'Locked panels are click-through: the mouse passes straight to the game, so the meter cannot be dragged or resized until you unlock it here.',
+               () => pill(xpLock), () => { setXpLock(!xpLock); buildXpConfig(wrap); });
     settingRow('Total row',
                'Adds a combined row that sums every skill.',
                () => pill(xpTotal), () => { xpTotal = !xpTotal; rebuild(); });

@@ -22,6 +22,9 @@
 //   <outdir>/progress.json   {stage, done, total, startedAt}  (updated ~1/s)
 //   <outdir>/meta.json       {date, buildnr, total, ok, failed[], names, annotations, notes[]}
 //   <outdir>/names.json      generated rename tables
+//   <outdir>/switches.json   {ver, buildnr, scripts:{<id>:{desc,keyKind,cols,varKind,entries}}}
+//                            baked case -> var maps for the switches the panels otherwise
+//                            hand-transcribe (collection log, toolbelt, shop caps, ...)
 //   <outdir>/opcodes.json    [{op, id, name}] scrambled client opcode -> canonical rsmv id
 import { EngineCache, iterateConfigFiles } from "3d/modeltothree";
 import { GameCacheLoader } from "cache/sqlite";
@@ -781,11 +784,30 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
         if (vb > 0 && nm && !names.varbit.has(vb)) { names.varbit.set(vb, nm); return 1; }
         return 0;
     };
+    // Baked switch maps, emitted as switches.json alongside the NAMES derived from them.
+    // These same switches are hand-transcribed into the panels (23 tables, ~2,800 pairs
+    // across 11 files, and only 5 of them carry a "regenerate after a game update" note), so
+    // the data is already being read here -- it was just being thrown away once a name had
+    // been built from it. Recording is deliberately done BEFORE each block's name lookup, so
+    // a case whose item/struct name does not resolve still contributes its var mapping.
+    //
+    // Shape: every value is an array even at length 1, so a consumer never branches on
+    // scalar-vs-array; an absent optional slot is omitted rather than nulled, so arr.length
+    // is the arity. Keys are strings because 5511's keys are creature NAMES.
+    type SwitchTable = { desc: string; keyKind: string; cols: string[]; varKind: string; entries: { [k: string]: number[] } };
+    const switches: { [k: string]: SwitchTable } = {};
+    const sw = (id: number, desc: string, keyKind: string, cols: string[], varKind = "varbit") => {
+        const entries: { [k: string]: number[] } = {};
+        switches[String(id)] = { desc, keyKind, cols, varKind, entries };
+        return (key: string | number, ...vals: number[]) => { entries[String(key)] = vals; };
+    };
     let n = 0;
     // slayer kill log (5511): name strings live in the script itself
     const t5511 = await renderWithRetry(engine, 5511);
+    const put5511 = sw(5511, "slayer kill log: creature name -> [kills, prestige]", "name", ["kc", "prestige"]);
     if (t5511) {
         for (const m of t5511.matchAll(/string0 = "([^"]+)";\s*int2 = varbitplayer_(\d+);\s*int3 = varbitplayer_(\d+);/g)) {
+            put5511(m[1], parseInt(m[2], 10), parseInt(m[3], 10));
             n += setVb(parseInt(m[2], 10), `slayerkc_${slug36(m[1])}`);
             n += setVb(parseInt(m[3], 10), `slayerprestige_${slug36(m[1])}`);
         }
@@ -794,8 +816,11 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     // an optional [int3, int5] second line whose counters the script adds on top of the
     // first pair (extension words once a count outgrows its varbit).
     const t6732 = await renderWithRetry(engine, 6732);
+    const put6732 = sw(6732, "boss kill log: struct -> counters", "struct", ["kc", "prestige", "kc2", "prestige2"]);
     if (t6732) {
         for (const m of t6732.matchAll(/case (\d+):\s*\{\s*\[int2, int4\] = \[varbitplayer_(\d+), varbitplayer_(\d+)\];(?:\s*\[int3, int5\] = \[varbitplayer_(\d+), varbitplayer_(\d+)\];)?/g)) {
+            put6732(m[1], parseInt(m[2], 10), parseInt(m[3], 10),
+                    ...(m[4] ? [parseInt(m[4], 10), parseInt(m[5], 10)] : []));
             const nm = structStrs.get(parseInt(m[1], 10))?.get(1348);
             if (!nm) { continue; }
             const s = slug36(nm);
@@ -807,8 +832,10 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     }
     // collection complete (14503): first varbit compared inside each case block
     const t14503 = await renderWithRetry(engine, 14503);
+    const put14503 = sw(14503, "collection set complete: struct -> done varbit", "struct", ["done"]);
     if (t14503) {
         for (const m of t14503.matchAll(/case (\d+): \{\s*if \(\(varbitplayer_(\d+)/g)) {
+            put14503(m[1], parseInt(m[2], 10));
             const strs = structStrs.get(parseInt(m[1], 10));
             const nm = strs?.get(6410) || cast.struct.get(parseInt(m[1], 10));
             if (nm) { n += setVb(parseInt(m[2], 10), `clogdone_${slug36(nm)}`); }
@@ -816,16 +843,30 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     }
     // collection item found (14500)
     const t14500 = await renderWithRetry(engine, 14500);
+    // The big one: ~1,531 cases, hand-transcribed into panel_bosses.js as 217 lines. Every
+    // case is recorded, including those whose item name does not resolve to a cache label.
+    // Verified against that hand table: 1,531 identical, 0 mismatched. The single hand entry
+    // with no baked equivalent is item 34997, whose case is `return script567();` -- a var
+    // behind an indirection, not a literal. Do NOT widen the pattern to chase it: guessing
+    // through a script call is how this stops being a faithful transcription. A consumer that
+    // needs it keeps a one-line override, as panel_bosses.js already documents.
+    const put14500 = sw(14500, "collection item found: item -> found varbit", "obj", ["vb"]);
     if (t14500) {
         for (const [item, vb] of parseCaseVb(t14500)) {
+            put14500(item, vb);
             const nm = cast.obj.get(item);
             if (nm) { n += setVb(vb, `clogitem_${slug36(nm)}`); }
         }
     }
     // toolbelt (7090): per-item flags + the tier counters it compares against enums
     const t7090 = await renderWithRetry(engine, 7090);
+    // Only the SWITCH is recorded. The curated tier/stored varbits below it are hand
+    // research, not switch data, and folding them in would make the file misstate where it
+    // came from.
+    const put7090 = sw(7090, "toolbelt stored flags: item -> varbit", "obj", ["vb"]);
     if (t7090) {
         for (const m of t7090.matchAll(/case (\d+): \{\s*if \(\(\(?varbitplayer_(\d+)/g)) {
+            put7090(m[1], parseInt(m[2], 10));
             const nm = cast.obj.get(parseInt(m[1], 10));
             if (nm) { n += setVb(parseInt(m[2], 10), `toolbelt_${slug36(nm)}`); }
         }
@@ -843,9 +884,11 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     }
     // shop caps (17845): assignment form "case S: { varbitplayer_N = int1; }"
     const t17845 = await renderWithRetry(engine, 17845);
+    const put17845 = sw(17845, "daily shop caps: struct -> bought-count varbit", "struct", ["vb"]);
     if (t17845) {
         for (const m of t17845.matchAll(/((?:case \d+:\s*)+)\{\s*varbitplayer_(\d+) = /g)) {
             const first = /case (\d+):/.exec(m[1]);
+            if (first) { put17845(first[1], parseInt(m[2], 10)); }
             const strs = first && structStrs.get(parseInt(first[1], 10));
             const nm = strs && strs.get(4849);
             if (nm) { n += setVb(parseInt(m[2], 10), `shopcap_${slug36(nm)}`); }
@@ -853,16 +896,20 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     }
     // unlockables (15411): name via item, else struct param 2794
     const t15411 = await renderWithRetry(engine, 15411);
+    const put15411 = sw(15411, "unlockables: item or struct id -> unlock varbit", "obj", ["vb"]);
     if (t15411) {
         for (const [id, vb] of parseCaseVb(t15411)) {
+            put15411(id, vb);
             const nm = cast.obj.get(id) || structStrs.get(id)?.get(2794);
             if (nm) { n += setVb(vb, `unlock_${slug36(nm)}`); }
         }
     }
     // death reclaim prices (11472): slot -> varclient long (server-pushed prices)
     const t11472 = await renderWithRetry(engine, 11472);
+    const put11472 = sw(11472, "death reclaim prices: slot -> varclient", "slot", ["vc"], "varc");
     if (t11472) {
         for (const m of t11472.matchAll(/case (\d+):\s*\{\s*return varclient_(\d+);/g)) {
+            put11472(m[1], parseInt(m[2], 10));
             const vc = parseInt(m[2], 10);
             if (!names.varc.has(vc)) { names.varc.set(vc, `death_price_slot${m[1]}`); }
         }
@@ -891,6 +938,9 @@ async function buildScriptNames(engine: EngineCache, names: NameTables, cast: Ca
     ];
     for (const [vb, nm] of CURATED_VARBITS) { if (!names.varbit.has(vb)) { names.varbit.set(vb, nm); } }
     notes.push(`script-table varbit names: ${n}, varc names: ${names.varc.size}`);
+    const swEntries = Object.values(switches).reduce((a, s) => a + Object.keys(s.entries).length, 0);
+    notes.push(`switch maps: ${Object.keys(switches).length} scripts, ${swEntries} entries`);
+    return { switches, swEntries };
 }
 
 // The decompiler already prints "/* if 517:12 */" for interface literals; name the group
@@ -1242,7 +1292,16 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
 
     // script-table renames (fills gaps only, so quest/morph names keep priority)...
     writeProgress("scriptnames", 0, 0);
-    await buildScriptNames(engine, names, cast, structStrs, notes);
+    const { switches, swEntries } = await buildScriptNames(engine, names, cast, structStrs, notes);
+    // One combined file, not a directory: a directory cannot be replaced atomically, so a
+    // panel reading mid-extraction could see a half-updated set. Same temp-plus-rename as
+    // every other output here.
+    writeProgress("switches", 0, 0);
+    {
+        const swtmp = path.join(outdir, "switches.json.tmp");
+        fs.writeFileSync(swtmp, JSON.stringify({ ver: 1, buildnr, scripts: switches }));
+        fs.renameSync(swtmp, path.join(outdir, "switches.json"));
+    }
     // ...then the two low-confidence-owner passes fill whatever is still unnamed:
     // ref_<owner> = a config's var_reference param points at the varbit; ach_<name> =
     // an achievement declares the varbit among its requirements.
@@ -1319,6 +1378,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
         ver: 3, date: startedAt, buildnr, total: ids.length, ok,
         failed, names: { varbit: names.varbit.size, varp: names.varp.size, varc: names.varc.size },
         annotations: { total: annTotal, ...annCounts },
+        switches: { scripts: Object.keys(switches).length, entries: swEntries },
         xref: {
             items: cast.obj.size, npcs: cast.npc.size, locs: cast.loc.size,
             quests: cast.quest.size, stats: cast.stat.size, achievements: cast.achievement.size,

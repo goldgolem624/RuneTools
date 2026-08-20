@@ -28,5 +28,7 @@ std::string ScriptJson(int id, size_t offset);
 // Ground-truth var names from the last extraction (names.json):
 // {"varbit":{"<id>":"name"},"varp":{"<id>":"name"}} or {} when never extracted.
 std::string NamesJson();
+// Baked switch maps from the last extraction; "{}" when none has been run.
+std::string SwitchesJson();
 
 }  // namespace cs2browser

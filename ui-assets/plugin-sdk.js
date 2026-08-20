@@ -135,14 +135,20 @@
       // tradeGoods:[{name,qty,item}], buildings:[{name,level}], ships:[{nameParts,voyageId,
       // status:'ready'|'sailing'|'returned'|'damaged', etaMinutes|null}], shipCount,
       // scrollPieces, distance, zone}. null until readable.
-      ports:        function () { return call('state.ports', []); }
+      ports:        function () { return call('state.ports', []); },
+      // Server tick counter (advances once per 600ms game tick). null when the client
+      // is not readable (not logged in / not tracked).
+      gameTick:     function () { return call('state.gameTick', []); }
     },
 
     // ---- scope: cache.read (static game data) ----
     cache: {
       itemInfo:  function (id) { return call('cache.itemInfo', [id]); },
       itemIcon:  function (id) { return call('cache.itemIcon', [id]); },
-      // Interface type-6 MODEL comp icon by MODEL id (see cacheIfaceGroup defs "model" field).
+      // Interface type-6 MODEL comp icon by MODEL id. NOTE: the only source of a model id is
+      // the host-side cacheIfaceGroup defs "model" field, which is NOT brokered to plugins, so
+      // this is usable only with a model id you already hold. state.interfaceGroup does not
+      // carry one.
       modelIcon: function (id) { return call('cache.modelIcon', [id]); },
       sprite:    function (id) { return call('cache.sprite', [id]); },
       varbitMap: function () { return call('cache.varbitMap', []); },

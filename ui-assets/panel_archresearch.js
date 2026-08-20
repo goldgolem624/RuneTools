@@ -82,7 +82,10 @@ let archResCult = null;      // DBRow id -> culture name, built once from the ca
 let archResList = null;      // [{b,n,f,r}] from the cache; static for the game build
 let archResVp = {};
 let archResAt = 0, archResBusy = false, archResSig = '';
+// archResFilter is a search box (transient by design); the Show all / Showing outstanding
+// view mode is a deliberate choice and is remembered.
 let archResFilter = '', archResHideDone = false;
+try { archResHideDone = localStorage.getItem('rtxArchResHide') === '1'; } catch (e) {}
 
 // Shared by this panel AND the mystery guides, so both always agree on what is done.
 async function archResearchEnsure(force) {
@@ -209,7 +212,9 @@ function renderArchResearch() {
     inp.value = archResFilter;
     inp.addEventListener('input', () => { archResFilter = inp.value || ''; archResSig = ''; paintArchResearch(); });
     wrap.querySelector('#arHideDone').addEventListener('click', () => {
-      archResHideDone = !archResHideDone; archResSig = ''; paintArchResearch();
+      archResHideDone = !archResHideDone; archResSig = '';
+      try { localStorage.setItem('rtxArchResHide', archResHideDone ? '1' : '0'); } catch (e) {}
+      paintArchResearch();
     });
   }
   paintArchResearch();

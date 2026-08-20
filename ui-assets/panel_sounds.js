@@ -31,7 +31,14 @@
   // never feels like a stall.
   let sndPageSize = 60;
   let sndBusy = false, sndSig = '', sndNote = '';
-  let sndVol = 70;               // cache effects are mastered loud
+  // Cache effects are mastered loud, hence the 70 default. soundVolume is a setter only, so
+  // nothing remembered a change: the slider snapped back to 70 on every reload AND the
+  // companion was not re-told until the slider was touched again.
+  let sndVol = 70;
+  // localStorage directly, NOT prefGet: panel files are spliced before client.html's script,
+  // so prefGet does not exist yet and calling it would throw out of this whole file.
+  // sndApplyDurablePrefs re-applies the durable value once prefsInit has loaded it.
+  try { const v = parseInt(localStorage.getItem('rtxSoundVol'), 10); if (v >= 0 && v <= 100) sndVol = v; } catch (e) {}
   let sndNow = -1;               // id currently loaded in the player
   let sndSt = { state: 'idle', pos: 0, dur: 0 };
   let sndFilter = '';
@@ -190,17 +197,34 @@
   }
 
   // The transport polls its own state, so the bar tracks playback without re-rendering the list.
+  // The mute list is hand-collected id by id, so it is the one setting in this panel that
+  // would genuinely hurt to lose. It goes through prefGet/prefSet (prefs.json on disk), not
+  // straight to localStorage, which is wiped on every app update.
   function sndLoadMuted() {
     try {
-      const raw = localStorage.getItem('rtxSoundMuted');
+      const raw = prefGet('rtxSoundMuted', null);
       if (raw) sndMuted = new Set(JSON.parse(raw).map(Number).filter(function (v) { return v > 0; }));
     } catch (e) {}
+  }
+  // Re-read once the durable store has loaded (it is async, and this panel reads at open).
+  // Only ADDS: a mute made in the meantime is not thrown away by the disk copy arriving.
+  function sndApplyDurablePrefs() {
+    try {
+      const raw = prefGet('rtxSoundMuted', null);
+      if (!raw) return;
+      let changed = false;
+      for (const v of JSON.parse(raw).map(Number)) if (v > 0 && !sndMuted.has(v)) { sndMuted.add(v); changed = true; }
+      if (!changed) return;
+      try { bridge().soundMute(myPid(), Array.from(sndMuted).join(',')); } catch (e) {}
+      sndSig = ''; paneRun('sounds', renderSounds);
+    } catch (e) {}
+    try { const v = parseInt(prefGet('rtxSoundVol', ''), 10); if (v >= 0 && v <= 100) { sndVol = v; bridge().soundVolume(sndVol); } } catch (e) {}
   }
 
   // Push the list to the companion AND persist it. Always both: the companion's copy dies with
   // the client process, so the panel is the durable owner of the list.
   function sndPushMuted() {
-    try { localStorage.setItem('rtxSoundMuted', JSON.stringify(Array.from(sndMuted))); } catch (e) {}
+    prefSet('rtxSoundMuted', JSON.stringify(Array.from(sndMuted)));
     try { bridge().soundMute(myPid(), Array.from(sndMuted).join(',')); } catch (e) {}
   }
 
@@ -447,8 +471,12 @@
       const vin = $('sndVolIn');
       if (vin) vin.addEventListener('input', function () {
         sndVol = +vin.value;
+        prefSet('rtxSoundVol', String(sndVol));
         try { bridge().soundVolume(sndVol); } catch (e2) {}
       });
+      // Push the restored volume once on open, so the companion matches what the slider shows
+      // instead of staying at its own default until the slider is dragged.
+      try { bridge().soundVolume(sndVol); } catch (e) {}
       sndLoadMuted();
       sndFetch(true);
     }
