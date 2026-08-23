@@ -212,6 +212,9 @@ std::string EnumJson(int enum_id);
 // t = tier (1 basic/2 threshold/3 defensive/4 ultimate/5 special/7 utility), d = description,
 // u = unlock text. Walked once and cached; {} until the cache is open. See AbilityConfigsJson.
 std::string AbilityConfigsJson();
+// Every buff/debuff name the struct cache knows with its bar icon id (sprite, or item when the
+// third field is 1): {"buffs":[[name,id,isItem],...],"debuffs":[...]}. {} until the cache opens.
+std::string BuffCatalogJson();
 
 // {"id":N,"name":".."} for an NPC id (live cache, via GetNpc; morph-following + name overrides).
 // Used by the Clue Scrolls tab to name "talk-to" clues. "{}" if unknown.

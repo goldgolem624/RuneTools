@@ -911,6 +911,13 @@
   .au-colwrap { display: inline-flex; align-items: center; gap: 6px; }
   .au-swatch { display: inline-block; width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--border-hi); cursor: pointer; flex: none; }
   .au-swatch:hover { border-color: var(--accent-hi); }
+  .au-npick { width: 260px; max-height: 320px; padding: 4px; }
+  .au-npick-list { display: flex; flex-direction: column; }
+  .au-npick-row { display: flex; align-items: center; gap: 8px; }
+  .au-npick-row.first { background: rgba(140,111,253,0.18); }
+  .au-npick-ico { position: static; width: 22px; height: 22px; flex: none; border-radius: 4px; background-color: #0e0f14; border: 1px solid rgba(255,255,255,0.15); }
+  .au-npick-live { font-size: 10px; color: var(--accent-hi); text-transform: uppercase; letter-spacing: .05em; }
+  .au-npick-none { color: var(--text-dim); cursor: default; }
   .au-cp { width: 190px; padding: 8px; display: flex; flex-direction: column; gap: 8px; overflow: visible; }
   .au-cp-sv { position: relative; width: 100%; height: 120px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); cursor: crosshair; }
   .au-cp-sv i, .au-cp-hue i { position: absolute; width: 10px; height: 10px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; transform: translate(-50%, -50%); pointer-events: none; top: 50%; }

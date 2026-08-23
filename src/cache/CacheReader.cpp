@@ -3118,6 +3118,39 @@ std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
     return out;
 }
 
+// Every buff/debuff the struct cache names, with the icon id the bar draws for it, so the UI
+// can show the art of an effect that is NOT up right now (aura placeholders, pickers).
+// {"buffs":[[name,id,isItem],...],"debuffs":[...]}; id is a sprite id unless isItem is 1, in
+// which case it is an item id (overloads, flasks). Built from the same walk as GetBuffName, so
+// it costs nothing extra once the names are loaded. {} until the cache opens. Cached.
+std::string BuffCatalogJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    LoadBuffNamesLocked();
+    if (!g_buffs_loaded) return "{}";
+    auto jstr = [](const std::string& v) {
+        std::string r = "\"";
+        for (char c : v) { if (c == '"' || c == '\\') r += '\\';
+                           if ((unsigned char)c >= 0x20) r += c; }
+        r += '"'; return r;
+    };
+    auto emit = [&](const std::unordered_map<int, std::string>& m) {
+        std::string out = "["; bool first = true;
+        for (const auto& kv : m) {
+            if (kv.first <= 0 || kv.second.empty()) continue;
+            auto it = g_buff_icon_item.find(kv.first);
+            bool item = (it != g_buff_icon_item.end()) && it->second;
+            if (!first) out += ','; first = false;
+            out += "[" + jstr(kv.second) + "," + std::to_string(kv.first) + "," + (item ? "1" : "0") + "]";
+        }
+        out += "]"; return out;
+    };
+    cached = "{\"buffs\":" + emit(g_buff_names) + ",\"debuffs\":" + emit(g_debuff_names) + "}";
+    return cached;
+}
+
 std::string AbilityConfigsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();

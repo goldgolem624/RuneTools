@@ -882,6 +882,11 @@ JSValueRef AbilityConfigs(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t, const JSValueRef[], JSValueRef*) {
     return served(ctx, "abilityconfigs", "{}", [] { return rtx::cache::AbilityConfigsJson(); });
 }
+// rtx.buffCatalog() -> every buff/debuff name in the cache with its icon id (see BuffCatalogJson).
+JSValueRef BuffCatalog(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t, const JSValueRef[], JSValueRef*) {
+    return served(ctx, "buffcatalog", "{}", [] { return rtx::cache::BuffCatalogJson(); });
+}
 
 JSValueRef ArchResearch(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t, const JSValueRef[], JSValueRef*) {
@@ -4703,6 +4708,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "dbRows",            DbRows);
     install_fn(ctx, ns, "itemParams",        ItemParams);
     install_fn(ctx, ns, "abilityConfigs",    AbilityConfigs);
+    install_fn(ctx, ns, "buffCatalog",       BuffCatalog);
     install_fn(ctx, ns, "mystPages",         MystPages);
     install_fn(ctx, ns, "archResearch",      ArchResearch);
     install_fn(ctx, ns, "npcInfo",           NpcInfo);

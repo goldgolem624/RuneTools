@@ -312,6 +312,7 @@
     _aurasAt = now;
     auraFetching = true;
     const need = auraNeeds();
+    try { await auraCatalogLoad(); } catch (e) {}
     try {
       if (bridge().buffs) {
         const d = JSON.parse(await bridge().buffs(myPid()));
@@ -638,11 +639,44 @@
     if (_iconMemoT) return;
     _iconMemoT = setTimeout(() => { _iconMemoT = 0; try { const keys = Object.keys(m); if (keys.length > 600) keys.slice(0, keys.length - 600).forEach(k => delete m[k]); prefSet('rtxAuraIcons', JSON.stringify(m)); } catch (e) {} }, 1500);
   }
-  // Best icon for an idle aura: the remembered one for its trigger's name, or the ability slot.
+  // The cache's own catalogue of buff/debuff names and icons (rtx.buffCatalog) and ability
+  // configs (name -> ability id, which is also its sprite id) seed the icon memory and the name
+  // lists, so placeholders and pickers know every effect from the start, not only ones seen.
+  let auraCatalog = null, auraCatalogTried = 0;
+  async function auraCatalogLoad() {
+    if (auraCatalog || !bridge()) return;
+    const now = Date.now(); if (now - auraCatalogTried < 5000) return; auraCatalogTried = now;
+    let cat = null;
+    try { if (bridge().buffCatalog) { const d = JSON.parse((await bridge().buffCatalog()) || '{}'); if (d && (Array.isArray(d.buffs) || Array.isArray(d.debuffs))) cat = d; } } catch (e) {}
+    if (!cat) return;                                   // cache not open yet, retry later
+    auraCatalog = { buffs: {}, debuffs: {} };
+    const m = auraIconMemoLoad(); const names = [];
+    const take = (rows, side) => (rows || []).forEach(r => {
+      if (!Array.isArray(r) || typeof r[0] !== 'string' || !r[0]) return;
+      const ic = r[2] ? { sprite: 0, item: r[1] | 0 } : { sprite: r[1] | 0, item: 0 };
+      auraCatalog[side][r[0]] = ic;
+      if (!m[r[0]]) m[r[0]] = ic;
+      names.push(r[0]);
+    });
+    take(cat.buffs, 'buffs'); take(cat.debuffs, 'debuffs');
+    auraRemember(names);
+    try { prefSet('rtxAuraIcons', JSON.stringify(m)); } catch (e) {}
+    auraInvalidate();
+  }
+  function auraAbilityCfgIcon(name) {
+    try { if (typeof abCfgLoad === 'function') abCfgLoad(); } catch (e) {}
+    const cfg = (typeof abCfg !== 'undefined') ? abCfg : null;
+    if (!cfg || !name) return null;
+    let c = cfg[name];
+    if (!c) { const q = name.toLowerCase(); for (const k in cfg) if (k.toLowerCase().indexOf(q) >= 0) { c = cfg[k]; break; } }
+    return (c && c.i) ? { sprite: c.i | 0, item: 0 } : null;
+  }
+  // Best icon for an idle aura: the action-bar slot or the cache's ability id for abilities; the
+  // remembered / catalogued icon for buffs and debuffs.
   function auraIdleIcon(a) {
     const t = a.triggers.list[0];
     if (!t) return null;
-    if (t.src === 'ability') { const sl = auraAbilityFind(t.name); if (sl) return { sprite: sl.id || 0, item: sl.item || 0 }; }
+    if (t.src === 'ability') { const sl = auraAbilityFind(t.name); if (sl) return { sprite: sl.id || 0, item: sl.item || 0 }; return auraAbilityCfgIcon(t.name); }
     const m = auraIconMemoLoad();
     if (t.name && m[t.name]) return m[t.name];
     if (t.name) { const q = t.name.toLowerCase(); for (const k in m) if (k.toLowerCase().indexOf(q) >= 0) return m[k]; }
@@ -1171,6 +1205,79 @@
   }
 
   // ---------------------------------------------------------------- editor helpers
+  // Candidates for a name field: [{name, icon, live, side}] for buffs/debuffs (catalogue +
+  // names seen + active now) or abilities (cache configs + what is on the bar).
+  function auraNameCandidates(kind) {
+    const out = [], seen = {};
+    const push = (name, icon, live, side) => { if (!name || seen[name]) return; seen[name] = 1; out.push({ name, icon, live, side }); };
+    if (kind === 'ability') {
+      auraAbilitySlots().forEach(sl => push(sl.name, { sprite: sl.id || 0, item: sl.item || 0 }, true, 'ability'));
+      try { if (typeof abCfgLoad === 'function') abCfgLoad(); } catch (e) {}
+      const cfg = (typeof abCfg !== 'undefined') ? abCfg : null;
+      if (cfg) Object.keys(cfg).sort().forEach(n => push(n, cfg[n].i ? { sprite: cfg[n].i | 0, item: 0 } : null, false, 'ability'));
+      return out;
+    }
+    const want = kind === 'debuff';
+    auraEffects().filter(e => e.debuff === want).forEach(e => push(e.b.name, { sprite: e.b.sprite || 0, item: e.b.item || 0 }, true, kind));
+    const m = auraIconMemoLoad();
+    const cat = auraCatalog ? auraCatalog[want ? 'debuffs' : 'buffs'] : null;
+    if (cat) Object.keys(cat).sort().forEach(n => push(n, cat[n], false, kind));
+    auraSeenLoad().forEach(n => push(n, m[n] || null, false, kind));
+    return out;
+  }
+  // Live search list under a name input: filters as you type, shows the icon of each match,
+  // click (or Enter for the first) fills the field. Shares #sndMenu so the usual outside-click
+  // and Escape handling closes it.
+  function auraNamePicker(inp, kind, onPick) {
+    if (typeof closeSoundMenu === 'function') closeSoundMenu();
+    const pop = document.createElement('div'); pop.className = 'sndmenu au-npick'; pop.id = 'sndMenu';
+    pop.addEventListener('mousedown', e => e.stopPropagation());
+    pop.addEventListener('click', e => e.stopPropagation());
+    const list = document.createElement('div'); list.className = 'au-npick-list'; pop.appendChild(list);
+    const paint = () => {
+      const q = String(inp.value || '').trim().toLowerCase();
+      const all = auraNameCandidates(kind);
+      let rows = q ? all.filter(c => c.name.toLowerCase().indexOf(q) >= 0) : all;
+      // exact / starts-with first, then live ones, then the rest
+      rows.sort((x, y) => {
+        const sx = q ? (x.name.toLowerCase() === q ? 0 : x.name.toLowerCase().indexOf(q) === 0 ? 1 : 2) : 2;
+        const sy = q ? (y.name.toLowerCase() === q ? 0 : y.name.toLowerCase().indexOf(q) === 0 ? 1 : 2) : 2;
+        if (sx !== sy) return sx - sy;
+        if (x.live !== y.live) return x.live ? -1 : 1;
+        return x.name.localeCompare(y.name);
+      });
+      list.textContent = '';
+      if (!rows.length) { const h = document.createElement('div'); h.className = 'sndmenu-it au-npick-none'; h.textContent = q ? 'No ' + kind + ' matching "' + q + '"' : 'Nothing known yet'; list.appendChild(h); return; }
+      rows.slice(0, 60).forEach((c, i) => {
+        const it = document.createElement('div'); it.className = 'sndmenu-it au-npick-row' + (i === 0 && q ? ' first' : '');
+        const ic = document.createElement('div'); ic.className = 'au-icon au-npick-ico'; auraIconFor(ic, c.icon, c.name); it.appendChild(ic);
+        const nm = document.createElement('span'); nm.textContent = c.name; nm.style.flex = '1'; it.appendChild(nm);
+        if (c.live) { const lv = document.createElement('span'); lv.className = 'au-npick-live'; lv.textContent = kind === 'ability' ? 'on bar' : 'active'; it.appendChild(lv); }
+        it.addEventListener('click', () => { onPick(c.name); if (typeof closeSoundMenu === 'function') closeSoundMenu(); });
+        list.appendChild(it);
+      });
+      if (rows.length > 60) { const h = document.createElement('div'); h.className = 'sndmenu-it au-npick-none'; h.textContent = '+' + (rows.length - 60) + ' more, keep typing'; list.appendChild(h); }
+    };
+    paint();
+    document.body.appendChild(pop);
+    if (typeof placeMenu === 'function') placeMenu(pop, inp);
+    try { wmRectsSoon(); } catch (e) {}
+    return paint;
+  }
+  // Name input wired to the picker: opens on focus/typing, Enter takes the first match.
+  function auraNameInput(t, kind, a, ph) {
+    const inp = auraInput(t.name, v => { t.name = v; auraTouch(a); }, ph);
+    let repaint = null;
+    const open = () => { if (!document.getElementById('sndMenu') || !repaint) repaint = auraNamePicker(inp, kind, n => { t.name = n; inp.value = n; auraTouch(a); }); else repaint(); };
+    inp.addEventListener('focus', open);
+    inp.addEventListener('input', () => { t.name = inp.value; if (document.getElementById('sndMenu') && repaint) repaint(); else open(); });
+    inp.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { const f = document.querySelector('#sndMenu .au-npick-row.first'); if (f) { f.click(); } else { inp.blur(); } }
+      if (e.key === 'Escape') { if (typeof closeSoundMenu === 'function') closeSoundMenu(); inp.blur(); }
+    });
+    return inp;
+  }
   // Open a choice menu anchored to `el`; clicking the same anchor again closes it.
   function auraMenu(el, ents) {
     if (typeof openChoice !== 'function') return;
@@ -1607,14 +1714,11 @@
       const g = auraGrid();
       if (t.src === 'buff' || t.src === 'debuff') {
         const cell = document.createElement('div'); cell.className = 'au-cell';
-        cell.appendChild(auraInput(t.name, v => { t.name = v; auraTouch(a); }, 'Name (or part of it)'));
-        const pick = auraMkBtn('▾', 'Pick from names seen', () => {
-          if (typeof openChoice !== 'function') return;
-          const live2 = auraEffects().filter(e => e.debuff === (t.src === 'debuff')).map(e => e.b.name);
-          const seen = auraSeenLoad().filter(n => live2.indexOf(n) < 0);
-          const ents = live2.map(n => ({ label: n + '  (active now)', act: () => { t.name = n; auraTouch(a); } })).concat(seen.map(n => ({ label: n, act: () => { t.name = n; auraTouch(a); } })));
-          if (!ents.length) ents.push({ label: '(nothing seen yet)', act: () => {} });
-          auraMenu(pick, ents.slice(0, 80));
+        const ninp = auraNameInput(t, t.src, a, 'Type to search ' + (t.src === 'debuff' ? 'debuffs' : 'buffs') + '...');
+        cell.appendChild(ninp);
+        const pick = auraMkBtn('▾', 'Browse every ' + (t.src === 'debuff' ? 'debuff' : 'buff') + ' the game knows', () => {
+          if (document.getElementById('sndMenu')) { if (typeof closeSoundMenu === 'function') closeSoundMenu(); return; }
+          auraNamePicker(ninp, t.src, n => { t.name = n; ninp.value = n; auraTouch(a); });
         }, 'au-sm');
         cell.appendChild(pick);
         auraRow(g, 'Name', cell, 'Leave empty and tick Clones to show every buff');
@@ -1626,12 +1730,12 @@
         auraRow(g, 'Clones', auraCheck('One display per matching buff (in a dynamic group)', t.clones, v => { t.clones = v; auraTouch(a); }));
       } else if (t.src === 'ability') {
         const cell = document.createElement('div'); cell.className = 'au-cell';
-        cell.appendChild(auraInput(t.name, v => { t.name = v; auraTouch(a); }, 'Ability name'));
-        const pick = auraMkBtn('▾', 'Pick from your action bars', () => {
-          if (typeof fetchAbilities === 'function') { try { fetchAbilities(); } catch (e) {} }
-          const ents = auraAbilitySlots().map(sl => ({ label: sl.name, act: () => { t.name = sl.name; auraTouch(a); } }));
-          if (!ents.length) ents.push({ label: '(no abilities read yet, try again in a second)', act: () => {} });
-          auraMenu(pick, ents);
+        if (typeof fetchAbilities === 'function') { try { fetchAbilities(); } catch (e) {} }
+        const ainp = auraNameInput(t, 'ability', a, 'Type to search abilities...');
+        cell.appendChild(ainp);
+        const pick = auraMkBtn('▾', 'Browse every ability (your bar first)', () => {
+          if (document.getElementById('sndMenu')) { if (typeof closeSoundMenu === 'function') closeSoundMenu(); return; }
+          auraNamePicker(ainp, 'ability', n => { t.name = n; ainp.value = n; auraTouch(a); });
         }, 'au-sm');
         cell.appendChild(pick);
         auraRow(g, 'Ability', cell);
