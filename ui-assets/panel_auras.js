@@ -1257,6 +1257,9 @@
         list.appendChild(it);
       });
       if (rows.length > 60) { const h = document.createElement('div'); h.className = 'sndmenu-it au-npick-none'; h.textContent = '+' + (rows.length - 60) + ' more, keep typing'; list.appendChild(h); }
+      // The list changes height with every keystroke; the click region must follow it, and so
+      // must its placement (it may need to flip above the field as it grows).
+      if (pop.parentNode) { try { if (typeof placeMenu === 'function') placeMenu(pop, inp); } catch (e) {} try { wmRectsSoon(); } catch (e) {} }
     };
     paint();
     document.body.appendChild(pop);

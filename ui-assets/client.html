@@ -6391,6 +6391,7 @@
     if (alertsNeedInv() && !paneVisible('inventory')) fetchInv();
     if (alertsNeedBuffs() && !paneVisible('buffs')) fetchBuffs();
     if (alertsNeedFarming() && !paneVisible('farming')) fetchFarming();
+    if (typeof alertsNeedGround === 'function' && alertsNeedGround()) fetchGround();
     evalAlerts();
     syncOverlayHighlight();
     // ---- Live PANEL fetches: once per OPEN window, with the dispatch context

@@ -54,7 +54,7 @@
     },
     custom: [],
   };
-  const CUSTOM_TYPES = [['name', 'Name'], ['panim', 'Player anim'], ['nanim', 'NPC anim'], ['auglevel', 'Augment lvl'], ['invslots', 'Inv slots'], ['invitem', 'Inv item'], ['buff', 'Buff value'], ['vitals', 'Player stat'], ['farm', 'Farm patch']];
+  const CUSTOM_TYPES = [['name', 'Name'], ['panim', 'Player anim'], ['nanim', 'NPC anim'], ['auglevel', 'Augment lvl'], ['invslots', 'Inv slots'], ['invitem', 'Inv item'], ['buff', 'Buff value'], ['vitals', 'Player stat'], ['farm', 'Farm patch'], ['ground', 'Ground item']];
   // Vitals alert: value compared = the current amount shown on the orb (points / adrenaline %).
   const VITALS = [['hp', 'Hitpoints'], ['prayer', 'Prayer'], ['summon', 'Summoning'], ['adren', 'Adrenaline']];
   // Inventory-slot conditions (count = used slots, free = empty slots, cap = 28).
@@ -67,7 +67,7 @@
   // Farm-patch alert conditions -> the patch state codes they match.
   const FARM_CONDS = [['ready', 'Ready'], ['disease', 'Diseased'], ['dead', 'Dead'], ['water', 'Needs water'], ['attention', 'Needs attention']];
   const FARM_COND_CODES = { ready: [4, 32], disease: [33], dead: [34], water: [7], attention: [33, 34, 7] };
-  const CUSTOM_TYPE_SET = ['name', 'panim', 'nanim', 'auglevel', 'invslots', 'invitem', 'buff', 'vitals', 'farm'];
+  const CUSTOM_TYPE_SET = ['name', 'panim', 'nanim', 'auglevel', 'invslots', 'invitem', 'buff', 'vitals', 'farm', 'ground'];
   // Types an extra AND condition may use: everything that is a plain "is this true right now"
   // test. Augment level and farm patch are per-item rising edges, so they only make sense as the
   // main trigger; they can still be gated BY the conditions below.
@@ -87,6 +87,7 @@
       cond: typeof c.cond === 'string' ? c.cond : defCond,
       num:  typeof c.num === 'number' ? c.num : 1,
       stat: (VITALS.some(s => s[0] === c.stat) ? c.stat : 'hp'),
+      item: typeof c.item === 'number' ? c.item : 0,
       not:  typeof c.not === 'boolean' ? c.not : false,   // invert: "AND NOT ..."
     };
   }
@@ -120,6 +121,7 @@
       num:     typeof w.num === 'number' ? w.num : 1,
       stat:    (VITALS.some(s => s[0] === w.stat) ? w.stat : 'hp'),
       vb:      typeof w.vb === 'number' ? w.vb : 0,             // farm: watched patch varbit id (0 = any)
+      item:    typeof w.item === 'number' ? w.item : 0,         // ground: exact item id from the cache (0 = match by name)
       label:   typeof w.label === 'string' ? w.label : '',
       sound:   (ALERT_SOUNDS.indexOf(w.sound) >= 0 ? w.sound : 'alert 1'),
       flash:   typeof w.flash === 'boolean' ? w.flash : false,
@@ -176,8 +178,8 @@
         if (Object.keys(off).length) out.rules[id].off = off;
       }
     }
-    out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, repeat: w.repeat, enabled: w.enabled,
-      also: (w.also || []).map(c => ({ type: c.type, kind: c.kind, text: c.text, anim: c.anim, cond: c.cond, num: c.num, stat: c.stat, not: c.not })) }));
+    out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, item: w.item, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, repeat: w.repeat, enabled: w.enabled,
+      also: (w.also || []).map(c => ({ type: c.type, kind: c.kind, text: c.text, anim: c.anim, cond: c.cond, num: c.num, stat: c.stat, item: c.item, not: c.not })) }));
     let ok = false;
     try { ok = !!bridge().alertsSave(myPid(), JSON.stringify(out)); } catch (e) {}
     // The host REFUSES the write (returns false) until it can resolve the account, since the
@@ -303,6 +305,7 @@
     if (w.type === 'buff') return buffLabel(w);
     if (w.type === 'vitals') return vitalsLabel(w);
     if (w.type === 'farm') return (w.vb ? farmPatchLabel(w.vb) : 'Any patch') + ' - ' + farmCondLabel(w.cond);
+    if (w.type === 'ground') return 'Ground item "' + (w.text || ('#' + w.item)) + '" dropped';
     return (w.kind.charAt(0).toUpperCase() + w.kind.slice(1)) + ' "' + w.text + '"';
   }
   function invSlotsMatch(w) {
@@ -377,6 +380,7 @@
     if (c.type === 'invitem')  return invItemMatch(c);
     if (c.type === 'buff')     return buffMatch(c);
     if (c.type === 'vitals')   return vitalsMatch(c);
+    if (c.type === 'ground')   return groundMatch(c, within);
     if (c.type === 'panim')    return !!(infoData && infoData.in && infoData.anim === c.anim);
     if (c.type === 'nanim')    return !!(sceneData && Array.isArray(sceneData.npcs) &&
                                           sceneData.npcs.some(n => n.anim === c.anim && within(n.x, n.y)));
@@ -406,6 +410,7 @@
     else if (c.type === 'invitem') l = invItemLabel(c);
     else if (c.type === 'buff') l = buffLabel(c);
     else if (c.type === 'vitals') l = vitalsLabel(c);
+    else if (c.type === 'ground') l = 'ground item "' + (c.text || ('#' + c.item)) + '"';
     else l = (c.kind || 'npc') + ' "' + (c.text || '') + '"';
     return (c.not ? 'not ' : '') + l;
   }
@@ -434,9 +439,42 @@
     if (!msg) return;
     try { uiNotify(msg, { ttl: 5000 }); } catch (e) {}
   }
+  // Dropped items on the ground (companion publish), polled while a Ground item alert exists.
+  // Ids are resolved to cache names once each and remembered for the session.
+  let groundData = null, _groundFetching = false, _groundAt = 0;
+  const groundNames = {};
+  async function fetchGround() {
+    if (!bridge() || !bridge().groundItems || _groundFetching) return;
+    const now = Date.now(); if (now - _groundAt < 600) return; _groundAt = now;
+    _groundFetching = true;
+    try { const g = JSON.parse((await bridge().groundItems(myPid())) || '[]'); groundData = Array.isArray(g) ? g : []; } catch (e) {}
+    try {
+      if (bridge().itemInfo && groundData) for (const g of groundData) {
+        if (!g || g.id == null || groundNames[g.id] !== undefined) continue;
+        groundNames[g.id] = '';
+        try { const info = JSON.parse(await bridge().itemInfo(g.id)); groundNames[g.id] = (info && info.name) || ''; } catch (e) {}
+      }
+    } catch (e) {}
+    _groundFetching = false;
+  }
+  function groundMatch(c, within) {
+    if (!groundData) return false;
+    const q = String(c.text || '').toLowerCase().trim();
+    if (!c.item && !q) return false;
+    return groundData.some(g => {
+      if (!g) return false;
+      if (c.item) { if (g.id !== c.item) return false; }
+      else if ((groundNames[g.id] || '').toLowerCase().indexOf(q) < 0) return false;
+      return within(g.x, g.y);
+    });
+  }
+  function customNeedsGround(w) { return w.enabled && anyCond(w, c => c.type === 'ground'); }
+  function alertsNeedGround() {
+    return !!(alertCfg && alertCfg.master && Array.isArray(alertCfg.custom) && alertCfg.custom.some(customNeedsGround));
+  }
   // Each feed is needed if the MAIN trigger or any extra AND condition reads it.
   function anyCond(w, f) { return f(w) || (Array.isArray(w.also) && w.also.some(f)); }
-  function customNeedsScene(w) { return w.enabled && anyCond(w, c => c.type === 'nanim' || (c.type === 'name' && !!c.text)); }
+  function customNeedsScene(w) { return w.enabled && anyCond(w, c => c.type === 'nanim' || c.type === 'ground' || (c.type === 'name' && !!c.text)); }
   function customNeedsInfo(w)  { return w.enabled && anyCond(w, c => c.type === 'panim'); }
   function customNeedsPerks(w) { return w.enabled && w.type === 'auglevel'; }
   function customNeedsInv(w)   { return w.enabled && anyCond(w, c => c.type === 'invslots' || c.type === 'invitem'); }
@@ -749,6 +787,7 @@
     if (v === 'buff')     { if (BUFF_CONDS.every(c => c[0] !== w.cond)) w.cond = 'lt'; fetchBuffs(); }
     if (v === 'vitals')   { if (BUFF_CONDS.every(c => c[0] !== w.cond)) w.cond = 'lt'; if (!VITALS.some(s => s[0] === w.stat)) w.stat = 'hp'; fetchPlayerVp(); }
     if (v === 'farm')     { if (FARM_CONDS.every(c => c[0] !== w.cond)) w.cond = 'ready'; fetchFarming(); }
+    if (v === 'ground')   { fetchGround(); }
     if ((v === 'invslots' || v === 'invitem' || v === 'buff' || v === 'vitals') && (w.num == null)) w.num = 1;
     saveAlertCfg(); renderCustomList();
   }
@@ -959,6 +998,33 @@
       addRow('Buff', cell);
       addRow('Is', condTrigger(w, BUFF_CONDS));
       if (BUFF_PRESENCE.indexOf(w.cond) < 0) addRow('Value', numField(w, 'num', 0));
+    } else if (w.type === 'ground') {
+      // Name search against the cache: typing lists matching items with their ids; picking one
+      // pins the exact id (shown in the field), typing free text matches dropped items by name.
+      const cell = document.createElement('div'); cell.className = 'al-cell';
+      const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'al-input';
+      inp.placeholder = 'Item name (search the cache)...'; inp.value = w.text || '';
+      let pickPaint = null;
+      const openPick = () => {
+        const q = inp.value.trim();
+        if (!q || !bridge() || !bridge().menuSearch) return;
+        let hits = [];
+        try { const r = JSON.parse(bridge().menuSearch(0, q, 40) || '{}'); hits = Array.isArray(r.hits) ? r.hits : []; } catch (e) {}
+        const ents = hits.map(h => ({ label: h.name + '  (' + h.id + ')', act: () => { w.text = h.name; w.item = h.id; inp.value = h.name; saveAlertCfg(); renderCustomList(); } }));
+        if (!ents.length) ents.push({ label: '(no item named like that in the cache)', act: () => {} });
+        closeSoundMenu(); openChoice(inp, ents);
+      };
+      inp.addEventListener('input', () => { w.text = inp.value; w.item = 0; saveAlertCfg(); openPick(); });
+      inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape') closeSoundMenu(); });
+      inp.addEventListener('click', e => e.stopPropagation());
+      cell.appendChild(inp);
+      const find = document.createElement('button'); find.type = 'button'; find.className = 'al-typesel'; find.title = 'Search the cache for this name';
+      find.textContent = w.item ? ('id ' + w.item) : 'Search'; find.addEventListener('click', e => { e.stopPropagation(); openPick(); });
+      cell.appendChild(find);
+      addRow('Item', cell);
+      const h = document.createElement('div'); h.className = 'al-desc';
+      h.textContent = w.item ? 'Matches that exact item id when it is dropped within range.' : 'Matches any dropped item whose name contains the text. Pick a search result to pin the exact id.';
+      addRow('', h);
     } else if (w.type === 'vitals') {
       if (!playerVp) fetchPlayerVp();
       addRow('Stat', statTrigger(w));
@@ -1008,7 +1074,7 @@
     host.innerHTML = '';
     if (!Array.isArray(alertCfg.custom) || !alertCfg.custom.length) {
       const e = document.createElement('div'); e.className = 'al-desc'; e.style.padding = '2px 4px';
-      e.textContent = 'No custom alerts. Add one (or pick a preset) to watch a name, a player/NPC animation, an equipped augment level, your inventory (slots / items), a buff value (e.g. timer below N), or a farming patch becoming ready. Add AND conditions to combine them, e.g. NPC anim 1234 AND NOT buff "Deflect Magic" active.';
+      e.textContent = 'No custom alerts. Add one (or pick a preset) to watch a name, a player/NPC animation, an equipped augment level, your inventory (slots / items), a buff value (e.g. timer below N), a farming patch becoming ready, or an item dropping on the ground. Add AND conditions to combine them, e.g. NPC anim 1234 AND NOT buff "Deflect Magic" active.';
       host.appendChild(e); return;
     }
     for (const w of alertCfg.custom) host.appendChild(customCard(w));
