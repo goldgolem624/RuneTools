@@ -442,6 +442,9 @@ JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
     std::ostringstream os;
     os << "[";
+    // Ids of the clients running right now, so a suppression can be lifted once its client is
+    // gone (see accounts::PruneCaptureSuppressions).
+    std::vector<std::string> live_ids;
     for (size_t i = 0; i < procs.size(); ++i) {
         const auto& p = procs[i];
         if (i) os << ",";
@@ -457,8 +460,14 @@ JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
         if (it != env.end()) character_id = it->second;
         const bool has_env = !env.empty();
 
+        if (!character_id.empty()) live_ids.push_back(character_id);
+
+        // An account the user has just removed must not be put straight back by capture while
+        // its client happens to still be running. That is what made Remove look like it did
+        // nothing: the row disappeared and returned on the next enumeration.
         if (capture && unlocked && has_env &&
-            (!display_name.empty() || !character_id.empty())) {
+            (!display_name.empty() || !character_id.empty()) &&
+            !accounts::IsCaptureSuppressed(character_id)) {
             accounts::Upsert(accounts::FromEnv(env));
         }
 
@@ -472,6 +481,9 @@ JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
            << "\"has_env\":"      << (has_env ? "true" : "false")
            << "}";
     }
+    // Lift the suppression on any account whose client has since closed, so removing an account
+    // stops capture NOW without blocking a later login from ever being saved again.
+    accounts::PruneCaptureSuppressions(live_ids);
     os << "]";
     return utf8_to_js(ctx, os.str());
 }
@@ -2103,6 +2115,14 @@ JSValueRef KeepFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
     bool on  = JSValueToBoolean(ctx, argv[1]);
     dock::SetKeepFocused(pid, on);
     return JSValueMakeUndefined(ctx);
+}
+
+// rtx.gameFocused(pid) -> bool: is the game (or its host frame) the foreground window.
+JSValueRef GameFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return JSValueMakeBoolean(ctx, dock::GameFocused(pid));
 }
 
 // Borderless fullscreen for this client's host window. With one arg, TOGGLES; with two, sets.
@@ -3933,7 +3953,11 @@ JSValueRef CenterTextFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    rtx::overlay::SetCenterText(pid, js_to_utf8(ctx, argv[1]));
+    // Optional 3rd/4th args: banner slot, and 0xRRGGBB accent (-1 / absent = the default red).
+    // Both omitted is the original single-banner behaviour, so existing callers are unchanged.
+    int slot = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 0;
+    int rgb  = (argc >= 4) ? (int)JSValueToNumber(ctx, argv[3], nullptr) : -1;
+    rtx::overlay::SetCenterText(pid, js_to_utf8(ctx, argv[1]), slot, rgb);
     return JSValueMakeBoolean(ctx, true);
 }
 
@@ -4779,6 +4803,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "clientWindowOpen",  ClientWindowOpen);
     install_fn(ctx, ns, "dockCollapse",      DockCollapse);   // legacy no-op
     install_fn(ctx, ns, "keepFocused",       KeepFocused);
+    install_fn(ctx, ns, "gameFocused",       GameFocused);
     install_fn(ctx, ns, "hostFullscreen",    HostFullscreen);
     install_fn(ctx, ns, "railTip",           RailTip);        // legacy no-op
     install_fn(ctx, ns, "uiRects",           UiRects);

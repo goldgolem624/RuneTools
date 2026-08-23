@@ -33,6 +33,9 @@ bool IsOpen(std::uint32_t pid);
 // WS_CHILD window, so EnumWindows (top-level only) can no longer find it.
 void* GameWindowHandle(std::uint32_t pid);
 
+// True when the foreground window is the game for `pid` (or the host frame it is embedded in).
+bool GameFocused(std::uint32_t pid);
+
 // Scale from this process's physical pixels into `game`'s own pixel space -- the space its
 // backbuffer, memory-read viewport values and in-frame drawing all use. 1.0 in the normal
 // case (the game's DPI context matches its monitor); less when the game runs DPI-virtualized,

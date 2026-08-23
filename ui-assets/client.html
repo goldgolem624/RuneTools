@@ -345,6 +345,9 @@
   .win.hud:hover .win-title, .win.hud.focus .win-title { opacity: 1; }
   .win.hud .win-name { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
   .win.hud .win-btns button { width: 18px; height: 18px; border-radius: 5px; }
+  /* The frame's corner resize zones (.rz, z-index 5) overlap the HUD's small title buttons;
+     the buttons must stay on top or hovering the X shows a resize cursor and eats the click. */
+  .win.hud .win-btns { position: relative; z-index: 7; }
   .win.hud .win-btns button svg { width: 11px; height: 11px; }
   .win.hud .win-lock.on { color: var(--accent); }
   .win.hud .win-tabs { display: none; }
@@ -353,7 +356,9 @@
   /* Locked: no input on this side, and wmPushRects drops it so the companion passes the
      click to the game. Chrome is hidden outright -- a control you cannot click is noise. */
   .win.hud.locked { pointer-events: none; }
-  .win.hud.locked .win-title { display: none; }
+  /* visibility, not display: the strip must keep its height so the content does not jump up
+     by 20px on lock, which would move a carefully placed aura. */
+  .win.hud.locked .win-title { visibility: hidden; }
   .win.hud.locked .rz { display: none; }
 
   /* Resize handles: invisible 7px strips on edges/corners. */
@@ -575,8 +580,15 @@
   .scene-range .val { color: var(--accent-hi); font-size: 11px; font-variant-numeric: tabular-nums; min-width: 54px; text-align: right; }
   .scene-int { display: flex; align-items: center; gap: 7px; cursor: pointer; }
   .scene-search { display: flex; align-items: center; gap: 10px; padding: 8px 2px 0; flex: 0 0 auto; }
+  .scene-search .scene-addterm { padding: 4px 10px; font: inherit; font-size: 13px; line-height: 1; flex: 0 0 auto; }
+  .scene-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 2px 0; flex: 0 0 auto; }
+  .scene-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 4px 2px 9px; border-radius: 999px;
+                border: 1px solid var(--accent-hi); color: #fff; background: rgba(140,111,253,0.12); }
+  .scene-chip button { appearance: none; border: 0; background: transparent; color: var(--text-dim); font: inherit; font-size: 13px; line-height: 1; padding: 0 4px; cursor: pointer; border-radius: 999px; }
+  .scene-chip button:hover { color: #fff; background: rgba(255,255,255,0.1); }
   .scene-search .cnt { color: var(--accent-hi); font-size: 11px; font-variant-numeric: tabular-nums; flex: 0 0 auto; min-width: 34px; text-align: right; }
   .scene-pills { display: flex; align-items: center; justify-content: space-between; gap: 8px 20px; padding: 7px 2px 2px; flex: 0 0 auto; flex-wrap: wrap; }
+  .scene-pills .scene-clear { margin-left: auto; padding: 4px 10px; font: inherit; font-size: 11px; }
   .scene-toggle {
     display: flex; gap: 2px; padding: 2px; min-width: 0;
     background: var(--bg-elev); border: 1px solid var(--border); border-radius: 7px;
@@ -718,6 +730,196 @@
   .pk-none { color: var(--text-mute); font-size: 11px; font-style: italic; }
   .pk-xp { color: var(--text-dim); font-size: 10px; margin-top: 6px; font-variant-numeric: tabular-nums; }
   .bf-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
+
+  /* --- Auras HUD: watched buffs/debuffs as icons with a radial time sweep ---
+     DESIGN NOTE. This sits over live gameplay, so nothing may depend on what is behind it.
+     Earlier versions used translucent tiles and leaned on drop shadows: readable over dark
+     ground, illegible over a bright, busy scene. Every layer here is therefore OPAQUE, the
+     label is lifted out of the artwork into its own chip, and the timer is outlined on all
+     four sides rather than merely shadowed. */
+  /* ===== Auras (panel_auras.js): HUD windows + editor ===== */
+  .au-wrap { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+  /* The root fills the HUD window's content box by absolute inset, so it is exactly the visible
+     area whatever the flex column above it computes. */
+  .win.hud .content { position: relative; }
+  .au-root { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: visible; }
+  .au-kids { position: relative; width: 100%; height: 100%; }
+  .au-hudhint { color: var(--text-dim); font-size: 11px; text-align: center; padding: 4px; }
+  /* One display element. --au-size = the smaller side, used to scale text. */
+  .au-el { position: absolute; box-sizing: border-box; overflow: visible; }
+  .au-el.au-editable { cursor: move; }
+  .au-el.au-sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* Edit mode (Auras panel open, window unlocked): tint every group's space and every root's
+     box so the area an aura occupies is visible even when nothing is triggered. */
+  .au-root.au-edit { background: rgba(140,111,253,0.12); outline: 1px dashed rgba(140,111,253,0.7); outline-offset: -1px; border-radius: 6px; }
+  .au-root.au-edit::after { content: attr(data-label); position: absolute; left: 4px; top: 2px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,0.65); pointer-events: none; text-shadow: 0 1px 2px #000; }
+  .au-edit .au-t-group, .au-edit .au-t-dyngroup { background: rgba(79,178,255,0.10); outline: 1px dashed rgba(79,178,255,0.7); outline-offset: -1px; border-radius: 6px; }
+  .au-edit .au-el.au-editable:not(.au-t-group):not(.au-t-dyngroup) { outline: 1px dashed rgba(255,255,255,0.35); outline-offset: 0; }
+  .au-rz { position: absolute; width: 10px; height: 10px; background: var(--accent); border-radius: 2px; opacity: .8; }
+  .au-rz-se { right: -2px; bottom: -2px; cursor: nwse-resize; }
+  .au-rz-nw { left: -2px; top: -2px; cursor: nwse-resize; }
+  .au-rz-ne { right: -2px; top: -2px; cursor: nesw-resize; }
+  .au-rz-sw { left: -2px; bottom: -2px; cursor: nesw-resize; }
+  /* Edge grips: thin strips along each wall (between the corners). */
+  .au-rz-n { top: -3px; left: 12px; right: 12px; height: 6px; width: auto; cursor: ns-resize; opacity: .45; }
+  .au-rz-s { bottom: -3px; left: 12px; right: 12px; height: 6px; width: auto; cursor: ns-resize; opacity: .45; }
+  .au-rz-w { left: -3px; top: 12px; bottom: 12px; width: 6px; height: auto; cursor: ew-resize; opacity: .45; }
+  .au-rz-e { right: -3px; top: 12px; bottom: 12px; width: 6px; height: auto; cursor: ew-resize; opacity: .45; }
+  .au-rz-n:hover, .au-rz-s:hover, .au-rz-w:hover, .au-rz-e:hover { opacity: .9; }
+  .au-wrz { width: 12px; height: 12px; z-index: 6; background: #fff; opacity: .9; border: 2px solid var(--accent); box-sizing: border-box; }
+  .au-wrz.au-rz-n, .au-wrz.au-rz-s { width: auto; height: 6px; opacity: .5; }
+  .au-wrz.au-rz-w, .au-wrz.au-rz-e { height: auto; width: 6px; opacity: .5; }
+  .au-root.au-edit { cursor: move; }
+  .au-desat .au-icon { filter: grayscale(1) brightness(0.8); }
+  .au-glow { box-shadow: 0 0 10px 3px rgba(140,111,253,0.85), 0 0 18px 6px rgba(140,111,253,0.35) !important; }
+  /* icon / pips / ring tiles */
+  .au-t-icon, .au-t-pips { border-radius: 8px; background: #0e0f14; border: 1px solid rgba(255,255,255,0.30); box-shadow: 0 2px 8px rgba(0,0,0,0.85); }
+  .au-t-icon { overflow: hidden; }
+  .au-t-pips { background: transparent; border: 0; box-shadow: none; }
+  .au-t-pips > .au-icon { position: relative; width: 100%; height: calc(100% - 16px); border-radius: 8px; background-color: #0e0f14; border: 1px solid rgba(255,255,255,0.30); box-sizing: border-box; box-shadow: 0 2px 8px rgba(0,0,0,0.85); }
+  .au-t-pips > .au-time { bottom: 16px; }
+  .au-el.au-off { opacity: .40 !important; }
+  .au-t-icon.au-oncd .au-icon { filter: grayscale(0.55) brightness(0.75); }
+  .au-icon { position: absolute; inset: 0; image-rendering: pixelated; background-size: contain; background-repeat: no-repeat; background-position: center; }
+  .au-sweep { position: absolute; inset: 0; pointer-events: none; }
+  .au-hh { position: absolute; top: 0; height: 100%; width: 50%; overflow: hidden; }
+  .au-hl { left: 0; }
+  .au-hr { left: 50%; }
+  .au-hh i { position: absolute; top: -50%; width: 400%; height: 200%; background: rgba(0,0,0,0.60); transform-origin: 100% 50%; }
+  .au-hl i { left: -300%; }
+  .au-hr i { left: -400%; }
+  .au-time { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  .au-time b { font-weight: 900; line-height: 1; color: #fff; font-size: clamp(11px, calc(var(--au-size, 56px) * 0.42), 40px); font-variant-numeric: tabular-nums;
+               text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000, 0 0 4px rgba(0,0,0,0.95); }
+  .au-time.au-soon b { color: #ff7b7b; font-size: clamp(14px, calc(var(--au-size, 56px) * 0.56), 52px); }
+  .au-time.au-full b { color: #ffd76a; }
+  .au-stk { position: absolute; right: 2px; bottom: 1px; font-size: clamp(9px, calc(var(--au-size, 56px) * 0.26), 18px); font-weight: 800; color: #fff; line-height: 1; pointer-events: none;
+            text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000; }
+  .au-pips { position: absolute; left: 0; right: 0; bottom: 0; display: grid; gap: 2px; --pip: var(--accent); }
+  .au-pips i { display: block; height: 6px; border-radius: 2px; background: rgba(255,255,255,0.10); border: 1px solid rgba(0,0,0,0.6); box-sizing: border-box; }
+  .au-pips i.on { background: var(--pip); box-shadow: 0 0 4px var(--pip); border-color: rgba(0,0,0,0.35); }
+  .au-pips.au-full i.on { box-shadow: 0 0 7px var(--pip), 0 0 2px #fff; }
+  /* ring: two clipped halves like the sweep, in colour, with a hole punched by an inner disc */
+  .au-ring { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; background: rgba(0,0,0,0.45); --rc: var(--accent); --rw: 6px; }
+  .au-ring .au-hh i { background: var(--rc); }
+  .au-ring-in { position: absolute; left: var(--rw); top: var(--rw); right: var(--rw); bottom: var(--rw); border-radius: 50%; background: #0e0f14; box-shadow: inset 0 0 6px rgba(0,0,0,0.8); }
+  .au-t-ring .au-time b { font-size: clamp(10px, calc(var(--au-size, 56px) * 0.3), 30px); }
+  /* bar */
+  .au-t-bar { border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.30); box-shadow: 0 2px 8px rgba(0,0,0,0.85); background-repeat: no-repeat; background-size: 100% 100%; }
+  /* Bar text: sized from the bar HEIGHT but capped so a tall bar does not outgrow its width; the
+     label may shrink/ellipsize, the number never does. */
+  .au-vtext { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; font-size: clamp(10px, calc(var(--au-size, 22px) * 0.5), 15px); line-height: 1; color: #fff; font-weight: 700;
+              text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000, 0 0 4px rgba(0,0,0,0.95); white-space: nowrap; overflow: hidden; }
+  .au-vtext span { font-weight: 600; opacity: .9; text-transform: uppercase; letter-spacing: .04em; font-size: .85em; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .au-vtext b { font-variant-numeric: tabular-nums; flex: none; }
+  /* text */
+  .au-t-text { display: flex; align-items: center; font-weight: 900; line-height: 1.05; white-space: nowrap; overflow: visible;
+               text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000, 0 0 5px rgba(0,0,0,0.95); }
+  /* animations */
+  .au-s-fade { animation: au-fadein .25s ease-out; }
+  .au-s-grow { animation: au-grow .3s cubic-bezier(.2,1.4,.4,1); }
+  .au-s-shrink { animation: au-shrinkin .3s ease-out; }
+  .au-s-slideL { animation: au-slideL .3s ease-out; }
+  .au-s-slideR { animation: au-slideR .3s ease-out; }
+  .au-s-slideU { animation: au-slideU .3s ease-out; }
+  .au-s-slideD { animation: au-slideD .3s ease-out; }
+  .au-s-bounce { animation: au-bouncein .5s cubic-bezier(.2,1.6,.4,1); }
+  .au-m-pulse { animation: au-pulse 1s ease-in-out infinite !important; }
+  .au-m-flash { animation: au-flash .7s steps(2, end) infinite !important; }
+  .au-m-shake { animation: au-shake .5s ease-in-out infinite !important; }
+  .au-m-spin { animation: au-spin 2s linear infinite !important; }
+  .au-m-wobble { animation: au-wobble 1s ease-in-out infinite !important; }
+  .au-m-bounce { animation: au-bounce 1s ease-in-out infinite !important; }
+  .au-fin-fade { animation: au-fadeout .4s ease-in forwards !important; }
+  .au-fin-shrink { animation: au-shrinkout .4s ease-in forwards !important; }
+  .au-fin-grow { animation: au-growout .4s ease-in forwards !important; }
+  .au-fin-slideL { animation: au-outL .4s ease-in forwards !important; }
+  .au-fin-slideR { animation: au-outR .4s ease-in forwards !important; }
+  .au-fin-slideU { animation: au-outU .4s ease-in forwards !important; }
+  .au-fin-slideD { animation: au-outD .4s ease-in forwards !important; }
+  @keyframes au-fadein { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes au-grow { from { transform: scale(0.2); } to { transform: scale(1); } }
+  @keyframes au-shrinkin { from { transform: scale(1.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  @keyframes au-slideL { from { transform: translateX(-60px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes au-slideR { from { transform: translateX(60px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes au-slideU { from { transform: translateY(-60px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes au-slideD { from { transform: translateY(60px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes au-bouncein { 0% { transform: scale(0.3); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
+  @keyframes au-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+  @keyframes au-flash { 0% { opacity: 1; } 50% { opacity: .35; } 100% { opacity: 1; } }
+  @keyframes au-shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+  @keyframes au-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes au-wobble { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(6deg); } }
+  @keyframes au-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  @keyframes au-fadeout { to { opacity: 0; } }
+  @keyframes au-shrinkout { to { transform: scale(0.2); opacity: 0; } }
+  @keyframes au-growout { to { transform: scale(1.8); opacity: 0; } }
+  @keyframes au-outL { to { transform: translateX(-60px); opacity: 0; } }
+  @keyframes au-outR { to { transform: translateX(60px); opacity: 0; } }
+  @keyframes au-outU { to { transform: translateY(-60px); opacity: 0; } }
+  @keyframes au-outD { to { transform: translateY(60px); opacity: 0; } }
+  /* ---- editor (the Auras panel) ---- */
+  .au-editor { overflow-y: auto; padding-right: 4px; }
+  .au-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .au-btn { background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--border-hi); border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .au-btn:hover { border-color: var(--accent-hi); }
+  .au-btn.au-add { border-style: dashed; background: transparent; color: var(--text-dim); font-weight: 400; align-self: flex-start; }
+  .au-btn.au-add:hover { color: var(--text); }
+  .au-cyc { min-width: 0; white-space: nowrap; }
+  .au-cyc .cur { overflow: hidden; text-overflow: ellipsis; }
+  .au-sm { padding: 2px 6px; font-size: 0.78em; }
+  .au-del { color: #ff8a8a; }
+  .au-locked { color: var(--accent); border-color: var(--accent); }
+  .au-opt { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); }
+  .au-hint { color: var(--text-dim); font-size: 11px; line-height: 1.45; }
+  .au-group { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+  .au-group.au-editing { border-color: var(--accent); }
+  .au-ghead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .au-crumb { color: var(--accent); }
+  .au-gname { flex: 1 1 120px; min-width: 0; }
+  .au-hex { flex: none !important; width: 84px; min-width: 0 !important; font-family: monospace; }
+  .au-gcount { color: var(--text-mute); font-size: 11px; white-space: nowrap; }
+  .au-tree { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; max-height: 240px; overflow-y: auto; flex: none; }
+  .au-editor > .au-bar, .au-editor > .au-group, .au-editor > .au-hint { flex: none; }
+  .au-node { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 12px; color: var(--text); cursor: pointer; border-bottom: 1px solid var(--border); }
+  .au-node:hover { background: rgba(255,255,255,0.04); }
+  .au-node.on { background: rgba(140,111,253,0.15); color: #fff; }
+  .au-node .au-ntype { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; flex: none; }
+  .au-node .au-nname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .au-node.live .au-nname { color: #fff; }
+  .au-node.live .au-ntype { color: var(--accent); }
+  .au-node input[type=checkbox] { flex: none; margin: 0; }
+  .au-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.2); flex: none; margin: 0 5px; }
+  .au-node.live .au-dot { background: var(--accent); }
+  .au-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .au-tab { appearance: none; background: transparent; color: var(--text-dim); border: 1px solid transparent; border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 11px; cursor: pointer; }
+  .au-tab:hover { color: var(--text); border-color: var(--border-hi); }
+  .au-tab.on { color: #fff; border-color: var(--accent-hi); background: rgba(140,111,253,0.12); }
+  .au-tabbody { display: flex; flex-direction: column; gap: 8px; }
+  .au-egrid { display: grid; grid-template-columns: 84px 1fr; gap: 7px 10px; align-items: center; }
+  .au-egrid > .au-lab { text-align: right; }
+  .au-lab { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .au-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .au-and { background: rgba(255,255,255,.03); border: 1px dashed var(--border); border-radius: 7px; padding: 6px 8px; display: flex; flex-direction: column; gap: 7px; }
+  .au-and-tag { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--accent); background: rgba(255,255,255,.06); border-radius: 4px; padding: 2px 6px; align-self: flex-start; }
+  .au-cust-head { display: flex; align-items: center; gap: 8px; }
+  .au-cust-head > .au-del { margin-left: auto; }
+  .au-items { display: flex; flex-direction: column; gap: 4px; }
+  .au-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 0; }
+  .au-tokcell { flex-wrap: nowrap; }
+  .au-tokcell .au-gname { flex: 1; }
+  .au-colwrap { display: inline-flex; align-items: center; gap: 6px; }
+  .au-swatch { display: inline-block; width: 20px; height: 20px; border-radius: 5px; border: 1px solid var(--border-hi); cursor: pointer; flex: none; }
+  .au-swatch:hover { border-color: var(--accent-hi); }
+  .au-cp { width: 190px; padding: 8px; display: flex; flex-direction: column; gap: 8px; overflow: visible; }
+  .au-cp-sv { position: relative; width: 100%; height: 120px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.2); cursor: crosshair; }
+  .au-cp-sv i, .au-cp-hue i { position: absolute; width: 10px; height: 10px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; transform: translate(-50%, -50%); pointer-events: none; top: 50%; }
+  .au-cp-hue { position: relative; width: 100%; height: 14px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.2); cursor: ew-resize;
+               background: linear-gradient(90deg, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%); }
+  .au-cp-row { display: flex; align-items: center; gap: 6px; }
+  .au-cp-pal { display: flex; flex-wrap: wrap; gap: 4px; }
+  .au-ta { width: 100%; min-height: 70px; background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--border-hi); border-radius: 6px; padding: 6px; font: inherit; font-size: 11px; font-family: monospace; box-sizing: border-box; resize: vertical; }
+  .au-ta:focus { outline: none; border-color: var(--accent-hi); }
   .bf-grp { color: var(--text-dim); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; padding: 10px 2px 4px; }
   .bf-row { display: flex; align-items: center; gap: 10px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; margin-bottom: 5px; }
   .bf-icon { width: 30px; height: 30px; flex: none; background-color: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 6px; background-repeat: no-repeat; background-position: center; background-size: contain; image-rendering: -webkit-optimize-contrast; }
@@ -772,6 +974,11 @@
   .al-seg button.on { background: var(--accent-hi); color: #fff; }
   .al-lab { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
   .al-cust.off { opacity: 0.5; }
+  .al-and { background: rgba(255,255,255,.03); border: 1px dashed var(--border); border-radius: 7px; padding: 6px 8px; display: flex; flex-direction: column; gap: 7px; }
+  .al-and-list { display: flex; flex-direction: column; gap: 6px; }
+  .al-and-list:empty { display: none; }
+  .al-and-tag { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--accent); background: rgba(255,255,255,.06); border-radius: 4px; padding: 2px 6px; }
+  .al-and-add { width: auto !important; align-self: flex-start; font-size: 11px; padding: 3px 9px; }
   .al-cust-head { display: flex; align-items: center; gap: 9px; }
   .al-grid { display: grid; grid-template-columns: 56px 1fr; gap: 9px 10px; align-items: center; }
   .al-grid > .al-lab { text-align: right; }
@@ -2075,8 +2282,8 @@
   // nobody loses what they already had, and the localStorage copy is kept in step so an older
   // launcher (no prefsLoad) still reads something sane.
   const rtxPrefs = Object.create(null);
-  let _prefsReady = false, _prefsSaveT = 0;
-  const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView'];
+  let _prefsReady = false, _prefsSaveT = 0, _prefsInitP = null;
+  const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView', 'rtxAuras', 'rtxAuraSeen', 'rtxAuraIcons'];
   function prefGet(key, def) {
     if (Object.prototype.hasOwnProperty.call(rtxPrefs, key)) return rtxPrefs[key];
     try { const s = localStorage.getItem(key); if (s !== null) return s; } catch (e) {}
@@ -2099,6 +2306,9 @@
     _prefsReady = true;
     let migrated = 0;
     for (const k of PREF_DURABLE) {
+      // A value written THIS session (prefSet before the disk read finished) is newer than the
+      // file; keep it and make sure it reaches the disk, instead of clobbering it with the old one.
+      if (Object.prototype.hasOwnProperty.call(rtxPrefs, k)) { migrated++; continue; }
       if (Object.prototype.hasOwnProperty.call(disk, k)) { rtxPrefs[k] = disk[k]; continue; }
       // Not on disk yet: adopt whatever localStorage still holds, so an upgrade keeps it.
       try { const s = localStorage.getItem(k); if (s !== null) { rtxPrefs[k] = s; migrated++; } } catch (e) {}
@@ -2111,6 +2321,7 @@
     try { sndApplyDurablePrefs(); } catch (e) {}
     try { ovApplyDurablePrefs(); } catch (e) {}
     try { sceneApplyDurablePrefs(); } catch (e) {}
+    try { if (typeof auraApplyDurablePrefs === 'function') auraApplyDurablePrefs(); } catch (e) {}
   }
 
   // DUNGEONEERING VISIBILITY. One flag gates the nav entry, the poll, the render and the
@@ -2197,6 +2408,7 @@
     // Utility
     { id: 'alerts',    label: 'Alerts',    cat: 'Utility', icon: '<path d="M18 16v-5a6 6 0 1 0-12 0v5l-1.5 2h15z"/><path d="M10 20a2 2 0 0 0 4 0"/>' },
     { id: 'ticks',     label: 'Ticks',     cat: 'Utility', icon: '<circle cx="12" cy="12" r="8"/><path d="M12 8.5V12l2.5 1.5"/>' },
+    { id: 'auras', label: 'Auras', cat: 'Utility', icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' },
     { id: 'metronome', label: 'Metronome', cat: 'Utility', icon: '<path d="M10 3h4l4 18H6z"/><path d="M8.5 14h7"/><path d="M12 18V8"/>' },
     { id: 'stopwatch', label: 'Stopwatch', cat: 'Utility', icon: '<circle cx="12" cy="13" r="8"/><path d="M12 13V9"/><path d="M9 2h6M12 2v3"/>' },
     { id: 'notes',     label: 'Notes',     cat: 'Utility', icon: '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/>' },
@@ -3731,12 +3943,18 @@
     // so they open small and are allowed to go far below the normal window floor.
     xpmeter: { w: 264, h: 210, minW: 172, minH: 78 },
     metronome: { w: 132, h: 132, minW: 84, minH: 84 },
+    auras: { w: 420, h: 560 },
+    // One window per aura group (tab id 'aura:<gid>', see panel_auras.js); looked up by prefix.
+    'aura:': { w: 240, h: 84, minW: 40, minH: 40 },
   };
   // HUD windows: minimal chrome, a lock (click-through) mode, and their own z-band above
   // the normal windows. These replace the companion-drawn metronome/XP widgets, which were
   // marker commands composited under this layer; both now live in the same DOM as every
   // other panel, so they inherit dragging, resizing, snapping and layout persistence.
   const WIN_HUD = new Set(['xpmeter', 'metronome']);
+  // Aura group windows are HUDs too; their ids are dynamic (one per group) so they are matched
+  // by prefix rather than listed.
+  function wmIsHud(id) { return WIN_HUD.has(id) || (typeof auraIsHudTab === 'function' && auraIsHudTab(id)); }
   const Z_HUD = 900000;              // HUD band: a HUD never hides behind a data panel
   function wmZ(w) { return (w.hud ? Z_HUD : 0) + w.z; }
   const wm = {
@@ -3929,7 +4147,13 @@
     if (w.y < 0) w.y = 0;
   }
   function winSizeFor(wid, tab) {
-    return Object.assign({}, WIN_DEF, WIN_SIZES[wid] || WIN_SIZES[tab] || {});
+    let pre = null;
+    if (typeof tab === 'string' && tab.indexOf('aura:') === 0) {
+      pre = Object.assign({}, WIN_SIZES['aura:']);
+      // A new aura window opens at the aura's own size (plus the HUD title strip).
+      try { const a = (typeof auraGet === 'function') ? auraGet(tab.slice(5)) : null; if (a) { pre.w = Math.max(pre.minW, (a.w | 0) + 4); pre.h = Math.max(pre.minH, (a.h | 0) + 22); } } catch (e) {}
+    }
+    return Object.assign({}, WIN_DEF, WIN_SIZES[wid] || WIN_SIZES[tab] || pre || {});
   }
   function wmApplyGeom(w) {
     w.el.style.left = w.x + 'px';
@@ -4021,7 +4245,11 @@
       x: pos.x, y: pos.y,
       w: hasBox ? geom.w : sz.w, h: hasBox ? geom.h : sz.h,
       z: ++wm.zTop, min: !!(geom && geom.min),
-      hud: WIN_HUD.has(tab.id), locked: !!(geom && geom.lock),
+      hud: wmIsHud(tab.id),
+      // Lock (click-through) is a HUD-only mode: a saved lock on a tab that is no longer a HUD
+      // (the Auras editor, formerly the auras HUD) would leave a window with no lock button that
+      // passes every click to the game.
+      locked: wmIsHud(tab.id) && !!(geom && geom.lock),
       el: null, body: null, pane: null, tabsEl: null, nameEl: null, titleEl: null, icoEl: null,
     };
     // A group opens with its members already docked; anything else opens solo. Members
@@ -4473,6 +4701,9 @@
     wmClamp(w);
     wmApplyGeom(w);
     wmRectsSoon();
+    // Aura groups lay themselves out to their window, so resizing one must repaint it live:
+    // waiting for the next buff poll made the tiles lag the handle by up to half a second.
+    if (d.mode === 'size' && typeof auraIsHudTab === 'function' && auraIsHudTab(w.tab) && !w.min) renderPaneFor(w);
   });
   document.addEventListener('mouseup', () => {
     _tabDrag = null;            // press ended without travelling: it was a plain click
@@ -5176,6 +5407,7 @@
   function mbCatEntries(catId) {
     const out = [], emitted = {};
     for (const t of allTabs()) {
+      if (t.hidden) continue;
       if ((t.cat || 'General') !== catId) continue;
       const g = TAB_GROUP_OF[t.id];
       if (g && emitted[g.id]) continue;
@@ -5476,7 +5708,7 @@
   //      panel, plugin tabs included. Arrow keys + Enter select; Esc / backdrop close. ----
   let tspSel = 0;
   function tspEntries(q) {
-    const all = allTabs();
+    const all = allTabs().filter(t => !t.hidden);
     if (!q) return all;
     const s = q.toLowerCase();
     const score = t => {
@@ -5686,6 +5918,7 @@
     // Plugins own their (sandboxed iframe) DOM; mount before any content wipe.
     if (activeTab === 'pluginbrowse') { renderPluginBrowse(); return; }
     if (activeTab.indexOf('plugin:') === 0) { renderPlugin(activeTab.slice(7)); return; }
+    if (activeTab.indexOf('aura:') === 0) { if (typeof renderAuraGroup === 'function') renderAuraGroup(activeTab.slice(5)); return; }
     // Bank manages its own DOM incrementally (search box keeps focus across
     // the 250 ms refresh), so it must run before the content is wiped.
     if (activeTab === 'bank') { renderBank(); return; }
@@ -5748,6 +5981,7 @@
     if (activeTab === 'netprobe') { renderNetProbe(); return; }
     if (activeTab === 'cs2') { renderCs2(); return; }
     if (activeTab === 'ticks') { renderTicks(); return; }
+    if (activeTab === 'auras') { renderAuras(); return; }
     if (activeTab === 'metronome') { renderMetronome(); return; }
     if (activeTab === 'stopwatch') { renderStopwatch(); return; }
     if (activeTab === 'notes') { renderNotes(); return; }
@@ -6228,6 +6462,9 @@
     // Nearby NPCs: refresh while the Scene tab is open (cheap hashmap walk).
     if (activeTab === 'scene') fetchScene();
     if (activeTab === 'perks') fetchPerks();
+    // Auras is a HUD: it must keep ticking while you are on some other tab, or looking at
+    // no tab at all, so it polls on pane VISIBILITY rather than on being the active one.
+    if (paneVisible('auras') || (typeof auraAnyHudVisible === 'function' && auraAnyHudVisible()) || (typeof auraNeedsPoll === 'function' && auraNeedsPoll())) fetchAuras();
     if (activeTab === 'buffs') fetchBuffs();
     if (activeTab === 'abilities') fetchAbilities();
     if (activeTab === 'pets') fetchPets();
@@ -6302,7 +6539,7 @@ state:{player:function(){return call('state.player',[]);},info:function(){return
 cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);}},
 notify:{windows:function(title,body){return call('notify.windows',[title,body]);}},
 clipboard:{copy:function(t){return call('clipboard.copy',[t]);}},
-overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t){return call('overlay.centerText',[t]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},highlightRects:function(l){return call('overlay.highlightRects',[l||[]]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);}},
+overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t,s,c){return call('overlay.centerText',[t,s,c]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},highlightRects:function(l){return call('overlay.highlightRects',[l||[]]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);}},
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);}}};
@@ -6484,7 +6721,10 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'overlay.notify':   { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: pClampNum(a[1], 0, 60000) }) },
     // Big centre-screen banner text ('' clears). Same in-frame channel the Dungeoneering
     // boss warnings use.
-    'overlay.centerText':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().centerText ? bridge().centerText(pid, pClampStr(a[0], 80)) : null) },
+    // a[1] = banner slot (0..2), a[2] = 0xRRGGBB accent. Slots stack upward and are independent,
+    // so a plugin can hold a prayer call and a mechanic cue on screen at once instead of having
+    // to rank one over the other. Both optional: omitted is the original single red banner.
+    'overlay.centerText':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().centerText ? bridge().centerText(pid, pClampStr(a[0], 80), pClampNum(a[1], 0, 2), pClampNum(a[2], -1, 0xFFFFFF)) : null) },
     // OS toast (Windows notification). Own manifest scope + a 1-per-10s rate cap.
     'notify.windows':   { scope: 'notify.os',  json: false,   run: (a) => (bridge().notifyWindows ? bridge().notifyWindows(pClampStr(a[0], 60), pClampStr(a[1], 200)) : null) },
     // Copy text to the user's clipboard. Own manifest scope; sized for plan exports.
@@ -6541,7 +6781,19 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'overlay.guideTiles':{ scope: 'overlay', json: false, run: (a, pid) => {
                             const marks = Array.isArray(a[0]) ? a[0] : [];
                             const recs = [];
-                            for (const m of marks.slice(0, 16)) {
+                            // 64, raised from 16. Nothing in the host required 16: GuideMarksFn
+                            // parses an uncapped list, the overlay's push() is bounded by
+                            // kMaxCmds (8192) and drops the overflow rather than corrupting the
+                            // buffer, and the host-trusted clue guide already sends 24.
+                            // The binding cost is not memory but the per-frame label placement
+                            // pass in Overlay.cpp, which is O(n^2): each label is tested against
+                            // every already-placed one for duplicates and again inside a
+                            // 12-step collision walk. A simple tile costs roughly a dozen draw
+                            // commands, so 64 marks is about 900 of the 8192 budget and a few
+                            // tens of thousands of rect tests per frame -- comfortable. Going to
+                            // several hundred is where that pass would start to bite, so this is
+                            // deliberately a bounded raise and not a removal.
+                            for (const m of marks.slice(0, 64)) {
                               if (!m || typeof m !== 'object') continue;
                               const x = pClampNum(m.x, 0, 16383) | 0, y = pClampNum(m.y, 0, 16383) | 0, plane = pClampNum(m.plane, 0, 3) | 0;
                               if (x < 1 || y < 1) continue;
@@ -6763,6 +7015,8 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   function allTabs() {
     const extra = [{ id: 'pluginbrowse', label: 'Browse plugins', cat: 'Plugins', icon: PLUGIN_BROWSE_ICON }];
     pluginTabs.forEach(p => extra.push({ id: 'plugin:' + p.id, label: p.manifest.name, cat: 'Plugins', icon: PLUGIN_TAB_ICON }));
+    // Aura groups: one HUD tab each (hidden from the menus; the Auras panel shows/hides them).
+    if (typeof auraGroupTabs === 'function') { try { auraGroupTabs().forEach(t => extra.push(t)); } catch (e) {} }
     return TABS.filter(t => (t.id !== 'dung' || DUNG_ENABLED) && (t.id !== 'groupbank' || gimInGroup !== false))
       .map(t => { const g = TAB_GROUP_OF[t.id]; return (g && g.cat && g.cat !== t.cat) ? Object.assign({}, t, { cat: g.cat }) : t; })
       .concat(extra);
@@ -7111,7 +7365,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     // Durable preferences first: several panels read their seed at parse time, and this is
     // what restores them on the first run after an app update wiped localStorage. Async, so
     // each of those panels also gets a re-apply hook (see prefsInit).
-    prefsInit();
+    _prefsInitP = prefsInit();
     // Load tile-marker state first so the initial pushOverlay() reflects whether markers
     // should render; this starts the overlay thread for accounts that already have
     // markers, without opening the tab.
@@ -7140,6 +7394,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
       // Plugin tabs must exist before the first restore attempt, or saved plugin
       // windows are silently dropped by the allTabs() lookup.
       if (!bootLayout._plugins) { bootLayout._plugins = 1; try { await loadPlugins(); } catch (e) {} }
+      // Same for aura groups: their HUD tabs come from the durable prefs, so the prefs file must
+      // be in before the restore runs or every saved group window is dropped as unknown.
+      if (_prefsInitP) { try { await _prefsInitP; } catch (e) {} }
       let ok = false;
       try { ok = await wmLayoutRestore(); } catch (e) {}
       // The HUD widgets are driven by their own saved settings, not only by the window

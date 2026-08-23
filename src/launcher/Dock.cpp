@@ -98,6 +98,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_stopwatch.js",
         "panel_notes.js",
         "panel_counter.js",
+        "panel_auras.js",          // HUD window: watched buff/debuff icons + time sweep
         "panel_metronome.js",      // HUD window: tick dial (was drawn by the companion)
         "panel_familiar.js",
         "panel_dungeoneering.js",  // Daemonheim floor status + explored map
@@ -1220,6 +1221,32 @@ void* GameWindowHandle(std::uint32_t pid) {
 }
 
 std::string ReadUiAsset(const std::string& name) { return ReadUiAssetImpl(name); }
+
+// Is the game for `pid` the window the user is working in right now? True when the foreground
+// window is the game itself, the host frame it is embedded in (the game is a WS_CHILD of the host
+// once embedded, so the foreground window IS the host), or any window rooted in either. Falls
+// back to a process-id compare for a client that is not docked at all. Used by the idle alert's
+// "only while the game is in the background" option, so it must be cheap: a few Win32 calls,
+// no AttachThreadInput, nothing that can block on a hung client.
+bool GameFocused(std::uint32_t pid) {
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    HWND root = GetAncestor(fg, GA_ROOT);
+    auto it = g_docks.find(pid);
+    if (it != g_docks.end() && it->second) {
+        Dock* d = it->second;
+        if (d->host && (fg == d->host || root == d->host)) return true;
+        if (d->game && IsWindow(d->game) && (fg == d->game || root == d->game)) return true;
+        if (d->gameInput && IsWindow(d->gameInput) && fg == d->gameInput) return true;
+    }
+    DWORD fgPid = 0;
+    GetWindowThreadProcessId(fg, &fgPid);
+    if (fgPid == pid) return true;
+    // The in-game UI view and the launcher's own windows belong to this process; the user
+    // typing into a RuneToolsX panel is still "at the game".
+    if (it != g_docks.end() && fgPid == GetCurrentProcessId()) return true;
+    return false;
+}
 
 void Tick() {
     if (g_docks.empty()) return;

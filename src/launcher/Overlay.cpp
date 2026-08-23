@@ -186,7 +186,12 @@ RECT g_xp_min{0, 0, 0, 0};                      // minimize-box rect (guarded by
 
 std::map<DWORD, std::vector<GuideMark>> g_guides;   // transient guide marks per pid (guarded by g_mu)
 std::map<DWORD, std::vector<UiHighlight>> g_uiHighlights;   // transient screen-space UI highlights per pid (guarded by g_mu)
-std::map<DWORD, std::string> g_centerTexts;         // transient screen-centre text per pid (guarded by g_mu)
+// Transient screen-centre banners per pid, keyed by SLOT (guarded by g_mu). Slotted rather
+// than a single string because independent callers need to be readable at the same time: a
+// prayer call and a boss mechanic can fire together, and ranking one over the other loses
+// information the player needs. Slot 0 keeps the original position and colour, so every
+// existing caller is unaffected.
+std::map<DWORD, std::map<int, CenterBanner>> g_centerTexts;
 std::map<DWORD, std::vector<PanelBox>> g_panelViz;  // Interfaces-tab panel visualizer boxes per pid (guarded by g_mu)
 std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;  // puzzle-box next-moves cells per pid (guarded by g_mu)
 std::map<DWORD, std::vector<KnotCell>> g_knotCells;      // celtic-knot arrow highlights per pid (guarded by g_mu)
@@ -677,7 +682,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     // must count as content here or the early-out below publishes an empty frame first.
     bool hasGuides = false;   // gate only -- drawing uses the frame's RESOLVED guides
     std::vector<UiHighlight> uihls;
-    std::string ctext;
+    std::map<int, CenterBanner> ctext;
     std::vector<PanelBox> pviz;
     std::vector<PuzzleCell> pcells;
     std::vector<KnotCell> kcells;
@@ -1553,17 +1558,24 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- screen-centre text (e.g. the BGH "Bound - 2s" stun countdown): one big kText
-    //     pill above the gameview centre, no world projection. Red accent = warning. ---
-    if (!ctext.empty()) {
+    // --- screen-centre text (e.g. the BGH "Bound - 2s" stun countdown): big kText pills above
+    //     the gameview centre, no world projection. Red accent = warning by default.
+    //     Slots stack UPWARD from the original slot-0 position, so adding a second banner never
+    //     moves the one callers already rely on. ---
+    for (const auto& cb : ctext) {
+        if (cb.second.text.empty()) continue;
         marker::Command t{}; t.type = marker::kText;
         t.x0 = vpX + vpW * 0.5f;
-        t.y0 = vpY + vpH * 0.35f;                        // above centre: clear of the player model
+        t.y0 = vpY + vpH * (0.35f - 0.075f * (float)cb.first);   // above centre: clear of the player model
         t.x1 = 22.0f;                                    // big: must read at a glance mid-fight
-        t.r = 235; t.g = 90; t.b = 90; t.a = 245;
-        int n = (int)ctext.size();
+        int rgb = cb.second.rgb;
+        if (rgb < 0) { t.r = 235; t.g = 90; t.b = 90; }  // default warning red
+        else { t.r = (std::uint8_t)((rgb >> 16) & 0xFF); t.g = (std::uint8_t)((rgb >> 8) & 0xFF);
+               t.b = (std::uint8_t)(rgb & 0xFF); }
+        t.a = 245;
+        int n = (int)cb.second.text.size();
         if (n > marker::kTextMax) n = marker::kTextMax;
-        std::memcpy(t.text, ctext.data(), (size_t)n);
+        std::memcpy(t.text, cb.second.text.data(), (size_t)n);
         t.text[n] = '\0';
         push(t);
     }
@@ -2560,7 +2572,9 @@ void RenderLoop() {
               auto uit = g_uiHighlights.find(cpid);
               hasUiHl = (uit != g_uiHighlights.end() && !uit->second.empty());
               auto ctit = g_centerTexts.find(cpid);
-              hasCenter = (ctit != g_centerTexts.end() && !ctit->second.empty());
+              hasCenter = false;
+              if (ctit != g_centerTexts.end())
+                  for (const auto& cb : ctit->second) if (!cb.second.text.empty()) { hasCenter = true; break; }
               auto pit = g_panelViz.find(cpid);
               hasPanelViz = (pit != g_panelViz.end() && !pit->second.empty()); }
             bool wantF = ccfg.enabled || ccfg.markers || ccfg.nameplates || !ccfg.highlight.empty() ||
@@ -2955,15 +2969,23 @@ void SetPanelViz(std::uint32_t pid, const std::vector<PanelBox>& boxes) {
     ensure_thread();
 }
 
-void SetCenterText(std::uint32_t pid, const std::string& text) {
+void SetCenterText(std::uint32_t pid, const std::string& text, int slot, int rgb) {
     if (!pid) return;
+    if (slot < 0 || slot >= kCenterSlots) slot = 0;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        if (text.empty()) g_centerTexts.erase((DWORD)pid);
-        else {
+        if (text.empty()) {
+            // Clear only THIS slot, and drop the pid entry once its last banner is gone so the
+            // map keeps no residue for a client that stopped drawing.
+            auto it = g_centerTexts.find((DWORD)pid);
+            if (it != g_centerTexts.end()) {
+                it->second.erase(slot);
+                if (it->second.empty()) g_centerTexts.erase(it);
+            }
+        } else {
             Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
             dst.pid = pid;
-            g_centerTexts[(DWORD)pid] = text;
+            g_centerTexts[(DWORD)pid][slot] = CenterBanner{ text, rgb };
         }
     }
     ensure_thread();

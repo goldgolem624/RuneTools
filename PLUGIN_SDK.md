@@ -146,8 +146,14 @@ await rtx.plugin.state.groundItems();
 //    Empty [] when there are none / you're not in-game.
 
 await rtx.plugin.state.scene(range);  // range = 1..64 tiles (clamped)
-// -> nearby entities within range, each with type ('player'|'npc'|'object'),
-//    id, name, dist, and (where applicable) combat level and plane, plus a count.
+// -> { players:[..], npcs:[..], objects:[..], specials:[..], walk, ... }
+//    Entities are grouped by kind, NOT a single flat list:
+//      npcs:    { id, uid, x, y, plane, combat, anim, face, size, name, actions[] }
+//      players: { uid, x, y, plane, combat, anim, self, name }
+//      objects: { id, x, y, plane, type, dist, name, actions[] }
+//    `anim` is the live animation id (-1 = none), which is how attack telegraphs are
+//    read (see the Jad Prayer Helper plugin). `walk` is the click-to-walk destination
+//    as { x, y, fx, fy, src } in tiles plus raw fine units, or null.
 
 await rtx.plugin.state.varps("659,3274");  // comma-separated varp ids (string capped at 200 chars)
 // -> { "659": 990, "3274": 120 }           map of id -> raw value
@@ -374,8 +380,10 @@ if (d.hasAbs && d.comps[0]) { const c = d.comps[0]; rtx.plugin.overlay.highlight
 await rtx.plugin.overlay.highlightRects(d.comps.map(c => [c.x, c.y, c.w, c.h]));
 await rtx.plugin.overlay.highlightRects([]);   // clear
 
-// Draw ground markers on world tiles (the same primitive the clue/quest guides use). Up to 16
+// Draw ground markers on world tiles (the same primitive the clue/quest guides use). Up to 64
 // tiles, each { x, y, plane, label }. Replaces the previous set; pass [] to clear.
+// Anything beyond 64 is dropped silently, so keep a set you send within the cap rather than
+// relying on the tail being rendered.
 rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"dig here" }]);
 
 // THE FIRST LINE OF A LABEL IS A MATCH KEY, NOT JUST TEXT. If it names a cache loc near

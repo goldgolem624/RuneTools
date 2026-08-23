@@ -193,7 +193,10 @@
       wikiSearch: function (term) { return call('overlay.wikiSearch', [term || '']); },
       clearHighlight: function () { return call('overlay.clearHighlight', []); },
       // Big centre-screen banner text ('' clears) - the Dungeoneering boss-warning channel.
-      centerText: function (text) { return call('overlay.centerText', [text]); },
+      // centerText(text, [slot], [rgb]) -- slot 0..2 stack upward from the gameview centre and
+      // are cleared independently (pass '' for that slot); rgb is 0xRRGGBB, default warning red.
+      // Use separate slots for cues that can be live at the same time, so neither hides the other.
+      centerText: function (text, slot, rgb) { return call('overlay.centerText', [text, slot, rgb]); },
       flashGame: function () { return call('overlay.flashGame', []); }
     },
 

@@ -3110,7 +3110,7 @@ bool ReadGroundItems(std::uint32_t pid, std::vector<GroundItem>& out) {
 // ring) the launcher can't see on its own. RW-maps so it can set enable=1, which arms the
 // companion's render-thread observer ONLY while the launcher polls (cost ~zero otherwise).
 // Strictly a launcher<->companion handshake; no game state is touched. False if no section.
-struct RuntimeHi { int gfx, x, y, uid, plane; std::uint32_t stamp; };
+struct RuntimeHi { int gfx, x, y, uid, plane, type, kind; std::uint32_t stamp; };
 bool ReadRuntimeHighlights(std::uint32_t pid, std::vector<RuntimeHi>& out, std::uint32_t* diag = nullptr) {
     out.clear();
     wchar_t name[64];
@@ -3132,7 +3132,7 @@ bool ReadRuntimeHighlights(std::uint32_t pid, std::vector<RuntimeHi>& out, std::
             out.clear(); out.reserve(cnt);
             for (std::uint32_t i = 0; i < cnt; ++i) {
                 const auto& it = sh->items[i];
-                out.push_back(RuntimeHi{ it.gfx, it.x, it.y, it.uid, it.plane, it.stamp });
+                out.push_back(RuntimeHi{ it.gfx, it.x, it.y, it.uid, it.plane, it.type, it.kind, it.stamp });
             }
             std::uint32_t s2 = sh->seq;
             ok = (s1 == s2 && !(s2 & 1u));               // unchanged across the copy
@@ -3607,6 +3607,19 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kLocalUid   = rtx::scn::kLocalUid;
 
     std::string players, npcs, specials;
+    // uids already emitted from the worldview walk. The companion's display hooks now catch
+    // EVERY type-4/13 the client renders, including the ones that are also vector entities
+    // (Time Sprite, Rockertunity), so without this a visible special would be listed twice:
+    // once from the walk and once from the hook.
+    std::unordered_set<int> seenSpecialUids;
+    // Placement keys for the same specials. Markers and effects often carry uid 0, which the uid
+    // set cannot dedupe, so the hook re-listed entities the walk had ALREADY emitted (with proper
+    // scan/dest classification) as anonymous extras.
+    std::unordered_set<std::uint64_t> seenSpecialTiles;
+    auto tileKey = [](int t, int x, int y, int p) -> std::uint64_t {
+        return ((std::uint64_t)(std::uint32_t)t << 48) ^ ((std::uint64_t)(std::uint32_t)x << 28) ^
+               ((std::uint64_t)(std::uint32_t)y << 4) ^ (std::uint64_t)(std::uint32_t)p;
+    };
     int vt4 = 0, vgfx4 = -1;   // diag: type-4 entities seen in the worldview vector + last gfx
     int pc = 0, nc = 0, sc4 = 0;
     int player_x = -1, player_y = -1;  // local player tile (anchors the object range)
@@ -3678,8 +3691,10 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         // rockertunity, ...). The companion-merged scan ring below has no world
                         // tile, so the panel must not treat every special the same way.
                         std::snprintf(sbuf, sizeof(sbuf),
-                            "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":%d,\"uid\":%d,\"w\":1}", sx4, sy4, pl4, gfx, uid4);
+                            "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":%d,\"uid\":%d,\"t\":4,\"w\":1}", sx4, sy4, pl4, gfx, uid4);
                         specials += sbuf; ++sc4;
+                        if (uid4) seenSpecialUids.insert(uid4);   // so the hook merge can dedupe
+                        seenSpecialTiles.insert(tileKey(4, sx4, sy4, pl4));
                     }
                     continue;
                 }
@@ -3707,12 +3722,15 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         bool isScan = hasDest && dtx == sx13 && dty == sy13;
                         int pl13 = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);
                         if (pl13 < 0 || pl13 > 3) pl13 = 0;
+                        int uid13 = rpm<std::int32_t>(h, *sec + 0x88).value_or(0);
                         if (sc4) specials.push_back(',');
                         char sbuf[192];
                         std::snprintf(sbuf, sizeof(sbuf),
-                            "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":-1,\"t\":13,\"k\":\"%s\",\"w\":1}",
-                            sx13, sy13, pl13, isScan ? "scan" : "dest");
+                            "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":-1,\"uid\":%d,\"t\":13,\"k\":\"%s\",\"w\":1}",
+                            sx13, sy13, pl13, uid13, isScan ? "scan" : "dest");
                         specials += sbuf; ++sc4;
+                        if (uid13) seenSpecialUids.insert(uid13);
+                        seenSpecialTiles.insert(tileKey(13, sx13, sy13, pl13));
                     }
                     continue;
                 }
@@ -3934,9 +3952,26 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
             std::uint32_t now = (std::uint32_t)GetTickCount64();
             for (const auto& hi : highs) {
                 if ((std::uint32_t)(now - hi.stamp) > rtx::special::kStaleMs) continue;   // stale
+                // Already emitted by the worldview walk above (the display hooks see every
+                // rendered type-4/13, vector-resident or not) -> do not list it twice.
+                if (hi.uid && seenSpecialUids.count(hi.uid)) continue;
+                // uid 0 carries no identity, so fall back to placement. Without this the walk's
+                // classified copy and the hook's copy of one marker both showed up.
+                if (!hi.uid && hi.x > 0 && hi.y > 0 &&
+                    seenSpecialTiles.count(tileKey(hi.type, hi.x, hi.y, hi.plane))) continue;
                 if (sc4) specials.push_back(',');
-                char sbuf[160];
-                std::snprintf(sbuf, sizeof(sbuf), "{\"x\":%d,\"y\":%d,\"gfx\":%d,\"uid\":%d}", hi.x, hi.y, hi.gfx, hi.uid);
+                const char* kind = "";
+                switch (hi.kind) {
+                    case rtx::special::kKindScan:   kind = "scan";   break;
+                    case rtx::special::kKindDest:   kind = "dest";   break;
+                    case rtx::special::kKindAdorn:  kind = "adorn";  break;
+                    case rtx::special::kKindEffect: kind = "effect"; break;
+                    default: break;
+                }
+                char sbuf[200];
+                std::snprintf(sbuf, sizeof(sbuf),
+                    "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":%d,\"uid\":%d,\"t\":%d,\"k\":\"%s\",\"w\":%d}",
+                    hi.x, hi.y, hi.plane, hi.gfx, hi.uid, hi.type, kind, (hi.x > 0 && hi.y > 0) ? 1 : 0);
                 specials += sbuf; ++sc4;
             }
         }
@@ -3946,8 +3981,37 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     char vdbuf[48];
     std::snprintf(vdbuf, sizeof(vdbuf), "[%d,%d]", vt4, vgfx4);   // worldview-vector type-4 count + last gfx
 
+    // Walk destination, read STRAIGHT off ClientMiniMap rather than hunted in the scene.
+    // The click handler writes it there before it even sends the move packet, so this needs
+    // no entity walk, no companion hook, and it is correct inside instances where the scene
+    // walk is blind. `src` distinguishes a world click from a minimap click.
+    // Emitted as tiles (the fields are fine units) with the raw values kept for diagnosis.
+    std::string walk = "null";
+    if (h && mgva) {
+        auto wroot = rpm<std::uint64_t>(h, mgva);
+        std::uint64_t mmp = 0;
+        if (wroot && *wroot > 0x10000) {
+            auto mmv = rpm<std::uint64_t>(h, *wroot + rtx::scn::kMiniMap);
+            if (mmv) mmp = *mmv;
+        }
+        if (mmp > 0x10000) {
+            const std::uint64_t* mm = &mmp;
+            auto dfx = rpm<std::int32_t>(h, *mm + rtx::scn::kDestX);
+            auto dfy = rpm<std::int32_t>(h, *mm + rtx::scn::kDestY);
+            auto dsr = rpm<std::uint8_t>(h, *mm + rtx::scn::kDestSrc);
+            if (dfx && dfy && *dfx > 0 && *dfy > 0) {
+                char wbuf[160];
+                std::snprintf(wbuf, sizeof(wbuf),
+                    "{\"x\":%d,\"y\":%d,\"fx\":%d,\"fy\":%d,\"src\":%d}",
+                    *dfx / 512, *dfy / 512, *dfx, *dfy, (int)dsr.value_or(0));
+                walk = wbuf;
+            }
+        }
+    }
+
     return "{\"players\":[" + players + "],\"npcs\":[" + npcs +
-           "],\"objects\":[" + objects + "],\"specials\":[" + specials + "],\"sdiag\":" + sdbuf + ",\"vdiag\":" + vdbuf + "}";
+           "],\"objects\":[" + objects + "],\"specials\":[" + specials + "],\"walk\":" + walk +
+           ",\"sdiag\":" + sdbuf + ",\"vdiag\":" + vdbuf + "}";
 }
 
 // Live view-projection matrix: worldView + g_matrixOff, resolved at runtime by
@@ -6305,6 +6369,23 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     auto alnum = [](char c){ return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); };
     int boxComp = (int)rpm<std::uint16_t>(h, box + 0x2a).value_or(0xFFFF);
     if (boxComp == 0xFFFF) return keyb;
+
+    // Collect the box's DIRECT component children with their component offset, then pick the
+    // keybind by SHAPE rather than by a fixed offset.
+    //
+    // The offset is NOT stable. Live probe of one action bar (same client, same bar):
+    //     Soul Split      children at 2,3,4,9,11,12,13  -> key at 12, cooldown at 13
+    //     Deflect Magic   children at 2,3,4,9,11,12,13  -> key at 12, cooldown at 13
+    //     Deflect Ranged  children at 1,2,3,8,10,11,12  -> key at 11, cooldown at 12
+    // The whole block shifts by one for some slots, because `box` is the grandparent reached by
+    // tree DEPTH: when a slot's name node sits one level deeper or shallower, the node treated
+    // as the box is a component out and every offset moves with it. Hardcoding 11/12 therefore
+    // read the wrong child on those slots and dropped the key silently -- Deflect Magic's "X"
+    // and Soul Split's "U" were lost while Deflect Ranged's "C" on the same bar read fine.
+    //
+    // Text is decoded with iface_sso_text, not a raw inline read: +0x180 is a per-class UNION,
+    // and on the non-text children it holds a child-vector whose bytes are not a string at all.
+    std::vector<std::pair<int, std::string>> kids;    // (component offset, decoded text)
     const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
     for (int kk = 0; kk < 3; ++kk) {
         std::uint64_t cs = r64(box + co[kk]), ce = r64(box + co[kk] + 8);
@@ -6315,22 +6396,52 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
             if (ch <= 0x10000) continue;
             std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
             if (d <= 0x3000) continue;
-            if (rpm<std::uint16_t>(h, ch + 0x2c).value_or(0) != 0xFFFF) continue;   // direct component, not a sub-array entry
+            if (rpm<std::uint16_t>(h, ch + 0x2c).value_or(0) != 0xFFFF) continue;   // direct component
             int rel = (int)rpm<std::uint16_t>(h, ch + 0x2a).value_or(0) - boxComp;
-            if (rel == 11 && keyb.empty()) {                       // keybind label
-                std::string t = iface_inline(h, ch);
-                if (t.size() == 1 && alnum(t[0])) keyb = t;
-                else if (t.size() >= 2 && t.size() <= 3 && alnum(t.back())) {   // <a/c/s>-<key>
-                    char m = (char)(t[0] | 0x20);
-                    int mm = (m == 's') ? 1 : (m == 'c') ? 2 : (m == 'a') ? 3 : 0;
-                    if (mm) { mod = mm; keyb = std::string(1, t.back()); }
-                }
-            } else if (rel == 12 && cd.empty()) {                  // per-ability cooldown text
-                std::string t = iface_inline(h, ch);
-                if (is_cd_timer(t)) cd = t;
+            std::string t = iface_sso_text(h, ch);
+            std::string clean; bool intag = false;      // strip <col=..> markup, as the name path does
+            for (char c2 : t) {
+                if (c2 == '<') intag = true;
+                else if (c2 == '>') intag = false;
+                else if (!intag) clean += c2;
             }
+            while (!clean.empty() && (clean.front() == ' ' || clean.front() == '\t')) clean.erase(clean.begin());
+            while (!clean.empty() && (clean.back()  == ' ' || clean.back()  == '\t')) clean.pop_back();
+            if (!clean.empty()) kids.emplace_back(rel, clean);
         }
     }
+    std::sort(kids.begin(), kids.end(),
+              [](const std::pair<int, std::string>& a, const std::pair<int, std::string>& b){ return a.first < b.first; });
+
+    // A keybind token: a single character, "<s|c|a>-<key>", or a function key.
+    auto as_key = [&](const std::string& t, int& outMod) -> std::string {
+        outMod = 0;
+        if (t.size() == 1 && alnum(t[0])) return t;
+        if (t.size() == 3 && t[1] == '-' && alnum(t.back())) {
+            char m = (char)(t[0] | 0x20);
+            int mm = (m == 's') ? 1 : (m == 'c') ? 2 : (m == 'a') ? 3 : 0;
+            if (mm) { outMod = mm; return std::string(1, t.back()); }
+        }
+        if (t.size() >= 2 && t.size() <= 3 && (t[0] == 'F' || t[0] == 'f')) {
+            bool digits = true;
+            for (std::size_t i = 1; i < t.size(); ++i) if (t[i] < '0' || t[i] > '9') digits = false;
+            if (digits) return t;
+        }
+        return {};
+    };
+
+    // Lowest-offset key-shaped child wins: the key always precedes the cooldown in the block,
+    // so scanning in order cannot mistake a bare-digit cooldown for the keybind.
+    bool haveKey = false; int keyRel = 0;
+    for (const auto& kv : kids) {
+        int mm = 0;
+        std::string k = as_key(kv.second, mm);
+        if (!k.empty()) { keyb = k; mod = mm; keyRel = kv.first; haveKey = true; break; }
+    }
+    // The cooldown is the child immediately after the keybind (12->13 and 11->12 above).
+    if (haveKey)
+        for (const auto& kv : kids)
+            if (kv.first == keyRel + 1 && is_cd_timer(kv.second)) { cd = kv.second; break; }
     return keyb;
 }
 
@@ -6948,6 +7059,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(gx, gy, plane, ch);
             float fallback = out.player_z;
+            bool haveFallback = false;
             if (ch[0] == kNoH || ch[1] == kNoH || ch[2] == kNoH || ch[3] == kNoH) {
                 int bestD2 = 4 * 4 + 1;                            // within 4 tiles or not at all
                 for (const auto& r : gobjs) {
@@ -6956,7 +7068,32 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     int dx = r.x - gx, dy = r.y - gy;
                     int d2 = dx * dx + dy * dy;
                     if (d2 >= bestD2) continue;
-                    bestD2 = d2; fallback = r.bmin[2];
+                    bestD2 = d2; fallback = r.bmin[2]; haveFallback = true;
+                }
+                // Nothing on the mark's own plane. Before giving up, take a live object standing
+                // on this very tile whatever plane it claims: an upper-storey mark whose plane
+                // does not agree with the placement (the plane a caller sends is frequently the
+                // one thing it gets wrong) still has real rendered geometry underneath it, and
+                // that geometry is better evidence of the height than anything else here.
+                if (!haveFallback) {
+                    int bestT = 2;                                 // this tile or an immediate neighbour
+                    for (const auto& r : gobjs) {
+                        if (r.config_id <= 0) continue;
+                        if (!(r.bmax[0] > r.bmin[0])) continue;
+                        int dx = r.x - gx, dy = r.y - gy;
+                        int d = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+                        if (d >= bestT) continue;
+                        bestT = d; fallback = r.bmin[2]; haveFallback = true;
+                    }
+                }
+                // Still nothing, and the mark is not on the player's plane. player_z is then the
+                // WORST answer available: it pins the mark to whatever storey the player happens
+                // to be standing on, so a roof mark sits at ground level and then climbs with you
+                // as you go up. Hold it at the mapped ground height for the tile instead, which
+                // is at least fixed in the world rather than following the camera.
+                if (!haveFallback && plane != out.plane) {
+                    std::int16_t g0 = rtx::cache::TileHeight(gx, gy, 0);
+                    if (g0 != kNoH) fallback = kHScale * (float)g0;
                 }
             }
             for (int i = 0; i < 4; ++i) {

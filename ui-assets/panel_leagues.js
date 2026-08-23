@@ -232,6 +232,12 @@
             return {
               f: r.f,
               comp: lgCol(r, 'i', '0') | 0,
+              // Columns 1 and 2 are the only ones this table has that nothing reads. Carried
+              // purely so the row tooltip can show them: a task whose printed target disagrees
+              // with the achievement's requirement (100 in the sentence, 102 from the cache) is
+              // either bad cache data or a league-specific target sitting in one of these.
+              c1: lgCol(r, 'i', '1') | 0,
+              c2: lgCol(r, 'i', '2') | 0,
               ach: lgCol(r, 'i', '3') | 0,
               vb: lgRefIsVb(ref) ? (ref & 0xFFFFFF) : 0,
               type: lgCol(r, 'i', '5') | 0,
@@ -573,12 +579,23 @@
       if (st.done) ttl.style.color = 'var(--ok)';
       nm.appendChild(ttl);
       const sub = document.createElement('div'); sub.className = 'lg-sub';
-      // F2P tag: free-world capable per db 334.8, unless the achievement itself is
-      // members-flagged (mirrors script20296's ACHIEVEMENT_GETMEMBERS || !col8 check;
-      // the `members` field arrives with launcher builds that emit it)
-      const achM = lgAchById && lgAchById[t.ach];
-      sub.textContent = (l.catName[t.cat] || ('Locality ' + t.cat)) + ' · Tier ' + t.tier
-        + (t.f2p && !(achM && achM.members) ? ' · F2P' : '');
+      // NO F2P tag. It used to read db 334.8 unless the achievement was members-flagged,
+      // mirroring script20296's ACHIEVEMENT_GETMEMBERS || !col8 test. The logic matched the
+      // game, but the inputs do not survive contact with the data: "Equip a magic shortbow"
+      // and "Fletch 200 magic stocks" came out tagged F2P with db334.8=1 and members=0, and
+      // both are plainly members content.
+      //
+      // The reason both signals are junk here is that the game never renders this badge for a
+      // league task. Its test is gated on MAP_MEMBERS() == 0, and a league runs on members
+      // worlds, so the flags behind it are never exercised and there is nothing keeping them
+      // honest. The task's `ach` also points at a HIDDEN league entry that exists to carry the
+      // task sentence, not at the real-world achievement whose membership status we would
+      // actually want.
+      //
+      // A tag that is wrong on obvious cases is worse than no tag, so it is gone rather than
+      // patched. Both inputs stay visible in the row tooltip, so if a trustworthy source for
+      // this turns up the tag can come back with evidence behind it.
+      sub.textContent = (l.catName[t.cat] || ('Locality ' + t.cat)) + ' · Tier ' + t.tier;
       nm.appendChild(sub);
       r.appendChild(nm);
       // pin toggle: tracked tasks keep a sticky toast with live progress
@@ -610,8 +627,21 @@
         tipParts.push((q.desc ? q.desc + ': ' : '') + q.cur.toLocaleString() + '/' + q.tgt.toLocaleString()
           + '  [vb ' + q.vbs.join('+') + ']' + (q.ok ? ' ✓' : ''));
       }
+      // Both halves of the F2P rule, because the label is a conjunction and a wrong tag gives
+      // no clue which half produced it. The game's own test (script20296) is: membership is
+      // required when ACHIEVEMENT_GETMEMBERS == 1 OR db 334.8 is false, so a task is F2P only
+      // when col8 is true AND the achievement is not members-flagged. `members` here is
+      // inferred from achievement op 19, which is the part most worth checking against a task
+      // that is obviously members content.
+      const achDbg = lgAchById && lgAchById[t.ach];
       tipParts.push('Row ' + t.f + ' · achievement ' + t.ach
         + (t.vb ? ' · completion vb ' + t.vb + ' = ' + (lgVbVals ? (lgVbVals[t.vb] | 0) : '?') : ''));
+      tipParts.push('Row cols: c1=' + t.c1 + ' c2=' + t.c2 + ' type=' + t.type
+        + ' · ach reqs: ' + ((achDbg && achDbg.reqs && achDbg.reqs.length)
+            ? achDbg.reqs.map(function (q) { return q.value; }).join(',') : 'none'));
+      tipParts.push('F2P: db334.8=' + (t.f2p ? 1 : 0)
+        + ' · ach.members=' + (achDbg ? (achDbg.members ? 1 : 0) : (lgAchById ? 'not-in-map' : 'defs-not-loaded'))
+        + ' -> ' + ((t.f2p && !(achDbg && achDbg.members)) ? 'F2P' : 'members'));
       r.dataset.tip = tipParts.join('\n');
       list.appendChild(r);
     }

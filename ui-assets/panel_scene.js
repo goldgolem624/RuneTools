@@ -8,8 +8,19 @@
   const SPECIAL_NAMES = { 7307: 'Time sprite', 7164: 'Rockertunity', 8447: "Lumberjack's Intuition",
     6841: 'Scan: FAR (blue, beyond 2x range)', 6842: 'Scan: MEDIUM (orange, 1-2x range)', 6843: 'Scan: CLOSE (red, within range)' };
   function specialName(g) { return SPECIAL_NAMES[g] || ('Special (gfx ' + g + ')'); }
+  // Type-4 graphics attached to an actor rather than to the world. The companion decides
+  // "attached" structurally (the owning node reports a player/NPC section), so an unnamed id
+  // still reads as an actor effect instead of an anonymous world special.
+  const ADORN_NAMES = { 8920: 'Health bar' };
+  function adornName(g) { return ADORN_NAMES[g] || ('Actor effect (gfx ' + g + ')'); }
   let sceneRange    = 20;
   let sceneTerm     = '';     // list filter: name or id substring (list-only; overlay/nameplates keep the full set)
+  // Extra saved filter terms (chips). A row matches if the typed term OR any chip matches, so
+  // several things can be watched at once without a separator that could clash with a name.
+  let sceneTerms    = [];
+  try { const v = JSON.parse(localStorage.getItem('rtxSceneTerms') || '[]'); if (Array.isArray(v)) sceneTerms = v.filter(x => typeof x === 'string').slice(0, 12); } catch (e) {}
+  function sceneTermsSave() { try { localStorage.setItem('rtxSceneTerms', JSON.stringify(sceneTerms)); } catch (e) {} }
+  function sceneAllTerms() { const t = sceneTerm.trim().toLowerCase(); const out = sceneTerms.map(x => x.toLowerCase()); if (t) out.push(t); return out; }
   // Dev hot-reload is a full LoadHTML, which resets every panel's JS state. Carry the
   // transient filter across THAT reload only (__rtxDevReload marker): a normal session
   // boot must start unfiltered, or a stale persisted filter would silently hide entities.
@@ -41,10 +52,13 @@
       sceneData = (d && Array.isArray(d.npcs) && Array.isArray(d.players))
                     ? { objects: [], specials: [], ...d } : { players: [], npcs: [], objects: [], specials: [] };
     } catch (e) { /* keep previous sceneData */ }
-    if (sceneShow.ground && bridge().groundItems) {
+    // Ground items are also read while any item marker is outstanding, so the marker can be
+    // cleared the moment the item is picked up even with the Ground tab closed.
+    if ((sceneShow.ground || sceneMarkCount()) && bridge().groundItems) {
       try { const g = JSON.parse((await bridge().groundItems(myPid())) || '[]'); sceneGround = Array.isArray(g) ? g : []; }
       catch (e) { sceneGround = []; }
-      resolveGroundNames();
+      if (sceneShow.ground) resolveGroundNames();
+      sceneMarksSweep();
     } else { sceneGround = []; }
     sceneFetching = false;
     reconcileNameplates();   // keep pinned nameplates applied to the current uids (even when the tab is closed)
@@ -97,16 +111,19 @@
         // Only the SCAN RING has no world tile (x/y is scan-internal), so it anchors to the player
         // at distance 0 and the colour alone is the signal; every other type-4 has a real tile ("w":1).
         const ring = s.gfx >= 6841 && s.gfx <= 6843;
-        // Type-13 entities carry no gfx id - the TILE is the whole payload. The reader
-        // splits the two classes that share the type: k='scan' is the clue-scan
-        // coordinate marker (its tile IS the dig spot), k='dest' is your walk target.
-        // NO k at all = a launcher built before that classifier: say UNKNOWN rather than
-        // guessing one of them (defaulting to 'dest' mislabelled the scan marker).
+        // Type-13 entities carry no gfx id - the TILE is the whole payload. Both the worldview
+        // walk and the companion's display hook now run the same scan-vs-destination shape test,
+        // so k is set whichever route the entity arrived by. k='scan' is the clue-scan coordinate
+        // marker (its tile IS the dig spot), k='dest' is your walk target. An empty k means the
+        // shape test could not read the entity, so say so rather than guessing a class.
+        //
+        // For type 4, k='adorn' means the graphic hangs off a player/NPC (health bar, hitsplat,
+        // overhead icon) rather than standing alone in the world.
         const nm = (s.t === 13)
           ? (s.k === 'scan' ? 'Scan coordinate (dig here)'
              : s.k === 'dest' ? 'Walk destination'
-             : 'Ground marker (type 13, rebuild to classify)')
-          : specialName(s.gfx);
+             : 'Ground marker (unidentified)')
+          : (s.k === 'adorn' ? adornName(s.gfx) : specialName(s.gfx));
         if (ring || !s.w) {
           out.push({ type: 'special', name: nm, x: (px != null ? px : s.x),
                      y: (py != null ? py : s.y), dist: 0, id: s.gfx, gfx: s.gfx, uid: s.uid });
@@ -121,11 +138,14 @@
       return ad !== bd ? ad - bd : (a.name || '').localeCompare(b.name || '');
     });
     sceneTotal = out.length;
-    const t = sceneTerm.trim().toLowerCase();
-    if (!t) return out;
-    // Display-name substring OR id-digit substring; players match on uid, specials on gfx.
-    return out.filter(n => (n.name || '').toLowerCase().indexOf(t) !== -1 ||
-                           String(n.id != null ? n.id : (n.uid != null ? n.uid : '')).indexOf(t) !== -1);
+    // The typed term plus every saved chip; a row matches if ANY of them matches. Each term is a
+    // display-name substring OR an id-digit substring; players match on uid, specials on gfx.
+    const terms = sceneAllTerms();
+    if (!terms.length) return out;
+    return out.filter(n => {
+      const nm = (n.name || '').toLowerCase(), idv = String(n.id != null ? n.id : (n.uid != null ? n.uid : ''));
+      return terms.some(t => nm.indexOf(t) !== -1 || idv.indexOf(t) !== -1);
+    });
   }
 
   // Which kinds show, the range and the interactable filter are DISPLAY prefs (machine-wide),
@@ -172,6 +192,70 @@
 
   // Per-NPC in-game outline: a 3D box around the live model bounds, keyed by entity uid.
   const outlineSet = new Set();
+  // Tile markers from the scene list: mark the tile a ground item (or object) sits on, using the
+  // same user-marker store as the Markers panel (region + local tile, persisted by the host), so
+  // it draws, survives, and can be recoloured or removed there like any other marker.
+  function sceneTileKey(x, y, plane) { return (((x >> 6) << 8) | (y >> 6)) + '/' + (x & 63) + '/' + (y & 63) + '/' + (plane | 0); }
+  function sceneTileMarked(x, y, plane) {
+    const ml = (typeof markerList !== 'undefined' && Array.isArray(markerList)) ? markerList : [];
+    const k = sceneTileKey(x, y, plane);
+    return ml.some(m => (m.region + '/' + m.lx + '/' + m.ly + '/' + (m.plane | 0)) === k);
+  }
+  // Item marks are transient: remembered here (per install) with the item id, and removed the
+  // first time the item is no longer on that tile (picked up, despawned, or we walked away).
+  let sceneMarks = null;   // key -> { x, y, plane, id }
+  function sceneMarksLoad() {
+    if (sceneMarks) return sceneMarks;
+    sceneMarks = {};
+    try { const v = JSON.parse(prefGet('rtxSceneMarks', '{}')); if (v && typeof v === 'object') sceneMarks = v; } catch (e) {}
+    return sceneMarks;
+  }
+  function sceneMarksSave() { try { prefSet('rtxSceneMarks', JSON.stringify(sceneMarksLoad())); } catch (e) {} }
+  function sceneMarkCount() { return Object.keys(sceneMarksLoad()).length; }
+  function sceneMarksSweep() {
+    const m = sceneMarksLoad(); const keys = Object.keys(m); if (!keys.length) return;
+    const b = bridge(); if (!b || !b.markerRemove) return;
+    let changed = false;
+    keys.forEach(k => {
+      const r = m[k];
+      const still = sceneGround.some(g => g.id === r.id && g.x === r.x && g.y === r.y && ((g.plane | 0) === (r.plane | 0)));
+      if (still) return;
+      try { b.markerRemove(myPid(), ((r.x >> 6) << 8) | (r.y >> 6), r.x & 63, r.y & 63, r.plane | 0); } catch (e) {}
+      delete m[k]; changed = true;
+    });
+    if (changed) { sceneMarksSave(); try { if (typeof fetchMarkers === 'function') fetchMarkers(true); } catch (e) {} try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {} }
+  }
+  function sceneMarksClearAll() {
+    const b = bridge(); if (!b || !b.markerRemove) return;
+    const m = sceneMarksLoad();
+    for (const k in m) { const r = m[k]; try { b.markerRemove(myPid(), ((r.x >> 6) << 8) | (r.y >> 6), r.x & 63, r.y & 63, r.plane | 0); } catch (e) {} delete m[k]; }
+    sceneMarksSave();
+    // Untracked ones from before tracking: identified by the scene mark colour (gold).
+    const ml = (typeof markerList !== 'undefined' && Array.isArray(markerList)) ? markerList : [];
+    const gold = (typeof mkParseColor === 'function') ? mkParseColor('#ffc93a') : 0xFFC93A;
+    ml.forEach(mk => { let c = 0; try { c = (typeof mkParseColor === 'function') ? mkParseColor(mk.color) : 0; } catch (e) {} if (c === gold) { try { b.markerRemove(myPid(), mk.region, mk.lx, mk.ly, mk.plane | 0); } catch (e) {} } });
+    try { if (typeof fetchMarkers === 'function') fetchMarkers(true); } catch (e) {}
+    try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {}
+    sceneSig = ''; setTimeout(renderScene, 150);
+  }
+  function toggleTileMark(x, y, plane, label, itemId) {
+    const b = bridge();
+    if (!b || !b.markerAdd) return;
+    const region = ((x >> 6) << 8) | (y >> 6), lx = x & 63, ly = y & 63;
+    const m = sceneMarksLoad(), k = sceneTileKey(x, y, plane);
+    try {
+      if (sceneTileMarked(x, y, plane)) { b.markerRemove(myPid(), region, lx, ly, plane | 0); delete m[k]; sceneMarksSave(); }
+      else {
+        b.markerAdd(myPid(), region, lx, ly, plane | 0, 0xFFC93A, String(label || '').slice(0, 40));
+        if (itemId != null) { m[k] = { x, y, plane: plane | 0, id: itemId }; sceneMarksSave(); }
+        // A marker nobody can see is a confusing no-op: make sure the markers layer is on.
+        try { if (typeof overlayState !== 'undefined' && overlayState && !overlayState.markers) { overlayState.markers = true; if (typeof saveOverlayCfg === 'function') saveOverlayCfg(); } } catch (e) {}
+      }
+    } catch (e) {}
+    try { if (typeof fetchMarkers === 'function') fetchMarkers(true); } catch (e) {}
+    try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {}
+    sceneSig = ''; setTimeout(renderScene, 150);
+  }
   function toggleOutline(uid, npcId) {
     const b = bridge();
     if (!b || !b.outlineNpc) return;
@@ -185,7 +269,7 @@
   const nameplateNames   = new Set();
   const nameplateSet     = new Set();
   let   nameplatesLoaded = false;
-  function nameplatesActive() { return nameplateNames.size > 0; }   // keeps scene data fresh in the background
+  function nameplatesActive() { return nameplateNames.size > 0 || sceneMarkCount() > 0; }   // keeps scene data fresh in the background (pinned nameplates, outstanding item marks)
   // Persisted schema { pill, names }; pins only DRAW while the pill is on. Bare array = names only.
   function loadNameplateNames() {
     const b = bridge();
@@ -253,12 +337,25 @@
       const srow = document.createElement('div'); srow.className = 'scene-search';
       const srch = document.createElement('input');
       srch.id = 'sceneSearch'; srch.className = 'bank-search';
-      srch.type = 'text'; srch.placeholder = 'Filter by name or id...';
+      srch.type = 'text'; srch.placeholder = 'Filter by name or id (Enter keeps it, add another)...';
       srch.value = sceneTerm; srch.spellcheck = false;
       srch.addEventListener('input', () => { sceneTerm = srch.value; try { localStorage.setItem('rtxSceneTerm', sceneTerm); } catch (e) {} renderScene(); });
-      srch.addEventListener('keydown', e => { if (e.key === 'Escape' && srch.value) { srch.value = ''; sceneTerm = ''; try { localStorage.setItem('rtxSceneTerm', ''); } catch (e2) {} renderScene(); e.stopPropagation(); } });
+      const addTerm = () => {
+        const v = srch.value.trim(); if (!v) return;
+        if (!sceneTerms.some(x => x.toLowerCase() === v.toLowerCase()) && sceneTerms.length < 12) sceneTerms.push(v);
+        sceneTermsSave(); srch.value = ''; sceneTerm = ''; try { localStorage.setItem('rtxSceneTerm', ''); } catch (e) {}
+        sceneSig = ''; renderScene();
+      };
+      srch.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { addTerm(); e.stopPropagation(); return; }
+        if (e.key === 'Escape' && srch.value) { srch.value = ''; sceneTerm = ''; try { localStorage.setItem('rtxSceneTerm', ''); } catch (e2) {} renderScene(); e.stopPropagation(); }
+      });
+      const addB = document.createElement('button'); addB.type = 'button'; addB.className = 'mk-btn scene-addterm'; addB.textContent = '+';
+      addB.title = 'Keep this term and filter by another as well (any of them matches)';
+      addB.addEventListener('click', addTerm);
       const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.id = 'sceneCnt'; cnt.textContent = '...';
-      srow.appendChild(srch); srow.appendChild(cnt);
+      srow.appendChild(srch); srow.appendChild(addB); srow.appendChild(cnt);
+      const chips = document.createElement('div'); chips.className = 'scene-chips'; chips.id = 'sceneChips';
       const rangeRow = document.createElement('div'); rangeRow.className = 'scene-range';
       const rlbl = document.createElement('span'); rlbl.className = 'lbl'; rlbl.textContent = 'Range';
       const rng = document.createElement('input');
@@ -300,11 +397,17 @@
         saveNameplates();
         pushOverlay();
       });
+      // Clear every tile marker placed from this list (tracked item marks, plus any marker that
+      // carries the scene mark colour, which catches ones made before tracking existed).
+      const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'mk-btn scene-clear'; clr.id = 'sceneClearMarks';
+      clr.textContent = 'Clear marks';
+      clr.title = 'Remove the tile markers placed from this list (item and object marks). Other markers are left alone; see the Markers panel for those.';
+      clr.addEventListener('click', (e) => { e.stopPropagation(); sceneMarksClearAll(); });
       const pills = document.createElement('div'); pills.className = 'scene-pills';
-      pills.appendChild(intc); pills.appendChild(npc);
+      pills.appendChild(intc); pills.appendChild(npc); pills.appendChild(clr);
       const list = document.createElement('div'); list.id = 'sceneList'; list.className = 'scene-list';
       list.addEventListener('scroll', () => { sceneScroll = list.scrollTop; });
-      sw.appendChild(hdr); sw.appendChild(srow); sw.appendChild(rangeRow); sw.appendChild(pills); sw.appendChild(list); c.appendChild(sw);
+      sw.appendChild(hdr); sw.appendChild(srow); sw.appendChild(chips); sw.appendChild(rangeRow); sw.appendChild(pills); sw.appendChild(list); c.appendChild(sw);
       sceneSig = '';
     }
     ['players', 'npcs', 'objects', 'ground', 'specials'].forEach(k => {
@@ -314,7 +417,7 @@
     const list = document.getElementById('sceneList');
     const items = sceneItems();
     $('sceneCnt').textContent = (items === null) ? '...'
-      : (sceneTerm.trim() && items.length !== sceneTotal) ? items.length + ' / ' + sceneTotal : items.length;
+      : (sceneAllTerms().length && items.length !== sceneTotal) ? items.length + ' / ' + sceneTotal : items.length;
 
     // Length-prefixed so an empty set never collides with the '' init/toggle sentinel.
     // Status AND pre-filter total are part of the sig: the empty-state message uses
@@ -323,7 +426,7 @@
     // FILTERED count stays 0 (the "0 / 17 yet still 'Nothing in range'" bug).
     const st = 'st' + (lastSnap ? (lastSnap.status | 0) : -1) + ',' + sceneTotal + '|';
     const sig = (items === null) ? 'null' + st
-      : st + items.length + '|q' + sceneTerm.trim().toLowerCase() + '|ol' + [...outlineSet].join(',') + '|np' + [...nameplateNames].join(',') + '|' +
+      : st + items.length + '|q' + sceneAllTerms().join('|') + '|ol' + [...outlineSet].join(',') + '|np' + [...nameplateNames].join(',') + '|' +
         items.map(n => n.type + (n.id || 0) + ':' + (n.uid || 0) + ':' +
           n.x + ',' + n.y + ':' + n.dist + ':' + (n.combat || 0) + ':' + (n.anim == null ? -1 : n.anim) + ':' + (n.name || '') + ':' + (n.actions || []).join('|')).join(';');
     if (sig === sceneSig) return;
@@ -332,12 +435,27 @@
     const keep = list.scrollTop;
     list.innerHTML = '';
     if (items === null) { list.innerHTML = '<div class="empty">Reading scene...</div>'; return; }
+    const chipsEl = $('sceneChips');
+    if (chipsEl) {
+      const csig = sceneTerms.join('|');
+      if (chipsEl.dataset.sig !== csig) {
+        chipsEl.dataset.sig = csig; chipsEl.textContent = '';
+        chipsEl.style.display = sceneTerms.length ? '' : 'none';
+        sceneTerms.forEach((t, i) => {
+          const ch = document.createElement('span'); ch.className = 'scene-chip';
+          const tx = document.createElement('span'); tx.textContent = t; ch.appendChild(tx);
+          const x = document.createElement('button'); x.type = 'button'; x.textContent = String.fromCharCode(0xd7); x.title = 'Remove this filter';
+          x.addEventListener('click', e => { e.stopPropagation(); sceneTerms.splice(i, 1); sceneTermsSave(); sceneSig = ''; renderScene(); });
+          ch.appendChild(x); chipsEl.appendChild(ch);
+        });
+      }
+    }
     if (!sceneShow.players && !sceneShow.npcs && !sceneShow.objects && !sceneShow.ground && !sceneShow.specials) {
       list.innerHTML = '<div class="empty">Nothing selected - toggle Players, NPCs, Objects, Ground or Specials above.</div>'; return;
     }
     if (!items.length) {
-      if (sceneTerm.trim() && sceneTotal > 0) {
-        const esc = sceneTerm.trim().replace(/[<>&]/g, '');
+      if (sceneAllTerms().length && sceneTotal > 0) {
+        const esc = sceneAllTerms().join('" or "').replace(/[<>&]/g, '');
         list.innerHTML = '<div class="empty">No name or id matching "' + esc + '" (' + sceneTotal + ' in range).</div>'; return;
       }
       let dg = '';
@@ -381,6 +499,16 @@
         ob.classList.toggle('on', on);
         ob.title = on ? 'Hide in-game box outline' : 'Box-outline this NPC in-game';
         ob.addEventListener('click', (e) => { e.stopPropagation(); toggleOutline(n.uid, n.id); });
+        wrap.appendChild(ob); wrap.appendChild(nm);
+        nameRow = wrap;
+      } else if (n.type === 'ground' || n.type === 'object') {
+        const wrap = document.createElement('div'); wrap.className = 'namet';
+        const ob = document.createElement('button'); ob.className = 'ol-btn';
+        const on = sceneTileMarked(n.x, n.y, n.plane);
+        ob.textContent = '◈';
+        ob.classList.toggle('on', on);
+        ob.title = on ? 'Remove the tile marker under this ' + (n.type === 'ground' ? 'item' : 'object') : 'Mark the tile this ' + (n.type === 'ground' ? 'item' : 'object') + ' is on (a user marker, see the Markers panel)';
+        ob.addEventListener('click', (e) => { e.stopPropagation(); toggleTileMark(n.x, n.y, n.plane, n.name, n.type === 'ground' ? n.id : null); });
         wrap.appendChild(ob); wrap.appendChild(nm);
         nameRow = wrap;
       } else if (n.type === 'player' && n.name) {

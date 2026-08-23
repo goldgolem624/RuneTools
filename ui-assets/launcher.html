@@ -869,7 +869,16 @@
         setTimeout(refresh, 900);
       }));
       actions.appendChild(textButton('Remove', 'ghost', async () => {
-        await bridge().removeAccount(a.id);
+        // Report the outcome. This ignored the reply, so a removal that did not persist looked
+        // identical to one that did: the row went, the next refresh brought it back, and
+        // nothing ever said why.
+        let ok = false, detail = '';
+        try {
+          const res = JSON.parse(await bridge().removeAccount(a.id));
+          ok = !!(res && res.success);
+        } catch (e) { detail = 'removal failed'; }
+        if (ok) showStatus($('main-status'), 'ok', 'Removed ' + (a.display_name || 'account'));
+        else    showStatus($('main-status'), 'err', detail || 'Could not remove the account. The vault could not be written.');
         refresh();
       }));
       r.appendChild(actions);

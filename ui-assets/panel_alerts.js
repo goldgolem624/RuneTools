@@ -43,6 +43,7 @@
   const NOTIFY_LABELS = { ingame: 'In-game', windows: 'Windows', both: 'Both' };
   const ALERT_DEFAULTS = {
     master: true,
+    unfocusedOnly: false,   // every alert: only while the game window is NOT in the foreground
     rules: {
       random:  { enabled: true,  sound: 'alert 1', flash: false, notify: 'ingame' },
       levelup: { enabled: false, sound: 'alert 2', flash: true,  notify: 'ingame' },
@@ -67,6 +68,28 @@
   const FARM_CONDS = [['ready', 'Ready'], ['disease', 'Diseased'], ['dead', 'Dead'], ['water', 'Needs water'], ['attention', 'Needs attention']];
   const FARM_COND_CODES = { ready: [4, 32], disease: [33], dead: [34], water: [7], attention: [33, 34, 7] };
   const CUSTOM_TYPE_SET = ['name', 'panim', 'nanim', 'auglevel', 'invslots', 'invitem', 'buff', 'vitals', 'farm'];
+  // Types an extra AND condition may use: everything that is a plain "is this true right now"
+  // test. Augment level and farm patch are per-item rising edges, so they only make sense as the
+  // main trigger; they can still be gated BY the conditions below.
+  const AND_TYPES = CUSTOM_TYPES.filter(t => t[0] !== 'auglevel' && t[0] !== 'farm');
+  const AND_TYPE_SET = AND_TYPES.map(t => t[0]);
+  const AND_MAX = 6;
+  // A condition inside `also`: the same fields as the main trigger, minus delivery.
+  function normAnd(c) {
+    if (!c || typeof c !== 'object') return null;
+    const type = (AND_TYPE_SET.indexOf(c.type) >= 0 ? c.type : 'buff');
+    const defCond = type === 'invslots' ? 'empty' : type === 'invitem' ? 'contains' : type === 'buff' ? 'inactive' : type === 'vitals' ? 'lt' : '';
+    return {
+      type: type,
+      kind: (['npc', 'player', 'object'].indexOf(c.kind) >= 0 ? c.kind : 'npc'),
+      text: typeof c.text === 'string' ? c.text : '',
+      anim: typeof c.anim === 'number' ? c.anim : 0,
+      cond: typeof c.cond === 'string' ? c.cond : defCond,
+      num:  typeof c.num === 'number' ? c.num : 1,
+      stat: (VITALS.some(s => s[0] === c.stat) ? c.stat : 'hp'),
+      not:  typeof c.not === 'boolean' ? c.not : false,   // invert: "AND NOT ..."
+    };
+  }
   const ALERT_PRESETS = [
     { name: 'Pickpocket failed',   type: 'panim',    anim: 424, sound: 'alert 5' },
     { name: 'Augment Siphon',      type: 'auglevel', anim: 12,  sound: 'alert 6' },
@@ -76,7 +99,10 @@
   ];
   let alertCfg       = null;
   let alertCustomSeq = 0;
-  let alertState     = { ready: false, pid: 0, prevSkills: null, prevGeDone: {}, prevRandom: false, idleSince: null, idleFired: false, custom: {}, augSeen: {}, farmSeen: {} };
+  // How long a random event stays "present" after the last poll that saw it. Long enough to
+  // bridge a dropped sighting, short enough that the box clears promptly once it really goes.
+  const RANDOM_HOLD_MS = 3000;
+  let alertState     = { ready: false, pid: 0, prevSkills: null, prevGeDone: {}, prevRandom: false, randomSeenAt: 0, idleSince: null, idleFired: false, custom: {}, augSeen: {}, farmSeen: {} };
   let alertLog       = [];
 
   function normCustom(w) {
@@ -100,6 +126,7 @@
       notify:  (NOTIFY_TYPES.indexOf(w.notify) >= 0 ? w.notify : 'ingame'),
       repeat:  typeof w.repeat === 'boolean' ? w.repeat : false,
       enabled: typeof w.enabled === 'boolean' ? w.enabled : true,
+      also:    Array.isArray(w.also) ? w.also.map(normAnd).filter(Boolean).slice(0, AND_MAX) : [],
     };
   }
   function loadAlertCfg() {
@@ -108,6 +135,9 @@
     alertCfg = JSON.parse(JSON.stringify(ALERT_DEFAULTS));
     if (saved && typeof saved === 'object') {
       if (typeof saved.master === 'boolean') alertCfg.master = saved.master;
+      if (typeof saved.unfocusedOnly === 'boolean') alertCfg.unfocusedOnly = saved.unfocusedOnly;
+      // Older builds had this on the idle rule alone; carry it over as the global switch.
+      else if (saved.rules && saved.rules.idle && saved.rules.idle.unfocusedOnly === true) alertCfg.unfocusedOnly = true;
       if (saved.rules) for (const id in alertCfg.rules) {
         const s = saved.rules[id]; if (!s) continue;
         if (typeof s.enabled === 'boolean') alertCfg.rules[id].enabled = s.enabled;
@@ -132,7 +162,7 @@
   let _alertSaveT = 0, _alertSaveTries = 0;
   function saveAlertCfg() {
     if (!alertCfg) return;
-    const out = { master: alertCfg.master, rules: {}, custom: [] };
+    const out = { master: alertCfg.master, unfocusedOnly: !!alertCfg.unfocusedOnly, rules: {}, custom: [] };
     for (const id in alertCfg.rules) {
       const r = alertCfg.rules[id];
       out.rules[id] = { enabled: r.enabled, sound: r.sound, flash: r.flash, notify: r.notify };
@@ -146,7 +176,8 @@
         if (Object.keys(off).length) out.rules[id].off = off;
       }
     }
-    out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, repeat: w.repeat, enabled: w.enabled }));
+    out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, repeat: w.repeat, enabled: w.enabled,
+      also: (w.also || []).map(c => ({ type: c.type, kind: c.kind, text: c.text, anim: c.anim, cond: c.cond, num: c.num, stat: c.stat, not: c.not })) }));
     let ok = false;
     try { ok = !!bridge().alertsSave(myPid(), JSON.stringify(out)); } catch (e) {}
     // The host REFUSES the write (returns false) until it can resolve the account, since the
@@ -174,7 +205,16 @@
   }
   // Route one alert by its delivery type. cfg = { sound, flash, notify }. The sound always plays
   // (set it to 'none' to mute); sticky = the in-game card stays until clicked.
+  // Is the game (or its host frame) the foreground window? Cheap Win32 query on the host; an
+  // older host without the function reports "not focused" so alerts keep working.
+  function gameHasFocus() {
+    try { return !!(bridge() && bridge().gameFocused && bridge().gameFocused(myPid())); } catch (e) { return false; }
+  }
+  // Global gate: when "only when tabbed out" is on, nothing alerts while you are looking at the
+  // game. Checked at delivery time so it covers every rule, custom alert and aura action alike.
+  function alertsSuppressed() { return !!(alertCfg && alertCfg.unfocusedOnly && gameHasFocus()); }
   function deliverAlert(cfg, msg, sticky) {
+    if (alertsSuppressed()) return;
     const nt = cfg.notify || 'ingame';
     if (cfg.sound && cfg.sound !== 'none') { try { bridge().playSound(cfg.sound); } catch (e) {} }
     if (nt === 'ingame' || nt === 'both') {
@@ -250,6 +290,11 @@
   function vitalsMatch(w) { const v = vitalValue(w.stat); return v != null && cmpNum(v, w.cond, w.num || 0); }
   function customLabel(w) {
     if (w.label) return w.label;
+    const base = customLabelBase(w);
+    if (Array.isArray(w.also) && w.also.length) return base + ' + ' + w.also.map(andLabel).join(' + ');
+    return base;
+  }
+  function customLabelBase(w) {
     if (w.type === 'panim') return 'Player anim ' + w.anim;
     if (w.type === 'nanim') return 'NPC anim ' + w.anim;
     if (w.type === 'auglevel') return 'Equipped augment reaches lvl ' + w.anim;
@@ -325,6 +370,45 @@
       default:   return v < n;
     }
   }
+  // Instantaneous truth of one condition (the main trigger or an entry of `also`), from the
+  // data already polled this tick. `within` = the scene-range test around the player.
+  function condPresent(c, within) {
+    if (c.type === 'invslots') return invSlotsMatch(c);
+    if (c.type === 'invitem')  return invItemMatch(c);
+    if (c.type === 'buff')     return buffMatch(c);
+    if (c.type === 'vitals')   return vitalsMatch(c);
+    if (c.type === 'panim')    return !!(infoData && infoData.in && infoData.anim === c.anim);
+    if (c.type === 'nanim')    return !!(sceneData && Array.isArray(sceneData.npcs) &&
+                                          sceneData.npcs.some(n => n.anim === c.anim && within(n.x, n.y)));
+    if (c.type === 'name' || !c.type) {
+      if (!c.text) return false;
+      const list = c.kind === 'player' ? (sceneData && sceneData.players)
+                 : c.kind === 'object' ? (sceneData && sceneData.objects)
+                 : (sceneData && sceneData.npcs);
+      if (!Array.isArray(list)) return false;
+      const t = c.text.toLowerCase();
+      return list.some(e => !e.self && (e.name || '').toLowerCase().indexOf(t) >= 0
+                            && (c.kind === 'object' || within(e.x, e.y)));
+    }
+    return false;
+  }
+  // Every extra AND condition holds (an empty list always holds). `not` inverts one entry.
+  function alsoOk(w, within) {
+    const list = w.also;
+    if (!Array.isArray(list) || !list.length) return true;
+    return list.every(c => { const p = condPresent(c, within); return c.not ? !p : p; });
+  }
+  function andLabel(c) {
+    let l;
+    if (c.type === 'panim') l = 'player anim ' + c.anim;
+    else if (c.type === 'nanim') l = 'NPC anim ' + c.anim;
+    else if (c.type === 'invslots') l = invSlotsLabel(c);
+    else if (c.type === 'invitem') l = invItemLabel(c);
+    else if (c.type === 'buff') l = buffLabel(c);
+    else if (c.type === 'vitals') l = vitalsLabel(c);
+    else l = (c.kind || 'npc') + ' "' + (c.text || '') + '"';
+    return (c.not ? 'not ' : '') + l;
+  }
   function fireCustom(w, force) {
     const now = Date.now();
     if (!force && w._last && now - w._last < 1500) return;
@@ -350,12 +434,14 @@
     if (!msg) return;
     try { uiNotify(msg, { ttl: 5000 }); } catch (e) {}
   }
-  function customNeedsScene(w) { return w.enabled && (w.type === 'nanim' || (w.type === 'name' && !!w.text)); }
-  function customNeedsInfo(w)  { return w.enabled && w.type === 'panim'; }
+  // Each feed is needed if the MAIN trigger or any extra AND condition reads it.
+  function anyCond(w, f) { return f(w) || (Array.isArray(w.also) && w.also.some(f)); }
+  function customNeedsScene(w) { return w.enabled && anyCond(w, c => c.type === 'nanim' || (c.type === 'name' && !!c.text)); }
+  function customNeedsInfo(w)  { return w.enabled && anyCond(w, c => c.type === 'panim'); }
   function customNeedsPerks(w) { return w.enabled && w.type === 'auglevel'; }
-  function customNeedsInv(w)   { return w.enabled && (w.type === 'invslots' || w.type === 'invitem'); }
-  function customNeedsBuffs(w)  { return w.enabled && w.type === 'buff'; }
-  function customNeedsVitals(w)  { return w.enabled && w.type === 'vitals'; }
+  function customNeedsInv(w)   { return w.enabled && anyCond(w, c => c.type === 'invslots' || c.type === 'invitem'); }
+  function customNeedsBuffs(w)  { return w.enabled && anyCond(w, c => c.type === 'buff'); }
+  function customNeedsVitals(w)  { return w.enabled && anyCond(w, c => c.type === 'vitals'); }
   function customNeedsFarming(w) { return w.enabled && w.type === 'farm'; }
   function alertsNeedVitals() {
     return !!(alertCfg && alertCfg.master && Array.isArray(alertCfg.custom) && alertCfg.custom.some(customNeedsVitals));
@@ -414,7 +500,7 @@
     if (!alertCfg || !alertCfg.master) { alertState.ready = false; return; }
     const pid = myPid();
     if (pid !== alertState.pid)
-      alertState = { ready: false, pid: pid, prevSkills: null, prevGeDone: {}, prevRandom: false, idleSince: null, idleFired: false, logoutFired: false, custom: {}, augSeen: {}, farmSeen: {}, goalTgt: {} };
+      alertState = { ready: false, pid: pid, prevSkills: null, prevGeDone: {}, prevRandom: false, randomSeenAt: 0, idleSince: null, idleFired: false, logoutFired: false, custom: {}, augSeen: {}, farmSeen: {}, goalTgt: {} };
     if (!alertState.custom) alertState.custom = {};
     if (!alertState.augSeen) alertState.augSeen = {};
     if (!alertState.farmSeen) alertState.farmSeen = {};
@@ -426,6 +512,7 @@
     const inw = !!(snap && snap.status === 30);
     if (!inw) {   // baseline so re-entry doesn't burst-fire
       alertState.prevSkills = null; alertState.prevGeDone = {}; alertState.prevRandom = false;
+      alertState.randomSeenAt = 0;
       alertState.idleSince = null; alertState.idleFired = false; alertState.logoutFired = false; alertState.custom = {}; alertState.augSeen = {}; alertState.farmSeen = {}; alertState.goalTgt = {};
       alertState.ready = !!snap; return;
     }
@@ -468,7 +555,14 @@
     if (en('idle')) {
       const ir = alertCfg.rules.idle, secs = ir.val || 5, thr = secs * 1000, info = infoData;
       const isIdle = !!(info && info.in && info.moving === false && info.anim === -1);
-      if (isIdle) {
+      // "Only while the game is in the background": you are idle on purpose when the game is
+      // the window you are looking at, so the alert is for the tab-out case only. Polled here
+      // (cheap Win32 on the host) rather than cached, so returning to the game silences the
+      // repeat on the very next tick. An older host without the function behaves as before.
+      // The tabbed-out gate is global now (alertsSuppressed, applied at delivery); here the
+      // idle clock keeps running while focused so tabbing out after standing still alerts at once.
+      const focusOk = !alertsSuppressed();
+      if (isIdle && focusOk) {
         const tnow = Date.now();
         if (alertState.idleSince == null) alertState.idleSince = tnow;
         if (alertState.ready && tnow - alertState.idleSince >= thr) {
@@ -478,7 +572,9 @@
             fireAlert('idle', 'Still idle', true); alertState.idleLast = tnow;
           }
         }
-      } else { alertState.idleSince = null; alertState.idleFired = false; }
+      } else if (!isIdle) { alertState.idleSince = null; alertState.idleFired = false; }
+      // isIdle but the game has focus: keep idleSince running so that tabbing out after already
+      // standing still for the threshold alerts promptly, but never fire while focused.
     } else { alertState.idleSince = null; alertState.idleFired = false; }
     // Idle LOGOUT warning. Unlike the rule above (which watches the avatar), this reads the
     // server's own clock: idleMs is how long since the client last REPORTED input, which is
@@ -506,9 +602,19 @@
       const lc = randomEventNames().map(s => s.toLowerCase());
       const hit = sceneData.npcs.find(n => within(n.x, n.y)
                     && lc.some(nm => (n.name || '').toLowerCase().indexOf(nm) >= 0));
+      // Hold the "present" state briefly after the last sighting instead of recomputing it
+      // from scratch every poll. A single poll that fails to match -- the scene list churning,
+      // a morph NPC whose name resolves empty for a frame, or the event sitting right on the
+      // range edge -- otherwise did two visible things: it dropped the name from the overlay
+      // channel and put it straight back (the highlight box blinking), and it re-armed the
+      // rising edge below so the SAME event could alert again and again.
+      const nowR = Date.now();
+      if (hit) alertState.randomSeenAt = nowR;
+      const present = !!hit ||
+        (alertState.randomSeenAt && (nowR - alertState.randomSeenAt) < RANDOM_HOLD_MS);
       if (en('random') && alertState.ready && hit && !alertState.prevRandom)
         fireAlert('random', (hit.name || 'Random event') + ' nearby');
-      alertState.prevRandom = !!hit;
+      alertState.prevRandom = !!present;
     }
     if (Array.isArray(alertCfg.custom)) {
       for (const w of alertCfg.custom) {
@@ -523,7 +629,7 @@
             live[ik] = true;
             const reached = (it.level || 0) >= thr;
             if (!(ik in seen)) { seen[ik] = reached; continue; }   // baseline first sight (no fire)
-            if (alertState.ready && reached && !seen[ik]) fireAugment(w, it);
+            if (alertState.ready && reached && !seen[ik] && alsoOk(w, within)) fireAugment(w, it);
             seen[ik] = reached;
           }
           for (const k in seen) if (!live[k]) delete seen[k];       // unequipped -> re-arm
@@ -538,37 +644,14 @@
           for (const vbid of watch) {
             const hit = farmStateMatch(vbid, w.cond);
             if (!(vbid in seen)) { seen[vbid] = hit; continue; }
-            if (alertState.ready && hit && !seen[vbid]) fireFarm(w, farmPatchLabel(vbid) + ' - ' + farmCondLabel(w.cond));
+            if (alertState.ready && hit && !seen[vbid] && alsoOk(w, within)) fireFarm(w, farmPatchLabel(vbid) + ' - ' + farmCondLabel(w.cond));
             seen[vbid] = hit;
           }
           continue;
         }
-        let present = false;
-        if (w.enabled) {
-          if (w.type === 'invslots') {
-            present = invSlotsMatch(w);
-          } else if (w.type === 'invitem') {
-            present = invItemMatch(w);
-          } else if (w.type === 'buff') {
-            present = buffMatch(w);
-          } else if (w.type === 'vitals') {
-            present = vitalsMatch(w);
-          } else if (w.type === 'panim') {
-            present = !!(infoData && infoData.in && infoData.anim === w.anim);
-          } else if (w.type === 'nanim') {
-            present = !!(sceneData && Array.isArray(sceneData.npcs) &&
-                         sceneData.npcs.some(n => n.anim === w.anim && within(n.x, n.y)));
-          } else if (w.text) {
-            const list = w.kind === 'player' ? (sceneData && sceneData.players)
-                       : w.kind === 'object' ? (sceneData && sceneData.objects)
-                       : (sceneData && sceneData.npcs);
-            if (Array.isArray(list)) {
-              const t = w.text.toLowerCase();
-              present = list.some(e => !e.self && (e.name || '').toLowerCase().indexOf(t) >= 0
-                                       && (w.kind === 'object' || within(e.x, e.y)));
-            }
-          }
-        }
+        // Main trigger AND every extra condition. All of them are sampled from the same poll,
+        // so "boss is mid magic attack AND no magic prayer is up" is a single consistent read.
+        const present = !!w.enabled && condPresent(w, within) && alsoOk(w, within);
         const was = !!alertState.custom[w.id];
         if (alertState.ready && present) {
           if (!was) { fireCustom(w); w._rlast = Date.now(); }
@@ -657,6 +740,8 @@
   }
   function setCustomType(w, v) {
     if ((w.type || 'name') === v) return;
+    // An extra AND condition (no id) is limited to instantaneous tests.
+    if (!w.id && AND_TYPE_SET.indexOf(v) < 0) return;
     w.type = v;
     if (v === 'auglevel' && (!w.anim || w.anim < 1)) w.anim = 12;
     if (v === 'invslots') { if (INVSLOT_CONDS.every(c => c[0] !== w.cond)) w.cond = 'empty'; }
@@ -668,7 +753,8 @@
     saveAlertCfg(); renderCustomList();
   }
   function typeTrigger(w) {
-    const labelFor = v => { const t = CUSTOM_TYPES.find(x => x[0] === v); return t ? t[1] : 'Name'; };
+    const types = w.id ? CUSTOM_TYPES : AND_TYPES;
+    const labelFor = v => { const t = types.find(x => x[0] === v); return t ? t[1] : 'Name'; };
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel';
     const cur = document.createElement('span'); cur.className = 'cur'; cur.textContent = labelFor(w.type || 'name');
     const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
@@ -676,7 +762,7 @@
     b.addEventListener('click', e => {
       e.stopPropagation();
       if (document.getElementById('sndMenu')) { closeSoundMenu(); return; }
-      openChoice(b, CUSTOM_TYPES.map(([v, lab]) => ({ label: lab, act: () => setCustomType(w, v) })));
+      openChoice(b, types.map(([v, lab]) => ({ label: lab, act: () => setCustomType(w, v) })));
     });
     return b;
   }
@@ -789,6 +875,67 @@
       const l = document.createElement('span'); l.className = 'al-lab'; l.textContent = labelText;
       grid.appendChild(l); grid.appendChild(control);
     };
+    condRows(w, addRow);
+    card.appendChild(grid);
+    // Extra conditions: the alert only fires while ALL of them hold as well. Each is a small
+    // card of its own with the same type picker and fields as the main trigger.
+    const andHost = document.createElement('div'); andHost.className = 'al-and-list';
+    (w.also || []).forEach((c, i) => andHost.appendChild(andCard(w, c, i)));
+    card.appendChild(andHost);
+    if (!w.also || w.also.length < AND_MAX) {
+      const addAnd = document.createElement('button'); addAnd.type = 'button'; addAnd.className = 'al-add al-and-add';
+      addAnd.textContent = '+ AND condition';
+      addAnd.title = 'Require another condition to be true at the same time (e.g. a buff NOT active)';
+      addAnd.addEventListener('click', () => {
+        if (!w.also) w.also = [];
+        w.also.push(normAnd({ type: 'buff', cond: 'inactive' }));
+        fetchBuffs();
+        saveAlertCfg(); renderCustomList();
+      });
+      card.appendChild(addAnd);
+    }
+    const sndGrid = document.createElement('div'); sndGrid.className = 'al-grid';
+    const addRow2 = (labelText, control) => {
+      const l = document.createElement('span'); l.className = 'al-lab'; l.textContent = labelText;
+      sndGrid.appendChild(l); sndGrid.appendChild(control);
+    };
+    const sndCell = document.createElement('div'); sndCell.className = 'al-cell';
+    sndCell.appendChild(soundTrigger(() => w.sound, v => { w.sound = v; saveAlertCfg(); }));
+    const play = document.createElement('button'); play.type = 'button'; play.className = 'al-play'; play.textContent = '▶'; play.title = 'Preview';
+    play.addEventListener('click', e => { e.stopPropagation(); if (w.sound !== 'none') { try { bridge().playSound(w.sound); } catch (_) {} } });
+    sndCell.appendChild(play);
+    addRow2('Sound', sndCell);
+    card.appendChild(sndGrid);
+    return customCardFoot(w, card);
+  }
+  function andCard(w, c, i) {
+    const box = document.createElement('div'); box.className = 'al-and';
+    const head = document.createElement('div'); head.className = 'al-cust-head';
+    const tag = document.createElement('span'); tag.className = 'al-and-tag'; tag.textContent = 'AND';
+    head.appendChild(tag);
+    // NOT toggle: "AND NOT using a magic prayer" reads better than hunting for an inverse comparator.
+    const notB = document.createElement('button'); notB.type = 'button'; notB.className = 'al-evt' + (c.not ? ' on' : '');
+    notB.textContent = 'NOT'; notB.title = 'Invert this condition';
+    notB.addEventListener('click', e => { e.stopPropagation(); c.not = !c.not; notB.classList.toggle('on', c.not); saveAlertCfg(); });
+    head.appendChild(notB);
+    head.appendChild(typeTrigger(c));
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'al-del'; del.textContent = '×'; del.title = 'Remove this condition'; del.style.marginLeft = 'auto';
+    del.addEventListener('click', () => { w.also.splice(i, 1); saveAlertCfg(); renderCustomList(); });
+    head.appendChild(del);
+    box.appendChild(head);
+    const grid = document.createElement('div'); grid.className = 'al-grid';
+    const addRow = (labelText, control) => {
+      const l = document.createElement('span'); l.className = 'al-lab'; l.textContent = labelText;
+      grid.appendChild(l); grid.appendChild(control);
+    };
+    condRows(c, addRow);
+    box.appendChild(grid);
+    return box;
+  }
+  // The type-specific fields of one condition. `w` is either the alert itself (main trigger)
+  // or an entry of alert.also; every helper below only touches the fields of the object it is
+  // given, so the same controls serve both.
+  function condRows(w, addRow) {
     if (w.type === 'invslots') {
       addRow('Condition', condTrigger(w, INVSLOT_CONDS));
       if (w.cond === 'usedge' || w.cond === 'usedle' || w.cond === 'freele') addRow('Count', numField(w, 'num', 0));
@@ -837,13 +984,8 @@
       cell.appendChild(inp);
       addRow('Name', cell);
     }
-    const sndCell = document.createElement('div'); sndCell.className = 'al-cell';
-    sndCell.appendChild(soundTrigger(() => w.sound, v => { w.sound = v; saveAlertCfg(); }));
-    const play = document.createElement('button'); play.type = 'button'; play.className = 'al-play'; play.textContent = '▶'; play.title = 'Preview';
-    play.addEventListener('click', e => { e.stopPropagation(); if (w.sound !== 'none') { try { bridge().playSound(w.sound); } catch (_) {} } });
-    sndCell.appendChild(play);
-    addRow('Sound', sndCell);
-    card.appendChild(grid);
+  }
+  function customCardFoot(w, card) {
     const foot = document.createElement('div'); foot.className = 'al-toggles';
     const mkTog = (label, on, set, tip) => {
       const t = document.createElement('div'); t.className = 'al-tog';
@@ -866,7 +1008,7 @@
     host.innerHTML = '';
     if (!Array.isArray(alertCfg.custom) || !alertCfg.custom.length) {
       const e = document.createElement('div'); e.className = 'al-desc'; e.style.padding = '2px 4px';
-      e.textContent = 'No custom alerts. Add one (or pick a preset) to watch a name, a player/NPC animation, an equipped augment level, your inventory (slots / items), a buff value (e.g. timer below N), or a farming patch becoming ready.';
+      e.textContent = 'No custom alerts. Add one (or pick a preset) to watch a name, a player/NPC animation, an equipped augment level, your inventory (slots / items), a buff value (e.g. timer below N), or a farming patch becoming ready. Add AND conditions to combine them, e.g. NPC anim 1234 AND NOT buff "Deflect Magic" active.';
       host.appendChild(e); return;
     }
     for (const w of alertCfg.custom) host.appendChild(customCard(w));
@@ -893,6 +1035,9 @@
     }
     document.body.appendChild(pop);
     placeMenu(pop, anchor);
+    // The menu floats outside its window: publish its rect, or any entry that hangs past the
+    // window edge is a click on the game instead.
+    try { wmRectsSoon(); } catch (e) {}
   }
 
   function notifyControl(get, set, id) {
@@ -924,6 +1069,21 @@
     m.appendChild(ml); m.appendChild(mp);
     m.addEventListener('click', () => { alertCfg.master = !alertCfg.master; reflectAlerts(); saveAlertCfg(); });
     wrap.appendChild(m);
+    // Global focus gate, right under the master switch: applies to every alert below, custom
+    // alerts and aura actions included.
+    const fo = document.createElement('div'); fo.className = 'al-master'; fo.setAttribute('role', 'button');
+    const fol = document.createElement('div');
+    const fon = document.createElement('div'); fon.className = 'al-name'; fon.textContent = 'Only alert when tabbed out';
+    const fod = document.createElement('div'); fod.className = 'al-desc';
+    const hostOk = !!(bridge() && bridge().gameFocused);
+    fod.textContent = hostOk ? 'Stay quiet while the game window has focus; sound, flash and messages fire only when you are in another window'
+                             : 'Needs a newer RuneToolsX launcher (this one cannot tell whether the game has focus), so it has no effect yet';
+    if (!hostOk) fod.style.color = '#ffb86b';
+    fol.appendChild(fon); fol.appendChild(fod);
+    const fop = alertPill(false); fop.id = 'al_focus_pill';
+    fo.appendChild(fol); fo.appendChild(fop);
+    fo.addEventListener('click', () => { alertCfg.unfocusedOnly = !alertCfg.unfocusedOnly; reflectAlerts(); saveAlertCfg(); });
+    wrap.appendChild(fo);
     for (const meta of ALERT_META) {
       const r = alertCfg.rules[meta.id];
       const card = document.createElement('div'); card.className = 'al-card'; card.id = 'al_' + meta.id;
@@ -1036,6 +1196,7 @@
   function reflectAlerts() {
     if (!alertCfg) return;
     const mp = $('al_master_pill'); if (mp) mp.classList.toggle('on', !!alertCfg.master);
+    const fp = $('al_focus_pill'); if (fp) fp.classList.toggle('on', !!alertCfg.unfocusedOnly);
     for (const meta of ALERT_META) {
       const r = alertCfg.rules[meta.id];
       const en = $('al_' + meta.id + '_en');    if (en) en.classList.toggle('on', r.enabled);

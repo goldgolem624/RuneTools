@@ -370,13 +370,54 @@
   // The "boss" of a combat task = the PARENT achievement listing it in `subach`; all combat
   // tasks share one flat category, so the category is NOT the boss.
   // Returns { parentId -> { name, n } } over the combat tasks that have a parent.
+  // Longest common prefix of a set of strings, trimmed at a word boundary and stripped of a
+  // leading verb. Used to NAME a group of orphan tasks from what they say: "Defeat Ivar, King
+  // of Bones, solo, using..." + "Defeat Ivar, King of Bones." -> "Ivar, King of Bones".
+  function cmCommonName(descs) {
+    if (!descs.length) return '';
+    let pre = descs[0] || '';
+    for (const d of descs) {
+      let i = 0; while (i < pre.length && i < d.length && pre[i] === d[i]) i++;
+      pre = pre.slice(0, i);
+      if (!pre) break;
+    }
+    pre = pre.replace(/^\s*(?:Defeat|Kill|Complete)\s+/i, '');
+    // Back off to the last clean boundary so a half-word is never shown.
+    pre = pre.replace(/[\s,;:.\-]+$/, '');
+    if (pre.length > 46) pre = pre.slice(0, 46).replace(/\s+\S*$/, '') + '...';
+    return pre.trim();
+  }
+
+  // Boss -> task count for the dropdown.
+  //
+  // A combat task normally hangs off a BOSS achievement, and that parent is the group. Some
+  // do not: Ivar's two tasks are listed by no parent at all, so keying purely on the parent
+  // dropped the boss from this list entirely while "All bosses" still showed its tasks --
+  // visible in the list, impossible to filter to. Orphans are now grouped by their own
+  // subcategory and named from what their descriptions have in common, so a boss the cache
+  // has not parented is still selectable instead of silently missing.
   function cmBosses() {
     const lb = cmLeafBoss(); const m = {};
+    const orphans = {};
     for (const a of (achDefs || [])) {
       if (!(achTier(a) && achTrackable(a) && !achIsLeagues(a))) continue;
-      const p = lb[a.id]; if (!p) continue;
-      if (!m[p.id]) m[p.id] = { name: p.name || ('#' + p.id), n: 0 };
-      m[p.id].n++;
+      const p = lb[a.id];
+      if (p) {
+        if (!m[p.id]) m[p.id] = { name: p.name || ('#' + p.id), n: 0 };
+        m[p.id].n++;
+        continue;
+      }
+      const key = (a.subcat != null) ? ('s' + a.subcat) : 'other';
+      (orphans[key] = orphans[key] || []).push(a);
+    }
+    // Synthetic ids sit far above real achievement ids so they can never collide with one.
+    let synth = 900000000;
+    for (const key in orphans) {
+      const list = orphans[key];
+      const nm = cmCommonName(list.map(x => x.desc || x.name || '')) ||
+                 (list.length === 1 ? (list[0].name || 'Other') : 'Other');
+      const id = synth++;
+      m[id] = { name: nm, n: list.length, ids: list.map(x => x.id) };
     }
     return m;
   }
@@ -445,7 +486,16 @@
     const started = (a) => { const ls = st.prog[a.id] || []; for (const l of ls) if (l.cur > 0) return true; return false; };
     const inTier = (a) => { if (cmFTier < 0) return true; const t = achTier(a); return t && t[1] === cmFTier; };
     const lb = cmLeafBoss();
-    const inBoss = (a) => { if (cmFBoss < 0) return true; const p = lb[a.id]; return !!(p && p.id === cmFBoss); };
+    // Real boss parents match by parent id; the synthetic orphan groups (see cmBosses)
+    // carry their member ids instead, since those tasks have no parent to match on.
+    const bosses = cmBosses();
+    const synthSel = (cmFBoss >= 0 && bosses[cmFBoss] && bosses[cmFBoss].ids)
+                      ? new Set(bosses[cmFBoss].ids) : null;
+    const inBoss = (a) => {
+      if (cmFBoss < 0) return true;
+      if (synthSel) return synthSel.has(a.id);
+      const p = lb[a.id]; return !!(p && p.id === cmFBoss);
+    };
     const items = all.filter(a => {
       if (!inTier(a) || !inBoss(a)) return false;
       if (cmFSearch && (a.name || '').toLowerCase().indexOf(cmFSearch) < 0 &&

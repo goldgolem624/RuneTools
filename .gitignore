@@ -78,7 +78,9 @@ tools/
 *.ps1
 plugin-uploads/
 AgilityPluginX/
+ArchGlacorPluginX/
 BghPluginX/
 HavenBghPluginX/
+JadPrayerPluginX/
 PortsPluginX/
 ZygomitesPluginX/

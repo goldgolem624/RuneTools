@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <set>
 #include <sstream>
 
 namespace rtx::launcher::accounts {
@@ -40,6 +41,65 @@ std::filesystem::path accounts_path() {
         return dir / L"accounts.dat";
     }
     return L"runetoolsx-accounts.dat";
+}
+
+// ---- capture suppression ----
+//
+// Removing an account is an explicit act, but auto-capture re-adds any account whose client is
+// running the moment the client list is next enumerated. The account therefore reappeared
+// immediately, which read as "Remove does nothing".
+//
+// A removed account is suppressed so capture will not put it straight back. The suppression is
+// lifted as soon as that account's client is gone (see PruneCaptureSuppressions), so a fresh
+// login is captured normally: the rule is "removing it now actually removes it", not "never
+// save this account again", which would be unclearable given capture is the only way in.
+//
+// Ids are stored HASHED. The vault is encrypted precisely so account identifiers are not
+// sitting in the clear next to it, and a suppression list of plaintext character ids would
+// hand back exactly that.
+std::filesystem::path suppress_path() {
+    auto p = accounts_path();
+    p.replace_filename(L"account_suppress.txt");
+    return p;
+}
+
+std::mutex                 g_sup_mu;
+std::set<std::string>      g_suppressed;      // hex sha256 of the account id
+bool                       g_sup_loaded = false;
+
+std::string id_digest(const std::string& id) {
+    std::uint8_t d[32];
+    if (!crypto::Sha256((const std::uint8_t*)id.data(), id.size(), d)) return {};
+    static const char* hex = "0123456789abcdef";
+    std::string out; out.reserve(64);
+    for (int i = 0; i < 32; ++i) { out += hex[d[i] >> 4]; out += hex[d[i] & 0xF]; }
+    return out;
+}
+
+void suppress_load_locked() {
+    if (g_sup_loaded) return;
+    g_sup_loaded = true;
+    std::ifstream f(suppress_path());
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.size() == 64) g_suppressed.insert(line);
+    }
+}
+
+void suppress_save_locked() {
+    auto path = suppress_path();
+    if (g_suppressed.empty()) { std::error_code ec; std::filesystem::remove(path, ec); return; }
+    auto tmp = path; tmp += L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f.is_open()) return;
+        for (const auto& h : g_suppressed) f << h << "\n";
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) { std::filesystem::remove(path, ec); std::filesystem::rename(tmp, path, ec); }
 }
 
 // ---- length-prefixed binary plaintext ----
@@ -448,8 +508,45 @@ bool Remove(const std::string& id) {
             changed = true;
         }
     }
-    if (changed) save_with_cached_key();
-    return changed;
+    if (!changed) return false;
+    // Report the SAVE, not the in-memory erase. This returned true whenever the account was
+    // found, even when writing the vault failed, so the row vanished from the list and came
+    // back on the next load with nothing having said the removal did not stick.
+    if (!save_with_cached_key()) return false;
+    SuppressCapture(id);
+    return true;
+}
+
+void SuppressCapture(const std::string& id) {
+    if (id.empty()) return;
+    auto h = id_digest(id);
+    if (h.empty()) return;
+    std::lock_guard<std::mutex> lk(g_sup_mu);
+    suppress_load_locked();
+    if (g_suppressed.insert(h).second) suppress_save_locked();
+}
+
+bool IsCaptureSuppressed(const std::string& id) {
+    if (id.empty()) return false;
+    auto h = id_digest(id);
+    if (h.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_sup_mu);
+    suppress_load_locked();
+    return g_suppressed.count(h) != 0;
+}
+
+void PruneCaptureSuppressions(const std::vector<std::string>& live_ids) {
+    std::set<std::string> live;
+    for (const auto& id : live_ids) { auto h = id_digest(id); if (!h.empty()) live.insert(h); }
+    std::lock_guard<std::mutex> lk(g_sup_mu);
+    suppress_load_locked();
+    bool changed = false;
+    for (auto it = g_suppressed.begin(); it != g_suppressed.end(); ) {
+        if (live.count(*it)) { ++it; continue; }
+        it = g_suppressed.erase(it);          // its client is gone: a fresh login may be captured
+        changed = true;
+    }
+    if (changed) suppress_save_locked();
 }
 
 bool DiscardVault() {

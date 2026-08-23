@@ -88,7 +88,14 @@ struct GuideMark { int gx = 0; int gy = 0; int plane = 0; std::string label; boo
 void SetGuideMarks(std::uint32_t pid, std::vector<GuideMark> marks);
 
 // Big screen-centre text, drawn as a kText pill at the gameview centre; empty clears.
-void SetCenterText(std::uint32_t pid, const std::string& text);
+//
+// `slot` lets independent callers hold their own banner at the same time -- they stack upward
+// from the original position instead of overwriting each other, so a prayer call and a boss
+// mechanic are both readable. `rgb` is 0xRRGGBB, or -1 for the default red accent.
+// Slot 0 with the default colour is exactly the original behaviour.
+struct CenterBanner { std::string text; int rgb = -1; };
+inline constexpr int kCenterSlots = 3;
+void SetCenterText(std::uint32_t pid, const std::string& text, int slot = 0, int rgb = -1);
 
 // Transient SCREEN-SPACE highlight rect (already client pixels, NOT world projected): outline +
 // soft fill over a game UI element. Replaces the pid's rect on each call; w<=0 clears.

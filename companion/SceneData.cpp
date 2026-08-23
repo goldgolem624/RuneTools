@@ -1237,6 +1237,115 @@ void* Detour_ObjSubmit(std::uint64_t a1, std::uint64_t a2) {
     return g_origObjSubmit(a1, a2);
 }
 
+// ===== Per-type DISPLAY hooks ===========================================================
+// The spawn capture above is indirect: it fires while the scene NODE exists but BEFORE the
+// Entity is allocated and linked (ctor order is alloc-node -> [capture] -> alloc entity ->
+// mov [node+0x1A0],entity), so an entity can reach it with no sub attached -- which is why
+// the scan ring never arrived there as a type-4 and why a worker thread has to re-read every
+// tracked pointer's type. The display methods have no such problem: by the time one runs,
+// the object is fully built, and each is reached ONLY through its own type's vtable, so
+// anything arriving IS that type. No type test, no re-read, no race.
+//
+//   type 4  -> vtable 0xB73A50 slot 7 -> 0x326690   (graphic highlights)
+//   type 13 -> vtable 0xB5E878 slot 7 -> 0x1ABBB0   (world markers)
+//
+// `rcx` is the SUB (the object carrying the vtable): plane at +0x40 and uid at +0x88 are
+// both read by the real function, and sub+0x8 is the back-pointer to the scene node, which
+// is where the float fine position lives.
+//
+// COST. These run on the render thread, per matching entity per frame, so the body is
+// gated on the launcher's enable flag first and is allocation-free and lock-free after it:
+// the ring index is atomic and the slot is written in place. Both types are rare on screen
+// (a handful at most), so the gated path is a load and a branch in the common case.
+// ===== Per-type DISPLAY hooks ===========================================================
+// The spawn capture is indirect: it fires while the scene NODE exists but BEFORE the Entity
+// is built and linked, so entities reach it with no sub attached -- which is why the scan
+// ring never arrived there as a type-4 and why a worker thread had to re-read every tracked
+// pointer's type. A display method has no such problem: it runs on a finished object and is
+// reached only through its own type's vtable, so anything arriving IS that type.
+//
+//   type 4  -> vtable 0xB73A50 slot 7 -> 0x326690   (graphic highlights)
+//   type 13 -> vtable 0xB5E878 slot 7 -> 0x1ABBB0   (world markers)
+//
+// THE ARGUMENT COUNT IS LOAD-BEARING. A first version of this declared four parameters and
+// crashed the game (0xC0000005, reproducible around Lumbridge). Both functions read stack
+// arguments beyond the four register slots:
+//     type 13: mov rdi,[rsp+0x110] (arg5) @0x1ABBE4 ; mov rax,[rsp+0x118] (arg6) @0x1ABCC3
+//     type 4 : mov rsi,[rsp+0x70]  (arg5) @0x3266FB ; mov r15,[rsp+0x78]  (arg6) @0x32675F
+// Forwarding with only four built a fresh 4-arg frame, so args 5/6 were whatever happened to
+// be on our stack; the callee then dereferenced that garbage (test byte [rdi+0x39c]) and
+// faulted. We declare EIGHT and pass all eight through: passing more than the callee reads is
+// harmless under caller-cleanup, passing fewer is fatal, and "at least 6" is a lower bound
+// (a slot being read proves it exists; a slot not being read proves nothing).
+//
+// xmm is NOT a hazard here, checked rather than assumed: type-4 reads r9 (`mov rbx,r9`), so
+// its arg4 is an integer, and type-13 only WRITES xmm1 from a constant. The xmm0 store at
+// 0x1ABC43 is the return value of the call at 0x1ABC32, not an incoming float.
+//
+// COST: render thread, per matching entity per frame. Gated on the launcher's enable flag
+// first, then allocation-free and lock-free -- the ring index is atomic and the slot is
+// written in place. Both types are rare on screen.
+typedef void* (*Display_t)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
+                           std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
+Display_t g_origT4Display = nullptr;
+Display_t g_origT13Display = nullptr;
+
+// Record one fully-built entity into the highlight ring. `type` is known from WHICH hook
+// called, not sniffed from memory.
+static inline void RecordDisplay(std::uint64_t sub, int type) {
+    if (sub <= 0xfffff || sub >= g_base) return;
+    auto& s = g_hiRing[g_hiIdx.fetch_add(1, std::memory_order_relaxed) % kHiRingCap];
+    s.gfx   = (type == 4) ? R32(sub + 0x74) : -1;    // +0x74 is a gfx id for type 4 ONLY
+    s.uid   = R32(sub + 0x88);
+    s.plane = (std::int16_t)R32(sub + kFloor);       // dword: the real fn compares it as one
+    s.type  = (std::int16_t)type;
+    std::uint64_t ent = R64(sub + 0x8);              // sub -> node back-pointer
+    float nx = 0.f, ny = 0.f;
+    if (ent > 0xfffff && ent < g_base) { nx = RF(ent + kEntPosX); ny = RF(ent + kEntPosY); }
+    s.x = (nx > 0.f && nx < 1e9f) ? (std::int32_t)(nx / 512.f) : 0;
+    s.y = (ny > 0.f && ny < 1e9f) ? (std::int32_t)(ny / 512.f) : 0;
+    s.kind = rtx::special::kKindUnknown;
+    if (type == 13) {
+        // Same data-shape test the worldview walk uses (Reader.cpp): the clue-scan marker stores
+        // its OWN tile as a fine destination at sub+0x74/+0x7C; the walk marker leaves 0.0/NaN
+        // there. NaN fails every comparison, so it falls through to kKindDest.
+        float dx = RF(sub + 0x74), dy = RF(sub + 0x7C);
+        bool hasDest = dx > 0.f && dx < 1e9f && dy > 0.f && dy < 1e9f;
+        s.kind = (hasDest && (std::int32_t)(dx / 512.f) == s.x && (std::int32_t)(dy / 512.f) == s.y)
+                 ? rtx::special::kKindScan : rtx::special::kKindDest;
+    } else if (type == 4) {
+        // A health bar / hitsplat / overhead icon hangs off the ACTOR's node, so the node's own
+        // section reports type 1 or 2. A standalone world effect (scan ring, rockertunity, Time
+        // Sprite) points back at its own type-4 section. Structural, so a new adornment gfx id
+        // classifies correctly without anyone adding it to a list.
+        std::uint64_t osec = (ent > 0xfffff && ent < g_base) ? R64(ent + kSecPtr) : 0;
+        std::uint8_t  ot   = (osec > 0xfffff && osec < g_base) ? R8(osec + kType) : 0xff;
+        s.kind = (ot == 1 || ot == 2) ? rtx::special::kKindAdorn : rtx::special::kKindEffect;
+    }
+    s.stamp = (std::uint32_t)GetTickCount64();
+    if (g_specialShare) {
+        g_specialShare->diag[1]++;
+        std::uint32_t prev = g_specialShare->diag[2];
+        if (type == 4 && ((s.gfx >= 6841 && s.gfx <= 6843) || !(prev >= 6841 && prev <= 6843)))
+            g_specialShare->diag[2] = (std::uint32_t)s.gfx;   // prefer a ring gfx
+    }
+}
+
+void* Detour_T4Display(std::uint64_t a1, std::uint64_t a2, std::uint64_t a3, std::uint64_t a4,
+                       std::uint64_t a5, std::uint64_t a6, std::uint64_t a7, std::uint64_t a8) {
+    __try {
+        if (g_specialOn.load(std::memory_order_relaxed)) RecordDisplay(a1, 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return g_origT4Display(a1, a2, a3, a4, a5, a6, a7, a8);
+}
+void* Detour_T13Display(std::uint64_t a1, std::uint64_t a2, std::uint64_t a3, std::uint64_t a4,
+                        std::uint64_t a5, std::uint64_t a6, std::uint64_t a7, std::uint64_t a8) {
+    __try {
+        if (g_specialOn.load(std::memory_order_relaxed)) RecordDisplay(a1, 13);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return g_origT13Display(a1, a2, a3, a4, a5, a6, a7, a8);
+}
+
 // Object-delete capture (rs2client+0x50AA40): remove the entity on despawn so a stale
 // ptr whose memory was reused is never re-read (the shared-sub flicker was exactly this).
 void* Detour_ObjDel(std::uint64_t a1, std::uint64_t a2) {
@@ -1292,7 +1401,10 @@ static void ScanOneEnt(std::uint64_t ent) {
                     }
                 };
                 RingLog("TYPE13 ent=0x%llx sub=0x%llx -- tile candidates (f/512 = world tile):", (unsigned long long)ent, (unsigned long long)sub);
-                dump("sub", sub, 0x200);
+                // A type-13 object is 0xF8 bytes (ctor 0x19F6F0: mov ecx,0xF8). Dumping 0x200
+                // ran 0x108 bytes past the end into neighbouring heap, which is where the
+                // bogus "tile candidates" in this log were coming from.
+                dump("sub", sub, rtx::scn::kT13Size - 4);
                 dump("ent", ent, 0x100);
             }
             return;
@@ -1315,8 +1427,18 @@ static void ScanOneEnt(std::uint64_t ent) {
         auto& s = g_hiRing[g_hiIdx.fetch_add(1, std::memory_order_relaxed) % kHiRingCap];
         s.gfx   = gfx;
         s.uid   = R32(sub + 0x88);
-        s.x     = R32(sub + 0x7c);                                 // proj_destX
-        s.y     = R32(sub + 0x80);                                 // proj_destY
+        // Position from the scene NODE (float fine coords at ent+0x30/+0x38), which is the
+        // same source Reader.cpp uses for every type-4 and type-13 it resolves correctly.
+        // This previously read ints from sub+0x7c/+0x80: a type-4 object is only 0x1B0 bytes
+        // so those are in bounds, but they are the entity's own projection fields, not a
+        // world tile -- and Highlight documents x/y as "world tile". The panel does not
+        // currently place the ring by tile (it renders at distance 0 and lets colour carry
+        // the meaning), so this makes the field honest without changing what is drawn.
+        {
+            float nx = RF(ent + kEntPosX), ny = RF(ent + kEntPosY);
+            s.x = (nx > 0.f && nx < 1e9f) ? (std::int32_t)(nx / 512.f) : 0;
+            s.y = (ny > 0.f && ny < 1e9f) ? (std::int32_t)(ny / 512.f) : 0;
+        }
         s.plane = (std::int16_t)R8(sub + kFloor);
         s.stamp = (std::uint32_t)GetTickCount64();
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -1683,6 +1805,41 @@ void ResolveSpecialObserver() {
         if (DetourTransactionCommit() == NO_ERROR) RingLog("hook: del-hook ATTACHED rva=0x%llx", (unsigned long long)(pd - g_base));
         else RingLog("hook: del-hook attach FAILED");
     } else RingLog("hook: del-hook NOT FOUND");
+
+    // ---- per-type display hooks ----
+    // Resolved by body pattern, not by RVA, so a rebuild that moves the function still finds
+    // it; a build that changes the body simply does not attach and says so, rather than
+    // attaching to the wrong function. Each pattern matches EXACTLY ONCE in .text on build
+    // 940, and each maps to the vtable slot it belongs to:
+    //   0x326690 == *(0xB73A50 + 7*8)      0x1ABBB0 == *(0xB5E878 + 7*8)
+    // The type-4 pattern starts mid-function (0x32669D); FindVarOp maps a body match back to
+    // the true entry through .pdata, which is what makes that one safe to detour.
+    static const unsigned char t4Body[] = {
+        0x80,0xB9,0xAD,0x01,0x00,0x00,0x00,
+        0x49,0x8B,0xD9, 0x49,0x8B,0xE8, 0x4C,0x8B,0xF2, 0x48,0x8B,0xF9 };
+    std::uint64_t p4 = FindVarOp(t4Body, sizeof(t4Body));
+    if (p4) {
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        g_origT4Display = (Display_t)p4;
+        DetourAttach(&(PVOID&)g_origT4Display, (PVOID)Detour_T4Display);
+        if (DetourTransactionCommit() == NO_ERROR) RingLog("hook: t4-display ATTACHED rva=0x%llx", (unsigned long long)(p4 - g_base));
+        else RingLog("hook: t4-display attach FAILED");
+    } else RingLog("hook: t4-display NOT FOUND");
+
+    static const unsigned char t13Body[] = {
+        0x48,0x89,0x5C,0x24,0x10, 0x48,0x89,0x6C,0x24,0x18,
+        0x56, 0x48,0x81,0xEC,0xE0,0x00,0x00,0x00 };
+    std::uint64_t p13 = FindVarOp(t13Body, sizeof(t13Body));
+    if (p13) {
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        g_origT13Display = (Display_t)p13;
+        DetourAttach(&(PVOID&)g_origT13Display, (PVOID)Detour_T13Display);
+        if (DetourTransactionCommit() == NO_ERROR) RingLog("hook: t13-display ATTACHED rva=0x%llx", (unsigned long long)(p13 - g_base));
+        else RingLog("hook: t13-display attach FAILED");
+    } else RingLog("hook: t13-display NOT FOUND");
+
 }
 
 void PublishSpecials(rtx::special::Share* sh) {
@@ -1694,12 +1851,25 @@ void PublishSpecials(rtx::special::Share* sh) {
     if (!g_specialOn.load(std::memory_order_relaxed)) { sh->seq++; sh->count = 0; sh->seq++; return; }
     rtx::special::Highlight out[rtx::special::kMaxHighlights];
     std::uint32_t c = 0;
+    // Two passes so per-actor adornments cannot crowd out the captures this hook exists for. A
+    // busy fight renders far more health bars and hitsplats than there are publish slots, and a
+    // single-pass ring scan would evict the scan ring behind them.
+    for (int pass = 0; pass < 2; ++pass)
     for (int i = 0; i < kHiRingCap && c < (std::uint32_t)rtx::special::kMaxHighlights; ++i) {
         rtx::special::Highlight hh = g_hiRing[i];                 // best-effort POD copy (racy, range-guarded reader)
         if (hh.stamp == 0 || (std::uint32_t)(now - hh.stamp) > rtx::special::kStaleMs) continue;   // empty or stale
+        if ((hh.kind == rtx::special::kKindAdorn) != (pass == 1)) continue;   // effects first, adornments after
         bool dup = false;
-        for (std::uint32_t j = 0; j < c; ++j)
-            if (out[j].uid == hh.uid) { if (hh.stamp > out[j].stamp) out[j] = hh; dup = true; break; }
+        for (std::uint32_t j = 0; j < c; ++j) {
+            // uid is the dedupe key ONLY when the entity has one. Markers and effects frequently
+            // read uid 0, and keying those on uid alone merged every one of them into a single
+            // slot whose stamp any later capture refreshed -- so the entry could never age out
+            // and appeared to linger on screen forever. Fall back to identity-by-placement.
+            bool same = hh.uid ? (out[j].uid == hh.uid)
+                              : (out[j].uid == 0 && out[j].type == hh.type && out[j].gfx == hh.gfx &&
+                                 out[j].x == hh.x && out[j].y == hh.y && out[j].plane == hh.plane);
+            if (same) { if (hh.stamp > out[j].stamp) out[j] = hh; dup = true; break; }
+        }
         if (!dup) out[c++] = hh;
     }
     sh->seq++;                                    // odd: mid-update

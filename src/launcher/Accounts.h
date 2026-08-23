@@ -38,6 +38,14 @@ bool                 Get(const std::string& id, Account& out);
 std::string          Upsert(Account a);   // returns assigned id, empty on failure
 bool                 Remove(const std::string& id);
 
+// Auto-capture would re-add a removed account the instant its still-running client is
+// enumerated again, so Remove suppresses that account. The suppression is lifted once the
+// account's client is gone, which keeps removal meaningful now without permanently blocking a
+// later login from being captured. Ids are hashed on disk.
+void SuppressCapture(const std::string& id);
+bool IsCaptureSuppressed(const std::string& id);
+void PruneCaptureSuppressions(const std::vector<std::string>& live_ids);
+
 // Build an Account from a captured JX_ env block: display_name + character_id
 // are picked out of the map, the rest of the env becomes the bearer payload.
 Account FromEnv(std::unordered_map<std::string, std::string> env);
