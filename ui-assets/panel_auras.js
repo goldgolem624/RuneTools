@@ -1422,7 +1422,7 @@
     inp.title = 'Tokens: ' + AURA_TOKENS.map(t => t[0]).join(' ') + '. Click % for the guide.';
     const b = auraMkBtn('%', 'Insert a token (shows what each one means)', () => {
       if (typeof openChoice !== 'function') return;
-      auraMenu(b, AURA_TOKENS.map(t => ({ label: t[0] + '   ' + t[1], act: () => { inp.value = (inp.value || '') + t[0]; fn(inp.value); } })));
+      auraMenu(b, AURA_TOKENS.map(t => ({ label: t[0] + '   ' + t[1], raw: true, act: () => { inp.value = (inp.value || '') + t[0]; fn(inp.value); } })));
     }, 'au-sm');
     cell.appendChild(inp); cell.appendChild(b);
     return cell;
@@ -1526,6 +1526,10 @@
     const sig = JSON.stringify([auraCfg.roots, Object.keys(all).length, auraEdSel, auraEdTab, auraEdImport, liveSig, winSig, sel, sel ? sel.children.map(cu => (all[cu] || {}).name) : null]);
     if (sig === auraEdSig) return;
     auraEdSig = sig;
+    // Rebuilding under a focused control never fires focusout for it; blur first so the
+    // keyboard-capture flag follows reality (see syncKbCapture in client.html).
+    const fe = document.activeElement;
+    if (fe && w.contains(fe) && fe.blur) { try { fe.blur(); } catch (e) {} }
     w.textContent = '';
 
     const bar = document.createElement('div'); bar.className = 'au-bar';

@@ -913,7 +913,7 @@
   .au-swatch:hover { border-color: var(--accent-hi); }
   .au-npick { width: 260px; max-height: 320px; padding: 4px; }
   .au-npick-list { display: flex; flex-direction: column; }
-  .au-npick-row { display: flex; align-items: center; gap: 8px; }
+  .au-npick-row { display: flex; align-items: center; gap: 8px; text-transform: none; }
   .au-npick-row.first { background: rgba(140,111,253,0.18); }
   .au-npick-ico { position: static; width: 22px; height: 22px; flex: none; border-radius: 4px; background-color: #0e0f14; border: 1px solid rgba(255,255,255,0.15); }
   .au-npick-live { font-size: 10px; color: var(--accent-hi); text-transform: uppercase; letter-spacing: .05em; }
@@ -956,7 +956,8 @@
   .al-typesel { display: inline-flex; align-items: center; gap: 12px; justify-content: space-between; border: 1px solid var(--border-hi); background: var(--bg-elev-2); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 4px 9px 4px 11px; cursor: pointer; min-width: 108px; }
   .al-typesel:hover { border-color: var(--accent-hi); }
   .al-typesel .cv { color: var(--text-mute); font-size: 10px; }
-  .sndmenu { position: fixed; z-index: 100000; background: var(--bg-elev-2); border: 1px solid var(--border-hi); border-radius: 8px; padding: 4px; box-shadow: 0 10px 28px rgba(0,0,0,0.5); min-width: 134px; max-height: 70vh; overflow-y: auto; }
+  /* padding-right reserves the scrollbar lane so a long menu's bar never sits on the text. */
+  .sndmenu { position: fixed; z-index: 100000; background: var(--bg-elev-2); border: 1px solid var(--border-hi); border-radius: 8px; padding: 4px 12px 4px 4px; box-shadow: 0 10px 28px rgba(0,0,0,0.5); min-width: 134px; max-height: 70vh; overflow-y: auto; }
   .sndmenu::-webkit-scrollbar { width: 8px; }
   .sndmenu::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
   .sndmenu::-webkit-scrollbar-track { background: transparent; }
@@ -5118,6 +5119,10 @@
   }
   document.addEventListener('focusin', () => setTimeout(syncKbCapture, 0));
   document.addEventListener('focusout', () => setTimeout(syncKbCapture, 0));
+  // Self-heal: a focused input REMOVED by a panel rebuild fires no focusout, which left the
+  // capture flag stuck on and silently ate every keystroke meant for the game. Re-derive the
+  // truth from the live activeElement once a second; syncKbCapture dedups, so this is free.
+  setInterval(syncKbCapture, 1000);
   // Companion-signalled: a click went to the GAME while we held keyboard capture --
   // drop focus so typing returns to the game immediately.
   window.__rtxGameClick = function () {

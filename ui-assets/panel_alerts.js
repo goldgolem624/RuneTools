@@ -1010,7 +1010,7 @@
         if (!q || !bridge() || !bridge().menuSearch) return;
         let hits = [];
         try { const r = JSON.parse(bridge().menuSearch(0, q, 40) || '{}'); hits = Array.isArray(r.hits) ? r.hits : []; } catch (e) {}
-        const ents = hits.map(h => ({ label: h.name + '  (' + h.id + ')', act: () => { w.text = h.name; w.item = h.id; inp.value = h.name; saveAlertCfg(); renderCustomList(); } }));
+        const ents = hits.map(h => ({ label: h.name + '  (' + h.id + ')', raw: true, act: () => { w.text = h.name; w.item = h.id; inp.value = h.name; saveAlertCfg(); renderCustomList(); } }));
         if (!ents.length) ents.push({ label: '(no item named like that in the cache)', act: () => {} });
         closeSoundMenu(); openChoice(inp, ents);
       };
@@ -1071,6 +1071,10 @@
   }
   function renderCustomList() {
     const host = document.getElementById('alertCustomList'); if (!host) return;
+    // Same reason as the Auras editor: wiping a focused input fires no focusout and leaves
+    // keyboard capture stuck on. Blur it first.
+    const fe = document.activeElement;
+    if (fe && host.contains(fe) && fe.blur) { try { fe.blur(); } catch (e) {} }
     host.innerHTML = '';
     if (!Array.isArray(alertCfg.custom) || !alertCfg.custom.length) {
       const e = document.createElement('div'); e.className = 'al-desc'; e.style.padding = '2px 4px';
@@ -1095,6 +1099,9 @@
     const pop = document.createElement('div'); pop.className = 'sndmenu'; pop.id = 'sndMenu';
     for (const e of entries) {
       const it = document.createElement('div'); it.className = 'sndmenu-it';
+      // raw: keep the label's exact case (token guides, item names); the default capitalize
+      // exists for the sound names ("alert 1" -> "Alert 1") and mangles anything case-sensitive.
+      if (e.raw) it.style.textTransform = 'none';
       const nm = document.createElement('span'); nm.textContent = e.label; nm.style.flex = '1'; it.appendChild(nm);
       it.addEventListener('click', () => { e.act(); closeSoundMenu(); });
       pop.appendChild(it);
