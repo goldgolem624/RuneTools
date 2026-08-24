@@ -718,6 +718,23 @@
     let left = r.left;
     if (left + pw > W - SB) left = r.right - pw;
     left = Math.max(8, Math.min(left, W - pw - SB));
+    // The anchor's window paints its content scrollbar ABOVE a fixed popup in this renderer, so
+    // a menu whose left edge lands in that lane gets a bar drawn over its text. If the menu
+    // would straddle the window's right-edge scrollbar lane, shove it fully past the lane
+    // (or fully inside the window when there is no room to the right).
+    try {
+      const winEl = anchor.closest ? anchor.closest('.win') : null;
+      if (winEl) {
+        const wr = winEl.getBoundingClientRect().right;
+        const LANE = 14;
+        // Any intersection of [left, left+pw] with the lane [wr-LANE, wr] counts, including a
+        // menu that starts inside the window and runs out across the edge.
+        if (left < wr && left + pw > wr - LANE) {
+          if (wr + 2 + pw <= W - SB) left = wr + 2;                  // fully past the lane
+          else left = Math.max(8, wr - LANE - 6 - pw);               // fully inside the window
+        }
+      }
+    } catch (e) {}
     let top = openUp ? (r.top - ph - 4) : (r.bottom + 4);
     top = Math.max(8, Math.min(top, H - ph - 8));
     pop.style.left = Math.max(8, left) + 'px';

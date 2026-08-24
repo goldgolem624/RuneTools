@@ -4462,6 +4462,9 @@
     wmSaveSoon();
   }
   function wmMinimize(w) {
+    // A body-level popup (sound / token / picker menu) anchored in this window must not outlive
+    // it as an orphan floating over the game.
+    try { if (typeof closeSoundMenu === 'function') closeSoundMenu(); } catch (e) {}
     w.min = true;
     w.el.style.display = 'none';
     if (wm.focused === w.wid) { wm.focused = null; }
@@ -4481,6 +4484,7 @@
   function wmClose(wid) {
     const w = wm.wins.get(wid);
     if (!w) return;
+    try { if (typeof closeSoundMenu === 'function') closeSoundMenu(); } catch (e) {}
     wm.dirty = true;            // closing is a layout change; see the note in openTab
     // Only the SHOWN tab needs leaving: the others were left when they were switched away.
     paneLeave(w.tab);
