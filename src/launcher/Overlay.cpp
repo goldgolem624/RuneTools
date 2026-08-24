@@ -586,10 +586,27 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
 
     // --- highlighted NPCs (e.g. random events): a pulsing gold ring + label,
     //     drawn until the NPC leaves the scene. Independent of the npc toggle. ---
-    if (!f.highlights.empty()) {
+    // Same anti-flicker hold as PublishMarkers: a labelled highlight that fails to resolve on
+    // individual frames (morph or animation churn) keeps drawing for a short grace period.
+    std::vector<rtx::reader::OverlayPoint> dfHls;
+    {
+        static std::map<std::string, std::pair<rtx::reader::OverlayPoint, ULONGLONG>> s_hold;
+        constexpr ULONGLONG kHoldMs = 700;
+        const ULONGLONG tnow = GetTickCount64();
+        dfHls = f.highlights;
+        for (const auto& hp : dfHls) if (!hp.label.empty()) s_hold[hp.label] = { hp, tnow };
+        for (auto it = s_hold.begin(); it != s_hold.end();) {
+            if (tnow - it->second.second > kHoldMs) { it = s_hold.erase(it); continue; }
+            bool present = false;
+            for (const auto& hp : dfHls) if (hp.label == it->first) { present = true; break; }
+            if (!present) dfHls.push_back(it->second.first);
+            ++it;
+        }
+    }
+    if (!dfHls.empty()) {
         float pulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
         SolidBrush goldText(Color(255, 255, 226, 128));
-        for (const auto& hp : f.highlights) {
+        for (const auto& hp : dfHls) {
             if (hp.has_box3d) {                              // Scene-tab outline -> 3D box
                 float ex[2] = { hp.bmin[0], hp.bmax[0] }, ny[2] = { hp.bmin[1], hp.bmax[1] }, uz[2] = { hp.bmin[2], hp.bmax[2] };
                 Gdiplus::PointF v[8]; bool okAll = true;
@@ -704,9 +721,35 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       if (sbit != g_skillBars.end() && now_ms() - sbit->second.at_ms <= kSkillBarsTtlMs)
           sbars = sbit->second.bars; }
 
+    // Labelled highlights (guide / alert NPCs) get a short HOLD: the reader resolves them per
+    // frame from the live scene, and a morphing or animating NPC can fail name or box resolution
+    // on individual frames, which made the box and label blink visibly. Each labelled highlight
+    // seen is kept drawing for a grace period after it stops resolving; the Scene-tab outline
+    // (empty label) stays strictly live, and a cleared needle empties the hold with the frame.
+    // PublishMarkers runs on the overlay thread only, so plain statics are fine.
+    std::vector<rtx::reader::OverlayPoint> hls;
+    {
+        static std::map<DWORD, std::map<std::string, std::pair<rtx::reader::OverlayPoint, ULONGLONG>>> s_hiHold;
+        constexpr ULONGLONG kHiHoldMs = 700;
+        const ULONGLONG tnow = GetTickCount64();
+        auto& hold = s_hiHold[cfg.pid];
+        if (f) {
+            hls = f->highlights;
+            for (const auto& hp : hls)
+                if (!hp.label.empty()) hold[hp.label] = { hp, tnow };
+            for (auto it = hold.begin(); it != hold.end();) {
+                if (tnow - it->second.second > kHiHoldMs) { it = hold.erase(it); continue; }
+                bool present = false;
+                for (const auto& hp : hls) if (hp.label == it->first) { present = true; break; }
+                if (!present) hls.push_back(it->second.first);
+                ++it;
+            }
+        } else hold.clear();
+    }
+
     bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
                        (widgets && !widgets->empty()) ||
-                       (f && (cfg.enabled || cfg.markers || cfg.nameplates || !f->highlights.empty() || hasGuides));
+                       (f && (cfg.enabled || cfg.markers || cfg.nameplates || !hls.empty() || hasGuides));
     if (!wantContent) {
         std::uint32_t s = sh->seq + 1;
         sh->seq = s; MemoryBarrier();
@@ -1090,7 +1133,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     //   label EMPTY + has_box3d (Scene-tab outline) -> teal model box only;
     //   labelled (guide/alert NPC) -> tile under the NPC (gold, follows them) +
     //   gold model box + compact label panel above the head.
-    if (f && !f->highlights.empty()) {
+    if (f && !hls.empty()) {
         float pulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
         auto box3d = [&](const rtx::reader::OverlayPoint& hp, float th, int r, int g, int b, int a) {
             float ex[2] = { hp.bmin[0], hp.bmax[0] };
@@ -1111,7 +1154,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 line(vx[e[0]], vy[e[0]], vx[e[1]], vy[e[1]], th, r, g, b, a);
             return true;
         };
-        for (const auto& hp : f->highlights) {
+        for (const auto& hp : hls) {
             // NEUTRAL, not an accent: an inspected entity is not an objective, and the two must
             // never be confusable. Discriminated on an EMPTY label -- do not give this path a
             // default caption or it silently reroutes into the objective style below.
