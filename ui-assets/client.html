@@ -2568,7 +2568,8 @@
     if (!d.skills)       return 'Waiting for skill data' + tail;
     if (!d.widgets)      return 'Skills interface (group ' + SK_GROUP + ') not open / not found' + tail;
     if (!d.comp2)        return d.widgets + ' widgets, but none are comp ' + SK_CELL_COMP + ' cells' + tail;
-    if (d.visible === 0) return 'Skills panel tabbed away (0 of ' + d.comp2 + ' cells visible) - bars hidden' + tail;
+    if (d.visible === 0 && !(d.openVar !== null && d.openVar > 0))
+      return 'Skills panel tabbed away (0 of ' + d.comp2 + ' cells visible) - bars hidden' + tail;
     if (!d.withAbs)      return d.comp2 + ' cells found, but no screen position (panel origin unresolved)' + tail;
     return d.comp2 + ' cells · ' + d.visible + ' vis · chrome ' + skContentDy + 'px · '
          + (d.anchor ? ('frame ' + d.anchor) : 'no 1477 frame anchor')
@@ -2694,7 +2695,16 @@
     // backpack. The reader flags each rendered widget with v:1, so require it on every
     // cell: zero visible cells reads as "tabbed away", and if the flag ever breaks on
     // a future build the failure is hidden bars, never bars over the wrong panel.
-    const ok = w => w && w.r && w.a && w.r[2] > 8 && w.r[3] > 8 && w.v === 1;
+    // VISIBILITY: per-cell v:1 exists to stop bars drawing over whatever tab replaced Skills
+    // on builds where the open varc reads as garbage. But the v flag itself is layout-dependent:
+    // in classic fullscreen layouts the +0x50 render bytes read differently and every cell
+    // reports not-visible even with the panel plainly open (reported live: "0 of 29 cells
+    // visible [open var 1]"). So the varc is the primary gate whenever it is READABLE: a sane
+    // nonzero open varc means the panel is open and cells are accepted without the flag; the
+    // per-cell flag only becomes a requirement when the varc is unreadable. openVar === 0
+    // (tabbed away) already cleared above in both worlds.
+    const openTrusted = openVar !== null && openVar > 0;
+    const ok = w => w && w.r && w.a && w.r[2] > 8 && w.r[3] > 8 && (openTrusted || w.v === 1);
     let cells = ws.filter(w => ok(w) && w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0)
                   .sort((p, q) => p.t[2] - q.t[2]);
     // Primary path: each cell CARRIES its skill slot (the sub index). Pairing cells[k]
