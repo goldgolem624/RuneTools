@@ -871,7 +871,9 @@
     }
     const za = v(61678), gu = v(61680), sa = v(61679);
     if (za || gu || sa) row('Alignment', 'Zamorak ' + za + ' · Guthix ' + gu + ' · Saradomin ' + sa);
-    if (vb[61518] !== undefined) row('Relic resets left', v(61518));
+    // vb 61518 (db 327 col 2) is the shared reset pool for relics AND blessings; the league
+    // grants 4 (owner-confirmed cap), so read it as n of 4.
+    if (vb[61518] !== undefined) row('Resets left (relics & blessings)', v(61518) + ' / 4');
     // Tier passives: the game's own Passive Effects list is db 328.7 per tier, already loaded
     // into l.tiers; a tier's passives are live once points reach its cost. The two var-backed
     // flags below are confirmations of specific passives (script16990 adrenaline, ritual souls),
