@@ -3899,7 +3899,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     // publishes each runtime object's live model AABB, and a degenerate one
     // (bmax.x <= bmin.x) is the engine's own statement that nothing is drawn.
     // Static map locs have no runtime AABB, so they report vis = true.
-    struct Obj { int id, x, y, plane, type, dist; std::string name, acts; bool rt; bool vis; };
+    struct Obj { int id, x, y, plane, type, dist; std::string name, acts; bool rt; bool vis;
+                 int w = 1, h = 1; };   // footprint in tiles, rotation-corrected; x/y = SW anchor
     std::vector<Obj> objs;
     if (player_x >= 0) {
         if (obj_range < 1)   obj_range = 1;
@@ -3935,7 +3936,12 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         if (!acts.empty()) acts.push_back(',');
                         acts += '"'; acts += json_escape(a); acts += '"';
                     }
-                    objs.push_back({ p.id, wx, wy, p.plane, p.type, dist, meta.name, std::move(acts), false, true });
+                    // Footprint: cache dims, swapped when the placement is rotated 90/270. The
+                    // anchor tile IS the SW corner of that footprint (MapLocations semantics), so
+                    // a consumer can cover the exact tiles the object stands on.
+                    int fw = meta.dim_x, fh = meta.dim_y;
+                    if (p.rotation & 1) std::swap(fw, fh);
+                    objs.push_back({ p.id, wx, wy, p.plane, p.type, dist, meta.name, std::move(acts), false, true, fw, fh });
                 }
             }
         }
@@ -3975,7 +3981,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     acts += '"'; acts += json_escape(a); acts += '"';
                 }
                 objs.push_back({ r.config_id, r.x, r.y, r.plane, -1, dist, meta.name, std::move(acts), true,
-                                 r.bmax[0] > r.bmin[0] });   // degenerate AABB = not rendered
+                                 r.bmax[0] > r.bmin[0],      // degenerate AABB = not rendered
+                                 meta.dim_x, meta.dim_y });  // rotation unknown for live locs; raw dims
             }
         }
         std::sort(objs.begin(), objs.end(), [](const Obj& a, const Obj& b) {
@@ -3990,8 +3997,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
         char buf[208];
         if (oc) objects.push_back(',');
         std::snprintf(buf, sizeof(buf),
-            "{\"id\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"type\":%d,\"dist\":%d,\"rt\":%s,\"vis\":%s,\"name\":\"",
-            o.id, o.x, o.y, o.plane, o.type, o.dist, o.rt ? "true" : "false",
+            "{\"id\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"type\":%d,\"dist\":%d,\"w\":%d,\"h\":%d,\"rt\":%s,\"vis\":%s,\"name\":\"",
+            o.id, o.x, o.y, o.plane, o.type, o.dist, o.w, o.h, o.rt ? "true" : "false",
             o.vis ? "true" : "false");
         objects += buf; objects += json_escape(o.name);
         objects += "\",\"actions\":["; objects += o.acts; objects += "]}";

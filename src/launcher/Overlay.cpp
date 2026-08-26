@@ -837,7 +837,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             size_t idx = (size_t)tgx * T + tgy;
             return idx < f->blocked.size() ? f->blocked[idx] : 0;
         };
-        // Full-blocked tiles: a soft red fill under the lattice.
+        // Full-blocked tiles. A flat 55-alpha red wash disappeared on red terrain (reported on
+        // the red-rock dig site: blocked ground read as walkable). Terrain-independent
+        // treatment instead: darken the tile (black reads on ANY hue), then a red diagonal
+        // hatch. Darken + hatch stays legible on stone, sand, snow and lava alike, and the
+        // hatch says "crossed out" without relying on colour contrast with the ground.
         if (!cfg.walk_only)
             for (int tgx = 0; tgx < T; ++tgx)
                 for (int tgy = 0; tgy < T; ++tgy) {
@@ -848,8 +852,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     marker::Command q{}; q.type = marker::kFillQuad;
                     q.x0 = px[a]; q.y0 = py[a]; q.x1 = px[b]; q.y1 = py[b];
                     q.x2 = px[c]; q.y2 = py[c]; q.x3 = px[d]; q.y3 = py[d];
-                    q.r = 240; q.g = 70; q.b = 70; q.a = 55;
+                    q.r = 12; q.g = 8; q.b = 10; q.a = 96;
                     push(q);
+                    // one SW->NE hatch stroke, haloed so it reads over the darkening
+                    line(px[a], py[a], px[c], py[c], 3.2f, 10, 6, 8, 150);
+                    line(px[a], py[a], px[c], py[c], 1.6f, 255, 96, 84, 220);
                 }
         // Each lattice edge is drawn ONCE in a uniform colour (player tile green, everything
         // else cyan-white); blocked is the fill, not the lines.
@@ -875,8 +882,16 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 cornerWorld(c0, A); cornerWorld(c1, B);
                 if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, A, B, x0, y0, x1, y1)) return;
             }
-            if (self) line(x0, y0, x1, y1, 2.4f, 150, 250, 150, 255);
-            else      line(x0, y0, x1, y1, 1.3f, 150, 215, 255, 175);
+            // Cartographic halo: a soft dark understroke beneath every lattice line, so the
+            // grid stays crisp over bright stone and pale sand where a bare cyan line washed
+            // out. The halo is drawn first and slightly wider; the colour line lands on top.
+            if (self) {
+                line(x0, y0, x1, y1, 4.2f, 8, 24, 10, 170);
+                line(x0, y0, x1, y1, 2.4f, 150, 250, 150, 255);
+            } else {
+                line(x0, y0, x1, y1, 2.6f, 6, 12, 20, 140);
+                line(x0, y0, x1, y1, 1.3f, 170, 225, 255, 205);
+            }
         };
         // Each tile draws its OWN four edges, so a bridge seam can be a step rather than a
         // shared corner both sides have to agree on. Interior edges are therefore drawn twice
@@ -903,10 +918,16 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 const size_t base = ((size_t)tgx * T + tgy) * 4;
                 size_t a = base + 0, b = base + 1, c = base + 2, d = base + 3;
                 if (vis[a] != 1 || vis[b] != 1 || vis[c] != 1 || vis[d] != 1) continue;
-                if (fl & 0x08) line(px[a], py[a], px[d], py[d], 2.6f, 95, 175, 255, 255);
-                if (fl & 0x04) line(px[b], py[b], px[c], py[c], 2.6f, 95, 175, 255, 255);
-                if (fl & 0x02) line(px[a], py[a], px[b], py[b], 2.6f, 95, 175, 255, 255);
-                if (fl & 0x01) line(px[d], py[d], px[c], py[c], 2.6f, 95, 175, 255, 255);
+                // Wall edges get the same halo treatment, slightly heavier: they are the
+                // "you cannot cross THIS side" signal and must dominate the lattice.
+                auto wall = [&](size_t e0, size_t e1) {
+                    line(px[e0], py[e0], px[e1], py[e1], 4.4f, 4, 10, 18, 180);
+                    line(px[e0], py[e0], px[e1], py[e1], 2.6f, 120, 190, 255, 255);
+                };
+                if (fl & 0x08) wall(a, d);
+                if (fl & 0x04) wall(b, c);
+                if (fl & 0x02) wall(a, b);
+                if (fl & 0x01) wall(d, c);
             }
     }
 

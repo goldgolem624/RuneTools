@@ -218,9 +218,14 @@
     let changed = false;
     keys.forEach(k => {
       const r = m[k];
+      if (r.id === -1) return;   // object footprint group: static, only removed by hand
       const still = sceneGround.some(g => g.id === r.id && g.x === r.x && g.y === r.y && ((g.plane | 0) === (r.plane | 0)));
       if (still) return;
-      try { b.markerRemove(myPid(), ((r.x >> 6) << 8) | (r.y >> 6), r.x & 63, r.y & 63, r.plane | 0); } catch (e) {}
+      const W = Math.max(1, r.w | 0 || 1), H = Math.max(1, r.h | 0 || 1);
+      for (let dx = 0; dx < W; dx++) for (let dy = 0; dy < H; dy++) {
+        const tx = r.x + dx, ty = r.y + dy;
+        try { b.markerRemove(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, r.plane | 0); } catch (e) {}
+      }
       delete m[k]; changed = true;
     });
     if (changed) { sceneMarksSave(); try { if (typeof fetchMarkers === 'function') fetchMarkers(true); } catch (e) {} try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {} }
@@ -228,7 +233,15 @@
   function sceneMarksClearAll() {
     const b = bridge(); if (!b || !b.markerRemove) return;
     const m = sceneMarksLoad();
-    for (const k in m) { const r = m[k]; try { b.markerRemove(myPid(), ((r.x >> 6) << 8) | (r.y >> 6), r.x & 63, r.y & 63, r.plane | 0); } catch (e) {} delete m[k]; }
+    for (const k in m) {
+      const r = m[k];
+      const W = Math.max(1, r.w | 0 || 1), H = Math.max(1, r.h | 0 || 1);
+      for (let dx = 0; dx < W; dx++) for (let dy = 0; dy < H; dy++) {
+        const tx = r.x + dx, ty = r.y + dy;
+        try { b.markerRemove(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, r.plane | 0); } catch (e) {}
+      }
+      delete m[k];
+    }
     sceneMarksSave();
     // Untracked ones from before tracking: identified by the scene mark colour (gold).
     const ml = (typeof markerList !== 'undefined' && Array.isArray(markerList)) ? markerList : [];
@@ -238,16 +251,25 @@
     try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {}
     sceneSig = ''; setTimeout(renderScene, 150);
   }
-  function toggleTileMark(x, y, plane, label, itemId) {
+  // `fw`/`fh` = the object's footprint in tiles (reader-supplied, rotation-corrected, x/y = SW
+  // anchor). Marking covers EVERY tile the object stands on, not just its anchor: a 2x2 crate
+  // marked on one corner tile read as "the box is in the wrong place". Toggling off removes the
+  // whole group; only the anchor carries the label so the name is not printed fw*fh times.
+  function toggleTileMark(x, y, plane, label, itemId, fw, fh) {
     const b = bridge();
     if (!b || !b.markerAdd) return;
-    const region = ((x >> 6) << 8) | (y >> 6), lx = x & 63, ly = y & 63;
     const m = sceneMarksLoad(), k = sceneTileKey(x, y, plane);
+    const W = Math.max(1, Math.min(8, fw | 0 || 1)), H = Math.max(1, Math.min(8, fh | 0 || 1));
+    const each = fn => { for (let dx = 0; dx < W; dx++) for (let dy = 0; dy < H; dy++) fn(x + dx, y + dy); };
     try {
-      if (sceneTileMarked(x, y, plane)) { b.markerRemove(myPid(), region, lx, ly, plane | 0); delete m[k]; sceneMarksSave(); }
-      else {
-        b.markerAdd(myPid(), region, lx, ly, plane | 0, 0xFFC93A, String(label || '').slice(0, 40));
-        if (itemId != null) { m[k] = { x, y, plane: plane | 0, id: itemId }; sceneMarksSave(); }
+      if (sceneTileMarked(x, y, plane)) {
+        each((tx, ty) => { try { b.markerRemove(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, plane | 0); } catch (e) {} });
+        delete m[k]; sceneMarksSave();
+      } else {
+        each((tx, ty) => { try { b.markerAdd(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, plane | 0, 0xFFC93A, (tx === x && ty === y) ? String(label || '').slice(0, 40) : ''); } catch (e) {} });
+        if (itemId != null) m[k] = { x, y, plane: plane | 0, id: itemId, w: W, h: H };
+        else m[k] = { x, y, plane: plane | 0, id: -1, w: W, h: H };   // object group: tracked for group removal only
+        sceneMarksSave();
         // A marker nobody can see is a confusing no-op: make sure the markers layer is on.
         try { if (typeof overlayState !== 'undefined' && overlayState && !overlayState.markers) { overlayState.markers = true; if (typeof saveOverlayCfg === 'function') saveOverlayCfg(); } } catch (e) {}
       }
@@ -508,7 +530,7 @@
         ob.textContent = '◈';
         ob.classList.toggle('on', on);
         ob.title = on ? 'Remove the tile marker under this ' + (n.type === 'ground' ? 'item' : 'object') : 'Mark the tile this ' + (n.type === 'ground' ? 'item' : 'object') + ' is on (a user marker, see the Markers panel)';
-        ob.addEventListener('click', (e) => { e.stopPropagation(); toggleTileMark(n.x, n.y, n.plane, n.name, n.type === 'ground' ? n.id : null); });
+        ob.addEventListener('click', (e) => { e.stopPropagation(); toggleTileMark(n.x, n.y, n.plane, n.name, n.type === 'ground' ? n.id : null, n.type === 'object' ? n.w : 1, n.type === 'object' ? n.h : 1); });
         wrap.appendChild(ob); wrap.appendChild(nm);
         nameRow = wrap;
       } else if (n.type === 'player' && n.name) {
