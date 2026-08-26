@@ -837,11 +837,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             size_t idx = (size_t)tgx * T + tgy;
             return idx < f->blocked.size() ? f->blocked[idx] : 0;
         };
-        // Full-blocked tiles. A flat 55-alpha red wash disappeared on red terrain (reported on
-        // the red-rock dig site: blocked ground read as walkable). Terrain-independent
-        // treatment instead: darken the tile (black reads on ANY hue), then a red diagonal
-        // hatch. Darken + hatch stays legible on stone, sand, snow and lava alike, and the
-        // hatch says "crossed out" without relying on colour contrast with the ground.
+        // Blocked ground. Two designs failed before this one: a flat 55-alpha red wash
+        // disappeared on red terrain, and darken-plus-hatch turned a mostly-blocked scene into
+        // wall-to-wall noise. The information that matters is WHERE WALKABLE ENDS, so blocked
+        // tiles get only a faint veil (and no lattice at all, see below) while the
+        // walkable/blocked boundary is drawn once, strongly, by the edge pass. Structure does
+        // the talking: gridded ground is walkable, ungridded ground is not, and one amber
+        // line divides them.
         if (!cfg.walk_only)
             for (int tgx = 0; tgx < T; ++tgx)
                 for (int tgy = 0; tgy < T; ++tgy) {
@@ -852,20 +854,21 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     marker::Command q{}; q.type = marker::kFillQuad;
                     q.x0 = px[a]; q.y0 = py[a]; q.x1 = px[b]; q.y1 = py[b];
                     q.x2 = px[c]; q.y2 = py[c]; q.x3 = px[d]; q.y3 = py[d];
-                    q.r = 12; q.g = 8; q.b = 10; q.a = 96;
+                    q.r = 8; q.g = 6; q.b = 8; q.a = 62;
                     push(q);
-                    // one SW->NE hatch stroke, haloed so it reads over the darkening
-                    line(px[a], py[a], px[c], py[c], 3.2f, 10, 6, 8, 150);
-                    line(px[a], py[a], px[c], py[c], 1.6f, 255, 96, 84, 220);
                 }
-        // Each lattice edge is drawn ONCE in a uniform colour (player tile green, everything
-        // else cyan-white); blocked is the fill, not the lines.
+        // The lattice belongs to WALKABLE tiles only: a blocked tile draws no grid, so the
+        // gridded carpet itself says "you can stand here" and its absence says you cannot.
         auto tileShown = [&](int tgx, int tgy, bool& shown, bool& self) {
             shown = self = false;
             if (tgx < 0 || tgy < 0 || tgx >= T || tgy >= T) return;
-            if ((flagAt(tgx, tgy) & 0x10) && cfg.walk_only) return;  // hidden by the filter
+            if (flagAt(tgx, tgy) & 0x10) return;             // blocked: no lattice, veil only
             shown = true;
             self = (tgx == R && tgy == R);
+        };
+        auto blockedAt = [&](int tgx, int tgy) {
+            if (tgx < 0 || tgy < 0 || tgx >= T || tgy >= T) return false;  // outside the ring: unknown, not blocked
+            return (flagAt(tgx, tgy) & 0x10) != 0;
         };
         auto cornerWorld = [&](size_t i, float* out) {
             const size_t tile = i / 4; const int c = (int)(i % 4);
@@ -873,7 +876,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             out[1] = (float)(f->player_ty - R + (int)(tile % T) + CY[c]) * 512.0f;
             out[2] = wz[i];
         };
-        auto edge = [&](size_t c0, size_t c1, bool self) {
+        // border: this edge separates walkable from blocked -> the amber coastline, the one
+        // strong stroke in the design. self: the player's tile. Everything else is quiet.
+        auto edge = [&](size_t c0, size_t c1, bool self, bool border) {
             bool clipped = (vis[c0] == 1 && vis[c1] == 2) || (vis[c0] == 2 && vis[c1] == 1);
             if (!clipped && !(vis[c0] == 1 && vis[c1] == 1)) return;
             float x0 = px[c0], y0 = py[c0], x1 = px[c1], y1 = py[c1];
@@ -882,15 +887,17 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 cornerWorld(c0, A); cornerWorld(c1, B);
                 if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, A, B, x0, y0, x1, y1)) return;
             }
-            // Cartographic halo: a soft dark understroke beneath every lattice line, so the
-            // grid stays crisp over bright stone and pale sand where a bare cyan line washed
-            // out. The halo is drawn first and slightly wider; the colour line lands on top.
+            // Cartographic halo: a soft dark understroke first, the colour line on top, so
+            // every stroke stays crisp on bright stone and pale sand alike.
             if (self) {
                 line(x0, y0, x1, y1, 4.2f, 8, 24, 10, 170);
                 line(x0, y0, x1, y1, 2.4f, 150, 250, 150, 255);
+            } else if (border) {
+                line(x0, y0, x1, y1, 4.0f, 30, 12, 2, 185);
+                line(x0, y0, x1, y1, 2.2f, 255, 178, 64, 235);
             } else {
-                line(x0, y0, x1, y1, 2.6f, 6, 12, 20, 140);
-                line(x0, y0, x1, y1, 1.3f, 170, 225, 255, 205);
+                line(x0, y0, x1, y1, 2.4f, 6, 12, 20, 120);
+                line(x0, y0, x1, y1, 1.2f, 170, 225, 255, 185);
             }
         };
         // Each tile draws its OWN four edges, so a bridge seam can be a step rather than a
@@ -904,10 +911,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     tileShown(tgx, tgy, shown, self);
                     if (!shown || self != (pass == 1)) continue;
                     const size_t base = ((size_t)tgx * T + tgy) * 4;
-                    edge(base + 0, base + 1, self);      // S
-                    edge(base + 1, base + 2, self);      // E
-                    edge(base + 2, base + 3, self);      // N
-                    edge(base + 3, base + 0, self);      // W
+                    edge(base + 0, base + 1, self, blockedAt(tgx, tgy - 1));   // S
+                    edge(base + 1, base + 2, self, blockedAt(tgx + 1, tgy));   // E
+                    edge(base + 2, base + 3, self, blockedAt(tgx, tgy + 1));   // N
+                    edge(base + 3, base + 0, self, blockedAt(tgx - 1, tgy));   // W
                 }
         // directional wall edges on top (a=SW b=SE c=NE d=NW)
         for (int tgx = 0; tgx < T; ++tgx)
