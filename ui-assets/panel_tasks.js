@@ -6,7 +6,11 @@
   let taskVp = null;
   let slayerCreatures = null;
   let reaperBosses = null;
-  const TASK_VARP_IDS = '183,185,4519,10077';
+  // Codex varps (CS2 script13488: creature id c -> varp[c/32] bit c%32, cases 0-6 in this
+  // order; its default branch literally asks for "another slayer_codex_x var"). 7*32 = 224 bits
+  // of "soul claimed", joined to names through enum 1563, which this panel already loads.
+  const ST_CODEX_VARPS = [7020, 7021, 7022, 7023, 7024, 7025, 12309];
+  const TASK_VARP_IDS = '183,185,4519,10077,' + ST_CODEX_VARPS.join(',');
   // Block/prefer slot varbits (clientscript-6410); slot values are task-category ids in varp
   // 185's id space, resolved through enum 1563.
   const ST_BLOCK_VBS = [9073, 9075, 9076, 9077, 9081, 9082, 22707, 42839];
@@ -29,7 +33,7 @@
   const ST_EXTRA_VB_IDS = ST_BLOCK_VBS.concat(ST_PREFER_VBS, ST_STANDING_VBS,
     ST_MASKS.map(m => m[1]), ST_MASKS.map(m => m[2]).filter(Boolean)).join(',');
   const stMaskNames = {};
-  let stStandingSig = '', stSlotsSig = '', stMasksSig = '';
+  let stStandingSig = '', stSlotsSig = '', stMasksSig = '', stCodexSig = '';
   // [name, killsVarbit, prestigeVarbit], baked from CS2 script5511's switch: the name<->varbit
   // pairing exists only there, and enum 10555's order does not match it.
   const SLAYER_LOG = [
@@ -197,13 +201,15 @@
         '<div class="st-card" id="stCollections"></div>' +
         '<div class="st-sec">Slayer creature log</div>' +
         '<div class="st-card" id="stLog"></div>' +
+        '<div class="st-sec" id="stCodexHead">Slayer codex souls</div>' +
+        '<div class="st-card" id="stCodex"></div>' +
         '<div class="st-sec" id="stMaskHead">Slayer mask kill counters</div>' +
         '<div class="st-card" id="stMasks"></div></div>';
       // Section sigs must reset when the DOM is rebuilt (a tab switch wipes #content), or a stale
       // sig leaves the card empty until a varbit changes.
       slayerLogSig = '';
       slayerColSig = '';
-      stStandingSig = ''; stSlotsSig = ''; stMasksSig = '';
+      stStandingSig = ''; stSlotsSig = ''; stMasksSig = ''; stCodexSig = '';
     }
     let sName = null, sCount = null;
     if (taskVp) {
@@ -228,7 +234,39 @@
     renderSlayerSlots();
     renderSlayerCollections();
     renderSlayerLog();
+    renderSlayerCodex();
     renderSlayerMasks();
+  }
+  // Slayer codex: which creature souls are claimed. One bit per creature across the seven
+  // codex varps; enum 1563 supplies the name for each id. Ids the enum does not name are
+  // counted but not listed (a future creature's bit set before the cache knows it).
+  function renderSlayerCodex() {
+    const box = document.getElementById('stCodex');
+    const head = document.getElementById('stCodexHead');
+    if (!box) return;
+    if (!taskVp || !slayerCreatures) {
+      if (stCodexSig !== 'wait') { stCodexSig = 'wait'; box.innerHTML = '<div class="st-more">Reading codex... (be in-world)</div>'; }
+      return;
+    }
+    const have = id => {
+      const vp = taskVp[String(ST_CODEX_VARPS[id >> 5])];
+      return typeof vp === 'number' ? ((vp >>> (id & 31)) & 1) === 1 : false;
+    };
+    const ids = Object.keys(slayerCreatures).map(Number).filter(n => n >= 0 && n < ST_CODEX_VARPS.length * 32);
+    const sig = ST_CODEX_VARPS.map(v => taskVp[String(v)] | 0).join(',') + '|' + ids.length;
+    if (sig === stCodexSig) return;
+    stCodexSig = sig;
+    const claimed = ids.filter(have), missing = ids.filter(id => !have(id));
+    if (head) head.textContent = 'Slayer codex souls (' + claimed.length + ' / ' + ids.length + ' claimed)';
+    let html = '';
+    if (!missing.length) {
+      html = '<div class="st-row"><div class="st-nm">Every codex soul is claimed.</div></div>';
+    } else {
+      html = '<div class="st-row st-hdr"><div class="st-nm">Missing souls (' + missing.length + ')</div></div>';
+      const names = missing.map(id => slayerCreatures[String(id)] || ('#' + id)).sort((a, b) => a.localeCompare(b));
+      for (const nm of names) html += '<div class="st-row"><div class="st-nm">' + nm + '</div></div>';
+    }
+    box.innerHTML = html;
   }
   function renderSlayerStanding() {
     const box = document.getElementById('stStanding');

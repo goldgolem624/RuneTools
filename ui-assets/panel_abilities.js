@@ -160,6 +160,42 @@
         + '</div>'
         + '<span style="font-size:12px;color:var(--text,#ddd);min-width:40px;text-align:right">' + disp + '%</span></div>';
     };
+    // Five combat buff/debuff timers that live in single absolute-expiry varc-ints rather than
+    // the cast/ready pairs abCdLive handles (CS2: setter script4252, getter script11073; decode
+    // confirmed in script10886): remaining ticks = 1 + (v - CLIENTCLOCK)/50. The varcs are NEVER
+    // cleared by the game, so an expired value must be rejected, not displayed.
+    const AB_TIMERS = [
+      [8477, 'Light Strike', true], [8478, 'Lord of Light', true], [8479, 'Avernic Rampage', false],
+      [8480, 'Sliver of Edicts', false], [8481, 'Sliver of Edicts cooldown', true],
+    ];
+    const abTimersHtml = () => {
+      if (!d.vc) return '';
+      const cyc = (d.cycles > 0) ? d.cycles : (d.clock > 0 ? Math.floor(d.clock / 20) : 0);
+      if (!cyc) return '';
+      let rows = '';
+      for (const [id, name, isCd] of AB_TIMERS) {
+        const v = d.vc['5:' + id];
+        if (typeof v !== 'number' || v <= 0) continue;
+        const secs = (1 + (v - cyc) / 50) * 0.6;          // ticks are 0.6s
+        if (v - cyc <= 0 || secs > 3600) continue;         // expired, or a torn read
+        const t = secs >= 60 ? Math.floor(secs / 60) + ':' + ('0' + Math.round(secs % 60)).slice(-2) : Math.round(secs) + 's';
+        rows += '<span style="font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid '
+          + (isCd ? 'rgba(224,108,108,.5)' : 'rgba(77,210,138,.5)') + ';color:' + (isCd ? '#e06c6c' : '#4dd28a') + '">'
+          + name + ' ' + t + '</span>';
+      }
+      return rows ? '<div style="display:flex;flex-wrap:wrap;gap:6px;padding:2px 2px 8px">' + rows + '</div>' : '';
+    };
+    const ensureTimers = () => {
+      const html = abTimersHtml();
+      let el = wrap.querySelector('#ab-timers');
+      if (!html) { if (el) el.remove(); return; }
+      if (!el) {
+        el = document.createElement('div'); el.id = 'ab-timers';
+        const ad = wrap.querySelector('#ab-adren');
+        wrap.insertBefore(el, ad ? ad.nextSibling : wrap.firstChild);
+      }
+      el.innerHTML = html;
+    };
     const ensureAdren = () => {
       const html = abAdrenHtml(d.adren);
       let el = wrap.querySelector('#ab-adren');
@@ -183,6 +219,7 @@
         }
       });
       ensureAdren();
+      ensureTimers();
       return;
     }
     abarSig = sig;
@@ -218,4 +255,5 @@
       wrap.appendChild(sec);
     }
     ensureAdren();
+    ensureTimers();
   }

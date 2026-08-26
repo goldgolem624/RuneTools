@@ -55,6 +55,16 @@
   // region unlocks is per league and hardcoded in the game (script21081: vb 58389
   // for Equilibrium; Catalyst's is dead weight now that the league ended).
   const LG_PICK_ENUM = 9082, LG_BONUS_VB = 58460;
+  // League status vars (research/leagues2/LEAGUES2.md, verified vs build 940; the bar maths is
+  // script20244, the game's own mini tracker):
+  //   blessings: progress = vb61497 - vb1668, span = vb61498 - vb1668;
+  //   vb61499 = blessing tier index (15 = none), vb61498 = next cost (255 = all done),
+  //   vb1668 = previous cost (REPURPOSED in the cache from varp 659 to varp 13489).
+  //   alignments (db 329 col 9 by slot): vb61678 Zamorak, vb61680 Guthix, vb61679 Saradomin.
+  //   vb61518 = relic resets remaining; vb61685 = adrenaline costs zeroed (script16990);
+  //   vb58531 = Necromancy ritual soul bonus percent (db 328 row 19890).
+  //   vb61500 / vb61501 = next region task threshold (2047 = done) / region tier index.
+  const LG_STATUS_VBS = [61497, 61498, 61499, 1668, 61678, 61679, 61680, 61518, 61685, 58531, 61500, 61501];
   const LG_TASKSDONE_VB = { 2: 58389 };
   // Region unlock state: varp 12327 is a locality BITMASK indexed by locality id
   // (script20136 = unk10982(varplayer_12327, bit); script20133 requires every bit of
@@ -320,6 +330,7 @@
     }
     if (lgPickVbs) { for (const k in lgPickVbs) vbs.add(lgPickVbs[k]); vbs.add(LG_BONUS_VB); }
     if (LG_TASKSDONE_VB[l.num]) vbs.add(LG_TASKSDONE_VB[l.num]);
+    if (l.blessTiers.length) for (const v of LG_STATUS_VBS) vbs.add(v);
     if (l.ptsRef > 0) addRef(l.ptsRef);
     vps.add(LG_ACTIVE_VP);
     if (l.hasRegions && lgData.regions && lgData.regions.length) {
@@ -841,6 +852,35 @@
     }
   }
 
+  // The always-visible status card. Vars only, no db walk (script20244's own approach).
+  function lgPaintStatus() {
+    const el = document.getElementById('lgStatus'); if (!el) return;
+    const l = lgCur(); if (!l || !l.blessTiers.length) { el.style.display = 'none'; return; }
+    const vb = lgVbVals;
+    if (!vb) { el.innerHTML = '<div class="lg-empty">Reading league vars... (be in-world)</div>'; return; }
+    const v = id => vb[id] | 0;
+    const rows = [];
+    const row = (k, val) => rows.push('<div class="lg-strow"><span>' + k + '</span><b>' + val + '</b></div>');
+    // Blessing bar per script20244: progress vb61497 - vb1668 over span vb61498 - vb1668.
+    const tierIdx = v(61499), nextCost = v(61498), prevCost = v(1668), done = v(61497);
+    if (nextCost === 255) row('Blessings', 'all tiers unlocked · ' + done + ' tasks');
+    else {
+      const span = nextCost - prevCost, prog = done - prevCost;
+      row('Blessing tier', (tierIdx === 15 ? 'none' : '#' + (tierIdx + 1)) + ' · ' + done + ' tasks · next at ' + nextCost
+        + (span > 0 ? ' (' + Math.max(0, prog) + '/' + span + ')' : ''));
+    }
+    const za = v(61678), gu = v(61680), sa = v(61679);
+    if (za || gu || sa) row('Alignment', 'Zamorak ' + za + ' · Guthix ' + gu + ' · Saradomin ' + sa);
+    if (vb[61518] !== undefined) row('Relic resets left', v(61518));
+    const passives = [];
+    if (v(61685) === 1) passives.push('abilities cost no adrenaline');
+    if (v(58531) > 0) passives.push('+' + v(58531) + '% ritual souls');
+    if (passives.length) row('Passives', passives.join(' · '));
+    if (vb[61500] !== undefined && v(61500) !== 2047)
+      row('Next region unlock', 'at ' + v(61500) + ' tasks (region tier ' + v(61501) + ')');
+    el.style.display = '';
+    el.innerHTML = rows.length ? rows.join('') : '<div class="lg-empty">No league status vars yet (be in-world on a league character).</div>';
+  }
   function renderLeagues() {
     const c = $('content');
     let wrap = $('lgWrap');
@@ -850,6 +890,10 @@
         .lg-sec { color: var(--accent-hi); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 14px 2px 6px; }
         .lg-wrap { margin: 2px 12px 0; }
         .lg-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; }
+        .lg-strow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 12px; font-size: 12px; }
+        .lg-strow + .lg-strow { border-top: 1px solid var(--border); }
+        .lg-strow span { color: var(--text-dim); }
+        .lg-strow b { color: var(--text); font-weight: 600; text-align: right; }
         .lg-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; }
         .lg-row + .lg-row { border-top: 1px solid var(--border); }
         .lg-nm { flex: 1; min-width: 0; color: var(--text); font-size: 12px; }
@@ -918,7 +962,7 @@
       + '|' + lgSection;
     if (sig === lgSig) {
       if (!lgAchById) lgEnsureAch();   // achievements may load after the tables did
-      if (lgListDirty) { lgListDirty = false; lgPaintTiers(); lgPaintList(); }
+      if (lgListDirty) { lgListDirty = false; lgPaintTiers(); lgPaintList(); lgPaintStatus(); }
       return;
     }
     lgSig = sig;
@@ -949,6 +993,13 @@
 
     sec(l.name + (l.sub ? ' · ' + l.sub : ''));
     wrap.lastChild.id = 'lgHead';
+    // Live status card: blessing/alignment/reset state read straight from vars, always visible
+    // above the section tabs. Only leagues that HAVE blessings get it (Leagues I has none).
+    if (l.blessTiers.length) {
+      const st = document.createElement('div'); st.className = 'lg-card'; st.id = 'lgStatus';
+      wrap.appendChild(st);
+      lgPaintStatus();
+    }
 
     // Section tabs: one area on screen at a time instead of one long scroll.
     if (sections.length > 1) {
