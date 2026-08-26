@@ -9,6 +9,11 @@
 // value(col 26) < threshold(col 27) means not owned. Consuming UI in game is iface 1843,
 // which has no cross-category search and no "what am I missing" view - this panel is both.
 //
+// No appearance previews: the game itself draws these as posed 3D MODELS (script18202 ->
+// script13146, IF_SETMODELANGLE) and table 163 carries no sprite or item-icon column, so there
+// is nothing 2D to render. Each row gets a wiki button instead, which shows the look in the
+// built-in wiki browser.
+//
 // No per-row itemInfo calls: the catalogue is name + text + one varbit each, and 5,313 serial
 // awaits is the mistake panel_currencies already demonstrates. Rows load once (the table is
 // version-static), ownership varbits refresh as a batch.
@@ -81,7 +86,9 @@
         .wd-pill.ok { color: var(--ok); border-color: rgba(77, 210, 138, .45); }
         .wd-pill.no { color: #e0b34c; border-color: rgba(224, 179, 76, .4); }
         .wd-mem { color: var(--text-mute); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; flex: none; }
-        .wd-more { padding: 8px 12px; color: var(--text-mute); font-size: 11px; }`);
+        .wd-more { padding: 8px 12px; color: var(--text-mute); font-size: 11px; }
+        .wd-wiki { appearance: none; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--text-dim); font: inherit; font-size: 10.5px; padding: 2px 8px; cursor: pointer; flex: none; }
+        .wd-wiki:hover { border-color: var(--accent-hi); color: var(--text); }`);
       wrap = document.createElement('div'); wrap.id = 'wdWrap'; wrap.className = 'pane'; c.appendChild(wrap);
       const bar = document.createElement('div'); bar.className = 'wd-bar';
       const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'bank-search'; inp.id = 'wdSearch';
@@ -127,6 +134,7 @@
       html += '<div class="wd-row"><div class="wd-nm">' + esc(r.name)
         + (r.how ? '<div class="wd-how">' + esc(r.how) + '</div>' : '') + '</div>'
         + (r.members ? '<span class="wd-mem">members</span>' : '')
+        + '<button type="button" class="wd-wiki" data-nm="' + esc(r.name).replace(/"/g, '&quot;') + '" title="Show this cosmetic in the wiki browser">wiki</button>'
         + (o === null ? '' : '<span class="wd-pill ' + (o ? 'ok">Owned' : 'no">Missing') + '</span>')
         + '</div>';
     }
@@ -135,4 +143,8 @@
     list.innerHTML = html;
     const more = document.getElementById('wdMore');
     if (more) more.addEventListener('click', () => { wdShowMax += 500; wdSig = ''; renderWardrobe(); });
+    list.querySelectorAll('.wd-wiki').forEach(b => b.addEventListener('click', e => {
+      e.stopPropagation();
+      try { if (bridge() && bridge().wikiOpen) bridge().wikiOpen(myPid(), b.dataset.nm || ''); } catch (err) {}
+    }));
   }
