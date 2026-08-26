@@ -2204,6 +2204,64 @@ static bool read_varc_str(HANDLE h, std::uint64_t client, int varc_id, std::stri
 // The reusable building block for varp/varbit-driven panels (farming, etc.): the
 // caller passes the varp ids it needs and slices varbit bits itself. Empty {} when
 // not in-world / chain unreadable. Unset varps come back as 0.
+// Live morph state for a CSV of loc BASE ids: which variant the game is drawing right now and
+// which var selects it. This is exactly what resolve_loc computes for the scene walk, exposed
+// so panels (quest guides especially) can retire hand-transcribed selector varbit tables.
+// Per id: {"id", "vb" or "vp" (the selector; -1 for the other), "value" (selector value, -1
+// unreadable), "child" (resolved variant loc id, -1 hidden/none), "name" (variant's name)}.
+// A base with NO morph emits {"id":N,"static":1}; an unknown id is skipped.
+std::string LocMorphsJson(std::uint32_t pid, const std::string& ids_csv) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "[]";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "[]";
+    std::string out = "["; bool first = true;
+    std::size_t i = 0, n = ids_csv.size();
+    while (i < n) {
+        while (i < n && (ids_csv[i] < '0' || ids_csv[i] > '9')) ++i;
+        int id = 0; bool any = false;
+        while (i < n && ids_csv[i] >= '0' && ids_csv[i] <= '9') {
+            id = id * 10 + (ids_csv[i] - '0'); any = true; ++i;
+            if (id > 10000000) { id = 0; any = false; break; }
+        }
+        if (!any) continue;
+        int vb = -1, vp = -1, defc = -1;
+        std::vector<int> variants;
+        if (!rtx::cache::GetLocMorph(id, vb, vp, defc, variants) || variants.empty()) {
+            out += (first ? "" : ",");
+            out += "{\"id\":" + std::to_string(id) + ",\"static\":1}";
+            first = false;
+            continue;
+        }
+        int value = -1;
+        if (vb >= 0) {
+            int wvp = -1, lsb = -1, msb = -1;
+            if (rtx::cache::GetVarbit(vb, wvp, lsb, msb) && wvp >= 0 && lsb >= 0 && msb >= lsb && msb < 32) {
+                int raw = read_varp(h, *root, wvp);
+                int width = msb - lsb + 1;
+                unsigned mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
+                value = (int)(((unsigned)raw >> lsb) & mask);
+            }
+        } else if (vp >= 0) {
+            value = read_varp(h, *root, vp);
+        }
+        int child = -1;
+        std::string name;
+        if (value >= 0) {
+            child = (value < (int)variants.size()) ? variants[(std::size_t)value] : defc;
+            if (child >= 0) name = rtx::cache::GetLoc(child).name;
+        }
+        out += (first ? "" : ",");
+        out += "{\"id\":" + std::to_string(id) + ",\"vb\":" + std::to_string(vb) +
+               ",\"vp\":" + std::to_string(vp) + ",\"value\":" + std::to_string(value) +
+               ",\"child\":" + std::to_string(child) + ",\"name\":\"" + json_escape(name) + "\"}";
+        first = false;
+    }
+    out += "]";
+    return out;
+}
+
 std::string VarpsJson(std::uint32_t pid, const std::string& ids_csv) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";
@@ -7637,12 +7695,22 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     // local = global & 63) the tile-marker feature stores by.
     int region = ((tx >> 6) << 8) | (ty >> 6);
     int lx = tx & 63, ly = ty & 63;
-    char buf[440];
+    // Render frame rate, straight from the engine's own counter: MainData+0x550 is the float
+    // the FPS_STATS op (885) truncates (cvttss2si [rcx+0x550]). -1 when unreadable/implausible.
+    int fps = -1;
+    {
+        auto mroot = rpm<std::uint64_t>(h, ps.mgva);
+        if (mroot && *mroot > 0x10000) {
+            auto f = rpm<float>(h, *mroot + 0x550);
+            if (f && *f > 0.0f && *f < 4000.0f) fps = (int)*f;
+        }
+    }
+    char buf[460];
     std::snprintf(buf, sizeof(buf),
         "{\"in\":true,\"x\":%d,\"y\":%d,\"plane\":%d,\"region\":%d,\"lx\":%d,\"ly\":%d,"
         "\"anim\":%d,\"moving\":%s,\"progress\":%d,\"energy\":%d,\"weight\":%d,\"combat\":%d,"
-        "\"interact\":",
-        tx, ty, plane, region, lx, ly, anim, moving ? "true" : "false", progress, energy, weight, combat);
+        "\"fps\":%d,\"interact\":",
+        tx, ty, plane, region, lx, ly, anim, moving ? "true" : "false", progress, energy, weight, combat, fps);
     std::string out = buf; out += interactJson; out += "}";
     return out;
 }

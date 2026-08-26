@@ -307,6 +307,9 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, 
 // separated varp ids; returns {"<id>":value,..}. Unset varps read back as 0 (engine
 // default). Foundation for varbit-driven panels: a varbit is a bit-slice of a varp,
 // so the caller fetches the underlying varp(s) and extracts the bits.
+// Live loc morph state for a CSV of base loc ids: selector var, its value, the resolved
+// variant loc id and name. See LocMorphsJson in Reader.cpp for the row shape.
+std::string LocMorphsJson(std::uint32_t pid, const std::string& ids_csv);
 std::string VarpsJson(std::uint32_t pid, const std::string& ids_csv);
 // Read varbit ids (cache def -> backing varp + bit slice) -> {"<id>":value,..}.
 std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv);

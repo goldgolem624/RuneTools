@@ -709,6 +709,9 @@
       sec('Activity');
       add(row('Animation', d.anim === -1 ? 'none' : String(d.anim)));
       add(row('Moving', d.moving ? 'yes' : 'no'));
+      // Engine-reported render rate (MainData+0x550, the FPS_STATS op's own counter); absent
+      // on an older host build.
+      if (typeof d.fps === 'number' && d.fps >= 0) add(row('Client FPS', String(d.fps)));
       // Scenery/objects aren't in the live entity list, so they show as none here.
       const it = d.interact;
       add(row('Interacting',

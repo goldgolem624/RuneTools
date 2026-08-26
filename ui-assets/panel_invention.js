@@ -95,10 +95,35 @@
   let compVp = null, compSig = '', compTerm = '', compHideEmpty = false, compFetching = false;
   // compTerm is a search box (transient); "Hide empty" is a deliberate view choice, so keep it.
   try { compHideEmpty = localStorage.getItem('rtxCompHideEmpty') === '1'; } catch (e) {}
+  // ---- Invention machines (CS2: script21030 db22.11 capacity, script21031 db22.3 level;
+  // script21101 loops INV_SIZE(93) against bits of varp 8649; inputs live in container 1011
+  // via script21002). Container mapping is script-derived, not yet play-verified, so this
+  // section reports what the containers actually hold and labels itself accordingly.
+  let mchBuilt = null, mchInputs = null, mchVp8649 = null, mchNames = {};
+  async function mchName(id) {
+    if (mchNames[id] === undefined) {
+      try { const d = JSON.parse(await bridge().itemInfo(id) || 'null'); mchNames[id] = (d && d.name) || ''; } catch (e) {}
+    }
+    return mchNames[id] || ('Item ' + id);
+  }
+  async function fetchMachines() {
+    if (!bridge() || !bridge().containerItems) return;
+    try {
+      const cm = JSON.parse(await bridge().containerItems(myPid(), 93) || 'null');
+      mchBuilt = (cm && Array.isArray(cm.items)) ? cm.items : null;
+      const ci = JSON.parse(await bridge().containerItems(myPid(), 1011) || 'null');
+      mchInputs = (ci && Array.isArray(ci.items)) ? ci.items : null;
+      const vp = JSON.parse(await bridge().varps(myPid(), '8649') || '{}');
+      mchVp8649 = vp['8649'] !== undefined ? (vp['8649'] | 0) : null;
+      if (mchBuilt) for (const it of mchBuilt) if (it && it[1] > 0) await mchName(it[1]);
+      if (mchInputs) for (const it of mchInputs) if (it && it[1] > 0) await mchName(it[1]);
+    } catch (e) {}
+  }
   async function fetchComponents() {
     if (!bridge() || !bridge().varps || compFetching) return;
     compFetching = true;
     try { const d = JSON.parse(await bridge().varps(myPid(), COMP_VARP_CSV)); if (d && typeof d === 'object') compVp = d; } catch (e) {}
+    try { await fetchMachines(); } catch (e) {}
     compFetching = false;
     paneRun('components', paintComponents);
   }
@@ -141,16 +166,42 @@
     }
     paintComponents();
   }
+  function mchHtml() {
+    const built = (mchBuilt || []).filter(it => it && it[1] > 0);
+    const inputs = (mchInputs || []).filter(it => it && it[1] > 0);
+    if (!built.length && !inputs.length) return '';
+    const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    let h = '<div class="comp-sec">Machines</div><div class="mch-card">';
+    if (built.length) {
+      // varp 8649 is bit-per-slot (script21101); pair each built slot with its bit.
+      h += '<div class="mch-row mch-hdr"><span>Built machine</span><span>slot flag</span></div>';
+      for (const it of built) {
+        const bit = mchVp8649 !== null ? ((mchVp8649 >>> (it[0] | 0)) & 1) : null;
+        h += '<div class="mch-row"><span>' + esc(mchNames[it[1]] || ('Item ' + it[1])) + '</span>'
+          + '<span>' + (bit === null ? '·' : bit ? 'on' : 'off') + '</span></div>';
+      }
+    }
+    if (inputs.length) {
+      const by = {};
+      for (const it of inputs) { const k = it[1]; by[k] = (by[k] || 0) + (it[2] > 0 ? it[2] : 1); }
+      h += '<div class="mch-row mch-hdr"><span>Machine hopper contents</span><span></span></div>';
+      for (const k in by) h += '<div class="mch-row"><span>' + esc(mchNames[k] || ('Item ' + k)) + '</span><span>x' + by[k].toLocaleString() + '</span></div>';
+    }
+    h += '<div class="mch-note">Slots from container 93, hopper from container 1011, flags from varp 8649 (script21101). Capacity/level joins land once the container mapping is play-verified.</div></div>';
+    return h;
+  }
   function paintComponents() {
     const body = $('compBody'); if (!body) return;
     if (!compVp) { body.innerHTML = '<div class="bank-empty" style="display:flex"><div class="warn" style="background:rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)">Reading...</div></div>'; return; }
     const t = compTerm.trim().toLowerCase();
     const u = k => (compVp[k] || 0) >>> 0;
     const owned = INV_COMPONENTS.filter(c => u(c[1]) > 0).length;
-    const sig = t + '|' + compHideEmpty + '|' + INV_COMPONENTS.map(c => u(c[1])).join(',');
+    const sig = t + '|' + compHideEmpty + '|' + INV_COMPONENTS.map(c => u(c[1])).join(',') + '|' + ((mchBuilt || []).length) + ':' + ((mchInputs || []).length) + ':' + mchVp8649;
     if (sig === compSig) return; compSig = sig;
     const meta = $('compMeta'); if (meta) meta.textContent = owned + ' / ' + INV_COMPONENTS.length + ' owned';
     body.innerHTML = '';
+    const mh = mchHtml();
+    if (mh) { const box = document.createElement('div'); box.innerHTML = mh; while (box.firstChild) body.appendChild(box.firstChild); }
     let curR = null, grid = null;
     for (const c of INV_COMPONENTS) {
       const name = c[0], varp = c[1], sprite = c[2], rarity = c[3], desc = c[4], src = c[5], cnt = u(varp);

@@ -104,6 +104,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_dungeoneering.js",  // Daemonheim floor status + explored map
         "panel_archresearch.js",   // Archaeology Field Study / Report status
         "panel_reputation.js",
+        "panel_wardrobe.js",     // cosmetic override ownership (dbtable 163)
         "panel_bossinfo.js",
         "panel_groupbank.js",
         "panel_pets.js",

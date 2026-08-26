@@ -867,7 +867,9 @@ JSValueRef DbRows(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "[]");
     int t = (int)JSValueToNumber(ctx, argv[0], nullptr);
-    return utf8_to_js(ctx, rtx::cache::DbRowsJson(t));
+    // served(): the first decode of a big table (163 = 5,313 rows) walks ~19,560 archive files
+    // and must not hitch the UI thread; DbRowsJson memoizes, so the background refresh is free.
+    return served(ctx, "dbrows:" + std::to_string(t), "[]", [t] { return rtx::cache::DbRowsJson(t); });
 }
 
 JSValueRef StructParams(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2123,6 +2125,14 @@ JSValueRef KeepFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 
 // rtx.gameFocused(pid) -> bool: is the game (or its host frame) the foreground window.
+// rtx.locMorphs(pid, "id,id,...") -> live morph resolution per base loc id (see Reader).
+JSValueRef LocMorphs(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, "[]");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return utf8_to_js(ctx, rtx::reader::LocMorphsJson(pid, js_to_utf8(ctx, argv[1])));
+}
+
 JSValueRef GameFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4810,6 +4820,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "dockCollapse",      DockCollapse);   // legacy no-op
     install_fn(ctx, ns, "keepFocused",       KeepFocused);
     install_fn(ctx, ns, "gameFocused",       GameFocused);
+    install_fn(ctx, ns, "locMorphs",         LocMorphs);
     install_fn(ctx, ns, "hostFullscreen",    HostFullscreen);
     install_fn(ctx, ns, "railTip",           RailTip);        // legacy no-op
     install_fn(ctx, ns, "uiRects",           UiRects);

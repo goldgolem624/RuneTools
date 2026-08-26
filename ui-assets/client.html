@@ -986,6 +986,11 @@
   .al-and-list { display: flex; flex-direction: column; gap: 6px; }
   .al-and-list:empty { display: none; }
   .al-and-tag { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--accent); background: rgba(255,255,255,.06); border-radius: 4px; padding: 2px 6px; }
+  .mch-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; }
+  .mch-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 12px; font-size: 12px; color: var(--text); }
+  .mch-row + .mch-row { border-top: 1px solid var(--border); }
+  .mch-row.mch-hdr span { color: var(--text-mute); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+  .mch-note { padding: 7px 12px; color: var(--text-mute); font-size: 10px; line-height: 1.4; }
   .al-and-add { width: auto !important; align-self: flex-start; font-size: 11px; padding: 3px 9px; }
   .al-cust-head { display: flex; align-items: center; gap: 9px; }
   .al-grid { display: grid; grid-template-columns: 56px 1fr; gap: 9px 10px; align-items: center; }
@@ -2348,6 +2353,7 @@
     { id: 'familiar', label: 'Familiar',     cat: 'Character', icon: '<circle cx="8.5" cy="7" r="1.7"/><circle cx="15.5" cy="7" r="1.7"/><circle cx="5.5" cy="11" r="1.7"/><circle cx="18.5" cy="11" r="1.7"/><path d="M12 11.5c2.6 0 4.5 1.8 4.5 4 0 1.7-1.2 2.8-2.7 2.8-1 0-1.3-.5-1.8-.5s-.8.5-1.8.5c-1.5 0-2.7-1.1-2.7-2.8 0-2.2 1.9-4 4.5-4z"/>' },
     { id: 'dung', label: 'Dungeoneering', cat: 'Character', icon: '<circle cx="9" cy="9" r="3.2"/><path d="M11.5 11.5 L18 18"/><path d="M15.5 15.5 L17.5 13.5"/><path d="M17 17 L19 15"/>' },
     { id: 'reputation',label: 'Reputation',   cat: 'Character', icon: '<path d="M12 3l7 2.5V11c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V5.5z"/><path d="M9.5 11.5l1.8 1.8L15 9.5"/>' },
+    { id: 'wardrobe', label: 'Wardrobe', cat: 'Character', icon: '<path d="M12 3l3 3-3 3-3-3z"/><path d="M5 21V9l7-3 7 3v12"/><path d="M12 9v12"/>' },
     { id: 'rituals',  label: 'Necromancy',   cat: 'Character', icon: '<circle cx="12" cy="12" r="8"/><path d="M12 4v16M5.3 8l13.4 8M18.7 8L5.3 16"/>' },
     { id: 'toolbelt', label: 'Toolbelt',     cat: 'Character', icon: '<path d="M3 10h18v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M8 10V7a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v3M10 14h4"/>' },
     { id: 'abilities',label: 'Ability Bar',  cat: 'Character', icon: '<rect x="3" y="9" width="18" height="6" rx="1.5"/><path d="M7 9v6M11 9v6M15 9v6"/>' },
@@ -6002,6 +6008,7 @@
     if (activeTab === 'archresearch') { renderArchResearch(); return; }
     if (activeTab === 'relics') { renderRelics(); return; }
     if (activeTab === 'reputation') { renderReputation(); return; }
+    if (activeTab === 'wardrobe') { renderWardrobe(); return; }
     if (activeTab === 'bossinfo') { renderBossInfo(); return; }
     if (activeTab === 'portsinfo') { if (typeof renderPortsInfo === 'function') renderPortsInfo(); return; }
     if (activeTab === 'hideyholes') { renderHidey(); return; }
@@ -6530,6 +6537,7 @@
     if (activeTab === 'archresearch') fetchArchResearch();
     if (activeTab === 'relics') fetchRelics();
     if (activeTab === 'reputation') fetchReputation();
+    if (activeTab === 'wardrobe') fetchWardrobe();
     if (activeTab === 'bossinfo') fetchBossInfo();
     if (activeTab === 'hideyholes') fetchHidey();
     if (activeTab === 'clues') { fetchClues(); fetchGlobetrotter(); }

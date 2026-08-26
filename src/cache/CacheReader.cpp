@@ -3553,8 +3553,17 @@ std::string ItemParamsJson(int item_id) {
 std::string DbRowsJson(int masterTable) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    // Memoized per table: the archive walk touches ~19,560 files whatever the table asked for,
+    // and the cache is version-static for a session, so the second call for the SAME table was
+    // pure waste (panel_worldmap documents the cost). Only a non-empty result is cached - "[]"
+    // can mean "cache not open yet" and must stay retryable.
+    static std::map<int, std::string> s_dbrows_memo;
+    { auto it = s_dbrows_memo.find(masterTable); if (it != s_dbrows_memo.end()) return it->second; }
     auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
     if (!index || !index->ready()) return "[]";
+    // The wardrobe catalogue (table 163) carries 5,313 rows; everything else stays under the
+    // historical 2,000 guard against a runaway table.
+    const int kMaxRows = (masterTable == 163) ? 6000 : 2000;
     constexpr int kDbRowsArchive = 41;
     // Table ids are CS2-space: id = sub*128 + master, while the row's op-4 tag is
     // master*256 + sub. Ids < 128 keep the historical any-subtable match (their callers
@@ -3573,7 +3582,7 @@ std::string DbRowsJson(int masterTable) {
     };
     std::string out = "["; int emitted = 0;
     for (int fid : entries[kDbRowsArchive].valid_file_ids) {
-        if (emitted >= 2000) break;
+        if (emitted >= kMaxRows) break;
         auto bytes = index->ReadFile(kDbRowsArchive, fid);
         if (bytes.size() < 2) continue;
         InputStream s(std::move(bytes));
@@ -3633,6 +3642,7 @@ std::string DbRowsJson(int masterTable) {
         out += "}}";
     }
     out += "]";
+    if (emitted > 0) s_dbrows_memo[masterTable] = out;
     return out;
 }
 
