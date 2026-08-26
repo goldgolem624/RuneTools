@@ -13,10 +13,26 @@
     [55088, 55089, [48317, 48318, 48319, 48320, 48321]],
     [55090, 55091, [48322, 48323, 48477, 48481, 48482, 48505, 48506, 48507]],
     [55092, 55093, [48508, 48779, 48780, 48781]]];
-  // Daily singles: [countVb, struct id]. Empty list = the Daily caps section is skipped.
-  const SC_DAILY = [];
+  // Daily singles: [countVb, struct id]. Populated from the CS2 switches extraction
+  // (script17845, the game's own daily shop-cap resolver: struct -> bought-count varbit);
+  // empty until an extraction exists, in which case the Daily caps section is skipped.
+  let SC_DAILY = [];
+  let scSwAdopted = false;
+  async function scAdoptSwitches() {
+    if (scSwAdopted || typeof cs2SwitchEntries !== 'function') return;
+    const ents = await cs2SwitchEntries(17845);
+    if (!ents) return;
+    scSwAdopted = true;
+    const out = [];
+    for (const k in ents) {
+      const sid = k | 0, rec = ents[k];
+      const vb = Array.isArray(rec) ? (rec[0] | 0) : (rec | 0);
+      if (sid > 0 && vb > 0) out.push([vb, sid]);
+    }
+    if (out.length) { SC_DAILY = out; scStructs = null; scSig = ''; }
+  }
 
-  const SC_VB_IDS = SC_GROUPS.flatMap(g => [g[0], g[1]]).concat(SC_DAILY.map(d => d[0])).join(',');
+  function scVbIds() { return SC_GROUPS.flatMap(g => [g[0], g[1]]).concat(SC_DAILY.map(d => d[0])).join(','); }
 
   let scVb = null, scFetching = false, scFetchAt = 0, scSig = '';
   let scStructs = null;         // struct id -> {name, item, cap}
@@ -43,7 +59,8 @@
     if (t - scFetchAt < 2000) return;
     scFetchAt = t; scFetching = true;
     try {
-      const vb = JSON.parse(await bridge().varbits(myPid(), SC_VB_IDS) || 'null');
+      await scAdoptSwitches();
+      const vb = JSON.parse(await bridge().varbits(myPid(), scVbIds()) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) scVb = vb;
       await scLoadStructs();
     } catch (e) { /* keep previous */ }
@@ -92,7 +109,7 @@
       wrap.innerHTML = '<div class="shc-empty">Reading shop limits... (be in-world)</div>';
       scSig = ''; return;
     }
-    const sig = SC_VB_IDS.split(',').map(k => scV(k)).join(',') + '|' + Math.floor(Date.now() / 60000);
+    const sig = scVbIds().split(',').map(k => scV(k)).join(',') + '|' + Math.floor(Date.now() / 60000);
     if (sig === scSig) return;
     scSig = sig;
     wrap.innerHTML = '';

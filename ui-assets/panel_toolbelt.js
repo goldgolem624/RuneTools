@@ -27,11 +27,31 @@
   const TB_FAM_46004 = [50120, 50121, 50122];
   const TB_MACHETES = [6313, 6315, 6317];   // above base machete 975; tier = vb 4935
 
-  const TB_VB_IDS = (() => {
+  // Mutable: the CS2 switches extraction (script7090, the same resolver this table was baked
+  // from) tops the list up with tools added after the bake. Additive only, see cs2SwitchEntries.
+  let tbTools = TB_TOOLS.slice();
+  function tbVbIds() {
     const ids = new Set([18521, 18522, 45999, 3008, 3009, 4935, 28225, 46004]);
-    TB_TOOLS.forEach(t => ids.add(t[1]));
+    tbTools.forEach(t => ids.add(t[1]));
     return Array.from(ids).join(',');
-  })();
+  }
+  let tbSwAdopted = false;
+  async function tbAdoptSwitches() {
+    if (tbSwAdopted || typeof cs2SwitchEntries !== 'function') return;
+    const ents = await cs2SwitchEntries(7090);
+    if (!ents) return;                        // no extraction yet; keep asking
+    tbSwAdopted = true;
+    const have = new Set(tbTools.map(t => t[0]));
+    let added = 0;
+    for (const k in ents) {
+      const item = k | 0, rec = ents[k];
+      const vb = Array.isArray(rec) ? (rec[0] | 0) : (rec | 0);
+      if (!(item > 0) || !(vb > 0) || have.has(item)) continue;
+      tbTools.push(Array.isArray(rec) && rec.length > 1 ? [item, vb, rec[1] | 0] : [item, vb]);
+      added++;
+    }
+    if (added) tbSig = '';
+  }
 
   let tbVb = null, tbFetching = false, tbFetchAt = 0, tbSig = '';
   let tbEnums = null;           // [enum 6397 hatchets, enum 2433 pickaxes, enum 12936]
@@ -54,14 +74,15 @@
     if (t - tbFetchAt < 2000) return;
     tbFetchAt = t; tbFetching = true;
     try {
-      const vb = JSON.parse(await bridge().varbits(myPid(), TB_VB_IDS) || 'null');
+      await tbAdoptSwitches();
+      const vb = JSON.parse(await bridge().varbits(myPid(), tbVbIds()) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) tbVb = vb;
       if (!tbEnums && bridge().enumInfo) {
         const grab = async id => { try { return JSON.parse(await bridge().enumInfo(id) || 'null'); } catch (e) { return null; } };
         const a = await grab(6397), b = await grab(2433), c = await grab(12936);
         if (a && Object.keys(a).length && b && Object.keys(b).length) tbEnums = [a, b, c || {}];
       }
-      for (const [id] of TB_TOOLS) await tbName(id);
+      for (const [id] of tbTools) await tbName(id);
       for (const id of [1351, 1265, 975, 47718].concat(TB_DG_PICK, TB_DG_HATCHET, TB_FAM_28225, TB_FAM_46004, TB_MACHETES)) await tbName(id);
       if (tbEnums) for (const e of tbEnums) for (const k in e) await tbName(e[k] | 0);
     } catch (e) { /* keep previous */ }
@@ -97,7 +118,7 @@
       wrap.innerHTML = '<div class="tb-empty">Reading toolbelt state... (be in-world)</div>';
       tbSig = ''; return;
     }
-    const sig = TB_VB_IDS.split(',').map(k => tbV(k)).join(',') + '|' +
+    const sig = tbVbIds().split(',').map(k => tbV(k)).join(',') + '|' +
                 (tbEnums ? 'e' : '-') + Object.keys(tbNames).length;
     if (sig === tbSig) return;
     tbSig = sig;
@@ -185,7 +206,7 @@
 
     {
       const stored = [], missing = [];
-      for (const [id, vbid, min] of TB_TOOLS) {
+      for (const [id, vbid, min] of tbTools) {
         (tbV(vbid) >= (min || 1) ? stored : missing).push(id);
       }
       stored.push(47718);   // hardcoded always-stored in script7090

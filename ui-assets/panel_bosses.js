@@ -334,7 +334,30 @@
   let bcVbIndex = null;                       // varbit id -> [varp, lsb, msb] (from varbitMap)
   let bcVarps = null;                         // varpsDumpAll snapshot {'4:<id>': value}
   let bcSig = '';
+  // Top the two baked switch tables up from the CS2 switches extraction, which bakes the same
+  // scripts (14500 item -> found varbit, 14503 struct -> complete varbit) from the LIVE cache.
+  // Additive: baked entries are never replaced, so a bad extraction cannot subtract data, and
+  // an install that never ran an extraction keeps working from the bake alone.
+  let bcSwAdopted = false;
+  async function bcAdoptSwitches() {
+    if (bcSwAdopted || typeof cs2SwitchEntries !== 'function') return;
+    const found = await cs2SwitchEntries(14500);
+    const done = await cs2SwitchEntries(14503);
+    if (!found && !done) return;             // no extraction yet; ask again next load
+    bcSwAdopted = true;
+    const take = (ents, into) => {
+      if (!ents) return;
+      for (const k in ents) {
+        const id = k | 0, rec = ents[k];
+        const vb = Array.isArray(rec) ? (rec[0] | 0) : (rec | 0);
+        if (id > 0 && vb > 0 && into[id] === undefined) into[id] = vb;
+      }
+    };
+    take(found, COLLECTION_ITEM_VBS);
+    take(done, BC_DONE_VBS);
+  }
   async function bcLoadCols() {
+    await bcAdoptSwitches();
     if (bcCols || bcColsLoading) return;
     if (!bridge().dbRows || !bridge().itemInfo) return;
     bcColsLoading = true;

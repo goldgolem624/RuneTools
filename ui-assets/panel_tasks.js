@@ -81,6 +81,8 @@
     if (!bridge().dbRows || !bridge().structParams || !bridge().itemInfo) return;
     slayerColsLoading = true;
     try {
+      // Shares panel_bosses' baked-and-extracted item->varbit tables; adopt before reading.
+      if (typeof bcAdoptSwitches === 'function') await bcAdoptSwitches();
       const rows = JSON.parse(await bridge().dbRows(84) || 'null');
       if (!Array.isArray(rows) || !rows.length) return;   // cache not open yet; retry next fetch
       const out = [];

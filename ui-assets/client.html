@@ -2935,6 +2935,30 @@
   const __paneRoots = Object.create(null);   // tab id -> .content element
   function paneRoot(id) { return __paneRoots[id] || null; }
   const $ = id => (id === 'content' && __paneRoot) ? __paneRoot : document.getElementById(id);
+  // ---- CS2 switch maps (rtx.cs2Switches -> %USERPROFILE%\RuneToolsX\cs2\switches.json) ----
+  // The sidecar extraction bakes the game's OWN switch tables (script id -> {desc, keyKind,
+  // varKind, entries}). Panels that carry a hand-transcribed copy of the same table adopt this
+  // as the fresher source when it is present: the baked table stays as the fallback for an
+  // install that never ran an extraction, and adoption is ADDITIVE (new entries appear, baked
+  // ones are never removed), so a bad extraction cannot subtract data.
+  let _cs2SwP = null;
+  function cs2SwitchScripts() {
+    if (!_cs2SwP) _cs2SwP = (async () => {
+      try {
+        const d = JSON.parse(await bridge().cs2Switches() || '{}');
+        if (d && d.scripts && Object.keys(d.scripts).length) return d.scripts;
+      } catch (e) {}
+      _cs2SwP = null;            // absent or unreadable: retry on a later call
+      return {};
+    })();
+    return _cs2SwP;
+  }
+  async function cs2SwitchEntries(scriptId) {
+    if (!bridge() || !bridge().cs2Switches) return null;
+    const sc = await cs2SwitchScripts();
+    const e = sc && sc[String(scriptId)];
+    return (e && e.entries && typeof e.entries === 'object') ? e.entries : null;
+  }
   const myPid = () => Number((window.__rtx_pid || 0));
   let activeTab = 'player';   // the FOCUSED window's tab (panel self-gates + dev reload)
   // Dev hot-reload continuity: a reload sets __rtxDevReload; reopen the tab that was open.
