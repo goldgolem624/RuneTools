@@ -698,6 +698,27 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
             break;
         }
     }
+    // TOP-VERB GATE. A rule is a FULL order captured from one menu; the same name can present a
+    // different menu elsewhere (an item's backpack vs bank vs worn menus). Applied there, the
+    // only stored verb that exists is often Examine, which ranked alone and rose to the top --
+    // the owner-reported "everything forces Examine" on an item that had a rule. A rule's first
+    // pin is its author's top choice: if THAT verb is not in this menu, this is not the menu the
+    // rule was written for, and every pin of that target is ignored rather than applied in part.
+    // A rule whose author genuinely put Examine first still applies everywhere, which is what
+    // putting Examine first means.
+    {
+        bool pinMatched[rtx::menu::kMaxPins] = {};
+        for (int i = 0; i < n; ++i)
+            if (rank[i] != 0x7FFFFFFF) pinMatched[rank[i]] = true;
+        for (int i = 0; i < n; ++i) {
+            if (rank[i] == 0x7FFFFFFF) continue;
+            const char* rt = g_share->pins[rank[i]].target;
+            int first = -1;
+            for (std::uint32_t p = 0; p < pins; ++p)
+                if (std::strncmp(rt, g_share->pins[p].target, rtx::menu::kTargetLen) == 0) { first = (int)p; break; }
+            if (first >= 0 && !pinMatched[first]) rank[i] = 0x7FFFFFFF;
+        }
+    }
     return true;
 }
 

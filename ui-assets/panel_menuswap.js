@@ -288,6 +288,23 @@
     if (got) { mnuSig = ''; mnuListSig = ''; }
   }
 
+  // The same ITEM shows a different menu per CONTAINER: Wield/Use/Drop in the backpack,
+  // Withdraw-1/5/10 in the bank, Remove worn. One rule keyed on the bare id served all three,
+  // which broke both ways at once (owner-reported on a wilderness sword): editing the order in
+  // one container overwrote the others' (one rule, last edit wins), and applying the backpack
+  // order to the bank menu ranked the only stored verb that exists there, usually Examine, and
+  // hoisted it to the top. The option SET identifies the container, so an item rule is keyed
+  // id + set signature and each container holds its own order. The signature is of the SORTED
+  // verbs, so the identity is stable under our own reordering.
+  function mnuSetSig(ents, target) {
+    const verbs = [];
+    for (const e of ents || []) if (mnuPlain(e.target) === target && e.verb) verbs.push(e.verb);
+    verbs.sort();
+    const str = verbs.join('|');
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  }
   function mnuVarKeys(ents, target, ctx) {
     // The KIND comes from hoverEntity too, never from the row's action class: a loc's content
     // verbs carry assorted class ordinals, so deriving it from the menu rejected every loc.
@@ -295,6 +312,15 @@
     if (!seen || !(seen.id > 0)) return [];
     const kind = seen.kind >= 0 ? seen.kind : mnuKindOf(mnuTypeOf(ents, target));
     if (kind < 0) return [];
+    if (kind === 0) {
+      // Items: the per-container key first, the legacy bare id as the lookup fallback so a rule
+      // saved before containers were distinguished keeps working in ITS container until it is
+      // re-saved (saving retires the older generation for the container being edited). The
+      // companion's own top-verb gate stops the fallback misapplying in the other containers.
+      const sig = mnuSetSig(ents, target);
+      const bare = 'item:' + seen.id;
+      return sig ? [bare + '@' + sig, bare] : [bare];
+    }
     return [mnuKeyKind(kind) + ':' + seen.id];
   }
 
@@ -568,7 +594,7 @@
     for (const key in mnuRules) {
       const verbs = mnuRules[key] || [];
       if (!verbs.length) continue;
-      const m = /^(item|loc|npc):(\d+)$/.exec(key);
+      const m = /^(item|loc|npc):(\d+)(?:@[0-9a-z]+)?$/.exec(key);
       if (m) {
         const kindLabel = m[1] === 'loc' ? 'object' : m[1];
         out.push({
@@ -901,7 +927,7 @@
           // Show the identity the rule is keyed on. Two same-named things are otherwise
           // indistinguishable here, which is exactly the case that needs checking when one
           // reorders and the other does not.
-          const km = /^(item|loc|npc):(\d+)$/.exec(r.key);
+          const km = /^(item|loc|npc):(\d+)(?:@[0-9a-z]+)?$/.exec(r.key);
           let idTag;
           if (km) {
             idTag = (km[1] === 'loc' ? 'object' : km[1]) + ' id ' + km[2];
