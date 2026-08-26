@@ -872,10 +872,19 @@
     const za = v(61678), gu = v(61680), sa = v(61679);
     if (za || gu || sa) row('Alignment', 'Zamorak ' + za + ' · Guthix ' + gu + ' · Saradomin ' + sa);
     if (vb[61518] !== undefined) row('Relic resets left', v(61518));
-    const passives = [];
-    if (v(61685) === 1) passives.push('abilities cost no adrenaline');
-    if (v(58531) > 0) passives.push('+' + v(58531) + '% ritual souls');
-    if (passives.length) row('Passives', passives.join(' · '));
+    // Tier passives: the game's own Passive Effects list is db 328.7 per tier, already loaded
+    // into l.tiers; a tier's passives are live once points reach its cost. The two var-backed
+    // flags below are confirmations of specific passives (script16990 adrenaline, ritual souls),
+    // shown only as a suffix so the row reads like the in-game interface's tier summary.
+    if (l.tiers.length && lgPoints != null) {
+      let active = 0, effects = 0;
+      for (const t of l.tiers) if (lgPoints >= t.cost) { active++; effects += (t.passives || []).length; }
+      const extra = [];
+      if (v(61685) === 1) extra.push('free adrenaline');
+      if (v(58531) > 0) extra.push('+' + v(58531) + '% ritual souls');
+      row('Passive tiers', active + ' / ' + l.tiers.length + ' active · ' + effects + ' effects live'
+        + (extra.length ? ' · ' + extra.join(' · ') : ''));
+    }
     if (vb[61500] !== undefined && v(61500) !== 2047)
       row('Next region unlock', 'at ' + v(61500) + ' tasks (region tier ' + v(61501) + ')');
     el.style.display = '';
