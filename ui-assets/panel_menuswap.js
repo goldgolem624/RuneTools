@@ -175,7 +175,11 @@
     for (let i = 0; i < mnuRecent.length; i++) {
       const r = mnuRecent[i];
       const t = mnuTargets(r.ents)[0];
-      if (t) r.key = mnuRuleKey(r.ents, t, r) || ('noid:' + t);
+      // Only id-LESS captures re-key. mnuIdSeen holds ONE id per display name, so re-keying a
+      // capture that already resolved would collapse two same-named variants (two "Fishing
+      // spot" ids) onto whichever id was hovered last, and the dedupe below then deleted one
+      // of them - which is how a variant became uneditable while its sibling had a rule.
+      if (t && /^noid:/.test(r.key)) r.key = mnuRuleKey(r.ents, t, r) || ('noid:' + t);
       if (seen[r.key]) { mnuRecent.splice(i--, 1); continue; }   // newest-first: keep the first
       seen[r.key] = 1;
     }
@@ -369,12 +373,43 @@
     return out.join('\n');
   }
 
-  // Pre-arm pins for every stored rule whose display NAME is claimed by exactly one
-  // rule (or by several rules with an identical verb order). Those cannot leak across
-  // same-named variants - the hazard that made pins latch-only - so the companion can
-  // hold them permanently and reorder on the FIRST build tick of a new hover, instead
-  // of waiting a poll round-trip during which the game's own default is clickable.
-  // Ambiguous names (two variants, different orders) stay latch-follow as before.
+  // Merge several variants' verb orders into ONE order that satisfies every one of them, or
+  // null when they genuinely contradict (one rule wants A above B, another B above A).
+  //
+  // This exists for same-NAMED variants with different ids (two "Fishing spot" NPCs, 312
+  // Cage/Harpoon and 313 Net/Harpoon). Pins match on verb + name, so the companion cannot
+  // tell the variants apart, and per-variant pins leaked one spot's order onto the other
+  // (owner report: putting Harpoon above Cage on 312 also put Harpoon above Net on 313).
+  // But the orders usually do not CONFLICT: Harpoon>Cage and Net>Harpoon merge into
+  // Net,Harpoon,Cage, and each menu only contains its own verbs, so the one merged pin list
+  // orders both variants exactly as asked. Topological merge with a stable tie-break (verbs
+  // rank by first appearance across the rules); a cycle means a real contradiction.
+  function mnuMergeOrders(orders) {
+    const verbs = [];
+    const edges = {}, indeg = {}, firstSeen = {};
+    let n = 0;
+    for (const o of orders) for (const v of o) {
+      if (firstSeen[v] === undefined) { firstSeen[v] = n++; verbs.push(v); edges[v] = {}; indeg[v] = 0; }
+    }
+    for (const o of orders)
+      for (let i = 0; i < o.length; i++)
+        for (let j = i + 1; j < o.length; j++)
+          if (!edges[o[i]][o[j]]) { edges[o[i]][o[j]] = 1; indeg[o[j]]++; }
+    const avail = verbs.filter(v => indeg[v] === 0);
+    const out = [];
+    while (avail.length) {
+      avail.sort((a, b) => firstSeen[a] - firstSeen[b]);
+      const v = avail.shift(); out.push(v);
+      for (const w in edges[v]) if (--indeg[w] === 0) avail.push(w);
+    }
+    return out.length === verbs.length ? out : null;
+  }
+  // Pre-arm pins for every stored rule whose display NAME resolves to one usable order:
+  // a single rule, several rules sharing one order, or several variants whose orders MERGE
+  // (see mnuMergeOrders). Pre-armed pins are held permanently by the companion and reorder on
+  // the first build tick of a new hover, instead of waiting a poll round-trip during which the
+  // game's own default is clickable. Only variants whose orders truly contradict each other
+  // stay latch-follow.
   function mnuPrearm() {
     const byName = {};
     for (const k in mnuRules) {
@@ -387,9 +422,9 @@
     const out = [];
     for (const nm in byName) {
       const keys = byName[nm];
-      const first = JSON.stringify(mnuRules[keys[0]] || []);
-      if (keys.some(k => JSON.stringify(mnuRules[k] || []) !== first)) continue;
-      for (const verb of mnuRules[keys[0]] || []) out.push(verb + '\t' + nm);
+      const merged = mnuMergeOrders(keys.map(k => mnuRules[k] || []));
+      if (!merged) continue;                     // contradictory variants: latch-only
+      for (const verb of merged) out.push(verb + '\t' + nm);
     }
     // global rule: empty target matches any (Pin.target semantics in MenuShare.h)
     for (const verb of mnuRules['*'] || []) out.push(verb + '\t');
