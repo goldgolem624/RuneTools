@@ -151,15 +151,9 @@
       // The idle case prints its raw inputs: the two varc stamps and both clock candidates.
       // "Freedom says ready while on cooldown" could be a missing varc in the dump, a stale
       // stamp, or our CLIENTCLOCK running past the stamps; the numbers tell which.
-      const cdRaw = () => {
-        if (!cdRec || !cdRec.v || !d) return '';
-        const a2 = d.vc ? d.vc['5:' + cdRec.v[0]] : undefined;
-        const b2 = d.vc ? d.vc['5:' + cdRec.v[1]] : undefined;
-        return String.fromCharCode(10) + '  raw: cast=' + a2 + ' ready=' + b2 + ' cycles=' + d.cycles + ' clock/20=' + (d.clock > 0 ? Math.floor(d.clock / 20) : '?');
-      };
       const cdLine = s.cd ? 'On cooldown: ' + s.cd + (s.cd.includes(':') ? '' : 's') + ' left (printed on the icon)'
                    : live != null ? 'On cooldown: ' + fmtSec(live) + ' left (varc ' + cdRec.v[0] + '/' + cdRec.v[1] + ' clock)'
-                   : cdRec && cdRec.v ? 'Not on cooldown (clock varc ' + cdRec.v[0] + '/' + cdRec.v[1] + ' idle)' + cdRaw()
+                   : cdRec && cdRec.v ? 'Not on cooldown (clock varc ' + cdRec.v[0] + '/' + cdRec.v[1] + ' idle)'
                    : null;
       if (cdLine) lines.push(cdLine);
       if (s.key) lines.push('Keybind: ' + (s.mod ? MOD[s.mod] + '+' : '') + s.key);

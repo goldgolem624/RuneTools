@@ -315,6 +315,9 @@
       ch.textContent = l.chan; row.appendChild(ch);
       const m = document.createElement('span'); m.className = 'chat-msg';
       m.innerHTML = chatHtml(l.tokens, q);
+      // Lines carrying game markup expose it on hover (icon indices, colour tags): this is how
+      // an unmapped <img=N> index gets identified without a debugger.
+      if (l.raw && l.raw.indexOf('<img=') >= 0) row.dataset.tip = 'Raw markup:' + String.fromCharCode(10) + l.raw;
       row.appendChild(m);
       frag.appendChild(row);
     }
