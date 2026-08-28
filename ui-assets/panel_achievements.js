@@ -390,42 +390,75 @@
 
   // Boss -> task count for the dropdown.
   //
-  // A combat task normally hangs off a BOSS achievement, and that parent is the group. Some
-  // do not: Ivar's two tasks are listed by no parent at all, so keying purely on the parent
-  // dropped the boss from this list entirely while "All bosses" still showed its tasks --
-  // visible in the list, impossible to filter to. Orphans are now grouped by their own
-  // subcategory and named from what their descriptions have in common, so a boss the cache
-  // has not parented is still selectable instead of silently missing.
+  // NAMES COME FROM THE GAME. Enum 16086 is the achievement category/subcategory display-name
+  // table (verified in the live cache: 212 entries, keys in the cat/subcat id space, values
+  // like "Skilling Boss<br>    Croesus" and "    Nakatra" with markup expressing hierarchy).
+  // A task's boss group resolves as: its parent achievement's name; else enum 16086 for its
+  // subcategory (markup stripped, last hierarchy segment taken); else the common-prefix guess;
+  // else "Category #<id>" so two unnamed groups can never blur into one "Other". Groups that
+  // end up with the SAME name merge, so a parented "Nex" and a subcategory also named "Nex"
+  // are one dropdown entry instead of two.
+  let cmSubcatNames = null, cmSubcatLoading = false;
+  function cmSubcatName(id) {
+    if (id == null) return '';
+    if (!cmSubcatNames) {
+      if (!cmSubcatLoading && bridge() && bridge().enumInfo) {
+        cmSubcatLoading = true;
+        (async () => {
+          try {
+            const m = JSON.parse(await bridge().enumInfo(16086) || 'null');
+            if (m && Object.keys(m).length) { cmSubcatNames = m; cmPopulateBoss(); renderCmList(); }
+          } catch (e) {}
+          cmSubcatLoading = false;
+        })();
+      }
+      return '';
+    }
+    let v = cmSubcatNames[String(id)];
+    if (!v) return '';
+    // "Skilling Boss<br>    Croesus" -> "Croesus"; strip colour tags; trim indent.
+    v = String(v).replace(/<col=[^>]*>|<\/col>/gi, '');
+    const segs = v.split(/<br\s*\/?>/i).map(x => x.trim()).filter(Boolean);
+    return segs.length ? segs[segs.length - 1] : v.trim();
+  }
   function cmBosses() {
-    const lb = cmLeafBoss(); const m = {};
+    const lb = achLeafParent();
     const orphans = {};
+    const byName = {};
+    const addTo = (nm, a) => {
+      const e = byName[nm] = byName[nm] || { name: nm, n: 0, ids: [] };
+      e.n++; e.ids.push(a.id);
+    };
     for (const a of (achDefs || [])) {
       if (!(achTier(a) && achTrackable(a) && !achIsLeagues(a))) continue;
       const p = lb[a.id];
-      if (p) {
-        if (!m[p.id]) m[p.id] = { name: p.name || ('#' + p.id), n: 0 };
-        m[p.id].n++;
-        continue;
-      }
+      if (p) { addTo(p.name || ('#' + p.id), a); continue; }
       const key = (a.subcat != null) ? ('s' + a.subcat) : 'other';
       (orphans[key] = orphans[key] || []).push(a);
     }
-    // Synthetic ids sit far above real achievement ids so they can never collide with one.
-    let synth = 900000000;
     for (const key in orphans) {
       const list = orphans[key];
-      const nm = cmCommonName(list.map(x => x.desc || x.name || '')) ||
-                 (list.length === 1 ? (list[0].name || 'Other') : 'Other');
-      const id = synth++;
-      m[id] = { name: nm, n: list.length, ids: list.map(x => x.id) };
+      const subcat = list[0].subcat;
+      const nm = cmSubcatName(subcat)
+              || cmCommonName(list.map(x => x.desc || x.name || ''))
+              || (list.length === 1 ? (list[0].name || '') : '')
+              || (subcat != null ? ('Category #' + subcat) : 'Uncategorised');
+      for (const a of list) addTo(nm, a);
     }
+    // Synthetic ids sit far above real achievement ids so they can never collide with one.
+    let synth = 900000000;
+    const m = {};
+    for (const nm of Object.keys(byName).sort()) m[synth++] = byName[nm];
     return m;
   }
   function cmPopulateBoss() {
     const dd = $('cmBoss'); if (!dd || !dd.setItems) return;
     const m = cmBosses(); const ids = Object.keys(m).map(Number).sort((a, b) => m[a].name.localeCompare(m[b].name));
-    if (dd.dataset.n === String(ids.length)) return;
-    dd.dataset.n = String(ids.length);
+    // Signature on the NAMES, not the count: the enum 16086 load renames groups without
+    // changing how many there are, and a count-only guard kept the old labels.
+    const sig = ids.map(i => m[i].name + ':' + m[i].n).join('|');
+    if (dd.dataset.n === sig) return;
+    dd.dataset.n = sig;
     const items = [{ value: -1, label: 'All bosses' }];
     for (const id of ids) items.push({ value: id, label: m[id].name + ' (' + m[id].n + ')' });
     dd.setItems(items, cmFBoss);
@@ -489,12 +522,13 @@
     // Real boss parents match by parent id; the synthetic orphan groups (see cmBosses)
     // carry their member ids instead, since those tasks have no parent to match on.
     const bosses = cmBosses();
+    // Every group carries its member ids now (parented and subcategory groups alike, so
+    // same-named ones could merge); the old parent-id match branch is gone with it.
     const synthSel = (cmFBoss >= 0 && bosses[cmFBoss] && bosses[cmFBoss].ids)
                       ? new Set(bosses[cmFBoss].ids) : null;
     const inBoss = (a) => {
       if (cmFBoss < 0) return true;
-      if (synthSel) return synthSel.has(a.id);
-      const p = lb[a.id]; return !!(p && p.id === cmFBoss);
+      return !!(synthSel && synthSel.has(a.id));
     };
     const items = all.filter(a => {
       if (!inTier(a) || !inBoss(a)) return false;
