@@ -1005,14 +1005,15 @@
     cx.imageSmoothingEnabled = true;
     try { cx.imageSmoothingQuality = 'high'; } catch (e) {}
     const ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
+    let drawn = 0, emptyKnown = 0, loading = 0;
     for (let ix = ix0; ix <= ix1; ix++) {
       for (let iy = iy0; iy <= iy1; iy++) {
         const dx0 = Math.round(sx(ix * ch)), dx1 = Math.round(sx((ix + 1) * ch));
         const dy0 = Math.round(sy((iy + 1) * ch)), dy1 = Math.round(sy(iy * ch));
         const rec = wmGet(L.ts, plane, ix, iy);
-        if (rec && rec.cv) { cx.drawImage(rec.cv, dx0, dy0, dx1 - dx0, dy1 - dy0); continue; }
-        if (!rec) wmEnqueue(L.ts, plane, ix, iy, Math.abs(ix * ch + ch / 2 - ccx) + Math.abs(iy * ch + ch / 2 - ccy));
-        if (rec && !rec.cv) continue;                           // known-empty: leave the void dark
+        if (rec && rec.cv) { drawn++; cx.drawImage(rec.cv, dx0, dy0, dx1 - dx0, dy1 - dy0); continue; }
+        if (!rec) { loading++; wmEnqueue(L.ts, plane, ix, iy, Math.abs(ix * ch + ch / 2 - ccx) + Math.abs(iy * ch + ch / 2 - ccy)); }
+        if (rec && !rec.cv) { emptyKnown++; continue; }         // known-empty: leave the void dark
         for (let li = Lidx - 1; li >= 0; li--) {                // loading: nearest coarser cached level
           const B = WM_LEVELS[li], bch = B.ch;
           const bix = Math.floor(ix * ch / bch), biy = Math.floor(iy * ch / bch);
@@ -1026,6 +1027,20 @@
       }
     }
     wmPump();
+    // Every chunk in view is KNOWN empty: say so instead of showing a silent black void. This is
+    // the honest state for instanced spaces (uncharted isles, boss and skilling instances, POH),
+    // which are assembled from template chunks at runtime and have no static map data.
+    if (drawn === 0 && loading === 0 && emptyKnown > 0) {
+      cx.save();
+      cx.font = '600 13px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
+      cx.textAlign = 'center'; cx.textBaseline = 'middle';
+      cx.fillStyle = 'rgba(238,240,245,0.75)';
+      cx.fillText('No static map here', w / 2, h / 2 - 12);
+      cx.font = '11.5px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
+      cx.fillStyle = 'rgba(170,176,191,0.7)';
+      cx.fillText('Instanced area (uncharted isle, boss or skilling instance, house): built at runtime, not in the map cache.', w / 2, h / 2 + 8);
+      cx.restore();
+    }
     // World tile grid. Spacing ADAPTS rather than the grid vanishing when zoomed out: at a few
     // px/tile a per-tile lattice would be mostly lines, so the step grows to the next power of
     // two that clears ~7 px and those coarser lines draw fainter, reading as a reference grid
