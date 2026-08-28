@@ -107,6 +107,12 @@
         const n = parseInt(tag.slice(4), 10);
         if (n >= 0) tokens.push({ img: n, color: curColor });
       }
+      else if (low.startsWith('sprite=')) {
+        // Direct sprite reference (the leagues broadcast icon is <sprite=36303>): the
+        // archive id itself, frame 0, drawn at text height like an <img=N> icon.
+        const n = parseInt(tag.slice(7), 10);
+        if (n >= 0) tokens.push({ spr: n, color: curColor });
+      }
       // <shad=..>, <str>, <u=..>, etc. -> dropped
       i = gt + 1;
     }
@@ -155,12 +161,26 @@
     }
     return '';
   }
+  // <sprite=ID>: whole-archive icons, cached by id (same fetch/repaint shape as the strip).
+  const chatSprUrl = new Map(), chatSprPending = new Set();
+  function chatSpriteSrc(id) {
+    if (chatSprUrl.has(id)) return chatSprUrl.get(id);
+    if (!chatSprPending.has(id) && bridge() && bridge().sprite) {
+      chatSprPending.add(id);
+      (async () => {
+        try { const u = await bridge().sprite(id, 32); if (u) chatSprUrl.set(id, u); } catch (e) {}
+        chatSprPending.delete(id);
+        if (chatSprUrl.has(id)) { try { chatRepaint(); } catch (e) {} }
+      })();
+    }
+    return '';
+  }
   function chatHtml(tokens, query) {
     const q = query ? query.toLowerCase() : '';
     let html = '';
     for (const t of tokens) {
-      if (t.img !== undefined) {
-        const src = chatIconSrc(t.img);
+      if (t.img !== undefined || t.spr !== undefined) {
+        const src = (t.img !== undefined) ? chatIconSrc(t.img) : chatSpriteSrc(t.spr);
         if (src) html += '<img class="chat-img" src="' + src + '" alt="">';
         continue;
       }
@@ -317,7 +337,7 @@
       m.innerHTML = chatHtml(l.tokens, q);
       // Lines carrying game markup expose it on hover (icon indices, colour tags): this is how
       // an unmapped <img=N> index gets identified without a debugger.
-      if (l.raw && l.raw.indexOf('<img=') >= 0) row.dataset.tip = 'Raw markup:' + String.fromCharCode(10) + l.raw;
+      if (l.raw && (l.raw.indexOf('<img=') >= 0 || l.raw.indexOf('<sprite=') >= 0)) row.dataset.tip = 'Raw markup:' + String.fromCharCode(10) + l.raw;
       row.appendChild(m);
       frag.appendChild(row);
     }
