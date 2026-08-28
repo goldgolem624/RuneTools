@@ -45,16 +45,21 @@
   }
   // Trackable = has any live-checkable requirement group.
   function achTrackable(a) {
+    // The game judges SEVEN requirement kinds (script19623): the five var-based ones, skill
+    // levels (op 12) and prerequisite achievements (op 11). All seven make an achievement
+    // trackable and all seven count toward completion.
     return !!((a.reqs && a.reqs.length) || (a.reqs23 && a.reqs23.length) ||
               (a.reqs25 && a.reqs25.length) || (a.reqsvpb && a.reqsvpb.length) ||
-              (a.reqsvp && a.reqsvp.length));
+              (a.reqsvp && a.reqsvp.length) || (a.skills && a.skills.length) ||
+              (a.prev && a.prev.length));
   }
   // How many requirements must be satisfied. `needN` (cache op 30): [1] = ANY one (OR),
   // [n]==reqs = ALL (AND); multi-element groups are summed. Absent -> AND all reqs.
   function achNeed(a) {
     if (a.needN && a.needN.length) return a.needN.reduce((s, x) => s + x, 0);
     return (a.reqs || []).length + (a.reqs23 || []).length + (a.reqs25 || []).length +
-           (a.reqsvpb || []).length + (a.reqsvp || []).length;
+           (a.reqsvpb || []).length + (a.reqsvp || []).length +
+           (a.skills || []).length + (a.prev || []).length;
   }
 
   // id -> achDef, and child-id -> parent achDef (from each parent's op-15 `subach` list).
@@ -234,12 +239,51 @@
         const ok = cur >= q.v; if (ok) sat++;
         reqs.push({ description: q.n, current: cur, target: q.v, complete: ok, varbits: [], varps: q.vps.slice() });
       }
+      // op 12: skill levels, judged against the live skill panel exactly as the game's
+      // requirement walk does. skills entries are [skillId, level]; skill ids share the
+      // reader's index space (SKILL_NAMES).
+      const liveSk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
+      for (const sq of (a.skills || [])) {
+        const sid = sq[0] | 0, lvl = sq[1] | 0;
+        const cur = (liveSk && liveSk[sid]) ? (liveSk[sid][0] | 0) : 0;
+        const ok = cur >= lvl; if (ok) sat++;
+        reqs.push({ description: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
+                    current: cur, target: lvl, complete: ok, varbits: [] });
+      }
+      // op 11: prerequisite achievements. Judged in the resolve pass below (their own
+      // completion may not be known yet on this walk); recorded as pending lines here.
+      for (const pid2 of (a.prev || [])) {
+        reqs.push({ description: '', current: 0, target: 1, complete: false, varbits: [], prereqOf: pid2 });
+      }
       const need = achNeed(a);
       const tier = achTier(a);
       out.push({ id: a.id, name: a.name || '', description: a.desc || '', reward: a.reward || '',
                  points: a.points || 0, complete: sat >= need, requirementsNeeded: need,
-                 combatMasteryTier: tier ? tier[0] : null, requirements: reqs });
+                 combatMasteryTier: tier ? tier[0] : null, requirements: reqs, _sat: sat });
     }
+    // Resolve prerequisite-achievement requirements. A prereq's completion can depend on
+    // other achievements in this same result, so iterate to a fixed point (chains are short;
+    // 8 passes covers any real depth) instead of trusting one walk's ordering.
+    const byId = {}; for (const r of out) byId[r.id] = r;
+    for (let pass = 0; pass < 8; pass++) {
+      let changed = false;
+      for (const r of out) {
+        let sat = r._sat;
+        for (const q of r.requirements) {
+          if (q.prereqOf === undefined) continue;
+          const dep = byId[q.prereqOf];
+          const defs = achDefById();
+          if (!q.description) q.description = 'Complete: ' + ((defs[q.prereqOf] && defs[q.prereqOf].name) || ('achievement #' + q.prereqOf));
+          const ok = !!(dep && dep.complete);
+          if (ok !== q.complete) { q.complete = ok; q.current = ok ? 1 : 0; changed = true; }
+          if (q.complete) sat++;
+        }
+        const nowDone = sat >= r.requirementsNeeded;
+        if (nowDone !== r.complete) { r.complete = nowDone; changed = true; }
+      }
+      if (!changed) break;
+    }
+    for (const r of out) delete r._sat;
     return out;
   }
 

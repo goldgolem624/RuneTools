@@ -68,7 +68,7 @@ struct Ach {
     // members defaults TRUE: op 19's presence marks an achievement free-to-play,
     // so entries without it are members content.
     bool members = true; bool named = false;
-    std::vector<Req> reqs; std::vector<int> subach;
+    std::vector<Req> reqs; std::vector<int> subach; std::vector<int> prereqs;
     std::vector<SkillReq> skills;   // op 12
     std::vector<BitReq> bitreqs23;  // op 23 (varp bits)
     std::vector<BitReq> bitreqs25;  // op 25 (varbit bits)
@@ -102,7 +102,7 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 7: a.reward = r.pstr(); break;
             case 8: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); r.u8(); r.pstr(); r.u8(); r.u16(); } break; }  // skill req (ironman)
             case 9: case 10: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.smart32(); r.pstr(); r.u8(); r.u16(); } break; }
-            case 11: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }   // previous achievements
+            case 11: { int c = r.u8(); for (int i = 0; i < c; ++i) a.prereqs.push_back((int)r.u24()); break; }   // previous achievements (judged by the game's req walk)
             // skill req: (u8 ?, u8 LEVEL, name, u8 ?, u16 SKILL).
             case 12: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); int lvl = r.u8(); r.pstr(); r.u8(); int sk = r.u16(); a.skills.push_back({ sk, lvl }); } break; }
             // op 13 = same SHAPE as op 14 but the u16 ids are VARP ids, not varbits
@@ -214,6 +214,23 @@ const std::string& AchievementsJson() {
                     }
                     out += "]}";
                 }
+                out += "]";
+            }
+            // Skill and prerequisite requirements: the game's requirement walk (script19623 /
+            // ACHIEVEMENT_REQSTATE) judges SEVEN kinds; these two were decoded and then
+            // dropped, so the panel could neither list nor judge them and any achievement
+            // mixing them with var-based reqs misjudged its completion.
+            if (!a.skills.empty()) {
+                out += ",\"skills\":[";
+                for (std::size_t i = 0; i < a.skills.size(); ++i) {
+                    if (i) out += ',';
+                    out += "[" + std::to_string(a.skills[i].skill) + "," + std::to_string(a.skills[i].level) + "]";
+                }
+                out += "]";
+            }
+            if (!a.prereqs.empty()) {
+                out += ",\"prev\":[";
+                for (std::size_t i = 0; i < a.prereqs.size(); ++i) { if (i) out += ','; out += std::to_string(a.prereqs[i]); }
                 out += "]";
             }
             if (!a.subach.empty()) {
