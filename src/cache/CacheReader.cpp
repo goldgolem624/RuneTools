@@ -3928,10 +3928,11 @@ void RegionHeightsFill(int player_x, int player_y, int plane, int radius,
 
 // ---- World-map areas (js5-23) -----------------------------------------------------------
 // Decoded offline against build 949 (scratchpad wm23.py) and the game's own scripts:
-//   archive 0, file = area id: "details". cstr internal name, cstr display name, u8 flags,
-//       u24 (unresolved), u32 background colour, u8, u8 zoom, u16 rect count, then rects of
-//       u8 type + u16 x0,y0,x1,y1 in TILES (inclusive): the source-world membership that
-//       WORLDMAP_COORDINMAP answers.
+//   archive 0, file = area id: "details". cstr internal name, cstr display name, then an
+//       11-byte header (u8 flags, u32, u32 background colour, u8, u8 zoom) and a u8 record
+//       count; records are 17 bytes: u8 type, source rect x0,y0,x1,y1 and DISPLAY rect
+//       x0,y0,x1,y1 (u16 tiles, inclusive). Source rects are the membership that
+//       WORLDMAP_COORDINMAP answers; the display rect is where that block sits on the map.
 //   archive 1, file = area id: "compositemap". u16 count, then records: u8 type; type 0 =
 //       u8 planes, u16 srcX, u16 srcY (mapsquares), u8 dstPlane, u16 dstX, u16 dstY: source
 //       square -> display square. This is how the surface map floats dungeons in the sea
@@ -3943,7 +3944,7 @@ namespace {
 struct WmZone { int planes, sx, sy, dp, dx, dy; };
 struct WmArea {
     int id = -1; std::string name, display; int flags = 0, bg = 0, zoom = 100;
-    std::vector<std::array<int, 4>> rects;   // tiles, inclusive
+    std::vector<std::array<int, 8>> rects;   // src x0,y0,x1,y1, dst x0,y0,x1,y1 (tiles, inclusive)
     std::vector<WmZone> zones;
     int x0 = 0, y0 = 0, x1 = -1, y1 = -1;    // display squares covered by the zone table
     int imgW = 0, imgH = 0;                  // full image size (px)
@@ -3981,15 +3982,15 @@ std::string MapAreasJson() {
         auto cstr = [&](std::string& dst) { while (p < d.size() && d[p]) dst.push_back((char)d[p++]); if (p < d.size()) ++p; };
         cstr(a.name); cstr(a.display);
         if (p + 12 > d.size()) continue;
-        a.flags = d[p]; p += 1; p += 3;                                          // u8 flags, u24 unresolved
+        a.flags = d[p]; p += 1; p += 4;                                          // u8 flags, u32 (unresolved)
         a.bg = ((int)d[p] << 24) | ((int)d[p+1] << 16) | ((int)d[p+2] << 8) | (int)d[p+3]; p += 4;
-        p += 1;                                                                  // u8 (always 1 on 949)
+        p += 1;                                                                  // u8 (1 on 949)
         a.zoom = d[p]; p += 1;
-        int nrect = ((int)d[p] << 8) | d[p+1]; p += 2;
-        for (int i = 0; i < nrect && p + 9 <= d.size(); ++i) {
+        int nrect = d[p]; p += 1;
+        for (int i = 0; i < nrect && p + 17 <= d.size(); ++i) {
             int t = d[p]; (void)t;
             auto u16 = [&](std::size_t q) { return ((int)d[q] << 8) | d[q+1]; };
-            a.rects.push_back({ u16(p+1), u16(p+3), u16(p+5), u16(p+7) }); p += 9;
+            a.rects.push_back({ u16(p+1), u16(p+3), u16(p+5), u16(p+7), u16(p+9), u16(p+11), u16(p+13), u16(p+15) }); p += 17;
         }
         auto c = idx->ReadFile(1, fid);
         if (c.size() >= 2) {
@@ -4033,7 +4034,8 @@ std::string MapAreasJson() {
         f2 = true;
         for (const auto& r : a.rects) {
             out += f2 ? "" : ","; f2 = false;
-            out += "[" + std::to_string(r[0]) + "," + std::to_string(r[1]) + "," + std::to_string(r[2]) + "," + std::to_string(r[3]) + "]";
+            out += "[" + std::to_string(r[0]) + "," + std::to_string(r[1]) + "," + std::to_string(r[2]) + "," + std::to_string(r[3]) + "," +
+                   std::to_string(r[4]) + "," + std::to_string(r[5]) + "," + std::to_string(r[6]) + "," + std::to_string(r[7]) + "]";
         }
         out += "]}";
     }

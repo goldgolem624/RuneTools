@@ -58,7 +58,8 @@ std::vector<CacheParseRow> CacheParseHealth();
 // failure. Memoized. Used for skill icons (and any other cache sprite).
 // World-map areas (js5-23): {"<areaId>":{"n","dn","zoom","bg","x0","y0","x1","y1" (display
 // mapsquares), "w","h" (full image px), "z":[[planes,srcX,srcY,dstPlane,dstX,dstY],...],
-// "r":[[x0,y0,x1,y1],...] (source tiles, inclusive)}}. Built once; {} until the cache opens.
+// "r":[[sx0,sy0,sx1,sy1,dx0,dy0,dx1,dy1],...] (source rect -> display rect, tiles, inclusive)}}.
+// Built once; {} until the cache opens.
 std::string MapAreasJson();
 // The game's own composited map image for an area as a data URL (full size, or the thumbnail).
 std::string MapAreaImageDataUrl(int areaId, bool thumb);

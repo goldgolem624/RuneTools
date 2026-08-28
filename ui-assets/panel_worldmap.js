@@ -745,6 +745,16 @@
   // Screen-to-stage factor: 1 normally; under the Preferences content zoom the screen rect is
   // scaled while clientWidth stays in CSS px, which put the cursor off by the zoom factor.
   function wmZoomK(el, r) { const cw = el.clientWidth || 0; return (cw > 0 && r && r.width > 0) ? cw / r.width : 1; }
+  // Pointer position in the stage's own CSS pixels. offsetX/Y come from the engine's hit test
+  // (already in the target's coordinate space, whatever zoom / device scale is in force);
+  // the rect arithmetic is only the fallback when the event targets a child element.
+  function wmPt(e, stage) {
+    const t = e.target;
+    if (t === stage && typeof e.offsetX === 'number') return { x: e.offsetX, y: e.offsetY };
+    if (t && t.parentNode === stage && typeof e.offsetX === 'number') return { x: e.offsetX + (t.offsetLeft || 0), y: e.offsetY + (t.offsetTop || 0) };
+    const r = stage.getBoundingClientRect(), k = wmZoomK(stage, r);
+    return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k };
+  }
   function wmFlyTo(x, y, p, sel) {
     if (p != null && (p | 0) !== wmCam.p) wmSetPlane(p | 0);
     const tz = Math.max(wmCam.z, 2.5);
@@ -988,6 +998,9 @@
   let wmAreas = null, wmAreasAt = 0, wmZoneIdx = null, wmAreaImg = {};
   // The area images are 1 px per tile: native or downsampled at <= 1 px/tile, but upscaled mush
   // above it (owner: 'absolutely terrible' at 2 px/tile), so the chunk renderer takes over there.
+  // The area image is 1 px per tile: it is the right source ONLY when zoomed out (<= 1 px/tile,
+  // native or shrunk). Above that the detailed chunk renderer (roads, buildings, walls) is the
+  // real map; magnifying the image was blur, not detail.
   const WM_IMG_MAX_Z = 1.0;
   function wmLoadAreas() {
     if (wmAreas || !bridge() || !bridge().mapAreas) return;
@@ -1011,11 +1024,14 @@
             const zoneOf = new Map();
             for (const z of (A.z || [])) zoneOf.set((z[1] << 8) | z[2], z);
             for (const r of (A.r || [])) {
+              // r = source rect -> display rect (tiles): a block moves as a whole, so a square's
+              // display square is its source square shifted by the rect offset.
+              const offX = (r.length >= 8 ? (r[4] >> 6) - (r[0] >> 6) : 0), offY = (r.length >= 8 ? (r[5] >> 6) - (r[1] >> 6) : 0);
               for (let qx = r[0] >> 6; qx <= (r[2] >> 6); qx++) for (let qy = r[1] >> 6; qy <= (r[3] >> 6); qy++) {
                 const k = (qx << 8) | qy;
                 if (idx.has(k)) continue;
                 const z = zoneOf.get(k);
-                const dx = z ? z[4] : qx, dy = z ? z[5] : qy;
+                const dx = z ? z[4] : qx + offX, dy = z ? z[5] : qy + offY;
                 if (!inImg(dx, dy)) continue;                  // outside this area's image: not shown on it
                 idx.set(k, { a: +id, dx: dx, dy: dy, pl: z ? z[0] : 0 });
               }
@@ -1098,6 +1114,7 @@
     let imgMode = false;
     if (plane === 0 && wmZoneIdx && wmAreas && z <= WM_IMG_MAX_Z) {
       imgMode = true;
+      cx.imageSmoothingEnabled = z < 1;                        // magnify crisp, shrink smooth
       const sqx0 = Math.max(0, vx0 >> 6), sqx1 = Math.min(255, vx1 >> 6), sqy0 = Math.max(0, vy0 >> 6), sqy1 = Math.min(255, vy1 >> 6);
       let missingImg = false;
       for (let qx = sqx0; qx <= sqx1; qx++) {
@@ -1117,6 +1134,7 @@
         }
       }
       if (missingImg) imgMode = false;                         // images still decoding: chunks fill in meanwhile
+      cx.imageSmoothingEnabled = true;
     }
     for (let ix = ix0; ix <= ix1 && !imgMode; ix++) {
       for (let iy = iy0; iy <= iy1; iy++) {
@@ -1226,7 +1244,30 @@
     // them hover, hold a constant screen size at every zoom, and keep place labels off them.
     // Below ~1.5 px/tile the view is a whole continent and several hundred symbols is noise, so
     // they drop out alongside the other dense layers.
-    if (wmLayer.icons && z >= 1.5 && WM_ML) {
+    if (wmLayer.icons && z >= 1.5 && WM_ML && imgMode) {
+      // Image mode fetches no chunks, so the symbols come from the world-wide placement table
+      // (the same one search uses), drawn exactly like the chunk-carried ones below.
+      wmLoadSymbols();
+      const seenPin = new Set();
+      if (WM_SYM) for (const p of WM_SYM) {
+        if ((p.p | 0) !== 0 && (p.p | 0) !== plane) continue;
+        const gx = p.x, gy = p.y;
+        if (gx < vx0 || gx > vx1 || gy < vy0 || gy > vy1) continue;
+        const pinKey = gx + ',' + gy + ',' + p.ml;
+        if (seenPin.has(pinKey)) continue;
+        seenPin.add(pinKey);
+        const e = WM_ML[p.ml];
+        if (!e || e.s < 0) continue;
+        const mx = sx(gx + 0.5), my = sy(gy + 0.5);
+        let url = wmSpriteUrl(e.s);
+        if (!url && e.s2 != null && e.s2 >= 0) url = wmSpriteUrl(e.s2);
+        const img = url ? wmImg(url) : null;
+        if (img) wmDrawIcon(cx, img, mx, my, 18);
+        placed.push({ x: mx - 9, y: my - 9, w: 18, h: 18 });
+        wmMarks.push({ sx: mx, sy: my, r: 10, ml: p.ml, x: gx, y: gy });
+      }
+    }
+    if (wmLayer.icons && z >= 1.5 && WM_ML && !imgMode) {
       // The reader exports a symbol from EVERY plane (the game shows an upper-floor bank on the
       // ground view), so the same element can arrive several times on one tile. Collapse those.
       const seenPin = new Set();
@@ -1712,16 +1753,16 @@
     };
     stage.addEventListener('wheel', function (e) {
       e.preventDefault();
-      const r = stage.getBoundingClientRect(), k = wmZoomK(stage, r);
-      zoomAt((e.clientX - r.left) * k, (e.clientY - r.top) * k, e.deltaY < 0 ? 1.22 : 1 / 1.22);
+      const pt = wmPt(e, stage);
+      zoomAt(pt.x, pt.y, e.deltaY < 0 ? 1.22 : 1 / 1.22);
     }, { passive: false });
     stage.addEventListener('mousedown', function (e) {
       wmDrag = { x: e.clientX, y: e.clientY, cx: wmCam.x, cy: wmCam.y, moved: false };
       stage.classList.add('grabbing'); e.preventDefault();
     });
     stage.addEventListener('mousemove', function (e) {
-      const r = stage.getBoundingClientRect(), k = wmZoomK(stage, r);
-      const mx = (e.clientX - r.left) * k, my = (e.clientY - r.top) * k;
+      const r = stage.getBoundingClientRect();
+      const pt = wmPt(e, stage), mx = pt.x, my = pt.y;
       const tx = Math.floor(wmCam.x + (mx - stage.clientWidth / 2) / wmCam.z);
       const ty = Math.floor(wmCam.y - (my - stage.clientHeight / 2) / wmCam.z);
       if (tx !== wmHover.x || ty !== wmHover.y) { wmHover = { x: tx, y: ty }; wmPaintStatus(); wmHoverBox(); }
@@ -1775,8 +1816,8 @@
       window.addEventListener('mouseup', function (e) {
         const st2 = document.getElementById('wmStage');
         if (wmDrag && st2 && !wmDrag.moved) {                   // click (no drag) = pin the tile
-          const r = st2.getBoundingClientRect(), k = wmZoomK(st2, r);
-          const mx = (e.clientX - r.left) * k, my = (e.clientY - r.top) * k;
+          const r = st2.getBoundingClientRect();
+          const pt = wmPt(e, st2), mx = pt.x, my = pt.y;
           if (mx >= 0 && my >= 0 && mx <= r.width && my <= r.height) {
             // A click on a linked element (dungeon link, stairs, ladders...) follows it the way
             // the game does: fly to the destination and pin it, plane switch included.
