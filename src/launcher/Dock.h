@@ -65,6 +65,7 @@ void PublishGameClientSize(std::uint32_t pid, int w, int h);
 // change, so alt-tab and multi-client are unaffected. Leaving restores the exact previous frame
 // and placement.
 void SetHostFullscreen(std::uint32_t pid, bool on);
+void SetUiScaleMultiplier(std::uint32_t pid, double mul);   // Preferences UI scale (1.0 = DPI only)
 bool IsHostFullscreen(std::uint32_t pid);
 
 // Keep the client rendering at full rate when its window isn't focused. Loads the companion and

@@ -15,6 +15,8 @@
     --text-mute:    #6b7388;
     --accent-hi:    #8c6ffd;
     --accent-lo:    #6a4ee0;
+    --accent:       #8c6ffd;   /* was referenced but never defined; Preferences drives all three */
+    --accent-ring:  rgba(124,92,252,0.28);
     --ok:           #4dd28a;
     --tx-fast:      120ms;
     --ease:         cubic-bezier(.4,0,.2,1);
@@ -22,12 +24,16 @@
     --win-bg:       rgba(12, 14, 20, 0.93);
     --win-radius:   10px;
     --win-shadow:   0 14px 44px rgba(0,0,0,0.55), 0 3px 10px rgba(0,0,0,0.40);
-    --win-shadow-f: 0 16px 50px rgba(0,0,0,0.60), 0 0 0 1px rgba(124,92,252,0.28),
+    --win-shadow-f: 0 16px 50px rgba(0,0,0,0.60), 0 0 0 1px var(--accent-ring),
                     0 3px 12px rgba(0,0,0,0.45);
     --bar-bg:       rgba(12, 14, 20, 0.90);
     --tx-med:       160ms;
   }
   * { box-sizing: border-box; }
+  /* Preferences: high contrast lifts the dim/mute text and borders; reduce-motion kills every
+     animation and transition (aura pulses, toast bars, pill slides) for motion-sensitive users. */
+  html.hc { --text-dim: #d6dae4; --text-mute: #a3abbe; --border: #3a4257; --border-hi: #55607a; }
+  html.nomotion *, html.nomotion *::before, html.nomotion *::after { animation: none !important; transition: none !important; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     /* TRANSPARENT on purpose: this page is composited OVER the game frame; only
@@ -2296,7 +2302,8 @@
   // launcher (no prefsLoad) still reads something sane.
   const rtxPrefs = Object.create(null);
   let _prefsReady = false, _prefsSaveT = 0, _prefsInitP = null;
-  const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView', 'rtxAuras', 'rtxAuraSeen', 'rtxAuraIcons'];
+  const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView', 'rtxAuras', 'rtxAuraSeen', 'rtxAuraIcons',
+                        'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify'];
   function prefGet(key, def) {
     if (Object.prototype.hasOwnProperty.call(rtxPrefs, key)) return rtxPrefs[key];
     try { const s = localStorage.getItem(key); if (s !== null) return s; } catch (e) {}
@@ -2335,7 +2342,56 @@
     try { ovApplyDurablePrefs(); } catch (e) {}
     try { sceneApplyDurablePrefs(); } catch (e) {}
     try { if (typeof auraApplyDurablePrefs === 'function') auraApplyDurablePrefs(); } catch (e) {}
+    try { _uiCfg = null; uiApply(); } catch (e) {}
   }
+
+  // =================== Preferences (rtxUi) ===================
+  // One durable JSON blob for every user-facing preference that is not already owned by a
+  // feature store (alerts and layout keep theirs). Read lazily, written through prefSet.
+  const UI_DEF = { scale: 100, accent: '#8c6ffd', contrast: false, motion: true, opacity: 93,
+                   restore: true, toastTtl: 5000, hideWorld: false, numFmt: 'compact', hiddenCats: [] };
+  const UI_ACCENTS = [['Violet', '#8c6ffd'], ['Blue', '#5b9cff'], ['Teal', '#2fd0c4'], ['Green', '#4dd28a'],
+                      ['Amber', '#f5b241'], ['Red', '#ff6b6b'], ['Pink', '#ff7ac8'], ['Mono', '#c9cfdd']];
+  let _uiCfg = null;
+  function uiCfg() {
+    if (_uiCfg) return _uiCfg;
+    let v = null;
+    try { v = JSON.parse(prefGet('rtxUi', '') || 'null'); } catch (e) {}
+    _uiCfg = Object.assign({}, UI_DEF, (v && typeof v === 'object') ? v : {});
+    if (!Array.isArray(_uiCfg.hiddenCats)) _uiCfg.hiddenCats = [];
+    return _uiCfg;
+  }
+  function uiCfgSave() { prefSet('rtxUi', JSON.stringify(uiCfg())); }
+  function uiHexMul(hex, m) {
+    const h = String(hex || '').replace('#', ''); if (h.length !== 6) return hex;
+    const c = [0, 2, 4].map(i => Math.max(0, Math.min(255, Math.round(parseInt(h.slice(i, i + 2), 16) * m))));
+    return '#' + c.map(x => x.toString(16).padStart(2, '0')).join('');
+  }
+  function uiHexRgb(hex) {
+    const h = String(hex || '').replace('#', ''); if (h.length !== 6) return '124,92,252';
+    return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)).join(',');
+  }
+  let _uiScaleSent = -1;
+  function uiApply() {
+    const c = uiCfg(), r = document.documentElement.style;
+    r.setProperty('--accent-hi', c.accent);
+    r.setProperty('--accent', c.accent);
+    r.setProperty('--accent-lo', uiHexMul(c.accent, 0.78));
+    r.setProperty('--accent-ring', 'rgba(' + uiHexRgb(c.accent) + ',0.28)');
+    const op = Math.max(0.3, Math.min(1, (Number(c.opacity) || 93) / 100));
+    r.setProperty('--win-bg', 'rgba(12,14,20,' + op.toFixed(2) + ')');
+    r.setProperty('--bar-bg', 'rgba(12,14,20,' + Math.min(1, op + 0.02).toFixed(2) + ')');
+    document.documentElement.classList.toggle('hc', !!c.contrast);
+    document.documentElement.classList.toggle('nomotion', !c.motion);
+    // UI scale rides the view's device scale (crisp text, correct input mapping); the
+    // launcher multiplies it into its DPI sync. Older launchers lack the call: no-op.
+    const sc = Math.max(50, Math.min(200, Number(c.scale) || 100));
+    if (sc !== _uiScaleSent) {
+      try { if (bridge() && bridge().uiScale) { bridge().uiScale(myPid(), sc / 100); _uiScaleSent = sc; } } catch (e) {}
+    }
+  }
+  function uiCatHidden(id) { return id !== 'Settings' && uiCfg().hiddenCats.indexOf(id) >= 0; }
+  try { uiApply(); } catch (e) {}   // localStorage seed: colours before first paint; prefsInit re-applies the durable copy
 
   // DUNGEONEERING VISIBILITY. One flag gates the nav entry, the poll, the render and the
   // tab-select handler, so the panel can be withheld from a build without removing any of its
@@ -2441,7 +2497,7 @@
     { id: 'cachex',     label: 'Cache Explorer', cat: 'Developer', icon: '<path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/><path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>' },
     { id: 'menuswap',   label: 'Right-click menu', cat: 'Utility', icon: '<path d="M4 5h16v4H4z"/><path d="M4 11h16v8H4z"/><path d="M7 14h7"/><path d="M7 17h5"/>' },
     { id: 'health',     label: 'Health Check', cat: 'Developer', icon: '<path d="M3 12h4l2-6 4 12 2-6h6"/>' },
-    { id: 'uisettings', label: 'UI Settings', cat: 'Settings', icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M8 14h8M8 17h5"/>' },
+    { id: 'uisettings', label: 'Preferences', cat: 'Settings', icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M8 14h8M8 17h5"/>' },
     { id: 'system',     label: 'System',     cat: 'Settings', icon: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.4 5.4l2.1 2.1M16.5 16.5l2.1 2.1M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1"/>' },
   ];
 
@@ -2474,6 +2530,7 @@
   function fmtGp(n) {
     n = Number(n) || 0;
     const sign = n < 0 ? '-' : ''; n = Math.abs(n);
+    if (uiCfg().numFmt === 'full') return sign + n.toLocaleString();
     const f = (v, suf) => {
       let s = v.toFixed(1);
       if (s.endsWith('.0')) s = s.slice(0, -2);
@@ -3965,7 +4022,7 @@
   function tabCat(id) { const t = allTabs().find(x => x.id === id); return t ? (t.cat || 'General') : null; }
   function railCategories() {
     const present = new Set(allTabs().map(t => t.cat || 'General'));
-    return CAT_META.filter(c => present.has(c.id));
+    return CAT_META.filter(c => present.has(c.id) && !uiCatHidden(c.id));
   }
   // =================== In-game window manager ===================
   // Every panel opens as its own floating window inside the game frame; consolidated
@@ -4894,7 +4951,7 @@
     if (!msg) return;
     opts = opts || {};
     const sticky = !!opts.sticky || opts.ttl === 0;
-    const ttl = sticky ? 0 : Math.max(1200, Number(opts.ttl) || 5000);
+    const ttl = sticky ? 0 : Math.max(1200, Number(opts.ttl) || Number(uiCfg().toastTtl) || 5000);
     const now = Date.now();
     // Repeat of a message already on screen: bump its count and restart its clock
     // instead of stacking duplicates (alert rules can re-fire quickly).
@@ -4983,18 +5040,113 @@
   // placement drag calls it per mousemove -- rebuilding the DOM either time destroyed
   // the control the user was actively dragging, so slider input went nowhere. Build
   // the markup once, then only reflect values into it.
+  // Shared row builders for the Preferences page (values reflected by reflectUiSettings,
+  // structure built once: renderPane re-runs this at 4 Hz while the window is open).
+  function uisPill(label, id, get, set, hint) {
+    const r = document.createElement('div'); r.className = 'row'; r.style.alignItems = 'center';
+    const k = document.createElement('span'); k.className = 'k'; k.textContent = label; if (hint) k.title = hint;
+    const pill = document.createElement('div'); pill.id = id; pill.className = 'al-pill' + (get() ? ' on' : '');
+    pill.innerHTML = '<span></span>'; if (hint) pill.title = hint;
+    pill.addEventListener('click', () => { set(!get()); pill.classList.toggle('on', !!get()); });
+    pill._get = get;
+    r.appendChild(k); r.appendChild(pill);
+    return r;
+  }
+  function uisSlider(label, id, min, max, step, get, set, fmt) {
+    const r = document.createElement('div'); r.className = 'row';
+    const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
+    const v = document.createElement('span'); v.className = 'v uis-row'; v.style.width = '210px';
+    const inp = document.createElement('input'); inp.type = 'range'; inp.id = id;
+    inp.min = String(min); inp.max = String(max); inp.step = String(step); inp.value = String(get());
+    const out = document.createElement('b'); out.id = id + 'v'; out.textContent = fmt(get());
+    inp.addEventListener('input', () => { set(Number(inp.value)); out.textContent = fmt(Number(inp.value)); });
+    inp._get = inp._get || get; inp._fmt = fmt;
+    v.appendChild(inp); v.appendChild(out); r.appendChild(k); r.appendChild(v);
+    return r;
+  }
+  function uisChipRow(label, id, chips, isOn, onPick) {
+    const r = document.createElement('div'); r.className = 'row';
+    const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
+    const v = document.createElement('span'); v.className = 'v';
+    const g = document.createElement('div'); g.className = 'uis-chips'; g.id = id; g.style.justifyContent = 'flex-end';
+    for (const [text, val, swatch] of chips) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'uis-chip'; b.dataset.val = val;
+      if (swatch) { const d = document.createElement('i'); d.style.cssText = 'display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:' + swatch; b.appendChild(d); }
+      b.appendChild(document.createTextNode(text));
+      b.addEventListener('click', () => { onPick(val); reflectUiSettings(); });
+      g.appendChild(b);
+    }
+    g._isOn = isOn;
+    v.appendChild(g); r.appendChild(k); r.appendChild(v);
+    return r;
+  }
+  function uisSep(rows) { const d = document.createElement('div'); d.style.cssText = 'border-top:1px solid var(--border); margin:8px 0 4px;'; rows.appendChild(d); }
+  function uisNote(rows, text) { const d = document.createElement('div'); d.style.cssText = 'color:var(--text-mute);font-size:11px;padding:2px 0 6px;'; d.textContent = text; rows.appendChild(d); }
+
   function renderUiSettings() {
     const c = $('content'); if (!c) return;
     if ($('uisWrap')) { reflectUiSettings(); return; }
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'uisWrap'; wrap.className = 'pane';
     const rows = document.createElement('div'); rows.className = 'rows';
+    const cfg = uiCfg();
+    const save = () => { uiCfgSave(); uiApply(); };
 
-    rows.appendChild(secRow('Alert popups'));
+    // ---------------- Appearance ----------------
+    rows.appendChild(secRow('Appearance'));
+    rows.appendChild(uisSlider('UI scale', 'uis_scale', 50, 200, 5, () => cfg.scale, v => { cfg.scale = v; save(); }, v => v + '%'));
+    if (!(bridge() && bridge().uiScale)) uisNote(rows, 'UI scale needs the updated launcher; the value is saved and applies after the next update.');
+    rows.appendChild(uisChipRow('Accent', 'uis_accent', UI_ACCENTS.map(a => [a[0], a[1], a[1]]),
+      v => v.toLowerCase() === String(cfg.accent).toLowerCase(), v => { cfg.accent = v; save(); }));
+    {
+      const r = document.createElement('div'); r.className = 'row';
+      const k = document.createElement('span'); k.className = 'k'; k.textContent = 'Custom accent';
+      const v = document.createElement('span'); v.className = 'v';
+      if (typeof auraColor === 'function') {
+        v.appendChild(auraColor(cfg.accent, hex => { cfg.accent = hex; save(); reflectUiSettings(); }));
+      } else {
+        const inp = document.createElement('input'); inp.className = 'bank-search'; inp.style.width = '90px'; inp.value = cfg.accent; inp.spellcheck = false;
+        inp.addEventListener('change', () => { if (/^#[0-9a-f]{6}$/i.test(inp.value)) { cfg.accent = inp.value; save(); reflectUiSettings(); } });
+        v.appendChild(inp);
+      }
+      r.appendChild(k); r.appendChild(v); rows.appendChild(r);
+    }
+    rows.appendChild(uisSlider('Panel opacity', 'uis_opacity', 30, 100, 1, () => cfg.opacity, v => { cfg.opacity = v; save(); }, v => v + '%'));
+    rows.appendChild(uisPill('High contrast', 'uis_hc', () => !!cfg.contrast, v => { cfg.contrast = v; save(); }, 'Brighter secondary text and borders'));
+    rows.appendChild(uisPill('Animations', 'uis_motion', () => cfg.motion !== false, v => { cfg.motion = v; save(); }, 'Off disables pulses, slides and fades everywhere'));
+    rows.appendChild(uisChipRow('Numbers', 'uis_numfmt', [['Compact (12.3m)', 'compact'], ['Full (12,345,678)', 'full']],
+      v => (cfg.numFmt || 'compact') === v, v => { cfg.numFmt = v; save(); }));
 
-    // Anchor.
+    // ---------------- Menu ----------------
+    uisSep(rows);
+    rows.appendChild(secRow('Menu'));
+    uisNote(rows, 'Hide categories you never open. Settings always stays.');
+    rows.appendChild(uisChipRow('Show categories', 'uis_cats', CAT_META.filter(m => m.id !== 'Settings').map(m => [m.id, m.id]),
+      v => !uiCatHidden(v), v => {
+        const i = cfg.hiddenCats.indexOf(v);
+        if (i >= 0) cfg.hiddenCats.splice(i, 1); else cfg.hiddenCats.push(v);
+        save(); try { renderMenubar(); } catch (e) {}
+      }));
+
+    // ---------------- Startup ----------------
+    uisSep(rows);
+    rows.appendChild(secRow('Startup'));
+    rows.appendChild(uisPill('Restore open panels on launch', 'uis_restore', () => cfg.restore !== false, v => { cfg.restore = v; save(); },
+      'Off starts with no panels open; bar position and alert placement are still remembered'));
+
+    // ---------------- Notifications ----------------
+    uisSep(rows);
+    rows.appendChild(secRow('Notifications'));
+    rows.appendChild(uisPill('Alerts enabled', 'uis_almaster', () => !!(alertCfg && alertCfg.master), v => { if (alertCfg) { alertCfg.master = v; saveAlertCfg(); } }));
+    rows.appendChild(uisPill('Only alert when tabbed out', 'uis_alfocus', () => !!(alertCfg && alertCfg.unfocusedOnly), v => { if (alertCfg) { alertCfg.unfocusedOnly = v; saveAlertCfg(); } },
+      'Applies to every alert source: idle, custom, auras'));
+    rows.appendChild(uisSlider('Sound volume', 'uis_vol', 0, 100, 1, () => (typeof sndVol === 'number' ? sndVol : 70),
+      v => { try { sndVol = v; prefSet('rtxSoundVol', String(v)); bridge().soundVolume(v); } catch (e) {} }, v => v + '%'));
+    rows.appendChild(uisSlider('Popup duration', 'uis_ttl', 2000, 15000, 500, () => cfg.toastTtl || 5000, v => { cfg.toastTtl = v; save(); }, v => (v / 1000).toFixed(1) + 's'));
+
+    // Popup placement (unchanged mechanics: stored with the per-account layout).
     const aRow = document.createElement('div'); aRow.className = 'row';
-    const aLab = document.createElement('span'); aLab.className = 'k'; aLab.textContent = 'Anchor';
+    const aLab = document.createElement('span'); aLab.className = 'k'; aLab.textContent = 'Popup anchor';
     const aWrap = document.createElement('span'); aWrap.className = 'v';
     const seg = document.createElement('div');
     seg.className = 'uis-chips'; seg.id = 'uis_anchor'; seg.style.justifyContent = 'flex-end';
@@ -5003,7 +5155,6 @@
       b.type = 'button'; b.textContent = label; b.className = 'uis-chip'; b.dataset.anchor = id;
       b.addEventListener('click', () => {
         toastCfg.anchor = id;
-        // Reset the offsets: one measured from a different edge would jump the stack.
         toastCfg.dx = 0;
         toastCfg.dy = (id.indexOf('top') === 0) ? 58 : 24;
         applyToastPos(); wmSaveSoon(); reflectUiSettings();
@@ -5012,7 +5163,6 @@
     }
     aWrap.appendChild(seg); aRow.appendChild(aLab); aRow.appendChild(aWrap);
     rows.appendChild(aRow);
-
     const num = (label, key) => {
       const r = document.createElement('div'); r.className = 'row';
       const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
@@ -5032,8 +5182,6 @@
     rows.appendChild(num('Offset X', 'dx'));
     rows.appendChild(num('Offset Y', 'dy'));
     rows.appendChild(num('Width', 'w'));
-
-    // Actions, grouped by what they do rather than piled into one wrapping row.
     const btnRow = (label, id, buttons) => {
       const r = document.createElement('div'); r.className = 'row';
       const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
@@ -5055,9 +5203,48 @@
       ['Reset', () => { toastCfg = Object.assign({}, TOAST_DEF); applyToastPos(); wmSaveSoon(); reflectUiSettings(); }],
     ]));
     rows.appendChild(btnRow('Preview', 'uis_prev', [
-      ['Timed', () => uiNotify('Test alert - this is how an in-game alert looks.', { ttl: 5000 })],
+      ['Timed', () => uiNotify('Test alert - this is how an in-game alert looks.', {})],
       ['Sticky', () => uiNotify('Sticky alert - stays until dismissed.', { sticky: true })],
       ['Clear', () => { for (const t of toasts.slice()) toastClose(t); }],
+    ]));
+
+    // ---------------- Privacy ----------------
+    uisSep(rows);
+    rows.appendChild(secRow('Privacy'));
+    rows.appendChild(uisPill('Hide player name', 'uis_hidename', () => !!nameHidden, v => setNameHidden(v), 'Masks the name in the bar header'));
+    rows.appendChild(uisPill('Hide world number', 'uis_hideworld', () => !!cfg.hideWorld, v => { cfg.hideWorld = v; save(); _hdrSig = ''; try { renderHeader(); } catch (e) {} }));
+
+    // ---------------- Data ----------------
+    uisSep(rows);
+    rows.appendChild(secRow('Data'));
+    uisNote(rows, 'Export copies every preference (sounds, overlay, auras, appearance) to the clipboard as one block; Import reads such a block back from the clipboard.');
+    rows.appendChild(btnRow('Preferences', 'uis_data', [
+      ['Export to clipboard', async () => {
+        try {
+          const out = { rtxPrefsExport: 1, prefs: {} };
+          for (const k of PREF_DURABLE) { const v = prefGet(k, null); if (v !== null) out.prefs[k] = v; }
+          await bridge().copyClipboard(JSON.stringify(out));
+          uiNotify('Preferences copied to the clipboard.', {});
+        } catch (e) { uiNotify('Export failed.', {}); }
+      }],
+      ['Import from clipboard', async () => {
+        try {
+          const txt = await bridge().pasteClipboard();
+          const v = JSON.parse(txt || 'null');
+          if (!v || v.rtxPrefsExport !== 1 || !v.prefs) { uiNotify('Clipboard does not hold an exported preferences block.', {}); return; }
+          let n = 0;
+          for (const k of PREF_DURABLE) if (Object.prototype.hasOwnProperty.call(v.prefs, k)) { prefSet(k, v.prefs[k]); n++; }
+          _uiCfg = null; uiApply();
+          try { sndApplyDurablePrefs(); ovApplyDurablePrefs(); sceneApplyDurablePrefs(); if (typeof auraApplyDurablePrefs === 'function') auraApplyDurablePrefs(); } catch (e) {}
+          const w = $('uisWrap'); if (w) w.remove();
+          uiNotify('Imported ' + n + ' preference' + (n === 1 ? '' : 's') + '.', {});
+        } catch (e) { uiNotify('Import failed.', {}); }
+      }],
+      ['Reset appearance', () => {
+        _uiCfg = Object.assign({}, UI_DEF, { hiddenCats: [] }); uiCfgSave(); uiApply();
+        try { renderMenubar(); } catch (e) {}
+        const w = $('uisWrap'); if (w) w.remove();
+      }],
     ]));
 
     wrap.appendChild(rows);
@@ -5068,7 +5255,16 @@
   // Values only. Never rewrites structure, and never fights a control the user is
   // currently dragging (that input keeps its own value until released).
   function reflectUiSettings() {
-    if (!$('uisWrap')) return;
+    const wrapEl = $('uisWrap'); if (!wrapEl) return;
+    // Generic controls: pills mirror their getter, sliders their getter unless being dragged,
+    // chip groups their isOn predicate.
+    for (const p of wrapEl.querySelectorAll('.al-pill')) if (p._get) p.classList.toggle('on', !!p._get());
+    for (const inp of wrapEl.querySelectorAll('input[type=range]')) {
+      if (!inp._get) continue;
+      if (document.activeElement !== inp) inp.value = String(inp._get());
+      const out = $(inp.id + 'v'); if (out && inp._fmt) out.textContent = inp._fmt(Number(inp.value));
+    }
+    for (const g of wrapEl.querySelectorAll('.uis-chips')) if (g._isOn) for (const b of Array.from(g.children)) b.classList.toggle('on', !!g._isOn(b.dataset.val));
     const seg = $('uis_anchor');
     if (seg) for (const b of Array.from(seg.children))
       b.classList.toggle('on', b.dataset.anchor === toastCfg.anchor);
@@ -5288,6 +5484,9 @@
       saved = s ? JSON.parse(s) : null;
     } catch (e) {}
     if (!saved || saved.v !== 1) return false;   // first run, or account not resolved yet
+    // Preferences: "restore panels on launch" off keeps the bar and alert placement but
+    // starts with no windows open.
+    if (uiCfg().restore === false) saved.wins = {};
     if (saved.bar) {
       if (typeof saved.bar.x === 'number') wm.barX = saved.bar.x;
       if (saved.bar.y === 'bottom' || saved.bar.y === 'top') wm.barY = saved.bar.y;
@@ -6393,7 +6592,7 @@
       if (s.world > 0) {
         let lg = false;
         try { lg = !!(bridge() && bridge().isLeaguesWorld && bridge().isLeaguesWorld(s.world)); } catch (e) {}
-        wtag = 'World ' + s.world + (lg ? ' (Leagues)' : '') + ' • ';
+        wtag = (uiCfg().hideWorld ? 'World hidden' : ('World ' + s.world + (lg ? ' (Leagues)' : ''))) + ' • ';
       }
       metaTxt = wtag + fmtStatus(s);
     }

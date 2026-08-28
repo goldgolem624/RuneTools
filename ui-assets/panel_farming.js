@@ -222,9 +222,10 @@
   try { nameHidden = localStorage.getItem('rtxHideName') === '1'; } catch (e) {}
   function setNameHidden(v) {
     nameHidden = !!v;
-    try { localStorage.setItem('rtxHideName', nameHidden ? '1' : '0'); } catch (e) {}
+    try { if (typeof prefSet === 'function') prefSet('rtxHideName', nameHidden ? '1' : '0'); else localStorage.setItem('rtxHideName', nameHidden ? '1' : '0'); } catch (e) {}
     renderHeader();
     const p = $('sysHideNamePill'); if (p) p.classList.toggle('on', nameHidden);   // keep the System-tab toggle in sync if it's showing
+    const p2 = $('uis_hidename'); if (p2) p2.classList.toggle('on', nameHidden);
   }
   (function () {
     // Runs at panel-load, BEFORE the main script defines `$` (panels are spliced ahead of it), so

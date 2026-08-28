@@ -232,6 +232,7 @@ long long ui_dir_mtime() {
 // the same pid); this struct only owns the host window + embed state.
 struct Dock {
     std::uint32_t pid = 0;
+    double uiScaleMul = 1.0;     // Preferences "UI scale": multiplies the DPI-derived view scale
     HWND host = nullptr;         // the top-level host window (the unified frame)
     HWND game = nullptr;         // the game's own top-level window, glued over the host
 
@@ -418,7 +419,8 @@ void SyncUiDpi(Dock* d) {
     if (!dpi) return;
     double gsf = (d->game && IsWindow(d->game)) ? GameSpaceFactor(d->game, d->pid) : 1.0;
     if (gsf <= 0.0) gsf = 1.0;
-    gameui::SetDeviceScale(d->pid, (dpi / 96.0) * gsf);
+    double mul = (d->uiScaleMul > 0.25 && d->uiScaleMul < 4.0) ? d->uiScaleMul : 1.0;
+    gameui::SetDeviceScale(d->pid, (dpi / 96.0) * gsf * mul);
 }
 
 void Detach(Dock* d, bool closeGame = false);   // fwd
@@ -1195,6 +1197,14 @@ void SetHostFullscreen(std::uint32_t pid, bool on) {
     auto it = g_docks.find(pid);
     if (it == g_docks.end() || !it->second) return;
     SetFullscreen(it->second, on);
+}
+
+void SetUiScaleMultiplier(std::uint32_t pid, double mul) {
+    auto it = g_docks.find(pid);
+    if (it == g_docks.end() || !it->second) return;
+    if (!(mul > 0.25 && mul < 4.0)) mul = 1.0;
+    it->second->uiScaleMul = mul;
+    SyncUiDpi(it->second);
 }
 
 bool IsHostFullscreen(std::uint32_t pid) {

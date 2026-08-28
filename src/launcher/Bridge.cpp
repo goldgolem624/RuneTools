@@ -2205,6 +2205,15 @@ JSValueRef UiKeyboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
+// rtx.uiScale(pid, mul): user UI-scale multiplier on top of the DPI-derived device scale.
+JSValueRef UiScale(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    dock::SetUiScaleMultiplier(pid, JSValueToNumber(ctx, argv[1], nullptr));
+    return JSValueMakeBoolean(ctx, true);
+}
+
 // rtx.uiClientInfo(pid) -> {"pw","ph","cw","ch","scale","mod"}
 JSValueRef UiClientInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -4850,6 +4859,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "railTip",           RailTip);        // legacy no-op
     install_fn(ctx, ns, "uiRects",           UiRects);
     install_fn(ctx, ns, "uiKeyboard",        UiKeyboard);
+    install_fn(ctx, ns, "uiScale",           UiScale);
     install_fn(ctx, ns, "uiClientInfo",      UiClientInfo);
     install_fn(ctx, ns, "myPid",             MyPid);
     install_fn(ctx, ns, "closeProcess",      CloseProcess);
