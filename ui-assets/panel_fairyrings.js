@@ -45,7 +45,7 @@
     13:   { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
     322:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
     221:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
-    1000: { vb: [12056, 9929, 12068, 12066], test: (V, P, x) => V(12056) >= 40 && !(x.staff === 0 && V(9929) < 2) && (V(12068) + V(12066)) === 5, req: 'A Fairy Tale II: Fairy Resistance stage [vb 12056 >= 40]; a fairy staff in the backpack (item 9025) or Fairy Very Wise met twice [vb 9929 >= 2]; both slot varbits summing to 5 [vb 12068 + vb 12066 = 5]' },
+    1000: { vb: [12056, 9929, 12068, 12066], test: (V, P, x) => V(12056) >= 40 && !(x.staff === 0 && V(9929) < 2) && (V(12068) + V(12066)) === 5, req: 'A Fairy Tale II reached the Fairy Resistance stage, and a fairy staff in your backpack (or Fairy Very Wise met twice) [vb 12056 >= 40; item 9025 in backpack or vb 9929 >= 2; vb 12068 + vb 12066 = 5]' },
     20:   { vb: [61256], test: (V) => V(61256) !== 0, req: 'Fairy ring built in your house [vb 61256 != 0]' },
   };
   const FR_BASE_REQ = "Priest in Peril, Nature Spirit, Lost City and A Fairy Tale I completed, A Fairy Tale II: Cure a Queen started (wiki); the game gates each ring's log entry on the tests shown per row";
@@ -107,7 +107,7 @@
         .fr-card { margin: 0 12px 10px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; }
         .fr-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; }
         .fr-row + .fr-row { border-top: 1px solid var(--border); }
-        .fr-code { font: 700 12px/1 Consolas, monospace; letter-spacing: .12em; color: var(--accent-hi); min-width: 46px; }
+        .fr-code { font: 700 12px/1.3 Consolas, monospace; letter-spacing: .12em; color: var(--accent-hi); min-width: 46px; max-width: 120px; white-space: normal; }
         .fr-row.no .fr-code { color: var(--text-mute); }
         .fr-nm { flex: 1; min-width: 0; color: var(--text); font-size: 12px; }
         .fr-row.no .fr-nm { color: var(--text-dim); }
@@ -131,7 +131,7 @@
           const k = m.dataset.frMap; const r = frRows.find(x => String(x.key) === k); const co = r ? frCoord(r.code) : null;
           if (!co) return;
           try { const t = allTabs().find(x => x.id === 'worldmap'); if (t) openTab(t); } catch (e) {}
-          setTimeout(() => { try { wmFlyTo(co.x, co.y, co.p, { x: co.x, y: co.y, p: co.p, nm: r.code.replace(/\s+/g, '') + ' ' + r.dest }); } catch (e) {} }, 60);
+          setTimeout(() => { try { wmFlyTo(co.x, co.y, co.p, { x: co.x, y: co.y, p: co.p, nm: r.code.trim().split(/\s+/).join('') + ' ' + r.dest }); } catch (e) {} }, 60);
         }
       });
       wrap.addEventListener('input', ev => { if (ev.target.id === 'frSearch') { frSearch = ev.target.value; frSig = ''; renderFairyRings(); } });
@@ -146,12 +146,16 @@
     frRows.forEach((r, i) => {
       const s = states[i]; if (s.ok) usable++; if (s.logged) seen++;
       if (frFilter === 'usable' && !s.ok) return; if (frFilter === 'locked' && s.ok) return; if (frFilter === 'unvisited' && s.logged) return;
-      const code = r.code.replace(/\s+/g, '');
-      if (q && (code + ' ' + r.dest).toLowerCase().indexOf(q) < 0) return;
+      // "A I Q" -> "AIQ"; multi-hop sequences ("AIR DLR DJQ AJS") keep their hops, arrowed.
+      const groups = r.code.trim().split(/\s+/);
+      const code = groups.length > 3 ? groups.join(' → ') : groups.join('');
+      const reqPlain = s.req ? s.req.replace(/\s*\[[^\]]*\]\s*/g, ' ').replace(/\s+/g, ' ').trim() : '';
+      const reqTest = s.req ? (s.req.match(/\[([^\]]*)\]/g) || []).map(x => x.slice(1, -1)).join('; ') : '';
+      if (q && (groups.join('') + ' ' + code + ' ' + r.dest).toLowerCase().indexOf(q) < 0) return;
       const parts = r.dest.split(': '); const region = parts.length > 1 ? parts[0] : ''; const place = parts.length > 1 ? parts.slice(1).join(': ') : r.dest;
       const co = frCoord(r.code);
       rows.push('<div class="fr-row ' + (s.ok ? 'ok' : 'no') + '"><span class="fr-code">' + esc(code) + '</span>'
-        + '<div class="fr-nm">' + esc(place || '(unnamed)') + '<div class="fr-sub">' + esc(region || '') + (s.req ? (region ? ' · ' : '') + 'Requires: ' + esc(s.req) : '') + '</div></div>'
+        + '<div class="fr-nm">' + esc(place || '(unnamed)') + '<div class="fr-sub">' + esc(region || '') + (reqPlain ? (region ? ' · ' : '') + '<span title="Game test: ' + esc(reqTest) + '">Requires: ' + esc(reqPlain) + '</span>' : '') + '</div></div>'
         + (s.logged ? '<span class="fr-pill seen" title="You have travelled here (game log)">visited</span>' : '')
         + '<span class="fr-pill ' + (s.ok ? 'ok' : 'no') + '">' + (s.ok ? 'usable' : 'locked') + '</span>'
         + (co ? '<button class="fr-btn" data-fr-map="' + r.key + '">Map</button>' : '') + '</div>');
