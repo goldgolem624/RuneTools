@@ -153,8 +153,11 @@
         ts: Date.now()
       };
       // No id yet: still list it (so it is visible and can resolve later) under a key that is
-      // clearly not a rule key. mnuReconcileRecent promotes it once the id lands.
-      rec.key = mnuRuleKey(rows, t, rec) || ('noid:' + t);
+      // clearly not a rule key. mnuReconcileRecent promotes it once the id lands. The key
+      // carries the OPTION SET like a real rule key does: the same name with different options
+      // (an item in a shop's Buy grid, its Sell grid and the backpack) is several captures, and
+      // keying on the name alone let the newest overwrite the others before their ids landed.
+      rec.key = mnuRuleKey(rows, t, rec) || ('noid:' + t + '@' + mnuSetSig(rows, t));
       for (let i = 0; i < mnuRecent.length; i++)
         if (mnuRecent[i].key === rec.key) { mnuRecent.splice(i, 1); break; }
       mnuRecent.unshift(rec);
@@ -180,7 +183,7 @@
       // capture that already resolved would collapse two same-named variants (two "Fishing
       // spot" ids) onto whichever id was hovered last, and the dedupe below then deleted one
       // of them - which is how a variant became uneditable while its sibling had a rule.
-      if (t && /^noid:/.test(r.key)) r.key = mnuRuleKey(r.ents, t, r) || ('noid:' + t);
+      if (t && /^noid:/.test(r.key)) r.key = mnuRuleKey(r.ents, t, r) || ('noid:' + t + '@' + mnuSetSig(r.ents, t));
       if (seen[r.key]) { mnuRecent.splice(i--, 1); continue; }   // newest-first: keep the first
       seen[r.key] = 1;
     }
