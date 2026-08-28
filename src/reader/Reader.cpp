@@ -5116,6 +5116,54 @@ std::string ScanSolutionJson(std::uint32_t pid) {
 //                for the config id (sec+0x1080), tile (fine floats /512) and plane.
 // Target-less verbs (Walk here / Cancel / Continue) leave STALE bytes in the name/ref fields from
 // the slot's previous occupant, so those return the verb alone.
+// The item id carried by ONE live widget node, addressed the way the hover slot addresses it:
+// interface group + component (+0x2a) + sub index (+0x2c). Same item gating as iface_walk
+// (id at +0x1a0 with the matching +0x188 key or the unset sentinel). -1 when no such node or
+// it carries no item. Shop stock, bank, trade and sale-back grids all resolve through this.
+static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, int sub) {
+    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
+    auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
+    auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
+    std::uint64_t gs, ge; iface_groups_range(h, mainData, gs, ge);
+    if (!gs) return -1;
+    int found = -1, visited = 0;
+    std::function<void(std::uint64_t, int)> walk = [&](std::uint64_t node, int depth) {
+        if (found >= 0 || depth > 12 || visited++ > 6000) return;
+        if (r16(node + 0x2a) == comp && r16(node + 0x2c) == sub) {
+            int item = r32(node + 0x1a0);
+            std::uint64_t sprRaw = r64(node + 0x188);
+            bool sprUnset = sprRaw == ~0ull;
+            if (item > 0 && item < 200000 && (sprUnset || sprRaw == 0x60000ull + (std::uint64_t)item)) { found = item; return; }
+        }
+        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        for (int k = 0; k < 3 && found < 0; ++k) {
+            std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8);
+            std::uint64_t ca = cs + 8, cb = ce + 8;
+            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
+            for (std::uint64_t c = ca; c + 0x18 <= cb && found < 0; c += 0x18) {
+                std::uint64_t ch = r64(c);
+                if (ch <= 0x10000) continue;
+                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
+                if (d <= 0x3000) continue;
+                walk(ch, depth + 1);
+            }
+        }
+    };
+    for (std::uint64_t g = gs; g + 0x10 <= ge && found < 0; g += 0x10) {
+        std::uint64_t ap2 = r64(g + 8);
+        if (ap2 <= 0x10000 || r32(ap2) != group) continue;
+        std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
+        std::uint64_t a = ws + 8, b = we + 8;
+        if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
+        for (std::uint64_t w = a; w + 0x18 <= b && found < 0; w += 0x18) {
+            std::uint64_t nd = r64(w);
+            if (nd > 0x10000) walk(nd, 0);
+        }
+        break;
+    }
+    return found;
+}
+
 std::string HoverEntityJson(std::uint32_t pid) {
     const char* kNone = "{\"ok\":false}";
     constexpr std::uint64_t kOffInputProc = 0x198E8, kHoverSlot = 0x13F8;
@@ -5190,13 +5238,22 @@ std::string HoverEntityJson(std::uint32_t pid) {
     // not which cell. Checked FIRST because a low slot index in +0x4C paired with the
     // component in +0x50 would otherwise satisfy the loc-tile test.
     int itemId = rpm<std::int32_t>(h, *ao + 0x44).value_or(-1);
-    if (itemId >= 0) {
+    {
         int slot = rpm<std::int32_t>(h, *ao + 0x4C).value_or(-1);
         int comp = rpm<std::uint16_t>(h, *ao + 0x50).value_or(0);
         int ifid = rpm<std::uint16_t>(h, *ao + 0x52).value_or(0);
-        std::snprintf(buf, sizeof(buf), ",\"kind\":\"item\",\"id\":%d,\"slot\":%d,\"iface\":%d,\"comp\":%d",
-                      itemId, slot, ifid, comp);
-        return out + buf + ",\"name\":\"" + json_escape(name) + "\"}";
+        // Interface grids that do not stamp +0x44 (shop stock and sale-back, bank, trade...)
+        // still identify their cell: read the item off the live widget at (group, comp, sub).
+        // Only when the hover names a thing (shop rows do), so plain buttons are untouched.
+        if (itemId < 0 && ifid > 0 && ifid < 4096 && slot >= 0 && !name.empty()) {
+            int wi = iface_item_at(h, *root, ifid, comp, slot);
+            if (wi > 0) itemId = wi;
+        }
+        if (itemId >= 0) {
+            std::snprintf(buf, sizeof(buf), ",\"kind\":\"item\",\"id\":%d,\"slot\":%d,\"iface\":%d,\"comp\":%d",
+                          itemId, slot, ifid, comp);
+            return out + buf + ",\"name\":\"" + json_escape(name) + "\"}";
+        }
     }
     if (tx > 0 && tx < 16384 && ty > 0 && ty < 16384) {          // loc: id + tile inline
         std::snprintf(buf, sizeof(buf), ",\"kind\":\"loc\",\"id\":%d,\"x\":%d,\"y\":%d", ref, tx, ty);
