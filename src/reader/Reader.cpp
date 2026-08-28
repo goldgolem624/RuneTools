@@ -5116,6 +5116,23 @@ std::string ScanSolutionJson(std::uint32_t pid) {
 //                for the config id (sec+0x1080), tile (fine floats /512) and plane.
 // Target-less verbs (Walk here / Cancel / Continue) leave STALE bytes in the name/ref fields from
 // the slot's previous occupant, so those return the verb alone.
+// Does the +0x188 graphic key of a widget node encode THIS item id? +0x1a0 alone is ambiguous
+// (per-class meaning), so an item node is only trusted when its key agrees. Known encodings:
+//   * all-FF sentinel: no graphic content (currency pouch, plain CC_SETOBJECT cells)
+//   * item + flavour<<16 with a small flavour (backpack/equipment = 6, other slot classes use
+//     their own flavour: the shop's outlined CC_SETOBJECT_ALWAYSNUM cells are not 6)
+//   * bit-62 OBJ-icon form: 0x4000000000000000 | flavour<<24 | item (POH-rework grids)
+// A heap pointer (dynamic graphic) or an unrelated sprite id never satisfies any of these.
+static bool iface_key_is_item(std::uint64_t key, int item) {
+    if (key == ~0ull) return true;
+    if ((key >> 62) == 1) return (int)(key & 0xFFFFFF) == item;
+    if (key < 0x1000000ull && key >= (std::uint64_t)item) {
+        std::uint64_t d = key - (std::uint64_t)item;
+        return (d & 0xFFFF) == 0 && (d >> 16) < 64;
+    }
+    return false;
+}
+
 // The item behind ONE hovered widget cell: interface group + component (+0x2a) + sub index
 // (+0x2c). Same item gating as iface_walk (id at +0x1a0 with the matching +0x188 key or the
 // unset sentinel). Interface grids often split a cell over components: the shop (script 6089)
@@ -5137,9 +5154,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
             int c = r16(node + 0x2a);
             if (c == comp) ++matched;
             int item = r32(node + 0x1a0);
-            std::uint64_t sprRaw = r64(node + 0x188);
-            bool sprUnset = sprRaw == ~0ull;
-            if (item > 0 && item < 200000 && (sprUnset || sprRaw == 0x60000ull + (std::uint64_t)item)) {
+            if (item > 0 && item < 200000 && iface_key_is_item(r64(node + 0x188), item)) {
                 if (c == comp) { found = item; return; }
                 int d = c > comp ? c - comp : comp - c;
                 if (d < nearDist) { nearDist = d; nearItem = item; }
