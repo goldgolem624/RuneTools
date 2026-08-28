@@ -147,8 +147,7 @@
         if (!cdRec || !cdRec.v || !d) return '';
         const a2 = d.vc ? d.vc['5:' + cdRec.v[0]] : undefined;
         const b2 = d.vc ? d.vc['5:' + cdRec.v[1]] : undefined;
-        return '
-  raw: cast=' + a2 + ' ready=' + b2 + ' cycles=' + d.cycles + ' clock/20=' + (d.clock > 0 ? Math.floor(d.clock / 20) : '?');
+        return String.fromCharCode(10) + '  raw: cast=' + a2 + ' ready=' + b2 + ' cycles=' + d.cycles + ' clock/20=' + (d.clock > 0 ? Math.floor(d.clock / 20) : '?');
       };
       const cdLine = s.cd ? 'On cooldown: ' + s.cd + (s.cd.includes(':') ? '' : 's') + ' left (printed on the icon)'
                    : live != null ? 'On cooldown: ' + fmtSec(live) + ' left (varc ' + cdRec.v[0] + '/' + cdRec.v[1] + ' clock)'
