@@ -673,6 +673,11 @@
           add(row('Run energy', d.energy + '%'));
         if (typeof d.weight === 'number' && d.weight > -32769)
           add(row('Weight', d.weight + ' kg'));
+        // The overhead action bar (harvest / search / clue-scan progress): the reader walks the
+        // player's head-bar list (psec+0xF08 -> +0x28, fill byte +0x34, HP bar excluded) and
+        // reports the fill 0-255; -1 when no action bar is showing.
+        if (typeof d.progress === 'number' && d.progress >= 0)
+          add(row('Action progress', Math.round(d.progress * 100 / 255) + '%'));
         sec('Progress');
         add(row('Quest points', L(vp['1297'] | 0)));
         // Total penguin points: varbit 4163, hard cap 250.
