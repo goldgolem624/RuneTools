@@ -601,6 +601,12 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         gameui::OpenWikiPalette(d->pid);
                         return 0;
                     }
+                    // Hide/show all panels (Preferences > Hotkeys).
+                    int hpVk = rtx::launcher::HidePanelsVk();
+                    if (hpVk && (int)wp == hpVk) {
+                        gameui::TogglePanels(d->pid);
+                        return 0;
+                    }
                     auto kb2 = rtx::markers::GetKeybinds();
                     // Consume the key ONLY when it actually marks/deletes a tile under the cursor; otherwise
                     // MarkAtCursor returns false and the key falls through so it still reaches the game.

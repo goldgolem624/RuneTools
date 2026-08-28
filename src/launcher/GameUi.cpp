@@ -662,6 +662,13 @@ void OpenWikiPalette(std::uint32_t pid) {
     u->lastActivityMs = GetTickCount64();
 }
 
+void TogglePanels(std::uint32_t pid) {
+    Ui* u = find(pid);
+    if (!u || !u->view) return;
+    u->view->EvaluateScript("typeof wmToggleAll==='function'&&wmToggleAll()");
+    u->lastActivityMs = GetTickCount64();
+}
+
 void SetDeviceScale(std::uint32_t pid, double scale) {
     Ui* u = find(pid);
     if (!u || !u->view || scale <= 0.01) return;

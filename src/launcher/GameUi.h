@@ -54,6 +54,7 @@ bool KeyboardCaptured(std::uint32_t pid);
 
 // Monitor scale for the layer's View (from the host's WM_DPICHANGED).
 void SetDeviceScale(std::uint32_t pid, double scale);
+void TogglePanels(std::uint32_t pid);   // hide/show-all-panels hotkey -> page's wmToggleAll()
 
 // ---- Bridge surface (JS window manager) -------------------------------------
 // rects: "x,y,w,h;x,y,w,h;..." in CSS px (scaled to physical px here).

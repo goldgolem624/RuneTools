@@ -79,6 +79,7 @@ std::filesystem::path runetools_dir() {
 }
 std::filesystem::path screenshots_dir() { return runetools_dir() / L"screenshots"; }
 std::filesystem::path screenshot_cfg()  { return runetools_dir() / L"screenshot.txt"; }
+std::filesystem::path hidepanels_cfg()  { return runetools_dir() / L"hidepanels.txt"; }   // Preferences: hide/show all panels key
 
 std::once_flag       g_gdip_once;
 ULONG_PTR            g_gdip_token = 0;
@@ -233,6 +234,23 @@ void ss_save_locked() {
     std::error_code ec; std::filesystem::create_directories(runetools_dir(), ec);
     std::ofstream f(screenshot_cfg(), std::ios::trunc);
     if (f) f << g_ss_vk;
+}
+// Hide/show-all-panels hotkey: same one-int file shape as the screenshot key, own file so
+// neither clobbers the other.
+std::mutex        g_hp_mu;
+int               g_hp_vk = 0;
+bool              g_hp_loaded = false;
+void hp_load_locked() {
+    if (g_hp_loaded) return;
+    g_hp_loaded = true;
+    std::ifstream f(hidepanels_cfg());
+    int vk = 0;
+    if (f && (f >> vk) && vk > 0 && vk < 256) g_hp_vk = vk;
+}
+void hp_save_locked() {
+    std::error_code ec; std::filesystem::create_directories(runetools_dir(), ec);
+    std::ofstream f(hidepanels_cfg(), std::ios::trunc);
+    if (f) f << g_hp_vk;
 }
 
 constexpr const char* kAppVersion = "1.0.0";   // fallback; real version read from FILEVERSION (app.rc)
@@ -3366,6 +3384,21 @@ JSValueRef ScreenshotKeybindSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
+JSValueRef HidePanelsKeybindGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                                size_t, const JSValueRef[], JSValueRef*) {
+    std::lock_guard<std::mutex> lk(g_hp_mu);
+    hp_load_locked();
+    return JSValueMakeNumber(ctx, g_hp_vk);
+}
+JSValueRef HidePanelsKeybindSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                                size_t argc, const JSValueRef argv[], JSValueRef*) {
+    int vk = (argc >= 1) ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    if (vk < 0 || vk > 255) vk = 0;
+    std::lock_guard<std::mutex> lk(g_hp_mu);
+    g_hp_loaded = true; g_hp_vk = vk; hp_save_locked();
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef OpenScreenshots(JSContextRef ctx, JSObjectRef, JSObjectRef,
                            size_t, const JSValueRef[], JSValueRef*) {
     std::error_code ec; std::filesystem::create_directories(screenshots_dir(), ec);
@@ -4668,6 +4701,11 @@ int ScreenshotVk() {
     ss_load_locked();
     return g_ss_vk;
 }
+int HidePanelsVk() {
+    std::lock_guard<std::mutex> lk(g_hp_mu);
+    hp_load_locked();
+    return g_hp_vk;
+}
 // Raises the in-game toast on completion. Safe to call off the UI path.
 bool CaptureScreenshotForPid(std::uint32_t pid) {
     return !capture_for_pid(pid).empty();
@@ -4873,6 +4911,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "wikiKeybindSet",     WikiKeybindSet);
     install_fn(ctx, ns, "screenshotKeybindGet", ScreenshotKeybindGet);
     install_fn(ctx, ns, "screenshotKeybindSet", ScreenshotKeybindSet);
+    install_fn(ctx, ns, "hidePanelsKeybindGet", HidePanelsKeybindGet);
+    install_fn(ctx, ns, "hidePanelsKeybindSet", HidePanelsKeybindSet);
     install_fn(ctx, ns, "openScreenshots",    OpenScreenshots);
     install_fn(ctx, ns, "version",           Version);
     install_fn(ctx, ns, "latestVersion",     LatestVersion);

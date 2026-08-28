@@ -4575,6 +4575,21 @@
     renderMenubar();
     wmRectsSoon(); wmSaveSoon();
   }
+  // Hide/show every panel at once (hotkey from Preferences, dispatched by the launcher).
+  // Hiding remembers which windows were open so showing brings back exactly those.
+  let _wmHiddenSet = null;
+  function wmToggleAll() {
+    const open = [...wm.wins.values()].filter(w => !w.min);
+    if (open.length) {
+      _wmHiddenSet = open.map(w => w.wid);
+      for (const w of open) wmMinimize(w);
+    } else {
+      const ids = _wmHiddenSet || [...wm.wins.keys()];
+      _wmHiddenSet = null;
+      for (const id of ids) { const w = wm.wins.get(id); if (w && w.min) wmRestore(w); }
+    }
+    try { wmPushRects(); } catch (e) {}
+  }
   function wmRestore(w) {
     w.min = false;
     w.el.style.display = '';
@@ -5080,6 +5095,18 @@
     v.appendChild(g); r.appendChild(k); r.appendChild(v);
     return r;
   }
+  // Hide/show-all-panels hotkey state (launcher-side binding, page-side capture).
+  let uisHpVk = 0, uisHpCapturing = false, uisHpPaint = null;
+  function uisHpSave() { try { if (bridge().hidePanelsKeybindSet) bridge().hidePanelsKeybindSet(uisHpVk); } catch (e) {} }
+  document.addEventListener('keydown', e => {
+    if (!uisHpCapturing) return;
+    e.preventDefault(); e.stopPropagation();
+    const vk = e.keyCode || e.which || 0;
+    if (vk && vk !== 27) { uisHpVk = vk; uisHpSave(); }
+    uisHpCapturing = false;
+    if (typeof kbGrab === 'function') kbGrab(false);
+    if (uisHpPaint) uisHpPaint();
+  }, true);
   function uisSep(rows) { const d = document.createElement('div'); d.style.cssText = 'border-top:1px solid var(--border); margin:8px 0 4px;'; rows.appendChild(d); }
   function uisNote(rows, text) { const d = document.createElement('div'); d.style.cssText = 'color:var(--text-mute);font-size:11px;padding:2px 0 6px;'; d.textContent = text; rows.appendChild(d); }
 
@@ -5207,6 +5234,29 @@
       ['Sticky', () => uiNotify('Sticky alert - stays until dismissed.', { sticky: true })],
       ['Clear', () => { for (const t of toasts.slice()) toastClose(t); }],
     ]));
+
+    // ---------------- Hotkeys ----------------
+    uisSep(rows);
+    rows.appendChild(secRow('Hotkeys'));
+    uisNote(rows, 'Keys are read by the launcher while the game has focus, so they work without clicking a panel first. Screenshot and Wiki keys are set on their own panels.');
+    {
+      const r = document.createElement('div'); r.className = 'row';
+      const k = document.createElement('span'); k.className = 'k'; k.textContent = 'Hide / show all panels';
+      const v = document.createElement('span'); v.className = 'v';
+      const g = document.createElement('div'); g.className = 'uis-chips'; g.style.justifyContent = 'flex-end';
+      const chip = document.createElement('button'); chip.type = 'button'; chip.className = 'uis-chip'; chip.id = 'uis_hpKey';
+      const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'uis-chip'; clr.textContent = 'Clear';
+      const paint = () => {
+        chip.textContent = uisHpCapturing ? 'Press a key...' : (uisHpVk ? (typeof ssVkName === 'function' ? ssVkName(uisHpVk) : ('VK ' + uisHpVk)) : 'Set key');
+        chip.classList.toggle('on', !!uisHpCapturing);
+      };
+      chip.addEventListener('click', () => { uisHpCapturing = !uisHpCapturing; if (typeof kbGrab === 'function') kbGrab(uisHpCapturing); paint(); });
+      clr.addEventListener('click', () => { uisHpVk = 0; if (uisHpCapturing && typeof kbGrab === 'function') kbGrab(false); uisHpCapturing = false; uisHpSave(); paint(); });
+      uisHpPaint = paint;
+      (async () => { try { if (bridge().hidePanelsKeybindGet) uisHpVk = (await bridge().hidePanelsKeybindGet()) | 0; } catch (e) {} paint(); })();
+      if (!(bridge() && bridge().hidePanelsKeybindGet)) { chip.disabled = true; chip.textContent = 'Needs updated launcher'; }
+      g.appendChild(chip); g.appendChild(clr); v.appendChild(g); r.appendChild(k); r.appendChild(v); rows.appendChild(r);
+    }
 
     // ---------------- Privacy ----------------
     uisSep(rows);

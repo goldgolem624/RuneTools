@@ -23,6 +23,7 @@ bool LoadWindowPos(std::uint32_t pid, int& x, int& y);
 // Screenshot: the capture keybind (virtual-key, 0 = unbound) and a capture trigger. The Dock host
 // proc fires CaptureScreenshotForPid on a matching key down-edge; PNGs land in RuneToolsX\screenshots.
 int  ScreenshotVk();
+int  HidePanelsVk();          // Preferences hide/show-all-panels key; 0 when unbound
 bool CaptureScreenshotForPid(std::uint32_t pid);
 
 }  // namespace rtx::launcher
