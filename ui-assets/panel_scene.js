@@ -28,6 +28,7 @@
   let sceneTotal    = 0;      // pre-filter count, shown as "matches / total" while filtering
   let sceneInteractable = false;
   let sceneNameplates = false;
+  const sceneObjOutlines = new Set();   // 'id:x:y:plane' outlined this session
   let sceneSig      = '';
   let sceneScroll   = 0;
   let sceneGround   = [];     // dropped ground items (companion type-3 publish): [{id,x,y,plane}]
@@ -527,6 +528,24 @@
         nameRow = wrap;
       } else if (n.type === 'ground' || n.type === 'object') {
         const wrap = document.createElement('div'); wrap.className = 'namet';
+        if (n.type === 'object' && bridge() && bridge().outlineObject) {
+          // Box outline, exactly like the NPC one: the live model AABB when the object is
+          // runtime-tracked, its footprint prism otherwise. Session-scoped, per instance.
+          const ok = n.id + ':' + n.x + ':' + n.y + ':' + (n.plane | 0);
+          const ob2 = document.createElement('button'); ob2.className = 'ol-btn';
+          const on2 = sceneObjOutlines.has(ok);
+          ob2.textContent = String.fromCharCode(0x25f3);
+          ob2.classList.toggle('on', on2);
+          ob2.title = on2 ? 'Hide in-game box outline' : 'Box-outline this object in-game (live model box when tracked, footprint otherwise)';
+          ob2.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const now = !sceneObjOutlines.has(ok);
+            try { bridge().outlineObject(myPid(), n.id, n.x, n.y, n.plane | 0, now); } catch (err) {}
+            if (now) sceneObjOutlines.add(ok); else sceneObjOutlines.delete(ok);
+            sceneSig = ''; renderScene();
+          });
+          wrap.appendChild(ob2);
+        }
         const ob = document.createElement('button'); ob.className = 'ol-btn';
         const on = sceneTileMarked(n.x, n.y, n.plane);
         ob.textContent = '◈';

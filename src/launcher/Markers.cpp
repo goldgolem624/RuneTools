@@ -383,7 +383,8 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     std::vector<std::string> none;
     std::vector<int> noOutline;
     std::vector<rtx::reader::GuideSite> noGuides;
-    if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, none, noOutline, noGuides, f) || !f.ok)
+    std::vector<rtx::reader::OutlineLocReq> noOutlineLocs;
+    if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, none, noOutline, noOutlineLocs, noGuides, f) || !f.ok)
         return false;
 
     // gv_* is logical interface space, W/H backbuffer px; convert like PublishMarkers

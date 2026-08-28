@@ -1262,6 +1262,30 @@ JSValueRef RenderToggle(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::reader::RenderToggle(pid, which, on));
 }
 
+// rtx.outlineObject(pid, locId, x, y, plane, on): box-outline one placed object, the way
+// outlineNpc does for NPCs. Keyed per (id, tile), so two instances of one loc toggle apart.
+JSValueRef OutlineObject(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 6) return JSValueMakeBoolean(ctx, false);
+    auto pid  = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    rtx::reader::OutlineLocReq rq;
+    rq.id    = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    rq.x     = (int)JSValueToNumber(ctx, argv[2], nullptr);
+    rq.y     = (int)JSValueToNumber(ctx, argv[3], nullptr);
+    rq.plane = (int)JSValueToNumber(ctx, argv[4], nullptr);
+    bool on  = JSValueToBoolean(ctx, argv[5]);
+    static std::mutex s_mu;
+    static std::map<std::uint32_t, std::vector<rtx::reader::OutlineLocReq>> s_locs;
+    std::lock_guard<std::mutex> lk(s_mu);
+    auto& v = s_locs[pid];
+    v.erase(std::remove_if(v.begin(), v.end(), [&](const rtx::reader::OutlineLocReq& e) {
+        return e.id == rq.id && e.x == rq.x && e.y == rq.y && e.plane == rq.plane; }), v.end());
+    if (on) v.push_back(rq);
+    rtx::launcher::companion::EnsureLoaded(pid);
+    rtx::overlay::SetOutlineLocs(pid, v);
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef OutlineNpc(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
@@ -4767,6 +4791,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "serverPacketArm",   ServerPacketArm);
     install_fn(ctx, ns, "renderToggle",      RenderToggle);
     install_fn(ctx, ns, "outlineNpc",        OutlineNpc);
+    install_fn(ctx, ns, "outlineObject",     OutlineObject);
     install_fn(ctx, ns, "nameplatePlayer",   NameplatePlayer);
     install_fn(ctx, ns, "interfaceGroups",   InterfaceGroups);
     install_fn(ctx, ns, "interfaceGroup",     InterfaceGroup);

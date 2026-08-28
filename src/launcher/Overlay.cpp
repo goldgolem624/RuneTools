@@ -475,12 +475,13 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
     Font font(&ff, 11.0f, FontStyleRegular, UnitPixel);
     SolidBrush textBrush(Color(255, 245, 245, 245));
     SolidBrush pill(Color(170, 14, 16, 24));         // dark translucent label bg
-    Color kindCol[4] = { Color(255, 90, 200, 235),   // 0 object  (cyan)
+    Color kindCol[5] = { Color(255, 90, 200, 235),   // 0 object  (cyan)
                          Color(255, 245, 210, 80),   // 1 npc     (yellow)
                          Color(255, 90, 220, 120),   // 2 player  (green)
-                         Color(255, 245, 165, 60) }; // 3 special (amber)
+                         Color(255, 245, 165, 60),   // 3 special (amber)
+                         Color(255, kTxtR, kTxtG, kTxtB) };  // 4 Scene object outline (neutral)
     auto wanted = [&](int kind) {
-        return kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
+        return kind == 4 ? true : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
     };
     auto project = [&](const rtx::reader::OverlayPoint& p, float& sx, float& sy) {
         if (!WorldToScreen(f.matrix, vpX, vpY, vpW, vpH, p.wx, p.wy, p.wz, sx, sy)) return false;
@@ -955,13 +956,15 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     // --- entity / object markers: live AABB / footprint outline, else a dot ---
     struct KC { int r, g, b; };
-    const KC kindCol[4] = { {90,200,235}, {245,210,80}, {90,220,120}, {245,165,60} };
+    // kind 4 = Scene-tab object outline: always drawn, neutral tone (an inspected object is
+    // not an objective; matches the NPC outline treatment).
+    const KC kindCol[5] = { {90,200,235}, {245,210,80}, {90,220,120}, {245,165,60}, {kTxtR,kTxtG,kTxtB} };
     auto wanted = [&](int kind) {
-        return kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
+        return kind == 4 ? true : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
     };
     if (f && cfg.enabled) for (const auto& p : f->points) {
         if (!wanted(p.kind)) continue;
-        const KC kc = kindCol[p.kind >= 0 && p.kind < 4 ? p.kind : 0];
+        const KC kc = kindCol[p.kind >= 0 && p.kind < 5 ? p.kind : 0];
         // Box/prism edges are clipped at the near plane INDIVIDUALLY, so a shape keeps its
         // visible part when the camera moves inside it instead of vanishing whole; a shape
         // projecting entirely outside the expanded screen guard still skips.
@@ -2448,7 +2451,7 @@ void RenderLoop() {
               auto pit = g_panelViz.find(cpid);
               hasPanelViz = (pit != g_panelViz.end() && !pit->second.empty()); }
             bool wantF = ccfg.enabled || ccfg.markers || ccfg.nameplates || !ccfg.highlight.empty() ||
-                         !ccfg.outline.empty() || !gsites.empty();
+                         !ccfg.outline.empty() || !ccfg.outlineLocs.empty() || !gsites.empty();
             bool wantWidgets = (toasting && g_toast_pid.load() == cpid) ||
                                (anyNotifs && g_notif_pid.load() == cpid) ||
                                (metroOn && metroPid == cpid) ||
@@ -2506,7 +2509,7 @@ void RenderLoop() {
                          (ccfg.enabled && ccfg.objects)  || (ccfg.nameplates && ccfg.np_objects),
                          ccfg.enabled && ccfg.specials,
                          (ccfg.enabled && ccfg.grid) ? ccfg.radius : 0,
-                         ccfg.interactable, ccfg.highlight, ccfg.outline, gsites, frame);
+                         ccfg.interactable, ccfg.highlight, ccfg.outline, ccfg.outlineLocs, gsites, frame);
             if (wantF && ok) {
                 PublishMarkers(ccfg, &frame, W2, H2, fa, wptr);
                 held[cpid] = { std::move(frame), tnow };
@@ -2687,12 +2690,14 @@ void Configure(const Config& c) {
         Config& dst = cfg_slot(c.pid);    // per-client slot: panels never clobber each other
         auto hl = dst.highlight;          // highlight is owned by SetHighlight; preserve it
         auto ol = dst.outline;            // outline is owned by SetOutline; preserve it
+        auto oll = dst.outlineLocs;       // owned by SetOutlineLocs; preserve it
         auto npu = dst.np_player_uids;    // owned by SetNameplatePlayers; preserve it
         dst = c;
         dst.highlight = hl;
         dst.outline = ol;
+        dst.outlineLocs = oll;
         dst.np_player_uids = npu;
-        need_thread = c.enabled || !dst.highlight.empty() || !dst.outline.empty();
+        need_thread = c.enabled || !dst.highlight.empty() || !dst.outline.empty() || !dst.outlineLocs.empty();
         hisz = dst.highlight.size();
     }
     rtx::log::Launcher("[ovl] Configure pid=" + std::to_string(c.pid) + " en=" + std::to_string((int)c.enabled) + " hi=" + std::to_string(hisz));
@@ -2912,6 +2917,17 @@ void SetHighlight(std::uint32_t pid, const std::vector<std::string>& names) {
         dst.highlight = names;
     }
     rtx::log::Launcher("[ovl] SetHighlight pid=" + std::to_string(pid) + " n=" + std::to_string(names.size()));
+    ensure_thread();
+}
+
+void SetOutlineLocs(std::uint32_t pid, const std::vector<rtx::reader::OutlineLocReq>& locs) {
+    if (!pid) return;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        Config& dst = cfg_slot((DWORD)pid);
+        dst.pid = pid;
+        dst.outlineLocs = locs;
+    }
     ensure_thread();
 }
 

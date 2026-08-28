@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "../reader/Reader.h"   // OutlineLocReq (object outline requests)
 
 // External world-grid overlay: a layered, click-through, topmost sibling window drawn over
 // the game client. Projects world tiles/entities to client pixels from out-of-process reads.
@@ -30,6 +31,7 @@ struct Config {
     int           radius   = 12;     // grid radius in tiles around the player
     std::vector<std::string> highlight;
     std::vector<int>         outline;    // NPC uids (sec+0x88) to box-outline (Scene tab)
+    std::vector<rtx::reader::OutlineLocReq> outlineLocs;   // objects to box-outline (Scene tab)
 };
 
 // Apply a new config. Thread-safe. Lazily spins up the render thread on first
@@ -59,6 +61,8 @@ void SetNameplatePlayers(std::uint32_t pid, const std::vector<int>& uids);
 // NPC uids (sec+0x88) to box-outline on `pid` (empty clears): a 3D box around the live model
 // AABB, independent of the grid/NPC toggles.
 void SetOutline(std::uint32_t pid, const std::vector<int>& uids);
+// Object outlines from the Scene tab: (loc id, world tile x/y, plane) per entry; empty clears.
+void SetOutlineLocs(std::uint32_t pid, const std::vector<rtx::reader::OutlineLocReq>& locs);
 
 // Tick metronome on `pid`'s game window. `visual` draws the widget (drag to move, wheel to
 // resize; position/size persist), `audio` clicks sounds/metronome.wav on each confirmed tick,

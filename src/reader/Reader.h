@@ -233,10 +233,15 @@ struct OverlayFrame {
 // insensitive), or whose uid (sec+0x88) is in `outline_uids`, is added to
 // out.highlights regardless of want_npcs (outline matches carry the live model AABB
 // box; name matches carry only a centre point). Returns ok=false when not in-world.
+// One object the Scene tab asked to box-outline: matched against the runtime publish for its
+// live model AABB, else against the static map placement for a footprint prism.
+struct OutlineLocReq { int id = 0, x = 0, y = 0, plane = 0; };
+
 bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        bool want_objects, bool want_specials, int grid_radius, bool interactable,
                        const std::vector<std::string>& highlight_names,
                        const std::vector<int>& outline_uids,
+                       const std::vector<OutlineLocReq>& outline_locs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out);
 

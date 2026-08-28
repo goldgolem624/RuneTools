@@ -6722,6 +6722,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        bool want_objects, bool want_specials, int grid_radius, bool interactable,
                        const std::vector<std::string>& highlight_names,
                        const std::vector<int>& outline_uids,
+                       const std::vector<OutlineLocReq>& outline_locs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out) {
     // All from SceneOffsets.h -- shared with the companion's SceneData.cpp walk.
@@ -7478,6 +7479,53 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         // direction. Drop the arrow when the player and target are on opposite sides of the line.
         bool crossBand = haveTarget && ((out.player_ty < 6400) != (tgy < 6400));
         if (have_player && haveTarget && !crossBand) { out.has_arrow = true; out.arrow_tx = tgx; out.arrow_ty = tgy; }
+    }
+
+    // Scene-tab OBJECT outlines: the same neutral box treatment the NPC outline gets, drawn
+    // regardless of the objects layer toggle. A runtime-tracked object contributes its exact
+    // live model AABB (rotation and height included); a purely static one falls back to its
+    // rotation-corrected footprint prism on the terrain. kind 4 = always-drawn outline.
+    if (!outline_locs.empty() && have_player) {
+        std::uint64_t oroot = (root && *root > 0x10000) ? *root : 0;
+        std::vector<RuntimeObj> oruntime;
+        ReadRuntimeObjects(pid, oruntime);
+        for (const auto& rq : outline_locs) {
+            if (rq.id <= 0 || rq.plane != out.plane) continue;
+            auto meta = resolve_loc(h, oroot, rq.id);
+            OverlayPoint op;
+            op.kind = 4; op.label = meta.name;
+            bool live = false;
+            int tol = std::max(meta.dim_x, meta.dim_y) - 1; if (tol < 0) tol = 0; tol += 1;
+            for (const auto& r : oruntime) {
+                if (r.config_id != rq.id || r.plane != rq.plane) continue;
+                if (std::abs(r.x - rq.x) > tol || std::abs(r.y - rq.y) > tol) continue;
+                if (!(r.bmax[0] > r.bmin[0])) break;
+                op.has_box3d = true;
+                for (int j = 0; j < 3; ++j) { op.bmin[j] = r.bmin[j]; op.bmax[j] = r.bmax[j]; }
+                op.wx = (r.bmin[0] + r.bmax[0]) * 0.5f;
+                op.wy = (r.bmin[1] + r.bmax[1]) * 0.5f;
+                op.wz = (r.bmin[2] + r.bmax[2]) * 0.5f;
+                op.head_z = r.bmax[2];
+                live = true;
+                break;
+            }
+            if (!live) {
+                // Static placement: find it in the map for the true rotation, else assume none.
+                int W = meta.dim_x, H = meta.dim_y;
+                for (const auto& pl : rtx::cache::RegionLocations(rq.x >> 6, rq.y >> 6)) {
+                    if (pl.id != rq.id || pl.plane != rq.plane) continue;
+                    if ((rq.x & 63) != pl.x || (rq.y & 63) != pl.y) continue;
+                    if (pl.rotation == 1 || pl.rotation == 3) std::swap(W, H);
+                    break;
+                }
+                op.wx = rq.x * 512.f + 256.f; op.wy = rq.y * 512.f + 256.f;
+                std::int16_t objH = rtx::cache::TileHeight(rq.x, rq.y, out.plane);
+                op.wz = (objH == kNoH) ? out.player_z : kHScale * (float)objH;
+                fillBox(op, rq.x, rq.y, W, H);
+                op.head_z = op.wz + op.box_h;
+            }
+            out.points.push_back(op);
+        }
     }
 
     if (want_objects && have_player) {
