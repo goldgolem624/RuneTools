@@ -150,6 +150,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_storage.js",
         "panel_containers.js",
         "panel_pof.js",
+        "panel_resdungeons.js",
         "panel_abilitytips.js",   // AB_TIPS: per-ability tooltip bullets extracted from the CS2 builders
         "panel_abilities.js",
         "panel_alerts.js",

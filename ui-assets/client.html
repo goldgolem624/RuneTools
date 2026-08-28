@@ -2344,7 +2344,7 @@
   const rtxPrefs = Object.create(null);
   let _prefsReady = false, _prefsSaveT = 0, _prefsInitP = null;
   const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView', 'rtxAuras', 'rtxAuraSeen', 'rtxAuraIcons',
-                        'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify'];
+                        'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify', 'rtxResDungCoords'];
   function prefGet(key, def) {
     if (Object.prototype.hasOwnProperty.call(rtxPrefs, key)) return rtxPrefs[key];
     try { const s = localStorage.getItem(key); if (s !== null) return s; } catch (e) {}
@@ -2606,6 +2606,7 @@
     { id: 'archshop', label: 'Guild Shop', cat: 'Archaeology', icon: '<path d="M4 9 5.5 4h13L20 9"/><path d="M4 9h16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M5.5 13v7h13v-7"/><path d="M9.5 20v-4h5v4"/>' },
     // World
     { id: 'worldmap', label: 'World Map', cat: 'World', icon: '<path d="M9 5 3 7v12l6-2 6 2 6-2V5l-6 2-6-2z"/><path d="M9 5v12M15 7v12"/><circle cx="12" cy="11" r="1.6"/>' },
+    { id: 'resdungeons', label: 'Resource Dungeons', cat: 'World', icon: '<path d="M4 20V9l8-6 8 6v11"/><path d="M9 20v-6h6v6"/><path d="M12 3v3"/>' },
     { id: 'anachronia', label: 'Anachronia', cat: 'World', icon: '<path d="M12 3 4 9v12h16V9l-8-6z"/><path d="M9 21v-6h6v6M4 9h16"/>' },
     { id: 'scene',    label: 'Scene',   cat: 'World', icon: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M16 6.2a3 3 0 0 1 0 5.6M20.5 19c0-2.2-1.3-3.9-3.3-4.6"/>' },
     { id: 'farming',  label: 'Farming', cat: 'World', icon: '<path d="M12 21V9M12 9c0-3 2-5 5-5 0 3-2 5-5 5M12 12C12 9 10 7 7 7c0 3 2 5 5 5M5 21h14"/>' },
@@ -5839,6 +5840,7 @@
     if (id === 'inventory') { invSig = ''; fetchInv(); }
     if (id === 'components') { compSig = ''; fetchComponents(); }
     if (id === 'machines') fetchMachinesTab();
+    if (id === 'resdungeons') { rdSig = ''; rdFetchAt = 0; fetchResDungeons(); }
     if (id === 'equipment') { equipSig = ''; fetchEquip(); }
     if (id === 'storage') { storageSig = ''; fetchStorage(); }
     if (id === 'abilities') fetchAbilities();
@@ -6484,6 +6486,7 @@
     if (activeTab === 'relics') { renderRelics(); return; }
     if (activeTab === 'reputation') { renderReputation(); return; }
     if (activeTab === 'wardrobe') { renderWardrobe(); return; }
+    if (activeTab === 'resdungeons') { renderResDungeons(); return; }
     if (activeTab === 'bossinfo') { renderBossInfo(); return; }
     if (activeTab === 'portsinfo') { if (typeof renderPortsInfo === 'function') renderPortsInfo(); return; }
     if (activeTab === 'hideyholes') { renderHidey(); return; }
@@ -7017,6 +7020,7 @@
     if (activeTab === 'relics') fetchRelics();
     if (activeTab === 'reputation') fetchReputation();
     if (activeTab === 'wardrobe') fetchWardrobe();
+    if (activeTab === 'resdungeons') fetchResDungeons();
     if (activeTab === 'bossinfo') fetchBossInfo();
     if (activeTab === 'hideyholes') fetchHidey();
     if (activeTab === 'clues') { fetchClues(); fetchGlobetrotter(); }

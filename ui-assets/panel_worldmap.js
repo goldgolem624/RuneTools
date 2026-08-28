@@ -689,6 +689,10 @@
   let wmPlayer = null, wmFollow = false, wmSel = null, wmFly = null;
   let wmHideyVals = {};            // varp id -> value, for the 2-bit hidey-hole state fields
   let wmMarks = [];                // screen-space hover targets: {sx, sy, r, tip}
+  // External pin groups (other panels plot sets of places, e.g. resource dungeons):
+  // group -> [{x, y, p, nm, sub, col}]. Replaced whole per group; drawn under the selection pin.
+  const wmExtPins = new Map();
+  function wmSetExtPins(group, pins) { wmExtPins.set(group, Array.isArray(pins) ? pins : []); try { wmKick(); } catch (e) {} }
   let wmHover = { x: -1, y: -1 };  // cursor tile (status readout)
   async function wmOpen() {
     try { if (typeof fetchLodestones === 'function') fetchLodestones(true); } catch (e) {}
@@ -1154,6 +1158,19 @@
         if (at) wmMarks.push({ sx: at.x, sy: at.y, r: 8, tip: '<b>' + htmlEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
       }
       cx.restore();
+    }
+    // external pin groups
+    for (const pins of wmExtPins.values()) {
+      for (const pn of pins) {
+        if ((pn.p | 0) !== plane) continue;
+        const mx = sx(pn.x + 0.5), my = sy(pn.y + 0.5);
+        if (mx < -20 || my < -20 || mx > w + 20 || my > h + 20) continue;
+        cx.beginPath(); cx.arc(mx, my, 6.5, 0, 6.2832);
+        cx.fillStyle = 'rgba(0,0,0,0.6)'; cx.fill();
+        cx.lineWidth = 2.2; cx.strokeStyle = pn.col || '#f5b241'; cx.stroke();
+        cx.beginPath(); cx.arc(mx, my, 2.2, 0, 6.2832); cx.fillStyle = pn.col || '#f5b241'; cx.fill();
+        wmMarks.push({ sx: mx, sy: my, r: 9, tip: '<b>' + htmlEsc(pn.nm || 'Pin') + '</b>' + (pn.sub ? '<br>' + htmlEsc(pn.sub) : '') + '<br>' + pn.x + ', ' + pn.y });
+      }
     }
     // selection pin
     if (wmSel && (wmSel.p | 0) === plane) {
