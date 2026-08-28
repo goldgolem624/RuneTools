@@ -2385,7 +2385,6 @@
                    font: 'variable', fontSize: 13, tabular: false, compactTips: false,
                    barClock: false, bar24h: false, barSession: false, barXp: false };
   const UI_FONTS = [['Segoe UI Variable', 'variable', "'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif"],
-                    ['Segoe UI', 'segoe', "'Segoe UI', system-ui, sans-serif"],
                     ['Calibri', 'calibri', "Calibri, 'Segoe UI', sans-serif"],
                     ['Verdana', 'verdana', "Verdana, Geneva, sans-serif"],
                     ['Consolas', 'consolas', "Consolas, 'Cascadia Mono', monospace"]];
@@ -3238,7 +3237,19 @@
     // Preferences "compact tooltips": drop the Source:/ID provenance lines that only a
     // developer or a sceptic wants, keep everything the player reads.
     if (!text || !uiCfg().compactTips) return text;
-    const out = String(text).split('\n').filter(l => !/^\s*(Source|Sources|ID)\b\s*:?/i.test(l) && !/^\s*Source:/.test(l));
+    // Drop provenance lines (Source/ID), explanatory lines (Shown because / Note / Tip / Why /
+    // Hint / Because), and parenthetical asides inside a line that still says something
+    // without them. The first line (the name) is always kept.
+    const lines = String(text).split('\n');
+    const out = [];
+    lines.forEach((l, i) => {
+      if (i > 0 && /^\s*(Source|Sources|ID|Note|Tip|Hint|Why|Because|Shown because|Diagnostic|Debug)\b/i.test(l)) return;
+      if (i > 0) {
+        const stripped = l.replace(/\s*\([^()]*\)/g, '').replace(/\s{2,}/g, ' ').trimEnd();
+        if (stripped.replace(/[\s:;,.-]/g, '').length) l = stripped;
+      }
+      out.push(l);
+    });
     return out.join('\n').replace(/\n{3,}/g, '\n\n');
   }
   function showTipFor(node) {
@@ -5287,7 +5298,7 @@
       v => (cfg.font || 'variable') === v, v => { cfg.font = v; save(); }));
     rows.appendChild(uisSlider('Font size', 'uis_fontsize', 11, 17, 1, () => cfg.fontSize || 13, v => { cfg.fontSize = v; save(); }, v => v + 'px'));
     rows.appendChild(uisPill('Tabular digits', 'uis_tabular', () => !!cfg.tabular, v => { cfg.tabular = v; save(); }, 'Fixed-width numerals so columns of numbers line up'));
-    rows.appendChild(uisPill('Compact tooltips', 'uis_ctips', () => !!cfg.compactTips, v => { cfg.compactTips = v; save(); try { hideTip(); } catch (e) {} }, 'Hides the Source: and ID provenance lines in tooltips'));
+    rows.appendChild(uisPill('Compact tooltips', 'uis_ctips', () => !!cfg.compactTips, v => { cfg.compactTips = v; save(); try { hideTip(); } catch (e) {} }, 'Hides provenance (Source, ID), explanatory lines and parenthetical asides in tooltips'));
 
     // ---------------- Bar ----------------
     sec('Bar');
