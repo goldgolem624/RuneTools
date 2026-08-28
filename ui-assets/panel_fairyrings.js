@@ -47,6 +47,7 @@
     20:   { vb: [61256], test: (V) => V(61256) !== 0, req: 'House fairy ring built (Construction)' },
   };
   const FR_BASE_REQ = "A Fairy Tale II: Cure a Queen started (fairy ring access)";
+  let frUnused = 0;
   let frRows = null, frVb = null, frVp = null, frStaff = null, frFetching = false, frFetchAt = 0, frSig = '', frFilter = 'all', frSearch = '';
   async function fetchFairyRings() {
     if (!bridge() || frFetching) return;
@@ -57,6 +58,10 @@
         if (Array.isArray(rows) && rows.length) {
           frRows = rows.map(r => ({ key: (r.i && r.i['1'] && r.i['1'][0]) | 0, code: (r.s && r.s['2'] && r.s['2'][0]) || '', dest: (r.s && r.s['3'] && r.s['3'][0]) || '' }))
                        .filter(r => r.code);
+          // Codes with no destination text are the game's UNUSED combinations (9 of the 64,
+          // e.g. AKR, AJP, DIQ); they are not places, so they are counted, not listed.
+          frUnused = frRows.filter(r => !r.dest).length;
+          frRows = frRows.filter(r => r.dest);
         }
       }
       const vbs = new Set(Object.values(FR_LOGGED)); for (const k in FR_GATES) for (const v of (FR_GATES[k].vb || [])) vbs.add(v);
@@ -151,7 +156,7 @@
     });
     let h = '<div class="fr-top"><input id="frSearch" class="bank-search" type="text" placeholder="Search code or destination..." value="' + esc(frSearch) + '" spellcheck="false">'
       + ['all', 'usable', 'locked', 'unvisited'].map(f => '<button class="fr-btn' + (frFilter === f ? ' on' : '') + '" data-fr-f="' + f + '">' + f[0].toUpperCase() + f.slice(1) + '</button>').join('')
-      + '<span class="fr-cnt">' + usable + ' / ' + frRows.length + ' usable · ' + seen + ' visited</span></div>';
+      + '<span class="fr-cnt">' + usable + ' / ' + frRows.length + ' usable · ' + seen + ' visited' + (frUnused ? ' · ' + frUnused + ' unused codes' : '') + '</span></div>';
     h += '<div class="fr-card">' + (rows.length ? rows.join('') : '<div class="fr-empty">Nothing matches.</div>') + '</div>';
     h += '<div class="fr-note">Codes and destinations are the game\'s fairy ring log (dbtable 121). "Usable" applies the same requirement gate the game applies to each ring (script 3104) to your live quest progress, on top of the base requirement: ' + esc(FR_BASE_REQ) + '. "Visited" is the game\'s own travel log flag. Map buttons appear for rings the World Map has bound to a fairy ring icon.</div>';
     wrap.innerHTML = h;
