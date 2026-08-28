@@ -55,12 +55,17 @@
   }
   // How many requirements must be satisfied. `needN` (cache op 30): [1] = ANY one (OR),
   // [n]==reqs = ALL (AND); multi-element groups are summed. Absent -> AND all reqs.
+  // needN (op 30) applies to the VAR-BASED requirements only. Skill levels and prerequisite
+  // achievements are separate ALL-REQUIRED gates: the game has a dedicated ALLPREREQMET op,
+  // and pooling them produced nonsense like Bug Swatter III reading "1 of 3 (any one)" across
+  // [25 kills, completed-flag, Complete Bug Swatter II] - the truth is BS II required AND
+  // 1-of-2 on the counter/flag pair.
   function achNeed(a) {
     if (a.needN && a.needN.length) return a.needN.reduce((s, x) => s + x, 0);
     return (a.reqs || []).length + (a.reqs23 || []).length + (a.reqs25 || []).length +
-           (a.reqsvpb || []).length + (a.reqsvp || []).length +
-           (a.skills || []).length + (a.prev || []).length;
+           (a.reqsvpb || []).length + (a.reqsvp || []).length;
   }
+  function achGatesTotal(a) { return (a.skills || []).length + (a.prev || []).length; }
 
   // id -> achDef, and child-id -> parent achDef (from each parent's op-15 `subach` list).
   let _achDefById = null, _achLeafParent = null;
@@ -133,7 +138,7 @@
       }
       let vp = {};
       if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
-      const done = new Set(), prog = {}, baseSat = {};
+      const done = new Set(), prog = {}, baseSat = {}, baseGates = {};
       for (const a of achDefs) {
         if (!achTrackable(a) || achIsLeagues(a)) continue;
         let sat = 0; const lines = [];
@@ -170,22 +175,28 @@
         // toward achNeed, so skipping them here after they started counting there misjudged
         // every mixed achievement as incomplete.
         const liveSk = (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
-        for (const sq of (a.skills || [])) {
+        let gatesOk = true;
+        for (const sq of (a.skills || [])) {          // hard gate, never part of the n-of-M pool
           const sid = sq[0] | 0, lvl = sq[1] | 0;
           const cur = (liveSk && liveSk[sid]) ? (liveSk[sid][0] | 0) : 0;
-          const okq = cur >= lvl; if (okq) sat++;
+          const okq = cur >= lvl; if (!okq) gatesOk = false;
           lines.push({ label: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
-                       cur: cur, req: lvl, ok: okq, src: 'live skill ' + sid });
+                       cur: cur, req: lvl, ok: okq, src: 'live skill ' + sid, gate: true });
         }
         // op 11: prerequisite achievements. Judged in the fixed-point pass below, where the
         // referenced achievement's own done state is known; recorded pending here.
-        for (const pid2 of (a.prev || [])) lines.push({ label: '', cur: 0, req: 1, ok: false, src: 'achievement ' + pid2, prereqOf: pid2 });
+        for (const pid2 of (a.prev || [])) lines.push({ label: '', cur: 0, req: 1, ok: false, src: 'achievement ' + pid2, prereqOf: pid2, gate: true });
         // Completion must be PROVEN, never assumed. With no requirements to check, sat 0 >=
         // need 0 marked the entry done, which (a) reported achievements we cannot evaluate as
         // complete and (b) pre-empted the rollup pass below, since it skips anything already
         // done - so a set like "Ardougne Set Tasks - Easy" read complete at 6/23 tasks.
-        baseSat[a.id] = sat;
-        if (achNeed(a) > 0 && sat >= achNeed(a) && !(a.prev && a.prev.length)) done.add(a.id);
+        baseSat[a.id] = sat; baseGates[a.id] = gatesOk;
+        const varNeed = achNeed(a);
+        const provable = varNeed > 0 || achGatesTotal(a) > 0;
+        // Done now only when every judged piece passes AND nothing waits on a prereq (those
+        // resolve in the fixed point below).
+        if (provable && (varNeed === 0 || sat >= varNeed) && gatesOk && !(a.prev && a.prev.length) && varNeed + (a.skills || []).length > 0)
+          done.add(a.id);
         prog[a.id] = lines;
       }
       // Fixed point over BOTH derived kinds: rollups (a `subach` list, complete when needN
@@ -205,15 +216,18 @@
             if (sub >= need) { done.add(p.id); chg = true; continue; }
           }
           if (p.prev && p.prev.length && baseSat[p.id] !== undefined) {
-            let sat = baseSat[p.id];
+            let prevOk = true;
             for (const ln of (prog[p.id] || [])) {
               if (ln.prereqOf === undefined) continue;
               if (!ln.label) ln.label = 'Complete: ' + ((defsById[ln.prereqOf] && defsById[ln.prereqOf].name) || ('achievement #' + ln.prereqOf));
               const ok = done.has(ln.prereqOf);
               if (ok !== ln.ok) { ln.ok = ok; ln.cur = ok ? 1 : 0; }
-              if (ln.ok) sat++;
+              if (!ln.ok) prevOk = false;
             }
-            if (achNeed(p) > 0 && sat >= achNeed(p)) { done.add(p.id); chg = true; }
+            // Prereqs are an ALL gate on top of the var pool and the skill gate, mirroring
+            // the game's ALLPREREQMET; needN never spans them.
+            const varNeed = achNeed(p);
+            if (prevOk && baseGates[p.id] !== false && (varNeed === 0 || baseSat[p.id] >= varNeed)) { done.add(p.id); chg = true; }
           }
         }
       }
@@ -271,27 +285,26 @@
         const ok = cur >= q.v; if (ok) sat++;
         reqs.push({ description: q.n, current: cur, target: q.v, complete: ok, varbits: [], varps: q.vps.slice() });
       }
-      // op 12: skill levels, judged against the live skill panel exactly as the game's
-      // requirement walk does. skills entries are [skillId, level]; skill ids share the
-      // reader's index space (SKILL_NAMES).
+      // op 12: skill levels: a hard ALL gate beside the var pool (never inside needN).
       const liveSk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
+      let gatesOk = true;
       for (const sq of (a.skills || [])) {
         const sid = sq[0] | 0, lvl = sq[1] | 0;
         const cur = (liveSk && liveSk[sid]) ? (liveSk[sid][0] | 0) : 0;
-        const ok = cur >= lvl; if (ok) sat++;
+        const ok = cur >= lvl; if (!ok) gatesOk = false;
         reqs.push({ description: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
-                    current: cur, target: lvl, complete: ok, varbits: [] });
+                    current: cur, target: lvl, complete: ok, varbits: [], gate: true });
       }
-      // op 11: prerequisite achievements. Judged in the resolve pass below (their own
-      // completion may not be known yet on this walk); recorded as pending lines here.
+      // op 11: prerequisite achievements: the ALLPREREQMET gate, resolved below.
       for (const pid2 of (a.prev || [])) {
-        reqs.push({ description: '', current: 0, target: 1, complete: false, varbits: [], prereqOf: pid2 });
+        reqs.push({ description: '', current: 0, target: 1, complete: false, varbits: [], prereqOf: pid2, gate: true });
       }
       const need = achNeed(a);
       const tier = achTier(a);
       out.push({ id: a.id, name: a.name || '', description: a.desc || '', reward: a.reward || '',
-                 points: a.points || 0, complete: sat >= need, requirementsNeeded: need,
-                 combatMasteryTier: tier ? tier[0] : null, requirements: reqs, _sat: sat });
+                 points: a.points || 0, complete: (need === 0 || sat >= need) && gatesOk && !(a.prev && a.prev.length) && (need + (a.skills || []).length > 0),
+                 requirementsNeeded: need,
+                 combatMasteryTier: tier ? tier[0] : null, requirements: reqs, _sat: sat, _gates: gatesOk });
     }
     // Resolve prerequisite-achievement requirements. A prereq's completion can depend on
     // other achievements in this same result, so iterate to a fixed point (chains are short;
@@ -300,22 +313,25 @@
     for (let pass = 0; pass < 8; pass++) {
       let changed = false;
       for (const r of out) {
-        let sat = r._sat;
+        let prevSeen = false, prevOk = true;
         for (const q of r.requirements) {
           if (q.prereqOf === undefined) continue;
+          prevSeen = true;
           const dep = byId[q.prereqOf];
           const defs = achDefById();
           if (!q.description) q.description = 'Complete: ' + ((defs[q.prereqOf] && defs[q.prereqOf].name) || ('achievement #' + q.prereqOf));
           const ok = !!(dep && dep.complete);
           if (ok !== q.complete) { q.complete = ok; q.current = ok ? 1 : 0; changed = true; }
-          if (q.complete) sat++;
+          if (!q.complete) prevOk = false;
         }
-        const nowDone = sat >= r.requirementsNeeded;
+        if (!prevSeen) continue;
+        const varOk = r.requirementsNeeded === 0 || r._sat >= r.requirementsNeeded;
+        const nowDone = varOk && r._gates !== false && prevOk;
         if (nowDone !== r.complete) { r.complete = nowDone; changed = true; }
       }
       if (!changed) break;
     }
-    for (const r of out) delete r._sat;
+    for (const r of out) { delete r._sat; delete r._gates; }
     return out;
   }
 
@@ -330,8 +346,10 @@
     if (tier) tip.push('Combat mastery: ' + tier[0] + ' (source: cache combat_mastery_category ' + a.cm + ')');
     if (a.reward) tip.push('Reward: ' + a.reward);
     if (a.points) tip.push(a.points + ' achievement points');
-    if (lines.length > 1) tip.push('Requires ' + need + ' of ' + lines.length + ' below' +
-      (need === 1 ? ' (any one)' : need >= lines.length ? ' (all)' : ''));
+    const poolLines = lines.filter(ln => !ln.gate);
+    if (poolLines.length > 1) tip.push('Requires ' + need + ' of ' + poolLines.length + ' below' +
+      (need === 1 ? ' (any one)' : need >= poolLines.length ? ' (all)' : ''));
+    if (lines.some(ln => ln.gate)) tip.push('Skill and prerequisite lines are always required.');
     for (const ln of lines) {
       const head = ln.label ? ln.label : 'Requirement';
       tip.push((ln.ok ? '✓ ' : '• ') + head + '  (' + ln.cur + '/' + ln.req + ')');
