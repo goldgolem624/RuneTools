@@ -1889,6 +1889,7 @@
   .chat-ch-group   { color: #5fd07a; }
   .chat-msg { flex: 1 1 auto; min-width: 0; color: var(--text); word-break: break-word; white-space: pre-wrap; }
   .chat-msg .chat-hit { background: rgba(240,200,80,0.32); border-radius: 2px; }
+  .chat-msg .chat-img { height: 1.05em; width: auto; vertical-align: -0.18em; margin: 0 2px 0 1px; image-rendering: auto; }
   .chat-empty { color: var(--text-dim); font-size: 12px; padding: 10px 4px; }
   .chat-count { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
   .ach-desc { flex: 1 1 0; color: var(--text-dim); font-size: 10px; min-width: 0; overflow: hidden;
@@ -4194,6 +4195,7 @@
     zTop: 10,
     focused: null,          // wid
     barX: null, barY: null, barPill: false,
+    barYf: null,            // vertical centre as a fraction of the frame height (free drag); null = edge-docked
     // Host borderless fullscreen. NOT persisted: it is a per-session view state, and the host
     // window's own saved placement is what restores on next launch.
     fullscreen: false,
@@ -5666,7 +5668,7 @@
                     w: Math.round(w.w), h: Math.round(w.h), z: w.z, min: w.min ? 1 : 0,
                     roll: w.rolled ? 1 : 0, lock: w.locked ? 1 : 0 };
     }
-    return { v: 1, bar: { x: wm.barX, y: wm.barY, pill: wm.barPill ? 1 : 0 },
+    return { v: 1, bar: { x: wm.barX, y: wm.barY, yf: wm.barYf, pill: wm.barPill ? 1 : 0 },
              toast: { anchor: toastCfg.anchor, dx: toastCfg.dx | 0, dy: toastCfg.dy | 0, w: toastCfg.w | 0 },
              wins };
   }
@@ -5701,6 +5703,7 @@
     if (saved.bar) {
       if (typeof saved.bar.x === 'number') wm.barX = saved.bar.x;
       if (saved.bar.y === 'bottom' || saved.bar.y === 'top') wm.barY = saved.bar.y;
+      if (typeof saved.bar.yf === 'number') wm.barYf = Math.min(1, Math.max(0, saved.bar.yf));
       wm.barPill = !!saved.bar.pill;
     }
     if (saved.toast && typeof saved.toast === 'object') {
@@ -5859,7 +5862,14 @@
     x = Math.max(6, Math.min(vw - bw - 6, x));
     bar.style.left = x + 'px';
     bar.style.transform = 'none';
-    if (wm.barY === 'bottom') { bar.style.top = 'auto'; bar.style.bottom = '10px'; }
+    if (typeof wm.barYf === 'number') {
+      // Free placement: any vertical position, always clamped inside the game frame.
+      const vh = window.innerHeight || 720, bh = bar.offsetHeight || 38;
+      let y = Math.round(vh * wm.barYf - bh / 2);
+      y = Math.max(6, Math.min(vh - bh - 6, y));
+      bar.style.bottom = 'auto'; bar.style.top = y + 'px';
+      wm.barY = (y + bh / 2 > vh / 2) ? 'bottom' : 'top';   // dropdown and toast sides follow the half it sits in
+    } else if (wm.barY === 'bottom') { bar.style.top = 'auto'; bar.style.bottom = '10px'; }
     else { bar.style.bottom = 'auto'; bar.style.top = '10px'; }
     // The toast stack sits under the bar when it is docked top, and at the top of
     // the screen when the bar moves to the bottom.
@@ -5971,7 +5981,7 @@
       const mv = (ev) => {
         const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
         wm.barX = Math.min(0.98, Math.max(0.02, ev.clientX / Math.max(1, vw)));
-        wm.barY = (ev.clientY > vh / 2) ? 'bottom' : 'top';
+        wm.barYf = Math.min(1, Math.max(0, ev.clientY / Math.max(1, vh)));
         positionMenubar();
         wmPushRects();
       };

@@ -58,7 +58,9 @@ std::vector<CacheParseRow> CacheParseHealth();
 // failure. Memoized. Used for skill icons (and any other cache sprite).
 std::string SpriteDataUrl(int sprite_id);
 // Same, capped to `px` (8..256) on the longest side; px<=0 falls back to the default cap.
-std::string SpriteDataUrlScaled(int sprite_id, int px);
+std::string SpriteDataUrlScaled(int sprite_id, int px, int frame = 0);
+// Archive id of the sprite group named `name` (reference-table name hash), -1 if unknown.
+int SpriteIdByName(const std::string& name);
 
 std::vector<std::uint8_t> SpriteRgba(int sprite_id, int& w, int& h);   // raw RGBA pixels (for the HUD overlay)
 

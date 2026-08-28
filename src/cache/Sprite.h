@@ -17,8 +17,9 @@ std::vector<std::uint8_t> SpriteAsPng(SqliteIndexFile& sprites_index,
 // As above, but capped to `max_side` (>=8) on the longest side instead of the default
 // 64 -- lets a panel request exactly (or 2x) its display box so the browser-side
 // rescale stays small and clean.
+// `frame` selects a frame of a multi-frame group (chat <img=N> icons); 0 = the icon frame.
 std::vector<std::uint8_t> SpriteAsPngScaled(SqliteIndexFile& sprites_index,
-                                            int sprite_id, int max_side);
+                                            int sprite_id, int max_side, int frame = 0);
 
 // Wraps an RGBA buffer as a PNG, DROPPING the alpha channel (colour type 2). The map render is
 // fully opaque, so the alpha byte is a quarter of the payload carrying no information; the

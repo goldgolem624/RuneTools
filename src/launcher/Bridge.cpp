@@ -857,9 +857,17 @@ JSValueRef Sprite(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc < 1) return utf8_to_js(ctx, "");
     int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
     // Optional 2nd arg: cap the longest side to `px` (panels pass ~2x their box for a clean 2:1 rescale).
+    // Optional 3rd arg: frame index within a multi-frame group (chat <img=N> icons).
     int px = (argc >= 2) ? (int)JSValueToNumber(ctx, argv[1], nullptr) : 0;
-    return utf8_to_js(ctx, px > 0 ? rtx::cache::SpriteDataUrlScaled(id, px)
-                                  : rtx::cache::SpriteDataUrl(id));
+    int frame = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 0;
+    return utf8_to_js(ctx, (px > 0 || frame > 0) ? rtx::cache::SpriteDataUrlScaled(id, px, frame)
+                                                 : rtx::cache::SpriteDataUrl(id));
+}
+// rtx.spriteByName(name) -> archive id of a named sprite group ("modicons"), -1 if unknown.
+JSValueRef SpriteByName(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeNumber(ctx, -1);
+    return JSValueMakeNumber(ctx, rtx::cache::SpriteIdByName(js_to_utf8(ctx, argv[0])));
 }
 
 JSValueRef Achievements(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -4783,6 +4791,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "modelIcon",         ModelIcon);
     install_fn(ctx, ns, "itemInfo",          ItemInfo);
     install_fn(ctx, ns, "sprite",            Sprite);
+    install_fn(ctx, ns, "spriteByName",      SpriteByName);
     install_fn(ctx, ns, "hudSprite",         HudSprite);
     install_fn(ctx, ns, "enumInfo",          EnumInfo);
     install_fn(ctx, ns, "structParams",      StructParams);

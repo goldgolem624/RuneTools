@@ -10,6 +10,7 @@
 #include "MapTiles.h"
 #include "NpcType.h"
 #include "Sprite.h"
+#include "Utils.h"
 #include "Store.h"
 
 #include <algorithm>
@@ -3912,28 +3913,45 @@ std::string SpriteDataUrl(int sprite_id) {
 
 // Sprite data URL capped to `px` on the longest side (area-average filtered) -- panels
 // request their display box (or 2x it) so the in-browser rescale stays small and clean.
-std::string SpriteDataUrlScaled(int sprite_id, int px) {
+std::string SpriteDataUrlScaled(int sprite_id, int px, int frame) {
     if (sprite_id < 0) return {};
-    if (px <= 0) return SpriteDataUrl(sprite_id);
+    if (frame < 0) frame = 0;
+    if (px <= 0 && frame == 0) return SpriteDataUrl(sprite_id);
+    if (px <= 0) px = 64;
     if (px < 8) px = 8;
     if (px > 256) px = 256;
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
-    const long long key = ((long long)sprite_id << 16) | px;
+    const long long key = ((long long)sprite_id << 24) | ((long long)(frame & 0xFF) << 16) | px;
     auto hit = g_sprite_scaled_cache.find(key);
     if (hit != g_sprite_scaled_cache.end()) return hit->second;
 
     std::string url;
     auto* idx = g_store ? g_store->Get(kIndexSprites) : nullptr;
     if (idx) {
-        auto png = SpriteAsPngScaled(*idx, sprite_id, px);
+        auto png = SpriteAsPngScaled(*idx, sprite_id, px, frame);
         if (!png.empty()) {
             std::string b64 = base64(png);
             if (!b64.empty()) url = "data:image/png;base64," + b64;
         }
     }
-    g_sprite_scaled_cache[key] = url;
+    if (!url.empty()) g_sprite_scaled_cache[key] = url;   // never memoise a miss (see SpriteDataUrl)
     return url;
+}
+
+// Sprite archive id whose reference-table name hash matches `name` (Jagex ASCII hash), e.g.
+// "modicons" for the chat <img=N> icon strip. -1 when the sprites ref table is not parsed or
+// no archive carries that name.
+int SpriteIdByName(const std::string& name) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = g_store ? g_store->Get(kIndexSprites) : nullptr;
+    if (!idx || !idx->ready()) return -1;
+    const int want = NameHash(name);
+    const auto& ents = idx->ref().entries();
+    for (std::size_t i = 0; i < ents.size(); ++i)
+        if (ents[i].hash == want && ents[i].hash != 0) return (int)i;
+    return -1;
 }
 
 std::vector<std::uint8_t> SpriteRgba(int sprite_id, int& w, int& h) {

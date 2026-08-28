@@ -41,7 +41,7 @@ bool looks_like_png(const std::vector<std::uint8_t>& b) {
 
 // Decode the legacy footer-based sprite formats (0 = paletted, 1 = raw RGB)
 // into a single RGBA frame. Mirrors the SpriteType decoder.
-bool decode_frame(const std::vector<std::uint8_t>& bytes, Frame& out) {
+bool decode_frame(const std::vector<std::uint8_t>& bytes, Frame& out, int frame = 0) {
     if (bytes.size() < 2) return false;
     Reader br(bytes.data(), bytes.size());
 
@@ -73,9 +73,20 @@ bool decode_frame(const std::vector<std::uint8_t>& bytes, Frame& out) {
         std::vector<std::uint8_t> palette((std::size_t)palette_count * 3);
         for (auto& p : palette) p = br.u8();
 
-        // Only the first frame is needed for an icon.
+        // Frames are stored back to back from offset 0: [flags][pixels][alpha?]. Icons want
+        // frame 0; chat <img=N> tags index frame N of the modicons group, so walk past the
+        // earlier frames (their sizes are known from the header) to reach the requested one.
+        if (frame < 0 || frame >= count) return false;
         br.set_pos(0);
-        int w = widths[0], h = heights[0];
+        for (int k = 0; k < frame; ++k) {
+            std::size_t px = (std::size_t)widths[k] * heights[k];
+            if (!br.ok(1)) return false;
+            std::uint8_t fl = br.u8();
+            std::size_t need = px * ((fl & 0x2) ? 2 : 1);
+            if (!br.ok(need)) return false;
+            br.set_pos(br.pos() + need);
+        }
+        int w = widths[frame], h = heights[frame];
         std::size_t pixels = (std::size_t)w * h;
         if (pixels == 0 || !br.ok(1)) return false;
         std::uint8_t flags = br.u8();
@@ -406,17 +417,17 @@ void downscale_to(Frame& f, int max_side) {
 }
 
 std::vector<std::uint8_t> SpriteAsPng(SqliteIndexFile& sprites, int sprite_id) {
-    return SpriteAsPngScaled(sprites, sprite_id, 64);
+    return SpriteAsPngScaled(sprites, sprite_id, 64, 0);
 }
 
-std::vector<std::uint8_t> SpriteAsPngScaled(SqliteIndexFile& sprites, int sprite_id, int max_side) {
+std::vector<std::uint8_t> SpriteAsPngScaled(SqliteIndexFile& sprites, int sprite_id, int max_side, int frame) {
     auto raw = sprites.ReadRawArchive(sprite_id);
     if (raw.empty()) return {};
     auto bytes = DecompressStandard(raw);
     if (bytes.empty()) return {};
-    if (looks_like_png(bytes)) return bytes;   // already a PNG, pass through
+    if (looks_like_png(bytes)) return frame == 0 ? bytes : std::vector<std::uint8_t>{};   // single-image PNG
     Frame f;
-    if (!decode_frame(bytes, f)) return {};
+    if (!decode_frame(bytes, f, frame)) return {};
     if (max_side < 8) max_side = 8;
     downscale_to(f, max_side);
     return encode_png(f);

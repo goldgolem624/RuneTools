@@ -100,7 +100,14 @@
       else if (low === 'lt') emit('<');
       else if (low === 'gt') emit('>');
       else if (low === 'br') emit(' ');
-      // <img=N>, <shad=..>, <str>, <u=..>, etc. -> dropped
+      else if (low.startsWith('img=')) {
+        // Chat icon: index into the game's "modicons" sprite strip (ironman badges, leagues,
+        // broadcasts). Rendered as an inline image by chatHtml; nothing added to `plain` so
+        // search still matches the words.
+        const n = parseInt(tag.slice(4), 10);
+        if (n >= 0) tokens.push({ img: n, color: curColor });
+      }
+      // <shad=..>, <str>, <u=..>, etc. -> dropped
       i = gt + 1;
     }
     const m = plain.match(/^\s*\[(\d{1,2}:\d{2}:\d{2})\]\s*/);
@@ -116,10 +123,43 @@
     }
     return { ts, plain: plain.trim(), tokens };
   }
+  // <img=N> icons: frames of the "modicons" sprite group, resolved by name once per session
+  // and cached per frame as data URLs. Older launchers lack spriteByName: icons stay dropped.
+  let chatIconsId = null, chatIconsResolving = false;
+  const chatIconUrl = new Map(), chatIconPending = new Set();
+  function chatIconSrc(n) {
+    if (chatIconsId === null) {
+      if (!chatIconsResolving && bridge() && bridge().spriteByName) {
+        chatIconsResolving = true;
+        (async () => {
+          try { const id = await bridge().spriteByName('modicons'); chatIconsId = (id >= 0) ? id : -1; } catch (e) { chatIconsId = -1; }
+          chatIconsResolving = false;
+          if (chatIconsId >= 0) { try { chatRepaint(); } catch (e) {} }
+        })();
+      } else if (!bridge() || !bridge().spriteByName) chatIconsId = -1;
+      return '';
+    }
+    if (chatIconsId < 0) return '';
+    if (chatIconUrl.has(n)) return chatIconUrl.get(n);
+    if (!chatIconPending.has(n)) {
+      chatIconPending.add(n);
+      (async () => {
+        try { const u = await bridge().sprite(chatIconsId, 32, n); if (u) chatIconUrl.set(n, u); } catch (e) {}
+        chatIconPending.delete(n);
+        if (chatIconUrl.has(n)) { try { chatRepaint(); } catch (e) {} }
+      })();
+    }
+    return '';
+  }
   function chatHtml(tokens, query) {
     const q = query ? query.toLowerCase() : '';
     let html = '';
     for (const t of tokens) {
+      if (t.img !== undefined) {
+        const src = chatIconSrc(t.img);
+        if (src) html += '<img class="chat-img" src="' + src + '" alt="">';
+        continue;
+      }
       let body;
       if (q && t.text.toLowerCase().indexOf(q) >= 0) {
         body = ''; let s = t.text, lc = s.toLowerCase(), pos = 0, idx;
@@ -224,6 +264,7 @@
     }
     renderChatList();
   }
+  function chatRepaint() { chatSig = ''; paneRun('chatlog', renderChatList); }
   function renderChatList() {
     const list = $('chatList'); if (!list) return;
     const store = chatStore();
