@@ -995,13 +995,10 @@
   // pins) keeps its world coordinates and dungeons sit at their true underground coords rather
   // than floating in the sea as the composed surface shows them. Squares absent from every
   // zone table stay void, which is the fix for the raw-grid rendering of instanced areas.
-  let wmAreas = null, wmAreasAt = 0, wmZoneIdx = null, wmAreaImg = {};
+  let wmAreas = null, wmAreasAt = 0, wmZoneIdx = null;
   // The area images are 1 px per tile: native or downsampled at <= 1 px/tile, but upscaled mush
   // above it (owner: 'absolutely terrible' at 2 px/tile), so the chunk renderer takes over there.
-  // The area image is 1 px per tile: it is the right source ONLY when zoomed out (<= 1 px/tile,
-  // native or shrunk). Above that the detailed chunk renderer (roads, buildings, walls) is the
-  // real map; magnifying the image was blur, not detail.
-  const WM_IMG_MAX_Z = 1.0;
+
   function wmLoadAreas() {
     if (wmAreas || !bridge() || !bridge().mapAreas) return;
     const t = Date.now(); if (t - wmAreasAt < 1500) return; wmAreasAt = t;
@@ -1051,23 +1048,6 @@
       } catch (e) {}
     })();
   }
-  function wmAreaImage(id) {
-    let rec = wmAreaImg[id];
-    if (rec) return rec.ok ? rec.img : null;
-    rec = wmAreaImg[id] = { ok: false, img: null, at: 0 };
-    const pull = async () => {
-      try {
-        const url = await bridge().mapAreaImage(id, false);
-        if (!url) { setTimeout(pull, 400); return; }          // served: '' until the background build lands
-        const img = new Image();
-        img.onload = () => { rec.img = img; rec.ok = true; wmKick(); };
-        img.onerror = () => { rec.ok = false; rec.err = true; };
-        img.src = url;
-      } catch (e) { setTimeout(pull, 1500); }
-    };
-    pull();
-    return null;
-  }
   // Does any mapsquare of a chunk (ch tiles wide at tile origin tx,ty) belong to a map area?
   function wmChunkPlaced(tx, ty, ch) {
     if (!wmZoneIdx) return true;                               // no data yet: draw everything
@@ -1113,34 +1093,11 @@
     try { cx.imageSmoothingQuality = 'high'; } catch (e) {}
     const ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
     let drawn = 0, emptyKnown = 0, loading = 0;
-    // Area images (plane 0, up to WM_IMG_MAX_Z px/tile): one 64x64 block per placed square,
-    // painted at the square's world position from the game's composited PNG.
-    let imgMode = false;
-    if (plane === 0 && wmZoneIdx && wmAreas && z <= WM_IMG_MAX_Z) {
-      imgMode = true;
-      cx.imageSmoothingEnabled = z < 1;                        // magnify crisp, shrink smooth
-      const sqx0 = Math.max(0, vx0 >> 6), sqx1 = Math.min(255, vx1 >> 6), sqy0 = Math.max(0, vy0 >> 6), sqy1 = Math.min(255, vy1 >> 6);
-      let missingImg = false;
-      for (let qx = sqx0; qx <= sqx1; qx++) {
-        for (let qy = sqy0; qy <= sqy1; qy++) {
-          const zn = wmZoneIdx.get((qx << 8) | qy);
-          if (!zn) { emptyKnown++; continue; }
-          const A = wmAreas[zn.a]; if (!A || !A.w) { emptyKnown++; continue; }
-          const img = wmAreaImage(zn.a);
-          if (!img) { missingImg = true; loading++; continue; }
-          const yTop = A.y0 + (A.h >> 6) - 1;                  // top image row = the highest display square
-          const px = (zn.dx - A.x0) * 64, py = (yTop - zn.dy) * 64;
-          if (px < 0 || py < 0 || px + 64 > A.w || py + 64 > A.h) { emptyKnown++; continue; }
-          const dx0 = Math.round(sx(qx * 64)), dx1 = Math.round(sx((qx + 1) * 64));
-          const dy0 = Math.round(sy((qy + 1) * 64)), dy1 = Math.round(sy(qy * 64));
-          cx.drawImage(img, px, py, 64, 64, dx0, dy0, dx1 - dx0, dy1 - dy0);
-          drawn++;
-        }
-      }
-      if (missingImg) imgMode = false;                         // images still decoding: chunks fill in meanwhile
-      cx.imageSmoothingEnabled = true;
-    }
-    for (let ix = ix0; ix <= ix1 && !imgMode; ix++) {
+    // One renderer only: the detailed chunk renderer at every zoom (the game's 1 px/tile area
+    // image is not used for terrain). Area data is used solely for PLACEMENT: which squares
+    // any map shows.
+    const imgMode = false;
+    for (let ix = ix0; ix <= ix1; ix++) {
       for (let iy = iy0; iy <= iy1; iy++) {
         const dx0 = Math.round(sx(ix * ch)), dx1 = Math.round(sx((ix + 1) * ch));
         const dy0 = Math.round(sy((iy + 1) * ch)), dy1 = Math.round(sy(iy * ch));
@@ -1248,30 +1205,7 @@
     // them hover, hold a constant screen size at every zoom, and keep place labels off them.
     // Below ~1.5 px/tile the view is a whole continent and several hundred symbols is noise, so
     // they drop out alongside the other dense layers.
-    if (wmLayer.icons && z >= 1.5 && WM_ML && imgMode) {
-      // Image mode fetches no chunks, so the symbols come from the world-wide placement table
-      // (the same one search uses), drawn exactly like the chunk-carried ones below.
-      wmLoadSymbols();
-      const seenPin = new Set();
-      if (WM_SYM) for (const p of WM_SYM) {
-        if ((p.p | 0) !== 0 && (p.p | 0) !== plane) continue;
-        const gx = p.x, gy = p.y;
-        if (gx < vx0 || gx > vx1 || gy < vy0 || gy > vy1) continue;
-        const pinKey = gx + ',' + gy + ',' + p.ml;
-        if (seenPin.has(pinKey)) continue;
-        seenPin.add(pinKey);
-        const e = WM_ML[p.ml];
-        if (!e || e.s < 0) continue;
-        const mx = sx(gx + 0.5), my = sy(gy + 0.5);
-        let url = wmSpriteUrl(e.s);
-        if (!url && e.s2 != null && e.s2 >= 0) url = wmSpriteUrl(e.s2);
-        const img = url ? wmImg(url) : null;
-        if (img) wmDrawIcon(cx, img, mx, my, 18);
-        placed.push({ x: mx - 9, y: my - 9, w: 18, h: 18 });
-        wmMarks.push({ sx: mx, sy: my, r: 10, ml: p.ml, x: gx, y: gy });
-      }
-    }
-    if (wmLayer.icons && z >= 1.5 && WM_ML && !imgMode) {
+    if (wmLayer.icons && z >= 1.5 && WM_ML) {
       // The reader exports a symbol from EVERY plane (the game shows an upper-floor bank on the
       // ground view), so the same element can arrive several times on one tile. Collapse those.
       const seenPin = new Set();
