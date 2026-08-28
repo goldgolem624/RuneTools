@@ -1008,7 +1008,11 @@
     (async () => {
       try {
         const d = JSON.parse(await bridge().mapAreas() || '{}');
-        if (d && Object.keys(d).length) {
+        // Only trust a launcher that emits the 8-field (source -> display) rect records; the
+        // first build misparsed archive 0 and its rects would place squares wrongly. Without
+        // usable areas the map simply keeps the plain chunk renderer.
+        const good = d && Object.keys(d).some(id => (d[id].r || []).some(r => r.length >= 8));
+        if (good) {
           wmAreas = d;
           // Zone index: source square -> {a: area id, dx, dy}. The surface (28) claims a square
           // first; other areas fill in what the surface does not place.
@@ -1043,7 +1047,7 @@
           }
           wmZoneIdx = idx;
           wmKick();
-        }
+        } else if (d && Object.keys(d).length) { wmAreasAt = Date.now() + 3600000; }   // old launcher: stop asking
       } catch (e) {}
     })();
   }
