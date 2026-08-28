@@ -34,6 +34,9 @@
         const ref = (r.i && r.i['26'] && r.i['26'][0]) | 0;
         if (!name || !ref) continue;
         if ((ref >>> 24) !== 1) continue;                      // varbit refs only (all rows on 949)
+        // Internal rows share the table: "!!( Preset N )" outfit-preset slots and "!( Hide
+        // <slot> )" hide-slot toggles. They are wardrobe MECHANICS, not cosmetics: skip them.
+        if (/^\s*!/.test(name) || /^\s*\(/.test(name)) continue;
         out.push({
           name: name,
           how: (r.s && r.s['9'] && r.s['9'][0]) || '',
