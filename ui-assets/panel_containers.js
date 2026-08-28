@@ -157,16 +157,37 @@
       const set = keys.filter(x => (k[x] | 0) !== 0);
       const zero = keys.filter(x => (k[x] | 0) === 0);
       let line;
-      if (!keys.length) line = 'Extra_ints: (none)';
-      else if (!set.length) line = 'Extra_ints: all ' + keys.length + ' keys 0';
+      if (!keys.length) line = 'Instance vars (Extra_ints): none';
+      else if (!set.length) line = 'Instance vars (Extra_ints): all ' + keys.length + ' keys 0';
       else {
-        line = 'Extra_ints:\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
+        line = 'Instance vars (Extra_ints):\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
         if (zero.length) line += '\n   (' + zero.length + ' other key' + (zero.length === 1 ? '' : 's') + ' 0)';
       }
       // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
       // count (varobj 18550), key 3 = stored-spec index (varobj 47702) resolved through
       // enum 15970 -> weapon obj. Charge permille = 1000 - wear/(max/1000), max = item
       // param 3385 (100,000 on EoF). Owner-validated: wear 669 + idx 76 = 99.4% Zamorak staff.
+      // Degradable items (CS2 script 5828, item param 4563 = 1): instance key 0 is the WEAR
+      // counter, item param 3385 the wear at which the item is fully degraded. The game shows
+      // "Item Charge: X.Y%" = 1000 - wear/(max/1000) permille (never 100.0 once worn, floor 0.1
+      // while any charge remains); items flagged 9308 count down "Charges remaining" instead.
+      let charge = '';
+      try {
+        const pp = JSON.parse(await bridge().itemParams(+parts[1]) || 'null');
+        const pi = (pp && pp.ints) || {};
+        const mx = pi['3385'] | 0, wear = k[0] | 0;
+        if ((pi['4563'] | 0) === 1 && mx > 0) {
+          if ((pi['9308'] | 0) === 1) {
+            charge = '\nCharges remaining: ' + Math.max(0, mx - wear).toLocaleString() + ' of ' + mx.toLocaleString();
+          } else {
+            let pm = wear === 0 ? 1000 : 1000 - Math.floor(wear / (mx / 1000));
+            if (pm === 0 && (pi['5772'] | 0) === 0) pm = 1;
+            if (pm === 1000 && wear !== 0) pm = 999;
+            pm = Math.max(0, Math.min(1000, pm));
+            charge = '\nItem charge: ' + (pm / 10).toFixed(1) + '% (' + wear.toLocaleString() + ' / ' + mx.toLocaleString() + ' wear used)';
+          }
+        }
+      } catch (e7) {}
       let eof = '';
       if (/essence of finality/i.test(cell.dataset.tip)) {
         try {
@@ -195,8 +216,8 @@
               + (pct ? '\nCharge: ' + pct : '');
         } catch (e4) {}
       }
-      const base = cell.dataset.tip.split('\nEoF:')[0].split('\nExtra_ints')[0];
-      cell.dataset.tip = base + eof + '\n' + line;
+      const base = cell.dataset.tip.split('\nItem charge:')[0].split('\nCharges remaining:')[0].split('\nEoF:')[0].split('\nInstance vars')[0].split('\nExtra_ints')[0];
+      cell.dataset.tip = base + charge + eof + '\n' + line;
       if (typeof showTipFor === 'function' && cell.matches(':hover')) showTipFor(cell);
     } catch (e2) {} finally { setTimeout(() => { cell._eiBusy = 0; }, 800); }
   });
