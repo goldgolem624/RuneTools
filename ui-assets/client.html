@@ -4324,6 +4324,19 @@
     withPane(w, () => withScrollKeep(w.pane, id, fn));
   }
   function renderPaneFor(w) { withPane(w, () => withScrollKeep(w.pane, w.tab, () => { renderPane(); wmRenderTabs(w); })); }
+  // Rebuild every open panel now. Panels skip repaints while their data signature is
+  // unchanged, so a display preference (number format, tooltips, fonts) would otherwise show
+  // only after the next data change or a refocus. Wiping the content defeats the build-once
+  // guards; the Preferences window itself is left alone so the control being used survives.
+  function uiRepaintAll() {
+    for (const w of wm.wins.values()) {
+      if (w.min || w.tab === 'uisettings') continue;
+      try {
+        withPane(w, () => { const c = $('content'); if (c) c.innerHTML = ''; });
+        renderPaneFor(w);
+      } catch (e) {}
+    }
+  }
 
   // Per-panel close/switch-away hooks (were openTab's leave cleanups).
   function paneLeave(id) {
@@ -5268,12 +5281,12 @@
     rows.appendChild(uisPill('High contrast', 'uis_hc', () => !!cfg.contrast, v => { cfg.contrast = v; save(); }, 'Brighter secondary text and borders'));
     rows.appendChild(uisPill('Animations', 'uis_motion', () => cfg.motion !== false, v => { cfg.motion = v; save(); }, 'Off disables pulses, slides and fades everywhere'));
     rows.appendChild(uisChipRow('Numbers', 'uis_numfmt', [['Compact (12.3m)', 'compact'], ['Full (12,345,678)', 'full']],
-      v => (cfg.numFmt || 'compact') === v, v => { cfg.numFmt = v; save(); }));
+      v => (cfg.numFmt || 'compact') === v, v => { cfg.numFmt = v; save(); uiRepaintAll(); }));
     rows.appendChild(uisChipRow('Font', 'uis_font', UI_FONTS.map(f => [f[0], f[1]]),
       v => (cfg.font || 'variable') === v, v => { cfg.font = v; save(); }));
     rows.appendChild(uisSlider('Font size', 'uis_fontsize', 11, 17, 1, () => cfg.fontSize || 13, v => { cfg.fontSize = v; save(); }, v => v + 'px'));
     rows.appendChild(uisPill('Tabular digits', 'uis_tabular', () => !!cfg.tabular, v => { cfg.tabular = v; save(); }, 'Fixed-width numerals so columns of numbers line up'));
-    rows.appendChild(uisPill('Compact tooltips', 'uis_ctips', () => !!cfg.compactTips, v => { cfg.compactTips = v; save(); }, 'Hides the Source: and ID provenance lines in tooltips'));
+    rows.appendChild(uisPill('Compact tooltips', 'uis_ctips', () => !!cfg.compactTips, v => { cfg.compactTips = v; save(); try { hideTip(); } catch (e) {} }, 'Hides the Source: and ID provenance lines in tooltips'));
 
     // ---------------- Bar ----------------
     sec('Bar');
