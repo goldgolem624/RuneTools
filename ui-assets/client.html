@@ -16,6 +16,8 @@
     --accent-hi:    #8c6ffd;
     --accent-lo:    #6a4ee0;
     --accent:       #8c6ffd;   /* was referenced but never defined; Preferences drives all three */
+    --font-ui:      'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+    --font-size:    13px;
     --accent-ring:  rgba(124,92,252,0.28);
     --ok:           #4dd28a;
     --tx-fast:      120ms;
@@ -34,13 +36,21 @@
      animation and transition (aura pulses, toast bars, pill slides) for motion-sensitive users. */
   html.hc { --text-dim: #d6dae4; --text-mute: #a3abbe; --border: #3a4257; --border-hi: #55607a; }
   html.nomotion *, html.nomotion *::before, html.nomotion *::after { animation: none !important; transition: none !important; }
+  html.tabnums body { font-variant-numeric: tabular-nums; }
+  /* Bar info chips (Preferences > Bar): clock, session timer, XP/h. Hidden when none enabled. */
+  .mb-info { display: flex; align-items: center; gap: 10px; padding: 0 10px; margin: 0 2px; flex: none;
+             border-right: 1px solid var(--border); font-size: 11px; color: var(--text-dim);
+             font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mb-info:empty { display: none; }
+  .mb-info b { color: var(--text); font-weight: 600; }
+  #menubar.pill .mb-info { display: none; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     /* TRANSPARENT on purpose: this page is composited OVER the game frame; only
        the menu bar and windows paint pixels. An opaque body hides the game. */
     background: transparent;
     color: var(--text);
-    font: 13px/1.5 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+    font: var(--font-size) / 1.5 var(--font-ui);
     /* WebKit (Ultralight) honours the -webkit- prefix; the unprefixed form alone
        doesn't stop drag-selection in this engine. */
     -webkit-user-select: none; user-select: none;
@@ -2349,7 +2359,14 @@
   // One durable JSON blob for every user-facing preference that is not already owned by a
   // feature store (alerts and layout keep theirs). Read lazily, written through prefSet.
   const UI_DEF = { scale: 100, accent: '#8c6ffd', contrast: false, motion: true, opacity: 93,
-                   restore: true, toastTtl: 5000, hideWorld: false, numFmt: 'compact', hiddenCats: [] };
+                   restore: true, toastTtl: 5000, hideWorld: false, numFmt: 'compact', hiddenCats: [],
+                   font: 'variable', fontSize: 13, tabular: false, compactTips: false,
+                   barClock: false, bar24h: false, barSession: false, barXp: false };
+  const UI_FONTS = [['Segoe UI Variable', 'variable', "'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif"],
+                    ['Segoe UI', 'segoe', "'Segoe UI', system-ui, sans-serif"],
+                    ['Calibri', 'calibri', "Calibri, 'Segoe UI', sans-serif"],
+                    ['Verdana', 'verdana', "Verdana, Geneva, sans-serif"],
+                    ['Consolas', 'consolas', "Consolas, 'Cascadia Mono', monospace"]];
   const UI_ACCENTS = [['Violet', '#8c6ffd'], ['Blue', '#5b9cff'], ['Teal', '#2fd0c4'], ['Green', '#4dd28a'],
                       ['Amber', '#f5b241'], ['Red', '#ff6b6b'], ['Pink', '#ff7ac8'], ['Mono', '#c9cfdd']];
   let _uiCfg = null;
@@ -2383,6 +2400,11 @@
     r.setProperty('--bar-bg', 'rgba(12,14,20,' + Math.min(1, op + 0.02).toFixed(2) + ')');
     document.documentElement.classList.toggle('hc', !!c.contrast);
     document.documentElement.classList.toggle('nomotion', !c.motion);
+    document.documentElement.classList.toggle('tabnums', !!c.tabular);
+    const fnt = UI_FONTS.find(f => f[1] === c.font) || UI_FONTS[0];
+    r.setProperty('--font-ui', fnt[2]);
+    r.setProperty('--font-size', Math.max(11, Math.min(17, Number(c.fontSize) || 13)) + 'px');
+    try { uiBarTick(); } catch (e) {}
     // UI scale rides the view's device scale (crisp text, correct input mapping); the
     // launcher multiplies it into its DPI sync. Older launchers lack the call: no-op.
     const sc = Math.max(50, Math.min(200, Number(c.scale) || 100));
@@ -2391,6 +2413,37 @@
     }
   }
   function uiCatHidden(id) { return id !== 'Settings' && uiCfg().hiddenCats.indexOf(id) >= 0; }
+  // Bar info chips. 1 Hz; writes only on change. The XP chip leans on the XP tracker's
+  // sampler (applyXpOverlay starts it) and its 1 s state fetch.
+  let _barInfoSig = '', _barXpArmed = false;
+  function uiBarTick() {
+    const el = $('hdr-info'); if (!el) return;
+    const c = uiCfg(), parts = [];
+    if (c.barClock) {
+      const d = new Date();
+      let h = d.getHours(), m = String(d.getMinutes()).padStart(2, '0');
+      if (c.bar24h) parts.push('<b>' + String(h).padStart(2, '0') + ':' + m + '</b>');
+      else parts.push('<b>' + ((h % 12) || 12) + ':' + m + '</b> ' + (h < 12 ? 'am' : 'pm'));
+    }
+    if (c.barSession || c.barXp) {
+      if (!_barXpArmed) { _barXpArmed = true; try { if (typeof applyXpOverlay === 'function') applyXpOverlay(); } catch (e) {} }
+      try { if (typeof fetchXpTracker === 'function') fetchXpTracker(false); } catch (e) {}
+      const d = (typeof xpStateData !== 'undefined') ? xpStateData : null;
+      if (c.barSession) {
+        const sec = d ? Math.floor((+d.elapsed || 0) / 1000) : 0;
+        const t = sec >= 3600 ? Math.floor(sec / 3600) + 'h ' + String(Math.floor((sec % 3600) / 60)).padStart(2, '0') + 'm'
+                              : Math.floor(sec / 60) + 'm ' + String(sec % 60).padStart(2, '0') + 's';
+        parts.push('Session <b>' + t + '</b>');
+      }
+      if (c.barXp) {
+        const ph = (d && d.total) ? (+d.total.ph || 0) : 0;
+        parts.push('<b>' + (typeof fmtXpNum === 'function' ? fmtXpNum(ph) : ph) + '</b> xp/h');
+      }
+    }
+    const html = parts.join('<span style="color:var(--text-mute)">|</span>');
+    if (html !== _barInfoSig) { _barInfoSig = html; el.innerHTML = html; try { positionMenubar(); } catch (e) {} }
+  }
+  setInterval(() => { try { uiBarTick(); } catch (e) {} }, 1000);
   try { uiApply(); } catch (e) {}   // localStorage seed: colours before first paint; prefsInit re-applies the durable copy
 
   // DUNGEONEERING VISIBILITY. One flag gates the nav entry, the poll, the render and the
@@ -3127,8 +3180,15 @@
     return body;
   }
 
+  function uiTipText(text) {
+    // Preferences "compact tooltips": drop the Source:/ID provenance lines that only a
+    // developer or a sceptic wants, keep everything the player reads.
+    if (!text || !uiCfg().compactTips) return text;
+    const out = String(text).split('\n').filter(l => !/^\s*(Source|Sources|ID)\b\s*:?/i.test(l) && !/^\s*Source:/.test(l));
+    return out.join('\n').replace(/\n{3,}/g, '\n\n');
+  }
   function showTipFor(node) {
-    const text = node.dataset.tip;
+    const text = uiTipText(node.dataset.tip);
     const grids = TIP_GRIDS.get(node);
     if (!text && !grids) { hideTip(); return; }
     if (grids) {
@@ -5143,6 +5203,20 @@
     rows.appendChild(uisPill('Animations', 'uis_motion', () => cfg.motion !== false, v => { cfg.motion = v; save(); }, 'Off disables pulses, slides and fades everywhere'));
     rows.appendChild(uisChipRow('Numbers', 'uis_numfmt', [['Compact (12.3m)', 'compact'], ['Full (12,345,678)', 'full']],
       v => (cfg.numFmt || 'compact') === v, v => { cfg.numFmt = v; save(); }));
+    rows.appendChild(uisChipRow('Font', 'uis_font', UI_FONTS.map(f => [f[0], f[1]]),
+      v => (cfg.font || 'variable') === v, v => { cfg.font = v; save(); }));
+    rows.appendChild(uisSlider('Font size', 'uis_fontsize', 11, 17, 1, () => cfg.fontSize || 13, v => { cfg.fontSize = v; save(); }, v => v + 'px'));
+    rows.appendChild(uisPill('Tabular digits', 'uis_tabular', () => !!cfg.tabular, v => { cfg.tabular = v; save(); }, 'Fixed-width numerals so columns of numbers line up'));
+    rows.appendChild(uisPill('Compact tooltips', 'uis_ctips', () => !!cfg.compactTips, v => { cfg.compactTips = v; save(); }, 'Hides the Source: and ID provenance lines in tooltips'));
+
+    // ---------------- Bar ----------------
+    uisSep(rows);
+    rows.appendChild(secRow('Bar'));
+    uisNote(rows, 'Chips shown in the menu bar beside the player status.');
+    rows.appendChild(uisPill('Clock', 'uis_barclock', () => !!cfg.barClock, v => { cfg.barClock = v; save(); }));
+    rows.appendChild(uisPill('24-hour clock', 'uis_bar24', () => !!cfg.bar24h, v => { cfg.bar24h = v; save(); }));
+    rows.appendChild(uisPill('Session timer', 'uis_barsess', () => !!cfg.barSession, v => { cfg.barSession = v; save(); }, 'Time since the XP tracker session started'));
+    rows.appendChild(uisPill('XP per hour', 'uis_barxp', () => !!cfg.barXp, v => { cfg.barXp = v; save(); }, 'Total XP/h from the XP tracker session'));
 
     // ---------------- Menu ----------------
     uisSep(rows);
@@ -5888,6 +5962,9 @@
     st.innerHTML = '<div class="title" id="hdr-title"><span class="dot"></span>' +
                    '<span id="hdr-name">--</span></div><div class="meta" id="hdr-meta">--</div>';
     bar.appendChild(st);
+    const info = document.createElement('div'); info.className = 'mb-info'; info.id = 'hdr-info';
+    bar.appendChild(info);
+    try { uiBarTick(); } catch (e) {}
     // Search + pill toggle.
     const search = document.createElement('button');
     search.className = 'mb-btn mb-search';
