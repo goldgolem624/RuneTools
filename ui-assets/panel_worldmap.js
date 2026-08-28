@@ -999,12 +999,30 @@
           wmAreas = d;
           // Zone index: source square -> {a: area id, dx, dy}. The surface (28) claims a square
           // first; other areas fill in what the surface does not place.
+          // Placement = the area's membership RECTS (archive 0, tile coords) at identity
+          // positions, then the composite table (archive 1) overriding the relocated squares.
+          // The zone table alone is only the relocations (dungeons floated into the sea);
+          // treating it as the full placement wiped everything else off the map (Karamja).
           const idx = new Map();
           const order = Object.keys(d).sort((a, b) => (a === '28' ? -1 : b === '28' ? 1 : (+a) - (+b)));
           for (const id of order) {
-            for (const z of (d[id].z || [])) {
+            const A = d[id], sqW = A.w >> 6, sqH = A.h >> 6;
+            const inImg = (dx, dy) => sqW > 0 && dx >= A.x0 && dx < A.x0 + sqW && dy >= A.y0 && dy < A.y0 + sqH;
+            const zoneOf = new Map();
+            for (const z of (A.z || [])) zoneOf.set((z[1] << 8) | z[2], z);
+            for (const r of (A.r || [])) {
+              for (let qx = r[0] >> 6; qx <= (r[2] >> 6); qx++) for (let qy = r[1] >> 6; qy <= (r[3] >> 6); qy++) {
+                const k = (qx << 8) | qy;
+                if (idx.has(k)) continue;
+                const z = zoneOf.get(k);
+                const dx = z ? z[4] : qx, dy = z ? z[5] : qy;
+                if (!inImg(dx, dy)) continue;                  // outside this area's image: not shown on it
+                idx.set(k, { a: +id, dx: dx, dy: dy, pl: z ? z[0] : 0 });
+              }
+            }
+            for (const z of (A.z || [])) {                     // relocations not covered by a rect
               const k = (z[1] << 8) | z[2];
-              if (!idx.has(k)) idx.set(k, { a: +id, dx: z[4], dy: z[5], pl: z[0] });
+              if (!idx.has(k) && inImg(z[4], z[5])) idx.set(k, { a: +id, dx: z[4], dy: z[5], pl: z[0] });
             }
           }
           wmZoneIdx = idx;
