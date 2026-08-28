@@ -748,12 +748,25 @@
   // Pointer position in the stage's own CSS pixels. offsetX/Y come from the engine's hit test
   // (already in the target's coordinate space, whatever zoom / device scale is in force);
   // the rect arithmetic is only the fallback when the event targets a child element.
+  // Effective CSS zoom on an element: the product of `zoom` up its ancestors (Preferences font
+  // size zooms window bodies). The engine reports pointer offsets in SCREEN pixels inside a
+  // zoomed subtree while layout works in the element's own CSS pixels, which put the hover
+  // tile at ~92% of the cursor position at 12 px (owner screenshots); dividing by the zoom
+  // maps them back.
+  function wmZoomOf(el) {
+    let z = 1;
+    for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
+      const v = parseFloat(getComputedStyle(n).zoom);
+      if (v && v > 0 && v !== 1) z *= v;
+    }
+    return z;
+  }
   function wmPt(e, stage) {
-    const t = e.target;
-    if (t === stage && typeof e.offsetX === 'number') return { x: e.offsetX, y: e.offsetY };
-    if (t && t.parentNode === stage && typeof e.offsetX === 'number') return { x: e.offsetX + (t.offsetLeft || 0), y: e.offsetY + (t.offsetTop || 0) };
-    const r = stage.getBoundingClientRect(), k = wmZoomK(stage, r);
-    return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k };
+    const Z = wmZoomOf(stage), t = e.target;
+    if (t === stage && typeof e.offsetX === 'number') return { x: e.offsetX / Z, y: e.offsetY / Z };
+    if (t && t.parentNode === stage && typeof e.offsetX === 'number') return { x: e.offsetX / Z + (t.offsetLeft || 0), y: e.offsetY / Z + (t.offsetTop || 0) };
+    const r = stage.getBoundingClientRect();
+    return { x: e.clientX / Z - r.left, y: e.clientY / Z - r.top };
   }
   function wmFlyTo(x, y, p, sel) {
     if (p != null && (p | 0) !== wmCam.p) wmSetPlane(p | 0);
