@@ -5116,10 +5116,13 @@ std::string ScanSolutionJson(std::uint32_t pid) {
 //                for the config id (sec+0x1080), tile (fine floats /512) and plane.
 // Target-less verbs (Walk here / Cancel / Continue) leave STALE bytes in the name/ref fields from
 // the slot's previous occupant, so those return the verb alone.
-// The item id carried by ONE live widget node, addressed the way the hover slot addresses it:
-// interface group + component (+0x2a) + sub index (+0x2c). Same item gating as iface_walk
-// (id at +0x1a0 with the matching +0x188 key or the unset sentinel). -1 when no such node or
-// it carries no item. Shop stock, bank, trade and sale-back grids all resolve through this.
+// The item behind ONE hovered widget cell: interface group + component (+0x2a) + sub index
+// (+0x2c). Same item gating as iface_walk (id at +0x1a0 with the matching +0x188 key or the
+// unset sentinel). Interface grids often split a cell over components: the shop (script 6089)
+// puts the ops on the rect 1265:20 and the object on the sibling 1265:24 with the same sub
+// index (sale-back: 1265:14 ops, 1265:17 object). So when the hovered component carries no
+// item, the answer is the same-sub-index node of the group whose component id is nearest to
+// the hovered one. -1 when nothing in the group carries an item at that sub index.
 static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, int sub, int* dbg = nullptr) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
@@ -5127,14 +5130,20 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
     std::uint64_t gs, ge; iface_groups_range(h, mainData, gs, ge);
     if (!gs) return -1;
     int found = -1, visited = 0, matched = 0, groups = 0;
+    int near = -1, nearDist = 1 << 30;   // best same-sub-index item on another component
     std::function<void(std::uint64_t, int)> walk = [&](std::uint64_t node, int depth) {
         if (found >= 0 || depth > 12 || visited++ > 6000) return;
-        if (r16(node + 0x2a) == comp && r16(node + 0x2c) == sub) {
-            ++matched;
+        if (r16(node + 0x2c) == sub) {
+            int c = r16(node + 0x2a);
+            if (c == comp) ++matched;
             int item = r32(node + 0x1a0);
             std::uint64_t sprRaw = r64(node + 0x188);
             bool sprUnset = sprRaw == ~0ull;
-            if (item > 0 && item < 200000 && (sprUnset || sprRaw == 0x60000ull + (std::uint64_t)item)) { found = item; return; }
+            if (item > 0 && item < 200000 && (sprUnset || sprRaw == 0x60000ull + (std::uint64_t)item)) {
+                if (c == comp) { found = item; return; }
+                int d = c > comp ? c - comp : comp - c;
+                if (d < nearDist) { nearDist = d; near = item; }
+            }
         }
         const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
         for (int k = 0; k < 3 && found < 0; ++k) {
@@ -5164,7 +5173,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
         break;
     }
     if (dbg) { dbg[0] = groups; dbg[1] = visited; dbg[2] = matched; }
-    return found;
+    return found >= 0 ? found : near;
 }
 
 std::string HoverEntityJson(std::uint32_t pid) {
