@@ -364,6 +364,9 @@
               /* Preferences font size: panels set explicit px sizes throughout, so the size
                  preference zooms window content as a whole (text, icons, controls together). */
               zoom: var(--content-zoom, 1); }
+  /* HUD windows (aura groups, XP meter, metronome) are pixel-precise overlays sized by the
+     user: a fractional zoom re-rasterises their text and blurs it. They keep 1:1. */
+  .win.hud .win-body { zoom: 1; }
   /* Rolled up (window shade): only the title strip remains. */
   .win.rolled .win-body { display: none; }
   .win.rolled { min-height: 0; }
@@ -846,8 +849,10 @@
   .au-t-bar { border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.30); box-shadow: 0 2px 8px rgba(0,0,0,0.85); background-repeat: no-repeat; background-size: 100% 100%; }
   /* Bar text: sized from the bar HEIGHT but capped so a tall bar does not outgrow its width; the
      label may shrink/ellipsize, the number never does. */
-  .au-vtext { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; font-size: clamp(10px, calc(var(--au-size, 22px) * 0.5), 15px); line-height: 1; color: #fff; font-weight: 700;
-              text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000, 0 0 4px rgba(0,0,0,0.95); white-space: nowrap; overflow: hidden; }
+  .au-vtext { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; font-size: clamp(11px, calc(var(--au-size, 22px) * 0.5), 15px); line-height: 1; color: #fff; font-weight: 700;
+              /* One crisp drop shadow, not a 4-way outline plus halo: the outline fused the
+                 counters of small bold glyphs and read as blur on every bar. */
+              text-shadow: 0 1px 1px rgba(0,0,0,0.95), 0 0 1px rgba(0,0,0,0.8); white-space: nowrap; overflow: hidden; }
   .au-vtext span { font-weight: 600; opacity: .9; text-transform: uppercase; letter-spacing: .04em; font-size: .85em; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .au-vtext b { font-variant-numeric: tabular-nums; flex: none; }
   /* text */
