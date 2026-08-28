@@ -1757,7 +1757,8 @@
       zoomAt(pt.x, pt.y, e.deltaY < 0 ? 1.22 : 1 / 1.22);
     }, { passive: false });
     stage.addEventListener('mousedown', function (e) {
-      wmDrag = { x: e.clientX, y: e.clientY, cx: wmCam.x, cy: wmCam.y, moved: false };
+      const p0 = wmPt(e, stage);
+      wmDrag = { x: e.clientX, y: e.clientY, px: p0.x, py: p0.y, cx: wmCam.x, cy: wmCam.y, moved: false };
       stage.classList.add('grabbing'); e.preventDefault();
     });
     stage.addEventListener('mousemove', function (e) {
@@ -1806,8 +1807,9 @@
       window.addEventListener('mousemove', function (e) {
         if (!wmDrag) return;
         const st2 = document.getElementById('wmStage'); if (!st2) { wmDrag = null; return; }
-        const kd = wmZoomK(stage, stage.getBoundingClientRect());
-        const dx = (e.clientX - wmDrag.x) * kd, dy = (e.clientY - wmDrag.y) * kd;
+        // Same coordinate source as the hover/click paths: engine offsets in stage CSS px.
+        const pt = wmPt(e, st2);
+        const dx = pt.x - wmDrag.px, dy = pt.y - wmDrag.py;
         if (Math.abs(dx) + Math.abs(dy) > 3) { wmDrag.moved = true; if (wmFollow) { wmFollow = false; wmPaintBar(); } }
         wmCam.x = Math.max(64, Math.min(16320, wmDrag.cx - dx / wmCam.z));
         wmCam.y = Math.max(64, Math.min(16320, wmDrag.cy + dy / wmCam.z));
