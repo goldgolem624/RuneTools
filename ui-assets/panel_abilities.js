@@ -89,9 +89,36 @@
       const preset = {}; for (const bi in ABAR_GATE) preset[bi] = readVb(ABAR_GATE[bi], vp) || 0;
       const adren = (vp[AB_ADREN_VARP] !== undefined) ? vp[AB_ADREN_VARP] : null;
       const dmg = { abil: (+vp[3531] || 0) + Math.floor((+vp[3532] || 0) / 2), armour: (+vp[711] || 0) + (+vp[3563] || 0), shield: (+vp[4499] || 0) };
-      abarData = { bars, preset, clock, cycles, adren, vc, dmg };
+      // Igneous Kal cape gate (CS2 script 9681): the worn cape (container 94 slot 1) carries a
+      // style value in item param 2881 / 8591 / 8592 / 8902: 8 = melee, 10 = magic, 9 = ranged.
+      // AB_TIPS "alt" variants are keyed by the script's style arg (1 melee, 2 magic, 3 ranged).
+      let capeArg = 0;
+      try {
+        if (bridge().containerItems) {
+          const eq = JSON.parse(await bridge().containerItems(myPid(), 94) || 'null');
+          const cape = eq && Array.isArray(eq.items) ? eq.items.find(it => it && (it[0] | 0) === 1 && it[1] > 0) : null;
+          if (cape) capeArg = await abCapeArg(cape[1] | 0);
+        }
+      } catch (e) {}
+      abarData = { bars, preset, clock, cycles, adren, vc, dmg, capeArg };
     } finally { abarFetching = false; }
     paneRun('abilities', renderAbilities);
+  }
+  const abCapeCache = new Map();   // cape item id -> script-9681 style arg (0 = not an Igneous cape)
+  async function abCapeArg(itemId) {
+    if (abCapeCache.has(itemId)) return abCapeCache.get(itemId);
+    let arg = 0;
+    try {
+      const pp = JSON.parse(await bridge().itemParams(itemId) || 'null');
+      const pi = (pp && pp.ints) || {};
+      for (const k of ['2881', '8591', '8592', '8902']) {
+        const v = pi[k] | 0;
+        if (v === 8) arg = 1; else if (v === 10) arg = 2; else if (v === 9) arg = 3;
+        if (arg) break;
+      }
+    } catch (e) {}
+    abCapeCache.set(itemId, arg);
+    return arg;
   }
   // Ability slots render the cache sprite whose id == the ability id (cache idx 8).
   function attachAbilityIcon(el, s) {
@@ -168,8 +195,9 @@
       if (rec.tg && AB_TGT[rec.tg]) sub += (sub ? '  ·  ' : '') + AB_TGT[rec.tg];
       if (sub) out.push('<col=aab0bf>' + sub + '</col>');
       if (rec.d && rec.t !== 0) out.push(abClean(rec.d));
-      if (tips && tips.l) {
-        for (const ln of tips.l) {
+      const tipLines = (tips && tips.alt && d.capeArg && tips.alt[String(d.capeArg)]) ? tips.alt[String(d.capeArg)] : (tips && tips.l);
+      if (tipLines) {
+        for (const ln of tipLines) {
           let txt = '';
           for (const tok of ln) txt += (typeof tok === 'string') ? tok : abDmgText(tok, rec);
           out.push(abClean(txt));
