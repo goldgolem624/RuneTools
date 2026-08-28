@@ -95,11 +95,19 @@
   let compVp = null, compSig = '', compTerm = '', compHideEmpty = false, compFetching = false;
   // compTerm is a search box (transient); "Hide empty" is a deliberate view choice, so keep it.
   try { compHideEmpty = localStorage.getItem('rtxCompHideEmpty') === '1'; } catch (e) {}
-  // ---- Invention machines (CS2: script21030 db22.11 capacity, script21031 db22.3 level;
-  // script21101 loops INV_SIZE(93) against bits of varp 8649; inputs live in container 1011
-  // via script21002). Container mapping is script-derived, not yet play-verified, so this
-  // section reports what the containers actually hold and labels itself accordingly.
-  let mchBuilt = null, mchInputs = null, mchVp8649 = null, mchNames = {};
+  // ---- Invention machines. CORRECTED SOURCES (the first cut read container 93 = the player
+  // BACKPACK and container 1011 = an herb store keyed by enum 13250, so the card showed plain
+  // inventory items - user-reported). The game's machine interface (script13676/13678) is
+  // varbit-driven and those varbits are what we read now:
+  //   vb 37614  machine type of the machine last inspected (enum 13175 key -> db22 row)
+  //   vb 37615  hotspot the inspected machine occupies (1-7, enum 13176 -> db23 row)
+  //   vb 37616/37617  current counts of the machine's two input items (db22 col 19 pairs)
+  //   vb 37590  divine charge stored; varp 7270 items loaded (vb 48814 for batch machines)
+  //   vb 37612/37613  total / used machine space across hotspots
+  // These transmit when the player interacts with machines, so the per-machine card is
+  // honest about being "as of last inspection".
+  const MCH_VBS = [37614, 37615, 37616, 37617, 37590, 37612, 37613, 48814];
+  let mchVb = null, mchVp7270 = null, mchDb22 = null, mchEnum13175 = null, mchNames = {};
   async function mchName(id) {
     if (mchNames[id] === undefined) {
       try { const d = JSON.parse(await bridge().itemInfo(id) || 'null'); mchNames[id] = (d && d.name) || ''; } catch (e) {}
@@ -107,17 +115,63 @@
     return mchNames[id] || ('Item ' + id);
   }
   async function fetchMachines() {
-    if (!bridge() || !bridge().containerItems) return;
+    if (!bridge() || !bridge().varbits) return;
     try {
-      const cm = JSON.parse(await bridge().containerItems(myPid(), 93) || 'null');
-      mchBuilt = (cm && Array.isArray(cm.items)) ? cm.items : null;
-      const ci = JSON.parse(await bridge().containerItems(myPid(), 1011) || 'null');
-      mchInputs = (ci && Array.isArray(ci.items)) ? ci.items : null;
-      const vp = JSON.parse(await bridge().varps(myPid(), '8649') || '{}');
-      mchVp8649 = vp['8649'] !== undefined ? (vp['8649'] | 0) : null;
-      if (mchBuilt) for (const it of mchBuilt) if (it && it[1] > 0) await mchName(it[1]);
-      if (mchInputs) for (const it of mchInputs) if (it && it[1] > 0) await mchName(it[1]);
+      mchVb = JSON.parse(await bridge().varbits(myPid(), MCH_VBS.join(',')) || 'null');
+      const vp = JSON.parse(await bridge().varps(myPid(), '7270') || '{}');
+      mchVp7270 = vp['7270'] !== undefined ? (vp['7270'] | 0) : null;
+      if (!mchEnum13175 && bridge().enumInfo) {
+        try { mchEnum13175 = JSON.parse(await bridge().enumInfo(13175) || 'null'); } catch (e) {}
+      }
+      if (!mchDb22 && bridge().dbRows) {
+        try {
+          const rows = JSON.parse(await bridge().dbRows(22) || 'null');
+          if (Array.isArray(rows) && rows.length) {
+            mchDb22 = {};
+            for (const r of rows) if (r && r.f !== undefined) mchDb22[r.f] = r;   // "f" = dbrow file id
+          }
+        } catch (e) {}
+      }
+      if (mchVb && mchDb22 && mchEnum13175) {
+        const row = mchDb22[mchEnum13175[String(mchVb['37614'] | 0)]];
+        if (row && row.i && row.i['19']) {
+          const p = row.i['19'];
+          for (let k = 0; k + 1 < p.length; k += 2) await mchName(p[k] | 0);
+        }
+      }
     } catch (e) {}
+  }
+  function mchHtml() {
+    const vb = mchVb; if (!vb) return '';
+    const v = k => (vb[String(k)] === undefined || vb[String(k)] === null) ? null : (vb[String(k)] | 0);
+    const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const type = v(37614), spaceMax = v(37612), spaceUsed = v(37613);
+    if (!type && !spaceMax) return '';
+    let h = '<div class="comp-sec">Machines</div><div class="mch-card">';
+    if (spaceMax) {
+      h += '<div class="mch-row"><span>Machine space used</span><span>' + (spaceUsed || 0) + ' / ' + spaceMax + '</span></div>';
+    }
+    if (type && mchDb22 && mchEnum13175) {
+      const row = mchDb22[mchEnum13175[String(type)]];
+      const nm = (row && row.s && row.s['1'] && row.s['1'][0]) || ('Machine type ' + type);
+      h += '<div class="mch-row mch-hdr"><span>Last inspected machine</span><span>hotspot ' + (v(37615) || '?') + '</span></div>';
+      h += '<div class="mch-row"><span>' + esc(nm) + '</span><span></span></div>';
+      const batch = !!(row && row.i && row.i['10'] && (row.i['10'][0] | 0) === 2);
+      const loaded = (batch && v(48814) > 0) ? v(48814) : mchVp7270;
+      if (loaded !== null) h += '<div class="mch-row"><span>Items loaded</span><span>' + loaded.toLocaleString() + '</span></div>';
+      if (row && row.i && row.i['19']) {
+        const p = row.i['19'], cur = [v(37616), v(37617)];
+        for (let k = 0; k + 1 < p.length && k < 4; k += 2) {
+          const need = (p[k + 1] | 0), have = cur[k / 2];
+          h += '<div class="mch-row"><span>' + esc(mchNames[p[k] | 0] || ('Item ' + p[k])) + '</span><span>'
+            + (have === null ? '·' : have.toLocaleString()) + (loaded && need ? ' / ' + (need * loaded).toLocaleString() : '') + '</span></div>';
+        }
+      }
+      const ch = v(37590);
+      if (ch !== null) h += '<div class="mch-row"><span>Divine charge stored</span><span>' + ch.toLocaleString() + '</span></div>';
+    }
+    h += '<div class="mch-note">Read from the varbits the in-game machine interface uses (script 13676: vb 37614/37615 selection, 37616/37617 inputs, 37590 charge, 37612/37613 space, varp 7270 load). Values refresh when you interact with machines in game.</div></div>';
+    return h;
   }
   async function fetchComponents() {
     if (!bridge() || !bridge().varps || compFetching) return;
@@ -166,37 +220,13 @@
     }
     paintComponents();
   }
-  function mchHtml() {
-    const built = (mchBuilt || []).filter(it => it && it[1] > 0);
-    const inputs = (mchInputs || []).filter(it => it && it[1] > 0);
-    if (!built.length && !inputs.length) return '';
-    const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-    let h = '<div class="comp-sec">Machines</div><div class="mch-card">';
-    if (built.length) {
-      // varp 8649 is bit-per-slot (script21101); pair each built slot with its bit.
-      h += '<div class="mch-row mch-hdr"><span>Built machine</span><span>slot flag</span></div>';
-      for (const it of built) {
-        const bit = mchVp8649 !== null ? ((mchVp8649 >>> (it[0] | 0)) & 1) : null;
-        h += '<div class="mch-row"><span>' + esc(mchNames[it[1]] || ('Item ' + it[1])) + '</span>'
-          + '<span>' + (bit === null ? '·' : bit ? 'on' : 'off') + '</span></div>';
-      }
-    }
-    if (inputs.length) {
-      const by = {};
-      for (const it of inputs) { const k = it[1]; by[k] = (by[k] || 0) + (it[2] > 0 ? it[2] : 1); }
-      h += '<div class="mch-row mch-hdr"><span>Machine hopper contents</span><span></span></div>';
-      for (const k in by) h += '<div class="mch-row"><span>' + esc(mchNames[k] || ('Item ' + k)) + '</span><span>x' + by[k].toLocaleString() + '</span></div>';
-    }
-    h += '<div class="mch-note">Slots from container 93, hopper from container 1011, flags from varp 8649 (script21101). Capacity/level joins land once the container mapping is play-verified.</div></div>';
-    return h;
-  }
   function paintComponents() {
     const body = $('compBody'); if (!body) return;
     if (!compVp) { body.innerHTML = '<div class="bank-empty" style="display:flex"><div class="warn" style="background:rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)">Reading...</div></div>'; return; }
     const t = compTerm.trim().toLowerCase();
     const u = k => (compVp[k] || 0) >>> 0;
     const owned = INV_COMPONENTS.filter(c => u(c[1]) > 0).length;
-    const sig = t + '|' + compHideEmpty + '|' + INV_COMPONENTS.map(c => u(c[1])).join(',') + '|' + ((mchBuilt || []).length) + ':' + ((mchInputs || []).length) + ':' + mchVp8649;
+    const sig = t + '|' + compHideEmpty + '|' + INV_COMPONENTS.map(c => u(c[1])).join(',') + '|' + JSON.stringify(mchVb) + ':' + mchVp7270;
     if (sig === compSig) return; compSig = sig;
     const meta = $('compMeta'); if (meta) meta.textContent = owned + ' / ' + INV_COMPONENTS.length + ' owned';
     body.innerHTML = '';
