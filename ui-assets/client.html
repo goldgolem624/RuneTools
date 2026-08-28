@@ -5278,7 +5278,10 @@
 
     // ---------------- Appearance ----------------
     sec('Appearance');
-    rows.appendChild(uisSlider('UI scale', 'uis_scale', 50, 200, 5, () => cfg.scale, v => { cfg.scale = v; save(); }, v => v + '%', true));
+    // Presets rather than a slider: applying a scale reflows the very panel being edited, so a
+    // continuous control fights the cursor. One click, one value.
+    rows.appendChild(uisChipRow('UI scale', 'uis_scale', [75, 90, 100, 110, 125, 150, 175, 200].map(v => [v + '%', String(v)]),
+      v => String(cfg.scale || 100) === v, v => { cfg.scale = Number(v); save(); }));
     if (!(bridge() && bridge().uiScale)) uisNote(rows, 'UI scale needs the updated launcher; the value is saved and applies after the next update.');
     rows.appendChild(uisChipRow('Accent', 'uis_accent', UI_ACCENTS.map(a => [a[0], a[1], a[1]]),
       v => v.toLowerCase() === String(cfg.accent).toLowerCase(), v => { cfg.accent = v; save(); }));
