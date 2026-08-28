@@ -1542,7 +1542,9 @@
         if (!st.coord) continue;
         let best = null, bd = 1e9;
         for (const pn of pins) { const d = Math.max(Math.abs(pn.x - st.coord[0]), Math.abs(pn.y - st.coord[1])); if (d < bd) { bd = d; best = pn; } }
-        if (best && bd <= 6) bind(key, net, st, best.x, best.y, best.p | 0, bd, best.ml);
+        // Surface stops fly on floor 0 whatever plane the icon record carries (charter icons are
+        // stored on plane 1 yet belong to the ground view); the stop's own plane wins if it has one.
+        if (best && bd <= 6) bind(key, net, st, best.x, best.y, (st.coord[2] | 0), bd, best.ml);
       }
     }
     wmStopIdx = idx; wmStopByPin = byPin;
@@ -1575,11 +1577,12 @@
     for (const key of keys) {
       const rec = wmStopIdx.get(key); if (!rec) continue;
       const h = document.createElement('div'); h.className = 'sndmenu-it'; h.style.cssText = 'font-weight:700;opacity:.8;cursor:default';
-      h.textContent = rec.net.name + ' - ' + rec.stop.name; pop.appendChild(h);
+      h.textContent = rec.net.name + ' - ' + rec.stop.name; h.style.textTransform = 'none'; pop.appendChild(h);
       for (const d of wmStopDests(key)) {
         const it = document.createElement('div'); it.className = 'sndmenu-it';
-        it.textContent = '  ' + d.name + (d.note ? '  (' + d.note + ')' : '') + (d.unbound ? '  [not on this map]' : '');
-        if (d.unbound) { it.style.opacity = '.45'; it.style.cursor = 'default'; }
+        it.textContent = '  ' + d.name + (d.note ? '  (' + d.note + ')' : '') + (d.unbound ? '  [position not confirmed yet]' : '');
+        it.style.textTransform = 'none';
+        if (d.unbound) { it.style.opacity = '.45'; it.style.cursor = 'default'; it.title = 'This stop has no verified map position yet, so it cannot be flown to.'; }
         else it.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); closeSoundMenu(); wmFlyTo(d.x, d.y, d.p, { x: d.x, y: d.y, p: d.p, nm: d.name }); });
         pop.appendChild(it);
       }
