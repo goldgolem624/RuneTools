@@ -5978,10 +5978,14 @@
       if (e.button !== 0) return;
       e.preventDefault();
       bar.classList.add('dragging');
+      // Keep the grab point under the cursor: the bar is positioned by its centre, so carry
+      // the offset from where it was grabbed to its centre through the whole drag.
+      const r0 = bar.getBoundingClientRect();
+      const offX = (r0.left + r0.width / 2) - e.clientX, offY = (r0.top + r0.height / 2) - e.clientY;
       const mv = (ev) => {
         const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
-        wm.barX = Math.min(0.98, Math.max(0.02, ev.clientX / Math.max(1, vw)));
-        wm.barYf = Math.min(1, Math.max(0, ev.clientY / Math.max(1, vh)));
+        wm.barX = Math.min(0.98, Math.max(0.02, (ev.clientX + offX) / Math.max(1, vw)));
+        wm.barYf = Math.min(1, Math.max(0, (ev.clientY + offY) / Math.max(1, vh)));
         positionMenubar();
         wmPushRects();
       };
