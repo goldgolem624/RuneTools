@@ -125,6 +125,10 @@
   }
   // <img=N> icons: frames of the "modicons" sprite group, resolved by name once per session
   // and cached per frame as data URLs. Older launchers lack spriteByName: icons stay dropped.
+  // Verified against the live cache (sprites index scan, build 949): archive 1455 is the
+  // 25-frame 13x11 strip of chat icons (mod crowns, ironman helms, skulls, league trophies).
+  // The name lookup is tried first so a renamed cache still resolves; 1455 is the fallback.
+  const CHAT_ICONS_SPRITE = 1455;
   let chatIconsId = null, chatIconsResolving = false;
   const chatIconUrl = new Map(), chatIconPending = new Set();
   function chatIconSrc(n) {
@@ -132,11 +136,11 @@
       if (!chatIconsResolving && bridge() && bridge().spriteByName) {
         chatIconsResolving = true;
         (async () => {
-          try { const id = await bridge().spriteByName('modicons'); chatIconsId = (id >= 0) ? id : -1; } catch (e) { chatIconsId = -1; }
+          try { const id = await bridge().spriteByName('modicons'); chatIconsId = (id >= 0) ? id : CHAT_ICONS_SPRITE; } catch (e) { chatIconsId = CHAT_ICONS_SPRITE; }
           chatIconsResolving = false;
           if (chatIconsId >= 0) { try { chatRepaint(); } catch (e) {} }
         })();
-      } else if (!bridge() || !bridge().spriteByName) chatIconsId = -1;
+      } else if (bridge() && bridge().sprite) chatIconsId = CHAT_ICONS_SPRITE;   // launcher without spriteByName: frames still need the frame arg
       return '';
     }
     if (chatIconsId < 0) return '';

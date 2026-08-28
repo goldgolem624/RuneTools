@@ -3947,10 +3947,12 @@ int SpriteIdByName(const std::string& name) {
     EnsureInit();
     auto* idx = g_store ? g_store->Get(kIndexSprites) : nullptr;
     if (!idx || !idx->ready()) return -1;
+    // The archive NAME hash is the reference table's `identifier` (the has_names block);
+    // `hash` is the optional alternate digest and never carries names.
     const int want = NameHash(name);
     const auto& ents = idx->ref().entries();
     for (std::size_t i = 0; i < ents.size(); ++i)
-        if (ents[i].hash == want && ents[i].hash != 0) return (int)i;
+        if (ents[i].identifier == want && ents[i].identifier != -1) return (int)i;
     return -1;
 }
 

@@ -260,7 +260,9 @@
         if (tm) {
           const tag = document.createElement('span');
           tag.textContent = tm.n;
-          tag.style.cssText = 'font-size:10px;padding:1px 5px;margin-left:6px;border:1px solid ' + tm.c
+          // inline-block with its own line-height: as a plain inline span the bordered box
+          // overflowed the row's line box and its top/bottom edges were clipped.
+          tag.style.cssText = 'display:inline-block;line-height:1.3;vertical-align:middle;font-size:10px;padding:0 5px;margin-left:6px;border:1px solid ' + tm.c
             + ';color:' + tm.c + ';border-radius:3px;opacity:.85;white-space:nowrap';
           nm.appendChild(tag);
         }
