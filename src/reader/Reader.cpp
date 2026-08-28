@@ -5120,16 +5120,17 @@ std::string ScanSolutionJson(std::uint32_t pid) {
 // interface group + component (+0x2a) + sub index (+0x2c). Same item gating as iface_walk
 // (id at +0x1a0 with the matching +0x188 key or the unset sentinel). -1 when no such node or
 // it carries no item. Shop stock, bank, trade and sale-back grids all resolve through this.
-static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, int sub) {
+static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, int sub, int* dbg = nullptr) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
     std::uint64_t gs, ge; iface_groups_range(h, mainData, gs, ge);
     if (!gs) return -1;
-    int found = -1, visited = 0;
+    int found = -1, visited = 0, matched = 0, groups = 0;
     std::function<void(std::uint64_t, int)> walk = [&](std::uint64_t node, int depth) {
         if (found >= 0 || depth > 12 || visited++ > 6000) return;
         if (r16(node + 0x2a) == comp && r16(node + 0x2c) == sub) {
+            ++matched;
             int item = r32(node + 0x1a0);
             std::uint64_t sprRaw = r64(node + 0x188);
             bool sprUnset = sprRaw == ~0ull;
@@ -5152,6 +5153,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
     for (std::uint64_t g = gs; g + 0x10 <= ge && found < 0; g += 0x10) {
         std::uint64_t ap2 = r64(g + 8);
         if (ap2 <= 0x10000 || r32(ap2) != group) continue;
+        ++groups;
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
@@ -5161,6 +5163,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
         }
         break;
     }
+    if (dbg) { dbg[0] = groups; dbg[1] = visited; dbg[2] = matched; }
     return found;
 }
 
@@ -5238,6 +5241,7 @@ std::string HoverEntityJson(std::uint32_t pid) {
     // not which cell. Checked FIRST because a low slot index in +0x4C paired with the
     // component in +0x50 would otherwise satisfy the loc-tile test.
     int itemId = rpm<std::int32_t>(h, *ao + 0x44).value_or(-1);
+    int ifdbg[3] = { -1, -1, -1 };
     {
         int slot = rpm<std::int32_t>(h, *ao + 0x4C).value_or(-1);
         int comp = rpm<std::uint16_t>(h, *ao + 0x50).value_or(0);
@@ -5245,8 +5249,10 @@ std::string HoverEntityJson(std::uint32_t pid) {
         // Interface grids that do not stamp +0x44 (shop stock and sale-back, bank, trade...)
         // still identify their cell: read the item off the live widget at (group, comp, sub).
         // Only when the hover names a thing (shop rows do), so plain buttons are untouched.
-        if (itemId < 0 && ifid > 0 && ifid < 4096 && slot >= 0 && !name.empty()) {
-            int wi = iface_item_at(h, *root, ifid, comp, slot);
+        // The name field is unreliable here (stale bytes), so it is not a gate: a node that
+        // carries no item simply does not resolve.
+        if (itemId < 0 && ifid > 0 && ifid < 4096 && slot >= 0) {
+            int wi = iface_item_at(h, *root, ifid, comp, slot, ifdbg);
             if (wi > 0) itemId = wi;
         }
         if (itemId >= 0) {
@@ -5269,8 +5275,9 @@ std::string HoverEntityJson(std::uint32_t pid) {
         int ifid  = rpm<std::uint16_t>(h, *ao + 0x52).value_or(0);
         if (ifid > 0 && ifid < 4096) {
             int comp2 = rpm<std::uint16_t>(h, *ao + 0x5C).value_or(0);
-            std::snprintf(buf, sizeof(buf), ",\"kind\":\"iface\",\"iface\":%d,\"comp\":%d,\"comp2\":%d",
-                          ifid, comp, comp2);
+            int slot = rpm<std::int32_t>(h, *ao + 0x4C).value_or(-1);
+            std::snprintf(buf, sizeof(buf), ",\"kind\":\"iface\",\"iface\":%d,\"comp\":%d,\"comp2\":%d,\"slot\":%d,\"dbg\":[%d,%d,%d]",
+                          ifid, comp, comp2, slot, ifdbg[0], ifdbg[1], ifdbg[2]);
             return out + buf + "}";
         }
     }

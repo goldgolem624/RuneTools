@@ -38,6 +38,7 @@
   // different poll than the capture. Remembering every id the launcher ever reported lets a
   // capture pick its id up afterwards instead of being stuck at "id not resolved".
   let mnuIdSeen = {};
+  let mnuIfaceDiag = '';   // last unresolved interface hover (diagnostic line in the footer)
   // The add-by-id form: pick what kind of thing it is, type its id, and the CACHE supplies the
   // name and the option list - no need to find the thing in game and hover it.
   let mnuAdd = { name: '', order: [], editKey: '' };   // the rule editor's working copy
@@ -242,6 +243,7 @@
     if (!t0) return;
     let hv = null;
     try { hv = JSON.parse(bridge().hoverEntity(myPid()) || '{}'); } catch (e) { return; }
+    if (hv && hv.ok && hv.kind === 'iface') mnuIfaceDiag = 'iface ' + hv.iface + ':' + hv.comp + ' slot ' + hv.slot + ' walk ' + JSON.stringify(hv.dbg || []);
     if (!hv || !hv.ok || !(hv.id > 0)) return;
     const kind = hv.kind === 'item' ? 0 : hv.kind === 'loc' ? 1 : hv.kind === 'npc' ? 2 : -1;
     if (kind < 0) return;
@@ -875,7 +877,7 @@
         || (mnuView === 'rules' ? 'Edit reorders a saved rule. Forget removes it.'
           : mnuView === 'edit'  ? 'Arrows set the order, then Save changes.'
           : mnuSel              ? 'Arrows set the order. It applies to every future menu for this object.'
-                                : 'Hover things in game to collect them here, then pick one to reorder.');
+                                : (mnuIfaceDiag || 'Hover things in game to collect them here, then pick one to reorder.'));
     }
 
     const list = $('mnuList');
