@@ -2443,6 +2443,9 @@
     const sc = Math.max(50, Math.min(200, Number(c.scale) || 100));
     if (sc !== _uiScaleSent) {
       try { if (bridge() && bridge().uiScale) { bridge().uiScale(myPid(), sc / 100); _uiScaleSent = sc; } } catch (e) {}
+      // The viewport changes size in CSS px: re-clamp windows and the bar, republish the
+      // consume rects, and rebuild open panels so nothing sits stale from the old raster.
+      setTimeout(() => { try { window.dispatchEvent(new Event('resize')); } catch (e) {} try { uiRepaintAll(); } catch (e) {} }, 120);
     }
   }
   function uiCatHidden(id) { return id !== 'Settings' && uiCfg().hiddenCats.indexOf(id) >= 0; }

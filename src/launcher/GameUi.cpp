@@ -675,6 +675,11 @@ void SetDeviceScale(std::uint32_t pid, double scale) {
     if (u->scale > scale - 0.005 && u->scale < scale + 0.005) return;
     u->scale = scale;
     u->view->set_device_scale(scale);
+    // A scale change re-rasterises the page; without an explicit full paint request only the
+    // regions later dirtied by input (hover) redraw, leaving windows invisible until moused
+    // over (owner report when switching the UI scale preset).
+    u->view->set_needs_paint(true);
+    u->view->EvaluateScript("try{window.dispatchEvent(new Event('resize'));}catch(e){}");
     rtx::log::Client(pid, "in-game ui: device scale -> " + std::to_string(scale));
 }
 
