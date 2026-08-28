@@ -546,14 +546,18 @@
           });
           wrap.appendChild(ob2);
         }
+        // Objects get the AABB outline ONLY (owner call): the tile-mark button stays for
+        // ground items, where a persistent marker is the point.
+        if (n.type === 'object') { wrap.appendChild(nm); nameRow = wrap; } else {
         const ob = document.createElement('button'); ob.className = 'ol-btn';
         const on = sceneTileMarked(n.x, n.y, n.plane);
         ob.textContent = '◈';
         ob.classList.toggle('on', on);
         ob.title = on ? 'Remove the tile marker under this ' + (n.type === 'ground' ? 'item' : 'object') : 'Mark the tile this ' + (n.type === 'ground' ? 'item' : 'object') + ' is on (a user marker, see the Markers panel)';
-        ob.addEventListener('click', (e) => { e.stopPropagation(); toggleTileMark(n.x, n.y, n.plane, n.name, n.type === 'ground' ? n.id : null, n.type === 'object' ? n.w : 1, n.type === 'object' ? n.h : 1); });
+        ob.addEventListener('click', (e) => { e.stopPropagation(); toggleTileMark(n.x, n.y, n.plane, n.name, n.type === 'ground' ? n.id : null, 1, 1); });
         wrap.appendChild(ob); wrap.appendChild(nm);
         nameRow = wrap;
+        }
       } else if (n.type === 'player' && n.name) {
         const wrap = document.createElement('div'); wrap.className = 'namet';
         const ob = document.createElement('button'); ob.className = 'ol-btn';

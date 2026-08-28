@@ -52,13 +52,17 @@
   // -> cycles = ms / 20. Rounding matches the game: remaining = (dur + 50 - elapsed) / 50.
   function abCdLive(s) {
     const r = abCdMap() && abCd[s.id], d = abarData;
-    if (!r || !r.v || !d || !d.vc || !d.clock) return null;
+    // NO d.clock in this guard. clock (mod_base offset) died in a game update and reads 0
+    // forever; requiring it here rejected the read before the good CLIENTCLOCK value was even
+    // looked at, which kept every cooldown at "ready" AFTER cycles was fixed (live tooltip:
+    // cast=3851 ready=5351 cycles=4093, plainly mid-cooldown, still reported idle).
+    if (!r || !r.v || !d || !d.vc) return null;
     const a = d.vc['5:' + r.v[0]], b = d.vc['5:' + r.v[1]];
     if (typeof a !== 'number' || typeof b !== 'number' || a <= 0 || b <= a) return null;
-    // The varc stamps are in CLIENTCLOCK cycles, so use that counter directly when the host
-    // reports it. clock/20 was always an approximation of this exact value, derived from a
-    // hardcoded module offset; it stays as the fallback for an older host.
-    const cyc = (d.cycles > 0) ? d.cycles : Math.floor(d.clock / 20);
+    // The varc stamps are in CLIENTCLOCK cycles: prefer that counter directly; clock/20 is the
+    // legacy approximation kept only for an older host that predates the cycles emit.
+    const cyc = (d.cycles > 0) ? d.cycles : (d.clock > 0 ? Math.floor(d.clock / 20) : 0);
+    if (!cyc) return null;
     const dur = b - a, el = cyc - a;
     if (el < 0 || el >= dur || dur > 360000) return null;
     return Math.floor((dur + 50 - el) / 50);
