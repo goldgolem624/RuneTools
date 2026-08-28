@@ -177,9 +177,29 @@
     if (!bridge() || !bridge().varps || compFetching) return;
     compFetching = true;
     try { const d = JSON.parse(await bridge().varps(myPid(), COMP_VARP_CSV)); if (d && typeof d === 'object') compVp = d; } catch (e) {}
-    try { await fetchMachines(); } catch (e) {}
     compFetching = false;
     paneRun('components', paintComponents);
+  }
+  let mchFetching = false;
+  async function fetchMachinesTab() {
+    if (mchFetching) return;
+    mchFetching = true;
+    try { await fetchMachines(); } catch (e) {}
+    mchFetching = false;
+    paneRun('machines', renderMachines);
+  }
+  function renderMachines() {
+    const c = $('content');
+    const h = mchHtml();
+    c.innerHTML = '<div class="bank-wrap"><div class="mbank-body" id="mchBody"></div></div>';
+    const body = $('mchBody');
+    if (!mchVb) {
+      body.innerHTML = '<div class="bank-empty" style="display:flex"><div class="warn" style="background:rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)">Reading...</div></div>';
+    } else if (!h) {
+      body.innerHTML = '<div class="mch-card"><div class="mch-note">No machine data yet. Open a machine at an invention workbench in game once; the interface varbits (script 13676) transmit on interaction and this tab reads them.</div></div>';
+    } else {
+      body.innerHTML = h;
+    }
   }
   // Component icon = a cache sprite (not an item icon). Same cache+async pattern as attachBuffIcon.
   function attachCompIcon(el, sid) {
@@ -226,12 +246,10 @@
     const t = compTerm.trim().toLowerCase();
     const u = k => (compVp[k] || 0) >>> 0;
     const owned = INV_COMPONENTS.filter(c => u(c[1]) > 0).length;
-    const sig = t + '|' + compHideEmpty + '|' + INV_COMPONENTS.map(c => u(c[1])).join(',') + '|' + JSON.stringify(mchVb) + ':' + mchVp7270;
+    const sig = t + '|' + compHideEmpty + '|' + INV_COMPONENTS.map(c => u(c[1])).join(',');
     if (sig === compSig) return; compSig = sig;
     const meta = $('compMeta'); if (meta) meta.textContent = owned + ' / ' + INV_COMPONENTS.length + ' owned';
     body.innerHTML = '';
-    const mh = mchHtml();
-    if (mh) { const box = document.createElement('div'); box.innerHTML = mh; while (box.firstChild) body.appendChild(box.firstChild); }
     let curR = null, grid = null;
     for (const c of INV_COMPONENTS) {
       const name = c[0], varp = c[1], sprite = c[2], rarity = c[3], desc = c[4], src = c[5], cnt = u(varp);
