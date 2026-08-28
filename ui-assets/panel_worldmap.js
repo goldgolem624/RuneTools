@@ -1446,10 +1446,10 @@
       fr.appendChild(a); fr.appendChild(b); tip.appendChild(fr);
     }
     {
-      const lk = wmElemLink(hit.ml);
+      const lk = wmElemLink(hit.ml, hit);
       if (lk) {
         const fr = document.createElement('div'); fr.className = 'wm-fact'; fr.style.marginTop = '4px';
-        const a = document.createElement('span'); a.textContent = 'Click to follow';
+        const a = document.createElement('span'); a.textContent = lk.guess ? ('Click to view ' + (lk.y >= 6400 ? 'underground' : 'the surface')) : 'Click to follow';
         const b = document.createElement('span'); b.className = 'v'; b.textContent = lk.x + ', ' + lk.y + (lk.p ? ' f' + lk.p : '');
         fr.appendChild(a); fr.appendChild(b); tip.appendChild(fr);
       }
@@ -1497,15 +1497,25 @@
   // Link destination of a map element: param 4148 is a packed coordgrid (plane<<28 | x<<14 | y),
   // the value the game's click handler (script 7592 -> 304) jumps to for dungeon links, stairs
   // and the like. null when the element has no link.
-  function wmElemLink(ml) {
-    const e = WM_ML && WM_ML[ml]; if (!e || !e.p) return null;
-    const v = e.p['4148'];
-    if (v == null || v === -1 || v < 0) return null;
-    return { x: (v >> 14) & 16383, y: v & 16383, p: (v >> 28) & 3 };
+  function wmElemLink(ml, at) {
+    const e = WM_ML && WM_ML[ml]; if (!e) return null;
+    const v = e.p ? e.p['4148'] : null;
+    if (v != null && v !== -1 && v >= 0) return { x: (v >> 14) & 16383, y: v & 16383, p: (v >> 28) & 3 };
+    // Dungeon ENTRANCE icons carry no link param (the server moves the player). The interior
+    // of nearly every surface dungeon is the same x at y + 6400; offer that when the map has
+    // a placed square there (and the reverse for an entrance seen from below).
+    if (at && wmZoneIdx) {
+      const cat = (WM_CAT && WM_CAT[e.c] && WM_CAT[e.c].n) || '';
+      if (/dungeon|cave|mine|entrance|ladder|stairs|trapdoor/i.test(cat + ' ' + (e.t || ''))) {
+        const ty = at.y >= 6400 ? at.y - 6400 : at.y + 6400;
+        if (wmZoneIdx.has(((at.x >> 6) << 8) | (ty >> 6))) return { x: at.x, y: ty, p: 0, guess: true };
+      }
+    }
+    return null;
   }
-  function wmLinkLine(ml) {
-    const lk = wmElemLink(ml); if (!lk) return '';
-    return '<div class="wm-fact" style="margin-top:4px"><span>Click to follow</span><span class="v">' + lk.x + ', ' + lk.y + (lk.p ? ' f' + lk.p : '') + '</span></div>';
+  function wmLinkLine(ml, at) {
+    const lk = wmElemLink(ml, at); if (!lk) return '';
+    return '<div class="wm-fact" style="margin-top:4px"><span>' + (lk.guess ? 'Click to view ' + (lk.y >= 6400 ? 'underground' : 'the surface') : 'Click to follow') + '</span><span class="v">' + lk.x + ', ' + lk.y + (lk.p ? ' f' + lk.p : '') + '</span></div>';
   }
   function wmElemTipHtml(m) {
     const t = wmElemTip(m.ml);
@@ -1515,7 +1525,7 @@
     // ("Level 19 Strength<br>Level 8 Agility<br>Requires a grapple"). Escape everything first,
     // then re-allow just <br>, so cache text can never inject markup but still breaks lines.
     const esc = function (s) { return htmlEsc(s).replace(/&lt;br\s*\/?&gt;/gi, '<br>'); };
-    const lkLine = wmLinkLine(m.ml);
+    const lkLine = wmLinkLine(m.ml, m);
     return '<b style="text-transform:uppercase;letter-spacing:.5px">' + esc(head || 'Map symbol') + '</b>'
          + (body ? '<br>' + esc(body) : '')
          + '<br><span style="opacity:.6">' + m.x + ', ' + m.y + '</span>' + lkLine;
@@ -1754,7 +1764,7 @@
             // the game does: fly to the destination and pin it, plane switch included.
             let hitM = null, hdM = Infinity;
             for (const m of wmMarks) { if (m.ml == null) continue; const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= m.r + 4 && d < hdM) { hdM = d; hitM = m; } }
-            const lk = hitM ? wmElemLink(hitM.ml) : null;
+            const lk = hitM ? wmElemLink(hitM.ml, hitM) : null;
             if (lk) {
               const t = wmElemTip(hitM.ml), nm = (t && t.head) ? String(t.head).replace(/<[^>]*>/g, '') : 'Link';
               wmFlyTo(lk.x, lk.y, lk.p, { x: lk.x, y: lk.y, p: lk.p, nm: nm });
