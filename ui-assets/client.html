@@ -2465,6 +2465,15 @@
   // sampler (applyXpOverlay starts it) and its 1 s state fetch.
   let _barInfoSig = '', _barXpArmed = false;
   function uiBarTick() {
+    // Overflow guard: anything that widened the bar after its last placement (fonts, chips,
+    // status text) must not leave it hanging off the frame edge.
+    try {
+      const bar = $('menubar');
+      if (bar) {
+        const r = bar.getBoundingClientRect(), vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+        if (r.right > vw - 4 || r.left < 4 || r.bottom > vh - 4 || r.top < 4) { positionMenubar(); wmRectsSoon(); }
+      }
+    } catch (e) {}
     const el = $('hdr-info'); if (!el) return;
     const c = uiCfg(), parts = [];
     if (c.barClock) {
@@ -6830,6 +6839,9 @@
     $('hdr-title').classList.toggle('is-in', inWorld);
     $('hdr-name').textContent = nameTxt;
     $('hdr-meta').textContent = metaTxt;
+    // The status text just changed the bar's width: re-clamp it inside the frame (the
+    // rebuild measured the bar before this text existed) and republish its consume rect.
+    try { positionMenubar(); wmRectsSoon(); } catch (e) {}
   }
 
   async function refresh() {
