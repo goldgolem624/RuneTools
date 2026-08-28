@@ -12,10 +12,9 @@
   }
   function fmtXpNum(v) {
     v = +v || 0;
-    if (v >= 100000000) return Math.round(v / 1000000) + 'M';
-    if (v >= 10000000) return (v / 1000000).toFixed(1) + 'M';
-    if (v >= 1000000) return (v / 1000000).toFixed(2) + 'M';
-    if (v >= 100000) return Math.round(v / 1000) + 'K';
+    // Precision by magnitude (Preferences convention): billions x.yy, millions x.y, thousands x.y.
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
     if (v >= 10000) return (v / 1000).toFixed(1) + 'K';
     return v.toLocaleString();
   }

@@ -2449,10 +2449,10 @@
         const n = Number(this);
         if (isFinite(n) && Math.abs(n) >= 100000 && Math.floor(n) === n) {
           const a = Math.abs(n), sign = n < 0 ? '-' : '';
-          const f = (v, suf) => { let t = v.toFixed(1); if (t.endsWith('.0')) t = t.slice(0, -2); return sign + t + suf; };
-          if (a >= 1e9) return f(a / 1e9, 'b');
-          if (a >= 1e6) return f(a / 1e6, 'm');
-          return f(a / 1e3, 'k');
+          if (a >= 1e9) return sign + (a / 1e9).toFixed(2) + 'b';
+          if (a >= 1e6) return sign + (a / 1e6).toFixed(1) + 'm';
+          let t = (a / 1e3).toFixed(1); if (t.endsWith('.0')) t = t.slice(0, -2);
+          return sign + t + 'k';
         }
       }
       return native.call(this, loc, opt);
@@ -2488,7 +2488,7 @@
       }
     }
     const html = parts.join('<span style="color:var(--text-mute)">|</span>');
-    if (html !== _barInfoSig) {
+    if (html !== _barInfoSig || el.innerHTML !== html) {
       _barInfoSig = html; el.innerHTML = html;
       // The bar's width just changed: re-centre it AND republish the consume rects, or the
       // newly covered strip (and everything that shifted under it) falls through to the game.
@@ -2637,14 +2637,10 @@
     n = Number(n) || 0;
     const sign = n < 0 ? '-' : ''; n = Math.abs(n);
     if (uiCfg().numFmt === 'full') return sign + n.toLocaleString();
-    const f = (v, suf) => {
-      let s = v.toFixed(1);
-      if (s.endsWith('.0')) s = s.slice(0, -2);
-      return sign + s + suf;
-    };
-    if (n >= 1e9) return f(n / 1e9, 'b');
-    if (n >= 1e6) return f(n / 1e6, 'm');
-    if (n >= 1e3) return f(n / 1e3, 'k');
+    // Precision by magnitude: billions x.yy, millions x.y, thousands x.y (.0 dropped).
+    if (n >= 1e9) return sign + (n / 1e9).toFixed(2) + 'b';
+    if (n >= 1e6) return sign + (n / 1e6).toFixed(1) + 'm';
+    if (n >= 1e3) { let t = (n / 1e3).toFixed(1); if (t.endsWith('.0')) t = t.slice(0, -2); return sign + t + 'k'; }
     return sign + n.toLocaleString();
   }
 
