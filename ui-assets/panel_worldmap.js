@@ -766,7 +766,7 @@
   // and lowercase every candidate name. Rebuilt only when the marker list changes.
   let wmIdx = null, wmIdxMarkSig = '';
   function wmIndex() {
-    const msig = (typeof markerList !== 'undefined') ? markerList.length + ':' + (markerList[0] ? markerList[0].label : '') : '';
+    const msig = ((typeof markerList !== 'undefined') ? markerList.length + ':' + (markerList[0] ? markerList[0].label : '') : '') + (wmAreas ? '|A' : '');
     if (wmIdx && msig === wmIdxMarkSig) return wmIdx;
     const out = [];
     const add = (lc, rec) => { rec.lc = lc.toLowerCase(); rec.words = rec.lc.split(/[\s\-\/(),']+/); out.push(rec); };
@@ -782,6 +782,13 @@
       const gx = (m.region >> 8) * 64 + m.lx, gy = (m.region & 0xFF) * 64 + m.ly;
       const nm = m.label || ('Marker (' + gx + ', ' + gy + ')');
       add(nm + ' marker', { ty: 'Marker', nm: nm, dt: gx + ', ' + gy + (m.plane ? ' f' + m.plane : ''), x: gx, y: gy, p: m.plane | 0 });
+    }
+    if (wmAreas) for (const id in wmAreas) {
+      const A = wmAreas[id]; if (!A.z || !A.z.length) continue;
+      // Fly target: the centre of the area's source squares (world space), plane 0.
+      let sxm = 0, sym = 0; for (const zz of A.z) { sxm += zz[1]; sym += zz[2]; }
+      const cxw = Math.round(sxm / A.z.length * 64 + 32), cyw = Math.round(sym / A.z.length * 64 + 32);
+      add((A.dn || A.n) + ' map', { ty: 'Map area', nm: A.dn || A.n, dt: A.z.length + ' squares', x: cxw, y: cyw, p: 0 });
     }
     wmIdx = out; wmIdxMarkSig = msig;
     return out;
@@ -969,8 +976,68 @@
     }
     return null;
   }
+  // ---- World-map areas (js5-23): the game's own composited map ----
+  // wmAreas: area id -> {n, dn, zoom, bg, x0, y0, x1, y1, w, h, z:[[planes,sx,sy,dp,dx,dy]], r}.
+  // The area images are what the in-game map shows: every mapsquare the game places on a map,
+  // drawn from the same art, and NOTHING else (no instance spaces, no dream worlds, no staging
+  // islands). We draw them back in WORLD space: each display square's 64x64 px block is
+  // painted at its SOURCE square's world position, so every overlay (labels, symbols, player,
+  // pins) keeps its world coordinates and dungeons sit at their true underground coords rather
+  // than floating in the sea as the composed surface shows them. Squares absent from every
+  // zone table stay void, which is the fix for the raw-grid rendering of instanced areas.
+  let wmAreas = null, wmAreasAt = 0, wmZoneIdx = null, wmAreaImg = {};
+  const WM_IMG_MAX_Z = 4;            // above this the chunk renderer's detail (walls, icons) wins
+  function wmLoadAreas() {
+    if (wmAreas || !bridge() || !bridge().mapAreas) return;
+    const t = Date.now(); if (t - wmAreasAt < 1500) return; wmAreasAt = t;
+    (async () => {
+      try {
+        const d = JSON.parse(await bridge().mapAreas() || '{}');
+        if (d && Object.keys(d).length) {
+          wmAreas = d;
+          // Zone index: source square -> {a: area id, dx, dy}. The surface (28) claims a square
+          // first; other areas fill in what the surface does not place.
+          const idx = new Map();
+          const order = Object.keys(d).sort((a, b) => (a === '28' ? -1 : b === '28' ? 1 : (+a) - (+b)));
+          for (const id of order) {
+            for (const z of (d[id].z || [])) {
+              const k = (z[1] << 8) | z[2];
+              if (!idx.has(k)) idx.set(k, { a: +id, dx: z[4], dy: z[5], pl: z[0] });
+            }
+          }
+          wmZoneIdx = idx;
+          wmKick();
+        }
+      } catch (e) {}
+    })();
+  }
+  function wmAreaImage(id) {
+    let rec = wmAreaImg[id];
+    if (rec) return rec.ok ? rec.img : null;
+    rec = wmAreaImg[id] = { ok: false, img: null, at: 0 };
+    const pull = async () => {
+      try {
+        const url = await bridge().mapAreaImage(id, false);
+        if (!url) { setTimeout(pull, 400); return; }          // served: '' until the background build lands
+        const img = new Image();
+        img.onload = () => { rec.img = img; rec.ok = true; wmKick(); };
+        img.onerror = () => { rec.ok = false; rec.err = true; };
+        img.src = url;
+      } catch (e) { setTimeout(pull, 1500); }
+    };
+    pull();
+    return null;
+  }
+  // Does any mapsquare of a chunk (ch tiles wide at tile origin tx,ty) belong to a map area?
+  function wmChunkPlaced(tx, ty, ch) {
+    if (!wmZoneIdx) return true;                               // no data yet: draw everything
+    const s0x = tx >> 6, s0y = ty >> 6, n = Math.max(1, ch >> 6);
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (wmZoneIdx.has(((s0x + i) << 8) | (s0y + j))) return true;
+    return false;
+  }
   function wmDraw() {
     const stage = $('wmStage'), cv = $('wmCanvas'); if (!stage || !cv) return;
+    wmLoadAreas();
     wmLoadElements();   // self-guarding: fetches the element tables once, then no-ops
     const w = stage.clientWidth | 0, h = stage.clientHeight | 0; if (!w || !h) return;
     // Back the canvas at DEVICE resolution: a CSS-resolution store gets stretched by display
@@ -1006,10 +1073,38 @@
     try { cx.imageSmoothingQuality = 'high'; } catch (e) {}
     const ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
     let drawn = 0, emptyKnown = 0, loading = 0;
-    for (let ix = ix0; ix <= ix1; ix++) {
+    // Area images (plane 0, up to WM_IMG_MAX_Z px/tile): one 64x64 block per placed square,
+    // painted at the square's world position from the game's composited PNG.
+    let imgMode = false;
+    if (plane === 0 && wmZoneIdx && wmAreas && z <= WM_IMG_MAX_Z) {
+      imgMode = true;
+      const sqx0 = Math.max(0, vx0 >> 6), sqx1 = Math.min(255, vx1 >> 6), sqy0 = Math.max(0, vy0 >> 6), sqy1 = Math.min(255, vy1 >> 6);
+      let missingImg = false;
+      for (let qx = sqx0; qx <= sqx1; qx++) {
+        for (let qy = sqy0; qy <= sqy1; qy++) {
+          const zn = wmZoneIdx.get((qx << 8) | qy);
+          if (!zn) { emptyKnown++; continue; }
+          const A = wmAreas[zn.a]; if (!A || !A.w) { emptyKnown++; continue; }
+          const img = wmAreaImage(zn.a);
+          if (!img) { missingImg = true; loading++; continue; }
+          const yTop = A.y0 + (A.h >> 6) - 1;                  // top image row = the highest display square
+          const px = (zn.dx - A.x0) * 64, py = (yTop - zn.dy) * 64;
+          if (px < 0 || py < 0 || px + 64 > A.w || py + 64 > A.h) { emptyKnown++; continue; }
+          const dx0 = Math.round(sx(qx * 64)), dx1 = Math.round(sx((qx + 1) * 64));
+          const dy0 = Math.round(sy((qy + 1) * 64)), dy1 = Math.round(sy(qy * 64));
+          cx.drawImage(img, px, py, 64, 64, dx0, dy0, dx1 - dx0, dy1 - dy0);
+          drawn++;
+        }
+      }
+      if (missingImg) imgMode = false;                         // images still decoding: chunks fill in meanwhile
+    }
+    for (let ix = ix0; ix <= ix1 && !imgMode; ix++) {
       for (let iy = iy0; iy <= iy1; iy++) {
         const dx0 = Math.round(sx(ix * ch)), dx1 = Math.round(sx((ix + 1) * ch));
         const dy0 = Math.round(sy((iy + 1) * ch)), dy1 = Math.round(sy(iy * ch));
+        // A chunk with no placed square is not part of any map the game shows: void, and never
+        // fetched (this is what put instance spaces and staging islands beside real land).
+        if (!wmChunkPlaced(ix * ch, iy * ch, ch)) { emptyKnown++; continue; }
         const rec = wmGet(L.ts, plane, ix, iy);
         if (rec && rec.cv) { drawn++; cx.drawImage(rec.cv, dx0, dy0, dx1 - dx0, dy1 - dy0); continue; }
         if (!rec) { loading++; wmEnqueue(L.ts, plane, ix, iy, Math.abs(ix * ch + ch / 2 - ccx) + Math.abs(iy * ch + ch / 2 - ccy)); }

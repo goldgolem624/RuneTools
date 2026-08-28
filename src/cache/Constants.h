@@ -20,6 +20,7 @@ constexpr int kIndexNpcs       = 18;
 constexpr int kIndexItems      = 19;   // archive = id >> 8, file = id & 0xff
 constexpr int kIndexSeqs       = 20;
 constexpr int kIndexStructs    = 22;
+constexpr int kIndexWorldMap   = 23;   // world-map areas: archive 0 details, 1 composite zones, 2 thumb PNG, 4 full PNG (file = area id)
 constexpr int kIndexAchievements = 57;  // archive = id >> 7, file = id & 0x7f
 // Audio. Both hold JAGA-wrapped Ogg Vorbis, one stream per archive, and the ARCHIVE ID IS THE
 // SOUND ID - the ids CS2 passes to SOUND_SYNTH / SOUND_VORBIS_VOLUME resolve directly here

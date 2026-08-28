@@ -989,6 +989,19 @@ JSValueRef MapWindow(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, "{\"pending\":1}");
 }
 
+// World-map AREAS (js5-23) and their composited images: static cache data, served off the UI
+// thread and memoised (the surface image is ~1.7 MB of PNG, fetched once per session).
+JSValueRef MapAreas(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                    size_t, const JSValueRef[], JSValueRef*) {
+    return served(ctx, "mapareas", "{}", [] { return rtx::cache::MapAreasJson(); });
+}
+JSValueRef MapAreaImage(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "");
+    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    bool thumb = (argc > 1) && JSValueToBoolean(ctx, argv[1]);
+    return served(ctx, "mapimg:" + std::to_string(id) + (thumb ? ":t" : ":f"), "", [id, thumb] { return rtx::cache::MapAreaImageDataUrl(id, thumb); });
+}
 // World-map ELEMENT tables. Both walk the whole config archive once, so they are served off the
 // UI thread and memoised by key -- the panel asks for them a single time when it opens.
 JSValueRef MapLabels(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -4823,6 +4836,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "modelIcon",         ModelIcon);
     install_fn(ctx, ns, "itemInfo",          ItemInfo);
     install_fn(ctx, ns, "sprite",            Sprite);
+    install_fn(ctx, ns, "mapAreas",          MapAreas);
+    install_fn(ctx, ns, "mapAreaImage",      MapAreaImage);
     install_fn(ctx, ns, "spriteByName",      SpriteByName);
     install_fn(ctx, ns, "hudSprite",         HudSprite);
     install_fn(ctx, ns, "enumInfo",          EnumInfo);

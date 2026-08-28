@@ -21,6 +21,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <array>
 #include <mutex>
 #include <queue>
 #include <set>
@@ -105,6 +106,7 @@ void EnsureInit() {
     g_store->Add(kIndexSprites,   0);   // one file per archive
     g_store->Add(kIndexConfigs,   0);   // DBRows (archive 41) for augment perk names
     g_store->Add(kIndexStructs,   0);   // structs (buff/debuff names)
+    g_store->Add(kIndexWorldMap,  0);   // world-map area defs + the game's own composited map images
     g_store->Add(kIndexEnums,     0);   // enums (id->name rosters: slayer creatures, reaper bosses)
     g_store->Add(kIndexAchievements, 0); // achievement defs (varbit-driven completion)
     g_store->Add(kIndexInterfaces, 0);  // static interface-component defs
@@ -3922,6 +3924,141 @@ void RegionHeightsFill(int player_x, int player_y, int plane, int radius,
             out[(std::size_t)gx * N + gy] = AbsHeightLocked(td, wx & 0x3f, wy & 0x3f, plane);
         }
     }
+}
+
+// ---- World-map areas (js5-23) -----------------------------------------------------------
+// Decoded offline against build 949 (scratchpad wm23.py) and the game's own scripts:
+//   archive 0, file = area id: "details". cstr internal name, cstr display name, u8 flags,
+//       u24 (unresolved), u32 background colour, u8, u8 zoom, u16 rect count, then rects of
+//       u8 type + u16 x0,y0,x1,y1 in TILES (inclusive): the source-world membership that
+//       WORLDMAP_COORDINMAP answers.
+//   archive 1, file = area id: "compositemap". u16 count, then records: u8 type; type 0 =
+//       u8 planes, u16 srcX, u16 srcY (mapsquares), u8 dstPlane, u16 dstX, u16 dstY: source
+//       square -> display square. This is how the surface map floats dungeons in the sea
+//       (surface file 28 maps square (33,172) to display (64,21)).
+//   archive 4 / 2, file = area id: u32 length + PNG: the game's composited map image, full
+//       size (1 px per tile, 64 px per display square, north up, origin = the minimum display
+//       square) and a thumbnail.
+namespace {
+struct WmZone { int planes, sx, sy, dp, dx, dy; };
+struct WmArea {
+    int id = -1; std::string name, display; int flags = 0, bg = 0, zoom = 100;
+    std::vector<std::array<int, 4>> rects;   // tiles, inclusive
+    std::vector<WmZone> zones;
+    int x0 = 0, y0 = 0, x1 = -1, y1 = -1;    // display squares covered by the zone table
+    int imgW = 0, imgH = 0;                  // full image size (px)
+};
+std::string g_wmAreasJson;                   // memo: built once (static cache data)
+bool wm_read_png_size(const std::vector<std::uint8_t>& f, int& w, int& h) {
+    if (f.size() < 4 + 24) return false;
+    std::size_t off = 4;                     // u32 length prefix, then the PNG
+    if (!(f[off] == 0x89 && f[off+1] == 'P' && f[off+2] == 'N' && f[off+3] == 'G')) return false;
+    auto be32 = [&](std::size_t p) { return ((int)f[p] << 24) | ((int)f[p+1] << 16) | ((int)f[p+2] << 8) | (int)f[p+3]; };
+    w = be32(off + 16); h = be32(off + 20);
+    return w > 0 && h > 0;
+}
+}  // namespace
+
+std::string MapAreasJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    if (!g_wmAreasJson.empty()) return g_wmAreasJson;
+    auto* idx = g_store ? g_store->Get(kIndexWorldMap) : nullptr;
+    if (!idx || !idx->ready()) return "{}";
+    const auto& ents = idx->ref().entries();
+    if (ents.size() < 5) return "{}";
+    auto jstr = [](const std::string& v) {
+        std::string r = "\"";
+        for (char c : v) { if (c == '"' || c == '\\') r += '\\'; if ((unsigned char)c >= 0x20) r += c; }
+        r += '"'; return r;
+    };
+    std::string out = "{"; bool first = true; int emitted = 0;
+    for (int fid : ents[0].valid_file_ids) {
+        auto d = idx->ReadFile(0, fid);
+        if (d.size() < 14) continue;
+        WmArea a; a.id = fid;
+        std::size_t p = 0;
+        auto cstr = [&](std::string& dst) { while (p < d.size() && d[p]) dst.push_back((char)d[p++]); if (p < d.size()) ++p; };
+        cstr(a.name); cstr(a.display);
+        if (p + 12 > d.size()) continue;
+        a.flags = d[p]; p += 1; p += 3;                                          // u8 flags, u24 unresolved
+        a.bg = ((int)d[p] << 24) | ((int)d[p+1] << 16) | ((int)d[p+2] << 8) | (int)d[p+3]; p += 4;
+        p += 1;                                                                  // u8 (always 1 on 949)
+        a.zoom = d[p]; p += 1;
+        int nrect = ((int)d[p] << 8) | d[p+1]; p += 2;
+        for (int i = 0; i < nrect && p + 9 <= d.size(); ++i) {
+            int t = d[p]; (void)t;
+            auto u16 = [&](std::size_t q) { return ((int)d[q] << 8) | d[q+1]; };
+            a.rects.push_back({ u16(p+1), u16(p+3), u16(p+5), u16(p+7) }); p += 9;
+        }
+        auto c = idx->ReadFile(1, fid);
+        if (c.size() >= 2) {
+            int n = ((int)c[0] << 8) | c[1]; std::size_t q = 2;
+            auto u16 = [&](std::size_t k) { return ((int)c[k] << 8) | c[k+1]; };
+            for (int i = 0; i < n; ++i) {
+                if (q >= c.size()) break;
+                int t = c[q];
+                if (t == 0) {
+                    if (q + 11 > c.size()) break;
+                    WmZone z{ c[q+1], u16(q+2), u16(q+4), c[q+6], u16(q+7), u16(q+9) };
+                    a.zones.push_back(z); q += 11;
+                } else {
+                    // Zone-level (8x8) record; not present on 949. Skip its 15 bytes, keep going.
+                    if (q + 15 > c.size()) break;
+                    q += 15;
+                }
+            }
+        }
+        for (const auto& z : a.zones) {
+            if (a.x1 < a.x0) { a.x0 = a.x1 = z.dx; a.y0 = a.y1 = z.dy; }
+            a.x0 = std::min(a.x0, z.dx); a.x1 = std::max(a.x1, z.dx);
+            a.y0 = std::min(a.y0, z.dy); a.y1 = std::max(a.y1, z.dy);
+        }
+        auto img = idx->ReadFile(4, fid);
+        wm_read_png_size(img, a.imgW, a.imgH);
+        if (a.zones.empty() && a.imgW == 0) continue;
+        out += first ? "" : ","; first = false; ++emitted;
+        out += "\"" + std::to_string(a.id) + "\":{\"n\":" + jstr(a.name) + ",\"dn\":" + jstr(a.display) +
+               ",\"zoom\":" + std::to_string(a.zoom) + ",\"bg\":" + std::to_string(a.bg & 0xFFFFFF) +
+               ",\"x0\":" + std::to_string(a.x0) + ",\"y0\":" + std::to_string(a.y0) +
+               ",\"x1\":" + std::to_string(a.x1) + ",\"y1\":" + std::to_string(a.y1) +
+               ",\"w\":" + std::to_string(a.imgW) + ",\"h\":" + std::to_string(a.imgH) + ",\"z\":[";
+        bool f2 = true;
+        for (const auto& z : a.zones) {
+            out += f2 ? "" : ","; f2 = false;
+            out += "[" + std::to_string(z.planes) + "," + std::to_string(z.sx) + "," + std::to_string(z.sy) + "," +
+                   std::to_string(z.dp) + "," + std::to_string(z.dx) + "," + std::to_string(z.dy) + "]";
+        }
+        out += "],\"r\":[";
+        f2 = true;
+        for (const auto& r : a.rects) {
+            out += f2 ? "" : ","; f2 = false;
+            out += "[" + std::to_string(r[0]) + "," + std::to_string(r[1]) + "," + std::to_string(r[2]) + "," + std::to_string(r[3]) + "]";
+        }
+        out += "]}";
+    }
+    out += "}";
+    if (emitted) g_wmAreasJson = out;
+    return out;
+}
+
+std::string MapAreaImageDataUrl(int areaId, bool thumb) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = g_store ? g_store->Get(kIndexWorldMap) : nullptr;
+    if (!idx || !idx->ready() || areaId < 0) return {};
+    auto f = idx->ReadFile(thumb ? 2 : 4, areaId);
+    if (f.size() < 8) return {};
+    std::size_t off = 0;
+    // The full-size archive prefixes a u32 length; the thumbnail archive stores the bare PNG.
+    if (!(f[0] == 0x89 && f[1] == 'P')) {
+        std::size_t ln = ((std::size_t)f[0] << 24) | ((std::size_t)f[1] << 16) | ((std::size_t)f[2] << 8) | f[3];
+        off = 4; if (ln > 0 && off + ln <= f.size()) f.resize(off + ln);
+    }
+    if (f.size() <= off + 8 || f[off] != 0x89) return {};
+    std::vector<std::uint8_t> png(f.begin() + (std::ptrdiff_t)off, f.end());
+    std::string b64 = base64(png);
+    return b64.empty() ? std::string() : ("data:image/png;base64," + b64);
 }
 
 std::string SpriteDataUrl(int sprite_id) {
