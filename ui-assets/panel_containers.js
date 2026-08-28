@@ -182,7 +182,7 @@
         if ((pi['369'] | 0) === 4 && (pi['368'] | 0) > 0) {
           const cap = pi['368'] | 0, pct = Math.min(99, Math.max(1, Math.floor(wear * 100 / cap)));
           charge = '\n' + (ps['6170'] || 'Urn') + ' filled: ' + pct + '% (' + wear.toLocaleString() + ' / ' + cap.toLocaleString() + ' xp)';
-        } else if ((pi['4563'] | 0) === 1 && mx > 0) {
+        } else if (mx > 0 && ((pi['4563'] | 0) === 1 || (pi['1324'] | 0) === 1)) {   // both degrade paths of script 5828
           if ((pi['9308'] | 0) === 1) {
             charge = '\nCharges remaining: ' + Math.max(0, mx - wear).toLocaleString() + ' of ' + mx.toLocaleString();
           } else {
