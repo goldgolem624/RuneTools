@@ -51,7 +51,7 @@
        the menu bar and windows paint pixels. An opaque body hides the game. */
     background: transparent;
     color: var(--text);
-    font: var(--font-size) / 1.5 var(--font-ui);
+    font-family: var(--font-ui); font-size: var(--font-size); line-height: 1.5;
     /* WebKit (Ultralight) honours the -webkit- prefix; the unprefixed form alone
        doesn't stop drag-selection in this engine. */
     -webkit-user-select: none; user-select: none;
@@ -289,6 +289,25 @@
     color: var(--accent-hi); background: rgba(var(--accent-rgb),0.18); border-color: rgba(var(--accent-rgb),0.5);
     font-weight: 600;
   }
+  /* Preferences page: section cards; each setting is label (+hint) left, control right.
+     Chip groups and wide controls drop to a full-width line under the label, so the page
+     keeps its shape from a 300px sliver to a full-width window. */
+  .pf-card { background: rgba(255,255,255,0.025); border: 1px solid var(--border); border-radius: 10px;
+             padding: 2px 14px 4px; margin: 0 0 12px; }
+  .pf-title { font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+              color: var(--accent-hi); padding: 10px 0 2px; }
+  .pf-card > .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+                    padding: 9px 0; border-top: 1px solid var(--border); margin: 0; }
+  .pf-card > .row.pf-first { border-top: none; }
+  .pf-card > .row > .k { flex: 1 1 150px; min-width: 130px; font-size: 12.5px; color: var(--text);
+                         text-transform: none; letter-spacing: 0; line-height: 1.3; }
+  .pf-card > .row > .k .pf-sub { display: block; font-size: 10.5px; color: var(--text-mute); margin-top: 2px; line-height: 1.35; }
+  .pf-card > .row > .v { flex: 2 1 220px; min-width: 0; display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+  .pf-card > .row > .v.pf-full { flex: 1 1 100%; justify-content: flex-start; }
+  .pf-card > .row > .v.uis-row input[type=range] { flex: 1 1 120px; min-width: 100px; max-width: 360px; }
+  .pf-card > .row > .v > .uis-chips { justify-content: flex-start; flex: 1 1 100%; gap: 6px; }
+  .pf-card > .row .al-pill { margin-left: auto; }
+  .pf-hint { flex: 1 1 100%; color: var(--text-mute); font-size: 11px; line-height: 1.45; padding: 4px 0 8px; }
   .uis-row { display: flex; align-items: center; gap: 8px; }
   .uis-row input[type=range] { flex: 1; min-width: 90px; }
   .uis-row b { min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -342,7 +361,10 @@
   .win-btns button svg { width: 13px; height: 13px; }
   .win-btns button:hover { background: var(--bg-elev-2); color: var(--text); }
   .win-btns button.win-close:hover { background: rgba(240,82,82,0.18); color: #ff8b8b; }
-  .win-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+  .win-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column;
+              /* Preferences font size: panels set explicit px sizes throughout, so the size
+                 preference zooms window content as a whole (text, icons, controls together). */
+              zoom: var(--content-zoom, 1); }
   /* Rolled up (window shade): only the title strip remains. */
   .win.rolled .win-body { display: none; }
   .win.rolled { min-height: 0; }
@@ -2405,7 +2427,10 @@
     document.documentElement.classList.toggle('tabnums', !!c.tabular);
     const fnt = UI_FONTS.find(f => f[1] === c.font) || UI_FONTS[0];
     r.setProperty('--font-ui', fnt[2]);
-    r.setProperty('--font-size', Math.max(11, Math.min(17, Number(c.fontSize) || 13)) + 'px');
+    const fs = Math.max(11, Math.min(17, Number(c.fontSize) || 13));
+    r.setProperty('--font-size', fs + 'px');
+    r.setProperty('--content-zoom', (fs / 13).toFixed(3));
+    try { if (typeof wmRectsSoon === 'function') wmRectsSoon(); } catch (e) {}
     try { uiBarTick(); } catch (e) {}
     // UI scale rides the view's device scale (crisp text, correct input mapping); the
     // launcher multiplies it into its DPI sync. Older launchers lack the call: no-op.
@@ -2415,6 +2440,26 @@
     }
   }
   function uiCatHidden(id) { return id !== 'Settings' && uiCfg().hiddenCats.indexOf(id) >= 0; }
+  // Preferences "Numbers": panels format through toLocaleString() at hundreds of call sites,
+  // so the preference is applied there. Compact mode abbreviates values from 100,000 up
+  // (levels, kill counts and stack sizes below that stay exact); calls that pass a locale or
+  // options are formatting deliberately and are left alone. Full mode is the native output.
+  (function () {
+    const native = Number.prototype.toLocaleString;
+    Number.prototype.toLocaleString = function (loc, opt) {
+      if (loc === undefined && opt === undefined && uiCfg().numFmt !== 'full') {
+        const n = Number(this);
+        if (isFinite(n) && Math.abs(n) >= 100000 && Math.floor(n) === n) {
+          const a = Math.abs(n), sign = n < 0 ? '-' : '';
+          const f = (v, suf) => { let t = v.toFixed(1); if (t.endsWith('.0')) t = t.slice(0, -2); return sign + t + suf; };
+          if (a >= 1e9) return f(a / 1e9, 'b');
+          if (a >= 1e6) return f(a / 1e6, 'm');
+          return f(a / 1e3, 'k');
+        }
+      }
+      return native.call(this, loc, opt);
+    };
+  })();
   // Canvas painters cannot read CSS var(): give them the accent as an rgba string.
   function accentRgba(a) { return 'rgba(' + uiHexRgb(uiCfg().accent) + ',' + a + ')'; }
   // Bar info chips. 1 Hz; writes only on change. The XP chip leans on the XP tracker's
@@ -5122,8 +5167,9 @@
   // Shared row builders for the Preferences page (values reflected by reflectUiSettings,
   // structure built once: renderPane re-runs this at 4 Hz while the window is open).
   function uisPill(label, id, get, set, hint) {
-    const r = document.createElement('div'); r.className = 'row'; r.style.alignItems = 'center';
-    const k = document.createElement('span'); k.className = 'k'; k.textContent = label; if (hint) k.title = hint;
+    const r = document.createElement('div'); r.className = 'row';
+    const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
+    if (hint) { const sub = document.createElement('span'); sub.className = 'pf-sub'; sub.textContent = hint; k.appendChild(sub); }
     const pill = document.createElement('div'); pill.id = id; pill.className = 'al-pill' + (get() ? ' on' : '');
     pill.innerHTML = '<span></span>'; if (hint) pill.title = hint;
     pill.addEventListener('click', () => { set(!get()); pill.classList.toggle('on', !!get()); });
@@ -5134,7 +5180,7 @@
   function uisSlider(label, id, min, max, step, get, set, fmt) {
     const r = document.createElement('div'); r.className = 'row';
     const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
-    const v = document.createElement('span'); v.className = 'v uis-row'; v.style.width = '210px';
+    const v = document.createElement('span'); v.className = 'v uis-row';
     const inp = document.createElement('input'); inp.type = 'range'; inp.id = id;
     inp.min = String(min); inp.max = String(max); inp.step = String(step); inp.value = String(get());
     const out = document.createElement('b'); out.id = id + 'v'; out.textContent = fmt(get());
@@ -5146,8 +5192,8 @@
   function uisChipRow(label, id, chips, isOn, onPick) {
     const r = document.createElement('div'); r.className = 'row';
     const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
-    const v = document.createElement('span'); v.className = 'v';
-    const g = document.createElement('div'); g.className = 'uis-chips'; g.id = id; g.style.justifyContent = 'flex-end';
+    const v = document.createElement('span'); v.className = 'v pf-full';
+    const g = document.createElement('div'); g.className = 'uis-chips'; g.id = id;
     for (const [text, val, swatch] of chips) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'uis-chip'; b.dataset.val = val;
       if (swatch) { const d = document.createElement('i'); d.style.cssText = 'display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;background:' + swatch; b.appendChild(d); }
@@ -5171,20 +5217,25 @@
     if (typeof kbGrab === 'function') kbGrab(false);
     if (uisHpPaint) uisHpPaint();
   }, true);
-  function uisSep(rows) { const d = document.createElement('div'); d.style.cssText = 'border-top:1px solid var(--border); margin:8px 0 4px;'; rows.appendChild(d); }
-  function uisNote(rows, text) { const d = document.createElement('div'); d.style.cssText = 'color:var(--text-mute);font-size:11px;padding:2px 0 6px;'; d.textContent = text; rows.appendChild(d); }
+  function uisSep(rows) { /* sections are cards now; kept for call-site compatibility */ }
+  function uisNote(rows, text) { const d = document.createElement('div'); d.className = 'pf-hint'; d.textContent = text; rows.appendChild(d); }
 
   function renderUiSettings() {
     const c = $('content'); if (!c) return;
     if ($('uisWrap')) { reflectUiSettings(); return; }
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'uisWrap'; wrap.className = 'pane';
-    const rows = document.createElement('div'); rows.className = 'rows';
+    let rows = null;
+    const sec = (title) => {
+      const card = document.createElement('div'); card.className = 'pf-card';
+      const h = document.createElement('div'); h.className = 'pf-title'; h.textContent = title;
+      card.appendChild(h); wrap.appendChild(card); rows = card;
+    };
     const cfg = uiCfg();
     const save = () => { uiCfgSave(); uiApply(); };
 
     // ---------------- Appearance ----------------
-    rows.appendChild(secRow('Appearance'));
+    sec('Appearance');
     rows.appendChild(uisSlider('UI scale', 'uis_scale', 50, 200, 5, () => cfg.scale, v => { cfg.scale = v; save(); }, v => v + '%'));
     if (!(bridge() && bridge().uiScale)) uisNote(rows, 'UI scale needs the updated launcher; the value is saved and applies after the next update.');
     rows.appendChild(uisChipRow('Accent', 'uis_accent', UI_ACCENTS.map(a => [a[0], a[1], a[1]]),
@@ -5215,8 +5266,7 @@
     rows.appendChild(uisPill('Compact tooltips', 'uis_ctips', () => !!cfg.compactTips, v => { cfg.compactTips = v; save(); }, 'Hides the Source: and ID provenance lines in tooltips'));
 
     // ---------------- Bar ----------------
-    uisSep(rows);
-    rows.appendChild(secRow('Bar'));
+    sec('Bar');
     uisNote(rows, 'Chips shown in the menu bar beside the player status.');
     rows.appendChild(uisPill('Clock', 'uis_barclock', () => !!cfg.barClock, v => { cfg.barClock = v; save(); }));
     rows.appendChild(uisPill('24-hour clock', 'uis_bar24', () => !!cfg.bar24h, v => { cfg.bar24h = v; save(); }));
@@ -5224,8 +5274,7 @@
     rows.appendChild(uisPill('XP per hour', 'uis_barxp', () => !!cfg.barXp, v => { cfg.barXp = v; save(); }, 'Total XP/h from the XP tracker session'));
 
     // ---------------- Menu ----------------
-    uisSep(rows);
-    rows.appendChild(secRow('Menu'));
+    sec('Menu');
     uisNote(rows, 'Hide categories you never open. Settings always stays.');
     rows.appendChild(uisChipRow('Show categories', 'uis_cats', CAT_META.filter(m => m.id !== 'Settings').map(m => [m.id, m.id]),
       v => !uiCatHidden(v), v => {
@@ -5235,14 +5284,12 @@
       }));
 
     // ---------------- Startup ----------------
-    uisSep(rows);
-    rows.appendChild(secRow('Startup'));
+    sec('Startup');
     rows.appendChild(uisPill('Restore open panels on launch', 'uis_restore', () => cfg.restore !== false, v => { cfg.restore = v; save(); },
       'Off starts with no panels open; bar position and alert placement are still remembered'));
 
     // ---------------- Notifications ----------------
-    uisSep(rows);
-    rows.appendChild(secRow('Notifications'));
+    sec('Notifications');
     rows.appendChild(uisPill('Alerts enabled', 'uis_almaster', () => !!(alertCfg && alertCfg.master), v => { if (alertCfg) { alertCfg.master = v; saveAlertCfg(); } }));
     rows.appendChild(uisPill('Only alert when tabbed out', 'uis_alfocus', () => !!(alertCfg && alertCfg.unfocusedOnly), v => { if (alertCfg) { alertCfg.unfocusedOnly = v; saveAlertCfg(); } },
       'Applies to every alert source: idle, custom, auras'));
@@ -5253,9 +5300,9 @@
     // Popup placement (unchanged mechanics: stored with the per-account layout).
     const aRow = document.createElement('div'); aRow.className = 'row';
     const aLab = document.createElement('span'); aLab.className = 'k'; aLab.textContent = 'Popup anchor';
-    const aWrap = document.createElement('span'); aWrap.className = 'v';
+    const aWrap = document.createElement('span'); aWrap.className = 'v pf-full';
     const seg = document.createElement('div');
-    seg.className = 'uis-chips'; seg.id = 'uis_anchor'; seg.style.justifyContent = 'flex-end';
+    seg.className = 'uis-chips'; seg.id = 'uis_anchor';
     for (const [id, label] of TOAST_ANCHORS) {
       const b = document.createElement('button');
       b.type = 'button'; b.textContent = label; b.className = 'uis-chip'; b.dataset.anchor = id;
@@ -5272,7 +5319,7 @@
     const num = (label, key) => {
       const r = document.createElement('div'); r.className = 'row';
       const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
-      const v = document.createElement('span'); v.className = 'v uis-row'; v.style.width = '210px';
+      const v = document.createElement('span'); v.className = 'v uis-row';
       const inp = document.createElement('input');
       inp.type = 'range'; inp.id = 'uis_' + key;
       const out = document.createElement('b'); out.id = 'uis_' + key + 'v';
@@ -5291,9 +5338,9 @@
     const btnRow = (label, id, buttons) => {
       const r = document.createElement('div'); r.className = 'row';
       const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
-      const v = document.createElement('span'); v.className = 'v';
+      const v = document.createElement('span'); v.className = 'v pf-full';
       const g = document.createElement('div');
-      g.className = 'uis-chips'; g.id = id; g.style.justifyContent = 'flex-end';
+      g.className = 'uis-chips'; g.id = id;
       for (const [text, fn, bid] of buttons) {
         const b = document.createElement('button');
         b.type = 'button'; b.className = 'uis-chip'; b.textContent = text;
@@ -5315,14 +5362,13 @@
     ]));
 
     // ---------------- Hotkeys ----------------
-    uisSep(rows);
-    rows.appendChild(secRow('Hotkeys'));
+    sec('Hotkeys');
     uisNote(rows, 'Keys are read by the launcher while the game has focus, so they work without clicking a panel first. Screenshot and Wiki keys are set on their own panels.');
     {
       const r = document.createElement('div'); r.className = 'row';
       const k = document.createElement('span'); k.className = 'k'; k.textContent = 'Hide / show all panels';
-      const v = document.createElement('span'); v.className = 'v';
-      const g = document.createElement('div'); g.className = 'uis-chips'; g.style.justifyContent = 'flex-end';
+      const v = document.createElement('span'); v.className = 'v pf-full';
+      const g = document.createElement('div'); g.className = 'uis-chips';
       const chip = document.createElement('button'); chip.type = 'button'; chip.className = 'uis-chip'; chip.id = 'uis_hpKey';
       const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'uis-chip'; clr.textContent = 'Clear';
       const paint = () => {
@@ -5338,14 +5384,12 @@
     }
 
     // ---------------- Privacy ----------------
-    uisSep(rows);
-    rows.appendChild(secRow('Privacy'));
+    sec('Privacy');
     rows.appendChild(uisPill('Hide player name', 'uis_hidename', () => !!nameHidden, v => setNameHidden(v), 'Masks the name in the bar header'));
     rows.appendChild(uisPill('Hide world number', 'uis_hideworld', () => !!cfg.hideWorld, v => { cfg.hideWorld = v; save(); _hdrSig = ''; try { renderHeader(); } catch (e) {} }));
 
     // ---------------- Data ----------------
-    uisSep(rows);
-    rows.appendChild(secRow('Data'));
+    sec('Data');
     uisNote(rows, 'Export copies every preference (sounds, overlay, auras, appearance) to the clipboard as one block; Import reads such a block back from the clipboard.');
     rows.appendChild(btnRow('Preferences', 'uis_data', [
       ['Export to clipboard', async () => {
@@ -5376,7 +5420,8 @@
       }],
     ]));
 
-    wrap.appendChild(rows);
+    // First row of every card carries no divider.
+    for (const card of wrap.querySelectorAll('.pf-card')) { const f = card.querySelector('.row'); if (f) f.classList.add('pf-first'); }
     c.appendChild(wrap);
     reflectUiSettings();
   }
