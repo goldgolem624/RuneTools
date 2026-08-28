@@ -238,15 +238,9 @@ const std::string& AchievementsJson() {
                 for (std::size_t i = 0; i < a.subach.size(); ++i) { if (i) out += ','; out += std::to_string(a.subach[i]); }
                 out += "]";
             }
-            if (!a.skills.empty()) {
-                out += ",\"skills\":[";
-                for (std::size_t i = 0; i < a.skills.size(); ++i) {
-                    if (i) out += ',';
-                    out += "{\"s\":" + std::to_string(a.skills[i].skill) +
-                           ",\"l\":" + std::to_string(a.skills[i].level) + "}";
-                }
-                out += "]";
-            }
+            // (NOTE: "skills" is emitted once above in [skill, level] array form; a second
+            // object-form emission here used to override it after JSON.parse (last key wins)
+            // and silently broke the panel's skill-gate judging. Do not reintroduce it.)
             // op 23 goes out as "reqsvpb" (varp bits) and op 25 as "reqs25" (varbit bits).
             // The legacy merged "reqs23" key is retired: panels heuristically classify it
             // when reading output from pre-split builds, so it must not reappear here.

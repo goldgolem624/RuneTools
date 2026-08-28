@@ -151,7 +151,10 @@
             srcs.push(r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb));
           }
           const okq = cur >= q.value; if (okq) sat++;
-          lines.push({ label: q.desc || '', cur: cur, req: q.value, ok: okq, src: srcs.join(' + ') });
+          // Single unnamed counter req: the achievement's own description IS its text
+          // (that is how the game presents it - see the render-side comment on script10988).
+          const lbl = q.desc || ((a.reqs.length === 1 && q.value > 1 && a.desc) ? a.desc : '');
+          lines.push({ label: lbl, cur: cur, req: q.value, ok: okq, src: srcs.join(' + ') });
         }
         const br = achBitReqs(a);
         for (const b of br.vbits) {               // op 25: one bit of a varbit's value
@@ -267,7 +270,8 @@
       for (const q of (a.reqs || [])) {
         let cur = 0; for (const vb of q.varbits) cur += (readVb(vb, vp) || 0);
         const ok = cur >= q.value; if (ok) sat++;
-        reqs.push({ description: q.desc || '', current: cur, target: q.value, complete: ok, varbits: q.varbits.slice() });
+        const dsc = q.desc || ((a.reqs.length === 1 && q.value > 1 && a.desc) ? a.desc : (q.value > 1 ? 'Progress counter' : 'Completion flag'));
+        reqs.push({ description: dsc, current: cur, target: q.value, complete: ok, varbits: q.varbits.slice() });
       }
       const br = achBitReqs(a);
       for (const b of br.vbits) {               // op 25: one bit of a varbit's value
@@ -351,7 +355,13 @@
       (need === 1 ? ' (any one)' : need >= poolLines.length ? ' (all)' : ''));
     if (lines.some(ln => ln.gate)) tip.push('Skill and prerequisite lines are always required.');
     for (const ln of lines) {
-      const head = ln.label ? ln.label : 'Requirement';
+      // Many requirements carry NO description in the cache: the game's own requirement-text
+      // builder (script10988) reads the same per-requirement string and simply skips the line
+      // when it is empty, letting the achievement's description plus aggregate progress carry
+      // the meaning. There is no hidden text to recover, so fall back to an honest shape-based
+      // label: a target above 1 is a progress counter, a target of exactly 1 is the
+      // completion flag the server sets when the achievement is judged done.
+      const head = ln.label ? ln.label : (ln.req > 1 ? 'Progress counter' : 'Completion flag');
       tip.push((ln.ok ? '✓ ' : '• ') + head + '  (' + ln.cur + '/' + ln.req + ')');
       if (ln.src) tip.push('    Source: ' + ln.src);
     }
