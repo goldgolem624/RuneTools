@@ -2378,7 +2378,16 @@ void RenderLoop() {
                 bool ok = rtx::reader::SkillsXp(xpPid, cur);
                 std::lock_guard<std::mutex> lk(g_mu);
                 g_xp.sampleMs = t;
-                if (ok) {
+                // A sample is only trustworthy once the skill table is populated: during login,
+                // a world hop or a reload the reader can return zeros for a moment. Baselining
+                // on those made the next real read count the player's ENTIRE XP as a session
+                // gain (19M on the first action, a 400B/h rate). Constitution can never be 0
+                // on a logged-in account (level 10 = 1,154 XP), and a skill that read > 0 a
+                // second ago cannot read 0 now, so either condition marks the sample unreadable.
+                bool readable = ok && cur[3] > 0;
+                if (readable) for (int i = 0; i < 29 && readable; ++i)
+                    if (cur[i] == 0 && g_xp.cur[i] > 0) readable = false;
+                if (readable) {
                     bool switched = false;
                     for (int i = 0; i < 29 && !switched; ++i)
                         if (g_xp.cur[i] >= 0 && cur[i] >= 0 && cur[i] < g_xp.cur[i]) switched = true;
@@ -2390,6 +2399,10 @@ void RenderLoop() {
                         for (int i = 0; i < 29; ++i) {
                             if (cur[i] < 0) continue;
                             if (g_xp.base[i] < 0) g_xp.base[i] = cur[i];   // record appeared mid-session
+                            // An impossible one-second jump (> 5M) is a table reload or an
+                            // account change we did not catch, never play: absorb it into the
+                            // baseline so it is not counted as a gain.
+                            if (g_xp.cur[i] >= 0 && cur[i] - g_xp.cur[i] > 5000000) g_xp.base[i] += cur[i] - g_xp.cur[i];
                             if (g_xp.firstGain[i] == 0 && g_xp.cur[i] >= 0 && cur[i] > g_xp.base[i])
                                 g_xp.firstGain[i] = t;
                             if (g_xp.startMs == 0 && g_xp.firstGain[i] != 0) g_xp.startMs = t;
