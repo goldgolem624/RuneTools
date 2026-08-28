@@ -164,6 +164,5 @@
       + ['all', 'usable', 'locked', 'unvisited'].map(f => '<button class="fr-btn' + (frFilter === f ? ' on' : '') + '" data-fr-f="' + f + '">' + f[0].toUpperCase() + f.slice(1) + '</button>').join('')
       + '<span class="fr-cnt">' + usable + ' / ' + frRows.length + ' usable · ' + seen + ' visited' + (frUnused ? ' · ' + frUnused + ' unused codes' : '') + '</span></div>';
     h += '<div class="fr-card">' + (rows.length ? rows.join('') : '<div class="fr-empty">Nothing matches.</div>') + '</div>';
-    h += '<div class="fr-note">Codes and destinations are the game\'s fairy ring log (dbtable 121). "Usable" applies the same requirement gate the game applies to each ring (script 3104) to your live quest progress, on top of the base requirement: ' + esc(FR_BASE_REQ) + '. "Visited" is the game\'s own travel log flag. Map buttons appear for rings the World Map has bound to a fairy ring icon.</div>';
     wrap.innerHTML = h;
   }
