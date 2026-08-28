@@ -44,7 +44,6 @@
              font-variant-numeric: tabular-nums; white-space: nowrap; }
   .mb-info:empty { display: none; }
   .mb-info b { color: var(--text); font-weight: 600; }
-  #menubar.pill .mb-info { display: none; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     /* TRANSPARENT on purpose: this page is composited OVER the game frame; only
@@ -2375,7 +2374,7 @@
     try { ovApplyDurablePrefs(); } catch (e) {}
     try { sceneApplyDurablePrefs(); } catch (e) {}
     try { if (typeof auraApplyDurablePrefs === 'function') auraApplyDurablePrefs(); } catch (e) {}
-    try { _uiCfg = null; uiApply(); } catch (e) {}
+    try { _uiCfg = null; uiApply(); const w = $('uisWrap'); if (w) w.remove(); } catch (e) {}
   }
 
   // =================== Preferences (rtxUi) ===================
@@ -5254,7 +5253,9 @@
       const h = document.createElement('div'); h.className = 'pf-title'; h.textContent = title;
       card.appendChild(h); wrap.appendChild(card); rows = card;
     };
-    const cfg = uiCfg();
+    // Never hold the cfg object: the durable copy can replace it after this page is built
+    // (prefsInit), and a toggle mutating a stale object is then silently not saved.
+    const cfg = new Proxy({}, { get: (_, k) => uiCfg()[k], set: (_, k, v) => { uiCfg()[k] = v; return true; } });
     const save = () => { uiCfgSave(); uiApply(); };
 
     // ---------------- Appearance ----------------
