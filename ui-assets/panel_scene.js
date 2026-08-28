@@ -98,7 +98,9 @@
         if (sceneInteractable && !hasActs(o)) continue;
         // Phantom locs: in the worldview with a config + action but never drawn (vis=false, only ever false for runtime locs); undefined = older reader -> keep.
         if (o.vis === false) continue;
-        out.push({ type: 'object', name: o.name, x: o.x, y: o.y, dist: (o.dist == null ? -1 : o.dist), id: o.id, plane: o.plane, otype: o.type, actions: o.actions, rt: !!o.rt });
+        // w/h = the reader's rotation-corrected footprint (live AABB for runtime locs); this
+        // mapping DROPPED them at first, which is why every object marked one tile.
+        out.push({ type: 'object', name: o.name, x: o.x, y: o.y, dist: (o.dist == null ? -1 : o.dist), id: o.id, plane: o.plane, otype: o.type, actions: o.actions, rt: !!o.rt, w: o.w | 0 || 1, h: o.h | 0 || 1 });
       }
     // Ground items carry no actions, so the Interactable filter doesn't apply.
     if (sceneShow.ground && Array.isArray(sceneGround))
