@@ -2463,7 +2463,7 @@
   function accentRgba(a) { return 'rgba(' + uiHexRgb(uiCfg().accent) + ',' + a + ')'; }
   // Bar info chips. 1 Hz; writes only on change. The XP chip leans on the XP tracker's
   // sampler (applyXpOverlay starts it) and its 1 s state fetch.
-  let _barInfoSig = '', _barXpArmed = false;
+  let _barInfoSig = '', _barXpArmed = false, _sessStartMs = 0;
   function uiBarTick() {
     // Overflow guard: anything that widened the bar after its last placement (fonts, chips,
     // status text) must not leave it hanging off the frame edge.
@@ -2482,17 +2482,34 @@
       if (c.bar24h) parts.push('<b>' + String(h).padStart(2, '0') + ':' + m + '</b>');
       else parts.push('<b>' + ((h % 12) || 12) + ':' + m + '</b> ' + (h < 12 ? 'am' : 'pm'));
     }
-    if (c.barSession || c.barXp) {
+    // Session = time logged into the game (lobby or in-game, status >= 20), from the first
+    // logged-in snapshot this client showed until it logs out. Independent of the XP tracker,
+    // whose own clock only starts at the first XP gain.
+    {
+      const sn = (typeof lastSnap !== 'undefined') ? lastSnap : null;
+      const loggedIn = !!(sn && sn.status >= 20);
+      const key = 'rtxSessStart:' + myPid();
+      if (loggedIn) {
+        if (!_sessStartMs) {
+          let saved = 0; try { saved = Number(localStorage.getItem(key)) || 0; } catch (e) {}
+          _sessStartMs = saved > 0 ? saved : Date.now();
+          try { localStorage.setItem(key, String(_sessStartMs)); } catch (e) {}
+        }
+      } else if (_sessStartMs && sn && sn.status >= 0) {
+        _sessStartMs = 0; try { localStorage.removeItem(key); } catch (e) {}
+      }
+    }
+    if (c.barSession) {
+      const sec = _sessStartMs ? Math.floor((Date.now() - _sessStartMs) / 1000) : 0;
+      const t = sec >= 3600 ? Math.floor(sec / 3600) + 'h ' + String(Math.floor((sec % 3600) / 60)).padStart(2, '0') + 'm'
+                            : Math.floor(sec / 60) + 'm ' + String(sec % 60).padStart(2, '0') + 's';
+      parts.push('Session <b>' + t + '</b>');
+    }
+    if (c.barXp) {
       if (!_barXpArmed) { _barXpArmed = true; try { if (typeof applyXpOverlay === 'function') applyXpOverlay(); } catch (e) {} }
       try { if (typeof fetchXpTracker === 'function') fetchXpTracker(false); } catch (e) {}
       const d = (typeof xpStateData !== 'undefined') ? xpStateData : null;
-      if (c.barSession) {
-        const sec = d ? Math.floor((+d.elapsed || 0) / 1000) : 0;
-        const t = sec >= 3600 ? Math.floor(sec / 3600) + 'h ' + String(Math.floor((sec % 3600) / 60)).padStart(2, '0') + 'm'
-                              : Math.floor(sec / 60) + 'm ' + String(sec % 60).padStart(2, '0') + 's';
-        parts.push('Session <b>' + t + '</b>');
-      }
-      if (c.barXp) {
+      {
         const ph = (d && d.total) ? (+d.total.ph || 0) : 0;
         parts.push('<b>' + (typeof fmtXpNum === 'function' ? fmtXpNum(ph) : ph) + '</b> xp/h');
       }
@@ -5315,7 +5332,7 @@
     uisNote(rows, 'Chips shown in the menu bar beside the player status.');
     rows.appendChild(uisPill('Clock', 'uis_barclock', () => !!cfg.barClock, v => { cfg.barClock = v; save(); }));
     rows.appendChild(uisPill('24-hour clock', 'uis_bar24', () => !!cfg.bar24h, v => { cfg.bar24h = v; save(); }));
-    rows.appendChild(uisPill('Session timer', 'uis_barsess', () => !!cfg.barSession, v => { cfg.barSession = v; save(); }, 'Time since the XP tracker session started'));
+    rows.appendChild(uisPill('Session timer', 'uis_barsess', () => !!cfg.barSession, v => { cfg.barSession = v; save(); }, 'Time logged into the game this session (lobby and in-game)'));
     rows.appendChild(uisPill('XP per hour', 'uis_barxp', () => !!cfg.barXp, v => { cfg.barXp = v; save(); }, 'Total XP/h from the XP tracker session'));
 
     // ---------------- Menu ----------------
