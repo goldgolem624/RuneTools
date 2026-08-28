@@ -5,7 +5,8 @@
 // member item (param 4851, icon/name) and the display name (param 4849). The four grouped
 // ware slots (City of Um / Thalmund) share one bought-counter per group, paired with a LIMIT
 // varbit, and reset weekly on Wednesday.
-// MTX-adjacent caps (lamps, stars, cores, protean packs, TH keys, ...) are not shown.
+// MTX-adjacent caps (lamps, stars, cores, protean packs, TH keys, ...) are not shown: the
+// script-17845 daily list was tried and dropped as outdated Treasure Hunter stock.
 
   // Grouped ware slots: [boughtVb, limitVb, [member struct ids]]
   const SC_GROUPS = [
@@ -13,33 +14,15 @@
     [55088, 55089, [48317, 48318, 48319, 48320, 48321]],
     [55090, 55091, [48322, 48323, 48477, 48481, 48482, 48505, 48506, 48507]],
     [55092, 55093, [48508, 48779, 48780, 48781]]];
-  // Daily singles: [countVb, struct id]. Populated from the CS2 switches extraction
-  // (script17845, the game's own daily shop-cap resolver: struct -> bought-count varbit);
-  // empty until an extraction exists, in which case the Daily caps section is skipped.
-  let SC_DAILY = [];
-  let scSwAdopted = false;
-  async function scAdoptSwitches() {
-    if (scSwAdopted || typeof cs2SwitchEntries !== 'function') return;
-    const ents = await cs2SwitchEntries(17845);
-    if (!ents) return;
-    scSwAdopted = true;
-    const out = [];
-    for (const k in ents) {
-      const sid = k | 0, rec = ents[k];
-      const vb = Array.isArray(rec) ? (rec[0] | 0) : (rec | 0);
-      if (sid > 0 && vb > 0) out.push([vb, sid]);
-    }
-    if (out.length) { SC_DAILY = out; scStructs = null; scSig = ''; }
-  }
 
-  function scVbIds() { return SC_GROUPS.flatMap(g => [g[0], g[1]]).concat(SC_DAILY.map(d => d[0])).join(','); }
+  function scVbIds() { return SC_GROUPS.flatMap(g => [g[0], g[1]]).join(','); }
 
   let scVb = null, scFetching = false, scFetchAt = 0, scSig = '';
   let scStructs = null;         // struct id -> {name, item, cap}
   async function scLoadStructs() {
     if (scStructs || !bridge().structParams) return;
     const out = {};
-    for (const sid of SC_GROUPS.flatMap(g => g[2]).concat(SC_DAILY.map(d => d[1]))) {
+    for (const sid of SC_GROUPS.flatMap(g => g[2])) {
       try {
         const sp = JSON.parse(await bridge().structParams(sid) || 'null');
         const I = (sp && sp.ints) || {}, S = (sp && sp.strs) || {};
@@ -59,7 +42,6 @@
     if (t - scFetchAt < 2000) return;
     scFetchAt = t; scFetching = true;
     try {
-      await scAdoptSwitches();
       const vb = JSON.parse(await bridge().varbits(myPid(), scVbIds()) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) scVb = vb;
       await scLoadStructs();
@@ -69,7 +51,7 @@
   }
   const scV = k => ((scVb && scVb[String(k)]) | 0);
   // Reset clocks: daily = next 00:00 UTC; weekly = next Wednesday 00:00 UTC.
-  function scDailyMs() { return 86400000 - (Date.now() % 86400000); }
+  function scDailyMs() { return 86400000 - (Date.now() % 86400000); }   // used by the weekly clock
   function scWeeklyMs() {
     const now = new Date();
     const day = now.getUTCDay();                       // Wed = 3
@@ -162,13 +144,5 @@
       });
     }
 
-    // ---- daily caps (section skipped entirely while the list is empty) ----
-    if (SC_DAILY.length) {
-      const dl = sec('Daily caps', 'resets 00:00 UTC · ' + shcFmt(scDailyMs()));
-      for (const [countVb, sid] of SC_DAILY) {
-        const s = scStructs[sid] || {};
-        row(dl, s.item | 0, s.name || ('#' + sid), null, scV(countVb), s.cap || 0);
-      }
-    }
     sizeAllIcons();
   }
