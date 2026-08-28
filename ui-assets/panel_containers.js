@@ -176,7 +176,13 @@
         const pp = JSON.parse(await bridge().itemParams(+parts[1]) || 'null');
         const pi = (pp && pp.ints) || {};
         const mx = pi['3385'] | 0, wear = k[0] | 0;
-        if ((pi['4563'] | 0) === 1 && mx > 0) {
+        const ps = (pp && pp.strs) || {};
+        // Fillables (urns, param 369 = 4): key 0 = stored XP, param 368 = capacity, label param
+        // 6170; the game clamps the percentage to 1..99 until the urn is teleported.
+        if ((pi['369'] | 0) === 4 && (pi['368'] | 0) > 0) {
+          const cap = pi['368'] | 0, pct = Math.min(99, Math.max(1, Math.floor(wear * 100 / cap)));
+          charge = '\n' + (ps['6170'] || 'Urn') + ' filled: ' + pct + '% (' + wear.toLocaleString() + ' / ' + cap.toLocaleString() + ' xp)';
+        } else if ((pi['4563'] | 0) === 1 && mx > 0) {
           if ((pi['9308'] | 0) === 1) {
             charge = '\nCharges remaining: ' + Math.max(0, mx - wear).toLocaleString() + ' of ' + mx.toLocaleString();
           } else {
@@ -216,7 +222,7 @@
               + (pct ? '\nCharge: ' + pct : '');
         } catch (e4) {}
       }
-      const base = cell.dataset.tip.split('\nItem charge:')[0].split('\nCharges remaining:')[0].split('\nEoF:')[0].split('\nInstance vars')[0].split('\nExtra_ints')[0];
+      const base = cell.dataset.tip.split(/\n[A-Za-z ]+ filled: /)[0].split('\nItem charge:')[0].split('\nCharges remaining:')[0].split('\nEoF:')[0].split('\nInstance vars')[0].split('\nExtra_ints')[0];
       cell.dataset.tip = base + charge + eof + '\n' + line;
       if (typeof showTipFor === 'function' && cell.matches(':hover')) showTipFor(cell);
     } catch (e2) {} finally { setTimeout(() => { cell._eiBusy = 0; }, 800); }
