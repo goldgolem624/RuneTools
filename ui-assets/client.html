@@ -1524,9 +1524,10 @@
   /* Up to three tight lines with an ellipsis, so "Exquisite woodcutting urn" stays readable
      instead of being sliced mid-glyph at the second line; the tooltip has the full name. */
   .inv-name {
-    font-size: 9.5px; line-height: 1.15; color: var(--text-dim); text-align: center;
-    padding: 0 2px 3px; min-height: 2.3em; max-height: 3.6em; word-break: break-word; overflow-wrap: anywhere;
-    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+    /* A plain block that grows to three lines: the -webkit-box line clamp is not honoured by
+       the embedded engine (the strip stayed at its two-line minimum and clipped mid-glyph). */
+    display: block; font-size: 9px; line-height: 1.15; color: var(--text-dim); text-align: center;
+    padding: 0 2px 3px; min-height: 2.3em; max-height: 3.65em; word-break: break-word; overflow: hidden;
   }
   .inv-grid::-webkit-scrollbar { width: 10px; }
   .inv-grid::-webkit-scrollbar-track { background: transparent; }
