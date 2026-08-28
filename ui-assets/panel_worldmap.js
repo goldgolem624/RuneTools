@@ -1333,6 +1333,15 @@
       const b = document.createElement('span'); b.className = 'v'; b.textContent = f[1];
       fr.appendChild(a); fr.appendChild(b); tip.appendChild(fr);
     }
+    {
+      const lk = wmElemLink(hit.ml);
+      if (lk) {
+        const fr = document.createElement('div'); fr.className = 'wm-fact'; fr.style.marginTop = '4px';
+        const a = document.createElement('span'); a.textContent = 'Click to follow';
+        const b = document.createElement('span'); b.className = 'v'; b.textContent = lk.x + ', ' + lk.y + (lk.p ? ' f' + lk.p : '');
+        fr.appendChild(a); fr.appendChild(b); tip.appendChild(fr);
+      }
+    }
     // Requirements sit between the header and the resource rows, as they do in game. Satisfied
     // entries are dimmed rather than hidden - the game marks them <str=FFFFFE> and still shows
     // them, because "what does this need" is the question even once you meet it.
@@ -1373,6 +1382,19 @@
   function wmLocName(m) {
     return (m && WM_LOCNM && WM_LOCNM[m.id]) || '';
   }
+  // Link destination of a map element: param 4148 is a packed coordgrid (plane<<28 | x<<14 | y),
+  // the value the game's click handler (script 7592 -> 304) jumps to for dungeon links, stairs
+  // and the like. null when the element has no link.
+  function wmElemLink(ml) {
+    const e = WM_ML && WM_ML[ml]; if (!e || !e.p) return null;
+    const v = e.p['4148'];
+    if (v == null || v === -1 || v < 0) return null;
+    return { x: (v >> 14) & 16383, y: v & 16383, p: (v >> 28) & 3 };
+  }
+  function wmLinkLine(ml) {
+    const lk = wmElemLink(ml); if (!lk) return '';
+    return '<div class="wm-fact" style="margin-top:4px"><span>Click to follow</span><span class="v">' + lk.x + ', ' + lk.y + (lk.p ? ' f' + lk.p : '') + '</span></div>';
+  }
   function wmElemTipHtml(m) {
     const t = wmElemTip(m.ml);
     const head = (t ? t.head : '') || wmLocName(m);
@@ -1381,9 +1403,10 @@
     // ("Level 19 Strength<br>Level 8 Agility<br>Requires a grapple"). Escape everything first,
     // then re-allow just <br>, so cache text can never inject markup but still breaks lines.
     const esc = function (s) { return htmlEsc(s).replace(/&lt;br\s*\/?&gt;/gi, '<br>'); };
+    const lkLine = wmLinkLine(m.ml);
     return '<b style="text-transform:uppercase;letter-spacing:.5px">' + esc(head || 'Map symbol') + '</b>'
          + (body ? '<br>' + esc(body) : '')
-         + '<br><span style="opacity:.6">' + m.x + ', ' + m.y + '</span>';
+         + '<br><span style="opacity:.6">' + m.x + ', ' + m.y + '</span>' + lkLine;
   }
   // The hovered TILE outlined at the map's own scale. A positioned div, so pointing at
   // tiles never forces a canvas repaint; wmDraw re-syncs it after pan/zoom.
@@ -1615,6 +1638,17 @@
           const r = st2.getBoundingClientRect(), k = wmZoomK(st2, r);
           const mx = (e.clientX - r.left) * k, my = (e.clientY - r.top) * k;
           if (mx >= 0 && my >= 0 && mx <= r.width && my <= r.height) {
+            // A click on a linked element (dungeon link, stairs, ladders...) follows it the way
+            // the game does: fly to the destination and pin it, plane switch included.
+            let hitM = null, hdM = Infinity;
+            for (const m of wmMarks) { if (m.ml == null) continue; const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= m.r + 4 && d < hdM) { hdM = d; hitM = m; } }
+            const lk = hitM ? wmElemLink(hitM.ml) : null;
+            if (lk) {
+              const t = wmElemTip(hitM.ml), nm = (t && t.head) ? String(t.head).replace(/<[^>]*>/g, '') : 'Link';
+              wmFlyTo(lk.x, lk.y, lk.p, { x: lk.x, y: lk.y, p: lk.p, nm: nm });
+              wmDrag = null; if (st2) st2.classList.remove('grabbing');
+              return;
+            }
             const tx = Math.floor(wmCam.x + (mx - st2.clientWidth / 2) / wmCam.z);
             const ty = Math.floor(wmCam.y - (my - st2.clientHeight / 2) / wmCam.z);
             wmSel = { x: tx, y: ty, p: wmCam.p, nm: '', dt: '' };
