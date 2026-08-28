@@ -1443,6 +1443,10 @@
       fr.appendChild(a); fr.appendChild(b); tip.appendChild(fr);
     }
     {
+      if (WM_ML[hit.ml] && WM_ML[hit.ml].c === WM_TRANSPORT_CAT) {
+        const rt = wmRouteTipLines(hit.x, hit.y);
+        if (rt) { const d = document.createElement('div'); d.innerHTML = rt; tip.appendChild(d); }
+      }
       const lk = wmElemLink(hit.ml, hit);
       if (lk) {
         const fr = document.createElement('div'); fr.className = 'wm-fact'; fr.style.marginTop = '4px';
@@ -1491,6 +1495,140 @@
   function wmLocName(m) {
     return (m && WM_LOCNM && WM_LOCNM[m.id]) || '';
   }
+  // ---- Transportation routes (curated) ----
+  // Topology (which stops a network connects) is curated from the RuneScape Wiki; every
+  // COORDINATE is game data: a stop is bound to the nearest Transportation map element
+  // (category 1206) to the map label carrying the stop's name, so a stop is never typed in by
+  // hand. Fairy rings carry the wiki's coordinates and are matched by proximity instead.
+  const WM_ROUTES = {"source":"RuneScape Wiki, verified 2026-08-28 (charter ship, gnome glider, boat network, Anachronia pages re-read); no coordinate is hand-typed: stops bind to map icons at runtime",
+"networks":[
+{"id":"charter","name":"Charter ship","kind":"all-to-all","wiki":"https://runescape.wiki/w/Charter_ship","stops":[
+{"name":"Port Sarim","alt":[],"note":""},{"name":"Catherby","alt":[],"note":""},{"name":"Brimhaven","alt":[],"note":""},{"name":"Musa Point","alt":["Karamja"],"note":""},{"name":"Port Khazard","alt":[],"note":""},{"name":"Shipyard","alt":["Karamja Shipyard"],"note":"partial Monkey Madness"},{"name":"Port Phasmatys","alt":[],"note":"Morytania access (Priest in Peril)"},{"name":"Mos Le'Harmless","alt":[],"note":"Cabin Fever"},{"name":"Port Tyras","alt":["Tyras Camp"],"note":"Regicide"},{"name":"Oo'glog","alt":[],"note":"As a First Resort"},{"name":"Menaphos","alt":["Menaphos Port district","Port district"],"note":"The Jack of Spades"}],"links":[]},
+{"id":"glider","name":"Gnome glider","kind":"all-to-all","wiki":"https://runescape.wiki/w/Gnome_glider","stops":[
+{"name":"Tree Gnome Stronghold","alt":["Grand Tree","Ta Quir Priw"],"note":"The Grand Tree"},{"name":"White Wolf Mountain","alt":["Sindarpos"],"note":""},{"name":"Digsite","alt":["Varrock Dig Site","Dig Site","Lemanto Andra"],"note":"crash landing: one-way, no flights back"},{"name":"Al Kharid","alt":["Kar-Hewo"],"note":""},{"name":"Karamja","alt":["Gandius","Shipyard"],"note":""},{"name":"Feldip Hills","alt":["Lemantolly Undri"],"note":"One Small Favour progress"},{"name":"Tree Gnome Village","alt":["Priw Gnomo Andralo"],"note":"The Prisoner of Glouphrie"},{"name":"Prifddinas","alt":["Dylandra"],"note":"Plague's End"},{"name":"Tuai Leit","alt":["Kai-Undri"],"note":"rescue Azalea Oakheart (The Arc)"}],"links":[]},
+{"id":"spirit_tree","name":"Spirit tree","kind":"all-to-all","wiki":"https://runescape.wiki/w/Spirit_tree","stops":[
+{"name":"Tree Gnome Village","alt":[],"note":"Tree Gnome Village quest"},{"name":"Tree Gnome Stronghold","alt":[],"note":"The Grand Tree"},{"name":"Battlefield of Khazard","alt":["Khazard Battlefield"],"note":""},{"name":"Grand Exchange","alt":[],"note":""},{"name":"Feldip Hills","alt":["South Feldip Hills"],"note":""},{"name":"Poison Waste","alt":[],"note":"The Path of Glouphrie"},{"name":"Port Sarim","alt":[],"note":"player-grown"},{"name":"Etceteria","alt":[],"note":"player-grown"},{"name":"Brimhaven","alt":[],"note":"player-grown"},{"name":"Manor Farm","alt":[],"note":"player-grown"},{"name":"Prifddinas","alt":[],"note":"Plague's End + three player-grown trees"}],"links":[]},
+{"id":"fairy_ring","name":"Fairy ring","kind":"all-to-all","cat":"fairy","wiki":"https://runescape.wiki/w/Fairy_ring","stops":[
+{"name":"AIP - Zanaris","alt":[],"coord":[2412,4434,0],"note":"A Fairy Tale II started"},{"name":"AIQ - Mudskipper Point","alt":[],"coord":[2996,3114,0],"note":""},{"name":"AIR - South of Witchaven","alt":[],"coord":[2700,3247,0],"note":""},{"name":"AJR - Fremennik Slayer Dungeon","alt":[],"coord":[2780,3613,0],"note":""},{"name":"AKQ - Piscatoris Hunter area","alt":[],"coord":[2319,3619,0],"note":""},{"name":"AKS - Feldip Hunter area","alt":[],"coord":[2571,2956,0],"note":""},{"name":"ALQ - Haunted Woods","alt":[],"coord":[3597,3495,0],"note":""},{"name":"ALS - McGrubor's Wood","alt":[],"coord":[2644,3495,0],"note":""},{"name":"BIP - Polypore Dungeon","alt":[],"coord":[3410,3324,0],"note":""},{"name":"BIQ - Kalphite Hive","alt":[],"coord":[3251,3095,0],"note":""},{"name":"BIS - Ardougne Zoo","alt":[],"coord":[2635,3266,0],"note":"special access"},{"name":"BJP - Fort Forinthry","alt":[],"coord":[3347,3540,0],"note":"Grove tier 2"},{"name":"BJR - Fisher Realm","alt":[],"coord":[2650,4730,0],"note":"Holy Grail"},{"name":"BJS - The Lost Grove","alt":[],"coord":[1935,3139,0],"note":"rebuild with bittercap mushrooms"},{"name":"BKP - South of Castle Wars","alt":[],"coord":[2385,3035,0],"note":""},{"name":"BKQ - Enchanted Valley","alt":[],"coord":[3041,4532,0],"note":""},{"name":"BKR - Mort Myre Swamp","alt":[],"coord":[3469,3431,0],"note":""},{"name":"BKS - Shrine of Inanna","alt":[],"coord":[4303,3202,0],"note":"Visions of Havenhythe"},{"name":"BLP - TzHaar City","alt":[],"coord":[4622,5147,0],"note":""},{"name":"BLR - Legends' Guild","alt":[],"coord":[2740,3351,0],"note":""},{"name":"CIP - Miscellania","alt":[],"coord":[2513,3884,0],"note":"The Fremennik Trials"},{"name":"CIQ - Yanille","alt":["Northwest of Yanille"],"coord":[2528,3127,0],"note":""},{"name":"CJR - Sinclair Mansion (east)","alt":[],"coord":[2705,3576,0],"note":""},{"name":"CJS - Kharazi Jungle","alt":[],"coord":[2901,2930,0],"note":"Legends' Quest started"},{"name":"CKQ - Menaphos Imperial District","alt":[],"coord":[3086,2704,0],"note":""},{"name":"CKR - Tai Bwo Wannai","alt":[],"coord":[2801,3003,0],"note":""},{"name":"CKS - Canifis","alt":[],"coord":[3447,3470,0],"note":""},{"name":"CLP - South of Draynor","alt":[],"coord":[3082,3206,0],"note":"special access"},{"name":"CLR - Ape Atoll","alt":[],"coord":[2735,2742,0],"note":"partial A Fairy Tale III"},{"name":"CLS - Jungle spiders (Yanille)","alt":[],"coord":[2682,3081,0],"note":""},{"name":"DIP - Mos Le'Harmless","alt":[],"coord":[3763,2930,0],"note":"partial A Fairy Tale III"},{"name":"DIS - Wizards' Tower","alt":[],"coord":[3092,3137,0],"note":""},{"name":"DJP - Tower of Life","alt":[],"coord":[2658,3230,0],"note":""},{"name":"DJR - Sinclair Mansion (west)","alt":[],"coord":[2676,3587,0],"note":""},{"name":"DJS - Prifddinas","alt":["Clan Amlodd"],"coord":[2130,3369,0],"note":"Plague's End"},{"name":"DKP - South of Musa Point","alt":[],"coord":[2900,3111,0],"note":""},{"name":"DKR - Edgeville","alt":[],"coord":[3129,3496,0],"note":""},{"name":"DKS - Rellekka Hunter area","alt":[],"coord":[2744,3719,0],"note":""},{"name":"DLP - North of Amberfell","alt":[],"coord":[4446,3393,0],"note":"partial Secrets of Amberfell"},{"name":"DLQ - North of Nardah","alt":[],"coord":[3423,3016,0],"note":""},{"name":"DLR - Poison Waste","alt":[],"coord":[2213,3099,0],"note":"special access"},{"name":"DLS - Myreque Hideout","alt":[],"coord":[3501,9821,0],"note":"In Search of the Myreque"},{"name":"AJQ - Dorgesh-Kaan South Dungeon","alt":[],"note":"Death to the Dorgeshuun"},{"name":"AJS - Penguin island","alt":[],"note":"special access"},{"name":"ALP - Gu'Tanoth","alt":[],"note":"partial A Fairy Tale III"},{"name":"ALR - Abyss","alt":[],"note":"special access"},{"name":"BIR - Sparse Plane","alt":[],"note":"special access"},{"name":"BJQ - Ancient Cavern","alt":[],"note":"Barbarian Training"},{"name":"BLQ - Yu'biusk","alt":[],"note":"special access"},{"name":"CIS - ScapeRune","alt":[],"note":"special access"},{"name":"CKP - Cosmic Entity plane","alt":[],"note":"special access"},{"name":"DIR - Goraks' Plane","alt":[],"note":"special access"},{"name":"DKQ - Glacor Cave","alt":[],"note":"Ritual of the Mahjarrat"},{"name":"AIS - Naragi homeworld","alt":[],"note":"special access"}],"links":[]},
+{"id":"canoe","name":"Canoe","kind":"chain","wiki":"https://runescape.wiki/w/Canoe","stops":[
+{"name":"Lumbridge","alt":[],"note":"hatchet; Woodcutting 12-57 by canoe"},{"name":"Champions' Guild","alt":[],"note":""},{"name":"Barbarian Village","alt":["Gunnarsgrunn"],"note":""},{"name":"Edgeville","alt":[],"note":""},{"name":"Wilderness","alt":["Wilderness Pond"],"note":"Waka only (57 Woodcutting); one-way"}],"links":[["Lumbridge","Champions' Guild"],["Champions' Guild","Barbarian Village"],["Barbarian Village","Edgeville"],["Edgeville","Wilderness"]]},
+{"id":"carpet","name":"Magic carpet","kind":"all-to-all","wiki":"https://runescape.wiki/w/Magic_carpet","stops":[
+{"name":"Shantay Pass","alt":["South of Shantay Pass"],"note":"members"},{"name":"North Pollnivneach","alt":["Pollnivneach"],"note":""},{"name":"South Pollnivneach","alt":["Pollnivneach"],"note":""},{"name":"Nardah","alt":[],"note":""},{"name":"Bedabin Camp","alt":[],"note":""},{"name":"Uzer","alt":[],"note":"The Golem"},{"name":"Menaphos","alt":[],"note":"Icthlarin's Little Helper"},{"name":"Sophanem","alt":[],"note":"Icthlarin's Little Helper"},{"name":"Monkey colony","alt":[],"note":"Do No Evil; South Pollnivneach and Shantay Pass only"}],"links":[]},
+{"id":"balloon","name":"Hot air balloon","kind":"all-to-all","wiki":"https://runescape.wiki/w/Hot_air_balloon","stops":[
+{"name":"Entrana","alt":[],"note":"Enlightened Journey; 20 Firemaking"},{"name":"Taverley","alt":[],"note":"20 Firemaking"},{"name":"Crafting Guild","alt":[],"note":"30 Firemaking"},{"name":"Varrock","alt":[],"note":"40 Firemaking"},{"name":"Castle Wars","alt":[],"note":"50 Firemaking"},{"name":"Grand Tree","alt":["Tree Gnome Stronghold"],"note":"60 Firemaking"}],"links":[]},
+{"id":"minecart","name":"Keldagrim minecart","kind":"hub","wiki":"https://runescape.wiki/w/Keldagrim_minecart_system","stops":[
+{"name":"Keldagrim","alt":[],"note":"must have visited Keldagrim"},{"name":"Grand Exchange","alt":[],"note":""},{"name":"White Wolf Mountain","alt":["Dwarven Tunnel"],"note":"Fishing Contest + The Giant Dwarf"},{"name":"Ice Mountain","alt":["Dwarven Mine"],"note":""}],"links":[["Keldagrim","Grand Exchange"],["Keldagrim","White Wolf Mountain"],["Keldagrim","Ice Mountain"]]},
+{"id":"train","name":"Dorgesh-Kaan to Keldagrim train","kind":"pairs","wiki":"https://runescape.wiki/w/Dorgesh-Kaan%E2%80%93Keldagrim_train_system","stops":[
+{"name":"Dorgesh-Kaan","alt":[],"note":"Another Slice of H.A.M."},{"name":"Keldagrim","alt":[],"note":""}],"links":[["Dorgesh-Kaan","Keldagrim"]]},
+{"id":"eagle","name":"Eagle transport","kind":"hub","wiki":"https://runescape.wiki/w/Eagle_transport_system","stops":[
+{"name":"Eagles' Peak","alt":["Eagles' Peak Cave"],"note":"Eagles' Peak quest; rope"},{"name":"Rellekka Hunter area","alt":["Trollweiss"],"note":"35 Agility"},{"name":"Feldip Hills","alt":["Feldip Hunter area"],"note":"grow young vine"},{"name":"Uzer","alt":[],"note":"45 Strength"},{"name":"Karamja","alt":["Jade Vine Maze"],"note":"maze access"}],"links":[["Eagles' Peak","Rellekka Hunter area"],["Eagles' Peak","Feldip Hills"],["Eagles' Peak","Uzer"],["Eagles' Peak","Karamja"]]},
+{"id":"ships","name":"Ships and ferries","kind":"pairs","wiki":"https://runescape.wiki/w/Boat_network","stops":[
+{"name":"Port Sarim","alt":[],"note":""},{"name":"Musa Point","alt":["Karamja"],"note":"30 coins"},{"name":"Entrana","alt":[],"note":"no weapons or armour"},{"name":"Crandor","alt":[],"note":"Dragon Slayer only"},{"name":"Void Knights' Outpost","alt":["Pest Control"],"note":"free"},{"name":"East Ardougne","alt":["Ardougne"],"note":""},{"name":"Brimhaven","alt":[],"note":"30 coins"},{"name":"Tree Gnome Stronghold","alt":[],"note":""},{"name":"Piscatoris","alt":["Piscatoris Fishing Colony"],"note":""},{"name":"Tai Bwo Wannai","alt":[],"note":"ogre boat"},{"name":"Feldip Hills","alt":[],"note":"ogre boat"},{"name":"Rellekka","alt":[],"note":""},{"name":"Miscellania","alt":[],"note":"The Fremennik Trials"},{"name":"Etceteria","alt":[],"note":"The Fremennik Trials"},{"name":"Waterbirth Island","alt":[],"note":"Jarvald"},{"name":"Jatizso","alt":[],"note":""},{"name":"Neitiznot","alt":[],"note":""},{"name":"Pirates' Cove","alt":[],"note":"The Fremennik Trials"},{"name":"Lunar Isle","alt":[],"note":""},{"name":"Iceberg","alt":[],"note":""},{"name":"Port Phasmatys","alt":[],"note":""},{"name":"Mos Le'Harmless","alt":[],"note":"Cabin Fever"},{"name":"Dragontooth Island","alt":[],"note":""},{"name":"Burgh de Rott","alt":[],"note":""},{"name":"Meiyerditch","alt":[],"note":"The Darkness of Hallowvale started"},{"name":"The Hollows","alt":[],"note":""},{"name":"Mort'ton","alt":[],"note":""},{"name":"Taverley","alt":[],"note":"free-to-play"},{"name":"Al Kharid","alt":[],"note":"free-to-play"},{"name":"Daemonheim","alt":[],"note":"free"},{"name":"Digsite","alt":["Varrock Dig Site","Dig Site"],"note":"The Stormbreaker"},{"name":"Anachronia","alt":[],"note":"first trip: base camp tutorial"}],
+"links":[["Port Sarim","Musa Point"],["Port Sarim","Entrana"],["Port Sarim","Crandor"],["Port Sarim","Void Knights' Outpost"],["East Ardougne","Brimhaven"],["Tree Gnome Stronghold","Piscatoris"],["Tai Bwo Wannai","Feldip Hills"],["Rellekka","Miscellania"],["Rellekka","Etceteria"],["Rellekka","Waterbirth Island"],["Rellekka","Jatizso"],["Rellekka","Neitiznot"],["Rellekka","Pirates' Cove"],["Rellekka","Iceberg"],["Pirates' Cove","Lunar Isle"],["Port Phasmatys","Mos Le'Harmless"],["Port Phasmatys","Dragontooth Island"],["Burgh de Rott","Meiyerditch"],["The Hollows","Mort'ton"],["Taverley","Daemonheim"],["Al Kharid","Daemonheim"],["Digsite","Anachronia"]]},
+{"id":"arc","name":"Arc ferries (Quartermaster Gully)","kind":"all-to-all","wiki":"https://runescape.wiki/w/Quartermaster_Gully","stops":[
+{"name":"Port Sarim","alt":[],"note":"Impressing the Locals"},{"name":"Menaphos","alt":["Menaphos Port district","Port district"],"note":""},{"name":"Waiko","alt":[],"note":""},{"name":"Whale's Maw","alt":[],"note":""},{"name":"Aminishi","alt":[],"note":""},{"name":"Goshima","alt":[],"note":""},{"name":"The Islands That Once Were Turtles","alt":[],"note":""},{"name":"Tuai Leit","alt":[],"note":""},{"name":"Cyclosis","alt":[],"note":""}],"links":[]},
+{"id":"kags","name":"Menaphos ferry (Portmaster Kags)","kind":"hub","wiki":"https://runescape.wiki/w/Portmaster_Kags","stops":[
+{"name":"Menaphos","alt":["Port district"],"note":"Crocodile Tears"},{"name":"Sunken Pyramid","alt":[],"note":""},{"name":"Crondis's pyramid","alt":["Pyramid of Crondis"],"note":""},{"name":"Jaldraocht Pyramid","alt":[],"note":"one-way"},{"name":"Nardah","alt":[],"note":"one-way"},{"name":"Pollnivneach","alt":[],"note":"one-way"},{"name":"Dominion Tower","alt":[],"note":"one-way"},{"name":"Heart of Gielinor","alt":[],"note":"one-way"},{"name":"Exiled Kalphite Hive","alt":[],"note":"one-way"}],"links":[["Menaphos","Sunken Pyramid"],["Menaphos","Crondis's pyramid"],["Menaphos","Jaldraocht Pyramid"],["Menaphos","Nardah"],["Menaphos","Pollnivneach"],["Menaphos","Dominion Tower"],["Menaphos","Heart of Gielinor"],["Menaphos","Exiled Kalphite Hive"]]}
+]};
+  const WM_TRANSPORT_CAT = 1206;
+  let wmStopIdx = null;              // stop key -> {net, stop, x, y, p, ml, dist}
+  let wmStopByPin = null;            // "x,y" of a transport placement -> [stop keys]
+  function wmNorm(n) { return String(n || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function wmBuildStops() {
+    if (wmStopIdx || !WM_ML || !MAP_LABELS || !MAP_LABELS.length) return;
+    wmLoadSymbols();
+    if (!WM_SYM) return;
+    const catName = (c) => ((WM_CAT && WM_CAT[c] && WM_CAT[c].n) || '').toLowerCase();
+    const pinsOf = (net) => WM_SYM.filter(p => { const e = WM_ML[p.ml]; if (!e) return false; return net.cat ? catName(e.c).indexOf(net.cat) >= 0 : e.c === WM_TRANSPORT_CAT; });
+    const pinsTransport = pinsOf({});
+    if (!pinsTransport.length) return;
+    const labels = MAP_LABELS.map(d => ({ k: wmNorm(d.n), x: d.x, y: d.y, p: d.p | 0, n: d.n }));
+    const idx = new Map(), byPin = new Map();
+    const bind = (key, net, stop, x, y, p, dist, ml) => {
+      idx.set(key, { net, stop, x, y, p, dist, ml });
+      const pk = x + ',' + y; if (!byPin.has(pk)) byPin.set(pk, []); byPin.get(pk).push(key);
+    };
+    for (const net of WM_ROUTES.networks) {
+      const pins = pinsOf(net);
+      for (const st of net.stops) {
+        const key = net.id + '|' + st.name;
+        if (st.coord) {
+          // Wiki coordinate: snap to the nearest transport pin within 12 tiles, else use it as is.
+          let best = null, bd = 1e9;
+          for (const pn of pins) { const d = Math.abs(pn.x - st.coord[0]) + Math.abs(pn.y - st.coord[1]); if (d < bd) { bd = d; best = pn; } }
+          if (best && bd <= 12) bind(key, net, st, best.x, best.y, best.p | 0, bd, best.ml);
+          else bind(key, net, st, st.coord[0], st.coord[1], st.coord[2] | 0, -1, -1);
+          continue;
+        }
+        // Name -> label -> nearest transport pin. Try the name and its alternates; accept the
+        // closest pin within 40 tiles of the label, else leave the stop unbound (never guessed).
+        const names = [st.name].concat(st.alt || []).map(wmNorm);
+        let best = null, bd = 1e9;
+        for (const lb of labels) {
+          if (names.indexOf(lb.k) < 0 && !names.some(n => lb.k.startsWith(n) && n.length >= 5)) continue;
+          for (const pn of pins) {
+            const d = Math.abs(pn.x - lb.x) + Math.abs(pn.y - lb.y);
+            if (d < bd) { bd = d; best = pn; }
+          }
+        }
+        if (best && bd <= 40) bind(key, net, st, best.x, best.y, best.p | 0, bd, best.ml);
+      }
+    }
+    wmStopIdx = idx; wmStopByPin = byPin;
+  }
+  // Destinations reachable from a stop, per the network's kind.
+  function wmStopDests(key) {
+    const rec = wmStopIdx.get(key); if (!rec) return [];
+    const net = rec.net, out = [];
+    const push = (nm) => { const k2 = net.id + '|' + nm; const r2 = wmStopIdx.get(k2); if (r2 && k2 !== key) out.push({ key: k2, name: nm, x: r2.x, y: r2.y, p: r2.p, note: r2.stop.note || '' }); else if (!r2) out.push({ key: k2, name: nm, unbound: true, note: (net.stops.find(s => s.name === nm) || {}).note || '' }); };
+    if (net.kind === 'all-to-all') { for (const st of net.stops) if (st.name !== rec.stop.name) push(st.name); }
+    else {
+      for (const l of (net.links || [])) {
+        if (l[0] === rec.stop.name) push(l[1]);
+        else if (l[1] === rec.stop.name) push(l[0]);
+      }
+      if (net.kind === 'chain' && !(net.links || []).length) {
+        const i = net.stops.findIndex(s => s.name === rec.stop.name);
+        if (i > 0) push(net.stops[i - 1].name); if (i >= 0 && i + 1 < net.stops.length) push(net.stops[i + 1].name);
+      }
+    }
+    return out;
+  }
+  function wmStopsAt(x, y) { wmBuildStops(); return (wmStopByPin && wmStopByPin.get(x + ',' + y)) || []; }
+  // Destination picker: a body-level menu (same chrome as the sound / aura pickers) listing
+  // every destination of every network at this stop; a click flies there with a named pin.
+  function wmOpenRoutePicker(anchorX, anchorY, keys) {
+    if (typeof closeSoundMenu === 'function') closeSoundMenu();
+    const pop = document.createElement('div'); pop.className = 'sndmenu'; pop.id = 'sndMenu';
+    pop.style.cssText = 'position:fixed;z-index:2147483000;max-height:340px;overflow:auto;min-width:220px';
+    for (const key of keys) {
+      const rec = wmStopIdx.get(key); if (!rec) continue;
+      const h = document.createElement('div'); h.className = 'sndmenu-it'; h.style.cssText = 'font-weight:700;opacity:.8;cursor:default';
+      h.textContent = rec.net.name + ' - ' + rec.stop.name; pop.appendChild(h);
+      for (const d of wmStopDests(key)) {
+        const it = document.createElement('div'); it.className = 'sndmenu-it';
+        it.textContent = '  ' + d.name + (d.note ? '  (' + d.note + ')' : '') + (d.unbound ? '  [not on this map]' : '');
+        if (d.unbound) { it.style.opacity = '.45'; it.style.cursor = 'default'; }
+        else it.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); closeSoundMenu(); wmFlyTo(d.x, d.y, d.p, { x: d.x, y: d.y, p: d.p, nm: d.name }); });
+        pop.appendChild(it);
+      }
+    }
+    document.body.appendChild(pop);
+    pop.style.left = Math.min(anchorX, (window.innerWidth || 1280) - 240) + 'px';
+    pop.style.top = Math.min(anchorY, (window.innerHeight || 720) - 350) + 'px';
+    try { wmRectsSoon(); } catch (e) {}
+  }
+  function wmRouteTipLines(x, y) {
+    const keys = wmStopsAt(x, y); if (!keys.length) return '';
+    let html = '';
+    for (const key of keys) {
+      const rec = wmStopIdx.get(key), dests = wmStopDests(key);
+      html += '<div class="wm-fact" style="margin-top:4px"><span>' + htmlEsc(rec.net.name) + '</span><span class="v">' + htmlEsc(rec.stop.name) + '</span></div>';
+      html += '<div style="opacity:.8">' + htmlEsc(dests.map(d => d.name).join(', ')) + '</div>';
+    }
+    html += '<div style="opacity:.6;margin-top:3px">Click to choose a destination</div>';
+    return html;
+  }
   // Link destination of a map element: param 4148 is a packed coordgrid (plane<<28 | x<<14 | y),
   // the value the game's click handler (script 7592 -> 304) jumps to for dungeon links, stairs
   // and the like. null when the element has no link.
@@ -1522,7 +1660,7 @@
     // ("Level 19 Strength<br>Level 8 Agility<br>Requires a grapple"). Escape everything first,
     // then re-allow just <br>, so cache text can never inject markup but still breaks lines.
     const esc = function (s) { return htmlEsc(s).replace(/&lt;br\s*\/?&gt;/gi, '<br>'); };
-    const lkLine = wmLinkLine(m.ml, m);
+    const lkLine = wmLinkLine(m.ml, m) + ((WM_ML[m.ml] && WM_ML[m.ml].c === WM_TRANSPORT_CAT) ? wmRouteTipLines(m.x, m.y) : '');
     return '<b style="text-transform:uppercase;letter-spacing:.5px">' + esc(head || 'Map symbol') + '</b>'
          + (body ? '<br>' + esc(body) : '')
          + '<br><span style="opacity:.6">' + m.x + ', ' + m.y + '</span>' + lkLine;
@@ -1763,6 +1901,14 @@
             // the game does: fly to the destination and pin it, plane switch included.
             let hitM = null, hdM = Infinity;
             for (const m of wmMarks) { if (m.ml == null) continue; const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= m.r + 4 && d < hdM) { hdM = d; hitM = m; } }
+            if (hitM && WM_ML[hitM.ml] && WM_ML[hitM.ml].c === WM_TRANSPORT_CAT) {
+              const keys = wmStopsAt(hitM.x, hitM.y);
+              if (keys.length) {
+                wmOpenRoutePicker(e.clientX + 8, e.clientY + 8, keys);
+                wmDrag = null; if (st2) st2.classList.remove('grabbing');
+                return;
+              }
+            }
             const lk = hitM ? wmElemLink(hitM.ml, hitM) : null;
             if (lk) {
               const t = wmElemTip(hitM.ml), nm = (t && t.head) ? String(t.head).replace(/<[^>]*>/g, '') : 'Link';
