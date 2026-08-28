@@ -133,7 +133,7 @@
       }
       let vp = {};
       if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
-      const done = new Set(), prog = {};
+      const done = new Set(), prog = {}, baseSat = {};
       for (const a of achDefs) {
         if (!achTrackable(a) || achIsLeagues(a)) continue;
         let sat = 0; const lines = [];
@@ -166,23 +166,55 @@
           const okq = cur >= q.v; if (okq) sat++;
           lines.push({ label: q.n, cur: cur, req: q.v, ok: okq, src: 'varp ' + q.vps.join(' + ') });
         }
+        // op 12: skill-level requirements, judged live against the skill panel. These count
+        // toward achNeed, so skipping them here after they started counting there misjudged
+        // every mixed achievement as incomplete.
+        const liveSk = (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
+        for (const sq of (a.skills || [])) {
+          const sid = sq[0] | 0, lvl = sq[1] | 0;
+          const cur = (liveSk && liveSk[sid]) ? (liveSk[sid][0] | 0) : 0;
+          const okq = cur >= lvl; if (okq) sat++;
+          lines.push({ label: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
+                       cur: cur, req: lvl, ok: okq, src: 'live skill ' + sid });
+        }
+        // op 11: prerequisite achievements. Judged in the fixed-point pass below, where the
+        // referenced achievement's own done state is known; recorded pending here.
+        for (const pid2 of (a.prev || [])) lines.push({ label: '', cur: 0, req: 1, ok: false, src: 'achievement ' + pid2, prereqOf: pid2 });
         // Completion must be PROVEN, never assumed. With no requirements to check, sat 0 >=
         // need 0 marked the entry done, which (a) reported achievements we cannot evaluate as
         // complete and (b) pre-empted the rollup pass below, since it skips anything already
         // done - so a set like "Ardougne Set Tasks - Easy" read complete at 6/23 tasks.
-        if (achNeed(a) > 0 && sat >= achNeed(a)) done.add(a.id);
+        baseSat[a.id] = sat;
+        if (achNeed(a) > 0 && sat >= achNeed(a) && !(a.prev && a.prev.length)) done.add(a.id);
         prog[a.id] = lines;
       }
-      // Rollups (a `subach` list) are complete when `needN` (else all) of their subs are; run to a
-      // fixed point so NESTED rollups propagate.
+      // Fixed point over BOTH derived kinds: rollups (a `subach` list, complete when needN
+      // else all of the subs are) and prerequisite requirements (op 11, complete when the
+      // referenced achievement is done). Both can chain through each other, so they share
+      // one loop; the prereq lines' ok/cur update as they resolve so the tooltip shows the
+      // judged state, not the pending one.
+      const defsById = achDefById();
       let chg = true, guard = 0;
       while (chg && guard++ < 24) {
         chg = false;
         for (const p of achDefs) {
-          if (done.has(p.id) || achIsLeagues(p) || !p.subach || !p.subach.length) continue;
-          let sub = 0; for (const c of p.subach) if (done.has(c)) sub++;
-          const need = (p.needN && p.needN.length) ? p.needN.reduce((s, x) => s + x, 0) : p.subach.length;
-          if (sub >= need) { done.add(p.id); chg = true; }
+          if (done.has(p.id) || achIsLeagues(p)) continue;
+          if (p.subach && p.subach.length) {
+            let sub = 0; for (const c of p.subach) if (done.has(c)) sub++;
+            const need = (p.needN && p.needN.length) ? p.needN.reduce((s, x) => s + x, 0) : p.subach.length;
+            if (sub >= need) { done.add(p.id); chg = true; continue; }
+          }
+          if (p.prev && p.prev.length && baseSat[p.id] !== undefined) {
+            let sat = baseSat[p.id];
+            for (const ln of (prog[p.id] || [])) {
+              if (ln.prereqOf === undefined) continue;
+              if (!ln.label) ln.label = 'Complete: ' + ((defsById[ln.prereqOf] && defsById[ln.prereqOf].name) || ('achievement #' + ln.prereqOf));
+              const ok = done.has(ln.prereqOf);
+              if (ok !== ln.ok) { ln.ok = ok; ln.cur = ok ? 1 : 0; }
+              if (ln.ok) sat++;
+            }
+            if (achNeed(p) > 0 && sat >= achNeed(p)) { done.add(p.id); chg = true; }
+          }
         }
       }
       // Anything with no requirements of its own and no sub-achievements cannot be judged
