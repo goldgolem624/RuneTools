@@ -245,7 +245,7 @@
   function auraTabId(uid) { return 'aura:' + uid; }
   function auraGroupTabs() {
     if (typeof prefGet !== 'function') return [];
-    return auraRoots().map(a => ({ id: auraTabId(a.uid), label: a.name || 'Aura', cat: 'Utility', hidden: true, icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' }));
+    return auraRoots().map(a => ({ id: auraTabId(a.uid), label: a.name || 'Aura', cat: 'HUD', hidden: true, icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' }));
   }
   function auraIsHudTab(id) { return typeof id === 'string' && id.indexOf('aura:') === 0; }
   function auraAnyHudVisible() { return typeof paneVisible === 'function' && auraRoots().some(a => paneVisible(auraTabId(a.uid))); }
