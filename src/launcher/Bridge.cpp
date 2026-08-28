@@ -58,6 +58,7 @@ using std::min;
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #pragma comment(lib, "winmm.lib")
@@ -946,6 +947,16 @@ JSValueRef CacheIfaceGroup(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::IfaceGroupDefsJson(gid));
 }
 
+// Map windows are built OFF the UI thread. A request that is not ready yet answers
+// {"pending":1} at once and starts (or joins) a background build; the panel polls the same
+// call again shortly and receives the finished window, which is then dropped from the ready
+// store (the panel keeps its own decoded cache). Before this the build ran synchronously on
+// the UI thread and every pan froze the whole client for the duration of a chunk render.
+namespace {
+std::mutex g_mapwinMu;
+std::unordered_map<std::string, std::string> g_mapwinReady;
+std::unordered_set<std::string> g_mapwinBusy;
+}
 JSValueRef MapWindow(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return utf8_to_js(ctx, "{}");
@@ -954,7 +965,28 @@ JSValueRef MapWindow(JSContextRef ctx, JSObjectRef, JSObjectRef,
     int plane = (int)JSValueToNumber(ctx, argv[2], nullptr);
     int half = (argc > 3) ? (int)JSValueToNumber(ctx, argv[3], nullptr) : 0;
     int ts   = (argc > 4) ? (int)JSValueToNumber(ctx, argv[4], nullptr) : 0;
-    return utf8_to_js(ctx, rtx::cache::MapWindowJson(cx, cy, plane, half, ts));
+    int want = (argc > 5) ? (int)JSValueToNumber(ctx, argv[5], nullptr) : 15;
+    bool sync = (argc > 6) && JSValueToBoolean(ctx, argv[6]);   // legacy callers (clue scan) may insist on inline
+    if (sync) return utf8_to_js(ctx, rtx::cache::MapWindowJson(cx, cy, plane, half, ts, want));
+    const std::string key = std::to_string(cx) + "," + std::to_string(cy) + "," + std::to_string(plane) + "," +
+                            std::to_string(half) + "," + std::to_string(ts) + "," + std::to_string(want);
+    {
+        std::lock_guard<std::mutex> lk(g_mapwinMu);
+        auto it = g_mapwinReady.find(key);
+        if (it != g_mapwinReady.end()) { std::string r = std::move(it->second); g_mapwinReady.erase(it); return utf8_to_js(ctx, r); }
+        if (g_mapwinBusy.count(key)) return utf8_to_js(ctx, "{\"pending\":1}");
+        g_mapwinBusy.insert(key);
+    }
+    std::thread([key, cx, cy, plane, half, ts, want] {
+        std::string r;
+        try { r = rtx::cache::MapWindowJson(cx, cy, plane, half, ts, want); } catch (...) { r = "{}"; }
+        std::lock_guard<std::mutex> lk(g_mapwinMu);
+        g_mapwinReady[key] = r.empty() ? "{}" : r;
+        g_mapwinBusy.erase(key);
+        // Never let an abandoned pan pile results up: keep the store small.
+        if (g_mapwinReady.size() > 96) g_mapwinReady.erase(g_mapwinReady.begin());
+    }).detach();
+    return utf8_to_js(ctx, "{\"pending\":1}");
 }
 
 // World-map ELEMENT tables. Both walk the whole config archive once, so they are served off the

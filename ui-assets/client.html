@@ -7166,7 +7166,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     // {"w","t","h","b64"} RGBA. Pure cache data; clamps keep single calls bounded.
     'cache.mapWindow':  { scope: 'cache.read', json: true,    run: (a) => (bridge().mapWindow
                             ? bridge().mapWindow(pClampNum(a[0], 0, 16000), pClampNum(a[1], 0, 16000),
-                                                 pClampNum(a[2], 0, 3), pClampNum(a[3], 0, 96), pClampNum(a[4], 0, 8))
+                                                 pClampNum(a[2], 0, 3), pClampNum(a[3], 0, 96), pClampNum(a[4], 0, 8), 15, true)
                             : '{}') },
     // Full live widget tree of ONE open interface group (id/type/rect/text/sprite per node) --
     // what the Interfaces tab shows. Heavier than state.interface; same read-only data.

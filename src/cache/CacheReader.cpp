@@ -2205,9 +2205,9 @@ std::string SoundListJson(int index_id, int start_id, int limit) {
 // window again while the player stands still. Keep the last few results; the inputs are static
 // cache data, so a hit stays valid for the life of the process.
 namespace {
-struct MapWinCacheEntry { int cx, cy, plane, half, ts; std::string json; };
+struct MapWinCacheEntry { int cx, cy, plane, half, ts, want; std::string json; };
 std::deque<MapWinCacheEntry> g_mapWinCache;      // most-recent first; guarded by g_mu
-constexpr std::size_t kMapWinCacheMax = 3;
+constexpr std::size_t kMapWinCacheMax = 48;   // a zoomed-out viewport spans dozens of chunks; 3 never hit
 }  // namespace
 
 // See the header. A clue item states the tile but never the object, so the object is read back
@@ -2259,9 +2259,10 @@ std::string ClueSearchTargetJson(int x, int y, int plane) {
     return out;
 }
 
-std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
+std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    if (want <= 0) want = 15;
     if (plane < 0 || plane > 3) plane = 0;
     if (half < 8 || half > 384) half = 40;       // tiles each side of the centre (panel-controlled zoom)
     if (ts < 2 || ts > 32) ts = 6;               // px per tile (32 = ~3x zoom before upscaling)
@@ -2270,7 +2271,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     // still share an entry.
     for (std::size_t i = 0; i < g_mapWinCache.size(); ++i) {
         const auto& e = g_mapWinCache[i];
-        if (e.cx == cx && e.cy == cy && e.plane == plane && e.half == half && e.ts == ts) {
+        if (e.cx == cx && e.cy == cy && e.plane == plane && e.half == half && e.ts == ts && e.want == want) {
             if (i == 0) return e.json;
             MapWinCacheEntry tmp = e;
             g_mapWinCache.erase(g_mapWinCache.begin() + (std::ptrdiff_t)i);
@@ -2809,8 +2810,10 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
     // Per-tile "cannot stand here" grid for the window (1 = full-blocked: trees, scenery footprints, void,
     // diagonal walls). Edge-only walls are NOT counted (the tile is still standable). Row-major by wx
     // (index = wx*WT + wy); the panel uses it so suggested scan tiles are always walkable.
-    std::vector<unsigned char> blkOut((std::size_t)WT * WT, 0);   // full-block 1/0 -- feeds the scan-tile walkability check (unchanged semantics)
-    std::vector<unsigned char> nomove((std::size_t)WT * WT, 0);   // FULL collision flag byte (block + N/E/S/W wall edges) for the walkability OVERLAY (mejrs nomove layer)
+    std::vector<unsigned char> blkOut, nomove;
+    if (want & 4) {
+    blkOut.assign((std::size_t)WT * WT, 0);   // full-block 1/0 -- feeds the scan-tile walkability check (unchanged semantics)
+    nomove.assign((std::size_t)WT * WT, 0);   // FULL collision flag byte (block + N/E/S/W wall edges) for the walkability OVERLAY (mejrs nomove layer)
     for (int wx = 0; wx < WT; ++wx)
         for (int wy = 0; wy < WT; ++wy) {
             int gx = cx - HALF + wx, gy = cy - HALF + wy;
@@ -2820,17 +2823,21 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts) {
             blkOut[(std::size_t)wx * WT + wy] = (f & kTileBlockFull) ? 1 : 0;
             nomove[(std::size_t)wx * WT + wy] = f & (kTileBlockFull | kTileBlockN | kTileBlockS | kTileBlockE | kTileBlockW);
         }
+    }
+    // The world map never reads the collision grids or objs: at ts=2 they were ~175 KB of
+    // base64 per chunk plus a per-tile blocked-grid walk, all discarded on arrival.
     std::string out = "{\"w\":" + std::to_string(W) + ",\"t\":" + std::to_string(TS) +
            ",\"h\":" + std::to_string(HALF) + ",\"wt\":" + std::to_string(WT) +
            ",\"cx\":" + std::to_string(cx) + ",\"cy\":" + std::to_string(cy) + ",\"p\":" + std::to_string(plane) +
            // A visually blank window that only reached here for its objs/collision ships NO
            // png: it would be a whole chunk of flat backdrop. Consumers already treat a
            // missing png as "no terrain" and fall back to the canvas backdrop.
-           ",\"png\":\"" + (any ? Base64Std(EncodePngRgb(rgba.data(), W, W)) : std::string()) + "\",\"blk\":\"" + Base64Std(blkOut) +
-           "\",\"nomove\":\"" + Base64Std(nomove) +
-           "\",\"objs\":\"" + Base64Std(objsOut) +
-           "\",\"icons\":\"" + Base64Std(iconsOut) + "\"}";
-    g_mapWinCache.push_front(MapWinCacheEntry{ cx, cy, plane, half, ts, out });
+           ",\"png\":\"" + ((any && (want & 1)) ? Base64Std(EncodePngRgb(rgba.data(), W, W)) : std::string()) +
+           "\",\"blk\":\"" + ((want & 4) ? Base64Std(blkOut) : std::string()) +
+           "\",\"nomove\":\"" + ((want & 4) ? Base64Std(nomove) : std::string()) +
+           "\",\"objs\":\"" + ((want & 8) ? Base64Std(objsOut) : std::string()) +
+           "\",\"icons\":\"" + ((want & 2) ? Base64Std(iconsOut) : std::string()) + "\"}";
+    g_mapWinCache.push_front(MapWinCacheEntry{ cx, cy, plane, half, ts, want, out });
     while (g_mapWinCache.size() > kMapWinCacheMax) g_mapWinCache.pop_back();
     return out;
 }

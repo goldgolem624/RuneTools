@@ -14,7 +14,7 @@
     { ts: 8,  ch: 64,  upto: 8 },
     { ts: 16, ch: 32,  upto: 1e9 },  // WM_ZMAX 12 < 16: still minified
   ];
-  const WM_ZMIN = 0.3, WM_ZMAX = 12, WM_CACHE_MAX = 130, WM_INFLIGHT_MAX = 2;
+  const WM_ZMIN = 0.3, WM_ZMAX = 12, WM_CACHE_MAX = 130, WM_INFLIGHT_MAX = 4;
   let wmCam = { x: 3213.5, y: 3429.5, z: 1.4, p: 0 };   // world tile centre + px/tile + floor
   let wmLayer = { labels: true, lodes: true, teles: true, hidey: false, marks: true, grid: false, icons: true };
   let wmCamSaved = false;   // a persisted camera skips the centre-on-player of the first open
@@ -165,6 +165,7 @@
     const t = WM_DB_ORDER[wmDbAt++];
     (async function () {
       try { WM_DB[t] = JSON.parse((await bridge().dbRows(t)) || '[]') || []; } catch (e) { WM_DB[t] = []; }
+      try { wmSymProvInvalidate(); } catch (e) {}   // a table landed: provisional search haystacks rebuild once
       wmDbBusy = false;
       setTimeout(wmPrefetchDb, 60);      // one archive walk per slice, never two in a frame
     })();
@@ -560,10 +561,14 @@
   // its skill name ("woodcutting"), and every resource its layout lists ("willow", "yew"). Built
   // lazily per element and rebuilt while its rows are still resolving, so it sharpens as the
   // structured data lands rather than caching a half-empty haystack.
+  const WM_SYM_TXT_PROV = new Map();   // haystacks built before the DB tables settled: reused until they do
+  let wmSymProvGen = 0;
   function wmSymText(ml) {
     const e = WM_ML && WM_ML[ml]; if (!e) return '';
     const done = WM_SYM_TXT.get(ml);
     if (done) return done;
+    const prov = WM_SYM_TXT_PROV.get(ml);
+    if (prov && prov.g === wmSymProvGen) return prov.t;
     const bits = [];
     if (e.n) bits.push(e.n);
     if (e.t) bits.push(e.t);
@@ -585,9 +590,12 @@
       settled = false;                                       // tables not in yet
     }
     const txt = bits.join(' ').toLowerCase();
-    if (settled) WM_SYM_TXT.set(ml, txt);                    // only freeze a COMPLETE haystack
+    if (settled) { WM_SYM_TXT.set(ml, txt); WM_SYM_TXT_PROV.delete(ml); }   // only freeze a COMPLETE haystack
+    else WM_SYM_TXT_PROV.set(ml, { g: wmSymProvGen, t: txt });              // provisional: valid until a table lands
     return txt;
   }
+  // Called when a DB table arrives so provisional haystacks are rebuilt once, not per keystroke.
+  function wmSymProvInvalidate() { wmSymProvGen++; }
 
   // "Heist: Asuran Arsenal" -> ["HEIST", "Asuran Arsenal"]. The game splits on the first <br>,
   // and only if there is none, on the first ": " (clientscript 16446). Order matters:
@@ -627,7 +635,16 @@
     best.busy = true; wmInflight++;
     let rec = null;
     try {
-      const meta = JSON.parse((await bridge().mapWindow(best.cx, best.cy, best.plane, best.half, best.ts)) || '{}');
+      // want = 3: terrain + icons only. The collision grids and objs (~175 KB of base64 per
+      // chunk at the finest level) were shipped and discarded on every window before.
+      const meta = JSON.parse((await bridge().mapWindow(best.cx, best.cy, best.plane, best.half, best.ts, 3)) || '{}');
+      if (meta && meta.pending) {
+        // Built off the UI thread now: poll again shortly; the job stays queued and un-busy so
+        // the priority order is re-evaluated against the current view.
+        best.busy = false; wmInflight--;
+        setTimeout(wmPump, 45);
+        return;
+      }
       // ox/oy = the window's SW origin in world tiles: pin coords arrive window-relative.
       rec = { cv: (meta && (meta.png || meta.b64)) ? await wmDecode(meta) : null,     // "{}" = genuinely no map data here
               icons: wmIcons(meta && meta.icons),
@@ -741,50 +758,72 @@
     if (l.indexOf(s) >= 0) return 2;
     return -1;
   }
+  // Search index: the static sources (labels, lodestones, teleports, hidey-holes, markers) are
+  // folded ONCE into lowercase records; every keystroke used to rebuild their display strings
+  // and lowercase every candidate name. Rebuilt only when the marker list changes.
+  let wmIdx = null, wmIdxMarkSig = '';
+  function wmIndex() {
+    const msig = (typeof markerList !== 'undefined') ? markerList.length + ':' + (markerList[0] ? markerList[0].label : '') : '';
+    if (wmIdx && msig === wmIdxMarkSig) return wmIdx;
+    const out = [];
+    const add = (lc, rec) => { rec.lc = lc.toLowerCase(); rec.words = rec.lc.split(/[\s\-\/(),']+/); out.push(rec); };
+    for (const d of MAP_LABELS) add(d.n, { ty: 'Place', nm: d.n, dt: d.x + ', ' + d.y + (d.p ? ' f' + d.p : ''), x: d.x, y: d.y, p: d.p | 0 });
+    if (typeof LODESTONES !== 'undefined') for (const l of LODESTONES) add(l.n + ' lodestone', { ty: 'Lodestone', nm: l.n, dt: l.kb ? 'key ' + l.kb : '', x: l.x, y: l.y, p: l.p | 0 });
+    for (const T of MAP_TELEPORTS) {
+      const rq = teleRqText(T);
+      const tkb = (typeof teleKeySeq === 'function') ? teleKeySeq(T) : teleKb(T);
+      add(T.n, { ty: 'Teleport', nm: T.n, alt: String(T.src || '').toLowerCase(), dt: (T.src || '') + (tkb ? ' [' + tkb + ']' : '') + (rq ? ' - req ' + rq : ''), x: T.x, y: T.y, p: T.p | 0 });
+    }
+    if (typeof HIDEY !== 'undefined') for (const hh of HIDEY) add(hh.loc + ' ' + hh.n + ' hidey', { ty: 'Hidey-hole', nm: hh.loc, dt: hh.n + ' - ' + (HIDEY_TIERS[hh.t] || ''), x: hh.x, y: hh.y, p: hh.p | 0 });
+    if (typeof markerList !== 'undefined') for (const m of markerList) {
+      const gx = (m.region >> 8) * 64 + m.lx, gy = (m.region & 0xFF) * 64 + m.ly;
+      const nm = m.label || ('Marker (' + gx + ', ' + gy + ')');
+      add(nm + ' marker', { ty: 'Marker', nm: nm, dt: gx + ', ' + gy + (m.plane ? ' f' + m.plane : ''), x: gx, y: gy, p: m.plane | 0 });
+    }
+    wmIdx = out; wmIdxMarkSig = msig;
+    return out;
+  }
+  function wmScoreLc(rec, s) {
+    if (rec.lc.startsWith(s)) return 0;
+    if (rec.words.some(w => w.startsWith(s))) return 1;
+    if (rec.lc.indexOf(s) >= 0) return 2;
+    return -1;
+  }
+  // Placements grouped per element once, so a query walks elements (hundreds) and only then
+  // the placements of the elements that matched, instead of every placement in the world.
+  let wmSymByMl = null, wmSymByMlN = 0;
+  function wmSymGroups() {
+    if (!WM_SYM) return null;
+    if (wmSymByMl && wmSymByMlN === WM_SYM.length) return wmSymByMl;
+    const m = new Map();
+    for (const sy of WM_SYM) { let a = m.get(sy.ml); if (!a) { a = []; m.set(sy.ml, a); } a.push(sy); }
+    wmSymByMl = m; wmSymByMlN = WM_SYM.length;
+    return m;
+  }
   function wmSearchEntries(q) {
     const s = q.trim().toLowerCase(), out = [];
     if (!s) return out;
     const co = s.match(/^(\d{1,5})[,\s]+(\d{1,5})(?:[,\s]+(\d))?$/);   // "3213 3429" or "x,y,plane"
     if (co) out.push({ sc: 0, ty: 'Tile', nm: '(' + co[1] + ', ' + co[2] + ')' + (co[3] ? ' floor ' + co[3] : ''), dt: 'go to coordinate', x: +co[1], y: +co[2], p: +(co[3] || 0) });
-    for (const d of MAP_LABELS) {
-      const sc = wmScore(d.n, s); if (sc < 0) continue;
-      out.push({ sc: sc, ty: 'Place', nm: d.n, dt: d.x + ', ' + d.y + (d.p ? ' f' + d.p : ''), x: d.x, y: d.y, p: d.p | 0 });
-    }
-    if (typeof LODESTONES !== 'undefined') for (const l of LODESTONES) {
-      const sc = wmScore(l.n + ' lodestone', s); if (sc < 0) continue;
-      out.push({ sc: sc, ty: 'Lodestone', nm: l.n, dt: l.kb ? 'key ' + l.kb : '', x: l.x, y: l.y, p: l.p | 0 });
-    }
-    for (const T of MAP_TELEPORTS) {
-      let sc = wmScore(T.n, s); const ss = wmScore(T.src || '', s);
-      if (ss >= 0 && (sc < 0 || ss + 1 < sc)) sc = ss + 1;
+    for (const rec of wmIndex()) {
+      let sc = wmScoreLc(rec, s);
+      if (rec.alt) { const ss = rec.alt.startsWith(s) ? 0 : rec.alt.indexOf(s) >= 0 ? 2 : -1; if (ss >= 0 && (sc < 0 || ss + 1 < sc)) sc = ss + 1; }
       if (sc < 0) continue;
-      const rq = teleRqText(T);
-      const tkb = (typeof teleKeySeq === 'function') ? teleKeySeq(T) : teleKb(T);
-      out.push({ sc: sc, ty: 'Teleport', nm: T.n, dt: (T.src || '') + (tkb ? ' [' + tkb + ']' : '') + (rq ? ' - req ' + rq : ''), x: T.x, y: T.y, p: T.p | 0 });
-    }
-    if (typeof HIDEY !== 'undefined') for (const hh of HIDEY) {
-      const sc = wmScore(hh.loc + ' ' + hh.n + ' hidey', s); if (sc < 0) continue;
-      out.push({ sc: sc, ty: 'Hidey-hole', nm: hh.loc, dt: hh.n + ' - ' + (HIDEY_TIERS[hh.t] || ''), x: hh.x, y: hh.y, p: hh.p | 0 });
-    }
-    if (typeof markerList !== 'undefined') for (const m of markerList) {
-      const gx = (m.region >> 8) * 64 + m.lx, gy = (m.region & 0xFF) * 64 + m.ly;   // region = (x>>6)<<8 | (y>>6)
-      const nm = m.label || ('Marker (' + gx + ', ' + gy + ')');
-      const sc = wmScore(nm + ' marker', s); if (sc < 0) continue;
-      out.push({ sc: sc, ty: 'Marker', nm: nm, dt: gx + ', ' + gy + (m.plane ? ' f' + m.plane : ''), x: gx, y: gy, p: m.plane | 0 });
+      out.push({ sc: sc, ty: rec.ty, nm: rec.nm, dt: rec.dt, x: rec.x, y: rec.y, p: rec.p });
     }
     // ---- map symbols: by TYPE ("fishing", "woodcutting", "bank") and by RESOURCE ("willow") ----
     // Grouped per element so one query does not return four hundred identical willow pins; the
     // nearest placement to the view centre wins and the rest are reported as a count.
     wmLoadSymbols();
-    if (WM_SYM && WM_ML) {
+    const groups = wmSymGroups();
+    if (groups && WM_ML) {
       const best = new Map();
-      for (const sy of WM_SYM) {
-        const hay = wmSymText(sy.ml);
+      for (const [ml, list] of groups) {
+        const hay = wmSymText(ml);
         if (!hay || hay.indexOf(s) < 0) continue;
-        const d = Math.abs(sy.x - wmCam.x) + Math.abs(sy.y - wmCam.y);
-        const b = best.get(sy.ml);
-        if (!b) best.set(sy.ml, { at: sy, d: d, n: 1 });
-        else { b.n++; if (d < b.d) { b.at = sy; b.d = d; } }
+        let at = null, dBest = Infinity;
+        for (const sy of list) { const d = Math.abs(sy.x - wmCam.x) + Math.abs(sy.y - wmCam.y); if (d < dBest) { dBest = d; at = sy; } }
+        best.set(ml, { at: at, d: dBest, n: list.length });
       }
       for (const [ml, b] of best) {
         const e = WM_ML[ml];
@@ -1373,9 +1412,17 @@
       else if (wmLayer[k] !== undefined) c.classList.toggle('on', !!wmLayer[k]);
     }
   }
+  // nearLabel walks every label; it ran on every mousemove. One answer per 8x8-tile cell.
+  const wmNearCache = new Map();
+  function wmNearMemo(x, y, p) {
+    const k = ((x >> 3) << 16) | ((y >> 3) << 3) | (p & 7);
+    let v = wmNearCache.get(k);
+    if (v === undefined) { v = nearLabel(x, y, p) || ''; if (wmNearCache.size > 4000) wmNearCache.clear(); wmNearCache.set(k, v); }
+    return v;
+  }
   function wmPaintStatus() {
     const st = $('wmStatus'); if (!st) return;
-    const near = (wmHover.x >= 0) ? (nearLabel(wmHover.x, wmHover.y, wmCam.p) || '') : '';
+    const near = (wmHover.x >= 0) ? wmNearMemo(wmHover.x, wmHover.y, wmCam.p) : '';
     let html = (wmHover.x >= 0 ? '<b>' + wmHover.x + ', ' + wmHover.y + '</b>' + (near ? ' <span class="wm-near">' + htmlEsc(near) + '</span>' : '') : '<span>hover the map for coordinates</span>')
       + '<span style="margin-left:auto">floor ' + wmCam.p + ' - ' + (Math.round(wmCam.z * 100) / 100) + ' px/tile</span>';
     if (wmSel) html += '<span class="wm-x" id="wmSelClear" title="Clear pin">&times;</span>';
@@ -1584,7 +1631,8 @@
       else if (chip.id === 'wmZoomOut') zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, 1 / 1.5);
       else if (chip.id === 'wmZoomIn') zoomAt(stage.clientWidth / 2, stage.clientHeight / 2, 1.5);
     });
-    inp.addEventListener('input', function () { wmResSel = 0; wmRenderResults(); });
+    let wmSearchT = 0;
+    inp.addEventListener('input', function () { wmResSel = 0; clearTimeout(wmSearchT); wmSearchT = setTimeout(wmRenderResults, 90); });
     inp.addEventListener('focus', function () { wmRenderResults(); });
     inp.addEventListener('blur', function () { setTimeout(function () { const b = $('wmResults'); if (b) b.style.display = 'none'; }, 150); });   // let a result click land first
     inp.addEventListener('keydown', function (e) {

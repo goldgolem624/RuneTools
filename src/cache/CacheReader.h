@@ -226,7 +226,10 @@ std::string NpcJson(int npc_id);
 // underlay colours + shape-split overlay colours (no icons), north-up. half = tiles each side
 // (zoom), ts = px/tile; both clamped, 0 = default (40 / 6). Returns JSON
 // {"w":px,"t":tilepx,"h":halfTiles,"b64":"<RGBA base64>"} for the panel to putImageData, or "{}".
-std::string MapWindowJson(int cx, int cy, int plane, int half = 0, int ts = 0);
+// `want` selects the payload sections: 1 = terrain png, 2 = icons, 4 = collision grids
+// (blk + nomove), 8 = objs. The world map asks for 3 (terrain + icons); the clue solver and
+// the overlay walkability layer keep the collision grids. Default = everything.
+std::string MapWindowJson(int cx, int cy, int plane, int half = 0, int ts = 0, int want = 15);
 
 // Raw param map of one StructType (js5-22; id = archive*32 + file):
 // {"ints":{key:v},"strs":{key:"v"}}. Generic cache-struct accessor for panels.

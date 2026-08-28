@@ -857,7 +857,7 @@
     const hit = MAP_WIN_CACHE.get(k);
     if (hit) { MAP_WIN_CACHE.delete(k); MAP_WIN_CACHE.set(k, hit); return hit.meta; }   // LRU touch
     let meta = null;
-    try { meta = JSON.parse((await bridge().mapWindow(cx, cy, plane, half, ts)) || '{}'); } catch (e) { return null; }
+    try { meta = JSON.parse((await bridge().mapWindow(cx, cy, plane, half, ts, 15, true)) || '{}'); } catch (e) { return null; }   // full payload, inline: the scan needs blk
     if (!meta || !meta.w) return meta;
     meta._k = k;
     const ent = { meta: meta, img: null };
