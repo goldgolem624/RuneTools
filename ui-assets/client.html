@@ -2490,7 +2490,13 @@
       }
     }
     const html = parts.join('<span style="color:var(--text-mute)">|</span>');
-    if (html !== _barInfoSig) { _barInfoSig = html; el.innerHTML = html; try { positionMenubar(); } catch (e) {} }
+    if (html !== _barInfoSig) {
+      _barInfoSig = html; el.innerHTML = html;
+      // The bar's width just changed: re-centre it AND republish the consume rects, or the
+      // newly covered strip (and everything that shifted under it) falls through to the game.
+      try { positionMenubar(); } catch (e) {}
+      try { wmRectsSoon(); } catch (e) {}
+    }
   }
   setInterval(() => { try { uiBarTick(); } catch (e) {} }, 1000);
   try { uiApply(); } catch (e) {}   // localStorage seed: colours before first paint; prefsInit re-applies the durable copy
