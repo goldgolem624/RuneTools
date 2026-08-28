@@ -5130,7 +5130,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
     std::uint64_t gs, ge; iface_groups_range(h, mainData, gs, ge);
     if (!gs) return -1;
     int found = -1, visited = 0, matched = 0, groups = 0;
-    int near = -1, nearDist = 1 << 30;   // best same-sub-index item on another component
+    int nearItem = -1, nearDist = 1 << 30;   // best same-sub-index item on another component
     std::function<void(std::uint64_t, int)> walk = [&](std::uint64_t node, int depth) {
         if (found >= 0 || depth > 12 || visited++ > 6000) return;
         if (r16(node + 0x2c) == sub) {
@@ -5142,7 +5142,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
             if (item > 0 && item < 200000 && (sprUnset || sprRaw == 0x60000ull + (std::uint64_t)item)) {
                 if (c == comp) { found = item; return; }
                 int d = c > comp ? c - comp : comp - c;
-                if (d < nearDist) { nearDist = d; near = item; }
+                if (d < nearDist) { nearDist = d; nearItem = item; }
             }
         }
         const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
@@ -5173,7 +5173,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
         break;
     }
     if (dbg) { dbg[0] = groups; dbg[1] = visited; dbg[2] = matched; }
-    return found >= 0 ? found : near;
+    return found >= 0 ? found : nearItem;
 }
 
 std::string HoverEntityJson(std::uint32_t pid) {
