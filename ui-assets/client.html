@@ -2606,6 +2606,7 @@
     { id: 'archshop', label: 'Guild Shop', cat: 'Archaeology', icon: '<path d="M4 9 5.5 4h13L20 9"/><path d="M4 9h16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M5.5 13v7h13v-7"/><path d="M9.5 20v-4h5v4"/>' },
     // World
     { id: 'worldmap', label: 'World Map', cat: 'World', icon: '<path d="M9 5 3 7v12l6-2 6 2 6-2V5l-6 2-6-2z"/><path d="M9 5v12M15 7v12"/><circle cx="12" cy="11" r="1.6"/>' },
+    { id: 'fairyrings', label: 'Fairy Rings', cat: 'World', icon: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>' },
     { id: 'resdungeons', label: 'Resource Dungeons', cat: 'World', icon: '<path d="M4 20V9l8-6 8 6v11"/><path d="M9 20v-6h6v6"/><path d="M12 3v3"/>' },
     { id: 'anachronia', label: 'Anachronia', cat: 'World', icon: '<path d="M12 3 4 9v12h16V9l-8-6z"/><path d="M9 21v-6h6v6M4 9h16"/>' },
     { id: 'scene',    label: 'Scene',   cat: 'World', icon: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><path d="M16 6.2a3 3 0 0 1 0 5.6M20.5 19c0-2.2-1.3-3.9-3.3-4.6"/>' },
@@ -5841,6 +5842,7 @@
     if (id === 'components') { compSig = ''; fetchComponents(); }
     if (id === 'machines') fetchMachinesTab();
     if (id === 'resdungeons') { rdSig = ''; rdFetchAt = 0; fetchResDungeons(); }
+    if (id === 'fairyrings') { frSig = ''; frFetchAt = 0; fetchFairyRings(); }
     if (id === 'equipment') { equipSig = ''; fetchEquip(); }
     if (id === 'storage') { storageSig = ''; fetchStorage(); }
     if (id === 'abilities') fetchAbilities();
@@ -6487,6 +6489,7 @@
     if (activeTab === 'reputation') { renderReputation(); return; }
     if (activeTab === 'wardrobe') { renderWardrobe(); return; }
     if (activeTab === 'resdungeons') { renderResDungeons(); return; }
+    if (activeTab === 'fairyrings') { renderFairyRings(); return; }
     if (activeTab === 'bossinfo') { renderBossInfo(); return; }
     if (activeTab === 'portsinfo') { if (typeof renderPortsInfo === 'function') renderPortsInfo(); return; }
     if (activeTab === 'hideyholes') { renderHidey(); return; }
@@ -7021,6 +7024,7 @@
     if (activeTab === 'reputation') fetchReputation();
     if (activeTab === 'wardrobe') fetchWardrobe();
     if (activeTab === 'resdungeons') fetchResDungeons();
+    if (activeTab === 'fairyrings') fetchFairyRings();
     if (activeTab === 'bossinfo') fetchBossInfo();
     if (activeTab === 'hideyholes') fetchHidey();
     if (activeTab === 'clues') { fetchClues(); fetchGlobetrotter(); }
