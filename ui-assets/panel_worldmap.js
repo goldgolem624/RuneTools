@@ -742,6 +742,9 @@
   }, 500);
 
   function wmSetPlane(p) { if (wmCam.p === p) return; wmCam.p = p; wmSaveCam(); wmPaintBar(); wmKick(); }
+  // Screen-to-stage factor: 1 normally; under the Preferences content zoom the screen rect is
+  // scaled while clientWidth stays in CSS px, which put the cursor off by the zoom factor.
+  function wmZoomK(el, r) { const cw = el.clientWidth || 0; return (cw > 0 && r && r.width > 0) ? cw / r.width : 1; }
   function wmFlyTo(x, y, p, sel) {
     if (p != null && (p | 0) !== wmCam.p) wmSetPlane(p | 0);
     const tz = Math.max(wmCam.z, 2.5);
@@ -1546,16 +1549,16 @@
     };
     stage.addEventListener('wheel', function (e) {
       e.preventDefault();
-      const r = stage.getBoundingClientRect();
-      zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.22 : 1 / 1.22);
+      const r = stage.getBoundingClientRect(), k = wmZoomK(stage, r);
+      zoomAt((e.clientX - r.left) * k, (e.clientY - r.top) * k, e.deltaY < 0 ? 1.22 : 1 / 1.22);
     }, { passive: false });
     stage.addEventListener('mousedown', function (e) {
       wmDrag = { x: e.clientX, y: e.clientY, cx: wmCam.x, cy: wmCam.y, moved: false };
       stage.classList.add('grabbing'); e.preventDefault();
     });
     stage.addEventListener('mousemove', function (e) {
-      const r = stage.getBoundingClientRect();
-      const mx = e.clientX - r.left, my = e.clientY - r.top;
+      const r = stage.getBoundingClientRect(), k = wmZoomK(stage, r);
+      const mx = (e.clientX - r.left) * k, my = (e.clientY - r.top) * k;
       const tx = Math.floor(wmCam.x + (mx - stage.clientWidth / 2) / wmCam.z);
       const ty = Math.floor(wmCam.y - (my - stage.clientHeight / 2) / wmCam.z);
       if (tx !== wmHover.x || ty !== wmHover.y) { wmHover = { x: tx, y: ty }; wmPaintStatus(); wmHoverBox(); }
@@ -1599,7 +1602,8 @@
       window.addEventListener('mousemove', function (e) {
         if (!wmDrag) return;
         const st2 = document.getElementById('wmStage'); if (!st2) { wmDrag = null; return; }
-        const dx = e.clientX - wmDrag.x, dy = e.clientY - wmDrag.y;
+        const kd = wmZoomK(stage, stage.getBoundingClientRect());
+        const dx = (e.clientX - wmDrag.x) * kd, dy = (e.clientY - wmDrag.y) * kd;
         if (Math.abs(dx) + Math.abs(dy) > 3) { wmDrag.moved = true; if (wmFollow) { wmFollow = false; wmPaintBar(); } }
         wmCam.x = Math.max(64, Math.min(16320, wmDrag.cx - dx / wmCam.z));
         wmCam.y = Math.max(64, Math.min(16320, wmDrag.cy + dy / wmCam.z));
@@ -1608,8 +1612,8 @@
       window.addEventListener('mouseup', function (e) {
         const st2 = document.getElementById('wmStage');
         if (wmDrag && st2 && !wmDrag.moved) {                   // click (no drag) = pin the tile
-          const r = st2.getBoundingClientRect();
-          const mx = e.clientX - r.left, my = e.clientY - r.top;
+          const r = st2.getBoundingClientRect(), k = wmZoomK(st2, r);
+          const mx = (e.clientX - r.left) * k, my = (e.clientY - r.top) * k;
           if (mx >= 0 && my >= 0 && mx <= r.width && my <= r.height) {
             const tx = Math.floor(wmCam.x + (mx - st2.clientWidth / 2) / wmCam.z);
             const ty = Math.floor(wmCam.y - (my - st2.clientHeight / 2) / wmCam.z);
