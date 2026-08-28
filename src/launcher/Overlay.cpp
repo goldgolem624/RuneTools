@@ -890,14 +890,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             // Cartographic halo: a soft dark understroke first, the colour line on top, so
             // every stroke stays crisp on bright stone and pale sand alike.
             if (self) {
-                line(x0, y0, x1, y1, 4.2f, 8, 24, 10, 170);
-                line(x0, y0, x1, y1, 2.4f, 150, 250, 150, 255);
+                line(x0, y0, x1, y1, 3.8f, 8, 24, 10, 165);
+                line(x0, y0, x1, y1, 2.0f, 150, 250, 150, 255);
             } else if (border) {
-                line(x0, y0, x1, y1, 4.0f, 30, 12, 2, 185);
-                line(x0, y0, x1, y1, 2.2f, 255, 178, 64, 235);
+                line(x0, y0, x1, y1, 3.4f, 30, 12, 2, 175);
+                line(x0, y0, x1, y1, 1.8f, 255, 178, 64, 235);
             } else {
-                line(x0, y0, x1, y1, 2.4f, 6, 12, 20, 120);
-                line(x0, y0, x1, y1, 1.2f, 170, 225, 255, 185);
+                line(x0, y0, x1, y1, 2.0f, 6, 12, 20, 105);
+                line(x0, y0, x1, y1, 1.0f, 170, 225, 255, 175);
             }
         };
         // Each tile draws its OWN four edges, so a bridge seam can be a step rather than a
@@ -911,10 +911,25 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     tileShown(tgx, tgy, shown, self);
                     if (!shown || self != (pass == 1)) continue;
                     const size_t base = ((size_t)tgx * T + tgy) * 4;
-                    edge(base + 0, base + 1, self, blockedAt(tgx, tgy - 1));   // S
-                    edge(base + 1, base + 2, self, blockedAt(tgx + 1, tgy));   // E
-                    edge(base + 2, base + 3, self, blockedAt(tgx, tgy + 1));   // N
-                    edge(base + 3, base + 0, self, blockedAt(tgx - 1, tgy));   // W
+                    // EACH SHARED EDGE DRAWN ONCE. Both tiles drawing their own four edges
+                    // stacked halo on halo along every interior line and read as blur (owner
+                    // report). A tile owns its S and W edges; it draws N/E only when the
+                    // neighbour will not (carpet edge: neighbour hidden), or when the two rims
+                    // genuinely differ in height (a bridge step is two real lines). The player
+                    // tile still draws all four in its own pass so green lands on top.
+                    auto neighbourDrawsShared = [&](int nx, int ny, size_t c0, size_t c1, size_t n0, size_t n1) {
+                        bool ns, nself;
+                        tileShown(nx, ny, ns, nself);
+                        if (!ns) return false;
+                        const size_t nb = ((size_t)nx * T + ny) * 4;
+                        return wz[base + c0] == wz[nb + n0] && wz[base + c1] == wz[nb + n1];
+                    };
+                    edge(base + 0, base + 1, self, blockedAt(tgx, tgy - 1));   // S: owned
+                    edge(base + 3, base + 0, self, blockedAt(tgx - 1, tgy));   // W: owned
+                    if (self || !neighbourDrawsShared(tgx + 1, tgy, 1, 2, 0, 3))
+                        edge(base + 1, base + 2, self, blockedAt(tgx + 1, tgy));   // E
+                    if (self || !neighbourDrawsShared(tgx, tgy + 1, 3, 2, 0, 1))
+                        edge(base + 2, base + 3, self, blockedAt(tgx, tgy + 1));   // N
                 }
         // directional wall edges on top (a=SW b=SE c=NE d=NW)
         for (int tgx = 0; tgx < T; ++tgx)

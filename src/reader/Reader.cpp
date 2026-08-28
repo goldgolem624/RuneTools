@@ -6450,7 +6450,8 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     //
     // Text is decoded with iface_sso_text, not a raw inline read: +0x180 is a per-class UNION,
     // and on the non-text children it holds a child-vector whose bytes are not a string at all.
-    std::vector<std::pair<int, std::string>> kids;    // (component offset, decoded text)
+    struct Kid { int rel; std::string text; int x, y; };
+    std::vector<Kid> kids;
     const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
     for (int kk = 0; kk < 3; ++kk) {
         std::uint64_t cs = r64(box + co[kk]), ce = r64(box + co[kk] + 8);
@@ -6472,11 +6473,13 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
             }
             while (!clean.empty() && (clean.front() == ' ' || clean.front() == '\t')) clean.erase(clean.begin());
             while (!clean.empty() && (clean.back()  == ' ' || clean.back()  == '\t')) clean.pop_back();
-            if (!clean.empty()) kids.emplace_back(rel, clean);
+            if (!clean.empty())
+                kids.push_back({ rel, clean,
+                                 rpm<std::int32_t>(h, ch + 0x70).value_or(0),
+                                 rpm<std::int32_t>(h, ch + 0x74).value_or(0) });
         }
     }
-    std::sort(kids.begin(), kids.end(),
-              [](const std::pair<int, std::string>& a, const std::pair<int, std::string>& b){ return a.first < b.first; });
+    std::sort(kids.begin(), kids.end(), [](const Kid& a, const Kid& b){ return a.rel < b.rel; });
 
     // A keybind token: a single character, "<s|c|a>-<key>", or a function key.
     auto as_key = [&](const std::string& t, int& outMod) -> std::string {
@@ -6495,18 +6498,40 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
         return {};
     };
 
-    // Lowest-offset key-shaped child wins: the key always precedes the cooldown in the block,
-    // so scanning in order cannot mistake a bare-digit cooldown for the keybind.
+    // GEOMETRY disambiguates keybind from cooldown, not order. The earlier rule ("the key
+    // precedes the cooldown, so first key-shaped child wins") broke on live bars: a one-digit
+    // cooldown ("4") is a perfectly key-shaped token, and on slots where it enumerates before
+    // the key node -- or the slot is unbound, or on cooldown the key text is suppressed -- the
+    // timer was reported AS the keybind (owner report: key chips showing the previous timer)
+    // and the real cooldown read came up empty, so the slot claimed ready mid-cooldown.
+    // The two nodes never share a place on screen: the KEYBIND label sits in the slot's
+    // top-left corner (small x AND small y, parent-relative), the COOLDOWN countdown is
+    // centred. A key-shaped child is accepted as the keybind only from the top-left region;
+    // the cooldown is any timer-shaped child that is NOT the chosen key node, preferring the
+    // one just after the key (the probed 11->12 / 12->13 layouts) but no longer requiring it.
+    const int bw = rpm<std::int32_t>(h, box + 0x78).value_or(0);
+    const int bh = rpm<std::int32_t>(h, box + 0x7c).value_or(0);
+    auto topLeft = [&](const Kid& k) {
+        // Half-box bounds when the box measured sanely; a torn 0-size box accepts near-origin.
+        const int lx = bw > 8 ? bw / 2 : 18, ly = bh > 8 ? bh / 2 : 18;
+        return k.x >= 0 && k.y >= 0 && k.x < lx && k.y < ly;
+    };
     bool haveKey = false; int keyRel = 0;
     for (const auto& kv : kids) {
         int mm = 0;
-        std::string k = as_key(kv.second, mm);
-        if (!k.empty()) { keyb = k; mod = mm; keyRel = kv.first; haveKey = true; break; }
+        std::string k = as_key(kv.text, mm);
+        if (k.empty() || !topLeft(kv)) continue;
+        keyb = k; mod = mm; keyRel = kv.rel; haveKey = true; break;
     }
-    // The cooldown is the child immediately after the keybind (12->13 and 11->12 above).
-    if (haveKey)
-        for (const auto& kv : kids)
-            if (kv.first == keyRel + 1 && is_cd_timer(kv.second)) { cd = kv.second; break; }
+    // Cooldown: prefer the child right after the key, else any non-key timer-shaped child
+    // OUTSIDE the top-left key region (so an unbound slot still reads its countdown).
+    for (const auto& kv : kids)
+        if (haveKey && kv.rel == keyRel + 1 && is_cd_timer(kv.text)) { cd = kv.text; break; }
+    if (cd.empty())
+        for (const auto& kv : kids) {
+            if (haveKey && kv.rel == keyRel) continue;
+            if (is_cd_timer(kv.text) && !topLeft(kv)) { cd = kv.text; break; }
+        }
     return keyb;
 }
 
