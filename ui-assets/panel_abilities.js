@@ -67,8 +67,12 @@
     if (!bridge() || abarFetching) return; abarFetching = true;
     abCfgLoad();
     try {
-      let bars = [], clock = 0;
-      try { const j = JSON.parse(await bridge().actionBar(myPid())); bars = j.bars || []; clock = j.clock || 0; } catch (e) {}
+      let bars = [], clock = 0, cycles = 0;
+      // cycles = CLIENTCLOCK units, the unit the cooldown varc stamps use. This assignment
+      // DROPPED it for a while, and clock (mod_base+0xED2FF8) died in a game update, so the
+      // cooldown clocks had no time source at all and every ability read as off cooldown
+      // (owner report: Freedom "ready" with cast/ready stamps plainly live in the tooltip).
+      try { const j = JSON.parse(await bridge().actionBar(myPid())); bars = j.bars || []; clock = j.clock || 0; cycles = j.cycles || 0; } catch (e) {}
       // varc-int snapshot for the cooldown clock pairs (keys are scope-prefixed "5:<id>")
       let vc = null;
       try { if (bridge().varcsDumpAll) vc = JSON.parse(await bridge().varcsDumpAll(myPid()) || 'null'); } catch (e) {}
@@ -78,7 +82,7 @@
       let vp = {}; if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
       const preset = {}; for (const bi in ABAR_GATE) preset[bi] = readVb(ABAR_GATE[bi], vp) || 0;
       const adren = (vp[AB_ADREN_VARP] !== undefined) ? vp[AB_ADREN_VARP] : null;
-      abarData = { bars, preset, clock, adren, vc };
+      abarData = { bars, preset, clock, cycles, adren, vc };
     } finally { abarFetching = false; }
     paneRun('abilities', renderAbilities);
   }
