@@ -986,7 +986,9 @@
   // than floating in the sea as the composed surface shows them. Squares absent from every
   // zone table stay void, which is the fix for the raw-grid rendering of instanced areas.
   let wmAreas = null, wmAreasAt = 0, wmZoneIdx = null, wmAreaImg = {};
-  const WM_IMG_MAX_Z = 4;            // above this the chunk renderer's detail (walls, icons) wins
+  // The area images are 1 px per tile: native or downsampled at <= 1 px/tile, but upscaled mush
+  // above it (owner: 'absolutely terrible' at 2 px/tile), so the chunk renderer takes over there.
+  const WM_IMG_MAX_Z = 1.0;
   function wmLoadAreas() {
     if (wmAreas || !bridge() || !bridge().mapAreas) return;
     const t = Date.now(); if (t - wmAreasAt < 1500) return; wmAreasAt = t;
