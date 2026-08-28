@@ -489,7 +489,7 @@
       .cx-tabs { display: flex; flex-wrap: wrap; gap: 5px; }
       .cx-chip { flex: 0 0 auto; font-size: 11px; font-weight: 600; padding: 4px 11px; border-radius: 12px;
           cursor: pointer; background: var(--bg-elev); border: 1px solid var(--border); color: var(--text-dim); }
-      .cx-chip.on { color: var(--text); background: var(--accent-soft, rgba(124,92,252,.16)); border-color: var(--accent); }
+      .cx-chip.on { color: var(--text); background: var(--accent-soft, rgba(var(--accent-rgb),.16)); border-color: var(--accent); }
       .cx-ctl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
       .cx-in { min-width: 0; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 7px;
           color: var(--text); font-size: 12px; padding: 5px 9px; outline: none; }

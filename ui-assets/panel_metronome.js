@@ -91,7 +91,7 @@
         g.fillStyle = 'rgba(130,130,200,0.35)'; g.fill();
       } else {
         g.beginPath(); g.arc(cx, cy, r - 6, TOP, TOP + TAU * ph2);
-        g.strokeStyle = 'rgba(140,111,253,0.88)'; g.lineWidth = Math.max(2, r * 0.09);
+        g.strokeStyle = (typeof accentRgba === 'function') ? accentRgba(0.88) : 'rgba(var(--accent-rgb),0.88)'; g.lineWidth = Math.max(2, r * 0.09);
         g.lineCap = 'round'; g.stroke();
         // Core flash: brightest as the beat lands, decaying quadratically across it.
         const f = (1 - ph2) * (1 - ph2);

@@ -372,8 +372,8 @@
           +   'animation:sndLivePulse 2s ease-in-out infinite}'
           + '@keyframes sndLivePulse{0%,100%{opacity:.4}50%{opacity:1}}'
           + '.pet-chip.snd-heard{transition:box-shadow 250ms,border-color 250ms,color 250ms}'
-          + '.pet-chip.snd-hot{border-color:var(--accent-hi,#a78bfa);color:var(--accent-hi,#a78bfa);'
-          +   'box-shadow:0 0 9px rgba(140,111,253,.5)}';
+          + '.pet-chip.snd-hot{border-color:var(--accent-hi);color:var(--accent-hi);'
+          +   'box-shadow:0 0 9px rgba(var(--accent-rgb),.5)}';
         document.head.appendChild(st);
       }
       wrap = document.createElement('div'); wrap.id = 'sndWrap'; wrap.className = 'pk-wrap';

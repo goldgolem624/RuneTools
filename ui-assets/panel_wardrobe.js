@@ -75,7 +75,7 @@
         .wd-bar { display: flex; align-items: center; gap: 8px; padding: 2px 0 8px; }
         .wd-tabs { display: flex; gap: 4px; }
         .wd-tab { appearance: none; background: transparent; color: var(--text-dim); border: 1px solid transparent; border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 11px; cursor: pointer; }
-        .wd-tab.on { color: #fff; border-color: var(--accent-hi); background: rgba(140,111,253,0.12); }
+        .wd-tab.on { color: #fff; border-color: var(--accent-hi); background: rgba(var(--accent-rgb),0.12); }
         .wd-cnt { margin-left: auto; color: var(--accent-hi); font-size: 11px; font-variant-numeric: tabular-nums; }
         .wd-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; }
         .wd-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }

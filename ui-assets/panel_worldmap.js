@@ -888,7 +888,7 @@
     return { x: x, y: y, w: w, h: h };
   }
   const WM_ACC_KEY = { line: 'rgba(77,210,138,0.75)', text: '#8ef0c0' };   // keybind
-  const WM_ACC_MORE = { line: 'rgba(140,111,253,0.75)', text: '#cfc2ff' }; // "+N more"
+  const WM_ACC_MORE = { get line() { return (typeof accentRgba === 'function') ? accentRgba(0.75) : 'rgba(var(--accent-rgb),0.75)'; }, get text() { return (typeof uiCfg === 'function') ? uiCfg().accent : '#cfc2ff'; } }; // "+N more"
   const wmTextW = new Map();   // label -> measured px width (font is constant)
   // Candidate offsets, in preference order: on the anchor, then the four sides, then the
   // diagonals. A label that collides used to just VANISH, which got much worse once the
@@ -1375,7 +1375,7 @@
     + '.wm-search:focus{border-color:var(--border-hi)}'
     + '.wm-results{position:absolute;top:32px;left:0;right:0;z-index:30;max-height:260px;overflow-y:auto;background:#12151d;border:1px solid var(--border-hi);border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,0.55)}'
     + '.wm-res{display:flex;gap:7px;align-items:center;padding:5px 8px;cursor:pointer;font-size:11.5px}'
-    + '.wm-res:hover,.wm-res.sel{background:rgba(124,92,252,0.14)}'
+    + '.wm-res:hover,.wm-res.sel{background:rgba(var(--accent-rgb),0.14)}'
     + '.wm-res .ty{flex:0 0 auto;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:0.4px;padding:1px 6px;border-radius:7px;background:rgba(255,255,255,0.07);color:var(--text-dim)}'
     + '.wm-res .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
     + '.wm-res .dt{flex:0 1 auto;color:var(--text-mute);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'

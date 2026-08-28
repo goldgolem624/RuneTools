@@ -925,7 +925,7 @@
         .lg-tabs { display: flex; gap: 5px; margin: 4px 0 2px; flex-wrap: wrap; }
         .lg-subtabs { margin: 2px 0 8px; }
         .lg-tab { font-size: 11px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--text-dim); cursor: pointer; }
-        .lg-tab.on { border-color: var(--accent-hi); color: #fff; background: linear-gradient(90deg, rgba(124,92,252,0.28), rgba(124,92,252,0.10)); }
+        .lg-tab.on { border-color: var(--accent-hi); color: #fff; background: linear-gradient(90deg, rgba(var(--accent-rgb),0.28), rgba(var(--accent-rgb),0.10)); }
         /* A GRID, not flex-wrap: relics are equal-rank choices, and variable-width
            chips wrapped ragged (a tier of three broke 2 + 1 with the orphan a
            different width). Equal columns line the tiers up with each other, and
@@ -934,7 +934,7 @@
         .lg-relics { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 5px; margin-top: 6px; }
         .lg-relic { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 3px 8px 3px 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev-2); font-size: 11px; color: var(--text); }
         .lg-relic > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .lg-relic.on { border-color: var(--accent-hi); background: linear-gradient(90deg, rgba(124,92,252,0.28), rgba(124,92,252,0.10)); color: #fff; }
+        .lg-relic.on { border-color: var(--accent-hi); background: linear-gradient(90deg, rgba(var(--accent-rgb),0.28), rgba(var(--accent-rgb),0.10)); color: #fff; }
         /* unknown, NOT locked: a dashed edge reads as "no answer" at a glance */
         .lg-relic.unk { border-style: dashed; color: var(--text-mute); }
         .lg-avail { color: var(--warn, #fbbf24); border-color: var(--warn, #fbbf24); }
