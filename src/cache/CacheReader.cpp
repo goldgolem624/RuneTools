@@ -3167,6 +3167,7 @@ std::string AbilityConfigsJson() {
     };
     std::string out = "{"; bool first = true;
     std::unordered_map<std::string, char> seen;
+    std::map<int, std::string> byId;   // sprite id (param 2802) -> record; every tier incl. 0
     // struct id -> [castVarc, readyVarc], from the player's own script 6506 (see above).
     // Empty (e.g. js5-12 absent, or a layout change) just means no "v" fields.
     const auto cdPairs = AbilityCooldownVarcsLocked();
@@ -3179,11 +3180,37 @@ std::string AbilityConfigsJson() {
             auto itTier = ds.ints.find(2799);
             if (itName == ds.strs.end() || itTier == ds.ints.end()) continue;
             int tier = itTier->second;
-            if (tier != 1 && tier != 2 && tier != 3 && tier != 4 && tier != 5 && tier != 7) continue;
+            // Tier 0 = the auto-attacks ("Basic<nbsp>Attack" per style): kept for the by-id
+            // map below, excluded from the by-name map like before.
+            if (tier != 0 && tier != 1 && tier != 2 && tier != 3 && tier != 4 && tier != 5 && tier != 7) continue;
             const std::string& name = itName->second;
-            if (name.empty() || !seen.emplace(name, 1).second) continue;   // first canonical per name
+            if (name.empty()) continue;
+            auto itId0 = ds.ints.find(2802);
+            const int sprId = (itId0 != ds.ints.end()) ? itId0->second : 0;
+            // Tooltip header / requirement params, mirroring the game's own tooltip script
+            // (clientscript 967 / 7473-7478): st = combat style 2806, l = level 2807,
+            // ag = adrenaline gain 2800 (tenths of %), ac = adrenaline cost 2798, tg = target
+            // type 8170, sh/dw/wp = shield / dual-wield / weapon requirement flags, acc =
+            // accuracy 9090 when not 100.
+            std::string extra;
+            auto addInt = [&](int key, const char* tag) {
+                auto it = ds.ints.find(key);
+                if (it != ds.ints.end() && it->second != 0) extra += std::string(",\"") + tag + "\":" + std::to_string(it->second);
+            };
+            addInt(2806, "st"); addInt(2807, "l"); addInt(2800, "ag"); addInt(2798, "ac");
+            addInt(8170, "tg"); addInt(2813, "sh"); addInt(2811, "dw"); addInt(5195, "wp"); addInt(9090, "acc");
+            if (sprId > 0 && byId.find(sprId) == byId.end()) {
+                std::string rec = "{\"t\":" + std::to_string(tier) + ",\"n\":" + jstr(name) + ",\"s\":" + std::to_string(a * 32 + fid) + extra;
+                auto itD0 = ds.strs.find(2795);
+                if (itD0 != ds.strs.end() && !itD0->second.empty()) rec += ",\"d\":" + jstr(itD0->second);
+                auto itCd0 = ds.ints.find(2796);
+                if (itCd0 != ds.ints.end() && itCd0->second > 0) rec += ",\"c\":" + std::to_string(itCd0->second);
+                rec += "}";
+                byId.emplace(sprId, rec);
+            }
+            if (tier == 0 || !seen.emplace(name, 1).second) continue;   // first canonical per name
             out += first ? "" : ","; first = false;
-            out += jstr(name) + ":{\"t\":" + std::to_string(tier);
+            out += jstr(name) + ":{\"t\":" + std::to_string(tier) + extra;
             auto itD = ds.strs.find(2795);
             if (itD != ds.strs.end() && !itD->second.empty()) out += ",\"d\":" + jstr(itD->second);
             auto itU = ds.strs.find(4650);
@@ -3216,7 +3243,11 @@ std::string AbilityConfigsJson() {
             out += "}";
         }
     }
-    out += "}";
+    // "_byId": the same abilities keyed by the sprite/ability id the action bar carries, so
+    // the panel resolves a slot without a name round-trip (and reaches the tier-0 attacks).
+    out += first ? "" : ","; out += "\"_byId\":{"; bool f2 = true;
+    for (const auto& kv : byId) { out += f2 ? "" : ","; f2 = false; out += "\"" + std::to_string(kv.first) + "\":" + kv.second; }
+    out += "}}";
     cached = out;
     return cached;
 }

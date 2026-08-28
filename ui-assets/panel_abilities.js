@@ -81,12 +81,15 @@
       let vc = null;
       try { if (bridge().varcsDumpAll) vc = JSON.parse(await bridge().varcsDumpAll(myPid()) || 'null'); } catch (e) {}
       await ensureVbMap();
-      const vps = new Set([AB_ADREN_VARP]);
+      // Damage pools the game's tooltip scripts read (script 17726 / 21027 / 21111): ability
+      // damage = varp 3531 (+ half of off-hand varp 3532), armour = varp 711 + 3563, shield = 4499.
+      const vps = new Set([AB_ADREN_VARP, 3531, 3532, 711, 3563, 4499]);
       for (const bi in ABAR_GATE) { const r = storageVbMap && storageVbMap[ABAR_GATE[bi]]; if (r) vps.add(r.varp); }
       let vp = {}; if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
       const preset = {}; for (const bi in ABAR_GATE) preset[bi] = readVb(ABAR_GATE[bi], vp) || 0;
       const adren = (vp[AB_ADREN_VARP] !== undefined) ? vp[AB_ADREN_VARP] : null;
-      abarData = { bars, preset, clock, cycles, adren, vc };
+      const dmg = { abil: (+vp[3531] || 0) + Math.floor((+vp[3532] || 0) / 2), armour: (+vp[711] || 0) + (+vp[3563] || 0), shield: (+vp[4499] || 0) };
+      abarData = { bars, preset, clock, cycles, adren, vc, dmg };
     } finally { abarFetching = false; }
     paneRun('abilities', renderAbilities);
   }
@@ -131,33 +134,85 @@
       if (live != null) return { cls: 'ab-cd', txt: fmtSec(live) };
       return s.castable === false ? { cls: 'ab-unavail', txt: abReason(s) } : { cls: 'ab-ready', txt: 'ready' };
     };
+    // The game's own tooltip, rebuilt from its data: header + requirements from the struct
+    // params (abilityConfigs._byId), bullet lines from AB_TIPS (interpreted from the CS2
+    // tooltip builders), damage numbers from the live pools. Falls back to our old summary
+    // when the cache record is missing.
+    const AB_CAT = { 0: 'Basic Attack', 1: 'Basic Ability', 2: 'Threshold Ability', 3: 'Defensive Ability', 4: 'Ultimate Ability', 5: 'Special Attack', 6: 'Passive', 7: 'Utility' };
+    const AB_TGT = { 1: 'Single-target', 2: 'Multi-target', 3: 'Self-target', 4: 'Area-target' };
+    const AB_STYLE_TXT = { 1: ['Melee damage', 'FFA11A'], 2: ['Melee damage', 'FFA11A'], 3: ['Ranged damage', '25AD37'], 4: ['Magic damage', '3366FF'], 29: ['Necromancy damage', 'A788DD'] };
+    const AB_SKILL = { 1: ['Attack', 0], 2: ['Strength', 2], 3: ['Ranged', 4], 4: ['Magic', 6], 5: ['Defence', 1], 6: ['Constitution', 3], 29: ['Necromancy', 28] };
+    const abCdText = (ticks) => { const sec = ticks * 0.6; if (sec >= 60) { const m = Math.floor(sec / 60), r = Math.round(sec - m * 60); return m + 'm' + (r ? ' ' + r + 's' : ''); } return (sec % 1 ? sec.toFixed(1) : String(sec)) + 's'; };
+    const abClean = (txt) => String(txt).replace(/<sprite=\d+>/g, '').replace(/<nbsp>/g, ' ');
+    const abDmgText = (tok, rec) => {
+      const pool = (d.dmg && d.dmg[tok.d]) || 0;
+      const st = tok.s || (rec && rec.st) || 0;
+      const sty = AB_STYLE_TXT[st] || (st >= 5 && st <= 7 ? AB_STYLE_TXT[1] : null);
+      const kind = (tok.x ? 'bonus ' : '') + (sty ? '<col=' + sty[1] + '>' + sty[0] + '</col>' : 'damage');
+      const pct = '<col=ffffff>' + tok.a + '%' + (tok.b !== tok.a ? '-' + tok.b + '%' : '') + '</col>';
+      if (pool > 0) {
+        const mn = Math.floor(tok.a * pool / 100), mx = mn + Math.floor((tok.b - tok.a) * pool / 100);
+        return '<col=ffffff>' + mn.toLocaleString() + (tok.b !== tok.a ? '-' + mx.toLocaleString() : '') + '</col> (' + pct + ') ' + kind;
+      }
+      return pct + ' ' + kind;
+    };
+    const gameTip = (s, st) => {
+      const byId = abCfg && abCfg._byId, rec = byId && byId[s.id];
+      const tips = (typeof AB_TIPS !== 'undefined') ? AB_TIPS[String(s.id)] : null;
+      if (!rec) return null;
+      const out = [];
+      const name = abClean((rec.t === 0 && tips && tips.n) ? tips.n : (rec.n || s.name));
+      out.push('<col=ffffff>' + name + '</col>');
+      let sub = AB_CAT[rec.t] || '';
+      if (rec.c) sub += (sub ? '  ·  ' : '') + abCdText(rec.c) + ' cooldown';
+      if (rec.tg && AB_TGT[rec.tg]) sub += (sub ? '  ·  ' : '') + AB_TGT[rec.tg];
+      if (sub) out.push('<col=aab0bf>' + sub + '</col>');
+      if (rec.d && rec.t !== 0) out.push(abClean(rec.d));
+      if (tips && tips.l) {
+        for (const ln of tips.l) {
+          let txt = '';
+          for (const tok of ln) txt += (typeof tok === 'string') ? tok : abDmgText(tok, rec);
+          out.push(abClean(txt));
+        }
+      }
+      // Requirements: level + skill (coloured against the live base level), gear flags.
+      const reqs = [];
+      if (rec.l && AB_SKILL[rec.st]) {
+        const sk = AB_SKILL[rec.st];
+        const live = (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills) && lastSnap.skills[sk[1]]) ? (lastSnap.skills[sk[1]][0] | 0) : null;
+        const ok = live === null ? null : live >= rec.l;
+        reqs.push('<col=' + (ok === null ? 'ffffff' : ok ? '00ff00' : 'ff3030') + '>' + rec.l + ' ' + sk[0] + '</col>');
+      }
+      if (rec.sh) reqs.push('Shield');
+      if (rec.dw) reqs.push('Dual wield');
+      if (rec.wp) reqs.push('Weapon');
+      if (reqs.length) out.push('<col=969696>Requires:</col> ' + reqs.join('  ·  '));
+      if (rec.ac) out.push('<col=969696>Costs ' + (rec.ac / 10) + '% adrenaline</col>');
+      return out;
+    };
     const slotTip = (s, st) => {
       const t = abTier(s.name), tm = AB_TIER_META[t], info = abInfo(s.name);
-      const lines = [s.name + (tm ? '  [' + tm.n + ']' : ''), 'Ability id ' + s.id + (s.item ? ' · item ' + s.item : '')];
-      if (info && info.d) lines.push(info.d);
-      lines.push('State: ' + st.txt);
+      const g = gameTip(s, st);
+      const lines = g ? g.slice() : [s.name + (tm ? '  [' + tm.n + ']' : '')];
+      if (!g && info && info.d) lines.push(info.d);
+      lines.push('<col=969696>State: ' + st.txt + '</col>');
       const req = AB_ADREN_REQ[t];
       if (req) lines.push('Needs ' + (req / 10) + '% adrenaline' + (adrenPct != null ? ' (have ' + adrenPct + '%)' : ''));
-      if (info && info.u) lines.push('Unlock: ' + info.u);
-      lines.push('Enabled byte (widget+0x80): ' + (s.en !== undefined ? s.en : '?') +
-                 (s.en === 255 ? ' (castable)' : ' (greyed by the game)'));
+      if (info && info.u) lines.push('<col=969696>Unlock: ' + abClean(info.u) + '</col>');
       const cdMap = abCdMap();
       const cdRec = cdMap && abCd[s.id];
-      if (cdRec && cdRec.c) {
-        const sec = cdRec.c * 0.6;
-        lines.push('Cooldown: ' + (sec % 1 ? sec.toFixed(1) : sec) + 's (' + cdRec.c + ' game ticks)');
-      }
+      if (!g && cdRec && cdRec.c) lines.push('Cooldown: ' + abCdText(cdRec.c));
       const live = abCdLive(s);
       // The idle case prints its raw inputs: the two varc stamps and both clock candidates.
       // "Freedom says ready while on cooldown" could be a missing varc in the dump, a stale
       // stamp, or our CLIENTCLOCK running past the stamps; the numbers tell which.
-      const cdLine = s.cd ? 'On cooldown: ' + s.cd + (s.cd.includes(':') ? '' : 's') + ' left (printed on the icon)'
-                   : live != null ? 'On cooldown: ' + fmtSec(live) + ' left (varc ' + cdRec.v[0] + '/' + cdRec.v[1] + ' clock)'
-                   : cdRec && cdRec.v ? 'Not on cooldown (clock varc ' + cdRec.v[0] + '/' + cdRec.v[1] + ' idle)'
+      const cdLine = s.cd ? 'On cooldown: ' + s.cd + (s.cd.includes(':') ? '' : 's') + ' left'
+                   : live != null ? 'On cooldown: ' + fmtSec(live) + ' left'
                    : null;
-      if (cdLine) lines.push(cdLine);
-      if (s.key) lines.push('Keybind: ' + (s.mod ? MOD[s.mod] + '+' : '') + s.key);
-      return lines.join('\n');
+      if (cdLine) lines.push('<col=969696>' + cdLine + '</col>');
+      if (s.key) lines.push('<col=969696>Keybind: ' + (s.mod ? MOD[s.mod] + '+' : '') + s.key + '</col>');
+      // Rendered through tipHtml (rows set tipHtml=1): <col>/<br> are the only markup used.
+      return lines.join('<br>');
     };
     const abAdrenHtml = (adren) => {
       if (adren == null) return '';
