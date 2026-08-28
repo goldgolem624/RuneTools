@@ -21,32 +21,34 @@
   // V(id) = live varbit, P(id) = live varp; extra.staff = dramen/lunar staff item 9025 count in
   // the backpack (INV_TOTAL(93, 9025) in the script).
   const FR_GATES = {
-    1:    { vb: [18021], test: (V) => V(18021) >= 225, req: 'The World Wakes (far enough in)' },
-    10:   { vb: [9928], test: (V) => !(V(9928) < 105 && V(9928) !== 95), req: "A Fairy Tale III: Battle at Ork's Rift (partial)" },
-    33:   { vb: [11533], test: (V) => V(11533) >= 13, req: 'Death to the Dorgeshuun (partial)' },
-    100:  { vb: [9928, 9939], test: (V) => !(V(9928) < 105 && (V(9928) !== 95 || V(9939) < 3)), req: "A Fairy Tale III: Battle at Ork's Rift (partial)" },
-    111:  { vp: [2696], test: (V, P) => P(2696) > 100, req: 'In Search of the Myreque (partial)' },
-    123:  { vb: [11610], test: (V) => V(11610) >= 400, req: 'Ritual of the Mahjarrat' },
-    131:  { vb: [25043, 23198], test: (V) => !(V(25043) === 0 || V(23198) < 400), req: "Plague's End" },
-    200:  { vp: [2262], test: (V, P) => P(2262) >= 9, req: 'The Fremennik Trials (partial)' },
-    212:  { vb: [9928, 9937], test: (V) => !(V(9928) < 105 && (V(9928) !== 95 || V(9937) < 2)), req: "A Fairy Tale III: Battle at Ork's Rift (partial)" },
-    223:  { vb: [36140], test: (V) => V(36140) >= 50, req: 'The Jack of Spades' },
-    321:  { vb: [60595], test: (V) => V(60595) >= 51, req: 'Visions of Havenhythe (partial)' },
-    231:  { vb: [36856], test: (V) => V(36856) === 1, req: 'Ring repaired (Legends’ Quest area; bittercap mushrooms)' },
-    302:  { vb: [9929], test: (V) => V(9929) !== 0, req: 'A Fairy Tale II: Cure a Queen (Fairy Very Wise)' },
-    313:  { vb: [13322], test: (V) => V(13322) >= 18, req: 'Land of the Goblins (partial)' },
-    330:  { vb: [52991], test: (V) => V(52991) >= 2, req: 'Fort Forinthry Grove tier 2' },
-    331:  { vb: [30276], test: (V) => V(30276) !== 0, req: 'Ring repaired (The Lost Grove; bittercap mushrooms)' },
-    332:  { vp: [2330], test: (V, P) => P(2330) >= 8, req: 'Holy Grail (partial)' },
-    333:  { vb: [12078], test: (V) => V(12078) !== 0, req: 'Ring repaired (Ancient Cavern; bittercap mushrooms)' },
-    110:  { vb: [52651], test: (V) => V(52651) >= 35, req: 'Secrets of Amberfell (partial)' },
-    13:   { vb: [9663], test: (V) => V(9663) !== 0, req: 'Achievement: If It Bleeds' },
-    322:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Achievement: If It Bleeds' },
-    221:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Achievement: If It Bleeds' },
-    1000: { vb: [12056, 9929, 12068, 12066], test: (V, P, x) => V(12056) >= 40 && !(x.staff === 0 && V(9929) < 2) && (V(12068) + V(12066)) === 5, req: 'A Fairy Tale II (partial), a fairy staff or Fairy Very Wise, all three slots set' },
-    20:   { vb: [61256], test: (V) => V(61256) !== 0, req: 'House fairy ring built (Construction)' },
+    // req = the wiki's stated requirement + the exact game test (variable and threshold) that
+    // the in-game ring log applies, so nothing here is "partial": it is the step the game checks.
+    1:    { vb: [18021], test: (V) => V(18021) >= 225, req: 'The World Wakes completed [game test: vb 18021 >= 225]' },
+    10:   { vb: [9928], test: (V) => !(V(9928) < 105 && V(9928) !== 95), req: "A Fairy Tale III: reached the Ork's Rift stage [vb 9928 >= 105, or = 95]" },
+    33:   { vb: [11533], test: (V) => V(11533) >= 13, req: 'Death to the Dorgeshuun completed [vb 11533 >= 13]' },
+    100:  { vb: [9928, 9939], test: (V) => !(V(9928) < 105 && (V(9928) !== 95 || V(9939) < 3)), req: "A Fairy Tale III: reached the Ork's Rift stage [vb 9928 >= 105, or = 95 with vb 9939 >= 3]" },
+    111:  { vp: [2696], test: (V, P) => P(2696) > 100, req: 'In Search of the Myreque completed [varp 2696 > 100]' },
+    123:  { vb: [11610], test: (V) => V(11610) >= 400, req: 'Ritual of the Mahjarrat completed [vb 11610 >= 400]' },
+    131:  { vb: [25043, 23198], test: (V) => !(V(25043) === 0 || V(23198) < 400), req: "Plague's End completed [vb 23198 >= 400] and the Prifddinas ring unlocked [vb 25043 = 1]" },
+    200:  { vp: [2262], test: (V, P) => P(2262) >= 9, req: 'The Fremennik Trials completed [varp 2262 >= 9]' },
+    212:  { vb: [9928, 9937], test: (V) => !(V(9928) < 105 && (V(9928) !== 95 || V(9937) < 2)), req: "A Fairy Tale III: reached the Ork's Rift stage [vb 9928 >= 105, or = 95 with vb 9937 >= 2]" },
+    223:  { vb: [36140], test: (V) => V(36140) >= 50, req: 'The Jack of Spades: Imperial district access [vb 36140 >= 50]' },
+    321:  { vb: [60595], test: (V) => V(60595) >= 51, req: 'Visions of Havenhythe: shrine stage [vb 60595 >= 51]' },
+    231:  { vb: [36856], test: (V) => V(36856) === 1, req: "Ring repaired with 5 bittercap mushrooms after starting Legends' Quest [object morph vb 36856 = 1]" },
+    302:  { vb: [9929], test: (V) => V(9929) !== 0, req: 'A Fairy Tale III started: Fairy Very Wise met [npc morph vb 9929 != 0]' },
+    313:  { vb: [13322], test: (V) => V(13322) >= 18, req: 'Land of the Goblins: Yu\'biusk reached [vb 13322 >= 18]' },
+    330:  { vb: [52991], test: (V) => V(52991) >= 2, req: 'Fort Forinthry Grove built to tier 2 [object morph vb 52991 >= 2]' },
+    331:  { vb: [30276], test: (V) => V(30276) !== 0, req: 'Ring repaired with bittercap mushrooms at The Lost Grove [object morph vb 30276 != 0]' },
+    332:  { vp: [2330], test: (V, P) => P(2330) >= 8, req: 'Holy Grail: Fisher Realm reached [varp 2330 >= 8]' },
+    333:  { vb: [12078], test: (V) => V(12078) !== 0, req: 'Ring repaired with bittercap mushrooms in the Ancient Cavern (Barbarian Training) [object morph vb 12078 != 0]' },
+    110:  { vb: [52651], test: (V) => V(52651) >= 35, req: 'Secrets of Amberfell: Amberfell reached [vb 52651 >= 35]' },
+    13:   { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
+    322:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
+    221:  { vb: [9663], test: (V) => V(9663) !== 0, req: 'Morytania ring log flag [vb 9663 != 0, named ach_if_it_bleeds in the script dump]' },
+    1000: { vb: [12056, 9929, 12068, 12066], test: (V, P, x) => V(12056) >= 40 && !(x.staff === 0 && V(9929) < 2) && (V(12068) + V(12066)) === 5, req: 'A Fairy Tale II: Fairy Resistance stage [vb 12056 >= 40]; a fairy staff in the backpack (item 9025) or Fairy Very Wise met twice [vb 9929 >= 2]; both slot varbits summing to 5 [vb 12068 + vb 12066 = 5]' },
+    20:   { vb: [61256], test: (V) => V(61256) !== 0, req: 'Fairy ring built in your house [vb 61256 != 0]' },
   };
-  const FR_BASE_REQ = "A Fairy Tale II: Cure a Queen started (fairy ring access)";
+  const FR_BASE_REQ = "Priest in Peril, Nature Spirit, Lost City and A Fairy Tale I completed, A Fairy Tale II: Cure a Queen started (wiki); the game gates each ring's log entry on the tests shown per row";
   let frUnused = 0;
   let frRows = null, frVb = null, frVp = null, frStaff = null, frFetching = false, frFetchAt = 0, frSig = '', frFilter = 'all', frSearch = '';
   async function fetchFairyRings() {
