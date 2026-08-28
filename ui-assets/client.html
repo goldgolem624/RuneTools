@@ -5183,14 +5183,18 @@
     r.appendChild(k); r.appendChild(pill);
     return r;
   }
-  function uisSlider(label, id, min, max, step, get, set, fmt) {
+  // commitOnRelease: the setter runs on release only (input still previews the label). Needed
+  // for anything that re-lays-out the page while dragging (UI scale resizes the viewport under
+  // the slider, so a live setter moves the thumb away from the cursor and feeds back).
+  function uisSlider(label, id, min, max, step, get, set, fmt, commitOnRelease) {
     const r = document.createElement('div'); r.className = 'row';
     const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
     const v = document.createElement('span'); v.className = 'v uis-row';
     const inp = document.createElement('input'); inp.type = 'range'; inp.id = id;
     inp.min = String(min); inp.max = String(max); inp.step = String(step); inp.value = String(get());
     const out = document.createElement('b'); out.id = id + 'v'; out.textContent = fmt(get());
-    inp.addEventListener('input', () => { set(Number(inp.value)); out.textContent = fmt(Number(inp.value)); });
+    inp.addEventListener('input', () => { if (!commitOnRelease) set(Number(inp.value)); out.textContent = fmt(Number(inp.value)); });
+    if (commitOnRelease) inp.addEventListener('change', () => { set(Number(inp.value)); out.textContent = fmt(Number(inp.value)); });
     inp._get = inp._get || get; inp._fmt = fmt;
     v.appendChild(inp); v.appendChild(out); r.appendChild(k); r.appendChild(v);
     return r;
@@ -5242,7 +5246,7 @@
 
     // ---------------- Appearance ----------------
     sec('Appearance');
-    rows.appendChild(uisSlider('UI scale', 'uis_scale', 50, 200, 5, () => cfg.scale, v => { cfg.scale = v; save(); }, v => v + '%'));
+    rows.appendChild(uisSlider('UI scale', 'uis_scale', 50, 200, 5, () => cfg.scale, v => { cfg.scale = v; save(); }, v => v + '%', true));
     if (!(bridge() && bridge().uiScale)) uisNote(rows, 'UI scale needs the updated launcher; the value is saved and applies after the next update.');
     rows.appendChild(uisChipRow('Accent', 'uis_accent', UI_ACCENTS.map(a => [a[0], a[1], a[1]]),
       v => v.toLowerCase() === String(cfg.accent).toLowerCase(), v => { cfg.accent = v; save(); }));
