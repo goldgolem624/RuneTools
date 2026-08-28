@@ -3980,9 +3980,26 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     if (!acts.empty()) acts.push_back(',');
                     acts += '"'; acts += json_escape(a); acts += '"';
                 }
-                objs.push_back({ r.config_id, r.x, r.y, r.plane, -1, dist, meta.name, std::move(acts), true,
+                // Live objects carry their exact model AABB, which beats the cache dims twice
+                // over: it is rotation-correct, and r.x/r.y is the RENDER ORIGIN (roughly the
+                // footprint centre), not the SW anchor the static path reports -- marking from
+                // it covered one centre tile of a bench (owner report). When the AABB is sane,
+                // the footprint is its extent in tiles and the anchor its SW corner; guarded
+                // back to the raw dims when the AABB is degenerate or wildly off the tile.
+                int fw = meta.dim_x, fh = meta.dim_y, ox = r.x, oy = r.y;
+                if (r.bmax[0] > r.bmin[0] && r.bmax[1] > r.bmin[1]) {
+                    int tw = (int)std::lround((r.bmax[0] - r.bmin[0]) / 512.0f);
+                    int th = (int)std::lround((r.bmax[1] - r.bmin[1]) / 512.0f);
+                    int ax = (int)std::floor(r.bmin[0] / 512.0f);
+                    int ay = (int)std::floor(r.bmin[1] / 512.0f);
+                    if (tw >= 1 && tw <= 16 && th >= 1 && th <= 16 &&
+                        std::abs(ax - r.x) <= 8 && std::abs(ay - r.y) <= 8) {
+                        fw = tw; fh = th; ox = ax; oy = ay;
+                    }
+                }
+                objs.push_back({ r.config_id, ox, oy, r.plane, -1, dist, meta.name, std::move(acts), true,
                                  r.bmax[0] > r.bmin[0],      // degenerate AABB = not rendered
-                                 meta.dim_x, meta.dim_y });  // rotation unknown for live locs; raw dims
+                                 fw, fh });
             }
         }
         std::sort(objs.begin(), objs.end(), [](const Obj& a, const Obj& b) {
