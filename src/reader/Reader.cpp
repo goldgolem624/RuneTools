@@ -2851,8 +2851,12 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
             out += b; first = false;
             const std::size_t mark = out.size();
             if (!ev_decode(out, r.opcode, r.payload, n, r.length)) {
+                // Undecoded: keep the opcode's NAME as the kind when the opcode is known (ge_offer
+                // has no documented field layout yet) so counters stay per opcode; "raw" is only
+                // for opcodes nothing here recognises.
                 out.resize(mark);
-                out += "\"kind\":\"raw\",\"hex\":\"";
+                const char* kind = (r.opcode == 0x05 || r.opcode == 0x51) ? "ge_offer" : "raw";
+                out += std::string("\"kind\":\"") + kind + "\",\"decoded\":false,\"hex\":\"";
                 ev_hex(out, r.payload, n);
                 out += "\"";
             }

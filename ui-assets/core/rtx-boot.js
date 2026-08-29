@@ -209,7 +209,9 @@
       if (pid !== rtxEventsPoll.pid) { rtxEventsPoll.pid = pid; rtxEventsPoll.seq = 0; rtxEventsPoll.tick = -1; }
       const d = await rtxData.call('state.events', rtxEventsPoll.seq);
       rtxEventsPoll.polls++;
-      if (!d || d.ok === false) { rtxEventsPoll.fails++; return; }
+      // Polls before the reader has attached are not failures: count only once data has flowed.
+      if (!d || d.ok === false) { if (rtxEventsPoll.ok) rtxEventsPoll.fails++; return; }
+      rtxEventsPoll.ok = true;
       if (typeof d.tick === 'number' && d.tick >= 0 && d.tick !== rtxEventsPoll.tick) {
         const now = performance.now();
         const dt = rtxEventsPoll.tick >= 0 ? now - rtxEventsPoll.tickAt : 0;
