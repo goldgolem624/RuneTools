@@ -24,6 +24,28 @@ namespace fs = std::filesystem;
 
 namespace rtx::launcher::iconcapture {
 
+
+// A version directory is only trusted once a validated capture wrote its `.validated` marker.
+// Files from an unvalidated atlas (an earlier build wrote 1,507 of them from the wrong texture)
+// must not be served: they would also satisfy every lookup, so no miss would ever trigger the
+// validated capture that replaces them.
+static std::mutex g_trustMu;
+static std::wstring g_trustDir;
+static bool g_trusted = false;
+static bool dir_trusted(const std::wstring& dir) {
+    std::lock_guard<std::mutex> lk(g_trustMu);
+    if (dir != g_trustDir) {
+        g_trustDir = dir;
+        std::error_code ec;
+        g_trusted = !dir.empty() && std::filesystem::exists(std::filesystem::path(dir) / L".validated", ec);
+    }
+    return g_trusted;
+}
+static void mark_trusted(const std::wstring& dir) {
+    std::lock_guard<std::mutex> lk(g_trustMu);
+    g_trustDir = dir; g_trusted = true;
+}
+
 namespace {
 
 // ---- minimal PNG writer (RGBA8, stored deflate blocks) --------------------------------
@@ -421,27 +443,6 @@ void NoteMiss(int) {
         std::lock_guard<std::mutex> lk(g_stMu);
         g_busy = false;
     }).detach();
-}
-
-// A version directory is only trusted once a validated capture wrote its `.validated` marker.
-// Files from an unvalidated atlas (an earlier build wrote 1,507 of them from the wrong texture)
-// must not be served: they would also satisfy every lookup, so no miss would ever trigger the
-// validated capture that replaces them.
-static std::mutex g_trustMu;
-static std::wstring g_trustDir;
-static bool g_trusted = false;
-static bool dir_trusted(const std::wstring& dir) {
-    std::lock_guard<std::mutex> lk(g_trustMu);
-    if (dir != g_trustDir) {
-        g_trustDir = dir;
-        std::error_code ec;
-        g_trusted = !dir.empty() && std::filesystem::exists(std::filesystem::path(dir) / L".validated", ec);
-    }
-    return g_trusted;
-}
-static void mark_trusted(const std::wstring& dir) {
-    std::lock_guard<std::mutex> lk(g_trustMu);
-    g_trustDir = dir; g_trusted = true;
 }
 
 std::wstring FindCapturedPng(int item_id) {
