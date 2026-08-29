@@ -11,6 +11,7 @@
   // saves PNGs for the icons on screen, so a pack miss heals itself. Status is polled.
   let icCap = null, icCapTimer = 0;
   let hcKeepScroll = [];   // .hc-list scrollTop values captured before a rebuild
+  let hcSig = '';          // last rendered data signature
   async function icCapFetch() {
     try { icCap = JSON.parse(await rtxData.raw('host.iconCaptureStatus')); } catch (e) { icCap = null; }
     clearTimeout(icCapTimer);
@@ -106,6 +107,11 @@
     // in-place label updates, so no element is replaced while it may hold focus
     const runBtn = document.getElementById('hcRunBtn');
     if (runBtn) runBtn.textContent = hcBusy ? 'Checking...' : 'Run check';
+    // The pane render runs on every 250 ms tick; rebuilding the DOM when nothing changed is what
+    // made the lists jump. Rebuild only when the data behind the card changed.
+    const hcSigNow = JSON.stringify([hcData, hcBusy, icMisses, icCov, icCap]);
+    if (hcSigNow === hcSig && body.childNodes.length) return;
+    hcSig = hcSigNow;
     hcKeepScroll = Array.from(document.querySelectorAll('.hc-list')).map(l => l.scrollTop);
     body.innerHTML = '';
 
@@ -155,7 +161,7 @@
     body.appendChild(card);
     renderIcons(body);
     // Restore list scroll positions recorded before this rebuild (see hcKeepScroll).
-    if (hcKeepScroll.length) { const ls = body.querySelectorAll('.hc-list'); ls.forEach((l, i) => { if (hcKeepScroll[i] != null) l.scrollTop = hcKeepScroll[i]; }); hcKeepScroll = []; }
+    if (hcKeepScroll.length) { const keep = hcKeepScroll; hcKeepScroll = []; setTimeout(() => { const ls = body.querySelectorAll('.hc-list'); ls.forEach((l, i) => { if (keep[i] != null) l.scrollTop = keep[i]; }); }, 0); }   // after layout, or Ultralight clamps it to 0
   }
 
   // "Item icons" card: is the bundled items.pack keeping up with the live cache.

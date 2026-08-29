@@ -273,6 +273,7 @@ int purge_dir(const fs::path& dir, const rtx::reader::IconAtlasMap& map, const s
         if (!keep && fs::remove(e.path(), ec)) ++removed;
     }
     if (!trusted) { std::ofstream m(marker, std::ios::binary); m << "atlas validated by pack similarity\n"; }
+    mark_trusted(dir.wstring());
     return removed;
 }
 
@@ -422,6 +423,27 @@ void NoteMiss(int) {
     }).detach();
 }
 
+// A version directory is only trusted once a validated capture wrote its `.validated` marker.
+// Files from an unvalidated atlas (an earlier build wrote 1,507 of them from the wrong texture)
+// must not be served: they would also satisfy every lookup, so no miss would ever trigger the
+// validated capture that replaces them.
+static std::mutex g_trustMu;
+static std::wstring g_trustDir;
+static bool g_trusted = false;
+static bool dir_trusted(const std::wstring& dir) {
+    std::lock_guard<std::mutex> lk(g_trustMu);
+    if (dir != g_trustDir) {
+        g_trustDir = dir;
+        std::error_code ec;
+        g_trusted = !dir.empty() && std::filesystem::exists(std::filesystem::path(dir) / L".validated", ec);
+    }
+    return g_trusted;
+}
+static void mark_trusted(const std::wstring& dir) {
+    std::lock_guard<std::mutex> lk(g_trustMu);
+    g_trustDir = dir; g_trusted = true;
+}
+
 std::wstring FindCapturedPng(int item_id) {
     if (item_id <= 0) return {};
     {
@@ -436,6 +458,7 @@ std::wstring FindCapturedPng(int item_id) {
         std::lock_guard<std::mutex> lk(g_stMu);
         if (g_dir.empty()) g_dir = dir;
     }
+    if (!dir_trusted(dir)) return {};
     std::wstring path;
     if (!dir.empty()) {
         std::error_code ec;
