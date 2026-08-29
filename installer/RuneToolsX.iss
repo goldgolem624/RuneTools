@@ -76,6 +76,9 @@ Source: "{#SrcDir}\{#MyAppExe}";    DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\rtxscene.dll";   DestDir: "{app}"; Flags: ignoreversion
 ; UI + data assets
 Source: "{#SrcDir}\client.html";    DestDir: "{app}"; Flags: ignoreversion
+; Core scripts + stylesheet (client.html's former inline script/style, spliced back in at load)
+Source: "{#SrcDir}\core\*";         DestDir: "{app}\core"; Flags: ignoreversion
+Source: "{#SrcDir}\rtx_vars.js";    DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\quest_guides.js"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; Split panel modules (spliced inline into client.html at load by inject_panel_scripts)
 Source: "{#SrcDir}\panel_*.js";     DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist

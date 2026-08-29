@@ -208,6 +208,8 @@
   <ItemGroup>
     <None Include="..\ui-assets\launcher.html" />
     <None Include="..\ui-assets\client.html" />
+    <None Include="..\ui-assets\core\*" />
+    <None Include="..\ui-assets\rtx_vars.js" />
     <None Include="..\ui-assets\quest_guides.js" />
     <None Include="..\ui-assets\panel_*.js" />
     <None Include="app.ico" />
@@ -229,7 +231,8 @@
       <UltralightRes  Include="$(UltralightDir)\resources\*" />
       <UltralightLic  Include="$(UltralightDir)\license\*" />
       <AlertSounds    Include="$(ProjectDir)..\ui-assets\sounds\*" />
-      <PanelScripts   Include="$(ProjectDir)..\ui-assets\panel_*.js" />
+      <PanelScripts   Include="$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\rtx_vars.js" />
+      <CoreScripts    Include="$(ProjectDir)..\ui-assets\core\*" />
     </ItemGroup>
     <MakeDir Directories="$(OutDir)Ultralight" />
     <MakeDir Directories="$(OutDir)Ultralight\resources" />
@@ -263,6 +266,12 @@
           SkipUnchangedFiles="false"
           OverwriteReadOnlyFiles="true"
           Condition="'@(PanelScripts)' != ''" />
+    <MakeDir Directories="$(OutDir)core" />
+    <Copy SourceFiles="@(CoreScripts)"
+          DestinationFolder="$(OutDir)core"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true"
+          Condition="'@(CoreScripts)' != ''" />
     <MakeDir Directories="$(OutDir)sounds" />
     <Copy SourceFiles="@(AlertSounds)"
           DestinationFolder="$(OutDir)sounds"
@@ -306,7 +315,7 @@
   -->
   <Target Name="BuildInstaller" AfterTargets="StageRuntime"
           Condition="'$(Configuration)|$(Platform)'=='Release|x64'"
-          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
+          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\core\*;$(ProjectDir)..\ui-assets\rtx_vars.js;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
           Outputs="$(ProjectDir)..\installer\Output\RuneToolsXSetup.exe">
     <PropertyGroup>
       <ISCC Condition="'$(ISCC)'=='' And Exists('$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe')">$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe</ISCC>

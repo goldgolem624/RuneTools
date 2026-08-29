@@ -86,12 +86,44 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
-// Splice sibling .js files into the page as inline <script> blocks ahead of the main inline
-// script: LoadHTML has no base URL, so a relative <script src> can never resolve. Each file
+// Assemble the page: LoadHTML has no base URL, so a relative <script src> / <link href> can
+// never resolve and everything is inlined. In order:
+//   1. core/rtx.css replaces the <!-- rtx:css --> marker in <head> as an inline <style> block
+//   2. kCoreFiles (client.html's former inline script, split at its seams) as <script> blocks
+//   3. kFiles: rtx_vars.js then every panel
+//   4. kBootFiles: core/rtx-boot.js (the poll loop + attachBridge)
+// all spliced ahead of client.html's own <script>, which only calls attachBridge(). Each file
 // keeps its own <script> block so JS errors retain per-file line numbers in OnAddConsoleMessage.
+// Every file is a plain script sharing the page's global scope, so a file's TOP LEVEL may only
+// use names declared by files spliced before it (tools/ui-ordercheck.js proves it statically, tools/ui-loadtest.js by running them).
 // Each panel file is an IIFE: it publishes only the names other files use (Object.assign(window, ...))
-// and self-registers its tab with registerTab (bootstrapped in rtx_vars.js, consumed by client.html).
+// and self-registers its tab with registerTab (core/rtx-registry.js; rtx_vars.js keeps a fallback).
 void inject_panel_scripts(std::string& html, const std::string& html_path) {
+    // Core, in load order. Physical split of the old inline script: all top-level names stay
+    // page globals. A file may only reference, at its own top level, names from files above it.
+    static const char* kCoreFiles[] = {
+        "core/rtx-shim.js",       // window.onerror first, then the localStorage shim
+        "core/rtx-prefs.js",      // durable prefs: prefGet/prefSet/prefsInit
+        "core/rtx-ui.js",         // rtxUi preferences blob, uiApply, number format, bar chips
+        "core/rtx-registry.js",   // TABS, RTX + registerTab, CAT_META, TAB_GROUPS, XP tables
+        "core/rtx-skillbars.js",  // in-game Skills XP bars + sprite icons
+        "core/rtx-bridge.js",     // pane roots + $, bridge/bridgeJson, myPid, paneEmpty
+        "core/rtx-icons.js",      // item icon/info caches, tooltips, attachIcon/attachInfo
+        "core/rtx-storage.js",    // bank / metal bank / guild shop / bait box / workbench
+        "core/rtx-player.js",     // Player State data, skill goals, metronome + XP overlay cfg
+        "core/rtx-wm.js",         // window manager
+        "core/rtx-notify.js",     // toasts / uiNotify
+        "core/rtx-settings.js",   // Preferences page
+        "core/rtx-input.js",      // input rects + keyboard capture, wiki palette
+        "core/rtx-layout.js",     // layout persistence, openTab, tabEntryKicks
+        "core/rtx-menubar.js",    // menu bar, wiki pane, fullscreen, tab search
+        "core/rtx-pane.js",       // renderPane / renderHeader
+        "core/rtx-plugins.js",    // plugin SDK host broker + marketplace
+    };
+    // After every panel: needs nothing at load, but attachBridge() in client.html needs it.
+    static const char* kBootFiles[] = {
+        "core/rtx-boot.js",       // refresh loop + attachBridge
+    };
     static const char* kFiles[] = {
         // RULE: new panels are IIFEs that call registerTab({ id, render, open, close, ... }); no bare globals.
         // quest_guides.js is DELIBERATELY not spliced: at ~1.3MB of one line it was half of
@@ -190,17 +222,28 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
     };
     auto slash = html_path.find_last_of("\\/");
     std::string dir = (slash == std::string::npos) ? std::string() : html_path.substr(0, slash + 1);
+    // Stylesheet: inline at the marker (Ultralight loads from a string; no external sheet).
+    static const char kCssMarker[] = "<!-- rtx:css -->";
+    auto cpos = html.find(kCssMarker);
+    if (cpos != std::string::npos) {
+        std::string css = read_file(dir + "core/rtx.css");
+        html.replace(cpos, sizeof(kCssMarker) - 1, "<style>\n" + css + "\n</style>");
+    }
     auto pos = html.find("<script>");
     if (pos == std::string::npos) return;
+    std::string blob;
+    auto splice = [&](const char* f) {
+        std::string js = read_file(dir + f);
+        if (js.empty()) { rtx::log::Launcher(std::string("ui: missing or empty ") + f); return; }
+        blob += "<script>\n" + js + "\n</script>\n";
+    };
+    for (const char* f : kCoreFiles) splice(f);
     // quest_guides.js used to be the FIRST spliced file, so window.QUEST_GUIDES existed before
     // any panel ran. It is lazy now, but a few panels still register their own guide into that
     // object at load time - create it up front so those assignments have something to write to.
-    std::string blob = "<script>window.QUEST_GUIDES = window.QUEST_GUIDES || {};</script>\n";
-    for (const char* f : kFiles) {
-        std::string js = read_file(dir + f);
-        if (js.empty()) continue;
-        blob += "<script>\n" + js + "\n</script>\n";
-    }
+    blob += "<script>window.QUEST_GUIDES = window.QUEST_GUIDES || {};</script>\n";
+    for (const char* f : kFiles) splice(f);
+    for (const char* f : kBootFiles) splice(f);
     html.insert(pos, blob);
 }
 
@@ -217,7 +260,7 @@ std::string ReadUiAssetImpl(const std::string& name) {
     return read_file(dir + name);
 }
 
-// Newest write time (raw tick count) across client.html and its sibling .js files.
+// Newest write time (raw tick count) across client.html, its sibling .js files and core/.
 long long ui_dir_mtime() {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -228,9 +271,14 @@ long long ui_dir_mtime() {
     };
     fs::path html(g_client_html_path);
     acc(html);
-    fs::directory_iterator it(html.parent_path(), ec), end;
-    for (; !ec && it != end; it.increment(ec))
-        if (it->path().extension() == L".js") acc(it->path());
+    for (const fs::path& d : { html.parent_path(), html.parent_path() / "core" }) {
+        fs::directory_iterator it(d, ec), end;
+        for (; !ec && it != end; it.increment(ec)) {
+            auto ext = it->path().extension();
+            if (ext == L".js" || ext == L".css") acc(it->path());
+        }
+        ec.clear();
+    }
     return m;
 }
 

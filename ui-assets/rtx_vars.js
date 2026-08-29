@@ -11,10 +11,10 @@ const VP = {
   ACCOUNT_MODE: 4818,      // bit0 ironman, bit1 hardcore, bit19 in-GIM, bit25 unranked group
 };
 
-// Panel registry bootstrap. Panels are spliced BEFORE client.html's own <script>, so the
-// registry must already exist when a panel's IIFE calls registerTab at load. client.html
-// adopts this same object (window.RTX) and owns the consumers (renderPane, tabEntryKicks,
-// paneLeave, the poll tick). def = { id, render, open, close, refresh, label, cat, icon }.
+// Panel registry fallback. core/rtx-registry.js is spliced before this file and owns the
+// real registerTab (it also appends the tab to TABS) plus the consumers (renderPane,
+// tabEntryKicks, paneLeave, the poll tick). This only guards a page loaded without the core,
+// so a panel's IIFE never throws at registerTab. def = { id, render, open, close, refresh, label, cat, icon }.
 window.RTX = window.RTX || {};
 RTX.panels = RTX.panels || {};
 window.registerTab = window.registerTab || function (def) {
