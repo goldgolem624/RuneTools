@@ -35,6 +35,7 @@ RuneTools/
 │   ├── cache/                   RS3 cache decoder (items, NPCs, maps, sprites)
 │   └── shared/                  Shared helpers (logging, machine key)
 ├── ui-assets/                   Panel + launcher UI (HTML/CSS/JS) and plugin SDK
+│                                (panel_*.js are IIFEs that call registerTab; no bare globals)
 ├── installer/                   Inno Setup installer script
 └── ThirdParty/
     ├── Ultralight/              Ultralight 1.4 HTML UI engine SDK (bundled)

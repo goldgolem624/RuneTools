@@ -1,19 +1,20 @@
 // RuneToolsX panel: Metal bank + Archaeology storage/unlocks/mysteries data.
-// Spliced inline into client.html; bare classic script sharing one global scope.
+// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
+(function () {
 
   // ---- Metal bank (container 858: ores + bars) ----
   // Same capture-while-open + disk-cache model as the bank: read whenever the metal bank is open,
   // served from the per-character disk cache otherwise. Ores/Bars split by enum 15093 membership.
-  let mbankData = null;     // {open, character, cached_at, count, items:[[slot,id,stack,name]]}
-  let mbankTerm = '', mbankFetching = false, mbankSig = '';
-  let matData = null;       // archaeology material storage: same shape as mbankData
-  let matTerm = '', matFetching = false, matSig = '';
-  let gbankData = null;     // Group Ironman shared bank (container 963): same shape as mbankData
-  let gbankTerm = '', gbankFetching = false, gbankSig = '';
-  let baitData = null;      // Anachronia bait box (container 867): same shape as mbankData
-  let baitTerm = '', baitFetching = false, baitSig = '';
-  let wbData = null;        // Archaeologist's workbench damaged artefacts (container 1008)
-  let wbTerm = '', wbFetching = false, wbSig = '';
+  mbankData = null;     // {open, character, cached_at, count, items:[[slot,id,stack,name]]}
+  mbankTerm = ''; mbankFetching = false; mbankSig = '';
+  matData = null;       // archaeology material storage: same shape as mbankData
+  matTerm = ''; matFetching = false; matSig = '';
+  gbankData = null;     // Group Ironman shared bank (container 963): same shape as mbankData
+  gbankTerm = ''; gbankFetching = false; gbankSig = '';
+  baitData = null;      // Anachronia bait box (container 867): same shape as mbankData
+  baitTerm = ''; baitFetching = false; baitSig = '';
+  wbData = null;        // Archaeologist's workbench damaged artefacts (container 1008)
+  wbTerm = ''; wbFetching = false; wbSig = '';
   // Workbench store capacity by upgrade level (CS2 script1020, varbit 61463). Level 0 holds
   // nothing: the store does not exist until the first guild-shop workbench upgrade is bought.
   const WB_CAP = [0, 125, 175, 225];
@@ -94,8 +95,8 @@
     for (const g of ARCH_SHOP) for (const it of g.items) if (it.have) s.add(it.have);
     return [...s];
   })();
-  let archShopHave = {};    // item id -> true when found in the cached bank or the backpack
-  let matUnlockVp = null;   // varp snapshot for the shop-unlock varbits (read alongside the materials)
+  archShopHave = {};    // item id -> true when found in the cached bank or the backpack
+  matUnlockVp = null;   // varp snapshot for the shop-unlock varbits (read alongside the materials)
   // Read a set of varbits -> {vbId: value} in one varp call (loads the varbit map lazily). Shared
   // by the shop-unlocks section and the Mysteries tab so they cannot disagree.
   async function readVarbitValues(vbIds) {
@@ -199,8 +200,8 @@
     "Inside You There Are Two Wolves": {tip:"Collect the six lunar slabs at the Moonrise Dig Site and complete the lunar wheel.",loc:"Moonrise Dig Site",req:"88 Archaeology, Secrets of Amberfell, Moonrise Dig Site access",items:["Lunar slab (new moon)", "Lunar slab (waxing crescent)", "Lunar slab (first quarter)", "Lunar slab (waxing gibbous)", "Lunar slab (waning gibbous)", "Lunar slab (last quarter)"],rewards:["23,000 Archaeology XP"],steps:["Collect all six lunar slabs from excavation hotspots around the dig site (guaranteed drop when 10+ levels above the hotspot requirement).", "Insert the new moon slab into the rightmost empty slot on the lunar wheel.", "Add the remaining slabs counter-clockwise: waxing crescent, first quarter, waxing gibbous (full moon and waning crescent are pre-placed), then waning gibbous and last quarter.", "Wait for the wheel to hum faintly.", "Speak with Utu to complete the mystery."]},
     "The Final Revolution": {tip:"Complete every other Moonrise mystery, then take the Letter from Utu at his memorial.",loc:"Moonrise Dig Site",req:"88 Archaeology, Shadows of the Colossi, Path of the Initiate, Cult Classic, Inside You There Are Two Wolves",items:["Letter from Utu"],rewards:["Anzagar companion pet", "Ability to create the Ring of Kayazu"],steps:["Complete all other mysteries at the Moonrise Dig Site.", "Re-enter the area with Utu (visit the Moonrise Temple and exit, or log out and back in). Utu will be replaced by a memorial statue.", "Reflect on the memorial to obtain the Letter from Utu, solving the mystery."],pages:[[131, "Letter from Utu"]],auto:[[2, [131]]]}
   };
-  let mystVp = null, mystFetching = false, mystSig = '';
-  let mystSteps = null;              // per-account step progress {"<name>":[stepIdx,..]} (mystLoad/mystSave)
+  mystVp = null; mystFetching = false; mystSig = '';
+  mystSteps = null;              // per-account step progress {"<name>":[stepIdx,..]} (mystLoad/mystSave)
   const mystOpen = new Set();        // expanded mystery rows (session-only)
   function mystDone(varp, bit, vp) { return !!(vp && ((vp[varp] || 0) >>> bit) & 1); }
   const MYST_PAGE_VARPS = [9205, 9206, 9207, 9564, 11732];   // 32 page bits each, global index space
@@ -216,7 +217,7 @@
   // archive: table-92 col4 -> table-81 page rows [globalIdx, itemId], col5 -> table-31 collectible
   // rows [varp-11733 bit, itemId]). The static ARCH_MYST_INFO pages arrays stay as the LABEL
   // source and the pre-build fallback; indexes always come from the cache once loaded.
-  let mystCachePages = null, mystCachePagesAt = 0;
+  mystCachePages = null; let mystCachePagesAt = 0;
   function mystPagesLoadOnce() {
     if (mystCachePages || !bridge() || !bridge().mystPages) return;
     const now = Date.now();
@@ -273,3 +274,7 @@
   }
   // Requirements line with live checks: skill tokens judged against lastSnap.skills, mystery
   // prerequisites against the completion varps; unknown tokens and "(partial)" prereqs stay neutral.
+
+// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
+Object.assign(window, { ARCH_MYSTERIES, ARCH_MYST_INFO, ARCH_SHOP, ARCH_SHOP_HAVE, ARCH_SHOP_VBS, MYST_C31_VARP, MYST_PAGE_VARPS, WB_CAP, mystC31Found, mystDone, mystEsc, mystFmtNums, mystLookup, mystOpen, mystPageCount, mystPageFound, mystPagesFor, readVarbitValues });
+})();

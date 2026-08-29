@@ -89,9 +89,11 @@ std::string read_file(const std::string& path) {
 // Splice sibling .js files into the page as inline <script> blocks ahead of the main inline
 // script: LoadHTML has no base URL, so a relative <script src> can never resolve. Each file
 // keeps its own <script> block so JS errors retain per-file line numbers in OnAddConsoleMessage.
-// The panel files are bare classic scripts sharing one global scope with client.html (no IIFE).
+// Each panel file is an IIFE: it publishes only the names other files use (Object.assign(window, ...))
+// and self-registers its tab with registerTab (bootstrapped in rtx_vars.js, consumed by client.html).
 void inject_panel_scripts(std::string& html, const std::string& html_path) {
     static const char* kFiles[] = {
+        // RULE: new panels are IIFEs that call registerTab({ id, render, open, close, ... }); no bare globals.
         // quest_guides.js is DELIBERATELY not spliced: at ~1.3MB of one line it was half of
         // everything the page parsed at startup, for data only the quest guides need. It is
         // pulled through bridge().uiAsset() the first time a guide is shown.

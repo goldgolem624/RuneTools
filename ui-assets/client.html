@@ -605,6 +605,16 @@
     padding: 36px 0;
     text-align: center; color: var(--text-mute); font-size: 12px;
   }
+  /* Bridge status strip (see updateStatusStrip): thin, top-left, under the menubar's z so
+     the bar stays clickable; pointer-events off so it never steals a click. */
+  #rtxStatusStrip {
+    position: fixed; top: 0; left: 0; right: 0; height: 20px; line-height: 20px;
+    padding: 0 10px; box-sizing: border-box;
+    background: var(--bar-bg); border-bottom: 1px solid var(--border-hi);
+    color: var(--text-dim); font: 11px var(--font-ui);
+    pointer-events: none; z-index: 99999; display: none;
+  }
+  #rtxStatusStrip.on { display: block; }
 
   .scene-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .scene-hdr {
@@ -2649,6 +2659,25 @@
     { id: 'system',     label: 'System',     cat: 'Settings', icon: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.4 5.4l2.1 2.1M16.5 16.5l2.1 2.1M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1"/>' },
   ];
 
+  // ==================== Panel registry (registerTab) ====================
+  // Every panel_*.js is an IIFE that calls registerTab({ id, render, open, close, refresh,
+  // label, cat, icon }) at load. The panels are spliced BEFORE this script, so the registry
+  // object itself is bootstrapped in rtx_vars.js; this just adopts it and owns the consumers:
+  // renderPane (render), tabEntryKicks (open), paneLeave (close) and the poll tick (refresh)
+  // each consult RTX.panels[id] first and fall through to the legacy if-chains for anything
+  // not registered. A new panel is one file: register with label/cat/icon and it is appended
+  // to TABS below; entries listed in TABS keep their rail order and may omit render info.
+  const RTX = window.RTX = window.RTX || {};
+  RTX.panels = RTX.panels || {};
+  function registerTab(def) {
+    if (def && def.id) RTX.panels[def.id] = def;
+    return def;
+  }
+  for (const k in RTX.panels) {
+    const d = RTX.panels[k];
+    if (d.label && !TABS.some(t => t.id === d.id)) TABS.push({ id: d.id, label: d.label, cat: d.cat || 'Utility', icon: d.icon || '' });
+  }
+
   // Rail parent categories, in rail order; only categories with tabs render.
   const CAT_META = [
     { id: 'Character',   icon: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>' },
@@ -3190,15 +3219,85 @@
   // Call a bridge method and parse its JSON; null on any failure. One console.error per
   // method per 30 s so a dead bridge cannot flood the log.
   const _bjErrAt = new Map();
+  // Failure envelope: a binding that answers {"ok":false,"why":"<why>"} (why in noclient,
+  // noargs, pending, error, unsupported) is normalised to null here, and the why is kept in
+  // bridgeJson.lastWhy / bridgeJson.whyByMethod[method] so a panel can tell "no client" from
+  // "empty data". Objects without a string `why` (e.g. {"ok":false} from scanSolution) pass
+  // through untouched, so existing callers see exactly what they always did.
   async function bridgeJson(method, ...args) {
     const b = bridge();
-    if (!b || typeof b[method] !== 'function') return null;
-    try { return JSON.parse(await b[method](...args)); }
+    if (!b || typeof b[method] !== 'function') {
+      bridgeJson.lastWhy = b ? 'unsupported' : 'noclient';
+      bridgeJson.whyByMethod[method] = bridgeJson.lastWhy;
+      return null;
+    }
+    try {
+      const v = JSON.parse(await b[method](...args));
+      if (v && typeof v === 'object' && !Array.isArray(v) && v.ok === false && typeof v.why === 'string') {
+        bridgeJson.lastWhy = v.why;
+        bridgeJson.whyByMethod[method] = v.why;
+        return null;
+      }
+      delete bridgeJson.whyByMethod[method];
+      return v;
+    }
     catch (e) {
       const now = Date.now();
       if (now - (_bjErrAt.get(method) || 0) >= 30000) { _bjErrAt.set(method, now); console.error('rtx bridgeJson ' + method + ': ' + e); }
+      bridgeJson.lastWhy = 'error';
+      bridgeJson.whyByMethod[method] = 'error';
       return null;
     }
+  }
+  bridgeJson.lastWhy = null;          // why of the most recent failed call, null after a success-free start
+  bridgeJson.whyByMethod = Object.create(null);
+  // Short user-facing text for a failure why (see bridgeJson).
+  function bridgeWhyText(why) {
+    switch (why) {
+      case 'noclient':    return 'Waiting for the game client';
+      case 'unsupported': return 'Launcher too old for this panel';
+      case 'pending':     return 'Loading';
+      case 'noargs':
+      case 'error':       return 'Reader error, see log';
+      default:            return '';
+    }
+  }
+  // Render the empty-state text for a pane whose bridgeJson(method) came back null. Panels opt
+  // in by calling this instead of painting their own "no data" copy; returns true when a why
+  // was known and rendered, false when the null was a plain empty result.
+  function paneEmpty(el, method) {
+    if (!el) return false;
+    const why = bridgeJson.whyByMethod[method] || null;
+    const text = bridgeWhyText(why);
+    if (!text) return false;
+    el.innerHTML = '';
+    const d = document.createElement('div');
+    d.className = 'empty';
+    d.textContent = text;
+    el.appendChild(d);
+    return true;
+  }
+  // Thin status strip across the top of the client, driven once per refresh() tick from
+  // bridgeStatus. Hidden while a client is attached and the reader is healthy; a "stale"
+  // reader is only announced after three consecutive ticks so the unverified moment right
+  // after attach never flashes it.
+  function updateStatusStrip(st) {
+    let el = document.getElementById('rtxStatusStrip');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'rtxStatusStrip';
+      document.body.appendChild(el);
+    }
+    let text = '';
+    if (st && st.ok === true) {
+      if (!st.attached) { text = 'Waiting for the game client'; updateStatusStrip._stale = 0; }
+      else if (st.reader === 'stale') {
+        updateStatusStrip._stale = (updateStatusStrip._stale || 0) + 1;
+        if (updateStatusStrip._stale >= 3) text = 'Game updated: reader offsets stale (build ' + (st.build || '?') + ')';
+      } else updateStatusStrip._stale = 0;
+    }
+    if (el.textContent !== text) el.textContent = text;
+    el.classList.toggle('on', !!text);
   }
   function rtxLog(...a) { console.log('rtx', ...a); }
 
@@ -4414,10 +4513,8 @@
     if (id === 'xpmeter' && xpOn) {
       try { xpOn = false; saveXpCfg(); paneRun('xptracker', () => { const wr = $('xpWrap'); if (wr) buildXpConfig(wr); }); } catch (e) {}
     }
-    if (id === 'vars') { try { varsWatchSet(false); hideVarbitPop(); hideVarIgnoredModal(); } catch (e) {} }
-    if (id === 'netprobe') { try { npArm(false); } catch (e) {} }
-    if (id === 'clues') { try { activeClueId = -1; if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); clueSetNpc(''); } catch (e) {} }
-    if (id === 'hideyholes') { try { hideyMapClose(); } catch (e) {} }
+    // Registered panels own their leave cleanup (registerTab({ close })).
+    { const P = RTX.panels[id]; if (P && typeof P.close === 'function') { try { P.close(); } catch (e) {} } }
     if (String(id).indexOf('plugin:') === 0) {
       // Clear every overlay channel plugins can write, so a plugin's guide marks /
       // boxes / banners don't outlive its window.
@@ -5846,65 +5943,16 @@
   // Vars tab must arm its observer or varWatchOn stays false while the host observer from
   // the pre-reload page stays armed forever (the mismatched disarm early-returns).
   function tabEntryKicks(id) {
-    if (id === 'bank') { bankFetchKey = ''; fetchBank(); }
-    if (id === 'metalbank') { mbankFetchKey = ''; fetchMetalBank(); }
-    if (id === 'groupbank') { gbankFetchKey = ''; fetchGroupBank(); }
+    // Registered panels own their entry kick (registerTab({ open })); the chain below is
+    // what this script still renders itself, plus ids gated on more than the tab id.
+    { const P = RTX.panels[id]; if (P && typeof P.open === 'function') P.open(); }
     if (id === 'materials') { matFetchKey = ''; fetchMaterials(); }
     if (id === 'baitbox') { baitFetchKey = ''; fetchBaitBox(); }
     if (id === 'artefacts') { wbFetchKey = ''; fetchWorkbench(); fetchArchShop(); }
-    if (id === 'inventory') { invSig = ''; fetchInv(); }
-    if (id === 'components') { compSig = ''; fetchComponents(); }
-    if (id === 'machines') fetchMachinesTab();
-    if (id === 'resdungeons') { rdSig = ''; rdFetchAt = 0; fetchResDungeons(); }
-    if (id === 'fairyrings') { frSig = ''; frFetchAt = 0; fetchFairyRings(); }
-    if (id === 'equipment') { equipSig = ''; fetchEquip(); }
-    if (id === 'storage') { storageSig = ''; fetchStorage(); }
-    if (id === 'abilities') fetchAbilities();
-    if (id === 'pets') { petsListSig = ''; fetchPets(true); }
-    if (id === 'bosses') { bossListSig = ''; fetchBosses(true); }
-    if (id === 'quests') { questListSig = ''; fetchQuests(true); qgEnsureLoaded(); }
-    if (id === 'questfocus') { qgSig = ''; fetchQuests(true); qgEnsureLoaded(); }
-    if (id === 'xptracker') { applyXpOverlay(); fetchXpTracker(true); }   // apply even when hidden: it starts the 1 Hz sampler
-    if (id === 'xpmeter') { applyXpOverlay(); fetchXpTracker(true); }     // same sampler; the meter is the readout
-    if (id === 'metronome') { applyMetroOverlay(); metroTickKick(); }
-    if (id === 'chatlog') { chatSig = ''; fetchChat(true); }
-    if (id === 'achievements') { achListSig = ''; fetchAchievements(true); }
-    if (id === 'combatmastery') { cmListSig = ''; fetchAchievements(true); }
-    if (id === 'areatasks') { areaState.sig = ''; fetchAreaTasks(true); }
-    if (id === 'gimtasks') { gimState.sig = ''; fetchGimTasks(true); }
-    if (id === 'archmysteries') { mystSig = ''; mystSteps = null; fetchArchMysteries(true); }   // steps reload per account
-    if (id === 'mystfocus') { mfSig = ''; fetchArchMysteries(true); }
     if (id === 'archshop') { matUnlockSig = ''; fetchArchShop(); }
-    if (id === 'familiar') { famSig = ''; fetchFamiliar(); }
     if (id === 'dung' && DUNG_ENABLED) { dungSig = ''; fetchDungeoneering(); }
-    if (id === 'archresearch') { archResSig = ''; fetchArchResearch(); }
-    if (id === 'relics') { relicsSig = ''; fetchRelics(); }
-    if (id === 'reputation') { repSig = ''; fetchReputation(); }
-    if (id === 'bossinfo') { biSig = ''; fetchBossInfo(); }
-    if (id === 'hideyholes') { hideyListSig = ''; fetchHidey(true); }
-    if (id === 'clues') { clueListSig = ''; fetchClues(true); }
-    if (id === 'lodestones') { lodeListSig = ''; fetchLodestones(true); }
-    if (id === 'worldmap') { if (typeof wmOpen === 'function') wmOpen(); }
-    if (id === 'anachronia') { if (typeof anaOpen === 'function') anaOpen(); }
-    if (id === 'scene') fetchScene();
-    if (id === 'info') fetchInfo();
-    if (id === 'dailies') fetchDailies(true);
-    if (id === 'tasks') fetchTasks();
-    if (id === 'kingdom') { kdSig = ''; fetchKingdom(); }
-    if (id === 'rituals') { rtSig = ''; fetchRituals(); }
-    if (id === 'toolbelt') { tbSig = ''; fetchToolbelt(); }
-    if (id === 'shopcaps') { scSig = ''; fetchShopCaps(); }
-    if (id === 'currencies') { cySig = ''; fetchCurrencies(); }
-    if (id === 'farmcol') { fcSig = ''; fetchFarmCol(); }
-    if (id === 'archcol') { acSig = ''; fetchArchCol(); }
-    if (id === 'collections') { clueColSig = ''; fetchClueCol(); }
-    if (id === 'leagues') { lgSig = ''; fetchLeagues(); }
-    if (id === 'cachex') { const l = $('cxList'); if (l) l._sig = ''; }
     if (id === 'info' || id === 'player') fetchPlayerVp();
     if (id === 'player') fetchGameGoals();
-    if (id === 'vars') { varsWatchSet(true); fetchVars(); }
-    if (id === 'netprobe') { try { npArm(true); npFetch(); } catch (e) {} }
-    if (id === 'farming') { farmSig = ''; _farmAt = 0; fetchFarming(); }
   }
   // ==================== Menu bar ====================
   // Slim glass bar: category launchers + player status + search. Draggable to any
@@ -6467,94 +6515,18 @@
     if (activeTab === 'pluginbrowse') { renderPluginBrowse(); return; }
     if (activeTab.indexOf('plugin:') === 0) { renderPlugin(activeTab.slice(7)); return; }
     if (activeTab.indexOf('aura:') === 0) { if (typeof renderAuraGroup === 'function') renderAuraGroup(activeTab.slice(5)); return; }
-    // Bank manages its own DOM incrementally (search box keeps focus across
-    // the 250 ms refresh), so it must run before the content is wiped.
-    if (activeTab === 'bank') { renderBank(); return; }
-    if (activeTab === 'metalbank') { renderMetalBank(); return; }
-    if (activeTab === 'groupbank') { renderGroupBank(); return; }
+    // Registered panels (registerTab in each panel_*.js IIFE) render here, before the
+    // content wipe below: panels such as Bank manage their own DOM incrementally (search
+    // box keeps focus across the 250 ms refresh), so they must run before it is wiped.
+    { const P = RTX.panels[activeTab]; if (P && typeof P.render === 'function') { P.render(); return; } }
+    // Legacy if-chain: tabs rendered by this script itself, or gated on more than the id.
     if (activeTab === 'materials') { renderMaterials(); return; }
     if (activeTab === 'baitbox') { renderBaitBox(); return; }
     if (activeTab === 'artefacts') { renderWorkbench(); return; }
-    if (activeTab === 'components') { renderComponents(); return; }
-    if (activeTab === 'machines') { renderMachines(); return; }
-    if (activeTab === 'inventory') { renderInventory(); return; }
-    if (activeTab === 'equipment') { renderEquipment(); return; }
-    if (activeTab === 'storage') { renderStorage(); return; }
-    if (activeTab === 'containers') { renderContainers(); return; }
-    if (activeTab === 'abilities') { renderAbilities(); return; }
-    if (activeTab === 'pets') { renderPets(); return; }
-    if (activeTab === 'bosses') { renderBosses(); return; }
-    if (activeTab === 'quests') { renderQuests(); return; }
-    if (activeTab === 'questfocus') { renderQuestFocus(); return; }
-    if (activeTab === 'xptracker') { renderXpTracker(); return; }
-    if (activeTab === 'xpmeter') { renderXpMeter(); return; }
-    if (activeTab === 'chatlog') { renderChat(); return; }
-    if (activeTab === 'achievements') { renderAchievements2(); return; }
-    if (activeTab === 'combatmastery') { renderCombatMastery(); return; }
-    if (activeTab === 'areatasks') { renderAreaTasks(); return; }
-    if (activeTab === 'gimtasks') { renderGimTasks(); return; }
-    if (activeTab === 'archmysteries') { renderArchMysteries(); return; }
-    if (activeTab === 'mystfocus') { renderMystFocus(); return; }
     if (activeTab === 'archshop') { renderArchShop(); return; }
-    if (activeTab === 'familiar') { renderFamiliar(); return; }
     if (activeTab === 'dung') { if (DUNG_ENABLED) renderDungeoneering(); return; }
-    if (activeTab === 'archresearch') { renderArchResearch(); return; }
-    if (activeTab === 'relics') { renderRelics(); return; }
-    if (activeTab === 'reputation') { renderReputation(); return; }
-    if (activeTab === 'wardrobe') { renderWardrobe(); return; }
-    if (activeTab === 'resdungeons') { renderResDungeons(); return; }
-    if (activeTab === 'fairyrings') { renderFairyRings(); return; }
-    if (activeTab === 'bossinfo') { renderBossInfo(); return; }
-    if (activeTab === 'portsinfo') { if (typeof renderPortsInfo === 'function') renderPortsInfo(); return; }
-    if (activeTab === 'hideyholes') { renderHidey(); return; }
-    if (activeTab === 'clues') { renderClues(); return; }
-    if (activeTab === 'globetrotter') { renderGlobetrotterTab(); return; }
-    if (activeTab === 'cluestats') { renderClueStats(); return; }
-    if (activeTab === 'lodestones') { renderLodestones(); return; }
-    if (activeTab === 'scarabs') { renderScarabs(); return; }
-    if (activeTab === 'obelisks') { renderObelisks(); return; }
-    if (activeTab === 'scene') { renderScene(); return; }
-    if (activeTab === 'overlay') { renderOverlay(); return; }
-    // typeof-guard: panel_worldmap.js is only spliced by rebuilt launchers; an older binary
-    // with hot-synced ui-assets must not throw here.
-    if (activeTab === 'worldmap') { if (typeof renderWorldMap === 'function') renderWorldMap(); return; }
-    if (activeTab === 'anachronia') { if (typeof renderAnachronia === 'function') renderAnachronia(); return; }
-    if (activeTab === 'markers') { renderMarkers(); return; }
-    if (activeTab === 'rendering') { renderRendering(); return; }
-    if (activeTab === 'alerts') { renderAlerts(); return; }
-    if (activeTab === 'perks') { renderPerks(); return; }
-    if (activeTab === 'buffs') { renderBuffs(); return; }
-    if (activeTab === 'tasks') { renderTasks(); return; }
-    if (activeTab === 'farming') { renderFarming(); return; }
-    if (activeTab === 'pof') { renderPof(); return; }
-    if (activeTab === 'interfaces') { renderInterfaces(); return; }
-    if (activeTab === 'info') { renderInfo(); return; }
-    if (activeTab === 'vars') { renderVars(); return; }
-    if (activeTab === 'netprobe') { renderNetProbe(); return; }
-    if (activeTab === 'cs2') { renderCs2(); return; }
-    if (activeTab === 'ticks') { renderTicks(); return; }
-    if (activeTab === 'auras') { renderAuras(); return; }
-    if (activeTab === 'metronome') { renderMetronome(); return; }
-    if (activeTab === 'stopwatch') { renderStopwatch(); return; }
-    if (activeTab === 'notes') { renderNotes(); return; }
-    if (activeTab === 'counter') { renderCounter(); return; }
-    if (activeTab === 'screenshot') { renderScreenshot(); return; }
     if (activeTab === 'fullscreen') { renderFullscreen(); return; }
     if (activeTab === 'wiki') { renderWikiPane(); return; }
-    if (activeTab === 'dailies') { renderDailies(); return; }
-    if (activeTab === 'kingdom') { renderKingdom(); return; }
-    if (activeTab === 'rituals') { renderRituals(); return; }
-    if (activeTab === 'toolbelt') { renderToolbelt(); return; }
-    if (activeTab === 'shopcaps') { renderShopCaps(); return; }
-    if (activeTab === 'currencies') { renderCurrencies(); return; }
-    if (activeTab === 'farmcol') { renderFarmCol(); return; }
-    if (activeTab === 'archcol') { renderArchCol(); return; }
-    if (activeTab === 'collections') { renderClueCol(); return; }
-    if (activeTab === 'leagues') { renderLeagues(); return; }
-    if (activeTab === 'sounds') { renderSounds(); return; }
-    if (activeTab === 'cachex') { renderCachex(); return; }
-    if (activeTab === 'menuswap') { renderMenuSwap(); return; }
-    if (activeTab === 'health') { renderHealth(); return; }
     if (activeTab === 'uisettings') { renderUiSettings(); return; }
     // Skills tab (the default landing tab): renderPane runs on every 250ms poll tick, but the grid
     // only depends on the skill array, the goal targets and the virtual-levels setting -- skip the
@@ -6960,8 +6932,16 @@
     if (!host || (refresh._hostT = (refresh._hostT||0) + 1) % 4 === 0) {
       try { host = JSON.parse(await bridge().hostInfo()); } catch (e) {}
     }
+    // Status strip: one cheap bridgeStatus per tick (cached snapshot list, no new reads).
+    try { updateStatusStrip(await bridgeJson('bridgeStatus', myPid())); } catch (e) {}
     renderHeader();
-    for (const _w of wmVisibleWins()) renderPaneFor(_w);
+    for (const _w of wmVisibleWins()) {
+      // Live-refresh hook: a registered panel may run per-tick work (registerTab({ refresh }))
+      // ahead of its render; most panels just let render run on the tick.
+      const P = RTX.panels[_w.tab];
+      if (P && typeof P.refresh === 'function') { try { P.refresh(); } catch (e) {} }
+      renderPaneFor(_w);
+    }
     sizeAllIcons();
     pluginPush();     // feed the host tick/state to every mounted plugin window
     } finally { refresh._busy = false; }

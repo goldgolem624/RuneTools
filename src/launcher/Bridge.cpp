@@ -388,6 +388,33 @@ JSValueRef served(JSContextRef ctx, const std::string& key, const char* empty,
     return utf8_to_js(ctx, r.empty() ? std::string(empty) : r);
 }
 
+// One failure envelope for object-shaped bridge reads: {"ok":false,"why":"<why>"} with why in
+// {noclient, noargs, pending, error, unsupported}. bridgeJson() in client.html turns this into
+// null and records the why, so a panel can tell "no client attached" from "empty data". Only
+// bindings whose SUCCESS shape is a JSON object with named fields use it; array, scalar, string
+// and keyed-map bindings keep their old empty default, because an object there would break
+// `.length` / string callers and would surface "ok"/"why" as rows to key-iterating panels.
+static std::string fail_json(const char* why) {
+    return std::string("{\"ok\":false,\"why\":\"") + why + "\"}";
+}
+
+// True when the reader currently tracks `pid`. Reads the cached snapshot list only (the same
+// string gameSnapshots serves), so this adds no cross-process read.
+static bool pid_known(std::uint32_t pid) {
+    if (!pid) return false;
+    const std::string j = rtx::reader::SamplesJson();
+    return j.find("\"pid\":" + std::to_string(pid) + ",") != std::string::npos;
+}
+
+// served() for object-shaped bindings: noclient when the pid is not attached, error when the
+// reader produced nothing, otherwise the success payload unchanged.
+static JSValueRef served_obj(JSContextRef ctx, std::uint32_t pid, const std::string& key,
+                             std::function<std::string()> build) {
+    if (!pid_known(pid)) return utf8_to_js(ctx, fail_json("noclient"));
+    std::string r = rtx::reader::ReadAsync(key, std::move(build));
+    return utf8_to_js(ctx, r.empty() ? fail_json("error") : r);
+}
+
 std::string wide_to_utf8(const std::wstring& w) {
     if (w.empty()) return {};
     int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
@@ -1050,50 +1077,56 @@ JSValueRef MapLocNames(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
 JSValueRef BankItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields ({"items":[..],..}).
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "bank:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::BankJson(pid); });
+    return served_obj(ctx, pid, "bank:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::BankJson(pid); });
 }
 
 JSValueRef MetalBankItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields.
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "metalbank:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::MetalBankJson(pid); });
+    return served_obj(ctx, pid, "metalbank:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::MetalBankJson(pid); });
 }
 
 JSValueRef MaterialItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields.
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "materials:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::MaterialsJson(pid); });
+    return served_obj(ctx, pid, "materials:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::MaterialsJson(pid); });
 }
 
 JSValueRef GroupBankItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields.
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "groupbank:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::GroupBankJson(pid); });
+    return served_obj(ctx, pid, "groupbank:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::GroupBankJson(pid); });
 }
 
 JSValueRef BaitBoxItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields.
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "baitbox:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::BaitBoxJson(pid); });
+    return served_obj(ctx, pid, "baitbox:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::BaitBoxJson(pid); });
 }
 
 JSValueRef WorkbenchItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields.
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "workbench:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::WorkbenchJson(pid); });
+    return served_obj(ctx, pid, "workbench:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::WorkbenchJson(pid); });
 }
 
 JSValueRef SceneEntities(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1224,10 +1257,11 @@ JSValueRef VarbitMap(JSContextRef ctx, JSObjectRef, JSObjectRef,
 // cannot be served from varps/varbits like the rest of the Player State panel.
 JSValueRef Membership(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields (member/premier flags).
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "membership:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::MembershipJson(pid); });
+    return served_obj(ctx, pid, "membership:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::MembershipJson(pid); });
 }
 
 JSValueRef Quests(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1527,10 +1561,11 @@ JSValueRef InterfaceSizeSearch(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
 JSValueRef Dialog(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{}");
+    // fail_json envelope: success is an object with named fields (the open dialog).
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "dialog:" + std::to_string(pid), "{}",
-                  [pid]{ return rtx::reader::DialogJson(pid); });
+    return served_obj(ctx, pid, "dialog:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::DialogJson(pid); });
 }
 
 
@@ -2655,6 +2690,34 @@ void run_update() {
 JSValueRef Version(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, running_version());
+}
+
+// rtx.bridgeStatus(pid): the one-call health summary behind the client's status strip.
+//   {"ok":true,"attached":bool,"reader":"ok|detached|stale","build":"<client version>"|0,"launcher":"x.y.z"}
+// Built from the cached snapshot list only (no new reads). detached = the pid is not tracked;
+// stale = tracked but the reader cannot classify its login state (status byte unverified),
+// which is what a game update that moved the offsets looks like from here.
+JSValueRef BridgeStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t argc, const JSValueRef argv[], JSValueRef*) {
+    auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    bool attached = false;
+    const char* reader = "detached";
+    std::string build = "0";
+    if (pid) {
+        const std::string j = rtx::reader::SamplesJson();
+        auto at = j.find("\"pid\":" + std::to_string(pid) + ",");
+        if (at != std::string::npos) {
+            attached = true;
+            auto end = j.find("\"ge_slots\"", at);
+            const std::string rec = j.substr(at, end == std::string::npos ? std::string::npos : end - at);
+            const std::string cv = json_str(rec, "client_version");
+            if (!cv.empty()) build = "\"" + json_escape(cv) + "\"";
+            reader = json_str(rec, "status_label").empty() ? "stale" : "ok";
+        }
+    }
+    return utf8_to_js(ctx, std::string("{\"ok\":true,\"attached\":") + (attached ? "true" : "false") +
+                           ",\"reader\":\"" + reader + "\",\"build\":" + build +
+                           ",\"launcher\":\"" + json_escape(running_version()) + "\"}");
 }
 
 extern std::mutex  g_latest_mu;      // defined just below with the checker
@@ -4903,6 +4966,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "menuPins",          MenuSwapFn);
     install_fn(ctx, ns, "hostInfo",          HostInfo);
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
+    install_fn(ctx, ns, "bridgeStatus",      BridgeStatus);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
     install_fn(ctx, ns, "modelIcon",         ModelIcon);
     install_fn(ctx, ns, "itemInfo",          ItemInfo);

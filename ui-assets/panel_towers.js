@@ -1,6 +1,7 @@
 // RuneToolsX panel: Towers (Skyscrapers) clue solver + clue map/scan machinery.
-// Spliced inline into client.html at load; shares its global scope (no IIFE); shared
+// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html); shared
 // helpers ($, bridge, myPid, ...) live in the main script and resolve at call time.
+(function () {
 
   // Towers: interface 1934. Latin square 1-5; each edge clue = towers visible from that side.
   // Clue widgets by t[1]=layer / t[2]=sub: 5 = top (per column), 4 = bottom, 3 = left (per row),
@@ -49,7 +50,7 @@
     towersAmbiguous = count > 1;
     return found;                                            // first solution (the clues normally make it unique)
   }
-  let towersBusy = false, towersOwnsPanel = false, towersDrawSig = '', towersHl = false, towersSupersede = false;
+  let towersBusy = false; towersOwnsPanel = false; let towersDrawSig = ''; let towersHl = false; let towersSupersede = false;
   let towersSolveSig = '', towersSolveCache = null, towersCacheAmb = false;   // clue-vector gate: the clues cannot change while one puzzle is up
   function towersClearHl() { if (!towersHl) return; try { if (bridge() && bridge().puzzleCells) bridge().puzzleCells(myPid(), ''); } catch (e) {} towersHl = false; }
   async function towersTick() {
@@ -341,14 +342,14 @@
   }
   // Map zoom: the inner div is sized to (stageWidth * zoom) and the stage scrolls, so the canvas
   // and the DOM markers scale and pan together.
-  let clueMapZoom = 1, clueMapDrag = null, clueMapStageEl = null, clueMapZoomBound = false;
+  clueMapZoom = 1; let clueMapDrag = null; let clueMapStageEl = null; let clueMapZoomBound = false;
   let clueMapHover = false;   // keyboard zoom only applies while the map is under the pointer
   // Nearest lodestone / teleport for the caption, so it can lead with whichever is closer.
   let clueMapLodeBest = null, clueMapTeleBest = null;
   // How much terrain the stage shows at zoom 1, and how much the last fetch actually covered.
   // They differ once a deep zoom forces a narrower window (see mapRes) - the on-screen scale
   // has to stay tied to the FORMER or the map would jump when the window narrows.
-  let clueMapSpan = 192, clueMapHalfGot = 96;
+  clueMapSpan = 192; clueMapHalfGot = 96;
   const MAP_MAX_BACK = 2048;      // px per side of the terrain image; it travels as base64 RGBA
   const MAP_MAX_TS = 32;          // reader's px-per-tile ceiling (CacheReader MapWindowJson)
   // Pick the pixels-per-tile the display actually needs, then the widest window that fits the
@@ -385,8 +386,8 @@
   // canvas scaled by exactly newZoom/oldZoom, applyMapZoom independently re-anchored on the stage
   // CENTRE, and the debounced re-fetch could change the window size (breaking the wheel's
   // assumption) and then re-run the centre snap. Zooming therefore jumped.
-  let clueMapWinCx = 0, clueMapWinCy = 0;   // world centre of the window currently drawn
-  let clueMapPin = null;                    // {wx, wy, ox, oy} = world tile at stage offset ox,oy
+  clueMapWinCx = 0; clueMapWinCy = 0;   // world centre of the window currently drawn
+  clueMapPin = null;                    // {wx, wy, ox, oy} = world tile at stage offset ox,oy
 
   function mapPxTile(stage) {
     const st = stage || clueMapStageEl || document.querySelector('.clue-map-stage');
@@ -651,11 +652,11 @@
     }
     cx.restore();
   }
-  let clueMapProj = null;
+  clueMapProj = null;
   // Draw-sequence token: every map draw bumps this on entry and re-checks after each await,
   // bailing if a NEWER draw started; otherwise a slow earlier draw can clobber the canvas.
-  let clueMapDrawSeq = 0;
-  let scanPlaneSel = null, scanPlaneSelFor = -1;   // manual floor pick for multi-floor scans (null = auto); cleared in-region or on clue change
+  clueMapDrawSeq = 0;
+  scanPlaneSel = null; scanPlaneSelFor = -1;   // manual floor pick for multi-floor scans (null = auto); cleared in-region or on clue change
   // Live local-player dot on the drawn clue map, only when on the map's plane and inside its bounds.
   function clueMapPlayerDraw(P) {
     const el = $('clueMapPlayer'), rg = $('clueMapRange'), pr = clueMapProj;
@@ -737,7 +738,7 @@
   }, 450);
   // Meerkats familiar = +5 scan range: varp 1831 holds the summoned pouch item id; cached so
   // scanRangeBonus() reads the flag without await.
-  let g_scanMeerkats = false, g_scanMeerkatsPouch = -1;
+  g_scanMeerkats = false; let g_scanMeerkatsPouch = -1;
   async function refreshMeerkats() {
     try {
       const pouchVp = typeof VP !== 'undefined' ? VP.FAMILIAR_POUCH : 1831;
@@ -951,7 +952,7 @@
   // Raw [slot, id, stack, name] rows for both, so a per-SLOT instance read is possible
   // (two stacks of one id hold different Extra_ints).
   let teleWornRows = null, teleInvRows = null;
-  let teleQuestVp = {};        // live varps for the gated quests (the quest system's own trackers)
+  teleQuestVp = {};        // live varps for the gated quests (the quest system's own trackers)
   // Currency-pouch balances, by the currency's ITEM id. Some teleports are paid for with a
   // pouch currency (memory strands), which never appears in the backpack - a held-item check
   // reports "you don't have any" to everyone. The game's own registry (DBTable 66) names each
@@ -3522,7 +3523,7 @@
   let telePassageEnum = null;
   // What the passage currently holds, and its shared charge pool (Extra_ints key 0). A
   // piece stored inside draws on this pool rather than its own count.
-  let telePassage = null;      // { charges: n, names: Set<baseName> }
+  telePassage = null;      // { charges: n, names: Set<baseName> }
   // Per-ring unlock, taken from the client's own fairy-ring availability resolver and
   // keyed by the code the ring dials. Codes map to the resolver's numbers through the
   // game's own ring table, whose letter order is A D C B / I L K J / P S R Q.
@@ -3735,3 +3736,7 @@
   for (const T of MAP_TELEPORTS) if (T.src === 'Portable fairy ring')
     T.req = { questName: 'A Fairy Tale II - Cure a Queen',questId:309, skill: 26, level: 94, heldAny: [41076] };
   // ---- END generated mejrs teleport data ----
+
+// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
+Object.assign(window, { CLUE_ACT_LBL, CLUE_KEYS, MAP_LABELS, MAP_TELEPORTS, applyMapZoom, clueAct, clueActionText, clueDrawLabelsWindow, clueDrawNomove, clueDrawObjects, clueDrawTeleports, clueMapBindZoom, clueMapBlit, clueMapCtx, clueMapPlayerDraw, clueMapTelePrefetch, clueObjAt, drawClueMap, fetchClues, mapRes, mapWindowCached, nearLabel, teleChargeInfo, teleInPassage, teleItemChargeMax, teleItemChargeVal, teleKb, teleKeySeq, telePassageSlot, teleReqBlock, teleResetIn, teleRqText, teleTaskSetWhy, teleWhyCached, towersTick });
+})();
