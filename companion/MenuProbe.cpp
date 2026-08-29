@@ -660,8 +660,22 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         }
     }
     char verb[288], raw[288], tgt[rtx::menu::kTargetLen];
-    const std::uint32_t pins = g_share->pinCount > (std::uint32_t)rtx::menu::kMaxPins
-                             ? (std::uint32_t)rtx::menu::kMaxPins : g_share->pinCount;
+    // Snapshot the pin list under the launcher's odd/even seqlock (MenuSwap.cpp SetPins),
+    // so a rewrite mid-read cannot mix rows from two lists. Bounded: after 8 tries use
+    // the last copy rather than stall the menu.
+    static rtx::menu::Pin pinsLocal[rtx::menu::kMaxPins];
+    std::uint32_t pins = 0;
+    for (int tries = 0; tries < 8; ++tries) {
+        const std::uint32_t s0 = g_share->pinSeq;
+        if (s0 & 1u) { YieldProcessor(); continue; }
+        MemoryBarrier();
+        std::uint32_t c = g_share->pinCount;
+        if (c > (std::uint32_t)rtx::menu::kMaxPins) c = (std::uint32_t)rtx::menu::kMaxPins;
+        std::memcpy(pinsLocal, g_share->pins, (std::size_t)c * sizeof(rtx::menu::Pin));
+        pins = c;
+        MemoryBarrier();
+        if (g_share->pinSeq == s0) break;
+    }
     for (int i = 0; i < n; ++i) {
         if (!Rd(begin + (std::uint64_t)i * kRecSize, recs[i], kRecSize)) return false;
         std::uint64_t obj = 0;
@@ -690,9 +704,9 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         // menu NOTHING has a target, so there is nothing to distinguish and only Cancel is fixed.
         if (i == 0 || (anyTargeted && !tgt[0])) { fixedSlot[i] = true; continue; }
         for (std::uint32_t p = 0; p < pins; ++p) {
-            if (std::strncmp(verb, g_share->pins[p].verb, rtx::menu::kVerbLen) != 0) continue;
-            if (g_share->pins[p].target[0] &&
-                std::strncmp(tgt, g_share->pins[p].target, rtx::menu::kTargetLen) != 0) continue;
+            if (std::strncmp(verb, pinsLocal[p].verb, rtx::menu::kVerbLen) != 0) continue;
+            if (pinsLocal[p].target[0] &&
+                std::strncmp(tgt, pinsLocal[p].target, rtx::menu::kTargetLen) != 0) continue;
             rank[i] = (int)p;
             ++g_share->stage[1];
             break;
@@ -712,10 +726,10 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
             if (rank[i] != 0x7FFFFFFF) pinMatched[rank[i]] = true;
         for (int i = 0; i < n; ++i) {
             if (rank[i] == 0x7FFFFFFF) continue;
-            const char* rt = g_share->pins[rank[i]].target;
+            const char* rt = pinsLocal[rank[i]].target;
             int first = -1;
             for (std::uint32_t p = 0; p < pins; ++p)
-                if (std::strncmp(rt, g_share->pins[p].target, rtx::menu::kTargetLen) == 0) { first = (int)p; break; }
+                if (std::strncmp(rt, pinsLocal[p].target, rtx::menu::kTargetLen) == 0) { first = (int)p; break; }
             if (first >= 0 && !pinMatched[first]) rank[i] = 0x7FFFFFFF;
         }
     }

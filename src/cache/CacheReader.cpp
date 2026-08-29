@@ -2269,6 +2269,12 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
     if (half < 8 || half > 384) half = 40;       // tiles each side of the centre (panel-controlled zoom)
     if (ts < 2 || ts > 32) ts = 6;               // px per tile (32 = ~3x zoom before upscaling)
     if (ts & 1) ++ts;                            // even keeps the tile-shape split exact
+    // half and ts are clamped independently; together they could demand a 24576px (2.4 GB)
+    // window. Shrink ts first (cheapest to lose), then half, until the buffer is sane.
+    constexpr int kMaxW = 4096;
+    while (2 * half * ts > kMaxW && ts > 2) ts -= 2;
+    while (2 * half * ts > kMaxW && half > 8) --half;
+    if (2 * half * ts > kMaxW) return "{}";
     // Looked up AFTER the clamps, so two requests differing only in an out-of-range argument
     // still share an entry.
     for (std::size_t i = 0; i < g_mapWinCache.size(); ++i) {

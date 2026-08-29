@@ -17,6 +17,7 @@
   const WM_ZMIN = 0.3, WM_ZMAX = 12, WM_CACHE_MAX = 130, WM_INFLIGHT_MAX = 4;
   let wmCam = { x: 3213.5, y: 3429.5, z: 1.4, p: 0 };   // world tile centre + px/tile + floor
   let wmLayer = { labels: true, lodes: true, teles: true, hidey: false, marks: true, grid: false, icons: true };
+  let wmRO = null;          // stage ResizeObserver, replaced on each mount
   let wmCamSaved = false;   // a persisted camera skips the centre-on-player of the first open
   try {
     const c = JSON.parse(localStorage.getItem('rtxWmCam') || 'null');
@@ -1584,7 +1585,7 @@
         it.textContent = '  ' + d.name + (d.note ? '  (' + d.note + ')' : '') + (d.unbound ? '  [position not confirmed yet]' : '');
         it.style.textTransform = 'none';
         if (d.unbound) { it.style.opacity = '.45'; it.style.cursor = 'default'; it.title = 'This stop has no verified map position yet, so it cannot be flown to.'; }
-        else it.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); closeSoundMenu(); wmFlyTo(d.x, d.y, d.p, { x: d.x, y: d.y, p: d.p, nm: d.name }); });
+        else it.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); if (typeof closeSoundMenu === 'function') closeSoundMenu(); wmFlyTo(d.x, d.y, d.p, { x: d.x, y: d.y, p: d.p, nm: d.name }); });
         pop.appendChild(it);
       }
     }
@@ -1852,7 +1853,8 @@
     stage.addEventListener('mouseleave', function () { const tip = $('wmTip'); if (tip) { tip.style.display = 'none'; tip._hsig = ''; } wmTipHit = null; wmHover = { x: -1, y: -1 }; wmPaintStatus(); wmHoverBox(); });
     // The pane resizes on its own now (floating window), so a viewport resize listener
     // alone misses it: watch the stage itself and redraw at the new size.
-    if (typeof ResizeObserver === 'function') new ResizeObserver(function () { wmKick(); }).observe(stage);
+    // One observer per mount: drop the previous one or every remount adds another redraw.
+    if (typeof ResizeObserver === 'function') { if (wmRO) wmRO.disconnect(); wmRO = new ResizeObserver(function () { wmKick(); }); wmRO.observe(stage); }
     if (!wmWinBound) {
       wmWinBound = true;
       window.addEventListener('mousemove', function (e) {

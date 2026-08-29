@@ -171,6 +171,7 @@ void NoteObserved(std::int32_t id, std::int32_t idx, bool muted) {
     e.muted = muted ? 1 : 0;
     e.ms    = (std::uint32_t)GetTickCount64();
     g_share->recent[seq % rtx::sound::kMaxRecent] = e;
+    MemoryBarrier();                              // slot must land before the seq bump
     g_share->recentSeq = seq + 1;                 // publish only once the slot is written
     ++g_share->diag[2];
 }

@@ -77,7 +77,7 @@
   // Armed per tracker; driven by the background hook in client.html, so it fires panel-closed.
   let scNotify = {};
   try { scNotify = JSON.parse(localStorage.getItem('rtxWeNotify') || '{}') || {}; } catch (e) { scNotify = {}; }
-  function scNotifySave() { try { localStorage.setItem('rtxWeNotify', JSON.stringify(scNotify)); } catch (e) {} }
+  function scNotifySave() { try { prefSet('rtxWeNotify', JSON.stringify(scNotify)); } catch (e) {} }   // durable pref
   function scNotifyAny() { for (const k in scNotify) if (scNotify[k]) return true; return false; }
 
   // Worlds already seen per kind; the first pass only seeds the baseline (no login spam).

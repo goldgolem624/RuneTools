@@ -67,6 +67,10 @@ bool SetPins(std::uint32_t pid, const std::string& rules) {
     if (!v) return false;
     std::uint32_t n = 0;
     std::size_t i = 0;
+    // Odd/even seqlock: odd while the pin rows are being rewritten, so the companion
+    // can retry instead of mixing rows from two lists.
+    v.sh->pinSeq = v.sh->pinSeq + 1;        // odd: mid-update
+    MemoryBarrier();
     while (i <= rules.size() && n < (std::uint32_t)rtx::menu::kMaxPins) {
         std::size_t e = rules.find('\n', i);
         if (e == std::string::npos) e = rules.size();
@@ -90,7 +94,7 @@ bool SetPins(std::uint32_t pid, const std::string& rules) {
     }
     v.sh->pinCount = n;                     // contents first, then the count
     MemoryBarrier();
-    v.sh->pinSeq = v.sh->pinSeq + 1;
+    v.sh->pinSeq = v.sh->pinSeq + 1;        // even: complete
     return true;
 }
 

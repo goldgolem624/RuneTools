@@ -10,6 +10,9 @@ namespace {
 std::vector<std::uint8_t> InflateImpl(const std::uint8_t* in, std::size_t in_len,
                                       std::size_t initial_out_hint, int window_bits) {
     std::vector<std::uint8_t> out;
+    // Clamp the hint: a bogus header size must not allocate gigabytes up front.
+    constexpr std::size_t kMaxInitial = (std::size_t)256 * 1024 * 1024;
+    if (initial_out_hint > kMaxInitial) initial_out_hint = kMaxInitial;
     out.resize(initial_out_hint > 0 ? initial_out_hint : (std::size_t)64 * 1024);
 
     z_stream s{};
@@ -29,9 +32,14 @@ std::vector<std::uint8_t> InflateImpl(const std::uint8_t* in, std::size_t in_len
         }
         s.next_out  = out.data() + written;
         s.avail_out = (uInt)(out.size() - written);
+        const std::size_t before = written;
         rc = inflate(&s, Z_NO_FLUSH);
         written = s.total_out;
         if (rc == Z_STREAM_ERROR || rc == Z_DATA_ERROR || rc == Z_MEM_ERROR) {
+            inflateEnd(&s); return {};
+        }
+        // Truncated input: Z_BUF_ERROR with no progress would loop forever.
+        if (rc == Z_BUF_ERROR || (rc != Z_STREAM_END && written == before && s.avail_in == 0)) {
             inflateEnd(&s); return {};
         }
     } while (rc != Z_STREAM_END);

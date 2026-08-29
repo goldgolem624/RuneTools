@@ -64,13 +64,17 @@ void ReferenceTable::Decode(const std::vector<std::uint8_t>& d) {
     const bool has_lengths  = (flags & 0x4) != 0;
     const bool has_hash_alt = (flags & 0x8) != 0;
 
+    // Untrusted blob: reject absurd counts/ids before any resize or indexed write.
+    constexpr int kMaxId = 1000000;
     int archive_count = (protocol_ >= 7) ? (int)w.Smart().value_or(0) : (int)w.U16();
+    if (archive_count < 0 || archive_count > kMaxId) return;
     valid_archive_ids_.resize(archive_count);
 
     int running = 0;
     int biggest_archive_id = -1;
     for (int i = 0; i < archive_count; ++i) {
         running += (protocol_ >= 7) ? (int)w.Smart().value_or(0) : (int)w.U16();
+        if (running < 0 || running > kMaxId) { valid_archive_ids_.clear(); return; }
         valid_archive_ids_[i] = running;
         if (running > biggest_archive_id) biggest_archive_id = running;
     }
@@ -102,6 +106,7 @@ void ReferenceTable::Decode(const std::vector<std::uint8_t>& d) {
     std::vector<int> file_counts(archive_count);
     for (int i = 0; i < archive_count; ++i) {
         file_counts[i] = (protocol_ >= 7) ? (int)w.Smart().value_or(0) : (int)w.U16();
+        if (file_counts[i] < 0 || file_counts[i] > kMaxId) { entries_.clear(); return; }
     }
 
     for (int i = 0; i < archive_count; ++i) {
@@ -113,6 +118,7 @@ void ReferenceTable::Decode(const std::vector<std::uint8_t>& d) {
         for (int j = 0; j < n; ++j) {
             int delta = (protocol_ >= 7) ? (int)w.Smart().value_or(0) : (int)w.U16();
             rolling += delta;
+            if (rolling < 0 || rolling > kMaxId) { entries_.clear(); return; }
             if (rolling > biggest) biggest = rolling;
             a.valid_file_ids.push_back(rolling);
         }

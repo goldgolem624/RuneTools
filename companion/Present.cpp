@@ -261,8 +261,14 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                         if ((seq0 & 1u) == 0 && fid0 != s_uiFrameId) {
                             int lw = (int)g_frame->width;
                             int lh = (int)g_frame->height;
+                            const std::uint32_t lstride = g_frame->stride;
+                            // Stride is launcher-written: it must cover a row and the
+                            // whole surface must fit the pixel area, or the upload reads
+                            // past the section.
                             if (lw <= (int)rtx::frame::kMaxWidth &&
-                                lh <= (int)rtx::frame::kMaxHeight) {
+                                lh <= (int)rtx::frame::kMaxHeight &&
+                                lstride >= (std::uint32_t)lw * 4u &&
+                                (size_t)lstride * (size_t)lh <= (size_t)rtx::frame::kMaxBytes) {
                                 // The share's dirty rect describes only the LATEST
                                 // publish; if more than one publish happened since
                                 // our last upload the earlier rects are lost --
@@ -273,7 +279,7 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                                 int dw = contiguous ? g_frame->dirty_w : lw;
                                 int dh = contiguous ? g_frame->dirty_h : lh;
                                 rtx::composite::UploadUiLayer(
-                                    g_frame->pixels, lw, lh, (int)g_frame->stride,
+                                    g_frame->pixels, lw, lh, (int)lstride,
                                     dx, dy, dw, dh);
                                 if (g_frame->seq == seq0 && g_frame->frame_id == fid0)
                                     s_uiFrameId = fid0;

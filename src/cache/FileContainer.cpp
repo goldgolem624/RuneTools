@@ -12,6 +12,8 @@ SplitArchive(const std::vector<std::uint8_t>& data,
 
     const int n = (int)valid_file_ids.size();
     if (n == 1) {
+        // Same guard as the multi-file loop: the id comes from the reference table unchecked.
+        if (valid_file_ids[0] < 0 || valid_file_ids[0] > largest_file_id) return files;
         files[valid_file_ids[0]] = data;
         return files;
     }

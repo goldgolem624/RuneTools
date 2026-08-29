@@ -694,7 +694,10 @@ void fast_tick_loop() {
     // cross-process ReadProcessMemory runs OUTSIDE the lock so a sweep never stalls
     // the UI-thread SampleAll callers, then results are written back under the lock.
     // Reused across iterations to avoid per-loop allocation.
-    struct Probe  { DWORD pid; HANDLE proc; std::uint64_t owner_va;
+    // `proc` is the State's original handle (identity for the write-back guard); `dup` is a
+    // DuplicateHandle taken under g_mu so SampleAll closing the original mid-read cannot
+    // hand us a freed or recycled HANDLE value.
+    struct Probe  { DWORD pid; HANDLE proc; HANDLE dup; std::uint64_t owner_va;
                     std::uint32_t last_val; double last_qpc_ms; };
     struct Result { DWORD pid; HANDLE proc; std::uint32_t tick;
                     double now_ms; bool reset; bool advanced; double dt; };
@@ -707,10 +710,14 @@ void fast_tick_loop() {
         {
             std::lock_guard<std::mutex> lk(g_mu);
             probes.reserve(g_states.size());
-            for (auto& [pid, s] : g_states)
-                if (s.proc && s.tick_owner_va)
-                    probes.push_back({pid, s.proc, s.tick_owner_va,
-                                      s.last_tick_value, s.last_tick_qpc_ms});
+            for (auto& [pid, s] : g_states) {
+                if (!s.proc || !s.tick_owner_va) continue;
+                HANDLE dup = nullptr;
+                if (!DuplicateHandle(GetCurrentProcess(), s.proc, GetCurrentProcess(),
+                                     &dup, 0, FALSE, DUPLICATE_SAME_ACCESS)) continue;
+                probes.push_back({pid, s.proc, dup, s.tick_owner_va,
+                                  s.last_tick_value, s.last_tick_qpc_ms});
+            }
         }
 
         // 2) Read each process's tick counter WITHOUT holding g_mu. Only this
@@ -719,9 +726,9 @@ void fast_tick_loop() {
         results.clear();
         results.reserve(probes.size());
         for (const auto& p : probes) {
-            auto owner = rpm<std::uint64_t>(p.proc, p.owner_va);
+            auto owner = rpm<std::uint64_t>(p.dup, p.owner_va);
             if (!owner || !*owner) continue;
-            auto t = rpm<std::uint32_t>(p.proc, *owner + kTickCounterOff);
+            auto t = rpm<std::uint32_t>(p.dup, *owner + kTickCounterOff);
             if (!t) continue;
             Result r{p.pid, p.proc, *t, qpc_now_ms(), false, false, 0.0};
             if (p.last_qpc_ms == 0.0)      r.reset = true;          // first observation
@@ -729,6 +736,7 @@ void fast_tick_loop() {
             else if (*t != p.last_val) {   r.advanced = true; r.dt = r.now_ms - p.last_qpc_ms; }
             results.push_back(r);
         }
+        for (auto& p : probes) { if (p.dup) CloseHandle(p.dup); p.dup = nullptr; }
 
         // 3) Write back under the lock, skipping any process that was evicted or
         //    re-attached (different handle) during the read.
@@ -736,7 +744,7 @@ void fast_tick_loop() {
             std::lock_guard<std::mutex> lk(g_mu);
             for (const auto& r : results) {
                 auto it = g_states.find(r.pid);
-                if (it == g_states.end() || it->second.proc != r.proc) continue;
+                if (it == g_states.end() || !it->second.proc || it->second.proc != r.proc) continue;
                 State& s = it->second;
                 s.current_tick = r.tick;
                 if (r.reset) {
@@ -2083,19 +2091,33 @@ std::string EquipmentJson(std::uint32_t pid) { return container_json_for(pid, 94
 // Read one player varp by id from the MainData+0x36040 hashmap. Returns 0 for an
 // unset varp (no node) -- which is exactly the engine's default, so callers can
 // treat "absent" and 0 identically. `h`/`root` pre-resolved + g_mu held.
-static int read_varp(HANDLE h, std::uint64_t root, int varp_id) {
-    if (varp_id < 0) return 0;
+// read_varp_found distinguishes "map unreadable / insane" (false) from "healthy map, varp
+// unset" (true, out = 0), so callers with a static fallback can tell the two apart.
+static bool read_varp_found(HANDLE h, std::uint64_t root, int varp_id, int& out) {
+    out = 0;
+    if (varp_id < 0) return false;
     std::uint64_t hashRoot = root + kOffVarpHash;
-    std::uint64_t ba = rpm<std::uint64_t>(h, hashRoot + 0x8).value_or(0);
-    int div = rpm<std::int32_t>(h, hashRoot + 0x10).value_or(0);
-    if (ba <= 0x10000 || div <= 0 || div > 2000000) return 0;   // upper bound: a stale offset reads garbage as the bucket count
-    std::uint64_t node = rpm<std::uint64_t>(h, ba + (std::uint64_t)(varp_id % div) * 8).value_or(0);
+    auto ba_o  = rpm<std::uint64_t>(h, hashRoot + 0x8);
+    auto div_o = rpm<std::int32_t>(h, hashRoot + 0x10);
+    if (!ba_o || !div_o) return false;
+    std::uint64_t ba = *ba_o; int div = *div_o;
+    if (ba <= 0x10000 || div <= 0 || div > 2000000) return false;   // upper bound: a stale offset reads garbage as the bucket count
+    auto bucket = rpm<std::uint64_t>(h, ba + (std::uint64_t)(varp_id % div) * 8);
+    if (!bucket) return false;
+    std::uint64_t node = *bucket;
     for (int i = 0; i < 128 && node > 0x10000; ++i) {
-        if (rpm<std::int32_t>(h, node).value_or(-1) == varp_id)
-            return rpm<std::int32_t>(h, node + 0x8).value_or(0);   // tag 0/1 -> int at +0x8
+        if (rpm<std::int32_t>(h, node).value_or(-1) == varp_id) {
+            out = rpm<std::int32_t>(h, node + 0x8).value_or(0);   // tag 0/1 -> int at +0x8
+            return true;
+        }
         node = rpm<std::uint64_t>(h, node + 0x28).value_or(0);
     }
-    return 0;
+    return true;   // healthy map, no node: engine default 0
+}
+static int read_varp(HANDLE h, std::uint64_t root, int varp_id) {
+    int v = 0;
+    read_varp_found(h, root, varp_id, v);
+    return v;
 }
 
 static constexpr std::size_t kVarcStrCap = 1024;   // longest live tooltips/examines seen ~300 B; bound every string read
@@ -3215,13 +3237,16 @@ rtx::cache::LocMeta resolve_loc(HANDLE h, std::uint64_t root, int base_id) {
         if (vb >= 0) {                                            // varbit takes priority (engine order)
             int wvp = -1, lsb = -1, msb = -1;                     // varbit -> backing varp + bit range
             if (rtx::cache::GetVarbit(vb, wvp, lsb, msb) && wvp >= 0 && lsb >= 0 && msb >= lsb && msb < 32) {
-                int raw = read_varp(h, root, wvp);
-                int width = msb - lsb + 1;
-                unsigned mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
-                value = (int)(((unsigned)raw >> lsb) & mask);
+                int raw = 0;                                      // unreadable map -> value stays -1 (static fallback)
+                if (read_varp_found(h, root, wvp, raw)) {
+                    int width = msb - lsb + 1;
+                    unsigned mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
+                    value = (int)(((unsigned)raw >> lsb) & mask);
+                }
             }
         } else if (vp >= 0) {
-            value = read_varp(h, root, vp);                       // selector is a varp directly
+            int v = 0;
+            if (read_varp_found(h, root, vp, v)) value = v;       // selector is a varp directly
         }
         if (value >= 0) {
             // Selector read OK -> resolve to the exact live variant (engine semantics:
@@ -3252,13 +3277,16 @@ rtx::cache::NpcMeta resolve_npc(HANDLE h, std::uint64_t root, int base_id, bool*
         if (vb >= 0) {                                            // varbit takes priority (engine order)
             int wvp = -1, lsb = -1, msb = -1;
             if (rtx::cache::GetVarbit(vb, wvp, lsb, msb) && wvp >= 0 && lsb >= 0 && msb >= lsb && msb < 32) {
-                int raw = read_varp(h, root, wvp);
-                int width = msb - lsb + 1;
-                unsigned mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
-                value = (int)(((unsigned)raw >> lsb) & mask);
+                int raw = 0;                                      // unreadable map -> value stays -1 (static fallback)
+                if (read_varp_found(h, root, wvp, raw)) {
+                    int width = msb - lsb + 1;
+                    unsigned mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
+                    value = (int)(((unsigned)raw >> lsb) & mask);
+                }
             }
         } else if (vp >= 0) {
-            value = read_varp(h, root, vp);                       // selector is a varp directly
+            int v = 0;
+            if (read_varp_found(h, root, vp, v)) value = v;       // selector is a varp directly
         }
         // Resolve to the EXACT in-range variant, or to NOTHING -- never the default child or the base.
         // Out-of-range or unreadable means the morph's live identity is unknown here; guessing paints a
@@ -4269,9 +4297,18 @@ static std::string iface_text_at(HANDLE h, std::uint64_t node, std::uint64_t fie
     if (p <= 0x10000) return {};
     char buf[512] = {};
     if (cap > (int)sizeof(buf) - 1) cap = (int)sizeof(buf) - 1;
-    if (!rpm_bytes(h, p, buf, cap)) return {};
+    if (cap <= 0) return {};
+    // Short strings often sit near the end of a heap page; a fixed window would cross into
+    // an unmapped page and fail the whole read. Read to the page boundary first and only
+    // fetch the remainder when no NUL was seen.
+    int first = (int)std::min<std::uint64_t>((std::uint64_t)cap, 0x1000 - (p & 0xFFF));
+    if (!rpm_bytes(h, p, buf, first)) return {};
     int len = 0;
-    while (len < (int)sizeof(buf) - 1 && buf[len]) ++len;
+    while (len < first && buf[len]) ++len;
+    if (len == first && first < cap) {
+        if (!rpm_bytes(h, p + first, buf + first, cap - first)) return {};
+        while (len < cap && buf[len]) ++len;
+    }
     return iface_encode_text(buf, len);
 }
 

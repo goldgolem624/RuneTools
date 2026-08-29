@@ -111,6 +111,8 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
         int nGroups = (int)br.bits(3);
         int nSel    = (int)br.bits(15);
         if (nGroups < 2 || nGroups > 6 || nSel < 1) return {};
+        if (br.err) return {};   // header reads above ran past the input
+        constexpr std::size_t kMaxBlock = 900000;
 
         // Selectors: unary-coded MTF over the group indices.
         std::vector<std::uint8_t> selectors((std::size_t)nSel);
@@ -160,6 +162,8 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
                 if (N == 0) N = 1;
                 run += (sym == 0) ? N : 2 * N;
                 N <<= 1;
+                // A bzip2 block never exceeds 900k bytes; cap before the flush allocates.
+                if (bwt.size() + run > kMaxBlock) return {};
                 continue;
             }
             if (run) {                                      // flush a pending run of mtf[0]
@@ -172,6 +176,7 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
             std::uint8_t v = mtf[idx];
             for (int z = idx; z > 0; --z) mtf[z] = mtf[z - 1];
             mtf[0] = v;
+            if (bwt.size() >= kMaxBlock) return {};
             bwt.push_back(v);
         }
 

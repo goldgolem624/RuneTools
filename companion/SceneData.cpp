@@ -955,9 +955,11 @@ void PublishVarcs(rtx::varc::Share* vsh) {
       }
     }
     vsh->seq++;                                   // odd: mid-update
+    MemoryBarrier();                              // data must not move above the odd seq
     std::memcpy(vsh->entries, g_varcbuf, (std::size_t)c * sizeof(rtx::varc::Entry));
     vsh->count = c;
     vsh->strCount = 0;
+    MemoryBarrier();                              // data must land before the even seq
     vsh->seq++;                                   // even: complete
 }
 
@@ -1031,8 +1033,10 @@ void Publish(Share* sh, bool wantDiag) {
     }
     // Commit atomically: short odd-seq window = just the copy of `c` objects.
     sh->seq++;                                    // odd: mid-update
+    MemoryBarrier();                              // data must not move above the odd seq
     std::memcpy(sh->objects, g_pubbuf, (std::size_t)c * sizeof(Object));
     sh->count = c;
+    MemoryBarrier();                              // data must land before the even seq
     sh->seq++;                                    // even: complete
 }
 
@@ -1524,8 +1528,10 @@ void PublishGround(rtx::ground::Share* sh) {
         c = ScanGroundEnt(ent, c);
     }
     sh->seq++;                                    // odd: mid-update
+    MemoryBarrier();                              // data must not move above the odd seq
     std::memcpy(sh->items, g_groundBuf, (std::size_t)c * sizeof(rtx::ground::Item));
     sh->count = c;
+    MemoryBarrier();                              // data must land before the even seq
     sh->seq++;                                    // even: complete
 }
 
@@ -1848,7 +1854,7 @@ void PublishSpecials(rtx::special::Share* sh) {
     // Arm the observer only while the launcher has refreshed enable (a stamp) recently; otherwise it
     // idles (cost ~zero on the render thread). 3s window > the launcher's poll cadence.
     g_specialOn.store(sh->enable != 0 && (std::uint32_t)(now - sh->enable) < 3000, std::memory_order_relaxed);
-    if (!g_specialOn.load(std::memory_order_relaxed)) { sh->seq++; sh->count = 0; sh->seq++; return; }
+    if (!g_specialOn.load(std::memory_order_relaxed)) { sh->seq++; MemoryBarrier(); sh->count = 0; MemoryBarrier(); sh->seq++; return; }
     rtx::special::Highlight out[rtx::special::kMaxHighlights];
     std::uint32_t c = 0;
     // Two passes so per-actor adornments cannot crowd out the captures this hook exists for. A
@@ -1873,8 +1879,10 @@ void PublishSpecials(rtx::special::Share* sh) {
         if (!dup) out[c++] = hh;
     }
     sh->seq++;                                    // odd: mid-update
+    MemoryBarrier();                              // data must not move above the odd seq
     std::memcpy(sh->items, out, (std::size_t)c * sizeof(rtx::special::Highlight));
     sh->count = c;
+    MemoryBarrier();                              // data must land before the even seq
     sh->seq++;                                    // even: complete
 }
 
@@ -2054,7 +2062,7 @@ DWORD WINAPI Worker(LPVOID) {
             // Genuinely empty for ~2s -> publish the empty set. A transient empty (a
             // scene/region reload frees all containers for a tick or two before they
             // re-discover) keeps the LAST good publish, so boxes don't flash off/on.
-            sh->seq++; sh->count = 0; sh->seq++;
+            sh->seq++; MemoryBarrier(); sh->count = 0; MemoryBarrier(); sh->seq++;
         }
         // Publish ALWAYS (not gated on the Vars watcher): panel-position vars are resolved
         // always-on (ResolvePanelGroupsFromLive), so they must be readable by the launcher without

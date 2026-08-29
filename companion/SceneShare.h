@@ -9,12 +9,13 @@
 namespace rtx::scene {
 
 // Named shared section, per client pid; version in the name isolates layout changes.
-inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXSceneData_v1_";
+// The _vN_ in kSectionPrefix and kVersion move together: bump both on a layout change.
+inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXSceneData_v2_";
 inline constexpr std::uint32_t kMagic   = 0x52545853;   // 'RTXS'
 inline constexpr std::uint32_t kVersion = 2;
 inline constexpr int kMaxObjects        = 4000;
 
-// Build "Local\RuneToolsXSceneData_v1_<pid>" into `out` (size >= 64).
+// Build "Local\RuneToolsXSceneData_v2_<pid>" into `out` (size >= 64).
 inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
     int i = 0;
     for (const wchar_t* s = kSectionPrefix; *s; ++s) out[i++] = *s;

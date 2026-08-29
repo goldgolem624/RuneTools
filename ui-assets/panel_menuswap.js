@@ -463,7 +463,11 @@
     try { await bridge().menuPins(myPid(), lines.join('\n')); } catch (e) {}
   }
 
+  let mnuBusy = false;
   async function mnuTick() {
+    if (mnuBusy) return;           // 300 ms timer vs awaits: no overlapping ticks
+    mnuBusy = true;
+    try {
     if (!bridge() || !bridge().menuStatus) return;
     await mnuLoadRules();          // once, before anything can overwrite the durable copy
     const vis = paneVisible('menuswap');
@@ -517,6 +521,7 @@
     const ctx = (mnuData.seq | 0) + '|' + (mnuData.locId | 0) + '|' + (mnuData.handle | 0);
     if (ctx !== mnuPinCtx) { mnuPinCtx = ctx; mnuPush(); }
     if (vis) renderMenuSwap();
+    } finally { mnuBusy = false; }
   }
 
   // Fixed = the bottom row, plus any TARGETLESS row in a menu that HAS targets. Must match the

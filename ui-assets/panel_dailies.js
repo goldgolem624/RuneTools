@@ -29,7 +29,7 @@
   // previous availability snapshot; the first fetch only sets the baseline.
   let dwNotify = {};
   try { dwNotify = JSON.parse(localStorage.getItem('rtxDwNotify') || '{}') || {}; } catch (e) {}
-  function dwNotifySave() { try { localStorage.setItem('rtxDwNotify', JSON.stringify(dwNotify)); } catch (e) {} }
+  function dwNotifySave() { try { prefSet('rtxDwNotify', JSON.stringify(dwNotify)); } catch (e) {} }   // durable pref
   function dwNotifyAny() { for (const k in dwNotify) if (dwNotify[k]) return true; return false; }
   let dwPrev = null;
 

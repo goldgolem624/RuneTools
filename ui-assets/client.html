@@ -2344,7 +2344,7 @@
   const rtxPrefs = Object.create(null);
   let _prefsReady = false, _prefsSaveT = 0, _prefsInitP = null;
   const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView', 'rtxAuras', 'rtxAuraSeen', 'rtxAuraIcons',
-                        'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify', 'rtxResDungCoords'];
+                        'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify', 'rtxResDungCoords', 'rtxSceneMarks'];
   function prefGet(key, def) {
     if (Object.prototype.hasOwnProperty.call(rtxPrefs, key)) return rtxPrefs[key];
     try { const s = localStorage.getItem(key); if (s !== null) return s; } catch (e) {}
@@ -4077,7 +4077,7 @@
   // so the lock button never worked and rtxMetroLock was never written.
   function setMetroLock(v) {
     metroLocked = !!v;
-    try { localStorage.setItem('rtxMetroLock', metroLocked ? '1' : '0'); } catch (e) {}
+    prefSet('rtxMetroLock', metroLocked ? '1' : '0');   // durable pref, not bare localStorage
     const w = wmWinOf('metronome');
     if (w) { w.locked = metroLocked; wmApplyLock(w); wmRectsSoon(); wmSaveSoon(); }
     paneRun('ticks', renderTicks);
@@ -4483,9 +4483,7 @@
     // offering to "lock" something already locked -- and that panel is the ONLY way back
     // once locked, since a locked window publishes no consume rect.
     if (w.tab === 'metronome') {
-      metroLocked = w.locked;
-      try { localStorage.setItem('rtxMetroLock', metroLocked ? '1' : '0'); } catch (e) {}
-      paneRun('ticks', renderTicks);
+      setMetroLock(w.locked);
     }
     if (w.tab === 'xpmeter') {
       xpLock = w.locked;
@@ -6883,6 +6881,9 @@
 
   async function refresh() {
     if (!bridge()) return;
+    if (refresh._busy) return;      // 250 ms timer vs awaits: no overlapping passes
+    refresh._busy = true;
+    try {
     let snaps = null;
     try { snaps = JSON.parse(await bridge().gameSnapshots()); }
     catch (e) { return; }
@@ -6947,6 +6948,7 @@
     for (const _w of wmVisibleWins()) renderPaneFor(_w);
     sizeAllIcons();
     pluginPush();     // feed the host tick/state to every mounted plugin window
+    } finally { refresh._busy = false; }
   }
 
   // One open window's per-poll fetches; activeTab/__paneRoot are bound to it by

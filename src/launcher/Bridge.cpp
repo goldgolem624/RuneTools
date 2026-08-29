@@ -47,6 +47,8 @@ using std::min;
 #include <cstdlib>
 #include <bcrypt.h>
 #include <cctype>
+#include <climits>
+#include <cmath>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -69,6 +71,15 @@ using std::min;
 namespace rtx::launcher {
 
 namespace {
+
+// Bounded JS number -> int: NaN/Infinity through a plain (int) cast is UB, so clamp instead.
+static int js_int(JSContextRef ctx, JSValueRef v, int def = 0, int lo = INT_MIN, int hi = INT_MAX) {
+    double d = JSValueToNumber(ctx, v, nullptr);
+    if (!std::isfinite(d)) return def;
+    if (d < (double)lo) return lo;
+    if (d > (double)hi) return hi;
+    return (int)d;
+}
 
 // ---- Screenshot capture ----------------------------------------------------
 // Grabs the game window to a PNG under %USERPROFILE%\RuneToolsX\screenshots, named by local date/time.
@@ -611,9 +622,9 @@ std::filesystem::path alerts_user_dir();
 JSValueRef SoundList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "[]");
-    int idx   = (int)JSValueToNumber(ctx, argv[0], nullptr);
-    int start = (argc >= 2) ? (int)JSValueToNumber(ctx, argv[1], nullptr) : 0;
-    int lim   = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 200;
+    int idx   = js_int(ctx, argv[0]);
+    int start = (argc >= 2) ? js_int(ctx, argv[1]) : 0;
+    int lim   = (argc >= 3) ? js_int(ctx, argv[2]) : 200;
     if (idx != rtx::cache::kIndexSoundEffects && idx != rtx::cache::kIndexMusic)
         return utf8_to_js(ctx, "[]");
     return utf8_to_js(ctx, rtx::cache::SoundListJson(idx, start, lim));
@@ -626,8 +637,8 @@ JSValueRef SoundList(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef SoundExport(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "");
-    int idx = (int)JSValueToNumber(ctx, argv[0], nullptr);
-    int id  = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    int idx = js_int(ctx, argv[0]);
+    int id  = js_int(ctx, argv[1]);
     if (idx != rtx::cache::kIndexSoundEffects && idx != rtx::cache::kIndexMusic)
         return utf8_to_js(ctx, "");
     auto ogg = rtx::cache::SoundOgg(idx, id);
@@ -650,9 +661,9 @@ JSValueRef SoundExport(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef SoundPlay(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
-    int idx = (int)JSValueToNumber(ctx, argv[0], nullptr);
-    int id  = (int)JSValueToNumber(ctx, argv[1], nullptr);
-    int vol = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 100;
+    int idx = js_int(ctx, argv[0]);
+    int id  = js_int(ctx, argv[1]);
+    int vol = (argc >= 3) ? js_int(ctx, argv[2]) : 100;
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
     if (idx != rtx::cache::kIndexSoundEffects && idx != rtx::cache::kIndexMusic)
@@ -680,12 +691,12 @@ JSValueRef SoundResume(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 JSValueRef SoundSeek(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc >= 1) rtx::audio::Seek((int)JSValueToNumber(ctx, argv[0], nullptr));
+    if (argc >= 1) rtx::audio::Seek(js_int(ctx, argv[0]));
     return JSValueMakeBoolean(ctx, true);
 }
 JSValueRef SoundVolume(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc >= 1) rtx::audio::SetVolume((int)JSValueToNumber(ctx, argv[0], nullptr));
+    if (argc >= 1) rtx::audio::SetVolume(js_int(ctx, argv[0]));
     return JSValueMakeBoolean(ctx, true);
 }
 // soundStatus() -> {state,pos,dur,vol,rate,ch}; the panel polls this to drive its transport.
@@ -735,9 +746,9 @@ JSValueRef SoundMute(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef ClueSearchTarget(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{}");
-    int x = static_cast<int>(JSValueToNumber(ctx, argv[0], nullptr));
-    int y = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
-    int p = (argc >= 3) ? static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr)) : 0;
+    int x = js_int(ctx, argv[0]);
+    int y = js_int(ctx, argv[1]);
+    int p = (argc >= 3) ? js_int(ctx, argv[2]) : 0;
     return utf8_to_js(ctx, rtx::cache::ClueSearchTargetJson(x, y, p));
 }
 
@@ -777,21 +788,21 @@ JSValueRef HostInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef ItemIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, icons::ItemIconDataUrl(id));
 }
 
 JSValueRef ModelIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, icons::ModelIconDataUrl(id));
 }
 
 JSValueRef ItemInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::ItemInfoJson(id));
 }
 
@@ -847,7 +858,7 @@ JSValueRef HudSprite(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 4) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int sprite = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    int sprite = js_int(ctx, argv[1]);
     std::string caption = js_to_utf8(ctx, argv[2]);
     bool on = JSValueToBoolean(ctx, argv[3]);
     return JSValueMakeBoolean(ctx, HudWrite(pid, sprite, caption, on));
@@ -856,11 +867,11 @@ JSValueRef HudSprite(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef Sprite(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     // Optional 2nd arg: cap the longest side to `px` (panels pass ~2x their box for a clean 2:1 rescale).
     // Optional 3rd arg: frame index within a multi-frame group (chat <img=N> icons).
-    int px = (argc >= 2) ? (int)JSValueToNumber(ctx, argv[1], nullptr) : 0;
-    int frame = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 0;
+    int px = (argc >= 2) ? js_int(ctx, argv[1]) : 0;
+    int frame = (argc >= 3) ? js_int(ctx, argv[2]) : 0;
     return utf8_to_js(ctx, (px > 0 || frame > 0) ? rtx::cache::SpriteDataUrlScaled(id, px, frame)
                                                  : rtx::cache::SpriteDataUrl(id));
 }
@@ -879,21 +890,21 @@ JSValueRef Achievements(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef EnumInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::EnumJson(id));
 }
 
 JSValueRef ItemParams(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::ItemParamsJson(id));
 }
 
 JSValueRef DbRows(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "[]");
-    int t = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int t = js_int(ctx, argv[0]);
     // served(): the first decode of a big table (163 = 5,313 rows) walks ~19,560 archive files
     // and must not hitch the UI thread; DbRowsJson memoizes, so the background refresh is free.
     return served(ctx, "dbrows:" + std::to_string(t), "[]", [t] { return rtx::cache::DbRowsJson(t); });
@@ -902,7 +913,7 @@ JSValueRef DbRows(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef StructParams(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::StructParamsJson(id));
 }
 
@@ -929,21 +940,21 @@ JSValueRef MystPages(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef NpcInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::NpcJson(id));
 }
 
 JSValueRef ParamDef(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::ParamDefJson(id));
 }
 
 JSValueRef CacheIfaceGroup(JSContextRef ctx, JSObjectRef, JSObjectRef,
                            size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
-    int gid = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int gid = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::IfaceGroupDefsJson(gid));
 }
 
@@ -967,7 +978,12 @@ JSValueRef MapWindow(JSContextRef ctx, JSObjectRef, JSObjectRef,
     int ts   = (argc > 4) ? (int)JSValueToNumber(ctx, argv[4], nullptr) : 0;
     int want = (argc > 5) ? (int)JSValueToNumber(ctx, argv[5], nullptr) : 15;
     bool sync = (argc > 6) && JSValueToBoolean(ctx, argv[6]);   // legacy callers (clue scan) may insist on inline
-    if (sync) return utf8_to_js(ctx, rtx::cache::MapWindowJson(cx, cy, plane, half, ts, want));
+    if (sync) {
+        // Same guard as the async path: a cache exception must not unwind into JSC.
+        std::string r;
+        try { r = rtx::cache::MapWindowJson(cx, cy, plane, half, ts, want); } catch (...) { r = "{}"; }
+        return utf8_to_js(ctx, r.empty() ? "{}" : r);
+    }
     const std::string key = std::to_string(cx) + "," + std::to_string(cy) + "," + std::to_string(plane) + "," +
                             std::to_string(half) + "," + std::to_string(ts) + "," + std::to_string(want);
     {
@@ -998,7 +1014,7 @@ JSValueRef MapAreas(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef MapAreaImage(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     bool thumb = (argc > 1) && JSValueToBoolean(ctx, argv[1]);
     return served(ctx, "mapimg:" + std::to_string(id) + (thumb ? ":t" : ":f"), "", [id, thumb] { return rtx::cache::MapAreaImageDataUrl(id, thumb); });
 }
@@ -1075,7 +1091,7 @@ JSValueRef SceneEntities(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{\"npcs\":[],\"count\":0}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int range = (argc >= 2) ? static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr)) : 20;
+    int range = (argc >= 2) ? js_int(ctx, argv[1]) : 20;
     rtx::launcher::companion::EnsureLoaded(pid);   // runtime scene objects (dig-site hotspots etc.)
     return served(ctx, "scene:" + std::to_string(pid) + ":" + std::to_string(range),
                   "{\"npcs\":[],\"count\":0}",
@@ -1136,7 +1152,7 @@ JSValueRef ContainerItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{\"present\":false,\"count\":0,\"cap\":0,\"items\":[]}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int id   = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int id   = js_int(ctx, argv[1]);
     // served(): the container walk is a real cross-process read polled per open panel;
     // it must not run inline on the UI thread (see the served() contract above).
     return served(ctx, "cont:" + std::to_string(pid) + ":" + std::to_string(id),
@@ -1164,11 +1180,11 @@ JSValueRef ItemExtraInts(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return utf8_to_js(ctx, "{\"present\":false,\"key\":[],\"pos\":[]}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int cid  = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
-    int iid  = static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr));
+    int cid  = js_int(ctx, argv[1]);
+    int iid  = js_int(ctx, argv[2]);
     // Optional 4th arg = the SLOT to read. Two stacks of one id hold different instance
     // vars, and without this every read returned the first slot's.
-    int slot = (argc >= 4) ? static_cast<int>(JSValueToNumber(ctx, argv[3], nullptr)) : -1;
+    int slot = (argc >= 4) ? js_int(ctx, argv[3]) : -1;
     return utf8_to_js(ctx, rtx::reader::ItemExtraIntsJson(pid, cid, iid, slot));
 }
 
@@ -1328,7 +1344,7 @@ JSValueRef RenderToggle(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
     auto pid   = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int  which = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int  which = js_int(ctx, argv[1]);
     bool on    = JSValueToBoolean(ctx, argv[2]);
     return JSValueMakeBoolean(ctx, rtx::reader::RenderToggle(pid, which, on));
 }
@@ -1340,10 +1356,10 @@ JSValueRef OutlineObject(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc < 6) return JSValueMakeBoolean(ctx, false);
     auto pid  = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     rtx::reader::OutlineLocReq rq;
-    rq.id    = (int)JSValueToNumber(ctx, argv[1], nullptr);
-    rq.x     = (int)JSValueToNumber(ctx, argv[2], nullptr);
-    rq.y     = (int)JSValueToNumber(ctx, argv[3], nullptr);
-    rq.plane = (int)JSValueToNumber(ctx, argv[4], nullptr);
+    rq.id    = js_int(ctx, argv[1]);
+    rq.x     = js_int(ctx, argv[2]);
+    rq.y     = js_int(ctx, argv[3]);
+    rq.plane = js_int(ctx, argv[4]);
     bool on  = JSValueToBoolean(ctx, argv[5]);
     static std::mutex s_mu;
     static std::map<std::uint32_t, std::vector<rtx::reader::OutlineLocReq>> s_locs;
@@ -1361,7 +1377,7 @@ JSValueRef OutlineNpc(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int  uid = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int  uid = js_int(ctx, argv[1]);
     bool on  = JSValueToBoolean(ctx, argv[2]);
     static std::mutex s_mu;
     static std::map<std::uint32_t, std::vector<int>> s_uids;   // outlined uids per client
@@ -1378,7 +1394,7 @@ JSValueRef NameplatePlayer(JSContextRef ctx, JSObjectRef, JSObjectRef,
                            size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int  uid = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int  uid = js_int(ctx, argv[1]);
     bool on  = JSValueToBoolean(ctx, argv[2]);
     static std::mutex s_mu;
     static std::map<std::uint32_t, std::vector<int>> s_uids;   // nameplated player uids per client
@@ -1411,7 +1427,7 @@ JSValueRef InterfaceGroup(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{\"widgets\":[]}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int gid = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int gid = js_int(ctx, argv[1]);
     return utf8_to_js(ctx, rtx::reader::InterfaceGroupJson(pid, gid));
 }
 
@@ -1419,9 +1435,9 @@ JSValueRef IfaceCompRects(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 4) return utf8_to_js(ctx, "{\"abs\":0,\"comps\":{}}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int gid = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int gid = js_int(ctx, argv[1]);
     std::string comps = js_to_utf8(ctx, argv[2]);
-    int mount = static_cast<int>(JSValueToNumber(ctx, argv[3], nullptr));
+    int mount = js_int(ctx, argv[3]);
     return utf8_to_js(ctx, rtx::reader::IfaceCompRectsJson(pid, gid, comps, mount));
 }
 
@@ -1431,8 +1447,8 @@ JSValueRef IfaceSpriteParent(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return utf8_to_js(ctx, "{\"ok\":0}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int gid = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
-    int spr = static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr));
+    int gid = js_int(ctx, argv[1]);
+    int spr = js_int(ctx, argv[2]);
     return utf8_to_js(ctx, rtx::reader::IfaceSpriteParentRectJson(pid, gid, spr));
 }
 
@@ -1494,9 +1510,9 @@ JSValueRef InterfaceSizeSearch(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return utf8_to_js(ctx, "{\"matches\":[]}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int w = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
-    int hgt = static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr));
-    int tol = (argc >= 4) ? static_cast<int>(JSValueToNumber(ctx, argv[3], nullptr)) : 0;
+    int w = js_int(ctx, argv[1]);
+    int hgt = js_int(ctx, argv[2]);
+    int tol = (argc >= 4) ? js_int(ctx, argv[3]) : 0;
     return utf8_to_js(ctx, rtx::reader::InterfaceSizeSearchJson(pid, w, hgt, tol));
 }
 
@@ -1513,7 +1529,7 @@ JSValueRef InterfaceComps(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return utf8_to_js(ctx, "{}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int group = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
+    int group = js_int(ctx, argv[1]);
     std::string comps = js_to_utf8(ctx, argv[2]);
     // Poll sites re-request the same (group, comps) tuple, so the key is stable and the
     // interface-tree walk stays off the UI thread.
@@ -1524,9 +1540,9 @@ JSValueRef InterfaceComps(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef IfaceOffset(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
-    int gid = static_cast<int>(JSValueToNumber(ctx, argv[0], nullptr));
-    int dx = static_cast<int>(JSValueToNumber(ctx, argv[1], nullptr));
-    int dy = static_cast<int>(JSValueToNumber(ctx, argv[2], nullptr));
+    int gid = js_int(ctx, argv[0]);
+    int dx = js_int(ctx, argv[1]);
+    int dy = js_int(ctx, argv[2]);
     rtx::reader::SetIfaceOffset(gid, dx, dy);
     return JSValueMakeBoolean(ctx, true);
 }
@@ -1572,7 +1588,7 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc >= 4) c.players     = JSValueToBoolean(ctx, argv[3]);
     if (argc >= 5) c.npcs        = JSValueToBoolean(ctx, argv[4]);
     if (argc >= 6) c.objects     = JSValueToBoolean(ctx, argv[5]);
-    if (argc >= 7) c.radius      = static_cast<int>(JSValueToNumber(ctx, argv[6], nullptr));
+    if (argc >= 7) c.radius      = js_int(ctx, argv[6]);
     if (argc >= 8) c.walk_only   = JSValueToBoolean(ctx, argv[7]);
     if (argc >= 9) c.interactable = JSValueToBoolean(ctx, argv[8]);
     if (argc >= 10) c.specials   = JSValueToBoolean(ctx, argv[9]);
@@ -1581,7 +1597,7 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc >= 13) c.np_players = JSValueToBoolean(ctx, argv[12]);
     if (argc >= 14) c.np_npcs    = JSValueToBoolean(ctx, argv[13]);
     if (argc >= 15) c.np_objects = JSValueToBoolean(ctx, argv[14]);
-    if (argc >= 16) c.np_range   = static_cast<int>(JSValueToNumber(ctx, argv[15], nullptr));
+    if (argc >= 16) c.np_range   = js_int(ctx, argv[15]);
     rtx::overlay::Configure(c);
     return JSValueMakeBoolean(ctx, true);
 }
@@ -1626,6 +1642,9 @@ void hs_save() {   // under g_hs_mu
     std::ofstream f(hs_cache_path(), std::ios::binary | std::ios::trunc);
     for (const auto& kv : g_hiscores) {
         if (kv.second.state != 1) continue;   // persist only successful lookups
+        bool bad = false;   // a control char in the key would corrupt the line format
+        for (unsigned char c : kv.first) if (c < 0x20) { bad = true; break; }
+        if (bad) continue;
         std::string body = kv.second.body;
         for (char& c : body) if (c == '\r') c = '\x1f'; else if (c == '\n') c = '\x1f';
         f << kv.second.epoch << '\t' << kv.first << '\t' << body << '\n';
@@ -1671,7 +1690,10 @@ JSValueRef HiscoresJson(JSContextRef ctx, JSObjectRef, JSObjectRef,
         auto sep = csv.find(',', pos);
         std::string name = csv.substr(pos, sep == std::string::npos ? std::string::npos : sep - pos);
         pos = (sep == std::string::npos) ? csv.size() : sep + 1;
-        if (name.empty()) continue;
+        if (name.empty() || name.size() > 20) continue;
+        // names become verbatim cache keys in a tab/newline file: only RS-legal characters
+        // (RS renders the space in a name as NBSP, UTF-8 C2 A0; hs_fetch maps it, so it is allowed here)
+        if (name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 _-Â ") != std::string::npos) continue;
         auto& e = g_hiscores[name];   // default-constructs a state-0 entry if absent
         bool fresh = (e.state != 0) && (now - e.epoch < kHsTtlSec);   // ok OR errored within the last hour
         if (!fresh && !e.inflight) {                                  // >=1h old or never fetched -> one fetch
@@ -1988,6 +2010,31 @@ JSValueRef PartyGetCode(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (!code.empty() && !g_party_loop_running.load()) party_start_loop();
     return utf8_to_js(ctx, code);
 }
+// Cheap shape check for JS-supplied JSON that gets concatenated into a request body:
+// bounded size, starts with { or [, balanced brackets, no control chars outside strings.
+static bool json_value_ok(const std::string& d) {
+    if (d.size() > 4096) return false;
+    std::size_t i = 0;
+    while (i < d.size() && std::isspace((unsigned char)d[i])) ++i;
+    if (i >= d.size() || (d[i] != '{' && d[i] != '[')) return false;
+    std::vector<char> st; bool str = false;
+    for (; i < d.size(); ++i) {
+        unsigned char c = (unsigned char)d[i];
+        if (str) {
+            if (c == '\\') { ++i; continue; }
+            if (c == '"') str = false;
+            continue;
+        }
+        if (c < 0x20) return false;
+        if (c == '"') str = true;
+        else if (c == '{' || c == '[') st.push_back((char)c);
+        else if (c == '}' || c == ']') {
+            if (st.empty() || st.back() != (c == '}' ? '{' : '[')) return false;
+            st.pop_back();
+        }
+    }
+    return !str && st.empty();
+}
 JSValueRef PartyReport(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -1997,6 +2044,7 @@ JSValueRef PartyReport(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string code;
     { std::lock_guard<std::mutex> lk(g_party_mu); code = g_party_code; }
     if (code.empty()) return JSValueMakeBoolean(ctx, false);
+    if (!json_value_ok(data)) return JSValueMakeBoolean(ctx, false);   // data is spliced raw into the body
     std::string body = "{\"code\":\"" + code + "\",\"kind\":\"" + kind + "\",\"data\":" + data + "}";
     std::thread([body]() {
         std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
@@ -2079,10 +2127,10 @@ JSValueRef MarkerAdd(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 5) return JSValueMakeBoolean(ctx, false);
     auto pid   = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
-    int region = (int)JSValueToNumber(ctx, argv[1], nullptr);
-    int lx     = (int)JSValueToNumber(ctx, argv[2], nullptr);
-    int ly     = (int)JSValueToNumber(ctx, argv[3], nullptr);
-    int plane  = (int)JSValueToNumber(ctx, argv[4], nullptr);
+    int region = js_int(ctx, argv[1]);
+    int lx     = js_int(ctx, argv[2]);
+    int ly     = js_int(ctx, argv[3]);
+    int plane  = js_int(ctx, argv[4]);
     std::uint32_t color = (argc >= 6) ? (std::uint32_t)JSValueToNumber(ctx, argv[5], nullptr) : 0x46E0C0;
     std::string label = (argc >= 7) ? js_to_utf8(ctx, argv[6]) : std::string();
     return JSValueMakeBoolean(ctx, rtx::markers::Add(pid, region, lx, ly, plane, color, label));
@@ -2091,20 +2139,20 @@ JSValueRef MarkerRemove(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 5) return JSValueMakeBoolean(ctx, false);
     auto pid   = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
-    int region = (int)JSValueToNumber(ctx, argv[1], nullptr);
-    int lx     = (int)JSValueToNumber(ctx, argv[2], nullptr);
-    int ly     = (int)JSValueToNumber(ctx, argv[3], nullptr);
-    int plane  = (int)JSValueToNumber(ctx, argv[4], nullptr);
+    int region = js_int(ctx, argv[1]);
+    int lx     = js_int(ctx, argv[2]);
+    int ly     = js_int(ctx, argv[3]);
+    int plane  = js_int(ctx, argv[4]);
     return JSValueMakeBoolean(ctx, rtx::markers::Remove(pid, region, lx, ly, plane));
 }
 JSValueRef MarkerSetLabel(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 6) return JSValueMakeBoolean(ctx, false);
     auto pid   = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
-    int region = (int)JSValueToNumber(ctx, argv[1], nullptr);
-    int lx     = (int)JSValueToNumber(ctx, argv[2], nullptr);
-    int ly     = (int)JSValueToNumber(ctx, argv[3], nullptr);
-    int plane  = (int)JSValueToNumber(ctx, argv[4], nullptr);
+    int region = js_int(ctx, argv[1]);
+    int lx     = js_int(ctx, argv[2]);
+    int ly     = js_int(ctx, argv[3]);
+    int plane  = js_int(ctx, argv[4]);
     std::string label = js_to_utf8(ctx, argv[5]);
     return JSValueMakeBoolean(ctx, rtx::markers::SetLabel(pid, region, lx, ly, plane, label));
 }
@@ -2112,10 +2160,10 @@ JSValueRef MarkerSetColor(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 6) return JSValueMakeBoolean(ctx, false);
     auto pid   = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
-    int region = (int)JSValueToNumber(ctx, argv[1], nullptr);
-    int lx     = (int)JSValueToNumber(ctx, argv[2], nullptr);
-    int ly     = (int)JSValueToNumber(ctx, argv[3], nullptr);
-    int plane  = (int)JSValueToNumber(ctx, argv[4], nullptr);
+    int region = js_int(ctx, argv[1]);
+    int lx     = js_int(ctx, argv[2]);
+    int ly     = js_int(ctx, argv[3]);
+    int plane  = js_int(ctx, argv[4]);
     std::uint32_t color = (std::uint32_t)JSValueToNumber(ctx, argv[5], nullptr);
     std::uint32_t color2 = (argc >= 7) ? (std::uint32_t)JSValueToNumber(ctx, argv[6], nullptr) : 0;
     return JSValueMakeBoolean(ctx, rtx::markers::SetColor(pid, region, lx, ly, plane, color, color2));
@@ -2137,8 +2185,8 @@ JSValueRef MarkerKeybindsGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef MarkerKeybindsSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t argc, const JSValueRef argv[], JSValueRef*) {
     rtx::markers::Keybinds kb;   // (markVk, removeVk, color); struct defaults are A / D
-    if (argc >= 1) kb.markVk   = (int)JSValueToNumber(ctx, argv[0], nullptr);
-    if (argc >= 2) kb.removeVk = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    if (argc >= 1) kb.markVk   = js_int(ctx, argv[0]);
+    if (argc >= 2) kb.removeVk = js_int(ctx, argv[1]);
     if (argc >= 3) kb.defColor = (std::uint32_t)JSValueToNumber(ctx, argv[2], nullptr);
     rtx::markers::SetKeybinds(kb);
     return JSValueMakeBoolean(ctx, true);
@@ -2599,10 +2647,18 @@ JSValueRef Version(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, running_version());
 }
 
+extern std::mutex  g_latest_mu;      // defined just below with the checker
+extern std::string g_latest_json;
+void refresh_latest();
 JSValueRef LatestVersion(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
-    auto r = http::Get(kUpdateHost, kLatestPath, {});
-    return utf8_to_js(ctx, (r.ok && r.status == 200) ? r.body : std::string("{}"));
+    // Never block the JS thread on the network: serve the background cache. An empty cache
+    // returns "{}" (checkForUpdate treats a missing version as "up to date"; the periodic
+    // cached poll picks the manifest up once the kicked refresh lands).
+    std::string j;
+    { std::lock_guard<std::mutex> lk(g_latest_mu); j = g_latest_json; }
+    if (j.empty() || j == "{}") { std::thread(refresh_latest).detach(); j = "{}"; }
+    return utf8_to_js(ctx, j);
 }
 
 // Background update checker: worker threads keep g_latest_json fresh so the UI can poll
@@ -2796,7 +2852,9 @@ bool vos_post_report(int a, int b, bool leagues) {
     long long prev = floorMs.load();
     if (prev != 0 && now - prev < 5 * 60'000) return false;
     if (!floorMs.compare_exchange_strong(prev, now)) return false;
-    std::thread([a, b, now, leagues, &floorMs] {
+    std::thread([a, b, now, leagues] {
+        // re-select inside: the outer reference must not outlive the frame
+        std::atomic<long long>& floorMs = leagues ? g_vos_reported_lg_ms : g_vos_reported_ms;
         std::string body = "{\"a\":" + std::to_string(a) + ",\"b\":" + std::to_string(b) +
                            (leagues ? ",\"l\":1" : "") + "}";
         std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
@@ -2981,7 +3039,7 @@ JSValueRef WorldEventVote(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
     std::string kind = js_to_utf8(ctx, argv[0]);
-    int world = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    int world = js_int(ctx, argv[1]);
     bool yes = JSValueToBoolean(ctx, argv[2]);
     std::uint32_t pid = (argc >= 4) ? (std::uint32_t)JSValueToNumber(ctx, argv[3], nullptr) : 0;
     if ((kind != "scarabs" && kind != "obelisks") || world < 1 || world > 999)
@@ -3270,7 +3328,7 @@ JSValueRef VosCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef IsLeaguesWorld(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
-    return JSValueMakeBoolean(ctx, is_leagues_world((int)JSValueToNumber(ctx, argv[0], nullptr)));
+    return JSValueMakeBoolean(ctx, is_leagues_world(js_int(ctx, argv[0])));
 }
 
 // The whole list, for panels that want to show or filter by it.
@@ -3289,8 +3347,8 @@ JSValueRef LeaguesWorlds(JSContextRef ctx, JSObjectRef, JSObjectRef,
 // main, so an older caller keeps its existing behaviour.
 JSValueRef VosReport(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
-    int a = (argc >= 1) ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 0;
-    int b = (argc >= 2) ? (int)JSValueToNumber(ctx, argv[1], nullptr) : 0;
+    int a = (argc >= 1) ? js_int(ctx, argv[0]) : 0;
+    int b = (argc >= 2) ? js_int(ctx, argv[1]) : 0;
     bool lg = (argc >= 3) && JSValueToBoolean(ctx, argv[2]);
     return JSValueMakeBoolean(ctx, vos_post_report(a, b, lg));
 }
@@ -3417,7 +3475,7 @@ JSValueRef WikiKeybindGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef WikiKeybindSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc >= 1)
-        rtx::launcher::wiki::KeybindSet((int)JSValueToNumber(ctx, argv[0], nullptr));
+        rtx::launcher::wiki::KeybindSet(js_int(ctx, argv[0]));
     return JSValueMakeBoolean(ctx, true);
 }
 
@@ -3430,7 +3488,7 @@ JSValueRef ScreenshotKeybindGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
 JSValueRef ScreenshotKeybindSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                 size_t argc, const JSValueRef argv[], JSValueRef*) {
-    int vk = (argc >= 1) ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    int vk = (argc >= 1) ? js_int(ctx, argv[0]) : 0;
     if (vk < 0 || vk > 255) vk = 0;
     std::lock_guard<std::mutex> lk(g_ss_mu);
     g_ss_loaded = true; g_ss_vk = vk; ss_save_locked();
@@ -3445,7 +3503,7 @@ JSValueRef HidePanelsKeybindGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 JSValueRef HidePanelsKeybindSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                 size_t argc, const JSValueRef argv[], JSValueRef*) {
-    int vk = (argc >= 1) ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    int vk = (argc >= 1) ? js_int(ctx, argv[0]) : 0;
     if (vk < 0 || vk > 255) vk = 0;
     std::lock_guard<std::mutex> lk(g_hp_mu);
     g_hp_loaded = true; g_hp_vk = vk; hp_save_locked();
@@ -3786,14 +3844,14 @@ JSValueRef Cs2Search(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, std::string("{\"err\":\"no query\"}"));
     std::string q = js_to_utf8(ctx, argv[0]);
-    int maxr = (argc >= 2) ? (int)JSValueToNumber(ctx, argv[1], nullptr) : 300;
+    int maxr = (argc >= 2) ? js_int(ctx, argv[1]) : 300;
     return utf8_to_js(ctx, cs2browser::SearchJson(q, maxr));
 }
 
 JSValueRef Cs2Script(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, std::string("{\"err\":\"no id\"}"));
-    int id = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int id = js_int(ctx, argv[0]);
     size_t off = (argc >= 2) ? (size_t)JSValueToNumber(ctx, argv[1], nullptr) : 0;
     return utf8_to_js(ctx, cs2browser::ScriptJson(id, off));
 }
@@ -3948,22 +4006,22 @@ JSValueRef VarPinsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef MenuDef(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{}");
-    int kind = (int)JSValueToNumber(ctx, argv[0], nullptr);
-    int id   = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    int kind = js_int(ctx, argv[0]);
+    int id   = js_int(ctx, argv[1]);
     return utf8_to_js(ctx, rtx::cache::MenuDefJson(kind, id));
 }
 JSValueRef MenuFind(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{\"ids\":[]}");
-    int kind = (int)JSValueToNumber(ctx, argv[0], nullptr);
+    int kind = js_int(ctx, argv[0]);
     return utf8_to_js(ctx, rtx::cache::MenuFindJson(kind, js_to_utf8(ctx, argv[1])));
 }
 
 JSValueRef MenuSearch(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{\"hits\":[]}");
-    int kind  = (int)JSValueToNumber(ctx, argv[0], nullptr);
-    int limit = argc > 2 ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 60;
+    int kind  = js_int(ctx, argv[0]);
+    int limit = argc > 2 ? js_int(ctx, argv[2]) : 60;
     return utf8_to_js(ctx, rtx::cache::MenuSearchJson(kind, js_to_utf8(ctx, argv[1]), limit));
 }
 
@@ -4001,7 +4059,7 @@ JSValueRef Metronome(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     bool visual = (argc >= 2) && JSValueToBoolean(ctx, argv[1]);
     bool audio  = (argc >= 3) && JSValueToBoolean(ctx, argv[2]);
-    int  interval = (argc >= 4) ? (int)JSValueToNumber(ctx, argv[3], nullptr) : 1;
+    int  interval = (argc >= 4) ? js_int(ctx, argv[3]) : 1;
     bool locked = (argc >= 5) && JSValueToBoolean(ctx, argv[4]);
     rtx::overlay::Metronome(pid, visual, audio, interval, locked);
     return JSValueMakeBoolean(ctx, true);
@@ -4089,8 +4147,8 @@ JSValueRef CenterTextFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     // Optional 3rd/4th args: banner slot, and 0xRRGGBB accent (-1 / absent = the default red).
     // Both omitted is the original single-banner behaviour, so existing callers are unchanged.
-    int slot = (argc >= 3) ? (int)JSValueToNumber(ctx, argv[2], nullptr) : 0;
-    int rgb  = (argc >= 4) ? (int)JSValueToNumber(ctx, argv[3], nullptr) : -1;
+    int slot = (argc >= 3) ? js_int(ctx, argv[2]) : 0;
+    int rgb  = (argc >= 4) ? js_int(ctx, argv[3]) : -1;
     rtx::overlay::SetCenterText(pid, js_to_utf8(ctx, argv[1]), slot, rgb);
     return JSValueMakeBoolean(ctx, true);
 }
@@ -4102,10 +4160,10 @@ JSValueRef UiHighlightFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     rtx::overlay::UiHighlight hl{};
     if (argc >= 5) {
-        hl.x = (int)JSValueToNumber(ctx, argv[1], nullptr);
-        hl.y = (int)JSValueToNumber(ctx, argv[2], nullptr);
-        hl.w = (int)JSValueToNumber(ctx, argv[3], nullptr);
-        hl.h = (int)JSValueToNumber(ctx, argv[4], nullptr);
+        hl.x = js_int(ctx, argv[1]);
+        hl.y = js_int(ctx, argv[2]);
+        hl.w = js_int(ctx, argv[3]);
+        hl.h = js_int(ctx, argv[4]);
     }
     rtx::overlay::SetUiHighlight(pid, hl);
     return JSValueMakeBoolean(ctx, true);
@@ -4156,7 +4214,7 @@ JSValueRef InvSlotRectFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{}");
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    int idx = (int)JSValueToNumber(ctx, argv[1], nullptr);
+    int idx = js_int(ctx, argv[1]);
     return utf8_to_js(ctx, rtx::reader::InvSlotRectJson(pid, idx));
 }
 
