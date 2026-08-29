@@ -7,24 +7,9 @@
   // Item icon coverage: pack stats + session misses (cheap) and the one-time cache walk
   // (host runs it on a background thread and answers {pending:1} until it lands).
   let icMisses = null, icCov = null, icNames = {}, icTimer = 0;
-  // Live capture (host.iconCapture): the launcher reads the client's GPU icon atlas and
-  // saves PNGs for the icons on screen, so a pack miss heals itself. Status is polled.
-  let icCap = null, icCapTimer = 0;
   let hcKeepScroll = [];   // .hc-list scrollTop values captured before a rebuild
   let hcSig = '';          // last rendered data signature
-  async function icCapFetch() {
-    try { icCap = JSON.parse(await rtxData.raw('host.iconCaptureStatus')); } catch (e) { icCap = null; }
-    clearTimeout(icCapTimer);
-    if (icCap && icCap.busy) icCapTimer = setTimeout(icCapFetch, 700);
-    paneRun('health', renderHealth);
-  }
-  async function icCapRun() {
-    try { icCap = JSON.parse(await rtxData.raw('host.iconCapture')); } catch (e) { icCap = null; }
-    clearTimeout(icCapTimer); icCapTimer = setTimeout(icCapFetch, 700);
-    paneRun('health', renderHealth);
-  }
   async function icFetch() {
-    icCapFetch();
     try { icMisses = JSON.parse(await rtxData.raw('host.iconMisses')); } catch (e) { icMisses = null; }
     try { icCov = JSON.parse(await rtxData.raw('host.iconCoverage')); } catch (e) { icCov = null; }
     if (icCov && icCov.pending) { clearTimeout(icTimer); icTimer = setTimeout(icFetch, 1500); }
@@ -109,7 +94,7 @@
     if (runBtn) runBtn.textContent = hcBusy ? 'Checking...' : 'Run check';
     // The pane render runs on every 250 ms tick; rebuilding the DOM when nothing changed is what
     // made the lists jump. Rebuild only when the data behind the card changed.
-    const hcSigNow = JSON.stringify([hcData, hcBusy, icMisses, icCov, icCap]);
+    const hcSigNow = JSON.stringify([hcData, hcBusy, icMisses, icCov]);
     if (hcSigNow === hcSig && body.childNodes.length) return;
     hcSig = hcSigNow;
     hcKeepScroll = Array.from(document.querySelectorAll('.hc-list')).map(l => l.scrollTop);
@@ -164,7 +149,8 @@
     if (hcKeepScroll.length) { const keep = hcKeepScroll; hcKeepScroll = []; setTimeout(() => { const ls = body.querySelectorAll('.hc-list'); ls.forEach((l, i) => { if (keep[i] != null) l.scrollTop = keep[i]; }); }, 0); }   // after layout, or Ultralight clamps it to 0
   }
 
-  // "Item icons" card: is the bundled items.pack keeping up with the live cache.
+  // "Item icons" card: are the rendered icons and the bundled items.pack keeping up with
+  // the live cache. The missing lists are what the offline renderer still owes us.
   function renderIcons(body) {
     if (!icMisses && !icCov) return;
     const sub = document.createElement('div'); sub.className = 'hc-sub'; sub.textContent = 'Item icons';
@@ -178,26 +164,8 @@
       r.appendChild(dot); r.appendChild(nm); r.appendChild(dt); card.appendChild(r);
     };
     const m = icMisses || {};
-    // Capture first: it is the action; the coverage lists below are the evidence.
-    const cap = icCap || {};
-    {
-      const r = document.createElement('div'); r.className = 'hc-row';
-      const b = document.createElement('button'); b.className = 'vw-btn';
-      b.textContent = cap.busy ? 'Capturing...' : 'Capture icons now';
-      b.disabled = !!cap.busy;
-      b.addEventListener('click', () => { icCapture(); });
-      const d = document.createElement('span'); d.className = 'hc-d';
-      d.textContent = 'captured this session: ' + String(cap.sessionWritten || 0);
-      r.appendChild(b); r.appendChild(d); card.appendChild(r);
-    }
-    if (cap.lastAt) {
-      const when = new Date(cap.lastAt).toLocaleTimeString();
-      // atlas: which GL texture passed the pack-similarity check, and every candidate's score
-      const atlas = cap.candidates ? '; atlas: name ' + (cap.atlasName || 0) + ', score ' + (cap.atlasScore || '0') +
-          ' (candidates: ' + cap.candidates + ')' : '';
-      row(cap.status === 'ok' ? 'ok' : 'bad', 'Last capture', when + ': ' + (cap.status || '?') +
-          (cap.status === 'ok' ? ' (' + cap.written + ' new of ' + cap.cells + ' cells)' : '') + atlas);
-    }
+    // Icons rendered offline from the cache are served before the pack, so count them first.
+    row(m.rendered ? 'ok' : 'warn', 'Rendered icons', String(m.rendered || 0));
     row(m.packIcons ? 'ok' : 'bad', 'Icon pack', m.packIds ? (m.packIds + ' ids, ' + m.packIcons + ' icons') : 'not loaded');
     if (icCov && icCov.pending) row('warn', 'Cache coverage', 'scanning...');
     else if (icCov && typeof icCov.items === 'number') {

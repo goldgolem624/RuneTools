@@ -158,7 +158,7 @@
       const set = keys.filter(x => (k[x] | 0) !== 0);
       const zero = keys.filter(x => (k[x] | 0) === 0);
       let line;
-      try { const src = rtxData.sync('cache.iconSource', +parts[0]); line = (src === 'captured' ? 'Icon: captured live' : src === 'pack' ? 'Icon: pack' : 'Icon: none yet') + '\n'; } catch (e) { line = ''; }
+      try { const src = rtxData.sync('cache.iconSource', +parts[0]); line = (src === 'rendered' ? 'Icon: rendered' : src === 'pack' ? 'Icon: pack' : 'Icon: none yet') + '\n'; } catch (e) { line = ''; }
       if (!keys.length) line += 'Instance vars (Extra_ints): none';
       else if (!set.length) line += 'Instance vars (Extra_ints): all ' + keys.length + ' keys 0';
       else {

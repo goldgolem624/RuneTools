@@ -1,8 +1,10 @@
 #include "IconCache.h"
-#include "IconCapture.h"   // live-captured PNGs beat the pack; misses schedule a capture
+#include "../reader/Reader.h"   // client version -> the rendered-icon directory for this build
 
 #include <Windows.h>
 #include <wincrypt.h>
+
+#include <cctype>
 
 #include <algorithm>
 #include <cstdint>
@@ -118,16 +120,105 @@ std::string pack_icon_url(Pack& p, int id) {
 }
 }  // namespace
 
-// Captured PNG (this client build's own render, see IconCapture.h) -> data URL. Memoized
-// per id here; IconCapture owns the path memo and drops it for ids a capture just wrote.
-std::mutex                          g_cap_mu;
-std::unordered_map<int, std::string> g_cap_url;   // id -> data URL ("" = no file at lookup time)
-std::string captured_icon_url(int item_id) {
-    std::wstring path = iconcapture::FindCapturedPng(item_id);
+// ---- Offline-rendered icons ------------------------------------------------------------
+// Icons are rendered from the game cache into
+//   %USERPROFILE%\RuneToolsX\icons\<clientVersion>\<itemId>.png
+// and are served before items.pack, so a build newer than the bundled pack still shows art.
+
+std::wstring icons_root() {
+    wchar_t buf[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH);
+    if (!n || n >= MAX_PATH) return {};
+    return (std::filesystem::path(buf) / L"RuneToolsX" / L"icons").wstring();
+}
+
+std::wstring sanitize_version(const std::string& v) {
+    std::wstring out;
+    for (char c : v) out += (std::isalnum((unsigned char)c) || c == '.' || c == '-' || c == '_') ? (wchar_t)c : L'_';
+    return out;
+}
+
+// Newest version directory under the icons root (by mtime), so a launcher started with no
+// client attached still serves the last render instead of nothing.
+std::wstring newest_dir() {
+    std::wstring root = icons_root();
+    if (root.empty()) return {};
+    std::error_code ec;
+    std::wstring best;
+    std::filesystem::file_time_type bestT{};
+    for (const auto& e : std::filesystem::directory_iterator(root, ec)) {
+        if (!e.is_directory(ec)) continue;
+        auto t = e.last_write_time(ec);
+        if (best.empty() || t > bestT) { best = e.path().wstring(); bestT = t; }
+    }
+    return best;
+}
+
+// The directory serving icons this session, or "" when there is none to trust.
+// A directory is used ONLY when it holds a `.validated` marker: a half-written render, or
+// one from the wrong source, would answer every lookup and silently shadow items.pack, and
+// because it answers them no miss is ever logged to reveal the bad art.
+std::mutex   g_dir_mu;
+bool         g_dir_done = false;
+std::wstring g_dir;
+std::wstring active_dir() {
+    std::lock_guard<std::mutex> lk(g_dir_mu);
+    if (g_dir_done) return g_dir;
+    g_dir_done = true;
+    std::wstring root = icons_root();
+    std::wstring dir;
+    if (!root.empty()) {
+        std::string ver;
+        try {
+            for (const auto& snap : rtx::reader::SampleAll())
+                if (snap.pid && !snap.client_version.empty()) { ver = snap.client_version; break; }
+        } catch (...) {}
+        std::error_code ec;
+        std::wstring vdir = sanitize_version(ver);
+        if (!vdir.empty()) {
+            std::filesystem::path p = std::filesystem::path(root) / vdir;
+            if (std::filesystem::is_directory(p, ec)) dir = p.wstring();
+        }
+        if (dir.empty()) dir = newest_dir();
+    }
+    std::error_code ec;
+    if (!dir.empty() && !std::filesystem::exists(std::filesystem::path(dir) / L".validated", ec)) dir.clear();
+    g_dir = dir;
+    return g_dir;
+}
+
+// Path of a rendered PNG for the id, or "" (memoized per id: one stat per id per session).
+std::mutex                            g_ren_mu;
+std::unordered_map<int, std::wstring> g_ren_path;
+std::wstring rendered_png(int item_id) {
+    if (item_id <= 0) return {};
+    {
+        std::lock_guard<std::mutex> lk(g_ren_mu);
+        auto it = g_ren_path.find(item_id);
+        if (it != g_ren_path.end()) return it->second;
+    }
+    std::wstring dir = active_dir();
+    std::wstring path;
+    if (!dir.empty()) {
+        std::error_code ec;
+        std::filesystem::path p = std::filesystem::path(dir) / (std::to_wstring(item_id) + L".png");
+        if (std::filesystem::exists(p, ec)) path = p.wstring();
+    }
+    std::lock_guard<std::mutex> lk(g_ren_mu);
+    if (g_ren_path.size() > 20000) g_ren_path.clear();   // bound the memo
+    g_ren_path[item_id] = path;
+    return path;
+}
+
+// Rendered PNG -> data URL, memoized per id alongside the path memo.
+std::mutex                           g_ren_url_mu;
+std::unordered_map<int, std::string> g_ren_url;
+std::string rendered_icon_url(int item_id) {
+    std::wstring path = rendered_png(item_id);
     if (path.empty()) return {};
-    std::lock_guard<std::mutex> lk(g_cap_mu);
-    auto it = g_cap_url.find(item_id);
-    if (it != g_cap_url.end() && !it->second.empty()) return it->second;
+    std::lock_guard<std::mutex> lk(g_ren_url_mu);
+    auto it = g_ren_url.find(item_id);
+    if (it != g_ren_url.end() && !it->second.empty()) return it->second;
     std::string url;
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (f) {
@@ -142,18 +233,18 @@ std::string captured_icon_url(int item_id) {
             }
         }
     }
-    g_cap_url[item_id] = url;
+    g_ren_url[item_id] = url;
     return url;
 }
 
 int IconSource(int item_id) {
     if (item_id <= 0) return 0;
-    if (!iconcapture::FindCapturedPng(item_id).empty()) return 2;
+    if (!rendered_png(item_id).empty()) return 2;
     return IconPackHas(item_id) ? 1 : 0;
 }
 
 std::string ItemIconDataUrl(int item_id) {
-    std::string url = captured_icon_url(item_id);
+    std::string url = rendered_icon_url(item_id);
     if (url.empty()) url = pack_icon_url(g_items_pack, item_id);
     if (url.empty() && item_id > 0) {
         {
@@ -162,14 +253,8 @@ std::string ItemIconDataUrl(int item_id) {
             if (it != g_misses.end()) ++it->second;
             else if (g_misses.size() < kMissCap) g_misses[item_id] = 1;
         }
-        iconcapture::NoteMiss(item_id);   // rate limited inside; no-op without a client
     }
     return url;
-}
-
-void ForgetMisses(const std::vector<int>& ids) {
-    std::lock_guard<std::mutex> lk(g_miss_mu);
-    for (int id : ids) g_misses.erase(id);
 }
 
 bool IconPackHas(int item_id) {
@@ -178,21 +263,6 @@ bool IconPackHas(int item_id) {
     std::lock_guard<std::mutex> lk(p.mu);
     ensure_index(p);
     return p.ready && (std::size_t)item_id < p.len.size() && p.len[item_id] > 0;
-}
-
-std::vector<unsigned char> IconPackBytes(int item_id) {
-    if (item_id <= 0) return {};
-    Pack& p = g_items_pack;
-    std::lock_guard<std::mutex> lk(p.mu);
-    ensure_index(p);
-    if (!p.ready || (std::size_t)item_id >= p.len.size() || p.len[item_id] == 0) return {};
-    std::ifstream f(p.path, std::ios::binary);
-    if (!f) return {};
-    f.seekg((std::streamoff)p.off[item_id], std::ios::beg);
-    std::vector<unsigned char> bytes(p.len[item_id]);
-    f.read(reinterpret_cast<char*>(bytes.data()), (std::streamsize)p.len[item_id]);
-    if ((std::uint32_t)f.gcount() != p.len[item_id]) return {};
-    return bytes;
 }
 
 std::string IconMissesJson() {
@@ -215,8 +285,26 @@ std::string IconMissesJson() {
         if (i) j += ',';
         j += '[' + std::to_string(m[i].first) + ',' + std::to_string(m[i].second) + ']';
     }
-    j += "],\"missCount\":" + std::to_string(m.size()) + "}";
+    j += "],\"missCount\":" + std::to_string(m.size()) + ",\"rendered\":" +
+         std::to_string(RenderedIconCount()) + "}";
     return j;
+}
+
+int RenderedIconCount() {
+    static std::mutex mu;
+    static int        cached = -1;      // counted once per process: a directory walk per poll is not free
+    std::lock_guard<std::mutex> lk(mu);
+    if (cached >= 0) return cached;
+    int n = 0;
+    std::wstring dir = active_dir();
+    if (!dir.empty()) {
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+            if (e.is_regular_file(ec) && e.path().extension() == L".png") ++n;
+        }
+    }
+    cached = n;
+    return cached;
 }
 
 std::string ModelIconDataUrl(int model_id) {

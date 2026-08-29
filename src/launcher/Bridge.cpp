@@ -6,7 +6,6 @@
 #include "GameUi.h"
 #include "WikiBrowser.h"
 #include "IconCache.h"
-#include "IconCapture.h"
 #include "Loader.h"
 #include "Overlay.h"
 #include "Markers.h"
@@ -826,7 +825,7 @@ JSValueRef IconSource(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "none");
     const int src = icons::IconSource(js_int(ctx, argv[0]));
-    return utf8_to_js(ctx, src == 2 ? "captured" : src == 1 ? "pack" : "none");
+    return utf8_to_js(ctx, src == 2 ? "rendered" : src == 1 ? "pack" : "none");
 }
 
 JSValueRef ItemIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -865,19 +864,6 @@ JSValueRef IconCoverage(JSContextRef ctx, JSObjectRef, JSObjectRef,
         g_iconCovBusy = false;
     }).detach();
     return utf8_to_js(ctx, "{\"pending\":1}");
-}
-
-// Live icon capture (IconCapture.h). iconCapture(pid) starts one background capture and
-// answers the status right away ({..,"busy":1}); poll iconCaptureStatus() for the result.
-JSValueRef IconCapture(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                       size_t argc, const JSValueRef argv[], JSValueRef*) {
-    auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
-    if (pid) iconcapture::CaptureAsync(pid);
-    return utf8_to_js(ctx, iconcapture::StatusJson());
-}
-JSValueRef IconCaptureStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                             size_t, const JSValueRef[], JSValueRef*) {
-    return utf8_to_js(ctx, iconcapture::StatusJson());
 }
 
 JSValueRef ModelIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -5055,8 +5041,6 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "iconSource",        IconSource);
     install_fn(ctx, ns, "iconMisses",        IconMisses);
     install_fn(ctx, ns, "iconCoverage",      IconCoverage);
-    install_fn(ctx, ns, "iconCapture",       IconCapture);
-    install_fn(ctx, ns, "iconCaptureStatus", IconCaptureStatus);
     install_fn(ctx, ns, "modelIcon",         ModelIcon);
     install_fn(ctx, ns, "itemInfo",          ItemInfo);
     install_fn(ctx, ns, "sprite",            Sprite);
