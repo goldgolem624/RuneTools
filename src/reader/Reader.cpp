@@ -2760,7 +2760,7 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
     case 0x52: {   // [sig NUL-terminated, i/s/l][args in REVERSE sig order: s = NUL string, i = i32 BE, l = i64 BE][scriptId: i32 BE]
         // The script id sits at the END, so a packet cut by the payload window loses it: such a
         // record still decodes the arguments it has and reports script -1 with partial:true.
-        const bool cut = wire > (std::int32_t)n;
+        const bool cut = len > (int)n;
         std::uint32_t p = 0; std::string sig;
         while (p < n && b[p] != 0 && sig.size() < 16) sig.push_back((char)b[p++]);
         if (p >= n) return false;                              // no NUL terminator: raw (empty sig = no args, seen live: len 5)
