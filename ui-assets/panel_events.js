@@ -40,6 +40,13 @@
         return 'container ' + ev.container + ' flags ' + ev.flags + ': ' + (s || '(no slots)') + ((ev.slots || []).length > 8 ? ', ...' : '') + (ev.partial ? ' [partial]' : '');
       }
       case 'runclientscript': return 'script ' + ev.script + '(' + (ev.args || []).map(a => typeof a === 'string' ? JSON.stringify(a) : a).join(', ') + ')';
+      case 'ge_offer': {
+        const o = ev.offer || {};
+        if (o.item == null) return 'slot ' + ev.slot + ' (offer unreadable) hex ' + (ev.hex || '');
+        const kind = o.type === 0 ? 'buy' : o.type === 1 ? 'sell' : ('type ' + o.type);
+        return 'slot ' + ev.slot + ' ' + kind + ' item ' + o.item + ' x' + o.qty + ' @ ' + Number(o.price).toLocaleString('en-US')
+             + ' filled ' + o.filled + '/' + o.qty + ' (' + Number(o.filledValue).toLocaleString('en-US') + ' gp) status ' + o.status;
+      }
       case 'run_energy': return 'energy ' + ev.value;
       case 'run_weight': return 'weight ' + ev.value;
       case 'ping': return 'echo ' + ev.a + ' / ' + ev.b;

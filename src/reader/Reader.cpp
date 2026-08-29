@@ -2757,11 +2757,11 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         o += "],\"partial\":"; o += (partial || (std::uint32_t)len > n) ? "true" : "false";
         return true;
     }
-    case 0x52: {   // [sig NUL-terminated, i/s][args in REVERSE sig order: s = NUL string, i = i32 BE][scriptId: i32 BE]
+    case 0x52: {   // [sig NUL-terminated, i/s/l][args in REVERSE sig order: s = NUL string, i = i32 BE, l = i64 BE][scriptId: i32 BE]
         std::uint32_t p = 0; std::string sig;
         while (p < n && b[p] != 0 && sig.size() < 16) sig.push_back((char)b[p++]);
         if (sig.empty() || p >= n) return false;
-        for (char c : sig) if (c != 'i' && c != 's') return false;
+        for (char c : sig) if (c != 'i' && c != 's' && c != 'l') return false;
         p++;
         std::vector<std::string> args(sig.size());
         for (int i = (int)sig.size() - 1; i >= 0; --i) {
@@ -2771,6 +2771,10 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
                 if (p >= n) return false;                      // truncated string: raw
                 args[(std::size_t)i] = "\"" + chat_pkt_escape(b + s0, p - s0) + "\"";
                 p++;
+            } else if (sig[(std::size_t)i] == 'l') {
+                if (p + 8 > n) return false;
+                const std::int64_t v = (std::int64_t)(((std::uint64_t)ev_u32be(b + p) << 32) | ev_u32be(b + p + 4));
+                args[(std::size_t)i] = std::to_string(v); p += 8;
             } else {
                 if (p + 4 > n) return false;
                 args[(std::size_t)i] = std::to_string((std::int32_t)ev_u32be(b + p)); p += 4;
@@ -2803,6 +2807,29 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
 
 // Everything after `since` (cap 512 per call, oldest first) plus the current cursor and the
 // reader's game tick counter, so one poll serves both the event stream and the tick channel.
+// The live GE slot as JSON ({} when unreadable). Used to enrich a 0x05/0x51 ge_offer event:
+// the packet's slot byte says WHICH offer changed, the slot array (already read per sample,
+// see the ge_box block in sample_one) says what it now holds, so nothing about the packet's
+// field layout has to be guessed.
+static std::string ge_slot_json(std::uint32_t pid, int slot) {
+    if (slot < 0 || slot >= kGESlotCount) return "{}";
+    auto ps = snap_proc(pid);
+    if (!ps) return "{}";
+    auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{}";
+    auto ge_box = rpm<std::uint64_t>(ps.h, *root + kOffGE);
+    if (!ge_box || !*ge_box) return "{}";
+    alignas(8) std::uint8_t b[kGESlotSize];
+    if (!rpm_bytes(ps.h, *ge_box + kGEArrayPad + (std::uint64_t)slot * kGESlotSize, b, sizeof(b))) return "{}";
+    char t[200];
+    std::snprintf(t, sizeof(t),
+        "{\"status\":%d,\"type\":%d,\"item\":%d,\"price\":%lld,\"qty\":%d,\"filled\":%d,\"filledValue\":%lld}",
+        *(const std::int32_t*)(b + 0x00), *(const std::int32_t*)(b + 0x04), *(const std::int32_t*)(b + 0x08),
+        (long long)*(const std::int64_t*)(b + 0x10), *(const std::int32_t*)(b + 0x18),
+        *(const std::int32_t*)(b + 0x1C), (long long)*(const std::int64_t*)(b + 0x20));
+    return t;
+}
+
 std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
     wchar_t name[64];
     rtx::events::MakeSectionName(pid, name);
@@ -2855,8 +2882,13 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
                 // has no documented field layout yet) so counters stay per opcode; "raw" is only
                 // for opcodes nothing here recognises.
                 out.resize(mark);
-                const char* kind = (r.opcode == 0x05 || r.opcode == 0x51) ? "ge_offer" : "raw";
-                out += std::string("\"kind\":\"") + kind + "\",\"decoded\":false,\"hex\":\"";
+                if ((r.opcode == 0x05 || r.opcode == 0x51) && n >= 1) {
+                    // slot byte + the live offer; payload kept as hex for the record
+                    out += "\"kind\":\"ge_offer\",\"slot\":" + std::to_string((int)r.payload[0])
+                         + ",\"offer\":" + ge_slot_json(pid, (int)r.payload[0]) + ",\"hex\":\"";
+                } else {
+                    out += "\"kind\":\"raw\",\"hex\":\"";
+                }
                 ev_hex(out, r.payload, n);
                 out += "\"";
             }
