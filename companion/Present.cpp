@@ -123,37 +123,70 @@ typedef void (WINAPI* PFN_glBindFramebuffer_p)(GLenum, GLuint);
 typedef void (WINAPI* PFN_glFramebufferTexture2D_p)(GLenum, GLenum, GLenum, GLuint, GLint);
 typedef GLenum (WINAPI* PFN_glCheckFramebufferStatus_p)(GLenum);
 
-// True when `name` is a live 2D texture whose level 0 is exactly the atlas size.
+// True when `name` is a live 2D texture whose level 0 is exactly the atlas size. A name
+// bound to another target raises INVALID_OPERATION on the 2D bind; drain and skip it.
 bool IsAtlasTexture(GLuint name, GLint savedBinding) {
     if (name == 0 || !glIsTexture(name)) return false;
     glBindTexture(GL_TEXTURE_2D, name);
+    if (glGetError() != GL_NO_ERROR) { glBindTexture(GL_TEXTURE_2D, (GLuint)savedBinding); return false; }
     GLint w = 0, h = 0;
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
     glBindTexture(GL_TEXTURE_2D, (GLuint)savedBinding);
+    while (glGetError() != GL_NO_ERROR) {}
     return w == (GLint)rtx::iconatlas::kAtlasW && h == (GLint)rtx::iconatlas::kAtlasH;
 }
 
-// The launcher passes the client's texture-owner object address (found by its reader).
-// The GL name lives somewhere in that object as a small u32: scan the first 0x200 bytes
-// at 4-byte steps for one glIsTexture accepts with the atlas size. VirtualQuery first: a
-// stale hint must not fault the render thread every frame until the launcher clears it.
-GLuint AtlasNameFromHint(std::uint64_t hint, GLint savedBinding) {
-    if (!hint) return 0;
+// Committed, readable, user-mode memory at [addr, addr+len)? VirtualQuery first: a stale
+// hint must not fault the render thread every frame until the launcher clears it.
+bool ReadableRange(std::uintptr_t addr, std::size_t len) {
+    if (addr < 0x10000 || addr > 0x00007FFFFFFFFFFFull) return false;
     MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQuery(reinterpret_cast<LPCVOID>(hint), &mbi, sizeof(mbi))) return 0;
-    if (mbi.State != MEM_COMMIT) return 0;
+    if (!VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi))) return false;
+    if (mbi.State != MEM_COMMIT) return false;
     const DWORD p = mbi.Protect & 0xFF;
-    if (p == PAGE_NOACCESS || p == PAGE_EXECUTE || (mbi.Protect & PAGE_GUARD)) return 0;
-    const std::uint8_t* base = reinterpret_cast<const std::uint8_t*>(hint);
+    if (p == PAGE_NOACCESS || p == PAGE_EXECUTE || (mbi.Protect & PAGE_GUARD)) return false;
     std::uintptr_t regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-    for (std::uintptr_t off = 0; off + 4 <= 0x200; off += 4) {
-        if (hint + off + 4 > regionEnd) break;
-        std::uint32_t v; std::memcpy(&v, base + off, 4);
-        if (v == 0 || v > 0x100000) continue;
-        if (IsAtlasTexture((GLuint)v, savedBinding)) return (GLuint)v;
+    return addr + len <= regionEnd;
+}
+
+struct AtlasCandidates {
+    GLuint   names[rtx::iconatlas::kMaxCandidates];
+    unsigned count = 0;
+    bool add(GLuint n) {
+        for (unsigned i = 0; i < count; ++i) if (names[i] == n) return false;
+        if (count >= rtx::iconatlas::kMaxCandidates) return false;
+        names[count++] = n; return true;
     }
-    return 0;
+};
+
+// Scan `len` bytes at `base` at 4-byte steps for u32s that are atlas-sized textures.
+void ScanForAtlasNames(std::uintptr_t base, std::size_t len, GLint savedBinding, AtlasCandidates& out) {
+    if (!ReadableRange(base, 4)) return;
+    for (std::size_t off = 0; off + 4 <= len; off += 4) {
+        if (!ReadableRange(base + off, 4)) break;
+        std::uint32_t v; std::memcpy(&v, reinterpret_cast<const void*>(base + off), 4);
+        if (v == 0 || v > 0x100000) continue;
+        if (IsAtlasTexture((GLuint)v, savedBinding)) out.add((GLuint)v);
+    }
+}
+
+// The launcher passes the client's texture-owner object (container+0x20). Build 949-5
+// keeps the GL names one pointer level down (owner+0x70/+0x78/+0x178 -> object with the
+// name at +0x20), and more than one of them is a 1536x1536 atlas. So: every u32 in the
+// owner's first 0x200 bytes, then the first 0x100 bytes of every plausible pointer it
+// holds. The launcher decides which candidate is the real item atlas (by content).
+void AtlasNamesFromHint(std::uint64_t hint, GLint savedBinding, AtlasCandidates& out) {
+    if (!hint) return;
+    const std::uintptr_t base = (std::uintptr_t)hint;
+    ScanForAtlasNames(base, 0x200, savedBinding, out);
+    for (std::size_t off = 0; off + 8 <= 0x200; off += 8) {
+        if (!ReadableRange(base + off, 8)) break;
+        std::uint64_t p; std::memcpy(&p, reinterpret_cast<const void*>(base + off), 8);
+        if (p == 0 || (p & 7) || p == hint) continue;
+        if (!ReadableRange((std::uintptr_t)p, 0x100)) continue;
+        ScanForAtlasNames((std::uintptr_t)p, 0x100, savedBinding, out);
+    }
 }
 
 // Launcher asked for the atlas: find it, glGetTexImage it into the share, publish.
@@ -161,7 +194,7 @@ GLuint AtlasNameFromHint(std::uint64_t hint, GLint savedBinding) {
 // touches is saved and restored; the readback itself is the only stall.
 void CaptureIconAtlas() {
     rtx::iconatlas::Share* s = g_icon;
-    static GLuint s_name = 0;   // last atlas name; re-validated (size) on every capture
+    GLuint s_name = 0;          // texture read this request (launcher-chosen or candidates[0])
     static PFN_glActiveTexture_p s_activeTexture = nullptr;
     static PFN_glBindBuffer_p    s_bindBuffer = nullptr;
     if (!s_activeTexture) s_activeTexture = reinterpret_cast<PFN_glActiveTexture_p>(wglGetProcAddress("glActiveTexture"));
@@ -173,16 +206,28 @@ void CaptureIconAtlas() {
     GLint binding = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D_P, &binding);
 
+    // Enumerate every atlas-sized texture on each request (cheap: a few hundred GL calls
+    // for the hint walk; the 64k probe only when the hint yields nothing). The launcher
+    // validates by content, so this never guesses.
+    AtlasCandidates cands;
     std::uint32_t hit = 0;
-    if (s_name && !IsAtlasTexture(s_name, binding)) s_name = 0;   // recreated since last time
-    if (s_name) hit = s->hintHit;
-    if (!s_name) { s_name = AtlasNameFromHint(s->hintTexOwner, binding); if (s_name) hit = 1; }
-    if (!s_name) {
-        // Probe: the client keeps a few thousand textures; 64k glIsTexture calls once
-        // per request is well under a frame.
-        for (GLuint n = 1; n < 65536 && !s_name; ++n)
-            if (IsAtlasTexture(n, binding)) s_name = n;
-        if (s_name) hit = 2;
+    AtlasNamesFromHint(s->hintTexOwner, binding, cands);
+    if (cands.count) hit = 1;
+    if (!cands.count) {
+        for (GLuint n = 1; n < 65536 && cands.count < rtx::iconatlas::kMaxCandidates; ++n)
+            if (IsAtlasTexture(n, binding)) cands.add(n);
+        if (cands.count) hit = 2;
+    }
+    s->candidateCount = cands.count;
+    for (unsigned i = 0; i < rtx::iconatlas::kMaxCandidates; ++i)
+        s->candidates[i] = i < cands.count ? cands.names[i] : 0;
+    s_name = 0;
+    if (s->wantName) {
+        // A validated name from an earlier request is honoured as long as it still has
+        // the atlas size, even if the walk no longer lists it (capped list, moved pointer).
+        if (IsAtlasTexture(s->wantName, binding)) s_name = s->wantName;
+    } else if (cands.count) {
+        s_name = cands.names[0];
     }
 
     s->glName = s_name; s->hintHit = hit;

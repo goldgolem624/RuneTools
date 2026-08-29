@@ -180,6 +180,21 @@ bool IconPackHas(int item_id) {
     return p.ready && (std::size_t)item_id < p.len.size() && p.len[item_id] > 0;
 }
 
+std::vector<unsigned char> IconPackBytes(int item_id) {
+    if (item_id <= 0) return {};
+    Pack& p = g_items_pack;
+    std::lock_guard<std::mutex> lk(p.mu);
+    ensure_index(p);
+    if (!p.ready || (std::size_t)item_id >= p.len.size() || p.len[item_id] == 0) return {};
+    std::ifstream f(p.path, std::ios::binary);
+    if (!f) return {};
+    f.seekg((std::streamoff)p.off[item_id], std::ios::beg);
+    std::vector<unsigned char> bytes(p.len[item_id]);
+    f.read(reinterpret_cast<char*>(bytes.data()), (std::streamsize)p.len[item_id]);
+    if ((std::uint32_t)f.gcount() != p.len[item_id]) return {};
+    return bytes;
+}
+
 std::string IconMissesJson() {
     std::uint32_t ids = 0, present = 0;
     {

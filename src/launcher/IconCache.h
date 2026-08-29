@@ -21,6 +21,10 @@ std::string ModelIconDataUrl(int model_id);
 // True when items.pack has an icon blob for the id (index len > 0). Cheap: index only.
 bool IconPackHas(int item_id);
 
+// Raw image blob from items.pack (PNG), empty when absent. Not memoized: the atlas
+// validator reads a few dozen once per capture.
+std::vector<unsigned char> IconPackBytes(int item_id);
+
 // Where an item's icon comes from: 2 = captured live from the client's atlas this build,
 // 1 = bundled items.pack, 0 = nowhere (the UI shows the name only).
 int IconSource(int item_id);

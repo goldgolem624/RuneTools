@@ -7,20 +7,26 @@
 // with the cell rectangles it reads itself out of client memory.
 //
 // Protocol: launcher writes `hintTexOwner` (address of the client's texture-owner
-// object, optional) then `request = 1`. The hook, at the next present, finds the atlas
-// texture, copies it into `pixels` (RGBA, row 0 = TOP after the flip), sets `status`,
+// object, optional) and `wantName` (0 = auto) then `request = 1`. The hook, at the next
+// present, lists every 1536x1536 texture it can reach (`candidates`), reads `wantName`
+// (or candidates[0]) into `pixels` (RGBA, row 0 = TOP after the flip), sets `status`,
 // bumps `seq`, clears `request`. When `request` is 0 the hook path is one load.
+//
+// v2: the client holds MORE THAN ONE 1536x1536 icon atlas (a second instance with the
+// same kind of content, plus pages/staging), so the hook can only enumerate; the
+// launcher picks by scoring each candidate's pixels against the bundled icon pack.
 
 #include <cstdint>
 
 namespace rtx::iconatlas {
 
-inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXIconAtlas_v1_";   // moves with kVersion
+inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXIconAtlas_v2_";   // moves with kVersion
 inline constexpr std::uint32_t kMagic   = 0x54414349;   // 'ICAT'
-inline constexpr std::uint32_t kVersion = 1;
+inline constexpr std::uint32_t kVersion = 2;
 inline constexpr std::uint32_t kAtlasW  = 1536;
 inline constexpr std::uint32_t kAtlasH  = 1536;
 inline constexpr std::uint32_t kMaxBytes = kAtlasW * kAtlasH * 4;
+inline constexpr std::uint32_t kMaxCandidates = 16;
 
 // `status` values written by the hook.
 inline constexpr std::uint32_t kStatusOk        = 0;
@@ -42,6 +48,9 @@ struct Share {
     std::uint64_t hintTexOwner;        // launcher -> hook: client texture-owner object (0 = probe only)
     std::uint32_t hintHit;             // hook -> launcher: 1 = name came from the hint, 2 = from the probe
     std::uint32_t reserved;            // readback stage: 1 = glGetTexImage, 2 = framebuffer glReadPixels (diagnostic)
+    std::uint32_t wantName;            // launcher -> hook: read this GL name (must be a candidate); 0 = candidates[0]
+    std::uint32_t candidateCount;      // hook -> launcher: number of valid entries in `candidates`
+    std::uint32_t candidates[kMaxCandidates];   // every 1536x1536 2D texture found (hint walk first, then probe)
     std::uint8_t  pixels[kMaxBytes];   // RGBA8, top-down
 };
 

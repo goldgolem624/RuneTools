@@ -1,5 +1,7 @@
 #include "IconCapture.h"
 #include "IconCache.h"
+#include "IconScore.h"
+#include "PngDecode.h"
 #include "../reader/Reader.h"
 #include "../shared/Log.h"
 #include "../../companion/IconAtlasShare.h"
@@ -8,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -102,6 +105,7 @@ rtx::iconatlas::Share* ShareFor(std::uint32_t pid) {
     if (!s) { CloseHandle(h); return nullptr; }
     s->request = 0; s->seq = 0; s->status = 0; s->width = s->height = 0;
     s->glName = 0; s->glError = 0; s->hintTexOwner = 0; s->hintHit = 0; s->capturedAtMs = 0;
+    s->wantName = 0; s->candidateCount = 0; std::memset(s->candidates, 0, sizeof(s->candidates));
     s->pid = pid; s->version = rtx::iconatlas::kVersion; s->magic = rtx::iconatlas::kMagic;
     g_maps[pid] = { h, s };
     return s;
@@ -115,6 +119,16 @@ int            g_lastWritten = 0, g_lastCells = 0, g_sessionWritten = 0;
 std::string    g_lastStatus = "idle";
 bool           g_busy = false;
 std::wstring   g_dir;                 // version directory of the last capture (lookup target)
+std::uint32_t  g_lastAtlasName = 0;   // GL name of the atlas the last capture used (0 = none)
+double         g_lastAtlasScore = 0;  // its pack-similarity score
+std::string    g_lastCandidates;      // "name:score,name:score" of the last validation pass
+
+// Validated atlas for this session: the client holds several 1536x1536 textures with
+// icon-like content, so a name is only trusted after its pixels scored against the pack.
+// Re-validated when the container moves or a later capture's score drops.
+std::uint32_t  g_validName = 0;
+std::uint64_t  g_validContainer = 0;
+bool           g_purged = false;      // wrong-texture leftovers removed once per session
 
 std::mutex     g_lookMu;
 std::unordered_map<int, std::wstring> g_lookup;   // id -> path ("" = known absent)
@@ -158,6 +172,110 @@ void set_status(const std::string& st, int written, int cells) {
     g_sessionWritten += written; g_lastAtMs = epoch_ms();
 }
 
+// Grid / make_grid / grid_similarity live in IconScore.h (shared with the offline test).
+
+// Reference set: up to 40 item cells (flavour 0x02, 36x32) that the pack also has,
+// spread across the map so one bad region cannot dominate.
+using iconscore::Grid; using iconscore::make_grid; using iconscore::grid_similarity;
+struct Ref { rtx::reader::IconAtlasCell cell; Grid grid; };
+std::vector<Ref> pick_refs(const rtx::reader::IconAtlasMap& map) {
+    std::vector<const rtx::reader::IconAtlasCell*> eligible;
+    for (const auto& c : map.cells)
+        if (c.flavour == 0x02 && c.w == 36 && c.h == 32 && c.item > 0 && icons::IconPackHas(c.item))
+            eligible.push_back(&c);
+    std::vector<Ref> refs;
+    if (eligible.empty()) return refs;
+    const size_t step = std::max<size_t>(1, eligible.size() / 40);
+    for (size_t i = 0; i < eligible.size() && refs.size() < 40; i += step) {
+        std::vector<unsigned char> bytes = icons::IconPackBytes(eligible[i]->item);
+        png::Image img;
+        if (bytes.empty() || !png::Decode(bytes.data(), bytes.size(), img)) continue;
+        Grid g = make_grid(img.rgba.data(), img.w, img.h, img.w * 4);
+        if (!g.any) continue;
+        refs.push_back({ *eligible[i], g });
+    }
+    return refs;
+}
+
+double score_pixels(const std::uint8_t* pixels, const std::vector<Ref>& refs) {
+    if (refs.empty()) return 0.0;
+    const std::uint32_t W = rtx::iconatlas::kAtlasW;
+    double sum = 0;
+    for (const auto& r : refs) {
+        const std::uint8_t* src = pixels + ((size_t)r.cell.y * W + (size_t)r.cell.x) * 4;
+        sum += grid_similarity(make_grid(src, r.cell.w, r.cell.h, (int)W * 4), r.grid);
+    }
+    return sum / (double)refs.size();
+}
+
+// One hook round trip. Returns false on timeout / GL failure (status set by the caller).
+bool request_readback(rtx::iconatlas::Share* s, std::uint64_t texOwner, std::uint32_t wantName) {
+    std::uint32_t seq0 = s->seq;
+    s->hintTexOwner = texOwner;
+    s->wantName = wantName;
+    s->request = 1;
+    const ULONGLONG deadline = GetTickCount64() + 2000;
+    while (s->seq == seq0 && GetTickCount64() < deadline) Sleep(20);
+    if (s->seq == seq0) { s->request = 0; return false; }
+    return true;
+}
+
+std::string fmt_score(double v) {
+    char b[32]; std::snprintf(b, sizeof(b), "%.3f", v); return b;
+}
+
+wchar_t* cell_file_name(const rtx::reader::IconAtlasCell& c, wchar_t* name, size_t n) {
+    if (c.flavour == 0x02 && c.w == 36 && c.h == 32) swprintf(name, n, L"%d.png", c.item);
+    else swprintf(name, n, L"%d_f%02x.png", c.item, c.flavour);
+    return name;
+}
+
+bool file_equals(const fs::path& file, const std::vector<std::uint8_t>& bytes) {
+    std::ifstream f(file, std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    std::streamoff sz = f.tellg();
+    if (sz != (std::streamoff)bytes.size()) return false;
+    f.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> cur((size_t)sz);
+    f.read(reinterpret_cast<char*>(cur.data()), sz);
+    return (std::streamoff)f.gcount() == sz && cur == bytes;
+}
+
+// Drop icons written from the wrong texture. Every file that maps to a current cell is
+// re-sliced and byte-compared. A directory without the `.validated` marker (written by
+// captures before validation existed) additionally loses every file that cannot be
+// checked, since nothing in it can be trusted; once marked, unmapped files (an icon from
+// a session where the bank was open) are kept.
+int purge_dir(const fs::path& dir, const rtx::reader::IconAtlasMap& map, const std::uint8_t* pixels) {
+    const std::uint32_t W = rtx::iconatlas::kAtlasW, H = rtx::iconatlas::kAtlasH;
+    std::error_code ec;
+    const fs::path marker = dir / L".validated";
+    const bool trusted = fs::exists(marker, ec);
+    std::unordered_map<std::wstring, const rtx::reader::IconAtlasCell*> byName;
+    for (const auto& c : map.cells) {
+        if (c.item <= 0 || c.w <= 0 || c.h <= 0 || c.x < 0 || c.y < 0 ||
+            (std::uint32_t)(c.x + c.w) > W || (std::uint32_t)(c.y + c.h) > H) continue;
+        wchar_t name[64]; byName[cell_file_name(c, name, 64)] = &c;
+    }
+    int removed = 0;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+        if (!e.is_regular_file(ec)) continue;
+        const std::wstring fn = e.path().filename().wstring();
+        if (fn.size() < 5 || fn.compare(fn.size() - 4, 4, L".png") != 0) continue;
+        auto it = byName.find(fn);
+        bool keep;
+        if (it == byName.end()) keep = trusted;
+        else {
+            const auto& c = *it->second;
+            const std::uint8_t* src = pixels + ((size_t)c.y * W + (size_t)c.x) * 4;
+            keep = file_equals(e.path(), encode_png(src, c.w, c.h, (int)W * 4));
+        }
+        if (!keep && fs::remove(e.path(), ec)) ++removed;
+    }
+    if (!trusted) { std::ofstream m(marker, std::ios::binary); m << "atlas validated by pack similarity\n"; }
+    return removed;
+}
+
 }  // namespace
 
 int CaptureIcons(std::uint32_t pid) {
@@ -165,39 +283,90 @@ int CaptureIcons(std::uint32_t pid) {
     // 1. cell map from the reader (also proves the pid is attached)
     rtx::reader::IconAtlasMap map = rtx::reader::ReadIconAtlasMap(pid);
     if (map.w <= 0 || map.cells.empty()) { set_status("no map (open the backpack)", 0, 0); return 0; }
+    const int cells = (int)map.cells.size();
     if (map.w != (int)rtx::iconatlas::kAtlasW || map.h != (int)rtx::iconatlas::kAtlasH) {
-        set_status("atlas size " + std::to_string(map.w) + "x" + std::to_string(map.h) + " unsupported", 0, (int)map.cells.size());
+        set_status("atlas size " + std::to_string(map.w) + "x" + std::to_string(map.h) + " unsupported", 0, cells);
         return 0;
     }
-    // 2. ask the hook for the pixels
+    // 2. reference icons from the pack (the validator needs at least a handful)
+    std::vector<Ref> refs = pick_refs(map);
+    if (refs.size() < 5) { set_status("too few pack references (" + std::to_string(refs.size()) + ")", 0, cells); return 0; }
+    // 3. ask the hook: first request lists candidates and reads the remembered name (or
+    //    candidates[0]); each further candidate is a separate readback, all scored.
     rtx::iconatlas::Share* s = ShareFor(pid);
-    if (!s) { set_status("share failed", 0, (int)map.cells.size()); return 0; }
-    std::uint32_t seq0 = s->seq;
-    s->hintTexOwner = map.texOwner;
-    s->request = 1;
-    const ULONGLONG deadline = GetTickCount64() + 2000;
-    while (s->seq == seq0 && GetTickCount64() < deadline) Sleep(20);
-    if (s->seq == seq0) { s->request = 0; set_status("timeout (companion not loaded?)", 0, (int)map.cells.size()); return 0; }
-    if (s->status == rtx::iconatlas::kStatusNoTexture) { set_status("no atlas texture found", 0, (int)map.cells.size()); return 0; }
-    if (s->status != rtx::iconatlas::kStatusOk) { set_status("gl error " + std::to_string(s->glError), 0, (int)map.cells.size()); return 0; }
-    // 3. slice
+    if (!s) { set_status("share failed", 0, cells); return 0; }
+    std::uint32_t remembered = 0;
+    { std::lock_guard<std::mutex> lk(g_stMu); if (g_validContainer == map.container) remembered = g_validName; }
+    if (!request_readback(s, map.texOwner, remembered)) { set_status("timeout (companion not loaded?)", 0, cells); return 0; }
+    if (s->status == rtx::iconatlas::kStatusNoTexture) { set_status("no atlas texture found", 0, cells); return 0; }
+    if (s->status != rtx::iconatlas::kStatusOk) { set_status("gl error " + std::to_string(s->glError), 0, cells); return 0; }
+
+    const size_t kBytes = (size_t)rtx::iconatlas::kAtlasW * rtx::iconatlas::kAtlasH * 4;
+    std::vector<std::uint32_t> candidates(s->candidates, s->candidates + std::min<std::uint32_t>(s->candidateCount, rtx::iconatlas::kMaxCandidates));
+    if (std::find(candidates.begin(), candidates.end(), s->glName) == candidates.end()) candidates.insert(candidates.begin(), s->glName);
+    const std::uint32_t hintHit = s->hintHit;
+
+    std::vector<std::uint8_t> best;               // pixels of the best-scoring candidate
+    std::uint32_t bestName = 0; double bestScore = -1, secondScore = -1;
+    std::string scoreList;
+    auto consider = [&](std::uint32_t name, double sc) {
+        if (!scoreList.empty()) scoreList += ",";
+        scoreList += std::to_string(name) + ":" + fmt_score(sc);
+        if (sc > bestScore) { secondScore = bestScore; bestScore = sc; bestName = name; best.assign(s->pixels, s->pixels + kBytes); }
+        else if (sc > secondScore) secondScore = sc;
+    };
+    double first = score_pixels(s->pixels, refs);
+    consider(s->glName, first);
+    // A remembered, still-good atlas skips the other readbacks; a drop re-validates all.
+    const bool skipRest = remembered && s->glName == remembered && first >= 0.6;
+    if (!skipRest) {
+        for (std::uint32_t name : candidates) {
+            if (name == s->glName) continue;
+            if (!request_readback(s, map.texOwner, name)) { rtx::log::Launcher("icon capture: readback timeout on tex " + std::to_string(name)); continue; }
+            if (s->status != rtx::iconatlas::kStatusOk || s->glName != name) {
+                rtx::log::Launcher("icon capture: tex " + std::to_string(name) + " readback failed (status " + std::to_string(s->status) + ", gl " + std::to_string(s->glError) + ")");
+                continue;
+            }
+            consider(name, score_pixels(s->pixels, refs));
+        }
+    }
+    rtx::log::Launcher("icon capture: pid " + std::to_string(pid) + " candidates " + std::to_string(candidates.size()) +
+                       " (hint " + std::to_string(hintHit) + ") scores " + scoreList + " refs " + std::to_string(refs.size()));
+    {
+        std::lock_guard<std::mutex> lk(g_stMu);
+        g_lastCandidates = scoreList; g_lastAtlasName = bestName; g_lastAtlasScore = bestScore;
+    }
+    const bool passes = bestScore >= 0.6 && (secondScore < 0 || bestScore - secondScore >= 0.1);
+    if (!passes) {
+        { std::lock_guard<std::mutex> lk(g_stMu); g_validName = 0; g_validContainer = 0; }
+        set_status("no matching atlas", 0, cells);
+        rtx::log::Launcher("icon capture: no matching atlas (best " + std::to_string(bestName) + " " + fmt_score(bestScore) + ")");
+        return 0;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_stMu);
+        g_validName = bestName; g_validContainer = map.container;
+    }
+    // 4. slice
     std::string ver;
     for (const auto& snap : rtx::reader::SampleAll()) if (snap.pid == pid) ver = snap.client_version;
     std::wstring root = icons_root();
-    if (root.empty()) { set_status("no USERPROFILE", 0, (int)map.cells.size()); return 0; }
+    if (root.empty()) { set_status("no USERPROFILE", 0, cells); return 0; }
     fs::path dir = fs::path(root) / sanitize_version(ver);
     std::error_code ec; fs::create_directories(dir, ec);
+    int removed = 0;
+    bool doPurge;
+    { std::lock_guard<std::mutex> lk(g_stMu); doPurge = !g_purged; g_purged = true; }
+    if (doPurge) removed = purge_dir(dir, map, best.data());
     const std::uint32_t W = rtx::iconatlas::kAtlasW, H = rtx::iconatlas::kAtlasH;
     int written = 0; std::vector<int> ids;
     for (const auto& c : map.cells) {
         if (c.item <= 0 || c.w <= 0 || c.h <= 0 || c.x < 0 || c.y < 0 ||
             (std::uint32_t)(c.x + c.w) > W || (std::uint32_t)(c.y + c.h) > H) continue;
         wchar_t name[64];
-        if (c.flavour == 0x02 && c.w == 36 && c.h == 32) swprintf(name, 64, L"%d.png", c.item);
-        else swprintf(name, 64, L"%d_f%02x.png", c.item, c.flavour);
-        fs::path file = dir / name;
+        fs::path file = dir / cell_file_name(c, name, 64);
         if (fs::exists(file, ec)) continue;
-        const std::uint8_t* src = s->pixels + ((size_t)c.y * W + (size_t)c.x) * 4;
+        const std::uint8_t* src = best.data() + ((size_t)c.y * W + (size_t)c.x) * 4;
         std::vector<std::uint8_t> png = encode_png(src, c.w, c.h, (int)W * 4);
         std::ofstream f(file, std::ios::binary);
         if (!f) continue;
@@ -211,13 +380,14 @@ int CaptureIcons(std::uint32_t pid) {
     {
         // captured ids must be re-looked-up: the "absent" memo is now stale for them
         std::lock_guard<std::mutex> lk(g_lookMu);
-        for (int id : ids) g_lookup.erase(id);
+        if (removed) g_lookup.clear();
+        else for (int id : ids) g_lookup.erase(id);
     }
     icons::ForgetMisses(ids);
-    set_status("ok", written, (int)map.cells.size());
-    rtx::log::Client(pid, "icon capture: " + std::to_string(written) + " new of " +
-                     std::to_string(map.cells.size()) + " cells (hint " + std::to_string(s->hintHit) +
-                     ", tex " + std::to_string(s->glName) + ")");
+    set_status("ok", written, cells);
+    rtx::log::Client(pid, "icon capture: " + std::to_string(written) + " new of " + std::to_string(cells) +
+                     " cells (hint " + std::to_string(hintHit) + ", tex " + std::to_string(bestName) +
+                     ", score " + fmt_score(bestScore) + ", removed " + std::to_string(removed) + ")");
     return written;
 }
 
@@ -285,6 +455,8 @@ std::string StatusJson() {
     return "{\"lastAt\":" + std::to_string(g_lastAtMs) + ",\"written\":" + std::to_string(g_lastWritten) +
            ",\"cells\":" + std::to_string(g_lastCells) + ",\"status\":\"" + g_lastStatus +
            "\",\"sessionWritten\":" + std::to_string(g_sessionWritten) + ",\"busy\":" + (g_busy ? "1" : "0") +
+           ",\"atlasName\":" + std::to_string(g_lastAtlasName) + ",\"atlasScore\":" + fmt_score(g_lastAtlasScore) +
+           ",\"candidates\":\"" + g_lastCandidates + "\"" +
            ",\"dir\":\"" + dir + "\"}";
 }
 

@@ -186,8 +186,11 @@
     }
     if (cap.lastAt) {
       const when = new Date(cap.lastAt).toLocaleTimeString();
+      // atlas: which GL texture passed the pack-similarity check, and every candidate's score
+      const atlas = cap.candidates ? '; atlas: name ' + (cap.atlasName || 0) + ', score ' + (cap.atlasScore || '0') +
+          ' (candidates: ' + cap.candidates + ')' : '';
       row(cap.status === 'ok' ? 'ok' : 'bad', 'Last capture', when + ': ' + (cap.status || '?') +
-          (cap.status === 'ok' ? ' (' + cap.written + ' new of ' + cap.cells + ' cells)' : ''));
+          (cap.status === 'ok' ? ' (' + cap.written + ' new of ' + cap.cells + ' cells)' : '') + atlas);
     }
     row(m.packIcons ? 'ok' : 'bad', 'Icon pack', m.packIds ? (m.packIds + ' ids, ' + m.packIcons + ' icons') : 'not loaded');
     if (icCov && icCov.pending) row('warn', 'Cache coverage', 'scanning...');

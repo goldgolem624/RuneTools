@@ -12,7 +12,9 @@ bookkeeping (graphic key -> atlas cell rectangle). So the capture has two halves
    game's GL context is current) reads the atlas texture back with `glGetTexImage`
    into the `IconAtlasShare` section (`companion/IconAtlasShare.h`).
 
-The launcher (`src/launcher/IconCapture.cpp`) joins the two, slices the rects and writes
+The launcher (`src/launcher/IconCapture.cpp`) joins the two, VALIDATES the texture (see
+"Atlas validation" below: the client owns several 1536x1536 icon atlases), slices the
+rects and writes
 
     %USERPROFILE%\RuneToolsX\icons\<clientVersion>\<itemId>.png        flavour 0x02, 36x32
     %USERPROFILE%\RuneToolsX\icons\<clientVersion>\<itemId>_f<xx>.png  any other flavour (hex)
@@ -67,17 +69,61 @@ The three rects match the ones the earlier heap scan found independently, and ev
 on-screen widget key (backpack 1473 comp 5, equipment 1464 comp 15) resolves to a rect
 (`widgetKeys` / `widgetKeysMapped` in `IconAtlasMapJson`).
 
-## Share protocol (`Local\RuneToolsXIconAtlas_v1_<pid>`)
+## Atlas validation (share v2)
 
-    magic 'ICAT', version 1, pid
+Live finding (build 949-5, pid 30284): container+0x20 (the texture owner) does NOT hold
+the GL name in its first 0x200 bytes. The names sit one pointer down: owner+0x70 -> object
+with u32 5531 at +0x20 (2048 at +0x24), owner+0x78 -> 13152 at +0x20, owner+0x178 -> 3224
+at +0x20. The old hook fell through to the flat probe and returned the FIRST 1536x1536
+texture (name 41), a different icon-atlas instance with the same kind of content; the
+correct map was applied to the wrong pixels and 1,507 wrong icons were written.
+
+Nothing on the hook side can tell the instances apart, so v2 splits the job:
+
+1. Hook: builds `candidates` = every u32 in the hint object's first 0x200 bytes, then in
+   the first 0x100 bytes of every plausible pointer it holds (8-aligned, user-mode,
+   VirtualQuery-guarded), that glIsTexture accepts, binds to GL_TEXTURE_2D without
+   raising, and has a 1536x1536 level 0. If that finds nothing, the flat probe 1..65535
+   collects ALL such textures (cap 16). It then reads back `wantName` when set (and still
+   atlas-sized), else candidates[0].
+2. Launcher: picks up to 40 reference items that are both in the map (flavour 0x02,
+   36x32) and in `items.pack` (`icons::IconPackHas`), decodes the pack PNGs
+   (`src/launcher/PngDecode.cpp`, vendored zlib) and requests one readback per candidate.
+   Score (`src/launcher/IconScore.h`): each image is reduced to an 8x8 grid of average
+   RGB over its opaque bounding box (alpha >= 128; the bbox makes the padded 36x32 cell
+   and the pack's tighter crop comparable); similarity = 1 - mean |diff| / 255 over cells
+   opaque in at least one image (opaque in only one = full-scale diff; transparent in
+   both = ignored). Candidate score = mean over the references.
+3. Accept the best candidate only if score >= 0.6 AND it beats the runner-up by >= 0.1;
+   otherwise write nothing and report status "no matching atlas". Every candidate's score
+   is logged (`icon capture: pid P candidates N (hint H) scores name:score,...`) and shown
+   on the Health card ("atlas: name N, score S (candidates: ...)").
+4. The winning name is remembered for the session with the container address. Later
+   captures request it directly and skip the other readbacks while its score stays
+   >= 0.6; a moved container or a score drop re-validates every candidate.
+5. Cleanup: the first validated capture of a session re-slices every mapped cell and
+   deletes any `<id>.png` / `<id>_fxx.png` in the version directory whose bytes differ.
+   A directory without the `.validated` marker (written by pre-v2 captures) also loses
+   every file that cannot be checked; the marker is then written so later sessions keep
+   unmapped-but-once-validated icons.
+
+Offline check: `tools/icon-score-test.cpp` (build line in its header) decodes pack icons
+and prints `id w h rgbaSum`, self-similarity (1.000), the similarity to the previous id
+and to a padded 36x32 copy (1.000); `tools/icon-score-test.py` prints the same first line
+through Pillow for a diff.
+
+## Share protocol (`Local\RuneToolsXIconAtlas_v2_<pid>`)
+
+    magic 'ICAT', version 2, pid
     request       launcher writes 1; the hook clears it after the attempt
     seq           hook bumps it once per attempt (the launcher waits on this, 2 s)
     width/height  1536x1536 on success
-    glName        GL texture name used (cached in the hook; size re-validated each capture)
+    glName        GL texture name that was read this request
     status        0 ok, 1 no texture, 2 gl error (glError holds the code)
-    hintTexOwner  launcher -> hook: container+0x20 object; the hook scans its first 0x200
-                  bytes for a u32 that glIsTexture accepts with a 1536x1536 level 0
-    hintHit       1 = name came from the hint, 2 = from the 1..65535 probe
+    hintTexOwner  launcher -> hook: container+0x20 object (walked as described above)
+    hintHit       1 = candidates came from the hint walk, 2 = from the 1..65535 probe
+    wantName      launcher -> hook: candidate to read (0 = candidates[0])
+    candidateCount / candidates[16]   hook -> launcher: every 1536x1536 texture found
     pixels        RGBA8, top-down (the hook flips GL's bottom-up rows)
 
 The hook path is one load (`request`) per present while idle. During a capture it
@@ -90,11 +136,14 @@ buffer binding and all `GL_PACK_*` state; the only stall is the readback itself.
    then holds every icon of every item shown; the map needs at least one item cell on
    screen, backpack or equipment is enough).
 2. Developer > Health check > Run check > "Capture icons now".
-3. Expect "Last capture: ok (N new of M cells)" with M around 1400 to 1540 and
+3. Expect "Last capture: ok (N new of M cells); atlas: name X, score S (candidates: ...)"
+   with S >= 0.6 and every other candidate well below it, M around 1400 to 1540 and
    `%USERPROFILE%\RuneToolsX\icons\<version>\` holding N PNG files (36x32 RGBA).
    A second run reports 0 new (files are skipped).
-4. Debug view shows `RuneToolsX: icon capture: N new of M cells (hint 1, tex <name>)`.
-   `hint 2` means the texture-owner scan did not find the name and the probe did;
-   status "no atlas texture found" means neither did and the atlas format changed.
+4. Debug view shows `RuneToolsX: icon capture: N new of M cells (hint 1, tex <name>,
+   score S, removed R)`. `hint 2` means the texture-owner walk found nothing and the
+   probe did; status "no atlas texture found" means neither did and the atlas format
+   changed; "no matching atlas" means textures were found but none looked like the pack
+   (check the candidate scores on the Health card before trusting anything).
 5. Any panel rendering an item that was missing from the pack now shows the captured
    icon without a restart (`IconCache` drops its memo for the captured ids).

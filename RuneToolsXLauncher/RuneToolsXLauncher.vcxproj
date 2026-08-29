@@ -123,6 +123,8 @@
 
   <ItemGroup>
     <ClInclude Include="..\src\launcher\Audio.h" />
+    <ClInclude Include="..\src\launcher\PngDecode.h" />
+    <ClInclude Include="..\src\launcher\IconScore.h" />
     <ClInclude Include="..\src\cache\Achievements.h" />
     <ClInclude Include="..\src\cache\Bzip2.h" />
     <ClInclude Include="..\src\cache\CachePath.h" />
@@ -195,6 +197,7 @@
     <ClCompile Include="..\src\launcher\Zip.cpp" />
     <ClCompile Include="..\src\launcher\IconCache.cpp" />
     <ClCompile Include="..\src\launcher\IconCapture.cpp" />
+    <ClCompile Include="..\src\launcher\PngDecode.cpp" />
     <ClCompile Include="..\src\launcher\Loader.cpp" />
     <ClCompile Include="..\src\launcher\main.cpp" />
     <ClCompile Include="..\src\launcher\Markers.cpp" />
