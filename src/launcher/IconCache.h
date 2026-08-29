@@ -21,6 +21,10 @@ std::string ModelIconDataUrl(int model_id);
 // True when items.pack has an icon blob for the id (index len > 0). Cheap: index only.
 bool IconPackHas(int item_id);
 
+// Where an item's icon comes from: 2 = captured live from the client's atlas this build,
+// 1 = bundled items.pack, 0 = nowhere (the UI shows the name only).
+int IconSource(int item_id);
+
 // Health-panel diagnostics: {"packIds":N,"packIcons":present,"misses":[[id,count],...],
 // "missCount":K}. `misses` are ids asked for through ItemIconDataUrl this session and not
 // in the pack (capped at 10,000 distinct ids), so a missing icon shows up as data rather

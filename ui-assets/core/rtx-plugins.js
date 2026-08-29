@@ -442,6 +442,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'host.cacheStoreLoad':    { scope: 'host',        json: false, run: (a) => bridge().cacheStoreLoad(...pArgs(a)) },
     'host.xpPanelState':      { scope: 'host',        json: false, run: (a, pid) => bridge().xpPanelState(pid, ...pArgs(a)) },
     'host.readerHealth':      { scope: 'host',        json: true,  run: (a, pid) => bridge().readerHealth(pid, ...pArgs(a)) },
+    'cache.iconSource':   { scope: 'cache.read', json: false, run: (a) => bridge().iconSource(pClampId(a[0])) },   // pack | captured | none
     'host.iconMisses':        { scope: 'host',        json: true,  run: () => bridge().iconMisses() },
     'host.iconCoverage':      { scope: 'host',        json: true,  run: () => bridge().iconCoverage() },
     'host.iconCapture':       { scope: 'host',        json: true,  run: (a, pid) => bridge().iconCapture(pid) },

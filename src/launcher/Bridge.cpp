@@ -822,6 +822,13 @@ JSValueRef HostInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::HostJson());
 }
 
+JSValueRef IconSource(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "none");
+    const int src = icons::IconSource(js_int(ctx, argv[0]));
+    return utf8_to_js(ctx, src == 2 ? "captured" : src == 1 ? "pack" : "none");
+}
+
 JSValueRef ItemIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
@@ -5045,6 +5052,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "bridgeStatus",      BridgeStatus);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
+    install_fn(ctx, ns, "iconSource",        IconSource);
     install_fn(ctx, ns, "iconMisses",        IconMisses);
     install_fn(ctx, ns, "iconCoverage",      IconCoverage);
     install_fn(ctx, ns, "iconCapture",       IconCapture);

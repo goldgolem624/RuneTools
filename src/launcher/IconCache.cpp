@@ -146,6 +146,12 @@ std::string captured_icon_url(int item_id) {
     return url;
 }
 
+int IconSource(int item_id) {
+    if (item_id <= 0) return 0;
+    if (!iconcapture::FindCapturedPng(item_id).empty()) return 2;
+    return IconPackHas(item_id) ? 1 : 0;
+}
+
 std::string ItemIconDataUrl(int item_id) {
     std::string url = captured_icon_url(item_id);
     if (url.empty()) url = pack_icon_url(g_items_pack, item_id);

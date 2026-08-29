@@ -175,6 +175,8 @@
     const head = (info && info.name) ? info.name : ('Item #' + itemId);
     const lines = [head, 'ID ' + itemId, 'Slot ' + (slotIndex + 1), stateLabel];
     if (info && info.ge_limit > 0) lines.push('Limit ' + info.ge_limit.toLocaleString() + '/4h');
+    // Provenance of the picture: bundled pack, captured live from the client, or none yet.
+    try { if (typeof rtxData === 'object') { const src = rtxData.sync('cache.iconSource', itemId); lines.push(src === 'captured' ? 'Icon: captured live' : src === 'pack' ? 'Icon: pack' : 'Icon: none yet'); } } catch (e) {}
     return lines.join('\n');
   }
 

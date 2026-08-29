@@ -109,6 +109,19 @@ void EnsureIconMapped() {
 #define GL_PIXEL_PACK_BUFFER_BINDING_P 0x88ED
 typedef void (WINAPI* PFN_glActiveTexture_p)(GLenum);
 typedef void (WINAPI* PFN_glBindBuffer_p)(GLenum, GLuint);
+// Framebuffer readback path (GL 3.0 core): attach the atlas as a colour attachment and
+// glReadPixels it. Works where glGetTexImage raises INVALID_OPERATION (non-2D targets,
+// sRGB/immutable storage in a core context, driver quirks).
+#define GL_READ_FRAMEBUFFER_P          0x8CA8
+#define GL_READ_FRAMEBUFFER_BINDING_P  0x8CAA
+#define GL_COLOR_ATTACHMENT0_P         0x8CE0
+#define GL_FRAMEBUFFER_COMPLETE_P      0x8CD5
+#define GL_READ_BUFFER_P               0x0C02
+typedef void (WINAPI* PFN_glGenFramebuffers_p)(GLsizei, GLuint*);
+typedef void (WINAPI* PFN_glDeleteFramebuffers_p)(GLsizei, const GLuint*);
+typedef void (WINAPI* PFN_glBindFramebuffer_p)(GLenum, GLuint);
+typedef void (WINAPI* PFN_glFramebufferTexture2D_p)(GLenum, GLenum, GLenum, GLuint, GLint);
+typedef GLenum (WINAPI* PFN_glCheckFramebufferStatus_p)(GLenum);
 
 // True when `name` is a live 2D texture whose level 0 is exactly the atlas size.
 bool IsAtlasTexture(GLuint name, GLint savedBinding) {
@@ -197,6 +210,43 @@ void CaptureIconAtlas() {
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, s->pixels);
         GLenum err = glGetError();
         glBindTexture(GL_TEXTURE_2D, (GLuint)binding);
+        std::uint32_t stage = 1;                                   // 1 = glGetTexImage, 2 = FBO readback
+        if (err != GL_NO_ERROR) {
+            // Fallback: read the texture through a framebuffer attachment.
+            static PFN_glGenFramebuffers_p        s_genFb  = nullptr;
+            static PFN_glDeleteFramebuffers_p     s_delFb  = nullptr;
+            static PFN_glBindFramebuffer_p        s_bindFb = nullptr;
+            static PFN_glFramebufferTexture2D_p   s_fbTex  = nullptr;
+            static PFN_glCheckFramebufferStatus_p s_fbStat = nullptr;
+            if (!s_genFb)  s_genFb  = reinterpret_cast<PFN_glGenFramebuffers_p>(wglGetProcAddress("glGenFramebuffers"));
+            if (!s_delFb)  s_delFb  = reinterpret_cast<PFN_glDeleteFramebuffers_p>(wglGetProcAddress("glDeleteFramebuffers"));
+            if (!s_bindFb) s_bindFb = reinterpret_cast<PFN_glBindFramebuffer_p>(wglGetProcAddress("glBindFramebuffer"));
+            if (!s_fbTex)  s_fbTex  = reinterpret_cast<PFN_glFramebufferTexture2D_p>(wglGetProcAddress("glFramebufferTexture2D"));
+            if (!s_fbStat) s_fbStat = reinterpret_cast<PFN_glCheckFramebufferStatus_p>(wglGetProcAddress("glCheckFramebufferStatus"));
+            if (s_genFb && s_delFb && s_bindFb && s_fbTex && s_fbStat) {
+                stage = 2;
+                while (glGetError() != GL_NO_ERROR) {}
+                GLint readFb = 0, readBuf = 0;
+                glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_P, &readFb);
+                glGetIntegerv(GL_READ_BUFFER_P, &readBuf);
+                GLuint fb = 0; s_genFb(1, &fb);
+                s_bindFb(GL_READ_FRAMEBUFFER_P, fb);
+                s_fbTex(GL_READ_FRAMEBUFFER_P, GL_COLOR_ATTACHMENT0_P, GL_TEXTURE_2D, s_name, 0);
+                const GLenum fbs = s_fbStat(GL_READ_FRAMEBUFFER_P);
+                if (fbs == GL_FRAMEBUFFER_COMPLETE_P) {
+                    glReadBuffer(GL_COLOR_ATTACHMENT0_P);
+                    glReadPixels(0, 0, (GLsizei)rtx::iconatlas::kAtlasW, (GLsizei)rtx::iconatlas::kAtlasH,
+                                 GL_RGBA, GL_UNSIGNED_BYTE, s->pixels);
+                    err = glGetError();
+                } else {
+                    err = 0x10000u | (fbs & 0xFFFFu);              // framebuffer status, tagged
+                }
+                s_bindFb(GL_READ_FRAMEBUFFER_P, (GLuint)readFb);
+                if (readFb) glReadBuffer((GLenum)readBuf);
+                s_delFb(1, &fb);
+            }
+        }
+        s->reserved = stage;
 
         glPixelStorei(GL_PACK_ALIGNMENT, packAlign);
         glPixelStorei(GL_PACK_ROW_LENGTH, packRow);

@@ -41,7 +41,7 @@ struct Share {
     std::uint64_t capturedAtMs;        // GetTickCount64() at capture
     std::uint64_t hintTexOwner;        // launcher -> hook: client texture-owner object (0 = probe only)
     std::uint32_t hintHit;             // hook -> launcher: 1 = name came from the hint, 2 = from the probe
-    std::uint32_t reserved;
+    std::uint32_t reserved;            // readback stage: 1 = glGetTexImage, 2 = framebuffer glReadPixels (diagnostic)
     std::uint8_t  pixels[kMaxBytes];   // RGBA8, top-down
 };
 
