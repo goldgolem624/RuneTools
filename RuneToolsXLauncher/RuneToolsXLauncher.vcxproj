@@ -149,6 +149,7 @@
     <ClInclude Include="..\src\launcher\Http.h" />
     <ClInclude Include="..\src\launcher\Zip.h" />
     <ClInclude Include="..\src\launcher\IconCache.h" />
+    <ClInclude Include="..\src\launcher\IconCapture.h" />
     <ClInclude Include="..\src\launcher\Loader.h" />
     <ClInclude Include="..\src\launcher\MonitorFix.h" />
     <ClInclude Include="..\src\launcher\Markers.h" />
@@ -193,6 +194,7 @@
     <ClCompile Include="..\src\launcher\Http.cpp" />
     <ClCompile Include="..\src\launcher\Zip.cpp" />
     <ClCompile Include="..\src\launcher\IconCache.cpp" />
+    <ClCompile Include="..\src\launcher\IconCapture.cpp" />
     <ClCompile Include="..\src\launcher\Loader.cpp" />
     <ClCompile Include="..\src\launcher\main.cpp" />
     <ClCompile Include="..\src\launcher\Markers.cpp" />

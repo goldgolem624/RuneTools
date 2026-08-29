@@ -96,6 +96,9 @@
     <ClCompile Include="..\src\launcher\IconCache.cpp">
       <Filter>Launcher</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\launcher\IconCapture.cpp">
+      <Filter>Launcher</Filter>
+    </ClCompile>
     <ClCompile Include="..\src\launcher\Loader.cpp">
       <Filter>Launcher</Filter>
     </ClCompile>
@@ -198,6 +201,9 @@
       <Filter>Launcher</Filter>
     </ClInclude>
     <ClInclude Include="..\src\launcher\IconCache.h">
+      <Filter>Launcher</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\launcher\IconCapture.h">
       <Filter>Launcher</Filter>
     </ClInclude>
     <ClInclude Include="..\src\launcher\Loader.h">

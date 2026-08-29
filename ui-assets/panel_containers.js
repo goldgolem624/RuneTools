@@ -158,10 +158,11 @@
       const set = keys.filter(x => (k[x] | 0) !== 0);
       const zero = keys.filter(x => (k[x] | 0) === 0);
       let line;
-      if (!keys.length) line = 'Instance vars (Extra_ints): none';
-      else if (!set.length) line = 'Instance vars (Extra_ints): all ' + keys.length + ' keys 0';
+      try { const src = rtxData.sync('cache.iconSource', +parts[0]); line = (src === 'captured' ? 'Icon: captured live' : src === 'pack' ? 'Icon: pack' : 'Icon: none yet') + '\n'; } catch (e) { line = ''; }
+      if (!keys.length) line += 'Instance vars (Extra_ints): none';
+      else if (!set.length) line += 'Instance vars (Extra_ints): all ' + keys.length + ' keys 0';
       else {
-        line = 'Instance vars (Extra_ints):\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
+        line += 'Instance vars (Extra_ints):\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
         if (zero.length) line += '\n   (' + zero.length + ' other key' + (zero.length === 1 ? '' : 's') + ' 0)';
       }
       // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
