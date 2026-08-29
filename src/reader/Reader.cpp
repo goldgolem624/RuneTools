@@ -2753,38 +2753,49 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
             std::snprintf(t, sizeof(t), "%s{\"slot\":%d,\"item\":%d,\"qty\":%u}", first ? "" : ",", slot, item, qty);
             o += t; first = false; ++count;
         }
-        // The kept window is 256 bytes: a big bank/inventory update carries more slots than fit.
+        // The kept window is kPayload bytes: a big bank update can carry more slots than fit.
         o += "],\"partial\":"; o += (partial || (std::uint32_t)len > n) ? "true" : "false";
         return true;
     }
     case 0x52: {   // [sig NUL-terminated, i/s/l][args in REVERSE sig order: s = NUL string, i = i32 BE, l = i64 BE][scriptId: i32 BE]
+        // The script id sits at the END, so a packet cut by the payload window loses it: such a
+        // record still decodes the arguments it has and reports script -1 with partial:true.
+        const bool cut = wire > (std::int32_t)n;
         std::uint32_t p = 0; std::string sig;
         while (p < n && b[p] != 0 && sig.size() < 16) sig.push_back((char)b[p++]);
         if (p >= n) return false;                              // no NUL terminator: raw (empty sig = no args, seen live: len 5)
         for (char c : sig) if (c != 'i' && c != 's' && c != 'l') return false;
         p++;
         std::vector<std::string> args(sig.size());
-        for (int i = (int)sig.size() - 1; i >= 0; --i) {
+        bool partial = false;
+        for (int i = (int)sig.size() - 1; i >= 0 && !partial; --i) {
             if (sig[(std::size_t)i] == 's') {
                 std::uint32_t s0 = p;
                 while (p < n && b[p] != 0) ++p;
-                if (p >= n) return false;                      // truncated string: raw
+                if (p >= n) {
+                    if (!cut) return false;                    // malformed inside a complete packet: raw
+                    args[(std::size_t)i] = "\"" + chat_pkt_escape(b + s0, p - s0) + "\""; partial = true; break;
+                }
                 args[(std::size_t)i] = "\"" + chat_pkt_escape(b + s0, p - s0) + "\"";
                 p++;
             } else if (sig[(std::size_t)i] == 'l') {
-                if (p + 8 > n) return false;
+                if (p + 8 > n) { if (!cut) return false; partial = true; break; }
                 const std::int64_t v = (std::int64_t)(((std::uint64_t)ev_u32be(b + p) << 32) | ev_u32be(b + p + 4));
                 args[(std::size_t)i] = std::to_string(v); p += 8;
             } else {
-                if (p + 4 > n) return false;
+                if (p + 4 > n) { if (!cut) return false; partial = true; break; }
                 args[(std::size_t)i] = std::to_string((std::int32_t)ev_u32be(b + p)); p += 4;
             }
         }
-        if (p + 4 > n) return false;
-        const std::uint32_t script = ev_u32be(b + p);
-        std::snprintf(t, sizeof(t), "\"kind\":\"runclientscript\",\"script\":%u,\"sig\":\"%s\",\"args\":[", script, sig.c_str());
+        std::int64_t script = -1;
+        if (!partial) {
+            if (p + 4 > n) { if (!cut) return false; partial = true; }
+            else script = ev_u32be(b + p);
+        }
+        std::snprintf(t, sizeof(t), "\"kind\":\"runclientscript\",\"script\":%lld,\"sig\":\"%s\",\"partial\":%s,\"args\":[",
+                      (long long)script, sig.c_str(), partial ? "true" : "false");
         o += t;
-        for (std::size_t i = 0; i < args.size(); ++i) { if (i) o += ","; o += args[i]; }
+        for (std::size_t i = 0; i < args.size(); ++i) { if (i) o += ","; o += args[i].empty() ? std::string("null") : args[i]; }
         o += "]"; return true;
     }
     case 0x5C:     // reads 1 byte -> skill block +0x18

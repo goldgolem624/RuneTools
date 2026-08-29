@@ -14,11 +14,11 @@
 
 namespace rtx::events {
 
-inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXEvents_v1_";   // moves with kVersion
+inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXEvents_v2_";   // moves with kVersion
 inline constexpr std::uint32_t kMagic   = 0x54564552;   // 'REVT'
-inline constexpr std::uint32_t kVersion = 1;
+inline constexpr std::uint32_t kVersion = 2;
 inline constexpr int kMaxRecords = 2048;   // ~20 s of the busiest observed rate (106 op-0x52 / 45 s + per-tick ops)
-inline constexpr int kPayload    = 256;    // bytes kept; `length` still reports the true wire size
+inline constexpr int kPayload    = 1024;    // bytes kept; `length` still reports the true wire size
 
 // Default opcode mask (launcher never wrote one): skill_update 0x04, ge_offer 0x05/0x51,
 // container_update 0x2B, runclientscript 0x52, run_energy 0x5C, run_weight 0x00,

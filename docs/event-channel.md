@@ -1,0 +1,100 @@
+# Event channel (rtxEvents)
+
+Motivation: docs/gap-audit-2026-08-29.md, A3. Panels and plugins used to poll at 4 Hz for things
+that are events (an xp drop, a container change, a script run, a game tick). This channel carries
+them from the game's inbound packet framer to the page with ~100 ms latency, and exposes the
+game tick as a subscription.
+
+## Pipeline
+
+1. Companion `companion/EventShare.h` + `SceneData.cpp` (`EventRecord`, called from the
+   existing framer detour right before the chat-ring branch). A named section
+   `Local\RuneToolsXEvents_v2_<pid>` holds a 2048-record ring. Each record is a per-record
+   odd/even seqlock (`seq = (index+1)*2`, `| 1` while the body is being filled, `MemoryBarrier()`
+   on both sides), `written` is published last. A 256-bit opcode mask (`mask[8]`, bit `op & 31`
+   of word `op >> 5`) chooses what is recorded; the companion seeds it with the default set
+   unless the launcher already wrote one (`maskSet`). `0x15` message_game is never recorded
+   (the chat ring owns it). Payload is truncated to 1024 bytes, `length` keeps the wire size,
+   `truncated` counts those records. Counters: `written`, `truncated`, `inbound`.
+   Layout: Record = 5 x u32/i32 + 1024 = 1044 bytes; Share = 80-byte header + 2048 x 1044
+   = 565,328 bytes.
+
+   Default mask: 0x00 run_weight, 0x04 skill_update, 0x05 and 0x51 ge_offer, 0x2B
+   container_update, 0x52 runclientscript, 0x5C run_energy, 0x8D ping_echo
+   (decimal csv `0,4,5,43,81,82,92,141`).
+
+2. Reader `src/reader/Reader.cpp`: `EventsJson(pid, since)` returns
+   `{"ok":true,"seq":<cursor>,"tick":<reader game tick or -1>,"from","inbound","truncated","hook","mask":[8],"events":[...]}`
+   with every record after `since` (cap 512, oldest first). `EventsMaskSet(pid, mask[8])` writes
+   the mask (creating the section if the companion has not, so a mask set before injection
+   survives it).
+
+   Decoded kinds (layouts already documented in this repo, in
+   `docs/server_packets_handler_map.md` and the `npDecoders` table of `ui-assets/panel_netprobe.js`):
+
+   | op | kind | fields |
+   |----|------|--------|
+   | 0x04 | `skill_update` | `skill`, `name`, `level`, `xp` |
+   | 0x2B | `container_update` | `container`, `flags`, `slots:[{slot,item,qty}]` (`item` -1 = emptied), `partial` (true when the 1024-byte window cut the slot list) |
+   | 0x52 | `runclientscript` | `script`, `sig`, `args` (ints and strings in signature order) |
+   | 0x5C | `run_energy` | `value` |
+   | 0x00 | `run_weight` | `value` (i16) |
+   | 0x8D | `ping` | `a`, `b` (the two u32 the client echoes) |
+
+   Raw (no field layout documented in the repo, so nothing is guessed): 0x05 / 0x51 `ge_offer`
+   and any other opcode enabled through the mask. Shape: `{"kind":"raw","op":N,"len":L,"hex":"..."}`.
+   A decoded kind falls back to raw when its payload is shorter than its layout needs.
+
+3. Bridge `src/launcher/Bridge.cpp`: `events(pid, sinceSeq)` (served_obj, key `events:<pid>`,
+   fail_json on noclient/noargs) and `eventsMask(pid, csv)` (bool). Broker
+   (`ui-assets/core/rtx-plugins.js`): `state.events` (scope state.read), `host.eventsMask`
+   (scope actuator, panel-only).
+
+4. Page bus `ui-assets/core/rtx-data.js`: `rtxEvents.on(kind, fn)`, `off`, `emit`; `'*'` hears
+   everything. `ui-assets/core/rtx-boot.js`: `rtxEventsTick` runs every 100 ms from attachBridge
+   (not inside refresh, which stays at 4 Hz), busy-guarded like refresh, cursor reset on pid
+   change, dedups on `seq` (the served cache may replay the previous span). Emits one event per
+   record keyed by `kind`, and `gameTick` `{tick, dtMs}` whenever the reader's tick counter moves.
+   `window.rtxEventsPoll` exposes cursor / poll / fail counters for the panel.
+
+5. SDK: plugins with `state.read` get one `events` push per host cycle (batched, in capture
+   order) alongside the unchanged 4 Hz `tick` heartbeat; `rtx.plugin.events.on(kind, fn)` fans
+   it out per kind. See PLUGIN_SDK.md, "Game events".
+
+6. Panel `ui-assets/panel_events.js` (Developer > Events): last 200 events newest first,
+   per-kind counters, gameTick counter with measured interval (mean / min / max of the last 20),
+   mask field, Pause and Clear.
+
+## Live verification (after a rebuild and a fresh inject)
+
+Open Developer > Events. The tick card is the first check:
+
+1. Standing still, logged in: `gameTick` increases by about 100 per minute and `interval` reads
+   about 600 ms (min/max within roughly 500 to 700 ms; the reader samples the tick counter,
+   so single outliers of one poll period, 100 ms, are expected). `polls` grows ~10 per second,
+   `fails` stays flat. If `fails` grows instead, the companion is not loaded or the section is
+   from an older build (`EventsJson` returns ok:false).
+2. Gain xp (any skill action, e.g. one pickpocket, one log cut): one `skill_update` row per xp
+   drop with the skill name, level and the new total xp. The `skill_update` counter goes up by
+   exactly the number of xp drops seen in the chat/xp popups.
+3. Pick up an item, or drop one: a `container_update` row for container 93 (inventory) listing
+   the changed slot with the item id and quantity; drop shows the slot as `empty`. Opening the
+   bank produces a large one with `[partial]` (the 256-byte window) and counts as one event.
+4. Open the Grand Exchange: `ge_offer` rows (op 0x05 / 0x51) appear as raw hex, one per offer
+   slot the server sends; interface scripts fired by the GE open show as `runclientscript`
+   rows with a script id and arguments. Closing it fires more `runclientscript` rows.
+5. Walk or run: `run_energy` rows while running (value counts down), `run_weight` after an
+   equipment/inventory change. `ping` rows appear on their own about once a minute.
+6. Pause: click Pause, do any of the above; the list freezes while the counters keep going.
+   Resume shows the new rows.
+7. Mask: set the field to `4` and Set; only `skill_update` rows arrive from then on (counters
+   for the others stop). Set `4,21`: still no chat lines (0x15 is refused). Click Default to
+   restore.
+8. Plugin path (optional): any plugin with `state.read` and
+   `rtx.plugin.events.on('skill_update', console.log)` in its code logs the same records the
+   panel shows, batched per 4 Hz push.
+
+Record the measured interval from step 1 in the report of the run.
+
+
+runclientscript records cut by the window decode the arguments they have and report `script: -1, partial: true` (the script id is the last field on the wire).
