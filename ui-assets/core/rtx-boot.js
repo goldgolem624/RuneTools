@@ -6,16 +6,23 @@
   // bridge(), uiBarTick() and uiRepaintAll(), which only exist once every core file is in.
   try { uiApply(); } catch (e) {}
 
+  let _refreshFailMsg = '';
+  attachBridge._waits = 0;
+  function refreshFail(msg) { if (msg === _refreshFailMsg) return; _refreshFailMsg = msg; console.error('rtx refresh: ' + msg); }
   async function refresh() {
-    if (!bridge()) return;
+    if (!bridge()) { refreshFail('bridge missing: typeof window.rtx = ' + typeof window.rtx); return; }
     if (refresh._busy) return;      // 250 ms timer vs awaits: no overlapping passes
     refresh._busy = true;
     try {
     let snaps = null;
+    // A failure here leaves every panel on "Connecting..." with no trace, so say why (once per
+    // distinct message, not per tick).
     try { snaps = JSON.parse(await bridge().gameSnapshots()); }
-    catch (e) { return; }
-    if (!Array.isArray(snaps)) return;
+    catch (e) { refreshFail('gameSnapshots threw: ' + (e && e.message ? e.message : e)); return; }
+    if (!Array.isArray(snaps)) { refreshFail('gameSnapshots returned non-array: ' + String(JSON.stringify(snaps)).slice(0, 200)); return; }
     const me = snaps.find(s => Number(s.pid) === myPid());
+    if (!me) refreshFail('no snapshot for pid ' + myPid() + '; have [' + snaps.map(s => s.pid).join(',') + ']');
+    else if (_refreshFailMsg) { _refreshFailMsg = ''; console.log('rtx refresh: snapshot for pid ' + myPid() + ' resumed'); }
     lastSnap = me || null;
     // Rebind plugin consent to the logged-in character. Driven from here, not only from
     // renderPlugin, because a minimized plugin window keeps its frame mounted and can still
@@ -190,7 +197,11 @@
 
 
   function attachBridge() {
-    if (!bridge()) { setTimeout(attachBridge, 100); return; }
+    if (!bridge()) {
+      if (!attachBridge._waits++) console.log('rtx boot: waiting for the bridge (typeof window.rtx = ' + typeof window.rtx + ', pid ' + myPid() + ')');
+      setTimeout(attachBridge, 100); return;
+    }
+    console.log('rtx boot: bridge attached after ' + attachBridge._waits + ' waits, pid ' + myPid());
     // Durable preferences first: several panels read their seed at parse time, and this is
     // what restores them on the first run after an app update wiped localStorage. Async, so
     // each of those panels also gets a re-apply hook (see prefsInit).
@@ -243,6 +254,7 @@
     wmRectsSoon();
     refresh();
     setInterval(refresh, 250);
+    console.log('rtx boot: refresh scheduled');
     // Keep the companion var-capture observer ON at all times (not just on the Vars
     // tab): it resolves client-side vars (panel origins, dialogue rects) the game
     // hashmaps don't keep current, else those highlights read stale. Cheap flag,
@@ -267,3 +279,4 @@
     loadPlugins();   // discover installed (signed) + sideloaded dev plugins -> Plugins category
     setInterval(pluginDevWatch, 2000);   // hot-reload sideloaded dev plugins on folder changes
   }
+
