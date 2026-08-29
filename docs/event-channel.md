@@ -98,3 +98,5 @@ Record the measured interval from step 1 in the report of the run.
 
 
 runclientscript records cut by the window decode the arguments they have and report `script: -1, partial: true` (the script id is the last field on the wire).
+
+ge_offer (0x05 / 0x51), verified live on 2026-08-29 with two offers in two slots: bytes 0-3 are a fixed `00 02 07 03` header, byte 4 is the slot index, bytes 5-6 the item id (big-endian); the remaining fields are not pinned down, so the event carries the live offer read from the GE slot array in memory (`offer`) plus the packet item (`item`) for cross-checking.
