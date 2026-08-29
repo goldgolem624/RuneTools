@@ -55,7 +55,7 @@
     lodeFetching = true;
     try {
       let vp = {};
-      if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), LODE_VARPS.concat(LODE_QUICK_VP).join(','))); } catch (e) {} }
+      if (bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', LODE_VARPS.concat(LODE_QUICK_VP).join(','))); } catch (e) {} }
       const qraw = (vp[LODE_QUICK_VP] || 0) >>> 0;
       lodeQuick = { on: (qraw & 1) === 1, n: (qraw >>> 1) & 0xfff };
       lodeData = LODESTONES.map(l => {
@@ -716,7 +716,7 @@
     hideyFetching = true;
     try {
       let vp = {};
-      if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), HIDEY_VARPS.join(','))); } catch (e) {} }
+      if (bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', HIDEY_VARPS.join(','))); } catch (e) {} }
       hideyData = HIDEY.map(h => { const v = (((vp[h.vp] || 0) >>> 0) >>> h.b) & 3; return { ...h, state: v, built: v >= 1, filled: v === 2 }; });
     } finally { hideyFetching = false; }
     paneRun('hideyholes', renderHidey);

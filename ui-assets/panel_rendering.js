@@ -21,7 +21,7 @@
       el.addEventListener('click', () => {
         renderHide[key] = !renderHide[key];
         el.classList.toggle('on', renderHide[key]);
-        try { if (bridge() && bridge().renderToggle) bridge().renderToggle(myPid(), which, renderHide[key]); } catch (e) {}
+        try { if (bridge() && bridge().renderToggle) rtxData.sync('act.renderToggle', which, renderHide[key]); } catch (e) {}
       });
     });
   }

@@ -84,7 +84,7 @@
     try {
       // Shares panel_bosses' baked-and-extracted item->varbit tables; adopt before reading.
       if (typeof bcAdoptSwitches === 'function') await bcAdoptSwitches();
-      const rows = await bridgeJson('dbRows', 84);
+      const rows = await rtxData.call('cache.dbRows', 84);
       if (!Array.isArray(rows) || !rows.length) return;   // cache not open yet; retry next fetch
       const out = [];
       for (const r of rows) {
@@ -92,18 +92,18 @@
         const region = r.s && r.s['4'] && r.s['4'][0];
         if (sid <= 0 || !region) continue;
         let sp = null;
-        sp = await bridgeJson('structParams', sid);
+        sp = await rtxData.call('cache.structParams', sid);
         const S = (sp && sp.strs) || {};
         if (!/Slayer monsters/i.test(S['6411'] || '')) continue;   // boss logs live in the same table
         const items = [];
         for (const id of ((r.i && r.i['13']) || [])) {
           let nm = '';
-          { const d = await bridgeJson('itemInfo', id); nm = (d && d.name) || ''; }
+          { const d = await rtxData.call('cache.itemInfo', id); nm = (d && d.name) || ''; }
           // Found varbit: baked map, else item param 8994 var_reference ((v >>> 24) == 1 -> low 24 bits).
           let vb = COLLECTION_ITEM_VBS[id] || COLLECTION_ITEM_VB_PAIR[id] || null;
           if (!vb && bridge().itemParams) {
             try {
-              const sp = await bridgeJson('itemParams', id);
+              const sp = await rtxData.call('cache.itemParams', id);
               const ref = (sp && sp.ints && sp.ints['8994']) | 0;
               if ((ref >>> 24) === 1) vb = ref & 0xFFFFFF;
             } catch (e) {}
@@ -128,24 +128,24 @@
   }
   async function fetchTasks() {
     if (!bridge() || !bridge().varps) return;
-    { const d = await bridgeJson('varps', myPid(), TASK_VARP_IDS); if (d && typeof d === 'object') taskVp = d; }
+    { const d = await rtxData.call('state.varps', TASK_VARP_IDS); if (d && typeof d === 'object') taskVp = d; }
     if (bridge().varbits) {
       try {
         const ids = SLAYER_LOG_IDS + ',' + ST_EXTRA_VB_IDS + (slayerColItemIds ? ',' + slayerColItemIds : '');
-        const vb = await bridgeJson('varbits', myPid(), ids);
+        const vb = await rtxData.call('state.varbitsCsv', ids);
         if (vb && typeof vb === 'object' && Object.keys(vb).length) slayerLogVb = vb;
       } catch (e) {}
     }
     await slayerColLoad();
     if (bridge().enumInfo) {
-      if (!slayerCreatures) { { const m = await bridgeJson('enumInfo', 1563); if (m && Object.keys(m).length) slayerCreatures = m; } }
-      if (!reaperBosses)    { { const m = await bridgeJson('enumInfo', 9197); if (m && Object.keys(m).length) reaperBosses    = m; } }
+      if (!slayerCreatures) { { const m = await rtxData.call('cache.enumInfo', 1563); if (m && Object.keys(m).length) slayerCreatures = m; } }
+      if (!reaperBosses)    { { const m = await rtxData.call('cache.enumInfo', 9197); if (m && Object.keys(m).length) reaperBosses    = m; } }
     }
     if (slayerLogVb && bridge().itemInfo) {
       for (const [item, kv, cv] of ST_MASKS) {
         const active = ((slayerLogVb[String(kv)] | 0) > 0) || (cv && (slayerLogVb[String(cv)] | 0) > 0);
         if (!active || stMaskNames[item] !== undefined) continue;
-        try { stMaskNames[item] = ((await bridgeJson('itemInfo', item)) || {}).name || ''; }
+        try { stMaskNames[item] = ((await rtxData.call('cache.itemInfo', item)) || {}).name || ''; }
         catch (e) { stMaskNames[item] = ''; }
       }
     }

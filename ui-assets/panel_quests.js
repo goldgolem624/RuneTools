@@ -23,7 +23,7 @@
     if (QUESTS) return true;
     if (!bridge() || !bridge().quests) return false;
     let j = null;
-    try { j = JSON.parse(await bridge().quests()); } catch (e) { return false; }
+    try { j = JSON.parse(await rtxData.raw('cache.quests')); } catch (e) { return false; }
     if (!j || !Array.isArray(j.quests) || !j.quests.length) return false;   // cache not open yet
     QUESTS = j.quests;
     QUEST_VB = j.vb || {};
@@ -40,7 +40,7 @@
   QUEST_ENUMS = null;
   async function questEnsureEnums() {
     if (QUEST_ENUMS || !bridge() || !bridge().enumInfo) return;
-    const grab = async id => { try { return JSON.parse(await bridge().enumInfo(id)) || {}; } catch (e) { return {}; } };
+    const grab = async id => { try { return JSON.parse(await rtxData.raw('cache.enumInfo', id)) || {}; } catch (e) { return {}; } };
     const ln = await grab(13354), ag = await grab(13275), ar = await grab(9686);
     // enumInfo returns {} while the enum cache is still opening -> leave null and retry next poll
     if (Object.keys(ln).length || Object.keys(ag).length || Object.keys(ar).length)
@@ -136,7 +136,7 @@
       if (!await questEnsureDefs()) return;   // cache not open yet -> retry next poll
       await questEnsureEnums();
       let vp = {};
-      if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), QUEST_VARPS.join(','))); } catch (e) {} }
+      if (bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', QUEST_VARPS.join(','))); } catch (e) {} }
       if (!vp || !Object.keys(vp).length) return;   // empty read -> keep last good
       const st = {};
       QUESTS.forEach(q => { st[q.id] = questStatus(q, vp); });

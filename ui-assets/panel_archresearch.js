@@ -44,7 +44,7 @@ async function archRelicEnsure(force) {
   try {
     if (archRelicNames === null && bridge().dbRows) {
       try {
-        const rows = JSON.parse(await bridge().dbRows(94) || 'null');
+        const rows = JSON.parse(await rtxData.raw('cache.dbRows', 94) || 'null');
         if (Array.isArray(rows) && rows.length) {
           const map = {};
           for (const r of rows) {
@@ -57,13 +57,13 @@ async function archRelicEnsure(force) {
       } catch (e) { /* retry next call until the cache is open */ }
     }
     try {
-      const pv = JSON.parse(await bridge().varps(myPid(), String(ARCH_RELIC_PRESET_VP)));
+      const pv = JSON.parse(await rtxData.raw('state.varps', String(ARCH_RELIC_PRESET_VP)));
       archRelicPreset = (pv && pv[ARCH_RELIC_PRESET_VP] | 0) || 0;
     } catch (e) {}
     if (bridge().varbits) {
       try {
         const vbs = archRelicVbs(archRelicPreset);
-        const vb = JSON.parse(await bridge().varbits(myPid(), vbs.join(',')) || 'null');
+        const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', vbs.join(',')) || 'null');
         archRelicVals = vbs.map(id => (vb && vb[id]) | 0);
       } catch (e) {}
     }
@@ -97,7 +97,7 @@ async function archResearchEnsure(force) {
   try {
     if (archResList === null) {
       if (!bridge().archResearch) { archResList = []; return; }   // older launcher build
-      try { archResList = JSON.parse(bridge().archResearch() || '[]') || []; }
+      try { archResList = JSON.parse(rtxData.sync('cache.archResearch') || '[]') || []; }
       catch (e) { archResList = []; }
     }
     // Culture pages: one enum read each, once per session (static for the game build).
@@ -105,7 +105,7 @@ async function archResearchEnsure(force) {
       const map = {};
       for (const [, name, eid] of ARCH_CULTURES) {
         try {
-          const e = JSON.parse(await bridge().enumInfo(eid) || '{}');
+          const e = JSON.parse(await rtxData.raw('cache.enumInfo', eid) || '{}');
           for (const k in e) { const row = e[k]; if (row > 0) map[row] = name; }
         } catch (err) { /* a missing culture enum just leaves those rows ungrouped */ }
       }
@@ -113,7 +113,7 @@ async function archResearchEnsure(force) {
     }
     const ids = ARCH_RES_FIELD_VARPS.concat(ARCH_RES_REPORT_VARPS).join(',');
     try {
-      const d = JSON.parse(await bridge().varps(myPid(), ids));
+      const d = JSON.parse(await rtxData.raw('state.varps', ids));
       if (d && typeof d === 'object') archResVp = d;
     } catch (e) {}
   } finally { archResBusy = false; }

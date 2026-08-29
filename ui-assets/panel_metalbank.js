@@ -112,7 +112,7 @@
     // the key count intact -- that one needs a bool out-param on the native side. Published
     // NON-ENUMERABLY so every existing caller (Object.keys / Object.assign / for..in) is unaffected.
     let vp = {}, ok = vps.size > 0 && !!bridge().varps;
-    if (ok) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) { ok = false; } }
+    if (ok) { try { vp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))); } catch (e) { ok = false; } }
     if (ok && Object.keys(vp).length !== vps.size) ok = false;
     const out = {};
     for (const vb of vbIds) out[vb] = readVb(vb, vp) || 0;
@@ -224,7 +224,7 @@
     if (now - mystCachePagesAt < 5000) return;   // cache may still be opening; retry later
     mystCachePagesAt = now;
     try {
-      const j = JSON.parse(bridge().mystPages() || 'null');
+      const j = JSON.parse(rtxData.sync('cache.mystPages') || 'null');
       if (j && j.myst && Object.keys(j.myst).length) mystCachePages = j.myst;
     } catch (e) {}
   }
@@ -234,7 +234,7 @@
     if (mystItemNames[id] !== undefined) return mystItemNames[id];
     mystItemNames[id] = 'Item ' + id;   // placeholder until the fetch lands (next render fixes it)
     try {
-      Promise.resolve(bridge().itemInfo(id)).then(s => {
+      Promise.resolve(rtxData.sync('cache.itemInfo', id)).then(s => {
         try { const o = JSON.parse(s); if (o && o.name) mystItemNames[id] = o.name; } catch (e) {}
       });
     } catch (e) {}

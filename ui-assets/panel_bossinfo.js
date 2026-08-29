@@ -48,7 +48,7 @@
   async function biLoadRotsEnum() {
     if (biRotsEnum || !bridge() || !bridge().enumInfo) return;
     try {
-      const e = JSON.parse(await bridge().enumInfo(7655) || 'null');
+      const e = JSON.parse(await rtxData.raw('cache.enumInfo', 7655) || 'null');
       if (e && Object.keys(e).length) biRotsEnum = e;
     } catch (e) {}
   }
@@ -66,14 +66,14 @@
   // are cache-static, so memoise forever once resolved.
   async function biSpotName(idx) {
     if (!biSpotEnum) {
-      try { biSpotEnum = JSON.parse(await bridge().enumInfo(10016) || 'null'); } catch (e) {}
+      try { biSpotEnum = JSON.parse(await rtxData.raw('cache.enumInfo', 10016) || 'null'); } catch (e) {}
       if (!biSpotEnum || !Object.keys(biSpotEnum).length) { biSpotEnum = null; return ''; }
     }
     const sid = biSpotEnum[String(idx)] | 0;
     if (sid <= 0) return '';
     if (biSpotNames[sid] === undefined) {
       try {
-        const sp = JSON.parse(await bridge().structParams(sid) || 'null');
+        const sp = JSON.parse(await rtxData.raw('cache.structParams', sid) || 'null');
         const nm = sp && sp.strs && sp.strs['1266'];
         if (nm) biSpotNames[sid] = nm;
       } catch (e) {}
@@ -89,9 +89,9 @@
       if (t - biFetchAt >= 2000) {
         biFetchAt = t; biFetching = true;
         try {
-          const vb = JSON.parse(await bridge().varbits(myPid(), BI_VB_IDS) || 'null');
+          const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', BI_VB_IDS) || 'null');
           if (vb && typeof vb === 'object' && Object.keys(vb).length) biVb = vb;
-          const vp = JSON.parse(await bridge().varps(myPid(), BI_VP_IDS) || 'null');
+          const vp = JSON.parse(await rtxData.raw('state.varps', BI_VP_IDS) || 'null');
           if (vp && typeof vp === 'object' && Object.keys(vp).length) biVp = vp;
         } catch (e) { /* keep previous; date math still renders */ }
         biFetching = false;

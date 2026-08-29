@@ -9,7 +9,7 @@
     if (now - _perksAt < 1000) return;
     _perksAt = now;
     perksFetching = true;
-    try { const d = JSON.parse(await bridge().perks(myPid())); perksData = (d && Array.isArray(d.items)) ? d : { items: [] }; }
+    try { const d = JSON.parse(await rtxData.raw('state.perks')); perksData = (d && Array.isArray(d.items)) ? d : { items: [] }; }
     catch (e) { /* keep previous */ }
     perksFetching = false;
     paneRun('perks', renderPerks);

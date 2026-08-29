@@ -121,7 +121,7 @@
     // 5s poll makes retries free
     if (bridge() && bridge().enumInfo) {
       try {
-        const em = JSON.parse(await bridge().enumInfo(id) || 'null');
+        const em = JSON.parse(await rtxData.raw('cache.enumInfo', id) || 'null');
         if (em && Object.keys(em).length) lgEnums[id] = em;
       } catch (e) {}
     }
@@ -134,7 +134,7 @@
     if (t - lgFetchAt < 5000) return;
     lgFetchAt = t; lgFetching = true;
     try {
-      const grab = async id => { try { return JSON.parse(await bridge().dbRows(id) || 'null') || []; } catch (e) { return []; } };
+      const grab = async id => { try { return JSON.parse(await rtxData.raw('cache.dbRows', id) || 'null') || []; } catch (e) { return []; } };
       const [hdrs, orders, tiers, relics, trophies, tasks, cfgs, cats, regions, regionInfos] = await Promise.all(
         [LG_T.header, LG_T.tierOrder, LG_T.tiers, LG_T.relics, LG_T.trophies, LG_T.tasks, LG_T.cfg, LG_T.cats,
          LG_T.regions, LG_T.regionInfo].map(grab));
@@ -274,7 +274,7 @@
   async function lgEnsureAch() {
     if (lgAchById) return;
     if (!achDefs && bridge() && bridge().achievements) {
-      try { achDefs = JSON.parse(await bridge().achievements()) || []; } catch (e) { achDefs = []; }
+      try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; }
     }
     if (!achDefs || !achDefs.length) return;
     const map = {};
@@ -345,7 +345,7 @@
     }
     let vpOut = {};
     if (vps.size && bridge().varps) {
-      try { vpOut = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))) || {}; } catch (e) {}
+      try { vpOut = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))) || {}; } catch (e) {}
     }
     lgVbVals = out; lgVpVals = vpOut;
     lgPoints = l.ptsRef > 0 ? lgRefVal(l.ptsRef) : null;
@@ -358,7 +358,7 @@
       lgRegionHigh = null;
       if (bridge().varpsLong) {
         try {
-          const d = JSON.parse(await bridge().varpsLong(myPid(), String(LG_REGION_VP))) || {};
+          const d = JSON.parse(await rtxData.raw('state.varpsLong', String(LG_REGION_VP))) || {};
           const raw = d[String(LG_REGION_VP)];
           if (raw !== undefined) {
             let u = Number(raw);

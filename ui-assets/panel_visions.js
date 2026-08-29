@@ -70,11 +70,11 @@
   }
   function qgIfaceComp(group, comp, label) {
     let cr = null;
-    try { cr = JSON.parse(bridge().ifaceCompRects(myPid(), group, String(comp), 0) || '{}'); } catch (e) {}
+    try { cr = JSON.parse(rtxData.sync('state.ifaceCompRects', group, String(comp), 0) || '{}'); } catch (e) {}
     const r = cr && cr.abs && cr.comps ? cr.comps[String(comp)] : null;
     if (!(r && r[2] > 0)) return false;
     qgClrNpc(); qgClrTiles(); qgClrDlg();
-    try { bridge().panelViz(myPid(), r[0] + ',' + r[1] + ',' + r[2] + ',' + r[3] + ',' + label); } catch (e) {}
+    try { rtxData.sync('overlay.panelViz', r[0] + ',' + r[1] + ',' + r[2] + ',' + r[3] + ',' + label); } catch (e) {}
     return true;
   }
   function qgIdMarks(objs, ids, label) {
@@ -94,16 +94,16 @@
   function qgItem(id, label) { qgClrNpc(); qgClrTiles(); qgClrDlg(); qgOv('overlay.highlightItem', id, label); }
   // Boxes multiple backpack slots at once: pairs = [[itemId, label],..].
   async function qgItems(pairs) {
-    let inv = null; try { inv = JSON.parse(await bridge().inventory(myPid())); } catch (e) {}
+    let inv = null; try { inv = JSON.parse(await rtxData.raw('state.inventory')); } catch (e) {}
     const slotOf = id => { if (inv && Array.isArray(inv.items)) for (const it of inv.items) if (it[1] === id) return it[0]; return -1; };
     const parts = [];
     for (const [id, label] of pairs) {
       const s = slotOf(id); if (s < 0) continue;
-      let r = null; try { r = JSON.parse(await bridge().invSlotRect(myPid(), s)); } catch (e) {}
+      let r = null; try { r = JSON.parse(await rtxData.raw('state.invSlotRect', s)); } catch (e) {}
       if (r && r.w > 0) parts.push(r.x + ',' + r.y + ',' + r.w + ',' + r.h + ',' + String(label).replace(/[,|]/g, ' '));
     }
     qgClrNpc(); qgClrTiles(); qgClrDlg();
-    try { bridge().panelViz(myPid(), parts.join('|')); } catch (e) {}
+    try { rtxData.sync('overlay.panelViz', parts.join('|')); } catch (e) {}
     return parts.length;
   }
   async function qgDialogOpt(text) { qgClrNpc(); qgClrTiles(); qgClrItem(); try { return await PLUGIN_API['overlay.highlightOption'].run([text], myPid()); } catch (e) { return false; } }
@@ -111,10 +111,10 @@
   function qgExtraAction(label) {
     qgClrNpc(); qgClrTiles();
     let cr = null;
-    try { cr = JSON.parse(bridge().ifaceCompRects(myPid(), 743, '7', 0) || '{}'); } catch (e) {}
+    try { cr = JSON.parse(rtxData.sync('state.ifaceCompRects', 743, '7', 0) || '{}'); } catch (e) {}
     const r = cr && cr.abs && cr.comps ? cr.comps['7'] : null;
     if (r && r[2] > 0) {
-      if (label) { qgClrDlg(); try { bridge().panelViz(myPid(), r[0] + ',' + r[1] + ',' + r[2] + ',' + r[3] + ',' + label); } catch (e) {} }
+      if (label) { qgClrDlg(); try { rtxData.sync('overlay.panelViz', r[0] + ',' + r[1] + ',' + r[2] + ',' + r[3] + ',' + label); } catch (e) {} }
       else { qgClrItem(); qgOv('overlay.highlightRect', r[0], r[1], r[2], r[3]); }
       return true;
     }
@@ -133,7 +133,7 @@
   }
   hudShown = true;   // starts true: a panel reload resets it while the HUD may still be lit, so the first clear must go through
   function hudSet(sprite, caption, on) {
-    try { if (bridge() && bridge().hudSprite) bridge().hudSprite(myPid(), on ? sprite : 0, on ? caption : '', !!on); } catch (e) {}
+    try { if (bridge() && bridge().hudSprite) rtxData.sync('overlay.hudSprite', on ? sprite : 0, on ? caption : '', !!on); } catch (e) {}
     hudShown = !!on;
   }
   // Lodestone-teleport HUD reminder while the player is >60 tiles from the named lodestone; true while it is up.
@@ -152,12 +152,12 @@
   }
   // Metal bank (container 858): deposited contents only, and only loaded at a furnace/forge/anvil.
   async function qgMetalBankCount(id) {
-    let d = null; try { d = JSON.parse(await bridge().metalBankItems(myPid())); } catch (e) {}
+    let d = null; try { d = JSON.parse(await rtxData.raw('state.metalBank')); } catch (e) {}
     let n = 0; if (d && Array.isArray(d.items)) for (const it of d.items) if (it[1] === id) n += (it[2] > 0 ? it[2] : 1);
     return n;
   }
   async function qgEquipCount(id) {   // worn items (container 94)
-    let eq = null; try { eq = JSON.parse(await bridge().equipment(myPid())); } catch (e) {}
+    let eq = null; try { eq = JSON.parse(await rtxData.raw('state.equipment')); } catch (e) {}
     let n = 0; if (eq && Array.isArray(eq.items)) for (const it of eq.items) if (it[1] === id) n += (it[2] > 0 ? it[2] : 1);
     return n;
   }
@@ -327,7 +327,7 @@
     let vb = {}; try { vb = await readVarbitValues(a.vbs || []); } catch (e) { return; }
     // Old-generation quests track progress in a whole varp: `vps` are read raw into done()'s third argument.
     let vp = {};
-    if (a.vps && a.vps.length) { try { vp = JSON.parse(await bridge().varps(myPid(), a.vps.join(','))) || {}; } catch (e) { return; } }
+    if (a.vps && a.vps.length) { try { vp = JSON.parse(await rtxData.raw('state.varps', a.vps.join(','))) || {}; } catch (e) { return; } }
     let inv = new Set();
     if (a.inv) { try { const d = JSON.parse((await PLUGIN_API['state.inventory'].run([], myPid())) || '{}'); if (d && Array.isArray(d.items)) for (const it of d.items) if (it[1] > 0) inv.add(it[1]); } catch (e) {} }
     const set = a.done(vb, inv, vp), sig = [...set].sort((x, y) => x - y).join(',');
@@ -387,7 +387,7 @@
     }
     if (v === 9) { await qgTalkNpc('Farmer Rachel', 'Talk to Farmer Rachel', 3611, 1438, 0); return; }   
     if (v === 12) {
-      if (!hosTrail) { try { const dt = await bridge().interfaceGroup(myPid(), 1191); if (dt && dt.toLowerCase().indexOf('follow it and see where it goes') >= 0) hosTrail = true; } catch (e) {} }   // group 1191 = player dialogue
+      if (!hosTrail) { try { const dt = await rtxData.raw('state.interfaceGroup', 1191); if (dt && dt.toLowerCase().indexOf('follow it and see where it goes') >= 0) hosTrail = true; } catch (e) {} }   // group 1191 = player dialogue
       if (hosTrail) {   // Blighted Cave entrance = loc 136477
         if (!(await qgObjectById(136477, 'Cave entrance\nEnter the Cave entrance')))
           qgTile(3639, 1477, 0, 'Go here, then enter the Cave entrance');

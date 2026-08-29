@@ -17,7 +17,7 @@
     if (qgDataState) return qgDataState === 2;
     qgDataState = 1;
     try {
-      const txt = (bridge() && bridge().uiAsset) ? await bridge().uiAsset('quest_guides.js') : '';
+      const txt = (bridge() && bridge().uiAsset) ? await rtxData.raw('host.uiAsset', 'quest_guides.js') : '';
       const a = txt.indexOf('{'), b = txt.lastIndexOf('}');
       if (a >= 0 && b > a) {
         const data = JSON.parse(txt.slice(a, b + 1));
@@ -47,7 +47,7 @@
     if ((questGSteps !== null && qgLoadedPid === myPid()) || qgFetching || !bridge() || !bridge().questLoad) return;
     qgFetching = true;
     qgLoadedPid = myPid();
-    try { const d = JSON.parse(await bridge().questLoad(myPid())); questGSteps = (d && typeof d === 'object') ? d : {}; }
+    try { const d = JSON.parse(await rtxData.raw('host.questLoad')); questGSteps = (d && typeof d === 'object') ? d : {}; }
     catch (e) { questGSteps = {}; }
     qgFetching = false;
     updateQuestHighlight();
@@ -56,7 +56,7 @@
   }
   function qgSave() {
     if (qgLoadedPid !== myPid()) return;   // never write one character's progress to another
-    try { bridge().questSave(myPid(), JSON.stringify(questGSteps || {})); } catch (e) {}
+    try { rtxData.sync('act.questSave', JSON.stringify(questGSteps || {})); } catch (e) {}
   }
   function qgFocusName() { return (questGSteps && typeof questGSteps.__focus === 'string') ? questGSteps.__focus : ''; }
   function setQuestFocus(nm) {
@@ -165,7 +165,7 @@
     let h = '<div style="display:flex;flex-wrap:wrap;gap:12px;padding:4px 0 2px;">';
     for (const it of list) {
       if (it.id) {
-        let url = ''; try { url = bridge() ? bridge().itemIcon(it.id) : ''; } catch (e) {}   // itemIcon() returns the data URL synchronously
+        let url = ''; try { url = bridge() ? rtxData.sync('cache.itemIcon', it.id) : ''; } catch (e) {}   // itemIcon() returns the data URL synchronously
         const label = (it.have !== undefined)
           ? qgEsc(it.name) + ' <span style="color:' + (it.have >= it.n ? 'var(--ok)' : '#f1a64c') + ';">' + it.have + '/' + it.n + '</span>'
           : it.n + '× ' + qgEsc(it.name);

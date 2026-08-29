@@ -183,7 +183,7 @@
       const hit = d.comps.find(c => c && (c.sub | 0) === sub && (c.w | 0) > 0);
       if (!hit) return false;
       qgClrNpc(); qgClrTiles(); qgClrDlg();
-      try { bridge().panelViz(myPid(), hit.x + ',' + hit.y + ',' + hit.w + ',' + hit.h + ',' + label); } catch (e) {}
+      try { rtxData.sync('overlay.panelViz', hit.x + ',' + hit.y + ',' + hit.w + ',' + hit.h + ',' + label); } catch (e) {}
       return true;
     } catch (e) { return false; }
   }

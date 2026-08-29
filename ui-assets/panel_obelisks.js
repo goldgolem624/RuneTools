@@ -35,7 +35,7 @@
       try { return JSON.parse(raw); } catch (e) { return null; }
     };
     // The bridge gates the HTTP fallback itself: no-op while SSE is alive, else one GET per 120s.
-    return parse(bridge().obeliskCached(1));
+    return parse(rtxData.sync('host.obeliskCached', 1));
   }
 
   function obActiveWorlds() {

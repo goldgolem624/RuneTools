@@ -28,9 +28,9 @@
   function ssLoadKb() {
     if (ssKbLoaded || !bridge() || !bridge().screenshotKeybindGet) return;
     ssKbLoaded = true;
-    try { ssKeybind = (bridge().screenshotKeybindGet() | 0) || 0; } catch (e) {}
+    try { ssKeybind = (rtxData.sync('host.screenshotKeybindGet') | 0) || 0; } catch (e) {}
   }
-  function ssSaveKb() { try { if (bridge().screenshotKeybindSet) bridge().screenshotKeybindSet(ssKeybind | 0); } catch (e) {} }
+  function ssSaveKb() { try { if (bridge().screenshotKeybindSet) rtxData.sync('act.screenshotKeybindSet', ssKeybind | 0); } catch (e) {} }
 
   function ssSetStatus(msg, tone) {
     const s = $('ssStatus'); if (!s) return;
@@ -59,7 +59,7 @@
     // Defer one frame so the status paints before the synchronous bridge grab.
     setTimeout(() => {
       let path = '';
-      try { path = bridge().captureScreenshot(myPid()) || ''; } catch (e) {}
+      try { path = rtxData.sync('act.captureScreenshot') || ''; } catch (e) {}
       if (path) ssSetStatus('Saved ' + path.split(/[\\/]/).pop(), 'ok');
       else ssSetStatus('Capture failed. Is the game window open?', 'err');
     }, 30);
@@ -134,7 +134,7 @@
     const cap = document.createElement('button'); cap.className = 'ss-btn accent'; cap.textContent = 'Capture now';
     cap.addEventListener('click', ssCaptureNow);
     const open = document.createElement('button'); open.className = 'ss-btn'; open.textContent = 'Open folder';
-    open.addEventListener('click', () => { try { if (bridge().openScreenshots) bridge().openScreenshots(); } catch (e) {} });
+    open.addEventListener('click', () => { try { if (bridge().openScreenshots) rtxData.sync('act.openScreenshots'); } catch (e) {} });
     arow.appendChild(cap); arow.appendChild(open); card.appendChild(arow);
 
     const status = document.createElement('div'); status.id = 'ssStatus'; status.className = 'ss-status';

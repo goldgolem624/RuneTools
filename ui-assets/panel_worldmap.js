@@ -110,18 +110,18 @@
     wmMlPend = true;
     (async function () {
       try {
-        const a = JSON.parse((await bridge().mapLabels()) || '{}');
+        const a = JSON.parse((await rtxData.raw('cache.mapLabels')) || '{}');
         if (a && Object.keys(a).length) WM_ML = a;
       } catch (e) {}
       try {
-        const c = JSON.parse((await bridge().mapCategories()) || '{}');
+        const c = JSON.parse((await rtxData.raw('cache.mapCategories')) || '{}');
         if (c) WM_CAT = c;
       } catch (e) {}
       // Names of the locs that PLACE the elements, for the 22 elements that have no name by any
       // other route. A few KB; loaded here so the tooltip stays synchronous on hover.
       try {
         if (bridge().mapLocNames) {
-          const ln = JSON.parse((await bridge().mapLocNames()) || '{}');
+          const ln = JSON.parse((await rtxData.raw('cache.mapLocNames')) || '{}');
           if (ln) WM_LOCNM = ln;
         }
       } catch (e) {}
@@ -166,7 +166,7 @@
     wmDbBusy = true;
     const t = WM_DB_ORDER[wmDbAt++];
     (async function () {
-      try { WM_DB[t] = JSON.parse((await bridge().dbRows(t)) || '[]') || []; } catch (e) { WM_DB[t] = []; }
+      try { WM_DB[t] = JSON.parse((await rtxData.raw('cache.dbRows', t)) || '[]') || []; } catch (e) { WM_DB[t] = []; }
       try { wmSymProvInvalidate(); } catch (e) {}   // a table landed: provisional search haystacks rebuild once
       wmDbBusy = false;
       setTimeout(wmPrefetchDb, 60);      // one archive walk per slice, never two in a frame
@@ -191,7 +191,7 @@
     if (WM_ST.has(id)) return WM_ST.get(id);
     WM_ST.set(id, null);
     (async function () {
-      let v = null; try { v = JSON.parse((await bridge().structParams(id)) || 'null'); } catch (e) {}
+      let v = null; try { v = JSON.parse((await rtxData.raw('cache.structParams', id)) || 'null'); } catch (e) {}
       WM_ST.set(id, v || { ints: {}, strs: {} }); wmTipRefresh();
     })();
     return null;
@@ -201,7 +201,7 @@
     if (WM_EN.has(id)) return WM_EN.get(id);
     WM_EN.set(id, null);
     (async function () {
-      let v = null; try { v = JSON.parse((await bridge().enumInfo(id)) || 'null'); } catch (e) {}
+      let v = null; try { v = JSON.parse((await rtxData.raw('cache.enumInfo', id)) || 'null'); } catch (e) {}
       WM_EN.set(id, v || {}); wmTipRefresh();
     })();
     return null;
@@ -215,7 +215,7 @@
     WM_IN.set(id, null);
     (async function () {
       let n = '';
-      try { const o = JSON.parse((await bridge().itemInfo(id)) || 'null'); n = (o && o.name) || ''; } catch (e) {}
+      try { const o = JSON.parse((await rtxData.raw('cache.itemInfo', id)) || 'null'); n = (o && o.name) || ''; } catch (e) {}
       WM_IN.set(id, n); wmTipRefresh();
     })();
     return undefined;
@@ -232,7 +232,7 @@
       if (!wmSkPend) {
         wmSkPend = true;
         (async function () {
-          try { WM_SKSPR = JSON.parse((await bridge().enumInfo(8548)) || '{}') || {}; } catch (e) { WM_SKSPR = {}; }
+          try { WM_SKSPR = JSON.parse((await rtxData.raw('cache.enumInfo', 8548)) || '{}') || {}; } catch (e) { WM_SKSPR = {}; }
           wmTipRefresh();
         })();
       }
@@ -533,13 +533,13 @@
       try {
         const k = 'wmsym';
         if (bridge().cacheStoreLoad) {                       // persisted from a previous session
-          const raw = await bridge().cacheStoreLoad(k);
+          const raw = await rtxData.raw('host.cacheStoreLoad', k);
           if (raw) { const j = JSON.parse(raw); if (j && j.v === wmBuild() && j.b) o = j; }
         }
         if (!o) {
-          o = JSON.parse((await bridge().mapSymbols()) || 'null');
+          o = JSON.parse((await rtxData.raw('cache.mapSymbols')) || 'null');
           if (o && o.b && bridge().cacheStoreSave)
-            try { await bridge().cacheStoreSave(k, JSON.stringify({ v: wmBuild(), b: o.b })); } catch (e) {}
+            try { await rtxData.raw('act.cacheStoreSave', k, JSON.stringify({ v: wmBuild(), b: o.b })); } catch (e) {}
         }
       } catch (e) { o = null; }
       if (o && o.b) {
@@ -697,7 +697,7 @@
     if (!wmSpritePend.has(id) && bridge() && bridge().sprite) {
       wmSpritePend.add(id);
       try {
-        const r = bridge().sprite(id);
+        const r = rtxData.sync('cache.sprite', id);
         if (r && typeof r.then === 'function')
           r.then(function (u) { SPRITES.set(id, (typeof u === 'string') ? u : ''); wmSpritePend.delete(id); wmKick(); },
                  function () { SPRITES.set(id, ''); wmSpritePend.delete(id); });
@@ -722,7 +722,7 @@
     try { if (typeof clueMapTelePrefetch === 'function') clueMapTelePrefetch(); } catch (e) {}
     try {
       if (bridge() && bridge().varps && typeof HIDEY_VARPS !== 'undefined')
-        wmHideyVals = JSON.parse(await bridge().varps(myPid(), HIDEY_VARPS.join(','))) || {};
+        wmHideyVals = JSON.parse(await rtxData.raw('state.varps', HIDEY_VARPS.join(','))) || {};
     } catch (e) {}
     if (!wmCamSaved) {             // first ever open: land on the player rather than Varrock
       try { const P = await scanPlayerTile(); if (P) { wmCam.x = P.x + 0.5; wmCam.y = P.y + 0.5; wmCam.p = P.p | 0; } } catch (e) {}
@@ -1022,7 +1022,7 @@
     const t = Date.now(); if (t - wmAreasAt < 1500) return; wmAreasAt = t;
     (async () => {
       try {
-        const d = JSON.parse(await bridge().mapAreas() || '{}');
+        const d = JSON.parse(await rtxData.raw('cache.mapAreas') || '{}');
         // Only trust a launcher that emits the 8-field (source -> display) rect records; the
         // first build misparsed archive 0 and its rects would place squares wrongly. Without
         // usable areas the map simply keeps the plain chunk renderer.

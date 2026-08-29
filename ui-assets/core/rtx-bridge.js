@@ -67,24 +67,29 @@
       bridgeJson.whyByMethod[method] = bridgeJson.lastWhy;
       return null;
     }
-    try {
-      const v = JSON.parse(await b[method](...args));
-      if (v && typeof v === 'object' && !Array.isArray(v) && v.ok === false && typeof v.why === 'string') {
-        bridgeJson.lastWhy = v.why;
-        bridgeJson.whyByMethod[method] = v.why;
-        return null;
-      }
-      delete bridgeJson.whyByMethod[method];
-      return v;
-    }
-    catch (e) {
-      const now = Date.now();
-      if (now - (_bjErrAt.get(method) || 0) >= 30000) { _bjErrAt.set(method, now); console.error('rtx bridgeJson ' + method + ': ' + e); }
-      bridgeJson.lastWhy = 'error';
-      bridgeJson.whyByMethod[method] = 'error';
+    try { return bridgeJson.parse(method, await b[method](...args)); }
+    catch (e) { return bridgeJson.fail(method, e); }
+  }
+  // The parse + envelope half of bridgeJson, split out so rtxData (core/rtx-data.js) can apply
+  // exactly the same rules to text that reached it through the plugin broker. Throws on bad
+  // JSON; callers route that through bridgeJson.fail.
+  bridgeJson.parse = function (method, text) {
+    const v = JSON.parse(text);
+    if (v && typeof v === 'object' && !Array.isArray(v) && v.ok === false && typeof v.why === 'string') {
+      bridgeJson.lastWhy = v.why;
+      bridgeJson.whyByMethod[method] = v.why;
       return null;
     }
-  }
+    delete bridgeJson.whyByMethod[method];
+    return v;
+  };
+  bridgeJson.fail = function (method, e) {
+    const now = Date.now();
+    if (now - (_bjErrAt.get(method) || 0) >= 30000) { _bjErrAt.set(method, now); console.error('rtx bridgeJson ' + method + ': ' + e); }
+    bridgeJson.lastWhy = 'error';
+    bridgeJson.whyByMethod[method] = 'error';
+    return null;
+  };
   bridgeJson.lastWhy = null;          // why of the most recent failed call, null after a success-free start
   bridgeJson.whyByMethod = Object.create(null);
   // Short user-facing text for a failure why (see bridgeJson).

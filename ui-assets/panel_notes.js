@@ -7,11 +7,11 @@
     if (notesLoadedPid === myPid() && notesData) return;
     notesLoadedPid = myPid(); notesData = [];
     try {
-      const a = JSON.parse((bridge() && bridge().notesLoad && bridge().notesLoad(myPid())) || '[]');
+      const a = JSON.parse((bridge() && bridge().notesLoad && rtxData.sync('host.notesLoad')) || '[]');
       if (Array.isArray(a)) notesData = a;
     } catch (e) { notesData = []; }
   }
-  function saveNotesNow() { try { bridge().notesSave(myPid(), JSON.stringify(notesData)); } catch (e) {} }
+  function saveNotesNow() { try { rtxData.sync('act.notesSave', JSON.stringify(notesData)); } catch (e) {} }
   function saveNotes() { clearTimeout(_notesSaveT); _notesSaveT = setTimeout(saveNotesNow, 400); }
   function noteId() { return 'n' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); }
   function addNote() { loadNotes(); notesData.unshift({ id: noteId(), title: '', body: '' }); saveNotesNow(); paintNotes(true); }

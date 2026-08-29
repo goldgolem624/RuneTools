@@ -60,7 +60,7 @@
       const vbs = [44292, 52504];
       for (const r of ANA_RES) vbs.push(r.wvb);
       for (const b of ANA_BUILDINGS) vbs.push(b.vb);
-      const vp = JSON.parse(await bridge().varps(myPid(), vps.join(','))) || {};
+      const vp = JSON.parse(await rtxData.raw('state.varps', vps.join(','))) || {};
       const vb = await readVarbitValues(vbs);
       const sig = JSON.stringify(vp) + JSON.stringify(vb);
       if (sig !== anaRefresh._sig) { anaRefresh._sig = sig; anaVp = vp; anaVb = vb; anaPaint(); }

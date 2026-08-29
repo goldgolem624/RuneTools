@@ -197,7 +197,7 @@
         for (const key of Object.keys(CY_CREATED)) {
           const piece = +key;
           let nm = '';
-          try { nm = (JSON.parse(await bridge().itemInfo(piece) || 'null') || {}).name || ''; }
+          try { nm = (JSON.parse(await rtxData.raw('cache.itemInfo', piece) || 'null') || {}).name || ''; }
           catch (e) {}
           if (!nm) continue;
           cyPieceNames[piece] = nm;
@@ -230,7 +230,7 @@
     if (!bridge().dbRows || !bridge().itemInfo) return;
     cyRowsLoading = true;
     try {
-      const rows = JSON.parse(await bridge().dbRows(66) || 'null');
+      const rows = JSON.parse(await rtxData.raw('cache.dbRows', 66) || 'null');
       if (!Array.isArray(rows) || !rows.length) return;   // cache not open yet; retry next fetch
       const out = [];
       for (const r of rows) {
@@ -240,7 +240,7 @@
         const obj = col(I, '4');
         let name = col(S, '5') || '';
         if (!name && obj > 0) {                           // script14963: override else OC_NAME(obj)
-          try { const d = JSON.parse(await bridge().itemInfo(obj) || 'null'); name = (d && d.name) || ''; } catch (e) {}
+          try { const d = JSON.parse(await rtxData.raw('cache.itemInfo', obj) || 'null'); name = (d && d.name) || ''; } catch (e) {}
         }
         out.push({
           row: r.f | 0,                                   // dbrow id = the CY_VARS key
@@ -265,18 +265,17 @@
     try {
       await cyLoadRegistry();
       cyLoadPieces();   // deliberately not awaited: the ~825-read name scan fills in async
-      try { const d = JSON.parse(await bridge().varps(myPid(), CY_VP_IDS) || 'null');
+      try { const d = JSON.parse(await rtxData.raw('state.varps', CY_VP_IDS) || 'null');
             if (d && typeof d === 'object' && Object.keys(d).length) cyVp = d; } catch (e) {}
-      try { const d = JSON.parse(await bridge().varbits(myPid(),
-              CY_VB_IDS + (cyPieceVbIds ? ',' + cyPieceVbIds : '')) || 'null');
+      try { const d = JSON.parse(await rtxData.raw('state.varbitsCsv', CY_VB_IDS + (cyPieceVbIds ? ',' + cyPieceVbIds : '')) || 'null');
             if (d && typeof d === 'object' && Object.keys(d).length) cyVb = d; } catch (e) {}
       if (!cyCapEnum && bridge().enumInfo) {
-        try { const m = JSON.parse(await bridge().enumInfo(11420) || 'null');
+        try { const m = JSON.parse(await rtxData.raw('cache.enumInfo', 11420) || 'null');
               if (m && Object.keys(m).length) cyCapEnum = m; } catch (e) {}
       }
       if (bridge().containerItems) {
-        try { cyPouchInv = JSON.parse(await bridge().containerItems(myPid(), 889) || 'null'); } catch (e) {}
-        try { cyPackInv = JSON.parse(await bridge().containerItems(myPid(), 93) || 'null'); } catch (e) {}
+        try { cyPouchInv = JSON.parse(await rtxData.raw('state.container', 889) || 'null'); } catch (e) {}
+        try { cyPackInv = JSON.parse(await rtxData.raw('state.container', 93) || 'null'); } catch (e) {}
       }
     } catch (e) { /* keep previous */ }
     cyFetching = false;

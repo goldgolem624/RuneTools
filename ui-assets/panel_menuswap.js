@@ -82,7 +82,7 @@
     if (mnuLoaded || !bridge() || !bridge().menuRulesLoad) return;
     mnuLoaded = true;
     let disk = null;
-    try { disk = JSON.parse(await bridge().menuRulesLoad() || '{}'); } catch (e) { return; }
+    try { disk = JSON.parse(await rtxData.raw('host.menuRulesLoad') || '{}'); } catch (e) { return; }
     const had = Object.keys(mnuRules).length;
     if (!mnuAdopt(disk) && had) mnuSaveRules();   // first run after the fix: migrate the mirror
     mnuSig = ''; mnuListSig = '';
@@ -92,7 +92,7 @@
   function mnuSaveRules() {
     const blob = JSON.stringify({ v: 2, rules: mnuRules, names: mnuNames });
     try { localStorage.setItem('rtxMenuRules', blob); } catch (e) {}
-    try { if (bridge() && bridge().menuRulesSave) bridge().menuRulesSave(blob); } catch (e) {}
+    try { if (bridge() && bridge().menuRulesSave) rtxData.sync('act.menuRulesSave', blob); } catch (e) {}
   }
 
   // (The cache name -> id search is gone. hoverEntity gives the exact id of what is under the
@@ -246,7 +246,7 @@
     const t0 = mnuTargets((mnuData && mnuData.entries) || [])[0];
     if (!t0) return;
     let hv = null;
-    try { hv = JSON.parse(bridge().hoverEntity(myPid()) || '{}'); } catch (e) { return; }
+    try { hv = JSON.parse(rtxData.sync('state.hoverEntity') || '{}'); } catch (e) { return; }
     if (hv && hv.ok && hv.kind === 'iface') mnuIfaceDiag = 'iface ' + hv.iface + ':' + hv.comp + ' slot ' + hv.slot + ' walk ' + JSON.stringify(hv.dbg || []);
     if (!hv || !hv.ok || !(hv.id > 0)) return;
     const kind = hv.kind === 'item' ? 0 : hv.kind === 'loc' ? 1 : hv.kind === 'npc' ? 2 : -1;
@@ -461,7 +461,7 @@
     const lines = parts.filter(Boolean).join('\n').split('\n')
       .filter(ln => ln && (seen[ln] ? false : (seen[ln] = 1)))
       .slice(0, 256);
-    try { await bridge().menuPins(myPid(), lines.join('\n')); } catch (e) {}
+    try { await rtxData.raw('act.menuPins', lines.join('\n')); } catch (e) {}
   }
 
   let mnuBusy = false;
@@ -486,7 +486,7 @@
       // and re-pushing there would send the closed panel's stale selection.
       const wasOff = mnuOn <= 0;
       mnuOn = mode;
-      try { await bridge().menuEnable(myPid(), mode); } catch (e) {}
+      try { await rtxData.raw('act.menuEnable', mode); } catch (e) {}
       if (wasOff && want) mnuPush();
     }
     // KEEP POLLING WITH THE TAB CLOSED, and keep acting on what comes back. Which rule to send is
@@ -497,7 +497,7 @@
     // Rules also have to be re-pushed after the client rebuilds its menu state (a lobby trip
     // clears the companion's copy), which the pin-context check below detects via seq.
     let d = null;
-    try { d = JSON.parse(await bridge().menuStatus(myPid()) || '{}'); } catch (e) { return; }
+    try { d = JSON.parse(await rtxData.raw('host.menuStatus') || '{}'); } catch (e) { return; }
     if (!want) return;               // no rules stored: nothing to resolve, nothing to push
     // A new menu discards the working order - it belonged to the menu it was built from.
     if (d && mnuData && d.seq !== mnuData.seq) mnuOrder = null;

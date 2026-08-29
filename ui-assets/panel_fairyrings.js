@@ -57,7 +57,7 @@
     const t = Date.now(); if (t - frFetchAt < 2000) return; frFetchAt = t; frFetching = true;
     try {
       if (!frRows && bridge().dbRows) {
-        const rows = JSON.parse(await bridge().dbRows(121) || 'null');
+        const rows = JSON.parse(await rtxData.raw('cache.dbRows', 121) || 'null');
         if (Array.isArray(rows) && rows.length) {
           frRows = rows.map(r => ({ key: (r.i && r.i['1'] && r.i['1'][0]) | 0, code: (r.s && r.s['2'] && r.s['2'][0]) || '', dest: (r.s && r.s['3'] && r.s['3'][0]) || '' }))
                        .filter(r => r.code);
@@ -69,10 +69,10 @@
       }
       const vbs = new Set(Object.values(FR_LOGGED)); for (const k in FR_GATES) for (const v of (FR_GATES[k].vb || [])) vbs.add(v);
       const vps = new Set(); for (const k in FR_GATES) for (const v of (FR_GATES[k].vp || [])) vps.add(v);
-      if (bridge().varbits) { const vb = JSON.parse(await bridge().varbits(myPid(), [...vbs].join(',')) || 'null'); if (vb && Object.keys(vb).length) frVb = vb; }
-      if (bridge().varps) { const vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(',')) || 'null'); if (vp && Object.keys(vp).length) frVp = vp; }
+      if (bridge().varbits) { const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', [...vbs].join(',')) || 'null'); if (vb && Object.keys(vb).length) frVb = vb; }
+      if (bridge().varps) { const vp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(',')) || 'null'); if (vp && Object.keys(vp).length) frVp = vp; }
       if (bridge().containerItems) {
-        try { const inv = JSON.parse(await bridge().containerItems(myPid(), 93) || 'null'); frStaff = (inv && Array.isArray(inv.items)) ? inv.items.filter(it => it && it[1] === 9025).reduce((s, it) => s + (it[2] > 0 ? it[2] : 1), 0) : null; } catch (e) {}
+        try { const inv = JSON.parse(await rtxData.raw('state.container', 93) || 'null'); frStaff = (inv && Array.isArray(inv.items)) ? inv.items.filter(it => it && it[1] === 9025).reduce((s, it) => s + (it[2] > 0 ? it[2] : 1), 0) : null; } catch (e) {}
       }
     } catch (e) {}
     frFetching = false;

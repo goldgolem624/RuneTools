@@ -111,22 +111,22 @@
   let mchVb = null, mchVp7270 = null, mchDb22 = null, mchEnum13175 = null, mchNames = {};
   async function mchName(id) {
     if (mchNames[id] === undefined) {
-      try { const d = JSON.parse(await bridge().itemInfo(id) || 'null'); mchNames[id] = (d && d.name) || ''; } catch (e) {}
+      try { const d = JSON.parse(await rtxData.raw('cache.itemInfo', id) || 'null'); mchNames[id] = (d && d.name) || ''; } catch (e) {}
     }
     return mchNames[id] || ('Item ' + id);
   }
   async function fetchMachines() {
     if (!bridge() || !bridge().varbits) return;
     try {
-      mchVb = JSON.parse(await bridge().varbits(myPid(), MCH_VBS.join(',')) || 'null');
-      const vp = JSON.parse(await bridge().varps(myPid(), '7270') || '{}');
+      mchVb = JSON.parse(await rtxData.raw('state.varbitsCsv', MCH_VBS.join(',')) || 'null');
+      const vp = JSON.parse(await rtxData.raw('state.varps', '7270') || '{}');
       mchVp7270 = vp['7270'] !== undefined ? (vp['7270'] | 0) : null;
       if (!mchEnum13175 && bridge().enumInfo) {
-        try { mchEnum13175 = JSON.parse(await bridge().enumInfo(13175) || 'null'); } catch (e) {}
+        try { mchEnum13175 = JSON.parse(await rtxData.raw('cache.enumInfo', 13175) || 'null'); } catch (e) {}
       }
       if (!mchDb22 && bridge().dbRows) {
         try {
-          const rows = JSON.parse(await bridge().dbRows(22) || 'null');
+          const rows = JSON.parse(await rtxData.raw('cache.dbRows', 22) || 'null');
           if (Array.isArray(rows) && rows.length) {
             mchDb22 = {};
             for (const r of rows) if (r && r.f !== undefined) mchDb22[r.f] = r;   // "f" = dbrow file id
@@ -177,7 +177,7 @@
   async function fetchComponents() {
     if (!bridge() || !bridge().varps || compFetching) return;
     compFetching = true;
-    try { const d = JSON.parse(await bridge().varps(myPid(), COMP_VARP_CSV)); if (d && typeof d === 'object') compVp = d; } catch (e) {}
+    try { const d = JSON.parse(await rtxData.raw('state.varps', COMP_VARP_CSV)); if (d && typeof d === 'object') compVp = d; } catch (e) {}
     compFetching = false;
     paneRun('components', paintComponents);
   }
@@ -211,7 +211,7 @@
     SPRITE_PENDING.add(sid);
     (async () => {
       try {
-        const url = await bridge().sprite(sid); SPRITE_PENDING.delete(sid);
+        const url = await rtxData.raw('cache.sprite', sid); SPRITE_PENDING.delete(sid);
         if (url) { SPRITES.set(sid, url); document.querySelectorAll('.comp-icon[data-spr="' + sid + '"]').forEach(n => setIconBg(n, url)); }
       } catch (e) { SPRITE_PENDING.delete(sid); }
     })();

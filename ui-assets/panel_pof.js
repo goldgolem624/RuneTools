@@ -22,7 +22,7 @@
 
   async function fetchPof() {
     if (!bridge() || !bridge().pof || pofFetching) return; pofFetching = true;
-    try { const d = JSON.parse(await bridge().pof(myPid())); pofData = (d && Array.isArray(d.pens)) ? d.pens : []; }
+    try { const d = JSON.parse(await rtxData.raw('state.pof')); pofData = (d && Array.isArray(d.pens)) ? d.pens : []; }
     catch (e) { /* keep previous */ }
     pofFetching = false;
     paneRun('pof', renderPof);

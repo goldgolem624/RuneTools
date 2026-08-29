@@ -63,7 +63,7 @@
     if (TB_NAME_OVERRIDES[id]) return (tbNames[id] = TB_NAME_OVERRIDES[id]);
     if (tbNames[id] === undefined) {
       try {
-        const d = JSON.parse(await bridge().itemInfo(id) || 'null');
+        const d = JSON.parse(await rtxData.raw('cache.itemInfo', id) || 'null');
         if (d && d.name) tbNames[id] = d.name;
       } catch (e) {}
     }
@@ -76,10 +76,10 @@
     tbFetchAt = t; tbFetching = true;
     try {
       await tbAdoptSwitches();
-      const vb = JSON.parse(await bridge().varbits(myPid(), tbVbIds()) || 'null');
+      const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', tbVbIds()) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) tbVb = vb;
       if (!tbEnums && bridge().enumInfo) {
-        const grab = async id => { try { return JSON.parse(await bridge().enumInfo(id) || 'null'); } catch (e) { return null; } };
+        const grab = async id => { try { return JSON.parse(await rtxData.raw('cache.enumInfo', id) || 'null'); } catch (e) { return null; } };
         const a = await grab(6397), b = await grab(2433), c = await grab(12936);
         if (a && Object.keys(a).length && b && Object.keys(b).length) tbEnums = [a, b, c || {}];
       }

@@ -92,11 +92,11 @@
   const TNP_ALFRED_EXPLORE_MSG = 'take a look around inside';
   let tnpExploreSaid = false;
   async function tnpVarp(id) {
-    try { const vp = JSON.parse(await bridge().varps(myPid(), String(id))); return (vp && vp[id]) | 0; } catch (e) { return 0; }
+    try { const vp = JSON.parse(await rtxData.raw('state.varps', String(id))); return (vp && vp[id]) | 0; } catch (e) { return 0; }
   }
   function qgIfaceOpen(group) {   // group present in the live interface table (root comp readable)
     try {
-      const cr = JSON.parse(bridge().ifaceCompRects(myPid(), group, '0', 0) || '{}');
+      const cr = JSON.parse(rtxData.sync('state.ifaceCompRects', group, '0', 0) || '{}');
       return !!(cr && cr.comps && cr.comps['0']);
     } catch (e) { return false; }
   }
@@ -109,7 +109,7 @@
       if (!icon) return false;
       const cell = d.comps.find(c => c && (c.comp | 0) === TNP_BM_CELL && (c.sub | 0) === (icon.sub | 0)) || icon;
       qgClrNpc(); qgClrTiles(); qgClrDlg();
-      try { bridge().panelViz(myPid(), cell.x + ',' + cell.y + ',' + cell.w + ',' + cell.h + ',' + label); } catch (e) {}
+      try { rtxData.sync('overlay.panelViz', cell.x + ',' + cell.y + ',' + cell.w + ',' + cell.h + ',' + label); } catch (e) {}
       return true;
     } catch (e) { return false; }
   }
@@ -122,7 +122,7 @@
       if (!icon) return false;
       const cell = d.comps.find(c => c && (c.comp | 0) === TNP_BM_CELL && (c.sub | 0) === TNP_ROOM_SQUARE) || icon;
       qgClrNpc(); qgClrTiles(); qgClrDlg();
-      try { bridge().panelViz(myPid(), cell.x + ',' + cell.y + ',' + cell.w + ',' + cell.h + ',' + label); } catch (e) {}
+      try { rtxData.sync('overlay.panelViz', cell.x + ',' + cell.y + ',' + cell.w + ',' + cell.h + ',' + label); } catch (e) {}
       return true;
     } catch (e) { return false; }
   }
@@ -134,7 +134,7 @@
       const hit = d.comps.find(c => c && (c.w | 0) > 0 && String(c.text || '').toLowerCase().indexOf(needle) >= 0);
       if (!hit) return false;
       qgClrNpc(); qgClrTiles(); qgClrDlg();
-      try { bridge().panelViz(myPid(), hit.x + ',' + hit.y + ',' + hit.w + ',' + hit.h + ',' + label); } catch (e) {}
+      try { rtxData.sync('overlay.panelViz', hit.x + ',' + hit.y + ',' + hit.w + ',' + hit.h + ',' + label); } catch (e) {}
       return true;
     } catch (e) { return false; }
   }

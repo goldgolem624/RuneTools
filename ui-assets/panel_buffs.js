@@ -12,7 +12,7 @@
     if (now - _buffsAt < 600) return;
     _buffsAt = now;
     buffsFetching = true;
-    try { const d = JSON.parse(await bridge().buffs(myPid())); buffsData = (d && Array.isArray(d.buffs)) ? d : { buffs: [], debuffs: [] }; }
+    try { const d = JSON.parse(await rtxData.raw('state.buffs')); buffsData = (d && Array.isArray(d.buffs)) ? d : { buffs: [], debuffs: [] }; }
     catch (e) { /* keep previous */ }
     buffsFetching = false;
     paneRun('buffs', renderBuffs);
@@ -29,7 +29,7 @@
     SPRITE_PENDING.add(sid);
     (async () => {
       try {
-        const url = await bridge().sprite(sid);
+        const url = await rtxData.raw('cache.sprite', sid);
         SPRITE_PENDING.delete(sid);
         if (url) {
           SPRITES.set(sid, url);

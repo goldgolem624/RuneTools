@@ -134,7 +134,7 @@
   }
   function loadAlertCfg() {
     let saved = {};
-    try { saved = JSON.parse((bridge() && bridge().alertsLoad && bridge().alertsLoad(myPid())) || '{}'); } catch (e) {}
+    try { saved = JSON.parse((bridge() && bridge().alertsLoad && rtxData.sync('host.alertsLoad')) || '{}'); } catch (e) {}
     alertCfg = JSON.parse(JSON.stringify(ALERT_DEFAULTS));
     if (saved && typeof saved === 'object') {
       if (typeof saved.master === 'boolean') alertCfg.master = saved.master;
@@ -182,7 +182,7 @@
     out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, item: w.item, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, repeat: w.repeat, enabled: w.enabled,
       also: (w.also || []).map(c => ({ type: c.type, kind: c.kind, text: c.text, anim: c.anim, cond: c.cond, num: c.num, stat: c.stat, item: c.item, not: c.not })) }));
     let ok = false;
-    try { ok = !!bridge().alertsSave(myPid(), JSON.stringify(out)); } catch (e) {}
+    try { ok = !!rtxData.sync('act.alertsSave', JSON.stringify(out)); } catch (e) {}
     // The host REFUSES the write (returns false) until it can resolve the account, since the
     // file is per-character. That refusal used to be discarded, so a change made before the
     // character name was readable was silently lost and came back as the default on reload.
@@ -194,7 +194,7 @@
   }
   function screenFlash() {
     // Flash the GAME window (drawn by the overlay over the game), not the launcher.
-    try { bridge().flashGame(myPid()); } catch (e) {}
+    try { rtxData.sync('overlay.flashGame'); } catch (e) {}
   }
   // Native Windows notification, shown by the launcher (Shell_NotifyIcon -> Win10/11 toast):
   // event = title; body = account, time, world.
@@ -211,7 +211,7 @@
   // Is the game (or its host frame) the foreground window? Cheap Win32 query on the host; an
   // older host without the function reports "not focused" so alerts keep working.
   function gameHasFocus() {
-    try { return !!(bridge() && bridge().gameFocused && bridge().gameFocused(myPid())); } catch (e) { return false; }
+    try { return !!(bridge() && bridge().gameFocused && rtxData.sync('state.gameFocused')); } catch (e) { return false; }
   }
   // Global gate: when "only when tabbed out" is on, nothing alerts while you are looking at the
   // game. Checked at delivery time so it covers every rule, custom alert and aura action alike.
@@ -448,13 +448,13 @@
     if (!bridge() || !bridge().groundItems || _groundFetching) return;
     const now = Date.now(); if (now - _groundAt < 600) return; _groundAt = now;
     _groundFetching = true;
-    try { const g = JSON.parse((await bridge().groundItems(myPid())) || '[]'); groundData = Array.isArray(g) ? g : []; } catch (e) {}
+    try { const g = JSON.parse((await rtxData.raw('state.groundItems')) || '[]'); groundData = Array.isArray(g) ? g : []; } catch (e) {}
     try {
       if (bridge().itemInfo && groundData) for (const g of groundData) {
         if (!g || g.id == null || groundNames[g.id] !== undefined) continue;
         if (Object.keys(groundNames).length >= 2000) for (const k in groundNames) delete groundNames[k];   // bounded name cache
         groundNames[g.id] = '';
-        try { const info = JSON.parse(await bridge().itemInfo(g.id)); groundNames[g.id] = (info && info.name) || ''; } catch (e) {}
+        try { const info = JSON.parse(await rtxData.raw('cache.itemInfo', g.id)); groundNames[g.id] = (info && info.name) || ''; } catch (e) {}
       }
     } catch (e) {}
     _groundFetching = false;
@@ -1028,7 +1028,7 @@
         const q = inp.value.trim();
         if (!q || !bridge() || !bridge().menuSearch) return;
         let hits = [];
-        try { const r = JSON.parse(bridge().menuSearch(0, q, 40) || '{}'); hits = Array.isArray(r.hits) ? r.hits : []; } catch (e) {}
+        try { const r = JSON.parse(rtxData.sync('host.menuSearch', 0, q, 40) || '{}'); hits = Array.isArray(r.hits) ? r.hits : []; } catch (e) {}
         const ents = hits.map(h => ({ label: h.name + '  (' + h.id + ')', raw: true, act: () => { w.text = h.name; w.item = h.id; inp.value = h.name; saveAlertCfg(); renderCustomList(); } }));
         if (!ents.length) ents.push({ label: '(no item named like that in the cache)', act: () => {} });
         closeSoundMenu(); openChoice(inp, ents);

@@ -108,10 +108,10 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
   function clueGuide(t, label) {
     if (!bridge() || !bridge().guideMarks) return;
     try {
-      if (!t) { bridge().guideMarks(myPid(), ''); return; }
+      if (!t) { rtxData.sync('overlay.guideMarks', ''); return; }
       const lab = String(label || '').replace(/[\x1e\x1f]/g, ' ').slice(0, 80);
       const x = Math.max(0, Math.min(16383, t.x | 0)), y = Math.max(0, Math.min(16383, t.y | 0)), p = Math.max(0, Math.min(3, t.p | 0));
-      bridge().guideMarks(myPid(), x + '\x1f' + y + '\x1f' + p + '\x1f' + lab);
+      rtxData.sync('overlay.guideMarks', x + '\x1f' + y + '\x1f' + p + '\x1f' + lab);
     } catch (e) {}
   }
   function scanTitle(rec) { return rec.key ? rec.key.replace(/\b\w/g, c => c.toUpperCase()) : 'Scan'; }
@@ -167,7 +167,7 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
   // Read the clue text from the open clue-scroll interface (group 345: the 8 text-line components, ids 1-8).
   async function clueScrollText() {
     try {
-      const g = JSON.parse((await bridge().interfaceGroup(myPid(), 345)) || '{}');
+      const g = JSON.parse((await rtxData.raw('state.interfaceGroup', 345)) || '{}');
       const lines = (g.widgets || []).filter(w => w.x && w.t && w.t[1] >= 1 && w.t[1] <= 8 && w.t[2] === -1)
         .sort((a, b) => ((a.r && a.r[1]) || 0) - ((b.r && b.r[1]) || 0)).map(w => String(w.x).replace(/<[^>]*>/g, '').trim()).filter(Boolean);
       return lines.join(' ');
@@ -421,7 +421,7 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
   async function scanGuide(spots, rec, idx) {
     if (!bridge() || !bridge().guideMarks) return;
     try {
-      if (!spots || !spots.length) { bridge().guideMarks(myPid(), ''); return; }
+      if (!spots || !spots.length) { rtxData.sync('overlay.guideMarks', ''); return; }
       // Only candidates on the player's CURRENT floor reach the in-world view: in multi-floor scan
       // areas the other floor's spots would linger as tiles drawn at the wrong height.
       const P = await scanPlayerTile();
@@ -440,7 +440,7 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
 // these are on screen at once, and repeating the area name on every one buries the world.
         recs = spots.slice(0, 24).map((s, k) => enc(s, 'Scan ' + ((idx ? idx[k] : k) + 1), 0xFF2D95)).join('\x1e');
       }
-      bridge().guideMarks(myPid(), recs);
+      rtxData.sync('overlay.guideMarks', recs);
     } catch (e) {}
   }
 

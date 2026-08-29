@@ -197,7 +197,7 @@
       try { seg = await qgInvCount(NF_SEG); plank = await qgInvCount(NF_PLANK); } catch (e) {}
       try { done = await readVarbitValues(Object.values(NF_FORT_DONE)); } catch (e) {}
       try {
-        const bd = JSON.parse(await bridge().bankItems(myPid()));   // cached bank -> works even when closed
+        const bd = JSON.parse(await rtxData.raw('state.bank'));   // cached bank -> works even when closed
         if (bd && Array.isArray(bd.items)) for (const it of bd.items) {
           if (it[1] === NF_SEG) bankSeg += (it[2] > 0 ? it[2] : 1);
           else if (it[1] === NF_PLANK) bankPlank += (it[2] > 0 ? it[2] : 1);

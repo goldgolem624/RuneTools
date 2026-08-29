@@ -45,6 +45,8 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   const pClampId   = v => { const n = parseInt(v, 10); return (isFinite(n) && n >= 0) ? n : 0; };
   const pClampNum  = (v, lo, hi) => { let n = Number(v); if (!isFinite(n)) n = lo; return Math.max(lo, Math.min(hi, n)); };
   const pClampStr  = (v, max) => String(v == null ? '' : v).slice(0, max);
+  // Trusted-arg pass-through for the promoted panel bindings below: shape is kept, size is bounded.
+  const pArgs      = a => (Array.isArray(a) ? a : []).slice(0, 8).map(x => (typeof x === 'number' || typeof x === 'boolean' || x == null) ? x : pClampStr(x, 65536));
   const pClampList = v => (Array.isArray(v) ? v : []).slice(0, 50).map(x => pClampStr(x, 40).replace(/[^A-Za-z0-9 _'\-]/g, '')).filter(Boolean).join(',');
 
   // method -> { scope, run(args,pid,id,frame), json }. Only safe read/overlay/
@@ -344,6 +346,138 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'storage.get':      { scope: 'storage',    json: 'maybe', run: (a, pid, id) => bridge().pluginStoreLoad(pid, id, pClampStr(a[0], 64)) },
     'storage.set':      { scope: 'storage',    json: false,   run: (a, pid, id) => bridge().pluginStoreSave(pid, id, pClampStr(a[0], 64), JSON.stringify(a[1] === undefined ? null : a[1])) },
     'storage.keys':     { scope: 'storage',    json: true,    run: (a, pid, id) => bridge().pluginStoreKeys(pid, id) },
+    // ===== Panel bindings promoted 2026-08-29 (docs/panel-plugin-migration.md, "rtxData") =====
+    // One-liners over the existing bindings; args are forwarded as given (pArgs: <=8 args, strings
+    // capped at 64K) so argc reaches the host unchanged. Method names are <ns>.<binding>.
+    // Scopes actuator / host / solver / party / chat.read are NOT in PLUGIN_SCOPES: a manifest cannot
+    // request them and the grant UI never offers them, so plugins cannot reach these; in-tree
+    // panels reach them through rtxData (core/rtx-data.js). actuator = acts on the game, the
+    // host or the filesystem. host = host-private stores and diagnostics.
+    // -- state (state.read)
+    // CSV twin of state.varbits: {"<id>":value} straight from the reader (no cache resolve), same shape as state.varps
+    'state.varbitsCsv':       { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varbits(pid, ...pArgs(a)) },
+    'state.varcsAll':         { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varcsDumpAll(pid, ...pArgs(a)) },
+    'state.varpsAll':         { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varpsDumpAll(pid, ...pArgs(a)) },
+    'state.varcStringsAll':   { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varcStringsDumpAll(pid, ...pArgs(a)) },
+    'state.varpsLong':        { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varpsLong(pid, ...pArgs(a)) },
+    'state.dialog':           { scope: 'state.read',  json: true,  run: (a, pid) => bridge().dialog(pid, ...pArgs(a)) },
+    'state.gameTickState':    { scope: 'state.read',  json: true,  run: (a, pid) => bridge().gameTickState(pid, ...pArgs(a)) },
+    'state.hoverEntity':      { scope: 'state.read',  json: true,  run: (a, pid) => bridge().hoverEntity(pid, ...pArgs(a)) },
+    'state.interfaceGroups':  { scope: 'state.read',  json: true,  run: (a, pid) => bridge().interfaceGroups(pid, ...pArgs(a)) },
+    'state.invSlotRect':      { scope: 'state.read',  json: true,  run: (a, pid) => bridge().invSlotRect(pid, ...pArgs(a)) },
+    'state.ifaceCompRects':   { scope: 'state.read',  json: true,  run: (a, pid) => bridge().ifaceCompRects(pid, ...pArgs(a)) },
+    'state.interfaceSizeSearch':{ scope: 'state.read',  json: true,  run: (a, pid) => bridge().interfaceSizeSearch(pid, ...pArgs(a)) },
+    'state.openContainers':   { scope: 'state.read',  json: true,  run: (a, pid) => bridge().openContainers(pid, ...pArgs(a)) },
+    'state.pof':              { scope: 'state.read',  json: true,  run: (a, pid) => bridge().pof(pid, ...pArgs(a)) },
+    'state.gameFocused':      { scope: 'state.read',  json: false, run: (a, pid) => bridge().gameFocused(pid, ...pArgs(a)) },
+    // -- cache (cache.read)
+    'cache.achievements':     { scope: 'cache.read',  json: true,  run: (a) => bridge().achievements(...pArgs(a)) },
+    'cache.abilityConfigs':   { scope: 'cache.read',  json: true,  run: (a) => bridge().abilityConfigs(...pArgs(a)) },
+    'cache.archResearch':     { scope: 'cache.read',  json: true,  run: (a) => bridge().archResearch(...pArgs(a)) },
+    'cache.quests':           { scope: 'cache.read',  json: true,  run: (a) => bridge().quests(...pArgs(a)) },
+    // sync, capped at 2000 rows host-side
+    'cache.dbRows':           { scope: 'cache.read',  json: true,  run: (a) => bridge().dbRows(...pArgs(a)) },
+    'cache.npcInfo':          { scope: 'cache.read',  json: true,  run: (a) => bridge().npcInfo(...pArgs(a)) },
+    'cache.cs2Names':         { scope: 'cache.read',  json: true,  run: (a) => bridge().cs2Names(...pArgs(a)) },
+    'cache.mystPages':        { scope: 'cache.read',  json: true,  run: (a) => bridge().mystPages(...pArgs(a)) },
+    'cache.mapAreas':         { scope: 'cache.read',  json: true,  run: (a) => bridge().mapAreas(...pArgs(a)) },
+    'cache.mapCategories':    { scope: 'cache.read',  json: false, run: (a) => bridge().mapCategories(...pArgs(a)) },
+    'cache.mapLabels':        { scope: 'cache.read',  json: false, run: (a) => bridge().mapLabels(...pArgs(a)) },
+    'cache.mapLocNames':      { scope: 'cache.read',  json: false, run: (a) => bridge().mapLocNames(...pArgs(a)) },
+    'cache.mapSymbols':       { scope: 'cache.read',  json: false, run: (a) => bridge().mapSymbols(...pArgs(a)) },
+    'cache.spriteByName':     { scope: 'cache.read',  json: false, run: (a) => bridge().spriteByName(...pArgs(a)) },
+    'cache.ifaceGroup':       { scope: 'cache.read',  json: true,  run: (a) => bridge().cacheIfaceGroup(...pArgs(a)) },
+    'cache.isLeaguesWorld':   { scope: 'cache.read',  json: false, run: (a) => bridge().isLeaguesWorld(...pArgs(a)) },
+    'cache.buffCatalog':      { scope: 'cache.read',  json: false, run: (a) => bridge().buffCatalog(...pArgs(a)) },
+    // -- overlay (overlay)
+    'overlay.guideMarks':     { scope: 'overlay',     json: false, run: (a, pid) => bridge().guideMarks(pid, ...pArgs(a)) },
+    'overlay.panelViz':       { scope: 'overlay',     json: false, run: (a, pid) => bridge().panelViz(pid, ...pArgs(a)) },
+    'overlay.uiHighlight':    { scope: 'overlay',     json: false, run: (a, pid) => bridge().uiHighlight(pid, ...pArgs(a)) },
+    'overlay.hudSprite':      { scope: 'overlay',     json: false, run: (a, pid) => bridge().hudSprite(pid, ...pArgs(a)) },
+    'overlay.outlineObject':  { scope: 'overlay',     json: false, run: (a, pid) => bridge().outlineObject(pid, ...pArgs(a)) },
+    // -- chat (chat.read)
+    // chat.read is NOT in PLUGIN_SCOPES (PMs, friends/clan chat need their own consent label), so only the panel path reaches it
+    'chat.messages':          { scope: 'chat.read',   json: true,  run: (a, pid) => bridge().chat(pid, ...pArgs(a)) },
+    // -- solver (solver)
+    'solver.puzzleCells':     { scope: 'solver',      json: false, run: (a, pid) => bridge().puzzleCells(pid, ...pArgs(a)) },
+    'solver.puzzleCellRects': { scope: 'solver',      json: true,  run: (a, pid) => bridge().puzzleCellRects(pid, ...pArgs(a)) },
+    'solver.puzzleState':     { scope: 'solver',      json: true,  run: (a, pid) => bridge().puzzleState(pid, ...pArgs(a)) },
+    'solver.knotCells':       { scope: 'solver',      json: false, run: (a, pid) => bridge().knotCells(pid, ...pArgs(a)) },
+    'solver.scanSolution':    { scope: 'solver',      json: true,  run: (a, pid) => bridge().scanSolution(pid, ...pArgs(a)) },
+    'solver.clueSearchTarget':{ scope: 'solver',      json: true,  run: (a) => bridge().clueSearchTarget(...pArgs(a)) },
+    'solver.compassHeading':  { scope: 'solver',      json: false, run: (a, pid) => bridge().compassHeading(pid, ...pArgs(a)) },
+    'solver.compassTarget':   { scope: 'solver',      json: false, run: (a, pid) => bridge().compassTarget(pid, ...pArgs(a)) },
+    // -- party (party)
+    'party.partyData':        { scope: 'party',       json: true,  run: (a) => bridge().partyData(...pArgs(a)) },
+    'party.partyGetCode':     { scope: 'party',       json: false, run: (a) => bridge().partyGetCode(...pArgs(a)) },
+    'party.partySetCode':     { scope: 'party',       json: false, run: (a) => bridge().partySetCode(...pArgs(a)) },
+    'party.partyReport':      { scope: 'party',       json: false, run: (a) => bridge().partyReport(...pArgs(a)) },
+    // -- host (host)
+    'host.alertsLoad':        { scope: 'host',        json: false, run: (a, pid) => bridge().alertsLoad(pid, ...pArgs(a)) },
+    'host.counterLoad':       { scope: 'host',        json: false, run: (a, pid) => bridge().counterLoad(pid, ...pArgs(a)) },
+    'host.notesLoad':         { scope: 'host',        json: false, run: (a, pid) => bridge().notesLoad(pid, ...pArgs(a)) },
+    'host.sidebarLoad':       { scope: 'host',        json: false, run: (a, pid) => bridge().sidebarLoad(pid, ...pArgs(a)) },
+    'host.mystLoad':          { scope: 'host',        json: true,  run: (a, pid) => bridge().mystLoad(pid, ...pArgs(a)) },
+    'host.questLoad':         { scope: 'host',        json: true,  run: (a, pid) => bridge().questLoad(pid, ...pArgs(a)) },
+    'host.menuRulesLoad':     { scope: 'host',        json: true,  run: (a) => bridge().menuRulesLoad(...pArgs(a)) },
+    'host.menuStatus':        { scope: 'host',        json: true,  run: (a, pid) => bridge().menuStatus(pid, ...pArgs(a)) },
+    'host.menuSearch':        { scope: 'host',        json: true,  run: (a) => bridge().menuSearch(...pArgs(a)) },
+    'host.markersGet':        { scope: 'host',        json: true,  run: (a, pid) => bridge().markersGet(pid, ...pArgs(a)) },
+    'host.markersVersion':    { scope: 'host',        json: false, run: (a, pid) => bridge().markersVersion(pid, ...pArgs(a)) },
+    'host.markerKeybindsGet': { scope: 'host',        json: true,  run: (a) => bridge().markerKeybindsGet(...pArgs(a)) },
+    'host.screenshotKeybindGet':{ scope: 'host',        json: false, run: (a) => bridge().screenshotKeybindGet(...pArgs(a)) },
+    'host.serverPacketFeed':  { scope: 'host',        json: true,  run: (a, pid) => bridge().serverPacketFeed(pid, ...pArgs(a)) },
+    'host.serverPackets':     { scope: 'host',        json: true,  run: (a, pid) => bridge().serverPackets(pid, ...pArgs(a)) },
+    'host.soundFilterStatus': { scope: 'host',        json: true,  run: (a, pid) => bridge().soundFilterStatus(pid, ...pArgs(a)) },
+    'host.soundList':         { scope: 'host',        json: true,  run: (a) => bridge().soundList(...pArgs(a)) },
+    'host.soundStatus':       { scope: 'host',        json: true,  run: (a) => bridge().soundStatus(...pArgs(a)) },
+    'host.varPinsLoad':       { scope: 'host',        json: true,  run: (a) => bridge().varPinsLoad(...pArgs(a)) },
+    'host.varsDump':          { scope: 'host',        json: true,  run: (a, pid) => bridge().varsDump(pid, ...pArgs(a)) },
+    'host.vosCached':         { scope: 'host',        json: true,  run: (a) => bridge().vosCached(...pArgs(a)) },
+    'host.obeliskCached':     { scope: 'host',        json: false, run: (a) => bridge().obeliskCached(...pArgs(a)) },
+    'host.scarabCached':      { scope: 'host',        json: false, run: (a) => bridge().scarabCached(...pArgs(a)) },
+    'host.cacheStoreLoad':    { scope: 'host',        json: false, run: (a) => bridge().cacheStoreLoad(...pArgs(a)) },
+    'host.xpPanelState':      { scope: 'host',        json: false, run: (a, pid) => bridge().xpPanelState(pid, ...pArgs(a)) },
+    'host.readerHealth':      { scope: 'host',        json: true,  run: (a, pid) => bridge().readerHealth(pid, ...pArgs(a)) },
+    'host.uiAsset':           { scope: 'host',        json: false, run: (a) => bridge().uiAsset(...pArgs(a)) },
+    'host.hiscores':          { scope: 'host',        json: true,  run: (a) => bridge().hiscores(...pArgs(a)) },
+    // -- act (actuator)
+    'act.alertsSave':         { scope: 'actuator',    json: false, run: (a, pid) => bridge().alertsSave(pid, ...pArgs(a)) },
+    'act.counterSave':        { scope: 'actuator',    json: false, run: (a, pid) => bridge().counterSave(pid, ...pArgs(a)) },
+    'act.notesSave':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().notesSave(pid, ...pArgs(a)) },
+    'act.sidebarSave':        { scope: 'actuator',    json: false, run: (a, pid) => bridge().sidebarSave(pid, ...pArgs(a)) },
+    'act.mystSave':           { scope: 'actuator',    json: false, run: (a, pid) => bridge().mystSave(pid, ...pArgs(a)) },
+    'act.questSave':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().questSave(pid, ...pArgs(a)) },
+    'act.menuRulesSave':      { scope: 'actuator',    json: false, run: (a) => bridge().menuRulesSave(...pArgs(a)) },
+    'act.menuEnable':         { scope: 'actuator',    json: false, run: (a, pid) => bridge().menuEnable(pid, ...pArgs(a)) },
+    'act.menuPins':           { scope: 'actuator',    json: false, run: (a, pid) => bridge().menuPins(pid, ...pArgs(a)) },
+    'act.markerAdd':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerAdd(pid, ...pArgs(a)) },
+    'act.markerRemove':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerRemove(pid, ...pArgs(a)) },
+    'act.markerSetColor':     { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerSetColor(pid, ...pArgs(a)) },
+    'act.markerSetLabel':     { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerSetLabel(pid, ...pArgs(a)) },
+    'act.markersClear':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().markersClear(pid, ...pArgs(a)) },
+    'act.markerKeybindsSet':  { scope: 'actuator',    json: false, run: (a) => bridge().markerKeybindsSet(...pArgs(a)) },
+    'act.screenshotKeybindSet':{ scope: 'actuator',    json: false, run: (a) => bridge().screenshotKeybindSet(...pArgs(a)) },
+    'act.captureScreenshot':  { scope: 'actuator',    json: false, run: (a, pid) => bridge().captureScreenshot(pid, ...pArgs(a)) },
+    'act.openScreenshots':    { scope: 'actuator',    json: false, run: (a) => bridge().openScreenshots(...pArgs(a)) },
+    'act.renderToggle':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().renderToggle(pid, ...pArgs(a)) },
+    'act.serverPacketArm':    { scope: 'actuator',    json: false, run: (a, pid) => bridge().serverPacketArm(pid, ...pArgs(a)) },
+    'act.soundExport':        { scope: 'actuator',    json: false, run: (a) => bridge().soundExport(...pArgs(a)) },
+    'act.soundFilterEnable':  { scope: 'actuator',    json: false, run: (a, pid) => bridge().soundFilterEnable(pid, ...pArgs(a)) },
+    'act.soundMute':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().soundMute(pid, ...pArgs(a)) },
+    'act.soundPause':         { scope: 'actuator',    json: false, run: (a) => bridge().soundPause(...pArgs(a)) },
+    'act.soundPlay':          { scope: 'actuator',    json: false, run: (a) => bridge().soundPlay(...pArgs(a)) },
+    'act.soundResume':        { scope: 'actuator',    json: false, run: (a) => bridge().soundResume(...pArgs(a)) },
+    'act.soundSeek':          { scope: 'actuator',    json: false, run: (a) => bridge().soundSeek(...pArgs(a)) },
+    'act.soundStop':          { scope: 'actuator',    json: false, run: (a) => bridge().soundStop(...pArgs(a)) },
+    'act.soundVolume':        { scope: 'actuator',    json: false, run: (a) => bridge().soundVolume(...pArgs(a)) },
+    'act.varPinsSave':        { scope: 'actuator',    json: false, run: (a) => bridge().varPinsSave(...pArgs(a)) },
+    'act.varsWatch':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().varsWatch(pid, ...pArgs(a)) },
+    'act.vosReport':          { scope: 'actuator',    json: false, run: (a) => bridge().vosReport(...pArgs(a)) },
+    'act.worldEventVote':     { scope: 'actuator',    json: false, run: (a) => bridge().worldEventVote(...pArgs(a)) },
+    'act.cacheStoreSave':     { scope: 'actuator',    json: false, run: (a) => bridge().cacheStoreSave(...pArgs(a)) },
+    'act.xpPanelReset':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().xpPanelReset(pid, ...pArgs(a)) },
+    'act.ifaceOffset':        { scope: 'actuator',    json: false, run: (a) => bridge().ifaceOffset(...pArgs(a)) },
     'ui.setHeight':     { scope: null,         json: false,   run: (a, pid, id, fr) => { if (fr) fr.style.height = pClampNum(a[0], 60, 4000) + 'px'; return true; } },
     'ui.setTitle':      { scope: null,         json: false,   run: () => true }
   };

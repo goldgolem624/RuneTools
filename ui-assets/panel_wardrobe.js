@@ -27,7 +27,7 @@
     if (wdRows || wdLoading || !bridge() || !bridge().dbRows) return;
     wdLoading = true;
     try {
-      const rows = JSON.parse(await bridge().dbRows(163) || 'null');
+      const rows = JSON.parse(await rtxData.raw('cache.dbRows', 163) || 'null');
       if (!Array.isArray(rows) || rows.length < 100) return;   // cache not open yet; retry
       const out = [];
       for (const r of rows) {

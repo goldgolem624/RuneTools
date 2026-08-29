@@ -17,7 +17,7 @@
     if (abCfg || abCfgTried || !bridge() || !bridge().abilityConfigs) return;
     abCfgTried = true;
     try {
-      const d = JSON.parse(await bridge().abilityConfigs() || '{}');
+      const d = JSON.parse(await rtxData.raw('cache.abilityConfigs') || '{}');
       if (d && Object.keys(d).length) abCfg = d; else abCfgTried = false;   // empty = cache not open yet, retry
     } catch (e) { abCfgTried = false; }
   }
@@ -77,16 +77,16 @@
       // DROPPED it for a while, and clock (mod_base+0xED2FF8) died in a game update, so the
       // cooldown clocks had no time source at all and every ability read as off cooldown
       // (owner report: Freedom "ready" with cast/ready stamps plainly live in the tooltip).
-      try { const j = JSON.parse(await bridge().actionBar(myPid())); bars = j.bars || []; clock = j.clock || 0; cycles = j.cycles || 0; } catch (e) {}
+      try { const j = JSON.parse(await rtxData.raw('state.actionBar')); bars = j.bars || []; clock = j.clock || 0; cycles = j.cycles || 0; } catch (e) {}
       // varc-int snapshot for the cooldown clock pairs (keys are scope-prefixed "5:<id>")
       let vc = null;
-      try { if (bridge().varcsDumpAll) vc = JSON.parse(await bridge().varcsDumpAll(myPid()) || 'null'); } catch (e) {}
+      try { if (bridge().varcsDumpAll) vc = JSON.parse(await rtxData.raw('state.varcsAll') || 'null'); } catch (e) {}
       await ensureVbMap();
       // Damage pools the game's tooltip scripts read (script 17726 / 21027 / 21111): ability
       // damage = varp 3531 (+ half of off-hand varp 3532), armour = varp 711 + 3563, shield = 4499.
       const vps = new Set([AB_ADREN_VARP, 3531, 3532, 711, 3563, 4499]);
       for (const bi in ABAR_GATE) { const r = storageVbMap && storageVbMap[ABAR_GATE[bi]]; if (r) vps.add(r.varp); }
-      let vp = {}; if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
+      let vp = {}; if (vps.size && bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))); } catch (e) {} }
       const preset = {}; for (const bi in ABAR_GATE) preset[bi] = readVb(ABAR_GATE[bi], vp) || 0;
       const adren = (vp[AB_ADREN_VARP] !== undefined) ? vp[AB_ADREN_VARP] : null;
       const dmg = { abil: (+vp[3531] || 0) + Math.floor((+vp[3532] || 0) / 2), armour: (+vp[711] || 0) + (+vp[3563] || 0), shield: (+vp[4499] || 0) };
@@ -96,7 +96,7 @@
       let capeArg = 0;
       try {
         if (bridge().containerItems) {
-          const eq = JSON.parse(await bridge().containerItems(myPid(), 94) || 'null');
+          const eq = JSON.parse(await rtxData.raw('state.container', 94) || 'null');
           const cape = eq && Array.isArray(eq.items) ? eq.items.find(it => it && (it[0] | 0) === 1 && it[1] > 0) : null;
           if (cape) capeArg = await abCapeArg(cape[1] | 0);
         }
@@ -110,7 +110,7 @@
     if (abCapeCache.has(itemId)) return abCapeCache.get(itemId);
     let arg = 0;
     try {
-      const pp = JSON.parse(await bridge().itemParams(itemId) || 'null');
+      const pp = JSON.parse(await rtxData.raw('cache.itemParams', itemId) || 'null');
       const pi = (pp && pp.ints) || {};
       for (const k of ['2881', '8591', '8592', '8902']) {
         const v = pi[k] | 0;
@@ -132,7 +132,7 @@
     SPRITE_PENDING.add(sid);
     (async () => {
       try {
-        const url = await bridge().sprite(sid); SPRITE_PENDING.delete(sid);
+        const url = await rtxData.raw('cache.sprite', sid); SPRITE_PENDING.delete(sid);
         if (url) { SPRITES.set(sid, url); document.querySelectorAll('.ab-icon[data-spr="' + sid + '"]').forEach(n => setIconBg(n, url)); }
       } catch (e) { SPRITE_PENDING.delete(sid); }
     })();

@@ -122,11 +122,11 @@
     if (!force && musicNames && now - musicFetchAt < 5000) return;
     musicFetchAt = now;
     if (!musicNames) {
-      try { musicNames = JSON.parse(await bridge().enumInfo(MUSIC_NAME_ENUM) || '{}') || {}; }
+      try { musicNames = JSON.parse(await rtxData.raw('cache.enumInfo', MUSIC_NAME_ENUM) || '{}') || {}; }
       catch (e) { musicNames = {}; }
     }
     try {
-      const d = JSON.parse(await bridge().varps(myPid(), MUSIC_VARPS.join(',')) || '{}') || {};
+      const d = JSON.parse(await rtxData.raw('state.varps', MUSIC_VARPS.join(',')) || '{}') || {};
       const set = new Set();
       for (let b = 0; b < MUSIC_VARPS.length; b++) {
         const v = (d[String(MUSIC_VARPS[b])] || 0) >>> 0;
@@ -144,7 +144,7 @@
     sndBusy = true; sndSig = ''; renderSounds();
     if (reset) { sndStart = 0; sndPageStack.length = 0; }
     try {
-      sndRows = JSON.parse(await bridge().soundList(SND_IDX[sndKind], sndStart, sndPageSize) || '[]') || [];
+      sndRows = JSON.parse(await rtxData.raw('host.soundList', SND_IDX[sndKind], sndStart, sndPageSize) || '[]') || [];
     } catch (e) { sndRows = []; }
     sndBusy = false; sndSig = '';
     paneRun('sounds', renderSounds);
@@ -162,7 +162,7 @@
     while (!sndScanStop) {
       let page = [];
       try {
-        page = JSON.parse(await bridge().soundList(SND_IDX[sndKind], from, PAGE) || '[]') || [];
+        page = JSON.parse(await rtxData.raw('host.soundList', SND_IDX[sndKind], from, PAGE) || '[]') || [];
       } catch (e) { break; }
       if (!page.length) break;
       sndScanRows = sndScanRows.concat(page);
@@ -178,21 +178,21 @@
   async function sndPlay(id) {
     if (!bridge() || !bridge().soundPlay) return;
     sndNow = id; sndNote = ''; sndSig = ''; renderSounds();
-    try { await bridge().soundPlay(SND_IDX[sndKind], id, sndVol); }
+    try { await rtxData.raw('act.soundPlay', SND_IDX[sndKind], id, sndVol); }
     catch (e) { sndNote = 'Sound ' + id + ' did not decode'; }
   }
   async function sndToggle() {
     if (!bridge()) return;
     try {
-      if (sndSt.state === 'playing') await bridge().soundPause();
-      else if (sndSt.state === 'paused') await bridge().soundResume();
+      if (sndSt.state === 'playing') await rtxData.raw('act.soundPause');
+      else if (sndSt.state === 'paused') await rtxData.raw('act.soundResume');
       else if (sndNow >= 0) await sndPlay(sndNow);
     } catch (e) {}
   }
   async function sndExport(id) {
     if (!bridge() || !bridge().soundExport) return;
     let p = '';
-    try { p = await bridge().soundExport(SND_IDX[sndKind], id); } catch (e) {}
+    try { p = await rtxData.raw('act.soundExport', SND_IDX[sndKind], id); } catch (e) {}
     sndNote = p ? ('Saved ' + p) : ('Could not export ' + id);
     sndSig = ''; renderSounds();
   }
@@ -216,17 +216,17 @@
       let changed = false;
       for (const v of JSON.parse(raw).map(Number)) if (v > 0 && !sndMuted.has(v)) { sndMuted.add(v); changed = true; }
       if (!changed) return;
-      try { bridge().soundMute(myPid(), Array.from(sndMuted).join(',')); } catch (e) {}
+      try { rtxData.sync('act.soundMute', Array.from(sndMuted).join(',')); } catch (e) {}
       sndSig = ''; paneRun('sounds', renderSounds);
     } catch (e) {}
-    try { const v = parseInt(prefGet('rtxSoundVol', ''), 10); if (v >= 0 && v <= 100) { sndVol = v; bridge().soundVolume(sndVol); } } catch (e) {}
+    try { const v = parseInt(prefGet('rtxSoundVol', ''), 10); if (v >= 0 && v <= 100) { sndVol = v; rtxData.sync('act.soundVolume', sndVol); } } catch (e) {}
   }
 
   // Push the list to the companion AND persist it. Always both: the companion's copy dies with
   // the client process, so the panel is the durable owner of the list.
   function sndPushMuted() {
     prefSet('rtxSoundMuted', JSON.stringify(Array.from(sndMuted)));
-    try { bridge().soundMute(myPid(), Array.from(sndMuted).join(',')); } catch (e) {}
+    try { rtxData.sync('act.soundMute', Array.from(sndMuted).join(',')); } catch (e) {}
   }
 
   function sndToggleMute(key) {
@@ -243,14 +243,14 @@
     const want = paneVisible('sounds');
     if (want !== sndFxOn && bridge().soundFilterEnable) {
       sndFxOn = want;
-      try { await bridge().soundFilterEnable(myPid(), want); } catch (e) {}
+      try { await rtxData.raw('act.soundFilterEnable', want); } catch (e) {}
       if (want) sndPushMuted();
     }
     if (!want || !bridge().soundStatus) return;
-    try { sndSt = JSON.parse(await bridge().soundStatus() || '{}') || sndSt; } catch (e) { return; }
+    try { sndSt = JSON.parse(await rtxData.raw('host.soundStatus') || '{}') || sndSt; } catch (e) { return; }
     if (bridge().soundFilterStatus) {
       try {
-        const fx = JSON.parse(await bridge().soundFilterStatus(myPid()) || '{}') || {};
+        const fx = JSON.parse(await rtxData.raw('host.soundFilterStatus') || '{}') || {};
         sndFx = fx;             // assign even when absent, so the strip reports a client that went away
         if (fx.ok) {
           // `n` is the companion's absolute observation count, so a gap here means the game
@@ -424,7 +424,7 @@
         }
         if (e.target.closest('#sndPlayPause')) { sndToggle(); return; }
         if (e.target.closest('#sndStopBtn')) {
-          try { bridge().soundStop(); } catch (e2) {}
+          try { rtxData.sync('act.soundStop'); } catch (e2) {}
           sndNow = -1; sndSig = ''; renderSounds(); return;
         }
         const lm = e.target.closest('button[data-live]');
@@ -466,18 +466,18 @@
         seek.addEventListener('mousedown', function () { sndSeeking = true; });
         seek.addEventListener('change', function () {
           sndSeeking = false;
-          try { bridge().soundSeek(+seek.value); } catch (e2) {}
+          try { rtxData.sync('act.soundSeek', +seek.value); } catch (e2) {}
         });
       }
       const vin = $('sndVolIn');
       if (vin) vin.addEventListener('input', function () {
         sndVol = +vin.value;
         prefSet('rtxSoundVol', String(sndVol));
-        try { bridge().soundVolume(sndVol); } catch (e2) {}
+        try { rtxData.sync('act.soundVolume', sndVol); } catch (e2) {}
       });
       // Push the restored volume once on open, so the companion matches what the slider shows
       // instead of staying at its own default until the slider is dragged.
-      try { bridge().soundVolume(sndVol); } catch (e) {}
+      try { rtxData.sync('act.soundVolume', sndVol); } catch (e) {}
       sndLoadMuted();
       sndFetch(true);
     }

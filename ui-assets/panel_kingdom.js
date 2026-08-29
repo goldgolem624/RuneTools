@@ -55,9 +55,9 @@
     if (t - kdFetchAt < 2000) return;
     kdFetchAt = t; kdFetching = true;
     try {
-      const vb = JSON.parse(await bridge().varbits(myPid(), KD_VB_IDS) || 'null');
+      const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', KD_VB_IDS) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) kdVb = vb;
-      const vp = JSON.parse(await bridge().varps(myPid(), KD_VP_IDS) || 'null');
+      const vp = JSON.parse(await rtxData.raw('state.varps', KD_VP_IDS) || 'null');
       if (vp && typeof vp === 'object' && Object.keys(vp).length) kdVp = vp;
       await kdEnsureQuest();
       // The quest tracker varp (plus any special-case varps questStatus reads) is fetched separately
@@ -67,7 +67,7 @@
         if (kdQuest.v) ids.add(kdQuest.v[0]);
         if (kdQuest.b) ids.add(kdQuest.b[0]);
         if (ids.size) {
-          const qvp = JSON.parse(await bridge().varps(myPid(), Array.from(ids).join(',')) || 'null');
+          const qvp = JSON.parse(await rtxData.raw('state.varps', Array.from(ids).join(',')) || 'null');
           if (qvp && typeof qvp === 'object' && Object.keys(qvp).length) kdQuestVp = qvp;
         }
       }

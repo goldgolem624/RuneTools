@@ -316,7 +316,7 @@
     try { await auraCatalogLoad(); } catch (e) {}
     try {
       if (bridge().buffs) {
-        const d = JSON.parse(await bridge().buffs(myPid()));
+        const d = JSON.parse(await rtxData.raw('state.buffs'));
         auraData = (d && Array.isArray(d.buffs)) ? d : { buffs: [], debuffs: [] };
         auraRemember(auraEffects().map(e => e.b.name));
       }
@@ -648,7 +648,7 @@
     if (auraCatalog || !bridge()) return;
     const now = Date.now(); if (now - auraCatalogTried < 5000) return; auraCatalogTried = now;
     let cat = null;
-    try { if (bridge().buffCatalog) { const d = JSON.parse((await bridge().buffCatalog()) || '{}'); if (d && (Array.isArray(d.buffs) || Array.isArray(d.debuffs))) cat = d; } } catch (e) {}
+    try { if (bridge().buffCatalog) { const d = JSON.parse((await rtxData.raw('cache.buffCatalog')) || '{}'); if (d && (Array.isArray(d.buffs) || Array.isArray(d.debuffs))) cat = d; } } catch (e) {}
     if (!cat) return;                                   // cache not open yet, retry later
     auraCatalog = { buffs: {}, debuffs: {} };
     const m = auraIconMemoLoad(); const names = [];
@@ -695,7 +695,7 @@
     SPRITE_PENDING.add(sid);
     (async () => {
       try {
-        const url = await bridge().sprite(sid); SPRITE_PENDING.delete(sid);
+        const url = await rtxData.raw('cache.sprite', sid); SPRITE_PENDING.delete(sid);
         if (url) { SPRITES.set(sid, url); if (name) auraIconByName[name] = url; document.querySelectorAll('.au-icon[data-spr="' + sid + '"]').forEach(n => auraSetIcon(n, url)); }
       } catch (e) { SPRITE_PENDING.delete(sid); }
     })();
@@ -709,7 +709,7 @@
     // Honour the Alerts panel's "only when tabbed out" switch.
     try { if (typeof alertsSuppressed === 'function' && alertsSuppressed()) return; } catch (e) {}
     if (act.sound && act.sound !== 'none') { try { bridge().playSound(act.sound); } catch (e) {} }
-    if (act.flash) { try { bridge().flashGame(myPid()); } catch (e) {} }
+    if (act.flash) { try { rtxData.sync('overlay.flashGame'); } catch (e) {} }
     const msg = act.msg ? auraText(act.msg, a, ev, st) : (a.name || 'Aura');
     if (act.notify === 'ingame' || act.notify === 'both') { try { uiNotify(msg, { ttl: 5000 }); } catch (e) {} }
     if (act.notify === 'windows' || act.notify === 'both') { try { if (typeof winNotify === 'function') winNotify(msg); } catch (e) {} }

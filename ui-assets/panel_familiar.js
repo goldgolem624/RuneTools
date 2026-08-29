@@ -11,12 +11,12 @@
     if (!bridge() || famFetching) return; famFetching = true;
     try {
       const pouchVp = typeof VP !== 'undefined' ? VP.FAMILIAR_POUCH : 1831, spVp = typeof VP !== 'undefined' ? VP.SPELL_POINTS : 1787;
-      let vp = {}; try { vp = JSON.parse(await bridge().varps(myPid(), pouchVp + ',' + spVp)); } catch (e) {}
+      let vp = {}; try { vp = JSON.parse(await rtxData.raw('state.varps', pouchVp + ',' + spVp)); } catch (e) {}
       const vb = await readVarbitValues([19034, 27403, 6055, 6054, 27747, 27749, 27750]);
-      let items = null; try { items = JSON.parse(await bridge().containerItems(myPid(), 530)); } catch (e) {}
+      let items = null; try { items = JSON.parse(await rtxData.raw('state.container', 530)); } catch (e) {}
       let pouch = vp[pouchVp] | 0; if (pouch <= 0 || pouch >= 0x7FFFFFFF) pouch = 0;
       if (pouch && FAM_NAMES[pouch] === undefined) {
-        try { FAM_NAMES[pouch] = (JSON.parse(await bridge().itemInfo(pouch)).name) || ('Item #' + pouch); }
+        try { FAM_NAMES[pouch] = (JSON.parse(await rtxData.raw('cache.itemInfo', pouch)).name) || ('Item #' + pouch); }
         catch (e) { FAM_NAMES[pouch] = 'Item #' + pouch; }
       }
       const alt = vb[27747] === 1;

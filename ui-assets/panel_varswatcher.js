@@ -30,7 +30,7 @@
   // wiped when the ui-assets are re-extracted on update; the mirror is read before bridge() exists.
   function varPinsSave() {
     const s = JSON.stringify([...varPinned]);
-    try { if (bridge() && bridge().varPinsSave) bridge().varPinsSave(s); } catch (e) {}
+    try { if (bridge() && bridge().varPinsSave) rtxData.sync('act.varPinsSave', s); } catch (e) {}
     try { localStorage.setItem('rtxVarPins', s); } catch (e) {}
   }
   let varPinsSynced = false;
@@ -38,9 +38,9 @@
     if (varPinsSynced || !bridge() || !bridge().varPinsLoad) return;
     varPinsSynced = true;
     let arr = null;
-    try { arr = JSON.parse(bridge().varPinsLoad() || '[]'); } catch (e) {}
+    try { arr = JSON.parse(rtxData.sync('host.varPinsLoad') || '[]'); } catch (e) {}
     if (Array.isArray(arr) && arr.length) varPinned = new Set(arr);                       // durable store wins
-    else if (varPinned.size) { try { bridge().varPinsSave(JSON.stringify([...varPinned])); } catch (e) {} }   // migrate localStorage -> durable
+    else if (varPinned.size) { try { rtxData.sync('act.varPinsSave', JSON.stringify([...varPinned])); } catch (e) {} }   // migrate localStorage -> durable
   }
   // Ground-truth var names from the CS2 extraction (%USERPROFILE%\RuneToolsX\cs2\names.json).
   let varNamesData = null, varNamesLower = null, varNamesTried = false;
@@ -48,7 +48,7 @@
     if (varNamesTried || !bridge() || !bridge().cs2Names) return;
     varNamesTried = true;
     try {
-      const d = JSON.parse(bridge().cs2Names() || '{}');
+      const d = JSON.parse(rtxData.sync('cache.cs2Names') || '{}');
       varNamesData = { varbit: d.varbit || {}, varp: d.varp || {}, varc: d.varc || {} };
       varNamesLower = { varbit: {}, varp: {}, varc: {} };
       for (const k in varNamesData.varbit) varNamesLower.varbit[k] = varNamesData.varbit[k].toLowerCase();
@@ -70,7 +70,7 @@
     varAchTried = true;
     (async () => {
       try {
-        if (!achDefs) { try { achDefs = JSON.parse(await bridge().achievements()) || []; } catch (e) { achDefs = []; } }
+        if (!achDefs) { try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; } }
         // achBitReqs classifies legacy merged bit reqs via storageVbMap, so it must be loaded first
         await ensureVbMap();
         const vb = {}, vp = {}, bits = {}, vpbits = {};
@@ -109,10 +109,10 @@
   }
   function varsWatchSet(on) {
     if (varWatchOn === on) return; varWatchOn = on;
-    try { if (bridge() && bridge().varsWatch) bridge().varsWatch(myPid(), on); } catch (e) {}
+    try { if (bridge() && bridge().varsWatch) rtxData.sync('act.varsWatch', on); } catch (e) {}
     if (on) { varNamesLoad(); varAchLoad(); varPinsSync(); }
     if (on && !varbitMapData && bridge() && bridge().varbitMap) {     // for the varp -> varbit hover decode
-      try { Promise.resolve(bridge().varbitMap()).then(j => {
+      try { Promise.resolve(rtxData.sync('cache.varbitMap')).then(j => {
         try { varbitMapData = JSON.parse(j); varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); } catch (e) {}
       }); } catch (e) {}
     }
@@ -129,12 +129,12 @@
     const now = Date.now(); if (now - _varAt < 250) return; _varAt = now;
     varFetching = true;
     let dv = null, dc = null, dx = null, dxs = null;
-    try { if (bridge().varpsDumpAll) dv = JSON.parse(await bridge().varpsDumpAll(myPid())); } catch (e) {}
+    try { if (bridge().varpsDumpAll) dv = JSON.parse(await rtxData.raw('state.varpsAll')); } catch (e) {}
     // The flat dump truncates 64-bit varps to their low 32 bits, so long ids are re-read full width.
-    try { if (bridge().varpsLong) varLongs = JSON.parse(await bridge().varpsLong(myPid(), VW_LONG_VARPS)); } catch (e) {}
-    try { if (bridge().varcsDumpAll) dx = JSON.parse(await bridge().varcsDumpAll(myPid())); } catch (e) {}
-    try { if (bridge().varcStringsDumpAll) dxs = JSON.parse(await bridge().varcStringsDumpAll(myPid())); } catch (e) {}  // varc-string, keys "2:<id>"
-    try { if (bridge().varsDump)     dc = JSON.parse(await bridge().varsDump(myPid())); } catch (e) {}
+    try { if (bridge().varpsLong) varLongs = JSON.parse(await rtxData.raw('state.varpsLong', VW_LONG_VARPS)); } catch (e) {}
+    try { if (bridge().varcsDumpAll) dx = JSON.parse(await rtxData.raw('state.varcsAll')); } catch (e) {}
+    try { if (bridge().varcStringsDumpAll) dxs = JSON.parse(await rtxData.raw('state.varcStringsAll')); } catch (e) {}  // varc-string, keys "2:<id>"
+    try { if (bridge().varsDump)     dc = JSON.parse(await rtxData.raw('host.varsDump')); } catch (e) {}
     varFetching = false;
     varcAvail = !!(dx && typeof dx === 'object' && Object.keys(dx).length) ||
                 !!(dxs && typeof dxs === 'object' && Object.keys(dxs).length) ||
@@ -449,7 +449,7 @@
   }
   function showVarbitPop(rowEl, key) {
     if (!varbitMapData && bridge() && bridge().varbitMap) {
-      try { Promise.resolve(bridge().varbitMap()).then(j => { try { varbitMapData = JSON.parse(j); } catch (e) {} }); } catch (e) {}
+      try { Promise.resolve(rtxData.sync('cache.varbitMap')).then(j => { try { varbitMapData = JSON.parse(j); } catch (e) {} }); } catch (e) {}
     }
     let pop = $('vrPop');
     if (!pop) {

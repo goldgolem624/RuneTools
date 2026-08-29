@@ -29,9 +29,9 @@
   function loadMarkerKb() {
     if (markerKbLoaded || !bridge() || !bridge().markerKeybindsGet) return;
     markerKbLoaded = true;
-    try { const o = JSON.parse(bridge().markerKeybindsGet()); if (o) markerKb = { mark: (o.mark | 0) || 65, remove: (o.remove | 0) || 68, color: (o.color | 0) || 0x46E0C0 }; } catch (e) {}
+    try { const o = JSON.parse(rtxData.sync('host.markerKeybindsGet')); if (o) markerKb = { mark: (o.mark | 0) || 65, remove: (o.remove | 0) || 68, color: (o.color | 0) || 0x46E0C0 }; } catch (e) {}
   }
-  function saveMarkerKb() { try { bridge().markerKeybindsSet(markerKb.mark | 0, markerKb.remove | 0, markerKb.color | 0); } catch (e) {} }
+  function saveMarkerKb() { try { rtxData.sync('act.markerKeybindsSet', markerKb.mark | 0, markerKb.remove | 0, markerKb.color | 0); } catch (e) {} }
   function fetchMarkers(force) {
     if (!bridge() || !bridge().markersGet) return;
     const pid = myPid();
@@ -80,7 +80,7 @@
     m.label = (val || '').slice(0, 64);
     clearTimeout(_mkLabelT);
     _mkLabelT = setTimeout(function () {
-      try { bridge().markerSetLabel(myPid(), m.region, m.lx, m.ly, m.plane, m.label); } catch (e) {}
+      try { rtxData.sync('act.markerSetLabel', m.region, m.lx, m.ly, m.plane, m.label); } catch (e) {}
     }, 350);
   }
   function mkCycleColor(m) {
@@ -88,7 +88,7 @@
     const next = MK_COLORS[(MK_COLORS.indexOf(cur) + 1 + MK_COLORS.length) % MK_COLORS.length];
     // Preserve the second tone across primary-colour cycles.
     const c2 = m.color2 ? mkParseColor(m.color2) : 0;
-    try { bridge().markerSetColor(myPid(), m.region, m.lx, m.ly, m.plane, next, c2); } catch (e) {}
+    try { rtxData.sync('act.markerSetColor', m.region, m.lx, m.ly, m.plane, next, c2); } catch (e) {}
     fetchMarkers(true); pushOverlay();
   }
   // Second tone: cycles OFF -> each palette colour -> OFF. Off = a classic single-colour
@@ -97,11 +97,11 @@
     const cur2 = m.color2 ? mkParseColor(m.color2) : 0;
     const ring = [0].concat(MK_COLORS);
     const next2 = ring[(ring.indexOf(cur2) + 1 + ring.length) % ring.length];
-    try { bridge().markerSetColor(myPid(), m.region, m.lx, m.ly, m.plane, mkParseColor(m.color), next2); } catch (e) {}
+    try { rtxData.sync('act.markerSetColor', m.region, m.lx, m.ly, m.plane, mkParseColor(m.color), next2); } catch (e) {}
     fetchMarkers(true); pushOverlay();
   }
   function mkDelete(m) {
-    try { bridge().markerRemove(myPid(), m.region, m.lx, m.ly, m.plane); } catch (e) {}
+    try { rtxData.sync('act.markerRemove', m.region, m.lx, m.ly, m.plane); } catch (e) {}
     fetchMarkers(true); pushOverlay();
   }
   function paintMarkerList() {
@@ -178,7 +178,7 @@
     fetchMarkers(true); pushOverlay(); ta.value = '';
   }
   function mkClearAll() {
-    try { bridge().markersClear(myPid()); } catch (e) {}
+    try { rtxData.sync('act.markersClear'); } catch (e) {}
     fetchMarkers(true); pushOverlay();
   }
   function renderMarkers() {

@@ -7,7 +7,7 @@
     if (!bridge() || !bridge().xpPanelState || xpFetching) return;
     const _t = Date.now(); if (!force && _t - xpFetchAt < 1000) return; xpFetchAt = _t;
     xpFetching = true;
-    try { const r = await bridge().xpPanelState(myPid()); xpStateData = JSON.parse(r); xpStateRaw = r; }
+    try { const r = await rtxData.raw('host.xpPanelState'); xpStateData = JSON.parse(r); xpStateRaw = r; }
     catch (e) {} finally { xpFetching = false; }
     paneRun('xptracker', renderXpLive);
   }
@@ -105,7 +105,7 @@
                  b.textContent = 'Reset';
                  b.addEventListener('click', e => {
                    e.stopPropagation();
-                   try { bridge().xpPanelReset(myPid()); } catch (e2) {}
+                   try { rtxData.sync('act.xpPanelReset'); } catch (e2) {}
                    fetchXpTracker(true);
                  });
                  return b;

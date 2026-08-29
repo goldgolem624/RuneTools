@@ -45,7 +45,7 @@
     if (now - skillBonusAt < 2000) return;
     skillBonusAt = now; skillBonusFetching = true;
     try {
-      const d = JSON.parse(await bridge().varps(myPid(), SKILL_BONUS_CSV) || '{}');
+      const d = JSON.parse(await rtxData.raw('state.varps', SKILL_BONUS_CSV) || '{}');
       if (d && typeof d === 'object') {
         const sig = JSON.stringify(d);
         if (sig !== skillBonusSig) {

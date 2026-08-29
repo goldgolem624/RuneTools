@@ -7,7 +7,7 @@
     if (!bridge() || gbankFetching) return;
     gbankFetching = true;
     try {
-      const d = JSON.parse(await bridge().groupBankItems(myPid()));
+      const d = JSON.parse(await rtxData.raw('state.groupBank'));
       gbankData = d && Array.isArray(d.items) ? d : { open: false, items: [], count: 0, cached_at: 0 };
     } catch (e) { /* keep previous */ }
     gbankFetching = false;

@@ -104,8 +104,8 @@
   async function dwLoadFFCosts() {
     if (dwFFCosts || !bridge().enumInfo) return;
     try {
-      const a = await bridgeJson('enumInfo', 5886);
-      const b = await bridgeJson('enumInfo', 5887);
+      const a = await rtxData.call('cache.enumInfo', 5886);
+      const b = await rtxData.call('cache.enumInfo', 5887);
       if (a && b && Object.keys(a).length && Object.keys(b).length) dwFFCosts = [a, b];
     } catch (e) {}
   }
@@ -116,7 +116,7 @@
     const t = Date.now(); if (!force && t - dwFetchAt < (bg ? 10000 : 2000)) return; dwFetchAt = t;
     dwFetching = true;
     try {
-      const vb = await bridgeJson('varbits', myPid(), DW_IDS);
+      const vb = await rtxData.call('state.varbitsCsv', DW_IDS);
       // Refresh the in-Priff gate BEFORE dwVosMaybeReport so the tab-report path never posts (and the
       // panel never labels 'live') a stale out-of-Priff varbit read.
       try { dwInPriff = dwRegionInPriff(await scanPlayerTile()); } catch (e) { dwInPriff = false; }
@@ -126,7 +126,7 @@
       // Menaphos journal collections (CS2 script13412: found-bits packed into varps 6989/6990).
       if (bridge().varps) {
         {
-          const vp = await bridgeJson('varps', myPid(), '5441,5442,6989,6990,3079,6601');
+          const vp = await rtxData.call('state.varps', '5441,5442,6989,6990,3079,6601');
           if (vp && typeof vp === 'object') dwVp = vp;
         }
       }
@@ -252,7 +252,7 @@
   function dwOnLeaguesWorld() {
     try {
       return !!(lastSnap && lastSnap.world && bridge() && bridge().isLeaguesWorld
-                && bridge().isLeaguesWorld(lastSnap.world));
+                && rtxData.sync('cache.isLeaguesWorld', lastSnap.world));
     } catch (e) { return false; }
   }
   function dwVosCommunity(hr, allowRefresh) {
@@ -260,7 +260,7 @@
     const lg = dwOnLeaguesWorld();
     const read = (refresh) => {
       try {
-        const j = JSON.parse(bridge().vosCached(refresh ? 1 : 0) || '{}');
+        const j = JSON.parse(rtxData.sync('host.vosCached', refresh ? 1 : 0) || '{}');
         return lg ? (j && j.lg) : j;      // leagues value rides under `lg`
       } catch (e) { return null; }
     };
@@ -306,7 +306,7 @@
     dwVosReportedHour = s.hourKey;
     // Reported INTO the pool this world belongs to, so leagues readings build the leagues
     // consensus rather than contradicting the main one.
-    try { bridge().vosReport(s.a, s.b, dwOnLeaguesWorld()); } catch (e) {}
+    try { rtxData.sync('act.vosReport', s.a, s.b, dwOnLeaguesWorld()); } catch (e) {}
   }
 
   function dwCheckNotify() {
@@ -364,7 +364,7 @@
     dwChalBusy = true;
     try {
       if (!dwChalEnum17112) {
-        dwChalEnum17112 = await bridgeJson('enumInfo', 17112);
+        dwChalEnum17112 = await rtxData.call('cache.enumInfo', 17112);
         if (!dwChalEnum17112) return;                 // cache not ready -> retry next pass
       }
       const rows = [];
@@ -373,13 +373,13 @@
         const sub = dwChalEnum17112[s.cat] | 0;
         if (sub <= 0) continue;
         if (!dwChalSubEnums[sub]) {
-          dwChalSubEnums[sub] = (await bridgeJson('enumInfo', sub)) || {};
+          dwChalSubEnums[sub] = (await rtxData.call('cache.enumInfo', sub)) || {};
         }
         const st = dwChalSubEnums[sub][s.idx] | 0;
         if (st <= 0) continue;
         if (!dwChalStructs[st]) {
           let sp = null;
-          sp = await bridgeJson('structParams', st);
+          sp = await rtxData.call('cache.structParams', st);
           const ints = (sp && sp.ints) || {}, strs = (sp && sp.strs) || {};
           dwChalStructs[st] = {
             name: (strs['1266'] || ('Challenge #' + st)) + (strs['4940'] ? ': ' + strs['4940'] : ''),
@@ -433,7 +433,7 @@
     dwMegBusy = true;
     try {
       if (!dwMegRows) {
-        dwMegRows = await bridgeJson('dbRows', 9);
+        dwMegRows = await rtxData.call('cache.dbRows', 9);
         if (!Array.isArray(dwMegRows) || !dwMegRows.length) { dwMegRows = null; return; }   // cache not ready -> retry
       }
       const row = dwMegRows.find(r0 => r0.i && r0.i['9'] && r0.i['9'][0] === key);
@@ -444,7 +444,7 @@
         let done = false;
         if (caseNum > 0) {
           {
-            const cb = (await bridgeJson('varbits', myPid(), String(31222 + caseNum))) || {};
+            const cb = (await rtxData.call('state.varbitsCsv', String(31222 + caseNum))) || {};
             done = (cb[String(31222 + caseNum)] | 0) === 1;
           }
         }
@@ -1092,7 +1092,7 @@
   function megHlClear() {
     if (!megHlLast) return;
     megHlLast = '';
-    try { bridge().uiHighlight(myPid(), 0, 0, 0, 0); } catch (e) {}
+    try { rtxData.sync('overlay.uiHighlight', 0, 0, 0, 0); } catch (e) {}
   }
   function megAnswerTick() {
     try {
@@ -1133,7 +1133,7 @@
                       + (d.hasAbs ? '' : ' [no screen origin - panel only]'));
       if (!d.hasAbs || !bridge().uiHighlight) { megHlClear(); return; }
       const rect = c2.x + ',' + c2.y + ',' + c2.w + ',' + c2.h;
-      if (rect !== megHlLast) { bridge().uiHighlight(myPid(), c2.x, c2.y, c2.w, c2.h); megHlLast = rect; }
+      if (rect !== megHlLast) { rtxData.sync('overlay.uiHighlight', c2.x, c2.y, c2.w, c2.h); megHlLast = rect; }
     } catch (e) {}
   }
 

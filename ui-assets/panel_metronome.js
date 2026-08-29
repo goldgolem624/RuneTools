@@ -26,7 +26,7 @@
     metroPollAt = now;
     metroPolling = true;
     try {
-      const r = JSON.parse(await bridge().gameTickState(myPid()) || 'null');
+      const r = JSON.parse(await rtxData.raw('state.gameTickState') || 'null');
       if (r && r.count >= 0) metroTs = { count: r.count | 0, age: r.age >= 0 ? r.age : 0, at: performance.now() };
       else metroTs = null;
     } catch (e) { metroTs = null; } finally { metroPolling = false; }

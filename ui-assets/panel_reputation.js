@@ -141,7 +141,7 @@
       const vb = await readVarbitValues(ids);
       const vps = [MENA_CITY.vp].concat(MENA_DISTRICTS.map(d => d.vp)).concat([FARM_VP]);
       let vp = {};
-      try { vp = JSON.parse(await bridge().varps(myPid(), vps.join(','))); } catch (e) {}
+      try { vp = JSON.parse(await rtxData.raw('state.varps', vps.join(','))); } catch (e) {}
       repData = {
         rep: REP_FACTIONS.map(f => ({ name: f.name, idx: f.idx, cls: f.cls, val: vb[f.vb] | 0 })),
         accepted: vb[REP_VB_ACCEPTED] | 0,

@@ -7,7 +7,7 @@
   async function hcRun() {
     if (hcBusy || !bridge() || !bridge().readerHealth) return;
     hcBusy = true; paneRun('health', renderHealth);
-    try { hcData = JSON.parse(await bridge().readerHealth(myPid())); } catch (e) { hcData = null; }
+    try { hcData = JSON.parse(await rtxData.raw('host.readerHealth')); } catch (e) { hcData = null; }
     hcBusy = false;
     paneRun('health', renderHealth);
   }

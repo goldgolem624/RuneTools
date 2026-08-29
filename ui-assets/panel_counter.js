@@ -7,13 +7,13 @@
     if (counterLoadedPid === myPid()) return;
     counterLoadedPid = myPid(); counterVal = 0; counterStep = 1;
     try {
-      const o = JSON.parse((bridge() && bridge().counterLoad && bridge().counterLoad(myPid())) || '{}');
+      const o = JSON.parse((bridge() && bridge().counterLoad && rtxData.sync('host.counterLoad')) || '{}');
       if (o && typeof o.value === 'number') counterVal = o.value | 0;
       // The step was never saved, so a counter set to +100 came back at +1 every reload.
       if (o && typeof o.step === 'number' && o.step > 0) counterStep = o.step | 0;
     } catch (e) {}
   }
-  function saveCounter() { try { bridge().counterSave(myPid(), JSON.stringify({ value: counterVal, step: counterStep })); } catch (e) {} }
+  function saveCounter() { try { rtxData.sync('act.counterSave', JSON.stringify({ value: counterVal, step: counterStep })); } catch (e) {} }
   function counterUpdate() { const v = $('ctrVal'); if (v) v.textContent = counterVal.toLocaleString(); }
   function counterInc(d) { counterVal += d; saveCounter(); counterUpdate(); }
   function counterReset() { counterVal = 0; saveCounter(); counterUpdate(); }

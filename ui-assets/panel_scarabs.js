@@ -23,7 +23,7 @@
       try { return JSON.parse(raw); } catch (e) { return null; }
     };
     // The bridge gates the network fallback (SSE alive -> no-op, else one GET per 120s).
-    return parse(bridge().scarabCached(1));
+    return parse(rtxData.sync('host.scarabCached', 1));
   }
   function scNow() { return Date.now() + scSkew; }
 
@@ -147,7 +147,7 @@
     const t = Date.now(); if (t - scSeen.at < 2000) return; scSeen.at = t;
     if (bridge().playerInfo) {
       try {
-        const p = JSON.parse(await bridge().playerInfo(myPid()) || 'null');
+        const p = JSON.parse(await rtxData.raw('state.player') || 'null');
         scPlayer = (p && p.in && p.x && p.y) ? { x: p.x, y: p.y, plane: p.plane | 0 } : null;
       } catch (e) { scPlayer = null; }
     }
@@ -198,7 +198,7 @@
       if (t - (scVoteSentAt[key] || 0) < 1500) return;
       scVoteSentAt[key] = t;
       // myPid() stamps the voter id per account: two accounts on one PC are two observers.
-      try { if (bridge().worldEventVote) bridge().worldEventVote(kind, world, yes, myPid()); } catch (e) {}
+      try { if (bridge().worldEventVote) rtxData.sync('act.worldEventVote', kind, world, yes, myPid()); } catch (e) {}
       scVoteCast[key] = yes ? 'y' : 'n';
     };
     if (!vote) {

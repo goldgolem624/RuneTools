@@ -28,7 +28,7 @@
   // King Lathas won't talk while any Mourner outfit piece is worn -- box a removal warning.
   const MH_MOURNER = new Set([6065, 6066, 6067, 6068, 6069, 6070, 10621, 51590, 51591]);
   async function mhMournerWorn() {   // one equipment read -> true if any Mourner piece is equipped
-    let eq = null; try { eq = JSON.parse(await bridge().equipment(myPid())); } catch (e) {}
+    let eq = null; try { eq = JSON.parse(await rtxData.raw('state.equipment')); } catch (e) {}
     if (eq && Array.isArray(eq.items)) for (const it of eq.items) if (MH_MOURNER.has(it[1])) return true;
     return false;
   }
@@ -40,9 +40,9 @@
   const mhNorm = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
   const mhIsNum = s => /^[0-9]+$/.test(s);
   async function mhBoxExact(needles) {
-    let dlg = null; try { dlg = JSON.parse(await bridge().dialog(myPid())); } catch (e) {}
+    let dlg = null; try { dlg = JSON.parse(await rtxData.raw('state.dialog')); } catch (e) {}
     const wants = needles.map(mhNorm).filter(Boolean);
-    const box = o => { try { bridge().uiHighlight(myPid(), o.x, o.y, o.w, o.h); } catch (e) {} };
+    const box = o => { try { rtxData.sync('overlay.uiHighlight', o.x, o.y, o.w, o.h); } catch (e) {} };
     if (dlg && dlg.hasAbs && Array.isArray(dlg.options)) {
       const opts = dlg.options.filter(o => o && (o.w > 0) && (o.text || '').toLowerCase().indexOf('<str') < 0)
                               .map(o => ({ o, body: mhNorm(o.text) })).filter(x => x.body);
@@ -54,7 +54,7 @@
       // the reverse, and never numeric, so '8' cannot touch "38".
       for (const x of opts) if (!mhIsNum(x.body) && wants.some(w => !mhIsNum(w) && x.body.indexOf(w) >= 0)) { box(x.o); return true; }
     }
-    try { bridge().uiHighlight(myPid(), 0, 0, 0, 0); } catch (e) {}
+    try { rtxData.sync('overlay.uiHighlight', 0, 0, 0, 0); } catch (e) {}
     return false;
   }
   async function mhStep() {

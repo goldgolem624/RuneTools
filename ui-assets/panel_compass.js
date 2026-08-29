@@ -110,7 +110,7 @@
   // checked against the known spot list so a stale post-update memory offset is rejected and the
   // solver falls back to needle triangulation.
   function compassTargetSpot() {
-    let s = ''; try { s = bridge().compassTarget(myPid()) || ''; } catch (e) {}
+    let s = ''; try { s = rtxData.sync('solver.compassTarget') || ''; } catch (e) {}
     if (!s) return null;
     const p = s.split(',').map(Number);
     if (p.length < 2 || !(p[0] > 0 && p[1] > 0)) return null;
@@ -166,7 +166,7 @@
     return dt < tetraNearest(COMPASS_SPOTS_G, x, y);              // else the nearer list claims it
   }
   function tetraRead() {                                          // varc 1323 -> {x,y,p}, or null
-    let s = ''; try { s = bridge().compassTarget(myPid()) || ''; } catch (e) {}
+    let s = ''; try { s = rtxData.sync('solver.compassTarget') || ''; } catch (e) {}
     if (!s) return null;
     const p = s.split(',').map(Number);
     if (p.length < 2 || !(p[0] > 0 && p[1] > 0)) return null;
@@ -183,7 +183,7 @@
     if (now - tetraOpenAt < 200) return tetraOpenV;
     tetraOpenAt = now;
     let v = false;
-    try { v = parseInt(bridge().compassHeading(myPid()), 10) >= 0; } catch (e) {}
+    try { v = parseInt(rtxData.sync('solver.compassHeading'), 10) >= 0; } catch (e) {}
     tetraOpenV = v;
     return v;
   }
@@ -258,7 +258,7 @@
     if (!ac || !isCompassClue(ac)) { const cb = $('clueCompass'); if (cb) cb.style.display = 'none'; return; }
     compassBusy = true;
     try {
-      let raw = -1; try { raw = parseInt(bridge().compassHeading(myPid()), 10); } catch (e) {}
+      let raw = -1; try { raw = parseInt(rtxData.sync('solver.compassHeading'), 10); } catch (e) {}
       let open = raw >= 0;
       if (open) compassLastRaw = raw;
       // PRIMARY: exact target from varc 1323 (instant). It does NOT need the needle, and
@@ -280,7 +280,7 @@
       if (res && res.state === 'solved') {                      // locked to one tile -> mark it in-world like a dig
         clueGuide({ x: res.spot[0], y: res.spot[1], p: 0 }, 'COMPASS DIG HERE');
       } else if (open) {                                        // ambiguous, on a compass clue -> clear the in-world tile
-        try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
+        try { if (bridge() && bridge().guideMarks) rtxData.sync('overlay.guideMarks', ''); } catch (e) {}
       }
       const sig = (res ? res.state : 'x') + '|' + (res && res.best ? res.best.join(',') : '') + '|' + compassReads.map(r => r.x + ',' + r.y + ',' + r.raw).join(';');
       // Redraw on sig change, OR when solved but the shared clue map got hidden by another path
@@ -296,7 +296,7 @@
   }
   function compassReset() {
     compassReads = []; compassResult = null; compassMapSig = null;
-    try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
+    try { if (bridge() && bridge().guideMarks) rtxData.sync('overlay.guideMarks', ''); } catch (e) {}
     drawCompassMap(); compassPaint();
   }
   // Manual capture: record the CURRENT player tile + current needle reading as one point.
@@ -309,7 +309,7 @@
       // reads array is sticky the user has no way back except the Clear button. This leaves
       // compassLastRaw written at :262 and never read; kept as-is rather than widening the diff.
       let raw = -1;
-      try { const v = parseInt(bridge().compassHeading(myPid()), 10); if (v >= 0) raw = v; } catch (e) {}
+      try { const v = parseInt(rtxData.sync('solver.compassHeading'), 10); if (v >= 0) raw = v; } catch (e) {}
       if (raw < 0) { compassFlash('open the compass clue first'); return; }
       const pos = await scanPlayerTile();
       if (!pos) { compassFlash('be in-world, then capture'); return; }

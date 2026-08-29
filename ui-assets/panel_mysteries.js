@@ -175,7 +175,7 @@
     if (now - _mystReqAt < 1500) return;
     _mystReqAt = now;
     if (!achDefs && bridge().achievements) {
-      try { achDefs = JSON.parse(await bridge().achievements()) || []; } catch (e) { achDefs = []; }
+      try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; }
       _achById = null;
     }
     // achBitReqs classifies legacy merged bit reqs via storageVbMap - load it up front so the first
@@ -201,7 +201,7 @@
       if (sb) for (const s2 of sb.sibs) vbs.add(s2[0]);
     }
     try { mystReqVb = await readVarbitValues([...vbs]); } catch (e) {}
-    if (vps.size) { try { mystReqVp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
+    if (vps.size) { try { mystReqVp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))); } catch (e) {} }
   }
   function mystReqSigVal() {   // cheap change signal for render sigs
     let s = 0;
@@ -289,7 +289,7 @@
   function mystSaveSteps() {
     if (mystSteps === null || !bridge() || !bridge().mystSave) return;
     if (mystLoadedPid !== myPid()) return;   // never write one character's blob to another
-    try { bridge().mystSave(myPid(), JSON.stringify(mystSteps)); } catch (e) {}
+    try { rtxData.sync('act.mystSave', JSON.stringify(mystSteps)); } catch (e) {}
   }
   // ---- focused mystery: pinned per account (stored in the same blob under "__focus"); gets its
   //      own tab with steps/tracking, and can mark the current step's NPC in-world ----
@@ -346,13 +346,13 @@
     try { if (typeof archResearchEnsure === 'function') await archResearchEnsure(); } catch (e) {}
     if ((mystSteps === null || mystLoadedPid !== myPid()) && bridge().mystLoad) {
       mystLoadedPid = myPid();
-      try { const d = JSON.parse(await bridge().mystLoad(myPid())); mystSteps = (d && typeof d === 'object') ? d : {}; }
+      try { const d = JSON.parse(await rtxData.raw('host.mystLoad')); mystSteps = (d && typeof d === 'object') ? d : {}; }
       catch (e) { mystSteps = {}; }
     }
     // 9302/9303 = mystery completion bits; 9205/9206/9207/9564/11732 = the global journal-page bank
     // (page found = bit idx%32 of varp [idx/32], CS2 script13039); 11733 = table-31 collectible bits
     // (CS2 script18966)
-    try { mystVp = JSON.parse(await bridge().varps(myPid(), '9302,9303,9205,9206,9207,9564,11732,11733')); } catch (e) { /* keep previous */ }
+    try { mystVp = JSON.parse(await rtxData.raw('state.varps', '9302,9303,9205,9206,9207,9564,11732,11733')); } catch (e) { /* keep previous */ }
     try { await mystReqPrefetch(); } catch (e) {}     // requirement-line live values
     mystFetching = false;
     updateMystHighlight();
@@ -595,7 +595,7 @@
     if (!bridge() || mbankFetching) return;
     mbankFetching = true;
     try {
-      const d = JSON.parse(await bridge().metalBankItems(myPid()));
+      const d = JSON.parse(await rtxData.raw('state.metalBank'));
       mbankData = d && Array.isArray(d.items) ? d : { open: false, items: [], count: 0, cached_at: 0 };
     } catch (e) { /* keep previous */ }
     mbankFetching = false;

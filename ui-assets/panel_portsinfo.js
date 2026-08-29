@@ -60,7 +60,7 @@
     if (!bridge()) return null;
     let vb = {}, vp = {};
     try { vb = (await readVarbitValues(PI_VB_IDS)) || {}; } catch (e) {}
-    try { vp = JSON.parse(await bridge().varps(myPid(), PI_VP_IDS)) || {}; } catch (e) {}
+    try { vp = JSON.parse(await rtxData.raw('state.varps', PI_VP_IDS)) || {}; } catch (e) {}
     const v = k => (vb[String(k)] | 0), p = k => (vp[String(k)] | 0);
     // script4186: office level / tutorial state -> how many ships the port has.
     const shipCount = v(17398) > 2 ? 4 : v(17398) > 1 ? 3 : v(17495) >= 63 ? 2 : (v(17457) === 1 ? 1 : 0);

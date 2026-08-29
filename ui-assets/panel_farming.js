@@ -75,7 +75,7 @@
       for (const vb of LEPRECHAUN_VBS) { const r = storageVbMap && storageVbMap[vb]; if (r) vps.add(r.varp); }
       // patches without a baked FARM.vb triple (Havenhythe) resolve their varp live
       for (const vb of FARM_ALL_VB) if (!FARM.vb[vb]) { const r = storageVbMap && storageVbMap[vb]; if (r) vps.add(r.varp); }
-      const d = JSON.parse(await bridge().varps(myPid(), Array.from(vps).join(',')));
+      const d = JSON.parse(await rtxData.raw('state.varps', Array.from(vps).join(',')));
       if (d && typeof d === 'object') farmData = d;
     }
     catch (e) { /* keep previous */ }
@@ -243,13 +243,13 @@
   function loadCats() {
     let arr = null;
     try {
-      const raw = (bridge() && bridge().sidebarLoad) ? bridge().sidebarLoad(myPid()) : '';
+      const raw = (bridge() && bridge().sidebarLoad) ? rtxData.sync('host.sidebarLoad') : '';
       if (raw) { const o = JSON.parse(raw); if (o && Array.isArray(o.collapsed)) arr = o.collapsed; }
     } catch (e) {}
     collapsedCats = (arr === null) ? allCatSet() : new Set(arr);  // no saved state -> minimized
   }
   function saveCats() {
-    try { bridge().sidebarSave(myPid(), JSON.stringify({ collapsed: [...collapsedCats] })); } catch (e) {}
+    try { rtxData.sync('act.sidebarSave', JSON.stringify({ collapsed: [...collapsedCats] })); } catch (e) {}
   }
   function toggleCat(cat) {
     if (!collapsedCats) loadCats();

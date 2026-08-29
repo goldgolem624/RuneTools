@@ -363,7 +363,7 @@
     if (!bridge().dbRows || !bridge().itemInfo) return;
     bcColsLoading = true;
     try {
-      const rows = JSON.parse(await bridge().dbRows(84) || 'null');
+      const rows = JSON.parse(await rtxData.raw('cache.dbRows', 84) || 'null');
       if (!Array.isArray(rows) || !rows.length) return;   // cache not open yet; retry next fetch
       const out = [], seen = {};
       for (const r of rows) {
@@ -379,7 +379,7 @@
         let doneVb = BC_DONE_VBS[sid] || null;
         if (!doneVb && sid > 0 && bridge().structParams) {
           try {
-            const sp = JSON.parse(await bridge().structParams(sid) || 'null');
+            const sp = JSON.parse(await rtxData.raw('cache.structParams', sid) || 'null');
             const ref = (sp && sp.ints && sp.ints['8993']) | 0;
             if ((ref >>> 24) === 1) doneVb = ref & 0xFFFFFF;
           } catch (e) {}
@@ -387,11 +387,11 @@
         const items = [];
         for (const id of ids) {
           let nm = '';
-          try { const d = JSON.parse(await bridge().itemInfo(id) || 'null'); nm = (d && d.name) || ''; } catch (e) {}
+          try { const d = JSON.parse(await rtxData.raw('cache.itemInfo', id) || 'null'); nm = (d && d.name) || ''; } catch (e) {}
           let vb = COLLECTION_ITEM_VBS[id] || COLLECTION_ITEM_VB_PAIR[id] || null;
           if (!vb && bridge().itemParams) {
             try {
-              const sp = JSON.parse(await bridge().itemParams(id) || 'null');
+              const sp = JSON.parse(await rtxData.raw('cache.itemParams', id) || 'null');
               const ref = (sp && sp.ints && sp.ints['8994']) | 0;
               if ((ref >>> 24) === 1) vb = ref & 0xFFFFFF;
             } catch (e) {}
@@ -414,7 +414,7 @@
     if (!bridge().varpsDumpAll) return;
     if (!bcVbIndex && bridge().varbitMap) {
       try {
-        const m = JSON.parse(await bridge().varbitMap() || 'null');
+        const m = JSON.parse(await rtxData.raw('cache.varbitMap') || 'null');
         if (m && Object.keys(m).length) {
           bcVbIndex = {};
           for (const vp in m) for (const t of m[vp]) bcVbIndex[t[0]] = [+vp, t[1], t[2]];
@@ -422,7 +422,7 @@
       } catch (e) {}
     }
     try {
-      const d = JSON.parse(await bridge().varpsDumpAll(myPid()) || 'null');
+      const d = JSON.parse(await rtxData.raw('state.varpsAll') || 'null');
       if (d && Object.keys(d).length) bcVarps = d;
     } catch (e) {}
   }
@@ -452,7 +452,7 @@
     bossFetching = true;
     try {
       let vp = {};
-      if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), BOSS_VARPS.join(','))); } catch (e) {} }
+      if (bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', BOSS_VARPS.join(','))); } catch (e) {} }
       if (!vp || !Object.keys(vp).length) return;   // empty read -> keep last good (no all-zero flash)
       bossesData = BOSSES.map(b => {
         const k1 = bossField(vp, b.kc) + 60000 * bossField(vp, b.pr);

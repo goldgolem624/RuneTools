@@ -58,7 +58,7 @@
     try {
       const slim = st.rows.map(r => ({ id: r.id, sum: r.sum, data: r.data, txt: r.txt }));
       const blob = JSON.stringify({ v: cxBuild(), lo: st.lo0, hi: st.hi0, at: st.at || Date.now(), rows: slim });
-      const ok = await bridge().cacheStoreSave('cx' + k, blob);
+      const ok = await rtxData.raw('act.cacheStoreSave', 'cx' + k, blob);
       st.cached = ok ? 'saved' : 'save failed';
     } catch (e) { st.cached = 'save failed'; }
     cxPaint();
@@ -66,7 +66,7 @@
   async function cxLoad(k) {
     if (!cxCacheable(k) || !bridge() || !bridge().cacheStoreLoad) return null;
     try {
-      const raw = await bridge().cacheStoreLoad('cx' + k);
+      const raw = await rtxData.raw('host.cacheStoreLoad', 'cx' + k);
       if (!raw) return null;
       const o = JSON.parse(raw);
       if (!o || !Array.isArray(o.rows)) return null;
@@ -78,7 +78,7 @@
     const st = cxSt(k);
     st.rows = []; st.loaded = false; st.cached = ''; st.reused = false; st.at = 0;
     st.lo0 = undefined; st.hi0 = undefined;
-    try { if (bridge() && bridge().cacheStoreSave) await bridge().cacheStoreSave('cx' + k, ''); } catch (e) {}
+    try { if (bridge() && bridge().cacheStoreSave) await rtxData.raw('act.cacheStoreSave', 'cx' + k, ''); } catch (e) {}
   }
 
   // Live var dumps key by DOMAIN:id ("4:1234" varp, "5:1234" varc); string varcs are bare.
@@ -258,27 +258,27 @@
     const rows = [];
     try {
       if (k === 'varbit') {
-        const m = JSON.parse(await bridge().varbitMap() || 'null') || {};
+        const m = JSON.parse(await rtxData.raw('cache.varbitMap') || 'null') || {};
         for (const vp of Object.keys(m)) {
           for (const d of m[vp]) rows.push({ id: d[0], sum: 'varp ' + vp + ' bits ' + d[1] + '-' + d[2], data: null });
         }
       } else if (k === 'varp') {
-        const m = JSON.parse(await bridge().varpsDumpAll(myPid()) || 'null') || {};
+        const m = JSON.parse(await rtxData.raw('state.varpsAll') || 'null') || {};
         for (const key of Object.keys(m)) {
           const v = m[key] | 0;
           rows.push({ id: cxKeyId(key), sum: v + '   0x' + (v >>> 0).toString(16), data: null });
         }
       } else if (k === 'varc') {
         let ints = {}, strs = {};
-        try { ints = JSON.parse(await bridge().varcsDumpAll(myPid()) || 'null') || {}; } catch (e) {}
-        if (bridge().varcStringsDumpAll) { try { strs = JSON.parse(await bridge().varcStringsDumpAll(myPid()) || 'null') || {}; } catch (e) {} }
+        try { ints = JSON.parse(await rtxData.raw('state.varcsAll') || 'null') || {}; } catch (e) {}
+        if (bridge().varcStringsDumpAll) { try { strs = JSON.parse(await rtxData.raw('state.varcStringsAll') || 'null') || {}; } catch (e) {} }
         for (const key of Object.keys(ints)) {
           const v = ints[key] | 0;
           rows.push({ id: cxKeyId(key), sum: v + cxCoord(v), data: null });
         }
         for (const key of Object.keys(strs)) rows.push({ id: cxKeyId(key), sum: '"' + strs[key] + '"  (string)', data: null });
       } else if (k === 'ach') {
-        const arr = JSON.parse(await bridge().achievements() || 'null') || [];
+        const arr = JSON.parse(await rtxData.raw('cache.achievements') || 'null') || [];
         for (const a of arr) {
           // txt feeds the search box, so a filter matches the description, the reward and every
           // requirement line, not just the title.

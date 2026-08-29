@@ -54,7 +54,7 @@
   function saveIfaceOff() { try { localStorage.setItem('rtxIfaceOff', JSON.stringify(ifaceOff)); } catch (e) {} }
   function pushIfaceOff(gid) {
     const o = ifaceOff[gid] || { x: 0, y: 0 };
-    try { if (bridge() && bridge().ifaceOffset) bridge().ifaceOffset(gid, o.x | 0, o.y | 0); } catch (e) {}
+    try { if (bridge() && bridge().ifaceOffset) rtxData.sync('act.ifaceOffset', gid, o.x | 0, o.y | 0); } catch (e) {}
   }
   function pushAllIfaceOff() { for (const k in ifaceOff) pushIfaceOff(parseInt(k, 10)); }
   // ---- component watch ---------------------------------------------------------
@@ -85,7 +85,7 @@
   function ifWatchTick() {
     if (!ifWatch || !bridge()) return;
     let ws = [];
-    try { ws = (JSON.parse(bridge().interfaceGroup(myPid(), ifWatch.gid) || '{}').widgets) || []; } catch (e) {}
+    try { ws = (JSON.parse(rtxData.sync('state.interfaceGroup', ifWatch.gid) || '{}').widgets) || []; } catch (e) {}
     for (const w of ws) {
       if (ifWatchKey(w) !== ifWatch.key) continue;
       const sig = ifWatchSig(w);
@@ -127,7 +127,7 @@
 
   function refetchIfaceGroup(gid) {   // re-pull widget rects so the inspector hover-highlight reflects the new offset
     if (!bridge()) return;
-    try { ifaceWidgets[gid] = (JSON.parse(bridge().interfaceGroup(myPid(), gid) || '{}').widgets) || []; }
+    try { ifaceWidgets[gid] = (JSON.parse(rtxData.sync('state.interfaceGroup', gid) || '{}').widgets) || []; }
     catch (e) {}
     paneRun('interfaces', renderIfaceList);
   }
@@ -143,7 +143,7 @@
   }
   function fetchInterfaceGroups() {
     if (!bridge()) return;
-    try { ifaceGroups = (JSON.parse(bridge().interfaceGroups(myPid()) || '{}').groups) || []; }
+    try { ifaceGroups = (JSON.parse(rtxData.sync('state.interfaceGroups') || '{}').groups) || []; }
     catch (e) { ifaceGroups = []; }
     for (const k in ifaceWidgets) delete ifaceWidgets[k];   // re-scan invalidates cached widgets
     paneRun('interfaces', renderIfaceList);
@@ -153,7 +153,7 @@
   function ifaceMonTick() {
     if (!ifaceMonOn || !paneVisible('interfaces') || !bridge()) return;
     let cur;
-    try { cur = (JSON.parse(bridge().interfaceGroups(myPid()) || '{}').groups) || []; } catch (e) { return; }
+    try { cur = (JSON.parse(rtxData.sync('state.interfaceGroups') || '{}').groups) || []; } catch (e) { return; }
     const now = new Set(cur.map(g => g.id));
     if (ifaceMonSeen === null) { ifaceMonSeen = now; return; }   // prime silently on first scan
     const ts = nowClock();
@@ -178,13 +178,13 @@
   function toggleIfaceGroup(gid) {
     ifaceOpen[gid] = !ifaceOpen[gid];
     if (ifaceOpen[gid] && !ifaceWidgets[gid] && bridge()) {      // fetch this group's widgets once, on expand
-      try { ifaceWidgets[gid] = (JSON.parse(bridge().interfaceGroup(myPid(), gid) || '{}').widgets) || []; }
+      try { ifaceWidgets[gid] = (JSON.parse(rtxData.sync('state.interfaceGroup', gid) || '{}').widgets) || []; }
       catch (e) { ifaceWidgets[gid] = []; }
     }
     if (ifaceOpen[gid] && !ifaceDefModels[gid] && bridge() && bridge().cacheIfaceGroup) {
       // model ids live only in the cache DEFS (type 6), never in the live tree
       const m = {};
-      try { for (const c of (JSON.parse(bridge().cacheIfaceGroup(gid) || '{}').comps || []))
+      try { for (const c of (JSON.parse(rtxData.sync('cache.ifaceGroup', gid) || '{}').comps || []))
               if (c.t === 6 && c.model > 0) m[c.id] = c.model; }
       catch (e) {}
       ifaceDefModels[gid] = m;
@@ -295,7 +295,7 @@
       // Hovering a widget row with a known absolute rect boxes it in-game; clears on leave. Shared by
       // the group list and the size-search results.
       let _ifHi = '';
-      const ifHi = (sig, x, y, w, h) => { if (sig === _ifHi) return; _ifHi = sig; try { bridge().uiHighlight(myPid(), x, y, w, h); } catch (e) {} };
+      const ifHi = (sig, x, y, w, h) => { if (sig === _ifHi) return; _ifHi = sig; try { rtxData.sync('overlay.uiHighlight', x, y, w, h); } catch (e) {} };
       const ifHover = (e) => {
         const row = e.target.closest('.if-row');
         if (row && row.dataset.ax !== undefined) {
@@ -391,7 +391,7 @@
     host.querySelectorAll('.if-sprico').forEach(el => loadSpriteIcon(el, +el.dataset.spr));
     host.querySelectorAll('.if-itemico').forEach(el => { const u = resolveIcon(+el.dataset.item); if (u) el.style.backgroundImage = "url('" + u + "')"; });
     host.querySelectorAll('.if-modelico').forEach(el => {
-      let u = ''; try { u = bridge() && bridge().modelIcon ? bridge().modelIcon(+el.dataset.model) : ''; } catch (e) {}
+      let u = ''; try { u = bridge() && bridge().modelIcon ? rtxData.sync('cache.modelIcon', +el.dataset.model) : ''; } catch (e) {}
       if (u) el.style.backgroundImage = "url('" + u + "')";
     });
     const meta = $('ifaceMeta');
@@ -409,7 +409,7 @@
     const w = +m[1], h = +m[2];
     if (meta) meta.textContent = 'searching...';
     let data = { matches: [] };
-    try { data = JSON.parse(await bridge().interfaceSizeSearch(myPid(), w, h, 0) || '{}'); } catch (e) {}
+    try { data = JSON.parse(await rtxData.raw('state.interfaceSizeSearch', w, h, 0) || '{}'); } catch (e) {}
     const matches = data.matches || [];
     const byG = {};
     for (const mt of matches) (byG[mt.g] = byG[mt.g] || []).push(mt);

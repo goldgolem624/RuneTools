@@ -576,7 +576,7 @@
     petsFetching = true;
     try {
       let vp = {};
-      if (bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), PET_VARPS.join(','))); } catch (e) {} }
+      if (bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', PET_VARPS.join(','))); } catch (e) {} }
       // An empty read must keep the last good state; otherwise every pet flips to "locked".
       if (!vp || !Object.keys(vp).length) return;
       petsData = PETS.map(p => ({ ...p, owned: petOwned(p, vp) }));   // null = untracked (legacy pets, no unlock bit)

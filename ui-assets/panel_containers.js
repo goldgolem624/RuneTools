@@ -61,7 +61,7 @@
     if (!bridge() || !bridge().openContainers || containersFetching) return;
     containersFetching = true;
     try {
-      const d = JSON.parse(await bridge().openContainers(myPid()));
+      const d = JSON.parse(await rtxData.raw('state.openContainers'));
       containersData = (d && Array.isArray(d.containers)) ? d.containers : [];
       // pull contents only for containers without a linked tab (shown inline)
       if (bridge().containerItems) {
@@ -69,7 +69,7 @@
           const k = KNOWN_CONTAINERS[cc.id];
           if ((k && k.tab) || cc.count <= 0) continue;   // linked containers show no inline contents
           try {
-            const ci = JSON.parse(await bridge().containerItems(myPid(), cc.id));
+            const ci = JSON.parse(await rtxData.raw('state.container', cc.id));
             contUnknownItems[cc.id] = { items: (ci && Array.isArray(ci.items)) ? ci.items : [], cap: (ci && ci.cap) || cc.cap };
           } catch (e) { /* keep previous */ }
         }
@@ -174,7 +174,7 @@
       // while any charge remains); items flagged 9308 count down "Charges remaining" instead.
       let charge = '';
       try {
-        const pp = JSON.parse(await bridge().itemParams(+parts[1]) || 'null');
+        const pp = JSON.parse(await rtxData.raw('cache.itemParams', +parts[1]) || 'null');
         const pi = (pp && pp.ints) || {};
         const mx = pi['3385'] | 0, wear = k[0] | 0;
         const ps = (pp && pp.strs) || {};
@@ -201,7 +201,7 @@
           const wear = k[0] | 0, idx = k[3] | 0;
           let pct = '';
           try {
-            const pp = JSON.parse(await bridge().itemParams(+parts[1]) || 'null');
+            const pp = JSON.parse(await rtxData.raw('cache.itemParams', +parts[1]) || 'null');
             const mx = (pp && pp.ints && pp.ints['3385']) | 0;
             if (mx >= 1000) {
               const pm = wear === 0 ? 1000 : Math.max(0, Math.min(999, 1000 - Math.floor(wear / (mx / 1000))));
@@ -211,10 +211,10 @@
           let wname = '';
           if (idx > 0 && bridge().enumInfo) {
             try {
-              const en = JSON.parse(await bridge().enumInfo(15970) || '{}');
+              const en = JSON.parse(await rtxData.raw('cache.enumInfo', 15970) || '{}');
               const wid = en[idx] | 0;
               if (wid > 0) {
-                const ii = JSON.parse(await bridge().itemInfo(wid) || 'null');
+                const ii = JSON.parse(await rtxData.raw('cache.itemInfo', wid) || 'null');
                 wname = (ii && ii.name) ? ii.name : ('item ' + wid);
               }
             } catch (e6) {}

@@ -19,7 +19,7 @@
   };
   let knotBusy = false, knotOpenGroup = -1, knotScanAt = 0;
   async function knotGroupHasRing0(g) {
-    try { const w = (JSON.parse(await bridge().interfaceGroup(myPid(), g) || '{}').widgets) || []; return w.some(x => x.t && x.t[1] === CELTIC_KNOTS[g].r[0][0]); }
+    try { const w = (JSON.parse(await rtxData.raw('state.interfaceGroup', g) || '{}').widgets) || []; return w.some(x => x.t && x.t[1] === CELTIC_KNOTS[g].r[0][0]); }
     catch (e) { return false; }
   }
   // Runs on a GLOBAL interval (not just the clues tab) so the in-game arrow highlight never goes
@@ -29,7 +29,7 @@
     knotBusy = true;
     try {
       const el = $('clueKnot');   // banner; absent when the clues tab isn't open
-      const clearKnot = () => { try { if (bridge().knotCells) bridge().knotCells(myPid(), ''); } catch (e) {} };
+      const clearKnot = () => { try { if (bridge().knotCells) rtxData.sync('solver.knotCells', ''); } catch (e) {} };
       // resolve the open layout: cached group first, else a throttled scan of all 9
       let g = (knotOpenGroup > 0 && await knotGroupHasRing0(knotOpenGroup)) ? knotOpenGroup : -1;
       if (g < 0) {
@@ -41,7 +41,7 @@
       }
       if (g < 0) { if (el && el._h !== '') { el._h = ''; el.style.display = 'none'; } clearKnot(); return; }
       const cfg = CELTIC_KNOTS[g];
-      let vb = {}; try { vb = JSON.parse(await bridge().varbits(myPid(), cfg.r.map((_, i) => KNOT_FIRST_VARBIT + i).join(',')) || '{}'); } catch (e) {}
+      let vb = {}; try { vb = JSON.parse(await rtxData.raw('state.varbitsCsv', cfg.r.map((_, i) => KNOT_FIRST_VARBIT + i).join(',')) || '{}'); } catch (e) {}
       const parts = [], arrows = []; let solved = true;   // arrows: {comp, count} the arrow to click + clicks remaining
       cfg.r.forEach((ring, i) => {
         const mod = ring[2]; let cur = ((((vb[KNOT_FIRST_VARBIT + i] | 0)) % mod) + mod) % mod;
@@ -62,10 +62,10 @@
         if (solved || !arrows.length) { clearKnot(); }
         else {
           try {
-            const cr = JSON.parse(bridge().ifaceCompRects(myPid(), g, arrows.map(a => a.comp).join(','), 728) || '{}');
+            const cr = JSON.parse(rtxData.sync('state.ifaceCompRects', g, arrows.map(a => a.comp).join(','), 728) || '{}');
             const segs = [];
             if (cr.abs && cr.comps) for (const a of arrows) { const c = cr.comps[a.comp]; if (c) segs.push((c[0] - 2) + ',' + (c[1] - 2) + ',' + (c[2] + 4) + ',' + (c[3] + 4) + ',' + a.count); }
-            bridge().knotCells(myPid(), segs.join(';'));
+            rtxData.sync('solver.knotCells', segs.join(';'));
           } catch (e) {}
         }
       }

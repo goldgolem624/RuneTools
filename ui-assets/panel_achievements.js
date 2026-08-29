@@ -123,7 +123,7 @@
     const _t = Date.now(); if (!force && _t - achFetchAt < 2500) return; achFetchAt = _t;
     achFetching = true;
     try {
-      if (!achDefs) { try { achDefs = JSON.parse(await bridge().achievements()) || []; } catch (e) { achDefs = []; } }
+      if (!achDefs) { try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; } }
       await ensureVbMap();
       // Leagues tasks are excluded here: they would add ~750 entries to the single varp read.
       const vps = new Set();
@@ -138,7 +138,7 @@
         for (const q of achVarpReqs(a)) for (const id of q.vps) vps.add(id);
       }
       let vp = {};
-      if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))); } catch (e) {} }
+      if (vps.size && bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))); } catch (e) {} }
       const done = new Set(), prog = {}, baseSat = {}, baseGates = {};
       for (const a of achDefs) {
         if (!achTrackable(a) || achIsLeagues(a)) continue;
@@ -249,7 +249,7 @@
   }
 
   async function pluginAchievements(pid) {
-    if (!achDefs) { try { achDefs = JSON.parse(await bridge().achievements()) || []; } catch (e) { achDefs = []; } }
+    if (!achDefs) { try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; } }
     await ensureVbMap();
     const vps = new Set();
     for (const a of achDefs) {
@@ -511,7 +511,7 @@
         cmSubcatLoading = true;
         (async () => {
           try {
-            const m = JSON.parse(await bridge().enumInfo(16086) || 'null');
+            const m = JSON.parse(await rtxData.raw('cache.enumInfo', 16086) || 'null');
             if (m && Object.keys(m).length) { cmSubcatNames = m; cmPopulateBoss(); renderCmList(); }
           } catch (e) {}
           cmSubcatLoading = false;

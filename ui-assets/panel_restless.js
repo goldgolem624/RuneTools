@@ -7,7 +7,7 @@
   const RG_AMULET = 552;   // Ghostspeak amulet (handed over by Father Urhney at v=2)
   const RG_SKULL = 553;    // Muddy skull (searched out of the Rocks at v=3 -> 4)
   async function rgVarp() {
-    try { const vp = JSON.parse(await bridge().varps(myPid(), String(RG_PROG))); return (vp && vp[RG_PROG]) | 0; } catch (e) { return 0; }
+    try { const vp = JSON.parse(await rtxData.raw('state.varps', String(RG_PROG))); return (vp && vp[RG_PROG]) | 0; } catch (e) { return 0; }
   }
   async function rgStep() {
     const v = await rgVarp();

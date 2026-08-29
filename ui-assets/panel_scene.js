@@ -41,7 +41,7 @@
     for (const g of sceneGround) {
       if (!g || g.id == null || sceneItemNames[g.id] !== undefined) continue;
       sceneItemNames[g.id] = '';
-      try { const info = JSON.parse(await bridge().itemInfo(g.id)); sceneItemNames[g.id] = (info && info.name) || ('Item ' + g.id); any = true; } catch (e) {}
+      try { const info = JSON.parse(await rtxData.raw('cache.itemInfo', g.id)); sceneItemNames[g.id] = (info && info.name) || ('Item ' + g.id); any = true; } catch (e) {}
     }
     if (any) paneRun('scene', () => { sceneSig = ''; renderScene(); });
   }
@@ -57,7 +57,7 @@
     // Ground items are also read while any item marker is outstanding, so the marker can be
     // cleared the moment the item is picked up even with the Ground tab closed.
     if ((sceneShow.ground || sceneMarkCount()) && bridge().groundItems) {
-      try { const g = JSON.parse((await bridge().groundItems(myPid())) || '[]'); sceneGround = Array.isArray(g) ? g : []; }
+      try { const g = JSON.parse((await rtxData.raw('state.groundItems')) || '[]'); sceneGround = Array.isArray(g) ? g : []; }
       catch (e) { sceneGround = []; }
       if (sceneShow.ground) resolveGroundNames();
       sceneMarksSweep();
@@ -541,7 +541,7 @@
           ob2.addEventListener('click', (e) => {
             e.stopPropagation();
             const now = !sceneObjOutlines.has(ok);
-            try { bridge().outlineObject(myPid(), n.id, n.x, n.y, n.plane | 0, now); } catch (err) {}
+            try { rtxData.sync('overlay.outlineObject', n.id, n.x, n.y, n.plane | 0, now); } catch (err) {}
             if (now) sceneObjOutlines.add(ok); else sceneObjOutlines.delete(ok);
             sceneSig = ''; renderScene();
           });

@@ -119,6 +119,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "core/rtx-menubar.js",    // menu bar, wiki pane, fullscreen, tab search
         "core/rtx-pane.js",       // renderPane / renderHeader
         "core/rtx-plugins.js",    // plugin SDK host broker + marketplace
+        "core/rtx-data.js",       // rtxData: panels' data path over PLUGIN_API (per-tick coalescer)
     };
     // After every panel: needs nothing at load, but attachBridge() in client.html needs it.
     static const char* kBootFiles[] = {

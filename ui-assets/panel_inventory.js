@@ -41,7 +41,7 @@
     if (!bridge() || !bridge().inventory || invFetching) return;
     invFetching = true;
     try {
-      const d = JSON.parse(await bridge().inventory(myPid()));
+      const d = JSON.parse(await rtxData.raw('state.inventory'));
       invData = (d && Array.isArray(d.items)) ? d : { present: false, count: 0, cap: 0, items: [] };
     } catch (e) { /* keep previous */ }
     invFetching = false;
@@ -51,13 +51,13 @@
     if (!bridge() || !bridge().equipment || equipFetching) return;
     equipFetching = true;
     try {
-      const d = JSON.parse(await bridge().equipment(myPid()));
+      const d = JSON.parse(await rtxData.raw('state.equipment'));
       equipData = (d && Array.isArray(d.items)) ? d : { present: false, count: 0, cap: 0, items: [] };
     } catch (e) { /* keep previous */ }
     // Cosmetic overrides live in container 670, indexed by the same worn-slot number.
     if (bridge().containerItems) {
       try {
-        const cm = JSON.parse(await bridge().containerItems(myPid(), 670));
+        const cm = JSON.parse(await rtxData.raw('state.container', 670));
         const ov = {}; for (const it of ((cm && Array.isArray(cm.items)) ? cm.items : [])) ov[it[0]] = it;
         equipCosmetics = ov;
       } catch (e) { /* keep previous */ }

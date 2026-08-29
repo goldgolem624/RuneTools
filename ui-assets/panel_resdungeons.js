@@ -49,7 +49,7 @@
     if (!bridge() || !bridge().varbits || rdFetching) return;
     const t = Date.now(); if (t - rdFetchAt < 2000) return; rdFetchAt = t; rdFetching = true;
     try {
-      const vb = JSON.parse(await bridge().varbits(myPid(), RD_LIST.map(r => r[3]).join(',')) || 'null');
+      const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', RD_LIST.map(r => r[3]).join(',')) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) rdVb = vb;
     } catch (e) {}
     rdFetching = false;

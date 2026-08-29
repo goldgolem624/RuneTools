@@ -25,12 +25,12 @@
     const out = {};
     for (const sid of SC_GROUPS.flatMap(g => g[2])) {
       try {
-        const sp = JSON.parse(await bridge().structParams(sid) || 'null');
+        const sp = JSON.parse(await rtxData.raw('cache.structParams', sid) || 'null');
         const I = (sp && sp.ints) || {}, S = (sp && sp.strs) || {};
         let name = S['4849'] || '';
         const item = I['4851'] | 0;
         if (!name && item > 0 && bridge().itemInfo) {
-          try { const d = JSON.parse(await bridge().itemInfo(item) || 'null'); name = (d && d.name) || ''; } catch (e) {}
+          try { const d = JSON.parse(await rtxData.raw('cache.itemInfo', item) || 'null'); name = (d && d.name) || ''; } catch (e) {}
         }
         out[sid] = { name: name || ('Ware #' + sid), item, cap: I['4166'] != null ? I['4166'] | 0 : null };
       } catch (e) { return; }   // cache hiccup: retry whole load next fetch
@@ -43,7 +43,7 @@
     if (t - scFetchAt < 2000) return;
     scFetchAt = t; scFetching = true;
     try {
-      const vb = JSON.parse(await bridge().varbits(myPid(), scVbIds()) || 'null');
+      const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', scVbIds()) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) scVb = vb;
       await scLoadStructs();
     } catch (e) { /* keep previous */ }

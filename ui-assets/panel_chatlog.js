@@ -143,7 +143,7 @@
       if (!chatIconsResolving && bridge() && bridge().spriteByName) {
         chatIconsResolving = true;
         (async () => {
-          try { const id = await bridge().spriteByName('modicons'); chatIconsId = (id >= 0) ? id : CHAT_ICONS_SPRITE; } catch (e) { chatIconsId = CHAT_ICONS_SPRITE; }
+          try { const id = await rtxData.raw('cache.spriteByName', 'modicons'); chatIconsId = (id >= 0) ? id : CHAT_ICONS_SPRITE; } catch (e) { chatIconsId = CHAT_ICONS_SPRITE; }
           chatIconsResolving = false;
           if (chatIconsId >= 0) { try { chatRepaint(); } catch (e) {} }
         })();
@@ -205,7 +205,7 @@
     const _t = Date.now(); if (!force && _t - chatFetchAt < 700) return; chatFetchAt = _t;
     chatFetching = true;
     try {
-      const j = JSON.parse(await bridge().chat(myPid()));
+      const j = JSON.parse(await rtxData.raw('chat.messages'));
       const lines = (j && Array.isArray(j.lines)) ? j.lines : [];
       const pkts = (j && Array.isArray(j.packets)) ? j.packets : [];
       chatPkHook = !!(j && j.phook);
@@ -281,7 +281,7 @@
         const s = chatStore();
         s.lines = [];
         try {
-          const j = JSON.parse(await bridge().chat(myPid()));
+          const j = JSON.parse(await rtxData.raw('chat.messages'));
           if (j && Array.isArray(j.lines)) { s.seen.clear(); for (const ln of j.lines) if (ln && ln.raw) s.seen.add(ln.raw); }
         } catch (e) {}
         chatSig = ''; renderChatList();

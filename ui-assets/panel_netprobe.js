@@ -38,14 +38,14 @@
 
   // Capture must be re-armed every poll: it auto-disarms ~3s after the last arm.
   function npArm(on) {
-    try { if (bridge() && bridge().serverPacketArm) bridge().serverPacketArm(myPid(), on); } catch (e) {}
+    try { if (bridge() && bridge().serverPacketArm) rtxData.sync('act.serverPacketArm', on); } catch (e) {}
   }
 
   async function npFetchEnum() {
     if (npEnum || npEnumTried || !bridge() || !bridge().serverPackets) return;
     npEnumTried = true;
     try {
-      const d = JSON.parse(await bridge().serverPackets(myPid()) || '{}');
+      const d = JSON.parse(await rtxData.raw('host.serverPackets') || '{}');
       if (d.ok && Array.isArray(d.packets)) {
         npEnum = {};
         for (const p of d.packets) npEnum[p.op] = { len: p.len, kind: p.kind, handler: p.handler };
@@ -62,7 +62,7 @@
     npArm(true);
     npFetchEnum();
     let d = null;
-    try { d = JSON.parse(await bridge().serverPacketFeed(myPid(), npCursor) || 'null'); } catch (e) { return; }
+    try { d = JSON.parse(await rtxData.raw('host.serverPacketFeed', npCursor) || 'null'); } catch (e) { return; }
     if (!d || !d.ok) { npMeta = d || null; paneRun('netprobe', npUpdateDynamic); return; }
     npMeta = d;
     if (Array.isArray(d.packets)) {
@@ -143,7 +143,7 @@
     if (c === undefined && bridge() && bridge().itemInfo) {
       npItemCache[id] = true;                       // in flight: ask only once
       (async () => {
-        try { const d = JSON.parse(await bridge().itemInfo(id) || '{}'); npItemCache[id] = (d && d.name) || ('item ' + id); }
+        try { const d = JSON.parse(await rtxData.raw('cache.itemInfo', id) || '{}'); npItemCache[id] = (d && d.name) || ('item ' + id); }
         catch (e) { npItemCache[id] = 'item ' + id; }
       })();
     }

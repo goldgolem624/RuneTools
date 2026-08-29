@@ -862,7 +862,7 @@ function solveWAStarMax(src, dl, W) {
   // 1931 / comp 18, and draws only when cr.abs resolves them to screen pixels.
   function puzzleClearHl() {
     if (!puzzleHl) return;
-    try { if (bridge() && bridge().puzzleCells) bridge().puzzleCells(myPid(), ''); } catch (e) {}
+    try { if (bridge() && bridge().puzzleCells) rtxData.sync('solver.puzzleCells', ''); } catch (e) {}
     puzzleHl = false;
   }
   // Collapse the move list into CLICKS: a straight run along one row/column (constant step
@@ -891,7 +891,7 @@ function solveWAStarMax(src, dl, W) {
   function puzzleHighlight(plan) {
     if (!plan || plan.idx >= plan.moves.length || !bridge() || !bridge().puzzleCellRects || !bridge().puzzleCells) { puzzleClearHl(); return; }
     try {
-      const cr = JSON.parse(bridge().puzzleCellRects(myPid()) || '{}');
+      const cr = JSON.parse(rtxData.sync('solver.puzzleCellRects') || '{}');
       if (!cr.abs || !cr.cells) { puzzleClearHl(); return; }
       const hlBlank = (puzzleLastBoard ? puzzleLastBoard.indexOf(24) : -1);
       const nexts = puzzleClicks(plan.moves, plan.idx, hlBlank).slice(0, 3), seen = new Set(), segs = [];
@@ -901,7 +901,7 @@ function solveWAStarMax(src, dl, W) {
         // Box = the actual cell (49px) on a 56px pitch, so a larger box would overlap neighbours.
         segs.push(c[0] + ',' + c[1] + ',' + c[2] + ',' + c[3] + ',' + s);
       }
-      if (segs.length) { bridge().puzzleCells(myPid(), segs.join(';')); puzzleHl = true; }
+      if (segs.length) { rtxData.sync('solver.puzzleCells', segs.join(';')); puzzleHl = true; }
       else puzzleClearHl();
     } catch (e) { puzzleClearHl(); }
   }
@@ -910,7 +910,7 @@ function solveWAStarMax(src, dl, W) {
     if (puzzleBusy) return; puzzleBusy = true;
     try {
       let sprites = null;
-      try { sprites = JSON.parse(bridge().puzzleState(myPid()) || '[]'); } catch (e) {}
+      try { sprites = JSON.parse(rtxData.sync('solver.puzzleState') || '[]'); } catch (e) {}
       const board = puzzleBoardFromSprites(sprites);
       cluePuzzleOpen = !!board;                        // tracked so the carousel can auto-focus the puzzle slot
       const el = $('cluePuzzle');

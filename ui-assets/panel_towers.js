@@ -52,12 +52,12 @@
   }
   let towersBusy = false; towersOwnsPanel = false; let towersDrawSig = ''; let towersHl = false; let towersSupersede = false;
   let towersSolveSig = '', towersSolveCache = null, towersCacheAmb = false;   // clue-vector gate: the clues cannot change while one puzzle is up
-  function towersClearHl() { if (!towersHl) return; try { if (bridge() && bridge().puzzleCells) bridge().puzzleCells(myPid(), ''); } catch (e) {} towersHl = false; }
+  function towersClearHl() { if (!towersHl) return; try { if (bridge() && bridge().puzzleCells) rtxData.sync('solver.puzzleCells', ''); } catch (e) {} towersHl = false; }
   async function towersTick() {
     if (towersBusy || !bridge() || !bridge().interfaceGroup) return;
     towersBusy = true;
     try {
-      let wj = null; wj = (await bridgeJson('interfaceGroup', myPid(), 1934)) || {};
+      let wj = null; wj = (await rtxData.call('state.interfaceGroup', 1934)) || {};
       const widgets = wj && wj.widgets;
       if (!widgets || !widgets.length) { towersOwnsPanel = false; towersSupersede = false; towersDrawSig = ''; towersClearHl(); return; }
       const top = [0, 0, 0, 0, 0], bottom = [0, 0, 0, 0, 0], left = [0, 0, 0, 0, 0], right = [0, 0, 0, 0, 0];
@@ -147,7 +147,7 @@
       const x0 = Math.round(topXc[c] - bw / 2), y0 = Math.round(leftYc[r] - bh / 2);
       segs.push(x0 + ',' + y0 + ',' + bw + ',' + bh + ',0,' + sol[r][c]);
     }
-    if (segs.length) { bridge().puzzleCells(myPid(), segs.join(';')); towersHl = true; } else towersClearHl();
+    if (segs.length) { rtxData.sync('solver.puzzleCells', segs.join(';')); towersHl = true; } else towersClearHl();
   }
 
   // Scan eliminations are IN-MEMORY only: a persisted set keyed by AREA carries over to the NEXT
@@ -230,7 +230,7 @@
           // The game is pointing at a tile our candidate list does not contain: the GAME wins.
           // Mark it directly so the answer is never withheld over a stale spot table.
           scanBandNote = 'exact dig tile from scan marker (' + mk.x + ', ' + mk.y + ') - outside the known spot list';
-          bridge().guideMarks(myPid(), (mk.x | 0) + '\x1f' + (mk.y | 0) + '\x1f' + (mk.p | 0) + '\x1fScan DIG HERE');
+          rtxData.sync('overlay.guideMarks', (mk.x | 0) + '\x1f' + (mk.y | 0) + '\x1f' + (mk.p | 0) + '\x1fScan DIG HERE');
         }
         scanBandSetCap();
         return;
@@ -244,7 +244,7 @@
     // near a candidate, an unrelated graphic passes it - so the red ring below is the real gate.
     try {
       if (bridge().scanSolution) {
-        const sol = JSON.parse(bridge().scanSolution(myPid()) || '{}');
+        const sol = JSON.parse(rtxData.sync('solver.scanSolution') || '{}');
         const pts = (sol && sol.ok) ? (Array.isArray(sol.cands) && sol.cands.length ? sol.cands : [[sol.x, sol.y]]) : [];
         // The registry this reads is a GENERIC graphics channel, and the dig tile is published
         // to it only while the ring is RED (d <= R; op83 is absent at orange and out of range).
@@ -283,7 +283,7 @@
     // SECONDARY: some scans publish the EXACT dig tile to varc 1323 (packed (plane<<28)|(x<<14)|y,
     // same as compass). Bbox-gated so a stale compass varc from a previous clue can't hijack it.
     try {
-      const raw = (bridge().compassTarget && bridge().compassTarget(myPid())) || '';
+      const raw = (bridge().compassTarget && rtxData.sync('solver.compassTarget')) || '';
       const tp = raw.split(',').map(Number);
       if (tp.length >= 2 && tp[0] > 0 && tp[1] > 0) {
         let bx0 = 1e9, by0 = 1e9, bx1 = -1e9, by1 = -1e9;
@@ -742,7 +742,7 @@
   async function refreshMeerkats() {
     try {
       const pouchVp = typeof VP !== 'undefined' ? VP.FAMILIAR_POUCH : 1831;
-      const vp = await bridgeJson('varps', myPid(), String(pouchVp));
+      const vp = await rtxData.call('state.varps', String(pouchVp));
       let pouch = (vp && vp[pouchVp]) | 0; if (pouch <= 0 || pouch >= 0x7FFFFFFF) pouch = 0;
       if (pouch === g_scanMeerkatsPouch) return g_scanMeerkats;
       g_scanMeerkatsPouch = pouch;
@@ -750,7 +750,7 @@
       if (!pouch) { g_scanMeerkats = false; }
       else {
         let name = (typeof FAM_NAMES !== 'undefined') ? FAM_NAMES[pouch] : undefined;
-        if (name === undefined) { try { name = ((await bridgeJson('itemInfo', pouch)).name) || ''; } catch (e) { name = ''; } if (typeof FAM_NAMES !== 'undefined') FAM_NAMES[pouch] = name; }
+        if (name === undefined) { try { name = ((await rtxData.call('cache.itemInfo', pouch)).name) || ''; } catch (e) { name = ''; } if (typeof FAM_NAMES !== 'undefined') FAM_NAMES[pouch] = name; }
         g_scanMeerkats = /meerkat/i.test(name || '');
       }
       if (g_scanMeerkats !== was) { clueFocusSig = ''; try { clueRenderFocus(); } catch (e) {} }
@@ -976,8 +976,8 @@
     }
     if (!want.length) return;
     let vp = {}, vb = {};
-    if (vps.length) vp = (await bridgeJson('varps', myPid(), vps.join(','))) || {};
-    if (vbs.length) vb = (await bridgeJson('varbits', myPid(), vbs.join(','))) || {};
+    if (vps.length) vp = (await rtxData.call('state.varps', vps.join(','))) || {};
+    if (vbs.length) vb = (await rtxData.call('state.varbitsCsv', vbs.join(','))) || {};
     for (const w of want) {
       const v = (w.kind === 'p') ? vp[w.id] : vb[w.id];
       if (v !== undefined) teleCurVal[w.obj] = v | 0;
@@ -1002,7 +1002,7 @@
         const q = QUEST_BY_ID.get(qid);
         if (q) { if (q.v) vps.add(q.v[0]); if (q.b) vps.add(q.b[0]); }
       }
-      teleQuestVp = (await bridgeJson('varps', myPid(), [...vps].join(','))) || {};
+      teleQuestVp = (await rtxData.call('state.varps', [...vps].join(','))) || {};
     }
     // Pouch currencies named by any row's req.cur
     {
@@ -1031,7 +1031,7 @@
       else if (uVps.indexOf(u[1]) < 0) uVps.push(u[1]);
     }
     if (uVps.length) {
-      Object.assign(teleQuestVp, (await bridgeJson('varps', myPid(), uVps.join(','))) || {});
+      Object.assign(teleQuestVp, (await rtxData.call('state.varps', uVps.join(','))) || {});
     }
     if (MAP_TELEPORTS.some(T => T.req && T.req.portal != null))
       for (const v of GOTE_PORTAL_VBS) if (ids.indexOf(v) < 0) ids.push(v);
@@ -1043,7 +1043,7 @@
     // Containers: worn (94) for outfit set gates, backpack (93) for held gates, and BOTH
     // feed the universal item rule below. Names ride along for charge-variant matching.
     const readCont = async cid => {
-      const r = await bridgeJson('containerItems', myPid(), cid);
+      const r = await rtxData.call('state.container', cid);
       const ids = new Set(); const names = []; const stacks = {}; const rows = [];
       (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { ids.add(x[1]); rows.push(x); if (x[3]) names.push(x[3]); stacks[x[1]] = (stacks[x[1]] || 0) + (x[2] | 0 || 1); } });
       return { ids, names, stacks, rows };
@@ -1074,7 +1074,7 @@
           const inInv = inv.ids.has(pid), inWorn = teleWornSet && teleWornSet.has(pid);
           if (!inInv && !inWorn) continue;
           try {
-            const r0 = (await bridgeJson('itemExtraInts', myPid(), inInv ? 93 : 94, pid)) || {};
+            const r0 = (await rtxData.call('state.itemExtra', inInv ? 93 : 94, pid)) || {};
             const ei = r0.key || {};
             const types = ei['1'] >>> 0;
             [0, 2, 3, 4].forEach((key, slot) => {
@@ -1100,7 +1100,7 @@
             const set = cont === 94 ? teleWornSet : teleInvSet;
             if (!set || !set.has(vid)) continue;
             try {
-              const r2 = (await bridgeJson('itemExtraInts', myPid(), cont, vid)) || {};
+              const r2 = (await rtxData.call('state.itemExtra', cont, vid)) || {};
               const kk = r2.key || {};
               if (kk[String(spec.key)] !== undefined) {
                 let raw = kk[String(spec.key)] | 0;
@@ -1155,7 +1155,7 @@
           let packed = (r2.key && r2.key['1']) >>> 0;
           if (!packed) continue;
           if (!telePassageEnum && bridge().enumInfo) {
-            telePassageEnum = (await bridgeJson('enumInfo', TELE_PASSAGE_ENUM)) || null;
+            telePassageEnum = (await rtxData.call('cache.enumInfo', TELE_PASSAGE_ENUM)) || null;
           }
           const names = (telePassageEnum && (telePassageEnum.values || telePassageEnum)) || null;
           let slot = 0;
@@ -1186,7 +1186,7 @@
       if (T.item > 0 && teleItemNames[T.item] === undefined) {
         teleItemNames[T.item] = null;   // claimed; fills in below (null = pending/none)
         try {
-          const d = await bridgeJson('itemInfo', T.item);
+          const d = await rtxData.call('cache.itemInfo', T.item);
           if (d && d.name) teleItemNames[T.item] = teleItemBase(d.name);
           else delete teleItemNames[T.item];      // no name yet: let a later pass retry
         } catch (e) { delete teleItemNames[T.item]; }
@@ -1670,7 +1670,7 @@
     if (!el) return '';
     let lvp = {};
     if (bridge() && bridge().varps) {
-      lvp = (await bridgeJson('varps', myPid(), LODE_VARPS.join(','))) || {};
+      lvp = (await rtxData.call('state.varps', LODE_VARPS.join(','))) || {};
     }
     const unlocked = (l) => {
       const raw = (lvp[l.vp] || 0) >>> 0, w = l.hi - l.lo + 1;
@@ -2208,7 +2208,7 @@
       if (bridge().containerItems) {
         for (const cid of [93, 95]) {   // inventory (always) + bank (only while open)
           // items: [[slot, item_id, stack, name], ..] -- item id is index 1, name is index 3.
-          try { const r = await bridgeJson('containerItems', myPid(), cid); (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); const isTicket = x[3] && /skipping ticket/i.test(x[3]); if (x[3] && !isTicket && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && !isTicket && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
+          try { const r = await rtxData.call('state.container', cid); (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); const isTicket = x[3] && /skipping ticket/i.test(x[3]); if (x[3] && !isTicket && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && !isTicket && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
         }
       }
       // A clue must leave the inventory to be replaced, so a not-held -> held transition is a fresh
@@ -2234,7 +2234,7 @@
       // Varps backing the state-dependent challenge answers.
       if (bridge().varps) {
         const vps = [...new Set(Object.values(CLUE_VB).map(d => d[0]))].join(',');
-        clueVarps = (await bridgeJson('varps', myPid(), vps)) || {};
+        clueVarps = (await rtxData.call('state.varps', vps)) || {};
       }
     } finally { clueFetching = false; }
     if (!scanElimLoaded) { scanElimLoaded = true; scanElimLoad(); }
@@ -2260,7 +2260,7 @@
         if (c.a === 'scan' && c.en > 0 && !CLUE_SCAN.has(c.en)) {
           CLUE_SCAN.set(c.en, '');
           try {
-            const e = await bridgeJson('enumInfo', c.en);
+            const e = await rtxData.call('cache.enumInfo', c.en);
             CLUE_SCAN.set(c.en, scanAreaText(e));
             const vals = e ? Object.values(e) : [];
             let key = '', rec = null, spots = null;
@@ -2319,7 +2319,7 @@
     if (CLUE_OBJ.has(k) || !bridge() || !bridge().clueSearchTarget) return;
     CLUE_OBJ.set(k, null);             // claim the slot first so a re-render cannot double-fetch
     let o = null;
-    o = (await bridgeJson('clueSearchTarget', x, y, p || 0)) || {};
+    o = (await rtxData.call('solver.clueSearchTarget', x, y, p || 0)) || {};
     CLUE_OBJ.set(k, (o && o.name) ? o : null);
     clueListSig = ''; paneRun('clues', renderCluesList);
   }
@@ -3376,7 +3376,7 @@
     if (st.n >= TELE_KB_TRIES || now - st.at < 2000) return;
     st.n++; st.at = now; teleKbTry.set(item, st);
     let p = null;
-    p = await bridgeJson('itemParams', item);
+    p = await rtxData.call('cache.itemParams', item);
     // The bridge returns { ints:{k:v}, strs:{k:"v"} } (PLUGIN_SDK.md:287; panel_bosses,
     // panel_containers and panel_tasks all read .ints that way). This read used p[k] FLAT, which
     // matched nothing for every item ever asked, so the whole live ordering below silently

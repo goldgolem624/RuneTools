@@ -199,7 +199,7 @@
           const c = dj.comps.find(k => k.comp === compId && k.w > 0);
           qgClrNpc(); qgClrTiles(); qgClrDlg();
           // Same overlay channel as highlightItem, so qgClrItem clears it.
-          if (c) { try { bridge().panelViz(myPid(), c.x + ',' + c.y + ',' + c.w + ',' + c.h + ',' + label); } catch (e) {} }
+          if (c) { try { rtxData.sync('overlay.panelViz', c.x + ',' + c.y + ',' + c.w + ',' + c.h + ',' + label); } catch (e) {} }
           else qgClrItem();
           return;
         }
@@ -348,7 +348,7 @@
     if (v === 152) { await qgDialogNpc('Anya', 'Talk to Anya to leave the Den', 0, 0, 0, 'yes'); return; }
     if (v === 155 || v === 160 || v === 165) {
       let used = -1;
-      try { const inv = JSON.parse(await bridge().inventory(myPid())); if (inv && Array.isArray(inv.items)) used = inv.items.filter(it => it[1] > 0).length; } catch (e) {}
+      try { const inv = JSON.parse(await rtxData.raw('state.inventory')); if (inv && Array.isArray(inv.items)) used = inv.items.filter(it => it[1] > 0).length; } catch (e) {}
       const free = used >= 0 ? 28 - used : -1;
       const warn = (free >= 0 && free < 6) ? ' - FREE UP ' + (6 - free) + ' BACKPACK SLOTS FIRST' : '';
       if (amberSorrel160Pick < 0) amberSorrel160Pick = hosRand(AMBER_SORREL160_OPTS.length);

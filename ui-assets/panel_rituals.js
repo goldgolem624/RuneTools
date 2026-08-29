@@ -13,7 +13,7 @@
     if (npc <= 0) return '';
     if (rtGlyphNames[npc] === undefined && bridge().npcInfo) {
       try {
-        const d = JSON.parse(await bridge().npcInfo(npc) || 'null');
+        const d = JSON.parse(await rtxData.raw('cache.npcInfo', npc) || 'null');
         if (d && d.name) rtGlyphNames[npc] = d.name;
       } catch (e) {}
     }
@@ -44,9 +44,9 @@
     if (!bridge().dbRows || !bridge().structParams) return;
     rtTalentsLoading = true;
     try {
-      const trees = JSON.parse(await bridge().dbRows(103) || 'null');
-      const tierRows = JSON.parse(await bridge().dbRows(104) || 'null');
-      const talRows = JSON.parse(await bridge().dbRows(105) || 'null');
+      const trees = JSON.parse(await rtxData.raw('cache.dbRows', 103) || 'null');
+      const tierRows = JSON.parse(await rtxData.raw('cache.dbRows', 104) || 'null');
+      const talRows = JSON.parse(await rtxData.raw('cache.dbRows', 105) || 'null');
       if (Array.isArray(trees) && trees.length && Array.isArray(tierRows) && Array.isArray(talRows)) {
         const tree = trees.find(r => r.f === RT_TREE_DBROW);
         const tierList = (tree && tree.i && tree.i['6']) || [];
@@ -61,7 +61,7 @@
             if (sid <= 0) continue;
             let name = (tal.s && tal.s['0'] && tal.s['0'][0]) || '', desc = '';
             try {
-              const sp = JSON.parse(await bridge().structParams(sid) || 'null');
+              const sp = JSON.parse(await rtxData.raw('cache.structParams', sid) || 'null');
               const S = (sp && sp.strs) || {};
               if (!name) name = S['2794'] || '';
               desc = rtPlain(S['2795']);
@@ -85,7 +85,7 @@
     if (!bridge().dbRows) return;
     if (!rtRecipes) {
       try {
-        const rows = JSON.parse(await bridge().dbRows(107) || 'null');
+        const rows = JSON.parse(await rtxData.raw('cache.dbRows', 107) || 'null');
         if (Array.isArray(rows) && rows.length) {
           rtRecipes = {};
           for (const r of rows) {
@@ -98,7 +98,7 @@
     }
     if (!rtSites) {
       try {
-        const rows = JSON.parse(await bridge().dbRows(106) || 'null');
+        const rows = JSON.parse(await rtxData.raw('cache.dbRows', 106) || 'null');
         if (Array.isArray(rows) && rows.length) {
           rtSites = {};
           for (const r of rows) {
@@ -120,9 +120,9 @@
     if (t - rtFetchAt < 2000) return;
     rtFetchAt = t; rtFetching = true;
     try {
-      const vb = JSON.parse(await bridge().varbits(myPid(), RT_VB_IDS) || 'null');
+      const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', RT_VB_IDS) || 'null');
       if (vb && typeof vb === 'object' && Object.keys(vb).length) rtVb = vb;
-      const vp = JSON.parse(await bridge().varps(myPid(), RT_VP_IDS) || 'null');
+      const vp = JSON.parse(await rtxData.raw('state.varps', RT_VP_IDS) || 'null');
       if (vp && typeof vp === 'object' && Object.keys(vp).length) rtVp = vp;
       await rtLoadTables();
       await rtLoadTalents();

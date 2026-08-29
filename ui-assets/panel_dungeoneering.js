@@ -146,7 +146,7 @@ let dungHoverLoc = null;     // {x, y, t}: last hovered scenery. The engine hove
 function dungReadDoorTip() {
   try {
     if (bridge().hoverEntity) {
-      const hv = JSON.parse(bridge().hoverEntity(myPid()) || '{}');
+      const hv = JSON.parse(rtxData.sync('state.hoverEntity') || '{}');
       if (hv && hv.ok && hv.kind === 'loc' && hv.x > 0) dungHoverLoc = { x: hv.x, y: hv.y, t: Date.now() };
     }
   } catch (e) {}
@@ -220,20 +220,20 @@ function dungSetManualCrit(cell, on) {
   dungSig = ''; renderDungeoneering();
 }
 // Cross-PC party sync: read/generate/join the shared code via the launcher bridge.
-function dungSyncCode() { try { return (bridge().partyGetCode && bridge().partyGetCode()) || ''; } catch (e) { return ''; } }
+function dungSyncCode() { try { return (bridge().partyGetCode && rtxData.sync('party.partyGetCode')) || ''; } catch (e) { return ''; } }
 function dungSyncAction(act, wrap) {
   try {
     if (act === 'new') {
       const chars = 'abcdefghijkmnpqrstuvwxyz23456789';   // no easily-confused chars
       let code = '';
       for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-      bridge().partySetCode(code); dungSyncInput = '';
+      rtxData.sync('party.partySetCode', code); dungSyncInput = '';
     } else if (act === 'join') {
       const box = wrap.querySelector('.dg-sync-in');
       const code = ((box ? box.value : dungSyncInput) || '').trim().toLowerCase();
-      if (code.length >= 4) { bridge().partySetCode(code); dungSyncInput = ''; }
+      if (code.length >= 4) { rtxData.sync('party.partySetCode', code); dungSyncInput = ''; }
     } else if (act === 'leave') {
-      bridge().partySetCode(''); dungSyncInput = '';
+      rtxData.sync('party.partySetCode', ''); dungSyncInput = '';
     }
   } catch (e) {}
   dungSig = ''; renderDungeoneering();
@@ -550,7 +550,7 @@ function dungHerbClear(owner) {
   if (!dungHerbHlLast) return;   // never wipe a box another feature put there
   if (owner && dungHerbHlOwner && dungHerbHlOwner !== owner) return;   // not ours
   dungHerbHlLast = ''; dungHerbHlOwner = '';
-  try { bridge().uiHighlight(myPid(), 0, 0, 0, 0); } catch (e) {}
+  try { rtxData.sync('overlay.uiHighlight', 0, 0, 0, 0); } catch (e) {}
 }
 // Hoardstalker riddle, latched: the answer must survive the riddle dialogue CLOSING
 // while you walk to the container, so it cannot be read fresh each tick.
@@ -597,12 +597,12 @@ function dungInvClear(owner) {
   if (owner && dungInvHlOwner && dungInvHlOwner !== owner) return;   // not ours to wipe
   if (!dungInvHlLast) return;  // same shared-channel rule as dungHerbClear
   dungInvHlLast = ''; dungInvHlOwner = '';
-  try { bridge().panelViz(myPid(), ''); } catch (e) {}
+  try { rtxData.sync('overlay.panelViz', ''); } catch (e) {}
 }
 // How many of `itemId` are in the backpack.
 function dungInvCount(itemId) {
   try {
-    const inv = JSON.parse(bridge().inventory(myPid()) || '{}');
+    const inv = JSON.parse(rtxData.sync('state.inventory') || '{}');
     let n = 0;
     for (const it of (inv.items || [])) if (it[1] === itemId) n++;
     return n;
@@ -613,7 +613,7 @@ function dungInvCount(itemId) {
 function dungHighlightInvItem(itemId, label, owner) {
   try {
     if (!itemId) { dungInvClear(owner); return 0; }
-    const inv = JSON.parse(bridge().inventory(myPid()) || '{}');
+    const inv = JSON.parse(rtxData.sync('state.inventory') || '{}');
     const segs = [];
     // Box every matching slot but LABEL ONLY THE FIRST: four stacked labels on adjacent
     // backpack slots just overlapped into an unreadable smear. The
@@ -622,7 +622,7 @@ function dungHighlightInvItem(itemId, label, owner) {
     for (const it of (inv.items || [])) {
       if (it[1] !== itemId) continue;
       held++;
-      const r = JSON.parse(bridge().invSlotRect(myPid(), it[0]) || '{}');
+      const r = JSON.parse(rtxData.sync('state.invSlotRect', it[0]) || '{}');
       if (r && r.w > 0) segs.push(r.x + ',' + r.y + ',' + r.w + ',' + r.h + ',' + (segs.length ? '' : label));
     }
     if (segs.length) {
@@ -630,7 +630,7 @@ function dungHighlightInvItem(itemId, label, owner) {
       dungInvHlOwner = owner || '';
       // PUBLISH EVERY TICK, do not dedupe: re-sending an identical payload is visually a no-op,
       // whereas not sending lets the highlight lapse after a single tick.
-      bridge().panelViz(myPid(), payload);
+      rtxData.sync('overlay.panelViz', payload);
       dungInvHlLast = payload;
       return segs.length;
     }
@@ -687,7 +687,7 @@ function dungGuideTiles(marks) {
       (m.x | 0) + '\x1f' + (m.y | 0) + '\x1f' + ((m.plane || 0) | 0) + '\x1f'
       + String(m.label == null ? '' : m.label).slice(0, 95).replace(/[\x1e\x1f]/g, ' ')
       + ((m.rgb || m.snap) ? '\x1f' + (m.snap ? 1 : 0) + '\x1f' + ((m.rgb | 0) || 0) : ''));
-    bridge().guideMarks(myPid(), recs.join('\x1e'));
+    rtxData.sync('overlay.guideMarks', recs.join('\x1e'));
   } catch (e) {}
 }
 
@@ -2322,7 +2322,7 @@ function dungReconcileScene(npcs, objs) {
             const t = (c.text || '').toLowerCase();
             if (t && c.w > 0 && t.indexOf(want) >= 0) {
               const rect = c.x + ',' + c.y + ',' + c.w + ',' + c.h;
-              if (rect !== dungHerbHlLast) { bridge().uiHighlight(myPid(), c.x, c.y, c.w, c.h); dungHerbHlLast = rect; }
+              if (rect !== dungHerbHlLast) { rtxData.sync('overlay.uiHighlight', c.x, c.y, c.w, c.h); dungHerbHlLast = rect; }
               dungHerbHlOwner = 'herb';
               drew = true;
               break;
@@ -2348,7 +2348,7 @@ function dungReconcileScene(npcs, objs) {
         const t = (c.text || '').toLowerCase();
         if (t && c.w > 0 && t.indexOf(w) >= 0) {
           const rect = c.x + ',' + c.y + ',' + c.w + ',' + c.h;
-          if (rect !== dungHerbHlLast) { bridge().uiHighlight(myPid(), c.x, c.y, c.w, c.h); dungHerbHlLast = rect; }
+          if (rect !== dungHerbHlLast) { rtxData.sync('overlay.uiHighlight', c.x, c.y, c.w, c.h); dungHerbHlLast = rect; }
           dungHerbHlOwner = owner || 'opt';
           return true;
         }
@@ -3438,7 +3438,7 @@ const DUNG_ROOM_DOORS = {
 };
 
 function dungFetchGroup(gid) {
-  try { return (JSON.parse(bridge().interfaceGroup(myPid(), gid) || '{}').widgets) || []; }
+  try { return (JSON.parse(rtxData.sync('state.interfaceGroup', gid) || '{}').widgets) || []; }
   catch (e) { return []; }
 }
 
@@ -3512,7 +3512,7 @@ function dungPumpPartyHiscores(party92) {
     const ask = Object.keys(dungHsPoll);
     if (ask.length) {
       try {
-        const hs = JSON.parse(bridge().hiscores(ask.join(',')) || '{}');
+        const hs = JSON.parse(rtxData.sync('host.hiscores', ask.join(',')) || '{}');
         for (const n in hs) {
           if (hs[n].s === 'ok') {
             const lv = [], lines = (hs[n].b || '').split(/\r?\n/);
@@ -3548,8 +3548,8 @@ function dungPumpPartyHiscores(party92) {
 // the RuneTools server. The launcher holds the shared cache + SSE stream; this panel just
 // report locally-learned facts and merge received ones. See Bridge.cpp party* fns.
 function dungPartyReport(kind, data) {
-  try { if (bridge().partyReport && bridge().partyGetCode && bridge().partyGetCode())
-          bridge().partyReport(kind, JSON.stringify(data)); } catch (e) {}
+  try { if (bridge().partyReport && bridge().partyGetCode && rtxData.sync('party.partyGetCode'))
+          rtxData.sync('party.partyReport', kind, JSON.stringify(data)); } catch (e) {}
 }
 // Merge the launcher's party cache into local state. Received DOORS fill dungDoorLevels
 // for cells not examined locally; received HISCORES fill dungPartyStats AND mark the name
@@ -3558,7 +3558,7 @@ function dungPartyReport(kind, data) {
 function dungPartyMerge() {
   dungSyncCode();   // touch partyGetCode -> loads the persisted code + starts the SSE loop if idle
   let pd = null;
-  try { if (bridge().partyData) pd = JSON.parse(bridge().partyData() || '{}'); } catch (e) {}
+  try { if (bridge().partyData) pd = JSON.parse(rtxData.sync('party.partyData') || '{}'); } catch (e) {}
   if (!pd || !pd.code) return;
   const hs = pd.hiscores || {};
   for (const name in hs) {
@@ -4999,7 +4999,7 @@ async function fetchDungeoneering() {
   if (!bridge() || dungFetching) return; dungFetching = true;
   try {
     let groups = [];
-    try { groups = (JSON.parse(bridge().interfaceGroups(myPid()) || '{}').groups) || []; } catch (e) {}
+    try { groups = (JSON.parse(rtxData.sync('state.interfaceGroups') || '{}').groups) || []; } catch (e) {}
     const inDung = groups.some(g => g.id === 945);
     const mapOpen = groups.some(g => g.id === 942);
     const party92 = groups.some(g => DUNG_PARTY_GROUPS.indexOf(g.id) >= 0);
@@ -5023,7 +5023,7 @@ async function fetchDungeoneering() {
       // one scene + varc read up top, shared by the anchor, ghost puzzle, facing and
       // floor-reset. Reset (timer 4190 drops) clears the anchor BEFORE it is re-acquired.
       let vc = {};
-      try { vc = JSON.parse(await bridge().varcsDumpAll(myPid()) || '{}'); } catch (e) {}
+      try { vc = JSON.parse(await rtxData.raw('state.varcsAll') || '{}'); } catch (e) {}
       const tmr = vc['5:4190'];
       // restore floor marks saved before a panel rebuild (same-floor check: the timer
       // only counts up within a floor, so an older/absent save never applies)
@@ -5167,7 +5167,7 @@ async function fetchDungeoneering() {
           // approximate it from the player being "somewhere in the start room": that
           // poisons the grid by up to +-7 tiles and shifts every marker.
 
-          const gi = JSON.parse(await bridge().groundItems(myPid()) || '[]');
+          const gi = JSON.parse(await rtxData.raw('state.groundItems') || '[]');
           if (Array.isArray(gi)) dungGroundCache = gi;   // hoardstalker ground piles
           const present = {};
           for (const g of (Array.isArray(gi) ? gi : [])) {
@@ -6138,7 +6138,7 @@ async function dungSceneTick() {
   dungTickBusy = true;
   try {
     let inDung = false, party92 = false;
-    try { const gs = (JSON.parse(bridge().interfaceGroups(myPid()) || '{}').groups) || [];
+    try { const gs = (JSON.parse(rtxData.sync('state.interfaceGroups') || '{}').groups) || [];
           inDung = gs.some(g => g.id === 945); party92 = gs.some(g => DUNG_PARTY_GROUPS.indexOf(g.id) >= 0); } catch (e) {}
     if (!inDung) {
       // party FORMING off-tab: keep the roster + hiscore fetch going so stats are
@@ -6157,7 +6157,7 @@ async function dungSceneTick() {
     // critical key wasn't marked"). Only ADD here; deciding a key was PICKED UP needs
     // the key-ring read, so the next full fetch does that from this cache.
     try {
-      const gi = JSON.parse(await bridge().groundItems(myPid()) || '[]');
+      const gi = JSON.parse(await rtxData.raw('state.groundItems') || '[]');
       if (Array.isArray(gi)) dungGroundCache = gi;   // hoardstalker ground piles
       for (const g of (Array.isArray(gi) ? gi : [])) {
         const ki = dungKeyInfo(g.id);
@@ -6169,7 +6169,7 @@ async function dungSceneTick() {
                          // tab-independent) and let the next full fetch attach them
     const needMazeVar = DUNG_MAZE_TIMER_VAR && objs.some(o => o.id === 49345 || o.name === 'Locked chest');
     if (npcs.some(n => n.name === 'Monolith' || (n.id >= 10966 && n.id <= 10971)) || needMazeVar) {   // monolith/emote (all statue themes)/maze room -> keep the progress varc fresh off-tab
-      try { const vc = JSON.parse(await bridge().varcsDumpAll(myPid()) || '{}');
+      try { const vc = JSON.parse(await rtxData.raw('state.varcsAll') || '{}');
             dungMonoCharge = (typeof vc['5:1233'] === 'number') ? vc['5:1233'] : null;
             dungMazeTimer = (DUNG_MAZE_TIMER_VAR && typeof vc['5:' + DUNG_MAZE_TIMER_VAR] === 'number') ? vc['5:' + DUNG_MAZE_TIMER_VAR] : null; } catch (e) {}
     }

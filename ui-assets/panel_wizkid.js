@@ -91,7 +91,7 @@
     wizkidKeyBusy = true;
     (async () => {
       try {
-        const j = JSON.parse(await bridge().actionBar(myPid()));
+        const j = JSON.parse(await rtxData.raw('state.actionBar'));
         const gate = { 1: 29138, 2: 29139, 3: 29140, 4: 29141 };
         const vb = await readVarbitValues(Object.values(gate));
         const MOD = ['', 'Shift+', 'Ctrl+', 'Alt+'];
