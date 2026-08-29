@@ -26,7 +26,7 @@ inline constexpr std::uint32_t kVersion = 2;
 inline constexpr std::uint32_t kAtlasW  = 1536;
 inline constexpr std::uint32_t kAtlasH  = 1536;
 inline constexpr std::uint32_t kMaxBytes = kAtlasW * kAtlasH * 4;
-inline constexpr std::uint32_t kMaxCandidates = 16;
+inline constexpr std::uint32_t kMaxCandidates = 32;   // the client keeps several atlas-sized textures; the launcher scores every one
 
 // `status` values written by the hook.
 inline constexpr std::uint32_t kStatusOk        = 0;

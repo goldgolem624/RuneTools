@@ -147,3 +147,16 @@ buffer binding and all `GL_PACK_*` state; the only stall is the readback itself.
    (check the candidate scores on the Health card before trusting anything).
 5. Any panel rendering an item that was missing from the pack now shows the captured
    icon without a restart (`IconCache` drops its memo for the captured ids).
+
+## Why the probe is unconditional (measured 2026-08-29)
+
+The client keeps several 1536x1536 icon atlases. The hint walk (texture-owner object plus the
+objects it points at) returned GL name 34, which IS an icon atlas: an exhaustive search of that
+texture found the bundled pack icons in it with a mean similarity of 0.845. But every rectangle
+the container maps for the bank widgets is EMPTY in that texture (similarity 0.000), and the
+offsets of the real matches are inconsistent, so it belongs to a different cache instance.
+Because the hint returned a candidate, the flat probe was skipped and the correct atlas was never
+offered; the content validator then refused to write (score 0.29), which is the behaviour we want.
+The hook now always unions the flat probe with the hint walk and reports up to 32 candidates, and
+the launcher scores each one against pack references. Separation is wide: the matching atlas scores
+about 0.85, every other candidate under 0.3.

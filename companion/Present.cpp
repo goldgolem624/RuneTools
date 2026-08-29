@@ -125,16 +125,32 @@ typedef GLenum (WINAPI* PFN_glCheckFramebufferStatus_p)(GLenum);
 
 // True when `name` is a live 2D texture whose level 0 is exactly the atlas size. A name
 // bound to another target raises INVALID_OPERATION on the 2D bind; drain and skip it.
-bool IsAtlasTexture(GLuint name, GLint savedBinding) {
-    if (name == 0 || !glIsTexture(name)) return false;
-    glBindTexture(GL_TEXTURE_2D, name);
-    if (glGetError() != GL_NO_ERROR) { glBindTexture(GL_TEXTURE_2D, (GLuint)savedBinding); return false; }
+#define GL_TEXTURE_RECTANGLE_P         0x84F5
+#define GL_TEXTURE_BINDING_RECTANGLE_P 0x84F6
+// Atlas-sized texture on either the 2D or the rectangle target. The client's icon atlas is
+// not guaranteed to be a plain GL_TEXTURE_2D, and binding a name to the wrong target raises
+// GL_INVALID_OPERATION, which is why each target is tried with its own binding restored.
+static bool AtlasSizeOnTarget(GLuint name, GLenum target, GLenum bindingEnum) {
+    GLint saved = 0;
+    glGetIntegerv(bindingEnum, &saved);
+    glBindTexture(target, name);
+    if (glGetError() != GL_NO_ERROR) { glBindTexture(target, (GLuint)saved); while (glGetError() != GL_NO_ERROR) {} return false; }
     GLint w = 0, h = 0;
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
-    glBindTexture(GL_TEXTURE_2D, (GLuint)savedBinding);
+    glGetTexLevelParameteriv(target, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(target, 0, GL_TEXTURE_HEIGHT, &h);
+    glBindTexture(target, (GLuint)saved);
     while (glGetError() != GL_NO_ERROR) {}
     return w == (GLint)rtx::iconatlas::kAtlasW && h == (GLint)rtx::iconatlas::kAtlasH;
+}
+// Target the atlas-sized texture `name` lives on (GL_TEXTURE_2D or GL_TEXTURE_RECTANGLE), 0 if neither.
+static GLenum AtlasTarget(GLuint name) {
+    if (name == 0 || !glIsTexture(name)) return 0;
+    if (AtlasSizeOnTarget(name, GL_TEXTURE_2D, GL_TEXTURE_BINDING_2D_P)) return GL_TEXTURE_2D;
+    if (AtlasSizeOnTarget(name, GL_TEXTURE_RECTANGLE_P, GL_TEXTURE_BINDING_RECTANGLE_P)) return GL_TEXTURE_RECTANGLE_P;
+    return 0;
+}
+bool IsAtlasTexture(GLuint name, GLint /*savedBinding*/) {
+    return AtlasTarget(name) != 0;
 }
 
 // Committed, readable, user-mode memory at [addr, addr+len)? VirtualQuery first: a stale
@@ -213,11 +229,12 @@ void CaptureIconAtlas() {
     std::uint32_t hit = 0;
     AtlasNamesFromHint(s->hintTexOwner, binding, cands);
     if (cands.count) hit = 1;
-    if (!cands.count) {
-        for (GLuint n = 1; n < 65536 && cands.count < rtx::iconatlas::kMaxCandidates; ++n)
-            if (IsAtlasTexture(n, binding)) cands.add(n);
-        if (cands.count) hit = 2;
-    }
+    // Always union the flat probe: live, the hint walk alone produced a single wrong atlas
+    // (name 34, score 0.29) while the real one was elsewhere. The launcher scores every
+    // candidate by content, so a longer list costs one readback each, never a wrong icon.
+    for (GLuint n = 1; n < 65536 && cands.count < rtx::iconatlas::kMaxCandidates; ++n)
+        if (IsAtlasTexture(n, binding)) cands.add(n);
+    if (!hit && cands.count) hit = 2;
     s->candidateCount = cands.count;
     for (unsigned i = 0; i < rtx::iconatlas::kMaxCandidates; ++i)
         s->candidates[i] = i < cands.count ? cands.names[i] : 0;
@@ -251,10 +268,13 @@ void CaptureIconAtlas() {
         glPixelStorei(GL_PACK_SWAP_BYTES, 0);
         glPixelStorei(GL_PACK_LSB_FIRST, 0);
 
-        glBindTexture(GL_TEXTURE_2D, s_name);
-        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, s->pixels);
+        const GLenum target = AtlasTarget(s_name) ? AtlasTarget(s_name) : GL_TEXTURE_2D;
+        const GLenum bindEnum = target == GL_TEXTURE_RECTANGLE_P ? GL_TEXTURE_BINDING_RECTANGLE_P : GL_TEXTURE_BINDING_2D_P;
+        GLint savedT = 0; glGetIntegerv(bindEnum, &savedT);
+        glBindTexture(target, s_name);
+        glGetTexImage(target, 0, GL_RGBA, GL_UNSIGNED_BYTE, s->pixels);
         GLenum err = glGetError();
-        glBindTexture(GL_TEXTURE_2D, (GLuint)binding);
+        glBindTexture(target, (GLuint)savedT);
         std::uint32_t stage = 1;                                   // 1 = glGetTexImage, 2 = FBO readback
         if (err != GL_NO_ERROR) {
             // Fallback: read the texture through a framebuffer attachment.
@@ -276,7 +296,7 @@ void CaptureIconAtlas() {
                 glGetIntegerv(GL_READ_BUFFER_P, &readBuf);
                 GLuint fb = 0; s_genFb(1, &fb);
                 s_bindFb(GL_READ_FRAMEBUFFER_P, fb);
-                s_fbTex(GL_READ_FRAMEBUFFER_P, GL_COLOR_ATTACHMENT0_P, GL_TEXTURE_2D, s_name, 0);
+                s_fbTex(GL_READ_FRAMEBUFFER_P, GL_COLOR_ATTACHMENT0_P, target, s_name, 0);
                 const GLenum fbs = s_fbStat(GL_READ_FRAMEBUFFER_P);
                 if (fbs == GL_FRAMEBUFFER_COMPLETE_P) {
                     glReadBuffer(GL_COLOR_ATTACHMENT0_P);
