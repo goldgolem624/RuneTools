@@ -95,6 +95,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         // quest_guides.js is DELIBERATELY not spliced: at ~1.3MB of one line it was half of
         // everything the page parsed at startup, for data only the quest guides need. It is
         // pulled through bridge().uiAsset() the first time a guide is shown.
+        "rtx_vars.js",          // shared var-id table (VB/VP), before every panel
         "panel_stopwatch.js",
         "panel_notes.js",
         "panel_counter.js",

@@ -680,8 +680,11 @@
     if (!url) return null;
     let r = wmImgs.get(url);
     if (!r) {
+      // bounded cache: evict the oldest so a long session cannot pin unbounded Image objects
+      while (wmImgs.size >= 600) wmImgs.delete(wmImgs.keys().next().value);
       r = { img: new Image(), ok: false };
       r.img.onload = function () { r.ok = true; wmKick(); };
+      r.img.onerror = function () { wmImgs.delete(url); };   // drop so a later call retries
       r.img.src = url;
       wmImgs.set(url, r);
     }

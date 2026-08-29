@@ -95,7 +95,7 @@
   // the check is only meaningful for the live league. On a finished league it reports
   // the current league's picks (false positives, two lit in one tier) while the real
   // picks read inactive, their vars having been cleared. Owner-caught on Catalyst.
-  const LG_ACTIVE_VP = 12314;
+  const LG_ACTIVE_VP = typeof VP !== 'undefined' ? VP.LEAGUE : 12314;
   let lgActiveLeague = null;   // varp 12314, null until read
   const LG_REGION_VP = 12327;
   const LG_REGION_MAXBIT = 41;                 // locality ids seen up to 40

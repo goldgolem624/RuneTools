@@ -27,7 +27,7 @@
     if (!bridge() || !bridge().varbits || gtChFetching) return; gtChFetching = true;
     try {
       let vb = null; try { vb = JSON.parse(await bridge().varbits(myPid(), '39460,39461,39462,39463,39464,39465,39466,39467,39468,39469,39470,58456') || 'null'); } catch (e) {}
-      let vp = null; try { vp = JSON.parse(await bridge().varps(myPid(), '12314') || 'null'); } catch (e) {}
+      let vp = null; try { vp = JSON.parse(await bridge().varps(myPid(), String(typeof VP !== 'undefined' ? VP.LEAGUE : 12314)) || 'null'); } catch (e) {}
       if (vb) { gtVb = vb; gtVp = vp; }
     } finally { gtChFetching = false; }
     paneRun('globetrotter', renderGlobetrotter);
@@ -87,7 +87,7 @@
     const gv = id => (gtVb ? (gtVb[id] | 0) : 0);
     const haveCh = !!gtVb;
     const setFlag = ((gv(39460) + gv(39461) + gv(39462) + gv(39463) + gv(39464)) >= 5) ? 1 : 0;
-    const unlimited = haveCh && gtVp && ((gtVp[12314] | 0) > 0) && (gv(58456) > 0);
+    const unlimited = haveCh && gtVp && ((gtVp[typeof VP !== 'undefined' ? VP.LEAGUE : 12314] | 0) > 0) && (gv(58456) > 0);
     const chargeCap = 3 + setFlag;
     let h = '<div id="gtHead" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;gap:8px">'
       + '<span style="font-weight:600;font-size:13px">Globetrotter outfit</span>'

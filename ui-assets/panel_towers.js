@@ -56,7 +56,7 @@
     if (towersBusy || !bridge() || !bridge().interfaceGroup) return;
     towersBusy = true;
     try {
-      let wj = null; try { wj = JSON.parse(await bridge().interfaceGroup(myPid(), 1934) || '{}'); } catch (e) {}
+      let wj = null; wj = (await bridgeJson('interfaceGroup', myPid(), 1934)) || {};
       const widgets = wj && wj.widgets;
       if (!widgets || !widgets.length) { towersOwnsPanel = false; towersSupersede = false; towersDrawSig = ''; towersClearHl(); return; }
       const top = [0, 0, 0, 0, 0], bottom = [0, 0, 0, 0, 0], left = [0, 0, 0, 0, 0], right = [0, 0, 0, 0, 0];
@@ -740,15 +740,16 @@
   let g_scanMeerkats = false, g_scanMeerkatsPouch = -1;
   async function refreshMeerkats() {
     try {
-      const vp = JSON.parse(await bridge().varps(myPid(), '1831'));
-      let pouch = (vp && vp['1831']) | 0; if (pouch <= 0 || pouch >= 0x7FFFFFFF) pouch = 0;
+      const pouchVp = typeof VP !== 'undefined' ? VP.FAMILIAR_POUCH : 1831;
+      const vp = await bridgeJson('varps', myPid(), String(pouchVp));
+      let pouch = (vp && vp[pouchVp]) | 0; if (pouch <= 0 || pouch >= 0x7FFFFFFF) pouch = 0;
       if (pouch === g_scanMeerkatsPouch) return g_scanMeerkats;
       g_scanMeerkatsPouch = pouch;
       const was = g_scanMeerkats;
       if (!pouch) { g_scanMeerkats = false; }
       else {
         let name = (typeof FAM_NAMES !== 'undefined') ? FAM_NAMES[pouch] : undefined;
-        if (name === undefined) { try { name = (JSON.parse(await bridge().itemInfo(pouch)).name) || ''; } catch (e) { name = ''; } if (typeof FAM_NAMES !== 'undefined') FAM_NAMES[pouch] = name; }
+        if (name === undefined) { try { name = ((await bridgeJson('itemInfo', pouch)).name) || ''; } catch (e) { name = ''; } if (typeof FAM_NAMES !== 'undefined') FAM_NAMES[pouch] = name; }
         g_scanMeerkats = /meerkat/i.test(name || '');
       }
       if (g_scanMeerkats !== was) { clueFocusSig = ''; try { clueRenderFocus(); } catch (e) {} }
@@ -974,8 +975,8 @@
     }
     if (!want.length) return;
     let vp = {}, vb = {};
-    try { if (vps.length) vp = JSON.parse(await bridge().varps(myPid(), vps.join(','))) || {}; } catch (e) {}
-    try { if (vbs.length) vb = JSON.parse(await bridge().varbits(myPid(), vbs.join(','))) || {}; } catch (e) {}
+    if (vps.length) vp = (await bridgeJson('varps', myPid(), vps.join(','))) || {};
+    if (vbs.length) vb = (await bridgeJson('varbits', myPid(), vbs.join(','))) || {};
     for (const w of want) {
       const v = (w.kind === 'p') ? vp[w.id] : vb[w.id];
       if (v !== undefined) teleCurVal[w.obj] = v | 0;
@@ -1000,7 +1001,7 @@
         const q = QUEST_BY_ID.get(qid);
         if (q) { if (q.v) vps.add(q.v[0]); if (q.b) vps.add(q.b[0]); }
       }
-      try { teleQuestVp = JSON.parse(await bridge().varps(myPid(), [...vps].join(','))) || {}; } catch (e) {}
+      teleQuestVp = (await bridgeJson('varps', myPid(), [...vps].join(','))) || {};
     }
     // Pouch currencies named by any row's req.cur
     {
@@ -1029,7 +1030,7 @@
       else if (uVps.indexOf(u[1]) < 0) uVps.push(u[1]);
     }
     if (uVps.length) {
-      try { Object.assign(teleQuestVp, JSON.parse(await bridge().varps(myPid(), uVps.join(','))) || {}); } catch (e) {}
+      Object.assign(teleQuestVp, (await bridgeJson('varps', myPid(), uVps.join(','))) || {});
     }
     if (MAP_TELEPORTS.some(T => T.req && T.req.portal != null))
       for (const v of GOTE_PORTAL_VBS) if (ids.indexOf(v) < 0) ids.push(v);
@@ -1041,7 +1042,7 @@
     // Containers: worn (94) for outfit set gates, backpack (93) for held gates, and BOTH
     // feed the universal item rule below. Names ride along for charge-variant matching.
     const readCont = async cid => {
-      const r = JSON.parse(await bridge().containerItems(myPid(), cid));
+      const r = await bridgeJson('containerItems', myPid(), cid);
       const ids = new Set(); const names = []; const stacks = {}; const rows = [];
       (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { ids.add(x[1]); rows.push(x); if (x[3]) names.push(x[3]); stacks[x[1]] = (stacks[x[1]] || 0) + (x[2] | 0 || 1); } });
       return { ids, names, stacks, rows };
@@ -1072,7 +1073,7 @@
           const inInv = inv.ids.has(pid), inWorn = teleWornSet && teleWornSet.has(pid);
           if (!inInv && !inWorn) continue;
           try {
-            const r0 = JSON.parse(await bridge().itemExtraInts(myPid(), inInv ? 93 : 94, pid)) || {};
+            const r0 = (await bridgeJson('itemExtraInts', myPid(), inInv ? 93 : 94, pid)) || {};
             const ei = r0.key || {};
             const types = ei['1'] >>> 0;
             [0, 2, 3, 4].forEach((key, slot) => {
@@ -1098,7 +1099,7 @@
             const set = cont === 94 ? teleWornSet : teleInvSet;
             if (!set || !set.has(vid)) continue;
             try {
-              const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), cont, vid)) || {};
+              const r2 = (await bridgeJson('itemExtraInts', myPid(), cont, vid)) || {};
               const kk = r2.key || {};
               if (kk[String(spec.key)] !== undefined) {
                 let raw = kk[String(spec.key)] | 0;
@@ -1146,14 +1147,14 @@
         // returns the first slot's contents, so the second passage's jewellery was invisible.
         const slots = telePassageSlots(inInv ? 93 : 94, pid2);
         for (const sl of (slots.length ? slots : [-1])) try {
-          const r2 = JSON.parse(await bridge().itemExtraInts(myPid(), inInv ? 93 : 94, pid2, sl)) || {};
+          const r2 = (await bridgeJson('itemExtraInts', myPid(), inInv ? 93 : 94, pid2, sl)) || {};
           passAny = true;
           const ch = ((r2.key && r2.key['0']) | 0);
           if (ch > passCharges) passCharges = ch;   // charges are per-passage; report the best
           let packed = (r2.key && r2.key['1']) >>> 0;
           if (!packed) continue;
           if (!telePassageEnum && bridge().enumInfo) {
-            try { telePassageEnum = JSON.parse(await bridge().enumInfo(TELE_PASSAGE_ENUM)) || null; } catch (e) {}
+            telePassageEnum = (await bridgeJson('enumInfo', TELE_PASSAGE_ENUM)) || null;
           }
           const names = (telePassageEnum && (telePassageEnum.values || telePassageEnum)) || null;
           let slot = 0;
@@ -1184,7 +1185,7 @@
       if (T.item > 0 && teleItemNames[T.item] === undefined) {
         teleItemNames[T.item] = null;   // claimed; fills in below (null = pending/none)
         try {
-          const d = JSON.parse(await bridge().itemInfo(T.item) || 'null');
+          const d = await bridgeJson('itemInfo', T.item);
           if (d && d.name) teleItemNames[T.item] = teleItemBase(d.name);
           else delete teleItemNames[T.item];      // no name yet: let a later pass retry
         } catch (e) { delete teleItemNames[T.item]; }
@@ -1668,7 +1669,7 @@
     if (!el) return '';
     let lvp = {};
     if (bridge() && bridge().varps) {
-      try { lvp = JSON.parse(await bridge().varps(myPid(), LODE_VARPS.join(','))) || {}; } catch (e) {}
+      lvp = (await bridgeJson('varps', myPid(), LODE_VARPS.join(','))) || {};
     }
     const unlocked = (l) => {
       const raw = (lvp[l.vp] || 0) >>> 0, w = l.hi - l.lo + 1;
@@ -2206,7 +2207,7 @@
       if (bridge().containerItems) {
         for (const cid of [93, 95]) {   // inventory (always) + bank (only while open)
           // items: [[slot, item_id, stack, name], ..] -- item id is index 1, name is index 3.
-          try { const r = JSON.parse(await bridge().containerItems(myPid(), cid)); (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); const isTicket = x[3] && /skipping ticket/i.test(x[3]); if (x[3] && !isTicket && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && !isTicket && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
+          try { const r = await bridgeJson('containerItems', myPid(), cid); (r.items || []).forEach(x => { if (Array.isArray(x) && x[1] > 0) { held.add(x[1]); if (cid === 93) { heldInv.add(x[1]); const isTicket = x[3] && /skipping ticket/i.test(x[3]); if (x[3] && !isTicket && /clue scroll|puzzle box|challenge scroll/i.test(x[3])) scrolls.push(x[1]); if (x[3] && !isTicket && /puzzle (box|scroll box|casket)/i.test(x[3])) { const lc = x[3].toLowerCase(); const t = lc.includes('master') ? 4 : lc.includes('elite') ? 3 : lc.includes('hard') ? 2 : lc.includes('medium') ? 1 : 0; puzzles.push({ i: x[1], t: t, a: 'puzzle', nm: x[3] }); } } } }); } catch (e) {}
         }
       }
       // A clue must leave the inventory to be replaced, so a not-held -> held transition is a fresh
@@ -2232,7 +2233,7 @@
       // Varps backing the state-dependent challenge answers.
       if (bridge().varps) {
         const vps = [...new Set(Object.values(CLUE_VB).map(d => d[0]))].join(',');
-        try { clueVarps = JSON.parse(await bridge().varps(myPid(), vps)) || {}; } catch (e) {}
+        clueVarps = (await bridgeJson('varps', myPid(), vps)) || {};
       }
     } finally { clueFetching = false; }
     if (!scanElimLoaded) { scanElimLoaded = true; scanElimLoad(); }
@@ -2258,7 +2259,7 @@
         if (c.a === 'scan' && c.en > 0 && !CLUE_SCAN.has(c.en)) {
           CLUE_SCAN.set(c.en, '');
           try {
-            const e = JSON.parse(await bridge().enumInfo(c.en));
+            const e = await bridgeJson('enumInfo', c.en);
             CLUE_SCAN.set(c.en, scanAreaText(e));
             const vals = e ? Object.values(e) : [];
             let key = '', rec = null, spots = null;
@@ -2317,7 +2318,7 @@
     if (CLUE_OBJ.has(k) || !bridge() || !bridge().clueSearchTarget) return;
     CLUE_OBJ.set(k, null);             // claim the slot first so a re-render cannot double-fetch
     let o = null;
-    try { o = JSON.parse(await bridge().clueSearchTarget(x, y, p || 0) || '{}'); } catch (e) {}
+    o = (await bridgeJson('clueSearchTarget', x, y, p || 0)) || {};
     CLUE_OBJ.set(k, (o && o.name) ? o : null);
     clueListSig = ''; paneRun('clues', renderCluesList);
   }
@@ -3374,7 +3375,7 @@
     if (st.n >= TELE_KB_TRIES || now - st.at < 2000) return;
     st.n++; st.at = now; teleKbTry.set(item, st);
     let p = null;
-    try { p = JSON.parse(await bridge().itemParams(item) || 'null'); } catch (e) {}
+    p = await bridgeJson('itemParams', item);
     // The bridge returns { ints:{k:v}, strs:{k:"v"} } (PLUGIN_SDK.md:287; panel_bosses,
     // panel_containers and panel_tasks all read .ints that way). This read used p[k] FLAT, which
     // matched nothing for every item ever asked, so the whole live ordering below silently

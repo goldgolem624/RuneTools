@@ -243,8 +243,11 @@ void WaiterThread(WaiterCtx* ctx) {
     for (;;) {
         DWORD r = WaitForSingleObject(ctx->evt, 250);
         if (InterlockedCompareExchange(&ctx->stop, 0, 0)) break;
-        if (r == WAIT_OBJECT_0 && ctx->host)
-            PostMessageW(ctx->host, kMsgUiInput, (WPARAM)ctx->pid, 0);
+        if (r != WAIT_OBJECT_0 || !ctx->host) continue;
+        // Destroy sets stop then signals the event; re-check right before posting so a wake that
+        // raced the stop cannot post into a host that is already tearing down.
+        if (InterlockedCompareExchange(&ctx->stop, 0, 0)) break;
+        PostMessageW(ctx->host, kMsgUiInput, (WPARAM)ctx->pid, 0);
     }
     CloseHandle(ctx->evt);
     delete ctx;

@@ -9,10 +9,11 @@
   async function fetchFamiliar() {
     if (!bridge() || famFetching) return; famFetching = true;
     try {
-      let vp = {}; try { vp = JSON.parse(await bridge().varps(myPid(), '1831,1787')); } catch (e) {}
+      const pouchVp = typeof VP !== 'undefined' ? VP.FAMILIAR_POUCH : 1831, spVp = typeof VP !== 'undefined' ? VP.SPELL_POINTS : 1787;
+      let vp = {}; try { vp = JSON.parse(await bridge().varps(myPid(), pouchVp + ',' + spVp)); } catch (e) {}
       const vb = await readVarbitValues([19034, 27403, 6055, 6054, 27747, 27749, 27750]);
       let items = null; try { items = JSON.parse(await bridge().containerItems(myPid(), 530)); } catch (e) {}
-      let pouch = vp['1831'] | 0; if (pouch <= 0 || pouch >= 0x7FFFFFFF) pouch = 0;
+      let pouch = vp[pouchVp] | 0; if (pouch <= 0 || pouch >= 0x7FFFFFFF) pouch = 0;
       if (pouch && FAM_NAMES[pouch] === undefined) {
         try { FAM_NAMES[pouch] = (JSON.parse(await bridge().itemInfo(pouch)).name) || ('Item #' + pouch); }
         catch (e) { FAM_NAMES[pouch] = 'Item #' + pouch; }
@@ -20,7 +21,7 @@
       const alt = vb[27747] === 1;
       famData = {
         pouch: pouch, name: pouch ? FAM_NAMES[pouch] : '',
-        sp: vp['1787'] | 0, lp: vb[19034] | 0, lpMax: vb[27403] | 0,
+        sp: vp[spVp] | 0, lp: vb[19034] | 0, lpMax: vb[27403] | 0,
         min: (alt ? vb[27749] : vb[6055]) | 0, half: (alt ? vb[27750] : vb[6054]) | 0,
         inv: (items && items.present) ? items : { present: false, count: 0, cap: 0, items: [] },
       };

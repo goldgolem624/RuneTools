@@ -86,7 +86,7 @@
   const DW_IDS = '16574,16575,16576,16578,16579,16580,16582,16583,16584,' +
                  '16586,16587,16588,16590,16591,16592,' +
                  '25543,25548,25533,25534,25551,25552,52328,' +
-                 '4164,4165,4163,4882,20742,5479,5480,5481,15893,' +
+                 '4164,4165,' + (typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163) + ',4882,20742,5479,5480,5481,15893,' +
                  '30084,30087,30088,30071,' +
                  '17687,60099,17689,17690,24942,17691,60100,17693,17694,24943,' +
                  '20739,20750,17933,20747,20745,20746,28370,20740,20744,16526,28796,' +
@@ -103,8 +103,8 @@
   async function dwLoadFFCosts() {
     if (dwFFCosts || !bridge().enumInfo) return;
     try {
-      const a = JSON.parse(await bridge().enumInfo(5886) || 'null');
-      const b = JSON.parse(await bridge().enumInfo(5887) || 'null');
+      const a = await bridgeJson('enumInfo', 5886);
+      const b = await bridgeJson('enumInfo', 5887);
       if (a && b && Object.keys(a).length && Object.keys(b).length) dwFFCosts = [a, b];
     } catch (e) {}
   }
@@ -115,7 +115,7 @@
     const t = Date.now(); if (!force && t - dwFetchAt < (bg ? 10000 : 2000)) return; dwFetchAt = t;
     dwFetching = true;
     try {
-      const vb = JSON.parse(await bridge().varbits(myPid(), DW_IDS) || 'null');
+      const vb = await bridgeJson('varbits', myPid(), DW_IDS);
       // Refresh the in-Priff gate BEFORE dwVosMaybeReport so the tab-report path never posts (and the
       // panel never labels 'live') a stale out-of-Priff varbit read.
       try { dwInPriff = dwRegionInPriff(await scanPlayerTile()); } catch (e) { dwInPriff = false; }
@@ -124,10 +124,10 @@
       // Varp-based rows: Champion's Challenge (CS2 script11552: varp 5441 == 5442 = done) + the
       // Menaphos journal collections (CS2 script13412: found-bits packed into varps 6989/6990).
       if (bridge().varps) {
-        try {
-          const vp = JSON.parse(await bridge().varps(myPid(), '5441,5442,6989,6990,3079,6601') || 'null');
+        {
+          const vp = await bridgeJson('varps', myPid(), '5441,5442,6989,6990,3079,6601');
           if (vp && typeof vp === 'object') dwVp = vp;
-        } catch (e) {}
+        }
       }
     } catch (e) { /* keep previous */ }
     dwFetching = false;
@@ -363,7 +363,7 @@
     dwChalBusy = true;
     try {
       if (!dwChalEnum17112) {
-        try { dwChalEnum17112 = JSON.parse(await bridge().enumInfo(17112) || 'null'); } catch (e) {}
+        dwChalEnum17112 = await bridgeJson('enumInfo', 17112);
         if (!dwChalEnum17112) return;                 // cache not ready -> retry next pass
       }
       const rows = [];
@@ -372,13 +372,13 @@
         const sub = dwChalEnum17112[s.cat] | 0;
         if (sub <= 0) continue;
         if (!dwChalSubEnums[sub]) {
-          try { dwChalSubEnums[sub] = JSON.parse(await bridge().enumInfo(sub) || 'null') || {}; } catch (e) { dwChalSubEnums[sub] = {}; }
+          dwChalSubEnums[sub] = (await bridgeJson('enumInfo', sub)) || {};
         }
         const st = dwChalSubEnums[sub][s.idx] | 0;
         if (st <= 0) continue;
         if (!dwChalStructs[st]) {
           let sp = null;
-          try { sp = JSON.parse(await bridge().structParams(st) || 'null'); } catch (e) {}
+          sp = await bridgeJson('structParams', st);
           const ints = (sp && sp.ints) || {}, strs = (sp && sp.strs) || {};
           dwChalStructs[st] = {
             name: (strs['1266'] || ('Challenge #' + st)) + (strs['4940'] ? ': ' + strs['4940'] : ''),
@@ -432,7 +432,7 @@
     dwMegBusy = true;
     try {
       if (!dwMegRows) {
-        try { dwMegRows = JSON.parse(await bridge().dbRows(9) || 'null'); } catch (e) {}
+        dwMegRows = await bridgeJson('dbRows', 9);
         if (!Array.isArray(dwMegRows) || !dwMegRows.length) { dwMegRows = null; return; }   // cache not ready -> retry
       }
       const row = dwMegRows.find(r0 => r0.i && r0.i['9'] && r0.i['9'][0] === key);
@@ -442,10 +442,10 @@
         const caseName = (row.s && row.s['2'] && row.s['2'][0]) || '';
         let done = false;
         if (caseNum > 0) {
-          try {
-            const cb = JSON.parse(await bridge().varbits(myPid(), String(31222 + caseNum)) || '{}');
+          {
+            const cb = (await bridgeJson('varbits', myPid(), String(31222 + caseNum))) || {};
             done = (cb[String(31222 + caseNum)] | 0) === 1;
-          } catch (e) {}
+          }
         }
         text = done ? "Today's case: complete!" : ("Today's case: " + (caseName || ('#' + caseNum)));
       }
@@ -766,8 +766,8 @@
     // Penguin spying gates (D&D-reqs CS2 case 3002): vb 4165 == 1 = unlocked (else visit Larry or
     // Chuck in Ardougne Zoo), total points vb 4163 cap at 250.
     if (v('4165') !== 1)       dwSetSub('peng', 'Visit Larry or Chuck in Ardougne Zoo to unlock');
-    else if (v('4163') >= 250) dwSetSub('peng', 'Penguin points at the 250 cap');
-    else                       dwSetSub('peng', v('4163') + ' / 250 penguin points');
+    else if (v(String(typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163)) >= 250) dwSetSub('peng', 'Penguin points at the 250 cap');
+    else                       dwSetSub('peng', v(String(typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163)) + ' / 250 penguin points');
     [['agi', '5479'], ['mag', '5480'], ['rng', '5481']].forEach(cd => {
       const ch = $('dwc-' + cd[0]); if (!ch) return;
       ch.classList.toggle('on', v(cd[1]) > 0);

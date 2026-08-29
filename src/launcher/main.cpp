@@ -5,6 +5,7 @@
 #include "Bridge.h"
 #include "Companion.h"
 #include "Dock.h"
+#include "Http.h"
 #include "MonitorFix.h"
 #include "Overlay.h"
 #include "Process.h"
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <atomic>
 #include <string>
 #include <thread>
 
@@ -331,13 +333,24 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     // Bring the companion up the INSTANT a client process appears -- before it logs in or renders its
     // first world scene -- so its observers are present from the start (a later setup misses the
     // startup scene pass that records render-pass slots like the clue-scan ring). Idempotent.
+    static std::atomic<bool> g_scan_stop{false};
     std::thread([] {
-        for (;;) {
-            for (const auto& info : rtx::launcher::process::ScanRsClients()) {
-                if (_wcsicmp(info.name.c_str(), L"rs2client.exe") == 0)
-                    rtx::launcher::companion::EnsureLoaded(info.pid);
+        while (!g_scan_stop.load()) {
+            bool any_loaded = false;
+            try {
+                for (const auto& info : rtx::launcher::process::ScanRsClients()) {
+                    if (_wcsicmp(info.name.c_str(), L"rs2client.exe") == 0 &&
+                        rtx::launcher::companion::EnsureLoaded(info.pid))
+                        any_loaded = true;
+                }
+            } catch (const std::exception& e) {
+                boot_log(std::string("companion scan: ") + e.what());
+            } catch (...) {
+                boot_log("companion scan: non-std exception");
             }
-            Sleep(100);
+            // 100 ms while no client is attached (the first world render must not be missed);
+            // 500 ms once one is live: the fast path is then just a section-open per tick.
+            Sleep(any_loaded ? 500 : 100);
         }
     }).detach();
 
@@ -350,6 +363,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         rtx::overlay::Stop();   // join the overlay render thread before teardown
         rtx::launcher::dock::Shutdown();   // restore game windows + close docked panels
         rtx::winnotify::Shutdown();   // remove the notification tray icon
+        g_scan_stop.store(true);            // companion scanner loop
+        rtx::launcher::http::Shutdown();    // one-shot network worker
     } catch (const std::exception& e) {
         fatal(std::string("Unhandled exception: ") + e.what());
         return 1;

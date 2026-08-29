@@ -66,10 +66,13 @@ bool LoadInto(std::uint32_t pid, const std::wstring& dll) {
             if (fn) {
                 HANDLE th = CreateRemoteThread(h, nullptr, 0, fn, remote, 0, nullptr);
                 if (th) {
-                    WaitForSingleObject(th, 10000);
-                    DWORD ec = 0; GetExitCodeThread(th, &ec);
-                    ok = ec != 0;          // LoadLibraryW returns the module handle (low 32 bits)
+                    DWORD w = WaitForSingleObject(th, 10000);
                     CloseHandle(th);
+                    // The exit code is only the LOW 32 bits of the HMODULE, so 0 does not mean
+                    // failure (a base with a zero low dword is legal). Ask the module list instead.
+                    ok = ModuleListed(pid) || SectionLive(pid);
+                    if (!ok && w == WAIT_TIMEOUT)
+                        rtx::log::Launcher("companion: pid " + std::to_string(pid) + " LoadLibraryW still running after 10s");
                 }
             }
         }
@@ -120,7 +123,7 @@ bool EnsureLoaded(std::uint32_t pid) {
     }
     if (!ModuleListed(pid)) {
         bool loaded = LoadInto(pid, dll);
-        rtx::log::Launcher(std::string("scene module ") + (loaded ? "started" : "load failed") +
+        rtx::log::Launcher(std::string("scene module ") + (loaded ? "started" : "not listed after load attempt") +
                            " for pid " + std::to_string(pid));
     }
     return SectionLive(pid);                        // may need a tick to appear

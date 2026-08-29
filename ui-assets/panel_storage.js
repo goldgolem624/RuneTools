@@ -152,7 +152,7 @@
     // Same guard as ensureVbMap: EnumJson runs cache work SYNCHRONOUSLY on the render thread, so a
     // permanently closed cache must not re-read it four times a second for the life of the session.
     const now = Date.now(); if (now - (storRosterTry[eid] || 0) < 2000) return null; storRosterTry[eid] = now;
-    let m = null; try { m = JSON.parse(await bridge().enumInfo(eid) || 'null'); } catch (e) {}
+    let m = await bridgeJson('enumInfo', eid);
     if (!m) return null;
     // Enum keys are the game's display order; they are not guaranteed to start at 0 (enum 7206
     // does, enum 6544 starts at 1), so sort numerically rather than counting from zero.
@@ -179,7 +179,7 @@
     // render thread, and an unthrottled retry would do that on every readVarbitValues call.
     if (storageVbMap || !bridge().varbitMap) return;
     const now = Date.now(); if (now - storageVbMapTry < 2000) return; storageVbMapTry = now;
-    try { const m = buildVbReverse(JSON.parse(await bridge().varbitMap())); if (Object.keys(m).length) storageVbMap = m; } catch (e) {}
+    try { const m = buildVbReverse(await bridgeJson('varbitMap')); if (Object.keys(m).length) storageVbMap = m; } catch (e) {}
   }
   function readVb(vbId, vpData) {
     const r = storageVbMap && storageVbMap[vbId]; if (!r) return null;
@@ -220,13 +220,13 @@
     let k = null;
     for (const cont of [93, 94]) {
       let ei = null;
-      try { ei = JSON.parse(await bridge().itemExtraInts(myPid(), cont, id)); } catch (e) {}
+      ei = await bridgeJson('itemExtraInts', myPid(), cont, id);
       if (ei && ei.key && ((ei.key['0'] | 0) || (ei.key['1'] | 0))) { k = ei.key; break; }
     }
     if (!k) return null;
     const charges = k['0'] | 0, packed = (k['1'] | 0) >>> 0;
     if (!passageNames && bridge().enumInfo) {
-      try { passageNames = JSON.parse(await bridge().enumInfo(PASSAGE_ENUM)) || null; } catch (e) {}
+      passageNames = (await bridgeJson('enumInfo', PASSAGE_ENUM)) || null;
     }
     const items = [];
     let v = packed;
@@ -248,9 +248,9 @@
     if (!bridge() || storageFetching) return; storageFetching = true;
     try {
       // Contents live in varbits/varps/containers, readable WITHOUT the box; inventory only LABELS the held tier.
-      let inv = null; try { inv = JSON.parse(await bridge().inventory(myPid())); } catch (e) {}
+      let inv = await bridgeJson('inventory', myPid());
       const held = new Set((inv && inv.items || []).map(it => it[1]));
-      let eq = null; try { eq = JSON.parse(await bridge().equipment(myPid())); } catch (e) {}   // worn items (rune pouch / quiver are equipped)
+      let eq = await bridgeJson('equipment', myPid());   // worn items (rune pouch / quiver are equipped)
       (eq && eq.items || []).forEach(it => held.add(it[1]));
       await ensureVbMap();
       // Harnessed relic powers gate what some rows should SAY (pouch decay); own throttle,
@@ -266,7 +266,7 @@
       STORAGE.clue.varp.forEach(x => varpSet.add(x[1]));
       STORAGE.sandy.vb.forEach(x => addVb(x[1]));
       let vp = {};
-      if (varpSet.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(myPid(), [...varpSet].join(','))); } catch (e) {} }
+      if (varpSet.size) vp = await bridgeJson('varps', myPid(), [...varpSet].join(','));
       // item tuple = [name, count, itemId, source] -- source is the provenance shown in the cell tooltip.
       const vbSrc = (vb) => { const r = storageVbMap && storageVbMap[vb]; return r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb); };
       const fromVb = (list) => list.map(x => [x[0], readVb(x[1], vp) || 0, STOR_ICON[x[0]] || 0, vbSrc(x[1])]).filter(x => x[1] > 0);
@@ -281,7 +281,7 @@
       if (gemBox || gemItems.length) {
         out.gem = { name: gemBox || STORAGE.gem.boxes[31455], items: gemItems };
       } else if (held.has(18338) && bridge().itemExtraInts) {
-        let ei = null; try { ei = JSON.parse(await bridge().itemExtraInts(myPid(), 93, 18338)); } catch (e) {}
+        let ei = await bridgeJson('itemExtraInts', myPid(), 93, 18338);
         // Extra_ints is flat [key0,val0,key1,val1,..], so "Extra_ints[1]" = first VALUE = pos[0].
         const packed = (ei && ei.pos && ei.pos.length ? ei.pos[0] : 0) || 0;
         const gbyte = ['key 0 byte 0', 'key 0 byte 1', 'key 0 byte 2', 'key 0 byte 3'];
@@ -297,7 +297,7 @@
       // code filtered by a hardcoded list whose "show everything" fallback only fired when the list
       // matched NOTHING, so a partial match (5 of 7 plank types) silently swallowed the rest.
       const readContainer = async (cfg, heldName) => {
-        let r = null; try { if (bridge().containerItems) r = JSON.parse(await bridge().containerItems(myPid(), cfg.container)); } catch (e) {}
+        let r = await bridgeJson('containerItems', myPid(), cfg.container);
         const rows = (r && r.items) || [];
         // One id can span several slots; sum the stacks and keep every slot for the cell tooltip.
         const byId = {}, nameOf = {}, slotsOf = {};
@@ -323,7 +323,7 @@
       // read an item's Extra_ints from the worn (94) or backpack (93) slot; ei.key[k] = value at key k.
       const eiFor = async (id) => {
         if (!bridge().itemExtraInts) return null;
-        for (const cid of [94, 93]) { try { const r = JSON.parse(await bridge().itemExtraInts(myPid(), cid, id)); if (r && r.present) return r; } catch (e) {} }
+        for (const cid of [94, 93]) { { const r = await bridgeJson('itemExtraInts', myPid(), cid, id); if (r && r.present) return r; } }
         return null;
       };
       // Essence pouches: tuple = [name, count, pouchIconId, src, cap, durStr, essenceIconId],
@@ -398,7 +398,7 @@
       if (quivers.length) out.quiver = quivers;
       // Money pouch: item 995 holds the sub-billion remainder, item 54830 counts billions.
       try {
-        let r = null; if (bridge().containerItems) r = JSON.parse(await bridge().containerItems(myPid(), STORAGE.money.container));
+        const r = await bridgeJson('containerItems', myPid(), STORAGE.money.container);
         const rows = (r && r.items) || [];
         const stackOf = (id) => (rows.find(it => it[1] === id) || [0, 0, 0])[2] >>> 0;
         const total = stackOf(54830) * 1000000000 + stackOf(995);
@@ -407,7 +407,7 @@
       // Currency pouch: inventory interface group 1473, comp 20 = currency icons; item id at
       // node+0x1a0, amount at node+0x1a8 (reader's "it"/"n"). Needs group 1473 present.
       try {
-        const ig = bridge().interfaceGroup ? JSON.parse(await bridge().interfaceGroup(myPid(), 1473)) : null;
+        const ig = await bridgeJson('interfaceGroup', myPid(), 1473);
         const cur = [];
         for (const w of ((ig && ig.widgets) || [])) {
           if (w.t && w.t[1] === 20 && w.it > 0 && (w.n || 0) > 0) {

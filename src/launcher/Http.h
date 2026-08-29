@@ -69,4 +69,12 @@ Response Stream(const std::wstring& host,
                 const std::function<bool(const char*, std::size_t)>& on_data,
                 const std::function<bool(int)>& on_status = nullptr);
 
+// Bounded fire-and-forget worker for one-shot network jobs (reports, cache refreshes).
+// 2 workers, queue capped at 64: a burst (e.g. many uncached hiscore names) no longer
+// spawns a thread per request. When full the OLDEST job is dropped (logged once).
+// Jobs run under try/catch so a throw cannot terminate the launcher. Started lazily.
+void Enqueue(std::function<void()> job);
+// Stops the workers (pending jobs are discarded). Call once on exit; safe if never started.
+void Shutdown();
+
 }  // namespace rtx::launcher::http

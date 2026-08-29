@@ -72,6 +72,15 @@ namespace rtx::launcher {
 
 namespace {
 
+// Body wrapper for the long-lived detached threads below: an escaping exception
+// would std::terminate the whole launcher, so log it and let the thread end.
+template <class F>
+void guarded(const char* what, F&& f) {
+    try { f(); }
+    catch (const std::exception& e) { rtx::log::Launcher(std::string(what) + ": thread threw: " + e.what()); }
+    catch (...) { rtx::log::Launcher(std::string(what) + ": thread threw (non-std)"); }
+}
+
 // Bounded JS number -> int: NaN/Infinity through a plain (int) cast is UB, so clamp instead.
 static int js_int(JSContextRef ctx, JSValueRef v, int def = 0, int lo = INT_MIN, int hi = INT_MAX) {
     double d = JSValueToNumber(ctx, v, nullptr);
@@ -1698,7 +1707,7 @@ JSValueRef HiscoresJson(JSContextRef ctx, JSObjectRef, JSObjectRef,
         bool fresh = (e.state != 0) && (now - e.epoch < kHsTtlSec);   // ok OR errored within the last hour
         if (!fresh && !e.inflight) {                                  // >=1h old or never fetched -> one fetch
             e.inflight = true;
-            std::thread(hs_fetch, name).detach();
+            http::Enqueue([name] { hs_fetch(name); });
         }
         if (!first) out << ',';
         first = false;
@@ -1969,17 +1978,18 @@ void party_start_loop() {
     if (code.empty()) return;                        // cleared -> just stop
     bool expected = false;
     if (g_party_loop_running.compare_exchange_strong(expected, true))
-        std::thread(party_events_loop, epoch, code).detach();
+        std::thread([epoch, code] { guarded("party events", [&] { party_events_loop(epoch, code); }); }).detach();
     else                                             // a loop is winding down; start fresh once it exits
-        std::thread([epoch, code]() {
+        std::thread([epoch, code]() { guarded("party restart", [&] {
             // the previous stream only notices the epoch bump when DATA arrives (its next heartbeat can be
             // ~25s away), so wait it out rather than giving up at 2s -- epoch-guarded.
             for (int i = 0; i < 120 && g_party_loop_running.load() && g_party_epoch.load() == epoch; ++i)
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             if (g_party_epoch.load() != epoch) return;
             bool e2 = false;
-            if (g_party_loop_running.compare_exchange_strong(e2, true)) std::thread(party_events_loop, epoch, code).detach();
-        }).detach();
+            if (g_party_loop_running.compare_exchange_strong(e2, true))
+                std::thread([epoch, code] { guarded("party events", [&] { party_events_loop(epoch, code); }); }).detach();
+        }); }).detach();
 }
 }  // namespace
 
@@ -2046,10 +2056,10 @@ JSValueRef PartyReport(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (code.empty()) return JSValueMakeBoolean(ctx, false);
     if (!json_value_ok(data)) return JSValueMakeBoolean(ctx, false);   // data is spliced raw into the body
     std::string body = "{\"code\":\"" + code + "\",\"kind\":\"" + kind + "\",\"data\":" + data + "}";
-    std::thread([body]() {
+    http::Enqueue([body]() {
         std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
         http::PostJson(kUpdateHost, L"/api/party/report", hdrs, body);
-    }).detach();
+    });
     return JSValueMakeBoolean(ctx, true);
 }
 JSValueRef PartyData(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2852,7 +2862,7 @@ bool vos_post_report(int a, int b, bool leagues) {
     long long prev = floorMs.load();
     if (prev != 0 && now - prev < 5 * 60'000) return false;
     if (!floorMs.compare_exchange_strong(prev, now)) return false;
-    std::thread([a, b, now, leagues] {
+    http::Enqueue([a, b, now, leagues] {
         // re-select inside: the outer reference must not outlive the frame
         std::atomic<long long>& floorMs = leagues ? g_vos_reported_lg_ms : g_vos_reported_ms;
         std::string body = "{\"a\":" + std::to_string(a) + ",\"b\":" + std::to_string(b) +
@@ -2866,7 +2876,7 @@ bool vos_post_report(int a, int b, bool leagues) {
             long long cur = now;
             floorMs.compare_exchange_strong(cur, now - (5 * 60'000 - 30'000));
         }
-    }).detach();
+    });
     return true;
 }
 
@@ -2962,7 +2972,7 @@ void scarab_scan_pass() {
             if (!listed && (it == last_scarab.end() || now - it->second >= 60'000)) {
                 last_scarab[s.world] = now;
                 int w = s.world;
-                std::thread([w] {
+                http::Enqueue([w] {
                     std::string body = "{\"w\":" + std::to_string(w) + "}";
                     std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
                     auto r = http::PostJson(kUpdateHost, kScarabReportPath, hdrs, body);
@@ -2970,7 +2980,7 @@ void scarab_scan_pass() {
                     if (!r.ok || r.status != 200)
                         rtx::log::Launcher("scarab report w" + std::to_string(w) + " failed: status " +
                                            std::to_string(r.status) + " " + r.detail);
-                }).detach();
+                });
             }
         }
         int district = scene_obelisk_district(scene);
@@ -2981,14 +2991,14 @@ void scarab_scan_pass() {
             if (!listed && (it == last_obelisk.end() || now - it->second >= 60'000)) {
                 last_obelisk[s.world] = now;
                 int w = s.world, d = district;
-                std::thread([w, d] {
+                http::Enqueue([w, d] {
                     std::string body = "{\"w\":" + std::to_string(w) + ",\"d\":" + std::to_string(d) + "}";
                     std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
                     auto r = http::PostJson(kUpdateHost, kObeliskReportPath, hdrs, body);
                     if (!r.ok || r.status != 200)
                         rtx::log::Launcher("obelisk report w" + std::to_string(w) + " failed: status " +
                                            std::to_string(r.status) + " " + r.detail);
-                }).detach();
+                });
             }
         }
     }
@@ -3045,7 +3055,7 @@ JSValueRef WorldEventVote(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if ((kind != "scarabs" && kind != "obelisks") || world < 1 || world > 999)
         return JSValueMakeBoolean(ctx, false);
     std::string v = voter_id();
-    std::thread([kind, world, yes, v, pid] {
+    http::Enqueue([kind, world, yes, v, pid] {
         std::string voter = v;
         if (pid) {                        // may hit the PEB, deliberately off the UI thread
             // Same identity as every per-account store (see account_key_for): an RSN is unique,
@@ -3067,7 +3077,7 @@ JSValueRef WorldEventVote(JSContextRef ctx, JSObjectRef, JSObjectRef,
                            "\",\"y\":" + (yes ? "true" : "false") + "}";
         std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
         http::PostJson(kUpdateHost, path.c_str(), hdrs, body);
-    }).detach();
+    });
     return JSValueMakeBoolean(ctx, true);
 }
 
@@ -3084,7 +3094,7 @@ JSValueRef ObeliskCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
         g_obelisk_get_ms.compare_exchange_strong(prev, now)) {
         bool expected = false;
         if (g_obelisk_fetching.compare_exchange_strong(expected, true)) {
-            std::thread([] {
+            http::Enqueue([] {
                 auto r = http::Get(kUpdateHost, kObeliskPath, {});
                 if (r.ok && r.status == 200 && r.body.size() < 32768 &&
                     !r.body.empty() && r.body.front() == '{') {
@@ -3093,7 +3103,7 @@ JSValueRef ObeliskCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     g_obelisk_fetched_ms.store((long long)GetTickCount64());   // data landed
                 }
                 g_obelisk_fetching.store(false);
-            }).detach();
+            });
         }
     }
     std::lock_guard<std::mutex> lk(g_obelisk_mu);
@@ -3113,7 +3123,7 @@ JSValueRef ScarabCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
         g_scarab_get_ms.compare_exchange_strong(prev, now)) {
         bool expected = false;
         if (g_scarab_fetching.compare_exchange_strong(expected, true)) {
-            std::thread([] {
+            http::Enqueue([] {
                 auto r = http::Get(kUpdateHost, kScarabPath, {});
                 if (r.ok && r.status == 200 && r.body.size() < 32768 &&
                     !r.body.empty() && r.body.front() == '{') {
@@ -3122,7 +3132,7 @@ JSValueRef ScarabCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     g_scarab_fetched_ms.store((long long)GetTickCount64());   // data landed
                 }
                 g_scarab_fetching.store(false);
-            }).detach();
+            });
         }
     }
     std::lock_guard<std::mutex> lk(g_scarab_mu);
@@ -3273,10 +3283,10 @@ JSValueRef LatestVersionCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                size_t, const JSValueRef[], JSValueRef*) {
     bool expected = false;
     if (g_checker_started.compare_exchange_strong(expected, true)) {
-        std::thread(update_checker_loop).detach();   // check-on-start + fallback poll
-        std::thread(update_events_loop).detach();     // live SSE push
-        std::thread(vos_report_loop).detach();        // always-on Voice of Seren reporter
-        std::thread(world_event_scan_loop).detach();  // scarab + soul-obelisk scene scanner
+        std::thread([] { guarded("update checker", update_checker_loop); }).detach();   // check-on-start + fallback poll
+        std::thread([] { guarded("update events", update_events_loop); }).detach();     // live SSE push
+        std::thread([] { guarded("vos report", vos_report_loop); }).detach();           // always-on Voice of Seren reporter
+        std::thread([] { guarded("world event scan", world_event_scan_loop); }).detach();  // scarab + soul-obelisk scene scanner
     }
     std::lock_guard<std::mutex> lk(g_latest_mu);
     return utf8_to_js(ctx, g_latest_json);
@@ -3304,7 +3314,7 @@ JSValueRef VosCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
         g_vos_get_ms.compare_exchange_strong(prev, now)) {
         bool expected = false;
         if (g_vos_fetching.compare_exchange_strong(expected, true)) {
-            std::thread([] {
+            http::Enqueue([] {
                 auto r = http::Get(kUpdateHost, kVosPath, {});
                 if (r.ok && r.status == 200 && r.body.size() < 512 &&
                     !r.body.empty() && r.body.front() == '{') {
@@ -3313,7 +3323,7 @@ JSValueRef VosCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     g_vos_fetched_ms.store((long long)GetTickCount64());   // data landed: freshness clock
                 }
                 g_vos_fetching.store(false);
-            }).detach();
+            });
         }
     }
     // A value older than 65 minutes cannot be current (h is only 0-23 and would wrap
@@ -3378,7 +3388,7 @@ JSValueRef StartUpdate(JSContextRef ctx, JSObjectRef, JSObjectRef,
     bool expected = false;
     if (g_upd_running.compare_exchange_strong(expected, true)) {
         set_upd("downloading", 0, "Starting");
-        std::thread(run_update).detach();
+        std::thread([] { guarded("update", run_update); }).detach();
     }
     return JSValueMakeBoolean(ctx, true);
 }
@@ -4694,7 +4704,7 @@ JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
         // Kick a refresh when nothing is cached or the cache is >60s old, one at a time.
         if (!g_pluginListInFlight && (g_pluginListBody.empty() || now - g_pluginListAt > 60000)) {
             g_pluginListInFlight = true;
-            std::thread([] {
+            http::Enqueue([] {
                 auto r = http::Get(kUpdateHost, kPluginListPath, {});   // public endpoint; no auth
                 std::lock_guard<std::mutex> lk(g_pluginListMu);
                 if (r.ok && r.status == 200 && !r.body.empty()) {
@@ -4706,7 +4716,7 @@ JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         ? ("HTTP " + std::to_string(r.status)) : r.detail;
                 }
                 g_pluginListInFlight = false;
-            }).detach();
+            });
         }
     }
     // A stale-but-good body still beats an error: only report failure when we have
@@ -4732,7 +4742,10 @@ JSValueRef PluginMarketInstall(JSContextRef ctx, JSObjectRef, JSObjectRef,
     g_installInFlight = true;
     g_installResult.clear();
     std::thread([slug] {
-        std::string err = install_plugin(slug);             // "" = success
+        // long download: its own thread so it cannot starve the 2 pool workers; a throw
+        // becomes an error string (and still clears the in-flight flag) instead of a crash
+        std::string err = "install failed";
+        guarded("plugin install", [&] { err = install_plugin(slug); });   // "" = success
         std::lock_guard<std::mutex> lk(g_installMu);
         g_installResult = err.empty() ? std::string("ok") : err;
         g_installInFlight = false;

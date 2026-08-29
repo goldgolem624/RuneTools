@@ -17,8 +17,9 @@ public:
 
     int  remaining() const { return (int)buf_.size() - offset_; }
     int  offset()    const { return offset_; }
-    void skip(int n)       { offset_ += n; }
-    void seek(int p)       { offset_  = p; }
+    // Clamped to [0, size] so remaining() is never negative on hostile lengths.
+    void skip(int n)       { seek(offset_ + n); }
+    void seek(int p)       { offset_ = p < 0 ? 0 : (p > (int)buf_.size() ? (int)buf_.size() : p); }
 
     int  ReadByte();          // 0 if past end
     int  ReadUnsignedByte() { return ReadByte() & 0xff; }

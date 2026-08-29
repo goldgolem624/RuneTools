@@ -451,6 +451,7 @@
     try {
       if (bridge().itemInfo && groundData) for (const g of groundData) {
         if (!g || g.id == null || groundNames[g.id] !== undefined) continue;
+        if (Object.keys(groundNames).length >= 2000) for (const k in groundNames) delete groundNames[k];   // bounded name cache
         groundNames[g.id] = '';
         try { const info = JSON.parse(await bridge().itemInfo(g.id)); groundNames[g.id] = (info && info.name) || ''; } catch (e) {}
       }

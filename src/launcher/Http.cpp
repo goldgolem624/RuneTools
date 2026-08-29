@@ -1,7 +1,13 @@
 #include "Http.h"
+#include "../shared/Log.h"
 
 #include <Windows.h>
 #include <winhttp.h>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -263,6 +269,72 @@ Response Stream(const std::wstring& host, const std::wstring& path,
         [&on_data](const char* d, DWORD n) { return on_data ? on_data(d, (std::size_t)n) : true; }, nullptr,
         on_status);
     return out;
+}
+
+// ---- bounded one-shot worker ----
+namespace {
+
+constexpr std::size_t kPoolWorkers  = 2;
+constexpr std::size_t kPoolQueueCap = 64;
+
+std::mutex                        g_pool_mu;
+std::condition_variable           g_pool_cv;
+std::deque<std::function<void()>> g_pool_q;
+std::vector<std::thread>          g_pool_threads;
+bool                              g_pool_started = false;
+bool                              g_pool_stop    = false;
+bool                              g_pool_logged_full = false;
+
+void pool_worker() {
+    for (;;) {
+        std::function<void()> job;
+        {
+            std::unique_lock<std::mutex> lk(g_pool_mu);
+            g_pool_cv.wait(lk, [] { return g_pool_stop || !g_pool_q.empty(); });
+            if (g_pool_stop) return;
+            job = std::move(g_pool_q.front());
+            g_pool_q.pop_front();
+        }
+        // one bad job must not take the process down with std::terminate
+        try { job(); }
+        catch (const std::exception& e) { rtx::log::Launcher(std::string("http worker: job threw: ") + e.what()); }
+        catch (...) { rtx::log::Launcher("http worker: job threw (non-std)"); }
+    }
+}
+
+}  // namespace
+
+void Enqueue(std::function<void()> job) {
+    if (!job) return;
+    std::lock_guard<std::mutex> lk(g_pool_mu);
+    if (g_pool_stop) return;                     // shutting down: drop silently
+    if (!g_pool_started) {
+        g_pool_started = true;
+        for (std::size_t i = 0; i < kPoolWorkers; ++i) g_pool_threads.emplace_back(pool_worker);
+    }
+    if (g_pool_q.size() >= kPoolQueueCap) {
+        g_pool_q.pop_front();                    // oldest is the least useful (stale refresh)
+        if (!g_pool_logged_full) {
+            g_pool_logged_full = true;
+            rtx::log::Launcher("http worker: queue full (" + std::to_string(kPoolQueueCap) + "), dropping oldest job");
+        }
+    }
+    g_pool_q.push_back(std::move(job));
+    g_pool_cv.notify_one();
+}
+
+void Shutdown() {
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lk(g_pool_mu);
+        if (g_pool_stop) return;
+        g_pool_stop = true;
+        g_pool_q.clear();
+        threads.swap(g_pool_threads);
+    }
+    g_pool_cv.notify_all();
+    // a worker stuck in a slow request would hold exit hostage: detach instead of join
+    for (auto& t : threads) t.detach();
 }
 
 }  // namespace rtx::launcher::http

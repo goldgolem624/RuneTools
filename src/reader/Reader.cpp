@@ -91,6 +91,15 @@ constexpr int           kWorkbenchContainerId = 1008; // Archaeologist's workben
 constexpr int           kMaxContainers   = 64;
 constexpr int           kMaxBankSlots    = 8192;
 
+// Entry count of the container-manager array [cstart,cend). 0 when the span is not a whole number
+// of entries (stale offset / mid-write) or is absurdly large; clamped to kMaxContainers otherwise.
+static int container_count(std::uint64_t cstart, std::uint64_t cend) {
+    if (cend <= cstart || (cend - cstart) % kContainerStride) return 0;
+    std::uint64_t n = (cend - cstart) / kContainerStride;
+    if (n > 4096) return 0;
+    return n > (std::uint64_t)kMaxContainers ? kMaxContainers : (int)n;
+}
+
 // Player varp (var-player) hashmap, embedded in MainData at +0x36040. Layout:
 //   root+0x8  = bucketArray (ptr)        root+0x10 = divisor (i32, bucket count)
 //   node = bucketArray[varpId % divisor]; chain node.next@+0x28; node id@+0,
@@ -98,6 +107,13 @@ constexpr int           kMaxBankSlots    = 8192;
 // An unset varp has no node and defaults to 0. Varbits are just a bit-slice of a
 // varp (def: varp id + [lsb,msb]); the slicing is done by the caller/JS.
 constexpr std::uint32_t kOffVarpHash     = 0x36040;
+
+// Global client-var (varc int + string) hashmap: store = *(MainData + kOffVarcStore) (the same
+// object kOffStats points at); the map sits at store + kVarcHashOff with the varp map's layout
+// (buckets@+0x8, divisor@+0x10; node id@+0, value@+0x8, next@+kVarNodeNext).
+constexpr std::uint32_t kOffVarcStore    = 0x198E0;
+constexpr std::uint32_t kVarcHashOff     = 0x7630;
+constexpr std::uint32_t kVarNodeNext     = 0x28;
 
 // Tick chain. The tick function loads an owner from a rip-relative global
 // and increments a counter at +0xDBF0 of that owner. The exact byte
@@ -893,8 +909,7 @@ Snapshot sample_one(State& s) {
                 auto cstart = rpm<std::uint64_t>(s.proc, *cmgr + 0x8);
                 auto cend   = rpm<std::uint64_t>(s.proc, *cmgr + 0x10);
                 if (cstart && cend && *cend > *cstart) {
-                    int n = (int)((*cend - *cstart) / kContainerStride);
-                    if (n > kMaxContainers) n = kMaxContainers;
+                    int n = container_count(*cstart, *cend);
                     std::vector<std::uint8_t> cbuf((std::size_t)n * kContainerStride);
                     if (n > 0 && rpm_bytes(s.proc, *cstart, cbuf.data(), cbuf.size())) {
                         auto capture = [&](const std::uint8_t* e, std::vector<BankSlot>& dst,
@@ -1413,7 +1428,25 @@ std::string SamplesJson() {
     return s_samples_json;
 }
 
-std::string BankJson(std::uint32_t pid) {
+// Append one filled slot as [slot,item_id,stack,"name"]; the name is resolved here (memoized) so
+// the UI can search by name without per-item bridge calls. `count` doubles as the comma guard.
+static void append_slot_json(std::string& out, std::size_t slot, int iid, int stack, int& count) {
+    char buf[96];
+    if (count) out.push_back(',');
+    std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, iid, stack);
+    out += buf;
+    out += json_escape(rtx::cache::ItemName(iid));
+    out += "\"]";
+    ++count;
+}
+
+// Shared body of BankJson and its siblings: live slots while the container is open, else the
+// encrypted per-character disk cache under `cacheKey`, else the in-memory fallback. The State
+// triple is selected by pointer-to-member so each container is a one-line wrapper.
+//   {"open":bool,"character":"..","cached_at":sec,"items":[[slot,id,stack,"name"],..],"count":N}
+static std::string cached_container_json(std::uint32_t pid, const char* cacheKey,
+                                         std::vector<BankSlot> State::*slotsM,
+                                         long long State::*cachedAtM, bool State::*openM) {
     std::string           character;
     bool                  open = false;
     long long             cached_at = 0;
@@ -1426,12 +1459,12 @@ std::string BankJson(std::uint32_t pid) {
         std::lock_guard<std::mutex> lk(g_mu);
         auto it = g_states.find((DWORD)pid);
         if (it != g_states.end()) {
-            character = !it->second.display_name.empty()
-                          ? it->second.display_name : it->second.character;
-            if (!it->second.bank_slots.empty()) {
-                mem_slots     = it->second.bank_slots;
-                mem_cached_at = it->second.bank_cached_at;
-                open          = it->second.bank_open;
+            const State& st = it->second;
+            character = !st.display_name.empty() ? st.display_name : st.character;
+            if (!(st.*slotsM).empty()) {
+                mem_slots     = st.*slotsM;
+                mem_cached_at = st.*cachedAtM;
+                open          = st.*openM;
             }
         }
     }
@@ -1443,7 +1476,7 @@ std::string BankJson(std::uint32_t pid) {
         items     = &mem_slots;
     }
     if (!items) {
-        BankCacheData d = ReadBankCache(character);
+        BankCacheData d = ReadContainerCache(cacheKey, character);
         if (!d.slots.empty()) {
             from_disk = std::move(d.slots);
             cached_at = d.cached_at;
@@ -1463,18 +1496,9 @@ std::string BankJson(std::uint32_t pid) {
 
     int count = 0;
     if (items) {
-        char buf[96];
         for (std::size_t slot = 0; slot < items->size(); ++slot) {
             const auto& bs = (*items)[slot];
-            if (bs.item_id <= 0) continue;
-            if (count) out.push_back(',');
-            // [slot, item_id, stack, "name"] -- name resolved here (memoized)
-            // so the UI can search by name without per-item bridge calls.
-            std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, bs.item_id, bs.stack);
-            out += buf;
-            out += json_escape(rtx::cache::ItemName(bs.item_id));
-            out += "\"]";
-            ++count;
+            if (bs.item_id > 0) append_slot_json(out, slot, bs.item_id, bs.stack, count);
         }
     }
     std::snprintf(hdr, sizeof(hdr), "],\"count\":%d}", count);
@@ -1482,336 +1506,30 @@ std::string BankJson(std::uint32_t pid) {
     return out;
 }
 
-// Metal bank (container 858) -- mirrors BankJson: live slots while open, else the encrypted
-// per-character disk cache, else the in-memory fallback. Item names resolved here (memoized).
+// Bank (container 95). ReadBankCache(character) is just ReadContainerCache("bank", character).
+std::string BankJson(std::uint32_t pid) {
+    return cached_container_json(pid, "bank", &State::bank_slots, &State::bank_cached_at, &State::bank_open);
+}
+// Metal bank (container 858): ores + bars, loaded only at a forge/furnace/anvil.
 std::string MetalBankJson(std::uint32_t pid) {
-    std::string           character;
-    bool                  open = false;
-    long long             cached_at = 0;
-    std::vector<BankSlot> mem_slots;          // copy of the in-memory cache (if any)
-    long long             mem_cached_at = 0;
-
-    {
-        std::lock_guard<std::mutex> lk(g_mu);
-        auto it = g_states.find((DWORD)pid);
-        if (it != g_states.end()) {
-            character = !it->second.display_name.empty()
-                          ? it->second.display_name : it->second.character;
-            if (!it->second.metalbank_slots.empty()) {
-                mem_slots     = it->second.metalbank_slots;
-                mem_cached_at = it->second.metalbank_cached_at;
-                open          = it->second.metalbank_open;
-            }
-        }
-    }
-
-    const std::vector<BankSlot>* items = nullptr;
-    std::vector<BankSlot> from_disk;
-    if (open && !mem_slots.empty()) {
-        cached_at = mem_cached_at;
-        items     = &mem_slots;
-    }
-    if (!items) {
-        BankCacheData d = ReadContainerCache("metalbank", character);
-        if (!d.slots.empty()) {
-            from_disk = std::move(d.slots);
-            cached_at = d.cached_at;
-            items     = &from_disk;
-        } else if (!mem_slots.empty()) {
-            cached_at = mem_cached_at;
-            items     = &mem_slots;
-        }
-    }
-
-    std::string out = "{\"open\":";
-    out += open ? "true" : "false";
-    out += ",\"character\":\"" + json_escape(character) + "\"";
-    char hdr[64];
-    std::snprintf(hdr, sizeof(hdr), ",\"cached_at\":%lld,\"items\":[", cached_at);
-    out += hdr;
-    int count = 0;
-    if (items) {
-        char buf[96];
-        for (std::size_t slot = 0; slot < items->size(); ++slot) {
-            const auto& bs = (*items)[slot];
-            if (bs.item_id <= 0) continue;
-            if (count) out.push_back(',');
-            std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, bs.item_id, bs.stack);
-            out += buf;
-            out += json_escape(rtx::cache::ItemName(bs.item_id));
-            out += "\"]";
-            ++count;
-        }
-    }
-    std::snprintf(hdr, sizeof(hdr), "],\"count\":%d}", count);
-    out += hdr;
-    return out;
+    return cached_container_json(pid, "metalbank", &State::metalbank_slots, &State::metalbank_cached_at, &State::metalbank_open);
 }
-
-// Archaeology material storage (container 885) -- mirrors MetalBankJson: live slots while the
-// storage UI is open, else the encrypted per-character disk cache, else the in-memory fallback.
+// Archaeology material storage (container 885).
 std::string MaterialsJson(std::uint32_t pid) {
-    std::string           character;
-    bool                  open = false;
-    long long             cached_at = 0;
-    std::vector<BankSlot> mem_slots;          // copy of the in-memory cache (if any)
-    long long             mem_cached_at = 0;
-
-    {
-        std::lock_guard<std::mutex> lk(g_mu);
-        auto it = g_states.find((DWORD)pid);
-        if (it != g_states.end()) {
-            character = !it->second.display_name.empty()
-                          ? it->second.display_name : it->second.character;
-            if (!it->second.materials_slots.empty()) {
-                mem_slots     = it->second.materials_slots;
-                mem_cached_at = it->second.materials_cached_at;
-                open          = it->second.materials_open;
-            }
-        }
-    }
-
-    const std::vector<BankSlot>* items = nullptr;
-    std::vector<BankSlot> from_disk;
-    if (open && !mem_slots.empty()) {
-        cached_at = mem_cached_at;
-        items     = &mem_slots;
-    }
-    if (!items) {
-        BankCacheData d = ReadContainerCache("materials", character);
-        if (!d.slots.empty()) {
-            from_disk = std::move(d.slots);
-            cached_at = d.cached_at;
-            items     = &from_disk;
-        } else if (!mem_slots.empty()) {
-            cached_at = mem_cached_at;
-            items     = &mem_slots;
-        }
-    }
-
-    std::string out = "{\"open\":";
-    out += open ? "true" : "false";
-    out += ",\"character\":\"" + json_escape(character) + "\"";
-    char hdr[64];
-    std::snprintf(hdr, sizeof(hdr), ",\"cached_at\":%lld,\"items\":[", cached_at);
-    out += hdr;
-    int count = 0;
-    if (items) {
-        char buf[96];
-        for (std::size_t slot = 0; slot < items->size(); ++slot) {
-            const auto& bs = (*items)[slot];
-            if (bs.item_id <= 0) continue;
-            if (count) out.push_back(',');
-            std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, bs.item_id, bs.stack);
-            out += buf;
-            out += json_escape(rtx::cache::ItemName(bs.item_id));
-            out += "\"]";
-            ++count;
-        }
-    }
-    std::snprintf(hdr, sizeof(hdr), "],\"count\":%d}", count);
-    out += hdr;
-    return out;
+    return cached_container_json(pid, "materials", &State::materials_slots, &State::materials_cached_at, &State::materials_open);
 }
-
-// Anachronia bait box (container 867) -- mirrors MetalBankJson: live slots while the bait-box UI
-// is open, else the encrypted per-character disk cache, else the in-memory fallback.
+// Anachronia bait box (container 867).
 std::string BaitBoxJson(std::uint32_t pid) {
-    std::string           character;
-    bool                  open = false;
-    long long             cached_at = 0;
-    std::vector<BankSlot> mem_slots;          // copy of the in-memory cache (if any)
-    long long             mem_cached_at = 0;
-
-    {
-        std::lock_guard<std::mutex> lk(g_mu);
-        auto it = g_states.find((DWORD)pid);
-        if (it != g_states.end()) {
-            character = !it->second.display_name.empty()
-                          ? it->second.display_name : it->second.character;
-            if (!it->second.baitbox_slots.empty()) {
-                mem_slots     = it->second.baitbox_slots;
-                mem_cached_at = it->second.baitbox_cached_at;
-                open          = it->second.baitbox_open;
-            }
-        }
-    }
-
-    const std::vector<BankSlot>* items = nullptr;
-    std::vector<BankSlot> from_disk;
-    if (open && !mem_slots.empty()) {
-        cached_at = mem_cached_at;
-        items     = &mem_slots;
-    }
-    if (!items) {
-        BankCacheData d = ReadContainerCache("baitbox", character);
-        if (!d.slots.empty()) {
-            from_disk = std::move(d.slots);
-            cached_at = d.cached_at;
-            items     = &from_disk;
-        } else if (!mem_slots.empty()) {
-            cached_at = mem_cached_at;
-            items     = &mem_slots;
-        }
-    }
-
-    std::string out = "{\"open\":";
-    out += open ? "true" : "false";
-    out += ",\"character\":\"" + json_escape(character) + "\"";
-    char hdr[64];
-    std::snprintf(hdr, sizeof(hdr), ",\"cached_at\":%lld,\"items\":[", cached_at);
-    out += hdr;
-    int count = 0;
-    if (items) {
-        char buf[96];
-        for (std::size_t slot = 0; slot < items->size(); ++slot) {
-            const auto& bs = (*items)[slot];
-            if (bs.item_id <= 0) continue;
-            if (count) out.push_back(',');
-            std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, bs.item_id, bs.stack);
-            out += buf;
-            out += json_escape(rtx::cache::ItemName(bs.item_id));
-            out += "\"]";
-            ++count;
-        }
-    }
-    std::snprintf(hdr, sizeof(hdr), "],\"count\":%d}", count);
-    out += hdr;
-    return out;
+    return cached_container_json(pid, "baitbox", &State::baitbox_slots, &State::baitbox_cached_at, &State::baitbox_open);
 }
-
-// Archaeologist's workbench damaged-artefact storage (container 1008) -- mirrors BaitBoxJson:
-// live slots while the workbench UI is open, else the encrypted per-character disk cache, else
-// the in-memory fallback. Empty is a legitimate state: the container holds nothing until the
-// first guild-shop workbench upgrade is bought (varbit 61463).
+// Archaeologist's workbench damaged-artefact storage (container 1008). Empty is a legitimate
+// state: the container holds nothing until the first guild-shop workbench upgrade (varbit 61463).
 std::string WorkbenchJson(std::uint32_t pid) {
-    std::string           character;
-    bool                  open = false;
-    long long             cached_at = 0;
-    std::vector<BankSlot> mem_slots;          // copy of the in-memory cache (if any)
-    long long             mem_cached_at = 0;
-
-    {
-        std::lock_guard<std::mutex> lk(g_mu);
-        auto it = g_states.find((DWORD)pid);
-        if (it != g_states.end()) {
-            character = !it->second.display_name.empty()
-                          ? it->second.display_name : it->second.character;
-            if (!it->second.workbench_slots.empty()) {
-                mem_slots     = it->second.workbench_slots;
-                mem_cached_at = it->second.workbench_cached_at;
-                open          = it->second.workbench_open;
-            }
-        }
-    }
-
-    const std::vector<BankSlot>* items = nullptr;
-    std::vector<BankSlot> from_disk;
-    if (open && !mem_slots.empty()) {
-        cached_at = mem_cached_at;
-        items     = &mem_slots;
-    }
-    if (!items) {
-        BankCacheData d = ReadContainerCache("workbench", character);
-        if (!d.slots.empty()) {
-            from_disk = std::move(d.slots);
-            cached_at = d.cached_at;
-            items     = &from_disk;
-        } else if (!mem_slots.empty()) {
-            cached_at = mem_cached_at;
-            items     = &mem_slots;
-        }
-    }
-
-    std::string out = "{\"open\":";
-    out += open ? "true" : "false";
-    out += ",\"character\":\"" + json_escape(character) + "\"";
-    char hdr[64];
-    std::snprintf(hdr, sizeof(hdr), ",\"cached_at\":%lld,\"items\":[", cached_at);
-    out += hdr;
-    int count = 0;
-    if (items) {
-        char buf[96];
-        for (std::size_t slot = 0; slot < items->size(); ++slot) {
-            const auto& bs = (*items)[slot];
-            if (bs.item_id <= 0) continue;
-            if (count) out.push_back(',');
-            std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, bs.item_id, bs.stack);
-            out += buf;
-            out += json_escape(rtx::cache::ItemName(bs.item_id));
-            out += "\"]";
-            ++count;
-        }
-    }
-    std::snprintf(hdr, sizeof(hdr), "],\"count\":%d}", count);
-    out += hdr;
-    return out;
+    return cached_container_json(pid, "workbench", &State::workbench_slots, &State::workbench_cached_at, &State::workbench_open);
 }
-
-// Group Ironman shared bank (container 963) -- mirrors MetalBankJson: live slots while the group
-// storage UI is open, else the encrypted per-character disk cache, else the in-memory fallback.
+// Group Ironman shared bank (container 963).
 std::string GroupBankJson(std::uint32_t pid) {
-    std::string           character;
-    bool                  open = false;
-    long long             cached_at = 0;
-    std::vector<BankSlot> mem_slots;          // copy of the in-memory cache (if any)
-    long long             mem_cached_at = 0;
-
-    {
-        std::lock_guard<std::mutex> lk(g_mu);
-        auto it = g_states.find((DWORD)pid);
-        if (it != g_states.end()) {
-            character = !it->second.display_name.empty()
-                          ? it->second.display_name : it->second.character;
-            if (!it->second.groupbank_slots.empty()) {
-                mem_slots     = it->second.groupbank_slots;
-                mem_cached_at = it->second.groupbank_cached_at;
-                open          = it->second.groupbank_open;
-            }
-        }
-    }
-
-    const std::vector<BankSlot>* items = nullptr;
-    std::vector<BankSlot> from_disk;
-    if (open && !mem_slots.empty()) {
-        cached_at = mem_cached_at;
-        items     = &mem_slots;
-    }
-    if (!items) {
-        BankCacheData d = ReadContainerCache("groupbank", character);
-        if (!d.slots.empty()) {
-            from_disk = std::move(d.slots);
-            cached_at = d.cached_at;
-            items     = &from_disk;
-        } else if (!mem_slots.empty()) {
-            cached_at = mem_cached_at;
-            items     = &mem_slots;
-        }
-    }
-
-    std::string out = "{\"open\":";
-    out += open ? "true" : "false";
-    out += ",\"character\":\"" + json_escape(character) + "\"";
-    char hdr[64];
-    std::snprintf(hdr, sizeof(hdr), ",\"cached_at\":%lld,\"items\":[", cached_at);
-    out += hdr;
-    int count = 0;
-    if (items) {
-        char buf[96];
-        for (std::size_t slot = 0; slot < items->size(); ++slot) {
-            const auto& bs = (*items)[slot];
-            if (bs.item_id <= 0) continue;
-            if (count) out.push_back(',');
-            std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, bs.item_id, bs.stack);
-            out += buf;
-            out += json_escape(rtx::cache::ItemName(bs.item_id));
-            out += "\"]";
-            ++count;
-        }
-    }
-    std::snprintf(hdr, sizeof(hdr), "],\"count\":%d}", count);
-    out += hdr;
-    return out;
+    return cached_container_json(pid, "groupbank", &State::groupbank_slots, &State::groupbank_cached_at, &State::groupbank_open);
 }
 
 // Walk the interface-container manager for `container_id` and emit
@@ -1827,8 +1545,7 @@ static std::string container_items_json(HANDLE h, std::uint64_t root, int contai
     auto cstart = rpm<std::uint64_t>(h, *cmgr + 0x8);
     auto cend   = rpm<std::uint64_t>(h, *cmgr + 0x10);
     if (!cstart || !cend || *cstart <= 0x10000 || *cend <= *cstart) return kAbsent;
-    int ncont = (int)((*cend - *cstart) / kContainerStride);
-    if (ncont > kMaxContainers) ncont = kMaxContainers;
+    int ncont = container_count(*cstart, *cend);
     for (int c = 0; c < ncont; ++c) {
         std::uint64_t e = *cstart + (std::uint64_t)c * kContainerStride;
         if (rpm<std::int32_t>(h, e + 0x10).value_or(-1) != container_id) continue;
@@ -1838,18 +1555,13 @@ static std::string container_items_json(HANDLE h, std::uint64_t root, int contai
             return "{\"present\":true,\"count\":0,\"cap\":0,\"items\":[]}";
         int cap = (int)((*iend - *istart) / 0x8);
         if (cap > kMaxBankSlots) cap = kMaxBankSlots;
-        std::string items; int count = 0; char buf[96];
+        std::string items; int count = 0;
         for (int s = 0; s < cap; ++s) {
             std::uint64_t slotAddr = *istart + (std::uint64_t)s * 0x8;
             int iid   = rpm<std::int32_t>(h, slotAddr).value_or(0);
             if (iid <= 0) continue;
             int stack = rpm<std::int32_t>(h, slotAddr + 0x4).value_or(0);
-            if (count) items.push_back(',');
-            std::snprintf(buf, sizeof(buf), "[%d,%d,%d,\"", s, iid, stack);
-            items += buf;
-            items += json_escape(rtx::cache::ItemName(iid));
-            items += "\"]";
-            ++count;
+            append_slot_json(items, (std::size_t)s, iid, stack, count);
         }
         char hdr[64];
         std::snprintf(hdr, sizeof(hdr), "{\"present\":true,\"count\":%d,\"cap\":%d,\"items\":[", count, cap);
@@ -1888,8 +1600,7 @@ std::string OpenContainersJson(std::uint32_t pid) {
     auto cstart = rpm<std::uint64_t>(h, *cmgr + 0x8);
     auto cend   = rpm<std::uint64_t>(h, *cmgr + 0x10);
     if (!cstart || !cend || *cstart <= 0x10000 || *cend <= *cstart) return kEmpty;
-    int ncont = (int)((*cend - *cstart) / kContainerStride);
-    if (ncont > kMaxContainers) ncont = kMaxContainers;
+    int ncont = container_count(*cstart, *cend);
     std::string out = "{\"containers\":[";
     int emitted = 0;
     for (int c = 0; c < ncont; ++c) {
@@ -1950,8 +1661,7 @@ std::string PofJson(std::uint32_t pid) {
             auto b = rpm<std::uint64_t>(h, *cmgr + 0x10);
             if (a && b && *a > 0x10000 && *b > *a) {
                 cstart = *a; cend = *b;
-                ncont = (int)((cend - cstart) / kContainerStride);
-                if (ncont > kMaxContainers) ncont = kMaxContainers;
+                ncont = container_count(cstart, cend);
             }
         }
     }
@@ -2047,8 +1757,7 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, 
     auto cstart = rpm<std::uint64_t>(h, *cmgr + 0x8);
     auto cend   = rpm<std::uint64_t>(h, *cmgr + 0x10);
     if (!cstart || !cend || *cstart <= 0x10000 || *cend <= *cstart) return kAbsent;
-    int ncont = (int)((*cend - *cstart) / kContainerStride);
-    if (ncont > kMaxContainers) ncont = kMaxContainers;
+    int ncont = container_count(*cstart, *cend);
     for (int c = 0; c < ncont; ++c) {
         std::uint64_t e = *cstart + (std::uint64_t)c * kContainerStride;
         if (rpm<std::int32_t>(h, e + 0x10).value_or(-1) != container_id) continue;
@@ -2157,21 +1866,27 @@ static bool read_eastl_string(HANDLE h, std::uint64_t strbase, std::string& out)
 //   client  = *ps.mgva (MainData);  store = *(client + 0x198E0);  hashmap = store + 0x7630
 //   buckets = *(hashmap + 0x8);     count = *(hashmap + 0x10)
 //   node = buckets[id % count]; chain @+0x28; id (i32) @+0; value (i32) @+8.  Absent/unset -> 0 (engine default).
-static int read_varc(HANDLE h, std::uint64_t client, int varc_id) {
-    if (varc_id < 0 || client <= 0x10000) return 0;
-    std::uint64_t store = rpm<std::uint64_t>(h, client + 0x198E0).value_or(0);
-    if (store <= 0x10000) return 0;
-    std::uint64_t hm = store + 0x7630;
+// Locate the hashmap node for `varc_id` (layout: see kOffVarcStore). nullopt when absent, or when
+// the store / bucket array / divisor look stale, so every reader falls back to "unset".
+static std::optional<std::uint64_t> varc_node(HANDLE h, std::uint64_t client, int varc_id) {
+    if (varc_id < 0 || client <= 0x10000) return std::nullopt;
+    std::uint64_t store = rpm<std::uint64_t>(h, client + kOffVarcStore).value_or(0);
+    if (store <= 0x10000) return std::nullopt;
+    std::uint64_t hm = store + kVarcHashOff;
     std::uint64_t ba = rpm<std::uint64_t>(h, hm + 0x8).value_or(0);
     int div = rpm<std::int32_t>(h, hm + 0x10).value_or(0);
-    if (ba <= 0x10000 || ba > 0x00007FFFFFFFFFFFull || div <= 0 || div > 2000000) return 0;   // sanity: stale offset -> 0
+    if (ba <= 0x10000 || ba > 0x00007FFFFFFFFFFFull || div <= 0 || div > 2000000) return std::nullopt;   // sanity: stale offset
     std::uint64_t node = rpm<std::uint64_t>(h, ba + (std::uint64_t)(varc_id % div) * 8).value_or(0);
     for (int i = 0; i < 128 && node > 0x10000; ++i) {
-        if (rpm<std::int32_t>(h, node).value_or(-1) == varc_id)
-            return rpm<std::int32_t>(h, node + 0x8).value_or(0);
-        node = rpm<std::uint64_t>(h, node + 0x28).value_or(0);
+        if (rpm<std::int32_t>(h, node).value_or(-1) == varc_id) return node;
+        node = rpm<std::uint64_t>(h, node + kVarNodeNext).value_or(0);
     }
-    return 0;
+    return std::nullopt;
+}
+
+static int read_varc(HANDLE h, std::uint64_t client, int varc_id) {
+    auto n = varc_node(h, client, varc_id);
+    return n ? rpm<std::int32_t>(h, *n + 0x8).value_or(0) : 0;
 }
 
 // Like read_varc but reports whether the id was actually PRESENT in the hashmap, so a legitimate value of 0
@@ -2179,19 +1894,10 @@ static int read_varc(HANDLE h, std::uint64_t client, int varc_id) {
 // The panel-origin resolver needs this: keying "is the var set?" off (value != 0) drops a panel sitting at 0.
 static bool read_varc_found(HANDLE h, std::uint64_t client, int varc_id, int& out_val) {
     out_val = 0;
-    if (varc_id < 0 || client <= 0x10000) return false;
-    std::uint64_t store = rpm<std::uint64_t>(h, client + 0x198E0).value_or(0);
-    if (store <= 0x10000) return false;
-    std::uint64_t hm = store + 0x7630;
-    std::uint64_t ba = rpm<std::uint64_t>(h, hm + 0x8).value_or(0);
-    int div = rpm<std::int32_t>(h, hm + 0x10).value_or(0);
-    if (ba <= 0x10000 || ba > 0x00007FFFFFFFFFFFull || div <= 0 || div > 2000000) return false;
-    std::uint64_t node = rpm<std::uint64_t>(h, ba + (std::uint64_t)(varc_id % div) * 8).value_or(0);
-    for (int i = 0; i < 128 && node > 0x10000; ++i) {
-        if (rpm<std::int32_t>(h, node).value_or(-1) == varc_id) { out_val = rpm<std::int32_t>(h, node + 0x8).value_or(0); return true; }
-        node = rpm<std::uint64_t>(h, node + 0x28).value_or(0);
-    }
-    return false;
+    auto n = varc_node(h, client, varc_id);
+    if (!n) return false;
+    out_val = rpm<std::int32_t>(h, *n + 0x8).value_or(0);
+    return true;
 }
 
 // Read one varc-STRING (VarClientString) by id from the SAME global client-var hashmap the varc-ints
@@ -2206,20 +1912,8 @@ static bool read_varc_found(HANDLE h, std::uint64_t client, int varc_id, int& ou
 // tooltip ("A magical barrier is blocking your path.<br>This door requires level 94 Magic ...").
 static bool read_varc_str(HANDLE h, std::uint64_t client, int varc_id, std::string& out) {
     out.clear();
-    if (varc_id < 0 || client <= 0x10000) return false;
-    std::uint64_t store = rpm<std::uint64_t>(h, client + 0x198E0).value_or(0);
-    if (store <= 0x10000) return false;
-    std::uint64_t hm = store + 0x7630;
-    std::uint64_t ba = rpm<std::uint64_t>(h, hm + 0x8).value_or(0);
-    int div = rpm<std::int32_t>(h, hm + 0x10).value_or(0);
-    if (ba <= 0x10000 || ba > 0x00007FFFFFFFFFFFull || div <= 0 || div > 2000000) return false;
-    std::uint64_t node = rpm<std::uint64_t>(h, ba + (std::uint64_t)(varc_id % div) * 8).value_or(0);
-    for (int i = 0; i < 128 && node > 0x10000; ++i) {
-        if (rpm<std::int32_t>(h, node).value_or(-1) == varc_id)
-            return read_eastl_string(h, node + 0x8, out);
-        node = rpm<std::uint64_t>(h, node + 0x28).value_or(0);
-    }
-    return false;
+    auto n = varc_node(h, client, varc_id);
+    return n ? read_eastl_string(h, *n + 0x8, out) : false;
 }
 
 // Read a comma-separated list of varp ids and return {"<id>":value,..} as JSON.
@@ -2459,7 +2153,7 @@ std::string VarpsDumpAllJson(std::uint32_t pid) {
             if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
             int id  = *reinterpret_cast<const std::int32_t*>(nb + 0x00);
             int val = *reinterpret_cast<const std::int32_t*>(nb + 0x08);
-            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + 0x28);
+            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + kVarNodeNext);
             if (id >= 0 && id < 100000) {
                 std::snprintf(buf, sizeof(buf), "%s\"4:%d\":%d", first ? "" : ",", id, val);
                 out += buf; first = false;
@@ -2481,9 +2175,9 @@ std::string VarcsDumpAllJson(std::uint32_t pid) {
     HANDLE h = ps.h;
     auto root = rpm<std::uint64_t>(h, ps.mgva);
     if (!root || *root <= 0x10000) return "{}";
-    std::uint64_t store = rpm<std::uint64_t>(h, *root + 0x198E0).value_or(0);
+    std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
     if (store <= 0x10000) return "{}";
-    std::uint64_t hashRoot = store + 0x7630;
+    std::uint64_t hashRoot = store + kVarcHashOff;
     std::uint64_t ba = rpm<std::uint64_t>(h, hashRoot + 0x8).value_or(0);
     int div = rpm<std::int32_t>(h, hashRoot + 0x10).value_or(0);
     if (ba <= 0x10000 || div <= 0 || div > 131072) return "{}";   // real bucket counts are a few thousand; cap a stale-offset alloc at ~1 MB, not 16 MB
@@ -2499,7 +2193,7 @@ std::string VarcsDumpAllJson(std::uint32_t pid) {
             if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
             int id  = *reinterpret_cast<const std::int32_t*>(nb + 0x00);
             int val = *reinterpret_cast<const std::int32_t*>(nb + 0x08);
-            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + 0x28);
+            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + kVarNodeNext);
             if (id >= 0 && id < 100000) {
                 std::snprintf(buf, sizeof(buf), "%s\"5:%d\":%d", first ? "" : ",", id, val);
                 out += buf; first = false;
@@ -2533,9 +2227,9 @@ std::string VarcLongsJson(std::uint32_t pid, const std::string& ids_csv) {
     HANDLE h = ps.h;
     auto root = rpm<std::uint64_t>(h, ps.mgva);
     if (!root || *root <= 0x10000) return "{}";
-    std::uint64_t store = rpm<std::uint64_t>(h, *root + 0x198E0).value_or(0);
+    std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
     if (store <= 0x10000) return "{}";
-    std::uint64_t hashRoot = store + 0x7630;
+    std::uint64_t hashRoot = store + kVarcHashOff;
     std::uint64_t ba = rpm<std::uint64_t>(h, hashRoot + 0x8).value_or(0);
     int div = rpm<std::int32_t>(h, hashRoot + 0x10).value_or(0);
     if (ba <= 0x10000 || div <= 0 || div > 131072) return "{}";
@@ -2550,7 +2244,7 @@ std::string VarcLongsJson(std::uint32_t pid, const std::string& ids_csv) {
             std::uint8_t nb[0x30];
             if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
             int id = *reinterpret_cast<const std::int32_t*>(nb + 0x00);
-            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + 0x28);
+            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + kVarNodeNext);
             if (want.count(id)) {
                 auto val = *reinterpret_cast<const std::int64_t*>(nb + 0x08);
                 std::snprintf(buf, sizeof(buf), "%s\"%d\":\"%lld\"",
@@ -2585,9 +2279,9 @@ std::string VarcIntsJson(std::uint32_t pid, const std::string& ids_csv) {
     HANDLE h = ps.h;
     auto root = rpm<std::uint64_t>(h, ps.mgva);
     if (!root || *root <= 0x10000) return "{}";
-    std::uint64_t store = rpm<std::uint64_t>(h, *root + 0x198E0).value_or(0);
+    std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
     if (store <= 0x10000) return "{}";
-    std::uint64_t hashRoot = store + 0x7630;
+    std::uint64_t hashRoot = store + kVarcHashOff;
     std::uint64_t ba = rpm<std::uint64_t>(h, hashRoot + 0x8).value_or(0);
     int div = rpm<std::int32_t>(h, hashRoot + 0x10).value_or(0);
     if (ba <= 0x10000 || div <= 0 || div > 131072) return "{}";
@@ -2602,7 +2296,7 @@ std::string VarcIntsJson(std::uint32_t pid, const std::string& ids_csv) {
             std::uint8_t nb[0x30];
             if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
             int id = *reinterpret_cast<const std::int32_t*>(nb + 0x00);
-            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + 0x28);
+            std::uint64_t next = *reinterpret_cast<const std::uint64_t*>(nb + kVarNodeNext);
             if (want.count(id)) {
                 int val = *reinterpret_cast<const std::int32_t*>(nb + 0x08);
                 std::snprintf(buf, sizeof(buf), "%s\"%d\":%d", first ? "" : ",", id, val);
@@ -2652,7 +2346,7 @@ std::string VarpsLongJson(std::uint32_t pid, const std::string& ids_csv) {
                 out += buf; first = false;
                 break;
             }
-            node = rpm<std::uint64_t>(h, node + 0x28).value_or(0);
+            node = rpm<std::uint64_t>(h, node + kVarNodeNext).value_or(0);
         }
     }
     out += "}";
@@ -2713,9 +2407,9 @@ std::string VarcStringsDumpAllJson(std::uint32_t pid) {
     HANDLE h = ps.h;
     auto root = rpm<std::uint64_t>(h, ps.mgva);
     if (!root || *root <= 0x10000) return "{}";
-    std::uint64_t store = rpm<std::uint64_t>(h, *root + 0x198E0).value_or(0);
+    std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
     if (store <= 0x10000) return "{}";
-    std::uint64_t hashRoot = store + 0x7630;
+    std::uint64_t hashRoot = store + kVarcHashOff;
     std::uint64_t ba = rpm<std::uint64_t>(h, hashRoot + 0x8).value_or(0);
     int div = rpm<std::int32_t>(h, hashRoot + 0x10).value_or(0);
     if (ba <= 0x10000 || div <= 0 || div > 131072) return "{}";
@@ -2728,7 +2422,7 @@ std::string VarcStringsDumpAllJson(std::uint32_t pid) {
         std::uint64_t node = buckets[(std::size_t)b];
         for (int steps = 0; steps < 512 && node > 0x10000; ++steps) {
             int id = rpm<std::int32_t>(h, node).value_or(-1);
-            std::uint64_t next = rpm<std::uint64_t>(h, node + 0x28).value_or(0);
+            std::uint64_t next = rpm<std::uint64_t>(h, node + kVarNodeNext).value_or(0);
             if (id >= 0 && id < 100000 && read_eastl_string(h, node + 0x8, val) && !val.empty()) {
                 // require mostly-printable content so int nodes whose union happens to parse are dropped
                 std::size_t printable = 0;
@@ -4372,14 +4066,30 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     if (count >= 6000 || depth > 12) return;
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
-    int i1 = r16(node+0x28), i2 = r16(node+0x2a), i3 = r16(node+0x2c);
-    int x = r32(node+0x70), y = r32(node+0x74), w = r32(node+0x78), hh = r32(node+0x7c);
+    // One block read covers every node field decoded below (+0x28 .. +0x1d8, the last child vector's
+    // end). If it fails (partially unmapped node) each field falls back to its own rpm, exactly as
+    // before, so value_or(0) semantics on unreadable fields are unchanged.
+    std::uint8_t nb[0x1d8];
+    const bool blk = rpm_bytes(h, node, nb, sizeof(nb));
+    auto f64 = [&](std::uint32_t off) -> std::uint64_t {
+        if (!blk) return r64(node + off);
+        std::uint64_t v; std::memcpy(&v, nb + off, 8); return v;
+    };
+    auto f32 = [&](std::uint32_t off) -> int {
+        if (!blk) return r32(node + off);
+        std::int32_t v; std::memcpy(&v, nb + off, 4); return v;
+    };
+    auto f16 = [&](std::uint32_t off) -> int {
+        if (!blk) return (int)rpm<std::int16_t>(h, node + off).value_or(0);
+        std::int16_t v; std::memcpy(&v, nb + off, 2); return v;
+    };
+    int i1 = f16(0x28), i2 = f16(0x2a), i3 = f16(0x2c);
+    int x = f32(0x70), y = f32(0x74), w = f32(0x78), hh = f32(0x7c);
     int ax = baseX + x, ay = baseY + y;        // absolute screen position of this node
     std::string txt = iface_text(h, node);     // *(node+0x90) display text (chat, labels, ...)
     if (txt.empty()) txt = iface_sso_text(h, node);   // +0x180 SSO member (dialogue options, inline labels)
-    int item = r32(node + 0x1a0);              // item id on an item slot; a packed ARGB colour on text/graphic
-    int amt  = r32(node + 0x1a8);              // item stack / quantity (currency amounts, item counts)
+    int item = f32(0x1a0);                     // item id on an item slot; a packed ARGB colour on text/graphic
+    int amt  = f32(0x1a8);              // item stack / quantity (currency amounts, item counts)
     // node+0x188 holds EITHER a small cache sprite id (zero-extended into 8 bytes) OR a pointer to a
     // dynamic-graphic content object -- but ONLY on the graphic classes. On TEXT nodes the whole
     // +0x180..0x197 span IS the SSO string object, so +0x188 reads the heap-string SIZE (live: GE /
@@ -4388,12 +4098,12 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     // scalars there (live: ff/bc/80 + 00s), text nodes keep string data -- any PRINTABLE ASCII marks
     // string storage, not a sprite. A node with resolved text is never sprite-bearing either: icon +
     // text are SIBLING nodes (buff slot 19:0 sprite vs 19:1 countdown).
-    std::uint64_t sprRaw = r64(node + 0x188);
+    std::uint64_t sprRaw = f64(0x188);
     bool sprUnset = sprRaw == ~0ull;               // all-FF = the unset sentinel: NO graphic content (not "dynamic")
     bool sprOk = txt.empty();
     if (sprOk) {
         std::uint8_t sb[8] = {};
-        if (rpm_bytes(h, node + 0x180, sb, 8))
+        if (blk ? (std::memcpy(sb, nb + 0x180, 8), true) : rpm_bytes(h, node + 0x180, sb, 8))
             for (int i = 1; i < 8 && sprOk; ++i)
                 if (sb[i] >= 0x20 && sb[i] < 0x7f) sprOk = false;
     }
@@ -4408,19 +4118,28 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     bool sprIsObj = sprOk && !sprUnset && !sprIsItem && sprRaw > 0xFFFFFFFFull;   // 64-bit heap pointer -> dynamic graphic
     int  spr      = (sprOk && !sprIsObj && !sprUnset && sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
     if (sprIsItem) spr = 131072 + (int)(sprRaw & 0xFFFFFF);
-    bool vis = ((std::uint32_t)r32(node + 0x50) & 0x01010000u) == 0x01010000u;
+    bool vis = ((std::uint32_t)f32(0x50) & 0x01010000u) == 0x01010000u;
     // Component TYPE, inferred from the node's payload (build-stable; the true discriminator is the C++
     // vtable at node+0x0, but those RVAs change every build). Verified against CS2-proven nodes: comp 14
     // (CC_DELETEALL) -> has children -> layer; comp 15 (IF_SETTEXT) -> text; item icons carry the item id
     // at +0x1a0 + the amount at +0x1a8 (live: Heartments 52860 x2475) AND a matching +0x188 key (see
     // realItem below) -- +0x1a0 alone is ambiguous because its meaning is per-class (colour on text,
     // scalar 2 on the footer hover class). Item ranks before text (an icon has both id and name).
-    auto hasChild = [&](std::uint64_t off) -> bool {
-        std::uint64_t cs = r64(node + off), ce = r64(node + off + 8), ca = cs + 8, cb = ce + 8;
-        if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) return false;
-        return r64(ca) > 0x10000;          // at least one real child pointer
+    // Child vectors at +0x198 / +0x180 / +0x1c8: {begin,end} pairs of 0x18-byte entries whose
+    // pointer sits 8 bytes in. Resolved ONCE here (range + first child) and reused by the child
+    // loop below, so the type inference and the recursion never re-read the same words.
+    struct ChildVec { std::uint64_t ca = 0, cb = 0, first = 0; bool ok = false; };
+    auto childVec = [&](std::uint32_t off) {
+        ChildVec v;
+        std::uint64_t cs = f64(off), ce = f64(off + 8);
+        v.ca = cs + 8; v.cb = ce + 8;
+        if (!cs || !ce || v.ca <= 0x10000 || v.cb <= v.ca || (v.cb - v.ca) > 0x100000) return v;
+        v.ok = true; v.first = r64(v.ca);
+        return v;
     };
-    bool hasKids   = hasChild(0x198) || hasChild(0x1c8) || (txt.empty() && hasChild(0x180));
+    const ChildVec cv198 = childVec(0x198), cv180 = childVec(0x180), cv1c8 = childVec(0x1c8);
+    auto hasChild = [](const ChildVec& v) { return v.ok && v.first > 0x10000; };   // at least one real child pointer
+    bool hasKids   = hasChild(cv198) || hasChild(cv1c8) || (txt.empty() && hasChild(cv180));
     // +0x1a0 is CLASS-dependent (per the node's widget class): item id on item-icon
     // graphics, a packed colour on text, small scalars / pointer fragments elsewhere.
     // Range alone therefore false-positives -- the equipment/backpack footer's hover class
@@ -4449,13 +4168,12 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     if (vis)                   out += ",\"v\":1";
     out += "}";
     first = false; ++count;
-    const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };   // child-array offsets
+    const ChildVec* co[3] = { &cv198, &cv180, &cv1c8 };   // child-array order matters for output
     for (int k = 0; k < 3; ++k) {
-        std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
-        std::uint64_t ca = cs + 8, cb = ce + 8;
-        if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-        for (std::uint64_t c = ca; c + 0x18 <= cb && count < 6000; c += 0x18) {
-            std::uint64_t ch = r64(c);
+        const ChildVec& v = *co[k];
+        if (!v.ok) continue;
+        for (std::uint64_t c = v.ca; c + 0x18 <= v.cb && count < 6000; c += 0x18) {
+            std::uint64_t ch = (c == v.ca) ? v.first : r64(c);
             if (ch <= 0x10000) continue;
             std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
             if (d <= 0x3000) continue;                     // child in a separate alloc
@@ -8015,8 +7733,7 @@ std::string PerksJson(std::uint32_t pid) {
     auto cstart = rpm<std::uint64_t>(h, *cmgr + 0x8);
     auto cend   = rpm<std::uint64_t>(h, *cmgr + 0x10);
     if (!cstart || !cend || *cstart <= 0x10000 || *cend <= *cstart) return "{\"items\":[]}";
-    int ncont = (int)((*cend - *cstart) / kContainerStride);
-    if (ncont > kMaxContainers) ncont = kMaxContainers;
+    int ncont = container_count(*cstart, *cend);
 
     std::string items; int n = 0; char buf[256];
     for (int c = 0; c < ncont; ++c) {

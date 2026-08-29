@@ -83,7 +83,7 @@
     try {
       // Shares panel_bosses' baked-and-extracted item->varbit tables; adopt before reading.
       if (typeof bcAdoptSwitches === 'function') await bcAdoptSwitches();
-      const rows = JSON.parse(await bridge().dbRows(84) || 'null');
+      const rows = await bridgeJson('dbRows', 84);
       if (!Array.isArray(rows) || !rows.length) return;   // cache not open yet; retry next fetch
       const out = [];
       for (const r of rows) {
@@ -91,18 +91,18 @@
         const region = r.s && r.s['4'] && r.s['4'][0];
         if (sid <= 0 || !region) continue;
         let sp = null;
-        try { sp = JSON.parse(await bridge().structParams(sid) || 'null'); } catch (e) {}
+        sp = await bridgeJson('structParams', sid);
         const S = (sp && sp.strs) || {};
         if (!/Slayer monsters/i.test(S['6411'] || '')) continue;   // boss logs live in the same table
         const items = [];
         for (const id of ((r.i && r.i['13']) || [])) {
           let nm = '';
-          try { const d = JSON.parse(await bridge().itemInfo(id) || 'null'); nm = (d && d.name) || ''; } catch (e) {}
+          { const d = await bridgeJson('itemInfo', id); nm = (d && d.name) || ''; }
           // Found varbit: baked map, else item param 8994 var_reference ((v >>> 24) == 1 -> low 24 bits).
           let vb = COLLECTION_ITEM_VBS[id] || COLLECTION_ITEM_VB_PAIR[id] || null;
           if (!vb && bridge().itemParams) {
             try {
-              const sp = JSON.parse(await bridge().itemParams(id) || 'null');
+              const sp = await bridgeJson('itemParams', id);
               const ref = (sp && sp.ints && sp.ints['8994']) | 0;
               if ((ref >>> 24) === 1) vb = ref & 0xFFFFFF;
             } catch (e) {}
@@ -127,24 +127,24 @@
   }
   async function fetchTasks() {
     if (!bridge() || !bridge().varps) return;
-    try { const d = JSON.parse(await bridge().varps(myPid(), TASK_VARP_IDS)); if (d && typeof d === 'object') taskVp = d; } catch (e) {}
+    { const d = await bridgeJson('varps', myPid(), TASK_VARP_IDS); if (d && typeof d === 'object') taskVp = d; }
     if (bridge().varbits) {
       try {
         const ids = SLAYER_LOG_IDS + ',' + ST_EXTRA_VB_IDS + (slayerColItemIds ? ',' + slayerColItemIds : '');
-        const vb = JSON.parse(await bridge().varbits(myPid(), ids) || 'null');
+        const vb = await bridgeJson('varbits', myPid(), ids);
         if (vb && typeof vb === 'object' && Object.keys(vb).length) slayerLogVb = vb;
       } catch (e) {}
     }
     await slayerColLoad();
     if (bridge().enumInfo) {
-      if (!slayerCreatures) { try { const m = JSON.parse(await bridge().enumInfo(1563)); if (m && Object.keys(m).length) slayerCreatures = m; } catch (e) {} }
-      if (!reaperBosses)    { try { const m = JSON.parse(await bridge().enumInfo(9197)); if (m && Object.keys(m).length) reaperBosses    = m; } catch (e) {} }
+      if (!slayerCreatures) { { const m = await bridgeJson('enumInfo', 1563); if (m && Object.keys(m).length) slayerCreatures = m; } }
+      if (!reaperBosses)    { { const m = await bridgeJson('enumInfo', 9197); if (m && Object.keys(m).length) reaperBosses    = m; } }
     }
     if (slayerLogVb && bridge().itemInfo) {
       for (const [item, kv, cv] of ST_MASKS) {
         const active = ((slayerLogVb[String(kv)] | 0) > 0) || (cv && (slayerLogVb[String(cv)] | 0) > 0);
         if (!active || stMaskNames[item] !== undefined) continue;
-        try { stMaskNames[item] = (JSON.parse(await bridge().itemInfo(item) || 'null') || {}).name || ''; }
+        try { stMaskNames[item] = ((await bridgeJson('itemInfo', item)) || {}).name || ''; }
         catch (e) { stMaskNames[item] = ''; }
       }
     }
@@ -584,7 +584,7 @@
         const L = (n) => n.toLocaleString();
         // Account status varp 4818: bit0 ironman, bit1 hardcore, bit19 in-GIM, bit25 unranked group,
         // bits21-23 GIM type via enum 5733 {0 Regular, 1 Competitive}; unranked wins over the type.
-        const am = u('4818'), iron = am & 1, hc = (am >>> 1) & 1, inGim = (am >>> 19) & 1,
+        const am = u(typeof VP !== 'undefined' ? VP.ACCOUNT_MODE : 4818), iron = am & 1, hc = (am >>> 1) & 1, inGim = (am >>> 19) & 1,
               gimType = (am >>> 21) & 7, gimUnranked = (am >>> 25) & 1;
         let acct = 'Main';
         if (iron) acct = inGim ? (gimUnranked ? 'Group Ironman (Unranked)'
@@ -621,7 +621,7 @@
         // the tier row (script20255), so it is derived here as the highest tier whose
         // points cost is reached, using the leagues panel's shared table data.
         {
-          const lg = u('12314');
+          const lg = u(typeof VP !== 'undefined' ? VP.LEAGUE : 12314);
           if (lg > 0) {
             const LG_NAMES = { 1: 'Leagues I (Catalyst)', 2: 'Leagues II (Equilibrium)' };
             sec('League');
@@ -664,7 +664,7 @@
         add(row('Prayer',     L(Math.floor((pr & 0x7fff) / 10)) + ' / ' + L(((pr >>> 16) & 0x7f) * 10)));
         add(row('Summoning',  L(Math.floor((su & 0x7fff) / 10)) + ' / ' + L(((su >>> 16) & 0x7f) * 10)));
         // Familiar special-move points: varp 1787 raw current, fixed max 60.
-        add(row('Spell points', L(u('1787')) + ' / 60'));
+        add(row('Spell points', L(u(typeof VP !== 'undefined' ? VP.SPELL_POINTS : 1787)) + ' / 60'));
         add(row('Adrenaline', Math.floor(u('679') / 10) + '%'));
         add(row('Run',        u('463') ? 'on' : 'off'));
         // Server-packet values off the skill block, not vars; weight is a signed i16 whose
@@ -681,8 +681,9 @@
         sec('Progress');
         add(row('Quest points', L(vp['1297'] | 0)));
         // Total penguin points: varbit 4163, hard cap 250.
-        if (infoVb && infoVb['4163'] !== undefined)
-          add(row('Penguin points', L(infoVb['4163'] | 0) + ' / 250'));
+        const pengVb = typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163;
+        if (infoVb && infoVb[pengVb] !== undefined)
+          add(row('Penguin points', L(infoVb[pengVb] | 0) + ' / 250'));
         // All-time Dungeoneering floors (varbit 39152, bits 0-15); omitted when unreadable, since 0 would read as "never".
         {
           const fv = playerVb && (playerVb['39152'] !== undefined ? playerVb['39152'] : playerVb[39152]);

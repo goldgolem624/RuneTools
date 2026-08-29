@@ -24,12 +24,13 @@
     --tx-fast:      120ms;
     --ease:         cubic-bezier(.4,0,.2,1);
     /* In-game window system */
-    --win-bg:       rgba(12, 14, 20, 0.93);
+    --bg-rgb:       12,14,20;      /* window/bar ground; uiApply re-derives the alpha from this */
+    --win-bg:       rgba(var(--bg-rgb), 0.93);
     --win-radius:   10px;
     --win-shadow:   0 14px 44px rgba(0,0,0,0.55), 0 3px 10px rgba(0,0,0,0.40);
     --win-shadow-f: 0 16px 50px rgba(0,0,0,0.60), 0 0 0 1px var(--accent-ring),
                     0 3px 12px rgba(0,0,0,0.45);
-    --bar-bg:       rgba(12, 14, 20, 0.90);
+    --bar-bg:       rgba(var(--bg-rgb), 0.90);
     --tx-med:       160ms;
   }
   * { box-sizing: border-box; }
@@ -2427,8 +2428,9 @@
     r.setProperty('--accent-rgb', uiHexRgb(c.accent));
     r.setProperty('--accent-ring', 'rgba(' + uiHexRgb(c.accent) + ',0.28)');
     const op = Math.max(0.3, Math.min(1, (Number(c.opacity) || 93) / 100));
-    r.setProperty('--win-bg', 'rgba(12,14,20,' + op.toFixed(2) + ')');
-    r.setProperty('--bar-bg', 'rgba(12,14,20,' + Math.min(1, op + 0.02).toFixed(2) + ')');
+    const bgRgb = (getComputedStyle(document.documentElement).getPropertyValue('--bg-rgb') || '').trim() || '12,14,20';
+    r.setProperty('--win-bg', 'rgba(' + bgRgb + ',' + op.toFixed(2) + ')');
+    r.setProperty('--bar-bg', 'rgba(' + bgRgb + ',' + Math.min(1, op + 0.02).toFixed(2) + ')');
     document.documentElement.classList.toggle('hc', !!c.contrast);
     document.documentElement.classList.toggle('nomotion', !c.motion);
     document.documentElement.classList.toggle('tabnums', !!c.tabular);
@@ -3185,6 +3187,20 @@
   function bridge() {
     return (typeof window.rtx === 'object') ? window.rtx : null;
   }
+  // Call a bridge method and parse its JSON; null on any failure. One console.error per
+  // method per 30 s so a dead bridge cannot flood the log.
+  const _bjErrAt = new Map();
+  async function bridgeJson(method, ...args) {
+    const b = bridge();
+    if (!b || typeof b[method] !== 'function') return null;
+    try { return JSON.parse(await b[method](...args)); }
+    catch (e) {
+      const now = Date.now();
+      if (now - (_bjErrAt.get(method) || 0) >= 30000) { _bjErrAt.set(method, now); console.error('rtx bridgeJson ' + method + ': ' + e); }
+      return null;
+    }
+  }
+  function rtxLog(...a) { console.log('rtx', ...a); }
 
   const ICONS = new Map();
   const ICON_PENDING = new Map();
@@ -3889,7 +3905,7 @@
     try { infoData = JSON.parse(await bridge().playerInfo(myPid())); } catch (e) { infoData = null; }
     if (bridge().hoverEntity) { try { infoHover = JSON.parse(bridge().hoverEntity(myPid()) || '{}'); } catch (e) { infoHover = null; } }
     if (bridge().membership) { try { infoMember = JSON.parse(await bridge().membership(myPid()) || 'null'); } catch (e) { infoMember = null; } }
-    if (bridge().varbits) { try { infoVb = JSON.parse(await bridge().varbits(myPid(), '4163') || 'null'); } catch (e) {} }
+    if (bridge().varbits) { try { infoVb = JSON.parse(await bridge().varbits(myPid(), String(typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163)) || 'null'); } catch (e) {} }
     if (bridge().varcsDumpAll) {
       try {
         const vc = JSON.parse(await bridge().varcsDumpAll(myPid()) || '{}');
@@ -7554,9 +7570,10 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   setInterval(async () => {
     try {
       if (!bridge() || !bridge().varps || !myPid()) return;
-      const vp = JSON.parse(await bridge().varps(myPid(), '4818')) || {};
-      if (vp['4818'] === undefined) return;
-      const inG = ((vp['4818'] >> 19) & 1) === 1;
+      const amVp = typeof VP !== 'undefined' ? VP.ACCOUNT_MODE : 4818;
+      const vp = JSON.parse(await bridge().varps(myPid(), String(amVp))) || {};
+      if (vp[amVp] === undefined) return;
+      const inG = ((vp[amVp] >> 19) & 1) === 1;
       if (inG !== gimInGroup) { gimInGroup = inG; try { renderSidebar(); } catch (e) {} }
     } catch (e) {}
   }, 10000);
