@@ -4149,6 +4149,33 @@ std::vector<std::uint8_t> SpriteRgba(int sprite_id, int& w, int& h) {
     return SpriteRawRgba(*idx, sprite_id, w, h);
 }
 
+// ---- item icon coverage -----------------------------------------------------
+std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    long long items = 0, with = 0;
+    std::string missing;
+    auto* idx = g_store ? g_store->Get(kIndexItems) : nullptr;
+    if (idx && idx->ready()) {
+        const auto& entries = idx->ref().entries();
+        for (int a = 0; a < (int)entries.size(); ++a) {
+            for (int fid : entries[a].valid_file_ids) {
+                auto bytes = idx->ReadFile(a, fid);
+                if (bytes.empty()) continue;
+                const int id = (a << 8) | fid;
+                ItemDef def = DecodeItem(id, std::move(bytes));
+                if (def.name.empty() || def.name == "null") continue;
+                ++items;
+                if (has(id)) { ++with; continue; }
+                if (!missing.empty()) missing += ',';
+                missing += std::to_string(id);
+            }
+        }
+    }
+    return "{\"items\":" + std::to_string(items) + ",\"withIcon\":" + std::to_string(with) +
+           ",\"missing\":[" + missing + "]}";
+}
+
 // ---- cache parse health -----------------------------------------------------
 // One sweep per parsed cache surface: how many records decode to a clean end
 // and, when they don't, the opcode that stopped the read (how the 949 item /

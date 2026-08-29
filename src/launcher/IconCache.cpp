@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <wincrypt.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -33,7 +34,12 @@ struct Pack {
     bool                                 ready = false;
     std::wstring                         path;
     std::vector<std::uint32_t>           off, len;
+    std::uint32_t                        present = 0;   // index entries with len > 0
 };
+// Requested-but-absent item ids (id -> request count); capped so a runaway poll cannot grow it.
+std::mutex                   g_miss_mu;
+std::unordered_map<int, int> g_misses;
+constexpr std::size_t        kMissCap = 10000;
 Pack g_items_pack { L"items.pack" };
 Pack g_model_pack { L"modelicons.pack" };
 
@@ -57,7 +63,10 @@ void ensure_index(Pack& p) {
     f.read(reinterpret_cast<char*>(idx.data()), (std::streamsize)N * 8);
     if ((std::uint32_t)(f.gcount() / 8) != N) return;
     p.off.resize(N); p.len.resize(N);
-    for (std::uint32_t i = 0; i < N; ++i) { p.off[i] = idx[i * 2]; p.len[i] = idx[i * 2 + 1]; }
+    for (std::uint32_t i = 0; i < N; ++i) {
+        p.off[i] = idx[i * 2]; p.len[i] = idx[i * 2 + 1];
+        if (p.len[i] > 0) ++p.present;
+    }
     p.ready = true;
 }
 
@@ -109,7 +118,46 @@ std::string pack_icon_url(Pack& p, int id) {
 }  // namespace
 
 std::string ItemIconDataUrl(int item_id) {
-    return pack_icon_url(g_items_pack, item_id);
+    std::string url = pack_icon_url(g_items_pack, item_id);
+    if (url.empty() && item_id > 0) {
+        std::lock_guard<std::mutex> lk(g_miss_mu);
+        auto it = g_misses.find(item_id);
+        if (it != g_misses.end()) ++it->second;
+        else if (g_misses.size() < kMissCap) g_misses[item_id] = 1;
+    }
+    return url;
+}
+
+bool IconPackHas(int item_id) {
+    if (item_id <= 0) return false;
+    Pack& p = g_items_pack;
+    std::lock_guard<std::mutex> lk(p.mu);
+    ensure_index(p);
+    return p.ready && (std::size_t)item_id < p.len.size() && p.len[item_id] > 0;
+}
+
+std::string IconMissesJson() {
+    std::uint32_t ids = 0, present = 0;
+    {
+        Pack& p = g_items_pack;
+        std::lock_guard<std::mutex> lk(p.mu);
+        ensure_index(p);
+        if (p.ready) { ids = (std::uint32_t)p.len.size(); present = p.present; }
+    }
+    std::vector<std::pair<int, int>> m;
+    {
+        std::lock_guard<std::mutex> lk(g_miss_mu);
+        m.assign(g_misses.begin(), g_misses.end());
+    }
+    std::sort(m.begin(), m.end(), [](const auto& a, const auto& b) {
+        return a.second != b.second ? a.second > b.second : a.first < b.first; });
+    std::string j = "{\"packIds\":" + std::to_string(ids) + ",\"packIcons\":" + std::to_string(present) + ",\"misses\":[";
+    for (std::size_t i = 0; i < m.size(); ++i) {
+        if (i) j += ',';
+        j += '[' + std::to_string(m[i].first) + ',' + std::to_string(m[i].second) + ']';
+    }
+    j += "],\"missCount\":" + std::to_string(m.size()) + "}";
+    return j;
 }
 
 std::string ModelIconDataUrl(int model_id) {

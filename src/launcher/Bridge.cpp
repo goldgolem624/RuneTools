@@ -828,6 +828,37 @@ JSValueRef ItemIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, icons::ItemIconDataUrl(id));
 }
 
+// Icon diagnostics for the Health panel. iconMisses is cheap (in-memory counters).
+// iconCoverage walks the whole item index once per process, off the UI thread like
+// MapWindow: {"pending":1} until the walk lands, then the memoized result forever.
+JSValueRef IconMisses(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, icons::IconMissesJson());
+}
+
+namespace {
+std::mutex  g_iconCovMu;
+std::string g_iconCovJson;      // "" = not built yet
+bool        g_iconCovBusy = false;
+}
+JSValueRef IconCoverage(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t, const JSValueRef[], JSValueRef*) {
+    {
+        std::lock_guard<std::mutex> lk(g_iconCovMu);
+        if (!g_iconCovJson.empty()) return utf8_to_js(ctx, g_iconCovJson);
+        if (g_iconCovBusy) return utf8_to_js(ctx, "{\"pending\":1}");
+        g_iconCovBusy = true;
+    }
+    std::thread([] {
+        std::string r;
+        try { r = rtx::cache::ItemIconCoverageJson(&icons::IconPackHas); } catch (...) { r = "{}"; }
+        std::lock_guard<std::mutex> lk(g_iconCovMu);
+        g_iconCovJson = r.empty() ? "{}" : r;
+        g_iconCovBusy = false;
+    }).detach();
+    return utf8_to_js(ctx, "{\"pending\":1}");
+}
+
 JSValueRef ModelIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
@@ -5000,6 +5031,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "readerHealth",      ReaderHealth);
     install_fn(ctx, ns, "bridgeStatus",      BridgeStatus);
     install_fn(ctx, ns, "itemIcon",          ItemIcon);
+    install_fn(ctx, ns, "iconMisses",        IconMisses);
+    install_fn(ctx, ns, "iconCoverage",      IconCoverage);
     install_fn(ctx, ns, "modelIcon",         ModelIcon);
     install_fn(ctx, ns, "itemInfo",          ItemInfo);
     install_fn(ctx, ns, "sprite",            Sprite);

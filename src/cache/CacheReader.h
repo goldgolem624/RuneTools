@@ -54,6 +54,12 @@ struct CacheParseRow {
 // the sweep (~1-2 s); intended for the user-triggered health check.
 std::vector<CacheParseRow> CacheParseHealth();
 
+// Icon coverage of the bundled items.pack against the live cache: walks every js5-19
+// item, keeps those with a real name (non-empty, not "null"), and asks `has(id)` for
+// each. {"items":N,"withIcon":M,"missing":[ids...]}. Holds the cache mutex for the
+// walk (~63k decodes); run it off the UI thread and memoize.
+std::string ItemIconCoverageJson(bool (*has)(int item_id));
+
 // `data:image/png;base64,...` for the cache sprite `sprite_id`, or "" on
 // failure. Memoized. Used for skill icons (and any other cache sprite).
 // World-map areas (js5-23): {"<areaId>":{"n","dn","zoom","bg","x0","y0","x1","y1" (display

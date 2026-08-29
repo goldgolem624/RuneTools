@@ -17,6 +17,15 @@ std::string ItemIconDataUrl(int item_id);
 // from the js5-3 def, so the UI joins live group:comp -> cache def -> this pack).
 std::string ModelIconDataUrl(int model_id);
 
+// True when items.pack has an icon blob for the id (index len > 0). Cheap: index only.
+bool IconPackHas(int item_id);
+
+// Health-panel diagnostics: {"packIds":N,"packIcons":present,"misses":[[id,count],...],
+// "missCount":K}. `misses` are ids asked for through ItemIconDataUrl this session and not
+// in the pack (capped at 10,000 distinct ids), so a missing icon shows up as data rather
+// than a blank cell somebody has to notice.
+std::string IconMissesJson();
+
 // Returns an asset file staged next to the exe, base64-encoded (cached per name),
 // or an empty string if missing. Used to ship the puzzle-solver tables
 // (wd_table.bin, pdb_5554.bin); the JS solver decodes them once on puzzle open.

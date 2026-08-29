@@ -4,11 +4,30 @@
 (function () {
 
   let hcData = null, hcBusy = false;
+  // Item icon coverage: pack stats + session misses (cheap) and the one-time cache walk
+  // (host runs it on a background thread and answers {pending:1} until it lands).
+  let icMisses = null, icCov = null, icNames = {}, icTimer = 0;
+  async function icFetch() {
+    try { icMisses = JSON.parse(await rtxData.raw('host.iconMisses')); } catch (e) { icMisses = null; }
+    try { icCov = JSON.parse(await rtxData.raw('host.iconCoverage')); } catch (e) { icCov = null; }
+    if (icCov && icCov.pending) { clearTimeout(icTimer); icTimer = setTimeout(icFetch, 1500); }
+    {
+      // names for the shown rows only; the full missing list can be a few hundred ids
+      const want = (icCov && Array.isArray(icCov.missing) ? icCov.missing.slice(0, 40) : [])
+        .concat(icMisses && Array.isArray(icMisses.misses) ? icMisses.misses.slice(0, 40).map(x => x[0]) : []);
+      for (const id of want) {
+        if (id in icNames) continue;
+        try { const d = JSON.parse(await rtxData.raw('cache.itemInfo', id) || 'null'); icNames[id] = (d && d.name) || ''; } catch (e) { icNames[id] = ''; }
+      }
+    }
+    paneRun('health', renderHealth);
+  }
   async function hcRun() {
     if (hcBusy || !bridge() || !bridge().readerHealth) return;
     hcBusy = true; paneRun('health', renderHealth);
     try { hcData = JSON.parse(await rtxData.raw('host.readerHealth')); } catch (e) { hcData = null; }
     hcBusy = false;
+    icFetch();
     paneRun('health', renderHealth);
   }
   function renderHealth() {
@@ -44,7 +63,11 @@
           .hc-idin { flex: 1 1 190px; min-width: 0; background: var(--bg-elev); border: 1px solid var(--border);
               border-radius: 7px; color: var(--text); font-size: 12px; padding: 6px 9px; outline: none; }
           .hc-idin:focus { border-color: var(--accent); }
-          .hc-hint { margin: 10px 14px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }`);
+          .hc-hint { margin: 10px 14px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+          .hc-sub { margin: 14px 14px 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent-hi); }
+          .hc-list { max-height: 180px; overflow-y: auto; border-top: 1px solid var(--border); }
+          .hc-list .hc-row { padding: 4px 12px; font-size: 11.5px; }
+          .hc-id { flex: 0 0 auto; color: var(--text-dim); font-variant-numeric: tabular-nums; min-width: 48px; }`);
       c.innerHTML = '';
       wrap = document.createElement('div'); wrap.id = 'hcWrap'; wrap.className = 'pane'; c.appendChild(wrap);
     }
@@ -111,6 +134,59 @@
       const dt = document.createElement('span'); dt.className = 'hc-d'; dt.textContent = chk.d || '';
       r.appendChild(dot); r.appendChild(nm); r.appendChild(dt);
       card.appendChild(r);
+    }
+    body.appendChild(card);
+    renderIcons(body);
+  }
+
+  // "Item icons" card: is the bundled items.pack keeping up with the live cache.
+  function renderIcons(body) {
+    if (!icMisses && !icCov) return;
+    const sub = document.createElement('div'); sub.className = 'hc-sub'; sub.textContent = 'Item icons';
+    body.appendChild(sub);
+    const card = document.createElement('div'); card.className = 'hc-card';
+    const row = (state, k, d) => {
+      const r = document.createElement('div'); r.className = 'hc-row';
+      const dot = document.createElement('span'); dot.className = 'hc-dot ' + state;
+      const nm = document.createElement('span'); nm.className = 'hc-k'; nm.textContent = k;
+      const dt = document.createElement('span'); dt.className = 'hc-d'; dt.textContent = d;
+      r.appendChild(dot); r.appendChild(nm); r.appendChild(dt); card.appendChild(r);
+    };
+    const m = icMisses || {};
+    row(m.packIcons ? 'ok' : 'bad', 'Icon pack', m.packIds ? (m.packIds + ' ids, ' + m.packIcons + ' icons') : 'not loaded');
+    if (icCov && icCov.pending) row('warn', 'Cache coverage', 'scanning...');
+    else if (icCov && typeof icCov.items === 'number') {
+      const miss = (icCov.missing || []).length;
+      row('ok', 'Cache items with names', String(icCov.items));
+      row(miss ? 'warn' : 'ok', 'Missing icons', miss ? (miss + ' of ' + icCov.items) : 'none');
+      if (miss) {
+        const list = document.createElement('div'); list.className = 'hc-list';
+        for (const id of icCov.missing.slice(0, 40)) {
+          const r = document.createElement('div'); r.className = 'hc-row';
+          const i = document.createElement('span'); i.className = 'hc-id'; i.textContent = id;
+          const n = document.createElement('span'); n.className = 'hc-k'; n.textContent = icNames[id] || '';
+          r.appendChild(i); r.appendChild(n); list.appendChild(r);
+        }
+        if (miss > 40) {
+          const r = document.createElement('div'); r.className = 'hc-row';
+          const n = document.createElement('span'); n.className = 'hc-d'; n.textContent = '+ ' + (miss - 40) + ' more';
+          r.appendChild(n); list.appendChild(r);
+        }
+        card.appendChild(list);
+      }
+    }
+    const misses = Array.isArray(m.misses) ? m.misses : [];
+    row(misses.length ? 'warn' : 'ok', 'Requested but absent this session', misses.length ? String(m.missCount) : 'none');
+    if (misses.length) {
+      const list = document.createElement('div'); list.className = 'hc-list';
+      for (const [id, n] of misses.slice(0, 40)) {
+        const r = document.createElement('div'); r.className = 'hc-row';
+        const i = document.createElement('span'); i.className = 'hc-id'; i.textContent = id;
+        const k = document.createElement('span'); k.className = 'hc-k'; k.textContent = icNames[id] || '';
+        const d = document.createElement('span'); d.className = 'hc-d'; d.textContent = n + 'x';
+        r.appendChild(i); r.appendChild(k); r.appendChild(d); list.appendChild(r);
+      }
+      card.appendChild(list);
     }
     body.appendChild(card);
   }
