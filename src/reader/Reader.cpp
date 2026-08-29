@@ -2893,10 +2893,15 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
                 // has no documented field layout yet) so counters stay per opcode; "raw" is only
                 // for opcodes nothing here recognises.
                 out.resize(mark);
-                if ((r.opcode == 0x05 || r.opcode == 0x51) && n >= 1) {
-                    // slot byte + the live offer; payload kept as hex for the record
-                    out += "\"kind\":\"ge_offer\",\"slot\":" + std::to_string((int)r.payload[0])
-                         + ",\"offer\":" + ge_slot_json(pid, (int)r.payload[0]) + ",\"hex\":\"";
+                if ((r.opcode == 0x05 || r.opcode == 0x51) && n >= 7) {
+                    // Seen live (two offers, two slots): bytes 0-3 are a fixed 00 02 07 03 header, byte 4 is
+                    // the slot index and bytes 5-6 the item id (BE); the rest is not pinned down, so the
+                    // offer itself comes from the GE slot array in memory. `item` is the packet's own id
+                    // so a consumer can check it against offer.item.
+                    const int slot = (int)r.payload[4];
+                    const int item = ((int)r.payload[5] << 8) | (int)r.payload[6];
+                    out += "\"kind\":\"ge_offer\",\"slot\":" + std::to_string(slot) + ",\"item\":" + std::to_string(item)
+                         + ",\"offer\":" + ge_slot_json(pid, slot) + ",\"hex\":\"";
                 } else {
                     out += "\"kind\":\"raw\",\"hex\":\"";
                 }
