@@ -444,6 +444,8 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'host.readerHealth':      { scope: 'host',        json: true,  run: (a, pid) => bridge().readerHealth(pid, ...pArgs(a)) },
     'host.iconMisses':        { scope: 'host',        json: true,  run: () => bridge().iconMisses() },
     'host.iconCoverage':      { scope: 'host',        json: true,  run: () => bridge().iconCoverage() },
+    'host.iconCapture':       { scope: 'host',        json: true,  run: (a, pid) => bridge().iconCapture(pid) },
+    'host.iconCaptureStatus': { scope: 'host',        json: true,  run: () => bridge().iconCaptureStatus() },
     'host.uiAsset':           { scope: 'host',        json: false, run: (a) => bridge().uiAsset(...pArgs(a)) },
     'host.hiscores':          { scope: 'host',        json: true,  run: (a) => bridge().hiscores(...pArgs(a)) },
     // -- act (actuator)

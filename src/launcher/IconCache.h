@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 // Resolves RS3 item icons from the bundled `items.pack` staged next to the exe
 // (noted items are composited as item-on-note PNGs). No network. Hot path is an
@@ -25,6 +26,9 @@ bool IconPackHas(int item_id);
 // in the pack (capped at 10,000 distinct ids), so a missing icon shows up as data rather
 // than a blank cell somebody has to notice.
 std::string IconMissesJson();
+
+// Drop ids from the miss log (a capture just produced their PNGs).
+void ForgetMisses(const std::vector<int>& ids);
 
 // Returns an asset file staged next to the exe, base64-encoded (cached per name),
 // or an empty string if missing. Used to ship the puzzle-solver tables

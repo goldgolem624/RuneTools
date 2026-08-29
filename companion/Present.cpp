@@ -9,9 +9,11 @@
 #include "MarkerShare.h"   // launcher-published world-marker command list
 #include "HudShare.h"      // launcher-published HUD-reminder (top-center sprite + caption)
 #include "FrameShare.h"    // launcher-published in-game window UI layer (pixel surface)
+#include "IconAtlasShare.h" // launcher-requested item-icon atlas readback (glGetTexImage)
 
 #include <windows.h>
 #include <detours.h>
+#include <GL/gl.h>
 #include <cstdint>
 #include <cstring>
 
@@ -77,6 +79,153 @@ void EnsureFrameMapped() {
                       sizeof(rtx::frame::Share)));
     if (!g_frame) { CloseHandle(g_frameMap); g_frameMap = nullptr; return; }
     OutputDebugStringA("RuneToolsX: ui-layer channel mapped");
+}
+
+// Item-icon atlas readback channel; the launcher creates it (request/response, see
+// IconAtlasShare.h). Mapped read+write; backed-off open like the UI layer.
+rtx::iconatlas::Share* g_icon    = nullptr;
+HANDLE                 g_iconMap = nullptr;
+void EnsureIconMapped() {
+    if (g_icon) return;
+    static ULONGLONG s_nextTry = 0;
+    ULONGLONG now = GetTickCount64();
+    if (now < s_nextTry) return;
+    s_nextTry = now + 1000;
+    wchar_t name[64];
+    rtx::iconatlas::MakeSectionName(GetCurrentProcessId(), name);
+    g_iconMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
+    if (!g_iconMap) return;
+    g_icon = reinterpret_cast<rtx::iconatlas::Share*>(
+        MapViewOfFile(g_iconMap, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
+                      sizeof(rtx::iconatlas::Share)));
+    if (!g_icon) { CloseHandle(g_iconMap); g_iconMap = nullptr; return; }
+    OutputDebugStringA("RuneToolsX: icon-atlas channel mapped");
+}
+
+#define GL_TEXTURE_BINDING_2D_P        0x8069
+#define GL_ACTIVE_TEXTURE_P            0x84E0
+#define GL_TEXTURE0_P                  0x84C0
+#define GL_PIXEL_PACK_BUFFER_P         0x88EB
+#define GL_PIXEL_PACK_BUFFER_BINDING_P 0x88ED
+typedef void (WINAPI* PFN_glActiveTexture_p)(GLenum);
+typedef void (WINAPI* PFN_glBindBuffer_p)(GLenum, GLuint);
+
+// True when `name` is a live 2D texture whose level 0 is exactly the atlas size.
+bool IsAtlasTexture(GLuint name, GLint savedBinding) {
+    if (name == 0 || !glIsTexture(name)) return false;
+    glBindTexture(GL_TEXTURE_2D, name);
+    GLint w = 0, h = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)savedBinding);
+    return w == (GLint)rtx::iconatlas::kAtlasW && h == (GLint)rtx::iconatlas::kAtlasH;
+}
+
+// The launcher passes the client's texture-owner object address (found by its reader).
+// The GL name lives somewhere in that object as a small u32: scan the first 0x200 bytes
+// at 4-byte steps for one glIsTexture accepts with the atlas size. VirtualQuery first: a
+// stale hint must not fault the render thread every frame until the launcher clears it.
+GLuint AtlasNameFromHint(std::uint64_t hint, GLint savedBinding) {
+    if (!hint) return 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(reinterpret_cast<LPCVOID>(hint), &mbi, sizeof(mbi))) return 0;
+    if (mbi.State != MEM_COMMIT) return 0;
+    const DWORD p = mbi.Protect & 0xFF;
+    if (p == PAGE_NOACCESS || p == PAGE_EXECUTE || (mbi.Protect & PAGE_GUARD)) return 0;
+    const std::uint8_t* base = reinterpret_cast<const std::uint8_t*>(hint);
+    std::uintptr_t regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    for (std::uintptr_t off = 0; off + 4 <= 0x200; off += 4) {
+        if (hint + off + 4 > regionEnd) break;
+        std::uint32_t v; std::memcpy(&v, base + off, 4);
+        if (v == 0 || v > 0x100000) continue;
+        if (IsAtlasTexture((GLuint)v, savedBinding)) return (GLuint)v;
+    }
+    return 0;
+}
+
+// Launcher asked for the atlas: find it, glGetTexImage it into the share, publish.
+// Runs with the game's GL context current (inside the swap hook). Every GL state it
+// touches is saved and restored; the readback itself is the only stall.
+void CaptureIconAtlas() {
+    rtx::iconatlas::Share* s = g_icon;
+    static GLuint s_name = 0;   // last atlas name; re-validated (size) on every capture
+    static PFN_glActiveTexture_p s_activeTexture = nullptr;
+    static PFN_glBindBuffer_p    s_bindBuffer = nullptr;
+    if (!s_activeTexture) s_activeTexture = reinterpret_cast<PFN_glActiveTexture_p>(wglGetProcAddress("glActiveTexture"));
+    if (!s_bindBuffer)    s_bindBuffer    = reinterpret_cast<PFN_glBindBuffer_p>(wglGetProcAddress("glBindBuffer"));
+
+    while (glGetError() != GL_NO_ERROR) {}     // drain the game's pending error, if any
+    GLint unit = GL_TEXTURE0_P;
+    if (s_activeTexture) { glGetIntegerv(GL_ACTIVE_TEXTURE_P, &unit); s_activeTexture(GL_TEXTURE0_P); }
+    GLint binding = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D_P, &binding);
+
+    std::uint32_t hit = 0;
+    if (s_name && !IsAtlasTexture(s_name, binding)) s_name = 0;   // recreated since last time
+    if (s_name) hit = s->hintHit;
+    if (!s_name) { s_name = AtlasNameFromHint(s->hintTexOwner, binding); if (s_name) hit = 1; }
+    if (!s_name) {
+        // Probe: the client keeps a few thousand textures; 64k glIsTexture calls once
+        // per request is well under a frame.
+        for (GLuint n = 1; n < 65536 && !s_name; ++n)
+            if (IsAtlasTexture(n, binding)) s_name = n;
+        if (s_name) hit = 2;
+    }
+
+    s->glName = s_name; s->hintHit = hit;
+    if (!s_name) {
+        s->width = s->height = 0;
+        s->status = rtx::iconatlas::kStatusNoTexture; s->glError = 0;
+    } else {
+        GLint pbo = 0;
+        if (s_bindBuffer) { glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING_P, &pbo); if (pbo) s_bindBuffer(GL_PIXEL_PACK_BUFFER_P, 0); }
+        GLint packAlign = 4, packRow = 0, packSkipR = 0, packSkipP = 0, packSwap = 0, packLsb = 0;
+        glGetIntegerv(GL_PACK_ALIGNMENT, &packAlign);
+        glGetIntegerv(GL_PACK_ROW_LENGTH, &packRow);
+        glGetIntegerv(GL_PACK_SKIP_ROWS, &packSkipR);
+        glGetIntegerv(GL_PACK_SKIP_PIXELS, &packSkipP);
+        glGetIntegerv(GL_PACK_SWAP_BYTES, &packSwap);
+        glGetIntegerv(GL_PACK_LSB_FIRST, &packLsb);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+        glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+        glPixelStorei(GL_PACK_SWAP_BYTES, 0);
+        glPixelStorei(GL_PACK_LSB_FIRST, 0);
+
+        glBindTexture(GL_TEXTURE_2D, s_name);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, s->pixels);
+        GLenum err = glGetError();
+        glBindTexture(GL_TEXTURE_2D, (GLuint)binding);
+
+        glPixelStorei(GL_PACK_ALIGNMENT, packAlign);
+        glPixelStorei(GL_PACK_ROW_LENGTH, packRow);
+        glPixelStorei(GL_PACK_SKIP_ROWS, packSkipR);
+        glPixelStorei(GL_PACK_SKIP_PIXELS, packSkipP);
+        glPixelStorei(GL_PACK_SWAP_BYTES, packSwap);
+        glPixelStorei(GL_PACK_LSB_FIRST, packLsb);
+        if (s_bindBuffer && pbo) s_bindBuffer(GL_PIXEL_PACK_BUFFER_P, (GLuint)pbo);
+
+        if (err == GL_NO_ERROR) {
+            // GL hands rows bottom-up; the launcher wants top-down (cell y from the packer).
+            const std::uint32_t W = rtx::iconatlas::kAtlasW, H = rtx::iconatlas::kAtlasH, stride = W * 4;
+            static std::uint8_t tmp[rtx::iconatlas::kAtlasW * 4];   // 6 KB: keep it off the game's stack
+            for (std::uint32_t y = 0; y < H / 2; ++y) {
+                std::uint8_t* a = s->pixels + (size_t)y * stride;
+                std::uint8_t* b = s->pixels + (size_t)(H - 1 - y) * stride;
+                std::memcpy(tmp, a, stride); std::memcpy(a, b, stride); std::memcpy(b, tmp, stride);
+            }
+            s->width = W; s->height = H;
+            s->status = rtx::iconatlas::kStatusOk; s->glError = 0;
+        } else {
+            s->width = s->height = 0;
+            s->status = rtx::iconatlas::kStatusGlError; s->glError = (std::uint32_t)err;
+        }
+    }
+    if (s_activeTexture) s_activeTexture((GLenum)unit);
+    s->capturedAtMs = GetTickCount64();
+    s->request = 0;
+    s->seq = s->seq + 1;    // published last: the launcher waits on seq
 }
 
 // Draw one command. Coords are client pixels in the projected space (cw x ch).
@@ -165,6 +314,11 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                 EnsureMarkerMapped();
                 EnsureHudMapped();
                 EnsureFrameMapped();
+                EnsureIconMapped();
+                // Atlas readback on request only: one load per present while idle.
+                if (g_icon && g_icon->request && g_icon->magic == rtx::iconatlas::kMagic &&
+                    g_icon->version == rtx::iconatlas::kVersion)
+                    CaptureIconAtlas();
                 // Resize handshake + liveness: publish the authoritative client size
                 // every present (even while the layer is hidden) so the launcher can
                 // size its off-screen UI view and detect a live v2 companion.

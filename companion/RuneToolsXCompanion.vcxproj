@@ -88,6 +88,7 @@
     <ClInclude Include="VarcShare.h" />
     <ClInclude Include="RenderShare.h" />
     <ClInclude Include="FrameShare.h" />
+    <ClInclude Include="IconAtlasShare.h" />
     <ClInclude Include="MarkerShare.h" />
     <ClInclude Include="NetShare.h" />
     <ClInclude Include="NetProbeShare.h" />

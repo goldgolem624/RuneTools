@@ -431,6 +431,26 @@ std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite);
 int CompassHeadingValue(std::uint32_t pid);
 // Compass-clue dig tile straight from varc 1323 (packed (plane<<28)|(x<<14)|y) -> "x,y,plane" or "" if unset.
 std::string CompassTargetJson(std::uint32_t pid);
+
+// Item icon atlas map: every icon the client currently holds in its 1536x1536 GPU atlas,
+// keyed by the widget graphic key (0x4000000000000000 | flavour<<24 | itemId) with its
+// cell rectangle. The pixels live only on the GPU; the launcher pairs this with the
+// companion's atlas readback (companion/IconAtlasShare.h). See docs/icon-capture.md.
+struct IconAtlasCell {
+    std::uint64_t key = 0;
+    int item = 0, flavour = 0, cell = 0;
+    int x = 0, y = 0, w = 0, h = 0;
+};
+struct IconAtlasMap {
+    std::uint64_t container = 0, texOwner = 0;   // client addresses (texOwner = hint for the hook)
+    int w = 0, h = 0;                            // atlas size; 0 = not found
+    int packerNodes = 0, unresolved = 0;         // rects found / occupied hash slots without a rect
+    int widgetKeys = 0, widgetKeysMapped = 0;    // on-screen item cells seen / of those, resolved
+    std::vector<IconAtlasCell> cells;
+};
+IconAtlasMap ReadIconAtlasMap(std::uint32_t pid);
+std::string  IconAtlasMapJson(std::uint32_t pid);
+
 // Scan-clue SOLUTION tile from the server. The game sends inbound opcode 83 (payload
 // 02 00 00 <xHi xLo> <yHi yLo> 14 00 96 FF FF FF FF) carrying the exact dig tile, but ONLY while the
 // player is within the orb's range (red pulse, <=11 paces). Arms the companion netprobe hook and returns

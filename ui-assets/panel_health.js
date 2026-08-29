@@ -7,7 +7,22 @@
   // Item icon coverage: pack stats + session misses (cheap) and the one-time cache walk
   // (host runs it on a background thread and answers {pending:1} until it lands).
   let icMisses = null, icCov = null, icNames = {}, icTimer = 0;
+  // Live capture (host.iconCapture): the launcher reads the client's GPU icon atlas and
+  // saves PNGs for the icons on screen, so a pack miss heals itself. Status is polled.
+  let icCap = null, icCapTimer = 0;
+  async function icCapFetch() {
+    try { icCap = JSON.parse(await rtxData.raw('host.iconCaptureStatus')); } catch (e) { icCap = null; }
+    clearTimeout(icCapTimer);
+    if (icCap && icCap.busy) icCapTimer = setTimeout(icCapFetch, 700);
+    paneRun('health', renderHealth);
+  }
+  async function icCapRun() {
+    try { icCap = JSON.parse(await rtxData.raw('host.iconCapture')); } catch (e) { icCap = null; }
+    clearTimeout(icCapTimer); icCapTimer = setTimeout(icCapFetch, 700);
+    paneRun('health', renderHealth);
+  }
   async function icFetch() {
+    icCapFetch();
     try { icMisses = JSON.parse(await rtxData.raw('host.iconMisses')); } catch (e) { icMisses = null; }
     try { icCov = JSON.parse(await rtxData.raw('host.iconCoverage')); } catch (e) { icCov = null; }
     if (icCov && icCov.pending) { clearTimeout(icTimer); icTimer = setTimeout(icFetch, 1500); }
@@ -187,6 +202,24 @@
         r.appendChild(i); r.appendChild(k); r.appendChild(d); list.appendChild(r);
       }
       card.appendChild(list);
+    }
+    // live capture card rows: session total, last run, and the manual trigger
+    const cap = icCap || {};
+    row(cap.status === 'ok' ? 'ok' : cap.busy ? 'warn' : (cap.lastAt ? 'bad' : 'warn'), 'Captured this session',
+        String(cap.sessionWritten || 0) + (cap.busy ? ' (capturing...)' : ''));
+    if (cap.lastAt) {
+      const when = new Date(cap.lastAt).toLocaleTimeString();
+      row(cap.status === 'ok' ? 'ok' : 'bad', 'Last capture', when + ': ' + (cap.status || '?') +
+          (cap.status === 'ok' ? ' (' + cap.written + ' new of ' + cap.cells + ' cells)' : ''));
+    }
+    {
+      const r = document.createElement('div'); r.className = 'hc-row';
+      const b = document.createElement('button'); b.className = 'vw-btn';
+      b.textContent = cap.busy ? 'Capturing...' : 'Capture icons now';
+      b.disabled = !!cap.busy;
+      b.dataset.tip = 'Read the icons currently on screen (open the bank first for the most coverage)';
+      b.addEventListener('click', icCapRun);
+      r.appendChild(b); card.appendChild(r);
     }
     body.appendChild(card);
   }

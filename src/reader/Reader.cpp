@@ -31,6 +31,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <array>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -4950,6 +4951,160 @@ std::string PanelRectsJson(std::uint32_t pid) {
                ",\"y\":" + std::to_string(y) + ",\"w\":" + std::to_string(W) + ",\"h\":" + std::to_string(H) + "}";
     }
     out += "]";
+    return out;
+}
+
+// ---- Item icon atlas map ---------------------------------------------------------------
+// The client keeps item icons only in a 1536x1536 GPU atlas; the CPU side holds the
+// bookkeeping. Verified live on build 949-5 (scratch proof1.py / proof2.py, 2026-08-29):
+//   widget item cell node   +0x188 u64 key = 0x4000000000000000 | flavour<<24 | itemId
+//                           +0x190 ptr -> icon cache node
+//   icon cache node (0x48)  +0x20 u64 key, +0x28 ptr container, +0x38 u32 cellId
+//   container               +0x08 u32 count, +0x20 ptr GPU texture owner, +0x28/+0x2c u32 atlas w/h,
+//                           +0x34 u32 next cell id,
+//                           +0x50/+0x58/+0x60 packer tree header: +0x60 = ROOT node (its +0x10
+//                           parent points back at container+0x50, the sentinel),
+//                           +0x98/+0xa0 hash table begin/end: 1537 x {u64 key, u32 cellId, u32 tag},
+//                           tag 9 = occupied.
+//   packer node             +0x00/+0x08 child ptrs, +0x10 parent, +0x20 u64 cellId,
+//                           +0x28 u32 x, +0x2c u32 y, +0x30 u32 w, +0x34 u32 h
+// Walking the tree from +0x60 reaches every node (1537 live), and cellIds 0x5d8/0x33c/0x3b2
+// resolved to (792,1296)/(1224,368)/(432,944), the rects the heap scan had found.
+namespace {
+// Find one live item-cell widget whose +0x190 cache node agrees with its +0x188 key.
+// Backpack 1473 / equipment 1464 first, then every open group. Also collects the widget
+// keys seen so the caller can verify each maps to a rect.
+std::uint64_t icon_atlas_find_cache_node(HANDLE h, std::uint64_t mainData, std::vector<std::uint64_t>& widgetKeys) {
+    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
+    auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
+    std::uint64_t gs, ge; iface_groups_range(h, mainData, gs, ge);
+    if (!gs) return 0;
+    std::vector<std::uint64_t> order;                       // group entry (ap2) list, preferred first
+    std::vector<std::uint64_t> rest;
+    for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
+        std::uint64_t ap2 = r64(g + 8);
+        if (ap2 <= 0x10000) continue;
+        int gid = r32(ap2);
+        if (gid == 1473 || gid == 1464) order.push_back(ap2); else rest.push_back(ap2);
+    }
+    order.insert(order.end(), rest.begin(), rest.end());
+    std::uint64_t found = 0;
+    for (std::uint64_t ap2 : order) {
+        std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
+        if (!ws || !we || we <= ws || (we - ws) > 0x100000) continue;
+        std::vector<std::uint64_t> stack;
+        for (std::uint64_t wn = ws + 8; wn + 8 <= we + 8; wn += 0x18) {
+            std::uint64_t nd = r64(wn); if (nd > 0x10000) stack.push_back(nd);
+        }
+        int budget = 6000;
+        while (!stack.empty() && budget-- > 0) {
+            std::uint64_t nd = stack.back(); stack.pop_back();
+            std::uint64_t key = r64(nd + 0x188);
+            if ((key >> 62) == 1 && key != ~0ull) {
+                std::uint64_t cn = r64(nd + 0x190);
+                if (cn > 0x10000 && r64(cn + 0x20) == key) {
+                    widgetKeys.push_back(key);
+                    if (!found) found = cn;
+                }
+            }
+            for (std::uint32_t co : { 0x198u, 0x180u, 0x1c8u }) {
+                std::uint64_t cs = r64(nd + co), ce = r64(nd + co + 8);
+                if (!cs || !ce || ce <= cs || ce - cs > 0x100000) continue;
+                for (std::uint64_t c = cs + 8; c + 8 <= ce + 8; c += 0x18) {
+                    std::uint64_t ch = r64(c);
+                    if (ch <= 0x10000) continue;
+                    std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
+                    if (d <= 0x3000) continue;
+                    stack.push_back(ch);
+                }
+            }
+        }
+        if (found && !widgetKeys.empty() && order.size() > 2 && ap2 == order[1]) break;   // both preferred groups done
+        if (found && (ap2 != order[0] || order.size() < 2)) break;
+    }
+    return found;
+}
+}  // namespace
+
+IconAtlasMap ReadIconAtlasMap(std::uint32_t pid) {
+    IconAtlasMap m;
+    auto ps = snap_proc(pid);
+    if (!ps) return m;
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return m;
+    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
+    auto r32 = [&](std::uint64_t a){ return rpm<std::uint32_t>(h, a).value_or(0); };
+    std::vector<std::uint64_t> widgetKeys;
+    std::uint64_t cn = icon_atlas_find_cache_node(h, *root, widgetKeys);
+    if (!cn) return m;
+    std::uint64_t cont = r64(cn + 0x28);
+    if (cont <= 0x10000) return m;
+    m.container = cont;
+    m.texOwner  = r64(cont + 0x20);
+    m.w = (int)r32(cont + 0x28); m.h = (int)r32(cont + 0x2c);
+    if (m.w <= 0 || m.h <= 0 || m.w > 8192 || m.h > 8192) { m.w = m.h = 0; return m; }
+    // packer tree: cellId -> rect
+    std::unordered_map<std::uint64_t, std::array<std::uint32_t, 4>> rects;
+    {
+        std::uint64_t troot = r64(cont + 0x60);
+        std::vector<std::uint64_t> stack; if (troot > 0x10000) stack.push_back(troot);
+        std::unordered_set<std::uint64_t> seen;
+        while (!stack.empty() && seen.size() < 16384) {
+            std::uint64_t a = stack.back(); stack.pop_back();
+            if (a <= 0x10000 || !seen.insert(a).second) continue;
+            std::uint8_t nb[0x38];
+            if (!rpm_bytes(h, a, nb, sizeof(nb))) continue;
+            std::uint64_t ca, cb, cid; std::uint32_t x, y, w, hh;
+            std::memcpy(&ca, nb, 8); std::memcpy(&cb, nb + 8, 8); std::memcpy(&cid, nb + 0x20, 8);
+            std::memcpy(&x, nb + 0x28, 4); std::memcpy(&y, nb + 0x2c, 4); std::memcpy(&w, nb + 0x30, 4); std::memcpy(&hh, nb + 0x34, 4);
+            if (cid && w > 0 && hh > 0 && w <= 1024 && hh <= 1024 && x + w <= (std::uint32_t)m.w && y + hh <= (std::uint32_t)m.h)
+                rects[cid] = { x, y, w, hh };
+            if (ca) stack.push_back(ca);
+            if (cb) stack.push_back(cb);
+        }
+    }
+    m.packerNodes = (int)rects.size();
+    // hash table: key -> cellId
+    std::uint64_t hb = r64(cont + 0x98), he = r64(cont + 0xa0);
+    if (hb > 0x10000 && he > hb && (he - hb) % 16 == 0 && (he - hb) / 16 <= 65536) {
+        std::vector<std::uint8_t> tb((size_t)(he - hb));
+        if (rpm_bytes(h, hb, tb.data(), tb.size())) {
+            for (size_t o = 0; o + 16 <= tb.size(); o += 16) {
+                std::uint64_t key; std::uint32_t cid, tag;
+                std::memcpy(&key, tb.data() + o, 8); std::memcpy(&cid, tb.data() + o + 8, 4); std::memcpy(&tag, tb.data() + o + 12, 4);
+                if (tag != 9 || (key >> 62) != 1) continue;
+                auto it = rects.find(cid);
+                if (it == rects.end()) { ++m.unresolved; continue; }
+                IconAtlasCell c;
+                c.key = key; c.item = (int)(key & 0xFFFFFF); c.flavour = (int)((key >> 24) & 0xFF); c.cell = (int)cid;
+                c.x = (int)it->second[0]; c.y = (int)it->second[1]; c.w = (int)it->second[2]; c.h = (int)it->second[3];
+                m.cells.push_back(c);
+            }
+        }
+    }
+    // verification: every widget key seen must be in the table with a rect
+    {
+        std::unordered_set<std::uint64_t> have;
+        for (const auto& c : m.cells) have.insert(c.key);
+        for (std::uint64_t k : widgetKeys) { ++m.widgetKeys; if (have.count(k)) ++m.widgetKeysMapped; }
+    }
+    return m;
+}
+
+std::string IconAtlasMapJson(std::uint32_t pid) {
+    IconAtlasMap m = ReadIconAtlasMap(pid);
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "{\"container\":%llu,\"texOwner\":%llu,\"w\":%d,\"h\":%d,\"packerNodes\":%d,\"unresolved\":%d,\"widgetKeys\":%d,\"widgetKeysMapped\":%d,\"cells\":[",
+                  (unsigned long long)m.container, (unsigned long long)m.texOwner, m.w, m.h, m.packerNodes, m.unresolved, m.widgetKeys, m.widgetKeysMapped);
+    std::string out = buf;
+    bool first = true;
+    for (const auto& c : m.cells) {
+        std::snprintf(buf, sizeof(buf), "%s{\"key\":%llu,\"item\":%d,\"flavour\":%d,\"cell\":%d,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d}",
+                      first ? "" : ",", (unsigned long long)c.key, c.item, c.flavour, c.cell, c.x, c.y, c.w, c.h);
+        out += buf; first = false;
+    }
+    out += "]}";
     return out;
 }
 

@@ -1,4 +1,5 @@
 #include "IconCache.h"
+#include "IconCapture.h"   // live-captured PNGs beat the pack; misses schedule a capture
 
 #include <Windows.h>
 #include <wincrypt.h>
@@ -117,15 +118,52 @@ std::string pack_icon_url(Pack& p, int id) {
 }
 }  // namespace
 
+// Captured PNG (this client build's own render, see IconCapture.h) -> data URL. Memoized
+// per id here; IconCapture owns the path memo and drops it for ids a capture just wrote.
+std::mutex                          g_cap_mu;
+std::unordered_map<int, std::string> g_cap_url;   // id -> data URL ("" = no file at lookup time)
+std::string captured_icon_url(int item_id) {
+    std::wstring path = iconcapture::FindCapturedPng(item_id);
+    if (path.empty()) return {};
+    std::lock_guard<std::mutex> lk(g_cap_mu);
+    auto it = g_cap_url.find(item_id);
+    if (it != g_cap_url.end() && !it->second.empty()) return it->second;
+    std::string url;
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (f) {
+        std::streamoff sz = f.tellg();
+        if (sz > 0 && sz < 4 * 1024 * 1024) {
+            f.seekg(0, std::ios::beg);
+            std::vector<unsigned char> bytes((size_t)sz);
+            f.read(reinterpret_cast<char*>(bytes.data()), sz);
+            if ((std::streamoff)f.gcount() == sz) {
+                std::string b64 = base64_encode(bytes);
+                if (!b64.empty()) url = "data:image/png;base64," + b64;
+            }
+        }
+    }
+    g_cap_url[item_id] = url;
+    return url;
+}
+
 std::string ItemIconDataUrl(int item_id) {
-    std::string url = pack_icon_url(g_items_pack, item_id);
+    std::string url = captured_icon_url(item_id);
+    if (url.empty()) url = pack_icon_url(g_items_pack, item_id);
     if (url.empty() && item_id > 0) {
-        std::lock_guard<std::mutex> lk(g_miss_mu);
-        auto it = g_misses.find(item_id);
-        if (it != g_misses.end()) ++it->second;
-        else if (g_misses.size() < kMissCap) g_misses[item_id] = 1;
+        {
+            std::lock_guard<std::mutex> lk(g_miss_mu);
+            auto it = g_misses.find(item_id);
+            if (it != g_misses.end()) ++it->second;
+            else if (g_misses.size() < kMissCap) g_misses[item_id] = 1;
+        }
+        iconcapture::NoteMiss(item_id);   // rate limited inside; no-op without a client
     }
     return url;
+}
+
+void ForgetMisses(const std::vector<int>& ids) {
+    std::lock_guard<std::mutex> lk(g_miss_mu);
+    for (int id : ids) g_misses.erase(id);
 }
 
 bool IconPackHas(int item_id) {
