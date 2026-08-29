@@ -44,6 +44,10 @@ std::mutex                   g_miss_mu;
 std::unordered_map<int, int> g_misses;
 constexpr std::size_t        kMissCap = 10000;
 Pack g_items_pack { L"items.pack" };
+// Icons rendered offline from the cache for items the bundled pack predates. Ships with
+// the app exactly like items.pack, so a user gets them by opening the client: nothing is
+// rendered or downloaded on their machine.
+Pack g_extra_pack { L"items_extra.pack" };
 Pack g_model_pack { L"modelicons.pack" };
 
 // Load a pack's index once. Caller holds p.mu.
@@ -88,6 +92,14 @@ const char* sniff_mime(const std::vector<unsigned char>& b) {
     if (b.size() >= 4 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G')
         return "image/png";        // composited noted icons
     return "image/gif";            // library default (GIF87a/GIF89a)
+}
+
+// Does this pack hold an icon for the id? Index only, so it is cheap to ask.
+bool PackHas(Pack& p, int item_id) {
+    if (item_id <= 0) return false;
+    std::lock_guard<std::mutex> lk(p.mu);
+    ensure_index(p);
+    return p.ready && (std::size_t)item_id < p.len.size() && p.len[item_id] > 0;
 }
 
 }  // namespace
@@ -239,12 +251,14 @@ std::string rendered_icon_url(int item_id) {
 
 int IconSource(int item_id) {
     if (item_id <= 0) return 0;
-    if (!rendered_png(item_id).empty()) return 2;
+    if (!rendered_png(item_id).empty()) return 2;   // local directory (development override)
+    if (PackHas(g_extra_pack, item_id)) return 2;   // shipped render
     return IconPackHas(item_id) ? 1 : 0;
 }
 
 std::string ItemIconDataUrl(int item_id) {
     std::string url = rendered_icon_url(item_id);
+    if (url.empty()) url = pack_icon_url(g_extra_pack, item_id);
     if (url.empty()) url = pack_icon_url(g_items_pack, item_id);
     if (url.empty() && item_id > 0) {
         {
@@ -257,13 +271,7 @@ std::string ItemIconDataUrl(int item_id) {
     return url;
 }
 
-bool IconPackHas(int item_id) {
-    if (item_id <= 0) return false;
-    Pack& p = g_items_pack;
-    std::lock_guard<std::mutex> lk(p.mu);
-    ensure_index(p);
-    return p.ready && (std::size_t)item_id < p.len.size() && p.len[item_id] > 0;
-}
+bool IconPackHas(int item_id) { return PackHas(g_items_pack, item_id); }
 
 std::string IconMissesJson() {
     std::uint32_t ids = 0, present = 0;
@@ -296,6 +304,12 @@ int RenderedIconCount() {
     std::lock_guard<std::mutex> lk(mu);
     if (cached >= 0) return cached;
     int n = 0;
+    {
+        Pack& p = g_extra_pack;                 // shipped renders: every user has these
+        std::lock_guard<std::mutex> lk(p.mu);
+        ensure_index(p);
+        if (p.ready) n += (int)p.present;
+    }
     std::wstring dir = active_dir();
     if (!dir.empty()) {
         std::error_code ec;

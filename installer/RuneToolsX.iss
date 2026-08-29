@@ -84,6 +84,7 @@ Source: "{#SrcDir}\quest_guides.js"; DestDir: "{app}"; Flags: ignoreversion skip
 Source: "{#SrcDir}\panel_*.js";     DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\launcher.html";  DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\items.pack";     DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SrcDir}\items_extra.pack"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\wd_table.bin";   DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\pdb_5554.bin";   DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\sounds\*";       DestDir: "{app}\sounds"; Flags: ignoreversion recursesubdirs createallsubdirs

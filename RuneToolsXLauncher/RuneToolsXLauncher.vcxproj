@@ -291,6 +291,10 @@
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true"
           Condition="Exists('$(ProjectDir)..\ui-assets\items.pack')" />
+    <Copy SourceFiles="$(ProjectDir)..\ui-assets\items_extra.pack"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(ProjectDir)..\ui-assets\items_extra.pack')" />
     <Copy SourceFiles="$(ProjectDir)..\ui-assets\wd_table.bin"
           DestinationFolder="$(OutDir)"
           SkipUnchangedFiles="true"
@@ -315,7 +319,7 @@
   -->
   <Target Name="BuildInstaller" AfterTargets="StageRuntime"
           Condition="'$(Configuration)|$(Platform)'=='Release|x64'"
-          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\core\*;$(ProjectDir)..\ui-assets\rtx_vars.js;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
+          Inputs="$(OutDir)RuneToolsXLauncher.exe;$(OutDir)rtxscene.dll;$(ProjectDir)..\ui-assets\launcher.html;$(ProjectDir)..\ui-assets\client.html;$(ProjectDir)..\ui-assets\core\*;$(ProjectDir)..\ui-assets\rtx_vars.js;$(ProjectDir)..\ui-assets\quest_guides.js;$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\items.pack;$(ProjectDir)..\ui-assets\items_extra.pack;$(ProjectDir)..\ui-assets\wd_table.bin;$(ProjectDir)..\ui-assets\pdb_5554.bin;$(ProjectDir)..\installer\RuneToolsX.iss"
           Outputs="$(ProjectDir)..\installer\Output\RuneToolsXSetup.exe">
     <PropertyGroup>
       <ISCC Condition="'$(ISCC)'=='' And Exists('$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe')">$(LocalAppData)\Programs\Inno Setup 6\ISCC.exe</ISCC>
