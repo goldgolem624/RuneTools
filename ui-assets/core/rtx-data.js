@@ -154,3 +154,19 @@ const rtxData = (function () {
   return { call: call, raw: raw, sync: sync, bindingOf: bindingOf };
 })();
 
+// rtxEvents: the in-page event bus fed by the 100 ms poll loop in rtx-boot.js (rtxEventsPoll).
+// Kinds: skill_update, container_update, runclientscript, ge_offer, run_energy, run_weight,
+// ping, raw (undocumented opcode: {op,len,hex}) and gameTick ({tick, dtMs}). '*' hears every
+// kind. Listeners run synchronously in emit(); a throwing listener never stops the others.
+const rtxEvents = (function () {
+  const subs = new Map();
+  function on(kind, fn) { if (typeof fn !== 'function') return; let a = subs.get(kind); if (!a) { a = []; subs.set(kind, a); } a.push(fn); }
+  function off(kind, fn) { const a = subs.get(kind); if (!a) return; const i = a.indexOf(fn); if (i !== -1) a.splice(i, 1); }
+  function emit(kind, ev) {
+    const a = subs.get(kind), b = subs.get('*');
+    if (a) for (const f of a.slice()) { try { f(ev); } catch (e) {} }
+    if (b) for (const f of b.slice()) { try { f(ev); } catch (e) {} }
+  }
+  return { on: on, off: off, emit: emit };
+})();
+

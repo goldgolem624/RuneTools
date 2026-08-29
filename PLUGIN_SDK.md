@@ -107,6 +107,26 @@ rtx.plugin.on("tick",  () => { /* refresh here */ });
 rtx.plugin.on("state", (snapshot) => { /* changed snapshot; requires state.read */ });
 ```
 
+### Game events
+
+With `state.read` the host also pushes game events captured from the server packet stream (the
+event channel, docs/event-channel.md). They arrive batched on the same cadence as `tick`, one
+callback per event in capture order; `tick` itself is unchanged.
+
+```js
+rtx.plugin.events.on("skill_update", (ev) => { /* {seq,t,wall,op,len,kind,skill,name,level,xp} */ });
+rtx.plugin.events.on("container_update", (ev) => { /* {container,flags,slots:[{slot,item,qty}],partial} */ });
+rtx.plugin.events.on("runclientscript", (ev) => { /* {script,sig,args} */ });
+rtx.plugin.events.on("gameTick", (ev) => { /* {tick, dtMs}: one per 600 ms server tick */ });
+rtx.plugin.events.on("*", (ev) => { /* every kind */ });
+rtx.plugin.events.off("skill_update", fn);
+```
+
+Kinds: `skill_update`, `container_update`, `runclientscript`, `run_energy` (`value`),
+`run_weight` (`value`), `ping` (`a`, `b`), `ge_offer` and other undocumented opcodes as `raw`
+(`{op,len,hex}`), and `gameTick`. Chat never appears here. Which opcodes are captured is a host
+setting (Developer > Events); plugins cannot change it.
+
 ## API reference
 
 All `state.*` reads act on the **current account** shown in the panel. Shapes below are the

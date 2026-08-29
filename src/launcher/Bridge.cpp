@@ -1382,6 +1382,38 @@ JSValueRef ServerPacketArm(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::reader::ServerPacketFeedEnable(pid, on));
 }
 
+// Event channel: events(pid, sinceSeq). served_obj keyed per pid (not per cursor) so panel_loop
+// keeps ONE builder warm at ~10 Hz; the cached value may carry a span built from the previous
+// cursor, which is harmless because rtxEvents dedups on seq and the ring is 2048 deep.
+JSValueRef Events(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                  size_t argc, const JSValueRef argv[], JSValueRef*) {
+    // fail_json envelope: success is an object with named fields.
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::uint64_t since = (argc >= 2)
+        ? (std::uint64_t)JSValueToNumber(ctx, argv[1], nullptr) : 0;
+    return served_obj(ctx, pid, "events:" + std::to_string(pid),
+                      [pid, since] { return rtx::reader::EventsJson(pid, since); });
+}
+
+// eventsMask(pid, "4,5,43,82,...") -> which opcodes the companion records into the event ring.
+JSValueRef EventsMask(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::string csv = js_to_utf8(ctx, argv[1]);
+    std::uint32_t mask[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    std::size_t i = 0;
+    while (i < csv.size()) {
+        while (i < csv.size() && !std::isdigit((unsigned char)csv[i])) ++i;
+        if (i >= csv.size()) break;
+        unsigned v = 0;
+        while (i < csv.size() && std::isdigit((unsigned char)csv[i])) { v = v * 10 + (unsigned)(csv[i] - '0'); ++i; }
+        if (v < 256) mask[v >> 5] |= 1u << (v & 31);
+    }
+    return JSValueMakeBoolean(ctx, rtx::reader::EventsMaskSet(pid, mask));
+}
+
 // which: 0 hide NPCs, 1 hide other players, 2 hide the whole scene.
 JSValueRef RenderToggle(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -5027,6 +5059,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "serverPackets",     ServerPackets);
     install_fn(ctx, ns, "serverPacketFeed",  ServerPacketFeed);
     install_fn(ctx, ns, "serverPacketArm",   ServerPacketArm);
+    install_fn(ctx, ns, "events",            Events);
+    install_fn(ctx, ns, "eventsMask",        EventsMask);
     install_fn(ctx, ns, "renderToggle",      RenderToggle);
     install_fn(ctx, ns, "outlineNpc",        OutlineNpc);
     install_fn(ctx, ns, "outlineObject",     OutlineObject);

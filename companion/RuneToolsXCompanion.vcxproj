@@ -91,6 +91,7 @@
     <ClInclude Include="MarkerShare.h" />
     <ClInclude Include="NetShare.h" />
     <ClInclude Include="NetProbeShare.h" />
+    <ClInclude Include="EventShare.h" />
     <ClInclude Include="InputShare.h" />
     <ClInclude Include="Composite.h" />
     <ClInclude Include="Present.h" />

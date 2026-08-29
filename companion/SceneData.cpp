@@ -34,6 +34,7 @@
 #include "GroundShare.h"    // dropped ground items (scene entity type 3)
 #include "NetShare.h"       // raw inbound socket bytes (recv/WSARecv), for wire capture
 #include "NetProbeShare.h"  // DECODED server->client packets, captured at the inbound framer
+#include "EventShare.h"     // opcode-filtered event ring fed from the same framer hook
 #include "Present.h"     // in-frame compositor (draws the launcher UI into the game frame)
 #include "SoundFilter.h" // cache-sound observation + muting (audio-chunk mix hook)
 #include "MenuProbe.h"  // right-click menu entry-layout probe (diagnostic, opt-in)
@@ -1639,8 +1640,41 @@ void ResolveNetCapture() {
 //   +0x2D0 ptr  payload buffer (the framer read `length` bytes to *(conn+0x2D0))
 //   +0x2E8 int  cumulative inbound byte counter (monotonic; de-dups a re-observed msg)
 rtx::netprobe::Share* g_netProbeShare = nullptr;
+rtx::events::Share*   g_eventShare    = nullptr;
 typedef std::uint64_t* (*Framer_t)(std::uint64_t conn, std::uint64_t* out);
 static Framer_t g_origFramer = nullptr;
+
+// Event ring feed (EventShare.h): one record per inbound message whose opcode bit is set in
+// the launcher-writable mask. Per-record odd/even seqlock so a reader copying a slot the
+// hook is overwriting sees the odd seq (or a changed one) and skips it. No allocation.
+static void EventRecord(std::int32_t op, std::int32_t len, const std::uint8_t* p) {
+    auto* ev = g_eventShare;
+    if (!ev) return;
+    ev->inbound++;
+    if (op == 0x15) return;                                   // chat ring owns message_game
+    if (!((ev->mask[(op >> 5) & 7] >> (op & 31)) & 1u)) return;
+    const std::uint64_t i = ev->written;
+    rtx::events::Record& r = ev->recs[i % rtx::events::kMaxRecords];
+    const std::uint32_t pub = (std::uint32_t)((i + 1) * 2);
+    r.seq = pub | 1u;                                         // odd: body in flux
+    MemoryBarrier();
+    r.tick   = GetTickCount();
+    FILETIME ft; GetSystemTimeAsFileTime(&ft);                // epoch ms low bits, no allocation
+    const std::uint64_t ft64 = ((std::uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    r.wallMs = (std::uint32_t)((ft64 - 116444736000000000ULL) / 10000ULL);
+    r.opcode = op;
+    r.length = len;
+    if (p && len > 0) {
+        const std::uint32_t kept =
+            (std::uint32_t)(len < rtx::events::kPayload ? len : rtx::events::kPayload);
+        std::memcpy(r.payload, p, kept);
+    }
+    if (len > rtx::events::kPayload) ev->truncated++;
+    MemoryBarrier();
+    r.seq = pub;                                              // even: published
+    MemoryBarrier();
+    ev->written = i + 1;
+}
 
 static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
     auto* sh = g_netProbeShare;
@@ -1662,6 +1696,8 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
         s_lastRx = rx; s_lastOp = op;
         const std::uint8_t* p =
             len > 0 ? *(const std::uint8_t* const*)(conn + 0x2d0) : nullptr;
+
+        EventRecord(op, len, p);                              // event ring (mask-filtered)
 
         if (op == 0x15) {                                     // message_game -> chat ring
             rtx::netprobe::ChatRecord& c =
@@ -1706,6 +1742,16 @@ static std::uint64_t* Detour_Framer(std::uint64_t conn, std::uint64_t* out) {
     return r;
 }
 
+static rtx::events::Share* MapEventShare() {
+    wchar_t name[128];
+    rtx::events::MakeSectionName(GetCurrentProcessId(), name);
+    HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                  sizeof(rtx::events::Share), name);
+    if (!h) return nullptr;
+    return (rtx::events::Share*)MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0,
+                                              sizeof(rtx::events::Share));
+}
+
 static rtx::netprobe::Share* MapNetProbeShare() {
     wchar_t name[128];
     swprintf_s(name, L"%s%lu", rtx::netprobe::kSectionPrefix,
@@ -1726,6 +1772,19 @@ void ResolveNetProbe() {
     sh->flags = 0; sh->framerRva = 0;
     sh->chatWritten = 0; sh->chatSeen = 0;
     for (int i = 0; i < 8; ++i) sh->diag[i] = 0;
+    // Event ring rides the same hook. Keep a mask the launcher already wrote (it may have
+    // created the section first); otherwise start from the default set.
+    g_eventShare = MapEventShare();
+    if (g_eventShare) {
+        auto* ev = g_eventShare;
+        if (ev->magic != rtx::events::kMagic || ev->version != rtx::events::kVersion || !ev->maskSet)
+            for (int i = 0; i < 8; ++i) ev->mask[i] = rtx::events::kDefaultMask[i];
+        ev->magic = rtx::events::kMagic; ev->version = rtx::events::kVersion;
+        ev->pid = GetCurrentProcessId(); ev->flags = 0;
+        ev->written = 0; ev->truncated = 0; ev->inbound = 0;
+    } else {
+        RingLog("events: share map FAILED");
+    }
     // Framer entry prologue:
     //   push rbx; push rsi; push r14; push r15; sub rsp,0x28; xor esi,esi; mov rbx,rcx;
     //   mov rcx,[rcx+8]; mov r14,rdx; mov r15d,esi; test rcx,rcx; jz <rel32>; cmp dword[rcx],2
@@ -1750,6 +1809,7 @@ void ResolveNetProbe() {
     DetourAttach(&(PVOID&)g_origFramer, (PVOID)Detour_Framer);
     if (DetourTransactionCommit() == NO_ERROR) {
         sh->flags |= 1;
+        if (g_eventShare) g_eventShare->flags |= 1;
         RingLog("netprobe: framer hook ATTACHED rva=0x%llx", (unsigned long long)(p - g_base));
     } else {
         RingLog("netprobe: framer hook attach FAILED");

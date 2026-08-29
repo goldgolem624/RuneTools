@@ -376,6 +376,13 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since);
 // Arm/disarm the companion framer capture (re-armed each poll while the panel is open;
 // auto-disarms ~3s after the last arm). False if the companion section isn't present.
 bool ServerPacketFeedEnable(std::uint32_t pid, bool on);
+// Event channel (companion EventShare ring): {"ok":true,"seq":<cursor>,"tick":<game tick or -1>,
+// "events":[{seq,t,wall,op,len,kind,...}]} with every record after `since` (cap 512), decoded
+// where the repo documents the layout, else kind "raw" with hex. {"ok":false,...} when the
+// companion is not loaded.
+std::string EventsJson(std::uint32_t pid, std::uint64_t since);
+// Write the 256-bit opcode record mask (bit op&31 of word op>>5). False if the section cannot be mapped.
+bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]);
 
 // Render toggles: which 0 = hide NPCs, 1 = hide other players, 2 = hide whole scene,
 // 3 = keep the client rendering at full rate while its window is unfocused,

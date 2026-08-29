@@ -196,6 +196,38 @@
   }
 
 
+  // Event channel poll: 100 ms, independent of refresh (which stays at 4 Hz). Drains
+  // state.events after the last seq, emits one rtxEvents event per record keyed by kind,
+  // and a gameTick whenever the reader's tick counter moves. Same reentrancy guard as
+  // refresh; a pid change resets the cursor so a new client's ring is read from its start.
+  const rtxEventsPoll = { seq: 0, pid: 0, tick: -1, tickAt: 0, busy: false, polls: 0, fails: 0 };
+  async function rtxEventsTick() {
+    if (rtxEventsPoll.busy || !bridge() || !bridge().events) return;
+    rtxEventsPoll.busy = true;
+    try {
+      const pid = myPid();
+      if (pid !== rtxEventsPoll.pid) { rtxEventsPoll.pid = pid; rtxEventsPoll.seq = 0; rtxEventsPoll.tick = -1; }
+      const d = await rtxData.call('state.events', rtxEventsPoll.seq);
+      rtxEventsPoll.polls++;
+      if (!d || d.ok === false) { rtxEventsPoll.fails++; return; }
+      if (typeof d.tick === 'number' && d.tick >= 0 && d.tick !== rtxEventsPoll.tick) {
+        const now = performance.now();
+        const dt = rtxEventsPoll.tick >= 0 ? now - rtxEventsPoll.tickAt : 0;
+        rtxEventsPoll.tick = d.tick; rtxEventsPoll.tickAt = now;
+        rtxEvents.emit('gameTick', { kind: 'gameTick', tick: d.tick, dtMs: dt });
+      }
+      const evs = Array.isArray(d.events) ? d.events : [];
+      for (const ev of evs) {
+        if (!(ev.seq > rtxEventsPoll.seq)) continue;   // served() may replay the previous span
+        rtxEventsPoll.seq = ev.seq;
+        rtxEvents.emit(ev.kind || 'raw', ev);
+      }
+      if (typeof d.seq === 'number' && d.seq > rtxEventsPoll.seq) rtxEventsPoll.seq = d.seq;
+    } catch (e) { rtxEventsPoll.fails++; }
+    finally { rtxEventsPoll.busy = false; }
+  }
+  window.rtxEventsPoll = rtxEventsPoll;   // the Events panel shows poll health from here
+
   function attachBridge() {
     if (!bridge()) {
       if (!attachBridge._waits++) console.log('rtx boot: waiting for the bridge (typeof window.rtx = ' + typeof window.rtx + ', pid ' + myPid() + ')');
@@ -255,6 +287,7 @@
     refresh();
     setInterval(refresh, 250);
     console.log('rtx boot: refresh scheduled');
+    setInterval(rtxEventsTick, 100);   // event channel (rtxEvents); not tied to refresh
     // Keep the companion var-capture observer ON at all times (not just on the Vars
     // tab): it resolves client-side vars (panel origins, dialogue rects) the game
     // hashmaps don't keep current, else those highlights read stale. Cheap flag,

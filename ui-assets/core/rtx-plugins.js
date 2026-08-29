@@ -22,15 +22,16 @@
   // Canonical SDK shim (mirror of ui-assets/plugin-sdk.js) spliced into each plugin
   // frame; inlined because LoadHTML gives the panel no base URL to fetch from.
   const PLUGIN_SDK_SHIM = `(function(){'use strict';if(window.rtx&&window.rtx.plugin)return;
-var P='rtx.plugin/1',T=15000,seq=1,pending=Object.create(null),L={tick:[],state:[]},rcb=[],S={ready:false,scopes:[],apiVersion:null,pluginId:null};
+var P='rtx.plugin/1',T=15000,seq=1,pending=Object.create(null),L={tick:[],state:[],events:[]},EV={},rcb=[],S={ready:false,scopes:[],apiVersion:null,pluginId:null};
 function call(method,args){return new Promise(function(res,rej){var id=seq++;var tm=setTimeout(function(){if(pending[id]){delete pending[id];rej(new Error('rtx.plugin: timeout '+method));}},T);pending[id]={res:res,rej:rej,tm:tm};try{parent.postMessage({__rtxPlugin:P,kind:'call',id:id,method:method,args:args||[]},'*');}catch(e){clearTimeout(tm);delete pending[id];rej(e);}});}
 window.addEventListener('message',function(ev){var m=ev.data;if(!m||m.__rtxPlugin!==P)return;if(ev.source!==parent)return;
 if(m.kind==='reply'){var p=pending[m.id];if(!p)return;clearTimeout(p.tm);delete pending[m.id];if(m.ok)p.res(m.result);else p.rej(new Error(m.error||'rtx.plugin: failed'));return;}
-if(m.kind==='event'){if(m.event==='ready'){var d=m.data||{};S.ready=true;S.scopes=Array.isArray(d.scopes)?d.scopes.slice():[];S.apiVersion=d.apiVersion||null;S.pluginId=d.pluginId||null;var c=rcb.slice();rcb.length=0;c.forEach(function(f){try{f();}catch(e){}});return;}var ls=L[m.event];if(ls)ls.forEach(function(f){try{f(m.data);}catch(e){}});}});
+if(m.kind==='event'){if(m.event==='ready'){var d=m.data||{};S.ready=true;S.scopes=Array.isArray(d.scopes)?d.scopes.slice():[];S.apiVersion=d.apiVersion||null;S.pluginId=d.pluginId||null;var c=rcb.slice();rcb.length=0;c.forEach(function(f){try{f();}catch(e){}});return;}if(m.event==='events'){var arr=Array.isArray(m.data)?m.data:[];arr.forEach(function(ev){var k=ev&&ev.kind;var fs=(EV[k]||[]).concat(EV['*']||[]);fs.forEach(function(f){try{f(ev);}catch(e){}});});}var ls=L[m.event];if(ls)ls.forEach(function(f){try{f(m.data);}catch(e){}});}});
 function g(o){return o;}
 var api={apiVersion:function(){return S.apiVersion;},id:function(){return S.pluginId;},grantedScopes:function(){return S.scopes.slice();},hasScope:function(s){return S.scopes.indexOf(s)!==-1;},
 ready:function(cb){if(typeof cb!=='function'){return new Promise(function(r){S.ready?r():rcb.push(r);});}S.ready?cb():rcb.push(cb);},
 on:function(e,cb){if(L[e]&&typeof cb==='function')L[e].push(cb);},
+events:{on:function(k,cb){if(typeof cb!=='function')return;(EV[k]=EV[k]||[]).push(cb);},off:function(k,cb){var a=EV[k];if(!a)return;var i=a.indexOf(cb);if(i!==-1)a.splice(i,1);}},
 state:{player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);},interfaceGroup:function(g){return call('state.interfaceGroup',[g]);},varcs:function(ids){return call('state.varcs',[ids]);},ports:function(){return call('state.ports',[]);},gameTick:function(){return call('state.gameTick',[]);}},
 cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);}},
 notify:{windows:function(title,body){return call('notify.windows',[title,body]);}},
@@ -101,6 +102,8 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     // Server tick counter. Returns a NUMBER, not JSON, hence json:false; the host returns -1
     // when the client is not tracked, which is normalised to null so a plugin sees the same
     // "cannot read" shape every other state call uses rather than a magic number.
+    // Event channel: {seq,tick,events:[{seq,t,wall,op,len,kind,...}]} after sinceSeq (host ring, 512 cap).
+    'state.events':     { scope: 'state.read', json: true,    run: (a, pid) => bridge().events(pid, pClampNum(a[0], 0, 4294967295)) },
     'state.gameTick':   { scope: 'state.read', json: false,
                           run: (a, pid) => { const t = bridge().gameTick(pid); return (typeof t === 'number' && t >= 0) ? t : null; } },
     'cache.itemInfo':   { scope: 'cache.read', json: true,    run: (a) => bridge().itemInfo(pClampId(a[0])) },
@@ -462,6 +465,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'act.openScreenshots':    { scope: 'actuator',    json: false, run: (a) => bridge().openScreenshots(...pArgs(a)) },
     'act.renderToggle':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().renderToggle(pid, ...pArgs(a)) },
     'act.serverPacketArm':    { scope: 'actuator',    json: false, run: (a, pid) => bridge().serverPacketArm(pid, ...pArgs(a)) },
+    'host.eventsMask':        { scope: 'actuator',    json: false, run: (a, pid) => bridge().eventsMask(pid, pClampStr(a[0], 2000)) },
     'act.soundExport':        { scope: 'actuator',    json: false, run: (a) => bridge().soundExport(...pArgs(a)) },
     'act.soundFilterEnable':  { scope: 'actuator',    json: false, run: (a, pid) => bridge().soundFilterEnable(pid, ...pArgs(a)) },
     'act.soundMute':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().soundMute(pid, ...pArgs(a)) },
@@ -504,15 +508,24 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   }
 
   // Push the host poll cadence to every mounted plugin (no free-polling in plugins).
+  // Game events collected by rtxEvents since the last push ride along as ONE 'events'
+  // batch per plugin with state.read; `tick` stays the 4 Hz heartbeat it always was.
+  const pluginEventQueue = [];
   function pluginPush() {
+    const batch = pluginEventQueue.length ? pluginEventQueue.splice(0) : null;
     for (const m of pluginMounts.values()) {
       if (!m.frame) continue;
       pluginSendEvent(m, 'tick', null);
-      if (m.scopes.indexOf('state.read') !== -1) pluginSendEvent(m, 'state', lastSnap);
+      if (m.scopes.indexOf('state.read') !== -1) {
+        pluginSendEvent(m, 'state', lastSnap);
+        if (batch) pluginSendEvent(m, 'events', batch);
+      }
     }
   }
 
   function pluginBrokerInit() {
+    // rtxEvents (core/rtx-data.js) loads after this file, so subscribe here, at attach time.
+    rtxEvents.on('*', function (ev) { if (pluginMounts.size && pluginEventQueue.length < 4096) pluginEventQueue.push(ev); });
     window.addEventListener('message', async (ev) => {
       const m = ev.data;
       if (!m || m.__rtxPlugin !== PLUGIN_PROTO) return;

@@ -9,6 +9,7 @@
 #include "../../companion/RenderShare.h"  // launcher->companion render toggles
 #include "../../companion/SpecialShare.h" // shared layout for transient render-pass highlights
 #include "../../companion/NetProbeShare.h" // decoded server->client packet feed (companion framer hook)
+#include "../../companion/EventShare.h"    // opcode-filtered event ring (the event channel)
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -2691,6 +2692,198 @@ bool ServerPacketFeedEnable(std::uint32_t pid, bool on) {
     UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
     CloseHandle(h);
     return ok;
+}
+
+// ---- event channel (companion EventShare ring -> decoded JSON) -------------------
+// Field layouts below come from the handler decompiles already written down in this repo
+// (docs/server_packets_handler_map.md and the npDecoders table in ui-assets/panel_netprobe.js).
+// Anything without a documented layout is emitted as kind "raw" with the payload hex: the
+// panel shows it, nobody guesses.
+namespace {
+const char* const kEvSkills[29] = { "Attack", "Defence", "Strength", "Constitution", "Ranged",
+    "Prayer", "Magic", "Cooking", "Woodcutting", "Fletching", "Fishing", "Firemaking", "Crafting",
+    "Smithing", "Mining", "Herblore", "Agility", "Thieving", "Slayer", "Farming", "Runecrafting",
+    "Hunter", "Construction", "Summoning", "Dungeoneering", "Divination", "Invention",
+    "Archaeology", "Necromancy" };
+
+void ev_hex(std::string& o, const std::uint8_t* b, std::uint32_t n) {
+    static const char* hexd = "0123456789abcdef";
+    for (std::uint32_t i = 0; i < n; ++i) { o += hexd[b[i] >> 4]; o += hexd[b[i] & 0xF]; }
+}
+std::uint32_t ev_u32be(const std::uint8_t* b) {
+    return ((std::uint32_t)b[0] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[2] << 8) | b[3];
+}
+
+// Appends the kind-specific fields (after the common prefix). `n` is the kept byte count;
+// `len` the true wire length. Returns false when the record must fall back to raw.
+bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, int len) {
+    char t[128];
+    switch (op) {
+    case 0x04: {   // [xp: u32 LE][level: b4 + 0x80][skill: -b5]
+        if (n < 6) return false;
+        const std::uint32_t xp = (std::uint32_t)b[0] | ((std::uint32_t)b[1] << 8) |
+                                 ((std::uint32_t)b[2] << 16) | ((std::uint32_t)b[3] << 24);
+        const int level = (b[4] + 0x80) & 0xFF, sk = (256 - b[5]) & 0xFF;
+        std::snprintf(t, sizeof(t), "\"kind\":\"skill_update\",\"skill\":%d,\"name\":\"%s\",\"level\":%d,\"xp\":%u",
+                      sk, sk < 29 ? kEvSkills[sk] : "", level, xp);
+        o += t; return true;
+    }
+    case 0x2B: {   // [container: u16 BE][flags: u8] then per slot [slot smart][itemId+1: u24 BE][qty u8 | 0xFF u32 BE][variant if flags&2]
+        if (n < 3) return false;
+        std::uint32_t p = 0;
+        const int cont = (b[0] << 8) | b[1]; p = 2;
+        const int flags = b[p++];
+        std::snprintf(t, sizeof(t), "\"kind\":\"container_update\",\"container\":%d,\"flags\":%d,\"slots\":[", cont, flags);
+        o += t;
+        bool first = true; int count = 0; bool partial = false;
+        while (p < n && count < 64) {
+            int slot;
+            if (b[p] < 0x80) { slot = b[p]; p += 1; }
+            else { if (p + 2 > n) { partial = true; break; } slot = (((b[p] << 8) | b[p + 1]) + 0x8000) & 0xFFFF; p += 2; }
+            if (p + 3 > n) { partial = true; break; }
+            const std::uint32_t item1 = ((std::uint32_t)b[p] << 16) | ((std::uint32_t)b[p + 1] << 8) | b[p + 2]; p += 3;
+            std::uint32_t qty = 0; int item = -1;
+            if (item1 != 0) {
+                if (p >= n) { partial = true; break; }
+                qty = b[p++];
+                if (qty == 0xFF) { if (p + 4 > n) { partial = true; break; } qty = ev_u32be(b + p); p += 4; }
+                if (flags & 2) { if (p < n) p++; }
+                item = (int)item1 - 1;
+            }
+            std::snprintf(t, sizeof(t), "%s{\"slot\":%d,\"item\":%d,\"qty\":%u}", first ? "" : ",", slot, item, qty);
+            o += t; first = false; ++count;
+        }
+        // The kept window is 256 bytes: a big bank/inventory update carries more slots than fit.
+        o += "],\"partial\":"; o += (partial || (std::uint32_t)len > n) ? "true" : "false";
+        return true;
+    }
+    case 0x52: {   // [sig NUL-terminated, i/s][args in REVERSE sig order: s = NUL string, i = i32 BE][scriptId: i32 BE]
+        std::uint32_t p = 0; std::string sig;
+        while (p < n && b[p] != 0 && sig.size() < 16) sig.push_back((char)b[p++]);
+        if (sig.empty() || p >= n) return false;
+        for (char c : sig) if (c != 'i' && c != 's') return false;
+        p++;
+        std::vector<std::string> args(sig.size());
+        for (int i = (int)sig.size() - 1; i >= 0; --i) {
+            if (sig[(std::size_t)i] == 's') {
+                std::uint32_t s0 = p;
+                while (p < n && b[p] != 0) ++p;
+                if (p >= n) return false;                      // truncated string: raw
+                args[(std::size_t)i] = "\"" + chat_pkt_escape(b + s0, p - s0) + "\"";
+                p++;
+            } else {
+                if (p + 4 > n) return false;
+                args[(std::size_t)i] = std::to_string((std::int32_t)ev_u32be(b + p)); p += 4;
+            }
+        }
+        if (p + 4 > n) return false;
+        const std::uint32_t script = ev_u32be(b + p);
+        std::snprintf(t, sizeof(t), "\"kind\":\"runclientscript\",\"script\":%u,\"sig\":\"%s\",\"args\":[", script, sig.c_str());
+        o += t;
+        for (std::size_t i = 0; i < args.size(); ++i) { if (i) o += ","; o += args[i]; }
+        o += "]"; return true;
+    }
+    case 0x5C:     // reads 1 byte -> skill block +0x18
+        if (n < 1) return false;
+        std::snprintf(t, sizeof(t), "\"kind\":\"run_energy\",\"value\":%d", (int)b[0]);
+        o += t; return true;
+    case 0x00:     // reads 2 bytes, byte-swapped -> skill block +0x1c
+        if (n < 2) return false;
+        std::snprintf(t, sizeof(t), "\"kind\":\"run_weight\",\"value\":%d", (int)(std::int16_t)((b[0] << 8) | b[1]));
+        o += t; return true;
+    case 0x8D:     // two u32 BE, client echoes back (9-byte reply)
+        if (n < 8) return false;
+        std::snprintf(t, sizeof(t), "\"kind\":\"ping\",\"a\":%u,\"b\":%u", ev_u32be(b), ev_u32be(b + 4));
+        o += t; return true;
+    default:
+        return false;   // 0x05 / 0x51 ge_offer: slot-indexed write, field layout not documented in the repo -> raw
+    }
+}
+}  // namespace
+
+// Everything after `since` (cap 512 per call, oldest first) plus the current cursor and the
+// reader's game tick counter, so one poll serves both the event stream and the tick channel.
+std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
+    wchar_t name[64];
+    rtx::events::MakeSectionName(pid, name);
+    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+    if (!h) return "{\"ok\":false,\"why\":\"companion not loaded\"}";
+    auto* sh = reinterpret_cast<const rtx::events::Share*>(
+        MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(rtx::events::Share)));
+    if (!sh) { CloseHandle(h); return "{\"ok\":false,\"why\":\"map failed\"}"; }
+    std::string out;
+    if (sh->magic != rtx::events::kMagic || sh->version != rtx::events::kVersion) {
+        out = "{\"ok\":false,\"why\":\"share version mismatch\"}";
+    } else {
+        std::uint32_t tickCount = 0; double age = 0;
+        const bool haveTick = TickState(pid, tickCount, age);
+        const std::uint64_t written = sh->written;
+        const std::uint64_t oldest  = written > (std::uint64_t)rtx::events::kMaxRecords
+                                     ? written - rtx::events::kMaxRecords : 0;
+        std::uint64_t from = since > oldest ? since : oldest;
+        if (from > written) from = written;
+        constexpr std::uint64_t kMaxPerCall = 512;
+        if (written - from > kMaxPerCall) from = written - kMaxPerCall;
+        char meta[256];
+        std::snprintf(meta, sizeof(meta),
+            "{\"ok\":true,\"seq\":%llu,\"tick\":%d,\"from\":%llu,\"inbound\":%llu,\"truncated\":%llu,"
+            "\"hook\":%s,\"mask\":[%u,%u,%u,%u,%u,%u,%u,%u],\"events\":[",
+            (unsigned long long)written, haveTick ? (int)tickCount : -1, (unsigned long long)from,
+            (unsigned long long)sh->inbound, (unsigned long long)sh->truncated,
+            (sh->flags & 1) ? "true" : "false",
+            sh->mask[0], sh->mask[1], sh->mask[2], sh->mask[3], sh->mask[4], sh->mask[5], sh->mask[6], sh->mask[7]);
+        out = meta;
+        bool first = true;
+        rtx::events::Record r;
+        for (std::uint64_t i = from; i < written; ++i) {
+            const rtx::events::Record& slot = sh->recs[i % rtx::events::kMaxRecords];
+            const std::uint32_t want = (std::uint32_t)((i + 1) * 2);   // companion: pub = (i+1)*2, odd while filling
+            if (slot.seq != want) continue;                            // lapped or in flux
+            MemoryBarrier();
+            std::memcpy(&r, &slot, sizeof(r));
+            MemoryBarrier();
+            if (slot.seq != want) continue;                            // rewritten during the copy
+            std::uint32_t n = r.length < 0 ? 0 : (std::uint32_t)r.length;
+            if (n > (std::uint32_t)rtx::events::kPayload) n = rtx::events::kPayload;
+            char b[160];
+            std::snprintf(b, sizeof(b), "%s{\"seq\":%llu,\"t\":%u,\"wall\":%u,\"op\":%d,\"len\":%d,",
+                          first ? "" : ",", (unsigned long long)(i + 1), r.tick, r.wallMs, r.opcode, r.length);
+            out += b; first = false;
+            const std::size_t mark = out.size();
+            if (!ev_decode(out, r.opcode, r.payload, n, r.length)) {
+                out.resize(mark);
+                out += "\"kind\":\"raw\",\"hex\":\"";
+                ev_hex(out, r.payload, n);
+                out += "\"";
+            }
+            out += "}";
+        }
+        out += "]}";
+    }
+    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+    CloseHandle(h);
+    return out;
+}
+
+// Launcher -> companion: which opcodes the hook records (bit op&31 of word op>>5). Creates
+// the section if the companion has not yet, so a mask set before injection survives it.
+bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]) {
+    wchar_t name[64];
+    rtx::events::MakeSectionName(pid, name);
+    HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
+    if (!h) h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                   sizeof(rtx::events::Share), name);
+    if (!h) return false;
+    auto* sh = reinterpret_cast<rtx::events::Share*>(
+        MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::events::Share)));
+    if (!sh) { CloseHandle(h); return false; }
+    for (int i = 0; i < 8; ++i) sh->mask[i] = mask[i];
+    sh->mask[0] &= ~(1u << 0x15);                             // never message_game
+    MemoryBarrier();
+    sh->maskSet = 1;
+    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+    CloseHandle(h);
+    return true;
 }
 
 // Render toggles (launcher->companion). which: 0 = hide NPCs, 1 = hide other players,

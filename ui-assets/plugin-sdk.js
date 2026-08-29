@@ -14,7 +14,8 @@
 
   var seq = 1;
   var pending = Object.create(null);     // id -> { resolve, reject, timer }
-  var listeners = { tick: [], state: [] };
+  var listeners = { tick: [], state: [], events: [] };
+  var eventSubs = {};                    // kind -> [cb]; '*' = every kind
   var readyCbs = [];
   var session = { ready: false, scopes: [], apiVersion: null, pluginId: null };
 
@@ -67,6 +68,13 @@
         cbs.forEach(function (cb) { try { cb(); } catch (e) {} });
         return;
       }
+      if (m.event === 'events') {
+        var arr = Array.isArray(m.data) ? m.data : [];
+        arr.forEach(function (ev) {
+          var fs = (eventSubs[ev && ev.kind] || []).concat(eventSubs['*'] || []);
+          fs.forEach(function (f) { try { f(ev); } catch (e) {} });
+        });
+      }
       var ls = listeners[m.event];
       if (ls) ls.forEach(function (cb) { try { cb(m.data); } catch (e) {} });
     }
@@ -87,6 +95,13 @@
     // ---- events (host-pushed; no free-polling) ----
     on: function (evt, cb) {
       if (listeners[evt] && typeof cb === 'function') listeners[evt].push(cb);
+    },
+    // Game events (requires state.read). kind: skill_update, container_update, runclientscript,
+    // ge_offer, run_energy, run_weight, ping, raw, gameTick; '*' for all. Delivered in batches
+    // on the host push cadence, one callback per event, in capture order.
+    events: {
+      on:  function (kind, cb) { if (typeof cb !== 'function') return; (eventSubs[kind] = eventSubs[kind] || []).push(cb); },
+      off: function (kind, cb) { var a = eventSubs[kind]; if (!a) return; var i = a.indexOf(cb); if (i !== -1) a.splice(i, 1); }
     },
 
     // ---- scope: state.read (current account only) ----
