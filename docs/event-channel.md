@@ -116,8 +116,11 @@ decompilation on 2026-08-30:
 - Remove: found -> 10785 clears it. Add: present -> return, else 10626 builds it (11423 create,
   10819 dress, 10818 value, 11426 set, 10822 refresh).
 
-A struct describes itself in **param 2794**, which is what the Events panel shows, so
-`script 10623(35826, 0)` reads as `buff bar remove: Wise - Grants you extra experience...`.
+A struct describes itself in **param 2794**, which is a DESCRIPTION and not a title: these
+structs carry no name anywhere in the cache (their other params are sprite ids and
+thresholds; following them lands on unrelated structs). The panel therefore shows the name
+when the description leads with one ("Wise - ...", "Pulse Core - 2% XP Boost") and the
+opening clause otherwise, with the full text on the row as a tooltip.
 Observed live: 35826 Wise, 35804 the explosion-at-100% perk, 6196 Quiver ammo, 30925 Pulse Core.
 
 Consequence: hooking 10623 gives exact buff add and remove events, with the tier already

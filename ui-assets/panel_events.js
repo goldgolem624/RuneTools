@@ -55,21 +55,34 @@
     })();
     return "";
   }
-  // A buff-bar struct describes itself in param 2794 (see script 10623 in the docs).
+  // A buff-bar struct carries only param 2794, and that is a DESCRIPTION, not a title: the cache
+  // holds no separate name for these (the other params are sprite ids and thresholds, and
+  // following them lands on unrelated structs). Some descriptions lead with the name, as in
+  // "Wise - Grants you extra experience" or "Pulse Core - 2% XP Boost", so take that when it is
+  // there and otherwise show the opening clause. The full text goes in the row title.
+  function evStructLabel(text) {
+    const t = String(text || "").replace(/<[^>]*>/g, "").trim();
+    if (!t) return "";
+    const dash = t.match(/^([^-]{2,28}) - /);
+    if (dash) return dash[1].trim();
+    const stop = t.search(/[.,;:]/);
+    const head = stop > 2 ? t.slice(0, stop) : t;
+    return head.length > 38 ? head.slice(0, 37) + "\u2026" : head;
+  }
   function evStructName(id) {
-    if (!(id > 0)) return "";
-    if (EV_STRUCT.has(id)) return EV_STRUCT.get(id) || "";
-    EV_STRUCT.set(id, "");
+    if (!(id > 0)) return null;
+    if (EV_STRUCT.has(id)) return EV_STRUCT.get(id);
+    EV_STRUCT.set(id, null);
     (async () => {
       const ps = await rtxData.call("cache.structParams", id);
       const strs = (ps && ps.strs) || {};
       const t = strs["2794"] || strs[2794];
       if (typeof t === "string" && t) {
-        EV_STRUCT.set(id, t.length > 46 ? (t.slice(0, 45) + "\u2026") : t);
+        EV_STRUCT.set(id, { label: evStructLabel(t), full: t.replace(/<[^>]*>/g, "") });
         evPaintSoon();
       }
     })();
-    return "";
+    return null;
   }
   // A name that arrives late marks the list dirty; the panel's own 250 ms tick repaints it.
   function evPaintSoon() { evDirty = true; }
@@ -80,8 +93,9 @@
   function evScriptText(ev) {
     const a = ev.args || [];
     if (ev.script === 10623 && a.length >= 2) {
-      const nm = evStructName(a[0]);
-      return "buff bar " + (a[1] ? "add" : "remove") + ": " + (nm || ("struct " + a[0]));
+      const st = evStructName(a[0]);
+      ev._full = st ? st.full : "";
+      return "buff bar " + (a[1] ? "add" : "remove") + ": " + (st ? st.label : "struct " + a[0]);
     }
     // 1264(title, when, what, extra, where, world, who, fc, link, ticks): the Community Event
     // notice. It assembles the blurb, writes it into 1234:11 or 1465:36 depending on which
@@ -185,8 +199,10 @@
       // wall is epoch ms low 32 bits: rebuild it relative to now (records are at most minutes old).
       let t = '';
       if (typeof ev.wall === 'number') { let d = (Date.now() % 4294967296) - ev.wall; if (d < 0) d += 4294967296; t = new Date(Date.now() - d).toTimeString().slice(0, 8); }
-      return '<div class="ev-row' + (ev.kind === 'raw' ? ' raw' : '') + '"><span class="t">' + t + '</span><span class="k">' + evEsc(ev.kind || 'raw')
-        + '</span><span class="o">' + evOp(ev.op) + '</span><span class="f">' + evEsc(evFields(ev)) + '</span></div>';
+      const body = evFields(ev);                       // sets ev._full for the rows that have more to say
+      const tip = ev._full ? ' data-tip="' + evEsc(ev._full).replace(/"/g, '&quot;') + '"' : '';
+      return '<div class="ev-row' + (ev.kind === 'raw' ? ' raw' : '') + '"' + tip + '><span class="t">' + t + '</span><span class="k">' + evEsc(ev.kind || 'raw')
+        + '</span><span class="o">' + evOp(ev.op) + '</span><span class="f">' + evEsc(body) + '</span></div>';
     }).join('');
   }
 
