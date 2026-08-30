@@ -62,7 +62,8 @@
     EV_STRUCT.set(id, "");
     (async () => {
       const ps = await rtxData.call("cache.structParams", id);
-      const t = ps && (ps["2794"] || ps[2794]);
+      const strs = (ps && ps.strs) || {};
+      const t = strs["2794"] || strs[2794];
       if (typeof t === "string" && t) {
         EV_STRUCT.set(id, t.length > 46 ? (t.slice(0, 45) + "\u2026") : t);
         evPaintSoon();
@@ -81,6 +82,13 @@
     if (ev.script === 10623 && a.length >= 2) {
       const nm = evStructName(a[0]);
       return "buff bar " + (a[1] ? "add" : "remove") + ": " + (nm || ("struct " + a[0]));
+    }
+    // 1264(title, when, what, extra, where, world, who, fc, link, ticks): the Community Event
+    // notice. It assembles the blurb, writes it into 1234:11 or 1465:36 depending on which
+    // layout is active, and hands 1269 a countdown that blanks it again.
+    if (ev.script === 1264 && a.length >= 3) {
+      const txt = a.filter(x => typeof x === "string" && x.length);
+      return "community event notice: " + txt.slice(0, 3).join(" | ") + (txt.length > 3 ? " ..." : "");
     }
     return "script " + ev.script + "(" + a.map(x => typeof x === "string" ? JSON.stringify(x) : x).join(", ") + ")";
   }

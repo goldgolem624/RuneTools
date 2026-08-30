@@ -122,3 +122,16 @@ Observed live: 35826 Wise, 35804 the explosion-at-100% perk, 6196 Quiver ammo, 3
 
 Consequence: hooking 10623 gives exact buff add and remove events, with the tier already
 resolved by 9101, instead of polling the bar.
+
+### Other scripts seen on this channel
+
+- **1264(title, when, what, extra, where, world, who, fc, link, ticks)**: the Community Event
+  notice. It assembles the blurb (When / What / Where / World / Who / FC / Link, each only when
+  non empty), writes it to component 1234:11 or 1465:36 depending on varbits 26696 and 27169,
+  unhides 1234:4 and 1465:30, and starts script 1269 as a countdown that blanks the notice and
+  hides it again. The trailing int is that countdown length in timer ticks.
+- **ping (0x8D)**: an 8 byte fixed packet carrying two 32 bit big endian values. Observed values
+  are uniformly spread across the full range with no monotonic component across a session, so
+  they read as a server challenge the client echoes back rather than a timestamp or a counter.
+  The reply is outbound and this channel captures inbound only, so the echo is not verified
+  here: the two numbers are reported verbatim rather than being given a meaning we cannot prove.
