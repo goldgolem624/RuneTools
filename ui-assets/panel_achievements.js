@@ -223,7 +223,7 @@
             let prevOk = true;
             for (const ln of (prog[p.id] || [])) {
               if (ln.prereqOf === undefined) continue;
-              if (!ln.label) ln.label = 'Complete: ' + ((defsById[ln.prereqOf] && defsById[ln.prereqOf].name) || ('achievement #' + ln.prereqOf));
+              if (!ln.label) ln.label = 'Requires achievement: ' + ((defsById[ln.prereqOf] && defsById[ln.prereqOf].name) || ('achievement #' + ln.prereqOf));
               const ok = done.has(ln.prereqOf);
               if (ok !== ln.ok) { ln.ok = ok; ln.cur = ok ? 1 : 0; }
               if (!ln.ok) prevOk = false;
@@ -271,7 +271,10 @@
       for (const q of (a.reqs || [])) {
         let cur = 0; for (const vb of q.varbits) cur += (readVb(vb, vp) || 0);
         const ok = cur >= q.value; if (ok) sat++;
-        const dsc = q.desc || ((a.reqs.length === 1 && q.value > 1 && a.desc) ? a.desc : (q.value > 1 ? 'Progress counter' : 'Completion flag'));
+        // Same wording as the tooltip: an unnamed requirement says what it counts, not the
+        // name of an internal var (most carry no text in the cache at all).
+        const dsc = q.desc || ((q.value > 1 && a.desc) ? a.desc
+                    : (q.value > 1 ? 'Counted by the game' : 'Marked complete by the game'));
         reqs.push({ description: dsc, current: cur, target: q.value, complete: ok, varbits: q.varbits.slice() });
       }
       const br = achBitReqs(a);
@@ -324,7 +327,7 @@
           prevSeen = true;
           const dep = byId[q.prereqOf];
           const defs = achDefById();
-          if (!q.description) q.description = 'Complete: ' + ((defs[q.prereqOf] && defs[q.prereqOf].name) || ('achievement #' + q.prereqOf));
+          if (!q.description) q.description = 'Requires achievement: ' + ((defs[q.prereqOf] && defs[q.prereqOf].name) || ('achievement #' + q.prereqOf));
           const ok = !!(dep && dep.complete);
           if (ok !== q.complete) { q.complete = ok; q.current = ok ? 1 : 0; changed = true; }
           if (!q.complete) prevOk = false;
@@ -352,9 +355,9 @@
     if (a.reward) tip.push('Reward: ' + a.reward);
     if (a.points) tip.push(a.points + ' achievement points');
     const poolLines = lines.filter(ln => !ln.gate);
-    if (poolLines.length > 1) tip.push('Requires ' + need + ' of ' + poolLines.length + ' below' +
-      (need === 1 ? ' (any one)' : need >= poolLines.length ? ' (all)' : ''));
-    if (lines.some(ln => ln.gate)) tip.push('Skill and prerequisite lines are always required.');
+    if (poolLines.length > 1) tip.push(need === 1 ? 'Do any one of these:'
+      : need >= poolLines.length ? 'Do all of these:' : ('Do any ' + need + ' of these:'));
+    if (lines.some(ln => ln.gate)) tip.push('Lines marked with a lock are required on top of that.');
     for (const ln of lines) {
       // Many requirements carry NO description in the cache: the game's own requirement-text
       // builder (script10988) reads the same per-requirement string and simply skips the line
@@ -362,8 +365,14 @@
       // the meaning. There is no hidden text to recover, so fall back to an honest shape-based
       // label: a target above 1 is a progress counter, a target of exactly 1 is the
       // completion flag the server sets when the achievement is judged done.
-      const head = ln.label ? ln.label : (ln.req > 1 ? 'Progress counter' : 'Completion flag');
-      tip.push((ln.ok ? '✓ ' : '• ') + head + '  (' + ln.cur + '/' + ln.req + ')');
+      // Most requirements carry no text in the cache (the game's own builder, script 10988,
+      // skips the empty ones and lets the achievement description carry the meaning), so an
+      // unnamed line says what it is counting rather than naming an internal var: a target
+      // above 1 is a tally the game keeps, a target of 1 is the flag it sets when done.
+      let head = ln.label;
+      if (!head) head = ln.req > 1 ? (a.desc || 'Counted by the game') : 'Marked complete by the game';
+      const count = ln.req > 1 ? ('  ' + ln.cur + ' of ' + ln.req) : '';
+      tip.push((ln.ok ? '✓ ' : ln.gate ? '• ' : '• ') + head + count);
       if (ln.src) tip.push('    Source: ' + ln.src);
     }
     tip.push('Status: ' + (isDone ? 'complete' : 'incomplete'));
