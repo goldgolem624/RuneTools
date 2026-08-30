@@ -100,3 +100,25 @@ Record the measured interval from step 1 in the report of the run.
 runclientscript records cut by the window decode the arguments they have and report `script: -1, partial: true` (the script id is the last field on the wire).
 
 ge_offer (0x05 / 0x51), verified live on 2026-08-29 with two offers in two slots: bytes 0-3 are a fixed `00 02 07 03` header, byte 4 is the slot index, bytes 5-6 the item id (big-endian); the remaining fields are not pinned down, so the event carries the live offer read from the GE slot array in memory (`offer`) plus the packet item (`item`) for cross-checking.
+
+## Reading a runclientscript line
+
+Script 10623(struct, mode) is the buff bar: it adds or removes ONE entry. Traced through the
+decompilation on 2026-08-30:
+
+- 10624 checks param 2961 on the struct; when set, 9101 swaps in the tier variant for the
+  player, choosing by STAT_BASE(5) against the thresholds in params 2965 and 2967 and returning
+  the struct in 2964, 2966 or 2968. So a tiered effect resolves to its current rank here.
+- mode 0 removes (15426 -> 15427), mode 1 adds (10625 -> 15425).
+- Both call 15428, which walks the bar's component list from param 8100, following the next
+  link in param 8105 for up to 50 entries, and matches on param 8106.
+  **Param 8106 is the identity of a buff bar slot**: it holds the struct id the slot shows.
+- Remove: found -> 10785 clears it. Add: present -> return, else 10626 builds it (11423 create,
+  10819 dress, 10818 value, 11426 set, 10822 refresh).
+
+A struct describes itself in **param 2794**, which is what the Events panel shows, so
+`script 10623(35826, 0)` reads as `buff bar remove: Wise - Grants you extra experience...`.
+Observed live: 35826 Wise, 35804 the explosion-at-100% perk, 6196 Quiver ammo, 30925 Pulse Core.
+
+Consequence: hooking 10623 gives exact buff add and remove events, with the tier already
+resolved by 9101, instead of polling the bar.

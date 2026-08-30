@@ -32,19 +32,77 @@
   rtxEvents.on('*', evOnEvent);
   rtxEvents.on('gameTick', evOnTick);
 
+  // Containers seen on this channel. The full list lives in panel_containers; these are the
+  // ones that actually appear in packet traffic, so a line reads "Backpack" not "93".
+  const EV_CONTAINERS = {
+    93: "Backpack", 94: "Worn equipment", 95: "Bank", 96: "Bank (tab)", 530: "Beast of Burden",
+    623: "Money pouch", 670: "Cosmetic overrides", 676: "Death reclaim", 787: "Loot log",
+    795: "Oddments storage", 890: "GE favourites", 930: "Death overflow",
+    523: "GE collect 1", 524: "GE collect 2", 525: "GE collect 3", 526: "GE collect 4",
+    527: "GE collect 5", 528: "GE collect 6", 783: "GE collect 7", 784: "GE collect 8",
+  };
+  function evContainer(id) { return EV_CONTAINERS[id] ? (EV_CONTAINERS[id] + " (" + id + ")") : ("container " + id); }
+
+  // Item and struct names are resolved once each and cached; a miss repaints when it lands.
+  const EV_ITEM = new Map(), EV_STRUCT = new Map();
+  function evItemName(id) {
+    if (!(id > 0)) return "";
+    if (EV_ITEM.has(id)) return EV_ITEM.get(id) || "";
+    EV_ITEM.set(id, "");
+    (async () => {
+      const info = await rtxData.call("cache.itemInfo", id);
+      if (info && info.name) { EV_ITEM.set(id, info.name); evPaintSoon(); }
+    })();
+    return "";
+  }
+  // A buff-bar struct describes itself in param 2794 (see script 10623 in the docs).
+  function evStructName(id) {
+    if (!(id > 0)) return "";
+    if (EV_STRUCT.has(id)) return EV_STRUCT.get(id) || "";
+    EV_STRUCT.set(id, "");
+    (async () => {
+      const ps = await rtxData.call("cache.structParams", id);
+      const t = ps && (ps["2794"] || ps[2794]);
+      if (typeof t === "string" && t) {
+        EV_STRUCT.set(id, t.length > 46 ? (t.slice(0, 45) + "\u2026") : t);
+        evPaintSoon();
+      }
+    })();
+    return "";
+  }
+  // A name that arrives late marks the list dirty; the panel's own 250 ms tick repaints it.
+  function evPaintSoon() { evDirty = true; }
+
+  // Scripts whose arguments we understand, so the line says what happened rather than which
+  // script ran. 10623(struct, mode) adds or removes one buff bar entry: see the call chain
+  // 10624 -> 9101 (tier by level) -> 15426/10625 -> 15428 (find by param 8106).
+  function evScriptText(ev) {
+    const a = ev.args || [];
+    if (ev.script === 10623 && a.length >= 2) {
+      const nm = evStructName(a[0]);
+      return "buff bar " + (a[1] ? "add" : "remove") + ": " + (nm || ("struct " + a[0]));
+    }
+    return "script " + ev.script + "(" + a.map(x => typeof x === "string" ? JSON.stringify(x) : x).join(", ") + ")";
+  }
+
   function evFields(ev) {
     switch (ev.kind) {
       case 'skill_update': return (ev.name || ('skill ' + ev.skill)) + ' Lv' + ev.level + ' xp=' + Number(ev.xp).toLocaleString('en-US');
       case 'container_update': {
-        const s = (ev.slots || []).slice(0, 8).map(x => '#' + x.slot + (x.item < 0 ? ' empty' : ' item ' + x.item + ' x' + x.qty)).join(', ');
-        return 'container ' + ev.container + ' flags ' + ev.flags + ': ' + (s || '(no slots)') + ((ev.slots || []).length > 8 ? ', ...' : '') + (ev.partial ? ' [partial]' : '');
+        const s = (ev.slots || []).slice(0, 8).map(x => {
+          if (x.item < 0) return 'slot ' + x.slot + ' emptied';
+          const nm = evItemName(x.item);
+          return 'slot ' + x.slot + ' = ' + (nm ? nm : ('item ' + x.item)) + ' x' + Number(x.qty).toLocaleString('en-US');
+        }).join(', ');
+        return evContainer(ev.container) + ': ' + (s || '(no slots)') + ((ev.slots || []).length > 8 ? ', ...' : '') + (ev.partial ? ' [partial]' : '');
       }
-      case 'runclientscript': return 'script ' + ev.script + '(' + (ev.args || []).map(a => typeof a === 'string' ? JSON.stringify(a) : a).join(', ') + ')';
+      case 'runclientscript': return evScriptText(ev);
       case 'ge_offer': {
         const o = ev.offer || {};
         if (o.item == null) return 'slot ' + ev.slot + ' (offer unreadable) hex ' + (ev.hex || '');
         const kind = o.type === 0 ? 'buy' : o.type === 1 ? 'sell' : ('type ' + o.type);
-        return 'slot ' + ev.slot + ' ' + kind + ' item ' + o.item + ' x' + o.qty + ' @ ' + Number(o.price).toLocaleString('en-US')
+        const inm = evItemName(o.item);
+        return 'slot ' + ev.slot + ' ' + kind + ' ' + (inm || ('item ' + o.item)) + ' x' + o.qty + ' @ ' + Number(o.price).toLocaleString('en-US')
              + ' filled ' + o.filled + '/' + o.qty + ' (' + Number(o.filledValue).toLocaleString('en-US') + ' gp) status ' + o.status;
       }
       case 'run_energy': return 'energy ' + ev.value;
