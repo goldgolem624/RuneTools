@@ -239,7 +239,12 @@
           .ev-stat b { color: var(--accent-hi); font-weight: 600; }
           .ev-stat span { color: var(--text-dim); }
           /* wrap: the type toggles are a row of unknown length and must not run off the panel */
-          .ev-mask { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+          .ev-mask { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; }
+          /* Any text in this panel can be arbitrary game or packet data, so it wraps by default;
+             a long unbroken token (a hex payload, a comma separated mask) has nothing to break on
+             otherwise and runs off the edge. */
+          .ev-card, .ev-card > div { min-width: 0; max-width: 100%; }
+          .ev-card, .ev-card * { overflow-wrap: anywhere; }
           .ev-mask input { flex: 1; font-size: 11px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: monospace; }
           .ev-list { margin: 0 12px 12px; font-family: monospace; font-size: 11px; }
           .ev-row { display: flex; gap: 8px; padding: 3px 6px; border-bottom: 1px solid var(--border); align-items: baseline; }
@@ -404,7 +409,13 @@
   async function evMaskApply() {
     const csv = $('evMask').value;
     const ok = await rtxData.call('host.eventsMask', csv);
-    $('evMaskMsg').textContent = ok ? ('Applied. Packets: ' + csv + '. Chat is never recorded here.')
+    const n = csv.split(',').filter(x => x.trim() !== '').length;
+    // Never print the raw list: 256 comma separated numbers have no spaces to wrap on and run
+    // off the panel. Say how many, and name them only when the list is short enough to read.
+    const what = n >= 250 ? 'every packet type (' + n + ')'
+               : n > 12   ? (n + ' packet types')
+               : ('packets ' + csv);
+    $('evMaskMsg').textContent = ok ? ('Applied: ' + what + '. Chat is never recorded here.')
                                     : 'Could not apply: the companion is not loaded in this client.';
   }
 

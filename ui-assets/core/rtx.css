@@ -362,7 +362,13 @@
   .win-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column;
               /* Preferences font size: panels set explicit px sizes throughout, so the size
                  preference zooms window content as a whole (text, icons, controls together). */
-              zoom: var(--content-zoom, 1); }
+              zoom: var(--content-zoom, 1);
+              /* Panels show arbitrary game data: item lists, hex payloads, comma separated ids,
+                 names with no spaces. A long unbroken run has nothing to wrap on and runs past
+                 the window edge, so allow a break anywhere by default. It only applies when a
+                 word would otherwise overflow, and white-space: nowrap still wins where a panel
+                 deliberately keeps something on one line. */
+              overflow-wrap: anywhere; }
   /* HUD windows (aura groups, XP meter, metronome) are pixel-precise overlays sized by the
      user: a fractional zoom re-rasterises their text and blurs it. They keep 1:1. */
   .win.hud .win-body { zoom: 1; }
