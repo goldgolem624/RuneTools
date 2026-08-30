@@ -166,12 +166,25 @@
     switch (ev.kind) {
       case 'skill_update': return (ev.name || ('skill ' + ev.skill)) + ' Lv' + ev.level + ' xp=' + Number(ev.xp).toLocaleString('en-US');
       case 'container_update': {
-        const s = (ev.slots || []).slice(0, 8).map(x => {
-          if (x.item < 0) return 'slot ' + x.slot + ' emptied';
-          const nm = evItemName(x.item);
-          return 'slot ' + x.slot + ' = ' + (nm ? nm : ('item ' + x.item)) + ' x' + Number(x.qty).toLocaleString('en-US');
-        }).join(', ');
-        return evContainer(ev.container) + ': ' + (s || '(no slots)') + ((ev.slots || []).length > 8 ? ', ...' : '') + (ev.partial ? ' [partial]' : '');
+        // Every slot, not a head of them: the packet is already bounded by the capture window
+        // (the reader marks a cut list [partial]), and a truncated line hides the change the
+        // reader is being consulted about. Runs of emptied slots collapse so a bank clear does
+        // not print two hundred identical clauses.
+        const sl = ev.slots || [];
+        const parts = [];
+        for (let i = 0; i < sl.length; i++) {
+          const x = sl[i];
+          if (x.item < 0) {
+            let j = i;
+            while (j + 1 < sl.length && sl[j + 1].item < 0 && sl[j + 1].slot === sl[j].slot + 1) j++;
+            parts.push(j > i ? ('slots ' + x.slot + '-' + sl[j].slot + ' emptied') : ('slot ' + x.slot + ' emptied'));
+            i = j;
+          } else {
+            const nm = evItemName(x.item);
+            parts.push('slot ' + x.slot + ' = ' + (nm || ('item ' + x.item)) + ' x' + Number(x.qty).toLocaleString('en-US'));
+          }
+        }
+        return evContainer(ev.container) + ': ' + (parts.join(', ') || '(no slots)') + (ev.partial ? ' [partial]' : '');
       }
       case 'runclientscript': return evScriptText(ev);
       case 'ge_offer': {
