@@ -254,6 +254,8 @@
       wrap = document.createElement('div'); wrap.id = 'evWrap';
       wrap.innerHTML = `
         <div class="ev-head"><div class="ev-title">Event channel</div>
+          <button class="ev-btn" id="evCopy">Copy</button>
+          <button class="ev-btn" id="evCopyJson">Copy JSON</button>
           <button class="ev-btn" id="evPause">Pause</button>
           <button class="ev-btn" id="evClear">Clear</button></div>
         <div class="ev-card" id="evTickCard"></div>
@@ -275,6 +277,8 @@
       c.appendChild(wrap);
       $('evPause').onclick = () => { evPaused = !evPaused; $('evPause').textContent = evPaused ? 'Resume' : 'Pause'; $('evPause').classList.toggle('on', evPaused); };
       $('evClear').onclick = () => { evLog.length = 0; for (const k in evCounts) delete evCounts[k]; evTick.count = 0; evTick.dts.length = 0; evDirty = true; };
+      $('evCopy').onclick = () => evCopy(false);
+      $('evCopyJson').onclick = () => evCopy(true);
       $('evMask').value = EV_DEFAULT_MASK;
       $('evMaskDef').onclick = () => { $('evMask').value = EV_DEFAULT_MASK; evMaskApply(); evPaintToggles(); };
       // Every opcode, not just the named ones. Undecoded packets arrive as raw hex, which is how
@@ -360,6 +364,41 @@
          + ', out of 256 the game can send. Anything not switched on is not captured at all, and '
          + 'chat has its own channel. Use Everything to see the rest as raw hex.');
     $('evMaskAll').classList.toggle('on', total >= 250);
+  }
+
+  // Oldest first, so a pasted log reads in the order things happened.
+  function evCopyText() {
+    const head = 'RuneToolsX event log  ' + new Date().toISOString()
+      + '  client ' + (window.rtxEventsPoll ? rtxEventsPoll.pid : '?')
+      + '  mask ' + (($('evMask') || {}).value || '')
+      + '  ' + evLog.length + ' events' + nlChar;
+    const rows = evLog.slice().reverse().map(ev => {
+      let t = '';
+      if (typeof ev.wall === 'number') { let d = (Date.now() % 4294967296) - ev.wall; if (d < 0) d += 4294967296; t = new Date(Date.now() - d).toTimeString().slice(0, 8); }
+      return [t, evOp(ev.op), ev.kind || 'raw', evFields(ev)].join('\t');
+    });
+    return head + rows.join(nlChar);
+  }
+  const nlChar = String.fromCharCode(10);
+  async function evCopy(asJson) {
+    let text;
+    if (asJson) {
+      const out = evLog.slice().reverse().map(ev => {
+        const o = {}; for (const k in ev) if (k.charAt(0) !== '_') o[k] = ev[k];
+        return o;
+      });
+      text = JSON.stringify({ at: new Date().toISOString(), pid: window.rtxEventsPoll ? rtxEventsPoll.pid : 0,
+                              mask: (($('evMask') || {}).value || ''), events: out }, null, 1);
+    } else {
+      text = evCopyText();
+    }
+    const cap = 65536, over = text.length > cap;
+    if (over) text = text.slice(0, cap - 80) + nlChar + '... trimmed at 65536 characters (' + evLog.length + ' events captured)';
+    const ok = await rtxData.call('clipboard.copy', text);
+    const msg = $('evMaskMsg');
+    if (msg) msg.textContent = (ok === null || ok === false)
+      ? 'Copy failed: the host has no clipboard binding.'
+      : ('Copied ' + evLog.length + ' events' + (asJson ? ' as JSON' : '') + (over ? ', trimmed to fit the clipboard limit' : '') + '.');
   }
 
   async function evMaskApply() {
