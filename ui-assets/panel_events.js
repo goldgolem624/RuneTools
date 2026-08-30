@@ -201,15 +201,15 @@
       default: return 'len ' + ev.len + ' hex ' + (ev.hex || '');
     }
   }
-  function evEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-  // Wire text verbatim, with the bytes that do not print shown as what they are. RS strings
-  // carry CP-1252 codes the client renders itself: 0xA0 stands in for a space inside a name
-  // and 0x92 for an apostrophe, and passing those straight through paints glyphs that look
-  // like stray letters. Control codes and the C1 range become <a0> so the row shows the
-  // actual content; ordinary Unicode is left alone.
-  function evWire(s) {
-    return String(s == null ? '' : s).replace(/[ -- ]/g, ch =>
-      '<' + ch.charCodeAt(0).toString(16).padStart(2, '0') + '>');
+  function evEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  // Wire text verbatim, with the bytes that do not print shown as what they are. RS strings
+  // carry CP-1252 codes the client renders itself: 0xA0 stands in for a space inside a name
+  // and 0x92 for an apostrophe, and passing those straight through paints glyphs that look
+  // like stray letters. Control codes and the C1 range become <a0> so the row shows the
+  // actual content; ordinary Unicode is left alone.
+  function evWire(s) {
+    return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u00a0]/g, ch =>
+      '<' + ch.charCodeAt(0).toString(16).padStart(2, '0') + '>');
   }
   function evOp(op) { return '0x' + (op < 16 ? '0' : '') + op.toString(16).toUpperCase(); }
 
