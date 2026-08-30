@@ -236,6 +236,11 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
     bool userSizing = false;   // inside a native drag/resize: Tick must not fight it
     SavedRect rel;             // host-relative geometry Tick holds the pane to (cached, not re-read)
     bool mobileFmt = true;     // format currently loaded; flips when a resize crosses the threshold
+    // What Tick last ASKED for, host relative. GetWindowRect reports the DWM frame, which does
+    // not match what SetWindowPos was given, so comparing measured against wanted never settles
+    // and the pane resized on every tick: the caption strip and its buttons visibly blinked.
+    bool  applied = false;
+    int   appDx = 0, appDy = 0, appW = 0, appH = 0;
     long long netDenied = 0;
 
     // ---- enforcement layer 1: main-frame navigation lock -------------------------------
@@ -466,6 +471,7 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
     case WM_EXITSIZEMOVE:
         if (it) {
             it->userSizing = false; it->persist();
+            it->applied = false;   // the user moved or resized it: re-apply the request once
             // Crossing the width threshold switches the wiki format for the new size.
             const bool m = want_mobile(it->rel.w);
             if (m != it->mobileFmt && it->ov) {
@@ -656,9 +662,21 @@ void Tick() {
         // pane back in. `rel` keeps the user's wish untouched, so growing the host again
         // restores the size they chose rather than the shrunken one.
         fit_to_host(it->host, wantDx, wantDy, wantW, wantH);
-        if (curDx != wantDx || curDy != wantDy || curW != wantW || curH != wantH)
+        // Compare against the last REQUEST, not the measured rect. A user drag (which updates
+        // rel) or a host resize changes the request; nothing else does, so the window is left
+        // alone and stops repainting its chrome every tick.
+        const bool moved = !it->applied || it->appDx != wantDx || it->appDy != wantDy ||
+                           it->appW != wantW || it->appH != wantH;
+        if (moved) {
+            it->applied = true;
+            it->appDx = wantDx; it->appDy = wantDy; it->appW = wantW; it->appH = wantH;
             SetWindowPos(it->hwnd, nullptr, o.x + wantDx, o.y + wantDy, wantW, wantH,
                          SWP_NOZORDER | SWP_NOACTIVATE);
+        } else if (curDx != wantDx || curDy != wantDy) {
+            // The host itself moved: keep the offset without touching the size.
+            SetWindowPos(it->hwnd, nullptr, o.x + wantDx, o.y + wantDy, 0, 0,
+                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
+        }
     }
 }
 

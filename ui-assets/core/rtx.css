@@ -89,11 +89,15 @@
   .mb-drag svg { width: 14px; height: 14px; }
   /* Categories scroll rather than force the bar wider, the same trade the chip strip
      already makes. They shrink last: the status readout gives way first. */
+  /* No horizontal scrolling: what does not fit moves into the More menu (see mbFitCats),
+     so nothing is ever cut mid-word or reachable only by a wheel gesture with no affordance. */
   .mb-cats {
     display: flex; align-items: stretch; gap: 2px;
-    min-width: 0; flex: 1 1 auto; overflow-x: auto; overflow-y: hidden;
-    scrollbar-width: none; overscroll-behavior-x: contain;
+    min-width: 0; flex: 1 1 auto; overflow: hidden;
   }
+  .mb-more { font-weight: 600; opacity: 0.9; }
+  .mb-more::after { content: ""; }
+  #mbdrop .tab-more { margin-left: auto; padding-left: 10px; color: var(--text-mute); }
   .mb-cats::-webkit-scrollbar { display: none; }
   .mb-cat {
     appearance: none; background: transparent; border: none; position: relative;

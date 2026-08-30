@@ -81,6 +81,79 @@
     }
     if (target) openTab(target);   // lives in another window (or nowhere): openTab finds it
   }
+  // The categories that did not fit, as one menu. Rows behave exactly like the bar buttons:
+  // a category holding a single panel opens it, anything else opens that category menu.
+  function openMbMore(btn, hidden) {
+    closeMbDrop();
+    wm.mbDrop = "__more";
+    btn.classList.add("open");
+    const dd = document.createElement("div");
+    dd.id = "mbdrop";
+    for (const c of hidden) {
+      const b = document.createElement("button");
+      b.className = "tab";
+      b.innerHTML = '<span class="tab-label"></span><span class="tab-more">&rsaquo;</span>';
+      b.querySelector(".tab-label").textContent = c.id;
+      b.addEventListener("click", () => {
+        const es = mbCatEntries(c.id);
+        if (es.length === 1) { closeMbDrop(); mbActivate(es[0]); return; }
+        openMbDrop(c.id, btn);
+      });
+      dd.appendChild(b);
+    }
+    document.body.appendChild(dd);
+    const br = btn.getBoundingClientRect();
+    const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+    let x = Math.round(br.right - (dd.offsetWidth || 200));
+    x = Math.max(6, Math.min(vw - (dd.offsetWidth || 200) - 6, x));
+    dd.style.left = x + "px";
+    if (wm.barY === "bottom") dd.style.bottom = Math.round(vh - br.top + 8) + "px";
+    else dd.style.top = Math.round(br.bottom + 8) + "px";
+    wmRectsSoon();
+  }
+
+  // Fit the category strip to the bar: hide from the end until the row fits, and put what
+  // was hidden behind one More button. Runs after layout, and again whenever the bar or the
+  // client is resized, so it is always measured rather than assumed.
+  function mbFitCats() {
+    const bar = $("menubar"); if (!bar || bar.classList.contains("pill")) return;
+    const cats = bar.querySelector(".mb-cats"); if (!cats) return;
+    const all = Array.prototype.slice.call(cats.querySelectorAll(".mb-cat:not(.mb-more)"));
+    if (!all.length) return;
+    let more = cats.querySelector(".mb-more");
+    if (!more) {
+      more = document.createElement("button");
+      more.className = "mb-cat mb-more";
+      more.title = "More categories";
+      more.textContent = "More";
+      more.addEventListener("click", () => {
+        if (wm.mbDrop === "__more") { closeMbDrop(); return; }
+        const hidden = mbHiddenCats();
+        if (hidden.length) openMbMore(more, hidden);
+      });
+      cats.appendChild(more);
+    }
+    for (const b of all) b.style.display = "";
+    more.style.display = "none";
+    // Overflow is measured on the BAR: the strip is allowed to shrink, so its own
+    // scrollWidth reports a fit that the bar as a whole does not have.
+    const fits = () => cats.scrollWidth <= cats.clientWidth + 1;
+    if (fits()) { mbHiddenCatIds = []; return; }
+    more.style.display = "";
+    const hiddenIds = [];
+    for (let i = all.length - 1; i >= 0 && !fits(); i--) {
+      all[i].style.display = "none";
+      hiddenIds.unshift(all[i].dataset.cat);
+    }
+    mbHiddenCatIds = hiddenIds;
+    if (!hiddenIds.length) more.style.display = "none";
+  }
+  let mbHiddenCatIds = [];
+  function mbHiddenCats() {
+    const ids = mbHiddenCatIds.slice();
+    return railCategories().filter(c => ids.indexOf(c.id) >= 0);
+  }
+
   function openMbDrop(catId, btn) {
     closeMbDrop();
     wm.mbDrop = catId;
@@ -239,6 +312,8 @@
     _hdrSig = '';                       // status ids were rebuilt: force a header repaint
     try { renderHeader(); } catch (e) {}
     // Keep an open dropdown alive across rebuilds (open-state dots change under it).
+    // Fit before restoring any open menu, so the button it anchors to is in its final place.
+    try { mbFitCats(); } catch (e) {}
     if (keepDrop) {
       const btn = bar.querySelector('.mb-cat[data-cat="' + keepDrop + '"]');
       wm.mbDrop = null;
@@ -246,6 +321,10 @@
     }
     wmRectsSoon();
   }
+  // Measured after the bar exists, and again on any resize: the bar is content sized, so a
+  // narrower client is exactly when categories start to fall off the end.
+  window.addEventListener("resize", () => { try { mbFitCats(); } catch (e) {} });
+
   function renderSidebar() { renderMenubar(); }
 
   // Fullscreen panel (Utility): borderless fullscreen for the embedded client. It was a
