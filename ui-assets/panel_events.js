@@ -60,6 +60,31 @@
   // following them lands on unrelated structs). Some descriptions lead with the name, as in
   // "Wise - Grants you extra experience" or "Pulse Core - 2% XP Boost", so take that when it is
   // there and otherwise show the opening clause. The full text goes in the row title.
+  // Invention perks: dbtable 8 column 1 is the name and column 2 is the id a buff struct
+  // carries in param 2802, so a perk buff can be named properly rather than by the first words
+  // of its description ("After reaching 100%" is Aftershock).
+  let EV_PERKS = null, _evPerksAsked = false;
+  function evPerkName(link) {
+    if (!(link > 0)) return "";
+    if (EV_PERKS) return EV_PERKS[link] || "";
+    if (!_evPerksAsked) {
+      _evPerksAsked = true;
+      (async () => {
+        const rows = await rtxData.call("cache.dbRows", 8);
+        const map = {};
+        for (const r of (Array.isArray(rows) ? rows : [])) {
+          const c = r && r.cols;
+          if (!c) continue;
+          const nm = c["1"] && c["1"][0], key = c["2"] && c["2"][0];
+          if (typeof nm === "string" && key > 0) map[key] = nm;
+        }
+        EV_PERKS = map;
+        if (Object.keys(map).length) { EV_STRUCT.clear(); evPaintSoon(); }
+      })();
+    }
+    return "";
+  }
+
   function evStructLabel(text) {
     const t = String(text || "").replace(/<[^>]*>/g, "").trim();
     if (!t) return "";
@@ -76,9 +101,13 @@
     (async () => {
       const ps = await rtxData.call("cache.structParams", id);
       const strs = (ps && ps.strs) || {};
-      const t = strs["2794"] || strs[2794];
-      if (typeof t === "string" && t) {
-        EV_STRUCT.set(id, { label: evStructLabel(t), full: t.replace(/<[^>]*>/g, "") });
+      const ints = (ps && ps.ints) || {};
+      const t = strs["2794"] || strs[2794] || "";
+      const perk = evPerkName(ints["2802"] || ints[2802]);
+      const label = perk || evStructLabel(t);
+      if (label) {
+        const full = t.replace(/<[^>]*>/g, "");
+        EV_STRUCT.set(id, { label: label, full: perk && full ? (perk + ": " + full) : full });
         evPaintSoon();
       }
     })();

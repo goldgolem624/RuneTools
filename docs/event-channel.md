@@ -138,3 +138,15 @@ resolved by 9101, instead of polling the bar.
   they read as a server challenge the client echoes back rather than a timestamp or a counter.
   The reply is outbound and this channel captures inbound only, so the echo is not verified
   here: the two numbers are reported verbatim rather than being given a meaning we cannot prove.
+
+### Naming a buff bar entry
+
+The buff struct itself has no title, but Invention perks do: **dbtable 8** holds the perk name in
+column 1 and, in column 2, the same id the buff struct carries in **param 2802**. So
+struct 35804 (2802 = 26466) is Aftershock and struct 35826 (2802 = 26341) is Wise, confirmed
+against rows 567 and 497. Buffs with no perk link fall back to the name their description leads
+with (Pulse Core, Quiver ammo), with the full description on the row.
+
+Sprite joins were tried and rejected: the icon id in param 4677 or 2802 is shared by several
+named structs (34918 matches Pulse Core, Advanced pulse core and Boon of Plenty I), so it cannot
+identify one on its own.
