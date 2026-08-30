@@ -86,17 +86,31 @@
     }
     el.dataset.icoTries = '';
     // Native size when it fits (pixel-crisp); fit down only when confirmed larger.
+    // The box this was decided against is recorded, because the decision only holds
+    // for that box: a pixel size committed for a wide cell CROPS once the cell narrows.
+    el.dataset.icoBox = bw + 'x' + bh;
     commit((nat.w > bw || nat.h > bh) ? 'contain' : (nat.w + 'px ' + nat.h + 'px'));
   }
-  // Re-size only icons whose URL changed: icon boxes are a fixed CSS size, so
-  // background-size can't change unless the URL did. Skips per-poll PNG parses.
+  // Re-size when the image OR its box changed. The box is not fixed: cell widths
+  // follow the grid, which follows the window, and a wrapping name changes the
+  // height. Sizing only on URL change left a stale pixel size behind, which shows
+  // as a cropped icon once the box is smaller than the size that was committed.
   function sizeAllIcons() {
     document.querySelectorAll('[data-ico-url]').forEach(el => {
-      if (el.dataset.icoSizedUrl === el.dataset.icoUrl) return;   // already sized for this image
+      const box = el.clientWidth + 'x' + el.clientHeight;
+      if (el.dataset.icoSizedUrl === el.dataset.icoUrl && el.dataset.icoBox === box) return;
       sizeIcon(el);
       el.dataset.icoSizedUrl = el.dataset.icoUrl || '';
     });
   }
+  // Resizing the window relayouts every grid without necessarily repainting the
+  // panels, so the icons have to be told to re-decide.
+  let icoResizeQ = 0;
+  window.addEventListener('resize', () => {
+    if (icoResizeQ) return;
+    icoResizeQ = requestAnimationFrame(() => { icoResizeQ = 0; sizeAllIcons(); });
+  });
+
   function setHTML(el, html) {
     if (el._h === html) return false;
     el._h = html; el.innerHTML = html;
