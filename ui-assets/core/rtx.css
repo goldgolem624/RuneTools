@@ -1485,6 +1485,15 @@
                  -1px  1px 0 #000, 1px  1px 0 #000, 0 0 2px #000;
     pointer-events: none;
   }
+  /* The compacted tiers carry two decimals (161.94M), which is far wider than the game's
+     floored 161M, so they get a tighter box: the label sits over the icon and must not run
+     past the cell. */
+  .bank-amt { max-width: calc(100% - 6px); overflow: hidden; white-space: nowrap; }
+  .bank-amt.k, .bank-amt.m, .bank-amt.b, .bank-amt.t, .bank-amt.q {
+    font-size: 9px; letter-spacing: -0.5px;
+  }
+  .inv-grid .bank-amt.k, .inv-grid .bank-amt.m, .inv-grid .bank-amt.b,
+  .inv-grid .bank-amt.t, .inv-grid .bank-amt.q { font-size: 10px; }
   .bank-amt.k { color: #ffffff; }  /* 100K+ "##K" white   */
   .bank-amt.m { color: #5ff05f; }  /* 10M+   "##M" green   */
   .bank-amt.b { color: #71c4ff; }  /* 10B+   "##B" blue    */
