@@ -266,7 +266,7 @@
              a long unbroken token (a hex payload, a comma separated mask) has nothing to break on
              otherwise and runs off the edge. */
           .ev-card, .ev-card > div { min-width: 0; max-width: 100%; }
-          .ev-card, .ev-card * { overflow-wrap: anywhere; }
+          .ev-card, .ev-card * { overflow-wrap: break-word; }
           .ev-mask input { flex: 1; font-size: 11px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: monospace; }
           .ev-list { margin: 0 12px 12px; font-family: monospace; font-size: 11px; }
           .ev-row { display: flex; gap: 8px; padding: 3px 6px; border-bottom: 1px solid var(--border); align-items: baseline; }
