@@ -17,16 +17,26 @@
 
   // RS item-amount tiers (game thresholds + colours): <100K full yellow, 100K-9.999M "K" white,
   // 10M-9.999B "M" green, 10B-9.999T "B" blue, 10T-9.999Q "T", >=10Q "Q". Integer units (the game floors).
-  // Two decimals rather than the game's whole units: 1.23M says what 1M hides.
+  // Item amounts. Below 100K the game shows the exact count, and so do we. Above that the
+  // unit comes from the MAGNITUDE, not from the game's shifted tiers: the game calls
+  // 2.3 billion "2325M", so two decimals there would read "2325.18M" and run off the cell.
+  // Choosing the unit by magnitude keeps every label between 1.00 and 999.99 plus a suffix.
+  const AMT_UNITS = [[1e15, "Q", "q"], [1e12, "T", "t"], [1e9, "B", "b"], [1e6, "M", "m"], [1e3, "K", "k"]];
   function fmtAmt(n) {
-    const d = (v) => v.toFixed(2);
-    if (n >= 1e16) return { t: d(n / 1e15) + 'Q', c: 'q' };
-    if (n >= 1e13) return { t: d(n / 1e12) + 'T', c: 't' };
-    if (n >= 1e10) return { t: d(n / 1e9) + 'B', c: 'b' };
-    if (n >= 1e7)  return { t: d(n / 1e6) + 'M', c: 'm' };
-    if (n >= 1e5)  return { t: d(n / 1e3) + 'K', c: 'k' };
-    if (n > 1)     return { t: String(n), c: '' };   // <100K -> full number (yellow); unstacked -> blank
-    return { t: '', c: '' };
+    if (!(n > 1)) return { t: n === 1 ? "" : "", c: "" };
+    if (n < 1e5) return { t: String(n), c: "" };          // exact count, RS yellow
+    for (let i = 0; i < AMT_UNITS.length; i++) {
+      const [div, suffix, cls] = AMT_UNITS[i];
+      if (n < div) continue;
+      let m = (n / div).toFixed(2);
+      // 999.999 rounds to "1000.00": promote it rather than print four digits.
+      if (parseFloat(m) >= 1000 && i > 0) {
+        const up = AMT_UNITS[i - 1];
+        return { t: (n / up[0]).toFixed(2) + up[1], c: up[2] };
+      }
+      return { t: m + suffix, c: cls };
+    }
+    return { t: String(n), c: "" };
   }
 
   // Icons render as CSS background-image, NOT <img> (a replaced <img> with %-sizing
