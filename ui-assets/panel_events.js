@@ -232,13 +232,14 @@
       injectStyle('evCss', `
           .ev-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; flex-wrap: wrap; }
           .ev-title { flex: 1; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent-hi); }
-          .ev-btn { font-size: 11px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--text); cursor: pointer; }
+          .ev-btn { font-size: 11px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-elev); color: var(--text); cursor: pointer; white-space: nowrap; flex: none; }
           .ev-btn.on { border-color: var(--accent-hi); color: var(--accent-hi); }
           .ev-card { margin: 0 12px 10px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 12px; }
           .ev-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; }
           .ev-stat b { color: var(--accent-hi); font-weight: 600; }
           .ev-stat span { color: var(--text-dim); }
-          .ev-mask { display: flex; gap: 6px; align-items: center; }
+          /* wrap: the type toggles are a row of unknown length and must not run off the panel */
+          .ev-mask { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
           .ev-mask input { flex: 1; font-size: 11px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: monospace; }
           .ev-list { margin: 0 12px 12px; font-family: monospace; font-size: 11px; }
           .ev-row { display: flex; gap: 8px; padding: 3px 6px; border-bottom: 1px solid var(--border); align-items: baseline; }
@@ -261,6 +262,7 @@
           <div id="evWhat" style="font-size:11px;color:var(--text-dim);margin-bottom:6px"></div>
           <div class="ev-mask" id="evToggles"></div>
           <div class="ev-mask" style="margin-top:6px">
+            <button class="ev-btn" id="evMaskAll">Everything</button>
             <button class="ev-btn" id="evMaskDef">Reset to default</button>
             <button class="ev-btn" id="evAdvBtn">Advanced</button>
           </div>
@@ -275,6 +277,13 @@
       $('evClear').onclick = () => { evLog.length = 0; for (const k in evCounts) delete evCounts[k]; evTick.count = 0; evTick.dts.length = 0; evDirty = true; };
       $('evMask').value = EV_DEFAULT_MASK;
       $('evMaskDef').onclick = () => { $('evMask').value = EV_DEFAULT_MASK; evMaskApply(); evPaintToggles(); };
+      // Every opcode, not just the named ones. Undecoded packets arrive as raw hex, which is how
+      // a new one gets identified in the first place.
+      $('evMaskAll').onclick = () => {
+        const all = []; for (let i = 0; i <= 255; i++) all.push(i);
+        $('evMask').value = all.join(',');
+        evMaskApply(); evPaintToggles();
+      };
       $('evMaskSet').onclick = () => { evMaskApply(); evPaintToggles(); };
       $('evAdvBtn').onclick = () => {
         const a = $('evAdv'); const show = a.style.display === 'none';
@@ -341,9 +350,16 @@
       host.appendChild(b);
     }
     const n = EV_TYPES.filter(t => on[t.op]).length;
-    $('evWhat').textContent = 'Recording ' + n + ' of ' + EV_TYPES.length + ' event types'
-      + (extra.length ? ' plus ' + extra.length + ' raw opcode' + (extra.length === 1 ? '' : 's') : '')
-      + '. Anything not switched on here is not captured at all, and chat has its own channel.';
+    const total = Object.keys(on).length;
+    // Be explicit that the named types are a selection, not the wire: the game sends far more.
+    $('evWhat').textContent = total >= 250
+      ? ('Recording every packet type (' + total + '). Types without a decoder arrive as raw hex. '
+         + 'This is a lot of traffic; Reset to default when you are done.')
+      : ('Recording ' + n + ' of ' + EV_TYPES.length + ' named event types'
+         + (extra.length ? ' and ' + extra.length + ' extra opcode' + (extra.length === 1 ? '' : 's') : '')
+         + ', out of 256 the game can send. Anything not switched on is not captured at all, and '
+         + 'chat has its own channel. Use Everything to see the rest as raw hex.');
+    $('evMaskAll').classList.toggle('on', total >= 250);
   }
 
   async function evMaskApply() {
