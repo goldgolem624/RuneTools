@@ -145,11 +145,19 @@
       return "buff bar " + (a[1] ? "add" : "remove") + ": " + (st ? st.label : "struct " + a[0]);
     }
     // 1264(title, when, what, extra, where, world, who, fc, link, ticks): the Community Event
-    // notice. It assembles the blurb, writes it into 1234:11 or 1465:36 depending on which
-    // layout is active, and hands 1269 a countdown that blanks it again.
-    if (ev.script === 1264 && a.length >= 3) {
-      const txt = a.filter(x => typeof x === "string" && x.length);
-      return "community event notice: " + txt.slice(0, 3).join(" | ") + (txt.length > 3 ? " ..." : "");
+    // notice. The script labels each field in exactly this order and skips the empty ones, so
+    // the row shows the whole notice rather than a truncated head of it. The trailing int is the
+    // countdown in timer ticks that script 1269 uses to blank the notice again.
+    if (ev.script === 1264) {
+      const strs = a.filter(x => typeof x === "string");
+      const ticks = a.find(x => typeof x === "number");
+      const F = ["", "When", "What", "", "Where", "World", "Who", "FC", "Link"];
+      const parts = [];
+      strs.forEach((v, i) => {
+        if (!v) return;
+        parts.push(F[i] ? (F[i] + ": " + v) : v);
+      });
+      return "community event: " + parts.join(" | ") + (ticks ? "  (" + ticks + " ticks)" : "");
     }
     return "script " + ev.script + "(" + a.map(x => typeof x === "string" ? JSON.stringify(x) : x).join(", ") + ")";
   }
@@ -203,7 +211,9 @@
           .ev-row .t { color: var(--text-dim); flex: 0 0 62px; }
           .ev-row .k { flex: 0 0 120px; color: var(--accent-hi); }
           .ev-row .o { flex: 0 0 38px; color: var(--text-dim); }
-          .ev-row .f { flex: 1; color: var(--text); word-break: break-all; }
+          /* break-word, not break-all: break-all split 'UTC' across lines mid-word. Long hex
+             payloads still wrap because they have no spaces to break on. */
+          .ev-row .f { flex: 1; color: var(--text); word-break: break-word; overflow-wrap: anywhere; }
           .ev-row.raw .k { color: var(--text-dim); }
       `);
       wrap = document.createElement('div'); wrap.id = 'evWrap';
