@@ -15,6 +15,14 @@
   // What the channel can record, in the words a reader thinks in. `op` is the packet opcode the
   // companion filters on; everything not listed here is simply not captured, which is why the
   // panel states its coverage rather than implying it shows the whole wire.
+  // Names for packets we do not decode yet, from docs/server_packets_handler_map.md. A named
+  // row beats "raw": it says whether a line is worth reading at all.
+  const EV_OPNAMES = {
+    0x02: 'unknown (10 bytes, constant)', 0x06: 'iface_prop_i8', 0x1F: 'unknown (10 bytes)',
+    0x2D: 'player_info', 0x43: 'unknown (12 bytes, constant)', 0x4E: 'iface_set',
+    0x5A: 'npc_info', 0x5F: 'iface_set (short)', 0x6D: 'zone_update',
+    0xB4: 'server_tick', 0xBE: 'telemetry_grid', 0xC8: 'unknown (empty)',
+  };
   const EV_TYPES = [
     { op: 4,   kind: 'skill_update',     label: 'XP and levels',    note: 'every xp drop' },
     { op: 43,  kind: 'container_update', label: 'Inventory and bank', note: 'slot changes in any container' },
@@ -34,6 +42,15 @@
     if (evLog.length > EV_KEEP) evLog.length = EV_KEEP;
     evDirty = true;
   }
+  // 0xB4 is the server's tick boundary (zero length, once per burst, about 600 ms apart in a
+  // full capture). It is an exact edge, unlike the polled counter, so measure it separately.
+  const evSrvTick = { count: 0, last: 0, dts: [] };
+  function evOnServerTick(ev) {
+    const now = (typeof performance === 'object' && performance.now) ? performance.now() : Date.now();
+    if (evSrvTick.last) { evSrvTick.dts.push(now - evSrvTick.last); if (evSrvTick.dts.length > 20) evSrvTick.dts.shift(); }
+    evSrvTick.last = now; evSrvTick.count++;
+  }
+
   function evOnTick(ev) {
     evTick.count++;
     if (ev.dtMs > 0) { evTick.dts.push(ev.dtMs); if (evTick.dts.length > 20) evTick.dts.shift(); }
@@ -43,6 +60,7 @@
   // Subscribe once at load: counters run whether or not the tab is open, like the chat log.
   rtxEvents.on('*', evOnEvent);
   rtxEvents.on('gameTick', evOnTick);
+  rtxEvents.on('*', ev => { if (ev && ev.op === 0xB4) evOnServerTick(ev); });
 
   // Containers seen on this channel. The full list lives in panel_containers; these are the
   // ones that actually appear in packet traffic, so a line reads "Backpack" not "93".
@@ -210,7 +228,11 @@
       case 'run_energy': return 'energy ' + ev.value;
       case 'run_weight': return 'weight ' + ev.value;
       case 'ping': return 'echo ' + ev.a + ' / ' + ev.b;
-      default: return 'len ' + ev.len + ' hex ' + (ev.hex || '');
+      default: {
+        const nm = EV_OPNAMES[ev.op];
+        const body = 'len ' + ev.len + (ev.hex ? ' hex ' + ev.hex : '');
+        return nm ? (nm + ': ' + body) : body;
+      }
     }
   }
   function evEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -311,6 +333,9 @@
       + '<div class="ev-stat"><span>gameTick</span> <b>' + evTick.count + '</b></div>'
       + '<div class="ev-stat"><span>tick</span> <b>' + evTick.last + '</b></div>'
       + '<div class="ev-stat"><span>interval</span> <b>' + (mean ? mean.toFixed(0) + ' ms' : 'n/a') + '</b> <span>(min ' + mn.toFixed(0) + ' / max ' + mx.toFixed(0) + ', last ' + dts.length + ')</span></div>'
+      + (evSrvTick.count ? ('<div class="ev-stat"><span>server tick</span> <b>' + evSrvTick.count + '</b> <span>every '
+          + (evSrvTick.dts.length ? (evSrvTick.dts.reduce((a, b) => a + b, 0) / evSrvTick.dts.length).toFixed(0) : '?')
+          + ' ms</span></div>') : '')
       + '<div class="ev-stat"><span>cursor</span> <b>' + (P.seq || 0) + '</b></div>'
       + '<div class="ev-stat"><span>polls</span> <b>' + (P.polls || 0) + '</b> <span>fails ' + (P.fails || 0) + '</span></div>'
       + '</div>';

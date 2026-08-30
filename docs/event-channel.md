@@ -165,3 +165,29 @@ The panel resolves in that order: perk name, then the description when it is sho
 a name before a dash, then the source item with its tier suffix removed (the status is Sign of
 the porter, the item is Sign of the porter VII), and only then the opening clause. The full
 description stays on the row as a tooltip.
+
+## What a full capture shows (mask = every opcode, 2026-08-30)
+
+Traffic arrives in bursts about 600 ms apart, one per game tick. A typical burst is:
+
+| packet | name | note |
+| --- | --- | --- |
+| 0x2D | player_info | 200 to 300 bytes every tick, the GPI bitmask block |
+| 0x5A | npc_info | the GNI block, length follows how many NPCs are near |
+| 0x6D | zone_update | 45 bytes per record, several records when more than one zone changed |
+| 0xBE | telemetry_grid | repeating id/value triples ending ff ff ff; telemetry, not game state |
+| 0xB4 | server_tick | ZERO length, always last in the burst: the tick boundary |
+| 0xC8 | (unnamed) | zero length, first in some bursts |
+| 0x4E, 0x5F | iface_set | 6 and 3 byte component writes, often in runs |
+| 0x06 | iface_prop_i8 | 3 bytes, payload constant at ff14a1 in this capture |
+| 0x02, 0x43 | (unnamed) | 10 and 12 bytes, payload constant across every occurrence |
+
+Two things worth acting on:
+
+1. **0xB4 is an exact tick edge.** The panel now counts it and reports its interval separately
+   from the polled counter, and it is the right source for anything tick sensitive, since it
+   does not depend on our 100 ms sampling.
+2. **0xBE is telemetry**, so its constant chatter can be ignored when reading a capture.
+
+Still unidentified: the layouts of 0x4E, 0x5F, 0x6D and 0xBE, and the meaning of the two 32 bit
+values in ping (0x8D), which stay uniformly random across every sample.
