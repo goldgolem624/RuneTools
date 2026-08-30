@@ -12,6 +12,18 @@
   let evPaused = false, evDirty = false, evTimer = null;
   const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
   const EV_DEFAULT_MASK = '0,4,5,43,81,82,92,141';   // mirrors kDefaultMask in companion/EventShare.h
+  // What the channel can record, in the words a reader thinks in. `op` is the packet opcode the
+  // companion filters on; everything not listed here is simply not captured, which is why the
+  // panel states its coverage rather than implying it shows the whole wire.
+  const EV_TYPES = [
+    { op: 4,   kind: 'skill_update',     label: 'XP and levels',    note: 'every xp drop' },
+    { op: 43,  kind: 'container_update', label: 'Inventory and bank', note: 'slot changes in any container' },
+    { op: 82,  kind: 'runclientscript',  label: 'Interface scripts', note: 'buff bar, notices, popups' },
+    { op: 5,   kind: 'ge_offer',         label: 'Grand Exchange',   note: 'offer changes', with: [81] },
+    { op: 92,  kind: 'run_energy',       label: 'Run energy',       note: '' },
+    { op: 0,   kind: 'run_weight',       label: 'Weight',           note: '' },
+    { op: 141, kind: 'ping',             label: 'Ping',             note: 'server keepalive' },
+  ];
 
   function evOnEvent(ev) {
     if (!ev || ev.kind === 'gameTick') return;
@@ -245,18 +257,30 @@
           <button class="ev-btn" id="evClear">Clear</button></div>
         <div class="ev-card" id="evTickCard"></div>
         <div class="ev-card"><div class="ev-stats" id="evCounts"></div></div>
-        <div class="ev-card"><div class="ev-mask">
-          <span>Opcode mask (decimal, csv)</span><input id="evMask" spellcheck="false">
-          <button class="ev-btn" id="evMaskSet">Set</button>
-          <button class="ev-btn" id="evMaskDef">Default</button></div>
+        <div class="ev-card">
+          <div id="evWhat" style="font-size:11px;color:var(--text-dim);margin-bottom:6px"></div>
+          <div class="ev-mask" id="evToggles"></div>
+          <div class="ev-mask" style="margin-top:6px">
+            <button class="ev-btn" id="evMaskDef">Reset to default</button>
+            <button class="ev-btn" id="evAdvBtn">Advanced</button>
+          </div>
+          <div id="evAdv" style="display:none;margin-top:6px">
+            <div class="ev-mask"><span>Opcode mask (decimal, csv)</span><input id="evMask" spellcheck="false">
+              <button class="ev-btn" id="evMaskSet">Set</button></div>
+          </div>
           <div id="evMaskMsg" style="font-size:11px;color:var(--text-dim);margin-top:4px"></div></div>
         <div class="ev-list" id="evList"></div>`;
       c.appendChild(wrap);
       $('evPause').onclick = () => { evPaused = !evPaused; $('evPause').textContent = evPaused ? 'Resume' : 'Pause'; $('evPause').classList.toggle('on', evPaused); };
       $('evClear').onclick = () => { evLog.length = 0; for (const k in evCounts) delete evCounts[k]; evTick.count = 0; evTick.dts.length = 0; evDirty = true; };
       $('evMask').value = EV_DEFAULT_MASK;
-      $('evMaskDef').onclick = () => { $('evMask').value = EV_DEFAULT_MASK; evMaskApply(); };
-      $('evMaskSet').onclick = evMaskApply;
+      $('evMaskDef').onclick = () => { $('evMask').value = EV_DEFAULT_MASK; evMaskApply(); evPaintToggles(); };
+      $('evMaskSet').onclick = () => { evMaskApply(); evPaintToggles(); };
+      $('evAdvBtn').onclick = () => {
+        const a = $('evAdv'); const show = a.style.display === 'none';
+        a.style.display = show ? '' : 'none'; $('evAdvBtn').classList.toggle('on', show);
+      };
+      evPaintToggles();
       evDirty = true;
     }
     if (!evDirty) return;
@@ -285,10 +309,48 @@
     }).join('');
   }
 
+  // Current mask as a set of opcodes.
+  function evMaskSet() {
+    const out = {};
+    for (const p of String(($('evMask') || {}).value || EV_DEFAULT_MASK).split(',')) {
+      const n = parseInt(p, 10); if (!isNaN(n)) out[n] = true;
+    }
+    return out;
+  }
+  function evPaintToggles() {
+    const host = $('evToggles'); if (!host) return;
+    const on = evMaskSet();
+    const known = {};
+    for (const t of EV_TYPES) { known[t.op] = true; for (const o of (t.with || [])) known[o] = true; }
+    const extra = Object.keys(on).filter(o => !known[o]);
+    host.innerHTML = '';
+    for (const t of EV_TYPES) {
+      const b = document.createElement('button');
+      b.className = 'ev-btn' + (on[t.op] ? ' on' : '');
+      b.textContent = t.label;
+      b.dataset.tip = t.note ? (t.note + '\n(packet 0x' + t.op.toString(16).toUpperCase().padStart(2, '0') + ')')
+                             : ('packet 0x' + t.op.toString(16).toUpperCase().padStart(2, '0'));
+      b.onclick = () => {
+        const cur = evMaskSet();
+        const ops = [t.op].concat(t.with || []);
+        const want = !cur[t.op];
+        for (const o of ops) { if (want) cur[o] = true; else delete cur[o]; }
+        $('evMask').value = Object.keys(cur).map(Number).sort((a, b2) => a - b2).join(',');
+        evMaskApply(); evPaintToggles();
+      };
+      host.appendChild(b);
+    }
+    const n = EV_TYPES.filter(t => on[t.op]).length;
+    $('evWhat').textContent = 'Recording ' + n + ' of ' + EV_TYPES.length + ' event types'
+      + (extra.length ? ' plus ' + extra.length + ' raw opcode' + (extra.length === 1 ? '' : 's') : '')
+      + '. Anything not switched on here is not captured at all, and chat has its own channel.';
+  }
+
   async function evMaskApply() {
     const csv = $('evMask').value;
     const ok = await rtxData.call('host.eventsMask', csv);
-    $('evMaskMsg').textContent = ok ? 'Mask written: ' + csv + ' (0x15 is never recorded)' : 'Mask write failed: companion not loaded?';
+    $('evMaskMsg').textContent = ok ? ('Applied. Packets: ' + csv + '. Chat is never recorded here.')
+                                    : 'Could not apply: the companion is not loaded in this client.';
   }
 
   function evOpen() { evDirty = true; if (!evTimer) evTimer = setInterval(() => { try { paneRun('events', renderEvents); } catch (e) {} }, 250); }
