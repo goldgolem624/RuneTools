@@ -17,12 +17,14 @@
 
   // RS item-amount tiers (game thresholds + colours): <100K full yellow, 100K-9.999M "K" white,
   // 10M-9.999B "M" green, 10B-9.999T "B" blue, 10T-9.999Q "T", >=10Q "Q". Integer units (the game floors).
+  // Two decimals rather than the game's whole units: 1.23M says what 1M hides.
   function fmtAmt(n) {
-    if (n >= 1e16) return { t: Math.floor(n / 1e15) + 'Q', c: 'q' };
-    if (n >= 1e13) return { t: Math.floor(n / 1e12) + 'T', c: 't' };
-    if (n >= 1e10) return { t: Math.floor(n / 1e9) + 'B', c: 'b' };
-    if (n >= 1e7)  return { t: Math.floor(n / 1e6) + 'M', c: 'm' };
-    if (n >= 1e5)  return { t: Math.floor(n / 1e3) + 'K', c: 'k' };
+    const d = (v) => v.toFixed(2);
+    if (n >= 1e16) return { t: d(n / 1e15) + 'Q', c: 'q' };
+    if (n >= 1e13) return { t: d(n / 1e12) + 'T', c: 't' };
+    if (n >= 1e10) return { t: d(n / 1e9) + 'B', c: 'b' };
+    if (n >= 1e7)  return { t: d(n / 1e6) + 'M', c: 'm' };
+    if (n >= 1e5)  return { t: d(n / 1e3) + 'K', c: 'k' };
     if (n > 1)     return { t: String(n), c: '' };   // <100K -> full number (yellow); unstacked -> blank
     return { t: '', c: '' };
   }
