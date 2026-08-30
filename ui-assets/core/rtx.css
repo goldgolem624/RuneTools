@@ -1531,8 +1531,11 @@
   .inv-name {
     /* A plain block that grows to three lines: the -webkit-box line clamp is not honoured by
        the embedded engine (the strip stayed at its two-line minimum and clipped mid-glyph). */
-    display: block; font-size: 9px; line-height: 1.15; color: var(--text-dim); text-align: center;
-    padding: 0 2px 3px; min-height: 2.3em; max-height: 3.65em; word-break: break-word; overflow: hidden;
+    display: block; font-size: 9px; line-height: 1.25; color: var(--text-dim); text-align: center;
+    /* Whole lines only: max-height has to be an exact multiple of line-height or the last
+       line is sliced through the glyphs. 3 lines at 1.25 = 3.75em, plus the padding. */
+    padding: 1px 2px 4px; min-height: 2.5em; max-height: 3.75em; word-break: break-word;
+    overflow: hidden; hyphens: auto;
   }
   .inv-grid::-webkit-scrollbar { width: 10px; }
   .inv-grid::-webkit-scrollbar-track { background: transparent; }

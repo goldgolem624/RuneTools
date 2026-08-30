@@ -77,10 +77,11 @@
         const n = Number(this);
         if (isFinite(n) && Math.abs(n) >= 100000 && Math.floor(n) === n) {
           const a = Math.abs(n), sign = n < 0 ? '-' : '';
+          // Two decimals at every magnitude: 17.15k reads as a real quantity where 17.2k
+          // rounds away the part people are checking.
           if (a >= 1e9) return sign + (a / 1e9).toFixed(2) + 'b';
-          if (a >= 1e6) return sign + (a / 1e6).toFixed(1) + 'm';
-          let t = (a / 1e3).toFixed(1); if (t.endsWith('.0')) t = t.slice(0, -2);
-          return sign + t + 'k';
+          if (a >= 1e6) return sign + (a / 1e6).toFixed(2) + 'm';
+          return sign + (a / 1e3).toFixed(2) + 'k';
         }
       }
       return native.call(this, loc, opt);
