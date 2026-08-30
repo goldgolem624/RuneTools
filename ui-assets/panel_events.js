@@ -399,7 +399,7 @@
   // Oldest first, so a pasted log reads in the order things happened.
   function evCopyText() {
     const head = 'RuneToolsX event log  ' + new Date().toISOString()
-      + '  client ' + (window.rtxEventsPoll ? rtxEventsPoll.pid : '?')
+      + '  client ' + (window.rtxEventsPoll ? window.rtxEventsPoll.pid : '?')
       + '  mask ' + (($('evMask') || {}).value || '')
       + '  ' + evLog.length + ' events' + nlChar;
     const rows = evLog.slice().reverse().map(ev => {
@@ -417,7 +417,7 @@
         const o = {}; for (const k in ev) if (k.charAt(0) !== '_') o[k] = ev[k];
         return o;
       });
-      text = JSON.stringify({ at: new Date().toISOString(), pid: window.rtxEventsPoll ? rtxEventsPoll.pid : 0,
+      text = JSON.stringify({ at: new Date().toISOString(), pid: window.rtxEventsPoll ? window.rtxEventsPoll.pid : 0,
                               mask: (($('evMask') || {}).value || ''), events: out }, null, 1);
     } else {
       text = evCopyText();
