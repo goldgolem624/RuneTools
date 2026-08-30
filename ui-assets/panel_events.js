@@ -238,7 +238,7 @@
           .ev-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; }
           .ev-stat b { color: var(--accent-hi); font-weight: 600; }
           .ev-stat span { color: var(--text-dim); }
-          /* wrap: the type toggles are a row of unknown length and must not run off the panel */
+          /* wrap: the type toggles are a row of unknown length and must not run off the panel */
           .ev-mask { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
           .ev-mask input { flex: 1; font-size: 11px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: monospace; }
           .ev-list { margin: 0 12px 12px; font-family: monospace; font-size: 11px; }
