@@ -6,7 +6,9 @@
 //   script 3151     display name per dungeon id
 //   script 3144     Dungeoneering level requirement per id
 //   script 3136     the "first-visit XP claimed" varbit per id (the Very Resourceful flags)
-//   script 3150     members-only flag (ids 1000+ are the free-to-play trio; the rest members)
+//   script 3150     free-to-play flag: returns 0 for ids 1, 2, 3, 4, 6 and 11 (Dwarven Mine,
+//                   Edgeville hill giants, Karamja Volcano, Daemonheim Peninsula, Mining Guild,
+//                   Al Kharid Mine) and 1, meaning members, for every other dungeon
 // The in-game screen greys an entry when the level is short OR the XP is unclaimed, so
 // "claimed" here is exactly what lights it up there. Entrance coordinates ship with the panel
 // (RD_COORDS below) because they are the one part of this that the cache does not carry.
@@ -15,26 +17,26 @@
   const RD_LIST = [
     // [id, name, level, varbit, members]
     [0,    'Edgeville Dungeon: Chaos Druids', 10,  2458,  1],
-    [1,    'Dwarven Mine',                    15,  2459,  1],
-    [2,    'Edgeville Dungeon: Hill Giants',  20,  2460,  1],
-    [3,    'Karamja Volcano',                 25,  2461,  1],
-    [4,    'Daemonheim Peninsula',            30,  2462,  1],
+    [1,    'Dwarven Mine',                    15,  2459, 0],
+    [2,    'Edgeville Dungeon: Hill Giants',  20,  2460, 0],
+    [3,    'Karamja Volcano',                 25,  2461, 0],
+    [4,    'Daemonheim Peninsula',            30,  2462, 0],
     [5,    'Baxtorian Falls',                 35,  2463,  1],
-    [6,    'Mining Guild',                    45,  2464,  1],
+    [6,    'Mining Guild',                    45,  2464, 0],
     [7,    'Taverley Dungeon: Hellhounds',    55,  2465,  1],
     [8,    'Taverley Dungeon: Blue Dragons',  60,  2466,  1],
     [9,    'Varrock Sewers',                  65,  2467,  1],
     [10,   'Chaos Tunnels',                   70,  2468,  1],
-    [11,   'Al Kharid Mine',                  75,  2469,  1],
+    [11,   'Al Kharid Mine',                  75,  2469, 0],
     [12,   'Brimhaven Dungeon',               80,  2470,  1],
     [13,   'Asgarnian Ice Dungeon',           85,  2471,  1],
     [14,   "Kal'gerion Dungeon",              90,  22569, 1],
     [16,   'Prifddinas: Gorajo',              95,  25871, 1],
     [17,   'Prifddinas: Motherlode',          115, 25872, 1],
     [18,   'Slayer Tower',                    100, 43691, 1],
-    [1000, 'Polypore Dungeon',                82,  508,   0],
-    [1001, 'Dragontooth Celestial Dungeon',   67,  42344, 0],
-    [1002, 'Braindeath Island',               50,  41302, 0],
+    [1000, 'Polypore Dungeon',                82,  508, 1],
+    [1001, 'Dragontooth Celestial Dungeon',   67,  42344, 1],
+    [1002, 'Braindeath Island',               50,  41302, 1],
   ];
   // Entrance coordinates. These are the destinations the Dungeoneering cape teleports to, one
   // per dungeon, which is the entrance in every case. They are NOT in the cache: no struct
