@@ -70,12 +70,13 @@
     if (!_evPerksAsked) {
       _evPerksAsked = true;
       (async () => {
+        // Our dbRows emits { f, i: { col: [ints] }, s: { col: [strings] } }: the name is string
+        // column 1 and the id the buff struct points at is int column 2.
         const rows = await rtxData.call("cache.dbRows", 8);
         const map = {};
         for (const r of (Array.isArray(rows) ? rows : [])) {
-          const c = r && r.cols;
-          if (!c) continue;
-          const nm = c["1"] && c["1"][0], key = c["2"] && c["2"][0];
+          const nm = r && r.s && r.s["1"] && r.s["1"][0];
+          const key = r && r.i && r.i["2"] && r.i["2"][0];
           if (typeof nm === "string" && key > 0) map[key] = nm;
         }
         EV_PERKS = map;
