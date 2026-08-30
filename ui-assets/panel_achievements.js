@@ -61,10 +61,22 @@
   // and pooling them produced nonsense like Bug Swatter III reading "1 of 3 (any one)" across
   // [25 kills, completed-flag, Complete Bug Swatter II] - the truth is BS II required AND
   // 1-of-2 on the counter/flag pair.
-  function achNeed(a) {
-    if (a.needN && a.needN.length) return a.needN.reduce((s, x) => s + x, 0);
+  // How many of the VARIABLE requirements must be satisfied. needN comes from op 30
+  // (subreq_count), which counts subrequirements in general, so it can name a number this
+  // achievement has no variable requirements for: every skill milestone (Archaeology 5, 10,
+  // 110 and the rest of that family) carries subreq_count 1 while its only requirement is the
+  // op 12 skill gate. Comparing 0 satisfied against a required 1 left them permanently
+  // incomplete, and the prerequisite chain blocked every level above them too. Clamp to the
+  // pool that actually exists: with no variable requirements the judgement rests on the
+  // gates, which is how the game reads them.
+  function achPool(a) {
     return (a.reqs || []).length + (a.reqs23 || []).length + (a.reqs25 || []).length +
            (a.reqsvpb || []).length + (a.reqsvp || []).length;
+  }
+  function achNeed(a) {
+    const pool = achPool(a);
+    if (a.needN && a.needN.length) return Math.min(pool, a.needN.reduce((s, x) => s + x, 0));
+    return pool;
   }
   function achGatesTotal(a) { return (a.skills || []).length + (a.prev || []).length; }
 
