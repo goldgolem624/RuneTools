@@ -1515,7 +1515,9 @@
     /* minmax: tracks shrink below 52px on narrow panels; a fixed 4x52px grid clips its left
            column off-screen. */
     display: grid; grid-template-columns: repeat(4, minmax(36px, 52px));
-    gap: 4px; align-content: center; justify-content: center;
+    /* start, not center: once the rows are taller than the panel, centred overflow puts the
+       first rows above the scroll origin where they cannot be reached. */
+    gap: 4px; align-content: start; justify-content: center;
     flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; margin-top: 8px;
   }
   /* Icons render at native pixel size, downscale-only: the bundled icons are tightly cropped,
