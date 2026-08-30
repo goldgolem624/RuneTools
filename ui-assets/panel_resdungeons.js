@@ -8,8 +8,8 @@
 //   script 3136     the "first-visit XP claimed" varbit per id (the Very Resourceful flags)
 //   script 3150     members-only flag (ids 1000+ are the free-to-play trio; the rest members)
 // The in-game screen greys an entry when the level is short OR the XP is unclaimed, so
-// "claimed" here is exactly what lights it up there. Entrance coordinates are not in the
-// cache or scripts; they are entered once (Coordinates > Import) and kept durable.
+// "claimed" here is exactly what lights it up there. Entrance coordinates ship with the panel
+// (RD_COORDS below) because they are the one part of this that the cache does not carry.
 (function () {
 
   const RD_LIST = [
@@ -36,15 +36,43 @@
     [1001, 'Dragontooth Celestial Dungeon',   67,  42344, 0],
     [1002, 'Braindeath Island',               50,  41302, 0],
   ];
-  let rdVb = null; let rdFetching = false; let rdFetchAt = 0; let rdSig = ''; let rdCoords = null; rdShowDone = true;
-  function rdCoordsLoad() {
-    if (rdCoords) return rdCoords;
-    let v = null;
-    try { v = JSON.parse((typeof prefGet === 'function' ? prefGet('rtxResDungCoords', '') : localStorage.getItem('rtxResDungCoords')) || 'null'); } catch (e) {}
-    rdCoords = (v && typeof v === 'object') ? v : {};
-    return rdCoords;
-  }
-  function rdCoordsSave() { try { prefSet('rtxResDungCoords', JSON.stringify(rdCoords || {})); } catch (e) {} }
+  // Entrance coordinates. These are the destinations the Dungeoneering cape teleports to, one
+  // per dungeon, which is the entrance in every case. They are NOT in the cache: no struct
+  // carries the teleport destination param for them (only the 114 spellbook and lodestone
+  // teleports do), the packed coordinates appear in no clientscript, and no dbrow names a
+  // dungeon beside a coordinate. They are curated data, from the RuneScape Cartography
+  // dataset (mejrs/data_rs3, teleport_data.json, group "Dungeoneering cape"), the same
+  // provenance as the world map's transport networks.
+  //
+  // Bound to dungeons by level: the cape's list is ordered by requirement and all 21 levels
+  // are distinct, so the pairing is unambiguous. Two ends of it were checked directly against
+  // the in-game map (chaos druids 3134,9915 and hill giants 3105,9829) and every other entry
+  // sits where its dungeon is.
+  const RD_COORDS = {
+    0:    { x: 3134, y: 9915, p: 0 },   // Edgeville Dungeon: Chaos Druids (10)
+    1:    { x: 3036, y: 9774, p: 0 },   // Dwarven Mine (15)
+    2:    { x: 3105, y: 9829, p: 0 },   // Edgeville Dungeon: Hill Giants (20)
+    3:    { x: 2843, y: 9555, p: 0 },   // Karamja Volcano (25)
+    4:    { x: 3512, y: 3663, p: 0 },   // Daemonheim Peninsula (30)
+    5:    { x: 2581, y: 9897, p: 0 },   // Baxtorian Falls (35)
+    6:    { x: 3022, y: 9739, p: 0 },   // Mining Guild (45)
+    7:    { x: 2856, y: 9840, p: 0 },   // Taverley Dungeon: Hellhounds (55)
+    8:    { x: 2915, y: 9806, p: 0 },   // Taverley Dungeon: Blue Dragons (60)
+    9:    { x: 3166, y: 9879, p: 0 },   // Varrock Sewers (65)
+    10:   { x: 3159, y: 5524, p: 0 },   // Chaos Tunnels (70)
+    11:   { x: 3299, y: 3307, p: 0 },   // Al Kharid Mine (75)
+    12:   { x: 2697, y: 9441, p: 0 },   // Brimhaven Dungeon (80)
+    13:   { x: 3032, y: 9599, p: 0 },   // Asgarnian Ice Dungeon (85)
+    14:   { x: 3398, y: 3665, p: 0 },   // Kal'gerion Dungeon (90)
+    16:   { x: 2235, y: 3420, p: 1 },   // Prifddinas: Gorajo (95)
+    17:   { x: 2233, y: 3396, p: 1 },   // Prifddinas: Motherlode (115)
+    18:   { x: 3434, y: 3529, p: 0 },   // Slayer Tower (100)
+    1000: { x: 4659, y: 5491, p: 3 },   // Polypore Dungeon (82)
+    1001: { x: 3812, y: 3528, p: 0 },   // Dragontooth Celestial Dungeon (67)
+    1002: { x: 2125, y: 5146, p: 0 },   // Braindeath Island (50)
+  };
+  let rdVb = null; let rdFetching = false; let rdFetchAt = 0; let rdSig = ''; rdShowDone = true;
+  function rdCoordsLoad() { return RD_COORDS; }
   async function fetchResDungeons() {
     if (!bridge() || !bridge().varbits || rdFetching) return;
     const t = Date.now(); if (t - rdFetchAt < 2000) return; rdFetchAt = t; rdFetching = true;
@@ -54,21 +82,6 @@
     } catch (e) {}
     rdFetching = false;
     paneRun('resdungeons', renderResDungeons);
-  }
-  // Import block: one dungeon per line, "Name: x, y[, plane]" or "Name x y". Names match on a
-  // case-insensitive prefix of the game name so "Dwarven Mine 3035 9772" lands.
-  function rdImport(text) {
-    const c = rdCoordsLoad(); let n = 0;
-    for (const raw of String(text || '').split(/\r?\n/)) {
-      const m = raw.trim().match(/^(.+?)[\s:,]+(\d{3,5})[\s,]+(\d{3,5})(?:[\s,]+(\d))?\s*$/);
-      if (!m) continue;
-      const key = m[1].trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-      const hit = RD_LIST.find(r => r[1].toLowerCase().replace(/[^a-z0-9]/g, '').startsWith(key) || key.startsWith(r[1].toLowerCase().replace(/[^a-z0-9]/g, '')));
-      if (!hit) continue;
-      c[hit[0]] = { x: +m[2], y: +m[3], p: m[4] ? +m[4] : 0 }; n++;
-    }
-    if (n) { rdCoordsSave(); rdSig = ''; rdPushPins(); }
-    return n;
   }
   function rdPushPins() {
     if (typeof wmSetExtPins !== 'function') return;
@@ -103,8 +116,6 @@
         .rd-btn:hover { color: var(--text); border-color: var(--accent-hi); }
         .rd-btn:disabled { opacity: .35; cursor: default; }
         .rd-note { margin: 6px 14px 10px; color: var(--text-mute); font-size: 11px; line-height: 1.45; }
-        .rd-imp { margin: 0 12px 10px; }
-        .rd-imp textarea { width: 100%; min-height: 70px; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font: 11px/1.4 Consolas, monospace; resize: vertical; }
         .rd-empty { margin: 10px 14px; color: var(--text-dim); font-size: 12px; }`);
       c.innerHTML = ''; rdSig = '';
       wrap = document.createElement('div'); wrap.id = 'rdWrap'; wrap.className = 'pane'; c.appendChild(wrap);
@@ -119,11 +130,6 @@
           return;
         }
         if (ev.target.id === 'rdShowDone') { rdShowDone = !rdShowDone; rdSig = ''; renderResDungeons(); return; }
-        if (ev.target.id === 'rdImpBtn') {
-          const ta = $('rdImpText'); const n = rdImport(ta ? ta.value : '');
-          uiNotify(n ? ('Imported coordinates for ' + n + ' dungeon' + (n === 1 ? '' : 's') + '.') : 'No lines matched. Use one "Name: x, y" per line.', {});
-          renderResDungeons(); return;
-        }
         if (ev.target.id === 'rdPinAll') { rdPushPins(); try { const t = allTabs().find(x => x.id === 'worldmap'); if (t) openTab(t); } catch (e) {} return; }
       });
     }
@@ -142,14 +148,13 @@
       rows.push('<div class="rd-row ' + (claimed ? 'done' : 'todo') + '"><span class="rd-dot"></span>'
         + '<div class="rd-nm">' + esc(r[1]) + '<div class="rd-sub">' + (claimed ? 'First-visit XP claimed' : 'XP not yet claimed') + (r[4] ? '' : ' · free-to-play') + (k ? ' · ' + k.x + ', ' + k.y : '') + '</div></div>'
         + '<span class="rd-lv' + lvCls + '" title="Dungeoneering level required">' + r[2] + '</span>'
-        + '<button class="rd-btn" data-rd-map="' + r[0] + '"' + (k ? '' : ' disabled title="No coordinates yet: add them under Coordinates"') + '>Map</button></div>');
+        + '<button class="rd-btn" data-rd-map="' + r[0] + '">Map</button></div>');
     }
     let h = '<div class="rd-top"><button class="rd-btn" id="rdShowDone">' + (rdShowDone ? 'Hide claimed' : 'Show claimed') + '</button>'
-      + '<button class="rd-btn" id="rdPinAll"' + (Object.keys(coords).length ? '' : ' disabled') + '>Pin all on map</button>'
+      + '<button class="rd-btn" id="rdPinAll">Pin all on map</button>'
       + '<span class="rd-cnt">' + done + ' / ' + RD_LIST.length + ' claimed</span></div>';
     h += '<div class="rd-card">' + (rows.length ? rows.join('') : '<div class="rd-empty">Every dungeon claimed.</div>') + '</div>';
     h += '<div class="rd-note">Names, levels and the claimed flags are the game\'s own (enum 3537, scripts 3151 / 3144 / 3136, the Very Resourceful varbits). The in-game list lights an entry only when the level is met and the XP is claimed; here the level pill and the dot say which is missing.</div>';
-    h += '<div class="rd-imp"><div class="rd-note" style="margin:0 2px 4px">Coordinates: one per line, "Name: x, y" (plane optional). Names match on a prefix.</div><textarea id="rdImpText" placeholder="Dwarven Mine: x, y&#10;Taverley Dungeon: Hellhounds: x, y, plane"></textarea><div style="margin-top:6px"><button class="rd-btn" id="rdImpBtn">Import coordinates</button></div></div>';
     wrap.innerHTML = h;
     rdPushPins();
   }
