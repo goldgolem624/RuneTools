@@ -150,3 +150,18 @@ with (Pulse Core, Quiver ammo), with the full description on the row.
 Sprite joins were tried and rejected: the icon id in param 4677 or 2802 is shared by several
 named structs (34918 matches Pulse Core, Advanced pulse core and Boon of Plenty I), so it cannot
 identify one on its own.
+
+#### How a buff bar entry is named
+
+A buff struct has no title of its own, but it always carries a link to something that does:
+
+| param | meaning | example |
+| --- | --- | --- |
+| 2802 | Invention perk: dbtable 8 column 2 holds this id, column 1 the name | 26466 = Aftershock, 26341 = Wise |
+| 4677 | the source item | 51490 = Sign of the porter VII, 33719 = Tirannwn quiver 1, 34918 = Advanced pulse core |
+| 2794 | the description, which for short entries IS the name | "Quiver ammo", "Pulse Core - 2% XP Boost" |
+
+The panel resolves in that order: perk name, then the description when it is short or leads with
+a name before a dash, then the source item with its tier suffix removed (the status is Sign of
+the porter, the item is Sign of the porter VII), and only then the opening clause. The full
+description stays on the row as a tooltip.

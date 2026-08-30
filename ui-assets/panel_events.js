@@ -86,6 +86,12 @@
     return "";
   }
 
+  // "Sign of the porter VII" is the item; the status is "Sign of the porter". Tiers appear as a
+  // trailing roman numeral or digit, so drop that and nothing else.
+  function evBaseItemName(nm) {
+    return String(nm || "").replace(/\s+(?:[IVXLC]{1,6}|\d{1,2})$/, "").trim();
+  }
+
   function evStructLabel(text) {
     const t = String(text || "").replace(/<[^>]*>/g, "").trim();
     if (!t) return "";
@@ -103,12 +109,23 @@
       const ps = await rtxData.call("cache.structParams", id);
       const strs = (ps && ps.strs) || {};
       const ints = (ps && ps.ints) || {};
-      const t = strs["2794"] || strs[2794] || "";
-      const perk = evPerkName(ints["2802"] || ints[2802]);
-      const label = perk || evStructLabel(t);
+      const t = (strs["2794"] || strs[2794] || "").replace(/<[^>]*>/g, "");
+      // 1. an Invention perk names itself in dbtable 8
+      let label = evPerkName(ints["2802"] || ints[2802]);
+      // 2. a short description IS the name ("Quiver ammo"), and a dashed one leads with it
+      if (!label && t && (t.length <= 26 || / - /.test(t))) label = evStructLabel(t);
+      // 3. otherwise the source item names it, without its tier
+      if (!label) {
+        const item = ints["4677"] || ints[4677];
+        if (item > 0) {
+          const info = await rtxData.call("cache.itemInfo", item);
+          if (info && info.name) label = evBaseItemName(info.name);
+        }
+      }
+      // 4. last resort: the opening clause of the description
+      if (!label) label = evStructLabel(t);
       if (label) {
-        const full = t.replace(/<[^>]*>/g, "");
-        EV_STRUCT.set(id, { label: label, full: perk && full ? (perk + ": " + full) : full });
+        EV_STRUCT.set(id, { label: label, full: t && t.indexOf(label) !== 0 ? (label + ": " + t) : t });
         evPaintSoon();
       }
     })();
