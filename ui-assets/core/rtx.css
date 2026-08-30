@@ -1524,21 +1524,19 @@
   .inv-grid .bank-amt { font-size: 13px; top: 3px; left: 4px; }
   /* Inventory cells stack an icon box over a name strip; the square-by-padding trick
      moves onto the inner icon box so the name can extend the cell downward. */
-  .inv-grid .bank-cell { height: auto; padding-bottom: 0; display: flex; flex-direction: column; }
-  .inv-ico-box { position: relative; width: 100%; height: 0; padding-bottom: 86%; flex: 0 0 auto; }
+  /* Explicit pixel heights, no percentage padding and no flex stacking: this engine resolves
+     percentage padding inside a grid item against an indefinite width and squeezes flex children,
+     which clipped the name through its glyphs whichever way the strip was constrained. 46 icon +
+     36 name = 82. */
+  .inv-grid .bank-cell { height: 82px; padding-bottom: 0; display: block; }
+  .inv-ico-box { position: relative; width: 100%; height: 46px; padding-bottom: 0; }
   /* Up to three tight lines with an ellipsis, so "Exquisite woodcutting urn" stays readable
      instead of being sliced mid-glyph at the second line; the tooltip has the full name. */
+  /* Three lines at 11px, so the cap is a whole multiple of the line box and the last line is
+     never sliced. The full name is always in the tooltip. */
   .inv-name {
-    /* A plain block that grows to three lines: the -webkit-box line clamp is not honoured by
-       the embedded engine (the strip stayed at its two-line minimum and clipped mid-glyph). */
-    /* flex: 0 0 auto is load bearing: the cell is a flex column, so a shrinkable name strip
-       gets squeezed below its min-height and the last line is cut through the glyphs. */
-    flex: 0 0 auto;
-    display: block; font-size: 9px; line-height: 1.25; color: var(--text-dim); text-align: center;
-    /* Whole lines only: max-height has to be an exact multiple of line-height or the last
-       line is sliced through the glyphs. 3 lines at 1.25 = 3.75em, plus the padding. */
-    padding: 1px 2px 4px; min-height: 2.5em; max-height: 3.75em; word-break: break-word;
-    overflow: hidden; hyphens: auto;
+    display: block; height: 36px; font-size: 9px; line-height: 11px; color: var(--text-dim);
+    text-align: center; padding: 1px 2px 2px; word-break: break-word; overflow: hidden;
   }
   .inv-grid::-webkit-scrollbar { width: 10px; }
   .inv-grid::-webkit-scrollbar-track { background: transparent; }
