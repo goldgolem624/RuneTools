@@ -102,7 +102,29 @@
       sizeIcon(el);
       el.dataset.icoSizedUrl = el.dataset.icoUrl || '';
     });
+    fitNames();
   }
+  // Item names must never be split mid-word: "Stormberr / y seed" is unreadable and looks
+  // broken. Wrapping alone cannot deliver that, because a grid cell can be narrower than a
+  // single word, and then every wrapping mode that is permitted to break will break one.
+  // So the text is shrunk instead: step the size down until the widest word fits, floor at
+  // 7px. Below the floor the name is clipped by overflow:hidden and the tooltip carries it
+  // in full, which is still better than a word cut across two lines.
+  const FIT_MAX = 9, FIT_MIN = 7, FIT_STEP = 0.5;
+  function fitName(el) {
+    const sig = el.textContent + '|' + el.clientWidth;
+    if (el.dataset.fitSig === sig) return;          // same text in the same box
+    let px = FIT_MAX;
+    el.style.fontSize = px + 'px';
+    // scrollWidth exceeds clientWidth exactly when some line, i.e. some word, is too wide.
+    while (px > FIT_MIN && el.scrollWidth > el.clientWidth) {
+      px -= FIT_STEP;
+      el.style.fontSize = px + 'px';
+    }
+    el.dataset.fitSig = sig;
+  }
+  function fitNames() { document.querySelectorAll('.inv-name').forEach(fitName); }
+
   // Resizing the window relayouts every grid without necessarily repainting the
   // panels, so the icons have to be told to re-decide.
   let icoResizeQ = 0;
