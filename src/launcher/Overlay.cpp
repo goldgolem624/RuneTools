@@ -72,6 +72,19 @@ constexpr int kSurfR = 11,  kSurfG = 13,  kSurfB = 18;    // #0B0D12  plate / sc
 constexpr int kInkR  = 5,   kInkG  = 7,   kInkB  = 11;    // #05070B  contour underlay
 constexpr int kTxtR  = 232, kTxtG  = 237, kTxtB  = 244;   // #E8EDF4  primary type
 constexpr int kAccR  = 140, kAccG  = 111, kAccB  = 253;   // #8C6FFD  --accent-hi
+
+// Identity of a highlight for the anti-flicker hold. Labelled highlights (guide / alert NPCs)
+// are one-per-label. The Scene-tab outline carries NO label by contract (the empty label is
+// what routes it to the neutral style), so it is identified by entity uid when there is one
+// (NPC outline) and otherwise by the centre tile of its box (object outline): the live AABB
+// jitters per frame while an object animates, the tile it sits on does not.
+static std::string HighlightHoldKey(const rtx::reader::OverlayPoint& hp) {
+    if (!hp.label.empty()) return hp.label;
+    if (hp.uid) return "u:" + std::to_string(hp.uid);
+    const float cx = hp.has_box3d ? (hp.bmin[0] + hp.bmax[0]) * 0.5f : hp.wx;
+    const float cy = hp.has_box3d ? (hp.bmin[1] + hp.bmax[1]) * 0.5f : hp.wy;
+    return "t:" + std::to_string((int)(cx / 512.f)) + "," + std::to_string((int)(cy / 512.f)) + "," + std::to_string(hp.kind);
+}
 constexpr int kOkR   = 77,  kOkG   = 210, kOkB   = 138;   // #4DD28A  --ok
 constexpr int kOkTxR = 142, kOkTxG = 240, kOkTxB = 192;   // #8EF0C0  green type on dark
 // Mix a hue 1:3 into the surface -> a dark tinted scrim that still reads as that hue. A
@@ -595,11 +608,12 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
         constexpr ULONGLONG kHoldMs = 700;
         const ULONGLONG tnow = GetTickCount64();
         dfHls = f.highlights;
-        for (const auto& hp : dfHls) if (!hp.label.empty()) s_hold[hp.label] = { hp, tnow };
+        std::vector<std::string> keys; keys.reserve(dfHls.size());
+        for (const auto& hp : dfHls) { keys.push_back(HighlightHoldKey(hp)); s_hold[keys.back()] = { hp, tnow }; }
         for (auto it = s_hold.begin(); it != s_hold.end();) {
             if (tnow - it->second.second > kHoldMs) { it = s_hold.erase(it); continue; }
             bool present = false;
-            for (const auto& hp : dfHls) if (hp.label == it->first) { present = true; break; }
+            for (const auto& k : keys) if (k == it->first) { present = true; break; }
             if (!present) dfHls.push_back(it->second.first);
             ++it;
         }
@@ -722,12 +736,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       if (sbit != g_skillBars.end() && now_ms() - sbit->second.at_ms <= kSkillBarsTtlMs)
           sbars = sbit->second.bars; }
 
-    // Labelled highlights (guide / alert NPCs) get a short HOLD: the reader resolves them per
-    // frame from the live scene, and a morphing or animating NPC can fail name or box resolution
-    // on individual frames, which made the box and label blink visibly. Each labelled highlight
-    // seen is kept drawing for a grace period after it stops resolving; the Scene-tab outline
-    // (empty label) stays strictly live, and a cleared needle empties the hold with the frame.
-    // PublishMarkers runs on the overlay thread only, so plain statics are fine.
+    // Highlights get a short HOLD: the reader resolves them per frame from the live scene, and a
+    // morphing or animating NPC (or a torn runtime-object read) can fail name or box resolution
+    // on individual frames, which made the box and label blink visibly. Each highlight seen is
+    // kept drawing for a grace period after it stops resolving. Labelled ones key on the label;
+    // the Scene-tab outline has an empty label by contract (that is what selects the neutral
+    // style), so it keys on the entity uid / centre tile instead. A cleared needle empties the
+    // hold with the frame. PublishMarkers runs on the overlay thread only, so statics are fine.
     std::vector<rtx::reader::OverlayPoint> hls;
     {
         static std::map<DWORD, std::map<std::string, std::pair<rtx::reader::OverlayPoint, ULONGLONG>>> s_hiHold;
@@ -736,12 +751,12 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         auto& hold = s_hiHold[cfg.pid];
         if (f) {
             hls = f->highlights;
-            for (const auto& hp : hls)
-                if (!hp.label.empty()) hold[hp.label] = { hp, tnow };
+            std::vector<std::string> keys; keys.reserve(hls.size());
+            for (const auto& hp : hls) { keys.push_back(HighlightHoldKey(hp)); hold[keys.back()] = { hp, tnow }; }
             for (auto it = hold.begin(); it != hold.end();) {
                 if (tnow - it->second.second > kHiHoldMs) { it = hold.erase(it); continue; }
                 bool present = false;
-                for (const auto& hp : hls) if (hp.label == it->first) { present = true; break; }
+                for (const auto& k : keys) if (k == it->first) { present = true; break; }
                 if (!present) hls.push_back(it->second.first);
                 ++it;
             }

@@ -55,6 +55,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         ensure_icon();
         return 0;
     }
+    // A second launcher instance bowing out asks the running one to show itself. Broadcast
+    // registered message (see main.cpp single-instance guard): it works whether the launcher
+    // window is minimized or parked (hidden) in the tray, which a window search cannot tell.
+    static const UINT s_showMain = RegisterWindowMessageW(L"RuneToolsX.ShowMain");
+    if (m == s_showMain) { restore_main(); return 0; }
     if (m == kMsgTray) {
         if (l == WM_LBUTTONUP || l == WM_LBUTTONDBLCLK) { restore_main(); return 0; }
         if (l == WM_RBUTTONUP) {

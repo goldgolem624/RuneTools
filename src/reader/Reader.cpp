@@ -7106,6 +7106,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 if (std::find(outline_uids.begin(), outline_uids.end(), uid) != outline_uids.end()) {
                     OverlayPoint op;
                     op.wx = cE; op.wy = cN; op.wz = cU; op.kind = 1;
+                    op.uid = uid;                 // hold identity: the launcher's anti-flicker hold keys unlabelled outlines on it
                     op.has_box3d = true;
                     op.bmin[0] = bmnE; op.bmin[1] = bmnN; op.bmin[2] = bmnU;
                     op.bmax[0] = bmxE; op.bmax[1] = bmxN; op.bmax[2] = bmxU;

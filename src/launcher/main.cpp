@@ -315,6 +315,26 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     // in-place update can detect + close this launcher via the Restart Manager.
     // Held for the process lifetime (handle intentionally leaked).
     CreateMutexW(nullptr, FALSE, L"RuneToolsXLauncher");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // A launcher is already running (possibly minimized). Two launchers publish into the SAME
+        // per-client overlay sections and alternate frames, so every highlight/outline blinks.
+        // Hand focus to the existing instance and bow out.
+        boot_log("another RuneToolsX launcher is already running; asking it to show itself and exiting");
+        // The running instance's tray window handles this (WinNotify.cpp) via restore_main(),
+        // which un-hides a tray-parked window as well as restoring a minimized one.
+        // That tray window is MESSAGE-ONLY, so HWND_BROADCAST never reaches it: look it up by
+        // class under HWND_MESSAGE (every instance, in case the stale mutex owner has no tray yet).
+        const UINT showMain = RegisterWindowMessageW(L"RuneToolsX.ShowMain");
+        AllowSetForegroundWindow(ASFW_ANY);
+        HWND tray = nullptr; int sent = 0;
+        while ((tray = FindWindowExW(HWND_MESSAGE, tray, L"RuneToolsXNotifyWnd", nullptr)) != nullptr) {
+            DWORD_PTR res = 0;
+            SendMessageTimeoutW(tray, showMain, 0, 0, SMTO_ABORTIFHUNG, 2000, &res);
+            ++sent;
+        }
+        boot_log("single-instance: notified " + std::to_string(sent) + " tray window(s)");
+        return 0;
+    }
 
     auto self = exe_dir();
     if (!preload_ultralight_dlls(self)) {
