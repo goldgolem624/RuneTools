@@ -1836,6 +1836,23 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     float uiScale;
     { float sx = (float)W / 800.0f, sy = (float)H / 600.0f; uiScale = sx < sy ? sx : sy; if (uiScale > 1.0f) uiScale = 1.0f; }
 
+    // ONE conversion for EVERY screen-space rect that reaches this function (UI highlight, panel
+    // visualizer, puzzle and knot cells, skill bars). All of them come out of the game's interface
+    // tree, i.e. the game's LOGICAL interface layout. Two independent factors turn that into
+    // backbuffer pixels:
+    //   * uiScale  - the engine's sub-800x600 downscale (1.0 at or above 800x600), applied to
+    //                design-space rects only (opt-in per path, see the note above);
+    //   * gvScale  - the OS display scaling: a per-monitor-aware client lays its interface out at
+    //                physical/scale and upscales into the backbuffer, so logical coords are short by
+    //                exactly backbuffer / logical-client width (1.0 on an unscaled monitor). Seen
+    //                live at 150%: every screen-space overlay compressed toward the top-left.
+    // Add new screen-space paths through this and nowhere else.
+    struct ScreenRect { float x0, y0, x1, y1; };
+    auto toScreen = [&](int x, int y, int w, int h, bool designSpace) -> ScreenRect {
+        const float k = gvScale * (designSpace ? uiScale : 1.0f);
+        return { (float)x * k, (float)y * k, (float)(x + w) * k, (float)(y + h) * k };
+    };
+
     // --- UI highlight: a screen-space accent box over a game UI element. Coords are already client
     //     pixels (panel-position varc + within-group offset, x uiScale), so NO world projection.
     //     Pulses so it reads as a "click here" cue. A caller may set SEVERAL at once
@@ -1845,10 +1862,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         float uipulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
         // A small target (a puzzle-box CELL, ~49px) INSETS so the highlight clearly sits inside that one
         // tile and never bleeds into its neighbours; a larger box (a dialogue option) keeps a slight outset.
-        const bool cell = (uihl.w * uiScale < 90.0f && uihl.h * uiScale < 90.0f);
+        const ScreenRect sr = toScreen(uihl.x, uihl.y, uihl.w, uihl.h, true);
+        const bool cell = ((sr.x1 - sr.x0) < 90.0f * gvScale && (sr.y1 - sr.y0) < 90.0f * gvScale);
         float pad = cell ? -3.5f : 3.0f;
-        float x0 = (float)uihl.x * uiScale - pad, y0 = (float)uihl.y * uiScale - pad;
-        float x1 = (float)(uihl.x + uihl.w) * uiScale + pad, y1 = (float)(uihl.y + uihl.h) * uiScale + pad;
+        float x0 = sr.x0 - pad, y0 = sr.y0 - pad;
+        float x1 = sr.x1 + pad, y1 = sr.y1 + pad;
         // Translucent fill -- stronger on a cell (no text to keep readable).
         marker::Command q{}; q.type = marker::kFillRect;
         q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
@@ -1880,17 +1898,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     // --- Puzzle-box next moves: bold GOLD numbered cells on the live board so the click order is obvious in
     //     advance. step 0 = click now (brightest + pulsing + thickest border), 1/2 = upcoming. Coords are
     //     already LOGICAL interface pixels (puzzleCellRects walks the widget tree), so NO uiScale.
-    //     They are not backbuffer pixels though: a per-monitor-aware client on an OS-scaled
-    //     monitor lays its interface out at physical/scale and upscales, so the rects are
-    //     multiplied by gvScale (backbuffer / logical client width, 1 when unscaled) exactly as
-    //     the gameview rect is. Seen live at 150%: every cell drawn compressed toward the
-    //     top-left, the number markers sitting a full board away from their tiles. ---
+    //     Converted by toScreen like every other screen-space rect (OS display scaling). ---
     if (!pcells.empty()) {
         float ppulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 900) / 900.0 * 6.2831853));
         for (const auto& pc : pcells) {
             if (pc.w <= 0 || pc.h <= 0) continue;
-            float x0 = (float)pc.x * gvScale, y0 = (float)pc.y * gvScale;
-            float x1 = (float)(pc.x + pc.w) * gvScale, y1 = (float)(pc.y + pc.h) * gvScale;
+            const ScreenRect sr = toScreen(pc.x, pc.y, pc.w, pc.h, false);
+            float x0 = sr.x0, y0 = sr.y0, x1 = sr.x1, y1 = sr.y1;
             const int R = 255, G = 196, B = 64;                    // gold (matches the side-panel hot tile)
             int fillA, bordA; float bordTh;
             if (pc.step == 0) { fillA = 85 + (int)(80.0f * ppulse); bordTh = 4.0f; bordA = 255; }   // next: pulsing, boldest
@@ -1921,14 +1935,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     // --- Celtic-knot arrows: an Interfaces-hover-style box (sky-blue, corner brackets) on each arrow to click,
     //     with the remaining click count in a pill ABOVE the box so it never covers the arrow. Coords are
-    //     already logical interface pixels (resolved live each tick), so NO uiScale, but the
-    //     same gvScale as the puzzle cells above (OS display scaling). ---
+    //     logical interface pixels (resolved live each tick), converted by toScreen. ---
     if (!kcells.empty()) {
         float kpulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1100) / 1100.0 * 6.2831853));
         for (const auto& kc : kcells) {
             if (kc.w <= 0 || kc.h <= 0) continue;
-            float x0 = (float)kc.x * gvScale, y0 = (float)kc.y * gvScale;
-            float x1 = (float)(kc.x + kc.w) * gvScale, y1 = (float)(kc.y + kc.h) * gvScale;
+            const ScreenRect sr = toScreen(kc.x, kc.y, kc.w, kc.h, false);
+            float x0 = sr.x0, y0 = sr.y0, x1 = sr.x1, y1 = sr.y1;
             marker::Command q{}; q.type = marker::kFillRect; q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
             q.r = kAccR; q.g = kAccG; q.b = kAccB; q.a = (std::uint8_t)(50 + (int)(45.0f * kpulse)); push(q);
             line(x0, y0, x1, y0, 2.4f, kAccR, kAccG, kAccB, 235); line(x1, y0, x1, y1, 2.4f, kAccR, kAccG, kAccB, 235);
@@ -1955,7 +1968,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     // --- Skills XP progress bars: a thin track along the bottom edge of each skill cell, filled by
     //     progress to the next level. Rects arrive as screen pixels (client.html converts its
     //     tree-walk coords by the reader-published interface scale), like the
-    //     puzzle/knot cells, so NO uiScale. No pulse and no label: this is ambient information
+    //     puzzle/knot cells, so NO uiScale; toScreen adds the OS display scaling. No pulse and no label: this is ambient information
     //     sitting under the game's own numbers, and it has to stay readable at a glance across
     //     29 cells without competing with them.
     //
@@ -1976,8 +1989,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0; bool any = false;
                 for (const auto& sb : sbars) {
                     if (sb.w <= 0 || sb.h <= 0) continue;
-                    const float sx0 = (float)sb.x, sy0 = (float)sb.y;
-                    const float sx1 = (float)(sb.x + sb.w), sy1 = (float)(sb.y + sb.h);
+                    const ScreenRect sr = toScreen(sb.x, sb.y, sb.w, sb.h, false);
+                    const float sx0 = sr.x0, sy0 = sr.y0, sx1 = sr.x1, sy1 = sr.y1;
                     if (!any) { bx0 = sx0; by0 = sy0; bx1 = sx1; by1 = sy1; any = true; }
                     else {
                         if (sx0 < bx0) bx0 = sx0; if (sy0 < by0) by0 = sy0;
@@ -1993,8 +2006,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     if (!sbarsHide)
     for (const auto& sb : sbars) {
         if (sb.w <= 0 || sb.h <= 0) continue;
-        float x0 = (float)sb.x, y1 = (float)(sb.y + sb.h);
-        float x1 = (float)(sb.x + sb.w);
+        const ScreenRect sr = toScreen(sb.x, sb.y, sb.w, sb.h, false);
+        float x0 = sr.x0, y1 = sr.y1;
+        float x1 = sr.x1;
         // Inset from the cell edge, and a height that scales with the cell but stays legible.
         float inset = 2.0f;
         float bh = (float)sb.h * 0.10f; if (bh < 2.5f) bh = 2.5f; if (bh > 5.0f) bh = 5.0f;
@@ -2022,8 +2036,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     //     distinct from the sky-blue "click here" highlight above. No pulse (steady reference frame). ---
     for (const auto& pb : pviz) {
         if (pb.w <= 0 || pb.h <= 0) continue;
-        float bx0 = (float)pb.x * uiScale, by0 = (float)pb.y * uiScale;
-        float bx1 = (float)(pb.x + pb.w) * uiScale, by1 = (float)(pb.y + pb.h) * uiScale;
+        const ScreenRect sr = toScreen(pb.x, pb.y, pb.w, pb.h, true);
+        float bx0 = sr.x0, by0 = sr.y0, bx1 = sr.x1, by1 = sr.y1;
         marker::Command fillc{}; fillc.type = marker::kFillRect;
         fillc.x0 = bx0; fillc.y0 = by0; fillc.x1 = bx1; fillc.y1 = by1;
         fillc.r = 64; fillc.g = 210; fillc.b = 224; fillc.a = 26;     // faint teal wash
