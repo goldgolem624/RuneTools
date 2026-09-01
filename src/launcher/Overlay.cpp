@@ -2593,9 +2593,12 @@ void RenderLoop() {
             // only -- no entity walk.
             if (!ok && (hasUiHl || hasPanelViz || hasSolverCells || hasSkillBars))
                 ok = rtx::reader::ReadViewMetrics(cpid, frame);
-            if (wantF && ok) {
+            if (ok) {
+                // ok can also mean a metrics-only frame (wantF false): publish it so the
+                // screen-space conversion has lc/gv, but only a full world frame enters the
+                // hold cache -- a held metrics frame would freeze nothing useful.
                 PublishMarkers(ccfg, &frame, W2, H2, fa, wptr);
-                held[cpid] = { std::move(frame), tnow };
+                if (wantF) held[cpid] = { std::move(frame), tnow };
             } else if (wantF) {
                 // Transient failure: re-serve the held frame within the hold window (positions
                 // freeze for a beat). Past the window, publish empty.
@@ -2605,7 +2608,8 @@ void RenderLoop() {
             } else {
                 PublishMarkers(ccfg, nullptr, W2, H2, fa, wptr);
             }
-            anyFrames = anyFrames || wantF || hasUiHl || hasPanelViz || hasCenter || wptr != nullptr;
+            anyFrames = anyFrames || wantF || hasUiHl || hasPanelViz || hasCenter ||
+                        hasSolverCells || hasSkillBars || wptr != nullptr;
         }
         // Drop held frames for clients no longer configured (closed docks).
         for (auto it = held.begin(); it != held.end(); )
