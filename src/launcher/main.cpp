@@ -85,6 +85,48 @@ bool preload_ultralight_dlls(const std::filesystem::path& self) {
     return true;
 }
 
+// Borderless frame subclass for the launcher window. WS_THICKFRAME keeps live resize and snap,
+// but also paints the standard frame (seen as a white sliver above the page's title bar), so
+// WM_NCCALCSIZE claims the whole window as client area; WM_NCHITTEST hands the 8px edges back
+// to the OS as resize handles. Dragging comes from the page (winCmd HTCAPTION), not from here.
+static WNDPROC g_launcherPrevProc = nullptr;
+static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    switch (m) {
+    case WM_NCCALCSIZE:
+        if (w) {
+            auto* pr = reinterpret_cast<NCCALCSIZE_PARAMS*>(l);
+            if (IsZoomed(h)) {
+                // Maximized: the OS extends the frame past the monitor edge; inset by it or the
+                // page's own edges are clipped off-screen.
+                const int fx = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                const int fy = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                pr->rgrc[0].left += fx; pr->rgrc[0].right  -= fx;
+                pr->rgrc[0].top  += fy; pr->rgrc[0].bottom -= fy;
+            }
+            return 0;
+        }
+        break;
+    case WM_NCHITTEST: {
+        const int x = (int)(short)LOWORD(l), y = (int)(short)HIWORD(l);
+        RECT r; GetWindowRect(h, &r);
+        const int g = 8;
+        const bool L = x < r.left + g, R = x >= r.right - g;
+        const bool T = y < r.top + g,  B = y >= r.bottom - g;
+        if (!IsZoomed(h)) {
+            if (T && L) return HTTOPLEFT;
+            if (T && R) return HTTOPRIGHT;
+            if (B && L) return HTBOTTOMLEFT;
+            if (B && R) return HTBOTTOMRIGHT;
+            if (T) return HTTOP;
+            if (B) return HTBOTTOM;
+            if (L) return HTLEFT;
+            if (R) return HTRIGHT;
+        }
+        break; }
+    }
+    return CallWindowProcW(g_launcherPrevProc, h, m, w, l);
+}
+
 class LauncherApp : public WindowListener, public LoadListener, public AppListener {
 public:
     bool ok = false;
@@ -195,6 +237,9 @@ public:
             LONG_PTR st = GetWindowLongPtrW(hwnd, GWL_STYLE);
             st |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_SYSMENU;
             SetWindowLongPtrW(hwnd, GWL_STYLE, st);
+            g_launcherPrevProc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(LauncherFrameProc)));
             SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             HMODULE hMod = GetModuleHandleW(nullptr);

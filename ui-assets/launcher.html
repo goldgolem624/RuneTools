@@ -329,7 +329,9 @@
     text-transform: uppercase;
     letter-spacing: 0.12em;
     display: flex; align-items: center; gap: 8px;
+    white-space: nowrap;
   }
+  .btn-sm { height: 24px; font-size: 10px; padding: 0 10px; white-space: nowrap; letter-spacing: 0.04em; }
   .section-title .count {
     background: var(--bg-elev-2);
     color: var(--text-dim);
@@ -346,8 +348,9 @@
     display: flex; align-items: center; gap: 7px;
     text-transform: none; letter-spacing: normal;
     font-size: 11px; font-weight: 500; color: var(--text-dim);
-    cursor: pointer;
+    cursor: pointer; white-space: nowrap;
   }
+  .section-title .acct-cap:hover { color: var(--text); }
   /* The native checkbox draws as an unthemed white box here, so it is kept only for semantics and
      keyboard focus, and the visible box is its sibling. Not `appearance: none` -- that leaves the
      control drawn as-is on engines that do not honour it, which is the bug it was meant to fix. */
@@ -355,7 +358,7 @@
     position: absolute; opacity: 0; width: 0; height: 0; margin: 0;
   }
   .section-title .acct-cap .box {
-    flex: none; width: 13px; height: 13px; border-radius: 4px; position: relative;
+    flex: none; width: 15px; height: 15px; border-radius: 5px; position: relative;
     background: var(--bg-elev-2); border: 1px solid var(--border-hi);
     transition: background .12s ease, border-color .12s ease;
   }
@@ -366,7 +369,7 @@
   }
   /* Tick drawn as two borders on a rotated box -- no glyph font, so it cannot fall back to tofu. */
   .section-title .acct-cap input:checked + .box::after {
-    content: ""; position: absolute; left: 4px; top: 1px; width: 3px; height: 6px;
+    content: ""; position: absolute; left: 5px; top: 2px; width: 3px; height: 7px;
     border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
   }
   .section-title .acct-cap input:focus + .box { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -418,7 +421,13 @@
   }
   .list-row .dot.live  { background: var(--ok);        box-shadow: 0 0 6px rgba(74,222,128,0.5); }
   .list-row .dot.idle  { background: var(--text-mute); }
-  .list-row .actions { display: flex; gap: 6px; }
+  .list-row .actions { display: flex; gap: 6px; align-items: center; }
+  .list-row .actions button { height: 28px; font-size: 11px; padding: 0 13px; border-radius: 7px; }
+  .list-row .actions button.icon { width: 28px; padding: 0; }
+  .list-row .actions button.icon svg { width: 13px; height: 13px; }
+  .list-row .actions button.primary { box-shadow: 0 1px 6px rgba(124, 92, 252, 0.28); }
+  .list-row .actions button.ghost { border-color: transparent; }
+  .list-row .actions button.ghost:hover:not(:disabled) { border-color: var(--border-hi); }
 
   .pill {
     font-size: 10px;
@@ -724,11 +733,11 @@
       <h3 class="section-title">
         Saved accounts
         <span class="count" id="acct-count">0</span>
-        <button class="ghost" id="acct-launch-all" type="button" style="height:24px;font-size:10px;padding:0 10px;display:none;margin-left:2px">Launch all</button>
+        <button class="ghost btn-sm" id="acct-launch-all" type="button" style="display:none">Launch all</button>
         <label class="acct-cap" title="When off, logging into a client no longer saves its session to this machine. Accounts already saved are kept - remove them individually below.">
           <input type="checkbox" id="acct-capture" checked>
           <span class="box"></span>
-          <span class="lbl">Save accounts automatically</span>
+          <span class="lbl">Auto&#8209;save</span>
         </label>
       </h3>
       <div class="list" id="acct-list">
@@ -857,11 +866,23 @@
   function xpPerHour(pid, sn) {
     const now = Date.now();
     const t = snapTotals(sn);
+    // No baseline until a real in-world sample: at the login screen the skills read 0, and a
+    // 0 baseline books the character's ENTIRE xp as a gain on the first in-world sample.
+    if (!(sn && sn.in_world) || t.xp <= 0) { xpTrack.delete(pid); return 0; }
     let tr = xpTrack.get(pid);
-    if (!tr || t.xp < tr.xp0) { tr = { t0: now, xp0: t.xp }; xpTrack.set(pid, tr); return 0; }
+    if (!tr || tr.xp0 <= 0 || t.xp < tr.xp0) { xpTrack.set(pid, { t0: now, xp0: t.xp }); return 0; }
     const dt = now - tr.t0;
     if (dt < 15000) return 0;                       // window too short to be honest
-    return Math.round((t.xp - tr.xp0) / dt * 3600000);
+    const ph = Math.round((t.xp - tr.xp0) / dt * 3600000);
+    // A world hop or profile switch can swap the whole skills block between samples; a rate no
+    // human reaches means the baseline is from another character, so start over.
+    if (ph > 30000000) { xpTrack.set(pid, { t0: now, xp0: t.xp }); return 0; }
+    return ph;
+  }
+  function fmtMB(mb) {
+    mb = Number(mb) || 0;
+    if (mb >= 1024) return (mb / 1024).toFixed(1) + 'GB';
+    return mb + 'MB';
   }
   function fmtNum(n) {
     n = Number(n) || 0;
@@ -1004,7 +1025,7 @@
       // and button state never reset with the once-a-second numbers.
       const meta = document.createElement('div');
       meta.className = 'cc-meta';
-      for (const [key, label] of [['lvl', 'Total lvl'], ['xph', 'XP/hr'], ['ses', 'Session'], ['cpu', 'CPU']]) {
+      for (const [key, label] of [['lvl', 'Total lvl'], ['xph', 'XP/hr'], ['ses', 'Session'], ['cpu', 'CPU \u00b7 Mem']]) {
         const st = document.createElement('div');
         st.className = 'cc-stat';
         const k = document.createElement('div'); k.className = 'k'; k.textContent = label;
@@ -1087,7 +1108,7 @@
       const ph = sn ? xpPerHour(pid, sn) : 0;
       set('xph', ph > 0 ? fmtNum(ph) : '-');
       set('ses', fmtDur(ses));
-      set('cpu', sn ? ((sn.cpu_pct || 0).toFixed(0) + '% \u00b7 ' + fmtNum(sn.working_set_mb || 0) + 'MB') : '-');
+      set('cpu', sn ? ((sn.cpu_pct || 0).toFixed(0) + '% \u00b7 ' + fmtMB(sn.working_set_mb)) : '-');
       if (sn) metaNote(sn);
     }
     for (const pid of [...firstSeen.keys()])
