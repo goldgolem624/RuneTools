@@ -175,17 +175,28 @@ public:
         app_->set_listener(this);
 
         boot_log("Window::Create...");
-        window_ = Window::Create(app_->main_monitor(), 460, 600, false,
-                                 kWindowFlags_Titled |
-                                 kWindowFlags_Resizable |
-                                 kWindowFlags_Maximizable);
+        // Borderless: the page draws its own title bar (drag region + min/close through the
+        // bridge's winCmd), so the OS chrome never breaks the dark theme. Resizable keeps the
+        // sizing borders; WS_CAPTION is added below so snap and minimize animations survive.
+        window_ = Window::Create(app_->main_monitor(), 460, 640, false,
+                                 kWindowFlags_Borderless |
+                                 kWindowFlags_Resizable);
         if (!window_) { fatal("Window::Create returned null"); return; }
         window_->SetTitle("RuneTools");
         window_->set_listener(this);
 
         // Topmost-then-not bypasses anti-focus-stealing.
         HWND hwnd = static_cast<HWND>(window_->native_handle());
+        rtx::launcher::SetLauncherWindow(hwnd);
         if (hwnd) {
+            // Borderless but still a first-class app window: WS_THICKFRAME keeps resize edges,
+            // WS_MINIMIZEBOX + WS_SYSMENU keep taskbar minimize and Alt+Space/Win+Down working.
+            // No WS_CAPTION, so no OS title bar paints over the page's own.
+            LONG_PTR st = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            st |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_SYSMENU;
+            SetWindowLongPtrW(hwnd, GWL_STYLE, st);
+            SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
             HMODULE hMod = GetModuleHandleW(nullptr);
             HICON hBig = (HICON)LoadImageW(hMod, MAKEINTRESOURCEW(1), IMAGE_ICON,
                                            GetSystemMetrics(SM_CXICON),

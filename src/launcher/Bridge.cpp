@@ -4104,6 +4104,54 @@ JSValueRef VarPinsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
 // would resent re-doing (a hand-collected sound mute list, overlay toggles) has to live on
 // disk. Var pins and menu rules were moved off localStorage for exactly this reason; this is
 // the general store so the next setting does not need its own bridge pair.
+namespace { void* g_launcherHwnd = nullptr; }
+void SetLauncherWindow(void* hwnd) { g_launcherHwnd = hwnd; }
+namespace {
+
+// Launcher-page metadata (per-account last played / last world / total level), its own file so
+// it can never collide with the panels' prefs.json blob.
+JSValueRef LauncherMetaLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                            size_t, const JSValueRef[], JSValueRef*) {
+    std::string s = alerts_read_file(launcher_cfg_path(L"launcher-meta.json"));
+    return utf8_to_js(ctx, s.empty() ? std::string("{}") : s);
+}
+
+JSValueRef LauncherMetaSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                            size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto p = launcher_cfg_path(L"launcher-meta.json");
+    if (p.empty()) return JSValueMakeBoolean(ctx, false);
+    std::string s = js_to_utf8(ctx, argv[0]);
+    auto tmp = p; tmp += L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return JSValueMakeBoolean(ctx, false);
+        f.write(s.data(), (std::streamsize)s.size());
+        if (!f.good()) return JSValueMakeBoolean(ctx, false);
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, p, ec);
+    if (ec) { std::filesystem::remove(p, ec); std::filesystem::rename(tmp, p, ec); }
+    return JSValueMakeBoolean(ctx, !ec);
+}
+
+// Window commands for the borderless launcher chrome. "drag" hands the press to the OS caption
+// drag (the standard HTCAPTION trick, so snap/maximize gestures keep working), "min" minimizes
+// (the tray hook then parks it), "close" posts a normal close.
+JSValueRef WinCmd(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                  size_t argc, const JSValueRef argv[], JSValueRef*) {
+    HWND h = reinterpret_cast<HWND>(g_launcherHwnd);
+    if (!h || !IsWindow(h) || argc < 1) return JSValueMakeBoolean(ctx, false);
+    std::string cmd = js_to_utf8(ctx, argv[0]);
+    if (cmd == "drag")      { ReleaseCapture(); SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, 0); }
+    else if (cmd == "min")  { ShowWindow(h, SW_MINIMIZE); }
+    else if (cmd == "close"){ PostMessageW(h, WM_CLOSE, 0, 0); }
+    else return JSValueMakeBoolean(ctx, false);
+    return JSValueMakeBoolean(ctx, true);
+}
+
+}  // namespace
+
 JSValueRef PrefsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t, const JSValueRef[], JSValueRef*) {
     std::string s = alerts_read_file(launcher_cfg_path(L"prefs.json"));
@@ -5231,6 +5279,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "varPinsLoad",       VarPinsLoad);
     install_fn(ctx, ns, "varPinsSave",       VarPinsSave);
     install_fn(ctx, ns, "prefsLoad",         PrefsLoad);
+    install_fn(ctx, ns, "launcherMetaLoad",  LauncherMetaLoad);
+    install_fn(ctx, ns, "launcherMetaSave",  LauncherMetaSave);
+    install_fn(ctx, ns, "winCmd",            WinCmd);
     install_fn(ctx, ns, "prefsSave",         PrefsSave);
     install_fn(ctx, ns, "menuRulesLoad",     MenuRulesLoad);
     install_fn(ctx, ns, "menuRulesSave",     MenuRulesSave);

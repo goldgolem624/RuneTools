@@ -15,6 +15,10 @@ namespace rtx::launcher {
 
 void AttachBridge(ultralight::View* view);
 
+// The launcher's own top-level HWND, for the borderless chrome's window commands
+// (winCmd: drag/min/close). Set once from main.cpp after Window::Create.
+void SetLauncherWindow(void* hwnd);
+
 // Per-account unified-window placement (top-left screen position), keyed on JX_DISPLAY_NAME.
 // LoadWindowPos returns false when nothing is stored (or the account is unresolved).
 void SaveWindowPos(std::uint32_t pid, int x, int y);
