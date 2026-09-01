@@ -1900,6 +1900,24 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     //     already LOGICAL interface pixels (puzzleCellRects walks the widget tree), so NO uiScale.
     //     Converted by toScreen like every other screen-space rect (OS display scaling). ---
     if (!pcells.empty()) {
+        // Diagnostic sibling of [gv]/[ovl] frame: the raw cell rect and every factor applied to
+        // it, change-gated. A misplaced solver overlay report + this line pins down whether the
+        // reader's rect or the conversion is wrong, on a machine we cannot inspect.
+        {
+            static std::map<DWORD, std::tuple<int,int,int,int>> l_pc;
+            auto cur = std::make_tuple(pcells[0].x, pcells[0].y, W, f ? f->lc_w : -1);
+            auto lit = l_pc.find(cfg.pid);
+            if (lit == l_pc.end() || lit->second != cur) {
+                l_pc[cfg.pid] = cur;
+                char b[192];
+                std::snprintf(b, sizeof(b),
+                    "[pz] cell0=%d,%d %dx%d gvScale=%.3f uiScale=%.3f frame=%dx%d lc=%dx%d gv=%dx%d",
+                    pcells[0].x, pcells[0].y, pcells[0].w, pcells[0].h, (double)gvScale,
+                    (double)uiScale, W, H, f ? f->lc_w : -1, f ? f->lc_h : -1,
+                    f ? f->gv_w : -1, f ? f->gv_h : -1);
+                rtx::log::Client(cfg.pid, b);
+            }
+        }
         float ppulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 900) / 900.0 * 6.2831853));
         for (const auto& pc : pcells) {
             if (pc.w <= 0 || pc.h <= 0) continue;

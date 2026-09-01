@@ -5477,6 +5477,20 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
             cw[s] = r32(cell + 0x78); ch_[s] = r32(cell + 0x7c);
         }
     }
+    // Diagnostic: how the rects were assembled (panel origin vs tree anchor), change-gated.
+    // Pairs with the launcher's [pz] line to localise a misplaced solver overlay to the
+    // origin resolution, the tree walk, or the launcher-side conversion.
+    {
+        static std::uint32_t l_pid = 0; static int l_ox = -99999, l_oy = -99999, l_gx = -99999, l_gy = -99999;
+        if (l_pid != pid || ox != l_ox || oy != l_oy || gx != l_gx || gy != l_gy) {
+            l_pid = pid; l_ox = ox; l_oy = oy; l_gx = gx; l_gy = gy;
+            int c0x = cw[0] > 0 ? cx[0] : -1, c0y = cw[0] > 0 ? cy[0] : -1;
+            rtx::log::Client(pid, "[pzr] abs=" + std::to_string(haveAbs ? 1 : 0) +
+                " origin=" + std::to_string(ox) + "," + std::to_string(oy) +
+                " grid=" + std::to_string(gx) + "," + std::to_string(gy) +
+                " cell0=" + std::to_string(c0x) + "," + std::to_string(c0y));
+        }
+    }
     std::string out = "{\"abs\":"; out += haveAbs ? "1" : "0"; out += ",\"cells\":[";
     for (int i = 0; i < 25; i++) {
         if (i) out += ",";
