@@ -343,6 +343,12 @@
     white-space: nowrap;
   }
   .btn-sm { height: 24px; font-size: 10px; padding: 0 10px; white-space: nowrap; letter-spacing: 0.04em; }
+  /* Near the minimum window width the accounts title row runs out of room: drop the Auto-save
+     caption (the box and its tooltip stay) before anything can clip off the card's edge. */
+  @media (max-width: 448px) {
+    .section-title { gap: 6px; letter-spacing: 0.08em; }
+    .section-title .acct-cap .lbl { display: none; }
+  }
   .section-title .count {
     background: var(--bg-elev-2);
     color: var(--text-dim);
