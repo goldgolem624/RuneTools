@@ -29,6 +29,13 @@
     5. the inline script below, which only starts the page.
   Every core file is a plain script: its top-level names are page globals shared with the panels.
   A core file may only reference, at its own top level, names declared by files spliced before it.
+
+  POINTER MATH RULE: never compute element-local mouse coordinates with raw
+  `e.clientX - rect.left` (or offsetX) arithmetic. Window bodies render under a CSS zoom
+  (font-size preference) and the page under the launcher's device scale, so raw coords land
+  up-left of the cursor by the zoom factor. Use uiEvPt(e, el) / uiZoomOf(el) from
+  core/rtx-ui.js -- the one shared recipe (the World Map and clue map both shipped this bug
+  independently before it was centralised).
 -->
 <!-- rtx:css -->
 </head>

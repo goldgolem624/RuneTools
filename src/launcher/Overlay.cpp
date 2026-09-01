@@ -2505,7 +2505,8 @@ void RenderLoop() {
                 fa = rem > kFlashMs ? 1.0f : (float)rem / (float)kFlashMs;
                 anyFlash = true;
             }
-            std::vector<rtx::reader::GuideSite> gsites; bool hasUiHl = false, hasPanelViz = false, hasCenter = false;
+            std::vector<rtx::reader::GuideSite> gsites;
+            bool hasUiHl = false, hasPanelViz = false, hasCenter = false, hasSolverCells = false, hasSkillBars = false;
             { std::lock_guard<std::mutex> lk(g_mu);
               auto git = g_guides.find(cpid);
               if (git != g_guides.end())
@@ -2517,7 +2518,13 @@ void RenderLoop() {
               if (ctit != g_centerTexts.end())
                   for (const auto& cb : ctit->second) if (!cb.second.text.empty()) { hasCenter = true; break; }
               auto pit = g_panelViz.find(cpid);
-              hasPanelViz = (pit != g_panelViz.end() && !pit->second.empty()); }
+              hasPanelViz = (pit != g_panelViz.end() && !pit->second.empty());
+              auto pzit = g_puzzleCells.find(cpid);
+              hasSolverCells = (pzit != g_puzzleCells.end() && !pzit->second.empty());
+              auto knit = g_knotCells.find(cpid);
+              hasSolverCells = hasSolverCells || (knit != g_knotCells.end() && !knit->second.empty());
+              auto sbit2 = g_skillBars.find(cpid);
+              hasSkillBars = (sbit2 != g_skillBars.end() && !sbit2->second.bars.empty()); }
             bool wantF = ccfg.enabled || ccfg.markers || ccfg.nameplates || !ccfg.highlight.empty() ||
                          !ccfg.outline.empty() || !ccfg.outlineLocs.empty() || !gsites.empty();
             bool wantWidgets = (toasting && g_toast_pid.load() == cpid) ||
@@ -2527,7 +2534,8 @@ void RenderLoop() {
             // A screen-space UI highlight, centre text, a panel-viz box (inventory-slot test /
             // Interfaces visualizer) OR a widget needs no world frame, but still needs the live
             // window size + a publish, so it can't take the cheap early-out.
-            if (!wantF && !hasUiHl && !hasPanelViz && !hasCenter && fa <= 0.0f && !wantWidgets) { PublishMarkers(ccfg, nullptr, 0, 0); continue; }
+            if (!wantF && !hasUiHl && !hasPanelViz && !hasCenter && !hasSolverCells && !hasSkillBars &&
+                fa <= 0.0f && !wantWidgets) { PublishMarkers(ccfg, nullptr, 0, 0); continue; }
             HWND gw = FindGameWindow(cpid);
             if (!gw || IsIconic(gw) || !IsWindowVisible(gw)) {
                 PublishMarkers(ccfg, nullptr, 0, 0);
@@ -2578,6 +2586,13 @@ void RenderLoop() {
                          ccfg.enabled && ccfg.specials,
                          (ccfg.enabled && ccfg.grid) ? ccfg.radius : 0,
                          ccfg.interactable, ccfg.highlight, ccfg.outline, ccfg.outlineLocs, gsites, frame);
+            // Screen-space rects (solver cells, UI highlights, panel viz, skill bars) come out of
+            // the game's LOGICAL interface layout and need the logical->pixel factor even when the
+            // world overlay is off; without a frame the factor silently read 1.0 and every solver
+            // cell drew compressed toward the top-left under Windows display scaling. Metrics
+            // only -- no entity walk.
+            if (!ok && (hasUiHl || hasPanelViz || hasSolverCells || hasSkillBars))
+                ok = rtx::reader::ReadViewMetrics(cpid, frame);
             if (wantF && ok) {
                 PublishMarkers(ccfg, &frame, W2, H2, fa, wptr);
                 held[cpid] = { std::move(frame), tnow };

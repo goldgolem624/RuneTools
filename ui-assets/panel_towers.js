@@ -458,6 +458,13 @@
       try { if (typeof selectClue === 'function') selectClue(); } catch (e) {}
     }, 90);
   }
+  // Pointer position in an element's own CSS pixels, zoom-corrected: the same recipe the World
+  // Map uses (wmPt). The engine reports pointer coords in SCREEN pixels inside a subtree under
+  // a CSS `zoom` (the Preferences content zoom scales window bodies) while layout works in the
+  // element's CSS pixels, which put the hover tile and every zoom pin up-left of the cursor by
+  // the zoom factor. offsetX is preferred (already element-relative); the rect arithmetic is
+  // the fallback when the event targets a child.
+  const cmZoomOf = uiZoomOf, cmPt = uiEvPt;   // shared core helper (rtx-ui.js) -- one recipe project-wide
   function clueMapBindZoom(stage) {
     clueMapStageEl = stage;
     // Zoom about the CURSOR: pin the world tile under it, change zoom, put that tile back under
@@ -468,8 +475,8 @@
       // ORDER MATTERS: the pin resolves a screen point to a world tile using the CURRENT
       // pixels-per-tile, so it has to be taken before clueMapZoom changes. Taking it after
       // resolved the wrong tile and the view crept west/north on every notch.
-      const rect = stage.getBoundingClientRect();
-      mapPinAt(e.clientX - rect.left, e.clientY - rect.top);
+      const pt = cmPt(e, stage);
+      mapPinAt(pt.x, pt.y);
       const prev = clueMapZoom;
       clueMapZoom = Math.max(1, Math.min(6, clueMapZoom * (e.deltaY < 0 ? 1.18 : 1 / 1.18)));
       if (clueMapZoom === prev) return;
@@ -481,8 +488,8 @@
     // so it lands exactly where you pointed.
     stage.addEventListener('dblclick', e => {
       e.preventDefault();
-      const rect = stage.getBoundingClientRect();
-      mapPinAt(e.clientX - rect.left, e.clientY - rect.top);   // before the zoom, as above
+      const pt = cmPt(e, stage);
+      mapPinAt(pt.x, pt.y);   // before the zoom, as above
       const prev = clueMapZoom;
       clueMapZoom = Math.min(6, clueMapZoom * 1.6);
       if (clueMapZoom === prev) return;
@@ -498,8 +505,9 @@
       clueMapZoomBound = true;
       window.addEventListener('mousemove', e => {
         if (!clueMapDrag || !clueMapStageEl) return;
-        clueMapStageEl.scrollLeft = clueMapDrag.sl - (e.clientX - clueMapDrag.x);
-        clueMapStageEl.scrollTop = clueMapDrag.st - (e.clientY - clueMapDrag.y);
+        const dz = cmZoomOf(clueMapStageEl);
+        clueMapStageEl.scrollLeft = clueMapDrag.sl - (e.clientX - clueMapDrag.x) / dz;
+        clueMapStageEl.scrollTop = clueMapDrag.st - (e.clientY - clueMapDrag.y) / dz;
         mapPinAt();   // panning MOVES the view: re-pin, or the next redraw would undo the drag
       });
       window.addEventListener('mouseup', () => {
@@ -562,22 +570,23 @@
     if (!cv || cv._tipBound) return; cv._tipBound = true;
     cv.addEventListener('mousemove', e => {
       const tip = $('clueMapTip'); if (!tip || !clueMapProj) return;
-      const rect = cv.getBoundingClientRect(); if (!rect.width) { tip.style.display = 'none'; return; }
-      const W = clueMapProj.W, mx = (e.clientX - rect.left) / rect.width * W, my = (e.clientY - rect.top) / rect.height * W;
+      const cw2 = cv.clientWidth, ch2 = cv.clientHeight; if (!cw2 || !ch2) { tip.style.display = 'none'; return; }
+      const pt = cmPt(e, cv);
+      const W = clueMapProj.W, mx = pt.x / cw2 * W, my = pt.y / ch2 * W;
       let hit = null, hd = Infinity;
       // Marks carry radii in the same 0..W space the map draws in, so the grab margin has to
       // scale with it too - a flat 7 is invisible once the terrain is oversampled.
-      const grab = 7 * (W / Math.max(1, rect.width));
+      const grab = 7 * (W / Math.max(1, cw2));
       for (const m of clueMapMarks) { const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= (m.r || 6) + grab && d < hd) { hd = d; hit = m; } }
       if (hit) {
-        const mi = cv.parentElement, mr = mi.getBoundingClientRect();
+        const mi = cv.parentElement, mp = cmPt(e, mi), mw = mi.clientWidth, mh = mi.clientHeight;
         tip.innerHTML = hit.label; tip.style.display = 'block';
         // Clamp so the tooltip stays fully inside the map panel (flip left / pull up on overflow).
-        let lx = e.clientX - mr.left + 12, ty = e.clientY - mr.top + 10;
+        let lx = mp.x + 12, ty = mp.y + 10;
         const tw = tip.offsetWidth, th = tip.offsetHeight;
-        if (lx + tw > mr.width - 2) lx = e.clientX - mr.left - tw - 12;
+        if (lx + tw > mw - 2) lx = mp.x - tw - 12;
         if (lx < 2) lx = 2;
-        if (ty + th > mr.height - 2) ty = mr.height - th - 2;
+        if (ty + th > mh - 2) ty = mh - th - 2;
         if (ty < 2) ty = 2;
         tip.style.left = lx + 'px';
         tip.style.top = ty + 'px';
@@ -585,9 +594,10 @@
     });
     cv.addEventListener('mousemove', e => {
       if (!clueMapProj) return;
-      const rect = cv.getBoundingClientRect(); if (!rect.width) return;
+      const cw3 = cv.clientWidth, ch3 = cv.clientHeight; if (!cw3 || !ch3) return;
       const W = clueMapProj.W;
-      const mx = (e.clientX - rect.left) / rect.width * W, my = (e.clientY - rect.top) / rect.height * W;
+      const pt = cmPt(e, cv);
+      const mx = pt.x / cw3 * W, my = pt.y / ch3 * W;
       const tS = clueMapProj.projX(1) - clueMapProj.projX(0);
       if (!(tS > 0)) return;
       const tx = Math.floor((mx - (clueMapProj.projX(0) - tS / 2)) / tS);

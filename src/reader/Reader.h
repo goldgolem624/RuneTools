@@ -245,6 +245,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out);
 
+// Fill only the frame's view metrics (gameview rect, logical client size, ui_scale) -- no
+// entity walk. For screen-space-only overlay publishes (solver cells, UI highlights, skill
+// bars) which need the logical->pixel factor while the world overlay is off. Returns false
+// when the client is not attached or nothing resolved.
+bool ReadViewMetrics(std::uint32_t pid, OverlayFrame& out);
+
 // Local-player info for one client as JSON (for the Player State tab):
 //   {"in":bool,"x":N,"y":N,"plane":N,"region":N,"lx":N,"ly":N,"anim":N,"moving":bool}
 // region = (x>>6)<<8 | (y>>6); lx/ly = local tile within the region (0..63).

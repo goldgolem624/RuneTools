@@ -758,21 +758,7 @@
   // zoomed subtree while layout works in the element's own CSS pixels, which put the hover
   // tile at ~92% of the cursor position at 12 px (owner screenshots); dividing by the zoom
   // maps them back.
-  function wmZoomOf(el) {
-    let z = 1;
-    for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
-      const v = parseFloat(getComputedStyle(n).zoom);
-      if (v && v > 0 && v !== 1) z *= v;
-    }
-    return z;
-  }
-  function wmPt(e, stage) {
-    const Z = wmZoomOf(stage), t = e.target;
-    if (t === stage && typeof e.offsetX === 'number') return { x: e.offsetX / Z, y: e.offsetY / Z };
-    if (t && t.parentNode === stage && typeof e.offsetX === 'number') return { x: e.offsetX / Z + (t.offsetLeft || 0), y: e.offsetY / Z + (t.offsetTop || 0) };
-    const r = stage.getBoundingClientRect();
-    return { x: e.clientX / Z - r.left, y: e.clientY / Z - r.top };
-  }
+  const wmZoomOf = uiZoomOf, wmPt = uiEvPt;   // shared core helper (rtx-ui.js) -- one recipe project-wide
   function wmFlyTo(x, y, p, sel) {
     if (p != null && (p | 0) !== wmCam.p) wmSetPlane(p | 0);
     const tz = Math.max(wmCam.z, 2.5);

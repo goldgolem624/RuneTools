@@ -1378,7 +1378,7 @@
     const drag = (el, fn) => {
       el.addEventListener('mousedown', e => {
         e.preventDefault(); e.stopPropagation();
-        const mv = ev => { const r = el.getBoundingClientRect(); fn(Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height))); paint(); onPick(auraHsvToHex(hsv.h, hsv.s, hsv.v)); };
+        const mv = ev => { const pt = uiEvPt(ev, el), w = el.clientWidth || 1, h = el.clientHeight || 1; fn(Math.max(0, Math.min(1, pt.x / w)), Math.max(0, Math.min(1, pt.y / h))); paint(); onPick(auraHsvToHex(hsv.h, hsv.s, hsv.v)); };
         const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
         document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up); mv(e);
       });

@@ -6821,6 +6821,87 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
     return out;
 }
 
+// Fill ONLY the view metrics of an OverlayFrame: gameview rect, logical client size, derived
+// interface scale. Split out of BuildOverlayFrame so the launcher can price screen-space
+// overlays (solver cells, UI highlights, skill bars) correctly when the world overlay is OFF:
+// those need the logical->pixel factor (backbuffer / lc_w) but no entity walk, and without it
+// the factor silently read 1.0 -- the "solver cells compressed toward the top-left under
+// Windows display scaling" report.
+static void fill_view_metrics(HANDLE h, std::uint64_t rootv, std::uint32_t pid, OverlayFrame& out) {
+    // Gameview viewport rect (the camera renders into this sub-rect, not the whole
+    // client). The rect only changes on resize/layout, so cache it and re-read at
+    // most ~2x/sec rather than walking the group list every overlay frame.
+    //
+    // TAKEN FROM THE VARCS, NOT THE WIDGET TREE. The game publishes the viewport as
+    // a uniform x,y,w,h record per view (view 1000 = the gameview: x 3005, y 3006,
+    // w 3001, h 3002; script8701 reads that record, script8709 writes it) and those
+    // values are PHYSICAL PIXELS. The interface widget 1477:27->28 carries the same
+    // rect in the SCALED UI space, so with Interface Scaling at anything but 100%
+    // it is smaller than the real viewport and every world-projected overlay landed
+    // short - the reported "objects drawn wrong at different scales". The tree walk
+    // stays as the fallback, and as the way ui_scale is derived: pixel width over
+    // tree width is exactly the interface->pixel factor, so neither the scaling
+    // setting nor the sub-800x600 downscale has to be located separately.
+    {
+        static std::uint32_t s_pid = 0; static unsigned long long s_ms = 0;
+        static int s_x = 0, s_y = 0, s_w = 0, s_h = 0; static float s_ui = 0.0f;
+        static int s_lcw = 0, s_lch = 0;
+        unsigned long long nowms = GetTickCount64();
+        if (s_pid != pid || nowms - s_ms > 500) {
+            int gx = 0, gy = 0, gw = 0, gh = 0, lw = 0, lh = 0;
+            const bool tree = (rootv && read_gameview_rect(h, rootv, gx, gy, gw, gh, &lw, &lh));
+            s_lcw = lw; s_lch = lh;
+            int vx = 0, vy = 0, vw = 0, vh = 0;
+            if (rootv) {
+                vx = read_varc(h, rootv, 3005); vy = read_varc(h, rootv, 3006);
+                vw = read_varc(h, rootv, 3001); vh = read_varc(h, rootv, 3002);
+            }
+            if (vw > 0 && vh > 0)  { s_x = vx; s_y = vy; s_w = vw; s_h = vh; }
+            else if (tree)         { s_x = gx; s_y = gy; s_w = gw; s_h = gh; }
+            else                   { s_w = 0; s_h = 0; }
+            // Sanity-bound the ratio: a torn/stale read must not scale the whole UI.
+            s_ui = 0.0f;
+            if (tree && gw > 0 && vw > 0) {
+                const float r = (float)vw / (float)gw;
+                if (r > 0.2f && r < 5.0f) s_ui = r;
+            }
+            // Diagnostic: log the projection viewport inputs whenever they CHANGE (world
+            // overlays offset "toward a corner, worse off-centre" means THESE are wrong,
+            // and reports arrive from machines we cannot inspect -- e.g. a mid-session
+            // monitor/DPI move where the varc record and the widget tree fall out of
+            // step). Change-gated, so a stable session logs this once.
+            {
+                static int l_vx = -99999, l_vy = -99999, l_vw = -99999, l_vh = -99999,
+                           l_gx = -99999, l_gw = -99999, l_gh = -99999;
+                static std::uint32_t l_pid = 0;
+                if (l_pid != pid || vx != l_vx || vy != l_vy || vw != l_vw || vh != l_vh ||
+                    gx != l_gx || gw != l_gw || gh != l_gh) {
+                    l_pid = pid; l_vx = vx; l_vy = vy; l_vw = vw; l_vh = vh;
+                    l_gx = gx; l_gw = gw; l_gh = gh;
+                    char gb[224];
+                    std::snprintf(gb, sizeof(gb),
+                        "[gv] varc=%d,%d %dx%d tree=%d,%d %dx%d root=%dx%d ui=%.3f (varc wins when set)",
+                        vx, vy, vw, vh, gx, gy, gw, gh, lw, lh, (double)s_ui);
+                    rtx::log::Client(pid, gb);
+                }
+            }
+            s_pid = pid; s_ms = nowms;
+        }
+        out.gv_x = s_x; out.gv_y = s_y; out.gv_w = s_w; out.gv_h = s_h;
+        out.lc_w = s_lcw; out.lc_h = s_lch;
+        out.ui_scale = s_ui;
+    }
+
+}
+
+bool ReadViewMetrics(std::uint32_t pid, OverlayFrame& out) {
+    auto ps = snap_proc(pid); if (!ps) return false;
+    auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
+    std::uint64_t rootv = (root && *root > 0x10000) ? *root : 0;
+    fill_view_metrics(ps.h, rootv, pid, out);
+    return out.gv_w > 0 || out.lc_w > 0;
+}
+
 bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        bool want_objects, bool want_specials, int grid_radius, bool interactable,
                        const std::vector<std::string>& highlight_names,
@@ -6880,69 +6961,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     std::uint64_t rootv = (root && *root > 0x10000) ? *root : 0;
     if (!read_view_matrix(h, pid, rootv, *wv, mprobes, out.matrix)) return false;
 
-    // Gameview viewport rect (the camera renders into this sub-rect, not the whole
-    // client). The rect only changes on resize/layout, so cache it and re-read at
-    // most ~2x/sec rather than walking the group list every overlay frame.
-    //
-    // TAKEN FROM THE VARCS, NOT THE WIDGET TREE. The game publishes the viewport as
-    // a uniform x,y,w,h record per view (view 1000 = the gameview: x 3005, y 3006,
-    // w 3001, h 3002; script8701 reads that record, script8709 writes it) and those
-    // values are PHYSICAL PIXELS. The interface widget 1477:27->28 carries the same
-    // rect in the SCALED UI space, so with Interface Scaling at anything but 100%
-    // it is smaller than the real viewport and every world-projected overlay landed
-    // short - the reported "objects drawn wrong at different scales". The tree walk
-    // stays as the fallback, and as the way ui_scale is derived: pixel width over
-    // tree width is exactly the interface->pixel factor, so neither the scaling
-    // setting nor the sub-800x600 downscale has to be located separately.
-    {
-        static std::uint32_t s_pid = 0; static unsigned long long s_ms = 0;
-        static int s_x = 0, s_y = 0, s_w = 0, s_h = 0; static float s_ui = 0.0f;
-        static int s_lcw = 0, s_lch = 0;
-        unsigned long long nowms = GetTickCount64();
-        if (s_pid != pid || nowms - s_ms > 500) {
-            int gx = 0, gy = 0, gw = 0, gh = 0, lw = 0, lh = 0;
-            const bool tree = (root && read_gameview_rect(h, *root, gx, gy, gw, gh, &lw, &lh));
-            s_lcw = lw; s_lch = lh;
-            int vx = 0, vy = 0, vw = 0, vh = 0;
-            if (rootv) {
-                vx = read_varc(h, rootv, 3005); vy = read_varc(h, rootv, 3006);
-                vw = read_varc(h, rootv, 3001); vh = read_varc(h, rootv, 3002);
-            }
-            if (vw > 0 && vh > 0)  { s_x = vx; s_y = vy; s_w = vw; s_h = vh; }
-            else if (tree)         { s_x = gx; s_y = gy; s_w = gw; s_h = gh; }
-            else                   { s_w = 0; s_h = 0; }
-            // Sanity-bound the ratio: a torn/stale read must not scale the whole UI.
-            s_ui = 0.0f;
-            if (tree && gw > 0 && vw > 0) {
-                const float r = (float)vw / (float)gw;
-                if (r > 0.2f && r < 5.0f) s_ui = r;
-            }
-            // Diagnostic: log the projection viewport inputs whenever they CHANGE (world
-            // overlays offset "toward a corner, worse off-centre" means THESE are wrong,
-            // and reports arrive from machines we cannot inspect -- e.g. a mid-session
-            // monitor/DPI move where the varc record and the widget tree fall out of
-            // step). Change-gated, so a stable session logs this once.
-            {
-                static int l_vx = -99999, l_vy = -99999, l_vw = -99999, l_vh = -99999,
-                           l_gx = -99999, l_gw = -99999, l_gh = -99999;
-                static std::uint32_t l_pid = 0;
-                if (l_pid != pid || vx != l_vx || vy != l_vy || vw != l_vw || vh != l_vh ||
-                    gx != l_gx || gw != l_gw || gh != l_gh) {
-                    l_pid = pid; l_vx = vx; l_vy = vy; l_vw = vw; l_vh = vh;
-                    l_gx = gx; l_gw = gw; l_gh = gh;
-                    char gb[224];
-                    std::snprintf(gb, sizeof(gb),
-                        "[gv] varc=%d,%d %dx%d tree=%d,%d %dx%d root=%dx%d ui=%.3f (varc wins when set)",
-                        vx, vy, vw, vh, gx, gy, gw, gh, lw, lh, (double)s_ui);
-                    rtx::log::Client(pid, gb);
-                }
-            }
-            s_pid = pid; s_ms = nowms;
-        }
-        out.gv_x = s_x; out.gv_y = s_y; out.gv_w = s_w; out.gv_h = s_h;
-        out.lc_w = s_lcw; out.lc_h = s_lch;
-        out.ui_scale = s_ui;
-    }
+    fill_view_metrics(h, rootv, pid, out);
 
     auto vb = deref(worker, kVecBegin);
     auto ve = deref(worker, kVecEnd);

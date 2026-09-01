@@ -14,6 +14,31 @@
                     ['Consolas', 'consolas', "Consolas, 'Cascadia Mono', monospace"]];
   const UI_ACCENTS = [['Violet', '#8c6ffd'], ['Blue', '#5b9cff'], ['Teal', '#2fd0c4'], ['Green', '#4dd28a'],
                       ['Amber', '#f5b241'], ['Red', '#ff6b6b'], ['Pink', '#ff7ac8'], ['Mono', '#c9cfdd']];
+  // =================== Pointer coordinates under CSS zoom (uiZoomOf / uiEvPt) ===================
+  // THE one way to turn a mouse event into element-local coordinates. Window bodies render under
+  // `zoom: var(--content-zoom)` (rtx.css .win-body, set by the font-size preference) and the whole
+  // page under the launcher's device scale; inside a zoomed subtree the engine reports pointer
+  // coords in SCREEN pixels while layout works in the element's own CSS pixels. Raw
+  // `e.clientX - rect.left` therefore lands up-left of the cursor by the zoom factor -- the World
+  // Map and clue map both shipped that bug. Every panel and core file MUST use uiEvPt (or divide
+  // by uiZoomOf) instead of raw clientX/offsetX arithmetic; see the authoring note in client.html.
+  function uiZoomOf(el) {
+    let z = 1;
+    for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
+      const v = parseFloat(getComputedStyle(n).zoom);
+      if (v && v > 0 && v !== 1) z *= v;
+    }
+    return z;
+  }
+  // Pointer position in `el`'s own CSS pixels. offsetX is preferred (the engine's hit test is
+  // already element-relative); the rect arithmetic is the fallback when the event targets a child.
+  function uiEvPt(e, el) {
+    const Z = uiZoomOf(el), t = e.target;
+    if (t === el && typeof e.offsetX === 'number') return { x: e.offsetX / Z, y: e.offsetY / Z };
+    if (t && t.parentNode === el && typeof e.offsetX === 'number') return { x: e.offsetX / Z + (t.offsetLeft || 0), y: e.offsetY / Z + (t.offsetTop || 0) };
+    const r = el.getBoundingClientRect();
+    return { x: e.clientX / Z - r.left, y: e.clientY / Z - r.top };
+  }
   let _uiCfg = null;
   function uiCfg() {
     if (_uiCfg) return _uiCfg;
