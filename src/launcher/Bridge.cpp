@@ -4104,9 +4104,9 @@ JSValueRef VarPinsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
 // would resent re-doing (a hand-collected sound mute list, overlay toggles) has to live on
 // disk. Var pins and menu rules were moved off localStorage for exactly this reason; this is
 // the general store so the next setting does not need its own bridge pair.
-namespace { void* g_launcherHwnd = nullptr; }
-void SetLauncherWindow(void* hwnd) { g_launcherHwnd = hwnd; }
 namespace {
+
+void* g_launcherHwnd = nullptr;   // set once via SetLauncherWindow (defined beside AttachBridge)
 
 // Launcher-page metadata (per-account last played / last world / total level), its own file so
 // it can never collide with the panels' prefs.json blob.
@@ -5044,6 +5044,8 @@ bool LoadWindowPos(std::uint32_t pid, int& x, int& y) {
     x = rx; y = ry;
     return true;
 }
+
+void SetLauncherWindow(void* hwnd) { g_launcherHwnd = hwnd; }
 
 void AttachBridge(ultralight::View* view) {
     if (!view) return;
