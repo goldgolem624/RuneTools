@@ -106,6 +106,18 @@ static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         break;
+    case WM_GETMINMAXINFO: {
+        // Below this the layout is nonsense (footer wraps, the card crushes into its titles),
+        // so the OS is simply not allowed to size the window there. DPI-scaled.
+        LRESULT r0 = CallWindowProcW(g_launcherPrevProc, h, m, w, l);
+        using DpiFn = UINT(WINAPI*)(HWND);
+        static DpiFn dpiFn = reinterpret_cast<DpiFn>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+        const double k = (dpiFn && dpiFn(h)) ? dpiFn(h) / 96.0 : 1.0;
+        auto* mi = reinterpret_cast<MINMAXINFO*>(l);
+        mi->ptMinTrackSize.x = (LONG)(380 * k);
+        mi->ptMinTrackSize.y = (LONG)(520 * k);
+        return r0; }
     case WM_NCHITTEST: {
         const int x = (int)(short)LOWORD(l), y = (int)(short)HIWORD(l);
         RECT r; GetWindowRect(h, &r);
