@@ -550,13 +550,24 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_DPICHANGED:
-            // The unified window moved to a monitor with a different DPI. Let DefWindowProc resize the
-            // host to the suggested rect first, then re-sync the in-game UI view's device scale.
-            if (d && d->gameIsChild) {
-                LRESULT r = DefWindowProcW(hwnd, msg, wp, lp);
+            // The unified window moved to a monitor with a different DPI, or the user changed the
+            // display scale live. Under per-monitor v2 DefWindowProc does NOT apply the suggested
+            // rect -- the window must move itself, or it keeps its old physical size while every
+            // DPI-derived factor updates around it (seen live: 150% -> 100%, game stuck at the old
+            // size until a manual resize, and drags landing off the new edges because the UI scale
+            // had already re-synced against a size that never changed). Apply the suggested rect,
+            // refit the game (child and glued alike), then re-sync the in-game UI device scale.
+            if (d && !d->fullscreen) {
+                const RECT* pr = reinterpret_cast<const RECT*>(lp);
+                if (pr)
+                    SetWindowPos(hwnd, nullptr, pr->left, pr->top,
+                                 pr->right - pr->left, pr->bottom - pr->top,
+                                 SWP_NOZORDER | SWP_NOACTIVATE);
+                Layout(d);        // WM_SIZE does this too, but a same-size suggestion sends none
                 SyncUiDpi(d);
-                return r;
+                return 0;
             }
+            if (d) { SyncUiDpi(d); return 0; }   // fullscreen: monitor-sized; scale only
             break;
         case rtx::render::kMsgGameClicked:
             // Companion: the user pressed a mouse button in the game area (including over our
