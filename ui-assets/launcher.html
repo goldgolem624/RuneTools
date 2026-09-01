@@ -1145,14 +1145,10 @@
       name.textContent = maskName(a.display_name) || a.id;
       who.appendChild(name);
       const m = metaFor(a.display_name);
-      if (m && (m.totalLevel || m.lastWorld || m.lastPlayed)) {
+      if (m && m.lastPlayed) {
         const ml = document.createElement('span');
         ml.className = 'meta';
-        const bits = [];
-        if (m.totalLevel) bits.push('Lv ' + m.totalLevel);
-        if (m.lastWorld) bits.push('W' + m.lastWorld);
-        if (m.lastPlayed) bits.push(relTime(m.lastPlayed));
-        ml.textContent = bits.join(' \u00b7 ');
+        ml.textContent = 'Last played ' + relTime(m.lastPlayed);
         who.appendChild(ml);
       }
       r.appendChild(who);
