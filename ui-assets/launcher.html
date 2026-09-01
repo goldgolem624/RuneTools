@@ -193,7 +193,10 @@
     outline: none;
     box-shadow: 0 0 0 3px rgba(124, 92, 252, 0.15);
   }
-  main { flex: 1; overflow: auto; padding: 28px 26px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  /* The page itself never scrolls at the default size: the card flexes to the window and the
+     account list absorbs the leftover height, scrolling internally. main keeps overflow:auto
+     purely as the fallback for a window resized below the card's minimum. */
+  main { flex: 1; min-height: 0; overflow: auto; padding: 22px 26px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
 
   .card {
     position: relative;
@@ -204,7 +207,12 @@
     box-shadow: var(--shadow-md);
     animation: card-in var(--tx-med) var(--ease-out);
     width: 100%; max-width: 420px;
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column;
   }
+  .card > .section-title { flex: none; }
+  #proc-list { flex: none; }
+  #acct-list { flex: 1 1 auto; min-height: 96px; max-height: none; }
   @keyframes card-in {
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0);   }
