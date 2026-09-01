@@ -1879,12 +1879,18 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     // --- Puzzle-box next moves: bold GOLD numbered cells on the live board so the click order is obvious in
     //     advance. step 0 = click now (brightest + pulsing + thickest border), 1/2 = upcoming. Coords are
-    //     already screen pixels (puzzleCellRects), so NO uiScale -- draw directly. ---
+    //     already LOGICAL interface pixels (puzzleCellRects walks the widget tree), so NO uiScale.
+    //     They are not backbuffer pixels though: a per-monitor-aware client on an OS-scaled
+    //     monitor lays its interface out at physical/scale and upscales, so the rects are
+    //     multiplied by gvScale (backbuffer / logical client width, 1 when unscaled) exactly as
+    //     the gameview rect is. Seen live at 150%: every cell drawn compressed toward the
+    //     top-left, the number markers sitting a full board away from their tiles. ---
     if (!pcells.empty()) {
         float ppulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 900) / 900.0 * 6.2831853));
         for (const auto& pc : pcells) {
             if (pc.w <= 0 || pc.h <= 0) continue;
-            float x0 = (float)pc.x, y0 = (float)pc.y, x1 = (float)(pc.x + pc.w), y1 = (float)(pc.y + pc.h);
+            float x0 = (float)pc.x * gvScale, y0 = (float)pc.y * gvScale;
+            float x1 = (float)(pc.x + pc.w) * gvScale, y1 = (float)(pc.y + pc.h) * gvScale;
             const int R = 255, G = 196, B = 64;                    // gold (matches the side-panel hot tile)
             int fillA, bordA; float bordTh;
             if (pc.step == 0) { fillA = 85 + (int)(80.0f * ppulse); bordTh = 4.0f; bordA = 255; }   // next: pulsing, boldest
@@ -1915,12 +1921,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     // --- Celtic-knot arrows: an Interfaces-hover-style box (sky-blue, corner brackets) on each arrow to click,
     //     with the remaining click count in a pill ABOVE the box so it never covers the arrow. Coords are
-    //     already screen pixels (resolved live each tick), so NO uiScale. ---
+    //     already logical interface pixels (resolved live each tick), so NO uiScale, but the
+    //     same gvScale as the puzzle cells above (OS display scaling). ---
     if (!kcells.empty()) {
         float kpulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1100) / 1100.0 * 6.2831853));
         for (const auto& kc : kcells) {
             if (kc.w <= 0 || kc.h <= 0) continue;
-            float x0 = (float)kc.x, y0 = (float)kc.y, x1 = (float)(kc.x + kc.w), y1 = (float)(kc.y + kc.h);
+            float x0 = (float)kc.x * gvScale, y0 = (float)kc.y * gvScale;
+            float x1 = (float)(kc.x + kc.w) * gvScale, y1 = (float)(kc.y + kc.h) * gvScale;
             marker::Command q{}; q.type = marker::kFillRect; q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
             q.r = kAccR; q.g = kAccG; q.b = kAccB; q.a = (std::uint8_t)(50 + (int)(45.0f * kpulse)); push(q);
             line(x0, y0, x1, y0, 2.4f, kAccR, kAccG, kAccB, 235); line(x1, y0, x1, y1, 2.4f, kAccR, kAccG, kAccB, 235);
