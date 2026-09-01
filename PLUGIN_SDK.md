@@ -514,6 +514,14 @@ rtx.plugin.ui.setTitle("My Tool");// reserved (no-op for now)
 </html>
 ```
 
+## Pointer coordinates in panel UI
+
+Never compute element-local mouse coordinates with raw `e.clientX - rect.left` (or `offsetX`)
+arithmetic. Panel bodies render under a CSS zoom (the user's font-size preference) and the page
+under the launcher's device scale, so raw coordinates land up-left of the cursor by the zoom
+factor. Use the page globals `uiEvPt(e, el)` (pointer position in `el`'s own CSS pixels) or
+`uiZoomOf(el)` (the effective zoom to divide by), provided by the launcher core.
+
 ## The sandbox
 
 Plugins run in a sandboxed frame and use the `rtx.plugin` APIs documented above:

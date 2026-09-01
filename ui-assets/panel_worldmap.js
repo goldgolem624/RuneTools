@@ -747,9 +747,6 @@
   }, 500);
 
   function wmSetPlane(p) { if (wmCam.p === p) return; wmCam.p = p; wmSaveCam(); wmPaintBar(); wmKick(); }
-  // Screen-to-stage factor: 1 normally; under the Preferences content zoom the screen rect is
-  // scaled while clientWidth stays in CSS px, which put the cursor off by the zoom factor.
-  function wmZoomK(el, r) { const cw = el.clientWidth || 0; return (cw > 0 && r && r.width > 0) ? cw / r.width : 1; }
   // Pointer position in the stage's own CSS pixels. offsetX/Y come from the engine's hit test
   // (already in the target's coordinate space, whatever zoom / device scale is in force);
   // the rect arithmetic is only the fallback when the event targets a child element.

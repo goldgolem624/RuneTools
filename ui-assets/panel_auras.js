@@ -1003,8 +1003,9 @@
       const overlapY = (s, y, h) => s.y < y + h + AURA_SNAP && s.y + s.h > y - AURA_SNAP;
       const overlapX = (s, x, w) => s.x < x + w + AURA_SNAP && s.x + s.w > x - AURA_SNAP;
       const sx = e.clientX, sy = e.clientY, ox = a.x, oy = a.y, ow = a.w, oh = a.h;
+      const dzZ = uiZoomOf(el);   // deltas arrive in screen px; a.x/a.y live in the body's CSS px
       const mv = ev => {
-        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        const dx = (ev.clientX - sx) / dzZ, dy = (ev.clientY - sy) / dzZ;
         if (rz) {
           // Any corner: the opposite corner stays put. Work in edges, snap the moving edges to
           // sibling / group edges, and match sibling sizes.
