@@ -265,9 +265,11 @@
     }
     bar.appendChild(cats);
     // Minimized-window chips: a minimized window stays visibly PRESENT here (it
-    // looked "completely closed" without an affordance); click restores it.
+    // looked "completely closed" without an affordance); click restores it. Built in the
+    // COLLAPSED bar too -- collapsing is about reclaiming the category rail, and dropping
+    // the chips with it stranded every minimized window with nothing left to click.
     const minimized = Array.from(wm.wins.values()).filter(w => w.min);
-    if (minimized.length && !wm.barPill) {
+    if (minimized.length) {
       const chips = document.createElement('div');
       chips.className = 'mb-chips';
       for (const w of minimized) {

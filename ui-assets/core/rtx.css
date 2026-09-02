@@ -77,10 +77,14 @@
   }
   #menubar.dragging { transition: none; }
   #menubar.pill { padding: 4px; }
-  /* Collapsed: drop the category rail, status readout and restore chips, but KEEP
-     search -- it is the one control that still reaches every panel from the pill,
-     so without it the collapsed bar can only be expanded again. */
-  #menubar.pill .mb-cats, #menubar.pill .mb-status, #menubar.pill .mb-chips { display: none; }
+  /* Collapsed: drop the CATEGORY RAIL only. Search stays -- it is the one control that
+     still reaches every panel from the pill, so without it the collapsed bar can only be
+     expanded again -- and so do the restore chips: a minimized window whose chip vanishes
+     with the bar reads as closed, with nothing left to click to get it back. The status
+     readout and clock stay with them, which is the whole point of a slim always-on bar. */
+  #menubar.pill .mb-cats { display: none; }
+  /* No rail to divide from once collapsed, so the chips drop their leading rule. */
+  #menubar.pill .mb-chips { border-left: none; margin-left: 0; padding-left: 0; }
   .mb-drag {
     display: flex; align-items: center; padding: 0 7px 0 5px;
     color: var(--text-mute); cursor: grab; border-radius: 8px; flex: none;
