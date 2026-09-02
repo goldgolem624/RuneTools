@@ -56,7 +56,8 @@
     /* ---- themed dropdown (div-based; native <select> paints a white system menu) ---- */
     .dd { position: relative; display: inline-block; }
     .dd-btn { display: inline-flex; align-items: center; gap: 7px; min-width: 84px;
-              justify-content: space-between; }
+              max-width: 150px; justify-content: space-between; overflow: hidden;
+              white-space: nowrap; text-overflow: ellipsis; }
     .dd-btn::after { content: ""; width: 0; height: 0; border-left: 4px solid transparent;
                      border-right: 4px solid transparent; border-top: 5px solid var(--dim); }
     .dd.open .dd-btn { border-color: var(--acc); }
@@ -136,15 +137,15 @@
 <body>
   <div id="tt"></div>
 
-  <div class="row hud-hide">
-    <div class="grow">
-      <h1>Rotation Builder</h1>
-      <div class="sub" id="status">Connecting to host...</div>
+  <div class="hud-hide" style="margin-bottom:10px">
+    <h1 style="white-space:nowrap">Rotation Builder</h1>
+    <div class="row" style="margin-top:8px">
+      <span class="dd" id="dd-rot"></span>
+      <button class="tiny" id="rot-new">New</button>
+      <button class="tiny" id="rot-dup">Copy</button>
+      <button class="tiny danger" id="rot-del">Delete</button>
     </div>
-    <span class="dd" id="dd-rot"></span>
-    <button class="tiny" id="rot-new">New</button>
-    <button class="tiny" id="rot-dup">Copy</button>
-    <button class="tiny danger" id="rot-del">Delete</button>
+    <div class="sub" id="status" style="margin:6px 0 0">Connecting to host...</div>
   </div>
 
   <div class="card hud-hide">
