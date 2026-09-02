@@ -122,6 +122,7 @@
     #play-strip .stat { flex: none; }
     #play-now { display: flex; gap: 5px; align-items: center; }
     #play-now .ab { width: 52px; height: 52px; background-size: 42px; border-color: var(--ok); cursor: default; }
+    #play-now.pend .ab { border-color: rgba(245,178,65,0.75); }   /* counting down, not yet */
     #play-now .key { position: absolute; bottom: -3px; right: -3px; background: #0c0d12;
                      border: 1px solid var(--line); border-radius: 4px; font-size: 12px;
                      padding: 1px 5px; color: var(--acc-hi); font-weight: 700; }
@@ -193,10 +194,10 @@
       <button id="play-reset">Reset</button>
       <label class="muted"><input type="checkbox" id="play-loop"> Loop</label>
       <label class="muted"><input type="checkbox" id="play-sync" checked> Sync to game ticks</label>
-      <button class="tiny hud-hide" id="keys-load" title="Read your action bars and badge each ability with its keybind">Load keybinds</button>
     </div>
     <div id="play-strip">
       <div class="stat"><span class="k">Tick</span><span class="v" id="pv-tick">0</span></div>
+      <div class="stat"><span class="k">Next</span><span class="v" id="pv-cd">-</span></div>
       <div id="play-now"></div>
       <div id="play-next"></div>
       <div class="stat"><span class="k">Adren</span><span class="v" id="pv-adr">0%</span></div>
@@ -418,6 +419,7 @@
     if (!k) return '';
     return (mod === 1 ? 'S+' : mod === 2 ? 'C+' : mod === 3 ? 'A+' : '') + k;
   }
+  // Keybinds load themselves (boot + every Play press); there is nothing to click.
   async function loadKeys() {
     try {
       const d = await rp().state.actionBar();
@@ -425,9 +427,8 @@
       for (const bar of (d && d.bars) || [])
         for (const sl of bar.slots || [])
           if (sl.id > 0 && !KEYS[sl.id]) { const kl = keyLabel(sl.key, sl.mod | 0); if (kl) KEYS[sl.id] = kl; }
-      $('status').textContent = Object.keys(KEYS).length + ' keybinds loaded from your action bars.';
       renderPlayback();
-    } catch (e) { $('status').textContent = 'Could not read the action bars (log in first).'; }
+    } catch (e) {}   // not in-game yet; the next Play press retries
   }
 
   // ---------------- rendering ----------------
@@ -569,6 +570,15 @@
   let playing = false, pos = 0, playTimer = null, lastGameTick = null, gameTickAlive = 0;
   function stepAt(t) { return cur ? cur.steps.filter(s => s.t === t) : []; }
   function nextSteps(t, n) { return cur ? cur.steps.filter(s => s.t > t).slice(0, n) : []; }
+  // What the playback displays: the step firing NOW, or else the next upcoming step with the
+  // countdown to it, so the strip is never empty mid-rotation.
+  function primaryAt(t) {
+    const now = stepAt(t);
+    if (now.length) { const a = []; let n = ''; for (const s of now) { a.push(...s.a); if (s.n) n = s.n; } return { a, n, dt: 0 }; }
+    const ns = nextSteps(t, 1)[0];
+    if (ns) return { a: ns.a.slice(), n: ns.n || '', dt: ns.t - t };
+    return { a: [], n: '', dt: -1 };
+  }
   function renderPlayback() {
     if (!cur) return;
     const dur = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 3 : 0;
@@ -576,19 +586,23 @@
     $('pv-el').textContent = (pos * 0.6).toFixed(1) + 's';
     $('play-fill').style.width = dur ? Math.min(100, pos / dur * 100) + '%' : '0';
     const sim = simulate();
-    let adr = cur.adren0 | 0, note = '';
-    cur.steps.forEach((s, i) => { if (s.t <= pos && sim[i]) { adr = sim[i].after; if (s.t === pos && s.n) note = s.n; } });
+    let adr = cur.adren0 | 0;
+    cur.steps.forEach((s, i) => { if (s.t <= pos && sim[i]) adr = sim[i].after; });
     $('pv-adr').textContent = adr + '%';
-    $('play-note').textContent = note;
+    const prim = primaryAt(pos);
+    $('play-note').textContent = prim.n;
+    $('pv-cd').textContent = prim.dt === 0 ? 'NOW' : prim.dt > 0 ? (prim.dt * 0.6).toFixed(1) + 's' : '-';
     const now = $('play-now'); now.innerHTML = '';
-    for (const s of stepAt(pos)) for (const id of s.a) {
+    now.classList.toggle('pend', prim.dt > 0);
+    for (const id of prim.a) {
       const el = abEl(id);
       if (KEYS[id]) { const k = document.createElement('span'); k.className = 'key'; k.textContent = KEYS[id]; el.appendChild(k); }
       now.appendChild(el);
     }
-    if (!now.childElementCount) { const m = document.createElement('span'); m.className = 'muted'; m.textContent = playing ? '(wait)' : 'press Play'; now.appendChild(m); }
+    if (!now.childElementCount) { const m = document.createElement('span'); m.className = 'muted'; m.textContent = playing ? '(done)' : 'press Play'; now.appendChild(m); }
+    const base = pos + Math.max(0, prim.dt);
     const nx = $('play-next'); nx.innerHTML = '';
-    for (const s of nextSteps(pos, 4)) {
+    for (const s of nextSteps(base, 4)) {
       const sep = document.createElement('span'); sep.className = 'muted'; sep.textContent = '+' + (s.t - pos); nx.appendChild(sep);
       for (const id of s.a.slice(0, 3)) nx.appendChild(abEl(id));
     }
@@ -635,14 +649,15 @@
     const now = Date.now();
     if (!force && now - hudLast < 250) return;   // stay well under the overlay rate limit
     hudLast = now;
-    const curIds = []; let note = '';
-    for (const s of stepAt(pos)) { for (const id of s.a) curIds.push(id); if (s.n) note = s.n; }
+    const prim = primaryAt(pos);
     const nxt = [];
-    for (const s of nextSteps(pos, 3)) for (const id of s.a.slice(0, 2)) nxt.push({ id, gap: s.t - pos });
+    for (const s of nextSteps(pos + Math.max(0, prim.dt), 3)) for (const id of s.a.slice(0, 2)) nxt.push({ id, gap: s.t - pos });
     rp().overlay.hudAbilities({
       title: cur.name,
-      sub: 'tick ' + pos + (note ? ' · ' + note : ''),
-      cur: curIds.slice(0, 6).map(id => ({ id, key: KEYS[id] || '' })),
+      sub: (prim.dt > 0 ? 'in ' + (prim.dt * 0.6).toFixed(1) + 's' : prim.dt === 0 ? 'NOW' : 'done') +
+           (prim.n ? ' · ' + prim.n : ''),
+      now: prim.dt === 0,
+      cur: prim.a.slice(0, 6).map(id => ({ id, key: KEYS[id] || '' })),
       next: nxt.slice(0, 6),
     }).catch(() => {});
   }
@@ -681,9 +696,8 @@
       $('pal-bars').classList.add('primary'); renderPalette();
     } catch (e) { $('status').textContent = 'Could not read the action bars (log in first).'; }
   });
-  $('play-btn').addEventListener('click', () => setPlaying(!playing));
+  $('play-btn').addEventListener('click', () => { if (!playing) loadKeys(); setPlaying(!playing); });
   $('play-reset').addEventListener('click', () => { pos = 0; setPlaying(false); });
-  $('keys-load').addEventListener('click', loadKeys);
   $('hud-btn').addEventListener('click', () => setHud(!hud));
   $('share-btn').addEventListener('click', async () => {
     if (!cur) return;
@@ -743,6 +757,7 @@
   rp().ui.setHeight(860);
   if (!(await loadAbilities())) { $('status').textContent = 'Ability index unavailable (open a client and try again).'; }
   loadTips();
+  loadKeys();
   const saved = await rp().storage.get('rotations').catch(() => null);
   rots = Array.isArray(saved) && saved.length ? saved : [blankRot('My first rotation')];
   cur = rots[0]; selStep = cur.steps.length - 1;

@@ -594,11 +594,12 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     h.ttl.textContent = pClampStr(payload.title, 40) || 'Rotation';
     h.sub.textContent = pClampStr(payload.sub, 60);
     h.body.innerHTML = '';
+    const isNow = payload.now !== false;   // absent = old plugin builds -> green as before
     const tile = (id, big, key, dim) => {
       const d = document.createElement('div');
       const sz = big ? 44 : 26;
       d.style.cssText = 'position:relative;width:' + sz + 'px;height:' + sz + 'px;border-radius:6px;flex:none;' +
-        'border:1px solid ' + (big ? 'rgba(77,210,138,0.8)' : 'rgba(255,255,255,0.12)') + ';' +
+        'border:1px solid ' + (big ? (isNow ? 'rgba(77,210,138,0.8)' : 'rgba(245,178,65,0.75)') : 'rgba(255,255,255,0.12)') + ';' +
         'background:#20222c center/' + (sz - 6) + 'px no-repeat;' + (dim ? 'opacity:0.62;' : '');
       pluginHudIcon(pClampId(id), d);
       if (key) {
