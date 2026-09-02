@@ -9,7 +9,7 @@
   // See PLUGIN_SDK.md. A plugin only ever reaches the read, overlay, sound, and
   // storage methods its granted scopes allow.
   const PLUGIN_PROTO  = 'rtx.plugin/1';
-  const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'clipboard']);
+  const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'clipboard', 'clipboard.read']);
   let   pluginTabs    = [];     // [{ id, manifest:{id,name,version,author,entry,description}, scopes:[] }]
   const pluginMounts  = new Map();   // plugin id -> { id, frame, scopes }; one per open plugin window
   const pluginBuckets = {};     // "id|method" -> token bucket
@@ -33,10 +33,10 @@ ready:function(cb){if(typeof cb!=='function'){return new Promise(function(r){S.r
 on:function(e,cb){if(L[e]&&typeof cb==='function')L[e].push(cb);},
 events:{on:function(k,cb){if(typeof cb!=='function')return;(EV[k]=EV[k]||[]).push(cb);},off:function(k,cb){var a=EV[k];if(!a)return;var i=a.indexOf(cb);if(i!==-1)a.splice(i,1);}},
 state:{player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);},interfaceGroup:function(g){return call('state.interfaceGroup',[g]);},varcs:function(ids){return call('state.varcs',[ids]);},ports:function(){return call('state.ports',[]);},gameTick:function(){return call('state.gameTick',[]);}},
-cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);},abilityConfigs:function(){return call('cache.abilityConfigs',[]);}},
+cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);},abilityConfigs:function(){return call('cache.abilityConfigs',[]);},abilityTips:function(){return call('cache.abilityTips',[]);}},
 notify:{windows:function(title,body){return call('notify.windows',[title,body]);}},
-clipboard:{copy:function(t){return call('clipboard.copy',[t]);}},
-overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t,s,c){return call('overlay.centerText',[t,s,c]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},highlightRects:function(l){return call('overlay.highlightRects',[l||[]]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);}},
+clipboard:{copy:function(t){return call('clipboard.copy',[t]);},paste:function(){return call('clipboard.paste',[]);}},
+overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t,s,c){return call('overlay.centerText',[t,s,c]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},highlightRects:function(l){return call('overlay.highlightRects',[l||[]]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);},hudAbilities:function(p){return call('overlay.hudAbilities',[p||null]);}},
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);}}};
@@ -219,6 +219,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     // Both render through the in-game UI layer now (same contract: notify's second
     // arg is a ttl in ms, 0 = sticky until dismissed).
     'overlay.toast':    { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: 5000 }) },
+    // A floating HUD strip over the game showing ability icons (rotation playback etc.).
+    // One per plugin, host-rendered from a validated payload; null/empty closes it.
+    'overlay.hudAbilities': { scope: 'overlay', json: false, run: (a, pid, id) => { pluginHudSet(id, a[0]); return true; } },
     'overlay.notify':   { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: pClampNum(a[1], 0, 60000) }) },
     // Big centre-screen banner text ('' clears). Same in-frame channel the Dungeoneering
     // boss warnings use.
@@ -230,6 +233,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     'notify.windows':   { scope: 'notify.os',  json: false,   run: (a) => (bridge().notifyWindows ? bridge().notifyWindows(pClampStr(a[0], 60), pClampStr(a[1], 200)) : null) },
     // Copy text to the user's clipboard. Own manifest scope; sized for plan exports.
     'clipboard.copy':   { scope: 'clipboard',  json: false,   run: (a) => (bridge().copyClipboard ? bridge().copyClipboard(pClampStr(a[0], 65536)) : null) },
+    // Read-back is its own scope: reading the clipboard is more sensitive than writing it,
+    // so a plugin that only exports never sees clipboard contents.
+    'clipboard.paste': { scope: 'clipboard.read', json: false, run: () => String(bridge().pasteClipboard() || '').slice(0, 65536) },
     'overlay.highlight':{ scope: 'overlay',    json: false,   run: (a, pid) => bridge().overlayHighlight(pid, pClampList(a[0])) },
     // Box a single NPC by name (case-insensitive) with an optional pill label. Unlike
     // overlay.highlight (which strips punctuation), this keeps the label intact and only
@@ -376,6 +382,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     // -- cache (cache.read)
     'cache.achievements':     { scope: 'cache.read',  json: true,  run: (a) => bridge().achievements(...pArgs(a)) },
     'cache.abilityConfigs':   { scope: 'cache.read',  json: true,  run: (a) => bridge().abilityConfigs(...pArgs(a)) },
+    // Plain-text tooltip bullets per ability id, flattened once from AB_TIPS (the interpreted
+    // CS2 tooltip builders panel_abilities renders). Damage placeholders become "a%-b% damage".
+    'cache.abilityTips':      { scope: 'cache.read',  json: true,  run: () => pluginAbilityTipsJson() },
     'cache.archResearch':     { scope: 'cache.read',  json: true,  run: (a) => bridge().archResearch(...pArgs(a)) },
     'cache.quests':           { scope: 'cache.read',  json: true,  run: (a) => bridge().quests(...pArgs(a)) },
     // sync, capped at 2000 rows host-side
@@ -524,6 +533,120 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
         if (batch) pluginSendEvent(m, 'events', batch);
       }
     }
+  }
+
+  // ---- plugin ability HUD: a small floating strip over the game, host-rendered ----
+  // Payload: { title, sub, cur:[{id,key}], next:[{id,gap}] }. Lives in the in-game UI layer
+  // (this page composites into the game frame), draggable by its header, one per plugin.
+  const pluginHuds = new Map();          // plugin id -> { el, body, ttl, sub }
+  const pluginHudIcons = new Map();      // ability id -> data URL promise result ('' = none)
+  function pluginHudIcon(id, el) {
+    if (pluginHudIcons.has(id)) { const u = pluginHudIcons.get(id); if (u) el.style.backgroundImage = 'url(' + u + ')'; return; }
+    try {
+      Promise.resolve(bridge().sprite(id)).then(u => {
+        pluginHudIcons.set(id, u || '');
+        if (u && el.isConnected) el.style.backgroundImage = 'url(' + u + ')';
+      }).catch(() => pluginHudIcons.set(id, ''));
+    } catch (e) {}
+  }
+  function pluginHudClose(slug) {
+    const h = pluginHuds.get(slug);
+    if (h) { try { h.el.remove(); } catch (e) {} pluginHuds.delete(slug); }
+  }
+  function pluginHudSet(slug, payload) {
+    const cur = payload && Array.isArray(payload.cur) ? payload.cur.slice(0, 6) : [];
+    if (!payload || !cur.length) { pluginHudClose(slug); return; }
+    let h = pluginHuds.get(slug);
+    if (!h) {
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;z-index:950000;top:110px;left:50%;transform:translateX(-50%);' +
+        'background:rgba(12,13,18,0.92);border:1px solid rgba(140,111,253,0.45);border-radius:10px;' +
+        'padding:6px 10px 8px;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none';
+      const head = document.createElement('div');
+      head.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:grab;margin-bottom:5px';
+      const ttl = document.createElement('span');
+      ttl.style.cssText = 'flex:1;font-size:11px;font-weight:700;color:#e8edf4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+      const sub = document.createElement('span');
+      sub.style.cssText = 'font-size:10px;color:#99a0b3;white-space:nowrap';
+      const x = document.createElement('span');
+      x.textContent = '\u00d7';
+      x.style.cssText = 'cursor:pointer;color:#99a0b3;font-size:13px;padding:0 2px';
+      x.addEventListener('click', () => pluginHudClose(slug));
+      head.appendChild(ttl); head.appendChild(sub); head.appendChild(x);
+      const body = document.createElement('div');
+      body.style.cssText = 'display:flex;align-items:center;gap:5px';
+      el.appendChild(head); el.appendChild(body);
+      // header drag (screen px both sides; this layer is unzoomed)
+      head.addEventListener('mousedown', (e) => {
+        if (e.target === x) return;
+        e.preventDefault();
+        const r = el.getBoundingClientRect();
+        el.style.transform = 'none'; el.style.left = r.left + 'px'; el.style.top = r.top + 'px';
+        const sx = e.clientX - r.left, sy = e.clientY - r.top;
+        const mv = ev => { el.style.left = Math.max(0, ev.clientX - sx) + 'px'; el.style.top = Math.max(0, ev.clientY - sy) + 'px'; };
+        const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+      });
+      document.body.appendChild(el);
+      h = { el, body, ttl, sub };
+      pluginHuds.set(slug, h);
+    }
+    h.ttl.textContent = pClampStr(payload.title, 40) || 'Rotation';
+    h.sub.textContent = pClampStr(payload.sub, 60);
+    h.body.innerHTML = '';
+    const tile = (id, big, key, dim) => {
+      const d = document.createElement('div');
+      const sz = big ? 44 : 26;
+      d.style.cssText = 'position:relative;width:' + sz + 'px;height:' + sz + 'px;border-radius:6px;flex:none;' +
+        'border:1px solid ' + (big ? 'rgba(77,210,138,0.8)' : 'rgba(255,255,255,0.12)') + ';' +
+        'background:#20222c center/' + (sz - 6) + 'px no-repeat;' + (dim ? 'opacity:0.62;' : '');
+      pluginHudIcon(pClampId(id), d);
+      if (key) {
+        const k = document.createElement('span');
+        k.textContent = pClampStr(key, 6);
+        k.style.cssText = 'position:absolute;bottom:-3px;right:-3px;background:#0c0d12;border:1px solid rgba(255,255,255,0.18);' +
+          'border-radius:4px;font-size:10px;font-weight:700;padding:0 3px;color:#9d83ff';
+        d.appendChild(k);
+      }
+      return d;
+    };
+    for (const it of cur) h.body.appendChild(tile(it && it.id, true, it && it.key, false));
+    const next = Array.isArray(payload.next) ? payload.next.slice(0, 6) : [];
+    for (const it of next) {
+      const gap = document.createElement('span');
+      gap.textContent = '+' + Math.max(0, Math.min(99, (it && it.gap) | 0));
+      gap.style.cssText = 'font-size:9px;color:#5e6580;flex:none';
+      h.body.appendChild(gap);
+      h.body.appendChild(tile(it && it.id, false, '', true));
+    }
+  }
+
+  let _pluginTipsJson = null;
+  function pluginAbilityTipsJson() {
+    if (_pluginTipsJson) return _pluginTipsJson;
+    const out = {};
+    const tips = (typeof AB_TIPS !== 'undefined') ? AB_TIPS : {};
+    const clean = t => String(t).replace(/<col=[0-9a-fA-F]+>/g, '').replace(/<\/col>/g, '')
+                                .replace(/<sprite=\d+>/g, '').replace(/<nbsp>/g, ' ')
+                                .replace(/<br>/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const id in tips) {
+      const rec = tips[id];
+      if (!rec || !Array.isArray(rec.l)) continue;
+      const lines = [];
+      for (const parts of rec.l) {
+        let ln = '';
+        for (const p of parts) {
+          if (typeof p === 'string') ln += p;
+          else if (p && typeof p === 'object') ln += (p.a != null ? p.a + '%-' + p.b + '% damage' : '');
+        }
+        ln = clean(ln);
+        if (ln) lines.push(ln);
+        if (lines.length >= 10) break;
+      }
+      if (lines.length) out[id] = lines;
+    }
+    _pluginTipsJson = JSON.stringify(out);
+    return _pluginTipsJson;
   }
 
   function pluginBrokerInit() {

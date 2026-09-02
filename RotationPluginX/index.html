@@ -86,8 +86,9 @@
     /* one floating tooltip, positioned from JS so scrollboxes cannot clip it */
     #tt { position: fixed; z-index: 90; display: none; pointer-events: none;
           background: #0c0d12; border: 1px solid var(--line); border-radius: 6px;
-          padding: 5px 9px; font-size: 11px; color: var(--tx); max-width: 260px;
-          box-shadow: 0 6px 18px rgba(0,0,0,0.5); }
+          padding: 6px 10px; font-size: 11px; color: var(--tx); max-width: 300px;
+          box-shadow: 0 6px 18px rgba(0,0,0,0.5); white-space: pre-line; line-height: 1.45; }
+    #tt b { color: var(--acc-hi); }
 
     /* ---- timeline ---- */
     #steps { display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto; }
@@ -112,9 +113,9 @@
     #play-strip { display: flex; align-items: center; gap: 14px; min-height: 76px; }
     #play-now { display: flex; gap: 5px; align-items: center; }
     #play-now .ab { width: 52px; height: 52px; background-size: 42px; border-color: var(--ok); cursor: default; }
-    #play-now .key { position: absolute; bottom: -2px; right: -2px; background: #0c0d12;
-                     border: 1px solid var(--line); border-radius: 4px; font-size: 9px;
-                     padding: 0 3px; color: var(--acc-hi); font-weight: 700; }
+    #play-now .key { position: absolute; bottom: -3px; right: -3px; background: #0c0d12;
+                     border: 1px solid var(--line); border-radius: 4px; font-size: 12px;
+                     padding: 1px 5px; color: var(--acc-hi); font-weight: 700; }
     #play-next { display: flex; gap: 4px; align-items: center; opacity: 0.7; }
     #play-next .ab { width: 30px; height: 30px; background-size: 24px; cursor: default; }
     #play-note { color: var(--warn); font-size: 0.9em; font-weight: 600; }
@@ -127,11 +128,7 @@
     #share-code, #import-code { width: 100%; height: 54px; resize: vertical; font-family: Consolas, monospace; font-size: 11px; }
     .muted { color: var(--mute); font-size: 0.78em; }
 
-    /* ---- HUD mode: only the playback strip, sized to sit over the game ---- */
-    body.hud { padding: 6px 8px; }
-    body.hud .hud-hide { display: none !important; }
-    body.hud #play-card { margin: 0; padding: 8px 10px; }
-    body.hud #play-strip { min-height: 60px; }
+    /* (game overlay playback lives in a host-drawn floating strip; see hudPush) */
   </style>
 </head>
 <body>
@@ -169,6 +166,7 @@
       <span class="dd" id="dd-style"></span>
       <span class="dd" id="dd-tier"></span>
       <button class="tiny" id="pal-bars" title="Show only abilities on your action bars">My bars</button>
+      <label class="muted" title="The cache tags some non-combat entries (teleports) as abilities; they are hidden unless checked"><input type="checkbox" id="pal-all"> All</label>
     </div>
     <div id="pal"></div>
   </div>
@@ -176,7 +174,7 @@
   <div class="card" id="play-card">
     <div class="row">
       <span class="lbl grow" style="margin:0">Playback</span>
-      <button class="tiny" id="hud-btn" title="Collapse to a slim strip you can park over the game while it plays">HUD mode</button>
+      <button class="tiny" id="hud-btn" title="Show playback as a floating strip over the game itself (drag it anywhere; its x closes it)">Game overlay</button>
     </div>
     <div class="row" style="margin-top:6px">
       <button class="primary" id="play-btn">Play</button>
@@ -205,7 +203,8 @@
     </div>
     <textarea id="share-code" readonly placeholder="Share code appears here"></textarea>
     <div class="row" style="margin:8px 0 6px">
-      <button class="tiny" id="import-btn">Import pasted code</button>
+      <button class="tiny" id="paste-btn" title="Read the code from your clipboard and import it">Paste &amp; import from clipboard</button>
+      <button class="tiny" id="import-btn">Import the box below</button>
     </div>
     <textarea id="import-code" placeholder="Paste an RTXROT1 code here, then press Import"></textarea>
   </div>
@@ -253,7 +252,14 @@
   // ---------------- floating tooltip ----------------
   const tt = $('tt');
   function ttShow(text, x, y) {
-    tt.textContent = text; tt.style.display = 'block';
+    // First line renders bold (ability name); the rest as-is (white-space: pre-line).
+    const nl = text.indexOf('\n');
+    tt.innerHTML = '';
+    const b = document.createElement('b');
+    b.textContent = nl === -1 ? text : text.slice(0, nl);
+    tt.appendChild(b);
+    if (nl !== -1) tt.appendChild(document.createTextNode('\n' + text.slice(nl + 1)));
+    tt.style.display = 'block';
     const r = tt.getBoundingClientRect();
     let lx = x + 12, ly = y - r.height - 10;
     if (lx + r.width > innerWidth - 4) lx = innerWidth - r.width - 4;
@@ -316,7 +322,7 @@
     const byId = cfg._byId || {};
     for (const k in byId) {
       const r = byId[k] || {};
-      AB[k | 0] = { n: r.n || ('#' + k), t: r.t | 0, st: r.st | 0, ag: r.ag | 0, ac: r.ac | 0, c: r.c | 0 };
+      AB[k | 0] = { n: r.n || ('#' + k), t: r.t | 0, st: r.st | 0, ag: r.ag | 0, ac: r.ac | 0, c: r.c | 0, l: r.l | 0 };
     }
     for (const name in cfg) {           // named records carry the cooldown more often
       if (name === '_byId') continue;
@@ -329,8 +335,13 @@
       if (r.ag) t.ag = r.ag | 0;
       if (r.ac) t.ac = r.ac | 0;
       if (r.c)  t.c = r.c | 0;
+      if (r.l)  t.l = r.l | 0;
     }
     return Object.keys(AB).length > 0;
+  }
+  let TIPS = {};   // abilityId -> [plain-text bullet, ...] (host-flattened game tooltips)
+  async function loadTips() {
+    try { if (rp().cache.abilityTips) TIPS = await rp().cache.abilityTips() || {}; } catch (e) {}
   }
   const TIER_TXT = { 0: 'Auto-attack', 1: 'Basic', 2: 'Threshold', 3: 'Threshold', 4: 'Ultimate', 5: 'Special', 7: 'Utility' };
   const costPct = a => { const c = a.ac | 0; return c > 120 ? Math.round(c / 10) : c; };
@@ -389,11 +400,10 @@
 
   // ---------------- keybinds ----------------
   let KEYS = {};
+  // The action bar serves `key` as a human-readable STRING ("4", "F2"), not a VK code;
+  // only the modifier is numeric.
   function keyLabel(key, mod) {
-    let k = '';
-    if (key >= 112 && key <= 135) k = 'F' + (key - 111);
-    else if (key >= 48 && key <= 90) k = String.fromCharCode(key);
-    else if (key > 0) k = '#' + key;
+    const k = String(key == null ? '' : key).trim().toUpperCase().slice(0, 5);
     if (!k) return '';
     return (mod === 1 ? 'S+' : mod === 2 ? 'C+' : mod === 3 ? 'A+' : '') + k;
   }
@@ -403,7 +413,7 @@
       KEYS = {};
       for (const bar of (d && d.bars) || [])
         for (const sl of bar.slots || [])
-          if (sl.id > 0 && sl.key > 0 && !KEYS[sl.id]) KEYS[sl.id] = keyLabel(sl.key, sl.mod | 0);
+          if (sl.id > 0 && !KEYS[sl.id]) { const kl = keyLabel(sl.key, sl.mod | 0); if (kl) KEYS[sl.id] = kl; }
       $('status').textContent = Object.keys(KEYS).length + ' keybinds loaded from your action bars.';
       renderPlayback();
     } catch (e) { $('status').textContent = 'Could not read the action bars (log in first).'; }
@@ -419,11 +429,16 @@
     const a = AB[id];
     if (a) d.classList.add('t' + a.t);
     d.dataset.ab2 = a ? a.n.slice(0, 2) : '?';
-    d.dataset.tt = a ? (a.n + ' · ' + (TIER_TXT[a.t] || '') +
-                        (a.c ? ' · cd ' + (a.c * 0.6).toFixed(1) + 's' : '') +
-                        (gainPct(a) ? ' · +' + gainPct(a) + '% adren' : '') +
-                        (costPct(a) ? ' · -' + costPct(a) + '% adren' : ''))
-                     : ('Unknown ability #' + id);
+    if (a) {
+      let t = a.n + '\n' + (TIER_TXT[a.t] || '') +
+              (a.c ? ' · ' + (a.c * 0.6).toFixed(1) + 's cooldown' : '') +
+              (a.l ? ' · level ' + a.l : '') +
+              (gainPct(a) ? ' · +' + gainPct(a) + '% adren' : '') +
+              (costPct(a) ? ' · costs ' + costPct(a) + '% adren' : '');
+      const lines = TIPS[String(id)];
+      if (lines && lines.length) t += '\n' + lines.slice(0, 8).join('\n');
+      d.dataset.tt = t;
+    } else d.dataset.tt = 'Unknown ability #' + id;
     requestIcon(id, d);
     return d;
   }
@@ -501,6 +516,14 @@
     for (const id of ids) {
       const a = AB[id];
       if (a.t === 0) continue;
+      // Combat relevance: the cache tags teleports and misc entries with ability tiers, but a
+      // real basic GENERATES adrenaline and a real threshold/ultimate COSTS it. Utility (t7)
+      // and specials (t5) pass as-is; "All" lifts the gate.
+      if (!$('pal-all').checked) {
+        const rel = (a.t === 1 && gainPct(a) > 0) || ((a.t === 2 || a.t === 3 || a.t === 4) && costPct(a) > 0) ||
+                    a.t === 5 || a.t === 7;
+        if (!rel) continue;
+      }
       if (q && a.n.toLowerCase().indexOf(q) === -1) continue;
       if (styleF === 'melee' ? (a.st !== 1 && a.st !== 2) : (styleF && a.st !== (styleF | 0))) continue;
       if (tierF === '23' ? (a.t !== 2 && a.t !== 3) : (tierF && a.t !== (tierF | 0))) continue;
@@ -550,6 +573,7 @@
     }
     const rows = $('steps').children;
     cur.steps.forEach((s, i) => { if (rows[i]) rows[i].classList.toggle('playnow', playing && s.t === pos); });
+    hudPush(false);
   }
   function advance() {
     if (!cur || !playing) return;
@@ -576,13 +600,30 @@
     renderPlayback();
   }
 
-  // ---------------- HUD mode ----------------
-  let hud = false;
+  // ---------------- game overlay (host-drawn floating strip over the game) ----------------
+  let hud = false, hudLast = 0;
   function setHud(on) {
     hud = on;
-    document.body.classList.toggle('hud', on);
-    $('hud-btn').textContent = on ? 'Full view' : 'HUD mode';
-    rp().ui.setHeight(on ? 150 : 860);
+    $('hud-btn').classList.toggle('primary', on);
+    if (!on) { try { rp().overlay.hudAbilities(null); } catch (e) {} }
+    else hudPush(true);
+  }
+  function hudPush(force) {
+    if (!hud || !cur) return;
+    if (!rp().overlay.hudAbilities) { $('status').textContent = 'Game overlay needs a newer RuneTools client.'; hud = false; $('hud-btn').classList.remove('primary'); return; }
+    const now = Date.now();
+    if (!force && now - hudLast < 250) return;   // stay well under the overlay rate limit
+    hudLast = now;
+    const curIds = []; let note = '';
+    for (const s of stepAt(pos)) { for (const id of s.a) curIds.push(id); if (s.n) note = s.n; }
+    const nxt = [];
+    for (const s of nextSteps(pos, 3)) for (const id of s.a.slice(0, 2)) nxt.push({ id, gap: s.t - pos });
+    rp().overlay.hudAbilities({
+      title: cur.name,
+      sub: 'tick ' + pos + (note ? ' · ' + note : ''),
+      cur: curIds.slice(0, 6).map(id => ({ id, key: KEYS[id] || '' })),
+      next: nxt.slice(0, 6),
+    }).catch(() => {});
   }
 
   // ---------------- events wiring ----------------
@@ -595,8 +636,11 @@
     rots.push(c); cur = c; renderRotList(); syncHeader(); renderSteps(); saveSoon();
   });
   $('rot-del').addEventListener('click', () => {
-    if (!cur || rots.length <= 1) return;
-    rots = rots.filter(r => r.id !== cur.id); cur = rots[0]; selStep = cur.steps.length - 1;
+    if (!cur) return;
+    // Deleting the last rotation leaves a fresh blank one rather than doing nothing.
+    rots = rots.filter(r => r.id !== cur.id);
+    if (!rots.length) rots.push(blankRot());
+    cur = rots[0]; selStep = cur.steps.length - 1;
     renderRotList(); syncHeader(); renderSteps(); saveSoon();
   });
   $('step-add').addEventListener('click', () => { if (!cur) return;
@@ -606,6 +650,7 @@
     const t = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 1 : 0;
     cur.steps.push({ t, a: [], n: '' }); selStep = cur.steps.length - 1; renderSteps(); saveSoon(); });
   $('pal-q').addEventListener('input', renderPalette);
+  $('pal-all').addEventListener('change', renderPalette);
   $('pal-bars').addEventListener('click', async () => {
     if (barIds) { barIds = null; $('pal-bars').classList.remove('primary'); renderPalette(); return; }
     try {
@@ -624,6 +669,21 @@
     renderShare();
     try { await rp().clipboard.copy($('share-code').value); $('status').textContent = 'Share code copied to clipboard.'; }
     catch (e) { $('status').textContent = 'Copy failed; select the code and copy it yourself.'; }
+  });
+  function doImport(text) {
+    const r = importCode(text);
+    rots.push(r); cur = r; selStep = cur.steps.length - 1;
+    renderRotList(); syncHeader(); renderSteps(); saveSoon();
+    const missing = new Set();
+    for (const s of r.steps) for (const id of s.a) if (!AB[id]) missing.add(id);
+    $('status').textContent = 'Imported "' + r.name + '"' + (missing.size ? ' (' + missing.size + ' unknown ability ids kept as placeholders)' : '') + '.';
+  }
+  $('paste-btn').addEventListener('click', async () => {
+    // Keyboard paste is unreliable inside the in-game view, so the clipboard is read through
+    // the host (clipboard.read scope, approved on enable).
+    if (!rp().clipboard.paste) { $('status').textContent = 'Clipboard paste needs a newer RuneTools client; paste into the box below instead.'; return; }
+    try { doImport(await rp().clipboard.paste()); }
+    catch (e) { $('status').textContent = 'Import failed: ' + e.message; }
   });
   $('import-btn').addEventListener('click', () => {
     try {
@@ -661,6 +721,7 @@
   if (missing.length) { $('status').textContent = 'Missing permissions: ' + missing.join(', ') + '. Re-enable the plugin and approve them.'; }
   rp().ui.setHeight(860);
   if (!(await loadAbilities())) { $('status').textContent = 'Ability index unavailable (open a client and try again).'; }
+  loadTips();
   const saved = await rp().storage.get('rotations').catch(() => null);
   rots = Array.isArray(saved) && saved.length ? saved : [blankRot('My first rotation')];
   cur = rots[0]; selStep = cur.steps.length - 1;

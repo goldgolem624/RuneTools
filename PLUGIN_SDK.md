@@ -60,6 +60,7 @@ my-plugin/
 | `storage`    | `rtx.plugin.storage.*` (per-plugin settings)     |
 | `notify.os`  | `rtx.plugin.notify.windows` (Windows notifications; 1 per 10s) |
 | `clipboard`  | `rtx.plugin.clipboard.copy` (copy-only; nothing is read back) |
+| `clipboard.read` | `rtx.plugin.clipboard.paste` (reads clipboard TEXT on user action; ask only if you truly need it) |
 
 `rtx.plugin.ui.*` and the meta/event helpers are always available. The user approves scopes
 on first enable, and the host enforces them on every call regardless of the manifest.
@@ -341,6 +342,10 @@ await rtx.plugin.cache.abilityConfigs();
 //    ag = adrenaline gain in tenths of a percent, ac = adrenaline cost, c = cooldown in game
 //    ticks (0.6 s), i = the ability id action-bar slots carry, d = description. "_byId" is the
 //    same set keyed by that ability id; cache.sprite(abilityId) is the ability's icon.
+await rtx.plugin.cache.abilityTips();
+// -> { "<abilityId>": ["bullet line", ...], ... }
+//    Plain-text tooltip bullets per ability (flattened from the game's own CS2 tooltip
+//    builders; damage placeholders read "75%-95% damage"). Static; fetch once.
 await rtx.plugin.cache.structParams(id); // -> { ints:{ k:v }, strs:{ k:"v" } } one StructType's params
 await rtx.plugin.cache.itemParams(id);   // -> { ints:{ k:v }, strs:{ k:"v" } } one item's op-249 params
 await rtx.plugin.cache.mapWindow(cx, cy, plane, half, ts);
@@ -443,6 +448,19 @@ rtx.plugin.overlay.wikiSearch("Abyssal whip");
 
 rtx.plugin.overlay.clearHighlight();         // clear both highlight layers
 
+// A small floating HUD strip over the game showing ability icons -- rotation playback,
+// switch reminders, and the like. One per plugin, host-rendered and draggable; call again
+// to update it (each call replaces the content), pass null (or an empty cur) to close it.
+// cur = the abilities to press NOW (drawn large, optional keybind badge, max 6);
+// next = upcoming (small + dimmed, gap = ticks until it, max 6). Icons come from the
+// ability id (the same id cache.sprite serves).
+rtx.plugin.overlay.hudAbilities({
+  title: "Zamorak opener", sub: "Tick 4 - dive out",
+  cur:  [{ id: 30331, key: "S+3" }],
+  next: [{ id: 23727, gap: 3 }, { id: 23729, gap: 6 }],
+});
+rtx.plugin.overlay.hudAbilities(null);       // close the strip
+
 // Big centre-screen banner text (the Dungeoneering boss-warning channel). '' clears.
 rtx.plugin.overlay.centerText("DODGE - icicles!");
 ```
@@ -460,10 +478,13 @@ on real events (a ship returned, a rare drop), never on a timer.
 
 ```js
 rtx.plugin.clipboard.copy(JSON.stringify(plan));
+const code = await rtx.plugin.clipboard.paste();  // requires the clipboard.read scope
 ```
 
-Copies text to the user's clipboard (capped 64 KB). Nothing can be read back; to accept
-pasted data, give the user a textarea to paste into.
+`copy` puts text on the user's clipboard (capped 64 KB). `paste` reads the clipboard's text
+back and needs the separate `clipboard.read` scope (approved like any other) -- call it only
+from a direct user action (an Import button), never on a timer, and expect any text at all.
+Keyboard paste inside the in-game view is unreliable, which is what this call is for.
 
 ### sound
 
