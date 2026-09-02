@@ -327,10 +327,34 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
             u->view->FireScrollEvent(se);
             break;
         }
-        case WM_KEYDOWN:
+        case WM_KEYDOWN: {
+            // Editing shortcuts: WebCore does not act on Ctrl+A/C/X/V from a raw key event in
+            // this embedding, so drive the editor command directly. The script walks into a
+            // focused IFRAME (plugin panels) so the command lands on the field that actually
+            // has focus; execCommand copy/paste goes through the platform clipboard AppCore
+            // installed. The raw event is swallowed for these four so nothing double-fires.
+            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool alt  = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            if (ctrl && !alt) {
+                const char* cmd = nullptr;
+                switch ((unsigned)e.wparam) {
+                    case 'A': cmd = "selectAll"; break;
+                    case 'C': cmd = "copy"; break;
+                    case 'X': cmd = "cut"; break;
+                    case 'V': cmd = "paste"; break;
+                }
+                if (cmd) {
+                    u->view->EvaluateScript(String((std::string(
+                        "(function(){var d=document;"
+                        "while(d.activeElement&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;"
+                        "try{d.execCommand('") + cmd + "');}catch(e){}})()").c_str()));
+                    break;
+                }
+            }
             u->view->FireKeyEvent(KeyEvent(KeyEvent::kType_RawKeyDown,
                                            (uintptr_t)e.wparam, (intptr_t)e.lparam, false));
             break;
+        }
         case WM_SYSKEYDOWN:
             u->view->FireKeyEvent(KeyEvent(KeyEvent::kType_RawKeyDown,
                                            (uintptr_t)e.wparam, (intptr_t)e.lparam, true));
