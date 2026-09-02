@@ -75,7 +75,8 @@
     #pal { display: flex; flex-wrap: wrap; gap: 4px; max-height: 148px; overflow-y: auto;
            padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
     .ab { width: 34px; height: 34px; border-radius: 6px; border: 1px solid var(--line);
-          background: var(--card2) center/26px no-repeat; cursor: pointer; position: relative; }
+          background: var(--card2) center/26px no-repeat; cursor: pointer; position: relative;
+          flex: none; }   /* NEVER shrinks: a squeezed row must wrap or scroll, not crush the icons */
     .ab:hover { border-color: var(--acc-hi); }
     .ab.noicon::after { content: attr(data-ab2); position: absolute; inset: 0;
                         display: flex; align-items: center; justify-content: center;
@@ -107,7 +108,7 @@
     .wpill.cd  { background: rgba(255,107,107,0.15); color: var(--err); border: 1px solid rgba(255,107,107,0.4); }
     .wpill.ok  { background: rgba(77,210,138,0.12); color: var(--ok); border: 1px solid rgba(77,210,138,0.35); }
     .step .gap { display: flex; align-items: center; gap: 2px; flex: none; }
-    .step input.note { width: 110px; font-size: 0.8em; padding: 3px 7px; }
+    .step input.note { flex: 0 1 110px; width: 110px; min-width: 44px; font-size: 0.8em; padding: 3px 7px; }
 
     /* ---- playback ---- */
     #play-strip { display: flex; align-items: center; gap: 14px; min-height: 76px; }
