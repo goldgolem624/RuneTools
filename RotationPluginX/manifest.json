@@ -1,0 +1,12 @@
+{
+  "rtxPluginManifest": 1,
+  "apiVersion": "1.0",
+  "id": "com.runetools.rotations",
+  "name": "Rotation Builder",
+  "version": "1.0.0",
+  "author": "RuneTools",
+  "description": "Build, validate, play back and share ability rotations. Tick-accurate playback with the game's own icons, adrenaline and cooldown checking from the live cache, keybind hints from your action bars, and one-click share codes.",
+  "entry": "index.html",
+  "scopes": ["state.read", "cache.read", "storage", "clipboard"],
+  "minHostVersion": "2.0.20"
+}

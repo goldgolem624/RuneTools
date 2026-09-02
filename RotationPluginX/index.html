@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!--
+    Rotation Builder: build, validate, play back and share ability rotations.
+
+    Fully self-contained (strict CSP; the host injects window.rtx.plugin). Data sources:
+      cache.abilityConfigs  - every ability: tier, style, adrenaline gain/cost, cooldown ticks
+      cache.sprite(id)      - the ability's own icon (sprite id == ability id)
+      state.actionBar()     - the player's bars, for keybind hints on playback
+      gameTick events       - real 600 ms server ticks driving synced playback
+    Sharing: a rotation exports as a copyable RTXROT1 code (base64url JSON) and imports by paste.
+  -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #14151c; --card: #1a1b23; --card2: #20222c; --line: rgba(255,255,255,0.07);
+      --tx: #e8e8ef; --dim: #8b8b9e; --mute: #5a5a6e; --acc: #7c5cfc; --acc-hi: #9d83ff;
+      --ok: #4dd28a; --warn: #f5b241; --err: #ff6b6b;
+    }
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: var(--bg);
+           color: var(--tx); padding: 12px; font-size: 13px; }
+    h1 { font-size: 1.05em; font-weight: 600; }
+    .sub { color: var(--dim); font-size: 0.82em; margin: 2px 0 10px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+            padding: 12px; margin-bottom: 10px; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .grow { flex: 1; min-width: 0; }
+    button { background: var(--card2); color: var(--tx); border: 1px solid var(--line);
+             border-radius: 7px; padding: 6px 11px; font: inherit; font-size: 0.86em;
+             font-weight: 600; cursor: pointer; }
+    button:hover { border-color: var(--acc); }
+    button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+    button.primary:hover { background: #6b4fe0; }
+    button.danger { color: var(--err); }
+    button.tiny { padding: 2px 7px; font-size: 0.78em; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    input[type=text], select, textarea {
+      background: var(--bg); color: var(--tx); border: 1px solid var(--line); border-radius: 7px;
+      padding: 6px 9px; font: inherit; font-size: 0.9em; }
+    input[type=text]:focus, textarea:focus { border-color: var(--acc); outline: none; }
+    .lbl { color: var(--mute); font-size: 0.72em; font-weight: 700; letter-spacing: 0.1em;
+           text-transform: uppercase; margin-bottom: 6px; }
+
+    /* ---- palette ---- */
+    #pal { display: flex; flex-wrap: wrap; gap: 4px; max-height: 148px; overflow-y: auto;
+           padding: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+    .ab { width: 34px; height: 34px; border-radius: 6px; border: 1px solid var(--line);
+          background: var(--card2) center/26px no-repeat; cursor: pointer; position: relative; }
+    .ab:hover { border-color: var(--acc-hi); }
+    .ab .tt { display: none; position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%);
+              background: #0c0d12; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
+              font-size: 11px; white-space: nowrap; z-index: 5; pointer-events: none; color: var(--tx); }
+    .ab:hover .tt { display: block; }
+    .t2 { box-shadow: inset 0 0 0 1px rgba(245,178,65,0.55); }   /* threshold */
+    .t3 { box-shadow: inset 0 0 0 1px rgba(245,178,65,0.55); }
+    .t4 { box-shadow: inset 0 0 0 1px rgba(255,107,107,0.6); }   /* ultimate */
+
+    /* ---- timeline ---- */
+    #steps { display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto; }
+    .step { display: flex; align-items: center; gap: 8px; background: var(--card2);
+            border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
+    .step.sel { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc); }
+    .step.playnow { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
+    .step .tickno { width: 66px; flex: none; font-variant-numeric: tabular-nums; }
+    .step .tickno b { font-size: 1em; }
+    .step .tickno span { color: var(--mute); font-size: 0.78em; display: block; }
+    .step .icons { display: flex; gap: 3px; flex-wrap: wrap; flex: 1; min-width: 0; }
+    .step .icons .ab { width: 28px; height: 28px; background-size: 22px; }
+    .step .icons .ab.rm:hover { border-color: var(--err); }
+    .step .warns { display: flex; gap: 4px; flex: none; }
+    .wpill { font-size: 0.72em; font-weight: 700; border-radius: 999px; padding: 2px 7px; }
+    .wpill.adr { background: rgba(245,178,65,0.15); color: var(--warn); border: 1px solid rgba(245,178,65,0.4); }
+    .wpill.cd  { background: rgba(255,107,107,0.15); color: var(--err); border: 1px solid rgba(255,107,107,0.4); }
+    .wpill.ok  { background: rgba(77,210,138,0.12); color: var(--ok); border: 1px solid rgba(77,210,138,0.35); }
+    .step .gap { display: flex; align-items: center; gap: 2px; flex: none; }
+    .step input.note { width: 110px; font-size: 0.8em; padding: 3px 7px; }
+
+    /* ---- playback ---- */
+    #play-strip { display: flex; align-items: center; gap: 14px; min-height: 76px; }
+    #play-now { display: flex; gap: 5px; align-items: center; }
+    #play-now .ab { width: 52px; height: 52px; background-size: 42px; border-color: var(--ok); }
+    #play-now .key { position: absolute; bottom: -2px; right: -2px; background: #0c0d12;
+                     border: 1px solid var(--line); border-radius: 4px; font-size: 9px;
+                     padding: 0 3px; color: var(--acc-hi); font-weight: 700; }
+    #play-next { display: flex; gap: 4px; align-items: center; opacity: 0.7; }
+    #play-next .ab { width: 30px; height: 30px; background-size: 24px; }
+    #play-note { color: var(--warn); font-size: 0.9em; font-weight: 600; }
+    #play-bar { height: 5px; background: var(--bg); border-radius: 999px; overflow: hidden;
+                border: 1px solid var(--line); margin-top: 8px; }
+    #play-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--acc), var(--acc-hi)); }
+    .stat { font-variant-numeric: tabular-nums; }
+    .stat .k { color: var(--mute); font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.08em; display: block; }
+    .stat .v { font-weight: 700; }
+    #share-code, #import-code { width: 100%; height: 54px; resize: vertical; font-family: Consolas, monospace; font-size: 11px; }
+    .muted { color: var(--mute); font-size: 0.78em; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <div class="grow">
+      <h1>Rotation Builder</h1>
+      <div class="sub" id="status">Connecting to host...</div>
+    </div>
+    <select id="rot-list" style="max-width:170px"></select>
+    <button class="tiny" id="rot-new">New</button>
+    <button class="tiny" id="rot-dup">Copy</button>
+    <button class="tiny danger" id="rot-del">Delete</button>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <input type="text" id="rot-name" class="grow" placeholder="Rotation name">
+      <label class="muted">Start adren
+        <select id="adren0"><option value="0">0%</option><option value="100">100%</option></select>
+      </label>
+    </div>
+    <div class="lbl">Timeline <span class="muted" style="text-transform:none;letter-spacing:0">(a row = one game tick, 0.6 s; several abilities on a row land the same tick)</span></div>
+    <div id="steps"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="tiny" id="step-add">+ Add tick (+3)</button>
+      <button class="tiny" id="step-add1">+1 tick</button>
+      <span class="muted grow" id="sim-sum"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <input type="text" id="pal-q" class="grow" placeholder="Search abilities (click to add to the selected tick)">
+      <select id="pal-style">
+        <option value="">All styles</option><option value="melee">Melee</option>
+        <option value="3">Ranged</option><option value="4">Magic</option>
+        <option value="29">Necromancy</option><option value="5">Defence</option>
+        <option value="6">Constitution</option>
+      </select>
+      <select id="pal-tier">
+        <option value="">All tiers</option><option value="1">Basic</option>
+        <option value="23">Threshold</option><option value="4">Ultimate</option>
+        <option value="5">Special</option><option value="7">Utility</option>
+      </select>
+      <button class="tiny" id="pal-bars" title="Show only abilities on your action bars">My bars</button>
+    </div>
+    <div id="pal"></div>
+  </div>
+
+  <div class="card">
+    <div class="lbl">Playback</div>
+    <div class="row">
+      <button class="primary" id="play-btn">Play</button>
+      <button id="play-reset">Reset</button>
+      <label class="muted"><input type="checkbox" id="play-loop"> Loop</label>
+      <label class="muted"><input type="checkbox" id="play-sync" checked> Sync to game ticks</label>
+      <button class="tiny" id="keys-load" title="Read your action bars and badge each ability with its keybind">Load keybinds</button>
+    </div>
+    <div id="play-strip">
+      <div class="stat"><span class="k">Tick</span><span class="v" id="pv-tick">0</span></div>
+      <div id="play-now"></div>
+      <div id="play-next"></div>
+      <div class="grow"></div>
+      <div class="stat"><span class="k">Adren</span><span class="v" id="pv-adr">0%</span></div>
+      <div class="stat"><span class="k">Elapsed</span><span class="v" id="pv-el">0.0s</span></div>
+    </div>
+    <div id="play-note"></div>
+    <div id="play-bar"><div id="play-fill"></div></div>
+  </div>
+
+  <div class="card">
+    <div class="lbl">Share</div>
+    <div class="row" style="margin-bottom:6px">
+      <button class="tiny" id="share-btn">Copy share code</button>
+      <span class="muted">Anyone with RuneTools pastes the code below to import.</span>
+    </div>
+    <textarea id="share-code" readonly placeholder="Share code appears here"></textarea>
+    <div class="row" style="margin:8px 0 6px">
+      <button class="tiny" id="import-btn">Import pasted code</button>
+    </div>
+    <textarea id="import-code" placeholder="Paste an RTXROT1 code here, then press Import"></textarea>
+  </div>
+
+<script>
+(async function () {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const rp = () => window.rtx && window.rtx.plugin;
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+                    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  // ---------------- data: ability index + icons ----------------
+  let AB = {};            // abilityId -> { n, t, st, ag, ac, c }
+  const ICONS = new Map(); // abilityId -> data URL ('' = none)
+  const iconPending = new Set();
+  function iconFor(id, el) {
+    if (ICONS.has(id)) { if (ICONS.get(id)) el.style.backgroundImage = 'url(' + ICONS.get(id) + ')'; return; }
+    if (iconPending.has(id)) { setTimeout(() => iconFor(id, el), 350); return; }
+    iconPending.add(id);
+    rp().cache.sprite(id).then(u => {
+      ICONS.set(id, u || ''); iconPending.delete(id);
+      if (u && el.isConnected) el.style.backgroundImage = 'url(' + u + ')';
+    }).catch(() => { ICONS.set(id, ''); iconPending.delete(id); });
+  }
+  async function loadAbilities() {
+    const cfgFn = rp().cache.abilityConfigs;
+    if (!cfgFn) { $('status').textContent = 'This RuneTools version is too old for the ability index (update the client).'; return false; }
+    const cfg = await cfgFn.call(rp().cache) || {};
+    const byId = cfg._byId || {};
+    for (const k in byId) {
+      const r = byId[k] || {};
+      AB[k | 0] = { n: r.n || ('#' + k), t: r.t | 0, st: r.st | 0, ag: r.ag | 0, ac: r.ac | 0, c: r.c | 0 };
+    }
+    // Named records carry the cooldown more often; merge onto the id records via "i".
+    for (const name in cfg) {
+      if (name === '_byId') continue;
+      const r = cfg[name] || {}; const id = r.i | 0;
+      if (!id) continue;
+      const t = AB[id] || (AB[id] = { n: name, t: r.t | 0, st: 0, ag: 0, ac: 0, c: 0 });
+      t.n = name;
+      if (r.t)  t.t = r.t | 0;
+      if (r.st) t.st = r.st | 0;
+      if (r.ag) t.ag = r.ag | 0;
+      if (r.ac) t.ac = r.ac | 0;
+      if (r.c)  t.c = r.c | 0;
+    }
+    return Object.keys(AB).length > 0;
+  }
+  const TIER_TXT = { 0: 'Auto-attack', 1: 'Basic', 2: 'Threshold', 3: 'Threshold', 4: 'Ultimate', 5: 'Special', 7: 'Utility' };
+  const costPct = a => { const c = a.ac | 0; return c > 120 ? Math.round(c / 10) : c; };
+  const gainPct = a => (a.ag | 0) / 10;
+  const reqPct  = a => (a.t === 2 || a.t === 3) ? Math.max(50, costPct(a)) : costPct(a);
+
+  // ---------------- rotations model + storage ----------------
+  // rot = { id, name, adren0, steps: [ { t, a:[abilityId,...], n:'' }, ... ] } steps sorted by t
+  let rots = [], cur = null, selStep = -1, dirty = null;
+  const newId = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  function blankRot(name) { return { id: newId(), name: name || 'New rotation', adren0: 0, steps: [{ t: 0, a: [], n: '' }] }; }
+  async function saveSoon() {
+    clearTimeout(dirty);
+    dirty = setTimeout(() => { rp().storage.set('rotations', rots).catch(() => {}); }, 800);
+  }
+  function sortSteps() { cur.steps.sort((x, y) => x.t - y.t); }
+
+  // ---------------- adrenaline + cooldown simulation ----------------
+  // Returns per-step { before, after, warnAdr, warnCd:[names] }.
+  function simulate() {
+    const out = []; if (!cur) return out;
+    let adren = cur.adren0 | 0;
+    const lastUse = {};   // abilityId -> tick of last use
+    for (const st of cur.steps) {
+      const before = adren; let warnAdr = false; const warnCd = [];
+      for (const id of st.a) {
+        const a = AB[id]; if (!a) continue;
+        if (before < reqPct(a)) warnAdr = true;
+        if (lastUse[id] != null && a.c > 0 && (st.t - lastUse[id]) < a.c)
+          warnCd.push(a.n + ' (' + ((a.c - (st.t - lastUse[id])) * 0.6).toFixed(1) + 's early)');
+        lastUse[id] = st.t;
+        adren = Math.max(0, Math.min(100, adren - costPct(a) + gainPct(a)));
+      }
+      out.push({ before, after: adren, warnAdr, warnCd });
+    }
+    return out;
+  }
+
+  // ---------------- share codes ----------------
+  const b64u = { enc: s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+                 dec: s => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/')))) };
+  function exportCode(r) {
+    const payload = [r.name, r.adren0 | 0, r.steps.map(s => [s.t, s.a, s.n || ''])];
+    return 'RTXROT1.' + b64u.enc(JSON.stringify(payload));
+  }
+  function importCode(code) {
+    const m = String(code || '').trim().match(/RTXROT1\.([A-Za-z0-9_\-]+)/);
+    if (!m) throw new Error('Not an RTXROT1 code');
+    const p = JSON.parse(b64u.dec(m[1]));
+    if (!Array.isArray(p) || !Array.isArray(p[2])) throw new Error('Malformed code');
+    const steps = p[2].slice(0, 300).map(s => ({
+      t: Math.max(0, Math.min(9999, s[0] | 0)),
+      a: (Array.isArray(s[1]) ? s[1] : []).slice(0, 8).map(x => x | 0).filter(x => x > 0),
+      n: String(s[2] || '').slice(0, 60),
+    })).sort((x, y) => x.t - y.t);
+    return { id: newId(), name: String(p[0] || 'Imported rotation').slice(0, 48), adren0: (p[1] | 0) ? 100 : 0, steps };
+  }
+
+  // ---------------- keybinds ----------------
+  let KEYS = {};   // abilityId -> label
+  function keyLabel(key, mod) {
+    let k = '';
+    if (key >= 112 && key <= 135) k = 'F' + (key - 111);
+    else if (key >= 48 && key <= 90) k = String.fromCharCode(key);
+    else if (key > 0) k = '#' + key;
+    if (!k) return '';
+    return (mod === 1 ? 'S+' : mod === 2 ? 'C+' : mod === 3 ? 'A+' : '') + k;
+  }
+  async function loadKeys() {
+    try {
+      const d = await rp().state.actionBar();
+      KEYS = {};
+      for (const bar of (d && d.bars) || [])
+        for (const sl of bar.slots || [])
+          if (sl.id > 0 && sl.key > 0 && !KEYS[sl.id]) KEYS[sl.id] = keyLabel(sl.key, sl.mod | 0);
+      $('status').textContent = Object.keys(KEYS).length + ' keybinds loaded from your action bars.';
+      renderPlayback();
+    } catch (e) { $('status').textContent = 'Could not read the action bars (log in first).'; }
+  }
+
+  // ---------------- rendering: library / timeline / palette ----------------
+  function renderRotList() {
+    const sel = $('rot-list'); sel.innerHTML = '';
+    for (const r of rots) {
+      const o = document.createElement('option');
+      o.value = r.id; o.textContent = r.name;
+      if (cur && r.id === cur.id) o.selected = true;
+      sel.appendChild(o);
+    }
+  }
+  function abEl(id, cls) {
+    const d = document.createElement('div');
+    d.className = 'ab ' + (cls || '');
+    const a = AB[id];
+    if (a) { d.classList.add('t' + a.t); }
+    const tt = document.createElement('span'); tt.className = 'tt';
+    tt.textContent = a ? (a.n + ' · ' + (TIER_TXT[a.t] || '') +
+                          (a.c ? ' · cd ' + (a.c * 0.6).toFixed(1) + 's' : '') +
+                          (gainPct(a) ? ' · +' + gainPct(a) + '%' : '') +
+                          (costPct(a) ? ' · -' + costPct(a) + '%' : ''))
+                   : ('Unknown ability #' + id);
+    d.appendChild(tt);
+    iconFor(id, d);
+    return d;
+  }
+  function renderSteps() {
+    if (!cur) return;
+    sortSteps();
+    const sim = simulate();
+    const root = $('steps'); root.innerHTML = '';
+    cur.steps.forEach((st, i) => {
+      const row = document.createElement('div');
+      row.className = 'step' + (i === selStep ? ' sel' : '');
+      row.addEventListener('click', () => { selStep = i; renderSteps(); });
+
+      const tn = document.createElement('div'); tn.className = 'tickno';
+      tn.innerHTML = '<b>t+' + st.t + '</b><span>' + (st.t * 0.6).toFixed(1) + 's</span>';
+      row.appendChild(tn);
+
+      const icons = document.createElement('div'); icons.className = 'icons';
+      st.a.forEach((id, ai) => {
+        const el = abEl(id, 'rm');
+        el.title = 'Click to remove';
+        el.addEventListener('click', ev => { ev.stopPropagation(); st.a.splice(ai, 1); renderSteps(); saveSoon(); });
+        icons.appendChild(el);
+      });
+      if (!st.a.length) { const ph = document.createElement('span'); ph.className = 'muted'; ph.textContent = 'click an ability below'; icons.appendChild(ph); }
+      row.appendChild(icons);
+
+      const w = document.createElement('div'); w.className = 'warns';
+      const sm = sim[i];
+      if (sm) {
+        if (sm.warnCd.length) { const p = document.createElement('span'); p.className = 'wpill cd'; p.textContent = 'CD'; p.title = 'On cooldown: ' + sm.warnCd.join(', '); w.appendChild(p); }
+        if (sm.warnAdr) { const p = document.createElement('span'); p.className = 'wpill adr'; p.textContent = sm.before + '%'; p.title = 'Not enough adrenaline at this tick (' + sm.before + '%)'; w.appendChild(p); }
+        else { const p = document.createElement('span'); p.className = 'wpill ok'; p.textContent = sm.after + '%'; p.title = 'Adrenaline after this tick'; w.appendChild(p); }
+      }
+      row.appendChild(w);
+
+      const gap = document.createElement('div'); gap.className = 'gap';
+      const mk = (txt, dt, title) => { const b = document.createElement('button'); b.className = 'tiny'; b.textContent = txt; b.title = title;
+        b.addEventListener('click', ev => { ev.stopPropagation();
+          const d0 = st.t; st.t = Math.max(0, st.t + dt);
+          const shift = st.t - d0;
+          for (const s2 of cur.steps) if (s2 !== st && s2.t >= d0 + (dt > 0 ? 0 : 1) && shift) s2.t = Math.max(0, s2.t + shift);
+          renderSteps(); saveSoon(); });
+        return b; };
+      gap.appendChild(mk('-', -1, 'One tick earlier (later steps follow)'));
+      gap.appendChild(mk('+', 1, 'One tick later (later steps follow)'));
+      row.appendChild(gap);
+
+      const note = document.createElement('input');
+      note.type = 'text'; note.className = 'note'; note.placeholder = 'note';
+      note.value = st.n || ''; note.maxLength = 60;
+      note.addEventListener('click', ev => ev.stopPropagation());
+      note.addEventListener('input', () => { st.n = note.value; saveSoon(); });
+      row.appendChild(note);
+
+      const del = document.createElement('button'); del.className = 'tiny danger'; del.textContent = 'x';
+      del.title = 'Remove this tick';
+      del.addEventListener('click', ev => { ev.stopPropagation(); cur.steps.splice(i, 1); if (selStep >= cur.steps.length) selStep = cur.steps.length - 1; renderSteps(); saveSoon(); });
+      row.appendChild(del);
+      root.appendChild(row);
+    });
+    const last = sim[sim.length - 1];
+    const dur = cur.steps.length ? (cur.steps[cur.steps.length - 1].t + 3) : 0;
+    $('sim-sum').textContent = cur.steps.length + ' ticks · ' + (dur * 0.6).toFixed(1) + 's' +
+                               (last ? ' · ends at ' + last.after + '% adren' : '');
+    renderShare();
+  }
+  let barIds = null;   // Set of ability ids on the player's bars ('My bars' filter)
+  function renderPalette() {
+    const q = $('pal-q').value.trim().toLowerCase();
+    const styleF = $('pal-style').value, tierF = $('pal-tier').value;
+    const root = $('pal'); root.innerHTML = '';
+    const ids = Object.keys(AB).map(Number).sort((a, b) => (AB[a].n < AB[b].n ? -1 : 1));
+    let shown = 0;
+    for (const id of ids) {
+      const a = AB[id];
+      if (a.t === 0) continue;                                   // auto-attacks are not placed
+      if (q && a.n.toLowerCase().indexOf(q) === -1) continue;
+      if (styleF === 'melee' ? (a.st !== 1 && a.st !== 2) : (styleF && a.st !== (styleF | 0))) continue;
+      if (tierF === '23' ? (a.t !== 2 && a.t !== 3) : (tierF && a.t !== (tierF | 0))) continue;
+      if (barIds && !barIds.has(id)) continue;
+      const el = abEl(id);
+      el.addEventListener('click', () => {
+        if (!cur) return;
+        if (selStep < 0 || selStep >= cur.steps.length) selStep = cur.steps.length - 1;
+        if (selStep < 0) { cur.steps.push({ t: 0, a: [], n: '' }); selStep = 0; }
+        const st = cur.steps[selStep];
+        if (st.a.length < 8 && st.a.indexOf(id) === -1) st.a.push(id);
+        renderSteps(); saveSoon();
+      });
+      root.appendChild(el);
+      if (++shown >= 220) break;
+    }
+    if (!shown) { const m = document.createElement('span'); m.className = 'muted'; m.textContent = 'No abilities match.'; root.appendChild(m); }
+  }
+  function renderShare() { if (cur) $('share-code').value = exportCode(cur); }
+
+  // ---------------- playback ----------------
+  let playing = false, pos = 0, playTimer = null, lastGameTick = null, gameTickAlive = 0;
+  function stepAt(t) { return cur ? cur.steps.filter(s => s.t === t) : []; }
+  function nextSteps(t, n) { return cur ? cur.steps.filter(s => s.t > t).slice(0, n) : []; }
+  function renderPlayback() {
+    if (!cur) return;
+    const dur = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 3 : 0;
+    $('pv-tick').textContent = String(pos);
+    $('pv-el').textContent = (pos * 0.6).toFixed(1) + 's';
+    $('play-fill').style.width = dur ? Math.min(100, pos / dur * 100) + '%' : '0';
+    const sim = simulate();
+    let adr = cur.adren0 | 0, note = '';
+    cur.steps.forEach((s, i) => { if (s.t <= pos && sim[i]) { adr = sim[i].after; if (s.t === pos && s.n) note = s.n; } });
+    $('pv-adr').textContent = adr + '%';
+    $('play-note').textContent = note;
+    const now = $('play-now'); now.innerHTML = '';
+    for (const s of stepAt(pos)) for (const id of s.a) {
+      const el = abEl(id);
+      if (KEYS[id]) { const k = document.createElement('span'); k.className = 'key'; k.textContent = KEYS[id]; el.appendChild(k); }
+      now.appendChild(el);
+    }
+    if (!now.childElementCount) { const m = document.createElement('span'); m.className = 'muted'; m.textContent = playing ? '(wait)' : 'press Play'; now.appendChild(m); }
+    const nx = $('play-next'); nx.innerHTML = '';
+    for (const s of nextSteps(pos, 4)) {
+      const sep = document.createElement('span'); sep.className = 'muted'; sep.textContent = '+' + (s.t - pos); nx.appendChild(sep);
+      for (const id of s.a.slice(0, 3)) nx.appendChild(abEl(id));
+    }
+    // highlight the live row in the timeline
+    const rows = $('steps').children;
+    cur.steps.forEach((s, i) => { if (rows[i]) rows[i].classList.toggle('playnow', playing && s.t === pos); });
+  }
+  function advance() {
+    if (!cur || !playing) return;
+    const dur = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 3 : 0;
+    pos++;
+    if (pos >= dur) {
+      if ($('play-loop').checked) pos = 0;
+      else { setPlaying(false); pos = dur; }
+    }
+    renderPlayback();
+  }
+  function setPlaying(on) {
+    playing = on;
+    $('play-btn').textContent = on ? 'Pause' : 'Play';
+    $('play-btn').classList.toggle('primary', !on);
+    clearInterval(playTimer); playTimer = null;
+    lastGameTick = null;
+    if (on) {
+      // Internal metronome; a live gameTick stream overrides it (see the event handler),
+      // so playback stays aligned with the server's real 600 ms ticks while in-game.
+      playTimer = setInterval(() => {
+        const synced = $('play-sync').checked && (Date.now() - gameTickAlive) < 2000;
+        if (!synced) advance();
+      }, 600);
+    }
+    renderPlayback();
+  }
+
+  // ---------------- events wiring ----------------
+  $('rot-list').addEventListener('change', () => {
+    const r = rots.find(x => x.id === $('rot-list').value);
+    if (r) { cur = r; selStep = cur.steps.length - 1; pos = 0; setPlaying(false); syncHeader(); renderSteps(); renderPlayback(); }
+  });
+  function syncHeader() { $('rot-name').value = cur.name; $('adren0').value = String(cur.adren0 | 0); }
+  $('rot-name').addEventListener('input', () => { if (cur) { cur.name = $('rot-name').value.slice(0, 48); renderRotList(); renderShare(); saveSoon(); } });
+  $('adren0').addEventListener('change', () => { if (cur) { cur.adren0 = $('adren0').value | 0; renderSteps(); saveSoon(); } });
+  $('rot-new').addEventListener('click', () => { cur = blankRot(); rots.push(cur); selStep = 0; renderRotList(); syncHeader(); renderSteps(); saveSoon(); });
+  $('rot-dup').addEventListener('click', () => {
+    if (!cur) return;
+    const c = JSON.parse(JSON.stringify(cur)); c.id = newId(); c.name = cur.name + ' (copy)';
+    rots.push(c); cur = c; renderRotList(); syncHeader(); renderSteps(); saveSoon();
+  });
+  $('rot-del').addEventListener('click', () => {
+    if (!cur || rots.length <= 1) return;
+    rots = rots.filter(r => r.id !== cur.id); cur = rots[0]; selStep = cur.steps.length - 1;
+    renderRotList(); syncHeader(); renderSteps(); saveSoon();
+  });
+  $('step-add').addEventListener('click', () => { if (!cur) return;
+    const t = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 3 : 0;
+    cur.steps.push({ t, a: [], n: '' }); selStep = cur.steps.length - 1; renderSteps(); saveSoon(); });
+  $('step-add1').addEventListener('click', () => { if (!cur) return;
+    const t = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 1 : 0;
+    cur.steps.push({ t, a: [], n: '' }); selStep = cur.steps.length - 1; renderSteps(); saveSoon(); });
+  for (const id of ['pal-q', 'pal-style', 'pal-tier'])
+    $(id).addEventListener(id === 'pal-q' ? 'input' : 'change', renderPalette);
+  $('pal-bars').addEventListener('click', async () => {
+    if (barIds) { barIds = null; $('pal-bars').classList.remove('primary'); renderPalette(); return; }
+    try {
+      const d = await rp().state.actionBar();
+      barIds = new Set();
+      for (const bar of (d && d.bars) || []) for (const sl of bar.slots || []) if (sl.id > 0) barIds.add(sl.id | 0);
+      $('pal-bars').classList.add('primary'); renderPalette();
+    } catch (e) { $('status').textContent = 'Could not read the action bars (log in first).'; }
+  });
+  $('play-btn').addEventListener('click', () => setPlaying(!playing));
+  $('play-reset').addEventListener('click', () => { pos = 0; setPlaying(false); });
+  $('keys-load').addEventListener('click', loadKeys);
+  $('share-btn').addEventListener('click', async () => {
+    if (!cur) return;
+    renderShare();
+    try { await rp().clipboard.copy($('share-code').value); $('status').textContent = 'Share code copied to clipboard.'; }
+    catch (e) { $('status').textContent = 'Copy failed; select the code and copy it yourself.'; }
+  });
+  $('import-btn').addEventListener('click', () => {
+    try {
+      const r = importCode($('import-code').value);
+      rots.push(r); cur = r; selStep = cur.steps.length - 1;
+      renderRotList(); syncHeader(); renderSteps(); saveSoon();
+      $('import-code').value = '';
+      const missing = new Set();
+      for (const s of r.steps) for (const id of s.a) if (!AB[id]) missing.add(id);
+      $('status').textContent = 'Imported "' + r.name + '"' + (missing.size ? ' (' + missing.size + ' unknown ability ids kept as placeholders)' : '') + '.';
+    } catch (e) { $('status').textContent = 'Import failed: ' + e.message; }
+  });
+
+  // ---------------- boot ----------------
+  await rp().ready();
+  const need = ['state.read', 'cache.read', 'storage', 'clipboard'];
+  const missing = need.filter(s => !rp().hasScope(s));
+  if (missing.length) { $('status').textContent = 'Missing permissions: ' + missing.join(', ') + '. Re-enable the plugin and approve them.'; }
+  rp().ui.setHeight(860);
+  if (!(await loadAbilities())) { $('status').textContent = 'Ability index unavailable (open a client and try again).'; }
+  const saved = await rp().storage.get('rotations').catch(() => null);
+  rots = Array.isArray(saved) && saved.length ? saved : [blankRot('My first rotation')];
+  cur = rots[0]; selStep = cur.steps.length - 1;
+  renderRotList(); syncHeader(); renderSteps(); renderPalette(); renderPlayback();
+  if (!missing.length) $('status').textContent = Object.keys(AB).length + ' abilities loaded. Click abilities to build; several on one row land the same tick.';
+
+  // Real server ticks drive playback whenever they are flowing and sync is on.
+  rp().events.on('gameTick', ev => {
+    gameTickAlive = Date.now();
+    if (!playing || !$('play-sync').checked) return;
+    if (lastGameTick != null && ev.tick !== lastGameTick) advance();
+    lastGameTick = ev.tick;
+  });
+})();
+</script>
+</body>
+</html>

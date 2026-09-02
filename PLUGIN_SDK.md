@@ -333,6 +333,14 @@ await rtx.plugin.cache.modelIcon(id); // -> string: PNG data URL for an interfac
 //    Model ids come only from the host-side cacheIfaceGroup defs, which are NOT brokered;
 //    state.interfaceGroup carries no model field. So this is usable only with a model id you
 //    already hold (e.g. one you baked into the plugin), not one you can look up at runtime.
+await rtx.plugin.cache.abilityConfigs();
+// -> { "<Ability Name>": { t, st, l, ag, ac, c, i, s, d, ... }, ..., "_byId": { "<abilityId>": {...} } }
+//    Every combat ability from the live cache. t = tier (0 auto-attack, 1 basic, 2 threshold,
+//    3 defensive threshold, 4 ultimate, 5 special, 7 utility), st = combat style (1/2 melee,
+//    3 ranged, 4 magic, 5 defence, 6 constitution, 29 necromancy), l = level req,
+//    ag = adrenaline gain in tenths of a percent, ac = adrenaline cost, c = cooldown in game
+//    ticks (0.6 s), i = the ability id action-bar slots carry, d = description. "_byId" is the
+//    same set keyed by that ability id; cache.sprite(abilityId) is the ability's icon.
 await rtx.plugin.cache.structParams(id); // -> { ints:{ k:v }, strs:{ k:"v" } } one StructType's params
 await rtx.plugin.cache.itemParams(id);   // -> { ints:{ k:v }, strs:{ k:"v" } } one item's op-249 params
 await rtx.plugin.cache.mapWindow(cx, cy, plane, half, ts);
