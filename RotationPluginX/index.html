@@ -111,13 +111,17 @@
     .step input.note { flex: 0 1 110px; width: 110px; min-width: 44px; font-size: 0.8em; padding: 3px 7px; }
 
     /* ---- playback ---- */
-    #play-strip { display: flex; align-items: center; gap: 14px; min-height: 76px; }
+    #play-strip { display: flex; align-items: center; gap: 12px; min-height: 76px; }
+    #play-strip .stat { flex: none; }
     #play-now { display: flex; gap: 5px; align-items: center; }
     #play-now .ab { width: 52px; height: 52px; background-size: 42px; border-color: var(--ok); cursor: default; }
     #play-now .key { position: absolute; bottom: -3px; right: -3px; background: #0c0d12;
                      border: 1px solid var(--line); border-radius: 4px; font-size: 12px;
                      padding: 1px 5px; color: var(--acc-hi); font-weight: 700; }
-    #play-next { display: flex; gap: 4px; align-items: center; opacity: 0.7; }
+    /* Upcoming queue takes what is left and CLIPS: a long rotation must never push the
+       adren/elapsed stats out of the card. */
+    #play-next { display: flex; gap: 4px; align-items: center; opacity: 0.7;
+                 flex: 1 1 auto; min-width: 0; overflow: hidden; }
     #play-next .ab { width: 30px; height: 30px; background-size: 24px; cursor: default; }
     #play-note { color: var(--warn); font-size: 0.9em; font-weight: 600; }
     #play-bar { height: 5px; background: var(--bg); border-radius: 999px; overflow: hidden;
@@ -188,7 +192,6 @@
       <div class="stat"><span class="k">Tick</span><span class="v" id="pv-tick">0</span></div>
       <div id="play-now"></div>
       <div id="play-next"></div>
-      <div class="grow"></div>
       <div class="stat"><span class="k">Adren</span><span class="v" id="pv-adr">0%</span></div>
       <div class="stat"><span class="k">Elapsed</span><span class="v" id="pv-el">0.0s</span></div>
     </div>
