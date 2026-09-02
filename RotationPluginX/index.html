@@ -10,7 +10,17 @@
       cache.sprite(id)      - the ability's own icon (sprite id == ability id)
       state.actionBar()     - the player's bars, for keybind hints on playback
       gameTick events       - real 600 ms server ticks driving synced playback
-    Sharing: a rotation exports as a copyable RTXROT1 code (base64url JSON) and imports by paste.
+
+    UI notes, learned the hard way:
+      * No native <select>: the engine draws option lists with system chrome (a white menu on a
+        dark theme), so every dropdown here is a div-based menu.
+      * Icon loads go through a QUEUE: cache.* is rate limited to 20 calls/s per plugin, and a
+        200-tile palette fired in parallel tripped it, leaving most tiles blank. The queue keeps
+        well under the cap and retries failures once.
+      * Tooltips are one floating element positioned from JS: a per-tile CSS tooltip clips
+        against the palette's own scrollbox.
+      * HUD mode collapses the whole window to just the playback strip, so it can sit over the
+        game like an overlay while the rotation steps.
   -->
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -36,12 +46,29 @@
     button.danger { color: var(--err); }
     button.tiny { padding: 2px 7px; font-size: 0.78em; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-    input[type=text], select, textarea {
+    input[type=text], textarea {
       background: var(--bg); color: var(--tx); border: 1px solid var(--line); border-radius: 7px;
       padding: 6px 9px; font: inherit; font-size: 0.9em; }
     input[type=text]:focus, textarea:focus { border-color: var(--acc); outline: none; }
     .lbl { color: var(--mute); font-size: 0.72em; font-weight: 700; letter-spacing: 0.1em;
            text-transform: uppercase; margin-bottom: 6px; }
+
+    /* ---- themed dropdown (div-based; native <select> paints a white system menu) ---- */
+    .dd { position: relative; display: inline-block; }
+    .dd-btn { display: inline-flex; align-items: center; gap: 7px; min-width: 84px;
+              justify-content: space-between; }
+    .dd-btn::after { content: ""; width: 0; height: 0; border-left: 4px solid transparent;
+                     border-right: 4px solid transparent; border-top: 5px solid var(--dim); }
+    .dd.open .dd-btn { border-color: var(--acc); }
+    .dd-menu { display: none; position: absolute; top: calc(100% + 4px); left: 0; z-index: 40;
+               min-width: 100%; max-height: 220px; overflow-y: auto;
+               background: #0f1016; border: 1px solid var(--line); border-radius: 8px;
+               box-shadow: 0 10px 26px rgba(0,0,0,0.55); padding: 4px; }
+    .dd.open .dd-menu { display: block; }
+    .dd-it { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 0.86em;
+             white-space: nowrap; color: var(--tx); }
+    .dd-it:hover { background: rgba(124,92,252,0.16); }
+    .dd-it.on { color: var(--acc-hi); font-weight: 700; }
 
     /* ---- palette ---- */
     #pal { display: flex; flex-wrap: wrap; gap: 4px; max-height: 148px; overflow-y: auto;
@@ -49,13 +76,17 @@
     .ab { width: 34px; height: 34px; border-radius: 6px; border: 1px solid var(--line);
           background: var(--card2) center/26px no-repeat; cursor: pointer; position: relative; }
     .ab:hover { border-color: var(--acc-hi); }
-    .ab .tt { display: none; position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%);
-              background: #0c0d12; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
-              font-size: 11px; white-space: nowrap; z-index: 5; pointer-events: none; color: var(--tx); }
-    .ab:hover .tt { display: block; }
-    .t2 { box-shadow: inset 0 0 0 1px rgba(245,178,65,0.55); }   /* threshold */
-    .t3 { box-shadow: inset 0 0 0 1px rgba(245,178,65,0.55); }
-    .t4 { box-shadow: inset 0 0 0 1px rgba(255,107,107,0.6); }   /* ultimate */
+    .ab.noicon::after { content: attr(data-ab2); position: absolute; inset: 0;
+                        display: flex; align-items: center; justify-content: center;
+                        font-size: 10px; font-weight: 700; color: var(--dim); }
+    .t2, .t3 { box-shadow: inset 0 0 0 1px rgba(245,178,65,0.55); }   /* threshold */
+    .t4 { box-shadow: inset 0 0 0 1px rgba(255,107,107,0.6); }        /* ultimate */
+
+    /* one floating tooltip, positioned from JS so scrollboxes cannot clip it */
+    #tt { position: fixed; z-index: 90; display: none; pointer-events: none;
+          background: #0c0d12; border: 1px solid var(--line); border-radius: 6px;
+          padding: 5px 9px; font-size: 11px; color: var(--tx); max-width: 260px;
+          box-shadow: 0 6px 18px rgba(0,0,0,0.5); }
 
     /* ---- timeline ---- */
     #steps { display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto; }
@@ -64,7 +95,6 @@
     .step.sel { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc); }
     .step.playnow { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
     .step .tickno { width: 66px; flex: none; font-variant-numeric: tabular-nums; }
-    .step .tickno b { font-size: 1em; }
     .step .tickno span { color: var(--mute); font-size: 0.78em; display: block; }
     .step .icons { display: flex; gap: 3px; flex-wrap: wrap; flex: 1; min-width: 0; }
     .step .icons .ab { width: 28px; height: 28px; background-size: 22px; }
@@ -80,12 +110,12 @@
     /* ---- playback ---- */
     #play-strip { display: flex; align-items: center; gap: 14px; min-height: 76px; }
     #play-now { display: flex; gap: 5px; align-items: center; }
-    #play-now .ab { width: 52px; height: 52px; background-size: 42px; border-color: var(--ok); }
+    #play-now .ab { width: 52px; height: 52px; background-size: 42px; border-color: var(--ok); cursor: default; }
     #play-now .key { position: absolute; bottom: -2px; right: -2px; background: #0c0d12;
                      border: 1px solid var(--line); border-radius: 4px; font-size: 9px;
                      padding: 0 3px; color: var(--acc-hi); font-weight: 700; }
     #play-next { display: flex; gap: 4px; align-items: center; opacity: 0.7; }
-    #play-next .ab { width: 30px; height: 30px; background-size: 24px; }
+    #play-next .ab { width: 30px; height: 30px; background-size: 24px; cursor: default; }
     #play-note { color: var(--warn); font-size: 0.9em; font-weight: 600; }
     #play-bar { height: 5px; background: var(--bg); border-radius: 999px; overflow: hidden;
                 border: 1px solid var(--line); margin-top: 8px; }
@@ -95,27 +125,33 @@
     .stat .v { font-weight: 700; }
     #share-code, #import-code { width: 100%; height: 54px; resize: vertical; font-family: Consolas, monospace; font-size: 11px; }
     .muted { color: var(--mute); font-size: 0.78em; }
-    .hidden { display: none !important; }
+
+    /* ---- HUD mode: only the playback strip, sized to sit over the game ---- */
+    body.hud { padding: 6px 8px; }
+    body.hud .hud-hide { display: none !important; }
+    body.hud #play-card { margin: 0; padding: 8px 10px; }
+    body.hud #play-strip { min-height: 60px; }
   </style>
 </head>
 <body>
-  <div class="row">
+  <div id="tt"></div>
+
+  <div class="row hud-hide">
     <div class="grow">
       <h1>Rotation Builder</h1>
       <div class="sub" id="status">Connecting to host...</div>
     </div>
-    <select id="rot-list" style="max-width:170px"></select>
+    <span class="dd" id="dd-rot"></span>
     <button class="tiny" id="rot-new">New</button>
     <button class="tiny" id="rot-dup">Copy</button>
     <button class="tiny danger" id="rot-del">Delete</button>
   </div>
 
-  <div class="card">
+  <div class="card hud-hide">
     <div class="row" style="margin-bottom:8px">
       <input type="text" id="rot-name" class="grow" placeholder="Rotation name">
-      <label class="muted">Start adren
-        <select id="adren0"><option value="0">0%</option><option value="100">100%</option></select>
-      </label>
+      <span class="muted">Start adren</span>
+      <span class="dd" id="dd-adren"></span>
     </div>
     <div class="lbl">Timeline <span class="muted" style="text-transform:none;letter-spacing:0">(a row = one game tick, 0.6 s; several abilities on a row land the same tick)</span></div>
     <div id="steps"></div>
@@ -126,33 +162,27 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card hud-hide">
     <div class="row" style="margin-bottom:8px">
       <input type="text" id="pal-q" class="grow" placeholder="Search abilities (click to add to the selected tick)">
-      <select id="pal-style">
-        <option value="">All styles</option><option value="melee">Melee</option>
-        <option value="3">Ranged</option><option value="4">Magic</option>
-        <option value="29">Necromancy</option><option value="5">Defence</option>
-        <option value="6">Constitution</option>
-      </select>
-      <select id="pal-tier">
-        <option value="">All tiers</option><option value="1">Basic</option>
-        <option value="23">Threshold</option><option value="4">Ultimate</option>
-        <option value="5">Special</option><option value="7">Utility</option>
-      </select>
+      <span class="dd" id="dd-style"></span>
+      <span class="dd" id="dd-tier"></span>
       <button class="tiny" id="pal-bars" title="Show only abilities on your action bars">My bars</button>
     </div>
     <div id="pal"></div>
   </div>
 
-  <div class="card">
-    <div class="lbl">Playback</div>
+  <div class="card" id="play-card">
     <div class="row">
+      <span class="lbl grow" style="margin:0">Playback</span>
+      <button class="tiny" id="hud-btn" title="Collapse to a slim strip you can park over the game while it plays">HUD mode</button>
+    </div>
+    <div class="row" style="margin-top:6px">
       <button class="primary" id="play-btn">Play</button>
       <button id="play-reset">Reset</button>
       <label class="muted"><input type="checkbox" id="play-loop"> Loop</label>
       <label class="muted"><input type="checkbox" id="play-sync" checked> Sync to game ticks</label>
-      <button class="tiny" id="keys-load" title="Read your action bars and badge each ability with its keybind">Load keybinds</button>
+      <button class="tiny hud-hide" id="keys-load" title="Read your action bars and badge each ability with its keybind">Load keybinds</button>
     </div>
     <div id="play-strip">
       <div class="stat"><span class="k">Tick</span><span class="v" id="pv-tick">0</span></div>
@@ -166,7 +196,7 @@
     <div id="play-bar"><div id="play-fill"></div></div>
   </div>
 
-  <div class="card">
+  <div class="card hud-hide">
     <div class="lbl">Share</div>
     <div class="row" style="margin-bottom:6px">
       <button class="tiny" id="share-btn">Copy share code</button>
@@ -184,21 +214,99 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const rp = () => window.rtx && window.rtx.plugin;
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
-                    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-  // ---------------- data: ability index + icons ----------------
-  let AB = {};            // abilityId -> { n, t, st, ag, ac, c }
-  const ICONS = new Map(); // abilityId -> data URL ('' = none)
-  const iconPending = new Set();
-  function iconFor(id, el) {
-    if (ICONS.has(id)) { if (ICONS.get(id)) el.style.backgroundImage = 'url(' + ICONS.get(id) + ')'; return; }
-    if (iconPending.has(id)) { setTimeout(() => iconFor(id, el), 350); return; }
-    iconPending.add(id);
-    rp().cache.sprite(id).then(u => {
-      ICONS.set(id, u || ''); iconPending.delete(id);
-      if (u && el.isConnected) el.style.backgroundImage = 'url(' + u + ')';
-    }).catch(() => { ICONS.set(id, ''); iconPending.delete(id); });
+  // ---------------- themed dropdown ----------------
+  // makeDrop(host, items [{v, label}], value, onPick) -> { set(v), get() }
+  const allDrops = [];
+  function makeDrop(host, items, value, onPick) {
+    host.classList.add('dd');
+    const btn = document.createElement('button'); btn.className = 'dd-btn tiny'; btn.type = 'button';
+    const menu = document.createElement('div'); menu.className = 'dd-menu';
+    host.appendChild(btn); host.appendChild(menu);
+    let cur = value, its = items.slice();
+    function paint() {
+      const on = its.find(i => i.v === cur) || its[0];
+      btn.textContent = on ? on.label : '';
+      menu.innerHTML = '';
+      for (const it of its) {
+        const d = document.createElement('div');
+        d.className = 'dd-it' + (it.v === cur ? ' on' : '');
+        d.textContent = it.label;
+        d.addEventListener('click', ev => { ev.stopPropagation(); cur = it.v; host.classList.remove('open'); paint(); onPick(cur); });
+        menu.appendChild(d);
+      }
+    }
+    btn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      const was = host.classList.contains('open');
+      for (const h of allDrops) h.classList.remove('open');
+      if (!was) host.classList.add('open');
+    });
+    allDrops.push(host);
+    paint();
+    return { set(v) { cur = v; paint(); }, get() { return cur; },
+             items(list) { its = list.slice(); if (!its.find(i => i.v === cur)) cur = its.length ? its[0].v : null; paint(); } };
+  }
+  document.addEventListener('click', () => { for (const h of allDrops) h.classList.remove('open'); });
+
+  // ---------------- floating tooltip ----------------
+  const tt = $('tt');
+  function ttShow(text, x, y) {
+    tt.textContent = text; tt.style.display = 'block';
+    const r = tt.getBoundingClientRect();
+    let lx = x + 12, ly = y - r.height - 10;
+    if (lx + r.width > innerWidth - 4) lx = innerWidth - r.width - 4;
+    if (ly < 4) ly = y + 16;
+    tt.style.left = lx + 'px'; tt.style.top = ly + 'px';
+  }
+  function ttHide() { tt.style.display = 'none'; }
+  document.addEventListener('mousemove', ev => {
+    const ab = ev.target.closest ? ev.target.closest('.ab[data-tt]') : null;
+    if (ab) ttShow(ab.dataset.tt, ev.clientX, ev.clientY); else ttHide();
+  });
+  document.addEventListener('mouseleave', ttHide);
+
+  // ---------------- data: ability index + queued icons ----------------
+  let AB = {};                 // abilityId -> { n, t, st, ag, ac, c }
+  const ICONS = new Map();     // abilityId -> data URL ('' = confirmed none)
+  const ICON_ELS = new Map();  // abilityId -> Set of elements awaiting the icon
+  const iconQ = []; const iconQueued = new Set(); const iconFailed = new Map(); // id -> retries
+  let iconBusy = 0;
+  function applyIcon(id) {
+    const url = ICONS.get(id); const els = ICON_ELS.get(id);
+    if (!els) return;
+    for (const el of els) if (el.isConnected) {
+      if (url) { el.style.backgroundImage = 'url(' + url + ')'; el.classList.remove('noicon'); }
+      else el.classList.add('noicon');
+    }
+    ICON_ELS.delete(id);
+  }
+  function pumpIcons() {
+    // cache.* is limited to 20 calls/s per plugin and shares that budget with everything else
+    // here, so keep icon traffic modest: 2 in flight, ~8/s.
+    while (iconBusy < 2 && iconQ.length) {
+      const id = iconQ.shift(); iconQueued.delete(id); iconBusy++;
+      rp().cache.sprite(id).then(u => { ICONS.set(id, u || ''); applyIcon(id); })
+        .catch(() => {
+          const n = (iconFailed.get(id) || 0) + 1; iconFailed.set(id, n);
+          if (n <= 2) setTimeout(() => requestIcon(id, null), 1500 * n);   // rate-limit backoff
+          else { ICONS.set(id, ''); applyIcon(id); }
+        })
+        .finally(() => { iconBusy--; setTimeout(pumpIcons, 120); });
+    }
+  }
+  function requestIcon(id, el) {
+    if (el) {
+      if (ICONS.has(id)) {
+        const u = ICONS.get(id);
+        if (u) el.style.backgroundImage = 'url(' + u + ')'; else el.classList.add('noicon');
+        return;
+      }
+      if (!ICON_ELS.has(id)) ICON_ELS.set(id, new Set());
+      ICON_ELS.get(id).add(el);
+    }
+    if (!ICONS.has(id) && !iconQueued.has(id)) { iconQueued.add(id); iconQ.push(id); }
+    pumpIcons();
   }
   async function loadAbilities() {
     const cfgFn = rp().cache.abilityConfigs;
@@ -209,8 +317,7 @@
       const r = byId[k] || {};
       AB[k | 0] = { n: r.n || ('#' + k), t: r.t | 0, st: r.st | 0, ag: r.ag | 0, ac: r.ac | 0, c: r.c | 0 };
     }
-    // Named records carry the cooldown more often; merge onto the id records via "i".
-    for (const name in cfg) {
+    for (const name in cfg) {           // named records carry the cooldown more often
       if (name === '_byId') continue;
       const r = cfg[name] || {}; const id = r.i | 0;
       if (!id) continue;
@@ -230,7 +337,6 @@
   const reqPct  = a => (a.t === 2 || a.t === 3) ? Math.max(50, costPct(a)) : costPct(a);
 
   // ---------------- rotations model + storage ----------------
-  // rot = { id, name, adren0, steps: [ { t, a:[abilityId,...], n:'' }, ... ] } steps sorted by t
   let rots = [], cur = null, selStep = -1, dirty = null;
   const newId = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   function blankRot(name) { return { id: newId(), name: name || 'New rotation', adren0: 0, steps: [{ t: 0, a: [], n: '' }] }; }
@@ -241,11 +347,10 @@
   function sortSteps() { cur.steps.sort((x, y) => x.t - y.t); }
 
   // ---------------- adrenaline + cooldown simulation ----------------
-  // Returns per-step { before, after, warnAdr, warnCd:[names] }.
   function simulate() {
     const out = []; if (!cur) return out;
     let adren = cur.adren0 | 0;
-    const lastUse = {};   // abilityId -> tick of last use
+    const lastUse = {};
     for (const st of cur.steps) {
       const before = adren; let warnAdr = false; const warnCd = [];
       for (const id of st.a) {
@@ -282,7 +387,7 @@
   }
 
   // ---------------- keybinds ----------------
-  let KEYS = {};   // abilityId -> label
+  let KEYS = {};
   function keyLabel(key, mod) {
     let k = '';
     if (key >= 112 && key <= 135) k = 'F' + (key - 111);
@@ -303,29 +408,22 @@
     } catch (e) { $('status').textContent = 'Could not read the action bars (log in first).'; }
   }
 
-  // ---------------- rendering: library / timeline / palette ----------------
-  function renderRotList() {
-    const sel = $('rot-list'); sel.innerHTML = '';
-    for (const r of rots) {
-      const o = document.createElement('option');
-      o.value = r.id; o.textContent = r.name;
-      if (cur && r.id === cur.id) o.selected = true;
-      sel.appendChild(o);
-    }
-  }
+  // ---------------- rendering ----------------
+  let ddRot, ddAdren, ddStyle, ddTier;
+  function rotItems() { return rots.map(r => ({ v: r.id, label: r.name })); }
+  function renderRotList() { ddRot.items(rotItems()); ddRot.set(cur ? cur.id : null); }
   function abEl(id, cls) {
     const d = document.createElement('div');
     d.className = 'ab ' + (cls || '');
     const a = AB[id];
-    if (a) { d.classList.add('t' + a.t); }
-    const tt = document.createElement('span'); tt.className = 'tt';
-    tt.textContent = a ? (a.n + ' · ' + (TIER_TXT[a.t] || '') +
-                          (a.c ? ' · cd ' + (a.c * 0.6).toFixed(1) + 's' : '') +
-                          (gainPct(a) ? ' · +' + gainPct(a) + '%' : '') +
-                          (costPct(a) ? ' · -' + costPct(a) + '%' : ''))
-                   : ('Unknown ability #' + id);
-    d.appendChild(tt);
-    iconFor(id, d);
+    if (a) d.classList.add('t' + a.t);
+    d.dataset.ab2 = a ? a.n.slice(0, 2) : '?';
+    d.dataset.tt = a ? (a.n + ' · ' + (TIER_TXT[a.t] || '') +
+                        (a.c ? ' · cd ' + (a.c * 0.6).toFixed(1) + 's' : '') +
+                        (gainPct(a) ? ' · +' + gainPct(a) + '% adren' : '') +
+                        (costPct(a) ? ' · -' + costPct(a) + '% adren' : ''))
+                     : ('Unknown ability #' + id);
+    requestIcon(id, d);
     return d;
   }
   function renderSteps() {
@@ -345,7 +443,7 @@
       const icons = document.createElement('div'); icons.className = 'icons';
       st.a.forEach((id, ai) => {
         const el = abEl(id, 'rm');
-        el.title = 'Click to remove';
+        el.dataset.tt = (el.dataset.tt || '') + ' · click to remove';
         el.addEventListener('click', ev => { ev.stopPropagation(); st.a.splice(ai, 1); renderSteps(); saveSoon(); });
         icons.appendChild(el);
       });
@@ -392,16 +490,16 @@
                                (last ? ' · ends at ' + last.after + '% adren' : '');
     renderShare();
   }
-  let barIds = null;   // Set of ability ids on the player's bars ('My bars' filter)
+  let barIds = null;
   function renderPalette() {
     const q = $('pal-q').value.trim().toLowerCase();
-    const styleF = $('pal-style').value, tierF = $('pal-tier').value;
+    const styleF = ddStyle.get(), tierF = ddTier.get();
     const root = $('pal'); root.innerHTML = '';
     const ids = Object.keys(AB).map(Number).sort((a, b) => (AB[a].n < AB[b].n ? -1 : 1));
     let shown = 0;
     for (const id of ids) {
       const a = AB[id];
-      if (a.t === 0) continue;                                   // auto-attacks are not placed
+      if (a.t === 0) continue;
       if (q && a.n.toLowerCase().indexOf(q) === -1) continue;
       if (styleF === 'melee' ? (a.st !== 1 && a.st !== 2) : (styleF && a.st !== (styleF | 0))) continue;
       if (tierF === '23' ? (a.t !== 2 && a.t !== 3) : (tierF && a.t !== (tierF | 0))) continue;
@@ -449,7 +547,6 @@
       const sep = document.createElement('span'); sep.className = 'muted'; sep.textContent = '+' + (s.t - pos); nx.appendChild(sep);
       for (const id of s.a.slice(0, 3)) nx.appendChild(abEl(id));
     }
-    // highlight the live row in the timeline
     const rows = $('steps').children;
     cur.steps.forEach((s, i) => { if (rows[i]) rows[i].classList.toggle('playnow', playing && s.t === pos); });
   }
@@ -470,8 +567,6 @@
     clearInterval(playTimer); playTimer = null;
     lastGameTick = null;
     if (on) {
-      // Internal metronome; a live gameTick stream overrides it (see the event handler),
-      // so playback stays aligned with the server's real 600 ms ticks while in-game.
       playTimer = setInterval(() => {
         const synced = $('play-sync').checked && (Date.now() - gameTickAlive) < 2000;
         if (!synced) advance();
@@ -480,14 +575,18 @@
     renderPlayback();
   }
 
+  // ---------------- HUD mode ----------------
+  let hud = false;
+  function setHud(on) {
+    hud = on;
+    document.body.classList.toggle('hud', on);
+    $('hud-btn').textContent = on ? 'Full view' : 'HUD mode';
+    rp().ui.setHeight(on ? 150 : 860);
+  }
+
   // ---------------- events wiring ----------------
-  $('rot-list').addEventListener('change', () => {
-    const r = rots.find(x => x.id === $('rot-list').value);
-    if (r) { cur = r; selStep = cur.steps.length - 1; pos = 0; setPlaying(false); syncHeader(); renderSteps(); renderPlayback(); }
-  });
-  function syncHeader() { $('rot-name').value = cur.name; $('adren0').value = String(cur.adren0 | 0); }
+  function syncHeader() { $('rot-name').value = cur.name; ddAdren.set(cur.adren0 | 0); }
   $('rot-name').addEventListener('input', () => { if (cur) { cur.name = $('rot-name').value.slice(0, 48); renderRotList(); renderShare(); saveSoon(); } });
-  $('adren0').addEventListener('change', () => { if (cur) { cur.adren0 = $('adren0').value | 0; renderSteps(); saveSoon(); } });
   $('rot-new').addEventListener('click', () => { cur = blankRot(); rots.push(cur); selStep = 0; renderRotList(); syncHeader(); renderSteps(); saveSoon(); });
   $('rot-dup').addEventListener('click', () => {
     if (!cur) return;
@@ -505,8 +604,7 @@
   $('step-add1').addEventListener('click', () => { if (!cur) return;
     const t = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 1 : 0;
     cur.steps.push({ t, a: [], n: '' }); selStep = cur.steps.length - 1; renderSteps(); saveSoon(); });
-  for (const id of ['pal-q', 'pal-style', 'pal-tier'])
-    $(id).addEventListener(id === 'pal-q' ? 'input' : 'change', renderPalette);
+  $('pal-q').addEventListener('input', renderPalette);
   $('pal-bars').addEventListener('click', async () => {
     if (barIds) { barIds = null; $('pal-bars').classList.remove('primary'); renderPalette(); return; }
     try {
@@ -519,6 +617,7 @@
   $('play-btn').addEventListener('click', () => setPlaying(!playing));
   $('play-reset').addEventListener('click', () => { pos = 0; setPlaying(false); });
   $('keys-load').addEventListener('click', loadKeys);
+  $('hud-btn').addEventListener('click', () => setHud(!hud));
   $('share-btn').addEventListener('click', async () => {
     if (!cur) return;
     renderShare();
@@ -538,6 +637,23 @@
   });
 
   // ---------------- boot ----------------
+  ddRot = makeDrop($('dd-rot'), [{ v: null, label: '...' }], null, v => {
+    const r = rots.find(x => x.id === v);
+    if (r) { cur = r; selStep = cur.steps.length - 1; pos = 0; setPlaying(false); syncHeader(); renderSteps(); renderPlayback(); }
+  });
+  ddAdren = makeDrop($('dd-adren'), [{ v: 0, label: '0%' }, { v: 100, label: '100%' }], 0, v => {
+    if (cur) { cur.adren0 = v | 0; renderSteps(); saveSoon(); }
+  });
+  ddStyle = makeDrop($('dd-style'), [
+    { v: '', label: 'All styles' }, { v: 'melee', label: 'Melee' }, { v: '3', label: 'Ranged' },
+    { v: '4', label: 'Magic' }, { v: '29', label: 'Necromancy' }, { v: '5', label: 'Defence' },
+    { v: '6', label: 'Constitution' },
+  ], '', renderPalette);
+  ddTier = makeDrop($('dd-tier'), [
+    { v: '', label: 'All tiers' }, { v: '1', label: 'Basic' }, { v: '23', label: 'Threshold' },
+    { v: '4', label: 'Ultimate' }, { v: '5', label: 'Special' }, { v: '7', label: 'Utility' },
+  ], '', renderPalette);
+
   await rp().ready();
   const need = ['state.read', 'cache.read', 'storage', 'clipboard'];
   const missing = need.filter(s => !rp().hasScope(s));
@@ -550,7 +666,6 @@
   renderRotList(); syncHeader(); renderSteps(); renderPalette(); renderPlayback();
   if (!missing.length) $('status').textContent = Object.keys(AB).length + ' abilities loaded. Click abilities to build; several on one row land the same tick.';
 
-  // Real server ticks drive playback whenever they are flowing and sync is on.
   rp().events.on('gameTick', ev => {
     gameTickAlive = Date.now();
     if (!playing || !$('play-sync').checked) return;
