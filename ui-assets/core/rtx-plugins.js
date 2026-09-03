@@ -13,7 +13,13 @@
   let   pluginTabs    = [];     // [{ id, manifest:{id,name,version,author,entry,description}, scopes:[] }]
   const pluginMounts  = new Map();   // plugin id -> { id, frame, scopes }; one per open plugin window
   const pluginBuckets = {};     // "id|method" -> token bucket
-  function pluginUnmount(id) { pluginMounts.delete(id); }
+  function pluginUnmount(id) {
+    // Release keyboard capture a frame claimed: an unmounted frame fires no focusout, and a
+    // leaked grab would eat every keystroke meant for the game from then on.
+    const m = pluginMounts.get(id);
+    if (m && m.kbFocus) kbGrab(false);
+    pluginMounts.delete(id);
+  }
 
   function pluginEsc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
   // Canonical HTML-text escape shared by the panels (global scope). Escapes & < > and ".
@@ -25,6 +31,14 @@
 var P='rtx.plugin/1',T=15000,seq=1,pending=Object.create(null),L={tick:[],state:[],events:[]},EV={},rcb=[],S={ready:false,scopes:[],apiVersion:null,pluginId:null};
 function call(method,args){return new Promise(function(res,rej){var id=seq++;var tm=setTimeout(function(){if(pending[id]){delete pending[id];rej(new Error('rtx.plugin: timeout '+method));}},T);pending[id]={res:res,rej:rej,tm:tm};try{parent.postMessage({__rtxPlugin:P,kind:'call',id:id,method:method,args:args||[]},'*');}catch(e){clearTimeout(tm);delete pending[id];rej(e);}});}
 window.addEventListener('message',function(ev){var m=ev.data;if(!m||m.__rtxPlugin!==P)return;if(ev.source!==parent)return;
+if(m.kind==='edit'){var c=String(m.cmd||''),ok=false;try{ok=document.execCommand(c);}catch(e){}
+// execCommand can refuse inside a sandboxed frame; fall back to the broker clipboard
+// (scope-gated like any other call) and edit the focused field directly.
+if(!ok){var t=document.activeElement,ed=!!(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'));
+var fire=function(){try{t.dispatchEvent(new Event('input',{bubbles:true}));}catch(e){}};
+if(c==='paste'&&ed){call('clipboard.paste').then(function(txt){txt=String(txt==null?'':txt);var s=t.selectionStart|0,en=t.selectionEnd|0;t.value=t.value.slice(0,s)+txt+t.value.slice(en);t.selectionStart=t.selectionEnd=s+txt.length;fire();}).catch(function(){});}
+else if((c==='copy'||c==='cut')&&ed){var s2=t.selectionStart|0,e2=t.selectionEnd|0,sel=t.value.slice(s2,e2);if(sel){call('clipboard.copy',[sel]).catch(function(){});if(c==='cut'){t.value=t.value.slice(0,s2)+t.value.slice(e2);t.selectionStart=t.selectionEnd=s2;fire();}}}}
+return;}
 if(m.kind==='reply'){var p=pending[m.id];if(!p)return;clearTimeout(p.tm);delete pending[m.id];if(m.ok)p.res(m.result);else p.rej(new Error(m.error||'rtx.plugin: failed'));return;}
 if(m.kind==='event'){if(m.event==='ready'){var d=m.data||{};S.ready=true;S.scopes=Array.isArray(d.scopes)?d.scopes.slice():[];S.apiVersion=d.apiVersion||null;S.pluginId=d.pluginId||null;var c=rcb.slice();rcb.length=0;c.forEach(function(f){try{f();}catch(e){}});return;}if(m.event==='events'){var arr=Array.isArray(m.data)?m.data:[];arr.forEach(function(ev){var k=ev&&ev.kind;var fs=(EV[k]||[]).concat(EV['*']||[]);fs.forEach(function(f){try{f(ev);}catch(e){}});});}var ls=L[m.event];if(ls)ls.forEach(function(f){try{f(m.data);}catch(e){}});}});
 function g(o){return o;}
@@ -40,7 +54,16 @@ overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);}}};
-window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
+window.rtx=window.rtx||{};window.rtx.plugin=api;
+// Keyboard focus publishing: the frame is a sandboxed opaque origin, so the host page cannot
+// see our activeElement; without this every keystroke aimed at a plugin text field went to the
+// game. Mirrors the host's own focus test; the 1s interval self-heals a field removed by a
+// rebuild (no focusout fires for that).
+var kbOn=false;function kbSync(){var t=document.activeElement;var on=!!(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable));if(on===kbOn)return;kbOn=on;try{parent.postMessage({__rtxPlugin:P,kind:'kb',on:on},'*');}catch(e){}}
+document.addEventListener('focusin',function(){setTimeout(kbSync,0);});
+document.addEventListener('focusout',function(){setTimeout(kbSync,0);});
+setInterval(kbSync,1000);
+try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
 
   // ---- arg clamps (defence: every plugin-supplied value is bounded) ----
   const pClampId   = v => { const n = parseInt(v, 10); return (isFinite(n) && n >= 0) ? n : 0; };
@@ -539,6 +562,9 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   // Payload: { title, sub, cur:[{id,key}], next:[{id,gap}] }. Lives in the in-game UI layer
   // (this page composites into the game frame), draggable by its header, one per plugin.
   const pluginHuds = new Map();          // plugin id -> { el, body, ttl, sub }
+  // Dragged position, kept across close/recreate: an empty tick or a loop wrap closes the
+  // strip and the next push rebuilds it, which must not teleport it back to the default spot.
+  const pluginHudPos = new Map();        // plugin id -> { left, top }
   const pluginHudIcons = new Map();      // ability id -> data URL promise result ('' = none)
   function pluginHudIcon(id, el) {
     if (pluginHudIcons.has(id)) { const u = pluginHudIcons.get(id); if (u) el.style.backgroundImage = 'url(' + u + ')'; return; }
@@ -551,17 +577,26 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
   }
   function pluginHudClose(slug) {
     const h = pluginHuds.get(slug);
-    if (h) { try { h.el.remove(); } catch (e) {} pluginHuds.delete(slug); }
+    if (h) { try { h.el.remove(); } catch (e) {} pluginHuds.delete(slug); wmRectsSoon(); }
   }
   function pluginHudSet(slug, payload) {
     const cur = payload && Array.isArray(payload.cur) ? payload.cur.slice(0, 6) : [];
-    if (!payload || !cur.length) { pluginHudClose(slug); return; }
+    // Only an explicit null closes the strip. An empty tick (nothing firing right now, e.g.
+    // the tail before a loop wraps) keeps it alive showing the title/sub and upcoming icons,
+    // instead of blinking out and back.
+    if (!payload) { pluginHudClose(slug); return; }
     let h = pluginHuds.get(slug);
     if (!h) {
       const el = document.createElement('div');
       el.style.cssText = 'position:fixed;z-index:950000;top:110px;left:50%;transform:translateX(-50%);' +
         'background:rgba(12,13,18,0.92);border:1px solid rgba(140,111,253,0.45);border-radius:10px;' +
         'padding:6px 10px 8px;min-width:180px;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none';
+      const p0 = pluginHudPos.get(slug);
+      if (p0) {
+        el.style.transform = 'none';
+        el.style.left = Math.max(0, Math.min(p0.left, (window.innerWidth || 1280) - 60)) + 'px';
+        el.style.top  = Math.max(0, Math.min(p0.top,  (window.innerHeight || 720) - 40)) + 'px';
+      }
       const head = document.createElement('div');
       head.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:grab;margin-bottom:5px';
       const ttl = document.createElement('span');
@@ -583,14 +618,19 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
         const r = el.getBoundingClientRect();
         el.style.transform = 'none'; el.style.left = r.left + 'px'; el.style.top = r.top + 'px';
         const sx = e.clientX - r.left, sy = e.clientY - r.top;
-        const mv = ev => { el.style.left = Math.max(0, ev.clientX - sx) + 'px'; el.style.top = Math.max(0, ev.clientY - sy) + 'px'; };
-        const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
+        const mv = ev => { el.style.left = Math.max(0, ev.clientX - sx) + 'px'; el.style.top = Math.max(0, ev.clientY - sy) + 'px'; wmPushRects(); };
+        const up = () => {
+          document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+          pluginHudPos.set(slug, { left: parseFloat(el.style.left) || 0, top: parseFloat(el.style.top) || 0 });
+          wmPushRects();
+        };
         document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
       });
       document.body.appendChild(el);
       h = { el, body, ttl, sub };
       pluginHuds.set(slug, h);
     }
+    wmRectsSoon();   // size follows the payload (icon count), so refresh the consume rect every set
     h.ttl.textContent = pClampStr(payload.title, 40) || 'Rotation';
     h.sub.textContent = pClampStr(payload.sub, 60);
     h.body.innerHTML = '';
@@ -666,6 +706,13 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
         pluginSendEvent(mounted, 'ready', { scopes: mounted.scopes, apiVersion: '1.0', pluginId: mounted.id });
         return;
       }
+      if (m.kind === 'kb') {
+        // A text field inside the sandboxed frame gained/lost focus (the SDK shim watches;
+        // this page cannot see across the opaque origin). Refcounted per mount so several
+        // open plugins cannot unbalance each other.
+        if (!!m.on !== !!mounted.kbFocus) { mounted.kbFocus = !!m.on; kbGrab(mounted.kbFocus); }
+        return;
+      }
       if (m.kind !== 'call') return;
       const reply = (ok, payload) => {
         try {
@@ -734,7 +781,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     // A different character's grants are now in force, so anything mounted under the old
     // ones must be re-evaluated rather than left running.
     if (!first) for (const w of wm.wins.values())
-      if (String(w.tab).indexOf('plugin:') === 0) { pluginMounts.delete(w.tab.slice(7)); renderPaneFor(w); }
+      if (String(w.tab).indexOf('plugin:') === 0) { pluginUnmount(w.tab.slice(7)); renderPaneFor(w); }
   }
   function pluginGrantsSaveSoon(delay) {
     if (_pgSaveT) return;
@@ -817,7 +864,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     const card = document.createElement('div');
     card.dataset.pluginPerm = id;
     card.style.cssText = 'max-width:420px;margin:24px auto;background:#1a1b23;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:20px;';
-    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings', 'notify.os': 'Show Windows notifications', 'clipboard': 'Copy text to your clipboard' };
+    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings', 'notify.os': 'Show Windows notifications', 'clipboard': 'Copy text to your clipboard', 'clipboard.read': 'Read your clipboard contents' };
     let h = '<div style="font-size:1.1em;font-weight:600;">' + pluginEsc(m.name) + '</div>';
     h += '<div style="color:#8b8b9e;font-size:.85em;margin:2px 0 6px;">v' + pluginEsc(m.version) + (m.author ? (' - ' + pluginEsc(m.author)) : '') + '</div>';
     if (tab.source === 'dev')
@@ -868,7 +915,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     const c = $('content');
     if (!c) return;
     const tab = pluginTabs.find(p => p.id === id);
-    if (!tab) { c.innerHTML = '<div class="empty">Plugin not found.</div>'; pluginMounts.delete(id); return; }
+    if (!tab) { c.innerHTML = '<div class="empty">Plugin not found.</div>'; pluginUnmount(id); return; }
     pluginGrantsEnsure();               // async; a not-yet-loaded store just prompts once more
     const granted = pluginGetGranted(id);
     // Consent must cover everything the CURRENT manifest asks for: an update that adds a
@@ -876,7 +923,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
     if (!granted || !pluginGrantCovers(granted, tab.scopes)) {
       const cur = c.firstElementChild;
       if (cur && cur.dataset && cur.dataset.pluginPerm === id) return;   // build-once
-      renderPluginPermission(id, tab, granted); pluginMounts.delete(id); return;
+      renderPluginPermission(id, tab, granted); pluginUnmount(id); return;
     }
     const cur = c.firstElementChild;
     if (cur && cur.dataset && cur.dataset.pluginHost === id) return;      // already mounted
@@ -900,7 +947,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
       try { entry = await entryFn.call(bridge(), id, tab.manifest.entry); } catch (e) {}
       const m = pluginMounts.get(id);
       if (!m || m.frame !== fr) return;             // window closed / remounted while loading
-      if (!entry) { c.innerHTML = '<div class="empty">Failed to load plugin entry file.</div>'; pluginMounts.delete(id); return; }
+      if (!entry) { c.innerHTML = '<div class="empty">Failed to load plugin entry file.</div>'; pluginUnmount(id); return; }
       fr.srcdoc = pluginBuildSrcdoc(entry);
     })();
   }
@@ -977,7 +1024,7 @@ window.rtx=window.rtx||{};window.rtx.plugin=api;try{parent.postMessage({__rtxPlu
       for (const id of Array.from(pluginMounts.keys())) {
         const tab = pluginTabs.find(p => p.id === id);
         if (!tab || tab.source !== 'dev' || before[id] === after[id]) continue;
-        pluginMounts.delete(id);
+        pluginUnmount(id);
         const w = wmWinOf('plugin:' + id);
         if (w && !w.min && w.tab === ('plugin:' + id)) { w.pane.innerHTML = ''; renderPaneFor(w); }
       }

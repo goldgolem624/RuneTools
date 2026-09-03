@@ -344,10 +344,13 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
                     case 'V': cmd = "paste"; break;
                 }
                 if (cmd) {
+                    // __rtxEditCmd (rtx-input.js) also routes the command into sandboxed
+                    // plugin iframes, whose contentDocument is unreachable from here.
                     u->view->EvaluateScript(String((std::string(
-                        "(function(){var d=document;"
+                        "(function(){if(window.__rtxEditCmd){window.__rtxEditCmd('") + cmd + "');return;}"
+                        "var d=document;"
                         "while(d.activeElement&&d.activeElement.contentDocument)d=d.activeElement.contentDocument;"
-                        "try{d.execCommand('") + cmd + "');}catch(e){}})()").c_str()));
+                        "try{d.execCommand('" + cmd + "');}catch(e){}})()").c_str()));
                     break;
                 }
             }

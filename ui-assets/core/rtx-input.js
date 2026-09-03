@@ -32,6 +32,10 @@
     add($('sndMenu')); add($('vrPop'));
     add($('lgMenu'));
     add($('ctxCopy'));
+    // Plugin ability HUD strips advertise header dragging and an x-to-close, so unlike the
+    // locked alerts HUD they must claim their clicks. try/catch: pluginHuds lives in
+    // rtx-plugins.js, which loads after this file; an early publish just skips it.
+    try { for (const h of pluginHuds.values()) add(h.el); } catch (e) {}
     // Only DISMISSIBLE toasts claim input. A transient toast stays click-through so
     // it can never swallow a click meant for the game underneath it. Placement mode
     // is the exception: the whole stack must be grabbable, empty or not.
@@ -80,6 +84,24 @@
   // capture flag stuck on and silently ate every keystroke meant for the game. Re-derive the
   // truth from the live activeElement once a second; syncKbCapture dedups, so this is free.
   setInterval(syncKbCapture, 1000);
+  // Host-driven editing shortcuts: GameUi.cpp swallows Ctrl+A/C/X/V and calls this. Walk into
+  // same-origin iframes as before; a sandboxed plugin frame is an opaque origin whose
+  // contentDocument is null from here, so the command travels over postMessage instead and the
+  // plugin SDK shim runs execCommand on the field that actually has focus.
+  window.__rtxEditCmd = function (cmd) {
+    let d = document;
+    for (;;) {
+      const ae = d.activeElement;
+      if (!ae || ae.tagName !== 'IFRAME') break;
+      let inner = null;
+      try { inner = ae.contentDocument; } catch (e) {}
+      if (inner) { d = inner; continue; }
+      try { ae.contentWindow.postMessage({ __rtxPlugin: 'rtx.plugin/1', kind: 'edit', cmd: String(cmd) }, '*'); } catch (e) {}
+      return;
+    }
+    try { d.execCommand(cmd); } catch (e) {}
+  };
+
   // Companion-signalled: a click went to the GAME while we held keyboard capture --
   // drop focus so typing returns to the game immediately.
   window.__rtxGameClick = function () {
