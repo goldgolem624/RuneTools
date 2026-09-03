@@ -117,35 +117,26 @@
     .step .notetext { grid-column: 1 / -1; color: var(--mute); font-size: 0.78em;
                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-    /* ---- playback ---- */
-    #play-strip { display: flex; align-items: center; gap: 12px; min-height: 76px; }
-    #play-strip .stat { flex: none; }
-    #play-now { display: flex; gap: 5px; align-items: center; }
-    #play-now .ab { width: 52px; height: 52px; background-size: 42px; border-color: var(--ok); cursor: default; }
-    #play-now.pend .ab { border-color: rgba(245,178,65,0.75); }   /* counting down, not yet */
-    #play-now .key { position: absolute; bottom: -3px; right: -3px; background: #0c0d12;
-                     border: 1px solid var(--line); border-radius: 4px; font-size: 12px;
-                     padding: 1px 5px; color: var(--acc-hi); font-weight: 700; }
-    /* Upcoming queue takes what is left and CLIPS: a long rotation must never push the
-       adren/elapsed stats out of the card. */
-    #play-next { display: flex; gap: 4px; align-items: center; opacity: 0.7;
-                 flex: 1 1 auto; min-width: 0; overflow: hidden; }
-    #play-next .ab { width: 30px; height: 30px; background-size: 24px; cursor: default; }
-    #play-note { color: var(--warn); font-size: 0.9em; font-weight: 600; }
-    #play-bar { height: 5px; background: var(--bg); border-radius: 999px; overflow: hidden;
-                border: 1px solid var(--line); margin-top: 8px; }
-    #play-fill { height: 100%; width: 0; background: linear-gradient(90deg, var(--acc), var(--acc-hi)); }
-    .stat { font-variant-numeric: tabular-nums; }
-    .stat .k { color: var(--mute); font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.08em; display: block; }
-    .stat .v { font-weight: 700; }
     #share-code, #import-code { width: 100%; height: 54px; resize: vertical; font-family: Consolas, monospace; font-size: 11px; }
     .muted { color: var(--mute); font-size: 0.78em; }
+
+    /* action feedback toast: the status line at the top is easy to miss, so New/Copy/
+       Delete/Import also flash this transient strip near the bottom of the window */
+    #note { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 95;
+            background: #0c0d12; border: 1px solid var(--acc); color: var(--tx);
+            border-radius: 8px; padding: 8px 14px; font-size: 12px; max-width: 90%;
+            box-shadow: 0 8px 22px rgba(0,0,0,0.5); opacity: 0; pointer-events: none;
+            transition: opacity 0.18s; white-space: nowrap; overflow: hidden;
+            text-overflow: ellipsis; }
+    #note.show { opacity: 1; }
+    #note.err { border-color: var(--err); color: var(--err); }
 
     /* (game overlay playback lives in a host-drawn floating strip; see hudPush) */
   </style>
 </head>
 <body>
   <div id="tt"></div>
+  <div id="note"></div>
 
   <div class="hud-hide" style="margin-bottom:10px">
     <h1 style="white-space:nowrap">Rotation Builder</h1>
@@ -161,8 +152,7 @@
   <div class="card hud-hide">
     <div class="row" style="margin-bottom:8px">
       <input type="text" id="rot-name" class="grow" placeholder="Rotation name">
-      <span class="muted">Start adren</span>
-      <span class="dd" id="dd-adren"></span>
+      <span class="muted" id="adren-live" title="The simulation starts from your live adrenaline; 0% when not logged in">Adren: -</span>
     </div>
     <div class="lbl">Timeline <span class="muted" style="text-transform:none;letter-spacing:0">(a row = one game tick, 0.6 s; several abilities on a row land the same tick)</span></div>
     <div id="steps"></div>
@@ -185,26 +175,14 @@
   </div>
 
   <div class="card" id="play-card">
-    <div class="row">
-      <span class="lbl grow" style="margin:0">Playback</span>
-      <button class="tiny" id="hud-btn" title="Show playback as a floating strip over the game itself (drag it anywhere; its x closes it)">Game overlay</button>
-    </div>
+    <div class="lbl">Playback</div>
     <div class="row" style="margin-top:6px">
       <button class="primary" id="play-btn">Play</button>
       <button id="play-reset">Reset</button>
       <label class="muted"><input type="checkbox" id="play-loop"> Loop</label>
       <label class="muted"><input type="checkbox" id="play-sync" checked> Sync to game ticks</label>
+      <span class="muted grow">Shows as a floating strip over the game (drag it anywhere).</span>
     </div>
-    <div id="play-strip">
-      <div class="stat"><span class="k">Tick</span><span class="v" id="pv-tick">0</span></div>
-      <div class="stat"><span class="k">Next</span><span class="v" id="pv-cd">-</span></div>
-      <div id="play-now"></div>
-      <div id="play-next"></div>
-      <div class="stat"><span class="k">Adren</span><span class="v" id="pv-adr">0%</span></div>
-      <div class="stat"><span class="k">Elapsed</span><span class="v" id="pv-el">0.0s</span></div>
-    </div>
-    <div id="play-note"></div>
-    <div id="play-bar"><div id="play-fill"></div></div>
   </div>
 
   <div class="card hud-hide">
@@ -260,6 +238,19 @@
              items(list) { its = list.slice(); if (!its.find(i => i.v === cur)) cur = its.length ? its[0].v : null; paint(); } };
   }
   document.addEventListener('click', () => { for (const h of allDrops) h.classList.remove('open'); });
+
+  // ---------------- action feedback ----------------
+  // Mirrors into the status line too, so the last action stays readable after the toast fades.
+  let noteT = 0;
+  function note(msg, isErr) {
+    $('status').textContent = msg;
+    const el = $('note');
+    el.textContent = msg;
+    el.classList.toggle('err', !!isErr);
+    el.classList.add('show');
+    clearTimeout(noteT);
+    noteT = setTimeout(() => el.classList.remove('show'), 2400);
+  }
 
   // ---------------- floating tooltip ----------------
   const tt = $('tt');
@@ -371,9 +362,24 @@
   function sortSteps() { cur.steps.sort((x, y) => x.t - y.t); }
 
   // ---------------- adrenaline + cooldown simulation ----------------
+  // Live adrenaline (varp 679, 0..1000) seeds the simulation; adren0 stays in the model
+  // only so old share codes keep importing, and as the fallback when not logged in.
+  let liveAdren = null;
+  async function readAdren() {
+    try {
+      const vp = await rp().state.varps('679');
+      const v = vp ? vp['679'] : undefined;
+      const pct = (v == null) ? null : Math.max(0, Math.min(100, Math.floor(v / 10)));
+      if (pct === liveAdren) return;
+      liveAdren = pct;
+      $('adren-live').textContent = 'Adren: ' + (pct == null ? '-' : pct + '%');
+      renderSteps(); renderPlayback();
+    } catch (e) {}
+  }
+  const startAdren = () => (liveAdren != null) ? liveAdren : (cur ? cur.adren0 | 0 : 0);
   function simulate() {
     const out = []; if (!cur) return out;
-    let adren = cur.adren0 | 0;
+    let adren = startAdren();
     const lastUse = {};
     for (const st of cur.steps) {
       const before = adren; let warnAdr = false; const warnCd = [];
@@ -432,7 +438,7 @@
   }
 
   // ---------------- rendering ----------------
-  let ddRot, ddAdren, ddStyle, ddTier;
+  let ddRot, ddStyle, ddTier;
   function rotItems() { return rots.map(r => ({ v: r.id, label: r.name })); }
   function renderRotList() { ddRot.items(rotItems()); ddRot.set(cur ? cur.id : null); }
   function abEl(id, cls) {
@@ -581,31 +587,6 @@
   }
   function renderPlayback() {
     if (!cur) return;
-    const dur = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 3 : 0;
-    $('pv-tick').textContent = String(pos);
-    $('pv-el').textContent = (pos * 0.6).toFixed(1) + 's';
-    $('play-fill').style.width = dur ? Math.min(100, pos / dur * 100) + '%' : '0';
-    const sim = simulate();
-    let adr = cur.adren0 | 0;
-    cur.steps.forEach((s, i) => { if (s.t <= pos && sim[i]) adr = sim[i].after; });
-    $('pv-adr').textContent = adr + '%';
-    const prim = primaryAt(pos);
-    $('play-note').textContent = prim.n;
-    $('pv-cd').textContent = prim.dt === 0 ? 'NOW' : prim.dt > 0 ? (prim.dt * 0.6).toFixed(1) + 's' : '-';
-    const now = $('play-now'); now.innerHTML = '';
-    now.classList.toggle('pend', prim.dt > 0);
-    for (const id of prim.a) {
-      const el = abEl(id);
-      if (KEYS[id]) { const k = document.createElement('span'); k.className = 'key'; k.textContent = KEYS[id]; el.appendChild(k); }
-      now.appendChild(el);
-    }
-    if (!now.childElementCount) { const m = document.createElement('span'); m.className = 'muted'; m.textContent = playing ? '(done)' : 'press Play'; now.appendChild(m); }
-    const base = pos + Math.max(0, prim.dt);
-    const nx = $('play-next'); nx.innerHTML = '';
-    for (const s of nextSteps(base, 4)) {
-      const sep = document.createElement('span'); sep.className = 'muted'; sep.textContent = '+' + (s.t - pos); nx.appendChild(sep);
-      for (const id of s.a.slice(0, 3)) nx.appendChild(abEl(id));
-    }
     const rows = $('steps').children;
     cur.steps.forEach((s, i) => { if (rows[i]) rows[i].classList.toggle('playnow', playing && s.t === pos); });
     hudPush(false);
@@ -633,22 +614,28 @@
       }, 600);
     }
     renderPlayback();
+    if (on) hudPush(true);   // show the strip immediately, ahead of the rate limiter
   }
 
   // ---------------- game overlay (host-drawn floating strip over the game) ----------------
-  let hud = false, hudLast = 0;
-  function setHud(on) {
-    hud = on;
-    $('hud-btn').classList.toggle('primary', on);
-    if (!on) { try { rp().overlay.hudAbilities(null); } catch (e) {} }
-    else hudPush(true);
+  // The overlay IS the playback display: it appears on Play, survives a pause mid-rotation,
+  // and clears on Reset (or when playback is reset to the start).
+  let hudLast = 0, hudShown = false, hudWarned = false;
+  function hudClear() {
+    if (!hudShown) return;
+    hudShown = false;
+    try { rp().overlay.hudAbilities(null); } catch (e) {}
   }
   function hudPush(force) {
-    if (!hud || !cur) return;
-    if (!rp().overlay.hudAbilities) { $('status').textContent = 'Game overlay needs a newer RuneTools client.'; hud = false; $('hud-btn').classList.remove('primary'); return; }
+    if (!cur) return;
+    if (!playing && pos === 0) { hudClear(); return; }
+    if (!rp().overlay.hudAbilities) {
+      if (!hudWarned) { hudWarned = true; note('Playback overlay needs a newer RuneTools client.', true); }
+      return;
+    }
     const now = Date.now();
     if (!force && now - hudLast < 250) return;   // stay well under the overlay rate limit
-    hudLast = now;
+    hudLast = now; hudShown = true;
     const prim = primaryAt(pos);
     const nxt = [];
     for (const s of nextSteps(pos + Math.max(0, prim.dt), 3)) for (const id of s.a.slice(0, 2)) nxt.push({ id, gap: s.t - pos });
@@ -663,21 +650,25 @@
   }
 
   // ---------------- events wiring ----------------
-  function syncHeader() { $('rot-name').value = cur.name; ddAdren.set(cur.adren0 | 0); }
+  function syncHeader() { $('rot-name').value = cur.name; }
   $('rot-name').addEventListener('input', () => { if (cur) { cur.name = $('rot-name').value.slice(0, 48); renderRotList(); renderShare(); saveSoon(); } });
-  $('rot-new').addEventListener('click', () => { cur = blankRot(); rots.push(cur); selStep = 0; renderRotList(); syncHeader(); renderSteps(); saveSoon(); });
+  $('rot-new').addEventListener('click', () => { cur = blankRot(); rots.push(cur); selStep = 0; renderRotList(); syncHeader(); renderSteps(); saveSoon();
+    note('Created "' + cur.name + '" and switched to it; rename it above.'); });
   $('rot-dup').addEventListener('click', () => {
     if (!cur) return;
     const c = JSON.parse(JSON.stringify(cur)); c.id = newId(); c.name = cur.name + ' (copy)';
     rots.push(c); cur = c; renderRotList(); syncHeader(); renderSteps(); saveSoon();
+    note('Copied to "' + c.name + '" and switched to it.');
   });
   $('rot-del').addEventListener('click', () => {
     if (!cur) return;
     // Deleting the last rotation leaves a fresh blank one rather than doing nothing.
+    const gone = cur.name;
     rots = rots.filter(r => r.id !== cur.id);
     if (!rots.length) rots.push(blankRot());
     cur = rots[0]; selStep = cur.steps.length - 1;
     renderRotList(); syncHeader(); renderSteps(); saveSoon();
+    note('Deleted "' + gone + '"; now on "' + cur.name + '".');
   });
   $('step-add').addEventListener('click', () => { if (!cur) return;
     const t = cur.steps.length ? cur.steps[cur.steps.length - 1].t + 3 : 0;
@@ -696,14 +687,13 @@
       $('pal-bars').classList.add('primary'); renderPalette();
     } catch (e) { $('status').textContent = 'Could not read the action bars (log in first).'; }
   });
-  $('play-btn').addEventListener('click', () => { if (!playing) loadKeys(); setPlaying(!playing); });
-  $('play-reset').addEventListener('click', () => { pos = 0; setPlaying(false); });
-  $('hud-btn').addEventListener('click', () => setHud(!hud));
+  $('play-btn').addEventListener('click', () => { if (!playing) { loadKeys(); readAdren(); } setPlaying(!playing); });
+  $('play-reset').addEventListener('click', () => { pos = 0; setPlaying(false); hudClear(); });
   $('share-btn').addEventListener('click', async () => {
     if (!cur) return;
     renderShare();
-    try { await rp().clipboard.copy($('share-code').value); $('status').textContent = 'Share code copied to clipboard.'; }
-    catch (e) { $('status').textContent = 'Copy failed; select the code and copy it yourself.'; }
+    try { await rp().clipboard.copy($('share-code').value); note('Share code copied to clipboard.'); }
+    catch (e) { note('Copy failed; select the code and copy it yourself.', true); }
   });
   function doImport(text) {
     const r = importCode(text);
@@ -711,34 +701,30 @@
     renderRotList(); syncHeader(); renderSteps(); saveSoon();
     const missing = new Set();
     for (const s of r.steps) for (const id of s.a) if (!AB[id]) missing.add(id);
-    $('status').textContent = 'Imported "' + r.name + '"' + (missing.size ? ' (' + missing.size + ' unknown ability ids kept as placeholders)' : '') + '.';
+    note('Imported "' + r.name + '" and switched to it' + (missing.size ? ' (' + missing.size + ' unknown ability ids kept as placeholders)' : '') + '.');
   }
   $('paste-btn').addEventListener('click', async () => {
     // Keyboard paste is unreliable inside the in-game view, so the clipboard is read through
     // the host (clipboard.read scope, approved on enable).
     if (!rp().clipboard.paste) { $('status').textContent = 'Clipboard paste needs a newer RuneTools client; paste into the box below instead.'; return; }
-    try { doImport(await rp().clipboard.paste()); }
-    catch (e) { $('status').textContent = 'Import failed: ' + e.message; }
+    let text = '';
+    try { text = String(await rp().clipboard.paste() || ''); }
+    catch (e) { note('Could not read the clipboard: ' + e.message, true); return; }
+    // Show what was read even when the import fails, so a wrong clipboard is visible
+    // and editable rather than a silent no-op.
+    $('import-code').value = text;
+    try { doImport(text); }
+    catch (e) { note('Import failed: ' + e.message, true); }
   });
   $('import-btn').addEventListener('click', () => {
-    try {
-      const r = importCode($('import-code').value);
-      rots.push(r); cur = r; selStep = cur.steps.length - 1;
-      renderRotList(); syncHeader(); renderSteps(); saveSoon();
-      $('import-code').value = '';
-      const missing = new Set();
-      for (const s of r.steps) for (const id of s.a) if (!AB[id]) missing.add(id);
-      $('status').textContent = 'Imported "' + r.name + '"' + (missing.size ? ' (' + missing.size + ' unknown ability ids kept as placeholders)' : '') + '.';
-    } catch (e) { $('status').textContent = 'Import failed: ' + e.message; }
+    try { doImport($('import-code').value); $('import-code').value = ''; }
+    catch (e) { note('Import failed: ' + e.message, true); }
   });
 
   // ---------------- boot ----------------
   ddRot = makeDrop($('dd-rot'), [{ v: null, label: '...' }], null, v => {
     const r = rots.find(x => x.id === v);
     if (r) { cur = r; selStep = cur.steps.length - 1; pos = 0; setPlaying(false); syncHeader(); renderSteps(); renderPlayback(); }
-  });
-  ddAdren = makeDrop($('dd-adren'), [{ v: 0, label: '0%' }, { v: 100, label: '100%' }], 0, v => {
-    if (cur) { cur.adren0 = v | 0; renderSteps(); saveSoon(); }
   });
   ddStyle = makeDrop($('dd-style'), [
     { v: '', label: 'All styles' }, { v: 'melee', label: 'Melee' }, { v: '3', label: 'Ranged' },
@@ -758,6 +744,8 @@
   if (!(await loadAbilities())) { $('status').textContent = 'Ability index unavailable (open a client and try again).'; }
   loadTips();
   loadKeys();
+  readAdren();
+  setInterval(readAdren, 3000);   // one varp call per 3 s: negligible against the 20/s budget
   const saved = await rp().storage.get('rotations').catch(() => null);
   rots = Array.isArray(saved) && saved.length ? saved : [blankRot('My first rotation')];
   cur = rots[0]; selStep = cur.steps.length - 1;

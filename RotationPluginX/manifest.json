@@ -3,10 +3,10 @@
   "apiVersion": "1.0",
   "id": "com.runetools.rotations",
   "name": "Rotation Builder",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "RuneTools",
   "description": "Build, validate, play back and share ability rotations. Tick-accurate playback as a floating strip over the game with the game's own icons and tooltips, adrenaline and cooldown checking from the live cache, keybind hints from your action bars, and one-click share codes.",
   "entry": "index.html",
   "scopes": ["state.read", "cache.read", "overlay", "storage", "clipboard", "clipboard.read"],
-  "minHostVersion": "2.0.20"
+  "minHostVersion": "2.0.21"
 }
