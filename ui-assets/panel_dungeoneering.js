@@ -74,6 +74,10 @@ const DUNG_SW_REF = {
 };
 let dungLastTimer = -1;   // varc 4190 seconds; a drop means a new floor -> re-anchor
 let dungKeyCache = {};    // "x,y" -> {x,y,ki}: ground keys REMEMBERED until picked up
+let dungOpenedAt = {};    // cell -> Date.now() the room was FIRST seen opened. The map
+                          // reveals a room instantly but its ground key is only scanned
+                          // a beat later, so "this room holds no key" is not trusted
+                          // until the room has been open for a moment (see the prune).
 let dungRoomRes = {};     // cell -> { "skillIdx|tier|level": {skill,skillIdx,tier,level} }
                           // EVERY resource ever seen in that room. `rooms` is rebuilt
                           // each poll from the LIVE scene, so without this a room's
@@ -92,6 +96,11 @@ let dungKeySrc = {};      // key idx -> {x,y} world tile the key was PICKED UP f
 const DUNG_KEY_MANUAL = 'manual promotion';   // dungCritKeys value for a hand-promoted key
 const DUNG_KEY_PARTY = 'party mark';          // dungCritKeys value for a party-relayed mark
 let dungCritKeyBlock = {};   // key idx -> 1: hand-DEMOTED keys the auto-latch must not re-add
+// STRUCTURALLY DERIVED crit keys (planner-written): a key fetched from a proven-critical
+// dead end is critical, because that branch exists to fetch it and reaches nothing else.
+// Kept apart from dungCritKeys so a derivation is never relayed to the party as if it
+// were a human mark, and a hand demotion still silences it like any other mark.
+let dungDerivedCritKeys = {};   // key idx -> why-string
 let dungCritKeyTouch = {};   // key idx -> Date.now() of the last local toggle: the party merge
                              // won't override it for ~3s (same optimistic hold as noncrit)
 let dungRestored = false;    // floor-marks restore ran this UI session (a panel rebuild resets
@@ -119,8 +128,8 @@ let dungCritKeys = {};        // key idx -> why: hand promotions, local and part
 // **A key found on the critical path does NOT guarantee its door leads to another
 // critical room** -- it is an indicator, not a proof. That is why
 // nothing derives criticality any more.
-function dungKeyIsCrit(i) { return !dungCritKeyBlock[i] && !!dungCritKeys[i]; }
-function dungKeyWhy(i) { return dungCritKeys[i] || ''; }
+function dungKeyIsCrit(i) { return !dungCritKeyBlock[i] && (!!dungCritKeys[i] || !!dungDerivedCritKeys[i]); }
+function dungKeyWhy(i) { return dungCritKeys[i] || dungDerivedCritKeys[i] || ''; }
 function dungKeyName(i) { const k = dungKeyInfo(18202 + 2 * (i - 1)); return k ? k.name : ''; }
 // attribute-safe text for the panel's own tooltips (names come from the game, so quotes and
 // angle brackets must not be able to break out of the attribute)
@@ -482,8 +491,13 @@ function dungDoorMine(dl) {
 //                a bonus room. (It can still be forced at a failure chance, so it is
 //                faded rather than hidden.)
 function dungDoorBand(dl) {
+  if (!dl) return null;
+  // A requirement of 106+ is critical UNCONDITIONALLY, party levels known or not:
+  // bonus-room skill doors only generate in the 1..105 band, so a 106+ reading can
+  // only sit on the critical path.
+  if (dl.level >= 106) return 'critical';
   const best = dungDoorMine(dl);
-  if (!dl || best == null) return null;
+  if (best == null) return null;
   if (dl.level > best) return 'above';
   if (dl.level < best - DUNG_DOOR_CRIT_MARGIN) return 'low';
   return 'critical';
@@ -3699,7 +3713,8 @@ function dungRoomSpace(rooms, floor, key) {
 //     branch by arithmetic, not by guesswork;
 //   * when the maximum remaining hits 0 the chain must already be complete, so the
 //     boss is reachable through rooms seen so far.
-const DUNG_CRIT_MIN = 19, DUNG_CRIT_MAX = 23;
+// Large-floor critical trees span 18..23 rooms INCLUDING the start and boss rooms.
+const DUNG_CRIT_MIN = 18, DUNG_CRIT_MAX = 23;
 // `critKeysHeld` = critical keys in the pack. Each one is a door that still has to be
 // opened, and the room behind it is ON the chain -- so it is already accounted for
 // among the remaining rooms. The rooms still to find by
@@ -3874,9 +3889,11 @@ function dungPlan(rooms, ctx) {
   const startKey = ctx.startKey, held = ctx.held, floor = ctx.floor;
   const from = (ctx.playerKey && rooms[ctx.playerKey]) ? ctx.playerKey : startKey;
   const led = dungLedger(rooms, held);
+  const planNow = Date.now();
   for (const kk in rooms) {
     const c = rooms[kk];
     c.unex = !!(c.bg && c.bg.length && c.bg.every(s => DUNG_UNEX_SPR.has(s)));
+    if (!c.unex && c.doors && !dungOpenedAt[kk]) dungOpenedAt[kk] = planNow;
     c.onPath = false; c.critSelfWhy = null; c.critPathWhy = null;
     c.rec = false; c.need = false; c.recCrit = false; c.recWhy = null; c.pot = 0; c.lowVia = false;
     c.deadBranch = false; c.refuted = false; c.keyFrom = null; c.keyFromAssumed = false;
@@ -4032,6 +4049,10 @@ function dungPlan(rooms, ctx) {
       if (!c || deadBranch[kk] || c.boss || c.start || dungManualCrit[kk] || factLatch(kk)) continue;
       if (c.unex || !c.doors) continue;               // no verdict without data
       if (c.key || (c.groundKeys && c.groundKeys.length) || c.keyFrom || keyCameFrom[kk]) continue;
+      // "No key here" is only trusted once the room has been open a moment: the map
+      // shows the room a few frames before the ground scan can report its key, and
+      // pruning in that window would eat a possible key room.
+      if (!dungOpenedAt[kk] || planNow - dungOpenedAt[kk] < 1200) continue;
       const p0 = kk.split(',').map(Number);
       let live = 0, frontier = false;
       for (const st of DUNG_DIRS) {
@@ -4052,6 +4073,28 @@ function dungPlan(rooms, ctx) {
     if (c && (dungDoorBand(dungDoorLevels[kk]) === 'critical'
               || (c.res && c.res.band === 'critical'))) c.refuted = true;
   }
+  // THE BOSS ON THE MAP SETTLES EVERY UNKNOWN. The boss icon only appears once the
+  // room has been walked into, and walking in means the whole critical tree between
+  // start and boss was ALREADY opened: any room still unopened now (locked doors
+  // included) hangs off the path, and every critical key was already spent. So:
+  //  - unopened rooms join the dead-branch set (manual promotions and fact latches
+  //    stay the player's overrule, as everywhere);
+  //  - solo (where the key ring is trustworthy), a key whose door was never even
+  //    SEEN cannot gate the route: veto its crit mark like a filler key. Party
+  //    floors keep the mark: a mate may have seen the door this client never did.
+  if (bossCell) {
+    for (const kk in rooms) {
+      const c = rooms[kk];
+      if (!c || c.boss || c.start || dungManualCrit[kk] || factLatch(kk)) continue;
+      if (!(c.unex || c.key)) continue;   // opened rooms keep their own verdicts
+      deadBranch[kk] = true; c.deadBranch = true;
+    }
+    if (soloFloor) for (const si in dungKeySrc) {
+      if (dungCritKeys[si] === DUNG_KEY_MANUAL) continue;
+      if (!dungKeyDoor[si] && !(led[si] && led[si].door)) keyBehindFiller[si] = 1;
+    }
+  }
+
   // OBJECTIVES -- the boss once found, otherwise every live frontier.
   const bossKey = bossCell;   // the boss, once mapped, is the only objective
   const fronts = [];
@@ -4247,7 +4290,10 @@ function dungPlan(rooms, ctx) {
         const sc = dungKeySrc[si];
         const srcCc = srcUsable(sc) ? ctx.cellOfWorld(sc.x, sc.y) : null;
         const dk = dungKeyDoor[si];
-        if (routeSet && dk && routeSet[dk]) forcedKey[si] = 'route';
+        // 'route' also covers a door latched onto any PROVEN-critical room, boss known
+        // or not: a critical lock forces the fetch, even though a critical fetch never
+        // says anything about the lock (critical rooms drop bonus keys too).
+        if (dk && ((routeSet && routeSet[dk]) || confSet.has(dk))) forcedKey[si] = 'route';
         else {
           if (!live.length && !confSet.size) continue;
           const r = reachWithout(+si);
@@ -4267,6 +4313,30 @@ function dungPlan(rooms, ctx) {
         if (srcCc && rooms[srcCc]) { mandatorySrc[srcCc] = 1; confSet.add(srcCc); }
       }
       if (!grew) break;
+    }
+    // A PROVEN-CRITICAL DEAD END THAT YIELDED A KEY exists to fetch that key: the
+    // branch reaches nothing else, so the key is critical (a side-branch terminus).
+    // Purely structural, so it may derive key criticality without a human mark; a
+    // hand demotion still silences it, and it is never relayed as a mark.
+    for (const kk in keyCameFrom) {
+      const si = keyCameFrom[kk];
+      if (dungDerivedCritKeys[si] || keyBehindFiller[si] || dungCritKeyBlock[si]) continue;
+      const c = rooms[kk];
+      if (!c || c.unex || !c.doors) continue;
+      const proven = dungManualCrit[kk] || factLatch(kk) || mandatorySrc[kk] || (evStr[kk] || 0) >= 2;
+      if (!proven) continue;
+      const par = sTop.par[kk];
+      const p0 = kk.split(',').map(Number);
+      let open = false, frontier = false;
+      for (const st of DUNG_DIRS) {
+        if (!(c.doors & st[0])) continue;
+        const nk = (p0[0] + st[1]) + ',' + (p0[1] + st[2]);
+        const n = rooms[nk];
+        if (!n || n.unex || !n.doors) { frontier = true; break; }
+        if (nk !== par && !deadBranch[nk]) open = true;
+      }
+      if (frontier || open) continue;
+      dungDerivedCritKeys[si] = 'fetched from a proven critical dead end';
     }
   }
   // MUST-VISIT -- rooms whose removal cuts the start off from EVERY live
@@ -4298,6 +4368,34 @@ function dungPlan(rooms, ctx) {
       if (cc2 && rooms[cc2] && base[cc2] !== undefined && !rooms[cc2].start && provenB.indexOf(cc2) < 0)
         provenB.push(cc2);
     }
+    // CAPACITY FORCING (large floors only): the critical tree spans at least
+    // DUNG_CRIT_MIN rooms INCLUDING start and boss. If avoiding a room leaves fewer
+    // than that many rooms even after crediting every unmapped cell the remainder
+    // could still open into, the path cannot fit around it: proven critical.
+    // Unmapped cells flood-fill into 4-connected regions once; a region adjacent to
+    // several frontier rooms is credited to each rather than partitioned. The
+    // over-count is deliberate: it only ever makes the rule fire LESS often.
+    const bigFloor = floor && floor.cols > 4 && floor.rows > 4;
+    let regionOf = null, regionSize = null;
+    if (bigFloor) {
+      regionOf = {}; regionSize = [];
+      for (let ry = 0; ry < floor.rows; ry++) for (let rx = 0; rx < floor.cols; rx++) {
+        const k0 = rx + ',' + ry;
+        if (rooms[k0] || regionOf[k0] !== undefined) continue;
+        const id = regionSize.length; let n = 0; const q = [[rx, ry]];
+        regionOf[k0] = id;
+        for (let i = 0; i < q.length; i++) {
+          n++;
+          for (const st of DUNG_DIRS) {
+            const nx = q[i][0] + st[1], ny = q[i][1] + st[2], nk2 = nx + ',' + ny;
+            if (nx < 0 || ny < 0 || nx >= floor.cols || ny >= floor.rows) continue;
+            if (rooms[nk2] || regionOf[nk2] !== undefined) continue;
+            regionOf[nk2] = id; q.push([nx, ny]);
+          }
+        }
+        regionSize.push(n);
+      }
+    }
     if (liveB.length || provenB.length) for (const kk in rooms) {
       if (kk === startKey || rooms[kk].start || dungManualNonCrit[kk] || base[kk] === undefined) continue;
       const d2 = reachSkip(kk);
@@ -4310,6 +4408,26 @@ function dungPlan(rooms, ctx) {
       if (!must[kk] && provenB.some(t => t !== kk && d2[t] === undefined)) {
         must[kk] = 1;
         mustWhy[kk] = 'the only way to a proven room';   // written in RENDER (stage G)
+      }
+      if (bigFloor && !must[kk] && !deadBranch[kk]) {
+        let potential = 0; const regs = new Set();
+        for (const rk in d2) {
+          potential++;
+          const rc = rooms[rk];
+          // Frontier rooms (unexplored, or still showing a locked door) may open into
+          // adjacent unmapped space; credit those regions to the survivor count.
+          if (!(rc && (rc.unex || rc.key))) continue;
+          const rp = rk.split(',').map(Number);
+          for (const st of DUNG_DIRS) {
+            const rid = regionOf[(rp[0] + st[1]) + ',' + (rp[1] + st[2])];
+            if (rid !== undefined) regs.add(rid);
+          }
+        }
+        regs.forEach(id => { potential += regionSize[id]; });
+        if (potential < DUNG_CRIT_MIN) {
+          must[kk] = 1;
+          mustWhy[kk] = 'the floor cannot fit the critical path around it';
+        }
       }
     }
   }
@@ -5003,7 +5121,7 @@ async function fetchDungeoneering() {
     const inDung = groups.some(g => g.id === 945);
     const mapOpen = groups.some(g => g.id === 942);
     const party92 = groups.some(g => DUNG_PARTY_GROUPS.indexOf(g.id) >= 0);
-    if (!inDung) { dungDropMarks(); dungFloorSW = null; dungLastTimer = -1; dungKeyCache = {}; dungKeySrc = {}; dungKeyDoor = {}; dungKeyFillerVeto = {}; dungHeldSeen = {}; dungHeldInit = false; dungRoomRes = {}; dungCritKeys = {}; dungCritKeyBlock = {}; dungCritKeyTouch = {}; dungDoorLevels = {}; dungTipLast = ''; dungStatues = null; dungMonoDone = {}; dungEmoteLast = -1; dungEmoteWatch = ''; dungManualNonCrit = {}; dungNonCritTouch = {}; dungManualCrit = {}; dungManualCritTouch = {}; dungNonCritSeen = {}; dungManualCritSeen = {}; dungStickyObj = ''; dungClearOverlays(); }   // left the dungeon -> drop anchor + keys + highlights (no party 'reset': the rest of the party may still be on the floor)
+    if (!inDung) { dungDropMarks(); dungFloorSW = null; dungLastTimer = -1; dungKeyCache = {}; dungOpenedAt = {}; dungKeySrc = {}; dungKeyDoor = {}; dungKeyFillerVeto = {}; dungHeldSeen = {}; dungHeldInit = false; dungRoomRes = {}; dungCritKeys = {}; dungDerivedCritKeys = {}; dungCritKeyBlock = {}; dungCritKeyTouch = {}; dungDoorLevels = {}; dungTipLast = ''; dungStatues = null; dungMonoDone = {}; dungEmoteLast = -1; dungEmoteWatch = ''; dungManualNonCrit = {}; dungNonCritTouch = {}; dungManualCrit = {}; dungManualCritTouch = {}; dungNonCritSeen = {}; dungManualCritSeen = {}; dungStickyObj = ''; dungClearOverlays(); }   // left the dungeon -> drop anchor + keys + highlights (no party 'reset': the rest of the party may still be on the floor)
     // Roster is party context, not dungeon context: keep it while the party interface
     // is open (forming), drop it only when there's no party context at all.
     if (!inDung && !party92) dungPartyRoster = {};
@@ -5052,7 +5170,7 @@ async function fetchDungeoneering() {
           }
         } catch (e) {}
       }
-      if (typeof tmr === 'number') { if (tmr < dungLastTimer - 2) { dungFloorSW = null; dungKeyCache = {}; dungKeySrc = {}; dungKeyDoor = {}; dungKeyFillerVeto = {}; dungHeldSeen = {}; dungHeldInit = false; dungRoomRes = {}; dungCritKeys = {}; dungCritKeyBlock = {}; dungCritKeyTouch = {}; dungDoorLevels = {}; dungCritLatch = {}; dungDropMarks(); dungTipLast = ''; dungMonoDone = {}; dungEmoteLast = -1; dungEmoteWatch = ''; dungLodeTick = -1; dungLodeWarnAt = -1; dungRouteTarget = ''; dungManualNonCrit = {}; dungNonCritTouch = {}; dungManualCrit = {}; dungManualCritTouch = {}; dungNonCritSeen = {}; dungManualCritSeen = {}; dungStickyObj = ''; dungPartyHoldUntil = Date.now() + 3000; dungPartyReport('reset', {}); } dungLastTimer = tmr; }   // roster persists across floors (party context, not floor); 'reset' clears the party channel's floor-scoped facts
+      if (typeof tmr === 'number') { if (tmr < dungLastTimer - 2) { dungFloorSW = null; dungKeyCache = {}; dungOpenedAt = {}; dungKeySrc = {}; dungKeyDoor = {}; dungKeyFillerVeto = {}; dungHeldSeen = {}; dungHeldInit = false; dungRoomRes = {}; dungCritKeys = {}; dungDerivedCritKeys = {}; dungCritKeyBlock = {}; dungCritKeyTouch = {}; dungDoorLevels = {}; dungCritLatch = {}; dungDropMarks(); dungTipLast = ''; dungMonoDone = {}; dungEmoteLast = -1; dungEmoteWatch = ''; dungLodeTick = -1; dungLodeWarnAt = -1; dungRouteTarget = ''; dungManualNonCrit = {}; dungNonCritTouch = {}; dungManualCrit = {}; dungManualCritTouch = {}; dungNonCritSeen = {}; dungManualCritSeen = {}; dungStickyObj = ''; dungPartyHoldUntil = Date.now() + 3000; dungPartyReport('reset', {}); } dungLastTimer = tmr; }   // roster persists across floors (party context, not floor); 'reset' clears the party channel's floor-scoped facts
       const yw = vc['5:5115'];
       if (typeof yw === 'number') d.yaw = ((yw % 16284) + 16284) % 16284;
       dungMonoCharge = (typeof vc['5:1233'] === 'number') ? vc['5:1233'] : null;   // monolith progress
@@ -5335,7 +5453,14 @@ async function fetchDungeoneering() {
               // LOW-tier resource alongside a high one is a side room, and the low tier
               // OVERRIDES (a T9 Woodcutting + T5 Fishing room that was
               // not on the route). Generated content puts filler together with filler.
-              if (nr.band === 'filler' || nr.band === 'bonus') {
+              // resLow is a PROOF the room is off the path, so it is STATIC, not
+              // party-relative: only the top two tiers of a resource type generate on
+              // both sides of the split, so any tier below those proves a bonus room
+              // whatever the party's levels are. An uncompletable (above-level)
+              // resource proves NOTHING: it also generates on the critical path. The
+              // party-relative band above stays what it was: an advisory for badges
+              // and ranking priors, never a proof.
+              if (nr.tier > 0 && nr.tier < DUNG_RES_SCALE.length - 1) {
                 if (!cell.resLow || nr.tier < cell.resLow.tier) cell.resLow = nr;
               }
             }
