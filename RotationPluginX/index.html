@@ -264,8 +264,11 @@
     if (nl !== -1) tt.appendChild(document.createTextNode('\n' + text.slice(nl + 1)));
     tt.style.display = 'block';
     const r = tt.getBoundingClientRect();
+    // Flip to the LEFT of the cursor when the right side is tight, instead of clamping
+    // against the window edge: clamping parked the tip over the palette's scrollbar.
     let lx = x + 12, ly = y - r.height - 10;
-    if (lx + r.width > innerWidth - 4) lx = innerWidth - r.width - 4;
+    if (lx + r.width > innerWidth - 18) lx = x - r.width - 12;
+    if (lx < 4) lx = Math.max(4, innerWidth - r.width - 18);
     if (ly < 4) ly = y + 16;
     tt.style.left = lx + 'px'; tt.style.top = ly + 'px';
   }
