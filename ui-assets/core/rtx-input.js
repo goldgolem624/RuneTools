@@ -25,6 +25,7 @@
     };
     if (!menubarHidden) add($('menubar'));
     add($('mbdrop'));
+    add($('mbdrop2'));   // the More menu's side flyout claims its clicks too
     // A locked HUD is deliberately absent: no consume rect means the companion never
     // swallows the click, so it lands in the game underneath. It keeps drawing regardless.
     for (const w of wm.wins.values()) if (!w.min && !w.locked) add(w.el);

@@ -172,8 +172,8 @@
   .mb-btn:hover { background: var(--bg-elev-2); color: var(--text); }
   .mb-btn.on { color: var(--accent-hi); border-color: var(--accent-hi); }
 
-  /* --- Category dropdown --- */
-  #mbdrop {
+  /* --- Category dropdown (+ the More menu's side flyout, #mbdrop2) --- */
+  #mbdrop, #mbdrop2 {
     position: absolute; z-index: 100001;
     min-width: 210px; max-height: 60vh; overflow-y: auto;
     background: var(--bar-bg);
@@ -182,9 +182,12 @@
     padding: 6px;
     animation: mbdrop-in var(--tx-med) var(--ease);
   }
+  #mbdrop2 { z-index: 100002; }   /* beside its parent, never under it */
   @keyframes mbdrop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-  #mbdrop::-webkit-scrollbar { width: 8px; }
-  #mbdrop::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  #mbdrop::-webkit-scrollbar, #mbdrop2::-webkit-scrollbar { width: 8px; }
+  #mbdrop::-webkit-scrollbar-thumb, #mbdrop2::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  /* The More row whose flyout is open stays lit, like an open bar category. */
+  #mbdrop .tab.open { background: rgba(var(--accent-rgb),0.16); color: var(--text); }
   .tab {
     appearance: none; background: transparent; border: none;
     color: var(--text-dim); text-align: left; width: 100%;

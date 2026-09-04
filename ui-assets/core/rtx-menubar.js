@@ -32,8 +32,48 @@
     wm.mbDrop = null;
     const dd = $('mbdrop');
     if (dd) dd.remove();
+    closeMbFlyout();
     const bar = $('menubar');
     if (bar) bar.querySelectorAll('.mb-cat.open').forEach(b => b.classList.remove('open'));
+    wmRectsSoon();
+  }
+  // The More menu's second level: a flyout BESIDE the parent list, so picking a
+  // category no longer replaces the More menu (choosing wrong meant starting over).
+  function closeMbFlyout() {
+    const dd2 = $('mbdrop2');
+    if (dd2) dd2.remove();
+    const dd = $('mbdrop');
+    if (dd) dd.querySelectorAll('.tab.open').forEach(b => b.classList.remove('open'));
+  }
+  function openMbFlyout(catId, row) {
+    const was = row.classList.contains('open');
+    closeMbFlyout();
+    if (was) { wmRectsSoon(); return; }   // clicking the open row toggles its flyout shut
+    row.classList.add('open');
+    const dd = document.createElement('div');
+    dd.id = 'mbdrop2';
+    for (const e of mbCatEntries(catId)) {
+      const w = e.win, target = e.target;
+      const b = document.createElement('button');
+      b.className = 'tab' + ((w && !w.min && !w.rolled && target && w.tab === target.id) ? ' is-active' : '');
+      b.innerHTML = '<span class="tab-label"></span>' + (w ? '<span class="tab-on"></span>' : '');
+      b.querySelector('.tab-label').textContent = e.label;
+      b.addEventListener('click', () => mbActivate(e));
+      dd.appendChild(b);
+    }
+    document.body.appendChild(dd);
+    const rr = row.getBoundingClientRect();
+    const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
+    const w2 = dd.offsetWidth || 220, h2 = dd.offsetHeight || 200;
+    // Beside the parent list: to its right when there is room (the More menu hugs the
+    // bar's right edge, so usually there is not), otherwise to its left.
+    let x = Math.round(rr.right + 8);
+    if (x + w2 > vw - 6) x = Math.round(rr.left - w2 - 8);
+    x = Math.max(6, Math.min(vw - w2 - 6, x));
+    let y = Math.round(rr.top - 6);
+    y = Math.max(6, Math.min(vh - h2 - 6, y));
+    dd.style.left = x + 'px';
+    dd.style.top = y + 'px';
     wmRectsSoon();
   }
   // The rows a category's menu shows. A TAB_GROUP collapses to ONE row, so this is what the user
@@ -97,7 +137,7 @@
       b.addEventListener("click", () => {
         const es = mbCatEntries(c.id);
         if (es.length === 1) { closeMbDrop(); mbActivate(es[0]); return; }
-        openMbDrop(c.id, btn);
+        openMbFlyout(c.id, b);   // beside the More list, which stays open
       });
       dd.appendChild(b);
     }
@@ -185,7 +225,7 @@
   }
   document.addEventListener('mousedown', (e) => {
     if (!wm.mbDrop) return;
-    if (e.target && e.target.closest && (e.target.closest('#mbdrop') || e.target.closest('#menubar'))) return;
+    if (e.target && e.target.closest && (e.target.closest('#mbdrop') || e.target.closest('#mbdrop2') || e.target.closest('#menubar'))) return;
     closeMbDrop();
   }, true);
 
@@ -268,7 +308,10 @@
     // looked "completely closed" without an affordance); click restores it. Built in the
     // COLLAPSED bar too -- collapsing is about reclaiming the category rail, and dropping
     // the chips with it stranded every minimized window with nothing left to click.
-    const minimized = Array.from(wm.wins.values()).filter(w => w.min);
+    // barMinChips !== false: shown by DEFAULT; hiding them is the opt-in (Preferences >
+    // Bar), because without the chips a minimized window's only affordance is its menu
+    // category entry.
+    const minimized = (uiCfg().barMinChips !== false) ? Array.from(wm.wins.values()).filter(w => w.min) : [];
     if (minimized.length) {
       const chips = document.createElement('div');
       chips.className = 'mb-chips';
@@ -290,6 +333,9 @@
     st.className = 'mb-status';
     st.innerHTML = '<div class="title" id="hdr-title"><span class="dot"></span>' +
                    '<span id="hdr-name">--</span></div><div class="meta" id="hdr-meta">--</div>';
+    // Hidden, not skipped: renderHeader/uiBarTick keep writing into the hdr-* ids, so
+    // the elements must exist even when the user turns the status block off.
+    if (uiCfg().barStatus === false) st.style.display = 'none';
     bar.appendChild(st);
     const info = document.createElement('div'); info.className = 'mb-info'; info.id = 'hdr-info';
     bar.appendChild(info);
