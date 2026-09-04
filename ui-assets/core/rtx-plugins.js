@@ -13,6 +13,56 @@
   let   pluginTabs    = [];     // [{ id, manifest:{id,name,version,author,entry,description}, scopes:[] }]
   const pluginMounts  = new Map();   // plugin id -> { id, frame, scopes }; one per open plugin window
   const pluginBuckets = {};     // "id|method" -> token bucket
+  // ---- per-plugin settings, declared by the plugin and rendered on the host's own
+  // Preferences page (rtx-settings.js) so every plugin gets standard controls for
+  // free. The plugin calls rtx.plugin.ui.settings(schema) once at boot; values are
+  // stored host-side in the plugin's storage bucket under the reserved key
+  // '~settings' (host-mediated: no 'storage' scope needed) and pushed back to the
+  // plugin as a 'settings' event on declare and on every change.
+  const pluginSettingsReg = new Map();   // plugin id -> { name, schema, values }
+  function pluginSettingsSchema(raw) {
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    for (const c of raw.slice(0, 24)) {
+      if (!c || typeof c !== 'object') continue;
+      const key = String(c.key || '');
+      if (!/^[A-Za-z0-9_.-]{1,32}$/.test(key)) continue;
+      const type = String(c.type || '');
+      if (['toggle', 'select', 'slider', 'text'].indexOf(type) < 0) continue;
+      const ctl = { key, type, label: pClampStr(c.label || key, 48), hint: pClampStr(c.hint || '', 120) };
+      if (type === 'select') {
+        ctl.options = (Array.isArray(c.options) ? c.options : []).slice(0, 12)
+          .map(o => ({ v: pClampStr(o && o.v, 40), label: pClampStr((o && o.label) || (o && o.v), 32) }))
+          .filter(o => o.v !== '');
+        if (!ctl.options.length) continue;
+      }
+      if (type === 'slider') {
+        ctl.min = pClampNum(c.min, -1e6, 1e6); ctl.max = pClampNum(c.max, -1e6, 1e6);
+        if (!(ctl.max > ctl.min)) continue;
+        ctl.step = pClampNum(c.step || 1, 1e-3, ctl.max - ctl.min);
+      }
+      ctl.def = pluginSettingClamp(ctl, c.default);
+      out.push(ctl);
+    }
+    return out.length ? out : null;
+  }
+  function pluginSettingClamp(ctl, v) {
+    if (ctl.type === 'toggle') return !!v;
+    if (ctl.type === 'slider') return pClampNum(v, ctl.min, ctl.max);
+    if (ctl.type === 'select') return ctl.options.some(o => o.v === v) ? v : ctl.options[0].v;
+    return pClampStr(v == null ? '' : v, 200);
+  }
+  // Change one value (Preferences page calls this): clamp, persist, push to the plugin.
+  function pluginSettingsSet(id, key, v) {
+    const reg = pluginSettingsReg.get(id);
+    if (!reg) return;
+    const ctl = reg.schema.find(c => c.key === key);
+    if (!ctl) return;
+    reg.values[key] = pluginSettingClamp(ctl, v);
+    try { bridge().pluginStoreSave(myPid(), id, '~settings', JSON.stringify(reg.values)); } catch (e) {}
+    const m = pluginMounts.get(id);
+    if (m) pluginSendEvent(m, 'settings', Object.assign({}, reg.values));
+  }
   function pluginUnmount(id) {
     // Release keyboard capture a frame claimed: an unmounted frame fires no focusout, and a
     // leaked grab would eat every keystroke meant for the game from then on.
@@ -28,7 +78,7 @@
   // Canonical SDK shim (mirror of ui-assets/plugin-sdk.js) spliced into each plugin
   // frame; inlined because LoadHTML gives the panel no base URL to fetch from.
   const PLUGIN_SDK_SHIM = `(function(){'use strict';if(window.rtx&&window.rtx.plugin)return;
-var P='rtx.plugin/1',T=15000,seq=1,pending=Object.create(null),L={tick:[],state:[],events:[]},EV={},rcb=[],S={ready:false,scopes:[],apiVersion:null,pluginId:null};
+var P='rtx.plugin/1',T=15000,seq=1,pending=Object.create(null),L={tick:[],state:[],events:[],settings:[]},EV={},rcb=[],S={ready:false,scopes:[],apiVersion:null,pluginId:null};
 function call(method,args){return new Promise(function(res,rej){var id=seq++;var tm=setTimeout(function(){if(pending[id]){delete pending[id];rej(new Error('rtx.plugin: timeout '+method));}},T);pending[id]={res:res,rej:rej,tm:tm};try{parent.postMessage({__rtxPlugin:P,kind:'call',id:id,method:method,args:args||[]},'*');}catch(e){clearTimeout(tm);delete pending[id];rej(e);}});}
 window.addEventListener('message',function(ev){var m=ev.data;if(!m||m.__rtxPlugin!==P)return;if(ev.source!==parent)return;
 if(m.kind==='edit'){var c=String(m.cmd||''),ok=false;try{ok=document.execCommand(c);}catch(e){}
@@ -53,7 +103,8 @@ clipboard:{copy:function(t){return call('clipboard.copy',[t]);},paste:function()
 overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t,s,c){return call('overlay.centerText',[t,s,c]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},highlightRects:function(l){return call('overlay.highlightRects',[l||[]]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);},hudAbilities:function(p){return call('overlay.hudAbilities',[p||null]);}},
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
-ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);}}};
+ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);},settings:function(schema){return call('ui.settings',[schema]);}},
+settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}}};
 window.rtx=window.rtx||{};window.rtx.plugin=api;
 // Keyboard focus publishing: the frame is a sandboxed opaque origin, so the host page cannot
 // see our activeElement; without this every keystroke aimed at a plugin text field went to the
@@ -518,7 +569,27 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'act.xpPanelReset':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().xpPanelReset(pid, ...pArgs(a)) },
     'act.ifaceOffset':        { scope: 'actuator',    json: false, run: (a) => bridge().ifaceOffset(...pArgs(a)) },
     'ui.setHeight':     { scope: null,         json: false,   run: (a, pid, id, fr) => { if (fr) fr.style.height = pClampNum(a[0], 60, 4000) + 'px'; return true; } },
-    'ui.setTitle':      { scope: null,         json: false,   run: () => true }
+    'ui.setTitle':      { scope: null,         json: false,   run: () => true },
+    // Declare the plugin's settings schema; returns the current values. Host-mediated,
+    // so no scope is needed: the plugin only ever sees its own values.
+    'ui.settings':      { scope: null,         json: false,   run: async (a, pid, id) => {
+      const schema = pluginSettingsSchema(a[0]);
+      if (!schema) throw new Error('invalid settings schema');
+      let stored = null;
+      try { stored = JSON.parse(await bridge().pluginStoreLoad(pid, id, '~settings') || 'null'); } catch (e) {}
+      const values = {};
+      for (const c of schema) values[c.key] = pluginSettingClamp(c, (stored && stored[c.key] !== undefined) ? stored[c.key] : c.def);
+      const tab = pluginTabs.find(p => p.id === id);
+      pluginSettingsReg.set(id, { name: (tab && tab.manifest.name) || id, schema, values });
+      try { if (typeof uisBuildPluginSettings === 'function') uisBuildPluginSettings(); } catch (e) {}
+      const m = pluginMounts.get(id);
+      if (m) pluginSendEvent(m, 'settings', Object.assign({}, values));
+      return Object.assign({}, values);
+    } },
+    'settings.get':     { scope: null,         json: false,   run: (a, pid, id) => {
+      const reg = pluginSettingsReg.get(id);
+      return reg ? Object.assign({}, reg.values) : {};
+    } }
   };
 
   function pluginRateOk(id, method) {

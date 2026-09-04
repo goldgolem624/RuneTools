@@ -14,7 +14,7 @@
 
   var seq = 1;
   var pending = Object.create(null);     // id -> { resolve, reject, timer }
-  var listeners = { tick: [], state: [], events: [] };
+  var listeners = { tick: [], state: [], events: [], settings: [] };
   var eventSubs = {};                    // kind -> [cb]; '*' = every kind
   var readyCbs = [];
   var session = { ready: false, scopes: [], apiVersion: null, pluginId: null };
@@ -222,7 +222,9 @@
 
     // ---- scope: clipboard (copy-only; nothing is read back) ----
     clipboard: {
-      copy: function (text) { return call('clipboard.copy', [text]); }
+      copy: function (text) { return call('clipboard.copy', [text]); },
+      // Needs the separate 'clipboard.read' scope.
+      paste: function () { return call('clipboard.paste', []); }
     },
 
     // ---- scope: sound (bundled WAV allowlist) ----
@@ -240,7 +242,17 @@
     // ---- ui (always available) ----
     ui: {
       setHeight: function (px) { return call('ui.setHeight', [px]); },
-      setTitle:  function (s) { return call('ui.setTitle', [s]); }
+      setTitle:  function (s) { return call('ui.setTitle', [s]); },
+      // Declare a settings schema; the host renders the controls on its Preferences
+      // page and returns the current values. See PLUGIN_SDK.md for the schema shape.
+      settings:  function (schema) { return call('ui.settings', [schema]); }
+    },
+
+    // ---- settings (always available; values for the declared schema) ----
+    settings: {
+      get: function () { return call('settings.get', []); },
+      // cb(values) fires on declare and on every change made in Preferences.
+      on:  function (cb) { if (typeof cb === 'function') listeners.settings.push(cb); }
     }
   };
 

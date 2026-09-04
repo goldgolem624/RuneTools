@@ -127,6 +127,12 @@
     rows.appendChild(uisPill('24-hour clock', 'uis_bar24', () => !!cfg.bar24h, v => { cfg.bar24h = v; save(); }));
     rows.appendChild(uisPill('Session timer', 'uis_barsess', () => !!cfg.barSession, v => { cfg.barSession = v; save(); }, 'Time logged into the game this session (lobby and in-game)'));
     rows.appendChild(uisPill('XP per hour', 'uis_barxp', () => !!cfg.barXp, v => { cfg.barXp = v; save(); }, 'Total XP/h from the XP tracker session'));
+    rows.appendChild(uisPill('Player status', 'uis_barstatus', () => cfg.barStatus !== false,
+      v => { cfg.barStatus = v; save(); try { renderMenubar(); } catch (e) {} },
+      'The name / world block in the bar; off hides it entirely (see also Privacy to mask just the name or world)'));
+    rows.appendChild(uisPill('Minimized panel chips', 'uis_barmin', () => cfg.barMinChips !== false,
+      v => { cfg.barMinChips = v; save(); try { renderMenubar(); } catch (e) {} },
+      'Off hides minimized panels from the bar; reopen them from their menu category'));
 
     // ---------------- Menu ----------------
     sec('Menu');
@@ -238,6 +244,18 @@
       g.appendChild(chip); g.appendChild(clr); v.appendChild(g); r.appendChild(k); r.appendChild(v); rows.appendChild(r);
     }
 
+    // ---------------- Plugins (dynamic card) ----------------
+    // Content is declared by plugins over the SDK (rtx.plugin.ui.settings), which can
+    // happen any time after this page is built, so the card owns its own rebuild:
+    // uisBuildPluginSettings() runs here and again whenever the broker registers a
+    // schema. Values reflect through the same generic _get machinery as every other
+    // control.
+    {
+      const card = document.createElement('div'); card.className = 'pf-card'; card.id = 'uisPluginsCard';
+      wrap.appendChild(card);
+      uisBuildPluginSettings(card);
+    }
+
     // ---------------- Privacy ----------------
     sec('Privacy');
     rows.appendChild(uisPill('Hide player name', 'uis_hidename', () => !!nameHidden, v => setNameHidden(v), 'Masks the name in the bar header'));
@@ -279,6 +297,49 @@
     for (const card of wrap.querySelectorAll('.pf-card')) { const f = card.querySelector('.row'); if (f) f.classList.add('pf-first'); }
     c.appendChild(wrap);
     reflectUiSettings();
+  }
+
+  // Plugin settings card: built here, rebuilt by the broker (rtx-plugins.js) whenever a
+  // plugin declares its schema. Renders the standard widgets for each declared control;
+  // a change goes through pluginSettingsSet, which clamps, persists and pushes the new
+  // values to the plugin as a 'settings' event.
+  function uisBuildPluginSettings(hostEl) {
+    const host = hostEl || $('uisPluginsCard');
+    if (!host) return;
+    host.innerHTML = '';
+    const h = document.createElement('div'); h.className = 'pf-title'; h.textContent = 'Plugins';
+    host.appendChild(h);
+    const reg = (typeof pluginSettingsReg !== 'undefined') ? pluginSettingsReg : null;
+    if (!reg || !reg.size) { uisNote(host, 'Plugins that declare settings appear here once opened.'); return; }
+    let firstRow = true;
+    for (const [id, r] of reg) {
+      const sub = document.createElement('div'); sub.className = 'pf-hint'; sub.style.fontWeight = '600'; sub.textContent = r.name;
+      host.appendChild(sub);
+      for (const c of r.schema) {
+        const eid = 'uisp_' + id.replace(/[^A-Za-z0-9_-]/g, '_') + '_' + c.key;
+        const val = () => r.values[c.key];
+        let row;
+        if (c.type === 'toggle') {
+          row = uisPill(c.label, eid, () => !!val(), v => pluginSettingsSet(id, c.key, v), c.hint);
+        } else if (c.type === 'slider') {
+          row = uisSlider(c.label, eid, c.min, c.max, c.step, () => Number(val()), v => pluginSettingsSet(id, c.key, v), v => String(v));
+        } else if (c.type === 'select') {
+          row = uisChipRow(c.label, eid, c.options.map(o => [o.label, o.v]), v => val() === v, v => pluginSettingsSet(id, c.key, v));
+        } else {
+          row = document.createElement('div'); row.className = 'row';
+          const k = document.createElement('span'); k.className = 'k'; k.textContent = c.label;
+          if (c.hint) { const s2 = document.createElement('span'); s2.className = 'pf-sub'; s2.textContent = c.hint; k.appendChild(s2); }
+          const v2 = document.createElement('span'); v2.className = 'v';
+          const inp = document.createElement('input'); inp.className = 'bank-search'; inp.style.width = '160px';
+          inp.value = String(val() == null ? '' : val()); inp.spellcheck = false;
+          inp.addEventListener('change', () => pluginSettingsSet(id, c.key, inp.value));
+          v2.appendChild(inp); row.appendChild(k); row.appendChild(v2);
+        }
+        if (firstRow) { row.classList.add('pf-first'); firstRow = false; }
+        host.appendChild(row);
+      }
+      firstRow = true;
+    }
   }
 
   // Values only. Never rewrites structure, and never fights a control the user is

@@ -510,6 +510,30 @@ rtx.plugin.ui.setHeight(420);     // resize the plugin frame (60..4000 px)
 rtx.plugin.ui.setTitle("My Tool");// reserved (no-op for now)
 ```
 
+### settings (always available)
+
+Declare a settings schema once at boot and RuneTools renders standard controls for your
+plugin on its own Preferences page (a "Plugins" card). No scope is needed: values are
+stored host-side per plugin and per account, and only your plugin sees them.
+
+```js
+const values = await rtx.plugin.ui.settings([
+  { key: 'compact',  type: 'toggle', label: 'Compact layout', default: false,
+    hint: 'Smaller rows and icons' },
+  { key: 'style',    type: 'select', label: 'Combat style', default: 'melee',
+    options: [{ v: 'melee', label: 'Melee' }, { v: 'ranged', label: 'Ranged' }] },
+  { key: 'volume',   type: 'slider', label: 'Alert volume', min: 0, max: 100, step: 5, default: 70 },
+  { key: 'nickname', type: 'text',   label: 'Display name', default: '' },
+]);
+
+rtx.plugin.settings.on(v => applySettings(v));   // fires on declare and on every change
+const now = await rtx.plugin.settings.get();     // current values on demand
+```
+
+Limits: 24 controls, key `[A-Za-z0-9_.-]` up to 32 chars, labels 48 / hints 120 chars,
+select up to 12 options, text values 200 chars. Values are clamped to the schema on
+every write. The storage key `~settings` in your plugin store is reserved for this.
+
 ## Complete example
 
 ```html
