@@ -247,8 +247,11 @@
           g.fillStyle = col; g.beginPath(); g.arc(bx, Y(v), 3, 0, 6.2832); g.fill();
         }
         const rows = [[dtf(best.timestamp), mute]];
-        if (best.avgHighPrice != null) rows.push(['Instabuy ' + Number(best.avgHighPrice).toLocaleString() + ' gp' + (best.highPriceVolume ? ' x' + Number(best.highPriceVolume).toLocaleString() : ''), okCol]);
-        if (best.avgLowPrice != null) rows.push(['Instasell ' + Number(best.avgLowPrice).toLocaleString() + ' gp' + (best.lowPriceVolume ? ' x' + Number(best.lowPriceVolume).toLocaleString() : ''), warnCol]);
+        // fmtGp, not toLocaleString: it honours the Numbers preference (compact 85.67b
+        // vs full 85,670,000,000), and these are bucket AVERAGES, so the raw value
+        // carries fractional gp that has no meaning on screen -- round it first.
+        if (best.avgHighPrice != null) rows.push(['Instabuy ' + fmtGp(Math.round(best.avgHighPrice)) + ' gp' + (best.highPriceVolume ? ' x' + fmtGp(best.highPriceVolume) : ''), okCol]);
+        if (best.avgLowPrice != null) rows.push(['Instasell ' + fmtGp(Math.round(best.avgLowPrice)) + ' gp' + (best.lowPriceVolume ? ' x' + fmtGp(best.lowPriceVolume) : ''), warnCol]);
         g.font = '10.5px sans-serif';
         let bw = 0;
         for (const [r] of rows) bw = Math.max(bw, g.measureText(r).width);
@@ -289,7 +292,7 @@
          p.low != null ? nx(p.low) + (p.lowTime ? ' · traded ' + gepAge(p.lowTime) + ' ago' : '') : '');
     if (p.high != null && p.low != null && p.low > 0)
       fact('Spread', fmtGp(p.high - p.low) + ' (' + ((p.high - p.low) / p.low * 100).toFixed(1) + '%)', nx(p.high - p.low));
-    if (it.limit) fact('Limit', Number(it.limit).toLocaleString());
+    if (it.limit) fact('Limit', fmtGp(it.limit), Number(it.limit).toLocaleString());
     if (it.highalch) fact('Alch', fmtGp(it.highalch), nx(it.highalch));
     box.appendChild(facts);
     // Lookback chips.
