@@ -658,9 +658,12 @@
         // Do NOT reintroduce varbit 1668 as HP; leagues reuses it (see LEAGUES2.md).
         // Max shown only when it reads sane, so a missing read never paints "x / 0".
         {
+          // RS3 terminology is "Life points", and a boosted current legitimately sits
+          // ABOVE the max (bonfire, Fortitude) -- say so, or the row reads as a bug.
           const mx = playerVp['13538'];
-          add(row('Hitpoints', playerVp['13537'] === undefined ? 'unknown'
-                 : (typeof mx === 'number' && mx > 0 ? L(hp) + ' / ' + L(mx) : L(hp))));
+          const boosted = typeof mx === 'number' && mx > 0 && hp > mx ? ' (boosted)' : '';
+          add(row('Life points', playerVp['13537'] === undefined ? 'unknown'
+                 : (typeof mx === 'number' && mx > 0 ? L(hp) + ' / ' + L(mx) + boosted : L(hp))));
         }
         add(row('Prayer',     L(Math.floor((pr & 0x7fff) / 10)) + ' / ' + L(((pr >>> 16) & 0x7f) * 10)));
         add(row('Summoning',  L(Math.floor((su & 0x7fff) / 10)) + ' / ' + L(((su >>> 16) & 0x7f) * 10)));
@@ -703,7 +706,9 @@
         if (drainPerSec > 0) {
           const t = Math.floor((u('5984') / 3000) / drainPerSec);
           const dd = Math.floor(t / 86400), hh = Math.floor(t % 86400 / 3600), mm = Math.floor(t % 3600 / 60), ss = t % 60;
-          add(row('Time remaining', dd > 0 ? (dd + 'd ' + hh + 'h') : hh > 0 ? (hh + 'h ' + mm + 'm') : mm > 0 ? (mm + 'm ' + ss + 's') : (ss + 's')));
+          // Minutes shown at every magnitude: "1d 0h" for 24h53m read as wrong (it hid
+          // almost an hour); "1d 0h 53m" says exactly what the division produced.
+          add(row('Time remaining', dd > 0 ? (dd + 'd ' + hh + 'h ' + mm + 'm') : hh > 0 ? (hh + 'h ' + mm + 'm') : mm > 0 ? (mm + 'm ' + ss + 's') : (ss + 's')));
         } else {
           add(row('Time remaining', 'n/a'));
         }

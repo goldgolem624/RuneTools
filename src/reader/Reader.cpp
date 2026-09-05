@@ -8276,10 +8276,14 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     {
         const int cur = read_varp(h, *root, 13537), mx = read_varp(h, *root, 13538);
         const bool logged = cur > 0 || mx > 0;
-        const bool sane = logged && mx >= cur && mx > 0 && mx < 100000;
+        // Boosted lifepoints legitimately sit ABOVE the max (bonfire, Fortitude), so
+        // cur > mx is normal; only a wildly disproportionate pair suggests a remap.
+        // 3x max is generous headroom for every ordinary boost.
+        const bool sane = logged && mx > 0 && mx < 100000 && cur >= 0 && cur <= mx * 3;
         add("Life points", !logged ? 2 : sane ? 1 : 0,
             !logged ? "not logged in" :
-            sane ? (std::to_string(cur) + " / " + std::to_string(mx)) : "values look wrong");
+            sane ? (std::to_string(cur) + " / " + std::to_string(mx) + (cur > mx ? " (boosted)" : ""))
+                 : "values look wrong");
     }
     // World-to-screen view matrix: finite, non-zero.
     {
