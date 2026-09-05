@@ -68,6 +68,21 @@
     if (el < 0 || el >= dur || dur > 360000) return null;
     return Math.floor((dur + 50 - el) / 50);
   }
+  // The reader identifies the keybind by its position on the slot widget, which is
+  // ambiguous in one case: a slot that is UNBOUND AND ON COOLDOWN has the countdown as
+  // its only text, so the timer can be reported as the keybind ("8" on a slot with 8s
+  // left). The cooldown CLOCKS are an independent source, so cross-check against them:
+  // a bare number that equals this ability's remaining seconds is the countdown, not a
+  // key. Only applies when the reader found no separate cooldown text (if it found both
+  // nodes, the key is a real one) and never to modified or non-numeric binds.
+  function abKeyOf(s) {
+    const k = s.key || '';
+    if (!k || s.mod || s.cd) return k;
+    if (!/^\d{1,3}$/.test(k)) return k;
+    const live = abCdLive(s);
+    if (live == null) return k;
+    return Math.abs(parseInt(k, 10) - live) <= 1 ? '' : k;
+  }
   async function fetchAbilities() {
     if (!bridge() || abarFetching) return; abarFetching = true;
     abCfgLoad();
@@ -239,7 +254,8 @@
                    : live != null ? 'On cooldown: ' + fmtSec(live) + ' left'
                    : null;
       if (cdLine) lines.push('<col=969696>' + cdLine + '</col>');
-      if (s.key) lines.push('<col=969696>Keybind: ' + (s.mod ? MOD[s.mod] + '+' : '') + s.key + '</col>');
+      const tk = abKeyOf(s);
+      if (tk) lines.push('<col=969696>Keybind: ' + (s.mod ? MOD[s.mod] + '+' : '') + tk + '</col>');
       // Rendered through tipHtml (rows set tipHtml=1): <col>/<br> are the only markup used.
       return lines.join('<br>');
     };
@@ -332,7 +348,8 @@
         row.dataset.tip = slotTip(s, st);
         row.dataset.tipHtml = '1';   // description carries <col=..>/<br> game markup
         const ico = document.createElement('div'); ico.className = 'ab-icon'; attachAbilityIcon(ico, s); row.appendChild(ico);
-        const kb = document.createElement('span'); kb.className = 'ab-key'; kb.textContent = s.key ? ((s.mod ? MOD[s.mod] + '+' : '') + s.key) : '·'; row.appendChild(kb);
+        const rk = abKeyOf(s);
+        const kb = document.createElement('span'); kb.className = 'ab-key'; kb.textContent = rk ? ((s.mod ? MOD[s.mod] + '+' : '') + rk) : '·'; row.appendChild(kb);
         const nm = document.createElement('span'); nm.className = 'ab-n'; nm.textContent = s.name; row.appendChild(nm);
         const t = abTier(s.name), tm = AB_TIER_META[t];
         if (tm) {
