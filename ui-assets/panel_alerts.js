@@ -70,11 +70,11 @@
   // Vitals alert: value compared = the current amount shown on the orb (points / adrenaline %).
   const VITALS = [['hp', 'Life points'], ['prayer', 'Prayer'], ['summon', 'Summoning'], ['adren', 'Adrenaline']];
   // Inventory-slot conditions (count = used slots, free = empty slots, cap = 28).
-  const INVSLOT_CONDS = [['empty', 'Empty'], ['full', 'Full'], ['usedge', 'Used â‰¥'], ['usedle', 'Used â‰¤'], ['freele', 'Free â‰¤']];
+  const INVSLOT_CONDS = [['empty', 'Empty'], ['full', 'Full'], ['usedge', 'Used ≥'], ['usedle', 'Used ≤'], ['freele', 'Free ≤']];
   // Inventory-item conditions (matched by item name, summing stacks across slots).
-  const INVITEM_CONDS = [['contains', 'Contains'], ['ge', 'Count â‰¥'], ['le', 'Count â‰¤'], ['eq', 'Count =']];
+  const INVITEM_CONDS = [['contains', 'Contains'], ['ge', 'Count ≥'], ['le', 'Count ≤'], ['eq', 'Count =']];
   // Buff-value comparators (value = the number shown on the buff bar, verbatim).
-  const BUFF_CONDS = [['active', 'Active'], ['inactive', 'Not active'], ['lt', 'Less than'], ['le', 'â‰¤'], ['eq', 'Equal to'], ['ge', 'â‰¥'], ['gt', 'Greater than']];
+  const BUFF_CONDS = [['active', 'Active'], ['inactive', 'Not active'], ['lt', 'Less than'], ['le', '≤'], ['eq', 'Equal to'], ['ge', '≥'], ['gt', 'Greater than']];
   const BUFF_PRESENCE = ['active', 'inactive'];
   // Farm-patch alert conditions -> the patch state codes they match.
   const FARM_CONDS = [['ready', 'Ready'], ['disease', 'Diseased'], ['dead', 'Dead'], ['water', 'Needs water'], ['attention', 'Needs attention']];
@@ -253,9 +253,9 @@
   function invSlotsLabel(w) {
     switch (w.cond) {
       case 'full':   return 'Inventory full';
-      case 'usedge': return 'Inventory has â‰¥ ' + (w.num || 0) + ' items';
-      case 'usedle': return 'Inventory has â‰¤ ' + (w.num || 0) + ' items';
-      case 'freele': return 'Inventory â‰¤ ' + (w.num || 0) + ' free slot' + ((w.num || 0) === 1 ? '' : 's');
+      case 'usedge': return 'Inventory has ≥ ' + (w.num || 0) + ' items';
+      case 'usedle': return 'Inventory has ≤ ' + (w.num || 0) + ' items';
+      case 'freele': return 'Inventory ≤ ' + (w.num || 0) + ' free slot' + ((w.num || 0) === 1 ? '' : 's');
       case 'empty':
       default:       return 'Inventory empty';
     }
@@ -263,9 +263,9 @@
   function invItemLabel(w) {
     const nm = w.text ? '"' + w.text + '"' : 'item';
     switch (w.cond) {
-      case 'ge': return 'Inventory has â‰¥ ' + (w.num || 0) + 'Ã— ' + nm;
-      case 'le': return 'Inventory has â‰¤ ' + (w.num || 0) + 'Ã— ' + nm;
-      case 'eq': return 'Inventory has ' + (w.num || 0) + 'Ã— ' + nm;
+      case 'ge': return 'Inventory has ≥ ' + (w.num || 0) + '× ' + nm;
+      case 'le': return 'Inventory has ≤ ' + (w.num || 0) + '× ' + nm;
+      case 'eq': return 'Inventory has ' + (w.num || 0) + '× ' + nm;
       case 'contains':
       default:   return 'Inventory contains ' + nm;
     }
@@ -762,7 +762,7 @@
       const it = document.createElement('div'); it.className = 'sndmenu-it' + (s === current ? ' sel' : '');
       const nm = document.createElement('span'); nm.textContent = s; it.appendChild(nm);
       if (s !== 'none') {
-        const pv = document.createElement('span'); pv.className = 'pv'; pv.textContent = 'â–¶';
+        const pv = document.createElement('span'); pv.className = 'pv'; pv.textContent = '▶';
         pv.addEventListener('click', e => { e.stopPropagation(); try { bridge().playSound(s); } catch (_) {} });
         it.appendChild(pv);
       }
@@ -777,7 +777,7 @@
   function soundTrigger(getVal, setVal) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-sndsel';
     const cur = document.createElement('span'); cur.className = 'cur'; cur.textContent = getVal();
-    const car = document.createElement('span'); car.className = 'cv'; car.textContent = 'â–¾';
+    const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
     b.appendChild(cur); b.appendChild(car);
     b.addEventListener('click', e => {
       e.stopPropagation();
@@ -828,7 +828,7 @@
     const labelFor = v => { const t = types.find(x => x[0] === v); return t ? t[1] : 'Name'; };
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel';
     const cur = document.createElement('span'); cur.className = 'cur'; cur.textContent = labelFor(w.type || 'name');
-    const car = document.createElement('span'); car.className = 'cv'; car.textContent = 'â–¾';
+    const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
     b.appendChild(cur); b.appendChild(car);
     b.addEventListener('click', e => {
       e.stopPropagation();
@@ -841,7 +841,7 @@
   function augItemTrigger(w) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel';
     const cur = document.createElement('span'); cur.className = 'cur';
-    const car = document.createElement('span'); car.className = 'cv'; car.textContent = 'â–¾';
+    const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
     const nameOf = id => {
       const it = (perksData && Array.isArray(perksData.items) ? perksData.items : [])
                    .find(x => x.container === 94 && x.id === id);
@@ -857,7 +857,7 @@
       if (!perksData) fetchPerks();   // not pulled yet -- reopen the dropdown once it loads
       const opts = [{ label: 'Any equipped', act: () => { w.augItem = 0; saveAlertCfg(); renderCustomList(); } }];
       for (const it of eq) {
-        const id = it.id, lbl = (it.name || ('Item ' + id)) + ' Â· L' + (it.level || 0);
+        const id = it.id, lbl = (it.name || ('Item ' + id)) + ' · L' + (it.level || 0);
         opts.push({ label: lbl, act: () => { w.augItem = id; saveAlertCfg(); renderCustomList(); } });
       }
       if (!eq.length) opts.push({ label: '(no augmented items equipped)', act: () => {} });
@@ -869,7 +869,7 @@
     const labelFor = v => { const t = VITALS.find(x => x[0] === v); return t ? t[1] : 'Life points'; };
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel';
     const cur = document.createElement('span'); cur.className = 'cur'; cur.textContent = labelFor(w.stat || 'hp');
-    const car = document.createElement('span'); car.className = 'cv'; car.textContent = 'â–¾';
+    const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
     b.appendChild(cur); b.appendChild(car);
     b.addEventListener('click', e => {
       e.stopPropagation();
@@ -882,7 +882,7 @@
     const labelFor = v => { const t = conds.find(x => x[0] === v); return t ? t[1] : conds[0][1]; };
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel';
     const cur = document.createElement('span'); cur.className = 'cur'; cur.textContent = labelFor(w.cond);
-    const car = document.createElement('span'); car.className = 'cv'; car.textContent = 'â–¾';
+    const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
     b.appendChild(cur); b.appendChild(car);
     b.addEventListener('click', e => {
       e.stopPropagation();
@@ -894,7 +894,7 @@
   function buffTrigger(w) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel'; b.title = 'Pick from active buffs';
     const cur = document.createElement('span'); cur.className = 'cur'; cur.textContent = 'Active';
-    const car = document.createElement('span'); car.className = 'cv'; car.textContent = 'â–¾';
+    const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
     b.appendChild(cur); b.appendChild(car);
     b.addEventListener('click', e => {
       e.stopPropagation();
@@ -903,7 +903,7 @@
       const opts = activeBuffs().filter(x => x.name).map(x => {
         const v = buffValue(x);
         // show the bar's current number verbatim (no unit) so the threshold matches the display
-        return { label: x.name + (v != null ? ' Â· now ' + v : ''), act: () => { w.text = x.name; saveAlertCfg(); renderCustomList(); } };
+        return { label: x.name + (v != null ? ' · now ' + v : ''), act: () => { w.text = x.name; saveAlertCfg(); renderCustomList(); } };
       });
       if (!opts.length) opts.push({ label: '(no active buffs - open the Buffs tab)', act: () => {} });
       openChoice(b, opts);
@@ -913,7 +913,7 @@
   function farmPatchTrigger(w) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel';
     const cur = document.createElement('span'); cur.className = 'cur'; cur.textContent = w.vb ? farmPatchLabel(w.vb) : 'Any patch';
-    const car = document.createElement('span'); car.className = 'cv'; car.textContent = 'â–¾';
+    const car = document.createElement('span'); car.className = 'cv'; car.textContent = '▾';
     b.appendChild(cur); b.appendChild(car);
     b.addEventListener('click', e => {
       e.stopPropagation();
@@ -937,7 +937,7 @@
     const head = document.createElement('div'); head.className = 'al-cust-head';
     const enp = alertPill(w.enabled); enp.title = 'Enable this alert';
     enp.addEventListener('click', () => { w.enabled = !w.enabled; enp.classList.toggle('on', w.enabled); card.classList.toggle('off', !w.enabled); saveAlertCfg(); });
-    const del = document.createElement('button'); del.type = 'button'; del.className = 'al-del'; del.textContent = 'Ã—'; del.title = 'Remove'; del.style.marginLeft = 'auto';
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'al-del'; del.textContent = '×'; del.title = 'Remove'; del.style.marginLeft = 'auto';
     del.addEventListener('click', () => { alertCfg.custom = alertCfg.custom.filter(x => x !== w); saveAlertCfg(); renderCustomList(); });
     head.appendChild(enp); head.appendChild(typeTrigger(w)); head.appendChild(del);
     card.appendChild(head);
@@ -972,7 +972,7 @@
     };
     const sndCell = document.createElement('div'); sndCell.className = 'al-cell';
     sndCell.appendChild(soundTrigger(() => w.sound, v => { w.sound = v; saveAlertCfg(); }));
-    const play = document.createElement('button'); play.type = 'button'; play.className = 'al-play'; play.textContent = 'â–¶'; play.title = 'Preview';
+    const play = document.createElement('button'); play.type = 'button'; play.className = 'al-play'; play.textContent = '▶'; play.title = 'Preview';
     play.addEventListener('click', e => { e.stopPropagation(); if (w.sound !== 'none') { try { bridge().playSound(w.sound); } catch (_) {} } });
     sndCell.appendChild(play);
     addRow2('Sound', sndCell);
@@ -990,7 +990,7 @@
     notB.addEventListener('click', e => { e.stopPropagation(); c.not = !c.not; notB.classList.toggle('on', c.not); saveAlertCfg(); });
     head.appendChild(notB);
     head.appendChild(typeTrigger(c));
-    const del = document.createElement('button'); del.type = 'button'; del.className = 'al-del'; del.textContent = 'Ã—'; del.title = 'Remove this condition'; del.style.marginLeft = 'auto';
+    const del = document.createElement('button'); del.type = 'button'; del.className = 'al-del'; del.textContent = '×'; del.title = 'Remove this condition'; del.style.marginLeft = 'auto';
     del.addEventListener('click', () => { w.also.splice(i, 1); saveAlertCfg(); renderCustomList(); });
     head.appendChild(del);
     box.appendChild(head);
@@ -1251,7 +1251,7 @@
       const snd = document.createElement('div'); snd.className = 'al-snd';
       const slab = document.createElement('span'); slab.className = 'lab'; slab.textContent = 'Sound';
       const strig = soundTrigger(() => r.sound, v => { r.sound = v; saveAlertCfg(); });
-      const play = document.createElement('button'); play.type = 'button'; play.className = 'al-play'; play.textContent = 'â–¶'; play.title = 'Preview';
+      const play = document.createElement('button'); play.type = 'button'; play.className = 'al-play'; play.textContent = '▶'; play.title = 'Preview';
       play.addEventListener('click', e => { e.stopPropagation(); if (r.sound !== 'none') { try { bridge().playSound(r.sound); } catch (_) {} } });
       snd.appendChild(slab); snd.appendChild(strig); snd.appendChild(play);
       ctl.appendChild(fl);
@@ -1278,14 +1278,14 @@
     add.style.width = 'auto'; add.style.flex = '1'; add.textContent = '+ Add custom alert';
     add.addEventListener('click', () => addCustom());
     const pre = document.createElement('button'); pre.type = 'button'; pre.className = 'al-add';
-    pre.style.width = 'auto'; pre.style.flex = '0 0 auto'; pre.textContent = '+ Preset â–¾';
+    pre.style.width = 'auto'; pre.style.flex = '0 0 auto'; pre.textContent = '+ Preset ▾';
     pre.addEventListener('click', e => {
       e.stopPropagation();
       if (document.getElementById('sndMenu')) { closeSoundMenu(); return; }
       openChoice(pre, ALERT_PRESETS.map(p => ({
-        label: p.name + (p.type === 'panim' ? ' Â· player anim ' + p.anim
-                       : p.type === 'nanim' ? ' Â· NPC anim ' + p.anim
-                       : p.type === 'auglevel' ? ' Â· level ' + p.anim : ''),
+        label: p.name + (p.type === 'panim' ? ' · player anim ' + p.anim
+                       : p.type === 'nanim' ? ' · NPC anim ' + p.anim
+                       : p.type === 'auglevel' ? ' · level ' + p.anim : ''),
         act: () => addPreset(p)
       })));
     });
