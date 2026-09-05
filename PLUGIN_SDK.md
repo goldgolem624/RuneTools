@@ -513,9 +513,13 @@ so calling these never generates upstream traffic. `latest` refreshes about ever
 ```js
 const prices = await rtx.plugin.prices.latest();   // { "2": { high, highTime, low, lowTime }, ... }
 const items  = await rtx.plugin.prices.mapping();  // [{ id, name, limit, value, lowalch, highalch, members, ... }]
+const one    = await rtx.plugin.prices.item(2);        // just that item: { "2": { high, ... } }
+const some   = await rtx.plugin.prices.item([2, 6]);   // up to 50 ids per call
 ```
 
-Rate limit: 1 call per 2 s across both methods (the payloads are large; cache them).
+Watching a handful of items? Use `item` -- it answers from a local parsed cache, so it
+is cheap and allowed 4 calls/s. `latest` and `mapping` return the full payloads (large;
+cache them) and are limited to 1 call per 2 s.
 
 ### ui (always available)
 

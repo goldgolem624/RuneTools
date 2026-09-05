@@ -253,7 +253,9 @@
       // {itemId: {high, highTime, low, lowTime}} for every traded item.
       latest:  function () { return call('prices.latest', []); },
       // Item metadata array: {id, name, limit, value, lowalch, highalch, members, ...}.
-      mapping: function () { return call('prices.mapping', []); }
+      mapping: function () { return call('prices.mapping', []); },
+      // One id (or an array, up to 50): just those items, without the full payload.
+      item: function (ids) { return call('prices.item', [ids]); }
     },
 
     // ---- settings (always available; values for the declared schema) ----
