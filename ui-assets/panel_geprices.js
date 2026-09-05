@@ -404,8 +404,10 @@
       const st = document.createElement('span'); st.id = 'gepStatus';
       st.style.cssText = 'font-size:11px;color:var(--text-mute);white-space:nowrap';
       bar.appendChild(inp); bar.appendChild(st);
+      // No overflow of its own: the pane already scrolls vertically (and reserves its
+      // scrollbar lane), and giving this element overflow-x made it a second scroll
+      // container whose rows pushed the star column out of reach.
       const list = document.createElement('div'); list.id = 'gepList';
-      list.style.cssText = 'overflow-x:auto';   // columns wider than the panel scroll together
       // Sort + Favorites bar. Clicking an active sort flips highest/lowest.
       const sbar = document.createElement('div');
       sbar.id = 'gepSort';
@@ -445,8 +447,10 @@
     const q = ($('gepQ').value || '').trim().toLowerCase();
     // numFmt rides the signature: switching Numbers compact/full changes both the
     // values and the column widths, so the list has to rebuild rather than sit stale.
+    // Panel width rides the signature too: the column fit depends on it, so resizing
+    // the window has to rebuild the list rather than leave a stale layout.
     const ssig = gepSortKey + ':' + gepSortDir + ':' + (gepFavView ? 1 : 0) + ':' + gepPinRev +
-                 ':' + (uiCfg().numFmt || 'compact');
+                 ':' + (uiCfg().numFmt || 'compact') + ':' + (($('gepList') || {}).clientWidth || 0);
     if (gepShownGen === gepGen && gepShownQuery === q && gepShownOpen === gepOpenId && gepShownSort === ssig) {
       for (const el of $('gepList').querySelectorAll('[data-ht]'))
         el.textContent = gepAge(+el.dataset.ht) + ' ago';
@@ -511,34 +515,52 @@
     }
     // When sorting by spread, the sorted-by number must be visible on the row itself.
     const showSpread = gepSortKey === 'spread' || gepSortKey === 'spreadpct';
-    // Column width follows the Numbers preference: "200,000,000,000" needs roughly
-    // twice the room of "200.00b", and at the compact width it wrapped onto a second
-    // line. The name column (1fr) gives up the space and ellipsises instead.
-    const full = uiCfg().numFmt === 'full';
-    const numW = full ? 116 : 62;
-    const spreadW = full ? 116 : 74;
-    // The name column keeps a readable floor instead of collapsing to nothing, and the
-    // whole list scrolls sideways when the columns cannot fit the panel (a game panel
-    // is often only ~400px wide, and full-format prices alone want 232px of that).
-    const NAME_MIN = 96;
-    const gridCols = '26px minmax(' + NAME_MIN + 'px, 1fr) ' + numW + 'px ' + numW + 'px' +
-                     (showSpread ? ' ' + spreadW + 'px' : '') + ' 52px 18px';
-    const cols = 6 + (showSpread ? 1 : 0);
-    // The pane's vertical scrollbar is drawn over the right edge of the content, and
-    // the star sits in the last column: without this gutter it ends up under the
-    // scrollbar and cannot be clicked.
-    const SCROLL_GUTTER = 14;
-    const rowMinW = 26 + NAME_MIN + numW * 2 + (showSpread ? spreadW : 0) + 52 + 18 +
-                    (cols * 8) + SCROLL_GUTTER;
+    // COLUMN FIT. The table never scrolls sideways and never overflows the pane: the
+    // pane (.content) already reserves its own scrollbar lane, so anything that
+    // overflows here just hides the columns at the right edge -- which is exactly how
+    // the favourite star ended up unclickable. Instead the layout adapts to the width
+    // it actually has, in the order a trader cares least about:
+    //   1. full-format numbers fall back to compact (exact value stays on hover),
+    //   2. then the Traded column drops.
+    // The name column flexes and ellipsises, mirroring .scene-trow elsewhere.
+    const NAME_MIN = 90, ICON_W = 26, AGE_W = 52, STAR_W = 18, GAP = 8;
+    const avail = (list && list.clientWidth) || (c && c.clientWidth) || 420;
+    let full = uiCfg().numFmt === 'full';
+    let showAge = true;
+    const widths = () => {
+      const numW = full ? 116 : 62, spreadW = full ? 116 : 74;
+      const cols = 4 + (showSpread ? 1 : 0) + (showAge ? 1 : 0);
+      const need = ICON_W + NAME_MIN + numW * 2 + (showSpread ? spreadW : 0) +
+                   (showAge ? AGE_W : 0) + STAR_W + cols * GAP;
+      return { numW, spreadW, need };
+    };
+    let w = widths();
+    if (w.need > avail && full) { full = false; w = widths(); }       // compact fits ~2x more
+    if (w.need > avail && showAge) { showAge = false; w = widths(); } // drop "Traded" last
+    const gridCols = ICON_W + 'px minmax(0,1fr) ' + w.numW + 'px ' + w.numW + 'px' +
+                     (showSpread ? ' ' + w.spreadW + 'px' : '') +
+                     (showAge ? ' ' + AGE_W + 'px' : '') + ' ' + STAR_W + 'px';
+    // Values honour the Numbers preference when it fits, and fall back to compact when
+    // it does not; the exact figure is always one hover away.
+    const compact = (n) => {
+      n = Number(n) || 0; const s = n < 0 ? '-' : ''; n = Math.abs(n);
+      if (n >= 1e9) return s + (n / 1e9).toFixed(2) + 'b';
+      if (n >= 1e6) return s + (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'm';
+      if (n >= 1e3) return s + (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+      return s + String(Math.round(n));
+    };
+    const fmtN = (n) => (full ? fmtGp(n) : compact(n));
+    const exact = (n) => Number(n).toLocaleString() + ' gp';
     // Column header, in the same grid as the rows so the labels sit over their columns.
     {
       const hd = document.createElement('div');
-      hd.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;min-width:' + rowMinW + 'px;' +
-                         'padding:2px ' + (8 + SCROLL_GUTTER) + 'px 4px 8px;border-bottom:1px solid var(--border);' +
+      hd.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;' +
+                         'padding:2px 8px 4px;border-bottom:1px solid var(--border);' +
                          'font-size:9.5px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.07em';
       const cells = ['', 'Item', 'Instabuy', 'Instasell'];
       if (showSpread) cells.push(gepSortKey === 'spreadpct' ? 'Spread %' : 'Spread');
-      cells.push('Traded', '');
+      if (showAge) cells.push('Traded');
+      cells.push('');
       for (let i = 0; i < cells.length; i++) {
         const d = document.createElement('div');
         d.textContent = cells[i];
@@ -551,8 +573,8 @@
       const p = gepLatest[it.id] || {};
       const open = gepOpenId === it.id;
       const row = document.createElement('div');
-      row.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;align-items:center;min-width:' + rowMinW + 'px;' +
-                          'padding:5px ' + (8 + SCROLL_GUTTER) + 'px 5px 8px;border-bottom:1px solid var(--border);cursor:pointer' +
+      row.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;align-items:center;' +
+                          'padding:5px 8px;border-bottom:1px solid var(--border);cursor:pointer' +
                           (open ? ';background:var(--accent-soft, rgba(140,111,253,0.08))' : '');
       row.title = open ? 'Click to collapse' : 'Click for price history';
       row.addEventListener('click', () => {
@@ -570,14 +592,15 @@
       try { if (typeof attachIcon === 'function') attachIcon(ic, it.id); } catch (e) {}
       const nm = document.createElement('div');
       nm.textContent = it.name;
+      nm.title = it.name;   // the column flexes, so a long name reads via hover
       nm.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px';
       const hi = document.createElement('div');
-      hi.textContent = p.high != null ? fmtGp(p.high) : '-';
-      hi.title = 'Latest buy (high) price';
+      hi.textContent = p.high != null ? fmtN(p.high) : '-';
+      hi.title = 'Latest buy (high) price' + (p.high != null ? ': ' + exact(p.high) : '');
       hi.style.cssText = 'color:var(--ok, #4dd28a);font-variant-numeric:tabular-nums;font-size:12.5px;text-align:right;white-space:nowrap';
       const lo = document.createElement('div');
-      lo.textContent = p.low != null ? fmtGp(p.low) : '-';
-      lo.title = 'Latest sell (low) price';
+      lo.textContent = p.low != null ? fmtN(p.low) : '-';
+      lo.title = 'Latest sell (low) price' + (p.low != null ? ': ' + exact(p.low) : '');
       lo.style.cssText = 'color:var(--warn, #f5b241);font-variant-numeric:tabular-nums;font-size:12.5px;text-align:right;white-space:nowrap';
       const ag = document.createElement('div');
       const ht = p.highTime || p.lowTime || 0;
@@ -604,14 +627,15 @@
           const d = p.high - p.low, pct = d / p.low * 100;
           // Junk-item spreads (a 6m item that instasells for 2 gp) reach millions of
           // percent; compact those the way gp values are compacted.
-          const pctTxt = (pct >= 1000 ? fmtGp(Math.round(pct)) : pct.toFixed(1)) + '%';
-          sp.textContent = gepSortKey === 'spreadpct' ? pctTxt : fmtGp(d);
+          const pctTxt = (pct >= 1000 ? compact(Math.round(pct)) : pct.toFixed(1)) + '%';
+          sp.textContent = gepSortKey === 'spreadpct' ? pctTxt : fmtN(d);
           sp.title = 'Spread ' + Number(d).toLocaleString() + ' gp (' + Math.round(pct).toLocaleString() + '%)';
         } else sp.textContent = '-';
         sp.style.cssText = 'color:var(--accent-hi, #9d83ff);font-variant-numeric:tabular-nums;font-size:12.5px;text-align:right;white-space:nowrap';
         row.appendChild(sp);
       }
-      row.appendChild(ag); row.appendChild(star);
+      if (showAge) row.appendChild(ag);
+      row.appendChild(star);
       list.appendChild(row);
       if (open) list.appendChild(gepDetail(it));
     };
