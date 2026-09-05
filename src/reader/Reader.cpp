@@ -6656,7 +6656,15 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
         // still read as the keybind (and the slot then reported no cooldown). The corner
         // label lives at x,y of a few px, so a third separates them with room to spare.
         // The absolute fallback for a torn 0-size box tightens with it.
-        const int lx = bw > 8 ? bw / 3 : 10, ly = bh > 8 ? bh / 3 : 10;
+        //
+        // The ABSOLUTE CAP is what saves the unbound-and-on-cooldown slot: with no
+        // keybind the countdown is the ONLY candidate, so a fractional bound alone
+        // still lets it qualify by default on a large box. A keybind label is printed
+        // hard against the slot corner (a few px in) whatever the slot measures, so
+        // nothing beyond 12px is a keybind -- which a centred timer always is.
+        int lx = bw > 8 ? bw / 3 : 10, ly = bh > 8 ? bh / 3 : 10;
+        if (lx > 12) lx = 12;
+        if (ly > 12) ly = 12;
         return k.x >= 0 && k.y >= 0 && k.x < lx && k.y < ly;
     };
     // MOST top-left wins, rather than the first in component order: when a slot is both
@@ -6680,7 +6688,12 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     if (cd.empty())
         for (const auto& kv : kids) {
             if (haveKey && kv.rel == keyRel) continue;
-            if (is_cd_timer(kv.text) && !topLeft(kv)) { cd = kv.text; break; }
+            if (!is_cd_timer(kv.text)) continue;
+            // The corner region is only off-limits while a keybind actually occupies it:
+            // on an UNBOUND slot nothing competes for the text, so refusing a corner-ish
+            // node there would report "ready" on an ability that is plainly counting down.
+            if (haveKey && topLeft(kv)) continue;
+            cd = kv.text; break;
         }
     return keyb;
 }
