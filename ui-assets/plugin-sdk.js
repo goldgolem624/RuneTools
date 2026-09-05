@@ -15,6 +15,9 @@
   var seq = 1;
   var pending = Object.create(null);     // id -> { resolve, reject, timer }
   var listeners = { tick: [], state: [], events: [], settings: [] };
+  // The host pushes its theme tokens (--rtx-accent and friends) on mount and whenever
+  // the user changes appearance settings; applying them keeps a plugin in step with
+  // the client's look. Handled in the message dispatch below.
   var eventSubs = {};                    // kind -> [cb]; '*' = every kind
   var readyCbs = [];
   var session = { ready: false, scopes: [], apiVersion: null, pluginId: null };

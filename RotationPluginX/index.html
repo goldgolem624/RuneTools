@@ -24,10 +24,14 @@
   -->
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* Host theme first, own values as fallback: the client injects --rtx-* tokens and
+       pushes updates when the user changes their accent, so the plugin follows it. */
     :root {
-      --bg: #14151c; --card: #1a1b23; --card2: #20222c; --line: rgba(255,255,255,0.07);
-      --tx: #e8e8ef; --dim: #8b8b9e; --mute: #5a5a6e; --acc: #7c5cfc; --acc-hi: #9d83ff;
-      --ok: #4dd28a; --warn: #f5b241; --err: #ff6b6b;
+      --bg: var(--rtx-bg, #14151c); --card: var(--rtx-panel, #1a1b23);
+      --card2: var(--rtx-bg-elev-2, #20222c); --line: var(--rtx-border, rgba(255,255,255,0.07));
+      --tx: var(--rtx-text, #e8e8ef); --dim: var(--rtx-text-mute, #8b8b9e); --mute: #5a5a6e;
+      --acc: var(--rtx-accent, #7c5cfc); --acc-hi: var(--rtx-accent-hi, #9d83ff);
+      --ok: var(--rtx-ok, #4dd28a); --warn: var(--rtx-warn, #f5b241); --err: var(--rtx-err, #ff6b6b);
     }
     body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: var(--bg);
            color: var(--tx); padding: 12px; font-size: 13px; }

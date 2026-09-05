@@ -70,12 +70,31 @@
   // Redrawn per hover move (a few hundred points; trivial): hover = {x, y} in canvas
   // CSS px (or null). The exact cursor gets a live crosshair with price/time readouts;
   // the nearest sample gets the dashed marker + data box. ----
+  // Backing-store scale for a canvas: the device pixel ratio TIMES the accumulated CSS
+  // zoom the panel renders under (the font-size preference sets `zoom` on .win-body).
+  // Sizing from clientWidth * dpr alone ignored that zoom, so the bitmap was smaller
+  // than its painted box and the engine upscaled it -- the whole chart came out soft
+  // and oversized. Capped so a big zoom on a wide panel cannot allocate a huge bitmap.
+  function gepCanvasScale(cv) {
+    let z = 1;
+    try { if (typeof uiZoomOf === 'function') z = uiZoomOf(cv) || 1; } catch (e) {}
+    if (!(z > 0) || z === 1) {
+      const r = cv.getBoundingClientRect(), cw = cv.clientWidth;
+      if (cw > 0 && r.width > 0) z = r.width / cw;
+    }
+    const k = (z || 1) * (window.devicePixelRatio || 1);
+    return Math.max(1, Math.min(4, k));
+  }
   function gepDrawChart(cv, series, hover) {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const W = cv.clientWidth || 420, H = cv.clientHeight || 120;
-    cv.width = W * dpr; cv.height = H * dpr;
+    const k = gepCanvasScale(cv);
+    // Only resize the backing store when it actually changes: assigning width/height
+    // clears the canvas, and the hover path redraws on every pointer move.
+    const bw = Math.round(W * k), bh = Math.round(H * k);
+    if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
     const g = cv.getContext('2d');
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.setTransform(k, 0, 0, k, 0, 0);
+    cv._drawnW = W; cv._drawnH = H;
     g.clearRect(0, 0, W, H);
     const pts = series.filter(p => p.avgHighPrice != null || p.avgLowPrice != null);
     if (pts.length < 2) {
@@ -276,10 +295,14 @@
     // Fact strip: exact latest prices, spread and item facts.
     // One row, always: compact fmtGp values with the exact figures in the tooltips.
     const facts = document.createElement('div');
-    facts.style.cssText = 'display:flex;gap:12px;flex-wrap:nowrap;white-space:nowrap;overflow-x:auto;' +
-                          'font-size:11.5px;margin-bottom:8px;color:var(--text-dim,#c6c6d2);scrollbar-width:none';
+    // Wraps rather than clipping: with compact numbers everything fits on one line, and
+    // with full-format prices (three 15-character figures) it needs a second rather
+    // than hiding LIMIT/ALCH behind an invisible scroll.
+    facts.style.cssText = 'display:flex;gap:4px 12px;flex-wrap:wrap;' +
+                          'font-size:11.5px;margin-bottom:8px;color:var(--text-dim,#c6c6d2)';
     const fact = (k, v, title) => {
       const s = document.createElement('span');
+      s.style.whiteSpace = 'nowrap';   // a label and its value never split across lines
       s.innerHTML = '<span style="color:var(--text-mute);font-size:10px;text-transform:uppercase;letter-spacing:0.05em">' + k + '</span> ';
       s.appendChild(document.createTextNode(v));
       if (title) s.title = title;
@@ -354,7 +377,10 @@
     // A list rebuild (fresh latest data every ~30s) recreates the detail card with a
     // blank canvas and the placeholder note, while the SERIES sig is unchanged -- so
     // "unchanged" alone must not skip the draw. The canvas carries its own painted flag.
-    if (sig === gepDrawnSig && cv.dataset.drawn === sig) return;
+    // Resizing the window changes the canvas box without changing the data, so the
+    // drawn size is part of the "needs redraw" test or the chart sits stretched.
+    const sized = cv._drawnW === cv.clientWidth && cv._drawnH === cv.clientHeight;
+    if (sig === gepDrawnSig && cv.dataset.drawn === sig && sized) return;
     gepDrawnSig = sig;
     cv.dataset.drawn = sig;
     gepChartData = series;
@@ -379,6 +405,7 @@
       st.style.cssText = 'font-size:11px;color:var(--text-mute);white-space:nowrap';
       bar.appendChild(inp); bar.appendChild(st);
       const list = document.createElement('div'); list.id = 'gepList';
+      list.style.cssText = 'overflow-x:auto';   // columns wider than the panel scroll together
       // Sort + Favorites bar. Clicking an active sort flips highest/lowest.
       const sbar = document.createElement('div');
       sbar.id = 'gepSort';
@@ -487,13 +514,21 @@
     // Column width follows the Numbers preference: "200,000,000,000" needs roughly
     // twice the room of "200.00b", and at the compact width it wrapped onto a second
     // line. The name column (1fr) gives up the space and ellipsises instead.
-    const numW = (uiCfg().numFmt === 'full') ? '116px' : '62px';
-    const spreadW = (uiCfg().numFmt === 'full') ? '116px' : '74px';
-    const gridCols = '26px 1fr ' + numW + ' ' + numW + (showSpread ? ' ' + spreadW : '') + ' 52px 18px';
+    const full = uiCfg().numFmt === 'full';
+    const numW = full ? 116 : 62;
+    const spreadW = full ? 116 : 74;
+    // The name column keeps a readable floor instead of collapsing to nothing, and the
+    // whole list scrolls sideways when the columns cannot fit the panel (a game panel
+    // is often only ~400px wide, and full-format prices alone want 232px of that).
+    const NAME_MIN = 96;
+    const gridCols = '26px minmax(' + NAME_MIN + 'px, 1fr) ' + numW + 'px ' + numW + 'px' +
+                     (showSpread ? ' ' + spreadW + 'px' : '') + ' 52px 18px';
+    const cols = 6 + (showSpread ? 1 : 0);
+    const rowMinW = 26 + NAME_MIN + numW * 2 + (showSpread ? spreadW : 0) + 52 + 18 + (cols * 8);
     // Column header, in the same grid as the rows so the labels sit over their columns.
     {
       const hd = document.createElement('div');
-      hd.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;' +
+      hd.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;min-width:' + rowMinW + 'px;' +
                          'padding:2px 8px 4px;border-bottom:1px solid var(--border);' +
                          'font-size:9.5px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.07em';
       const cells = ['', 'Item', 'Instabuy', 'Instasell'];
@@ -511,7 +546,7 @@
       const p = gepLatest[it.id] || {};
       const open = gepOpenId === it.id;
       const row = document.createElement('div');
-      row.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;align-items:center;' +
+      row.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;align-items:center;min-width:' + rowMinW + 'px;' +
                           'padding:5px 8px;border-bottom:1px solid var(--border);cursor:pointer' +
                           (open ? ';background:var(--accent-soft, rgba(140,111,253,0.08))' : '');
       row.title = open ? 'Click to collapse' : 'Click for price history';

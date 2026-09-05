@@ -528,6 +528,26 @@ rtx.plugin.ui.setHeight(420);     // resize the plugin frame (60..4000 px)
 rtx.plugin.ui.setTitle("My Tool");// reserved (no-op for now)
 ```
 
+### Theming (automatic)
+
+Your plugin runs in its own document, so it inherits none of the client's CSS. The
+host injects its live theme as custom properties and pushes updates when the user
+changes their appearance settings, so styling against these keeps you in step with
+the rest of the client (accent colour included):
+
+```css
+.button   { background: var(--rtx-accent, #8c6ffd); }
+.card     { background: var(--rtx-panel, #1a1b23); border: 1px solid var(--rtx-border, rgba(255,255,255,.08)); }
+.subtle   { color: var(--rtx-text-mute, #8b8b9e); }
+```
+
+Available: `--rtx-accent`, `--rtx-accent-hi`, `--rtx-accent-lo`, `--rtx-accent-rgb`,
+`--rtx-accent-ring`, `--rtx-bg`, `--rtx-bg-elev`, `--rtx-bg-elev-2`, `--rtx-panel`,
+`--rtx-panel-2`, `--rtx-win-bg`, `--rtx-border`, `--rtx-border-hi`, `--rtx-text`,
+`--rtx-text-dim`, `--rtx-text-mute`, `--rtx-ok`, `--rtx-warn`, `--rtx-err`,
+`--rtx-font-ui`, `--rtx-font-size`. Always pass a fallback: a value can be absent on
+an older client. Your `<head>` is spliced in after these, so anything you define wins.
+
 ### settings (always available)
 
 Declare a settings schema once at boot and RuneTools renders standard controls for your

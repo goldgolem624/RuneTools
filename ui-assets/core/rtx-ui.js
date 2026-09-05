@@ -80,6 +80,9 @@
     r.setProperty('--content-zoom', (fs / 13).toFixed(3));
     try { if (typeof wmRectsSoon === 'function') wmRectsSoon(); } catch (e) {}
     try { uiBarTick(); } catch (e) {}
+    // Plugin frames are separate documents and inherit none of the above: push the
+    // token values to any mounted plugin so accent/font changes reach them live.
+    try { if (typeof pluginThemeBroadcast === 'function') pluginThemeBroadcast(); } catch (e) {}
     // UI scale rides the view's device scale (crisp text, correct input mapping); the
     // launcher multiplies it into its DPI sync. Older launchers lack the call: no-op.
     const sc = Math.max(50, Math.min(200, Number(c.scale) || 100));

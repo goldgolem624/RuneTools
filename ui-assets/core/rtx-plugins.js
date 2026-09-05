@@ -90,7 +90,7 @@ if(c==='paste'&&ed){call('clipboard.paste').then(function(txt){txt=String(txt==n
 else if((c==='copy'||c==='cut')&&ed){var s2=t.selectionStart|0,e2=t.selectionEnd|0,sel=t.value.slice(s2,e2);if(sel){call('clipboard.copy',[sel]).catch(function(){});if(c==='cut'){t.value=t.value.slice(0,s2)+t.value.slice(e2);t.selectionStart=t.selectionEnd=s2;fire();}}}}
 return;}
 if(m.kind==='reply'){var p=pending[m.id];if(!p)return;clearTimeout(p.tm);delete pending[m.id];if(m.ok)p.res(m.result);else p.rej(new Error(m.error||'rtx.plugin: failed'));return;}
-if(m.kind==='event'){if(m.event==='ready'){var d=m.data||{};S.ready=true;S.scopes=Array.isArray(d.scopes)?d.scopes.slice():[];S.apiVersion=d.apiVersion||null;S.pluginId=d.pluginId||null;var c=rcb.slice();rcb.length=0;c.forEach(function(f){try{f();}catch(e){}});return;}if(m.event==='events'){var arr=Array.isArray(m.data)?m.data:[];arr.forEach(function(ev){var k=ev&&ev.kind;var fs=(EV[k]||[]).concat(EV['*']||[]);fs.forEach(function(f){try{f(ev);}catch(e){}});});}var ls=L[m.event];if(ls)ls.forEach(function(f){try{f(m.data);}catch(e){}});}});
+if(m.kind==='event'){if(m.event==='theme'){var td=m.data||{};for(var tk in td)document.documentElement.style.setProperty(tk,td[tk]);return;}if(m.event==='ready'){var d=m.data||{};S.ready=true;S.scopes=Array.isArray(d.scopes)?d.scopes.slice():[];S.apiVersion=d.apiVersion||null;S.pluginId=d.pluginId||null;var c=rcb.slice();rcb.length=0;c.forEach(function(f){try{f();}catch(e){}});return;}if(m.event==='events'){var arr=Array.isArray(m.data)?m.data:[];arr.forEach(function(ev){var k=ev&&ev.kind;var fs=(EV[k]||[]).concat(EV['*']||[]);fs.forEach(function(f){try{f(ev);}catch(e){}});});}var ls=L[m.event];if(ls)ls.forEach(function(f){try{f(m.data);}catch(e){}});}});
 function g(o){return o;}
 var api={apiVersion:function(){return S.apiVersion;},id:function(){return S.pluginId;},grantedScopes:function(){return S.scopes.slice();},hasScope:function(s){return S.scopes.indexOf(s)!==-1;},
 ready:function(cb){if(typeof cb!=='function'){return new Promise(function(r){S.ready?r():rcb.push(r);});}S.ready?cb():rcb.push(cb);},
@@ -964,6 +964,43 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       .concat(extra);
   }
 
+  // The host's live theme, handed to plugin frames as CSS custom properties. A plugin
+  // is its own document with an opaque origin, so it inherits nothing from the host:
+  // without this every plugin hardcodes colours and ignores the user's accent, scale
+  // and font entirely. Names are rtx-prefixed so they can never collide with a
+  // plugin's own variables, and every one carries a fallback at the use site.
+  const PLUGIN_THEME_VARS = ['accent', 'accent-hi', 'accent-lo', 'accent-rgb', 'accent-ring',
+                             'bg', 'bg-elev', 'bg-elev-2', 'panel', 'panel-2', 'win-bg',
+                             'border', 'border-hi', 'text', 'text-dim', 'text-mute',
+                             'ok', 'warn', 'err', 'font-ui', 'font-size'];
+  function pluginThemeVars() {
+    const cs = getComputedStyle(document.documentElement);
+    const out = {};
+    for (const n of PLUGIN_THEME_VARS) {
+      const v = (cs.getPropertyValue('--' + n) || '').trim();
+      if (v) out['--rtx-' + n] = v;
+    }
+    return out;
+  }
+  function pluginThemeCss() {
+    const v = pluginThemeVars();
+    let css = ':root{';
+    for (const k in v) css += k + ':' + v[k] + ';';
+    css += '}';
+    // Native defaults so a plugin that styles nothing still matches the client. The
+    // author's own head content is spliced AFTER this, so anything they set wins.
+    css += 'html,body{margin:0;background:var(--rtx-bg,#14151c);color:var(--rtx-text,#e8e8ef);' +
+           'font-family:var(--rtx-font-ui,-apple-system,"Segoe UI",Roboto,sans-serif);' +
+           'font-size:var(--rtx-font-size,13px);}';
+    return css;
+  }
+  // Push the theme to every mounted plugin when the user changes it (uiApply calls this).
+  function pluginThemeBroadcast() {
+    if (!pluginMounts.size) return;
+    const vars = pluginThemeVars();
+    for (const m of pluginMounts.values()) pluginSendEvent(m, 'theme', vars);
+  }
+
   // Build the plugin document: CSP + SDK shim FIRST in a canonical skeleton, with the
   // author's head/body content re-serialized behind them. The old approach spliced the
   // CSP after the first regex match of "<head>", which an entry file could steer into
@@ -975,7 +1012,8 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-src 'none'; " +
       "form-action 'none'; base-uri 'none'" + '">';
-    const inject = csp + '<scr' + 'ipt>' + PLUGIN_SDK_SHIM + '</scr' + 'ipt>';
+    const inject = csp + '<style>' + pluginThemeCss() + '</style>' +
+                   '<scr' + 'ipt>' + PLUGIN_SDK_SHIM + '</scr' + 'ipt>';
     let headHtml = '', bodyHtml = '';
     try {
       const doc = new DOMParser().parseFromString(String(entryHtml || ''), 'text/html');
