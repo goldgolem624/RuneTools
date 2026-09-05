@@ -23,6 +23,7 @@
 #include "../reader/Reader.h"
 #include "../shared/Log.h"
 #include "../shared/MachineFingerprint.h"
+#include <random>                   // random_device: unpredictable installer temp name
 #include "Http.h"
 #include "Crypto.h"
 #include "Zip.h"
@@ -2728,8 +2729,8 @@ void run_update() {
     wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
     wchar_t rnd[24] = {};
     {
-        unsigned int r1 = 0, r2 = 0; rand_s(&r1); rand_s(&r2);
-        swprintf_s(rnd, L"_%08x%08x", r1, r2);
+        std::random_device rd;   // MSVC: cryptographic (RtlGenRandom-backed)
+        swprintf_s(rnd, L"_%08x%08x", (unsigned)rd(), (unsigned)rd());
     }
     std::wstring dest = std::wstring(tmp) + L"RuneToolsXSetup" + rnd + L".exe";
 
