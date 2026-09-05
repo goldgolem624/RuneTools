@@ -4298,7 +4298,21 @@ JSValueRef WinCmd(JSContextRef ctx, JSObjectRef, JSObjectRef,
     HWND h = reinterpret_cast<HWND>(g_launcherHwnd);
     if (!h || !IsWindow(h) || argc < 1) return JSValueMakeBoolean(ctx, false);
     std::string cmd = js_to_utf8(ctx, argv[0]);
-    if (cmd == "drag")      { ReleaseCapture(); SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, 0); }
+    if (cmd == "drag") {
+        ReleaseCapture();
+        // Synchronous: this returns only when the OS drag loop ends. That loop CONSUMES
+        // the button release, so the page never sees a mouse-up and the engine stays in
+        // a pressed state, where hover styling stops updating -- which is why the title
+        // bar's own buttons went dead after a click on the bar and only came back once
+        // some other click delivered a clean down/up pair. Hand the view its release.
+        SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+        POINT pt{};
+        if (GetCursorPos(&pt) && ScreenToClient(h, &pt)) {
+            if (pt.x < 0) pt.x = 0;
+            if (pt.y < 0) pt.y = 0;
+            PostMessageW(h, WM_LBUTTONUP, 0, MAKELPARAM((WORD)pt.x, (WORD)pt.y));
+        }
+    }
     else if (cmd == "min")  { ShowWindow(h, SW_MINIMIZE); }
     else if (cmd == "close"){ PostMessageW(h, WM_CLOSE, 0, 0); }
     else return JSValueMakeBoolean(ctx, false);
