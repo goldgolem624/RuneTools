@@ -1070,6 +1070,9 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     // remote page that escaped the spliced CSP (its own CSP governs it after
     // navigation). Exactly one load event (the srcdoc mount) is legitimate; any
     // further load tears the plugin down.
+    // The frame is attached to the DOM only AFTER srcdoc is set (see below): an iframe
+    // inserted empty first loads about:blank and fires a load of its own, which counted
+    // as a navigation and disabled every plugin on mount.
     let frLoads = 0;
     fr.addEventListener('load', () => {
       frLoads++;
@@ -1082,7 +1085,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       }
     });
     fr.style.cssText = 'border:0;display:block;width:100%;flex:1 1 auto;min-height:0;background:#14151c;';
-    wrap.appendChild(fr); c.appendChild(wrap);
+    c.appendChild(wrap);
     // Least privilege: the mount carries the INTERSECTION of what was granted and what the
     // manifest still asks for, so a scope dropped from a later manifest stops working even
     // though the older grant still lists it. The per-call gate reads this list.
@@ -1094,7 +1097,9 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       const m = pluginMounts.get(id);
       if (!m || m.frame !== fr) return;             // window closed / remounted while loading
       if (!entry) { c.innerHTML = '<div class="empty">Failed to load plugin entry file.</div>'; pluginUnmount(id); return; }
+      // Content first, THEN attach: one document, one load event, no about:blank.
       fr.srcdoc = pluginBuildSrcdoc(entry);
+      wrap.appendChild(fr);
     })();
   }
 
