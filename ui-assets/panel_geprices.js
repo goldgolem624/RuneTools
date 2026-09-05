@@ -524,12 +524,17 @@
     const gridCols = '26px minmax(' + NAME_MIN + 'px, 1fr) ' + numW + 'px ' + numW + 'px' +
                      (showSpread ? ' ' + spreadW + 'px' : '') + ' 52px 18px';
     const cols = 6 + (showSpread ? 1 : 0);
-    const rowMinW = 26 + NAME_MIN + numW * 2 + (showSpread ? spreadW : 0) + 52 + 18 + (cols * 8);
+    // The pane's vertical scrollbar is drawn over the right edge of the content, and
+    // the star sits in the last column: without this gutter it ends up under the
+    // scrollbar and cannot be clicked.
+    const SCROLL_GUTTER = 14;
+    const rowMinW = 26 + NAME_MIN + numW * 2 + (showSpread ? spreadW : 0) + 52 + 18 +
+                    (cols * 8) + SCROLL_GUTTER;
     // Column header, in the same grid as the rows so the labels sit over their columns.
     {
       const hd = document.createElement('div');
       hd.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;min-width:' + rowMinW + 'px;' +
-                         'padding:2px 8px 4px;border-bottom:1px solid var(--border);' +
+                         'padding:2px ' + (8 + SCROLL_GUTTER) + 'px 4px 8px;border-bottom:1px solid var(--border);' +
                          'font-size:9.5px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.07em';
       const cells = ['', 'Item', 'Instabuy', 'Instasell'];
       if (showSpread) cells.push(gepSortKey === 'spreadpct' ? 'Spread %' : 'Spread');
@@ -547,7 +552,7 @@
       const open = gepOpenId === it.id;
       const row = document.createElement('div');
       row.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;align-items:center;min-width:' + rowMinW + 'px;' +
-                          'padding:5px 8px;border-bottom:1px solid var(--border);cursor:pointer' +
+                          'padding:5px ' + (8 + SCROLL_GUTTER) + 'px 5px 8px;border-bottom:1px solid var(--border);cursor:pointer' +
                           (open ? ';background:var(--accent-soft, rgba(140,111,253,0.08))' : '');
       row.title = open ? 'Click to collapse' : 'Click for price history';
       row.addEventListener('click', () => {
