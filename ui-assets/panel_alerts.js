@@ -101,6 +101,7 @@
       stat: (VITALS.some(s => s[0] === c.stat) ? c.stat : 'hp'),
       item: typeof c.item === 'number' ? c.item : 0,
       not:  typeof c.not === 'boolean' ? c.not : false,   // invert: "AND NOT ..."
+      op:   c.op === 'or' ? 'or' : 'and',                 // connector to what precedes it
     };
   }
   const ALERT_PRESETS = [
@@ -305,7 +306,8 @@
   function customLabel(w) {
     if (w.label) return w.label;
     const base = customLabelBase(w);
-    if (Array.isArray(w.also) && w.also.length) return base + ' + ' + w.also.map(andLabel).join(' + ');
+    if (Array.isArray(w.also) && w.also.length)
+      return base + w.also.map(c => (c.op === 'or' ? ' OR ' : ' AND ') + andLabel(c)).join('');
     return base;
   }
   function customLabelBase(w) {
@@ -408,12 +410,26 @@
     }
     return false;
   }
-  // Every extra AND condition holds (an empty list always holds). `not` inverts one entry.
-  function alsoOk(w, within) {
-    const list = w.also;
-    if (!Array.isArray(list) || !list.length) return true;
-    return list.every(c => { const p = condPresent(c, within); return c.not ? !p : p; });
+  // Extra conditions with AND/OR connectors: the list splits into OR-groups, AND binding
+  // tighter, so trigger AND c1 OR c2 AND c3 reads (trigger AND c1) OR (c2 AND c3).
+  // gate = the ANDs riding with the main trigger all hold; alt = some OR-group fully
+  // holds ON ITS OWN, which fires the alert without the main trigger (that is what OR
+  // means). `not` inverts one entry; an empty list gates nothing.
+  function alsoGroups(w, within) {
+    const list = Array.isArray(w.also) ? w.also : [];
+    const ok = c => { const p = condPresent(c, within); return c.not ? !p : p; };
+    let gate = true, alt = false, cur = null;   // cur = the OR-group being accumulated
+    for (const c of list) {
+      if (c.op === 'or') { if (cur !== null) alt = alt || cur; cur = ok(c); }
+      else if (cur === null) gate = gate && ok(c);
+      else cur = cur && ok(c);
+    }
+    if (cur !== null) alt = alt || cur;
+    return { gate: gate, alt: alt };
   }
+  // Rising-edge triggers (augment level, farm patch) use this as a pass/fail gate: the
+  // edge still has to happen, and then either its AND group or any OR group approves.
+  function alsoOk(w, within) { const r = alsoGroups(w, within); return r.gate || r.alt; }
   function andLabel(c) {
     let l;
     if (c.type === 'panim') l = 'player anim ' + c.anim;
@@ -702,9 +718,11 @@
           }
           continue;
         }
-        // Main trigger AND every extra condition. All of them are sampled from the same poll,
-        // so "boss is mid magic attack AND no magic prayer is up" is a single consistent read.
-        const present = !!w.enabled && condPresent(w, within) && alsoOk(w, within);
+        // Main trigger AND its conditions, or any OR-group on its own. All sampled from
+        // the same poll, so "boss is mid magic attack AND no magic prayer is up" is a
+        // single consistent read.
+        const rg = alsoGroups(w, within);
+        const present = !!w.enabled && ((condPresent(w, within) && rg.gate) || rg.alt);
         const was = !!alertState.custom[w.id];
         if (alertState.ready && present) {
           if (!was) { fireCustom(w); w._rlast = Date.now(); }
@@ -956,7 +974,7 @@
     if (!w.also || w.also.length < AND_MAX) {
       const addAnd = document.createElement('button'); addAnd.type = 'button'; addAnd.className = 'al-add al-and-add';
       addAnd.textContent = '+ AND condition';
-      addAnd.title = 'Require another condition to be true at the same time (e.g. a buff NOT active)';
+      addAnd.title = 'Require another condition to be true at the same time (e.g. a buff NOT active). Click its AND tag afterwards to turn it into an OR alternative.';
       addAnd.addEventListener('click', () => {
         if (!w.also) w.also = [];
         w.also.push(normAnd({ type: 'buff', cond: 'inactive' }));
@@ -982,7 +1000,17 @@
   function andCard(w, c, i) {
     const box = document.createElement('div'); box.className = 'al-and';
     const head = document.createElement('div'); head.className = 'al-cust-head';
-    const tag = document.createElement('span'); tag.className = 'al-and-tag'; tag.textContent = 'AND';
+    // AND/OR toggle. AND must hold alongside the trigger; OR starts an alternative that
+    // fires the alert on its own (AND binds tighter, so conditions after an OR chain to it).
+    const tag = document.createElement('button'); tag.type = 'button';
+    tag.className = 'al-evt al-and-tag' + (c.op === 'or' ? ' on' : '');
+    tag.textContent = c.op === 'or' ? 'OR' : 'AND';
+    tag.title = 'Click to switch. AND: must hold together with the trigger. OR: fires the alert on its own (later AND conditions chain to it).';
+    tag.addEventListener('click', e => {
+      e.stopPropagation();
+      c.op = c.op === 'or' ? 'and' : 'or';
+      saveAlertCfg(); renderCustomList();
+    });
     head.appendChild(tag);
     // NOT toggle: "AND NOT using a magic prayer" reads better than hunting for an inverse comparator.
     const notB = document.createElement('button'); notB.type = 'button'; notB.className = 'al-evt' + (c.not ? ' on' : '');
