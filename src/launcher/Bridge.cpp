@@ -2701,8 +2701,37 @@ void run_update() {
     log("manifest version=" + ver + " hash=" + hash);
     if (ver.empty()) { log("abort: manifest has no version"); set_upd("error", 0, "No update available"); return; }
 
+    // ANTI-DOWNGRADE: a compromised (or replayed) manifest must not be able to push an
+    // older, vulnerable build. Dotted-numeric compare; a manifest version <= what is
+    // already running is never an update.
+    {
+        auto parts = [](const std::string& s) {
+            std::vector<long> v; long cur = 0; bool any = false;
+            for (char c : s) {
+                if (c >= '0' && c <= '9') { cur = cur * 10 + (c - '0'); any = true; }
+                else if (c == '.') { v.push_back(any ? cur : 0); cur = 0; any = false; }
+            }
+            if (any) v.push_back(cur);
+            while (v.size() < 4) v.push_back(0);
+            return v;
+        };
+        const auto nv = parts(ver), rv = parts(running_version());
+        if (!(nv > rv)) {   // lexicographic on equal-length numeric vectors
+            log("abort: manifest version " + ver + " is not newer than running " + running_version());
+            set_upd("error", 0, "No update available");
+            return;
+        }
+    }
+
+    // Random destination name: a fixed %TEMP% path was a predictable target for a
+    // same-user swap between verification and launch.
     wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
-    std::wstring dest = std::wstring(tmp) + L"RuneToolsXSetup.exe";
+    wchar_t rnd[24] = {};
+    {
+        unsigned int r1 = 0, r2 = 0; rand_s(&r1); rand_s(&r2);
+        swprintf_s(rnd, L"_%08x%08x", r1, r2);
+    }
+    std::wstring dest = std::wstring(tmp) + L"RuneToolsXSetup" + rnd + L".exe";
 
     set_upd("downloading", 0, "Downloading v" + ver);
     auto dl = http::Download(kUpdateHost, kDownloadPath, hdrs, dest,
@@ -2723,9 +2752,21 @@ void run_update() {
         set_upd("error", 0, "Update verification failed");
         return;
     }
+    // TOCTOU guard: hold a read handle with FILE_SHARE_READ ONLY (no write, no
+    // delete sharing) from before hashing until after the installer has launched.
+    // Nobody can swap or modify the verified bytes while this handle is open.
+    HANDLE guard = CreateFileW(dest.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (guard == INVALID_HANDLE_VALUE) {
+        DeleteFileW(dest.c_str());
+        log("abort: could not lock the downloaded installer for verification");
+        set_upd("error", 0, "Update verification failed");
+        return;
+    }
     std::string got = sha256_hex(dest);
     log("verify expected=" + hash + " got=" + got);
     if (got.empty() || _stricmp(got.c_str(), hash.c_str()) != 0) {
+        CloseHandle(guard);
         DeleteFileW(dest.c_str());
         log("abort: hash mismatch");
         set_upd("error", 0, "Update verification failed");
@@ -2747,8 +2788,9 @@ void run_update() {
                                  nullptr, SW_SHOWNORMAL);
     INT_PTR code = reinterpret_cast<INT_PTR>(rc);
     log("ShellExecuteW returned " + std::to_string((long long)code));
-    if (code <= 32) { log("abort: ShellExecuteW failed (<=32)"); set_upd("error", 0, "Couldn't start the installer"); return; }
+    if (code <= 32) { CloseHandle(guard); log("abort: ShellExecuteW failed (<=32)"); set_upd("error", 0, "Couldn't start the installer"); return; }
     Sleep(1500);          // let the installer spin up before this process releases its files
+    CloseHandle(guard);   // the installer is running from the verified bytes now
     // Must be TerminateProcess, NOT ExitProcess: ExitProcess runs module detach callbacks, which can
     // deadlock with the Ultralight/GPU/SSE threads live -- the process then hangs, keeps the exe locked,
     // and the update silently fails. TerminateProcess exits instantly.

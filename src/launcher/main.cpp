@@ -318,21 +318,33 @@ public:
         rtx::launcher::dock::Tick();
     }
 
+    // PRIVILEGED VIEW LOCKDOWN: the launcher page is our own LoadHTML document and
+    // holds the full native bridge; remote main-frame navigation is never legitimate.
+    static bool local_url(const String& url) {
+        String8 u8 = url.utf8();
+        std::string u(u8.data(), u8.length());
+        return u.empty() || u.rfind("about:", 0) == 0;
+    }
+    void OnBeginLoading(View* view, uint64_t, bool is_main, const String& url) override {
+        if (is_main && !local_url(url)) {
+            view->Stop();
+            boot_log("BLOCKED main-frame navigation off the launcher page");
+        }
+    }
     // Attach on both events: window-object-ready can fire only for the
     // initial about:blank context, so DOM-ready is the fallback. Both
-    // are idempotent (property overwrite, not leak).
+    // are idempotent (property overwrite, not leak), and both are gated
+    // on the frame still being the local document.
     void OnWindowObjectReady(View* view, uint64_t, bool is_main,
                              const String& url) override {
-        if (!is_main) return;
-        boot_log(std::string("window object ready (") +
-                 url.utf8().data() + "); attaching JS bridge");
+        if (!is_main || !local_url(url)) return;
+        boot_log("window object ready (local); attaching JS bridge");
         rtx::launcher::AttachBridge(view);
     }
     void OnDOMReady(View* view, uint64_t, bool is_main,
                     const String& url) override {
-        if (!is_main) return;
-        boot_log(std::string("DOM ready (") +
-                 url.utf8().data() + "); re-attaching JS bridge");
+        if (!is_main || !local_url(url)) return;
+        boot_log("DOM ready (local); re-attaching JS bridge");
         rtx::launcher::AttachBridge(view);
     }
 

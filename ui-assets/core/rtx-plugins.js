@@ -105,7 +105,7 @@ sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);},settings:function(schema){return call('ui.settings',[schema]);}},
 settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}},
-prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);}}};
+prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);},item:function(ids){return call('prices.item',[ids]);}}};
 window.rtx=window.rtx||{};window.rtx.plugin=api;
 // Keyboard focus publishing: the frame is a sandboxed opaque origin, so the host page cannot
 // see our activeElement; without this every keystroke aimed at a plugin text field went to the
@@ -123,6 +123,15 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
   const pClampStr  = (v, max) => String(v == null ? '' : v).slice(0, max);
   // Trusted-arg pass-through for the promoted panel bindings below: shape is kept, size is bounded.
   const pArgs      = a => (Array.isArray(a) ? a : []).slice(0, 8).map(x => (typeof x === 'number' || typeof x === 'boolean' || x == null) ? x : pClampStr(x, 65536));
+  // Overlay-record clamp: keeps the \x1e-record / \x1f-field structure the native
+  // parsers expect but bounds it (64 records, 16 fields, 256 chars each), so a
+  // plugin cannot flood the per-frame overlay pass or smuggle oversized payloads.
+  const pOverlayArgs = a => (Array.isArray(a) ? a : []).slice(0, 8).map(x => {
+    if (typeof x === 'number' || typeof x === 'boolean' || x == null) return x;
+    return String(x).slice(0, 65536).split('\x1e').slice(0, 64)
+      .map(r => r.split('\x1f').slice(0, 16).map(f => f.slice(0, 256)).join('\x1f'))
+      .join('\x1e');
+  });
   const pClampList = v => (Array.isArray(v) ? v : []).slice(0, 50).map(x => pClampStr(x, 40).replace(/[^A-Za-z0-9 _'\-]/g, '')).filter(Boolean).join(',');
 
   // method -> { scope, run(args,pid,id,frame), json }. Only safe read/overlay/
@@ -477,11 +486,16 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'cache.isLeaguesWorld':   { scope: 'cache.read',  json: false, run: (a) => bridge().isLeaguesWorld(...pArgs(a)) },
     'cache.buffCatalog':      { scope: 'cache.read',  json: false, run: (a) => bridge().buffCatalog(...pArgs(a)) },
     // -- overlay (overlay)
-    'overlay.guideMarks':     { scope: 'overlay',     json: false, run: (a, pid) => bridge().guideMarks(pid, ...pArgs(a)) },
-    'overlay.panelViz':       { scope: 'overlay',     json: false, run: (a, pid) => bridge().panelViz(pid, ...pArgs(a)) },
-    'overlay.uiHighlight':    { scope: 'overlay',     json: false, run: (a, pid) => bridge().uiHighlight(pid, ...pArgs(a)) },
-    'overlay.hudSprite':      { scope: 'overlay',     json: false, run: (a, pid) => bridge().hudSprite(pid, ...pArgs(a)) },
-    'overlay.outlineObject':  { scope: 'overlay',     json: false, run: (a, pid) => bridge().outlineObject(pid, ...pArgs(a)) },
+    // NOT plain pArgs: these carry record lists with \x1e/\x1f separators, and the
+    // 64KB pass-through let a plugin feed unbounded records straight into the native
+    // overlay parsers (a few hundred labels is a render-thread DoS; arbitrary rects
+    // are on-screen spoofing fuel). Records and fields are bounded here; the panels'
+    // own calls don't route through the broker and are unaffected.
+    'overlay.guideMarks':     { scope: 'overlay',     json: false, run: (a, pid) => bridge().guideMarks(pid, ...pOverlayArgs(a)) },
+    'overlay.panelViz':       { scope: 'overlay',     json: false, run: (a, pid) => bridge().panelViz(pid, ...pOverlayArgs(a)) },
+    'overlay.uiHighlight':    { scope: 'overlay',     json: false, run: (a, pid) => bridge().uiHighlight(pid, ...pOverlayArgs(a)) },
+    'overlay.hudSprite':      { scope: 'overlay',     json: false, run: (a, pid) => bridge().hudSprite(pid, ...pOverlayArgs(a)) },
+    'overlay.outlineObject':  { scope: 'overlay',     json: false, run: (a, pid) => bridge().outlineObject(pid, ...pOverlayArgs(a)) },
     // -- chat (chat.read)
     // chat.read is NOT in PLUGIN_SCOPES (PMs, friends/clan chat need their own consent label), so only the panel path reaches it
     'chat.messages':          { scope: 'chat.read',   json: true,  run: (a, pid) => bridge().chat(pid, ...pArgs(a)) },
@@ -594,10 +608,36 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     // RS3 GE prices: the launcher caches relay copies from the RuneTools server, which is
     // the ONLY consumer of the upstream price API -- a plugin call never leaves the machine
     // beyond that relay. latest: {itemId: {high, highTime, low, lowTime}}; mapping: item
-    // metadata array (name, id, limit, alch values).
+    // metadata array (name, id, limit, alch values). item: one id or an array of up to 50,
+    // answered from a parsed broker-side cache so watching a few prices costs neither the
+    // half-megabyte payload nor a JSON parse per call.
     'prices.latest':    { scope: 'cache.read', json: true,    run: () => bridge().pricesCached() },
-    'prices.mapping':   { scope: 'cache.read', json: true,    run: () => bridge().pricesMapping() }
+    'prices.mapping':   { scope: 'cache.read', json: true,    run: () => bridge().pricesMapping() },
+    'prices.item':      { scope: 'cache.read', json: false,   run: (a) => {
+      const data = pluginPricesData();
+      const ids = Array.isArray(a[0]) ? a[0] : [a[0]];
+      const out = {};
+      for (const v of ids.slice(0, 50)) { const n = pClampId(v); if (data[n] !== undefined) out[n] = data[n]; }
+      return out;
+    } }
   };
+
+  // Parsed copy of the launcher's cached latest-prices payload, refreshed at most every
+  // 30 s (the relay itself refreshes every 90 s), shared by every prices.item call.
+  let _pricesParsed = null, _pricesParsedAt = 0;
+  function pluginPricesData() {
+    const now = Date.now();
+    if (!_pricesParsed || now - _pricesParsedAt > 30000) {
+      try {
+        const d = JSON.parse(bridge().pricesCached() || '{}');
+        const data = (d && d.data) ? d.data : d;
+        if (data && typeof data === 'object') _pricesParsed = data;
+      } catch (e) {}
+      if (!_pricesParsed) _pricesParsed = {};
+      _pricesParsedAt = now;
+    }
+    return _pricesParsed;
+  }
 
   function pluginRateOk(id, method) {
     // rate = tokens refilled per second; capacity = max burst (>=1 so slow rates still fire).
@@ -605,6 +645,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                : method.indexOf('overlay.') === 0 ? 6
                : method.indexOf('notify.') === 0 ? 0.1     // OS toasts: 1 per 10s
                : method.indexOf('clipboard.') === 0 ? 1
+               : method === 'prices.item' ? 4             // tiny answers from a local parsed cache
                : method.indexOf('prices.') === 0 ? 0.5    // half-MB payloads; data changes every 90s anyway
                : 20;
     const cap = Math.max(1, rate);
@@ -781,6 +822,10 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       for (const pm of pluginMounts.values())
         if (pm.frame && ev.source === pm.frame.contentWindow) { mounted = pm; break; }
       if (!mounted) return;
+      // Defense in depth alongside the load-count teardown: a legitimate sandboxed
+      // srcdoc frame always has the opaque origin ('null'); anything else is not a
+      // plugin document we built.
+      if (ev.origin !== 'null') return;
       if (m.kind === 'hello') {
         pluginSendEvent(mounted, 'ready', { scopes: mounted.scopes, apiVersion: '1.0', pluginId: mounted.id });
         return;
@@ -919,19 +964,25 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       .concat(extra);
   }
 
-  // Splice the host CSP + the SDK shim into the plugin's entry HTML head.
+  // Build the plugin document: CSP + SDK shim FIRST in a canonical skeleton, with the
+  // author's head/body content re-serialized behind them. The old approach spliced the
+  // CSP after the first regex match of "<head>", which an entry file could steer into
+  // an HTML comment ("<!-- <head> -->"), leaving the real document with NO CSP at all
+  // (free network access from inside the frame). A real HTML parse cannot be steered
+  // by comments, and the CSP meta preceding every author node means it always applies.
   function pluginBuildSrcdoc(entryHtml) {
     const csp = '<meta http-equiv="Content-Security-Policy" content="' +
       "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
       "img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-src 'none'; " +
       "form-action 'none'; base-uri 'none'" + '">';
     const inject = csp + '<scr' + 'ipt>' + PLUGIN_SDK_SHIM + '</scr' + 'ipt>';
-    let html = String(entryHtml || '');
-    const head = html.match(/<head[^>]*>/i);
-    if (head) { const i = head.index + head[0].length; return html.slice(0, i) + inject + html.slice(i); }
-    const htm = html.match(/<html[^>]*>/i);
-    if (htm) { const i = htm.index + htm[0].length; return html.slice(0, i) + '<head>' + inject + '</head>' + html.slice(i); }
-    return '<!DOCTYPE html><html><head>' + inject + '</head><body>' + html + '</body></html>';
+    let headHtml = '', bodyHtml = '';
+    try {
+      const doc = new DOMParser().parseFromString(String(entryHtml || ''), 'text/html');
+      headHtml = doc.head ? doc.head.innerHTML : '';
+      bodyHtml = doc.body ? doc.body.innerHTML : '';
+    } catch (e) { headHtml = ''; bodyHtml = ''; }   // fail CLOSED: no author markup without the CSP
+    return '<!DOCTYPE html><html><head>' + inject + headHtml + '</head><body>' + bodyHtml + '</body></html>';
   }
 
   function renderPluginPermission(id, tab, prev) {
@@ -1014,6 +1065,22 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     const fr = document.createElement('iframe');
     fr.setAttribute('sandbox', 'allow-scripts');     // NO allow-same-origin -> opaque origin
     fr.setAttribute('referrerpolicy', 'no-referrer');
+    // ESCAPE HARDENING: the sandbox permits a document to navigate ITSELF, and a
+    // navigated frame keeps its window identity, so the broker would keep trusting a
+    // remote page that escaped the spliced CSP (its own CSP governs it after
+    // navigation). Exactly one load event (the srcdoc mount) is legitimate; any
+    // further load tears the plugin down.
+    let frLoads = 0;
+    fr.addEventListener('load', () => {
+      frLoads++;
+      if (frLoads > 1) {
+        pluginUnmount(id);
+        try { fr.remove(); } catch (e) {}
+        c.innerHTML = '<div class="empty">Plugin disabled: ' + pluginEsc(tab.manifest.name) +
+                      ' tried to navigate its page, which plugins are not permitted to do.</div>';
+        try { rtx.log && rtx.log('plugin ' + id + ' unmounted: unexpected frame navigation'); } catch (e) {}
+      }
+    });
     fr.style.cssText = 'border:0;display:block;width:100%;flex:1 1 auto;min-height:0;background:#14151c;';
     wrap.appendChild(fr); c.appendChild(wrap);
     // Least privilege: the mount carries the INTERSECTION of what was granted and what the

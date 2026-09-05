@@ -109,11 +109,27 @@ struct Ui : public LoadListener, public ViewListener {
         if (frame) frame->cursor = (std::uint32_t)cursor;
     }
 
-    void OnWindowObjectReady(View* v, std::uint64_t, bool is_main, const String&) override {
-        if (is_main) attach(v);
+    // PRIVILEGED VIEW LOCKDOWN. This view only ever shows our own LoadHTML document
+    // and it holds the full native bridge, so a main-frame navigation to anything
+    // remote is never legitimate: stop it at begin-loading (same pattern as the wiki
+    // pane), and gate attach() on the frame still being the local document, so the
+    // bridge can never be installed into foreign content even if a load slips by.
+    static bool local_url(const String& url) {
+        String8 u8 = url.utf8();
+        std::string u(u8.data(), u8.length());
+        return u.empty() || u.rfind("about:", 0) == 0;
     }
-    void OnDOMReady(View* v, std::uint64_t, bool is_main, const String&) override {
-        if (is_main) attach(v);
+    void OnBeginLoading(View* v, std::uint64_t, bool is_main, const String& url) override {
+        if (is_main && !local_url(url)) {
+            v->Stop();
+            rtx::log::Client(pid, "[ui] BLOCKED main-frame navigation off the local page");
+        }
+    }
+    void OnWindowObjectReady(View* v, std::uint64_t, bool is_main, const String& url) override {
+        if (is_main && local_url(url)) attach(v);
+    }
+    void OnDOMReady(View* v, std::uint64_t, bool is_main, const String& url) override {
+        if (is_main && local_url(url)) attach(v);
     }
     // Same contract as the old dock panel: bridge + read-only __rtx_pid global,
     // re-run on both load events (idempotent property overwrite).

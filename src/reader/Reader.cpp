@@ -1279,6 +1279,14 @@ void drain_chat_rings() {
         auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
             MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0));
         if (!sh) { CloseHandle(h); continue; }
+        // The section name is same-user pre-creatable: before touching the fixed v3
+        // layout, require the mapped view to actually be that large, or a hostile
+        // 4 KB section with a valid magic walks the reads straight off the view.
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 ||
+            mbi.RegionSize < sizeof(rtx::netprobe::Share)) {
+            UnmapViewOfFile((void*)sh); CloseHandle(h); continue;
+        }
         if (sh->magic == rtx::netprobe::kMagic && sh->version >= 3) {
             const std::uint64_t written = sh->chatWritten;
             std::lock_guard<std::mutex> lk(s_chat_mu);
@@ -2630,6 +2638,17 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
     auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
         MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0));
     if (!sh) { CloseHandle(h); return "{\"ok\":false,\"reason\":\"map failed\"}"; }
+    // Same-user pre-creatable name: the fixed layout below is only touched when the
+    // mapped view is actually big enough for it (a hostile 4 KB section with a valid
+    // magic otherwise walks the record loop straight off the view). This path reads
+    // up to the END of recs[] (the v2 prefix; v3 appended the chat ring after it),
+    // so the bound is the chat ring's offset, keeping stale-v2 compat intact.
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 ||
+        mbi.RegionSize < offsetof(rtx::netprobe::Share, chatWritten)) {
+        UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh)); CloseHandle(h);
+        return "{\"ok\":false,\"reason\":\"share undersized\"}";
+    }
     std::string out;
     // Accept any version >= 2: the diag ring layout is a stable prefix (v3 appended the
     // chat ring after it), so an older companion still injected across an update works.

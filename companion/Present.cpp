@@ -182,10 +182,14 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                                    g_marker->version == rtx::marker::kVersion &&
                                    (g_marker->seq & 1u) == 0 && g_marker->visible &&
                                    g_marker->count > 0;
+                // w/h come from a shared section any same-user process could have
+                // pre-created: clamp to the layout's real bounds or UploadHud would
+                // read w*h*4 bytes past the 64 KB buffer (OOB game-heap disclosure).
                 bool haveHud = g_hud && g_hud->magic == rtx::hud::kMagic &&
                                g_hud->version == rtx::hud::kVersion &&
                                (g_hud->seq & 1u) == 0 && g_hud->enable &&
-                               g_hud->w > 0 && g_hud->h > 0;
+                               g_hud->w > 0 && g_hud->h > 0 &&
+                               g_hud->w <= rtx::hud::kMaxW && g_hud->h <= rtx::hud::kMaxH;
                 // Drawing the UI layer only needs the last-uploaded texture, so a
                 // mid-write seq (odd) still draws; only the UPLOAD requires a stable
                 // snapshot.
