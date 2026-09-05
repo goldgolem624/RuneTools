@@ -581,9 +581,26 @@
     border: 2px solid transparent; background-clip: padding-box;
   }
   .content::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: padding-box; }
+  /* SAFETY NET for the overflow-x: hidden above. A panel whose content is wider than the
+     pane has its right edge CLIPPED AND UNREACHABLE -- and when the clipped part holds a
+     control (a favourite star, a toggle, an x), that control simply cannot be clicked.
+     Panels should size their own layouts to fit (see .scene-trow / panel_geprices for the
+     pattern: minmax(0,1fr) for the flexible column, drop low-priority columns when tight),
+     but these two rules stop an un-audited panel from silently losing content:
+       - grid/flex rows shrink instead of standing at their widest descendant, which is
+         what pushes the last column out in the first place;
+       - a direct child cannot be wider than the pane. */
+  .content > * { max-width: 100%; }
+  .content [class*="row"], .content [class*="grid"], .content [class*="head"] { min-width: 0; }
   /* Width classes replace the old viewport media queries (the view now spans the whole
      game client, so per-WINDOW width drives responsive layout). */
   .win.narrow .content { padding: 10px 12px; }
+  /* Sounds rows: the meta column is the row's only flexible child, so it must be able to
+     shrink or the Export button is pushed out of the pane and cannot be clicked. It is
+     dropped entirely on a tight window (the row title still carries the text). */
+  .snd-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; opacity: 0.75; }
+  .win.tight .snd-meta { display: none; }
   .pane    { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .rows { display: flex; flex-direction: column; gap: 8px; }
   /* Section heading inside a .rows list (see secRow). */
@@ -1697,8 +1714,13 @@
   .ge-cell.is-complete .ge-value { color: #4dd28a; }
   .ge-cell.is-active   { box-shadow: inset 0 0 0 1px rgba(240,181,60,0.30); }
   .ge-cell.is-complete { box-shadow: inset 0 0 0 1px rgba(77, 210, 138, 0.40); }
-  @media (max-width: 430px) { .ge-grid { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 280px) { .ge-grid { grid-template-columns: 1fr; } }
+  /* Window width, NOT viewport: every .win lives in one document spanning the whole game
+     client, so the @media rules these replace could only fire if the entire client were
+     430px wide -- meaning the intended narrow layout never actually arrived, and three
+     columns in a 330px window clipped the BUY/SELL badge (the one thing distinguishing an
+     offer's direction) out of its own cell. */
+  .win.narrow .ge-grid { grid-template-columns: repeat(2, 1fr); }
+  .win.tight  .ge-grid { grid-template-columns: 1fr; }
 
   /* Ultralight doesn't render native title= tooltips, and a CSS ::after gets clipped
      by parent overflow:hidden -- one fixed bubble on <body>, positioned by JS. */
@@ -2226,13 +2248,14 @@
   .vw-pop-h .vw-pop-nm { color: var(--accent-hi); font-size: 10px; font-weight: 600; }
   .vw-pl b { margin-left: auto; color: var(--text); }
   .vw-pl.chg { background: rgba(var(--accent-rgb),0.16); }
-  @media (max-width: 360px) {
-    .vw-row { gap: 5px; padding: 6px 7px; }
-    .vw-row .vw-id { min-width: 0; font-size: 12px; }
-    .vw-tag { padding: 2px 5px; }
-    .vw-vals .vw-val { font-size: 13px; }
-    .vw-flt .vw-chip { padding: 0 9px; }
-  }
+  /* Window width, not viewport (see the .ge-grid note): as an @media rule this compaction
+     never ran, so a narrow varswatcher squeezed .vw-vals -- the actual value -- to a few
+     pixels while the id column held its full width. */
+  .win.tight .vw-row { gap: 5px; padding: 6px 7px; }
+  .win.tight .vw-row .vw-id { min-width: 0; font-size: 12px; }
+  .win.tight .vw-tag { padding: 2px 5px; }
+  .win.tight .vw-vals .vw-val { font-size: 13px; }
+  .win.tight .vw-flt .vw-chip { padding: 0 9px; }
   .vw-pl.chg b { color: #4dd28a; }
   .vw-cur { font-size: 10px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
   .vw-cur span { color: var(--text); }
@@ -2296,8 +2319,8 @@
   .sw-lap { display: flex; justify-content: space-between; font-size: 12px; font-variant-numeric: tabular-nums;
     padding: 5px 10px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; }
   .sw-lap .ix { color: var(--text-dim); } .sw-lap .split { color: var(--accent-hi); } .sw-lap .tot { color: var(--text); }
-  @media (max-width: 380px) { .sw-time { font-size: 34px; letter-spacing: 0.5px; } }
-  @media (max-width: 300px) { .sw-time { font-size: 27px; letter-spacing: 0; } }
+  .win.narrow .sw-time { font-size: 34px; letter-spacing: 0.5px; }
+  .win.tight  .sw-time { font-size: 27px; letter-spacing: 0; }
 
   .metro { margin-top: 14px; padding: 12px; max-width: 100%; box-sizing: border-box;
     background: var(--bg-elev); border: 1px solid var(--border);

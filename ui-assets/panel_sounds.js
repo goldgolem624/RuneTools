@@ -517,10 +517,16 @@
     if (list) {
       let h = '';
       for (const r of vis) {
-        h += '<div class="pet-row"' + (r.id === sndNow ? ' style="background:rgba(120,180,255,0.10)"' : '') + '>'
-           + '<div style="flex:0 0 70px;font-variant-numeric:tabular-nums">' + r.id + '</div>'
-           + '<div style="flex:1;opacity:0.75">' + r.rate + ' Hz · ' + (r.ch === 2 ? 'stereo' : 'mono')
-           + ' · ' + sndFmtMs(r.ms) + ' · ' + sndFmtBytes(r.bytes) + '</div>'
+        // The meta column carries min-width:0 + ellipsis and is the ONLY flexible child:
+        // without it the row's floor exceeded a narrow panel and pushed Export (the last
+        // child) outside the pane, where overflow-x:hidden made it unclickable. The
+        // detail also rides the row title, so nothing is lost when it truncates.
+        const meta = r.rate + ' Hz · ' + (r.ch === 2 ? 'stereo' : 'mono')
+                   + ' · ' + sndFmtMs(r.ms) + ' · ' + sndFmtBytes(r.bytes);
+        h += '<div class="pet-row" title="' + htmlEsc(String(r.id) + ' — ' + meta) + '"'
+           + (r.id === sndNow ? ' style="background:rgba(120,180,255,0.10)"' : '') + '>'
+           + '<div style="flex:0 0 auto;min-width:44px;font-variant-numeric:tabular-nums">' + r.id + '</div>'
+           + '<div class="snd-meta">' + meta + '</div>'
            + '<button class="pet-chip" data-play="' + r.id + '">Play</button>'
            + (sndFx.hooked
                 ? '<button class="pet-chip' + (sndMuted.has(sndKey(SND_IDX[sndKind], r.id)) ? ' on' : '')

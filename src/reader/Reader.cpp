@@ -6651,16 +6651,27 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     const int bw = rpm<std::int32_t>(h, box + 0x78).value_or(0);
     const int bh = rpm<std::int32_t>(h, box + 0x7c).value_or(0);
     auto topLeft = [&](const Kid& k) {
-        // Half-box bounds when the box measured sanely; a torn 0-size box accepts near-origin.
-        const int lx = bw > 8 ? bw / 2 : 18, ly = bh > 8 ? bh / 2 : 18;
+        // A THIRD of the box, not half. On a ~36px slot a centred one-digit timer starts
+        // around x=14,y=12, which sat inside the old half-box bound -- so "4" with 4s left
+        // still read as the keybind (and the slot then reported no cooldown). The corner
+        // label lives at x,y of a few px, so a third separates them with room to spare.
+        // The absolute fallback for a torn 0-size box tightens with it.
+        const int lx = bw > 8 ? bw / 3 : 10, ly = bh > 8 ? bh / 3 : 10;
         return k.x >= 0 && k.y >= 0 && k.x < lx && k.y < ly;
     };
+    // MOST top-left wins, rather than the first in component order: when a slot is both
+    // bound and on cooldown there are two key-shaped children, and enumeration order does
+    // not say which is the corner one. Distance from the box origin does.
     bool haveKey = false; int keyRel = 0;
-    for (const auto& kv : kids) {
-        int mm = 0;
-        std::string k = as_key(kv.text, mm);
-        if (k.empty() || !topLeft(kv)) continue;
-        keyb = k; mod = mm; keyRel = kv.rel; haveKey = true; break;
+    {
+        const Kid* best = nullptr; int bestMod = 0; std::string bestKey;
+        for (const auto& kv : kids) {
+            int mm = 0;
+            std::string k = as_key(kv.text, mm);
+            if (k.empty() || !topLeft(kv)) continue;
+            if (!best || (kv.x + kv.y) < (best->x + best->y)) { best = &kv; bestMod = mm; bestKey = k; }
+        }
+        if (best) { keyb = bestKey; mod = bestMod; keyRel = best->rel; haveKey = true; }
     }
     // Cooldown: prefer the child right after the key, else any non-key timer-shaped child
     // OUTSIDE the top-left key region (so an unbound slot still reads its countdown).

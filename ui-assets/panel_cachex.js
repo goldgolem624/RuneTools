@@ -514,11 +514,16 @@
          to the end of 200 rows first. */
       .cx-pager { position: sticky; bottom: 0; z-index: 2;
           display: flex; align-items: center; gap: 6px; padding: 7px 10px;
+          flex-wrap: wrap;   /* the row count may take a second line; navigation never wraps away */
           border-top: 1px solid var(--border); background: var(--bg-elev); }
-      .cx-pg { min-width: 30px; padding: 4px 8px; font-size: 12px; line-height: 1; }
+      .cx-pg { min-width: 30px; padding: 4px 8px; font-size: 12px; line-height: 1; flex: 0 0 auto; }
       .cx-pg:disabled { opacity: 0.35; cursor: default; }
       .cx-jump { width: 54px; flex: 0 0 auto; text-align: center; padding: 4px 6px; font-variant-numeric: tabular-nums; }
-      .cx-pgof { font-size: 11px; color: var(--text-mute); white-space: nowrap; font-variant-numeric: tabular-nums; }`);
+      /* The count is decorative and sits between the nav buttons in DOM order, so it has to
+         be the thing that gives: unshrinkable, it pushed the forward/last page buttons off
+         the pane, where overflow-x:hidden made them unreachable on a big result set. */
+      .cx-pgof { font-size: 11px; color: var(--text-mute); white-space: nowrap; font-variant-numeric: tabular-nums;
+          flex: 1 1 60px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }`);
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'cxWrap'; wrap.className = 'cx-wrap'; c.appendChild(wrap);
 
