@@ -104,7 +104,8 @@ overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);},settings:function(schema){return call('ui.settings',[schema]);}},
-settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}}};
+settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}},
+prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);}}};
 window.rtx=window.rtx||{};window.rtx.plugin=api;
 // Keyboard focus publishing: the frame is a sandboxed opaque origin, so the host page cannot
 // see our activeElement; without this every keystroke aimed at a plugin text field went to the
@@ -589,7 +590,13 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'settings.get':     { scope: null,         json: false,   run: (a, pid, id) => {
       const reg = pluginSettingsReg.get(id);
       return reg ? Object.assign({}, reg.values) : {};
-    } }
+    } },
+    // RS3 GE prices: the launcher caches relay copies from the RuneTools server, which is
+    // the ONLY consumer of the upstream price API -- a plugin call never leaves the machine
+    // beyond that relay. latest: {itemId: {high, highTime, low, lowTime}}; mapping: item
+    // metadata array (name, id, limit, alch values).
+    'prices.latest':    { scope: 'cache.read', json: true,    run: () => bridge().pricesCached() },
+    'prices.mapping':   { scope: 'cache.read', json: true,    run: () => bridge().pricesMapping() }
   };
 
   function pluginRateOk(id, method) {
@@ -598,6 +605,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                : method.indexOf('overlay.') === 0 ? 6
                : method.indexOf('notify.') === 0 ? 0.1     // OS toasts: 1 per 10s
                : method.indexOf('clipboard.') === 0 ? 1
+               : method.indexOf('prices.') === 0 ? 0.5    // half-MB payloads; data changes every 90s anyway
                : 20;
     const cap = Math.max(1, rate);
     const k = id + '|' + method, now = Date.now();

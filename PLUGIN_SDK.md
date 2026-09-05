@@ -503,6 +503,20 @@ await rtx.plugin.storage.keys();             // -> ["key", ...]
 Keys are namespaced to your plugin id and the active account; another plugin cannot read
 them. Key names are capped at 64 chars and each value at ~256 KB.
 
+### prices (scope: cache.read)
+
+Real-time RS3 Grand Exchange prices. The data is relayed through the RuneTools
+server (the single consumer of the upstream price API) and cached by the launcher,
+so calling these never generates upstream traffic. `latest` refreshes about every
+90 seconds; call it at most that often.
+
+```js
+const prices = await rtx.plugin.prices.latest();   // { "2": { high, highTime, low, lowTime }, ... }
+const items  = await rtx.plugin.prices.mapping();  // [{ id, name, limit, value, lowalch, highalch, members, ... }]
+```
+
+Rate limit: 1 call per 2 s across both methods (the payloads are large; cache them).
+
 ### ui (always available)
 
 ```js

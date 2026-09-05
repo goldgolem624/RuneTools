@@ -248,6 +248,14 @@
       settings:  function (schema) { return call('ui.settings', [schema]); }
     },
 
+    // ---- scope: cache.read -- RS3 GE prices (server-relayed, launcher-cached) ----
+    prices: {
+      // {itemId: {high, highTime, low, lowTime}} for every traded item.
+      latest:  function () { return call('prices.latest', []); },
+      // Item metadata array: {id, name, limit, value, lowalch, highalch, members, ...}.
+      mapping: function () { return call('prices.mapping', []); }
+    },
+
     // ---- settings (always available; values for the declared schema) ----
     settings: {
       get: function () { return call('settings.get', []); },

@@ -167,6 +167,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_lodestones.js", // Hidey-holes + Lodestones status
         "panel_clueguide.js",  // Clue scrolls map + emote/cryptic guide
         "panel_metalbank.js",  // Metal bank
+        "panel_geprices.js",   // GE Prices (server-relayed real-time prices)
         "panel_mysteries.js",  // Archaeology mysteries (requirements + focused mystery)
         "panel_chatlog.js",
         "panel_achievements.js",

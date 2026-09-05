@@ -3466,6 +3466,118 @@ JSValueRef VosCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_vos_json);
 }
 
+// ---- RS3 GE prices, relayed through the RuneTools server -------------------------------
+// The server is the single consumer of the upstream price API for the whole userbase;
+// every client reads the cached relay copies here. latest is ~530 KB refreshed
+// server-side every 90 s (refetch when older than 2 min, one attempt per 30 s);
+// mapping is ~1.4 MB of item metadata (refetch every 6 h, one attempt per 10 min).
+constexpr wchar_t kPricesLatestPath[]  = L"/api/prices/latest";
+constexpr wchar_t kPricesMappingPath[] = L"/api/prices/mapping";
+std::mutex             g_prices_mu;
+std::string            g_prices_json = "{}";
+std::string            g_prices_map_json = "[]";
+std::atomic<long long> g_prices_ms{ 0 };          // when latest DATA landed
+std::atomic<long long> g_prices_get_ms{ 0 };      // last attempt, success or not
+std::atomic<bool>      g_prices_fetching{ false };
+std::atomic<long long> g_prices_map_ms{ 0 };
+std::atomic<long long> g_prices_map_get_ms{ 0 };
+std::atomic<bool>      g_prices_map_fetching{ false };
+
+void prices_kick(const wchar_t* path, std::size_t cap, std::string* slot,
+                 std::atomic<long long>& data_ms, std::atomic<long long>& get_ms,
+                 std::atomic<bool>& fetching, long long ttl_ms, long long floor_ms) {
+    long long now = (long long)GetTickCount64();
+    long long fresh = data_ms.load();
+    if (fresh && now - fresh < ttl_ms) return;         // cache still current
+    long long prev = get_ms.load();
+    if (prev && now - prev < floor_ms) return;         // attempted too recently
+    if (!get_ms.compare_exchange_strong(prev, now)) return;
+    bool expected = false;
+    if (!fetching.compare_exchange_strong(expected, true)) return;
+    std::wstring p(path);
+    http::Enqueue([p, cap, slot, &data_ms, &fetching] {
+        auto r = http::Fetch(kUpdateHost, p, {}, cap);
+        if (r.ok && r.status == 200 && !r.body.empty() &&
+            (r.body.front() == '{' || r.body.front() == '[')) {
+            std::lock_guard<std::mutex> lk(g_prices_mu);
+            *slot = std::move(r.body);
+            data_ms.store((long long)GetTickCount64());
+        }
+        fetching.store(false);
+    });
+}
+
+JSValueRef PricesCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                        size_t, const JSValueRef[], JSValueRef*) {
+    prices_kick(kPricesLatestPath, 1u * 1024 * 1024, &g_prices_json,
+                g_prices_ms, g_prices_get_ms, g_prices_fetching, 120'000, 30'000);
+    std::lock_guard<std::mutex> lk(g_prices_mu);
+    return utf8_to_js(ctx, g_prices_json);
+}
+JSValueRef PricesMapping(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    prices_kick(kPricesMappingPath, 4u * 1024 * 1024, &g_prices_map_json,
+                g_prices_map_ms, g_prices_map_get_ms, g_prices_map_fetching, 21'600'000, 600'000);
+    std::lock_guard<std::mutex> lk(g_prices_mu);
+    return utf8_to_js(ctx, g_prices_map_json);
+}
+
+// Per-item price history, fetched on demand through the relay (which caches server-side
+// too). Keyed by "id:lookback"; entries are fresh for 5 minutes and the cache is capped.
+// The caller polls: a miss returns "{}" and kicks a background fetch; the panel re-asks
+// on its next tick and gets the data once it lands.
+struct PricesTsEntry { std::string json = "{}"; long long ms = 0; bool fetching = false; };
+std::mutex g_prices_ts_mu;
+std::map<std::string, PricesTsEntry> g_prices_ts;
+
+JSValueRef PricesTimeseries(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                            size_t argc, const JSValueRef argv[], JSValueRef*) {
+    int id = (argc >= 1) ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    std::string lb = get_string_arg(ctx, argc, argv, 1);
+    static const char* kLb[] = { "6h", "24h", "7d", "30d", "6m", "1y" };
+    bool lbOk = false;
+    for (const char* l : kLb) if (lb == l) { lbOk = true; break; }
+    if (id <= 0 || id > 10'000'000 || !lbOk) return utf8_to_js(ctx, "{}");
+    const std::string key = std::to_string(id) + ":" + lb;
+    std::string cached = "{}";
+    bool kick = false;
+    {
+        std::lock_guard<std::mutex> lk(g_prices_ts_mu);
+        auto& e = g_prices_ts[key];
+        cached = e.json;
+        long long now = (long long)GetTickCount64();
+        if (!e.fetching && (e.ms == 0 || now - e.ms > 300'000)) { e.fetching = true; kick = true; }
+        if (g_prices_ts.size() > 48) {
+            // Cap: drop the stalest idle entry so a chart-happy session cannot grow this forever.
+            auto oldest = g_prices_ts.end();
+            for (auto it = g_prices_ts.begin(); it != g_prices_ts.end(); ++it)
+                if (!it->second.fetching && (oldest == g_prices_ts.end() || it->second.ms < oldest->second.ms)) oldest = it;
+            if (oldest != g_prices_ts.end()) g_prices_ts.erase(oldest);
+        }
+    }
+    if (kick) {
+        std::wstring path = L"/api/prices/timeseries?id=" + std::to_wstring(id) + L"&lookback=";
+        for (char c : lb) path.push_back((wchar_t)c);
+        http::Enqueue([path, key] {
+            auto r = http::Fetch(kUpdateHost, path, {}, 1u * 1024 * 1024);
+            std::lock_guard<std::mutex> lk(g_prices_ts_mu);
+            auto& e = g_prices_ts[key];
+            if (r.ok && r.status == 200 && !r.body.empty() && r.body.front() == '{') {
+                e.json = std::move(r.body);
+                e.ms = (long long)GetTickCount64();
+            } else {
+                // Failed: mark it so the UI can say "unavailable" instead of loading
+                // forever (but never clobber a previously good series), and retry in
+                // ~1 minute rather than 5.
+                if (e.json == "{}") e.json = "{\"unavailable\":1}";
+                e.ms = (long long)GetTickCount64() - 240'000;
+            }
+            e.fetching = false;
+        });
+    }
+    return utf8_to_js(ctx, cached);
+}
+
 // Is `world` a leagues-only world? One source of truth for the launcher and the panels,
 // so the two can never disagree about which pool a report belongs to.
 JSValueRef IsLeaguesWorld(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -5234,6 +5346,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "latestVersion",     LatestVersion);
     install_fn(ctx, ns, "latestVersionCached", LatestVersionCached);
     install_fn(ctx, ns, "vosCached", VosCached);
+    install_fn(ctx, ns, "pricesCached", PricesCached);
+    install_fn(ctx, ns, "pricesMapping", PricesMapping);
+    install_fn(ctx, ns, "pricesTimeseries", PricesTimeseries);
     install_fn(ctx, ns, "vosReport", VosReport);
     install_fn(ctx, ns, "isLeaguesWorld",     IsLeaguesWorld);
     install_fn(ctx, ns, "leaguesWorlds",      LeaguesWorlds);
