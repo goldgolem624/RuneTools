@@ -416,7 +416,10 @@
     const st = $('gepStatus');
     if (!gepMap || !gepLatest) { st.textContent = 'loading prices...'; return; }
     const q = ($('gepQ').value || '').trim().toLowerCase();
-    const ssig = gepSortKey + ':' + gepSortDir + ':' + (gepFavView ? 1 : 0) + ':' + gepPinRev;
+    // numFmt rides the signature: switching Numbers compact/full changes both the
+    // values and the column widths, so the list has to rebuild rather than sit stale.
+    const ssig = gepSortKey + ':' + gepSortDir + ':' + (gepFavView ? 1 : 0) + ':' + gepPinRev +
+                 ':' + (uiCfg().numFmt || 'compact');
     if (gepShownGen === gepGen && gepShownQuery === q && gepShownOpen === gepOpenId && gepShownSort === ssig) {
       for (const el of $('gepList').querySelectorAll('[data-ht]'))
         el.textContent = gepAge(+el.dataset.ht) + ' ago';
@@ -481,10 +484,16 @@
     }
     // When sorting by spread, the sorted-by number must be visible on the row itself.
     const showSpread = gepSortKey === 'spread' || gepSortKey === 'spreadpct';
+    // Column width follows the Numbers preference: "200,000,000,000" needs roughly
+    // twice the room of "200.00b", and at the compact width it wrapped onto a second
+    // line. The name column (1fr) gives up the space and ellipsises instead.
+    const numW = (uiCfg().numFmt === 'full') ? '116px' : '62px';
+    const spreadW = (uiCfg().numFmt === 'full') ? '116px' : '74px';
+    const gridCols = '26px 1fr ' + numW + ' ' + numW + (showSpread ? ' ' + spreadW : '') + ' 52px 18px';
     // Column header, in the same grid as the rows so the labels sit over their columns.
     {
       const hd = document.createElement('div');
-      hd.style.cssText = 'display:grid;grid-template-columns:26px 1fr 62px 62px' + (showSpread ? ' 74px' : '') + ' 52px 18px;gap:8px;' +
+      hd.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;' +
                          'padding:2px 8px 4px;border-bottom:1px solid var(--border);' +
                          'font-size:9.5px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.07em';
       const cells = ['', 'Item', 'Instabuy', 'Instasell'];
@@ -502,7 +511,7 @@
       const p = gepLatest[it.id] || {};
       const open = gepOpenId === it.id;
       const row = document.createElement('div');
-      row.style.cssText = 'display:grid;grid-template-columns:26px 1fr 62px 62px' + (showSpread ? ' 74px' : '') + ' 52px 18px;gap:8px;align-items:center;' +
+      row.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;align-items:center;' +
                           'padding:5px 8px;border-bottom:1px solid var(--border);cursor:pointer' +
                           (open ? ';background:var(--accent-soft, rgba(140,111,253,0.08))' : '');
       row.title = open ? 'Click to collapse' : 'Click for price history';
@@ -525,11 +534,11 @@
       const hi = document.createElement('div');
       hi.textContent = p.high != null ? fmtGp(p.high) : '-';
       hi.title = 'Latest buy (high) price';
-      hi.style.cssText = 'color:var(--ok, #4dd28a);font-variant-numeric:tabular-nums;font-size:12.5px;text-align:right';
+      hi.style.cssText = 'color:var(--ok, #4dd28a);font-variant-numeric:tabular-nums;font-size:12.5px;text-align:right;white-space:nowrap';
       const lo = document.createElement('div');
       lo.textContent = p.low != null ? fmtGp(p.low) : '-';
       lo.title = 'Latest sell (low) price';
-      lo.style.cssText = 'color:var(--warn, #f5b241);font-variant-numeric:tabular-nums;font-size:12.5px;text-align:right';
+      lo.style.cssText = 'color:var(--warn, #f5b241);font-variant-numeric:tabular-nums;font-size:12.5px;text-align:right;white-space:nowrap';
       const ag = document.createElement('div');
       const ht = p.highTime || p.lowTime || 0;
       ag.dataset.ht = String(ht);
