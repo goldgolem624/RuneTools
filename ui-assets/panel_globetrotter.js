@@ -84,7 +84,7 @@
   function renderGlobetrotter() {
     const el = $('gtPanel'); if (!el) return;
     const n = Object.keys(gtWorn).length;
-    const esc = s => String(s).replace(/[&<>]/g, x => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[x]));
+    const esc = htmlEsc;
     const gv = id => (gtVb ? (gtVb[id] | 0) : 0);
     const haveCh = !!gtVb;
     const setFlag = ((gv(39460) + gv(39461) + gv(39462) + gv(39463) + gv(39464)) >= 5) ? 1 : 0;
@@ -294,7 +294,7 @@
     const pin = clueVarcPinned();   // pinned rows render inert, so the lockout is visible not silent
     const sig = 'H|' + clueLiveTier + '|' + activeClueId + '|' + pin + '|' + (g_scanMeerkats ? 'm' : '') + '|' + list.map(c => c.i).join(',');
     if (el._hsig === sig) return; el._hsig = sig;
-    const esc = s => String(s).replace(/[&<>]/g, x => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[x]));
+    const esc = htmlEsc;
     if (!hl.length) { el.innerHTML = '<div style="text-align:center;padding:14px 6px;opacity:0.7;font-size:12px;line-height:1.5">No clue scrolls held.<br>Hold a clue and it appears here. Use <b>Browse all</b> for the full database.</div>'; return; }
     if (!list.length) { el.innerHTML = '<div style="text-align:center;padding:12px 6px;opacity:0.6;font-size:12px">No ' + esc(CLUE_TIERS[clueLiveTier]) + ' clues held.</div>'; return; }
     let h = '';

@@ -1,10 +1,17 @@
 // rtx-ui.js: Preferences blob (UI_DEF, uiCfg, uiApply, uiCatHidden), the toLocaleString number format, accentRgba and the menu bar info chips (uiBarTick).
 // Loads after: rtx-prefs.js (prefGet/prefSet); uiApply() runs at load and must not touch anything declared later.
 // Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
+  // =================== HTML escaping (shared by every panel) ===================
+  // htmlEsc: the canonical text/attribute escape (& < > "). pluginEsc: DOM-based, for
+  // author-supplied plugin strings shown in host chrome.
+  function pluginEsc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+  // Canonical HTML-text escape shared by the panels (global scope). Escapes & < > and ".
+  function htmlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
   // =================== Preferences (rtxUi) ===================
   // One durable JSON blob for every user-facing preference that is not already owned by a
   // feature store (alerts and layout keep theirs). Read lazily, written through prefSet.
-  const UI_DEF = { scale: 100, accent: '#8c6ffd', contrast: false, motion: true, opacity: 93,
+  const UI_DEF = { scale: 100, accent: '#e8c26a', contrast: false, motion: true, opacity: 93,
                    restore: true, toastTtl: 5000, hideWorld: false, numFmt: 'compact', hiddenCats: [],
                    font: 'variable', fontSize: 13, tabular: false, compactTips: false,
                    barClock: false, bar24h: false, barSession: false, barXp: false };
@@ -12,7 +19,7 @@
                     ['Calibri', 'calibri', "Calibri, 'Segoe UI', sans-serif"],
                     ['Verdana', 'verdana', "Verdana, Geneva, sans-serif"],
                     ['Consolas', 'consolas', "Consolas, 'Cascadia Mono', monospace"]];
-  const UI_ACCENTS = [['Violet', '#8c6ffd'], ['Blue', '#5b9cff'], ['Teal', '#2fd0c4'], ['Green', '#4dd28a'],
+  const UI_ACCENTS = [['Gold', '#e8c26a'], ['Violet', '#8c6ffd'], ['Blue', '#5b9cff'], ['Teal', '#2fd0c4'], ['Green', '#4dd28a'],
                       ['Amber', '#f5b241'], ['Red', '#ff6b6b'], ['Pink', '#ff7ac8'], ['Mono', '#c9cfdd']];
   // =================== Pointer coordinates under CSS zoom (uiZoomOf / uiEvPt) ===================
   // THE one way to turn a mouse event into element-local coordinates. Window bodies render under

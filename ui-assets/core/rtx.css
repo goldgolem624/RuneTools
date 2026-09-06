@@ -1,31 +1,44 @@
+  /* RuneToolsX in-game shell, "Obsidian Aurora". This head of the stylesheet owns the tokens
+     and the shell chrome (menu bar, floating windows, tab strip, glyphs, HUD windows, toasts,
+     the wiki palette, the pane scaffolding). Panel styles follow it and only consume tokens.
+     Every selector keeps its name: panels and the window manager address these classes. */
   :root {
-    --bg:           #0b0d12;
-    --bg-elev:      #11141c;
-    --bg-elev-2:    #161a25;
-    --border:       #1f2433;
-    --border-hi:    #2d3447;
-    --text:         #eef0f5;
-    --text-dim:     #aab0bf;
-    --text-mute:    #6b7388;
+    --bg:           #07090f;
+    --bg-elev:      #0e1119;
+    --bg-elev-2:    #141926;
+    --border:       #1e2431;
+    --border-hi:    #303a4d;
+    --text:         #f2efe6;
+    --text-dim:     #aab1c2;
+    --text-mute:    #6d7690;
     --accent-hi:    #8c6ffd;
     --accent-lo:    #6a4ee0;
-    --accent:       #8c6ffd;   /* was referenced but never defined; Preferences drives all three */
+    --accent:       #8c6ffd;   /* Preferences (uiApply) drives all three accent tokens */
     --font-ui:      'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
     --font-size:    13px;
     --accent-rgb:   140,111,253;   /* every tinted accent surface derives from this */
     --accent-ring:  rgba(var(--accent-rgb),0.28);
+    --aurora-rgb:   98,226,255;
+    --brass:        #e8c26a;       /* structural gold: hairlines, section labels */
+    --brass-rgb:    232,194,106;
+    --font-mono:    'Cascadia Code', 'Consolas', ui-monospace, monospace;
     --ok:           #4dd28a;
+    --warn:         #f5b241;
+    --err:          #ff6b6b;
     --tx-fast:      120ms;
-    --ease:         cubic-bezier(.4,0,.2,1);
-    /* In-game window system */
-    --bg-rgb:       12,14,20;      /* window/bar ground; uiApply re-derives the alpha from this */
-    --win-bg:       rgba(var(--bg-rgb), 0.93);
-    --win-radius:   10px;
-    --win-shadow:   0 14px 44px rgba(0,0,0,0.55), 0 3px 10px rgba(0,0,0,0.40);
-    --win-shadow-f: 0 16px 50px rgba(0,0,0,0.60), 0 0 0 1px var(--accent-ring),
-                    0 3px 12px rgba(0,0,0,0.45);
-    --bar-bg:       rgba(var(--bg-rgb), 0.90);
     --tx-med:       160ms;
+    --ease:         cubic-bezier(.4,0,.2,1);
+    --ease-out:     cubic-bezier(.16,1,.3,1);
+    /* In-game window system */
+    --bg-rgb:       8,10,15;      /* window/bar ground; uiApply re-derives the alpha from this */
+    --win-bg:       rgba(var(--bg-rgb), 0.93);
+    --win-radius:   4px;
+    --win-shadow:   0 18px 50px rgba(0,0,0,0.6), 0 3px 10px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.04);
+    --win-shadow-f: 0 22px 60px rgba(0,0,0,0.66), 0 0 0 1px var(--accent-ring),
+                    0 0 34px -8px rgba(var(--accent-rgb),0.45), 0 3px 12px rgba(0,0,0,0.45),
+                    inset 0 1px 0 rgba(255,255,255,0.06);
+    --bar-bg:       rgba(var(--bg-rgb), 0.90);
+    --glass-line:   rgba(255,255,255,0.07);
   }
   * { box-sizing: border-box; }
   /* Preferences: high contrast lifts the dim/mute text and borders; reduce-motion kills every
@@ -54,36 +67,38 @@
   input, textarea, [contenteditable="true"] {
     -webkit-user-select: text; user-select: text;
   }
+  ::selection { background: rgba(var(--accent-rgb),0.45); color: #fff; }
 
   /* ==================== In-game desktop: menu bar + floating windows ==================== */
   #desktop { position: fixed; inset: 0; overflow: hidden; }
 
-  /* --- Menu bar: slim glass pill, draggable, edge-dockable --- */
+  /* --- Menu bar: a floating glass pill with an aurora hairline, draggable, edge-dockable --- */
   #menubar {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     display: flex; align-items: stretch; gap: 2px;
-    /* The bar is content-sized, so on a small client it used to run off the edge: the
-       position clamp could only pin it to x=6 and the overflow stayed. Cap it to the client
-       and let the middle sections give way instead (see .mb-cats / .mb-status). */
+    /* Content-sized, capped to the client so the middle sections give way (see .mb-cats /
+       .mb-status) instead of the bar running off the edge on a small window. */
     max-width: calc(100vw - 12px); box-sizing: border-box;
     height: 38px; padding: 4px 6px;
     background: var(--bar-bg);
     border: 1px solid var(--border-hi);
-    border-radius: 12px;
+    border-radius: 4px;
     box-shadow: var(--win-shadow);
     z-index: 100000;
     will-change: transform;
     contain: paint;
   }
+  /* The one place the accent runs edge to edge: a thin lit line along the top of the bar. */
+  #menubar::before {
+    content: ''; position: absolute; left: -1px; right: -1px; top: -1px; height: 2px;
+    background: linear-gradient(90deg, var(--brass), rgba(var(--aurora-rgb),0.9) 60%, var(--brass));
+    opacity: 1; pointer-events: none;
+  }
   #menubar.dragging { transition: none; }
   #menubar.pill { padding: 4px; }
-  /* Collapsed: drop the CATEGORY RAIL only. Search stays -- it is the one control that
-     still reaches every panel from the pill, so without it the collapsed bar can only be
-     expanded again -- and so do the restore chips: a minimized window whose chip vanishes
-     with the bar reads as closed, with nothing left to click to get it back. The status
-     readout and clock stay with them, which is the whole point of a slim always-on bar. */
+  /* Collapsed: drop the CATEGORY RAIL only. Search, the restore chips, the status readout
+     and the clock stay: a slim always-on bar must still reach every panel. */
   #menubar.pill .mb-cats { display: none; }
-  /* No rail to divide from once collapsed, so the chips drop their leading rule. */
   #menubar.pill .mb-chips { border-left: none; margin-left: 0; padding-left: 0; }
   .mb-drag {
     display: flex; align-items: center; padding: 0 7px 0 5px;
@@ -91,8 +106,6 @@
   }
   .mb-drag:active { cursor: grabbing; }
   .mb-drag svg { width: 14px; height: 14px; }
-  /* Categories scroll rather than force the bar wider, the same trade the chip strip
-     already makes. They shrink last: the status readout gives way first. */
   /* No horizontal scrolling: what does not fit moves into the More menu (see mbFitCats),
      so nothing is ever cut mid-word or reachable only by a wheel gesture with no affordance. */
   .mb-cats {
@@ -106,16 +119,19 @@
   .mb-cat {
     appearance: none; background: transparent; border: none; position: relative;
     display: flex; align-items: center; justify-content: center;
-    width: 36px; border-radius: 8px; color: var(--text-mute); cursor: pointer;
+    width: 36px; border-radius: 3px; color: var(--text-mute); cursor: pointer;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
-  .mb-cat { width: auto; padding: 0 10px; font: inherit; font-size: 11.5px; font-weight: 500;
+  .mb-cat { width: auto; padding: 0 11px; font: 600 10.5px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase;
             flex: none; white-space: nowrap; }
-  .mb-cat:hover { background: var(--bg-elev-2); color: var(--text); }
-  .mb-cat.open { background: linear-gradient(180deg, rgba(var(--accent-rgb),0.30), rgba(var(--accent-rgb),0.12)); color: #fff; }
+  .mb-cat:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+  .mb-cat.open {
+    background: var(--brass); color: #1a1406; box-shadow: none;
+  }
   .mb-cat.has-open::after {
     content: ''; position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
-    width: 4px; height: 4px; border-radius: 50%; background: var(--accent-hi);
+    width: 5px; height: 5px; border-radius: 0; background: rgb(var(--aurora-rgb));
+    box-shadow: 0 0 6px rgba(var(--aurora-rgb),0.9); transform: translateX(-50%) rotate(45deg);
   }
   /* Shrinks BEFORE the categories do (flex-shrink 3 vs their 1): a truncated character name
      costs less than losing access to a panel. Both texts ellipsis rather than wrap, because
@@ -125,20 +141,17 @@
     padding: 0 12px; margin: 0 2px; min-width: 0; flex: 0 3 auto; overflow: hidden;
     border-left: 1px solid var(--border); border-right: 1px solid var(--border);
   }
-  .mb-status .title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 12px; line-height: 1.25; min-width: 0; }
+  .mb-status .title { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 11.5px; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1.25; min-width: 0; }
   .mb-status .title > span:not(.dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mb-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-mute);
                     transition: background var(--tx-fast) var(--ease); flex: none; }
-  .mb-status .title.is-in .dot { background: var(--ok); box-shadow: 0 0 6px rgba(77,210,138,0.7); }
-  .mb-status .meta { font-size: 10px; color: var(--text-mute); font-variant-numeric: tabular-nums;
+  .mb-status .title.is-in .dot { background: rgb(var(--aurora-rgb)); box-shadow: 0 0 0 3px rgba(var(--aurora-rgb),0.18), 0 0 8px rgba(var(--aurora-rgb),0.8); }
+  .mb-status .meta { font: 500 9.5px var(--font-mono); color: var(--text-mute); font-variant-numeric: tabular-nums;
                      letter-spacing: 0.02em; line-height: 1.25; white-space: nowrap;
                      overflow: hidden; text-overflow: ellipsis; }
   /* Restore chips for minimized windows. Capped so the bar can never grow with the number of
-     open windows, but SCROLLABLE rather than clipped: overflow:hidden alone silently swallowed
-     every chip past the cap, so with enough windows minimized the later ones simply vanished
-     from the bar. (They were never unreachable - their category menu still restores them - but
-     a control that disappears with no trace reads as a bug.) Scrollbar hidden: a 24px strip has
-     no room for one, and the chips scroll on the wheel. */
+     open windows, but SCROLLABLE rather than clipped: a control that disappears with no trace
+     reads as a bug. Scrollbar hidden: a 24px strip has no room for one; the chips scroll on the wheel. */
   .mb-chips {
     display: flex; align-items: center; gap: 3px;
     padding: 0 4px; margin: 0 2px;
@@ -151,39 +164,39 @@
   .mb-chip {
     appearance: none; border: 1px solid var(--border); background: rgba(var(--accent-rgb),0.08);
     display: flex; align-items: center; gap: 5px;
-    height: 24px; padding: 0 9px 0 6px; border-radius: 999px;
+    height: 24px; padding: 0 9px 0 6px; border-radius: 3px;
     color: var(--text-dim); cursor: pointer;
-    font: inherit; font-size: 10.5px; white-space: nowrap;
+    font: 600 10px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease),
                 border-color var(--tx-fast) var(--ease);
   }
-  .mb-chip svg { width: 12px; height: 12px; flex: none; color: var(--accent-hi); opacity: 0.85; }
-  .mb-chip:hover { background: rgba(var(--accent-rgb),0.18); color: var(--text); border-color: rgba(var(--accent-rgb),0.5); }
+  .mb-chip svg { width: 12px; height: 12px; flex: none; color: var(--brass); opacity: 0.9; }
+  .mb-chip:hover { background: rgba(var(--accent-rgb),0.2); color: var(--text); border-color: rgba(var(--accent-rgb),0.55); }
   .mb-chip span { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
   /* Search and the collapse pill never shrink: the pill is the only way back from a
      squeezed bar, and search is the only control that still reaches every panel. */
   .mb-btn {
     appearance: none; background: transparent; border: none; flex: none;
     display: flex; align-items: center; justify-content: center;
-    padding: 0 10px; border-radius: 8px; color: var(--text-mute); cursor: pointer;
-    font: inherit; font-size: 11.5px; font-weight: 500; white-space: nowrap;
+    padding: 0 10px; border-radius: 3px; color: var(--text-mute); cursor: pointer;
+    font: 600 10.5px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; white-space: nowrap;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
-  .mb-btn:hover { background: var(--bg-elev-2); color: var(--text); }
-  .mb-btn.on { color: var(--accent-hi); border-color: var(--accent-hi); }
+  .mb-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+  .mb-btn.on { color: var(--brass); border-color: var(--brass); }
 
   /* --- Category dropdown (+ the More menu's side flyout, #mbdrop2) --- */
   #mbdrop, #mbdrop2 {
     position: absolute; z-index: 100001;
     min-width: 210px; max-height: 60vh; overflow-y: auto;
     background: var(--bar-bg);
-    border: 1px solid var(--border-hi); border-radius: 12px;
+    border: 1px solid var(--border-hi); border-top: 2px solid var(--brass); border-radius: 4px;
     box-shadow: var(--win-shadow);
     padding: 6px;
-    animation: mbdrop-in var(--tx-med) var(--ease);
+    animation: mbdrop-in var(--tx-med) var(--ease-out);
   }
   #mbdrop2 { z-index: 100002; }   /* beside its parent, never under it */
-  @keyframes mbdrop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  @keyframes mbdrop-in { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: none; } }
   #mbdrop::-webkit-scrollbar, #mbdrop2::-webkit-scrollbar { width: 8px; }
   #mbdrop::-webkit-scrollbar-thumb, #mbdrop2::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
   /* The More row whose flyout is open stays lit, like an open bar category. */
@@ -192,19 +205,19 @@
     appearance: none; background: transparent; border: none;
     color: var(--text-dim); text-align: left; width: 100%;
     display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px; border-radius: 8px;
+    padding: 8px 10px; border-radius: 3px;
     font: inherit; font-size: 12px; font-weight: 500;
     cursor: pointer; position: relative;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
   .tab svg { width: 16px; height: 16px; flex: 0 0 16px; opacity: 0.85; }
   .tab .tab-label { line-height: 1; flex: 1; }
-  .tab:hover { background: var(--bg-elev-2); color: var(--text); }
+  .tab:hover { background: rgba(255,255,255,0.06); color: var(--text); }
   .tab.is-active { color: #fff; }
-  .tab.is-active svg { opacity: 1; color: var(--accent-hi); }
-  .tab .tab-on { width: 5px; height: 5px; border-radius: 50%; background: var(--accent-hi); flex: none; }
+  .tab.is-active svg { opacity: 1; color: var(--brass); }
+  .tab .tab-on { width: 6px; height: 6px; border-radius: 0; transform: rotate(45deg); background: rgb(var(--aurora-rgb)); flex: none; box-shadow: 0 0 6px rgba(var(--aurora-rgb),0.9); }
 
-  /* --- Floating windows --- */
+  /* --- Floating windows: glass panes with a lit top edge; the focused one glows --- */
   .win {
     position: absolute;
     display: flex; flex-direction: column;
@@ -217,61 +230,60 @@
     contain: paint;
     will-change: transform;
   }
-  .win.focus { border-color: rgba(var(--accent-rgb),0.55); box-shadow: var(--win-shadow-f); }
-  .win.opening { animation: win-in var(--tx-med) var(--ease); }
+  .win.focus { border-color: var(--border-hi); box-shadow: var(--win-shadow-f); }
+  .win.opening { animation: win-in var(--tx-med) var(--ease-out); }
   @keyframes win-in { from { opacity: 0; transform: scale(0.965); } to { opacity: 1; transform: none; } }
   .win.dragging, .win.sizing { transition: none; }
   .win-title {
-    flex: none; display: flex; align-items: center; gap: 8px;
-    height: 34px; padding: 0 6px 0 11px;
-    background: linear-gradient(180deg, rgba(var(--accent-rgb),0.10), rgba(var(--accent-rgb),0.02));
+    flex: none; display: flex; align-items: center; gap: 8px; position: relative;
+    height: 34px; padding: 0 6px 0 12px;
+    background: rgba(0,0,0,0.28);
     border-bottom: 1px solid var(--border);
     cursor: grab;
   }
+  .win-title::before {
+    content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+    background: var(--border-hi);
+    opacity: 1; transition: background var(--tx-med) var(--ease); pointer-events: none;
+  }
+  .win.focus .win-title::before { background: linear-gradient(90deg, var(--brass), rgba(var(--accent-rgb),0.9)); }
   .win-title:active { cursor: grabbing; }
-  .win.focus .win-title { background: linear-gradient(180deg, rgba(var(--accent-rgb),0.18), rgba(var(--accent-rgb),0.04)); }
-  .win-title { padding-left: 12px; }
+  .win.focus .win-title { background: rgba(0,0,0,0.36); }
   .win-name {
     flex: 1; min-width: 0;
-    font-size: 12px; font-weight: 600; color: var(--text);
+    font: 700 10.5px var(--font-mono); color: var(--text); letter-spacing: 0.14em; text-transform: uppercase;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   /* Tab strip (group members AND docked panels): its OWN row under the title bar, so it
-     never squeezes the window name and never clips its tail -- pills wrap at narrow
-     widths. A solo window renders no pills, so :empty hides the row entirely. */
-  /* EVERY tab is the same shape -- an equal pill of equal height -- so the row reads
-     as one control and only fill/weight marks the active one. Styling just the active
-     tab as a pill left the row ragged, and a wrapped active tab looked like a stray
-     control on its own line. */
+     never squeezes the window name and never clips its tail; pills wrap at narrow widths.
+     A solo window renders no pills, so :empty hides the row entirely. Every tab is the same
+     shape, an equal pill of equal height, so the row reads as one control. */
   .win-tabs {
     flex: none; display: flex; flex-wrap: wrap; gap: 3px;
-    padding: 7px 10px 2px;
+    padding: 0 8px;
     border-bottom: 1px solid var(--border);
+    background: rgba(0,0,0,0.18);
   }
   .win-tabs:empty { display: none; }
   .win.rolled .win-tabs { display: none; }
   .win-tabs button {
     display: inline-flex; align-items: center; gap: 4px;
-    height: 23px; padding: 0 5px 0 9px;
-    font: inherit; font-size: 11px; font-weight: 500;
-    border-radius: 6px; cursor: pointer; white-space: nowrap;
-    border: 1px solid transparent; background: transparent; color: var(--text-mute);
+    height: 28px; padding: 0 5px 0 8px;
+    font: 600 10.5px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+    border-radius: 0; cursor: pointer; white-space: nowrap;
+    border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: transparent; color: var(--text-mute);
     transition: color var(--tx-fast) var(--ease), background var(--tx-fast) var(--ease),
                 border-color var(--tx-fast) var(--ease);
   }
-  .win-tabs button.solo { padding-right: 9px; }        /* nothing to close: no reserved slot */
-  .win-tabs button:hover { color: var(--text); background: var(--bg-elev-2); }
-  .win-tabs button.on {
-    color: #cfc2ff; font-weight: 600;
-    background: rgba(var(--accent-rgb),0.16); border-color: rgba(var(--accent-rgb),0.42);
-  }
+  .win-tabs button.solo { padding-right: 8px; }        /* nothing to close: no reserved slot */
+  .win-tabs button:hover { color: var(--text); }
+  .win-tabs button.on { color: var(--brass); border-bottom-color: var(--brass); background: transparent; }
   .win-tabs button.tabdrag { opacity: 0.45; }
   /* Close mark: its slot is ALWAYS reserved (only the glyph fades in), so hovering a
-     tab cannot reflow the row -- which would make tabs shuffle under the cursor while
-     you are dragging one. */
+     tab cannot reflow the row, which would make tabs shuffle under a drag. */
   .win-tabs .win-tabx {
     font-style: normal; font-size: 13px; line-height: 1;
-    width: 14px; height: 14px; border-radius: 4px;
+    width: 14px; height: 14px; border-radius: 2px;
     display: inline-flex; align-items: center; justify-content: center;
     color: var(--text-mute); opacity: 0;
     transition: opacity var(--tx-fast) var(--ease), background var(--tx-fast) var(--ease),
@@ -283,24 +295,24 @@
      only exist once that panel has rendered, so a shell-owned view must own its CSS. */
   .uis-chips { display: flex; flex-wrap: wrap; gap: 5px; }
   .uis-chip {
-    font: inherit; font-size: 11px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
-    border: 1px solid var(--border-hi); background: var(--bg-elev-2); color: var(--text-dim);
+    font: 600 10px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 6px 10px; border-radius: 3px; cursor: pointer;
+    border: 1px solid var(--border-hi); background: transparent; color: var(--text-dim);
     white-space: nowrap;
     transition: color var(--tx-fast) var(--ease), background var(--tx-fast) var(--ease),
                 border-color var(--tx-fast) var(--ease);
   }
   .uis-chip:hover { color: var(--text); border-color: var(--text-mute); }
   .uis-chip.on {
-    color: var(--accent-hi); background: rgba(var(--accent-rgb),0.18); border-color: rgba(var(--accent-rgb),0.5);
-    font-weight: 600;
+    color: #1a1406; background: var(--brass); border-color: var(--brass);
+    font-weight: 700;
   }
   /* Preferences page: section cards; each setting is label (+hint) left, control right.
      Chip groups and wide controls drop to a full-width line under the label, so the page
      keeps its shape from a 300px sliver to a full-width window. */
-  .pf-card { background: rgba(255,255,255,0.025); border: 1px solid var(--border); border-radius: 10px;
+  .pf-card { background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 4px; border-left: 2px solid var(--brass);
              padding: 2px 14px 4px; margin: 0 0 12px; }
-  .pf-title { font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
-              color: var(--accent-hi); padding: 10px 0 2px; }
+  .pf-title { font: 700 10px var(--font-mono); letter-spacing: .16em; text-transform: uppercase;
+              color: var(--brass); padding: 10px 0 2px; }
   .pf-card > .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
                     padding: 9px 0; border-top: 1px solid var(--border); margin: 0; }
   .pf-card > .row.pf-first { border-top: none; }
@@ -318,10 +330,8 @@
   .uis-row b { min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
 
   /* ---- Shell glyphs, drawn in CSS -------------------------------------------
-     This renderer proved unreliable with fine SVG line work: identical close
-     paths came out as strays or specks depending on how the path data was
-     written, and no amount of sizing fixed it. These use gradients and shadows
-     only - no path parsing, no font dependency, no transforms (a transform on a
+     This renderer proved unreliable with fine SVG line work, so these use gradients and
+     shadows only: no path parsing, no font dependency, no transforms (a transform on a
      hit-tested element also offsets this engine's CPU hit-testing). They inherit
      currentColor and scale with their box. */
   .g { display: inline-block; flex: none; width: 12px; height: 12px; }
@@ -355,29 +365,25 @@
   .win-lock:not(.on) .g-lock::before { transform: translate(1px, -1px) rotate(-14deg); }
 
   /* Drop target: a dragged window is hovering this one's title / tab strip. */
-  .win.dock-target { outline: 2px solid var(--accent-hi); outline-offset: -2px; }
+  .win.dock-target { outline: 2px solid var(--brass); outline-offset: -2px; box-shadow: var(--win-shadow-f); }
   .win-btns { display: flex; gap: 2px; margin-left: auto; }
   .win-btns button {
     appearance: none; border: none; background: transparent; cursor: pointer;
-    width: 26px; height: 26px; border-radius: 7px; color: var(--text-mute);
+    width: 26px; height: 26px; border-radius: 3px; color: var(--text-mute);
     display: flex; align-items: center; justify-content: center;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
   .win-btns button svg { width: 13px; height: 13px; }
-  .win-btns button:hover { background: var(--bg-elev-2); color: var(--text); }
-  .win-btns button.win-close:hover { background: rgba(240,82,82,0.18); color: #ff8b8b; }
+  .win-btns button:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+  .win-btns button.win-close:hover { background: rgba(240,82,82,0.2); color: #ff8b8b; }
   .win-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column;
               /* Preferences font size: panels set explicit px sizes throughout, so the size
                  preference zooms window content as a whole (text, icons, controls together). */
               zoom: var(--content-zoom, 1);
-              /* Panels show arbitrary game data: item lists, hex payloads, comma separated ids,
-                 names with no spaces. A long unbroken run has nothing to wrap on and runs past
-                 the window edge, so a word that cannot fit its line is allowed to break.
-                 break-word, NOT anywhere: anywhere also shrinks the min-content width, which
-                 lets a narrow grid cell split a word that would have fitted whole on the next
-                 line ("Stormberr / y seed"). break-word breaks only as a last resort, so names
-                 keep breaking at their spaces. white-space: nowrap still wins where a panel
-                 deliberately keeps something on one line. */
+              /* Panels show arbitrary game data (item lists, hex payloads, names with no spaces).
+                 A long unbroken run has nothing to wrap on, so a word that cannot fit its line
+                 is allowed to break; break-word (not anywhere) keeps names breaking at spaces
+                 first. white-space: nowrap still wins where a panel keeps something on one line. */
               overflow-wrap: break-word; }
   /* HUD windows (aura groups, XP meter, metronome) are pixel-precise overlays sized by the
      user: a fractional zoom re-rasterises their text and blurs it. They keep 1:1. */
@@ -387,17 +393,17 @@
   .win.rolled { min-height: 0; }
 
   /* ---- HUD widgets (XP Meter, Metronome) ----
-     Read-at-a-glance overlays rather than data panels. They keep the full window
-     machinery (drag, 8-way resize, snap, persistence) but shed the visual weight: the
-     normal 240x140 floor is lifted, the chrome collapses to a slim strip that only
-     appears on hover/focus, and the body is transparent so the widget itself is the
-     window. Locked = click-through (see wmApplyLock). */
+     Read-at-a-glance overlays rather than data panels. They keep the full window machinery
+     (drag, 8-way resize, snap, persistence) but shed the visual weight: the normal floor is
+     lifted, the chrome collapses to a slim strip that only appears on hover/focus, and the
+     body is transparent so the widget itself is the window. Locked = click-through. */
   .win.hud { min-width: 0; min-height: 0; background: transparent; border-color: transparent;
              box-shadow: none; }
   .win.hud .win-title {
     height: 20px; min-height: 20px; padding: 0 2px 0 7px; background: transparent;
     border-bottom: 0; opacity: 0; transition: opacity var(--tx-fast) var(--ease);
   }
+  .win.hud .win-title::before { display: none; }
   .win.hud:hover .win-title, .win.hud.focus .win-title { opacity: 1; }
   .win.hud .win-name { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
   .win.hud .win-btns button { width: 18px; height: 18px; border-radius: 5px; }
@@ -410,21 +416,17 @@
   .win.hud .win-body { background: transparent; }
   .win.hud .content { padding: 0; overflow: hidden; }
   /* Locked: no input on this side, and wmPushRects drops it so the companion passes the
-     click to the game. Chrome is hidden outright -- a control you cannot click is noise. */
+     click to the game. Chrome is hidden outright: a control you cannot click is noise. */
   .win.hud.locked { pointer-events: none; }
   /* visibility, not display: the strip must keep its height so the content does not jump up
      by 20px on lock, which would move a carefully placed aura. */
   .win.hud.locked .win-title { visibility: hidden; }
   .win.hud.locked .rz { display: none; }
 
-  /* Resize handles: invisible 7px strips on edges/corners. */
   /* ---- In-game notifications ------------------------------------------------
-     These used to be drawn by the companion as GL primitives from the marker
-     command list: rounded rects plus a fixed-cell ASCII-only bitmap atlas, so no
-     real type, no wrapping, no styling. They are DOM now, composited by the same
-     UI layer as the windows. The stack is pointer-events:none so a transient
-     toast can never eat a click meant for the game; only a dismissible card opts
-     back in (and only those publish an input rect). */
+     DOM cards composited by the same UI layer as the windows. The stack is pointer-events:none
+     so a transient toast can never eat a click meant for the game; only a dismissible card
+     opts back in (and only those publish an input rect). */
   #toaster {
     position: absolute;
     display: flex; flex-direction: column; gap: 8px;
@@ -435,17 +437,15 @@
      dashed frame so an EMPTY stack is still visible and grabbable. */
   #toaster.placing { pointer-events: auto; cursor: grab; }
   #toaster.placing:active { cursor: grabbing; }
-  /* A REAL element, not ::before: it carries a width grip, and a pseudo-element
-     cannot take events. order:-1 keeps it at the stack's leading edge whichever
-     flex direction the current anchor uses. */
-  /* Deliberately loud: it is a transient editing affordance over a busy game scene,
-     so it has to win against whatever is behind it. */
+  /* A REAL element, not ::before: it carries a width grip, and a pseudo-element cannot take
+     events. order:-1 keeps it at the stack's leading edge whichever flex direction the current
+     anchor uses. Deliberately loud: a transient editing affordance over a busy game scene. */
   #toastGhost {
     position: relative; order: -1;
     display: flex; align-items: center; justify-content: center; gap: 8px;
     min-height: 42px; padding: 9px 30px 9px 14px;
-    border-radius: 10px;
-    border: 2px dashed var(--accent-hi);
+    border-radius: 4px;
+    border: 2px dashed var(--brass);
     background: linear-gradient(180deg, rgba(var(--accent-rgb),0.34), rgba(var(--accent-rgb),0.20));
     box-shadow: 0 0 0 1px rgba(0,0,0,0.55), 0 0 22px rgba(var(--accent-rgb),0.55),
                 0 10px 28px rgba(0,0,0,0.5);
@@ -453,12 +453,10 @@
     text-shadow: 0 1px 3px rgba(0,0,0,0.8);
     user-select: none;
   }
-  /* Whole stack gets a faint field while placing, so its extent is obvious even
-     when it holds live cards. */
   #toaster.placing { outline: 1px dashed rgba(167,139,250,0.5); outline-offset: 6px; border-radius: 6px; }
   .ghost-rz {
     position: absolute; top: 2px; right: 2px; bottom: 2px; width: 22px;
-    cursor: ew-resize; border-radius: 0 8px 8px 0;
+    cursor: ew-resize; border-radius: 0 10px 10px 0;
     display: flex; align-items: center; justify-content: center;
     background: rgba(0,0,0,0.20);
   }
@@ -473,25 +471,22 @@
     padding: 11px 12px 12px;
     background: var(--win-bg);
     border: 1px solid var(--border-hi);
-    border-left: 3px solid var(--accent-hi);
-    border-radius: 9px;
+    border-left: 3px solid var(--brass);
+    border-radius: 4px;
     box-shadow: var(--win-shadow);
     overflow: hidden;
-    animation: toast-in 220ms var(--ease);
+    animation: toast-in 240ms var(--ease-out);
   }
   .toast.out { animation: toast-out 200ms var(--ease) forwards; }
-  .toast.sticky { pointer-events: auto; border-left-color: #f0b429; }
+  .toast.sticky { pointer-events: auto; border-left-color: var(--warn); }
   /* A sticky card that has reached its goal (a completed pinned task): the amber
-     "still needs you" edge turns green, which is the same done colour the panels
-     use. Set by the owner via rec.el.classList, so uiNotify stays generic. */
+     "still needs you" edge turns green, the same done colour the panels use. */
   .toast.sticky.done { border-left-color: var(--ok); }
   @keyframes toast-in  { from { opacity: 0; transform: translateY(-10px) scale(0.97); }
                          to   { opacity: 1; transform: none; } }
   @keyframes toast-out { from { opacity: 1; transform: none; }
                          to   { opacity: 0; transform: translateY(-6px) scale(0.98); } }
-  /* Every card carries its state on the coloured left edge, so the status dot is
-     redundant on ALL of them (it used to show on non-owner cards only). The element
-     is still built by uiNotify; hiding it here keeps that path generic. */
+  /* Every card carries its state on the coloured left edge, so the status dot is redundant. */
   .toast-ico { display: none; }
 
   /* ---- wiki palette: hotkey-opened search over a dimmed backdrop ---- */
@@ -499,16 +494,16 @@
     justify-content: center; background: rgba(5, 7, 11, 0.62); animation: wkfade 140ms ease; }
   @keyframes wkfade { from { opacity: 0; } }
   .wk-card { margin-top: 16vh; width: min(560px, 86vw); background: var(--win-bg);
-    border: 1px solid rgba(var(--accent-rgb), 0.5); border-radius: 14px; padding: 14px;
-    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6); animation: wkpop 170ms var(--ease); }
+    border: 1px solid var(--border-hi); border-top: 2px solid var(--brass); border-radius: 4px; padding: 14px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6); animation: wkpop 170ms var(--ease-out); }
   @keyframes wkpop { from { transform: translateY(-12px) scale(0.98); opacity: 0; } }
   .wk-row { display: flex; gap: 8px; align-items: center; }
-  .wk-in { flex: 1; min-width: 0; background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 9px; color: var(--text);
+  .wk-in { flex: 1; min-width: 0; background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 3px; color: var(--text);
     font: 500 15px/1.2 inherit; padding: 11px 12px; outline: none; }
-  .wk-in:focus { border-color: rgba(var(--accent-rgb), 0.6); }
-  .wk-go { background: var(--accent-hi); border: none; color: #fff; border-radius: 9px;
-    padding: 11px 16px; font: 600 14px/1.2 inherit; cursor: pointer; }
+  .wk-in:focus { border-color: var(--brass); box-shadow: 0 0 0 3px rgba(var(--brass-rgb),0.2); }
+  .wk-go { background: var(--brass); border: none; color: #1a1406; border-radius: 3px;
+    padding: 11px 16px; font: 700 11px/1.2 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
   .wk-go:hover { filter: brightness(1.1); }
   .wk-hint { margin-top: 9px; display: flex; justify-content: space-between; gap: 10px;
     color: var(--text-mute); font-size: 11.5px; }
@@ -521,40 +516,32 @@
   }
   .toast-n {
     flex: none; align-self: flex-start; margin-top: 1px;
-    font-size: 10px; font-weight: 600; line-height: 16px; color: var(--text-mute);
-    background: var(--bg-elev-2); border-radius: 999px; padding: 0 7px;
+    font: 700 9.5px/16px var(--font-mono); color: var(--brass);
+    background: rgba(var(--brass-rgb),0.12); border: 1px solid rgba(var(--brass-rgb),0.35); border-radius: 3px; padding: 0 6px;
   }
-  /* Sits at the card's top-right whatever the card's height, with a comfortable
-     hit target rather than a token glyph. */
-  /* Full-height dismiss column on the card's trailing edge. The negative margins
-     cancel the card's own padding so it reaches the true edges; .toast has
-     overflow:hidden, so the corner radius clips it. */
+  /* Full-height dismiss column on the card's trailing edge. The negative margins cancel the
+     card's own padding so it reaches the true edges; .toast has overflow:hidden, so the corner
+     radius clips it. A tint, not transparent: an unfilled column reads as a floating glyph. */
   .toast-x {
     flex: none; align-self: stretch;
     appearance: none; padding: 0; border: none; border-left: 1px solid var(--border-hi);
-    /* A tint, not transparent: an unfilled column reads as a floating glyph rather
-       than a button, which is what made it look unfinished. */
     background: rgba(255,255,255,0.055); cursor: pointer;
     width: 36px; margin: -11px -12px -12px 0; border-radius: 0;
     color: var(--text); line-height: 0;
     display: flex; align-items: center; justify-content: center;
     transition: background var(--tx-fast) var(--ease), color var(--tx-fast) var(--ease);
   }
-  /* WIN_SVG bakes in stroke-width 1.8, which reads as a speck at this size in a
-     34px column -- CSS overrides the presentation attribute. */
   .toast-x .g-x { width: 13px; height: 13px; }
   .toast-x:hover { background: rgba(240,82,82,0.22); color: #ff9b9b; }
   /* Remaining-time rule along the bottom edge; width is set inline per frame. */
   .toast-bar { position: absolute; left: 0; bottom: 0; height: 2px; width: 100%;
                background: rgba(255,255,255,0.06); }
-  .toast-bar i { display: block; height: 100%; background: var(--accent-hi); opacity: 0.65; }
+  .toast-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--brass), rgb(var(--aurora-rgb))); opacity: 0.85; }
 
-  /* Resize grab bands, entirely INSIDE the border box. They must not overhang:
-     .win is overflow:hidden + contain:paint (which CLIPS anything outside), and
-     the rect we publish as the input-consume region is getBoundingClientRect --
-     the border box -- so a handle sticking out is both invisible AND lands its
-     clicks in the GAME. Edges stay slim (5px) so they barely graze the content
-     scrollbar; corners are generous since that is where people aim. */
+  /* Resize grab bands, entirely INSIDE the border box. They must not overhang: .win is
+     overflow:hidden + contain:paint (which CLIPS anything outside), and the rect published as
+     the input-consume region is the border box, so a handle sticking out is both invisible AND
+     lands its clicks in the GAME. Edges stay slim (5px); corners are generous. */
   .rz { position: absolute; z-index: 5; }
   .rz-n  { top: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
   .rz-s  { bottom: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
@@ -566,13 +553,11 @@
   .rz-sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
 
   /* min-width: 0 is load-bearing: without it this flex child refuses to shrink below its
-     widest descendant, so fixed-width content slides out of the window. */
-  /* overflow-y: SCROLL (not auto) on purpose: panels rebuild their DOM wholesale on data
-     changes, and with auto the scrollbar vanished for the empty frame and reappeared after -
-     a width change that reflowed every flexible cell twice per repaint (the "panel zooms
-     in/out when my money pouch ticks" bug). A permanently reserved scrollbar lane keeps the
-     content width constant no matter what the repaint does. (scrollbar-gutter would be the
-     modern fix; this WebKit predates it.) */
+     widest descendant, so fixed-width content slides out of the window.
+     overflow-y: SCROLL (not auto) on purpose: panels rebuild their DOM wholesale on data
+     changes, and with auto the scrollbar vanished for the empty frame and reappeared after,
+     a width change that reflowed every flexible cell twice per repaint. A permanently
+     reserved scrollbar lane keeps the content width constant no matter what the repaint does. */
   .content { flex: 1; padding: 14px 16px; overflow-y: scroll; overflow-x: hidden; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
   .content::-webkit-scrollbar { width: 10px; }
   .content::-webkit-scrollbar-track { background: transparent; }
@@ -581,23 +566,17 @@
     border: 2px solid transparent; background-clip: padding-box;
   }
   .content::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: padding-box; }
-  /* SAFETY NET for the overflow-x: hidden above. A panel whose content is wider than the
-     pane has its right edge CLIPPED AND UNREACHABLE -- and when the clipped part holds a
-     control (a favourite star, a toggle, an x), that control simply cannot be clicked.
-     Panels should size their own layouts to fit (see .scene-trow / panel_geprices for the
-     pattern: minmax(0,1fr) for the flexible column, drop low-priority columns when tight),
-     but these two rules stop an un-audited panel from silently losing content:
-       - grid/flex rows shrink instead of standing at their widest descendant, which is
-         what pushes the last column out in the first place;
-       - a direct child cannot be wider than the pane. */
+  /* SAFETY NET for the overflow-x: hidden above. A panel whose content is wider than the pane
+     has its right edge CLIPPED AND UNREACHABLE. Panels should size their own layouts to fit,
+     but these two rules stop an un-audited panel from silently losing content: grid/flex rows
+     shrink instead of standing at their widest descendant, and a direct child cannot be wider
+     than the pane. */
   .content > * { max-width: 100%; }
   .content [class*="row"], .content [class*="grid"], .content [class*="head"] { min-width: 0; }
-  /* Width classes replace the old viewport media queries (the view now spans the whole
-     game client, so per-WINDOW width drives responsive layout). */
+  /* Width classes replace the old viewport media queries (per-WINDOW width drives layout). */
   .win.narrow .content { padding: 10px 12px; }
   /* Sounds rows: the meta column is the row's only flexible child, so it must be able to
-     shrink or the Export button is pushed out of the pane and cannot be clicked. It is
-     dropped entirely on a tight window (the row title still carries the text). */
+     shrink or the Export button is pushed out of the pane and cannot be clicked. */
   .snd-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
               white-space: nowrap; opacity: 0.75; }
   .win.tight .snd-meta { display: none; }
@@ -607,8 +586,8 @@
   .rows .sec {
     margin: 10px 0 -1px; padding-bottom: 5px;
     border-bottom: 1px solid var(--border);
-    font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
-    text-transform: uppercase; color: var(--text-mute);
+    font: 700 9.5px var(--font-mono); letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--brass);
   }
   .rows .sec:first-child { margin-top: 0; }
   .row {
@@ -617,8 +596,8 @@
   }
   .row .k {
     color: var(--text-mute);
-    letter-spacing: 0.04em; text-transform: uppercase;
-    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    font: 600 9.5px var(--font-mono);
   }
   .row .v {
     color: var(--text);
@@ -626,10 +605,10 @@
     font-size: 12px;
   }
   .pane h2 {
-    margin: 0 0 14px;
-    font-size: 12px; font-weight: 600;
-    color: var(--text-dim);
-    letter-spacing: 0.06em; text-transform: uppercase;
+    margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    font: 700 10.5px var(--font-mono);
+    color: var(--brass);
+    letter-spacing: 0.16em; text-transform: uppercase;
   }
 
   .empty {

@@ -140,7 +140,7 @@
     const coords = rdCoordsLoad();
     const sig = RD_LIST.map(r => (rdVb[String(r[3])] | 0)).join('') + '|' + lv + '|' + rdShowDone + '|' + Object.keys(coords).length;
     if (sig === rdSig) return; rdSig = sig;
-    const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const esc = htmlEsc;
     let done = 0; const rows = [];
     for (const r of RD_LIST) {
       const claimed = (rdVb[String(r[3])] | 0) === 1; if (claimed) done++;

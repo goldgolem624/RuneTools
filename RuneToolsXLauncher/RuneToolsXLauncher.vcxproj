@@ -83,7 +83,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <LargeAddressAware>true</LargeAddressAware>
-      <AdditionalDependencies>Ultralight.lib;UltralightCore.lib;WebCore.lib;AppCore.lib;Psapi.lib;Shell32.lib;Bcrypt.lib;Crypt32.lib;Winhttp.lib;CacheVendor.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Ultralight.lib;UltralightCore.lib;WebCore.lib;AppCore.lib;Psapi.lib;Shell32.lib;Bcrypt.lib;Crypt32.lib;Winhttp.lib;Windowscodecs.lib;Shlwapi.lib;Ole32.lib;OleAut32.lib;CacheVendor.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)$(Platform)\$(Configuration)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <DelayLoadDLLs>Ultralight.dll;UltralightCore.dll;WebCore.dll;AppCore.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
@@ -111,7 +111,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <LargeAddressAware>true</LargeAddressAware>
-      <AdditionalDependencies>Ultralight.lib;UltralightCore.lib;WebCore.lib;AppCore.lib;Psapi.lib;Shell32.lib;Bcrypt.lib;Crypt32.lib;Winhttp.lib;CacheVendor.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Ultralight.lib;UltralightCore.lib;WebCore.lib;AppCore.lib;Psapi.lib;Shell32.lib;Bcrypt.lib;Crypt32.lib;Winhttp.lib;Windowscodecs.lib;Shlwapi.lib;Ole32.lib;OleAut32.lib;CacheVendor.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)$(Platform)\$(Configuration)\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <DelayLoadDLLs>Ultralight.dll;UltralightCore.dll;WebCore.dll;AppCore.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
@@ -143,6 +143,9 @@
     <ClInclude Include="..\src\cache\Utils.h" />
     <ClInclude Include="..\src\launcher\Accounts.h" />
     <ClInclude Include="..\src\launcher\Bridge.h" />
+    <ClInclude Include="..\src\launcher\BridgeUtil.h" />
+    <ClInclude Include="..\src\launcher\Update.h" />
+    <ClInclude Include="..\src\launcher\News.h" />
     <ClInclude Include="..\src\launcher\GameUi.h" />
     <ClInclude Include="..\src\launcher\Cs2Browser.h" />
     <ClInclude Include="..\src\launcher\Crypto.h" />
@@ -184,6 +187,9 @@
     <ClCompile Include="..\src\cache\Store.cpp" />
     <ClCompile Include="..\src\cache\Utils.cpp" />
     <ClCompile Include="..\src\launcher\Accounts.cpp" />
+    <ClCompile Include="..\src\launcher\BridgeUtil.cpp" />
+    <ClCompile Include="..\src\launcher\Update.cpp" />
+    <ClCompile Include="..\src\launcher\News.cpp" />
     <ClCompile Include="..\src\launcher\Bridge.cpp" />
     <ClCompile Include="..\src\launcher\Companion.cpp" />
     <ClCompile Include="..\src\launcher\Cs2Browser.cpp" />

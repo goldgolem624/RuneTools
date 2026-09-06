@@ -13,6 +13,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace rtx::launcher::accounts {
 
@@ -64,12 +65,71 @@ std::filesystem::path suppress_path() {
 }
 
 std::mutex                 g_sup_mu;
-std::set<std::string>      g_suppressed;      // hex sha256 of the account id
+std::set<std::string>      g_suppressed;      // hex HMAC-SHA256(install secret, account id)
+constexpr const char*      kSuppressHeader = "#rtx-suppress-v2";
 bool                       g_sup_loaded = false;
 
+// The suppression list is keyed by HMAC-SHA256(install secret, account id), not a bare hash:
+// account ids are character names, so an unkeyed digest next to the vault was a brute-forceable
+// list of which characters this machine has. The 32-byte secret is minted once per install and
+// kept under per-user DPAPI (suppress.key beside the list), so the file alone reveals nothing.
+std::filesystem::path suppress_key_path() {
+    auto p = accounts_path();
+    p.replace_filename(L"suppress.key");
+    return p;
+}
+
+// Thread-safe one-time initialisation (callers run outside g_sup_mu): a failed first attempt
+// yields an empty secret for the rest of the process and is retried on the next launch.
+std::string suppress_secret_locked() {
+    static const std::string cached = []() -> std::string {
+    const auto path = suppress_key_path();
+    {
+        std::ifstream f(path, std::ios::binary);
+        if (f) {
+            std::stringstream ss; ss << f.rdbuf();
+            const auto blob = ss.str();
+            if (!blob.empty()) {
+                std::vector<std::uint8_t> bytes(blob.begin(), blob.end());
+                std::string existing = crypto::UnprotectForCurrentUser(bytes);
+                if (!existing.empty()) return existing;
+            }
+        }
+    }
+    std::uint8_t raw[32];
+    if (!crypto::RandomBytes(raw, sizeof(raw))) return {};
+    std::string secret(reinterpret_cast<const char*>(raw), sizeof(raw));
+    SecureZeroMemory(raw, sizeof(raw));
+    auto sealed = crypto::ProtectForCurrentUser(secret);
+    if (sealed.empty()) return {};
+    std::ofstream o(path, std::ios::binary | std::ios::trunc);
+    if (!o) return {};
+    o.write(reinterpret_cast<const char*>(sealed.data()), (std::streamsize)sealed.size());
+    o.flush();
+    if (!o) return {};
+    return secret;
+    }();
+    return cached;
+}
+
+// HMAC-SHA256 over SHA-256 (64-byte block), hex encoded. Empty when no secret is available,
+// which callers treat as "cannot suppress" (fail open to normal capture, never to a fixed key).
 std::string id_digest(const std::string& id) {
+    const std::string key = suppress_secret_locked();
+    if (key.empty()) return {};
+    std::uint8_t k[64] = {};
+    std::memcpy(k, key.data(), key.size() < sizeof(k) ? key.size() : sizeof(k));
+    std::string inner; inner.reserve(64 + id.size());
+    for (int i = 0; i < 64; ++i) inner.push_back((char)(k[i] ^ 0x36));
+    inner += id;
+    std::uint8_t ih[32];
+    if (!crypto::Sha256((const std::uint8_t*)inner.data(), inner.size(), ih)) return {};
+    std::string outer; outer.reserve(64 + 32);
+    for (int i = 0; i < 64; ++i) outer.push_back((char)(k[i] ^ 0x5c));
+    outer.append(reinterpret_cast<const char*>(ih), sizeof(ih));
     std::uint8_t d[32];
-    if (!crypto::Sha256((const std::uint8_t*)id.data(), id.size(), d)) return {};
+    if (!crypto::Sha256((const std::uint8_t*)outer.data(), outer.size(), d)) return {};
+    SecureZeroMemory(k, sizeof(k));
     static const char* hex = "0123456789abcdef";
     std::string out; out.reserve(64);
     for (int i = 0; i < 32; ++i) { out += hex[d[i] >> 4]; out += hex[d[i] & 0xF]; }
@@ -82,9 +142,11 @@ void suppress_load_locked() {
     std::ifstream f(suppress_path());
     if (!f) return;
     std::string line;
+    bool versioned = false;
     while (std::getline(f, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-        if (line.size() == 64) g_suppressed.insert(line);
+        if (line == kSuppressHeader) { versioned = true; continue; }
+        if (versioned && line.size() == 64) g_suppressed.insert(line);
     }
 }
 
@@ -95,6 +157,7 @@ void suppress_save_locked() {
     {
         std::ofstream f(tmp, std::ios::trunc);
         if (!f.is_open()) return;
+        f << kSuppressHeader << "\n";
         for (const auto& h : g_suppressed) f << h << "\n";
     }
     std::error_code ec;

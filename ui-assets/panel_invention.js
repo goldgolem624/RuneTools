@@ -145,7 +145,7 @@
   function mchHtml() {
     const vb = mchVb; if (!vb) return '';
     const v = k => (vb[String(k)] === undefined || vb[String(k)] === null) ? null : (vb[String(k)] | 0);
-    const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const esc = htmlEsc;
     const type = v(37614), spaceMax = v(37612), spaceUsed = v(37613);
     if (!type && !spaceMax) return '';
     let h = '<div class="comp-sec">Machines</div><div class="mch-card">';

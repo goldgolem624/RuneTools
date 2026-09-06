@@ -118,7 +118,10 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "core/rtx-layout.js",     // layout persistence, openTab, tabEntryKicks
         "core/rtx-menubar.js",    // menu bar, wiki pane, fullscreen, tab search
         "core/rtx-pane.js",       // renderPane / renderHeader
-        "core/rtx-plugins.js",    // plugin SDK host broker + marketplace
+        "core/rtx-plugin-api.js", // plugin SDK method table, clamps, rate limiter, SDK shim
+        "core/rtx-plugin-hud.js", // host-rendered plugin ability HUD strip
+        "core/rtx-plugins.js",    // plugin SDK host broker: mounts, grants, sandbox, windows
+        "core/rtx-plugin-market.js", // in-client marketplace (browse / install)
         "core/rtx-data.js",       // rtxData: panels' data path over PLUGIN_API (per-tick coalescer)
     };
     // After every panel: needs nothing at load, but attachBridge() in client.html needs it.

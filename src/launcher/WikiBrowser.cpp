@@ -34,6 +34,16 @@ using namespace ultralight;
 
 constexpr const char* kHome = "https://runescape.wiki/";
 constexpr int kChrome = 26;        // native caption strip height (drag handle)
+
+// Windows 11 draws a one pixel system border around every top-level window, which showed
+// as a white ring around the pane. Square corners (rounded ones force the border) and
+// DWMWA_COLOR_NONE remove it; both are no-ops before Windows 11.
+static void quiet_frame(HWND h) {
+    DWORD pref = 1 /* DWMWCP_DONOTROUND */;
+    DwmSetWindowAttribute(h, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &pref, sizeof(pref));
+    COLORREF border = 0xFFFFFFFE /* DWMWA_COLOR_NONE */;
+    DwmSetWindowAttribute(h, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
+}
 constexpr int kEdge = 6;           // resize border thickness
 
 // ---- URL policy ------------------------------------------------------------------------
@@ -378,7 +388,7 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
             HBRUSH bg = CreateSolidBrush(RGB(11, 13, 18));
             FillRect(dc, &rc, bg); DeleteObject(bg);
             RECT ln = rc; ln.top = kChrome - 1;
-            HBRUSH ac = CreateSolidBrush(RGB(84, 67, 152));
+            HBRUSH ac = CreateSolidBrush(RGB(232, 194, 106));   // brass, matches the client shell
             FillRect(dc, &ln, ac); DeleteObject(ac);
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, RGB(180, 185, 200));
@@ -412,6 +422,9 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
     case WM_NCCALCSIZE:
         if (wp) return 0;   // client area = whole window: WS_THICKFRAME without its frame
         break;
+    case WM_NCACTIVATE:
+        // No frame repaint on focus changes (it drew a white 3D edge around the pane).
+        return DefWindowProcW(h, msg, wp, (LPARAM)-1);
     case WM_ERASEBKGND: {
         // Dark ground everywhere the overlay hasn't painted yet: the class brush is
         // white, which flashed at the edges and on first show.
@@ -587,14 +600,7 @@ void Open(std::uint32_t pid, const std::string& term) {
     // only the caption drag worked); WM_NCCALCSIZE below erases its visible frame.
     SetWindowLongPtrW(it->hwnd, GWL_STYLE,
                       GetWindowLongPtrW(it->hwnd, GWL_STYLE) | WS_THICKFRAME);
-    // Product chrome: rounded corners + a subtle accent outline (Windows 11 DWM; both
-    // no-ops on older Windows). This replaces the distracting default white frame.
-    { DWORD pref = 2 /* DWMWCP_ROUND */;
-      DwmSetWindowAttribute(it->hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &pref, sizeof(pref));
-      // DWMWA_COLOR_NONE: no system border at all. A colored one was requested first
-      // but rendered as the distracting white ring regardless of the value set.
-      COLORREF border = 0xFFFFFFFE /* DWMWA_COLOR_NONE */;
-      DwmSetWindowAttribute(it->hwnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border)); }
+    quiet_frame(it->hwnd);
     SetWindowSubclass(it->hwnd, PaneProc, 1, (DWORD_PTR)it);
 
     // The overlay creates its own view (a hand-built view never joined AppCore's repaint
@@ -613,6 +619,7 @@ void Open(std::uint32_t pid, const std::string& term) {
 
     SetWindowPos(it->hwnd, HWND_TOP, o.x + r.left, o.y + r.top, w, h,
                  SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    quiet_frame(it->hwnd);   // again now that the frame exists: the pre-show request alone still showed the ring
     it->fit_overlay(0, 0);   // real client rect is known only after the frame trick lands
     it->ov->Focus();
     it->openedMs = (long long)GetTickCount64();

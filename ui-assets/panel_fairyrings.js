@@ -141,7 +141,7 @@
     const states = frRows.map(r => frState(r));
     const sig = frFilter + '|' + frSearch + '|' + states.map(s => (s.ok ? 1 : 0) + (s.logged ? 2 : 0)).join('') + '|' + (frVb ? 1 : 0);
     if (sig === frSig) return; frSig = sig;
-    const esc = x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const esc = htmlEsc;   // shared escaper: & < > and " (values land in title=/value= attributes)
     const q = frSearch.trim().toLowerCase();
     let usable = 0, seen = 0; const rows = [];
     frRows.forEach((r, i) => {
@@ -159,7 +159,7 @@
         + '<div class="fr-nm">' + esc(place || '(unnamed)') + '<div class="fr-sub">' + esc(region || '') + (reqPlain ? (region ? ' · ' : '') + '<span title="Game test: ' + esc(reqTest) + '">Requires: ' + esc(reqPlain) + '</span>' : '') + '</div></div>'
         + (s.logged ? '<span class="fr-pill seen" title="You have travelled here (game log)">visited</span>' : '')
         + '<span class="fr-pill ' + (s.ok ? 'ok' : 'no') + '">' + (s.ok ? 'usable' : 'locked') + '</span>'
-        + (co ? '<button class="fr-btn" data-fr-map="' + r.key + '">Map</button>' : '') + '</div>');
+        + (co ? '<button class="fr-btn" data-fr-map="' + esc(r.key) + '">Map</button>' : '') + '</div>');
     });
     let h = '<div class="fr-top"><input id="frSearch" class="bank-search" type="text" placeholder="Search code or destination..." value="' + esc(frSearch) + '" spellcheck="false">'
       + ['all', 'usable', 'locked', 'unvisited'].map(f => '<button class="fr-btn' + (frFilter === f ? ' on' : '') + '" data-fr-f="' + f + '">' + f[0].toUpperCase() + f.slice(1) + '</button>').join('')

@@ -17,6 +17,8 @@
 
 #include <Windows.h>
 #include <ShlObj.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -92,6 +94,11 @@ bool preload_ultralight_dlls(const std::filesystem::path& self) {
 static WNDPROC g_launcherPrevProc = nullptr;
 static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
+    case WM_NCACTIVATE:
+        // Activation changes make DefWindowProc repaint the WS_THICKFRAME frame even though
+        // WM_NCCALCSIZE gave it no room: a white 3D edge appeared whenever focus moved to
+        // another app. lParam -1 tells it to skip that repaint.
+        return DefWindowProcW(h, m, w, (LPARAM)-1);
     case WM_NCCALCSIZE:
         if (w) {
             auto* pr = reinterpret_cast<NCCALCSIZE_PARAMS*>(l);
@@ -115,8 +122,8 @@ static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
         const double k = (dpiFn && dpiFn(h)) ? dpiFn(h) / 96.0 : 1.0;
         auto* mi = reinterpret_cast<MINMAXINFO*>(l);
-        mi->ptMinTrackSize.x = (LONG)(380 * k);
-        mi->ptMinTrackSize.y = (LONG)(520 * k);
+        mi->ptMinTrackSize.x = (LONG)(860 * k);
+        mi->ptMinTrackSize.y = (LONG)(600 * k);
         return r0; }
     case WM_NCHITTEST: {
         const int x = (int)(short)LOWORD(l), y = (int)(short)HIWORD(l);
@@ -232,7 +239,7 @@ public:
         // Borderless: the page draws its own title bar (drag region + min/close through the
         // bridge's winCmd), so the OS chrome never breaks the dark theme. Resizable keeps the
         // sizing borders; WS_CAPTION is added below so snap and minimize animations survive.
-        window_ = Window::Create(app_->main_monitor(), 460, 640, false,
+        window_ = Window::Create(app_->main_monitor(), 1060, 700, false,
                                  kWindowFlags_Borderless |
                                  kWindowFlags_Resizable);
         if (!window_) { fatal("Window::Create returned null"); return; }
@@ -254,6 +261,13 @@ public:
                                   reinterpret_cast<LONG_PTR>(LauncherFrameProc)));
             SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+            // Windows 11 draws a one pixel system border around every top-level window, which
+            // shows as a white ring around the page. DWMWA_COLOR_NONE removes it (no-op before
+            // Windows 11). Square corners to match the page's own chrome.
+            { COLORREF border = DWMWA_COLOR_NONE;
+              DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
+              DWORD pref = DWMWCP_DONOTROUND;
+              DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref)); }
             HMODULE hMod = GetModuleHandleW(nullptr);
             HICON hBig = (HICON)LoadImageW(hMod, MAKEINTRESOURCEW(1), IMAGE_ICON,
                                            GetSystemMetrics(SM_CXICON),

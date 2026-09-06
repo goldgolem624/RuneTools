@@ -1,4 +1,7 @@
 #include "Bridge.h"
+#include "BridgeUtil.h"
+#include "Update.h"
+#include "News.h"
 #include "Accounts.h"
 #include "Companion.h"
 #include "Cs2Browser.h"
@@ -23,7 +26,6 @@
 #include "../reader/Reader.h"
 #include "../shared/Log.h"
 #include "../shared/MachineFingerprint.h"
-#include <random>                   // random_device: unpredictable installer temp name
 #include "Http.h"
 #include "Crypto.h"
 #include "Zip.h"
@@ -72,15 +74,6 @@ using std::min;
 namespace rtx::launcher {
 
 namespace {
-
-// Body wrapper for the long-lived detached threads below: an escaping exception
-// would std::terminate the whole launcher, so log it and let the thread end.
-template <class F>
-void guarded(const char* what, F&& f) {
-    try { f(); }
-    catch (const std::exception& e) { rtx::log::Launcher(std::string(what) + ": thread threw: " + e.what()); }
-    catch (...) { rtx::log::Launcher(std::string(what) + ": thread threw (non-std)"); }
-}
 
 // Bounded JS number -> int: NaN/Infinity through a plain (int) cast is UB, so clamp instead.
 static int js_int(JSContextRef ctx, JSValueRef v, int def = 0, int lo = INT_MIN, int hi = INT_MAX) {
@@ -275,7 +268,6 @@ void hp_save_locked() {
     if (f) f << g_hp_vk;
 }
 
-constexpr const char* kAppVersion = "1.0.0";   // fallback; real version read from FILEVERSION (app.rc)
 
 std::filesystem::path vault_key_path() { return runetools_dir() / L"vault.key"; }
 
@@ -362,24 +354,6 @@ void ensure_vault_unlocked() {
     });
 }
 
-std::string js_to_utf8(JSContextRef ctx, JSValueRef v) {
-    JSStringRef s = JSValueToStringCopy(ctx, v, nullptr);
-    if (!s) return {};
-    size_t bytes = JSStringGetMaximumUTF8CStringSize(s);
-    std::string out(bytes, '\0');
-    size_t n = JSStringGetUTF8CString(s, out.data(), bytes);
-    JSStringRelease(s);
-    if (n) out.resize(n - 1);
-    return out;
-}
-
-JSValueRef utf8_to_js(JSContextRef ctx, const std::string& s) {
-    JSStringRef js = JSStringCreateWithUTF8CString(s.c_str());
-    JSValueRef out = JSValueMakeString(ctx, js);
-    JSStringRelease(js);
-    return out;
-}
-
 // Serve a per-pid panel read from the reader's background cache: the synchronous cross-process
 // read must never run on the UI thread, which stays free to pump the embedded host's
 // activation. `build` runs on the background thread, so capture by value only.
@@ -416,44 +390,6 @@ static JSValueRef served_obj(JSContextRef ctx, std::uint32_t pid, const std::str
     return utf8_to_js(ctx, r.empty() ? fail_json("error") : r);
 }
 
-std::string wide_to_utf8(const std::wstring& w) {
-    if (w.empty()) return {};
-    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                                nullptr, 0, nullptr, nullptr);
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                        out.data(), n, nullptr, nullptr);
-    return out;
-}
-
-std::string json_escape(const std::string& s) {
-    std::string out; out.reserve(s.size() + 2);
-    for (char c : s) {
-        switch (c) {
-        case '"':  out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n";  break;
-        case '\r': out += "\\r";  break;
-        case '\t': out += "\\t";  break;
-        default:
-            if (static_cast<unsigned char>(c) < 0x20) {
-                char buf[8];
-                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-                out += buf;
-            } else {
-                out += c;
-            }
-        }
-    }
-    return out;
-}
-
-std::string get_string_arg(JSContextRef ctx, size_t argc,
-                           const JSValueRef argv[], size_t idx) {
-    if (idx >= argc) return {};
-    return js_to_utf8(ctx, argv[idx]);
-}
-
 // Sanitised, per-account identity used for every per-account file and for vote dedupe.
 // Defined up here because the vote handler needs it long before the storage helpers below.
 // Mirrors BankCache's sanitize so the same account maps predictably to a file:
@@ -488,8 +424,14 @@ std::string account_key_for(std::uint32_t pid) {
 JSValueRef OpenExternal(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto url = get_string_arg(ctx, argc, argv, 0);
-    static const char* kAllowed = "https://runetools.io/";
-    if (url.rfind(kAllowed, 0) != 0) return JSValueMakeUndefined(ctx);
+    // runetools.io plus the official RuneScape news hosts (the launcher's news cards link
+    // straight to the article). Anything else is refused.
+    static const char* kAllowed[] = {
+        "https://runetools.io/", "https://secure.runescape.com/", "https://www.runescape.com/", "https://runescape.com/",
+    };
+    bool allowed = false;
+    for (const char* a : kAllowed) if (url.rfind(a, 0) == 0) { allowed = true; break; }
+    if (!allowed) return JSValueMakeUndefined(ctx);
     int n = MultiByteToWideChar(CP_UTF8, 0, url.data(), (int)url.size(),
                                 nullptr, 0);
     std::wstring w(n, L'\0');
@@ -1827,9 +1769,6 @@ JSValueRef HiscoresJson(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out.str());
 }
 
-// The RuneTools server host, shared by the party-sync section below and the self-update /
-// VoS / world-event code further down. Declared here because party-sync uses it first.
-constexpr wchar_t kUpdateHost[]   = L"runetools.io";
 
 // ---- Leagues-only worlds ---------------------------------------------------------------
 // Leagues runs its own copy of the world state, so a leagues world's Voice of Seren, world
@@ -2476,6 +2415,15 @@ JSValueRef CloseProcess(JSContextRef ctx, JSObjectRef, JSObjectRef,
     }
     auto pid = static_cast<std::uint32_t>(
         JSValueToNumber(ctx, argv[0], nullptr));
+    // Only a RuneScape client this launcher tracks may be closed: the binding is reachable from
+    // the UI view, and an unrestricted pid would turn any script foothold there into an
+    // arbitrary process killer for the whole session.
+    bool tracked = false;
+    for (const auto& p : process::ScanRsClients()) if (p.pid == pid) { tracked = true; break; }
+    if (!tracked) {
+        return utf8_to_js(ctx,
+            R"({"success":false,"detail":"not a tracked RuneScape client"})");
+    }
     bool ok = process::TerminateByPid(pid);
     std::ostringstream os;
     os << "{\"success\":" << (ok ? "true" : "false")
@@ -2597,212 +2545,6 @@ JSValueRef OpenLog(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       nullptr, nullptr, SW_SHOWNORMAL);
     }
     return JSValueMakeUndefined(ctx);
-}
-
-// ---- one-click self-update ----------------------------------------------
-constexpr wchar_t kLatestPath[]   = L"/api/client/latest-version";
-constexpr wchar_t kDownloadPath[] = L"/api/client/download-update";
-
-// Running launcher version from the exe's own VERSIONINFO (app.rc FILEVERSION), the single source of truth.
-std::string running_version() {
-    wchar_t path[MAX_PATH] = {};
-    if (GetModuleFileNameW(nullptr, path, MAX_PATH)) {
-        DWORD ignored = 0, sz = GetFileVersionInfoSizeW(path, &ignored);
-        if (sz) {
-            std::vector<unsigned char> buf(sz);
-            if (GetFileVersionInfoW(path, 0, sz, buf.data())) {
-                VS_FIXEDFILEINFO* ffi = nullptr; UINT n = 0;
-                if (VerQueryValueW(buf.data(), L"\\", reinterpret_cast<LPVOID*>(&ffi), &n) && ffi) {
-                    char v[32];
-                    std::snprintf(v, sizeof(v), "%u.%u.%u",
-                                  (unsigned)HIWORD(ffi->dwFileVersionMS),
-                                  (unsigned)LOWORD(ffi->dwFileVersionMS),
-                                  (unsigned)HIWORD(ffi->dwFileVersionLS));
-                    return v;
-                }
-            }
-        }
-    }
-    return kAppVersion;
-}
-
-// Minimal JSON string-field reader (find "key":"value"); the backend response is flat enough for that.
-std::string json_str(const std::string& body, const char* key) {
-    std::string pat = std::string("\"") + key + "\"";
-    size_t k = body.find(pat);
-    if (k == std::string::npos) return {};
-    size_t c = body.find(':', k + pat.size());
-    if (c == std::string::npos) return {};
-    size_t i = c + 1;
-    while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) ++i;
-    if (i >= body.size() || body[i] != '"') return {};
-    ++i;
-    std::string out;
-    while (i < body.size() && body[i] != '"') {
-        if (body[i] == '\\' && i + 1 < body.size()) { out.push_back(body[i + 1]); i += 2; }
-        else out.push_back(body[i++]);
-    }
-    return out;
-}
-
-// SHA-256 of a file as lowercase hex ("" on failure); verifies a download against the manifest hash.
-std::string sha256_hex(const std::wstring& file) {
-    HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return {};
-    BCRYPT_ALG_HANDLE alg = nullptr; BCRYPT_HASH_HANDLE h = nullptr;
-    std::string out;
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0) {
-        DWORD objLen = 0, cb = 0;
-        BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&objLen, sizeof(objLen), &cb, 0);
-        std::vector<unsigned char> obj(objLen);
-        if (BCryptCreateHash(alg, &h, obj.data(), objLen, nullptr, 0, 0) == 0) {
-            std::vector<unsigned char> buf(1 << 16); DWORD read = 0;
-            while (ReadFile(f, buf.data(), (DWORD)buf.size(), &read, nullptr) && read)
-                BCryptHashData(h, buf.data(), read, 0);
-            unsigned char dig[32] = {};
-            if (BCryptFinishHash(h, dig, sizeof(dig), 0) == 0) {
-                static const char* hx = "0123456789abcdef";
-                for (unsigned char d : dig) { out.push_back(hx[d >> 4]); out.push_back(hx[d & 0xf]); }
-            }
-            BCryptDestroyHash(h);
-        }
-        BCryptCloseAlgorithmProvider(alg, 0);
-    }
-    CloseHandle(f);
-    return out;
-}
-
-std::mutex        g_upd_mu;
-std::string       g_upd_phase = "idle";   // idle|downloading|verifying|launching|error
-int               g_upd_pct   = 0;
-std::string       g_upd_detail;
-std::atomic<bool> g_upd_running{ false };
-
-void set_upd(const char* phase, int pct, const std::string& detail) {
-    std::lock_guard<std::mutex> lk(g_upd_mu);
-    g_upd_phase = phase; g_upd_pct = pct; g_upd_detail = detail;
-}
-
-// Worker: fetch manifest -> download the build -> verify -> run the per-user installer silently ->
-// exit so it can replace the launcher's files (the installer relaunches it).
-void run_update() {
-    struct Done { ~Done() { g_upd_running = false; } } done;
-    auto log = [](const std::string& m) { rtx::log::Launcher("[update] " + m); };
-    log("worker start (running v" + running_version() + ")");
-
-    std::vector<http::Header> hdrs;   // public update endpoints; no auth headers
-
-    set_upd("downloading", 0, "Checking update");
-    auto man = http::Get(kUpdateHost, kLatestPath, hdrs);
-    log("manifest GET ok=" + std::to_string(man.ok) + " status=" + std::to_string(man.status));
-    if (!man.ok || man.status != 200) { log("abort: manifest unreachable: " + man.detail); set_upd("error", 0, "Couldn't reach the update server"); return; }
-    std::string ver  = json_str(man.body, "version");
-    std::string hash = json_str(man.body, "hash");
-    log("manifest version=" + ver + " hash=" + hash);
-    if (ver.empty()) { log("abort: manifest has no version"); set_upd("error", 0, "No update available"); return; }
-
-    // ANTI-DOWNGRADE: a compromised (or replayed) manifest must not be able to push an
-    // older, vulnerable build. Dotted-numeric compare; a manifest version <= what is
-    // already running is never an update.
-    {
-        auto parts = [](const std::string& s) {
-            std::vector<long> v; long cur = 0; bool any = false;
-            for (char c : s) {
-                if (c >= '0' && c <= '9') { cur = cur * 10 + (c - '0'); any = true; }
-                else if (c == '.') { v.push_back(any ? cur : 0); cur = 0; any = false; }
-            }
-            if (any) v.push_back(cur);
-            while (v.size() < 4) v.push_back(0);
-            return v;
-        };
-        const auto nv = parts(ver), rv = parts(running_version());
-        if (!(nv > rv)) {   // lexicographic on equal-length numeric vectors
-            log("abort: manifest version " + ver + " is not newer than running " + running_version());
-            set_upd("error", 0, "No update available");
-            return;
-        }
-    }
-
-    // Random destination name: a fixed %TEMP% path was a predictable target for a
-    // same-user swap between verification and launch.
-    wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
-    wchar_t rnd[24] = {};
-    {
-        std::random_device rd;   // MSVC: cryptographic (RtlGenRandom-backed)
-        swprintf_s(rnd, L"_%08x%08x", (unsigned)rd(), (unsigned)rd());
-    }
-    std::wstring dest = std::wstring(tmp) + L"RuneToolsXSetup" + rnd + L".exe";
-
-    set_upd("downloading", 0, "Downloading v" + ver);
-    auto dl = http::Download(kUpdateHost, kDownloadPath, hdrs, dest,
-        [](long long got, long long total) {
-            set_upd("downloading", total > 0 ? (int)((got * 100) / total) : 0, "");
-        });
-    log("download ok=" + std::to_string(dl.ok) + " status=" + std::to_string(dl.status) + " detail=" + dl.detail);
-    if (!dl.ok || dl.status != 200) { log("abort: download failed"); set_upd("error", 0, "Download failed"); return; }
-
-    // FAIL CLOSED. A manifest without a usable hash used to skip verification and run the
-    // downloaded exe anyway, which made "omit the hash" a way to turn verification off - the one
-    // thing an attacker who could serve the manifest would do first. client_versions.hash is NOT
-    // NULL server-side, so a missing hash is a broken manifest, never a normal update.
-    set_upd("verifying", 100, "Verifying");
-    if (hash.size() != 64 || hash.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
-        DeleteFileW(dest.c_str());
-        log("abort: manifest hash missing or malformed (len=" + std::to_string(hash.size()) + ")");
-        set_upd("error", 0, "Update verification failed");
-        return;
-    }
-    // TOCTOU guard: hold a read handle with FILE_SHARE_READ ONLY (no write, no
-    // delete sharing) from before hashing until after the installer has launched.
-    // Nobody can swap or modify the verified bytes while this handle is open.
-    HANDLE guard = CreateFileW(dest.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (guard == INVALID_HANDLE_VALUE) {
-        DeleteFileW(dest.c_str());
-        log("abort: could not lock the downloaded installer for verification");
-        set_upd("error", 0, "Update verification failed");
-        return;
-    }
-    std::string got = sha256_hex(dest);
-    log("verify expected=" + hash + " got=" + got);
-    if (got.empty() || _stricmp(got.c_str(), hash.c_str()) != 0) {
-        CloseHandle(guard);
-        DeleteFileW(dest.c_str());
-        log("abort: hash mismatch");
-        set_upd("error", 0, "Update verification failed");
-        return;
-    }
-
-    set_upd("launching", 100, "Installing v" + ver);
-
-    // Inno postinstall [Run] entries don't fire under /VERYSILENT; the dual [Run]
-    // in RuneToolsX.iss handles the silent relaunch.
-    std::wstring instlog = rtx::log::LogDir();
-    if (!instlog.empty() && instlog.back() != L'\\' && instlog.back() != L'/') instlog += L'\\';
-    instlog += L"installer.log";
-    std::wstring args = L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"" + instlog + L"\"";
-
-    log("launching installer /VERYSILENT (+/LOG=installer.log), then Sleep(1500) + TerminateProcess");
-    HINSTANCE rc = ShellExecuteW(nullptr, L"open", dest.c_str(),
-                                 args.c_str(),
-                                 nullptr, SW_SHOWNORMAL);
-    INT_PTR code = reinterpret_cast<INT_PTR>(rc);
-    log("ShellExecuteW returned " + std::to_string((long long)code));
-    if (code <= 32) { CloseHandle(guard); log("abort: ShellExecuteW failed (<=32)"); set_upd("error", 0, "Couldn't start the installer"); return; }
-    Sleep(1500);          // let the installer spin up before this process releases its files
-    CloseHandle(guard);   // the installer is running from the verified bytes now
-    // Must be TerminateProcess, NOT ExitProcess: ExitProcess runs module detach callbacks, which can
-    // deadlock with the Ultralight/GPU/SSE threads live -- the process then hangs, keeps the exe locked,
-    // and the update silently fails. TerminateProcess exits instantly.
-    log("exiting now (TerminateProcess) so the installer can replace our files");
-    rtx::log::BeginShutdown();   // suppress crash reports from threads killed by the terminate below
-    TerminateProcess(GetCurrentProcess(), 0);
-}
-
-JSValueRef Version(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                   size_t, const JSValueRef[], JSValueRef*) {
-    return utf8_to_js(ctx, running_version());
 }
 
 // rtx.bridgeStatus(pid): the one-call health summary behind the client's status strip.
@@ -3668,26 +3410,6 @@ JSValueRef ClientsRunning(JSContextRef ctx, JSObjectRef, JSObjectRef,
         CloseHandle(snap);
     }
     return JSValueMakeNumber(ctx, n);
-}
-
-// Idempotent; the caller polls updateState().
-JSValueRef StartUpdate(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                       size_t, const JSValueRef[], JSValueRef*) {
-    bool expected = false;
-    if (g_upd_running.compare_exchange_strong(expected, true)) {
-        set_upd("downloading", 0, "Starting");
-        std::thread([] { guarded("update", run_update); }).detach();
-    }
-    return JSValueMakeBoolean(ctx, true);
-}
-
-JSValueRef UpdateState(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                       size_t, const JSValueRef[], JSValueRef*) {
-    std::lock_guard<std::mutex> lk(g_upd_mu);
-    std::ostringstream o;
-    o << "{\"phase\":\"" << g_upd_phase << "\",\"pct\":" << g_upd_pct
-      << ",\"detail\":\"" << json_escape(g_upd_detail) << "\"}";
-    return utf8_to_js(ctx, o.str());
 }
 
 // Ultralight has no navigator.clipboard; read CF_UNICODETEXT directly.
@@ -5402,6 +5124,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "version",           Version);
     install_fn(ctx, ns, "latestVersion",     LatestVersion);
     install_fn(ctx, ns, "latestVersionCached", LatestVersionCached);
+    install_fn(ctx, ns, "newsCached",        NewsCached);
     install_fn(ctx, ns, "vosCached", VosCached);
     install_fn(ctx, ns, "pricesCached", PricesCached);
     install_fn(ctx, ns, "pricesMapping", PricesMapping);

@@ -130,7 +130,7 @@
     if (sig === wdSig) return;
     wdSig = sig;
     cnt.textContent = wdVb ? (owned.toLocaleString() + ' / ' + wdRows.length.toLocaleString() + ' owned') : (wdRows.length.toLocaleString() + ' cosmetics');
-    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const esc = htmlEsc;
     let html = '';
     const shown = rows.slice(0, wdShowMax);
     for (const r of shown) {
@@ -138,7 +138,7 @@
       html += '<div class="wd-row"><div class="wd-nm">' + esc(r.name)
         + (r.how ? '<div class="wd-how">' + esc(r.how) + '</div>' : '') + '</div>'
         + (r.members ? '<span class="wd-mem">members</span>' : '')
-        + '<button type="button" class="wd-wiki" data-nm="' + esc(r.name).replace(/"/g, '&quot;') + '" title="Show this cosmetic in the wiki browser">wiki</button>'
+        + '<button type="button" class="wd-wiki" data-nm="' + esc(r.name) + '" title="Show this cosmetic in the wiki browser">wiki</button>'
         + (o === null ? '' : '<span class="wd-pill ' + (o ? 'ok">Owned' : 'no">Missing') + '</span>')
         + '</div>';
     }
