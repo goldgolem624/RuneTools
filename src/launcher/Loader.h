@@ -6,9 +6,30 @@
 
 namespace rtx::launcher::loader {
 
-// Search the standard install locations for an RS3 client executable.
-// Empty string if none of the well-known paths exist.
+// RuneScape.exe to launch: the user's saved override when one is set and still exists,
+// otherwise the auto-detected install. Empty when neither resolves.
 std::wstring DefaultRsClientPath();
+
+// The auto-detected RuneScape.exe only (registry, Steam libraries, drive scan). Empty if none.
+std::wstring AutoRsClientPath();
+
+// User override, persisted in the RuneToolsX data folder. Get returns "" when unset or the
+// file has since vanished; Set with "" clears it. Set rejects anything that is not an
+// existing RuneScape.exe.
+std::wstring CustomRsClientPath();
+// Returns "" on success, otherwise a user-facing reason (wrong file, not signed by Jagex, ...).
+std::string  SetCustomRsClientPath(const std::wstring& path);
+
+// Authenticode check: the file carries a valid, trusted signature whose signer is Jagex.
+// `subject` receives the signer's organisation (or common name) when one could be read,
+// signed or not, so a refusal can say who actually signed the file.
+struct SignerCheck {
+    bool        ok;        // valid chain and a Jagex signer
+    bool        signed_;   // some valid signature was present
+    std::string subject;   // signer name as read from the certificate
+    std::string reason;    // user-facing reason when !ok
+};
+SignerCheck VerifyGameSigner(const std::wstring& path);
 
 struct LaunchResult {
     bool          success;

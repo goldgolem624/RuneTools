@@ -895,6 +895,21 @@
   .settings-box .credits-dim { margin-top: 12px; }
   .credits-ov.behind { visibility: hidden; }
   .list-row { padding: 12px 14px; }
+
+  /* ==================== game location ==================== */
+  .set-row-col { flex-direction: column; align-items: stretch; gap: 10px; }
+  .gp-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .gp-path { font: 500 11px var(--font-mono); color: var(--text); word-break: break-all; line-height: 1.45; }
+  .gp-path.missing { color: var(--err); }
+  .gp-tag { flex: none; font: 700 9px var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); border: 1px solid var(--border-hi); padding: 2px 6px; border-radius: 3px; }
+  .gp-tag:empty { display: none; }
+  .gp-tag.bad { color: var(--err); border-color: rgba(255, 107, 107, 0.45); }
+  .gp-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .gp-actions [hidden] { display: none; }
+  .gp-missing { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(var(--brass-rgb), 0.45); background: rgba(var(--brass-rgb), 0.06); font-size: 11px; line-height: 1.5; color: var(--text); }
+  .gp-missing[hidden] { display: none; }
+  .gp-missing .link { display: block; margin-top: 6px; font: 600 10px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--brass-2); cursor: pointer; }
+  .gp-missing .link:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -987,6 +1002,10 @@
             <div class="acct-menu" id="acct-menu" role="listbox" hidden></div>
           </div>
           <div class="play-hint" id="play-hint">Log into a client once and it is saved here for one-click launches.</div>
+          <div class="gp-missing" id="gp-missing" hidden>
+            <b>RuneScape.exe was not found.</b> Play needs the game's RuneScape.exe.
+            <span class="link" id="gp-locate">Locate it</span>
+          </div>
           <div id="proc-list" hidden></div><span id="proc-count" hidden></span>
           <div class="play-foot">
             <button class="ghost btn-sm" id="acct-launch-all" type="button" style="display:none">Launch all</button>
@@ -1045,6 +1064,20 @@
           <span class="lbl">On</span>
         </label>
       </div>
+      <div class="set-row set-row-col">
+        <div class="set-text">
+          <b>Game location</b>
+          <span>The RuneScape.exe that Play starts. Normally found on its own; change it if your game lives somewhere else.</span>
+        </div>
+        <div class="gp-line">
+          <span class="gp-path" id="gp-path">Checking...</span>
+          <span class="gp-tag" id="gp-tag"></span>
+        </div>
+        <div class="gp-actions">
+          <button class="ghost btn-sm" id="gp-pick" type="button">Change...</button>
+          <button class="ghost btn-sm" id="gp-reset" type="button" hidden>Use detected location</button>
+        </div>
+      </div>
       <div class="set-head">Saved accounts <span class="count" id="acct-count">0</span></div>
       <div class="list" id="acct-list">
         <div class="empty">
@@ -1053,6 +1086,27 @@
         </div>
       </div>
       <p class="credits-dim">Hide a panel to keep RuneTools out of that character's game window. Forgetting an account removes its saved session from this machine.</p>
+    </div>
+  </div>
+</div>
+
+<div id="gpOv" class="credits-ov">
+  <div class="credits-box">
+    <div class="credits-hd">Change the game location?</div>
+    <div class="credits-body">
+      <p>RuneTools found your game on its own at <span class="gp-path" id="gp-ov-path"></span>.
+         Only change this if that is the wrong copy.</p>
+      <p class="credits-legend">What to pick:</p>
+      <ul class="cap-list">
+        <li><b>RuneScape.exe</b> inside your game folder.</li>
+        <li>Jagex Launcher installs keep it under <b>Jagex Launcher\Games\RuneScape</b>.</li>
+        <li>Steam installs keep it under <b>steamapps\common\RuneScape\bin\win64</b>.</li>
+      </ul>
+      <p class="credits-dim">Not rs2client.exe: that is the game process RuneScape.exe starts, and launching it directly skips the sign-in hand-off.</p>
+    </div>
+    <div class="credits-ft">
+      <span class="btn-min" id="gpCancel">Keep it</span>
+      <span class="btn-min" id="gpConfirm">Choose a file</span>
     </div>
   </div>
 </div>
@@ -1562,6 +1616,61 @@
   // Shared open/close for the capture dialog. The confirm handler is rebound per open so a
   // dismissed dialog can never leave a stale one attached.
   let capOnConfirm = null;
+  // ---- game location (which RuneScape.exe Play starts) ----
+  let gpInfo = null;
+  function gpRender(info) {
+    gpInfo = info || null;
+    const path = $('gp-path'), tag = $('gp-tag'), reset = $('gp-reset'), miss = $('gp-missing');
+    if (!path) return;
+    if (!info) { path.textContent = 'Unavailable'; path.classList.remove('missing'); tag.textContent = ''; reset.hidden = true; if (miss) miss.hidden = true; return; }
+    if (info.found) {
+      path.textContent = info.path;
+      path.classList.toggle('missing', !info.signed);
+      tag.textContent = info.signed ? ((info.custom ? 'Chosen by you' : 'Detected') + ' \u00b7 signed by ' + (info.signer || 'Jagex'))
+                                    : 'Not signed by Jagex';
+      tag.classList.toggle('bad', !info.signed);
+      tag.title = info.signed ? '' : (info.reason || '');
+    } else {
+      path.textContent = 'Not found. Pick the RuneScape.exe inside your game folder.';
+      path.classList.add('missing');
+      tag.textContent = '';
+      tag.classList.remove('bad');
+    }
+    reset.hidden = !(info.custom && info.auto);
+    if (miss) miss.hidden = !!info.found;
+  }
+  async function gpRefresh() {
+    if (!bridge().gamePath) { gpRender(null); return; }
+    try { gpRender(JSON.parse(await bridge().gamePath())); } catch (e) { gpRender(null); }
+  }
+  async function gpPickNow() {
+    if (!bridge().gamePathPick) return;
+    let res = null;
+    try { res = JSON.parse(await bridge().gamePathPick()); } catch (e) { res = null; }
+    if (!res || res.cancelled) return;
+    if (res.error) { showStatus($('main-status'), 'err', res.error); return; }
+    gpRender(res);
+    showStatus($('main-status'), 'ok', 'Game location saved.');
+  }
+  // Replacing a location that was found automatically asks first; a missing one does not.
+  function gpPick() {
+    if (gpInfo && gpInfo.found && !gpInfo.custom) { $('gp-ov-path').textContent = gpInfo.path; gpSet(true); }
+    else gpPickNow();
+  }
+  function gpSet(on) {
+    $('gpOv').classList.toggle('on', !!on);
+    $('settingsOv').classList.toggle('behind', !!on);
+  }
+  $('gp-pick').addEventListener('click', gpPick);
+  $('gp-locate').addEventListener('click', gpPickNow);
+  $('gp-reset').addEventListener('click', async () => {
+    if (!bridge().gamePathReset) return;
+    try { gpRender(JSON.parse(await bridge().gamePathReset())); } catch (e) {}
+  });
+  $('gpCancel').addEventListener('click', () => gpSet(false));
+  $('gpOv').addEventListener('click', (e) => { if (e.target === $('gpOv')) gpSet(false); });
+  $('gpConfirm').addEventListener('click', () => { gpSet(false); gpPickNow(); });
+
   function capSet(on, onConfirm) {
     if (on) capOnConfirm = onConfirm || null;
     $('capOv').classList.toggle('on', !!on);
@@ -1739,7 +1848,7 @@
     n.style.display = (n.style.display === 'none') ? 'block' : 'none';
   });
 
-  const settingsSet = (on) => { $('settingsOv').classList.toggle('on', !!on); };
+  const settingsSet = (on) => { $('settingsOv').classList.toggle('on', !!on); if (on) gpRefresh(); };
   $('tb-settings').addEventListener('click', () => settingsSet(true));
   $('open-settings').addEventListener('click', () => settingsSet(true));
   $('settingsClose').addEventListener('click', () => settingsSet(false));
@@ -1762,7 +1871,7 @@
   $('capOv').addEventListener('click', (e) => { if (e.target === $('capOv')) capSet(false); });
   $('capConfirm').addEventListener('click', () => { const f = capOnConfirm; capSet(false); if (f) f(); });
 
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { creditsSet(false); capSet(false); settingsSet(false); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { creditsSet(false); capSet(false); gpSet(false); settingsSet(false); } });
 
   $('openlog').addEventListener('click', () => bridge().openLog && bridge().openLog());
   // openExternal allows runetools.io URLs only; /discord 302s to the current invite, so the
@@ -1847,6 +1956,7 @@
     try { res = JSON.parse(await bridge().launchAccount(id)); } catch (e) {}
     if (res.success) showStatus($('main-status'), 'ok', 'Launched (PID ' + res.pid + ')');
     else             showStatus($('main-status'), 'err', res.detail || 'launch failed');
+    if (!res.success && /not found/i.test(res.detail || '')) gpRefresh();
     play.textContent = 'Play';
     invalidateRenderCache();
     setTimeout(refresh, 900);
@@ -1980,6 +2090,7 @@
     // first scan whether or not this has resolved yet.
     initAccountCapture();
     initTitlebar();
+    gpRefresh();
     const la = $('acct-launch-all');
     if (la) la.addEventListener('click', launchAll);
     refresh();

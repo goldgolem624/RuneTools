@@ -28,6 +28,7 @@
 #include "../shared/MachineFingerprint.h"
 #include "Http.h"
 #include "Crypto.h"
+#include <shobjidl.h>              // IFileOpenDialog for the game location picker
 #include "Zip.h"
 
 #include <Ultralight/Ultralight.h>
@@ -72,6 +73,8 @@ using std::min;
 #pragma comment(lib, "gdiplus.lib")
 
 namespace rtx::launcher {
+
+void* g_launcherHwnd = nullptr;   // set once via SetLauncherWindow; owner for modal dialogs
 
 namespace {
 
@@ -3562,6 +3565,83 @@ JSValueRef PlayAlertSound(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, ok ? true : false);
 }
 
+// ---- Game location: which RuneScape.exe gets launched ----------------------
+// gamePath() -> {"path","auto","custom":bool,"found":bool}. The page shows this in Settings
+// and on the play card when nothing was found.
+std::string game_path_json() {
+    const std::wstring custom = loader::CustomRsClientPath();
+    const std::wstring autod  = loader::AutoRsClientPath();
+    const std::wstring path   = custom.empty() ? autod : custom;
+    loader::SignerCheck sc{ false, false, {}, {} };
+    if (!path.empty()) sc = loader::VerifyGameSigner(path);
+    std::ostringstream os;
+    os << "{\"path\":\""   << json_escape(wide_to_utf8(path))
+       << "\",\"auto\":\"" << json_escape(wide_to_utf8(autod))
+       << "\",\"custom\":"  << (custom.empty() ? "false" : "true")
+       << ",\"found\":"      << (path.empty() ? "false" : "true")
+       << ",\"signed\":"     << (sc.ok ? "true" : "false")
+       << ",\"signer\":\""  << json_escape(sc.subject)
+       << "\",\"reason\":\"" << json_escape(sc.ok ? std::string{} : sc.reason) << "\"}";
+    return os.str();
+}
+
+JSValueRef GamePath(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, game_path_json());
+}
+
+// gamePathPick() -> gamePath() JSON plus "cancelled":true when the dialog was dismissed, or
+// "error" when the chosen file is not a RuneScape.exe. The dialog is modal to the launcher.
+JSValueRef GamePathPick(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    std::wstring chosen; bool cancelled = true;
+    {
+        IFileOpenDialog* dlg = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+            static const COMDLG_FILTERSPEC kTypes[] = {
+                { L"RuneScape.exe", L"RuneScape.exe" },
+                { L"Programs (*.exe)", L"*.exe" },
+            };
+            dlg->SetFileTypes(2, kTypes);
+            dlg->SetTitle(L"Locate RuneScape.exe");
+            dlg->SetFileName(L"RuneScape.exe");
+            DWORD opts = 0; dlg->GetOptions(&opts);
+            dlg->SetOptions(opts | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_DONTADDTORECENT);
+            // Start in the current location when there is one, so a fix is one click away.
+            std::wstring cur = loader::DefaultRsClientPath();
+            if (!cur.empty()) {
+                IShellItem* folder = nullptr;
+                std::wstring dir = std::filesystem::path(cur).parent_path().wstring();
+                if (SUCCEEDED(SHCreateItemFromParsingName(dir.c_str(), nullptr, IID_PPV_ARGS(&folder)))) {
+                    dlg->SetFolder(folder); folder->Release();
+                }
+            }
+            if (SUCCEEDED(dlg->Show(static_cast<HWND>(g_launcherHwnd)))) {
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(dlg->GetResult(&item))) {
+                    PWSTR psz = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &psz)) && psz) {
+                        chosen = psz; CoTaskMemFree(psz); cancelled = false;
+                    }
+                    item->Release();
+                }
+            }
+            dlg->Release();
+        }
+    }
+    if (init == S_OK || init == S_FALSE) CoUninitialize();
+
+    if (cancelled) return utf8_to_js(ctx, "{\"cancelled\":true}");
+    if (std::string why = loader::SetCustomRsClientPath(chosen); !why.empty())
+        return utf8_to_js(ctx, "{\"error\":\"" + json_escape(why) + "\"}");
+    return utf8_to_js(ctx, game_path_json());
+}
+
+// gamePathReset() -> gamePath() JSON after clearing the override.
+JSValueRef GamePathReset(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    loader::SetCustomRsClientPath(L"");
+    return utf8_to_js(ctx, game_path_json());
+}
+
 JSValueRef NotifyWindows(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -3982,8 +4062,6 @@ JSValueRef VarPinsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
 // disk. Var pins and menu rules were moved off localStorage for exactly this reason; this is
 // the general store so the next setting does not need its own bridge pair.
 namespace {
-
-void* g_launcherHwnd = nullptr;   // set once via SetLauncherWindow (defined beside AttachBridge)
 
 // Launcher-page metadata (per-account last played / last world / total level), its own file so
 // it can never collide with the panels' prefs.json blob.
@@ -5198,6 +5276,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "removeAccount",     RemoveAccount);
     install_fn(ctx, ns, "accountCapture",    AccountCapture);
     install_fn(ctx, ns, "launchAccount",     LaunchAccount);
+    install_fn(ctx, ns, "gamePath",          GamePath);
+    install_fn(ctx, ns, "gamePathPick",      GamePathPick);
+    install_fn(ctx, ns, "gamePathReset",     GamePathReset);
 
     // Plugin SDK host functions: reachable by the trusted in-panel broker only -- plugin
     // iframes never see window.rtx.

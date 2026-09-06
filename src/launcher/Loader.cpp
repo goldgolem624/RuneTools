@@ -2,6 +2,11 @@
 #include "../shared/Log.h"
 
 #include <Windows.h>
+#include <SoftPub.h>
+#include <wincrypt.h>
+#include <wintrust.h>
+#pragma comment(lib, "wintrust.lib")
+#pragma comment(lib, "crypt32.lib")
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -129,7 +134,124 @@ std::vector<std::wstring> fixed_drive_roots() {
 
 }  // namespace
 
+namespace {
+
+std::filesystem::path game_path_file() {
+    wchar_t up[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH) > 0) {
+        auto dir = std::filesystem::path(up) / L"RuneToolsX";
+        std::error_code ec; std::filesystem::create_directories(dir, ec);
+        return dir / L"game-path.txt";
+    }
+    return L"runetoolsx-game-path.txt";
+}
+
+bool is_runescape_exe(const std::wstring& p) {
+    std::wstring name = std::filesystem::path(p).filename().wstring();
+    for (auto& c : name) c = (wchar_t)towlower(c);
+    return name == L"runescape.exe";
+}
+
+// Name of the leaf signer: organisation first, common name as a fallback.
+std::string signer_name(PCCERT_CONTEXT cert) {
+    if (!cert) return {};
+    wchar_t buf[256] = {};
+    DWORD n = CertGetNameStringW(cert, CERT_NAME_ATTR_TYPE, 0, (void*)szOID_ORGANIZATION_NAME, buf, 256);
+    if (n <= 1) n = CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, buf, 256);
+    return n > 1 ? w2u(buf) : std::string{};
+}
+
+}  // namespace
+
+SignerCheck VerifyGameSigner(const std::wstring& path) {
+    SignerCheck out{ false, false, {}, {} };
+    std::error_code ec;
+    if (path.empty() || !std::filesystem::exists(path, ec)) { out.reason = "The file no longer exists."; return out; }
+
+    WINTRUST_FILE_INFO fi{}; fi.cbStruct = sizeof(fi); fi.pcwszFilePath = path.c_str();
+    WINTRUST_DATA wd{}; wd.cbStruct = sizeof(wd);
+    wd.dwUIChoice       = WTD_UI_NONE;
+    wd.fdwRevocationChecks = WTD_REVOKE_NONE;          // no network round trip on every launch
+    wd.dwUnionChoice    = WTD_CHOICE_FILE;
+    wd.pFile            = &fi;
+    wd.dwStateAction    = WTD_STATEACTION_VERIFY;
+    wd.dwProvFlags      = WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_SAFER_FLAG;
+    // No WTD_LIFETIME_SIGNING_FLAG: a countersigned (timestamped) file stays valid after the
+    // certificate's own expiry, which is how an older genuine build keeps launching.
+    GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    LONG st = WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
+
+    if (auto* prov = WTHelperProvDataFromStateData(wd.hWVTStateData)) {
+        if (auto* sgnr = WTHelperGetProvSignerFromChain(prov, 0, FALSE, 0)) {
+            if (sgnr->csCertChain > 0 && sgnr->pasCertChain) out.subject = signer_name(sgnr->pasCertChain[0].pCert);
+        }
+    }
+    wd.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
+
+    if (st != ERROR_SUCCESS) {
+        // A signer name with a failed check means the signature is present but the bytes no
+        // longer match it: the file was modified after signing.
+        if (!out.subject.empty())
+            out.reason = "This file has been modified since \"" + out.subject + "\" signed it, so it cannot be trusted.";
+        else if (st == TRUST_E_NOSIGNATURE)
+            out.reason = "This file is not digitally signed. The real RuneScape.exe is signed by Jagex Limited.";
+        else
+            out.reason = "This file's digital signature could not be verified. The real RuneScape.exe is signed by Jagex Limited.";
+        return out;
+    }
+    out.signed_ = true;
+    std::string low = out.subject; for (auto& c : low) c = (char)tolower((unsigned char)c);
+    if (low.find("jagex") == std::string::npos) {
+        out.reason = "This file is signed by \"" + out.subject + "\", not by Jagex. The real RuneScape.exe is signed by Jagex Limited.";
+        return out;
+    }
+    out.ok = true;
+    return out;
+}
+
+std::wstring CustomRsClientPath() {
+    std::ifstream in(game_path_file(), std::ios::binary);
+    if (!in) return {};
+    std::string u8((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    while (!u8.empty() && (u8.back() == '\r' || u8.back() == '\n' || u8.back() == ' ')) u8.pop_back();
+    if (u8.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, u8.data(), (int)u8.size(), nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, u8.data(), (int)u8.size(), w.data(), n);
+    std::error_code ec;
+    if (!is_runescape_exe(w) || !std::filesystem::exists(w, ec)) return {};
+    return w;
+}
+
+std::string SetCustomRsClientPath(const std::wstring& path) {
+    std::error_code ec;
+    if (path.empty()) {
+        std::filesystem::remove(game_path_file(), ec);
+        rtx::log::Launcher("game path override cleared");
+        return {};
+    }
+    if (!std::filesystem::exists(path, ec)) return "That file does not exist.";
+    if (!is_runescape_exe(path)) {
+        return w2u(std::filesystem::path(path).filename().wstring())
+             + " is not RuneScape.exe. Pick the RuneScape.exe inside your game folder.";
+    }
+    SignerCheck sc = VerifyGameSigner(path);
+    rtx::log::Launcher("game path candidate " + w2u(path) + ": signer=\"" + sc.subject + "\" ok=" + (sc.ok ? "1" : "0"));
+    if (!sc.ok) return sc.reason;
+    std::ofstream out(game_path_file(), std::ios::binary | std::ios::trunc);
+    if (!out) return "The choice could not be saved.";
+    out << w2u(path);
+    rtx::log::Launcher("game path override set: " + w2u(path));
+    return {};
+}
+
 std::wstring DefaultRsClientPath() {
+    if (std::wstring custom = CustomRsClientPath(); !custom.empty()) return custom;
+    return AutoRsClientPath();
+}
+
+std::wstring AutoRsClientPath() {
     // RuneScape.exe (the Jagex Launcher game wrapper). The wrapper refreshes stale session tokens
     // before spawning the real rs2client.exe child; spawning rs2client directly skips that and lands
     // on the shell "no app for rs-launch" dialog. Resolved via the registry and Steam libraries
@@ -225,6 +347,13 @@ LaunchResult launch_impl(
     if (rs.empty() || !std::filesystem::exists(rs)) {
         r.detail = "Jagex Launcher (RuneScape.exe) not found";
         rtx::log::Launcher("launch failed: " + r.detail);
+        return r;
+    }
+    // Checked on every launch, not only when chosen: the file at that path can change under
+    // us, and the environment below carries the account's session identifiers.
+    if (SignerCheck sc = VerifyGameSigner(rs); !sc.ok) {
+        r.detail = "Launch refused: " + sc.reason;
+        rtx::log::Launcher("launch refused: " + w2u(rs) + " signer=\"" + sc.subject + "\": " + sc.reason);
         return r;
     }
 
