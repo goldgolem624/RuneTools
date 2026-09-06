@@ -3572,8 +3572,25 @@ std::string game_path_json() {
     const std::wstring custom = loader::CustomRsClientPath();
     const std::wstring autod  = loader::AutoRsClientPath();
     const std::wstring path   = custom.empty() ? autod : custom;
+    // The page polls this every few seconds so a renamed or replaced file shows up live. The
+    // signature check hashes the whole file, so it is cached per (path, size, mtime); a
+    // changed file therefore gets re-verified and an untouched one costs a stat.
+    static std::mutex cache_mu;
+    static std::wstring cache_path; static std::uintmax_t cache_size = 0;
+    static std::filesystem::file_time_type cache_mtime{};
+    static loader::SignerCheck cache_sc{ false, false, {}, {} };
     loader::SignerCheck sc{ false, false, {}, {} };
-    if (!path.empty()) sc = loader::VerifyGameSigner(path);
+    if (!path.empty()) {
+        std::error_code ec;
+        const auto size  = std::filesystem::file_size(path, ec);
+        const auto mtime = std::filesystem::last_write_time(path, ec);
+        std::lock_guard<std::mutex> lk(cache_mu);
+        if (path != cache_path || size != cache_size || mtime != cache_mtime) {
+            cache_sc = loader::VerifyGameSigner(path);
+            cache_path = path; cache_size = size; cache_mtime = mtime;
+        }
+        sc = cache_sc;
+    }
     std::ostringstream os;
     os << "{\"path\":\""   << json_escape(wide_to_utf8(path))
        << "\",\"auto\":\"" << json_escape(wide_to_utf8(autod))

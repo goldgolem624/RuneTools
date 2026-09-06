@@ -898,13 +898,18 @@
 
   /* ==================== game location ==================== */
   .set-row-col { flex-direction: column; align-items: stretch; gap: 10px; }
-  .gp-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .gp-path { font: 500 11px var(--font-mono); color: var(--text); word-break: break-all; line-height: 1.45; }
+  @keyframes gp-flash { 0%, 100% { box-shadow: none; } 20% { box-shadow: inset 0 0 0 1px var(--brass), 0 0 18px -4px rgba(var(--brass-rgb), 0.7); } }
+  .set-row.flash { animation: gp-flash 1.8s var(--ease) 1; }
+  .gp-field { padding: 9px 12px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 3px; min-width: 0; }
+  .gp-path { font: 500 11.5px var(--font-mono); color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
   .gp-path.missing { color: var(--err); }
-  .gp-tag { flex: none; font: 700 9px var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); border: 1px solid var(--border-hi); padding: 2px 6px; border-radius: 3px; }
+  .gp-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .gp-tag { display: inline-flex; align-items: center; gap: 7px; font: 600 10px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+  .gp-tag::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok, #6fe3a3); box-shadow: 0 0 6px rgba(111, 227, 163, 0.6); }
   .gp-tag:empty { display: none; }
-  .gp-tag.bad { color: var(--err); border-color: rgba(255, 107, 107, 0.45); }
-  .gp-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .gp-tag.bad { color: var(--err); }
+  .gp-tag.bad::before { background: var(--err); box-shadow: 0 0 6px rgba(255, 107, 107, 0.6); }
+  .gp-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
   .gp-actions [hidden] { display: none; }
   .gp-missing { margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(var(--brass-rgb), 0.45); background: rgba(var(--brass-rgb), 0.06); font-size: 11px; line-height: 1.5; color: var(--text); }
   .gp-missing[hidden] { display: none; }
@@ -1064,18 +1069,18 @@
           <span class="lbl">On</span>
         </label>
       </div>
-      <div class="set-row set-row-col">
+      <div class="set-row set-row-col" id="gp-row">
         <div class="set-text">
           <b>Game location</b>
           <span>The RuneScape.exe that Play starts. Normally found on its own; change it if your game lives somewhere else.</span>
         </div>
-        <div class="gp-line">
-          <span class="gp-path" id="gp-path">Checking...</span>
+        <div class="gp-field"><span class="gp-path" id="gp-path">Checking...</span></div>
+        <div class="gp-foot">
           <span class="gp-tag" id="gp-tag"></span>
-        </div>
-        <div class="gp-actions">
-          <button class="ghost btn-sm" id="gp-pick" type="button">Change...</button>
-          <button class="ghost btn-sm" id="gp-reset" type="button" hidden>Use detected location</button>
+          <div class="gp-actions">
+            <button class="ghost btn-sm" id="gp-pick" type="button">Change...</button>
+            <button class="ghost btn-sm" id="gp-reset" type="button" hidden>Use detected</button>
+          </div>
         </div>
       </div>
       <div class="set-head">Saved accounts <span class="count" id="acct-count">0</span></div>
@@ -1550,7 +1555,10 @@
                          (runningSet.has(lcKey(a.display_name)) ? 1 : 0)).join(';');
   }
 
+  let _gpTick = 0, _gpKey = null;
   async function refresh() {
+    // Game location is live: a renamed, restored or replaced RuneScape.exe shows within seconds.
+    if ((++_gpTick % 3) === 1) gpRefresh();
     let procs = [];
     try { procs = JSON.parse(await bridge().scanProcesses()); } catch (e) {}
     try {
@@ -1624,7 +1632,7 @@
     if (!path) return;
     if (!info) { path.textContent = 'Unavailable'; path.classList.remove('missing'); tag.textContent = ''; reset.hidden = true; if (miss) miss.hidden = true; return; }
     if (info.found) {
-      path.textContent = info.path;
+      path.textContent = String(info.path).split('\\').join('\\' + String.fromCharCode(0x200b));
       path.classList.toggle('missing', !info.signed);
       tag.textContent = info.signed ? ((info.custom ? 'Chosen by you' : 'Detected') + ' \u00b7 signed by ' + (info.signer || 'Jagex'))
                                     : 'Not signed by Jagex';
@@ -1641,7 +1649,15 @@
   }
   async function gpRefresh() {
     if (!bridge().gamePath) { gpRender(null); return; }
-    try { gpRender(JSON.parse(await bridge().gamePath())); } catch (e) { gpRender(null); }
+    let raw = null;
+    try { raw = await bridge().gamePath(); } catch (e) {}
+    if (raw === _gpKey) return;          // unchanged: leave the DOM alone
+    _gpKey = raw;
+    try { gpRender(JSON.parse(raw)); } catch (e) { gpRender(null); }
+    if (gpInfo && !gpInfo.found && !gpAlerted) {
+      gpAlerted = true;
+      gpGoToSetting('RuneScape.exe was not found. Tell the launcher where your game is installed.');
+    }
   }
   async function gpPickNow() {
     if (!bridge().gamePathPick) return;
@@ -1662,7 +1678,18 @@
     $('settingsOv').classList.toggle('behind', !!on);
   }
   $('gp-pick').addEventListener('click', gpPick);
-  $('gp-locate').addEventListener('click', gpPickNow);
+  // Take the user to the Game location setting: open Settings, scroll the row into view and
+  // pulse it. Used by the play-card notice, the boot check and a launch that failed for it.
+  function gpGoToSetting(msg) {
+    if (msg) showStatus($('main-status'), 'err', msg);
+    settingsSet(true);
+    const row = $('gp-row');
+    if (!row) return;
+    row.scrollIntoView({ block: 'center' });
+    row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash');
+  }
+  let gpAlerted = false;
+  $('gp-locate').addEventListener('click', () => gpGoToSetting());
   $('gp-reset').addEventListener('click', async () => {
     if (!bridge().gamePathReset) return;
     try { gpRender(JSON.parse(await bridge().gamePathReset())); } catch (e) {}
@@ -1956,7 +1983,7 @@
     try { res = JSON.parse(await bridge().launchAccount(id)); } catch (e) {}
     if (res.success) showStatus($('main-status'), 'ok', 'Launched (PID ' + res.pid + ')');
     else             showStatus($('main-status'), 'err', res.detail || 'launch failed');
-    if (!res.success && /not found/i.test(res.detail || '')) gpRefresh();
+    if (!res.success && /not found|refused/i.test(res.detail || '')) { gpAlerted = true; await gpRefresh(); gpGoToSetting(res.detail); }
     play.textContent = 'Play';
     invalidateRenderCache();
     setTimeout(refresh, 900);
