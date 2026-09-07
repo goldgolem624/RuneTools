@@ -7876,10 +7876,13 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     swx = ctx - (W - 1) / 2; swy = cty - (H - 1) / 2;
                 }
                 fillBox(op, swx, swy, W, H);
+                op.box_h = 0.f;                      // flat tile footprint: an extruded prism's raised
+                                                     // top face lands beside its base from overhead and
+                                                     // the outline read as a T (owner report, 950-1)
                 op.wx = (swx + W * 0.5f) * 512.f;    // label anchored on the footprint centre
                 op.wy = (swy + H * 0.5f) * 512.f;
                 op.wz = op.box[2];
-                op.head_z = op.wz + op.box_h;
+                op.head_z = op.wz;
                 out.points.push_back(op);
                 ++oc;
             }
@@ -7914,7 +7917,8 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 int W = meta.dim_x, H = meta.dim_y;
                 if (p.rotation == 1 || p.rotation == 3) std::swap(W, H);
                 fillBox(op, wx, wy, W, H);
-                op.head_z = op.wz + op.box_h;   // footprint top -> a nameplate floats above it
+                op.box_h = 0.f;                 // flat tile footprint, same as the runtime markers
+                op.head_z = op.wz;
                 out.points.push_back(op);
                 ++oc;
             }
