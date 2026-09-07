@@ -8066,8 +8066,44 @@ bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
     return true;
 }
 
+// One instance-var bit field of an augmented item: `id` is the domain-5 varbit the client
+// scripts read it through, `var`/`lsb`/`msb` the 950-1 layout used until the cache answers.
+struct PerkField { int id; int var; int lsb; int msb; };
+struct PerkFieldLayout {
+    PerkField xp    { 30212, 0,  0, 19 };
+    PerkField g1p1  { 30215, 1,  0, 14 }, g1p1r { 30216, 3,  0,  3 };
+    PerkField g1p2  { 30217, 1, 15, 29 }, g1p2r { 30218, 3,  4,  7 };
+    PerkField g2p1  { 30219, 2,  0, 14 }, g2p1r { 30220, 3,  8, 11 };
+    PerkField g2p2  { 30221, 2, 15, 29 }, g2p2r { 30222, 3, 12, 15 };
+    bool from_cache = false;   // every field resolved from the varbit archive
+    int  drift      = 0;       // fields whose cache definition differs from the built-in fallback
+};
+// Resolves each field from the cache once every field is available (the cache opens after the
+// first reads); until then the fallback layout serves. Health check reads `from_cache`/`drift`.
+static const PerkFieldLayout& perk_field_layout() {
+    static PerkFieldLayout L;
+    if (L.from_cache) return L;
+    PerkField* fs[] = { &L.xp, &L.g1p1, &L.g1p1r, &L.g1p2, &L.g1p2r, &L.g2p1, &L.g2p1r, &L.g2p2, &L.g2p2r };
+    int hit = 0, drift = 0;
+    for (PerkField* f : fs) {
+        int var = -1, lsb = -1, msb = -1;
+        if (!rtx::cache::GetObjVarbit(f->id, var, lsb, msb)) continue;
+        if (var < 0 || var >= 8 || lsb < 0 || msb < lsb || msb > 31) continue;
+        if (var != f->var || lsb != f->lsb || msb != f->msb) ++drift;
+        ++hit;
+    }
+    if (hit != (int)(sizeof(fs) / sizeof(fs[0]))) return L;   // cache not ready or ids gone: fallback
+    for (PerkField* f : fs) {
+        int var = -1, lsb = -1, msb = -1;
+        rtx::cache::GetObjVarbit(f->id, var, lsb, msb);
+        f->var = var; f->lsb = lsb; f->msb = msb;
+    }
+    L.drift = drift; L.from_cache = true;
+    return L;
+}
+
 // Augmented items: walk inventory (93) + equipment (94), decode each slot's
-// Extra_ints (see project_runetoolsx_perks) for item XP / gizmo perks.
+// instance vars (layout above) for item XP / gizmo perks.
 std::string PerksJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return "{\"items\":[]}";
@@ -8108,41 +8144,41 @@ std::string PerksJson(std::uint32_t pid) {
             if (count < 2 || count > 10) continue;
             auto ptrArr = rpm<std::uint64_t>(h, X + 0x10);
             if (!ptrArr || *ptrArr <= 0x10000) continue;
-            // The slot's extra data is a set of KEYED pairs: each non-null pointer
-            // holds a field key at +0 and its int value at +8. For
-            // augmented gear: key 0 = item XP, key 1 = gizmo-1 packed perk ids
-            // (low 15 bits = perk1, high = perk2), key 2 = gizmo-2 packed ids (only
-            // when two gizmos), key 3 = packed perk RANKS (4-bit nibbles
-            // g1.p1,g1.p2,g2.p1,g2.p2). Items are gated by ItemIsAugmented() above,
-            // so here it just decodes whatever keys are present (a freshly-augmented
-            // item with no gizmo installed carries only key 0, its item XP).
-            int  val[8]    = {0,0,0,0,0,0,0,0};
-            bool hasKey[8] = {false,false,false,false,false,false,false,false};
+            // The slot's extra data is a set of KEYED pairs: each non-null pointer holds
+            // an instance-var key at +0 and its int value at +8. The client scripts read
+            // these through domain-5 ("object") varbits, bit fields over those keys
+            // (INV_GETVAR in CS2 12197/12199), so the layout is taken from the cache:
+            //   30212 var 0 bits 0-19  item XP
+            //   30215 var 1 bits 0-14  gizmo-1 perk-1 id    30216 var 3 bits 0-3   its rank
+            //   30217 var 1 bits 15-29 gizmo-1 perk-2 id    30218 var 3 bits 4-7   its rank
+            //   30219 var 2 bits 0-14  gizmo-2 perk-1 id    30220 var 3 bits 8-11  its rank
+            //   30221 var 2 bits 15-29 gizmo-2 perk-2 id    30222 var 3 bits 12-15 its rank
+            // The values above are the 950-1 fallback for a varbit the cache lacks; the
+            // health check's "Perk layout" row reports drift. Items are gated by
+            // ItemIsAugmented() above, so this just decodes whatever keys are present (a
+            // freshly augmented item with no gizmo carries only var 0, its item XP).
+            int val[8] = {0,0,0,0,0,0,0,0};
             for (int j = 0; j < count; ++j) {
                 auto p = rpm<std::uint64_t>(h, *ptrArr + (std::uint64_t)j * 0x8);
                 if (!p || *p <= 0x10000) continue;
                 int key = rpm<std::int32_t>(h, *p).value_or(-1);
                 if (key < 0 || key >= 8) continue;
-                val[key]    = rpm<std::int32_t>(h, *p + 0x8).value_or(0);
-                hasKey[key] = true;
+                val[key] = rpm<std::int32_t>(h, *p + 0x8).value_or(0);
             }
-            int  xp        = val[0];
-            int  perkData1 = val[1];
-            int  perkData2 = val[2];
-            int  rankInt   = val[3];
-            bool twoGizmos = hasKey[2] && perkData2 != 0;
+            const PerkFieldLayout& L = perk_field_layout();
+            auto fld = [&](const PerkField& f) {
+                std::uint32_t mask = (f.msb - f.lsb >= 31) ? 0xFFFFFFFFu : ((1u << (f.msb - f.lsb + 1)) - 1u);
+                return (int)(((std::uint32_t)val[f.var] >> f.lsb) & mask);
+            };
+            int xp = fld(L.xp);
             // Augmentation was already confirmed from the item config above, so this
             // just decodes whatever gizmos + item XP the slot carries (a non-gizmo'd
             // augmented item, e.g. the pickpocketing bag, simply has no perk keys).
-
-            auto nib = [&](int idx){ return (rankInt >> (idx * 4)) & 0xF; };
             struct PK { int id; int rank; };
-            std::vector<PK> pk = { { perkData1 & 0x7FFF, nib(0) }, { perkData1 >> 15, nib(1) } };
-            if (twoGizmos) { pk.push_back({ perkData2 & 0x7FFF, nib(2) });
-                             pk.push_back({ perkData2 >> 15,    nib(3) }); }
-
-            bool g1has = (perkData1 & 0x7FFF) > 0 || (perkData1 >> 15) > 0;
-            bool g2has = twoGizmos && ((perkData2 & 0x7FFF) > 0 || (perkData2 >> 15) > 0);
+            PK pk[4] = { { fld(L.g1p1), fld(L.g1p1r) }, { fld(L.g1p2), fld(L.g1p2r) },
+                         { fld(L.g2p1), fld(L.g2p1r) }, { fld(L.g2p2), fld(L.g2p2r) } };
+            bool g1has = pk[0].id > 0 || pk[1].id > 0;
+            bool g2has = pk[2].id > 0 || pk[3].id > 0;
             int  gizmos = (g1has ? 1 : 0) + (g2has ? 1 : 0);
 
             std::string perks;
@@ -8150,9 +8186,14 @@ std::string PerksJson(std::uint32_t pid) {
                 if (p.id <= 0) continue;
                 std::string nm = rtx::cache::PerkName(p.id);
                 if (nm.empty()) nm = "Perk #" + std::to_string(p.id);
-                if (p.rank > 0) { nm += ' '; nm += std::to_string(p.rank); }
+                // The game prints a rank only for perks that define more than one (CS2
+                // 12079): the rank var of a single-rank perk such as Talking carries
+                // whatever the server left there (5 was seen on 950-1) and means rank 1.
+                int ranks = rtx::cache::PerkRankCount(p.id);
+                int rank  = (ranks > 0 && ranks <= 1) ? 1 : p.rank;
+                if (ranks > 1 && rank > 0) { nm += ' '; nm += std::to_string(rank); }
                 if (!perks.empty()) perks.push_back(',');
-                std::snprintf(buf, sizeof(buf), "{\"id\":%d,\"rank\":%d,\"name\":\"", p.id, p.rank);
+                std::snprintf(buf, sizeof(buf), "{\"id\":%d,\"rank\":%d,\"ranks\":%d,\"name\":\"", p.id, rank, ranks);
                 perks += buf; perks += json_escape(nm); perks += "\"";
                 std::string ds = rtx::cache::PerkDesc(p.id);   // effect text (may carry <col=..> markup)
                 if (!ds.empty()) { perks += ",\"desc\":\""; perks += json_escape(ds); perks += "\""; }
@@ -8499,6 +8540,21 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         const bool logged = read_varp(h, *root, 13538) > 0;
         add("Daily challenges", !logged ? 2 : cats > 0 ? 1 : 0,
             !logged ? "not logged in" : cats > 0 ? (std::to_string(cats) + " slots assigned") : "no slot reads a category (varbit ids moved?)");
+    }
+    {   // Perk layout: the augmented-item decode takes its bit fields from the domain-5 varbits
+        // (30212, 30215..30222) and the rank rule from the perk dbrows (Talking = 1 rank, Honed = 6).
+        // A missing varbit means the ids were renumbered (fallback layout in use, likely wrong);
+        // a rank-count miss means the dbrow decode drifted.
+        const PerkFieldLayout& L = perk_field_layout();
+        int talking = rtx::cache::PerkRankCount(23), honed = rtx::cache::PerkRankCount(5);
+        std::string d;
+        int st = 1;
+        if (!L.from_cache) { st = 0; d = "varbits 30212/30215..30222 not all resolved, built-in 950-1 layout in use"; }
+        else d = L.drift ? (std::to_string(L.drift) + " fields differ from the built-in layout, cache layout in use")
+                         : "9 fields match the cache";
+        if (talking != 1 || honed != 6) { st = 0; d += "; perk rank counts Talking=" + std::to_string(talking) + " Honed=" + std::to_string(honed) + " (expected 1/6)"; }
+        else d += "; rank counts ok";
+        add("Perk layout", st, d);
     }
     {   // Scene objects: a runtime loc id is proven by matching a static map placement of that id on
         // the object's own tile (most scenery is unnamed, so a name is no test; dynamic spawns such as

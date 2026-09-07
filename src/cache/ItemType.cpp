@@ -74,9 +74,11 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 121: case 122: s.ReadUnsignedShort();            return true;
         case 125: case 126: s.ReadByte(); s.ReadByte(); s.ReadByte(); return true;
         case 127: case 128: case 129: case 130: s.ReadUnsignedShort(); return true;
-        case 132: {
+        case 132: {   // varobj list (see ItemDef::varobjs)
             int n = s.ReadUnsignedByte();
-            for (int i = 0; i < n; ++i) s.ReadUnsignedShort();
+            d.varobjs.clear();
+            d.varobjs.reserve(n);
+            for (int i = 0; i < n; ++i) d.varobjs.push_back(s.ReadUnsignedShort());
             return true;
         }
         case 134: s.ReadUnsignedByte();                       return true;

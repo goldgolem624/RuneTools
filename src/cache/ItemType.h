@@ -32,6 +32,12 @@ struct ItemDef {
     // item id without hovering the item in game.
     std::string options[5];
     std::string worn_options[5];
+    // opcode 132: the item's VAROBJ list, in slot order. A live item instance stores its
+    // per-slot ints keyed by POSITION in this list (Reader.cpp "instance vars" key N), and the
+    // client scripts address them by varobj id (INV_GETVAR(inv, slot, 30215)). So key N of an
+    // instance means varobjs[N]. Augmented gear: 30212 item XP, 30215/30216 gizmo-1 perk-1
+    // id/rank, 30217/30218 gizmo-1 perk-2, 30219..30222 gizmo-2 (CS2 12197/12199).
+    std::vector<int> varobjs;
 };
 
 // Parses the file bytes for one item id. Walks opcode-by-opcode until

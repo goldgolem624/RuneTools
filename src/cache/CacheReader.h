@@ -143,12 +143,20 @@ bool GetLocMorph(int loc_id, int& varbit, int& varp, int& def_child, std::vector
 // [lsb,msb] for `varbit_id`. value = (varp >> lsb) & ((1<<(msb-lsb+1))-1).
 // Returns false if unknown. Shares the VarbitMapJson decode (cached once).
 bool GetVarbit(int varbit_id, int& varp, int& lsb, int& msb);
+// Same for a domain-5 ("object") varbit: a bit field over an item INSTANCE's vars, the ints a
+// container slot carries keyed 0..N. `var` is that key. The scripts read these with
+// INV_GETVAR(inv, slot, id); the perks reader uses 30212 (item XP) and 30215..30222 (gizmo
+// perk ids / ranks) to find the layout instead of hardcoding it.
+bool GetObjVarbit(int varbit_id, int& var, int& lsb, int& msb);
 
 // Augment-perk display name for a DBRows perk id (CONFIGS index 2 / archive 41,
 // rows with tableId 8). Lazily decodes the perk rows once. Empty if unknown.
 std::string PerkName(int perk_id);
 // Perk effect description (same DBRows row, 2nd string column); may carry <col=..> markup.
 std::string PerkDesc(int perk_id);
+// Number of ranks the perk defines (rows of column 7). 1 for single-rank perks such as
+// Talking; the game never prints a rank number for those (CS2 12079). 0 if unknown.
+int PerkRankCount(int perk_id);
 
 // Archaeology mystery -> collectible mapping, decoded live from the DBRows archive:
 // `{"myst":{"<name>":{"pg":[[globalPageIdx,itemId],..],"c31":[[varp11733Bit,itemId],..]},..}}`.
@@ -280,6 +288,20 @@ std::string DbRowsJson(int masterTable);
 
 // Raw op-249 params of one ITEM (js5-19): {"ints":{key:v},"strs":{key:"v"}}, {} when none.
 std::string ItemParamsJson(int item_id);
+
+// The item's varobj list (item config op 132), slot order. A live item instance keeps its
+// per-slot ints keyed by position in this list, so instance key N belongs to varobjs[N]. The
+// perks reader uses it to find which key carries which gizmo perk id / rank (30215..30222)
+// instead of assuming fixed positions. Empty when the item has no varobjs. Cached per id.
+std::vector<int> ItemVarobjs(int item_id);
+
+// Raw item config bytes as lowercase hex (research aid for update breaks: tools/cacheprobe/cq
+// "hex <id>"). Empty when the file is absent.
+std::string ItemFileHex(int item_id);
+// Same for one CONFIGS (index 2) file: cq "cfg <archive> <file>". Archive 65 = varobject defs.
+std::string ConfigFileHex(int archive, int file);
+// File count / largest id / first ids of one CONFIGS archive: cq "cfgls <archive>".
+std::string ConfigArchiveInfo(int archive);
 
 // Display name for a buff-bar icon id. RS3 buffs/debuffs are StructTypes
 // (index 22) whose params carry the name plus the buff-bar sprite id; the

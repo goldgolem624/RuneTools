@@ -50,6 +50,7 @@ std::unordered_map<int, LocMeta>      g_loc_cache;
 std::unordered_map<int, std::vector<LocPlacement>> g_region_cache;  // key = rx<<8 | ry
 std::unordered_map<int, std::string>  g_perk_names;     // DBRows perk id -> name
 std::unordered_map<int, std::string>  g_perk_descs;     // DBRows perk id -> effect description (col 4)
+std::unordered_map<int, int>          g_perk_ranks;     // DBRows perk id -> rank count (rows of col 7)
 bool                                  g_perks_loaded   = false;
 std::unordered_map<int, std::string>  g_buff_names;     // buff-bar sprite/item id -> name
 std::unordered_map<int, std::string>  g_debuff_names;   // debuff-bar sprite/item id -> name
@@ -885,6 +886,7 @@ void LoadPerkNamesLocked() {
         int idCol = 1 << 30, idVal = 0;            bool haveId = false;
         int nameCol = 1 << 30; std::string nameVal; bool haveName = false;
         int descCol = 1 << 30; std::string descVal;   // 2nd string col = effect description (col 4)
+        int ranksVal = 0;                             // rows of col 7 (per-rank tuples) = rank count
         bool bad = false;
         while (s.remaining() > 0 && !bad) {
             int op = s.ReadUnsignedByte();
@@ -901,6 +903,7 @@ void LoadPerkNamesLocked() {
                 std::vector<int> types((std::size_t)subN);
                 for (int i = 0; i < subN; ++i) types[i] = s.ReadUnsignedSmart();
                 int rowCount = s.ReadUnsignedSmart();
+                if (columnId == 7) ranksVal = rowCount;
                 for (int r = 0; r < rowCount && !bad; ++r) {
                     for (int sub = 0; sub < subN; ++sub) {
                         if (s.remaining() <= 0) { bad = true; break; }
@@ -922,6 +925,7 @@ void LoadPerkNamesLocked() {
         if (tableId == 8 && haveId && haveName && idVal >= 0 && !nameVal.empty()) {
             g_perk_names[idVal] = nameVal;
             if (!descVal.empty()) g_perk_descs[idVal] = descVal;
+            if (ranksVal > 0) g_perk_ranks[idVal] = ranksVal;
         }
     }
 }
@@ -1043,6 +1047,15 @@ std::string PerkDesc(int perk_id) {
     LoadPerkNamesLocked();
     auto it = g_perk_descs.find(perk_id);
     return it != g_perk_descs.end() ? it->second : std::string();
+}
+
+int PerkRankCount(int perk_id) {
+    if (perk_id <= 0) return 0;
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    LoadPerkNamesLocked();
+    auto it = g_perk_ranks.find(perk_id);
+    return it != g_perk_ranks.end() ? it->second : 0;
 }
 
 // ---- Archaeology research (DBTable 90) -------------------------------------
@@ -1369,6 +1382,10 @@ constexpr int kVarbitArchive = 69;
 std::string g_varbit_map_json;
 bool        g_varbit_map_loaded = false;
 std::unordered_map<int, std::array<int, 3>> g_varbit_defs;   // varbit id -> {varp,lsb,msb}
+// Domain-5 ("object") varbits: bit fields over an ITEM INSTANCE's vars, the ints a live
+// container slot carries keyed 0..N (Reader.cpp "instance vars"). The client scripts read
+// them with INV_GETVAR(inv, slot, varbit): 30215 = var 1 bits 0..14 = gizmo-1 perk-1 id.
+std::unordered_map<int, std::array<int, 3>> g_objvarbit_defs;   // varbit id -> {var,lsb,msb}
 
 void LoadVarbitMapLocked() {
     if (g_varbit_map_loaded) return;
@@ -1393,7 +1410,9 @@ void LoadVarbitMapLocked() {
             else if (op == 16) { /* boolean flag, no data */ }
             else break;                             // unknown opcode -> length unknown, stop
         }
-        if (domain != 0 || varp < 0 || lsb < 0 || msb < 0) continue;
+        if (varp < 0 || lsb < 0 || msb < 0) continue;
+        if (domain == 5) { g_objvarbit_defs[fid] = { varp, lsb, msb }; continue; }
+        if (domain != 0) continue;
         g_varbit_defs[fid] = { varp, lsb, msb };
         std::snprintf(buf, sizeof(buf), "%s[%d,%d,%d]",
                       per_varp[varp].empty() ? "" : ",", fid, lsb, msb);
@@ -1425,6 +1444,17 @@ bool GetVarbit(int varbit_id, int& varp, int& lsb, int& msb) {
     auto it = g_varbit_defs.find(varbit_id);
     if (it == g_varbit_defs.end()) return false;
     varp = it->second[0]; lsb = it->second[1]; msb = it->second[2];
+    return true;
+}
+
+bool GetObjVarbit(int varbit_id, int& var, int& lsb, int& msb) {
+    if (varbit_id < 0) return false;
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    LoadVarbitMapLocked();
+    auto it = g_objvarbit_defs.find(varbit_id);
+    if (it == g_objvarbit_defs.end()) return false;
+    var = it->second[0]; lsb = it->second[1]; msb = it->second[2];
     return true;
 }
 
@@ -3566,6 +3596,63 @@ int PanelMountComp(int group_id) {
 // augmentation marker, so this is the only way a panel can read them. Used by the
 // Player-Owned Ports crew list (3080 icon sprite, 3081-3084 stats, 3093/3094 +
 // 3095/3096 = cost pairs of (resource id, amount)).
+std::vector<int> ItemVarobjs(int item_id) {
+    static std::unordered_map<int, std::vector<int>> cache;   // guarded by g_mu
+    if (item_id < 0) return {};
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto hit = cache.find(item_id);
+    if (hit != cache.end()) return hit->second;
+    EnsureInit();
+    std::vector<int> out;
+    auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+    if (index && index->ready()) {
+        auto bytes = index->ReadFile(item_id >> 8, item_id & 0xff);
+        if (!bytes.empty()) out = DecodeItem(item_id, std::move(bytes)).varobjs;
+    }
+    cache[item_id] = out;
+    return out;
+}
+
+std::string ConfigFileHex(int archive, int file) {
+    if (archive < 0 || file < 0) return {};
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return {};
+    auto bytes = cfg->ReadFile(archive, file);
+    static const char* hx = "0123456789abcdef";
+    std::string out; out.reserve(bytes.size() * 2);
+    for (auto b : bytes) { out.push_back(hx[b >> 4]); out.push_back(hx[b & 15]); }
+    return out;
+}
+
+std::string ConfigArchiveInfo(int archive) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return "not ready";
+    const auto& entries = cfg->ref().entries();
+    if (archive < 0 || archive >= (int)entries.size()) return "archive out of range (" + std::to_string(entries.size()) + " archives)";
+    const auto& e = entries[archive];
+    std::string out = "files " + std::to_string(e.valid_file_ids.size()) + " largest " + std::to_string(e.largest_file_id) + " ids";
+    int n = 0;
+    for (int fid : e.valid_file_ids) { if (n++ >= 12) { out += " ..."; break; } out += " " + std::to_string(fid); }
+    return out;
+}
+
+std::string ItemFileHex(int item_id) {
+    if (item_id < 0) return {};
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+    if (!index || !index->ready()) return {};
+    auto bytes = index->ReadFile(item_id >> 8, item_id & 0xff);
+    static const char* hx = "0123456789abcdef";
+    std::string out; out.reserve(bytes.size() * 2);
+    for (auto b : bytes) { out.push_back(hx[b >> 4]); out.push_back(hx[b & 15]); }
+    return out;
+}
+
 std::string ItemParamsJson(int item_id) {
     if (item_id < 0) return "{}";
     std::lock_guard<std::mutex> lk(g_mu);
