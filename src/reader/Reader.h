@@ -344,6 +344,8 @@ std::string MembershipJson(std::uint32_t pid);
 // varps (box counts, etc.) the companion push-observer never re-captures are always current
 // here. External-only (no companion). See VarpsDumpAllJson in Reader.cpp.
 std::string VarpsDumpAllJson(std::uint32_t pid);
+// Per-build server opcode table for the panels ({"message_game":33,...,"op_max":222}); companion/ServerOps.h.
+std::string ServerOpsJson();
 // Every set varc-int polled from the global client-var hashmap (store+0x7630), keyed "5:<id>". External-only.
 std::string VarcsDumpAllJson(std::uint32_t pid);
 // Read specific varcs as 64-bit values from the same global map -> {"<id>":"<i64 as string>",..}.

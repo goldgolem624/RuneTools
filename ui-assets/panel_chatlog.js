@@ -230,7 +230,8 @@
         if (chatConsume(store.ifPlain, p.plain)) continue;  // chatbox walk already delivered it
         chatMark(store.pkPlain, p.plain);
         fresh.push({ raw: 'pk:' + pk.seq, ts: pk.t ? chatFmtTime(pk.t) : '', tokens: p.tokens,
-                     plain: p.plain, chan: chatClassifyPkt(pk.type, name, String(pk.chan || '')), src: 'pk' });
+                     plain: p.plain, chan: chatClassifyPkt(pk.type, name, String(pk.chan || '')), src: 'pk',
+                     pkraw: String(pk.raw || ''), pkname: name });
       }
       if (pkts.length) for (const pk of pkts) if (pk && pk.seq > store.pseq) store.pseq = pk.seq;
       // Interface lines (newest-first as {raw, base, name}); prepend to stay newest-first.
@@ -239,7 +240,16 @@
         store.seen.add(raw);
         const p = chatParse(raw, ln.base);
         if (bootPk && bootPk.has(p.plain)) continue;        // first fill: packet backlog wins
-        if (chatConsume(store.pkPlain, p.plain)) continue;  // packet capture already delivered it
+        if (chatConsume(store.pkPlain, p.plain)) {           // packet capture already delivered it:
+          // the packet has no channel colour, the chatbox widget does (its base colour is what
+          // the game paints untagged text with, red on broadcasts). Re-render that packet line
+          // with the interface base so the log matches the game.
+          if (typeof ln.base === 'number' && ln.base >= 0) {
+            const hit = fresh.concat(store.lines.slice(0, 300)).find(l => l.src === 'pk' && l.plain === p.plain && !l.baseDone);
+            if (hit) { const q = chatParse(hit.pkraw || '', ln.base); if (hit.pkname) q.tokens.unshift({ text: hit.pkname + ': ', color: null }); hit.tokens = q.tokens; hit.baseDone = true; chatSig = ""; }
+          }
+          continue;
+        }
         chatMark(store.ifPlain, p.plain);
         const name = chatNormSpace(String(ln.name || '').replace(/<[^>]*>/g, '')).trim();
         fresh.push({ raw, ts: p.ts, tokens: p.tokens, plain: p.plain, chan: chatClassify(p.plain, name), src: 'if' });

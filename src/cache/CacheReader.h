@@ -53,6 +53,8 @@ struct CacheParseRow {
 // plus the DBRows-vs-dbtables schema cross-check. Holds the cache mutex for
 // the sweep (~1-2 s); intended for the user-triggered health check.
 std::vector<CacheParseRow> CacheParseHealth();
+// Unknown-opcode probe report (see src/cache/Probe.h). Holds the cache mutex for seconds.
+std::string CacheProbeUnknownOps();
 
 // Icon coverage of the bundled items.pack against the live cache: walks every js5-19
 // item, keeps those with a real name (non-empty, not "null"), and asks `has(id)` for

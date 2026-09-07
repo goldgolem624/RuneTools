@@ -1,4 +1,5 @@
 #include "NpcType.h"
+#include "Probe.h"
 
 namespace rtx::cache {
 
@@ -154,10 +155,57 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
         }
         case 252: s.ReadShort();                    return true;
         case 253: s.skip(1);                        return true;
+        // ---- build 950-1 additions (payloads recovered with the unknown-opcode probe, Probe.h) ----
+        case 92: {                                   // u8 x3, string, u8, u8 n, n x bigsmart (11 defs, "Trainee adventurer")
+            s.ReadUnsignedByte(); s.ReadUnsignedByte(); s.ReadUnsignedByte();
+            (void)s.ReadString(); s.ReadUnsignedByte();
+            int n = s.ReadUnsignedByte();
+            for (int i = 0; i < n; ++i) s.ReadBigSmart();
+            return true;
+        }
+        case 187: {                                  // u8, u16, u16, usmart n, n x bigsmart, bigsmart (same shape as loc 207)
+            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
+            int n = s.ReadUnsignedSmart();
+            for (int i = 0; i < n; ++i) s.ReadBigSmart();
+            s.ReadBigSmart();
+            return true;
+        }
+        case 188: {                                  // u8, u16, u16, bigsmart, usmart n, n x bigsmart, bigsmart (same shape as loc 208)
+            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart();
+            int n = s.ReadUnsignedSmart();
+            for (int i = 0; i < n; ++i) s.ReadBigSmart();
+            s.ReadBigSmart();
+            return true;
+        }
+        case 189: {                                  // 950-1. Live shapes (191 defs, see docs/cs2_opcodes.md):
+            //   u16, u8, u16, u16 (header), u8 mask, then 10-byte sub-records S = {u8 slot, u8 01, u16 0003,
+            //   u16 0003, i32 value} with 1-byte glue between them (00 = spacer, 01..03 = a group count),
+            //   then a 1-byte tail (02 in every def). The glue/mask semantics were not pinned down
+            //   (multi-sub defs contradict every simple count or bitmask reading), so this consumes by
+            //   SIGNATURE: a byte that starts an S is an S; otherwise 00 is skipped, a byte followed by an
+            //   S is a group count (up to that many contiguous S), and anything else is the tail and ends
+            //   the payload. Matches all 191 defs exactly.
+            s.ReadUnsignedShort(); s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
+            s.ReadUnsignedByte();                                    // mask
+            auto subAt = [&](int o) {
+                return s.remaining() >= (o - s.offset()) + 10 &&
+                       s.peek(o + 1) == 0x01 && s.peek(o + 2) == 0x00 && s.peek(o + 3) == 0x03 &&
+                       s.peek(o + 4) == 0x00 && s.peek(o + 5) == 0x03;
+            };
+            for (int guard = 0; guard < 96 && s.remaining() > 0; ++guard) {
+                if (subAt(s.offset())) { s.skip(10); continue; }   // a sub-record starts here
+                int c = s.ReadUnsignedByte();                        // glue
+                if (c == 0) continue;                                // spacer
+                if (!subAt(s.offset())) break;                       // tail consumed -> done
+                for (int i = 0; i < c && subAt(s.offset()); ++i) s.skip(10);
+            }
+            return true;
+        }
         default:
             if (op >= 30 && op <= 34) { d.options[op - 30] = s.ReadString(); return true; }
             if (op >= 150 && op <= 154) { d.members_options[op - 150] = s.ReadString(); return true; }
             if (op >= 170 && op <= 175) { s.ReadShort();                     return true; }  // action cursors
+            if (op == probe::g_op && probe::g_len <= s.remaining()) { s.skip(probe::g_len); return true; }   // unknown-opcode probe (Probe.h)
             return false;
     }
 }
@@ -173,8 +221,9 @@ NpcDef DecodeNpc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op) {
     for (;;) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if (!ReadOne(s, d, op)) { if (stop_op) *stop_op = op; break; }
+        if (!ReadOne(s, d, op)) { if (stop_op) *stop_op = op; probe::g_stop = s.offset(); break; }
     }
+    probe::g_tail = s.remaining();
     return d;
 }
 

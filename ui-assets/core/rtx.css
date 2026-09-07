@@ -679,10 +679,10 @@
   }
   .scene-list::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: padding-box; }
   .scene-thead, .scene-trow {
-    display: grid; grid-template-columns: 18px minmax(0,1fr) 30px 38px 80px;
+    display: grid; grid-template-columns: 18px minmax(0,1fr) 30px 38px 96px;
     gap: 6px; align-items: center;
   }
-  .win.tight .scene-thead, .win.tight .scene-trow { grid-template-columns: 18px minmax(0,1fr) 34px 78px; gap: 5px; }
+  .win.tight .scene-thead, .win.tight .scene-trow { grid-template-columns: 18px minmax(0,1fr) 34px 88px; gap: 5px; }
   .win.tight .scene-thead .h-lvl, .win.tight .scene-trow .lvl { display: none; }
   .win.tight .scene-trow .num, .win.tight .scene-trow .tile { font-size: 10px; }
   .scene-thead {

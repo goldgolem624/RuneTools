@@ -1232,6 +1232,11 @@ JSValueRef Varbits(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   [pid, ids]{ return rtx::reader::VarbitsJson(pid, ids); });
 }
 
+JSValueRef ServerOps(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, rtx::reader::ServerOpsJson());
+}
+
 JSValueRef VarbitMap(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, rtx::cache::VarbitMapJson());
@@ -5121,6 +5126,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "varps",             Varps);
     install_fn(ctx, ns, "varbits",           Varbits);
     install_fn(ctx, ns, "varbitMap",         VarbitMap);
+    install_fn(ctx, ns, "serverOps",         ServerOps);   // per-build server opcode table (companion/ServerOps.h)
     install_fn(ctx, ns, "membership",        Membership);
     install_fn(ctx, ns, "quests",            Quests);
     install_fn(ctx, ns, "varpsDumpAll",      VarpsDumpAll);

@@ -1,4 +1,5 @@
 #include "LocationType.h"
+#include "Probe.h"
 
 namespace rtx::cache {
 
@@ -181,11 +182,41 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
             }
             return true;
         }
+        // ---- build 950-1 additions (payloads recovered with the unknown-opcode probe, Probe.h) ----
+        case 111:                                    return true;   // flag, no payload
+        case 207: {                                  // u8, u16, u16, usmart n, n x bigsmart, bigsmart (same shape as npc 187)
+            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
+            int n = s.ReadUnsignedSmart();
+            for (int i = 0; i < n; ++i) s.ReadBigSmart();
+            s.ReadBigSmart();
+            return true;
+        }
+        case 208: {                                  // u8, u16, u16, bigsmart, usmart n, n x bigsmart, bigsmart (same shape as npc 188)
+            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart();
+            int n = s.ReadUnsignedSmart();
+            for (int i = 0; i < n; ++i) s.ReadBigSmart();
+            s.ReadBigSmart();
+            return true;
+        }
+        case 209: {                                  // u16, u8, u16, u16, u8, u8 n, n x entry, u8 (nested entries: slot, t, u16, u16, bigsmart, 00,
+            s.ReadUnsignedShort(); s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();   //   then t-1 x {u8, u16, bigsmart, 00}; empirical)
+            s.ReadUnsignedByte();
+            int n = s.ReadUnsignedByte();
+            for (int i = 0; i < n; ++i) {
+                s.ReadUnsignedByte();
+                int t = s.ReadUnsignedByte();
+                s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart(); s.ReadUnsignedByte();
+                for (int k = 1; k < t; ++k) { s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadBigSmart(); s.ReadUnsignedByte(); }
+            }
+            s.ReadUnsignedByte();
+            return true;
+        }
         default:
             if (op >= 30 && op <= 34)   { d.options[op - 30] = s.ReadString();         return true; }
             if (op >= 136 && op <= 140) { s.ReadUnsignedByte();                        return true; }
             if (op >= 150 && op <= 154) { d.members_options[op - 150] = s.ReadString(); return true; }
             if (op >= 190 && op <= 195) { s.ReadUnsignedShort();                       return true; }  // action cursors
+            if (op == probe::g_op && probe::g_len <= s.remaining()) { s.skip(probe::g_len); return true; }   // unknown-opcode probe (Probe.h)
             return false;
     }
 }
@@ -201,8 +232,9 @@ LocDef DecodeLoc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op) {
     for (;;) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
-        if (!ReadOne(s, d, op)) { if (stop_op) *stop_op = op; break; }
+        if (!ReadOne(s, d, op)) { if (stop_op) *stop_op = op; probe::g_stop = s.offset(); break; }
     }
+    probe::g_tail = s.remaining();
     return d;
 }
 

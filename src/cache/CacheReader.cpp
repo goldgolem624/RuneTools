@@ -1,4 +1,5 @@
 #include "CacheReader.h"
+#include "Probe.h"
 
 #include "Achievements.h"
 #include "Constants.h"
@@ -1529,11 +1530,15 @@ bool DecodeQuestFile(std::vector<std::uint8_t> bytes, QuestDef& q, int* stop_op 
                                else if (key == 7855) q.length = v;
                                else if (key == 7831) q.age = v;
                                else if (key == 9393) q.area = v; } } } break;
+        case 22: s.skip(12); break;    // 950-1: fixed 12-byte payload (probe: 308/308 quest defs parse clean with exactly 12)
         default:
+            if (op == probe::g_op && probe::g_len <= s.remaining()) { s.skip(probe::g_len); break; }   // unknown-opcode probe (Probe.h)
+            probe::g_stop = s.offset(); probe::g_tail = s.remaining();
             if (stop_op) *stop_op = op;
             return !q.name.empty();        // unknown opcode -> keep what decoded
         }
     }
+    probe::g_tail = s.remaining();
     return !q.name.empty();
 }
 
@@ -4185,6 +4190,66 @@ std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
 // the stream ran out mid-record (structural overrun, no single opcode to blame);
 // 257 means the record parsed but disagrees with its schema (DBRows vs dbtables).
 // User-triggered from the Info-tab health check; holds g_mu for the sweep.
+// Unknown-opcode probe (Probe.h): for every surface that stops at an opcode, brute-force the
+// payload size that lets each failing record parse to a clean terminator, and dump the first
+// records' bytes from the opcode on. Holds the cache mutex; seconds of work.
+std::string CacheProbeUnknownOps() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    if (!g_store) return "cache not open\n";
+    std::string log;
+    auto probe_index = [&](const char* name, int index_id, int archive, auto&& decode) {
+        auto* idx = g_store->Get(index_id);
+        if (!idx || !idx->ready()) { log += std::string(name) + ": index not open\n"; return; }
+        const auto& entries = idx->ref().entries();
+        int a0 = archive >= 0 ? archive : 0, a1 = archive >= 0 ? archive + 1 : (int)entries.size();
+        std::unordered_map<int, std::vector<std::vector<std::uint8_t>>> failing;
+        int total = 0;
+        probe::g_op = -1;
+        for (int a = a0; a < a1 && a < (int)entries.size(); ++a)
+            for (int fid : entries[a].valid_file_ids) {
+                auto bytes = idx->ReadFile(a, fid);
+                if (bytes.empty()) continue;
+                ++total;
+                int st = decode(bytes);
+                if (st > 0 && st < 256 && failing[st].size() < 400) failing[st].push_back(std::move(bytes));
+            }
+        log += std::string(name) + ": " + std::to_string(total) + " records\n";
+        for (auto& kv : failing) {
+            const int op = kv.first; auto& recs = kv.second;
+            log += "  opcode " + std::to_string(op) + ": " + std::to_string(recs.size()) + " failing records (capped at 400); first records (hex from the opcode byte):\n";
+            for (size_t i = 0; i < recs.size() && i < 400; ++i) {
+                probe::g_op = -1; (void)decode(recs[i]);
+                int from = probe::g_stop > 0 ? probe::g_stop - 1 : 0; char hx[6];
+                // per-record payload length: the L values for which the WHOLE record then decodes to an exact end
+                std::string lens;
+                for (int L = 0; L <= 300; ++L) { probe::g_op = op; probe::g_len = L; int st = decode(recs[i]); if (st == 0 && probe::g_tail == 0) { if (!lens.empty()) lens += ','; lens += std::to_string(L); } }
+                probe::g_op = -1;
+                log += "    stop@" + std::to_string(from) + "/" + std::to_string(recs[i].size()) + " len=[" + lens + "] whole record: ";
+                for (int k = 0; k < (int)recs[i].size() && k < 600; ++k) { std::snprintf(hx, sizeof(hx), (k == from ? "|%02x " : "%02x "), recs[i][k]); log += hx; }
+                log += "\n";
+            }
+            std::vector<std::pair<int, int>> res;
+            for (int L = 0; L <= 200; ++L) {
+                probe::g_op = op; probe::g_len = L; int okc = 0, okAny = 0;
+                for (const auto& r : recs) { int st = decode(r); if (st == 0) { ++okAny; if (probe::g_tail == 0) ++okc; } }
+                res.push_back({ okc * 1000 + okAny, L });
+            }
+            std::sort(res.rbegin(), res.rend());
+            for (int i = 0; i < 6 && i < (int)res.size(); ++i)
+                log += "    L=" + std::to_string(res[i].second) + " exact=" + std::to_string(res[i].first / 1000) + " clean=" + std::to_string(res[i].first % 1000) + " of " + std::to_string(recs.size()) + "\n";
+        }
+        probe::g_op = -1;
+    };
+    probe_index("npcs", kIndexNpcs, -1, [](const std::vector<std::uint8_t>& b) { int st = 0; DecodeNpc(0, b, &st); return st; });
+    probe_index("objects", kIndexLocations, -1, [](const std::vector<std::uint8_t>& b) { int st = 0; DecodeLoc(0, b, &st); return st; });
+    probe_index("items", kIndexItems, -1, [](const std::vector<std::uint8_t>& b) { int st = 0; DecodeItem(0, b, &st); return st; });
+    probe_index("quests", kIndexConfigs, kQuestArchive, [](const std::vector<std::uint8_t>& b) { int st = 0; QuestDef q; DecodeQuestFile(b, q, &st); return st; });
+    AchievementsProbeUnknown(log);
+    probe::g_op = -1;
+    return log;
+}
+
 std::vector<CacheParseRow> CacheParseHealth() {
     std::vector<CacheParseRow> rows;
     std::lock_guard<std::mutex> lk(g_mu);

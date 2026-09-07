@@ -11,6 +11,7 @@
 // POD; zero allocations on the hook path.
 
 #include <cstdint>
+#include "ServerOps.h"
 
 namespace rtx::events {
 
@@ -20,16 +21,12 @@ inline constexpr std::uint32_t kVersion = 2;
 inline constexpr int kMaxRecords = 2048;   // ~20 s of the busiest observed rate (106 op-0x52 / 45 s + per-tick ops)
 inline constexpr int kPayload    = 1024;    // bytes kept; `length` still reports the true wire size
 
-// Default opcode mask (launcher never wrote one): skill_update 0x04, ge_offer 0x05/0x51,
-// container_update 0x2B, runclientscript 0x52, run_energy 0x5C, run_weight 0x00,
-// ping_echo 0x8D. 0x15 (message_game) is never recorded here: the chat ring owns it.
+// Default opcode mask (launcher never wrote one): the named game events in ServerOps.h
+// (skill_update, ge_offer, container_update, runclientscript, run_energy, run_weight,
+// ping_echo). message_game is never recorded here: the chat ring owns it.
 inline constexpr std::uint32_t kDefaultMask[8] = {
-    (1u << 0x04) | (1u << 0x05) | (1u << 0x00),          // word 0: opcodes 0x00..0x1F
-    (1u << (0x2B - 0x20)),                               // word 1: 0x20..0x3F
-    (1u << (0x51 - 0x40)) | (1u << (0x52 - 0x40)) | (1u << (0x5C - 0x40)),   // word 2: 0x40..0x5F
-    0,                                                   // word 3: 0x60..0x7F
-    (1u << (0x8D - 0x80)),                               // word 4: 0x80..0x9F
-    0, 0, 0 };
+    rtx::sops::DefaultMaskWord(0), rtx::sops::DefaultMaskWord(1), rtx::sops::DefaultMaskWord(2), rtx::sops::DefaultMaskWord(3),
+    rtx::sops::DefaultMaskWord(4), rtx::sops::DefaultMaskWord(5), rtx::sops::DefaultMaskWord(6), rtx::sops::DefaultMaskWord(7) };
 
 struct Record {
     std::uint32_t seq;        // seqlock: (index+1)*2 when published, that value | 1 while filling

@@ -14,18 +14,23 @@
   let npAt = 0;
   const NP_CAP = 5000;
   // Opcode names seeded from the handler decompiles; user edits in localStorage override these.
-  let npNames = { 0: 'run_weight', 4: 'skill_update', 5: 'ge_offer', 6: 'iface_prop_i8',
-    21: 'message_game', 28: 'update_zone', 43: 'container_update', 45: 'player_info',
-    78: 'iface_set', 81: 'ge_offer', 82: 'runclientscript', 90: 'npc_info', 92: 'run_energy',
-    93: 'rebuild_scene_dyn', 95: 'iface_set', 109: 'zone_update', 124: 'iface_prop_bool',
-    141: 'ping_echo', 158: 'iface_set', 159: 'telemetry_cell_clear', 180: 'server_tick', 190: 'telemetry_grid',
-    199: 'telemetry_edit', 220: 'telemetry_value', 223: 'telemetry_reindex',
-    224: 'telemetry_row_slot' };
+  // Opcode names: the per-build table from companion/ServerOps.h (state.serverOps) is the truth;
+  // the seed is 950-1. Opcodes not in it are unnamed until re-derived (see docs/cs2_opcodes.md).
+  const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x82,
+                 ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0 };
+  let npNames = {};
+  function npApplySops(m) {
+    Object.assign(SOPS, m || {});
+    for (const [name, op] of Object.entries(SOPS)) if (name !== 'op_max' && typeof op === 'number') npNames[op] = name;
+    npDecoders = {};
+    for (const [name, fn] of Object.entries(npDecodersByName)) if (typeof SOPS[name] === 'number') npDecoders[SOPS[name]] = fn;
+  }
   try {
     const saved = JSON.parse(localStorage.getItem('rtxNetNames') || 'null');
     if (saved && typeof saved === 'object') npNames = Object.assign(npNames, saved);
   } catch (e) {}
   function npNamesSave() { try { localStorage.setItem('rtxNetNames', JSON.stringify(npNames)); } catch (e) {} }
+  (async () => { try { npApplySops(await rtxData.call('state.serverOps')); } catch (e) { npApplySops(null); } })();
 
   function npHex2(n) { return '0x' + (n & 0xFF).toString(16).toUpperCase().padStart(2, '0'); }
   function npKind(len) {
@@ -150,16 +155,17 @@
     return 'item ' + id;
   }
   // Per-opcode field decoders from the handler decompiles; '' when the payload is too short.
-  const npDecoders = {
-    // xp (LE u32) | level = (b4 + 0x80) & 0xFF | skill = (-b5) & 0xFF -> skill block +0x7618
-    4: function (b) {
+  let npDecoders = {};   // opcode -> decoder, rebuilt from npDecodersByName whenever the opcode table arrives
+  const npDecodersByName = {
+    // 950-1: [skill: -b0][level: -b1][xp: u32 BE] -> skill block +0x7618  (949 was [xp LE][level b4+0x80][skill -b5])
+    skill_update: function (b) {
       if (b.length < 6) return '';
-      const xp = ((b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)) >>> 0);
-      const level = (b[4] + 0x80) & 0xFF, sk = (256 - b[5]) & 0xFF;
+      const sk = (256 - b[0]) & 0xFF, level = (256 - b[1]) & 0xFF;
+      const xp = (((b[2] << 24) | (b[3] << 16) | (b[4] << 8) | b[5]) >>> 0);
       return (NP_SKILLS[sk] || ('skill ' + sk)) + ' Lv' + level + ' xp=' + xp.toLocaleString('en-US');
     },
     // 0x06: [value: -b0 signed][compId16: b1<<8 | (b2+0x80)] -> property store mgr +0x19888.
-    6: function (b) {
+    iface_prop_i8: function (b) {
       if (b.length < 3) return '';
       const v = -(b[0] << 24 >> 24);
       const comp = (b[1] << 8) | ((b[2] + 0x80) & 0xFF);
@@ -168,7 +174,7 @@
     // 0x2B: [containerId:u16 BE][flags:u8] then per changed slot: [slot: smart 1B<0x80 else
     // 2B(+0x8000)][itemId+1: 3B BE][qty: u8, or 0xFF then u32 BE][+1 variant byte if flags&2].
     // itemId+1 == 0 marks an empty slot.
-    43: function (b) {
+    container_update: function (b) {
       if (b.length < 3) return '';
       let p = 0;
       const cont = (b[p] << 8) | b[p + 1]; p += 2;
@@ -191,7 +197,7 @@
     },
     // 0x15: [type: smart 1B if <0x80 else 2B BE + 0x8000][u32 uid][flags:1]; flags&1 adds a NUL
     // sender string (flags&2 a second one), then the NUL text. type 109 = game, 138 = broadcast.
-    21: function (b) {
+    message_game: function (b) {
       if (b.length < 6) return '';
       let p, type;
       if (b[0] < 0x80) { type = b[0]; p = 1; }
@@ -206,14 +212,14 @@
       return 'type ' + type + (name ? ' <' + name + '>' : '') + ' “' + text + '”';
     },
     // 0x1C: [plane:u8][zoneX:i8][zoneY: u8-0x80]; zone coords are index*8 tiles off the scene base.
-    28: function (b) {
+    update_zone: function (b) {
       if (b.length < 3) return '';
       const plane = b[0], zx = (b[1] << 24 >> 24), zy = b[2] - 0x80;
       return 'plane ' + plane + ' zone x=' + zx + ' y=' + zy;
     },
     // 0x4E: the component id maps to a varp id, the value is the new varp value; byte order is
     // 16-bit-swapped halves. Layout comp:u16(BE)@4 + value:u32, stored in the +0x19f78 hash.
-    78: function (b) {
+    iface_set: function (b) {
       if (b.length < 6) return '';
       const comp = (b[4] << 8) | b[5];
       const val = ((b[1] << 24) | (b[0] << 16) | (b[3] << 8) | b[2]) >>> 0;
@@ -224,7 +230,7 @@
     // then bit-packed 4 planes x A x B of 1 present-bit + 26-bit template ref: plane (r>>24)&3,
     // zoneX (r>>14)&0x3FF, zoneY (r>>3)&0x7FF, rot (r>>1)&3 (bit 0 unused). Map square = zone>>3.
     // A Daemonheim room is a 2x2 zone block on 2 planes; only explored rooms are listed.
-    93: function (b) {
+    rebuild_scene_dyn: function (b) {
       if (b.length < 14 || b[2] !== 5) return '';
       const bx = ((b[8] << 8) | b[9]), by = ((b[10] << 8) | b[11]);
       const A = b[12], B = b[13];
@@ -256,7 +262,7 @@
     },
     // 0x52: [type-sig: NUL-terminated, e.g. "iiiis"][args in REVERSE sig order: 's' = NUL
     // cp1252 string, else i32 BE][scriptId: i32 BE at the very end].
-    82: function (b) {
+    runclientscript: function (b) {
       let p = 0, sig = '';
       while (p < b.length && b[p] !== 0 && sig.length < 16) sig += String.fromCharCode(b[p++]);
       if (!sig || p >= b.length || !/^[is]+$/.test(sig)) return '';
@@ -283,7 +289,7 @@
     // [delay -b][tile x<<4|y][animId 4B order b4·b5·b2·b3][shape<<2|rot +0x80], 08 loc_del
     // [tile -b][shape<<2|rot +0x80]; tiles are 0-7 offsets inside the zone. A shape/rot byte
     // with its top bit set pulls a variable-size extension, so the walk has to stop there.
-    109: function (b) {
+    zone_update: function (b) {
       if (b.length < 3) return '';
       const FIXED = { 0: 10, 3: 7, 4: 20, 5: 21, 6: 11, 7: 3, 8: 2, 9: 5, 10: 14, 11: 8,
         12: 7, 13: 6, 14: 7, 15: 11, 16: 29, 17: 4, 18: 5, 19: 28, 20: 8 };
@@ -320,50 +326,50 @@
       return out.join(' | ');
     },
     // 0x5F: [value: signed byte][compId: b2<<8 | (b1+0x80)]; same var store as 0x4E/0x9E.
-    95: function (b) {
+    iface_set_short: function (b) {
       if (b.length < 3) return '';
       const comp = (b[2] << 8) | ((b[1] + 0x80) & 0xFF);
       return npVarLabel(comp) + ' = ' + (b[0] << 24 >> 24);
     },
     // 0x7C: [key u32, byte order b1·b0·b3·b2 = component group<<16|child][flag: 0x81 -> 1 else 0].
-    124: function (b) {
+    iface_prop_bool: function (b) {
       if (b.length < 5) return '';
       const key = (((b[1] << 24) | (b[0] << 16) | (b[3] << 8) | b[2]) >>> 0);
       return 'comp ' + (key >>> 16) + ':' + (key & 0xFFFF) + ' = ' + (b[4] === 0x81 ? 1 : 0);
     },
     // Telemetry-table edits: same table as 0xBE, but the byte negations/biases differ per op.
-    159: function (b) {                                // 0x9F: clear one cell
+    telemetry_cell_clear: function (b) {                                // 0x9F: clear one cell
       if (b.length < 3) return '';
       return '[' + b[2] + ',' + ((256 - b[0]) & 0xFF) + ',' + ((b[1] + 0x80) & 0xFF) + '] = none';
     },
-    199: function (b) {                                // 0xC7: edit
+    telemetry_edit: function (b) {                                // 0xC7: edit
       if (b.length < 3) return '';
       return 'group ' + ((256 - b[2]) & 0xFF) + ' edit(' + ((-0x80 - b[0]) << 24 >> 24)
         + ', ' + ((b[1] - 0x80) << 24 >> 24) + ')';
     },
-    220: function (b) {                                // 0xDC: cell value
+    telemetry_value: function (b) {                                // 0xDC: cell value
       if (b.length < 6) return '';
       const v = ((b[4] << 24) | (b[5] << 16) | (b[2] << 8) | b[3]) >>> 0;
       return 'group ' + b[0] + ' idx ' + ((-0x80 - b[1]) << 24 >> 24) + ' value ' + v.toLocaleString('en-US');
     },
-    223: function (b) {                                // 0xDF: edit + reindex rows
+    telemetry_reindex: function (b) {                                // 0xDF: edit + reindex rows
       if (b.length < 3) return '';
       return 'group ' + ((0x80 - b[1]) & 0xFF) + ' reindex(' + ((256 - b[0]) & 0xFF)
         + ', ' + ((256 - b[2]) & 0xFF) + ')';
     },
-    224: function (b) {                                // 0xE0: row-order slot
+    telemetry_row_slot: function (b) {                                // 0xE0: row-order slot
       if (b.length < 3) return '';
       const idx = (256 - b[0]) & 0xFF;
       return 'group ' + ((256 - b[2]) & 0xFF) + ' slot ' + idx + ' = ' + (b[1] === 0x7F ? idx : -1);
     },
     // 0x8D: two u32 BE nonces the client echoes back in a 9-byte reply; carries no game state.
-    141: function (b) {
+    ping_echo: function (b) {
       if (b.length < 8) return '';
       const a = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
       const c = ((b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7]) >>> 0;
       return 'echo ' + a + ' / ' + c + ' (client replies 9B)';
     },
-    158: function (b) {                                // 0x9E: comp:u16(BE)@0 + two u32
+    iface_set_10: function (b) {                                // 0x9E: comp:u16(BE)@0 + two u32
       if (b.length < 10) return '';
       const comp = (b[0] << 8) | b[1];
       const a = ((b[3] << 24) | (b[2] << 16) | (b[5] << 8) | b[4]) >>> 0;
@@ -372,7 +378,7 @@
     },
     // 0xBE: sparse [group][row][column] update of the in-game Telemetry table; nested lists are
     // 0xFF-terminated, values u32 BE, cell 0x80000000 = no value. Indices are positional only.
-    190: function (b) {
+    telemetry_grid: function (b) {
       let p = 0; const out = [];
       while (p < b.length) {
         const i = b[p++]; if (i === 0xFF) break;

@@ -593,7 +593,7 @@
       const distc = document.createElement('div'); distc.className = 'num';
       distc.textContent = (n.dist >= 0) ? n.dist : '-';
       const tilec = document.createElement('div'); tilec.className = 'tile';
-      tilec.textContent = '(' + n.x + ', ' + n.y + (typeof n.plane === 'number' ? ', ' + n.plane : '') + ')';
+      tilec.textContent = '(' + n.x + ', ' + n.y + (typeof n.plane === 'number' && n.plane ? ', ' + n.plane : '') + ')';   // plane only above ground: keeps the column inside its track
       row.appendChild(bd); row.appendChild(namec); row.appendChild(lvlc); row.appendChild(distc); row.appendChild(tilec);
       frag.appendChild(row);
     }

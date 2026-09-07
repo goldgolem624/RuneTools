@@ -17,6 +17,7 @@ public:
 
     int  remaining() const { return (int)buf_.size() - offset_; }
     int  offset()    const { return offset_; }
+    int  peek(int abs) const { return (abs >= 0 && abs < (int)buf_.size()) ? (buf_[abs] & 0xff) : -1; }   // byte at an absolute offset, no advance
     // Clamped to [0, size] so remaining() is never negative on hostile lengths.
     void skip(int n)       { seek(offset_ + n); }
     void seek(int p)       { offset_ = p < 0 ? 0 : (p > (int)buf_.size() ? (int)buf_.size() : p); }

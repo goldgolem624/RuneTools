@@ -27,5 +27,7 @@ void QuestCapeQuestNames(std::vector<std::string>& out);
 // clean end and the most common stopping opcode (stop_op = -1 when none stopped).
 // Caller MUST hold the shared cache mutex (AchievementsMutex); does not lock.
 void AchievementsParseHealth(int& ok, int& total, int& stop_op, int& stop_n);
+// Unknown-opcode probe (Probe.h); appends a report to `log`. Caller holds the cache mutex.
+void AchievementsProbeUnknown(std::string& log);
 
 }  // namespace rtx::cache

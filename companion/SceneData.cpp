@@ -34,7 +34,8 @@
 #include "GroundShare.h"    // dropped ground items (scene entity type 3)
 #include "NetShare.h"       // raw inbound socket bytes (recv/WSARecv), for wire capture
 #include "NetProbeShare.h"  // DECODED server->client packets, captured at the inbound framer
-#include "EventShare.h"     // opcode-filtered event ring fed from the same framer hook
+#include "EventShare.h"
+#include "ServerOps.h"     // opcode-filtered event ring fed from the same framer hook
 #include "Present.h"     // in-frame compositor (draws the launcher UI into the game frame)
 #include "SoundFilter.h" // cache-sound observation + muting (audio-chunk mix hook)
 #include "MenuProbe.h"  // right-click menu entry-layout probe (diagnostic, opt-in)
@@ -233,7 +234,8 @@ std::uint64_t SceneWorker(std::uint64_t W) {
 }
 // Config-id offset on the sub struct. Walls/decor keep a pointer at this offset
 // instead, so reads are range-gated (see ReadConfig) and fall back to unnamed.
-constexpr std::uint64_t kConfigId = 0xa8;
+constexpr std::uint64_t kConfigId = 0xb0;   // 950-1: was 0xa8, which now holds the tile Y (live diag: type-0 inline id 14933 @+0xb0 and a
+                                            // def pointer @+0xb8; type-12 def pointer @+0xb0 with the id at def+0x28)
 
 // Loc id within the loc-def struct that sub+0xa8 points at for the def-pointer form.
 constexpr std::uint64_t kDefLocId = 0x28;
@@ -242,9 +244,10 @@ constexpr std::uint64_t kDefLocId = 0x28;
 // when the loc has a rendered model this frame; a loc sitting in the worldview with a
 // valid config, action and cached loc-def AABB but never drawn (phantom locs, cleared
 // or uninstantiated locs) has the whole block zeroed. Gates the published AABB.
-constexpr std::uint64_t kModelLo = 0x18, kModelMid = 0x20, kModelHi = 0x30;
+constexpr std::uint64_t kModelLo = 0x28, kModelMid = 0x30, kModelHi = 0x40;   // 950-1: +0x10 with the sub header (was 0x18/0x20/0x30); the
+                                                                             // two far-away diag subs read all-zero here, a rendered one is unverified
 
-// sub+0xa8 has two forms: type-0 scenery stores the loc id inline as an int;
+// sub+kConfigId (0xb0 on 950-1, 0xa8 before) has two forms: type-0 scenery stores the loc id inline as an int;
 // type-12 (walls/decor) stores a pointer to the loaded loc def, id at def+0x28.
 // Distinguish by whether the 64-bit value is a readable heap pointer.
 // Returns 0 when neither yields a sane id (launcher leaves it unnamed).
@@ -392,7 +395,7 @@ void ScanRegionForManagers(std::uint64_t rbase, std::uint64_t rsize, float px, f
             // Confirm the entity<->sub link (sub+0x8 points back to the entity). This is a
             // near-perfect filter for the float-scan's coincidental hits, so even a
             // single-entity container below is safe to accept.
-            if (R64(sub + 0x8) != ent) continue;
+            if (R64(sub + rtx::scn::kBack) != ent) continue;
             std::uint64_t mgr = R64(ent + kEntMgr);
             int total = 0;
             // Accept score >= 1: many real objects (plaques, fountains, isolated decor)
@@ -1214,7 +1217,7 @@ int FindContainersFromTracked() {
         if (!IsHeap(ent)) continue;
         std::uint64_t sub = R64(ent + kSecPtr);
         if (!IsHeap(sub) || !IsScenery(R8(sub + kType))) continue;
-        if (R64(sub + 0x8) != ent) continue;              // the back-pointer filter
+        if (R64(sub + rtx::scn::kBack) != ent) continue;              // the back-pointer filter
         std::uint64_t mgr = R64(ent + kEntMgr);
         int total = 0;
         if (IsHeap(mgr) && ScoreContainer(mgr, total) >= 1) {
@@ -1304,7 +1307,7 @@ static inline void RecordDisplay(std::uint64_t sub, int type) {
     s.uid   = R32(sub + 0x88);
     s.plane = (std::int16_t)R32(sub + kFloor);       // dword: the real fn compares it as one
     s.type  = (std::int16_t)type;
-    std::uint64_t ent = R64(sub + 0x8);              // sub -> node back-pointer
+    std::uint64_t ent = R64(sub + rtx::scn::kBack);   // sub -> node back-pointer
     float nx = 0.f, ny = 0.f;
     if (ent > 0xfffff && ent < g_base) { nx = RF(ent + kEntPosX); ny = RF(ent + kEntPosY); }
     s.x = (nx > 0.f && nx < 1e9f) ? (std::int32_t)(nx / 512.f) : 0;
@@ -1627,7 +1630,7 @@ void ResolveNetCapture() {
 // ---- decoded inbound packet capture -------------------------------------------
 // Hooked at the GAME's inbound framer (FUN_1400ff0c0), one level above the socket:
 // the function that reads one server message, ISAAC-deciphers its opcode, looks the
-// opcode up in the packet table (base held at rs2client+0xC6A158, entries 0..0xE5),
+// opcode up in the packet table (base held at rs2client+0xC70BB0 on 950-1, entries 0..0xDE),
 // and reads the declared-length payload into the connection buffer. At its return the
 // connection object carries the plaintext opcode + length + payload -- exactly what
 // the client itself will hand to the packet's handler. Zero cost while the panel is
@@ -1639,6 +1642,8 @@ void ResolveNetCapture() {
 //   +0x30  int  length  (resolved payload length, after any 1/2-byte size prefix)
 //   +0x2D0 ptr  payload buffer (the framer read `length` bytes to *(conn+0x2D0))
 //   +0x2E8 int  cumulative inbound byte counter (monotonic; de-dups a re-observed msg)
+// Server opcode of message_game (the chat ring's feed); the per-build value lives in ServerOps.h.
+constexpr int kOpMessageGame = rtx::sops::kMessageGame;
 rtx::netprobe::Share* g_netProbeShare = nullptr;
 rtx::events::Share*   g_eventShare    = nullptr;
 typedef std::uint64_t* (*Framer_t)(std::uint64_t conn, std::uint64_t* out);
@@ -1651,7 +1656,7 @@ static void EventRecord(std::int32_t op, std::int32_t len, const std::uint8_t* p
     auto* ev = g_eventShare;
     if (!ev) return;
     ev->inbound++;
-    if (op == 0x15) return;                                   // chat ring owns message_game
+    if (op == kOpMessageGame) return;                         // chat ring owns message_game
     if (!((ev->mask[(op >> 5) & 7] >> (op & 31)) & 1u)) return;
     const std::uint64_t i = ev->written;
     rtx::events::Record& r = ev->recs[i % rtx::events::kMaxRecords];
@@ -1686,7 +1691,7 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
     const bool armed = sh->enable != 0 && (std::uint32_t)(now - sh->enable) <= 3000;
     __try {
         const std::int32_t op = *(const std::int32_t*)(conn + 0x2c);
-        if (op < 0 || op > 0xE5) { if (armed) sh->diag[2]++; return; }   // invalid/none
+        if (op < 0 || op > rtx::sops::kOpMax) { if (armed) sh->diag[2]++; return; }   // invalid/none (framer bound, ServerOps.h)
         const std::int32_t  len = *(const std::int32_t*)(conn + 0x30);
         const std::uint32_t rx  = *(const std::uint32_t*)(conn + 0x2e8);
         // The framer is re-entered on the same pending message until the dispatcher
@@ -1699,7 +1704,7 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
 
         EventRecord(op, len, p);                              // event ring (mask-filtered)
 
-        if (op == 0x15) {                                     // message_game -> chat ring
+        if (op == kOpMessageGame) {                           // message_game -> chat ring
             rtx::netprobe::ChatRecord& c =
                 sh->chat[sh->chatWritten % rtx::netprobe::kChatRecords];
             c.tick   = GetTickCount64();

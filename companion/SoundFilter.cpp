@@ -1,10 +1,14 @@
 // In-client sound observation and muting (see SoundFilter.h / SoundShare.h).
 //
 // Hook target is the engine's shared sound-play function, reached from every CS2 op that starts
-// a sound:
+// a sound. Build 950-1 changed its shape (949-5 and earlier had 13 args and returned void):
 //
-//   PLAY(subsystem, kind, id, loops, volume, group, a7, ..., delay)   // 13 args, returns void
-//          rcx      dx   r8d  r9d    +0x20   +0x28
+//   PLAY(subsystem, ctx, kind, id, loops, volume, group, a8, ..., flag)  // 15 args, returns
+//         rcx       rdx  r8w   r9d  +0x20  +0x28   +0x30                  // the sound object
+//
+// The callers pass the subsystem twice (rcx and rdx), `delay` is no longer an argument (the
+// caller stores it on the returned object at +0xB4 afterwards), and a trailing byte flag was
+// added. Everything else kept its order, shifted one slot right.
 //
 // `id` is the js5 archive id - the same id the Sounds panel lists and plays - and `group` is
 // the engine's own source tag: 6 = sound effects (js5-14), 8 = vorbis/music (js5-40).
@@ -22,12 +26,12 @@
 //
 // --- how the target is located -------------------------------------------------------------
 // NOT by opcode number: the CS2 opcode scramble was re-shuffled after build 949, so the old
-// numbers name different ops now (SOUND_SYNTH was opcode 1522, it is 168 in the current build).
+// numbers name different ops now (SOUND_SYNTH was opcode 1522 on 949, 168 on 949-5, 297 on 950-1).
 // NOT by a hardcoded address: those move every build.
 //
-// Instead, scan for the SOUND_SYNTH handler's body - byte-identical between 949 and the current
-// build - and decode the call it makes. That self-locates PLAY even when PLAY itself moves. The
-// pattern is 125 bytes and matches EXACTLY ONCE in .text (verified against the live binary).
+// Instead, scan for the SOUND_SYNTH handler's body and decode the call it makes. That
+// self-locates PLAY even when PLAY itself moves. The pattern is 151 bytes and matches EXACTLY
+// ONCE in .text (verified against the 950-1 binary; the 949 body was 125 bytes and is gone).
 //
 // Everything here runs on whichever thread started the sound. No allocation, no locks: while
 // the panel is closed the detour is one relaxed load and a branch.
@@ -44,55 +48,89 @@
 namespace rtx::soundfilter {
 namespace {
 
-// 13 args, void return - taken from decompiling the callee itself, not guessed from a call
-// site. All 13 are forwarded verbatim.
-typedef void(__fastcall* Play_t)(std::uint64_t, std::uint32_t, std::int32_t, std::int32_t,
-                                 std::int32_t, std::int32_t, std::int32_t, std::uint64_t,
-                                 std::int32_t, std::uint64_t, std::int32_t, std::int32_t,
-                                 std::int32_t);
+// 15 args, returns the sound object (or null) - taken from the 950-1 call sites, which all
+// consume rax afterwards. All 15 are forwarded verbatim and the return value passed back.
+typedef std::uint64_t(__fastcall* Play_t)(std::uint64_t, std::uint64_t, std::uint32_t,
+                                          std::int32_t, std::int32_t, std::int32_t,
+                                          std::int32_t, std::int32_t, std::int32_t,
+                                          std::int32_t, std::uint64_t, std::int32_t,
+                                          std::int32_t, std::int32_t, std::uint8_t);
 
 Play_t              g_orig      = nullptr;
 rtx::sound::Share*  g_share     = nullptr;
 bool                g_installed = false;
 std::uint64_t       g_base      = 0;
 
-// SOUND_SYNTH handler body. Address-bearing operands are wildcarded: the two rip-relative
-// disp32s and the JZ displacement.
+// SOUND_SYNTH handler body (950-1). Address-bearing operands are wildcarded: the two
+// rip-relative disp32s and the JZ rel32.
 //
-//   sub  rsp,0x78
+//   sub  rsp,0x88
 //   add  dword [rdx+0x10A0],-3        <- pops 3 ints; the -3 is what identifies THIS op
 //   mov  eax,[rdx+0x10A0]
-//   mov  rcx,[rcx+0x199F0]            <- audio subsystem, off the engine context
-//   lea  r8,[rdx+rax*4] / test rcx,rcx / jz
-//   mov  eax,[r8+0x108] / r9d,[r8+0x104] / r8d,[r8+0x100]   <- delay, loops, ID
-//   movzx edx,[rip+..] / lea rax,[rip+..]
-//   mov  [rsp+0x58],0xFF / [rsp+0x50],-1 / [rsp+0x48],rax / [rsp+0x40],0
-//   mov  [rsp+0x30],4 / [rsp+0x28],6 / [rsp+0x20],0xFF      <- a7, group, volume
+//   mov  rcx,[rcx+0x19A30]            <- audio subsystem, off the engine context (0x199F0 on 949)
+//   lea  r8,[rdx+rax*4] / test rcx,rcx / jz rel32
+//   mov  eax,[r8+0x104]               <- loops
+//   lea  rdx,[rip+..]                 <- position vector
+//   mov  r9d,[r8+0x100]               <- ID
+//   mov  byte [rsp+0x70],0 / [rsp+0x60],0xFF / [rsp+0x58],-1 / [rsp+0x50],rdx
+//   xor  edx,edx / [rsp+0x48],edx / [rsp+0x40],edx / mov rdx,rcx
+//   mov  [rsp+0x38],4 / [rsp+0x30],6   <- a8, group
+//   mov  [rsp+0x80],rbx / ebx,[r8+0x108]   <- delay, applied after the call
+//   movzx r8d,word [rip+..]           <- kind
+//   mov  [rsp+0x28],0xFF / [rsp+0x20],eax   <- volume, loops
 const unsigned char kSynth[] = {
-    0x48,0x83,0xEC,0x78, 0x83,0x82,0xA0,0x10,0x00,0x00,0xFD,
-    0x8B,0x82,0xA0,0x10,0x00,0x00, 0x48,0x8B,0x89,0xF0,0x99,0x01,0x00,
-    0x4C,0x8D,0x04,0x82, 0x48,0x85,0xC9, 0x74,0x61,
-    0x41,0x8B,0x80,0x08,0x01,0x00,0x00, 0x45,0x8B,0x88,0x04,0x01,0x00,0x00,
-    0x45,0x8B,0x80,0x00,0x01,0x00,0x00,
-    0x0F,0xB7,0x15,0x00,0x00,0x00,0x00, 0x89,0x44,0x24,0x60,
-    0x48,0x8D,0x05,0x00,0x00,0x00,0x00,
-    0xC7,0x44,0x24,0x58,0xFF,0x00,0x00,0x00, 0xC7,0x44,0x24,0x50,0xFF,0xFF,0xFF,0xFF,
-    0x48,0x89,0x44,0x24,0x48, 0xC7,0x44,0x24,0x40,0x00,0x00,0x00,0x00,
-    0xC7,0x44,0x24,0x30,0x04,0x00,0x00,0x00, 0xC7,0x44,0x24,0x28,0x06,0x00,0x00,0x00,
-    0xC7,0x44,0x24,0x20,0xFF,0x00,0x00,0x00,
+    0x48,0x81,0xEC,0x88,0x00,0x00,0x00,
+    0x83,0x82,0xA0,0x10,0x00,0x00,0xFD,
+    0x8B,0x82,0xA0,0x10,0x00,0x00,
+    0x48,0x8B,0x89,0x30,0x9A,0x01,0x00,
+    0x4C,0x8D,0x04,0x82,
+    0x48,0x85,0xC9,
+    0x0F,0x84,0x00,0x00,0x00,0x00,
+    0x41,0x8B,0x80,0x04,0x01,0x00,0x00,
+    0x48,0x8D,0x15,0x00,0x00,0x00,0x00,
+    0x45,0x8B,0x88,0x00,0x01,0x00,0x00,
+    0xC6,0x44,0x24,0x70,0x00,
+    0xC7,0x44,0x24,0x60,0xFF,0x00,0x00,0x00,
+    0xC7,0x44,0x24,0x58,0xFF,0xFF,0xFF,0xFF,
+    0x48,0x89,0x54,0x24,0x50,
+    0x33,0xD2,
+    0x89,0x54,0x24,0x48,
+    0x89,0x54,0x24,0x40,
+    0x48,0x8B,0xD1,
+    0xC7,0x44,0x24,0x38,0x04,0x00,0x00,0x00,
+    0xC7,0x44,0x24,0x30,0x06,0x00,0x00,0x00,
+    0x48,0x89,0x9C,0x24,0x80,0x00,0x00,0x00,
+    0x41,0x8B,0x98,0x08,0x01,0x00,0x00,
+    0x44,0x0F,0xB7,0x05,0x00,0x00,0x00,0x00,
+    0xC7,0x44,0x24,0x28,0xFF,0x00,0x00,0x00,
+    0x89,0x44,0x24,0x20,
 };
 const unsigned char kSynthMask[] = {
-    1,1,1,1, 1,1,1,1,1,1,1,
-    1,1,1,1,1,1, 1,1,1,1,1,1,1,
-    1,1,1,1, 1,1,1, 1,0,
-    1,1,1,1,1,1,1, 1,1,1,1,1,1,1,
     1,1,1,1,1,1,1,
-    1,1,1,0,0,0,0, 1,1,1,1,
+    1,1,1,1,1,1,1,
+    1,1,1,1,1,1,
+    1,1,1,1,1,1,1,
+    1,1,1,1,
+    1,1,1,
+    1,1,0,0,0,0,
+    1,1,1,1,1,1,1,
     1,1,1,0,0,0,0,
-    1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
-    1,1,1,1,1, 1,1,1,1,1,1,1,1,
-    1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,
+    1,1,1,1,1,
     1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,
+    1,1,1,1,1,
+    1,1,
+    1,1,1,1,
+    1,1,1,1,
+    1,1,1,
+    1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,
+    1,1,1,1,0,0,0,0,
+    1,1,1,1,1,1,1,1,
+    1,1,1,1,
 };
 static_assert(sizeof(kSynth) == sizeof(kSynthMask), "pattern and mask must match in length");
 
@@ -176,11 +214,11 @@ void NoteObserved(std::int32_t id, std::int32_t idx, bool muted) {
     ++g_share->diag[2];
 }
 
-void __fastcall Detour_Play(std::uint64_t subsystem, std::uint32_t kind, std::int32_t id,
-                            std::int32_t loops, std::int32_t volume, std::int32_t group,
-                            std::int32_t a7, std::uint64_t a8, std::int32_t a9,
-                            std::uint64_t a10, std::int32_t a11, std::int32_t a12,
-                            std::int32_t delay) {
+std::uint64_t __fastcall Detour_Play(std::uint64_t subsystem, std::uint64_t ctx, std::uint32_t kind,
+                                     std::int32_t id, std::int32_t loops, std::int32_t volume,
+                                     std::int32_t group, std::int32_t a8, std::int32_t a9,
+                                     std::int32_t a10, std::uint64_t a11, std::int32_t a12,
+                                     std::int32_t a13, std::int32_t a14, std::uint8_t a15) {
     if (g_share && g_share->enable) {
         ++g_share->diag[0];
         const std::int32_t idx = IndexOf(group);
@@ -191,7 +229,7 @@ void __fastcall Detour_Play(std::uint64_t subsystem, std::uint32_t kind, std::in
             ++g_share->diag[1];
         }
     }
-    g_orig(subsystem, kind, id, loops, volume, group, a7, a8, a9, a10, a11, a12, delay);
+    return g_orig(subsystem, ctx, kind, id, loops, volume, group, a8, a9, a10, a11, a12, a13, a14, a15);
 }
 
 rtx::sound::Share* MapShare() {

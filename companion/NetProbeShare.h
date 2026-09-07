@@ -29,7 +29,7 @@ inline constexpr int kSnip       = 1024;
 inline constexpr int kChatRecords = 256;
 inline constexpr int kChatSnip    = 512;    // one message: type+u32+flags+sender+text
 
-// One decoded inbound message. `opcode` is the deciphered server opcode (0..0xE5);
+// One decoded inbound message. `opcode` is the deciphered server opcode (0..0xDE on 950-1, 0..0xE5 before);
 // `length` is the resolved payload length in bytes; `kept` is how much landed in `data`.
 struct Record {
     std::uint64_t tick;      // GetTickCount64 at capture

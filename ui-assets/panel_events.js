@@ -11,27 +11,34 @@
   const evTick = { count: 0, last: -1, dts: [], lastAt: 0 };
   let evPaused = false, evDirty = false, evTimer = null;
   const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
-  const EV_DEFAULT_MASK = '0,4,5,43,81,82,92,141';   // mirrors kDefaultMask in companion/EventShare.h
+  // Server opcodes for THIS game build, from companion/ServerOps.h via state.serverOps. The
+  // seed below is the 950-1 table so the panel works before the first fetch; every place that
+  // used to hold a number now reads it from here, because Jagex reshuffles the opcodes on
+  // game updates (949-5 -> 950-1 changed every one).
+  const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x82,
+                 ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0 };
+  (async () => { try { const m = await rtxData.call('state.serverOps'); if (m && typeof m === 'object') Object.assign(SOPS, m); } catch (e) {} })();
+  const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo']
+      .map(k => SOPS[k]).sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h
   // What the channel can record, in the words a reader thinks in. `op` is the packet opcode the
   // companion filters on; everything not listed here is simply not captured, which is why the
   // panel states its coverage rather than implying it shows the whole wire.
   // Names for packets we do not decode yet, from docs/server_packets_handler_map.md. A named
   // row beats "raw": it says whether a line is worth reading at all.
-  const EV_OPNAMES = {
-    0x02: 'unknown (10 bytes, constant)', 0x06: 'iface_prop_i8', 0x1F: 'unknown (10 bytes)',
-    0x2D: 'player_info', 0x43: 'unknown (12 bytes, constant)', 0x4E: 'iface_set',
-    0x5A: 'npc_info', 0x5F: 'iface_set (short)', 0x6D: 'zone_update',
-    0xB4: 'server_tick', 0xBE: 'telemetry_grid', 0xC8: 'unknown (empty)',
-  };
+  // Names for packets we do not decode: only the ones pinned on the current build. Anything not in
+  // SOPS or here shows as raw with its opcode, which is honest; guessing names from a stale table
+  // is how the panel showed "skill_update" for garbage after 950-1.
+  const EV_OPNAMES = { [SOPS.server_tick]: 'server_tick' };
   const EV_TYPES = [
-    { op: 4,   kind: 'skill_update',     label: 'XP and levels',    note: 'every xp drop' },
-    { op: 43,  kind: 'container_update', label: 'Inventory and bank', note: 'slot changes in any container' },
-    { op: 82,  kind: 'runclientscript',  label: 'Interface scripts', note: 'buff bar, notices, popups' },
-    { op: 5,   kind: 'ge_offer',         label: 'Grand Exchange',   note: 'offer changes', with: [81] },
-    { op: 92,  kind: 'run_energy',       label: 'Run energy',       note: '' },
-    { op: 0,   kind: 'run_weight',       label: 'Weight',           note: '' },
-    { op: 141, kind: 'ping',             label: 'Ping',             note: 'server keepalive' },
+    { name: 'skill_update',     kind: 'skill_update',     label: 'XP and levels',    note: 'every xp drop' },
+    { name: 'container_update', kind: 'container_update', label: 'Inventory and bank', note: 'slot changes in any container' },
+    { name: 'runclientscript',  kind: 'runclientscript',  label: 'Interface scripts', note: 'buff bar, notices, popups' },
+    { name: 'ge_offer',         kind: 'ge_offer',         label: 'Grand Exchange',   note: 'offer changes' },
+    { name: 'run_energy',       kind: 'run_energy',       label: 'Run energy',       note: '' },
+    { name: 'run_weight',       kind: 'run_weight',       label: 'Weight',           note: '' },
+    { name: 'ping_echo',        kind: 'ping',             label: 'Ping',             note: 'server keepalive' },
   ];
+  for (const t of EV_TYPES) Object.defineProperty(t, 'op', { get() { return SOPS[t.name]; } });
 
   function evOnEvent(ev) {
     if (!ev || ev.kind === 'gameTick') return;
@@ -60,7 +67,7 @@
   // Subscribe once at load: counters run whether or not the tab is open, like the chat log.
   rtxEvents.on('*', evOnEvent);
   rtxEvents.on('gameTick', evOnTick);
-  rtxEvents.on('*', ev => { if (ev && ev.op === 0xB4) evOnServerTick(ev); });
+  rtxEvents.on('*', ev => { if (ev && ev.op === SOPS.server_tick) evOnServerTick(ev); });
 
   // Containers seen on this channel. The full list lives in panel_containers; these are the
   // ones that actually appear in packet traffic, so a line reads "Backpack" not "93".
@@ -306,8 +313,8 @@
       $('evClear').onclick = () => { evLog.length = 0; for (const k in evCounts) delete evCounts[k]; evTick.count = 0; evTick.dts.length = 0; evDirty = true; };
       $('evCopy').onclick = () => evCopy(false);
       $('evCopyJson').onclick = () => evCopy(true);
-      $('evMask').value = EV_DEFAULT_MASK;
-      $('evMaskDef').onclick = () => { $('evMask').value = EV_DEFAULT_MASK; evMaskApply(); evPaintToggles(); };
+      $('evMask').value = evDefaultMask();
+      $('evMaskDef').onclick = () => { $('evMask').value = evDefaultMask(); evMaskApply(); evPaintToggles(); };
       // Every opcode, not just the named ones. Undecoded packets arrive as raw hex, which is how
       // a new one gets identified in the first place.
       $('evMaskAll').onclick = () => {
@@ -355,7 +362,7 @@
   // Current mask as a set of opcodes.
   function evMaskSet() {
     const out = {};
-    for (const p of String(($('evMask') || {}).value || EV_DEFAULT_MASK).split(',')) {
+    for (const p of String(($('evMask') || {}).value || evDefaultMask()).split(',')) {
       const n = parseInt(p, 10); if (!isNaN(n)) out[n] = true;
     }
     return out;

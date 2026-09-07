@@ -1,4 +1,6 @@
 #include "Achievements.h"
+#include "Probe.h"
+#include <algorithm>
 
 #include "Constants.h"
 #include "Store.h"
@@ -136,12 +138,22 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 30: { int c = r.u8(); for (int i = 0; i < c; ++i) a.subreqCount.push_back((int)r.usmart()); break; }  // how many subreqs needed
             case 31: r.u8(); break;
             case 32: r.u8(); r.u8(); r.u8(); break;
-            case 35: break;
+            // ---- build 950-1 (payloads recovered with the unknown-opcode probe, Probe.h) ----
+            // 33 and 35 share the op 13/14 shape but carry u24 ids (35 was a bare flag through 949-5):
+            //   count(u8) x { u8, smart32 value, padded desc, u8 m, m x u24 id }
+            // 36 is the op 23/25 packed-bit shape with a u24 id:
+            //   count(u8) x { u8, u24 id, u8, padded name, u8 bit }
+            case 33: case 35: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.smart32(); r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) r.u24(); } break; }
+            case 36: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.u24(); r.u8(); r.pstr(); r.u8(); } break; }
             case 37: r.u8(); break;
             case 38: r.u8(); break;
-            default: if (stop_op) *stop_op = op; return a;   // unknown trailing opcode -> stop, keep what we have
+            default:
+                if (op == probe::g_op && r.p + (std::size_t)probe::g_len <= r.n) { r.p += (std::size_t)probe::g_len; break; }   // unknown-opcode probe (Probe.h)
+                probe::g_stop = (int)r.p; probe::g_tail = (int)(r.n - r.p);
+                if (stop_op) *stop_op = op; return a;   // unknown trailing opcode -> stop, keep what we have
         }
     }
+    probe::g_tail = (int)(r.n - r.p);
     return a;
 }
 
@@ -301,6 +313,48 @@ const std::string& AchievementsJson() {
 
 // Parse-health sweep over every achievement def. Lock-free (caller holds the shared
 // cache mutex). See header.
+// Unknown-opcode probe over every achievement def (see Probe.h). Appends its report to `log`.
+void AchievementsProbeUnknown(std::string& log) {
+    EnsureCacheInit();
+    auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;
+    if (!idx) { log += "achievements: index not open\n"; return; }
+    std::vector<std::vector<uint8_t>> recs; int total = 0; std::unordered_map<int, int> stops;
+    probe::g_op = -1;
+    const auto& entries = idx->ref().entries();
+    for (int arc = 0; arc < (int)entries.size(); ++arc)
+        for (int fid : entries[arc].valid_file_ids) {
+            auto b = idx->ReadFile(arc, fid);
+            if (b.empty()) continue;
+            ++total; int st = 0; (void)decode_one((arc << 7) | fid, b, &st);
+            if (st > 0) { ++stops[st]; if (recs.size() < 400) recs.push_back(std::move(b)); }
+        }
+    log += "achievements: " + std::to_string(total) + " records, " + std::to_string(recs.size()) + " failing\n";
+    for (const auto& kv : stops) log += "  stop opcode " + std::to_string(kv.first) + " x" + std::to_string(kv.second) + "\n";
+    for (const auto& kv : stops) {
+        const int op = kv.first;
+        std::vector<const std::vector<uint8_t>*> mine;
+        for (const auto& b : recs) { probe::g_op = -1; int st = 0; (void)decode_one(0, b, &st); if (st == op) mine.push_back(&b); }
+        log += "  opcode " + std::to_string(op) + ": " + std::to_string(mine.size()) + " records; first records (hex from the opcode byte):\n";
+        for (size_t i = 0; i < mine.size() && i < 24; ++i) {
+            probe::g_op = -1; int st = 0; (void)decode_one(0, *mine[i], &st);
+            int from = probe::g_stop > 0 ? probe::g_stop - 1 : 0; char hx[6];
+            log += "    stop@" + std::to_string(from) + "/" + std::to_string(mine[i]->size()) + " whole record: ";
+            for (int k = 0; k < (int)mine[i]->size() && k < 400; ++k) { std::snprintf(hx, sizeof(hx), (k == from ? "|%02x " : "%02x "), (*mine[i])[k]); log += hx; }
+            log += "\n";
+        }
+        std::vector<std::pair<int, int>> res;
+        for (int L = 0; L <= 200; ++L) {
+            probe::g_op = op; probe::g_len = L; int okc = 0, okAny = 0;
+            for (const auto* b : mine) { int st = 0; (void)decode_one(0, *b, &st); if (st == 0) { ++okAny; if (probe::g_tail == 0) ++okc; } }
+            res.push_back({ okc * 1000 + okAny, L });
+        }
+        std::sort(res.rbegin(), res.rend());
+        for (int i = 0; i < 6 && i < (int)res.size(); ++i)
+            log += "    L=" + std::to_string(res[i].second) + " exact=" + std::to_string(res[i].first / 1000) + " clean=" + std::to_string(res[i].first % 1000) + " of " + std::to_string(mine.size()) + "\n";
+    }
+    probe::g_op = -1;
+}
+
 void AchievementsParseHealth(int& ok, int& total, int& stop_op, int& stop_n) {
     ok = total = stop_n = 0; stop_op = -1;
     EnsureCacheInit();

@@ -71,6 +71,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
   // storage/sound calls; everything actuating/privileged is simply absent.
   const PLUGIN_API = {
     'state.player':     { scope: 'state.read', json: true,    run: (a, pid) => bridge().playerInfo(pid) },
+    'state.serverOps':  { scope: 'state.read', json: true,    run: () => bridge().serverOps() },   // {name: opcode} for this game build
     'state.info':       { scope: 'state.read', json: true,    run: (a, pid) => bridge().playerInfo(pid) },
     'state.inventory':  { scope: 'state.read', json: true,    run: (a, pid) => bridge().inventory(pid) },
     'state.equipment':  { scope: 'state.read', json: true,    run: (a, pid) => bridge().equipment(pid) },

@@ -10,6 +10,7 @@
 #include "../../companion/SpecialShare.h" // shared layout for transient render-pass highlights
 #include "../../companion/NetProbeShare.h" // decoded server->client packet feed (companion framer hook)
 #include "../../companion/EventShare.h"    // opcode-filtered event ring (the event channel)
+#include "../../companion/ServerOps.h"     // per-build server opcodes (single source, see the header)
 
 #include <Windows.h>
 #include <TlHelp32.h>
@@ -49,6 +50,14 @@ namespace rtx::reader {
 namespace {
 
 // ---- Patterns + offsets baked from static analysis of rs2client.exe ----
+//
+// BUILD HISTORY. 940 through 949-5 shared one MainData layout. Build 950-1 (2026-09-07) grew
+// MainData by 0x40 somewhere between +0x550 and +0x18D18, so every MainData-relative offset
+// at or above +0x18D18 moved by exactly +0x40 (0x19F68 -> 0x19FA8, 0x36040 -> 0x36080,
+// 0x53588 -> 0x535C8, ...) while the inner object layouts (skill block +0x7618, account
+// +0x28/+0x30, worldView container +0x70/+0x58, ...) did not change. Re-derived with
+// the engine-op method in docs/cs2_opcodes.md; the patterns below (MainData ctor anchor,
+// tick increment) matched unchanged.
 
 // MainData chain (used for world + status). Pattern anchors a function near
 // the top of MainData ctor that does `mov [rip+disp32], rax` to publish
@@ -67,11 +76,11 @@ constexpr int       kMainAnchorAdjust  = -32;
 // inbound packet 0xB4) and it has no engine op, because scripts never read it -- so its
 // byte-pattern anchor cannot be replaced by this and must stay.
 constexpr std::uint32_t kOffClientClock = 0x528;
-constexpr std::uint32_t kOffWorld   = 0x19970;   // root + this -> ptr -> +0x20 -> +0x8 = world(int)
-constexpr std::uint32_t kOffStatus  = 0x19F60;   // root + this = status(int8)
-constexpr std::uint32_t kOffStats   = 0x198E0;   // root + this -> stats container
+constexpr std::uint32_t kOffWorld   = 0x199B0;   // root + this -> ptr -> +0x20 -> +0x8 = world(int)
+constexpr std::uint32_t kOffStatus  = 0x19FA0;   // root + this = status(int8)
+constexpr std::uint32_t kOffStats   = 0x19920;   // root + this -> stats container
 constexpr std::uint32_t kStatsInner = 0x7618;    // stats container + this -> skill block
-constexpr std::uint32_t kOffGE      = 0x19950;   // root + this -> ptr -> +0x10 = ge slot array
+constexpr std::uint32_t kOffGE      = 0x19990;   // root + this -> ptr -> +0x10 = ge slot array
 constexpr std::uint32_t kGEArrayPad = 0x10;      // bytes from slot-container start to slot 0
 constexpr std::uint32_t kGESlotSize = 0x28;      // bytes per slot
 constexpr int           kGESlotCount = 8;        // members get 8, non-members 3 (rest read as empty)
@@ -80,7 +89,7 @@ constexpr int           kGESlotCount = 8;        // members get 8, non-members 3
 // end@+0x10 }; entries stride 0x48 with id@+0x10 and the item array at
 // start@+0x18 / end@+0x20 (stride 0x8: item_id@+0, stack@+4). Bank = id 95;
 // it is only present while the bank window is open.
-constexpr std::uint32_t kOffInvData      = 0x19988;
+constexpr std::uint32_t kOffInvData      = 0x199C8;
 constexpr std::uint32_t kContainerStride = 0x48;
 constexpr int           kBankContainerId = 95;
 constexpr int           kMetalBankContainerId = 858;   // Mining&Smithing metal bank (ores + bars)
@@ -102,18 +111,18 @@ static int container_count(std::uint64_t cstart, std::uint64_t cend) {
     return n > (std::uint64_t)kMaxContainers ? kMaxContainers : (int)n;
 }
 
-// Player varp (var-player) hashmap, embedded in MainData at +0x36040. Layout:
+// Player varp (var-player) hashmap, embedded in MainData at +0x36080. Layout:
 //   root+0x8  = bucketArray (ptr)        root+0x10 = divisor (i32, bucket count)
 //   node = bucketArray[varpId % divisor]; chain node.next@+0x28; node id@+0,
 //   value@+0x8 (low 32 = the int value), type tag@+0x20 (0/1 = int).
 // An unset varp has no node and defaults to 0. Varbits are just a bit-slice of a
 // varp (def: varp id + [lsb,msb]); the slicing is done by the caller/JS.
-constexpr std::uint32_t kOffVarpHash     = 0x36040;
+constexpr std::uint32_t kOffVarpHash     = 0x36080;
 
 // Global client-var (varc int + string) hashmap: store = *(MainData + kOffVarcStore) (the same
 // object kOffStats points at); the map sits at store + kVarcHashOff with the varp map's layout
 // (buckets@+0x8, divisor@+0x10; node id@+0, value@+0x8, next@+kVarNodeNext).
-constexpr std::uint32_t kOffVarcStore    = 0x198E0;
+constexpr std::uint32_t kOffVarcStore    = 0x19920;
 constexpr std::uint32_t kVarcHashOff     = 0x7630;
 constexpr std::uint32_t kVarNodeNext     = 0x28;
 
@@ -868,7 +877,7 @@ Snapshot sample_one(State& s) {
             }
 
             // In-game character name: the account object's JagString at +0x68 (kOffStatus+8
-            // is the account pointer, 0x19F68). Kept only as a legacy-login fallback for the
+            // is the account pointer, 0x19FA8). Kept only as a legacy-login fallback for the
             // bank-cache key; display_name wins below when it is set.
             //
             // This used to read 15 raw bytes and keep the printable ones, which was wrong for
@@ -882,7 +891,7 @@ Snapshot sample_one(State& s) {
             // The engine (CHAT_PLAYERNAME, op 220) treats an empty +0x68 as "not set" and
             // falls back to the Player object's own name at Player+0xF8, reached through
             // account+0x58; we mirror that. We do NOT implement its further fallback through
-            // the player list (account+0x48 index into MainData+0x19910 -> +0x10 -> [idx*8]
+            // the player list (account+0x48 index into MainData+0x19950 -> +0x10 -> [idx*8]
             // -> +0x38) or the global playerRef, since both only matter when no Player is
             // resolvable at all, and an empty name is handled correctly anyway.
             auto acct = rpm<std::uint64_t>(s.proc, *root + (kOffStatus + 0x8));
@@ -1220,7 +1229,7 @@ std::string BuildSamplesJson() {
 }
 
 // ---- packet chat log (companion netprobe chat ring -> per-pid session log) --------
-// The companion copies every decoded op-0x15 (message_game) payload into a dedicated
+// The companion copies every decoded message_game payload (op 0x21 on 950-1, 0x15 before) into a dedicated
 // always-on ring; this drains it on the sampler thread so the log accumulates from the
 // moment of injection, independent of any panel (or the game chat window) being open.
 // Wire format, from the handler decompile (docs/server_packets_handler_map.md):
@@ -1807,7 +1816,7 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, 
 }
 std::string EquipmentJson(std::uint32_t pid) { return container_json_for(pid, 94); }
 
-// Read one player varp by id from the MainData+0x36040 hashmap. Returns 0 for an
+// Read one player varp by id from the MainData+0x36080 hashmap. Returns 0 for an
 // unset varp (no node) -- which is exactly the engine's default, so callers can
 // treat "absent" and 0 identically. `h`/`root` pre-resolved + g_mu held.
 // read_varp_found distinguishes "map unreadable / insane" (false) from "healthy map, varp
@@ -1829,7 +1838,7 @@ static bool read_varp_found(HANDLE h, std::uint64_t root, int varp_id, int& out)
             out = rpm<std::int32_t>(h, node + 0x8).value_or(0);   // tag 0/1 -> int at +0x8
             return true;
         }
-        node = rpm<std::uint64_t>(h, node + 0x28).value_or(0);
+        node = rpm<std::uint64_t>(h, node + kVarNodeNext).value_or(0);   // was a hardcoded +0x38: only bucket-head varps read right on 950-1
     }
     return true;   // healthy map, no node: engine default 0
 }
@@ -1873,7 +1882,7 @@ static bool read_eastl_string(HANDLE h, std::uint64_t strbase, std::string& out)
 // Read one varc-int (VarClientInt) by id from the GLOBAL client-var hashmap. Unlike varps (a MainData-
 // embedded map) and unlike the script-VM-context path the companion observes, varc-ints live in a global
 // store reachable purely externally (varc 1323 = the compass dig tile):
-//   client  = *ps.mgva (MainData);  store = *(client + 0x198E0);  hashmap = store + 0x7630
+//   client  = *ps.mgva (MainData);  store = *(client + 0x19920);  hashmap = store + 0x7630
 //   buckets = *(hashmap + 0x8);     count = *(hashmap + 0x10)
 //   node = buckets[id % count]; chain @+0x28; id (i32) @+0; value (i32) @+8.  Absent/unset -> 0 (engine default).
 // Locate the hashmap node for `varc_id` (layout: see kOffVarcStore). nullopt when absent, or when
@@ -2046,8 +2055,8 @@ std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv) {
 // Free-vs-member is NOT var state, which is why no varp/varbit ever shows it: clientscripts
 // ask the engine via the PLAYERMEMBER op. That op's handler (client opcode 686, build 940) is
 // literally
-//     acct = *(MainData + 0x19F68);   push(acct && *(u8*)(acct + 0x28) != 0)
-// so the same two dereferences reproduce it exactly. The account object at +0x19F68 backs the
+//     acct = *(MainData + 0x19FA8);   push(acct && *(u8*)(acct + 0x28) != 0)
+// so the same two dereferences reproduce it exactly. The account object at +0x19FA8 backs the
 // whole USERDETAIL_* op family (QUICKCHAT, LOBBY_UNREADMESSAGES, LOBBY_LASTLOGINDAY, ...), and
 // USERDETAIL_LOBBY_MEMBERSHIP reads its +0x30 as the subscription expiry, hence the neutral
 // field names. Offsets come from the client's op-handler registration table -- see
@@ -2067,7 +2076,7 @@ std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv) {
 // Jagex-account detection = JX_DISPLAY_NAME present in the target's environment (the Jagex
 // Launcher sets it; legacy logins leave it empty). A non-launcher start-up would read as
 // legacy and merely UNDER-state the budget, which is the safe direction.
-constexpr std::uint32_t kOffAccount      = 0x19F68;   // MainData -> account / user-detail object
+constexpr std::uint32_t kOffAccount      = 0x19FA8;   // MainData -> account / user-detail object
 constexpr std::uint32_t kOffAcctIsMember = 0x28;      // u8, nonzero = members
 constexpr std::uint32_t kOffAcctExpiry   = 0x30;      // u64, raw value LOBBY_MEMBERSHIP divides down
 constexpr int           kPremierVarbit   = 50572;
@@ -2079,7 +2088,7 @@ constexpr int           kPremierVarbit   = 50572;
 // keyboard stamp count: cursor movement inside the game window resets the timer even while the
 // window is inactive (the client watches the mouse through a GLOBAL low-level hook), whereas
 // keys only count while the game window is active (they arrive as ordinary window messages).
-constexpr std::uint32_t kOffInputReporter = 0x19870;  // MainData -> input reporter
+constexpr std::uint32_t kOffInputReporter = 0x198B0;  // MainData -> input reporter
 constexpr std::uint32_t kOffRepPointerA   = 0x28;     // u64 ms, last pointer flush (recorder A)
 constexpr std::uint32_t kOffRepPointerB   = 0x50;     // u64 ms, last pointer flush (recorder B)
 constexpr std::uint32_t kOffRepKeyboard   = 0x2858;   // u64 ms, last key batch (0 = none yet)
@@ -2135,7 +2144,7 @@ std::string MembershipJson(std::uint32_t pid) {
     return buf;
 }
 
-// Dump EVERY currently-set player varp by polling the MainData+0x36040 hashmap directly
+// Dump EVERY currently-set player varp by polling the MainData+0x36080 hashmap directly
 // (every bucket -> chain), keyed "4:<id>" (scope 4 = varp) to match the Vars tab. A varp the
 // SERVER updates but no CS2 script re-reads (ore/wood/soil/gem box counts) is never re-pushed,
 // so the companion push-observer shows it stale while a direct poll stays current.
@@ -2176,7 +2185,7 @@ std::string VarpsDumpAllJson(std::uint32_t pid) {
 }
 
 // Dump EVERY currently-set varc-int by polling the GLOBAL client-var hashmap directly (store+0x7630, where
-// store = *(MainData+0x198E0)), keyed "5:<id>" (scope 5 = varc-int) to match the Vars tab. External-only --
+// store = *(MainData+0x19920)), keyed "5:<id>" (scope 5 = varc-int) to match the Vars tab. External-only --
 // the companion's in-process varc capture is disabled, so this direct poll is how varcs reach the panel.
 // Same node layout as the varp map (id@+0, value@+8, next@+0x28). Offsets build-specific (re-verify on update).
 std::string VarcsDumpAllJson(std::uint32_t pid) {
@@ -2523,20 +2532,20 @@ bool VarsWatch(std::uint32_t pid, bool on) {
 
 // ---- server -> client packet protocol -----------------------------------------
 // The client keeps a per-opcode descriptor table for inbound (server->client) messages.
-// The inbound framer indexes it by the deciphered opcode (valid 0x00..0xE5); each entry
+// The inbound framer indexes it by the deciphered opcode (valid 0x00..0xDE on 950-1); each entry
 // is a pointer to a 0x50-byte descriptor: {+0x00 int opcode, +0x04 int length, +0x10 ptr
 // decode/handle vtable (handler fn at vtable+0x10)}. length >=0 = fixed, -1 = 1-byte size
 // prefix (var-byte), -2 = 2-byte size prefix (var-short). The table base is held at a
-// module global (rs2client+0xC6A158 on the current build) and populated during init.
+// module global (rs2client+0xC70BB0 on the current build) and populated during init.
 //
 // Reading it here (cross-process, no hook) enumerates the WHOLE protocol the client
 // understands, live from the running build. Resolution is RVA-first, then a structural
 // fallback that proves a candidate by the descriptor invariant (desc[op].opcode == op),
 // so a game update that moves the table is self-correcting rather than silently wrong.
 namespace {
-constexpr std::uint64_t kOpTableRva   = 0xC6A158;   // module global holding the table base
-constexpr int           kOpMax        = 0xE5;       // highest valid opcode (framer bails above)
-constexpr int           kOpCount      = kOpMax + 1; // 230
+constexpr std::uint64_t kOpTableRva   = 0xC70BB0;   // module global holding the table base
+constexpr int           kOpMax        = 0xDE;       // highest valid opcode (framer bails above; 0xE5 through 949-5)
+constexpr int           kOpCount      = kOpMax + 1; // 223
 constexpr std::uint64_t kDescOpcodeOff = 0x00;
 constexpr std::uint64_t kDescLenOff    = 0x04;
 constexpr std::uint64_t kDescVtblOff   = 0x10;
@@ -2739,16 +2748,15 @@ std::uint32_t ev_u32be(const std::uint8_t* b) {
 bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, int len) {
     char t[128];
     switch (op) {
-    case 0x04: {   // [xp: u32 LE][level: b4 + 0x80][skill: -b5]
+    case rtx::sops::kSkillUpdate: {   // 950-1: [skill: -b0][level: -b1][xp: u32 BE]  (949: [xp LE][level b4+0x80][skill -b5])
         if (n < 6) return false;
-        const std::uint32_t xp = (std::uint32_t)b[0] | ((std::uint32_t)b[1] << 8) |
-                                 ((std::uint32_t)b[2] << 16) | ((std::uint32_t)b[3] << 24);
-        const int level = (b[4] + 0x80) & 0xFF, sk = (256 - b[5]) & 0xFF;
+        const int sk = (256 - b[0]) & 0xFF, level = (256 - b[1]) & 0xFF;
+        const std::uint32_t xp = ev_u32be(b + 2);
         std::snprintf(t, sizeof(t), "\"kind\":\"skill_update\",\"skill\":%d,\"name\":\"%s\",\"level\":%d,\"xp\":%u",
                       sk, sk < 29 ? kEvSkills[sk] : "", level, xp);
         o += t; return true;
     }
-    case 0x2B: {   // [container: u16 BE][flags: u8] then per slot [slot smart][itemId+1: u24 BE][qty u8 | 0xFF u32 BE][variant if flags&2]
+    case rtx::sops::kContainerUpdate: {   // [container: u16 BE][flags: u8] then per slot [slot smart][itemId+1: u24 BE][qty u8 | 0xFF u32 BE][variant if flags&2]
         if (n < 3) return false;
         std::uint32_t p = 0;
         const int cont = (b[0] << 8) | b[1]; p = 2;
@@ -2777,7 +2785,7 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         o += "],\"partial\":"; o += (partial || (std::uint32_t)len > n) ? "true" : "false";
         return true;
     }
-    case 0x52: {   // [sig NUL-terminated, i/s/l][args in REVERSE sig order: s = NUL string, i = i32 BE, l = i64 BE][scriptId: i32 BE]
+    case rtx::sops::kRunClientScript: {   // [sig NUL-terminated, i/s/l][args in REVERSE sig order: s = NUL string, i = i32 BE, l = i64 BE][scriptId: i32 BE]
         // The script id sits at the END, so a packet cut by the payload window loses it: such a
         // record still decodes the arguments it has and reports script -1 with partial:true.
         const bool cut = len > (int)n;
@@ -2818,15 +2826,15 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         for (std::size_t i = 0; i < args.size(); ++i) { if (i) o += ","; o += args[i].empty() ? std::string("null") : args[i]; }
         o += "]"; return true;
     }
-    case 0x5C:     // reads 1 byte -> skill block +0x18
+    case rtx::sops::kRunEnergy:     // reads 1 byte -> skill block +0x18
         if (n < 1) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"run_energy\",\"value\":%d", (int)b[0]);
         o += t; return true;
-    case 0x00:     // reads 2 bytes, byte-swapped -> skill block +0x1c
+    case rtx::sops::kRunWeight:     // reads 2 bytes, byte-swapped -> skill block +0x1c
         if (n < 2) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"run_weight\",\"value\":%d", (int)(std::int16_t)((b[0] << 8) | b[1]));
         o += t; return true;
-    case 0x8D:     // two u32 BE, client echoes back (9-byte reply)
+    case rtx::sops::kPingEcho:     // two u32 BE, client echoes back (9-byte reply)
         if (n < 8) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"ping\",\"a\":%u,\"b\":%u", ev_u32be(b), ev_u32be(b + 4));
         o += t; return true;
@@ -3044,7 +3052,7 @@ bool SkillsXp(std::uint32_t pid, int out[29]) {
 // Layout for the current build. All scene entities -- players, NPCs,
 // scenery, ground items -- live in one vector owned by the worldView's "scene worker":
 //
-//   container = *(root + 0x19990)
+//   container = *(root + 0x199D0)
 //   idx       = *(int)(container + 0x70)        active worldView index
 //   worldView = *( *(container + 0x58) + idx*0x10 + 8 )
 //   worker    = *(worldView + 0x10170)
@@ -3317,7 +3325,7 @@ bool validate_scene_worker(HANDLE h, std::uint64_t worker, CamProbes* probes, bo
         if (!ep || *ep <= 0x10000) continue;
         auto sec = rpm<std::uint64_t>(h, *ep + 0x1A0);
         if (!sec || *sec <= 0x10000) continue;
-        int t = rpm<std::uint8_t>(h, *sec + 0x10).value_or(0xFF);
+        int t = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xFF);
         if (!(t <= 5 || (t >= 10 && t <= 13))) continue;
         ++typed;
         if (probes && probes->n < 8 && (t == 1 || t == 2)) {
@@ -3720,15 +3728,15 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     // gfx at sec+0x74; position on the entity (ep+0x30/0x38). vt4/vgfx4 count ALL type-4
                     // for diagnostics; the scan ring is NOT a vector entity (it arrives via the
                     // companion highlight merge below), so keep the position gate to avoid (0,0) clutter.
-                    int gfx  = rpm<std::int32_t>(h, *sec + 0x74).value_or(-1);
+                    int gfx  = rpm<std::int32_t>(h, *sec + rtx::scn::kT4Gfx).value_or(-1);
                     auto ex = rpm<float>(h, *ep + 0x30);
                     auto ey = rpm<float>(h, *ep + 0x38);
                     int sx4 = ex ? (int)(*ex / 512.f) : 0;
                     int sy4 = ey ? (int)(*ey / 512.f) : 0;
                     ++vt4; vgfx4 = gfx;
                     if (sx4 > 0 && sy4 > 0) {
-                        int uid4 = rpm<std::int32_t>(h, *sec + 0x88).value_or(0);
-                        int pl4  = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);   // plane (sec+0x40)
+                        int uid4 = rpm<std::int32_t>(h, *sec + 0x98).value_or(0);
+                        int pl4  = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // plane (sec+0x40)
                         if (pl4 < 0 || pl4 > 3) pl4 = 0;
                         if (sc4) specials.push_back(',');
                         char sbuf[160];
@@ -3758,16 +3766,16 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     int sx13 = ex ? (int)(*ex / 512.f) : 0;
                     int sy13 = ey ? (int)(*ey / 512.f) : 0;
                     if (sx13 > 0 && sy13 > 0) {
-                        auto dxf = rpm<float>(h, *sec + 0x74);
-                        auto dyf = rpm<float>(h, *sec + 0x7C);
+                        auto dxf = rpm<float>(h, *sec + 0x84);
+                        auto dyf = rpm<float>(h, *sec + 0x8C);
                         // NaN fails every comparison, so this also rejects the walk marker's junk.
                         bool hasDest = dxf && dyf && *dxf > 0.f && *dxf < 1e9f && *dyf > 0.f && *dyf < 1e9f;
                         int dtx = hasDest ? (int)(*dxf / 512.f) : 0;
                         int dty = hasDest ? (int)(*dyf / 512.f) : 0;
                         bool isScan = hasDest && dtx == sx13 && dty == sy13;
-                        int pl13 = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);
+                        int pl13 = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
                         if (pl13 < 0 || pl13 > 3) pl13 = 0;
-                        int uid13 = rpm<std::int32_t>(h, *sec + 0x88).value_or(0);
+                        int uid13 = rpm<std::int32_t>(h, *sec + 0x98).value_or(0);
                         if (sc4) specials.push_back(',');
                         char sbuf[192];
                         std::snprintf(sbuf, sizeof(sbuf),
@@ -3802,11 +3810,11 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     if (name.empty()) continue;               // players always carry a live name
                     bool self = (uid == local_uid);
                     if (self) { player_x = tx; player_y = ty;
-                                player_plane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0); }
+                                player_plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0); }
                     int combat = rpm<std::int32_t>(h, *sec + kCombat).value_or(-1);
                     if (combat < 0 || combat > 5000) combat = -1;
                     int anim = rpm<std::int32_t>(h, *sec + 0xA90).value_or(-1);  // shared actor anim
-                    int plane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);   // shared actor plane
+                    int plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // shared actor plane
                     if (pc) players.push_back(',');
                     std::snprintf(buf, sizeof(buf),
                         "{\"uid\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"combat\":%d,\"anim\":%d,\"self\":%s,\"name\":\"",
@@ -3861,7 +3869,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                             face = static_cast<int>(deg + 0.5) % 360;
                         }
                     }
-                    int npcPlane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);   // shared actor plane
+                    int npcPlane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // shared actor plane
                     std::snprintf(buf, sizeof(buf),
                         "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
                         reportId, uid, tx, ty, npcPlane, meta.combat_level, anim, face, meta.size);
@@ -4087,9 +4095,24 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
 // read_view_matrix (the offset drifts across builds: 0x13030 -> 0x13070 ->
 // 0x13970 on 949). See project_runetoolsx_world_to_screen.
 
+// Interface-manager object: mainData+0x19900 (0x198C0 through 949-5) -> owner. Through
+// 949-5 the open-group array lived in a container at owner+0x30 (begin/end at +0x58/+0x60).
+// On 950-1 the owner was reshuffled: the array begin/end are at owner+0x50/+0x58 (live:
+// 1926 entries incl. the 1477 game frame; the +0xC8/+0xD0 pair is a different, one-entry
+// list). Entries stay 0x10 wide with the group object at +8 and its id at +0.
+//
+// WIDGET NODES also changed on 950-1 (all live-verified against 1477:27/28, the backpack
+// item grid and text rows): component ids i16 @+0x38/+0x3A/+0x3C (was +0x28), rect
+// x/y/w/h @+0x98..+0xA4 (was +0x70), display-text pointer @+0xB8 (was +0x90), the SSO
+// string / graphic key union @+0x1B0 (was +0x180/+0x188), item id @+0x1D8 and stack
+// @+0x1E0 (was +0x1A0/+0x1A8), child vectors @+0x1D0/+0x1B8/+0x200 (was +0x198/+0x180/
+// +0x1C8). The hidden flag (was +0x50) has not been re-derived yet.
+constexpr std::uint64_t kIfaceGroupsBegin = 0x50;
+constexpr std::uint64_t kIfaceGroupsEnd   = 0x58;
+
 // Gameview (3D viewport) rect from the interface tree. Static chain:
-// mainData+0x198C0 -> owner; container =
-// owner+0x30; group array at container+0x58..+0x60 (stride 0x10, entry+8 =
+// mainData+0x19900 -> owner; container =
+// owner+0x50..+0x58 = group array begin/end (stride 0x10, entry+8 =
 // group obj, interface id @+0). Group 1477 = the game frame; child 27 -> child
 // 28 = the 3D viewport. Widget node: ids i16 @+0x28/+0x2A/+0x2C, rect x@+0x70
 // y@+0x74 w@+0x78 h@+0x7C. Returns false (caller leaves gv_* = 0 -> use window)
@@ -4100,10 +4123,9 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
-    std::uint64_t owner = r64(mainData + 0x198C0);
+    std::uint64_t owner = r64(mainData + 0x19900);
     if (owner <= 0x10000) return false;
-    std::uint64_t cont = owner + 0x30;
-    std::uint64_t gs = r64(cont + 0x58), ge = r64(cont + 0x60);
+    std::uint64_t gs = r64(owner + kIfaceGroupsBegin), ge = r64(owner + kIfaceGroupsEnd);
     if (gs <= 0x10000 || ge <= gs || (ge - gs) % 0x10 || (ge - gs) > 0x200000) return false; // UI-container gate
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
         std::uint64_t ap2 = r64(g + 8);
@@ -4120,7 +4142,7 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
             for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
                 std::uint64_t nd = r64(wn);
                 if (nd <= 0x10000) continue;
-                int w = r32(nd + 0x78), hh = r32(nd + 0x7c);
+                int w = r32(nd + 0xa0), hh = r32(nd + 0xa4);
                 long long area = (long long)w * hh;
                 if (w > 0 && hh > 0 && area > best) { best = area; *rootW = w; *rootH = hh; }
             }
@@ -4128,9 +4150,9 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
         for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
             std::uint64_t nd = r64(wn);
             if (nd <= 0x10000) continue;
-            if (r16(nd + 0x28) != 1477 || r16(nd + 0x2a) != 27 || r16(nd + 0x2c) != -1) continue;  // 1477:27
-            int px = r32(nd + 0x70), py = r32(nd + 0x74);             // parent (accumulates into child)
-            const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };      // child-array offsets
+            if (r16(nd + 0x38) != 1477 || r16(nd + 0x3a) != 27 || r16(nd + 0x3c) != -1) continue;  // 1477:27
+            int px = r32(nd + 0x98), py = r32(nd + 0x9c);             // parent (accumulates into child)
+            const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };      // child-array offsets
             for (int k = 0; k < 3; ++k) {
                 std::uint64_t cs = r64(nd + co[k]), ce = r64(nd + co[k] + 8);
                 std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -4140,10 +4162,10 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
                     if (ch <= 0x10000) continue;
                     std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
                     if (d <= 0x3000) continue;                         // child lives in a separate alloc
-                    if (r16(ch + 0x28) != 1477 || r16(ch + 0x2a) != 28 || r16(ch + 0x2c) != -1) continue;  // 1477:28
-                    int cw = r32(ch + 0x78), chh = r32(ch + 0x7c);
+                    if (r16(ch + 0x38) != 1477 || r16(ch + 0x3a) != 28 || r16(ch + 0x3c) != -1) continue;  // 1477:28
+                    int cw = r32(ch + 0xa0), chh = r32(ch + 0xa4);
                     if (cw <= 0 || chh <= 0) return false;
-                    gx = px + r32(ch + 0x70); gy = py + r32(ch + 0x74); gw = cw; gh = chh;
+                    gx = px + r32(ch + 0x98); gy = py + r32(ch + 0x9c); gw = cw; gh = chh;
                     return true;
                 }
             }
@@ -4273,7 +4295,7 @@ static std::string iface_text_at(HANDLE h, std::uint64_t node, std::uint64_t fie
 
 // Display text at the usual field (*(node+0x90), legacy I_textP).
 static std::string iface_text(HANDLE h, std::uint64_t node) {
-    return iface_text_at(h, node, 0x90, 127);
+    return iface_text_at(h, node, 0xb8, 127);
 }
 
 // SECOND text member at node+0x180: a 24-byte FBString-style SSO string. Flag
@@ -4285,7 +4307,7 @@ static std::string iface_text(HANDLE h, std::uint64_t node) {
 // lines -- text the +0x90 field doesn't carry.
 static std::string iface_sso_text(HANDLE h, std::uint64_t node) {
     std::uint8_t raw[0x18];
-    if (!rpm_bytes(h, node + 0x180, raw, sizeof(raw))) return {};
+    if (!rpm_bytes(h, node + 0x1b0, raw, sizeof(raw))) return {};
     std::uint8_t flag = raw[0x17];
     char buf[512] = {};
     int len = 0;
@@ -4348,13 +4370,13 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
         if (!blk) return (int)rpm<std::int16_t>(h, node + off).value_or(0);
         std::int16_t v; std::memcpy(&v, nb + off, 2); return v;
     };
-    int i1 = f16(0x28), i2 = f16(0x2a), i3 = f16(0x2c);
-    int x = f32(0x70), y = f32(0x74), w = f32(0x78), hh = f32(0x7c);
+    int i1 = f16(0x38), i2 = f16(0x3a), i3 = f16(0x3c);
+    int x = f32(0x98), y = f32(0x9c), w = f32(0xa0), hh = f32(0xa4);
     int ax = baseX + x, ay = baseY + y;        // absolute screen position of this node
     std::string txt = iface_text(h, node);     // *(node+0x90) display text (chat, labels, ...)
     if (txt.empty()) txt = iface_sso_text(h, node);   // +0x180 SSO member (dialogue options, inline labels)
-    int item = f32(0x1a0);                     // item id on an item slot; a packed ARGB colour on text/graphic
-    int amt  = f32(0x1a8);              // item stack / quantity (currency amounts, item counts)
+    int item = f32(0x1d8);                     // item id on an item slot; a packed ARGB colour on text/graphic
+    int amt  = f32(0x1e0);              // item stack / quantity (currency amounts, item counts)
     // node+0x188 holds EITHER a small cache sprite id (zero-extended into 8 bytes) OR a pointer to a
     // dynamic-graphic content object -- but ONLY on the graphic classes. On TEXT nodes the whole
     // +0x180..0x197 span IS the SSO string object, so +0x188 reads the heap-string SIZE (live: GE /
@@ -4363,12 +4385,12 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     // scalars there (live: ff/bc/80 + 00s), text nodes keep string data -- any PRINTABLE ASCII marks
     // string storage, not a sprite. A node with resolved text is never sprite-bearing either: icon +
     // text are SIBLING nodes (buff slot 19:0 sprite vs 19:1 countdown).
-    std::uint64_t sprRaw = f64(0x188);
+    std::uint64_t sprRaw = f64(0x1b0);
     bool sprUnset = sprRaw == ~0ull;               // all-FF = the unset sentinel: NO graphic content (not "dynamic")
     bool sprOk = txt.empty();
     if (sprOk) {
         std::uint8_t sb[8] = {};
-        if (blk ? (std::memcpy(sb, nb + 0x180, 8), true) : rpm_bytes(h, node + 0x180, sb, 8))
+        if (blk ? (std::memcpy(sb, nb + 0x1b0, 8), true) : rpm_bytes(h, node + 0x1b0, sb, 8))
             for (int i = 1; i < 8 && sprOk; ++i)
                 if (sb[i] >= 0x20 && sb[i] < 0x7f) sprOk = false;
     }
@@ -4383,7 +4405,8 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     bool sprIsObj = sprOk && !sprUnset && !sprIsItem && sprRaw > 0xFFFFFFFFull;   // 64-bit heap pointer -> dynamic graphic
     int  spr      = (sprOk && !sprIsObj && !sprUnset && sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
     if (sprIsItem) spr = 131072 + (int)(sprRaw & 0xFFFFFF);
-    bool vis = ((std::uint32_t)f32(0x50) & 0x01010000u) == 0x01010000u;
+    bool vis = true;   // 950-1: the hidden flag is not at +0x50 any more and has not been re-derived (no node in the
+                   // live tree carries the old 0x01010000 pattern); report everything visible rather than nothing
     // Component TYPE, inferred from the node's payload (build-stable; the true discriminator is the C++
     // vtable at node+0x0, but those RVAs change every build). Verified against CS2-proven nodes: comp 14
     // (CC_DELETEALL) -> has children -> layer; comp 15 (IF_SETTEXT) -> text; item icons carry the item id
@@ -4402,7 +4425,7 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
         v.ok = true; v.first = r64(v.ca);
         return v;
     };
-    const ChildVec cv198 = childVec(0x198), cv180 = childVec(0x180), cv1c8 = childVec(0x1c8);
+    const ChildVec cv198 = childVec(0x1d0), cv180 = childVec(0x1b8), cv1c8 = childVec(0x200);
     auto hasChild = [](const ChildVec& v) { return v.ok && v.first > 0x10000; };   // at least one real child pointer
     bool hasKids   = hasChild(cv198) || hasChild(cv1c8) || (txt.empty() && hasChild(cv180));
     // +0x1a0 is CLASS-dependent (per the node's widget class): item id on item-icon
@@ -4450,11 +4473,10 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
 static void iface_groups_range(HANDLE h, std::uint64_t mainData,
                                std::uint64_t& gs, std::uint64_t& ge) {
     gs = ge = 0;
-    std::uint64_t owner = rpm<std::uint64_t>(h, mainData + 0x198C0).value_or(0);
+    std::uint64_t owner = rpm<std::uint64_t>(h, mainData + 0x19900).value_or(0);
     if (owner <= 0x10000) return;
-    std::uint64_t cont = owner + 0x30;
-    std::uint64_t s = rpm<std::uint64_t>(h, cont + 0x58).value_or(0);
-    std::uint64_t e = rpm<std::uint64_t>(h, cont + 0x60).value_or(0);
+    std::uint64_t s = rpm<std::uint64_t>(h, owner + kIfaceGroupsBegin).value_or(0);
+    std::uint64_t e = rpm<std::uint64_t>(h, owner + kIfaceGroupsEnd).value_or(0);
     if (s <= 0x10000 || e <= s || (e - s) % 0x10 || (e - s) > 0x200000) return;
     gs = s; ge = e;
 }
@@ -4659,11 +4681,11 @@ static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount
         std::function<void(std::uint64_t,int,int,int)> walk =
             [&](std::uint64_t node, int bx, int by, int depth) {
             if (found || depth > 14) return;
-            int ax = bx + r32(node + 0x70), ay = by + r32(node + 0x74);
-            if (r16(node + 0x2a) == mount_comp && r32(node + 0x78) > 0 && r32(node + 0x7c) > 0) {
+            int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
+            if (r16(node + 0x3a) == mount_comp && r32(node + 0xa0) > 0 && r32(node + 0xa4) > 0) {
                 fx = ax; fy = ay; found = true; return;
             }
-            const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+            const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
             for (int k = 0; k < 3 && !found; ++k) {
                 std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
                 std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -4751,8 +4773,8 @@ static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
         bool found = false;
         std::function<void(std::uint64_t,int)> walk = [&](std::uint64_t node, int depth) {
             if (found || depth > 16) return;
-            if (spr(node + 0x188) == sprite_id) { found = true; return; }
-            const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+            if (spr(node + 0x1b0) == sprite_id) { found = true; return; }
+            const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
             for (int k = 0; k < 3 && !found; ++k) {
                 std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8), ca = cs + 8, cb = ce + 8;
                 if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
@@ -4868,8 +4890,8 @@ static bool iface_live_frame_origin(HANDLE h, std::uint64_t gs, std::uint64_t ge
     std::function<void(std::uint64_t,int,int,int)> fwalk =
         [&](std::uint64_t node, int bx, int by, int depth) {
         if (depth > 14) return;
-        int ax = bx + r32(node + 0x70), ay = by + r32(node + 0x74);
-        int w2 = r32(node + 0x78), h2 = r32(node + 0x7c);
+        int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
+        int w2 = r32(node + 0xa0), h2 = r32(node + 0xa4);
         if (w2 >= wLo && w2 <= wHi && h2 >= hLo && h2 <= hHi) {
             if (anyCount == 0) { anyCount = 1; anyX = ax; anyY = ay; anyW = w2; anyH = h2; }
             else if (std::abs(ax - anyX) > 4 || std::abs(ay - anyY) > 4) anyCount = 2;   // second DISTINCT position -> ambiguous
@@ -4882,7 +4904,7 @@ static bool iface_live_frame_origin(HANDLE h, std::uint64_t gs, std::uint64_t ge
                 }
             }
         }
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3; ++k) {
             std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
             std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -5030,8 +5052,8 @@ int CompassHeadingValue(std::uint32_t pid) {
         for (std::uint64_t w = a; w + 0x18 <= b; w += 0x18) {
             std::uint64_t nd = r64(w);
             if (nd <= 0x10000) continue;
-            if (r16(nd + 0x2a) == 5)            // component id 5 = the needle
-                return r32(nd + 0x180);          // its rotation
+            if (r16(nd + 0x3a) == 5)            // component id 5 = the needle
+                return r32(nd + 0x1b0);          // its rotation (+0x180 through 949-5)
         }
         return -1;   // group open but needle component not found
     }
@@ -5058,7 +5080,7 @@ std::string CompassTargetJson(std::uint32_t pid) {
 
 // LIVE read of the scan orb's ring graphic from the scene-graphic REGISTRY, the second read
 // path recorded when op83 was reverse-engineered: op83's handler stores its 0x2c-byte record
-// at MainData+0x198b0 (+0x90 + slot*0x2c) with the coordinate converted to a FINE world
+// at MainData+0x198f0 (+0x90 + slot*0x2c) with the coordinate converted to a FINE world
 // position (0x100 + tile*512) as floats. Reading the registry beats reading the packet: the
 // record PERSISTS for as long as the ring is drawn, while the packet only exists on the tick
 // it arrived (so a 2.5s freshness window either misses it or goes stale mid-scan).
@@ -5066,7 +5088,7 @@ std::string CompassTargetJson(std::uint32_t pid) {
 // op83 is generic, so every plausible tile found is returned for the caller to validate
 // against the clue's own candidate spots.
 static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<std::pair<int,int>>& out) {
-    constexpr std::uint64_t kOffRegistry = 0x198b0, kRecBase = 0x90, kRecSize = 0x2c, kSlots = 8;
+    constexpr std::uint64_t kOffRegistry = 0x198f0, kRecBase = 0x90, kRecSize = 0x2c, kSlots = 8;
     // A fine coordinate is 0x100 + tile*512, so a valid one is positive, under the world edge,
     // and lands on a tile centre.
     auto fine_to_tile = [](float f) -> int {
@@ -5170,17 +5192,17 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
     int nearItem = -1, nearDist = 1 << 30;   // best same-sub-index item on another component
     std::function<void(std::uint64_t, int)> walk = [&](std::uint64_t node, int depth) {
         if (found >= 0 || depth > 12 || visited++ > 6000) return;
-        if (r16(node + 0x2c) == sub) {
-            int c = r16(node + 0x2a);
+        if (r16(node + 0x3c) == sub) {
+            int c = r16(node + 0x3a);
             if (c == comp) ++matched;
-            int item = r32(node + 0x1a0);
-            if (item > 0 && item < 200000 && iface_key_is_item(r64(node + 0x188), item)) {
+            int item = r32(node + 0x1d8);
+            if (item > 0 && item < 200000 && iface_key_is_item(r64(node + 0x1b0), item)) {
                 if (c == comp) { found = item; return; }
                 int d = c > comp ? c - comp : comp - c;
                 if (d < nearDist) { nearDist = d; nearItem = item; }
             }
         }
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3 && found < 0; ++k) {
             std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8);
             std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -5213,7 +5235,7 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
 
 std::string HoverEntityJson(std::uint32_t pid) {
     const char* kNone = "{\"ok\":false}";
-    constexpr std::uint64_t kOffInputProc = 0x198E8, kHoverSlot = 0x13F8;
+    constexpr std::uint64_t kOffInputProc = 0x19928, kHoverSlot = 0x13F8;   // 0x198E8 through 949-5 (+0x40 on 950-1)
     auto ps = snap_proc(pid);
     if (!ps) return kNone;
     HANDLE h = ps.h;
@@ -5329,9 +5351,9 @@ std::string HoverEntityJson(std::uint32_t pid) {
     if (targetless) return out + "}";
     // NPC/player: resolve the scene uid in the live entity vector (same chain as PlayerInfoJson).
     if (ref > 0) {
-        constexpr std::uint64_t kContainer = 0x19990, kActiveIdx = 0x70, kEntryArr = 0x58,
+        constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
                                 kEntryWv = 0x8, kVecBegin = 0x138, kVecEnd = 0x140,
-                                kSecPtr = 0x1A0, kType = 0x10, kUid = 0x88,
+                                kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
                                 kPosX = 0x270, kPosY = 0x278, kNpcCfg = 0x1080;
         auto cont = rpm<std::uint64_t>(h, *root + kContainer);
         auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + kActiveIdx) : std::nullopt;
@@ -5354,7 +5376,7 @@ std::string HoverEntityJson(std::uint32_t pid) {
                     if (t != 1 && t != 2) continue;
                     float fx = rpm<float>(h, *sec + kPosX).value_or(0);
                     float fy = rpm<float>(h, *sec + kPosY).value_or(0);
-                    int plane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);
+                    int plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
                     if (plane < 0 || plane > 3) plane = 0;
                     int cfg = (t == 1) ? rpm<std::int32_t>(h, *sec + kNpcCfg).value_or(-1) : -1;
                     char enm[40] = {0};
@@ -5402,7 +5424,7 @@ std::string PuzzleStateJson(std::uint32_t pid) {
     }
     if (!ap2) return kEmpty;
     auto gather = [&](std::uint64_t node, std::uint64_t* buf, int& n, int cap) {
-        const std::uint64_t offs[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t offs[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int oi = 0; oi < 3; ++oi) {
             std::uint64_t cs = r64(node + offs[oi]), ce = r64(node + offs[oi] + 8);
             std::uint64_t a = cs + 8, b = ce + 8;
@@ -5419,7 +5441,7 @@ std::string PuzzleStateJson(std::uint32_t pid) {
     std::uint64_t grid = 0; int guard = 0;
     while (sp > 0 && guard++ < 8000) {
         std::uint64_t n = stack[--sp];
-        if (r16s(n + 0x2a) == 18 && r16s(n + 0x2c) == -1) { grid = n; break; }
+        if (r16s(n + 0x3a) == 18 && r16s(n + 0x3c) == -1) { grid = n; break; }
         gather(n, stack, sp, 4096);
     }
     if (!grid) return kEmpty;
@@ -5427,9 +5449,9 @@ std::string PuzzleStateJson(std::uint32_t pid) {
     int board[25]; for (int i = 0; i < 25; i++) board[i] = -1;
     int filled = 0;
     for (int i = 0; i < cn; i++) {
-        int s = r16s(cells[i] + 0x2c);
+        int s = r16s(cells[i] + 0x3c);
         if (s < 0 || s > 24 || board[s] != -1) continue;
-        board[s] = r16u(cells[i] + 0x188);
+        board[s] = r16u(cells[i] + 0x1b0);
         filled++;
     }
     if (filled < 25) return kEmpty;
@@ -5466,9 +5488,9 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
     std::function<void(std::uint64_t,int,int,int)> find =
         [&](std::uint64_t node, int bx, int by, int depth) {
         if (grid || depth > 14) return;
-        int ax = bx + r32(node + 0x70), ay = by + r32(node + 0x74);
-        if (r16s(node + 0x2a) == 18 && r16s(node + 0x2c) == -1) { grid = node; gx = ax; gy = ay; return; }
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
+        if (r16s(node + 0x3a) == 18 && r16s(node + 0x3c) == -1) { grid = node; gx = ax; gy = ay; return; }
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3 && !grid; ++k) {
             std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8), ca = cs + 8, cb = ce + 8;
             if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
@@ -5485,15 +5507,15 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
     if (!grid) return kEmpty;
     // Gather the grid's 25 direct children (the cells), placed by sub (= row-major grid index).
     int cx[25], cy[25], cw[25] = {0}, ch_[25];
-    const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+    const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
     for (int k = 0; k < 3; ++k) {
         std::uint64_t cs = r64(grid + co[k]), ce = r64(grid + co[k] + 8), ca = cs + 8, cb = ce + 8;
         if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
         for (std::uint64_t c = ca; c + 0x18 <= cb; c += 0x18) {
             std::uint64_t cell = r64(c); if (cell <= 0x10000) continue;
-            int s = r16s(cell + 0x2c); if (s < 0 || s > 24 || cw[s] > 0) continue;
-            cx[s] = gx + r32(cell + 0x70); cy[s] = gy + r32(cell + 0x74);
-            cw[s] = r32(cell + 0x78); ch_[s] = r32(cell + 0x7c);
+            int s = r16s(cell + 0x3c); if (s < 0 || s > 24 || cw[s] > 0) continue;
+            cx[s] = gx + r32(cell + 0x98); cy[s] = gy + r32(cell + 0x9c);
+            cw[s] = r32(cell + 0xa0); ch_[s] = r32(cell + 0xa4);
         }
     }
     // Diagnostic: how the rects were assembled (panel origin vs tree anchor), change-gated.
@@ -5550,17 +5572,17 @@ std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& 
     std::function<void(std::uint64_t,int,int,int)> walk =
         [&](std::uint64_t node, int bx, int by, int depth) {
         if (depth > 16) return;
-        int ax = bx + r32(node + 0x70), ay = by + r32(node + 0x74);
-        int comp = r16s(node + 0x2a);
-        if (r16s(node + 0x2c) == -1 && std::find(want.begin(), want.end(), comp) != want.end()
+        int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
+        int comp = r16s(node + 0x3a);
+        if (r16s(node + 0x3c) == -1 && std::find(want.begin(), want.end(), comp) != want.end()
             && std::find(seen.begin(), seen.end(), comp) == seen.end()) {
             seen.push_back(comp);
             comps += (comps.empty() ? "" : ",");
             // ax/ay already include the origin (the walk is seeded with ox,oy below) -- do NOT add ox/oy again.
             comps += "\"" + std::to_string(comp) + "\":[" + std::to_string(ax) + "," + std::to_string(ay)
-                   + "," + std::to_string(r32(node + 0x78)) + "," + std::to_string(r32(node + 0x7c)) + "]";
+                   + "," + std::to_string(r32(node + 0xa0)) + "," + std::to_string(r32(node + 0xa4)) + "]";
         }
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3; ++k) {
             std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8), ca = cs + 8, cb = ce + 8;
             if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
@@ -5618,14 +5640,14 @@ std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite) 
     std::function<void(std::uint64_t,int,int,int,int,int,int,int,int)> walk =
         [&](std::uint64_t node, int bx, int by, int depth, int px, int py, int pw, int ph, int pv) {
         if (found || depth > 16) return;
-        int ax = bx + r32(node + 0x70), ay = by + r32(node + 0x74);
-        int w = r32(node + 0x78), hh = r32(node + 0x7c);
-        int vis = (((std::uint32_t)r32(node + 0x50) & 0x01010000u) == 0x01010000u) ? 1 : 0;
-        std::uint64_t sprRaw = r64(node + 0x188);
+        int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
+        int w = r32(node + 0xa0), hh = r32(node + 0xa4);
+        int vis = 1;   // see the node reader: hidden flag not re-derived on 950-1
+        std::uint64_t sprRaw = r64(node + 0x1b0);
         if (sprRaw > 0 && sprRaw < 0x100000 && (int)sprRaw == sprite && pw > 0 && ph > 0) {
             fx = px; fy = py; fw = pw; fh = ph; fv = pv; found = true; return;
         }
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3 && !found; ++k) {
             std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8), ca = cs + 8, cb = ce + 8;
             if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
@@ -5739,7 +5761,7 @@ std::string InterfaceSizeSearchJson(std::uint32_t pid, int tw, int th, int tol) 
                 out += "}";
                 ++matched;
             }
-            const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+            const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
             for (int k = 0; k < 3; ++k) {
                 std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
                 std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -5800,9 +5822,9 @@ std::string DialogJson(std::uint32_t pid) {
     };
     walk = [&](std::uint64_t node, int bx, int by, int depth) {
         if (depth > 16 || found > 600) return;   // a dynamically-added option can sit past many graphic layers -> generous caps
-        int comp = r16(node + 0x2a);
-        int tag  = r32(node + 0x178);
-        int x = r32(node + 0x70), y = r32(node + 0x74), w = r32(node + 0x78), hh = r32(node + 0x7c);
+        int comp = r16(node + 0x3a);
+        int tag  = r32(node + 0x1a8);   // 0x178 through 949-5; +0x30 like the neighbouring SSO member (unverified on 950-1)
+        int x = r32(node + 0x98), y = r32(node + 0x9c), w = r32(node + 0xa0), hh = r32(node + 0xa4);
         int ax = bx + x, ay = by + y;
         ++found;
         std::string txt = iface_sso_text(h, node);
@@ -5821,7 +5843,7 @@ std::string DialogJson(std::uint32_t pid) {
                                  ",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(hh);
             opts += "}";
         }
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3; ++k) {
             std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
             std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -5853,7 +5875,7 @@ std::string DialogJson(std::uint32_t pid) {
         for (const auto& s : kPanelOrigins) if (s.group == kGroup) { varcPositioned = s.var_x != 0; break; }
         if (haveAbs && varcPositioned) {
             std::uint64_t c0 = r64(a);
-            int rw = (c0 > 0x10000) ? r32(c0 + 0x78) : 0, rh = (c0 > 0x10000) ? r32(c0 + 0x7c) : 0;
+            int rw = (c0 > 0x10000) ? r32(c0 + 0xa0) : 0, rh = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
             int fx = 0, fy = 0;
             if (rw > 0 && rh > 0 && iface_live_frame_origin(h, gs, ge, ox, oy, rw - 2, rw + 2, rh - 2, rh + 2, fx, fy)) { ox = fx; oy = fy; }
         }
@@ -5903,9 +5925,9 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
     walk = [&](std::uint64_t node, int bx, int by, int depth) {
         if (depth > 12 || found > 4000) return;
         ++found;
-        int comp = r16(node + 0x2a);
-        int x = r32(node + 0x70), y = r32(node + 0x74), w = r32(node + 0x78), hh = r32(node + 0x7c);
-        int vflags = r32(node + 0x50);   // raw visibility/state flags (e.g. bit 0x1800 = panel hidden on swap-in-place dialogs)
+        int comp = r16(node + 0x3a);
+        int x = r32(node + 0x98), y = r32(node + 0x9c), w = r32(node + 0xa0), hh = r32(node + 0xa4);
+        int vflags = r32(node + 0x60);   // raw state flags (+0x50 through 949-5, where bit 0x1800 = panel hidden; 950-1 bit meanings not re-derived)
         int ax = bx + x, ay = by + y;
         if (want.count(comp)) {
             std::string txt = iface_text(h, node);          // +0x90 display text (labels, progress counters)
@@ -5915,10 +5937,10 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
             // 0x4000000000000000 | flavour<<24 | itemId in the low 24 bits, +0x1a0 duplicating
             // the plain id. "obj" = that unpacked item id so callers
             // can match text-less grid cells by item (e.g. 61880 crude wooden chair).
-            std::uint64_t sprRaw = rpm<std::uint64_t>(h, node + 0x188).value_or(0);
+            std::uint64_t sprRaw = rpm<std::uint64_t>(h, node + 0x1b0).value_or(0);
             int sprv = (sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
             int objv = ((sprRaw >> 62) == 1 && (sprRaw & 0xFFFFFF) < 200000) ? (int)(sprRaw & 0xFFFFFF) : 0;
-            int subv = r16(node + 0x2c);   // entry index within a templated grid (e.g. :261...) -- lets callers pair sibling layers (icon comp 16 <-> cell bg comp 15)
+            int subv = r16(node + 0x3c);   // entry index within a templated grid (e.g. :261...) -- lets callers pair sibling layers (icon comp 16 <-> cell bg comp 15)
             comps += firstC ? "" : ","; firstC = false;
             comps += "{\"comp\":" + std::to_string(comp) + ",\"sub\":" + std::to_string(subv) +
                      ",\"text\":\"" + json_escape(txt) + "\"" +
@@ -5928,7 +5950,7 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
                                   ",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(hh);
             comps += "}";
         }
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3; ++k) {
             std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
             std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -5959,7 +5981,7 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
         for (const auto& s : kPanelOrigins) if (s.group == group) { varcPositioned = s.var_x != 0; break; }
         if (haveAbs && varcPositioned) {
             std::uint64_t c0 = r64(a);
-            int rw = (c0 > 0x10000) ? r32(c0 + 0x78) : 0, rh = (c0 > 0x10000) ? r32(c0 + 0x7c) : 0;
+            int rw = (c0 > 0x10000) ? r32(c0 + 0xa0) : 0, rh = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
             int fx = 0, fy = 0;
             if (rw > 0 && rh > 0 && iface_live_frame_origin(h, gs, ge, ox, oy, rw - 2, rw + 2, rh - 2, rh + 2, fx, fy)) { ox = fx; oy = fy; }
         }
@@ -6007,10 +6029,10 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
     std::function<void(std::uint64_t,std::uint64_t,int,int,int)> walk;
     walk = [&](std::uint64_t node, std::uint64_t parent, int bx, int by, int depth) {
         if (depth > 12 || cells.size() > 4000) return;
-        int x = r32(node + 0x70), y = r32(node + 0x74), w = r32(node + 0x78), hh = r32(node + 0x7c);
+        int x = r32(node + 0x98), y = r32(node + 0x9c), w = r32(node + 0xa0), hh = r32(node + 0xa4);
         int ax = bx + x, ay = by + y;
         if (w >= 28 && w <= 60 && hh >= 26 && hh <= 52) cells.push_back({ ax, ay, w, hh, parent, node }); // a backpack cell (size-gated; tolerates UI scale)
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3; ++k) {
             std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
             std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -6036,8 +6058,8 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
         // live from sizes (no hardcoded constant): border = (panelW - contentW)/2, header = remaining
         // vertical minus the matching bottom border.
         std::uint64_t c0 = r64(a);
-        int contentW = (c0 > 0x10000) ? r32(c0 + 0x78) : 0;
-        int contentH = (c0 > 0x10000) ? r32(c0 + 0x7c) : 0;
+        int contentW = (c0 > 0x10000) ? r32(c0 + 0xa0) : 0;
+        int contentH = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
         // CHROME INSET (frame border + title bar) between the window origin (varc 3040/3041) and the grid.
         // Read the WINDOW frame size LIVE from group 1477's root widget (the movable window that holds the
         // grid). The tree is scale-aware and present whenever the backpack is open -- unlike the panel-size
@@ -6064,7 +6086,7 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
             if (ws2 > 0x10000 && a2 > 0x10000) {
                 std::uint64_t w0 = r64(a2);
                 if (w0 > 0x10000) {
-                    int pw = r32(w0 + 0x78), ph = r32(w0 + 0x7c);
+                    int pw = r32(w0 + 0xa0), ph = r32(w0 + 0xa4);
                     // Sanity: the frame is only slightly bigger than the grid (border + title bar). Reject a
                     // garbage read (e.g. a huge value that would push the header off-screen -> no box, and
                     // would break the viewport clip below) so it falls back to the varbit inset instead.
@@ -6201,7 +6223,7 @@ std::string ChatJson(std::uint32_t pid) {
     if (!top) break;
 
     auto kids = [&](std::uint64_t node, std::vector<std::uint64_t>& dst) {
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int kk = 0; kk < 3; ++kk) {
             std::uint64_t cs = r64(node + co[kk]), ce = r64(node + co[kk] + 8);
             std::uint64_t a = cs + 8, b = ce + 8;
@@ -6216,7 +6238,7 @@ std::string ChatJson(std::uint32_t pid) {
         }
     };
     // DFS collecting comp-86 line widgets, in tree order. Each line carries its
-    // RAW markup (+0x180) AND its base text colour (u24 RGB at +0x80): RS3's
+    // RAW markup (+0x1b0) AND its base text colour (u24 RGB at +0xa8; +0x180/+0x80 through 949-5): RS3's
     // </col> resets to this per-channel base (white for system lines, the channel
     // colour for clan/public/etc.), NOT to white -- so the UI must know it to
     // colour message bodies that have no inline <col=..>.
@@ -6226,14 +6248,14 @@ std::string ChatJson(std::uint32_t pid) {
     while (!stk.empty() && guard++ < 20000 && emitted < 500) {
         auto cur = stk.back(); stk.pop_back();
         if (cur.first <= 0x10000 || cur.second > 12) continue;
-        if (r16(cur.first + 0x2a) == 86) {
-            std::string msg = iface_text_at(h, cur.first, 0x180, 480);
+        if (r16(cur.first + 0x3a) == 86) {
+            std::string msg = iface_text_at(h, cur.first, 0x1b0, 480);
             if (!msg.empty()) {
-                std::uint32_t basecol = (std::uint32_t)r32(cur.first + 0x80) & 0xFFFFFF;
+                std::uint32_t basecol = (std::uint32_t)r32(cur.first + 0xa8) & 0xFFFFFF;   // 950-1: base colour at +0xa8 (was +0x80; live: ffffff on game lines)
                 // +0x90 display text = the sender's name on player messages, empty
                 // on system/game lines -- the UI uses it (with the [CC]/[FC]/[GC]
                 // labels in the text) to attribute the channel.
-                std::string nm = iface_text_at(h, cur.first, 0x90, 96);
+                std::string nm = iface_text_at(h, cur.first, 0xb8, 96);                      // 950-1: sender pointer at +0xb8 (was +0x90)
                 a += first ? "" : ","; first = false;
                 a += "{\"raw\":\"" + msg + "\",\"base\":" + std::to_string(basecol) +
                      ",\"name\":\"" + nm + "\"}";
@@ -6315,7 +6337,7 @@ std::string BuffsJson(std::uint32_t pid) {
     if (!gs) return kEmpty;
 
     auto kids = [&](std::uint64_t node, std::vector<std::uint64_t>& dst) {
-        const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
         for (int k = 0; k < 3; ++k) {
             std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8);
             std::uint64_t a = cs + 8, b = ce + 8;
@@ -6346,7 +6368,7 @@ std::string BuffsJson(std::uint32_t pid) {
             auto cur = stk.back(); stk.pop_back();
             if (cur.first <= 0x10000 || cur.second > 4) continue;
             std::vector<std::uint64_t> cs; kids(cur.first, cs);
-            for (auto c : cs) if (r16(c + 0x2a) == want) return c;
+            for (auto c : cs) if (r16(c + 0x3a) == want) return c;
             for (auto c : cs) stk.push_back({ c, cur.second + 1 });
         }
         return 0;
@@ -6361,7 +6383,7 @@ std::string BuffsJson(std::uint32_t pid) {
         std::string out; bool first = true;
         std::vector<unsigned> seen;   // dedup icon ids within this bar (see below)
         for (auto slot : slots) {
-            std::uint64_t slotArr = r64(slot + 0x1c8);
+            std::uint64_t slotArr = r64(slot + 0x200);   // child vector (+0x1c8 through 949-5)
             if (slotArr <= 0x10000) continue;
             std::uint64_t icon = r64(slotArr + 0x8), textw = r64(slotArr + 0x20);
             if (icon <= 0x10000) continue;
@@ -6381,13 +6403,13 @@ std::string BuffsJson(std::uint32_t pid) {
             // Kept ALONGSIDE the two filters below rather than replacing them, even though it
             // subsumes both: if a real buff is ever sampled mid-attach this drops it for one
             // frame, which is the safe direction, but the older guards stay as a second net.
-            if (r64(icon + 0x30) != slot) continue;
-            int sprite = r16(icon + 0x188);
-            int item   = r32(icon + 0x1a0);
+            if (r64(icon + 0x40) != slot) continue;      // parent backlink (+0x30 through 949-5; live: +0x40 = parent, +0x48 = parent+0x20)
+            int sprite = r16(icon + 0x1b0);
+            int item   = r32(icon + 0x1d8);
             std::string timer;
             if (textw > 0x10000) {
                 char tb[8] = {};
-                if (rpm_bytes(h, textw + 0x180, tb, sizeof(tb) - 1)) {
+                if (rpm_bytes(h, textw + 0x1b0, tb, sizeof(tb) - 1)) {
                     for (int i = 0; i < (int)sizeof(tb) - 1 && tb[i]; ++i) {
                         unsigned char c = (unsigned char)tb[i];
                         if (c < 0x20 || c > 0x7e) break;
@@ -6416,7 +6438,8 @@ std::string BuffsJson(std::uint32_t pid) {
             if (r32(icon + 0x8) == 0) continue;
             // Secondary visible-state guard for other pooled-leftover kinds (stale UI sprites, "Sell"
             // labels): a shown icon has icon+0x50 & 0x01010000 == 0x01010000.
-            if ((((std::uint32_t)r32(icon + 0x50)) & 0x01010000u) != 0x01010000u) continue;
+            // (949-5 also required the +0x50 visible-state pattern here; that flag moved on 950-1 and has not
+            //  been re-derived, so the parent-backlink filter above is the only stale-icon guard for now)
             int id = itemBased ? item : sprite;
             // Dedup: the buff bar reuses a pool of slot widgets, so while it
             // reshuffles (e.g. refreshing an overhead prayer) the same icon can
@@ -6488,7 +6511,7 @@ static void collect_ability_names(HANDLE h, std::uint64_t root,
             while (!stack.empty() && guard < 8000) {
                 ++guard;
                 std::uint64_t node = stack.back(); stack.pop_back();
-                int id = r16(node + 0x188);
+                int id = r16(node + 0x1b0);
                 if (id > 0 && id < 0xFFFF) {
                     std::string nm = iface_text(h, node);   // *(node+0x90), escaped UTF-8
                     if (!nm.empty()) {
@@ -6505,7 +6528,7 @@ static void collect_ability_names(HANDLE h, std::uint64_t root,
                         }
                     }
                 }
-                const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+                const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
                 for (int kk = 0; kk < 3; ++kk) {
                     std::uint64_t cs = r64(node + co[kk]), ce = r64(node + co[kk] + 8);
                     std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -6549,7 +6572,7 @@ static bool is_cd_timer(const std::string& t) {
 // pointer -- the keybind label / cooldown number live here). Empty if it isn't printable text.
 static std::string iface_inline(HANDLE h, std::uint64_t node) {
     char buf[16] = {};
-    if (!rpm_bytes(h, node + 0x180, buf, sizeof(buf) - 1)) return {};
+    if (!rpm_bytes(h, node + 0x1b0, buf, sizeof(buf) - 1)) return {};
     std::string s;
     for (int i = 0; i < 15 && buf[i]; ++i) { unsigned char c = (unsigned char)buf[i]; if (c < 0x20 || c >= 0x7f) return {}; s += (char)c; }
     return s;
@@ -6571,7 +6594,7 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     std::string keyb;
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto alnum = [](char c){ return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); };
-    int boxComp = (int)rpm<std::uint16_t>(h, box + 0x2a).value_or(0xFFFF);
+    int boxComp = (int)rpm<std::uint16_t>(h, box + 0x3a).value_or(0xFFFF);
     if (boxComp == 0xFFFF) return keyb;
 
     // Collect the box's DIRECT component children with their component offset, then pick the
@@ -6591,7 +6614,7 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     // and on the non-text children it holds a child-vector whose bytes are not a string at all.
     struct Kid { int rel; std::string text; int x, y; };
     std::vector<Kid> kids;
-    const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+    const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
     for (int kk = 0; kk < 3; ++kk) {
         std::uint64_t cs = r64(box + co[kk]), ce = r64(box + co[kk] + 8);
         std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -6601,8 +6624,8 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
             if (ch <= 0x10000) continue;
             std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
             if (d <= 0x3000) continue;
-            if (rpm<std::uint16_t>(h, ch + 0x2c).value_or(0) != 0xFFFF) continue;   // direct component
-            int rel = (int)rpm<std::uint16_t>(h, ch + 0x2a).value_or(0) - boxComp;
+            if (rpm<std::uint16_t>(h, ch + 0x3c).value_or(0) != 0xFFFF) continue;   // direct component
+            int rel = (int)rpm<std::uint16_t>(h, ch + 0x3a).value_or(0) - boxComp;
             std::string t = iface_sso_text(h, ch);
             std::string clean; bool intag = false;      // strip <col=..> markup, as the name path does
             for (char c2 : t) {
@@ -6614,8 +6637,8 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
             while (!clean.empty() && (clean.back()  == ' ' || clean.back()  == '\t')) clean.pop_back();
             if (!clean.empty())
                 kids.push_back({ rel, clean,
-                                 rpm<std::int32_t>(h, ch + 0x70).value_or(0),
-                                 rpm<std::int32_t>(h, ch + 0x74).value_or(0) });
+                                 rpm<std::int32_t>(h, ch + 0x98).value_or(0),
+                                 rpm<std::int32_t>(h, ch + 0x9c).value_or(0) });
         }
     }
     std::sort(kids.begin(), kids.end(), [](const Kid& a, const Kid& b){ return a.rel < b.rel; });
@@ -6648,8 +6671,8 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     // centred. A key-shaped child is accepted as the keybind only from the top-left region;
     // the cooldown is any timer-shaped child that is NOT the chosen key node, preferring the
     // one just after the key (the probed 11->12 / 12->13 layouts) but no longer requiring it.
-    const int bw = rpm<std::int32_t>(h, box + 0x78).value_or(0);
-    const int bh = rpm<std::int32_t>(h, box + 0x7c).value_or(0);
+    const int bw = rpm<std::int32_t>(h, box + 0xa0).value_or(0);
+    const int bh = rpm<std::int32_t>(h, box + 0xa4).value_or(0);
     auto topLeft = [&](const Kid& k) {
         // A THIRD of the box, not half. On a ~36px slot a centred one-digit timer starts
         // around x=14,y=12, which sat inside the old half-box bound -- so "4" with 4s left
@@ -6706,7 +6729,7 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
 static void abar_collect(HANDLE h, std::uint64_t node, std::uint64_t parent, std::uint64_t gp,
                          int depth, std::vector<AbarSlot>& dst) {
     if (depth > 14 || dst.size() >= 64) return;
-    int id = (int)rpm<std::uint16_t>(h, node + 0x188).value_or(0);
+    int id = (int)rpm<std::uint16_t>(h, node + 0x1b0).value_or(0);
     if (id > 0 && id < 0xFFFF) {
         std::string nm = iface_text(h, node);             // *(node+0x90), escaped UTF-8
         if (!nm.empty()) {
@@ -6719,18 +6742,18 @@ static void abar_collect(HANDLE h, std::uint64_t node, std::uint64_t parent, std
                 for (auto& s : dst) if (s.id == id) { seen = true; break; }
                 if (!seen) {
                     int mod = 0; std::string cd; std::string key = gp ? box_keybind(h, gp, mod, cd) : std::string();
-                    int item = rpm<std::int32_t>(h, node + 0x1a0).value_or(0); if (item < 0 || item > 200000) item = 0;   // item slots store the item here
+                    int item = rpm<std::int32_t>(h, node + 0x1d8).value_or(0); if (item < 0 || item > 200000) item = 0;   // item slots store the item here
                     // I_AbilityEnabled (+0x80): 255 = fully lit/castable; lower values (e.g. 51)
                     // = greyed. Export the RAW byte so the UI can show it (provenance) and so the
                     // castable threshold can be tuned without re-reversing if other values appear.
-                    int en = (int)rpm<std::uint8_t>(h, node + 0x80).value_or(0);
+                    int en = (int)rpm<std::uint8_t>(h, node + 0xa8).value_or(0);
                     dst.push_back({ id, item, clean, key, mod, en, cd });
                 }
             }
         }
     }
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
-    const std::uint64_t co[3] = { 0x198, 0x180, 0x1c8 };
+    const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
     for (int kk = 0; kk < 3; ++kk) {
         std::uint64_t cs = r64(node + co[kk]), ce = r64(node + co[kk] + 8);
         std::uint64_t ca = cs + 8, cb = ce + 8;
@@ -6807,8 +6830,8 @@ std::string ActionBarJson(std::uint32_t pid) {
     return out;
 }
 
-// Cooldown hashmap at root+0x19F78 with layout (buckets ptr @mgr+0x38178, cap @+0x38180;
-// node {key i32@0, expiry i64@+8 in CLIENTCLOCK ms = qword at base+0xED2FF8, flag u8@+0x10,
+// Cooldown hashmap at root+0x19FB8 on 950-1 (0x19F78 before) with layout (buckets ptr @mgr+0x38178, cap @+0x38180;
+// node {key i32@0, expiry i64@+8 in CLIENTCLOCK ms = qword at base+0xED2FF8 (949 RVA, STALE on 950-1, not re-derived: diagnostics only), flag u8@+0x10,
 // next@+0x18}). It does NOT hold ability cooldowns -- it stays empty through continuous
 // casting. There is no externally-joinable ability_id->expiry registry; the printed
 // per-ability cooldown text on each action-bar slot (see box_keybind) is the cooldown
@@ -6822,7 +6845,7 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
     HANDLE h = ps.h;
     auto rootv = rpm<std::uint64_t>(h, ps.mgva);
     if (!rootv || *rootv <= 0x10000) return kEmpty;
-    std::uint64_t mgr     = *rootv + 0x19f78;
+    std::uint64_t mgr     = *rootv + 0x19fb8;   // 0x19f78 through 949-5 (+0x40 on 950-1)
     std::uint64_t clock   = rpm<std::uint64_t>(h, ps.mod_base + 0xED2FF8).value_or(0);
     std::uint64_t buckets = rpm<std::uint64_t>(h, mgr + 0x38178).value_or(0);
     std::uint32_t cap     = rpm<std::uint32_t>(h, mgr + 0x38180).value_or(0);
@@ -7068,7 +7091,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 auto ey = rpm<float>(h, *ep + 0x38);
                 if (!ex || !ey) continue;
                 if ((int)(*ex / 512.f) <= 0 || (int)(*ey / 512.f) <= 0) continue;
-                int gfx = rpm<std::int32_t>(h, *sec + 0x74).value_or(-1);
+                int gfx = rpm<std::int32_t>(h, *sec + rtx::scn::kT4Gfx).value_or(-1);
                 OverlayPoint p;
                 p.wx = *ex; p.wy = *ey; p.wz = ez.value_or(0);
                 p.kind = 3;
@@ -7093,7 +7116,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 have_player = true;
                 out.player_tx = tx; out.player_ty = ty; out.player_z = fz.value_or(0);
                 out.player_fx = *fx; out.player_fy = *fy;   // smooth sub-tile position for the ground indicator
-                out.plane = rpm<std::int32_t>(h, *sec + 0x40).value_or(0);  // live plane
+                out.plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);  // live plane
             }
 
             char nm[40] = {0};
@@ -7815,11 +7838,11 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 // dead-client eviction in SampleAll references them before this point.
 
 std::string PlayerInfoJson(std::uint32_t pid) {
-    constexpr std::uint64_t kContainer = 0x19990, kActiveIdx = 0x70, kEntryArr = 0x58,
+    constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
-                            kVecEnd = 0x140, kSecPtr = 0x1A0, kType = 0x10, kUid = 0x88,
+                            kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
                             kPosX = 0x270, kPosY = 0x278, kAnim = 0xA90,
-                            kPlayerData = 0x19F68, kLocalUid = 0x48;
+                            kPlayerData = 0x19FA8, kLocalUid = 0x48;
     auto ps = snap_proc(pid);
     if (!ps)
         return "{\"in\":false}";
@@ -7857,7 +7880,7 @@ std::string PlayerInfoJson(std::uint32_t pid) {
 
     float fx = rpm<float>(h, psec + kPosX).value_or(0), fy = rpm<float>(h, psec + kPosY).value_or(0);
     int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
-    int plane = rpm<std::int32_t>(h, psec + 0x40).value_or(0);   // live plane (sec + 0x40)
+    int plane = rpm<std::int32_t>(h, psec + rtx::scn::kPlane).value_or(0);   // live plane (sec + 0x40)
     if (plane < 0 || plane > 3) plane = 0;
     int anim = rpm<std::int32_t>(h, psec + kAnim).value_or(-1);
     float px, py;
@@ -7998,11 +8021,11 @@ std::string PlayerInfoJson(std::uint32_t pid) {
 }
 
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
-    constexpr std::uint64_t kContainer = 0x19990, kActiveIdx = 0x70, kEntryArr = 0x58,
+    constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,
-                            kVecEnd = 0x140, kSecPtr = 0x1A0, kType = 0x10, kUid = 0x88,
+                            kVecEnd = 0x140, kSecPtr = rtx::scn::kSecPtr, kType = rtx::scn::kType, kUid = rtx::scn::kUid,
                             kPosX = 0x270, kPosY = 0x278,
-                            kPlayerData = 0x19F68, kLocalUid = 0x48;
+                            kPlayerData = 0x19FA8, kLocalUid = 0x48;
     auto ps = snap_proc(pid);
     if (!ps) return false;
     HANDLE h = ps.h;
@@ -8038,7 +8061,7 @@ bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
     if (!psec) return false;
     float fx = rpm<float>(h, psec + kPosX).value_or(0), fy = rpm<float>(h, psec + kPosY).value_or(0);
     tx = (int)(fx / 512.f); ty = (int)(fy / 512.f);
-    int pl = rpm<std::int32_t>(h, psec + 0x40).value_or(0);
+    int pl = rpm<std::int32_t>(h, psec + rtx::scn::kPlane).value_or(0);
     plane = (pl < 0 || pl > 3) ? 0 : pl;
     return true;
 }
@@ -8165,6 +8188,17 @@ std::string AccountKey(std::uint32_t pid) {
     return !s.display_name.empty() ? s.display_name : s.character;
 }
 
+// The per-build server opcode table (companion/ServerOps.h) for the panels: {"name":opcode,...}.
+std::string ServerOpsJson() {
+    std::string out = "{"; bool first = true;
+    for (const auto& e : rtx::sops::kExpected) {
+        out += first ? "" : ","; first = false;
+        out += "\""; out += e.name; out += "\":" + std::to_string(e.op);
+    }
+    out += ",\"op_max\":" + std::to_string(rtx::sops::kOpMax) + "}";
+    return out;
+}
+
 std::string ReaderHealthJson(std::uint32_t pid) {
     std::string checks;
     auto add = [&](const char* k, int ok, const std::string& d) {
@@ -8233,7 +8267,7 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     if (!rootOk) return "{\"version\":\"" + json_escape(version) + "\",\"checks\":[" + checks + "]}";
 
     {
-        auto pdata = rpm<std::uint64_t>(h, *root + 0x19F68);
+        auto pdata = rpm<std::uint64_t>(h, *root + 0x19FA8);
         int uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + 0x48).value_or(-1) : -1;
         add("Player", uid >= 0 ? 1 : 0, uid >= 0 ? "" : "not found (log in and re-run)");
     }
@@ -8330,7 +8364,7 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     }
     // World-to-screen view matrix: finite, non-zero.
     {
-        auto cont = rpm<std::uint64_t>(h, *root + 0x19990);
+        auto cont = rpm<std::uint64_t>(h, *root + 0x199D0);
         bool ok = false;
         if (cont && *cont > 0x10000) {
             auto idx = rpm<std::int32_t>(h, *cont + 0x70);
@@ -8365,6 +8399,137 @@ std::string ReaderHealthJson(std::uint32_t pid) {
             CloseHandle(m);
         }
         add("Companion: live variables", ok ? 1 : 2, ok ? "" : "inactive (loads with the game client)");
+    }
+    {   // Server opcodes: every opcode in ServerOps.h must still carry its recorded wire length in the
+        // client's packet table (rs2client+kOpTableRva). A game update reshuffles the opcodes; this
+        // turns "the events panel decodes garbage" into a red row naming the first mismatch.
+        std::uint64_t modSize = 0;
+        { std::lock_guard<std::mutex> lk(g_mu); auto it = g_states.find((DWORD)pid); if (it != g_states.end()) modSize = it->second.mod_size; }
+        std::uint64_t tbl = (ps.mod_base && modSize) ? resolve_optable(h, ps.mod_base, modSize) : 0;
+        int okc = 0, total = 0; std::string bad;
+        for (const auto& e : rtx::sops::kExpected) {
+            ++total;
+            int len = 0x7FFF;
+            if (tbl) {
+                auto desc = rpm<std::uint64_t>(h, tbl + (std::uint64_t)e.op * 8);
+                if (desc && *desc > 0x10000) len = rpm<std::int32_t>(h, *desc + kDescLenOff).value_or(0x7FFF);
+            }
+            if (len == e.len) ++okc; else if (bad.empty()) bad = std::string(e.name) + " (0x" + [&]{ char hx[8]; std::snprintf(hx, sizeof(hx), "%02X", e.op); return std::string(hx); }() + ")";
+        }
+        add("Server opcodes", !tbl ? 0 : okc == total ? 1 : 0,
+            !tbl ? "packet table not found" : okc == total ? (std::to_string(total) + " opcodes carry their expected wire length")
+                                                            : (std::to_string(okc) + "/" + std::to_string(total) + " match; first stale: " + bad + " (game update reshuffled opcodes)"));
+    }
+    {   // Varp lookups: read_varp (single id, chain walk) must agree with the full-dump walk for a
+        // sample of ids that sit deep in their buckets; a wrong link offset only breaks those
+        std::string dump = VarpsDumpAllJson(pid);
+        int checked = 0, agree = 0; size_t pos = 0;
+        for (int k = 0; k < 4000 && checked < 40; ++k) {
+            size_t q = dump.find('"', pos); if (q == std::string::npos) break;
+            size_t e = dump.find('"', q + 1); if (e == std::string::npos) break;
+            size_t c = dump.find(':', e); if (c == std::string::npos) break;
+            size_t end = dump.find_first_of(",}", c); if (end == std::string::npos) break;
+            pos = end;
+            if ((k % 97) != 0) continue;                       // spread the sample across the map
+            // keys are "4:<varp id>" (scope 4); skip the scope prefix
+            const char* kp = dump.c_str() + q + 1; if (kp[0] == '4' && kp[1] == ':') kp += 2;
+            int id = std::atoi(kp), v = std::atoi(dump.c_str() + c + 1);
+            if (id <= 0) continue;
+            ++checked; if (read_varp(h, *root, id) == v) ++agree;
+        }
+        add("Varp lookups", checked == 0 ? 2 : agree == checked ? 1 : 0,
+            checked == 0 ? "no varps to sample" : (std::to_string(agree) + "/" + std::to_string(checked) + " sampled ids agree with the full dump" + (agree == checked ? "" : " (chain link offset)")));
+    }
+    // ---- PANEL DATA PATHS ----------------------------------------------------------------
+    // Every row above proves a chain the panels share; these prove the panel-facing readers
+    // themselves, so a game update that breaks one panel (and nothing else) shows up here
+    // instead of in a user report. Each uses the exact function its panel calls.
+    {   // Player State / Tasks: PlayerInfoJson must find the local player in the scene while in-world
+        const bool inWorld = rpm<std::int8_t>(h, *root + kOffStatus).value_or(0) == 30;
+        std::string pj = PlayerInfoJson(pid);
+        const bool in = pj.find("\"in\":true") != std::string::npos;
+        add("Player state", !inWorld ? 2 : in ? 1 : 0,
+            !inWorld ? "not in-world" : in ? "" : "local player not found in the scene (entity layout)");
+    }
+    {   // Buffs panel: the buff/debuff bar groups (284/291) must be open and their slots readable
+        std::uint64_t gs = 0, ge = 0; iface_groups_range(h, *root, gs, ge);
+        bool g284 = false, g291 = false;
+        if (gs && ge > gs)
+            for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
+                std::uint64_t ap2 = rpm<std::uint64_t>(h, g + 8).value_or(0);
+                if (ap2 <= 0x10000) continue;
+                int gid = rpm<std::int32_t>(h, ap2).value_or(-1);
+                g284 |= (gid == 284); g291 |= (gid == 291);
+            }
+        std::string bj = BuffsJson(pid);
+        int n = 0; for (size_t i = 0; (i = bj.find("\"id\":", i)) != std::string::npos; ++i) ++n;
+        add("Buff bar", (g284 || g291) ? 1 : 0,
+            (g284 || g291) ? (std::to_string(n) + " effect" + (n == 1 ? "" : "s") + " read") : "buff bar interface not open (widget layout)");
+    }
+    {   // Chat log: chatbox widgets (interface path) and the companion's packet ring (message_game opcode)
+        std::string cj = ChatJson(pid);
+        int lines = 0; for (size_t i = 0; (i = cj.find("\"raw\":", i)) != std::string::npos; ++i) ++lines;
+        add("Chat (interface)", lines > 0 ? 1 : 0, lines > 0 ? (std::to_string(lines) + " lines") : "chatbox text not readable (widget layout)");
+        wchar_t name[64]; rtx::netprobe::MakeSectionName(pid, name);
+        HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+        int st = 2; std::string d = "inactive (loads with the game client)";
+        if (m) {
+            auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, sizeof(rtx::netprobe::Share)));
+            if (sh && sh->magic == rtx::netprobe::kMagic) {
+                const bool hooked = (sh->flags & 1) != 0;
+                const unsigned long long msgs = sh->chatWritten;
+                if (!hooked)          { st = 0; d = "framer not hooked (pattern moved)"; }
+                else if (msgs > 0)    { st = 1; d = std::to_string(msgs) + " messages captured"; }
+                else                  { st = 0; d = "framer hooked but no game message seen (message_game opcode moved?)"; }
+            }
+            if (sh) UnmapViewOfFile((void*)sh);
+            CloseHandle(m);
+        }
+        add("Chat (packets)", st, d);
+    }
+    {   // Daily challenges: the three assigned slots live in varbits 16574/16578/16582 (category 1..31)
+        int cats = 0;
+        for (int vb : { 16574, 16578, 16582 }) {
+            int vp = -1, lsb = -1, msb = -1;
+            if (!rtx::cache::GetVarbit(vb, vp, lsb, msb) || vp < 0) continue;
+            int raw = read_varp(h, *root, vp);
+            int v = (raw >> lsb) & (int)((1u << (msb - lsb + 1)) - 1);
+            if (v >= 1 && v <= 31) ++cats;
+        }
+        const bool logged = read_varp(h, *root, 13538) > 0;
+        add("Daily challenges", !logged ? 2 : cats > 0 ? 1 : 0,
+            !logged ? "not logged in" : cats > 0 ? (std::to_string(cats) + " slots assigned") : "no slot reads a category (varbit ids moved?)");
+    }
+    {   // Scene objects: a runtime loc id is proven by matching a static map placement of that id on
+        // the object's own tile (most scenery is unnamed, so a name is no test; dynamic spawns such as
+        // event areas have no static placement, so only a share of ids can ever match). 950-1 published
+        // the tile Y as the loc id: zero matches. Also counts objects carrying a live model AABB.
+        std::vector<RuntimeObj> objs;
+        if (ReadRuntimeObjects(pid, objs) && !objs.empty()) {
+            std::unordered_map<int, std::unordered_set<long long>> regionSets;   // region key -> (id<<20|x<<10|y)
+            int matched = 0, total = 0, rendered = 0;
+            for (size_t i = 0; i < objs.size() && total < 300; ++i) {
+                const auto& r = objs[i];
+                if (r.config_id <= 0) continue;
+                ++total;
+                if (r.bmax[0] > r.bmin[0]) ++rendered;
+                const int rx = r.x >> 6, ry = r.y >> 6, key = (rx << 8) | ry;
+                auto it = regionSets.find(key);
+                if (it == regionSets.end()) {
+                    auto& set = regionSets[key];
+                    for (const auto& pl : rtx::cache::RegionLocations(rx, ry))
+                        set.insert(((long long)pl.id << 20) | ((long long)(rx * 64 + pl.x) << 10) | (long long)(ry * 64 + pl.y));
+                    it = regionSets.find(key);
+                }
+                if (it->second.count(((long long)r.config_id << 20) | ((long long)r.x << 10) | (long long)r.y)) ++matched;
+            }
+            const bool ok = total == 0 || matched * 10 >= total;   // 10 % is generous headroom for dynamic areas; a wrong field gives ~0
+            add("Scene objects", ok ? 1 : 0,
+                std::to_string(matched) + "/" + std::to_string(total) + " loc ids match a map placement on their tile, " +
+                std::to_string(rendered) + " with a live model" + (ok ? "" : " (companion loc-id field moved)"));
+        } else {
+            add("Scene objects", 2, "no runtime objects published yet");
+        }
     }
     // Cache parse health: per-surface decode sweep -- x/y records parsed plus the
     // opcode that breaks the read. After a game update a red row here names the
