@@ -1386,6 +1386,10 @@ std::unordered_map<int, std::array<int, 3>> g_varbit_defs;   // varbit id -> {va
 // container slot carries keyed 0..N (Reader.cpp "instance vars"). The client scripts read
 // them with INV_GETVAR(inv, slot, varbit): 30215 = var 1 bits 0..14 = gizmo-1 perk-1 id.
 std::unordered_map<int, std::array<int, 3>> g_objvarbit_defs;   // varbit id -> {var,lsb,msb}
+// Every non-player domain, keyed domain -> base var -> [{varbit id, lsb, msb}, ..]. Domain byte
+// per the client scripts' variable sources: 0 player, 1 npc, 2 client, 3 world, 4 region,
+// 5 object (item instance), 6 clan, 7 clan settings, 8 campaign, 9 player group.
+std::map<int, std::map<int, std::vector<std::array<int, 3>>>> g_dombit_defs;
 
 void LoadVarbitMapLocked() {
     if (g_varbit_map_loaded) return;
@@ -1411,8 +1415,8 @@ void LoadVarbitMapLocked() {
             else break;                             // unknown opcode -> length unknown, stop
         }
         if (varp < 0 || lsb < 0 || msb < 0) continue;
-        if (domain == 5) { g_objvarbit_defs[fid] = { varp, lsb, msb }; continue; }
-        if (domain != 0) continue;
+        if (domain == 5) g_objvarbit_defs[fid] = { varp, lsb, msb };
+        if (domain != 0) { g_dombit_defs[domain][varp].push_back({ fid, lsb, msb }); continue; }
         g_varbit_defs[fid] = { varp, lsb, msb };
         std::snprintf(buf, sizeof(buf), "%s[%d,%d,%d]",
                       per_varp[varp].empty() ? "" : ",", fid, lsb, msb);
@@ -3624,6 +3628,121 @@ std::string ConfigFileHex(int archive, int file) {
     std::string out; out.reserve(bytes.size() * 2);
     for (auto b : bytes) { out.push_back(hx[b >> 4]); out.push_back(hx[b & 15]); }
     return out;
+}
+
+// Per-domain census of the VARBIT archive: {"<domain>":{"n":count,"var":[min,max],"vb":[min,max],
+// "sample":[ids..]}}. Research aid (cq "vbdomains"): which var domains the cache defines bit
+// fields over and how many. Domain byte per the client scripts' variable sources: 0 player,
+// 1 npc, 2 client, 3 world, 4 region, 5 object (item instance), 6 clan, 7 clan settings,
+// 8 campaign, 9 player group.
+std::string VarbitDomainsJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!index || !index->ready()) return "{}";
+    const auto& entries = index->ref().entries();
+    if ((int)entries.size() <= kVarbitArchive) return "{}";
+    struct D { int n = 0, vmin = 1 << 30, vmax = -1, bmin = 1 << 30, bmax = -1; std::vector<int> sample; };
+    std::map<int, D> doms;
+    for (int fid : entries[kVarbitArchive].valid_file_ids) {
+        auto bytes = index->ReadFile(kVarbitArchive, fid);
+        if (bytes.empty()) continue;
+        InputStream s(std::move(bytes));
+        int domain = -1, var = -1;
+        while (s.remaining() > 0) {
+            int op = s.ReadUnsignedByte();
+            if (op == 0) break;
+            if (op == 1)      { domain = s.ReadUnsignedByte(); var = s.ReadUnsignedShort(); }
+            else if (op == 2) { s.ReadUnsignedByte(); s.ReadUnsignedByte(); }
+            else if (op == 16) { }
+            else break;
+        }
+        if (domain < 0) continue;
+        D& d = doms[domain];
+        ++d.n;
+        if (var < d.vmin) d.vmin = var; if (var > d.vmax) d.vmax = var;
+        if (fid < d.bmin) d.bmin = fid; if (fid > d.bmax) d.bmax = fid;
+        if (d.sample.size() < 6) d.sample.push_back(fid);
+    }
+    std::string out = "{"; bool first = true;
+    for (auto& kv : doms) {
+        const D& d = kv.second;
+        out += first ? "" : ","; first = false;
+        out += "\"" + std::to_string(kv.first) + "\":{\"n\":" + std::to_string(d.n) +
+               ",\"var\":[" + std::to_string(d.vmin) + "," + std::to_string(d.vmax) + "]" +
+               ",\"vb\":[" + std::to_string(d.bmin) + "," + std::to_string(d.bmax) + "],\"sample\":[";
+        for (std::size_t i = 0; i < d.sample.size(); ++i) out += (i ? "," : "") + std::to_string(d.sample[i]);
+        out += "]}";
+    }
+    return out + "}";
+}
+
+std::string VarbitDomainMapJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    LoadVarbitMapLocked();
+    std::string out = "{"; bool fd = true; char buf[64];
+    for (const auto& dom : g_dombit_defs) {
+        out += fd ? "" : ","; fd = false;
+        out += "\"" + std::to_string(dom.first) + "\":{"; bool fv = true;
+        for (const auto& var : dom.second) {
+            out += fv ? "" : ","; fv = false;
+            out += "\"" + std::to_string(var.first) + "\":["; bool fb = true;
+            for (const auto& b : var.second) {
+                std::snprintf(buf, sizeof(buf), "%s[%d,%d,%d]", fb ? "" : ",", b[0], b[1], b[2]);
+                out += buf; fb = false;
+            }
+            out += "]";
+        }
+        out += "}";
+    }
+    return out + "}";
+}
+
+// Var definitions of one domain: the config file per var id carries op 3 = value type (CS2
+// subtype id: 0 int, 1 boolean, 33 obj, 39 inv, 71 hash64, 73 struct, 110 long, ...), op 4 =
+// u8 flag (1 = persists across sessions on player vars), op 110 = u16. Only vars whose type
+// is not int are listed, so the JSON stays small: {"archive":60,"n":13270,"types":{"<id>":33,..},
+// "flags":{"<id>":1,..}} plus "ops" = count of every opcode seen (research: an unknown opcode
+// means the format moved). Archives: 60 player, 61 npc, 62 client, 63 world, 64 region,
+// 65 object, 66 clan, 67 clan settings, 68 campaign, 75 player group.
+std::string VarDefsJson(int archive) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!cfg || !cfg->ready()) return "{}";
+    const auto& entries = cfg->ref().entries();
+    if (archive < 0 || archive >= (int)entries.size()) return "{}";
+    std::string types, flags, unk; std::map<int, int> ops; int n = 0, unknown = 0;
+    for (int fid : entries[archive].valid_file_ids) {
+        auto bytes = cfg->ReadFile(archive, fid);
+        if (bytes.empty()) continue;
+        ++n;
+        std::string hex;
+        if (unknown < 6) { static const char* hx = "0123456789abcdef"; for (auto b : bytes) { hex.push_back(hx[b >> 4]); hex.push_back(hx[b & 15]); } }
+        InputStream s(std::move(bytes));
+        int type = 0, flag = 0;
+        while (s.remaining() > 0) {
+            int op = s.ReadUnsignedByte();
+            if (op == 0) break;
+            ++ops[op];
+            if (op == 3)        type = s.ReadUnsignedByte();
+            else if (op == 4)   flag |= s.ReadUnsignedByte();
+            else if (op == 7)   flag |= 0x100;                 // no payload (client vars 2852.., with op 4 = 2)
+            else if (op == 8)   flag |= 0x200;                 // no payload (40 player vars 12352..)
+            else if (op == 110) s.ReadUnsignedShort();
+            else {
+                if (unknown < 6) unk += (unk.empty() ? "" : ",") + ("\"" + std::to_string(fid) + ":" + hex + "\"");
+                ++unknown; break;
+            }
+        }
+        if (type != 0) types += (types.empty() ? "" : ",") + ("\"" + std::to_string(fid) + "\":" + std::to_string(type));
+        if (flag != 0) flags += (flags.empty() ? "" : ",") + ("\"" + std::to_string(fid) + "\":" + std::to_string(flag));
+    }
+    std::string o; bool first = true;
+    for (const auto& kv : ops) { o += (first ? "" : ",") + ("\"" + std::to_string(kv.first) + "\":" + std::to_string(kv.second)); first = false; }
+    return "{\"archive\":" + std::to_string(archive) + ",\"n\":" + std::to_string(n) + ",\"unknown\":" + std::to_string(unknown) +
+           ",\"unknownSample\":[" + unk + "],\"types\":{" + types + "},\"flags\":{" + flags + "},\"ops\":{" + o + "}}";
 }
 
 std::string ConfigArchiveInfo(int archive) {

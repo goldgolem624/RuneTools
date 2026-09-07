@@ -8556,6 +8556,21 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         else d += "; rank counts ok";
         add("Perk layout", st, d);
     }
+    {   // Var domains: the varbit archive must still define bit fields over the nine domains the
+        // client scripts know (0 player .. 8 campaign), and the var config files of the player and
+        // client archives must decode without an unknown opcode (op 3 type, 4 flag, 7/8 flags, 110).
+        // Feeds the vars panel's domain chips, type chips, varc bit fields and the item hover fields.
+        std::string cen = rtx::cache::VarbitDomainsJson();
+        int doms = 0;
+        for (int dom = 0; dom <= 8; ++dom) if (cen.find("\"" + std::to_string(dom) + "\":{") != std::string::npos) ++doms;
+        auto unknownOf = [](const std::string& j) {
+            auto p = j.find("\"unknown\":"); return p == std::string::npos ? -1 : std::atoi(j.c_str() + p + 10);
+        };
+        int u60 = unknownOf(rtx::cache::VarDefsJson(60)), u62 = unknownOf(rtx::cache::VarDefsJson(62));
+        int st = (doms == 9 && u60 == 0 && u62 == 0) ? 1 : (doms == 0 ? 2 : 0);
+        add("Var domains", st, doms == 0 ? "varbit archive not readable yet" :
+            std::to_string(doms) + "/9 domains defined; unknown var-config opcodes: player " + std::to_string(u60) + ", client " + std::to_string(u62));
+    }
     {   // Scene objects: a runtime loc id is proven by matching a static map placement of that id on
         // the object's own tile (most scenery is unnamed, so a name is no test; dynamic spawns such as
         // event areas have no static placement, so only a share of ids can ever match). 950-1 published

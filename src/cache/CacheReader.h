@@ -302,6 +302,19 @@ std::string ItemFileHex(int item_id);
 std::string ConfigFileHex(int archive, int file);
 // File count / largest id / first ids of one CONFIGS archive: cq "cfgls <archive>".
 std::string ConfigArchiveInfo(int archive);
+// Per-domain census of the varbit archive (count, base-var and varbit id ranges, samples):
+// {"<domain>":{"n":..,"var":[min,max],"vb":[min,max],"sample":[..]}}. Domains: 0 player,
+// 1 npc, 2 client, 3 world, 4 region, 5 object (item instance), 6 clan, 7 clan settings,
+// 8 campaign, 9 player group.
+std::string VarbitDomainsJson();
+// Varbit definitions of every NON-player domain, {"<domain>":{"<var>":[[varbit,lsb,msb],..]}}.
+// VarbitMapJson keeps its varp-only shape (several panels invert it); this carries the rest,
+// e.g. "2" for the bit fields over varc ints and "5" for item instance keys.
+std::string VarbitDomainMapJson();
+// Var definitions of one var config archive (60 player, 61 npc, 62 client, 63 world, 64 region,
+// 65 object, 66 clan, 67 clan settings, 68 campaign, 75 player group): value type per var
+// (CS2 subtype id, int omitted), persist flag, opcode census. See the .cpp for the shape.
+std::string VarDefsJson(int archive);
 
 // Display name for a buff-bar icon id. RS3 buffs/debuffs are StructTypes
 // (index 22) whose params carry the name plus the buff-bar sprite id; the

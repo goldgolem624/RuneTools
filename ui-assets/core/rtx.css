@@ -2144,6 +2144,21 @@
   .vw-tag.varc  { color: #4dd28a; background: rgba(77,210,138,0.13);  border-color: rgba(77,210,138,0.35); }
   .vw-tag.other { color: var(--text-dim); background: var(--bg); border-color: var(--border); }
   .vw-tag.varbit { color: #e0a85a; background: rgba(224,168,90,0.14); border-color: rgba(224,168,90,0.40); }
+  /* Var domain (player / client / ...) and declared value type (obj, inv, struct ...) chips. */
+  .vw-dom, .vw-type { font-size: 9px; letter-spacing: .02em; padding: 2px 6px; border-radius: 5px; flex: 0 0 auto;
+    border: 1px solid var(--border); color: var(--text-dim); background: var(--bg); }
+  .vw-type { color: #e0a85a; border-color: rgba(224,168,90,0.35); font-family: ui-monospace, Consolas, monospace; }
+  .win.tight .vw-dom { display: none; }
+  .vw-pop-dom { color: var(--text-dim); font-weight: 400; font-size: 10px; }
+  .vw-chip-legend { margin-left: auto; }
+  .vw-chip-legend.on { color: var(--accent-hi); }
+  .vw-legend { margin: 4px 8px 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+    font-size: 10px; color: var(--text-dim); }
+  .vw-legend-h, .vw-legend-f { margin: 2px 0 6px; }
+  .vw-legend-t { border-collapse: collapse; width: 100%; font-family: ui-monospace, Consolas, monospace; }
+  .vw-legend-t th { text-align: left; font-weight: 600; color: var(--text); padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); }
+  .vw-legend-t td { padding: 2px 6px 2px 0; color: var(--text); white-space: nowrap; }
+  .vw-legend-t td.dim { color: var(--text-dim); }
   .vw-row .vw-id { font-family: ui-monospace, Consolas, monospace; font-size: 13px; font-weight: 700;
     color: var(--text); font-variant-numeric: tabular-nums; flex: 0 0 auto; min-width: 54px; }
   /* ground-truth name from the CS2 extraction (quest tracker / npc-loc morph) */

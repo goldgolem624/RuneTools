@@ -1242,6 +1242,26 @@ JSValueRef VarbitMap(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::VarbitMapJson());
 }
 
+// Varbit definitions of the non-player domains ({"2": varc bit fields, "5": item instance
+// keys, ...}); the vars panel decodes varc rows and the item hover decodes instance keys with it.
+JSValueRef VarbitDomainMap(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                           size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, rtx::cache::VarbitDomainMapJson());
+}
+
+// Per-domain census of the varbit archive (the vars panel's "Domains" legend).
+JSValueRef VarbitDomains(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, rtx::cache::VarbitDomainsJson());
+}
+
+// Var definitions (value type per var) of one var config archive; arg = archive id.
+JSValueRef VarDefs(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    int archive = argc > 0 ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 60;
+    return utf8_to_js(ctx, rtx::cache::VarDefsJson(archive));
+}
+
 // Membership tier. Free-vs-member is engine state (the PLAYERMEMBER op), not a var, so this
 // cannot be served from varps/varbits like the rest of the Player State panel.
 JSValueRef Membership(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -5126,6 +5146,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "varps",             Varps);
     install_fn(ctx, ns, "varbits",           Varbits);
     install_fn(ctx, ns, "varbitMap",         VarbitMap);
+    install_fn(ctx, ns, "varbitDomainMap",   VarbitDomainMap);
+    install_fn(ctx, ns, "varbitDomains",     VarbitDomains);
+    install_fn(ctx, ns, "varDefs",           VarDefs);
     install_fn(ctx, ns, "serverOps",         ServerOps);   // per-build server opcode table (companion/ServerOps.h)
     install_fn(ctx, ns, "membership",        Membership);
     install_fn(ctx, ns, "quests",            Quests);

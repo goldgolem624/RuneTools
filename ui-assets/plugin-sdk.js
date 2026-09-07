@@ -170,6 +170,16 @@
       modelIcon: function (id) { return call('cache.modelIcon', [id]); },
       sprite:    function (id) { return call('cache.sprite', [id]); },
       varbitMap: function () { return call('cache.varbitMap', []); },
+      // Varbit definitions of the NON-player domains: {"<domain>": {"<var>": [[varbitId, lsb, msb], ...}}.
+      // Domains: 1 npc, 2 client (bit fields over varc ints), 3 world, 4 region, 5 object (item
+      // instance keys), 6 clan, 7 clan settings, 8 campaign. Player (0) stays in varbitMap.
+      varbitDomainMap: function () { return call('cache.varbitDomainMap', []); },
+      // Census of the varbit archive per domain: {"<domain>": {n, var: [min, max], vb: [min, max], sample}}.
+      varbitDomains: function () { return call('cache.varbitDomains', []); },
+      // Var definitions of one var config archive (60 player, 61 npc, 62 client, 63 world, 64 region,
+      // 65 object, 66 clan, 67 clan settings, 68 campaign, 75 player group): {archive, n, types: {"<id>":
+      // subtype}, flags: {"<id>": bits}}. `types` lists only vars whose value type is not int.
+      varDefs:   function (archive) { return call('cache.varDefs', [archive]); },
       enumInfo:  function (id) { return call('cache.enumInfo', [id]); },
       // Param definition: {type[,int][,str]} ({} until the reader is available).
       paramDef:  function (id) { return call('cache.paramDef', [id]); },

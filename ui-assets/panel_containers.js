@@ -3,6 +3,8 @@
 // Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
+  let ciDomMap = null;   // cache.varbitDomainMap; "5" = bit fields over item instance keys (object domain)
+
   // tab: link straight to that container's own panel. No tab: named, contents shown inline here.
   const KNOWN_CONTAINERS = {
     93:  { name: 'Backpack',          tab: 'inventory' },
@@ -165,6 +167,23 @@
         line += 'Instance vars (Extra_ints):\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
         if (zero.length) line += '\n   (' + zero.length + ' other key' + (zero.length === 1 ? '' : 's') + ' 0)';
       }
+      // Bit fields the client scripts define over each key: the object-domain varbits
+      // (cache.varbitDomainMap "5"), e.g. 30215 = key 1 bits 0-14 = gizmo-1 perk-1 id,
+      // 18550 = key 0 bits 0-18 = Essence of Finality wear. Listed per key that holds a value,
+      // nonzero fields only, so the raw ints above become the fields the game actually reads.
+      try {
+        if (!ciDomMap) ciDomMap = JSON.parse(await rtxData.raw('cache.varbitDomainMap') || '{}') || {};
+        const om = ciDomMap['5'] || {};
+        for (const x of set) {
+          const defs = om[x]; if (!defs) continue;
+          const v = k[x] | 0, fields = [];
+          for (const d of defs) {
+            const w = d[2] - d[1], mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1), fv = (v >>> d[1]) & mask;
+            if (fv) fields.push('vb ' + d[0] + ' [' + d[1] + (d[2] !== d[1] ? '-' + d[2] : '') + '] = ' + fv);
+          }
+          if (fields.length) line += '\n   key ' + x + ' fields: ' + fields.join(', ');
+        }
+      } catch (e8) {}
       // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
       // count (varobj 18550), key 3 = stored-spec index (varobj 47702) resolved through
       // enum 15970 -> weapon obj. Charge permille = 1000 - wear/(max/1000), max = item

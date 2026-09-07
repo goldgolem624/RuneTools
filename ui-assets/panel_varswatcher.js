@@ -22,6 +22,9 @@
   let varPopTimer = 0;
   let varPopKey = '', varPopAnchor = null;
   let varNoise = {}; let varNoisy = new Set(); let varBlock = new Set(); let varTimerAllow = new Set(); varWatchOn = false; let varTypeFilter = ''; let varbitMapData = null;
+  let varDomMap = null;      // cache.varbitDomainMap: {"<domain>":{"<var>":[[varbit,lsb,msb],..]}} (non-player domains)
+  let varDefsData = null;    // {0: cache.varDefs(60), 2: cache.varDefs(62)}: value type per var id
+  let varLegendOn = false;   // the "Domains" legend under the filter row
   let varFeedHover = false;                            // pointer inside the feed -> freeze row ORDER
   // Pinned watches sit at the top in stable order, bypassing every filter / cap / timer-hide.
   let varPinned = new Set();
@@ -107,10 +110,55 @@
     if (t === 2) return { label: 'varc·s', cls: 'varc' };
     return { label: 't' + t, cls: 'other' };
   }
+  // Var DOMAINS, the client's own numbering (the domain byte of every varbit definition and the
+  // variable-source table of the client scripts). Each domain has its own store; the panel reads
+  // player (varps) and client (varcs) live, the item hover reads object vars, the rest are cache
+  // definitions only until their stores are located. `archive` = the var config archive (js5-2).
+  const VAR_DOMAINS = {
+    0: { name: 'player',        archive: 60, live: 'this panel (varp rows)' },
+    1: { name: 'npc',           archive: 61, live: 'not read' },
+    2: { name: 'client',        archive: 62, live: 'this panel (varc rows)' },
+    3: { name: 'world',         archive: 63, live: 'not read' },
+    4: { name: 'region',        archive: 64, live: 'not read' },
+    5: { name: 'object',        archive: 65, live: 'item hover (instance vars)' },
+    6: { name: 'clan',          archive: 66, live: 'not read' },
+    7: { name: 'clan settings', archive: 67, live: 'not read' },
+    8: { name: 'campaign',      archive: 68, live: 'not read' },
+    9: { name: 'player group',  archive: 75, live: 'not read' },
+  };
+  // Value type of a var (op 3 of its config file), the CS2 subtype ids. int is the default and
+  // never shown; an id outside this table shows as "t<id>".
+  const VAR_TYPE_NAMES = { 0: 'int', 1: 'boolean', 3: 'quest', 6: 'seq', 9: 'component', 10: 'idkit',
+    11: 'midi', 12: 'npc_mode', 13: 'namedobj', 14: 'synth', 16: 'area', 17: 'stat', 22: 'coordgrid',
+    23: 'graphic', 24: 'chatphrase', 26: 'enum', 30: 'loc', 31: 'model', 32: 'npc', 33: 'obj',
+    34: 'player_uid', 36: 'string', 37: 'spotanim', 38: 'npc_uid', 39: 'inv', 42: 'char', 44: 'bas',
+    50: 'coordfine', 71: 'hash64', 73: 'struct', 74: 'dbrow', 110: 'long', 118: 'player_group',
+    131: 'achievement' };
+  function varDomainOf(scope) { return scope === 4 ? 0 : (scope === 5 || scope === 2) ? 2 : -1; }
+  function varTypeOf(scope, id) {
+    const dom = varDomainOf(scope); if (dom < 0 || !varDefsData || !varDefsData[dom]) return 0;
+    return varDefsData[dom].types[id] | 0;
+  }
+  function varTypeName(code) { return VAR_TYPE_NAMES[code] || ('t' + code); }
+  function varDomLoad() {
+    if (!varDomMap) {
+      try { Promise.resolve(rtxData.sync('cache.varbitDomainMap')).then(j => {
+        try { varDomMap = JSON.parse(j) || {}; varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); } catch (e) {}
+      }); } catch (e) {}
+    }
+    if (!varDefsData) {
+      varDefsData = {};
+      for (const dom of [0, 2]) {
+        try { Promise.resolve(rtxData.sync('cache.varDefs', VAR_DOMAINS[dom].archive)).then(j => {
+          try { const d = JSON.parse(j); if (d && d.types) { varDefsData[dom] = d; varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); } } catch (e) {}
+        }); } catch (e) {}
+      }
+    }
+  }
   function varsWatchSet(on) {
     if (varWatchOn === on) return; varWatchOn = on;
     try { if (bridge() && bridge().varsWatch) rtxData.sync('act.varsWatch', on); } catch (e) {}
-    if (on) { varNamesLoad(); varAchLoad(); varPinsSync(); }
+    if (on) { varNamesLoad(); varAchLoad(); varPinsSync(); varDomLoad(); }
     if (on && !varbitMapData && bridge() && bridge().varbitMap) {     // for the varp -> varbit hover decode
       try { Promise.resolve(rtxData.sync('cache.varbitMap')).then(j => {
         try { varbitMapData = JSON.parse(j); varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); } catch (e) {}
@@ -119,7 +167,17 @@
   }
   // varbits that live in varp `varpId`, each decoded from `value` -> [{id, lsb, msb, val}]
   function varpVarbits(varpId, value) {
-    const defs = varbitMapData && varbitMapData[varpId]; if (!defs) return [];
+    return bitsOf(varbitMapData && varbitMapData[varpId], value);
+  }
+  // Same for a varc int: its bit fields are the domain-2 varbits (cache.varbitDomainMap "2").
+  function varcVarbits(varcId, value) {
+    return bitsOf(varDomMap && varDomMap['2'] && varDomMap['2'][varcId], value);
+  }
+  function varsOfRow(scope, id, value) {
+    return scope === 4 ? varpVarbits(id, value) : scope === 5 ? varcVarbits(id, value) : [];
+  }
+  function bitsOf(defs, value) {
+    if (!defs) return [];
     return defs.map(d => { const lsb = d[1], w = d[2] - d[1], mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1);
       return { id: d[0], lsb, msb: d[2], val: (value >>> lsb) & mask }; });
   }
@@ -185,6 +243,31 @@
         ch.addEventListener('click', () => { varTypeFilter = v; clearBtn(paintVars); });
         flt.appendChild(ch);
       });
+      // "Domains": a legend of every var domain the client defines, from the cache census
+      // (cache.varbitDomains) joined with what this build reads live.
+      const dl = document.createElement('button'); dl.className = 'vw-chip vw-chip-legend'; dl.textContent = 'Domains';
+      dl.title = 'Which var domains exist, how many bit fields each defines, and which ones are read live';
+      const legend = document.createElement('div'); legend.id = 'vrLegend'; legend.className = 'vw-legend'; legend.hidden = true;
+      dl.addEventListener('click', () => {
+        varLegendOn = !varLegendOn; legend.hidden = !varLegendOn; dl.classList.toggle('on', varLegendOn);
+        if (!varLegendOn) return;
+        legend.textContent = 'loading domain census...';
+        Promise.resolve(rtxData.sync('cache.varbitDomains')).then(j => {
+          let cen = {}; try { cen = JSON.parse(j) || {}; } catch (e) {}
+          let h = '<div class="vw-legend-h">Var domains (the client keeps one store per domain; a varbit is a bit field over one var of one domain)</div>' +
+            '<table class="vw-legend-t"><tr><th>#</th><th>domain</th><th>defs</th><th>varbits</th><th>base vars</th><th>read live by</th></tr>';
+          for (const dom of Object.keys(VAR_DOMAINS)) {
+            const d = VAR_DOMAINS[dom], c = cen[dom];
+            h += '<tr><td>' + dom + '</td><td>' + d.name + '</td><td>archive ' + d.archive + '</td>' +
+              '<td>' + (c ? c.n.toLocaleString() : '0') + '</td>' +
+              '<td>' + (c ? c.var[0] + ' to ' + c.var[1] : '') + '</td>' +
+              '<td class="' + (d.live === 'not read' ? 'dim' : '') + '">' + d.live + '</td></tr>';
+          }
+          h += '</table><div class="vw-legend-f">Hover a row for its bit fields; the type chip (obj, inv, struct, string, hash64 ...) is the var\'s declared value type, int when absent.</div>';
+          legend.innerHTML = h;
+        }).catch(() => { legend.textContent = 'domain census unavailable'; });
+      });
+      flt.appendChild(dl);
       const meta = document.createElement('div'); meta.id = 'vrMeta'; meta.className = 'vw-meta';
       const feed = document.createElement('div'); feed.id = 'vrFeed'; feed.className = 'vw-feed';
       feed.addEventListener('scroll', hideVarbitPop);
@@ -208,7 +291,7 @@
         const el = varRowEls.get(k); if (el) { el.remove(); varRowEls.delete(k); }
         hideVarbitPop(); paintVars();
       });
-      wrap.appendChild(top); wrap.appendChild(flt); wrap.appendChild(meta); wrap.appendChild(feed);
+      wrap.appendChild(top); wrap.appendChild(flt); wrap.appendChild(legend); wrap.appendChild(meta); wrap.appendChild(feed);
       c.appendChild(wrap);
     }
     paintVars();
@@ -249,13 +332,16 @@
           const v = varDump[k] | 0;
           let m2 = v === want || (v & 0xffff) === want || ((v >>> 16) & 0xffff) === want
                 || v === want * 10 || v === want * 100;
-          if (!m2 && scope === 4 && varbitMapData)
-            m2 = varpVarbits(id, v).some(b => b.val === want || b.val === want * 10);
+          if (!m2 && (scope === 4 || scope === 5))
+            m2 = varsOfRow(scope, id, v).some(b => b.val === want || b.val === want * 10);
           if (!m2) continue;
         } else if (f) {
-          // Match by id substring, or (for a varp) an exact varbit # it owns.
+          // Match by id substring, or (for a varp / varc) an exact varbit # it owns.
           let m = String(id).indexOf(f) >= 0;
           if (!m && scope === 4 && varbitMapData) { const defs = varbitMapData[id]; if (defs && defs.some(d => d[0] === +f)) m = true; }
+          if (!m && scope === 5 && varDomMap && varDomMap['2']) { const defs = varDomMap['2'][id]; if (defs && defs.some(d => d[0] === +f)) m = true; }
+          // Domain or type word: "client", "player", "obj", "struct", "string" ...
+          if (!m) { const fl = f.toLowerCase(), dom = varDomainOf(scope); if (dom >= 0 && VAR_DOMAINS[dom].name === fl) m = true; else { const tc = varTypeOf(scope, id); if (tc && varTypeName(tc) === fl) m = true; } }
           // Name substring: the varp's name, a named varbit in it, or a named achievement bit of it.
           if (!m && (scope === 5 || scope === 2) && varNamesLower) {
             const cn = varNamesLower.varc[id];
@@ -335,7 +421,7 @@
       let el = varRowEls.get(r.key);
       if (!el) {
         el = document.createElement('div'); el.className = 'vw-row'; el._sig = ''; el._flashAt = 0;
-        if (r.scope === 4) {
+        if (r.scope === 4 || r.scope === 5) {
           el.addEventListener('mouseenter', () => { clearTimeout(varPopTimer); showVarbitPop(el, r.key); });
           el.addEventListener('mouseleave', () => { varPopTimer = setTimeout(hideVarbitPop, 260); });   // grace period to move into the popover
         }
@@ -387,8 +473,11 @@
         }
       }
     }
+    const dom = varDomainOf(r.scope), tcode = varTypeOf(r.scope, r.id);
     el.innerHTML =
       '<span class="vw-tag ' + tl.cls + '">' + tl.label + '</span>' +
+      (dom >= 0 ? '<span class="vw-dom" title="Var domain ' + dom + ' (' + VAR_DOMAINS[dom].name + '); config archive ' + VAR_DOMAINS[dom].archive + '">' + VAR_DOMAINS[dom].name + '</span>' : '') +
+      (tcode ? '<span class="vw-type" title="Value type (config op 3): CS2 subtype ' + tcode + '">' + varTypeName(tcode) + '</span>' : '') +
       '<span class="vw-id">' + r.id + '</span>' +
       (nm ? '<span class="vw-name" title="' + vwEscHtml(nm) + '">' + vwEscHtml(nm) + '</span>' : '') +
       '<span class="vw-vals"' + (typeof r.cur === 'string' ? ' title="' + vwEscHtml(r.cur) + '"' : '') + '>' +
@@ -405,23 +494,25 @@
   function fillVarbitPop(pop, key) {
     if (!varDump) return false;
     const p = key.split(':'); const scope = +p[0], id = +p[1];
-    if (scope !== 4) return false;
+    if (scope !== 4 && scope !== 5) return false;
     const cur = varDump[key];
     if (typeof cur !== 'number') return false;
     const recent = (Date.now() - (varChangeAt[key] || 0)) < VAR_RECENT_MS;
     const base = (recent && varPrev[key] !== undefined) ? varPrev[key] : cur;
-    const vbs = varpVarbits(id, cur), was = {};
-    varpVarbits(id, base).forEach(v => { was[v.id] = v.val; });
+    const vbs = varsOfRow(scope, id, cur), was = {};
+    varsOfRow(scope, id, base).forEach(v => { was[v.id] = v.val; });
     // 32-bit breakdown, set bits highlighted; shown even for varps with no named varbits.
     let bits = '';
     for (let b = 31; b >= 0; b--) { if (b !== 31 && (b + 1) % 4 === 0) bits += ' '; bits += (((cur >>> b) & 1) ? '<b>1</b>' : '0'); }
-    const pn = varpName(id);
-    const html = '<div class="vw-pop-h">varp ' + id + (pn ? ' <span class="vw-pop-nm">' + vwEscHtml(pn) + '</span>' : '') + ' = ' + cur +
+    const pn = scope === 4 ? varpName(id) : varcName(id);
+    const dom = varDomainOf(scope), tcode = varTypeOf(scope, id);
+    const domTxt = ' <span class="vw-pop-dom">' + VAR_DOMAINS[dom].name + ' domain' + (tcode ? ', ' + varTypeName(tcode) : '') + '</span>';
+    const html = '<div class="vw-pop-h">' + (scope === 4 ? 'varp ' : 'varc ') + id + (pn ? ' <span class="vw-pop-nm">' + vwEscHtml(pn) + '</span>' : '') + domTxt + ' = ' + cur +
       (cur < 0 ? ' (u32 ' + (cur >>> 0) + ')' : '') +    // bit-31 bitfields read negative as int32; not overflow
       ' &nbsp;0x' + (cur >>> 0).toString(16).toUpperCase() + '</div>' +
       '<div class="vw-pop-bits">' + bits + '</div>' +
-      // Named single bits of the VARP itself (achievement op-23 reqs).
-      ((varAchData && varAchData.vpbits[id]) || []).map(b => {
+      // Named single bits of the VARP itself (achievement op-23 reqs); player domain only.
+      ((scope === 4 && varAchData && varAchData.vpbits[id]) || []).map(b => {
         const bv = (cur >>> b.bit) & 1, wv = (base >>> b.bit) & 1;
         return '<div class="vw-pl' + (wv !== bv ? ' chg' : '') + '">' +
           '<span class="vw-pl-id">bit ' + b.bit + '</span><span class="vw-pl-b">[' + b.bit + ']</span>' +
@@ -442,8 +533,8 @@
         }
         return h;
       }).join('') +
-      (vbs.length || (varAchData && varAchData.vpbits[id]) ? '' :
-        '<div class="vw-pop-e">' + (varbitMapData ? 'no named varbits in this varp' : 'loading varbit names...') + '</div>');
+      (vbs.length || (scope === 4 && varAchData && varAchData.vpbits[id]) ? '' :
+        '<div class="vw-pop-e">' + ((scope === 4 ? varbitMapData : varDomMap) ? 'no varbits defined over this ' + (scope === 4 ? 'varp' : 'varc') : 'loading varbit definitions...') + '</div>');
     if (pop._html !== html) { pop._html = html; pop.innerHTML = html; }   // no scroll-position reset on identical content
     return true;
   }

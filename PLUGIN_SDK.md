@@ -326,6 +326,14 @@ await rtx.plugin.cache.itemInfo(id);  // -> object: item metadata (name, value, 
 await rtx.plugin.cache.itemIcon(id);  // -> string: PNG data URL ("" if none)
 await rtx.plugin.cache.sprite(id);    // -> string: PNG data URL
 await rtx.plugin.cache.varbitMap();   // -> { "<varpId>": [[varbitId, lsb, msb], ...], ... }
+await rtx.plugin.cache.varbitDomainMap(); // -> { "<domain>": { "<var>": [[varbitId, lsb, msb], ...] } }
+//    the non-player domains: 1 npc, 2 client (bit fields over varc ints), 3 world, 4 region,
+//    5 object (item instance keys, see state.itemExtraInts), 6 clan, 7 clan settings, 8 campaign
+await rtx.plugin.cache.varbitDomains();   // -> { "<domain>": { n, var: [min, max], vb: [min, max], sample } }
+await rtx.plugin.cache.varDefs(archive);  // -> { archive, n, types: { "<varId>": subtype }, flags: { "<varId>": bits } }
+//    archive 60 player, 61 npc, 62 client, 63 world, 64 region, 65 object, 66 clan, 67 clan
+//    settings, 68 campaign, 75 player group; `types` lists only vars whose value type is not int
+//    (CS2 subtype ids: 1 boolean, 33 obj, 36 string, 39 inv, 71 hash64, 73 struct, 110 long, ...)
 await rtx.plugin.cache.enumInfo(id);  // -> { "<key>": value, ... }  (id->name/value roster)
 await rtx.plugin.cache.paramDef(id);  // -> { type[, int][, str] }  param definition
 //    ({} while the host's param reader is unavailable)
