@@ -64,7 +64,7 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     // outranks the latch. clueCompassSeen is keyed by the clue's ITEM id, which every clue
     // of that tier shares, so one compass clue used to mark every later elite clue as a
     // compass: the scan then followed the needle and reported a stale varc target as
-    // "DIG HERE (exact, from clue)" hundreds of tiles from the scan area (owner-caught:
+    // "DIG HERE (exact, from clue)" hundreds of tiles from the scan area (found in testing:
     // an "East or West Ardougne" scan answered with South Feldip Hills).
     if (r && r.spots && r.spots.length && r.spots.length <= COMPASS_FIELD_MIN) return false;
     if (clueCompassSeen.has(c.i)) return true;

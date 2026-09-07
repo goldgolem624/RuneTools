@@ -149,7 +149,7 @@
       const parts = cell.dataset.ei.split(':');
       if (!bridge() || !bridge().itemExtraInts || !myPid()) return;
       // parts[2] = the SLOT. Two stacks of one id carry different instance vars, so an
-      // id-only read showed the FIRST slot's values on every one of them (owner-caught
+      // id-only read showed the FIRST slot's values on every one of them (found in testing
       // hovering two Passages of the abyss). -1 keeps the old first-match behaviour.
       const eiSlot = (parts.length > 2 && parts[2] !== '') ? +parts[2] : -1;
       const r = JSON.parse(await bridge().itemExtraInts(myPid(), +parts[0], +parts[1], eiSlot)) || {};
@@ -187,7 +187,7 @@
       // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
       // count (varobj 18550), key 3 = stored-spec index (varobj 47702) resolved through
       // enum 15970 -> weapon obj. Charge permille = 1000 - wear/(max/1000), max = item
-      // param 3385 (100,000 on EoF). Owner-validated: wear 669 + idx 76 = 99.4% Zamorak staff.
+      // param 3385 (100,000 on EoF). Validated in testing: wear 669 + idx 76 = 99.4% Zamorak staff.
       // Degradable items (CS2 script 5828, item param 4563 = 1): instance key 0 is the WEAR
       // counter, item param 3385 the wear at which the item is fully degraded. The game shows
       // "Item Charge: X.Y%" = 1000 - wear/(max/1000) permille (never 100.0 once worn, floor 0.1

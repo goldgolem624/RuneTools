@@ -124,7 +124,7 @@
         nm.textContent = name || ('Item #' + id);
         cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() + '\nSlot ' + slot;
         // slot included: two stacks of one id hold DIFFERENT instance vars, and an
-        // id-only read always returned the first slot's (owner-caught on two passages).
+        // id-only read always returned the first slot's (found in testing on two passages).
         cell.dataset.ei = '93:' + id + ':' + slot;
       }
       cell.appendChild(box); cell.appendChild(nm);

@@ -4066,7 +4066,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 // Live objects carry their exact model AABB, which beats the cache dims twice
                 // over: it is rotation-correct, and r.x/r.y is the RENDER ORIGIN (roughly the
                 // footprint centre), not the SW anchor the static path reports -- marking from
-                // it covered one centre tile of a bench (owner report). When the AABB is sane,
+                // it covered one centre tile of a bench (seen in testing). When the AABB is sane,
                 // the footprint is its extent in tiles and the anchor its SW corner; guarded
                 // back to the raw dims when the AABB is degenerate or wildly off the tile.
                 int fw = meta.dim_x, fh = meta.dim_y, ox = r.x, oy = r.y;
@@ -6752,7 +6752,7 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     // precedes the cooldown, so first key-shaped child wins") broke on live bars: a one-digit
     // cooldown ("4") is a perfectly key-shaped token, and on slots where it enumerates before
     // the key node -- or the slot is unbound, or on cooldown the key text is suppressed -- the
-    // timer was reported AS the keybind (owner report: key chips showing the previous timer)
+    // timer was reported AS the keybind (seen in testing: key chips showing the previous timer)
     // and the real cooldown read came up empty, so the slot claimed ready mid-cooldown.
     // The two nodes never share a place on screen: the KEYBIND label sits in the slot's
     // top-left corner (small x AND small y, parent-relative), the COOLDOWN countdown is
@@ -7850,7 +7850,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 // Footprint, not the model box. A tree's canopy AABB is 4x3 tiles wide and six
                 // tall, and from an overhead camera the box top lands beside its base, so the
                 // twelve projected edges read as a T or a notch while the static trees next to
-                // it drew clean squares (owner report, 950-1). The tiles the game blocks are the
+                // it drew clean squares (seen on 950-1). The tiles the game blocks are the
                 // placement's rotated cache dims; the live AABB only settles orientation and
                 // centre for a dynamic loc that has no placement near its render origin.
                 int W = meta.dim_x, H = meta.dim_y;
@@ -7878,7 +7878,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 fillBox(op, swx, swy, W, H);
                 op.box_h = 0.f;                      // flat tile footprint: an extruded prism's raised
                                                      // top face lands beside its base from overhead and
-                                                     // the outline read as a T (owner report, 950-1)
+                                                     // the outline read as a T (seen on 950-1)
                 op.wx = (swx + W * 0.5f) * 512.f;    // label anchored on the footprint centre
                 op.wy = (swy + H * 0.5f) * 512.f;
                 op.wz = op.box[2];

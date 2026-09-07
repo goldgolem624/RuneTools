@@ -4144,7 +4144,7 @@ void RegionHeightsFill(int player_x, int player_y, int plane, int radius,
 }
 
 // ---- World-map areas (js5-23) -----------------------------------------------------------
-// Decoded offline against build 949 (scratchpad wm23.py) and the game's own scripts:
+// Decoded offline against build 949 (offline decode script) and the game's own scripts:
 //   archive 0, file = area id: "details". cstr internal name, cstr display name, then an
 //       11-byte header (u8 flags, u32, u32 background colour, u8, u8 zoom) and a u8 record
 //       count; records are 17 bytes: u8 type, source rect x0,y0,x1,y1 and DISPLAY rect

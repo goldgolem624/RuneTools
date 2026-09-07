@@ -163,7 +163,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                               .map(x => parseInt(x, 10)).filter(n => isFinite(n) && n >= 0 && n < 200000);
                             let all = {}; try { all = JSON.parse(await bridge().varcsDumpAll(pid) || '{}'); } catch (e) {}
                             // varcsDumpAll keys are scope-prefixed "5:<id>" (5 = varc-int); a bare-id
-                            // lookup always missed and served 0 for every varc (owner-caught via the
+                            // lookup always missed and served 0 for every varc (found in testing via the
                             // Hefin lap timer reading 0:00 while the watcher showed varc 7416 counting).
                             const out = {}; for (const id of ids) out[id] = (all['5:' + id] | 0) || 0; return out; } },
     // Achievements: full roster with live completion + per-requirement progress, or a single

@@ -91,7 +91,7 @@
       // cycles = CLIENTCLOCK units, the unit the cooldown varc stamps use. This assignment
       // DROPPED it for a while, and clock (mod_base+0xED2FF8) died in a game update, so the
       // cooldown clocks had no time source at all and every ability read as off cooldown
-      // (owner report: Freedom "ready" with cast/ready stamps plainly live in the tooltip).
+      // (seen in testing: Freedom "ready" with cast/ready stamps plainly live in the tooltip).
       try { const j = JSON.parse(await rtxData.raw('state.actionBar')); bars = j.bars || []; clock = j.clock || 0; cycles = j.cycles || 0; } catch (e) {}
       // varc-int snapshot for the cooldown clock pairs (keys are scope-prefixed "5:<id>")
       let vc = null;

@@ -95,7 +95,7 @@
   // heavily SHARED between leagues - L1 Production Master reuses all five of L2's - so
   // the check is only meaningful for the live league. On a finished league it reports
   // the current league's picks (false positives, two lit in one tier) while the real
-  // picks read inactive, their vars having been cleared. Owner-caught on Catalyst.
+  // picks read inactive, their vars having been cleared. Found in testing on Catalyst.
   const LG_ACTIVE_VP = typeof VP !== 'undefined' ? VP.LEAGUE : 12314;
   let lgActiveLeague = null;   // varp 12314, null until read
   const LG_REGION_VP = 12327;
@@ -206,7 +206,7 @@
         // FOUR-sub tuple (int, graphic, string, int) flattening to keys 1/2/3/4, and
         // the game matches a task's locality against sub [4] and shows sub [3]
         // (script20120), so the id list is key '4'. Key '1' is a different int with
-        // duplicates; pairing on it scrambled the labels (owner-caught: a Kandarin:
+        // duplicates; pairing on it scrambled the labels (found in testing: a Kandarin:
         // Ardougne task tagged Misthalin: City of Um).
         const cfg = cfgBy[lgCol(h, 'i', '13')];
         const catRow = cfg ? catBy[lgList(cfg, 'i', '6')[2]] : null;

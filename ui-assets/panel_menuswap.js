@@ -385,7 +385,7 @@
   // This exists for same-NAMED variants with different ids (two "Fishing spot" NPCs, 312
   // Cage/Harpoon and 313 Net/Harpoon). Pins match on verb + name, so the companion cannot
   // tell the variants apart, and per-variant pins leaked one spot's order onto the other
-  // (owner report: putting Harpoon above Cage on 312 also put Harpoon above Net on 313).
+  // (seen in testing: putting Harpoon above Cage on 312 also put Harpoon above Net on 313).
   // But the orders usually do not CONFLICT: Harpoon>Cage and Net>Harpoon merge into
   // Net,Harpoon,Cage, and each menu only contains its own verbs, so the one merged pin list
   // orders both variants exactly as asked. Topological merge with a stable tie-break (verbs

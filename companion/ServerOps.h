@@ -13,7 +13,7 @@
 //   tools/rtx_offsets.py pkt  -> per-opcode handler fingerprint (MainData fields it touches):
 //     skill_update / run_energy / run_weight write the skill block (0x19920 -> 0x7618),
 //     ge_offer indexes the GE slots (0x19990), server_tick increments the tick counter (0xDBF0).
-//   a 60 s capture of the event ring with the mask wide open (scratchpad opfreq.py):
+//   a 60 s capture of the event ring with the mask wide open (offline capture script):
 //     container_update starts with container 93 (backpack), runclientscript runs every tick with
 //     script args, ping_echo is the 8-byte nonce every ~6 s, message_game carries the chat text.
 #include <cstdint>

@@ -1208,7 +1208,7 @@
   // Normalise an item name to the thing the teleport actually needs. Charge variants
   // ("Skills necklace (3)") drop their count, and SKILL-CAPE variants all reduce to the
   // parent cape: every one of them keeps the cape's teleport, so requiring the exact
-  // "Slayer cape" made a held "Inverted Slayer master cape" read as missing (owner-caught).
+  // "Slayer cape" made a held "Inverted Slayer master cape" read as missing (found in testing).
   //   inverted slayer master cape -> slayer master cape -> slayer cape
   //   slayer cape (t) / hooded slayer cape                -> slayer cape
   function teleItemBase(nm) {
@@ -3521,7 +3521,7 @@
   // 2026-08-02), so charges never gate a teleport.
   // Attuned Passage of the abyss. The RECOLOURS are separate item ids (item params
   // 6846/6847/6848 on 44543 = 46318/46319/53925) - leaving them out meant a recoloured
-  // passage was invisible, so its stored jewellery read as "not held" (owner-caught while
+  // passage was invisible, so its stored jewellery read as "not held" (found in testing while
   // carrying two passages, only one of which was recognised).
   const TELE_PASSAGE_IDS = [44542, 44543, 44544, 44545, 46318, 46319, 53925];
   const TELE_PASSAGE_ENUM = 15018;                        // slot index -> jewellery name
