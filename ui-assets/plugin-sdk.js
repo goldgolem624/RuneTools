@@ -116,6 +116,11 @@
       bank:       function () { return call('state.bank', []); },
       scene:      function (range) { return call('state.scene', [range]); },
       varps:      function (ids) { return call('state.varps', [ids]); },
+      // Live var stores per domain, resolved the way the client binds them for scripts:
+      // {stores: {"<domain>": {src, ptr, live, div, count, vt}}, vars: {"6:<id>": v, "9:<id>": v}}.
+      // Clan (6) and player-group (9) values are listed when those stores exist; world, region and
+      // campaign have no live store at all (the client never binds them to a script).
+      varDomainStores: function () { return call('state.varDomainStores', []); },
       buffs:      function () { return call('state.buffs', []); },
       cooldowns:  function () { return call('state.cooldowns', []); },
       perks:      function () { return call('state.perks', []); },

@@ -1294,6 +1294,15 @@ JSValueRef VarcsDumpAll(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   [pid]{ return rtx::reader::VarcsDumpAllJson(pid); });
 }
 
+// Live var stores per domain (clan, player group, ...) plus their values; see Reader.h.
+JSValueRef VarDomainStores(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                           size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return served(ctx, "vardomstores:" + std::to_string(pid), "{}",
+                  [pid]{ return rtx::reader::VarDomainStoresJson(pid); });
+}
+
 JSValueRef VarcInts(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{}");
@@ -5154,6 +5163,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "quests",            Quests);
     install_fn(ctx, ns, "varpsDumpAll",      VarpsDumpAll);
     install_fn(ctx, ns, "varcsDumpAll",      VarcsDumpAll);
+    install_fn(ctx, ns, "varDomainStores",   VarDomainStores);
     install_fn(ctx, ns, "varcStrings",       VarcStrings);
     install_fn(ctx, ns, "varcInts",          VarcInts);
     install_fn(ctx, ns, "varcLongs",         VarcLongs);

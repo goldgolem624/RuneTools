@@ -25,6 +25,9 @@
   let varDomMap = null;      // cache.varbitDomainMap: {"<domain>":{"<var>":[[varbit,lsb,msb],..]}} (non-player domains)
   let varDefsData = null;    // {0: cache.varDefs(60), 2: cache.varDefs(62)}: value type per var id
   let varLegendOn = false;   // the "Domains" legend under the filter row
+  let varDomStores = null;   // state.varDomainStores.stores: per-domain {src, ptr, live, div, count, vt}
+  let varDomVars = {};       // state.varDomainStores.vars: "6:<id>" / "9:<id>" -> value (clan, player group)
+  let _varDomAt = 0;
   let varFeedHover = false;                            // pointer inside the feed -> freeze row ORDER
   // Pinned watches sit at the top in stable order, bypassing every filter / cap / timer-hide.
   let varPinned = new Set();
@@ -108,6 +111,8 @@
     if (t === 4) return { label: 'varp', cls: 'varp' };
     if (t === 5) return { label: 'varc', cls: 'varc' };
     if (t === 2) return { label: 'varc·s', cls: 'varc' };
+    if (t === 6) return { label: 'varclan', cls: 'varbit' };
+    if (t === 9) return { label: 'vargroup', cls: 'varbit' };
     return { label: 't' + t, cls: 'other' };
   }
   // Var DOMAINS, the client's own numbering (the domain byte of every varbit definition and the
@@ -134,7 +139,8 @@
     34: 'player_uid', 36: 'string', 37: 'spotanim', 38: 'npc_uid', 39: 'inv', 42: 'char', 44: 'bas',
     50: 'coordfine', 71: 'hash64', 73: 'struct', 74: 'dbrow', 110: 'long', 118: 'player_group',
     131: 'achievement' };
-  function varDomainOf(scope) { return scope === 4 ? 0 : (scope === 5 || scope === 2) ? 2 : -1; }
+  // Row scope -> var domain: 4 varp = 0 player, 5 / 2 varc = 2 client, 6 = clan, 9 = player group.
+  function varDomainOf(scope) { return scope === 4 ? 0 : (scope === 5 || scope === 2) ? 2 : (scope === 6 || scope === 9) ? scope : -1; }
   function varTypeOf(scope, id) {
     const dom = varDomainOf(scope); if (dom < 0 || !varDefsData || !varDefsData[dom]) return 0;
     return varDefsData[dom].types[id] | 0;
@@ -148,7 +154,7 @@
     }
     if (!varDefsData) {
       varDefsData = {};
-      for (const dom of [0, 2]) {
+      for (const dom of [0, 2, 6, 9]) {
         try { Promise.resolve(rtxData.sync('cache.varDefs', VAR_DOMAINS[dom].archive)).then(j => {
           try { const d = JSON.parse(j); if (d && d.types) { varDefsData[dom] = d; varRowEls.forEach(el => { el._sig = ''; }); paneRun('vars', paintVars); } } catch (e) {}
         }); } catch (e) {}
@@ -174,7 +180,10 @@
     return bitsOf(varDomMap && varDomMap['2'] && varDomMap['2'][varcId], value);
   }
   function varsOfRow(scope, id, value) {
-    return scope === 4 ? varpVarbits(id, value) : scope === 5 ? varcVarbits(id, value) : [];
+    if (scope === 4) return varpVarbits(id, value);
+    if (scope === 5) return varcVarbits(id, value);
+    if (scope === 6 || scope === 9) return bitsOf(varDomMap && varDomMap[String(scope)] && varDomMap[String(scope)][id], value);
+    return [];
   }
   function bitsOf(defs, value) {
     if (!defs) return [];
@@ -192,6 +201,14 @@
     try { if (bridge().varpsLong) varLongs = JSON.parse(await rtxData.raw('state.varpsLong', VW_LONG_VARPS)); } catch (e) {}
     try { if (bridge().varcsDumpAll) dx = JSON.parse(await rtxData.raw('state.varcsAll')); } catch (e) {}
     try { if (bridge().varcStringsDumpAll) dxs = JSON.parse(await rtxData.raw('state.varcStringsAll')); } catch (e) {}  // varc-string, keys "2:<id>"
+    // Clan (6) and player-group (9) stores, keys "6:<id>" / "9:<id>", plus the per-domain store
+    // status the Domains legend shows. Polled at a lower rate: the stores change rarely.
+    let dd = null;
+    if (Date.now() - _varDomAt > 2000) {
+      _varDomAt = Date.now();
+      try { dd = JSON.parse(await rtxData.raw('state.varDomainStores')); } catch (e) {}
+      if (dd && typeof dd === 'object') { varDomStores = dd.stores || null; varDomVars = (dd.vars && typeof dd.vars === 'object') ? dd.vars : {}; }
+    }
     try { if (bridge().varsDump)     dc = JSON.parse(await rtxData.raw('host.varsDump')); } catch (e) {}
     varFetching = false;
     varcAvail = !!(dx && typeof dx === 'object' && Object.keys(dx).length) ||
@@ -207,6 +224,7 @@
       if (dxs && typeof dxs === 'object') Object.assign(d, dxs);
       if (dv && typeof dv === 'object') Object.assign(d, dv);
       if (dx && typeof dx === 'object') Object.assign(d, dx);
+      Object.assign(d, varDomVars);
     }
     if (!d || typeof d !== 'object') return;
     for (const k in varNoise) { varNoise[k] *= 0.82; if (varNoise[k] < 0.05) delete varNoise[k]; }
@@ -256,14 +274,26 @@
           let cen = {}; try { cen = JSON.parse(j) || {}; } catch (e) {}
           let h = '<div class="vw-legend-h">Var domains (the client keeps one store per domain; a varbit is a bit field over one var of one domain)</div>' +
             '<table class="vw-legend-t"><tr><th>#</th><th>domain</th><th>defs</th><th>varbits</th><th>base vars</th><th>read live by</th></tr>';
+          // Live store status from the reader (the client's own script binder chains): a store
+          // that exists shows its var count; clan and group stores are absent outside a clan/group.
+          const st = varDomStores || {};
+          const liveTxt = (dom, d) => {
+            const s = st[dom];
+            if (dom === '6' || dom === '9') return s && s.live ? 'this panel (' + s.count + ' vars live)' : (s ? 'store absent (not in a ' + (dom === '6' ? 'clan' : 'group') + ')' : d.live);
+            if (dom === '7') return s && s.ptr && s.ptr !== '0x0' ? 'bound per script (settings object present)' : 'bound per script; no clan settings loaded';
+            if (dom === '1') return 'bound per script to the target NPC only';
+            if (dom === '3' || dom === '4' || dom === '8') return 'never bound to scripts; no live store';
+            return d.live;
+          };
           for (const dom of Object.keys(VAR_DOMAINS)) {
-            const d = VAR_DOMAINS[dom], c = cen[dom];
+            const d = VAR_DOMAINS[dom], c = cen[dom], lt = liveTxt(dom, d);
             h += '<tr><td>' + dom + '</td><td>' + d.name + '</td><td>archive ' + d.archive + '</td>' +
               '<td>' + (c ? c.n.toLocaleString() : '0') + '</td>' +
               '<td>' + (c ? c.var[0] + ' to ' + c.var[1] : '') + '</td>' +
-              '<td class="' + (d.live === 'not read' ? 'dim' : '') + '">' + d.live + '</td></tr>';
+              '<td class="' + (/absent|never|no clan|not read/.test(lt) ? 'dim' : '') + '">' + lt + '</td></tr>';
           }
-          h += '</table><div class="vw-legend-f">Hover a row for its bit fields; the type chip (obj, inv, struct, string, hash64 ...) is the var\'s declared value type, int when absent.</div>';
+          h += '</table><div class="vw-legend-f">Hover a row for its bit fields; the type chip (obj, inv, struct, string, hash64 ...) is the var\'s declared value type, int when absent. ' +
+               'World, region and campaign vars are defined in the cache but the client never binds a store for them, so no script (and no reader) can see values.</div>';
           legend.innerHTML = h;
         }).catch(() => { legend.textContent = 'domain census unavailable'; });
       });
@@ -421,7 +451,7 @@
       let el = varRowEls.get(r.key);
       if (!el) {
         el = document.createElement('div'); el.className = 'vw-row'; el._sig = ''; el._flashAt = 0;
-        if (r.scope === 4 || r.scope === 5) {
+        if (r.scope === 4 || r.scope === 5 || r.scope === 6 || r.scope === 9) {
           el.addEventListener('mouseenter', () => { clearTimeout(varPopTimer); showVarbitPop(el, r.key); });
           el.addEventListener('mouseleave', () => { varPopTimer = setTimeout(hideVarbitPop, 260); });   // grace period to move into the popover
         }
@@ -494,7 +524,7 @@
   function fillVarbitPop(pop, key) {
     if (!varDump) return false;
     const p = key.split(':'); const scope = +p[0], id = +p[1];
-    if (scope !== 4 && scope !== 5) return false;
+    if (scope !== 4 && scope !== 5 && scope !== 6 && scope !== 9) return false;
     const cur = varDump[key];
     if (typeof cur !== 'number') return false;
     const recent = (Date.now() - (varChangeAt[key] || 0)) < VAR_RECENT_MS;
@@ -504,10 +534,10 @@
     // 32-bit breakdown, set bits highlighted; shown even for varps with no named varbits.
     let bits = '';
     for (let b = 31; b >= 0; b--) { if (b !== 31 && (b + 1) % 4 === 0) bits += ' '; bits += (((cur >>> b) & 1) ? '<b>1</b>' : '0'); }
-    const pn = scope === 4 ? varpName(id) : varcName(id);
+    const pn = scope === 4 ? varpName(id) : scope === 5 ? varcName(id) : '';
     const dom = varDomainOf(scope), tcode = varTypeOf(scope, id);
     const domTxt = ' <span class="vw-pop-dom">' + VAR_DOMAINS[dom].name + ' domain' + (tcode ? ', ' + varTypeName(tcode) : '') + '</span>';
-    const html = '<div class="vw-pop-h">' + (scope === 4 ? 'varp ' : 'varc ') + id + (pn ? ' <span class="vw-pop-nm">' + vwEscHtml(pn) + '</span>' : '') + domTxt + ' = ' + cur +
+    const html = '<div class="vw-pop-h">' + varTypeLabel(scope).label + ' ' + id + (pn ? ' <span class="vw-pop-nm">' + vwEscHtml(pn) + '</span>' : '') + domTxt + ' = ' + cur +
       (cur < 0 ? ' (u32 ' + (cur >>> 0) + ')' : '') +    // bit-31 bitfields read negative as int32; not overflow
       ' &nbsp;0x' + (cur >>> 0).toString(16).toUpperCase() + '</div>' +
       '<div class="vw-pop-bits">' + bits + '</div>' +
@@ -534,7 +564,7 @@
         return h;
       }).join('') +
       (vbs.length || (scope === 4 && varAchData && varAchData.vpbits[id]) ? '' :
-        '<div class="vw-pop-e">' + ((scope === 4 ? varbitMapData : varDomMap) ? 'no varbits defined over this ' + (scope === 4 ? 'varp' : 'varc') : 'loading varbit definitions...') + '</div>');
+        '<div class="vw-pop-e">' + ((scope === 4 ? varbitMapData : varDomMap) ? 'no varbits defined over this ' + varTypeLabel(scope).label : 'loading varbit definitions...') + '</div>');
     if (pop._html !== html) { pop._html = html; pop.innerHTML = html; }   // no scroll-position reset on identical content
     return true;
   }

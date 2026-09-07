@@ -2224,6 +2224,94 @@ std::string VarcsDumpAllJson(std::uint32_t pid) {
     return out;
 }
 
+// ---- Var domain stores ---------------------------------------------------------------------
+// How the client binds var DOMAINS for a script (950-1 fn 0x14008df60, the context binder that
+// runs before the interpreter loop 0x14008e180): every pushvar/popvar resolves its store
+// through a per-context hashmap keyed by the domain id, and the binder fills that map from:
+//   0 player       MainData+0x19fb8           (the varp manager; hashmap at +0x36080)
+//   2 client       [MainData+0x19920]+0x7620   (varc object; hashmap at +0x7630)
+//   6 clan         [[MainData+0x19920]+0x77b0] (created on clan join, null otherwise)
+//   7 clansettings [MainData+0x19888] + slot*16 (op ACTIVECLANSETTINGS_FIND_* binds a slot)
+//   9 playergroup  [[MainData+0x19948]+8]+0x28  (null without a group)
+//   1 npc          script target entity +0x130   (only while a script runs on that NPC)
+// Domains 3 (world), 4 (region) and 8 (campaign) are never bound: no script can read them,
+// so the client keeps no live store for them. The stores that scripts see are eastl hashtables
+// of one class (vtable rs2client+0xB609C0): buckets at +0x10, bucket count at +0x18, element
+// count at +0x20; node = {u32 var id, value union at +8, type byte at +0x20 (0 int, 1 long,
+// 2 string), next at +0x28}. The varc object wraps the same table at +8.
+struct DomStore { const char* src; std::uint64_t obj; std::uint64_t table; int div; int count; bool typed; };
+
+static bool dom_table(HANDLE h, std::uint64_t table, int& div, int& count) {
+    div = rpm<std::int32_t>(h, table + 0x18).value_or(0);
+    count = rpm<std::int32_t>(h, table + 0x20).value_or(0);
+    std::uint64_t ba = rpm<std::uint64_t>(h, table + 0x10).value_or(0);
+    return ba > 0x10000 && div > 0 && div <= 131072 && count >= 0 && count <= div * 8;
+}
+
+// Every (id, value) of one store into `out` as "<domain>:<id>":value. Long values are emitted
+// as strings, string values as "(string)".
+static void dom_dump(HANDLE h, std::uint64_t table, int domain, std::string& out, bool& first) {
+    int div = 0, count = 0;
+    if (!dom_table(h, table, div, count)) return;
+    std::uint64_t ba = rpm<std::uint64_t>(h, table + 0x10).value_or(0);
+    std::vector<std::uint64_t> buckets((std::size_t)div);
+    if (!rpm_bytes(h, ba, buckets.data(), (std::size_t)div * 8)) return;
+    char buf[96];
+    for (int b = 0; b < div; ++b) {
+        std::uint64_t node = buckets[(std::size_t)b];
+        for (int steps = 0; steps < 512 && node > 0x10000; ++steps) {
+            std::uint8_t nb[0x30];
+            if (!rpm_bytes(h, node, nb, sizeof(nb))) break;
+            int id = *reinterpret_cast<const std::int32_t*>(nb);
+            int type = nb[0x20];
+            if (id >= 0 && id < 100000) {
+                if (type == 0)      std::snprintf(buf, sizeof(buf), "%s\"%d:%d\":%d", first ? "" : ",", domain, id, *reinterpret_cast<const std::int32_t*>(nb + 8));
+                else if (type == 1) std::snprintf(buf, sizeof(buf), "%s\"%d:%d\":\"%lld\"", first ? "" : ",", domain, id, (long long)*reinterpret_cast<const std::int64_t*>(nb + 8));
+                else                std::snprintf(buf, sizeof(buf), "%s\"%d:%d\":\"(string)\"", first ? "" : ",", domain, id);
+                out += buf; first = false;
+            }
+            node = *reinterpret_cast<const std::uint64_t*>(nb + kVarNodeNext);
+        }
+    }
+}
+
+std::string VarDomainStoresJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "{}";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{}";
+    const std::uint64_t kTableVt = ps.mod_base ? ps.mod_base + 0xB609C0 : 0;
+    std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
+    std::uint64_t clan  = store > 0x10000 ? rpm<std::uint64_t>(h, store + 0x77b0).value_or(0) : 0;
+    std::uint64_t grp   = rpm<std::uint64_t>(h, *root + 0x19948).value_or(0);
+    std::uint64_t grpObj = grp > 0x10000 ? rpm<std::uint64_t>(h, grp + 8).value_or(0) : 0;
+    std::uint64_t clanReg = rpm<std::uint64_t>(h, *root + 0x19888).value_or(0);
+    std::uint64_t cs0 = clanReg > 0x10000 ? rpm<std::uint64_t>(h, clanReg).value_or(0) : 0;
+    std::uint64_t cs1 = clanReg > 0x10000 ? rpm<std::uint64_t>(h, clanReg + 16).value_or(0) : 0;
+
+    std::string out = "{\"stores\":{"; char buf[256]; bool firstS = true;
+    auto emit = [&](const char* key, const char* src, std::uint64_t obj, std::uint64_t table) {
+        int div = 0, count = 0; bool ok = obj > 0x10000 && dom_table(h, table, div, count);
+        std::uint64_t vt = obj > 0x10000 ? rpm<std::uint64_t>(h, table).value_or(0) : 0;
+        std::snprintf(buf, sizeof(buf), "%s\"%s\":{\"src\":\"%s\",\"ptr\":\"0x%llx\",\"live\":%s,\"div\":%d,\"count\":%d,\"vt\":%s}",
+                      firstS ? "" : ",", key, src, (unsigned long long)obj, ok ? "true" : "false", ok ? div : 0, ok ? count : 0,
+                      (kTableVt && vt == kTableVt) ? "true" : "false");
+        out += buf; firstS = false;
+    };
+    emit("0",  "MainData+0x19fb8 (varp manager)", *root + 0x19fb8, *root + kOffVarpHash - 8);
+    emit("2",  "[MainData+0x19920]+0x7620 (varc object)", store > 0x10000 ? store + 0x7620 : 0, store + 0x7620 + 8);
+    emit("6",  "[[MainData+0x19920]+0x77b0]", clan, clan);
+    emit("7",  "[[MainData+0x19888]+0] (clan settings slot 0; table offset not pinned)", cs0, cs0);
+    emit("7b", "[[MainData+0x19888]+16] (clan settings slot 1; table offset not pinned)", cs1, cs1);
+    emit("9",  "[[MainData+0x19948]+8]+0x28", grpObj > 0x10000 ? grpObj + 0x28 : 0, grpObj + 0x28);
+    out += "},\"vars\":{"; bool first = true;
+    if (clan > 0x10000) dom_dump(h, clan, 6, out, first);
+    if (grpObj > 0x10000) dom_dump(h, grpObj + 0x28, 9, out, first);
+    out += "}}";
+    return out;
+}
+
 // Read specific varcs as 64-bit values ("varc longs"), external-only. Same global client-var
 // hashmap as VarcsDumpAllJson (store+0x7630); the node's value union at +0x08 is read as i64
 // instead of i32, so long-typed varcs keep their full width -- e.g. the death interface's
@@ -8570,6 +8658,25 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         int st = (doms == 9 && u60 == 0 && u62 == 0) ? 1 : (doms == 0 ? 2 : 0);
         add("Var domains", st, doms == 0 ? "varbit archive not readable yet" :
             std::to_string(doms) + "/9 domains defined; unknown var-config opcodes: player " + std::to_string(u60) + ", client " + std::to_string(u62));
+    }
+    {   // Var domain stores: the player and client tables must resolve through the binder's chains
+        // with sane bucket counts and the store class vtable; clan / player group stores are reported
+        // as present or absent (absent is normal outside a clan or group).
+        std::string j = VarDomainStoresJson(pid);
+        auto field = [&](const char* dom, const char* name) -> std::string {
+            auto p = j.find("\"" + std::string(dom) + "\":{"); if (p == std::string::npos) return "";
+            auto q = j.find("\"" + std::string(name) + "\":", p); if (q == std::string::npos) return "";
+            q += std::strlen(name) + 3; auto e = j.find_first_of(",}", q);
+            return j.substr(q, e - q);
+        };
+        // The varp table is an embedded member without its own vtable; the varc table carries it.
+        bool p0 = field("0", "live") == "true";
+        bool p2 = field("2", "live") == "true" && field("2", "vt") == "true";
+        std::string d = "player " + (p0 ? "ok (" + field("0", "count") + " vars)" : "FAILED") +
+                        ", client " + (p2 ? "ok (" + field("2", "count") + " vars)" : "FAILED") +
+                        ", clan " + (field("6", "live") == "true" ? field("6", "count") + " vars" : "absent") +
+                        ", player group " + (field("9", "live") == "true" ? field("9", "count") + " vars" : "absent");
+        add("Var domain stores", (p0 && p2) ? 1 : 0, d);
     }
     {   // Scene objects: a runtime loc id is proven by matching a static map placement of that id on
         // the object's own tile (most scenery is unnamed, so a name is no test; dynamic spawns such as

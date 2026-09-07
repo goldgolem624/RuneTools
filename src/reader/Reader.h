@@ -348,6 +348,11 @@ std::string VarpsDumpAllJson(std::uint32_t pid);
 std::string ServerOpsJson();
 // Every set varc-int polled from the global client-var hashmap (store+0x7630), keyed "5:<id>". External-only.
 std::string VarcsDumpAllJson(std::uint32_t pid);
+// The live var stores of every script-visible domain, resolved the way the client's script
+// context binder does: {"stores":{"<domain>":{src,ptr,live,div,count,vt}},"vars":{"6:<id>":v,
+// "9:<id>":v}}. Domains 6 (clan) and 9 (player group) are dumped when their store exists;
+// 3, 4 and 8 have no live store (never bound to a script). See Reader.cpp "Var domain stores".
+std::string VarDomainStoresJson(std::uint32_t pid);
 // Read specific varcs as 64-bit values from the same global map -> {"<id>":"<i64 as string>",..}.
 // For long-typed varcs (death-interface item prices 4829-4875/7109-7111, at-risk varc 4876).
 std::string VarcLongsJson(std::uint32_t pid, const std::string& ids_csv);

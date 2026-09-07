@@ -177,6 +177,10 @@ await rtx.plugin.state.scene(range);  // range = 1..64 tiles (clamped)
 //    as { x, y, fx, fy, src } in tiles plus raw fine units, or null.
 
 await rtx.plugin.state.varps("659,3274");  // comma-separated varp ids (string capped at 200 chars)
+await rtx.plugin.state.varDomainStores(); // -> { stores: { "<domain>": { src, ptr, live, div, count, vt } },
+//    vars: { "6:<id>": v, "9:<id>": v } }: the live var store of each script-visible domain, resolved the
+//    way the client binds them for scripts; clan (6) and player-group (9) values are listed when those
+//    stores exist. World (3), region (4) and campaign (8) have no live store: the client never binds them.
 // -> { "659": 990, "3274": 120 }           map of id -> raw value
 
 await rtx.plugin.state.varbits([46468, 46463]); // array of varbit ids (<=64)
