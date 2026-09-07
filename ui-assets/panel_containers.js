@@ -8,10 +8,16 @@
   // 5828/15097/670 Essence of Finality). Everything else defined over the same key belongs to
   // another family and is only counted.
   const CI_OBJ_VARBITS = {
-    30212: 'item XP',
-    30215: 'gizmo 1 perk 1', 30216: 'gizmo 1 perk 1 rank', 30217: 'gizmo 1 perk 2', 30218: 'gizmo 1 perk 2 rank',
-    30219: 'gizmo 2 perk 1', 30220: 'gizmo 2 perk 1 rank', 30221: 'gizmo 2 perk 2', 30222: 'gizmo 2 perk 2 rank',
-    18550: 'EoF wear', 47702: 'EoF stored special (enum 15970 index)',
+    aug: {
+      30212: 'item XP',
+      30215: 'gizmo 1 perk 1', 30216: 'gizmo 1 perk 1 rank', 30217: 'gizmo 1 perk 2', 30218: 'gizmo 1 perk 2 rank',
+      30219: 'gizmo 2 perk 1', 30220: 'gizmo 2 perk 1 rank', 30221: 'gizmo 2 perk 2', 30222: 'gizmo 2 perk 2 rank',
+    },
+    eof: { 18550: 'wear', 47702: 'stored special (enum 15970 index)' },
+  };
+  // Families whose meaning is known per KEY rather than per varbit (the game shows the raw int).
+  const CI_KEY_NAMES = {
+    gote: { 0: 'stored sign of the porter charges' },
   };
 
   // tab: link straight to that container's own panel. No tab: named, contents shown inline here.
@@ -186,17 +192,25 @@
       try {
         if (!ciDomMap) ciDomMap = JSON.parse(await rtxData.raw('cache.varbitDomainMap') || '{}') || {};
         const om = ciDomMap['5'] || {};
+        // The family decides which names apply: a pinned varbit of one family reads garbage on
+        // another (Grace of the elves' porter counter is not "EoF wear"). Name from the tip's
+        // first line; augmented gear by its "Augmented " prefix.
+        const itemName = String(cell.dataset.tip || '').split('\n')[0];
+        const fam = /^augmented /i.test(itemName) ? 'aug' : /essence of finality/i.test(itemName) ? 'eof'
+                  : /^grace of the elves/i.test(itemName) ? 'gote' : '';
+        const vbNames = CI_OBJ_VARBITS[fam] || {}, keyNames = CI_KEY_NAMES[fam] || {};
         for (const x of set) {
-          const defs = om[x]; if (!defs) continue;
+          const defs = om[x] || [];
           const v = k[x] | 0, known = []; let others = 0;
+          if (keyNames[x]) known.push(keyNames[x] + ' = ' + v);
           for (const d of defs) {
-            const lbl = CI_OBJ_VARBITS[d[0]];
+            const lbl = vbNames[d[0]];
             if (!lbl) { others++; continue; }
             const w = d[2] - d[1], mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1), fv = (v >>> d[1]) & mask;
             known.push(lbl + ' = ' + fv + ' (vb ' + d[0] + ' [' + d[1] + (d[2] !== d[1] ? '-' + d[2] : '') + '])');
           }
           if (known.length) line += '\n   key ' + x + ': ' + known.join(', ');
-          if (others) line += '\n   ' + (known.length ? '(+' : 'key ' + x + ': (') + others + ' other bit field' + (others === 1 ? '' : 's') + ' defined over key ' + x + ' by other item families)';
+          if (others) line += '\n   ' + (known.length ? '(+' : 'key ' + x + ': (') + others + ' bit field' + (others === 1 ? '' : 's') + ' defined over key ' + x + ' by other item families)';
         }
       } catch (e8) {}
       // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
