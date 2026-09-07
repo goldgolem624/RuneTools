@@ -4,6 +4,15 @@
 (function () {
 
   let ciDomMap = null;   // cache.varbitDomainMap; "5" = bit fields over item instance keys (object domain)
+  // Object-domain varbits pinned to an item family by its scripts (CS2 12197/12199 augmented gear,
+  // 5828/15097/670 Essence of Finality). Everything else defined over the same key belongs to
+  // another family and is only counted.
+  const CI_OBJ_VARBITS = {
+    30212: 'item XP',
+    30215: 'gizmo 1 perk 1', 30216: 'gizmo 1 perk 1 rank', 30217: 'gizmo 1 perk 2', 30218: 'gizmo 1 perk 2 rank',
+    30219: 'gizmo 2 perk 1', 30220: 'gizmo 2 perk 1 rank', 30221: 'gizmo 2 perk 2', 30222: 'gizmo 2 perk 2 rank',
+    18550: 'EoF wear', 47702: 'EoF stored special (enum 15970 index)',
+  };
 
   // tab: link straight to that container's own panel. No tab: named, contents shown inline here.
   const KNOWN_CONTAINERS = {
@@ -171,17 +180,23 @@
       // (cache.varbitDomainMap "5"), e.g. 30215 = key 1 bits 0-14 = gizmo-1 perk-1 id,
       // 18550 = key 0 bits 0-18 = Essence of Finality wear. Listed per key that holds a value,
       // nonzero fields only, so the raw ints above become the fields the game actually reads.
+      // Instance key slots are shared positions across every item family and the cache does not
+      // say which family a varbit belongs to, so only the fields pinned to a family (by its
+      // scripts) are named; the rest fold into one count so the raw list stays readable.
       try {
         if (!ciDomMap) ciDomMap = JSON.parse(await rtxData.raw('cache.varbitDomainMap') || '{}') || {};
         const om = ciDomMap['5'] || {};
         for (const x of set) {
           const defs = om[x]; if (!defs) continue;
-          const v = k[x] | 0, fields = [];
+          const v = k[x] | 0, known = []; let others = 0;
           for (const d of defs) {
+            const lbl = CI_OBJ_VARBITS[d[0]];
+            if (!lbl) { others++; continue; }
             const w = d[2] - d[1], mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1), fv = (v >>> d[1]) & mask;
-            if (fv) fields.push('vb ' + d[0] + ' [' + d[1] + (d[2] !== d[1] ? '-' + d[2] : '') + '] = ' + fv);
+            known.push(lbl + ' = ' + fv + ' (vb ' + d[0] + ' [' + d[1] + (d[2] !== d[1] ? '-' + d[2] : '') + '])');
           }
-          if (fields.length) line += '\n   key ' + x + ' fields: ' + fields.join(', ');
+          if (known.length) line += '\n   key ' + x + ': ' + known.join(', ');
+          if (others) line += '\n   ' + (known.length ? '(+' : 'key ' + x + ': (') + others + ' other bit field' + (others === 1 ? '' : 's') + ' defined over key ' + x + ' by other item families)';
         }
       } catch (e8) {}
       // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
