@@ -7847,21 +7847,39 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 robjs.push_back({ r.config_id, r.x, r.y });
                 OverlayPoint op;
                 op.kind = 0; op.label = meta.name;
-                if (r.bmax[0] > r.bmin[0]) {            // valid live AABB -> true 3D box
-                    op.has_box3d = true;
-                    for (int j = 0; j < 3; ++j) { op.bmin[j] = r.bmin[j]; op.bmax[j] = r.bmax[j]; }
-                    op.wx = (r.bmin[0] + r.bmax[0]) * 0.5f;   // label anchored on the box centre
-                    op.wy = (r.bmin[1] + r.bmax[1]) * 0.5f;
-                    op.wz = (r.bmin[2] + r.bmax[2]) * 0.5f;
-                    op.head_z = r.bmax[2];   // box top -> a nameplate floats above the object
-                } else {                                      // no box -> centred tile footprint
-                    op.wx = r.x * 512.f + 256.f; op.wy = r.y * 512.f + 256.f;
-                    std::int16_t objH = rtx::cache::TileHeight(r.x, r.y, out.plane);
-                    op.wz = (objH == kNoH) ? out.player_z : kHScale * (float)objH;
-                    int W = meta.dim_x, H = meta.dim_y;
-                    fillBox(op, r.x - (W - 1) / 2, r.y - (H - 1) / 2, W, H);
-                    op.head_z = op.wz + op.box_h;
+                // Footprint, not the model box. A tree's canopy AABB is 4x3 tiles wide and six
+                // tall, and from an overhead camera the box top lands beside its base, so the
+                // twelve projected edges read as a T or a notch while the static trees next to
+                // it drew clean squares (owner report, 950-1). The tiles the game blocks are the
+                // placement's rotated cache dims; the live AABB only settles orientation and
+                // centre for a dynamic loc that has no placement near its render origin.
+                int W = meta.dim_x, H = meta.dim_y;
+                int swx = r.x - (W - 1) / 2, swy = r.y - (H - 1) / 2;
+                bool placed = false;
+                {
+                    const int tol = std::max(W, H);
+                    for (const auto& pl : rtx::cache::RegionLocations(r.x >> 6, r.y >> 6)) {
+                        if (pl.id != r.config_id || pl.plane != r.plane) continue;
+                        int wx = ((r.x >> 6) << 6) + pl.x, wy = ((r.y >> 6) << 6) + pl.y;
+                        if (std::abs(wx - r.x) > tol || std::abs(wy - r.y) > tol) continue;
+                        swx = wx; swy = wy;
+                        if (pl.rotation & 1) std::swap(W, H);
+                        placed = true;
+                        break;
+                    }
                 }
+                if (!placed && r.bmax[0] > r.bmin[0] && r.bmax[1] > r.bmin[1]) {
+                    const float spanX = r.bmax[0] - r.bmin[0], spanY = r.bmax[1] - r.bmin[1];
+                    if ((spanX >= spanY) != (W >= H)) std::swap(W, H);
+                    const int ctx = (int)std::floor((r.bmin[0] + r.bmax[0]) * 0.5f / 512.f);
+                    const int cty = (int)std::floor((r.bmin[1] + r.bmax[1]) * 0.5f / 512.f);
+                    swx = ctx - (W - 1) / 2; swy = cty - (H - 1) / 2;
+                }
+                fillBox(op, swx, swy, W, H);
+                op.wx = (swx + W * 0.5f) * 512.f;    // label anchored on the footprint centre
+                op.wy = (swy + H * 0.5f) * 512.f;
+                op.wz = op.box[2];
+                op.head_z = op.wz + op.box_h;
                 out.points.push_back(op);
                 ++oc;
             }
