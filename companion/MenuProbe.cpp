@@ -83,6 +83,7 @@
 // menu+target+nocanc" was never evidence either way. LogLaneTops samples the lanes before the
 // build and after our write to settle it.
 
+#include "SceneOffsets.h"
 #include "MenuProbe.h"
 #include "MenuShare.h"
 
@@ -298,13 +299,17 @@ std::uint64_t Scan(const unsigned char* pat, const unsigned char* mask, std::siz
     if (!tb || !ts) return 0;
     __try {
         const unsigned char* b = (const unsigned char*)tb;
+        std::uint64_t hit = 0;
         for (std::uint64_t i = 0; i + n < ts; ++i) {
             if (b[i] != pat[0]) continue;
             bool ok = true;
             for (std::size_t j = 1; j < n; ++j)
                 if (mask[j] && b[i + j] != pat[j]) { ok = false; break; }
-            if (ok) return tb + i;
+            if (!ok) continue;
+            if (hit) return 0;   // ambiguous: refuse
+            hit = tb + i;
         }
+        return hit;
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return 0;
 }
@@ -822,6 +827,7 @@ void ApplyOrder(std::uint64_t mgr) {
         if (!changed) continue;
         if (lane.stat == 0) ++g_share->stage[3];
 
+        if (!rtx::scn::KnownBuild(g_base)) continue;
         __try {
             for (int j = 0; j < m; ++j)
                 std::memcpy((void*)(begin + (std::uint64_t)slots[j] * kRecSize), recs[items[j]], kRecSize);
@@ -1056,7 +1062,7 @@ void PromotePinnedEntry(std::uint64_t mgr) {
     }
 
     std::uint64_t disp = 0;
-    if (!Rd(top + kRecTarget, &disp, 8) || !disp) {
+    if (!rtx::scn::KnownBuild(g_base) || !Rd(top + kRecTarget, &disp, 8) || !disp) {
         g_share->promoState = rtx::menu::kPromoWriteFailed;
         return;
     }

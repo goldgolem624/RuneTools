@@ -158,7 +158,7 @@ std::uint64_t FindPlayFn() {
             bool ok = true;
             for (std::size_t j = 1; j < n; ++j)
                 if (kSynthMask[j] && b[i + j] != kSynth[j]) { ok = false; break; }
-            if (ok) { hit = tb + i; break; }
+            if (ok) { if (hit) return 0; hit = tb + i; }
         }
         if (!hit) return 0;
         // PLAY is called immediately after the argument setup the pattern covers.

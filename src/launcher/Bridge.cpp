@@ -560,6 +560,10 @@ JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
             if (m) {
                 auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
                     MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
+                MEMORY_BASIC_INFORMATION mbi{};
+                if (sh && (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 || mbi.RegionSize < sizeof(rtx::netprobe::Share))) {
+                    UnmapViewOfFile((void*)sh); sh = nullptr;
+                }
                 if (sh) {
                     if (sh->magic == rtx::netprobe::kMagic && sh->version >= 3) {
                         if (!(sh->flags & 1)) {
@@ -4780,9 +4784,8 @@ JSValueRef PluginDevEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
 constexpr wchar_t kPluginListPath[] = L"/api/plugins/client/list";
 
-// Pinned ECDSA P-256 public key (raw X||Y, 64 bytes) -- the server's signing key.
-// Bundles whose signature doesn't verify against this are refused.
-static const unsigned char kPluginPubKey[64] = {
+// Pinned ECDSA P-256 public key (raw X||Y): signs plugin bundles and the update manifest.
+const unsigned char kPluginPubKey[64] = {
     0x7e, 0x24, 0xd5, 0xaa, 0xd0, 0x72, 0x29, 0xf2, 0x11, 0xbf, 0x5a, 0x75,
     0x3b, 0x5a, 0xf0, 0xe7, 0xe0, 0xd8, 0xdf, 0xb7, 0x7a, 0x8b, 0x19, 0xe4,
     0x17, 0xe8, 0x59, 0x25, 0xdf, 0x44, 0x53, 0x7c, 0x65, 0xa1, 0xe0, 0x0f,

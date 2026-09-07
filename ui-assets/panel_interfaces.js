@@ -69,7 +69,7 @@
   function ifWatchSig(w) {
     const r = w.r || [0, 0, 0, 0];
     return r[0] + ',' + r[1] + ' ' + r[2] + 'x' + r[3] + ' spr:' + (w.s || '-')
-         + (w.x ? ' txt:' + String(w.x).replace(/<[^>]*>/g, '').trim() : '');
+         + (w.x ? ' txt:' + String(w.x).replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').trim() : '');
   }
   function ifWatchStart(gid, key, label) {
     ifWatchStop();

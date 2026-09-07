@@ -636,6 +636,8 @@ Account FromEnv(std::unordered_map<std::string, std::string> env) {
     it = env.find("JX_CHARACTER_ID");
     if (it != env.end()) a.character_id = it->second;
     a.captured_at = iso8601_now();
+    env.erase("JX_ACCESS_TOKEN");   // unused; never persisted
+    env.erase("JX_REFRESH_TOKEN");
     a.env = std::move(env);
     return a;
 }

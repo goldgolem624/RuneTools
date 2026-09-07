@@ -778,7 +778,7 @@ std::uint64_t FindVarOp(const unsigned char* body, std::size_t blen) {
         for (std::uint64_t i = 0; i + blen < ts; ++i) {
             bool ok = true;
             for (std::uint64_t j = 0; j < blen; ++j) if (b[i + j] != body[j]) { ok = false; break; }
-            if (ok) { body_va = tb + i; break; }
+            if (ok) { if (body_va) return 0; body_va = tb + i; }   // must match exactly once
         }
         if (!body_va) return 0;
         // Map the body back to its function's true entry via the exception unwind table.
@@ -813,7 +813,7 @@ std::uint64_t FindVarOpWild(const unsigned char* body, const unsigned char* mask
         for (std::uint64_t i = 0; i + blen < ts; ++i) {
             bool ok = true;
             for (std::uint64_t j = 0; j < blen; ++j) if (mask[j] && b[i + j] != body[j]) { ok = false; break; }
-            if (ok) { body_va = tb + i; break; }
+            if (ok) { if (body_va) return 0; body_va = tb + i; }   // must match exactly once
         }
         if (!body_va) return 0;
         std::uint32_t body_rva = (std::uint32_t)(body_va - g_base);
@@ -1134,7 +1134,7 @@ void ResolveRenderHooks() {
             if (pDis) g_renderShare->installed |= 2;   // bit1: hide other players
         }
     }
-    std::uint64_t pRender = FindVarOp(kRenderBody, sizeof(kRenderBody));
+    std::uint64_t pRender = rtx::scn::KnownBuild(g_base) ? FindVarOp(kRenderBody, sizeof(kRenderBody)) : 0;
     if (pRender) {
         std::uint64_t spot = pRender + 0x266;
         std::uint8_t op = R8(spot);

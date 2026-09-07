@@ -11,7 +11,7 @@ std::vector<std::uint8_t> InflateImpl(const std::uint8_t* in, std::size_t in_len
                                       std::size_t initial_out_hint, int window_bits) {
     std::vector<std::uint8_t> out;
     // Clamp the hint: a bogus header size must not allocate gigabytes up front.
-    constexpr std::size_t kMaxInitial = (std::size_t)256 * 1024 * 1024;
+    constexpr std::size_t kMaxInitial = (std::size_t)32 * 1024 * 1024;
     if (initial_out_hint > kMaxInitial) initial_out_hint = kMaxInitial;
     out.resize(initial_out_hint > 0 ? initial_out_hint : (std::size_t)64 * 1024);
 

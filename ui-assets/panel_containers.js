@@ -4,9 +4,7 @@
 (function () {
 
   let ciDomMap = null;   // cache.varbitDomainMap; "5" = bit fields over item instance keys (object domain)
-  // Object-domain varbits pinned to an item family by its scripts (CS2 12197/12199 augmented gear,
-  // 5828/15097/670 Essence of Finality). Everything else defined over the same key belongs to
-  // another family and is only counted.
+  // Object-domain varbits per item family (CS2 12197/12199 augmented gear; 5828/15097/670 EoF).
   const CI_OBJ_VARBITS = {
     aug: {
       30212: 'item XP',
@@ -15,7 +13,6 @@
     },
     eof: { 18550: 'wear', 47702: 'stored special (enum 15970 index)' },
   };
-  // Families whose meaning is known per KEY rather than per varbit (the game shows the raw int).
   const CI_KEY_NAMES = {
     gote: { 0: 'stored sign of the porter charges' },
   };
@@ -182,19 +179,10 @@
         line += 'Instance vars (Extra_ints):\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
         if (zero.length) line += '\n   (' + zero.length + ' other key' + (zero.length === 1 ? '' : 's') + ' 0)';
       }
-      // Bit fields the client scripts define over each key: the object-domain varbits
-      // (cache.varbitDomainMap "5"), e.g. 30215 = key 1 bits 0-14 = gizmo-1 perk-1 id,
-      // 18550 = key 0 bits 0-18 = Essence of Finality wear. Listed per key that holds a value,
-      // nonzero fields only, so the raw ints above become the fields the game actually reads.
-      // Instance key slots are shared positions across every item family and the cache does not
-      // say which family a varbit belongs to, so only the fields pinned to a family (by its
-      // scripts) are named; the rest fold into one count so the raw list stays readable.
+      // Instance keys are shared across item families; only this family's fields are named.
       try {
         if (!ciDomMap) ciDomMap = JSON.parse(await rtxData.raw('cache.varbitDomainMap') || '{}') || {};
         const om = ciDomMap['5'] || {};
-        // The family decides which names apply: a pinned varbit of one family reads garbage on
-        // another (Grace of the elves' porter counter is not "EoF wear"). Name from the tip's
-        // first line; augmented gear by its "Augmented " prefix.
         const itemName = String(cell.dataset.tip || '').split('\n')[0];
         const fam = /^augmented /i.test(itemName) ? 'aug' : /essence of finality/i.test(itemName) ? 'eof'
                   : /^grace of the elves/i.test(itemName) ? 'gote' : '';

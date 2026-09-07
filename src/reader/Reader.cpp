@@ -1390,7 +1390,8 @@ void panel_loop() {
             }
         }
         for (auto& [key, build] : jobs) {
-            std::string v = build();          // heavy RPM, OFF the UI thread (builder takes g_mu)
+            std::string v;                    // heavy RPM, OFF the UI thread (builder takes g_mu)
+            try { v = build(); } catch (const std::exception& ex) { rtx::log::Launcher("[reader] refresh: " + std::string(ex.what())); }
             std::lock_guard<std::mutex> lk(s_async_mu);
             auto it = s_async.find(key);
             if (it != s_async.end()) { it->second.value = std::move(v); it->second.has_value = true; }
@@ -1425,7 +1426,9 @@ std::string ReadAsync(const std::string& key, std::function<std::string()> build
     // data immediately instead of the empty default -- otherwise a panel that reads "no data" as
     // a real state (e.g. Pets -> every pet "locked") flashes wrong until the next poll. One-time
     // per key; steady-state stays off the UI thread.
-    std::string v = build();
+    std::string v;
+    try { v = build(); }
+    catch (const std::exception& ex) { rtx::log::Launcher("[reader] " + key + ": " + ex.what()); v.clear(); }
     std::lock_guard<std::mutex> lk(s_async_mu);
     auto& e = s_async[key];
     e.value = v; e.has_value = true;

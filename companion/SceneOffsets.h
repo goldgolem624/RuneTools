@@ -6,9 +6,19 @@
 // offset changes here. The worker/matrix entries are defaults only: they are
 // runtime-resolved and rescanned when invalid.
 
+#include <Windows.h>
 #include <cstdint>
 
 namespace rtx::scn {
+
+// Builds whose in-process write offsets were verified; writes are refused on any other.
+inline constexpr std::uint32_t kKnownBuildStamps[] = { 0x6a998810 /* 950-1 */ };
+inline bool KnownBuild(std::uint64_t base) {
+    auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    auto nt  = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    for (auto st : kKnownBuildStamps) if (nt->FileHeader.TimeDateStamp == st) return true;
+    return false;
+}
 
 // Build 950-1 moved every MainData-relative offset here by +0x40 (see the BUILD HISTORY note
 // in src/reader/Reader.cpp); the object-internal offsets below it were unchanged.

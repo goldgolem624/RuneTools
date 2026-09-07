@@ -1,4 +1,5 @@
 // RuneToolsX panel: Dungeoneering (Daemonheim floor status + explored floor map).
+const dgEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 // Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 //
 // Sources = the live interface trees (bridge interfaceGroup), which mirror the
@@ -5607,9 +5608,9 @@ function dungPartyBestHtml(party92, alwaysOpen) {
       + '<div class="dg-party">'
       + partyNames.map((n, i) => {
           const s = memStatus(n);
-          return '<span class="dg-pmem dg-pm-' + s.cls + '" title="' + n + ' — ' + s.txt + '">'
+          return '<span class="dg-pmem dg-pm-' + s.cls + '" title="' + dgEsc(n) + ' - ' + s.txt + '">'
             + '<i class="dg-pmdot"></i>'
-            + '<b style="color:' + (dungIsSelf(n) ? '#f25c5c' : dungMateCol(i + 1)) + '">p' + (i + 1) + '</b>' + n + '</span>';
+            + '<b style="color:' + (dungIsSelf(n) ? '#f25c5c' : dungMateCol(i + 1)) + '">p' + (i + 1) + '</b>' + dgEsc(n) + '</span>';
         }).join('')
       + '</div>';
   }
@@ -6036,7 +6037,7 @@ function renderDungeoneering() {
       for (const m of (d.mates || []))
         if (m.cx === gx && m.cy === gy) {
           const mcol = dungMateCol(m.pn);
-          ov += '<span class="dg-mk dg-atpos dg-mate-mk" data-mate="' + m.name + '" style="' + dungSubStyle(m.lx, m.ly) + '" title="p' + m.pn + ' - ' + m.name + '">'
+          ov += '<span class="dg-mk dg-atpos dg-mate-mk" data-mate="' + dgEsc(m.name) + '" style="' + dungSubStyle(m.lx, m.ly) + '" title="p' + m.pn + ' - ' + dgEsc(m.name) + '">'
               + '<span class="dg-mate" style="background:' + mcol + ';box-shadow:0 0 5px ' + mcol + '"></span>'
               + '<span class="dg-mate-n" style="color:' + mcol + '">p' + m.pn + '</span></span>';
         }

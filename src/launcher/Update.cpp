@@ -1,5 +1,6 @@
 #include "Update.h"
 #include "BridgeUtil.h"
+#include "Crypto.h"
 #include "Http.h"
 #include "../shared/Log.h"
 
@@ -121,6 +122,25 @@ static void run_update() {
     std::string hash = json_str(man.body, "hash");
     log("manifest version=" + ver + " hash=" + hash);
     if (ver.empty()) { log("abort: manifest has no version"); set_upd("error", 0, "No update available"); return; }
+
+    // Signed manifest: rtx-client-update-v1\n<version>\n<hash>\n<size> under the pinned key.
+    {
+        std::string size;
+        {
+            size_t k = man.body.find("\"size\"");
+            size_t c = k == std::string::npos ? k : man.body.find(':', k);
+            if (c != std::string::npos) { for (size_t i = c + 1; i < man.body.size(); ++i) { char ch = man.body[i]; if (ch == ' ') continue; if (ch >= '0' && ch <= '9') size.push_back(ch); else break; } }
+        }
+        std::vector<std::uint8_t> sig;
+        std::string lhash = hash; for (auto& ch : lhash) ch = (char)tolower((unsigned char)ch);
+        std::string msg = "rtx-client-update-v1\n" + ver + "\n" + lhash + "\n" + (size.empty() ? "0" : size);
+        if (!plugin_b64_decode(json_str(man.body, "sig"), sig) || sig.size() != 64 ||
+            !crypto::VerifyEcdsaP256((const std::uint8_t*)msg.data(), msg.size(), sig.data(), sig.size(), kPluginPubKey, sizeof(kPluginPubKey))) {
+            log("abort: manifest signature missing or invalid");
+            set_upd("error", 0, "Update manifest failed verification");
+            return;
+        }
+    }
 
     // ANTI-DOWNGRADE: a compromised (or replayed) manifest must not be able to push an
     // older, vulnerable build. Dotted-numeric compare; a manifest version <= what is

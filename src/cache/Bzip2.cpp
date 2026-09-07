@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "Bzip2.h"
 
 #include <array>
@@ -82,8 +83,9 @@ int decode(BitReader& br, const Huff& h) {
 
 std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t len,
                                           std::size_t orig_size) {
+    constexpr std::size_t kMaxOut = 32u * 1024 * 1024;
     std::vector<std::uint8_t> out;
-    out.reserve(orig_size ? orig_size : len * 4);
+    out.reserve(std::min(orig_size ? orig_size : len * 4, kMaxOut));
     BitReader br{ data, len };
 
     while (true) {
@@ -145,7 +147,7 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
 
         // Decode the MTF/RLE2 symbol stream into the BWT buffer.
         std::vector<std::uint8_t> bwt;
-        bwt.reserve(orig_size ? orig_size : (std::size_t)1 << 16);
+        bwt.reserve(std::min(orig_size ? orig_size : (std::size_t)1 << 16, (std::size_t)900 * 1024));
         int gpos = 0, gidx = -1;
         const Huff* cur = nullptr;
         std::uint64_t run = 0, N = 0;
@@ -208,6 +210,7 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
                 std::uint8_t extra = dec[i++];
                 for (int r = 0; r < extra; ++r) out.push_back(b);
             }
+            if (out.size() > kMaxOut) return {};
         }
     }
     return out;
