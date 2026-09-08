@@ -1,5 +1,4 @@
 // RuneToolsX panel: Secrets of Amberfell quest guide (quest 531).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Progress varbit 52651 (from cache quest config js5-2 archive 35 file 531): start value 5,
@@ -18,14 +17,8 @@
     sorrel:  [60924, 60925],          // the post-interview debrief (two chat stages)
   };
   const AMBER_Q_ALL = Object.values(AMBER_Q).flat();
-  // Nine 4-bit "clue" counters store the ORDER each deduction fact was learned (1..9; 0 = not yet),
   // riding the top bits of the selection-pair varps: 60956/60957 Rowan, 60960 Heather, 60954/60955
   // Fern (varp 12870 b24-31), 60958/60959 Heywood, 60953 Ash, 60952 Sorrel (varp 12869 b24-31).
-  // Deduction notes UI (group 518, positioned by varcs 6463/6464). Each suspect's two selections
-  // (where / what doing) are varbits whose value is a suspect id bitmask (Fern 2, Ash 4, Rowan 8,
-  // Heywood 16, Heather 32); a deduction is correct when BOTH equal the suspect's own id.
-  // Entry: [vb option1, vb option2, correct value, comp option1, comp option2] (comps = the 195x30
-  // option cells to box when wrong). Order matches the guide's five deduction steps.
   const AMBER_DEDUCTIONS = [   // [.., comp option1, comp option2, correct text 1, correct text 2]
     [60939, 60940, 2,  11, 12, 'In the woods', 'Gathering mushrooms'],           // Fern
     [60943, 60944, 4,  15, 16, 'By the river', 'Sending the message'],           // Ash
@@ -41,7 +34,6 @@
   const AMBER_WAVE = 54467;       // waves fight: counts waves cleared
   const AMBER_MOSS = 60918;       // v=115 sub varbit: 0 -> 1 after Mossbrain's first chat, 2 = offering bowl received
   const AMBER_MOTHS = 60917;      // v=115 sub varbit: spirit moths caught (0..5)
-  // Highweald Forest hollow trees: [searched varbit (0 fresh, 1 searched), x, y]
   const AMBER_TREES = [[60849, 3557, 1620], [60850, 3545, 1657], [60851, 3511, 1642], [60852, 3487, 1680]];
   const AMBER_MEAT = 61623;       // Blessed raw rabbit meat (from checking the sprung snare) -> back to Joanna
   const AMBER_VIAL = 61626;       // Vial of blood (from Anya at v=140)
@@ -58,8 +50,6 @@
   const AMBER_DEDUCT_VBS = AMBER_DEDUCTIONS.flatMap(d => [d[0], d[1]]);
   let amberDen = false; // latch: Inanna seen in scene = inside Inanna's Den (prayed at the altar)
   let amberDenAt = -1;  // the AMBER_PROG value the den latch was set at (reset when the value moves)
-  // The bridge repair takes 20 nails of ONE kind: steel by default, or whichever kind is already
-  // in the backpack. All seven smithable kinds count.
   const AMBER_NAILS = [
     { id: 1539, name: 'Steel nails' },
     { id: 4819, name: 'Bronze nails' },
@@ -71,8 +61,6 @@
   ];
   let amberNailId = 0, amberNailAt = 0, amberNailBusy = false;   // 0 = none detected -> steel default
   function amberNail() { return AMBER_NAILS.find(n => n.id === amberNailId) || AMBER_NAILS[0]; }
-  // Backpack scan for a carried nail kind (async, throttled); a change invalidates the guide
-  // signatures so the next poll re-renders with the new kind.
   function amberNailRefresh() {
     if (amberNailBusy || Date.now() - amberNailAt < 2000) return;
     if (!bridge() || typeof PLUGIN_API === 'undefined') return;
@@ -88,7 +76,6 @@
       amberNailAt = Date.now(); amberNailBusy = false;
     })();
   }
-  // Quick-guide item rows; section titles match the wiki quick-guide data, '' = the whole-quest list.
   function amberItems(section) {
     amberNailRefresh();
     const nail = amberNail();
@@ -109,13 +96,9 @@
     }
     return null;
   }
-  // Quest-topic NPC: box any chooser option naming the quest, else highlight the NPC.
   async function amberTalkNpc(name, label, tx, ty, tp, ...extra) {
     return qgDialogNpc(name, label, tx, ty, tp, 'secrets of amberfell', ...extra);
   }
-  // From v=50 the quest runs inside the temple instance: an open chooser gets boxed, otherwise
-  // the NPC is outlined when instanced, and a player back in the world is pointed at the
-  // temple quest marker to re-enter.
   async function amberInstanceStep(npc, label, ...opts) {
     let boxed = false; try { boxed = await PLUGIN_API['overlay.highlightOption'].run(['yes', ...opts], myPid()); } catch (e) {}
     if (boxed) { qgClrNpc(); qgClrTiles(); qgClrItem(); return; }
@@ -129,7 +112,6 @@
     let vbm = {}; try { vbm = await readVarbitValues([AMBER_PROG, AMBER_ANYA, AMBER_MOSS, AMBER_MOTHS]); } catch (e) { return; }
     const v = vbm[AMBER_PROG] | 0, anya = vbm[AMBER_ANYA] | 0;
     if (v !== amberDenAt) amberDen = false;
-    // The quest Ranger is NPC 32560; match by id, not name -- several unrelated NPCs contain "Ranger".
     if (v === 0) { await amberTalkNpc('#32560', 'Talk to the Ranger', 3644, 1589, 0); return; }
     if (v === 5) { await amberTalkNpc('#32560', 'Continue dialogue with the Ranger', 3644, 1589, 0); return; }
     if (v === 10) { await amberTalkNpc('Adam', 'Take the S.O.S. note to Adam', 3484, 1574, 0); return; }
@@ -151,9 +133,6 @@
     if (v === 40) {   // interviews: each NPC's own accumulator bits gate its step, so any order works
       let sv = {}; try { sv = await readVarbitValues([...AMBER_Q_ALL, AMBER_CHECKED]); } catch (e) {}
       const asked = ids => ids.every(id => (sv[id] | 0) === 1);
-      // The interviewees share option TEXTS, so needles must come from the NPC actually being
-      // talked to. The chooser carries no NPC name, so the speaking NPC is taken to be the nearest
-      // interviewee in dialogue range; highlightOption no-ops when nothing matches.
       const AMBER_INTERVIEWS = [
         ['Farmer Rowan', 'rowan',   ['are these your pumpkins', 'can you tell me where everyone was last night', 'bye']],
         ['Heather',      'heather', ["i'm looking for someone who contacted wendlewick", 'bye']],
@@ -185,8 +164,6 @@
         return;
       }
       if ((sv[AMBER_CHECKED] | 0) !== 1) {
-        // When the notes UI (group 518) is open, box the first option cell whose selection varbit is
-        // wrong; all ten correct -> box the Check button. UI closed -> highlight the notes item.
         let dj = null; try { dj = JSON.parse((await PLUGIN_API['state.interface'].run([518, AMBER_DEDUCT_COMPS], myPid())) || '{}'); } catch (e) {}
         if (dj && dj.open && dj.hasAbs && Array.isArray(dj.comps)) {
           let dvb = {}; try { dvb = await readVarbitValues(AMBER_DEDUCT_VBS); } catch (e) {}
@@ -198,7 +175,6 @@
           if (!compId) { compId = AMBER_CHECK_COMP; label = 'All correct - press Check'; }
           const c = dj.comps.find(k => k.comp === compId && k.w > 0);
           qgClrNpc(); qgClrTiles(); qgClrDlg();
-          // Same overlay channel as highlightItem, so qgClrItem clears it.
           if (c) { try { rtxData.sync('overlay.panelViz', c.x + ',' + c.y + ',' + c.w + ',' + c.h + ',' + label); } catch (e) {} }
           else qgClrItem();
           return;
@@ -235,8 +211,6 @@
     if (v === 64 || v === 66 || v === 68) { await amberInstanceStep('Sorrel', 'Continue dialogue with Sorrel', 'secrets of amberfell'); return; }
     if (v === 70) { await amberTalkNpc('Inanna', 'Begin the fight (combat gear; havensilver optional)', 3748, 1655, 0, 'yes'); return; }
     if (v >= 75 && v <= 85) {   // waves fight: 75 fight start, 80 at AMBER_WAVE=2, 85 at 3 (waves 1 and 4 move only the
-// counter). A crawler-only wave must be finished with Inanna's special move or the fight
-// loops forever.
       let crawler = null, vamp = null;
       try { const sc = JSON.parse((await PLUGIN_API['state.scene'].run([60], myPid())) || '{}');
             if (sc && Array.isArray(sc.npcs)) {
@@ -246,7 +220,6 @@
       let w = 0; try { w = (await readVarbitValues([AMBER_WAVE]))[AMBER_WAVE] | 0; } catch (e) {}
       const wl = w > 0 ? ' [waves down: ' + w + ']' : '';
       if (crawler && !vamp) {   // crawler-only wave: press the extra action button (Inanna's special) instead of fighting;
-// fall back to the crawler outline until its origin varc publishes.
         if (qgExtraAction("Crawler-only wave: press this (Inanna's special)" + wl)) return;
         await qgNpc(crawler.name, "Crawler-only wave: finish with Inanna's special move" + wl, crawler.x, crawler.y, 0); return;
       }
@@ -255,23 +228,18 @@
       await amberTalkNpc('Inanna', v === 75 && w === 0 ? 'Talk to Inanna to fight the waves' : 'No wave up: continue with Inanna', 3748, 1655, 0);
       return;
     }
-    // 90 = final wave down (fight over), 95 = the cutscene played -> Inanna's post-fight talk moves it to 100.
     if (v === 90 || v === 95) { await amberTalkNpc('Inanna', 'Talk to Inanna after the fight', 3748, 1655, 0); return; }
     if (v === 100) { await amberTalkNpc('Sorrel', 'Return to Sorrel in Amberfell (fairy ring DLP)', 3732, 1573, 0); return; }
     if (v === 105) { await amberTalkNpc('Anya', 'Talk to Anya at her camp (fairy ring BKS)', 3600, 1381, 0); return; }
     if (v === 110) { await amberTalkNpc('Shrine Tender Joanna', 'Talk to Shrine Tender Joanna', 3545, 1425, 0); return; }
-    // 115 = Joanna handed over the blessed rabbit snare (61622) + spirit jar (61624).
     if (v === 115) {
       const moss = vbm[AMBER_MOSS] | 0;   // 0 first chat pending, 1 bring any 5 cooked fish, 2 offering bowl received
       if (moss >= 2) {
-        // Searching a tree spawns spirit moths as scene NPCs -> mark the nearest moth while any are
-        // up; otherwise box the nearest UNSEARCHED tree (per-tree varbits).
         const P = qgP, caught = vbm[AMBER_MOTHS] | 0;
         const dist = (x, y) => P ? Math.abs(x - P.x) + Math.abs(y - P.y) : 0;
         if ((await qgInvCount(AMBER_MEAT)) > 0) { await amberTalkNpc('Shrine Tender Joanna', 'Take the blessed rabbit meat to Shrine Tender Joanna', 3545, 1425, 0); return; }
         let sc = null;
         try { sc = JSON.parse((await PLUGIN_API['state.scene'].run([60], myPid())) || '{}'); } catch (e) {}
-        // Spawned snare locs (sceneEntities .objects): 137316 = laid, 134263 = sprung.
         const objs = (sc && Array.isArray(sc.objects)) ? sc.objects : [];
         const snare = objs.find(o => o && o.id === 134263);
         if (snare) { qgObject('Blessed rabbit snare', 'Check the snare', snare.x, snare.y, snare.plane | 0); return; }
@@ -304,8 +272,6 @@
       await amberTalkNpc('Mossbrain', moss === 1 ? 'Give Mossbrain any 5 cooked fish' : 'Talk to Mossbrain at the goblin camp', 3647, 1364, 0);
       return;
     }
-    // Den entry: box an open "Yes" chooser; latch once Inanna is in scene (she exists only inside
-    // the Den) and target her; otherwise the Altar of Inanna.
     const amberDenEntry = async (label, opts = [], onDen = null) => {
       let boxed = false; try { boxed = await PLUGIN_API['overlay.highlightOption'].run(['yes', ...opts], myPid()); } catch (e) {}
       if (boxed) { qgClrNpc(); qgClrTiles(); qgClrItem(); return; }
@@ -319,15 +285,12 @@
       else qgTile(3545, 1425, 0, "Pray at the Altar of Inanna to enter Inanna's Den");
     };
     if (v === 120) { await amberDenEntry('Talk to Inanna', ['move on', "let's do it"]); return; }
-    // 125-135 = the Anya vial chain in the Den: 125 give the empty vial, 130/132 mid-dialogue,
-    // 135 receive the vial of blood; at 140 the Vial of blood (61626) is held.
     if (v === 125 || v === 130 || v === 132 || v === 135) {
       await amberTalkNpc('Anya', v === 125 ? 'Give Anya the empty vial'
                                : v === 135 ? 'Talk to Anya to receive the vial of blood'
                                            : 'Continue with Anya', 0, 0, 0);
       return;
     }
-    // Esther at the top of the Wendlewick lighthouse: walk-to -> stairs -> Esther on plane 1.
     const amberEsther = async (label) => {
       const LP = qgP;
       const near = (x, y, p, r) => !!(LP && (LP.p | 0) === p && Math.abs(LP.x - x) <= r && Math.abs(LP.y - y) <= r);
@@ -372,7 +335,6 @@
       default: qgClearAll(); break;
     }
   }
-  // Step i = flat index across sections. QG_AUTO is declared in the earlier-spliced panel_visions.js.
   QG_AUTO['Secrets of Amberfell'] = {
     vbs: [AMBER_PROG, ...AMBER_Q_ALL, ...AMBER_DEDUCT_VBS, AMBER_CHECKED, AMBER_MOSS, AMBER_MOTHS],
     inv: true,
@@ -394,8 +356,6 @@
       if (at40(q(AMBER_Q.heywood))) s.add(11); // Talk to Heywood, who roams around Amberfell
       if (at40(q(AMBER_Q.ash))) s.add(12);     // Talk to Ash at the barricade to the south-east
       if (at40(q(AMBER_Q.sorrel))) s.add(13);  // Talk to Sorrel (after the interviews)
-      // Deduction steps: 14 = open the notes + check (all ten selections right), 15-19 = one per
-      // suspect (both of that suspect's selection varbits at their id).
       const dedOk = AMBER_DEDUCTIONS.map(d => (vb[d[0]] | 0) === d[2] && (vb[d[1]] | 0) === d[2]);
       dedOk.forEach((ok, i) => { if (at40(ok)) s.add(15 + i); });
       if (at40((vb[AMBER_CHECKED] | 0) === 1)) s.add(14);   // notes opened, deductions selected AND checked
@@ -425,6 +385,5 @@
     },
   };
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { amberItems, amberStep });
 })();

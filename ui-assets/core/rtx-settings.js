@@ -1,17 +1,8 @@
-// rtx-settings.js: Preferences page (renderUiSettings, reflectUiSettings) and its widgets (uisPill, uisSlider, uisChipRow, hotkey capture).
-// Loads after: rtx-notify.js, rtx-ui.js, rtx-wm.js.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ---- UI Settings panel (Developer): live placement of in-game chrome ----
   const TOAST_ANCHORS = [
     ['top-left', 'Top left'], ['top-center', 'Top centre'], ['top-right', 'Top right'],
     ['bottom-left', 'Bottom left'], ['bottom-center', 'Bottom centre'], ['bottom-right', 'Bottom right'],
   ];
-  // BUILD-ONCE. renderPane() runs this every 250 ms for a visible window, and the
-  // placement drag calls it per mousemove -- rebuilding the DOM either time destroyed
-  // the control the user was actively dragging, so slider input went nowhere. Build
-  // the markup once, then only reflect values into it.
-  // Shared row builders for the Preferences page (values reflected by reflectUiSettings,
-  // structure built once: renderPane re-runs this at 4 Hz while the window is open).
+  // BUILD-ONCE: renderPane() rebuilds this every 250 ms while the window is visible.
   function uisPill(label, id, get, set, hint) {
     const r = document.createElement('div'); r.className = 'row';
     const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
@@ -23,9 +14,6 @@
     r.appendChild(k); r.appendChild(pill);
     return r;
   }
-  // commitOnRelease: the setter runs on release only (input still previews the label). Needed
-  // for anything that re-lays-out the page while dragging (UI scale resizes the viewport under
-  // the slider, so a live setter moves the thumb away from the cursor and feeds back).
   function uisSlider(label, id, min, max, step, get, set, fmt, commitOnRelease) {
     const r = document.createElement('div'); r.className = 'row';
     const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
@@ -55,7 +43,6 @@
     v.appendChild(g); r.appendChild(k); r.appendChild(v);
     return r;
   }
-  // Hide/show-all-panels hotkey state (launcher-side binding, page-side capture).
   let uisHpVk = 0, uisHpCapturing = false, uisHpPaint = null;
   function uisHpSave() { try { if (bridge().hidePanelsKeybindSet) bridge().hidePanelsKeybindSet(uisHpVk); } catch (e) {} }
   document.addEventListener('keydown', e => {
@@ -81,15 +68,10 @@
       const h = document.createElement('div'); h.className = 'pf-title'; h.textContent = title;
       card.appendChild(h); wrap.appendChild(card); rows = card;
     };
-    // Never hold the cfg object: the durable copy can replace it after this page is built
-    // (prefsInit), and a toggle mutating a stale object is then silently not saved.
     const cfg = new Proxy({}, { get: (_, k) => uiCfg()[k], set: (_, k, v) => { uiCfg()[k] = v; return true; } });
     const save = () => { uiCfgSave(); uiApply(); };
 
-    // ---------------- Appearance ----------------
     sec('Appearance');
-    // Presets rather than a slider: applying a scale reflows the very panel being edited, so a
-    // continuous control fights the cursor. One click, one value.
     rows.appendChild(uisChipRow('UI scale', 'uis_scale', [75, 90, 100, 110, 125, 150, 175, 200].map(v => [v + '%', String(v)]),
       v => String(cfg.scale || 100) === v, v => { cfg.scale = Number(v); save(); }));
     if (!(bridge() && bridge().uiScale)) uisNote(rows, 'UI scale needs the updated launcher; the value is saved and applies after the next update.');
@@ -120,7 +102,6 @@
     rows.appendChild(uisPill('Tabular digits', 'uis_tabular', () => !!cfg.tabular, v => { cfg.tabular = v; save(); }, 'Fixed-width numerals so columns of numbers line up'));
     rows.appendChild(uisPill('Compact tooltips', 'uis_ctips', () => !!cfg.compactTips, v => { cfg.compactTips = v; save(); try { hideTip(); } catch (e) {} }, 'Hides provenance (Source, ID), explanatory lines and parenthetical asides in tooltips'));
 
-    // ---------------- Bar ----------------
     sec('Bar');
     uisNote(rows, 'Chips shown in the menu bar beside the player status.');
     rows.appendChild(uisPill('Clock', 'uis_barclock', () => !!cfg.barClock, v => { cfg.barClock = v; save(); }));
@@ -134,7 +115,6 @@
       v => { cfg.barMinChips = v; save(); try { renderMenubar(); } catch (e) {} },
       'Off hides minimized panels from the bar; reopen them from their menu category'));
 
-    // ---------------- Menu ----------------
     sec('Menu');
     uisNote(rows, 'Hide categories you never open. Settings always stays.');
     rows.appendChild(uisChipRow('Show categories', 'uis_cats', CAT_META.filter(m => m.id !== 'Settings').map(m => [m.id, m.id]),
@@ -144,12 +124,10 @@
         save(); try { renderMenubar(); } catch (e) {}
       }));
 
-    // ---------------- Startup ----------------
     sec('Startup');
     rows.appendChild(uisPill('Restore open panels on launch', 'uis_restore', () => cfg.restore !== false, v => { cfg.restore = v; save(); },
       'Off starts with no panels open; bar position and alert placement are still remembered'));
 
-    // ---------------- Notifications ----------------
     sec('Notifications');
     rows.appendChild(uisPill('Alerts enabled', 'uis_almaster', () => !!(alertCfg && alertCfg.master), v => { if (alertCfg) { alertCfg.master = v; saveAlertCfg(); } }));
     rows.appendChild(uisPill('Only alert when tabbed out', 'uis_alfocus', () => !!(alertCfg && alertCfg.unfocusedOnly), v => { if (alertCfg) { alertCfg.unfocusedOnly = v; saveAlertCfg(); } },
@@ -158,7 +136,6 @@
       v => { try { sndVol = v; prefSet('rtxSoundVol', String(v)); bridge().soundVolume(v); } catch (e) {} }, v => v + '%'));
     rows.appendChild(uisSlider('Popup duration', 'uis_ttl', 2000, 15000, 500, () => cfg.toastTtl || 5000, v => { cfg.toastTtl = v; save(); }, v => (v / 1000).toFixed(1) + 's'));
 
-    // Popup placement (unchanged mechanics: stored with the per-account layout).
     const aRow = document.createElement('div'); aRow.className = 'row';
     const aLab = document.createElement('span'); aLab.className = 'k'; aLab.textContent = 'Popup anchor';
     const aWrap = document.createElement('span'); aWrap.className = 'v pf-full';
@@ -222,7 +199,6 @@
       ['Clear', () => { for (const t of toasts.slice()) toastClose(t); }],
     ]));
 
-    // ---------------- Hotkeys ----------------
     sec('Hotkeys');
     uisNote(rows, 'Keys are read by the launcher while the game has focus, so they work without clicking a panel first. Screenshot and Wiki keys are set on their own panels.');
     {
@@ -244,24 +220,16 @@
       g.appendChild(chip); g.appendChild(clr); v.appendChild(g); r.appendChild(k); r.appendChild(v); rows.appendChild(r);
     }
 
-    // ---------------- Plugins (dynamic card) ----------------
-    // Content is declared by plugins over the SDK (rtx.plugin.ui.settings), which can
-    // happen any time after this page is built, so the card owns its own rebuild:
-    // uisBuildPluginSettings() runs here and again whenever the broker registers a
-    // schema. Values reflect through the same generic _get machinery as every other
-    // control.
     {
       const card = document.createElement('div'); card.className = 'pf-card'; card.id = 'uisPluginsCard';
       wrap.appendChild(card);
       uisBuildPluginSettings(card);
     }
 
-    // ---------------- Privacy ----------------
     sec('Privacy');
     rows.appendChild(uisPill('Hide player name', 'uis_hidename', () => !!nameHidden, v => setNameHidden(v), 'Masks the name in the bar header'));
     rows.appendChild(uisPill('Hide world number', 'uis_hideworld', () => !!cfg.hideWorld, v => { cfg.hideWorld = v; save(); _hdrSig = ''; try { renderHeader(); } catch (e) {} }));
 
-    // ---------------- Data ----------------
     sec('Data');
     uisNote(rows, 'Export copies every preference (sounds, overlay, auras, appearance) to the clipboard as one block; Import reads such a block back from the clipboard.');
     rows.appendChild(btnRow('Preferences', 'uis_data', [
@@ -293,16 +261,11 @@
       }],
     ]));
 
-    // First row of every card carries no divider.
     for (const card of wrap.querySelectorAll('.pf-card')) { const f = card.querySelector('.row'); if (f) f.classList.add('pf-first'); }
     c.appendChild(wrap);
     reflectUiSettings();
   }
 
-  // Plugin settings card: built here, rebuilt by the broker (rtx-plugins.js) whenever a
-  // plugin declares its schema. Renders the standard widgets for each declared control;
-  // a change goes through pluginSettingsSet, which clamps, persists and pushes the new
-  // values to the plugin as a 'settings' event.
   function uisBuildPluginSettings(hostEl) {
     const host = hostEl || $('uisPluginsCard');
     if (!host) return;
@@ -342,12 +305,8 @@
     }
   }
 
-  // Values only. Never rewrites structure, and never fights a control the user is
-  // currently dragging (that input keeps its own value until released).
   function reflectUiSettings() {
     const wrapEl = $('uisWrap'); if (!wrapEl) return;
-    // Generic controls: pills mirror their getter, sliders their getter unless being dragged,
-    // chip groups their isOn predicate.
     for (const p of wrapEl.querySelectorAll('.al-pill')) if (p._get) p.classList.toggle('on', !!p._get());
     for (const inp of wrapEl.querySelectorAll('input[type=range]')) {
       if (!inp._get) continue;

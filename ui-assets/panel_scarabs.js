@@ -1,9 +1,6 @@
 // RuneToolsX panel: Corrupted Scarabs (community world tracker).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
-// Displays the SSE-fed cache {worlds:[[world,expiresAtMs],..], now:serverNowMs}; detection and reporting live in C++ (Bridge.cpp scarab_scan_pass).
 (function () {
 
-  // Skew is anchored to the payload's ARRIVAL time (rxAt), so a stale payload never inflates the countdown.
   let scSkew = 0;          // serverNow - localNow
   let scRaw = '';
   let scListSig = '';
@@ -22,7 +19,6 @@
       }
       try { return JSON.parse(raw); } catch (e) { return null; }
     };
-    // The bridge gates the network fallback (SSE alive -> no-op, else one GET per 120s).
     return parse(rtxData.sync('host.scarabCached', 1));
   }
   function scNow() { return Date.now() + scSkew; }
@@ -42,7 +38,6 @@
     return Math.floor(s / 60) + 'm ' + (s % 60 < 10 ? '0' : '') + (s % 60) + 's';
   }
 
-  // Shared tracker styles; panel_obelisks.js uses them too, so whichever renders first injects.
   function scEnsureCss() {
     injectStyle('scCss', `
           .sc-wrap { margin: 2px 12px 0; }
@@ -75,13 +70,11 @@
           .sc-vtal { margin-top: 5px; color: var(--text-mute); font-size: 10px; font-variant-numeric: tabular-nums; }`);
   }
 
-  // Armed per tracker; driven by the background hook in client.html, so it fires panel-closed.
   let scNotify = {};
   try { scNotify = JSON.parse(localStorage.getItem('rtxWeNotify') || '{}') || {}; } catch (e) { scNotify = {}; }
   function scNotifySave() { try { prefSet('rtxWeNotify', JSON.stringify(scNotify)); } catch (e) {} }   // durable pref
   function scNotifyAny() { for (const k in scNotify) if (scNotify[k]) return true; return false; }
 
-  // Worlds already seen per kind; the first pass only seeds the baseline (no login spam).
   const scNotifySeen = { scarabs: null, obelisks: null };
   function scNotifyCheck(kind, rows, districtName) {
     const key = kind === 'scarabs' ? 'scarab' : 'obelisk';
@@ -100,7 +93,6 @@
     }
     scNotifySeen[kind] = live;
   }
-  // Called from the 250ms poll, so self-throttled: the caches only change on an SSE push.
   let scNotifyAt = 0;
   function scNotifyPoll() {
     if (!scNotifyAny() || !bridge()) return;
@@ -130,16 +122,12 @@
     const s = scPos();
     return !!s && s.x >= MENAPHOS.x0 && s.x <= MENAPHOS.x1 && s.y >= MENAPHOS.y0 && s.y <= MENAPHOS.y1;
   }
-  // Chebyshev distance, matching the scene reader's own range semantics.
   function scNear(x, y, r) {
     const s = scPos();
     return !!s && Math.max(Math.abs(s.x - x), Math.abs(s.y - y)) <= r;
   }
   const scMyWorld = () => ((typeof lastSnap !== 'undefined' && lastSnap && lastSnap.world) ? lastSnap.world : 0);
 
-  // The 50-tile detection radius matches the C++ scanner's reach (SceneJson clamps at 64).
-  // absentAt = game tick the object was FIRST observed missing (-1 while visible); the 3-tick
-  // vote gate stops a scene rebuild (loading screen, plane change) offering a vote on a live one.
   const scSeen = { scarab: false, obelisk: false, at: 0, tick: -1, absentAt: { scarab: -1, obelisk: -1 } };
   const SCARAB_LOCS = [109473, 109475, 109477];
   async function scRefreshSeen() {
@@ -156,7 +144,6 @@
     try { sc = JSON.parse(await bridge().sceneEntities(myPid(), 50) || 'null'); } catch (e) { return; }
     if (!sc) return;
     const objs = sc.objects || [], npcs = sc.npcs || [];
-    // Either list counts as seeing it: the swarm may be an npc or a runtime loc.
     scSeen.scarab = objs.some(o => SCARAB_LOCS.indexOf(o.id) >= 0) || npcs.some(o => SCARAB_LOCS.indexOf(o.id) >= 0);
     scSeen.obelisk = objs.some(o => o.id === 109495);
     let tick = -1;
@@ -174,8 +161,6 @@
     return scSeen.absentAt[k] >= 0 && scSeen.tick - scSeen.absentAt[k] >= 3;
   }
 
-  // `areaOk`: anywhere in Menaphos for the roaming scarabs, within 50 tiles of the fixed obelisk.
-  // The server cannot verify a position, so this is a convenience gate, not a trust boundary.
   function scCanVote(world, kind, areaOk) {
     return world === scMyWorld() && !!areaOk && scGoneFor(kind);
   }
@@ -186,18 +171,15 @@
   const scVoteSentAt = {};   // "kind:world" -> last post time (click guard)
   const SC_YES_TO_REMOVE = 3;   // mirrors world-events.js YES_TO_REMOVE
 
-  // `vote` = [world, yes, no, endsAt] or undefined; `areaOk` = the caller's area test.
   function scVoteBlock(kind, world, vote, now, areaOk) {
     const wrap = document.createElement('div'); wrap.className = 'sc-vote';
     const row = document.createElement('div'); row.className = 'sc-vrow';
     const q = document.createElement('div'); q.className = 'sc-vq';
     const key = kind + ':' + world;
-    // One post per 1.5s per row: a rebuild swaps the buttons out, so repeat clicks re-post.
     const send = (yes) => {
       const t = Date.now();
       if (t - (scVoteSentAt[key] || 0) < 1500) return;
       scVoteSentAt[key] = t;
-      // myPid() stamps the voter id per account: two accounts on one PC are two observers.
       try { if (bridge().worldEventVote) rtxData.sync('act.worldEventVote', kind, world, yes, myPid()); } catch (e) {}
       scVoteCast[key] = yes ? 'y' : 'n';
     };
@@ -239,7 +221,6 @@
     if (fill) fill.style.width = (left / 600) + '%';        // 60_000ms window -> percent
     const tal = $('scvt-' + key);
     if (tal) {
-      // One "still here" ends the vote, so the tally reads as progress toward 3 "gone".
       const txt = vote[1] + ' of ' + SC_YES_TO_REMOVE + ' say gone · ' + Math.ceil(left / 1000) + 's left';
       if (tal.textContent !== txt) tal.textContent = txt;
     }
@@ -267,7 +248,6 @@
     const myWorld = scMyWorld();
     const card = $('scCard'), empty = $('scEmpty');
     if (!card || !empty) return;
-    // Rebuild on structural change only; the pill and vote bar tick every paint in place.
     const sig = rows.map(r => {
       const v = scVoteFor(d, r.world);
       return r.world + (v ? ':' + v[1] + '/' + v[2] : '')
@@ -280,7 +260,6 @@
       for (const r of rows) {
         const box = document.createElement('div');
         const row = document.createElement('div'); row.className = 'sc-row';
-        // "your world" needs its own line: inline, the row ellipsis clips it under the pill.
         const cell = document.createElement('div'); cell.style.cssText = 'flex:1;min-width:0';
         const w = document.createElement('div'); w.className = 'sc-w';
         w.textContent = 'World ' + r.world;
@@ -311,7 +290,6 @@
     }
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { renderScarabs, scBell, scCanVote, scCanVoteNo, scEnsureCss, scFmt, scInMenaphos, scMyWorld, scNear, scNotifyPoll, scRefreshSeen, scVoteBlock, scVoteFor, scVoteTick });
 registerTab({ id: 'scarabs', render: renderScarabs });
 })();

@@ -1,9 +1,6 @@
 // RuneToolsX panel: Archaeology mysteries (requirements + focused mystery) + metal bank UI.
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
-  // Requirement live-checks beyond skills/mysteries: solved varbits + the Qualification achievement
-  // chains, evaluated recursively from the cache achievement defs.
   const MYST_REQ_STATIC_VBS = [
     52651,                                            // Secrets of Amberfell stage (5 started, 170 complete)
     61089,                                            // Moonrise Dig Site access (>= 2; below that, talk to the NPC at 3749,1651)
@@ -28,7 +25,6 @@
     }
     return _achById;
   }
-  // every varbit/varp the achievement's full sub-tree reads
   function achChainNeeds(id, vbs, vps, seen) {
     const byId = mystAchMaps(); if (!byId || seen.has(id)) return;
     seen.add(id);
@@ -40,8 +36,6 @@
     for (const q of achVarpReqs(a)) for (const id of q.vps) vps.add(id);
     for (const s of (a.subach || [])) achChainNeeds(s, vbs, vps, seen);
   }
-  // recursive completion: satisfied subrequirements (varbit reqs + skill reqs + varp-bit reqs +
-  // sub-achievements) >= needN (op 30), default all
   function achEvalDone(id, memo) {
     memo = memo || new Map();
     if (memo.has(id)) return memo.get(id);
@@ -78,8 +72,6 @@
   // 92 ids joined to names via the archive-41 rows). [vb, solvedAt] -- the stage clamps at solvedAt
   // for display; {bits, n} = bitmask form (Contract Claws: BITCOUNT(vb 47091) of 12 gargoyles,
   // vb 47151 flips when Ophiuchus frees). Most of these varbits are LOC/NPC MORPHS. Page-only
-  // mysteries are absent on purpose: their progress IS the page count (script14587).
-  // {vp, bit} = research-started flag: Secrets of the Monolith is research-driven
   // (script14630/14629 over the research bit-banks; started varps 9297/9298/11740, completed
   // 9299/9300/11741, bit = row field-368640 index; research 2922 "Mysterious Monolith: Existence"
   // = index 38 -> started varp 9298 bit 6, completed varp 9300 bit 6).
@@ -127,8 +119,6 @@
     if (s.bits !== undefined) return 'varbit ' + s.bits + ' (bitmask)';
     return 'varbit ' + s[0];
   }
-  // -> [cur, max] or null; max 1 = binary research flag. Reads the panel's prefetched maps unless
-  // explicit vb/vp maps are passed (the plugin SDK's state.mysteries does its own reads).
   function mystStageVal(name, vbMap, vpMap) {
     const s = MYST_STAGE[name];
     if (!s) return null;
@@ -146,13 +136,7 @@
     const v = vbm[s[0]] | 0;
     return [Math.min(v, s[1]), s[1]];
   }
-  // Same-varp varbit CANDIDATES for the focused mystery. The cache has NO validated per-step
-  // varbit -> mystery link: step state (e.g. Path of the Initiate's offering bowls) exists ONLY as
-  // loc-config morph varbits, vb 61072 is referenced by ZERO scripts, the stage varbit's only
-  // reference is the journal dispatcher script14584, and no struct/dbrow field ties steps to a
-  // mystery. Content state is allocated in per-varp blocks, so the stage varbit's varp siblings
-  // are strong CANDIDATES -- but one varp can hold several mysteries' state (varp 12883 = the
-  // Initiate bowls AND the lunar slabs), so these render explicitly unvalidated, with live values.
+  // Varbits sharing a stage varbit's varp are only CANDIDATES: one varp can hold several mysteries' state.
   let _mystSibCache = null;   // { name, val: {varp, sibs:[[vb,lsb,msb],..]} }
   function mystStageSiblings(name) {
     const vb = mystStageVb(name);
@@ -178,8 +162,6 @@
       try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; }
       _achById = null;
     }
-    // achBitReqs classifies legacy merged bit reqs via storageVbMap - load it up front so the first
-    // pass already routes varbit vs varp bits correctly.
     await ensureVbMap();
     const vbs = new Set(MYST_REQ_STATIC_VBS), vps = new Set();
     if (mystAchMaps()) for (const nm of MYST_REQ_ACH_NAMES) {
@@ -192,8 +174,6 @@
       const s = MYST_STAGE[nm], vb = mystStageVb(nm);
       if (vb !== null) vbs.add(vb); else vps.add(s.vp);
     }
-    // Focused mystery: read its stage varp's sibling varbits live (candidates section), and load the
-    // CS2 rename table for their morph labels (shared with the Vars panel).
     if (typeof varNamesLoad === 'function') varNamesLoad();
     const fnm = mystFocusName();
     if (fnm) {
@@ -209,7 +189,6 @@
     if (mystReqVp) for (const k in mystReqVp) s += mystReqVp[k];
     return s;
   }
-  // token -> live check (null = no definition, render neutral)
   function mystReqResolve(t) {
     if (!mystReqVb) return null;
     const vb = id => mystReqVb[id] || 0;
@@ -281,18 +260,12 @@
       return mystEsc(tt);
     }).join(', ');
   }
-  // Which account the in-memory blob was read for. mystSteps is per-character, but it was
-  // only reset on entering the Mysteries tab, so switching account with the tab already open
-  // (or while working in Focused Mystery) left the previous character's steps loaded -- and
-  // the next save wrote them into the NEW character's file. Same guard the Notes panel uses.
   let mystLoadedPid = -1;
   function mystSaveSteps() {
     if (mystSteps === null || !bridge() || !bridge().mystSave) return;
     if (mystLoadedPid !== myPid()) return;   // never write one character's blob to another
     try { rtxData.sync('act.mystSave', JSON.stringify(mystSteps)); } catch (e) {}
   }
-  // ---- focused mystery: pinned per account (stored in the same blob under "__focus"); gets its
-  //      own tab with steps/tracking, and can mark the current step's NPC in-world ----
   let mfSig = '';
   function mystFocusName() { return (mystSteps && typeof mystSteps.__focus === 'string') ? mystSteps.__focus : ''; }
   function setMystFocus(nm) {
@@ -301,9 +274,6 @@
     mystSaveSteps(); mystSig = ''; mfSig = '';
     updateMystHighlight();
   }
-  // done/auto state per step. Auto specs: number = at least N pages found; array = those page
-  // indices found; {vb, v} = live varbit >= v (for pageless mysteries). Anything else = a manually
-  // saved checkmark.
   function mystStepStates(name, info) {
     const out = [];
     if (!info || !info.steps) return out;
@@ -321,9 +291,6 @@
         } else if (Array.isArray(spec)) dn = spec.every(idx => mystPageFound(idx));
         else dn = !!mystReqVb && (mystReqVb[spec.vb] | 0) >= spec.v;
       } else dn = manual.indexOf(i) >= 0;
-      // No explicit spec: a step that NAMES a special research tracks itself from the live research
-      // bits, matched against the real names from DBTable 90. Only a step that actually names one is
-      // taken over; everything else stays hand-tickable.
       let resAuto = false;
       if (spec === undefined) {
         const rd = (typeof archResearchDoneIn === 'function') ? archResearchDoneIn(info.steps[i]) : null;
@@ -333,8 +300,6 @@
     }
     return out;
   }
-  // Intentional no-op: per-step NPC marking belongs in a plugin (rtx.plugin.overlay.highlight);
-  // the stub is kept so callers stay simple.
   function updateMystHighlight() {}
   let mystAt = 0;
   async function fetchArchMysteries(force) {
@@ -342,7 +307,6 @@
     const now = Date.now();
     if (!force && now - mystAt < 750) return;   // also polled in the background while in-world marking is on
     mystFetching = true; mystAt = now;
-    // keep the research bits fresh so steps naming a special research tick themselves
     try { if (typeof archResearchEnsure === 'function') await archResearchEnsure(); } catch (e) {}
     if ((mystSteps === null || mystLoadedPid !== myPid()) && bridge().mystLoad) {
       mystLoadedPid = myPid();
@@ -350,8 +314,6 @@
       catch (e) { mystSteps = {}; }
     }
     // 9302/9303 = mystery completion bits; 9205/9206/9207/9564/11732 = the global journal-page bank
-    // (page found = bit idx%32 of varp [idx/32], CS2 script13039); 11733 = table-31 collectible bits
-    // (CS2 script18966)
     try { mystVp = JSON.parse(await rtxData.raw('state.varps', '9302,9303,9205,9206,9207,9564,11732,11733')); } catch (e) { /* keep previous */ }
     try { await mystReqPrefetch(); } catch (e) {}     // requirement-line live values
     mystFetching = false;
@@ -364,7 +326,6 @@
     let wrap = $('mystWrap');
     if (!wrap) {
       c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'mystWrap'; wrap.className = 'pk-wrap'; c.appendChild(wrap); mystSig = '';
-      // one delegated handler: step checkbox toggle, uncheck-all, row expand/collapse
       wrap.addEventListener('click', e => {
         const st = e.target.closest('.myst-step');
         if (st) {
@@ -434,8 +395,6 @@
                 mystEsc(name) + '</span>' +
                 '<span class="arch-d">' + (info && info.tip ? mystEsc(info.tip) : pts + ' points') + '</span></div>' + mystBadgeHtml(ok, pc, st, name) + '</div>';
         if (!open) { html += rowHtml; continue; }
-        // expanded = ONE card: the row becomes the card header, generic info below (steps + page
-        // tracking live on the Focused Mystery tab)
         const detHtml = info
           ? (mystMetaHtml(info, pts, false, name) +
              '<span class="myst-pin" data-m="' + mystEsc(name) + '">' +
@@ -451,9 +410,6 @@
   function mystBadgeHtml(ok, pc, st, name) {
     if (ok) return '<span class="arch-b ok">Solved</span>';
     if (pc) {
-      // Page-collection mysteries: all pages found = the journal's state 3, "I should talk to the site
-      // manager" (script14585/14584). Only for mysteries WITHOUT a stage varbit -- the stage-tracked
-      // ones have their own remaining flow after the pages and never return that state.
       if (pc[0] === pc[1] && !MYST_STAGE[name])
         return '<span class="arch-b ok" title="All pages found (journal state 3, script14585)">Talk to the site manager</span>';
       return '<span class="arch-b' + (pc[0] === pc[1] ? ' ok' : '') + '">' + pc[0] + '/' + pc[1] + ' pages</span>';
@@ -463,8 +419,6 @@
              (st[1] === 1 ? 'Research started' : 'stage ' + st[0] + '/' + st[1]) + '</span>';
     return '<span class="arch-b">Unsolved</span>';
   }
-  // Focused-tab candidates list: every varbit sharing the stage varbit's varp, with the CS2 morph
-  // labels and live values. Explicitly unvalidated (see mystStageSiblings).
   function mystSiblingsHtml(name) {
     const sb = mystStageSiblings(name);
     if (!sb || sb.sibs.length < 2) return '';
@@ -488,7 +442,6 @@
   function mystMetaHtml(info, pts, withTip, name) {
     let h = '<div class="myst-meta">';
     if (withTip && info.tip) h += '<div>' + mystEsc(info.tip) + '</div>';
-    // Live progress stage (script14584 varbit), with the varbit id spelled out.
     const st = name ? mystStageVal(name) : null;
     if (st) h += '<div><b>Stage:</b> ' +
                  (st[1] === 1 ? (st[0] ? 'Research started' : 'Research not started') : st[0] + ' / ' + st[1]) +
@@ -588,7 +541,6 @@
                   : '<div class="myst-tip">No guide data for this mystery.</div>' + mystSiblingsHtml(nm)) + '</div>';
     live.innerHTML = html;
   }
-  // Bar item ids from enum 15093 (idx 18-33, 44-45, 47, 49). Everything else = ore.
   const MBANK_BARS = new Set([2349,2351,2353,2355,2359,2361,2357,2363,44838,44840,44842,44844,
                               45984,45986,45988,45991,57435,57444,59210,60296]);
   async function fetchMetalBank() {
@@ -660,7 +612,6 @@
     section('Bars', bars);
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { MYST_STAGE, fetchArchMysteries, fetchMetalBank, mystFocusName, mystSaveSteps, mystStageVal, mystStageVb });
 registerTab({ id: 'metalbank', render: renderMetalBank, open: function () { mbankFetchKey = ''; fetchMetalBank(); } });
 registerTab({ id: 'archmysteries', render: renderArchMysteries, open: function () { mystSig = ''; mystSteps = null; fetchArchMysteries(true); } });

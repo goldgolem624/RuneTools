@@ -1,6 +1,4 @@
-// RuneToolsX panel: Containers (every live interface container; most exist in memory only
-// while their window is open).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
+// RuneToolsX panel: Containers (every live interface container).
 (function () {
 
   let ciDomMap = null;   // cache.varbitDomainMap; "5" = bit fields over item instance keys (object domain)
@@ -17,7 +15,6 @@
     gote: { 0: 'stored sign of the porter charges' },
   };
 
-  // tab: link straight to that container's own panel. No tab: named, contents shown inline here.
   const KNOWN_CONTAINERS = {
     93:  { name: 'Backpack',          tab: 'inventory' },
     94:  { name: 'Worn equipment',    tab: 'equipment' },
@@ -36,15 +33,12 @@
     784: { name: 'GE Collection: slot 8', tab: 'exchange' },
     890: { name: 'GE Favourites', tab: 'exchange' },   // matches script20898/20900 INV_TOTAL(890) star logic
     // Heartments 52860 + H'oddments 52555: the TH oddments-family currency store
-    // (scripts 14481-14483); counted as owned by 13275/18491
     795: { name: 'Oddments storage (TH currencies)' },
     676: { name: 'Death: reclaim items' },
     930: { name: 'Death: overflow storage' },
-    // Examine-player windows (populated while examining another player)
     742: { name: 'Examined player: equipment' },
     743: { name: 'Examined player: cosmetic overrides' },
     787: { name: 'Loot log' },
-    // Player-Owned Farm pens + storage
     851: { name: 'Farm: Small pen (south)' },
     852: { name: 'Farm: Small pen (west)' },
     853: { name: 'Farm: Medium pen (east)' },
@@ -64,8 +58,6 @@
     963: { name: 'Group bank',        tab: 'groupbank' },
     964: { name: 'Bank inventory' },                     // the bank's own inventory (NOT the group shared storage)
     974: { name: 'Nodon spike harness', tab: 'storage' },
-    // Archaeologist's workbench storage. Capacity is gated by the guild-shop workbench upgrades
-    // (varbit 61463 -> 125/175/225, CS2 script1020); it holds 0 until the first upgrade is bought.
     1008: { name: 'Workbench storage', tab: 'artefacts' },
   };
   let containersData = null, containersFetching = false, containersSig = '';
@@ -77,7 +69,6 @@
     try {
       const d = JSON.parse(await rtxData.raw('state.openContainers'));
       containersData = (d && Array.isArray(d.containers)) ? d.containers : [];
-      // pull contents only for containers without a linked tab (shown inline)
       if (bridge().containerItems) {
         for (const cc of containersData) {
           const k = KNOWN_CONTAINERS[cc.id];
@@ -97,7 +88,6 @@
     const c = $('content');
     let wrap = $('contWrap');
     if (!wrap) { c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'contWrap'; wrap.className = 'pane stor-wrap'; c.appendChild(wrap); containersSig = ''; }
-    // Dedupe by id (the manager can briefly hold a duplicate entry); keep the highest count seen.
     const byId = {};
     for (const cc of (containersData || [])) { const p = byId[cc.id]; if (!p || cc.count > p.count) byId[cc.id] = cc; }
     const linked = id => { const k = KNOWN_CONTAINERS[id]; return !!(k && k.tab); };
@@ -150,9 +140,6 @@
     sizeAllIcons();
   }
 
-  // Live Extra_ints inspector: hovering any tagged item cell (data-ei = "container:item")
-  // fetches bridge().itemExtraInts and appends the raw key/value pairs to the tooltip -
-  // the discovery surface for unmapped charge/state storage on items.
   document.addEventListener('mouseover', async e => {
     const cell = e.target.closest ? e.target.closest('[data-ei]') : null;
     if (!cell || cell._eiBusy) return;
@@ -160,14 +147,9 @@
     try {
       const parts = cell.dataset.ei.split(':');
       if (!bridge() || !bridge().itemExtraInts || !myPid()) return;
-      // parts[2] = the SLOT. Two stacks of one id carry different instance vars, so an
-      // id-only read showed the FIRST slot's values on every one of them (found in testing
-      // hovering two Passages of the abyss). -1 keeps the old first-match behaviour.
       const eiSlot = (parts.length > 2 && parts[2] !== '') ? +parts[2] : -1;
       const r = JSON.parse(await bridge().itemExtraInts(myPid(), +parts[0], +parts[1], eiSlot)) || {};
       const k = r.key || {};
-      // A wall of "0=0 1=0 2=0 ..." buries the one key that carries anything. Lead with the
-      // keys that HOLD a value, one per line, and fold the empty ones into a single tail.
       const keys = Object.keys(k).sort((a, b) => a - b);
       const set = keys.filter(x => (k[x] | 0) !== 0);
       const zero = keys.filter(x => (k[x] | 0) === 0);
@@ -179,7 +161,6 @@
         line += 'Instance vars (Extra_ints):\n' + set.map(x => '   key ' + x + ' = ' + k[x]).join('\n');
         if (zero.length) line += '\n   (' + zero.length + ' other key' + (zero.length === 1 ? '' : 's') + ' 0)';
       }
-      // Instance keys are shared across item families; only this family's fields are named.
       try {
         if (!ciDomMap) ciDomMap = JSON.parse(await rtxData.raw('cache.varbitDomainMap') || '{}') || {};
         const om = ciDomMap['5'] || {};
@@ -201,22 +182,12 @@
           if (others) line += '\n   ' + (known.length ? '(+' : 'key ' + x + ': (') + others + ' bit field' + (others === 1 ? '' : 's') + ' defined over key ' + x + ' by other item families)';
         }
       } catch (e8) {}
-      // Essence of Finality decode (CS2 scripts 5828/15097/670): instance key 0 = wear
-      // count (varobj 18550), key 3 = stored-spec index (varobj 47702) resolved through
-      // enum 15970 -> weapon obj. Charge permille = 1000 - wear/(max/1000), max = item
-      // param 3385 (100,000 on EoF). Validated in testing: wear 669 + idx 76 = 99.4% Zamorak staff.
-      // Degradable items (CS2 script 5828, item param 4563 = 1): instance key 0 is the WEAR
-      // counter, item param 3385 the wear at which the item is fully degraded. The game shows
-      // "Item Charge: X.Y%" = 1000 - wear/(max/1000) permille (never 100.0 once worn, floor 0.1
-      // while any charge remains); items flagged 9308 count down "Charges remaining" instead.
       let charge = '';
       try {
         const pp = JSON.parse(await rtxData.raw('cache.itemParams', +parts[1]) || 'null');
         const pi = (pp && pp.ints) || {};
         const mx = pi['3385'] | 0, wear = k[0] | 0;
         const ps = (pp && pp.strs) || {};
-        // Fillables (urns, param 369 = 4): key 0 = stored XP, param 368 = capacity, label param
-        // 6170; the game clamps the percentage to 1..99 until the urn is teleported.
         if ((pi['369'] | 0) === 4 && (pi['368'] | 0) > 0) {
           const cap = pi['368'] | 0, pct = Math.min(99, Math.max(1, Math.floor(wear * 100 / cap)));
           charge = '\n' + (ps['6170'] || 'Urn') + ' filled: ' + pct + '% (' + wear.toLocaleString() + ' / ' + cap.toLocaleString() + ' xp)';
@@ -266,7 +237,6 @@
     } catch (e2) {} finally { setTimeout(() => { cell._eiBusy = 0; }, 800); }
   });
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { fetchContainers });
 registerTab({ id: 'containers', render: renderContainers });
 })();

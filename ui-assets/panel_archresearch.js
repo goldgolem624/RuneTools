@@ -1,29 +1,18 @@
 // RuneToolsX panel: Archaeology research (Field Study / Report status).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 // DBTable 90 is the research list: column 0 is the progress BIT, 3 the name, 6 the Field Study
-// text and 7 the Report text (bridge archResearch decodes it). Progress is live varp bits,
-// 32 per varp:
 //   field study known -> varp 9297 (bits 0-31), 9298 (32-63), 11740 (64-95)
 //   report filed      -> varp 9299,             9300,          11741
-// A research is only fully done once the REPORT is filed.
 (function () {
 
 const ARCH_RES_FIELD_VARPS  = [9297, 9298, 11740];
 const ARCH_RES_REPORT_VARPS = [9299, 9300, 11741];
 
 // Enum 14082 maps the journal's tab index to a per-culture enum, and each of those lists that
-// culture's research BY DBRow id -- hence the `d` (row id) field. Anything in no culture enum
-// is not a book page: the "<site> Dig Site" rows (kind 1) are site-wide team research, and a
-// few named ones live outside the book.
 const ARCH_CULTURES = [
   [0, 'Special',      14083], [1, 'Armadylean', 14084], [2, 'Bandosian',   14085],
   [3, 'Dragonkin',    10575], [4, 'Guthixian',   3016], [5, 'Saradominist', 14086],
   [6, 'Zamorakian',   14087], [7, 'Zarosian',   14088],
 ];
-// Active monolith relic powers (CS2 clientscript-14862/19772/14614/14596, decoded 2026-08-04):
-// varp 12086 = the active PRESET (0-3); the 3 harnessed powers of a preset are varbits laid
-// out in a stride-4 block, vb = 57207 + preset*4 + slot(0-2). Each varbit's VALUE is a key
-// into DBTable 94 (col 0 = key, col 1 = the power's name string) - resolved live, no bake.
 const ARCH_RELIC_PRESET_VP = 12086, ARCH_RELIC_VB_BASE = 57207, ARCH_RELIC_SLOTS = 3;
 function archRelicVbs(preset) {
   const out = [];
@@ -34,8 +23,6 @@ let archRelicNames = null;   // db94 key -> power name, built once from the cach
 let archRelicPreset = 0, archRelicVals = [];   // active preset + its 3 varbit values
 let archRelicAt = 0, archRelicBusy = false;
 
-// Relic-only read, split out of archResearchEnsure so ANY panel can ask "is this relic
-// harnessed?" cheaply (one varp + three varbits; names cached after the first call).
 async function archRelicEnsure(force) {
   if (archRelicBusy || !bridge()) return;
   const now = Date.now();
@@ -69,8 +56,6 @@ async function archRelicEnsure(force) {
     }
   } finally { archRelicBusy = false; }
 }
-// Is a named relic power harnessed right now? Panels use this to state effects as FACT
-// instead of hedging ("100% if Conservation of Energy is active").
 function archRelicActive(name) {
   if (!name || !archRelicNames) return false;
   const want = String(name).toLowerCase();
@@ -83,12 +68,9 @@ let archResCult = null;      // DBRow id -> culture name, built once from the ca
 let archResList = null;      // [{b,n,f,r}] from the cache; static for the game build
 let archResVp = {};
 let archResAt = 0, archResBusy = false, archResSig = '';
-// archResFilter is a search box (transient by design); the Show all / Showing outstanding
-// view mode is a deliberate choice and is remembered.
 let archResFilter = '', archResHideDone = false;
 try { archResHideDone = localStorage.getItem('rtxArchResHide') === '1'; } catch (e) {}
 
-// Shared by this panel AND the mystery guides, so both always agree on what is done.
 async function archResearchEnsure(force) {
   if (archResBusy) return;
   const now = Date.now();
@@ -100,7 +82,6 @@ async function archResearchEnsure(force) {
       try { archResList = JSON.parse(rtxData.sync('cache.archResearch') || '[]') || []; }
       catch (e) { archResList = []; }
     }
-    // Culture pages: one enum read each, once per session (static for the game build).
     if (archResCult === null && bridge().enumInfo) {
       const map = {};
       for (const [, name, eid] of ARCH_CULTURES) {
@@ -120,7 +101,6 @@ async function archResearchEnsure(force) {
   await archRelicEnsure(force);   // active preset + harnessed powers (own throttle)
 }
 
-// bit -> is it set in this varp bank? (banks hold 32 bits each, in order)
 function archResBitSet(bank, bit) {
   if (!(bit >= 0)) return false;
   const vid = bank[Math.floor(bit / 32)];
@@ -128,7 +108,6 @@ function archResBitSet(bank, bit) {
   const raw = archResVp[vid];
   return typeof raw === 'number' && ((raw >>> (bit % 32)) & 1) === 1;
 }
-// 'report' = fully researched, 'field' = studied but not written up, 'none' = untouched
 function archResStatus(e) {
   if (!e) return 'none';
   if (archResBitSet(ARCH_RES_REPORT_VARPS, e.b)) return 'report';
@@ -146,10 +125,6 @@ function archResCounts() {
   return { done: done, part: part, total: total };
 }
 
-// Does this guide step name a research that is COMPLETED? true/false, or null when the step
-// names no known research (caller then leaves the step manually tickable). Matching is by the
-// research's cache NAME appearing in the step text; the longest match wins, so "Incomplete
-// Portal Network III" is never mistaken for "Incomplete Portal Network I".
 function archResearchDoneIn(text) {
   if (!text || !archResList || !archResList.length) return null;
   const hay = String(text).toLowerCase();
@@ -164,8 +139,6 @@ function archResearchDoneIn(text) {
   return archResStatus(best) === 'report';
 }
 
-// compact live-progress stamp, so panels displaying research state repaint the moment a field
-// study or report lands
 function archResSigVal() {
   return ARCH_RES_FIELD_VARPS.concat(ARCH_RES_REPORT_VARPS).map(v => archResVp[v] | 0).join('.');
 }
@@ -175,13 +148,9 @@ async function fetchArchResearch() {
   paneRun('archresearch', renderArchResearch);
 }
 
-// Culture grouping joins the book enums on the DBRow id, which only a launcher build carrying
-// the `d`/`t` fields emits. Without them every row would collapse into one "Other research"
-// heap, so fall back to the plain ungrouped list.
 function archResGrouped() {
   return !!(archResList && archResList.length && archResList.some(e => e.d != null));
 }
-// Which culture page a research belongs to, else the site-wide / outside-the-book buckets.
 function archResGroup(e) {
   const c = archResCult && archResCult[e.d];
   if (c) return c;
@@ -191,8 +160,6 @@ function archResGroupOrder() {
   return ARCH_CULTURES.map(x => x[1]).concat([ARCH_GRP_SITE, ARCH_GRP_OTHER]);
 }
 
-// The header + filter bar are built ONCE and never re-rendered: rebuilding them on a keystroke
-// destroys the focused <input>. Only #arList is repainted.
 function renderArchResearch() {
   const c = $('content');
   let wrap = $('arWrap');
@@ -254,8 +221,6 @@ function paintArchResearch() {
   if (btn) { btn.textContent = archResHideDone ? 'Showing outstanding' : 'Show all'; btn.classList.toggle('ar-on', archResHideDone); }
 
   const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  // 'field' = the field study is done and the write-up is outstanding, i.e. the research team
-  // still has to be put on it at the guild.
   const LABEL = { report: 'Complete', field: 'Gather team', none: 'Not started' };
   const TIP = { field: 'Field study done — gather your research team to file the report.' };
 
@@ -272,7 +237,6 @@ function paintArchResearch() {
   };
   let html = '';
   if (!archResGrouped()) {
-    // Older launcher build: no row ids to join the culture enums on, so show one plain list.
     html = '<div class="ar-list">' + rows.map(rowHtml).join('') + '</div>';
   } else {
     const by = {};
@@ -290,9 +254,6 @@ function paintArchResearch() {
   list.innerHTML = html;
 }
 
-// ---- Active Relics tab (Archaeology) -----------------------------------------
-// Its own panel: the monolith's active preset + its 3 harnessed powers, all read via
-// archResearchEnsure() (varp 12086 + varbits 57207+preset*4+slot -> DBTable 94 names).
 async function fetchRelics() {
   await archRelicEnsure();   // relic-only: archResearchEnsure can early-return on old builds
   paneRun('relics', renderRelics);
@@ -325,7 +286,6 @@ function renderRelics() {
   list.innerHTML = '<div class="ar-list">' + rows + '</div>';
 }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { archRelicActive, archRelicEnsure, archResSigVal, archResearchDoneIn, archResearchEnsure, fetchArchResearch, fetchRelics });
 registerTab({ id: 'archresearch', render: renderArchResearch, open: function () { archResSig = ''; fetchArchResearch(); } });
 registerTab({ id: 'relics', render: renderRelics, open: function () { relicsSig = ''; fetchRelics(); } });

@@ -1,29 +1,8 @@
 // RuneToolsX panel: Miscellania kingdom management (Throne of Miscellania / Royal Trouble).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
-// CS2 ground truth:
 //   script10838 - approval = vb 10057 stored 0-127, shown as (v*100)/127 %, coloured green
 //                 >= 75, red <= 25, orange between; last visit = varp 6987 (DATE_MINUTES
-//                 timestamp, -1 = never), shown as "<t> ago"; coffer = vb 10059 coins.
-//   script1117/5770 - coffer cap 5,000,000 -> 7,500,000 and worker cap 10 -> 15 pips when
-//                 vb 12425 >= 30 (Royal Trouble complete).
-//   script1395  - the six 10-pip resource bars in interface 391, in component order:
-//                 comp 56 block = vb 10070, comp 71 = vb 10067, comp 84 = vb 10068,
-//                 comp 96 = vb 10069, comp 127 = vb 10085, comp 147 = vb 10086; total
-//                 assigned = varp 2242 (15-pip bar). Toggles written by the same script:
-//                 vb 10088 = Herbs/Flax (comps 158/160), vb 10087 = Mahogany/Teak/Both
-//                 (comps 137/139/141), vb 10060 = Cooked/Raw fish (comp 123).
-// The six bars carry NO labels in CS2 - the label texts (Fishing, Wood, Mining, Herbs, Hardwood,
-// Farm) are static text comps of interface 391, so this panel decodes the group via
-// cacheIfaceGroup(391) and pairs each bar with the label comp on its row by geometry.
-// No label is ever guessed: an unpaired bar renders as "Resource".
 (function () {
 
-  // Resource bar labels, verified against interface 391's component tree: each resource is one
-  // subtree, and its label text, its 10-pip block (script1395's varbit writes) and its toggle live
-  // under the same parent - Fishing card (par 29) = block vb 10069 + the cooked/raw toggle
-  // comp 123 (vb 10060), Herbs card (par 16) = vb 10068 + the herbs/flax toggle (vb 10088),
-  // Hardwood card (par 43) = vb 10085 + the mahogany/teak toggle (vb 10087); Wood (par 27) =
-  // vb 10067, Mining (par 10) = vb 10070, Farm (par 47) = vb 10086.
   const KD_BARS = [['Fishing', 10069], ['Wood', 10067], ['Mining', 10070],
                    ['Herbs', 10068], ['Hardwood', 10085], ['Farm', 10086]];
   const KD_VB_IDS = '10057,10059,12425,10060,10087,10088,' +
@@ -32,8 +11,6 @@
 
   let kdVb = null, kdVp = null, kdFetching = false, kdFetchAt = 0, kdSig = '';
 
-  // Kingdom management is gated on Throne of Miscellania; the quest's progress tracker is resolved
-  // from the shared quest defs (panel_quests.js globals) and judged live.
   let kdQuest = null, kdQuestVp = null;
   async function kdEnsureQuest() {
     if (kdQuest || typeof questEnsureDefs !== 'function') return;
@@ -60,8 +37,6 @@
       const vp = JSON.parse(await rtxData.raw('state.varps', KD_VP_IDS) || 'null');
       if (vp && typeof vp === 'object' && Object.keys(vp).length) kdVp = vp;
       await kdEnsureQuest();
-      // The quest tracker varp (plus any special-case varps questStatus reads) is fetched separately
-      // so KD_VP_IDS stays static.
       if (kdQuest) {
         const ids = new Set();
         if (kdQuest.v) ids.add(kdQuest.v[0]);
@@ -111,7 +86,6 @@
       wrap.innerHTML = '<div class="kd-empty">Reading kingdom state... (be in-world; values sync on login)</div>';
       kdSig = ''; return;
     }
-    // Gate on Throne of Miscellania: before it the management varbits are meaningless.
     if (kdUnlocked() === false) {
       wrap.innerHTML = '<div class="kd-empty">Kingdom management unlocks on completing the quest Throne of Miscellania.</div>';
       kdSig = ''; return;
@@ -156,7 +130,6 @@
 
     {
       const ov = sec('Kingdom');
-      // Approval: stored 0-127, displayed exactly as script10838 does, with its colour bands.
       const appr = Math.floor((kdV(10057) * 100) / 127);
       row(ov, 'Approval', appr < 75 ? 'Do favours for the citizens to raise it' : null,
           appr + '%', appr >= 75 ? 'ok' : appr <= 25 ? 'bad' : 'warn', appr / 100);
@@ -172,15 +145,10 @@
 
     {
       const wk = sec('Workers');
-      // Total assigned = the sum of the six bars. varp 2242 reads 0 live even with workers assigned
-      // (it only drives the interface's pip strip), so it is not trusted.
       const total = KD_BARS.reduce((s, b) => s + kdV(b[1]), 0);
       row(wk, 'Assigned', null, total + ' / ' + workerCap, total >= workerCap ? 'ok' : 'warn', total / workerCap);
       for (const [nm, vbid] of KD_BARS) {
         const n = kdV(vbid);
-        // The three collection toggles say WHICH resource that bar's workers gather. In script1395
-        // graphic 699 marks the SELECTED radio (exactly one per state): vb 10088 == 1 -> Flax,
-        // vb 10087 0/1/2 -> Mahogany/Teak/Both, vb 10060 == 1 -> Cooked.
         let sub = null;
         if (nm === 'Herbs') sub = 'Collecting: ' + (kdV(10088) === 1 ? 'Flax' : 'Herbs');
         else if (nm === 'Hardwood') sub = 'Collecting: ' + (['Mahogany', 'Teak', 'Both'][kdV(10087)] || '?');
@@ -190,7 +158,6 @@
     }
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { fetchKingdom });
 registerTab({ id: 'kingdom', render: renderKingdom, open: function () { kdSig = ''; fetchKingdom(); } });
 })();

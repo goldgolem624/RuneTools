@@ -1,20 +1,9 @@
-// rtx-input.js: Input-region + keyboard publishing to the host (wmPushRects, wmRectsSoon, kbGrab, syncKbCapture, __rtxGameClick) and the wiki search palette (wikiPaletteOpen).
-// Loads after: rtx-wm.js; installs focusin/focusout listeners and a 1 s syncKbCapture interval at load.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ---- input-region + keyboard publishing to the host ----
-  // null, not '': an empty first payload (menubar not laid out yet) must still
-  // reach the host, or the dedup below swallows the very first publish.
   let _rectsQueued = false, _lastRectsPayload = null;
   function wmPushRects() {
     _rectsQueued = false;
     const b = bridge();
     if (!b || !b.uiRects) return;
     const rects = [];
-    // Grow each rect by a hairline margin. Windows carry a soft drop shadow, so the
-    // panel READS as bigger than its border box; without this, a click aimed at the
-    // visual edge falls outside the consume region and the GAME acts on it (camera
-    // spin / walk) instead of the panel. Inside the margin nothing happens, which is
-    // the right outcome for a near-miss on a window edge.
     const PAD = 3;
     const add = (el) => {
       if (!el) return;
@@ -26,24 +15,13 @@
     if (!menubarHidden) add($('menubar'));
     add($('mbdrop'));
     add($('mbdrop2'));   // the More menu's side flyout claims its clicks too
-    // A locked HUD is deliberately absent: no consume rect means the companion never
-    // swallows the click, so it lands in the game underneath. It keeps drawing regardless.
     for (const w of wm.wins.values()) if (!w.min && !w.locked) add(w.el);
-    // Body-level popovers: they float outside any window rect, so they need their own.
     add($('sndMenu')); add($('vrPop'));
     add($('lgMenu'));
     add($('ctxCopy'));
-    // Plugin ability HUD strips advertise header dragging and an x-to-close, so unlike the
-    // locked alerts HUD they must claim their clicks. try/catch: pluginHuds lives in
-    // rtx-plugins.js, which loads after this file; an early publish just skips it.
     try { for (const h of pluginHuds.values()) add(h.el); } catch (e) {}
-    // Only DISMISSIBLE toasts claim input. A transient toast stays click-through so
-    // it can never swallow a click meant for the game underneath it. Placement mode
-    // is the exception: the whole stack must be grabbable, empty or not.
     if (toastPlacing) add($('toaster'));
     else for (const t of toasts) if (t.sticky && !t.closing) add(t.el);
-    // Modal surfaces (tab search, tooltips are transient/hover-only) claim the whole
-    // client: they dim everything and must swallow every click.
     if ($('tspOv') || $('vrModalOv') || $('wikiPal')) {
       rects.length = 0;
       rects.push('0,0,' + (window.innerWidth || 1280) + ',' + (window.innerHeight || 720));
@@ -53,7 +31,6 @@
     _lastRectsPayload = payload;
     try { b.uiRects(myPid(), payload, !menubarHidden || rects.length > 0); } catch (e) {}
   }
-  // Coalesce rect pushes to one per task; drags call wmPushRects directly per move.
   function wmRectsSoon() {
     if (_rectsQueued) return;
     _rectsQueued = true;
@@ -61,12 +38,7 @@
   }
   let menubarHidden = false;   // reserved: a future hide-UI toggle
 
-  // Keyboard capture: claim the game's keystrokes only while a text field has focus.
   let _kbCaptured = false, _kbGrabs = 0;
-  // Explicit claim, for panels that need the keystroke WITHOUT a focused text field -- a
-  // "press any key" keybind listener is a button, so the focus test below can never see it and
-  // every key went to the game instead of being captured. Refcounted: two listeners armed at
-  // once must not have the first one to finish drop capture for both.
   function kbGrab(on) {
     _kbGrabs = Math.max(0, _kbGrabs + (on ? 1 : -1));
     syncKbCapture();
@@ -81,14 +53,7 @@
   }
   document.addEventListener('focusin', () => setTimeout(syncKbCapture, 0));
   document.addEventListener('focusout', () => setTimeout(syncKbCapture, 0));
-  // Self-heal: a focused input REMOVED by a panel rebuild fires no focusout, which left the
-  // capture flag stuck on and silently ate every keystroke meant for the game. Re-derive the
-  // truth from the live activeElement once a second; syncKbCapture dedups, so this is free.
   setInterval(syncKbCapture, 1000);
-  // Host-driven editing shortcuts: GameUi.cpp swallows Ctrl+A/C/X/V and calls this. Walk into
-  // same-origin iframes as before; a sandboxed plugin frame is an opaque origin whose
-  // contentDocument is null from here, so the command travels over postMessage instead and the
-  // plugin SDK shim runs execCommand on the field that actually has focus.
   window.__rtxEditCmd = function (cmd) {
     let d = document;
     for (;;) {
@@ -103,18 +68,11 @@
     try { d.execCommand(cmd); } catch (e) {}
   };
 
-  // Companion-signalled: a click went to the GAME while we held keyboard capture --
-  // drop focus so typing returns to the game immediately.
   window.__rtxGameClick = function () {
     try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) {}
     setTimeout(syncKbCapture, 0);
   };
 
-  // ---- Wiki palette: dimmed search overlay -> the wiki-locked in-client browser. ------
-  // Opened by the host on the user's hotkey (gameui::OpenWikiPalette evaluates
-  // wikiPaletteOpen()) or from any panel. Enter / the button opens the term in the
-  // dedicated wiki pane; exact titles land directly on their page. The chip in the
-  // footer binds the hotkey inline: click it, press a key (Esc unbinds).
   let _wkKbListen = false;
   function wikiPaletteOpen() {
     const existing = $('wikiPal');
@@ -134,9 +92,6 @@
     document.body.appendChild(ov);
     kbGrab(true);
     wmRectsSoon();
-    // The opening hotkey's WM_CHAR arrives AFTER the palette focuses its input (the host
-    // consumes the key-down, but TranslateMessage already queued the character), so the
-    // bound key used to type itself into the search box. Swallow input for the first beat.
     const openedAt = performance.now();
     const done = () => {
       if (!$('wikiPal')) return;

@@ -1,7 +1,3 @@
-// rtx-plugin-market.js: the in-client marketplace: browse the signed catalogue served by runetools.io, install / uninstall, and re-prompt consent on every (re)install
-// Loads after: rtx-plugins.js (pluginTabs, grants, loadPlugins) and rtx-wm.js.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ---- in-client marketplace (browse + install signed plugins) ----
   let pluginBrowseList = [];
   async function renderPluginBrowse() {
     const c = $('content');
@@ -16,11 +12,6 @@
       '<div id="pbList"><div class="empty">Loading plugins...</div></div>';
     c.appendChild(wrap);
     const se = $('pbSearch'); if (se) se.addEventListener('input', renderBrowseList);
-    // pluginMarketList() is served ASYNC (the HTTP fetch runs off the UI thread): it returns
-    // "{}" until the worker has the response, {"error":...} if the last fetch failed, and the
-    // catalog once it lands. Poll until one of the latter two arrives; the first fetch can
-    // outlive a short window (proxy autodetect), so never give up while the panel is open.
-    // An empty plugins ARRAY is a real answer (catalog empty), unlike a missing one.
     pluginBrowseList = [];
     for (let attempt = 0; ; attempt++) {
       let got = null, err = '', diag = '';
@@ -72,8 +63,6 @@
       (scopes ? ('<div style="margin-top:4px;">' + scopes + '</div>') : '');
     const acts = el.querySelector('.acts');
 
-    // Read-only community score; voting is a logged-in website action, the client
-    // runs account-less.
     if (typeof p.votes === 'number') {
       const sc = document.createElement('span');
       sc.title = 'Community score (vote on runetools.io)';
@@ -107,8 +96,6 @@
     btn.disabled = true; btn.textContent = 'Installing...';
     let err = 'error';
     try {
-      // Install runs on a background thread now: kick it, then poll the status so the download
-      // never blocks the UI thread. '' = success (matches the pre-async contract below).
       const start = await bridge().pluginMarketInstall(slug);
       if (start === 'busy') { btn.disabled = false; btn.textContent = 'Install'; return; }
       err = 'pending';
@@ -123,7 +110,6 @@
     if (!err) {
       pluginClearGranted(slug);       // require a fresh permission consent on every (re)install
       await loadPlugins();
-      // Open the freshly installed plugin's window (shows its permission prompt).
       const pt = allTabs().find(x => x.id === 'plugin:' + slug);
       if (pt) openTab(pt);
     } else {

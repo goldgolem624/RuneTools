@@ -1,8 +1,4 @@
-// RuneToolsX panel: Events (Developer) -- live view of the event channel (rtxEvents, fed by the
-// companion EventShare ring through state.events) and the gameTick channel. This panel is the
-// verification instrument for docs/event-channel.md: it must show ~600 ms between ticks and one
-// decoded record per game event (xp drop, container change, script run, ...).
-// Spliced inline into client.html; IIFE (registerTab; see the RTX registry in core/rtx-registry.js).
+// RuneToolsX panel: Events (Developer) -- live view of the event channel (rtxEvents).
 (function () {
 
   const EV_KEEP = 200;
@@ -11,23 +7,11 @@
   const evTick = { count: 0, last: -1, dts: [], lastAt: 0 };
   let evPaused = false, evDirty = false, evTimer = null;
   const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
-  // Server opcodes for THIS game build, from companion/ServerOps.h via state.serverOps. The
-  // seed below is the 950-1 table so the panel works before the first fetch; every place that
-  // used to hold a number now reads it from here, because Jagex reshuffles the opcodes on
-  // game updates (949-5 -> 950-1 changed every one).
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x82,
                  ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0 };
   (async () => { try { const m = await rtxData.call('state.serverOps'); if (m && typeof m === 'object') Object.assign(SOPS, m); } catch (e) {} })();
   const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo']
       .map(k => SOPS[k]).sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h
-  // What the channel can record, in the words a reader thinks in. `op` is the packet opcode the
-  // companion filters on; everything not listed here is simply not captured, which is why the
-  // panel states its coverage rather than implying it shows the whole wire.
-  // Names for packets we do not decode yet, from docs/server_packets_handler_map.md. A named
-  // row beats "raw": it says whether a line is worth reading at all.
-  // Names for packets we do not decode: only the ones pinned on the current build. Anything not in
-  // SOPS or here shows as raw with its opcode, which is honest; guessing names from a stale table
-  // is how the panel showed "skill_update" for garbage after 950-1.
   const EV_OPNAMES = { [SOPS.server_tick]: 'server_tick' };
   const EV_TYPES = [
     { name: 'skill_update',     kind: 'skill_update',     label: 'XP and levels',    note: 'every xp drop' },
@@ -49,8 +33,6 @@
     if (evLog.length > EV_KEEP) evLog.length = EV_KEEP;
     evDirty = true;
   }
-  // 0xB4 is the server's tick boundary (zero length, once per burst, about 600 ms apart in a
-  // full capture). It is an exact edge, unlike the polled counter, so measure it separately.
   const evSrvTick = { count: 0, last: 0, dts: [] };
   function evOnServerTick(ev) {
     const now = (typeof performance === 'object' && performance.now) ? performance.now() : Date.now();
@@ -64,13 +46,10 @@
     evTick.last = ev.tick; evTick.lastAt = Date.now();
     evDirty = true;
   }
-  // Subscribe once at load: counters run whether or not the tab is open, like the chat log.
   rtxEvents.on('*', evOnEvent);
   rtxEvents.on('gameTick', evOnTick);
   rtxEvents.on('*', ev => { if (ev && ev.op === SOPS.server_tick) evOnServerTick(ev); });
 
-  // Containers seen on this channel. The full list lives in panel_containers; these are the
-  // ones that actually appear in packet traffic, so a line reads "Backpack" not "93".
   const EV_CONTAINERS = {
     93: "Backpack", 94: "Worn equipment", 95: "Bank", 96: "Bank (tab)", 530: "Beast of Burden",
     623: "Money pouch", 670: "Cosmetic overrides", 676: "Death reclaim", 787: "Loot log",
@@ -80,7 +59,6 @@
   };
   function evContainer(id) { return EV_CONTAINERS[id] ? (EV_CONTAINERS[id] + " (" + id + ")") : ("container " + id); }
 
-  // Item and struct names are resolved once each and cached; a miss repaints when it lands.
   const EV_ITEM = new Map(), EV_STRUCT = new Map();
   function evItemName(id) {
     if (!(id > 0)) return "";
@@ -92,14 +70,6 @@
     })();
     return "";
   }
-  // A buff-bar struct carries only param 2794, and that is a DESCRIPTION, not a title: the cache
-  // holds no separate name for these (the other params are sprite ids and thresholds, and
-  // following them lands on unrelated structs). Some descriptions lead with the name, as in
-  // "Wise - Grants you extra experience" or "Pulse Core - 2% XP Boost", so take that when it is
-  // there and otherwise show the opening clause. The full text goes in the row title.
-  // Invention perks: dbtable 8 column 1 is the name and column 2 is the id a buff struct
-  // carries in param 2802, so a perk buff can be named properly rather than by the first words
-  // of its description ("After reaching 100%" is Aftershock).
   let EV_PERKS = null, _evPerksAsked = false;
   function evPerkName(link) {
     if (!(link > 0)) return "";
@@ -107,8 +77,6 @@
     if (!_evPerksAsked) {
       _evPerksAsked = true;
       (async () => {
-        // Our dbRows emits { f, i: { col: [ints] }, s: { col: [strings] } }: the name is string
-        // column 1 and the id the buff struct points at is int column 2.
         const rows = await rtxData.call("cache.dbRows", 8);
         const map = {};
         for (const r of (Array.isArray(rows) ? rows : [])) {
@@ -123,8 +91,6 @@
     return "";
   }
 
-  // "Sign of the porter VII" is the item; the status is "Sign of the porter". Tiers appear as a
-  // trailing roman numeral or digit, so drop that and nothing else.
   function evBaseItemName(nm) {
     return String(nm || "").replace(/\s+(?:[IVXLC]{1,6}|\d{1,2})$/, "").trim();
   }
@@ -147,11 +113,8 @@
       const strs = (ps && ps.strs) || {};
       const ints = (ps && ps.ints) || {};
       const t = (strs["2794"] || strs[2794] || "").replace(/<[^>]*>/g, "");
-      // 1. an Invention perk names itself in dbtable 8
       let label = evPerkName(ints["2802"] || ints[2802]);
-      // 2. a short description IS the name ("Quiver ammo"), and a dashed one leads with it
       if (!label && t && (t.length <= 26 || / - /.test(t))) label = evStructLabel(t);
-      // 3. otherwise the source item names it, without its tier
       if (!label) {
         const item = ints["4677"] || ints[4677];
         if (item > 0) {
@@ -159,7 +122,6 @@
           if (info && info.name) label = evBaseItemName(info.name);
         }
       }
-      // 4. last resort: the opening clause of the description
       if (!label) label = evStructLabel(t);
       if (label) {
         EV_STRUCT.set(id, { label: label, full: t && t.indexOf(label) !== 0 ? (label + ": " + t) : t });
@@ -168,12 +130,8 @@
     })();
     return null;
   }
-  // A name that arrives late marks the list dirty; the panel's own 250 ms tick repaints it.
   function evPaintSoon() { evDirty = true; }
 
-  // Scripts whose arguments we understand, so the line says what happened rather than which
-  // script ran. 10623(struct, mode) adds or removes one buff bar entry: see the call chain
-  // 10624 -> 9101 (tier by level) -> 15426/10625 -> 15428 (find by param 8106).
   function evScriptText(ev) {
     const a = ev.args || [];
     if (ev.script === 10623 && a.length >= 2) {
@@ -181,10 +139,6 @@
       ev._full = st ? st.full : "";
       return "buff bar " + (a[1] ? "add" : "remove") + ": " + (st ? st.label : "struct " + a[0]);
     }
-    // 1264(title, when, what, extra, where, world, who, fc, link, ticks): the Community Event
-    // notice. The script labels each field in exactly this order and skips the empty ones, so
-    // the row shows the whole notice rather than a truncated head of it. The trailing int is the
-    // countdown in timer ticks that script 1269 uses to blank the notice again.
     if (ev.script === 1264) {
       const strs = a.filter(x => typeof x === "string");
       const ticks = a.find(x => typeof x === "number");
@@ -203,10 +157,6 @@
     switch (ev.kind) {
       case 'skill_update': return (ev.name || ('skill ' + ev.skill)) + ' Lv' + ev.level + ' xp=' + Number(ev.xp).toLocaleString('en-US');
       case 'container_update': {
-        // Every slot, not a head of them: the packet is already bounded by the capture window
-        // (the reader marks a cut list [partial]), and a truncated line hides the change the
-        // reader is being consulted about. Runs of emptied slots collapse so a bank clear does
-        // not print two hundred identical clauses.
         const sl = ev.slots || [];
         const parts = [];
         for (let i = 0; i < sl.length; i++) {
@@ -243,11 +193,6 @@
     }
   }
   function evEsc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-  // Wire text verbatim, with the bytes that do not print shown as what they are. RS strings
-  // carry CP-1252 codes the client renders itself: 0xA0 stands in for a space inside a name
-  // and 0x92 for an apostrophe, and passing those straight through paints glyphs that look
-  // like stray letters. Control codes and the C1 range become <a0> so the row shows the
-  // actual content; ordinary Unicode is left alone.
   function evWire(s) {
     return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u00a0]/g, ch =>
       '<' + ch.charCodeAt(0).toString(16).padStart(2, '0') + '>');
@@ -315,8 +260,6 @@
       $('evCopyJson').onclick = () => evCopy(true);
       $('evMask').value = evDefaultMask();
       $('evMaskDef').onclick = () => { $('evMask').value = evDefaultMask(); evMaskApply(); evPaintToggles(); };
-      // Every opcode, not just the named ones. Undecoded packets arrive as raw hex, which is how
-      // a new one gets identified in the first place.
       $('evMaskAll').onclick = () => {
         const all = []; for (let i = 0; i <= 255; i++) all.push(i);
         $('evMask').value = all.join(',');
@@ -349,7 +292,6 @@
     const kinds = EV_KINDS.concat(Object.keys(evCounts).filter(k => EV_KINDS.indexOf(k) === -1));
     $('evCounts').innerHTML = kinds.map(k => '<div class="ev-stat"><span>' + evEsc(k) + '</span> <b>' + (evCounts[k] || 0) + '</b></div>').join('');
     $('evList').innerHTML = evLog.map(ev => {
-      // wall is epoch ms low 32 bits: rebuild it relative to now (records are at most minutes old).
       let t = '';
       if (typeof ev.wall === 'number') { let d = (Date.now() % 4294967296) - ev.wall; if (d < 0) d += 4294967296; t = new Date(Date.now() - d).toTimeString().slice(0, 8); }
       const body = evFields(ev);                       // sets ev._full for the rows that have more to say
@@ -359,7 +301,6 @@
     }).join('');
   }
 
-  // Current mask as a set of opcodes.
   function evMaskSet() {
     const out = {};
     for (const p of String(($('evMask') || {}).value || evDefaultMask()).split(',')) {
@@ -392,7 +333,6 @@
     }
     const n = EV_TYPES.filter(t => on[t.op]).length;
     const total = Object.keys(on).length;
-    // Be explicit that the named types are a selection, not the wire: the game sends far more.
     $('evWhat').textContent = total >= 250
       ? ('Recording every packet type (' + total + '). Types without a decoder arrive as raw hex. '
          + 'This is a lot of traffic; Reset to default when you are done.')
@@ -403,7 +343,6 @@
     $('evMaskAll').classList.toggle('on', total >= 250);
   }
 
-  // Oldest first, so a pasted log reads in the order things happened.
   function evCopyText() {
     const head = 'RuneToolsX event log  ' + new Date().toISOString()
       + '  client ' + (window.rtxEventsPoll ? window.rtxEventsPoll.pid : '?')
@@ -442,8 +381,6 @@
     const csv = $('evMask').value;
     const ok = await rtxData.call('host.eventsMask', csv);
     const n = csv.split(',').filter(x => x.trim() !== '').length;
-    // Never print the raw list: 256 comma separated numbers have no spaces to wrap on and run
-    // off the panel. Say how many, and name them only when the list is short enough to read.
     const what = n >= 250 ? 'every packet type (' + n + ')'
                : n > 12   ? (n + ' packet types')
                : ('packets ' + csv);

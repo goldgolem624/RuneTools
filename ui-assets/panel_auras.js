@@ -1,33 +1,6 @@
 // RuneToolsX panel: Auras. A WeakAuras-style display engine for the in-game HUD.
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
-//
-// MODEL (mirrors WeakAuras' data table, trimmed to what this game exposes):
-//   aura = { uid, name, type, parent, children[], x, y, w, h, ...display props,
-//            triggers: { list: [trigger], logic: 'any'|'all', active: -1|index },
-//            conditions: [ { checks: [ {trig, v, op, val} ], changes: [ {prop, val} ] } ],
-//            actions: { show: {sound, flash, notify, msg}, hide: {...} },
-//            anim: { start, main, finish }, load: { combat } }
-//   types: icon | bar | text | ring | pips (displays), group (static: children keep their own
-//          x/y/w/h inside it), dyngroup (lays children out: grow direction, spacing, sort, limit,
-//          and a trigger that matches several things draws one CLONE per match).
-//   Every TOP-LEVEL aura or group is its own HUD window (tab 'aura:<uid>'), so it is dragged,
-//   resized and locked like every other window; its children move with it.
-//
-// TRIGGERS produce a STATE: { show, progressType: 'timed'|'static'|'none', remaining, duration,
-//   value, total, name, icon, stacks }. Several triggers per aura combine with any/all; the
-//   "active" trigger supplies what the display shows (first active, or a fixed one). Conditions
-//   read any trigger's state ("trigger 2 remaining < 5") and change display properties while they
-//   hold; Actions fire once on show / on hide; Animations are CSS presets.
-//
-// TEXT TOKENS: %p progress (remaining time or value), %t total (duration or max), %n name,
-//   %s stacks, %v value, %r remaining seconds (raw), %c percent, %2.p = token from trigger 2,
-//   %% = a literal %.
-//
-// NOTE ON LOAD ORDER: panels are spliced BEFORE client.html's own script runs, so prefGet /
-// prefSet do not exist yet at parse time. Config is loaded lazily on first use, never at top level.
 (function () {
 
-  // ---------------------------------------------------------------- constants
   const AURA_TYPES = [['icon', 'Icon'], ['bar', 'Bar'], ['text', 'Text'], ['ring', 'Ring'], ['pips', 'Stack pips'], ['group', 'Group'], ['dyngroup', 'Dynamic group']];
   const AURA_DISPLAY_TYPES = ['icon', 'bar', 'text', 'ring', 'pips'];
   const AURA_TRIG_SRCS = [['buff', 'Buff'], ['debuff', 'Debuff'], ['ability', 'Ability cooldown'], ['vital', 'Vital'], ['panim', 'Player animation'], ['nanim', 'NPC animation'], ['nearby', 'Nearby name'], ['invslots', 'Inventory slots'], ['invitem', 'Inventory item'], ['always', 'Always on']];
@@ -49,23 +22,16 @@
   const AURA_MAX_CLONES = 20;
   const AURA_EXPORT_PREFIX = 'RTXA1!';
 
-  // A fresh aura of a given type: every field present, so nothing downstream needs null checks.
   function auraDefaults(type) {
     const d = {
       uid: '', name: '', type: type || 'icon', parent: null, children: [], winGeom: null,
       x: 0, y: 0, w: 56, h: 56,
       alpha: 1, color: '#ffffff', desat: false, hideIdle: true, glow: false,
-      // icon
       showTime: true, showStacks: true, sweep: true, iconName: '',
-      // bar
       orient: 'h', barColor: '#8c6ffd', bgColor: '#0e0f14', inverse: false, textL: '%n', textR: '%p',
-      // text
       text: '%p', fontSize: 18, textColor: '#ffffff', align: 'center',
-      // ring
       ringColor: '#8c6ffd', ringWidth: 6,
-      // pips
       max: 5, pipColor: '#b14df0',
-      // dyngroup
       grow: 'right', space: 4, limit: 0, sort: 'none', gridCols: 5, childW: 48, childH: 48,
       triggers: { list: [], logic: 'any', active: -1 },
       conditions: [],
@@ -160,7 +126,6 @@
     return o;
   }
 
-  // ---------------------------------------------------------------- config store
   let auraCfg = null;        // { v: 3, auras: {uid: aura}, roots: [uid] }
   let auraDirty = false;
   const auraWinSig = {};
@@ -180,7 +145,6 @@
     if (v.v === 3 && v.auras && typeof v.auras === 'object') {
       for (const k in v.auras) { const a = auraNorm(v.auras[k]); if (a) { a.uid = k; auraCfg.auras[k] = a; } }
       auraCfg.roots = (Array.isArray(v.roots) ? v.roots : []).filter(u => auraCfg.auras[u]);
-      // Repair: children that vanished, parents that vanished, roots missing.
       for (const k in auraCfg.auras) {
         const a = auraCfg.auras[k];
         a.children = a.children.filter(c => auraCfg.auras[c]);
@@ -195,7 +159,6 @@
       auraMigrateV2([{ id: 'legacy', name: 'Auras', items: v.names.map(n => ({ name: n, src: 'buff', mode: 'icon' })), showIdle: !!v.showIdle, showName: !!v.showName }]);
     }
   }
-  // v2 (groups of {name, src, mode, max, color}) -> one dynamic group per v2 group, one aura per item.
   function auraMigrateV2(groups) {
     groups.forEach(g => {
       if (!g || !Array.isArray(g.items)) return;
@@ -242,7 +205,6 @@
   function auraRoots() { auraCfgLoad(); return auraCfg.roots.map(u => auraCfg.auras[u]).filter(Boolean); }
   function auraInvalidate() { for (const k in auraWinSig) delete auraWinSig[k]; auraEdSig = ''; }
 
-  // ---------------------------------------------------------------- HUD tabs (one per root)
   function auraTabId(uid) { return 'aura:' + uid; }
   function auraGroupTabs() {
     if (typeof prefGet !== 'function') return [];
@@ -251,8 +213,6 @@
   function auraIsHudTab(id) { return typeof id === 'string' && id.indexOf('aura:') === 0; }
   function auraAnyHudVisible() { return typeof paneVisible === 'function' && auraRoots().some(a => paneVisible(auraTabId(a.uid))); }
   function auraWinShown(uid) { return !!(typeof wmWinOf === 'function' && wmWinOf(auraTabId(uid))); }
-  // Hiding closes the HUD window, and the window manager forgets a closed window's placement;
-  // the aura remembers its own so show/hide round-trips to the same spot, size and lock state.
   function auraWinShow(uid, on) {
     const tid = auraTabId(uid);
     const a = auraGet(uid);
@@ -275,8 +235,6 @@
     auraCfgSave();
   }
   function auraMigrateWindow() {}
-  // Auras with on-show / on-hide actions must be evaluated even when no aura window is open,
-  // otherwise a sound configured on an aura whose window is closed would never play.
   function auraNeedsPoll() {
     const all = auraAll();
     for (const k in all) {
@@ -287,7 +245,6 @@
     return false;
   }
 
-  // ---------------------------------------------------------------- data feeds
   let auraData = null, auraFetching = false, _aurasAt = 0;
   function auraNeeds() {
     const n = { buffs: false, abil: false, vital: false, info: false, scene: false, inv: false };
@@ -336,7 +293,6 @@
   function auraRepaintAll() {
     if (typeof paneRun !== 'function') return;
     try { auraTick(); } catch (e) {}
-    // Remember placements of open aura windows every few seconds (covers closing via the X).
     const now = Date.now();
     if (now - _auraGeomAt > 3000) {
       _auraGeomAt = now;
@@ -424,12 +380,10 @@
   }
   function auraInCombat() { const s = auraSelf(); return s ? (typeof s.combat === 'number' && s.combat > 0) : null; }
 
-  // ---------------------------------------------------------------- trigger evaluation
   const auraMaxSeen = {};   // key -> longest remaining seen (the game reports time LEFT only)
   function auraCmp(v, op, n) {
     switch (op) { case '<': return v < n; case '<=': return v <= n; case '=': return v === n; case '>=': return v >= n; case '>': return v > n; case '!=': return v !== n; default: return true; }
   }
-  // Returns an array of states (clones); empty = not triggered.
   function auraTrigStates(t, a, ti) {
     const out = [];
     const key = a.uid + ':' + ti;
@@ -519,7 +473,6 @@
     }
     return out;
   }
-  // Evaluate an aura: { show, states (clones of the active trigger), per: [states per trigger], act }
   function auraEval(a) {
     const per = a.triggers.list.map((t, i) => { try { return auraTrigStates(t, a, i); } catch (e) { return []; } });
     const n = per.length;
@@ -537,7 +490,6 @@
     return { show, loaded, states, per, act };
   }
 
-  // ---------------------------------------------------------------- conditions
   function auraCondVar(st, v) {
     if (!st) return null;
     switch (v) {
@@ -551,7 +503,6 @@
     }
     return null;
   }
-  // Active overrides for a clone: {color, alpha, glow, desat, hide, text, scale, _sound:[ci]}
   function auraCondApply(a, ev, st) {
     const o = {};
     a.conditions.forEach((c, ci) => {
@@ -574,8 +525,6 @@
     return o;
   }
 
-  // ---------------------------------------------------------------- text tokens
-  // Seconds under a minute, m:ss under ten minutes, then whole minutes (79m) and hours (2h).
   function auraFmtTime(s) {
     s = Math.max(0, s);
     if (s < 60) return String(Math.round(s));
@@ -584,7 +533,6 @@
     const h = Math.floor(s / 3600), mm = Math.round((s % 3600) / 60);
     return mm ? h + 'h' + (mm < 10 ? '0' : '') + mm : h + 'h';
   }
-  // Short form for numbers drawn ON a tile, where there is no room for thousands separators.
   function auraFmtShort(v) {
     if (typeof v !== 'number') return String(v == null ? '' : v);
     const ab = Math.abs(v);
@@ -619,10 +567,7 @@
     });
   }
 
-  // ---------------------------------------------------------------- icons
   function auraSetIcon(el, url) { el.style.backgroundImage = "url('" + url + "')"; el.style.backgroundSize = 'contain'; }
-  // name -> {sprite, item}: remembered per install, so a placeholder can show the art of a buff
-  // that is not up right now (and never was this session).
   let auraIconMemo = null;
   function auraIconMemoLoad() {
     if (auraIconMemo) return auraIconMemo;
@@ -640,9 +585,6 @@
     if (_iconMemoT) return;
     _iconMemoT = setTimeout(() => { _iconMemoT = 0; try { const keys = Object.keys(m); if (keys.length > 600) keys.slice(0, keys.length - 600).forEach(k => delete m[k]); prefSet('rtxAuraIcons', JSON.stringify(m)); } catch (e) {} }, 1500);
   }
-  // The cache's own catalogue of buff/debuff names and icons (rtx.buffCatalog) and ability
-  // configs (name -> ability id, which is also its sprite id) seed the icon memory and the name
-  // lists, so placeholders and pickers know every effect from the start, not only ones seen.
   let auraCatalog = null, auraCatalogTried = 0;
   async function auraCatalogLoad() {
     if (auraCatalog || !bridge()) return;
@@ -672,8 +614,6 @@
     if (!c) { const q = name.toLowerCase(); for (const k in cfg) if (k.toLowerCase().indexOf(q) >= 0) { c = cfg[k]; break; } }
     return (c && c.i) ? { sprite: c.i | 0, item: 0 } : null;
   }
-  // Best icon for an idle aura: the action-bar slot or the cache's ability id for abilities; the
-  // remembered / catalogued icon for buffs and debuffs.
   function auraIdleIcon(a) {
     const t = a.triggers.list[0];
     if (!t) return null;
@@ -701,12 +641,10 @@
     })();
   }
 
-  // ---------------------------------------------------------------- actions + edge tracking
   const auraShownPrev = {};
   const auraCondSoundPrev = {};
   function auraDeliver(act, a, ev, st) {
     if (!act) return;
-    // Honour the Alerts panel's "only when tabbed out" switch.
     try { if (typeof alertsSuppressed === 'function' && alertsSuppressed()) return; } catch (e) {}
     if (act.sound && act.sound !== 'none') { try { bridge().playSound(act.sound); } catch (e) {} }
     if (act.flash) { try { rtxData.sync('overlay.flashGame'); } catch (e) {} }
@@ -714,8 +652,6 @@
     if (act.notify === 'ingame' || act.notify === 'both') { try { uiNotify(msg, { ttl: 5000 }); } catch (e) {} }
     if (act.notify === 'windows' || act.notify === 'both') { try { if (typeof winNotify === 'function') winNotify(msg); } catch (e) {} }
   }
-  // One evaluation pass over EVERY aura (not only visible windows) so actions fire even for a
-  // root whose window is closed. Results are cached per tick for the renderers.
   let auraEvalCache = {};
   function auraTick() {
     auraEvalCache = {};
@@ -742,9 +678,6 @@
     }
   }
 
-  // ---------------------------------------------------------------- rendering
-  // Keyed reconcile: one element per visible (aura, clone), updated in place so the CSS
-  // animations (start / main / finish) behave.
   function auraReconcile(host, items, make, update, finishClassFor) {
     const keep = {};
     items.forEach(it => { keep[it.key] = it; });
@@ -798,7 +731,6 @@
     if (!n) { n = document.createElement('div'); n.className = cls; if (html) n.innerHTML = html; el.appendChild(n); }
     return n;
   }
-  // Build / update the visual for one (aura, state) pair inside `el` (already sized by the caller).
   function auraPaint(el, a, ev, st, ov) {
     const color = ov.color != null ? String(ov.color) : null;
     const textOv = ov.text != null ? String(ov.text) : null;
@@ -878,12 +810,10 @@
       return;
     }
   }
-  // Items to draw for an aura (each = one clone); [] when hidden.
   function auraItems(a, sizeW, sizeH, parentIsDyn) {
     const ev = auraEvalCache[a.uid] || auraEval(a);
     if (!ev.loaded) return [];                       // a Load rule hides it outright
     if (!ev.show || !ev.states.length) {
-      // Not triggered: either gone, or a dimmed placeholder so the slot stays visible.
       if (a.hideIdle && a.triggers.list.length) return [];
       const ov = auraCondApply(a, ev, null);
       if (ov.hide) return [];
@@ -905,8 +835,6 @@
     return el;
   }
   function auraUpdateEl(el, it, edit) {
-    // Type changed under a reused element (same uid): drop the previous type's children,
-    // classes and inline styles, otherwise the new look paints over the old one.
     if (el.dataset.type !== it.a.type) {
       el.textContent = '';
       el.removeAttribute('style');
@@ -925,7 +853,6 @@
     const a = auraGet(el.dataset.uid);
     return (a && a.anim.finish !== 'none') ? a.anim.finish : '';
   }
-  // Children of a static group: absolute boxes. Children of a dynamic group: flow.
   function auraRenderChildrenInto(host, grp, edit) {
     const dyn = grp.type === 'dyngroup';
     host.classList.toggle('au-dyn', dyn); host.classList.toggle('au-static', !dyn);
@@ -960,7 +887,6 @@
       return auraMakeEl(it);
     }, (el, it) => {
       if (!dyn) {
-        // Keep children inside the group box even if the group was shrunk after they were placed.
         const BW = host.clientWidth, BH = host.clientHeight;
         if (BW > 0 && BH > 0) {
           const cw = it.nested ? it.a.w : it.w, chh = it.nested ? it.a.h : it.h;
@@ -983,9 +909,6 @@
       el.onclick = edit ? (e => { e.stopPropagation(); auraEdSel = it.a.uid; auraInvalidate(); auraEdRepaint(); }) : null;
     }, auraFinishClass);
   }
-  // Drag a child inside a static group (edit mode): moves its x/y; the corner handle resizes.
-  // Snaps to the group's edges and to siblings (edge alignment, adjacency, and matching size
-  // when resizing), and never lets a child leave the group's box.
   const AURA_SNAP = 10;
   function auraArmDrag(el, a) {
     if (!auraChild(el, 'au-rz')) ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'].forEach(d => { const rz = document.createElement('div'); rz.className = 'au-rz au-rz-' + d; rz.dataset.dir = d; el.appendChild(rz); });
@@ -1007,8 +930,6 @@
       const mv = ev => {
         const dx = (ev.clientX - sx) / dzZ, dy = (ev.clientY - sy) / dzZ;
         if (rz) {
-          // Any corner: the opposite corner stays put. Work in edges, snap the moving edges to
-          // sibling / group edges, and match sibling sizes.
           const west = dir.indexOf('w') >= 0, north = dir.indexOf('n') >= 0;
           const east = dir.indexOf('e') >= 0, south = dir.indexOf('s') >= 0;
           let L = ox, T = oy, R = ox + ow, B = oy + oh;
@@ -1028,7 +949,6 @@
         } else {
           let x = Math.round(ox + dx), y = Math.round(oy + dy), w = ow, h = oh;
           let done = false;
-          // 1. Butt up against a neighbour: side by side -> share top and height; stacked -> share left and width.
           for (const sb of sibs) {
             if (overlapY(sb, y, h)) {
               if (near(x, sb.x + sb.w)) { x = sb.x + sb.w; y = sb.y; h = sb.h; done = true; break; }
@@ -1039,7 +959,6 @@
               if (near(y + h, sb.y))    { y = sb.y - h;     x = sb.x; w = sb.w; done = true; break; }
             }
           }
-          // 2. Otherwise align edges with neighbours and the group box.
           if (!done) {
             const xs = [0, BW], ys = [0, BH];
             sibs.forEach(sb => { xs.push(sb.x, sb.x + sb.w, sb.x + (sb.w - w) / 2); ys.push(sb.y, sb.y + sb.h, sb.y + (sb.h - h) / 2); });
@@ -1057,7 +976,6 @@
     };
   }
 
-  // A root's HUD window.
   function renderAuraGroup(uid) {
     const a = auraGet(uid);
     const c = $('content');
@@ -1068,9 +986,6 @@
     const locked = !!(win && win.locked);
     const edit = !locked && (typeof paneVisible === 'function') && paneVisible('auras');
     host.classList.toggle('au-edit', edit);
-    // Edit mode on a top-level window: big corner grips that resize the WINDOW itself (the
-    // frame's own 5px edge strips are hard to hit on a small HUD), and dragging empty space
-    // moves it, so the window is handled like any child box.
     const grips = Array.from(host.children).filter(x => x.classList.contains('au-wrz'));
     if (edit && win && typeof wmResizeStart === 'function') {
       if (!grips.length) ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'].forEach(d => {
@@ -1082,8 +997,6 @@
       host.onclick = e => { if (e.target === host) { auraEdSel = uid; auraInvalidate(); auraEdRepaint(); } };
     } else { grips.forEach(x => x.remove()); host.onmousedown = null; host.onclick = null; }
     host.dataset.label = edit ? ((a.name || a.type) + (a.type === 'dyngroup' ? '  (dynamic)' : a.type === 'group' ? '  (group)' : '')) : '';
-    // Usable box = the content area clipped to the window frame (the frame's border and the
-    // resize grips can eat a few pixels that clientHeight still reports), minus a 2px margin.
     let W = Math.max(8, c.clientWidth), H = Math.max(8, c.clientHeight);
     try {
       const cr = c.getBoundingClientRect();
@@ -1104,15 +1017,11 @@
       return;
     }
     host.classList.remove('au-kids'); host.style.display = 'block';
-    // Square displays (icon, ring, pips) keep their aspect: the smaller side of the window,
-    // centred. Bars and text stretch to the window.
     const square = a.type === 'icon' || a.type === 'ring' || a.type === 'pips';
     const sw = square ? Math.min(W, H) : W, sh = square ? Math.min(W, H) : H;
     const items = auraItems(a, sw, sh, false);
     auraReconcile(host, items, auraMakeEl, (el, it) => {
       auraUpdateEl(el, it, edit);
-      // Pin to the content box with CSS rather than trusting measured pixels: a stretched display
-      // (bar, text) takes the whole box via inset, a square one is centred by auto margins and
       // capped at 100% so it can never run past the window edge.
       el.style.position = 'absolute'; el.style.left = '1px'; el.style.top = '1px'; el.style.right = '1px'; el.style.bottom = '1px';
       el.style.maxWidth = 'calc(100% - 2px)'; el.style.maxHeight = 'calc(100% - 2px)'; el.style.margin = 'auto';
@@ -1122,7 +1031,6 @@
     setHint((!items.length && !locked && !a.triggers.list.length) ? ((a.name || 'Aura') + ': no trigger yet.') : '');
   }
 
-  // ---------------------------------------------------------------- import / export
   function auraSubtree(uid, out) {
     const a = auraGet(uid); if (!a) return out;
     out.push(a); a.children.forEach(c => auraSubtree(c, out)); return out;
@@ -1159,7 +1067,6 @@
     return root;
   }
 
-  // ---------------------------------------------------------------- presets
   const AURA_PRESETS = [
     { name: 'Necromancy stacks', build: () => {
       const g = auraDefaults('dyngroup'); g.name = 'Necromancy'; g.grow = 'right'; g.childW = 52; g.childH = 70; g.space = 6; g.w = 260; g.h = 76;
@@ -1206,9 +1113,6 @@
     auraEdRepaint();
   }
 
-  // ---------------------------------------------------------------- editor helpers
-  // Candidates for a name field: [{name, icon, live, side}] for buffs/debuffs (catalogue +
-  // names seen + active now) or abilities (cache configs + what is on the bar).
   function auraNameCandidates(kind) {
     const out = [], seen = {};
     const push = (name, icon, live, side) => { if (!name || seen[name]) return; seen[name] = 1; out.push({ name, icon, live, side }); };
@@ -1227,9 +1131,6 @@
     auraSeenLoad().forEach(n => push(n, m[n] || null, false, kind));
     return out;
   }
-  // Live search list under a name input: filters as you type, shows the icon of each match,
-  // click (or Enter for the first) fills the field. Shares #sndMenu so the usual outside-click
-  // and Escape handling closes it.
   function auraNamePicker(inp, kind, onPick) {
     if (typeof closeSoundMenu === 'function') closeSoundMenu();
     const pop = document.createElement('div'); pop.className = 'sndmenu au-npick'; pop.id = 'sndMenu';
@@ -1240,7 +1141,6 @@
       const q = String(inp.value || '').trim().toLowerCase();
       const all = auraNameCandidates(kind);
       let rows = q ? all.filter(c => c.name.toLowerCase().indexOf(q) >= 0) : all;
-      // exact / starts-with first, then live ones, then the rest
       rows.sort((x, y) => {
         const sx = q ? (x.name.toLowerCase() === q ? 0 : x.name.toLowerCase().indexOf(q) === 0 ? 1 : 2) : 2;
         const sy = q ? (y.name.toLowerCase() === q ? 0 : y.name.toLowerCase().indexOf(q) === 0 ? 1 : 2) : 2;
@@ -1259,8 +1159,6 @@
         list.appendChild(it);
       });
       if (rows.length > 60) { const h = document.createElement('div'); h.className = 'sndmenu-it au-npick-none'; h.textContent = '+' + (rows.length - 60) + ' more, keep typing'; list.appendChild(h); }
-      // The list changes height with every keystroke; the click region must follow it, and so
-      // must its placement (it may need to flip above the field as it grows).
       if (pop.parentNode) { try { if (typeof placeMenu === 'function') placeMenu(pop, inp); } catch (e) {} try { wmRectsSoon(); } catch (e) {} }
     };
     paint();
@@ -1269,7 +1167,6 @@
     try { wmRectsSoon(); } catch (e) {}
     return paint;
   }
-  // Name input wired to the picker: opens on focus/typing, Enter takes the first match.
   function auraNameInput(t, kind, a, ph) {
     const inp = auraInput(t.name, v => { t.name = v; auraTouch(a); }, ph);
     let repaint = null;
@@ -1283,7 +1180,6 @@
     });
     return inp;
   }
-  // Open a choice menu anchored to `el`; clicking the same anchor again closes it.
   function auraMenu(el, ents) {
     if (typeof openChoice !== 'function') return;
     if (document.getElementById('sndMenu')) { const own = el.dataset.menuOpen === '1'; if (typeof closeSoundMenu === 'function') closeSoundMenu(); if (own) { el.dataset.menuOpen = ''; return; } }
@@ -1305,7 +1201,6 @@
     paint();
     b.addEventListener('click', e => {
       e.stopPropagation();
-      // Second click on the same trigger closes its menu instead of reopening it.
       if (document.getElementById('sndMenu')) { const own = b.dataset.menuOpen === '1'; if (typeof closeSoundMenu === 'function') closeSoundMenu(); if (own) { b.dataset.menuOpen = ''; return; } }
       document.querySelectorAll('[data-menu-open="1"]').forEach(x => { x.dataset.menuOpen = ''; });
       b.dataset.menuOpen = '1';
@@ -1315,7 +1210,6 @@
     });
     return b;
   }
-  // The app's toggle: a pill (see .al-pill), never a native checkbox.
   function auraPill(on, fn, title) {
     const p = document.createElement('div'); p.className = 'al-pill' + (on ? ' on' : ''); p.appendChild(document.createElement('span'));
     if (title) p.title = title;
@@ -1336,7 +1230,6 @@
     i.addEventListener('click', e => e.stopPropagation());
     return i;
   }
-  // ---- colour picker: saturation/value square + hue bar + swatches + hex ----
   function auraHexToHsv(hex) {
     const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim()); if (!m) return { h: 260, s: 0.5, v: 1 };
     const n = parseInt(m[1], 16), r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
@@ -1405,7 +1298,6 @@
     wrap.appendChild(sw); wrap.appendChild(inp);
     return wrap;
   }
-  // Text tokens, for the guide menu and the legend under token fields.
   const AURA_TOKENS = [
     ['%p', 'Progress: time left (timed) or the value (static)'],
     ['%t', 'Total: full duration or the maximum'],
@@ -1417,7 +1309,6 @@
     ['%2.p', 'Any token from trigger 2 (%1.n, %3.s ...)'],
     ['%%', 'A literal % sign'],
   ];
-  // A text field that accepts tokens: the % button lists them with meanings and inserts one.
   function auraTextInput(val, fn, ph) {
     const cell = document.createElement('div'); cell.className = 'au-cell au-tokcell';
     const inp = auraInput(val, fn, ph);
@@ -1511,14 +1402,11 @@
     auraEdRepaint();
   }
 
-  // ---------------------------------------------------------------- editor
   function renderAuras() {
     auraCfgLoad();
     const c = $('content');
     let w = document.getElementById('auWrap');
     if (!w) { c.innerHTML = ''; w = document.createElement('div'); w.id = 'auWrap'; w.className = 'au-wrap au-editor'; c.appendChild(w); auraEdSig = ''; }
-    // Never rebuild the editor under a field being typed in: the live signature below changes
-    // whenever a buff ticks on or off, which would wipe a half-typed name.
     const ae = document.activeElement;
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && w.contains(ae)) return;
     const all = auraAll();
@@ -1528,8 +1416,6 @@
     const sig = JSON.stringify([auraCfg.roots, Object.keys(all).length, auraEdSel, auraEdTab, auraEdImport, liveSig, winSig, sel, sel ? sel.children.map(cu => (all[cu] || {}).name) : null]);
     if (sig === auraEdSig) return;
     auraEdSig = sig;
-    // Rebuilding under a focused control never fires focusout for it; blur first so the
-    // keyboard-capture flag follows reality (see syncKbCapture in client.html).
     const fe = document.activeElement;
     if (fe && w.contains(fe) && fe.blur) { try { fe.blur(); } catch (e) {} }
     w.textContent = '';
@@ -1859,7 +1745,6 @@
     body.appendChild(row);
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { auraAnyHudVisible, auraApplyDurablePrefs, auraColor, auraGet, auraGroupTabs, auraIsHudTab, auraNeedsPoll, fetchAuras, renderAuraGroup });
 registerTab({ id: 'auras', render: renderAuras });
 })();

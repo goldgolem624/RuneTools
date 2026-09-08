@@ -1,9 +1,6 @@
-// RuneToolsX panel: Dungeoneering (Daemonheim floor status + explored floor map).
 const dgEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-// Spliced inline into client.html at load; IIFE (window exports + registerTab).
 // Sources: interface group 945 (floor HUD) and 942 (floor map). Keys held = varc 1812-1875 via enum 5734,
 // floor timer = varc 4190 (seconds), speedrun = varc 1233/2381, gatestone flags = varc 6569/6570 (spr 13165/13166).
-// Visibility masks read 0 across 942/945, so only dynamic content (key rows, text values, sprite ids) is trusted.
 (function () {
 
 let dungData = null; let dungFetching = false; dungSig = '';
@@ -13,7 +10,6 @@ const DUNG_KEY_SHAPES = ['triangle', 'diamond', 'rectangle', 'pentagon', 'corner
 const DUNG_KEY_HEX = { Orange: '#f59e42', Silver: '#c9ced9', Yellow: '#f5d442', Green: '#5fd07a',
                        Blue: '#5b9cf6', Purple: '#a06bff', Crimson: '#f25c5c', Gold: '#f0c419' };
 // Rooms are 14x14 tiles with a 2-tile gap on every side (16-tile pitch); world +x = east (map col+), +y = north (map row-).
-// The grid is anchored per floor by the start-room constellation fit (dungReconcileScene).
 const DUNG_ROOM_PITCH = 16, DUNG_ROOM_W = 14;
 const DUNG_MAP_XSIGN = 1, DUNG_MAP_YSIGN = -1;
 let dungPlanDbg = '';      // planner counters for the debug line
@@ -21,24 +17,19 @@ let dungMandatoryKeyRooms = {};   // cell -> 1: yielded a key nothing works with
 let dungForcedKeys = {};          // key idx -> 'route' | 'blocks': proven-forced keys
 let dungKeyFillerVeto = {};       // key idx -> 1: planner ignores its crit mark (behind filler)
 let dungFloorSW = null;    // {x,y} world tile of the start room's SW corner (constellation fit)
-// Start-room reference constellation: loc id -> room-local [x,y] from the SW corner (-1/14 = door locs in the gaps).
-// Matched under 4 rotations. Only single-instance locs are listed; shared ids keep one entry across themes.
 const DUNG_SW_REF = {
-  // frozen theme
   2342: [1, 12], 17144: [1, 12], 49257: [6, 6], 49934: [6, 12], 49937: [0, 5],
   50035: [9, 13], 50191: [1, 1], 50195: [3, 0], 50196: [0, 3], 50197: [2, 2],
   50205: [6, 8], 50229: [7, 0], 50241: [13, 7], 50346: [-1, 7], 50374: [7, -1],
   50386: [14, 7], 51156: [12, -1], 51456: [10, 0], 51457: [13, 0], 51577: [4, 9],
   53124: [14, 3], 123933: [1, 1], 123948: [7, 7], 137159: [6, 6],
   137198: [13, 12], 137199: [13, 13], 137205: [13, 11],
-  // abandoned theme
   17146: [1, 12], 49935: [9, 8], 49938: [0, 4], 50036: [9, 12], 50192: [0, 0],
   50198: [2, 0], 50199: [0, 2], 50200: [2, 2], 50206: [6, 8], 50224: [6, 0],
   50232: [0, 6], 50240: [13, 6], 50273: [6, 14], 50433: [6, -1], 50441: [-1, 6],
   50449: [14, 6], 50604: [11, -1], 50910: [10, 0], 50911: [13, 0], 51030: [3, 9],
   53125: [14, 3], 123932: [6, 6],
   // remaining themes, cache-derived (js5-5 start-room template bank at x=113, y 5249-5313 / 5377-5441 / 5505-5537).
-  // Only rotation-safe (square footprint) ids; non-square locs shift with floor rotation. Unvalidated live.
   17142: [1, 12], 50203: [2, 2], 50207: [6, 8], 52004: [10, 0], 52005: [13, 0],   // theme bank 3
   17148: [1, 12], 54887: [2, 2], 53883: [6, 8], 54662: [10, 0], 54663: [13, 0],   // theme bank 4
   17150: [1, 12], 55815: [2, 2], 55605: [6, 8],                                   // theme bank 5
@@ -54,11 +45,9 @@ let dungKeySrc = {};      // key idx -> {x,y} world tile the key was picked up f
 const DUNG_KEY_MANUAL = 'manual promotion';   // dungCritKeys value for a hand-promoted key
 const DUNG_KEY_PARTY = 'party mark';          // dungCritKeys value for a party-relayed mark
 let dungCritKeyBlock = {};   // key idx -> 1: hand-demoted keys the auto-latch must not re-add
-// Planner-derived crit keys, kept apart from dungCritKeys so they are never relayed to the party as human marks.
 let dungDerivedCritKeys = {};   // key idx -> why-string
 let dungCritKeyTouch = {};   // key idx -> Date.now() of the last local toggle (~3s optimistic hold against the party merge)
 let dungRestored = false;    // floor-marks restore ran this UI session (a panel rebuild resets module state)
-// Persist the floor's marks across panel rebuilds, keyed to the floor by the timer varc.
 function dungSaveMarks() {
   try {
     localStorage.setItem('rtxDgMarks', JSON.stringify({ t: Date.now(), tm: dungLastTimer,
@@ -68,17 +57,13 @@ function dungSaveMarks() {
   } catch (e) {}
 }
 function dungDropMarks() { try { localStorage.removeItem('rtxDgMarks'); } catch (e) {} }
-// Keys are critical only by human mark (local right-click or party relay); nothing derives it from position.
 let dungCritKeys = {};        // key idx -> why: hand promotions, local and party mates'
 function dungKeyIsCrit(i) { return !dungCritKeyBlock[i] && (!!dungCritKeys[i] || !!dungDerivedCritKeys[i]); }
 function dungKeyWhy(i) { return dungCritKeys[i] || dungDerivedCritKeys[i] || ''; }
 function dungKeyName(i) { const k = dungKeyInfo(18202 + 2 * (i - 1)); return k ? k.name : ''; }
-// attribute-safe text for the panel's own tooltips
 function dungAttr(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 let dungDoorLevels = {};  // map cell 'gx,gy' -> {skill, level}: parsed from the examine tooltip
-                          // (group 1177 text / varc-str 2251, "...requires level N <Skill> to optimally unlock...")
 let dungTipLast = '';     // last processed 1177 tooltip sentence (change-triggered)
-// The examine sentence is transient: captured on the tab-independent 600ms tick, attached by the next full fetch.
 let dungPendingTip = null;   // {text, x, y, dx, dy, t}: x/y = player tile, dx/dy = examined door's own tile
 let dungTipDbg = '';         // last attach attempt, surfaced on the map's debug line
 let dungHoverLoc = null;     // {x, y, t}: last hovered scenery (engine hover slot carries the loc's own world tile)
@@ -112,14 +97,11 @@ let dungNonCritTouch = {};    // cell -> Date.now() of the last local mark/unmar
 let dungPartyHoldUntil = 0;   // after a local floor reset: skip the launcher's door/noncrit cache until 'reset' round-trips
 let dungManualCrit = {};      // map-cell 'gx,gy' -> 1: left-clicked to force critical; exclusive with noncrit; party-synced ('critroom')
 let dungManualCritTouch = {}; // cell -> Date.now() of the last local crit mark/unmark (3s hold)
-// Rooms proven critical this floor. onPath is rebuilt every poll, so proofs latch here; only the player's own non-crit mark clears one.
 let dungCritLatch = {};       // map-cell 'gx,gy' -> the why-string captured at proof time
-// Last recommended frontier; the ranking only leaves its branch for an openable door or when the branch ends. Not persisted.
 let dungStickyObj = '';
 let dungNonCritSeen = {};     // cells confirmed in the shared set at least once: a mirror may only
 let dungManualCritSeen = {};  // remove a mark it has seen, never one that simply failed to arrive
 let dungHoverCell = '';       // map cell under the mouse; H routes to it
-// Manual crit/noncrit marks are mutually exclusive and relayed to the party (cells are absolute floor-grid, same for every client).
 function dungSetNonCrit(cell, on) {
   if (on) { dungManualNonCrit[cell] = 1; delete dungManualCrit[cell]; dungManualCritTouch[cell] = Date.now(); }
   else delete dungManualNonCrit[cell];
@@ -136,7 +118,6 @@ function dungSetManualCrit(cell, on) {
   if (on) dungPartyReport('noncrit', { cell: cell, on: false });
   dungSig = ''; renderDungeoneering();
 }
-// Cross-PC party sync: read/generate/join the shared code via the launcher bridge.
 function dungSyncCode() { try { return (bridge().partyGetCode && rtxData.sync('party.partyGetCode')) || ''; } catch (e) { return ''; } }
 function dungSyncAction(act, wrap) {
   try {
@@ -160,25 +141,18 @@ const DUNG_SKILL_SPR = [
   16040, 16045, 16160, 16041, 16058, 16057, 16055, 16043, 16197, 16051,
   16050, 16049, 16044, 16061, 16056, 16052, 16038, 16196, 16060, 16048,
   16059, 16053, 16042, 16195, 16047, 16046, 16054, 16039, 30936];
-// Help-the-ghost (restoration) room loc ids, one per theme family (js5-16): pillar Repair, pot Repair, box Fill.
 const DUNG_GHOST_PILLAR = { 54580: 1, 54591: 1, 54602: 1, 55457: 1, 55472: 1 };
 const DUNG_GHOST_POT    = { 54577: 1, 54588: 1, 54599: 1, 55455: 1, 55470: 1 };
 const DUNG_GHOST_BOX    = { 54576: 1, 54587: 1, 54598: 1, 55453: 1, 55468: 1 };
-// Coffin (Unlock) ids. Families are not arithmetically aligned across themes: match by membership only.
 const DUNG_GHOST_COFFIN = { 40181: 1, 54571: 1, 54582: 1, 54593: 1, 55465: 1 };
-// Bless-remains coffin: coexists on the same tile once unlocked, so its presence marks the unlock done.
 const DUNG_GHOST_COFFIN_BLESS = { 54572: 1, 54583: 1, 54594: 1, 55451: 1, 55466: 1 };
-// Done markers appear alongside the broken model on the same tile, so each task is checked per tile.
 const DUNG_GHOST_POT_DONE    = { 54578: 1, 54589: 1, 54600: 1, 55456: 1, 55471: 1 };
 const DUNG_GHOST_PILLAR_DONE = { 54581: 1, 54592: 1, 54603: 1, 55458: 1, 55473: 1 };
 // Actionless "Jewellery box" locs; 40173/40180/55464 are inferred, not verified.
 const DUNG_GHOST_BOX_DONE    = { 55454: 1, 55469: 1, 40173: 1, 40180: 1, 55464: 1 };
-// "Antique ring": a ground item on the floor and in the pack (dungGroundCache / dungInvCount, never objs).
 const DUNG_GHOST_RING = 19879;
 // Ghost-room puzzle: NPC 10989 is the ghost to kill (10990 are decoys); outlined in-scene by uid.
-// Sliding-block puzzle: 8 block NPCs on a 3x3 grid (SE cell empty when solved); each id has a fixed target cell [col 0=W..2=E, row 0=N..2=S].
 // Five theme families of 8 consecutive ids in grid reading order; only 12125-12132 verified, the rest inferred.
-// 17043-17046 and 26307-26310 are 4-block variants (different grid), excluded.
 const DUNG_PUZZLE = (() => {
   const cells = [[0, 0], [1, 0], [2, 0],   // NW  N  NE
                  [0, 1], [1, 1], [2, 1],   //  W  C   E
@@ -188,8 +162,6 @@ const DUNG_PUZZLE = (() => {
     cells.forEach((c, i) => { t[base + i] = c; });
   return t;
 })();
-// Statues puzzle: pushable npc -> its static target statue (js5-18; pairs share the same model id).
-// 13069-13088 are a different Push-only statue puzzle, excluded.
 const DUNG_STATUE_PAIR = {
   10954: 10942, 10955: 10943, 10956: 10944, 10957: 10945,
   10958: 10946, 10959: 10947, 10960: 10948, 10961: 10949,
@@ -199,21 +171,17 @@ const DUNG_STATUE_PAIR = {
 };
 let dungStatues = null;   // [{id, east, cur:[x,y], tgt:[x,y], done}] while the room is in scene
 let dungMonoCharge = null;   // varc 1233 while in a dungeon (generic room progress: monolith 0-195, emotes 67/134/201)
-// Poison maze: mining a pedestal (~4s) costs about 13 running tiles; the router balances on these.
 const DUNG_MAZE_MINE_SEC = 4, DUNG_RUN_TILES_PER_SEC = 3.3;
 const DUNG_MAZE_MINE_TILES = Math.round(DUNG_MAZE_MINE_SEC * DUNG_RUN_TILES_PER_SEC);
 const DUNG_MAZE_TIMER_VAR = 1233;   // poison-maze countdown (~205 after the switch, ticks to 0); shared with monolith/emote progress
 let dungMazeTimer = null;    // live maze countdown value while in the maze room
 let dungArmableTiles = {};   // "x,y" -> 1: tiles that held an arm-statue this visit (armed ones re-id as references)
 
-// Skilling resources from cache ids (js5-16 locs / js5-18 npcs). Hunter + Divination are NPCs; the rest are locs
 // (id = base + 2*(tier-1), x3 variants at +0/+20/+40). skillIdx = SKILL_NAMES order (WC 8, Fish 10, Mine 14, Farm 19, Hunter 21, Div 25).
 const DUNG_RES_SCALE = [1, 10, 20, 30, 40, 50, 60, 70, 80, 90];
 const DUNG_RES_DIV   = [1, 10, 20, 30, 40, 50, 60, 70, 80, 85];
-// A completable resource within this many levels of the party's best is critical regardless of tier.
 const DUNG_CRIT_MARGIN = 15;
 const DUNG_DOOR_CRIT_MARGIN = 10;
-// Skills that go past 99: for a party below 110, tier 8 is also on the critical path when completable.
 const DUNG_CAP110_SKILLS = { Woodcutting: 1, Mining: 1, Fishing: 1, Farming: 1, Hunter: 1 };
 const DUNG_RES_FAMS = [
   ['Woodcutting', 8,  2, [49705, 49725, 49745, 53751, 55494, 82267]],
@@ -244,7 +212,6 @@ function dungIsSelf(n) {
   const strip = s => (s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
   return strip(n) === strip(dungSelfName);
 }
-// Party's best level in RS3 skill idx: own live level, raised by any roster member's hiscore level.
 function dungPartyBest(idx) {
   let best = dungSkillLevel(idx), by = null;
   for (const n in dungPartyStats) {
@@ -254,7 +221,6 @@ function dungPartyBest(idx) {
   }
   return { best: best, by: by };
 }
-// Highest resource tier (1-10) the party can complete in a skill; null when no level is known.
 function dungMaxTier(skillIdx, skillName) {
   const b = dungPartyBest(skillIdx);
   if (b.best == null) return { maxTier: null, best: b.best, by: b.by };
@@ -263,8 +229,6 @@ function dungMaxTier(skillIdx, skillName) {
   for (let t = 0; t < scale.length; t++) if (scale[t] <= b.best) mt = t + 1;
   return { maxTier: mt, best: b.best, by: b.by };
 }
-// Resource band: 'bonus' = above the party's level, 'critical' = top 2 completable tiers, within
-// DUNG_CRIT_MARGIN of the party's best, or T8 for a sub-110 party on a 110-cap skill; 'filler' otherwise.
 function dungResBand(res, maxTier, best) {
   if (best == null || maxTier == null) return null;
   if (res.level > best) return 'bonus';
@@ -273,11 +237,9 @@ function dungResBand(res, maxTier, best) {
   const t8 = !!DUNG_CAP110_SKILLS[res.skill] && best < 110 && res.tier === 8;
   return (topBand || guaranteed || t8) ? 'critical' : 'filler';
 }
-// A top-band resource marks the path only when the room has >= 2 effective doors, a ground key, a locked door or a gatestone.
 function dungResPathworthy(c, kk, roomsMap) {
   if ((c.groundKeys && c.groundKeys.length) || c.key || c.gate) return true;
   if (c.unex || !c.doors) return true;      // doors = 0 is missing data, not a one-door dead end
-  // doors into rooms marked non-critical don't count; doors into unknown space do
   let n = 0;
   if (kk && roomsMap) {
     const p = kk.split(',').map(Number);
@@ -290,17 +252,14 @@ function dungResPathworthy(c, kk, roomsMap) {
   }
   return n >= 2;
 }
-// Party-best level in a captured door's skill; doors say 'Constitution' where SKILL_NAMES says 'Hitpoints'.
 function dungDoorMine(dl) {
   if (!dl) return null;
   const dn = dl.skill === 'Constitution' ? 'Hitpoints' : dl.skill;
   const si = SKILL_NAMES.findIndex(n => n.toLowerCase() === dn.toLowerCase());
   return si >= 0 ? dungPartyBest(si).best : null;
 }
-// Door band vs the party's best: 'critical' (within DUNG_DOOR_CRIT_MARGIN of the ceiling), 'low', or 'above' (party can't open it).
 function dungDoorBand(dl) {
   if (!dl) return null;
-  // bonus-room skill doors only generate in the 1..105 band, so 106+ is critical unconditionally
   if (dl.level >= 106) return 'critical';
   const best = dungDoorMine(dl);
   if (best == null) return null;
@@ -336,12 +295,10 @@ let dungIceDump = null;      // ice room model + plan, copyable JSON (map tab)
 let dungMazeDump = null;     // poison-maze model + route, copyable JSON
 let dungBarrelDump = null;   // barrel room: live pad-relative geometry + the rotation fit's per-turn scores
 let dungColFerret = null;    // latched colour in the coloured-ferret room: one target at a time
-// Plate marks must carry an rgb: the reader hides rgb-0 destination tiles when a labelled NPC box stands at the objective.
 const DUNG_FERRET_RGB = { Red: 0xff4444, Blue: 0x4488ff, Green: 0x33cc66,
                           Yellow: 0xffdd33, Orange: 0xff8822 };
 let dungFerretPlan = null;   // {anchor:'x,y', stops:['x,y'...], idx} held fish route (stable while the ferret walks)
 let dungFerretSettle = null; // {key:'x,y', n} ferret settle detector
-// Shared overlay channels are published only when the value changes (re-publishing per tick flashes the labels).
 let dungHerbHlLast = '';     // last uiHighlight rect this panel published ('' = none)
 let dungHerbHlOwner = '';    // feature that published it; a tagged clear only wipes its own box, no tag = force-clear
 function dungHerbClear(owner) {
@@ -350,16 +307,11 @@ function dungHerbClear(owner) {
   dungHerbHlLast = ''; dungHerbHlOwner = '';
   try { rtxData.sync('overlay.uiHighlight', 0, 0, 0, 0); } catch (e) {}
 }
-// Hoardstalker riddle, latched (the dialogue closes while walking to the container).
 let dungHoardRiddle = null;  // {k, item, opt|gid, loc} or null
 let dungGroundCache = [];    // last groundItems() result: hoardstalker piles live there
-// Strange-plant room: a colour change replaces the loc and the capture keeps both, so liveness is per-tile recency.
 let dungPlantSeen = {};      // 'x,y|loc id' -> tick first seen in this room
-// Seeker room: per-npc patrol/turn memory (spawns: turn tiles, speed, heading; sentinel: turn-phase anchor + rotation step).
 let dungSeekerMem = {};      // npc uid -> {face, at, x, y, hd, mt, spd, turns, step, pend}
-// Crystal room: a crystal is invisible while under its pressure plate, so remember each colour's last position.
 let dungCrysMem = {};        // colour name -> {d, dx, dy, c, t}
-// Poltergeist: herb named in the sarcophagus inscription, latched (the dialogue closes while walking).
 let dungPoltHerb = null;
 // Dialogue text comp differs per group (1186 inscription = comp 3, 1184 npc line = comp 10), so scan a range.
 const DUNG_DLG_GROUPS = [1186, 1184, 1191];   // server-message / npc / player
@@ -383,7 +335,6 @@ function dungInvClear(owner) {
   dungInvHlLast = ''; dungInvHlOwner = '';
   try { rtxData.sync('overlay.panelViz', ''); } catch (e) {}
 }
-// How many of `itemId` are in the backpack.
 function dungInvCount(itemId) {
   try {
     const inv = JSON.parse(rtxData.sync('state.inventory') || '{}');
@@ -392,7 +343,6 @@ function dungInvCount(itemId) {
     return n;
   } catch (e) { return 0; }
 }
-// Box every backpack slot holding itemId (panelViz takes '|'-separated boxes); only the first gets the label.
 function dungHighlightInvItem(itemId, label, owner) {
   try {
     if (!itemId) { dungInvClear(owner); return 0; }
@@ -408,12 +358,10 @@ function dungHighlightInvItem(itemId, label, owner) {
     if (segs.length) {
       const payload = segs.join('|');
       dungInvHlOwner = owner || '';
-      // publish every tick: not sending lets the highlight lapse after one tick
       rtxData.sync('overlay.panelViz', payload);
       dungInvHlLast = payload;
       return segs.length;
     }
-    // invSlotRect can transiently return w=0 mid-redraw: keep the last boxes, only clear when the item is gone
     if (held) return 0;
     dungInvClear(owner);
   } catch (e) {}
@@ -430,7 +378,6 @@ function dungClearOverlays() {
   if (dungLodeCenterOn) { dungLodeCenterOn = false; try { bridge().centerText(myPid(), ''); } catch (e) {} }
 }
 
-// In-scene NPC boxes via bridge().overlayHighlight (the overlay.highlight sanitiser strips '#' and '|').
 // One box per needle: "#<id>|label" or "name|label", ',' separated. Re-asserted every reconcile (shared channel).
 function dungHighlightList(needles) {
   try { bridge().overlayHighlight(myPid(), (needles || []).map(s => String(s).replace(/,/g, ' ')).join(',')); } catch (e) {}
@@ -451,20 +398,17 @@ function dungGuideTiles(marks) {
   } catch (e) {}
 }
 
-// Scene read: refresh the start-room anchor and set the in-scene highlights for the room's puzzle.
 function dungReconcileScene(npcs, objs) {
   npcs = npcs || [];
   if (!dungWasIn) {   // first reconcile since load/exit: sweep a stale centre text
     try { bridge().centerText(myPid(), ''); } catch (e) {}
   }
   dungWasIn = true;
-  // Same-room gate: scene range is 100 tiles, so neighbouring rooms' puzzle NPCs are listed too. Fails closed without an anchor.
   const here = e => {
     if (!dungFloorSW || !dungSelfPos || typeof e.x !== 'number') return false;
     const a = dungRoomOf(dungFloorSW, e.x, e.y), b = dungRoomOf(dungFloorSW, dungSelfPos.x, dungSelfPos.y);
     return a.rx === b.rx && a.ry === b.ry;
   };
-  // Clear the shared overlay channels only outside the poltergeist room (unconditional clear + redraw blinks).
   {
     const poltHere = npcs.some(n => n.id === 11245 && typeof n.x === 'number' && here(n))
       || (objs || []).some(o => typeof o.x === 'number' && here(o) &&
@@ -473,7 +417,6 @@ function dungReconcileScene(npcs, objs) {
   }
   const marks = [];   // guide-tile channel: grooves/switches locs + statue target tile
   // Suspicious grooves: safe tiles vary per floor and no id rule holds, so only observed 67099 (confirmed safe) is marked.
-  // Wrong steps leave a 67097 marker loc.
   {
     const marked = {};
     for (const o of (objs || []))
@@ -483,7 +426,6 @@ function dungReconcileScene(npcs, objs) {
       }
   }
   // Poison maze tile blockers: pedestal families (js5-16), Mine-actioned 49360-49374 + 54412-54416, the rest actionless.
-  // 54110-54117 are the pedestal room's 2x2 pedestals, a different puzzle, not listed.
   const DUNG_MAZE_PEDESTAL = {};
   for (const pr of [[49360, 49374], [50957, 50967], [51503, 51513], [52051, 52061],
                     [54412, 54416], [54976, 54988], [55877, 55887]])
@@ -492,14 +434,12 @@ function dungReconcileScene(npcs, objs) {
     DUNG_MAZE_PEDESTAL[o.id]
     || o.name === 'Pedestal' || o.name === 'Switch'
     || (o.actions || []).some(a => a === 'Mine');
-  // "Locked chest" (Open) and "Open chest" (Search) loc ids across themes (js5-16); name fallbacks cover unknown themes.
   const DUNG_CHEST_LOCKED = { 49345:1, 49346:1, 49347:1, 49886:1, 49887:1, 49888:1,
                               49889:1, 49890:1, 49891:1, 49892:1, 49893:1, 49894:1, 49895:1 };
   const DUNG_CHEST_OPEN   = { 49348:1, 49349:1, 49350:1,
                               49896:1, 49897:1, 49908:1, 49909:1 };
   const mazeChest = (objs || []).find(o => (DUNG_CHEST_LOCKED[o.id] || o.name === 'Locked chest')
                                            && typeof o.x === 'number' && here(o));
-  // the opened chest coexists with the locked id on the same tile; its presence ends the puzzle
   const mazeDone = (objs || []).some(o => (DUNG_CHEST_OPEN[o.id] || o.name === 'Open chest')
                                           && typeof o.x === 'number' && here(o));
   const mbars = (objs || []).filter(o => o.name === 'Barrier' && typeof o.x === 'number' && here(o));
@@ -519,8 +459,6 @@ function dungReconcileScene(npcs, objs) {
       const swx = dungFloorSW.x + DUNG_ROOM_PITCH * pr.rx, swy = dungFloorSW.y + DUNG_ROOM_PITCH * pr.ry;
       const barSet = {}, blk = {};
       for (const b of mbars) barSet[(b.x - swx) + ',' + (b.y - swy)] = 1;
-      // In-room test by local coordinate (here() disagrees at the edges). Mine-actioned pedestals are a toll
-      // of DUNG_MAZE_MINE_TILES, not a wall.
       const mineable = {};
       for (const o of (objs || [])) {
         if (typeof o.x !== 'number' || !dungMazeBlocks(o)) continue;
@@ -529,7 +467,6 @@ function dungReconcileScene(npcs, objs) {
         if ((o.actions || []).some(a => a === 'Mine')) mineable[lx + ',' + ly] = 1;
         else blk[lx + ',' + ly] = 1;
       }
-      // Walls from the js5-5 room template (region 2_66..2_75; 16x16 with a 1-tile border, live local = rot(template) - (1,1)).
       // Entries are [x, y, type, rot]: type 0 = one edge, 2 = corner (rot and rot+1); dirs 0=W 1=N 2=E 3=S; rotation r maps (x,y)->(y,15-x).
       const TPL_WALLS = [[0,1,0,2],[0,2,0,2],[0,3,0,2],[0,4,0,2],[0,5,0,2],[0,6,0,2],[0,7,0,2],[0,8,0,2],[0,9,0,2],[0,10,0,2],[0,11,0,2],[0,12,0,2],[0,13,0,2],[0,14,0,2],[1,0,0,1],[1,2,0,2],[1,3,0,2],[1,5,0,2],[1,6,0,2],[1,7,0,2],[1,8,0,2],[1,9,0,2],[1,10,0,2],[1,11,0,2],[1,13,0,2],[1,15,0,3],[2,0,0,1],[2,1,0,1],[2,3,0,2],[2,4,0,2],[2,5,0,2],[2,6,0,2],[2,7,0,2],[2,9,0,2],[2,10,0,2],[2,11,0,2],[2,12,0,2],[2,14,0,3],[2,15,0,3],[3,0,0,1],[3,1,0,1],[3,2,0,1],[3,4,0,2],[3,5,0,2],[3,6,0,2],[3,7,0,2],[3,8,0,2],[3,9,0,2],[3,10,0,2],[3,11,0,2],[3,13,0,3],[3,14,0,3],[3,15,0,3],[4,0,0,1],[4,2,0,1],[4,3,0,1],[4,5,0,2],[4,7,0,2],[4,8,0,2],[4,9,0,2],[4,10,0,2],[4,12,0,3],[4,13,0,3],[4,14,0,3],[4,15,0,3],[5,0,0,1],[5,1,0,1],[5,2,0,1],[5,4,0,1],[5,6,0,2],[5,7,0,2],[5,8,0,2],[5,9,0,2],[5,11,0,3],[5,12,0,3],[5,13,0,3],[5,14,0,3],[5,15,0,3],[6,0,0,1],[6,1,0,1],[6,2,0,1],[6,3,0,1],[6,4,0,1],[6,5,0,1],[6,10,0,3],[6,11,0,3],[6,13,0,3],[6,14,0,3],[6,15,0,3],[7,0,0,1],[7,1,0,1],[7,2,0,1],[7,3,0,1],[7,4,0,1],[7,5,0,1],[7,11,0,3],[7,12,0,3],[7,13,0,3],[7,14,0,3],[7,15,0,3],[8,0,0,1],[8,2,0,1],[8,3,0,1],[8,4,0,1],[8,10,0,3],[8,11,0,3],[8,12,0,3],[8,13,0,3],[8,15,0,3],[9,0,0,1],[9,1,0,1],[9,2,0,1],[9,3,0,1],[9,4,0,1],[9,5,0,1],[9,10,0,3],[9,11,0,3],[9,12,0,3],[9,13,0,3],[9,14,0,3],[9,15,0,3],[10,0,0,1],[10,1,0,1],[10,3,0,1],[10,4,0,1],[10,6,0,0],[10,7,0,0],[10,8,0,0],[10,9,0,0],[10,11,0,3],[10,13,0,3],[10,14,0,3],[10,15,0,3],[11,0,0,1],[11,1,2,0],[11,2,0,1],[11,3,0,1],[11,5,0,0],[11,6,0,0],[11,7,0,0],[11,9,0,0],[11,10,0,0],[11,12,0,3],[11,13,0,3],[11,14,0,3],[11,15,0,3],[12,0,0,1],[12,1,0,1],[12,2,0,1],[12,4,0,0],[12,5,0,0],[12,6,0,0],[12,7,0,0],[12,8,0,0],[12,9,0,0],[12,10,0,0],[12,11,0,0],[12,13,0,3],[12,14,0,3],[12,15,0,3],[13,0,0,1],[13,1,0,1],[13,3,0,0],[13,4,0,0],[13,5,0,0],[13,6,0,0],[13,8,0,0],[13,9,0,0],[13,10,0,0],[13,11,0,0],[13,12,0,0],[13,14,0,3],[13,15,0,3],[14,0,0,1],[14,2,0,0],[14,4,0,0],[14,5,0,0],[14,6,0,0],[14,7,0,0],[14,8,0,0],[14,9,0,0],[14,11,0,0],[14,12,0,0],[14,13,0,0],[14,15,0,3],[15,1,0,0],[15,2,0,0],[15,3,0,0],[15,4,0,0],[15,5,0,0],[15,6,0,0],[15,7,0,0],[15,8,0,0],[15,9,0,0],[15,10,0,0],[15,11,0,0],[15,12,0,0],[15,13,0,0],[15,14,0,0]];
       const TPL_BLOCK = [[6,6],[6,9],[7,6],[9,6],[9,9]];   // centre pillars + rock (scenery on the outer walkway is outside the playfield)
@@ -538,7 +475,6 @@ function dungReconcileScene(npcs, objs) {
       const rotP = (x, y, r) => { for (let i2 = 0; i2 < r; i2++) { const t2 = x; x = y; y = 15 - t2; } return [x, y]; };
       const toLive = (x, y, r) => { const p4 = rotP(x, y, r); return [p4[0] - 1, p4[1] - 1]; };
       const gx = chest.x - swx, gy = chest.y - swy, sx = dungSelfPos.x - swx, sy = dungSelfPos.y - swy;
-      // rotation: template chest on the live chest and >= 12 of 16 ring barriers on live barrier tiles
       let mrot = -1;
       for (let r = 0; r < 4; r++) {
         const c2 = toLive(TPL_CHEST[0], TPL_CHEST[1], r);
@@ -560,7 +496,6 @@ function dungReconcileScene(npcs, objs) {
           passE[p4[0] + ',' + p4[1] + ',' + d0] = p4[0] + ',' + p4[1];
         }
       }
-      // a step is blocked when a wall edge sits on either side of the boundary; barrier and door edges are passable
       const OPP = { 0: 2, 1: 3, 2: 0, 3: 1 };   // W<->E, N<->S
       const DIRD = { '1,0': 2, '-1,0': 0, '0,1': 1, '0,-1': 3 };   // step vector -> edge dir from source (world axes: +y = N)
       const edgeAt = (x, y, d, nx, ny) => {
@@ -568,7 +503,6 @@ function dungReconcileScene(npcs, objs) {
         return { wall: wallE[k1] || wallE[k2], pass: passE[k1] || passE[k2] };
       };
       const open = (x, y) => x >= 0 && x <= 13 && y >= 0 && y <= 13 && !blk[x + ',' + y];
-      // costed search: one tile of running = 1, mining a pedestal = DUNG_MAZE_MINE_TILES more
       const mprev = {}, dist = {}, done = {};
       const startK = sx + ',' + sy, goalK = gx + ',' + gy;
       dist[startK] = 0; mprev[startK] = null;
@@ -601,7 +535,6 @@ function dungReconcileScene(npcs, objs) {
       if (mg) {
         const chain = [];
         for (let k = mg; k; k = mprev[k]) chain.unshift(k);
-        // each barrier/door edge the walk crosses gets a number at the loc's own tile; mine tolls get MINE
         let step = 1;
         const marked = {};
         const doorTile = (() => { const b = mbars.find(b2 => b2.id === 49344); return b ? (b.x - swx) + ',' + (b.y - swy) : ''; })();
@@ -638,12 +571,10 @@ function dungReconcileScene(npcs, objs) {
     const P_SPOUT = { 39969: 1, 49687: 1, 49689: 1, 49692: 1, 54288: 1 };
     const P_PAD   = { 52206: 1, 54282: 1, 35232: 1 };
     const BITS = 17422;
-    // Push solution as (dx,dy) offsets from the pad, matched under rotation: BARREL_OFFS = the 13 start tiles,
     // BARREL_SOLN = the 5 one-tile pushes as [fromOff, toOff].
     const BARREL_OFFS = [[3,-4],[3,-3],[3,-2],[4,-5],[4,-2],[4,-1],[5,-4],[5,-3],[5,-1],
                          [-2,-8],[-1,-8],[-2,3],[-1,3]];
     const BARREL_SOLN = [[[5,-3],[5,-4]],[[5,-1],[5,0]],[[4,-1],[3,-1]],[[-1,3],[-1,4]],[[-2,3],[-3,3]]];
-    // quarter-turn (x,y) -> (y,-x); rooms rotate, never mirror
     const rotOff = (p, r) => { let x = p[0], y = p[1]; for (let i = 0; i < r; i++) { const t = x; x = y; y = -t; } return [x, y]; };
     const isBarrel = n => n.name === 'Barrel';
     const act = (e, a) => (e.actions || []).some(x => x === a);
@@ -651,7 +582,6 @@ function dungReconcileScene(npcs, objs) {
     const spout  = (objs || []).find(o => inR(o) && (P_SPOUT[o.id] || o.name === 'Expelling pipe'));
     const pad    = (objs || []).find(o => inR(o) && (P_PAD[o.id] || o.name === 'Pressure pad'));
     const doneB  = npcs.find(n => inR(n) && (B_DONE[n.id] || (isBarrel(n) && !(n.actions || []).length)));
-    // a pressure pad alone is not evidence (the emote room has pads too)
     if (broken || spout || (pad && npcs.some(n => inR(n) && isBarrel(n)))) {
       const settled = doneB && pad && doneB.x === pad.x && doneB.y === pad.y;
       if (settled) {
@@ -660,7 +590,6 @@ function dungReconcileScene(npcs, objs) {
         return;
       }
       const bitsTile = (dungGroundCache || []).find(g => g && g.id === BITS && here(g));
-      // fit the captured barrel layout to the live push barrels (pad offsets); most on-tile matches wins
       const pushBarrels = pad ? npcs.filter(n => inR(n) && isBarrel(n) && act(n, 'Push')) : [];
       const liveOff = new Set(pushBarrels.map(n => (n.x - pad.x) + ',' + (n.y - pad.y)));
       let bestR = -1, bestHits = -1;
@@ -672,7 +601,6 @@ function dungReconcileScene(npcs, objs) {
         if (hits > bestHits) { bestHits = hits; bestR = r; }
       }
       const rotTied = rotScores.filter(h => h === bestHits).length > 1;   // ambiguous fit: refuse to guide
-      // push step = first move whose source barrel is still on its start tile; requires >= 8 of 13 fit
       if (pad) dungBarrelDump = {
         pad: [pad.x, pad.y], rotScores: rotScores, bestR: bestR, bestHits: bestHits,
         tied: rotTied,
@@ -697,13 +625,11 @@ function dungReconcileScene(npcs, objs) {
         const ps = pushStep();
         if (ps) {
           dungGuideTiles(marks);
-          // which barrel only: recorded push directions do not survive rotation. Tile-anchored needle (all push barrels share id 11072).
           dungHighlightList(['#' + ps.b.id + '|Push this barrel  ('
                              + ps.step + ' of ' + ps.of + ')|'
                              + ps.b.x + ';' + ps.b.y + ';1']);
           return;
         }
-        // pushes done (or no fit) -> take the bits (ground item: dungGroundCache, not objs)
         for (const g of (dungGroundCache || []))
           if (g && g.id === BITS && typeof g.x === 'number' && here(g) && marks.length < 16)
             marks.push({ x: g.x, y: g.y, plane: g.plane || 0, rgb: 0x5fd07a,
@@ -736,13 +662,11 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // Coloured-ferret room: name/action driven ("<Colour> ferret" with Scare = still to do; "<Colour> pressure plate" = target).
   {
     const colFerrets = npcs.filter(n => typeof n.x === 'number' && here(n)
                                      && /^[A-Z][a-z]+ ferret$/.test(String(n.name || '')));
     if (colFerrets.length) {
       const todo = colFerrets.filter(n => (n.actions || []).some(a => a === 'Scare'));
-      // one at a time, latched: nearest ferret, held until its colour is finished or it leaves the room
       if (dungColFerret && !todo.some(n => String(n.name).split(' ')[0] === dungColFerret))
         dungColFerret = null;
       if (!dungColFerret && todo.length) {
@@ -762,8 +686,6 @@ function dungReconcileScene(npcs, objs) {
         const rgb = DUNG_FERRET_RGB[colour] || 0xffffff;
         if (plate) marks.push({ x: plate.x, y: plate.y, plane: plate.plane || 0,
                                 label: '', rgb: rgb });
-        // Stand one tile beyond the ferret along the plate->ferret line (it flees away from the player, cardinal only);
-        // close the bigger axis gap first.
         if (plate) {
           const dx = pick.x - plate.x, dy = pick.y - plate.y;
           let sx = 0, sy = 0;
@@ -783,8 +705,6 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // Fish-ferret puzzle: throw fish onto tiles in the ferret's straight-line sight (8 directions, holes block) to walk it
-  // onto the plate. BFS over straight runs from its live tile, re-solved as it moves. Board loc ids per theme (js5-16).
   {
     const DUNG_FERRET_TILE = { 49546: 1, 49547: 1, 49548: 1, 54293: 1 };
     const DUNG_FERRET_HOLE = { 49549: 1, 49550: 1, 49551: 1, 49552: 1, 49553: 1, 49554: 1,
@@ -802,7 +722,6 @@ function dungReconcileScene(npcs, objs) {
         if (dungFerretSettle && dungFerretSettle.key === fsk) dungFerretSettle.n++;
         else dungFerretSettle = { key: fsk, n: 1 };
         const fsettled = dungFerretSettle.n >= 2;
-        // hold the route while the ferret executes it; re-solve only when it settles off-plan
         if (dungFerretPlan) {
           while (dungFerretPlan.idx < dungFerretPlan.stops.length && dungFerretPlan.stops[dungFerretPlan.idx] === fsk) dungFerretPlan.idx++;
           if (dungFerretPlan.idx >= dungFerretPlan.stops.length) dungFerretPlan = null;
@@ -850,8 +769,7 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Lodestone pillar room: fixed jump route over a 7x7 'Gap' lattice (49567/68/69), in lattice-local coords for the
-  // canonical orientation (lodestone on the -Y side); the lodestone's side pins the rotation. Rotations only, no mirror.
+  // Lodestone pillar room: fixed jump route over a 7x7 'Gap' lattice (49567/68/69), in lattice-local coords.
   {
     const DUNG_LODE_ROUTE = [[6, 5], [5, 4], [3, 4], [1, 4], [0, 3], [0, 1]];
     const lode = (objs || []).find(o => o.name === 'Lodestone' && typeof o.x === 'number' && here(o) &&
@@ -888,7 +806,6 @@ function dungReconcileScene(npcs, objs) {
     }
   }
   // Ice-slide room. Pads stop a slide (pressed by landing; 49320-23 unpressed -> 49324-27 pressed, both stop);
-  // otherwise you slide to the last free tile before furniture (49328/49329/49330 only) or the wall. No theme variants.
   {
     const iceUnpressed = (objs || []).filter(o =>
       o.id >= 49320 && o.id <= 49323 && typeof o.x === 'number' && here(o));
@@ -901,7 +818,6 @@ function dungReconcileScene(npcs, objs) {
       const pr = dungRoomOf(dungFloorSW, dungSelfPos.x, dungSelfPos.y);
       const swx = dungFloorSW.x + DUNG_ROOM_PITCH * pr.rx, swy = dungFloorSW.y + DUNG_ROOM_PITCH * pr.ry;
       const roomKey = pr.rx + ',' + pr.ry;
-      // the ice sheet is inset one tile inside the 14x14 room grid (the 0/13 ring is the wall base)
       const ICE_LO = 1, ICE_HI = DUNG_ROOM_W - 2;
       const furn = {}, pad = {};   // furn value = the furniture's name, for "stops at X" labels
       for (const o of iceFurn) furn[(o.x - swx) + ',' + (o.y - swy)] = o.name || 'furniture';
@@ -914,17 +830,14 @@ function dungReconcileScene(npcs, objs) {
       const settled = dungIceSettle.n >= 2;
       const rem = iceUnpressed.map(o => ({ x: o.x - swx, y: o.y - swy }));
       const remSig = roomKey + '|' + rem.map(b => b.x + ',' + b.y).sort().join(';');
-      // Hold the plan while executing; re-solve only when settled and the pad set changed or the player is off-plan.
       if (dungIcePlan && dungIcePlan.sig === remSig) {
         while (dungIcePlan.idx < dungIcePlan.stops.length && dungIcePlan.stops[dungIcePlan.idx].k === posKey) dungIcePlan.idx++;
         if (dungIcePlan.idx >= dungIcePlan.stops.length) dungIcePlan = null;
-        // the only valid resting place is the tile the next leg starts from
         else if (settled && !(dungIcePlan.idx === 0
                    ? posKey === dungIcePlan.anchor
                    : dungIcePlan.stops[dungIcePlan.idx - 1].k === posKey))
           dungIcePlan = null;
       } else if (dungIcePlan) dungIcePlan = null;
-      // one maximal slide: head-on furniture only; a diagonal step needs both flanking cardinal tiles free. null = cannot move
       const slideTo = (cx, cy, dd) => {
         let nx = cx, ny = cy;
         for (;;) {
@@ -942,13 +855,11 @@ function dungReconcileScene(npcs, objs) {
         const full = (1 << rem.length) - 1;
         const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
         const popc = m => { let n = 0; while (m) { n += m & 1; m >>= 1; } return n; };
-        // standing on an unpressed pad does not press it, so the start mask is always empty
         const m0 = 0;
         const start = posKey + ':' + m0;
         const prev = {}; prev[start] = null;
         const q = [[px, py, m0]];
         let goalK = null, bestK = null, bestBits = popc(m0);
-        // BFS over (tile, pressed-mask): first full-mask state = fewest slides; fallback = most pads
         for (let qi = 0; qi < q.length && !goalK; qi++) {
           const cx2 = q[qi][0], cy2 = q[qi][1], m = q[qi][2];
           for (const dd of DIRS) {
@@ -966,7 +877,6 @@ function dungReconcileScene(npcs, objs) {
         }
         const endK = goalK || bestK;
         if (endK) {
-          // stops carry the click direction (compass, y+ = north) and the stop reason (furniture name, '' = wall/pad)
           const stops = [];
           for (let k = endK; k && k !== start; k = prev[k]) {
             const kp = k.split(':')[0], pp = prev[k].split(':')[0];
@@ -994,14 +904,11 @@ function dungReconcileScene(npcs, objs) {
           .map(n => ({ id: n.id, n: n.name || '', x: n.x - swx, y: n.y - swy })),
         plan: dungIcePlan ? dungIcePlan.stops.slice(dungIcePlan.idx) : null
       };
-      // render only the next two stops; nothing renders mid-slide
       if (dungIcePlan && settled) {
         let step = 1;
         for (const s of dungIcePlan.stops.slice(dungIcePlan.idx, dungIcePlan.idx + 2)) {
           if (marks.length >= 16) break;
           const p2 = s.k.split(',').map(Number);
-          // step 1 = the adjacent tile to click, direction recomputed from the player's tile. snap must be 0 on
-          // bare ice (snap boxes a nearby loc's model AABB); only step-2 marks on a pad loc snap.
           if (step === 1) {
             marks.push({ x: swx + px + Math.sign(p2[0] - px), y: swy + py + Math.sign(p2[1] - py), plane: 0,
                          label: '1 - click here', rgb: s.press ? 0x5fd07a : 0xf0c75a, snap: 0 });
@@ -1016,8 +923,6 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Switches room: a pulled switch spawns an actionless done-twin at the same tile (first label line = loc name so the
-  // reader boxes the loc). Done offset is not constant across themes; match on id sets.
   const DUNG_SWITCH_PULL = { 49381: 1, 49382: 1, 49383: 1, 54333: 1 };
   const DUNG_SWITCH_DONE = { 49384: 1, 49385: 1, 49386: 1, 54334: 1 };
   const pulled = {};
@@ -1031,7 +936,6 @@ function dungReconcileScene(npcs, objs) {
   for (const ci of [35275, 49522, 49523, 49524, 54302]) DUNG_SCOUT_CRATES[ci] = 'Cook the fish';
   for (const ci of [35277, 49528, 49529, 49530, 54304]) DUNG_SCOUT_CRATES[ci] = 'Smith battleaxes';
   for (const ci of [35279, 49534, 49535, 49536, 54306]) DUNG_SCOUT_CRATES[ci] = 'Fletch bows';
-  // Take-from successors: done-markers for their tile
   const DUNG_SCOUT_DONE = {};
   for (const ci of [35276, 49525, 49526, 49527, 54303,
                     35278, 49531, 49532, 49533, 54305,
@@ -1041,7 +945,6 @@ function dungReconcileScene(npcs, objs) {
     const works = (objs || []).filter(o => DUNG_SCOUT_CRATES[o.id] && inSR(o));
     const dones = (objs || []).filter(o => DUNG_SCOUT_DONE[o.id] && inSR(o));
     if (works.length || dones.length) {
-      // the capture keeps replaced states listed, so a done state or Empty crate at a tile ends that tile
       const doneAt = {};
       for (const o of (objs || [])) {
         if (typeof o.x !== 'number') continue;
@@ -1058,8 +961,7 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // Divine skinweaver boss: Tunnel locs 49286-49288 need blocking; a done one gains "Blocked tunnel" 49289/49290 at the
-  // same tile. The room spans two cells, so gate on NPC 10058 in scene rather than the same-room test.
+  // Divine skinweaver boss: Tunnel locs 49286-49288 need blocking; a done one becomes "Blocked tunnel" 49289/49290.
   if (npcs.some(n => n.id === 10058)) {
     const DUNG_TUNNEL = { 49286: 1, 49287: 1, 49288: 1 };
     const DUNG_TUNNEL_DONE = { 49289: 1, 49290: 1, 49291: 1 };   // blocked = tunnel id + 3
@@ -1069,13 +971,10 @@ function dungReconcileScene(npcs, objs) {
       if (DUNG_TUNNEL[o.id] && typeof o.x === 'number' && !tdone[o.x + ',' + o.y] && marks.length < 16)
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: (o.name || 'Tunnel') + '\nBlock', rgb: 0xe8b34b });
   }
-  // Rotating crystal room: the active large crystal appears briefly every 5 game ticks (~3s); each appearance
-  // restarts the phase clock and the centre-screen prompt fires one tick early. "Large crystal" states x themes:
   // base 49507-09/54275, active 49510-12/54276, solved 49513-15/54277.
   const DUNG_BIG_BASE   = { 49507:1, 49508:1, 49509:1, 54275:1 };
   const DUNG_BIG_ACTIVE = { 49510:1, 49511:1, 49512:1, 54276:1 };
   const DUNG_BIG_SOLVED = { 49513:1, 49514:1, 49515:1, 54277:1 };
-  // solved = a solved id, or any two distinct non-active large-crystal states on one tile (the capture keeps the replaced base)
   let lodeSolved = (objs || []).some(o => DUNG_BIG_SOLVED[o.id] && typeof o.x === 'number' && here(o));
   if (!lodeSolved) {
     const bigAt = {};
@@ -1091,7 +990,6 @@ function dungReconcileScene(npcs, objs) {
     dungLodeKey = ''; dungLodeTick = -1; dungLodeWarnAt = -1; dungCrysMem = {};
     if (dungLodeCenterOn) { dungLodeCenterOn = false; try { bridge().centerText(myPid(), ''); } catch (e) {} }
   }
-  // Power-up locs (cache name "Inactive lodestone"), never marked once the room is solved
   const DUNG_POWERUP = { 54263: 1, 54266: 1, 54269: 1, 54272: 1 };
   for (const pb of [49471, 49480, 49489, 49498]) { DUNG_POWERUP[pb] = 1; DUNG_POWERUP[pb + 1] = 1; DUNG_POWERUP[pb + 2] = 1; }
   if (!lodeSolved)
@@ -1099,25 +997,21 @@ function dungReconcileScene(npcs, objs) {
       if (DUNG_POWERUP[o.id] && typeof o.x === 'number' && here(o) && marks.length < 16)
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: (o.name || '') + '\nPower up' });
   const activeLode = lodeSolved ? null : (objs || []).find(o => DUNG_BIG_ACTIVE[o.id] && typeof o.x === 'number' && here(o));
-  // Four coloured crystals travel the cross arms toward the centre and must arrive together. Per colour, nine
   // consecutive ids: 3 crystal | 3 Power-up | 3 lodestone (blue 49468, red 49477, green 49486, yellow 49495).
   const DUNG_CRYSTALS = {};
   for (const [base, n, c] of [[49468, 'Blue crystal', 0x5ab8f0], [49477, 'Red crystal', 0xf25c5c],
                               [49486, 'Green crystal', 0x5fd07a], [49495, 'Yellow crystal', 0xf0c419]])
     for (let v = 0; v < 3; v++) DUNG_CRYSTALS[base + v] = { n: n, c: c };
-  // fourth theme, single id per colour
   DUNG_CRYSTALS[54262] = { n: 'Blue crystal',   c: 0x5ab8f0 };
   DUNG_CRYSTALS[54265] = { n: 'Red crystal',    c: 0xf25c5c };
   DUNG_CRYSTALS[54268] = { n: 'Green crystal',  c: 0x5fd07a };
   DUNG_CRYSTALS[54271] = { n: 'Yellow crystal', c: 0xf0c419 };
   const crys = lodeSolved ? [] : (objs || []).filter(o => DUNG_CRYSTALS[o.id] && typeof o.x === 'number' && here(o));
-  // variant without the appearing crystal: the cycle mark is a coloured crystal reaching the static large crystal
   const bigLode = lodeSolved ? null : (objs || []).find(o => DUNG_BIG_BASE[o.id] && typeof o.x === 'number' && here(o));
   if (bigLode) dungLodeCenter = { x: bigLode.x, y: bigLode.y };
   let ltick = -1;
   if (activeLode || bigLode || dungLodeTick >= 0) { try { ltick = bridge().gameTick(myPid()); } catch (e) {} }
   const dungLodeMarkEnd = () => { dungLodeKey = ''; };
-  // Cycle anchor only tightens: an earlier sighting pulls it back, a later one is sampling lag; >900ms error re-locks.
   const dungLodeAnchor = t => {
     const CYC = 2400;
     if (!dungLodeMarkAt) { dungLodeMarkAt = t; return; }
@@ -1132,7 +1026,6 @@ function dungReconcileScene(npcs, objs) {
     dungLodeSeenAt = Date.now();
     if (lk !== dungLodeKey) { dungLodeKey = lk; dungLodeAnchor(Date.now()); if (ltick >= 0) dungLodeTick = ltick; }
   } else if (bigLode) {
-    // a crystal never lands on the large crystal: "arrival" = Chebyshev distance <= 1
     const arr = crys.find(c => Math.max(Math.abs(c.x - bigLode.x), Math.abs(c.y - bigLode.y)) <= 1);
     if (arr) {
       dungLodeSeenAt = Date.now();
@@ -1140,9 +1033,7 @@ function dungReconcileScene(npcs, objs) {
       if (lk !== dungLodeKey) { dungLodeKey = lk; dungLodeAnchor(Date.now()); if (ltick >= 0) dungLodeTick = ltick; }
     } else dungLodeMarkEnd();
   } else dungLodeMarkEnd();
-  // no cycle mark for 12s -> stop prompting
   if (dungLodeTick >= 0 && dungLodeSeenAt && Date.now() - dungLodeSeenAt > 12000) { dungLodeTick = -1; dungLodeWarnAt = -1; }
-  // dungLodeTimerTick (100ms, client.html) owns the centre text; suppressed outside the room and while out of sync
   dungLodeInRoom = !!(activeLode || bigLode);
   let crysOutSync = false;
   dungLodeDbg = '';
@@ -1168,12 +1059,10 @@ function dungReconcileScene(npcs, objs) {
           if (dd > bd) { bd = dd; best = p; }
         }
         if (best) return best;
-        // no pad loc in scene -> synthesize the pad tile at +-5
         if (c.x === ctr.x && c.y !== ctr.y) return { x: ctr.x, y: ctr.y + 5 * Math.sign(c.y - ctr.y), plane: c.plane || 0 };
         if (c.y === ctr.y && c.x !== ctr.x) return { x: ctr.x + 5 * Math.sign(c.x - ctr.x), y: ctr.y, plane: c.plane || 0 };
         return null;
       };
-      // a crystal under its plate is not in the scene: "known here but absent now" = at the plate
       const PLATE_D = 5;                       // pads sit at +-5 from the centre
       const nowT = Date.now(), visible = {};
       for (const c of crys) {
@@ -1198,11 +1087,8 @@ function dungReconcileScene(npcs, objs) {
       dungLodeDbg = ' | crys[v4] ctr ' + ctr.x + ',' + ctr.y + ' pads ' + cpads.length
                   + ' known ' + ents.length + ' hidden ' + ents.filter(e => e.hidden).length;
       if (ents.length >= 2) {
-        // Invariant: crystals advance together, so pairwise step offsets are stable while absolute distances wrap.
-        // Five positions 0-4 (a crystal never lands on the centre tile; distance 5 = under the pad).
         const CYC = PLATE_D;                      // 0=under pad, 1..4 = rail, then wrap
         const step = e => PLATE_D - e.d;          // d5->0, d4->1, d3->2, d2->3, d1->4
-        // ref = the crystal that minimises total hold time (also invariant, so the instruction stays put)
         let ref = null, refCost = 1e9;
         for (const r of ents) {
           let cost = 0;
@@ -1218,7 +1104,6 @@ function dungReconcileScene(npcs, objs) {
           const at = padOn(e.dx, e.dy);
           if (!at) continue;
           const short = e.nm.replace(/ crystal$/i, '');
-          // the overlay snaps a guide box to the loc named on the label's first line (within 8 tiles); '-' hides the title
           marks.push({ x: at.x, y: at.y, plane: at.plane || 0, rgb: e.c,
                        label: '-Pressure pad\n' + short + '  HOLD ' + k });
         }
@@ -1226,8 +1111,6 @@ function dungReconcileScene(npcs, objs) {
     }
   }
   dungLodeSuppress = crys.length >= 4 || (crys.length >= 2 && crysOutSync);
-  // Tile-flip puzzle (Lights Out): 5x5 of "Green/Yellow tile" locs with Imbue+Force; flipping one flips its + neighbours.
-  // Solver fires only when exactly 25 sit in one room. Solved over GF(2) by first-row enumeration for both target colours.
   const DUNG_LO_GREEN  = { 3873:1, 39859:1, 49638:1, 49639:1, 49640:1, 54065:1 };
   const DUNG_LO_YELLOW = { 3874:1, 39860:1, 49641:1, 49642:1, 49643:1, 54066:1 };
   const ftiles = (objs || []).filter(o => (DUNG_LO_GREEN[o.id] || DUNG_LO_YELLOW[o.id])
@@ -1277,8 +1160,6 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Start-room constellation fit: vote the SW-corner translation under 4 rotations. Re-fit every reconcile
-  // (the whole floor is always in scene) and overwrite dungFloorSW.
   if (objs && objs.length) {
     const cand = objs.filter(o => DUNG_SW_REF[o.id] && typeof o.x === 'number');
     if (cand.length >= 6) {
@@ -1297,7 +1178,6 @@ function dungReconcileScene(npcs, objs) {
       }
       if (bestN >= 6) {
         const p = bestKey.split(',').map(Number);
-        // anchor moved -> cell-keyed derived caches are wrong; the player's own marks are left alone
         if (dungFloorSW && (dungFloorSW.x !== p[0] || dungFloorSW.y !== p[1])) {
           dungRoomRes = {}; dungKeyDoor = {};
         }
@@ -1306,7 +1186,6 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Statues puzzle: statics (north 5x5 grids) mark target cells; pushables (south grids) go to the same cell of their
   // own grid. Room-local grids at cols 1-5 west / 8-12 east, rows 1-5 south / 8-12 north, walkway at 6-7.
   dungStatues = null;
   if (dungFloorSW) {
@@ -1337,8 +1216,6 @@ function dungReconcileScene(npcs, objs) {
       try { bridge().centerText(myPid(), ''); } catch (e) {}
     }
   }
-  // Help-the-ghost room: npc 11246 (the only Talk-action "Ghost") is the room marker, not the objective.
-  // Tasks: repair pillar and pot, pick up the ring (19879) and Fill it into the box, then the coffin.
   const talkGhost = npcs.find(n => n.id === 11246 && typeof n.x === 'number' && here(n));
   const ghostRoomHere = talkGhost
     || (objs || []).some(o => typeof o.x === 'number' && here(o) &&
@@ -1353,7 +1230,6 @@ function dungReconcileScene(npcs, objs) {
       else if (DUNG_GHOST_PILLAR_DONE[o.id]) doneAt.pillar[t] = 1;
       else if (DUNG_GHOST_BOX_DONE[o.id]) doneAt.box[t] = 1;
     }
-    // ring chain: floor -> pack -> box; only the next step is guided
     if (haveRing) {
       for (const o of roomObjs) if (DUNG_GHOST_BOX[o.id] && !doneAt.box[o.x + ',' + o.y])
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: 'Fill -- put the ring back', rgb: 0x33cc66 });
@@ -1369,8 +1245,6 @@ function dungReconcileScene(npcs, objs) {
       else if (DUNG_GHOST_POT[o.id] && !doneAt.pot[t])
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: 'Repair the pot' });
     }
-    // coffin last. Step read from live actions; snap (2x2 footprint) boxes the whole object.
-    // The Unlock variant never goes away, so an actionless coffin is the only completion signal.
     if (!marks.length) {
       const isCoffin = o => o.name === 'Coffin'
                          || DUNG_GHOST_COFFIN[o.id] || DUNG_GHOST_COFFIN_BLESS[o.id];
@@ -1379,7 +1253,6 @@ function dungReconcileScene(npcs, objs) {
       for (const o of roomObjs)
         if (isCoffin(o) && !(o.actions || []).length) coffinDone[o.x + ',' + o.y] = 1;
       const pend = f => roomObjs.filter(o => isCoffin(o) && f(o) && !coffinDone[o.x + ',' + o.y]);
-      // Bless supersedes Unlock (both sit on the tile once open)
       const bless = pend(o => hasAct(o, 'Bless-remains'));
       const coffins = bless.length ? bless : pend(o => hasAct(o, 'Unlock'));
       for (const o of coffins)
@@ -1393,8 +1266,6 @@ function dungReconcileScene(npcs, objs) {
                      marks.length ? '' : 'Nothing left to restore');
     return;
   }
-  // Ghost kill room: id family 10981-11000 (target/decoy pairs); the target is always the lowest Ghost id in the room.
-  // Name matching is unsafe (ghost monsters 10821-10830 are also "Ghost"). Needles carry a tile anchor.
   const ghosts = npcs.filter(n => n.id >= 10981 && n.id <= 11000 && typeof n.x === 'number' && here(n));
   const ghostNeedle = g => '#' + g.id + '|Kill this ghost|' + g.x + ';' + g.y + ';1';
   if (ghosts.length === 1) {
@@ -1414,41 +1285,32 @@ function dungReconcileScene(npcs, objs) {
   // Pondskater puzzle: 12091/12092/12093 are decoys; 12089 carries the key.
   const skater = npcs.find(n => n.id === 12089 && typeof n.x === 'number' && here(n));
   if (skater) { dungGuideTiles(marks); dungHighlightNpc(12089, 'Has the key'); return; }
-  // Read-and-arm statues room: reference statues (one per row) tell the weapon; arm the same-row armable with the
-  // combat-triangle counter. Reference id -> weapon to arm with.
   const DUNG_STATUE_READ = {
     11020: 'staff', 11027: 'staff', 11028: 'staff', 11029: 'staff',
     11021: 'sword', 11022: 'sword', 11023: 'sword', 11030: 'sword', 11031: 'sword', 11032: 'sword',
     11024: 'bow', 11025: 'bow', 11026: 'bow', 11033: 'bow', 11034: 'bow', 11035: 'bow',
-    // theme siblings (same weapon tail models)
     12108: 'staff', 12109: 'sword', 12110: 'bow', 12111: 'staff', 12112: 'sword', 12113: 'bow',
     13051: 'staff', 13052: 'sword', 13053: 'bow', 13054: 'staff', 13055: 'sword', 13056: 'bow',
   };
-  // "Arm" action npc families (js5-18)
   const DUNG_ARM_IDS = n => (n >= 11012 && n <= 11014) || (n >= 11036 && n <= 11044)
     || n === 12106 || n === 13049 || (n >= 12094 && n <= 12096) || (n >= 13057 && n <= 13059);
   const armables = npcs.filter(n => DUNG_ARM_IDS(n.id) && typeof n.x === 'number' && here(n));
-  // an armed statue re-ids to a reference id, so tiles that held an armable are excluded from the reference pool
   if (!armables.length) dungArmableTiles = {};
   for (const a of armables) dungArmableTiles[a.x + ',' + a.y] = 1;
   const readRefs = npcs.filter(n => DUNG_STATUE_READ[n.id] && typeof n.x === 'number' && here(n) && !dungArmableTiles[n.x + ',' + n.y]);
   if (readRefs.length && armables.length) {
-    // armables can share one npc id, so each needle carries its tile anchor ("x;y")
     const needles = [];
     for (const a of armables) {
-      // rooms rotate: refs pair along either axis, exact match first, then +-1
       const r = readRefs.find(rr => rr.y === a.y || rr.x === a.x)
              || readRefs.find(rr => Math.abs(rr.y - a.y) <= 1 || Math.abs(rr.x - a.x) <= 1);
       if (r) needles.push('#' + a.id + '|Arm with ' + DUNG_STATUE_READ[r.id] + '|' + a.x + ';' + a.y);
     }
     if (needles.length) { dungGuideTiles(marks); dungHighlightList(needles); return; }
   }
-  // Simple arm-statues room: weapon is fixed per pose id (js5-18 param 74 = the armed form, value >> 8).
   const DUNG_ARM_WEAPON = {
     11036: 'sword', 11037: 'sword', 11038: 'sword',   // -> 11051-53  melee
     11039: 'bow',   11040: 'bow',   11041: 'bow',     // -> 11045-47  ranged
     11042: 'staff', 11043: 'staff', 11044: 'staff',   // -> 11048-50  magic
-    // 12xxx/13xxx themes, pattern-filled from the same permutation
     12094: 'sword', 12095: 'bow', 12096: 'staff',
     13057: 'sword', 13058: 'bow', 13059: 'staff',
   };
@@ -1475,9 +1337,6 @@ function dungReconcileScene(npcs, objs) {
     dungHighlightNpc(armStatue.id, w ? 'Arm with a ' + w + ' (' + DUNG_ARM_STYLE[w] + ')' : 'Arm this statue');
     return;
   }
-  // Emotes puzzle: each player stands on a pressure pad and copies the statue nearest that pad. Statue states:
-  // active (performs), done (+3 re-id once copied), broken (pads the party size doesn't need). Done and broken join
-  // the pairing set; only active is watched.
   const DUNG_EMOTE_STATUE = { 10966: 1, 10967: 1, 10968: 1, 12114: 1, 12960: 1 };
   const DUNG_EMOTE_DONE   = { 10969: 1, 10970: 1, 10971: 1, 12115: 1, 12961: 1 };
   const DUNG_EMOTE_BROKEN = { 10972: 1, 10973: 1, 10974: 1, 12116: 1, 12962: 1 };
@@ -1485,7 +1344,6 @@ function dungReconcileScene(npcs, objs) {
     (DUNG_EMOTE_STATUE[n.id] || DUNG_EMOTE_DONE[n.id] || DUNG_EMOTE_BROKEN[n.id])
     && typeof n.x === 'number' && here(n));
   if (emoteStatues.some(n => DUNG_EMOTE_STATUE[n.id])) {
-    // every "Pressure pad" loc id across themes
     const DUNG_EMOTE_PADS = { 52206: 1, 54282: 1, 35232: 1, 97487: 1 };
     const pads = (objs || []).filter(o => DUNG_EMOTE_PADS[o.id] && typeof o.x === 'number' && here(o));
     const nearest = (x, y) => {
@@ -1512,7 +1370,6 @@ function dungReconcileScene(npcs, objs) {
       dungHighlightList(['#' + watch.id + '|' + (lbl || 'Copy this statue') + '|' + watch.x + ';' + watch.y + ';1']);
       return;
     }
-    // not on a pad: number only the pads paired to an active statue
     let padN = 0;
     for (const p of pads) {
       if (marks.length >= 16) break;
@@ -1534,7 +1391,6 @@ function dungReconcileScene(npcs, objs) {
   const DUNG_HERB_SPENT_LOC = 50114;   // plain farming patch that replaces the herb patch once picked out
   const DUNG_HERB_GROUP = 720;         // "SELECT AN OPTION" picker; text comps at 15 + 3n, interfaceComps gives absolute rects
   const DUNG_HERB_COMPS = [18, 21, 24, 27, 30, 33].join(',');   // options 1..6
-  // always clear when not drawing (the interface being closed is the common case)
   function dungHighlightHerb(herb) {
     let drew = false;
     try {
@@ -1558,7 +1414,6 @@ function dungReconcileScene(npcs, objs) {
     } catch (e) {}
     return drew;
   }
-  // Option-row matcher by text (option numbers shift between pages). Does not clear on miss; the caller decides.
   function dungHighlightOptionText(group, comps, want, owner) {
     try {
       if (!want) return false;
@@ -1580,7 +1435,6 @@ function dungReconcileScene(npcs, objs) {
   {
     const inRoom = o => typeof o.x === 'number' && here(o);
     const polt      = npcs.find(n => n.id === 11245 && inRoom(n));
-    // states coexist per tile: group by tile and keep the most advanced state
     const sarcAt = {};                     // tile -> {st: 0 still shut | 1 opened, o}
     for (const o of (objs || [])) {
       if (!inRoom(o)) continue;
@@ -1617,12 +1471,9 @@ function dungReconcileScene(npcs, objs) {
         const hit = t && DUNG_POLT_HERBS.find(h => t.indexOf(h.toLowerCase()) >= 0);
         if (hit) { dungPoltHerb = herb = hit; }
       }
-      // multi-tile locs: the "-<loc name>" label prefix snaps the box to the model AABB and hides the name line.
-      // Filling and lighting run in parallel: a censer can be lit as soon as its own herb is in.
       for (const c2 of censLight)
         if (marks.length < 16) marks.push({ x: c2.x, y: c2.y, plane: c2.plane || 0, label: '-Censer\nLight', rgb: 0xe8b34b });
       if (censEmpty.length) {
-        // raw herb held -> Consecrate; consecrated held -> censer; neither -> harvest
         const herbItem = herb ? DUNG_HERB_ITEM[herb] : 0;
         const rawN = herbItem ? dungInvCount(herbItem) : 0;
         const doneN = dungInvCount(DUNG_HERB_DONE_ITEM);
@@ -1635,7 +1486,6 @@ function dungReconcileScene(npcs, objs) {
             if (marks.length < 16) marks.push({ x: c2.x, y: c2.y, plane: c2.plane || 0, label: '-Censer\nAdd herb', rgb: 0xe8b34b });
         } else {
           dungInvClear();
-          // box the patch only once the herb is known (picking the wrong one wastes the patch)
           if (herb) for (const p2 of patches)
             if (marks.length < 16) marks.push({ x: p2.x, y: p2.y, plane: p2.plane || 0,
               label: '-Herb patch\nHarvest ' + herb + ' x' + censEmpty.length, rgb: 0x5fd07a });
@@ -1645,7 +1495,6 @@ function dungReconcileScene(npcs, objs) {
         }
       } else {
         dungHerbClear('herb'); dungInvClear();
-        // every censer lit -> Open the sarcophagus
         const censKeys = Object.keys(censAt);
         if (censKeys.length && censKeys.every(k => censAt[k].st === 2))
           for (const sc of sarcs)
@@ -1657,8 +1506,6 @@ function dungReconcileScene(npcs, objs) {
     }
   }
   // Pedestal room (js5-16): Pedestal 54110-13 idle | 54114-17 activated; Pillar 54118-21 base | 54122-25 Fix | 54126-29 done;
-  // Rubble 54130-33 + 54138-41 Mine | 54134-37 + 54142-45 cleared. Cleared rubble keeps its Mine action, so done-tile
-  // suppression is load-bearing.
   {
     const inR = o => typeof o.x === 'number' && here(o);
     const isPed      = o => o.id >= 54110 && o.id <= 54117;
@@ -1666,7 +1513,6 @@ function dungReconcileScene(npcs, objs) {
     const isFixDone  = o => o.id >= 54126 && o.id <= 54129;
     const isMine     = o => (o.id >= 54130 && o.id <= 54133) || (o.id >= 54138 && o.id <= 54141);
     const isMineDone = o => (o.id >= 54134 && o.id <= 54137) || (o.id >= 54142 && o.id <= 54145);
-    // per family: pillars and rubble share tiles, and a marker only speaks for its own kind
     const fixDone = {}, mineDone = {};
     for (const o of (objs || [])) {
       if (!inR(o)) continue;
@@ -1689,16 +1535,11 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // Seeker sentinel room: the sentinel rotates on the spot (facing = reader `face`, degrees from the leading yaw
-  // quaternion, no offset needed); four "Seeker spawn" (Subdue) patrol the corners.
   const DUNG_SENTINEL = { 10941: 1, 25128: 1 };   // both npcs named 'Seeker sentinel'
   const DUNG_GAZE_OFFSET = 0;
-  // gaze is a 45-degree cone (eight room sections); 9 tiles from the centre gives ~8 usable per line within 16 marks
   const DUNG_GAZE_LEN  = 9;
   const DUNG_GAZE_HALF = 22.5;
-  // Subdue a spawn while it faces away and the gaze is elsewhere; a subdued spawn drops its Subdue action.
   const DUNG_SEEKER_SPAWN = { 10933: 1, 10935: 1, 10938: 1, 10939: 1 };
-  // sentinel re-aims every 5 ticks; a spawn patrols in 4-tick legs, turning at the end of every leg (fallback period only)
   const DUNG_SENT_TURN_MS = 5 * 600, DUNG_SPAWN_TURN_MS = 4 * 600;
   {
     const sent = npcs.filter(n => DUNG_SENTINEL[n.id] && typeof n.x === 'number' && here(n));
@@ -1709,21 +1550,11 @@ function dungReconcileScene(npcs, objs) {
       const now = Date.now();
       const norm = d => ((d % 360) + 360) % 360;
       const angdiff = (a, b) => { const d = Math.abs(norm(a) - norm(b)); return d > 180 ? 360 - d : d; };
-      // Bearing in the same convention line() draws with: 0 = north (+y), 90 = east.
       const bearing = (fx, fy, tx, ty) => norm(Math.atan2(tx - fx, ty - fy) * 180 / Math.PI);
-      // Track each npc's facing; a change stamps the turn time for the countdowns.
-      // Facing falls back to the walk vector when the reader can't give `face` -- a
-      // pacing spawn's movement IS its facing.
       const faceOf = n => {
         const m = dungSeekerMem[n.uid] || (dungSeekerMem[n.uid] = { face: null, at: 0, x: n.x, y: n.y });
         let f = (typeof n.face === 'number' && n.face >= 0) ? norm(n.face) : null;
         if (f === null && (m.x !== n.x || m.y !== n.y)) f = bearing(m.x, m.y, n.x, n.y);
-        // Patrol learning (spawns), geometry-free: measure the walk SPEED from
-        // observed movement (never assume tiles/tick), and record every tile where
-        // the walk direction bent by 45+ degrees as a TURN TILE. The paths bend at
-        // the ends of every 4-tick leg -- including 90-degree corners mid-room -- so
-        // an endpoint-extremes line model predicted turns a whole leg late
-        // ("always turn around with ~2.7s on the tooltip").
         if (m.x !== n.x || m.y !== n.y) {
           const step = Math.max(Math.abs(n.x - m.x), Math.abs(n.y - m.y));
           const hd = bearing(m.x, m.y, n.x, n.y);
@@ -1740,12 +1571,6 @@ function dungReconcileScene(npcs, objs) {
         }
         if (f !== null) {
           if (m.face !== null && angdiff(f, m.face) > 30) {
-            // Signed turn size: two matching consecutive deltas lock in a rotation
-            // STEP (the sentinel sweeps in fixed increments -> future directions
-            // become predictable). A turn observation can only ever be LATE (600ms
-            // poll), so the phase anchor only moves EARLIER: an observation landing
-            // before the predicted grid tightens the anchor, one landing after is
-            // read as detection lag and ignored. Re-anchor outright when stale.
             const d = (((f - m.face) % 360) + 540) % 360 - 180;
             if (m.pend != null && Math.abs(d - m.pend) <= 10) m.step = d;
             m.pend = d;
@@ -1762,8 +1587,6 @@ function dungReconcileScene(npcs, objs) {
         m.x = n.x; m.y = n.y;
         return m.face;
       };
-      // Sentinel gaze test for a WORLD tile: inside the drawn cone of any sentinel
-      // (same half-angle as the cone below, so the label and the red tiles agree).
       const sentFaces = sent.map(s => ({ s: s, f: faceOf(s) }));
       const inGaze = (x, y) => sentFaces.some(sf => {
         if (sf.f === null) return true;                 // unreadable: assume watched
@@ -1771,18 +1594,11 @@ function dungReconcileScene(npcs, objs) {
         const o2 = (sz2 % 2 === 0) ? -0.5 : 0;
         return angdiff(bearing(sf.s.x + o2, sf.s.y + o2, x, y), norm(sf.f + DUNG_GAZE_OFFSET)) <= DUNG_GAZE_HALF;
       });
-      // Stamp-based countdown, bias-corrected: turn observations lag the real turn by
-      // 0..600ms (the poll period), so knock off half of that instead of showing the
-      // systematically-late raw figure.
       const eta = (m, period) => {
         if (!m || !m.at) return '';
         const left = Math.max(0, period - ((now - m.at) % period) - 300) / 1000;
         return ' ~' + left.toFixed(1) + 's';
       };
-      // Time until the gaze actually LEAVES a tile -- not merely until the next
-      // re-aim, which can point at the same section again. With a learned rotation
-      // step the future directions are known: count re-aims until the cone clears the
-      // tile. Without one, say only that the gaze MAY shift.
       const gazeEta = (x, y) => {
         const sf = sentFaces[0];
         if (!sf || sf.f === null) return '';
@@ -1801,27 +1617,15 @@ function dungReconcileScene(npcs, objs) {
         }
         return ' - off in ~' + ((next + (k - 1) * DUNG_SENT_TURN_MS) / 1000).toFixed(1) + 's';
       };
-      // SPAWNS ARE MARKED ON THE NPC, not the ground : the highlight
-      // channel boxes the model by "#id" and the reader follows it each frame, so the
-      // box tracks the patrol walk instead of lagging a tile behind it. Ground marks
-      // stay for the gaze cone only. Needle labels must avoid ',' and '|' (the needle
-      // separators), hence the dash phrasing.
       const needles = [];
       for (const sp of spawns) {
         const subdued = !(sp.actions || []).some(a => a === 'Subdue');
         if (subdued) { needles.push('#' + sp.id + '|Subdued'); continue; }
         const f = faceOf(sp);
         const m = dungSeekerMem[sp.uid];
-        // Facing away = the player is in its REAR half-circle. Unknown facing (just
-        // arrived, not yet seen moving) counts as facing you -- never call NOW blind.
         const away = f !== null && dungSelfPos
           && angdiff(f, bearing(sp.x, sp.y, dungSelfPos.x, dungSelfPos.y)) > 90;
         const gazed = inGaze(sp.x, sp.y);
-        // POSITION-BASED turn eta: distance to the nearest LEARNED turn tile ahead on
-        // the current walk direction, over the MEASURED speed. No phase stamp -> none
-        // of the poll-lag lateness, and no geometry assumption -> corners count as
-        // turns too. Falls back to the stamp countdown until a
-        // waypoint on this leg has been seen once.
         const turnEta = () => {
           if (!m || m.hd == null || !m.spd || !m.turns) return null;
           const hx = Math.sin(m.hd * Math.PI / 180), hy = Math.cos(m.hd * Math.PI / 180);
@@ -1852,29 +1656,10 @@ function dungReconcileScene(npcs, objs) {
           continue;
         }
         const deg = ((s.face + DUNG_GAZE_OFFSET) % 360 + 360) % 360;
-        // Footprint-derived geometry. THESE MUST STAY WITH THE CODE THAT USES THEM: dropping them
-        // while leaving their uses throws a ReferenceError every tick and blanks the whole panel,
-        // which node --check cannot catch.
         const sz = (typeof s.size === 'number' && s.size > 0) ? s.size : 2;
-        // THE REPORTED TILE IS THE MODEL'S NORTH-EAST TILE, NOT ITS SOUTH-WEST ONE.
-        // The game stores the model CENTRE in fine units, and for an EVEN-sized model
-        // that centre lands exactly on a tile boundary: the sentinel reads 5812224/512
-        // = 11352.0 exactly. Truncating to int therefore names the NE tile, and the
-        // model extends in -x/-y from it. Proven on screen: the anchor box drew on the
-        // model's NE corner.
-        //   even size -> centre sits half a tile BELOW/LEFT of the reported tile
-        //   odd size  -> fine centre is tile*512+256, truncates to the tile itself
-        // Getting this backwards pushed the origin a full tile the wrong way on BOTH
-        // axes, which is the displacement no amount of angle tuning could fix.
         const org = (sz % 2 === 0) ? -0.5 : 0;
         const start = Math.max(1, Math.ceil(sz / 2));   // just past the model edge
-        // TWO EDGE LINES, not a filled block: a solid wedge only reaches 5 tiles inside the 16-mark
-        // cap, while the lines reach the wall. Walk each edge with a DDA (step the dominant axis one
-        // tile at a time), not by sampling round(sin*i), which skips and doubles tiles on diagonals.
-        // Rasterise FROM THE MODEL CENTRE and drop the tiles inside the model's own footprint, so
-        // the ray starts exactly at its edge with no gap.
         const cx = s.x + org, cy = s.y + org;            // model centre, tile-index space
-        // Footprint: the reported tile is the NE one, so the body runs back sz-1 tiles.
         const bx0 = s.x - sz + 1, by0 = s.y - sz + 1;
         const inBody = (x, y) => x >= bx0 && x <= s.x && y >= by0 && y <= s.y;
         const line = (bear, len) => {
@@ -1893,8 +1678,6 @@ function dungReconcileScene(npcs, objs) {
         const seen = {};
         const runs = [line(deg - DUNG_GAZE_HALF, DUNG_GAZE_LEN),
                       line(deg + DUNG_GAZE_HALF, DUNG_GAZE_LEN)];
-        // interleave so a truncation shortens BOTH lines evenly rather than drawing one
-        // whole line and half the other
         const most = Math.max(runs[0].length, runs[1].length);
         const pend = [];
         for (let n = 0; n < most; n++)
@@ -1906,32 +1689,18 @@ function dungReconcileScene(npcs, objs) {
           seen[kk2] = 1;
           marks.push({ x: gx, y: gy, plane: s.plane || 0, rgb: 0xff5a5a, label: '' });
         }
-        // LABEL RIDES THE LAST TILE ALREADY DRAWN -- no separate centre-line mark. That
-        // extra mark landed between the two lines and read as a stray disconnected box
         
-        // NO LABEL : the compass name adds nothing once the lines are
-        // correct -- you can see which way he is looking. Dropping it also stops a pill
-        // covering a tile you might need to read, and frees a mark for reach.
       }
       dungGuideTiles(marks);              // ground: the gaze cone only
       dungHighlightList(needles);         // npc boxes: spawns + unreadable sentinel
       return;
     }
   }
-  // COLOURED RECESS PUZZLE (cache scan. Push/Pull each Block onto the
-  // nearest coloured recess, mix the vials at the Shelves, then use each vial on the
-  // block standing on the matching colour.
-  //   recess (no action), FOUR theme variants each:
   //     blue   54504, 54525, 54546, 54623      green  54506, 54527, 54548, 54625
   //     yellow 54508, 54529, 54550, 54627      violet 54510, 54531, 54552, 54629
   //   Shelves "Mix Blue/Green/Yellow/Violet": 35241, 35242, 35243, 35245, 35246
   //   vials: Blue 19869, Green 19871, Yellow 19873, Violet 19875
-  // THE BLOCK REPORTS ITS OWN COMPLETION. Block npcs run FIVE PER THEME: a generic
-  // "Block" then the four dyed ones at +1..+4 (Blue, Green, Yellow, Violet) --
   // 13024, 13029, 13034, 13039, 13044 are the generics. Once a vial is applied the npc
-  // BECOMES "Violet block" etc. Reading completion off the INVENTORY instead meant the
-  // guide kept pointing at an empty slot after the vial was used, and kept guiding a
-  // solved room. The dyed block is the source of truth.
   const DUNG_BLOCK_COL = {};        // npc id -> '' while generic, colour name once dyed
   for (const base of [13024, 13029, 13034, 13039, 13044]) {
     DUNG_BLOCK_COL[base] = '';
@@ -1954,13 +1723,9 @@ function dungReconcileScene(npcs, objs) {
       const kk = e => e.x + ',' + e.y;
       const blockAt = {};
       for (const b of blocks) blockAt[kk(b)] = b;
-      // STABLE ORDER: `objs` order is not stable between polls, and an unsorted list
-      // made the chosen colour alternate every tick and the highlight flicker.
       const seated = recs.filter(r => blockAt[kk(r)]).sort((p1, p2) => p1.x - p2.x || p1.y - p2.y);
       const freeR  = recs.filter(r => !blockAt[kk(r)]);
       const loose  = blocks.filter(b => !recs.some(r => kk(r) === kk(b)));
-      // A seated recess whose block is already DYED is finished, whatever the backpack
-      // says. Only the rest still want a vial.
       const pending = seated.filter(r => !DUNG_BLOCK_COL[blockAt[kk(r)].id]);
       if (!loose.length && !pending.length) {
         dungInvClear('recess');                 // solved: say nothing at all
@@ -1968,7 +1733,6 @@ function dungReconcileScene(npcs, objs) {
         dungHighlightNpc(0);
         return;
       }
-      // Phase 1: each loose block goes to its NEAREST free recess.
       for (const b of loose) {
         if (marks.length >= 16) break;
         let best = null, bd = 1e9;
@@ -1982,10 +1746,8 @@ function dungReconcileScene(npcs, objs) {
                      label: col ? ('Push/Pull to the ' + col + ' recess')
                                 : 'Push/Pull onto a recess' });
       }
-      // Phase 2: the colour being applied now = first PENDING colour whose vial is held.
       const holdCol = pending.map(r => DUNG_RECESS[r.id])
                              .find(c => DUNG_VIAL_ITEM[c] && dungInvCount(DUNG_VIAL_ITEM[c]));
-      // Only that block is marked: boxing the finished ones was noise.
       for (const r of pending) {
         const c = DUNG_RECESS[r.id];
         if (c !== holdCol || marks.length >= 16) continue;
@@ -1995,10 +1757,6 @@ function dungReconcileScene(npcs, objs) {
       if (holdCol) dungHighlightInvItem(DUNG_VIAL_ITEM[holdCol],
                                         'Use on the ' + holdCol + ' block', 'recess');
       else dungInvClear('recess');
-      // Mix whatever is still missing, in one trip. The Shelves are WALL-MOUNTED, so
-      // their tile can fall in the neighbouring room cell and `here()` drops them --
-      // match by PROXIMITY to the recesses instead (shelves 5 tiles away were
-      // being skipped while the recesses in the same room marked fine).
       const need = pending.map(r => DUNG_RECESS[r.id])
                           .filter(c => DUNG_VIAL_ITEM[c] && !dungInvCount(DUNG_VIAL_ITEM[c]));
       if (need.length) {
@@ -2020,10 +1778,6 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // STRANGE PLANT ROOM (js5-16 scan); maze templates js5-5). One
-  // Uproot plant sets the target COLOUR; you chop matching plants to open gaps in the
-  // vine maze until you can reach and uproot it, and the colour CHANGES OFTEN.
-  // Every colour has 4 "Chop" ids, 4 no-action ids and 2 "Uproot" ids:
   //   blue   Uproot 35507/35520  Chop 35577,35616,35715,35799
   //   purple Uproot 35523/35525  Chop 35602,35655,35719,35804
   //   red    Uproot 35562/35568  Chop 35606,35689,35734,35809
@@ -2035,21 +1789,12 @@ function dungReconcileScene(npcs, objs) {
     35602:'purple', 35655:'purple', 35719:'purple', 35804:'purple',
     35606:'red',    35689:'red',    35734:'red',    35809:'red',
     35611:'yellow', 35709:'yellow', 35778:'yellow', 35830:'yellow' };
-  // The 4 no-action ids per colour (same js5-16 scan): a plant not offering Chop. At a
-  // template gap tile this is read as "already open" for the routing below.
   const DUNG_PLANT_DEAD = {
     35588:'blue',   35625:'blue',   35718:'blue',   35800:'blue',
     35604:'purple', 35685:'purple', 35720:'purple', 35808:'purple',
     35609:'red',    35708:'red',    35739:'red',    35812:'red',
     35613:'yellow', 35712:'yellow', 35780:'yellow', 35835:'yellow' };
   const DUNG_PLANT_RGB = { blue:0x4aa3ff, purple:0xb06cff, red:0xff5a5a, yellow:0xf2d24b };
-  // THE MAZE IS CACHEABLE. The room is one of 4 fixed 16x16 templates (js5-5 room bank
-  // region rx6, cells (1,0)..(1,3), one per baked door set; themes reskin the art but
-  // the geometry is identical), rotated per instance. '#' = vine hedge / wall, 'C' = a
-  // chop-plant gap, 'U' = the 2x2 uproot plant, '.' = floor. Row index = local Y (south
-  // row first), string index = local X. Live rooms sit 16-ALIGNED in the dynamic region:
-  // validated against a live capture -- origin (13040,2176), template (1,1)
-  // rotated 180 put 'U' under the live uproot and 'C' under every live plant tile.
   const DUNG_PLANT_MAZES = [
     ['################','#.....#........#','#..UU#####.....#','#..UU#.#.#C#...#','#...##.##..##..#','##C##...C...C..#','#...#...#...#..#','##..##.####.##.#','##...C.#..C..###','##C#.#.#..##...#','#..###.C#..#...#','#......#.#.##..#','#...#C##...##..#','#..##....#C##..#','#..#.....#..#..#','################'],
     ['################','#..#.....#.#...#','#..##C####.C...#','#..##......#...#','##C#..##C###...#','#....##.......##','#..###....##C###','#..C..#..##...##','#.##...#.#.UU###','#.#....###.UU.##','#.###..#.###...#','#.###..C.....###','#...##.###.#C###','###C##...###...#','#.........C....#','################'],
@@ -2058,20 +1803,12 @@ function dungReconcileScene(npcs, objs) {
   ];
   {
     const inR = o => typeof o.x === 'number' && here(o);
-    // vis === false = captured by the companion but no longer drawn (phantom-loc
-    // filter). Colour changes REPLACE the loc and the capture keeps the earlier spawn, so
-    // the raw list carries one stale state per past change.
     const plants = (objs || []).filter(o =>
       (DUNG_PLANT_UPROOT[o.id] || DUNG_PLANT_CHOP[o.id] || DUNG_PLANT_DEAD[o.id])
       && o.vis !== false && inR(o));
     const ups = plants.filter(o => DUNG_PLANT_UPROOT[o.id]);
     if (!ups.length) dungPlantSeen = {};       // not in the room: drop the history
     else {
-      // PER-TILE RECENCY decides which state is real. The capture lists OLD and NEW
-      // states together at one tile (capture: red 35734 AND yellow
-      // 35778 both at 13044,2189), so at each tile the id that appeared most recently
-      // is the live one. Marking any id that merely matched the target colour boxed
-      // plants that were visibly another colour.
       const now = Date.now(), seen = {};
       for (const o of plants) {
         const k = o.x + ',' + o.y + '|' + o.id;
@@ -2084,26 +1821,11 @@ function dungReconcileScene(npcs, objs) {
         const tk = o.x + ',' + o.y, t = dungPlantSeen[tk + '|' + o.id] || 0;
         if (!tile[tk] || t > tile[tk].t) tile[tk] = { o: o, t: t, tie: false };
         else if (t === tile[tk].t && o.id !== tile[tk].o.id) {
-          // SAME first-seen tick -- history unknown (first sighting already doubled,
-          // e.g. right after a panel reload). Group by MOST ADVANCED state, the same
-          // rule the sarcophagus/censer and herb-patch blocks use for coexisting loc
-          // states: a no-action (spent) state outranks a bloomed one, so a tile whose
-          // live state may be spent is never boxed -- an "any state matches"
-          // tie fallback drew boxes on tiles with no flower standing.
-          // screenshots. Preferring spent only ever costs a mark, and it
-          // comes back on the next colour change, which recency resolves. Two
-          // ACTIONABLE states tying (colour genuinely unknown) stay flagged `tie`
-          // for the fallback colour rule below.
           const deadNew = !!DUNG_PLANT_DEAD[o.id], deadCur = !!DUNG_PLANT_DEAD[tile[tk].o.id];
           if (deadNew && !deadCur) tile[tk] = { o: o, t: t, tie: false };
           else if (!deadNew && !deadCur) tile[tk].tie = true;
-          // (spent already winning, or both spent: keep it, no tie -- not boxed either way)
         }
       }
-      // The uproot too is grouped by recency ACROSS its 2x2 footprint: colour changes
-      // can re-anchor the replacement loc on another footprint tile, leaving a stale
-      // uproot state on the earlier one. The most recently appeared uproot state is the
-      // live one.
       let upo = null, upT = -1;
       for (const tk in tile) {
         const tv = tile[tk];
@@ -2113,11 +1835,6 @@ function dungReconcileScene(npcs, objs) {
       const rgb = DUNG_PLANT_RGB[col] || 0x5fd07a;
       const plantCol = o2 => DUNG_PLANT_UPROOT[o2.id] || DUNG_PLANT_CHOP[o2.id] || DUNG_PLANT_DEAD[o2.id];
 
-      // Match the instance to a template: origin is the 16-aligned block, then the
-      // (variant, rotation) whose grid puts 'U' under the live uproot tile and 'C'
-      // under EVERY live gap tile. Rotation is applied cell-wise, so the 2x2 uproot
-      // needs no anchor bookkeeping. Two different grids fitting the same evidence
-      // drops the route rather than guessing between them.
       let grid = null, gOx = 0, gOy = 0;
       if (upo) {
         const ox = upo.x & ~15, oy = upo.y & ~15;
@@ -2145,17 +1862,10 @@ function dungReconcileScene(npcs, objs) {
         }
       }
 
-      // ROUTE: fewest CHOPS from the player's tile to the uproot, steps as tie-break
-      // (a chop is what the puzzle actually charges -- the colour has to cycle onto
-      // the gap before it opens). A 'C' gap whose live state is a no-action id is
-      // already open and costs only the step.
       let route = null;
       if (grid && dungSelfPos) {
         const sx = dungSelfPos.x - gOx, sy = dungSelfPos.y - gOy;
         if (sx >= 0 && sx < 16 && sy >= 0 && sy < 16 && grid[sy][sx] !== '#') {
-          // Open = nothing standing there. ABSENT counts: once the companion drops
-          // despawned locs (del-capture gate, a chopped plant vanishes
-          // from the feed entirely rather than turning into a no-action id.
           const openGap = (x, y) => {
             const tv = tile[(gOx + x) + ',' + (gOy + y)];
             return !tv || !!DUNG_PLANT_DEAD[tv.o.id];
@@ -2193,9 +1903,6 @@ function dungReconcileScene(npcs, objs) {
         }
       }
 
-      // Box the uproot at its REAL 2x2 footprint  when the matched
-      // grid gives the footprint; the reported tile alone otherwise. Label only the
-      // reported tile so the labels never stack.
       if (upo) {
         if (grid) {
           for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
@@ -2210,9 +1917,6 @@ function dungReconcileScene(npcs, objs) {
         }
       }
       if (route && route.length) {
-        // THE MAZE ROUTE, not the whole room: only the gaps on the way to the uproot,
-        // numbered in walking order. A gap that is not the target colour right now is
-        // a grey WAIT -- chopping it does nothing until the colour cycles onto it.
         for (let i = 0; i < route.length && marks.length < 16; i++) {
           const tv = route[i], c2 = plantCol(tv.o);
           const ready = !tv.tie && c2 === col && DUNG_PLANT_CHOP[tv.o.id];
@@ -2221,9 +1925,6 @@ function dungReconcileScene(npcs, objs) {
                        label: '-' + (i + 1) + '. ' + (ready ? 'Chop' : 'Wait (now ' + c2 + ')') });
         }
       } else {
-        // No settled route (template mismatch, player outside the block, or ambiguous
-        // evidence): fall back to boxing every gap whose LIVE state matches the target
-        // colour.
         for (const tk in tile) {
           if (marks.length >= 16) break;
           const tv = tile[tk], o2 = tv.o;
@@ -2239,42 +1940,13 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // HOARDSTALKER RIDDLE ROOM (js5-18 scan.
   // Riddle-giver: NPC 11011 "Enigmatic hoardstalker", action "Get-Riddle". The named
-  // variants carry "Take" and run in the usual id PAIRS:
   //   11146/47 Cub   11148/49 Little  11150/51 Naive  11152/53 Keen   11154/55 Brave
   //   11156/57 Brah  11158/59 Naabe   11160/61 Wise   11162/63 Adept  11164/65 Sachem
-  // DELIBERATELY EXCLUDED: 16825/16826, 20287, 20289 and 22422-22425 are "Gorajo
-  // hoardstalker", the card/shop NPC, a different feature entirely.
-  // You Search a Food barrel (49598) and take what the riddle asked for.
-  // THE RIDDLE NPC IS THE ONE CARRYING "Get-Riddle" -- matched on the live action, not
-  // an id list. 11146-11165 are excluded: the cache shows them as "Cub hoardstalker" /
-  // "Sachem hoardstalker" carrying Interact/Take/Attack, the Gorajo companions, nothing to
-  // do with the riddle. Any of them standing in the room kept this
-  // block alive, so the riddle box stayed pinned after the puzzle was done and after the
-  // riddle-giver was gone. A js5-18 sweep finds exactly ONE npc in the
-  // game with Get-Riddle: 11011, the Enigmatic hoardstalker.
-  //
-  // Matching on the action also gives solved-detection for free IF the option is dropped
-  // once the riddle is answered -- the same way the coloured ferrets lose Scare.
   const DUNG_HOARD_NPCS = { 11011: 1 };
   const dungIsRiddler = n => (n.actions || []).some(a => a === 'Get-Riddle')
                           || DUNG_HOARD_NPCS[n.id];
-  // THE NPC ID DOES NOT DETERMINE THE ANSWER. The RIDDLE does: you
-  // Get-Riddle and the text appears in the NPC dialogue, group 1184 comp 10 -- the same
-  // read the Murder-on-the-Border and No-Place-Like-Home guides already use. Confirmed
-  // live: "While many call me mould / Some call me savoury." -> Gissel mushroom, 4.
   const DUNG_HOARD_IFACE = [1184, 1186, 1191];   // npc / server-message / player dialogue
-  // `k` = a distinctive lowercase fragment of the riddle. `opt` = the take-list ROW text
-  // where it differs from the item name (the list says "Mushroom." for Gissel mushroom
-  // and "Poison." for Weapon poison, so matching on the item name alone would miss).
-  // `loc` = which container. Only container 4 has a known loc id, so riddles for 1-3
-  // still name the item and container without boxing anything.
-  // Two container KINDS, and they need different handling:
-  //   `gid` = the item lies ON THE GROUND with an "(o)" name suffix -> box the ground
-  //           item by ITEM id (locations 1 and 3, two separate floor piles).
-  //   `opt` = the item is inside a searchable object -> box the take-list ROW by text
-  //           (location 2 = chest 49595, location 4 = food barrel 49598).
   const DUNG_HOARD_RIDDLES = [
     { k:'serpent am i',             item:'Cave eel',           opt:'Cave eel',           loc:4 },
     { k:'born through fire',        item:'Ashes',              gid:17379,                loc:3 },
@@ -2295,29 +1967,17 @@ function dungReconcileScene(npcs, objs) {
     { k:'fill a room with me',      item:'Vial of water',      opt:'Vial of water',      loc:4 },
     { k:'deathslinger is merely',   item:'Bowstring',          gid:17389,                loc:1 },
   ];
-  // 2 = chest (Search, 5 rows: Blood rune / Coins / Fishing rod / Needle / Unholy
-  // symbol), 4 = food barrel (Search, 6 items over 2 pages). 1 and 3 are ground piles.
-  // THEME VARIANTS (barrel not highlighted): every Daemonheim puzzle
-  // prop ships one loc id per tileset, in consecutive triples -- cache ground truth
   // (js5-16 names): Chest 49594/49595/49596, Food barrel 49597/49598/49599. The single
-  // mid-triple id only matched one theme.
   const DUNG_HOARD_LOC_OBJ = { 2: { 49594: 1, 49595: 1, 49596: 1 },
                                4: { 49597: 1, 49598: 1, 49599: 1 } };
   // Group 1188 = "Dialogue option select", for BOTH the chest list and the paged barrel
-  // list. The row TEXT comps are NOT on a clean stride here -- the live tree shows
-  // option 1's label at comp 6 and option 2's at comp 33, each inside its own row LAYER
-  // -- so scan a RANGE and match on text instead of guessing ids. " number comps in the
-  // same range never contain an item name, so they cannot false-match.
   const DUNG_HOARD_GROUP = 1188;
-  // MUST stay <= 64 ids: InterfaceCompsJson returns "{}" for a longer list, which matches
-  // nothing at all.
   const DUNG_HOARD_COMPS = Array.from({ length: 64 }, (_, i) => i).join(',');
   {
     const inR = o => typeof o.x === 'number' && here(o);
     const hoard = npcs.find(n => dungIsRiddler(n) && inR(n));
     if (!hoard) { dungHoardRiddle = null; dungHerbClear('riddle'); }   // left the room: drop a stale answer + this panel's box
     else {
-      // Latch while the riddle dialogue is up: it closes as you walk to the container.
       {
         const t = dungDlgText();
         const hit = t && DUNG_HOARD_RIDDLES.find(r => t.indexOf(r.k) >= 0);
@@ -2325,13 +1985,7 @@ function dungReconcileScene(npcs, objs) {
       }
       const r = dungHoardRiddle;
       const cid = (r && DUNG_HOARD_LOC_OBJ[r.loc]) || null;   // id-set: any theme variant
-      // DISPLAY name carries the "(o)" origin suffix that every Daemonheim hoardstalker
-      // item has (the wiki take-table lists them all as "<name> (o)", and the ground
-      // piles spawn with that exact suffix) --. The take-LIST rows drop
-      // it ("Vial of water."), so the highlight MATCH text (`want`) stays without it.
       const itemDisp = r ? r.item + ' (o)' : '';
-      // ONE target, not all of them : a room holds several barrels and
-      // boxing every one was unreadable noise. Nearest to the player wins.
       const nearest = (list, match) => {
         if (!dungSelfPos) return null;
         let best = null, bd = 1e9;
@@ -2343,8 +1997,6 @@ function dungReconcileScene(npcs, objs) {
         return best;
       };
       if (r && r.gid) {
-        // Locations 1 and 3 are floor piles: the answer is a GROUND ITEM carrying an
-        // "(o)" name suffix, so there is nothing to search, just pick it up.
         const g = nearest(dungGroundCache, e => e.id === r.gid);
         if (g && marks.length < 16)
           marks.push({ x: g.x, y: g.y, plane: g.plane || 0, rgb: 0x5fd07a,
@@ -2356,9 +2008,6 @@ function dungReconcileScene(npcs, objs) {
                        label: (r.loc === 2 ? '-Chest' : '-Food barrel')
                               + '\nSearch, take ' + itemDisp });
       }
-      // The take-list can paginate ("(1 OF 2)" with a "More..." row), so box the row by
-      // TEXT and fall back to More... when the item is not on this page. Never key off
-      // the option NUMBER: it shifts between pages. Ground-pile riddles have no list.
       const want = (r && !r.gid) ? (r.opt || r.item) : '';
       if (!want || !(dungHighlightOptionText(DUNG_HOARD_GROUP, DUNG_HOARD_COMPS, want, 'riddle')
                   || dungHighlightOptionText(DUNG_HOARD_GROUP, DUNG_HOARD_COMPS, 'more', 'riddle')))
@@ -2377,22 +2026,12 @@ function dungReconcileScene(npcs, objs) {
   const construct = npcs.find(n => n.id === 11005 && typeof n.x === 'number' && here(n));
   if (construct) { dungGuideTiles(marks); dungHighlightNpc(11005, 'Charge the construct'); return; }
   // Damaged constructs (cache: the three Repair-action ids): 11002 arm, 11003 head
-  // (by elimination -- arm and leg are ), 11004 leg (own branch above).
   const armless = npcs.find(n => n.id === 11002 && typeof n.x === 'number' && here(n));
   if (armless) { dungGuideTiles(marks); dungHighlightNpc(11002, 'Attach an arm'); return; }
   const headless = npcs.find(n => n.id === 11003 && typeof n.x === 'number' && here(n));
   if (headless) { dungGuideTiles(marks); dungHighlightNpc(11003, 'Attach a head'); return; }
   // Monolith room, matched by NAME so every theme's id family works (seen: 10975
   // inactive + 10978 active on frozen, 10979 active w/ Count-charges on abandoned;
-  // the shade needle below is name-matched already). An 'Activate' action (or the
-  // verified inactive id 10975) = the INACTIVE form -> guide activating it; any
-  // other Monolith = active -> progress bar from varc 1233 + box the shades.
-  // At 100% that monolith is DONE: remember its tile and stop guiding it (and the
-  // shades). A monolith at OTHER coordinates is a fresh puzzle and tracks again.
-  // Charged monoliths keep their id and just switch anim on
-  // abandoned: 13069 charging -> 13072 charged, id 10979 both) -- an anim in this
-  // set = DONE even when the varc-1233 latch was missed (e.g. re-entering the
-  // room later). Anim ids are per-theme; extend as observed.
   const DUNG_MONO_DONE_ANIM = { 13072: 1 };
   const monosHere = npcs.filter(n => n.name === 'Monolith' && typeof n.x === 'number'
     && !dungMonoDone[n.x + ',' + n.y] && !DUNG_MONO_DONE_ANIM[n.anim] && here(n));
@@ -2413,11 +2052,6 @@ function dungReconcileScene(npcs, objs) {
           lbl = '[' + '#'.repeat(f) + '-'.repeat(10 - f) + '] ' + Math.round(v / MAX * 100) + '%';
         } else lbl = 'Progress ' + v;
       }
-      // shades FIRST: the reader aims the direction arrow at the first labelled
-      // highlight, and the thing to walk to is a shade, not the monolith. The '*'
-      // match-ALL needle boxes EVERY shade, bounded to +-6 tiles of the monolith
-      // ("x;y;6" anchor -- shades a room over belong to a different monolith).
-      // Needs the launcher rebuilt with the reader's '*'-needle support.
       needles.push('*mysterious shade|Kill|' + mono.x + ';' + mono.y + ';6');
       needles.push('#' + mono.id + (lbl ? '|' + lbl : ''));
       dungGuideTiles(marks); dungHighlightList(needles); return;
@@ -2445,10 +2079,6 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // statues: box the FIRST misplaced pushable with the push it needs, and mark its
-  // target tile in-world (one statue at a time -- the next lights up when this one
-  // lands). Grid-local +x = world east, +y = world north, so the delta reads as
-  // directions directly.
   if (dungStatues) {
     const mis = dungStatues.find(s => !s.done);
     if (mis) {
@@ -2465,19 +2095,11 @@ function dungReconcileScene(npcs, objs) {
   dungGuideTiles(marks);
   dungHighlightNpc(0);   // nothing to guide -> clear
 }
-// per-party-member colours (p1..p5; the player's own arrow stays red). Picked for
-// contrast against the brown room tiles AND the dark board -- no yellows/ambers
-// (invisible on the tan floor art).
 const DUNG_PARTY_COLS = ['#39d3d3', '#f06bd8', '#e8ecff', '#8c5aff', '#6bf06b'];
 const dungMateCol = pn => DUNG_PARTY_COLS[(pn - 1) % DUNG_PARTY_COLS.length] || DUNG_PARTY_COLS[0];
-// camera-yaw -> arrow rotation, calibrated : SIGN +1, OFFSET 180
 // (north-camera -> north arrow; NE -> NE). yaw 5115 runs the SAME rotational sense
-// as the screen once offset by 180deg.
 const DUNG_YAW_SIGN = 1, DUNG_YAW_OFFSET = 180;
 
-// World tile -> (room delta from the anchor room, in-room local 0..13) on the 16-pitch
-// grid, anchored at the start room's SW corner. Gap tiles (local 14/15) clamp onto the
-// room to their west/south, so a marker in a doorway draws at that room's wall.
 function dungRoomOf(sw, wx, wy) {
   const dx = wx - sw.x, dy = wy - sw.y;
   const rx = Math.floor(dx / DUNG_ROOM_PITCH), ry = Math.floor(dy / DUNG_ROOM_PITCH);
@@ -2485,9 +2107,6 @@ function dungRoomOf(sw, wx, wy) {
            lx: Math.min(dx - rx * DUNG_ROOM_PITCH, DUNG_ROOM_W - 1),
            ly: Math.min(dy - ry * DUNG_ROOM_PITCH, DUNG_ROOM_W - 1) };
 }
-// In-room local (0..13) -> pixel offset inside the 56px map cell. Half-span 20px is
-// slightly compressed so an 18px marker at the far wall still sits INSIDE the room
-// tile (at full span the arrow overhung the border and read as "in the gap").
 function dungSubPx(lx, ly) {
   const H = 28, S = 20, R = (DUNG_ROOM_W - 1) / 2;   // centre of the 0..13 span = 6.5
   if (typeof lx !== 'number' || typeof ly !== 'number') return { left: H, top: H };   // unknown -> centre
@@ -2506,8 +2125,6 @@ function dungKeyInfo(item) {
            name: color + ' ' + DUNG_KEY_SHAPES[i & 7] + ' key' };
 }
 
-// The eight door-key SHAPES as inline glyphs (triangle, diamond, rectangle,
-// pentagon, corner, crescent, wedge, shield), filled with the key colour.
 const DUNG_SHAPE_PATHS = [
   'M6 1 L11 10.5 H1 Z',
   'M6 0.8 L11.2 6 L6 11.2 L0.8 6 Z',
@@ -2525,24 +2142,15 @@ function dungShape(si, hex, px) {
 
 // Complete map-marker tables from the renderer CS2 script5999:
 //   room graphics 2831 = start, 2833 = boss; keys enum 3008 (24px obj);
-//   skill-door graphics enum 371 keyed by skill id (16px), names enum 108;
 //   player arrow 2825-2829 by facing; gatestone objs 17489 / 29468 / 18829.
 const DUNG_START_SPR = 2831, DUNG_BOSS_SPR = 2833;
 // unexplored room art: "?" tiles (2787-2790 / 2806-2809) + dark key/skill-locked
 // (35883-35886). A room whose bg is ONLY these hasn't been entered yet.
-// Unexplored = the map cell shows ONLY "?" sprites. Read from the artwork, never
-// inferred from door bits -- doors = 0 means "no exits known", which is a different
-// thing and got this wrong three separate ways on.
 function dungCellUnex(c) {
   return !!(c && c.bg && c.bg.length && c.bg.every(sp => DUNG_UNEX_SPR.has(sp)));
 }
 const DUNG_UNEX_SPR = new Set([2787, 2788, 2789, 2790, 2806, 2807, 2808, 2809, 35883, 35884, 35885, 35886]);
-// NB: a "non-critical path" theory (dark-hatch room sprites = skippable side rooms)
-// was DISPROVEN by live readings -- the dark tier just means "unexplored", shared by
-// plain "?" rooms AND locked/skill-door rooms, and such rooms sit on the critical path
-// with no alternative. So no non-crit marking is drawn.
-// three gatestones; the room is outlined in the stone's colour (sampled from its
-// item icon). 17489 personal (teal), 29468 second (red), 18829 group (blue).
+// 17489 personal (teal), 29468 second (red), 18829 group (blue).
 const DUNG_GATESTONES = {
   17489: { name: 'Gatestone', color: '#5ae1b4' },
   29468: { name: 'Gatestone 2', color: '#e1625a' },
@@ -2558,11 +2166,6 @@ const DUNG_SKILL_DOOR = {
   30934: 'Necromancy', 1817: 'Quest', 1818: 'Quest',
 };
 
-// Room-tile sprite -> door bitmask (N=1 E=2 S=4 W=8). A door = a floor STUB that
-// reaches the outermost tile-edge pixel at the edge centre (walls are inset 2+px);
-// decoded from the js5-8 room sprites and verified mutual against live grid
-// connectivity. Two adjacent rooms link only when BOTH carry the
-// matching door. Sprites not listed => doors unknown, no line.
 const DUNG_ROOM_DOORS = {
   2787: 4, 2788: 8, 2789: 1, 2790: 2, 2791: 4, 2792: 8, 2793: 1, 2794: 2,
   2795: 12, 2796: 9, 2797: 3, 2798: 6, 2799: 13, 2800: 11, 2801: 7, 2802: 14,
@@ -2577,17 +2180,9 @@ function dungFetchGroup(gid) {
   catch (e) { return []; }
 }
 
-// Party interface groups: 91 = Daemonheim lobby formation panel, 92 = in-dungeon
-// party list. Both carry the member names in TEXT comps 19-23.
 const DUNG_PARTY_GROUPS = [91, 92];
-// Placeholder labels that occupy a name slot before the party is formed (comp 19
-// shows "Party Leader" until a real leader name replaces it) -- never a real name.
 const DUNG_PARTY_LABELS = { 'Party Leader': 1, 'Party Member': 1, 'Party member': 1 };
 
-// RS display names in interface text carry NON-BREAKING spaces (u00a0), e.g.
-// "Aurni x" -- normalise to a plain space so the roster key, the scene name and the
-// hiscores lookup (aurni_x) all agree. Module-level so both the tab fetch and the
-// off-tab tick share it.
 function rosterKey(s) { return (s || '').replace(/\s+/g, ' ').replace(/["<>&]/g, '').trim(); }
 
 function dungRosterAdd(n) {
@@ -2599,41 +2194,20 @@ function dungRosterAdd(n) {
   dungPartyRoster[n] = 1;
 }
 
-// Party roster (from the party interface group 92 name slots comps 19-23) + official
-// index_lite hiscore fetch. Runs during FORMATION (group 92 open in the lobby) as well
-// as inside a dungeon, so stats are ready before the first floor. Each new name is
-// asked once; pending/ok entries never re-ping (the bridge caches per session), so
-// polling is free. Returns true if the party interface was open.
 function dungPumpPartyHiscores(party92) {
-  // The local player's own name from the account snapshot (works in the lobby too, before
-  // any scene read sets dungSelfName). Self is NEVER hiscore-fetched: the local live skills
-  // come from the client's own memory (the stats panel / dungSkillLevel), so a self lookup
-  // would be a wasted call.
   try { if (lastSnap && lastSnap.display_name) dungSelfName = rosterKey(lastSnap.display_name); } catch (e) {}
-  // name slots comps 19-23 of whichever party interface is open: group 91 = the
-  // Daemonheim LOBBY formation panel, group 92 = the in-dungeon party list. Both use
-  // the same layout.
   if (party92)
     for (const gid of DUNG_PARTY_GROUPS)
       for (const w of dungFetchGroup(gid)) {
         const comp = w.t ? w.t[1] : -1;
         const raw = w.x;
-        // A REAL display name renders its internal space as a non-breaking space
-        // (U+00A0); the interface's placeholder/role labels ("Party Leader", "Invite
-        // Player") use a regular space -- so a raw regular space marks a label, not a
-        // member. Belt-and-braces: also drop the known placeholder strings. (If the
-        // reader ever normalises NBSP->space, the denylist still catches "Party Leader".)
         if (comp >= 19 && comp <= 23 && raw && raw.length >= 1 && raw.length <= 20
             && raw.indexOf(' ') < 0 && !DUNG_PARTY_LABELS[raw])
           dungRosterAdd(rosterKey(raw));
       }
-  // prune any placeholder that leaked in earlier (e.g. before this filter existed):
-  // drop it from the roster and its fetch bookkeeping so it stops showing as a member.
   for (const l in DUNG_PARTY_LABELS) {
     delete dungPartyRoster[l]; delete dungHsPoll[l]; delete dungHsDone[l]; delete dungPartyStats[l];
   }
-  // heal a roster that already forked before the identity dedupe existed: the same
-  // player under two byte-variants doubled the party count and the hiscore fetches
   {
     const seen = {};
     for (const n of Object.keys(dungPartyRoster)) {
@@ -2663,11 +2237,6 @@ function dungPumpPartyHiscores(party92) {
       } catch (e) {}
     }
   }
-  // Share the local player's LIVE levels with the party as a 'hiscore' fact -- hiscores lag
-  // behind live training, which made two clients band the same room differently
-  // (. Every member shares live, every member merges the
-  // shared values, so the rules run on identical numbers everywhere. Re-sent only
-  // when a level (or the code) changes; the local copy ignores the echo (dungIsSelf).
   try {
     if (dungSelfName && lastSnap && lastSnap.skills && dungSyncCode()) {
       const lv = SKILL_NAMES.map((_, i) => dungSkillLevel(i));
@@ -2679,17 +2248,10 @@ function dungPumpPartyHiscores(party92) {
   return !!party92;
 }
 
-// ---- Cross-PC party sync (manual code): relay facts one member learns to the rest via
-// the RuneTools server. The launcher holds the shared cache + SSE stream; this panel just
-// report locally-learned facts and merge received ones. See Bridge.cpp party* fns.
 function dungPartyReport(kind, data) {
   try { if (bridge().partyReport && bridge().partyGetCode && rtxData.sync('party.partyGetCode'))
           rtxData.sync('party.partyReport', kind, JSON.stringify(data)); } catch (e) {}
 }
-// Merge the launcher's party cache into local state. Received DOORS fill dungDoorLevels
-// for cells not examined locally; received HISCORES fill dungPartyStats AND mark the name
-// done so that player is never looked up again. Never re-reports
-// (only local captures report), so there's no echo loop.
 function dungPartyMerge() {
   dungSyncCode();   // touch partyGetCode -> loads the persisted code + starts the SSE loop if idle
   let pd = null;
@@ -2699,23 +2261,11 @@ function dungPartyMerge() {
   for (const name in hs) {
     if (dungIsSelf(name)) continue;                 // the local live stats win
     if (Array.isArray(hs[name])) {
-      // OVERWRITE, not first-write-wins: a member's live-shared levels must replace
-      // the lagged official hiscore this client may have fetched first, so every
-      // client converges on the same numbers (the server cache is the shared truth).
       dungPartyStats[name] = hs[name];
       dungHsDone[name] = 1; delete dungHsPoll[name];   // don't fetch what a teammate already shared
     }
   }
-  // doors + non-crit marks are FLOOR-scoped: right after a floor change is detected
-  // (and reported 'reset'), the launcher cache may still hold the previous floor's
-  // facts until the reset round-trips -- skip re-ingesting them during the hold.
-  // Hiscores above are party-scoped and always safe to merge.
   if (Date.now() < dungPartyHoldUntil) return;
-  // MIRROR GUARD: until the bridge has received an actual server snapshot for this
-  // code, its cache is NOT the party's truth -- acting on it deletes the player's own
-  // fresh non-crit mark 3s after the click whenever the report round-trip wasn't
-  // live yet (server not deployed / stream still connecting; 
-  // as "marks flip back by themselves").
   if (!pd.synced) return;
   const doors = pd.doors || {};
   for (const cell in doors) {
@@ -2723,14 +2273,6 @@ function dungPartyMerge() {
     if (d && d.skill && d.level && !dungDoorLevels[cell])
       dungDoorLevels[cell] = { skill: d.skill, level: d.level | 0, shared: true };
   }
-  // Room-mark mirrors. Two safety rules learned the hard way:
-  // (1) mirror a fact kind ONLY when the launcher's payload actually carries its
-  //     field -- an older build/server omits it entirely, and treating "absent" as
-  //     "empty set" deletes the player's fresh local marks;
-  // (2) REMOVAL is ack-based: a mark may only be mirror-removed after it has been
-  //     SEEN in the shared set at least once (a real teammate un-mark). A mark whose
-  //     report never landed (rejected kind, lost POST) stays local forever instead
-  //     of silently vanishing after the 3s hold.
   const now = Date.now();
   if (Array.isArray(pd.noncrit)) {
     const want = {};
@@ -2749,9 +2291,6 @@ function dungPartyMerge() {
     for (const cell in dungManualCrit)
       if (!wantC[cell] && !freshC(cell) && dungManualCritSeen[cell]) { delete dungManualCrit[cell]; delete dungManualCritSeen[cell]; }
   }
-  // manual key promotions/demotions are OVERRIDES relayed as deltas (idx -> 1/0):
-  // on = ensure critical (an existing auto reason is kept), off = demote + block the
-  // auto-latch here too. Same 3s hold protects the local fresh toggle from the echo.
   const ck = pd.critkeys || {};
   for (const i in ck) {
     const ki = +i;
@@ -2763,58 +2302,19 @@ function dungPartyMerge() {
 }
 
 
-// client.html owns ONE shared tooltip (#global-tip): a document-level mouseover on [data-tip]
-// rendering the attribute as text (white-space: pre-line, so a newline in the attribute gives
-// a new line). The map uses THAT; never add a second implementation. A `title` attribute
-// would become a second tooltip the day the engine honours it, so move them all onto this
-// panel's own attribute after each render.
 function dungStripTitles(root) {
   if (!root) return;
   const els = root.querySelectorAll('[title]');
   for (let i = 0; i < els.length; i++) {
     const el = els[i], t = el.getAttribute('title');
     el.removeAttribute('title');
-    // INSIDE a map cell the ROOM's tooltip is the one worth reading. A marker with its
-    // own data-tip wins closest() and replaced the room's whole reasoning with a single
-    // line ("Woodcutting door"), hiding the captured level and the critical/non-essential
-    // verdict  -- so markers lose the title and inherit the room's.
     if (el.closest && el.closest('.dg-cell')) continue;
     if (t && !el.getAttribute('data-tip')) el.setAttribute('data-tip', t);
   }
 }
-// ===========================================================================
-// CRITICAL-PATH PLANNER
-// ===========================================================================
-// ONE objective-directed model rework). It replaces a split brain:
-// a graph-based "critical path" and a separate point-scored "explore next" that
-// shared no inputs and could contradict each other on screen (the pink chain
-// pointing one way while the explore ring pointed another).
-//
-//   FACTS -> STRUCTURE -> INFERENCE -> PROOFS -> RANKING -> PLAN -> RENDER
-//
-// Two properties the model guarantees:
-//  * everything is DERIVED FRESH from latched OBSERVATIONS (a key seen on the
-//    floor, a door requirement examined, a room marked), so nothing
-//    goes stale when the map opens up;
-//  * the derivation runs to a FIXED POINT, so a conclusion that unlocks another
-//    (key is critical -> its door room is evidence -> its approach chain -> a
-//    key lying on that chain) settles in the SAME tick, not one poll per hop.
-// The recommendation is simply the FIRST STEP of the winning plan, so "where to
-// go next" and "where the path runs" can no longer disagree.
 
 const DUNG_DIRS = [[1, 0, -1], [2, 1, 0], [4, 0, 1], [8, -1, 0]];   // doorBit, dx, dy (N E S W)
-// ROOM SPACE. From an unmapped cell, run a ray in each of
-// the four directions and count the free cells until the ray leaves the floor or hits a
-// an already-known room. The sum is how much room the dungeon still has to grow THAT
-// WAY. It is deliberately LOCAL and cheap -- unlike the flood-fill `area` below, which
-// measures a frontier's exclusive catchment, this measures elbow room, and the two
-// disagree usefully: a cell wedged between known rooms scores low even when the flood
-// beyond it is huge.
 function dungRoomSpace(rooms, floor, key) {
-  // Same 8x8 fallback as dungFrontierArea. A ray is bounded by the floor edge or a
-  // known room and NOTHING ELSE, so on a poll where the map root widget was missed
-  // (floor unset) an east/south ray with no room ahead of it never terminated and the
-  // panel froze inside this loop (probe.
   const cols = (floor && floor.cols) || 8, rows = (floor && floor.rows) || 8;
   const p = key.split(',').map(Number);
   let total = 0;
@@ -2826,51 +2326,23 @@ function dungRoomSpace(rooms, floor, key) {
   }
   return total;
 }
-// CRITICAL-ROOM BUDGET. A large floor's critical chain is always
-// 19..23 rooms INCLUDING the start room and the boss room. So once k of them are
-// identified, between 19-k and 23-k remain. Two things fall out of that:
-//   * a frontier whose entire reachable unknown area is SMALLER than the minimum
-//     remaining count cannot possibly contain the rest of the chain -- it is a side
-//     branch by arithmetic, not by guesswork;
-//   * when the maximum remaining hits 0 the chain must already be complete, so the
-//     boss is reachable through rooms seen so far.
-// Large-floor critical trees span 18..23 rooms INCLUDING the start and boss rooms.
 const DUNG_CRIT_MIN = 18, DUNG_CRIT_MAX = 23;
-// `critKeysHeld` = critical keys in the pack. Each one is a door that still has to be
-// opened, and the room behind it is ON the chain -- so it is already accounted for
-// among the remaining rooms. The rooms still to find by
-// EXPLORING is therefore the remainder MINUS those. This is the `need` the expected-
-// rooms figure is measured against; it was also the bound of a `fits` gate that rejected
-// branches outright, removed -- a small region is less likely to hold the
-// chain, not incapable of it.
-// `foundOverride`: identified-room count supplied by a caller that runs BEFORE onPath
-// is painted (the planner ranks first and paints after, and `rooms` is rebuilt every
-// poll, so counting onPath mid-plan always came out as start+boss and the tooltip's
-// need sat at ~18 all floor while the header said 13 -- probe.
 function dungCritBudget(rooms, critKeysHeld, foundOverride) {
   let found = 0;
   if (foundOverride != null) found = foundOverride;
   else for (const k in rooms) {
     const r = rooms[k];
-    // An unexplored room is never FOUND. The planner sets onPath on the frontier it
-    // RECOMMENDS (for the pink route look), and counting that guess inflated the
-    // header by one whenever a recommendation was up. A ?-room marked
-    // critical stays counted: that is an identification, not a guess.
     if (r && (r.start || r.boss || (r.onPath && (!r.unex || dungManualCrit[k])))) found++;
   }
   const keyed = Math.max(0, critKeysHeld || 0);
   const min = Math.max(0, DUNG_CRIT_MIN - found);
   const max = Math.max(0, DUNG_CRIT_MAX - found);
   return { found: found, min: min, max: max, keyed: keyed,
-           // still to DISCOVER: the keyed rooms are remaining, but not unknown
            unkMin: Math.max(0, min - keyed),
            unkMax: Math.max(0, max - keyed) };
 }
 const DUNG_OPPBIT = { 1: 4, 2: 8, 4: 1, 8: 2 };
 
-// Mutual-door neighbours -- both rooms must carry the shared edge's door (the same
-// rule the connector bars are drawn with). A room whose sprite cannot be read has
-// no known exits and ends a chain.
 function dungNbrs(rooms, kk) {
   const c = rooms[kk];
   if (!c || c.doors === undefined) return [];
@@ -2884,7 +2356,6 @@ function dungNbrs(rooms, kk) {
   }
   return out;
 }
-// BFS over the room graph; canEnter(cell) gates passage (locked doors, exclusions).
 function dungBfs(rooms, from, canEnter) {
   const par = {}, dist = {};
   if (!rooms[from]) return { par: par, dist: dist };
@@ -2904,7 +2375,6 @@ function dungPath(par, k) {
   for (let c = k; c != null && par[c] !== undefined; c = par[c]) out.push(c);
   return out.reverse();
 }
-// Key ledger straight from observations: where each key is and which door needs it.
 function dungLedger(rooms, held) {
   const led = {}, at = i => (led[i] = led[i] || { held: false, floor: null, door: null });
   held.forEach(i => { at(i).held = true; });
@@ -2915,10 +2385,6 @@ function dungLedger(rooms, held) {
   }
   return led;
 }
-// Rooms reachable from `from` once every key that can be picked up ALONG THE WAY is taken.
-// A key never makes anything unreachable, so this greedy closure is exact -- and it
-// IS the elimination model: a locked frontier whose key is nowhere on the map simply
-// never enters the reachable set.
 function dungReachClosure(rooms, from, led, held) {
   const keys = new Set(held);
   let out = dungBfs(rooms, from, null), grew = true, guard = 0;
@@ -2932,8 +2398,6 @@ function dungReachClosure(rooms, from, led, held) {
   }
   return { reach: out, keys: keys };
 }
-// Unknown floor-grid area each frontier gates (ties shared) -- the prior on "the
-// boss is this way" before any other evidence exists.
 function dungFrontierArea(rooms, fronts, floor) {
   const area = {}, dist = {};
   for (const f of fronts) {
@@ -2949,28 +2413,6 @@ function dungFrontierArea(rooms, fronts, floor) {
     }
     dist[f] = d;
   }
-  // REGION = THE BOUNDING BOX OF THE FOUR RAYS. Cast a ray from the room in each
-  // direction, counting free cells until a known room or the floor edge stops it, then
-  //
-  //     width  = left + right + 1     (the +1 is the room itself)
-  //     height = up   + down  + 1
-  //     region = width * height
-  //
-  // Exactly as specified : the shield door had 1 left, 1 right and 5
-  // down -> 3 x 6 = 18; the ? had 5 left and 2 right with nothing above or below ->
-  // 8 x 1 = 8. The shield door has far more area available, and this says so.
-  //
-  // WHY NOT THE OTHER TWO THINGS THIS HAS BEEN:
-  //  - A FLOOD counts everything eventually reachable. Free space on a part-explored
-  //    floor is normally one connected blob -- a strip along the top joins the block down
-  //    the right by squeezing around a corner -- so every frontier scores the whole thing
-  //    and none of them can be told apart (measured: 48 vs 45 on a case where the honest
-  //    answer is 8 vs 18).
-  //  - The LINE SUM is these same four rays ADDED, which is a perimeter, not an area: it
-  //    scores a 1-wide corridor of 7 the same as a block that is 7 cells across.
-  //
-  // Multiplying the extents is what turns the rays into an area. It cannot leak around a
-  // corner, because a box has no corners to turn.
   const cols = (floor && floor.cols) || 8, rows = (floor && floor.rows) || 8;
   for (const f of fronts) {
     const p = f.split(',').map(Number);
@@ -2987,9 +2429,6 @@ function dungFrontierArea(rooms, fronts, floor) {
   }
   const all = {};
   for (const f of fronts) for (const k in dist[f]) if (!rooms[k]) all[k] = 1;
-  // Total reachable unmapped space -- the denominator for the share each frontier
-  // commands. Cells reachable from TWO frontiers are counted once here but credited to
-  // both above, which is correct: a room there really is reachable either way.
   area['#allcells'] = Object.keys(all).length;
   for (const k in all) {
     let bd = Infinity, own = [];
@@ -3003,9 +2442,6 @@ function dungFrontierArea(rooms, fronts, floor) {
   return area;
 }
 
-// The planner. Annotates `rooms` in place (onPath / critSelfWhy / critPathWhy /
-// rec / need / recWhy / unex / pot) and returns the route edges + derived key
-// criticality + the chosen action.
 function dungPlan(rooms, ctx) {
   const startKey = ctx.startKey, held = ctx.held, floor = ctx.floor;
   const from = (ctx.playerKey && rooms[ctx.playerKey]) ? ctx.playerKey : startKey;
@@ -3020,101 +2456,37 @@ function dungPlan(rooms, ctx) {
     c.deadBranch = false; c.refuted = false; c.keyFrom = null; c.keyFromAssumed = false;
   }
 
-  // ===========================================================================
-  // STAGE A -- FACTS. Latched observations only, nothing derived: which key
-  // came out of which room (keyCameFrom / keyFrom), the boss and start cells,
-  // and which persisted criticality latches count as FACTS. Manual marks
-  // (dungManualCrit / dungManualNonCrit), door readings (dungDoorLevels) and
-  // the key-door latch (dungKeyDoor) are module state read directly by the
-  // stages below.
-  // ===========================================================================
-  // ---- STRUCTURAL REFUTATION FIRST (rewrite, : "there was no key in
-  // that room? it wasnt critical?") ----
-  // The model's core split: FACTS (a key was taken here, a critical key's door, the
-  // boss, your own mark) versus INFERENCES (a near-level door reading, a top-tier
-  // resource -- priors on where the chain runs). Only facts may latch as proofs;
-  // an inference must RETRACT the moment structure disproves it. Grading a door reading
-  // "confirmed" and latching it HARD leaves an opened level-93 door onto one empty fishing
-  // dead end stuck
-  // "a critical room" forever. Refutation is therefore computed FIRST, from the map
-  // alone, and the evidence pass consults it.
-  // An ASSUMED source (key ring flipped while a teammate picked it up elsewhere) may
-  // not argue anything, vetoes included -- it may be naming the wrong room entirely.
-  //
-  // EXCEPT ON A SOLO FLOOR. The whole distrust exists because the shared key ring also
-  // flips on a TEAMMATE's pickup; with nobody else in the instance, a ring flip while
-  // standing in a room PROVES the pickup happened there. Keeping the distrust solo made
-  // the yellow-pentagon room read "Spur --... with no key" while its own tooltip said
-  // a key entered the ring there, and the room dropped off the path.
   const soloFloor = Object.keys(dungPartyRoster).length <= 1;
   const srcUsable = sc => sc && typeof sc.x === 'number' && (!sc.assumed || soloFloor);
-  // Key origins (also feeds the render: keyFrom = what the room contained).
   const keyCameFrom = {};
   for (const si in dungKeySrc) {
     const sc = dungKeySrc[si];
     if (sc && typeof sc.x === 'number') {
       const cc = ctx.cellOfWorld(sc.x, sc.y);
-      // keyFrom = what the room CONTAINED, fine to report from an assumed source.
-      // keyCameFrom = an argument that you HAD to come here, which an assumed source
-      // cannot support, because it may be naming the room a teammate was standing in.
       if (cc) {
         if (rooms[cc]) { rooms[cc].keyFrom = si; rooms[cc].keyFromAssumed = !!sc.assumed; }
         if (!sc.assumed || soloFloor) keyCameFrom[cc] = si;   // solo: the flip IS proof
       }
     }
   }
-  // The boss and start cells -- anchor facts for every stage below.
   let bossCell = null, startCell = null;
   for (const kk in rooms) {
     if (rooms[kk].boss) bossCell = kk;
     if (rooms[kk].start) startCell = kk;
   }
-  // A surviving FACT latch also protects: a hard latch is a point fact whose
-  // observation may have vanished between polls (key-source lost -- the
-  // rule) and structure must not prune it. Old builds also latched DOOR INFERENCES
-  // hard ("the level-NN <skill> door room") and persisted them; the new code never
-  // latches that why-string, so its shape identifies a stale inference latch, which
-  // gets NO protection and is cleared below once its branch is proven empty.
   const staleInfLatch = kk => {
     const w = dungCritLatch[kk] ? String(dungCritLatch[kk]) : '';
     return !!w && (w[0] === '~' || /^the level-\d+ /.test(w));
   };
   const factLatch = kk => !!dungCritLatch[kk] && !staleInfLatch(kk);
 
-  // ===========================================================================
-  // STAGE B -- STRUCTURE. Pure map geometry -- no evidence is weighed here:
-  // start-rooted BFS (sTop), the settled boss route (routeSet), the filler
-  // shadow (lowVia) + key filler veto, the finished-and-empty branch fixpoint
-  // (deadBranch) with refuted flags, the frontier list, the reachability
-  // closure (cl / live) and each frontier's region (area).
-  // ===========================================================================
-  // Topological BFS from the START room: the floor's own structure, independent of
-  // where the player happens to be standing. Used to judge which frontier a piece of
-  // evidence actually gates (see the ranking below); the room graph doesn't change
-  // between passes, so it is computed once.
   const sTop = dungBfs(rooms, (startKey && rooms[startKey]) ? startKey : from, null);
-  // THE SETTLED ROUTE, computed UP FRONT (it needs only the room graph).
   let routeSet = null;
-  // One start-rooted, lock-blind BFS, shared by the settled route and the fetch chains below,
-  // so the settled route obeys the same MUTUAL-door rule as every other traversal.
   const sFull = startCell ? dungBfs(rooms, startCell, null) : null;
   if (bossCell && sFull && sFull.dist[bossCell] !== undefined) {   // boss actually reachable
     routeSet = {};
     for (let c = bossCell; c != null; c = sFull.par[c]) { routeSet[c] = 1; if (c === startCell) break; }
   }
-  // FILLER SHADOWS WHAT IT GATES. A room whose lowest-tier resource is filler is side
-  // content, and so is anything you can only reach THROUGH it -- generated floors keep
-  // filler with filler ("the room(s) beyond it should have been also
-  // marked as non-critical"). They have to be MARKED, not merely deprioritised, or the
-  // map still shows them as ordinary unexplored rooms worth visiting.
-  // FILLER GATES EVERYTHING BEHIND IT -- computed FIRST, because it is a VETO and a
-  // veto has to be in hand before any evidence is weighed, or a room can be marked critical
-  // on key evidence and only then be found to sit behind filler.
-  // Reachable from start WITHOUT entering a filler room; anything known but not
-  // reachable that way sits behind one.
-  // Rooted at the start like sTop, with the same player-room fallback: the ranking's
-  // filler veto reads lowVia (see the grade), so a floor whose start room was misread
-  // must not silently lose the veto altogether.
   const cleanRoot = (startKey && rooms[startKey]) ? startKey : (rooms[from] ? from : null);
   if (cleanRoot) {
     const clean = dungBfs(rooms, cleanRoot,
@@ -3125,22 +2497,6 @@ function dungPlan(rooms, ctx) {
       if (clean[kk] === undefined) r.lowVia = true;   // only reachable via filler
     }
   }
-  // A KEY IS NOT CRITICAL UNTIL PROVEN. Every automatic derivation has now been removed
-  // (repeatedly). They all reduced to "this key is needed to get past the
-  // next door", which is a fact about the CURRENT frontier, not about the boss chain --
-  // and on a barely-explored floor every room is trivially a cut vertex, so they fired on
-  // essentially every key. The panel had 4 keys flagged critical at 5/64 rooms explored.
-  // What remains: dungCritKeys, i.e. keys YOU promoted or a party mate relayed. The
-  // planner still fetches keys it needs (that is the `needkey` action and does not depend
-  // on criticality) -- it just stops CALLING them critical.
-  // A KEY FOUND BEHIND FILLER CANNOT BE CRITICAL. Not a weighting, a structural
-  // impossibility: if the only way to that key is through a filler room, then the key is
-  // off the path, whatever anyone has marked it ("it literally cant be
-  // critical as it lives behind a low level resource"). This OVERRIDES party marks,
-  // because a mate's mark may itself be a guess -- but NOT the player's OWN promotion:
-  // a hand mark on this floor is the player overruling the prior, same as dungManualCrit
-  // overrules lowVia on a room. (Before, the chip said "critical" while the planner
-  // silently ignored it -- the two must not disagree without saying so.)
   const keyBehindFiller = {};
   for (const si in dungKeySrc) {
     const sc = dungKeySrc[si];
@@ -3151,17 +2507,7 @@ function dungPlan(rooms, ctx) {
     if (cr && (cr.lowVia || cr.resLow) && !dungManualCrit[cc]) keyBehindFiller[si] = 1;
   }
   dungKeyFillerVeto = keyBehindFiller;   // published so the key chips can SAY it is vetoed
-  // Same rule as dungKeyIsCrit, plus the filler veto above.
   const isCritKey = i => !keyBehindFiller[i] && dungKeyIsCrit(i);
-  // FINISHED-AND-EMPTY BRANCHES, to a fixpoint (backwards prune). A room is proven
-  // OFF the chain when everything beyond it is explored and yielded nothing: not the
-  // start/boss/your mark, no locked door, no key in it, no key reported from it (any
-  // source, assumed included -- pruning a possible key room is worse than keeping a
-  // spur), and no door to undiscovered space (a frontier is unfinished business).
-  // Purely structural -- evidence and latches deliberately have NO say here: this
-  // verdict is exactly the "strong evidence" that demotion requires, and it is what
-  // retracts a refuted door/resource prior. A prune that skipped evidenced and latched
-  // rooms could never take one off the path.
   const deadBranch = {};
   for (let dp = 0; dp < 64; dp++) {
     let changed = false;
@@ -3170,9 +2516,6 @@ function dungPlan(rooms, ctx) {
       if (!c || deadBranch[kk] || c.boss || c.start || dungManualCrit[kk] || factLatch(kk)) continue;
       if (c.unex || !c.doors) continue;               // no verdict without data
       if (c.key || (c.groundKeys && c.groundKeys.length) || c.keyFrom || keyCameFrom[kk]) continue;
-      // "No key here" is only trusted once the room has been open a moment: the map
-      // shows the room a few frames before the ground scan can report its key, and
-      // pruning in that window would eat a possible key room.
       if (!dungOpenedAt[kk] || planNow - dungOpenedAt[kk] < 1200) continue;
       const p0 = kk.split(',').map(Number);
       let live = 0, frontier = false;
@@ -3187,22 +2530,11 @@ function dungPlan(rooms, ctx) {
     }
     if (!changed) break;
   }
-  // Rooms whose criticality PRIOR the prune just disproved -- the render says
-  // "retracted" instead of repeating the refuted claim.
   for (const kk in deadBranch) {
     const c = rooms[kk];
     if (c && (dungDoorBand(dungDoorLevels[kk]) === 'critical'
               || (c.res && c.res.band === 'critical'))) c.refuted = true;
   }
-  // THE BOSS ON THE MAP SETTLES EVERY UNKNOWN. The boss icon only appears once the
-  // room has been walked into, and walking in means the whole critical tree between
-  // start and boss was ALREADY opened: any room still unopened now (locked doors
-  // included) hangs off the path, and every critical key was already spent. So:
-  //  - unopened rooms join the dead-branch set (manual promotions and fact latches
-  //    stay the player's overrule, as everywhere);
-  //  - solo (where the key ring is trustworthy), a key whose door was never even
-  //    SEEN cannot gate the route: veto its crit mark like a filler key. Party
-  //    floors keep the mark: a mate may have seen the door this client never did.
   if (bossCell) {
     for (const kk in rooms) {
       const c = rooms[kk];
@@ -3216,82 +2548,46 @@ function dungPlan(rooms, ctx) {
     }
   }
 
-  // OBJECTIVES -- the boss once found, otherwise every live frontier.
   const bossKey = bossCell;   // the boss, once mapped, is the only objective
   const fronts = [];
   for (const kk in rooms) {
     if (rooms[kk].boss) continue;   // the destination, never a frontier
-    // A room still showing a LOCKED DOOR is unexplored space whatever its background
-    // sprite says (the map only draws the lock while it is shut). Keying frontiers on
-    // the sprite alone meant a room whose key is held could never be the objective,
-    // so the planner sent the player exploring a level-45 skill door instead.
     if ((rooms[kk].unex || rooms[kk].key) && !dungManualNonCrit[kk]) fronts.push(kk);
   }
   const cl = dungReachClosure(rooms, from, led, held);
   const cands = bossKey ? [bossKey] : fronts;
   const live = cands.filter(t => cl.reach.dist[t] !== undefined);
-  // rooms opening directly off the one the player is standing in
   const adjToPlayer = new Set(rooms[from] ? dungNbrs(rooms, from) : []);
   const planDiag = { rooms: Object.keys(rooms).length, fronts: fronts.length, live: live.length,
                from: from || '-' };
   const area = fronts.length ? dungFrontierArea(rooms, fronts, floor) : {};
 
-  // ===========================================================================
-  // STAGE C -- INFERENCE (the evidence pass): why a room matters in its own
-  // right. evid = why-string, evStr = ranking strength (2 confirmed / 1 prior),
-  // evFact = latchable proof. Strength and factness are separate AXES: a read
-  // near-level door RANKS as confirmed but is an inference and must retract;
-  // only facts may latch.
-  // ===========================================================================
   const evid = {}, evStr = {}, evFact = {};
-  // ASSUMED sources are excluded ON PARTY FLOORS: the shared key ring flips on a
-  // TEAMMATE's pickup too, so an assumed source may be naming whatever room this client's
-  // player was standing in. Solo, the flip is proof (srcUsable).
   const srcCells = {};
   for (const si in dungKeySrc) {
     if (!isCritKey(si) || !srcUsable(dungKeySrc[si])) continue;
     const cell = ctx.cellOfWorld(dungKeySrc[si].x, dungKeySrc[si].y);
     if (rooms[cell]) srcCells[cell] = dungKeyName(+si) || 'key';
   }
-  // THE DOOR A CRITICAL KEY OPENED STAYS EVIDENCE. `c.key` exists only while the door
-  // is SHUT, but the usual discovery order is: use the key, explore beyond, THEN
-  // realise the key was critical and promote it -- at which point the marker is gone
-  // and the "door needing the critical key" branch below can never fire. dungKeyDoor
-  // latched the cell while it was shut; read it, same rule as dungDoorLevels
-  // ("door levels outlive the marker", ).
   const critDoorCell = {};
   for (const i in dungKeyDoor) {
     if (isCritKey(i) && rooms[dungKeyDoor[i]]) critDoorCell[dungKeyDoor[i]] = dungKeyName(+i) || 'key';
   }
-  // Evidence is GRADED, not just counted : a captured door
-  // requirement, a critical key or the boss is something that can be CONFIRMED about this
-  // floor; a top-tier resource is only a prior on where content was generated. A
-  // confirmed room therefore outranks any number of resource rooms -- counting them
-  // equally let three distant T10s outvote a confirmed 101 Mining door next door.
   for (const kk in rooms) {
     const c = rooms[kk];
     if (dungManualNonCrit[kk]) continue;
-    // str: 2 = ranks as confirmed, 1 = ranks as a prior. fact: latchable proof --
-    // ONLY facts survive structural disproof; str and fact are separate axes (a read
-    // near-level door RANKS high but is still an inference and must retract).
     let why = null, str = 2, fact = true;
     if (dungManualCrit[kk]) why = 'a room you marked critical';
     else if (c.boss) why = 'the boss room';
     else if ((c.groundKeys || []).some(gk => isCritKey(gk.idx))) why = 'a critical key lying here';
     else if (srcCells[kk]) why = 'the room that held the critical ' + srcCells[kk];
     else if (c.key && isCritKey(c.key.idx)) {
-      // Every critical key is human-marked now, so this is always confirmed evidence.
       why = 'the door needing the critical ' + c.key.name;
     }
     else if (critDoorCell[kk]) {
-      //...and the same door AFTER it was opened, read from the latch (see above).
       why = 'the door that needed the critical ' + critDoorCell[kk];
     }
     else if (!deadBranch[kk]) {
-      // INFERENCES -- priors on where the chain was generated, refutable by
-      // exploration. A finished-and-empty branch (deadBranch) gets NO inference
-      // evidence at all: the level-93 Construction door hiding one T10 fishing
-      // dead end must read as retracted, not "a critical room".
       fact = false;
       const dl = dungDoorLevels[kk];
       if (dungDoorBand(dl) === 'critical')
@@ -3304,68 +2600,20 @@ function dungPlan(rooms, ctx) {
     if (why) { evid[kk] = why; evStr[kk] = str; if (fact) evFact[kk] = 1; }
   }
 
-  // ===========================================================================
-  // STAGE D -- PROOFS: forced keys and must-visit rooms. Combines STRUCTURE
-  // with INFERENCE (the confirmed set is evStr>=2 evidence plus the latch),
-  // which is why this stage sits after the evidence pass. Products: forcedKey /
-  // mandatoryKey / mandatorySrc and must / mustWhy.
-  //
-  // PROVENANCE DOES NOT MAKE A KEY CRITICAL. Not the start room, not a must-pass
-  // room, not an evidenced room (twice). All three describe places
-  // you would walk through anyway, so finding a key there says nothing about
-  // whether its DOOR is on the route. Every version of "it was lying in X" is a
-  // hint about the key's origin, not a fact about its destination.
-  // What IS sound is structural: a key is FORCED when the floor cannot be
-  // continued without it or its door sits on the settled route -- that is the
-  // forcedKey fixpoint below, a property of connectivity, not an inheritance.
-  // (Two derivation loops and an unread srcNote/srcOnly tooltip map implemented
-  // the unsound version until. The tooltip provenance shown
-  // is room.keySrc / keyFrom, built in the render.)
-  //
-  // Nothing derives criticality (see dungKeyIsCrit), and the one sound cascade -- forced
-  // keys -- reaches its own fixpoint right here, so the planner is single-pass.
-  // ===========================================================================
   const must = {};           // cell -> 1: cuts the start from every objective / a proof
   const mustWhy = {};        // dominator rooms' tooltip why (written in RENDER)
   const mandatoryKey = {};   // key idx -> 1: nothing is reachable without it
   const mandatorySrc = {};   // cell -> 1: yielded such a key, so the trip there was forced
   const forcedKey = {};      // key idx -> 'blocks' | 'route': proven forced, either way
-  // WHICH KEYS ARE MANDATORY -- proven, not inferred. A key is mandatory when removing
-  // it from the obtainable set leaves NO live frontier reachable: the floor cannot be
-  // continued without it. That makes the trip to fetch it forced, and the room it came
-  // out of is therefore on the critical path ("the green corner is
-  // the only path forward... so the room containing the key is also critical").
-  //
-  // This is provenance flowing BACKWARDS, the only direction it flows: it says the key
-  // had to be COLLECTED, never that the door it opens leads anywhere critical.
-  //
-  // NOT the `must` cut-vertex test, which was tried for this and removed: on a barely
-  // explored floor almost every room is a cut vertex, so it fired on nearly every key.
-  // Reachability-without-the-key is exact and cannot over-fire that way -- if anything
-  // else is still reachable, the key simply is not proven necessary yet.
   const reachWithout = excl => {
     const keys = new Set();
     held.forEach(i => { if (i !== excl) keys.add(i); });
-    // RE-LOCK THE DOOR THIS KEY OPENED. Opening a door clears its requirement, so on
-    // the CURRENT graph removing an already-spent key changes nothing and it looks
-    // optional -- the test could only ever catch doors still shut (a
-    // room whose key opened the way to a confirmed-critical room was marked a spur).
-    // dungKeyDoor latched that door while it was still locked, which is exactly the
-    // historical fact needed to ask "was there a route WITHOUT this key".
     const relock = dungKeyDoor[excl] || null;
     const gate = kk => {
       if (relock && kk === relock && !keys.has(excl)) return false;
       const c = rooms[kk];
       return !c.key || keys.has(c.key.idx);
     };
-    // ROOTED AT THE START ROOM, not the player. The question is historical -- "could
-    // the floor have been continued without this key" -- and the answer must not
-    // depend on which side of the re-locked door the player happens to stand. Rooted
-    // at the player, a key spent on the only way onward was never proven mandatory:
-    // once you walked through, everything ahead stayed reachable FROM YOU, and the
-    // whole fetch chain behind you stayed unmarked (the "later discovered to be
-    // critical" case, ). Falls back to the player only when the start
-    // room was never read, same as sTop.
     const structFrom = (startKey && rooms[startKey]) ? startKey : from;
     let out = dungBfs(rooms, structFrom, gate);
     for (let g = 0; g < 12; g++) {
@@ -3379,29 +2627,9 @@ function dungPlan(rooms, ctx) {
     }
     return out;
   };
-  // Rooms carrying CONFIRMED evidence (a near-level skill door and the like). Reaching
-  // one of these is not optional, so a key without which one becomes unreachable was
-  // not optional either.
   const confirmed = [];
   for (const kk in evStr) if (evStr[kk] >= 2 && rooms[kk] && cl.reach.dist[kk] !== undefined) confirmed.push(kk);
-  //...plus every room PROVEN earlier this floor (the latch). A proof does not
-  // expire when its evidence stops being observable, and a key that gated a latched
-  // room was exactly as forced as one gating live evidence -- without this, the
-  // orange-triangle key that "revealed that room up north that is critical" read
-  // (not critical) and its source room dropped off the path.
   for (const kk in dungCritLatch) if (rooms[kk] && confirmed.indexOf(kk) < 0) confirmed.push(kk);
-  // FORCED KEYS, TO A FIXPOINT. Two ways a key is proven forced:
-  //  - 'route': the boss is known and the door this key opened sits on the settled
-  //    route (routeSet, computed up top). Proven by the route, no BFS needed.
-  //  - 'blocks': without it, nothing is left (blocksAll) or confirmed-critical
-  //    content is unreachable (blocksCrit).
-  // Each proven key's OBSERVED source room is itself confirmed-critical content
-  // ("the trip there was forced"), so it joins the confirmed set and the loop
-  // re-runs: that is what lets a CHAIN of keys settle -- key A's door is on the
-  // route, fetching A needed key B, so B is forced too and B's source room marks.
-  // Single-shot, this never cascaded and the earlier rooms stayed unmarked
-  // ("a key that's later discovered to be critical").
-  // Bounded: each round either proves at least one new key (<= 64) or stops.
   if (rooms[(startKey && rooms[startKey]) ? startKey : from]) {
     const confSet = new Set(confirmed);
     for (let guard = 0; guard < 8; guard++) {
@@ -3411,34 +2639,22 @@ function dungPlan(rooms, ctx) {
         const sc = dungKeySrc[si];
         const srcCc = srcUsable(sc) ? ctx.cellOfWorld(sc.x, sc.y) : null;
         const dk = dungKeyDoor[si];
-        // 'route' also covers a door latched onto any PROVEN-critical room, boss known
-        // or not: a critical lock forces the fetch, even though a critical fetch never
-        // says anything about the lock (critical rooms drop bonus keys too).
         if (dk && ((routeSet && routeSet[dk]) || confSet.has(dk))) forcedKey[si] = 'route';
         else {
           if (!live.length && !confSet.size) continue;
           const r = reachWithout(+si);
-          // (a) nothing left to explore without it -- the still-locked case
           const blocksAll = live.length && !live.some(t => r.dist[t] !== undefined);
-          // (b) it was the way to confirmed-critical content -- the already-spent
-          //     case. A key's OWN source cell is excluded from its test: "this key
-          //     gates the room it lay in" would be self-justifying.
           let blocksCrit = false;
           confSet.forEach(kk => { if (kk !== srcCc && r.dist[kk] === undefined) blocksCrit = true; });
           if (!(blocksAll || blocksCrit)) continue;
           forcedKey[si] = 'blocks';
           mandatoryKey[+si] = 1;   // only 'blocks' keys: the tooltip says "nothing is
-                                   // reachable without it", which 'route' cannot claim
         }
         grew = true;
         if (srcCc && rooms[srcCc]) { mandatorySrc[srcCc] = 1; confSet.add(srcCc); }
       }
       if (!grew) break;
     }
-    // A PROVEN-CRITICAL DEAD END THAT YIELDED A KEY exists to fetch that key: the
-    // branch reaches nothing else, so the key is critical (a side-branch terminus).
-    // Purely structural, so it may derive key criticality without a human mark; a
-    // hand demotion still silences it, and it is never relayed as a mark.
     for (const kk in keyCameFrom) {
       const si = keyCameFrom[kk];
       if (dungDerivedCritKeys[si] || keyBehindFiller[si] || dungCritKeyBlock[si]) continue;
@@ -3460,28 +2676,16 @@ function dungPlan(rooms, ctx) {
       dungDerivedCritKeys[si] = 'fetched from a proven critical dead end';
     }
   }
-  // MUST-VISIT -- rooms whose removal cuts the start off from EVERY live
-  //    objective. Topological, so locked rooms still count as gates. Runs BEFORE the
-  //    ranking, because it depends only on the room graph and
-  //    `live`, and the budget's found count below needs it in hand.
   if (startKey && rooms[startKey]) {
     const reachSkip = skip => dungBfs(rooms, startKey, kk => kk !== skip).dist;
     const base = reachSkip(null);
     const liveB = live.filter(t => base[t] !== undefined);
-    // DOMINATORS OF PROOFS ARE PROOFS (a boss beside the start left
-    // "9 found" -- scattered proven rooms with none of the corridors every route to
-    // them must cross). If removing a room cuts the start off from a PROVEN room,
-    // every walk to that proof passed through it: a forced traversal, latched and
-    // counted like any other proof. It cannot over-fire: it only ever anchors on rooms
-    // that are ALREADY proofs.
     const provenB = [];
     for (const kk in rooms) {
       if (base[kk] === undefined || rooms[kk].start) continue;
       if ((evStr[kk] || 0) >= 2 || dungCritLatch[kk] || mandatorySrc[kk] || dungManualCrit[kk] || rooms[kk].boss)
         provenB.push(kk);
     }
-    // Key SOURCE rooms are proofs too (backwards provenance): the trip happened, so
-    // the corridors every walk to them crossed are forced as well.
     for (const si in dungKeySrc) {
       const sc2 = dungKeySrc[si];
       if (!srcUsable(sc2)) continue;
@@ -3489,13 +2693,6 @@ function dungPlan(rooms, ctx) {
       if (cc2 && rooms[cc2] && base[cc2] !== undefined && !rooms[cc2].start && provenB.indexOf(cc2) < 0)
         provenB.push(cc2);
     }
-    // CAPACITY FORCING (large floors only): the critical tree spans at least
-    // DUNG_CRIT_MIN rooms INCLUDING start and boss. If avoiding a room leaves fewer
-    // than that many rooms even after crediting every unmapped cell the remainder
-    // could still open into, the path cannot fit around it: proven critical.
-    // Unmapped cells flood-fill into 4-connected regions once; a region adjacent to
-    // several frontier rooms is credited to each rather than partitioned. The
-    // over-count is deliberate: it only ever makes the rule fire LESS often.
     const bigFloor = floor && floor.cols > 4 && floor.rows > 4;
     let regionOf = null, regionSize = null;
     if (bigFloor) {
@@ -3522,9 +2719,6 @@ function dungPlan(rooms, ctx) {
       const d2 = reachSkip(kk);
       if (liveB.length && liveB.every(t => t === kk || d2[t] === undefined)) {
         must[kk] = 1;
-        // (was: the key of this room's door derived critical from "only way onward".
-        //  Removed -- on a barely-explored floor every room is a cut vertex, so it
-        //  fired on essentially every key.)
       }
       if (!must[kk] && provenB.some(t => t !== kk && d2[t] === undefined)) {
         must[kk] = 1;
@@ -3535,8 +2729,6 @@ function dungPlan(rooms, ctx) {
         for (const rk in d2) {
           potential++;
           const rc = rooms[rk];
-          // Frontier rooms (unexplored, or still showing a locked door) may open into
-          // adjacent unmapped space; credit those regions to the survivor count.
           if (!(rc && (rc.unex || rc.key))) continue;
           const rp = rk.split(',').map(Number);
           for (const st of DUNG_DIRS) {
@@ -3553,111 +2745,38 @@ function dungPlan(rooms, ctx) {
     }
   }
 
-  // ===========================================================================
-  // STAGE E -- RANKING (kept verbatim -- rewritten and confirmed).
-  // Products: objective / objWhy / tied, plus the sticky-path hold.
-  // ===========================================================================
   let objective = null, objWhy = '', tied = {};
-  // PICK ONE -- ranked, never summed: DISCRIMINATING evidence, then unknown
-  //    region, then elbow room.  (Distance never ranks; see below.)
-  //
-  //    "Discriminating" is the subtle part. Routes to different frontiers share a
-  //    prefix, and evidence on the shared part says nothing about WHICH way to go.
-  //    Counting all evidence on the route made the FURTHEST frontier win purely by
-  //    having more rooms behind it, and made the answer flip every time the player
-  //    moved (live). So: take routes from the START room (a
-  //    structural property of the floor, stable as the player walks) and count
-  //    evidence only on the stretch EXCLUSIVE to that frontier.
-  //
-  //    DISTANCE IS NOT A TERM. Where the critical path runs is a property of the
-  //    floor, not of where the player is standing ("distance is
-  //    totally irrelevant for critical pathing"). It is still REPORTED in the
-  //    tooltip, because trip length is worth knowing, but it never ranks. Unknown
-  //    area only breaks ties between similarly-distant options: a central frontier
-  //    gates more unknown cells than a corner one, so ranking area above distance
-  //    quietly sent the player to the far side of the floor (live).
-  //    Distance is bucketed so a room or two of difference doesn't jitter the
-  //    answer while walking.
   const routeOf = {}, shared = {};
   for (const t of live) {
     const rs = dungPath(sTop.par, t);
     routeOf[t] = rs;
     for (const pk of rs) shared[pk] = (shared[pk] || 0) + 1;
   }
-  // "Exclusive" = evidence sitting on a room that ONLY this frontier's route passes
-  // through, so it cannot be claimed by a rival frontier. Also returns WHAT that
-  // evidence is and WHERE, because "1 exclusive evidence" on its own is unauditable
-  // ("what exactly is the exclusive evidence").
   const evOf = t => {
     let s = 0, n = 0, why = '', at = '';
     for (const pk of (routeOf[t] || [])) {
       if (!evid[pk] || shared[pk] !== 1) continue;
-      // EVIDENCE IS SPENT ONCE THE ROOM IS REACHED. A level-101 door tells you the
-      // room BEHIND IT is worth reaching -- it does not say which of that room's exits
-      // continues the path. Once the room is explored, the door has been answered,
-      // and the room's own criticality may already be explained by a continuation that
-      // have ALREADY found (the Invention room may have been critical
-      // to reach the green door, not the '?' beyond it). Counting it again for a
-      // frontier further along is the same forwards-inheritance error as the keys.
-      // So only UNEXPLORED rooms carry evidence forward: the frontier itself, and
-      // anything unexplored still on its route.
-      // EXPLORED is read from the map SPRITE (`unex`), not from door bits. Testing
-      // `doors !== undefined` treated a known-but-unwalked room as explored, because
-      // those carry doors = 0 -- so a frontier's OWN evidence was thrown away, and a
-      // level-85 Prayer door with the party at 93 (guaranteed critical) came out at
-      // grade 0 and lost to an unevidenced ?. Same root cause as the
-      // dead-end prune.
       if (rooms[pk] && !rooms[pk].unex) continue;
       n++;
       if (evStr[pk] > s) { s = evStr[pk]; why = evid[pk]; at = pk; }
     }
     return { s: s, n: n, why: why, at: at };
   };
-  // Budget first: how many critical rooms can still be out there. `budget.min` is the
-  // FEWEST that must remain, so any branch with less unknown space than that cannot
-  // hold the rest of the chain.
   let critHeld = 0;
   held.forEach(idx => { if (isCritKey(idx)) critHeld++; });
-  // FOUND, counted from what is identified RIGHT NOW: confirmed-evidence rooms,
-  // must-pass rooms, and the chains linking them back to the start -- the same set
-  // the presentation will paint. dungCritBudget's own onPath count cannot work here
-  // (onPath is painted after the ranking, and `rooms` is rebuilt every poll), so it
-  // always came out as start+boss and `need` sat at ~18 for the whole floor while
-  // the header said 13 (probe. Unexplored rooms count only when the
-  // marked them -- locating a critical door is not FINDING its room -- which
-  // is the same reading the header uses.
   const idSet = {};
   const ided = kk => { const r = rooms[kk]; if (r && (!r.unex || dungManualCrit[kk])) idSet[kk] = 1; };
   if (startKey && rooms[startKey]) idSet[startKey] = 1;
-  // IDENTIFIED = PROVEN, never the connecting chains. The chains are the current
-  // best geometry, and counting them made "found" COLLAPSE when they rerouted
-  // (6 -> 3 in one poll, ). Proofs latch, so this count is monotone
-  // within a floor -- it can only grow toward the 19-23 budget, exactly like the
-  // real information does. The chains still paint pink below; they just don't
-  // claim to be identified rooms.
   for (const kk in evStr) if (evStr[kk] >= 2) ided(kk);
   for (const kk in must) ided(kk);
   for (const kk in dungCritLatch) ided(kk);
   for (const kk in dungManualCrit) ided(kk);
-  // Key-source rooms count (backwards provenance: the trip to fetch a key happened,
-  // so its room is identified critical -- five held keys left five source rooms
-  // uncounted,  "still only 12").
   for (const si in dungKeySrc) {
     const sc3 = dungKeySrc[si];
     if (srcUsable(sc3)) { const cc3 = ctx.cellOfWorld(sc3.x, sc3.y); if (cc3) ided(cc3); }
   }
-  // The settled boss walk IS proven geometry once the boss is on the map -- it is
-  // what made the end-of-floor "20 found - 0-3 to go" read right.
   if (routeSet) for (const kk in routeSet) ided(kk);
   const budget = dungCritBudget(rooms, critHeld, Object.keys(idSet).length);
-  // CHAIN CONTINUATION : a frontier at the tip of a run of PROVEN
-  // rooms is likelier to continue the chain. The evidence STACKS with the length --
-  // 2 in a row is a small nudge, 3 larger, 4 larger still, and so on (not a
-  // 3+ threshold) -- so this is the UNCAPPED consecutive-proven count and the
-  // lexicographic term discriminates a 6-run from a 2-run. Ranked BELOW grade: a run
-  // is still an inference, so it never outranks a READ door or overrides the filler
-  // veto -- it decides among frontiers with no hard evidence of their own, the
-  // "? at the end of the pink row" case.
   const provenRank = kk => (evStr[kk] || 0) >= 2 || must[kk] || dungCritLatch[kk]
                         || mandatorySrc[kk] || dungManualCrit[kk];
   const chainOf = t => {
@@ -3671,23 +2790,6 @@ function dungPlan(rooms, ctx) {
     }
     return n2;
   };
-  // THE CRITICAL PATH IS (TYPICALLY) THE LONGEST PATH : the
-  // generator lays the 19-23 chain as the floor's longest start-to-boss walk, so a
-  // frontier DEEPER on its start-route is structurally likelier to be the chain's
-  // continuation. Depth is start-rooted (sTop), so unlike the banned player-distance
-  // rule it is a property of the floor and never drifts as you walk. Ranked below
-  // chain/continues (local proof beats a global prior, and the finish-your-branch
-  // behaviour stays) but ABOVE region: extending the longest known path beats the
-  // bigger empty box.
-  // STICK WITH THE PATH BEING EXPLORED. The continues-term above only
-  // holds while a frontier hangs off the room you stand in; a rival that gains grade-2
-  // route evidence still outranked a half-explored branch and sent the party across the
-  // floor mid-push. The stronger rule: once a branch is being explored, keep
-  // recommending it until it yields a KEY THAT OPENS A DOOR (an openable frontier
-  // elsewhere breaks the hold) or it DEAD-ENDS (no live, unvetoed frontier left on the
-  // branch -- then the normal ranking resumes). Anchor = the last recommendation; if it
-  // has since been explored, the branch continues through any live frontier whose
-  // start-route passes through it.
   const stickyAnchor = (dungStickyObj && rooms[dungStickyObj]) ? dungStickyObj : '';
   let stickyObj = null, stickyWhy = '';
   let stkEv = -1, stkLeads = -1, stkChain = -1, stkCont = -1, stkDepth = -1, stkPot = -1, stkSpB = -1, stkCount = -1, stkSpace = -1;
@@ -3699,113 +2801,16 @@ function dungPlan(rooms, ctx) {
       continue;
     }
     const e = evOf(t), ar = area[t] || 0;
-    // Elbow room in the four cardinal directions (line-sum), used as the
-    // preference among otherwise equal options: more space = more floor left to find.
     const sp = dungRoomSpace(rooms, floor, t);
-    // DOES IT LEAD ANYWHERE AT ALL? space 0 means no free cell in any cardinal
-    // direction, catchment 0 means no unknown cell only this frontier can reach --
-    // together, a room enclosed by what is already known, which cannot extend the chain
-    // however it ranks elsewhere. Live case: a frontier 8 rooms away with
-    // "space 0, catchment 0" was picked as the objective.
-    // This is the ONLY thing catchment still decides; it does not rank.
     const leadsOn = (sp > 0 || ar > 0) ? 1 : 0;
-    // FINISH THE BRANCH YOU ARE ON. A frontier hanging off the room you are standing in
-    // continues the current push; anything else abandons it. Without this the ranking
-    // re-decided from scratch every tick and would walk you off a critical chain to a
-    // roomier ? across the floor, leaving the branch half-done: do not move off a branch
-    // until it yields something useful, a key or a dead end.
-    //
-    // It ranks BELOW grade and leadsOn, so within THIS ranking real evidence still
-    // pulls ahead -- but see the sticky-path override after the loop :
-    // once a branch is being explored, evidence on a rival branch no longer moves the
-    // recommendation; only an openable door or the branch ending does. This term still
-    // matters for ordering WITHIN the sticky branch and for fresh choices.
-    //
-    // NOT the distance rule that was removed. That one ranked rooms as MORE CRITICAL
-    // for being close, which is wrong -- criticality is a property of the floor, not of
-    // where you stand. This changes only the ORDER you visit equally-good options in.
-    // When the room you are in has no unexplored exits left -- a dead end, or you have
-    // taken what was there -- every candidate scores 0 here and the normal ranking
-    // resumes, which is the "until a key or a dead end" part.
     const continues = adjToPlayer.has(t) ? 1 : 0;
     const pot = area[t + '#pot'] || 0;   // the ray bounding box: width x height
-    // EXPECTED CRITICAL ROOMS BEHIND THIS FRONTIER.
-    //
-    // A small region is NOT ruled out (correcting an earlier hard
-    // reject): 7 cells can still hold the one or two rooms that hold a needed key.
-    // It simply commands a smaller SHARE of what is left to find.
-    //
-    // The model: `need` critical rooms are still unplaced, and the reachable unmapped
-    // space is `allN` cells. Spread them uniformly over that space and the count
-    // landing in a region of `pot` cells is need * pot / allN -- capped at pot, since
-    // a region cannot hold more rooms than it has cells. That is an EXPECTATION, so a
-    // 7-cell region scores ~1.4 of 8 rather than 0, which is exactly the "could be a
-    // room or two, but the other way is likelier" reading.
-    //
-    // Uniform placement is the honest assumption: how densely Daemonheim fills a region is
-    // unmeasured, and inventing a prior would be guessing.
     const need = budget.unkMin || 0;
     const allN = area['#allcells'] || 0;
-    // Capped at `need` as well as `pot`: the box is a bounding rectangle, NOT a
-    // subset of allN's flood cells (it can span known rooms and unreachable space),
-    // so pot/allN can exceed 1 and the tooltip printed "expect 11.2 of 8".
     const expCrit = (need > 0 && allN > 0) ? Math.min(pot, need, need * pot / allN) : 0;
-    // NOT A RANKING TERM. Within one pass `need` and `allN` are floor-wide constants,
-    // so this is `pot` times a constant -- a monotone rescale that can never disagree
-    // with region and never separates two frontiers region did not already separate
-    // (measured: zero direction disagreements). It had two slots in the order holding
-    // one signal. It stays because "expect 5 of 15 rooms" is a readable thing to put in
-    // a tooltip, but it is not independent evidence and must not be ranked as if it
-    // were. NB any probability derived SOLELY from region size has this property; to
-    // add information it would have to take a different input.
-    // A frontier whose OWN entrance is a requirement judged non-essential (a door
-    // far below, or above, the party) is a side path: rank it BELOW even an
-    // unevidenced option, so "explore past the level-45 door" can never be offered
-    // while a room whose key is held is waiting. Denying it
-    // evidence was not enough -- routes to it still inherited evidence from rooms
-    // passed on the way, tying it with the real objective on every term below it.
     const ownBand = dungDoorBand(dungDoorLevels[t]);
-    //...and anything only reachable THROUGH a low-tier room inherits that verdict
-    // (anything reachable only through that door is also non-critical).
-    // Generated floors keep filler with filler, so a branch
-    // entered through a side room is side content. Read from `lowVia`, the clean-BFS
-    // result computed up top: reachable from the start only by crossing filler.
-    // REACHABILITY is the rule, not a walk of this frontier's route: requiring the filler
-    // room to be EXCLUSIVE to the route fails both ways -- one filler room feeding a
-    // junction with TWO unexplored doors vetoes NEITHER (the more a filler room gates, the
-    // more damning it is, not less), and a frontier with a clean detour is vetoed whenever
-    // the BFS-shortest route happens to cross filler. lowVia also respects a manual critical
-    // mark on the frontier, which the route walk overrode.
-    // TOP OF THE ORDER: a critical door whose key is held RIGHT NOW. That is
-    // the strongest thing the floor can say -- a confirmed requirement plus the
-    // means to satisfy it -- so it outranks any amount of inferred evidence. Walking
-    // into the unknown is what you do when there are no hints left to follow, not
-    // while a key in your pack opens a known door.
     const own = rooms[t];
-    // Holding the key for a door KNOWN to be critical is the strongest signal there is.
-    // Holding one for a door only INFERRED critical is not -- the inference chain
-    // is "key was lying on the path, therefore its door is on the path", and that step
-    // is not sound. So only a CONFIRMED key earns the top grade; a
-    // derived one ranks as the ordinary evidence it is.
-    // isCritKey, not dungKeyIsCrit: the filler veto must gate the grade-3 tier the
-    // same way it gates evidence, or a vetoed key's door still outranked everything.
     const openableCrit = !!(own.key && held.has(own.key.idx) && isCritKey(own.key.idx));
-    //...and a door openable RIGHT NOW ranks above walking into the unknown even
-    // when its key is not confirmed critical. That is the rule
-    // ("not while a key in your pack opens a known door"), but tying it to
-    // a confirmed-only test made it dead: once auto-derivation of critical keys was
-    // removed, almost no key is confirmed, so holding one stopped counting for
-    // anything and an unevidenced ? outranked a shield door whose key was held
-    //. A locked door is a KNOWN gate with KNOWN rooms behind it;
-    // a ? is a guess. Ranked below real evidence (a near-level skill door, e.s = 2),
-    // above nothing.
-    // A key ON THE FLOOR counts as good as one in the pack, provided it is reachable.
-    // Only the pack was checked, so a door whose key was lying in the room the player was
-    // STANDING IN scored as an unevidenced frontier and lost to a bigger region across
-    // the floor (the green rectangle key was on the ground and its
-    // door was the very next one). Picking it up is a step, not an obstacle -- and the
-    // plan stage below already redirects to collect a key it needs, so the ranking was
-    // the only thing not treating it as reachable progress.
     const ownKey = own.key ? own.key.idx : null;
     const ownKeyFloor = (ownKey != null && led[ownKey]) ? led[ownKey].floor : null;
     const keyInPack = ownKey != null && held.has(ownKey);
@@ -3813,20 +2818,7 @@ function dungPlan(rooms, ctx) {
     const openableAny = keyInPack || keyOnFloor;
     const grade = (ownBand === 'low' || ownBand === 'above' || own.lowVia) ? -1
                 : openableCrit ? 3 : Math.max(e.s, openableAny ? 1 : 0);
-    // ELBOW ROOM, bucketed in threes -- a TIEBREAK under region, not a rival to it.
-    // Region (width x height) already answers "how much floor is this way"; the line
-    // sum answers "how far is visible", which is the same four rays ADDED instead of
-    // multiplied. Kept only to separate frontiers whose boxes come out equal.
-    // Raw `sp` is still the last term, so bucketing loses nothing.
     const spB = Math.floor(sp / 3);
-    // DISTANCE IS NOT A RANKING TERM. Where the critical path goes is a property of
-    // the floor, not of where the player happens to be standing -- a door 12 rooms
-    // away is exactly as critical as one next door. `cost` is still REPORTED in the
-    // tooltip, because knowing the trip length is useful even though it must not sway
-    // the call. Final tiebreak is the cell key: arbitrary, but DETERMINISTIC, so a
-    // genuine tie cannot flip between polls the way the crystal readout did. Strict
-    // lexicographic order, written as a term list so the nesting cannot get miscounted
-    // (it did, adding a term by hand). First difference decides.
     const chainB = chainOf(t);
     const depth = (routeOf[t] || []).length;   // rooms from the start: longest-path prior
     const TERMS = [
@@ -3844,11 +2836,6 @@ function dungPlan(rooms, ctx) {
     for (const [mine, best] of TERMS) {
       if (mine !== best) { wins = mine > best; allEqual = false; break; }
     }
-    // WHY THIS ROOM RANKS WHERE IT DOES. The ranking is a strict lexicographic order,
-    // so the honest explanation is simply the terms in order -- without this the
-    // tooltip could only say "Explore this way", which answers what to do and not why
-    // here. Built for every candidate because the sticky-path pick
-    // below needs the same explanation for a room that did NOT win the open ranking.
     const whyStr = 'grade ' + (grade === 3 ? '3 (critical door, key held)'
                           : grade === 1 && openableAny
                             ? (keyInPack ? '1 (locked door, key in your pack)'
@@ -3867,22 +2854,12 @@ function dungPlan(rooms, ctx) {
              + ' | ' + e.n + ' exclusive evidence'
              + (e.why ? ' (' + e.why + (e.at ? ' @' + e.at : '') + ')' : '')
              + ' | space ' + sp + ' | catchment ' + ar + ' (diagnostic, does not rank)';
-    // Every term equal -- a GENUINE tie, and on a fresh floor with two unexplored
-    // doors and nothing else known that is the normal state, not an edge case. Record
-    // the tied cells so they can all be offered ("it's essentially a
-    // 50/50, just mark both"); still pick a deterministic single objective for the
-    // route line, or the drawn path would flip between polls.
     if (allEqual) { tied[t] = 1; wins = (objective === null || t < objective); }
     else if (wins) tied = { [t]: 1 };   // a strict win discards the previous tie set
     if (wins) {
       bestEv = grade; bestLeads = leadsOn; bestChain = chainB; bestCont = continues; bestDepth = depth; bestPot = pot; bestSpB = spB; bestCount = e.n; bestSpace = sp; bestOpen = openableCrit || openableAny; objective = t;
       objWhy = whyStr;
     }
-    // The best live continuation of the path being explored: this frontier IS the
-    // last recommendation, or its start-route passes through it (the anchor was
-    // explored and the branch carried on). Vetoed (-1) and dead-end frontiers never
-    // qualify -- when none qualifies the branch has ended and the hold releases.
-    // Ranked among themselves by the same term order as the open ranking.
     if (stickyAnchor && grade > -1 && leadsOn &&
         (t === stickyAnchor || (routeOf[t] || []).indexOf(stickyAnchor) >= 0)) {
       const STERMS = [
@@ -3901,15 +2878,6 @@ function dungPlan(rooms, ctx) {
     }
   }
 
-  // THE STICKY-PATH OVERRIDE : the open ranking may prefer a
-  // different branch on soft terms (route evidence, depth, region) while the branch
-  // being explored has not finished -- but switching mid-branch costs the walk back,
-  // so the recommendation holds the current path. Only two things release it, exactly
-  // a DOOR OPENABLE RIGHT NOW appearing anywhere (grade 3, or
-  // a locked door whose key is in the pack / reachable on the floor -- "a key that
-  // reveals another door that can be opened"), or the branch ending (stickyObj null: every
-  // frontier on it is explored, vetoed, or a dead end). The boss overrides everything
-  // as before.
   if (!bossKey && stickyObj && objective && objective !== stickyObj) {
     if (!(bestEv === 3 || bestOpen)) {
       objective = stickyObj;
@@ -3919,16 +2887,8 @@ function dungPlan(rooms, ctx) {
              + 'moves the plan off a branch mid-push) | ' + stickyWhy;
     }
   }
-  // Whatever is recommended now IS the path being explored for the next poll --
-  // including a key-break switch: the opened door starts the new branch.
   if (objective) dungStickyObj = objective;
 
-  // ===========================================================================
-  // STAGE F -- PLAN (kept verbatim). Products: action + the route (onPath /
-  // edges). Walk toward the objective; the first door that cannot be opened turns the
-  // plan into "fetch that key first" (repeat, bounded). This is the elimination
-  // insight as plain cost: a key on the floor is a detour, not a special case.
-  // ===========================================================================
   const onPath = {}, edges = {};
   let action = null;
   const addPath = t => {
@@ -3946,8 +2906,6 @@ function dungPlan(rooms, ctx) {
       let blk = null;
       for (const pk of p) { const c = rooms[pk]; if (c.key && !held.has(c.key.idx)) { blk = c.key.idx; break; } }
       if (blk == null) break;
-      // NOT a criticality verdict. Needing a key to reach the
-      // CURRENT objective is a routing fact, not proof the key is on the boss chain.
       const fc = led[blk] && led[blk].floor;
       if (!fc || fc === target) { action = { kind: 'needkey', cell: (led[blk] && led[blk].door) || target, key: blk }; target = null; break; }
       fetch = blk; target = fc;
@@ -3955,8 +2913,6 @@ function dungPlan(rooms, ctx) {
     if (target) action = fetch != null ? { kind: 'key', cell: target, key: fetch }
                                        : { kind: bossKey ? 'boss' : 'explore', cell: target };
   } else if (cands.length) {
-    // Nothing reachable even with every obtainable key: the way onward is locked
-    // and its key is not on the map.
     const openAll = dungBfs(rooms, from, null);
     const reach = cands.filter(t => openAll.dist[t] !== undefined).sort((a, b) => openAll.dist[a] - openAll.dist[b]);
     if (reach.length) {
@@ -3964,7 +2920,6 @@ function dungPlan(rooms, ctx) {
         onPath[pk] = 1;
         const c = rooms[pk];
         if (c.key && !held.has(c.key.idx)) {
-          // (was: derive critical from 'only way onward' -- removed, see below)
           action = { kind: 'needkey', cell: pk, key: c.key.idx };
           break;
         }
@@ -3972,12 +2927,6 @@ function dungPlan(rooms, ctx) {
     }
   }
 
-  // ===========================================================================
-  // STAGE G -- RENDER ANNOTATIONS + LATCH MAINTENANCE: contiguous chains, one
-  // pink tier, ONE recommendation. The room annotations (onPath / critSelfWhy /
-  // critPathWhy / rec / need / recWhy) are written here and only here, and the
-  // criticality + key-door latches are maintained at the end.
-  // ===========================================================================
   const sb = dungBfs(rooms, (startKey && rooms[startKey]) ? startKey : from, null);
   const chain = (kk, why) => {
     let prev = kk;
@@ -3988,17 +2937,9 @@ function dungPlan(rooms, ctx) {
       if (r && !r.start && !dungManualNonCrit[c] && !r.critPathWhy && !evid[c]) r.critPathWhy = 'the way to ' + why;
     }
   };
-  // Dominators of proofs carry their why from STAGE D (recorded as mustWhy,
-  // written here so every room annotation is a render-stage product). Same
-  // first-writer-wins guard as every writer below.
   for (const kk in mustWhy)
     if (rooms[kk] && !rooms[kk].critSelfWhy && !rooms[kk].critPathWhy)
       rooms[kk].critPathWhy = mustWhy[kk];
-  // ONLY CONFIRMED EVIDENCE CLAIMS THE PATH. evStr 2 = something captured about THIS
-  // floor (a read door level, a critical key, the boss). e. a top-tier resource room,
-  // which says where content tends to be generated and nothing about the chain. A prior
-  // still keeps its critSelfWhy so the tooltip explains it, and still counts for RANKING
-  // via evStr -- it just no longer asserts membership of the chain.
   for (const kk in evid) {
     rooms[kk].critSelfWhy = evid[kk];
     if ((evStr[kk] || 0) >= 2) { onPath[kk] = 1; chain(kk, evid[kk]); }
@@ -4009,13 +2950,6 @@ function dungPlan(rooms, ctx) {
     chain(kk, 'the only way onward');
   }
   if (startKey && rooms[startKey]) onPath[startKey] = 1;
-  // (keyCameFrom + the finished-branch prune moved to the TOP of the planner -- the
-  // refutation-first rewrite, : the evidence pass consults them now.)
-  // A KEY TAKEN FROM A ROOM PROVES THE TRIP -- backwards provenance, the rule this
-  // model is built on. These rooms were only ever PROTECTED (wipe/prune exemptions)
-  // but never painted, latched or counted unless a separate forced-key proof landed,
-  // so five held keys left five source rooms unmarked ("still only
-  // 12 critical rooms"). Mark them; the latch block below then makes it permanent.
   for (const kk in keyCameFrom) {
     if (!rooms[kk] || dungManualNonCrit[kk]) continue;
     onPath[kk] = 1;
@@ -4023,54 +2957,13 @@ function dungPlan(rooms, ctx) {
       rooms[kk].critSelfWhy = 'it held the ' + (dungKeyName(+keyCameFrom[kk]) || 'key')
                             + ' (the trip here is proven by the pickup)';
   }
-  // LATCH THE DOOR EACH KEY OPENS. Opening the door clears `c.key`, so the link between
-  // a key and the door that needed it evaporates exactly when it becomes useful. Latched
-  // here, it survives (and is persisted with the other marks).
   for (const kk in rooms) {
     const c = rooms[kk];
-    // While the marker is VISIBLE the observation is the truth -- follow it if it moved
-    // (an early widget-churn cell latched before the anchor settled must not stick, and
-    // it is persisted to disk). Once the door opens the marker vanishes and the latch
-    // keeps the last observed cell, which is the point of latching.
     if (c && c.key && dungKeyDoor[c.key.idx] !== kk) { dungKeyDoor[c.key.idx] = kk; dungSaveMarks(); }
   }
-  // The dead-branch prune is the structural finished-branch fixpoint at the top of the
-  // planner. Skipping evidenced and hard-latched rooms is what stops a refuted door prior
-  // demoting -- under the fact/inference split, facts are protected STRUCTURALLY
-  // (keys, boss, start, marks) and inferences are precisely what the prune retracts.)
-  // ONCE THE BOSS IS FOUND, STOP GUESSING. `onPath` above is a UNION OF HYPOTHESES --
-  // every evidenced room, every cut vertex, and the chain leading to each -- so it forms
-  // a TREE. A critical path is a CHAIN, so a branching pink set is proof that some
-  // branches are speculation. While the boss is unknown that is the best available, but
-  // the moment it is on the map the real answer is knowable: the route from the start
-  // room to the boss. Everything else marked purely on evidence was a guess that is now
-  // settled, and keeping it inflates the room count and the map ("some
-  // of the rooms are marked critical, when they actually weren't").
-  // KEPT alongside the route: rooms that yielded a key (you had to go there for it) and
-  // anything marked critical by hand.
-  // (bossCell / startCell / sFull / routeSet are computed in FACTS/STRUCTURE,
-  // before the proofs, so the forced-key proof could use them -- see there.)
-  // A FORCED FETCH MAKES ITS WHOLE CHAIN CRITICAL ("that key was
-  // actually critical, making everything along that long chain to get down there also
-  // critical"). If the door a key opened sits on the route, then going to wherever that
-  // key lay was not optional, and neither was any room you had to cross to reach it.
-  //
-  // This is provenance flowing BACKWARDS, which is the only direction it flows. The
-  // trigger is the DOOR being on the route -- not the key having been found somewhere
-  // critical, which proves nothing (corrected repeatedly).
   const fetchChain = {};
-  // The chain PREFERS doors that were actually opened: the trip happened, so a route
-  // through open doors exists, and the lock-blind sFull could thread the drawn chain
-  // through a still-locked door the trip never used. Lock-blind stays as the fallback
-  // (a misread sprite must not silently drop a proven chain).
   const sOpen = startCell ? dungBfs(rooms, startCell, kk => !rooms[kk].key) : null;
   for (const si in dungKeySrc) {
-    // FORCED = proven in the pass loop (forcedKey): 'blocks' = nothing (or confirmed-
-    // critical content) is reachable without it -- stands on its own, does NOT need the
-    // boss ; 'route' = the boss is known and the door this key opened
-    // sits on the settled route. Anything weaker stays out: while the boss is unknown,
-    // `onPath` is a union of hypotheses, and hanging a fetch chain off a guess is
-    // forwards inheritance again.
     if (!forcedKey[si]) continue;
     const sc = dungKeySrc[si];
     if (!srcUsable(sc)) continue;
@@ -4080,7 +2973,6 @@ function dungPlan(rooms, ctx) {
     const par = (sOpen && sOpen.dist[src] !== undefined) ? sOpen.par : sFull.par;
     for (const c of dungPath(par, src)) {
       fetchChain[c] = 1;
-      // say WHY the room is pink -- a bare onPath painted the chain with no reason line
       const rc = rooms[c];
       if (rc && c !== src && !rc.start && !evid[c] && !rc.critPathWhy)
         rc.critPathWhy = 'the trip to fetch the ' + nm;
@@ -4103,64 +2995,21 @@ function dungPlan(rooms, ctx) {
   }
   for (const kk in onPath) {
     if (!rooms[kk] || dungManualNonCrit[kk]) continue;
-    // A PROVEN FORCED TRIP OUTRANKS EVERY HEURISTIC. fetchChain rooms sit on a path that
-    // SHOWED was mandatory -- without that key, either nothing was reachable or
-    // confirmed-critical content was. deadBranch and lowVia are structural verdicts
-    // about rooms nothing has been proven about, and they must not delete a proof.
-    // They were being applied FIRST, so the whole south-west leg walked to fetch the
-    // boss-door key came out unmarked: spend the key and every room on it reads as a
-    // spur. (dungTerminal is gone -- the finished-branch fixpoint
-    // at the top covers the single-leaf case it tested.)
     if (!fetchChain[kk]) {
       if (deadBranch[kk]) continue;
-      // Filler-gated rooms are off the path by construction -- they were being faded on
-      // the map while still carrying a pink "Critical:" line in the tooltip.
       if (rooms[kk].lowVia && !dungManualCrit[kk]) continue;
-      // FINDING THE BOSS SETTLES THE ROUTE, NOT THE CHAIN. The wipe below exists to
-      // retract route SPECULATION (hypothesis chains, strength-1 resource priors) once
-      // the real start->boss walk is known -- but the boss DOOR still needs its key
-      // legs, and the 19-23 budget still counts them. Deleting CONFIRMED evidence
-      // (evStr 2: a read guaranteed-band door, a critical key's door or source) left
-      // "6 found, 13-17 to go" -- the header asserting rooms the map just unmarked
-      // ("makes absolutely no sense"). A confirmed room is a proof,
-      // and an inference must not delete a proof (same rule as fetchChain above).
       if (routeSet && !routeSet[kk] && !keyCameFrom[kk] && !dungManualCrit[kk]
           && evStr[kk] !== 2 && !must[kk]
           && !rooms[kk].boss && !rooms[kk].start) continue;  // settled: not on the real route
-          // (must survives the wipe: cut-to-objective rooms and dominators of proofs
-          //  are forced traversals, and the wipe runs BEFORE the latch block -- without
-          //  the exemption they were wiped on the very poll they were first proven)
     }
     rooms[kk].onPath = true;
   }
-  // A ROOM PROVEN CRITICAL STAYS CRITICAL ("strong evidence
-  // to override" -- rooms kept dropping off the path with nothing proving they were
-  // off it). onPath is rebuilt every poll, so a proof that stops being observable
-  // silently demoted its room. Point facts about a room never go stale -- a key was
-  // taken/seen here, its confirmed door was read, the trip was proven forced -- so
-  // they LATCH for the floor. Demotion needs the player's own non-crit mark; the
-  // dead-branch prune, filler shadow and route wipe are INFERENCES and may not touch
-  // a latched room (the same inference-vs-proof rule as fetchChain above).
   {
     let latchChanged = false;
     for (const kk in rooms) {
       const r = rooms[kk];
       const cur = dungCritLatch[kk] ? String(dungCritLatch[kk]) : '';
-      // A HARD latch never re-writes; a SOFT one may upgrade to hard when a point
-      // fact lands later.
       if (!r || r.unex || dungManualNonCrit[kk] || (cur && cur[0] !== '~')) continue;
-      // `must` latches too: a room that cut the start off from EVERY live objective
-      // was forcibly TRAVERSED... but that proof was made against objectives that were
-      // themselves speculation, so it latches SOFT ('~' prefix): structural disproof
-      // (everything beyond explored and empty) may retract it. Point facts -- a key
-      // taken here, confirmed evidence, a proven fetch -- latch HARD and are never
-      // structurally disprovable (the room leading only to a too-low
-      // farming room must demote; the room a key came from must not).
-      // FACTS LATCH HARD; must-derived traversal proofs latch SOFT; inferences never
-      // latch at all (the fact/inference split, ). A near-level door
-      // ranks evStr 2 but is NOT a fact -- dungDoorLevels already persists the reading,
-      // so nothing is lost by not latching the conclusion: it recomputes every poll
-      // and retracts cleanly when the branch finishes empty.
       if (r.onPath && ((evFact[kk] && evStr[kk] === 2) || fetchChain[kk] || keyCameFrom[kk] || mandatorySrc[kk] || must[kk])) {
         const hard = (evFact[kk] && evStr[kk] === 2) || fetchChain[kk] || keyCameFrom[kk] || mandatorySrc[kk];
         if (!cur || hard) {
@@ -4175,13 +3024,6 @@ function dungPlan(rooms, ctx) {
       const r = rooms[kk];
       if (!r) continue;
       const why = String(dungCritLatch[kk]);
-      // STRUCTURAL DISPROOF CLEARS A LATCH when the room has no LIVE fact behind it:
-      // every way on from here is explored and yielded nothing, which IS the strong
-      // evidence demotion requires. Reaches SOFT (must-derived) latches.
-      // and STALE door-inference latches persisted by older builds
-      // ( -- identified by their why-string, see staleInfLatch).
-      // FACT latches are protected from the prune itself, so they never appear here
-      // as deadBranch; a proof whose observation vanished stays marked.
       const factNow = evFact[kk] || fetchChain[kk] || keyCameFrom[kk] || mandatorySrc[kk];
       if (deadBranch[kk] && !factNow) {
         delete dungCritLatch[kk]; latchChanged = true; continue;
@@ -4195,12 +3037,6 @@ function dungPlan(rooms, ctx) {
   }
   for (const f in area) if (rooms[f]) rooms[f].pot = area[f];
 
-  // EQUALLY GOOD ALTERNATIVES GET MARKED TOO. When candidates tie on every term there
-  // is no basis for preferring one, and a single ring implies a confidence the ranking
-  // does not have -- on a fresh floor with two unexplored doors and nothing else known,
-  // that is the normal state ("it's essentially a 50/50, just mark
-  // both"). The route line still runs to one of them, chosen deterministically, or the
-  // drawn path would flip between polls.
   const tieN = Object.keys(tied).length;
   if (tieN > 1) for (const tk in tied) {
     const tr = rooms[tk];
@@ -4226,10 +3062,6 @@ function dungPlan(rooms, ctx) {
       if (objWhy) r.recWhy += String.fromCharCode(10) + 'Why: ' + objWhy;
     }
   }
-  // PLANNER DIAGNOSTICS. "Nothing is marked to explore" has several distinct causes --
-  // no frontiers found, frontiers found but none reachable, an objective with no
-  // walkable path -- and they are indistinguishable from the map alone. Reported in the
-  // debug line rather than reasoned about from the code, which is easy to get wrong).
   planDiag.objective = objective || '-'; planDiag.action = action ? action.kind : '-';
   return { edges: edges, objective: objective, action: action, diag: planDiag };
 }
@@ -4243,11 +3075,7 @@ async function fetchDungeoneering() {
     const mapOpen = groups.some(g => g.id === 942);
     const party92 = groups.some(g => DUNG_PARTY_GROUPS.indexOf(g.id) >= 0);
     if (!inDung) { dungDropMarks(); dungFloorSW = null; dungLastTimer = -1; dungKeyCache = {}; dungOpenedAt = {}; dungKeySrc = {}; dungKeyDoor = {}; dungKeyFillerVeto = {}; dungHeldSeen = {}; dungHeldInit = false; dungRoomRes = {}; dungCritKeys = {}; dungDerivedCritKeys = {}; dungCritKeyBlock = {}; dungCritKeyTouch = {}; dungDoorLevels = {}; dungTipLast = ''; dungStatues = null; dungMonoDone = {}; dungEmoteLast = -1; dungEmoteWatch = ''; dungManualNonCrit = {}; dungNonCritTouch = {}; dungManualCrit = {}; dungManualCritTouch = {}; dungNonCritSeen = {}; dungManualCritSeen = {}; dungStickyObj = ''; dungClearOverlays(); }   // left the dungeon -> drop anchor + keys + highlights (no party 'reset': the rest of the party may still be on the floor)
-    // Roster is party context, not dungeon context: keep it while the party interface
-    // is open (forming), drop it only when there's no party context at all.
     if (!inDung && !party92) dungPartyRoster = {};
-    // Fetch party stats whenever a party exists (forming in the lobby OR in a dungeon)
-    // so the levels are ready before the first floor.
     dungPumpPartyHiscores(party92);
     const d = { in: inDung, mapOpen: mapOpen, party92: party92, keys: [], timer: '', deaths: '',
                 skips: [], prog: '', progW: 0, map: null };
@@ -4259,13 +3087,9 @@ async function fetchDungeoneering() {
                        3: { name: 'Trailblazer outfit', item: 38542 } };
     const skipUsed = {};   // comp 2/4 -> used bool
     if (inDung) {
-      // one scene + varc read up top, shared by the anchor, ghost puzzle, facing and
-      // floor-reset. Reset (timer 4190 drops) clears the anchor BEFORE it is re-acquired.
       let vc = {};
       try { vc = JSON.parse(await rtxData.raw('state.varcsAll') || '{}'); } catch (e) {}
       const tmr = vc['5:4190'];
-      // restore floor marks saved before a panel rebuild (same-floor check: the timer
-      // only counts up within a floor, so an older/absent save never applies)
       if (!dungRestored && typeof tmr === 'number') {
         dungRestored = true;
         try {
@@ -4280,13 +3104,6 @@ async function fetchDungeoneering() {
             dungKeyDoor = Object.assign(s.kd || {}, dungKeyDoor);
             dungRoomRes = Object.assign(s.rr || {}, dungRoomRes);
             dungCritLatch = Object.assign(s.cl || {}, dungCritLatch);
-            // THE ANCHOR MUST PERSIST TOO. dungFloorSW comes ONLY from the start-room
-            // constellation fit, so once the panel reloads mid-floor it can never be
-            // re-derived -- you are nowhere near the start room. That left `sw NONE`
-            // for the rest of the floor, which fails `here()` closed (no puzzle
-            // guidance at all) and leaves the map unable to place YOU (:
-            // "is there no retry... why is the player not drawn"). There is no
-            // retry that could work; persisting is the only fix.
             if (!dungFloorSW && s.sw && typeof s.sw.x === 'number') dungFloorSW = s.sw;
           }
         } catch (e) {}
@@ -4297,19 +3114,13 @@ async function fetchDungeoneering() {
       dungMonoCharge = (typeof vc['5:1233'] === 'number') ? vc['5:1233'] : null;   // monolith progress
       dungMazeTimer = (DUNG_MAZE_TIMER_VAR && typeof vc['5:' + DUNG_MAZE_TIMER_VAR] === 'number') ? vc['5:' + DUNG_MAZE_TIMER_VAR] : null;   // poison-maze countdown
       let sceneNpcs = [], sceneObjs = [], dungSelf = null, dungMates = [];
-      // NB: RS display names in interface text carry NON-BREAKING spaces (u00a0),
-      // e.g. "Aurni x" -- normalise to a plain space so the roster key, the scene
-      // name and the hiscores lookup all agree (the lookup form is aurni_x).
       const rosterKey = s => (s || '').replace(/\s+/g, ' ').replace(/["<>&]/g, '').trim();
       try { const se = JSON.parse(await bridge().sceneEntities(myPid(), 128) || '{}'); sceneNpcs = se.npcs || []; sceneObjs = se.objects || [];
             const sp = (se.players || []).find(p => p && p.self);
             if (sp && typeof sp.x === 'number') { dungSelf = { x: sp.x, y: sp.y }; if (sp.name) { dungSelfName = rosterKey(sp.name); } }
             dungMates = (se.players || []).filter(p => p && !p.self && typeof p.x === 'number'); } catch (e) {}
-      // everyone inside the instance IS the party (self included): floor-scoped roster
       if (dungSelfName) dungRosterAdd(dungSelfName);
       for (const m of dungMates) dungRosterAdd(rosterKey(m.name || ('#' + m.uid)));
-      // scene mates just added to the roster (inside the instance) -> ask for them too;
-      // the group-92 roster + hiscore pump already ran up top (works in formation too)
       dungPumpPartyHiscores(false);
       dungSelfPos = dungSelf || dungSelfPos;   // same-room gate anchor for the reconcile
       dungReconcileScene(sceneNpcs, sceneObjs);   // start-room anchor + ghost / puzzle / grooves highlight
@@ -4329,32 +3140,21 @@ async function fetchDungeoneering() {
         if (w.x && comp === 26 && w.x !== 'Progress bar text') d.prog = w.x;
         if (comp === 28 && w.r) d.progW = w.r[2];   // script5873 fill: 14px at zero
       }
-      // a skip indicator is present when its check/X sprite is in the tree
       for (const iconComp in skipMeta) {
         const flag = +iconComp + 1;               // comp 2 pairs with 1, comp 4 with 3
         if (skipUsed[flag] !== undefined)
           d.skips.push({ name: skipMeta[iconComp].name, item: skipMeta[iconComp].item, used: skipUsed[flag] });
       }
-      // speedrun bar shows only when genuinely active: real text AND a fill
-      // beyond script5873's 14px zero-width base
       if (d.progW <= 15) d.prog = '';
       d.keys.sort((a, b) => a.idx - b.idx);
 
-      // Floor map (group 942, comp-8 children). Classification mirrors the
       // renderer script5999: room TILES (>=30px graphics, incl. the 2831 start /
-      // 2833 boss overlays) render as their real sprite; markers are 24px key
-      // objs, 16px skill-door graphics (enum 371), 2825-2829 player arrow, and
-      // the 20px gatestone objs 17489/29468/18829. A room's requirement = the key
-      // or skill door it shows; a key room turns green when that key is held
       // (script8152 = key item -> held varc, the game's own outline test).
       const held = new Set(d.keys.map(k => k.idx));
       const rooms = {}; let player = null;
       const cellOf = (cx, cy) => rooms[cx + ',' + cy] ||
         (rooms[cx + ',' + cy] = { bg: [], key: null, door: null, gate: 0, boss: false });
       for (const w of dungFetchGroup(942)) {
-        // comp 3 = the map root: its pixel size IS the floor size (12px pad each side,
-        // 32px per room cell) -- 152x152 = 4x4 floor, 280x280 = 8x8.
-        // Room widget coords are ABSOLUTE grid cells within this floor.
         if (w.t && w.t[1] === 3 && w.r && w.r[2] >= 100) {
           const fc = Math.round((w.r[2] - 24) / 32), fr = Math.round((w.r[3] - 24) / 32);
           if (fc >= 2 && fc <= 8 && fr >= 2 && fr <= 8) d.floor = { cols: fc, rows: fr };
@@ -4362,9 +3162,6 @@ async function fetchDungeoneering() {
         if (!w.t || w.t[1] !== 8 || w.t[2] < 0 || !w.r) continue;
         const x = w.r[0], y = w.r[1], ww = w.r[2], hh = w.r[3];
         if (x < 0 || y < 0 || x > 240 || y > 240) continue;      // pooled/off-map widget
-        // rooms sit at 12 + 32*cell (12px board pad) -- subtract the pad before
-        // bucketing. Identical for the aligned 32px room tiles, but the ARROW moves
-        // continuously: without the pad its cell flipped early in a room's east/south.
         const cx = Math.floor((x + ww / 2 - 12) / 32), cy = Math.floor((y + hh / 2 - 12) / 32);
         const cand = (w.s >= 131072) ? w.s - 131072 : (w.it || 0);
         if (cand && DUNG_GATESTONES[cand]) {
@@ -4390,21 +3187,10 @@ async function fetchDungeoneering() {
       }
       if (Object.keys(rooms).length) d.map = { rooms: rooms, player: player };
 
-      // Ground keys: the dungeon map only dots a key once you are near it, so this panel tracks
-      // them from the scene ground items and REMEMBER each one (world tile -> key)
-      // until it's picked up. A remembered key is dropped only when the player is
-      // close enough to see it and it's gone (picked up); keys that merely scroll out
-      // of the loaded scene stay remembered, so a missed key keeps showing on the map.
-      // Each key maps to its true room via the 14+2 grid, anchored on the start
-      // room's SW corner from the constellation fit; without the anchor keys are
-      // not placed (an approximate grid rounds edge keys into the wrong room).
       if (d.map) {
         try {
           let startCell = null;
           for (const kk in rooms) if (rooms[kk].start) { const p = kk.split(',').map(Number); startCell = { cx: p[0], cy: p[1] }; break; }
-          // NB: dungFloorSW comes ONLY from the start-room constellation fit. Do NOT
-          // approximate it from the player being "somewhere in the start room": that
-          // poisons the grid by up to +-7 tiles and shifts every marker.
 
           const gi = JSON.parse(await rtxData.raw('state.groundItems') || '[]');
           if (Array.isArray(gi)) dungGroundCache = gi;   // hoardstalker ground piles
@@ -4416,28 +3202,12 @@ async function fetchDungeoneering() {
             present[kk] = true;
             dungKeyCache[kk] = { x: g.x, y: g.y, ki: ki };   // remember it
           }
-          // Forget keys that are gone AND within pickup range (<=12 tiles: the loaded
-          // scene always reports these, so absence == picked up). Distant keys persist.
-          // ALSO: each key index exists once per floor, so a cached ground key whose
-          // index is now HELD (the key-ring varcs) was picked up -- authoritative,
-          // works no matter how far from the tile the pickup was noticed.
           for (const kk in dungKeyCache) {
             const c = dungKeyCache[kk];
             if (held.has(c.ki.idx)) { dungKeySrc[c.ki.idx] = { x: c.x, y: c.y }; delete dungKeyCache[kk]; dungSaveMarks(); continue; }
             if (dungSelf && !present[kk] && Math.max(Math.abs(c.x - dungSelf.x), Math.abs(c.y - dungSelf.y)) <= 12)
               delete dungKeyCache[kk];
           }
-          // A KEY GRABBED BEFORE THE PANEL EVER SAW IT LYING THERE still has to come from
-          // somewhere. The loop above only records a source for keys that made it into
-          // dungKeyCache -- walk in and take one in the same tick and there is no record
-          // at all, so the room then reported "Dead end (nothing here)" about a room a
-          // key had just come out of.
-          //
-          // Fall back to where the player is standing when the key enters the ring. That
-          // is ASSUMED, not observed: the ring is shared, so a teammate's pickup also
-          // trips it and would name the wrong room. So it is flagged, and the flag is
-          // honoured downstream -- an assumed source may say what a room contained, but
-          // it is NEVER allowed to argue that anything is on the critical path.
           if (!dungHeldInit) { held.forEach(i => { dungHeldSeen[i] = 1; }); dungHeldInit = true; }
           else for (const i of held) {
             if (dungKeySrc[i] || dungHeldSeen[i]) continue;
@@ -4445,12 +3215,6 @@ async function fetchDungeoneering() {
             if (dungSelf) { dungKeySrc[i] = { x: dungSelf.x, y: dungSelf.y, assumed: 1 }; dungSaveMarks(); }
           }
           held.forEach(i => { dungHeldSeen[i] = 1; });
-          // Room grid: 16-tile pitch anchored at the start room's SW corner (from the
-          // smuggler sighting). Every position -- the player's and each key's -- is that
-          // entity's WORLD tile pushed through dungRoomOf; the map-arrow widget rect is
-          // NOT used (capture showed it off the room lattice entirely), and one
-          // source of truth means the cell and in-room offset can never disagree.
-          // NO fallback anchor: an approximate grid puts edge keys in the WRONG room.
           const anchor = (dungFloorSW && startCell)
             ? { swx: dungFloorSW.x, swy: dungFloorSW.y, cx: startCell.cx, cy: startCell.cy } : null;
           const sw = anchor ? { x: anchor.swx, y: anchor.swy } : null;
@@ -4462,11 +3226,8 @@ async function fetchDungeoneering() {
               dungCurDoors = rooms[tc + ',' + tr].doors || 0;   // for the ice-slide goal
             }
           } else if (player && d.map) {
-            // no anchor -> the only cell source is the game's map-arrow widget, which
-            // is proven unreliable: draw NO arrow rather than one in the wrong room
             d.map.player = null;
           }
-          // party members on the map (same anchored math as the player)
           d.mates = [];
           if (anchor) for (const m of dungMates) {
             const r2 = dungRoomOf(sw, m.x, m.y);
@@ -4476,14 +3237,6 @@ async function fetchDungeoneering() {
               d.mates.push({ name: key, pn: Object.keys(dungPartyRoster).sort().indexOf(key) + 1, cx: tc2, cy: tr2, lx: r2.lx, ly: r2.ly });
             }
           }
-          // KEY PROVENANCE: which key was originally picked up in this room. Recorded so
-          // that after a floor you can check whether a key the panel called "critical"
-          // actually came out of a critical room -- the designation means "found in a
-          // room on the critical path", and it is NOT yet established that such keys
-          // must be used (a floor finished with two of them unspent, ).
-          // Provenance only; nothing reads it for planning.
-          // reset first: if a room object survives between polls, pushing would stack
-          // the same key over and over
           for (const kk3 in rooms) if (rooms[kk3]) rooms[kk3].keySrc = null;
           if (anchor) for (const si in dungKeySrc) {
             const src = dungKeySrc[si];
@@ -4494,7 +3247,6 @@ async function fetchDungeoneering() {
             if (!room3) continue;
             (room3.keySrc = room3.keySrc || []).push({ idx: +si, name: dungKeyName(+si) || ('key ' + si) });
           }
-          // TEMP diagnostics (remove once sub-room placement is confirmed live)
           d.dbg = 'sw ' + (anchor ? anchor.swx + ',' + anchor.swy + ' @cell ' + anchor.cx + ',' + anchor.cy : 'NONE')
                 + ' | self ' + (dungSelf ? dungSelf.x + ',' + dungSelf.y : 'NONE')
                 + ' | cell ' + (player ? player.cx + ',' + player.cy : 'NONE')
@@ -4507,34 +3259,13 @@ async function fetchDungeoneering() {
             const cell = rooms[(anchor.cx + DUNG_MAP_XSIGN * r.rx) + ',' + (anchor.cy + DUNG_MAP_YSIGN * r.ry)];
             if (cell) addKey(cell, c.ki, r);   // only draw in a known room
           }
-          // Skilling-resource rooms: map each scene resource to its map cell (round-based,
-          // so an edge tree folds into its room) and tag the room with its resource.
-          //
-          // A ROOM YOU HAVE NOT OPENED HAS NOTHING IN SCENE: instances do NOT load every
-          // resource up front, so a badge on an unexplored room is a stale cache entry
-          // from the PREVIOUS floor.
-          //
-          // So it is an INVARIANT: a resource attributed to an unexplored cell is bad
-          // data, whatever produced it -- stale cache, a shifted anchor, or an edge node
-          // rounding in from the room next door. Guarded at both ends below: never
-          // recorded against an unexplored cell, and never displayed for one.
-          // The room's BAND is RELATIVE to the party's ceiling:
-          // critical = within the top 2 tiers the party can actually COMPLETE; a tier
-          // ABOVE the party's level = a bonus room (they can't finish it); well below =
-          // filler. So T9/T10 is critical ONLY for a ~90+ party -- a level-50 party's
-          // critical band is its own top tiers, and T10 is a bonus room for them.
           if (anchor) for (const e of sceneNpcs.concat(sceneObjs)) {
             if (typeof e.x !== 'number') continue;
             const res = dungResource(e.id);
-            // Divination wisps are NOT a path signal : they spawn
-            // without regard to the critical path, so they must never drive the
-            // band badge, the key-drop crit latch, or the low-level fade.
             if (!res || res.skill === 'Divination') continue;
             const rx = Math.round((e.x - sw.x - 6.5) / DUNG_ROOM_PITCH), ry = Math.round((e.y - sw.y - 6.5) / DUNG_ROOM_PITCH);
             const ck = (anchor.cx + DUNG_MAP_XSIGN * rx) + ',' + (anchor.cy + DUNG_MAP_YSIGN * ry);
             if (rooms[ck] && !dungCellUnex(rooms[ck])) {
-              // RECORD the sighting. Grading happens below, off the record, so a room is
-              // graded the same whether or not its nodes are currently on screen.
               const sig = res.skillIdx + '|' + res.tier + '|' + res.level;
               const st = (dungRoomRes[ck] = dungRoomRes[ck] || {});
               if (!st[sig]) {
@@ -4543,14 +3274,6 @@ async function fetchDungeoneering() {
               }
             }
           }
-          // GRADE FROM THE RECORD, NOT THE SCENE. `rooms` is rebuilt every poll and the
-          // loop above only sees what is in render range, so grading from the scene would
-          // erase what a room contained the moment it scrolls out of view ("once you know that
-          // resource is in the room, it stays there for grading"). A resource node does
-          // not move or deplete, so the sighting is permanent.
-          //
-          // Bands are RECOMPUTED here rather than stored, because "filler" is relative to
-          // the party's levels and those change when someone joins or leaves.
           for (const ck in dungRoomRes) {
             const cell = rooms[ck];
             if (!cell || dungCellUnex(cell)) continue;   // see the invariant above
@@ -4560,40 +3283,14 @@ async function fetchDungeoneering() {
               const nr = { skill: r0.skill, tier: r0.tier, level: r0.level,
                            mine: dungSkillLevel(r0.skillIdx), best: mt.best, by: mt.by,
                            maxTier: mt.maxTier, band: dungResBand(r0, mt.maxTier, mt.best) };
-              // REPRESENT THE ROOM BY ITS LOWEST-TIER RESOURCE. A low tier tells you far
-              // more than a high one: generated floors keep filler with filler, so a T2
-              // Hunter alongside a T10 Woodcutting means the room is filler, and the T10
-              // is incidental. Picking the best band instead labelled
-              // that room "T10 -- in the party's top tier, likely critical path", which
-              // is the opposite of what the T2 says.
-              // Ties on tier break to the lower level, same reasoning.
               if (!cell.res || nr.tier < cell.res.tier
                   || (nr.tier === cell.res.tier && nr.level < cell.res.level)) cell.res = nr;
-              //...but REMEMBER that a low one was here. Keeping only the best band threw
-              // the fact away, and it turns out to be the decisive one: a room holding a
-              // LOW-tier resource alongside a high one is a side room, and the low tier
-              // OVERRIDES (a T9 Woodcutting + T5 Fishing room that was
-              // not on the route). Generated content puts filler together with filler.
-              // resLow is a PROOF the room is off the path, so it is STATIC, not
-              // party-relative: only the top two tiers of a resource type generate on
-              // both sides of the split, so any tier below those proves a bonus room
-              // whatever the party's levels are. An uncompletable (above-level)
-              // resource proves NOTHING: it also generates on the critical path. The
-              // party-relative band above stays what it was: an advisory for badges
-              // and ranking priors, never a proof.
               if (nr.tier > 0 && nr.tier < DUNG_RES_SCALE.length - 1) {
                 if (!cell.resLow || nr.tier < cell.resLow.tier) cell.resLow = nr;
               }
             }
           }
-          // ---- ONE planner: criticality, the route and the recommendation all come
-          // out of the same objective-directed model (see dungPlan). Runs after the
-          // resource/ground-key facts above are in place, and needs nothing else.
           {
-            // NB not gated on the constellation anchor: the room GRAPH alone is
-            // enough to route and recommend. The anchor only sharpens it (it is
-            // what places ground keys and the player's true cell), so without it
-            // the plan starts from the start room instead of going silent.
             const plan = dungPlan(rooms, {
               startKey: startCell ? startCell.cx + ',' + startCell.cy : null,
               playerKey: (anchor && player && player.cx !== undefined) ? player.cx + ',' + player.cy : null,
@@ -4612,24 +3309,8 @@ async function fetchDungeoneering() {
                           + ' live ' + g.live + ' from ' + g.from
                           + ' obj ' + g.objective + ' act ' + g.action;
             }
-            // DERIVED MARKS ARE NOT RELAYED. Sending one put a GUESS on the
-            // party channel, where it came back as `DUNG_KEY_PARTY` -- an observation,
-            // latched, and indistinguishable from a human mark. That
-            // round trip laundered "the planner suspects" into "the party knows" and
-            // defeated the whole point of keeping derivations unlatched, which is that a
-            // conclusion must never outlive the situation that produced it.
-            // Only a HUMAN promotion (right-click) is relayed now; see dungPartyReport
-            // at the manual-promote handler.
           }
           // Skill-door LEVEL capture: the entity tooltip (group 1177, its one TEXT
-          // widget = varc-string 2251; EXAMINING the door is required, hover never
-          // writes it) carries the exact requirement -- "...requires level 104
-          // Strength to optimally unlock...". On a NEW sentence, attach
-          // (skill, level) to the door being examined: unambiguous when the floor
-          // has one door of that skill; with several, only when the player stands
-          // at exactly ONE of them (within 8 tiles of that room's rect -- you
-          // examine the door you're next to). Anything still ambiguous is DROPPED,
-          // never guessed. Latched per floor.
           {
             dungReadDoorTip();                    // also poll here (tab open = 1s cadence)
             const tip = dungPendingTip;
@@ -4641,10 +3322,6 @@ async function fetchDungeoneering() {
                 const cand = Object.keys(rooms).filter(kk =>
                   rooms[kk].door && rooms[kk].door.name.toLowerCase() === sk.toLowerCase());
                 let target = cand.length === 1 ? cand[0] : null, how = '';
-                // Several doors of that skill: the EXAMINED DOOR'S OWN TILE (tip.dx/dy, captured
-                // from the engine hover slot at examine time) is the exact anchor -- try it first
-                // with a tight radius. Fall back to the tile the player stood on (tip.x/y),
-                // nearest-candidate with tie-drop, for captures where no loc hover was seen.
                 if (!target && cand.length > 1 && anchor && (tip.dx != null || tip.x != null)) {
                   const distOf = (kk, px, py) => {
                     const p2 = kk.split(',').map(Number);
@@ -4675,16 +3352,10 @@ async function fetchDungeoneering() {
                 }
               }
             } else if (tip) { dungPendingTip = null; dungTipLast = ''; }   // stale: drop it, but
-            // clear the dedupe stamp too -- otherwise a capture that never attached
-            // (map hadn't drawn the door yet, ambiguous candidates) would block
-            // that exact sentence for the rest of the floor and re-examining did nothing.
           }
         } catch (e) {}
       }
 
-      // Exploration guidance now comes from dungPlan (called above): the
-      // recommendation is literally the first step of the winning plan, so it can
-      // never disagree with the drawn path.
     }
     if (inDung) dungSaveMarks();   // marks survive a panel rebuild (restored above)
     dungData = d;
@@ -4692,17 +3363,8 @@ async function fetchDungeoneering() {
   paneRun('dung', renderDungeoneering);
 }
 
-// Party roster list + collapsible "Party best" hiscore-validation grid. Shared by the
-// in-dungeon view and the formation (lobby) view. Returns an HTML string; call sites
-// run the shared sprite loader afterwards (dg-rspr-mk) to paint the skill icons.
 function dungPartyBestHtml(party92, alwaysOpen) {
-  // ensure the local name is known at render (lastSnap.display_name is reliably set by
-  // the time anything renders -- it drives the panel header), so self is never
-  // mistaken for a mate even if the first fetch tick raced ahead of the snapshot.
   try { if (lastSnap && lastSnap.display_name) dungSelfName = rosterKey(lastSnap.display_name); } catch (e) {}
-  // one boxed, collapsible master section (it's not critical
-  // mid-floor -- hideable as a whole). The formation (lobby) view is ABOUT the
-  // party, so it renders open with no collapse chrome.
   if (!alwaysOpen) {
     const n = Object.keys(dungPartyRoster).length;
     let out = '<div class="dg-sect dg-phd" title="Party roster, party-best levels and cross-PC sync -- click to '
@@ -4714,9 +3376,6 @@ function dungPartyBestHtml(party92, alwaysOpen) {
   }
   let html = '';
   const partyNames = Object.keys(dungPartyRoster).sort();
-  // per-MEMBER hiscore fetch status -> a coloured dot on the chip: self = the local live
-  // stats (never fetched), green = fetched ok, amber = fetching, red = no hiscores found
-  // (privated / typo / ironman) so it's obvious WHICH person's lookup failed.
   const memStatus = n =>
     dungIsSelf(n) ? { cls: 'self', txt: 'your own live stats (not fetched)' }
     : dungPartyStats[n] ? { cls: 'ok', txt: 'hiscores fetched' }
@@ -4736,8 +3395,6 @@ function dungPartyBestHtml(party92, alwaysOpen) {
   }
   if (!party92)
     html += '<div class="dg-none">Open the game\'s party interface so every mate\'s name (and stats) can be fetched.</div>';
-  // Party best level per skill = the levels the rules actually use (the local live level
-  // merged with mates' fetched hiscores). Clean aligned table: icon | level | provider.
   const rows = [];
   for (let i = 0; i < SKILL_NAMES.length; i++) {
     const b = dungPartyBest(i);
@@ -4754,9 +3411,6 @@ function dungPartyBestHtml(party92, alwaysOpen) {
       + '<span class="dg-count">' + (mates.length ? okN + '/' + mates.length + ' fetched' : 'you only') + '</span></div>';
     if (dungPbOpen) html += '<div class="dg-pb">' + rows.join('') + '</div>';
   }
-  // Cross-PC party sync: one member makes a code, shares it (voice/Discord), everyone
-  // joins it -> examined door levels + fetched hiscores relay between PCs. If the launcher
-  // lacks the bridge (old build), the whole section is hidden.
   if (bridge().partyGetCode) {
     const code = dungSyncCode();
     html += '<div class="dg-sect"><span>Party sync</span>'
@@ -4783,7 +3437,6 @@ function renderDungeoneering() {
   let wrap = $('dgWrap');
   if (!wrap) {
     c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'dgWrap'; wrap.className = 'pk-wrap'; c.appendChild(wrap); dungSig = '';
-    // click a room -> route to it (click the same room again to clear)
     wrap.addEventListener('click', ev => {
       const t = ev.target;
       if (t && t.closest && t.closest('.dg-pbhd')) {
@@ -4792,10 +3445,8 @@ function renderDungeoneering() {
       if (t && t.closest && t.closest('.dg-phd')) {
         dungPartyOpen = !dungPartyOpen; dungSig = ''; renderDungeoneering(); return;
       }
-      // party-sync controls
       const sb = t && t.closest ? t.closest('[data-sync]') : null;
       if (sb) { dungSyncAction(sb.getAttribute('data-sync'), wrap); return; }
-      // ice-room dump -> OS clipboard
       const ib = t && t.closest ? t.closest('[data-icedump]') : null;
       if (ib) {
         try { if (dungIceDump && bridge() && bridge().copyClipboard) { bridge().copyClipboard(JSON.stringify(dungIceDump)); ib.textContent = 'Copied'; } } catch (e) {}
@@ -4811,8 +3462,6 @@ function renderDungeoneering() {
         try { if (dungMazeDump && bridge() && bridge().copyClipboard) { bridge().copyClipboard(JSON.stringify(dungMazeDump)); mb2.textContent = 'Copied'; } } catch (e) {}
         return;
       }
-      // key chip -> toggle critical: promote a held key / demote a critical one
-      // (a manual demotion is remembered so the auto-latch can't re-add it)
       const keyEl = t && t.closest ? t.closest('.dg-key[data-kidx]') : null;
       if (keyEl) {
         const ki = +keyEl.getAttribute('data-kidx');
@@ -4823,12 +3472,10 @@ function renderDungeoneering() {
         dungPartyReport('critkey', { idx: ki, on: promote });   // relay the override to the party
         dungSig = ''; renderDungeoneering(); return;
       }
-      // left-click a room -> mark it CRITICAL (route moved to hover + H)
       const cell = t && t.closest ? t.closest('.dg-cell[data-cell]') : null;
       if (!cell) return;
       dungSetManualCrit(cell.getAttribute('data-cell'), true);
     });
-    // hover tracking for the H route key
     wrap.addEventListener('mouseover', ev => {
       const cell = ev.target && ev.target.closest ? ev.target.closest('.dg-cell[data-cell]') : null;
       dungHoverCell = cell ? cell.getAttribute('data-cell') : '';
@@ -4843,7 +3490,6 @@ function renderDungeoneering() {
         dungSig = ''; renderDungeoneering();
       });
     }
-    // remember what's typed in the join box so a re-render (a hiscore arriving) restores it
     wrap.addEventListener('input', ev => {
       if (ev.target && ev.target.classList && ev.target.classList.contains('dg-sync-in')) dungSyncInput = ev.target.value;
     });
@@ -4851,11 +3497,6 @@ function renderDungeoneering() {
       if (ev.key === 'Enter' && ev.target && ev.target.classList && ev.target.classList.contains('dg-sync-in'))
         dungSyncAction('join', wrap);
     });
-    // right-click a room -> mark it NON-critical; middle-click -> un-mark. Shared across
-    // the party (dungSetNonCrit relays it). Ultralight's WebKit does not reliably
-    // dispatch contextmenu/auxclick DOM events -- the raw mousedown (button 2 = right,
-    // 1 = middle) is what actually arrives, so the actions live THERE; contextmenu is
-    // handled only to suppress any default menu if the engine ever raises it.
     wrap.addEventListener('contextmenu', ev => { ev.preventDefault(); });
     wrap.addEventListener('mousedown', ev => {
       if (ev.button !== 1 && ev.button !== 2) return;
@@ -4870,8 +3511,6 @@ function renderDungeoneering() {
   const d = dungData;
   if (!d) { wrap.innerHTML = '<div class="stor-empty">Reading...</div>'; dungSig = ''; return; }
   if (!d.in) {
-    // Party FORMING (party interface open in the lobby) or a roster already fetched
-    // -> show the party + party-best so stats are visible/validated before entering.
     const formingNames = Object.keys(dungPartyRoster);
     if (d.party92 || formingNames.length) {
       const fsig = 'form|' + formingNames.sort().join(',') + '|' + d.party92 + '|' + dungPbOpen + '|' + dungSyncCode()
@@ -4889,20 +3528,13 @@ function renderDungeoneering() {
       + '<span class="dg-hint">Floor status, held keys and the explored map appear here in a dungeon.</span></div>';
     dungSig = ''; return;
   }
-  // arrow rotation from live camera yaw; computed here so the fast-path (below) can
-  // spin the arrow every fetch without a full re-render.
   const yawDeg = (d.yaw !== undefined) ? (DUNG_YAW_SIGN * d.yaw / 16284 * 360 + DUNG_YAW_OFFSET) : 0;
-  // NB: d.timer AND the yaw arrow are OUT of the sig -- they change every tick and a
-  // full re-render restarts the CSS pulse animations (visible clipping). Both are
-  // updated in place below instead. Ghosts are outlined in-scene, not rendered here.
   const sig = JSON.stringify([d.keys.map(k => k.idx + (dungKeyIsCrit(k.idx) ? 'c' : '')), d.deaths,
     d.skips.map(s => s.name + (s.used ? '1' : '0')), d.prog, d.mapOpen, d.party92,
     d.floor ? d.floor.cols + 'x' + d.floor.rows : 0, dungRouteTarget,
     (d.mates || []).map(m => m.name + '@' + m.cx + ',' + m.cy).join(';'), Object.keys(dungPartyRoster).sort().join('|'),
     SKILL_NAMES.map((_, i) => { const b = dungPartyBest(i); return (b.best || 0) + (b.by || ''); }).join('.'),
     Object.keys(dungHsPoll).length, Object.keys(dungHsDone).length, dungPbOpen, dungPartyOpen, dungSyncCode(), Object.keys(dungManualNonCrit).sort().join(','), Object.keys(dungManualCrit).sort().join(','), Object.keys(dungPartyStats).sort().join('|'),
-    // chip veto notes + opened-door crit tooltips read these latches, so they must
-    // re-render when a latch or a crit mark moves even if nothing else changed
     Object.keys(dungKeyFillerVeto).sort().join(','),
     Object.keys(dungKeyDoor).map(i => i + (dungKeyIsCrit(i) ? 'c' : '') + '@' + dungKeyDoor[i]).sort().join('|'),
     d.map ? [Object.keys(d.map.rooms).map(k => {
@@ -4914,8 +3546,6 @@ function renderDungeoneering() {
              (c.res ? 'x' + c.res.skill + c.res.level + (c.res.band || '') + (c.res.mine != null ? 'm' + c.res.mine : '') + (c.res.best != null ? 'b' + c.res.best : '') : '') +
              '/' + (c.groundKeys ? c.groundKeys.map(g => g.idx + '@' + (g.lx == null ? 'c' : Math.round(g.lx)) + ',' + (g.ly == null ? 'c' : Math.round(g.ly))).join('.') : '');
     }), (d.map.player ? d.map.player.cx + ',' + d.map.player.cy : 0)] : 0]);   // player SUB-position is fast-pathed, not in the sig
-  // structural sig unchanged -> only refresh the live timer text, so the pulse
-  // animations keep running smoothly instead of restarting on a full re-render.
   if (sig === dungSig) {
     const te = wrap.querySelector('.dg-timer');
     if (te) te.textContent = d.timer || '';
@@ -4950,21 +3580,10 @@ function renderDungeoneering() {
         + '<span class="dg-skip ' + (s.used ? 'used' : 'avail') + '">' + (s.used ? 'used' : 'ready') + '</span></span>').join('')
     + '</div>';
 
-  // Held keys split by criticality: keys witnessed lying in a critical room
-  // (start room / T9-T10 resource room) open critical-path doors -> their own
-  // section on top; the rest below. Sections collapse away when empty.
   const critHeld = d.keys.filter(k => dungKeyIsCrit(k.idx));
   const normHeld = d.keys.filter(k => !dungKeyIsCrit(k.idx));
-  // chips are clickable togglers: a held key promotes to critical / a critical key
-  // demotes back (the demotion is remembered so the auto-latch can't re-add it)
   const keyChip = (k, crit) => {
     const why = dungKeyWhy(k.idx);
-    // Say WHICH kind of claim this is. Only a hand/party mark is a verdict; everything
-    // else is the panel's own inference and is labelled as such, with the raw reason
-    // shown so a wrong one is identifiable. If the planner is IGNORING the mark (the
-    // key's source room sits behind filler, which structurally rules it out) the chip
-    // has to say so -- a chip reading "critical" while the map marks nothing looked like
-    // the panel was broken.
     const veto = dungKeyFillerVeto[k.idx]
       ? ' IGNORED by the planner: it was found behind a filler room, so its door cannot'
         + ' be on the path.'
@@ -4994,50 +3613,30 @@ function renderDungeoneering() {
       + '<div class="dg-prog">' + d.prog + '</div>';
   }
 
-  // arrow rotates by camera yaw (yawDeg computed above). The MAP arrow carries
-  // dg-yawarrow so the fast-path can spin it; the legend arrow is static north.
   const dgArrowSvg = (deg, cls) => '<svg class="dg-shape ' + cls + '" width="18" height="18" viewBox="0 0 12 12" style="transform:rotate(' + deg.toFixed(1) + 'deg)">'
     + '<path d="M6 1 L10.5 10.5 L6 8 L1.5 10.5 Z" fill="#f25c5c" stroke="rgba(0,0,0,.6)" stroke-width="0.9"/></svg>';
   const dgArrow = dgArrowSvg(yawDeg, 'dg-yawarrow');
   if (d.map) {
     const cells = Object.keys(d.map.rooms).map(k => k.split(',').map(Number));
     const xs = cells.map(p => p[0]), ys = cells.map(p => p[1]);
-    // Floor size known (map-root pixels) -> the board spans the WHOLE floor grid, with
-    // faint slots for unexplored cells, so explored rooms sit at their true place in
-    // the overall dungeon layout (room widget coords are absolute floor cells).
     let x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
     let y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
     if (d.floor) { x0 = 0; y0 = 0; x1 = Math.max(x1, d.floor.cols - 1); y1 = Math.max(y1, d.floor.rows - 1); }
     const ncols = x1 - x0 + 1, nrows = y1 - y0 + 1;
-    // clean node-graph layout: rooms are tiles on an absolutely-positioned board,
-    // connections are short rounded bars sitting in the GAPS between linked rooms
-    // (reads as a circuit/subway map instead of lines crossing the room art).
     const CELL = 56, GAP = 12, PITCH = CELL + GAP, PAD = 4;
     const bw = PAD * 2 + ncols * PITCH - GAP, bh = PAD * 2 + nrows * PITCH - GAP;
     const left = (col) => PAD + col * PITCH, top = (row) => PAD + row * PITCH;
-    // Large floors overflow the panel width -> scale the whole board down to fit
-    // (a transform keeps the node-graph crisp and every marker proportional).
     const avail = Math.max(160, (wrap.clientWidth || 300) - 4);
     const scale = Math.min(1, avail / bw);
     html += '<div class="dg-sect"><span>Explored map</span><span class="dg-count">'
       + cells.length + (d.floor ? ' / ' + (d.floor.cols * d.floor.rows) + ' rooms (' + d.floor.cols + 'x' + d.floor.rows + ' floor)' : ' rooms') + '</span></div>';
-    // Critical-chain progress. The chain is 19-23 rooms INCLUDING start and boss, so
-    // the remaining window is a hard bound, not an estimate. It is the `need` behind the
-    // planner's expected-rooms figure, so showing it makes that number auditable.
     {
       const ck = (d.keys || []).filter(k => dungKeyIsCrit(k.idx)).length;
       const cb = dungCritBudget(d.map.rooms, ck);
       const span = (a2, b2) => (a2 === b2 ? String(a2) : a2 + '-' + b2);
-      // "16 of 19-23 found": the budget total INCLUDES the key-fetch legs, not just the
-      // settled boss walk, so found can sit below 19 with the route known -- the
-      // remainder is legs whose rooms are still unidentified:
-      // "only 16? shouldnt it be at least 19" -- the total makes the invariant visible).
       html += '<div class="dg-sect dg-sub2"><span>Critical rooms</span><span class="dg-count">'
         + cb.found + (cb.max > 0 ? ' of ' + span(cb.found + cb.min, cb.found + cb.max) : '') + ' found'
         + (cb.max > 0 ? ' &middot; ' + span(cb.min, cb.max) + ' to go' : ' &middot; chain may be complete')
-        // Held critical keys are doors that MUST be opened, so their rooms are among
-        // the remainder but are not unknown -- show the split so the number the planner
-        // actually gates on is visible.
         + (ck > 0 && cb.max > 0
              ? ' <span class="dg-dim">(' + ck + ' behind held key' + (ck === 1 ? '' : 's')
                + ', ' + span(cb.unkMin, cb.unkMax) + ' to find)</span>' : '')
@@ -5045,17 +3644,10 @@ function renderDungeoneering() {
     }
     html += '<div class="dg-boardscale" style="height:' + Math.ceil(bh * scale) + 'px">';
     html += '<div class="dg-board" style="width:' + bw + 'px;height:' + bh + 'px;transform:scale(' + scale.toFixed(4) + ')">';
-    // unexplored floor slots first (under everything): where rooms COULD be
     if (d.floor)
       for (let gy = y0; gy <= y1; gy++) for (let gx = x0; gx <= x1; gx++)
         if (!d.map.rooms[gx + ',' + gy])
           html += '<span class="dg-cell dg-unex" style="left:' + left(gx - x0) + 'px;top:' + top(gy - y0) + 'px"></span>';
-    // clicked-target route: BFS over the door graph from the player's room, only
-    // entering rooms that can be entered (no key needed, or key held; the target itself always
-    // allowed); unexplored rooms can END a route but not be routed THROUGH. The
-    // route's EDGES light their connectors, so the chain is readable even when
-    // several route rooms sit side by side (adjacent but non-consecutive rooms
-    // get no lit bar between them).
     let routeSet = null, routeEdges = null;
     if (dungRouteTarget && d.map.rooms[dungRouteTarget] && d.map.player) {
       const skey = d.map.player.cx + ',' + d.map.player.cy;
@@ -5085,7 +3677,6 @@ function renderDungeoneering() {
         }
       }
     }
-    // connectors next (under the tiles)
     for (const k in d.map.rooms) {
       const [gx, gy] = k.split(',').map(Number), dm = d.map.rooms[k].doors;
       if (dm === undefined) continue;
@@ -5099,39 +3690,19 @@ function renderDungeoneering() {
       if ((dm & 4) && s && s.doors !== undefined && (s.doors & 1))
         html += '<i class="dg-conn' + connCls(sk2) + '" style="top:' + (top(row) + CELL - 3) + 'px;left:' + (left(col) + CELL / 2 - 4) + 'px;height:' + (GAP + 6) + 'px;width:8px"></i>';
     }
-    // OPENED critical-key doors, by cell: room.key vanishes when the door opens, but
-    // the tooltip must keep saying the room's door needed a critical key (same
-    // "outlives the marker" rule as dungDoorLevels; the latch is the truth).
     const openedCritDoor = {};
     for (const i in dungKeyDoor) if (dungKeyIsCrit(i)) openedCritDoor[dungKeyDoor[i]] = +i;
     for (const k in d.map.rooms) {
       const [gx, gy] = k.split(',').map(Number), room = d.map.rooms[k];
       const col = gx - x0, row = gy - y0;
       const here = d.map.player && d.map.player.cx === gx && d.map.player.cy === gy;
-      // DEAD END: exactly one door (nowhere to go but back), nothing to collect (no
-      // ground key), no requirement worth visiting (locked/skill door, gatestone),
-      // and not the boss/start -> dim so the eye skips over it. UNEXPLORED "?" rooms
-      // are NEVER dead ends -- their layout/contents aren't known yet.
       const unex = room.bg.length > 0 && room.bg.every(s => DUNG_UNEX_SPR.has(s));
       const dcnt = room.doors === undefined ? 9 : ((room.doors & 1) + ((room.doors >> 1) & 1) + ((room.doors >> 2) & 1) + ((room.doors >> 3) & 1));
-      // A resource does NOT rescue a room from being a dead end :
-      // one door, nothing to collect and no requirement is structurally the end of the
-      // line whatever is standing in it. The T-badge still says the node is worth doing;
-      // the room just stops competing for the eye with actual route rooms.
-      // A room a key was TAKEN from is not empty -- it is the reason you walked down
-      // there. Reporting it as "Dead end (nothing here)" threw away the single strongest
-      // piece of backwards evidence on the floor.
       const dead = !unex && dcnt <= 1 && !(room.groundKeys && room.groundKeys.length) && !room.key && !room.door && !room.gate && !room.boss && !room.start && !here && !room.keyFrom;
       room.dead = dead;
       let tile = room.bg.map(s => '<span class="dg-rspr" data-spr="' + s + '"></span>').join('');
-      // The room REQUIREMENT (locked-door key OR skill door) is the primary thing to
-      // read -> drawn BIG and CENTRED. Ground key, player arrow and party dots sit at
-      // their real in-room positions. A critical (level>=80) resource gets a small
-      // green corner tag; low-tier resources and the potential-count number are NOT
-      // drawn (the potential still drives the explore ring, just without a badge).
       const gate = room.gate ? DUNG_GATESTONES[room.gate] : null;
       const manualNC = !!dungManualNonCrit[k];   // hand-forced non-critical -> fade, suppress crit
-      // the shut door's marker, or the latch once it is opened -- both are the same fact
       const critKeyIdx = room.key ? (dungKeyIsCrit(room.key.idx) ? room.key.idx : null)
                                   : (openedCritDoor[k] != null ? openedCritDoor[k] : null);
       const critSrc = (critKeyIdx != null && !manualNC) ? dungKeyWhy(critKeyIdx) : null;
@@ -5145,8 +3716,6 @@ function renderDungeoneering() {
             + '<span class="dg-doorplate dg-skillplate dg-bigreq"><span class="dg-rspr-mk dg-bigspr" data-spr="' + room.door.spr + '"></span></span></span>';
       for (const gk of (room.groundKeys || []))
         ov += '<span class="dg-mk dg-floorkey dg-atpos" style="' + dungSubStyle(gk.lx, gk.ly) + '" title="' + gk.name + ' on the floor"><span class="dg-keyico" data-item="' + gk.item + '"></span></span>';
-      // only the CRITICAL band (party's top tiers) gets the green corner badge; bonus/
-      // filler rooms carry no badge (and are faded via room.lowRes above)
       if (room.res && room.res.band === 'critical' && !manualNC)
         ov += '<span class="dg-mk dg-bl"><span class="dg-res" title="' + room.res.skill + ' tier ' + room.res.tier + ' (level ' + room.res.level + ')'
             + (room.res.mine != null ? ', you ' + room.res.mine : '')
@@ -5162,29 +3731,13 @@ function renderDungeoneering() {
               + '<span class="dg-mate-n" style="color:' + mcol + '">p' + m.pn + '</span></span>';
         }
       if (here) ov += '<span class="dg-mk dg-player" style="' + dungSubStyle(d.map.player.lx, d.map.player.ly) + '">' + dgArrow + '</span>';
-      // A resource room OUTSIDE the party's critical band = off the critical path ->
-      // faded like a dead end: 'filler' (completable but well below the top tiers) OR
-      // 'bonus' (a tier the party can't complete -> a bonus room). Only the 'critical'
-      // band (top 2 completable tiers) stays bright. Never faded for boss/start/here.
       room.lowRes = !!(room.res && (room.res.band === 'filler' || room.res.band === 'bonus'))
         && !room.boss && !room.start && !here && !room.critPathWhy;   // never fade the approach path to a critical room
-      // Skill door with a captured requirement (examine tooltip) more than 10
-      // levels below the player's own = non-essential side path; same fade.
-      // NOT gated on room.door: opening the door removes the map marker, but the
-      // captured level (and the room's criticality) must survive the walk-through.
       const dl = dungDoorLevels[k] || null;
       const doorMine = dungDoorMine(dl);
       const doorBand = dungDoorBand(dl);
       room.lowDoor = (doorBand === 'low' || doorBand === 'above')
         && !room.boss && !room.start && !here;
-      // A captured skill door the PARTY can unlock and whose requirement is near/at the
-      // party's level (>= partyBest - margin) is a hard gate -> the path behind it is
-      // likely critical (uses party best, not the local level: a level-81 Magic door is
-      // critical when a mate has 87 even if the local level is lower). Trivial doors far below the party
-      // are lowDoor (faded) instead. Marked with the same violet dg-crit ring as crit keys.
-      //...and never for a REFUTED room: the planner proved the branch behind this
-      // door finished and empty, so the near-level prior is retracted (:
-      // the level-93 Construction door hiding one fishing dead end is NOT critical).
       room.critDoor = doorBand === 'critical' && !manualNC && !room.refuted;
       const reqs = [];
       for (const gk of (room.groundKeys || [])) reqs.push(gk.name + ' (on the floor)');
@@ -5218,35 +3771,12 @@ function renderDungeoneering() {
                                         : ' -- top tier, worth doing (dead end, not the route)')
            : room.res.band === 'bonus' ? ' -- above the party\'s level, likely a bonus room'
            : room.res.band === 'filler' ? ' -- well below the party, likely filler' : ''));
-      // ONE criticality line: the room's STRONGEST reason only (dedupe
-      //: "Critical:..." and "On the way to..." stacked as two
-      // overlapping claims about the same room). critSelfWhy (why THIS room
-      // matters) outranks critPathWhy (it sits on a path to something else);
-      // the self line still yields to the boss / critDoor / resource lines,
-      // which already state the same reason in their own words.
       if (room.critSelfWhy && !room.boss && !room.critDoor && !(room.res && room.res.band === 'critical'))
         reqs.push('Critical: ' + room.critSelfWhy);
       else if (room.critPathWhy) reqs.push('On ' + room.critPathWhy + ' -- keys found here are critical');
       if (room.start) reqs.push('Start room -- always on the critical path');
       if (room.boss) reqs.push('Boss room');
       if (room.pot) reqs.push(room.pot + ' unexplored room' + (room.pot === 1 ? '' : 's') + ' this way');
-      // KEY PROVENANCE, ONE LINE PER KEY (dedupe, : "Key found
-      // here", "A key was taken from this room" and "taken here is REQUIRED"
-      // overlapped with contradictory qualifiers in one tooltip). Each key taken
-      // from this room gets exactly one sentence: the pickup fact plus the PROVEN
-      // forced tier -- 'route' (its door is on the settled boss route) / 'blocks'
-      // (nothing was reachable without it) / not known yet. Say ONLY what is
-      // proven about the key's DOOR: provenance flows BACKWARDS, the pickup
-      // proves the trip and nothing about the door (corrected
-      // repeatedly), so the no-proof tier reads "not known yet" -- never
-      // "(not critical)", the wording that made a proven-forced key read as a
-      // contradiction (the orange-triangle case). The room's
-      // own criticality is the criticality line's claim, not this one's ("door
-      // on the route" was being printed off the SOURCE room's onPath, and the
-      // key line asserted ON/NOT-on-path beside it -- ).
-      // keySrc (anchored grid) and keyFrom (planner cell fit) are the same
-      // dungKeySrc observations through two mappings -- union them by key idx
-      // so no key prints twice.
       const provKeys = (room.keySrc || []).map(ks => ks.idx);
       if (room.keyFrom != null && provKeys.indexOf(+room.keyFrom) < 0) provKeys.push(+room.keyFrom);
       for (const pi of provKeys) {
@@ -5263,32 +3793,18 @@ function renderDungeoneering() {
       if (manualNC) reqs.push('Marked non-critical by you (middle-click to clear)');
       if (dungManualCrit[k]) reqs.push('Marked critical by you (middle-click to clear)');
       if (routeSet && routeSet[k]) reqs.push(k === dungRouteTarget ? 'Route target (H to clear)' : 'On the route');
-      // A dead end can only claim to have MATTERED on a fact. `dead` already excludes
-      // every fact that forces a trip (a key taken here sets keyFrom, which un-deads
-      // the room and prints its own provenance line above), so the one truthful
-      // "critical dead end" left is the player's own mark. Never assert "its key is taken":
-      // that is fabricated whenever no key ever existed there.
       const critDead = dead && !!dungManualCrit[k];
       if (dead) reqs.push(critDead
         ? 'Dead end -- no way onward (kept critical by your own mark)'
         : room.res
         ? 'Dead end -- the ' + room.res.skill + ' node is all there is here'
         : 'Dead end (nothing here)');
-      // Say WHY a room went dim, or a pruned spur just reads as an unvisited room
-      // A pruned room that DID report a key can only happen on a party floor (solo,
-      // the ring flip is trusted and blocks the prune) -- say why the key didn't count
-      // instead of claiming "no key" in the same tooltip that reports one.
       if (room.deadBranch && !dead) reqs.push(room.keyFrom
         ? 'Spur -- ways on from here are finished; the key-ring flip seen here was not '
           + 'trusted (party floor: a teammate may have picked that key up elsewhere)'
         : 'Spur -- every way on from here ends in a dead end with no key, so the path cannot run through it');
       if (room.lowVia && !room.lowRes) reqs.push('Only reachable through a filler room');
       const title = reqs.length ? ' data-tip="' + dungAttr(reqs.join('\n')) + '"' : '';
-      // ONE source of truth: the planner already decided what is on the path
-      // (dungPlan -> room.onPath). The render must never re-derive it from the raw signals,
-      // or there are two definitions of "critical" that can drift apart.
-      // A critical dead end keeps its ON-PATH look: greying it out is what made a
-      // room that fed the boss read as irrelevant once its key was taken.
       const cls = 'dg-cell dg-room' + (dead && !critDead ? ' dg-dead' : '') + (room.lowRes || room.lowVia || room.lowDoor || room.deadBranch || manualNC ? ' dg-lowres' : '')
         + (manualNC ? ' dg-noncrit' : '')
         + (room.haveKey ? ' dg-havekey' : '') + (room.boss ? ' dg-boss' : '')
@@ -5302,29 +3818,20 @@ function renderDungeoneering() {
            + (ov ? '<span class="dg-ovs">' + ov + '</span>' : '') + '</span>';
     }
     html += '</div></div>';   // dg-board + dg-boardscale
-    // legend: only show gatestone rings for stones actually on this floor's map
     const gatesOnMap = [];
     for (const k in d.map.rooms) { const g = d.map.rooms[k].gate; if (g && gatesOnMap.indexOf(g) < 0) gatesOnMap.push(g); }
-    // Legend, grouped by MEANING so each ring reads unambiguously :
-    // what a room contains -> what is critical (pink) -> where to go (violet/amber)
-    // -> what to skip (dim) -> who is where. Entries appear only when on the map.
     const anyRoom = f => Object.keys(d.map.rooms).some(k => f(d.map.rooms[k], k));
     html += '<div class="dg-legend">'
-      // contents
       + '<span><span class="dg-doorplate" style="--kc:var(--text-dim)"><span class="dg-keyico" data-item="18208"></span></span>door req</span>'
       + '<span><span class="dg-floorkey" style="animation:none"><span class="dg-keyico" data-item="18208"></span></span>key on floor</span>'
       + '<span><span class="dg-lg-hk"></span>have key</span>'
       + (anyRoom(r => r.boss) ? '<span><span class="dg-lg-ring" style="border-color:var(--err)"></span>boss</span>' : '')
-      // critical-path evidence (pink): top-band resource, party-level door, crit-key door
       + (anyRoom(r => r.onPath) ? '<span><span class="dg-lg-crit"></span>critical path</span>' : '')
-      // where to go next
       + (anyRoom(r => r.rec) ? '<span><span class="dg-lg-rec"></span>do this next</span>' : '')
       + (anyRoom(r => r.need) ? '<span><span class="dg-lg-need"></span>best (need key)</span>' : '')
-      // what to skip
       + (anyRoom(r => r.dead) ? '<span><span class="dg-lg-dead"></span>dead end</span>' : '')
       + (anyRoom(r => r.lowRes || r.lowVia || r.lowDoor || r.deadBranch) ? '<span><span class="dg-lg-low"></span>low level (off path)</span>' : '')
       + (Object.keys(dungManualNonCrit).length ? '<span><span class="dg-lg-nc"></span>non-critical (you)</span>' : '')
-      // gatestones + people
       + gatesOnMap.map(g =>'<span><span class="dg-lg-ring" style="border-color:' + DUNG_GATESTONES[g].color + '"></span>' + DUNG_GATESTONES[g].name + '</span>').join('')
       + '<span>' + dgArrowSvg(0, '') + 'you</span>'
       + ((d.mates || []).length ? '<span><span class="dg-mate" style="display:inline-block"></span>party</span>' : '')
@@ -5336,44 +3843,27 @@ function renderDungeoneering() {
       + '<div class="dg-none">Open the in-game dungeon map once to populate it.</div>';
   }
 
-  // Ice-room dump: one click -> OS clipboard (Ultralight has no free-text selection
-  // copy). The JSON is the room model the solver actually used -- paste it back when
-  // a plan looks wrong so the mechanics get verified against data, not memory.
   if (dungIceDump) html += '<div class="dg-dbg"><button class="dg-sync-btn" data-icedump="1">Copy ice-room dump</button> ice: '
     + dungIceDump.padsUn.length + ' pad(s) left, plan '
     + (dungIceDump.plan ? dungIceDump.plan.length + ' slide(s)' : 'NONE') + '</div>';
   if (dungMazeDump) html += '<div class="dg-dbg"><button class="dg-sync-btn" data-mazedump="1">Copy maze dump</button> maze: '
     + dungMazeDump.barriers.length + ' barrier(s), route '
     + (dungMazeDump.route ? dungMazeDump.route.length + ' tile(s), cost ' + dungMazeDump.cost : 'NONE') + '</div>';
-  // Same paste-back loop for the barrel room's rotation fit -- the scores say whether the
-  // orientation was actually determined or just won a tie.
   if (dungBarrelDump) html += '<div class="dg-dbg"><button class="dg-sync-btn" data-barreldump="1">Copy barrel-room dump</button> barrels: '
     + dungBarrelDump.liveOffsets.length + ' live, fit rot ' + dungBarrelDump.bestR
     + ' (' + dungBarrelDump.rotScores.join('/') + ')'
     + (dungBarrelDump.tied ? ' <b>TIED -- not guiding</b>' : '') + '</div>';
 
-  // Party / Party best / Party sync live BELOW the map (they're not
-  // critical mid-floor and must never push the map down).
   html += dungPartyBestHtml(d.party92);
 
   wrap.innerHTML = html;
-  // paint the real room sprites + skill-door marker sprites (Interfaces-tab path)
   wrap.querySelectorAll('.dg-rspr').forEach(el => loadSpriteIcon(el, +el.dataset.spr, 112));
   wrap.querySelectorAll('.dg-rspr-mk').forEach(el => loadSpriteIcon(el, +el.dataset.spr, 40));
-  // skip + key item icons from the bundled pack (same path as bank/inventory)
   wrap.querySelectorAll('.dg-mini,.dg-keyico').forEach(el => { const u = resolveIcon(+el.dataset.item); if (u) el.style.backgroundImage = "url('" + u + "')"; });
   dungStripTitles(wrap);
 }
 
-// Tab-independent tick: keep the ghost / sliding-puzzle in-scene highlight live even
-// when the Dungeoneering tab isn't open (the puzzle target changes as blocks slide, and
-// you're usually watching the game, not the panel). Skips when the dung tab is active
-// (fetchDungeoneering already reconciles) and when not in a dungeon (one cheap group check).
 let dungTickBusy = false;
-// The crystal-room "CLICK NOW" centre-text countdown is REMOVED (:
-// usually inaccurate -- the reconcile-lag anchor could not hold the true phase). The
-// interval still runs this to sweep any leftover centre text; the out-of-sync pad
-// marks are the room's guidance now.
 function dungLodeTimerTick() {
   if (dungLodeCenterOn) { dungLodeCenterOn = false; try { bridge().centerText(myPid(), ''); } catch (e) {} }
 }
@@ -5387,8 +3877,6 @@ async function dungSceneTick() {
     try { const gs = (JSON.parse(rtxData.sync('state.interfaceGroups') || '{}').groups) || [];
           inDung = gs.some(g => g.id === 945); party92 = gs.some(g => DUNG_PARTY_GROUPS.indexOf(g.id) >= 0); } catch (e) {}
     if (!inDung) {
-      // party FORMING off-tab: keep the roster + hiscore fetch going so stats are
-      // ready when the floor starts; drop the roster only with no party context.
       if (party92) dungPumpPartyHiscores(true);
       else dungPartyRoster = {};
       dungClearOverlays(); return;
@@ -5396,12 +3884,6 @@ async function dungSceneTick() {
     let npcs = [], objs = [];
     try { const se = JSON.parse(await bridge().sceneEntities(myPid(), 128) || '{}'); npcs = se.npcs || []; objs = se.objects || [];
           const sp = (se.players || []).find(p => p && p.self); if (sp && typeof sp.x === 'number') dungSelfPos = { x: sp.x, y: sp.y }; } catch (e) {}
-    // Ground keys, observed TAB-INDEPENDENTLY. The map fetch only runs while the
-    // Dungeoneering tab is active, so a key picked up while you were looking at the
-    // game was never seen lying anywhere -- and with no provenance the room it came
-    // from never counted as critical ("the top left that contained a
-    // critical key wasn't marked"). Only ADD here; deciding a key was PICKED UP needs
-    // the key-ring read, so the next full fetch does that from this cache.
     try {
       const gi = JSON.parse(await rtxData.raw('state.groundItems') || '[]');
       if (Array.isArray(gi)) dungGroundCache = gi;   // hoardstalker ground piles
@@ -5411,8 +3893,6 @@ async function dungSceneTick() {
       }
     } catch (e) {}
     dungReadDoorTip();   // examine sentences are transient AND the dung tab is usually
-                         // NOT the active one while playing -- catch them here (600ms,
-                         // tab-independent) and let the next full fetch attach them
     const needMazeVar = DUNG_MAZE_TIMER_VAR && objs.some(o => o.id === 49345 || o.name === 'Locked chest');
     if (npcs.some(n => n.name === 'Monolith' || (n.id >= 10966 && n.id <= 10971)) || needMazeVar) {   // monolith/emote (all statue themes)/maze room -> keep the progress varc fresh off-tab
       try { const vc = JSON.parse(await rtxData.raw('state.varcsAll') || '{}');
@@ -5423,6 +3903,5 @@ async function dungSceneTick() {
   } finally { dungTickBusy = false; }
 }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { dungLodeTimerTick, dungSceneTick, fetchDungeoneering, renderDungeoneering });
 })();

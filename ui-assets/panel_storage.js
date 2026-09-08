@@ -1,5 +1,4 @@
 // RuneToolsX panel: Storage boxes (ore/wood/soil/gem/essence/rune pouch/quiver/...).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Per-type counts live in varbits (ore/soil/upgraded gem bag), a container (wood 937) or the item's own Extra_ints (base gem bag).
@@ -14,7 +13,6 @@
     },
     soil: {
       boxes: { 49538: 'Archaeological soil box' }, capVb: 47021,    // capacity varbit: 0->50,1->100,2->250,3->500
-      // soil counts are VARPS read DIRECTLY (the value IS the count) -- NOT varbits.
       varp: [['Ancient gravel', 9370], ['Saltwater mud', 9371], ['Fiery brimstone', 9372], ['Aerated sediment', 9373], ['Earthen clay', 9374], ['Volcanic ash', 9578]]
     },
     gem: {
@@ -29,11 +27,9 @@
       boxes: { 51022: 'Plank box' }, container: 895, roster: 16107
     },
     essence: {   // RC essence pouches; COUNT and stored TYPE are PER-POUCH.
-                 // Tuple = [name, countVb, typeVb, capacity, pouchItemId, decayVarp, decayMax].
                  // Durability% = (decayMax - varp)*100/decayMax, integer div (Med/Large/Giant wear
                  // on varps 3217/3218/3219, max 800/1000/1200); Small never decays and the
                  // Conservation of Energy relic forces 100%. The Massive pouch (24205) packs count
-                 // (bits 0-4), durability (bits 6-15 of 756) and type (bits 29-31) in Extra_int key 0.
       pouches: [
         ['Small pouch',     16497, 16502, 3,  5509,  0,    0],
         ['Medium pouch',    16498, 16503, 6,  5510,  3217, 800],
@@ -51,7 +47,6 @@
              ['Easy casket', 8686], ['Medium casket', 8687], ['Hard casket', 8688], ['Elite casket', 8689], ['Master casket', 8690]]
     },
     rune: {      // rune pouches (Small/Large/Grasping + every dye): per-slot count in Extra_ints keys 0,2,3,4
-                 // (value=count); key 1 packs each slot's rune TYPE as 6-bit indices (LSB=first slot, RS3 order)
       items: {
         38451: 'Small rune pouch', 38453: 'Large rune pouch', 44390: 'Small rune pouch (red)',
         44393: 'Large rune pouch (red)', 44395: 'Small rune pouch (blue)', 44398: 'Large rune pouch (blue)',
@@ -76,9 +71,7 @@
     money:  { container: 623 },   // Money pouch: Coins (995) split across slots; total = remainder gp + billions*1e9
     sandy:  { vb: [['Sandy Sand', 61090]] }   // Sandy Sand currency: count lives in varbit 61090 (no container; item 61835 is the icon)
   };
-  // RS3 rune index -> name (1..21); combination runes (5..10) are a best-effort ordering.
   const RUNE_NAMES = { 1: 'Air', 2: 'Water', 3: 'Earth', 4: 'Fire', 5: 'Dust', 6: 'Lava', 7: 'Mist', 8: 'Mud', 9: 'Smoke', 10: 'Steam', 11: 'Mind', 12: 'Body', 13: 'Cosmic', 14: 'Chaos', 15: 'Nature', 16: 'Law', 17: 'Death', 18: 'Astral', 19: 'Blood', 20: 'Soul', 21: 'Wrath', 22: 'Time' };
-  // Item NAME -> item id for grid icons of the varbit/varp-backed boxes; no entry = text cell.
   const STOR_ICON = {
     'Copper': 436, 'Tin': 438, 'Iron': 440, 'Coal': 453, 'Silver': 442, 'Mithril': 447, 'Adamantite': 449,
     'Luminite': 44820, 'Gold': 444, 'Runite': 451, 'Orichalcite': 44822, 'Drakolith': 44824, 'Necrite': 44826,
@@ -98,8 +91,6 @@
     'Easy clue': 42006, 'Medium clue': 42007, 'Hard clue': 42008, 'Elite clue': 42009, 'Master clue': 42010,
     'Easy casket': 42001, 'Medium casket': 42002, 'Hard casket': 42003, 'Elite casket': 42004, 'Master casket': 42005
   };
-  // Quiver arrow-type byte (key0 & 0xFF) -> ammo name; byte is the key of cache enum 16608.
-  // The bolt slot stores only a count, no type byte, so bolts can't be named from quiver data.
   const AMMO_TYPE = {
     1: 'Abyssalbane arrow', 2: 'Abyssalbane bolt', 3: 'Adamant arrow', 4: 'Adamant bolts', 5: 'Adamant brutal', 6: 'Araxyte arrow',
     7: 'Ascendri bolts', 8: 'Ascendri bolts (e)', 9: 'Ascension bolts', 10: 'Bakriminel bolts', 11: 'Barbed bolts', 12: 'Basiliskbane arrow',
@@ -122,7 +113,6 @@
     109: 'Wen arrow', 110: 'Bik arrow', 111: 'Primal arrow', 112: 'Primal bolts', 113: 'Havensilver bolt', 114: 'Havensilver bolt +1',
     115: 'Havensilver bolt +2'
   };
-  // Quiver ammo-type byte -> item id (enum 16608 value), for the ammo icon in the Storage grid.
   const AMMO_ID = {
     1: 21655, 2: 21675, 3: 890, 4: 9143, 5: 4798, 6: 31737, 7: 31868, 8: 31881, 9: 28465, 10: 24116,
     11: 881, 12: 21650, 13: 21670, 14: 13083, 15: 4788, 16: 9139, 17: 4740, 18: 8882, 19: 13280, 20: 4160,
@@ -140,44 +130,25 @@
   const SOIL_CAP = [50, 100, 250, 500];
   let storageData = null; storageVbMap = null; let storageSig = ''; let storageFetching = false;
   let storageVbMapTry = 0;    // last varbitMap attempt (ms) -- bridge().varbitMap is SYNCHRONOUS native work
-  // cfg.roster -> ordered item ids, read from the SAME cache enum the game's own fill script walks
-  // (Plank box CS2 case 51022 does enum_getvalue(0, 33, 16107, i) for i < ENUM_GETOUTPUTCOUNT).
-  // Hardcoding these rosters is what hid Magic/Elder/Eternal planks: the list was the whitelist, so
-  // a tier Jagex added and we never transcribed was dropped without a trace. Cached per session --
-  // enumInfo is synchronous native cache work and must not run on every poll tick.
   const storRoster = {}, storRosterTry = {};
   async function storRosterIds(eid) {
     if (!eid) return null;
     if (storRoster[eid]) return storRoster[eid];
     if (!bridge() || !bridge().enumInfo) return null;
-    // Same guard as ensureVbMap: EnumJson runs cache work SYNCHRONOUSLY on the render thread, so a
-    // permanently closed cache must not re-read it four times a second for the life of the session.
     const now = Date.now(); if (now - (storRosterTry[eid] || 0) < 2000) return null; storRosterTry[eid] = now;
     let m = await rtxData.call('cache.enumInfo', eid);
     if (!m) return null;
-    // Enum keys are the game's display order; they are not guaranteed to start at 0 (enum 7206
-    // does, enum 6544 starts at 1), so sort numerically rather than counting from zero.
     const ids = Object.keys(m).map(Number).sort((a, b) => a - b).map(k => m[k] | 0).filter(v => v > 0);
     if (!ids.length) return null;      // CONFIGS index not open yet -> retry next poll, do NOT cache
     storRoster[eid] = ids;
     return ids;
   }
-  // Runecrafting pouches never degrade while Conservation of Energy is harnessed
-  // (panel_archresearch.js reads the live relic slots).
   function storNoDecay() {
     return typeof archRelicActive === 'function' && archRelicActive('Conservation of Energy');
   }
 
-  // varbitMap is keyed by varp -> [[varbitId,lsb,msb],..]; invert to varbitId -> {varp,lsb,msb}.
   function buildVbReverse(vbm) { const m = {}; for (const vp in vbm) for (const d of vbm[vp]) m[d[0]] = { varp: +vp, lsb: d[1], msb: d[2] }; return m; }
   async function ensureVbMap() {
-    // VarbitMapJson returns "{}" while the CONFIGS index is not open (CacheReader.cpp:1363,1404),
-    // and buildVbReverse({}) is a TRUTHY empty object -- caching that latched EVERY varbit in the
-    // app to 0 for the rest of the session: the lockbox reads "Solved." forever, and achievements /
-    // farming / abilities / quests / mysteries all silently read zero. Only accept a non-empty map,
-    // and back off between retries, because bridge().varbitMap does NOT go through served()/
-    // ReadAsync like varps does (Bridge.cpp:921-924) -- it runs cache work synchronously on the
-    // render thread, and an unthrottled retry would do that on every readVarbitValues call.
     if (storageVbMap || !bridge().varbitMap) return;
     const now = Date.now(); if (now - storageVbMapTry < 2000) return; storageVbMapTry = now;
     try { const m = buildVbReverse(await rtxData.call('cache.varbitMap')); if (Object.keys(m).length) storageVbMap = m; } catch (e) {}
@@ -187,12 +158,6 @@
     const v = (vpData[r.varp] || 0) >>> 0, w = r.msb - r.lsb, mask = w >= 31 ? 0xffffffff : ((1 << (w + 1)) - 1);
     return (v >>> r.lsb) & mask;
   }
-  // Passage of the abyss: charges in Extra_int var 30214, and the filled slots packed into the
-  // next var as 4-bit nibbles (least significant first, one per slot, in the order the game
-  // lists them). Each nibble indexes enum 15018, which names the jewellery; unset slots are
-  // simply absent, so the nibble count is the fill count. Variants share the same layout.
-  // Icons for the Passage's slots: enum 15018 names the jewellery generically, so map each
-  // name to a representative item id (charge variants share one icon).
   const PASSAGE_ICON = {
     'Ferocious ring': 15400, 'Games necklace': 3863, 'Ring of duelling': 2562,
     'Ring of wealth': 2572, 'Skills necklace': 11105, 'Ring of slaying': 13286,
@@ -200,11 +165,7 @@
     'Ring of respawn': 39366, 'Enlightened amulet': 39387, "Traveller's necklace": 39372,
     "Delver's anklet": 59241
   };
-  // One item id per colour, all sharing the same Extra_ints layout. Confirmed in-game:
-  // 44542 red, 44543 purple, 44544 green, 44545 yellow.
   const PASSAGE_IDS = [44542, 44543, 44544, 44545];
-  // The unattuned form cannot teleport, so it stores no jewellery and holds no charges. Listed
-  // separately rather than dropped: holding one should say why the panel is empty.
   const PASSAGE_UNATTUNED = 44540;
   const PASSAGE_ENUM = 15018, PASSAGE_SLOTS = 6;
   const PASSAGE_FREE_VB = 52159;   // Dark Facet of Passage: teleports stop consuming charges
@@ -217,7 +178,6 @@
       if (held.has(PASSAGE_UNATTUNED)) return { name: 'Unattuned - attune it to teleport', cap: PASSAGE_SLOTS, items: [] };
       return null;
     }
-    // held merges backpack + worn, so try the backpack first and fall back to equipment.
     let k = null;
     for (const cont of [93, 94]) {
       let ei = null;
@@ -237,7 +197,6 @@
       const nm = (passageNames && passageNames[String(ix)]) || ('Unknown (' + ix + ')');
       items.push([nm, 1, PASSAGE_ICON[nm] || 0]);
     }
-    // Dark Facet of Passage (varbit 52159) makes teleports free, so the counter stops mattering.
     let unlimited = false;
     try { const vb = await readVarbitValues([PASSAGE_FREE_VB]); unlimited = ((vb && vb[PASSAGE_FREE_VB]) | 0) === 1; } catch (e) {}
     const label = unlimited ? 'Unlimited charges' : ('Charges ' + charges.toLocaleString());
@@ -248,14 +207,11 @@
   async function fetchStorage() {
     if (!bridge() || storageFetching) return; storageFetching = true;
     try {
-      // Contents live in varbits/varps/containers, readable WITHOUT the box; inventory only LABELS the held tier.
       let inv = await rtxData.call('state.inventory');
       const held = new Set((inv && inv.items || []).map(it => it[1]));
       let eq = await rtxData.call('state.equipment');   // worn items (rune pouch / quiver are equipped)
       (eq && eq.items || []).forEach(it => held.add(it[1]));
       await ensureVbMap();
-      // Harnessed relic powers gate what some rows should SAY (pouch decay); own throttle,
-      // so calling it here is a no-op most polls and needs no tab to have been opened.
       try { if (typeof archRelicEnsure === 'function') await archRelicEnsure(); } catch (e) {}
       const varpSet = new Set();
       const addVb = (vb) => { const r = storageVbMap && storageVbMap[vb]; if (r) varpSet.add(r.varp); };
@@ -268,7 +224,6 @@
       STORAGE.sandy.vb.forEach(x => addVb(x[1]));
       let vp = {};
       if (varpSet.size) vp = await rtxData.call('state.varps', [...varpSet].join(','));
-      // item tuple = [name, count, itemId, source] -- source is the provenance shown in the cell tooltip.
       const vbSrc = (vb) => { const r = storageVbMap && storageVbMap[vb]; return r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb); };
       const fromVb = (list) => list.map(x => [x[0], readVb(x[1], vp) || 0, STOR_ICON[x[0]] || 0, vbSrc(x[1])]).filter(x => x[1] > 0);
       const fromVarp = (list) => list.map(x => [x[0], (vp[x[1]] || 0) >>> 0, STOR_ICON[x[0]] || 0, 'varp ' + x[1]]).filter(x => x[1] > 0);
@@ -276,14 +231,11 @@
       const out = { ore: null, wood: null, soil: null, gem: null, plank: null, essence: null, clue: null, rune: null, quiver: null, nexus: null, brooch: null, money: null, currency: null, sandy: null };
       const oreItems = fromVb(STORAGE.ore.vb);
       if (oreBox || oreItems.length) out.ore = { name: oreBox || '', items: oreItems };
-      // Gem bag tier: the cache defines no "upgrade purchased" flag, so ownership is inferred from
-      // where the data lives; the base bag (18338) keeps its counts in its own Extra_ints (held only).
       const gemItems = fromVb(STORAGE.gem.vb);
       if (gemBox || gemItems.length) {
         out.gem = { name: gemBox || STORAGE.gem.boxes[31455], items: gemItems };
       } else if (held.has(18338) && bridge().itemExtraInts) {
         let ei = await rtxData.call('state.itemExtra', 93, 18338);
-        // Extra_ints is flat [key0,val0,key1,val1,..], so "Extra_ints[1]" = first VALUE = pos[0].
         const packed = (ei && ei.pos && ei.pos.length ? ei.pos[0] : 0) || 0;
         const gbyte = ['key 0 byte 0', 'key 0 byte 1', 'key 0 byte 2', 'key 0 byte 3'];
         const gi = [['Sapphire', packed % 256], ['Emerald', Math.floor(packed / 256) % 256], ['Ruby', Math.floor(packed / 65536) % 256], ['Diamond', Math.floor(packed / 16777216) % 256]]
@@ -292,15 +244,9 @@
       }
       const soilItems = fromVarp(STORAGE.soil.varp);
       if (soilBox || soilItems.length) out.soil = { name: soilBox || '', cap: SOIL_CAP[readVb(STORAGE.soil.capVb, vp) || 0] || 50, items: soilItems };
-      // Container-backed boxes. cfg.roster (a cache enum) fixes the game's display ORDER; the counts
-      // and names come from the container itself, so the roster decides sequence, never membership.
-      // Anything in the container the roster does not list is appended rather than dropped -- the old
-      // code filtered by a hardcoded list whose "show everything" fallback only fired when the list
-      // matched NOTHING, so a partial match (5 of 7 plank types) silently swallowed the rest.
       const readContainer = async (cfg, heldName) => {
         let r = await rtxData.call('state.container', cfg.container);
         const rows = (r && r.items) || [];
-        // One id can span several slots; sum the stacks and keep every slot for the cell tooltip.
         const byId = {}, nameOf = {}, slotsOf = {};
         rows.forEach(it => {
           const id = it[1];
@@ -321,14 +267,11 @@
       out.plank = await readContainer(STORAGE.plank, storHeldBox('plank', held));
       out.nexus  = await readContainer(STORAGE.nexus,  null);
       out.brooch = await readContainer(STORAGE.brooch, null);
-      // read an item's Extra_ints from the worn (94) or backpack (93) slot; ei.key[k] = value at key k.
       const eiFor = async (id) => {
         if (!bridge().itemExtraInts) return null;
         for (const cid of [94, 93]) { { const r = await rtxData.call('state.itemExtra', cid, id); if (r && r.present) return r; } }
         return null;
       };
-      // Essence pouches: tuple = [name, count, pouchIconId, src, cap, durStr, essenceIconId],
-      // essenceIconId 0 = empty. The Massive pouch shows whenever held (durability matters empty).
       const essType = (t) => STORAGE.essence.types[t & 7] || STORAGE.essence.types[0];
       const eM = STORAGE.essence.massive;
       const essItems = [];
@@ -345,20 +288,14 @@
             cnt > 0 ? ty[1] : 0]);
           continue;
         }
-        // A HELD pouch stays rendered at count 0: dropping the cell made the strip
-        // reflow on every fill/empty cycle mid-training (owner-reported jitter).
         const cnt = readVb(cntVb, vp) || 0;
         if (cnt <= 0 && !held.has(pouchIcon)) continue;
         const ty = essType(readVb(typeVb, vp) || 0);
-        // decayVarp p[5] / decayMax p[6]; 0 = no decay (Small/Massive/Expansive).
         const decayVarp = p[5], decayMax = p[6];
         let durStr = '';
         if (decayVarp && decayMax) {
           const wear = (vp[decayVarp] || 0) >>> 0;
           const pct = Math.max(0, Math.floor((decayMax - Math.min(wear, decayMax)) * 100 / decayMax));
-          // Conservation of Energy stops pouch decay outright, so the wear varp is moot while
-          // it is harnessed. The relic state is READ (varp 12086 + its preset's varbits), so
-          // state the effect as fact instead of hedging "100% if the relic is active".
           durStr = storNoDecay()
             ? 'Durability 100% - Conservation of Energy is harnessed, so pouches do not degrade'
             : 'Durability ' + pct + '% (' + (decayMax - wear) + ' / ' + decayMax + ' · varp ' + decayVarp + ')';
@@ -387,8 +324,6 @@
       for (const id in STORAGE.quiver.items) {
         if (!held.has(+id)) continue;
         const ei = await eiFor(+id); if (!ei || !ei.key) continue;
-        // key0 packs the equipped ammo AND the stored ammo's type: [secondaryType:9 | primaryCount:15 |
-        // primaryType:8]; both type fields are keys of cache enum 16608 (AMMO_TYPE). key1 = stored count.
         const k0 = (ei.key[0] || 0) >>> 0, k1 = (ei.key[1] || 0) >>> 0;
         const pType = k0 & 0xFF, pCount = (k0 >>> 8) & 0x7FFF, sType = (k0 >>> 23) & 0x1FF, sCount = k1 & 0xFFFF;
         const items = [];
@@ -397,7 +332,6 @@
         quivers.push({ name: STORAGE.quiver.items[id], items });
       }
       if (quivers.length) out.quiver = quivers;
-      // Money pouch: item 995 holds the sub-billion remainder, item 54830 counts billions.
       try {
         const r = await rtxData.call('state.container', STORAGE.money.container);
         const rows = (r && r.items) || [];
@@ -405,8 +339,6 @@
         const total = stackOf(54830) * 1000000000 + stackOf(995);
         if (total > 0) out.money = { name: '', items: [['Coins', total, 995, 'container 623 · item 995 (gp) + item 54830 (×1e9)']] };
       } catch (e) {}
-      // Currency pouch: inventory interface group 1473, comp 20 = currency icons; item id at
-      // node+0x1a0, amount at node+0x1a8 (reader's "it"/"n"). Needs group 1473 present.
       try {
         const ig = await rtxData.call('state.interfaceGroup', 1473);
         const cur = [];
@@ -426,7 +358,6 @@
     paneRun('storage', renderStorage);
   }
 
-  // RS3-style count abbreviation: <100k full, 100k+ -> K, 1m+ -> M, 1b+ -> B, 1t+ -> T, 1q+ -> Q (2dp).
   function storAbbr(n) {
     return n >= 1e15 ? +(n / 1e15).toFixed(2) + 'Q' : n >= 1e12 ? +(n / 1e12).toFixed(2) + 'T'
          : n >= 1e9 ? +(n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? +(n / 1e6).toFixed(2) + 'M'
@@ -450,8 +381,6 @@
     add('Sandy Sand', d && d.sandy);
     add('Passage of the abyss', d && d.passage);
     const boxItems = (b) => b.items || [];
-    // it[5] (durability text) is part of the signature so wear ticks - and the relic
-    // flipping pouch decay off - actually repaint instead of waiting for a count change.
     const sig = storNoDecay() + '|' + list.map(([t, b]) => t + '|' + (b.name || '') + '|' + (b.cap || '') + '|' + boxItems(b).map(it => it[0] + ':' + it[1] + ':' + (it[2] || 0) + ':' + (it[5] || '')).join(',')).join(';');
     if (sig === storageSig) { sizeAllIcons(); return; }
     storageSig = sig;
@@ -470,22 +399,18 @@
       return cell;
     };
     const gridOf = (items, cap) => { const g = document.createElement('div'); g.className = 'stor-grid'; items.forEach(it => g.appendChild(makeCell(it, cap))); return g; };
-    // Essence cell: it = [name,count,pouchIcon,src,cap,durStr,essIcon].
     const makeEssenceCell = (it) => {
       const name = it[0], count = it[1], pouchId = it[2], src = it[3] || '', cap = it[4] || 0, dur = it[5] || '', essId = it[6] || 0;
       const cell = document.createElement('div'); cell.className = 'stor-ecell';
       cell.dataset.tip = name + '\n' + count.toLocaleString() + (cap ? ' / ' + cap : '') + (dur ? '\n' + dur : '') + (src ? '\n' + src : '');
       const mkIcon = (id, cls) => { const u = id ? resolveIcon(id) : ''; const e = document.createElement('div'); e.className = 'bank-icon ' + cls; if (u) { e.dataset.itemId = String(id); setIconBg(e, u); } return e; };
       cell.appendChild(mkIcon(pouchId, 'stor-epouch'));
-      // The arrow + essence slot ALWAYS renders (empty box when essId 0): appearing and
-      // vanishing with the contents resized the cell every fill/empty (owner-reported).
       const ar = document.createElement('span'); ar.className = 'stor-earrow'; ar.textContent = '›';
       if (!essId) ar.style.opacity = '0.35';
       cell.appendChild(ar);
       cell.appendChild(mkIcon(essId, 'stor-eess'));
       const cz = document.createElement('span'); cz.className = 'stor-ecap';
       cz.style.fontVariantNumeric = 'tabular-nums';
-      // Reserve the full-count width ("12 / 12") so 1- vs 2-digit counts don't shift the row.
       if (cap) cz.style.minWidth = (2 * String(cap).length + 3) + 'ch';
       cz.innerHTML = count.toLocaleString() + (cap ? ' <span class="cap">/ ' + cap + '</span>' : '');
       cell.appendChild(cz);
@@ -509,7 +434,6 @@
     if (scrollAt > 0) c.scrollTop = scrollAt;
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { STORAGE, ensureVbMap, fetchStorage, readVb });
 registerTab({ id: 'storage', render: renderStorage, open: function () { storageSig = ''; fetchStorage(); } });
 })();

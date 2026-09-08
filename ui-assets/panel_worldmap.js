@@ -1,5 +1,4 @@
 // RuneToolsX panel: World Map (full-world terrain browser: pan/zoom/search/layers).
-// Spliced inline into client.html; IIFE. Shared helpers and clue-map data tables (MAP_LABELS, MAP_TELEPORTS, LODESTONES, HIDEY) resolve at call time.
 (function () {
 
   // Terrain comes from bridge().mapWindow in fixed chunks, one cached offscreen canvas each; every level renders 512 px images. upto = the level's own ts so images are never magnified.
@@ -34,7 +33,6 @@
   function wmSaveLayers() { try { localStorage.setItem('rtxWmLayers', JSON.stringify(wmLayer)); } catch (e) {} }
   function wmLevel(z) { for (const L of WM_LEVELS) if (z <= L.upto) return L; return WM_LEVELS[WM_LEVELS.length - 1]; }
 
-  // ---- chunk cache (LRU by Map insertion order) + bounded fetch queue ----
   const wmCache = new Map();    // "ts|plane|ix|iy" -> {cv: canvas | null (no map data)}
   const wmQueued = new Map();   // same key -> {key, ts, plane, ix, iy, half, cx, cy, pri, busy}
   let wmInflight = 0, wmFailAt = 0;
@@ -56,7 +54,6 @@
     const L = WM_LEVELS.find(v => v.ts === ts), ch = L.ch;
     wmQueued.set(k, { key: k, ts: ts, plane: plane, ix: ix, iy: iy, half: ch / 2, cx: ix * ch + ch / 2, cy: iy * ch + ch / 2, pri: pri, busy: false });
   }
-  // Terrain arrives as PNG (`png`); older builds sent raw RGBA (`b64`). Both handled.
   async function wmDecode(meta) {
     const W = meta.w | 0;
     const cv = document.createElement('canvas'); cv.width = W; cv.height = W;
@@ -75,7 +72,6 @@
     cv.getContext('2d').putImageData(new ImageData(a, W, W), 0, 0);
     return cv;
   }
-  // Map element pins: 10 bytes each, wtx u16 LE, wty u16 LE, element id u16 LE, loc id u32 LE. Tile coords are window-relative (chunk ox/oy). Loc id is per placement, tooltip name of last resort.
   function wmIcons(b64) {
     if (!b64) return null;
     const bin = atob(b64), n = (bin.length / 10) | 0;
@@ -86,7 +82,6 @@
       out[i] = { tx: bin.charCodeAt(o)     | (bin.charCodeAt(o + 1) << 8),
                  ty: bin.charCodeAt(o + 2) | (bin.charCodeAt(o + 3) << 8),
                  ml: bin.charCodeAt(o + 4) | (bin.charCodeAt(o + 5) << 8),
-                 // >>> 0: loc ids run past 2^31 and a signed shift would wrap them negative.
                  id: (bin.charCodeAt(o + 6)        | (bin.charCodeAt(o + 7) << 8) |
                      (bin.charCodeAt(o + 8) << 16) | (bin.charCodeAt(o + 9) << 24)) >>> 0 };
     }
@@ -106,7 +101,6 @@
         const c = JSON.parse((await rtxData.raw('cache.mapCategories')) || '{}');
         if (c) WM_CAT = c;
       } catch (e) {}
-      // Names of the locs placing the 22 elements that have no name by any other route.
       try {
         if (bridge().mapLocNames) {
           const ln = JSON.parse((await rtxData.raw('cache.mapLocNames')) || '{}');
@@ -118,7 +112,6 @@
       wmPrefetchDb();   // DB tables for the structured tooltips, one gated slice at a time
     })();
   }
-  // ================= structured element tooltips =================
   // Per-category layouts (clientscript-7590 maps category -> kind, clientscript-9566 maps kind -> layout), keyed off element param 4147; without 4147 the plain "param 4149 else category name" rule applies.
   const WM_KIND = { 1159: 7, 4551: 9, 4624: 10, 4625: 11, 1184: 14, 5121: 14,
                     1176: 15, 3032: 16, 1205: 17, 5699: 21 };
@@ -150,7 +143,6 @@
       setTimeout(wmPrefetchDb, 60);      // one archive walk per slice, never two in a frame
     })();
   }
-  // DB_FIND takes the FIRST match and dbRows emits in ascending file id, so first-wins is right.
   function wmDbIdx(t, colKey) {
     const ck = t + ':' + colKey;
     let m = WM_DBI[ck]; if (m) return m;
@@ -163,7 +155,6 @@
     WM_DBI[ck] = m; return m;
   }
 
-  // ---- lazy, memoised cache reads. A miss repaints the tooltip when it lands. ----
   function wmStruct(id) {
     if (id == null || id < 0) return null;
     if (WM_ST.has(id)) return WM_ST.get(id);
@@ -184,7 +175,6 @@
     })();
     return null;
   }
-  // undefined = still loading, '' = genuinely nameless (the game prints "XP training method - no resource" for those).
   function wmItemName(id) {
     if (!id || id < 0) return '';
     if (WM_IN.has(id)) { const v = WM_IN.get(id); return v === null ? undefined : v; }
@@ -239,7 +229,6 @@
     if (!head && list.length) { const p = wmStruct(list[list.length - 1]); head = p ? (p.strs['2210'] || '') : ''; }
     return { head: head, rows: wmStructRows(list, skill, useAlt), one: list.length <= 1 };
   }
-  // Farming differs only in that col 2 is an ENUM id whose values are the structs.
   function wmLayFarm(key) {
     const ix = wmDbIdx(170, '0'); if (!ix) return null;
     const r = ix.get(key); if (!r) return { head: '', rows: [] };
@@ -272,7 +261,6 @@
     return { head: (el && el.n) || '', rows: rows, rawHead: true, alwaysName: true,
              reqs: wmReqs(el) };
   }
-  // ---- element requirements ----
   // Element param 7781 names a struct of up to 20 (type, value) pairs (clientscripts 13327 text / 13290 met). Param 478 is a constant 1 and only drives the membership fallback. Only the Mining Site layout (kind 7) has a real block; other kinds route through script 16461.
   const WM_REQ_SLOTS = [
     [1294, 1295], [1296, 1297], [1298, 1299], [1300, 1301], [1302, 1303], [1304, 1305],
@@ -289,7 +277,6 @@
     }
     return WM_QJ[j] || null;
   }
-  // Returns [{text, ok}] with ok true/false/null (null = unknown), or null while a cache read is in flight.
   function wmReqs(el) {
     const p = (el && el.p) || {};
     const sid = p['7781'];
@@ -336,9 +323,7 @@
         // type 62 routes through clientscript 13302 (not decoded); affects one struct (Ancient Cavern Mine).
       }
     }
-    // Non-skill requirements first, then skills, matching the game's two passes.
     const out = other.concat(skills);
-    // Members fallback: only when the struct said nothing at all, matching the game's guard.
     if (!out.length && p['478']) out.push({ text: 'Membership', ok: null });
     return out;
   }
@@ -360,7 +345,6 @@
     const rows = [];
     for (const cf of (r.i['17'] || [])) {
       const c = by88.get(cf); if (!c) continue;
-      // dbRows flattens tuple members onto consecutive columns; table 88 has adjacent tuple columns (15,16,17), so i[16] and i[17] each hold two concatenated lists. Peel by length.
       const m15 = c.i['15'] || [], m16 = c.i['16'] || [], m17 = c.i['17'] || [];
       const arts = m17.slice(Math.max(0, m16.length - m15.length));
       let nm = (c.s && c.s['2'] && c.s['2'][0]) || '';
@@ -393,7 +377,6 @@
     return { head: ((r.s['2'] || [''])[0]) + ' Dig Site',
              desc: (r.s['3'] || [''])[0], facts: facts, rows: [] };
   }
-  // Big Game Hunter keys off column 3, not 0 (the sub-1 junk rows carry no col 3).
   function wmLayHunt(key) {
     const ix = wmDbIdx(53, '3'); if (!ix) return null;
     const r = ix.get(key); if (!r) return { head: '', rows: [] };
@@ -444,7 +427,6 @@
     19: { t: [180], b: function (k) { return wmLayStructList(180, k,  0, false); } },
     21: { t: [358], b: function (k) { return wmLayStructList(358, k, 23, true); } }
   };
-  // The structured payload for an element, or null to use the plain rule.
   function wmElemRich(ml) {
     const e = WM_ML && WM_ML[ml]; if (!e) return null;
     const kind = WM_KIND[e.c]; if (!kind) return null;
@@ -458,18 +440,14 @@
     return r;
   }
 
-  // ---- searchable symbol index ----
-  // Placements come from one world-wide walk (bridge().mapSymbols), memoised in C++ per session and persisted per client build.
   let WM_SYM = null, wmSymPend = false;       // [{ml,x,y,p}]
   const WM_SYM_TXT = new Map();               // element id -> lowercase haystack
-  // Skill names for type search map to the skill each layout reports.
   const WM_SKILL_NM = { 0: 'attack', 1: 'defence', 2: 'strength', 3: 'constitution', 4: 'ranged',
     5: 'prayer', 6: 'magic', 7: 'cooking', 8: 'woodcutting', 9: 'fletching', 10: 'fishing',
     11: 'firemaking', 12: 'crafting', 13: 'mining', 14: 'smithing', 15: 'herblore', 16: 'agility',
     17: 'thieving', 18: 'slayer', 19: 'farming', 20: 'runecrafting', 21: 'hunter', 22: 'construction',
     23: 'summoning', 24: 'dungeoneering', 25: 'divination', 26: 'invention', 27: 'archaeology',
     28: 'necromancy' };
-  // The layout each kind reports its rows against.
   const WM_KIND_SKILL = { 7: 13, 9: 21, 10: 27, 11: 27, 14: 8, 15: 10, 16: 25, 17: 19, 21: 23 };
   function wmLoadSymbols() {
     if (WM_SYM || wmSymPend || !bridge() || !bridge().mapSymbols) return;
@@ -505,7 +483,6 @@
   const wmBuild = function () {
     return (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.client_version) || '';
   };
-  // Haystack per element: category, tooltip text, skill name, every listed resource. Rebuilt while rows are still resolving.
   const WM_SYM_TXT_PROV = new Map();   // haystacks built before the DB tables settled: reused until they do
   let wmSymProvGen = 0;
   function wmSymText(ml) {
@@ -572,21 +549,17 @@
     best.busy = true; wmInflight++;
     let rec = null;
     try {
-      // want = 3: terrain + icons only (no collision grids or objs).
       const meta = JSON.parse((await bridge().mapWindow(best.cx, best.cy, best.plane, best.half, best.ts, 3)) || '{}');
       if (meta && meta.pending) {
-        // Built off the UI thread: poll again shortly; the job stays queued and un-busy.
         best.busy = false; wmInflight--;
         setTimeout(wmPump, 45);
         return;
       }
-      // ox/oy = the window's SW origin in world tiles.
       rec = { cv: (meta && (meta.png || meta.b64)) ? await wmDecode(meta) : null,     // "{}" = genuinely no map data here
               icons: wmIcons(meta && meta.icons),
               ox: best.cx - best.half, oy: best.cy - best.half };
     } catch (e) {
       rec = null; wmFailAt = Date.now();
-      // A static view only pumps from wmDraw; retry so a transient bridge failure does not stick.
       setTimeout(wmKick, 1600);
     }
     wmInflight--; wmQueued.delete(best.key);
@@ -594,7 +567,6 @@
     wmKick(); wmPump();
   }
 
-  // ---- draw scheduling: one rAF per invalidation, idle when the tab is closed ----
   let wmRafOn = false;
   function wmKick() {
     if (wmRafOn) return; wmRafOn = true;
@@ -606,14 +578,12 @@
     });
   }
 
-  // ---- icon images for canvas markers (item icons + cache sprites are data URLs) ----
   const wmImgs = new Map();        // url -> {img, ok}
   const wmSpritePend = new Set();
   function wmImg(url) {
     if (!url) return null;
     let r = wmImgs.get(url);
     if (!r) {
-      // bounded cache
       while (wmImgs.size >= 600) wmImgs.delete(wmImgs.keys().next().value);
       r = { img: new Image(), ok: false };
       r.img.onload = function () { r.ok = true; wmKick(); };
@@ -639,11 +609,9 @@
     return SPRITES.get(id) || '';
   }
 
-  // ---- live state pulled on open ----
   let wmPlayer = null, wmFollow = false, wmSel = null, wmFly = null;
   let wmHideyVals = {};            // varp id -> value, for the 2-bit hidey-hole state fields
   let wmMarks = [];                // screen-space hover targets: {sx, sy, r, tip}
-  // External pin groups: group -> [{x, y, p, nm, sub, col}], replaced whole per group.
   const wmExtPins = new Map();
   function wmSetExtPins(group, pins) { wmExtPins.set(group, Array.isArray(pins) ? pins : []); try { wmKick(); } catch (e) {} }
   let wmHover = { x: -1, y: -1 };  // cursor tile (status readout)
@@ -660,10 +628,8 @@
     }
     wmKick();
   }
-  // Player marker + follow.
   let wmTickN = 0;
   setInterval(async function () {
-    // typeof-guard: can fire before the main script has run
     if (typeof paneVisible === 'undefined' || !paneVisible('worldmap') || !document.getElementById('wmStage')) return;
     // Teleport gate varbits can change while the map is open; refresh every ~5s.
     if (++wmTickN % 10 === 0) { try { await clueMapTelePrefetch(); wmKick(); } catch (e) {} }
@@ -677,7 +643,6 @@
   }, 500);
 
   function wmSetPlane(p) { if (wmCam.p === p) return; wmCam.p = p; wmSaveCam(); wmPaintBar(); wmKick(); }
-  // Pointer position in stage CSS pixels; engine offsets are screen pixels inside a zoomed subtree, so divide by the effective zoom.
   const wmZoomOf = uiZoomOf, wmPt = uiEvPt;   // shared core helper (rtx-ui.js)
   function wmFlyTo(x, y, p, sel) {
     if (p != null && (p | 0) !== wmCam.p) wmSetPlane(p | 0);
@@ -687,7 +652,6 @@
     wmPaintBar(); wmKick();
   }
 
-  // ---- search across every location source the panels already carry ----
   function wmScore(name, s) {
     const l = String(name || '').toLowerCase();
     if (l.startsWith(s)) return 0;
@@ -695,7 +659,6 @@
     if (l.indexOf(s) >= 0) return 2;
     return -1;
   }
-  // Search index: static sources folded once into lowercase records; rebuilt only when the marker list changes.
   let wmIdx = null, wmIdxMarkSig = '';
   function wmIndex() {
     const msig = ((typeof markerList !== 'undefined') ? markerList.length + ':' + (markerList[0] ? markerList[0].label : '') : '') + (wmAreas ? '|A' : '');
@@ -717,7 +680,6 @@
     }
     if (wmAreas) for (const id in wmAreas) {
       const A = wmAreas[id]; if (!A.z || !A.z.length) continue;
-      // Fly target: centre of the area's source squares, plane 0.
       let sxm = 0, sym = 0; for (const zz of A.z) { sxm += zz[1]; sym += zz[2]; }
       const cxw = Math.round(sxm / A.z.length * 64 + 32), cyw = Math.round(sym / A.z.length * 64 + 32);
       add((A.dn || A.n) + ' map', { ty: 'Map area', nm: A.dn || A.n, dt: A.z.length + ' squares', x: cxw, y: cyw, p: 0 });
@@ -731,7 +693,6 @@
     if (rec.lc.indexOf(s) >= 0) return 2;
     return -1;
   }
-  // Placements grouped per element once.
   let wmSymByMl = null, wmSymByMlN = 0;
   function wmSymGroups() {
     if (!WM_SYM) return null;
@@ -752,7 +713,6 @@
       if (sc < 0) continue;
       out.push({ sc: sc, ty: rec.ty, nm: rec.nm, dt: rec.dt, x: rec.x, y: rec.y, p: rec.p });
     }
-    // ---- map symbols: by type ("fishing") and by resource ("willow"); grouped per element, nearest placement wins ----
     wmLoadSymbols();
     const groups = wmSymGroups();
     if (groups && WM_ML) {
@@ -768,7 +728,6 @@
         const e = WM_ML[ml];
         const cat = (WM_CAT && WM_CAT[e.c] && WM_CAT[e.c].n) || '';
         const r = wmElemRich(ml);
-        // Score by the sharpest field that matched.
         const nm = (r && r.head) || (e.n ? String(e.n).split('<br>')[0].split(': ')[0] : '') || cat || 'Map symbol';
         let sc = wmScore(nm, s);
         if (sc < 0) sc = wmScore(cat, s);
@@ -805,15 +764,12 @@
     wmFlyTo(e.x, e.y, e.p, { x: e.x, y: e.y, p: e.p | 0, nm: e.nm, dt: (e.ty === 'Tile' ? '' : e.ty + (e.dt ? ' - ' + e.dt : '')) });
   }
 
-  // ---- overlay painters (screen space; each registers hover targets in wmMarks) ----
-  // Marker keybinds come from teleKb() (panel_towers.js). Icons keep aspect, never upscale past native, snap to whole pixels.
   function wmDrawIcon(cx, img, mx, my, box) {
     const w = img.naturalWidth || img.width || box, h = img.naturalHeight || img.height || box;
     const s = Math.min(1, box / Math.max(w, h));
     const dw = Math.max(1, Math.round(w * s)), dh = Math.max(1, Math.round(h * s));
     cx.drawImage(img, Math.round(mx - dw / 2), Math.round(my - dh / 2), dw, dh);
   }
-  // Place-label styling, shared by both map surfaces: each label gets its own dark translucent plate for constant contrast.
   function wmLabelPlate(cx, x, y, w, h, r, fill) {
     cx.beginPath();
     cx.moveTo(x + r, y); cx.lineTo(x + w - r, y); cx.quadraticCurveTo(x + w, y, x + w, y + r);
@@ -839,7 +795,6 @@
     cx.fillText(text, x, y);
     cx.restore();
   }
-  // Small map badge (teleport keybind, "+N more"). Returns its rect so the label pass can route around it.
   function wmBadge(cx, text, cxp, topY, accent) {
     cx.save();
     cx.font = '700 9.5px system-ui, "Segoe UI", sans-serif';
@@ -860,9 +815,7 @@
   const WM_ACC_KEY = { line: 'rgba(77,210,138,0.75)', text: '#8ef0c0' };   // keybind
   const WM_ACC_MORE = { get line() { return (typeof accentRgba === 'function') ? accentRgba(0.75) : 'rgba(var(--accent-rgb),0.75)'; }, get text() { return (typeof uiCfg === 'function') ? uiCfg().accent : '#cfc2ff'; } }; // "+N more"
   const wmTextW = new Map();   // label -> measured px width (font is constant)
-  // Candidate offsets in preference order: on the anchor, four sides, diagonals. A moved plate gets a dot back at its true tile.
   const WM_CHIP_TRY = [[0, 0], [0, -1], [0, 1], [1, 0], [-1, 0], [1, -1], [-1, 1], [1, 1], [-1, -1]];
-  // Returns the plate centre {x,y}, or null when every candidate was blocked.
   function wmChip(cx, sxp, syp, text, placed, hot, w, h) {
     cx.font = '500 10.5px system-ui, "Segoe UI", sans-serif'; cx.textAlign = 'center'; cx.textBaseline = 'middle';
     try { cx.letterSpacing = '0.35px'; } catch (e) {}
@@ -888,9 +841,6 @@
     }
     return null;
   }
-  // ---- World-map areas (js5-23): the game's own composited map ----
-  // wmAreas: area id -> {n, dn, zoom, bg, x0, y0, x1, y1, w, h, z:[[planes,sx,sy,dp,dx,dy]], r}.
-  // Each display square is painted at its source square's world position so overlays keep world coords. Area images are 1 px/tile, so the chunk renderer takes over above that.
   let wmAreas = null, wmAreasAt = 0, wmZoneIdx = null;
 
   function wmLoadAreas() {
@@ -899,7 +849,6 @@
     (async () => {
       try {
         const d = JSON.parse(await rtxData.raw('cache.mapAreas') || '{}');
-        // Only trust a launcher that emits the 8-field (source -> display) rect records.
         const good = d && Object.keys(d).some(id => (d[id].r || []).some(r => r.length >= 8));
         if (good) {
           wmAreas = d;
@@ -912,7 +861,6 @@
             const zoneOf = new Map();
             for (const z of (A.z || [])) zoneOf.set((z[1] << 8) | z[2], z);
             for (const r of (A.r || [])) {
-              // r = source rect -> display rect (tiles); a block moves as a whole.
               const offX = (r.length >= 8 ? (r[4] >> 6) - (r[0] >> 6) : 0), offY = (r.length >= 8 ? (r[5] >> 6) - (r[1] >> 6) : 0);
               for (let qx = r[0] >> 6; qx <= (r[2] >> 6); qx++) for (let qy = r[1] >> 6; qy <= (r[3] >> 6); qy++) {
                 const k = (qx << 8) | qy;
@@ -934,7 +882,6 @@
       } catch (e) {}
     })();
   }
-  // Does any mapsquare of a chunk (ch tiles wide at tile origin tx,ty) belong to a map area?
   function wmChunkPlaced(tx, ty, ch) {
     if (!wmZoneIdx) return true;                               // no data yet: draw everything
     const s0x = tx >> 6, s0y = ty >> 6, n = Math.max(1, ch >> 6);
@@ -946,7 +893,6 @@
     wmLoadAreas();
     wmLoadElements();   // self-guarding: fetches the element tables once, then no-ops
     const w = stage.clientWidth | 0, h = stage.clientHeight | 0; if (!w || !h) return;
-    // Canvas backed at device resolution; drawing stays in CSS units via the transform, as does wmMarks hit-testing.
     const dpr = (typeof devicePixelRatio === 'number' && devicePixelRatio > 0) ? devicePixelRatio : 1;
     const bwpx = Math.round(w * dpr), bhpx = Math.round(h * dpr);
     if (cv.width !== bwpx) cv.width = bwpx;
@@ -967,7 +913,6 @@
     wmMarks = [];
     const vx0 = Math.floor(wmCam.x - w / 2 / z), vx1 = Math.ceil(wmCam.x + w / 2 / z);
     const vy0 = Math.floor(wmCam.y - h / 2 / z), vy1 = Math.ceil(wmCam.y + h / 2 / z);
-    // terrain chunks (exact level, finest cached coarser level as stand-in). Dest rects snapped to shared integer edges to avoid seams.
     const L = wmLevel(z * dpr), ch = L.ch, Lidx = WM_LEVELS.indexOf(L);   // level picked in DEVICE px/tile so scaled displays stay native-sharp
     const ix0 = Math.max(0, Math.floor(vx0 / ch)), ix1 = Math.min(Math.floor(16383 / ch), Math.floor(vx1 / ch));
     const iy0 = Math.max(0, Math.floor(vy0 / ch)), iy1 = Math.min(Math.floor(16383 / ch), Math.floor(vy1 / ch));
@@ -975,13 +920,11 @@
     try { cx.imageSmoothingQuality = 'high'; } catch (e) {}
     const ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
     let drawn = 0, emptyKnown = 0, loading = 0;
-    // One renderer only: the chunk renderer at every zoom. Area data is used solely for placement.
     const imgMode = false;
     for (let ix = ix0; ix <= ix1; ix++) {
       for (let iy = iy0; iy <= iy1; iy++) {
         const dx0 = Math.round(sx(ix * ch)), dx1 = Math.round(sx((ix + 1) * ch));
         const dy0 = Math.round(sy((iy + 1) * ch)), dy1 = Math.round(sy(iy * ch));
-        // A chunk with no placed square is void and never fetched.
         if (!wmChunkPlaced(ix * ch, iy * ch, ch)) { emptyKnown++; continue; }
         const rec = wmGet(L.ts, plane, ix, iy);
         if (rec && rec.cv) { drawn++; cx.drawImage(rec.cv, dx0, dy0, dx1 - dx0, dy1 - dy0); continue; }
@@ -1000,7 +943,6 @@
       }
     }
     wmPump();
-    // Every chunk in view is known empty: say so. Instanced spaces have no static map data.
     if (drawn === 0 && loading === 0 && emptyKnown > 0) {
       cx.save();
       cx.font = '600 13px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
@@ -1012,7 +954,6 @@
       cx.fillText('Instanced area (uncharted isle, boss or skilling instance, house): built at runtime, not in the map cache.', w / 2, h / 2 + 8);
       cx.restore();
     }
-    // World tile grid: step grows to the next power of two that clears ~7 px; coarser lines draw fainter.
     if (wmLayer.grid) {
       let step = 1;
       while (step * z < 7) step *= 2;                 // in world tiles
@@ -1030,7 +971,6 @@
         cx.moveTo(0, py); cx.lineTo(w, py);
       }
       cx.stroke();
-      // Region edges (64 tiles) stay readable at any zoom.
       if (z >= 0.35) {
         cx.strokeStyle = 'rgba(120,190,255,0.22)';
         cx.beginPath();
@@ -1056,7 +996,6 @@
         wmMarks.push({ sx: mx, sy: my, r: 7, tip: '<b>Hidey-hole</b> ' + htmlEsc(hh.loc) + '<br>' + htmlEsc(hh.n) + ' - ' + (HIDEY_TIERS[hh.t] || '') + '<br><span style="opacity:.65">' + (st === 2 ? 'built + stocked' : st === 1 ? 'built, empty' : 'not built') + ' - ' + hh.x + ', ' + hh.y + '</span>' });
       }
     }
-    // user tile markers
     if (wmLayer.marks && typeof markerList !== 'undefined') {
       for (const m of markerList) {
         if ((m.plane | 0) !== plane) continue;
@@ -1068,11 +1007,8 @@
         wmMarks.push({ sx: sx(gx + 0.5), sy: sy(gy + 0.5), r: s0 / 2 + 3, tip: '<b>' + htmlEsc(m.label || 'Tile marker') + '</b><br>' + gx + ', ' + gy });
       }
     }
-    // Occupancy for the label pass: seed icon and badge rects so wmChip routes labels around them.
     const placed = [];
-    // ---- world-map element symbols ---- drawn here (not baked into the terrain PNG) so they hover and hold screen size; dropped below ~1.5 px/tile.
     if (wmLayer.icons && z >= 1.5 && WM_ML) {
-      // The reader exports a symbol from every plane, so collapse duplicates per tile.
       const seenPin = new Set();
       for (let ix = ix0; ix <= ix1; ix++) for (let iy = iy0; iy <= iy1; iy++) {
         const r0 = wmGet(L.ts, plane, ix, iy, true);
@@ -1086,7 +1022,6 @@
           const e = WM_ML[p.ml];
           if (!e || e.s < 0) continue;
           const mx = sx(gx + 0.5), my = sy(gy + 0.5);
-          // Try the preferred sprite, then the alternate: an id can resolve to an empty URL.
           let url = wmSpriteUrl(e.s);
           if (!url && e.s2 != null && e.s2 >= 0) url = wmSpriteUrl(e.s2);
           const img = url ? wmImg(url) : null;
@@ -1096,7 +1031,6 @@
         }
       }
     }
-    // teleport destinations (close zoom only, distance-clustered)
     if (wmLayer.teles && z >= 1.6) {
       const buckets = [];
       for (const T of MAP_TELEPORTS) {
@@ -1111,7 +1045,6 @@
         b.ts.push(T);
       }
       for (const b of buckets) {
-        // Stacked groups fan up to three member icons around the anchor; bigger stacks add a +N badge.
         const show = b.ts.slice(0, 3), n = show.length, sp = 13;
         for (let i = 0; i < n; i++) {
           const T2 = show[i];
@@ -1136,7 +1069,6 @@
         wmMarks.push({ sx: b.mx, sy: b.my, r: 10 + (n - 1) * sp / 2 + 3, ts: b.ts });   // tooltip built lazily on hover
       }
     }
-    // lodestones (sparse: always drawn; grey until the unlock varbit says otherwise)
     if (wmLayer.lodes && typeof LODESTONES !== 'undefined') {
       const lookup = (typeof lodeData !== 'undefined' && lodeData) ? lodeData : null;
       for (const l of LODESTONES) {
@@ -1159,19 +1091,16 @@
         wmMarks.push({ sx: mx, sy: my, r: 11, tip: '<b>' + htmlEsc(l.n) + ' lodestone</b><br><span style="opacity:.75">' + (l.kb ? 'key ' + htmlEsc(l.kb) + ' - ' : '') + (unlocked ? 'unlocked' : 'locked') + '</span>' });
       }
     }
-    // place labels (nearest-to-centre first, overlap-culled like the clue maps)
     if (wmLayer.labels) {
       const inview = MAP_LABELS.filter(function (d) { return (d.p || 0) === plane && d.x >= vx0 && d.x <= vx1 && d.y >= vy0 && d.y <= vy1; });
       inview.sort(function (a, b) { return (Math.abs(a.x - ccx) + Math.abs(a.y - ccy)) - (Math.abs(b.x - ccx) + Math.abs(b.y - ccy)); });
       cx.save();
       for (const d of inview.slice(0, 34)) {
-        // Hit-test where the plate landed, not the anchor.
         const at = wmChip(cx, sx(d.x + 0.5), sy(d.y + 0.5), d.n, placed, false, w, h);
         if (at) wmMarks.push({ sx: at.x, sy: at.y, r: 8, tip: '<b>' + htmlEsc(d.n) + '</b><br>' + d.x + ', ' + d.y });
       }
       cx.restore();
     }
-    // external pin groups
     for (const pins of wmExtPins.values()) {
       for (const pn of pins) {
         if ((pn.p | 0) !== plane) continue;
@@ -1184,7 +1113,6 @@
         wmMarks.push({ sx: mx, sy: my, r: 9, tip: '<b>' + htmlEsc(pn.nm || 'Pin') + '</b>' + (pn.sub ? '<br>' + htmlEsc(pn.sub) : '') + '<br>' + pn.x + ', ' + pn.y });
       }
     }
-    // selection pin
     if (wmSel && (wmSel.p | 0) === plane) {
       const mx = sx(wmSel.x + 0.5), my = sy(wmSel.y + 0.5);
       cx.lineCap = 'round';
@@ -1200,7 +1128,6 @@
       if (wmSel.nm) { const placed = []; cx.save(); wmChip(cx, mx, my - 24, wmSel.nm, placed, true); cx.restore(); }
       wmMarks.push({ sx: mx, sy: my, r: 12, tip: '<b>' + htmlEsc(wmSel.nm || 'Pinned tile') + '</b><br>' + wmSel.x + ', ' + wmSel.y + '<br><span style="opacity:.65">' + (nearLabel(wmSel.x, wmSel.y, plane) || '') + '</span>' });
     }
-    // player
     if (wmPlayer && (wmPlayer.p | 0) === plane) {
       const mx = sx(wmPlayer.x + 0.5), my = sy(wmPlayer.y + 0.5);
       if (mx >= -20 && mx <= w + 20 && my >= -20 && my <= h + 20) {
@@ -1218,7 +1145,6 @@
     return ts.map(function (t2) {
       const why = teleWhyCached(t2);
       const ci = (typeof teleChargeInfo === 'function') ? teleChargeInfo(t2) : null;
-      // green = usable now, red = a requirement is unmet (named below)
       const unk = (typeof teleTaskSetWhy === 'function') && teleTaskSetWhy(t2) === '?';
       const dot = '<span style="color:' + (why ? '#ff6b6b' : unk ? '#fbbf24' : '#4dd28a') + '">●</span> ';
       return dot + '<b>' + htmlEsc(t2.n) + '</b><br><span style="opacity:.75">' + htmlEsc(t2.src || '')
@@ -1236,7 +1162,6 @@
                }).join('') : '') + '</span>';
     }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.15);margin:3px 0">');
   }
-  // Map symbol tooltip in the game's shape: caps category header over a body line. Icon strips reuse the .tg-cell plate.
   function wmStripNode(g) {
     const s = document.createElement('div'); s.className = 'wm-strip';
     if (g.label) { const h = document.createElement('span'); h.className = 'wm-glab'; h.textContent = g.label; s.appendChild(h); }
@@ -1312,7 +1237,6 @@
         fr.appendChild(a); fr.appendChild(b); tip.appendChild(fr);
       }
     }
-    // Requirements sit between header and resource rows; satisfied entries are dimmed, not hidden (game marks them <str=FFFFFE>).
     if (m.reqs && m.reqs.length) {
       const rq = document.createElement('div'); rq.className = 'wm-reqs';
       const rh = document.createElement('div'); rh.className = 'wm-reqh';
@@ -1326,7 +1250,6 @@
       tip.appendChild(rq);
     }
     if (m.rows && m.rows.length) tip.appendChild(wmRowsNode(m));
-    // buildTipGrids, not setTipGrids: the latter targets the global #global-tip; the map owns #wmTip.
     if (m.groups && typeof buildTipGrids === 'function') {
       const live = m.groups.filter(function (g) { return g.items.length; });
       if (live.length) tip.appendChild(buildTipGrids(live));
@@ -1334,18 +1257,14 @@
     const c = document.createElement('div'); c.className = 'wm-xy'; c.textContent = hit.x + ', ' + hit.y;
     tip.appendChild(c);
   }
-  // Repaint in place once cache data lands, only while the pointer is still on the same symbol.
   function wmTipRefresh() {
     const tip = document.getElementById('wmTip');
     if (!tip || tip.style.display === 'none' || !wmTipHit) return;
     wmTipPaintElem(tip, wmTipHit);
   }
-  // Last-resort header: the name of the loc that placed this pin (22 elements have no other name).
   function wmLocName(m) {
     return (m && WM_LOCNM && WM_LOCNM[m.id]) || '';
   }
-  // ---- Transportation routes (curated) ----
-  // Topology is curated from the wiki; coordinates are the game's map-icon placements. A stop binds only when a Transportation (or Fairy ring) icon sits within 6 tiles.
   const WM_ROUTES = {"source":"Game world coordinates of each stop (boarding points and destinations) with wiki-verified topology and requirements.","networks":[{"id":"charter","name":"Charter ship","kind":"all-to-all","wiki":"https://runescape.wiki/w/Charter_ship","stops":[{"name":"Port Sarim","alt":[],"note":"","coord":[3042,3191,0],"src":"game"},{"name":"Catherby","alt":[],"note":"","coord":[2794,3408,0],"src":"game"},{"name":"Port Tyras","alt":[],"note":"Regicide","coord":[2145,3122,0],"src":"game"},{"name":"Brimhaven","alt":[],"note":"","coord":[2760,3238,0],"src":"game"},{"name":"Port Khazard","alt":[],"note":"","coord":[2674,3146,0],"src":"game"},{"name":"Oo'glog","alt":[],"note":"As a First Resort","coord":[2621,2857,0],"src":"game"},{"name":"Musa Point","alt":[],"note":"","coord":[2954,3158,0],"src":"game"},{"name":"Shipyard","alt":[],"note":"partial Monkey Madness","coord":[3001,3033,0],"src":"game"},{"name":"Port Phasmatys","alt":[],"note":"Morytania access (Priest in Peril)","coord":[3702,3502,0],"src":"game"},{"name":"Menaphos","alt":[],"note":"The Jack of Spades","coord":[3144,2662,0],"src":"game"}],"links":[]},{"id":"glider","name":"Gnome glider","kind":"all-to-all","wiki":"https://runescape.wiki/w/Gnome_glider","stops":[{"name":"Tree Gnome Stronghold","alt":[],"note":"The Grand Tree","coord":[2464,3502,3],"src":"game"},{"name":"White Wolf Mountain","alt":[],"note":"","coord":[2850,3493,1],"src":"game"},{"name":"Al Kharid","alt":[],"note":"","coord":[3283,3212,0],"src":"game"},{"name":"Karamja","alt":[],"note":"","coord":[2970,2973,0],"src":"game"},{"name":"Feldip Hills","alt":[],"note":"One Small Favour progress","coord":[2545,2972,0],"src":"game"},{"name":"Tree Gnome Village","alt":[],"note":"The Prisoner of Glouphrie","coord":[2496,3190,0],"src":"game"},{"name":"Prifddinas","alt":[],"note":"Plague's End","coord":[2207,3452,1],"src":"game"},{"name":"Tuai Leit","alt":[],"note":"rescue Azalea Oakheart (The Arc)","coord":[1773,11919,0],"src":"game"},{"name":"Digsite","alt":[],"note":"crash landing: arrival only, no flights back","coord":[3319,3438,0],"src":"game"}],"links":[]},{"id":"spirit_tree","name":"Spirit tree","kind":"all-to-all","wiki":"https://runescape.wiki/w/Spirit_tree","stops":[{"name":"Tree Gnome Village","alt":[],"note":"Tree Gnome Village quest","coord":[2542,3169,0],"src":"game"},{"name":"Tree Gnome Stronghold","alt":[],"note":"The Grand Tree","coord":[2462,3444,0],"src":"game"},{"name":"Battlefield of Khazard","alt":[],"note":"","coord":[2557,3259,0],"src":"game"},{"name":"Grand Exchange","alt":[],"note":"","coord":[3187,3507,0],"src":"game"},{"name":"South Feldip Hills","alt":[],"note":"","coord":[2416,2851,0],"src":"game"},{"name":"Port Sarim","alt":[],"note":"player-grown","coord":[3058,3257,0],"src":"game"},{"name":"Etceteria","alt":[],"note":"player-grown","coord":[2613,3855,0],"src":"game"},{"name":"Brimhaven","alt":[],"note":"player-grown","coord":[2800,3203,0],"src":"game"},{"name":"Poison Waste","alt":[],"note":"The Path of Glouphrie","coord":[2338,3109,0],"src":"game"},{"name":"Prifddinas","alt":[],"note":"Plague's End + three player-grown trees","coord":[2275,3371,1],"src":"game"}],"links":[]},{"id":"fairy_ring","name":"Fairy ring","kind":"all-to-all","cat":"fairy","wiki":"https://runescape.wiki/w/Fairy_ring","stops":[{"name":"AIP - Zanaris","alt":[],"note":"A Fairy Tale II started","coord":[2412,4434,0],"src":"game"},{"name":"AIQ - Asgarnia: Mudskipper Point","alt":[],"note":"","coord":[2996,3114,0],"src":"game"},{"name":"AIR - Islands: South of Witchhaven","alt":[],"note":"","coord":[2700,3247,0],"src":"game"},{"name":"AIS - Other realms: Naragi homeworld","alt":[],"note":"special access","coord":[2030,5982,0],"src":"game"},{"name":"AJQ - Dungeons: Dark cave south of Dorgesh-Kaan","alt":[],"note":"Death to the Dorgeshuun","coord":[2735,5221,0],"src":"game"},{"name":"AJR - Kandarin: Slayer cave south-east of Relekka","alt":[],"note":"","coord":[2780,3613,0],"src":"game"},{"name":"AJS - Islands: Penguins near Miscellania","alt":[],"note":"special access","coord":[2500,3896,0],"src":"game"},{"name":"AKQ - Piscatoris Hunter area","alt":[],"note":"","coord":[2319,3619,0],"src":"game"},{"name":"AKS - Feldip Hills: Jungle Hunter area","alt":[],"note":"","coord":[2571,2956,0],"src":"game"},{"name":"ALP - Feldip Hills: Near Gu\u00b4Tanoth","alt":[],"note":"partial A Fairy Tale III","coord":[2468,4189,0],"src":"game"},{"name":"ALQ - Morytania: Haunted Woods east of Canifis","alt":[],"note":"","coord":[3597,3495,0],"src":"game"},{"name":"ALR - Other realmms: Abyss","alt":[],"note":"special access","coord":[3059,4875,0],"src":"game"},{"name":"ALS - Kandarin: McGrubor\u00b4s Wood","alt":[],"note":"","coord":[2644,3495,0],"src":"game"},{"name":"BIP - Islands: Polypore Dungeon","alt":[],"note":"","coord":[3410,3324,0],"src":"game"},{"name":"BIQ - Kharidian Desert: Near Kalphite Hive","alt":[],"note":"","coord":[3251,3095,0],"src":"game"},{"name":"BIS - Sparse Plane","alt":[],"note":"special access","coord":[2455,4396,0],"src":"game"},{"name":"BIS - Kandarin: Ardougne Zoo unicorns","alt":[],"note":"special access","coord":[2635,3266,0],"src":"game"},{"name":"BJP - Fort Forinthry","alt":[],"note":"Grove tier 2","coord":[3347,3540,0],"src":"game"},{"name":"BJQ - Dungeons: Ancient Cavern","alt":[],"note":"Barbarian Training","coord":[1737,5342,0],"src":"game"},{"name":"BJR - Other realms: Realm of the fisher king","alt":[],"note":"Holy Grail","coord":[2650,4730,0],"src":"game"},{"name":"BJS - The Lost Grove","alt":[],"note":"rebuild with bittercap mushrooms","coord":[1359,5635,0],"src":"game"},{"name":"BKP - Feldip Hills: South of Castle Wars","alt":[],"note":"","coord":[2385,3035,0],"src":"game"},{"name":"BKQ - Other realms: Enchanted Valley","alt":[],"note":"","coord":[3041,4532,0],"src":"game"},{"name":"BKR - Morytania: Mort Myre, south of Canifis","alt":[],"note":"","coord":[3469,3431,0],"src":"game"},{"name":"BLP - Dungeons: TzHaar area","alt":[],"note":"","coord":[4622,5147,0],"src":"game"},{"name":"BLR - Kandarin: Legends' Guild","alt":[],"note":"","coord":[2740,3351,0],"src":"game"},{"name":"CIP - Islands: Miscellania","alt":[],"note":"The Fremennik Trials","coord":[2513,3884,0],"src":"game"},{"name":"CIQ - Kandarin: North-west of Yanille","alt":[],"note":"","coord":[2528,3127,0],"src":"game"},{"name":"CIS - Other realms: ScapeRune (Evil Bob\u00b4s island)","alt":[],"note":"special access","coord":[3419,4772,0],"src":"game"},{"name":"CJR - Kandarin: Sinclair Mansion (east)","alt":[],"note":"","coord":[2705,3576,0],"src":"game"},{"name":"CJS - Karamja: Kharazi Jungle","alt":[],"note":"Legends' Quest started","coord":[2901,2930,0],"src":"game"},{"name":"CKP - Other realms: Cosmic entity\u00b4s plane","alt":[],"note":"special access","coord":[2075,4848,0],"src":"game"},{"name":"CKQ - Menaphos: Imperial District","alt":[],"note":"","coord":[3086,2704,0],"src":"game"},{"name":"CKR - Karamja: South of Tai Bwo Wannai Village","alt":[],"note":"","coord":[2801,3003,0],"src":"game"},{"name":"CKS - Morytania: Canifis","alt":[],"note":"","coord":[3447,3470,0],"src":"game"},{"name":"CLP - Islands: South of Draynor Village","alt":[],"note":"special access","coord":[3082,3206,0],"src":"game"},{"name":"CLS - Islands: Jungle spiders near Yanille","alt":[],"note":"","coord":[2682,3081,0],"src":"game"},{"name":"CLR - Islands: Ape Atoll","alt":[],"note":"partial A Fairy Tale III","coord":[2735,2742,0],"src":"game"},{"name":"DIP - Islands: Mos Le\u00b4Harmless","alt":[],"note":"partial A Fairy Tale III","coord":[3763,2930,0],"src":"game"},{"name":"DIR - Other realms: Gorak`s Plane","alt":[],"note":"special access","coord":[3038,5348,0],"src":"game"},{"name":"DIR AKS - Kethsi","alt":[],"note":"","coord":[4026,5699,0],"src":"game"},{"name":"DIS - Misthalin: Wizard\u00b4s Tower","alt":[],"note":"","coord":[3092,3137,0],"src":"game"},{"name":"DJP - Kandarin: Tower of Life","alt":[],"note":"","coord":[2658,3230,0],"src":"game"},{"name":"DJR - Kandarin: Sinclair Mansion (west)","alt":[],"note":"","coord":[2676,3587,0],"src":"game"},{"name":"DJS - Tirannwn: Prifddinas (Clan Amlodd)","alt":[],"note":"Plague's End","coord":[2130,3369,0],"src":"game"},{"name":"DKP - Karamja: South of Musa Point","alt":[],"note":"","coord":[2900,3111,0],"src":"game"},{"name":"DKQ - Dungeons: Glacor Cave","alt":[],"note":"Ritual of the Mahjarrat","coord":[4183,5726,0],"src":"game"},{"name":"DKR - Misthalin: Edgeville","alt":[],"note":"","coord":[3129,3496,0],"src":"game"},{"name":"DKS - Kandarin: Snowy Hunter area","alt":[],"note":"","coord":[2744,3719,0],"src":"game"},{"name":"DLP - Havenhythe: North of Amberfell","alt":[],"note":"partial Secrets of Amberfell","coord":[3742,1601,0],"src":"game"},{"name":"DLQ - Kharidian Desert: North of Nardah","alt":[],"note":"","coord":[3423,3016,0],"src":"game"},{"name":"DLR - Islands: Poison Waste south of Isafdar","alt":[],"note":"special access","coord":[2213,3099,0],"src":"game"},{"name":"DLS - Dungeons: Myreque Hideout under The Hollows","alt":[],"note":"In Search of the Myreque","coord":[3501,9821,3],"src":"game"},{"name":"RESISTANCE - Fairy Resistance HQ","alt":[],"note":"","coord":[2254,4426,0],"src":"game"},{"name":"BIR DIP CLR ALP - Ork\u00b4s Rift","alt":[],"note":"","coord":[1626,4176,0],"src":"game"},{"name":"BLQ - Yu\u00b4biusk","alt":[],"note":"special access","coord":[2229,4244,1],"src":"game"},{"name":"BKS - Inanna's shrine","alt":[],"note":"Visions of Havenhythe","coord":[3599,1410,0],"src":"game"}],"links":[]},{"id":"arc","name":"Arc ferries (Quartermaster Gully)","kind":"all-to-all","wiki":"https://runescape.wiki/w/Quartermaster_Gully","stops":[{"name":"Port Sarim","alt":[],"note":"Impressing the Locals","coord":[3054,3247,0],"src":"game"},{"name":"Menaphos","alt":[],"note":"","coord":[3231,2664,0],"src":"game"},{"name":"Tuai Leit","alt":[],"note":"","coord":[1760,12010,0],"src":"game"},{"name":"Whale's Maw","alt":[],"note":"","coord":[2012,11781,0],"src":"game"},{"name":"Waiko","alt":[],"note":"","coord":[1809,11652,0],"src":"game"},{"name":"Turtle Islands","alt":[],"note":"","coord":[2245,11423,0],"src":"game"},{"name":"Aminishi","alt":[],"note":"","coord":[2061,11270,0],"src":"game"},{"name":"Cyclosis","alt":[],"note":"","coord":[2251,11182,0],"src":"game"},{"name":"Goshima","alt":[],"note":"","coord":[2448,11593,0],"src":"game"}],"links":[]},{"id":"kags","name":"Menaphos ferry (Portmaster Kags)","kind":"hub","wiki":"https://runescape.wiki/w/Portmaster_Kags","stops":[{"name":"Menaphos","alt":[],"note":"Crocodile Tears","coord":[3122,2631,0],"src":"game"},{"name":"Sunken Pyramid","alt":[],"note":"","coord":[3032,2672,0],"src":"game"},{"name":"Crondis' Pyramid","alt":[],"note":"","coord":[3273,2644,0],"src":"game"},{"name":"Jaldraocht","alt":[],"note":"one-way","coord":[3254,2882,0],"src":"game"},{"name":"Nardah","alt":[],"note":"one-way","coord":[3373,2931,0],"src":"game"},{"name":"Pollnivneach","alt":[],"note":"one-way","coord":[3377,2962,0],"src":"game"},{"name":"Dominion Tower","alt":[],"note":"one-way","coord":[3373,3080,0],"src":"game"}],"links":[["Menaphos","Sunken Pyramid"],["Menaphos","Crondis' Pyramid"],["Menaphos","Jaldraocht"],["Menaphos","Nardah"],["Menaphos","Pollnivneach"],["Menaphos","Dominion Tower"]]},{"id":"canoe","name":"Canoe","kind":"chain","wiki":"https://runescape.wiki/w/Canoe","stops":[{"name":"Lumbridge","alt":[],"note":"hatchet; Woodcutting 12-57 by canoe"},{"name":"Champions' Guild","alt":[],"note":""},{"name":"Barbarian Village","alt":["Gunnarsgrunn"],"note":"","coord":[3112,3409,0],"src":"game"},{"name":"Edgeville","alt":[],"note":"","coord":[3131,3509,0],"src":"game"},{"name":"Wilderness","alt":["Wilderness Pond"],"note":"Waka only (57 Woodcutting); one-way"}],"links":[["Lumbridge","Champions' Guild"],["Champions' Guild","Barbarian Village"],["Barbarian Village","Edgeville"],["Edgeville","Wilderness"]]},{"id":"carpet","name":"Magic carpet","kind":"all-to-all","wiki":"https://runescape.wiki/w/Magic_carpet","stops":[{"name":"Shantay Pass","alt":["South of Shantay Pass"],"note":"members","coord":[3312,3107,0],"src":"game"},{"name":"North Pollnivneach","alt":["Pollnivneach"],"note":"","coord":[3352,3001,0],"src":"game"},{"name":"South Pollnivneach","alt":["Pollnivneach"],"note":"","coord":[3346,2943,0],"src":"game"},{"name":"Nardah","alt":[],"note":"","coord":[3399,2920,0],"src":"game"},{"name":"Bedabin Camp","alt":[],"note":"","coord":[3184,3042,0],"src":"game"},{"name":"Uzer","alt":[],"note":"The Golem","coord":[3469,3111,0],"src":"game"},{"name":"Menaphos","alt":[],"note":"Icthlarin's Little Helper"},{"name":"Sophanem","alt":[],"note":"Icthlarin's Little Helper"},{"name":"Monkey colony","alt":[],"note":"Do No Evil; South Pollnivneach and Shantay Pass only"}],"links":[]},{"id":"balloon","name":"Hot air balloon","kind":"all-to-all","wiki":"https://runescape.wiki/w/Hot_air_balloon","stops":[{"name":"Entrana","alt":[],"note":"Enlightened Journey; 20 Firemaking"},{"name":"Taverley","alt":[],"note":"20 Firemaking"},{"name":"Crafting Guild","alt":[],"note":"30 Firemaking","coord":[2922,3301,0],"src":"game"},{"name":"Varrock","alt":[],"note":"40 Firemaking"},{"name":"Castle Wars","alt":[],"note":"50 Firemaking","coord":[2461,3108,0],"src":"game"},{"name":"Grand Tree","alt":["Tree Gnome Stronghold"],"note":"60 Firemaking","coord":[2479,3459,0],"src":"game"}],"links":[]},{"id":"minecart","name":"Keldagrim minecart","kind":"hub","wiki":"https://runescape.wiki/w/Keldagrim_minecart_system","stops":[{"name":"Keldagrim","alt":[],"note":"must have visited Keldagrim"},{"name":"Grand Exchange","alt":[],"note":""},{"name":"White Wolf Mountain","alt":["Dwarven Tunnel"],"note":"Fishing Contest + The Giant Dwarf"},{"name":"Ice Mountain","alt":["Dwarven Mine"],"note":""}],"links":[["Keldagrim","Grand Exchange"],["Keldagrim","White Wolf Mountain"],["Keldagrim","Ice Mountain"]]},{"id":"train","name":"Dorgesh-Kaan to Keldagrim train","kind":"pairs","wiki":"https://runescape.wiki/w/Dorgesh-Kaan%E2%80%93Keldagrim_train_system","stops":[{"name":"Dorgesh-Kaan","alt":[],"note":"Another Slice of H.A.M."},{"name":"Keldagrim","alt":[],"note":""}],"links":[["Dorgesh-Kaan","Keldagrim"]]},{"id":"eagle","name":"Eagle transport","kind":"hub","wiki":"https://runescape.wiki/w/Eagle_transport_system","stops":[{"name":"Eagles' Peak","alt":["Eagles' Peak Cave"],"note":"Eagles' Peak quest; rope"},{"name":"Rellekka Hunter area","alt":["Trollweiss"],"note":"35 Agility"},{"name":"Feldip Hills","alt":["Feldip Hunter area"],"note":"grow young vine"},{"name":"Uzer","alt":[],"note":"45 Strength"},{"name":"Karamja","alt":["Jade Vine Maze"],"note":"maze access"}],"links":[["Eagles' Peak","Rellekka Hunter area"],["Eagles' Peak","Feldip Hills"],["Eagles' Peak","Uzer"],["Eagles' Peak","Karamja"]]},{"id":"ships","name":"Ships and ferries","kind":"pairs","wiki":"https://runescape.wiki/w/Boat_network","stops":[{"name":"Port Sarim","alt":[],"note":"","coord":[3029,3219,0],"src":"game"},{"name":"Musa Point","alt":["Karamja"],"note":"30 coins","coord":[2958,3143,0],"src":"game"},{"name":"Entrana","alt":[],"note":"no weapons or armour","coord":[2834,3334,0],"src":"game"},{"name":"Crandor","alt":[],"note":"Dragon Slayer only"},{"name":"Void Knights' Outpost","alt":["Pest Control"],"note":"free"},{"name":"East Ardougne","alt":["Ardougne"],"note":"","coord":[2682,3273,0],"src":"game"},{"name":"Brimhaven","alt":[],"note":"30 coins"},{"name":"Tree Gnome Stronghold","alt":[],"note":""},{"name":"Piscatoris","alt":["Piscatoris Fishing Colony"],"note":""},{"name":"Tai Bwo Wannai","alt":[],"note":"ogre boat","coord":[2764,2956,0],"src":"game"},{"name":"Feldip Hills","alt":[],"note":"ogre boat","coord":[2654,2964,0],"src":"game"},{"name":"Rellekka","alt":[],"note":"","coord":[2628,3692,0],"src":"game"},{"name":"Miscellania","alt":[],"note":"The Fremennik Trials","coord":[2580,3846,0],"src":"game"},{"name":"Etceteria","alt":[],"note":"The Fremennik Trials"},{"name":"Waterbirth Island","alt":[],"note":"Jarvald","coord":[2550,3758,0],"src":"game"},{"name":"Jatizso","alt":[],"note":"","coord":[2421,3780,0],"src":"game"},{"name":"Neitiznot","alt":[],"note":"","coord":[2311,3779,0],"src":"game"},{"name":"Pirates' Cove","alt":[],"note":"The Fremennik Trials","coord":[2209,3794,0],"src":"game"},{"name":"Lunar Isle","alt":[],"note":""},{"name":"Iceberg","alt":[],"note":""},{"name":"Port Phasmatys","alt":[],"note":"","coord":[3703,3503,0],"src":"game"},{"name":"Mos Le'Harmless","alt":[],"note":"Cabin Fever","coord":[3683,2951,0],"src":"game"},{"name":"Dragontooth Island","alt":[],"note":""},{"name":"Burgh de Rott","alt":[],"note":""},{"name":"Meiyerditch","alt":[],"note":"The Darkness of Hallowvale started"},{"name":"The Hollows","alt":[],"note":""},{"name":"Mort'ton","alt":[],"note":""},{"name":"Taverley","alt":[],"note":"free-to-play"},{"name":"Al Kharid","alt":[],"note":"free-to-play"},{"name":"Daemonheim","alt":[],"note":"free"},{"name":"Digsite","alt":["Varrock Dig Site","Dig Site"],"note":"The Stormbreaker"},{"name":"Anachronia","alt":[],"note":"first trip: base camp tutorial"}],"links":[["Port Sarim","Musa Point"],["Port Sarim","Entrana"],["Port Sarim","Crandor"],["Port Sarim","Void Knights' Outpost"],["East Ardougne","Brimhaven"],["Tree Gnome Stronghold","Piscatoris"],["Tai Bwo Wannai","Feldip Hills"],["Rellekka","Miscellania"],["Rellekka","Etceteria"],["Rellekka","Waterbirth Island"],["Rellekka","Jatizso"],["Rellekka","Neitiznot"],["Rellekka","Pirates' Cove"],["Rellekka","Iceberg"],["Pirates' Cove","Lunar Isle"],["Port Phasmatys","Mos Le'Harmless"],["Port Phasmatys","Dragontooth Island"],["Burgh de Rott","Meiyerditch"],["The Hollows","Mort'ton"],["Taverley","Daemonheim"],["Al Kharid","Daemonheim"],["Digsite","Anachronia"]]}]};
   const WM_TRANSPORT_CAT = 1206;
   wmStopIdx = null;              // stop key -> {net, stop, x, y, p, ml, dist}
@@ -1373,14 +1292,12 @@
         if (!st.coord) continue;
         let best = null, bd = 1e9;
         for (const pn of pins) { const d = Math.max(Math.abs(pn.x - st.coord[0]), Math.abs(pn.y - st.coord[1])); if (d < bd) { bd = d; best = pn; } }
-        // Surface stops fly on floor 0 whatever plane the icon record carries; the stop's own plane wins.
         if (best && bd <= 6) bind(key, net, st, best.x, best.y, (st.coord[2] | 0), bd, best.ml);
         else bind(key, net, st, st.coord[0], st.coord[1], (st.coord[2] | 0), -1, -1);   // authoritative coordinate: flyable even without a nearby icon
       }
     }
     wmStopIdx = idx; wmStopByPin = byPin;
   }
-  // Destinations reachable from a stop, per the network's kind.
   function wmStopDests(key) {
     const rec = wmStopIdx.get(key); if (!rec) return [];
     const net = rec.net, out = [];
@@ -1399,7 +1316,6 @@
     return out;
   }
   function wmStopsAt(x, y) { wmBuildStops(); return (wmStopByPin && wmStopByPin.get(x + ',' + y)) || []; }
-  // Destination picker: body-level menu listing every destination of every network at this stop.
   function wmOpenRoutePicker(anchorX, anchorY, keys) {
     if (typeof closeSoundMenu === 'function') closeSoundMenu();
     const pop = document.createElement('div'); pop.className = 'sndmenu'; pop.id = 'sndMenu';
@@ -1456,14 +1372,12 @@
     const t = wmElemTip(m.ml);
     const head = (t ? t.head : '') || wmLocName(m);
     const body = t ? t.body : '';
-    // Only the first <br> splits header/body. Escape everything, then re-allow just <br>.
     const esc = function (s) { return htmlEsc(s).replace(/&lt;br\s*\/?&gt;/gi, '<br>'); };
     const lkLine = wmLinkLine(m.ml, m) + ((WM_ML[m.ml] && WM_ML[m.ml].c === WM_TRANSPORT_CAT) ? wmRouteTipLines(m.x, m.y) : '');
     return '<b style="text-transform:uppercase;letter-spacing:.5px">' + esc(head || 'Map symbol') + '</b>'
          + (body ? '<br>' + esc(body) : '')
          + '<br><span style="opacity:.6">' + m.x + ', ' + m.y + '</span>' + lkLine;
   }
-  // The hovered tile outlined as a positioned div, so hovering never forces a canvas repaint.
   function wmHoverBox() {
     const stage = document.getElementById('wmStage'); if (!stage) return;
     let box = document.getElementById('wmHoverTile');
@@ -1481,7 +1395,6 @@
     box.style.width = z + 'px'; box.style.height = z + 'px';
     box.style.display = 'block';
   }
-  // ---- chrome: bar chips + status line ----
   function wmPaintBar() {
     const bar = $('wmBar'); if (!bar) return;
     const chips = bar.querySelectorAll('[data-wm]');
@@ -1492,7 +1405,6 @@
       else if (wmLayer[k] !== undefined) c.classList.toggle('on', !!wmLayer[k]);
     }
   }
-  // One nearLabel answer per 8x8-tile cell.
   const wmNearCache = new Map();
   function wmNearMemo(x, y, p) {
     const k = ((x >> 3) << 16) | ((y >> 3) << 3) | (p & 7);
@@ -1511,7 +1423,6 @@
     if (xb && !xb._b) { xb._b = 1; xb.addEventListener('click', function () { wmSel = null; wmKick(); }); }
   }
 
-  // ---- panel ----
   const WM_CSS = ''
     + '.wm-wrap{display:flex;flex-direction:column;gap:6px;height:100%;min-height:0}'
     + '.wm-searchrow{position:relative;flex:0 0 auto}'
@@ -1532,7 +1443,6 @@
     + '.wm-stage.grabbing{cursor:grabbing}'
     + '#wmCanvas{position:absolute;left:0;top:0;width:100%;height:100%}'
     + '.wm-tip{position:absolute;z-index:20;display:none;pointer-events:none;background:rgba(9,11,17,0.94);border:1px solid var(--border-hi);border-radius:8px;padding:7px 9px;font-size:11px;line-height:1.45;max-width:320px;box-shadow:0 10px 28px rgba(0,0,0,0.55)}'
-    /* Structured symbol tooltip. .tg-body's white-space rule is scoped to #global-tip, so it is re-declared here. */
     + '.wm-tip.wide{max-width:392px}'
     + '.wm-tip .tg-body{white-space:normal}'
     + '.wm-h{display:block;font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;'
@@ -1549,7 +1459,6 @@
     + '.wm-req.met{color:var(--text-mute)}'
     + '.wm-req.unmet{color:var(--warn,#e0a44a)}'
     + '.wm-rows{display:flex;flex-direction:column;gap:3px}'
-    /* minmax(0,1fr), not 1fr: a 1fr track floors at min-content and a long nowrap name pushes the second card out of the tip. */
     + '.wm-rows.wide{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:3px 5px}'
     + '.wm-row{display:flex;align-items:center;gap:8px;min-height:26px;padding:3px 8px 3px 5px;'
     +   'min-width:0;overflow:hidden;'
@@ -1637,7 +1546,6 @@
         let hit = null, hd = Infinity;
         for (const m of wmMarks) { const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= m.r + 5 && d < hd) { hd = d; hit = m; } }
         if (hit) {
-          // Rebuild the content only when the hovered mark changes; per-mousemove rebuilds made icon sizing oscillate.
           const hsig = hit.ts ? ('ts:' + hit.sx + ',' + hit.sy)
                      : (hit.ml != null ? ('ml:' + hit.ml + ',' + hit.x + ',' + hit.y)
                                        : ('tp:' + (hit.tip || '')));
@@ -1659,14 +1567,12 @@
       }
     });
     stage.addEventListener('mouseleave', function () { const tip = $('wmTip'); if (tip) { tip.style.display = 'none'; tip._hsig = ''; } wmTipHit = null; wmHover = { x: -1, y: -1 }; wmPaintStatus(); wmHoverBox(); });
-    // Watch the stage itself (floating window resizes); one observer per mount.
     if (typeof ResizeObserver === 'function') { if (wmRO) wmRO.disconnect(); wmRO = new ResizeObserver(function () { wmKick(); }); wmRO.observe(stage); }
     if (!wmWinBound) {
       wmWinBound = true;
       window.addEventListener('mousemove', function (e) {
         if (!wmDrag) return;
         const st2 = document.getElementById('wmStage'); if (!st2) { wmDrag = null; return; }
-        // Same coordinate source as the hover/click paths: engine offsets in stage CSS px.
         const pt = wmPt(e, st2);
         const dx = pt.x - wmDrag.px, dy = pt.y - wmDrag.py;
         if (Math.abs(dx) + Math.abs(dy) > 3) { wmDrag.moved = true; if (wmFollow) { wmFollow = false; wmPaintBar(); } }
@@ -1680,7 +1586,6 @@
           const r = st2.getBoundingClientRect();
           const pt = wmPt(e, st2), mx = pt.x, my = pt.y;
           if (mx >= 0 && my >= 0 && mx <= r.width && my <= r.height) {
-            // A click on a linked element follows it: fly to the destination and pin it.
             let hitM = null, hdM = Infinity;
             for (const m of wmMarks) { if (m.ml == null) continue; const d = Math.hypot(m.sx - mx, m.sy - my); if (d <= m.r + 4 && d < hdM) { hdM = d; hitM = m; } }
             if (hitM && WM_ML[hitM.ml] && WM_ML[hitM.ml].c === WM_TRANSPORT_CAT) {
@@ -1737,7 +1642,6 @@
     wmKick();
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { wmBuildStops, wmFlyTo, wmKick, wmLabelText, wmSetExtPins });
 registerTab({ id: 'worldmap', render: renderWorldMap, open: function () { if (typeof wmOpen === 'function') wmOpen(); } });
 })();

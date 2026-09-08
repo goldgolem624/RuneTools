@@ -1,11 +1,3 @@
-// rtx-menubar.js: Menu bar (positionMenubar, renderMenubar, dropdowns), renderSidebar alias, wiki pane, fullscreen, tab search palette (Ctrl+K), copySelection/contextmenu.
-// Loads after: rtx-layout.js, rtx-wm.js, rtx-registry.js; installs mousedown/keydown/contextmenu listeners at load.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ==================== Menu bar ====================
-  // Slim glass bar: category launchers + player status + search. Draggable to any
-  // x position along the top or bottom edge; collapsible to a pill. State rides
-  // the layout store. renderSidebar stays as an alias -- panel code and the GIM
-  // visibility poll still call it.
   function positionMenubar() {
     const bar = $('menubar');
     if (!bar) return;
@@ -16,7 +8,6 @@
     bar.style.left = x + 'px';
     bar.style.transform = 'none';
     if (typeof wm.barYf === 'number') {
-      // Free placement: any vertical position, always clamped inside the game frame.
       const vh = window.innerHeight || 720, bh = bar.offsetHeight || 38;
       let y = Math.round(vh * wm.barYf - bh / 2);
       y = Math.max(6, Math.min(vh - bh - 6, y));
@@ -24,8 +15,6 @@
       wm.barY = (y + bh / 2 > vh / 2) ? 'bottom' : 'top';   // dropdown and toast sides follow the half it sits in
     } else if (wm.barY === 'bottom') { bar.style.top = 'auto'; bar.style.bottom = '10px'; }
     else { bar.style.bottom = 'auto'; bar.style.top = '10px'; }
-    // The toast stack sits under the bar when it is docked top, and at the top of
-    // the screen when the bar moves to the bottom.
     document.body.classList.toggle('bar-bottom', wm.barY === 'bottom');
   }
   function closeMbDrop() {
@@ -37,8 +26,6 @@
     if (bar) bar.querySelectorAll('.mb-cat.open').forEach(b => b.classList.remove('open'));
     wmRectsSoon();
   }
-  // The More menu's second level: a flyout BESIDE the parent list, so picking a
-  // category no longer replaces the More menu (choosing wrong meant starting over).
   function closeMbFlyout() {
     const dd2 = $('mbdrop2');
     if (dd2) dd2.remove();
@@ -65,8 +52,6 @@
     const rr = row.getBoundingClientRect();
     const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
     const w2 = dd.offsetWidth || 220, h2 = dd.offsetHeight || 200;
-    // Beside the parent list: to its right when there is room (the More menu hugs the
-    // bar's right edge, so usually there is not), otherwise to its left.
     let x = Math.round(rr.right + 8);
     if (x + w2 > vw - 6) x = Math.round(rr.left - w2 - 8);
     x = Math.max(6, Math.min(vw - w2 - 6, x));
@@ -76,10 +61,6 @@
     dd.style.top = y + 'px';
     wmRectsSoon();
   }
-  // The rows a category's menu shows. A TAB_GROUP collapses to ONE row, so this is what the user
-  // actually sees rather than the raw tab list. Shared by the dropdown and by the single-entry
-  // shortcut in renderMenubar, so a click behaves identically whichever path it arrives through.
-  // Recomputed per click, never cached: Plugins grows and shrinks as plugins are installed.
   function mbCatEntries(catId) {
     const out = [], emitted = {};
     for (const t of allTabs()) {
@@ -91,15 +72,10 @@
       out.push({ label: g ? g.label : t.label,
                  win:    g ? wmWinOfAny(g.tabs) : wmWinOf(t.id),
                  target: g ? groupEntryTab(g)   : t,
-                 // Every tab this row owns, so closing can scope itself to them. Copied: closing
-                 // splices tab arrays, and g.tabs is the shared TAB_GROUPS definition.
                  ids:    g ? g.tabs.slice()     : [t.id] });
     }
     return out;
   }
-  // Route through the TAB, not the window: after docking, w may be showing an UNRELATED tab, and
-  // acting on it there hits the host instead of what was asked for. Only toggle when the requested
-  // tab is ALREADY shown.
   function mbActivate(e) {
     const w = e.win, target = e.target;
     if (w && (!target || w.tabs.indexOf(target.id) >= 0)) {
@@ -107,10 +83,6 @@
       if (wasMin) wmRestore(w);
       if (target && w.tab !== target.id) { wmSwitchTab(w, target); wmFocus(w); closeMbDrop(); return; }
       if (!wasMin) {
-        // Open and showing: the menu entry is a toggle and it CLOSES. This used to minimize, which
-        // left the window alive behind a restore chip and read as the click having done nothing.
-        // Scope it to the tabs this ROW owns: a window can hold panels docked in from elsewhere,
-        // and those must survive. Only when the row accounts for every tab does the window go.
         const mine = e.ids || (target ? [target.id] : []);
         if (mine.length && w.tabs.every(id => mine.indexOf(id) >= 0)) wmClose(w.wid);
         else mine.forEach(id => { if (w.tabs.indexOf(id) >= 0) wmCloseTabIn(w, id); });
@@ -121,8 +93,6 @@
     }
     if (target) openTab(target);   // lives in another window (or nowhere): openTab finds it
   }
-  // The categories that did not fit, as one menu. Rows behave exactly like the bar buttons:
-  // a category holding a single panel opens it, anything else opens that category menu.
   function openMbMore(btn, hidden) {
     closeMbDrop();
     wm.mbDrop = "__more";
@@ -152,9 +122,6 @@
     wmRectsSoon();
   }
 
-  // Fit the category strip to the bar: hide from the end until the row fits, and put what
-  // was hidden behind one More button. Runs after layout, and again whenever the bar or the
-  // client is resized, so it is always measured rather than assumed.
   function mbFitCats() {
     const bar = $("menubar"); if (!bar || bar.classList.contains("pill")) return;
     const cats = bar.querySelector(".mb-cats"); if (!cats) return;
@@ -175,8 +142,6 @@
     }
     for (const b of all) b.style.display = "";
     more.style.display = "none";
-    // Overflow is measured on the BAR: the strip is allowed to shrink, so its own
-    // scrollWidth reports a fit that the bar as a whole does not have.
     const fits = () => cats.scrollWidth <= cats.clientWidth + 1;
     if (fits()) { mbHiddenCatIds = []; return; }
     more.style.display = "";
@@ -200,13 +165,9 @@
     btn.classList.add('open');
     const dd = document.createElement('div');
     dd.id = 'mbdrop';
-    // No category heading: the bar button above it is the label, and it stays lit
-    // while its menu is open. (It earned its place when the button was an icon.)
     for (const e of mbCatEntries(catId)) {
       const w = e.win, target = e.target;
       const b = document.createElement('button');
-      // Lit only when the requested TAB is on screen -- after docking, w can hold it while
-      // showing something else, and rolled hides the body just like minimized does.
       b.className = 'tab' + ((w && !w.min && !w.rolled && target && w.tab === target.id) ? ' is-active' : '');
       b.innerHTML = '<span class="tab-label"></span>' + (w ? '<span class="tab-on"></span>' : '');
       b.querySelector('.tab-label').textContent = e.label;
@@ -235,7 +196,6 @@
     const keepDrop = wm.mbDrop;
     bar.classList.toggle('pill', !!wm.barPill);
     bar.innerHTML = '';
-    // Drag handle (grip dots): move along the top/bottom edges.
     const drag = document.createElement('div');
     drag.className = 'mb-drag';
     drag.title = 'Move bar';
@@ -244,8 +204,6 @@
       if (e.button !== 0) return;
       e.preventDefault();
       bar.classList.add('dragging');
-      // Keep the grab point under the cursor: the bar is positioned by its centre, so carry
-      // the offset from where it was grabbed to its centre through the whole drag.
       const r0 = bar.getBoundingClientRect();
       const offX = (r0.left + r0.width / 2) - e.clientX, offY = (r0.top + r0.height / 2) - e.clientY;
       const mv = (ev) => {
@@ -265,12 +223,8 @@
       document.addEventListener('mouseup', up);
     });
     bar.appendChild(drag);
-    // Category launchers (a dot marks categories with open windows).
     const cats = document.createElement('nav');
     cats.className = 'mb-cats';
-    // A vertical wheel over an x-only scroller is not reliably translated for us, and the
-    // categories only overflow on a small client -- exactly when the user most needs to
-    // reach them. Map the wheel by hand, and only consume it when there is somewhere to go.
     cats.addEventListener('wheel', (e) => {
       const max = cats.scrollWidth - cats.clientWidth;
       if (max <= 0) return;
@@ -293,10 +247,6 @@
       b.textContent = c.id;          // a legible word beats a 17px line glyph
       b.addEventListener('click', () => {
         if (wm.mbDrop === c.id) { closeMbDrop(); return; }
-        // A category holding one panel would open a menu of one row repeating the button's own
-        // label (Quests > Quests), which is a question with a single answer. Open it directly.
-        // Five of the ten categories are like this, and Plugins joins them when nothing is
-        // installed, so the count is measured here per click rather than declared in CAT_META.
         const es = mbCatEntries(c.id);
         if (es.length === 1) { closeMbDrop(); mbActivate(es[0]); return; }
         openMbDrop(c.id, b);
@@ -304,13 +254,6 @@
       cats.appendChild(b);
     }
     bar.appendChild(cats);
-    // Minimized-window chips: a minimized window stays visibly PRESENT here (it
-    // looked "completely closed" without an affordance); click restores it. Built in the
-    // COLLAPSED bar too -- collapsing is about reclaiming the category rail, and dropping
-    // the chips with it stranded every minimized window with nothing left to click.
-    // barMinChips !== false: shown by DEFAULT; hiding them is the opt-in (Preferences >
-    // Bar), because without the chips a minimized window's only affordance is its menu
-    // category entry.
     const minimized = (uiCfg().barMinChips !== false) ? Array.from(wm.wins.values()).filter(w => w.min) : [];
     if (minimized.length) {
       const chips = document.createElement('div');
@@ -328,39 +271,30 @@
       }
       bar.appendChild(chips);
     }
-    // Player status: renderHeader() writes these ids (kept from the old header).
     const st = document.createElement('div');
     st.className = 'mb-status';
     st.innerHTML = '<div class="title" id="hdr-title"><span class="dot"></span>' +
                    '<span id="hdr-name">--</span></div><div class="meta" id="hdr-meta">--</div>';
-    // Hidden, not skipped: renderHeader/uiBarTick keep writing into the hdr-* ids, so
-    // the elements must exist even when the user turns the status block off.
     if (uiCfg().barStatus === false) st.style.display = 'none';
     bar.appendChild(st);
     const info = document.createElement('div'); info.className = 'mb-info'; info.id = 'hdr-info';
     bar.appendChild(info);
     try { uiBarTick(); } catch (e) {}
-    // Search + pill toggle.
     const search = document.createElement('button');
     search.className = 'mb-btn mb-search';
     search.title = 'Search panels (Ctrl+K)';
     search.textContent = 'Search';
     search.addEventListener('click', openTabSearch);
     bar.appendChild(search);
-    // Borderless fullscreen moved off the bar into its own panel (Utility > Fullscreen,
-    // renderFullscreen) -- the bar keeps only window chrome: search, chips, collapse.
     const pill = document.createElement('button');
     pill.className = 'mb-btn';
     pill.title = wm.barPill ? 'Expand bar' : 'Collapse bar';
-    // Guillemets: plain Latin-1 text, so they cannot mis-render the way paths did.
     pill.textContent = wm.barPill ? '»' : '«';
     pill.addEventListener('click', () => { wm.barPill = !wm.barPill; closeMbDrop(); renderMenubar(); wmSaveSoon(); });
     bar.appendChild(pill);
     positionMenubar();
     _hdrSig = '';                       // status ids were rebuilt: force a header repaint
     try { renderHeader(); } catch (e) {}
-    // Keep an open dropdown alive across rebuilds (open-state dots change under it).
-    // Fit before restoring any open menu, so the button it anchors to is in its final place.
     try { mbFitCats(); } catch (e) {}
     if (keepDrop) {
       const btn = bar.querySelector('.mb-cat[data-cat="' + keepDrop + '"]');
@@ -369,19 +303,10 @@
     }
     wmRectsSoon();
   }
-  // Measured after the bar exists, and again on any resize: the bar is content sized, so a
-  // narrower client is exactly when categories start to fall off the end.
   window.addEventListener("resize", () => { try { mbFitCats(); } catch (e) {} });
 
   function renderSidebar() { renderMenubar(); }
 
-  // Fullscreen panel (Utility): borderless fullscreen for the embedded client. It was a
-  // button on the main bar; it lives in its own panel now. The GAME's own Fullscreen
-  // option cannot work while embedded (its window is our child, clipped to the host),
-  // so this drives the HOST: it takes the whole monitor and the game comes with it.
-  // ---- Wiki pane: launcher + settings for the in-client wiki browser. The browser
-  //      itself is a native pane locked to runescape.wiki; this panel just starts it,
-  //      binds the palette hotkey, and explains the feature. ----
   function renderWikiPane() {
     const c = $('content');
     if ($('wkWrap')) { return; }
@@ -408,7 +333,6 @@
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); open(); } });
     row.appendChild(inp); row.appendChild(go);
     wrap.appendChild(row);
-    // Hotkey row, same interaction as the screenshot keybind: click, press a key.
     const kbRow = document.createElement('div');
     kbRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin:6px 0';
     const kbLbl = document.createElement('span'); kbLbl.className = 'ov-hint'; kbLbl.style.margin = '0';
@@ -427,9 +351,6 @@
         listening = false; kbGrab(false);
         try { bridge().wikiKeybindSet(e.key === 'Escape' ? 0 : (e.keyCode | 0)); } catch (e2) {}
         paint();
-        // Release focus + capture NOW: with either still held, the freshly-bound key
-        // reads as "typing" on its next press and feeds the UI instead of the keybind
-        // (seen live as "I had to press the hotkey twice").
         try { if (document.activeElement) document.activeElement.blur(); } catch (e3) {}
         syncKbCapture();
       };
@@ -474,8 +395,6 @@
     c.appendChild(wrap);
   }
 
-  // ---- Tab search palette (Ctrl+K / '/' / the rail magnifier): type to jump to any
-  //      panel, plugin tabs included. Arrow keys + Enter select; Esc / backdrop close. ----
   let tspSel = 0;
   function tspEntries(q) {
     const all = allTabs().filter(t => !t.hidden);
@@ -523,8 +442,6 @@
     if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
   }
   function closeTabSearch() {
-    // Blur any focused field first, or the host keeps keyboard capture forever
-    // (focusout never fires for removed nodes in Ultralight).
     const ov = $('tspOv');
     if (ov) {
       try { const a = document.activeElement; if (a && ov.contains(a)) a.blur(); } catch (e) {}
@@ -551,8 +468,6 @@
       else if (e.key === 'Enter')     { e.preventDefault(); if (es[tspSel]) tspJump(es[tspSel]); }
       else if (e.key === 'Escape')    { e.preventDefault(); closeTabSearch(); }
       else if (e.key === 'Backspace' && (e.ctrlKey || e.altKey)) {
-        // Delete the previous word. The host drops the control character this combo produces
-        // (it would otherwise be typed as a box), so without this the key would do nothing.
         e.preventDefault();
         const end = inp.selectionStart === inp.selectionEnd ? inp.selectionStart : inp.selectionEnd;
         const head = inp.value.slice(0, end);
@@ -576,7 +491,6 @@
     const k = (e.key || '').toLowerCase();
     if (k === 'escape' && $('tspOv')) { closeTabSearch(); return; }
     if (k === 'escape') {
-      // Esc in a text field: drop focus so keyboard capture returns to the game.
       const t0 = e.target;
       if (t0 && (t0.tagName === 'INPUT' || t0.tagName === 'TEXTAREA' || t0.isContentEditable)) {
         t0.blur();
@@ -593,10 +507,6 @@
     }
   });
 
-  // Copy-out support. Ultralight has NO clipboard integration (no navigator.clipboard, no
-  // native Ctrl+C, no context menu), so the current selection is forwarded to the OS
-  // clipboard through the bridge (copyClipboard). Returns false when there is nothing
-  // selected or the bridge predates the function.
   function copySelection() {
     let sel = '';
     const t = document.activeElement;
@@ -617,7 +527,6 @@
     m.style.left = Math.min(e.clientX, window.innerWidth - 70) + 'px';
     m.style.top = Math.min(e.clientY, window.innerHeight - 34) + 'px';
     const onDown = (ev) => { if (ev.target !== m) { m.remove(); try { wmRectsSoon(); } catch (e2) {} document.removeEventListener('mousedown', onDown, true); } };
-    // mousedown (not click): fires before the page mousedown clears the selection
     m.addEventListener('mousedown', ev => {
       ev.preventDefault(); ev.stopPropagation();
       copySelection(); m.remove();
@@ -636,21 +545,8 @@
     r.appendChild(ks); r.appendChild(vs);
     return r;
   }
-  // Section heading for a .rows list, so a long readout can be grouped instead of
-  // reading as one undifferentiated column.
   function secRow(label) {
     const d = document.createElement('div'); d.className = 'sec'; d.textContent = label;
     return d;
   }
 
-  // ---- Storage tab -> panel_storage.js (spliced inline at load) ----
-  // ---- Containers tab -> panel_containers.js (spliced inline at load) ----
-  // ---- POF tab -> panel_pof.js (spliced inline at load) ----
-  // ---- Abilities tab -> panel_abilities.js (spliced inline at load) ----
-  // ---- Pets tab -> panel_pets.js (spliced inline at load) ----
-  // ---- Bosses tab -> panel_bosses.js (spliced inline at load) ----
-  // ---- Quests tab -> panel_quests.js (spliced inline at load) ----
-  // ---- Quest Guides tab -> panel_questguides.js (spliced inline at load) ----
-  // ---- XP Tracker tab -> panel_xptracker.js (spliced inline at load) ----
-  // ---- Chat Log tab -> panel_chatlog.js (spliced inline at load) ----
-  // ---- Achievements tab -> panel_achievements.js (spliced inline at load) ----

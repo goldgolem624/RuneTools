@@ -1,18 +1,8 @@
 // RuneToolsX panel: Chat Log (searchable, colour-rendered chatbox history).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
-  // TWO sources merged into one log:
   //  - packets: op-0x15 message_game from the companion's always-on capture ring; arrives
-  //    regardless of which chat tab is open (or whether the chatbox is visible at all),
-  //    with a structured channel type id and the sender split out. Deduped by seq.
   //  - interface: the chatbox widget walk (group 137), the pre-packet source; still covers
-  //    any channel that rides a different opcode, and only sees what the chatbox renders.
-  //    Deduped by raw string (the rotating chatbox pool re-sends lines).
-  // A game message lands in BOTH, so each side suppresses a line whose plain text the other
-  // side delivered within the last 2 minutes. RS3 encodes literal angle brackets as
-  // <lt>/<gt>, so every real "<..>" is an engine tag: whitelist <col>, drop the rest,
-  // HTML-escape all text.
   const chatLogs = {};   // pid -> { seen:Set, pseq, pkPlain:Map, ifPlain:Map, lines:[{raw, ts, tokens, plain, chan, src}] }
   let chatFetching = false; let chatFetchAt = 0; chatSearch = ''; let chatSig = ''; let chatChan = 'All';
   let chatPkHook = false;
@@ -22,10 +12,6 @@
     if (!chatLogs[p]) chatLogs[p] = { seen: new Set(), pseq: 0, pkPlain: new Map(), ifPlain: new Map(), lines: [] };
     return chatLogs[p];
   }
-  // Cross-source dedup ledgers: plain text -> ms shown by that source. Consume-once with a
-  // short window: each shown line suppresses exactly ONE copy of the same text from the
-  // other source (delivery skew between the sources is ~2s), so a message the player
-  // GENUINELY repeats moments later still shows. Bounded by Map insertion order.
   function chatMark(map, plain) { map.set(plain, Date.now()); if (map.size > 600) map.delete(map.keys().next().value); }
   function chatConsume(map, plain) {
     const t = map.get(plain);
@@ -34,9 +20,6 @@
     return true;
   }
   // Channel from the wire type id. Verified live: 109 = game/spam, 138 = broadcast news,
-  // 96/98/99 = specials. 0/2/3/6 are the long-standing engine message-type ids (game,
-  // public, private-from, private-to). Anything unknown falls back on structure: a line
-  // that carried a channel name is clan-flavoured, a bare sender is public, else system.
   const CHAT_PKT_TYPES = { 0:'Game', 96:'Game', 98:'Game', 99:'Game', 109:'Game', 138:'Game', 2:'Public', 3:'Private', 6:'Private' };
   function chatClassifyPkt(type, name, chan) {
     if (CHAT_PKT_TYPES[type]) return CHAT_PKT_TYPES[type];
@@ -47,13 +30,7 @@
     const d = new Date(ms), p2 = n => (n < 10 ? '0' : '') + n;
     return p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
   }
-  // Classify a line by the fixed label the engine writes per channel (abbreviation display mode,
-  // RS3's default):
-  //   Public: "Name: msg"; Private: "From/To Name:"; Friends: "[FC] Name:";
-  //   Clan: "[CC] Name:" ([GIM] for group-ironman); Guest clan: "[GC] Name:";
-  //   Group: "[Group] Name:" / "[Group (Team)] Name:"; Game/system: plain text, NO sender.
   // `name` (sender, widget +0x90) separates Public from Game. A custom channel label
-  // "[X] Name:" cannot be disambiguated by text and falls to Public.
   function chatClassify(plain, name) {
     if (!name || !name.trim()) return 'Game';        // no sender -> system/game/broadcast
     if (/^(From|To)\b/.test(plain)) return 'Private';
@@ -67,14 +44,9 @@
     }
     return 'Public';
   }
-  // RS3 uses exotic whitespace inside names (U+00A0 etc.); normalize it to plain spaces so names
-  // both display and search correctly.
   function chatNormSpace(s) { let o = ""; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); o += (c === 0xA0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200B) || c === 0x202F || c === 0x205F || c === 0x3000 || c === 0xFEFF) ? " " : s[i]; } return o; }
   function chatEsc(s) { return htmlEsc(s); }
-  // Parse one raw chatbox line -> { ts:"HH:MM:SS"|"", plain:"<text>", tokens:[{text,color}] }.
-  // RS3 colour markup is NOT nested: <col=hex> SETS the colour; </col> RESETS to the line's BASE
   // colour (widget +0x80, the per-channel colour; `base` RGB int from the bridge), NOT to white.
-  // <lt>/<gt> are literal brackets; <img=N>/<shad>/... are dropped.
   function chatParse(raw, base) {
     let ts = '';
     const baseHex = (typeof base === 'number' && base >= 0) ? '#' + ('000000' + base.toString(16)).slice(-6) : null;
@@ -102,19 +74,13 @@
       else if (low === 'gt') emit('>');
       else if (low === 'br') emit(' ');
       else if (low.startsWith('img=')) {
-        // Chat icon: index into the game's "modicons" sprite strip (ironman badges, leagues,
-        // broadcasts). Rendered as an inline image by chatHtml; nothing added to `plain` so
-        // search still matches the words.
         const n = parseInt(tag.slice(4), 10);
         if (n >= 0) tokens.push({ img: n, color: curColor });
       }
       else if (low.startsWith('sprite=')) {
-        // Direct sprite reference (the leagues broadcast icon is <sprite=36303>): the
-        // archive id itself, frame 0, drawn at text height like an <img=N> icon.
         const n = parseInt(tag.slice(7), 10);
         if (n >= 0) tokens.push({ spr: n, color: curColor });
       }
-      // <shad=..>, <str>, <u=..>, etc. -> dropped
       i = gt + 1;
     }
     const m = plain.match(/^\s*\[(\d{1,2}:\d{2}:\d{2})\]\s*/);
@@ -130,11 +96,6 @@
     }
     return { ts, plain: plain.trim(), tokens };
   }
-  // <img=N> icons: frames of the "modicons" sprite group, resolved by name once per session
-  // and cached per frame as data URLs. Older launchers lack spriteByName: icons stay dropped.
-  // Verified against the live cache (sprites index scan, build 949): archive 1455 is the
-  // 25-frame 13x11 strip of chat icons (mod crowns, ironman helms, skulls, league trophies).
-  // The name lookup is tried first so a renamed cache still resolves; 1455 is the fallback.
   const CHAT_ICONS_SPRITE = 1455;
   let chatIconsId = null, chatIconsResolving = false;
   const chatIconUrl = new Map(), chatIconPending = new Set();
@@ -162,7 +123,6 @@
     }
     return '';
   }
-  // <sprite=ID>: whole-archive icons, cached by id (same fetch/repaint shape as the strip).
   const chatSprUrl = new Map(), chatSprPending = new Set();
   function chatSpriteSrc(id) {
     if (chatSprUrl.has(id)) return chatSprUrl.get(id);
@@ -211,12 +171,7 @@
       chatPkHook = !!(j && j.phook);
       const store = chatStore();
       const fresh = [];
-      // First fill only: the packet backlog and the chatbox scrollback overlap far outside
-      // the rolling dedup window, so reconcile the whole initial batch against each other.
       const bootPk = (store.pseq === 0 && store.lines.length === 0) ? new Set() : null;
-      // Packet lines first (newest-first, deduped by ring seq). The sender is split out on
-      // the wire, so rebuild the familiar "Name: msg" plain form -- it is also what makes
-      // the cross-source dedup line up with the interface rendering of the same message.
       for (const pk of pkts) {
         if (!pk || !(pk.seq > store.pseq)) continue;
         const p = chatParse(String(pk.raw || ''), null);
@@ -234,16 +189,12 @@
                      pkraw: String(pk.raw || ''), pkname: name });
       }
       if (pkts.length) for (const pk of pkts) if (pk && pk.seq > store.pseq) store.pseq = pk.seq;
-      // Interface lines (newest-first as {raw, base, name}); prepend to stay newest-first.
       for (const ln of lines) {
         const raw = ln && ln.raw; if (!raw || store.seen.has(raw)) continue;
         store.seen.add(raw);
         const p = chatParse(raw, ln.base);
         if (bootPk && bootPk.has(p.plain)) continue;        // first fill: packet backlog wins
         if (chatConsume(store.pkPlain, p.plain)) {           // packet capture already delivered it:
-          // the packet has no channel colour, the chatbox widget does (its base colour is what
-          // the game paints untagged text with, red on broadcasts). Re-render that packet line
-          // with the interface base so the log matches the game.
           if (typeof ln.base === 'number' && ln.base >= 0) {
             const hit = fresh.concat(store.lines.slice(0, 300)).find(l => l.src === 'pk' && l.plain === p.plain && !l.baseDone);
             if (hit) { const q = chatParse(hit.pkraw || '', ln.base); if (hit.pkname) q.tokens.unshift({ text: hit.pkname + ': ', color: null }); hit.tokens = q.tokens; hit.baseDone = true; chatSig = ""; }
@@ -285,8 +236,6 @@
         const b = e.target.closest('.pet-chip'); if (!b) return;
         chatChan = b.dataset.chan; chatSig = ''; renderChatList();
       });
-      // Clear empties the displayed log but re-snapshots the visible chatbox lines into `seen`, so
-      // the next poll does not re-add everything still on screen.
       clr.addEventListener('click', async () => {
         const s = chatStore();
         s.lines = [];
@@ -304,8 +253,6 @@
     const list = $('chatList'); if (!list) return;
     const store = chatStore();
     const q = chatSearch.trim().toLowerCase();
-    // Signature FIRST: this runs every 250ms poll, so when nothing shown has changed it must do
-    // ZERO DOM work or the chips + list rebuild every tick.
     const sig = q + '|' + chatChan + '|' + (chatPkHook ? 1 : 0) + '|' + store.lines.length + '|' + (store.lines[0] ? store.lines[0].raw : '');
     if (sig === chatSig) return;
     chatSig = sig;
@@ -346,8 +293,6 @@
       ch.textContent = l.chan; row.appendChild(ch);
       const m = document.createElement('span'); m.className = 'chat-msg';
       m.innerHTML = chatHtml(l.tokens, q);
-      // Lines carrying game markup expose it on hover (icon indices, colour tags): this is how
-      // an unmapped <img=N> index gets identified without a debugger.
       if (l.raw && (l.raw.indexOf('<img=') >= 0 || l.raw.indexOf('<sprite=') >= 0)) row.dataset.tip = 'Raw markup:' + String.fromCharCode(10) + l.raw;
       row.appendChild(m);
       frag.appendChild(row);
@@ -361,7 +306,6 @@
     }
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { fetchChat });
 registerTab({ id: 'chatlog', render: renderChat, open: function () { chatSig = ''; fetchChat(true); } });
 })();

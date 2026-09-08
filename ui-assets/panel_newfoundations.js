@@ -1,5 +1,4 @@
 // RuneToolsX panel: New Foundations quest guide (quest 489).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Progress varbit 52592 (quest config js5-2 archive 35 file 489): starts at 5, complete at 65.
@@ -9,44 +8,32 @@
   const NF_SPIKES = Array.from({ length: 40 }, (_, i) => 52558 + i);   // per-spot spike varbits 52558-52597: 0 = not in progress, 2 = OPTIMAL spot, 1 = non-optimal
   // Fortification build-spot map (spike varbit -> tile); optimal spot = varbit 2, readable out of scan range.
   const NF_FORT_SPOTS = [
-    // North wall section 1
     { vb: 52563, x: 3292, y: 3575 },
     { vb: 52564, x: 3299, y: 3575 },
     { vb: 52565, x: 3306, y: 3575 },
-    // North wall section 2
     { vb: 52566, x: 3312, y: 3575 },
     { vb: 52567, x: 3318, y: 3575 },
     { vb: 52568, x: 3325, y: 3575 },
-    // North-west wall
     { vb: 52561, x: 3277, y: 3567 },
     { vb: 52562, x: 3280, y: 3573 },
-    // South-west wall
     { vb: 52580, x: 3277, y: 3542 },
     { vb: 52581, x: 3285, y: 3534 },
     { vb: 52582, x: 3284, y: 3537 },
-    // South wall section 1
     { vb: 52576, x: 3317, y: 3532 },
     { vb: 52577, x: 3309, y: 3532 },
-    // South wall section 2
     { vb: 52578, x: 3295, y: 3532 },
     { vb: 52579, x: 3293, y: 3532 },
-    // North-east wall
     { vb: 52569, x: 3334, y: 3567 },
     { vb: 52570, x: 3331, y: 3571 },
-    // East wall
     { vb: 52571, x: 3334, y: 3566 },
     { vb: 52572, x: 3334, y: 3553 },
-    // South-east wall
     { vb: 52573, x: 3332, y: 3542 },
     { vb: 52574, x: 3328, y: 3538 },
     { vb: 52575, x: 3325, y: 3535 },
-    // Rear gate
     { vb: 52583, x: 3283, y: 3574 },
     { vb: 52584, x: 3289, y: 3574 },
-    // Front gate
     { vb: 52585, x: 3307, y: 3532 },
     { vb: 52586, x: 3300, y: 3532 },
-    // West wall
     { vb: 52559, x: 3275, y: 3545 },
     { vb: 52560, x: 3275, y: 3565 },
   ];
@@ -109,12 +96,10 @@
   const NF_FLINT = 29828, NF_FLINT_X = 3082, NF_FLINT_Y = 3249;   // Father Flint, Draynor Village marketplace
   const NF_HOTSPOT_NAME = 'Optimal Construction hotspot';   // the optimal hotspot's loc id changes as the flag moves between spots, so match by NAME
   const NF_BP = 125059, NF_BP_X = 3287, NF_BP_Y = 3555;     // Fort Forinthry blueprints table (also opens the Construction menu)
-  // v=15 phase latches: set in nfStep, read by QG_AUTO, reset when v<15.
   let nfNearPortal2 = false;    // step 3: player came within 10 tiles of the portal 3304,3524
   let nfInFortInstance = false; // step 4: an Armoured zombie was seen in scene (= inside the instance)
   let nfHotspotSeen = false;    // steps 7-8: the Optimal Construction hotspot was seen in scene
   let nfTitlePick = null;       // random "Choose your title" pick, latched so the box does not jump
-  // Other channels are cleared only on a hit, so the underlying highlight does not flicker.
   async function nfBoxOpt(opt) {
     let b = false; try { b = await PLUGIN_API['overlay.highlightOption'].run([opt], myPid()); } catch (e) {}
     if (b) { qgClrNpc(); qgClrTiles(); qgClrItem(); }
@@ -137,7 +122,6 @@
     if (v < 15) { nfNearPortal2 = false; nfInFortInstance = false; }
     if (v < 25) nfHotspotSeen = false;
     if (v >= NF_DONE) { qgClearAll(); return; }
-    // 64 = the reader's max scan radius; the optimal hotspot roams the whole fort perimeter.
     const sc = await qgScene(64);
     const zombie = sc.npcs.some(n => n && n.id === NF_ZOMBIE);   // Armoured zombies and Bill only exist inside the Fort instance
     const bill = sc.npcs.some(n => n && n.id === NF_BILL);
@@ -145,7 +129,6 @@
     if (v >= 25 && sc.objects.some(o => o && o.name === NF_HOTSPOT_NAME)) nfHotspotSeen = true;
     if (v >= 15 && qgP && (qgP.p | 0) === 0 &&
         Math.abs(qgP.x - NF_PORTAL2_X) <= 10 && Math.abs(qgP.y - NF_PORTAL2_Y) <= 10) nfNearPortal2 = true;
-    // King Roald in scene is the reliable in-instance signal: the x>=6400 check fails here, and the varbit sits at 0 through his whole conversation.
     if (sc.npcs.some(n => n && n.id === NF_ROALD)) {
       if (await nfBoxOpt(v >= 10 ? 'sign me up' : 'accept')) return;
       await qgNpc('#' + NF_ROALD, 'Talk to King Roald');
@@ -181,18 +164,15 @@
     if (v === 40) { await qgNpc('#' + NF_SIV, 'Talk to Overseer Siv (Barbarian Village)', NF_SIV_X, NF_SIV_Y, 0); return; }
     if (v === 45) { await qgNpc('#' + NF_FLINT, 'Talk to Father Flint (Draynor)', NF_FLINT_X, NF_FLINT_Y, 0); return; }
     if (v === 50) { await qgNpc('#' + NF_BILL2, 'Talk to Bill', NF_BILL2_X, NF_BILL2_Y, 0); return; }
-    // v=55: build the fortifications at the optimal spot; unmapped spots fall back to nfBuildStep.
     if (v === 55) {
       if (qgIfaceComp(1370, 29, 'Start blueprint')) return;
       let spikes = {}; try { spikes = await readVarbitValues(NF_FORT_SPOTS.map(s => s.vb)); } catch (e) {}
       const optimal = NF_FORT_SPOTS.filter(s => (spikes[s.vb] | 0) === 2);
       if (optimal.length) {
-        // The piece's materials were already spent at Start blueprint -> no material check here.
         qgClrNpc(); qgClrDlg(); qgClrItem();
         qgOv('overlay.guideTiles', optimal.map(s => ({ x: s.x, y: s.y, plane: 0, label: 'Optimal Construction hotspot\nBuild' })));
         return;
       }
-      // No hotspot up -> the next piece starts at the blueprints, where materials ARE consumed.
       let seg = 0, plank = 0, done = {}, bankSeg = 0, bankPlank = 0;
       try { seg = await qgInvCount(NF_SEG); plank = await qgInvCount(NF_PLANK); } catch (e) {}
       try { done = await readVarbitValues(Object.values(NF_FORT_DONE)); } catch (e) {}
@@ -228,10 +208,8 @@
         if (nfTitlePick === null) { const t = ['duke', 'duchess', 'dux']; nfTitlePick = t[Math.floor(Math.random() * t.length)]; }
         if (await nfBoxOpt(nfTitlePick)) return;
       }
-      // Bill's npc id changes with his morph -> match by name or a known id.
       const b = sc.npcs.find(n => n && (n.name === 'Bill' || n.id === NF_BILL2 || n.id === NF_BILL));
       if (b) { await qgNpc('#' + b.id, 'Talk to Bill'); return; }
-      // The 300-tile gate marks his world tile only in the fort overworld, not from the finishing-up instance.
       if (qgP && Math.abs(qgP.x - NF_BILL2_X) <= 300 && Math.abs(qgP.y - NF_BILL2_Y) <= 300) {
         qgTile(NF_BILL2_X, NF_BILL2_Y, 0, 'Talk to Bill');
         return;
@@ -250,7 +228,6 @@
       'sub vb ' + NF_FORT + ' = ' + (nfMonVb[NF_FORT] | 0),
       'Perfect Build (' + NF_PERFECT + ') = ' + (nfMonVb[NF_PERFECT] | 0) + '%',
     ];
-    // Non-zero spikes only (id=value; 2 = optimal, 1 = non-optimal).
     const active = NF_SPIKES.filter(id => (nfMonVb[id] | 0) !== 0).map(id => id + '=' + (nfMonVb[id] | 0));
     lines.push('spikes ' + NF_SPIKES[0] + '-' + NF_SPIKES[NF_SPIKES.length - 1] + ': ' +
                (active.length ? active.join(' ') : '(all 0)'));
@@ -275,8 +252,6 @@
     })();
   }
   (function () { function nfMonLoop() { try { nfMonRefresh(); } catch (e) {} setTimeout(nfMonLoop, 1100); } setTimeout(nfMonLoop, 1650); })();
-  // Wiki flat step idx (section order): The beginning 0-2, Saving Bill 3-7, Building the Workshop
-  // 8-10, Recruiting help 11-14, Building the fortifications 15-16, pieces 17-28, Finishing up 29-30.
   QG_AUTO['New Foundations'] = {
     vbs: [NF_PROG].concat(Object.values(NF_FORT_DONE)),
     done: (vb) => {
@@ -304,6 +279,5 @@
     },
   };
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { nfMonText, nfStep });
 })();

@@ -1,12 +1,4 @@
-// rtx-plugin-hud.js: the host-rendered ability HUD strip a plugin drives through overlay.hudAbilities (one per plugin, draggable, icons resolved from the cache)
-// Loads after: rtx-wm.js (wmRectsSoon/wmPushRects) and rtx-plugin-api.js.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ---- plugin ability HUD: a small floating strip over the game, host-rendered ----
-  // Payload: { title, sub, cur:[{id,key}], next:[{id,gap}] }. Lives in the in-game UI layer
-  // (this page composites into the game frame), draggable by its header, one per plugin.
   const pluginHuds = new Map();          // plugin id -> { el, body, ttl, sub }
-  // Dragged position, kept across close/recreate: an empty tick or a loop wrap closes the
-  // strip and the next push rebuilds it, which must not teleport it back to the default spot.
   const pluginHudPos = new Map();        // plugin id -> { left, top }
   const pluginHudIcons = new Map();      // ability id -> data URL promise result ('' = none)
   function pluginHudIcon(id, el) {
@@ -24,9 +16,6 @@
   }
   function pluginHudSet(slug, payload) {
     const cur = payload && Array.isArray(payload.cur) ? payload.cur.slice(0, 6) : [];
-    // Only an explicit null closes the strip. An empty tick (nothing firing right now, e.g.
-    // the tail before a loop wraps) keeps it alive showing the title/sub and upcoming icons,
-    // instead of blinking out and back.
     if (!payload) { pluginHudClose(slug); return; }
     let h = pluginHuds.get(slug);
     if (!h) {
@@ -54,7 +43,6 @@
       const body = document.createElement('div');
       body.style.cssText = 'display:flex;align-items:center;gap:5px';
       el.appendChild(head); el.appendChild(body);
-      // header drag (screen px both sides; this layer is unzoomed)
       head.addEventListener('mousedown', (e) => {
         if (e.target === x) return;
         e.preventDefault();

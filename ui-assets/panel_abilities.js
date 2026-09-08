@@ -1,17 +1,13 @@
 // RuneToolsX panel: Abilities (live action-bar slots, keybinds, cooldowns).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Main bar = interface group 1430; secondary bars 1670-1673 are gated on varbits
-  // 29138-29141 (>0 = visible, value = displayed preset). s.cd = the cooldown text the
-  // engine prints on the slot ("" = none); s.castable false = engine-greyed.
+  // 29138-29141 (>0 = visible, value = displayed preset).
   abarData = null; let abarFetching = false; let abarSig = '';
   const ABAR_GATE = { 1: 29138, 2: 29139, 3: 29140, 4: 29141 };
   // Adrenaline = varplayer 679 (0..1000 = 0..100.0%). Doubles as special-attack energy
-  // while a spec weapon is wielded.
   const AB_ADREN_VARP = 679;
-  // Live ability configs from the cache (bridge abilityConfigs -> struct index 22, keyed by
-  // name: {t:tier, d:description, u:unlock}). AB_TIER below is only a bootstrap fallback.
+  // Live ability configs from the cache (bridge abilityConfigs -> struct index 22).
   abCfg = null; let abCfgTried = false;
   async function abCfgLoad() {
     if (abCfg || abCfgTried || !bridge() || !bridge().abilityConfigs) return;
@@ -22,18 +18,11 @@
     } catch (e) { abCfgTried = false; }
   }
   function abInfo(name) { return (abCfg && abCfg[name]) || null; }
-  // Bootstrap tier fallback until abCfg loads; the cache value wins in abTier().
   const AB_TIER = {"Adaptive Strike":1,"Aggression":7,"Aggressive Stance":7,"Aimed Shot":5,"Anticipation":1,"Asphyxiate":2,"Assault":2,"Backhand":1,"Balance by Force":5,"Balanced Stance":7,"Balanced Strike":4,"Barge":1,"Barricade":4,"Bash":1,"Berserk":4,"Binding Shot":1,"Bladed Dive":1,"Bloat":2,"Blood Siphon":2,"Blood Tendrils":2,"Bombardment":2,"Cease":7,"Chain":1,"Chaos Roar":1,"City of Um Teleport":2,"Cleave":1,"Combat Monolith":1,"Combust":1,"Command Phantom Guardian":2,"Command Putrid Zombie":2,"Command Skeleton Warrior":2,"Command Vengeful Ghost":2,"Concentrated Blast":1,"Conjure Phantom Guardian":2,"Conjure Putrid Zombie":2,"Conjure Skeleton Warrior":2,"Conjure Undead Army":2,"Conjure Vengeful Ghost":2,"Corruption Blast":2,"Corruption Shot":2,"Darkness":2,"Dazing Shot":1,"Deadshot":4,"Death Skulls":4,"Death's Swiftness":4,"Debilitate":3,"Decimate":1,"Deep Burn":5,"Deep Impact":2,"Defensive Stance":7,"Demon Slayer":7,"Demoralise":1,"Destroy":2,"Detonate":2,"Devotion":3,"Dismember":2,"Dive":7,"Divert":1,"Dragon Breath":1,"Dragon Slayer":7,"Eat Food":7,"Escape":7,"Essence of Finality":5,"Finger of Death":2,"Flurry":2,"Fragmentation Shot":1,"Freedom":1,"Frenzy":4,"Fury":1,"Galeshot":1,"Get Over Here!":5,"Golden Touch":7,"Greater Barge":1,"Greater Bone Shield":2,"Greater Chain":1,"Greater Concentrated Blast":1,"Greater Dazing Shot":1,"Greater Death's Swiftness":4,"Greater Flurry":2,"Greater Fury":1,"Greater Ricochet":1,"Greater Sonic Wave":1,"Greater Sunshine":4,"Guthix's Blessing":4,"Havoc":1,"Horror":2,"Hurricane":2,"Ice Asylum":4,"Imbue: Shadows":2,"Immortality":4,"Impact":1,"Incendiary Shot":4,"Incite":7,"Ingenuity of the Humans":7,"Invoke Death":2,"Invoke Lord of Bones":2,"Kuradal's Favour":7,"Lesser Bone Shield":2,"Life Transfer":2,"Limitless":7,"Living Death":4,"Magma Tempest":2,"Magma Tempest (Targeted)":2,"Magma Tempest - Area of effect damage":2,"Massacre":4,"Metamorphosis":4,"Meteor Strike":4,"Natural Instinct":4,"Omnipower":4,"Onslaught":4,"Overpower":4,"Phantom Strike.":5,"Piercing Shot":1,"Preparation":1,"Provoke":1,"Pulverise":4,"Punish":1,"Quake":2,"Rapid Fire":2,"Reflect":3,"Regenerate":7,"Rejuvenate":4,"Rend":1,"Reprisal":3,"Resonance":1,"Revenge":3,"Revolution":1,"Ricochet":1,"Rout":2,"Runic Charge":7,"Sacrifice":1,"Salt the Wound":2,"Sanguine Charge":2,"Shadow Tendrils":2,"Shatter":3,"Shock":1,"Siphon":1,"Slaughter":2,"Slayer's Insight":7,"Slice":1,"Smash":1,"Smoke Tendrils":2,"Snap Shot":2,"Snipe":2,"Sonic Wave":1,"Soul Sap":1,"Soul Strike":2,"Spectral Scythe":2,"Split Soul":2,"Storm Shards":1,"Sunfall Slam":5,"Sunshine":4,"Surge":7,"Tempest of Armadyl":5,"Threads of Fate":2,"Touch of Death":1,"Transfigure":4,"Tsunami":4,"Tuska's Wrath":1,"Undead Slayer":7,"Ungael Teleport":2,"Unload":4,"Unsullied":7,"Volley of Souls":2,"Weapon Special Attack":5,"Wild Magic":2};
   const AB_TIER_META = { 1: { n: 'Basic', c: '#7f9fbf' }, 2: { n: 'Threshold', c: '#e0b34c' }, 3: { n: 'Defensive', c: '#4cc0c0' }, 4: { n: 'Ultimate', c: '#e06c6c' }, 5: { n: 'Special', c: '#c98cf0' }, 7: { n: 'Utility', c: '#67c07a' } };
   // Adrenaline required to CAST, by tier: threshold >= 500 (50%), ultimate >= 1000 (100%).
   const AB_ADREN_REQ = { 2: 500, 4: 1000 };
   function abTier(name) { const i = abInfo(name); return (i && i.t) || AB_TIER[name] || 0; }
-  // Ability cooldowns, from the live cache via bridge abilityConfigs:
-  //   "c" = cooldown in GAME TICKS (param 2796, 0.6s each)
-  //   "i" = the ability id the slot carries at widget+0x188 (param 2802)
-  //   "v" = the cooldown-clock varc pair [castClock, readyClock] in CLIENTCLOCK cycles
-  //         (50/s), WRITTEN ONCE at cast and then static -- the countdown derives from
-  //         the clock, so the pair does not tick.
   let abCd = null;
   function abCdMap() {
     if (abCd || !abCfg) return abCd;
@@ -48,33 +37,17 @@
     if (Object.keys(map).length) abCd = map;
     return abCd;
   }
-  // Remaining cooldown in whole seconds from the varc clock pair, or null when the cooldown
-  // is not provably running. The engine clock is MILLISECONDS; CLIENTCLOCK cycles are 50/s
-  // -> cycles = ms / 20. Rounding matches the game: remaining = (dur + 50 - elapsed) / 50.
   function abCdLive(s) {
     const r = abCdMap() && abCd[s.id], d = abarData;
-    // NO d.clock in this guard. clock (mod_base offset) died in a game update and reads 0
-    // forever; requiring it here rejected the read before the good CLIENTCLOCK value was even
-    // looked at, which kept every cooldown at "ready" AFTER cycles was fixed (live tooltip:
-    // cast=3851 ready=5351 cycles=4093, plainly mid-cooldown, still reported idle).
     if (!r || !r.v || !d || !d.vc) return null;
     const a = d.vc['5:' + r.v[0]], b = d.vc['5:' + r.v[1]];
     if (typeof a !== 'number' || typeof b !== 'number' || a <= 0 || b <= a) return null;
-    // The varc stamps are in CLIENTCLOCK cycles: prefer that counter directly; clock/20 is the
-    // legacy approximation kept only for an older host that predates the cycles emit.
     const cyc = (d.cycles > 0) ? d.cycles : (d.clock > 0 ? Math.floor(d.clock / 20) : 0);
     if (!cyc) return null;
     const dur = b - a, el = cyc - a;
     if (el < 0 || el >= dur || dur > 360000) return null;
     return Math.floor((dur + 50 - el) / 50);
   }
-  // The reader identifies the keybind by its position on the slot widget, which is
-  // ambiguous in one case: a slot that is UNBOUND AND ON COOLDOWN has the countdown as
-  // its only text, so the timer can be reported as the keybind ("8" on a slot with 8s
-  // left). The cooldown CLOCKS are an independent source, so cross-check against them:
-  // a bare number that equals this ability's remaining seconds is the countdown, not a
-  // key. Only applies when the reader found no separate cooldown text (if it found both
-  // nodes, the key is a real one) and never to modified or non-numeric binds.
   function abKeyOf(s) {
     const k = s.key || '';
     if (!k || s.mod || s.cd) return k;
@@ -88,26 +61,16 @@
     abCfgLoad();
     try {
       let bars = [], clock = 0, cycles = 0;
-      // cycles = CLIENTCLOCK units, the unit the cooldown varc stamps use. This assignment
-      // DROPPED it for a while, and clock (mod_base+0xED2FF8) died in a game update, so the
-      // cooldown clocks had no time source at all and every ability read as off cooldown
-      // (seen in testing: Freedom "ready" with cast/ready stamps plainly live in the tooltip).
       try { const j = JSON.parse(await rtxData.raw('state.actionBar')); bars = j.bars || []; clock = j.clock || 0; cycles = j.cycles || 0; } catch (e) {}
-      // varc-int snapshot for the cooldown clock pairs (keys are scope-prefixed "5:<id>")
       let vc = null;
       try { if (bridge().varcsDumpAll) vc = JSON.parse(await rtxData.raw('state.varcsAll') || 'null'); } catch (e) {}
       await ensureVbMap();
-      // Damage pools the game's tooltip scripts read (script 17726 / 21027 / 21111): ability
-      // damage = varp 3531 (+ half of off-hand varp 3532), armour = varp 711 + 3563, shield = 4499.
       const vps = new Set([AB_ADREN_VARP, 3531, 3532, 711, 3563, 4499]);
       for (const bi in ABAR_GATE) { const r = storageVbMap && storageVbMap[ABAR_GATE[bi]]; if (r) vps.add(r.varp); }
       let vp = {}; if (vps.size && bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))); } catch (e) {} }
       const preset = {}; for (const bi in ABAR_GATE) preset[bi] = readVb(ABAR_GATE[bi], vp) || 0;
       const adren = (vp[AB_ADREN_VARP] !== undefined) ? vp[AB_ADREN_VARP] : null;
       const dmg = { abil: (+vp[3531] || 0) + Math.floor((+vp[3532] || 0) / 2), armour: (+vp[711] || 0) + (+vp[3563] || 0), shield: (+vp[4499] || 0) };
-      // Igneous Kal cape gate (CS2 script 9681): the worn cape (container 94 slot 1) carries a
-      // style value in item param 2881 / 8591 / 8592 / 8902: 8 = melee, 10 = magic, 9 = ranged.
-      // AB_TIPS "alt" variants are keyed by the script's style arg (1 melee, 2 magic, 3 ranged).
       let capeArg = 0;
       try {
         if (bridge().containerItems) {
@@ -136,7 +99,6 @@
     abCapeCache.set(itemId, arg);
     return arg;
   }
-  // Ability slots render the cache sprite whose id == the ability id (cache idx 8).
   function attachAbilityIcon(el, s) {
     if (s.item) { const url = resolveIcon(s.item); if (url) { setIconBg(el, url); return; } }
     const sid = s.id; if (!sid) return;
@@ -161,15 +123,11 @@
     const MOD = ['', 'Shift', 'Ctrl', 'Alt'], BARNAME = ['Main bar', 'Bar 2', 'Bar 3', 'Bar 4', 'Bar 5'];
     const adren = d.adren;
     const adrenPct = (adren != null) ? Math.floor(adren / 10) : null;
-    // Name the adrenaline shortfall when the ability tier (cache param 2799) and varp 679
-    // explain the greying; other gates (level / weapon style / target / lock) are not asserted.
     const abReason = (s) => {
       const req = AB_ADREN_REQ[abTier(s.name)];
       if (req && adren != null && adren < req) return 'needs ' + (req / 10) + '%';
       return 'unavailable';
     };
-    // Slot state priority: s.cd text -> the varc cooldown clock (covers the in-game icon text
-    // being disabled) -> engine-greyed -> ready.
     const fmtSec = (n) => n > 59 ? Math.floor(n / 60) + ':' + ('0' + (n % 60)).slice(-2) : n + 's';
     const slotState = (s) => {
       if (s.cd) return { cls: 'ab-cd', txt: s.cd.includes(':') ? s.cd : s.cd + 's' };
@@ -177,10 +135,6 @@
       if (live != null) return { cls: 'ab-cd', txt: fmtSec(live) };
       return s.castable === false ? { cls: 'ab-unavail', txt: abReason(s) } : { cls: 'ab-ready', txt: 'ready' };
     };
-    // The game's own tooltip, rebuilt from its data: header + requirements from the struct
-    // params (abilityConfigs._byId), bullet lines from AB_TIPS (interpreted from the CS2
-    // tooltip builders), damage numbers from the live pools. Falls back to our old summary
-    // when the cache record is missing.
     const AB_CAT = { 0: 'Basic Attack', 1: 'Basic Ability', 2: 'Threshold Ability', 3: 'Defensive Ability', 4: 'Ultimate Ability', 5: 'Special Attack', 6: 'Passive', 7: 'Utility' };
     const AB_TGT = { 1: 'Single-target', 2: 'Multi-target', 3: 'Self-target', 4: 'Area-target' };
     const AB_STYLE_TXT = { 1: ['Melee damage', 'FFA11A'], 2: ['Melee damage', 'FFA11A'], 3: ['Ranged damage', '25AD37'], 4: ['Magic damage', '3366FF'], 29: ['Necromancy damage', 'A788DD'] };
@@ -219,7 +173,6 @@
           out.push(abClean(txt));
         }
       }
-      // Requirements: level + skill (coloured against the live base level), gear flags.
       const reqs = [];
       if (rec.l && AB_SKILL[rec.st]) {
         const sk = AB_SKILL[rec.st];
@@ -247,16 +200,12 @@
       const cdRec = cdMap && abCd[s.id];
       if (!g && cdRec && cdRec.c) lines.push('Cooldown: ' + abCdText(cdRec.c));
       const live = abCdLive(s);
-      // The idle case prints its raw inputs: the two varc stamps and both clock candidates.
-      // "Freedom says ready while on cooldown" could be a missing varc in the dump, a stale
-      // stamp, or our CLIENTCLOCK running past the stamps; the numbers tell which.
       const cdLine = s.cd ? 'On cooldown: ' + s.cd + (s.cd.includes(':') ? '' : 's') + ' left'
                    : live != null ? 'On cooldown: ' + fmtSec(live) + ' left'
                    : null;
       if (cdLine) lines.push('<col=969696>' + cdLine + '</col>');
       const tk = abKeyOf(s);
       if (tk) lines.push('<col=969696>Keybind: ' + (s.mod ? MOD[s.mod] + '+' : '') + tk + '</col>');
-      // Rendered through tipHtml (rows set tipHtml=1): <col>/<br> are the only markup used.
       return lines.join('<br>');
     };
     const abAdrenHtml = (adren) => {
@@ -271,10 +220,6 @@
         + '</div>'
         + '<span style="font-size:12px;color:var(--text,#ddd);min-width:40px;text-align:right">' + disp + '%</span></div>';
     };
-    // Five combat buff/debuff timers that live in single absolute-expiry varc-ints rather than
-    // the cast/ready pairs abCdLive handles (CS2: setter script4252, getter script11073; decode
-    // confirmed in script10886): remaining ticks = 1 + (v - CLIENTCLOCK)/50. The varcs are NEVER
-    // cleared by the game, so an expired value must be rejected, not displayed.
     const AB_TIMERS = [
       [8477, 'Light Strike', true], [8478, 'Lord of Light', true], [8479, 'Avernic Rampage', false],
       [8480, 'Sliver of Edicts', false], [8481, 'Sliver of Edicts cooldown', true],
@@ -316,8 +261,6 @@
     };
     const vis = d.bars.filter(b => b.bar === 0 || d.preset[b.bar] > 0);
     const byBS = {}; vis.forEach(b => b.slots.forEach(s => { byBS[b.bar * 100 + s.slot] = s; }));
-    // Layout-only signature (not live cd/castable): the same layout updates state in place and
-    // never rebuilds the DOM, so the list cannot flicker or lose scroll on a poll.
     const sig = vis.map(b => b.bar + ':' + (d.preset[b.bar] || 0) + ':' + b.slots.map(s => s.slot + '/' + s.id + '/' + s.item + '/' + s.key + '/' + s.mod).join(',')).join(';');
     if (sig === abarSig) {
       wrap.querySelectorAll('.ab-cdcell').forEach(el => {
@@ -355,8 +298,6 @@
         if (tm) {
           const tag = document.createElement('span');
           tag.textContent = tm.n;
-          // inline-block with its own line-height: as a plain inline span the bordered box
-          // overflowed the row's line box and its top/bottom edges were clipped.
           tag.style.cssText = 'display:inline-block;line-height:1.3;vertical-align:middle;font-size:10px;padding:0 5px;margin-left:6px;border:1px solid ' + tm.c
             + ';color:' + tm.c + ';border-radius:3px;opacity:.85;white-space:nowrap';
           nm.appendChild(tag);
@@ -372,7 +313,6 @@
     ensureTimers();
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { abCdLive, abCdMap, abCfgLoad, fetchAbilities });
 registerTab({ id: 'abilities', render: renderAbilities, open: function () { fetchAbilities(); } });
 })();

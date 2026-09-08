@@ -1,23 +1,13 @@
 // RuneToolsX panel: Compass clue solver.
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
-  // Needle rotation read live via bridge().compassHeading (group 996 / comp 5 / node+0x180). It
-  // encodes the world bearing to the dig spot, NOT linearly: 4x-per-revolution (~5deg) distortion
-  // from the isometric camera. Calibrated model:
-  //     raw = COMPASS_S*bearingN + c_clue + COMPASS_H4A*sin(4*bearingN) + COMPASS_H4B*cos(4*bearingN)
-  // bearingN = bearing from north, CW. c_clue is a per-clue north-zero offset, cancelled by the
-  // solver's mean-subtraction. Spots are scored by mean-removed RMS residual.
+  // Needle rotation read live via bridge().compassHeading (group 996 / comp 5 / node+0x180).
   const COMPASS_S = 5.7361;         // raw per degree of bearing (true scale; FULL = S*360)
   const COMPASS_H4A = -28.984;      // 4th-harmonic sin coeff (raw): the needle's 90deg-period distortion
   const COMPASS_H4B = -0.470;       // 4th-harmonic cos coeff (raw)
   const COMPASS_FULL = 2065;        // raw per full circle (wrap period, = round(S*360))
   const COMPASS_FIT_OK = 7;         // raw RMS ceiling for a confident fit (true spot RMS is ~quantization)
-  // Runner-up separation (raw RMS) required to COMMIT, by reading count: relaxed as captures
-  // accumulate, tight enough that a wrong dig effectively never happens.
   function compassMinGap(n) { return n >= 4 ? 3 : n === 3 ? 4 : 6; }
-  // Needle model: forward (bearingN -> raw, sans per-clue offset) and inverse (the 4H term is
-  // small, so the fixed-point iteration converges fast).
   function compassModel(b) { const r = 4 * b * Math.PI / 180; return COMPASS_S * b + COMPASS_H4A * Math.sin(r) + COMPASS_H4B * Math.cos(r); }
   function compassInvert(raw) {
     let b = raw / COMPASS_S;
@@ -78,9 +68,6 @@
     let a = Math.atan2(sy - py, sx - px) * 180 / Math.PI;   // 0=east, CCW
     let b = 90 - a; b %= 360; if (b < 0) b += 360; return b;
   }
-  // Offset-corrected RMS residual: std-dev of per-reading implied north-zeros after removing
-  // their mean (cancels any constant per-clue offset; RMS absorbs quantization). Wrap-safe vs
-  // reading 0. n<2 -> 0: one reading cannot constrain a spot; the separation gap handles it.
   function compassErrOn(reads, spot) {
     const n = reads.length; if (!n) return 1e9; if (n === 1) return 0;
     const imp = reads.map(r => r.raw - compassModel(compassBearingN(r.x, r.y, spot[0], spot[1])));
@@ -91,8 +78,6 @@
     return Math.sqrt(s2 / n);
   }
   function compassErr(spot) { return compassErrOn(compassReads, spot); }
-  // Evaluate after every capture: the lowest-RMS spot is the dig site IF it is a good fit AND
-  // clearly better than the runner-up; never commit on an ambiguous near-collinear pair.
   function compassSolve() {
     if (compassReads.length < 2) return { state: 'need', cands: 0, best: compassReads.length ? COMPASS_SPOTS_G[0] : null, err: 1e9 };
     let best = COMPASS_SPOTS_G[0], bestErr = 1e9, secErr = 1e9;
@@ -107,8 +92,6 @@
     return { state: 'need', cands: near, best: best, err: bestErr };
   }
   // EXACT dig spot: varc 1323 stores the compass target packed (compassTarget bridge). Cross-
-  // checked against the known spot list so a stale post-update memory offset is rejected and the
-  // solver falls back to needle triangulation.
   function compassTargetSpot() {
     let s = ''; try { s = rtxData.sync('solver.compassTarget') || ''; } catch (e) {}
     if (!s) return null;
@@ -118,21 +101,7 @@
     for (const sp of COMPASS_SPOTS_G) { const d = Math.abs(sp[0] - p[0]) + Math.abs(sp[1] - p[1]); if (d < bd) { bd = d; best = sp; } }
     return bd <= 2 ? best : null;                               // garbage won't land within 2 tiles of a real spot
   }
-  // ---- Tetracompass ------------------------------------------------------------------
-  // A powered tetracompass drives the SAME engine field as a compass clue: varc 1323 holds its
-  // dig tile packed (plane<<28)|(x<<14)|y, so the spot reads exactly, with no hint text and no
-  // needle triangulation. Because one varc serves both, the TILE is what says which of the two
-  // is live: a tetracompass site is never a compass-clue spot and vice versa, so the spot lists
-  // are the discriminator. That doubles as the guard the compass path already gets -- a stale
-  // post-update memory offset lands on a tile in neither list, and is dropped.
-  // The site list is reference data, NOT the answer: the tile actually dug always comes from the
-  // varc. The list only has to say which KIND of target is loaded, so an entry being a tile out
-  // costs nothing but a missed match. A plain threshold cannot do that job -- tetra (2722, 3577)
-  // and compass spot (2721, 3577) are one tile apart, so any tolerance wide enough to absorb a
-  // stale entry also merges those two. Instead the lists COMPETE: whichever has the nearer entry
-  // claims the target. Being a comparison rather than a cutoff, it splits the adjacent pair
-  // correctly from either side AND tolerates drift, and where it cannot tell it returns nothing,
-  // so an unrecognised tile goes unmarked rather than mismarked.
+  // A powered tetracompass drives the SAME engine field as a compass clue; tetra site (2722, 3577) and compass spot (2721, 3577) are one tile apart, so match against the site list, not a tolerance.
   const TETRA_SITES = [
     [2935,3489],[2946,3462],[2945,3274],[2896,3550],[2595,2932],[2623,3001],
     [2462,2897],[2573,2922],[2600,2934],[2553,2985],[2614,3624],[2713,3628],
@@ -151,9 +120,6 @@
   const TETRA_POWERED = 49957;                  // Tetracompass (powered) -- confirmed in-game
   const TETRA_SNAP = 3;                         // furthest a target may sit from its listed site
   let tetraLast = null;
-  // Held state rides on the clue panel's existing backpack scan (clueHeldInv, filled by
-  // fetchClues) rather than a second container read: the tetracompass is only ever solved from
-  // that same panel, so a separate poll would duplicate the round trip.
   const tetraHeld = () => typeof clueHeldInv !== 'undefined' && clueHeldInv.has(TETRA_POWERED);
   function tetraNearest(list, x, y) {
     let d = 1e9;
@@ -173,10 +139,6 @@
     return { x: p[0], y: p[1], p: p[2] | 0 };
   }
   // varc 1323 KEEPS its last value after the interface is closed, so the varc alone cannot say
-  // whether a target is still live -- read on its own it leaves a stale tile marked long after the
-  // compass is put away. compassHeading returns -1 unless interface group 996 is open AND its
-  // needle component is present, so it doubles as the open-probe. Memoised just under the poll
-  // interval: it walks the interface group list, and several callers want it each tick.
   let tetraOpenAt = 0, tetraOpenV = false;
   function tetraOpen() {
     const now = Date.now();
@@ -192,22 +154,13 @@
     const t = tetraRead();
     return (t && tetraIsSite(t.x, t.y)) ? t : null;
   }
-  // Polled alongside compassTick. Only the SELECTED tetracompass drives the mark + map, on the
-  // same rule the compass follows: whatever is picked in the held list owns them, so a carried
-  // tetracompass cannot overwrite the tile of the clue you are actually solving. Deselection is
-  // handled by selectClue, which redraws for whatever took its place.
   async function tetraTick() {
     if (!bridge() || !bridge().compassTarget) return;
     if (activeClueId !== TETRA_POWERED || !tetraHeld()) { tetraLast = null; return; }
     const t = tetraTarget();
     if (!t) { if (tetraLast) { tetraLast = null; clueGuide(null); drawClueMap(null); } return; }
-    // Standing on the tile, the label has done its job and is only blocking the view, so it drops
-    // to an empty string -- the overlay draws the marker alone for those (Overlay.cpp skips the
-    // text plate when the label is empty).
     const pos = await scanPlayerTile();
     const onSpot = !!pos && pos.x === t.x && pos.y === t.y && (pos.p | 0) === (t.p | 0);
-    // Re-mark when the target moves, when you step on or off it, and when the shared clue map has
-    // been hidden by another path without the target changing, else the dig map stays blank.
     const tileSig = t.x + ',' + t.y + ',' + t.p;
     const sig = tileSig + (onSpot ? '|on' : '');
     const mw = $('clueMapWrap');
@@ -219,10 +172,6 @@
     if (moved || mapHidden) drawClueMap({ x: t.x, y: t.y, p: t.p });   // stepping on/off needs no redraw
   }
 
-  // Both solvers publish through varc 1323, and only the one it points at can actually be acted
-  // on -- so the varc, not the click, decides which of the two is showing. It is checked every
-  // poll rather than once on change: an edge-triggered version let a click sit on the inert entry
-  // until the target happened to move. Returns the pinned held-entry id, or -1 for neither.
   function clueVarcPinned() {
     if (!bridge() || !bridge().compassTarget || !tetraOpen()) return -1;   // nothing open -> nothing pinned
     const t = tetraRead(); if (!t) return -1;
@@ -231,8 +180,6 @@
     const cc = held.find(c => isCompassClue(c));
     return cc ? cc.i : -1;
   }
-  // Is this entry one the varc arbitrates? Only those two are pinned; every other clue stays
-  // freely selectable, since the varc says nothing about them.
   function clueVarcIsPair(id) {
     if (id === TETRA_POWERED) return true;
     const c = (id >= 0) ? CLUE_DATA.find(z => z.i === id) : null;
@@ -244,7 +191,6 @@
     if (want < 0 || want === activeClueId) return;
     if (activeClueId >= 0 && !clueVarcIsPair(activeClueId)) return;   // deliberate pick elsewhere; leave it
     const e = clueHeldList().find(c => c.i === want);
-    // A tier filter that hides the entry would defeat the whole point, so widen to All in that case.
     if (e && clueLiveTier >= 0 && e.t !== clueLiveTier) clueLiveTier = -1;
     activeClueId = want; clueMapZoom = 1; clueMapPin = null; compassMapSig = '';
     selectClue();
@@ -252,8 +198,6 @@
 
   async function compassTick() {
     if (compassBusy) return;
-    // Only the SELECTED compass clue drives the in-world mark + panel map, else a held compass clue
-    // would override the picked clue and mark the wrong spot every tick.
     const ac = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
     if (!ac || !isCompassClue(ac)) { const cb = $('clueCompass'); if (cb) cb.style.display = 'none'; return; }
     compassBusy = true;
@@ -261,19 +205,11 @@
       let raw = -1; try { raw = parseInt(rtxData.sync('solver.compassHeading'), 10); } catch (e) {}
       let open = raw >= 0;
       if (open) compassLastRaw = raw;
-      // PRIMARY: exact target from varc 1323 (instant). It does NOT need the needle, and
-      // the row only exists while the clue is HELD, so a broken or lagging heading reader
-      // must never blank the solver (user-caught: needle spinning, no answer shown). The
-      // spot-list snap already rejects stale/garbage varc values; a valid snap implies the
-      // target is loaded, so it also counts as "open".
       const tgt = compassTargetSpot();
       if (tgt) open = true;
       const pos = open ? await scanPlayerTile() : null;         // current tile (for the player marker only; capture is manual)
       const res = tgt ? { state: 'solved', spot: tgt, best: tgt, err: 0, cands: 1, via: 'varc' }
                       : (open || compassReads.length) ? compassSolve() : null;
-      // Selection can change DURING the awaits above (the scroll turns into a puzzle box
-      // and the held list reselects): a stale tick finishing late must not re-mark the
-      // world or redraw the map the new clue just cleared (user-caught 2026-08-01).
       const ac2 = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
       if (!ac2 || !isCompassClue(ac2)) return;
       compassResult = { open: open, res: res, pos: pos };
@@ -283,9 +219,6 @@
         try { if (bridge() && bridge().guideMarks) rtxData.sync('overlay.guideMarks', ''); } catch (e) {}
       }
       const sig = (res ? res.state : 'x') + '|' + (res && res.best ? res.best.join(',') : '') + '|' + compassReads.map(r => r.x + ',' + r.y + ',' + r.raw).join(';');
-      // Redraw on sig change, OR when solved but the shared clue map got hidden by another path
-      // without the sig changing, else the dig map silently stays blank. Self-limiting: once shown
-      // it is no longer hidden.
       const _mw = $('clueMapWrap'); const _mapHidden = !_mw || _mw.style.display === 'none';
       if (sig !== compassMapSig || (res && res.state === 'solved' && _mapHidden)) { compassMapSig = sig;
         if (res && res.state === 'solved') drawClueMap({ x: res.spot[0], y: res.spot[1], p: 0 });
@@ -299,15 +232,8 @@
     try { if (bridge() && bridge().guideMarks) rtxData.sync('overlay.guideMarks', ''); } catch (e) {}
     drawCompassMap(); compassPaint();
   }
-  // Manual capture: record the CURRENT player tile + current needle reading as one point.
   async function compassCapture() {
     try {
-      // The needle must be read LIVE. compassLastRaw is whatever the needle said at some EARLIER
-      // tile (:262 only writes it while open), so falling back to it logs that old bearing against
-      // the tile you are standing on now -- a fabricated reading, with no warning. One is enough to
-      // take the true spot from RMS 0.24 / 1 candidate to RMS 394 / 0 candidates, and since the
-      // reads array is sticky the user has no way back except the Clear button. This leaves
-      // compassLastRaw written at :262 and never read; kept as-is rather than widening the diff.
       let raw = -1;
       try { const v = parseInt(rtxData.sync('solver.compassHeading'), 10); if (v >= 0) raw = v; } catch (e) {}
       if (raw < 0) { compassFlash('open the compass clue first'); return; }
@@ -322,7 +248,6 @@
     } catch (e) {}
   }
   function compassFlash(m) { compassNote = m; compassPaint(); setTimeout(() => { compassNote = ''; compassPaint(); }, 2500); }
-  // Plausible candidate spots (RMS within the fit ceiling); evaluated from the first reading.
   function compassCandidates() {
     if (!compassReads.length) return [];
     const out = []; for (const s of COMPASS_SPOTS_G) if (compassErr(s) < COMPASS_FIT_OK) out.push(s); return out;
@@ -348,20 +273,13 @@
     let W = 384, g, projX, projY, drewTerrain = false;
     if (ext <= 160 && bridge() && bridge().mapWindow) {
       const half = Math.max(12, Math.min(80, Math.ceil(ext / 2) + 10));
-      // Resolution follows the DISPLAY, like the scan/dig maps: a fixed 6 px per tile over a
-      // small window is a ~144 px image stretched across the whole panel, which is what left a
-      // solved compass looking like a mosaic. mapRes also sizes for device pixels.
       clueMapSpan = 2 * half;
       const R = mapRes(clueMapSpan, half);
       const ts = R.ts;
       let meta = await mapWindowCached(cx0, cy0, plane, R.half, ts);
       if (myseq !== clueMapDrawSeq) return;                              // newer draw started during the terrain fetch -> bail
       W = (meta && meta.w) || 384; const TS = (meta && meta.t) || ts, H = (meta && meta.h) || R.half;
-      // Scale from the window we actually GOT: mapRes may widen it past the requested half to
-      // reach display resolution, and sizing against the requested span would push the extra
-      // ground off the stage instead of showing it.
       clueMapSpan = 2 * H; clueMapWinCx = cx0; clueMapWinCy = cy0; clueMapHalfGot = H; applyMapZoom();
-      // Backing store at display resolution so labels/markers are not upscaled with the terrain.
       g = clueMapCtx(cv, W);
       if (meta && (meta.png || meta.b64 || meta._k)) { try { clueMapBlit(g, meta, W, cv); clueDrawNomove(g, meta); clueDrawObjects(g, meta); clueDrawTeleports(g, meta); clueDrawLabelsWindow(g, meta); drewTerrain = true; } catch (e) {} }
       projX = sx => (sx - (cx0 - H)) * TS + TS / 2;
@@ -375,8 +293,6 @@
       projY = sy => W / 2 - (sy - cy0) * sc;
     }
     clueMapProj = { projX: projX, projY: projY, W: W, plane: plane };
-    // Heading ray per reading at the FIXED north-zero, extended to the panel edge; each ray depends
-    // only on its own (tile, raw) reading, so it draws identically every redraw.
     const rays = [];
     {
       for (const r of reads) {
@@ -456,6 +372,5 @@
     }); }
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { TETRA_POWERED, clueVarcIsPair, clueVarcPinned, clueVarcRoute, compassTick, tetraOpen, tetraTarget, tetraTick });
 })();

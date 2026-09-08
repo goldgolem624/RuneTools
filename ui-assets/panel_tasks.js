@@ -1,5 +1,4 @@
 // RuneToolsX panel: Tasks (Slayer + Reaper) and the Ticks/Info tabs.
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Varps: 183 = slayer count, 185 = slayer creature -> enum 1563 name, 10077 = task streak.
@@ -22,8 +21,6 @@
   // or vb 44233 == 1, and vb 24968 == 1 also means the cancel is free. Costs (clientscript-6410
   // button texts): cancel 30 / extend 30 / block 100 / prefer 100 points.
   const ST_STANDING_VBS = [9071, 9072, 525, 24968, 44233, 22905, 23260];
-  // Mask kill counters (clientscript-5828): [mask item id, kills varbit, force-cooldown varbit
-  // or 0]. The cooldown varbit holds a DATE_RUNEDAY deadline; the wyrm masks share vb 21951.
   const ST_MASKS = [
     [27616, 18238, 0],     [27618, 18242, 0],     [27620, 18246, 0],     [27622, 18250, 0],
     [27624, 18254, 0],     [28686, 18611, 0],     [28688, 18615, 0],     [28690, 18619, 0],
@@ -35,8 +32,6 @@
     ST_MASKS.map(m => m[1]), ST_MASKS.map(m => m[2]).filter(Boolean)).join(',');
   const stMaskNames = {};
   let stStandingSig = '', stSlotsSig = '', stMasksSig = '', stCodexSig = '';
-  // [name, killsVarbit, prestigeVarbit], baked from CS2 script5511's switch: the name<->varbit
-  // pairing exists only there, and enum 10555's order does not match it.
   const SLAYER_LOG = [
     ['Aberrant spectres', 22924, 29825], ['Abyssal demons', 22935, 29836],
     ['Acheron mammoths', 29821, 29856], ['Adamant dragons', 28374, 29850],
@@ -63,14 +58,10 @@
     ['Stalker creatures', 38935, 38936], ['Terror dogs', 22921, 29822],
     ['Tormented demons', 22941, 29842], ['Vile blooms', 44239, 44240],
     ['Warped tortoises', 22923, 29824], ["Zemouregal's undead", 52486, 52487]];
-  // Collection rows come from dbrows master 84 (region col 4, collection struct col 11, unique-drop
-  // items col 13); the struct gives name (param 6410), title (2533), description (6411).
-  // Struct -> status varbit (0 not started, 1 in progress, 2 complete), baked from CS2 script14503.
   const SLAYER_COL_VBS = {
     15023: 45092, 15024: 45093, 15026: 45094, 15027: 45095, 15028: 45096, 15029: 45097,
     15030: 45098, 15025: 45099, 15031: 45100, 15032: 45101, 15033: 45102, 15034: 45103,
     45440: 49797, 52981: 60807 };
-  // Per-item found flags are client varbits; the item-id -> varbit table lives in panel_bosses.js.
   let slayerCols = null;        // [{region, name, title, vb|null, items:[{id,name,vb|[vb,vb]|null}]}]
   let slayerColsLoading = false;
   let slayerColItemIds = '';
@@ -82,7 +73,6 @@
     if (!bridge().dbRows || !bridge().structParams || !bridge().itemInfo) return;
     slayerColsLoading = true;
     try {
-      // Shares panel_bosses' baked-and-extracted item->varbit tables; adopt before reading.
       if (typeof bcAdoptSwitches === 'function') await bcAdoptSwitches();
       const rows = await rtxData.call('cache.dbRows', 84);
       if (!Array.isArray(rows) || !rows.length) return;   // cache not open yet; retry next fetch
@@ -99,7 +89,6 @@
         for (const id of ((r.i && r.i['13']) || [])) {
           let nm = '';
           { const d = await rtxData.call('cache.itemInfo', id); nm = (d && d.name) || ''; }
-          // Found varbit: baked map, else item param 8994 var_reference ((v >>> 24) == 1 -> low 24 bits).
           let vb = COLLECTION_ITEM_VBS[id] || COLLECTION_ITEM_VB_PAIR[id] || null;
           if (!vb && bridge().itemParams) {
             try {
@@ -208,8 +197,6 @@
         '<div class="st-card" id="stCodex"></div>' +
         '<div class="st-sec" id="stMaskHead">Slayer mask kill counters</div>' +
         '<div class="st-card" id="stMasks"></div></div>';
-      // Section sigs must reset when the DOM is rebuilt (a tab switch wipes #content), or a stale
-      // sig leaves the card empty until a varbit changes.
       slayerLogSig = '';
       slayerColSig = '';
       stStandingSig = ''; stSlotsSig = ''; stMasksSig = ''; stCodexSig = '';
@@ -240,9 +227,6 @@
     renderSlayerCodex();
     renderSlayerMasks();
   }
-  // Slayer codex: which creature souls are claimed. One bit per creature across the seven
-  // codex varps; enum 1563 supplies the name for each id. Ids the enum does not name are
-  // counted but not listed (a future creature's bit set before the cache knows it).
   function renderSlayerCodex() {
     const box = document.getElementById('stCodex');
     const head = document.getElementById('stCodexHead');
@@ -301,7 +285,6 @@
       box.appendChild(r);
       return r;
     };
-    // The game hides its whole points UI while vb 9072 == 0.
     if (v(9072) === 0) {
       row('Slayer points', null, 'complete one task first', 'no',
           'The game unlocks the Slayer points shop after your first completed task (varbit 9072).');
@@ -357,8 +340,6 @@
     line('Blocked tasks', blocks, 100);
     line('Preferred tasks', prefers, 100);
   }
-  // Only masks with a nonzero counter or a pending force deadline render: the vars carry no
-  // ownership signal, so an owned-but-unused mask looks like an unowned one.
   function renderSlayerMasks() {
     const box = document.getElementById('stMasks');
     const head = document.getElementById('stMaskHead');
@@ -393,7 +374,6 @@
       let cdTxt = '';
       if (cv) {
         const dl = v(cv);
-        // The deadline varbit is a DATE_RUNEDAY; 0 = never set, future = cooling down.
         if (dl > today) cdTxt = 'task force in ' + (dl - today) + 'd';
         else if (dl > 0) cdTxt = 'task forceable';
       }
@@ -414,7 +394,6 @@
     box.appendChild(foot);
     sizeAllIcons();
   }
-  // Region collections: tri-state status per varbit, with the unique-drop roster in the tooltip.
   let slayerColSig = '';
   function renderSlayerCollections() {
     const box = document.getElementById('stCollections');
@@ -427,7 +406,6 @@
       return;
     }
     const v = id => (slayerLogVb[String(id)] | 0);
-    // An item is collected when its found varbit reads >= 1 (a paired composite sums both).
     const owned = it => it.vb == null ? null
                       : Array.isArray(it.vb) ? (it.vb.reduce((n, x) => n + v(x), 0) >= 1)
                       : v(it.vb) >= 1;
@@ -453,7 +431,6 @@
       p.className = 'st-pill' + (complete ? ' ok' : n > 0 ? ' go' : '');
       p.textContent = n + ' / ' + m;
       r.appendChild(p);
-      // Drop lists render as two grids of item ICONS under the text (setTipGrids, client.html).
       r.dataset.tip = col.name + (col.title ? '\nReward: the title \'' + col.title + '\'' : '');
       if (typeof setTipGrids === 'function')
         setTipGrids(r, [{ label: 'Missing', cls: 'miss', items: missing },
@@ -537,25 +514,17 @@
     if (lb) {
       lb.textContent = metroLocked ? 'Locked (click-through)' : 'Lock position';
       lb.classList.toggle('on', metroLocked);
-      // A locked window publishes no consume rect, so its own lock button is unreachable:
-      // this is the only way back. Disabling it while the dial is closed would strand that.
       lb.title = metroLocked ? 'Unlock the Metronome window so it can be moved again'
                              : 'Make the Metronome window click-through';
     }
   }
 
-  // No always-on UI-thread loop: the stopwatch is on-demand and the metronome runs in the
-  // overlay, so an idle panel never wakes the render thread.
 
   let _infoSig = '';
   function renderInfo() {
     const c = $('content');
     let wrap = $('infoWrap');
     if (!wrap) { c.innerHTML = ''; wrap = document.createElement('div'); wrap.id = 'infoWrap'; wrap.className = 'pane'; c.appendChild(wrap); _infoSig = ''; }
-    // Rebuild only when an input actually changed (same dedup the Skills grid uses):
-    // this pane used to tear down and rebuild its whole DOM 4x/s, one of the largest
-    // steady-state raster costs in the UI. The idle countdown is quantized to seconds
-    // in the signature so it still ticks visibly without forcing 4 rebuilds/s.
     try {
       const im = infoMember && typeof infoMember.idleMs === 'number'
         ? Object.assign({}, infoMember, { idleMs: Math.floor(infoMember.idleMs / 1000) })
@@ -566,8 +535,6 @@
     } catch (e) { /* unstringifiable input: fall through and rebuild */ }
     const d = infoData;
     const rows = document.createElement('div'); rows.className = 'rows';
-    // Grouped, not one long column. A heading is only emitted once something actually
-    // lands under it, so a section whose every value is unreadable stays hidden.
     let secPending = null;
     const sec = (name) => { secPending = name; };
     const add = (r) => {
@@ -583,8 +550,6 @@
       if (playerVp) {
         const hp = u('13537'), pr = u('3274'), su = u('8040');   // 13537 = current lifepoints, raw
         const L = (n) => n.toLocaleString();
-        // Account status varp 4818: bit0 ironman, bit1 hardcore, bit19 in-GIM, bit25 unranked group,
-        // bits21-23 GIM type via enum 5733 {0 Regular, 1 Competitive}; unranked wins over the type.
         const am = u(typeof VP !== 'undefined' ? VP.ACCOUNT_MODE : 4818), iron = am & 1, hc = (am >>> 1) & 1, inGim = (am >>> 19) & 1,
               gimType = (am >>> 21) & 7, gimUnranked = (am >>> 25) & 1;
         let acct = 'Main';
@@ -594,18 +559,9 @@
                                : (hc ? 'Hardcore Ironman' : 'Ironman');
         sec('Account');
         add(row('Account', acct));
-        // Membership: engine state (PLAYERMEMBER op) for free-vs-member, varbit 50572 for
-        // premier. `resolved` is false before the account object exists, when every other
-        // field would read as free rather than as unknown - so skip the row entirely then.
         if (infoMember && infoMember.resolved) {
           add(row('Membership', infoMember.tier === 2 ? 'Premier'
                               : infoMember.member ? 'Member' : 'Free'));
-          // Idle logout: the budget is additive (5 base +5 member +5 Jagex account, max 15) and
-          // enforced server-side. idleMs IS live though - the client stamps when it last
-          // reported input to the server, which is what that timer runs on - so show the real
-          // remaining time and fall back to the bare budget only when it is unavailable (-1).
-          // Cursor movement inside the game window resets it even unfocused; keys only count
-          // while the game window is active. NOTE it does not run at all while in combat.
           const idleBudget = Math.floor(infoMember.idleLogoutSeconds / 60) + ' min';
           if (typeof infoMember.idleMs === 'number' && infoMember.idleMs >= 0) {
             const left = Math.max(0, infoMember.idleLogoutSeconds - Math.floor(infoMember.idleMs / 1000));
@@ -615,12 +571,6 @@
             add(row('Idle logout', idleBudget));
           }
         }
-        // Leagues account identity: varp 12314 = league number (script20117 matches it
-        // against db 326.0; 0 = normal character). Points varp is per league (db 326.28
-        // var_reference: L1 12426, L2 13521); vb 58389 = league tasks completed
-        // (script21081). The XP multiplier is NOT a var: the game prints db 328.4 of
-        // the tier row (script20255), so it is derived here as the highest tier whose
-        // points cost is reached, using the leagues panel's shared table data.
         {
           const lg = u(typeof VP !== 'undefined' ? VP.LEAGUE : 12314);
           if (lg > 0) {
@@ -643,23 +593,9 @@
           }
         }
         sec('Vitals');
-        // Combat level comes from the player entity section (psec+0x10BC); -1 = unavailable.
         if (typeof d.combat === 'number' && d.combat >= 3)
           add(row('Combat level', String(d.combat)));
-        // varp 13537 = current lifepoints, varp 13538 = MAX lifepoints (both raw). The max
-        // was located live 2026-08-17 by value-searching the varp map at 1,068/1,500 (only
-        // 13538 held 1500) and cross-checked on a second account at 5,600/5,600 (13537 and
-        // 13538 both 5600).
-        // 13537 is now CONFIRMED in CS2 (build 940, 11 scripts): the game moved current
-        // lifepoints off varbit 1668 (varp 659 bits 1-15, hence the old 32767 ceiling) onto
-        // this varp, and script16860 lifts the cap to 2^31-1 while varp 12314 > 0, so
-        // in-league values above 32000 are legitimate. 13538 stays live-observation only:
-        // it is referenced by zero clientscripts, which read max via script2915 instead.
-        // Do NOT reintroduce varbit 1668 as HP; leagues reuses it (see LEAGUES2.md).
-        // Max shown only when it reads sane, so a missing read never paints "x / 0".
         {
-          // RS3 terminology is "Life points", and a boosted current legitimately sits
-          // ABOVE the max (bonfire, Fortitude) -- say so, or the row reads as a bug.
           const mx = playerVp['13538'];
           const boosted = typeof mx === 'number' && mx > 0 && hp > mx ? ' (boosted)' : '';
           add(row('Life points', playerVp['13537'] === undefined ? 'unknown'
@@ -667,47 +603,35 @@
         }
         add(row('Prayer',     L(Math.floor((pr & 0x7fff) / 10)) + ' / ' + L(((pr >>> 16) & 0x7f) * 10)));
         add(row('Summoning',  L(Math.floor((su & 0x7fff) / 10)) + ' / ' + L(((su >>> 16) & 0x7f) * 10)));
-        // Familiar special-move points: varp 1787 raw current, fixed max 60.
         add(row('Spell points', L(u(typeof VP !== 'undefined' ? VP.SPELL_POINTS : 1787)) + ' / 60'));
         add(row('Adrenaline', Math.floor(u('679') / 10) + '%'));
         add(row('Run',        u('463') ? 'on' : 'off'));
-        // Server-packet values off the skill block, not vars; weight is a signed i16 whose
-        // "missing" sentinel is -100000.
         if (typeof d.energy === 'number' && d.energy >= 0)
           add(row('Run energy', d.energy + '%'));
         if (typeof d.weight === 'number' && d.weight > -32769)
           add(row('Weight', d.weight + ' kg'));
-        // The overhead action bar (harvest / search / clue-scan progress): the reader walks the
-        // player's head-bar list (psec+0xF08 -> +0x28, fill byte +0x34, HP bar excluded) and
-        // reports the fill 0-255; -1 when no action bar is showing.
         if (typeof d.progress === 'number' && d.progress >= 0)
           add(row('Action progress', Math.round(d.progress * 100 / 255) + '%'));
         sec('Progress');
         add(row('Quest points', L(vp['1297'] | 0)));
-        // Total penguin points: varbit 4163, hard cap 250.
         const pengVb = typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163;
         if (infoVb && infoVb[pengVb] !== undefined)
           add(row('Penguin points', L(infoVb[pengVb] | 0) + ' / 250'));
-        // All-time Dungeoneering floors (varbit 39152, bits 0-15); omitted when unreadable, since 0 would read as "never".
         {
           const fv = playerVb && (playerVb['39152'] !== undefined ? playerVb['39152'] : playerVb[39152]);
           if (typeof fv === 'number' && fv >= 0)
             add(row('Dungeoneering floors', L(fv)));
         }
         sec('Charge pack');
-        // Charge pack: varp 5984 raw charge is in 1/3000 units; max tier = bits 19-23 of varp 5982.
         const cv = u('5982'), tb = b => (cv >>> b) & 1;
         const maxRaw = !tb(19) ? 600000000 : !tb(20) ? 750000000 : !tb(21) ? 900000000
                      : !tb(22) ? 1050000000 : !tb(23) ? 1200000000 : 1500000000;
         add(row('Charge pack', L(Math.floor(u('5984') / 3000)) + ' / ' + L(Math.floor(maxRaw / 3000))));
-        // Combat drain rate = varp 5991 / 1800 charges/s; drain is 0 without augmented gear.
         const drainPerSec = (u('5991') * 10 / 6) / 3000;
         add(row('Drain rate', drainPerSec.toFixed(2) + '/s'));
         if (drainPerSec > 0) {
           const t = Math.floor((u('5984') / 3000) / drainPerSec);
           const dd = Math.floor(t / 86400), hh = Math.floor(t % 86400 / 3600), mm = Math.floor(t % 3600 / 60), ss = t % 60;
-          // Minutes shown at every magnitude: "1d 0h" for 24h53m read as wrong (it hid
-          // almost an hour); "1d 0h 53m" says exactly what the division produced.
           add(row('Time remaining', dd > 0 ? (dd + 'd ' + hh + 'h ' + mm + 'm') : hh > 0 ? (hh + 'h ' + mm + 'm') : mm > 0 ? (mm + 'm ' + ss + 's') : (ss + 's')));
         } else {
           add(row('Time remaining', 'n/a'));
@@ -721,14 +645,10 @@
       sec('Activity');
       add(row('Animation', d.anim === -1 ? 'none' : String(d.anim)));
       add(row('Moving', d.moving ? 'yes' : 'no'));
-      // Engine-reported render rate (MainData+0x550, the FPS_STATS op's own counter); absent
-      // on an older host build.
       if (typeof d.fps === 'number' && d.fps >= 0) add(row('Client FPS', String(d.fps)));
-      // Scenery/objects aren't in the live entity list, so they show as none here.
       const it = d.interact;
       add(row('Interacting',
         it ? (it.name || '?') + (it.type === 1 && it.id >= 0 ? ' (' + it.id + ')' : '') : 'none'));
-      // Camera varcs: 5115 yaw (0..16284 = full circle), 5114 pitch, 1971 zoom (raw engine units).
       if (infoCam) {
         sec('Camera');
         if (typeof infoCam.yaw === 'number')
@@ -736,11 +656,6 @@
         if (typeof infoCam.pitch === 'number') add(row('Pitch', String(infoCam.pitch)));
         if (typeof infoCam.zoom === 'number') add(row('Zoom', String(infoCam.zoom)));
       }
-      // Whatever the engine hover slot resolves right now, one subrow per decoded field.
-      // STICKY: moving the mouse from the NPC to THIS panel clears the engine's hover
-      // slot, which used to blank the section the instant you tried to read it. The
-      // last real target is therefore held and shown (tagged "last") until a new one
-      // replaces it, so hover something, then come read the details at leisure.
       {
         let hv = infoHover;
         const isReal = hv && hv.ok && (hv.kind || hv.name);
@@ -764,7 +679,6 @@
     wrap.innerHTML = ''; wrap.appendChild(rows);
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { fetchTasks, renderInfo, renderTicks });
 registerTab({ id: 'tasks', render: renderTasks, open: function () { fetchTasks(); } });
 registerTab({ id: 'info', render: renderInfo, open: function () { fetchInfo(); } });

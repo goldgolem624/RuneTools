@@ -1,18 +1,7 @@
-// rtx-shim.js: window.onerror (first statement on purpose) and the localStorage shim for builds where Ultralight storage is a no-op.
-// Loads after: nothing: this is the first script the page runs.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // First statement on purpose: uncaught errors anywhere in the panel (including
-  // later top-level statements) reach the client log via the console listener.
   window.onerror = function (msg, src, line, col) {
     try { console.error('uncaught: ' + msg + ' @' + line + ':' + col); } catch (e) {}
   };
   // localStorage SHIM. Without a WebCore cache_path (launcher builds before 2026-07-30)
-  // Ultralight's localStorage is a SILENT NO-OP: setItem "succeeds" but getItem always
-  // returns null, so every panel's "persisted" state (alert bells, crew snapshots, ports
-  // plan/gear, var pins, notes) silently evaporated between repaints. Probe it once and,
-  // when broken, replace it with an in-memory store - session-lifetime persistence, which
-  // is what the panels actually rely on within a run. Remove-safe once every deployed
-  // launcher sets config.cache_path (main.cpp).
   (function () {
     try {
       localStorage.setItem('__rtxProbe', '1');

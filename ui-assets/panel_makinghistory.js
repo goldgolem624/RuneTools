@@ -1,9 +1,7 @@
 // RuneToolsX panel: Making History quest guide (quest 124).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Progress varbit 9664 (cache quest config js5-2 archive 35 file 124; varp 2173 bits 0-2):
-  // start value 1, complete at 4. Requires quest 27 (The Restless Ghost).
   const MH_PROG = 9664, MH_DONE = 4;
   const MH_ERIN = 9665;    // sub varbit [3-5]: Erin/key thread -- 0 -> 1 when the Silver merchant hands over the key
   const MH_KEY = 6754;     // Enchanted key (from the Silver merchant at 9665=1)
@@ -13,8 +11,6 @@
                            // chat, -> 4 when Melina gets the sapphire amulet (9668 flips with it)
   const MH_DRON = 9666;    // sub varbit [6-8]: Dron thread -- 0 -> 2 after Blanin's chat
   const MH_OUTPOST = 9671; // sub varbit [20]: 0 -> 1 when the Outpost is restored (mid Jorral finale, v=3)
-  // Required items (wiki list, ids cache-checked). Rendered by qgItemsRow via QG_REQ;
-  // '' = the whole-quest list shown at the top of the walkthrough.
   function mhItems(section) {
     const spade = { id: 952,  n: 1, name: 'Spade (or the meerkats familiar; buyable from Richard during the quest)' };
     const ecto  = { id: 4278, n: 2, name: 'Ecto-tokens (or Ghosts Ahoy done, or 2,600 coins to charter ships)' };
@@ -25,18 +21,12 @@
     }
     return null;   // per-section lists can land here once the guide is built
   }
-  // King Lathas won't talk while any Mourner outfit piece is worn -- box a removal warning.
   const MH_MOURNER = new Set([6065, 6066, 6067, 6068, 6069, 6070, 10621, 51590, 51591]);
   async function mhMournerWorn() {   // one equipment read -> true if any Mourner piece is equipped
     let eq = null; try { eq = JSON.parse(await rtxData.raw('state.equipment')); } catch (e) {}
     if (eq && Array.isArray(eq.items)) for (const it of eq.items) if (MH_MOURNER.has(it[1])) return true;
     return false;
   }
-  // Dron's quiz answers include bare numbers (8, 36, 12), and the shared overlay.highlightOption
-  // does BIDIRECTIONAL SUBSTRING matching, so needle '8' also matches the wrong option "38.".
-  // This boxer uses EXACT (normalized) equality instead. DialogJson returns the answer text with
-  // no option-index prefix (the "1."/"2." label is a separate, dropped component), so nothing
-  // needs stripping.
   const mhNorm = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
   const mhIsNum = s => /^[0-9]+$/.test(s);
   async function mhBoxExact(needles) {
@@ -46,12 +36,7 @@
     if (dlg && dlg.hasAbs && Array.isArray(dlg.options)) {
       const opts = dlg.options.filter(o => o && (o.w > 0) && (o.text || '').toLowerCase().indexOf('<str') < 0)
                               .map(o => ({ o, body: mhNorm(o.text) })).filter(x => x.body);
-      // Pass 1: EXACT normalized equality. This must win before any substring test -- the needle
-      // "fifth and fourth" exactly matches that option, so the shorter option "fourth" cannot steal
-      // the box.
       for (const x of opts) if (wants.includes(x.body)) { box(x.o); return true; }
-      // Pass 2: forward-only substring (option text CONTAINS the whole needle), phrases only. Never
-      // the reverse, and never numeric, so '8' cannot touch "38".
       for (const x of opts) if (!mhIsNum(x.body) && wants.some(w => !mhIsNum(w) && x.body.indexOf(w) >= 0)) { box(x.o); return true; }
     }
     try { rtxData.sync('overlay.uiHighlight', 0, 0, 0, 0); } catch (e) {}
@@ -65,14 +50,9 @@
       return;
     }
     if (v === 1) {   // accepted -> the Silver merchant (npc 569) in the East Ardougne market;
-                     // his chooser boxes "3 Ask about the outpost." MH_ERIN 1 = Enchanted key held.
       if (erin >= 2) {   // chest (item 6759) dug up -> unlock it: both slots boxed at once
         if (droalak >= 5) {   // Scroll 6758 held -> Phasmatys done (no ghostspeak needed any more);
-                              // on to Blanin (npc 2940) west of the Rellekka cow pen, then Dron
           if (dron >= 3) {   // quiz passed -> back to Jorral at the Outpost with BOTH the Journal and
-                             // Scroll. Jorral analyses all three evidence threads (any order): show the
-                             // journal -> 9665=4, discuss the warrior Dron -> 9666=4, analyse the
-                             // scroll -> 9667=6. The Letter comes once all three are done.
             if (erin >= 4 && dron >= 4 && droalak >= 6) { qgClearAll(); return; }
             const haveJ = (await qgInvCount(MH_JOURNAL)) > 0, haveS = (await qgInvCount(MH_SCROLL)) > 0;
             const miss = !haveJ && !haveS ? ' - BRING THE JOURNAL AND SCROLL'
@@ -82,8 +62,6 @@
             return;
           }
           if (dron >= 2) {   // Dron (npc 2939) west of the helmet shop. The two intro lines + the
-                             // 12-answer quiz all go through mhBoxExact -- exact match so the '8'
-                             // answer can't box the wrong "38." option in the 36/38 chooser.
             const boxed = await mhBoxExact([
               "i'm after important answers", "why you're the famous warrior dron",
               'an iron mace', 'breakfast', 'lunch', 'bunnies', 'red', '36', '8',
@@ -111,7 +89,6 @@
         return;
       }
       if (erin >= 1) {   // key in hand -> the quest dig spot is FIXED; no hot-and-cold needed. Tile + spade shown
-                         // hot-and-cold needed. Tile + spade shown together (overwrite, no clears).
         qgClrNpc(); qgClrDlg();
         qgOv('overlay.guideTiles', [{ x: 2440, y: 3140, plane: 0, label: 'Dig here' }]);
         qgOv('overlay.highlightItem', 952, 'Dig with the Spade');
@@ -121,9 +98,7 @@
       return;
     }
     if (v === 2) {   // Letter (item 6756) received -> Ardougne Castle, climb to King Lathas on floor 2.
-                     // He won't talk while a Mourner outfit is worn -> warn to remove it first.
       const suffix = (await mhMournerWorn()) ? ' (REMOVE YOUR MOURNER OUTFIT FIRST)' : '';
-      // On the upper floor (plane 1) with Lathas loaded -> outline him; otherwise the staircase.
       const sc = await qgScene();
       const lathas = sc.npcs.find(n => n && n.name && String(n.name).toLowerCase() === 'king lathas');
       if ((qgP && (qgP.p | 0) === 1) && lathas) { await qgNpc('King Lathas', 'Talk to King Lathas' + suffix, lathas.x, lathas.y, 1); return; }
@@ -138,8 +113,6 @@
       default: qgClearAll(); break;   // 4 = quest COMPLETE -> nothing to guide
     }
   }
-  // Live monitor: own poll loop. ALL of varp 2173's varbits ride along -- only 9664 is understood,
-  // the rest are watched until the quest reveals what they mean.
   const MH_MON_VBS = [MH_PROG, 9665, 9666, 9667, 9668, 9669, 9670, 9671, 9672];
   const MH_MON_TAG = { 9664: 'progress [0-2]', 9665: 'Erin/key [3-5]', 9666: 'Dron [6-8]', 9667: 'Droalak [9-12]',
                        9668: 'Melina amulet [13]', 9669: '? [14]', 9670: '? [15-19]', 9671: 'Outpost restored [20]', 9672: '? [21-31]' };
@@ -169,11 +142,8 @@
     })();
   }
   (function () { function mhMonLoop() { try { mhMonRefresh(); } catch (e) {} setTimeout(mhMonLoop, 1100); } setTimeout(mhMonLoop, 1800); })();
-  // "Go to the Outpost" has no varbit: it completes by STANDING within 10 tiles of 2436,3347 at
-  // v=0 (latched; the quest cannot go below 0, so there is no reset condition).
   let mhAtOutpost = false;
   let mhJournalSeen = false;   // latch: Journal 6755 seen in the pack (banking it must not untick the chest step)
-  // Auto-complete the quick-guide checkboxes from MH_PROG thresholds only.
   QG_AUTO['Making History'] = {
     vbs: [MH_PROG, MH_ERIN, MH_DROALAK, MH_DRON],
     inv: true,
@@ -199,6 +169,5 @@
     },
   };
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { mhItems, mhMonText, mhStep });
 })();

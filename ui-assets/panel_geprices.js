@@ -1,13 +1,6 @@
 // RuneToolsX panel: GE Prices -- real-time item prices with expandable history charts.
-// Data is relayed through the RuneTools server (the single consumer of the upstream
-// price API); the launcher caches latest/mapping (Bridge.cpp pricesCached/pricesMapping)
-// and fetches per-item history on demand (pricesTimeseries, 5-min cached).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
-  // Parsed caches. The raw payloads are ~0.5 MB (latest) and ~1.4 MB (mapping); the
-  // pane renders at 4 Hz, so parsing is throttled: latest every 30 s, mapping only
-  // when its length changes (it is near-static).
   let gepLatest = null, gepLatestAt = 0, gepGen = 0;
   let gepMap = null, gepMapLen = -1;
   let gepShownGen = -1, gepShownQuery = null, gepShownOpen = -1;
@@ -23,7 +16,6 @@
   let gepPins = new Set();      // favorited item ids, persisted per machine
   try { gepPins = new Set(JSON.parse(localStorage.getItem('rtxGePins') || '[]')); } catch (e) {}
   function gepSavePins() { try { localStorage.setItem('rtxGePins', JSON.stringify([...gepPins])); } catch (e) {} }
-  // Sort metric for an item (null = item lacks the data and sorts to the end).
   function gepMetric(it) {
     const p = gepLatest && gepLatest[it.id];
     if (!p) return null;
@@ -66,15 +58,6 @@
   }
   const gepCss = (name, fb) => (getComputedStyle(document.documentElement).getPropertyValue(name) || fb).trim() || fb;
 
-  // ---- history chart: avg high/low lines on a canvas, drawn in theme colors.
-  // Redrawn per hover move (a few hundred points; trivial): hover = {x, y} in canvas
-  // CSS px (or null). The exact cursor gets a live crosshair with price/time readouts;
-  // the nearest sample gets the dashed marker + data box. ----
-  // Backing-store scale for a canvas: the device pixel ratio TIMES the accumulated CSS
-  // zoom the panel renders under (the font-size preference sets `zoom` on .win-body).
-  // Sizing from clientWidth * dpr alone ignored that zoom, so the bitmap was smaller
-  // than its painted box and the engine upscaled it -- the whole chart came out soft
-  // and oversized. Capped so a big zoom on a wide panel cannot allocate a huge bitmap.
   function gepCanvasScale(cv) {
     let z = 1;
     try { if (typeof uiZoomOf === 'function') z = uiZoomOf(cv) || 1; } catch (e) {}
@@ -88,8 +71,6 @@
   function gepDrawChart(cv, series, hover) {
     const W = cv.clientWidth || 420, H = cv.clientHeight || 120;
     const k = gepCanvasScale(cv);
-    // Only resize the backing store when it actually changes: assigning width/height
-    // clears the canvas, and the hover path redraws on every pointer move.
     const bw = Math.round(W * k), bh = Math.round(H * k);
     if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
     const g = cv.getContext('2d');
@@ -100,11 +81,6 @@
     if (pts.length < 2) {
       g.fillStyle = gepCss('--text-mute', '#8b8b9e'); g.font = '11px sans-serif';
       if (pts.length === 1) {
-        // A single recorded trade still deserves a mark, not an empty box: rares can go
-        // months between sales. The timestamp is the START of an averaging bucket whose
-        // width depends on the lookback (a day at 1y), so a coarse window can only say
-        // "around" a date -- showing it as exact made 30d and 1y disagree by a day for
-        // the same trade.
         const p = pts[0], v = p.avgHighPrice != null ? p.avgHighPrice : p.avgLowPrice;
         const color = p.avgHighPrice != null ? gepCss('--ok', '#4dd28a') : gepCss('--warn', '#f5b241');
         const step = series.length > 1 ? Math.abs(series[1].timestamp - series[0].timestamp) : 0;
@@ -125,7 +101,6 @@
       if (v != null) { if (v < min) min = v; if (v > max) max = v; }
     if (max === min) { max += 1; min -= 1; }
     const t0 = pts[0].timestamp, t1 = pts[pts.length - 1].timestamp;
-    // Layout: legend row | price plot | volume strip | date labels.
     const padL = 6, padR = 6, padT = 16, padB = 14, volH = 24;
     const plotBot = H - padB - volH - 4;
     const X = t => padL + (W - padL - padR) * ((t - t0) / Math.max(1, t1 - t0));
@@ -137,7 +112,6 @@
       const hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
       return (t1 - t0 <= 90000) ? dt(t) + ' ' + hm : dt(t);
     };
-    // Labelled y gridlines at min / mid / max, and labelled x gridlines at quarter points.
     g.strokeStyle = gepCss('--border', 'rgba(255,255,255,0.08)');
     g.lineWidth = 1;
     g.font = '10px sans-serif';
@@ -152,9 +126,6 @@
       g.fillText(lbl, x - g.measureText(lbl).width / 2, H - padB + 11);
     }
     const okCol = gepCss('--ok', '#4dd28a'), warnCol = gepCss('--warn', '#f5b241');
-    // CONSTANT lines: every sample with data connects to the next one with data, straight
-    // through empty buckets (a rare that trades weekly reads as one continuous line, the
-    // way the wiki draws it), with a dot on each actual sample.
     const line = (getV, color) => {
       const arr = [];
       for (const p of pts) { const v = getV(p); if (v != null) arr.push([X(p.timestamp), Y(v)]); }
@@ -172,8 +143,6 @@
     };
     line(p => p.avgLowPrice, warnCol);
     line(p => p.avgHighPrice, okCol);
-    // Y gridline labels AFTER the lines, on a background chip: drawn first, a price line
-    // passing near a gridline ran straight over its text.
     g.font = '10px sans-serif';
     for (const v of [min, (min + max) / 2, max]) {
       const lbl = fmtGp(v), lw2 = g.measureText(lbl).width;
@@ -184,7 +153,6 @@
       g.fillStyle = mute;
       g.fillText(lbl, padL + 2, Y(v) - 3);
     }
-    // Legend, wiki-style naming. Top RIGHT: the max-price gridline label owns the top left.
     g.font = '10px sans-serif';
     const legend = [['Instabuy', okCol], ['Instasell', warnCol]];
     let lw = 0;
@@ -195,7 +163,6 @@
       g.fillStyle = mute; g.fillText(name, lx + 9, 10);
       lx += 9 + g.measureText(name).width + 12;
     }
-    // Volume strip: instabuy volume up from the strip's midline, instasell volume down.
     {
       const midY = H - padB - volH / 2 - 2;
       let vmax = 0;
@@ -203,9 +170,6 @@
       if (vmax > 0) {
         g.strokeStyle = gepCss('--border', 'rgba(255,255,255,0.08)');
         g.beginPath(); g.moveTo(padL, midY); g.lineTo(W - padR, midY); g.stroke();
-        // Bar width from the BUCKET STEP, not the sample count: the feed omits empty
-        // buckets, so a sparse week may hold five samples and count-based bars became
-        // day-wide slabs. Step = the smallest gap between consecutive samples.
         let step = Infinity;
         for (let i = 1; i < series.length; i++)
           step = Math.min(step, Math.abs(series[i].timestamp - series[i - 1].timestamp) || Infinity);
@@ -219,13 +183,11 @@
         }
       }
     }
-    // Window edge dates.
     g.fillStyle = mute; g.font = '10px sans-serif';
     const endLbl = dtf(t1);
     g.fillText(dtf(t0), padL, H - padB + 11);
     g.fillText(endLbl, W - padR - g.measureText(endLbl).width, H - padB + 11);
 
-    // Hover: exact-cursor crosshair with live price/time readouts...
     if (hover != null) {
       const hx = Math.max(padL, Math.min(W - padR, hover.x));
       const hy = Math.max(padT, Math.min(plotBot, hover.y));
@@ -233,7 +195,6 @@
       g.beginPath(); g.moveTo(hx, padT); g.lineTo(hx, H - padB); g.stroke();
       g.beginPath(); g.moveTo(padL, hy); g.lineTo(W - padR, hy); g.stroke();
       g.globalAlpha = 1;
-      // Price at the cursor height (right edge) and time at the cursor x (top of the axis).
       const hv = min + (1 - (hy - padT) / Math.max(1, plotBot - padT)) * (max - min);
       const ht = t0 + (hover.x - padL) / Math.max(1, W - padL - padR) * (t1 - t0);
       g.font = '10px sans-serif';
@@ -250,7 +211,6 @@
       g.fillStyle = gepCss('--text-dim', '#c6c6d2');
       g.fillText(tv, tvx, H - padB + 11);
     }
-    // ...plus the dashed marker + data box on the sample nearest the cursor.
     if (hover != null) {
       const hoverX = hover.x;
       let best = null, bd = Infinity;
@@ -266,9 +226,6 @@
           g.fillStyle = col; g.beginPath(); g.arc(bx, Y(v), 3, 0, 6.2832); g.fill();
         }
         const rows = [[dtf(best.timestamp), mute]];
-        // fmtGp, not toLocaleString: it honours the Numbers preference (compact 85.67b
-        // vs full 85,670,000,000), and these are bucket AVERAGES, so the raw value
-        // carries fractional gp that has no meaning on screen -- round it first.
         if (best.avgHighPrice != null) rows.push(['Instabuy ' + fmtGp(Math.round(best.avgHighPrice)) + ' gp' + (best.highPriceVolume ? ' x' + fmtGp(best.highPriceVolume) : ''), okCol]);
         if (best.avgLowPrice != null) rows.push(['Instasell ' + fmtGp(Math.round(best.avgLowPrice)) + ' gp' + (best.lowPriceVolume ? ' x' + fmtGp(best.lowPriceVolume) : ''), warnCol]);
         g.font = '10.5px sans-serif';
@@ -292,12 +249,7 @@
     const box = document.createElement('div');
     box.style.cssText = 'grid-column:1/-1;background:var(--bg, #14151c);border:1px solid var(--border);' +
                         'border-radius:8px;padding:10px 12px;margin:2px 0 4px';
-    // Fact strip: exact latest prices, spread and item facts.
-    // One row, always: compact fmtGp values with the exact figures in the tooltips.
     const facts = document.createElement('div');
-    // Wraps rather than clipping: with compact numbers everything fits on one line, and
-    // with full-format prices (three 15-character figures) it needs a second rather
-    // than hiding LIMIT/ALCH behind an invisible scroll.
     facts.style.cssText = 'display:flex;gap:4px 12px;flex-wrap:wrap;' +
                           'font-size:11.5px;margin-bottom:8px;color:var(--text-dim,#c6c6d2)';
     const fact = (k, v, title) => {
@@ -318,7 +270,6 @@
     if (it.limit) fact('Limit', fmtGp(it.limit), Number(it.limit).toLocaleString());
     if (it.highalch) fact('Alch', fmtGp(it.highalch), nx(it.highalch));
     box.appendChild(facts);
-    // Lookback chips.
     const chips = document.createElement('div');
     chips.style.cssText = 'display:flex;gap:5px;margin-bottom:7px';
     for (const lb of ['24h', '7d', '30d', '1y']) {
@@ -335,9 +286,6 @@
     const cv = document.createElement('canvas');
     cv.id = 'gepChart';
     cv.style.cssText = 'width:100%;height:170px;display:block';
-    // Hover: redraw with a crosshair + data box on the nearest sample. Pointer coords go
-    // through uiEvPt: the pane sits under a CSS zoom (font-size preference), where raw
-    // clientX arithmetic lands off the cursor by the zoom factor (see rtx-ui.js).
     cv.addEventListener('pointermove', ev => {
       if (!gepChartData) return;
       gepDrawChart(cv, gepChartData, uiEvPt(ev, cv));
@@ -352,8 +300,6 @@
     return box;
   }
 
-  // Called every tick while a row is expanded: asks the launcher cache (which kicks the
-  // fetch on a miss) and draws once the series lands or changes.
   function gepTickChart() {
     if (!gepOpenId) return;
     const cv = $('gepChart');
@@ -374,11 +320,6 @@
     }
     if (!series) return;   // still fetching; note keeps saying loading
     const sig = gepOpenId + ':' + gepLb + ':' + series.length + ':' + (series.length ? series[series.length - 1].timestamp : 0);
-    // A list rebuild (fresh latest data every ~30s) recreates the detail card with a
-    // blank canvas and the placeholder note, while the SERIES sig is unchanged -- so
-    // "unchanged" alone must not skip the draw. The canvas carries its own painted flag.
-    // Resizing the window changes the canvas box without changing the data, so the
-    // drawn size is part of the "needs redraw" test or the chart sits stretched.
     const sized = cv._drawnW === cv.clientWidth && cv._drawnH === cv.clientHeight;
     if (sig === gepDrawnSig && cv.dataset.drawn === sig && sized) return;
     gepDrawnSig = sig;
@@ -404,11 +345,7 @@
       const st = document.createElement('span'); st.id = 'gepStatus';
       st.style.cssText = 'font-size:11px;color:var(--text-mute);white-space:nowrap';
       bar.appendChild(inp); bar.appendChild(st);
-      // No overflow of its own: the pane already scrolls vertically (and reserves its
-      // scrollbar lane), and giving this element overflow-x made it a second scroll
-      // container whose rows pushed the star column out of reach.
       const list = document.createElement('div'); list.id = 'gepList';
-      // Sort + Favorites bar. Clicking an active sort flips highest/lowest.
       const sbar = document.createElement('div');
       sbar.id = 'gepSort';
       sbar.style.cssText = 'display:flex;gap:5px;align-items:center;margin-bottom:8px;flex-wrap:wrap';
@@ -419,7 +356,6 @@
         b.style.cssText = 'font-size:10.5px;padding:2px 9px;border-radius:999px;border:1px solid var(--border);' +
                           'background:transparent;color:var(--text-dim,#c6c6d2);cursor:pointer;font:inherit;font-size:10.5px';
         b.addEventListener('click', () => {
-          // Cycle: off -> highest first -> lowest first -> off again.
           if (key === 'favs') { gepFavView = !gepFavView; }
           else if (gepSortKey === key) {
             if (gepSortDir < 0) gepSortDir = 1;
@@ -445,10 +381,6 @@
     const st = $('gepStatus');
     if (!gepMap || !gepLatest) { st.textContent = 'loading prices...'; return; }
     const q = ($('gepQ').value || '').trim().toLowerCase();
-    // numFmt rides the signature: switching Numbers compact/full changes both the
-    // values and the column widths, so the list has to rebuild rather than sit stale.
-    // Panel width rides the signature too: the column fit depends on it, so resizing
-    // the window has to rebuild the list rather than leave a stale layout.
     const ssig = gepSortKey + ':' + gepSortDir + ':' + (gepFavView ? 1 : 0) + ':' + gepPinRev +
                  ':' + (uiCfg().numFmt || 'compact') + ':' + (($('gepList') || {}).clientWidth || 0);
     if (gepShownGen === gepGen && gepShownQuery === q && gepShownOpen === gepOpenId && gepShownSort === ssig) {
@@ -458,7 +390,6 @@
       return;
     }
     gepShownGen = gepGen; gepShownQuery = q; gepShownOpen = gepOpenId; gepShownSort = ssig;
-    // Reflect the sort/favorites chips.
     const sb = $('gepSort');
     if (sb) for (const b of sb.children) {
       const key = b.dataset.key;
@@ -490,19 +421,15 @@
         rows.push(it);
         if (rows.length >= 400) break;
       }
-      // Prefix matches first, then alphabetical (gepMap's own order), unless sorting.
       if (!gepSortKey) rows.sort((a, b) => (b._q.indexOf(q) === 0 ? 1 : 0) - (a._q.indexOf(q) === 0 ? 1 : 0));
       rows = rows.slice(0, 60);
     } else if (gepSortKey) {
-      // Sorted browse: rank the whole book by the chosen metric.
       rows = gepMap.filter(it => gepMetric(it) != null);
     } else {
-      // Default browse: the most valuable recently traded items rather than nothing.
       rows = gepMap.filter(it => { const p = gepLatest[it.id]; return p && p.high != null && p.high >= 1000000; })
                    .sort((a, b) => (gepLatest[b.id].high || 0) - (gepLatest[a.id].high || 0));
     }
     rows = bySort(rows).slice(0, 60);
-    // Favorites lead the default browse view (skipped while searching or already in Favorites view).
     let favHead = [];
     if (!gepFavView && !q && favs.length) {
       favHead = bySort(favs);
@@ -513,16 +440,7 @@
       list.innerHTML = '<div class="empty">' + (gepFavView ? 'No favorites yet. Star an item to keep it here.' : 'No items match.') + '</div>';
       return;
     }
-    // When sorting by spread, the sorted-by number must be visible on the row itself.
     const showSpread = gepSortKey === 'spread' || gepSortKey === 'spreadpct';
-    // COLUMN FIT. The table never scrolls sideways and never overflows the pane: the
-    // pane (.content) already reserves its own scrollbar lane, so anything that
-    // overflows here just hides the columns at the right edge -- which is exactly how
-    // the favourite star ended up unclickable. Instead the layout adapts to the width
-    // it actually has, in the order a trader cares least about:
-    //   1. full-format numbers fall back to compact (exact value stays on hover),
-    //   2. then the Traded column drops.
-    // The name column flexes and ellipsises, mirroring .scene-trow elsewhere.
     const NAME_MIN = 90, ICON_W = 26, AGE_W = 52, STAR_W = 18, GAP = 8;
     const avail = (list && list.clientWidth) || (c && c.clientWidth) || 420;
     let full = uiCfg().numFmt === 'full';
@@ -540,8 +458,6 @@
     const gridCols = ICON_W + 'px minmax(0,1fr) ' + w.numW + 'px ' + w.numW + 'px' +
                      (showSpread ? ' ' + w.spreadW + 'px' : '') +
                      (showAge ? ' ' + AGE_W + 'px' : '') + ' ' + STAR_W + 'px';
-    // Values honour the Numbers preference when it fits, and fall back to compact when
-    // it does not; the exact figure is always one hover away.
     const compact = (n) => {
       n = Number(n) || 0; const s = n < 0 ? '-' : ''; n = Math.abs(n);
       if (n >= 1e9) return s + (n / 1e9).toFixed(2) + 'b';
@@ -551,7 +467,6 @@
     };
     const fmtN = (n) => (full ? fmtGp(n) : compact(n));
     const exact = (n) => Number(n).toLocaleString() + ' gp';
-    // Column header, in the same grid as the rows so the labels sit over their columns.
     {
       const hd = document.createElement('div');
       hd.style.cssText = 'display:grid;grid-template-columns:' + gridCols + ';gap:8px;' +
@@ -582,9 +497,6 @@
         gepDrawnSig = ''; gepChartData = null; gepShownOpen = -1;
         renderGePrices();
       });
-      // .ge-icon + data-item-id is attachIcon's contract: an icon resolved AFTER this
-      // row was built finds its element through that selector. Without it, late icons
-      // never land (the launch-week bug: half the list showed stale or empty art).
       const ic = document.createElement('div');
       ic.className = 'ge-icon';
       ic.dataset.itemId = String(it.id);
@@ -607,7 +519,6 @@
       ag.dataset.ht = String(ht);
       ag.textContent = ht ? gepAge(ht) + ' ago' : '';
       ag.style.cssText = 'color:var(--text-mute);font-size:10.5px;text-align:right;white-space:nowrap';
-      // Favorite star. A button, not part of the row click.
       const fav = gepPins.has(it.id);
       const star = document.createElement('button');
       star.textContent = fav ? '★' : '☆';
@@ -625,8 +536,6 @@
         const sp = document.createElement('div');
         if (p.high != null && p.low != null && p.low > 0) {
           const d = p.high - p.low, pct = d / p.low * 100;
-          // Junk-item spreads (a 6m item that instasells for 2 gp) reach millions of
-          // percent; compact those the way gp values are compacted.
           const pctTxt = (pct >= 1000 ? compact(Math.round(pct)) : pct.toFixed(1)) + '%';
           sp.textContent = gepSortKey === 'spreadpct' ? pctTxt : fmtN(d);
           sp.title = 'Spread ' + Number(d).toLocaleString() + ' gp (' + Math.round(pct).toLocaleString() + '%)';

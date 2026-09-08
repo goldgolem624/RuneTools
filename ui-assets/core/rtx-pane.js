@@ -1,6 +1,3 @@
-// rtx-pane.js: Scan-clue orb helpers, row/secRow, renderPane (the per-tab render dispatch) and renderHeader.
-// Loads after: rtx-menubar.js and every core file before it; the panels it dispatches to are resolved at call time.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
   // ---- Scan elimination from the orb (interface 1752) + player tile. The ring's blue band == "too far"
   // (sprite 113): destination is > 2*range, so spots within 2*range of you are dropped. When the orb glows
   // (sprite 131, within detection): spots beyond 2*range are dropped. Chebyshev distance; safe + convergent.
@@ -27,20 +24,13 @@
 
 
   let _playerPaneSig = '';   // Skills-grid dedup (see the guard in renderPane)
-  // (The consolidated-panel sub-tab strip moved into each window's title bar --
-  // see wmRenderTabs. renderPane runs with activeTab/__paneRoot pointed at ONE
-  // window by renderPaneFor/withPane; it must not touch shell chrome.)
 
   function renderPane() {
-    // Plugins own their (sandboxed iframe) DOM; mount before any content wipe.
     if (activeTab === 'pluginbrowse') { renderPluginBrowse(); return; }
     if (activeTab.indexOf('plugin:') === 0) { renderPlugin(activeTab.slice(7)); return; }
     if (activeTab.indexOf('aura:') === 0) { if (typeof renderAuraGroup === 'function') renderAuraGroup(activeTab.slice(5)); return; }
-    // Registered panels (registerTab in each panel_*.js IIFE) render here, before the
-    // content wipe below: panels such as Bank manage their own DOM incrementally (search
-    // box keeps focus across the 250 ms refresh), so they must run before it is wiped.
+    // Registered panels render themselves, and must run before the 250 ms refresh wipes the pane.
     { const P = RTX.panels[activeTab]; if (P && typeof P.render === 'function') { P.render(); return; } }
-    // Legacy if-chain: tabs rendered by this script itself, or gated on more than the id.
     if (activeTab === 'materials') { renderMaterials(); return; }
     if (activeTab === 'baitbox') { renderBaitBox(); return; }
     if (activeTab === 'artefacts') { renderWorkbench(); return; }
@@ -49,9 +39,6 @@
     if (activeTab === 'fullscreen') { renderFullscreen(); return; }
     if (activeTab === 'wiki') { renderWikiPane(); return; }
     if (activeTab === 'uisettings') { renderUiSettings(); return; }
-    // Skills tab (the default landing tab): renderPane runs on every 250ms poll tick, but the grid
-    // only depends on the skill array, the goal targets and the virtual-levels setting -- skip the
-    // full ~29-cell rebuild (and the icon re-attachment churn) when none of that changed.
     if (activeTab === 'player' && lastSnap) {
       fetchSkillBonus();   // async, self-throttled; re-renders when bonus XP changes
       const psig = JSON.stringify(lastSnap.skills || null) + '|' +
@@ -77,15 +64,8 @@
         e.textContent = 'Skill data appears once in-world.';
         wrap.appendChild(e); c.appendChild(wrap); return;
       }
-      // In-game XP bars toggle: draws a progress bar on each cell of the GAME's Skills
-      // panel (not this grid), so it is useful with this window closed.
       if (bridge() && bridge().skillBars) {
         skBarsLoad();
-        // The shared toggle row (same control the Rendering panel uses), and it flips its
-        // OWN class rather than re-rendering the pane -- the grid rebuild is signature-
-        // deduped, so asking it to repaint just to show a toggle state did nothing.
-        // The sub-line doubles as the diagnostic when nothing appears: it names which
-        // stage failed rather than leaving a silent toggle. Repainted live by the tick.
         const row = ovToggleRow('skBarsTgl', 'XP bars on the in-game skills panel', skBarsWhyText());
         row.classList.toggle('on', skBarsOn);
         row.addEventListener('click', () => {
@@ -119,7 +99,6 @@
         cell.appendChild(ico);
         cell.appendChild(lvl);
 
-        // xp = -1 only when the read failed (e.g. not in-world yet).
         const lines = [
           name,
           'ID ' + i,
@@ -145,9 +124,7 @@
           lines.push('In-game target: ' + (gp.mode === 'xp' ? (gp.target.toLocaleString() + ' XP') : ('level ' + gp.target)) +
                      ' - ' + Math.floor(gp.pct * 100) + '%' + (gp.done ? ' (reached)' : ''));
         }
-        // Bonus XP (from the game's own bonus-xp varps; value already /10). The TOTAL must truncate per
-        // skill BEFORE summing -- the game's own total (script9202) does integer int/10 per skill, so
-        // summing the raw tenths and flooring once drifts a few XP above the in-game figure.
+        // Bonus XP (from the game's own bonus-xp varps; value already /10). The TOTAL truncates per skill, not once at the end.
         const bonus = skillBonusFor(i);
         if (bonus > 0) {
           totalBonus += Math.floor(bonus);
@@ -163,7 +140,6 @@
       wrap.appendChild(grid);
 
       const stats = document.createElement('div'); stats.className = 'skill-stats';
-      // Long values shrink a step (or two) so they never get clipped in a narrow tile.
       const stat = (label, val) => {
         const d = document.createElement('div'); d.className = 'skill-stat';
         const s = String(val);
@@ -202,9 +178,6 @@
       return;
     } else if (activeTab === 'exchange') {
       // GE COLLECTION BOX, integrated per offer cell: slots 1-8 = containers 523-528,783,784 (enum
-      // 1079 order). Fetched async into a cache; the exchange tab repaints every poll, so cells pick
-      // it up on the next pass. Coins render as a gp figure (the packed coins icon is the 999Q
-      // max-stack art), items as icon + name.
       const GE_COLL_IDS = [523, 524, 525, 526, 527, 528, 783, 784];
       window.geCollCache = window.geCollCache || { slots: null, at: 0 };
       async function geCollFetch() {
@@ -233,8 +206,6 @@
         const e = geCollCache.slots && geCollCache.slots[i];
         if (!e) return false;
         const d = document.createElement('div'); d.className = 'ge-collect';
-        // ONE tooltip per cell: the collect details fold into the cell's own tip instead of nesting
-        // [data-tip] spans -- two anchors make the bubble flip position/size while sweeping the row.
         let txt = [], tipParts = [];
         if (e.coins > 0) { txt.push(fmtGp(e.coins) + ' gp'); tipParts.push(e.coins.toLocaleString() + ' coins'); }
         for (const it of e.items) {
@@ -326,7 +297,6 @@
       c.appendChild(wrap);
       return;
     } else {
-      // Display preference: mask the player name in the header (persists; also toggled by clicking the name).
       {
         const pr = document.createElement('div'); pr.className = 'row'; pr.style.alignItems = 'center';
         const pk = document.createElement('span'); pk.className = 'k'; pk.textContent = 'Hide player name';
@@ -359,7 +329,6 @@
 
   let _hdrSig = '';
   function renderHeader() {
-    // Write the DOM only on change: runs at 4 Hz per client and is static most polls.
     const s = lastSnap;
     let inWorld, nameTxt, metaTxt;
     if (!s) {
@@ -367,8 +336,6 @@
     } else {
       inWorld = !!s.in_world;
       nameTxt = nameHidden ? 'Hidden' : (s.display_name || ('PID ' + s.pid));
-      // Leagues worlds are flagged: their Voice of Seren / world events are a separate
-      // pool, so knowing which one you are on explains why the crowdsourced values differ.
       let wtag = '';
       if (s.world > 0) {
         let lg = false;
@@ -383,8 +350,6 @@
     $('hdr-title').classList.toggle('is-in', inWorld);
     $('hdr-name').textContent = nameTxt;
     $('hdr-meta').textContent = metaTxt;
-    // The status text just changed the bar's width: re-clamp it inside the frame (the
-    // rebuild measured the bar before this text existed) and republish its consume rect.
     try { positionMenubar(); wmRectsSoon(); } catch (e) {}
   }
 

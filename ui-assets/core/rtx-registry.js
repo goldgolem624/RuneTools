@@ -1,12 +1,6 @@
-// rtx-registry.js: Tab registry: DUNG_ENABLED/NETPROBE_ENABLED, TABS, RTX + registerTab, CAT_META, SKILL_NAMES, fmtGp, XP tables, TAB_GROUPS, tabCat, railCategories.
-// Loads after: rtx-ui.js (uiCatHidden at call time only); loads BEFORE rtx_vars.js and the panels so registerTab exists when each panel IIFE registers.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
   const DUNG_ENABLED = true;
-  // Server Packets (panel_netprobe.js): the inbound protocol view + live framer feed.
-  // false -> hidden, true -> shown.
   const NETPROBE_ENABLED = false;
   const TABS = [
-    // Character
     { id: 'player',   label: 'Skills',       cat: 'Character', icon: '<path d="M5 20v-5M12 20V8M19 20v-9"/>' },
     { id: 'info',     label: 'Player State', cat: 'Character', icon: '<path d="M12 19s-6-4-6-8.5A3 3 0 0 1 12 8a3 3 0 0 1 6 2.5C18 15 12 19 12 19z"/>' },
     { id: 'perks',    label: 'Perks',        cat: 'Combat', icon: '<path d="M12 2l3 6 6 .5-4.5 4 1.4 6L12 15.6 6.1 18.5l1.4-6L3 8.5 9 8z"/>' },
@@ -24,7 +18,6 @@
     { id: 'xptracker',label: 'XP Tracker',   cat: 'Progression', icon: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3.5-4 3 2.5L18 8"/><path d="M18 8h-3.5M18 8v3.5"/>' },
     { id: 'xpmeter',  label: 'XP Meter',     cat: 'Progression', icon: '<path d="M4 17h16"/><path d="M6 17v-4"/><path d="M11 17V9"/><path d="M16 17v-6"/>' },
     { id: 'chatlog',  label: 'Chat Log',     cat: 'Utility', icon: '<path d="M4 5h16v10H9l-4 4V15H4z"/><path d="M8 9h8M8 12h5"/>' },
-    // Items
     { id: 'inventory', label: 'Inventory', cat: 'Items', icon: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>' },
     { id: 'equipment', label: 'Equipment', cat: 'Items', icon: '<path d="M8 4l4 2 4-2 3 2.5-3 3v9.5H8V9.5l-3-3z"/>' },
     { id: 'bank',      label: 'Bank',      cat: 'Items', icon: '<path d="M3 10l9-6 9 6M4 10h16M6 10v8M12 10v8M18 10v8M3 20h18"/>' },
@@ -39,25 +32,20 @@
     { id: 'containers', label: 'Containers', cat: 'Items', icon: '<rect x="3" y="3" width="18" height="6" rx="1"/><rect x="3" y="11" width="18" height="6" rx="1"/><path d="M7 6h2M7 14h2"/>' },
     { id: 'shopcaps', label: 'Shop Limits', cat: 'Items', icon: '<path d="M4 9 5.5 4h13L20 9"/><path d="M4 9h16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M5.5 13v7h13v-7"/><path d="M9 17h6"/>' },
     { id: 'currencies', label: 'Currencies', cat: 'Items', icon: '<circle cx="12" cy="12" r="8"/><path d="M12 7.5v9"/><path d="M14.5 9.5c-.5-.8-1.4-1.2-2.5-1.2-1.4 0-2.5.7-2.5 1.7 0 2.3 5 1.5 5 3.8 0 1-1.1 1.7-2.5 1.7-1.1 0-2-.4-2.5-1.2"/>' },
-    // Quests
     { id: 'quests',   label: 'Browse Quests', cat: 'Quests', icon: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-3-2-3 2-3-2-3 2V4a1 1 0 0 1 1-1z"/><path d="M9 8h6M9 12h6"/>' },
     { id: 'questfocus', label: 'Focused Quest', cat: 'Quests', icon: '<path d="M6 3h12a1 1 0 0 1 1 1v16l-3-2-3 2-3-2-3 2V4a1 1 0 0 1 1-1z"/><circle cx="12" cy="10" r="3"/>' },
-    // Achievements
     { id: 'achievements', label: 'Achievements', cat: 'Progression', icon: '<circle cx="12" cy="9" r="5"/><path d="M8.5 13.5L7 21l5-3 5 3-1.5-7.5"/><path d="M12 6.5l.9 1.8 2 .3-1.4 1.4.3 2-1.8-1-1.8 1 .3-2L9.1 8.6l2-.3z"/>' },
     { id: 'combatmastery', label: 'Combat Mastery', cat: 'Progression', icon: '<path d="M13 4l7 7-2 2-7-7z"/><path d="M11 6L3.5 13.5 3 17l3.5-.5L14 9"/><path d="M5 14l3 3"/>' },
     { id: 'areatasks', label: 'Area Tasks', cat: 'Progression', icon: '<path d="M9 3 3 5.5v15L9 18l6 2.5 6-2.5v-15L15 5.5 9 3z"/><path d="M9 3v15M15 5.5v15"/>' },
     { id: 'gimtasks', label: 'Group Iron Tasks', cat: 'Progression', icon: '<circle cx="8" cy="8" r="2.6"/><circle cx="16" cy="8" r="2.6"/><path d="M3.5 19c0-2.7 2-4.5 4.5-4.5s4.5 1.8 4.5 4.5M13 18.8c.3-2.4 2.1-4 4.3-4 .9 0 1.7.2 2.4.7"/>' },
-    // Clues
     { id: 'clues',    label: 'Clue Scrolls',  cat: 'Clues', icon: '<path d="M7 4h10a1 1 0 0 1 1 1v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M9 8h6M9 11h6M9 14h4"/>' },
     { id: 'hideyholes', label: 'Hidey-holes', cat: 'Clues', icon: '<rect x="3" y="8" width="18" height="12" rx="1.5"/><path d="M3 12 L21 12"/><path d="M10 8 L10 4 L14 4 L14 8"/><circle cx="12" cy="16" r="1.2"/>' },
     { id: 'globetrotter', label: 'Globetrotter', cat: 'Clues', icon: '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M4.5 7.5h15M4.5 16.5h15"/>' },
     { id: 'cluestats', label: 'Clue Stats',   cat: 'Clues', icon: '<path d="M4 20V5"/><path d="M4 20h16"/><rect x="7" y="12" width="3" height="5"/><rect x="12" y="8" width="3" height="9"/><rect x="17" y="4" width="3" height="13"/>' },
-    // Collections
     { id: 'pets',     label: 'Pets',         cat: 'Collections', icon: '<circle cx="12" cy="15" r="4"/><circle cx="6.5" cy="10" r="1.7"/><circle cx="10" cy="7" r="1.7"/><circle cx="14" cy="7" r="1.7"/><circle cx="17.5" cy="10" r="1.7"/>' },
     { id: 'farmcol',  label: 'Farm Collections', cat: 'Collections', icon: '<path d="M4 8v12M9 8v12M14 8v12M19 8v12"/><path d="M3 12h17M3 16h17"/><circle cx="12" cy="5" r="1.6"/>' },
     { id: 'bosses',   label: 'Bosses',       cat: 'Collections', icon: '<path d="M12 3 L19 7 L19 13 C19 17 16 20 12 21 C8 20 5 17 5 13 L5 7 Z"/><circle cx="9.5" cy="11" r="1.3"/><circle cx="14.5" cy="11" r="1.3"/><path d="M9 15.5 C10 16.5 14 16.5 15 15.5"/>' },
     { id: 'collections', label: 'Clue Collections', cat: 'Collections', icon: '<path d="M4 5h16v14H4z"/><path d="M8 9h8M8 12h8M8 15h5"/>' },
-    // Archaeology
     { id: 'archmysteries', label: 'Mysteries', cat: 'Archaeology', icon: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/><path d="M11 8a2 2 0 0 1 1.5 3.3c-.6.5-1 .8-1.2 1.4M11 15h.01"/>' },
     { id: 'mystfocus', label: 'Focused Mystery', cat: 'Archaeology', icon: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>' },
     { id: 'materials', label: 'Material Storage', cat: 'Archaeology', icon: '<path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>' },
@@ -65,7 +53,6 @@
     { id: 'archcol',  label: 'Artefact Collections', cat: 'Archaeology', icon: '<path d="M12 2 2 7l10 5 10-5-10-5z"/><path d="M6 9.5v5l6 3 6-3v-5"/><path d="M12 12v8"/>' },
     { id: 'relics',   label: 'Active Relics', cat: 'Archaeology', icon: '<path d="M12 2l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z"/>' },
     { id: 'archshop', label: 'Guild Shop', cat: 'Archaeology', icon: '<path d="M4 9 5.5 4h13L20 9"/><path d="M4 9h16v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M5.5 13v7h13v-7"/><path d="M9.5 20v-4h5v4"/>' },
-    // World
     { id: 'worldmap', label: 'World Map', cat: 'World', icon: '<path d="M9 5 3 7v12l6-2 6 2 6-2V5l-6 2-6-2z"/><path d="M9 5v12M15 7v12"/><circle cx="12" cy="11" r="1.6"/>' },
     { id: 'fairyrings', label: 'Fairy Rings', cat: 'World', icon: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>' },
     { id: 'resdungeons', label: 'Resource Dungeons', cat: 'World', icon: '<path d="M4 20V9l8-6 8 6v11"/><path d="M9 20v-6h6v6"/><path d="M12 3v3"/>' },
@@ -80,10 +67,8 @@
     { id: 'lodestones', label: 'Lodestones', cat: 'World', icon: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>' },
     { id: 'scarabs',   label: 'Corrupted Scarabs', cat: 'World', icon: '<ellipse cx="12" cy="13" rx="5" ry="6"/><path d="M12 7V4M8 9L5 6M16 9l3-3M7 13H3M21 13h-4M8 18l-3 3M16 18l3 3"/>' },
     { id: 'obelisks',  label: 'Soul Obelisk', cat: 'World', icon: '<path d="M10 3h4l1.5 13h-7z"/><path d="M7 19h10M9 16h6"/>' },
-    // Boss & minigame
     { id: 'bossinfo', label: 'Boss Info',   cat: 'Combat', icon: '<path d="M12 3 L19 7 L19 13 C19 17 16 20 12 21 C8 20 5 17 5 13 L5 7 Z"/><path d="M12 8v5M12 16h.01"/>' },
     { id: 'portsinfo', label: 'Ports',      cat: 'World', icon: '<path d="M12 3v13"/><path d="M12 6a3 3 0 1 0 .01 0"/><path d="M5 13c0 4 3.5 7 7 8 3.5-1 7-4 7-8"/><path d="M3 13h4M17 13h4"/>' },
-    // Utility
     { id: 'alerts',    label: 'Alerts',    cat: 'HUD', icon: '<path d="M18 16v-5a6 6 0 1 0-12 0v5l-1.5 2h15z"/><path d="M10 20a2 2 0 0 0 4 0"/>' },
     { id: 'ticks',     label: 'Ticks',     cat: 'HUD', icon: '<circle cx="12" cy="12" r="8"/><path d="M12 8.5V12l2.5 1.5"/>' },
     { id: 'auras', label: 'Auras', cat: 'HUD', icon: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>' },
@@ -94,10 +79,8 @@
     { id: 'screenshot',label: 'Screenshot', cat: 'Utility', icon: '<rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="12" cy="13.5" r="3.5"/><path d="M8 7l1.5-2.5h5L16 7"/>' },
     { id: 'wiki',      label: 'Wiki',      cat: 'Utility', icon: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19a2 2 0 0 1 2-2h13"/><path d="M9 7h6M9 10.5h6"/>' },
     { id: 'fullscreen',label: 'Fullscreen', cat: 'Utility', icon: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>' },
-    // Developer
     { id: 'interfaces', label: 'Interfaces', cat: 'Developer', icon: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18M8 9v11"/>' },
     { id: 'vars',       label: 'Vars',       cat: 'Developer', icon: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h4"/>' },
-    // Server Packets: gated by NETPROBE_ENABLED, above.
     ...(NETPROBE_ENABLED ? [{ id: 'netprobe',   label: 'Server Packets', cat: 'Developer', icon: '<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="7" cy="7" r="1"/><circle cx="11" cy="12" r="1"/><circle cx="9" cy="17" r="1"/>' }] : []),
     { id: 'cs2',        label: 'CS2 Scripts', cat: 'Developer', icon: '<path d="M8 6l-4 6 4 6M16 6l4 6-4 6M13.5 5l-3 14"/>' },
     { id: 'sounds',     label: 'Sounds', cat: 'Developer', icon: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>' },
@@ -109,15 +92,6 @@
     { id: 'system',     label: 'System',     cat: 'Settings', icon: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.4 5.4l2.1 2.1M16.5 16.5l2.1 2.1M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1"/>' },
   ];
 
-  // ==================== Panel registry (registerTab) ====================
-  // Every panel_*.js is an IIFE that calls registerTab({ id, render, open, close, refresh,
-  // label, cat, icon }) at load. This file is spliced BEFORE rtx_vars.js and the panels, so
-  // registerTab here is the one the panels call (rtx_vars.js keeps a fallback for a page that
-  // loads without the core). The consumers, renderPane (render), tabEntryKicks (open),
-  // paneLeave (close) and the poll tick (refresh), each consult RTX.panels[id] first and fall
-  // through to the legacy if-chains for anything not registered. A new panel is one file:
-  // register with label/cat/icon and it is appended to TABS; entries listed in TABS keep
-  // their rail order and may omit render info.
   const RTX = window.RTX = window.RTX || {};
   RTX.panels = RTX.panels || {};
   function tabAdopt(d) {
@@ -129,7 +103,6 @@
   }
   for (const k in RTX.panels) tabAdopt(RTX.panels[k]);   // anything registered before this file ran
 
-  // Rail parent categories, in rail order; only categories with tabs render.
   const CAT_META = [
     { id: 'Character',   icon: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>' },
     { id: 'Combat',      icon: '<path d="M4 20l6-6M14 4l6 6-9 9-6-6z"/><path d="M4 20l2-2M13 11l-2 2"/>' },
@@ -159,7 +132,6 @@
     n = Number(n) || 0;
     const sign = n < 0 ? '-' : ''; n = Math.abs(n);
     if (uiCfg().numFmt === 'full') return sign + n.toLocaleString();
-    // Precision by magnitude: billions x.yy, millions x.y, thousands x.y (.0 dropped).
     if (n >= 1e9) return sign + (n / 1e9).toFixed(2) + 'b';
     if (n >= 1e6) return sign + (n / 1e6).toFixed(1) + 'm';
     if (n >= 1e3) { let t = (n / 1e3).toFixed(1); if (t.endsWith('.0')) t = t.slice(0, -2); return sign + t + 'k'; }
@@ -198,17 +170,6 @@
   }
 
 
-  // ---- Tasks tab -> panel_tasks.js (spliced inline at load) ----
-  // ---- Vars Watcher -> panel_varswatcher.js (spliced inline at load) ----
-  // ---- Bank -> panel_bank.js (spliced inline at load) ----
-  // ---- Inventory & Equipment tab -> panel_inventory.js (spliced inline at load) ----
-  // ---- Two-level rail: category icons, then that category's children once selected.
-  //      (rail removed: the menu bar + dropdowns replaced it) ----
-  // ---- Panel consolidation (2026-08-03): related tabs share ONE rail entry; the members
-  // render as a sub-tab strip ABOVE the content area (#subbar, outside #content so panel
-  // repaints never wipe it). Every member keeps its tab id, so per-tab fetch/leave hooks,
-  // tick gates and localStorage keys all keep working; only the navigation collapses.
-  // A group's `cat` overrides its members' categories (allTabs applies it).
   const TAB_GROUPS = [
     { id: 'quests',  label: 'Quests',         cat: 'Quests',      tabs: ['quests', 'questfocus'],                                subs: ['All Quests', 'Focused'] },
     { id: 'achieve', label: 'Achievements',   cat: 'Progression', tabs: ['achievements', 'combatmastery', 'areatasks', 'gimtasks'], subs: ['Achievements', 'Combat Mastery', 'Area Tasks', 'GIM Journey'] },
@@ -228,7 +189,6 @@
   ];
   const TAB_GROUP_OF = {};   // tab id -> group
   for (const g of TAB_GROUPS) for (const id of g.tabs) TAB_GROUP_OF[id] = g;
-  // The member to open when the rail entry is clicked: last used, else the group's first.
   function groupEntryTab(g) {
     let last = null;
     try { last = localStorage.getItem('rtxGrpLast:' + g.id); } catch (e) {}

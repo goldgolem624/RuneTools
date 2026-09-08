@@ -1,10 +1,6 @@
 // RuneToolsX panel: Interfaces inspector.
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
-  // Groups are listed cheaply (collapsed); a group's widget tree is fetched only on expand, so the
-  // whole tree is never walked or polled.
-  // Hand-curated group names; ids without a confident name stay bare numbers.
   const IFACE_NAMES = {
     13:'Bank PIN', 1253:'Treasure Hunter (removed)',
     919:'Fish Flingers scoreboard', 922:'Fish Flingers results', 923:'Fish Flingers details',
@@ -37,9 +33,6 @@
   let ifaceGroups = null;          // [{id, n}, ..]  (n = top-level widget count)
   const ifaceWidgets = {};         // gid -> [{t,d,r}, ..]  (cached on first expand)
   const ifaceDefModels = {};       // gid -> {compId: modelId} for type-6 MODEL comps (js5-3 defs).
-                                   // A model comp's live node only holds a runtime render handle
-                                   // ("dynamic"); the cache def carries the model id, which keys
-                                   // the pre-rendered modelicons.pack (bridge modelIcon).
   const ifaceOpen = {};            // gid -> bool (expanded)
   let ifaceOff = {};               // gid -> {x,y}  live origin nudge (persisted; pushed to the reader)
   let ifaceOffLoaded = false;
@@ -57,10 +50,7 @@
     try { if (bridge() && bridge().ifaceOffset) rtxData.sync('act.ifaceOffset', gid, o.x | 0, o.y | 0); } catch (e) {}
   }
   function pushAllIfaceOff() { for (const k in ifaceOff) pushIfaceOff(parseInt(k, 10)); }
-  // ---- component watch ---------------------------------------------------------
-  // Clicking a row's id samples THAT component ~5x/s and logs every change to its rect or
-  // sprite. Built for hover-driven state: the swap only shows while the mouse is on the
-  // widget, so a still inspector never catches it.
+  // Clicking a row's id samples THAT component ~5x/s and logs every change.
   let ifWatch = null;   // {gid, key, label, until, seen:[], last:'', t}
   function ifWatchKey(w) {
     const t = w.t || [0, 0, 0];
@@ -148,8 +138,6 @@
     for (const k in ifaceWidgets) delete ifaceWidgets[k];   // re-scan invalidates cached widgets
     paneRun('interfaces', renderIfaceList);
   }
-  // Open/close monitor: every 0.6s, diff the set of loaded interface groups and log what opened or
-  // closed, so an in-game action immediately shows which interface it toggled.
   function ifaceMonTick() {
     if (!ifaceMonOn || !paneVisible('interfaces') || !bridge()) return;
     let cur;
@@ -182,7 +170,6 @@
       catch (e) { ifaceWidgets[gid] = []; }
     }
     if (ifaceOpen[gid] && !ifaceDefModels[gid] && bridge() && bridge().cacheIfaceGroup) {
-      // model ids live only in the cache DEFS (type 6), never in the live tree
       const m = {};
       try { for (const c of (JSON.parse(rtxData.sync('cache.ifaceGroup', gid) || '{}').comps || []))
               if (c.t === 6 && c.model > 0) m[c.id] = c.model; }
@@ -192,8 +179,6 @@
     renderIfaceList();
   }
   function renderInterfaces() {
-    // Re-entered every poll tick; once built it bails so rows are not rebuilt each tick (hover
-    // flicker). The list re-renders only on demand: search, expand/collapse, or Refresh.
     if (document.getElementById('ifaceWrap')) return;
     const c = $('content');
     {
@@ -281,19 +266,14 @@
       $('ifMonClear').addEventListener('click', () => { ifaceMon = []; renderIfaceMon(); });
       loadIfaceOff();      // restore + push saved calibration nudges to the reader
       renderIfaceMon();
-      // Group headers are rebuilt every render, so the expand click is delegated. Clicks on the offset
-      // steppers are ignored (they live below the header, not inside it).
       $('ifaceList').addEventListener('click', (e) => {
         const st = e.target.closest('.if-st');
         if (st) { e.stopPropagation(); ifaceStep(st); return; }
-        // Click a widget row with a size -> seed the size search with it (find its mount-slot counterpart).
         const row = e.target.closest('.if-row');
         if (row && row.dataset.w !== undefined) { $('ifaceSizeIn').value = row.dataset.w + 'x' + row.dataset.h; renderIfaceSize(); return; }
         const hdr = e.target.closest('.if-group');
         if (hdr && hdr.dataset.gid) toggleIfaceGroup(parseInt(hdr.dataset.gid, 10));
       });
-      // Hovering a widget row with a known absolute rect boxes it in-game; clears on leave. Shared by
-      // the group list and the size-search results.
       let _ifHi = '';
       const ifHi = (sig, x, y, w, h) => { if (sig === _ifHi) return; _ifHi = sig; try { rtxData.sync('overlay.uiHighlight', x, y, w, h); } catch (e) {} };
       const ifHover = (e) => {
@@ -345,14 +325,9 @@
           const pad = 8 + (w.d || 0) * 12;
           const idtxt = t[1] + (t[2] >= 0 ? ':' + t[2] : '');    // component[:sub]; group is in the header
           const full = t[0] + ':' + t[1] + (t[2] >= 0 ? ':' + t[2] : '');  // full path on hover
-          // text: strip RS3 colour tags, then HTML-escape for safe display
           const tx = (w.x || '').replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').trim();
-          // Tip copy keeps the game's LINE BREAKS (<br> -> newline) before the other tags
-          // are stripped, so a multi-line scroll/dialogue reads as written.
           const txFull = (w.x || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')
                                     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').trim();
-          // absolute screen rect (only known for movable panels whose position varc is resolved, e.g.
-          // dialogues / inventory) -> hovering the row boxes the widget in-game
           const a = w.a;
           const absAttr = (a && r[2] > 0 && r[3] > 0) ? ' data-ax="' + a[0] + '" data-ay="' + a[1] + '" data-aw="' + r[2] + '" data-ah="' + r[3] + '"' : '';
           const sizeAttr = (r[2] > 0 && r[3] > 0) ? ' data-w="' + r[2] + '" data-h="' + r[3] + '"' : '';
@@ -363,21 +338,14 @@
             + (w.it ? '<span class="if-itemico" data-item="' + w.it + '"></span><span class="if-item">#' + w.it + '</span>' : '')
             + (w.n ? '<span class="if-amt">×' + Number(w.n).toLocaleString() + '</span>' : '')
             // "s" >= 131072 is the reader's synthetic encoding (131072 + item id) of an obj-icon graphic:
-            // the widget references an ITEM whose icon the game bakes from its model at runtime, so no such
-            // sprite exists in the js5 sprite cache.
             + (w.s ? (w.s >= 131072
                    ? '<span class="if-itemico" data-item="' + (w.s - 131072) + '"></span><span class="if-spr">item icon ' + (w.s - 131072) + '</span>'
                    : '<span class="if-sprico" data-spr="' + w.s + '"></span><span class="if-spr">spr ' + w.s + '</span>')
-                   // a graphic with no sprite id: if the cache DEF says this comp is a type-6 MODEL,
-                   // show the model id + its pre-rendered icon (modelicons.pack); else plain "dynamic"
                    : (w.ty === 'graphic'
                    ? (((ifaceDefModels[g.id] || {})[t[1]])
                       ? '<span class="if-modelico" data-model="' + ifaceDefModels[g.id][t[1]] + '"></span><span class="if-mdl">model ' + ifaceDefModels[g.id][t[1]] + '</span>'
                       : '<span class="if-dyn">dynamic</span>')
                    : ''))
-            // The row ellipsizes long strings, so carry the FULL text in a tip - scroll/
-            // dialogue widgets are exactly the ones worth reading in full. Newlines are
-            // kept (the tip renders them), and quotes escaped for the attribute.
             + (tx ? '<span class="if-txt" data-tip="' + txFull.replace(/"/g, '&quot;').replace(/\n/g, '&#10;') + '">' + tx + '</span>' : '')
             + '<span class="if-rect">' + r[0] + ',' + r[1] + ' · ' + r[2] + '×' + r[3] + '</span></div>';
         }
@@ -398,8 +366,6 @@
     if (meta) meta.textContent = groups.length + ' groups' + (q ? ' · ' + shown + ' shown' : '');
   }
 
-  // Size search: find every component sized WxH across all open groups; pairs a panel to the
-  // game-frame slot it mounts into.
   async function renderIfaceSize() {
     const res = document.getElementById('ifaceSizeRes'); if (!res) return;
     const meta = $('ifaceSizeMeta');
@@ -433,7 +399,6 @@
     if (meta) meta.textContent = matches.length + ' match' + (matches.length === 1 ? '' : 'es') + ' · ' + gids.length + ' group' + (gids.length === 1 ? '' : 's');
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { ifaceMonTick });
 registerTab({ id: 'interfaces', render: renderInterfaces });
 })();

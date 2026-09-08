@@ -1,11 +1,7 @@
-// RuneToolsX panel: Bosses (per-boss kill counts from the permanent kill-log varps, the same
-// vars the in-game Beasts kill log reads).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
+// RuneToolsX panel: Bosses (per-boss kill counts from the permanent kill-log varps).
 (function () {
 
   // Generated table. kc/pr = [varp, lsb, msb]; pr = 60000-rollover counter, total = kc + 60000*pr.
-  // kc2/pr2 = second mode where one exists (hard/solo/duo/group), labeled m1/m2; sp = icon sprite id.
-  // log = [varp, bit] of the collection-log-complete flag. Two pairs share one bit on purpose: the
   // game has a single combined log for TzTok-Jad + Har-Aken (struct 1532) and for Beastmaster
   // Durzag + Yakamaru (struct 1552).
   const BOSSES = [
@@ -74,13 +70,11 @@
   ];   // BOSS_GEN_END
   const BOSS_VARPS = [...new Set(BOSSES.flatMap(b => [b.kc, b.pr, b.kc2, b.pr2].filter(Boolean).map(t => t[0]).concat(b.log ? [b.log[0]] : [])))];
 
-  // The game's collection table is dbrows MASTER 84 (name col 4, display order col 0, type col 2,
   // collection struct col 11, item list col 13). Type-1 rows resolve each item's found flag
   // through CS2 script14500, an item-id -> VARBIT switch that exists only in the script, so its
   // parse is baked below (incl. grouped case labels; 34997 via script567; 47660 is the one
   // composite = vb 33756 + vb 43671). Items NOT in the switch carry the varbit as item param 8994
   // VAR_REFERENCE ((v >>> 24) == 1 -> varbit = v & 0xFFFFFF), resolved at runtime. Found =
-  // value >= 1. Shared with panel_tasks.js (spliced later in Dock.cpp kFiles). Regenerate from
   // clientscript-14500 after game updates.
   const COLLECTION_ITEM_VBS = {
     288:45073,546:45079,548:45080,985:45036,987:45037,2577:38058,2579:38059,2581:38137,
@@ -300,12 +294,8 @@
     61732:61063,61734:61064,61736:61065,61738:61066,61740:61067,61742:61068,61744:61069
   };
   const COLLECTION_ITEM_VB_PAIR = { 47660: [33756, 43671] };
-  // The 14 slayer-region rows render in the Tasks tab; everything else type-1 renders here.
   const BC_SLAYER_STRUCTS = new Set([15023, 15024, 15025, 15026, 15027, 15028, 15029, 15030,
                                      15031, 15032, 15033, 15034, 45440, 52981]);
-  // Collection COMPLETE varbit per collection struct (CS2 script14503's switch; newer structs
-  // instead carry the var as param 8993 var_reference, resolved at runtime). Used to attach each
-  // collection to its boss row by matching the varbit's [varp, bit] against the row's log field.
   const BC_DONE_VBS = {
     1531: 37472, 1532: 37473, 1533: 37474, 1535: 37475, 1537: 37476, 1538: 37477,
     1539: 37478, 1540: 37479, 1541: 37480, 1542: 37481, 1543: 37482, 1544: 37483,
@@ -317,28 +307,16 @@
     40632: 47972, 40633: 47973, 40634: 47974, 40635: 47976, 40636: 47978,
     40637: 47975, 40638: 47977, 40639: 47979 };
   let bossesData = null, bossFetching = false, bossListSig = '', bossFetchAt = 0;
-  // Persistent enrage/streak varbits, keyed by BOSSES name (CS2 clientscript-11074): Telos +
-  // Arch-Glacor hard mode carry current/best enrage and killstreak; Araxxi carries current enrage
-  // only (vb 23045 * 20). Other enrage bosses persist only enrage-mode KILL counts (kc2).
   const BOSS_ENRAGE = {
     'Telos':       { cur: 32626, best: 32627, streak: 32635, streakBest: 34272 },
     'Arch-Glacor': { cur: 50177, best: 50178, streak: 50186, streakBest: 50187 },
     'Araxxi':      { cur: 23045, mult: 20 },
   };
-  // Row categories (master-84 has no explicit type column for this, so classification is
-  // structural): struct-bearing rows are BOSS drop logs except the clue-tier structs; struct-less
-  // rows split by the table's display-order bands - 39-47 and 61-74 are the Player-Owned Farm
-  // breed collections, 75-82 the Archaeology faction artefact sets, the rest stay 'other'.
-  // POF and Archaeology render in panel_farmcol.js / panel_archcol.js, not here.
   const BC_CLUE_STRUCTS = new Set([40632, 40633, 40634, 40635, 40636, 40637, 40638, 40639]);
   bcCols = null; let bcColsLoading = false;   // [{ord, name, cat, doneVb, items:[{id,name,vb}]}]
   bcVbIndex = null;                       // varbit id -> [varp, lsb, msb] (from varbitMap)
   bcVarps = null;                         // varpsDumpAll snapshot {'4:<id>': value}
   let bcSig = '';
-  // Top the two baked switch tables up from the CS2 switches extraction, which bakes the same
-  // scripts (14500 item -> found varbit, 14503 struct -> complete varbit) from the LIVE cache.
-  // Additive: baked entries are never replaced, so a bad extraction cannot subtract data, and
-  // an install that never ran an extraction keeps working from the bake alone.
   let bcSwAdopted = false;
   async function bcAdoptSwitches() {
     if (bcSwAdopted || typeof cs2SwitchEntries !== 'function') return;
@@ -375,7 +353,6 @@
         if (BC_SLAYER_STRUCTS.has(sid)) continue;
         if (seen[name]) continue;   // "Hard clue rewards" etc. exist twice with parallel structs; keep the first
         seen[name] = 1;
-        // Complete-flag varbit: baked script14503 switch, else the struct's param 8993 var_reference.
         let doneVb = BC_DONE_VBS[sid] || null;
         if (!doneVb && sid > 0 && bridge().structParams) {
           try {
@@ -408,8 +385,6 @@
     } catch (e) { /* retry next fetch */ }
     bcColsLoading = false;
   }
-  // ~1400 found varbits would be too many individual varbit reads; slice them locally from one
-  // varpsDumpAll snapshot using the cache's varbit defs (varbitMap).
   async function bcLoadVarps() {
     if (!bridge().varpsDumpAll) return;
     if (!bcVbIndex && bridge().varbitMap) {
@@ -495,8 +470,6 @@
     renderBossList();
     renderBossCollections();
   }
-  // Shared styles for collection lists (also used by panel_farmcol.js / panel_archcol.js, which
-  // can render before the Bosses tab has ever been opened).
   function bcEnsureCss() {
     injectStyle('bcCss', `
       .bc-wrap { margin: 2px 12px 0; }
@@ -541,8 +514,6 @@
       p.className = 'bc-pill' + (complete ? ' ok' : n > 0 ? ' go' : '');
       p.textContent = n + ' / ' + m;
       r.appendChild(p);
-      // Two grids of item ICONS rather than two capped lists of names (see setTipGrids in
-      // client.html, which budgets the cell count to the viewport and reports the remainder).
       r.dataset.tip = col.name;
       if (typeof setTipGrids === 'function')
         setTipGrids(r, [{ label: 'Missing', cls: 'miss', items: missing },
@@ -552,8 +523,6 @@
     return done;
   }
   const bcColSig = cols => cols.map(c => c.items.map(it => { const o = bcOwned(it); return o == null ? 'x' : o ? 1 : 0; }).join('')).join(',');
-  // Boss logs already shown on a KC row stay out; boss logs WITHOUT a KC row render on the
-  // Bosses tab. Clue/general go to their own tab, POF and Archaeology to theirs.
   function bcBossOnlyCols() {
     const bossKeys = new Set();
     for (const b of BOSSES) if (b.log) bossKeys.add(b.log[0] + ':' + b.log[1]);
@@ -580,7 +549,6 @@
     bcPaintList(box, bossCols);
   }
 
-  // ---- Collections tab -> panel_bosses.js (clue + general collection logs) ----
   let clueColSig = '', ccFetching = false, ccFetchAt = 0;
   async function fetchClueCol() {
     if (!bridge() || ccFetching) return;
@@ -618,8 +586,6 @@
     const done = bcPaintList(box, cols);
     head.textContent = 'Clue & general collections · ' + done + ' / ' + cols.length + ' complete';
   }
-  // Collections attach to boss rows by matching their complete-varbit's [varp, bit] against the
-  // row's log field - the same flag in two encodings, so no name matching.
   function bossCollectionOf(b) {
     if (!b.log || !bcCols || !bcVbIndex) return null;
     for (const col of bcCols) {
@@ -638,7 +604,6 @@
     const grand = d.reduce((s, b) => s + b.total, 0);
     const logsDone = d.filter(b => b.logDone === true).length, logsTot = d.filter(b => b.logDone !== null).length;
     const cnt = $('bossCnt'); if (cnt) cnt.textContent = d.length + ' bosses  ·  ' + grand.toLocaleString() + ' kills  ·  ' + logsDone + '/' + logsTot + ' logs' + (items.length !== d.length ? '  ·  ' + items.length + ' shown' : '');
-    // Per-boss drop-log progress folded into the sig so a new drop repaints the row.
     const colInfo = it => {
       const col = bossCollectionOf(it);
       if (!col || !bcVarps) return null;
@@ -662,7 +627,6 @@
     bossListSig = sig;
     list.innerHTML = '';
     if (!items.length) { list.innerHTML = '<div class="empty">No bosses match.</div>'; return; }
-    // tooltip: kc/pr/log are [varp, lsb, msb] / [varp, bit] fields
     const fmtField = t => 'varp ' + t[0] + (t[1] === t[2] ? ' bit ' + t[1] : ' bits ' + t[1] + '-' + t[2]);
     const fmtKC = (kc, pr) => fmtField(kc) + ', rollovers ' + fmtField(pr);
     for (const b of items) {
@@ -680,8 +644,6 @@
         tip.push(m1 + ' kills: ' + b.k1.toLocaleString());
         tip.push('KC: ' + fmtKC(b.kc, b.pr));
       }
-      // Bosses the game counts on ONE shared counter (Osseous with Rex Matriarchs) say so, or the
-      // identical numbers read as a bug in the panel.
       if (b.kcWith) tip.push('Kill count is shared with ' + b.kcWith + ' (one counter in game)');
       const enTip = enrageOf(b);
       if (enTip) {
@@ -691,9 +653,6 @@
       const ci = colInfo(b);
       if (ci) {
         tip.push('Collection log: ' + ci.n + ' / ' + ci.m + (b.logDone ? ' (complete)' : ''));
-        // The drop lists render as two grids of item ICONS below the text (see setTipGrids in
-        // client.html). A comma-joined run of forty item names told you far less than seeing
-        // the loot, and it made the bubble taller than the window it came from.
         if (typeof setTipGrids === 'function')
           setTipGrids(row, [{ label: 'Missing', cls: 'miss', items: ci.missing },
                             { label: 'Collected', cls: 'have', items: ci.have }]);
@@ -739,7 +698,6 @@
     }
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { BOSSES, BOSS_VARPS, COLLECTION_ITEM_VBS, COLLECTION_ITEM_VB_PAIR, bcAdoptSwitches, bcColSig, bcEnsureCss, bcLoadCols, bcLoadVarps, bcPaintList, bossField, fetchBosses, fetchClueCol });
 registerTab({ id: 'bosses', render: renderBosses, open: function () { bossListSig = ''; fetchBosses(true); } });
 registerTab({ id: 'collections', render: renderClueCol, open: function () { clueColSig = ''; fetchClueCol(); } });

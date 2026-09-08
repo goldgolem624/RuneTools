@@ -1,9 +1,7 @@
 // RuneToolsX panel: Globetrotter outfit guide + clue scroll list/solver UI.
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Worn pieces are detected from the equipment container (94) by item name, so every tier variant
-  // counts.
   const GLOBETROTTER = [
     { key: 'jacket',     name: 'Jacket',     cost: '1,500', effect: 'Teleport directly to the clue scroll location.', charges: 'Up to 3 charges (+1 every 5 trails).' },
     { key: 'shorts',     name: 'Shorts',     cost: '1,000', effect: 'Automatically perform the correct emote for emote clues.', charges: 'Unlimited.' },
@@ -19,9 +17,7 @@
   ];
   let gtWorn = {}, gtFetching = false, gtExpanded = false;
   const GT_NAMES = {};
-  // Live charge state (CS2 script10761 tooltip math): cap = 3 + set flag, where the set flag is
-  // vb39460+39461+39462+39463+39464 >= 5 (script3862); trails per charge = 5 (jacket/backpack) or
-  // 2 (boots) minus the set flag; unlimited charges when vp12314 > 0 and vb58456 > 0 (script20152).
+  // Live charge state (CS2 script10761): cap = 3 + set flag, where the set flag is vb39460+39461+39462+39463+39464 >= 5 (script3862).
   const GT_CHARGE_VBS = { jacket: [39468, 39465, 5], backpack: [39469, 39466, 5], boots: [39470, 39467, 2] };  // [charges vb, progress vb, base trails/charge]
   let gtVb = null, gtVp = null, gtChFetching = false, gtChargesAt = 0, gtWornAt = 0;
   async function fetchGtCharges() {
@@ -56,8 +52,6 @@
       const gt = document.createElement('div'); gt.id = 'gtPanel'; gt.style.cssText = 'padding:8px 10px;border-radius:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1)'; wrap.appendChild(gt);
       gt.addEventListener('click', e => { if (e.target.closest('#gtHead')) { gtExpanded = !gtExpanded; renderGlobetrotter(); } });
     }
-    // The tab renders on the 250ms loop; the bridge reads are throttled (worn = container scan,
-    // charges = varbits).
     const now = Date.now();
     if (now - gtWornAt > 4000) { gtWornAt = now; fetchGlobetrotter(); }
     if (now - gtChargesAt > 1500) { gtChargesAt = now; fetchGtCharges(); }
@@ -133,8 +127,6 @@
     if (!wrap) {
       c.innerHTML = ''; clueListSig = '';
       wrap = document.createElement('div'); wrap.id = 'clueWrap'; wrap.className = 'pk-wrap'; c.appendChild(wrap);
-      // Live view = difficulty tabs + held-clue list. "Browse all" is a separate read-only database
-      // mode that never drives the live solver / map / in-world marks.
       const tabs = document.createElement('div'); tabs.id = 'clueTabs'; tabs.style.cssText = 'display:flex;gap:4px;margin-bottom:7px;flex-wrap:wrap'; wrap.appendChild(tabs);
       tabs.addEventListener('click', e => {
         const t = e.target.closest('[data-tier]'); if (t) { clueLiveTier = +t.dataset.tier; clueRenderFocus(); return; }
@@ -194,8 +186,6 @@
       mapWrap.appendChild(mapStage);
       const mapCap = document.createElement('div'); mapCap.id = 'clueMapCap'; mapCap.className = 'clue-map-cap'; mapWrap.appendChild(mapCap);
       const mapFloors = document.createElement('div'); mapFloors.id = 'clueMapFloors'; mapFloors.style.cssText = 'display:none;gap:5px;align-items:center;margin-top:4px;font-size:11px;flex-wrap:wrap'; mapWrap.appendChild(mapFloors);
-      // Manual floor switch for a multi-floor scan map. Clicking the floor you are already
-      // viewing releases the pick and goes back to following the player's own floor.
       mapFloors.addEventListener('click', e => {
         const b = e.target.closest('button[data-floor]'); if (!b) return;
         const want = +b.dataset.floor;
@@ -213,7 +203,6 @@
         clueListSig = ''; renderCluesList();
       });
       search.addEventListener('input', () => { clueFSearch = search.value.toLowerCase(); clueListSig = ''; renderCluesList(); });
-      // Browse-all list is READ-ONLY: it must not touch the live held-clue solver / map / in-world marks.
       list.addEventListener('click', e => {
         if (clueBrowse) return;
         const r = e.target.closest('.pet-row'); if (!r || r.dataset.cid === undefined) return;
@@ -230,13 +219,10 @@
     puzzleTick();    // poll the puzzle-box board (interface 1931); drives the optimal-solver guide
     clueScrollTick();   // poll the open clue scroll (interface 345); auto-identifies emote/cryptic clues
   }
-  // Mode dispatcher. LIVE = difficulty tabs + held-clue list + solver (held clues only). BROWSE =
-  // the read-only database, which never touches the live solver (activeClueId is dropped on entry).
   function clueRenderFocus() {
     const tabs = $('clueTabs'), held = $('clueHeld'), tb = $('clueToolbar'), cnt = $('clueCnt'), list = $('clueList');
     if (!tabs) return;
     const SOLVER = ['clueCompass', 'cluePuzzle', 'clueEmote', 'clueKnot', 'clueMapWrap'];
-    // Opening a puzzle box in-game selects its held clue so the solver shows there.
     if (cluePuzzleOpen && !cluePuzzleWasOpen && !clueBrowse && cluePuzzleHeld.length) { activeClueId = cluePuzzleHeld[0].i; clueLiveTier = -1; }
     cluePuzzleWasOpen = cluePuzzleOpen;
     if (clueBrowse) {
@@ -264,13 +250,6 @@
     h += '<button id="clueBrowseBtn" class="pet-chip" style="margin-left:auto">Browse all</button>';
     tabs.innerHTML = h;
   }
-  // Auto-selects a held clue so the solver always shows one. Puzzle clues (slider / lockbox /
-  // towers) list here too and route through selectClue.
-  // Clue ids seen in the backpack, so a clue LEAVING it can be detected (= completed).
-  // fetchClues already resets on the ARRIVAL edge (a clue id re-entering the inventory); this
-  // is the departure edge, which also covers a swap that completes inside one poll interval.
-  // Confirmed over two polls: a single empty read during a bridge hiccup must not wipe the
-  // eliminations of a scan you are still solving.
   const clueHeldSeen = new Set(), clueGoneCnt = {};
   function renderClueHeld() {
     const el = $('clueHeld'); if (!el) return;
@@ -341,8 +320,6 @@
     };
     const secHdr = (txt) => { const h = document.createElement('div'); h.textContent = txt;
       h.style.cssText = 'font-size:10px;text-transform:uppercase;letter-spacing:0.5px;opacity:0.55;font-weight:700;padding:9px 4px 4px'; return h; };
-    // "Held now" = held clues WITHIN the current filter; "Other clues" = the rest of the filtered
-    // set. Both honour the tier/type/search chips, so a held clue is never shown twice.
     const heldClues = items.filter(c => clueHeld.has(c.i));
     const showHeld = heldClues.length && !clueFHeld;
     const otherItems = showHeld ? items.filter(c => !clueHeld.has(c.i)) : items;
@@ -355,7 +332,6 @@
     for (const c of otherItems) list.appendChild(clueRow(c));
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { clueRenderFocus, fetchGlobetrotter, renderClueStats, renderClues, renderCluesList, renderGlobetrotterTab });
 registerTab({ id: 'clues', render: renderClues, open: function () { clueListSig = ''; fetchClues(true); }, close: function () { try { activeClueId = -1; if (bridge() && bridge().guideMarks) rtxData.sync('overlay.guideMarks', ''); clueSetNpc(''); } catch (e) {} } });
 registerTab({ id: 'globetrotter', render: renderGlobetrotterTab });

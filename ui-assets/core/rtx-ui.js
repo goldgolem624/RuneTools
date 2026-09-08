@@ -1,16 +1,6 @@
-// rtx-ui.js: Preferences blob (UI_DEF, uiCfg, uiApply, uiCatHidden), the toLocaleString number format, accentRgba and the menu bar info chips (uiBarTick).
-// Loads after: rtx-prefs.js (prefGet/prefSet); uiApply() runs at load and must not touch anything declared later.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // =================== HTML escaping (shared by every panel) ===================
-  // htmlEsc: the canonical text/attribute escape (& < > "). pluginEsc: DOM-based, for
-  // author-supplied plugin strings shown in host chrome.
   function pluginEsc(s) { const d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
-  // Canonical HTML-text escape shared by the panels (global scope). Escapes & < > and ".
   function htmlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
-  // =================== Preferences (rtxUi) ===================
-  // One durable JSON blob for every user-facing preference that is not already owned by a
-  // feature store (alerts and layout keep theirs). Read lazily, written through prefSet.
   const UI_DEF = { scale: 100, accent: '#e8c26a', contrast: false, motion: true, opacity: 93,
                    restore: true, toastTtl: 5000, hideWorld: false, numFmt: 'compact', hiddenCats: [],
                    font: 'variable', fontSize: 13, tabular: false, compactTips: false,
@@ -21,14 +11,6 @@
                     ['Consolas', 'consolas', "Consolas, 'Cascadia Mono', monospace"]];
   const UI_ACCENTS = [['Gold', '#e8c26a'], ['Violet', '#8c6ffd'], ['Blue', '#5b9cff'], ['Teal', '#2fd0c4'], ['Green', '#4dd28a'],
                       ['Amber', '#f5b241'], ['Red', '#ff6b6b'], ['Pink', '#ff7ac8'], ['Mono', '#c9cfdd']];
-  // =================== Pointer coordinates under CSS zoom (uiZoomOf / uiEvPt) ===================
-  // THE one way to turn a mouse event into element-local coordinates. Window bodies render under
-  // `zoom: var(--content-zoom)` (rtx.css .win-body, set by the font-size preference) and the whole
-  // page under the launcher's device scale; inside a zoomed subtree the engine reports pointer
-  // coords in SCREEN pixels while layout works in the element's own CSS pixels. Raw
-  // `e.clientX - rect.left` therefore lands up-left of the cursor by the zoom factor -- the World
-  // Map and clue map both shipped that bug. Every panel and core file MUST use uiEvPt (or divide
-  // by uiZoomOf) instead of raw clientX/offsetX arithmetic; see the authoring note in client.html.
   function uiZoomOf(el) {
     let z = 1;
     for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
@@ -37,8 +19,6 @@
     }
     return z;
   }
-  // Pointer position in `el`'s own CSS pixels. offsetX is preferred (the engine's hit test is
-  // already element-relative); the rect arithmetic is the fallback when the event targets a child.
   function uiEvPt(e, el) {
     const Z = uiZoomOf(el), t = e.target;
     if (t === el && typeof e.offsetX === 'number') return { x: e.offsetX / Z, y: e.offsetY / Z };
@@ -87,24 +67,15 @@
     r.setProperty('--content-zoom', (fs / 13).toFixed(3));
     try { if (typeof wmRectsSoon === 'function') wmRectsSoon(); } catch (e) {}
     try { uiBarTick(); } catch (e) {}
-    // Plugin frames are separate documents and inherit none of the above: push the
-    // token values to any mounted plugin so accent/font changes reach them live.
     try { if (typeof pluginThemeBroadcast === 'function') pluginThemeBroadcast(); } catch (e) {}
-    // UI scale rides the view's device scale (crisp text, correct input mapping); the
-    // launcher multiplies it into its DPI sync. Older launchers lack the call: no-op.
     const sc = Math.max(50, Math.min(200, Number(c.scale) || 100));
     if (sc !== _uiScaleSent) {
       try { if (bridge() && bridge().uiScale) { bridge().uiScale(myPid(), sc / 100); _uiScaleSent = sc; } } catch (e) {}
-      // The viewport changes size in CSS px: re-clamp windows and the bar, republish the
-      // consume rects, and rebuild open panels so nothing sits stale from the old raster.
       setTimeout(() => { try { window.dispatchEvent(new Event('resize')); } catch (e) {} try { uiRepaintAll(); } catch (e) {} }, 120);
     }
   }
   function uiCatHidden(id) { return id !== 'Settings' && uiCfg().hiddenCats.indexOf(id) >= 0; }
-  // Preferences "Numbers": panels format through toLocaleString() at hundreds of call sites,
-  // so the preference is applied there. Compact mode abbreviates values from 100,000 up
-  // (levels, kill counts and stack sizes below that stay exact); calls that pass a locale or
-  // options are formatting deliberately and are left alone. Full mode is the native output.
+  // Compact mode patches Number.prototype.toLocaleString: whole values from 100,000 up become k/m/b.
   (function () {
     const native = Number.prototype.toLocaleString;
     Number.prototype.toLocaleString = function (loc, opt) {
@@ -112,8 +83,6 @@
         const n = Number(this);
         if (isFinite(n) && Math.abs(n) >= 100000 && Math.floor(n) === n) {
           const a = Math.abs(n), sign = n < 0 ? '-' : '';
-          // Two decimals at every magnitude: 17.15k reads as a real quantity where 17.2k
-          // rounds away the part people are checking.
           if (a >= 1e9) return sign + (a / 1e9).toFixed(2) + 'b';
           if (a >= 1e6) return sign + (a / 1e6).toFixed(2) + 'm';
           return sign + (a / 1e3).toFixed(2) + 'k';
@@ -122,14 +91,9 @@
       return native.call(this, loc, opt);
     };
   })();
-  // Canvas painters cannot read CSS var(): give them the accent as an rgba string.
   function accentRgba(a) { return 'rgba(' + uiHexRgb(uiCfg().accent) + ',' + a + ')'; }
-  // Bar info chips. 1 Hz; writes only on change. The XP chip leans on the XP tracker's
-  // sampler (applyXpOverlay starts it) and its 1 s state fetch.
   let _barInfoSig = '', _barXpArmed = false, _sessStartMs = 0;
   function uiBarTick() {
-    // Overflow guard: anything that widened the bar after its last placement (fonts, chips,
-    // status text) must not leave it hanging off the frame edge.
     try {
       const bar = $('menubar');
       if (bar) {
@@ -145,9 +109,6 @@
       if (c.bar24h) parts.push('<b>' + String(h).padStart(2, '0') + ':' + m + '</b>');
       else parts.push('<b>' + ((h % 12) || 12) + ':' + m + '</b> ' + (h < 12 ? 'am' : 'pm'));
     }
-    // Session = time logged into the game (lobby or in-game, status >= 20), from the first
-    // logged-in snapshot this client showed until it logs out. Independent of the XP tracker,
-    // whose own clock only starts at the first XP gain.
     {
       const sn = (typeof lastSnap !== 'undefined') ? lastSnap : null;
       const loggedIn = !!(sn && sn.status >= 20);
@@ -180,16 +141,9 @@
     const html = parts.join('<span style="color:var(--text-mute)">|</span>');
     if (html !== _barInfoSig || el.innerHTML !== html) {
       _barInfoSig = html; el.innerHTML = html;
-      // The bar's width just changed: re-centre it AND republish the consume rects, or the
-      // newly covered strip (and everything that shifted under it) falls through to the game.
       try { positionMenubar(); } catch (e) {}
       try { wmRectsSoon(); } catch (e) {}
     }
   }
   setInterval(() => { try { uiBarTick(); } catch (e) {} }, 1000);
-  // The first uiApply() call lives at the top of core/rtx-boot.js: it reaches bridge(), uiBarTick()
-  // and the window manager, none of which exist yet while this file loads.
 
-  // DUNGEONEERING VISIBILITY. One flag gates the nav entry, the poll, the render and the
-  // tab-select handler, so the panel can be withheld from a build without removing any of its
-  // code. false -> hidden, true -> shown.

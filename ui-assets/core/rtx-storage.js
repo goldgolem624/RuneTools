@@ -1,7 +1,3 @@
-// rtx-storage.js: Bank, metal bank materials, Archaeology guild shop, bait box and workbench renderers (fetchBank, paintMaterials, renderBaitBox, paintWorkbench...).
-// Loads after: rtx-icons.js (attachIcon/attachInfo) and rtx-bridge.js.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ---- Bank (paginated, searchable) ----
   const BANK_PER_PAGE = 50;          // 10 cols x 5 rows
   let bankData     = null;           // {open, character, cached_at, count, items:[[slot,id,stack,name]]}
   let bankTerm     = '';
@@ -15,10 +11,6 @@
   let bankPaintSig = '';             // last painted signature, to avoid flicker
   let bankFetching = false;
 
-  // RS item-amount tiers (game thresholds + colours): <100K full yellow, 100K-9.999M "K" white,
-  // 10M-9.999B "M" green, 10B-9.999T "B" blue, 10T-9.999Q "T", >=10Q "Q". Integer units (the game floors).
-  // Item amounts. Below 100K the game shows the exact count, and so do we. Above that the
-  // unit comes from the MAGNITUDE, not from the game's shifted tiers: the game calls
   // 2.3 billion "2325M", so two decimals there would read "2325.18M" and run off the cell.
   // Choosing the unit by magnitude keeps every label between 1.00 and 999.99 plus a suffix.
   const AMT_UNITS = [[1e15, "Q", "q"], [1e12, "T", "t"], [1e9, "B", "b"], [1e6, "M", "m"], [1e3, "K", "k"]];
@@ -39,13 +31,7 @@
     return { t: String(n), c: "" };
   }
 
-  // Icons render as CSS background-image, NOT <img> (a replaced <img> with %-sizing
-  // resolves to intrinsic size in Ultralight's WebKit -> uneven). Sizing is
-  // DOWNSCALE-ONLY: true pixel size, shrunk only when bigger than the box;
-  // `contain` blew tightly-cropped small icons up to fill the slot.
   const ICON_NAT = new Map();   // data-url -> {w,h} | null (not a decodable PNG)
-  // Read width/height straight from the PNG IHDR (offsets 16/20, big-endian) of
-  // the data URL -- synchronous + reliable, no Image() load race.
   function pngSize(url) {
     if (ICON_NAT.has(url)) return ICON_NAT.get(url);
     let s = null;
@@ -71,12 +57,6 @@
     if (!nat) { commit('contain'); return; }              // not a decodable PNG -> fit the box
     const bw = el.clientWidth, bh = el.clientHeight;
     if (!bw || !bh) {
-      // Not laid out yet: committing native size here painted oversized sprites for a
-      // beat before the next sizing pass shrank them (visible on every panel as icons
-      // flashing huge). Paint NOTHING for the pre-layout instant and decide with real
-      // box dimensions on the next frame, which fires before paint in this renderer.
-      // A box that stays unmeasurable (hidden tab) settles on contain, which is the
-      // correct rendering for any box size.
       commit('0px 0px');
       const tries = (parseInt(el.dataset.icoTries || '0', 10) || 0) + 1;
       el.dataset.icoTries = String(tries);
@@ -85,16 +65,9 @@
       return;
     }
     el.dataset.icoTries = '';
-    // Native size when it fits (pixel-crisp); fit down only when confirmed larger.
-    // The box this was decided against is recorded, because the decision only holds
-    // for that box: a pixel size committed for a wide cell CROPS once the cell narrows.
     el.dataset.icoBox = bw + 'x' + bh;
     commit((nat.w > bw || nat.h > bh) ? 'contain' : (nat.w + 'px ' + nat.h + 'px'));
   }
-  // Re-size when the image OR its box changed. The box is not fixed: cell widths
-  // follow the grid, which follows the window, and a wrapping name changes the
-  // height. Sizing only on URL change left a stale pixel size behind, which shows
-  // as a cropped icon once the box is smaller than the size that was committed.
   function sizeAllIcons() {
     document.querySelectorAll('[data-ico-url]').forEach(el => {
       const box = el.clientWidth + 'x' + el.clientHeight;
@@ -104,19 +77,12 @@
     });
     fitNames();
   }
-  // Item names must never be split mid-word: "Stormberr / y seed" is unreadable and looks
-  // broken. Wrapping alone cannot deliver that, because a grid cell can be narrower than a
-  // single word, and then every wrapping mode that is permitted to break will break one.
-  // So the text is shrunk instead: step the size down until the widest word fits, floor at
-  // 7px. Below the floor the name is clipped by overflow:hidden and the tooltip carries it
-  // in full, which is still better than a word cut across two lines.
   const FIT_MAX = 9, FIT_MIN = 7, FIT_STEP = 0.5;
   function fitName(el) {
     const sig = el.textContent + '|' + el.clientWidth;
     if (el.dataset.fitSig === sig) return;          // same text in the same box
     let px = FIT_MAX;
     el.style.fontSize = px + 'px';
-    // scrollWidth exceeds clientWidth exactly when some line, i.e. some word, is too wide.
     while (px > FIT_MIN && el.scrollWidth > el.clientWidth) {
       px -= FIT_STEP;
       el.style.fontSize = px + 'px';
@@ -125,8 +91,6 @@
   }
   function fitNames() { document.querySelectorAll('.inv-name').forEach(fitName); }
 
-  // Resizing the window relayouts every grid without necessarily repainting the
-  // panels, so the icons have to be told to re-decide.
   let icoResizeQ = 0;
   window.addEventListener('resize', () => {
     if (icoResizeQ) return;
@@ -153,9 +117,7 @@
     sizeIcon(el);
   }
 
-  // itemIcon() reads the bundled pack SYNCHRONOUSLY; memoized, misses cached as ''.
   // Icon overrides for items whose bundled icon is wrong: coins (995) bakes amount
-  // text into the sprite, so use a clean coin-pile image.
   const CUSTOM_ICON = {
     995: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB8AAAAeCAIAAABbkFLLAAAABnRSTlMAAAAAAABupgeRAAADg0lEQVR42p2WP28TQRDF3+7ZXjvGVhJ0BISAAELib0MBPVBDCRWiRoKOggpRIfEBgJIPQAMNFQiJhlCABAUCChJRBMmIIIfgrG9vl7zVXZY9DHEYbXGRZn7zZnZ2YoGNTSIyO76b2BA9d78LBDt5qQ/YMd3kv9GLj1NsbESPU07VagmO7lcHdqupDlYGePoSI21nqo7tV/D2bp5uY9GTBFJAANbC5H8XL+EcDuxS9RqybDPaE++SW+jh3+kCDkw/zGDMuHSiZUJdmfmdLnli7SCdaGMRxG3YGQHkOem7tvPMneiOHB7niLaWzuNol/MPUykZkHlRFbt1uVuGF1diHQAIMYIuwymtXoNgDNFDg8N71ZF9anaHarfw4m2UyRhCk4QhqhFy16KBjUtu1Blj8+K6nPMfht8/BzE9h+Alkd5sRNqrb4F/+gpqNdLZGaOHhnR+Z38ODx1AOkNaKqLj4B6WvDatAOYXoycjqKscmBK0qgEZ03M4jsAI7cgti12LaTexvILSKDa3RBvDeOuortlQTYVtU9HCOnq+76zXnpCuVKCT4hwTDDQpIcgVwk3OObv3QEsJ1WDtU53K2FBHjdoVHRqBbree6fkwljYztR4GZ8nlscxE41VTXbc9YhlIgVpCh3q9OpGkd1qY7qLVDJPgDy/T2bAbWkq1m5jsRHRRlMsijI3pzjFsy4TaMoEd5dLVGRti2bdCuxS+9YpnshvTJRyKt5qbiG6nT/fW6BNNdCawtQybPdvjlVjtUHonnDm+MkGNFe0UYXXQXnmZ7Ral2RBGBFU74gAkgm4oQIjxxYxRe17dYhTFuuix/qaw8EWXOzbscZ+yuu4FpZBA7Saiy3wuhR9K6xt96kQU+fw1rt/pA7h2MfVPl5SlfkwvtRsmiDsjE2ZfWsaPAd584Otdv+13n8oRepFKgdUh+it6DT0cwqcMDbKsybfFBbp0r1IAi1+xsKjfLxQdODSrZqbVqg4Li9vYUXJvCa8/IDYCrfOlx/89rDjeg7f7N7qXbrLgqxdSnUMP9UBj+WcAfF9G77v+8pUUCo+svLY8omO9OqL5LYWAMWzCQAct8mSvskqLdR3oPMZV6MFCVVnm9/gqgLi/YWPHORyF+76HEIHRJj89TPee64WsweS3J+nHzxqFcWPHXaqGbPaHlOw/m1l4NPP07uTtK5P/8BT4T5PjyPwF8Qz3jm5wM2gAAAAASUVORK5CYII='
   };
@@ -185,8 +147,6 @@
     return cell;
   }
 
-  // Re-attach icons for cells that haven't painted yet, so freshly-arrived icons
-  // appear without a page switch.
   function topUpBankIcons() {
     const grid = document.getElementById('bankGrid');
     if (!grid) return;
@@ -219,14 +179,11 @@
     matFetching = false;
     paneRun('materials', renderMaterials);
   }
-  // ---- Guild Shop tab: Archaeology Guild permanent-unlock states (own tab). ----
   let ashopFetching = false;
   async function fetchArchShop() {
     if (!bridge() || ashopFetching) return; ashopFetching = true;
     try {
       matUnlockVp = await readVarbitValues(ARCH_SHOP_VBS);
-      // Entries with no unlock varbit (the free soil box claim) are proven by possession: scan
-      // the cached bank -- readable with the bank closed -- and the live backpack.
       if (ARCH_SHOP_HAVE.length) {
         const found = {};
         const scan = rows => { for (const it of (rows || [])) if (ARCH_SHOP_HAVE.indexOf(it[1]) >= 0) found[it[1]] = true; };
@@ -249,25 +206,16 @@
     }
     paintUnlocks();
   }
-  // ---- Familiar tab -> panel_familiar.js (spliced inline at load) ----
-  // Derive one shop entry's live state -> { done, badge, detail }. Tiered upgrades share a single
-  // LEVEL varbit, so a tier is owned once that varbit reaches the tier's level; single purchases
-  // are owned at >= 1. Entries with no `own` spec are consumables with no ownership to read.
   function archUnlockState(it) {
     const lvl = (matUnlockVp && it.own && matUnlockVp[it.own.vb]) || 0;
     const detail = it.effect || it.note || '';
     if (it.have) {
-      // Possession-proven, not varbit-proven: say "Have it" rather than "Owned" so the weaker evidence
-      // is visible -- a claimed box that was destroyed would read as not held.
       const got = !!archShopHave[it.have];
       return { done: got, badge: got ? 'Have it' : 'Not held', detail: detail || 'Free, one-time claim' };
     }
     if (!it.own) return { done: false, badge: '', detail: detail, plain: true };
     const need = it.own.lvl || 1;
     if (lvl >= need) return { done: true, badge: 'Owned', detail: detail };
-    // The shop sells tiers in order ("...and previous upgrades"), so a tier you cannot buy yet
-    // because the one below it is unbought is LOCKED, not merely unbought -- matching the game's
-    // three states. Buyable means the varbit sits exactly one tier short.
     const locked = lvl < need - 1;
     return { done: false, locked: locked, badge: locked ? 'Locked' : 'Not bought', detail: detail };
   }
@@ -289,9 +237,6 @@
     paintMaterials();
   }
   let matUnlockSig = '';
-  // Archaeology Guild shop, grouped by qualification rank exactly as the in-game shop tabs are.
-  // Only trackable entries (those with an `own` spec) count toward a rank's owned tally; the
-  // consumables listed alongside them have no ownership state to read.
   function paintUnlocks() {
     const host = $('matUnlocks'); if (!host) return;
     const groups = ARCH_SHOP.map(g => ({
@@ -349,7 +294,6 @@
     body.appendChild(grid);
   }
   // ---- Bait box tab: Anachronia Big Game Hunter bait box (container 867). Same model as the metal
-  // bank / materials tabs -- live while the box UI is open, else the per-character disk cache. ----
   async function fetchBaitBox() {
     if (!bridge() || baitFetching) return;
     baitFetching = true;
@@ -409,7 +353,6 @@
   }
 
   // ---- Workbench Storage tab: the Archaeologist's damaged-artefact store (container 1008). Same model
-  // as the bait box -- live while the workbench is open, else the per-character disk cache. The
   // container holds nothing until the first guild-shop workbench upgrade (varbit 61463). ----
   async function fetchWorkbench() {
     if (!bridge() || wbFetching) return;
@@ -420,9 +363,6 @@
         const d = JSON.parse(await bridge().workbenchItems(myPid()));
         wbData = d && Array.isArray(d.items) ? d : empty;
       } else if (bridge().containerItems) {
-        // Pre-rebuild fallback: the generic container read still shows the workbench while it is OPEN.
-        // No disk cache on that path, so it empties when you walk away; the cached view needs the
-        // launcher build that adds the workbenchItems bridge.
         const d = JSON.parse(await bridge().containerItems(myPid(), 1008));
         const items = (d && Array.isArray(d.items)) ? d.items : [];
         wbData = { open: items.length > 0, items: items, count: items.length, cached_at: 0, liveOnly: true };
@@ -463,7 +403,6 @@
         : (wbData && wbData.cached_at ? 'cached ' + new Date(wbData.cached_at * 1000).toLocaleString() : '')
           || (wbData && wbData.liveOnly ? 'live only until the launcher is rebuilt' : '');
       const total = (wbData && wbData.count) ? wbData.count : 0;
-      // Capacity comes from the workbench-upgrade level varbit, which the Guild Shop tab reads.
       const cap = WB_CAP[(matUnlockVp && matUnlockVp[61463]) || 0] || 0;
       meta.innerHTML = (total ? total + (cap ? ' / ' + cap : '') + ' artefacts' : '') + (liveTxt ? '<br>' + liveTxt : '');
     }

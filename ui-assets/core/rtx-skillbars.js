@@ -1,16 +1,12 @@
 // rtx-skillbars.js: In-game Skills XP bars (interface 1466 cells), SKILL_SPRITES/SKILL_LAYOUT, combatLevel, sprite icon loader (setSpriteIcon, attachSkillIcon).
 // Loads after: rtx-registry.js (XP tables).
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ---- in-game Skills XP bars (RuneLite-style) ----
   // A progress bar along the bottom of every cell of the game's Skills panel (interface 1466, comp 2 subs 0..28, row-major = SKILL_LAYOUT order). Gated on varc 3165 == 1 (panel open); positioned from varcs 3166/3167.
   const SK_GROUP = 1466, SK_OPEN_VARC = 3165, SK_CELL_COMP = 2;
   // Panel chrome (title bar + tab strip) is in frame group 1477, not 1466, so the position varcs point at the window's outer top-left. Chrome is derived from geometry: inset = (panelW - contentW) / 2, offset = panelH - contentH - inset (live: window 224x291, content 216x243 -> inset 4, top chrome 44). The tab strip comp id and visibility flag are unreliable across layouts.
-  // The panel's window record decodes as w,h,?,x,y (see script8701 notes).
   const SK_POS_VARC_X = 3166, SK_POS_VARC_Y = 3167;
   const SK_SIZE_VARC_W = 3162, SK_SIZE_VARC_H = 3163;
   let skContentDx = 0, skContentDy = 0, skChromeAt = 0, skChromeSeen = '';
   let skChromeOk = false;   // a varc-derived chrome measurement from SANE inputs exists
-  // Returns {dx,dy}, or null if either rect was unreadable (caller keeps its last good value).
   function skMeasureChrome(panelW, panelH, contentW, contentH) {
     if (!(panelW > 0 && panelH > 0 && contentW > 0 && contentH > 0)) return null;
     if (contentW > panelW || contentH > panelH) return null;      // torn read
@@ -54,12 +50,10 @@
   }
   let skBarsBootCleared = false;   // one unconditional wipe per page life (see below)
   function skBarsClear(force) {
-    // `force` clears even when this page never drew: the overlay keeps the last published commands across a UI reload.
     if (!skBarsDrawn && !force) return;
     try { if (bridge() && bridge().skillBars) bridge().skillBars(myPid(), ''); } catch (e) {}
     skBarsDrawn = false;
   }
-  // Red -> yellow -> green across the level (ramped through yellow to avoid muddy brown).
   function skBarColour(pct) {
     let f = pct / 1000; if (f < 0) f = 0; if (f > 1) f = 1;
     const r = f < 0.5 ? 235 : Math.round(235 - 190 * ((f - 0.5) / 0.5));
@@ -88,10 +82,8 @@
     }
     skBarsBootCleared = true;   // drawing path owns the channel from here on
     const now = Date.now(); if (now - skBarsAt < 400) return; skBarsAt = now;
-    // Open varc is the real gate: 1466's widgets stay in the tree when tabbed away. Only an explicit 0 closes; unreadable does not disable. Values only count when they are plausible small ints (some builds hold garbage 64-bit values).
     let openVar = null, originX = null, originY = null, panelW = 0, panelH = 0;
     try {
-      // varcInts, not varcLongs: the 64-bit read widens adjacent union bytes into int-typed varcs. Longs only as a fallback on an older host.
       const rd = bridge().varcInts || bridge().varcLongs;
       const d = JSON.parse(await rd(myPid(),
                   SK_OPEN_VARC + ',' + SK_POS_VARC_X + ',' + SK_POS_VARC_Y
@@ -105,14 +97,12 @@
       const rh = Number(d[String(SK_SIZE_VARC_H)]); if (sane(rh)) panelH = rh;
     } catch (e) {}
     const sk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
-    // uiSc = interface->pixel scale (Interface Scaling setting). Primary: companion client width / 1477 root frame width. Fallback: the reader's gameview-varc / gameview-tree ratio ("ui").
     let ws = [], uiSc = 1, gj = null;
     try {
       gj = JSON.parse(bridge().interfaceGroup(myPid(), SK_GROUP) || '{}');
       ws = gj.widgets || [];
       if (typeof gj.ui === 'number' && gj.ui > 0.2 && gj.ui < 5) uiSc = gj.ui;
     } catch (e) {}
-    // Diagnostics are recorded before any bail-out and painted live onto the toggle row (the skills pane is signature-deduped).
     skBarsDiag = { widgets: ws.length, openVar: openVar, skills: sk ? sk.length : 0,
                    px: originX, py: originY, pw: panelW,
                    comp2: ws.filter(w => w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0).length,
@@ -121,16 +111,12 @@
     skBarsPaintWhy();
     if (openVar === 0) { skBarsClear(); return; }        // tabbed away / closed
     if (!sk || !sk.length) { skBarsClear(); return; }
-    // Skill cells = comp 2's subs (2:0..2:28, 60x27, three per row at x 7/79/151), row-major. Only widgets with a resolved absolute position are drawn on.
-    // Visibility: a sane nonzero open varc accepts cells without the per-cell v:1 flag (the flag reads false in classic fullscreen layouts); the flag is only required when the varc is unreadable.
     const openTrusted = openVar !== null && openVar > 0;
     const ok = w => w && w.r && w.a && w.r[2] > 8 && w.r[3] > 8 && (openTrusted || w.v === 1);
     let cells = ws.filter(w => ok(w) && w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0)
                   .sort((p, q) => p.t[2] - q.t[2]);
-    // Primary path: each cell carries its skill slot (the sub index); positional pairing broke whenever one cell was filtered out.
     let bySub = true;
     if (cells.length < 20) {
-      // Fallback if the interface is restructured: the widget size that repeats ~29 times is the cell grid, ordered by position.
       const bySize = {};
       for (const w of ws) { if (!ok(w)) continue; const k = w.r[2] + 'x' + w.r[3]; (bySize[k] = bySize[k] || []).push(w); }
       let best = null;
@@ -140,14 +126,12 @@
       bySub = false;
     }
     cells = cells.slice(0, SKILL_LAYOUT.length);
-    // True origin + chrome from the live 1477 frame (mirrors Reader.cpp InvSlotRectJson): 1477's walk seeds at 0,0; the owning frame is the 1477 widget slightly larger than 1466's content root, nearest the varc origin hint. border = (frameW - contentW)/2, header = the vertical rest. Cells = frame + (cell - contentRoot), so a garbage origin varc cannot displace bars.
     const root = ws.find(w => w.d === 0 && w.r && w.r[2] > 0 && w.r[3] > 0);
     let anchor = null;
     if (root && root.a) {
       const cw = root.r[2], ch = root.r[3];
       let fr = [];
       try { fr = (JSON.parse(bridge().interfaceGroup(myPid(), 1477) || '{}').widgets) || []; } catch (e) {}
-      // Primary interface->pixel scale: companion client width over the 1477 root frame width.
       let rootW = 0;
       for (const f of fr)
         if (f && f.d === 0 && f.r && f.r[2] > rootW) rootW = f.r[2];
@@ -162,7 +146,6 @@
       }
       skBarsDiag.ui = { sc: Math.round(uiSc * 1000) / 1000, pw: pw, rootW: rootW,
                         rd: gj ? gj.ui : null, vw: gj ? gj.uiw : null, gw: gj ? gj.uig : null };
-      // 1477 widgets can arrive without `a` (no panel-origin spec): the JSON is a strict depth-first walk with parent-relative rects, so absolutes reconstruct from a depth stack.
       const stk = [];
       for (const f of fr) {
         if (!f || !f.r) continue;
@@ -182,7 +165,6 @@
         if (dist === bestD && best && fw * fh >= best.r[2] * best.r[3]) continue;
         bestD = dist; best = f;
       }
-      // The distance gate only disambiguates when several frames match the size; a unique match is trusted at any distance.
       if (best && bestD > 200 && sizeMatches > 1) best = null;
       if (best) {
         const bd = Math.round((best.r[2] - cw) / 2);
@@ -195,7 +177,6 @@
     }
     skBarsDiag.anchor = anchor ? (anchor.x + ',' + anchor.y) : null;
     skBarsPaintWhy();
-    // Fallback: varc-measured chrome, from sane inputs only. With garbage varcs the live frame is also the presence gate.
     if (!anchor) {
       if (now - skChromeAt > 1500) {
         skChromeAt = now;
@@ -213,7 +194,6 @@
       if (!t) continue;
       const pct = skBarPct(t[2] === undefined ? -1 : t[2], i === 26);
       if (pct < 0) continue;
-      // Anchor path: every term is a widget-tree coordinate, so the rect converts to pixels by uiSc. The varc-chrome fallback mixes spaces and stays unscaled.
       const bx = anchor ? (anchor.x + (c.a[0] - anchor.rx)) : (c.a[0] + skContentDx);
       const by = anchor ? (anchor.y + (c.a[1] - anchor.ry)) : (c.a[1] + skContentDy);
       const s = anchor ? uiSc : 1;
@@ -224,12 +204,10 @@
     try { bridge().skillBars(myPid(), segs.join(';')); skBarsDrawn = segs.length > 0; } catch (e) {}
   }
 
-  // Skill -> cache sprite id (from the game's SkillData table).
   const SKILL_SPRITES = [16040,16045,16160,16041,16058,16057,16055,16043,
     16197,16051,16050,16049,16044,16061,16056,16052,16038,16196,16060,16048,
     16059,16053,16042,16195,16047,16046,16054,16039,30936];
 
-  // In-game skills-tab order (3 per row), as reader indices.
   const SKILL_LAYOUT = [
      0, 3,14,   // Attack       Hitpoints   Mining
      2,16,13,   // Strength     Agility     Smithing
@@ -242,7 +220,6 @@
     24,25,26,   // Dungeoneering Divination Invention
     27,28];     // Archaeology  Necromancy
 
-  // RS3 combat level (post-Necromancy). Necromancy counts as its own style.
   function combatLevel(sk) {
     const L = i => (sk[i] ? sk[i][0] : 0);
     const att=L(0), str=L(2), rng=L(4), mag=L(6), nec=L(28);
@@ -254,12 +231,10 @@
 
   const SPRITES = new Map();
   const SPRITE_PENDING = new Set();
-  // Frame-budgeted sprite loader (~8ms/frame).
   const SPRITE_QUEUE = [];
   let spriteDraining = false;
   const rafSchedule = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : (cb => setTimeout(cb, 16));
   const nowMs = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
-  // Background-image, not <img>: oversized cache sprites hit Ultralight's replaced-element intrinsic-size bug. No isConnected guard: Ultralight does not implement it.
   function setSpriteIcon(el, url) {
     if (!url || !el) return;
     el.style.backgroundImage = 'url("' + url + '")';
@@ -267,7 +242,6 @@
     el.style.backgroundRepeat = 'no-repeat';
     el.style.backgroundPosition = 'center';
   }
-  // Optional `px` asks the C++ for an area-average downscale capped to px on the longest side (pass ~2x the CSS box). Cached per (id,px).
   function loadSpriteIcon(el, id, px) {
     if (!id || id <= 0 || !el) return;
     const k = px ? (id + '|' + px) : id;

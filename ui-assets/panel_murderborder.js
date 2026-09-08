@@ -1,5 +1,4 @@
 // RuneToolsX panel: Murder on the Border quest guide (quest 490, Fort Forinthry).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Progress varbit 52689 (cache quest config js5-2 archive 35 file 490): start value 5,
@@ -7,15 +6,12 @@
   const MOTB_PROG = 52689, MOTB_DONE = 195;
   // Quest start: Aster in the Fort Forinthry townhall -- npc 29809 at 3302,3571.
   const MOTB_ASTER = 29809, MOTB_ASTER_X = 3302, MOTB_ASTER_Y = 3571;
-  // Post-Accept flavour chooser (any option works). One option is picked at random ONCE and kept
-  // so the box does not flicker (qgRand).
   const MOTB_FLAVOR1 = ['bear that in mind', 'just like any other day', 'my kind of party'];
   let motbFlavor1 = 0;
   const MOTB_FLAVOR2 = ['sure it will be fine', 'keep our guard up', 'keep things entertaining'];
   let motbFlavor2 = 0;
   const MOTB_BILL = 29806, MOTB_BILL_X = 3286, MOTB_BILL_Y = 3557;   // Bill
   const MOTB_BLUEPRINTS = 125059, MOTB_BP_X = 3287, MOTB_BP_Y = 3555;   // Fort Forinthry blueprints table
-  // Kitchen (Tier 1) build materials (noted or unnoted both count):
   // 12x willow frame 54848/54849n, 6x stone wall segment 54460/54461n.
   const MOTB_FRAME = 54848, MOTB_FRAME_N = 54849, MOTB_WALL = 54460, MOTB_WALL_N = 54461;
   // Blueprint picking runs in the Make-X window (frame 1371 / content 1370): recipe list = 1371
@@ -25,17 +21,12 @@
   const MOTB_MAKEX_CONTENT = 1370, MOTB_MAKEX_TITLE = 13, MOTB_MAKEX_START = 29;
   // Kitchen construction hotspots (3 spots): per-spot 2-bit loc-morph varbits, 0 = no blueprint,
   // 1 = plain hotspot, 2 = the OPTIMAL hotspot (loc 125242 'Optimal Construction hotspot', action
-  // Build) -- the optimal spot ROTATES between builds. VARBIT-PRIMARY: the tile comes straight
-  // from the varbits so it works with the hotspot out of scene; the third spot's varbit is
   // unknown, so it is picked by ELIMINATION when neither known varbit reads 2.
   const MOTB_HOT1 = 51675, MOTB_HOT1_TILE = [3315, 3564];   // vb 51675 [30:31]
   const MOTB_HOT2 = 51674, MOTB_HOT2_TILE = [3313, 3565];   // vb 51674 [28:29]
   const MOTB_HOT3 = 51677, MOTB_HOT3_TILE = [3319, 3567];   // vb 51677 [0:1] (the third locmorph, by elimination)
   const MOTB_KITCHEN_VB = 33400;    // kitchen tier (vp 10762 [14:17]): 1 = Tier 1 built (flips with quest -> 20)
   // The banquet portal (light blue, south of the well): loc 125244 "Murder on the Border", action
-  // Continue quest. It leads INTO the quest INSTANCE: from v=25 until the instance is left, every
-  // branch must call motbReenter() FIRST -- back in the overworld (qgInInstance false) means point
-  // at this portal to re-enter.
   const MOTB_PORTAL = 125244, MOTB_PORTAL_X = 3303, MOTB_PORTAL_Y = 3541;
   const MOTB_WELCOME1 = ['welcome to fort forinthry', 'very perceptive', 'say nothing'];
   let motbWelcome1 = 0;
@@ -45,15 +36,11 @@
   let motbWelcome3 = 0;
   const MOTB_WELCOME4 = ["we've got this", 'surrounded by idiots', 'say nothing'];
   let motbWelcome4 = 0;
-  // Town Hall guest groups (v=55; one talk per group). Instance NPCs -> marked at their live
-  // scene tiles.
   const MOTB_GUESTS_CENTRAL = [29915, 29930];               // Aster, Duke Horacio (central room, ground)
   const MOTB_GUESTS_WEST = [29934, 29920, 29939];           // Rodney, Simon, Duchess Alba (western room, ground)
   const MOTB_GUESTS_UP = [29929, 29927, 29918, 29916];      // Bianca, Iris, King Roald, Ellamaria (second floor)
   const MOTB_GUESTC_OPTS = ['same dish as the other guests', 'just make him the dish', 'say nothing'];   // central room
   let motbGuestC = 0;
-  // Per-group done sub-varbits (all -> 1 on that group's talk): central vb 52710,
-  // western vb 52708, second floor vb 52709.
   const MOTB_GRP_CENTRAL_VB = 52710, MOTB_GRP_WEST_VB = 52708, MOTB_GRP_UP_VB = 52709;
   const MOTB_FEAST1 = ["doing the best i can", 'offering any support', 'deserve better than you', 'say nothing'];
   let motbFeast1 = 0;
@@ -62,9 +49,6 @@
   const MOTB_ASTER85 = ['glad i have your support', "isn't a novel", 'above suspicion yourself', 'say nothing'];
   let motbAster85 = 0;
   const MOTB_NUTROAST = 125283;   // Nut roast loc (Part 1, kitchen SE corner), action Investigate
-  // Part 1 investigation per-item done flags (each -> 1 when investigated): nut roast vb 52692,
-  // strange satchel vb 52693. vb 52690 is a BITFIELD, not a clean counter (2 after the nut roast,
-  // 6 after the satchel), so the per-item flags are used.
   const MOTB_NUTROAST_VB = 52692, MOTB_SATCHEL_VB = 52693, MOTB_SIMON_VB = 52695, MOTB_BURIEDBOX_VB = 52694;   // (52690 bitfield: 2/6/22/30 after items 1/2/3/4)
   const MOTB_MEAL_VB = 52696;   // "Detect the poison" (5/8) done -- potion used on the duke's meal (52690 bitfield -> 62)
   const MOTB_KINGROALD_VB = 52691;   // (6/8) Talk to King Roald done (52690 bitfield -> 63)
@@ -76,36 +60,21 @@
   const MOTB_BIANCA_OPTS = ['that s unacceptable', "doesn't bother me", 'very poorly hidden', 'reflect poorly on me'];
   let motbBianca = 0;
   const MOTB_BIANCA_VB = 52698;   // (8/8) Bianca clue linked. 52690 is a BITFIELD of the 8 Part-1 done flags 52691-52698 -> 255 = all done; quest varbit 52689 -> 95 = Part 1 complete.
-  // Part 2 (v=95): ascend the Town Hall to the top floor (plane 3). Each floor's staircase is a
-  // different loc, action "Top floor": plane 0 -> Stone stairs 125006, plane 1 -> 125007,
-  // plane 2 -> 125008 (regular stairs). At plane 3 -> talk to Aster.
   const MOTB_STAIRS0 = 125006, MOTB_STAIRS1 = 125007, MOTB_STAIRS2 = 125008;
   const MOTB_TRAPDOOR = 125009;   // Trap door (Town Hall top floor), action Bottom floor
   const MOTB_ASTER_P2 = 29915;   // Aster on the Town Hall top floor (same instance id)
-  // Fight the assassin (v=100): living npc 29951. On death he morphs to 29952 (the corpse) and
-  // the quest -> 105; 29952 is what is SEARCHED for the letter later.
   const MOTB_ASSASSIN = 29951, MOTB_ASSASSIN_DEAD = 29952;
   const MOTB_ROALD2_OPTS = ['guards were unaccounted for', "confirm aster's innocence"];
   let motbRoald2 = 0;
-  // Part 2 investigation (v=125+): vb 52699 is the BITFIELD twin of Part 1's 52690 (255 = all 8
-  // bits), and the per-item done flags start at 52700 (parallel to 52691-52698).
   const MOTB_P2_BITFIELD = 52699, MOTB_P2_ITEM1_VB = 52700;
   const MOTB_WAXSEAL = 125287, MOTB_WAXSEAL_VB = 52702;   // Wax seal loc (Part 2 item 2/8), Investigate; done flag 52702 (52699 bitfield -> 5). (flags not sequential from 52700: item1=52700, item2=52702)
   const MOTB_IRIS = 29926, MOTB_IRIS_CLUE_SUB = 10;   // Iris npc (Part 2 item 3/8, Workshop) -- talk + Link "Strange Seal" (1030 comp 19 sub 10, live board dump)
-  // Iris walks the Workshop and is out of the wax seal's scene range. Instanced (no absolute
-  // tiles), but her offset from the seal is roughly fixed: Iris 6479,480 - seal 6522,494 =
-  // (-43,-14). When Iris is not in the 64-range scene, mark the seal's LIVE tile + this offset.
   const MOTB_IRIS_DX = -43, MOTB_IRIS_DY = -14;
   const MOTB_IRIS_OPTS = ['this is all an act', 'really is this dense', "i'm not sure"];
   let motbIris = 0;
   const MOTB_IRIS_VB = 52703;   // (3/8) Iris clue linked (52699 bitfield -> 13)
   const MOTB_PARCHMENT = 125289, MOTB_PARCHMENT_VB = 52701;   // Burnt parchment loc (Part 2 item 4/8), Investigate; done flag 52701 (52699 bitfield -> 15)
-  // "Find the unearthed coffer" sub-sequence (flat 27): first talk to Princess (the dog, 29941)
-  // + Link "Amulet of Spanielspeak" (1030 comp 19 sub 11).
   const MOTB_PRINCESS = 29941, MOTB_AMULET_CLUE_SUB = 11;
-  // Princess "stand here" ritual spots (v=130+). Instanced -> each spot is a tile RELATIVE to a
-  // live scene anchor (npc/obj id + dx,dy): stand on it, then talk to Princess. Spot 1 = Bill
-  // (29948 here -- NOT the Part-1 kitchen Bill 29806): tile 6477,494 - Bill 6486,485 = (-9,+9).
   const MOTB_PSPOT1 = { anchor: 29948, kind: 'npc', dx: -9, dy: 9 };
   const MOTB_PSPOT2 = { anchor: 29948, kind: 'npc', dx: 22, dy: -7 };   // spot 2 = Bill + (+22,-7) (tile 6508,478 - Bill 6486,485)
   const MOTB_PSPOT3 = { anchor: 29929, kind: 'npc', dx: 10, dy: 6 };    // spot 3 = Bianca 29929 + (+10,+6) (tile 6530,489 - Bianca 6520,483)
@@ -127,9 +96,6 @@
   let motbElla165_3 = 0;
   const MOTB_ELLA165_4 = ['zamorakians offered them power', 'vendetta against the king', 'revenge on queen ellamaria'];
   let motbElla165_4 = 0;
-  // v=170 "identify the murderer" list = interface GROUP 720 (positioned by varcs 3089/3090 ->
-  // kPanelOrigins). Option 5 "Bianca Dunnet" = button layer comp 28 (its label "5. Bianca Dunnet"
-  // is comp 30).
   const MOTB_IDENTIFY_GROUP = 720, MOTB_BIANCA_OPT = 28;
   const MOTB_FATE175 = ['she broke the law', 'risk her harming anyone', 'she deserves it', 'like it either', 'say nothing'];
   let motbFate175 = 0;
@@ -149,12 +115,8 @@
   const MOTB_SATCHEL_OPTS = ['who this belongs to', 'could be a diversion', 'add this to my collection'];
   let motbSatchel = 0;
   const MOTB_SIMON = 29920;   // Simon npc (Part 1 item 3/8, outside the Town Hall) -- talk + Link the clue
-  // "Link a clue" investigation board = group 1030 (kPanelOrigins varcs 6463/6464). The
-  // "How to Poison Dummies for Dummies" clue's Link entry = comp 19 sub 2, boxed via
-  // motbIfaceSubBox.
   const MOTB_LINK_GROUP = 1030, MOTB_LINK_CLUE_COMP = 19, MOTB_LINK_CLUE_SUB = 2;
   const MOTB_BURIEDBOX = 125281;   // Half-buried box loc (Part 1 item 4/8, NE corner), action Investigate
-  // Detect the poison sub-flow (driven by inventory items, no quest-varbit ticks):
   const MOTB_POISON_BASE = 54584;   // poison detection potion (base) -- from "Take a vial" at the satchel
   const MOTB_CUPBOARD = 125248;     // Supply cupboard loc (Kitchen), action Search
   const MOTB_HOLLYHOCK = 54581;    // hollyhock item id (from the Kitchen supply cupboard)
@@ -167,8 +129,6 @@
   }
   async function motbReenter() {   // true = outside the instance -> portal (or its confirm chooser) highlighted
     if (qgInInstance(qgP)) return false;
-    // Portal click opens "WOULD YOU LIKE TO CONTINUE ...?" -> box "Yes." while open (single
-    // highlightOption read, cleared only after a match -- no-flicker rule).
     let boxed = false;
     try { boxed = await PLUGIN_API['overlay.highlightOption'].run(['yes'], myPid()); } catch (e) {}
     if (boxed) { qgClrNpc(); qgClrTiles(); qgClrItem(); return true; }
@@ -196,15 +156,11 @@
     return false;
   }
 
-  // quest_guides.js already ships the full generated entry for quest 490 (rich {Chat:} pills with
-  // option text), so do NOT assign window.QUEST_GUIDES here -- that would overwrite it. Only
-  // quests newer than the generated dump get injected entries.
 
   async function motbStep() {
     let vbm = {}; try { vbm = await readVarbitValues([MOTB_PROG, MOTB_HOT1, MOTB_HOT2, MOTB_HOT3, MOTB_GRP_CENTRAL_VB, MOTB_GRP_WEST_VB, MOTB_GRP_UP_VB, MOTB_NUTROAST_VB, MOTB_SATCHEL_VB, MOTB_SIMON_VB, MOTB_BURIEDBOX_VB, MOTB_MEAL_VB, MOTB_KINGROALD_VB, MOTB_ALBA_VB, MOTB_WAXSEAL_VB, MOTB_IRIS_VB, MOTB_PARCHMENT_VB, MOTB_COFFER_VB, MOTB_ALBA6_VB, MOTB_RODNEY_VB]); } catch (e) { return; }
     const v = vbm[MOTB_PROG] | 0;
     if (v !== 155) motbRodneyAsked = false;   // Rodney "Ask Bianca" latch only meaningful at v=155
-    // The HUD notification is only used by the v=15 materials warning; drop it anywhere else.
     if (hudShown && v !== 15) hudSet(0, '', false);
     if (v >= MOTB_DONE) { qgClearAll(); return; }   // 195 = complete: nothing to guide
     if (v === 0 || v === 5) {
@@ -221,10 +177,6 @@
       return;
     }
     if (v === 15) {
-      // Blueprint STARTED (any hotspot morph varbit nonzero) -> build phase: mark the OPTIMAL spot's
-      // tile straight from the varbits (2 = optimal; third spot by elimination), so it works with the
-      // hotspot out of scene. The materials were CONSUMED by starting the blueprint (they gate the
-      // hotspot creation, not the building), so no HUD warning in this phase.
       const h1 = vbm[MOTB_HOT1] | 0, h2 = vbm[MOTB_HOT2] | 0, h3 = vbm[MOTB_HOT3] | 0;
       if (h1 !== 0 || h2 !== 0 || h3 !== 0) {
         if (hudShown) hudSet(0, '', false);
@@ -232,13 +184,11 @@
         qgTile(t[0], t[1], 0, 'Optimal Construction hotspot\nBuild');
         return;
       }
-      // HUD warns while the blueprint-START materials are short.
       const frames = (await qgInvCount(MOTB_FRAME)) + (await qgInvCount(MOTB_FRAME_N));
       const walls = (await qgInvCount(MOTB_WALL)) + (await qgInvCount(MOTB_WALL_N));
       if (frames < 12 || walls < 6) hudSet(31684, 'Need willow frames ' + frames + '/12 and stone wall segments ' + walls + '/6', true);
       else if (hudShown) hudSet(0, '', false);
       if (qgIfaceOpen(MOTB_MAKEX_FRAME)) {
-        // Kitchen (Tier 1) already selected (content title 1370:13) -> the button.
         if (await motbIfaceTextHas(MOTB_MAKEX_CONTENT, MOTB_MAKEX_TITLE, 'kitchen (tier 1)')) {
           if (qgIfaceComp(MOTB_MAKEX_CONTENT, MOTB_MAKEX_START, 'Start blueprint')) return;
         }
@@ -301,7 +251,6 @@
     }
     if (v === 55 || v === 60 || v === 65) {
       if (await motbReenter()) return;
-      // Choosers are mutually exclusive, so every picked needle rides one read.
       const centralDone = (vbm[MOTB_GRP_CENTRAL_VB] | 0) >= 1;   // vb 52710 -> 1
       const westDone = (vbm[MOTB_GRP_WEST_VB] | 0) >= 1;         // vb 52708 -> 1
       const upDone = (vbm[MOTB_GRP_UP_VB] | 0) >= 1;             // vb 52709 -> 1
@@ -317,10 +266,6 @@
         try { boxed = await PLUGIN_API['overlay.highlightOption'].run(needles, myPid()); } catch (e) {}
       }
       if (boxed) { qgClrNpc(); qgClrTiles(); qgClrItem(); return; }
-      // NPC outlines via the multi-needle overlayHighlight channel (CSV of '#id|label' parts -- the
-      // same channel qgNpc uses singly; qgClrNpc clears it). Floor split by the PLAYER's plane
-      // (qgP.p -- scanPlayerTile's field is `p`, not `plane`): the scene npc entries carry no usable
-      // plane, so the known per-floor id sets are the filter.
       const pp = qgP ? (qgP.p | 0) : 0;
       const parts = [];
       if (pp === 1) { if (!upDone) MOTB_GUESTS_UP.forEach(id => parts.push('#' + id + '|Second floor guest')); }
@@ -375,8 +320,6 @@
         if (!(await qgObjectById(MOTB_BURIEDBOX, 'Half-buried box\nInvestigate', sc.objects))) qgClearAll();
         return;
       }
-      // Detect the poison sub-flow (inventory-driven). Combining CONSUMES the base + hollyhock into
-      // the unheated potion, so items are checked NEWEST-first.
       const clrBox = () => { qgClrNpc(); qgClrTiles(); qgClrItem(); };
       if ((vbm[MOTB_MEAL_VB] | 0) >= 1) {
         if ((vbm[MOTB_KINGROALD_VB] | 0) < 1) {
@@ -403,10 +346,6 @@
       const nHolly = await qgInvCount(MOTB_HOLLYHOCK);
       const nUnheated = await qgInvCount(MOTB_UNHEATED);
       if ((await qgInvCount(MOTB_HEATED)) >= 1) {
-        // (5/8) use the heated potion (54588) on the duke's meal (loc 125249). Using it opens "WHAT DO
-        // YOU WANT TO USE THIS ON?" -> box option 2 "the duke's meat pate" ('meat' is the accent-safe
-        // discriminator vs wine/chocolate). Otherwise show the item AND the object together on separate
-        // channels, drawn directly -- the clr helpers would wipe each other.
         if (await motbBoxOpt('meat')) { clrBox(); return; }
         qgClrNpc(); qgClrDlg();
         const marks = qgIdMarks(sc.objects, MOTB_DUKEMEAL, "Duke's meal\nUse the potion");
@@ -427,8 +366,6 @@
         return;
       }
       if (nBase >= 1) {
-        // 'take hollyhock' is matched first (cupboard), else 'leave' (closes the satchel chooser);
-        // that order avoids a collision.
         if (await motbBoxOpt('take hollyhock', 'leave')) { clrBox(); return; }
         if (!(await qgObjectById(MOTB_CUPBOARD, 'Supply cupboard\nSearch', sc.objects))) qgClearAll();
         return;
@@ -567,9 +504,6 @@
         await qgDialogNpc('#' + MOTB_ALBA, 'Talk to Duchess Alba', 0, 0, 0, 'talk to duchess alba', 'beef with king roald', MOTB_ALBA6_OPTS[motbAlba6 - 1], 'that s all for now');
         return;
       }
-      // Rodney's "Ask Bianca." line arrives on NPC chat group 1184 comp 10. The (7/8) done-flag 52706
-      // also implies this step is done, so it is skipped when 52706 is set: a reset latch (panel
-      // reload) then cannot re-show Rodney after Scorched Will is linked.
       if (!motbRodneyAsked && await motbIfaceTextHas(1184, 10, 'ask bianca')) motbRodneyAsked = true;
       if (!motbRodneyAsked && (vbm[MOTB_RODNEY_VB] | 0) < 1) {
         await qgDialogNpc('#' + MOTB_RODNEY, 'Talk to Rodney', 0, 0, 0, 'talk to rodney', 'ask about ellamaria', 'that s all for now');
@@ -583,9 +517,6 @@
         await qgNpc('#' + MOTB_RODNEY, 'Talk to Rodney');
         return;
       }
-      // The live options are "Talk to Ellamaria." (NOT "Queen") / "I heard you were once friends with
-      // Bianca." / "That's all for now."; 'talk to ellamaria' does not match "Link a clue to
-      // Ellamaria.", so it uniquely boxes the topic opener.
       await qgDialogNpc('#' + MOTB_ELLAMARIA, 'Talk to Queen Ellamaria', 0, 0, 0, 'talk to ellamaria', 'friends with bianca', 'that s all for now');
       return;
     }
@@ -602,8 +533,6 @@
         let ir = false;
         try { ir = await PLUGIN_API['overlay.highlightOption'].run([MOTB_IRIS_OPTS[motbIris - 1], 'link a clue to iris'], myPid()); } catch (e) {}
         if (ir) { qgClrNpc(); qgClrTiles(); qgClrItem(); return; }
-        // Iris in the 64-range scene -> highlight her; else point toward her relative to the seal's live
-        // tile (she is out of range until the player walks over).
         if (sc.npcs.some(n => n && n.id === MOTB_IRIS)) { await qgNpc('#' + MOTB_IRIS, 'Talk to Iris'); return; }
         const seal = sc.objects.find(o => o && o.id === MOTB_WAXSEAL);
         if (seal) {
@@ -655,9 +584,6 @@
   }
   (function () { function motbMonLoop() { try { motbMonRefresh(); } catch (e) {} setTimeout(motbMonLoop, 1100); } setTimeout(motbMonLoop, 1750); })();
 
-  // Auto-complete the quick-guide checkboxes from MOTB_PROG thresholds only.
-  // Flat idx = position across the GENERATED guide's sections (quest_guides.js owns the step list,
-  // so the complete case counts it dynamically).
   QG_AUTO['Murder on the Border'] = {
     vbs: [MOTB_PROG, MOTB_HOT1, MOTB_HOT2, MOTB_HOT3, MOTB_KITCHEN_VB, MOTB_GRP_CENTRAL_VB, MOTB_GRP_WEST_VB, MOTB_GRP_UP_VB, MOTB_NUTROAST_VB, MOTB_SATCHEL_VB, MOTB_SIMON_VB, MOTB_BURIEDBOX_VB, MOTB_MEAL_VB, MOTB_KINGROALD_VB, MOTB_ALBA_VB, MOTB_BIANCA_VB, MOTB_P2_ITEM1_VB, MOTB_WAXSEAL_VB, MOTB_IRIS_VB, MOTB_PARCHMENT_VB, MOTB_COFFER_VB, MOTB_ALBA6_VB, MOTB_RODNEY_VB],
     done: (vb) => {
@@ -665,18 +591,11 @@
       const s = new Set();
       if (v >= 10) s.add(0);   // Talk to Aster (conversation done -> 10)
       if (v >= 15) s.add(1);   // Talk to Bill about the Kitchen (-> 15)
-      // Check plans / start the blueprint: done once a hotspot morph varbit flips (the quest varbit
-      // stays 15 through the build phase).
       if (v > 15 || (v >= 15 && (((vb[MOTB_HOT1] | 0) || (vb[MOTB_HOT2] | 0) || (vb[MOTB_HOT3] | 0)) !== 0))) s.add(2);
-      // Build the Kitchen: done at -> 20; vb 33400 >= 1 covers the transient.
       if (v >= 20 || (v >= 15 && (vb[MOTB_KITCHEN_VB] | 0) >= 1)) s.add(3);
       if (v >= 25) s.add(4);   // The banquet: Talk to Aster (-> 25)
       if (v >= 30) s.add(5);   // Click the banquet portal, cutscene starts (-> 30)
-      // Welcome arrivals: 35 Ellamaria+Roald, 40 Bianca, 45 Horacio group, 50 Alba =
-      // all four welcomed -> the watch-cutscene/welcome step is done.
       if (v >= 50) s.add(6);
-      // Three guest groups talked (any order): all three done sub-varbits at 1
-      // (central 52710, west 52708, second floor 52709).
       if (v > 65 || (v >= 55 && (vb[MOTB_GRP_CENTRAL_VB] | 0) >= 1 && (vb[MOTB_GRP_WEST_VB] | 0) >= 1 && (vb[MOTB_GRP_UP_VB] | 0) >= 1)) s.add(7);
       if (v >= 75) s.add(8);   // Aster starts the feast (-> 75, cutscene)
       if (v >= 85) s.add(9);   // Converse with the guests during the feast cutscene (75->80->85)
@@ -716,6 +635,5 @@
     },
   };
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { motbMonText, motbStep });
 })();

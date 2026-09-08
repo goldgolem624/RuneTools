@@ -1,10 +1,5 @@
 // RuneToolsX panel: Cache Explorer (Developer).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
-// One sub-tab per cache family. Varbits/varps/varcs have bulk bridge reads and load in one
-// call; enums, structs, dbtables and items are per-id lookups, so those are SCANNED over an
-// id range (chunked and cancellable) and the results cached in memory for the session.
 // Built once and updated in place: renderCachex() runs on the 250 ms poll, and rebuilding
-// would drop focus from the search box mid-keystroke.
 (function () {
 
   const CX_TYPES = [
@@ -15,8 +10,6 @@
     { k: 'varbit',  label: 'Varbits',  bulk: 'varbitMap' },
     { k: 'varp',    label: 'Varps',    bulk: 'varpsDumpAll' },
     { k: 'varc',    label: 'Varcs',    bulk: 'varcsDumpAll' },
-    // Achievements come back as ONE array (index 57 walked whole), so this is a bulk family
-    // rather than a scanned id range - there is no per-id bridge call to chunk over.
     { k: 'ach',     label: 'Achievements', bulk: 'achievements' }
   ];
   const CX_MAX_ROWS = 200;          // rows per PAGE: rendering every hit would stall the view
@@ -24,18 +17,8 @@
   let cxTab = 'enum', cxFilter = '', cxOpen = null, cxSeq = 0;
   const cxPageOf = {};              // per tab: current 0-based page, kept when you switch away
   const cxState = {};               // per type: { rows:[{id,sum,data}], busy, done, total, err, loaded }
-  // Persisted results. The game cache only changes on a game UPDATE, so a snapshot stays
-  // valid for as long as the client build does: the build string is the cache key, and a
-  // re-scan of an already-covered range costs nothing. Widening a range only scans the part
-  // that is missing. Live player state (varps/varcs) is deliberately NOT cached.
-  // Snapshots live in real files (%USERPROFILE%/RuneToolsX/cachex/<family>.json) via the
-  // bridge, the same way the CS2 extraction writes its output: a full struct scan is many MB,
-  // far past what the renderer can hold. The game cache only changes on a game UPDATE, so the
-  // client build is the cache key and a stored scan stays valid until the game moves.
-  // Live player state (varps/varcs) is deliberately never stored.
   // Several varcs carry a world tile packed as (plane<<28)|(x<<14)|y -- the compass-clue
   // target (1323) among them. Decoding any value that lands in a sane tile range makes those
-  // obvious at a glance instead of reading as an arbitrary integer.
   function cxCoord(v) {
     if (!(v > 16384)) return '';
     const x = (v >> 14) & 0x3FFF, y = v & 0x3FFF, z = (v >> 28) & 0x3;
@@ -85,8 +68,6 @@
   const cxKeyId = k => { const p = String(k).split(':'); return parseInt(p[p.length - 1], 10); };
   const cxT = k => CX_TYPES.filter(t => t.k === k)[0];
   const cxSt = k => (cxState[k] = cxState[k] || { rows: [], busy: false, done: 0, total: 0, loaded: false });
-  // The from/to boxes belong to the ACTIVE family: stash them on switch and restore, so a
-  // struct scan range is not carried over onto dbtables.
   function cxSaveRange() {
     const lo = $('cxLo'), hi = $('cxHi'), st = cxSt(cxTab);
     if (lo) st.lo = lo.value;
@@ -98,7 +79,6 @@
     if (hi) hi.value = (st.hi !== undefined) ? st.hi : (t.hi !== undefined ? t.hi : '');
   }
 
-  // One-line summary per entry: what you scan the list for before opening anything.
   function cxSummarise(k, id, d) {
     try {
       if (k === 'enum') {
@@ -121,9 +101,6 @@
     } catch (e) {}
     return '';
   }
-  // Readable detail. Cache strings carry literal <br> markup and rows hold long parallel
-  // arrays, so values are unwrapped one per line and every column is labelled: cramming a
-  // whole row onto one line is what made this unreadable.
   const CX_STR_WRAP = 96;
   function cxText(v) {
     return String(v).replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim();
@@ -133,7 +110,6 @@
     if (!t) return ind + '""';
     return t.split('\n').map(l => ind + l).join('\n');
   }
-  // One value inline; several become a numbered list so parallel columns stay alignable.
   function cxColumn(label, vals, out) {
     const arr = Array.isArray(vals) ? vals : [vals];
     if (!arr.length) { out.push('  ' + label + ': []'); return; }
@@ -157,9 +133,6 @@
       else { out.push('    [' + i + ']'); out.push(cxLines(x, '        ')); }
     });
   }
-  // What the filter searches, and what a match snippet is cut from. Deliberately NOT raw
-  // JSON: slicing that produced snippets full of ","ge_limit":-1,"value": noise. This is the
-  // same labelled shape the detail view shows, flattened onto one line.
   function cxIndexText(k, d) {
     const out = [];
     const add = v => {
@@ -208,8 +181,6 @@
         out.push('');
       }
     } else if (k === 'ach') {
-      // No "name:" line: the row above already IS the name, and repeating it pushed the
-      // description down for nothing. Description leads, because it is what you are reading for.
       if (d.desc) out.push(cxLines(d.desc, '  '));
       if (d.reward) { out.push(''); out.push('  Reward: ' + cxText(d.reward)); }
       const meta = [];
@@ -220,10 +191,6 @@
       if (d.cm >= 0) meta.push('combat mastery ' + d.cm);
       if (d.hidden) meta.push('hidden');
       if (meta.length) { out.push(''); out.push('  ' + meta.join('  ·  ')); }
-      // The completion RULE from the cache, not your progress against it: which varbit the game
-      // watches and the value it must reach. Naming those varbits is the whole reason to look an
-      // achievement up here rather than in the Achievements panel, so spell the condition out
-      // in words instead of printing a bare "value" field nobody can interpret.
       const rq = d.reqs || [];
       if (rq.length) {
         out.push('');
@@ -242,15 +209,11 @@
     return out.join('\n');
   }
 
-  // Bulk families: one bridge call each.
   async function cxLoadBulk(k) {
     const st = cxSt(k);
     if (st.busy || st.loaded) return;
     if (k === 'varbit') {
       const saved = await cxLoad(k);
-      // lo/hi are the scanned id bounds. The other two cxLoad sites restore them; this one
-      // did not, so after a reload the "ids N-M" label vanished and the gap-fill treated the
-      // range as unknown and rescanned.
       if (saved) { st.rows = saved.rows; st.at = saved.at; st.lo0 = saved.lo; st.hi0 = saved.hi;
                    st.loaded = true; st.cached = 'saved'; cxPaint(); return; }
     }
@@ -280,18 +243,10 @@
       } else if (k === 'ach') {
         const arr = JSON.parse(await rtxData.raw('cache.achievements') || 'null') || [];
         for (const a of arr) {
-          // txt feeds the search box, so a filter matches the description, the reward and every
-          // requirement line, not just the title.
           const txt = [a.name, a.desc, a.reward]
             .concat((a.reqs || []).map(q => q && q.desc))
             .filter(Boolean).join(' ');
-          // Separated with the same middot the detail uses. "N req" read as a progress count;
-          // the number of completion CONDITIONS is what it actually is, and one is the norm, so
-          // it is only worth stating when there is more than one.
           const nq = (a.reqs || []).length;
-          // HIDDEN achievements carry the name OPCODE but an empty string (the game withholds
-          // the title until you complete it), so they arrived as a wall of "Achievement 4804".
-          // The description is the only human-readable thing they have, so label them with it.
           const desc1 = cxText(a.desc || '').split('\n')[0].trim();
           const bits = [a.name || desc1 || ('Achievement ' + a.id)];
           if (a.points) bits.push(a.points + ' pts');
@@ -307,15 +262,12 @@
     cxPaint();
   }
 
-  // Scanned families: one bridge call per id, chunked so the UI keeps painting. Anything the
-  // stored snapshot already covers is reused, so only genuinely new ids cost a round trip.
   async function cxScan(k) {
     const t = cxT(k), st = cxSt(k);
     if (!t || !t.fn || st.busy || !bridge() || !bridge()[t.fn]) return;
     const lo = Math.max(0, parseInt(($('cxLo') || {}).value, 10) || t.lo);
     const hi = Math.max(lo, parseInt(($('cxHi') || {}).value, 10) || t.hi);
 
-    // Adopt a stored snapshot for this build before deciding what still needs scanning.
     if (!st.loaded) {
       const saved = await cxLoad(k);
       if (saved) {
@@ -323,9 +275,6 @@
         st.loaded = true; st.cached = 'saved';
       }
     }
-    // Coverage is only ever widened over ids we have ACTUALLY read. Claiming the whole
-    // requested range up front meant a cancelled scan looked complete, so every later press
-    // found nothing to do and the button appeared dead.
     const gaps = [];
     const have = st.loaded && st.lo0 !== undefined && st.hi0 !== undefined;
     if (have) {
@@ -349,8 +298,6 @@
         let d = null;
         try { d = JSON.parse(await bridge()[t.fn](id) || 'null'); } catch (e) { d = null; }
         const empty = !d || (Array.isArray(d) ? !d.length : !Object.keys(d).length);
-        // Index the whole entry, not just the summary: the point of the filter is finding a
-        // value buried in a column, which the one-line summary never shows.
         if (!empty) st.rows.push({ id: id, sum: cxSummarise(k, id, d), data: d, txt: cxIndexText(k, d) });
         if (g[2] !== 'low') st.hi0 = id;                            // grew the top end
         st.done++;
@@ -376,7 +323,6 @@
     });
   }
 
-  // Repaint only the parts that change; the chrome and the search box are never rebuilt.
   function cxPaint() {
     const wrap = $('cxWrap');
     if (!wrap || !paneVisible('cachex')) return;
@@ -401,8 +347,6 @@
     if (!list) return;
     const rows = cxRows(cxTab);
     const filt = cxFilter.trim().toLowerCase();
-    // Clamp BEFORE the signature: a filter that shrinks the result set must not leave the view
-    // parked on a page that no longer exists, showing nothing with no way back.
     const pages = Math.max(1, Math.ceil(rows.length / CX_MAX_ROWS));
     let page = cxPageOf[cxTab] | 0;
     if (page >= pages) page = pages - 1;
@@ -422,8 +366,6 @@
       const row = document.createElement('div'); row.className = 'cx-row';
       const idEl = document.createElement('span'); idEl.className = 'cx-id'; idEl.textContent = r.id;
       const sum = document.createElement('span'); sum.className = 'cx-sum';
-      // When the hit is buried in a column the summary will not show it, so echo the
-      // surrounding text instead of leaving the row looking like a false positive.
       let label = r.sum || '';
       if (filt && r.txt && (r.sum || '').toLowerCase().indexOf(filt) < 0) {
         const at = r.txt.toLowerCase().indexOf(filt);
@@ -446,8 +388,6 @@
         list.appendChild(det);
       }
     }
-    // Pager. Always rendered (even on a single page) so the row count is always stated: the old
-    // "showing the first 800, narrow your search" was a dead end with no way to reach the rest.
     const go = function (p) {
       cxPageOf[cxTab] = Math.max(0, Math.min(pages - 1, p));
       cxOpen = null;                       // an expanded row on the page you just left is noise
@@ -574,8 +514,6 @@
     ctl.appendChild(clr);
     const srch = document.createElement('input'); srch.id = 'cxSearch'; srch.className = 'cx-in cx-search';
     srch.placeholder = 'Filter by id or content';
-    // A new filter means a new result set, so page 1: staying on page 14 of the old one is
-    // never what you meant, and the clamp in cxPaint would only rescue the overshoot case.
     srch.addEventListener('input', () => { cxFilter = srch.value; cxOpen = null; cxPageOf[cxTab] = 0; cxPaint(); });
     ctl.appendChild(srch);
     const stat = document.createElement('span'); stat.id = 'cxStat'; stat.className = 'cx-stat';
@@ -585,12 +523,10 @@
     const list = document.createElement('div'); list.id = 'cxList'; list.className = 'cx-list';
     wrap.appendChild(list);
 
-    // seed the range boxes for the starting tab
     const t0 = cxT(cxTab);
     lo.value = t0.lo; hi.value = t0.hi;
     cxPaint();
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 registerTab({ id: 'cachex', render: renderCachex, open: function () { const l = $('cxList'); if (l) l._sig = ''; } });
 })();

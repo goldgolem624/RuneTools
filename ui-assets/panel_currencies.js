@@ -1,25 +1,13 @@
 // RuneToolsX panel: Currencies (the currency pouch as a ledger: balance vs cap per currency).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 // DBTable 66 (master id 66, so dbRows(66) directly) is the game's own currency registry.
-// Column meanings, per the CS2 scripts that read them:
 //   col 0 currency id (scripts 14966/12774), col 1 backing type (0 = var via script14966,
-//   1 = item via script14967), col 2 cap (script3517 fallback), col 3 graphic, col 4 obj item
-//   (script14967 INV_TOTAL), col 5 name override (script14963: override else OC_NAME(obj)),
 //   col 6 in-pouch flag (script12774 lists rows via db_find_with_count(270432, 1)), col 7 pouch
-//   tab 1-3 (script12774's section switch; anything else lands in the default section).
 // Item-backed balances = container 889 total + backpack 93 total (script14964 adds
 // INV_TOTAL(93, obj) on top of script14967's INV_TOTAL(889, obj)).
-// BAKED (these mappings exist ONLY in clientscript switches, not in any cache config):
 //   CY_VARS: the dbrow -> backing-var switch of clientscript-14966 (currency_pouch_value_get),
-//     all 76 cases verbatim ('p' = varp, 'b' = varbit). Regenerate from that script after game
-//     updates; a new currency row missing here degrades to a "Status unknown" pill.
 //   Hidden cap overrides from clientscript-3517: dbrow 2079 cap = enum 11420[varbit 33143]
-//     (Waiko upgrades); dbrow 2254 cap = 4 * (10 + BaseThieving / 9). Every other cap is db 66.2.
-//   Livid Farm produce (dbrow 2274, varbit 16372) is STORED divided by 10; the game multiplies
-//     by 10 at display time (clientscript-12774, clientscript-3519).
 (function () {
 
-  // dbrow id -> backing var, verbatim from clientscript-14966. 'pN' = varplayer N, 'bN' = varbit N.
   const CY_VARS = {
     2065: 'b41706', 2066: 'p6526', 2067: 'p6528', 2068: 'p6529', 2069: 'p6533', 2070: 'p6535',
     2071: 'b22905', 2072: 'b9071', 2073: 'b520', 2074: 'b16530', 2075: 'b40241', 2076: 'b16394',
@@ -36,13 +24,6 @@
     12994: 'p11584', 13286: 'b55169', 13287: 'b55275', 14411: 'b56081', 18102: 'p1097',
     18385: 'b61090' };
 
-  // Outfit-piece "created" flags, parsed verbatim from clientscript-6831: the gate behind the
-  // Create-Item interface (group 1371) returns 2 ("already created") for these item ids when the
-  // varbit reads >= 1 (both its '== 1' and '> 0' case forms; the three '== 2' cases and the ones
-  // gated on helper scripts are deliberately left out). BAKED because the item -> varbit pairing
-  // exists only in that switch. Which pieces belong to which fragment currency is NOT baked: it
-  // is derived at runtime by cache-name association (see cyLoadPieces).
-  // Regenerate from clientscript-6831 after game updates.
   const CY_CREATED = {
     23665:4370, 23671:4382, 23672:4381, 23673:4380, 23674:26892, 23675:4376, 23676:4377, 23677:4378,
     23678:4379, 23679:34974, 23680:34977, 23681:34976, 23682:34975, 23683:34978, 23684:34987, 23685:34988,
@@ -150,7 +131,6 @@
     57701:56237 };
 
   const CY_VP_IDS = Object.values(CY_VARS).filter(d => d[0] === 'p').map(d => d.slice(1)).join(',');
-  // + 33143: the Waiko-upgrade tier that indexes the dbrow-2079 cap enum (script3517).
   const CY_VB_IDS = Object.values(CY_VARS).filter(d => d[0] === 'b').map(d => d.slice(1)).concat(['33143']).join(',');
 
   cyRows = null; let cyRowsLoading = false;   // in-pouch registry rows from dbRows(66)
@@ -159,10 +139,6 @@
   let cyPouchInv = null, cyPackInv = null;    // containerItems 889 / 93 (item-backed balances)
   let cyFetching = false, cyFetchAt = 0, cySig = '';
   const cySprites = {};                       // graphic id -> data-url ('' = pending/none)
-  // Fragment currency -> outfit pieces, derived at runtime over the CY_CREATED piece list: a
-  // piece belongs to a fragment currency when the fragment's registry obj appears in its
-  // materials (item params 2650-2654, or struct params 2655-2664 of the material-group structs
-  // in 2990-2994).
   let cyPieces = null, cyPiecesLoading = false;   // registry ROW id -> [{item, vb}]
   let cyPieceVbIds = '';                          // created-state varbits joined to the batch read
   const cyPieceNames = {};                        // piece item id -> cache name
@@ -172,28 +148,17 @@
     if (!bridge().itemInfo) return;
     cyPiecesLoading = true;
     try {
-      // The item-param recipe walk (params 2650-54 / 2990-94, clientscript-7113/7114) is DEAD DATA in
-      // the live game: a full offline scan of every js5-19 item found ZERO items carrying param 2650
-      // or 2990, so the create-panel materials are server-driven and no client table ties a fragment
-      // currency to its pieces. The association is therefore derived from CACHE NAMES: each fragment
-      // row's name stem (the words before "fragments") is matched into the cache names of the 825
-      // gate-listed pieces (CY_CREATED). Both sides are cache ground-truth strings.
-      // stem = the words before "fragments"; word = its last word alone, the fallback for possessive
-      // or prefixed currency names ("Nature's sentinel" pieces are named "Oaken sentinel helm" etc.).
       const stems = [];   // [{rowId, stem, word}]
       for (const r of cyRows) {
         const m = /^(.*?)\s+fragments?\b/i.exec(r.name || '');
         if (!m || !m[1].trim()) continue;
         let stem = m[1].trim().toLowerCase();
-        // The Dungeoneering fragments outfit is the Gorajan trailblazer: the one family whose outfit
-        // name shares no token with its fragment name.
         if (stem === 'dungeoneering') stem = 'trailblazer';
         const w = stem.split(/\s+/);
         stems.push({ rowId: r.row, stem, word: w[w.length - 1] });
       }
       const out = {};
       if (stems.length) {
-        // One-time scan (~825 cached itemInfo reads, async, off the render path).
         for (const key of Object.keys(CY_CREATED)) {
           const piece = +key;
           let nm = '';
@@ -201,20 +166,14 @@
           catch (e) {}
           if (!nm) continue;
           cyPieceNames[piece] = nm;
-          // Skill pendants sit in the same creation gate but are not outfit pieces.
           if (/\bpendant of\b/i.test(nm)) continue;
-          // Gate-listed but NOT part of the obtainable sets: the Shark fist wraps and the Ghostly farmer
-          // variant are unobtainable legacy entries.
           if (/^shark fist\b/i.test(nm) || /^ghostly farmer\b/i.test(nm)) continue;
           const low = ' ' + nm.toLowerCase().replace(/[^a-z0-9']+/g, ' ') + ' ';
-          // full-phrase stems get first claim on a piece; last-word fallback second
           let hit = stems.find(s => low.indexOf(' ' + s.stem + ' ') >= 0)
                  || stems.find(s => low.indexOf(' ' + s.word + ' ') >= 0);
           if (hit) (out[hit.rowId] = out[hit.rowId] || []).push({ item: piece, vb: CY_CREATED[key] });
         }
       }
-      // Zero matches with fragment rows present means an itemInfo hiccup mid-scan -- leave null so
-      // the next fetch retries instead of latching the fallback note forever.
       if (stems.length && !Object.keys(out).length) { cyPiecesLoading = false; return; }
       cyPieces = out;
       const ids = new Set();
@@ -288,8 +247,6 @@
     for (const it of inv.items) if ((it[1] | 0) === obj) n += it[2] | 0;   // [slot,id,stack,name]
     return n;
   };
-  // Balance: number, or null = item-backed but container 889 not readable yet, or undefined =
-  // var-backed with no baked mapping (Status unknown).
   function cyBalance(r) {
     if (r.type === 1) {
       if (!cyPouchInv || !cyPouchInv.present) return null;
@@ -302,11 +259,7 @@
     if (r.row === 2274) n *= 10;   // Livid Farm produce stored /10 (scripts 12774/3519)
     return n;
   }
-  // Cap: db 66.2, except the two script3517 overrides. null = no cap known.
   function cyCap(r) {
-    // Livid Farm (2274): the balance is displayed x10 (stored /10) but no script scales or even
-    // renders the db 66.2 cap for this row, so the cap's units are unverifiable and a live balance
-    // can exceed the raw column. Show the bare balance rather than claim a cap.
     if (r.row === 2274) return null;
     if (r.row === 2079) {
       const tier = (cyVb && cyVb['33143']) | 0;
@@ -320,19 +273,14 @@
     }
     return r.cap > 0 ? r.cap : null;
   }
-  // Neutral placeholder (dashed ring) for rows with no renderable icon: an empty box reads as a
-  // rendering bug.
   const CY_PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="22" height="22">' +
     '<circle cx="12" cy="12" r="8.5" fill="none" stroke="#666a72" stroke-width="1.6" stroke-dasharray="3 2.6"/></svg>');
-  // Sprite fetch states: undefined = never asked, '' = in flight, 'x' = decode failed
-  // (placeholder stays), else the data-url.
   function cySpriteFetch(gid) {
     if (cySprites[gid] !== undefined || !bridge() || !bridge().sprite) return;
     cySprites[gid] = '';
     (async () => {
       try {
-        // 44px = 2x the 22px box, the same clean-rescale convention as the other panels.
         const url = await bridge().sprite(gid, 44);
         cySprites[gid] = url || 'x';
         if (url) document.querySelectorAll('.cy-ico[data-spr="' + gid + '"]').forEach(n => setIconBg(n, url));
@@ -390,8 +338,6 @@
       wrap.appendChild(s);
       return card;
     };
-    // The pouch UI's own section order (script12774 renders default, then tabs 1..3). The game gives
-    // these sections no derivable caption, so the labels stay literal.
     const groups = [
       ['Pouch', cyRows.filter(r => r.tab < 1 || r.tab > 3)],
       ['Pouch tab 1', cyRows.filter(r => r.tab === 1)],
@@ -405,12 +351,9 @@
       for (const r of rows) {
         const bal = cyBalance(r);
         let cap = cyCap(r);
-        // A cap the balance already exceeds is a false claim (wrong units or stale column): drop it and
-        // show the bare balance.
         if (cap != null && typeof bal === 'number' && bal > cap) cap = null;
         const el = document.createElement('div'); el.className = 'cy-row';
         const ico = document.createElement('div'); ico.className = 'cy-ico';
-        // Icon chain: packed item icon -> cache sprite (col 3 graphic) -> neutral placeholder.
         let iconed = false;
         if (r.obj > 0) { const u = resolveIcon(r.obj); if (u) { setIconBg(ico, u); iconed = true; } }
         if (!iconed && r.graphic > 0) {
@@ -424,10 +367,6 @@
         el.appendChild(ico);
         const nm = document.createElement('div'); nm.className = 'cy-nm';
         const t = document.createElement('div'); t.textContent = r.name; nm.appendChild(t);
-        // Fragment currencies: outfit-piece created state from baked CY_CREATED (clientscript-6831)
-        // crossed with the runtime name match (cyLoadPieces). A 0 balance with every piece created
-        // renders a green Constructed pill; fragments whose scan finds no pieces keep the "may already
-        // be constructed" note instead of a guessed claim.
         const isFrag = /fragment/i.test(r.name);
         const pieces = cyPieces ? (cyPieces[r.row] || null) : null;
         const made = pieces ? pieces.filter(pc => ((cyVb && cyVb[String(pc.vb)]) | 0) >= 1).length : 0;
@@ -474,7 +413,6 @@
     sizeAllIcons();
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { CY_VARS, cyLoadRegistry, fetchCurrencies });
 registerTab({ id: 'currencies', render: renderCurrencies, open: function () { cySig = ''; fetchCurrencies(); } });
 })();

@@ -1,9 +1,4 @@
 // RuneToolsX Plugin SDK (rtx.plugin): shim the host loads into every sandboxed plugin
-// iframe. Exposes `window.rtx.plugin`, brokering every call to the host over postMessage;
-// the frame's opaque origin has no access to the host Bridge/DOM. Must stay in sync with
-// the host broker's method allowlist in client.html.
-// Frame CSP blocks fetch/XHR/WebSocket/eval, so bundles must be self-contained; every
-// method requires the user-granted manifest scope named in its section below.
 
 (function () {
   'use strict';
@@ -15,9 +10,6 @@
   var seq = 1;
   var pending = Object.create(null);     // id -> { resolve, reject, timer }
   var listeners = { tick: [], state: [], events: [], settings: [] };
-  // The host pushes its theme tokens (--rtx-accent and friends) on mount and whenever
-  // the user changes appearance settings; applying them keeps a plugin in step with
-  // the client's look. Handled in the message dispatch below.
   var eventSubs = {};                    // kind -> [cb]; '*' = every kind
   var readyCbs = [];
   var session = { ready: false, scopes: [], apiVersion: null, pluginId: null };
@@ -117,9 +109,7 @@
       scene:      function (range) { return call('state.scene', [range]); },
       varps:      function (ids) { return call('state.varps', [ids]); },
       // Live var stores per domain, resolved the way the client binds them for scripts:
-      // {stores: {"<domain>": {src, ptr, live, div, count, vt}}, vars: {"6:<id>": v, "9:<id>": v}}.
-      // Clan (6) and player-group (9) values are listed when those stores exist; world, region and
-      // campaign have no live store at all (the client never binds them to a script).
+      // Clan (6) and player-group (9) values are listed when those stores exist.
       varDomainStores: function () { return call('state.varDomainStores', []); },
       buffs:      function () { return call('state.buffs', []); },
       cooldowns:  function () { return call('state.cooldowns', []); },
@@ -139,147 +129,82 @@
       materials:    function () { return call('state.materials', []); },
       baitBox:      function () { return call('state.baitBox', []); },
       groundItems:  function () { return call('state.groundItems', []); },
-      // Unspent Bonus XP per skill: [{skill,bonus}] (skills with none omitted).
       skillBonus:   function () { return call('state.skillBonus', []); },
-      // D&D tracker: {available:{star,etree,dmob,sink,chin,ff,goebie,famil}, resets:{daily,weekly,monthly}, varbits:{id:value}}.
       dailies:      function () { return call('state.dailies', []); },
-      // Quest list with live status: [{id,name,difficulty,status,statusText}].
       quests:       function () { return call('state.quests', []); },
-      // One quest in full: status + requirements (judged live) + cache journal info.
       quest:        function (id) { return call('state.quest', [id]); },
-      // Archaeology mysteries: [{site,name,points,solved,stage:{value,max}|null}].
       mysteries:    function () { return call('state.mysteries', []); },
-      // Full live widget tree of one open interface group (the Interfaces-tab walk):
-      // {widgets:[{t:[group,comp,sub],d,r:[x,y,w,h],ty,...}]}. Heavier than state.interface.
       interfaceGroup: function (groupId) { return call('state.interfaceGroup', [groupId]); },
-      // Live VARC-int values by id -> { "<id>": value } (max 64 ids), like state.varbits.
       varcs:        function (ids) { return call('state.varcs', [ids]); },
-      // Player-Owned Ports account state (host-decoded): {resources:[{name,qty,sprite}],
-      // tradeGoods:[{name,qty,item}], buildings:[{name,level}], ships:[{nameParts,voyageId,
-      // status:'ready'|'sailing'|'returned'|'damaged', etaMinutes|null}], shipCount,
-      // scrollPieces, distance, zone}. null until readable.
       ports:        function () { return call('state.ports', []); },
-      // Server tick counter (advances once per 600ms game tick). null when the client
-      // is not readable (not logged in / not tracked).
       gameTick:     function () { return call('state.gameTick', []); }
     },
 
-    // ---- scope: cache.read (static game data) ----
     cache: {
       itemInfo:  function (id) { return call('cache.itemInfo', [id]); },
       itemIcon:  function (id) { return call('cache.itemIcon', [id]); },
-      // Interface type-6 MODEL comp icon by MODEL id. NOTE: the only source of a model id is
-      // the host-side cacheIfaceGroup defs "model" field, which is NOT brokered to plugins, so
-      // this is usable only with a model id you already hold. state.interfaceGroup does not
-      // carry one.
       modelIcon: function (id) { return call('cache.modelIcon', [id]); },
       sprite:    function (id) { return call('cache.sprite', [id]); },
       varbitMap: function () { return call('cache.varbitMap', []); },
-      // Varbit definitions of the NON-player domains: {"<domain>": {"<var>": [[varbitId, lsb, msb], ...}}.
-      // Domains: 1 npc, 2 client (bit fields over varc ints), 3 world, 4 region, 5 object (item
-      // instance keys), 6 clan, 7 clan settings, 8 campaign. Player (0) stays in varbitMap.
       varbitDomainMap: function () { return call('cache.varbitDomainMap', []); },
-      // Census of the varbit archive per domain: {"<domain>": {n, var: [min, max], vb: [min, max], sample}}.
       varbitDomains: function () { return call('cache.varbitDomains', []); },
-      // Var definitions of one var config archive (60 player, 61 npc, 62 client, 63 world, 64 region,
-      // 65 object, 66 clan, 67 clan settings, 68 campaign, 75 player group): {archive, n, types: {"<id>":
-      // subtype}, flags: {"<id>": bits}}. `types` lists only vars whose value type is not int.
       varDefs:   function (archive) { return call('cache.varDefs', [archive]); },
       enumInfo:  function (id) { return call('cache.enumInfo', [id]); },
-      // Param definition: {type[,int][,str]} ({} until the reader is available).
       paramDef:  function (id) { return call('cache.paramDef', [id]); },
-      // Raw param map of one StructType (js5-22): {ints:{key:val}, strs:{key:"val"}}.
       structParams: function (id) { return call('cache.structParams', [id]); },
-      // Raw op-249 param map of one item (js5-19): {ints:{key:val}, strs:{key:"val"}}.
       itemParams: function (id) { return call('cache.itemParams', [id]); },
-      // Top-down cache terrain render centred on world tile (cx,cy): {w,t,h,png} where png is
-      // a base64 PNG (RGB). Older clients returned `b64` = raw RGBA; handle both if you must.
-      // (putImageData it into a canvas). half = tiles each side (<=96), ts = px/tile (<=8).
       mapWindow: function (cx, cy, plane, half, ts) { return call('cache.mapWindow', [cx, cy, plane, half, ts]); }
     },
 
-    // ---- scope: overlay (non-interactive visuals only) ----
     overlay: {
       toast:     function (text) { return call('overlay.toast', [text]); },
       notify:    function (text, ttlMs) { return call('overlay.notify', [text, ttlMs]); },
       highlight: function (names) { return call('overlay.highlight', [names]); },
-      // Box ONE NPC by name with an optional pill label; optional tileX/tileY boxes the
-      // instance nearest that tile instead of the player. Empty name clears the box.
       highlightNpc: function (name, label, tileX, tileY) { return call('overlay.highlightNpc', [name, label, tileX, tileY]); },
-      // Highlight the dialogue option matching any of the given texts (string or array).
       highlightOption: function (texts) { return call('overlay.highlightOption', Array.isArray(texts) ? texts : [texts]); },
-      // Box the backpack slot holding item `itemId` (optional label); 0 clears.
       highlightItem: function (itemId, label) { return call('overlay.highlightItem', [itemId, label]); },
-      // Highlight an arbitrary screen rect (e.g. from state.interface); w/h <= 0 clears.
       highlightRect: function (x, y, w, h) { return call('overlay.highlightRect', [x, y, w, h]); },
-      // Several boxes at once: [[x,y,w,h], ...] or [{x,y,w,h}, ...]. Replaces the whole set;
-      // [] clears. Shares one set per client with highlightRect, so the last caller wins.
       highlightRects: function (list) { return call('overlay.highlightRects', [list || []]); },
-      // Mark world tiles as guide objectives: [{x, y, plane, label}, ...]; [] clears.
-      // Optional x2/y2 on a mark (x/y = SW corner, x2/y2 = NE corner) draws one flat
-      // ground rect over the whole span instead of a single-tile mark.
-      // Optional color ('#rrggbb' or packed int) tints the mark; optional color2 makes
-      // a TWO-TONE tile split diagonally between the two colours (single tiles only).
       guideTiles: function (marks) { return call('overlay.guideTiles', [marks]); },
-      // Open the in-client wiki browser on a search term ('' = wiki home). The pane is
-      // hard-locked to runescape.wiki; a plugin can only pick the page, never the site.
       wikiSearch: function (term) { return call('overlay.wikiSearch', [term || '']); },
       clearHighlight: function () { return call('overlay.clearHighlight', []); },
-      // Big centre-screen banner text ('' clears) - the Dungeoneering boss-warning channel.
-      // centerText(text, [slot], [rgb]) -- slot 0..2 stack upward from the gameview centre and
-      // are cleared independently (pass '' for that slot); rgb is 0xRRGGBB, default warning red.
-      // Use separate slots for cues that can be live at the same time, so neither hides the other.
       centerText: function (text, slot, rgb) { return call('overlay.centerText', [text, slot, rgb]); },
       flashGame: function () { return call('overlay.flashGame', []); }
     },
 
-    // ---- scope: notify.os (Windows notifications; rate-capped to 1 per 10s) ----
     notify: {
       windows: function (title, body) { return call('notify.windows', [title, body]); }
     },
 
-    // ---- scope: clipboard (copy-only; nothing is read back) ----
     clipboard: {
       copy: function (text) { return call('clipboard.copy', [text]); },
-      // Needs the separate 'clipboard.read' scope.
       paste: function () { return call('clipboard.paste', []); }
     },
 
-    // ---- scope: sound (bundled WAV allowlist) ----
     sound: {
       play: function (name) { return call('sound.play', [name]); }
     },
 
-    // ---- scope: storage (per-plugin, per-account, quota-capped) ----
     storage: {
       get:  function (key) { return call('storage.get', [key]); },
       set:  function (key, value) { return call('storage.set', [key, value]); },
       keys: function () { return call('storage.keys', []); }
     },
 
-    // ---- ui (always available) ----
     ui: {
       setHeight: function (px) { return call('ui.setHeight', [px]); },
       setTitle:  function (s) { return call('ui.setTitle', [s]); },
-      // Declare a settings schema; the host renders the controls on its Preferences
-      // page and returns the current values. See PLUGIN_SDK.md for the schema shape.
       settings:  function (schema) { return call('ui.settings', [schema]); }
     },
 
-    // ---- scope: cache.read -- RS3 GE prices (server-relayed, launcher-cached) ----
     prices: {
-      // {itemId: {high, highTime, low, lowTime}} for every traded item.
       latest:  function () { return call('prices.latest', []); },
-      // Item metadata array: {id, name, limit, value, lowalch, highalch, members, ...}.
       mapping: function () { return call('prices.mapping', []); },
-      // One id (or an array, up to 50): just those items, without the full payload.
       item: function (ids) { return call('prices.item', [ids]); }
     },
 
-    // ---- settings (always available; values for the declared schema) ----
     settings: {
       get: function () { return call('settings.get', []); },
-      // cb(values) fires on declare and on every change made in Preferences.
       on:  function (cb) { if (typeof cb === 'function') listeners.settings.push(cb); }
     }
   };
@@ -287,6 +212,5 @@
   window.rtx = window.rtx || {};
   window.rtx.plugin = api;
 
-  // Announce the frame is alive so the host sends the 'ready' handshake.
   try { parent.postMessage({ __rtxPlugin: PROTO, kind: 'hello' }, '*'); } catch (e) {}
 })();

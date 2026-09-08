@@ -1,5 +1,4 @@
 // RuneToolsX panel: Vars watcher (live varp/varc feed for RE).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   function vwHex(v)   { return '0x' + ((v >>> 0).toString(16).toUpperCase().padStart(8, '0')); }
@@ -9,8 +8,7 @@
   // String varc values (scope 2) arrive as JS strings, ints as numbers.
   function vwVal(v) { return typeof v === 'string' ? vwEscHtml(v) : vwShort(v); }
 
-  // Scopes: 4 = varp, 5 = varc-int, 2 = varc-string. varps poll the hashmap directly; varc also
-  // comes from the companion observer, gated on this tab being open.
+  // Scopes: 4 = varp, 5 = varc-int, 2 = varc-string.
   let varDump = null, varLast = {}, varRowEls = new Map(), varFilter = '', varPaused = false, varFetching = false, _varAt = 0, varcAvail = false;
   // 64-bit varps: offer price 137, market price 140, offer snapshot 9458, recent trading price
   // 13483, plus probe regions 12788-12795 (GE-slot shaped, 12788 = unix seconds) and 10853-10896.
@@ -29,11 +27,8 @@
   let varDomVars = {};       // state.varDomainStores.vars: "6:<id>" / "9:<id>" -> value (clan, player group)
   let _varDomAt = 0;
   let varFeedHover = false;                            // pointer inside the feed -> freeze row ORDER
-  // Pinned watches sit at the top in stable order, bypassing every filter / cap / timer-hide.
   let varPinned = new Set();
   try { const vp = JSON.parse(localStorage.getItem('rtxVarPins') || '[]'); if (Array.isArray(vp)) varPinned = new Set(vp); } catch (e) {}
-  // Pins live in the durable store (%USERPROFILE%/RuneToolsX/varpins.json) because localStorage is
-  // wiped when the ui-assets are re-extracted on update; the mirror is read before bridge() exists.
   function varPinsSave() {
     const s = JSON.stringify([...varPinned]);
     try { if (bridge() && bridge().varPinsSave) rtxData.sync('act.varPinsSave', s); } catch (e) {}
@@ -67,9 +62,7 @@
   function varpName(id)   { return (varNamesData && varNamesData.varp[id]) || (varAchData && varAchData.vp[id]) || ''; }
   function varbitName(id) { return (varNamesData && varNamesData.varbit[id]) || (varAchData && varAchData.vb[id]) || ''; }
   function varcName(id)   { return (varNamesData && varNamesData.varc[id]) || ''; }
-  // Achievement-derived meanings from the cache (js5-57): op-14 reqs name the varbit(s) they track,
   // op-25 single bits WITHIN a varbit's value, op-23 single bits of a VARP, op-13 whole varps.
-  // CS2 source names win on overlap.
   let varAchData = null, varAchTried = false;   // { vb, vp, bits, vpbits, *L lowercased for search }
   function varAchLoad() {
     if (varAchTried || !bridge() || !bridge().achievements) return;
@@ -77,7 +70,6 @@
     (async () => {
       try {
         if (!achDefs) { try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; } }
-        // achBitReqs classifies legacy merged bit reqs via storageVbMap, so it must be loaded first
         await ensureVbMap();
         const vb = {}, vp = {}, bits = {}, vpbits = {};
         for (const a of (achDefs || [])) {
@@ -115,9 +107,6 @@
     if (t === 9) return { label: 'vargroup', cls: 'varbit' };
     return { label: 't' + t, cls: 'other' };
   }
-  // Var DOMAINS, the client's own numbering (the domain byte of every varbit definition and the
-  // variable-source table of the client scripts). Each domain has its own store; the panel reads
-  // player (varps) and client (varcs) live, the item hover reads object vars, the rest are cache
   // definitions only until their stores are located. `archive` = the var config archive (js5-2).
   const VAR_DOMAINS = {
     0: { name: 'player',        archive: 60, live: 'this panel (varp rows)' },
@@ -131,8 +120,6 @@
     8: { name: 'campaign',      archive: 68, live: 'not read' },
     9: { name: 'player group',  archive: 75, live: 'not read' },
   };
-  // Value type of a var (op 3 of its config file), the CS2 subtype ids. int is the default and
-  // never shown; an id outside this table shows as "t<id>".
   const VAR_TYPE_NAMES = { 0: 'int', 1: 'boolean', 3: 'quest', 6: 'seq', 9: 'component', 10: 'idkit',
     11: 'midi', 12: 'npc_mode', 13: 'namedobj', 14: 'synth', 16: 'area', 17: 'stat', 22: 'coordgrid',
     23: 'graphic', 24: 'chatphrase', 26: 'enum', 30: 'loc', 31: 'model', 32: 'npc', 33: 'obj',
@@ -171,7 +158,6 @@
       }); } catch (e) {}
     }
   }
-  // varbits that live in varp `varpId`, each decoded from `value` -> [{id, lsb, msb, val}]
   function varpVarbits(varpId, value) {
     return bitsOf(varbitMapData && varbitMapData[varpId], value);
   }
@@ -201,8 +187,6 @@
     try { if (bridge().varpsLong) varLongs = JSON.parse(await rtxData.raw('state.varpsLong', VW_LONG_VARPS)); } catch (e) {}
     try { if (bridge().varcsDumpAll) dx = JSON.parse(await rtxData.raw('state.varcsAll')); } catch (e) {}
     try { if (bridge().varcStringsDumpAll) dxs = JSON.parse(await rtxData.raw('state.varcStringsAll')); } catch (e) {}  // varc-string, keys "2:<id>"
-    // Clan (6) and player-group (9) stores, keys "6:<id>" / "9:<id>", plus the per-domain store
-    // status the Domains legend shows. Polled at a lower rate: the stores change rarely.
     let dd = null;
     if (Date.now() - _varDomAt > 2000) {
       _varDomAt = Date.now();
@@ -214,9 +198,7 @@
     varcAvail = !!(dx && typeof dx === 'object' && Object.keys(dx).length) ||
                 !!(dxs && typeof dxs === 'object' && Object.keys(dxs).length) ||
                 !!(dc && typeof dc === 'object' && Object.keys(dc).length);
-    // The companion walk (dc) is the only source for varc-strings and the getStorage-only varps the
     // flat hashmap misses (172/2017), but its type-4 captures include script-local scopes whose ids
-    // collide with player varps, so the direct polls must win on overlap.
     let d = null;
     if ((dv && typeof dv === 'object') || (dc && typeof dc === 'object') || (dx && typeof dx === 'object') || (dxs && typeof dxs === 'object')) {
       d = {};
@@ -261,8 +243,6 @@
         ch.addEventListener('click', () => { varTypeFilter = v; clearBtn(paintVars); });
         flt.appendChild(ch);
       });
-      // "Domains": a legend of every var domain the client defines, from the cache census
-      // (cache.varbitDomains) joined with what this build reads live.
       const dl = document.createElement('button'); dl.className = 'vw-chip vw-chip-legend'; dl.textContent = 'Domains';
       dl.title = 'Which var domains exist, how many bit fields each defines, and which ones are read live';
       const legend = document.createElement('div'); legend.id = 'vrLegend'; legend.className = 'vw-legend'; legend.hidden = true;
@@ -274,8 +254,6 @@
           let cen = {}; try { cen = JSON.parse(j) || {}; } catch (e) {}
           let h = '<div class="vw-legend-h">Var domains (the client keeps one store per domain; a varbit is a bit field over one var of one domain)</div>' +
             '<table class="vw-legend-t"><tr><th>#</th><th>domain</th><th>defs</th><th>varbits</th><th>base vars</th><th>read live by</th></tr>';
-          // Live store status from the reader (the client's own script binder chains): a store
-          // that exists shows its var count; clan and group stores are absent outside a clan/group.
           const st = varDomStores || {};
           const liveTxt = (dom, d) => {
             const s = st[dom];
@@ -301,7 +279,6 @@
       const meta = document.createElement('div'); meta.id = 'vrMeta'; meta.className = 'vw-meta';
       const feed = document.createElement('div'); feed.id = 'vrFeed'; feed.className = 'vw-feed';
       feed.addEventListener('scroll', hideVarbitPop);
-      // Freeze row ORDER while the pointer is in the feed: values still update in place.
       feed.addEventListener('mouseenter', () => { varFeedHover = true; });
       feed.addEventListener('mouseleave', () => { varFeedHover = false; paintVars(); });
       feed.addEventListener('click', (e) => {
@@ -337,7 +314,6 @@
     if (varDump) {
       for (const k in varDump) {
         if (varBlock.has(k)) continue;
-        // Pinned watches bypass every filter and cap: an explicit watch must never disappear.
         if (varPinned.has(k)) {
           const pp = k.split(':');
           const at2 = varChangeAt[k] || 0, ago2 = at2 ? (now - at2) : Infinity;
@@ -345,7 +321,6 @@
           pinnedRows.push({ key: k, scope: +pp[0], id: +pp[1], cur: varDump[k], prev: varPrev[k], at: at2, ago: ago2 });
           continue;
         }
-        // Auto-hidden timer noise, bypassed by a search so a filtered var shows even if it flips fast.
         if (!f && varNoisy.has(k) && !varTimerAllow.has(k)) { timerCount++; continue; }
         const p = k.split(':'); const scope = +p[0], id = +p[1];
         if (varTypeFilter) {                          // "varc" groups varc-int (5) + varc-string (2)
@@ -353,10 +328,6 @@
           if (want === 5 ? (scope !== 5 && scope !== 2) : (scope !== want)) continue;
         }
         if (f && f[0] === '=') {
-          // STRICT VALUE SEARCH: '=1500' matches by VALUE only, never by id. Covers the
-          // raw value, either 16-bit half, x10/x100 scalings (prayer-style packings) and
-          // every varbit decoded out of a varp. For hunting where an on-screen number
-          // lives: search '=N', change the number in game, search again, intersect.
           const want = parseInt(f.slice(1), 10);
           if (!Number.isFinite(want)) continue;
           const v = varDump[k] | 0;
@@ -366,13 +337,10 @@
             m2 = varsOfRow(scope, id, v).some(b => b.val === want || b.val === want * 10);
           if (!m2) continue;
         } else if (f) {
-          // Match by id substring, or (for a varp / varc) an exact varbit # it owns.
           let m = String(id).indexOf(f) >= 0;
           if (!m && scope === 4 && varbitMapData) { const defs = varbitMapData[id]; if (defs && defs.some(d => d[0] === +f)) m = true; }
           if (!m && scope === 5 && varDomMap && varDomMap['2']) { const defs = varDomMap['2'][id]; if (defs && defs.some(d => d[0] === +f)) m = true; }
-          // Domain or type word: "client", "player", "obj", "struct", "string" ...
           if (!m) { const fl = f.toLowerCase(), dom = varDomainOf(scope); if (dom >= 0 && VAR_DOMAINS[dom].name === fl) m = true; else { const tc = varTypeOf(scope, id); if (tc && varTypeName(tc) === fl) m = true; } }
-          // Name substring: the varp's name, a named varbit in it, or a named achievement bit of it.
           if (!m && (scope === 5 || scope === 2) && varNamesLower) {
             const cn = varNamesLower.varc[id];
             if (cn && cn.indexOf(f.toLowerCase()) >= 0) m = true;
@@ -392,7 +360,6 @@
               })) m = true;
             }
           }
-          // A numeric query also matches by VALUE: exact, or a component of a (plane<<28)|(x<<14)|y coord.
           if (!m && /^\d+$/.test(f)) {
             const fn = +f, v = varDump[k] | 0;
             if (v === fn || (v & 0x7FFFFFFF) === fn) m = true;                 // exact value (flag bit ignored)
@@ -405,7 +372,6 @@
         rows.push({ key: k, scope, id, cur: varDump[k], prev: varPrev[k], at, ago });
       }
     }
-    // Recently changed float to the top, everything else in id order; pinned rows sit above both.
     rows.sort((a, b) => (b.at - a.at) || (a.id - b.id));
     pinnedRows.sort((a, b) => (a.scope - b.scope) || (a.id - b.id));
     const cap = 500;
@@ -439,7 +405,6 @@
       return;
     }
     if (empty) empty.remove();
-    // Order freeze: refresh visible rows in place, no reordering or add/remove, until the pointer leaves.
     if (varFeedHover) {
       for (const r of all) { const el = varRowEls.get(r.key); if (el) renderRow(el, r); }
       updateVarPop();
@@ -474,8 +439,6 @@
     const pinned = varPinned.has(r.key);
     el.classList.toggle('pinned', pinned);
     const agoTxt = changed ? (r.ago < 1000 ? 'now' : Math.round(r.ago / 1000) + 's') : '';
-    // A long varp disagreeing with the truncated dump shows full width; it joins the sig so the
-    // row repaints when only the high bytes move.
     const long64 = (r.scope === 4 && varLongs && varLongs[String(r.id)] !== undefined
                     && varLongs[String(r.id)] !== String(r.cur | 0)) ? varLongs[String(r.id)] : null;
     const sig = r.cur + '|' + (long64 || '') + '|' + (changed ? r.prev : '~') + '|' + agoTxt + '|' + (pinned ? 'p' : '');
@@ -484,9 +447,7 @@
     const tl = varTypeLabel(r.scope);
     let nm = r.scope === 4 ? varpName(r.id) :
              (r.scope === 5 || r.scope === 2) ? varcName(r.id) : '';
-    // Unnamed varp that just changed: label it with the first named varbit or achievement bit that differs.
     if (!nm && r.scope === 4 && changed && typeof r.cur === 'number' && typeof r.prev === 'number') {
-      // named single bit of the varp itself (op-23 reqs)
       const pb = varAchData && varAchData.vpbits[r.id];
       const fp = pb ? pb.find(b => ((r.cur >>> b.bit) & 1) !== ((r.prev >>> b.bit) & 1)) : null;
       if (fp) nm = 'bit ' + fp.bit + ': ' + fp.label;
@@ -495,7 +456,6 @@
         for (const v of varpVarbits(r.id, r.cur)) {
           const w = was[v.id];
           if (v.val === w) continue;
-          // a named single bit inside the varbit (op-25) beats the varbit-level label
           const ab = varAchData && varAchData.bits[v.id];
           const fb = (ab && w !== undefined) ? ab.find(b => achBitFromVbVal(v.id, v.val, b.bit) !== achBitFromVbVal(v.id, w, b.bit)) : null;
           if (fb) { nm = 'vb ' + v.id + ' bit ' + fb.bit + ': ' + fb.label; break; }
@@ -520,7 +480,6 @@
       '<button class="vw-pin' + (pinned ? ' on' : '') + '" data-pin="' + r.key + '" title="' + (pinned ? 'Unpin' : 'Pin to top (survives filters; never reorders)') + '">' + (pinned ? '✦' : '✧') + '</button>' +
       '<button class="vw-ig" data-blk="' + r.key + '" title="Hide this var">×</button>';
   }
-  // Popover content, rebuilt from the current dump. Returns false when the var can't be shown.
   function fillVarbitPop(pop, key) {
     if (!varDump) return false;
     const p = key.split(':'); const scope = +p[0], id = +p[1];
@@ -531,7 +490,6 @@
     const base = (recent && varPrev[key] !== undefined) ? varPrev[key] : cur;
     const vbs = varsOfRow(scope, id, cur), was = {};
     varsOfRow(scope, id, base).forEach(v => { was[v.id] = v.val; });
-    // 32-bit breakdown, set bits highlighted; shown even for varps with no named varbits.
     let bits = '';
     for (let b = 31; b >= 0; b--) { if (b !== 31 && (b + 1) % 4 === 0) bits += ' '; bits += (((cur >>> b) & 1) ? '<b>1</b>' : '0'); }
     const pn = scope === 4 ? varpName(id) : scope === 5 ? varcName(id) : '';
@@ -541,7 +499,6 @@
       (cur < 0 ? ' (u32 ' + (cur >>> 0) + ')' : '') +    // bit-31 bitfields read negative as int32; not overflow
       ' &nbsp;0x' + (cur >>> 0).toString(16).toUpperCase() + '</div>' +
       '<div class="vw-pop-bits">' + bits + '</div>' +
-      // Named single bits of the VARP itself (achievement op-23 reqs); player domain only.
       ((scope === 4 && varAchData && varAchData.vpbits[id]) || []).map(b => {
         const bv = (cur >>> b.bit) & 1, wv = (base >>> b.bit) & 1;
         return '<div class="vw-pl' + (wv !== bv ? ' chg' : '') + '">' +
@@ -553,7 +510,6 @@
         let h = '<div class="vw-pl' + (wasV !== undefined && wasV !== v.val ? ' chg' : '') + '">' +
           '<span class="vw-pl-id">vb ' + v.id + '</span><span class="vw-pl-b">[' + v.lsb + (v.msb !== v.lsb ? '-' + v.msb : '') + ']</span>' +
           (vn ? '<span class="vw-pl-nm" title="' + vwEscHtml(vn) + '">' + vwEscHtml(vn) + '</span>' : '') + '<b>' + v.val + '</b></div>';
-        // Named single bits INSIDE this varbit (op-25 reqs), indexed against the varbit's value.
         const ab = varAchData && varAchData.bits[v.id];
         if (ab) for (const b of ab) {
           const bv = achBitFromVbVal(v.id, v.val, b.bit), wv = achBitFromVbVal(v.id, wasV === undefined ? v.val : wasV, b.bit);
@@ -588,7 +544,6 @@
     pop.style.left = Math.max(6, Math.min(rc.left, window.innerWidth - pop.offsetWidth - 8)) + 'px';
     try { wmRectsSoon(); } catch (e) {}
   }
-  // Re-render the open popover on every paint so its varbit values stay live without mouse motion.
   function updateVarPop() {
     const pop = $('vrPop');
     if (!pop || pop.style.display === 'none' || !varPopKey) return;
@@ -596,7 +551,6 @@
     fillVarbitPop(pop, varPopKey);
   }
   function hideVarbitPop() { const pop = $('vrPop'); if (pop) { pop.style.display = 'none'; try { wmRectsSoon(); } catch (e) {} } varPopKey = ''; varPopAnchor = null; }
-  // Session-scoped list of hidden vars (manual or auto-hidden timer noise), with unhide controls.
   function showVarIgnoredModal() {
     hideVarIgnoredModal();
     const rowsM = [];
@@ -651,7 +605,6 @@
   }
   function hideVarIgnoredModal() { const ov = $('vrModalOv'); if (ov) { ov.remove(); try { wmRectsSoon(); } catch (e) {} } }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { fetchVars, varNamesLoad, varbitName });
 registerTab({ id: 'vars', render: renderVars, open: function () { varsWatchSet(true); fetchVars(); }, close: function () { try { varsWatchSet(false); hideVarbitPop(); hideVarIgnoredModal(); } catch (e) {} } });
 })();

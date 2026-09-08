@@ -1,8 +1,3 @@
-// rtx-wm.js: In-game window manager: WIN_SIZES, wm state, wmCreateWindow, tabs/docking/drag/resize, paneVisible, withPane, paneScrollTrack, withScrollKeep, paneRun, renderPaneFor, uiRepaintAll, paneLeave.
-// Loads after: rtx-registry.js (TABS/TAB_GROUPS) and rtx-bridge.js; installs document mousemove/mouseup listeners at load.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // =================== In-game window manager ===================
-  // Every panel is a floating window; TAB_GROUPS open as one window with a member strip. Layout persists per account (layoutLoad/layoutSave); input regions are published via rtx.uiRects.
   const WIN_DEF = { w: 440, h: 560, minW: 330, minH: 240 };
   const WIN_SIZES = {
     player: { w: 470, h: 540 },
@@ -23,16 +18,12 @@
     ticks: { w: 360, h: 330, minH: 200 },
     screenshot: { w: 400, h: 350, minH: 220 },
     xptracker: { w: 420, h: 480 },
-    // HUD widgets (WIN_HUD) open small and may go below the normal window floor.
     xpmeter: { w: 264, h: 210, minW: 172, minH: 78 },
     metronome: { w: 132, h: 132, minW: 84, minH: 84 },
     auras: { w: 420, h: 560 },
-    // One window per aura group (tab id 'aura:<gid>', see panel_auras.js); looked up by prefix.
     'aura:': { w: 240, h: 84, minW: 40, minH: 40 },
   };
-  // HUD windows: minimal chrome, a lock (click-through) mode, and their own z-band above the normal windows.
   const WIN_HUD = new Set(['xpmeter', 'metronome']);
-  // Aura group windows are HUDs too; their ids are dynamic, so matched by prefix.
   function wmIsHud(id) { return WIN_HUD.has(id) || (typeof auraIsHudTab === 'function' && auraIsHudTab(id)); }
   const Z_HUD = 900000;              // HUD band: a HUD never hides behind a data panel
   function wmZ(w) { return (w.hud ? Z_HUD : 0) + w.z; }
@@ -42,12 +33,10 @@
     focused: null,          // wid
     barX: null, barY: null, barPill: false,
     barYf: null,            // vertical centre as a fraction of the frame height (free drag); null = edge-docked
-    // Host borderless fullscreen. Not persisted (per-session view state).
     fullscreen: false,
     restored: false,        // layout restore ran (or gave up)
     dirty: false,           // user changed layout since restore (enables saves)
   };
-  // Tabs dock between windows, so a wid only names a window; w.tabs is the truth and lookups go through wmWinOf.
   function widFor(tabId) { const g = TAB_GROUP_OF[tabId]; return g ? ('g:' + g.id) : tabId; }
   function wmMintWid(tabId) {
     const base = widFor(tabId);
@@ -60,7 +49,6 @@
     for (const w of wm.wins.values()) if (w.tabs.indexOf(tabId) >= 0) return w;
     return null;
   }
-  // A group counts as open if any member is docked somewhere; prefer a shown window.
   function wmWinOfAny(ids) {
     let hidden = null;
     for (const id of ids) {
@@ -70,27 +58,22 @@
     }
     return hidden;
   }
-  // Rolled counts as hidden (`.win.rolled .win-body` is display:none).
   function paneVisible(id) {
     const w = wmWinOf(id);
     return !!(w && !w.min && !w.rolled && w.tab === id);
   }
   function paneRoot(id) { return __paneRoots[id] || null; }
-  // Drives the 4 Hz fetch/repaint sweep.
   function wmVisibleWins() {
     const out = [];
     for (const w of wm.wins.values()) if (!w.min && !w.rolled) out.push(w);
     return out;
   }
-  // Run fn with the pane-dispatch context (activeTab + $('content')) pointed at `w`.
   function withPane(w, fn) {
     const pa = activeTab, pr = __paneRoot;
     activeTab = w.tab;
     __paneRoot = w.pane;
     try { return fn(); } finally { activeTab = pa; __paneRoot = pr; }
   }
-  // ---- scroll preservation across repaints ----
-  // Panels rebuild their subtree on repaint, resetting scrollTop. Offsets are recorded on scroll (capture listener on the pane; scrollTop reads flush layout), only offsets reset to zero are restored, and memory is scoped per tab because docked tabs share one .content.
   function paneTabOf(root) {
     for (const w of wm.wins.values()) if (w.pane === root) return w.tab;
     return '';
@@ -111,7 +94,6 @@
         else if (typeof el.className === 'string' && el.className.trim())
           sel = '.' + el.className.trim().split(/\s+/).map(CSS_esc).join('.');
         else return;                       // no stable handle -> cannot match it back
-        // Index among all matches so same-class lists do not collapse onto the first.
         try { i = Array.prototype.indexOf.call(root.querySelectorAll(sel), el); } catch (err) { return; }
         if (i < 0) return;
         key = tab + '|' + sel + '|' + i;
@@ -120,7 +102,6 @@
       mem.set(key, { tab, sel, i, top: el.scrollTop, left: el.scrollLeft });
     }, true);
   }
-  // Minimal identifier escape so a stray character cannot throw out of querySelectorAll.
   function CSS_esc(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '\\$&'); }
   function paneScrollRestore(root, tab) {
     const mem = root && root.__rtxScrollMem;
@@ -146,14 +127,12 @@
     paneScrollTrack(root);
     try { return fn(); } finally { paneScrollRestore(root, tab); }
   }
-  // Async-callback repaint helper: repaint my panel against its window if visible.
   function paneRun(id, fn) {
     const w = wmWinOf(id);
     if (!w || w.min || w.tab !== id) return;
     withPane(w, () => withScrollKeep(w.pane, id, fn));
   }
   function renderPaneFor(w) { withPane(w, () => withScrollKeep(w.pane, w.tab, () => { renderPane(); wmRenderTabs(w); })); }
-  // Rebuild every open panel now (display preferences would otherwise wait for a data change). The Preferences window is left alone.
   function uiRepaintAll() {
     for (const w of wm.wins.values()) {
       if (w.min || w.tab === 'uisettings') continue;
@@ -164,19 +143,15 @@
     }
   }
 
-  // Per-panel close/switch-away hooks.
   function paneLeave(id) {
-    // Closing a HUD window turns the widget off: fold the state back into the owning setting. Guarded on the setting still being on, which also stops recursion when the close was ours.
     if (id === 'metronome' && metroVisual()) {
       try { setMetroMode(metroAudio() ? 'audio' : 'off'); } catch (e) {}
     }
     if (id === 'xpmeter' && xpOn) {
       try { xpOn = false; saveXpCfg(); paneRun('xptracker', () => { const wr = $('xpWrap'); if (wr) buildXpConfig(wr); }); } catch (e) {}
     }
-    // Registered panels own their leave cleanup (registerTab({ close })).
     { const P = RTX.panels[id]; if (P && typeof P.close === 'function') { try { P.close(); } catch (e) {} } }
     if (String(id).indexOf('plugin:') === 0) {
-      // Clear every overlay channel plugins can write.
       try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
       try { if (bridge() && bridge().uiHighlight) bridge().uiHighlight(myPid(), 0, 0, 0, 0); } catch (e) {}
       try { if (bridge() && bridge().panelViz) bridge().panelViz(myPid(), ''); } catch (e) {}
@@ -192,7 +167,6 @@
     const sz = winSizeFor(w.wid, w.tab);
     if (w.w < sz.minW) w.w = sz.minW;
     if (w.w > vw) w.w = vw;
-    // Rolled windows: clamp against the rendered height and never rewrite the stored h.
     const eh = w.rolled ? ((w.el && w.el.offsetHeight) || 36) : w.h;
     if (!w.rolled) {
       if (w.h < sz.minH) w.h = sz.minH;
@@ -207,7 +181,6 @@
     let pre = null;
     if (typeof tab === 'string' && tab.indexOf('aura:') === 0) {
       pre = Object.assign({}, WIN_SIZES['aura:']);
-      // A new aura window opens at the aura's own size (plus the HUD title strip).
       try { const a = (typeof auraGet === 'function') ? auraGet(tab.slice(5)) : null; if (a) { pre.w = Math.max(pre.minW, (a.w | 0) + 4); pre.h = Math.max(pre.minH, (a.h | 0) + 22); } } catch (e) {}
     }
     return Object.assign({}, WIN_DEF, WIN_SIZES[wid] || WIN_SIZES[tab] || pre || {});
@@ -216,9 +189,7 @@
     w.el.style.left = w.x + 'px';
     w.el.style.top = w.y + 'px';
     w.el.style.width = w.w + 'px';
-    // Rolled up (window shade): only the title strip shows.
     w.el.style.height = w.rolled ? 'auto' : (w.h + 'px');
-    // Width classes replace the old viewport media queries.
     w.el.classList.toggle('narrow', w.w < 400);
     w.el.classList.toggle('tight', w.w < 350);
   }
@@ -226,13 +197,11 @@
     w.rolled = !w.rolled;
     w.el.classList.toggle('rolled', !!w.rolled);
     wmApplyGeom(w);
-    // Rolled == hidden, so rolling changes arm state; unrolling must repaint by hand (the sweep skipped it).
     if (!w.rolled) renderPaneFor(w);
     syncMarkerArm();
     renderMenubar();
     wmRectsSoon(); wmSaveSoon();
   }
-  // HUD lock = click-through. Both halves needed: pointer-events:none stops this view reacting, dropping the window from wmPushRects lets the click reach the game.
   function wmApplyLock(w) {
     if (!w.el) return;
     w.el.classList.toggle('locked', !!w.locked);
@@ -243,7 +212,6 @@
     w.locked = !w.locked;
     wmApplyLock(w);
     wmRectsSoon(); wmSaveSoon();
-    // Keep the owning setting in step: the window carries the lock for layout restore, the setting for a reopened widget, and the settings panel is the only way back once locked.
     if (w.tab === 'metronome') {
       setMetroLock(w.locked);
     }
@@ -267,7 +235,6 @@
     try { localStorage.setItem('rtxDevTab', activeTab); } catch (e) {}
     syncMarkerArm();
   }
-  // Cascade spawn position: below the menu bar, stepping down-right, clamped.
   let _spawnN = 0;
   function wmSpawnPos(sz) {
     const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
@@ -282,7 +249,6 @@
 
   function wmCreateWindow(wid, tab, group, geom, noAnim) {
     const sz = winSizeFor(wid, tab.id);
-    // `geom.nogeom` = a restore that carried state (min/lock) but no usable box.
     const hasBox = !!(geom && !geom.nogeom);
     const pos = hasBox ? { x: geom.x, y: geom.y } : wmSpawnPos(sz);
     const w = {
@@ -292,11 +258,9 @@
       w: hasBox ? geom.w : sz.w, h: hasBox ? geom.h : sz.h,
       z: ++wm.zTop, min: !!(geom && geom.min),
       hud: wmIsHud(tab.id),
-      // Lock is a HUD-only mode: a saved lock on a tab that is no longer a HUD would pass every click to the game.
       locked: wmIsHud(tab.id) && !!(geom && geom.lock),
       el: null, body: null, pane: null, tabsEl: null, nameEl: null, titleEl: null, icoEl: null,
     };
-    // A group opens with its members docked; hidden members and ones already undocked stay out.
     if (group) {
       const avail = allTabs();
       w.tabs = group.tabs.filter(id => avail.some(t => t.id === id) && !wmWinOf(id));
@@ -329,12 +293,10 @@
       b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
       return b;
     };
-    // HUD lock toggle: locked = click-through; unlocking from here is impossible once locked, so the owning settings panel keeps its own lock control.
     if (w.hud) btns.appendChild(mkB('g-lock', 'Lock (click-through)', () => wmToggleLock(w), 'win-lock'));
     btns.appendChild(mkB('g-min', 'Minimize', () => wmMinimize(w)));
     btns.appendChild(mkB('g-x', 'Close', () => wmClose(wid), 'win-close'));
     title.appendChild(btns);
-    // Double-click the title = roll the window up to its title strip (window shade).
     title.addEventListener('dblclick', (e) => {
       if (e.target && e.target.closest && (e.target.closest('.win-btns') || e.target.closest('.win-tabs'))) return;
       wmToggleRoll(w);
@@ -349,7 +311,6 @@
     el.appendChild(body);
     w.body = body;
     w.pane = pane;
-    // Resize handles.
     for (const dir of ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se']) {
       const h = document.createElement('div');
       h.className = 'rz rz-' + dir;
@@ -357,7 +318,6 @@
       h.addEventListener('mousedown', (e) => wmResizeStart(w, dir, e));
       el.appendChild(h);
     }
-    // Focus on any press inside; drag from the title bar.
     el.addEventListener('mousedown', () => { if (wm.focused !== wid) { wmFocus(w); wmRectsSoon(); wmSaveSoon(); } }, true);
     title.addEventListener('mousedown', (e) => wmDragStart(w, e));
     // Republish rects once win-in's scale(0.965) is gone, or the consume region is the scaled box.
@@ -373,7 +333,6 @@
     wmRenderTabs(w);
     return w;
   }
-  // A member of this window's group keeps the group's short label; anything docked in from elsewhere shows its own.
   function wmTabLabel(w, id) {
     const t = allTabs().find(x => x.id === id);
     if (w.group) {
@@ -382,12 +341,10 @@
     }
     return t ? t.label : id;
   }
-  // Still exactly the group it opened as -> group name; otherwise named after the shown tab.
   function wmIsWholeGroup(w) {
     if (!w.group) return false;
     const avail = allTabs();
     const mem = w.group.tabs.filter(id => avail.some(t => t.id === id));
-    // Filter both sides: allTabs() can drop a member after the window was built (groupbank once gimInGroup resolves).
     const have = w.tabs.filter(id => avail.some(t => t.id === id));
     return have.length === mem.length && mem.every(id => have.indexOf(id) >= 0);
   }
@@ -397,14 +354,11 @@
     const whole = wmIsWholeGroup(w);
     w.nameEl.textContent = whole ? w.group.label : (t ? t.label : w.tab);
   }
-  // The tab strip under the title bar: one pill per docked tab (hidden while solo).
   function wmRenderTabs(w) {
     if (!w.tabsEl) return;
     const avail = allTabs();
-    // Conditionally hidden members stay off the strip; a lone remaining pill is inert.
     const shown = w.tabs.filter(id => avail.some(x => x.id === id));
     const multi = w.tabs.length > 1;
-    // Sign what is actually rendered, not w.tabs: allTabs() shifts under us.
     const sig = multi ? (shown.join(',') + '|' + w.tab + '|' + w.tabs.length) : '';
     if (w.tabsEl._sig === sig) return;
     w.tabsEl._sig = sig;
@@ -442,7 +396,6 @@
     if (w.group && w.group.tabs.indexOf(w.tab) >= 0)
       try { localStorage.setItem('rtxGrpLast:' + w.group.id, w.tab); } catch (e) {}
   }
-  // Live reorder while a pill is dragged along its strip (same wrapped row only).
   function wmReorderTabAt(w, id, x, y) {
     if (!w.tabsEl) return;
     let overId = null;
@@ -461,7 +414,6 @@
     wmRenderTabs(w);
     wmSaveSoon();
   }
-  // Replace a window's docked set wholesale (layout restore, undock source).
   function wmSetTabs(w, ids) {
     w.tabs = ids.slice();
     if (w.tabs.indexOf(w.tab) < 0) w.tabs.unshift(w.tab);
@@ -482,7 +434,6 @@
     wmSaveSoon();
   }
   function wmMinimize(w) {
-    // A body-level popup anchored in this window must not outlive it.
     try { if (typeof closeSoundMenu === 'function') closeSoundMenu(); } catch (e) {}
     w.min = true;
     w.el.style.display = 'none';
@@ -491,7 +442,6 @@
     renderMenubar();
     wmRectsSoon(); wmSaveSoon();
   }
-  // Hide/show every panel at once (Preferences hotkey); hiding remembers which windows were open.
   let _wmHiddenSet = null;
   function wmToggleAll() {
     const open = [...wm.wins.values()].filter(w => !w.min);
@@ -519,7 +469,6 @@
     if (!w) return;
     try { if (typeof closeSoundMenu === 'function') closeSoundMenu(); } catch (e) {}
     wm.dirty = true;            // closing is a layout change; see the note in openTab
-    // Only the shown tab needs leaving.
     paneLeave(w.tab);
     delete __paneRoots[w.tab];
     wm.wins.delete(wid);
@@ -530,7 +479,6 @@
     renderMenubar();
     wmRectsSoon(); wmSaveSoon();
   }
-  // Show `id` without leaving the outgoing tab (the caller already dealt with it).
   function wmMountTab(w, id) {
     w.tab = id;
     __paneRoots[id] = w.pane;
@@ -540,7 +488,6 @@
     renderPaneFor(w);
     withPane(w, () => tabEntryKicks(id));
   }
-  // Tab to show after index `i` was spliced out: nearest surviving available id on either side (build-hidden members can linger in w.tabs). null = nothing left.
   function wmNeighbourTab(w, i) {
     const avail = allTabs();
     const ok = (id) => avail.some(t => t.id === id);
@@ -551,7 +498,6 @@
     }
     return null;
   }
-  // Close ONE docked tab (its pill's ✕); the title-bar ✕ still closes the whole window.
   function wmCloseTabIn(w, id) {
     const i = w.tabs.indexOf(id);
     if (i < 0) return;
@@ -560,7 +506,6 @@
     w.tabs.splice(i, 1);
     const nx = wasShown ? wmNeighbourTab(w, i) : null;
     if (wasShown && !nx) { wmClose(w.wid); return; }   // only build-hidden leftovers: nothing to mount
-    // Only a mounted tab gets left: paneLeave clears singleton host channels (guideMarks, uiHighlight, panelViz, overlayHighlight, centerText).
     if (wasShown) paneLeave(id);
     delete __paneRoots[id];
     if (wasShown) wmMountTab(w, nx);
@@ -569,21 +514,17 @@
     renderMenubar();
     wmRectsSoon(); wmSaveSoon();
   }
-  // Close a tab wherever it lives; the window goes with it only if it was the last.
   function wmCloseTabId(id) {
     const w = wmWinOf(id);
     if (w) wmCloseTabIn(w, id);
   }
 
-  // ---- window-to-window docking ----
-  // Drop zone = the target's title bar + tab strip; its body belongs to the panel.
   function wmPtIn(el, x, y) {
     if (!el) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
   function wmDockTargetAt(x, y, skip) {
-    // HUD widgets never dock, in either direction.
     if (skip && skip.hud) return null;
     let best = null;
     for (const w of wmVisibleWins()) {
@@ -591,14 +532,12 @@
       if (!wmPtIn(w.titleEl, x, y) && !wmPtIn(w.tabsEl, x, y)) continue;
       if (!best || w.z > best.z) best = w;   // overlapping title bars: the top one wins
     }
-    // Occlusion check: another window's body may be painted over the title bar. Rolled windows still occlude (hence wm.wins).
     if (best) for (const w of wm.wins.values()) {
       if (w === best || w === skip || w.min) continue;
       if (w.z > best.z && wmPtIn(w.el, x, y)) return null;
     }
     return best;
   }
-  // Merge src into tgt: the tabs move, so they are never paneLeave'd.
   function wmDockInto(src, tgt) {
     const act = src.tab;
     delete __paneRoots[act];
@@ -615,7 +554,6 @@
     renderMenubar();
     wmRectsSoon(); wmSaveSoon();
   }
-  // Tear a pill out into its own window under the cursor; returns it so the press continues as a window move.
   function wmUndockTab(w, id, ev) {
     if (w.tabs.length <= 1) return null;
     const t = allTabs().find(x => x.id === id);
@@ -626,7 +564,6 @@
     const nx = wasShown ? wmNeighbourTab(w, i) : null;
     if (wasShown) delete __paneRoots[id];   // moving, not closing: no paneLeave
     if (wasShown && !nx) {
-      // Every leftover is build-hidden: torn down by hand, not wmClose (which would paneLeave the moving tab).
       wm.wins.delete(w.wid);
       if (w.el && w.el.parentNode) w.el.parentNode.removeChild(w.el);
       if (wm.focused === w.wid) wm.focused = null;
@@ -637,7 +574,6 @@
     }
     const geom = { x: Math.round(ev.clientX - 70), y: Math.round(ev.clientY - 14),
                    w: w.w, h: w.h, min: false };
-    // noAnim: born mid-drag, win-in's scale would shrink every published rect.
     const nw = wmCreateWindow(wmMintWid(id), t, TAB_GROUP_OF[id] || null, geom, true);
     wmSetTabs(nw, [id]);        // one member of its group, not the whole group again
     wmFocus(nw);
@@ -649,7 +585,6 @@
     return nw;
   }
 
-  // ---- drag / resize (mouse capture rides the companion's consume-until-release) ----
   let _wmDrag = null;
   let _tabDrag = null;        // pill pressed, not yet dragged far enough to undock
   let _tabDragged = false;    // that press became an undock -> swallow its click
@@ -660,7 +595,6 @@
     w.el.classList.add('dragging');
     e.preventDefault();
   }
-  // Pills arm a potential undock only: no preventDefault, so a press that never moves is a click.
   function wmTabDragStart(w, id, e) {
     if (e.button !== 0) return;
     if (e.target && e.target.closest && e.target.closest('.win-tabx')) return;
@@ -676,9 +610,7 @@
     e.stopPropagation();
   }
   document.addEventListener('mousemove', (e) => {
-    // A pill press that travels ~8px tears that tab out and hands the press to the window-move code.
     if (_tabDrag && !_wmDrag) {
-      // Inside its own strip the press reorders instead of tearing out.
       const td0 = _tabDrag;
       const sr = td0.w.tabsEl ? td0.w.tabsEl.getBoundingClientRect() : null;
       if (sr && e.clientX >= sr.left - 28 && e.clientX <= sr.right + 28 &&
@@ -702,13 +634,11 @@
     const w = d.w;
     if (d.mode === 'move') {
       w.x = d.ox + dx; w.y = d.oy + dy;
-      // Edge snap (desktop bounds), 10px threshold.
       const vw = window.innerWidth, vh = window.innerHeight;
       if (Math.abs(w.x) < 10) w.x = 0;
       if (Math.abs(w.y) < 10) w.y = 0;
       if (Math.abs(vw - (w.x + w.w)) < 10) w.x = vw - w.w;
       if (Math.abs(vh - (w.y + w.h)) < 10) w.y = vh - w.h;
-      // Hovering another window's title / tab strip = drop it in there on release.
       const tgt = wmDockTargetAt(e.clientX, e.clientY, w);
       if (tgt !== d.dock) {
         if (d.dock) d.dock.el.classList.remove('dock-target');
@@ -725,7 +655,6 @@
     wmClamp(w);
     wmApplyGeom(w);
     wmRectsSoon();
-    // Aura groups lay themselves out to their window, so resizing must repaint live.
     if (d.mode === 'size' && typeof auraIsHudTab === 'function' && auraIsHudTab(w.tab) && !w.min) renderPaneFor(w);
   });
   document.addEventListener('mouseup', () => {

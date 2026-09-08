@@ -1,5 +1,4 @@
 // RuneToolsX panel: Scene (nearby players, NPCs, objects, ground items, specials).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   sceneData = null;   // {players:[{uid,x,y,self,name}], npcs:[..], objects:[{id,x,y,plane,type,dist,name,actions}]}
@@ -9,22 +8,14 @@
   const SPECIAL_NAMES = { 7307: 'Time sprite', 7164: 'Rockertunity', 8447: "Lumberjack's Intuition",
     6841: 'Scan: FAR (blue, beyond 2x range)', 6842: 'Scan: MEDIUM (orange, 1-2x range)', 6843: 'Scan: CLOSE (red, within range)' };
   function specialName(g) { return SPECIAL_NAMES[g] || ('Special (gfx ' + g + ')'); }
-  // Type-4 graphics attached to an actor rather than to the world. The companion decides
-  // "attached" structurally (the owning node reports a player/NPC section), so an unnamed id
-  // still reads as an actor effect instead of an anonymous world special.
   const ADORN_NAMES = { 8920: 'Health bar' };
   function adornName(g) { return ADORN_NAMES[g] || ('Actor effect (gfx ' + g + ')'); }
   sceneRange = 20;
   let sceneTerm     = '';     // list filter: name or id substring (list-only; overlay/nameplates keep the full set)
-  // Extra saved filter terms (chips). A row matches if the typed term OR any chip matches, so
-  // several things can be watched at once without a separator that could clash with a name.
   let sceneTerms    = [];
   try { const v = JSON.parse(localStorage.getItem('rtxSceneTerms') || '[]'); if (Array.isArray(v)) sceneTerms = v.filter(x => typeof x === 'string').slice(0, 12); } catch (e) {}
   function sceneTermsSave() { try { localStorage.setItem('rtxSceneTerms', JSON.stringify(sceneTerms)); } catch (e) {} }
   function sceneAllTerms() { const t = sceneTerm.trim().toLowerCase(); const out = sceneTerms.map(x => x.toLowerCase()); if (t) out.push(t); return out; }
-  // Dev hot-reload is a full LoadHTML, which resets every panel's JS state. Carry the
-  // transient filter across THAT reload only (__rtxDevReload marker): a normal session
-  // boot must start unfiltered, or a stale persisted filter would silently hide entities.
   try { if (window.__rtxDevReload) sceneTerm = localStorage.getItem('rtxSceneTerm') || ''; } catch (e) {}
   let sceneTotal    = 0;      // pre-filter count, shown as "matches / total" while filtering
   sceneInteractable = false;
@@ -54,8 +45,6 @@
       sceneData = (d && Array.isArray(d.npcs) && Array.isArray(d.players))
                     ? { objects: [], specials: [], ...d } : { players: [], npcs: [], objects: [], specials: [] };
     } catch (e) { /* keep previous sceneData */ }
-    // Ground items are also read while any item marker is outstanding, so the marker can be
-    // cleared the moment the item is picked up even with the Ground tab closed.
     if ((sceneShow.ground || sceneMarkCount()) && bridge().groundItems) {
       try { const g = JSON.parse((await rtxData.raw('state.groundItems')) || '[]'); sceneGround = Array.isArray(g) ? g : []; }
       catch (e) { sceneGround = []; }
@@ -75,7 +64,6 @@
     return [null, null];
   }
 
-  // Players/NPCs are range-filtered here by tile distance; objects arrive already filtered.
   function sceneItems() {
     if (!sceneData) return null;
     const [px, py] = sceneSelfPos();
@@ -98,13 +86,9 @@
     if (sceneShow.objects && Array.isArray(sceneData.objects))
       for (const o of sceneData.objects) {
         if (sceneInteractable && !hasActs(o)) continue;
-        // Phantom locs: in the worldview with a config + action but never drawn (vis=false, only ever false for runtime locs); undefined = older reader -> keep.
         if (o.vis === false) continue;
-        // w/h = the reader's rotation-corrected footprint (live AABB for runtime locs); this
-        // mapping DROPPED them at first, which is why every object marked one tile.
         out.push({ type: 'object', name: o.name, x: o.x, y: o.y, dist: (o.dist == null ? -1 : o.dist), id: o.id, plane: o.plane, otype: o.type, actions: o.actions, rt: !!o.rt, w: o.w | 0 || 1, h: o.h | 0 || 1 });
       }
-    // Ground items carry no actions, so the Interactable filter doesn't apply.
     if (sceneShow.ground && Array.isArray(sceneGround))
       for (const g of sceneGround) {
         const d = cheby(g.x, g.y); if (!inRange(d)) continue;
@@ -112,17 +96,7 @@
       }
     if (sceneShow.specials && Array.isArray(sceneData.specials))
       for (const s of sceneData.specials) {
-        // Only the SCAN RING has no world tile (x/y is scan-internal), so it anchors to the player
-        // at distance 0 and the colour alone is the signal; every other type-4 has a real tile ("w":1).
         const ring = s.gfx >= 6841 && s.gfx <= 6843;
-        // Type-13 entities carry no gfx id - the TILE is the whole payload. Both the worldview
-        // walk and the companion's display hook now run the same scan-vs-destination shape test,
-        // so k is set whichever route the entity arrived by. k='scan' is the clue-scan coordinate
-        // marker (its tile IS the dig spot), k='dest' is your walk target. An empty k means the
-        // shape test could not read the entity, so say so rather than guessing a class.
-        //
-        // For type 4, k='adorn' means the graphic hangs off a player/NPC (health bar, hitsplat,
-        // overhead icon) rather than standing alone in the world.
         const nm = (s.t === 13)
           ? (s.k === 'scan' ? 'Scan coordinate (dig here)'
              : s.k === 'dest' ? 'Walk destination'
@@ -142,8 +116,6 @@
       return ad !== bd ? ad - bd : (a.name || '').localeCompare(b.name || '');
     });
     sceneTotal = out.length;
-    // The typed term plus every saved chip; a row matches if ANY of them matches. Each term is a
-    // display-name substring OR an id-digit substring; players match on uid, specials on gfx.
     const terms = sceneAllTerms();
     if (!terms.length) return out;
     return out.filter(n => {
@@ -152,10 +124,6 @@
     });
   }
 
-  // Which kinds show, the range and the interactable filter are DISPLAY prefs (machine-wide),
-  // unlike the pinned nameplate names, which are per-character and stay in the nameplates
-  // blob. None of the three was persisted, so the Nameplates pill came back on after a reload
-  // with every kind switched off and the range reset -- the switch said on and drew nothing.
   function saveSceneView() {
     prefSet('rtxSceneView', JSON.stringify(
       { show: sceneShow, range: sceneRange, inter: !!sceneInteractable }));
@@ -171,14 +139,8 @@
       return true;
     } catch (e) { return false; }
   }
-  // Panel files are spliced BEFORE client.html's own script (Dock.cpp inserts them at the
-  // first <script>), so prefGet does not exist yet at this point and calling it would throw
-  // out of this whole file. Read the localStorage seed directly here; the durable value is
-  // re-applied by sceneApplyDurablePrefs once prefsInit has loaded it.
   sceneAdoptView(sceneSeed('rtxSceneView'));
   function sceneSeed(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
-  // Re-adopt when the durable store finishes loading (see prefsInit): this file reads its
-  // seed at parse time, which is empty on the first run after an app update wiped localStorage.
   function sceneApplyDurablePrefs() {
     if (!sceneAdoptView(prefGet('rtxSceneView', null))) return;
     sceneSig = '';
@@ -194,19 +156,13 @@
     if (sceneNameplates) pushOverlay();   // nameplate kinds mirror these toggles
   }
 
-  // Per-NPC in-game outline: a 3D box around the live model bounds, keyed by entity uid.
   const outlineSet = new Set();
-  // Tile markers from the scene list: mark the tile a ground item (or object) sits on, using the
-  // same user-marker store as the Markers panel (region + local tile, persisted by the host), so
-  // it draws, survives, and can be recoloured or removed there like any other marker.
   function sceneTileKey(x, y, plane) { return (((x >> 6) << 8) | (y >> 6)) + '/' + (x & 63) + '/' + (y & 63) + '/' + (plane | 0); }
   function sceneTileMarked(x, y, plane) {
     const ml = (typeof markerList !== 'undefined' && Array.isArray(markerList)) ? markerList : [];
     const k = sceneTileKey(x, y, plane);
     return ml.some(m => (m.region + '/' + m.lx + '/' + m.ly + '/' + (m.plane | 0)) === k);
   }
-  // Item marks are transient: remembered here (per install) with the item id, and removed the
-  // first time the item is no longer on that tile (picked up, despawned, or we walked away).
   let sceneMarks = null;   // key -> { x, y, plane, id }
   function sceneMarksLoad() {
     if (sceneMarks) return sceneMarks;
@@ -247,7 +203,6 @@
       delete m[k];
     }
     sceneMarksSave();
-    // Untracked ones from before tracking: identified by the scene mark colour (gold).
     const ml = (typeof markerList !== 'undefined' && Array.isArray(markerList)) ? markerList : [];
     const gold = (typeof mkParseColor === 'function') ? mkParseColor('#ffc93a') : 0xFFC93A;
     ml.forEach(mk => { let c = 0; try { c = (typeof mkParseColor === 'function') ? mkParseColor(mk.color) : 0; } catch (e) {} if (c === gold) { try { b.markerRemove(myPid(), mk.region, mk.lx, mk.ly, mk.plane | 0); } catch (e) {} } });
@@ -255,10 +210,6 @@
     try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {}
     sceneSig = ''; setTimeout(renderScene, 150);
   }
-  // `fw`/`fh` = the object's footprint in tiles (reader-supplied, rotation-corrected, x/y = SW
-  // anchor). Marking covers EVERY tile the object stands on, not just its anchor: a 2x2 crate
-  // marked on one corner tile read as "the box is in the wrong place". Toggling off removes the
-  // whole group; only the anchor carries the label so the name is not printed fw*fh times.
   function toggleTileMark(x, y, plane, label, itemId, fw, fh) {
     const b = bridge();
     if (!b || !b.markerAdd) return;
@@ -274,7 +225,6 @@
         if (itemId != null) m[k] = { x, y, plane: plane | 0, id: itemId, w: W, h: H };
         else m[k] = { x, y, plane: plane | 0, id: -1, w: W, h: H };   // object group: tracked for group removal only
         sceneMarksSave();
-        // A marker nobody can see is a confusing no-op: make sure the markers layer is on.
         try { if (typeof overlayState !== 'undefined' && overlayState && !overlayState.markers) { overlayState.markers = true; if (typeof saveOverlayCfg === 'function') saveOverlayCfg(); } } catch (e) {}
       }
     } catch (e) {}
@@ -290,13 +240,10 @@
     if (on) outlineSet.add(uid); else outlineSet.delete(uid);
     sceneSig = ''; renderScene();
   }
-  // Nameplate pins are BY NAME and persisted per account: entity uids change every session, so
-  // pinned names are re-applied to current uids by reconcileNameplates.
   const nameplateNames   = new Set();
   const nameplateSet     = new Set();
   nameplatesLoaded = false;
   function nameplatesActive() { return nameplateNames.size > 0 || sceneMarkCount() > 0; }   // keeps scene data fresh in the background (pinned nameplates, outstanding item marks)
-  // Persisted schema { pill, names }; pins only DRAW while the pill is on. Bare array = names only.
   function loadNameplateNames() {
     const b = bridge();
     if (!b || !b.nameplatesLoad || !myPid()) return;
@@ -317,7 +264,6 @@
     if (!b || !b.nameplatesSave || !myPid()) return;
     try { b.nameplatesSave(myPid(), JSON.stringify({ pill: !!sceneNameplates, names: [...nameplateNames] })); } catch (e) {}
   }
-  // Re-apply pinned NAMES to the uids in range; despawned uids are dropped so the set can't grow.
   function reconcileNameplates() {
     const b = bridge();
     if (!b || !b.nameplatePlayer || !sceneData || !Array.isArray(sceneData.players)) return;
@@ -423,8 +369,6 @@
         saveNameplates();
         pushOverlay();
       });
-      // Clear every tile marker placed from this list (tracked item marks, plus any marker that
-      // carries the scene mark colour, which catches ones made before tracking existed).
       const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'mk-btn scene-clear'; clr.id = 'sceneClearMarks';
       clr.textContent = 'Clear marks';
       clr.title = 'Remove the tile markers placed from this list (item and object marks). Other markers are left alone; see the Markers panel for those.';
@@ -445,11 +389,6 @@
     $('sceneCnt').textContent = (items === null) ? '...'
       : (sceneAllTerms().length && items.length !== sceneTotal) ? items.length + ' / ' + sceneTotal : items.length;
 
-    // Length-prefixed so an empty set never collides with the '' init/toggle sentinel.
-    // Status AND pre-filter total are part of the sig: the empty-state message uses
-    // both ("Not in-game - Lobby", 'no match (N in range)'), so a Lobby -> In-game
-    // flip or the first data arriving after a reload must repaint even while the
-    // FILTERED count stays 0 (the "0 / 17 yet still 'Nothing in range'" bug).
     const st = 'st' + (lastSnap ? (lastSnap.status | 0) : -1) + ',' + sceneTotal + '|';
     const sig = (items === null) ? 'null' + st
       : st + items.length + '|q' + sceneAllTerms().join('|') + '|ol' + [...outlineSet].join(',') + '|np' + [...nameplateNames].join(',') + '|' +
@@ -488,9 +427,6 @@
       const sd = sceneData && sceneData.sdiag;
       const vd = sceneData && sceneData.vdiag;
       if (sd && sceneShow.specials) dg = '<br><span style="color:var(--text-dim);font-size:10.5px">observer: installed ' + (sd[3] | 0) + ' &nbsp;fires ' + (sd[0] | 0) + ' &nbsp;type-4 ' + (sd[1] | 0) + ' &nbsp;gfx ' + (sd[2] | 0) + ' &nbsp;types 0x' + ((sd[4] | 0) >>> 0).toString(16) + ' &nbsp;@0x' + ((sd[5] | 0) >>> 0).toString(16) + '<br>tracked ptrs: ' + (sd[6] | 0) + ' &nbsp;hook uptime: ' + (sd[8] | 0) + 's' + '</span>';
-      // The snapshot already knows WHY the scene is empty - say which it is instead
-      // of hedging. Status 30 = In-game (see status_label in Reader.cpp); anything
-      // else (Lobby, Logging in, Changing worlds) means the scene CANNOT have data.
       let why;
       if (!lastSnap) why = 'No client data - is the reader attached?';
       else if ((lastSnap.status | 0) !== 30) why = 'Not in-game - ' + fmtStatus(lastSnap) + '.';
@@ -530,8 +466,6 @@
       } else if (n.type === 'ground' || n.type === 'object') {
         const wrap = document.createElement('div'); wrap.className = 'namet';
         if (n.type === 'object' && bridge() && bridge().outlineObject) {
-          // Box outline, exactly like the NPC one: the live model AABB when the object is
-          // runtime-tracked, its footprint prism otherwise. Session-scoped, per instance.
           const ok = n.id + ':' + n.x + ':' + n.y + ':' + (n.plane | 0);
           const ob2 = document.createElement('button'); ob2.className = 'ol-btn';
           const on2 = sceneObjOutlines.has(ok);
@@ -547,8 +481,6 @@
           });
           wrap.appendChild(ob2);
         }
-        // Objects get the AABB outline ONLY (owner call): the tile-mark button stays for
-        // ground items, where a persistent marker is the point.
         if (n.type === 'object') { wrap.appendChild(nm); nameRow = wrap; } else {
         const ob = document.createElement('button'); ob.className = 'ol-btn';
         const on = sceneTileMarked(n.x, n.y, n.plane);
@@ -580,7 +512,6 @@
       const live = n.rt ? ' · <span class="act" style="color:#34d399">live</span>' : '';
       sub.innerHTML = subTxt + live + (acts ? ' · <span class="act">' + acts + '</span>' : '');
       namec.appendChild(nameRow); namec.appendChild(sub);
-      // Row text truncates on narrow panels; the full detail lives in the hover tooltip.
       const tipLines = [dispName, subTxt.replace(' · ', ', ')];
       if (n.combat && n.combat > 0) tipLines.push('Combat level ' + n.combat);
       if (n.dist >= 0) tipLines.push('Distance ' + n.dist + (n.dist === 1 ? ' tile' : ' tiles'));
@@ -601,7 +532,6 @@
     list.scrollTop = keep || sceneScroll || 0;
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { fetchScene, loadNameplateNames, nameplatesActive, renderScene, saveSceneView, sceneApplyDurablePrefs, sceneSelfPos });
 registerTab({ id: 'scene', render: renderScene, open: function () { fetchScene(); } });
 })();

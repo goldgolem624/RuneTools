@@ -1,37 +1,8 @@
-// rtx-data.js: rtxData, the panels' single data path over the plugin broker (PLUGIN_API in rtx-plugins.js).
-// Loads after: rtx-plugins.js (PLUGIN_API), rtx-bridge.js (bridge, bridgeJson, myPid). Nothing runs at load.
-// Plain script, page globals by design: rtxData is the only name this file publishes.
-//
-// Why: docs/panel-plugin-migration.md. Core panels are reference UIs over the broker, so a panel
-// asks for 'state.varps' the same way a marketplace plugin does, and the broker table is the one
-// place that knows which host binding serves it. Panels are trusted (same page, same origin), so
-// this path applies no scope grant and no rate bucket; it does apply the broker's json rule.
-//
-//   rtxData.call(method, ...args)  -> parsed value, null on any failure (bridgeJson rules: JSON
-//                                     error, {"ok":false,"why"} envelope, no client, unknown
-//                                     binding). json:false methods resolve to run()'s own result.
-//   rtxData.raw(method, ...args)   -> whatever run() returned, unparsed. Throws (rejects) exactly
-//                                     where bridge().name(...) would have, so
-//                                     JSON.parse(await rtxData.raw(...)) is a drop-in for
-//                                     JSON.parse(await bridge().name(myPid(), ...)).
-//   rtxData.sync(method, ...args)  -> run()'s result, synchronously, no coalescing. The host
-//                                     bindings are synchronous, and many panel sites depend on
-//                                     that (JSON.parse(bridge().x(..)), draw-then-flag sequences),
-//                                     so this is the same call routed through the broker table.
-//   rtxData.bindingOf(method)      -> the host binding a broker method's run() calls, or null.
-//
 // Coalescer (state.* and cache.* only): within one 100 ms window (a refresh() pass is 250 ms)
-// identical (method, args) calls share one bridge round-trip, and the id-list reads (state.varps,
-// state.varbitsCsv, state.varpsLong) issued in the same turn are merged into ONE bridge call whose
-// answer is split back per caller. The host's served() cache keys on the id list, and ReadAsync
-// builds a cold key inline, so a merged list returns real data on its first request too.
-// Overlay, sound and actuator methods are never coalesced: every call reaches the host.
 const rtxData = (function () {
   const HOT = /^(state|cache)\./;
   const WINDOW_MS = 100;
-  // method -> host binding for the merged id-list reads. These call the binding directly with the
   // merged CSV instead of run(): the per-plugin clamp on run() (pClampStr 200) is a plugin
-  // boundary limit and panel lists are longer; each caller still only sees its own ids.
   const BATCH = { 'state.varps': 'varps', 'state.varbitsCsv': 'varbits', 'state.varpsLong': 'varpsLong' };
   const memo = new Map();       // key -> { t, p }: shared in-flight/just-finished promise per (method, args)
   const batches = new Map();    // method -> [{ ids, csv, resolve, reject }] awaiting the flush
@@ -57,8 +28,6 @@ const rtxData = (function () {
     return method + ' ' + a;
   }
 
-  // Merged id-list read. The reader parses digit runs out of the CSV, so the split here mirrors
-  // that: an id the caller asked for appears in its answer only when the host answered it.
   function batched(method, args) {
     const csv = String(args[0] == null ? '' : args[0]);
     const ids = csv.split(/[^0-9]+/).filter(Boolean);
@@ -85,8 +54,6 @@ const rtxData = (function () {
     catch (e) { for (const it of q) it.reject(e); return; }
     let obj = null;
     try { obj = JSON.parse(text); } catch (e) {}
-    // Empty default ("{}" when the pid is not tracked) or a failure envelope: every caller sees
-    // the host's own text, exactly as its own call would have.
     if (!obj || typeof obj !== 'object' || Array.isArray(obj) || obj.ok === false || !Object.keys(obj).length) {
       for (const it of q) it.resolve(text); return;
     }
@@ -154,10 +121,6 @@ const rtxData = (function () {
   return { call: call, raw: raw, sync: sync, bindingOf: bindingOf };
 })();
 
-// rtxEvents: the in-page event bus fed by the 100 ms poll loop in rtx-boot.js (rtxEventsPoll).
-// Kinds: skill_update, container_update, runclientscript, ge_offer, run_energy, run_weight,
-// ping, raw (undocumented opcode: {op,len,hex}) and gameTick ({tick, dtMs}). '*' hears every
-// kind. Listeners run synchronously in emit(); a throwing listener never stops the others.
 const rtxEvents = (function () {
   const subs = new Map();
   function on(kind, fn) { if (typeof fn !== 'function') return; let a = subs.get(kind); if (!a) { a = []; subs.set(kind, a); } a.push(fn); }

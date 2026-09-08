@@ -1,22 +1,10 @@
 // RuneToolsX panel: Sounds (cache audio browser + player).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
-//
-// js5-14 holds sound EFFECTS and js5-40 holds MUSIC, both as JAGA containers wrapping ordinary
 // Ogg Vorbis. The ARCHIVE ID IS THE SOUND ID - the same id CS2 passes to SOUND_SYNTH /
-// SOUND_VORBIS_VOLUME - so anything here cross-references with the CS2 panel.
-//
-// The companion hooks the engine's shared play function, so "Heard in game" reports ids from
-// this same space: a listed row can be muted, and anything heard can be played straight back.
-//
-// Playback is in-process (Audio.cpp: stb_vorbis decode + waveOut). Windows ships no Vorbis codec
-// and the renderer has no media element, so both halves live in the client. Decode and mixing
-// run on a worker; nothing here blocks the game.
 (function () {
 
   const SND_IDX = { sfx: 14, music: 40 };
   // Track names come from enum 1345 (1347 is the lowercase copy the game's own search uses).
   // Unlock state is clientscript-837, named `music_getvar`: bit (index & 31) of the varp for
-  // block (index / 32), in THIS order - 35 consecutive varps then a scattered tail as the list
   // outgrew its original range. 50 blocks x 32 = 1600 slots.
   const MUSIC_NAME_ENUM = 1345;
   const MUSIC_VARPS = [37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,
@@ -28,17 +16,9 @@
   let sndKind = 'sfx';
   let sndRows = [];              // [{id,rate,ch,ms,bytes}, ...] for the page on screen
   let sndStart = 0;              // paging cursor (archive id to read from)
-  // Each row costs a read + inflate of that archive, so keep a page small enough that listing
-  // never feels like a stall.
   let sndPageSize = 60;
   let sndBusy = false, sndSig = '', sndNote = '';
-  // Cache effects are mastered loud, hence the 70 default. soundVolume is a setter only, so
-  // nothing remembered a change: the slider snapped back to 70 on every reload AND the
-  // companion was not re-told until the slider was touched again.
   sndVol = 70;
-  // localStorage directly, NOT prefGet: panel files are spliced before client.html's script,
-  // so prefGet does not exist yet and calling it would throw out of this whole file.
-  // sndApplyDurablePrefs re-applies the durable value once prefsInit has loaded it.
   try { const v = parseInt(localStorage.getItem('rtxSoundVol'), 10); if (v >= 0 && v <= 100) sndVol = v; } catch (e) {}
   sndNow = -1;               // id currently loaded in the player
   let sndSt = { state: 'idle', pos: 0, dur: 0 };
@@ -46,10 +26,6 @@
   let sndSeeking = false;        // suppress status-driven slider updates mid-drag
   const sndPageStack = [];
   let sndSort = 'id';            // 'id' | 'dur'
-  // In-game sound filter (companion channel, separate from the launcher-side player above).
-  // sndMuted holds ids the GAME should not play; sndLive is what the game was observed playing.
-  // Mute keys pack the js5 index with the id exactly as the companion does, so an effect and a
-  // music track that share a number stay distinct.
   const sndKey = function (idx, id) { return (idx * 0x1000000) + (id & 0xFFFFFF); };
   let sndMuted = new Set();
   sndLive = new Map();       // key -> {id, idx, ms, hits, heardAt}; keyed so a repeat never re-adds
@@ -75,10 +51,6 @@
     return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB'
          : b >= 1024 ? Math.round(b / 1024) + ' KB' : b + ' B';
   }
-  // The filter box takes either an ID substring or a DURATION expression. Durations are what
-  // you actually hunt by ("the long ones"), and an id search cannot express that.
-  //   >5s   <500ms   >=2s   <=1.5s   2s-10s   0.5-2s
-  // A bare number stays an id search, so the old behaviour is untouched.
   function sndParseDur(q) {
     if (!q) return null;
     const unit = function (txt, val) { return /ms$/.test(txt) ? val : val * 1000; };
@@ -112,10 +84,6 @@
     return rows;
   }
 
-  // The named music list. It is NOT joined to the audio archives: no enum, struct or interface
-  // maps a track index to a js5-40 archive (checked), and the in-game player's own Play handler
-  // is a stub, so the client probably never resolves that itself. Names + ownership are real;
-  // playing a named track is not possible yet, and the UI says so rather than implying it.
   async function musicFetch(force) {
     if (!bridge() || !bridge().enumInfo) return;
     const now = Date.now();
@@ -151,9 +119,6 @@
   }
 
   // Filtering the 60 rows on screen cannot answer "which effects are long?" - there are 7427.
-  // This walks the whole index a page at a time, keeping every row, so the filter and sort then
-  // apply across all of it. Paged deliberately: each page is one bridge call, so the panel stays
-  // responsive and it can be stopped part-way.
   async function sndScanAll() {
     if (!bridge() || !bridge().soundList || sndScanning) return;
     sndScanning = true; sndScanStop = false; sndScanRows = [];
@@ -197,18 +162,12 @@
     sndSig = ''; renderSounds();
   }
 
-  // The transport polls its own state, so the bar tracks playback without re-rendering the list.
-  // The mute list is hand-collected id by id, so it is the one setting in this panel that
-  // would genuinely hurt to lose. It goes through prefGet/prefSet (prefs.json on disk), not
-  // straight to localStorage, which is wiped on every app update.
   function sndLoadMuted() {
     try {
       const raw = prefGet('rtxSoundMuted', null);
       if (raw) sndMuted = new Set(JSON.parse(raw).map(Number).filter(function (v) { return v > 0; }));
     } catch (e) {}
   }
-  // Re-read once the durable store has loaded (it is async, and this panel reads at open).
-  // Only ADDS: a mute made in the meantime is not thrown away by the disk copy arriving.
   function sndApplyDurablePrefs() {
     try {
       const raw = prefGet('rtxSoundMuted', null);
@@ -222,8 +181,6 @@
     try { const v = parseInt(prefGet('rtxSoundVol', ''), 10); if (v >= 0 && v <= 100) { sndVol = v; rtxData.sync('act.soundVolume', sndVol); } } catch (e) {}
   }
 
-  // Push the list to the companion AND persist it. Always both: the companion's copy dies with
-  // the client process, so the panel is the durable owner of the list.
   function sndPushMuted() {
     prefSet('rtxSoundMuted', JSON.stringify(Array.from(sndMuted)));
     try { rtxData.sync('act.soundMute', Array.from(sndMuted).join(',')); } catch (e) {}
@@ -237,9 +194,6 @@
 
   async function sndTick() {
     if (!bridge()) return;
-    // Observation runs on the game's audio thread, so it follows the tab: on while the panel is
-    // open, off the moment it is not. Re-push the mute list on every enable - the companion's
-    // copy lives in the client process and is gone if that process restarted.
     const want = paneVisible('sounds');
     if (want !== sndFxOn && bridge().soundFilterEnable) {
       sndFxOn = want;
@@ -253,9 +207,6 @@
         const fx = JSON.parse(await rtxData.raw('host.soundFilterStatus') || '{}') || {};
         sndFx = fx;             // assign even when absent, so the strip reports a client that went away
         if (fx.ok) {
-          // `n` is the companion's absolute observation count, so a gap here means the game
-          // played more than the ring holds between two polls - the ids are lost, not silently
-          // renumbered.
           const fresh = (fx.recent || []).filter(function (e2) { return e2.n >= sndLiveSeq; });
           if (fresh.length) {
             sndLiveSeq = fresh[fresh.length - 1].n + 1;
@@ -266,9 +217,6 @@
               if (prev) { prev.ms = ev.ms; prev.hits++; prev.heardAt = nowWall; }
               else sndLive.set(k, { id: ev.id, idx: ev.idx, ms: ev.ms, hits: 1, heardAt: nowWall });
             }
-            // Cap by dropping the least recently heard, so a long session cannot grow the strip
-            // without bound. Note this does NOT dirty sndSig: the row list must not repaint
-            // just because a sound played.
             if (sndLive.size > 24) {
               const byAge = Array.from(sndLive.values()).sort(function (a, b) { return a.ms - b.ms; });
               for (let i = 0; i < byAge.length - 24; i++) sndLive.delete(sndKey(byAge[i].idx, byAge[i].id));
@@ -294,13 +242,6 @@
     renderLiveStrip();
   }
 
-  // "Heard in game" strip. Owns its own element and its own repaint decision - it must never
-  // go through renderSounds(), which rebuilds all 60 rows and would destroy the button under the
-  // cursor several times a second.
-  //
-  // Chips are ordered by ID, not by recency: a recency order re-shuffles on every observation,
-  // which is what made these impossible to click. Position is therefore stable, and a recurring
-  // sound only bumps its hit count.
   function renderLiveStrip() {
     const live = $('sndLive');
     if (!live) return;
@@ -314,10 +255,6 @@
     }
     const keys = Array.from(sndLive.keys()).sort(function (a, b) { return a - b; });
     const d = sndFx.diag || [];
-    // DOM REBUILD only when the chip SET or the mute set changes - rebuilding mid-click
-    // destroys the button under the cursor. Everything that moves faster than that
-    // (hit counts, the just-fired pulse, the played counter) is patched IN PLACE on
-    // every tick below, so the strip reads as live without ever re-shuffling.
     const sig = keys.join(',') + '|' + Array.from(sndMuted).sort().join(',');
     if (sig !== sndLiveSig) {
       sndLiveSig = sig;
@@ -343,8 +280,6 @@
       }
       live.innerHTML = h;
     }
-    // In-place patch pass, every tick: counts and the "just fired" pulse. Touching
-    // textContent/classList never destroys an element, so clicks stay safe.
     const cts = $('sndLiveCounts');
     if (cts && d.length >= 2) cts.textContent = '  ·  ' + d[0] + ' played, ' + d[1] + ' silenced';
     const nowWall = Date.now();
@@ -363,8 +298,6 @@
     let wrap = $('sndWrap');
     if (!wrap) {
       c.innerHTML = '';
-      // Live-strip styling: a breathing "observing" dot and a glow pulse on the chip
-      // whose sound just fired, so the strip visibly reacts the moment the game plays.
       if (!document.getElementById('sndFxCss')) {
         const st = document.createElement('style'); st.id = 'sndFxCss';
         st.textContent =
@@ -431,8 +364,6 @@
         if (lm) { sndToggleMute(+lm.dataset.live); return; }
         const lp = e.target.closest('button[data-liveplay]');
         if (lp) {
-          // The companion reports js5 archive ids, so the panel can play back exactly what the
-          // game just played, out of the same index.
           const parts = lp.dataset.liveplay.split(':');
           sndKind = (+parts[0] === SND_IDX.music) ? 'music' : 'sfx';
           sndPlay(+parts[1]);
@@ -456,8 +387,6 @@
       });
       const find = $('sndFind');
       if (find) find.addEventListener('input', function () {
-        // Keep the raw text: a duration expression (">5s") must survive, and sndMatch strips to
-        // digits itself when it decides the input is an id search.
         sndFilter = find.value.trim().toLowerCase();
         sndSig = ''; renderSounds();
       });
@@ -475,8 +404,6 @@
         prefSet('rtxSoundVol', String(sndVol));
         try { rtxData.sync('act.soundVolume', sndVol); } catch (e2) {}
       });
-      // Push the restored volume once on open, so the companion matches what the slider shows
-      // instead of staying at its own default until the slider is dragged.
       try { rtxData.sync('act.soundVolume', sndVol); } catch (e) {}
       sndLoadMuted();
       sndFetch(true);
@@ -484,8 +411,6 @@
 
     if (sndKind === 'tracks') { renderTrackList(wrap); return; }
     const vis = sndVisible();
-    // Sort and scan state belong in the signature: without them, toggling the sort or finishing a
-    // scan produces the same row COUNT and the repaint would be skipped.
     const sig = sndKind + '|' + sndStart + '|' + vis.length + '|' + sndBusy + '|' + sndNote
               + '|' + sndFilter + '|' + sndNow + '|' + sndSort
               + '|' + (sndScanRows ? sndScanRows.length : -1) + '|' + (sndScanning ? 1 : 0)
@@ -517,10 +442,6 @@
     if (list) {
       let h = '';
       for (const r of vis) {
-        // The meta column carries min-width:0 + ellipsis and is the ONLY flexible child:
-        // without it the row's floor exceeded a narrow panel and pushed Export (the last
-        // child) outside the pane, where overflow-x:hidden made it unclickable. The
-        // detail also rides the row title, so nothing is lost when it truncates.
         const meta = r.rate + ' Hz · ' + (r.ch === 2 ? 'stereo' : 'mono')
                    + ' · ' + sndFmtMs(r.ms) + ' · ' + sndFmtBytes(r.bytes);
         h += '<div class="pet-row" title="' + htmlEsc(String(r.id) + ' — ' + meta) + '"'
@@ -549,8 +470,6 @@
   }
 
   // Named track list: enum 1345 titles with live unlock state from the music_getvar varps.
-  // Deliberately has no Play button - a title is not linked to an audio archive (see musicFetch),
-  // and offering playback that cannot work would be worse than saying so.
   function renderTrackList(wrap) {
     musicFetch(false);
     const names = musicNames || {};
@@ -599,7 +518,6 @@
     if (nav) nav.innerHTML = '';
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { renderSounds, sndApplyDurablePrefs, sndTick });
 registerTab({ id: 'sounds', render: renderSounds });
 })();

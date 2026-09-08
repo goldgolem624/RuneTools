@@ -1,11 +1,9 @@
 // RuneToolsX panel: Havenhythe visual quest guides (Visions / Hearts of Sanguine / Hermit Permits).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Visions of Havenhythe (quest 526): runs while progress varbit 60595 is 1..50.
   const VOH_PROG = 60595, VOH_KILLS = 60596, VOH_LIMESTONE = 3211, VOH_BRICK = 3420, VOH_MEAD = 60403;
   const HOS_PROG = 60597, HOS_SUB = 60598, HOS_ALE = 60599, HOS_GIVE = 60600, HOS_MIRIAM = 60601, HOS_JACOB = 60603, HOS_GEFEN2 = 60602, HOS_ALE_ITEM = 60512, HOS_POPPY = 60408, HOS_SPINES = 60409, HOS_WOLFTONGUE = 60407, HOS_VIAL = 229, HOS_OILVIAL = 60420, HOS_STERVIAL = 60421, HOS_CRUSHED = 60414, HOS_MIXVIAL = 60422, HOS_PRESSED = 60413, HOS_MIXVIAL2 = 60423, HOS_WEIGHED = 60410, HOS_ANTISANG = 60424;   // Hearts of Sanguine sub-varbits + item ids
-  // Starts true: overlay marks survive a panel reload, so the first idle tick must sweep them.
   let qgOn = true; qgP = null; let hosTrail = false; let hosDown = false; let hosDown27 = false; let hosTrust = 0; let hosTumourPhase = 0; let hosFarewell = 0;
   let hosOreMined = false;   // v=54 latch: 4 havensilver ore held
   let hosBarsSmelted = false; // v=60 latch: 4 havensilver bars across inventory + metal bank
@@ -18,7 +16,6 @@
     try { return ((performance.now() * 1000) | 0) % n; } catch (e) {}
     return Date.now() % n;
   }
-  // Four independent overlay channels; each helper sets one and clears the others.
   const qgOv = (cmd, ...a) => { try { return PLUGIN_API[cmd].run(a, myPid()); } catch (e) {} };
   const qgClrNpc = () => qgOv('overlay.highlight', []);
   const qgClrTiles = () => qgOv('overlay.guideTiles', []);
@@ -34,17 +31,6 @@
     if (loaded || !tx) { qgClrTiles(); qgOv('overlay.highlightNpc', name, label, tx, ty); }   // pass the target tile -> box the focused instance, not the nearest to the player
     else { qgClrNpc(); qgOv('overlay.guideTiles', [{ x: tx, y: ty, plane: tp || 0, label: label }]); }
   }
-  // Compose a guide-tile label that reads ACTION first, then the object.
-  //
-  // The first line is NOT free text: the host matches it against the cache loc near the tile
-  // to give the mark that object's 3D footprint prism, falling back to a flat tile when it
-  // does not resolve (Reader.cpp, "when the label's first line names a cache loc..."). So the
-  // name has to stay on line 1 -- but a leading '-' makes that line MATCH-ONLY and hides it,
-  // and every later line still draws. Emitting '-name\naction\nname' therefore renders
-  //     Climb
-  //     Cliffside
-  // while keeping the prism. Over the 95-char label cap we drop the repeated name rather than
-  // let the host truncate mid-word; the box itself still identifies the object.
   function qgLabel(locName, action) {
     const n = String(locName || ''), a = String(action || '');
     if (!n) return a;
@@ -81,7 +67,6 @@
     const want = Array.isArray(ids) ? ids : [ids];
     return objs.filter(o => o && want.includes(o.id)).map(o => ({ x: o.x, y: o.y, plane: o.plane || 0, label: label }));
   }
-  // False = no live instance in range and tiles cleared; the caller may draw a walk-to marker.
   async function qgObjectById(ids, label, objs) {
     if (!objs) objs = (await qgScene()).objects;
     qgClrNpc(); qgClrDlg(); qgClrItem();
@@ -92,7 +77,6 @@
   // Instanced content sits at x >= 6400; static underground areas only shift y, so x alone identifies an instance.
   function qgInInstance(P) { return !!(P && P.x >= 6400); }
   function qgItem(id, label) { qgClrNpc(); qgClrTiles(); qgClrDlg(); qgOv('overlay.highlightItem', id, label); }
-  // Boxes multiple backpack slots at once: pairs = [[itemId, label],..].
   async function qgItems(pairs) {
     let inv = null; try { inv = JSON.parse(await rtxData.raw('state.inventory')); } catch (e) {}
     const slotOf = id => { if (inv && Array.isArray(inv.items)) for (const it of inv.items) if (it[1] === id) return it[0]; return -1; };
@@ -136,7 +120,6 @@
     try { if (bridge() && bridge().hudSprite) rtxData.sync('overlay.hudSprite', on ? sprite : 0, on ? caption : '', !!on); } catch (e) {}
     hudShown = !!on;
   }
-  // Lodestone-teleport HUD reminder while the player is >60 tiles from the named lodestone; true while it is up.
   async function qgLodestone(name) {
     const lo = (typeof LODESTONES !== 'undefined') ? LODESTONES.find(l => l.n === name) : null;
     if (!lo) return false;
@@ -184,7 +167,6 @@
     await step();
     qgAutoTick(focused).catch(function () {});   
   }
-  // Per quest: the varbits to read + done(vb) -> Set of completed step indices (i = step order across sections).
   qgAutoDone = {};
   let vohMeadDown = false;   // v=9 "go downstairs" latch: plane 0 reached (no varbit for this step)
   let vohSailed = false;     // v=18 "Lorris / I'm ready" latch: arrived at the Havenhythe dock (3388,1530 +-40)
@@ -234,12 +216,10 @@
         if ((vb[60615] | 0) > 0) hosBuffDrunk = true;   // antisanguine buff up -> the drink step is done (latched past expiry)
         const at6 = (cond) => v > 6 || (v === 6 && cond);   
         const s = new Set();
-        // Creepy behind
         if (v >= 6) s.add(0);            // Talk to Adam (start)
         if (at6(sub >= 1)) s.add(1);     // Go NE, talk to Raz in her cabin
         if (at6(sub >= 2)) s.add(2);     // Inspect the dead bear
         if (at6(sub >= 3)) s.add(3);     // Talk to Raz
-        // Local gossip
         if (at6(ale >= 1)) s.add(4);     // Talk to Bartender Gefen (Burnt Lobster)
         if (at6(give >= 1)) s.add(5);    // Buy a Wendlewick ale
         if (at6(miriam >= 1)) s.add(6);  // Talk to Matthew (give him the ale)
@@ -247,13 +227,11 @@
         if (at6(gefen2 >= 1)) s.add(8);  // Talk to Jacob
         if (at6(ale >= 2)) s.add(9);     // Talk to Bartender Gefen again
         if (v >= 9) s.add(10);           // Go back and talk to Adam
-        // To the farm
         if (v >= 12) s.add(11);   // Talk to Farmer Rachel
         if (v >= 15 || hosTrail) s.add(12);   // Investigate the bloodsplatter
         if (v >= 15) s.add(13);   // Follow the blood trail, enter the cave
         if (v >= 18) s.add(14);   // Talk to Anya
         if (v >= 21) s.add(15);   // Teleport, go to the lighthouse, talk to Esther
-        // Gathering ingredients
         const has = (id) => inv.has(id);
         if (v >= 24 || has(60408)) s.add(16);   // pick poppies -> Wendlewick poppy
         if (v >= 24 || has(60409)) s.add(17);   // kill a hedgehog, pick up the spines
@@ -272,7 +250,6 @@
         if (v >= 30) s.add(28);   // test antisanguine on the hedgehog
         if (v >= 33) s.add(29);   // test on the duck
         if (v >= 36) s.add(30);   // test on the badger
-        // Getting a havensilver weapon
         if (v >= 42) s.add(31);   // Liat in the smithy
         if (v >= 45) s.add(32);   // go to the mine, talk to Gidon (+ mine copper/tin)
         if (v >= 48) s.add(33);   // give Liat the copper + tin (un-noted)
@@ -282,7 +259,6 @@
         if (v >= 60) s.add(37);   // return and talk to Liat
         if (v >= 63 || hosBarsSmelted) s.add(38);   // smelt the ores (latched at 4x bar 60296 across inventory + metal bank)
         if (v >= 63) s.add(39);   // smith the havensilver greatsword
-        // Fight
         if (v >= 66 || hosSwordWorn) s.add(40);   // equip the Havensilver greatsword (latched once 60298 is worn)
         if (v >= 66) s.add(41);   // return to the Blighted Cave, talk to Anya
         if (v >= 69 || hosBuffDrunk) s.add(42);   // enter the cave, drink the antisanguine (buff varbit 60615, latched)
@@ -325,7 +301,6 @@
   async function qgAutoTick(nm) {
     const a = QG_AUTO[nm]; if (!a) return;
     let vb = {}; try { vb = await readVarbitValues(a.vbs || []); } catch (e) { return; }
-    // Old-generation quests track progress in a whole varp: `vps` are read raw into done()'s third argument.
     let vp = {};
     if (a.vps && a.vps.length) { try { vp = JSON.parse(await rtxData.raw('state.varps', a.vps.join(','))) || {}; } catch (e) { return; } }
     let inv = new Set();
@@ -353,7 +328,6 @@
       if (!(await qgObjectById(136506, 'Stairs\nClimb up to Esther')))
         qgOv('overlay.guideTiles', [{ x: 3452, y: 1494, plane: 0, label: 'Go to the lighthouse, then climb the stairs' }]);
     };
-    // Boss arena bounds derive from the Sanguine heart's live tile (x +-10, y -25..+15): the instance region changes every fight.
     {
       let boss = null, tumours = [];
       try { const s = JSON.parse((await PLUGIN_API['state.scene'].run([60], myPid())) || '{}'); if (s && Array.isArray(s.npcs)) {
@@ -371,7 +345,6 @@
     }
     if (v === 0 || v === 3) { await qgTalkNpc('Adam', 'Talk to Adam', 3483, 1573, 0); return; }   
     if (v === 6) {
-      // sub-steps within v=6, latest first.
       if (ale === 2) { await qgTalkNpc('Adam', 'Talk to Adam', 3483, 1573, 0); return; }   
       if (gefen2 === 1) { await qgTalkNpc('Bartender Gefen', 'Talk to Bartender Gefen', 3499, 1498, 0); return; }   
       if (jacob === 1) { await qgTalkNpc('Jacob', 'Talk to Jacob', 3490, 1507, 0); return; }      
@@ -688,6 +661,5 @@
   const QUEST_GUIDES = { 'Visions of Havenhythe': vohStep, 'Hearts of Sanguine': hosStep, 'Hermit Permits': hpStep, 'Secrets of Amberfell': () => amberStep(), 'Wiz Kid': () => wizkidStep(), 'Necromancy!': () => necroStep(), 'The Restless Ghost': () => rgStep(), 'Making History': () => mhStep(), 'New Foundations': () => nfStep(), "There's No Place Like Home...": () => tnpStep(), 'Murder on the Border': () => motbStep() };   // focused quest name -> step fn (later-spliced panels' steps are called via lazy arrows)
   (function () { function guideLoop() { questGuideTick().catch(function () {}); setTimeout(guideLoop, 700); } setTimeout(guideLoop, 900); })();   // first tick deferred so PLUGIN_API (declared later) is ready
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { QG_AUTO, QUEST_GUIDES, hudSet, qgClearAll, qgClrDlg, qgClrItem, qgClrNpc, qgClrTiles, qgDialogNpc, qgEquipCount, qgExtraAction, qgIdMarks, qgIfaceComp, qgInInstance, qgInvCount, qgItem, qgItems, qgNpc, qgObject, qgObjectById, qgOv, qgRand, qgScene, qgSceneNpc, qgTile });
 })();

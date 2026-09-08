@@ -1,6 +1,4 @@
 // RuneToolsX panel: Server Packets (server -> client protocol + live inbound feed).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
-// The opcode table is a cross-process read; the live feed needs the companion.
 (function () {
 
   let npEnum = null;                 // {op -> {len, kind, handler}} from serverPackets()
@@ -13,8 +11,6 @@
   let npFilter = '';                 // hex/dec opcode, "0x10-0x20" range, or name substring
   let npAt = 0;
   const NP_CAP = 5000;
-  // Opcode names seeded from the handler decompiles; user edits in localStorage override these.
-  // Opcode names: the per-build table from companion/ServerOps.h (state.serverOps) is the truth;
   // the seed is 950-1. Opcodes not in it are unnamed until re-derived (see docs/cs2_opcodes.md).
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x82,
                  ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0 };
@@ -41,7 +37,6 @@
   }
   function npName(op) { return npNames[op] || ''; }
 
-  // Capture must be re-armed every poll: it auto-disarms ~3s after the last arm.
   function npArm(on) {
     try { if (bridge() && bridge().serverPacketArm) rtxData.sync('act.serverPacketArm', on); } catch (e) {}
   }
@@ -113,7 +108,6 @@
     for (let i = 0; i + 1 < hex.length; i += 2) { s += hex.substr(i, 2).toUpperCase() + ' '; }
     return s.trim();
   }
-  // Only a 1/2/4-byte payload is a single big-endian scalar; other widths are composite.
   function npNumHint(r) {
     const n = r.kept;
     if (n !== 1 && n !== 2 && n !== 4) return '';
@@ -129,7 +123,6 @@
     for (let i = 0; i + 1 < r.hex.length; i += 2) b.push(parseInt(r.hex.substr(i, 2), 16));
     return b;
   }
-  // RS3 skill ids 0..28 (for skill_update).
   const NP_SKILLS = ['Attack', 'Defence', 'Strength', 'Constitution', 'Ranged', 'Prayer', 'Magic',
     'Cooking', 'Woodcutting', 'Fletching', 'Fishing', 'Firemaking', 'Crafting', 'Smithing', 'Mining',
     'Herblore', 'Agility', 'Thieving', 'Slayer', 'Farming', 'Runecrafting', 'Hunter', 'Construction',
@@ -140,7 +133,6 @@
     867: 'bait box', 885: 'arch materials', 963: 'group bank', 1008: 'workbench'
   };
   function npContainerName(id) { return NP_CONTAINERS[id] ? (NP_CONTAINERS[id] + '(' + id + ')') : ('container ' + id); }
-  // Item names resolve asynchronously, so a name appears one poll after it resolves.
   const npItemCache = { 995: 'Coins' };
   function npItemName(id) {
     const c = npItemCache[id];
@@ -154,7 +146,6 @@
     }
     return 'item ' + id;
   }
-  // Per-opcode field decoders from the handler decompiles; '' when the payload is too short.
   let npDecoders = {};   // opcode -> decoder, rebuilt from npDecodersByName whenever the opcode table arrives
   const npDecodersByName = {
     // 950-1: [skill: -b0][level: -b1][xp: u32 BE] -> skill block +0x7618  (949 was [xp LE][level b4+0x80][skill -b5])
@@ -173,7 +164,6 @@
     },
     // 0x2B: [containerId:u16 BE][flags:u8] then per changed slot: [slot: smart 1B<0x80 else
     // 2B(+0x8000)][itemId+1: 3B BE][qty: u8, or 0xFF then u32 BE][+1 variant byte if flags&2].
-    // itemId+1 == 0 marks an empty slot.
     container_update: function (b) {
       if (b.length < 3) return '';
       let p = 0;
@@ -217,19 +207,13 @@
       const plane = b[0], zx = (b[1] << 24 >> 24), zy = b[2] - 0x80;
       return 'plane ' + plane + ' zone x=' + zx + ' y=' + zy;
     },
-    // 0x4E: the component id maps to a varp id, the value is the new varp value; byte order is
-    // 16-bit-swapped halves. Layout comp:u16(BE)@4 + value:u32, stored in the +0x19f78 hash.
+    // 0x4E: the component id maps to a varp id, the value is the new varp value; value byte order is 1,0,3,2.
     iface_set: function (b) {
       if (b.length < 6) return '';
       const comp = (b[4] << 8) | b[5];
       const val = ((b[1] << 24) | (b[0] << 16) | (b[3] << 8) | b[2]) >>> 0;
       return npVarLabel(comp) + ' = ' + npVarVal(comp, val);
     },
-    // 0x5D dynamic/instanced map load: [type:1-4][npcIdxBits][must==5][hdrY u16 LE @3][?]
-    // [hdrX u16 BE @6][baseX u16 BE @8][baseY u16 BE @10][zonesA][zonesB], base in 8-tile zones,
-    // then bit-packed 4 planes x A x B of 1 present-bit + 26-bit template ref: plane (r>>24)&3,
-    // zoneX (r>>14)&0x3FF, zoneY (r>>3)&0x7FF, rot (r>>1)&3 (bit 0 unused). Map square = zone>>3.
-    // A Daemonheim room is a 2x2 zone block on 2 planes; only explored rooms are listed.
     rebuild_scene_dyn: function (b) {
       if (b.length < 14 || b[2] !== 5) return '';
       const bx = ((b[8] << 8) | b[9]), by = ((b[10] << 8) | b[11]);
@@ -260,8 +244,6 @@
                 + ' ry' + ryLo + (ryHi !== ryLo ? '-' + ryHi : '') : '')
         + (trunc ? ' · TRUNCATED at ' + b.length + 'B (raise kSnip in NetProbeShare.h)' : '');
     },
-    // 0x52: [type-sig: NUL-terminated, e.g. "iiiis"][args in REVERSE sig order: 's' = NUL
-    // cp1252 string, else i32 BE][scriptId: i32 BE at the very end].
     runclientscript: function (b) {
       let p = 0, sig = '';
       while (p < b.length && b[p] !== 0 && sig.length < 16) sig += String.fromCharCode(b[p++]);
@@ -284,11 +266,6 @@
       const script = ((b[p] << 24) | (b[p + 1] << 16) | (b[p + 2] << 8) | b[p + 3]) >>> 0;
       return 'script ' + script + '(' + wire.reverse().join(', ') + ')';
     },
-    // 0x6D: header [plane: -b][zoneX: (-0x80-b)*8 idx][zoneY: same], then sub-ops from a
-    // 22-entry table: 01 loc_add [shape<<2|rot +0x80][locId u32 LE][tile -b], 03 loc_anim
-    // [delay -b][tile x<<4|y][animId 4B order b4·b5·b2·b3][shape<<2|rot +0x80], 08 loc_del
-    // [tile -b][shape<<2|rot +0x80]; tiles are 0-7 offsets inside the zone. A shape/rot byte
-    // with its top bit set pulls a variable-size extension, so the walk has to stop there.
     zone_update: function (b) {
       if (b.length < 3) return '';
       const FIXED = { 0: 10, 3: 7, 4: 20, 5: 21, 6: 11, 7: 3, 8: 2, 9: 5, 10: 14, 11: 8,
@@ -325,19 +302,16 @@
       }
       return out.join(' | ');
     },
-    // 0x5F: [value: signed byte][compId: b2<<8 | (b1+0x80)]; same var store as 0x4E/0x9E.
     iface_set_short: function (b) {
       if (b.length < 3) return '';
       const comp = (b[2] << 8) | ((b[1] + 0x80) & 0xFF);
       return npVarLabel(comp) + ' = ' + (b[0] << 24 >> 24);
     },
-    // 0x7C: [key u32, byte order b1·b0·b3·b2 = component group<<16|child][flag: 0x81 -> 1 else 0].
     iface_prop_bool: function (b) {
       if (b.length < 5) return '';
       const key = (((b[1] << 24) | (b[0] << 16) | (b[3] << 8) | b[2]) >>> 0);
       return 'comp ' + (key >>> 16) + ':' + (key & 0xFFFF) + ' = ' + (b[4] === 0x81 ? 1 : 0);
     },
-    // Telemetry-table edits: same table as 0xBE, but the byte negations/biases differ per op.
     telemetry_cell_clear: function (b) {                                // 0x9F: clear one cell
       if (b.length < 3) return '';
       return '[' + b[2] + ',' + ((256 - b[0]) & 0xFF) + ',' + ((b[1] + 0x80) & 0xFF) + '] = none';
@@ -362,7 +336,6 @@
       const idx = (256 - b[0]) & 0xFF;
       return 'group ' + ((256 - b[2]) & 0xFF) + ' slot ' + idx + ' = ' + (b[1] === 0x7F ? idx : -1);
     },
-    // 0x8D: two u32 BE nonces the client echoes back in a 9-byte reply; carries no game state.
     ping_echo: function (b) {
       if (b.length < 8) return '';
       const a = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
@@ -376,8 +349,6 @@
       const c = ((b[7] << 24) | (b[6] << 16) | (b[9] << 8) | b[8]) >>> 0;
       return npVarLabel(comp) + ' = (' + a + ', ' + c + ')';
     },
-    // 0xBE: sparse [group][row][column] update of the in-game Telemetry table; nested lists are
-    // 0xFF-terminated, values u32 BE, cell 0x80000000 = no value. Indices are positional only.
     telemetry_grid: function (b) {
       let p = 0; const out = [];
       while (p < b.length) {
@@ -395,7 +366,6 @@
       return out.join('  ');
     },
   };
-  // iface_set carries the RAW varp value; some varps are scaled (5984 = charge in 1/3000 units).
   const NP_VARNAMES = {
     5984: { name: 'invention_charge', fmt: function (v) { return Math.floor(v / 3000).toLocaleString('en-US') + ' charge (raw ' + v.toLocaleString('en-US') + ')'; } }
   };
@@ -434,10 +404,8 @@
     npNamesSave();
     npPaint();
   }
-  // exposed for inline onclick
   window.npRename = npRename;
 
-  // Per-poll update touches only the dynamic regions so the controls/filter input keep focus.
   function renderNetProbe() {
     npFetch();
     if ($('np-body')) npUpdateDynamic(); else npPaint();
@@ -484,7 +452,6 @@
     if (fe) fe.oninput = () => { npFilter = fe.value; npPaintBodyOnly(flt); };
   }
 
-  // Repaint just the table body on filter keystrokes (keeps the input focused).
   function npPaintBodyOnly() {
     const holder = $('np-body'); if (!holder) { npPaint(); return; }
     const flt = npParseFilter();
@@ -507,7 +474,6 @@
   const NP_TD = 'padding:2px 8px;border-bottom:1px solid var(--border,#26262c);vertical-align:top';
 
   function npLiveHtml(flt) {
-    // Fixed layout + explicit small-column widths so the payload column wraps instead of overflowing.
     return '<div style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;border:1px solid var(--border,#26262c);border-radius:4px">'
       + '<table style="width:100%;table-layout:fixed;border-collapse:collapse;font:12px/1.4 ui-monospace,Consolas,monospace">'
       + '<colgroup><col style="width:52px"><col style="width:56px"><col style="width:112px"><col style="width:44px"><col></colgroup>'
@@ -579,7 +545,6 @@
     return rows || '<tr><td colspan="6" style="padding:14px;color:var(--text-dim,#999)">No opcodes match the filter.</td></tr>';
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { npRename });
 registerTab({ id: 'netprobe', render: renderNetProbe, open: function () { try { npArm(true); npFetch(); } catch (e) {} }, close: function () { try { npArm(false); } catch (e) {} } });
 })();

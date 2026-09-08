@@ -1,12 +1,7 @@
-// rtx-plugin-api.js: the brokered plugin API surface: PLUGIN_SDK_SHIM (spliced into every plugin frame), the argument clamps, the PLUGIN_API method table, the per-plugin rate limiter, and the prices / ability-tip caches it serves from
-// Loads after: rtx-pane.js; nothing here runs at load (pluginBrokerInit in rtx-plugins.js dispatches into PLUGIN_API at attach time).
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // Method table the broker dispatches into (sandbox / permission model: top of rtx-plugins.js). Every entry is { scope, json, run(args, pid, pluginId, frame) }; args are plugin-supplied and clamped here.
   const PLUGIN_PROTO  = 'rtx.plugin/1';
   const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'clipboard', 'clipboard.read']);
   const pluginBuckets = {};     // "id|method" -> token bucket (pluginRateOk)
 
-  // Canonical SDK shim (mirror of ui-assets/plugin-sdk.js) spliced into each plugin frame; inlined because LoadHTML gives no base URL.
   const PLUGIN_SDK_SHIM = `(function(){'use strict';if(window.rtx&&window.rtx.plugin)return;
 var P='rtx.plugin/1',T=15000,seq=1,pending=Object.create(null),L={tick:[],state:[],events:[],settings:[]},EV={},rcb=[],S={ready:false,scopes:[],apiVersion:null,pluginId:null};
 function call(method,args){return new Promise(function(res,rej){var id=seq++;var tm=setTimeout(function(){if(pending[id]){delete pending[id];rej(new Error('rtx.plugin: timeout '+method));}},T);pending[id]={res:res,rej:rej,tm:tm};try{parent.postMessage({__rtxPlugin:P,kind:'call',id:id,method:method,args:args||[]},'*');}catch(e){clearTimeout(tm);delete pending[id];rej(e);}});}
@@ -47,11 +42,9 @@ document.addEventListener('focusout',function(){setTimeout(kbSync,0);});
 setInterval(kbSync,1000);
 try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
 
-  // ---- arg clamps (defence: every plugin-supplied value is bounded) ----
   const pClampId   = v => { const n = parseInt(v, 10); return (isFinite(n) && n >= 0) ? n : 0; };
   const pClampNum  = (v, lo, hi) => { let n = Number(v); if (!isFinite(n)) n = lo; return Math.max(lo, Math.min(hi, n)); };
   const pClampStr  = (v, max) => String(v == null ? '' : v).slice(0, max);
-  // Trusted-arg pass-through for the promoted panel bindings: shape kept, size bounded.
   const pArgs      = a => (Array.isArray(a) ? a : []).slice(0, 8).map(x => (typeof x === 'number' || typeof x === 'boolean' || x == null) ? x : pClampStr(x, 65536));
   // Overlay-record clamp: keeps the \x1e-record / \x1f-field structure but bounds it (64 records, 16 fields, 256 chars each).
   const pOverlayArgs = a => (Array.isArray(a) ? a : []).slice(0, 8).map(x => {
@@ -62,7 +55,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
   });
   const pClampList = v => (Array.isArray(v) ? v : []).slice(0, 50).map(x => pClampStr(x, 40).replace(/[^A-Za-z0-9 _'\-]/g, '')).filter(Boolean).join(',');
 
-  // method -> { scope, run(args,pid,id,frame), json }. Only safe read/overlay/storage/sound calls.
   const PLUGIN_API = {
     'state.player':     { scope: 'state.read', json: true,    run: (a, pid) => bridge().playerInfo(pid) },
     'state.serverOps':  { scope: 'state.read', json: true,    run: () => bridge().serverOps() },   // {name: opcode} for this game build
@@ -75,10 +67,8 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'state.groupBank':  { scope: 'state.read', json: true,    run: (a, pid) => bridge().groupBankItems(pid) },
     'state.baitBox':    { scope: 'state.read', json: true,    run: (a, pid) => bridge().baitBoxItems(pid) },
     'state.scene':      { scope: 'state.read', json: true,    run: (a, pid) => bridge().sceneEntities(pid, pClampNum(a[0], 1, 64)) },
-    // Dropped ground items: [{id,x,y,plane},..].
     'state.groundItems':{ scope: 'state.read', json: true,    run: (a, pid) => bridge().groundItems(pid) },
     'state.varps':      { scope: 'state.read', json: true,    run: (a, pid) => bridge().varps(pid, pClampStr(a[0], 200)) },
-    // Live varbit values by id -> { "<id>": value }, resolved from the cache and read live.
     'state.varbits':    { scope: 'state.read', json: false,   run: async (a) => {
                             const ids = (Array.isArray(a[0]) ? a[0] : []).slice(0, 64)
                               .map(x => parseInt(x, 10)).filter(n => isFinite(n) && n >= 0 && n < 200000);
@@ -109,14 +99,12 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                             return HIDEY.map(h => { const v = (((vp[h.vp] || 0) >>> 0) >>> h.b) & 3;
                               return { name: h.n, tier: HIDEY_TIERS[h.t], location: h.loc, build: HIDEY_BUILD[h.t],
                                        fillItems: h.fi || [], state: v, built: v >= 1, filled: v === 2 }; }); } },
-    // Server tick counter: a number (json:false); host -1 (untracked) is normalised to null.
     // Event channel: {seq,tick,events:[{seq,t,wall,op,len,kind,...}]} after sinceSeq (host ring, 512 cap).
     'state.events':     { scope: 'state.read', json: true,    run: (a, pid) => bridge().events(pid, pClampNum(a[0], 0, 4294967295)) },
     'state.gameTick':   { scope: 'state.read', json: false,
                           run: (a, pid) => { const t = bridge().gameTick(pid); return (typeof t === 'number' && t >= 0) ? t : null; } },
     'cache.itemInfo':   { scope: 'cache.read', json: true,    run: (a) => bridge().itemInfo(pClampId(a[0])) },
     'cache.itemIcon':   { scope: 'cache.read', json: false,   run: (a) => bridge().itemIcon(pClampId(a[0])) },
-    // Pre-rendered interface type-6 model comp icons, keyed by model id (cacheIfaceGroup is host-only, so the plugin must already have the id).
     'cache.modelIcon':  { scope: 'cache.read', json: false,   run: (a) => (bridge().modelIcon ? bridge().modelIcon(pClampId(a[0])) : '') },
     'cache.sprite':     { scope: 'cache.read', json: false,   run: (a) => bridge().sprite(pClampId(a[0])) },
     'cache.varbitMap':  { scope: 'cache.read', json: true,    run: () => bridge().varbitMap() },
@@ -124,34 +112,24 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'cache.varbitDomains':   { scope: 'cache.read', json: true, run: () => (bridge().varbitDomains ? bridge().varbitDomains() : '{}') },
     'cache.varDefs':         { scope: 'cache.read', json: true, run: (a) => (bridge().varDefs ? bridge().varDefs(pClampId(a[0])) : '{}') },
     'cache.enumInfo':   { scope: 'cache.read', json: true,    run: (a) => bridge().enumInfo(pClampId(a[0])) },
-    // Param definition from the cache: {type[,int][,str]} ({} until the reader ships).
     'cache.paramDef':   { scope: 'cache.read', json: true,    run: (a) => (bridge().paramDef ? bridge().paramDef(pClampId(a[0])) : '{}') },
-    // Raw param map of one StructType (js5-22): {"ints":{k:v},"strs":{k:"v"}}.
     'cache.structParams':{ scope: 'cache.read', json: true,   run: (a) => (bridge().structParams ? bridge().structParams(pClampId(a[0])) : '{}') },
-    // Raw op-249 param map of one item (js5-19): {"ints":{k:v},"strs":{k:"v"}}.
     'cache.itemParams': { scope: 'cache.read', json: true,    run: (a) => (bridge().itemParams ? bridge().itemParams(pClampId(a[0])) : '{}') },
-    // Top-down cache terrain render centred on a world tile: {"w","t","h","b64"} RGBA.
     'cache.mapWindow':  { scope: 'cache.read', json: true,    run: (a) => (bridge().mapWindow
                             ? bridge().mapWindow(pClampNum(a[0], 0, 16000), pClampNum(a[1], 0, 16000),
                                                  pClampNum(a[2], 0, 3), pClampNum(a[3], 0, 96), pClampNum(a[4], 0, 8), 15, true)
                             : '{}') },
-    // Full live widget tree of one open interface group (id/type/rect/text/sprite per node).
     'state.interfaceGroup':{ scope: 'state.read', json: true, run: (a, pid) => bridge().interfaceGroup(pid, pClampId(a[0])) },
-    // Player-Owned Ports state, decoded host-side (see panel_portsinfo.js): resources, trade goods, buildings, ships with ETA, scroll pieces, exploration. null until readable.
     'state.ports':      { scope: 'state.read', json: false,   run: async () => (typeof portsStateRead === 'function' ? await portsStateRead() : null) },
-    // Live varc-int values by id -> {"<id>": value} (<=64 ids).
     'state.varcs':      { scope: 'state.read', json: false,   run: async (a, pid) => {
                             const ids = (Array.isArray(a[0]) ? a[0] : []).slice(0, 64)
                               .map(x => parseInt(x, 10)).filter(n => isFinite(n) && n >= 0 && n < 200000);
                             let all = {}; try { all = JSON.parse(await bridge().varcsDumpAll(pid) || '{}'); } catch (e) {}
-                            // varcsDumpAll keys are scope-prefixed "5:<id>" (5 = varc-int)
                             const out = {}; for (const id of ids) out[id] = (all['5:' + id] | 0) || 0; return out; } },
-    // Achievements: full roster with live completion + progress, or one by id -> {id,name,complete,...}.
     'state.achievements':{ scope: 'state.read', json: false,  run: (a, pid) => pluginAchievements(pid) },
     'state.achievement': { scope: 'state.read', json: false,  run: async (a, pid) => {
                             const id = pClampId(a[0]); const all = await pluginAchievements(pid);
                             return all.find(x => x.id === id) || null; } },
-    // Unspent Bonus XP per skill -> [{skill,bonus}] (already /10, matching the skill tooltips).
     'state.skillBonus': { scope: 'state.read', json: false,   run: async (a, pid) => {
                             let vp = {}; try { vp = JSON.parse(await bridge().varps(pid, SKILL_BONUS_CSV)); } catch (e) {}
                             const out = [];
@@ -160,13 +138,11 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                               if (raw > 0) out.push({ skill: SKILL_NAMES[i] || ('Skill ' + i), bonus: raw / 10 });
                             }
                             return out; } },
-    // D&D tracker: available = the D&D Tracker's bell tests; resets = epoch ms of the next daily/weekly/monthly reset; varbits = raw tracker values by id.
     'state.dailies':    { scope: 'state.read', json: false,   run: async (a, pid) => {
                             let vb = null; try { vb = JSON.parse(await bridge().varbits(pid, DW_IDS)); } catch (e) {}
                             if (!vb || typeof vb !== 'object') return null;
                             return { available: dwAvail(vb), resets: dwNextResets(), varbits: vb,
                                      vos: dwVosState(vb) }; } },
-    // Quest list: [{id,name,difficulty,status,statusText}]; status 0 not started / 1 in progress / 2 complete / -1 no tracker.
     'state.quests':     { scope: 'state.read', json: false,   run: async (a, pid) => {
                             if (!await questEnsureDefs()) return null;
                             let vp = {}; try { vp = JSON.parse(await bridge().varps(pid, QUEST_VARPS.join(','))); } catch (e) {}
@@ -174,7 +150,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                             return QUESTS.map(q => { const st = questStatus(q, vp);
                               return { id: q.id, name: q.n, difficulty: q.d !== undefined ? (QDIFF[q.d] || null) : null,
                                        status: st, statusText: st >= 0 ? QSTATUS[st] : 'Unknown' }; }); } },
-    // One quest in full: live status, requirements judged against the account, journal info (strings may contain <br>).
     'state.quest':      { scope: 'state.read', json: false,   run: async (a, pid) => {
                             if (!await questEnsureDefs()) return null;
                             const q = QUEST_BY_ID.get(pClampId(a[0])); if (!q) return null;
@@ -196,7 +171,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                                                 length: (q.ln !== undefined && QUEST_ENUMS ? E.ln[q.ln] : null) || null,
                                                 age: (q.ag !== undefined && QUEST_ENUMS ? E.ag[q.ag] : null) || null,
                                                 area: (q.ar !== undefined && QUEST_ENUMS ? E.ar[q.ar] : null) || null } }; } },
-    // Archaeology mysteries: [{site,name,points,solved,stage:{value,max}|null}]; stage null = no stage var.
     'state.mysteries':  { scope: 'state.read', json: false,   run: async (a, pid) => {
                             const stVps = Object.values(MYST_STAGE).filter(s => s && s.vp !== undefined).map(s => s.vp);
                             let vp = {}; try { vp = JSON.parse(await bridge().varps(pid, ['9302', '9303'].concat(stVps).join(','))); } catch (e) {}
@@ -207,21 +181,14 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                               const st = mystStageVal(name, vb, vp);
                               return { site: g.site, name, points: pts, solved: mystDone(varp, bit, vp),
                                        stage: st ? { value: st[0], max: st[1] } : null }; })); } },
-    // notify's second arg is a ttl in ms, 0 = sticky.
     'overlay.toast':    { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: 5000 }) },
-    // Floating HUD strip of ability icons, one per plugin; null/empty closes it.
     'overlay.hudAbilities': { scope: 'overlay', json: false, run: (a, pid, id) => { pluginHudSet(id, a[0]); return true; } },
     'overlay.notify':   { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: pClampNum(a[1], 0, 60000) }) },
-    // Centre-screen banner text ('' clears); a[1] = slot (0..2, independent, stack upward), a[2] = 0xRRGGBB accent.
     'overlay.centerText':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().centerText ? bridge().centerText(pid, pClampStr(a[0], 80), pClampNum(a[1], 0, 2), pClampNum(a[2], -1, 0xFFFFFF)) : null) },
-    // OS toast. Own manifest scope + 1-per-10s rate cap.
     'notify.windows':   { scope: 'notify.os',  json: false,   run: (a) => (bridge().notifyWindows ? bridge().notifyWindows(pClampStr(a[0], 60), pClampStr(a[1], 200)) : null) },
-    // Clipboard write. Own manifest scope.
     'clipboard.copy':   { scope: 'clipboard',  json: false,   run: (a) => (bridge().copyClipboard ? bridge().copyClipboard(pClampStr(a[0], 65536)) : null) },
-    // Clipboard read is its own scope.
     'clipboard.paste': { scope: 'clipboard.read', json: false, run: () => String(bridge().pasteClipboard() || '').slice(0, 65536) },
     'overlay.highlight':{ scope: 'overlay',    json: false,   run: (a, pid) => bridge().overlayHighlight(pid, pClampList(a[0])) },
-    // Box a single NPC by name (case-insensitive) with an optional pill label; only '|' and ',' are stripped. Empty name clears.
     'overlay.highlightNpc':{ scope: 'overlay', json: false, run: (a, pid) => {
                             const name = pClampStr(a[0], 48).replace(/[|,]/g, '').replace(/\s+/g, ' ').trim();
                             if (!name) { try { bridge().overlayHighlight(pid, ''); } catch (e) {} return false; }
@@ -231,7 +198,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                             if (tx > 0 && ty > 0) needle += '|' + tx + ',' + ty;
                             try { bridge().overlayHighlight(pid, needle); } catch (e) {} return true; } },
     'overlay.flashGame':{ scope: 'overlay',    json: false,   run: (a, pid) => bridge().flashGame(pid) },
-    // Highlight one chat-option box matching `text` (substring, both ways).
     'overlay.highlightOption':{ scope: 'overlay', json: false, run: async (a, pid) => {
                             const norm = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
                             const wants = (Array.isArray(a) ? a : [a]).map(x => norm(pClampStr(x, 120))).filter(Boolean);   // match an option against ANY of these texts in ONE read
@@ -249,7 +215,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                             }
                             try { bridge().uiHighlight(pid, 0, 0, 0, 0); } catch (e) {}
                             return false; } },
-    // Highlight the backpack slot holding item `id` if present and visible. a[1] = optional label.
     'overlay.highlightItem':{ scope: 'overlay', json: false, run: async (a, pid) => {
                             const itemId = pClampId(a[0]);
                             if (!itemId) { try { bridge().panelViz(pid, ''); } catch (e) {} return false; }
@@ -262,18 +227,15 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                             const label = (a[1] == null || a[1] === '') ? ('Item ' + itemId) : pClampStr(a[1], 96).replace(/[,|]/g, ' ');   // 96 = the same label budget as overlay.highlightNpc
                             try { bridge().panelViz(pid, r.x + ',' + r.y + ',' + r.w + ',' + r.h + ',' + label); } catch (e) {}
                             return true; } },
-    // Guide marks: the host boxes the loc footprint at each tile + a label, and points the ground arrow at the first. marks = [{x, y, plane, label}]; [] clears.
     'overlay.guideTiles':{ scope: 'overlay', json: false, run: (a, pid) => {
                             const marks = Array.isArray(a[0]) ? a[0] : [];
                             const recs = [];
-                            // 64 marks: the host cost is the O(n^2) label placement pass in Overlay.cpp, so this is a bounded raise, not a removal.
                             for (const m of marks.slice(0, 64)) {
                               if (!m || typeof m !== 'object') continue;
                               const x = pClampNum(m.x, 0, 16383) | 0, y = pClampNum(m.y, 0, 16383) | 0, plane = pClampNum(m.plane, 0, 3) | 0;
                               if (x < 1 || y < 1) continue;
                               const label = pClampStr(m.label == null ? '' : m.label, 95).replace(/[\x1e\x1f]/g, ' ');   // 95 = the overlay's kTextMax (the loc name + '\n' share the same budget)
                               let rec = x + '\x1f' + y + '\x1f' + plane + '\x1f' + label;
-                              // Optional tail (host parser field order): snap, rgb, areaX2, areaY2, region, rgb2. x2/y2 = NE corner of a ground rect; color2 makes a two-tone split.
                               const x2 = pClampNum(m.x2, 0, 16383) | 0, y2 = pClampNum(m.y2, 0, 16383) | 0;
                               const hasArea = x2 >= x && y2 >= y && (x2 > x || y2 > y);
                               const pcol = (v) => { if (typeof v === 'number') return v & 0xFFFFFF;
@@ -289,8 +251,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                             try { bridge().uiHighlight(pid, 0, 0, 0, 0); } catch (e) {}
                             try { bridge().panelViz(pid, ''); } catch (e) {}
                             return true; } },
-    // Highlight an arbitrary screen rect; w/h <= 0 clears.
-    // Several boxes at once: array of [x,y,w,h] (or {x,y,w,h}); [] clears. The set replaces the previous one and is shared with highlightRect (one set per client).
     'overlay.highlightRects':{ scope: 'overlay', json: false, run: (a, pid) => {
                             const list = Array.isArray(a[0]) ? a[0] : [];
                             const recs = [];
@@ -308,15 +268,10 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                             if (w > 0 && h > 0) { try { bridge().uiHighlight(pid, x, y, w, h); } catch (e) {} return true; }
                             try { bridge().uiHighlight(pid, 0, 0, 0, 0); } catch (e) {} return false; } },
     'sound.play':       { scope: 'sound',      json: false,   run: (a, pid) => bridge().playSound(pClampStr(a[0], 64)) },
-    // Open the wiki-locked in-client browser on a search term (empty = wiki home); overlay scope and bucket.
     'overlay.wikiSearch':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().wikiOpen ? bridge().wikiOpen(pid, pClampStr(a[0], 200)) : null) },
     'storage.get':      { scope: 'storage',    json: 'maybe', run: (a, pid, id) => bridge().pluginStoreLoad(pid, id, pClampStr(a[0], 64)) },
     'storage.set':      { scope: 'storage',    json: false,   run: (a, pid, id) => bridge().pluginStoreSave(pid, id, pClampStr(a[0], 64), JSON.stringify(a[1] === undefined ? null : a[1])) },
     'storage.keys':     { scope: 'storage',    json: true,    run: (a, pid, id) => bridge().pluginStoreKeys(pid, id) },
-    // ===== Panel bindings promoted 2026-08-29 (docs/panel-plugin-migration.md, "rtxData") =====
-    // Args forwarded as given (pArgs: <=8 args, strings capped at 64K). Scopes actuator / host / solver / party / chat.read are not in PLUGIN_SCOPES, so plugins cannot reach them; in-tree panels use rtxData (core/rtx-data.js).
-    // -- state (state.read)
-    // CSV twin of state.varbits: {"<id>":value} straight from the reader (no cache resolve), same shape as state.varps
     'state.varbitsCsv':       { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varbits(pid, ...pArgs(a)) },
     'state.varcsAll':         { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varcsDumpAll(pid, ...pArgs(a)) },
     'state.varDomainStores':  { scope: 'state.read',  json: true,  run: (a, pid) => (bridge().varDomainStores ? bridge().varDomainStores(pid) : '{}') },
@@ -333,14 +288,11 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'state.openContainers':   { scope: 'state.read',  json: true,  run: (a, pid) => bridge().openContainers(pid, ...pArgs(a)) },
     'state.pof':              { scope: 'state.read',  json: true,  run: (a, pid) => bridge().pof(pid, ...pArgs(a)) },
     'state.gameFocused':      { scope: 'state.read',  json: false, run: (a, pid) => bridge().gameFocused(pid, ...pArgs(a)) },
-    // -- cache (cache.read)
     'cache.achievements':     { scope: 'cache.read',  json: true,  run: (a) => bridge().achievements(...pArgs(a)) },
     'cache.abilityConfigs':   { scope: 'cache.read',  json: true,  run: (a) => bridge().abilityConfigs(...pArgs(a)) },
-    // Plain-text tooltip bullets per ability id, flattened from AB_TIPS; damage placeholders become "a%-b% damage".
     'cache.abilityTips':      { scope: 'cache.read',  json: true,  run: () => pluginAbilityTipsJson() },
     'cache.archResearch':     { scope: 'cache.read',  json: true,  run: (a) => bridge().archResearch(...pArgs(a)) },
     'cache.quests':           { scope: 'cache.read',  json: true,  run: (a) => bridge().quests(...pArgs(a)) },
-    // sync, capped at 2000 rows host-side
     'cache.dbRows':           { scope: 'cache.read',  json: true,  run: (a) => bridge().dbRows(...pArgs(a)) },
     'cache.npcInfo':          { scope: 'cache.read',  json: true,  run: (a) => bridge().npcInfo(...pArgs(a)) },
     'cache.cs2Names':         { scope: 'cache.read',  json: true,  run: (a) => bridge().cs2Names(...pArgs(a)) },
@@ -354,16 +306,12 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'cache.ifaceGroup':       { scope: 'cache.read',  json: true,  run: (a) => bridge().cacheIfaceGroup(...pArgs(a)) },
     'cache.isLeaguesWorld':   { scope: 'cache.read',  json: false, run: (a) => bridge().isLeaguesWorld(...pArgs(a)) },
     'cache.buffCatalog':      { scope: 'cache.read',  json: false, run: (a) => bridge().buffCatalog(...pArgs(a)) },
-    // -- overlay (overlay)
-    // Not plain pArgs: record lists with \x1e/\x1f separators are bounded here before reaching the native parsers.
     'overlay.guideMarks':     { scope: 'overlay',     json: false, run: (a, pid) => bridge().guideMarks(pid, ...pOverlayArgs(a)) },
     'overlay.panelViz':       { scope: 'overlay',     json: false, run: (a, pid) => bridge().panelViz(pid, ...pOverlayArgs(a)) },
     'overlay.uiHighlight':    { scope: 'overlay',     json: false, run: (a, pid) => bridge().uiHighlight(pid, ...pOverlayArgs(a)) },
     'overlay.hudSprite':      { scope: 'overlay',     json: false, run: (a, pid) => bridge().hudSprite(pid, ...pOverlayArgs(a)) },
     'overlay.outlineObject':  { scope: 'overlay',     json: false, run: (a, pid) => bridge().outlineObject(pid, ...pOverlayArgs(a)) },
-    // -- chat (chat.read): not in PLUGIN_SCOPES, panel path only
     'chat.messages':          { scope: 'chat.read',   json: true,  run: (a, pid) => bridge().chat(pid, ...pArgs(a)) },
-    // -- solver (solver)
     'solver.puzzleCells':     { scope: 'solver',      json: false, run: (a, pid) => bridge().puzzleCells(pid, ...pArgs(a)) },
     'solver.puzzleCellRects': { scope: 'solver',      json: true,  run: (a, pid) => bridge().puzzleCellRects(pid, ...pArgs(a)) },
     'solver.puzzleState':     { scope: 'solver',      json: true,  run: (a, pid) => bridge().puzzleState(pid, ...pArgs(a)) },
@@ -372,12 +320,10 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'solver.clueSearchTarget':{ scope: 'solver',      json: true,  run: (a) => bridge().clueSearchTarget(...pArgs(a)) },
     'solver.compassHeading':  { scope: 'solver',      json: false, run: (a, pid) => bridge().compassHeading(pid, ...pArgs(a)) },
     'solver.compassTarget':   { scope: 'solver',      json: false, run: (a, pid) => bridge().compassTarget(pid, ...pArgs(a)) },
-    // -- party (party)
     'party.partyData':        { scope: 'party',       json: true,  run: (a) => bridge().partyData(...pArgs(a)) },
     'party.partyGetCode':     { scope: 'party',       json: false, run: (a) => bridge().partyGetCode(...pArgs(a)) },
     'party.partySetCode':     { scope: 'party',       json: false, run: (a) => bridge().partySetCode(...pArgs(a)) },
     'party.partyReport':      { scope: 'party',       json: false, run: (a) => bridge().partyReport(...pArgs(a)) },
-    // -- host (host)
     'host.alertsLoad':        { scope: 'host',        json: false, run: (a, pid) => bridge().alertsLoad(pid, ...pArgs(a)) },
     'host.counterLoad':       { scope: 'host',        json: false, run: (a, pid) => bridge().counterLoad(pid, ...pArgs(a)) },
     'host.notesLoad':         { scope: 'host',        json: false, run: (a, pid) => bridge().notesLoad(pid, ...pArgs(a)) },
@@ -409,7 +355,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'host.iconCoverage':      { scope: 'host',        json: true,  run: () => bridge().iconCoverage() },
     'host.uiAsset':           { scope: 'host',        json: false, run: (a) => bridge().uiAsset(...pArgs(a)) },
     'host.hiscores':          { scope: 'host',        json: true,  run: (a) => bridge().hiscores(...pArgs(a)) },
-    // -- act (actuator)
     'act.alertsSave':         { scope: 'actuator',    json: false, run: (a, pid) => bridge().alertsSave(pid, ...pArgs(a)) },
     'act.counterSave':        { scope: 'actuator',    json: false, run: (a, pid) => bridge().counterSave(pid, ...pArgs(a)) },
     'act.notesSave':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().notesSave(pid, ...pArgs(a)) },
@@ -449,7 +394,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'act.ifaceOffset':        { scope: 'actuator',    json: false, run: (a) => bridge().ifaceOffset(...pArgs(a)) },
     'ui.setHeight':     { scope: null,         json: false,   run: (a, pid, id, fr) => { if (fr) fr.style.height = pClampNum(a[0], 60, 4000) + 'px'; return true; } },
     'ui.setTitle':      { scope: null,         json: false,   run: () => true },
-    // Declare the plugin's settings schema; returns the current values. Host-mediated, no scope.
     'ui.settings':      { scope: null,         json: false,   run: async (a, pid, id) => {
       const schema = pluginSettingsSchema(a[0]);
       if (!schema) throw new Error('invalid settings schema');
@@ -468,7 +412,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       const reg = pluginSettingsReg.get(id);
       return reg ? Object.assign({}, reg.values) : {};
     } },
-    // RS3 GE prices via the launcher's relay cache (never leaves the machine beyond the RuneTools server). latest: {itemId: {high, highTime, low, lowTime}}; mapping: item metadata array; item: one id or up to 50, from a parsed broker-side cache.
     'prices.latest':    { scope: 'cache.read', json: true,    run: () => bridge().pricesCached() },
     'prices.mapping':   { scope: 'cache.read', json: true,    run: () => bridge().pricesMapping() },
     'prices.item':      { scope: 'cache.read', json: false,   run: (a) => {
@@ -480,7 +423,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     } }
   };
 
-  // Parsed copy of the cached latest-prices payload, refreshed at most every 30 s (relay refreshes every 90 s).
   let _pricesParsed = null, _pricesParsedAt = 0;
   function pluginPricesData() {
     const now = Date.now();
@@ -497,7 +439,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
   }
 
   function pluginRateOk(id, method) {
-    // rate = tokens refilled per second; capacity = max burst (>=1 so slow rates still fire).
     const rate = method.indexOf('storage.') === 0 ? 4
                : method.indexOf('overlay.') === 0 ? 6
                : method.indexOf('notify.') === 0 ? 0.1     // OS toasts: 1 per 10s

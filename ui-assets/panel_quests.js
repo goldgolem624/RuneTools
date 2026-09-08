@@ -1,16 +1,12 @@
 // RuneToolsX panel: Quests (full progress tracker with requirements + guides).
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // Definitions decode from the LIVE cache (bridge.quests() -> configs archive 35 QuestType; varbit
-  // trackers pre-resolved to [varp,lsb,msb]). Status: < start = not started, < end = in progress, else complete.
   QUESTS = null;
   QUEST_BY_ID = null;  // id -> def
   QUEST_VARPS = null;  // every varp the tracker reads (progress + specials + QP)
   let QUEST_VB = {};       // special-case varbit id -> [varp,lsb,msb] (payload "vb")
-  // EXTRA per-quest requirements the cache configs don't encode, judged as a varbit slice >= min
   // over the same varp snapshot (b = [varp,lsb,msb]). Fort Forinthry building tiers per CS2
-  // script7163: Workshop = vp10761[0:3], Chapel [4:7], Command Centre [8:11], Town Hall [12:15].
   const QUEST_XREQS = {
     490: [   // Murder on the Border
       { t: 'Build Town Hall (Tier 1)',      b: [10761, 12, 15], min: 1, done: 'Built', todo: 'Not built' },
@@ -42,7 +38,6 @@
     if (QUEST_ENUMS || !bridge() || !bridge().enumInfo) return;
     const grab = async id => { try { return JSON.parse(await rtxData.raw('cache.enumInfo', id)) || {}; } catch (e) { return {}; } };
     const ln = await grab(13354), ag = await grab(13275), ar = await grab(9686);
-    // enumInfo returns {} while the enum cache is still opening -> leave null and retry next poll
     if (Object.keys(ln).length || Object.keys(ag).length || Object.keys(ar).length)
       QUEST_ENUMS = { ln, ag, ar };
   }
@@ -57,7 +52,6 @@
     return t ? qBits(vp, t[0], t[1], t[2]) : 0;
   }
   const qBand = (v, a, b) => v < a ? 0 : (v < b ? 1 : 2);
-  // -> 0 not started / 1 in progress / 2 complete / -1 no tracker in the configs.
   function questStatus(q, vp) {
     switch (q.id) {
       case 92:  { const v = vp[2615] || 0; if (v > 6) return 2; return (v === 0 && qVbBits(vp, 12894) === 0) ? 0 : 1; }
@@ -73,7 +67,6 @@
     if (q.b) return qBand(qBits(vp, q.b[0], q.b[1], q.b[2]), q.b[3], q.b[4]);
     return -1;
   }
-  // live REAL skill levels (index = the quest statreq skill id; same order as SKILL_NAMES)
   function questSkillLevels() {
     const sk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : [];
     return i => (sk[i] ? sk[i][0] : 0);
@@ -103,7 +96,6 @@
     });
     return out;
   }
-  // Full prerequisite closure: every transitive quest, the max level per skill (with the quest that demands it) and the max QP.
   function questClosure(q) {
     const quests = new Map(), skills = new Map();
     let qp = q.rqp ? { need: q.rqp, src: q.n } : null;
@@ -140,7 +132,6 @@
       if (!vp || !Object.keys(vp).length) return;   // empty read -> keep last good
       const st = {};
       QUESTS.forEach(q => { st[q.id] = questStatus(q, vp); });
-      // Re-render only on real change: the detail page rebuilds wholesale and would reset scroll each poll.
       const lvl = questSkillLevels();
       let sig = (vp[1297] || 0) + '|';
       QUESTS.forEach(q => { sig += st[q.id]; });
@@ -152,7 +143,6 @@
       if (changed) updateQuestHighlight();   // completion can clear the step NPC mark
     } finally { questFetching = false; }
   }
-  // A not-started quest is "ready" when its FULL closure, plus the QUEST_XREQS extras, is met.
   function questReady(q, d) {
     const lvl = questSkillLevels();
     const c = questClosure(q);
@@ -201,9 +191,6 @@
     }
     renderQuestList();
   }
-  // True when this quest has full in-world VISUAL guidance (NPC/object/dialogue/item
-  // highlighting) - the step-fn registry panel_visions.js declares. typeof-guarded so an
-  // older build without that splice never throws here.
   function questHasVisualGuide(name) {
     try { return typeof QUEST_GUIDES === 'object' && !!QUEST_GUIDES[name]; } catch (e) { return false; }
   }
@@ -213,7 +200,6 @@
     if (!d) { list.innerHTML = '<div class="empty">Reading... (be in-world)</div>'; questListSig = ''; return; }
     const ready = {};   // computed lazily only for not-started quests (closure walk)
     const idSearch = /^\d+$/.test(questFSearch);   // digits = also match config ids by prefix
-    // Typing "guided" (any 3+ char prefix) filters to the visually-guided quests.
     const guidedSearch = questFSearch.length >= 3 && 'guide'.indexOf(questFSearch) === 0;
     const items = QUESTS.filter(q => {
       if (questFSearch) {
@@ -276,10 +262,6 @@
     const q = QUEST_BY_ID ? QUEST_BY_ID.get(questView) : null;
     const d = questsData;
     // renderPane() polls every 250 ms; rebuild only on real change or hover flickers and scroll resets.
-    // The guide-ready flag is PART of the signature: the 1.3MB guide data is lazy-loaded, and the
-    // first render of a quest is what kicks that load -- so it necessarily paints with no Quick
-    // guide. Without this term nothing about the quest changes when the data lands, the signature
-    // still matches, and the section stays empty until some unrelated interaction invalidates it.
     const sig = questView + '|' + questNav.join(',') + '|' + (d ? d.sig : '') + '|' +
                 ((typeof questGuidesReady === 'function' && questGuidesReady()) ? 1 : 0);
     if (sig === questDetailSig && $('questDetailWrap')) return;
@@ -310,7 +292,6 @@
     const stEl = document.createElement('span'); stEl.className = 'pet-st ' + pill[0]; stEl.textContent = pill[1];
     hdr.appendChild(stEl);
     wrap.appendChild(hdr);
-    // Focusing opens the Focused Quest tab and drives the in-world visual guide.
     if (qgg) {
       const focused = qgFocusName() === q.n;
       const fbtn = document.createElement('button'); fbtn.className = 'qd-focus' + (focused ? ' on' : '');
@@ -371,7 +352,6 @@
     };
     if (q.sp) {
       const area = (QUEST_ENUMS && q.ar !== undefined && QUEST_ENUMS.ar[q.ar]) ? QUEST_ENUMS.ar[q.ar] : '';
-      // op10 start coords, packed (plane<<28 | x<<14 | y); surfaced as a tooltip
       const tip = (q.xy || []).map(v => {
         const pl = v >>> 28, x = (v >>> 14) & 0x3FFF, y = v & 0x3FFF;
         return '(' + x + ', ' + y + (pl ? ', plane ' + pl : '') + ')';
@@ -395,7 +375,6 @@
       r.innerHTML = '<span class="qr-n">Quest points</span><span class="qr-v">' + reqs.qp.have + ' / ' + reqs.qp.need + '</span>';
     }));
     reqs.skills.forEach(s => box.appendChild(reqRow(s.ok ? 'ok' : 'miss', r => {
-      // 'sk-icon' + data-skill so the async sprite load repaints this box too
       const ic2 = document.createElement('div'); ic2.className = 'qr-ico sk-icon';
       ic2.dataset.skill = String(s.id); attachSkillIcon(ic2, s.id); r.appendChild(ic2);
       const n = document.createElement('span'); n.className = 'qr-n'; n.textContent = (SKILL_NAMES[s.id] || ('Skill ' + s.id)); r.appendChild(n);
@@ -415,7 +394,6 @@
                     htmlEsc(x.ok ? (x.done || 'Done') : (x.todo || 'Incomplete')) + '</span>';
     })));
     wrap.appendChild(box);
-    // Full prerequisite chain, shown only when it ADDS something over the direct requirements.
     const cl = questClosure(q);
     const indirect = cl.quests.filter(r => !(q.rq || []).includes(r.id));
     const addsInfo = indirect.length > 0 ||
@@ -495,7 +473,6 @@
       (q.rw ? q.rw.split(/<br\s*\/?\s*>/i) : []).forEach(li);
       wrap.appendChild(rbx);
     }
-    // Quick guide from the wiki-imported quest_guides.js, spliced in by the host.
     if (qgg) {
       const gbox = document.createElement('div'); gbox.className = 'stor-box';
       const gh = document.createElement('div'); gh.className = 'stor-h'; gh.textContent = 'Quick guide';
@@ -525,7 +502,6 @@
     }
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { QDIFF, QSTATUS, fetchQuests, questEnsureDefs, questEnsureEnums, questPill, questReqs, questSkillLevels, questStatus, renderQuests });
 registerTab({ id: 'quests', render: renderQuests, open: function () { questListSig = ''; fetchQuests(true); qgEnsureLoaded(); } });
 })();

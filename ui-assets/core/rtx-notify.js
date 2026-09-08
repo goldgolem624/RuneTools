@@ -1,16 +1,6 @@
-// rtx-notify.js: In-game notifications: toast queue, applyToastPos, toast drag placement, uiNotify, toastClose, toastTick.
-// Loads after: rtx-ui.js (uiCfg) and rtx-wm.js (wm state) at call time; toastDragInit installs document listeners at load.
-// Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ==================== In-game notifications ====================
-  // Replaces the companion's GL-primitive notification cards (marker command list,
-  // fixed-cell ASCII atlas). Same delivery contract as before -- a message and a
-  // time-to-live, 0 = sticky until dismissed -- but rendered in the UI layer, so
-  // it gets real type, wrapping and the window design language.
   const TOAST_MAX = 4;
   const toasts = [];               // { el, msg, until, sticky, n, barEl, countEl }
   let _toastTimer = 0;
-  // Placement, persisted with the layout (per account). Anchor + offset rather than a
-  // raw x/y so the stack keeps its corner when the game window is resized.
   const TOAST_DEF = { anchor: 'top-center', dx: 0, dy: 58, w: 420 };
   let toastCfg = Object.assign({}, TOAST_DEF);
   let toastPlacing = false;        // UI Settings "position on screen" mode
@@ -25,17 +15,13 @@
     el.style.width = w + 'px';
     el.style.top = el.style.bottom = el.style.left = el.style.right = 'auto';
     el.style.transform = 'none';
-    // Vertical edge
     if (a.indexOf('bottom') === 0) el.style.bottom = Math.max(0, dy) + 'px';
     else el.style.top = Math.max(0, dy) + 'px';
-    // Horizontal edge; centre keeps its own translate so dx nudges from the middle.
     if (a.indexOf('left') > 0) el.style.left = Math.max(0, dx) + 'px';
     else if (a.indexOf('right') > 0) el.style.right = Math.max(0, dx) + 'px';
     else { el.style.left = '50%'; el.style.transform = 'translateX(calc(-50% + ' + dx + 'px))'; }
-    // Newest-first at the top edge, newest-nearest-the-edge at the bottom.
     el.style.flexDirection = (a.indexOf('bottom') === 0) ? 'column-reverse' : 'column';
     el.classList.toggle('placing', !!toastPlacing);
-    // The placement frame is a real element so it can carry a width grip.
     let g = $('toastGhost');
     if (toastPlacing && !g) {
       g = document.createElement('div');
@@ -48,7 +34,6 @@
         e.preventDefault(); e.stopPropagation();          // not a move-drag
         const sx = e.clientX, ow = Number(toastCfg.w) || TOAST_DEF.w;
         const a = String(toastCfg.anchor || 'top-center');
-        // Right-anchored stacks grow leftwards, so the grip reads inverted there.
         const dir = (a.indexOf('right') > 0) ? -1 : 1;
         const mv = (ev) => {
           const vwNow = window.innerWidth || 1280;
@@ -71,16 +56,11 @@
     wmRectsSoon();
   }
 
-  // Drag the stack itself while in placement mode; converts the drop point back into
-  // an offset from whichever edge the current anchor uses.
   (function toastDragInit() {
     document.addEventListener('mousedown', (e) => {
       if (!toastPlacing) return;
       const el = $('toaster');
       if (!el || !e.target.closest || !e.target.closest('#toaster')) return;
-      // The width grip is inside the stack, and THIS listener is on the capture
-      // phase, so it would otherwise start a move-drag before the grip ever sees
-      // the press and stopPropagation could not save it.
       if (e.target.closest('.ghost-rz')) return;
       e.preventDefault();
       const r = el.getBoundingClientRect();
@@ -107,11 +87,8 @@
     }, true);
   })();
 
-  // A colour-coded dot rather than a drawn icon: amber = needs dismissing, accent =
-  // it will clear itself. Reads instantly and cannot mis-render.
   function toastIcon(sticky) { return '<i class="g g-dot"></i>'; }
 
-  // msg: text. opts: { ttl: ms (0/omitted-with-sticky = until dismissed), sticky: bool }
   function uiNotify(msg, opts) {
     msg = String(msg == null ? '' : msg).slice(0, 300);
     if (!msg) return;
@@ -119,8 +96,6 @@
     const sticky = !!opts.sticky || opts.ttl === 0;
     const ttl = sticky ? 0 : Math.max(1200, Number(opts.ttl) || Number(uiCfg().toastTtl) || 5000);
     const now = Date.now();
-    // Repeat of a message already on screen: bump its count and restart its clock
-    // instead of stacking duplicates (alert rules can re-fire quickly).
     const dup = toasts.find(t => t.msg === msg && !t.closing);
     if (dup) {
       dup.n++;
@@ -156,8 +131,6 @@
                   until: ttl ? now + ttl : 0, barEl, countEl: cnt, closing: false };
     $('toaster').appendChild(el);
     toasts.push(rec);
-    // Cap the stack: retire the oldest NON-sticky first so a dismissible warning
-    // is never silently pushed out by routine chatter.
     while (toasts.filter(t => !t.closing).length > TOAST_MAX) {
       const victim = toasts.find(t => !t.closing && !t.sticky) ||
                      toasts.find(t => !t.closing);
@@ -166,8 +139,6 @@
     }
     toastTick();
     wmRectsSoon();                 // a sticky card is clickable -> claim its rect
-    // The record is returned so callers (pinned league tasks) can live-update a
-    // sticky card's text in place instead of stacking new toasts.
     return rec;
   }
 
@@ -183,7 +154,6 @@
     }, 200);
   }
 
-  // Drives expiry + the remaining-time rule. Runs ONLY while toasts are on screen.
   function toastTick() {
     const now = Date.now();
     for (const t of toasts.slice()) {

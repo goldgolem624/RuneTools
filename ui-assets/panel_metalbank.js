@@ -1,9 +1,7 @@
 // RuneToolsX panel: Metal bank + Archaeology storage/unlocks/mysteries data.
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
   // ---- Metal bank (container 858: ores + bars) ----
-  // Same capture-while-open + disk-cache model as the bank: read whenever the metal bank is open,
   // served from the per-character disk cache otherwise. Ores/Bars split by enum 15093 membership.
   mbankData = null;     // {open, character, cached_at, count, items:[[slot,id,stack,name]]}
   mbankTerm = ''; mbankFetching = false; mbankSig = '';
@@ -16,24 +14,10 @@
   wbData = null;        // Archaeologist's workbench damaged artefacts (container 1008)
   wbTerm = ''; wbFetching = false; wbSig = '';
   // Workbench store capacity by upgrade level (CS2 script1020, varbit 61463). Level 0 holds
-  // nothing: the store does not exist until the first guild-shop workbench upgrade is bought.
   const WB_CAP = [0, 125, 175, 225];
-  // ---- Archaeology Guild shop (Ezreal), full catalogue grouped by qualification rank ----
-  // Source = cache enum 15883, the shop's own ordered entry list, whose -1 entries are the tab
-  // breaks; each entry is a struct carrying name (param 4849), price in chronotes (4850), icon
-  // item (4851) and the rank requirement as prose (4859).
-  // `own` = how to read whether it is bought, live:
-  //   {vb, lvl}  upgrade LEVEL varbit, owned when value >= lvl (tiers share one varbit)
-  //   {vb}       single-purchase flag, owned when value >= 1
-  //   null       consumable or repeatable purchase, no owned state exists
-  // Everything below is CS2/cache-derived; no ownership is inferred from the item id alone.
   const ARCH_RANKS = ['Intern', 'Assistant', 'Associate', 'Professor', 'Guildmaster'];
   const ARCH_SHOP = [
     { rank: 'Intern', items: [
-      // Free one-time claim. No "claimed" varbit exists (the shop's own CLAIMED badge is server-driven;
-      // no arch shop struct or item carries an unlock param, so the client-side resolver script19893
-      // returns 0 for every entry here). Possession of the item is the one honest signal, so `have`
-      // checks the cached bank + backpack.
       { name: 'Archaeological soil box', item: 49538, price: 0, have: 49538 },
       { name: 'Material manual',        item: 49946, price: 2000 },
       { name: 'Hi-spec monocle',        item: 49947, price: 2000 },
@@ -59,7 +43,6 @@
       { name: 'Material storage upgrade', item: 49950, price: 25000, own: { vb: 47022, lvl: 2 }, effect: '40 material slots' },
       { name: 'Workbench upgrade',        item: 63265, price: 25000, own: { vb: 61463, lvl: 1 }, effect: 'Workbench stores 125 damaged artefacts' },
       { name: 'Mattock precision upgrade', item: 49560, price: 30000, own: { vb: 47023, lvl: 2 }, effect: '+4 mattock precision' },
-      // No icon item: this entry carries its art in param 4852, not the 4851 obj slot.
       { name: 'Auto-screener v1.080 Blueprint', price: 50000, own: { vb: 47350 }, effect: 'Auto-screens collected soil' },
       { name: 'Certificate of qualification (associate)', item: 63015, price: 5000 },
     ] },
@@ -83,13 +66,11 @@
       { name: 'Certificate of qualification (guildmaster)', item: 63019, price: 25000 },
     ] },
   ];
-  // Every varbit the shop needs, deduped, for one batched read.
   const ARCH_SHOP_VBS = (() => {
     const s = new Set();
     for (const g of ARCH_SHOP) for (const it of g.items) if (it.own) s.add(it.own.vb);
     return [...s];
   })();
-  // Item ids whose ownership is proven by possession rather than a varbit (see `have` above).
   const ARCH_SHOP_HAVE = (() => {
     const s = new Set();
     for (const g of ARCH_SHOP) for (const it of g.items) if (it.have) s.add(it.have);
@@ -97,20 +78,10 @@
   })();
   archShopHave = {};    // item id -> true when found in the cached bank or the backpack
   matUnlockVp = null;   // varp snapshot for the shop-unlock varbits (read alongside the materials)
-  // Read a set of varbits -> {vbId: value} in one varp call (loads the varbit map lazily). Shared
-  // by the shop-unlocks section and the Mysteries tab so they cannot disagree.
   async function readVarbitValues(vbIds) {
     await ensureVbMap();
     const vps = new Set();
     for (const vb of vbIds) { const r = storageVbMap && storageVbMap[vb]; if (r) vps.add(r.varp); }
-    // VarpsJson (Reader.cpp:2043-2057) emits exactly one key per requested id, and "{}" when the
-    // process snapshot or root-pointer read fails. So key-count === requested-count is the "the
-    // varps answered" signal -- the one thing a caller cannot infer from the VALUES, since a failed
-    // read and a genuinely-zero var are both 0. It catches five of the six ways this can fail (empty
-    // varbit map, absent map bridge, varps "{}", varps throw, varbit missing from the map); it does
-    // NOT catch a bad varp-hashmap base, where read_varp (Reader.cpp:1920) returns 0 per var with
-    // the key count intact -- that one needs a bool out-param on the native side. Published
-    // NON-ENUMERABLY so every existing caller (Object.keys / Object.assign / for..in) is unaffected.
     let vp = {}, ok = vps.size > 0 && !!bridge().varps;
     if (ok) { try { vp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))); } catch (e) { ok = false; } }
     if (ok && Object.keys(vp).length !== vps.size) ok = false;
@@ -119,10 +90,6 @@
     Object.defineProperty(out, '_ok', { value: ok, enumerable: false });
     return out;
   }
-  // Archaeology mysteries. Completion lives in two VARP BITMASKS: varp 9302 (bits 0-31) and varp
-  // 9303 (bits 0-14), from achievement op-23 reqs where the u16 is the VARP id and `val` is the
-  // BIT index (NOT a varbit id; varbit 9302 is the unrelated deep-sea-fishing wrecks counter).
-  // Each entry: [name, varp, bit, points].
   const ARCH_MYSTERIES = [
     { site: 'Kharid-et', m: [['Breaking the Seal',9302,0,5],['Prison Break',9302,1,5],['Time Served',9302,2,10],
         ['The Forgotten Prisoner',9302,3,10],['The Cult of Orcus',9302,4,15],['Shadow Fall',9302,5,20],
@@ -144,8 +111,6 @@
     { site: 'Moonrise', m: [['Shadows of the Colossi',9303,15,15],['Path of the Initiate',9303,16,15],
         ['Cult Classic',9303,17,15],['Inside You There Are Two Wolves',9303,18,15],['The Final Revolution',9303,19,10]] },
   ];
-  // Per-mystery guide data (runescape.wiki), keyed by mystery name; Steps render as checkboxes
-  // whose per-account progress persists via mystLoad/mystSave.
   const ARCH_MYST_INFO = {
     "Breaking the Seal": {tip:"Clear the fort debris at the Kharid-et exterior excavation. Requires completion of the Archaeology tutorial.",loc:"Kharid-et Dig Site",req:"12 Archaeology (boostable), Archaeology tutorial completed",items:["Centurion's seal (damaged)"],rewards:["900 Archaeology experience", "Access to the main fortress"],steps:["Speak to Dr Nabanik after completing the Archaeology tutorial and unlocking the Kharid-et Dig Site. Speak to him a second time to receive a centurion's seal (damaged). Dr Nabanik can be found next to the winch.", "Excavate the fort debris blocking the fort entrance until it dwindles down to nothing and the triangular entryway is revealed.", "After the entrance is completely revealed, a purple barrier will become visible. Restore the seal at an archaeologist's workbench with 6 Third Age iron and 2 Zarosian insignia.", "Go through the fort entrance with the restored centurion's seal in your backpack."]},
     "Prison Break": {tip:"Discover how to unlock the doors leading into the prison block under the fortress at the Kharid-et Dig Site.",loc:"Kharid-et Dig Site",req:"12 Archaeology (boostable), Breaking the Seal completed",items:["Custodian's log page 1", "Custodian's log page 2", "Custodian's log page 3", "Custodian's log page 4"],rewards:["900 Archaeology experience", "Access to the prison block"],steps:["Gather custodian's log page 1 and page 2 from legionary remains, castra debris or administratum debris found in the vicinity of the prison door in Kharid-et Dig Site. Any of these spots will drop any of the pages; there are four pages to collect to complete the mystery but only the first two are needed to access the prison.", "After collecting pages 1 and 2, talk to Liam; he will give you a broken Kharid-et prison dial, which needs to be put back into place to be able to open the door.", "Fix the broken dial (third one down) on the wall to the right of the prison door.", "To the left of the door, press the buttons in the following order: Shadow, Blood, Smoke, Ice.", "If not already collected, gather custodian's log page 3 and page 4 either from the same spots as above or from the newly unlocked praesidio remains and carcerem debris in the prison."],pages:[[0, "Custodian's log page 1"], [1, "Custodian's log page 2"], [2, "Custodian's log page 3"], [3, "Custodian's log page 4"]],auto:[[0, [0, 1]], [4, [2, 3]]]},
@@ -213,10 +178,6 @@
   function mystC31Found(bit) {
     return !!((((mystVp && mystVp[MYST_C31_VARP]) || 0) >>> bit) & 1);
   }
-  // LIVE cache mystery -> collectible mapping (bridge mystPages, CacheReader decodes the DBRows
-  // archive: table-92 col4 -> table-81 page rows [globalIdx, itemId], col5 -> table-31 collectible
-  // rows [varp-11733 bit, itemId]). The static ARCH_MYST_INFO pages arrays stay as the LABEL
-  // source and the pre-build fallback; indexes always come from the cache once loaded.
   mystCachePages = null; let mystCachePagesAt = 0;
   function mystPagesLoadOnce() {
     if (mystCachePages || !bridge() || !bridge().mystPages) return;
@@ -240,8 +201,6 @@
     } catch (e) {}
     return mystItemNames[id];
   }
-  // Effective collectible lists for a mystery: cache-derived indexes, static labels by index,
-  // item-config names for anything the statics do not know.
   function mystPagesFor(name, info) {
     mystPagesLoadOnce();
     const stat = (info && info.pages) || [];
@@ -262,7 +221,6 @@
     return tot ? [n, tot] : null;
   }
   function mystEsc(s) { return htmlEsc(s); }
-  // thousands separators for the big XP numbers in reward text (skips already-formatted ones)
   function mystFmtNums(s) { return String(s).replace(/\d{4,}/g, m => m.replace(/\B(?=(\d{3})+$)/g, ',')); }
   let mystByName = null;             // mystery name (lower) -> [varp, bit, pts]
   function mystLookup(nm) {
@@ -272,9 +230,6 @@
     }
     return mystByName[String(nm).toLowerCase()] || null;
   }
-  // Requirements line with live checks: skill tokens judged against lastSnap.skills, mystery
-  // prerequisites against the completion varps; unknown tokens and "(partial)" prereqs stay neutral.
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { ARCH_MYSTERIES, ARCH_MYST_INFO, ARCH_SHOP, ARCH_SHOP_HAVE, ARCH_SHOP_VBS, MYST_C31_VARP, MYST_PAGE_VARPS, WB_CAP, mystC31Found, mystDone, mystEsc, mystFmtNums, mystLookup, mystOpen, mystPageCount, mystPageFound, mystPagesFor, readVarbitValues });
 })();

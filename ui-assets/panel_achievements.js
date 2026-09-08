@@ -1,16 +1,11 @@
 // RuneToolsX panel: Achievements + Combat Mastery (two tabs sharing one cache fetch;
-// Combat Mastery = achievements with a combat_mastery_category).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
 (function () {
 
-  // Definitions come from the live cache (js5-57 via bridge.achievements()); each leaf carries
-  // op-14 requirements [{value, desc, varbits[]}], satisfied when the live varbit value >= target.
   achDefs = null;
   achState = null;
   let achFetching = false, achListSig = '', achFetchAt = 0;
   let achFSearch = '', achFStatus = 0;   // filter: 0 all / 1 complete / 2 in progress / 3 incomplete
   let cmFSearch = '', cmFStatus = 0, cmFTier = -1, cmFBoss = -1, cmListSig = '';
-  // combat_mastery_category id -> [tier name, tier index 0..5]
   const ACH_CM = { 13980: ['Easy', 0], 14042: ['Medium', 1], 14305: ['Hard', 2],
                    14313: ['Elite', 3], 14314: ['Master', 4], 14420: ['Grandmaster', 5] };
   const ACH_CM_TIERS = ['Easy', 'Medium', 'Hard', 'Elite', 'Master', 'Grandmaster'];
@@ -19,11 +14,6 @@
   // <=> cat 5619), not real account achievements. Excluded everywhere.
   const ACH_LEAGUES_CAT = 5619;
   function achIsLeagues(a) { return a.cat === ACH_LEAGUES_CAT || !(a.name && a.name.trim()); }
-  // Bit requirements, normalized into their two id spaces:
-  //   op 25 -> vbits [{vb, bit, n}]: bit BIT of VARBIT vb's VALUE
-  //   op 23 -> vpbits [{vp, bit, n}]: bit BIT of VARP vp
-  // Pre-split launcher builds merge both ops under "reqs23" where the op is unknowable; those
-  // are classified by whether the bit fits inside the id's varbit definition.
   function achBitReqs(a) {
     const vbits = [], vpbits = [];
     for (const q of (a.reqs25 || [])) vbits.push({ vb: q.vb, bit: q.bit, n: q.n || '' });
@@ -35,40 +25,18 @@
     }
     return { vbits: vbits, vpbits: vpbits };
   }
-  // One op-25 bit read out of a varbit's live VALUE; shared so the Achievements / Mysteries /
-  // Vars panels can never disagree on the bit indexing.
   function achBitFromVbVal(vbId, vbVal, bit) { return ((vbVal || 0) >>> bit) & 1; }
-  // op 13 varp reqs, normalized: [{vps, v, n}] - the SUM of the varps' live values >= v.
   function achVarpReqs(a) {
     const out = [];
     for (const q of (a.reqsvp || [])) out.push({ vps: q.vps || [q.vp], v: q.v, n: q.n || '' });
     return out;
   }
-  // Trackable = has any live-checkable requirement group.
   function achTrackable(a) {
-    // The game judges SEVEN requirement kinds (script19623): the five var-based ones, skill
-    // levels (op 12) and prerequisite achievements (op 11). All seven make an achievement
-    // trackable and all seven count toward completion.
     return !!((a.reqs && a.reqs.length) || (a.reqs23 && a.reqs23.length) ||
               (a.reqs25 && a.reqs25.length) || (a.reqsvpb && a.reqsvpb.length) ||
               (a.reqsvp && a.reqsvp.length) || (a.skills && a.skills.length) ||
               (a.prev && a.prev.length));
   }
-  // How many requirements must be satisfied. `needN` (cache op 30): [1] = ANY one (OR),
-  // [n]==reqs = ALL (AND); multi-element groups are summed. Absent -> AND all reqs.
-  // needN (op 30) applies to the VAR-BASED requirements only. Skill levels and prerequisite
-  // achievements are separate ALL-REQUIRED gates: the game has a dedicated ALLPREREQMET op,
-  // and pooling them produced nonsense like Bug Swatter III reading "1 of 3 (any one)" across
-  // [25 kills, completed-flag, Complete Bug Swatter II] - the truth is BS II required AND
-  // 1-of-2 on the counter/flag pair.
-  // How many of the VARIABLE requirements must be satisfied. needN comes from op 30
-  // (subreq_count), which counts subrequirements in general, so it can name a number this
-  // achievement has no variable requirements for: every skill milestone (Archaeology 5, 10,
-  // 110 and the rest of that family) carries subreq_count 1 while its only requirement is the
-  // op 12 skill gate. Comparing 0 satisfied against a required 1 left them permanently
-  // incomplete, and the prerequisite chain blocked every level above them too. Clamp to the
-  // pool that actually exists: with no variable requirements the judgement rests on the
-  // gates, which is how the game reads them.
   function achPool(a) {
     return (a.reqs || []).length + (a.reqs23 || []).length + (a.reqs25 || []).length +
            (a.reqsvpb || []).length + (a.reqsvp || []).length;
@@ -80,13 +48,10 @@
   }
   function achGatesTotal(a) { return (a.skills || []).length + (a.prev || []).length; }
 
-  // id -> achDef, and child-id -> parent achDef (from each parent's op-15 `subach` list).
   let _achDefById = null, _achLeafParent = null;
   function achDefById() { if (!_achDefById && achDefs) { _achDefById = {}; for (const a of achDefs) _achDefById[a.id] = a; } return _achDefById || {}; }
   function achLeafParent() { if (!_achLeafParent && achDefs) { _achLeafParent = {}; for (const p of achDefs) if (p.subach) for (const c of p.subach) _achLeafParent[c] = p; } return _achLeafParent || {}; }
 
-  // Custom dark dropdown (Ultralight renders native <select> popups OS-white). Returns a wrapper
-  // div with .setItems(items, value) + .getValue(); onChange(value) fires on pick.
   function mkDropdown(value, onChange) {
     const dd = document.createElement('div'); dd.className = 'pet-dd';
     const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'pet-dd-btn'; dd.appendChild(btn);
@@ -116,8 +81,6 @@
   }
   if (!window._petDDClose) { window._petDDClose = true; document.addEventListener('click', () => document.querySelectorAll('.pet-dd.open').forEach(x => x.classList.remove('open'))); }
 
-  // Combat task -> its BOSS parent. The six "Combat Mastery - <tier>" parents are tier rollups,
-  // so they are skipped: each task maps to its boss, not its tier bucket.
   let _cmLeafBoss = null;
   function cmLeafBoss() {
     if (!_cmLeafBoss && achDefs) {
@@ -156,7 +119,6 @@
         if (!achTrackable(a) || achIsLeagues(a)) continue;
         let sat = 0; const lines = [];
         for (const q of (a.reqs || [])) {
-          // multi-varbit requirement: sum the fields
           let cur = 0; const srcs = [];
           for (const vb of q.varbits) {
             const r = storageVbMap && storageVbMap[vb];
@@ -164,8 +126,6 @@
             srcs.push(r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb));
           }
           const okq = cur >= q.value; if (okq) sat++;
-          // Single unnamed counter req: the achievement's own description IS its text
-          // (that is how the game presents it - see the render-side comment on script10988).
           const lbl = q.desc || ((a.reqs.length === 1 && q.value > 1 && a.desc) ? a.desc : '');
           lines.push({ label: lbl, cur: cur, req: q.value, ok: okq, src: srcs.join(' + ') });
         }
@@ -187,9 +147,6 @@
           const okq = cur >= q.v; if (okq) sat++;
           lines.push({ label: q.n, cur: cur, req: q.v, ok: okq, src: 'varp ' + q.vps.join(' + ') });
         }
-        // op 12: skill-level requirements, judged live against the skill panel. These count
-        // toward achNeed, so skipping them here after they started counting there misjudged
-        // every mixed achievement as incomplete.
         const liveSk = (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
         let gatesOk = true;
         for (const sq of (a.skills || [])) {          // hard gate, never part of the n-of-M pool
@@ -199,27 +156,14 @@
           lines.push({ label: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
                        cur: cur, req: lvl, ok: okq, src: 'live skill ' + sid, gate: true });
         }
-        // op 11: prerequisite achievements. Judged in the fixed-point pass below, where the
-        // referenced achievement's own done state is known; recorded pending here.
         for (const pid2 of (a.prev || [])) lines.push({ label: '', cur: 0, req: 1, ok: false, src: 'achievement ' + pid2, prereqOf: pid2, gate: true });
-        // Completion must be PROVEN, never assumed. With no requirements to check, sat 0 >=
-        // need 0 marked the entry done, which (a) reported achievements we cannot evaluate as
-        // complete and (b) pre-empted the rollup pass below, since it skips anything already
-        // done - so a set like "Ardougne Set Tasks - Easy" read complete at 6/23 tasks.
         baseSat[a.id] = sat; baseGates[a.id] = gatesOk;
         const varNeed = achNeed(a);
         const provable = varNeed > 0 || achGatesTotal(a) > 0;
-        // Done now only when every judged piece passes AND nothing waits on a prereq (those
-        // resolve in the fixed point below).
         if (provable && (varNeed === 0 || sat >= varNeed) && gatesOk && !(a.prev && a.prev.length) && varNeed + (a.skills || []).length > 0)
           done.add(a.id);
         prog[a.id] = lines;
       }
-      // Fixed point over BOTH derived kinds: rollups (a `subach` list, complete when needN
-      // else all of the subs are) and prerequisite requirements (op 11, complete when the
-      // referenced achievement is done). Both can chain through each other, so they share
-      // one loop; the prereq lines' ok/cur update as they resolve so the tooltip shows the
-      // judged state, not the pending one.
       const defsById = achDefById();
       let chg = true, guard = 0;
       while (chg && guard++ < 24) {
@@ -240,15 +184,11 @@
               if (ok !== ln.ok) { ln.ok = ok; ln.cur = ok ? 1 : 0; }
               if (!ln.ok) prevOk = false;
             }
-            // Prereqs are an ALL gate on top of the var pool and the skill gate, mirroring
-            // the game's ALLPREREQMET; needN never spans them.
             const varNeed = achNeed(p);
             if (prevOk && baseGates[p.id] !== false && (varNeed === 0 || baseSat[p.id] >= varNeed)) { done.add(p.id); chg = true; }
           }
         }
       }
-      // Anything with no requirements of its own and no sub-achievements cannot be judged
-      // either way; callers should treat these as unknown rather than incomplete.
       const unknown = new Set();
       for (const a of achDefs) {
         if (done.has(a.id) || achIsLeagues(a)) continue;
@@ -283,8 +223,6 @@
       for (const q of (a.reqs || [])) {
         let cur = 0; for (const vb of q.varbits) cur += (readVb(vb, vp) || 0);
         const ok = cur >= q.value; if (ok) sat++;
-        // Same wording as the tooltip: an unnamed requirement says what it counts, not the
-        // name of an internal var (most carry no text in the cache at all).
         const dsc = q.desc || ((q.value > 1 && a.desc) ? a.desc
                     : (q.value > 1 ? 'Counted by the game' : 'Marked complete by the game'));
         reqs.push({ description: dsc, current: cur, target: q.value, complete: ok, varbits: q.varbits.slice() });
@@ -305,7 +243,6 @@
         const ok = cur >= q.v; if (ok) sat++;
         reqs.push({ description: q.n, current: cur, target: q.v, complete: ok, varbits: [], varps: q.vps.slice() });
       }
-      // op 12: skill levels: a hard ALL gate beside the var pool (never inside needN).
       const liveSk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
       let gatesOk = true;
       for (const sq of (a.skills || [])) {
@@ -315,7 +252,6 @@
         reqs.push({ description: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
                     current: cur, target: lvl, complete: ok, varbits: [], gate: true });
       }
-      // op 11: prerequisite achievements: the ALLPREREQMET gate, resolved below.
       for (const pid2 of (a.prev || [])) {
         reqs.push({ description: '', current: 0, target: 1, complete: false, varbits: [], prereqOf: pid2, gate: true });
       }
@@ -326,9 +262,6 @@
                  requirementsNeeded: need,
                  combatMasteryTier: tier ? tier[0] : null, requirements: reqs, _sat: sat, _gates: gatesOk });
     }
-    // Resolve prerequisite-achievement requirements. A prereq's completion can depend on
-    // other achievements in this same result, so iterate to a fixed point (chains are short;
-    // 8 passes covers any real depth) instead of trusting one walk's ordering.
     const byId = {}; for (const r of out) byId[r.id] = r;
     for (let pass = 0; pass < 8; pass++) {
       let changed = false;
@@ -371,16 +304,7 @@
       : need >= poolLines.length ? 'Do all of these:' : ('Do any ' + need + ' of these:'));
     if (lines.some(ln => ln.gate)) tip.push('Lines marked with a lock are required on top of that.');
     for (const ln of lines) {
-      // Many requirements carry NO description in the cache: the game's own requirement-text
-      // builder (script10988) reads the same per-requirement string and simply skips the line
-      // when it is empty, letting the achievement's description plus aggregate progress carry
-      // the meaning. There is no hidden text to recover, so fall back to an honest shape-based
-      // label: a target above 1 is a progress counter, a target of exactly 1 is the
-      // completion flag the server sets when the achievement is judged done.
       // Most requirements carry no text in the cache (the game's own builder, script 10988,
-      // skips the empty ones and lets the achievement description carry the meaning), so an
-      // unnamed line says what it is counting rather than naming an internal var: a target
-      // above 1 is a tally the game keeps, a target of 1 is the flag it sets when done.
       let head = ln.label;
       if (!head) head = ln.req > 1 ? (a.desc || 'Counted by the game') : 'Marked complete by the game';
       const count = ln.req > 1 ? ('  ' + ln.cur + ' of ' + ln.req) : '';
@@ -398,8 +322,6 @@
     top.appendChild(nm);
     if (tier) { const tb = document.createElement('span'); tb.className = 'ach-cm t' + tier[1]; tb.textContent = tier[0]; top.appendChild(tb); }
     info.appendChild(top);
-    // Progress chip: never show "3/3 but Incomplete". need >= 2 -> progress toward the requirement
-    // COUNT; need 1 -> the best single count's progress.
     let chip = null;
     if (!isDone) {
       if (need >= 2) {
@@ -493,12 +415,6 @@
     }
   }
 
-  // The "boss" of a combat task = the PARENT achievement listing it in `subach`; all combat
-  // tasks share one flat category, so the category is NOT the boss.
-  // Returns { parentId -> { name, n } } over the combat tasks that have a parent.
-  // Longest common prefix of a set of strings, trimmed at a word boundary and stripped of a
-  // leading verb. Used to NAME a group of orphan tasks from what they say: "Defeat Ivar, King
-  // of Bones, solo, using..." + "Defeat Ivar, King of Bones." -> "Ivar, King of Bones".
   function cmCommonName(descs) {
     if (!descs.length) return '';
     let pre = descs[0] || '';
@@ -508,22 +424,12 @@
       if (!pre) break;
     }
     pre = pre.replace(/^\s*(?:Defeat|Kill|Complete)\s+/i, '');
-    // Back off to the last clean boundary so a half-word is never shown.
     pre = pre.replace(/[\s,;:.\-]+$/, '');
     if (pre.length > 46) pre = pre.slice(0, 46).replace(/\s+\S*$/, '') + '...';
     return pre.trim();
   }
 
-  // Boss -> task count for the dropdown.
-  //
-  // NAMES COME FROM THE GAME. Enum 16086 is the achievement category/subcategory display-name
-  // table (verified in the live cache: 212 entries, keys in the cat/subcat id space, values
-  // like "Skilling Boss<br>    Croesus" and "    Nakatra" with markup expressing hierarchy).
-  // A task's boss group resolves as: its parent achievement's name; else enum 16086 for its
-  // subcategory (markup stripped, last hierarchy segment taken); else the common-prefix guess;
-  // else "Category #<id>" so two unnamed groups can never blur into one "Other". Groups that
-  // end up with the SAME name merge, so a parented "Nex" and a subcategory also named "Nex"
-  // are one dropdown entry instead of two.
+  // Enum 16086 = achievement category/subcategory display names (212 entries, keyed in the cat/subcat id space).
   let cmSubcatNames = null, cmSubcatLoading = false;
   function cmSubcatName(id) {
     if (id == null) return '';
@@ -542,7 +448,6 @@
     }
     let v = cmSubcatNames[String(id)];
     if (!v) return '';
-    // "Skilling Boss<br>    Croesus" -> "Croesus"; strip colour tags; trim indent.
     v = String(v).replace(/<col=[^>]*>|<\/col>/gi, '');
     const segs = v.split(/<br\s*\/?>/i).map(x => x.trim()).filter(Boolean);
     return segs.length ? segs[segs.length - 1] : v.trim();
@@ -571,7 +476,6 @@
               || (subcat != null ? ('Category #' + subcat) : 'Uncategorised');
       for (const a of list) addTo(nm, a);
     }
-    // Synthetic ids sit far above real achievement ids so they can never collide with one.
     let synth = 900000000;
     const m = {};
     for (const nm of Object.keys(byName).sort()) m[synth++] = byName[nm];
@@ -581,7 +485,6 @@
     const dd = $('cmBoss'); if (!dd || !dd.setItems) return;
     const m = cmBosses(); const ids = Object.keys(m).map(Number).sort((a, b) => m[a].name.localeCompare(m[b].name));
     // Signature on the NAMES, not the count: the enum 16086 load renames groups without
-    // changing how many there are, and a count-only guard kept the old labels.
     const sig = ids.map(i => m[i].name + ':' + m[i].n).join('|');
     if (dd.dataset.n === sig) return;
     dd.dataset.n = sig;
@@ -645,11 +548,7 @@
     const started = (a) => { const ls = st.prog[a.id] || []; for (const l of ls) if (l.cur > 0) return true; return false; };
     const inTier = (a) => { if (cmFTier < 0) return true; const t = achTier(a); return t && t[1] === cmFTier; };
     const lb = cmLeafBoss();
-    // Real boss parents match by parent id; the synthetic orphan groups (see cmBosses)
-    // carry their member ids instead, since those tasks have no parent to match on.
     const bosses = cmBosses();
-    // Every group carries its member ids now (parented and subcategory groups alike, so
-    // same-named ones could merge); the old parent-id match branch is gone with it.
     const synthSel = (cmFBoss >= 0 && bosses[cmFBoss] && bosses[cmFBoss].ids)
                       ? new Set(bosses[cmFBoss].ids) : null;
     const inBoss = (a) => {
@@ -695,7 +594,6 @@
     }
   }
 
-// ---- IIFE exports (generated by panel_iife.py: only names other files use) ----
 Object.assign(window, { achBitFromVbVal, achBitReqs, achDefById, achIsLeagues, achVarpReqs, fetchAchievements, mkDropdown, pluginAchievements });
 registerTab({ id: 'achievements', render: renderAchievements2, open: function () { achListSig = ''; fetchAchievements(true); } });
 registerTab({ id: 'combatmastery', render: renderCombatMastery, open: function () { cmListSig = ''; fetchAchievements(true); } });
