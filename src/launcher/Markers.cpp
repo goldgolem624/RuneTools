@@ -31,7 +31,6 @@ struct Account {
 };
 std::map<std::string, Account> g_accounts;   // keyed by sanitized account name (guarded by g_mu)
 
-// ---- keybind config (global, loaded once) ----
 Keybinds g_kb;
 bool     g_kb_loaded = false;
 // Per-pid arm state, guarded by g_mu. Absent = disarmed.
@@ -51,7 +50,6 @@ std::filesystem::path markers_dir() {
     return d;
 }
 
-// Same identity the bank/alerts caches use: keep [A-Za-z0-9-_], space -> '_', drop the rest.
 std::string sanitize_account(const std::string& name) {
     std::string out;
     for (char c : name) {
@@ -62,7 +60,6 @@ std::string sanitize_account(const std::string& name) {
     return out;
 }
 
-// pid -> account name, cached: account_for() runs every overlay frame and ReadJxEnv() walks the remote PEB.
 std::mutex                              g_acct_mu;
 std::map<std::uint32_t, std::string>    g_pid_acct;
 
@@ -80,7 +77,6 @@ std::string account_for(std::uint32_t pid) {
         auto it = env.find("JX_DISPLAY_NAME");
         if (it != env.end()) acct = sanitize_account(it->second);
     }
-    // Only cache a resolved name.
     if (!acct.empty()) {
         std::lock_guard<std::mutex> lk(g_acct_mu);
         g_pid_acct[pid] = acct;
@@ -88,7 +84,6 @@ std::string account_for(std::uint32_t pid) {
     return acct;
 }
 
-// Labels are stored in a tab-separated line, so a tab or newline would corrupt the file.
 std::string clean_label(const std::string& s) {
     std::string out; out.reserve(s.size());
     for (char c : s) {
@@ -325,7 +320,6 @@ bool Clear(std::uint32_t pid) {
 
 namespace {
 
-// RE'd projection (mirrors rtx::overlay::WorldToScreen): world-fine (x,y,z) -> client px.
 bool world_to_screen(const float* m, float vpX, float vpY, float vpW, float vpH,
                      float x, float y, float z, float& sx, float& sy) {
     float w = m[3] * x + m[11] * y + m[7] * z + m[15];
@@ -338,7 +332,6 @@ bool world_to_screen(const float* m, float vpX, float vpY, float vpW, float vpH,
     return true;
 }
 
-// Convex quad containment via same-sign edge cross products.
 bool point_in_quad(float px, float py, const float* qx, const float* qy) {
     auto cr = [](float ax, float ay, float bx, float by, float cx, float cy) {
         return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
@@ -352,7 +345,6 @@ bool point_in_quad(float px, float py, const float* qx, const float* qy) {
     return !(neg && pos);
 }
 
-// World tile under the cursor: the ground tile whose projected quad contains it (front-most on overlap).
 bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     HWND hwnd = reinterpret_cast<HWND>(rtx::launcher::dock::GameWindowHandle(pid));
     if (!hwnd || !IsWindow(hwnd)) return false;
@@ -375,7 +367,6 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, none, noOutline, noOutlineLocs, noGuides, f) || !f.ok)
         return false;
 
-    // gv_* is logical interface space, W/H backbuffer px; convert like PublishMarkers.
     float gvScale = 1.0f;
     if (f.gv_w > 0 && f.lc_w > 0) {
         const float s = W / (float)f.lc_w;
@@ -387,14 +378,12 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     float vpY = f.gv_h > 0 ? (float)f.gv_y * gvScale : 0.f; if (vpY < 0) vpY = 0; if (vpY + vpH > H) vpY = H - vpH;
 
     const float mx = curX, my = curY;
-    // Cursor outside the 3D viewport: not a tile pick.
     if (mx < vpX || my < vpY || mx > vpX + vpW || my > vpY + vpH) return false;
 
     const int R = 24;
     bool found = false; int bx = 0, by = 0; float bestFront = -1e18f;
     for (int tx = f.player_tx - R; tx <= f.player_tx + R; ++tx)
         for (int ty = f.player_ty - R; ty <= f.player_ty + R; ++ty) {
-            // per-tile corner heights so picks land on the same quads the overlay draws
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(tx, ty, f.plane, ch);
             auto cz = [&](int c) { return (ch[c] == -32768) ? f.player_z : 32.0f * (float)ch[c]; };
@@ -429,7 +418,6 @@ bool KeybindArmed(std::uint32_t pid) {
 
 bool MarkAtCursor(std::uint32_t pid, int action) {
     if (!KeybindArmed(pid)) return false;             // panel not open: key falls through to the game
-    // No identity = nowhere to store; say so rather than failing silently.
     if (account_for(pid).empty()) {
         rtx::overlay::Toast(pid, "Markers need a logged-in character - none detected yet");
         return false;

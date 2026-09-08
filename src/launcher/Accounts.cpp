@@ -42,7 +42,6 @@ std::filesystem::path accounts_path() {
     return L"runetoolsx-accounts.dat";
 }
 
-// ---- capture suppression ----
 // A removed account is kept out of auto-capture until its client is gone (PruneCaptureSuppressions).
 // Ids are stored hashed so the list does not leak account identifiers next to the vault.
 std::filesystem::path suppress_path() {

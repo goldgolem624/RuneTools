@@ -49,8 +49,6 @@ namespace rtx::reader {
 
 namespace {
 
-// ---- Patterns + offsets baked from static analysis of rs2client.exe ----
-//
 // BUILD HISTORY. 940..949-5: one MainData layout. 950-1 (2026-09-07): MainData grew by 0x40
 // between +0x550 and +0x18D18, so every MainData-relative offset >= +0x18D18 moved +0x40
 // (0x19F68 -> 0x19FA8, 0x36040 -> 0x36080, 0x53588 -> 0x535C8); inner object layouts unchanged.
@@ -86,7 +84,6 @@ constexpr int           kWorkbenchContainerId = 1008; // Archaeologist's workben
 constexpr int           kMaxContainers   = 64;
 constexpr int           kMaxBankSlots    = 8192;
 
-// Entry count of [cstart,cend); 0 when not a whole number of entries (mid-write) or absurdly large.
 static int container_count(std::uint64_t cstart, std::uint64_t cend) {
     if (cend <= cstart || (cend - cstart) % kContainerStride) return 0;
     std::uint64_t n = (cend - cstart) / kContainerStride;
@@ -111,7 +108,6 @@ const std::uint8_t  kTickIncBytes[] =
 const std::size_t   kTickIncLen     = sizeof(kTickIncBytes);
 constexpr std::uint32_t kTickCounterOff = 0xDBF0;  // u32 at owner + this
 
-// ---- Win32 helpers ----
 
 std::string last_error_msg(DWORD err) {
     char* buf = nullptr;
@@ -200,7 +196,6 @@ std::string read_jagstring(HANDLE h, std::uint64_t str, std::uint64_t max_len = 
     return out;
 }
 
-// Byte-pattern scan of the module; returns the RVA of every match.
 std::vector<std::uint64_t> scan_text(HANDLE h, std::uint64_t mod_base,
                                      std::uint64_t mod_size,
                                      const std::uint8_t* needle, std::size_t n) {
@@ -276,7 +271,6 @@ std::optional<std::uint64_t> decode_preceding_mov_rcx_rip(
     return std::nullopt;
 }
 
-// Read VS_VERSIONINFO ProductVersion from the target's exe file path.
 std::string read_client_version(HANDLE h) {
     wchar_t path[MAX_PATH] = {};
     DWORD n = MAX_PATH;
@@ -309,7 +303,6 @@ std::string read_client_version(HANDLE h) {
     return v;
 }
 
-// Read an environment variable from the target's PEB. Empty for legacy accounts and pre-init alike.
 std::string read_target_env(HANDLE h, const wchar_t* var) {
     using NtQIP_t = NTSTATUS (NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
     static auto NtQIP = reinterpret_cast<NtQIP_t>(GetProcAddress(
@@ -409,7 +402,6 @@ HostInfo read_host_info() {
         while (!s_cpu.empty() && (s_cpu.back() == ' ' || s_cpu.back() == '\t'))
             s_cpu.pop_back();
 
-        // First adapter that is not the software fallback or RDP adapter.
         DISPLAY_DEVICEW dd{}; dd.cb = sizeof(dd);
         for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i) {
             std::wstring name = dd.DeviceString;
@@ -445,7 +437,6 @@ HostInfo read_host_info() {
     return hi;
 }
 
-// ---- Per-PID cached attachment state ----
 
 struct State {
     DWORD          pid              = 0;
@@ -455,18 +446,14 @@ struct State {
     std::string    client_version;
     std::string    display_name;
 
-    // Resolved global addresses (absolute VAs in the target).
     std::uint64_t  main_global_va   = 0;
     std::uint64_t  tick_owner_va    = 0;
 
-    // Tick tracking, refreshed by the fast-poll thread (QPC, ~1 ms) so inter-tick dt is ms-accurate.
     std::uint32_t  last_tick_value     = 0;
     double         last_tick_qpc_ms    = 0.0;
     double         last_dt_ms          = 0.0;
     std::uint32_t  current_tick        = 0;
 
-    // CPU% sampling (kernel+user 100ns ticks / wall / cores). Min-dt guard needed: concurrent pollers
-    // otherwise shrink the window until idle processes round to 0%.
     ULONGLONG      cpu_sample_wall_ms     = 0;
     ULONGLONG      cpu_sample_total_100ns = 0;
     double         cached_cpu_pct         = 0.0;
@@ -512,8 +499,6 @@ struct State {
 
 std::mutex                              g_mu;
 std::unordered_map<DWORD, State>        g_states;
-// Previous local-player pos per pid. Guarded by g_pinfo_mu: touched from panel_loop, the UI thread
-// (ReadAsync cold path) and SampleAll eviction.
 std::unordered_map<DWORD, std::pair<float, float>> g_pinfo_prevpos;
 std::mutex                                         g_pinfo_mu;
 
@@ -522,9 +507,6 @@ void release(State& s) {
     s = State{};
 }
 
-// Snapshot of a client's read targets with a DUPLICATED handle, taken under a brief g_mu hold so
-// builders never hold g_mu across RPM. SampleAll is the only closer of the original; the dup
-// outlives it and reads just fail.
 struct ProcSnap {
     HANDLE        h = nullptr;       // duplicated handle, closed in the dtor
     std::uint64_t mgva = 0;          // main_global_va: address of the MainData root pointer
@@ -571,7 +553,6 @@ std::vector<DWORD> find_all_pids(const wchar_t* name) {
     return out;
 }
 
-// Returns 0 if the pattern is absent (process not fully image-mapped yet).
 std::uint64_t resolve_main_global(HANDLE h, std::uint64_t base, std::uint64_t size) {
     auto anchors = scan_text(h, base, size, kMainAnchorBytes, kMainAnchorLen);
     for (auto rva : anchors) {
@@ -583,8 +564,6 @@ std::uint64_t resolve_main_global(HANDLE h, std::uint64_t base, std::uint64_t si
     return 0;
 }
 
-// The increment sequence is unique in .text, so the first hit is taken; the global may still be 0
-// (BSS) before engine init.
 std::uint64_t resolve_tick_owner_global(HANDLE h,
                                         std::uint64_t base, std::uint64_t size) {
     auto incs = scan_text(h, base, size, kTickIncBytes, kTickIncLen);
@@ -596,7 +575,6 @@ std::uint64_t resolve_tick_owner_global(HANDLE h,
     return 0;
 }
 
-// Globals may stay 0 here if the engine is not initialised yet; sample_one() retries each frame.
 bool attach_state(State& s, DWORD pid) {
     HANDLE h = OpenProcess(
         PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
@@ -636,7 +614,6 @@ bool attach_state(State& s, DWORD pid) {
     return true;
 }
 
-// ---- 1 ms tick poller ----
 
 LARGE_INTEGER     g_qpc_freq{};
 std::atomic<bool> g_fast_started{ false };
@@ -648,11 +625,8 @@ double qpc_now_ms() {
 }
 
 void fast_tick_loop() {
-    // Process-wide 1 ms timer resolution so Sleep(5) is honoured; left raised for the launcher's lifetime.
     timeBeginPeriod(1);
 
-    // Plan snapshotted under g_mu, RPM outside it, results written back under it. `proc` is the
-    // identity for the write-back guard; `dup` survives SampleAll closing the original mid-read.
     struct Probe  { DWORD pid; HANDLE proc; HANDLE dup; std::uint64_t owner_va;
                     std::uint32_t last_val; double last_qpc_ms; };
     struct Result { DWORD pid; HANDLE proc; std::uint32_t tick;
@@ -675,7 +649,6 @@ void fast_tick_loop() {
             }
         }
 
-        // Only this thread writes the tick fields, so the snapshot's last_* stay authoritative.
         results.clear();
         results.reserve(probes.size());
         for (const auto& p : probes) {
@@ -691,7 +664,6 @@ void fast_tick_loop() {
         }
         for (auto& p : probes) { if (p.dup) CloseHandle(p.dup); p.dup = nullptr; }
 
-        // Skip anything evicted or re-attached (different handle) during the read.
         {
             std::lock_guard<std::mutex> lk(g_mu);
             for (const auto& r : results) {
@@ -722,7 +694,6 @@ void ensure_fast_thread_started() {
     std::thread(fast_tick_loop).detach();
 }
 
-// Fill a Snapshot from the live State. Caller holds g_mu.
 Snapshot sample_one(State& s) {
     Snapshot snap;
     snap.pid            = s.pid;
@@ -804,11 +775,9 @@ Snapshot sample_one(State& s) {
                 }
                 if (!name.empty()) s.character = name;
             }
-            // JX_DISPLAY_NAME is set before the bank can open; the memory name populates lazily.
             const std::string& bank_key =
                 !s.display_name.empty() ? s.display_name : s.character;
 
-            // Storage containers exist in memory only while their window is open; one walk feeds all.
             bool found_bank = false, found_metal = false, found_mats = false, found_group = false, found_bait = false,
                  found_wb = false;
             auto cmgr = rpm<std::uint64_t>(s.proc, *root + kOffInvData);
@@ -930,7 +899,6 @@ Snapshot sample_one(State& s) {
         snap.priv_bytes_mb  = (long long)(pmc.PrivateUsage      / (1024 * 1024));
     }
 
-    // CPU% recomputed only when >= 500 ms have passed since the last baseline.
     FILETIME ftC, ftE, ftK, ftU;
     if (GetProcessTimes(s.proc, &ftC, &ftE, &ftK, &ftU)) {
         ULONGLONG total = ft_to_100ns(ftK) + ft_to_100ns(ftU);
@@ -968,7 +936,6 @@ Snapshot sample_one(State& s) {
 std::vector<Snapshot> SampleAll() {
     ensure_fast_thread_started();
 
-    // Process-table snapshot can take several ms; keep it outside g_mu.
     auto live_pids = find_all_pids(L"rs2client.exe");
     std::unordered_set<DWORD> live(live_pids.begin(), live_pids.end());
 
@@ -987,7 +954,6 @@ std::vector<Snapshot> SampleAll() {
         } else ++it;
     }
 
-    // Retry anything not ready at attach time (display name, the two static globals).
     for (auto& [pid, s] : g_states) {
         if (!s.proc) continue;
         if (s.display_name.empty()) {
@@ -1045,8 +1011,6 @@ std::string json_escape(const std::string& v) {
 }  // namespace
 
 namespace {
-// Samples JSON is built on a background thread and served from this cache: the UI thread must stay
-// free to pump the embedded client's activation messages or its focus handshake and render stall.
 std::mutex        s_samples_mu;
 std::string       s_samples_json;
 std::atomic<bool> s_sampler_started{false};
@@ -1054,7 +1018,6 @@ std::atomic<bool> s_sampler_started{false};
 std::string BuildSamplesJson() {
     auto snaps = SampleAll();
     std::string out = "[";
-    // Must hold the whole per-client record: snprintf truncation would yield malformed JSON.
     char buf[1536];
     for (size_t i = 0; i < snaps.size(); ++i) {
         const auto& s = snaps[i];
@@ -1110,7 +1073,6 @@ std::string BuildSamplesJson() {
     return out;
 }
 
-// ---- packet chat log (companion netprobe chat ring -> per-pid session log) --------
 // message_game (op 0x21 on 950-1, 0x15 before) wire: [type: 1B smart if <0x80, else 2B BE + 0x8000]
 // [u32][flags:1]; flags&1 -> NUL sender, flags&2 -> NUL channel name; then NUL message text.
 struct ChatPkt {
@@ -1126,7 +1088,6 @@ struct ChatAcc { std::uint64_t drained = 0; std::uint64_t seen = 0; bool hook = 
                  std::deque<ChatPkt> log; };
 std::unordered_map<std::uint32_t, ChatAcc> s_chatAcc;
 
-// Well-formed UTF-8 passes through; anything else is escaped as latin-1.
 std::string chat_pkt_escape(const std::uint8_t* s, std::uint32_t n) {
     std::string o; o.reserve(n + 8);
     for (std::uint32_t i = 0; i < n; ++i) {
@@ -1159,11 +1120,9 @@ void drain_chat_rings() {
         rtx::netprobe::MakeSectionName(pid, name);
         HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
         if (!h) continue;
-        // Map the whole section (size 0): a pre-v3 companion's section is smaller.
         auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
             MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0));
         if (!sh) { CloseHandle(h); continue; }
-        // Section name is same-user pre-creatable: verify the view is v3-sized before reading it.
         MEMORY_BASIC_INFORMATION mbi{};
         if (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 ||
             mbi.RegionSize < sizeof(rtx::netprobe::Share)) {
@@ -1227,8 +1186,6 @@ void sample_loop() {
     }
 }
 
-// ---- generic off-thread per-panel reads ------------------------------------
-// UI thread registers (key -> builder) and gets the last cached value; panel_loop keeps polled keys fresh.
 struct AsyncEntry {
     std::function<std::string()>          build;
     std::string                           value;
@@ -1247,7 +1204,6 @@ void panel_loop() {
             std::lock_guard<std::mutex> lk(s_async_mu);
             auto now = steady_clock::now();
             for (auto it = s_async.begin(); it != s_async.end(); ) {
-                // 5 s: above the slowest panel poll throttle (~2 s), so a shown tab never goes cold.
                 if (now - it->second.last_used > seconds(5)) { it = s_async.erase(it); continue; }
                 jobs.emplace_back(it->first, it->second.build);
                 ++it;
@@ -1273,7 +1229,6 @@ void ensure_sampler_started() {
 }
 }  // namespace
 
-// Serve a per-panel read from the background cache. `build` runs on the background thread.
 std::string ReadAsync(const std::string& key, std::function<std::string()> build) {
     ensure_sampler_started();
     {
@@ -1283,7 +1238,6 @@ std::string ReadAsync(const std::string& key, std::function<std::string()> build
         e.last_used = std::chrono::steady_clock::now();
         if (e.has_value) return e.value;
     }
-    // Cold: build once inline so panels that treat "no data" as a real state do not flash wrong.
     std::string v;
     try { v = build(); }
     catch (const std::exception& ex) { rtx::log::Launcher("[reader] " + key + ": " + ex.what()); v.clear(); }
@@ -1300,14 +1254,12 @@ std::string SamplesJson() {
         std::lock_guard<std::mutex> lk(s_samples_mu);
         if (!s_samples_json.empty()) return s_samples_json;
     }
-    // First call before the background thread has produced anything: build once.
     std::string j = BuildSamplesJson();
     std::lock_guard<std::mutex> lk(s_samples_mu);
     if (s_samples_json.empty()) s_samples_json = j;
     return s_samples_json;
 }
 
-// Append one filled slot as [slot,item_id,stack,"name"]. `count` doubles as the comma guard.
 static void append_slot_json(std::string& out, std::size_t slot, int iid, int stack, int& count) {
     char buf[96];
     if (count) out.push_back(',');
@@ -1318,8 +1270,6 @@ static void append_slot_json(std::string& out, std::size_t slot, int iid, int st
     ++count;
 }
 
-// Live slots while open, else the per-character disk cache under `cacheKey`, else the in-memory copy.
-//   {"open":bool,"character":"..","cached_at":sec,"items":[[slot,id,stack,"name"],..],"count":N}
 static std::string cached_container_json(std::uint32_t pid, const char* cacheKey,
                                          std::vector<BankSlot> State::*slotsM,
                                          long long State::*cachedAtM, bool State::*openM) {
@@ -1329,7 +1279,6 @@ static std::string cached_container_json(std::uint32_t pid, const char* cacheKey
     std::vector<BankSlot> mem_slots;
     long long             mem_cached_at = 0;
 
-    // Copy out under a brief lock; JSON build and disk read happen without g_mu.
     {
         std::lock_guard<std::mutex> lk(g_mu);
         auto it = g_states.find((DWORD)pid);
@@ -1381,19 +1330,15 @@ static std::string cached_container_json(std::uint32_t pid, const char* cacheKey
     return out;
 }
 
-// Bank (container 95).
 std::string BankJson(std::uint32_t pid) {
     return cached_container_json(pid, "bank", &State::bank_slots, &State::bank_cached_at, &State::bank_open);
 }
-// Metal bank (container 858).
 std::string MetalBankJson(std::uint32_t pid) {
     return cached_container_json(pid, "metalbank", &State::metalbank_slots, &State::metalbank_cached_at, &State::metalbank_open);
 }
-// Archaeology material storage (container 885).
 std::string MaterialsJson(std::uint32_t pid) {
     return cached_container_json(pid, "materials", &State::materials_slots, &State::materials_cached_at, &State::materials_open);
 }
-// Anachronia bait box (container 867).
 std::string BaitBoxJson(std::uint32_t pid) {
     return cached_container_json(pid, "baitbox", &State::baitbox_slots, &State::baitbox_cached_at, &State::baitbox_open);
 }
@@ -1401,12 +1346,10 @@ std::string BaitBoxJson(std::uint32_t pid) {
 std::string WorkbenchJson(std::uint32_t pid) {
     return cached_container_json(pid, "workbench", &State::workbench_slots, &State::workbench_cached_at, &State::workbench_open);
 }
-// Group Ironman shared bank (container 963).
 std::string GroupBankJson(std::uint32_t pid) {
     return cached_container_json(pid, "groupbank", &State::groupbank_slots, &State::groupbank_cached_at, &State::groupbank_open);
 }
 
-// Emit {"present":bool,"count":N,"cap":N,"items":[[slot,item_id,stack,"name"],..]} for one container.
 static std::string container_items_json(HANDLE h, std::uint64_t root, int container_id) {
     const char* kAbsent = "{\"present\":false,\"count\":0,\"cap\":0,\"items\":[]}";
     auto cmgr = rpm<std::uint64_t>(h, root + kOffInvData);
@@ -1453,7 +1396,6 @@ static std::string container_json_for(std::uint32_t pid, int container_id) {
 std::string InventoryJson(std::uint32_t pid) { return container_json_for(pid, 93); }
 std::string ContainerItemsJson(std::uint32_t pid, int container_id) { return container_json_for(pid, container_id); }
 
-// Every container live in the manager: id + filled count + capacity.
 std::string OpenContainersJson(std::uint32_t pid) {
     const char* kEmpty = "{\"containers\":[]}";
     auto ps = snap_proc(pid);
@@ -1498,8 +1440,6 @@ std::string OpenContainersJson(std::uint32_t pid) {
 }
 
 // POF pens (containers 851-857): slot item = species; inv-var index 2 & 0x1F = trait (enum 14340).
-// Present only while the pen UI is open; cached to disk per account as kind "pen<id>".
-//   {"pens":[{"id":N,"open":bool,"cached_at":sec,"animals":[[item,trait,"species"],..]},..]}
 std::string PofJson(std::uint32_t pid) {
     const char* kEmpty = "{\"pens\":[]}";
     std::string key;
@@ -1603,7 +1543,6 @@ std::string PofJson(std::uint32_t pid) {
 }
 
 // Per-slot Extra_ints: entry+0x30 -> slot*0x38 -> {ptrArr@+0x10, count@+0x18}; ptr = key@+0, value@+8.
-// Returns {"present":bool,"key":[v@key0..15],"pos":[v in pointer order]}.
 std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, int slot_want) {
     const char* kAbsent = "{\"present\":false,\"key\":[],\"pos\":[]}";
     auto ps = snap_proc(pid);
@@ -1656,7 +1595,6 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, 
 }
 std::string EquipmentJson(std::uint32_t pid) { return container_json_for(pid, 94); }
 
-// false = map unreadable; true with out = 0 = healthy map, varp unset (engine default).
 static bool read_varp_found(HANDLE h, std::uint64_t root, int varp_id, int& out) {
     out = 0;
     if (varp_id < 0) return false;
@@ -1698,7 +1636,6 @@ static bool read_eastl_string(HANDLE h, std::uint64_t strbase, std::string& out)
         if (src <= 0x10000 || src > 0x00007FFFFFFFFFFFull || sz == 0 || sz > 0x2000) return false;
         size = (std::size_t)std::min<std::uint64_t>(sz, kVarcStrCap);
     } else {                                                  // SSO
-        // Accept length 1..22; flag==0 (full 23 chars) is indistinguishable from a zeroed int node.
         if (flag == 0 || flag > 0x16) return false;
         size = (std::size_t)(0x17 - flag);
         src  = strbase;
@@ -1709,7 +1646,6 @@ static bool read_eastl_string(HANDLE h, std::uint64_t strbase, std::string& out)
     return true;
 }
 
-// Varc hashmap node for `varc_id` (layout at kOffVarcStore); nullopt when absent or the map looks stale.
 static std::optional<std::uint64_t> varc_node(HANDLE h, std::uint64_t client, int varc_id) {
     if (varc_id < 0 || client <= 0x10000) return std::nullopt;
     std::uint64_t store = rpm<std::uint64_t>(h, client + kOffVarcStore).value_or(0);
@@ -1731,7 +1667,6 @@ static int read_varc(HANDLE h, std::uint64_t client, int varc_id) {
     return n ? rpm<std::int32_t>(h, *n + 0x8).value_or(0) : 0;
 }
 
-// Like read_varc but distinguishes a present value of 0 from "absent".
 static bool read_varc_found(HANDLE h, std::uint64_t client, int varc_id, int& out_val) {
     out_val = 0;
     auto n = varc_node(h, client, varc_id);
@@ -1748,8 +1683,6 @@ static bool read_varc_str(HANDLE h, std::uint64_t client, int varc_id, std::stri
     return n ? read_eastl_string(h, *n + 0x8, out) : false;
 }
 
-// Live morph state for a CSV of loc base ids. Per id: {"id","vb"/"vp" (selector, -1 for the other),
-// "value" (-1 unreadable),"child" (variant loc, -1 hidden),"name"}; no morph -> {"id":N,"static":1}.
 std::string LocMorphsJson(std::uint32_t pid, const std::string& ids_csv) {
     auto ps = snap_proc(pid);
     if (!ps) return "[]";
@@ -1855,7 +1788,6 @@ std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
-// ---- membership tier ---------------------------------------------------------------------
 // Member is engine state, not a var: PLAYERMEMBER op = acct = *(MainData+0x19FA8); *(u8*)(acct+0x28) != 0.
 // Premier = varbit 50572 (varp 10287 bit 5), ANDed with member as script15757 does (legacy varp 12864 reads 0).
 // idleLogoutSeconds is derived (server-enforced): 5 min base, +5 members, +5 Jagex account, cap 15; out of combat only.
@@ -1864,8 +1796,6 @@ constexpr std::uint32_t kOffAcctIsMember = 0x28;      // u8, nonzero = members
 constexpr std::uint32_t kOffAcctExpiry   = 0x30;      // u64, raw value LOBBY_MEMBERSHIP divides down
 constexpr int           kPremierVarbit   = 50572;
 
-// Idle time in the client's ms domain: time since input was last flushed to the server. Pointer
-// counts even when the window is inactive (global low-level hook); keys only while active.
 constexpr std::uint32_t kOffInputReporter = 0x198B0;  // MainData -> input reporter
 constexpr std::uint32_t kOffRepPointerA   = 0x28;     // u64 ms, last pointer flush (recorder A)
 constexpr std::uint32_t kOffRepPointerB   = 0x50;     // u64 ms, last pointer flush (recorder B)
@@ -1897,7 +1827,6 @@ std::string MembershipJson(std::uint32_t pid) {
     int jagex = read_target_env(h, L"JX_DISPLAY_NAME").empty() ? 0 : 1;
     int budget = 300 + (member ? 300 : 0) + (jagex ? 300 : 0);
 
-    // -1 when the reporter is not up yet.
     long long idleMs = -1;
     std::uint64_t rep = rpm<std::uint64_t>(h, *root + kOffInputReporter).value_or(0);
     if (rep > 0x10000 && rep <= 0x00007FFFFFFFFFFFull) {
@@ -1922,7 +1851,6 @@ std::string MembershipJson(std::uint32_t pid) {
 }
 
 // Every set varp from the MainData+0x36080 hashmap, keyed "4:<id>" (scope 4 = varp). Direct poll stays
-// current for varps the server updates but no script re-reads (the companion observer shows those stale).
 std::string VarpsDumpAllJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";
@@ -1995,7 +1923,6 @@ std::string VarcsDumpAllJson(std::uint32_t pid) {
     return out;
 }
 
-// ---- Var domain stores ---------------------------------------------------------------------
 // Domain stores bound by the script context binder (950-1 fn 0x14008df60):
 //   0 player       MainData+0x19fb8           (varp manager; hashmap at +0x36080)
 //   2 client       [MainData+0x19920]+0x7620   (varc object; hashmap at +0x7630)
@@ -2014,7 +1941,6 @@ static bool dom_table(HANDLE h, std::uint64_t table, int& div, int& count) {
     return ba > 0x10000 && div > 0 && div <= 131072 && count >= 0 && count <= div * 8;
 }
 
-// Emits "<domain>:<id>":value; longs as strings, strings as "(string)".
 static void dom_dump(HANDLE h, std::uint64_t table, int domain, std::string& out, bool& first) {
     int div = 0, count = 0;
     if (!dom_table(h, table, div, count)) return;
@@ -2126,8 +2052,6 @@ std::string VarcLongsJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
-// Selected varcs read as i32; int-typed varcs must not go through the i64 path (the union's
-// high 4 bytes are garbage).
 std::string VarcIntsJson(std::uint32_t pid, const std::string& ids_csv) {
     std::unordered_set<int> want;
     std::size_t i = 0;
@@ -2175,7 +2099,6 @@ std::string VarcIntsJson(std::uint32_t pid, const std::string& ids_csv) {
 }
 
 // Long-typed varps (e.g. vp137, vp140, vp13483, vp9458): full i64 from the node's value union
-// at +0x8, emitted as JSON strings.
 std::string VarpsLongJson(std::uint32_t pid, const std::string& ids_csv) {
     std::unordered_set<int> want;
     std::size_t i = 0;
@@ -2214,8 +2137,6 @@ std::string VarpsLongJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
-// JSON string body (no quotes): printable ASCII kept, " and \ escaped, everything else becomes a
-// space so a stray high byte cannot null the whole JSON in JSStringCreateWithUTF8CString.
 static void append_json_str(std::string& out, const std::string& s) {
     for (unsigned char ch : s) {
         if (ch == '"' || ch == '\\') { out += '\\'; out += (char)ch; }
@@ -2224,7 +2145,6 @@ static void append_json_str(std::string& out, const std::string& s) {
     }
 }
 
-// Selected varc-strings: {"<id>":"<string>",..}; absent or non-string ids are omitted
 // (e.g. varc 2251 = interface-1177 hover tooltip, 1691 = mouseover text).
 std::string VarcStringsJson(std::uint32_t pid, const std::string& ids_csv) {
     auto ps = snap_proc(pid);
@@ -2251,7 +2171,6 @@ std::string VarcStringsJson(std::uint32_t pid, const std::string& ids_csv) {
 }
 
 // All varc-strings from the global client-var hashmap (store+0x7630), keyed "2:<id>". The node has no
-// type tag, so every value union is parsed as an EASTL string and kept only if it validates and looks textual.
 std::string VarcStringsDumpAllJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";
@@ -2275,7 +2194,6 @@ std::string VarcStringsDumpAllJson(std::uint32_t pid) {
             int id = rpm<std::int32_t>(h, node).value_or(-1);
             std::uint64_t next = rpm<std::uint64_t>(h, node + kVarNodeNext).value_or(0);
             if (id >= 0 && id < 100000 && read_eastl_string(h, node + 0x8, val) && !val.empty()) {
-                // require mostly-printable content so int nodes whose union happens to parse are dropped
                 std::size_t printable = 0;
                 for (unsigned char c : val) if (c == '\t' || c == '\n' || c == '\r' || (c >= 0x20 && c <= 0x7e)) ++printable;
                 if (printable * 100 >= val.size() * 80) {
@@ -2292,8 +2210,6 @@ std::string VarcStringsDumpAllJson(std::uint32_t pid) {
     return out;
 }
 
-// Every-scope var snapshot from the companion's var section, keyed "<scope>:<id>".
-// {} when the companion isn't loaded or the watcher isn't enabled.
 std::string VarsDumpJson(std::uint32_t pid) {
     wchar_t name[64];
     rtx::varc::MakeSectionName(pid, name);
@@ -2342,7 +2258,6 @@ std::string VarsDumpJson(std::uint32_t pid) {
     return out;
 }
 
-// Toggle the in-process var observer via the shared section's enable flag; false if no companion section.
 bool VarsWatch(std::uint32_t pid, bool on) {
     wchar_t name[64];
     rtx::varc::MakeSectionName(pid, name);
@@ -2358,7 +2273,6 @@ bool VarsWatch(std::uint32_t pid, bool on) {
     return ok;
 }
 
-// ---- server -> client packet protocol -----------------------------------------
 // Inbound opcode descriptor table (base at rs2client+0xC70BB0, opcodes 0x00..0xDE on 950-1). Entry =
 // ptr to 0x50-byte descriptor {+0x00 int opcode, +0x04 int length, +0x10 vtable (handler at vtable+0x10)};
 // length >=0 fixed, -1 var-byte, -2 var-short. Resolution is RVA-first, then a structural scan
@@ -2372,7 +2286,6 @@ constexpr std::uint64_t kDescLenOff    = 0x04;
 constexpr std::uint64_t kDescVtblOff   = 0x10;
 constexpr std::uint64_t kVtblHandlerOff = 0x10;
 
-// desc[op].opcode == op, sampled at a spread of opcodes.
 bool optable_valid(HANDLE h, std::uint64_t tbl) {
     if (!tbl) return false;
     static const int probe[] = {0, 1, 2, 0x2A, 0x5C, 0x83, 0xC0, kOpMax};
@@ -2385,7 +2298,6 @@ bool optable_valid(HANDLE h, std::uint64_t tbl) {
     return true;
 }
 
-// RVA global first, then a sweep of the image for any in-module qword that satisfies optable_valid.
 std::uint64_t resolve_optable(HANDLE h, std::uint64_t base, std::uint64_t size) {
     if (auto t = rpm<std::uint64_t>(h, base + kOpTableRva); t && optable_valid(h, *t))
         return *t;
@@ -2406,7 +2318,6 @@ std::uint64_t resolve_optable(HANDLE h, std::uint64_t base, std::uint64_t size) 
 }
 }  // namespace
 
-// Server->client opcode enumeration read live from the client; {"ok":false,...} when unresolvable.
 std::string ServerPacketsJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return "{\"ok\":false,\"reason\":\"not attached\"}";
@@ -2448,8 +2359,6 @@ std::string ServerPacketsJson(std::uint32_t pid) {
     return out;
 }
 
-// Decoded-packet feed from the companion's netprobe ring: records with seq > `since` plus meta.
-// A fast burst can lap the ring between polls (meta.seen vs the returned span shows the gap).
 std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
     wchar_t name[64];
     rtx::netprobe::MakeSectionName(pid, name);
@@ -2458,8 +2367,6 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
     auto* sh = reinterpret_cast<const rtx::netprobe::Share*>(
         MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0));
     if (!sh) { CloseHandle(h); return "{\"ok\":false,\"reason\":\"map failed\"}"; }
-    // The section name is pre-creatable by the same user: never walk recs[] unless the view is
-    // at least the v2 prefix (up to the chat ring offset).
     MEMORY_BASIC_INFORMATION mbi{};
     if (VirtualQuery(sh, &mbi, sizeof(mbi)) == 0 ||
         mbi.RegionSize < offsetof(rtx::netprobe::Share, chatWritten)) {
@@ -2467,7 +2374,6 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
         return "{\"ok\":false,\"reason\":\"share undersized\"}";
     }
     std::string out;
-    // version >= 2: the diag ring is a stable prefix (v3 appended the chat ring after it).
     if (sh->magic != rtx::netprobe::kMagic || sh->version < 2) {
         out = "{\"ok\":false,\"reason\":\"share magic/version mismatch\"}";
     } else {
@@ -2511,8 +2417,6 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
     return out;
 }
 
-// Arm the companion's framer capture: `enable` is a GetTickCount64 stamp the companion decays
-// (~3s), so the panel re-arms each poll.
 bool ServerPacketFeedEnable(std::uint32_t pid, bool on) {
     wchar_t name[64];
     rtx::netprobe::MakeSectionName(pid, name);
@@ -2528,8 +2432,6 @@ bool ServerPacketFeedEnable(std::uint32_t pid, bool on) {
     return ok;
 }
 
-// ---- event channel (companion EventShare ring -> decoded JSON) -------------------
-// Field layouts: docs/server_packets_handler_map.md. Undocumented opcodes are emitted as kind "raw".
 namespace {
 const char* const kEvSkills[29] = { "Attack", "Defence", "Strength", "Constitution", "Ranged",
     "Prayer", "Magic", "Cooking", "Woodcutting", "Fletching", "Fishing", "Firemaking", "Crafting",
@@ -2545,7 +2447,6 @@ std::uint32_t ev_u32be(const std::uint8_t* b) {
     return ((std::uint32_t)b[0] << 24) | ((std::uint32_t)b[1] << 16) | ((std::uint32_t)b[2] << 8) | b[3];
 }
 
-// Kind-specific fields. `n` = kept bytes, `len` = true wire length. false = fall back to raw.
 bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, int len) {
     char t[128];
     switch (op) {
@@ -2586,7 +2487,6 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         return true;
     }
     case rtx::sops::kRunClientScript: {   // [sig NUL-terminated, i/s/l][args in REVERSE sig order: s = NUL string, i = i32 BE, l = i64 BE][scriptId: i32 BE]
-        // Script id is last, so a record cut by the payload window reports script -1 with partial:true.
         const bool cut = len > (int)n;
         std::uint32_t p = 0; std::string sig;
         while (p < n && b[p] != 0 && sig.size() < 16) sig.push_back((char)b[p++]);
@@ -2643,8 +2543,6 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
 }
 }  // namespace
 
-// Live GE slot as JSON ({} when unreadable); enriches a 0x05/0x51 ge_offer event whose slot byte
-// says which offer changed.
 static std::string ge_slot_json(std::uint32_t pid, int slot) {
     if (slot < 0 || slot >= kGESlotCount) return "{}";
     auto ps = snap_proc(pid);
@@ -2715,7 +2613,6 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
                 out.resize(mark);
                 if ((r.opcode == 0x05 || r.opcode == 0x51) && n >= 7) {
                     // ge_offer: bytes 0-3 fixed 00 02 07 03, byte 4 slot, bytes 5-6 item id (BE); rest unknown,
-                    // so the offer comes from the GE slot array in memory.
                     const int slot = (int)r.payload[4];
                     const int item = ((int)r.payload[5] << 8) | (int)r.payload[6];
                     out += "\"kind\":\"ge_offer\",\"slot\":" + std::to_string(slot) + ",\"item\":" + std::to_string(item)
@@ -2736,7 +2633,6 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
 }
 
 // Opcode mask the hook records (bit op&31 of word op>>5). Creates the section if the companion
-// has not yet, so a mask set before injection survives it.
 bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]) {
     wchar_t name[64];
     rtx::events::MakeSectionName(pid, name);
@@ -2779,7 +2675,6 @@ bool RenderToggle(std::uint32_t pid, int which, bool on) {
     return ok;
 }
 
-// Keyboard-input window published by the companion; 0 if not loaded or no frame presented yet.
 std::uint64_t RenderInputWindow(std::uint32_t pid) {
     wchar_t name[64];
     rtx::render::MakeSectionName(pid, name);
@@ -2794,7 +2689,6 @@ std::uint64_t RenderInputWindow(std::uint32_t pid) {
     return w;
 }
 
-// Server-tick count and ms since the last tick (QPC based; age = -1 if unknown).
 bool TickState(std::uint32_t pid, std::uint32_t& count, double& age_ms) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_states.find((DWORD)pid);
@@ -2830,16 +2724,12 @@ bool SkillsXp(std::uint32_t pid, int out[29]) {
     return true;
 }
 
-// ---- Scene entities (players + NPCs) ----
-// Scene entity vector (build-specific):
 //   container = *(root + 0x199D0); idx = *(int)(container + 0x70)
 //   worldView = *( *(container + 0x58) + idx*0x10 + 8 ); worker = *(worldView + 0x10170)
 //   vector:   begin = *(worker + 0x138), end = *(worker + 0x140)   (Entity* each)
 //   entity:   sec = *(entity + 0x1A0); type = *(u8)(sec + 0x10)  (1 = NPC, 2 = player)
 //   NPC/player: name(asciiz)@sec+0xB8, uid@sec+0x88, NPC configId@sec+0x1080,
 //               posX(float)@sec+0x270, posY(float)@sec+0x278  (tile = pos / 512)
-// Objects are not read from the live vector (no walkable loc config id); they come from the
-// MAPSV2 cache (index 5) around the local player with loc configs (index 16).
 namespace {
 
 struct RuntimeObj {
@@ -2847,8 +2737,6 @@ struct RuntimeObj {
     float bmin[3], bmax[3];   // live model world AABB (east,north,up); bmax.x==bmin.x = none
 };
 
-// Torn-free snapshot of the companion's runtime scene objects (dynamically placed locs not in
-// the static map). False when the section doesn't exist.
 bool ReadRuntimeObjects(std::uint32_t pid, std::vector<RuntimeObj>& out) {
     out.clear();
     wchar_t name[64];
@@ -2883,7 +2771,6 @@ bool ReadRuntimeObjects(std::uint32_t pid, std::vector<RuntimeObj>& out) {
     return ok;
 }
 
-// Dropped ground items (scene entity type 3) from the companion's ground section.
 struct GroundItem { int id, x, y, plane; };
 bool ReadGroundItems(std::uint32_t pid, std::vector<GroundItem>& out) {
     out.clear();
@@ -2916,8 +2803,6 @@ bool ReadGroundItems(std::uint32_t pid, std::vector<GroundItem>& out) {
     return ok;
 }
 
-// Transient render-pass highlights (clue-scan ring) from the companion's "special" section.
-// RW-mapped so the arm stamp can be refreshed; the observer only runs while polled.
 struct RuntimeHi { int gfx, x, y, uid, plane, type, kind; std::uint32_t stamp; };
 bool ReadRuntimeHighlights(std::uint32_t pid, std::vector<RuntimeHi>& out, std::uint32_t* diag = nullptr) {
     out.clear();
@@ -2952,8 +2837,6 @@ bool ReadRuntimeHighlights(std::uint32_t pid, std::vector<RuntimeHi>& out, std::
     return ok;
 }
 
-// Loc name/actions honouring a varbit/varp morph (read live); no morph or unreadable selector
-// falls back to GetLoc(base).
 rtx::cache::LocMeta resolve_loc(HANDLE h, std::uint64_t root, int base_id) {
     int vb = -1, vp = -1, defc = -1;
     std::vector<int> variants;
@@ -2974,7 +2857,6 @@ rtx::cache::LocMeta resolve_loc(HANDLE h, std::uint64_t root, int base_id) {
             if (read_varp_found(h, root, vp, v)) value = v;       // selector is a varp directly
         }
         if (value >= 0) {
-            // in-range index picks the child; out-of-range uses the morph default
             int child = (value < (int)variants.size()) ? variants[value] : defc;
             if (child < 0) return {};            // hidden, no marker
             return rtx::cache::GetLoc(child);
@@ -2983,8 +2865,6 @@ rtx::cache::LocMeta resolve_loc(HANDLE h, std::uint64_t root, int base_id) {
     return rtx::cache::GetLoc(base_id);
 }
 
-// NPC name/actions honouring a varbit/varp morph (read live). out_hidden is set only when the
-// entity is a morph the game is not drawing here; callers skip it rather than use the stale in-memory name.
 rtx::cache::NpcMeta resolve_npc(HANDLE h, std::uint64_t root, int base_id, bool* out_hidden = nullptr) {
     if (out_hidden) *out_hidden = false;
     int vb = -1, vp = -1, defc = -1;
@@ -3005,7 +2885,6 @@ rtx::cache::NpcMeta resolve_npc(HANDLE h, std::uint64_t root, int base_id, bool*
             int v = 0;
             if (read_varp_found(h, root, vp, v)) value = v;       // selector is a varp directly
         }
-        // Exact in-range variant or nothing; never the default child or the base (a guess paints a phantom).
         (void)defc;
         if (value < 0 || value >= (int)variants.size()) { if (out_hidden) *out_hidden = true; return {}; }
         int child = variants[value];
@@ -3017,7 +2896,6 @@ rtx::cache::NpcMeta resolve_npc(HANDLE h, std::uint64_t root, int base_id, bool*
 
 }  // namespace
 
-// [{id,x,y,plane},..]; names are left to the caller.
 std::string GroundItemsJson(std::uint32_t pid) {
     std::vector<GroundItem> items;
     ReadGroundItems(pid, items);
@@ -3033,9 +2911,6 @@ std::string GroundItemsJson(std::uint32_t pid) {
 }
 
 namespace {
-// ---- update-resilient worldView fields ---------------------------------------
-// Scene-worker and view-matrix offsets into the worldView move on game updates, so the cached
-// offset is validated on every use and the worldView block is rescanned (throttled) when it fails.
 std::atomic<std::uint32_t>       g_workerOff{ rtx::scn::kWorkerOffDefault };
 std::atomic<std::uint32_t>       g_matrixOff{ rtx::scn::kMatrixOffDefault };
 std::atomic<std::int32_t>        g_camPosRel{ rtx::scn::kCamPosRelDefault };   // stored camera position, relative to the matrix
@@ -3043,12 +2918,9 @@ std::atomic<unsigned long long>  g_workerScanAt{ 0 };   // rescan throttles (Get
 std::atomic<unsigned long long>  g_matrixScanAt{ 0 };
 constexpr std::uint32_t          kWvSpan = 0x14000;     // worldView bytes covered by a rescan
 
-// Live entity fine positions (east, north, up) for validating a candidate view matrix; several,
-// since any single entity may be off-screen.
 struct CamProbes { int n = 0; float p[8][3]; };
 
 // +0x138/+0x140 must bound a sane entity vector whose secs (+0x1A0) carry known type bytes.
-// `strict` (rescan candidates) needs >=4 typed entities; non-strict accepts a sparse or empty scene.
 bool validate_scene_worker(HANDLE h, std::uint64_t worker, CamProbes* probes, bool strict) {
     if (worker <= 0x10000 || worker > 0x7FFFFFFFFFFFull) return false;
     auto b = rpm<std::uint64_t>(h, worker + 0x138);
@@ -3083,7 +2955,6 @@ bool validate_scene_worker(HANDLE h, std::uint64_t worker, CamProbes* probes, bo
     return typed >= need;
 }
 
-// Cached offset first (lenient), else a throttled strict rescan.
 std::optional<std::uint64_t> scene_worker(HANDLE h, std::uint32_t pid,
                                           std::uint64_t wv, CamProbes* probes) {
     std::uint32_t off = g_workerOff.load(std::memory_order_relaxed);
@@ -3116,11 +2987,8 @@ bool finite_nonzero_16(const float* m) {
     return nz;
 }
 
-// Matrix selection: the worldView holds several plausible matrix blocks (render camera at 0x13090
-// plus copies, minimap impostor at 0x13970). The discriminator is that the centre solved from the
-// view-projection matrix must equal the (east, up, north) floats the engine stores at matrix+0x80.
+// Matrix selection: render camera matrix at worldView+0x13090, minimap impostor at 0x13970.
 
-// Camera centre: solve x'(C)=y'(C)=w(C)=0 (world order east, north, up).
 bool solve_cam_centre(const float* m, double out[3]) {
     double A[3][4] = {
         { m[0], m[8],  m[4], -(double)m[12] },
@@ -3147,8 +3015,6 @@ bool solve_cam_centre(const float* m, double out[3]) {
     return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
 }
 
-// Render-camera test: z' row gradient parallel to the w row (true perspective), optical axis centred,
-// solved centre is a real world position, and the stored (east, up, north) at wv+off+rel matches it.
 bool validate_view_matrix(HANDLE h, std::uint64_t wv, std::uint32_t off,
                           std::int32_t rel, const float* m) {
     if (!finite_nonzero_16(m)) return false;
@@ -3174,8 +3040,6 @@ bool validate_view_matrix(HANDLE h, std::uint64_t wv, std::uint32_t off,
            std::fabs(C[1] - p[2]) < kTol;     // north
 }
 
-// Rescan fallback: some live entity projects on-screen with real perspective (rejects orthographic
-// helper cameras) and 6-tile offsets separate on screen.
 bool probes_project(const float* m, const CamProbes& probes) {
     auto ndc = [&](float x, float y, float z, float& nx, float& ny) {
         float w = m[3] * x + m[11] * y + m[7] * z + m[15];
@@ -3208,7 +3072,6 @@ bool probes_project(const float* m, const CamProbes& probes) {
 
 // Per-client camera-read state. A block that stopped updating still centre-matches its own stale
 // position, so camera varcs 5115 (yaw) / 5114 (pitch) / 1971 (zoom) changing while the matrix
-// bytes stay identical for ~8 reads forces a rescan.
 struct CamTrust {
     bool  validated = false;   // centre-match passed at least once at g_matrixOff
     bool  haveLastM = false, haveVarc = false;
@@ -3221,9 +3084,6 @@ struct CamTrust {
 std::mutex g_camTrustMu;
 std::unordered_map<std::uint32_t, CamTrust> g_camTrust;
 
-// View-projection matrix for a worldView. Cached offset accepted on centre-match; throttled rescan
-// otherwise: pass 1 uses the canonical centre at +0x80, pass 2 searches +-0x400 around a
-// probe-validated matrix to re-learn the relative offset.
 bool read_view_matrix(HANDLE h, std::uint32_t pid, std::uint64_t root,
                       std::uint64_t wv, const CamProbes& probes, float* out) {
     std::uint32_t off = g_matrixOff.load(std::memory_order_relaxed);
@@ -3299,8 +3159,6 @@ bool read_view_matrix(HANDLE h, std::uint32_t pid, std::uint64_t root,
         std::memcpy(tr.lastM, out, 16 * sizeof(float));
         tr.haveLastM = true;
     };
-    // Pass 1: centre at matrix+0x80. Prefer a match that also projects the live scene; the stale
-    // offset only wins if nothing else matches.
     struct Hit { std::uint32_t off; float m[16]; };
     Hit hits[8]; int nh = 0;
     Hit stale{}; bool haveStale = false;
@@ -3320,7 +3178,6 @@ bool read_view_matrix(HANDLE h, std::uint32_t pid, std::uint64_t root,
         return true;
     }
     if (haveStale) { adopt(stale.off, 0x80, stale.m); return true; }
-    // Pass 2: centre field moved relative to the matrix; search around a probe-validated matrix.
     if (probes.n > 0) {
         for (std::uint32_t o = 0; o + 64 <= kWvSpan; o += 0x10) {
             float m[16];
@@ -3366,8 +3223,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kLocalUid   = rtx::scn::kLocalUid;
 
     std::string players, npcs, specials;
-    // Dedupe specials the walk already emitted against the companion hook merge below; uid is
-    // often 0 for markers, so tiles are keyed too.
     std::unordered_set<int> seenSpecialUids;
     std::unordered_set<std::uint64_t> seenSpecialTiles;
     auto tileKey = [](int t, int x, int y, int p) -> std::uint64_t {
@@ -3379,8 +3234,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     int player_x = -1, player_y = -1;  // local player tile (anchors the object range)
     int player_plane = 0;              // local player plane (sec + 0x40)
 
-    // Duplicate the process handle under a brief g_mu hold and walk without the lock (the walk can
-    // take tens of ms). The dup stays valid if SampleAll closes the original mid-walk.
     HANDLE h = nullptr; std::uint64_t mgva = 0;
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -3422,8 +3275,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 if (!sec || *sec <= 0x10000) continue;
                 int type = rpm<std::uint8_t>(h, *sec + kType).value_or(0xff);
                 if (type == 4) {                             // type-4 world entity (Time Sprite etc.)
-                    // gfx at sec+0x74; position on the entity (ep+0x30/0x38). The scan ring is not a
-                    // vector entity (it comes from the companion highlight merge below).
+                    // gfx at sec+0x74; position on the entity (ep+0x30/0x38).
                     int gfx  = rpm<std::int32_t>(h, *sec + rtx::scn::kT4Gfx).value_or(-1);
                     auto ex = rpm<float>(h, *ep + 0x30);
                     auto ey = rpm<float>(h, *ep + 0x38);
@@ -3436,7 +3288,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         if (pl4 < 0 || pl4 > 3) pl4 = 0;
                         if (sc4) specials.push_back(',');
                         char sbuf[160];
-                        // "w":1 = real world position (the companion-merged scan ring has none)
                         std::snprintf(sbuf, sizeof(sbuf),
                             "{\"x\":%d,\"y\":%d,\"p\":%d,\"gfx\":%d,\"uid\":%d,\"t\":4,\"w\":1}", sx4, sy4, pl4, gfx, uid4);
                         specials += sbuf; ++sc4;
@@ -3448,7 +3299,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 if (type == 13) {
                     // Type-13 ground markers, two classes (vtables 0xB5ED70 vs 0xB5E878): the clue-scan
                     // marker stores its destination as a fine position at sub+0x74/+0x7C (equal to its own
-                    // tile); the walk-destination marker has 0.0 / NaN there. Classified by data shape.
                     auto ex = rpm<float>(h, *ep + 0x30);
                     auto ey = rpm<float>(h, *ep + 0x38);
                     int sx13 = ex ? (int)(*ex / 512.f) : 0;
@@ -3511,11 +3361,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 } else {                                      // NPC
                     int cfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
                     int anim = rpm<std::int32_t>(h, *sec + 0xA90).value_or(-1);  // shared actor anim
-                    // Empty meta = hidden morph variant: skip, never fall back to the static def.
                     bool morphHidden = false;
                     auto meta = resolve_npc(h, root.value_or(0), cfg, &morphHidden);
-                    // Cache def name preferred: the live name at sec+0xB8 can be an internal dev name.
-                    // A hidden morph keeps a stale in-memory name, so no live fallback for it.
                     std::string npcName = !meta.name.empty() ? meta.name : (morphHidden ? std::string() : name);
                     if (npcName.empty()) continue;            // hidden morph variant / nameless decoration
                     std::string acts;
@@ -3524,7 +3371,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         acts += '"'; acts += json_escape(a); acts += '"';
                     }
                     if (nc) npcs.push_back(',');
-                    // resolved morph child id, not the base cfg
                     int reportId = (meta.id >= 0) ? meta.id : cfg;
                     // Facing in degrees (-1 unreadable) from the yaw quaternion sec+0x1E0 = w, sec+0x1E8 = y:
                     // heading = 2 * atan2(-y, w). Not 0x1D0/0x1D8, which lags by one step.
@@ -3552,10 +3398,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
             }
         }
     }
-    // Objects pass: named static map scenery (MAPSV2 index 5 + loc configs index 16) within
-    // `obj_range` Chebyshev tiles of the player, deduped by (id, tile).
-    // `vis` = the loc has a rendered model; a degenerate runtime AABB (bmax.x <= bmin.x) means not
-    // drawn. Static map locs have no AABB and report vis = true.
     struct Obj { int id, x, y, plane, type, dist; std::string name, acts; bool rt; bool vis;
                  int w = 1, h = 1; };   // footprint in tiles, rotation-corrected; x/y = SW anchor
     std::vector<Obj> objs;
@@ -3589,14 +3431,12 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         if (!acts.empty()) acts.push_back(',');
                         acts += '"'; acts += json_escape(a); acts += '"';
                     }
-                    // Footprint: cache dims swapped on 90/270 rotation; anchor tile = SW corner.
                     int fw = meta.dim_x, fh = meta.dim_y;
                     if (p.rotation & 1) std::swap(fw, fh);
                     objs.push_back({ p.id, wx, wy, p.plane, p.type, dist, meta.name, std::move(acts), false, true, fw, fh });
                 }
             }
         }
-        // Merge companion-published runtime locs under the same range/plane/dedupe rules; `rt` flags them.
         std::vector<RuntimeObj> runtime;
         if (ReadRuntimeObjects(pid, runtime)) {
             for (const auto& r : runtime) {
@@ -3611,8 +3451,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 if (meta.name.empty()) continue;
                 long long dk = ((long long)r.config_id << 40) | ((long long)r.x << 20) | (unsigned)r.y;
                 if (!seen.insert(dk).second) continue;       // already have it from the cache (exact tile)
-                // Static SW anchor vs live render origin differ by at most dim-1; distinct instances
-                // sit >= dim apart, so same id + plane within max(dim)-1 tiles is the same object.
                 int tol = std::max(meta.dim_x, meta.dim_y) - 1; if (tol < 0) tol = 0;
                 bool dup = false;
                 for (const auto& o : objs)
@@ -3624,8 +3462,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     if (!acts.empty()) acts.push_back(',');
                     acts += '"'; acts += json_escape(a); acts += '"';
                 }
-                // r.x/r.y is the render origin, not the SW anchor: take footprint and anchor from the
-                // live AABB when sane, else fall back to the raw dims.
                 int fw = meta.dim_x, fh = meta.dim_y, ox = r.x, oy = r.y;
                 if (r.bmax[0] > r.bmin[0] && r.bmax[1] > r.bmin[1]) {
                     int tw = (int)std::lround((r.bmax[0] - r.bmin[0]) / 512.0f);
@@ -3662,8 +3498,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
         ++oc;
     }
 
-    // Merge companion-observed render-pass highlights (clue-scan ring etc.): transient type-4
-    // graphics never kept in the worldview vector. No range filter.
     std::uint32_t sdiag[12] = { 0,0,0,0,0,0,0,0,0,0,0,0 };   // ...+gfxhits/t4hits/MB/sub
     {
         std::vector<RuntimeHi> highs;
@@ -3696,8 +3530,6 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     char vdbuf[48];
     std::snprintf(vdbuf, sizeof(vdbuf), "[%d,%d]", vt4, vgfx4);   // worldview-vector type-4 count + last gfx
 
-    // Walk destination straight off ClientMiniMap (written by the click handler before the move
-    // packet; valid inside instances). Fine units; `src` = world vs minimap click.
     std::string walk = "null";
     if (h && mgva) {
         auto wroot = rpm<std::uint64_t>(h, mgva);
@@ -3738,7 +3570,6 @@ constexpr std::uint64_t kIfaceGroupsBegin = 0x50;
 constexpr std::uint64_t kIfaceGroupsEnd   = 0x58;
 
 // Gameview (3D viewport) rect from the interface tree: group 1477 = game frame, 1477:27 -> 1477:28 =
-// the viewport. False unless the full chain validates (caller falls back to the window).
 static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
                                int& gx, int& gy, int& gw, int& gh,
                                int* rootW = nullptr, int* rootH = nullptr) {
@@ -3755,7 +3586,6 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) return false;
-        // Largest top-level 1477 frame = full client in logical interface space (pixel scale source).
         if (rootW && rootH) {
             long long best = 0;
             for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
@@ -3795,9 +3625,6 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
     return false;                                                     // group 1477 absent (not in-world / login)
 }
 
-// Interface->pixel scale (the Interface Scaling setting): view-1000 varc pixel width over the
-// unscaled widget-tree width. 1.0 when either source is missing or the ratio is implausible.
-// Cached ~500ms per pid. The two rects can disagree after a runtime DPI change.
 static float iface_ui_scale(HANDLE h, std::uint64_t root, std::uint32_t pid,
                             int* outVw = nullptr, int* outGw = nullptr) {
     static std::mutex mu;
@@ -3831,8 +3658,6 @@ static float iface_ui_scale(HANDLE h, std::uint64_t root, std::uint32_t pid,
     return ui;
 }
 
-// JSON-escape + UTF-8-normalise widget text: valid UTF-8 passes through, CP-1252 bytes are widened,
-// so a stray byte cannot null the whole JSON in Ultralight. Colour tags are left in.
 static std::string iface_encode_text(const char* buf, int len) {
     auto valid_utf8 = [&]() -> bool {
         for (int i = 0; i < len; ) {
@@ -3860,7 +3685,6 @@ static std::string iface_encode_text(const char* buf, int len) {
         else if (ch < 0x20)         out += ' ';                                       // control -> space
         else if (keep || ch < 0x80) out += (char)ch;                                  // already UTF-8 (or ASCII)
         else {
-            // CP-1252 -> UTF-8: 0x80-0x9F are punctuation, not C1 controls; >= 0xA0 matches Latin-1.
             static const unsigned short kCp1252Hi[32] = {
                 0x20AC,0x0081,0x201A,0x0192,0x201E,0x2026,0x2020,0x2021,
                 0x02C6,0x2030,0x0160,0x2039,0x0152,0x008D,0x017D,0x008F,
@@ -3880,7 +3704,6 @@ static std::string iface_text_at(HANDLE h, std::uint64_t node, std::uint64_t fie
     char buf[512] = {};
     if (cap > (int)sizeof(buf) - 1) cap = (int)sizeof(buf) - 1;
     if (cap <= 0) return {};
-    // Read to the page boundary first; a fixed window can cross into an unmapped page.
     int first = (int)std::min<std::uint64_t>((std::uint64_t)cap, 0x1000 - (p & 0xFFF));
     if (!rpm_bytes(h, p, buf, first)) return {};
     int len = 0;
@@ -3918,7 +3741,6 @@ static std::string iface_sso_text(HANDLE h, std::uint64_t node) {
         if (len <= 0) return {};
         std::memcpy(buf, raw, (size_t)len);
     }
-    // +0x180 is a per-class union (containers: child vector; graphics: scalar), so a NUL before the
     // declared length is junk, not a string. 0xFF is the empty jstring sentinel, treated as non-text.
     int printable = 0;
     for (int i = 0; i < len; ++i) {
@@ -3930,14 +3752,12 @@ static std::string iface_sso_text(HANDLE h, std::uint64_t node) {
     return iface_encode_text(buf, len);
 }
 
-// Depth-first walk emitting one JSON object per node. baseX/baseY = parent's absolute origin; node
 // +0x70/+0x74 is parent-relative. Emits "r"=[relX,relY,w,h] and "a"=[absX,absY] when an origin is known.
 static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
                        std::string& out, int& count, bool& first, int baseX, int baseY, bool haveAbs) {
     if (count >= 6000 || depth > 12) return;
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    // One block read covers every field decoded below (+0x28 .. +0x1d8); per-field rpm fallback if it fails.
     std::uint8_t nb[0x1d8];
     const bool blk = rpm_bytes(h, node, nb, sizeof(nb));
     auto f64 = [&](std::uint32_t off) -> std::uint64_t {
@@ -3960,7 +3780,6 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     int item = f32(0x1d8);                     // item id on an item slot; a packed ARGB colour on text/graphic
     int amt  = f32(0x1e0);              // item stack / quantity (currency amounts, item counts)
     // node+0x188: small sprite id or dynamic-graphic pointer, graphic classes only. On text nodes
-    // +0x180..0x197 is the SSO string, so printable ASCII in +0x181..0x187 means text, not a sprite.
     std::uint64_t sprRaw = f64(0x1b0);
     bool sprUnset = sprRaw == ~0ull;               // all-FF = the unset sentinel: NO graphic content (not "dynamic")
     bool sprOk = txt.empty();
@@ -3971,7 +3790,6 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
                 if (sb[i] >= 0x20 && sb[i] < 0x7f) sprOk = false;
     }
     // Bit-62-flagged +0x188 = obj-icon graphic: 0x4000000000000000 | flavour<<24 | itemId (low 24 bits).
-    // Encoded as 131072+item for the Interfaces tab; bounded < 200000 since SSO bytes can read as bit-62.
     bool sprIsItem = sprOk && !sprUnset && (sprRaw >> 62) == 1 && (sprRaw & 0xFFFFFF) < 200000;
     bool sprIsObj = sprOk && !sprUnset && !sprIsItem && sprRaw > 0xFFFFFFFFull;   // 64-bit heap pointer -> dynamic graphic
     int  spr      = (sprOk && !sprIsObj && !sprUnset && sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
@@ -3996,10 +3814,8 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     // (equipment/backpack slots) or the unset sentinel (currency pouch 1473).
     bool realItem  = (item > 0 && item < 200000) &&
                      (sprUnset || sprRaw == 0x60000ull + (std::uint64_t)item);
-    // Zero-sized nodes with a small +0x188 scalar are another class (quest-list rows carry an enum); size-gate.
     bool sized     = (w > 0 && hh > 0);
     bool okSpr     = (spr > 0) && sized;   // spr already gated to a plausible sprite-id range above
-    // A pointer-backed (dynamic) graphic is labelled graphic without a sprite id.
     const char* ty = hasKids ? "layer" : realItem ? "item" : !txt.empty() ? "text" : (okSpr || (sprIsObj && sized)) ? "graphic" : "rect";
     out += first ? "" : ",";
     out += "{\"g\":" + std::to_string(group) + ",\"t\":[" + std::to_string(i1) + "," +
@@ -4039,8 +3855,7 @@ static void iface_groups_range(HANDLE h, std::uint64_t mainData,
     gs = s; ge = e;
 }
 
-// Companion-published var by (scope,id): 4 = varp/varbit, 5 = varc-int. Panel X/Y varc-ints can't be
-// resolved externally (getStorage is an in-process vtable call). false if companion absent / unresolved.
+// Companion-published var by (scope,id): 4 = varp/varbit, 5 = varc-int.
 static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
     wchar_t name[64];
     rtx::varc::MakeSectionName(pid, name);
@@ -4071,9 +3886,6 @@ static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
 }
 
 // Movable-panel origin table: a group's origin = its X/Y varc-ints (scope 5); dialogues share 9102/9103.
-// mount_comp: fallback origin = absolute rect of that comp in the game frame (1477) when the var is unset.
-// is_varc: read via read_varc_found only, since a same-id varp can shadow it with 0 and pin the origin.
-// req_group: spec applies only while that group is also open (0 = always). Tried in table order.
 struct PanelOriginSpec { int group; int var_x; int var_y; int off_left; int off_top; int mount_comp; bool is_varc; int req_group; };
 static const PanelOriginSpec kPanelOrigins[] = {
     { 1477, -1, -1, 0, 0, 0 },    // HUD root / game frame: tree is screen-absolute, identity spec so "a" is emitted
@@ -4090,8 +3902,7 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 1224, 3089, 3090, 0, 0, 0, true },   // Ritual selection (Necromancy! communion ritual) -- window-frame varcs 3089/3090
     { 533,  3089, 3090, 0, 0, 0, true },   // Display case -- window-frame varcs 3089/3090, content centred in the frame
     { 1286, 3089, 3090, 0, 0, 0, true },   // Discovered Ratings (Fish Flingers) -- window-frame varcs 3089/3090
-    // House Controls 1665: frame slot comp varies with docking, so key off its own varc 3096/3097 plus the
-    // (4,16) border/title inset; classic/tabbed mode adjustments are applied in iface_panel_origin.
+    // House Controls 1665: frame slot comp varies with docking, so key off its own varcs 3096/3097.
     { 1665, 3096, 3097, -4, -16, 0, true },
     { 1223, 3096, 3097, 0, 0, 0, true },   // Active ritual (Necromancy!) -- position varcs 3096/3097
     { 923,  3096, 3097, 0, 0, 0, true },   // Fish Flingers competition results -- position varcs 3096/3097
@@ -4120,14 +3931,11 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 720,  0, 0, 0, 0, 735, false },      // Option-select window: central interface pre-centred for the 512x334 slot 1477:735
     { 743,  6423, 6424, 0, 0, 0, true },  // Extra action button -- varcs 6423/6424; box comp 7 (38x38 button), root is 150x56
     { 1512, 0, 0, 0, 0, 722 },    // Build-mode furniture sidebar: always open (gate on 1514), viewport-anchored via 1477:722;
-                                  // item grid comp 16 subs carry the item id in the graphic field
     { 1030, 6463, 6464, 0, 0, 0, true },    // "Link a clue" investigation board -- varcs 6463/6464, no mount fallback
     { 1518, 6463, 6464, 0, 0, 726, true },  // Furniture Storage: tree persists while hidden, so gate on 1514; comp 19 subs
-                                  // carry the item id in the graphic field
     { 1516, 6463, 6464, 0, 0, 726, true },  // Furniture Construction -- varcs 6463/6464, fallback 1477:726; box comp 23 = construct slot
     { 1931, 0, 0, 0, -12, 732 },  // Sliding puzzle box: centered central interface, origin = live rect of 1477 mount comp 732
 };
-// Per-group calibration nudge added on top of kPanelOrigins, set from the Interfaces tab; keyed by group.
 static std::mutex g_ifaceOffMu;
 static std::unordered_map<int, std::pair<int,int>> g_ifaceOff;
 void SetIfaceOffset(int gid, int dx, int dy) {
@@ -4136,7 +3944,6 @@ void SetIfaceOffset(int gid, int dx, int dy) {
     else g_ifaceOff[gid] = { dx, dy };
 }
 
-// Absolute screen position of a component in the game frame (1477): accumulated +0x70/74 down the tree.
 static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount_comp, int& ox, int& oy) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
@@ -4181,8 +3988,6 @@ static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount
     return false;
 }
 
-// Position var precedence: direct nonzero > companion nonzero > direct found > companion 0. The companion
-// observer can publish a transient 0 through a dead storage pointer, so its zero never beats a direct read.
 static bool read_panel_pos_var(HANDLE h, std::uint64_t main_data, std::uint32_t pid,
                                int id, bool is_varc, int& out) {
     int cv = 0;
@@ -4195,7 +4000,6 @@ static bool read_panel_pos_var(HANDLE h, std::uint64_t main_data, std::uint32_t 
         if (pv != 0) { vv = pv; vok = true; }
         else vok = read_varc_found(h, main_data, id, vv);
     }
-    // Nonzero beats zero; at equal class the direct hashmap beats the companion observer.
     if (vok && vv != 0) { out = vv; return true; }
     if (cok && cv != 0) { out = cv; return true; }
     if (vok) { out = vv; return true; }
@@ -4203,7 +4007,6 @@ static bool read_panel_pos_var(HANDLE h, std::uint64_t main_data, std::uint32_t 
     return false;
 }
 
-// Is an interface group open (in the group list with a sane widget list)? Same test DialogJson uses.
 static bool iface_group_open(HANDLE h, std::uint64_t main_data, int gid) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
@@ -4219,8 +4022,6 @@ static bool iface_group_open(HANDLE h, std::uint64_t main_data, int gid) {
     return false;
 }
 
-// True if any node in the game frame (1477) renders sprite_id. Detects the House Controls tab bar:
-// tab icon 18788 is present only when the window is tabbed with another panel.
 static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
@@ -4258,13 +4059,10 @@ static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
     return false;
 }
 
-// Resolve a group's absolute screen origin from its position vars; false leaves the origin unchanged.
-// Specs are tried in table order, first that resolves wins.
 static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t pid, int gid, int& ox, int& oy) {
     for (const auto& s : kPanelOrigins) {
         if (s.group != gid) continue;
         if (s.req_group && !iface_group_open(h, main_data, s.req_group)) continue;   // variant gate
-        // Position vars are only written once a panel is dragged; mount_comp covers the never-dragged default.
         int vx = 0, vy = 0; bool okx = false, oky = false;
         if (s.var_x < 0 && s.var_y < 0) {
             okx = oky = true;   // identity spec: the group's tree is already screen-absolute
@@ -4309,15 +4107,12 @@ static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t 
     return false;
 }
 
-// Re-anchor a window's varc origin to its live rendered frame in 1477: the engine clamps windows to the
-// viewport while the drag varcs stay unclamped. Nearest size-matching node within 120px wins, smallest area on ties.
 static bool iface_live_frame_origin(HANDLE h, std::uint64_t gs, std::uint64_t ge,
                                     int px, int py, int wLo, int wHi, int hLo, int hHi,
                                     int& outX, int& outY, int* outW = nullptr, int* outH = nullptr) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     long long bestD = -1, bestArea = 0;
-    // A client resize re-lays-out instantly while the varc lags seconds, so a sole size match is adopted at any distance.
     int anyCount = 0, anyX = 0, anyY = 0, anyW = 0, anyH = 0;
     std::function<void(std::uint64_t,int,int,int)> fwalk =
         [&](std::uint64_t node, int bx, int by, int depth) {
@@ -4370,7 +4165,6 @@ static bool iface_live_frame_origin(HANDLE h, std::uint64_t gs, std::uint64_t ge
     return bestD >= 0;
 }
 
-// Movable-panel table for the Interfaces-tab visualizer: rect = (var_x - off_left, var_y - off_top, var_w, var_h).
 struct PanelVizSpec { const char* name; int var_x; int var_y; int var_w; int var_h; int off_left; int off_top; };
 static const PanelVizSpec kPanelViz[] = {
     { "Dialogue",          9102, 9103, 9104, 9105, 0, 0 },
@@ -4404,7 +4198,6 @@ static const PanelVizSpec kPanelViz[] = {
     { "Debuff bar",        10147,10148,10149,10150,0, 0 },
 };
 
-// Resolved panel rects: [{"name":..,"x":..,"y":..,"w":..,"h":..}, ..]
 std::string PanelRectsJson(std::uint32_t pid) {
     std::string out = "["; bool first = true;
     for (const auto& s : kPanelViz) {
@@ -4423,7 +4216,6 @@ std::string PanelRectsJson(std::uint32_t pid) {
     return out;
 }
 
-// Group list without recursion: {"groups":[{"id":G,"n":topLevelCount},..]}
 std::string InterfaceGroupsJson(std::uint32_t pid) {
     const char* kEmpty = "{\"groups\":[]}";
     auto ps = snap_proc(pid);
@@ -4450,8 +4242,7 @@ std::string InterfaceGroupsJson(std::uint32_t pid) {
     return out;
 }
 
-// Compass-clue needle: group 996 comp 5, rotation int32 at node+0x180. Raw 0..~2092 (JS converts
-// bearing = raw / 5.8127), or -1 when not open / not found.
+// Compass-clue needle: group 996 comp 5, rotation int32 at node+0x180, raw 0..~2092 (bearing = raw / 5.8127); -1 when not open.
 int CompassHeadingValue(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return -1;
@@ -4516,7 +4307,6 @@ static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<st
         if (!rpm_bytes(h, bases[bi] + kRecBase, blk, (int)sizeof(blk))) continue;
         for (std::uint64_t slot = 0; slot < kSlots; ++slot) {
             const std::uint8_t* rec = blk + slot * kRecSize;
-            // Exact float offsets are not pinned: take the first aligned pair (one optional field between) that decodes.
             for (std::size_t o = 0; o + 8 <= kRecSize; o += 4) {
                 float fx; std::memcpy(&fx, rec + o, 4);
                 int tx = fine_to_tile(fx);
@@ -4633,7 +4423,6 @@ std::string HoverEntityJson(std::uint32_t pid) {
     auto ao = rpm<std::uint64_t>(h, *ip + kHoverSlot);
     if (!ao || *ao <= 0x10000) return kNone;
 
-    // EASTL string read that accepts flag==0 (full 23-char inline SSO), unlike read_eastl_string.
     auto hover_str = [&](std::uint64_t sb, std::string& out2) -> bool {
         out2.clear();
         std::uint8_t rawb[0x18];
@@ -4658,7 +4447,6 @@ std::string HoverEntityJson(std::uint32_t pid) {
     if (!hover_str(*ao + 0x18, verb) || verb.empty()) return kNone;
     for (char& c : verb) if ((unsigned char)c < 0x20) c = ' ';
 
-    // Drop <col=..> markup and map the CP-1252 NBSP; verbs carry colour tags too.
     auto strip_markup = [](const std::string& s) {
         std::string o; bool intag = false;
         for (unsigned char c : s) {
@@ -4675,7 +4463,6 @@ std::string HoverEntityJson(std::uint32_t pid) {
     if (verb.empty()) return kNone;
     std::string raw;
     hover_str(*ao + 0x00, raw);
-    // The display name is always colour-tagged; anything else is slot-reuse garbage.
     std::string name = (raw.compare(0, 5, "<col=") == 0) ? strip_markup(raw) : std::string();
     std::string out = "{\"ok\":true,\"verb\":\"" + json_escape(verb) + "\"";
 
@@ -4684,14 +4471,12 @@ std::string HoverEntityJson(std::uint32_t pid) {
     int ty  = rpm<std::int32_t>(h, *ao + 0x50).value_or(0);
     char buf[96];
     // Item hover: +0x44 = item id (-1 otherwise), +0x4C = slot index, +0x50 = (component u16, interface u16).
-    // Checked first, since a low slot index would otherwise pass the loc-tile test.
     int itemId = rpm<std::int32_t>(h, *ao + 0x44).value_or(-1);
     int ifdbg[3] = { -1, -1, -1 };
     {
         int slot = rpm<std::int32_t>(h, *ao + 0x4C).value_or(-1);
         int comp = rpm<std::uint16_t>(h, *ao + 0x50).value_or(0);
         int ifid = rpm<std::uint16_t>(h, *ao + 0x52).value_or(0);
-        // Grids that do not stamp +0x44 (shop, bank, trade): read the item off the live widget at (group, comp, sub).
         if (itemId < 0 && ifid > 0 && ifid < 4096 && slot >= 0) {
             int wi = iface_item_at(h, *root, ifid, comp, slot, ifdbg);
             if (wi > 0) itemId = wi;
@@ -4707,7 +4492,6 @@ std::string HoverEntityJson(std::uint32_t pid) {
         return out + buf + ",\"name\":\"" + json_escape(name) + "\"}";
     }
     // Interface-action hover: +0x44 == -1, no tile, +0x50 = (component u16, interface u16), second pair at +0x5C.
-    // Runs before the target-less check since the name field holds stale bytes here.
     {
         int comp  = rpm<std::uint16_t>(h, *ao + 0x50).value_or(0);
         int ifid  = rpm<std::uint16_t>(h, *ao + 0x52).value_or(0);
@@ -4721,7 +4505,6 @@ std::string HoverEntityJson(std::uint32_t pid) {
     }
     bool targetless = verb == "Walk here" || verb == "Cancel" || verb == "Continue" || name.empty();
     if (targetless) return out + "}";
-    // NPC/player: resolve the scene uid in the live entity vector (same chain as PlayerInfoJson).
     if (ref > 0) {
         constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
                                 kEntryWv = 0x8, kVecBegin = 0x138, kVecEnd = 0x140,
@@ -4768,12 +4551,10 @@ std::string HoverEntityJson(std::uint32_t pid) {
             }
         }
     }
-    // Unresolvable reference: still report what the slot says.
     return out + ",\"name\":\"" + json_escape(name) + "\"}";
 }
 
 // Puzzle box board: interface 1931 comp 18, 25 cells each with a sprite u16 @+0x188 (consecutive ids,
-// 65535 = gap). Returns the raw sprites in sub order, or "[]" when 1931 isn't open.
 std::string PuzzleStateJson(std::uint32_t pid) {
     const char* kEmpty = "[]";
     auto ps = snap_proc(pid); if (!ps) return kEmpty;
@@ -4831,7 +4612,6 @@ std::string PuzzleStateJson(std::uint32_t pid) {
 }
 
 // Screen rects of the 25 puzzle-box cells (1931 comp 18) in sub order:
-//   {"abs":1,"cells":[[x,y,w,h] | null, ... x25]}; "abs":0 = group-relative, do not draw.
 std::string PuzzleCellRectsJson(std::uint32_t pid) {
     const char* kEmpty = "{\"abs\":0,\"cells\":[]}";
     auto ps = snap_proc(pid); if (!ps) return kEmpty;
@@ -4848,7 +4628,6 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
     if (!ap2) return kEmpty;
     int ox = 0, oy = 0;
     bool haveAbs = iface_panel_origin(h, *root, pid, 1931, ox, oy);
-    // Find the comp-18 grid, accumulating +0x70/74 per node.
     std::uint64_t grid = 0; int gx = 0, gy = 0;
     std::function<void(std::uint64_t,int,int,int)> find =
         [&](std::uint64_t node, int bx, int by, int depth) {
@@ -4870,7 +4649,6 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
     std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
     for (std::uint64_t w = ws + 8; w + 0x18 <= we + 8 && !grid; w += 0x18) { std::uint64_t nd = r64(w); if (nd > 0x10000) find(nd, ox, oy, 0); }
     if (!grid) return kEmpty;
-    // Cells are the grid's direct children, placed by sub.
     int cx[25], cy[25], cw[25] = {0}, ch_[25];
     const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
     for (int k = 0; k < 3; ++k) {
@@ -4883,7 +4661,6 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
             cw[s] = r32(cell + 0xa0); ch_[s] = r32(cell + 0xa4);
         }
     }
-    // Change-gated diagnostic; pairs with the launcher's [pz] line.
     {
         static std::uint32_t l_pid = 0; static int l_ox = -99999, l_oy = -99999, l_gx = -99999, l_gy = -99999;
         if (l_pid != pid || ox != l_ox || oy != l_oy || gx != l_gx || gy != l_gy) {
@@ -4905,8 +4682,6 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
     return out;
 }
 
-// Screen rects of components in a group: {"abs":1,"comps":{"<id>":[x,y,w,h],..}} ("abs":0 = don't draw).
-// mountComp = the 1477 slot the group renders into (knot = 728), used when the group has no origin spec.
 std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& compsCsv, int mountComp) {
     const char* kEmpty = "{\"abs\":0,\"comps\":{}}";
     auto ps = snap_proc(pid); if (!ps) return kEmpty;
@@ -4925,7 +4700,6 @@ std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& 
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) { std::uint64_t a = r64(g + 8); if (a > 0x10000 && r32(a) == group) { ap2 = a; break; } }
     if (!ap2) return kEmpty;
     int ox = 0, oy = 0;
-    // kPanelOrigins first; the caller's mount slot only when the group isn't registered there.
     bool haveAbs = iface_panel_origin(h, *root, pid, group, ox, oy);
     if (!haveAbs && mountComp > 0) haveAbs = read_iface_mount_origin(h, *root, mountComp, ox, oy);
     std::vector<int> seen; std::string comps;
@@ -4938,7 +4712,6 @@ std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& 
             && std::find(seen.begin(), seen.end(), comp) == seen.end()) {
             seen.push_back(comp);
             comps += (comps.empty() ? "" : ",");
-            // ax/ay already include the origin (walk seeded with ox,oy).
             comps += "\"" + std::to_string(comp) + "\":[" + std::to_string(ax) + "," + std::to_string(ay)
                    + "," + std::to_string(r32(node + 0xa0)) + "," + std::to_string(r32(node + 0xa4)) + "]";
         }
@@ -4960,8 +4733,6 @@ std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& 
     return out;
 }
 
-// Screen rect of the layer containing a sprite within group (component ids vary per layout, sprites don't).
-// A sprite does not identify a window: tab icons appear in every window's tab strip. {"ok":1,"x":..,"y":..,"w":..,"h":..} or {"ok":0}.
 std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite) {
     const char* kEmpty = "{\"ok\":0}";
     auto ps = snap_proc(pid); if (!ps) return kEmpty;
@@ -4981,7 +4752,6 @@ std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite) 
     int ox = 0, oy = 0;
     iface_panel_origin(h, *root, pid, group, ox, oy);   // 1477 seeds at 0,0 -> already screen
     bool found = false; int fx = 0, fy = 0, fw = 0, fh = 0, fv = 0;
-    // Each level passes its own rect down, so a match reports its container.
     std::function<void(std::uint64_t,int,int,int,int,int,int,int,int)> walk =
         [&](std::uint64_t node, int bx, int by, int depth, int px, int py, int pw, int ph, int pv) {
         if (found || depth > 16) return;
@@ -5027,11 +4797,8 @@ std::string InterfaceGroupJson(std::uint32_t pid, int groupId) {
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
     std::uint64_t gs, ge; iface_groups_range(h, *root, gs, ge);
     if (!gs) return kEmpty;
-    // Seed the walk with the panel origin so widgets carry "a":[absX,absY]; relative when unresolved.
     int ox = 0, oy = 0;
     bool haveAbs = iface_panel_origin(h, *root, pid, groupId, ox, oy);
-    // "ui" = interface->pixel scale (rects are in unscaled interface space), 1.0 when unresolved;
-    // "uiw"/"uig" = the raw varc-px / tree-width inputs behind it.
     int uiVw = 0, uiGw = 0;
     const float uiSc = iface_ui_scale(h, *root, pid, &uiVw, &uiGw);
     std::string out = "{\"ui\":" + std::to_string(uiSc) +
@@ -5055,8 +4822,6 @@ std::string InterfaceGroupJson(std::uint32_t pid, int groupId) {
     return out;
 }
 
-// Components of a given size (w x h within +-tol) across every open group:
-//   {"matches":[{"g":G,"c":comp,"s":sub,"w":w,"h":h,"ax":absX,"ay":absY},..]}  (ax/ay only when the origin resolves)
 std::string InterfaceSizeSearchJson(std::uint32_t pid, int tw, int th, int tol) {
     const char* kEmpty = "{\"matches\":[]}";
     auto ps = snap_proc(pid);
@@ -5122,7 +4887,6 @@ std::string InterfaceSizeSearchJson(std::uint32_t pid, int tw, int th, int tol) 
 }
 
 // Option-select dialogue (group 1188) state with absolute option rects; {} when closed.
-//   {"group":1188,"options":[{"n":1,"comp":6,"text":"..","x":..,"y":..,"w":..,"h":..},..],"header":"..","headerComp":3}
 std::string DialogJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";
@@ -5135,8 +4899,6 @@ std::string DialogJson(std::uint32_t pid) {
     std::uint64_t gs, ge; iface_groups_range(h, *root, gs, ge);
     if (!gs) return "{}";
 
-    // Comp 3 = header; options at comps 6/33/35/37/39 plus dynamically added ones, so they are captured
-    // by shape (any visible non-header text). Stale text lingers in unused comps.
     const int kGroup = 1188;   // option-select is the one the quest highlight uses
     int ox = 0, oy = 0;
     bool haveAbs = iface_panel_origin(h, *root, pid, kGroup, ox, oy);
@@ -5158,7 +4920,6 @@ std::string DialogJson(std::uint32_t pid) {
         ++found;
         std::string txt = iface_sso_text(h, node);
         if (comp == 3 && tag == 2 && !txt.empty() && header.empty()) { header = txt; headerComp = comp; }
-        // Numeric index labels ("1.") are narrow (~25px); numeric answers ("38.") are full width, so width-gate.
         else if (!txt.empty() && w > 0 && !(comp == 3 && tag == 2) && !(isNumText(txt) && w < 48)) {
             opts += firstOpt ? "" : ","; firstOpt = false; ++optN;
             opts += "{\"n\":" + std::to_string(optN) + ",\"comp\":" + std::to_string(comp) +
@@ -5189,8 +4950,6 @@ std::string DialogJson(std::uint32_t pid) {
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
         open = true;
-        // Re-anchor to the live frame (drag varcs are unclamped at screen edges); varc-positioned specs only,
-        // since a same-size search hijacks mount-anchored groups.
         bool varcPositioned = false;
         for (const auto& s : kPanelOrigins) if (s.group == kGroup) { varcPositioned = s.var_x != 0; break; }
         if (haveAbs && varcPositioned) {
@@ -5215,7 +4974,6 @@ std::string DialogJson(std::uint32_t pid) {
 
 // Live text + absolute rect of requested comps in a group. NPC chat 1184: comp 4 = name, 10 = message,
 // 11 = the visible continue button (comp 15 is the CS2 space-key target in a mispositioned variant).
-//   {"group":G,"open":bool,"hasAbs":bool,"comps":[{"comp":C,"text":"..","x":..,"y":..,"w":..,"h":..},..]}
 std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& compsCsv) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";
@@ -5248,7 +5006,6 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
         if (want.count(comp)) {
             std::string txt = iface_text(h, node);          // +0x90 display text
             if (txt.empty()) txt = iface_sso_text(h, node); // +0x180 SSO text
-            // +0x188 graphic field: small = sprite id ("spr"); bit-62 form = obj icon, item id in the low 24 bits ("obj").
             std::uint64_t sprRaw = rpm<std::uint64_t>(h, node + 0x1b0).value_or(0);
             int sprv = (sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
             int objv = ((sprRaw >> 62) == 1 && (sprRaw & 0xFFFFFF) < 200000) ? (int)(sprRaw & 0xFFFFFF) : 0;
@@ -5283,7 +5040,6 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
         open = true;
-        // Re-anchor to the live frame for varc-positioned specs only (see DialogJson).
         bool varcPositioned = false;
         for (const auto& s : kPanelOrigins) if (s.group == group) { varcPositioned = s.var_x != 0; break; }
         if (haveAbs && varcPositioned) {
@@ -5303,7 +5059,6 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
 }
 
 // Live backpack slot rect from group 1473 (origin varcs 3040/3041, size 8990/8991): cells found by size,
-// deduped, sorted into reading order. {"x":..,"y":..,"w":..,"h":..} or {}.
 std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";
@@ -5320,7 +5075,6 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
     if (!originOk) return "{}";   // panel position varc not resolved yet
     int px = ox, py = oy;   // outer frame origin, before the chrome inset
 
-    // Visible viewport clip: the tree also carries cells from inactive layout variants and scrolled-out rows.
     int vpx0 = 0, vpy0 = 0, vpx1 = 0, vpy1 = 0; bool haveVp = false;
 
     struct Cell { int x, y, w, h; std::uint64_t parent; std::uint64_t node; };
@@ -5351,8 +5105,6 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
-        // Chrome inset: the origin is the outer frame; content (group root) is inset by border + title bar.
-        // border = (panelW - contentW)/2, header = (panelH - contentH) - border, with the frame size read live from 1477.
         std::uint64_t c0 = r64(a);
         int contentW = (c0 > 0x10000) ? r32(c0 + 0xa0) : 0;
         int contentH = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
@@ -5363,7 +5115,6 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
                                     contentH + 1, contentH + 299, frameX, frameY, &panelW, &panelH)) {
             ox = frameX; oy = frameY; px = frameX; py = frameY;
         }
-        // No anchored frame: fall back to 1477's first root widget, sanity-gated.
         if (panelW == 0) for (std::uint64_t g2 = gs; g2 + 0x10 <= ge; g2 += 0x10) {
             std::uint64_t ap = r64(g2 + 8);
             if (ap <= 0x10000 || r32(ap) != 1477) continue;
@@ -5386,7 +5137,6 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
             border = 4; header = (read_varp(h, *root, 3814) & 1) ? 44 : 64;
         }
         ox += border; oy += header;
-        // c0's size is the viewport (scrollable content is a child), so scrolled-out rows fall outside it.
         if (contentW > 0 && contentH > 0)      { vpx0 = ox; vpy0 = oy; vpx1 = ox + contentW; vpy1 = oy + contentH; haveVp = true; }
         else if (panelW > 0 && panelH > 0) { vpx0 = px; vpy0 = py; vpx1 = px + panelW; vpy1 = py + panelH; haveVp = true; }
         if (haveVp && panelW > 0 && panelH > 0) {
@@ -5405,13 +5155,11 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
         int cx = c.x + c.w / 2, cy = c.y + c.h / 2;
         return cx >= vpx0 && cx <= vpx1 && cy >= vpy0 && cy <= vpy1;
     };
-    // Active slot container = the parent with the most visible slot-sized children (inactive variants are off-screen).
     std::unordered_map<std::uint64_t,int> votes;
     for (const auto& c : cells) if (visible(c)) votes[c.parent]++;
     std::uint64_t cont = 0; int best = 0;
     for (const auto& kv : votes) if (kv.second > best) { best = kv.second; cont = kv.first; }
 
-    // Dedupe co-located render layers, then sort row-major so slots[N] is slot N+1.
     std::vector<Cell> slots;
     for (const auto& c : cells) if (c.parent == cont) {
         bool dup = false;
@@ -5419,7 +5167,6 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
         if (!dup) slots.push_back(c);
     }
     std::sort(slots.begin(), slots.end(), [](const Cell& a, const Cell& b){ return a.y != b.y ? a.y < b.y : a.x < b.x; });
-    // Diagnostic (throttled 1s): chosen container plus a flag probe of competing containers.
     { static ULONGLONG t = 0; ULONGLONG n = GetTickCount64(); if (n - t >= 1000) { t = n;
         char hdr[200];
         std::snprintf(hdr, sizeof(hdr), "INV raw=%zu cont=%04llx slots=%zu pick=%d vp=[%d,%d,%d,%d] org=%d,%d",
@@ -5454,9 +5201,6 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
 
 // Chat lines from group 137 comp-86 widgets (raw markup at +0x180, newest first) plus the packet log
 // (op-0x15 message_game from the companion ring):
-//   {"lines":[{"raw":"<raw markup>","base":RRGGBB,"name":".."},..],
-//    "phook":true,"pseen":N,
-//    "packets":[{"seq":N,"t":epochMs,"type":109,"name":"..","chan":"..","raw":".."},..]}
 std::string ChatJson(std::uint32_t pid) {
     std::string ifaceArr = "[]";
     do {
@@ -5498,7 +5242,6 @@ std::string ChatJson(std::uint32_t pid) {
         }
     };
     // Comp-86 lines: raw markup at +0x1b0, base colour u24 RGB at +0xa8 (+0x180/+0x80 through 949-5);
-    // </col> resets to the per-channel base, not white.
     std::string a = "["; bool first = true; int emitted = 0;
     std::vector<std::pair<std::uint64_t, int>> stk{ { top, 0 } };
     int guard = 0;
@@ -5523,7 +5266,6 @@ std::string ChatJson(std::uint32_t pid) {
     ifaceArr = std::move(a);
     } while (false);
 
-    // Packet log (drain_chat_rings on the sampler thread), newest first; the UI dedupes on seq.
     std::string out = "{\"lines\":" + ifaceArr;
     {
         std::lock_guard<std::mutex> lk(s_chat_mu);
@@ -5551,7 +5293,6 @@ std::string ChatJson(std::uint32_t pid) {
     return out;
 }
 
-// Buff timer string to seconds: bare seconds, "m:ss" / "h:mm:ss", or "Nh"/"Nm".
 static int parse_buff_secs(const std::string& t) {
     if (t.empty()) return 0;
     if (t.find(':') != std::string::npos) {
@@ -5611,7 +5352,6 @@ std::string BuffsJson(std::uint32_t pid) {
         }
         return 0;
     };
-    // Descendant whose component id (+0x2a) == want (bounded DFS).
     auto find_comp = [&](std::uint64_t top, int want) -> std::uint64_t {
         std::vector<std::pair<std::uint64_t, int>> stk{ { top, 0 } };
         int guard = 0;
@@ -5638,8 +5378,6 @@ std::string BuffsJson(std::uint32_t pid) {
             if (slotArr <= 0x10000) continue;
             std::uint64_t icon = r64(slotArr + 0x8), textw = r64(slotArr + 0x20);
             if (icon <= 0x10000) continue;
-            // Dangling-icon filter: an expired buff's icon widget is re-parented elsewhere while the slot
-            // still points at it, so require the parent backlink to match the slot.
             if (r64(icon + 0x40) != slot) continue;      // parent backlink (+0x30 through 949-5; +0x48 = parent+0x20)
             int sprite = r16(icon + 0x1b0);
             int item   = r32(icon + 0x1d8);
@@ -5656,7 +5394,6 @@ std::string BuffsJson(std::uint32_t pid) {
             }
             bool itemBased = (item > 0 && item < 200000);
             bool spriteOk  = (sprite > 0 && sprite < 0xFFFF);
-            // The sprite offset may hold an item id (e.g. Bone Shield = 30099); the struct cache says which.
             if (!itemBased && spriteOk && rtx::cache::GetBuffIconIsItem(sprite)) {
                 item = sprite; sprite = 0; itemBased = true; spriteOk = false;
             }
@@ -5665,16 +5402,13 @@ std::string BuffsJson(std::uint32_t pid) {
             if (r32(icon + 0x8) == 0) continue;
             // 949-5 also required icon+0x50 & 0x01010000 (visible state); that flag moved on 950-1 and is not re-derived.
             int id = itemBased ? item : sprite;
-            // Dedup: pooled slot widgets can transiently show the same icon in two slots while reshuffling.
             unsigned dkey = itemBased ? (0x80000000u | (unsigned)item) : (unsigned)sprite;
             bool dup = false; for (unsigned k : seen) if (k == dkey) { dup = true; break; }
             if (dup) continue; seen.push_back(dkey);
             std::string name = debuff ? rtx::cache::GetDebuffName(id)
                                       : rtx::cache::GetBuffName(id);
             if (name.empty() && itemBased) name = rtx::cache::ItemName(item);
-            // No name and no timer text = pooled leftover.
             if (name.empty() && timer.empty()) continue;
-            // Kind: is the +0x180 text a countdown timer or a static count/percentage.
             int knd = rtx::cache::GetBuffKind(id);
             const char* kindStr = (knd & 1) ? "timer" : (knd & 4) ? "pct" : (knd & 2) ? "count" : "";
             int sc = (kindStr[0] == '\0' || (knd & 1)) ? parse_buff_secs(timer) : 0;
@@ -5760,11 +5494,9 @@ static void collect_ability_names(HANDLE h, std::uint64_t root,
 }
 
 // One bound action-bar ability. item: item slots store it at +0x1a0, abilities leave 0.
-// cd: the per-ability cooldown text printed on the icon (empty when ready); the GCD swirl is not read.
 struct AbarSlot { int id; int item; std::string name; std::string key; int mod; int en;
                   std::string cd; };
 
-// Timer-shaped text: "44", "1:23", "4.8", "2m", "2m 15s". Rejects pooled leftovers.
 static bool is_cd_timer(const std::string& t) {
     if (t.empty()) return false;
     bool digit = false;
@@ -5785,9 +5517,8 @@ static std::string iface_inline(HANDLE h, std::uint64_t node) {
 }
 
 // Slot box's keybind label and per-ability cooldown text. Each slot is a 13-component block;
-// typically box+4 = name, box+5 = GCD swirl, box+11 = keybind, box+12 = cooldown (+0x180 inline),
-// but the offsets shift by one on some slots. Do not filter on +0x188==0 (live cooldown widgets
-// carry junk there). mod: 0 none, 1 shift, 2 ctrl, 3 alt.
+// typically box+4 = name, box+5 = GCD swirl, box+11 = keybind, box+12 = cooldown (+0x180 inline).
+// mod: 0 none, 1 shift, 2 ctrl, 3 alt.
 static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::string& cd) {
     mod = 0; cd.clear();
     std::string keyb;
@@ -5796,8 +5527,6 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     int boxComp = (int)rpm<std::uint16_t>(h, box + 0x3a).value_or(0xFFFF);
     if (boxComp == 0xFFFF) return keyb;
 
-    // Direct component children with their component offset; the keybind is picked by shape and
-    // geometry, not a fixed offset. +0x180 is a per-class union, so decode via iface_sso_text.
     struct Kid { int rel; std::string text; int x, y; };
     std::vector<Kid> kids;
     const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
@@ -5829,7 +5558,6 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
     }
     std::sort(kids.begin(), kids.end(), [](const Kid& a, const Kid& b){ return a.rel < b.rel; });
 
-    // A keybind token: a single character, "<s|c|a>-<key>", or a function key.
     auto as_key = [&](const std::string& t, int& outMod) -> std::string {
         outMod = 0;
         if (t.size() == 1 && alnum(t[0])) return t;
@@ -5846,19 +5574,14 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
         return {};
     };
 
-    // Geometry disambiguates keybind from cooldown (a one-digit cooldown is key-shaped): the
-    // keybind label sits in the slot's top-left corner, the countdown is centred.
     const int bw = rpm<std::int32_t>(h, box + 0xa0).value_or(0);
     const int bh = rpm<std::int32_t>(h, box + 0xa4).value_or(0);
     auto topLeft = [&](const Kid& k) {
-        // A third of the box, capped at 12px: a centred one-digit timer on a ~36px slot starts
-        // around x=14,y=12, while the keybind label sits a few px into the corner on any slot size.
         int lx = bw > 8 ? bw / 3 : 10, ly = bh > 8 ? bh / 3 : 10;
         if (lx > 12) lx = 12;
         if (ly > 12) ly = 12;
         return k.x >= 0 && k.y >= 0 && k.x < lx && k.y < ly;
     };
-    // Most top-left key-shaped child wins (a bound slot on cooldown has two key-shaped children).
     bool haveKey = false; int keyRel = 0;
     {
         const Kid* best = nullptr; int bestMod = 0; std::string bestKey;
@@ -5870,14 +5593,12 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
         }
         if (best) { keyb = bestKey; mod = bestMod; keyRel = best->rel; haveKey = true; }
     }
-    // Cooldown: prefer the child right after the key, else any non-key timer-shaped child.
     for (const auto& kv : kids)
         if (haveKey && kv.rel == keyRel + 1 && is_cd_timer(kv.text)) { cd = kv.text; break; }
     if (cd.empty())
         for (const auto& kv : kids) {
             if (haveKey && kv.rel == keyRel) continue;
             if (!is_cd_timer(kv.text)) continue;
-            // The corner region is only off-limits while a keybind occupies it.
             if (haveKey && topLeft(kv)) continue;
             cd = kv.text; break;
         }
@@ -5885,8 +5606,7 @@ static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::strin
 }
 
 
-// Depth-first collect bound abilities under `node`: name at *(node+0x90), id u16 @ +0x188; the
-// name node's grandparent is the slot box (keybind + cooldown). Icon-only nodes skipped; deduped.
+// Depth-first collect bound abilities under `node`: name at *(node+0x90), id u16 at +0x1b0.
 static void abar_collect(HANDLE h, std::uint64_t node, std::uint64_t parent, std::uint64_t gp,
                          int depth, std::vector<AbarSlot>& dst) {
     if (depth > 14 || dst.size() >= 64) return;
@@ -5929,7 +5649,6 @@ static void abar_collect(HANDLE h, std::uint64_t node, std::uint64_t parent, std
 
 // Bound abilities on every action bar: main (group 1430) + secondaries (1670..1673; the UI gates
 // them on varbits 29138..29141, >0 = visible, value = preset). Read from the interface tree.
-//   {"clock":N,"cycles":N,"bars":[{"bar":0,"group":1430,"slots":[{"slot":N,"id":K,..,"cd":"","castable":true},..]},..]}
 // clock = engine wall-clock ms; cycles = CLIENTCLOCK units (50/s), the unit cooldown varcs are stamped in.
 std::string ActionBarJson(std::uint32_t pid) {
     const char* kEmpty = "{\"clock\":0,\"cycles\":0,\"bars\":[]}";
@@ -5945,7 +5664,6 @@ std::string ActionBarJson(std::uint32_t pid) {
     // Engine wall-clock ms at module+0xED2FF8 (949 RVA).
     long long clock = (long long)(ps.mod_base
         ? rpm<std::uint64_t>(h, ps.mod_base + 0xED2FF8).value_or(0) : 0);
-    // CLIENTCLOCK cycles off the MainData root; 0 = unreadable (panel falls back to clock/20).
     long long cycles = (long long)rpm<std::uint32_t>(h, *rootv + kOffClientClock).value_or(0);
     const int bars[5] = { 1430, 1670, 1671, 1672, 1673 };
     std::string out = "{\"clock\":" + std::to_string(clock) +
@@ -5982,8 +5700,6 @@ std::string ActionBarJson(std::uint32_t pid) {
 
 // Cooldown hashmap at root+0x19FB8 on 950-1 (0x19F78 before): buckets ptr @mgr+0x38178, cap @+0x38180;
 // node {key i32@0, expiry i64@+8 in engine-clock ms (base+0xED2FF8, 949 RVA, stale on 950-1), flag u8@+0x10, next@+0x18}.
-// Does not hold ability cooldowns (box_keybind's printed text is the source). Diagnostics only, not wired into the UI.
-//   {"clock":N,"cooldowns":[{"id":K,"remaining":MS,"flag":F},..]}
 std::string AbilityCooldownsJson(std::uint32_t pid) {
     const char* kEmpty = "{\"cooldowns\":[]}";
     auto ps = snap_proc(pid);
@@ -6014,7 +5730,6 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
         }
     }
 
-    // Names from the action bars only when something is on cooldown (+0x188 id == registry key).
     std::vector<std::pair<int, std::string>> roster;
     if (!cds.empty()) collect_ability_names(h, *rootv, roster);
 
@@ -6033,12 +5748,8 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
     return out;
 }
 
-// View metrics only (gameview rect, logical client size, ui scale), so screen-space overlays
-// can be priced without an entity walk when the world overlay is off.
 static void fill_view_metrics(HANDLE h, std::uint64_t rootv, std::uint32_t pid, OverlayFrame& out) {
-    // Gameview rect, cached and re-read at most ~2x/sec. Taken from the varcs (view 1000: x 3005,
-    // y 3006, w 3001, h 3002; physical pixels); widget 1477:27->28 carries it in scaled UI space
-    // and is the fallback. ui_scale = varc width / tree width.
+    // Gameview rect from view-1000 varcs (x 3005, y 3006, w 3001, h 3002; physical pixels), cached ~2x/sec.
     {
         static std::uint32_t s_pid = 0; static unsigned long long s_ms = 0;
         static int s_x = 0, s_y = 0, s_w = 0, s_h = 0; static float s_ui = 0.0f;
@@ -6056,13 +5767,11 @@ static void fill_view_metrics(HANDLE h, std::uint64_t rootv, std::uint32_t pid, 
             if (vw > 0 && vh > 0)  { s_x = vx; s_y = vy; s_w = vw; s_h = vh; }
             else if (tree)         { s_x = gx; s_y = gy; s_w = gw; s_h = gh; }
             else                   { s_w = 0; s_h = 0; }
-            // Sanity-bound the ratio: a torn/stale read must not scale the whole UI.
             s_ui = 0.0f;
             if (tree && gw > 0 && vw > 0) {
                 const float r = (float)vw / (float)gw;
                 if (r > 0.2f && r < 5.0f) s_ui = r;
             }
-            // Log the viewport inputs whenever they change.
             {
                 static int l_vx = -99999, l_vy = -99999, l_vw = -99999, l_vh = -99999,
                            l_gx = -99999, l_gw = -99999, l_gh = -99999;
@@ -6102,7 +5811,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        const std::vector<OutlineLocReq>& outline_locs,
                        const std::vector<GuideSite>& guide_sites,
                        OverlayFrame& out) {
-    // All from SceneOffsets.h -- shared with the companion's SceneData.cpp walk.
     constexpr std::uint64_t kContainer = rtx::scn::kContainer, kActiveIdx = rtx::scn::kActiveIdx,
                             kEntryArr = rtx::scn::kEntryArr, kEntryWv = rtx::scn::kEntryWv,
                             kVecBegin = rtx::scn::kVecBegin, kVecEnd = rtx::scn::kVecEnd,
@@ -6112,8 +5820,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                             kPosZ = rtx::scn::kPosZ, kPosY = rtx::scn::kPosY,
                             kPlayerData = rtx::scn::kPlayerData, kLocalUid = rtx::scn::kLocalUid;
 
-    // Dup the client handle under a brief g_mu hold, then build the frame without the lock (runs
-    // every overlay frame). The dup outlives a concurrent SampleAll close; DupGuard closes it.
     HANDLE h = nullptr; std::uint64_t mgva = 0;
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -6142,7 +5848,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     auto wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + kEntryWv);
     if (!wv || *wv <= 0x10000) return false;
 
-    // Worker first: its walk collects entity positions the matrix rescan uses as tie-breaks.
     CamProbes mprobes;
     auto worker = scene_worker(h, pid, *wv, &mprobes);
     if (!worker) return false;
@@ -6155,9 +5860,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     auto ve = deref(worker, kVecEnd);
     bool have_player = false;
     std::unordered_set<int> regions;
-    // Highlight entry: "needle", "needle|label", or "needle|label|x;y[;r]" (legacy "x,y"; the bridge
-    // is comma-separated). Needle = lowercased NPC-name substring, "#<id>" = model id, '*' prefix =
-    // box every match; tile picks the nearest instance, r bounds match-all to r tiles (Chebyshev).
     struct HiNeedle { std::string needle, label; int tx = -1, ty = -1; int id = -1; bool all = false; int rad = -1; };
     std::vector<HiNeedle> hlow;
     for (const auto& s : highlight_names) {
@@ -6182,8 +5884,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         for (auto& ch : t) if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
         if (!t.empty()) hlow.push_back({ t, lbl, wtx, wty, wid, wall, wrad });
     }
-    // One NPC boxed per needle (unless match-all). Preference: live in-memory name (mem, i.e. the
-    // active morph), then interactable, then nearest. Resolved after the walk.
     std::uint64_t root_raw = (root && *root > 0x10000) ? *root : 0;   // for live varbit-aware NPC morphs
     struct HiCand { OverlayPoint hp; int tx, ty, ndl; bool inter, mem; };
     std::vector<HiCand> hcands;
@@ -6262,14 +5962,11 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 }
             }
 
-            // Highlight match (NPCs only), regardless of want_npcs. Name resolves through the live
-            // morph variant like SceneJson (morph NPCs carry no in-memory name).
             if (type == 1 && !hlow.empty()) {
                 int hcfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
                 bool fromMem = !name.empty();
                 bool morphHidden = false;
                 rtx::cache::NpcMeta hmeta = resolve_npc(h, root_raw, hcfg, &morphHidden);
-                // Hidden morph: never fall back to the in-memory name (it lingers after the variant is undrawn).
                 const std::string hname = !hmeta.name.empty() ? hmeta.name : (morphHidden ? std::string() : name);
                 int hresolvedId = (hmeta.id >= 0) ? hmeta.id : hcfg;   // live model id (== SceneJson's reported id)
                 std::string lower = hname;
@@ -6290,11 +5987,9 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     }
                     bool inter = (hcfg >= 0) && !hmeta.actions.empty();
                     hcands.push_back({ hp, tx, ty, (int)ni, inter, fromMem });
-                    // No break: an NPC is a candidate for every needle it matches.
                 }
             }
 
-            // Scene-tab per-NPC outline (by uid), regardless of want_npcs.
             if (type == 1 && have_box && !outline_uids.empty()) {
                 int uid = rpm<std::int32_t>(h, *sec + kUid).value_or(0);
                 if (std::find(outline_uids.begin(), outline_uids.end(), uid) != outline_uids.end()) {
@@ -6310,7 +6005,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 
             bool want = (type == 2) ? want_players : want_npcs;
             if (!want) continue;
-            // Interactable filter (mirrors the Scene tab): NPCs only.
             if (interactable && type == 1) {
                 int cfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
                 if (rtx::cache::GetNpc(cfg).actions.empty()) continue;
@@ -6318,7 +6012,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             OverlayPoint p;
             p.wx = *fx; p.wy = *fy; p.wz = fz.value_or(0);
             p.kind = (type == 2) ? 2 : 1;
-            // NPC names via the cache (overrides + live morph variant) so nameplates match the Scene tab.
             std::string label = name;
             if (type == 1) {
                 int cfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
@@ -6342,7 +6035,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         }
     }
 
-    // One highlight per needle: live-named beats static-cache match, interactable beats not, then nearest.
     if (!hcands.empty()) {
         std::vector<int> best(hlow.size(), -1);
         std::vector<long long> bestScore(hlow.size(), 0);
@@ -6350,7 +6042,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             const HiCand& c = hcands[i];
             const HiNeedle& nd = hlow[c.ndl];
             if (nd.all) {
-                // match-all: every active candidate boxes, within the anchor radius if given.
                 if (!c.mem) continue;
                 if (nd.tx > 0 && nd.rad > 0 &&
                     (std::abs(c.tx - nd.tx) > nd.rad || std::abs(c.ty - nd.ty) > nd.rad)) continue;
@@ -6366,8 +6057,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         for (int bi : best) if (bi >= 0) out.highlights.push_back(hcands[bi].hp);
     }
 
-    // Heights are absolute: live fine-z = 32 * cache surface height. No player anchor (breaks on
-    // deck locs above terrain); player_z is the fallback for tiles with no height data.
+    // Heights are absolute: live fine-z = 32 * cache surface height.
     constexpr std::int16_t kNoH = -32768;
     constexpr float kHScale = 32.0f;
     out.anchor_h = have_player
@@ -6377,8 +6067,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         std::int16_t hh = rtx::cache::TileHeight(tx, ty, out.plane);
         return (hh == kNoH) ? out.player_z : kHScale * (float)hh;
     };
-    // Ground footprint box (SW tile + W x H), corners SW,SE,NE,NW, levelled at the lowest corner
-    // (highest with atTop, for walk surfaces over a pit); plane decided once at the centre column.
     auto fillBox = [&](OverlayPoint& op, int swx, int swy, int W, int H,
                        int forPlane = -1, bool atTop = false) {
         if (W < 1) W = 1;
@@ -6402,20 +6090,15 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             op.box[i * 3 + 2] = lev;
         }
         op.has_box = true;
-        // Static locs carry no model height: footprint-scaled stand-in plus the corner spread.
         int m = (W > H ? W : H);
         if (m > 4) m = 4;
         op.box_h = 280.f + 120.f * (float)(m - 1) + (atTop ? 0.f : (top - base));
     };
 
-    // Guide sites: independent of the object toggle. The label's first line names the target loc;
-    // a matching cache loc within ~8 tiles gives the point its real footprint prism.
     if (have_player && !guide_sites.empty()) {
         std::uint64_t groot = (root && *root > 0x10000) ? *root : 0;
         std::vector<RuntimeObj> gobjs;                    // live placements: true model AABBs
         ReadRuntimeObjects(pid, gobjs);
-        // Single-tile mark on the terrain, one height per corner. Cache height missing (instances,
-        // unmapped areas): base of the nearest live scene object instead.
         auto fillTileOnGround = [&](OverlayPoint& op, int gx, int gy, int plane) {
             const int cx[4] = { gx, gx + 1, gx + 1, gx };
             const int cy[4] = { gy, gy, gy + 1, gy + 1 };
@@ -6433,7 +6116,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     if (d2 >= bestD2) continue;
                     bestD2 = d2; fallback = r.bmin[2]; haveFallback = true;
                 }
-                // Nothing on the mark's plane: a live object on this tile on any plane (callers often send the wrong plane).
                 if (!haveFallback) {
                     int bestT = 2;                                 // this tile or an immediate neighbour
                     for (const auto& r : gobjs) {
@@ -6445,7 +6127,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                         bestT = d; fallback = r.bmin[2]; haveFallback = true;
                     }
                 }
-                // Off the player's plane, player_z would make the mark climb with the player: use mapped ground height.
                 if (!haveFallback && plane != out.plane) {
                     std::int16_t g0 = rtx::cache::TileHeight(gx, gy, 0);
                     if (g0 != kNoH) fallback = kHScale * (float)g0;
@@ -6459,14 +6140,11 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             op.has_box = true;
             op.box_h = 0.f;                                        // ground tile, not a prism
         };
-        // Region marks: sites sharing (label, rgb) merge into one flat zone drawn per tile with
-        // only the perimeter outlined and one label per connected patch.
         {
             auto tkey = [](int tx, int ty) -> long long { return ((long long)tx << 20) | (long long)(ty & 0xFFFFF); };
             std::unordered_map<std::string, std::vector<const GuideSite*>> rgroups;
             for (const auto& gs : guide_sites)
                 if (gs.region) rgroups[gs.label + '\x01' + std::to_string(gs.rgb)].push_back(&gs);
-            // resolve_loc memoized per config id (runs every overlay frame).
             std::unordered_map<int, rtx::cache::LocMeta> lmemo;
             auto locOf = [&](int cfg) -> const rtx::cache::LocMeta& {
                 auto it = lmemo.find(cfg);
@@ -6477,7 +6155,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 const auto& sites = rg.second;
                 const GuideSite* first = sites[0];
                 std::string oname = first->label.substr(0, first->label.find('\n'));
-                // Leading '-' = match-only first line: used for footprint lookup, not displayed.
                 const bool nameHidden = !oname.empty() && oname[0] == '-';
                 if (nameHidden) oname.erase(0, 1);
                 std::string disp = first->label;
@@ -6489,8 +6166,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 std::vector<std::pair<int,int>> tlist;
                 auto addTile = [&](int tx, int ty) { if (tiles.insert(tkey(tx, ty)).second) tlist.push_back({ tx, ty }); };
                 for (const GuideSite* s : sites) {
-                    // Covered tiles = loc config footprint dims centred on the live model; the AABB
-                    // only picks orientation and centre (foliage overhangs its true tiles).
                     int bestD2 = 6 * 6 + 1; const RuntimeObj* bestR = nullptr;
                     for (const auto& r : gobjs) {
                         if (r.config_id <= 0 || r.plane != s->plane) continue;
@@ -6519,7 +6194,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     }
                 }
                 if (tlist.empty()) continue;
-                // Connected components (8-neighbour): each separate patch gets its own perimeter and pill.
                 std::unordered_map<long long, int> comp;
                 int ncomp = 0;
                 for (const auto& seed : tlist) {
@@ -6573,7 +6247,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             OverlayPoint op;
             op.kind = 4;
             op.label = gs.label;
-            // Leading '-' on the first line = match-only name, not displayed.
             const bool nameHidden = !gs.label.empty() && gs.label[0] == '-';
             if (nameHidden) {
                 std::size_t nl = gs.label.find('\n');
@@ -6586,7 +6259,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane);
                 op.wz = (hh == kNoH) ? out.player_z : kHScale * (float)hh;
             }
-            // Area mark: flat rect (gx,gy)..(gx2,gy2), no loc matching, levelled at the highest corner.
             if (gs.gx2 >= gs.gx && gs.gy2 >= gs.gy && gs.gx2 > 0 && gs.gy2 > 0) {
                 fillBox(op, gs.gx, gs.gy, gs.gx2 - gs.gx + 1, gs.gy2 - gs.gy + 1, gs.plane, true);
                 op.box_h = 0.f;
@@ -6599,7 +6271,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             if (nameHidden) oname.erase(0, 1);
             bool found = false;
             if (gs.snap_obj) {
-                // Snap to the nearest live object's AABB by tile (morph names vary); no object = skip the mark.
                 int bestD2 = 5 * 5 + 1; const RuntimeObj* bestR = nullptr;
                 for (const auto& r : gobjs) {
                     if (r.config_id <= 0 || r.plane != gs.plane) continue;
@@ -6619,7 +6290,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 continue;
             }
             if (!oname.empty()) {
-                // Live runtime object first: its AABB wraps the actual visual.
                 int bestD2 = 8 * 8 + 1; const RuntimeObj* bestR = nullptr;
                 for (const auto& r : gobjs) {
                     if (r.config_id <= 0 || r.plane != gs.plane) continue;
@@ -6640,7 +6310,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 }
             }
             if (!found && !oname.empty()) {
-                // Neighbouring regions too: a footprint can anchor across a region boundary.
                 std::unordered_set<int> rkeys;
                 for (int dx = -3; dx <= 3; dx += 6)
                     for (int dy = -3; dy <= 3; dy += 6)
@@ -6673,8 +6342,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 
     }
 
-    // Direction arrow target (direction only, no pathfinding): a labelled NPC highlight near a
-    // guide objective wins and drops the static destination tile, else the first guide site.
     {
         int tgx = 0, tgy = 0; bool haveTarget = false;
         bool npcAtObjective = false;
@@ -6696,9 +6363,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         if (have_player && haveTarget && !crossBand) { out.has_arrow = true; out.arrow_tx = tgx; out.arrow_ty = tgy; }
     }
 
-    // Scene-tab object outlines go into out.highlights (drawn with the master toggle off), not
-    // out.points. Live AABB when a runtime record matches (same config + plane, within 6 tiles of
-    // the record tile or AABB centre), else a synthesized footprint box.
     if (!outline_locs.empty()) {
         std::uint64_t oroot = (root && *root > 0x10000) ? *root : 0;
         std::vector<RuntimeObj> oruntime;
@@ -6727,7 +6391,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 op.wy = (best->bmin[1] + best->bmax[1]) * 0.5f;
                 op.wz = (best->bmin[2] + best->bmax[2]) * 0.5f;
             } else {
-                // Static scenery: synthesized box over the rotation-corrected footprint, one tile tall.
                 int W = meta.dim_x, H = meta.dim_y;
                 int ax = rq.x, ay = rq.y;
                 for (const auto& pl : rtx::cache::RegionLocations(rq.x >> 6, rq.y >> 6)) {
@@ -6759,7 +6422,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         std::vector<RO> robjs;                                          // runtime placements (dedupe static)
         int oc = 0;
 
-        // Runtime objects first (live AABB), static map scenery second.
         std::vector<RuntimeObj> runtime;
         if (ReadRuntimeObjects(pid, runtime)) {
             for (const auto& r : runtime) {
@@ -6773,8 +6435,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 robjs.push_back({ r.config_id, r.x, r.y });
                 OverlayPoint op;
                 op.kind = 0; op.label = meta.name;
-                // Footprint (rotated cache dims), not the model box; the live AABB only settles
-                // orientation and centre when no placement sits near the render origin.
                 int W = meta.dim_x, H = meta.dim_y;
                 int swx = r.x - (W - 1) / 2, swy = r.y - (H - 1) / 2;
                 bool placed = false;
@@ -6808,7 +6468,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             }
         }
 
-        // Static map scenery, skipped where a runtime object of the same loc covers the tile.
         int rn = 0;
         for (int key : regions) {
             if (rn++ >= kMaxRegions || oc >= kMaxObjects) break;
@@ -6847,18 +6506,14 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         out.grid_r = grid_radius;
         rtx::cache::RegionBlockedFill(out.player_tx, out.player_ty, out.plane,
                                       grid_radius, out.blocked);
-        // Per-tile corners, not a shared lattice (bridge decks disagree with the ravine beside
-        // them). Layout T*T*4, SW/SE/NE/NW per tile.
         rtx::cache::RegionCornerHeightsFill(out.player_tx, out.player_ty, out.plane,
                                             grid_radius, out.heights);
     }
 
-    // Highlights project off the view matrix alone, so they draw without a player tile.
     out.ok = have_player || !out.highlights.empty();
     return out.ok;
 }
 
-// g_pinfo_prevpos / g_pinfo_mu are declared up top: SampleAll's eviction references them.
 
 std::string PlayerInfoJson(std::uint32_t pid) {
     constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
@@ -6917,7 +6572,6 @@ std::string PlayerInfoJson(std::uint32_t pid) {
                   (std::abs(fx - px) > 1.f || std::abs(fy - py) > 1.f);
 
     // Interaction target: entity ptr sec+0x218, uid sec+0x1b4, resolved against the live entity
-    // vector (NPCs + players only; scenery resolves as null).
     std::string interactJson = "null";
     if (vb && ve && *vb > 0x10000 && *ve >= *vb) {
         auto rawp = rpm<std::uint64_t>(h, psec + 0x218);
@@ -6961,7 +6615,6 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     }
 
     // Head progress bar: psec+0xF08 -> +0x28 = head-bar list, each a ptr with fill u8 @ +0x34.
-    // List order is not fixed (health bar included), so report the first non-HP fill. -1 = none.
     int progress = -1;
     {
         auto p1 = rpm<std::uint64_t>(h, psec + 0xF08);
@@ -7004,7 +6657,6 @@ std::string PlayerInfoJson(std::uint32_t pid) {
         if (c >= 3 && c <= 152) combat = c;
     }
 
-    // region = (x>>6)<<8|(y>>6), local = global & 63: what the tile-marker feature stores by.
     int region = ((tx >> 6) << 8) | (ty >> 6);
     int lx = tx & 63, ly = ty & 63;
     // FPS: float at MainData+0x550 (the FPS_STATS op 885 truncates it). -1 when implausible.
@@ -7083,7 +6735,6 @@ struct PerkFieldLayout {
     bool from_cache = false;   // every field resolved from the varbit archive
     int  drift      = 0;       // fields whose cache definition differs from the fallback
 };
-// Fallback layout until the cache answers for every field; health check reads from_cache/drift.
 static const PerkFieldLayout& perk_field_layout() {
     static PerkFieldLayout L;
     if (L.from_cache) return L;
@@ -7135,7 +6786,6 @@ std::string PerksJson(std::uint32_t pid) {
         for (int s = 0; s < nslot; ++s) {
             int iid = rpm<std::int32_t>(h, *istart + (std::uint64_t)s * 0x8).value_or(0);
             if (iid <= 0) continue;
-            // Augmented = item config signal (worn "Disassemble" + "gizmos" destroy text), not ext-data.
             if (!rtx::cache::ItemIsAugmented(iid)) continue;
             std::string itemName = rtx::cache::ItemName(iid);
             std::uint64_t X = *xstart + (std::uint64_t)s * 0x38;
@@ -7195,10 +6845,6 @@ std::string PerksJson(std::uint32_t pid) {
 }
 
 
-// ---- Reader health check -------------------------------------------------
-// Per-subsystem read-chain diagnostic, ordered root-first.
-//   {"version":"..","checks":[{"k":name,"ok":0|1|2,"d":detail},..]}   ok 2 = warn/informational.
-// Per-account store identity: display_name, else the in-memory character name (see Reader.h).
 std::string AccountKey(std::uint32_t pid) {
     std::lock_guard<std::mutex> lk(g_mu);
     auto it = g_states.find((DWORD)pid);
@@ -7207,7 +6853,6 @@ std::string AccountKey(std::uint32_t pid) {
     return !s.display_name.empty() ? s.display_name : s.character;
 }
 
-// Per-build server opcode table (companion/ServerOps.h): {"name":opcode,...}.
 std::string ServerOpsJson() {
     std::string out = "{"; bool first = true;
     for (const auto& e : rtx::sops::kExpected) {
@@ -7235,7 +6880,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         if (it != g_states.end()) version = it->second.client_version;
     }
 
-    // Flag a changed build string even while every chain still passes.
     std::string buildNote; int buildOk = 1;
     if (!version.empty()) {
         wchar_t up[MAX_PATH] = {};
@@ -7255,7 +6899,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         }
     }
 
-    // Check names/details are user-facing: plain language, no offsets.
     auto ps = snap_proc(pid);
     add("Game client", ps ? 1 : 0, ps ? "connected" : "not connected");
     if (!buildNote.empty()) add("Game build", buildOk, buildNote);
@@ -7266,7 +6909,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     bool rootOk = root && *root > 0x10000;
     add("Game data", rootOk ? 1 : 0, rootOk ? "" : "not available (lobby / loading is normal)");
 
-    // Tick counter (independent pattern): present and advancing.
     {
         std::uint32_t tc = 0; double age = 0;
         bool ok = TickState(pid, tc, age);
@@ -7289,7 +6931,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         int n = jcount(VarcsDumpAllJson(pid));
         add("Client variables", n > 0 ? 1 : 0, std::to_string(n) + " tracked");
     }
-    // Interface tree: group range + the game frame (1477) present.
     {
         std::uint64_t gs = 0, ge = 0; iface_groups_range(h, *root, gs, ge);
         int groups = 0; bool frame = false;
@@ -7306,7 +6947,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         add("Interfaces", (groups > 0 && frame) ? 1 : 0,
             (groups > 0 && frame) ? (std::to_string(groups) + " open") : "game window layout not readable");
     }
-    // Skills block: xp values plausible.
     {
         int xp[29] = {};
         bool ok = SkillsXp(pid, xp);
@@ -7326,14 +6966,12 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     }
     {
         std::string sc = SceneJson(pid, 2);
-        // Player and NPC walks break independently (different offset chains).
         bool pOk = sc.find("\"players\":[{") != std::string::npos;
         bool nOk = sc.find("\"npcs\":[{") != std::string::npos;
         add("Nearby players", pOk ? 1 : 0, pOk ? "" : "not readable");
         add("Nearby NPCs", nOk ? 1 : pOk ? 2 : 0,
             nOk ? "" : pOk ? "none nearby (or walk broken; re-run near NPCs)" : "not readable");
     }
-    // Overlay viewport: varc record (pixels) vs widget-tree rect (UI space) plus the 1477 frame width.
     {
         int gx = 0, gy = 0, gw = 0, gh = 0, lw = 0, lh = 0;
         const bool tree = read_gameview_rect(h, *root, gx, gy, gw, gh, &lw, &lh);
@@ -7363,7 +7001,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
             sane ? (std::to_string(cur) + " / " + std::to_string(mx) + (cur > mx ? " (boosted)" : ""))
                  : "values look wrong");
     }
-    // World-to-screen view matrix: finite, non-zero.
     {
         auto cont = rpm<std::uint64_t>(h, *root + 0x199D0);
         bool ok = false;
@@ -7373,7 +7010,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
             if (idx && *idx >= 0 && *idx < 64 && arr && *arr > 0x10000) {
                 auto wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + 0x8);
                 if (wv && *wv > 0x10000) {
-                    // Same self-healing path the overlay uses.
                     CamProbes probes;
                     auto worker = scene_worker(h, pid, *wv, &probes);
                     float m[16] = {};
@@ -7383,7 +7019,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         }
         add("Overlay camera", ok ? 1 : 0, ok ? "" : "not readable (in-world markers won't draw)");
     }
-    // Companion-published channels: absent = warn, not fail.
     {
         std::vector<RuntimeObj> objs;
         bool ok = ReadRuntimeObjects(pid, objs);
@@ -7428,7 +7063,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
             size_t end = dump.find_first_of(",}", c); if (end == std::string::npos) break;
             pos = end;
             if ((k % 97) != 0) continue;                       // spread the sample across the map
-            // keys are "4:<varp id>" (scope 4)
             const char* kp = dump.c_str() + q + 1; if (kp[0] == '4' && kp[1] == ':') kp += 2;
             int id = std::atoi(kp), v = std::atoi(dump.c_str() + c + 1);
             if (id <= 0) continue;
@@ -7437,7 +7071,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         add("Varp lookups", checked == 0 ? 2 : agree == checked ? 1 : 0,
             checked == 0 ? "no varps to sample" : (std::to_string(agree) + "/" + std::to_string(checked) + " sampled ids agree with the full dump" + (agree == checked ? "" : " (chain link offset)")));
     }
-    // ---- Panel data paths: each row calls the exact function its panel uses ----
     {   // Player State / Tasks: PlayerInfoJson must find the local player while in-world
         const bool inWorld = rpm<std::int8_t>(h, *root + kOffStatus).value_or(0) == 30;
         std::string pj = PlayerInfoJson(pid);
@@ -7507,7 +7140,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         add("Perk layout", st, d);
     }
     {   // Var domains: varbit archive defines all nine domains (0 player .. 8 campaign); var config
-        // files 60/62 decode with no unknown opcode (known: 3 type, 4 flag, 7/8 flags, 110).
         std::string cen = rtx::cache::VarbitDomainsJson();
         int doms = 0;
         for (int dom = 0; dom <= 8; ++dom) if (cen.find("\"" + std::to_string(dom) + "\":{") != std::string::npos) ++doms;
@@ -7527,7 +7159,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
             q += std::strlen(name) + 3; auto e = j.find_first_of(",}", q);
             return j.substr(q, e - q);
         };
-        // The varp table is an embedded member without a vtable; the varc table has one.
         bool p0 = field("0", "live") == "true";
         bool p2 = field("2", "live") == "true" && field("2", "vt") == "true";
         std::string d = "player " + (p0 ? "ok (" + field("0", "count") + " vars)" : "FAILED") +
@@ -7537,7 +7168,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         add("Var domain stores", (p0 && p2) ? 1 : 0, d);
     }
     {   // Scene objects: runtime loc ids proven by a static map placement of that id on the same tile
-        // (dynamic spawns never match, so only a share can). A wrong companion field gives ~0.
         std::vector<RuntimeObj> objs;
         if (ReadRuntimeObjects(pid, objs) && !objs.empty()) {
             std::unordered_map<int, std::unordered_set<long long>> regionSets;   // region key -> (id<<20|x<<10|y)
@@ -7565,7 +7195,6 @@ std::string ReaderHealthJson(std::uint32_t pid) {
             add("Scene objects", 2, "no runtime objects published yet");
         }
     }
-    // Cache parse health per decoder: records parsed plus the opcode that broke. Warn at >=95%.
     for (const auto& r : rtx::cache::CacheParseHealth()) {
         std::string note;
         int status;

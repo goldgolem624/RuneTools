@@ -9,7 +9,6 @@
 namespace rtx::launcher::soundfilter {
 namespace {
 
-// Open + map for one call; never holds a view across a client's exit.
 struct View {
     HANDLE              map = nullptr;
     rtx::sound::Share*  sh  = nullptr;

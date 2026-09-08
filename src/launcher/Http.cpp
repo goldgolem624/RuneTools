@@ -263,7 +263,6 @@ Response Stream(const std::wstring& host, const std::wstring& path,
     return out;
 }
 
-// ---- bounded one-shot worker ----
 namespace {
 
 constexpr std::size_t kPoolWorkers  = 2;

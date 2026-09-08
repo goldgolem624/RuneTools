@@ -53,7 +53,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         ensure_icon();
         return 0;
     }
-    // Second-instance "show yourself" broadcast (see main.cpp single-instance guard).
     static const UINT s_showMain = RegisterWindowMessageW(L"RuneToolsX.ShowMain");
     if (m == s_showMain) { restore_main(); return 0; }
     if (m == kMsgTray) {
@@ -78,7 +77,6 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-// Launcher window subclass: minimize completes, then the window hides (tray icon is the way back).
 LRESULT CALLBACK MainSubclass(HWND h, UINT m, WPARAM w, LPARAM l) {
     WNDPROC prev = g_mainPrev;
     LRESULT r = prev ? CallWindowProcW(prev, h, m, w, l) : DefWindowProcW(h, m, w, l);

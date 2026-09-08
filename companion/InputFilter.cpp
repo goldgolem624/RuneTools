@@ -1,7 +1,4 @@
 // Window-message filter + foreground-query capture (see InputFilter.h).
-// keepFocused: drop focus-loss, answer foreground/active/focus polls with the game window, do click-activation.
-// embedded (child window, detached queues, see Dock.cpp): also post kMsgGameClicked to the host,
-// skip TranslateMessage for relayed keys, and mirror relayed keys into this queue's key state.
 
 #include "InputFilter.h"
 #include "RenderShare.h"
@@ -23,14 +20,12 @@ HANDLE              g_renderMap  = nullptr;
 
 void EnsureRenderMapped() {
     if (g_render) return;
-    // Runs on every message: back off to one OpenFileMapping per second.
     static ULONGLONG s_nextTry = 0;
     ULONGLONG now = GetTickCount64();
     if (now < s_nextTry) return;
     s_nextTry = now + 1000;
     wchar_t name[64];
     rtx::render::MakeSectionName(GetCurrentProcessId(), name);
-    // Read + write: this module publishes inputWindow.
     g_renderMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
     if (!g_renderMap) return;
     g_render = reinterpret_cast<rtx::render::Share*>(
@@ -39,13 +34,11 @@ void EnsureRenderMapped() {
     if (!g_render) { CloseHandle(g_renderMap); g_renderMap = nullptr; }
 }
 
-// In-game window UI: messages hitting launcher-published rects go to the SPSC ring and are dropped.
 rtx::input::Share* g_input    = nullptr;
 HANDLE             g_inputMap = nullptr;
 HANDLE             g_inputEvt = nullptr;
 
 void EnsureInputMapped() {
-    // Retry until both handles exist: the wake event can lag the section.
     if (g_input && g_inputEvt) return;
     static ULONGLONG s_nextTry = 0;
     ULONGLONG now = GetTickCount64();
@@ -112,7 +105,6 @@ void PushUiEvent(UINT msg, int x, int y, WPARAM wp, LPARAM lp) {
     if (g_inputEvt) SetEvent(g_inputEvt);
 }
 
-// Held buttons that started on the UI vs on the game. Every button-down joins exactly one mask.
 unsigned g_uiButtons   = 0;
 unsigned g_gameButtons = 0;
 bool g_wasOverUi = false;
@@ -146,8 +138,6 @@ LPCWSTR Win32CursorFor(std::uint32_t id) {
     }
 }
 
-// Keep-focused stands down once the window closes (faking foreground during shutdown hangs the
-// close path). Scoped per window: the game can recreate its render child.
 bool g_closing = false;
 HWND g_closingHwnd = nullptr;
 HWND g_pnApplied = nullptr;   // window WS_EX_NOPARENTNOTIFY was applied to
@@ -158,7 +148,6 @@ bool KeepFocused() {
     return g_render && g_render->magic == rtx::render::kMagic && g_render->keepFocused;
 }
 
-// Child window with detached queues; implies keep-focused.
 bool EmbeddedActive() {
     if (g_closing) return false;
     EnsureRenderMapped();
@@ -172,7 +161,6 @@ bool UiActive() {
            g_input->version == rtx::input::kVersion && g_input->active;
 }
 
-// Foreground/active/focus query capture.
 typedef HWND (WINAPI* GetWnd_t)();
 typedef BOOL (WINAPI* TranslateMsg_t)(const MSG*);
 GetWnd_t       g_origGetForeground = nullptr;
@@ -193,7 +181,6 @@ HWND WINAPI GetFocus_hook() {
     if (g_gameWindow && KeepFocused()) return g_gameWindow;
     return g_origGetFocus ? g_origGetFocus() : nullptr;
 }
-// Embedded: the host already translated relayed keys; translating again doubles WM_CHARs.
 BOOL WINAPI Translate_hook(const MSG* m) {
     if (m && g_gameWindow && m->hwnd == g_gameWindow &&
         (m->message == WM_KEYDOWN || m->message == WM_SYSKEYDOWN) && EmbeddedActive())
@@ -219,7 +206,6 @@ void InstallApiHooks() {
     if (DetourTransactionCommit() == NO_ERROR) g_apiHooked = true;
 }
 
-// Embedded: mirror relayed keys into this queue's key state; modifiers from the async state.
 void SyncKeyState(WPARAM vk, bool down) {
     BYTE ks[256];
     if (!GetKeyboardState(ks)) return;
@@ -233,7 +219,6 @@ void SyncKeyState(WPARAM vk, bool down) {
     SetKeyboardState(ks);
 }
 
-// Keys the game believes are held; a swallowed focus-loss would otherwise leave them stuck.
 bool g_keyDown[256] = {};
 
 void ReleaseHeldKeys(HWND hwnd) {
@@ -247,7 +232,6 @@ void ReleaseHeldKeys(HWND hwnd) {
     }
 }
 
-// Diagnostics.
 #define RTX_DIAG 0
 #define RTX_FORCE_KEEPFOCUS 0
 #if RTX_DIAG
@@ -308,13 +292,11 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             ReleaseHeldKeys(hwnd);
             return 0;
         }
-        // A client that thinks it is active declines WM_MOUSEACTIVATE; answer it here and raise the root.
         if (msg == WM_MOUSEACTIVATE) return MA_ACTIVATE;
         if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) {
             HWND root   = GetAncestor(hwnd, GA_ROOT);
             HWND realFg = g_origGetForeground ? g_origGetForeground() : nullptr;
             if (root && realFg && realFg != root && realFg != hwnd) SetForegroundWindow(root);
-            // Posted, never sent: must not block on the launcher.
             if (root && root != hwnd && EmbeddedActive())
                 PostMessageW(root, rtx::render::kMsgGameClicked, 0, 0);
         }
@@ -323,7 +305,6 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 SyncKeyState(wparam, msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
         }
     }
-    // UI consume filter. Runs after keep-focused so click-raise and kMsgGameClicked still fire.
     if (!g_closing && UiActive()) {
         switch (msg) {
             case WM_MOUSEMOVE:
@@ -341,7 +322,6 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 }
                 SnapshotRects();
                 if (msg == WM_MOUSEMOVE) {
-                    // Self-heal masks from the live button state (a release can be lost to focus loss).
                     unsigned held = ((wparam & MK_LBUTTON)  ? 1u  : 0u) |
                                     ((wparam & MK_RBUTTON)  ? 2u  : 0u) |
                                     ((wparam & MK_MBUTTON)  ? 4u  : 0u) |
@@ -357,7 +337,6 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                                msg == WM_MBUTTONDBLCLK || msg == WM_XBUTTONDBLCLK);
                 bool isUp   = (msg == WM_LBUTTONUP || msg == WM_RBUTTONUP ||
                                msg == WM_MBUTTONUP || msg == WM_XBUTTONUP);
-                // Game drag in progress: never consume, and further downs join the game mask.
                 if (g_gameButtons) {
                     if (isDown) {
                         g_gameButtons |= bit;
@@ -376,7 +355,6 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                         return 0;
                     }
                     g_gameButtons |= bit;
-                    // WM_KILLFOCUS sentinel: the UI blurs its field so typing returns to the game.
                     if (g_input->capture_keyboard)
                         PushUiEvent(WM_KILLFOCUS, x, y, 0, 0);
                     break;
@@ -394,7 +372,6 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                     PushUiEvent(msg, x, y, wparam, lparam);
                     return 0;
                 }
-                // One unconsumed transition move as the cursor leaves the UI, so it clears :hover.
                 if (msg == WM_MOUSEMOVE && g_wasOverUi) {
                     g_wasOverUi = false;
                     PushUiEvent(msg, x, y, wparam, lparam);
@@ -405,7 +382,6 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             case WM_CHAR:    case WM_SYSCHAR:
                 if (g_input->capture_keyboard) {
                     PushUiEvent(msg, 0, 0, wparam, lparam);
-                    // Key-ups also reach the game: synthesized stuck-key releases arrive as plain WM_KEYUPs.
                     if (msg == WM_KEYUP || msg == WM_SYSKEYUP) break;
                     return 0;
                 }
@@ -451,7 +427,6 @@ void DiagLogLine(const char* line) {
 
 bool Install(HWND hwnd) {
     if (!hwnd) return false;
-    // A new render child: the close latch belonged to the old window.
     if (g_closing && g_closingHwnd && hwnd != g_closingHwnd && IsWindow(hwnd)) {
         g_closing = false;
         g_closingHwnd = nullptr;
@@ -461,7 +436,6 @@ bool Install(HWND hwnd) {
     InstallApiHooks();
     EnsureRenderMapped();
     if (g_render && g_render->magic == rtx::render::kMagic) {
-        // Keyboard relay target is this render child, not the top-level frame.
         g_render->inputWindow = (std::uint64_t)(std::uintptr_t)hwnd;
     }
     if (g_hwnd == hwnd && g_orig) return true;

@@ -1,5 +1,4 @@
 #pragma once
-// Decoded server -> client packets from the inbound framer; single-writer ring, `written` published last.
 
 #include <cstdint>
 
@@ -10,7 +9,7 @@ inline constexpr std::uint32_t kMagic   = 0x5450524E;   // 'NRPT'
 inline constexpr std::uint32_t kVersion = 3;            // v3: dedicated chat ring appended
 inline constexpr int kMaxRecords = 1024;    // ring depth
 inline constexpr int kSnip       = 1024;    // payload bytes kept; 0x5D rebuild_scene_dyn reaches ~880
-// Chat ring: op 0x15 message_game, not gated by `enable`. Opcodes 0..0xDE on 950-1 (0..0xE5 before).
+// Decoded server -> client packets from the inbound framer; single-writer ring, `written` published last. Chat ring: op 0x15 message_game, not gated by `enable`. Opcodes 0..0xDE on 950-1 (0..0xE5 before).
 inline constexpr int kChatRecords = 256;
 inline constexpr int kChatSnip    = 512;    // one message: type+u32+flags+sender+text
 

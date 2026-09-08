@@ -118,7 +118,6 @@ std::string StatusJson() {
     fs::path out = OutDir();
     std::string meta = read_file(out / L"meta.json");
     std::string prog = read_file(out / L"progress.json");
-    // Revision at extraction start; clientVer below is the current install.
     std::string extract_ver = read_file(out / L"client_version.txt");
     bool sidecar = fs::exists(fs::path(sidecar_dir()) / L"dist" / L"cs2export.js");
     std::string clientver = game_client_version();
@@ -138,7 +137,6 @@ std::string StartExtract() {
     fs::path entry = fs::path(sidecar_dir()) / L"dist" / L"cs2export.js";
     if (!fs::exists(entry))
         return "{\"err\":\"sidecar not found (set RTX_CS2_SIDECAR to the folder containing dist\\\\cs2export.js)\"}";
-    // Drop stale progress before spawning.
     std::error_code ec;
     fs::remove(fs::path(OutDir()) / L"progress.json", ec);
     {

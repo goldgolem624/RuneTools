@@ -74,8 +74,6 @@ bool split_cdn_url(const std::string& url, std::wstring& host, std::wstring& pat
     return true;
 }
 
-// Resample a cover to `width` with WIC and re-encode as JPEG (the engine's own bilinear scaler
-// aliases). "" on failure.
 std::string resample_cover(const std::string& bytes, UINT width) {
     using Microsoft::WRL::ComPtr;
     ComPtr<IWICImagingFactory> f;
@@ -167,7 +165,6 @@ void refresh_news() {
         rtx::log::Launcher("news: fetch failed (ok=" + std::to_string(r.ok) + " status=" + std::to_string(r.status) + ")");
         return;
     }
-    // Text first, covers follow.
     { std::lock_guard<std::mutex> lk(g_news_mu); g_news_json = r.body; }
     std::string with_covers = inline_covers(r.body);
     std::lock_guard<std::mutex> lk(g_news_mu);

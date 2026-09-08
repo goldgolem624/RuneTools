@@ -20,10 +20,8 @@ typedef BOOL (WINAPI* SwapBuffers_t)(HDC);
 SwapBuffers_t g_origSwap = nullptr;
 bool          g_installed = false;
 
-// Diagnostic: 1 = draw a fixed cyan box every present.
 #define RTX_MARKER_SELFTEST 0
 
-// Launcher-created shared sections; marker and HUD are mapped read-only.
 rtx::marker::Share* g_marker    = nullptr;
 HANDLE              g_markerMap = nullptr;
 
@@ -52,7 +50,6 @@ void EnsureHudMapped() {
     if (!g_hud) { CloseHandle(g_hudMap); g_hudMap = nullptr; }
 }
 
-// UI layer is read+write: this side publishes client size and a liveness counter. Retry backed off to 1 s.
 rtx::frame::Share* g_frame    = nullptr;
 HANDLE             g_frameMap = nullptr;
 void EnsureFrameMapped() {
@@ -73,7 +70,6 @@ void EnsureFrameMapped() {
 }
 
 
-// Coords are client pixels in the projected space (cw x ch).
 void DrawCommand(const rtx::marker::Command& c, int cw, int ch) {
     const float r = c.r / 255.0f, g = c.g / 255.0f, b = c.b / 255.0f, a = c.a / 255.0f;
     switch (c.type) {
@@ -123,7 +119,6 @@ void DrawCommand(const rtx::marker::Command& c, int cw, int ch) {
     }
 }
 
-// Diagnostic: log long render frames.
 #define RTX_DIAG 0
 
 // No C++ objects here: the SEH wrapper must have nothing to unwind.
@@ -145,7 +140,6 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
 #endif
     HWND hwnd = WindowFromDC(hdc);
     if (hwnd) {
-        // Idempotent; inert until the launcher sets keepFocused.
         rtx::winmsg::Install(hwnd);
         RECT rc;
         if (GetClientRect(hwnd, &rc)) {
@@ -155,14 +149,12 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                 EnsureMarkerMapped();
                 EnsureHudMapped();
                 EnsureFrameMapped();
-                // Client size + liveness counter every present, even while hidden.
                 if (g_frame && g_frame->magic == rtx::frame::kMagic &&
                     g_frame->version == rtx::frame::kVersion) {
                     g_frame->client_w = fbw;
                     g_frame->client_h = fbh;
                     g_frame->module_seq = g_frame->module_seq + 1;
                 }
-                // Decide before touching GL so idle frames skip Begin()/End().
                 bool haveMarkers = g_marker && g_marker->magic == rtx::marker::kMagic &&
                                    g_marker->version == rtx::marker::kVersion &&
                                    (g_marker->seq & 1u) == 0 && g_marker->visible &&
@@ -173,7 +165,6 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                                (g_hud->seq & 1u) == 0 && g_hud->enable &&
                                g_hud->w > 0 && g_hud->h > 0 &&
                                g_hud->w <= rtx::hud::kMaxW && g_hud->h <= rtx::hud::kMaxH;
-                // Odd seq still draws (last texture); only the upload needs a stable snapshot.
                 bool haveUi = g_frame && g_frame->magic == rtx::frame::kMagic &&
                               g_frame->version == rtx::frame::kVersion &&
                               g_frame->visible &&
@@ -197,7 +188,6 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                     if (haveMarkers) {
                         std::uint32_t n = g_marker->count;
                         if (n > rtx::marker::kMaxCmds) n = rtx::marker::kMaxCmds;
-                        // Use the size the launcher projected against; fall back to live.
                         int cw = g_marker->fb_w > 0 ? g_marker->fb_w : fbw;
                         int ch = g_marker->fb_h > 0 ? g_marker->fb_h : fbh;
                         for (std::uint32_t i = 0; i < n; ++i)
@@ -214,7 +204,6 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                         char cap[rtx::hud::kCaptionMax + 1];
                         std::memcpy(cap, g_hud->caption, rtx::hud::kCaptionMax);
                         cap[rtx::hud::kCaptionMax] = '\0';
-                        // Framed card: shadow, dark panel, 2px accent rule, icon above caption.
                         const int sw = 56;
                         const int sh = (g_hud->w > 0) ? (sw * g_hud->h / g_hud->w) : sw;
                         const int pad = 10;
@@ -243,12 +232,10 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                             int lw = (int)g_frame->width;
                             int lh = (int)g_frame->height;
                             const std::uint32_t lstride = g_frame->stride;
-                            // Stride is untrusted: must cover a row and fit the section.
                             if (lw <= (int)rtx::frame::kMaxWidth &&
                                 lh <= (int)rtx::frame::kMaxHeight &&
                                 lstride >= (std::uint32_t)lw * 4u &&
                                 (size_t)lstride * (size_t)lh <= (size_t)rtx::frame::kMaxBytes) {
-                                // Dirty rect covers only the latest publish; skipped publishes force a full upload.
                                 bool contiguous = (fid0 == s_uiFrameId + 1);
                                 int dx = contiguous ? g_frame->dirty_x : 0;
                                 int dy = contiguous ? g_frame->dirty_y : 0;

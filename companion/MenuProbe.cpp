@@ -299,8 +299,6 @@ bool EntryVec(std::uint64_t mgr, std::uint64_t& begin, std::uint64_t& count) {
     return count > 0;
 }
 
-// ---- hover-target dump --------------------------------------------------------------------
-// Raw-word dump of the hover-target block; the entity name is the only string in it (+0x80).
 void HoverDump(std::uint64_t mgr) {
     std::uint64_t b = 0, e = 0;
     if (!Rd(mgr + 0x1380, &b, 8) || !Rd(mgr + 0x1388, &e, 8)) return;
@@ -333,8 +331,6 @@ void Publish(std::uint64_t mgr) {
     std::uint64_t begin = 0, count = 0;
     if (!EntryVec(mgr, begin, count)) return;      // menu closed: keep what was last captured
 
-    // Stage into locals and commit only once the capture is accepted; the share latches the last
-    // accepted menu so the panel stays usable after the menu closes.
     rtx::menu::Entry stage[rtx::menu::kMaxEntries];
     char buf[288];
     std::uint32_t out = 0;
@@ -378,12 +374,10 @@ void Publish(std::uint64_t mgr) {
         }
     if (!targeted) return;                          // empty ground: Cancel + Walk here only
 
-    // Same object with fewer options = menu decaying as the cursor leaves; keep the fuller capture.
     const bool sameObject = first && g_share->lastTarget[0] &&
                             std::strncmp(first, g_share->lastTarget, rtx::menu::kTargetLen) == 0;
     if (sameObject && targeted < g_share->lastTargeted) return;
 
-    // Commit the handle with the entries it belongs to (never keep-last-nonzero).
     {
         std::uint64_t tb = 0, te = 0;
         std::uint32_t h = 0;
@@ -401,7 +395,6 @@ void Publish(std::uint64_t mgr) {
     ++g_share->diag[0];
 }
 
-// Strip colour tags so record targets compare against the plain names rules are written with.
 void StripTags(const char* in, char* out) {
     std::size_t o = 0;
     bool skip = false;
@@ -414,7 +407,6 @@ void StripTags(const char* in, char* out) {
 }
 
 // Reorder: permuting whole 16-byte records is refcount-neutral. "Top of menu" = end of array.
-// Stable: unpinned entries keep their relative order.
 struct Lane { std::uint64_t begin, end; int stat; const char* name; };
 // Only the drawn menu (+0x90) and +0x3b8, which FUN_14012d660 copies over +0x90 wholesale for
 // interface/inventory menus. Do not add the subset lanes (+0x6e0, +0xa08, +0xd30, +0x13a0):
@@ -424,11 +416,8 @@ const Lane kLanes[] = {
     { 0x03B8, 0x03C0, 4, "iface" },
 };
 
-// Rank each record by the rule list and mark structural slots (Cancel / Walk here), which must
-// keep their exact storage index because the game repositions them at draw time.
 bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* rank,
               bool* fixedSlot) {
-    // Any targeted entry means a world menu, where targetless entries are structural.
     bool anyTargeted = false;
     for (int k = 0; k < n && !anyTargeted; ++k) {
         std::uint64_t t = 0;
@@ -442,8 +431,6 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         }
     }
     char verb[288], raw[288], tgt[rtx::menu::kTargetLen];
-    // Snapshot pins under the launcher's odd/even seqlock (MenuSwap.cpp SetPins); after 8 tries
-    // use the last copy rather than stall the menu.
     static rtx::menu::Pin pinsLocal[rtx::menu::kMaxPins];
     std::uint32_t pins = 0;
     for (int tries = 0; tries < 8; ++tries) {
@@ -471,8 +458,6 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         std::uint64_t tstr = 0;
         std::memcpy(&tstr, recs[i] + kRecTarget, 8);     // already copied out with the record
         if (tstr && ReadEastl(tstr, raw, sizeof(raw), &hp) > 0) StripTags(raw, tgt);
-        // Structural = bottom entry, plus any targetless entry in a menu that has targets.
-        // Interface menus have no targets at all, so there only Cancel is fixed.
         if (i == 0 || (anyTargeted && !tgt[0])) { fixedSlot[i] = true; continue; }
         for (std::uint32_t p = 0; p < pins; ++p) {
             if (std::strncmp(verb, pinsLocal[p].verb, rtx::menu::kVerbLen) != 0) continue;
@@ -483,8 +468,6 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
             break;
         }
     }
-    // Top-verb gate: if a rule's first pin is absent from this menu (same name, different context,
-    // e.g. backpack vs bank), ignore every pin of that target rather than apply it in part.
     {
         bool pinMatched[rtx::menu::kMaxPins] = {};
         for (int i = 0; i < n; ++i)
@@ -535,8 +518,6 @@ void ApplyOrder(std::uint64_t mgr) {
         if (lane.stat == 0) ++g_share->stage[0];
         if (!RankLane(begin, n, recs, rank, fixedSlot)) continue;
 
-        // Structural rows keep their exact storage index (the game places them on the dispatch
-        // side); movable records permute among movable slots, walked top-of-menu first.
         int m = 0;
         for (int d = 0; d < n; ++d) {
             const int idx = n - 1 - d;
@@ -576,7 +557,6 @@ void ApplyOrder(std::uint64_t mgr) {
 
 }
 
-// An entry's action-class tag and its priority.
 bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio) {
     std::uint64_t q1 = 0;
     tag = 0; prio = 0;
@@ -585,18 +565,9 @@ bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio) {
     return Rd(tag + kTagPrio, &prio, 4);
 }
 
-// Class promotion, the way the client's own shift-to-drop works: swap the pinned entry's class
-// pointer (display +0x38) for the generic promoted op class. The interface builder gives ops 1-5
-// the promoted class (prio 57) and ops 6-10 the demoted one (prio 1007), so Drop / Examine can
-// never rise by permutation alone. The class carries dispatch as well as priority, so it must
-// be the GENERIC op class, never an action-specific one like Use.
 // Gated to the interface demoted class (1007); world demoted classes (1002/1003) have no proven
-// counterpart.
 constexpr std::int32_t  kDemotedIface   = 1007;
 
-// ---- learning which class is the GENERIC op class -------------------------------------------
-// Behavioural signal: the generic op class is the promoted class seen with two or more distinct
-// verbs for an entity type; an action-specific class only ever carries its own verb.
 struct ClassObs {
     std::uint64_t cls;
     std::int32_t  ord;
@@ -629,7 +600,6 @@ void NoteClass(std::uint64_t cls, std::int32_t ord, std::int32_t prio, const cha
     o.verbHash[0] = h; o.verbs = 1;
 }
 
-// The learned generic class for an entity type: promoted, and shared by the most distinct verbs.
 std::uint64_t LearnedGeneric(std::int32_t ord) {
     std::uint64_t best = 0;
     int bestVerbs = 1;                       // a single-verb class is action-specific: never use it
@@ -641,8 +611,6 @@ std::uint64_t LearnedGeneric(std::int32_t ord) {
     return best;
 }
 
-// Structural counterpart: a demoted op class and its promoted twin share a vtable and entity
-// ordinal; take the highest rank in the promoted band (generic sits at the top, 57).
 std::uint64_t g_modEnd = 0;
 
 std::uint64_t ScanCounterpart(std::uint64_t demoted, std::int32_t ord, std::int32_t& outPrio) {
@@ -689,7 +657,6 @@ void PromotePinnedEntry(std::uint64_t mgr) {
             NoteClass(tag, ord, prio, verb);
     }
 
-    // ApplyOrder has just run, so the last record is the row we want as the default.
     const std::uint64_t top = begin + (count - 1) * kRecSize;
     std::uint64_t topTag = 0;
     std::int32_t  topPrio = 0;
@@ -713,7 +680,6 @@ void PromotePinnedEntry(std::uint64_t mgr) {
         return;
     }
 
-    // Structural first; the learned class is a cross-check that wins when it disagrees.
     std::int32_t topOrd = -1;
     Rd(topTag + 0x44, &topOrd, 4);
     std::int32_t  candPrio = 0;
@@ -748,10 +714,7 @@ void PromotePinnedEntry(std::uint64_t mgr) {
 }
 
 // Never write the class PRIORITY (+0x40) instead: the tag is shared by several verbs game-wide,
-// and a priority edit does not move the click.
 
-// Diagnostic: log the display order of every lane. Menus under three entries (idle ground) are
-// skipped without consuming budget.
 int g_laneLog = 0;                        // budget, refilled when the panel is opened
 
 std::uint64_t LaneSig(std::uint64_t mgr) {
@@ -768,7 +731,6 @@ std::uint64_t LaneSig(std::uint64_t mgr) {
 
 void LogLaneTops(std::uint64_t mgr, const char* when) {
     if (g_laneLog <= 0) return;
-    // The snap sample records even a small or empty menu.
     const bool isSnap = (when[0] == 's');
     std::uint64_t mb = 0;
     const int mcount = LaneCount(mgr, kVecs[1], mb);   // kVecs[1] = v_0x90, the drawn menu
@@ -810,7 +772,6 @@ void LogLaneTops(std::uint64_t mgr, const char* when) {
     }
 }
 
-// ---- hover-slot dump -----------------------------------------------------------------------
 // Hover record slots mgr+0x13e0/0x13f0/0x1400/0x1410 hold {base, display} pairs; display =
 // base+0x20, verb at display+0x18, target at display+0x00, type at *(display+0x38)+0x44.
 // The CS2 hover-info op reads 0x13e0 or 0x1410 by a settings byte; the snap rebuilds
@@ -819,7 +780,6 @@ int g_slotLog = 0;                        // budget, re-armed when the panel is 
 
 void DumpHoverSlots(std::uint64_t mgr) {
     if (g_slotLog <= 0) return;
-    // Dedup on content; display pointers are reallocated every tick.
     char verbs[4][64], tgt0[96];
     std::int32_t tys[4];
     static const std::uint64_t kSlots[] = { 0x13E0, 0x13F0, 0x1400, 0x1410 };
@@ -833,7 +793,6 @@ void DumpHoverSlots(std::uint64_t mgr) {
         std::uint64_t tag = 0;
         if (Rd(q1 + 0x38, &tag, 8) && tag) Rd(tag + 0x44, &tys[i], 4);
     }
-    // +0x90 top three (display order) post-snap, with class priority and op index per row.
     std::uint64_t b90 = 0;
     const int n90 = LaneCount(mgr, kVecs[1], b90);
     char top[3][64];
@@ -891,7 +850,6 @@ void DumpHoverSlots(std::uint64_t mgr) {
     }
 }
 
-// Fallback manager capture; string-init usually runs before the companion attaches.
 void __fastcall Detour_Init(std::uint64_t mgr) {
     g_mgr = mgr;
     g_origInit(mgr);
@@ -900,8 +858,6 @@ void __fastcall Detour_Init(std::uint64_t mgr) {
 typedef void(__fastcall* Build_t)(std::uint64_t, std::uint32_t, std::uint32_t, std::uint8_t);
 Build_t g_origBuild = nullptr;
 
-// Snapshot function (rcx = manager): copies the top menu record into the hover fields. Reorder
-// and promote at entry so its own snapshot picks up our order.
 typedef std::uint64_t(__fastcall* Snap_t)(std::uint64_t);
 Snap_t g_origSnap = nullptr;
 
@@ -919,12 +875,10 @@ std::uint64_t __fastcall Detour_Snap(std::uint64_t mgr) {
     return r;
 }
 
-// Per-tick menu builder (rcx = manager, 4 args). The array is rebuilt every tick, so the
-// reorder must run after each build.
+// Per-tick menu builder (rcx = manager, 4 args); the array is rebuilt every tick.
 void __fastcall Detour_Build(std::uint64_t ctx, std::uint32_t a2, std::uint32_t a3, std::uint8_t a4) {
     if (g_mgr) LogLaneTops(g_mgr, "pre");
     g_origBuild(ctx, a2, a3, a4);
-    // Use the captured pointer, not ctx, so a signature surprise cannot misdirect the write.
     const std::uint64_t mgr = g_mgr;
     if (mgr) {
         ApplyOrder(mgr);
@@ -1005,7 +959,6 @@ void Poll() {
     const std::uint64_t mgr = g_mgr;
     if (!mgr) return;
 
-    // Re-arm the dump budgets on each panel open (kEnablePanel exactly, not background publish).
     {
         static bool wasOn = false;
         const bool on = g_share && g_share->enable == rtx::menu::kEnablePanel;
@@ -1021,7 +974,6 @@ void Poll() {
     }
     if (g_dumps >= kMaxDumps) return;
 
-    // One dump per distinct menu.
     std::uint64_t sig = 0;
     bool anything = false;
     for (const Vec& v : kVecs) {
@@ -1058,7 +1010,6 @@ void Poll() {
             for (std::uint64_t i = 0; i * 16 < span; ++i) {
                 std::uint64_t q[2] = { 0, 0 };
                 if (!Rd(b + i * 16, q, 16)) continue;
-                // The string resolves as either an EASTL heap string or a raw {ptr,size}.
                 std::uint32_t k32[4] = { 0, 0, 0, 0 };
                 Rd(q[0], k32, sizeof(k32));
                 std::uint64_t sp = 0, ss = 0;
@@ -1082,7 +1033,6 @@ void Poll() {
                     (unsigned long long)i, k32[2], line);
                 Log("             obj=%016llx  tgt=%016llx", 
                     (unsigned long long)q[0], (unsigned long long)q[1]);
-                // Scan the action object for strings (verb lives inside it, not in the record).
                 char t2[288];
                 for (std::uint64_t o2 = 0; o2 + 0x18 <= 0x140; o2 += 8) {
                     bool hp = false;

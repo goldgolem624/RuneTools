@@ -8,7 +8,6 @@
 
 #pragma comment(lib, "bcrypt.lib")
 
-// Per-machine secret for sealing at-rest data; never sent over the network.
 // SHA-256(volumeSerial(C:) | MachineGuid | computerName), 64 hex chars.
 
 namespace rtx::shared {
@@ -70,7 +69,6 @@ inline std::string Sha256Hex(const std::string& data) {
         return {};
     }
     UCHAR digest[32]{};
-    // One-shot BCryptHash avoids sizing a hash-object buffer.
     NTSTATUS st = BCryptHash(
         hAlg, nullptr, 0,
         reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),

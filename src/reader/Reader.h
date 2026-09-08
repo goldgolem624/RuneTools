@@ -131,7 +131,6 @@ struct OverlayFrame {
     // Gameview rect in interface space: varcs (view 1000) x 3005, y 3006, w 3001, h 3002; fallback widget 1477:27->28.
     int gv_x = 0, gv_y = 0, gv_w = 0, gv_h = 0;
     int lc_w = 0, lc_h = 0;
-    // Interface Scaling: setting 481 -> enum 488. 0 = underivable this frame.
     float ui_scale = 0.0f;
 };
 
@@ -175,7 +174,6 @@ std::string LocMorphsJson(std::uint32_t pid, const std::string& ids_csv);
 std::string VarpsJson(std::uint32_t pid, const std::string& ids_csv);
 std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv);
 
-// member = PLAYERMEMBER engine-op state off MainData; premier = varbit 50572.
 std::string MembershipJson(std::uint32_t pid);
 
 std::string VarpsDumpAllJson(std::uint32_t pid);
@@ -214,7 +212,6 @@ std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite);
 int CompassHeadingValue(std::uint32_t pid);
 std::string CompassTargetJson(std::uint32_t pid);
 
-// Scan-clue tile: inbound opcode 83, payload 02 00 00 xHi xLo yHi yLo 14 00 96 FF FF FF FF (needs the netprobe hook).
 std::string ScanSolutionJson(std::uint32_t pid);
 // Hover target from the engine slot *(input_proc+0x13F8).
 std::string HoverEntityJson(std::uint32_t pid);

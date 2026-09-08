@@ -25,7 +25,6 @@ constexpr char          kMagic[4]  = { 'R', 'T', 'X', 'E' };
 constexpr std::uint16_t kVersion   = 2;
 constexpr std::size_t   kHeaderLen = 4 + 2 + crypto::kNonceBytes + crypto::kTagBytes;
 
-// Fixed salt: secrecy comes from the fingerprint-derived key and the per-write random nonce.
 constexpr std::uint8_t kSalt[crypto::kSaltBytes] = {
     0x52,0x54,0x58,0x42, 0x6e,0x6b,0x76,0x31, 0xa7,0x3c,0x91,0x5e, 0x0d,0xf2,0x84,0x6b
 };
@@ -47,7 +46,6 @@ std::string sanitize(const std::string& name) {
     return out.empty() ? "unknown" : out;
 }
 
-// AES key derived from the stable machine fingerprint, memoised.
 std::mutex                g_key_mu;
 std::vector<std::uint8_t> g_key;
 std::string               g_key_for;

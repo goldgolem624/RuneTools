@@ -45,7 +45,6 @@ std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_byte
             p.rotation = data & 0x3;
             out.push_back(p);
 
-            // Extra block when attribute bit 0x80 is set; sub-data bits select trailing u16s.
             if (data >= 0x80) {
                 int sub = s.ReadUnsignedByte();
                 if (sub != 0) {

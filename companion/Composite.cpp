@@ -15,7 +15,6 @@
 namespace rtx::composite {
 namespace {
 
-// ---- GL3+ types / enums not present in the 1.1 <GL/gl.h> on Windows ----------
 typedef unsigned int  GLuint_l;
 typedef int           GLint_l;
 typedef unsigned int  GLenum_l;
@@ -47,7 +46,6 @@ using PFN_glActiveTexture           = void (APIENTRY*)(GLenum_l);
 using PFN_glBlendFuncSeparate       = void (APIENTRY*)(GLenum_l, GLenum_l, GLenum_l, GLenum_l);
 using PFN_glBlendEquationSeparate   = void (APIENTRY*)(GLenum_l, GLenum_l);
 
-// GL >= 1.2 / 1.4 / 2.0 / 3.0 enums absent from the 1.1 header.
 #define GL_ARRAY_BUFFER          0x8892
 #define GL_DYNAMIC_DRAW          0x88E8
 #define GL_VERTEX_SHADER         0x8B31
@@ -113,7 +111,6 @@ GLuint g_solid_prog = 0;
 GLuint g_vao        = 0;
 GLuint g_vbo        = 0;
 GLint  g_loc_color  = -1;
-// Textured sidebar path.
 GLuint g_tex_prog   = 0;
 GLuint g_tex_vao    = 0;
 GLuint g_tex_vbo    = 0;
@@ -121,7 +118,6 @@ GLuint g_tex        = 0;
 int    g_tex_w      = 0;
 int    g_tex_h      = 0;
 GLint  g_loc_sampler = -1;
-// Glyph atlas: GL_RED coverage texture + tint shader, built lazily on first label draw.
 GLuint g_glyph_prog  = 0;
 GLuint g_glyph_tex   = 0;
 GLint  g_loc_glyph_color = -1;
@@ -162,7 +158,6 @@ void ResolveAll() {
                  pVertexAttribPointer && pBindVertexArray && pActiveTexture && pUniform1i;
 }
 
-// Solid quad, NDC positions; fragment premultiplies by alpha for the compositor blend.
 const char* kVertSrc = R"GLSL(#version 330 core
 layout(location = 0) in vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
@@ -189,7 +184,6 @@ uniform sampler2D u_tex;
 void main() { frag = texture(u_tex, v_uv); }
 )GLSL";
 
-// Glyph: red-channel coverage, tinted and premultiplied.
 const char* kGlyphFragSrc = R"GLSL(#version 330 core
 in vec2 v_uv;
 out vec4 frag;
@@ -229,7 +223,6 @@ void SaveState(SavedState& s) {
     if (pActiveTexture) pActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D_E, &s.texture_2d);
     glGetIntegerv(GL_VIEWPORT,             s.viewport);
-    // The game may leave nonzero ROW_LENGTH/SKIP or a bound PBO; both would break uploads.
     glGetIntegerv(GL_UNPACK_ROW_LENGTH_E,           &s.unpack_row_length);
     glGetIntegerv(GL_UNPACK_ALIGNMENT_E,            &s.unpack_alignment);
     glGetIntegerv(GL_UNPACK_SKIP_ROWS_E,            &s.unpack_skip_rows);
@@ -241,7 +234,6 @@ void SaveState(SavedState& s) {
     glGetIntegerv(GL_BLEND_DST_ALPHA,      &s.blend_dst_alpha);
     glGetIntegerv(GL_BLEND_EQUATION_RGB,   &s.blend_equation_rgb);
     glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &s.blend_equation_alpha);
-    // Box as well as enable bit: the game re-enables the test and expects its rectangle intact.
     glGetIntegerv(GL_SCISSOR_BOX, s.scissor_box);
     s.blend   = glIsEnabled(GL_BLEND);
     s.scissor = glIsEnabled(GL_SCISSOR_TEST);
@@ -277,7 +269,6 @@ void RestoreState(const SavedState& s) {
     if (pBindBuffer) pBindBuffer(GL_PIXEL_UNPACK_BUFFER_E, (GLuint_l)s.pixel_unpack_buffer);
 }
 
-// Rasterise the ASCII glyph atlas once (GDI) into a GL_RED coverage texture. Render thread only.
 void EnsureGlyphAtlas() {
     if (g_atlas_ready || !g_have_gl) return;
     g_atlas_ready = true;   // attempt once; on failure glyphs never draw
@@ -304,7 +295,6 @@ void EnsureGlyphAtlas() {
     HGDIOBJ oldBmp = SelectObject(memDC, dib);
     std::memset(bits, 0, (size_t)aw * ah * 4);   // black, transparent
 
-    // ANTIALIASED, not ClearType: per-channel fringe would tint the white text.
     HFONT font = CreateFontW(-(chh - 13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
                              ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
@@ -316,7 +306,6 @@ void EnsureGlyphAtlas() {
         int col = i % cols, row = i / cols;
         SIZE sz{};
         GetTextExtentPoint32W(memDC, &wc, 1, &sz);
-        // Left-aligned in the cell so [0, adv] can be cropped by UV.
         int adv = sz.cx; if (adv < 1) adv = 1; if (adv > cw) adv = cw;
         g_glyph_adv[i] = adv;
         int tx = col * cw;                       // left-aligned
@@ -374,7 +363,6 @@ void EnsureGL() {
     pEnableVertexAttribArray(0);
     pBindVertexArray(0);
 
-    // Textured program + (pos.xy, uv.xy) quad + the persistent sidebar texture.
     GLuint tvs = CompileShader(GL_VERTEX_SHADER,   kTexVertSrc);
     GLuint tfs = CompileShader(GL_FRAGMENT_SHADER, kTexFragSrc);
     g_tex_prog = pCreateProgram();
@@ -404,7 +392,6 @@ void EnsureGL() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Glyph tint program shares the textured vertex shader and VAO/VBO.
     GLuint gvs = CompileShader(GL_VERTEX_SHADER,   kTexVertSrc);
     GLuint gfs = CompileShader(GL_FRAGMENT_SHADER, kGlyphFragSrc);
     g_glyph_prog = pCreateProgram();
@@ -420,7 +407,6 @@ void EnsureGL() {
                  g_tex_prog != 0 && g_tex_vao != 0 && g_tex != 0);
 }
 
-// glViewport only when the size changes; Begin() resets the tracker.
 int g_vp_w = -1, g_vp_h = -1;
 inline void SetViewport(int w, int h) {
     if (w == g_vp_w && h == g_vp_h) return;
@@ -431,12 +417,10 @@ inline void SetViewport(int w, int h) {
 void Begin() {
     ResolveAll();
     if (!g_resolved) return;
-    // Save before EnsureGL() creates or binds anything.
     SaveState(g_saved);
     g_active = true;
     EnsureGL();
     if (!g_have_gl) return;
-    // Draw state is set once per frame; per-primitive draws touch only colour, verts, viewport.
     glEnable(GL_BLEND);
     if (pBlendEquationSeparate) pBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
     if (pBlendFuncSeparate)     pBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
@@ -445,7 +429,6 @@ void Begin() {
     glDisable(GL_CULL_FACE);
     glDisable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);
-    // Uploads assume tightly packed client memory and no PBO.
     if (pBindBuffer) pBindBuffer(GL_PIXEL_UNPACK_BUFFER_E, 0);
     glPixelStorei(GL_UNPACK_ROW_LENGTH_E, 0);
     glPixelStorei(GL_UNPACK_SKIP_ROWS_E, 0);
@@ -468,7 +451,6 @@ void DrawSolidRect(int x, int y, int w, int h,
                    int fb_w, int fb_h) {
     if (!g_have_gl || fb_w <= 0 || fb_h <= 0 || w <= 0 || h <= 0) return;
 
-    // Client px -> NDC, Y flipped.
     float L = (float)x / (float)fb_w * 2.0f - 1.0f;
     float R = (float)(x + w) / (float)fb_w * 2.0f - 1.0f;
     float T = 1.0f - (float)y / (float)fb_h * 2.0f;
@@ -561,14 +543,12 @@ void DrawGlyph(int cell, float x, float y, float w, float h,
     pBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-    // Back to the solid state Begin() established.
     glBindTexture(GL_TEXTURE_2D, 0);
     pUseProgram(g_solid_prog);
     pBindVertexArray(g_vao);
     pBindBuffer(GL_ARRAY_BUFFER, g_vbo);
 }
 
-// Rounded rect as a centroid triangle fan, SEG segments per corner.
 static void DrawRoundFill(float x, float y, float w, float h, float rad,
                           float r, float g, float b, float a, int fb_w, int fb_h) {
     if (!g_have_gl || fb_w <= 0 || fb_h <= 0 || w <= 0.f || h <= 0.f) return;
@@ -621,7 +601,6 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     const float cellH  = (float)chh * scale;
     const float track  = 0.6f * scale;
 
-    // Up to 4 lines split on '\n', one panel, centred.
     const char* lstart[4]; int llen[4]; int nl = 0;
     const char* st = s;
     for (const char* p = s;; ++p) {
@@ -649,7 +628,6 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     if (glyphsTotal == 0) return;
 
     // Panel chrome: #0B0D12 @ 0.90, 1px hairline in the caller's colour, fixed 5px radius
-    // (small enough that the un-AA'd 5-segment arc never shows), shadow straight down.
     const float padX = 8.0f, padY = 5.0f;
     const float lineH = cellH * 0.92f;
     const float pillW = maxW + padX * 2.0f;
@@ -661,7 +639,6 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     DrawRoundFill(pillX - 1.0f, pillY - 1.0f, pillW + 2.0f, pillH + 2.0f, rad + 1.0f, ar, ag, ab, aa, fb_w, fb_h);
     DrawRoundFill(pillX, pillY, pillW, pillH, rad, 0.043f, 0.051f, 0.071f, 0.90f, fb_w, fb_h);
 
-    // All glyph quads in one upload + draw.
     SetViewport(fb_w, fb_h);
     pUseProgram(g_glyph_prog);
     if (g_loc_glyph_tex >= 0) pUniform1i(g_loc_glyph_tex, 0);
@@ -728,7 +705,6 @@ void DrawPlainText(const char* s, float x, float y, float text_px, int align,
     const float cellH  = (float)chh * scale;
     const float track  = 0.6f * scale;
 
-    // Single line, stops at '\n'. Measured with real advances so alignment is exact.
     float tw = 0.0f; int glyphs = 0;
     for (const char* p = s; *p && *p != '\n'; ++p) {
         unsigned char ch = (unsigned char)*p;
@@ -803,7 +779,6 @@ void UploadUiLayer(const void* bgra, int w, int h, int stride,
         g_tex_h = h;
         return;
     }
-    // Dirty sub-rect only, clamped.
     if (dx < 0) { dw += dx; dx = 0; }
     if (dy < 0) { dh += dy; dy = 0; }
     if (dx + dw > w) dw = w - dx;
@@ -819,7 +794,6 @@ void UploadUiLayer(const void* bgra, int w, int h, int stride,
 void DrawUiLayer(int dst_x, int dst_y, int fb_w, int fb_h) {
     if (!g_have_gl || fb_w <= 0 || fb_h <= 0) return;
     if (g_tex_w <= 0 || g_tex_h <= 0) return;
-    // Texture's own size, never the share's live size: that would scale a stale texture mid-resize.
     int dst_w = g_tex_w, dst_h = g_tex_h;
 
     float L = (float)dst_x / (float)fb_w * 2.0f - 1.0f;
@@ -854,7 +828,6 @@ void DrawUiLayer(int dst_x, int dst_y, int fb_w, int fb_h) {
     pBindVertexArray(0);
 }
 
-// HUD sprite: own texture, straight-alpha RGBA.
 GLuint g_hud_tex = 0; int g_hud_w = 0, g_hud_h = 0;
 
 void UploadHud(const void* rgba, int w, int h) {
@@ -900,7 +873,6 @@ void DrawHud(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h) {
     pBindBuffer(GL_ARRAY_BUFFER, g_tex_vbo);
     pBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    // Restore Begin() state including the premultiplied blend func, else later draws blend alpha twice.
     if (pBlendFuncSeparate) pBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
                                                GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glBindTexture(GL_TEXTURE_2D, 0);

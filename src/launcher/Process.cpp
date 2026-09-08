@@ -59,7 +59,6 @@ std::vector<Info> ScanRsClients() {
                 pi.x64  = is_x64(h);
                 CloseHandle(h);
             } else {
-                // Access denied (client launched elevated): still listable via QUERY_LIMITED_INFORMATION.
                 if (GetLastError() == ERROR_ACCESS_DENIED) pi.accessible = false;
                 pi.x64 = true;
                 HANDLE h2 = OpenProcess(
@@ -187,7 +186,6 @@ std::unordered_map<std::string, std::string> ReadJxEnv(std::uint32_t pid) {
 
         const wchar_t* eq = nullptr;
         for (size_t i = 0; i < len; ++i) {
-            // Skip leading '=' (per-drive cwd entries like "=C:").
             if (i > 0 && p[i] == L'=') { eq = p + i; break; }
         }
         if (eq) {

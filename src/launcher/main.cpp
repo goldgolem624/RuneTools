@@ -81,19 +81,15 @@ bool preload_ultralight_dlls(const std::filesystem::path& self) {
     return true;
 }
 
-// Borderless frame subclass: WM_NCCALCSIZE claims the whole window as client, WM_NCHITTEST
-// hands the 8px edges to the OS for resize. Dragging comes from the page (winCmd HTCAPTION).
 static WNDPROC g_launcherPrevProc = nullptr;
 static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
     case WM_NCACTIVATE:
-        // lParam -1 skips the frame repaint on activation changes.
         return DefWindowProcW(h, m, w, (LPARAM)-1);
     case WM_NCCALCSIZE:
         if (w) {
             auto* pr = reinterpret_cast<NCCALCSIZE_PARAMS*>(l);
             if (IsZoomed(h)) {
-                // Maximized: the OS extends the frame past the monitor edge; inset by it.
                 const int fx = GetSystemMetrics(SM_CXFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
                 const int fy = GetSystemMetrics(SM_CYFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
                 pr->rgrc[0].left += fx; pr->rgrc[0].right  -= fx;
@@ -103,7 +99,6 @@ static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         break;
     case WM_GETMINMAXINFO: {
-        // Minimum usable layout size, DPI-scaled.
         LRESULT r0 = CallWindowProcW(g_launcherPrevProc, h, m, w, l);
         using DpiFn = UINT(WINAPI*)(HWND);
         static DpiFn dpiFn = reinterpret_cast<DpiFn>(
@@ -150,8 +145,7 @@ public:
         Settings settings;
         settings.app_name       = String("RuneToolsX");
         settings.developer_name = String("RuneTools");
-        // CPU renderer by default: with many game clients the D3D11 path exhausts VRAM and crashes
-        // the games too. RTX_GPU_RENDER=1 switches to D3D11.
+        // RTX_GPU_RENDER=1 switches to D3D11; the CPU renderer is the default.
         bool useGpu = false;
         {
             char buf[8] = {0};
@@ -165,8 +159,6 @@ public:
 
         Config config;
         config.resource_path_prefix = String(resources.c_str());
-        // Without a writable cache_path WebKit storage (localStorage etc.) is a silent no-op.
-        // %LOCALAPPDATA%\RuneToolsX\webcache, exe-relative fallback.
         {
             std::filesystem::path cacheDir;
             wchar_t* lad = nullptr;
@@ -189,8 +181,7 @@ public:
         if (!app_) { fatal("App::Create returned null"); return; }
 
         auto client_html = (self / "client.html").string();
-        // Dev override for the panel UI (hot-reload from a checkout): RTX_UI_DIR env var, else
-        // the first line of rtx_ui_dev.txt next to the exe.
+        // Panel UI dev override: RTX_UI_DIR env var, else the first line of rtx_ui_dev.txt next to the exe.
         bool uiDev = false;
         {
             std::string dir;
@@ -218,7 +209,6 @@ public:
         app_->set_listener(this);
 
         boot_log("Window::Create...");
-        // Borderless: the page draws its own title bar (min/close via the bridge's winCmd).
         window_ = Window::Create(app_->main_monitor(), 1060, 700, false,
                                  kWindowFlags_Borderless |
                                  kWindowFlags_Resizable);
@@ -229,7 +219,6 @@ public:
         HWND hwnd = static_cast<HWND>(window_->native_handle());
         rtx::launcher::SetLauncherWindow(hwnd);
         if (hwnd) {
-            // WS_THICKFRAME keeps resize edges; WS_MINIMIZEBOX + WS_SYSMENU keep taskbar minimize and Win+Down.
             LONG_PTR st = GetWindowLongPtrW(hwnd, GWL_STYLE);
             st |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_SYSMENU;
             SetWindowLongPtrW(hwnd, GWL_STYLE, st);
@@ -238,7 +227,6 @@ public:
                                   reinterpret_cast<LONG_PTR>(LauncherFrameProc)));
             SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-            // Win11 draws a 1px system border; DWMWA_COLOR_NONE removes it. Square corners match the page.
             { COLORREF border = DWMWA_COLOR_NONE;
               DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border, sizeof(border));
               DWORD pref = DWMWCP_DONOTROUND;
@@ -261,10 +249,8 @@ public:
             BringWindowToTop(hwnd);
             SetActiveWindow(hwnd);
 
-            // Keep the run loop ticking when idle so OnUpdate (dock::Tick) runs without input.
             SetTimer(hwnd, 1, 100, nullptr);
 
-            // Tray icon + minimize-to-tray for the launcher window only.
             rtx::winnotify::EnableTray(hwnd);
         }
 
@@ -296,12 +282,10 @@ public:
         if (overlay_) overlay_->Resize(w, h);
     }
 
-    // Each run-loop iteration, main thread.
     void OnUpdate() override {
         rtx::launcher::dock::Tick();
     }
 
-    // The launcher page holds the full native bridge; remote main-frame navigation is never legitimate.
     static bool local_url(const String& url) {
         String8 u8 = url.utf8();
         std::string u(u8.data(), u8.length());
@@ -313,8 +297,6 @@ public:
             boot_log("BLOCKED main-frame navigation off the launcher page");
         }
     }
-    // Attach on both events: window-object-ready can fire only for the initial about:blank
-    // context, so DOM-ready is the fallback. Both are idempotent.
     void OnWindowObjectReady(View* view, uint64_t, bool is_main,
                              const String& url) override {
         if (!is_main || !local_url(url)) return;
@@ -336,9 +318,6 @@ private:
 
 }  // namespace
 
-// Per-monitor DPI awareness, declared before any window exists: overlay coordinates are mixed
-// with the game's physical pixels, so a DPI-virtualized process lands overlays off target.
-// Resolved dynamically; falls back v2 -> per-monitor v1 -> system-aware.
 void DeclareDpiAwareness() {
     using SetCtxFn = BOOL(WINAPI*)(HANDLE);
     auto setCtx = reinterpret_cast<SetCtxFn>(
@@ -368,9 +347,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     // Named mutex matching the installer's AppMutex (RuneToolsX.iss); held for the process lifetime.
     CreateMutexW(nullptr, FALSE, L"RuneToolsXLauncher");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // Two launchers would publish into the same overlay sections; hand focus to the existing one.
         boot_log("another RuneToolsX launcher is already running; asking it to show itself and exiting");
-        // The tray window (WinNotify.cpp) is message-only, so look it up by class under HWND_MESSAGE.
         const UINT showMain = RegisterWindowMessageW(L"RuneToolsX.ShowMain");
         AllowSetForegroundWindow(ASFW_ANY);
         HWND tray = nullptr; int sent = 0;
@@ -391,13 +368,10 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
-    // After AppCore.dll is loaded and before App::Create.
     boot_log(rtx::launcher::InstallMonitorInfoFix()
                  ? "GetMonitorInfoW fix installed in AppCore.dll"
                  : "GetMonitorInfoW fix NOT installed (import not found)");
 
-    // Load the companion as soon as a client appears: a later setup misses the startup scene pass
-    // that records render-pass slots. Idempotent.
     static std::atomic<bool> g_scan_stop{false};
     std::thread([] {
         while (!g_scan_stop.load()) {
@@ -420,7 +394,6 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     try {
         LauncherApp app;
         app.Run();
-        // Flag shutdown so a thread that faults during teardown is not logged as a crash.
         rtx::log::BeginShutdown();
         rtx::overlay::Stop();
         rtx::launcher::dock::Shutdown();
@@ -435,8 +408,6 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         return 1;
     }
     boot_log("=== Clean exit ===");
-    // TerminateProcess, never the CRT exit path: WebCore teardown or a worker blocked in a send to
-    // a dead client keeps the process alive with the exe locked.
     TerminateProcess(GetCurrentProcess(), 0);
     return 0;   // unreachable
 }

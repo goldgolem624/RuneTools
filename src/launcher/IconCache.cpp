@@ -25,7 +25,6 @@ namespace rtx::launcher::icons {
 
 namespace {
 
-// One bundled RTIP pack: lazily indexed, per-id data URLs memoized ("" = known miss).
 struct Pack {
     const wchar_t*                       file;
     std::mutex                           mu;
@@ -36,12 +35,10 @@ struct Pack {
     std::vector<std::uint32_t>           off, len;
     std::uint32_t                        present = 0;   // index entries with len > 0
 };
-// Requested-but-absent item ids (id -> request count), capped.
 std::mutex                   g_miss_mu;
 std::unordered_map<int, int> g_misses;
 constexpr std::size_t        kMissCap = 10000;
 Pack g_items_pack { L"items.pack" };
-// Offline-rendered icons for items the bundled pack predates; shipped like items.pack.
 Pack g_extra_pack { L"items_extra.pack" };
 Pack g_model_pack { L"modelicons.pack" };
 
@@ -89,7 +86,6 @@ const char* sniff_mime(const std::vector<unsigned char>& b) {
     return "image/gif";            // library default (GIF87a/GIF89a)
 }
 
-// Index only.
 bool PackHas(Pack& p, int item_id) {
     if (item_id <= 0) return false;
     std::lock_guard<std::mutex> lk(p.mu);
@@ -142,7 +138,6 @@ std::wstring sanitize_version(const std::string& v) {
     return out;
 }
 
-// Newest version directory by mtime, for a launcher with no client attached.
 std::wstring newest_dir() {
     std::wstring root = icons_root();
     if (root.empty()) return {};
@@ -187,7 +182,6 @@ std::wstring active_dir() {
     return g_dir;
 }
 
-// Rendered PNG path for the id, memoized.
 std::mutex                            g_ren_mu;
 std::unordered_map<int, std::wstring> g_ren_path;
 std::wstring rendered_png(int item_id) {
@@ -210,7 +204,6 @@ std::wstring rendered_png(int item_id) {
     return path;
 }
 
-// Rendered PNG -> data URL, memoized.
 std::mutex                           g_ren_url_mu;
 std::unordered_map<int, std::string> g_ren_url;
 std::string rendered_icon_url(int item_id) {

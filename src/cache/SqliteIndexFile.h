@@ -14,9 +14,6 @@ struct sqlite3_stmt;
 
 namespace rtx::cache {
 
-// One .jcache (SQLite) file: cache_index KEY=1 -> reference-table blob; cache KEY=<archive_id>
-// -> archive blob. One READONLY connection, dropped on BUSY/LOCKED/IOERR so the official
-// launcher can take exclusive access; reopened on the next call.
 
 class SqliteIndexFile {
 public:
@@ -31,17 +28,12 @@ public:
     bool                ready()    const     { return ref_table_ != nullptr; }
     const ReferenceTable& ref()   const     { return *ref_table_; }
 
-    // Decompressed bytes of one file, or empty. Decoded archives are LRU-cached under a byte
-    // budget; failed decodes are not retried.
     std::vector<std::uint8_t> ReadFile(int archive_id, int file_id);
 
-    // Raw archive blob from the `cache` table, no decompression or ref-table validation.
     std::vector<std::uint8_t> ReadRawArchive(int archive_id);
 
-    // Archive ids present in the SQLite table, ascending from `from_key`, at most `limit`.
     std::vector<int> ArchiveIdsFrom(int from_key, int limit) const;
 
-    // Health reporting.
     std::size_t CachedBytes()     const;
     int         FailedArchives()  const;
 
@@ -58,7 +50,6 @@ private:
     std::vector<std::uint8_t> FetchArchiveBlob(int archive_id);
     bool ArchiveHasFile(int archive_id, int file_id) const;
 
-    // Connection handling (const so ArchiveIdsFrom can stay const).
     bool          EnsureDb() const;          // lazy open; false if it cannot open
     sqlite3_stmt* Prepare(const char* sql, sqlite3_stmt*& cached) const;
     void          DropDb() const;            // close + forget statements

@@ -39,7 +39,6 @@ bool looks_like_png(const std::vector<std::uint8_t>& b) {
     return b.size() >= 8 && b[0]==0x89 && b[1]==0x50 && b[2]==0x4E && b[3]==0x47;
 }
 
-// Decode the footer-based sprite formats (0 = paletted, 1 = raw RGB) into one RGBA frame.
 bool decode_frame(const std::vector<std::uint8_t>& bytes, Frame& out, int frame = 0) {
     if (bytes.size() < 2) return false;
     Reader br(bytes.data(), bytes.size());
@@ -157,8 +156,6 @@ void put_chunk(std::vector<std::uint8_t>& png, const char tag[4],
     put_be32(png, crc);
 }
 
-// ---- Minimal deflate (single fixed-Huffman block, RFC 1951 3.2.6, over hash-chain LZ77) ----
-// The vendored zlib has only the inflate half. Deflate packs bits LSB-first; Huffman codes are MSB-first.
 class BitWriter {
 public:
     void bits(std::uint32_t v, int n) {          // LSB-first: block header, extra bits
@@ -204,7 +201,6 @@ std::vector<std::uint8_t> deflate_fixed(const std::vector<std::uint8_t>& d) {
     w.bits(1, 1);                                 // BFINAL
     w.bits(1, 2);                                 // BTYPE = 01 (fixed Huffman)
     const std::ptrdiff_t n = (std::ptrdiff_t)d.size();
-    // head/prev are window-sized, not input-sized.
     std::vector<std::int32_t> head((std::size_t)kHashSize, -1), prev((std::size_t)kWindow, -1);
     auto h3 = [&](std::ptrdiff_t p) {
         return (int)(((std::uint32_t)d[p] << 10) ^ ((std::uint32_t)d[p + 1] << 5) ^ d[p + 2]) & (kHashSize - 1);
@@ -264,7 +260,6 @@ std::vector<std::uint8_t> zlib_deflate(const std::vector<std::uint8_t>& raw) {
     return z;
 }
 
-// Uncompressed ("stored") zlib stream; used for icons, where deflate is not worth the CPU.
 std::vector<std::uint8_t> zlib_store(const std::vector<std::uint8_t>& raw) {
     std::vector<std::uint8_t> z;
     z.push_back(0x78); z.push_back(0x01);          // zlib header
@@ -312,8 +307,6 @@ std::vector<std::uint8_t> encode_png(const Frame& f) {
 
 }  // namespace
 
-// RGBA in, PNG (colour type 2, no alpha) out. The UP filter does most of the compression
-// work on smooth terrain (~4.3x vs ~1.5x unfiltered).
 std::vector<std::uint8_t> EncodePngRgb(const std::uint8_t* rgba, int w, int h) {
     if (!rgba || w <= 0 || h <= 0) return {};
     const std::size_t stride = (std::size_t)w * 3;
@@ -345,8 +338,6 @@ std::vector<std::uint8_t> EncodePngRgb(const std::uint8_t* rgba, int w, int h) {
     return png;
 }
 
-// Cap the longest side. Area-average (box) filter, alpha-weighted so transparent texels
-// don't darken edges; nearest-sample visibly jaggied detailed sprites.
 void downscale_to(Frame& f, int max_side) {
     if (f.width <= max_side && f.height <= max_side) return;
     double s = (double)max_side / (f.width > f.height ? f.width : f.height);
@@ -407,7 +398,6 @@ std::vector<std::uint8_t> SpriteAsPngScaled(SqliteIndexFile& sprites, int sprite
     return encode_png(f);
 }
 
-// Raw RGBA of a sprite's first frame. Empty (w=h=0) on failure or if the cache stores a PNG.
 std::vector<std::uint8_t> SpriteRawRgba(SqliteIndexFile& sprites, int sprite_id, int& w, int& h) {
     w = h = 0;
     auto raw = sprites.ReadRawArchive(sprite_id);

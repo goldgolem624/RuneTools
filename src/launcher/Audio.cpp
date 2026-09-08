@@ -1,5 +1,3 @@
-// In-process Ogg Vorbis playback for cache audio: stb_vorbis decode (this TU only), waveOut mix.
-// Decoding runs on a worker; the JS bridge calls in on the UI thread, which shares the game's host.
 
 #include "Audio.h"
 
@@ -14,7 +12,6 @@
 
 #pragma comment(lib, "winmm.lib")
 
-// Silence stb_vorbis MSVC warnings for this TU.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4244 4245 4456 4457 4701 4702 4703 4996)
@@ -117,7 +114,6 @@ bool Play(const std::vector<std::vector<std::uint8_t>>& chunks, int volume_pct) 
             short* pcm = nullptr;
             const int frames = stb_vorbis_decode_memory(ogg.data(), (int)ogg.size(), &ch, &hz, &pcm);
             if (frames <= 0 || !pcm) { if (pcm) free(pcm); continue; }
-            // Every chunk of one sound shares a format; stop on mismatch.
             if (!rate) { rate = hz; channels = ch; }
             if (hz != rate || ch != channels) { free(pcm); break; }
             all.insert(all.end(), pcm, pcm + (std::size_t)frames * ch);

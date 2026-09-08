@@ -61,7 +61,6 @@ std::wstring reg_str(HKEY root, const wchar_t* subkey, const wchar_t* value, REG
     return s;
 }
 
-// InstallLocation of a program found by DisplayName across the Uninstall keys (HKLM 64/32, HKCU).
 std::wstring uninstall_install_location(const wchar_t* displayName) {
     const wchar_t* kUninstall = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
     struct Spot { HKEY root; REGSAM view; };
@@ -89,7 +88,6 @@ std::wstring uninstall_install_location(const wchar_t* displayName) {
     return {};
 }
 
-// Steam install dir + every "path" listed in libraryfolders.vdf.
 std::vector<std::wstring> steam_libraries() {
     std::vector<std::wstring> libs;
     std::wstring steam = reg_str(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", 0);
@@ -150,7 +148,6 @@ bool is_runescape_exe(const std::wstring& p) {
     return name == L"runescape.exe";
 }
 
-// Name of the leaf signer: organisation first, common name as a fallback.
 std::string signer_name(PCCERT_CONTEXT cert) {
     if (!cert) return {};
     wchar_t buf[256] = {};
@@ -187,7 +184,6 @@ SignerCheck VerifyGameSigner(const std::wstring& path) {
     WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
 
     if (st != ERROR_SUCCESS) {
-        // Signer name with a failed check = the file was modified after signing.
         if (!out.subject.empty())
             out.reason = "This file has been modified since \"" + out.subject + "\" signed it, so it cannot be trusted.";
         else if (st == TRUST_E_NOSIGNATURE)
@@ -252,19 +248,16 @@ std::wstring AutoRsClientPath() {
     // rs2client.exe; spawning rs2client directly lands on the "no app for rs-launch" dialog.
     std::vector<std::wstring> cands;
 
-    // 1) Jagex Launcher install dir from the registry.
     if (std::wstring jx = uninstall_install_location(L"Jagex Launcher"); !jx.empty()) {
         if (jx.back() != L'\\' && jx.back() != L'/') jx.push_back(L'\\');
         cands.push_back(jx + L"Games\\RuneScape\\RuneScape.exe");
     }
 
-    // 2) Steam libraries.
     for (std::wstring lib : steam_libraries()) {
         if (!lib.empty() && lib.back() != L'\\' && lib.back() != L'/') lib.push_back(L'\\');
         cands.push_back(lib + L"steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe");
     }
 
-    // 3) Standard relative layouts on every fixed drive.
     static const wchar_t* kRel[] = {
         L"Program Files (x86)\\Jagex Launcher\\Games\\RuneScape\\RuneScape.exe",
         L"Program Files\\Jagex Launcher\\Games\\RuneScape\\RuneScape.exe",
@@ -341,7 +334,6 @@ LaunchResult launch_impl(
         rtx::log::Launcher("launch failed: " + r.detail);
         return r;
     }
-    // Checked on every launch: the file can change under us and the env carries session identifiers.
     if (SignerCheck sc = VerifyGameSigner(rs); !sc.ok) {
         r.detail = "Launch refused: " + sc.reason;
         rtx::log::Launcher("launch refused: " + w2u(rs) + " signer=\"" + sc.subject + "\": " + sc.reason);
@@ -378,7 +370,6 @@ LaunchResult launch_impl(
         return r;
     }
     r.pid = pi.dwProcessId;
-    // Kill-on-close job object ties the whole spawned client tree to the launcher's lifetime.
     static HANDLE s_job = [] {
         HANDLE j = CreateJobObjectW(nullptr, nullptr);
         if (j) {

@@ -14,12 +14,10 @@ struct ArchiveEntry {
     int largest_file_id = -1;            // max element of valid_file_ids
 };
 
-// Per-index manifest: which archives exist, files per archive, optional names.
 // Stored zlib-wrapped in the SQLite `cache_index` table at KEY=1.
 
 class ReferenceTable {
 public:
-    // default_file_count: assumed per-archive file count when not encoded (0 = highest id + 1).
     ReferenceTable(int index_id,
                    const std::vector<std::uint8_t>& zlib_wrapped_blob,
                    int default_file_count);

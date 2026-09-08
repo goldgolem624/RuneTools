@@ -8,7 +8,6 @@
 
 namespace rtx::cache {
 
-// ---- connection handling ---------------------------------------------------
 
 bool SqliteIndexFile::EnsureDb() const {
     if (db_) return true;
@@ -31,7 +30,6 @@ void SqliteIndexFile::DropDb() const {
 }
 
 void SqliteIndexFile::NoteResult(int rc) const {
-    // Release the file so the official launcher can take exclusive access; reopen next call.
     const int base = rc & 0xff;
     if (base == SQLITE_BUSY || base == SQLITE_LOCKED || base == SQLITE_IOERR) DropDb();
 }
@@ -64,7 +62,6 @@ std::vector<std::uint8_t> SqliteIndexFile::FetchBlob(const char* sql, sqlite3_st
     return out;
 }
 
-// Archive ids from the SQLite table itself, so it works where the ref table is absent.
 std::vector<int> SqliteIndexFile::ArchiveIdsFrom(int from_key, int limit) const {
     std::vector<int> out;
     if (limit < 1) return out;
@@ -83,7 +80,6 @@ std::vector<int> SqliteIndexFile::ArchiveIdsFrom(int from_key, int limit) const 
     return out;
 }
 
-// ---- lifecycle --------------------------------------------------------------
 
 SqliteIndexFile::SqliteIndexFile(int index_id, std::string jcache_path,
                                  int default_files_per_archive,
@@ -125,10 +121,8 @@ bool SqliteIndexFile::ArchiveHasFile(int archive_id, int file_id) const {
            != a.valid_file_ids.end();
 }
 
-// ---- decoded-archive cache --------------------------------------------------
 
 void SqliteIndexFile::EvictToBudget(std::size_t incoming) {
-    // LRU-evict until the newcomer fits; an archive bigger than the budget is still cached alone.
     while (cached_bytes_ > 0 && cached_bytes_ + incoming > byte_budget_) {
         Slot* victim = nullptr;
         for (auto& s : archive_cache_) {

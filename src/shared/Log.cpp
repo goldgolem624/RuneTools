@@ -103,7 +103,6 @@ void write_crash_report(const char* tag, EXCEPTION_POINTERS* ep, const char* det
 }
 
 LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
-    // After BeginShutdown, faults are teardown races on background threads: skip the report.
     if (g_shutting_down.load(std::memory_order_relaxed)) return EXCEPTION_CONTINUE_SEARCH;
     write_crash_report("unhandled SEH exception", ep, nullptr);
     return EXCEPTION_CONTINUE_SEARCH;   // let WER record it as well
@@ -181,7 +180,6 @@ void Init() {
 
     g_launcher.open(dir / L"launcher.log", std::ios::out | std::ios::trunc);
 
-    // Launcher-only: the in-client module never calls Init().
     SetUnhandledExceptionFilter(CrashFilter);
     std::set_terminate(TerminateHandler);
 }

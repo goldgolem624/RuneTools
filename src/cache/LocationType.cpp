@@ -5,7 +5,6 @@ namespace rtx::cache {
 
 namespace {
 
-// LocationConfig opcode dispatcher. Returns false on an unknown opcode.
 bool ReadOne(InputStream& s, LocDef& d, int op) {
     switch (op) {
         case 1: {                                    // models: count x (type, sub-count x smart32)
@@ -137,7 +136,6 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
                 int hi = s.ReadUnsignedShort();           // live data so far)
                 int c  = s.ReadBigSmart();
                 if (hi < lo || hi > 1024) return false;   // hostile/drifted range
-                // Expand the range into value-indexed morph_variants, padding with -1.
                 while ((int)d.morph_variants.size() < lo) d.morph_variants.push_back(-1);
                 for (int v = lo; v <= hi; ++v) {
                     if ((int)d.morph_variants.size() <= v) d.morph_variants.push_back(c);

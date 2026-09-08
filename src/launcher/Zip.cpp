@@ -31,7 +31,6 @@ bool ExtractFile(const std::uint8_t* data, std::size_t len,
     out.clear();
     if (!data || len < 22) return false;
 
-    // Locate the End Of Central Directory record (sig 0x06054b50), scanning back.
     const std::size_t kMaxComment = 65557;
     std::size_t start = (len > kMaxComment) ? len - kMaxComment : 0;
     long long eocd = -1;

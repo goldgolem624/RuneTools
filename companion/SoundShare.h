@@ -1,5 +1,4 @@
 #pragma once
-// Sound contract; ids are js5 archive ids, muting passes the play function volume 0.
 
 #include <cstdint>
 

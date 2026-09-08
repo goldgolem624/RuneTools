@@ -10,7 +10,6 @@ namespace {
 std::vector<std::uint8_t> InflateImpl(const std::uint8_t* in, std::size_t in_len,
                                       std::size_t initial_out_hint, int window_bits) {
     std::vector<std::uint8_t> out;
-    // Clamp the size hint.
     constexpr std::size_t kMaxInitial = (std::size_t)32 * 1024 * 1024;
     if (initial_out_hint > kMaxInitial) initial_out_hint = kMaxInitial;
     out.resize(initial_out_hint > 0 ? initial_out_hint : (std::size_t)64 * 1024);
@@ -38,7 +37,6 @@ std::vector<std::uint8_t> InflateImpl(const std::uint8_t* in, std::size_t in_len
         if (rc == Z_STREAM_ERROR || rc == Z_DATA_ERROR || rc == Z_MEM_ERROR) {
             inflateEnd(&s); return {};
         }
-        // Truncated input: Z_BUF_ERROR with no progress would loop forever.
         if (rc == Z_BUF_ERROR || (rc != Z_STREAM_END && written == before && s.avail_in == 0)) {
             inflateEnd(&s); return {};
         }
@@ -77,11 +75,9 @@ std::vector<std::uint8_t> DecompressStandard(const std::vector<std::uint8_t>& ra
     if (raw.size() < 9) return {};
     std::uint32_t orig_size = be32(raw, 5);
     if (type == 1) {
-        // bzip2 with the 4-byte "BZh1" header stripped; body begins at the first block magic.
         return Bzip2Decompress(raw.data() + 9, raw.size() - 9, orig_size);
     }
     if (type == 2) {
-        // window_bits 47 = auto-detect zlib OR gzip header.
         return InflateImpl(raw.data() + 9, raw.size() - 9, orig_size, 47);
     }
     return {};  // lzma unsupported

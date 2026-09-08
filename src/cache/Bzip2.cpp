@@ -7,7 +7,6 @@ namespace rtx::cache {
 
 namespace {
 
-// MSB-first bit reader over the raw bzip2 stream.
 struct BitReader {
     const std::uint8_t* d;
     std::size_t         len;
@@ -35,7 +34,6 @@ struct BitReader {
     }
 };
 
-// Canonical-Huffman decode table (bzip2 limit/base/perm form).
 struct Huff {
     int minLen = 0, maxLen = 0;
     int base[25]  = {0};
@@ -116,7 +114,6 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
         if (br.err) return {};   // header reads above ran past the input
         constexpr std::size_t kMaxBlock = 900000;
 
-        // Selectors: unary-coded MTF over the group indices.
         std::vector<std::uint8_t> selectors((std::size_t)nSel);
         std::uint8_t posg[6];
         for (int i = 0; i < nGroups; ++i) posg[i] = (std::uint8_t)i;
@@ -129,7 +126,6 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
             selectors[(std::size_t)i] = v;
         }
 
-        // Huffman code lengths per group (delta-coded).
         Huff tables[6];
         for (int g = 0; g < nGroups; ++g) {
             int lens[258]; int c = (int)br.bits(5);
@@ -145,7 +141,6 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
         std::uint8_t mtf[256];
         for (int i = 0; i < nInUse; ++i) mtf[i] = (std::uint8_t)symMap[i];
 
-        // Decode the MTF/RLE2 symbol stream into the BWT buffer.
         std::vector<std::uint8_t> bwt;
         bwt.reserve(std::min(orig_size ? orig_size : (std::size_t)1 << 16, (std::size_t)900 * 1024));
         int gpos = 0, gidx = -1;
@@ -182,7 +177,6 @@ std::vector<std::uint8_t> Bzip2Decompress(const std::uint8_t* data, std::size_t 
             bwt.push_back(v);
         }
 
-        // Inverse Burrows-Wheeler transform via the next-index chain.
         std::size_t n = bwt.size();
         if (n == 0 || origPtr >= n) return {};
         std::array<std::uint32_t, 256> cnt{}; cnt.fill(0);

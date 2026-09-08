@@ -4,7 +4,6 @@ namespace rtx::cache {
 
 namespace {
 
-// ItemType opcode dispatcher; unused opcodes are consumed to keep the stream aligned.
 bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
     switch (opcode) {
         case 1:  d.inv_model_id = s.ReadBigSmart();           return true;
@@ -15,7 +14,6 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 11: d.stackable = true;                          return true;
         case 12: s.ReadInt();                                 return true;
         case 9: {
-            // count(u8) x BigSmart.
             int n = s.ReadUnsignedByte();
             for (int i = 0; i < n; ++i) s.ReadBigSmart();
             return true;
@@ -28,7 +26,6 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 30: case 31: case 32: case 33: case 34:
                  d.options[opcode - 30] = s.ReadString();         return true;
         case 35: case 36: case 37: case 38: case 39: {
-            // Worn options; only augmented gear carries a "Disassemble" worn option.
             std::string opt = s.ReadString();
             if (opt == "Disassemble") d.augmented = true;
             d.worn_options[opcode - 35] = opt;
@@ -100,7 +97,6 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
                 bool is_string = s.ReadUnsignedByte() == 1;
                 int  key       = s.Read24BitInt();
                 if (is_string) {
-                    // A destroy message naming "gizmos" marks augmented gear even without the name prefix.
                     std::string v = s.ReadString();
                     if (v.find("gizmo") != std::string::npos) d.augmented = true;
                     d.params_s[key] = std::move(v);

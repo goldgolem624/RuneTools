@@ -17,7 +17,6 @@ namespace {
 std::mutex g_mu;
 std::unordered_map<std::uint32_t, ULONGLONG> g_last_try;   // pid -> last attempt tick
 
-// rtxscene.dll is staged next to the launcher exe (same build output dir).
 std::wstring ModulePath() {
     wchar_t exe[MAX_PATH] = {};
     if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return {};
@@ -84,7 +83,6 @@ bool EnsureLoaded(std::uint32_t pid) {
     if (!pid) return false;
     if (SectionLive(pid)) return true;             // already live (cheap fast path)
 
-    // Retry fast: the companion must be in before the client's first world render.
     ULONGLONG now = GetTickCount64();
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -93,7 +91,6 @@ bool EnsureLoaded(std::uint32_t pid) {
         g_last_try[pid] = now;
     }
 
-    // Access denied (client launched elevated): log once per pid, stop retrying.
     {
         HANDLE probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!probe && GetLastError() == ERROR_ACCESS_DENIED) {

@@ -23,11 +23,9 @@ MapTileData DecodeMapTiles(std::vector<std::uint8_t> file_bytes, int* leftover) 
     InputStream s(std::move(file_bytes));
     if (is936) s.skip(5);
 
-    // the reference decode (4,64,64) C-order: plane, x, y.
     for (int plane = 0; plane < 4; ++plane) {
         for (int x = 0; x < 64; ++x) {
             for (int y = 0; y < 64; ++y) {
-                // Ran short mid-walk = a real misparse; -1 tells the parse-health check.
                 if (s.remaining() <= 0) { if (leftover) *leftover = -1; return out; }
                 int idx = (plane * 64 + x) * 64 + y;
                 int flags = s.ReadUnsignedByte();
@@ -39,8 +37,6 @@ MapTileData DecodeMapTiles(std::vector<std::uint8_t> file_bytes, int* leftover) 
             }
         }
     }
-    // Trailer (8-byte non-members bitmask + opcode-based environment section) is intentionally
-    // not consumed: op 0x01's record format is unresolved and nothing uses it.
     if (leftover) *leftover = (int)s.remaining();
     return out;
 }

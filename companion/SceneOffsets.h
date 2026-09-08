@@ -1,5 +1,5 @@
 #pragma once
-// RS3 client memory offsets shared by Reader.cpp and SceneData.cpp. 950-1 moved every MainData-relative offset by +0x40; object-internal offsets unchanged.
+// RS3 client memory offsets shared by Reader.cpp and SceneData.cpp. 950-1 moved every MainData-relative offset by +0x40; object-internal offsets unchanged. kDest*: written by click handler 0xE3110 (0xE1A30 on 949), fine units (tile = value / 512). kWalk*: written by CS2 SETWALKMARKER op 308 (2222 on 949).
 
 #include <Windows.h>
 #include <cstdint>
@@ -45,7 +45,6 @@ inline constexpr std::uint64_t kT4PosU   = 0x8C;    // type-4 -> fine up    (int
 inline constexpr std::uint64_t kT4PosN   = 0x90;    // type-4 -> fine north (int32) (0x80 through 949-5)
 inline constexpr std::uint64_t kT13Size  = 0x108;   // type-13 (world marker) object size (0xF8 + 0x10 header growth; assumed)
 
-// kDest*: written by click handler 0xE3110 (0xE1A30 on 949), fine units (tile = value / 512). kWalk*: written by CS2 SETWALKMARKER op 308 (2222 on 949).
 inline constexpr std::uint64_t kMiniMap  = 0x19890; // root -> ClientMiniMap (pointer)
 inline constexpr std::uint64_t kDestX    = 0x14;    // minimap -> i32 destination fine X
 inline constexpr std::uint64_t kDestY    = 0x18;    // minimap -> i32 destination fine Y

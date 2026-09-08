@@ -475,7 +475,6 @@ std::uint64_t FindEntry(const VarContext& ctx, std::uint16_t var_id) {
     return 0;
 }
 
-// Registries get freed/reused; confirm the page is readable and reg+0x58/+0x60 still match.
 bool ScopeStillLive(const VarContext& sc) {
     if (!CanonPtr(sc.registry) || !sc.bucket_table || !sc.bucket_count) return false;
     MEMORY_BASIC_INFORMATION mbi{};
@@ -495,8 +494,6 @@ __declspec(noinline) void PushCandidate(const VarContext& ctx, std::uint16_t var
     if (g_candidates.size() < 64) g_candidates.emplace_back(ctx, var_id);
 }
 
-// Movable-panel position-var groups (X, Y, W, H; 0 = none). Their scopes are script-local and
-// freed after the script runs, so they must be resolved at the push_var capture point.
 struct PanelGroup { std::uint16_t x, y, w, h; };
 static const PanelGroup kPanelGroups[] = {
     { 9102, 9103, 9104, 9105 },  // dialogues (Choose/NPC/Player/Clue/Server/Input)
@@ -530,8 +527,6 @@ static const PanelGroup kPanelGroups[] = {
     { 10147, 10148, 10149, 10150 }, // debuff bar
 };
 
-// getStorage needs the script's instance tables (vm_ctx+0xc010/+0xc1e0) alive, so resolve here
-// from the live vm_ctx and cache the permanent storage pointer.
 __declspec(noinline) void ResolveCurrentVarLive(std::uint64_t vm_ctx, std::uint16_t var_id, std::uint8_t scope_type) {
     std::uint32_t key = ((std::uint32_t)scope_type << 16) | var_id;
     {
@@ -551,8 +546,6 @@ __declspec(noinline) void ResolveCurrentVarLive(std::uint64_t vm_ctx, std::uint1
 
 std::int32_t ReadIntSafe(std::uint64_t storage);
 
-// Decoy registries hold unrelated vars reading -1, so require sane X/Y (and W/H) before caching.
-// Always re-resolves: a reopened panel gets a fresh scope, and the cached pointer must follow it.
 __declspec(noinline) void ResolvePanelGroupsFromLive(std::uint64_t vm_ctx) {
     VarContext ctx{};
     if (!ReadVarContext(vm_ctx, ctx)) return;
@@ -599,7 +592,6 @@ inline void* VarOpObserve(VarOp_t orig, std::uint64_t a, std::uint64_t vm_ctx, s
 void* Detour_Varp(std::uint64_t a, std::uint64_t vm_ctx) { if (g_varcShare) g_varcShare->diag[0]++; return VarOpObserve(g_origVarp, a, vm_ctx, 4); }
 void* Detour_Varc(std::uint64_t a, std::uint64_t vm_ctx) { if (g_varcShare) g_varcShare->diag[1]++; return VarOpObserve(g_origVarc, a, vm_ctx, 5); }
 
-// cc_if_setdraggable CS2 op, 4 args, r9 = vm_ctx. Diag counter only; its scope does not hold the panel vars.
 typedef void* (*CcOp_t)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 CcOp_t g_origCcDrag = nullptr;
 
@@ -686,7 +678,6 @@ rtx::varc::Entry g_varcbuf[rtx::varc::kMaxVars];
 
 struct EnumEntry { std::uint64_t entry; std::uint16_t id; std::uint8_t type; };
 
-// Probes the last bucket first: a stale table faults there.
 void EnumerateScope(const VarContext& sc, std::vector<EnumEntry>& out) {
     std::uint64_t bt = sc.bucket_table; std::uint32_t bc = sc.bucket_count;
     if (!bt || !bc || bc > 1000000 || !CanonPtr(bt)) return;
@@ -718,7 +709,6 @@ std::int32_t ReadIntSafe(std::uint64_t storage) {
     __try { return *(std::int32_t*)storage; } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-// Worker thread, ~every 2s: enumerate live scopes and cache storage for new type-4 vars.
 __declspec(noinline) void DiscoverStorage() {
     std::vector<VarContext> scopes;
     { std::lock_guard<std::mutex> lk(g_scopeMu); scopes = g_verifiedScopes; }
@@ -728,7 +718,6 @@ __declspec(noinline) void DiscoverStorage() {
         if (!ScopeStillLive(sc)) continue;
         ++live;
         ents.clear(); EnumerateScope(sc, ents);
-        // Scope-keyed: varp and varc scopes both hold type-4 entries with overlapping ids.
         const std::uint32_t scopeKey = (std::uint32_t)sc.scope_type << 16;
         std::lock_guard<std::mutex> lk(g_varMu);
         for (auto& e : ents) {
@@ -762,7 +751,6 @@ __declspec(noinline) void VerifyCandidates() {
     }
 }
 void PublishVarcs(rtx::varc::Share* vsh) {
-    // Every ~2s evict individually dead storage pointers; never clear wholesale (would drop live panel positions).
     if ((g_pubTick++ % 8) == 0) {
         std::lock_guard<std::mutex> lk(g_varMu);
         for (auto it = g_storageCache.begin(); it != g_storageCache.end(); ) {
@@ -793,7 +781,6 @@ void PublishVarcs(rtx::varc::Share* vsh) {
     vsh->seq++;                                   // even: complete
 }
 
-// ---- shared section --------------------------------------------------------
 Share* MapShare() {
     wchar_t name[64];
     rtx::scene::MakeSectionName(GetCurrentProcessId(), name);
@@ -821,7 +808,6 @@ void Publish(Share* sh, bool wantDiag) {
         if (n > 30000) n = 30000;
         for (std::uint64_t i = 0; i < n && c < rtx::scene::kMaxObjects; ++i) {
             std::uint64_t ep = R64(vb + i * 8);
-            // Despawned locs stay structurally intact in memory; the del capture is the only signal.
             if (dead.count(ep)) continue;
             int t, tx, ty;
             if (!ValidSceneryEntity(ep, t, tx, ty)) continue;
@@ -832,7 +818,6 @@ void Publish(Share* sh, bool wantDiag) {
             o.plane = (std::int16_t)R32(sub + kFloor);
             o.kind = (std::int16_t)t;
             ReadBox(ep, o);
-            // Phantom-loc filter: AABB is loc-def-derived, so an empty live-model block is the real "drawn" signal.
             if ((R32(sub + kModelLo) | R32(sub + kModelMid) | R32(sub + kModelHi)) == 0) {
                 o.bmin[0] = o.bmin[1] = o.bmin[2] = 0.f;
                 o.bmax[0] = o.bmax[1] = o.bmax[2] = 0.f;
@@ -856,7 +841,6 @@ void Publish(Share* sh, bool wantDiag) {
     sh->seq++;                                    // even: complete
 }
 
-// ===== Render toggles (launcher-driven): hide NPCs / hide other players / scene blank.
 // Display detours skip the draw call; scene blank flips one Jcc byte in the render thread.
 rtx::render::Share* g_renderShare = nullptr;
 std::atomic<std::uint64_t> g_localPlayerSub{ 0 };
@@ -943,27 +927,21 @@ void ResolveRenderHooks() {
     }
 }
 
-// ===== Render-pass highlight observer: transient type-4 highlights (clue-scan ring) are submitted
-// per frame but never stored in the worldview vector, so they are captured at the submit path.
 rtx::special::Share* g_specialShare = nullptr;
 constexpr int kHiRingCap = 128;
 rtx::special::Highlight g_hiRing[kHiRingCap] = {};
 std::atomic<std::uint32_t> g_hiIdx{ 0 };
 std::atomic<bool> g_specialOn{ false };   // worker decays this from the launcher's enable stamp
-// Every entity ptr seen at the spawn capture and not yet despawned; type is re-read live on the worker.
 std::mutex g_renderMu;
 std::unordered_set<std::uint64_t> g_renderSet;
-// Despawned slots not yet re-spawned. A despawned loc stays bit-perfect in memory, so this is the only signal.
 std::unordered_set<std::uint64_t> g_deadSet;
 constexpr std::size_t kDeadSetCap = 100000;
-// First a1 the spawn capture sees.
 std::atomic<std::uint64_t> g_SceneWorkerRoot{ 0 };
 std::uint64_t g_hookInstallMs = 0;
 
 // Capture points are __try functions: anything with a destructor lives in these helpers (C2712).
 static inline void RenderInsert(std::uint64_t p) { std::lock_guard<std::mutex> lk(g_renderMu); g_renderSet.insert(p); }
 
-// Only the spawn capture may revive a dead slot (WalkVecTrack must not).
 static inline void SpawnMark(std::uint64_t p) {
     std::lock_guard<std::mutex> lk(g_renderMu);
     g_renderSet.insert(p);
@@ -981,8 +959,6 @@ std::unordered_set<std::uint64_t> DeadSnapshot() {
     return g_deadSet;
 }
 
-// Same acceptance chain as the heap scan, seeded from tracked entities. Only sees entities that
-// spawned after the hook attached; the deep sweep covers the rest.
 int FindContainersFromTracked() {
     std::vector<std::uint64_t> snap;
     { std::lock_guard<std::mutex> lk(g_renderMu); snap.assign(g_renderSet.begin(), g_renderSet.end()); }
@@ -1028,7 +1004,6 @@ typedef void* (*Display_t)(std::uint64_t, std::uint64_t, std::uint64_t, std::uin
 Display_t g_origT4Display = nullptr;
 Display_t g_origT13Display = nullptr;
 
-// type comes from which hook called, not from memory.
 static inline void RecordDisplay(std::uint64_t sub, int type) {
     if (sub <= 0xfffff || sub >= g_base) return;
     auto& s = g_hiRing[g_hiIdx.fetch_add(1, std::memory_order_relaxed) % kHiRingCap];
@@ -1049,7 +1024,6 @@ static inline void RecordDisplay(std::uint64_t sub, int type) {
         s.kind = (hasDest && (std::int32_t)(dx / 512.f) == s.x && (std::int32_t)(dy / 512.f) == s.y)
                  ? rtx::special::kKindScan : rtx::special::kKindDest;
     } else if (type == 4) {
-        // Adornments (health bar, hitsplat) hang off an actor node (type 1/2); world effects own a type-4 node.
         std::uint64_t osec = (ent > 0xfffff && ent < g_base) ? R64(ent + kSecPtr) : 0;
         std::uint8_t  ot   = (osec > 0xfffff && osec < g_base) ? R8(osec + kType) : 0xff;
         s.kind = (ot == 1 || ot == 2) ? rtx::special::kKindAdorn : rtx::special::kKindEffect;
@@ -1086,7 +1060,6 @@ void* Detour_ObjDel(std::uint64_t a1, std::uint64_t a2) {
     return g_origObjDel(a1, a2);
 }
 
-// Adds every entity ptr in a scene worker's vector to the live set; returns ptrs walked.
 static int WalkVecTrack(std::uint64_t wk) {
     if (!IsHeap(wk)) return 0;
     int cnt = 0;
@@ -1239,7 +1212,6 @@ void PublishGround(rtx::ground::Share* sh) {
     sh->seq++;                                    // even: complete
 }
 
-// ---- raw inbound socket capture (ws2_32; opcodes still enciphered here) ----
 rtx::net::Share* g_netShare = nullptr;
 
 typedef int (WSAAPI* Recv_t)(SOCKET, char*, int, int);
@@ -1269,7 +1241,6 @@ static int WSAAPI Detour_Recv(SOCKET s, char* buf, int len, int flags) {
     return n;
 }
 
-// Synchronous completions only; an overlapped buffer is not filled at return.
 static int WSAAPI Detour_WSARecv(SOCKET s, LPWSABUF bufs, DWORD count, LPDWORD got,
                                  LPDWORD flags, LPWSAOVERLAPPED ov,
                                  LPWSAOVERLAPPED_COMPLETION_ROUTINE cr) {
@@ -1302,7 +1273,6 @@ void ResolveNetCapture() {
     g_netShare->bytesTotal = 0;
     g_netShare->flags   = 0;
     g_netShare->enable  = 1;
-    // LoadLibrary, not GetModuleHandle: winsock may not be loaded yet at companion init.
     HMODULE ws2 = LoadLibraryW(L"ws2_32.dll");
     if (!ws2) { RingLog("net: ws2_32 unavailable"); return; }
     auto pRecv = (Recv_t)GetProcAddress(ws2, "recv");
@@ -1321,7 +1291,6 @@ void ResolveNetCapture() {
     }
 }
 
-// ---- decoded inbound packet capture -------------------------------------------
 // Hooked at the game's inbound framer (FUN_1400ff0c0), which ISAAC-deciphers the opcode and
 // looks it up in the packet table (rs2client+0xC70BB0 on 950-1, entries 0..0xDE).
 // Connection object: +0x2C int opcode (-1 = none), +0x30 int length, +0x2D0 payload ptr,
@@ -1332,7 +1301,6 @@ rtx::events::Share*   g_eventShare    = nullptr;
 typedef std::uint64_t* (*Framer_t)(std::uint64_t conn, std::uint64_t* out);
 static Framer_t g_origFramer = nullptr;
 
-// One record per inbound message whose opcode bit is set in the launcher mask; per-record seqlock.
 static void EventRecord(std::int32_t op, std::int32_t len, const std::uint8_t* p) {
     auto* ev = g_eventShare;
     if (!ev) return;
@@ -1367,14 +1335,12 @@ static void NetProbeRecord(std::uint64_t conn, std::uint64_t* out) {
     if (!sh) return;
     if (!out || out[0] == 0) return;
     const std::uint32_t now = (std::uint32_t)GetTickCount64();
-    // Diag ring records only while the panel keeps the stamp fresh; the chat ring is always on.
     const bool armed = sh->enable != 0 && (std::uint32_t)(now - sh->enable) <= 3000;
     __try {
         const std::int32_t op = *(const std::int32_t*)(conn + 0x2c);
         if (op < 0 || op > rtx::sops::kOpMax) { if (armed) sh->diag[2]++; return; }
         const std::int32_t  len = *(const std::int32_t*)(conn + 0x30);
         const std::uint32_t rx  = *(const std::uint32_t*)(conn + 0x2e8);
-        // The framer re-enters on the same pending message; only a new packet advances the byte counter.
         static std::uint32_t s_lastRx = 0xFFFFFFFFu; static std::int32_t s_lastOp = -1;
         if (rx == s_lastRx && op == s_lastOp) { if (armed) sh->diag[3]++; return; }
         s_lastRx = rx; s_lastOp = op;
@@ -1456,7 +1422,6 @@ void ResolveNetProbe() {
     sh->flags = 0; sh->framerRva = 0;
     sh->chatWritten = 0; sh->chatSeen = 0;
     for (int i = 0; i < 8; ++i) sh->diag[i] = 0;
-    // Keep a mask the launcher already wrote; otherwise start from the default set.
     g_eventShare = MapEventShare();
     if (g_eventShare) {
         auto* ev = g_eventShare;
@@ -1507,7 +1472,6 @@ void ResolveSpecialObserver() {
         g_specialShare->diag[8] = g_specialShare->diag[9] = g_specialShare->diag[10] = g_specialShare->diag[11] = 0;
     }
     // Object-submit fn: mov rcx,rdx; mov r8d,0x47; mov r14,rdx; call <rel32>; mov rcx,[rbx+0x140]; cmp rcx,[rbx+0x148]
-    // (worker-vec end/cap). Misresolution shows as diag[1] staying 0 while diag[0] climbs.
     static const unsigned char body[] = {
         0x00,0x00,0x48,0x8B,0xCA,0x41,0xB8,0x47,0x00,0x00,0x00,0x4C,0x8B,0xF2,0xE8,
         0x00,0x00,0x00,0x00,                                          // CALL rel32 (wildcard)
@@ -1574,12 +1538,10 @@ void ResolveSpecialObserver() {
 void PublishSpecials(rtx::special::Share* sh) {
     if (!sh) return;
     std::uint32_t now = (std::uint32_t)GetTickCount64();
-    // Armed only while the launcher's enable stamp is fresh (3s > its poll cadence).
     g_specialOn.store(sh->enable != 0 && (std::uint32_t)(now - sh->enable) < 3000, std::memory_order_relaxed);
     if (!g_specialOn.load(std::memory_order_relaxed)) { sh->seq++; MemoryBarrier(); sh->count = 0; MemoryBarrier(); sh->seq++; return; }
     rtx::special::Highlight out[rtx::special::kMaxHighlights];
     std::uint32_t c = 0;
-    // Effects first, adornments second, so health bars cannot crowd out the scan ring.
     for (int pass = 0; pass < 2; ++pass)
     for (int i = 0; i < kHiRingCap && c < (std::uint32_t)rtx::special::kMaxHighlights; ++i) {
         rtx::special::Highlight hh = g_hiRing[i];                 // racy POD copy, range-guarded
@@ -1587,7 +1549,6 @@ void PublishSpecials(rtx::special::Share* sh) {
         if ((hh.kind == rtx::special::kKindAdorn) != (pass == 1)) continue;
         bool dup = false;
         for (std::uint32_t j = 0; j < c; ++j) {
-            // uid 0 entries (markers/effects) dedupe by placement, else they merge and never age out.
             bool same = hh.uid ? (out[j].uid == hh.uid)
                               : (out[j].uid == 0 && out[j].type == hh.type && out[j].gfx == hh.gfx &&
                                  out[j].x == hh.x && out[j].y == hh.y && out[j].plane == hh.plane);
@@ -1688,7 +1649,6 @@ DWORD WINAPI Worker(LPVOID) {
 
     ResolveNetProbe();
 
-    // Raw socket capture disabled; re-enable only for a wire capture.
     // ResolveNetCapture();
 
     OutputDebugStringA(rtx::present::Install()
@@ -1702,8 +1662,6 @@ DWORD WINAPI Worker(LPVOID) {
     RingLog(rtx::menuprobe::Install() ? "menu: probe installed"
                                       : "menu: string-init pattern not found");
 
-    // Deep sweep only catches entities that pre-date the spawn hook; it backs off exponentially
-    // while fruitless and re-arms on a big player move. Containers only accumulate, never flicker.
     constexpr ULONGLONG kRescanMs = 12000;               // base deep-sweep period
     constexpr ULONGLONG kRescanMaxMs = 300000;           // backoff ceiling (5 min)
     ULONGLONG lastScanMs = 0, rescanMs = kRescanMs;
@@ -1731,10 +1689,8 @@ DWORD WINAPI Worker(LPVOID) {
             Publish(sh, sh->diag_len < 0x260);           // keep dumping until a sub of each type captured
             emptyTicks = 0;
         } else if (++emptyTicks >= 8) {
-            // Empty for ~2s: publish the empty set. A transient empty keeps the last good publish.
             sh->seq++; MemoryBarrier(); sh->count = 0; MemoryBarrier(); sh->seq++;
         }
-        // Always published: panel-position vars must be readable without the Vars watcher.
         if (g_varcShare) PublishVarcs(g_varcShare);
         std::uint64_t root = g_SceneWorkerRoot.load(std::memory_order_relaxed);
         int entN = WalkVecTrack(root);

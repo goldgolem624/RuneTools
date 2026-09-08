@@ -4,8 +4,6 @@
 #include <string>
 #include <vector>
 
-// CNG-backed crypto primitives: AES-256-GCM, PBKDF2-HMAC-SHA256,
-// BCryptGenRandom, plus per-user DPAPI helpers.
 
 namespace rtx::launcher::crypto {
 
@@ -40,11 +38,9 @@ bool DecryptAesGcm(const std::uint8_t* key,   std::size_t key_len,
                    const std::uint8_t* tag,        std::size_t tag_len,
                    std::vector<std::uint8_t>& out_plaintext);
 
-// Per-user DPAPI: not unwrappable under another Windows account.
 std::vector<std::uint8_t> ProtectForCurrentUser(const std::string& plaintext);
 std::string               UnprotectForCurrentUser(const std::vector<std::uint8_t>& cipher);
 
-// SHA-256 of a buffer into out[32].
 bool Sha256(const std::uint8_t* data, std::size_t len, std::uint8_t out[32]);
 
 // ECDSA P-256 verify. `sig` is raw 64-byte r||s (IEEE-P1363); `pubkey_xy` is raw 64-byte X||Y.

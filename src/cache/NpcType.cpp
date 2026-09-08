@@ -5,7 +5,6 @@ namespace rtx::cache {
 
 namespace {
 
-// NPCType opcode dispatcher. Returns false on an unknown opcode.
 bool ReadOne(InputStream& s, NpcDef& d, int op) {
     switch (op) {
         case 1: {                                   // model ids

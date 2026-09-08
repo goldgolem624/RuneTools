@@ -10,7 +10,6 @@
 namespace rtx::launcher::menuswap {
 namespace {
 
-// Open + map for one call; never holds a view across a client's exit.
 struct View {
     HANDLE            map = nullptr;
     rtx::menu::Share* sh  = nullptr;
@@ -127,7 +126,6 @@ std::string StatusJson(std::uint32_t pid) {
         for (std::uint32_t i = 0; i < pn; ++i) {
             if (i) out += ',';
             out += '"';
-            // Display only; a raw tab is invalid inside a JSON string.
             append_escaped(out, sh->pins[i].verb, rtx::menu::kVerbLen);
             out += " on ";
             append_escaped(out, sh->pins[i].target, rtx::menu::kTargetLen);

@@ -10,7 +10,6 @@ namespace {
 using GetMonitorInfoW_t = BOOL(WINAPI*)(HMONITOR, LPMONITORINFO);
 GetMonitorInfoW_t g_real_get_monitor_info = nullptr;
 
-// GetMonitorInfoW wrapper for AppCore.dll: on a stale HMONITOR, re-resolve the primary and retry.
 BOOL WINAPI Hooked_GetMonitorInfoW(HMONITOR monitor, LPMONITORINFO info) {
     GetMonitorInfoW_t real = g_real_get_monitor_info;
     if (!real) return FALSE;
@@ -19,7 +18,6 @@ BOOL WINAPI Hooked_GetMonitorInfoW(HMONITOR monitor, LPMONITORINFO info) {
     HMONITOR primary = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
     if (primary && real(primary, info)) return TRUE;
 
-    // No monitor answered: fake primary geometry so AppCore proceeds silently.
     if (info && info->cbSize >= sizeof(MONITORINFO)) {
         info->rcMonitor = RECT{0, 0, 1920, 1080};
         info->rcWork    = RECT{0, 0, 1920, 1040};
@@ -29,7 +27,6 @@ BOOL WINAPI Hooked_GetMonitorInfoW(HMONITOR monitor, LPMONITORINFO info) {
     return FALSE;
 }
 
-// IAT slot for an import by name, scanning every descriptor (module names may be api-set aliases).
 FARPROC* find_iat_slot(HMODULE module, const char* func) {
     auto* base = reinterpret_cast<BYTE*>(module);
     auto* dos  = reinterpret_cast<IMAGE_DOS_HEADER*>(base);

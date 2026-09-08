@@ -59,13 +59,11 @@ std::unordered_map<int, bool>         g_buff_icon_item; // buff-bar icon id -> t
 bool                                  g_buffs_loaded   = false;
 bool                                  g_init_attempted = false;
 
-// Collision: loc clip info + per-region unwalkable grids, both memoized.
 struct LocClip { bool no_clip = false; int dim_x = 1, dim_y = 1; };
 std::unordered_map<int, LocClip>      g_locclip_cache;
 std::unordered_map<int, std::vector<std::uint8_t>> g_blocked_cache;  // key = rx<<8 | ry
 std::unordered_map<int, MapTileData>  g_tiles_cache;                 // key = rx<<8 | ry
 
-// World-map scene icons: a loc with a mapscene (loc opcode 102) draws a map icon instead of a wall.
 // mapscene id -> sprite via the MAPSCENES config (index 2, archive 34, opcode 1 = sprite_id). Memoized.
 struct MapsceneIcon { int w = 0, h = 0; bool tried = false; std::vector<std::uint8_t> rgba; };
 std::unordered_map<int, int>          g_mapscene_sprite;   // mapscene id -> sprite id
@@ -86,7 +84,6 @@ struct MaplabelDef {
 std::unordered_map<int, MaplabelDef>  g_maplabel_def;       // maplabel id -> {sprite, category, text}
 std::unordered_map<int, MapsceneIcon> g_maplabel_px;        // maplabel id -> decoded RGBA icon
 std::unordered_map<int, int>          g_loc_mapfunc;        // loc id -> mapFunction (maplabel) id (-1 = none)
-// loc id -> loc name, filled by the same decode; the world map's fallback tooltip text.
 std::unordered_map<int, std::string>  g_loc_name;
 bool                                  g_maplabels_loaded = false;
 
@@ -190,7 +187,6 @@ ItemInfo ResolveLocked(int item_id) {
     return info;
 }
 
-// Loc clip (no_clip + footprint). Assumes g_mu held.
 LocClip LocClipLocked(int loc_id) {
     auto hit = g_locclip_cache.find(loc_id);
     if (hit != g_locclip_cache.end()) return hit->second;
@@ -209,7 +205,6 @@ LocClip LocClipLocked(int loc_id) {
     return clip;
 }
 
-// Load the MAPSCENES config (index 2, archive 34): mapscene id -> sprite id. Assumes g_mu held.
 void EnsureMapscenesLocked() {
     if (g_mapscenes_loaded) return;
     auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
@@ -235,7 +230,6 @@ void EnsureMapscenesLocked() {
     }
 }
 
-// Decoded RGBA icon for a mapscene id (lazy; failures cached as empty). Assumes g_mu held.
 const MapsceneIcon& MapsceneIconLocked(int mapscene_id) {
     auto& ic = g_mapscene_px[mapscene_id];
     if (ic.tried) return ic;
@@ -251,7 +245,6 @@ const MapsceneIcon& MapsceneIconLocked(int mapscene_id) {
     return ic;
 }
 
-// loc id -> mapscene id (-1 = none); memoized. ALSO caches the loc's mapFunction in one decode. Assumes g_mu held.
 int LocMapsceneLocked(int loc_id) {
     auto hit = g_loc_mapscene.find(loc_id);
     if (hit != g_loc_mapscene.end()) return hit->second;
@@ -270,7 +263,6 @@ int LocMapsceneLocked(int loc_id) {
     if (!nm.empty()) g_loc_name[loc_id] = nm;   // absent == no name; saves an entry per nameless loc
     return ms;
 }
-// loc id -> mapFunction (worldmap maplabel) id (-1 = none); shares LocMapsceneLocked's decode. Assumes g_mu held.
 int LocMapFunctionLocked(int loc_id) {
     auto hit = g_loc_mapfunc.find(loc_id);
     if (hit != g_loc_mapfunc.end()) return hit->second;
@@ -278,8 +270,6 @@ int LocMapFunctionLocked(int loc_id) {
     auto it = g_loc_mapfunc.find(loc_id);
     return it != g_loc_mapfunc.end() ? it->second : -1;
 }
-// MAPLABELS config (index 2 / archive 36): maplabel id -> {sprite, category, text}. Opcode table
-// per the game. Assumes g_mu held.
 void EnsureMaplabelsLocked() {
     if (g_maplabels_loaded) return;
     auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
@@ -321,13 +311,11 @@ void EnsureMaplabelsLocked() {
                 default: stop = true; break;                                 // unknown -> stop (alignment lost)
             }
         }
-        // Keep every record that can produce a pixel or a word (icons may hang off the 0x1a switch, tooltips off a param).
         if (def.sprite >= 0 || !def.text.empty() || !def.sw.kids.empty()
             || def.category >= 0 || !def.pi.empty() || !def.ps.empty())
             g_maplabel_def[fid] = std::move(def);
     }
 }
-// Every sprite an element could draw, best first (own, then switch children); any may be absent or fail to decode. Assumes g_mu held.
 void MaplabelSpritesLocked(int id, std::vector<int>& out) {
     out.clear();
     EnsureMaplabelsLocked();
@@ -349,7 +337,6 @@ int MaplabelSpriteLocked(int id, bool /*prefer_hd*/) {
     MaplabelSpritesLocked(id, s);
     return s.empty() ? -1 : s.front();
 }
-// Decoded RGBA icon for a maplabel id (lazy; failures cached empty). Assumes g_mu held.
 const MapsceneIcon& MaplabelIconLocked(int maplabel_id) {
     auto& ic = g_maplabel_px[maplabel_id];
     if (ic.tried) return ic;
@@ -365,20 +352,17 @@ const MapsceneIcon& MaplabelIconLocked(int maplabel_id) {
     return ic;
 }
 
-// Decoded land tiles (file 3) for a region. Assumes g_mu held.
 const MapTileData& RegionTilesLocked(int rx, int ry) {
     int key = (rx << 8) | ry;
     auto hit = g_tiles_cache.find(key);
     if (hit != g_tiles_cache.end()) return hit->second;
     auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
-    // DecodeMapTiles returns fully-sized arrays even for empty input.
     MapTileData td = DecodeMapTiles(index ? index->ReadFile(rx | (ry << 7), 3)
                                           : std::vector<std::uint8_t>{});
     g_tiles_cache[key] = std::move(td);
     return g_tiles_cache[key];
 }
 
-// Per-region unwalkable grid (4*64*64, 1 = blocked). Assumes g_mu held.
 const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
     int key = (rx << 8) | ry;
     auto hit = g_blocked_cache.find(key);
@@ -399,14 +383,12 @@ const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
     auto isBridge = [&](int x, int y) {
         return (settings[(std::size_t)(64 + x) * 64 + y] & 0x2) != 0;
     };
-    // Void tiles (file 3): full-blocked at the plane the flag effectively targets.
     for (int z = 0; z < 4; ++z)
         for (int x = 0; x < 64; ++x)
             for (int y = 0; y < 64; ++y) {
                 if (!(settings[(std::size_t)(z * 64 + x) * 64 + y] & 0x1)) continue;
                 orFlag(isBridge(x, y) ? z - 1 : z, x, y, kTileBlockFull);
             }
-    // Object placements (land file 0 + water file 1), plane-shifted on bridges.
     for (int file : {0, 1}) {
         auto bytes = index->ReadFile(archive, file);
         if (bytes.empty()) continue;
@@ -480,7 +462,6 @@ std::string ItemInfoJson(int item_id) {
     return buf;
 }
 
-// NPC display-name overrides for defs whose cache name is an internal dev name. Applied in GetNpc.
 static const std::unordered_map<int, std::string> g_npc_name_overrides = {
     { 30265, "Skeleton Warrior" },
     { 30266, "Putrid Zombie" },
@@ -488,12 +469,10 @@ static const std::unordered_map<int, std::string> g_npc_name_overrides = {
     { 31142, "Phantom Guardian" },
 };
 
-// Underscores and no spaces = internal dev name.
 static bool name_looks_internal(const std::string& s) {
     return !s.empty() && s.find('_') != std::string::npos && s.find(' ') == std::string::npos;
 }
 
-// Drop a leading "combatv2", '_' -> ' ', capitalise each word.
 static std::string prettify_internal_name(std::string s) {
     for (char& ch : s) if (ch == '_') ch = ' ';
     const std::string mk = "combatv2 ";
@@ -543,7 +522,6 @@ NpcMeta GetNpc(int npc_id) {
             cur = next;   // follow the morph
         }
     }
-    // Explicit override wins; otherwise prettify an internal cache name.
     auto ov = g_npc_name_overrides.find(npc_id);
     if (ov != g_npc_name_overrides.end()) meta.name = ov->second;
     else if (name_looks_internal(meta.name)) meta.name = prettify_internal_name(meta.name);
@@ -552,7 +530,6 @@ NpcMeta GetNpc(int npc_id) {
     return meta;
 }
 
-// ---- menu-rule authoring ------------------------------------------------------------------
 namespace {
 
 void JsonEscTo(std::string& out, const std::string& in) {
@@ -563,7 +540,6 @@ void JsonEscTo(std::string& out, const std::string& in) {
     }
 }
 
-// name -> ids, one map per kind, decoded on first use. Guarded by g_mu.
 std::map<std::string, std::vector<int>> g_name_index[3];
 bool g_name_index_built[3] = { false, false, false };
 
@@ -573,7 +549,6 @@ void BuildNameIndexLocked(int kind) {
     const int idx = kind == 0 ? kIndexItems : kind == 1 ? kIndexLocations : kIndexNpcs;
     auto* index = g_store ? g_store->Get(idx) : nullptr;
     if (!index) return;
-    // Archives are 256 files; walk until a run of empty archives says the index is exhausted.
     int emptyRun = 0;
     for (int archive = 0; archive < 512 && emptyRun < 8; ++archive) {
         bool any = false;
@@ -615,14 +590,12 @@ std::string MenuDefJson(int kind, int id) {
             if (!bytes.empty()) {
                 ItemDef d = DecodeItem(id, std::move(bytes));
                 name = d.name;
-                // Backpack menu draws the worn set; ground set only as fallback.
                 for (const auto& o : d.worn_options) if (!o.empty()) opts.push_back(o);
                 if (opts.empty())
                     for (const auto& o : d.options) if (!o.empty()) opts.push_back(o);
             }
         }
     }
-    // Options the client appends: Use and Drop after the def's own, Examine last; skipped if the def names one.
     {
         auto addTail = [&opts](const char* v) {
             for (const auto& o : opts) if (o == v) return;
@@ -630,7 +603,6 @@ std::string MenuDefJson(int kind, int id) {
         };
         if (kind == 0) {
             addTail("Use");
-            // A destroyable item gets no Drop.
             bool destroyable = false;
             for (const auto& o : opts) if (o == "Destroy") destroyable = true;
             if (!destroyable) addTail("Drop");
@@ -677,7 +649,6 @@ std::string MenuSearchJson(int kind, const std::string& query, int limit) {
     EnsureInit();
     BuildNameIndexLocked(kind);
 
-    // Exact and prefix matches rank first.
     struct Hit { int id; const std::string* name; int rank; };
     std::vector<Hit> hits;
     for (const auto& kv : g_name_index[kind]) {
@@ -725,7 +696,6 @@ LocMeta GetLoc(int loc_id) {
             LocDef def = DecodeLoc(cur, std::move(bytes));
             if (guard == 0) { meta.dim_x = def.dim_x; meta.dim_y = def.dim_y; }  // placed loc's footprint
             if (meta.name.empty()) meta.name = def.name;
-            // Members option (150..154) overrides the base option (30..34) per slot.
             if (meta.actions.empty()) {
                 for (std::size_t i = 0; i < def.options.size(); ++i) {
                     const std::string& opt = !def.members_options[i].empty()
@@ -793,8 +763,7 @@ bool GetNpcMorph(int npc_id, int& varbit, int& varp, int& def_child, std::vector
             auto bytes = index->ReadFile(npc_id >> 7, npc_id & 0x7f);   // 128 NPC files per archive
             if (!bytes.empty()) {
                 NpcDef def = DecodeNpc(npc_id, std::move(bytes));
-                // op106/118 store the value-indexed variants followed by a trailing default. A
-                // varbit/varp selector + >=2 entries = a real morph; split off the last as the default.
+                // op106/118 store the value-indexed variants followed by a trailing default.
                 if ((def.varbit >= 0 || def.varp >= 0) && def.transform_to.size() >= 2) {
                     info.has = true;
                     info.varbit = def.varbit;
@@ -938,7 +907,6 @@ void LoadMystPagesLocked() {
             rows[fid] = std::move(row);
     }
     if (rows.empty()) return;                    // cache not fully readable yet -> retry later
-    // Referenced-row lists -> "[[bitIndex,itemId],..]", keeping only rows of the wanted table.
     auto emit_refs = [&rows](const std::vector<int>& refs, int wantMaster) {
         std::string s2 = "["; bool f2 = true;
         for (int rid : refs) {
@@ -955,7 +923,6 @@ void LoadMystPagesLocked() {
     for (auto& [fid, row] : rows) {
         if (row.master != 92 || row.name.empty()) continue;
         if (row.c4.empty() && row.c5.empty()) continue;
-        // Other subtables share master 92; skip entries whose refs resolve to nothing.
         std::string pg = emit_refs(row.c4, 81), c31 = emit_refs(row.c5, 31);
         if (pg == "[]" && c31 == "[]") continue;
         out += first ? "\"" : ",\""; first = false;
@@ -1062,13 +1029,11 @@ void LoadArchResearchLocked() {
         e.name   = strs.count(3) ? strs[3] : std::string();
         e.field  = strs.count(6) ? strs[6] : std::string();
         e.report = strs.count(7) ? strs[7] : std::string();
-        // Unnamed rows are placeholders.
         if (e.name.empty()) continue;
         out.push_back(std::move(e));
     }
     std::sort(out.begin(), out.end(), [](const Res& a, const Res& b) { return a.bit < b.bit; });
 
-    // ReadString already emits UTF-8; only JSON escaping is needed.
     std::string j = "[";
     auto jstr = [&j](const char* k, const std::string& v) {
         j += ",\""; j += k; j += "\":\"";
@@ -1166,7 +1131,6 @@ void LoadDbTablesLocked() {
 }
 
 // Check one DBRow against the loaded schemas: 0 = match, 257 = linkage/type mismatch, else breaking opcode (256 = overrun).
-// Caller holds g_mu with dbtables loaded.
 int DbRowSchemaCheckLocked(std::vector<std::uint8_t> bytes) {
     InputStream s(std::move(bytes));
     int tag = -1;
@@ -1218,7 +1182,6 @@ struct ParamDef {
 std::unordered_map<int, ParamDef> g_param_defs;
 bool g_params_loaded = false;
 
-// Decode one param file (out = null validates only). Returns 0 on a clean end, else the stopping opcode.
 int DecodeParamFile(std::vector<std::uint8_t> bytes, ParamDef* out) {
     InputStream s(std::move(bytes));
     while (s.remaining() > 0) {
@@ -1462,7 +1425,6 @@ bool DecodeQuestFile(std::vector<std::uint8_t> bytes, QuestDef& q, int* stop_op 
     return !q.name.empty();
 }
 
-// Dedupe key: lower-cased alphanumerics, legacy stub spellings folded onto canonical names.
 std::string QuestNameKey(const std::string& name) {
     static const std::unordered_map<std::string, const char*> kAlias = {
         { "Mournings Ends Part 1",      "Mourning's End Part I" },
@@ -1494,7 +1456,6 @@ void LoadQuestsLocked() {
         QuestDef q; q.id = fid;
         if (DecodeQuestFile(index->ReadFile(kQuestArchive, fid), q)) defs[fid] = std::move(q);
     }
-    // canonical entry per name = the one WITH a progress tracker, then highest id
     auto tracked = [](const QuestDef& q) { return q.vp >= 0 || q.vb >= 0; };
     std::unordered_map<std::string, int> canon;      // name key -> config id
     for (auto& [fid, q] : defs) {
@@ -1518,7 +1479,6 @@ void LoadQuestsLocked() {
         auto it = g_param_defs.find(7829);
         if (it != g_param_defs.end() && it->second.has_int) default_icon = it->second.def_int;
     }
-    // Icon: param 7829, else op17 graphic, inherited through the parent chain, else the generic default.
     auto icon_of = [&](const QuestDef& q) {
         const QuestDef* cur = &q;
         for (int hop = 0; cur && hop < 8; ++hop) {
@@ -1548,7 +1508,6 @@ void LoadQuestsLocked() {
         return t.find(needle) != std::string::npos;
     };
     // Param 1345 (journal id) marks every entry the in-game list shows; delisted quests lack it.
-    // If a cache update strips the param wholesale, drop nothing.
     int journalN = 0;
     for (auto& [fid, q] : defs) if (q.journal >= 0) ++journalN;
     int droppedLegacy = 0;
@@ -1567,7 +1526,6 @@ void LoadQuestsLocked() {
         if (q.members) out += ",\"m\":1";
         if (q.has_diff) out += ",\"d\":" + std::to_string(q.difficulty);
         out += ",\"p\":" + std::to_string(q.points);
-        // Journal id (param 1345): map element requirement structs name quests by it, not by file id.
         if (q.journal >= 0) out += ",\"j\":" + std::to_string(q.journal);
         if (q.vp >= 0) {
             out += ",\"v\":[" + std::to_string(q.vp) + "," + std::to_string(q.vp_start) + "," +
@@ -1603,7 +1561,6 @@ void LoadQuestsLocked() {
         int ic = icon_of(q);
         if (ic > 0) out += ",\"ic\":" + std::to_string(ic);
         if (q.year > 0) out += ",\"yr\":" + std::to_string(q.year);
-        // Journal text surfaces (ReadString already emits UTF-8, so only JSON escaping here).
         auto jstr = [&out](const char* k, const std::string& v) {
             if (v.empty()) return;
             out += ",\""; out += k; out += "\":\"";
@@ -1634,7 +1591,6 @@ void LoadQuestsLocked() {
         }
         out += "}";
     }
-    // journalN = configs carrying the journal id; dropped = delisted configs removed.
     out += "],\"journalN\":" + std::to_string(journalN) +
            ",\"dropped\":" + std::to_string(droppedLegacy) + "}";
     g_quests_json = std::move(out);
@@ -1691,7 +1647,6 @@ std::string EnumJson(int enum_id) {
     return out;
 }
 
-// {"id":N,"name":".."} formatted from GetNpc (which does its own locking).
 std::string NpcJson(int npc_id) {
     NpcMeta m = GetNpc(npc_id);
     std::string out = "{\"id\":" + std::to_string(m.id) + ",\"name\":\"";
@@ -1703,11 +1658,7 @@ std::string NpcJson(int npc_id) {
     return out;
 }
 
-// ---- Static interface-component defs (js5-3) --------------------------------------------------
 namespace {
-// One component (js5-3: archive = group, file = component). Fixed layout, no opcodes: header (version, type,
-// content-type, geometry, parent, hidden), then a type-specific block; the option/script tail is never read.
-// Types 10-16 carry undocumented variable-size payloads (header still decodes).
 struct IfaceCompDef {
     int  type = -1, contenttype = 0, parent = -1;
     int  x = 0, y = 0, w = 0, h = 0;
@@ -1838,7 +1789,6 @@ std::string IfaceGroupDefsJson(int group_id) {
 
 #include "OverlayTexColours.h"
 
-// ---- Map terrain colours + flat region render ----
 // Underlay (archive 1) / overlay (archive 4) colour from CONFIGS -> 0xRRGGBB or -1. opcode 1 = primary RGB,
 // 7 = secondary, 13 = ternary; fall through in that order. Caller holds g_mu. Cached.
 static int ConfigColourLocked(int archive, int id) {
@@ -1870,11 +1820,9 @@ static int ConfigColourLocked(int archive, int id) {
             }
         }
     }
-    // Textured overlays: prefer the material's average texture colour over the flat tint.
     if (archive == 4 && material >= 0) {
         int flat = (col2 >= 0) ? col2 : (col >= 0) ? col : col3;
         if (flat == 0xFF00FF) flat = -1;
-        // Only when the flat value is absent or a neutral grey.
         bool neutral = false;
         if (flat >= 0) {
             int r = (flat >> 16) & 0xff, g = (flat >> 8) & 0xff, b = flat & 0xff;
@@ -1887,11 +1835,9 @@ static int ConfigColourLocked(int archive, int id) {
             while (lo <= hi) { int mid = (lo + hi) / 2;
                 if (kOverlayMatIds[mid] == material) { found = mid; break; }
                 if (kOverlayMatIds[mid] < material) lo = mid + 1; else hi = mid - 1; }
-            // A 0x000000 entry is a failed texture average, not black; fall through to the flat RGB.
             if (found >= 0 && kOverlayMatCols[found] != 0) { cache[key] = kOverlayMatCols[found]; return kOverlayMatCols[found]; }
         }
     }
-    // Overlays (archive 4) take the secondary colour first; everything else the primary.
     int out = (archive == 4) ? ((col2 >= 0) ? col2 : (col >= 0) ? col : col3)
                              : ((col >= 0) ? col : (col2 >= 0) ? col2 : col3);
     cache[key] = out;
@@ -1915,8 +1861,6 @@ static std::string Base64Std(const std::vector<unsigned char>& d) {
     return out;
 }
 
-// Overlay pixel mask for a tile shape: m[a*size+b]=1 where the OVERLAY covers (underlay = the rest).
-// Faithful port of the overlay tile-shape draw (size even). a = east, b = top-down within the tile.
 static void OverlayMaskLocal(int shape, int size, std::vector<unsigned char>& m) {
     for (auto& v : m) v = 0;
     auto set = [&](int x, int y0, int y1) {
@@ -1963,7 +1907,6 @@ static void OverlayMaskLocal(int shape, int size, std::vector<unsigned char>& m)
     }
 }
 
-// Assumes g_mu held (defined with RegionLocations below).
 static const std::vector<LocPlacement>& RegionLocationsLocked(int region_x, int region_y);
 
 // Wall pixels for loc type 0 (one edge), 2 (L of two edges), 9 (diagonal) at a rotation; tile-local (a,b) into out.
@@ -1993,7 +1936,6 @@ static void WallLine(int ty, int rot, int size, std::vector<std::pair<int, int>>
     }
 }
 
-// Every chunk in order; each is a complete Ogg stream, so decode separately and join the PCM.
 std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id) {
     SqliteIndexFile* idx = nullptr;
     {
@@ -2018,13 +1960,11 @@ std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id
                          bytes.begin() + (std::ptrdiff_t)(pos + len));
         pos += len;
     }
-    // Bad chunk table: fall back to everything after the header.
     if (out.empty() && j.ogg_off < bytes.size())
         out.emplace_back(bytes.begin() + (std::ptrdiff_t)j.ogg_off, bytes.end());
     return out;
 }
 
-// One sound's Ogg bytes, JAGA header stripped.
 std::vector<std::uint8_t> SoundOgg(int index_id, int sound_id) {
     SqliteIndexFile* idx = nullptr;          // same reasoning as SoundListJson: do not hold
     {                                        // g_mu across the read + inflate
@@ -2036,14 +1976,12 @@ std::vector<std::uint8_t> SoundOgg(int index_id, int sound_id) {
     auto raw = idx->ReadRawArchive(sound_id);
     if (raw.empty()) return {};
     auto bytes = Decompress(raw);   // audio indexes use the NXT "ZL" wrapper, not the
-                                        // standard container (that is the sprite index)
     if (bytes.empty()) return {};
     JagaInfo j = ParseJaga(bytes);
     if (!j.ok) return {};
     return std::vector<std::uint8_t>(bytes.begin() + (std::ptrdiff_t)j.ogg_off, bytes.end());
 }
 
-// [{id, rate, ch, ms, bytes}, ...] for one page; a full index-14 walk would decompress ~250MB.
 std::string SoundListJson(int index_id, int start_id, int limit) {
     if (limit < 1) limit = 1;
     if (limit > 512) limit = 512;
@@ -2055,7 +1993,6 @@ std::string SoundListJson(int index_id, int start_id, int limit) {
         idx = g_store ? g_store->Get(index_id) : nullptr;
     }
     if (!idx) return "[]";
-    // Ids come from the SQLite table, not the reference table.
     const auto ids = idx->ArchiveIdsFrom(start_id, limit);
     std::string out = "[";
     int emitted = 0;
@@ -2063,7 +2000,6 @@ std::string SoundListJson(int index_id, int start_id, int limit) {
         auto raw = idx->ReadRawArchive(id);
         if (raw.empty()) continue;
         auto bytes = Decompress(raw);   // audio indexes use the NXT "ZL" wrapper, not the
-                                        // standard container (that is the sprite index)
         JagaInfo j2 = ParseJaga(bytes);
         if (!j2.ok) continue;
         char buf[192];
@@ -2079,17 +2015,14 @@ std::string SoundListJson(int index_id, int start_id, int limit) {
     return out;
 }
 
-// Window render is expensive and the panel re-requests the same window on a poll; keep the last few results.
 namespace {
 struct MapWinCacheEntry { int cx, cy, plane, half, ts, want; std::string json; };
 std::deque<MapWinCacheEntry> g_mapWinCache;      // most-recent first; guarded by g_mu
 constexpr std::size_t kMapWinCacheMax = 48;   // a zoomed-out viewport spans dozens of chunks; 3 never hit
 }  // namespace
 
-// Matched by right-click option (Search, or Open for a locked container), not by name.
 std::string ClueSearchTargetJson(int x, int y, int plane) {
     if (x <= 0 || y <= 0 || plane < 0 || plane > 3) return "{}";
-    // Multi-tile objects anchor at their SW corner; widen to neighbouring regions.
     struct Best { int id = -1; std::string name, action; int dx = 1, dy = 1; int rank = 99; };
     Best best;
     for (int rgx = (x - 4) >> 6; rgx <= ((x + 4) >> 6); ++rgx) {
@@ -2102,7 +2035,6 @@ std::string ClueSearchTargetJson(int x, int y, int plane) {
                 if (p.rotation == 1 || p.rotation == 3) { int t = dx; dx = dy; dy = t; }
                 const int gx = rgx * 64 + p.x, gy = rgy * 64 + p.y;
                 if (x < gx || x >= gx + dx || y < gy || y >= gy + dy) continue;
-                // Prefer Search over Open (a door is never the clue target).
                 for (std::size_t a = 0; a < m.actions.size(); ++a) {
                     const std::string& act = m.actions[a];
                     int rank = (act == "Search") ? 0 : (act == "Open") ? 1 : 99;
@@ -2138,12 +2070,10 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
     if (half < 8 || half > 384) half = 40;       // tiles each side of the centre (panel-controlled zoom)
     if (ts < 2 || ts > 32) ts = 6;               // px per tile (32 = ~3x zoom before upscaling)
     if (ts & 1) ++ts;                            // even keeps the tile-shape split exact
-    // Shrink ts first, then half, until the buffer is sane.
     constexpr int kMaxW = 4096;
     while (2 * half * ts > kMaxW && ts > 2) ts -= 2;
     while (2 * half * ts > kMaxW && half > 8) --half;
     if (2 * half * ts > kMaxW) return "{}";
-    // Looked up after the clamps so out-of-range variants share an entry.
     for (std::size_t i = 0; i < g_mapWinCache.size(); ++i) {
         const auto& e = g_mapWinCache[i];
         if (e.cx == cx && e.cy == cy && e.plane == plane && e.half == half && e.ts == ts && e.want == want) {
@@ -2156,7 +2086,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
     }
     const int HALF = half, TS = ts;
     const int WT = 2 * HALF, W = WT * TS;
-    // Void is pre-filled with the panel backdrop (EncodePngRgb drops alpha). Must match panel_worldmap.js exactly.
     constexpr int kMapVoidCol = 0x0B0D12;
     std::vector<unsigned char> rgba((size_t)W * W * 4);
     for (std::size_t p = 0; p < rgba.size(); p += 4) {
@@ -2182,14 +2111,12 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         if (o == 112 && c == 0xFFFFFF) return true;       // ocean is remapped to blue, not dropped
         return c >= 0;
     };
-    // Authored hole on plane 0: nothing may be promoted over it.
     auto groundHoleAt = [&](const MapTileData& td, int gx, int gy) -> bool {
         const std::size_t b0 = (std::size_t)(gx & 63) * 64 + (gy & 63);
         return (td.underlay[b0] >= 1 || td.overlay[b0] >= 1) &&
                !drawableTile(td.underlay[b0], td.overlay[b0]);
     };
     // Highest plane 1..3 flagged "ground map" (settings bit 0x8) with real ground, 0 if none. Locs on any plane
-    // up to it are drawn (Prifddinas: flagged copy on plane 3, locs on plane 1).
     auto promoPlaneAt = [&](int gx, int gy) -> int {
         if (plane != 0 || gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return 0;
         const MapTileData& td = RegionTilesLocked(gx >> 6, gy >> 6);
@@ -2211,18 +2138,14 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         int ep = effPlaneAt(gx, gy);
         int idx = (ep * 64 + (gx & 63)) * 64 + (gy & 63);
         ul = td.underlay[idx]; ov = td.overlay[idx]; sh = td.shape[idx];
-        // A shifted column only overrides the base plane where the upper plane has ground.
         if (ep != plane && ul < 1 && ov < 1) {
             int b = (plane * 64 + (gx & 63)) * 64 + (gy & 63);
             ul = td.underlay[b]; ov = td.overlay[b]; sh = td.shape[b];
         }
-        // Settings bit 0x8 promotes an upper-plane tile onto the ground map; highest flagged plane wins.
-        // An authored hole on plane 0 outranks the promotion.
         if (plane == 0 && !td.settings.empty() && !groundHoleAt(td, gx, gy)) {
             for (int p = 3; p >= 1; --p) {
                 std::size_t i2 = (std::size_t)(p * 64 + (gx & 63)) * 64 + (gy & 63);
                 if (!(td.settings[i2] & 0x8)) continue;
-                // Invisible upper tiles are not promoted.
                 if (!drawableTile(td.underlay[i2], td.overlay[i2])) continue;
                 ul = td.underlay[i2]; ov = td.overlay[i2]; sh = td.shape[i2];
                 break;
@@ -2241,7 +2164,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         auto cl = [](double v){ int i = (int)(v + 0.5); return i < 0 ? 0 : (i > 255 ? 255 : i); };
         return (cl(((col >> 16) & 0xff) * f) << 16) | (cl(((col >> 8) & 0xff) * f) << 8) | cl((col & 0xff) * f);
     };
-    // Underlay blend: average underlay RGB over a (2*UBR+1)^2 box (separable box blur); the kernel tightens as tiles grow.
     const int UBR  = (TS >= 24) ? 1 : (TS >= 16) ? 2 : (TS >= 10) ? 3 : 4;
     const int UBLO = -UBR, UBHI = UBR + 1;
     const int PAD = 5, PW = WT + 2 * PAD;   // padding sized for the widest kernel; over-pad is free
@@ -2262,7 +2184,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             size_t j = (size_t)qx * PW + py; if (!rawM[j]) continue; sR += rawR[j]; sG += rawG[j]; sB += rawB[j]; ++sC; }
         size_t i = (size_t)px * PW + py; hR[i] = sR; hG[i] = sG; hB[i] = sB; hC[i] = sC;
     }
-    // 1-tile ring beyond the window (index (wx+1)*BW+(wy+1)) keeps bilinear sampling continuous across chunks.
     const int BW = WT + 2;
     std::vector<int> blendUl((size_t)BW * BW, -1);
     for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
@@ -2271,7 +2192,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             size_t j = (size_t)px * PW + qy; sR += hR[j]; sG += hG[j]; sB += hB[j]; sC += hC[j]; }
         if (sC > 0) blendUl[(size_t)(wx + 1) * BW + (wy + 1)] = ((sR / sC) << 16) | ((sG / sC) << 8) | (sB / sC);
     }
-    // Hillshade factor per tile: brighten NW-facing slopes, darken SE-facing. Same 1-tile ring.
     std::vector<float> shadeF((size_t)BW * BW, 1.0f);
     for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
         int gx = cx - HALF + wx, gy = cy - HALF + wy;
@@ -2284,7 +2204,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         if (d < -0.18) d = -0.18; else if (d > 0.18) d = 0.18;
         shadeF[(size_t)(wx + 1) * BW + (wy + 1)] = (float)(1.0 + d);
     }
-    // Per-pixel shade factor, bilinear between tile centres, clamped to [lo,hi] (full relief bleaches overlays at cliffs).
     auto sampleShade = [&](int wx, int wy, int a, int bb, double lo, double hi) -> double {
         double u = wx + (a + 0.5) / (double)TS - 0.5;
         double v = wy + 1.0 - (bb + 0.5) / (double)TS - 0.5;
@@ -2302,7 +2221,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         double f = acc / wsum;
         return f < lo ? lo : (f > hi ? hi : f);
     };
-    // Deterministic per-pixel dither so a single-colour tile does not read as a solid block at high zoom.
     auto dither = [](int tx, int ty, int a, int bb) -> int {
         unsigned h = (unsigned)tx * 73856093u ^ (unsigned)ty * 19349663u
                    ^ (unsigned)a * 83492791u ^ (unsigned)bb * 2971215073u;
@@ -2387,7 +2305,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         for (int wy = 0; wy < WT; ++wy) {
             int gx = cx - HALF + wx, gy = cy - HALF + wy;
             int ul, ov, sh; tileAt(gx, gy, ul, ov, sh);            // column-shifted tiles resolve to plane+1 inside tileAt
-            // deck = a shifted column actually carried by the upper plane.
             bool deck = effPlaneAt(gx, gy) != plane && (ul >= 1 || ov >= 1);
             if (ul < 1 && ov < 1 && !deck) continue;               // no tile data and no shifted column -> genuine void
             int ucol = (ul >= 1) ? blendUl[(size_t)(wx + 1) * BW + (wy + 1)] : -1;
@@ -2395,15 +2312,12 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             if (ocol == 0xFF00FF) ocol = -1;                       // magenta = transparent overlay
             if (ov == 112 && ocol == 0xFFFFFF) ocol = 0x3D4E63;    // ocean (white -> blue, per the game map)
             if (deck && ucol < 0 && ocol < 0) ucol = 0x6E5436;     // shifted tile with no colourable floor (plank piers) -> deck wood
-            // Only an invisible overlay (42/43, the 0xFF00FF marker) = authored hole; stays backdrop.
             if (ucol < 0 && ocol < 0) continue;                    // authored void -> backdrop
             any = true;
             const double tf = shadeF[(size_t)(wx + 1) * BW + (wy + 1)];
-            // Underlay ground gets the per-pixel gradient only at TS >= 8; flat at map zoom like the game's map.
             const bool smoothUl = (TS >= 8) && (ul >= 1);
             const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
-            // Relief ceiling capped so the brightest channel stays under 255 (near-white overlays get no highlight).
             double ovHi = 1.07;
             if (ocol >= 0) {
                 int mxc = (ocol >> 16) & 0xff;
@@ -2415,11 +2329,9 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                     if (ovHi < 1.0)  ovHi = 1.0;
                 }
             }
-            // Overlays take a clamped relief light: unshaded they read as blocks, fully shaded they bleach at cliffs.
             int px0 = wx * TS, py0 = ((WT - 1) - wy) * TS;          // north-up tile origin
             bool useMask = (ocol >= 0);
             if (useMask) OverlayMaskLocal(sh < 0 ? 0 : sh, TS, mask);
-            // Detail only where a tile is big enough to read.
             const bool detail = (TS >= 8);
             for (int a = 0; a < TS; ++a) {
                 for (int bb = 0; bb < TS; ++bb) {
@@ -2427,7 +2339,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                     if (useMask && mask[a * TS + bb]) {
                         if (tileWater) { col = sampleSurf(wx, wy, a, bb); if (col < 0) col = ocol; }
                         else if (detail) {
-                            // Gentle interpolated light for overlays.
                             col = shade(ocol, sampleShade(wx, wy, a, bb, 0.93, ovHi));
                         }
                         else col = ocol;
@@ -2443,7 +2354,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             }
         }
     }
-    // Structures on the planes above draw over this plane, as on the game's map.
     if (plane < 3) {
         std::vector<unsigned char> umask((size_t)TS * TS);
         for (int up = plane + 1; up <= 3; ++up) {
@@ -2471,10 +2381,8 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             }
         }
     }
-    // ---- locs: map-scene icons (loc opcode 102) composited at the tile, else wall lines from type-0/2/9 locs ----
     std::vector<unsigned char> objsOut;   // objects layer: scenery footprints (wtx u16, wty u16, dx u8, dy u8, id u32) for the toggleable client overlay
     // Map element pins: (wtx u16, wty u16, maplabel id u16, loc id u32) LE, 10 bytes each. Per-element data
-    // (sprite/category/text) comes from MapLabelsJson; the per-placement loc id is the tooltip's name of last resort.
     std::vector<unsigned char> iconsOut;
     {
         EnsureMapscenesLocked();
@@ -2486,7 +2394,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                 const auto& locs = RegionLocationsLocked(rgx, rgy);
                 for (const auto& p : locs) {
                     int gx = rgx * 64 + p.x, gy = rgy * 64 + p.y;
-                    // Element pins are exported from every plane, before the terrain plane filter; the panel dedupes.
                     {
                         int mfAny = LocMapFunctionLocked(p.id);
                         if (mfAny >= 0) {
@@ -2502,7 +2409,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                             continue;   // an element replaces the wall, on any plane
                         }
                     }
-                    // Shifted columns pull their plane+1 locs down; promoted columns bring that plane's locs (promoPlaneAt).
                     if (p.plane != plane
                         && !(p.plane == plane + 1 && effPlaneAt(gx, gy) != plane)
                         && !(plane == 0 && p.plane >= 1 && p.plane <= promoPlaneAt(gx, gy))) continue;
@@ -2524,7 +2430,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                     if (ms >= 0) {                                     // map-scene icon: composite, no wall
                         const MapsceneIcon& ic = MapsceneIconLocked(ms);
                         if (ic.w <= 0 || ic.h <= 0 || ic.rgba.empty()) continue;
-                        // Native icon px scaled from the game's 4px/tile reference to our TS, clamped to a few tiles.
                         int dw = ic.w * TS / 4, dh = ic.h * TS / 4;
                         if (dw < TS) dw = TS; if (dh < TS) dh = TS;
                         int maxpx = 5 * TS; if (dw > maxpx) dw = maxpx; if (dh > maxpx) dh = maxpx;
@@ -2560,9 +2465,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             }
         }
     }
-    // Empty = nothing visible, no objs, no pins. "Has a blocked tile" is deliberately not part of it (void counts as blocked).
     if (!any && objsOut.empty() && iconsOut.empty()) return "{}";
-    // Per-tile full-blocked grid (edge-only walls excluded), row-major by wx (index = wx*WT + wy).
     std::vector<unsigned char> blkOut, nomove;
     if (want & 4) {
     blkOut.assign((std::size_t)WT * WT, 0);   // full-block 1/0 for the scan-tile walkability check
@@ -2580,7 +2483,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
     std::string out = "{\"w\":" + std::to_string(W) + ",\"t\":" + std::to_string(TS) +
            ",\"h\":" + std::to_string(HALF) + ",\"wt\":" + std::to_string(WT) +
            ",\"cx\":" + std::to_string(cx) + ",\"cy\":" + std::to_string(cy) + ",\"p\":" + std::to_string(plane) +
-           // No png for a visually blank window; consumers treat a missing png as "no terrain".
            ",\"png\":\"" + ((any && (want & 1)) ? Base64Std(EncodePngRgb(rgba.data(), W, W)) : std::string()) +
            "\",\"blk\":\"" + ((want & 4) ? Base64Std(blkOut) : std::string()) +
            "\",\"nomove\":\"" + ((want & 4) ? Base64Std(nomove) : std::string()) +
@@ -2592,8 +2494,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
 }
 
 
-// Buff / debuff names: StructTypes (index 22) whose params carry name + bar icon id. Param keys get renumbered
-// by updates, so they are discovered from probe strings, then every struct is walked.
 namespace {
 
 struct DecodedStruct {
@@ -2620,14 +2520,12 @@ bool DecodeStructFile(std::vector<std::uint8_t> bytes, DecodedStruct& out) {
     return !out.ints.empty() || !out.strs.empty();
 }
 
-// Collision rank: prefer short, punctuation-free labels over tooltip sentences.
 int BuffNameScore(const std::string& s) {
     int punct = 0;
     for (char c : s) if (c == '.' || c == ',' || c == '(' || c == ')' || c == '%') ++punct;
     return (int)s.size() + punct + ((int)s.size() > 40 ? 10 : 0);
 }
 
-// First line only; strip <...> tags, trailing whitespace and a trailing " Active".
 std::string CleanBuffName(std::string name) {
     auto br = name.find("<br>");
     if (br != std::string::npos) name.resize(br);
@@ -2648,7 +2546,6 @@ std::string CleanBuffName(std::string name) {
     return name;
 }
 
-// Item-backed buffs: the item's cache name, minus a dose suffix "(4)" and a trailing " Active".
 std::string BuffItemName(int id) {
     if (id <= 0) return {};
     std::string n = ResolveLocked(id).name;
@@ -2669,7 +2566,6 @@ std::string BuffItemName(int id) {
     return n;
 }
 
-// Build g_buff_names / g_debuff_names from the struct cache. Caller holds g_mu.
 void LoadBuffNamesLocked() {
     if (g_buffs_loaded) return;
     auto* index = g_store ? g_store->Get(kIndexStructs) : nullptr;
@@ -2696,7 +2592,6 @@ void LoadBuffNamesLocked() {
         { "Supreme Overload Active", true, 0 },
     };
 
-    // Step 1: discover the name, sprite/item and buff-or-debuff keys from structs containing a probe string.
     int nameKey = -1;
     std::unordered_map<int, bool> spriteKeyIsItem;          // key -> value is an item id
     std::vector<const DecodedStruct*> matchStructs;
@@ -2741,7 +2636,6 @@ void LoadBuffNamesLocked() {
         if (!cand.empty()) bodKey = *cand.begin();
     }
 
-    // Step 2: map every struct's sprite/item value -> name into the right bar.
     for (const auto& s : structs) {
         auto nit = s.strs.find(nameKey);
         if (nit == s.strs.end() || nit->second.empty()) continue;
@@ -2754,7 +2648,6 @@ void LoadBuffNamesLocked() {
             auto sp = s.ints.find(kv.first);
             if (sp == s.ints.end() || sp->second <= 0) continue;
             int id = sp->second;
-            // Item or sprite: the +0x188 widget value alone is ambiguous.
             g_buff_icon_item[id] = kv.second;
             std::string name = kv.second ? BuffItemName(id) : std::string();
             if (name.empty()) name = fallback;
@@ -2773,7 +2666,6 @@ void LoadBuffNamesLocked() {
     }
 }
 
-// Exact, then +/-1: inactive/active icon pairs sit at adjacent ids.
 std::string LookupBuffNameAdj(int id, const std::unordered_map<int, std::string>& m) {
     auto it = m.find(id);     if (it != m.end()) return it->second;
     it = m.find(id - 1);      if (it != m.end()) return it->second;
@@ -2843,7 +2735,6 @@ std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
     return out;
 }
 
-// {"buffs":[[name,id,isItem],...],"debuffs":[...]}; id is a sprite unless isItem is 1 (item id). Cached.
 std::string BuffCatalogJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -2888,7 +2779,6 @@ std::string AbilityConfigsJson() {
     std::string out = "{"; bool first = true;
     std::unordered_map<std::string, char> seen;
     std::map<int, std::string> byId;   // sprite id (param 2802) -> record; every tier incl. 0
-    // struct id -> [castVarc, readyVarc] from script 6506; empty just means no "v" fields.
     const auto cdPairs = AbilityCooldownVarcsLocked();
     const auto& entries = index->ref().entries();
     for (int a = 0; a < (int)entries.size(); ++a) {
@@ -2899,7 +2789,6 @@ std::string AbilityConfigsJson() {
             auto itTier = ds.ints.find(2799);
             if (itName == ds.strs.end() || itTier == ds.ints.end()) continue;
             int tier = itTier->second;
-            // Tier 0 = auto-attacks: kept in the by-id map, excluded from the by-name map.
             if (tier != 0 && tier != 1 && tier != 2 && tier != 3 && tier != 4 && tier != 5 && tier != 7) continue;
             const std::string& name = itName->second;
             if (name.empty()) continue;
@@ -2950,7 +2839,6 @@ std::string AbilityConfigsJson() {
             out += "}";
         }
     }
-    // "_byId": the same abilities keyed by the action-bar sprite/ability id (includes tier 0).
     out += first ? "" : ","; out += "\"_byId\":{"; bool f2 = true;
     for (const auto& kv : byId) { out += f2 ? "" : ","; f2 = false; out += "\"" + std::to_string(kv.first) + "\":" + kv.second; }
     out += "}}";
@@ -2991,7 +2879,6 @@ std::string StructParamsJson(int structId) {
 }
 
 namespace {
-// Shared JSON string escaper for the world-map element tables below.
 std::string JStr(const std::string& v) {
     std::string r = "\"";
     for (char c : v) {
@@ -3020,7 +2907,6 @@ std::string MapLabelsJson() {
         out += first ? "" : ","; first = false;
         out += "\"" + std::to_string(kv.first) + "\":{\"s\":" + std::to_string(sp) +
                ",\"c\":" + std::to_string(d.category);
-        // Alternate sprite: the panel tries this when the preferred one yields no image.
         if (sprites.size() > 1) out += ",\"s2\":" + std::to_string(sprites[1]);
         if (!d.text.empty())      out += ",\"t\":" + JStr(d.text);
         if (n4149 != d.ps.end())  out += ",\"n\":" + JStr(n4149->second);
@@ -3041,7 +2927,6 @@ std::string MapLabelsJson() {
 }
 
 // Every map-symbol placement: 7 bytes LE each (element u16, x u16, y u16, plane u8) as {"n":count,"b":"<base64>"}.
-// Walks every region once without RegionLocationsLocked (memoising all ~5,000 regions would pin every loc in memory).
 std::string MapSymbolsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3079,8 +2964,6 @@ std::string MapSymbolsJson() {
     return cached;
 }
 
-// Loc id -> loc name for mapFunction-bearing locs. Piggybacks on MapSymbolsJson's walk (which fills g_loc_name);
-// that call takes g_mu itself, so it runs before the lock below.
 std::string MapLocNamesJson() {
     MapSymbolsJson();
     std::lock_guard<std::mutex> lk(g_mu);
@@ -3149,7 +3032,6 @@ std::string MapCategoriesJson() {
     return out;
 }
 
-// ---- HUD panel mount registry (enum 7716 + panel structs) -------------------------------------
 namespace {
 // Content group id -> mount comp sub under group 1477. Enum 7716 maps slot id (not a group id) -> panel struct;
 // params 3514-3517 = content comps packed (group<<16)|sub, param 3503 = mount comp packed the same way (non-1477 skipped).
@@ -3163,7 +3045,6 @@ void BuildPanelMountsLocked() {
     if (!enums || !enums->ready() || !structs || !structs->ready()) return;
     auto bytes = enums->ReadFile(7716 >> 8, 7716 & 0xff);
     if (bytes.empty()) return;
-    // Same opcode walk as EnumJson, int maps only (ops 6/8).
     std::vector<std::pair<int, int>> pairs;
     InputStream s(std::move(bytes));
     while (s.remaining() > 0) {
@@ -3245,7 +3126,6 @@ std::string ConfigFileHex(int archive, int file) {
     return out;
 }
 
-// Per-domain varbit census (cq "vbdomains"): {"<domain>":{"n":count,"var":[min,max],"vb":[min,max],"sample":[ids..]}}.
 std::string VarbitDomainsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3414,7 +3294,6 @@ std::string ItemParamsJson(int item_id) {
 std::string DbRowsJson(int masterTable) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
-    // Memoized per table (the walk touches every file). "[]" can mean "cache not open yet", so only non-empty results are cached.
     static std::map<int, std::string> s_dbrows_memo;
     { auto it = s_dbrows_memo.find(masterTable); if (it != s_dbrows_memo.end()) return it->second; }
     auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
@@ -3529,7 +3408,6 @@ int GetBuffKind(int id) {
     return 0;
 }
 
-// True when the bar icon id is an item rather than a sprite. Unknown -> false.
 bool GetBuffIconIsItem(int id) {
     if (id <= 0) return false;
     std::lock_guard<std::mutex> lk(g_mu);
@@ -3650,7 +3528,6 @@ std::int16_t TileHeightAtPlane(int wx, int wy, int eff_plane) {
 }
 
 void TileCornerHeights(int wx, int wy, int plane, std::int16_t out[4]) {
-    // All four corners summed through this column's effective plane (per-corner detection morphs quads at seams).
     out[0] = out[1] = out[2] = out[3] = (std::int16_t)-32768;
     if (wx < 0 || wy < 0) return;
     if (plane < 0 || plane > 3) plane = 0;
@@ -3695,7 +3572,6 @@ void RegionCornerHeightsFill(int player_x, int player_y, int plane, int radius,
             if (wx < 0 || wy < 0) continue;
             const int rx = wx >> 6, ry = wy >> 6;
             if (rx > 127 || ry > 255) continue;
-            // One layer decision per tile column.
             const int ep = EffPlaneLocked(RegionTilesLocked(rx, ry), wx & 0x3f, wy & 0x3f, plane);
             const std::size_t base = ((std::size_t)tx * T + ty) * 4;
             for (int c = 0; c < 4; ++c) {
@@ -3729,7 +3605,6 @@ void RegionHeightsFill(int player_x, int player_y, int plane, int radius,
     }
 }
 
-// ---- World-map areas (js5-23), file = area id ----
 // archive 0 "details": cstr internal name, cstr display name, 11-byte header (u8 flags, u32, u32 bg colour, u8, u8 zoom),
 // u8 record count; 17-byte records: u8 type, source rect x0,y0,x1,y1, display rect x0,y0,x1,y1 (u16 tiles, inclusive).
 // archive 1 "compositemap": u16 count, records: u8 type; type 0 = u8 planes, u16 srcX, u16 srcY, u8 dstPlane, u16 dstX, u16 dstY.
@@ -3873,12 +3748,10 @@ std::string SpriteDataUrl(int sprite_id) {
             if (!b64.empty()) url = "data:image/png;base64," + b64;
         }
     }
-    // Only a success is memoised; an empty result (index not open yet) must stay retryable.
     if (!url.empty()) g_sprite_cache[sprite_id] = url;
     return url;
 }
 
-// Sprite data URL capped to `px` on the longest side (area-average filtered).
 std::string SpriteDataUrlScaled(int sprite_id, int px, int frame) {
     if (sprite_id < 0) return {};
     if (frame < 0) frame = 0;
@@ -3929,7 +3802,6 @@ std::vector<std::uint8_t> SpriteRgba(int sprite_id, int& w, int& h) {
     return SpriteRawRgba(*idx, sprite_id, w, h);
 }
 
-// ---- item icon coverage -----------------------------------------------------
 std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3956,7 +3828,6 @@ std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
            ",\"missing\":[" + missing + "]}";
 }
 
-// ---- cache parse health: per surface, clean-decode count and the most frequent stopping opcode ----
 // Big indexes are sampled (every Nth file). stop_op 256 = stream overrun, 257 = schema mismatch.
 // Unknown-opcode probe (Probe.h): brute-force the payload size that lets each failing record parse cleanly. Holds g_mu.
 std::string CacheProbeUnknownOps() {
@@ -3987,7 +3858,6 @@ std::string CacheProbeUnknownOps() {
             for (size_t i = 0; i < recs.size() && i < 400; ++i) {
                 probe::g_op = -1; (void)decode(recs[i]);
                 int from = probe::g_stop > 0 ? probe::g_stop - 1 : 0; char hx[6];
-                // L values for which the whole record then decodes to an exact end
                 std::string lens;
                 for (int L = 0; L <= 300; ++L) { probe::g_op = op; probe::g_len = L; int st = decode(recs[i]); if (st == 0 && probe::g_tail == 0) { if (!lens.empty()) lens += ','; lens += std::to_string(L); } }
                 probe::g_op = -1;
@@ -4026,7 +3896,6 @@ std::vector<CacheParseRow> CacheParseHealth() {
         for (const auto& kv : stops)
             if (kv.second > row.stop_n) { row.stop_op = kv.first; row.stop_n = kv.second; }
     };
-    // Sweep one index (or one archive when `archive` >= 0); `decode` returns the stopping opcode (0 = clean).
     auto sweep = [&](const char* name, int index_id, int archive, auto&& decode) {
         CacheParseRow row; row.name = name;
         auto* idx = g_store->Get(index_id);
@@ -4133,8 +4002,6 @@ std::vector<CacheParseRow> CacheParseHealth() {
         return 0; });
     sweep("dbtables", kIndexConfigs, kDbTablesArchive, [](int, int, std::vector<std::uint8_t> b) {
         return DecodeDbTableFile(std::move(b), nullptr); });
-    // DBRows vs dbtables schemas (stop 257 = schema disagrees). Schemas are reloaded every run: the client
-    // rewrites the .jcache in place on updates while this process keeps running.
     g_dbtable_cols.clear();
     g_dbtables_loaded = false;
     LoadDbTablesLocked();

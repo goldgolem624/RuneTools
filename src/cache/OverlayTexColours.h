@@ -1,5 +1,4 @@
-// GENERATED: overlay material (config opcode 3) -> average diffuse-texture colour (the flat RGB
-// is only a tint). Computed offline from js5-26 materials -> js5-52 textures; regenerate after a cache update.
+// GENERATED: overlay material (config opcode 3) -> average diffuse colour; js5-26 materials -> js5-52 textures.
 static const int kOverlayMatIds[] = {
     38, 39, 40, 46, 48, 50, 55, 66, 75, 322, 1135, 1304,
     1410, 1417, 1444, 1621, 1740, 1768, 1769, 1772, 1780, 1785, 1787, 1788,

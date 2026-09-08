@@ -1,12 +1,6 @@
-// In-client sound observation and muting (see SoundFilter.h / SoundShare.h).
-// Hook: the engine's shared sound-play function, 950-1 shape (949-5 had 13 args, void):
 //   PLAY(subsystem, ctx, kind, id, loops, volume, group, a8, ..., flag)  15 args, returns the sound object
 //         rcx       rdx  r8w   r9d  +0x20  +0x28   +0x30
 // id = js5 archive id; group = engine source tag, 6 = effects (js5-14), 8 = vorbis/music (js5-40).
-// Muting sets volume to 0 and calls through (SOUND_SYNTH_VOLUME already drives that argument).
-// Located by scanning the SOUND_SYNTH handler body (op 297 on 950-1; opcodes reshuffle per build)
-// and decoding the CALL it makes. Pattern is 151 bytes, matches exactly once in .text.
-// Runs on whichever thread started the sound; no allocation, no locks.
 
 #include "SoundFilter.h"
 #include "SoundShare.h"
@@ -20,7 +14,6 @@
 namespace rtx::soundfilter {
 namespace {
 
-// 15 args, returns the sound object or null (950-1 call sites consume rax).
 typedef std::uint64_t(__fastcall* Play_t)(std::uint64_t, std::uint64_t, std::uint32_t,
                                           std::int32_t, std::int32_t, std::int32_t,
                                           std::int32_t, std::int32_t, std::int32_t,
@@ -32,10 +25,6 @@ rtx::sound::Share*  g_share     = nullptr;
 bool                g_installed = false;
 std::uint64_t       g_base      = 0;
 
-// SOUND_SYNTH handler body (950-1). Wildcarded: two rip-relative disp32s and the JZ rel32.
-// Identifying signals: add [rdx+0x10A0],-3 (pops 3 ints), audio subsystem at [rcx+0x19A30]
-// (0x199F0 on 949), id from [r8+0x100], loops [r8+0x104], delay [r8+0x108],
-// stack args [rsp+0x20]=loops, +0x28=volume 0xFF, +0x30=group 6, +0x38=a8 4.
 const unsigned char kSynth[] = {
     0x48,0x81,0xEC,0x88,0x00,0x00,0x00,
     0x83,0x82,0xA0,0x10,0x00,0x00,0xFD,
@@ -92,7 +81,6 @@ const unsigned char kSynthMask[] = {
 };
 static_assert(sizeof(kSynth) == sizeof(kSynthMask), "pattern and mask must match in length");
 
-// Returns 0 (nothing hooked) if the pattern is not unique or no CALL follows it.
 std::uint64_t FindPlayFn() {
     auto dos = (const IMAGE_DOS_HEADER*)g_base;
     auto nt  = (const IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
@@ -130,7 +118,6 @@ std::uint64_t FindPlayFn() {
     return 0;
 }
 
-// Key packing lives in SoundShare.h, shared with the launcher and panel.
 inline std::int32_t IndexOf(std::int32_t group) {
     return (group == 8) ? rtx::sound::kIndexMusic : rtx::sound::kIndexEffects;
 }
@@ -152,7 +139,6 @@ bool IsMuted(std::int32_t key) {
     return hit && g_share->blockSeq == s0;
 }
 
-// One ring entry per playback start.
 void NoteObserved(std::int32_t id, std::int32_t idx, bool muted) {
     const std::uint32_t seq = g_share->recentSeq;
     rtx::sound::RecentEntry e;

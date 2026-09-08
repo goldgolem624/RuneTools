@@ -78,7 +78,6 @@ void* g_launcherHwnd = nullptr;   // set once via SetLauncherWindow; owner for m
 
 namespace {
 
-// Bounded JS number -> int: NaN/Infinity through a plain (int) cast is UB, so clamp instead.
 static int js_int(JSContextRef ctx, JSValueRef v, int def = 0, int lo = INT_MIN, int hi = INT_MAX) {
     double d = JSValueToNumber(ctx, v, nullptr);
     if (!std::isfinite(d)) return def;
@@ -87,7 +86,6 @@ static int js_int(JSContextRef ctx, JSValueRef v, int def = 0, int lo = INT_MIN,
     return (int)d;
 }
 
-// ---- Screenshot capture ----------------------------------------------------
 
 std::filesystem::path runetools_dir() {
     return std::filesystem::path(rtx::log::LogDir()).parent_path();
@@ -116,7 +114,6 @@ bool png_encoder_clsid(CLSID& out) {
     return false;
 }
 
-// Some GPU-accelerated windows render black to a memory DC.
 bool bitmap_mostly_black(const void* bits, int w, int h, int stride) {
     if (!bits || w <= 0 || h <= 0) return true;
     const auto* p = static_cast<const std::uint8_t*>(bits);
@@ -132,7 +129,6 @@ bool bitmap_mostly_black(const void* bits, int w, int h, int stride) {
     return samples > 0 && nonblack * 100 / samples < 2;   // <2% non-black -> treat as blank
 }
 
-// PrintWindow(PW_RENDERFULLCONTENT) with a screen BitBlt fallback when it comes back blank. Caller deletes.
 HBITMAP capture_window_dib(HWND hwnd, int& outW, int& outH) {
     if (!hwnd || !IsWindow(hwnd)) return nullptr;
     RECT rc{};
@@ -174,7 +170,6 @@ HBITMAP capture_window_dib(HWND hwnd, int& outW, int& outH) {
     return dib;
 }
 
-// YYYY-MM-DD_HH-MM-SS[_n].png
 std::filesystem::path next_screenshot_path() {
     SYSTEMTIME st{}; GetLocalTime(&st);
     auto pad = [](unsigned v, int w) {
@@ -230,7 +225,6 @@ std::wstring capture_for_pid(std::uint32_t pid) {
     return path;
 }
 
-// Keybind: one virtual-key code persisted as a single integer, 0 = unbound.
 std::mutex        g_ss_mu;
 int               g_ss_vk = 0;
 bool              g_ss_loaded = false;
@@ -246,7 +240,6 @@ void ss_save_locked() {
     std::ofstream f(screenshot_cfg(), std::ios::trunc);
     if (f) f << g_ss_vk;
 }
-// Hide/show-all-panels hotkey, same file shape.
 std::mutex        g_hp_mu;
 int               g_hp_vk = 0;
 bool              g_hp_loaded = false;
@@ -266,8 +259,6 @@ void hp_save_locked() {
 
 std::filesystem::path vault_key_path() { return runetools_dir() / L"vault.key"; }
 
-// Vault passphrase: random 32-byte secret on disk under DPAPI (current Windows user).
-// Empty means DPAPI was unavailable; the caller falls back to the legacy fingerprint secret.
 std::string vault_secret() {
     const auto path = vault_key_path();
     {
@@ -304,7 +295,6 @@ std::string vault_secret() {
 void unlock_or_create_vault(const std::string& secret) {
     if (accounts::HasVault()) {
         if (accounts::Unlock(secret)) return;
-        // Pre-DPAPI vaults were sealed with the machine fingerprint; migrate in place.
         const std::string& legacy = shared::GetMachineFingerprint();
         if (!legacy.empty() && legacy != secret && accounts::Unlock(legacy)) {
             if (accounts::ChangePassphrase(secret)) {
@@ -314,7 +304,6 @@ void unlock_or_create_vault(const std::string& secret) {
             }
             return;
         }
-        // Sealed by another machine/user: start fresh (old file kept as .bak).
         rtx::log::Launcher("accounts vault not unlockable; starting a fresh vault");
         accounts::DiscardVault();
     }
@@ -340,13 +329,10 @@ JSValueRef served(JSContextRef ctx, const std::string& key, const char* empty,
     return utf8_to_js(ctx, r.empty() ? std::string(empty) : r);
 }
 
-// Failure envelope for object-shaped reads only: why in {noclient, noargs, pending, error, unsupported}.
-// Array/scalar/keyed-map bindings keep their empty default (an object there breaks callers).
 static std::string fail_json(const char* why) {
     return std::string("{\"ok\":false,\"why\":\"") + why + "\"}";
 }
 
-// Reads the cached snapshot list only; no cross-process read.
 static bool pid_known(std::uint32_t pid) {
     if (!pid) return false;
     const std::string j = rtx::reader::SamplesJson();
@@ -360,7 +346,6 @@ static JSValueRef served_obj(JSContextRef ctx, std::uint32_t pid, const std::str
     return utf8_to_js(ctx, r.empty() ? fail_json("error") : r);
 }
 
-// Per-account file identity; mirrors BankCache's sanitize: keep [A-Za-z0-9-_], space -> '_'.
 std::string sanitize_account(const std::string& name) {
     std::string out;
     for (char c : name) {
@@ -381,9 +366,7 @@ std::string account_key_for(std::uint32_t pid) {
     return (it != env.end()) ? sanitize_account(it->second) : std::string();
 }
 
-// ---- Callbacks ----
 
-// Host-allowlisted so a tampered renderer can't fire arbitrary shell handlers.
 JSValueRef OpenExternal(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto url = get_string_arg(ctx, argc, argv, 0);
@@ -427,7 +410,6 @@ JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
         if (!character_id.empty()) live_ids.push_back(character_id);
 
-        // Suppression keeps a just-removed account from being re-captured while its client still runs.
         if (capture && unlocked && has_env &&
             (!display_name.empty() || !character_id.empty()) &&
             !accounts::IsCaptureSuppressed(character_id)) {
@@ -458,7 +440,6 @@ JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
     std::string j = rtx::reader::ReaderHealthJson(pid);
-    // Launcher-side companion checks appended after the reader chains.
     auto tail = j.rfind("]}");
     if (pid && tail != std::string::npos) {
         std::string extra;
@@ -534,7 +515,6 @@ JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, j);
 }
 
-// Sibling UI asset text, loaded on demand instead of spliced in at startup.
 JSValueRef UiAsset(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
@@ -544,7 +524,6 @@ JSValueRef UiAsset(JSContextRef ctx, JSObjectRef, JSObjectRef,
 // ---- Cache audio (js5-14 effects / js5-40 music) ----
 std::filesystem::path alerts_user_dir();
 
-// soundList(index, startId, limit) -> [{id,rate,ch,ms,bytes}, ...]
 JSValueRef SoundList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "[]");
@@ -556,7 +535,6 @@ JSValueRef SoundList(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::SoundListJson(idx, start, lim));
 }
 
-// soundExport(index, id) -> absolute path of a written .ogg, or "".
 JSValueRef SoundExport(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "");
@@ -579,7 +557,6 @@ JSValueRef SoundExport(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, path.string());
 }
 
-// soundPlay(index, id, volumePct) -> true if it decoded and started (in-process, Audio.cpp).
 JSValueRef SoundPlay(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -620,13 +597,11 @@ JSValueRef SoundVolume(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc >= 1) rtx::audio::SetVolume(js_int(ctx, argv[0]));
     return JSValueMakeBoolean(ctx, true);
 }
-// soundStatus() -> {state,pos,dur,vol,rate,ch}
 JSValueRef SoundStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, rtx::audio::StatusJson());
 }
 
-// ---- in-client sound: observe what the game plays, and mute ids (companion channel) ----
 
 JSValueRef SoundFilterStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -643,7 +618,6 @@ JSValueRef SoundFilterEnable(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::launcher::soundfilter::SetEnabled(pid, on));
 }
 
-// ids: comma-separated.
 JSValueRef SoundMute(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -659,7 +633,6 @@ JSValueRef SoundMute(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::launcher::soundfilter::SetMuted(pid, std::move(ids)));
 }
 
-// The searchable object a clue points at (clue items carry the tile, never the object name).
 JSValueRef ClueSearchTarget(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{}");
@@ -669,7 +642,6 @@ JSValueRef ClueSearchTarget(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::ClueSearchTargetJson(x, y, p));
 }
 
-// ---- right-click menu (Developer) ----
 JSValueRef MenuStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
@@ -681,13 +653,11 @@ JSValueRef MenuEnable(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    // rtx::menu::kEnable* (a bool maps to 1/0 = kEnablePanel/kEnableOff); NaN must not reach the cast.
     const double raw = JSValueToNumber(ctx, argv[1], nullptr);
     const auto mode = (raw >= 1.0 && raw <= 2.0) ? static_cast<std::uint32_t>(raw) : 0u;
     return JSValueMakeBoolean(ctx, rtx::launcher::menuswap::SetEnabled(pid, mode));
 }
 
-// verbs: newline-separated, in display order.
 JSValueRef MenuSwapFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -714,7 +684,6 @@ JSValueRef ItemIcon(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, icons::ItemIconDataUrl(id));
 }
 
-// Icon diagnostics for the Health panel; iconCoverage walks the item index once, off the UI thread.
 JSValueRef IconMisses(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, icons::IconMissesJson());
@@ -757,7 +726,6 @@ JSValueRef ItemInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::ItemInfoJson(id));
 }
 
-// --- HUD reminder (top-center sprite + caption over the game frame) ------------------------
 // The launcher owns the per-client HUD section (one mapping per pid kept alive); the module reads it.
 namespace {
 struct HudMap { HANDLE h = nullptr; rtx::hud::Share* s = nullptr; int lastSprite = -1; };
@@ -818,13 +786,11 @@ JSValueRef Sprite(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "");
     int id = js_int(ctx, argv[0]);
-    // Optional: px caps the longest side; frame indexes into a multi-frame group.
     int px = (argc >= 2) ? js_int(ctx, argv[1]) : 0;
     int frame = (argc >= 3) ? js_int(ctx, argv[2]) : 0;
     return utf8_to_js(ctx, (px > 0 || frame > 0) ? rtx::cache::SpriteDataUrlScaled(id, px, frame)
                                                  : rtx::cache::SpriteDataUrl(id));
 }
-// spriteByName(name) -> archive id, -1 if unknown.
 JSValueRef SpriteByName(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeNumber(ctx, -1);
@@ -903,7 +869,6 @@ JSValueRef CacheIfaceGroup(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::IfaceGroupDefsJson(gid));
 }
 
-// Map windows build off the UI thread: {"pending":1} until ready, then the result is handed over once.
 namespace {
 std::mutex g_mapwinMu;
 std::unordered_map<std::string, std::string> g_mapwinReady;
@@ -1049,7 +1014,6 @@ JSValueRef GameTick(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeNumber(ctx, static_cast<double>(count));
 }
 
-// Tick count plus ms since it landed (the metronome interpolates phase locally); age = -1 when unknown.
 JSValueRef GameTickState(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{\"count\":-1,\"age\":-1}");
@@ -1111,7 +1075,6 @@ JSValueRef ItemExtraInts(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     int cid  = js_int(ctx, argv[1]);
     int iid  = js_int(ctx, argv[2]);
-    // Optional slot: two stacks of one id hold different instance vars.
     int slot = (argc >= 4) ? js_int(ctx, argv[3]) : -1;
     return utf8_to_js(ctx, rtx::reader::ItemExtraIntsJson(pid, cid, iid, slot));
 }
@@ -1155,7 +1118,6 @@ JSValueRef VarbitDomains(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::VarbitDomainsJson());
 }
 
-// arg = var config archive id.
 JSValueRef VarDefs(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     int archive = argc > 0 ? (int)JSValueToNumber(ctx, argv[0], nullptr) : 60;
@@ -1295,7 +1257,6 @@ JSValueRef ServerPacketArm(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::reader::ServerPacketFeedEnable(pid, on));
 }
 
-// events(pid, sinceSeq). Keyed per pid, not per cursor: a stale span is harmless, rtxEvents dedups on seq.
 JSValueRef Events(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
@@ -1306,7 +1267,6 @@ JSValueRef Events(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       [pid, since] { return rtx::reader::EventsJson(pid, since); });
 }
 
-// eventsMask(pid, "4,5,43,...") -> opcodes the companion records into the event ring.
 JSValueRef EventsMask(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -1334,7 +1294,6 @@ JSValueRef RenderToggle(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, rtx::reader::RenderToggle(pid, which, on));
 }
 
-// outlineObject(pid, locId, x, y, plane, on), keyed per (id, tile).
 JSValueRef OutlineObject(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 6) return JSValueMakeBoolean(ctx, false);
@@ -1425,7 +1384,6 @@ JSValueRef IfaceCompRects(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::IfaceCompRectsJson(pid, gid, comps, mount));
 }
 
-// Addresses window chrome by sprite; component ids are not stable across layouts.
 JSValueRef IfaceSpriteParent(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return utf8_to_js(ctx, "{\"ok\":0}");
@@ -1478,7 +1436,6 @@ JSValueRef PuzzleCellRects(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::PuzzleCellRectsJson(pid));
 }
 
-// Solver tables are staged next to the exe by the build; returned as base64.
 JSValueRef PuzzleWdTable(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, icons::AssetFileBase64(L"wd_table.bin"));
@@ -1582,7 +1539,6 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// ---- Party hiscores (Dungeoneering): index_lite lookups, cached on disk for 1 hour per name ----
 namespace {
 std::mutex g_hs_mu;
 struct HsEntry { int state = 0; long long epoch = 0; std::string body; bool inflight = false; };  // state 0 none 1 ok 2 error; epoch = unix secs of last completed fetch
@@ -1668,7 +1624,6 @@ JSValueRef HiscoresJson(JSContextRef ctx, JSObjectRef, JSObjectRef,
         std::string name = csv.substr(pos, sep == std::string::npos ? std::string::npos : sep - pos);
         pos = (sep == std::string::npos) ? csv.size() : sep + 1;
         if (name.empty() || name.size() > 20) continue;
-        // names become verbatim cache keys: RS-legal characters only (NBSP allowed, hs_fetch maps it)
         if (name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 _-Â ") != std::string::npos) continue;
         auto& e = g_hiscores[name];
         bool fresh = (e.state != 0) && (now - e.epoch < kHsTtlSec);
@@ -1688,8 +1643,6 @@ JSValueRef HiscoresJson(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 
 
-// ---- Leagues-only worlds ---------------------------------------------------------------
-// Leagues worlds have independent VoS/world-event state, so crowdsourced reports are kept apart.
 const int kLeaguesWorlds[] = {
     143, 144, 145, 146, 147,
     172, 173, 174, 175,
@@ -1709,8 +1662,6 @@ bool is_leagues_world(int w) {
     return false;
 }
 
-// ---- Dungeoneering party-sync: door levels and hiscores relayed via the server, keyed by a shared code.
-//      SSE loop fills a launcher-global cache; see website routes/party.js + services/party-sync.js. ----
 namespace {
 std::mutex g_party_mu;
 std::string g_party_code;                                   // "" = off
@@ -1741,7 +1692,6 @@ std::string party_code_load() {
     return out.size() >= 4 && out.size() <= 16 ? out : std::string();
 }
 
-// naive extractors for the flat JSON the server sends; no JSON lib on the launcher side.
 std::string json_str_field(const std::string& j, const std::string& key) {
     auto p = j.find("\"" + key + "\"");
     if (p == std::string::npos) return "";
@@ -1757,7 +1707,6 @@ long long json_num_field(const std::string& j, const std::string& key) {
     ++p; while (p < j.size() && (j[p] == ' ' || j[p] == '"')) ++p;
     return std::atoll(j.c_str() + p);
 }
-// levels array "[65,74,null,...]" -> CSV "65,74,,..."
 std::string json_levels_csv(const std::string& j) {
     auto p = j.find("\"levels\"");
     if (p == std::string::npos) return "";
@@ -1814,7 +1763,6 @@ void party_apply_critkey(const std::string& payload) {
     std::lock_guard<std::mutex> lk(g_party_mu);
     g_party_critkeys[(int)idx] = on ? 1 : 0;
 }
-// psnapshot: {"doors":[{cell,skill,level},...],"hiscores":[{name,levels},...],"noncrit":[..],"critkeys":[..],"critrooms":[..]}
 void party_apply_snapshot(const std::string& j) {
     { std::lock_guard<std::mutex> lk(g_party_mu); g_party_doors.clear(); g_party_hiscores.clear(); g_party_noncrit.clear(); g_party_critkeys.clear(); g_party_critrooms.clear(); }
     auto dseg = j.find("\"doors\"");
@@ -1931,7 +1879,6 @@ void party_start_loop() {
         std::thread([epoch, code] { guarded("party events", [&] { party_events_loop(epoch, code); }); }).detach();
     else
         std::thread([epoch, code]() { guarded("party restart", [&] {
-            // the old stream only notices the epoch bump when data arrives (heartbeat ~25s), so wait it out
             for (int i = 0; i < 120 && g_party_loop_running.load() && g_party_epoch.load() == epoch; ++i)
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             if (g_party_epoch.load() != epoch) return;
@@ -1968,7 +1915,6 @@ JSValueRef PartyGetCode(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (!code.empty() && !g_party_loop_running.load()) party_start_loop();
     return utf8_to_js(ctx, code);
 }
-// Shape check for JS-supplied JSON that is spliced raw into a request body.
 static bool json_value_ok(const std::string& d) {
     if (d.size() > 4096) return false;
     std::size_t i = 0;
@@ -2027,7 +1973,6 @@ JSValueRef PartyData(JSContextRef ctx, JSObjectRef, JSObjectRef,
     for (const auto& kv : g_party_hiscores) {
         if (!first) out += ',';
         first = false;
-        // CSV "65,74,,90" -> "[65,74,null,90]"
         std::string arr = "[";
         const std::string& csv = kv.second;
         std::size_t i = 0; bool f2 = true;
@@ -2068,7 +2013,6 @@ JSValueRef PartyData(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out);
 }
 
-// ---- Tile markers (see Markers.cpp) ----
 JSValueRef MarkersGet(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -2147,7 +2091,6 @@ JSValueRef MarkerKeybindsSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
     rtx::markers::SetKeybinds(kb);
     return JSValueMakeBoolean(ctx, true);
 }
-// Mark/delete keys only act while the Markers panel is open.
 JSValueRef MarkerKeybindsArm(JSContextRef ctx, JSObjectRef, JSObjectRef,
                              size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -2205,7 +2148,6 @@ JSValueRef ClientWindowOpen(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, dock::IsOpen(pid));
 }
 
-// Legacy no-op, kept registered for stale JS callers.
 JSValueRef DockCollapse(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t, const JSValueRef[], JSValueRef*) {
     return JSValueMakeUndefined(ctx);
@@ -2220,7 +2162,6 @@ JSValueRef KeepFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeUndefined(ctx);
 }
 
-// locMorphs(pid, "id,id,...") -> live morph resolution per base loc id.
 JSValueRef LocMorphs(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "[]");
@@ -2235,7 +2176,6 @@ JSValueRef GameFocused(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, dock::GameFocused(pid));
 }
 
-// Borderless fullscreen: one arg toggles, two sets; returns the resulting state.
 JSValueRef HostFullscreen(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -2246,14 +2186,11 @@ JSValueRef HostFullscreen(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, dock::IsHostFullscreen(pid));
 }
 
-// Legacy no-op, kept registered for stale callers.
 JSValueRef RailTip(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t, const JSValueRef[], JSValueRef*) {
     return JSValueMakeUndefined(ctx);
 }
 
-// ---- In-game window manager -------------------------------------------------
-// uiRects(pid, "x,y,w,h;..." CSS px, visible): regions the UI claims for input.
 JSValueRef UiRects(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -2264,7 +2201,6 @@ JSValueRef UiRects(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// uiKeyboard(pid, on): a UI text field gained/lost focus.
 JSValueRef UiKeyboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -2273,7 +2209,6 @@ JSValueRef UiKeyboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// uiScale(pid, mul): user multiplier on top of the DPI-derived device scale.
 JSValueRef UiScale(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -2282,7 +2217,6 @@ JSValueRef UiScale(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// uiClientInfo(pid) -> {"pw","ph","cw","ch","scale","mod"}
 JSValueRef UiClientInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, "{}");
@@ -2292,7 +2226,6 @@ JSValueRef UiClientInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
 JSValueRef MyPid(JSContextRef ctx, JSObjectRef, JSObjectRef,
                  size_t, const JSValueRef[], JSValueRef*) {
-    // Per-client windows define a global __rtx_pid; the main launcher returns 0.
     JSObjectRef global = JSContextGetGlobalObject(ctx);
     JSStringRef key = JSStringCreateWithUTF8CString("__rtx_pid");
     JSValueRef v = JSObjectGetProperty(ctx, global, key, nullptr);
@@ -2309,7 +2242,6 @@ JSValueRef CloseProcess(JSContextRef ctx, JSObjectRef, JSObjectRef,
     }
     auto pid = static_cast<std::uint32_t>(
         JSValueToNumber(ctx, argv[0], nullptr));
-    // Only a tracked RuneScape client may be closed; the binding is reachable from the UI view.
     bool tracked = false;
     for (const auto& p : process::ScanRsClients()) if (p.pid == pid) { tracked = true; break; }
     if (!tracked) {
@@ -2354,7 +2286,6 @@ JSValueRef RemoveAccount(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, os.str());
 }
 
-// Whether a running client's JX_ credentials are captured into the vault automatically (default on).
 std::filesystem::path account_capture_cfg() { return runetools_dir() / L"account_capture.txt"; }
 std::mutex g_cap_mu;
 bool       g_cap_on = true, g_cap_loaded = false;
@@ -2379,7 +2310,6 @@ void account_capture_set(bool on) {
     if (f) f << (on ? 1 : 0);
 }
 
-// accountCapture([bool]) -> state after the optional set
 JSValueRef AccountCapture(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc >= 1) account_capture_set(JSValueToBoolean(ctx, argv[0]));
@@ -2394,8 +2324,7 @@ JSValueRef LaunchAccount(JSContextRef ctx, JSObjectRef, JSObjectRef,
         return utf8_to_js(ctx,
             R"({"success":false,"detail":"unknown account or vault locked"})");
     }
-    // rs2client.exe falls back to the rs-launch:// handler on a non-empty JX_ACCESS_TOKEN it can't use,
-    // so ACCESS/REFRESH are forced empty.
+    // rs2client.exe falls back to the rs-launch:// handler on a non-empty JX_ACCESS_TOKEN it can't use, so ACCESS/REFRESH are forced empty.
     auto take = [&](const char* k) -> std::string {
         auto it = a.env.find(k);
         return (it == a.env.end()) ? std::string{} : it->second;
@@ -2428,8 +2357,6 @@ JSValueRef OpenLog(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeUndefined(ctx);
 }
 
-// bridgeStatus(pid) -> {"ok":true,"attached":bool,"reader":"ok|detached|stale","build":"<ver>"|0,"launcher":"x.y.z"}
-// From the cached snapshot list only. stale = tracked but login state unclassified (offsets moved).
 JSValueRef BridgeStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -2458,15 +2385,12 @@ extern std::string g_latest_json;
 void refresh_latest();
 JSValueRef LatestVersion(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
-    // Serves the background cache; never blocks the JS thread on the network.
     std::string j;
     { std::lock_guard<std::mutex> lk(g_latest_mu); j = g_latest_json; }
     if (j.empty() || j == "{}") { std::thread(refresh_latest).detach(); j = "{}"; }
     return utf8_to_js(ctx, j);
 }
 
-// Background update checker: check-on-start + hourly poll, plus SSE push as a trigger only;
-// the manifest GET is the source of truth.
 constexpr int     kCheckIntervalMs = 60 * 60'000;
 constexpr wchar_t kEventsPath[]    = L"/api/client/events";
 std::mutex        g_latest_mu;
@@ -2474,7 +2398,6 @@ std::string       g_latest_json = "{}";
 std::atomic<bool> g_checker_started{ false };
 
 void refresh_latest() {
-    // Debounce: the start poll and the SSE hello both fire at startup.
     static std::atomic<long long> last_ms{ 0 };
     long long now = (long long)GetTickCount64();
     long long prev = last_ms.load();
@@ -2496,7 +2419,6 @@ void update_checker_loop() {
     }
 }
 
-// Voice of Seren shared state; the SSE loop writes pushed `vos` events straight into the cache.
 constexpr wchar_t kVosPath[]       = L"/api/vos";
 constexpr wchar_t kVosReportPath[] = L"/api/vos/report";
 std::mutex             g_vos_mu;
@@ -2513,7 +2435,6 @@ bool sse_alive_now() {
            ((long long)GetTickCount64() - g_sse_last_rx_ms.load()) < 40'000;
 }
 
-// ---- Corrupted Scarab world tracker (same architecture as VoS) ----
 // Server keeps each world for a fixed 5-minute window from first sighting; rows carry absolute expiry.
 constexpr wchar_t kScarabPath[]       = L"/api/scarabs";
 constexpr wchar_t kScarabReportPath[] = L"/api/scarabs/report";
@@ -2523,8 +2444,7 @@ std::atomic<long long> g_scarab_fetched_ms{ 0 };   // when data landed
 std::atomic<long long> g_scarab_get_ms{ 0 };       // last GET attempt (fallback floor)
 std::atomic<bool>      g_scarab_fetching{ false };
 
-// ---- Menaphos Soul Obelisk tracker (loc 109495; same architecture) ----
-// Sightings are classified by tile against kObeliskSpawns; 7.5-minute window from first sighting.
+// ---- Menaphos Soul Obelisk tracker (loc 109495): sightings classified by tile against kObeliskSpawns; 7.5-minute window from first sighting ----
 constexpr wchar_t kObeliskPath[]       = L"/api/obelisks";
 constexpr wchar_t kObeliskReportPath[] = L"/api/obelisks/report";
 std::mutex             g_obelisk_mu;
@@ -2533,7 +2453,6 @@ std::atomic<long long> g_obelisk_fetched_ms{ 0 };
 std::atomic<long long> g_obelisk_get_ms{ 0 };
 std::atomic<bool>      g_obelisk_fetching{ false };
 
-// Stamps local arrival time as "rxAt" (unix ms); the panel derives server-clock skew from now - rxAt.
 std::string stamp_rx_at(const std::string& json) {
     if (json.size() < 2 || json.front() != '{') return json;
     using namespace std::chrono;
@@ -2549,7 +2468,6 @@ constexpr ObeliskSpawn kObeliskSpawns[] = {
     { 3141, 2644, 4 },   // Port District
 };
 
-// 0 when absent.
 int vos_json_int(const std::string& j, const char* key) {
     std::string needle = "\"" + std::string(key) + "\":";
     auto p = j.find(needle);
@@ -2560,7 +2478,6 @@ int vos_json_int(const std::string& j, const char* key) {
     return any ? (int)v : 0;
 }
 
-// 64-bit variant for unix-ms timestamps.
 long long json_ll(const std::string& j, const char* key) {
     std::string needle = "\"" + std::string(key) + "\":";
     auto p = j.find(needle);
@@ -2571,7 +2488,6 @@ long long json_ll(const std::string& j, const char* key) {
     return any ? v : 0;
 }
 
-// Braced body of a nested object (leagues VoS lives under "lg"); empty when absent.
 std::string vos_json_section(const std::string& j, const char* name) {
     const std::string needle = "\"" + std::string(name) + "\":{";
     auto p = j.find(needle);
@@ -2586,13 +2502,11 @@ std::string vos_json_section(const std::string& j, const char* name) {
     return depth == 0 ? j.substr(start, p - start - 1) : std::string();
 }
 
-// `h` is only 0-23, so a day-old value would otherwise pass the hour check.
 bool vos_cache_stale() {
     long long fetched = g_vos_fetched_ms.load();
     return fetched != 0 && ((long long)GetTickCount64() - fetched) > 65 * 60'000;
 }
 
-// True when the cache holds a value for the current UTC hour ("h":1 must not match inside "h":18).
 bool vos_cache_has_current_hour() {
     if (vos_cache_stale()) return false;
     SYSTEMTIME st; GetSystemTime(&st);
@@ -2609,10 +2523,8 @@ bool vos_cache_has_current_hour() {
     return d == (int)today;
 }
 
-// Fire-and-forget report under a per-pool 5-minute floor.
 bool vos_post_report(int a, int b, bool leagues) {
     if (a < 1 || a > 8 || b < 1 || b > 8 || a == b) return false;
-    // The server stamps its own arrival hour, so skip the last seconds before the top of the hour.
     {
         SYSTEMTIME st; GetSystemTime(&st);
         if (st.wMinute == 59 && st.wSecond >= 57) return false;
@@ -2629,7 +2541,6 @@ bool vos_post_report(int a, int b, bool leagues) {
         std::vector<http::Header> hdrs = { { "Content-Type", "application/json" } };
         auto r = http::PostJson(kUpdateHost, kVosReportPath, hdrs, body);
         if (!r.ok || r.status != 200) {
-            // Rewind the floor so a failed post retries ~30s later.
             rtx::log::Launcher("vos report failed: status " + std::to_string(r.status) + " " + r.detail);
             long long cur = now;
             floorMs.compare_exchange_strong(cur, now - (5 * 60'000 - 30'000));
@@ -2639,7 +2550,6 @@ bool vos_post_report(int a, int b, bool leagues) {
 }
 
 // Corrupted Scarab detection: swarm ids 109473/109475/109477 (id match; other "Corrupted Scarab" entities exist).
-// A world already listed (and unexpired) is not re-reported; 60s local floor.
 bool scene_has_scarab(const std::string& scene) {
     static const char* kIds[] = { "\"id\":109473,", "\"id\":109475,", "\"id\":109477," };
     for (const char* n : kIds)
@@ -2664,7 +2574,6 @@ int scene_obelisk_district(const std::string& scene) {
     return 0;
 }
 
-// True when `world` is in the "worlds" array (not the sibling "votes" array) and unexpired.
 // Row shape: [world, ...extra, expiresAtMs]; server-now is estimated as payload.now + (localNow - rxAt).
 bool payload_lists_world(const std::string& json, int world) {
     const std::string key = "\"worlds\":[";
@@ -2680,7 +2589,6 @@ bool payload_lists_world(const std::string& json, int world) {
     const std::string needle = "[" + std::to_string(world) + ",";
     auto hit = json.find(needle, start);
     if (hit == std::string::npos || hit >= end) return false;
-    // On any parse surprise, treat the row as live.
     auto rowEnd = json.find(']', hit);
     if (rowEnd == std::string::npos || rowEnd > end) return true;
     std::size_t q = rowEnd;
@@ -2696,14 +2604,12 @@ bool payload_lists_world(const std::string& json, int world) {
     return expiresAt > srvNow + (localNow - rxAt);
 }
 
-// One scene read per client per pass, shared by both trackers.
 void scarab_scan_pass() {
     static std::unordered_map<int, long long> last_scarab;    // world -> tick
     static std::unordered_map<int, long long> last_obelisk;
     auto snaps = rtx::reader::SampleAll();
     for (const auto& s : snaps) {
         if (s.status != 30 || s.world <= 0) continue;
-        // The obelisk is a runtime loc, only visible through the companion's object list.
         rtx::launcher::companion::EnsureLoaded(s.pid);
         std::string scene = rtx::reader::SceneJson(s.pid, 50);
         long long now = (long long)GetTickCount64();
@@ -2745,7 +2651,6 @@ void scarab_scan_pass() {
     }
 }
 
-// Stable per-install voter id (32 random hex chars); WorldEventVote appends a per-account hash.
 std::string voter_id() {
     static std::mutex mu;
     static std::string cached;
@@ -2781,7 +2686,6 @@ std::string voter_id() {
     return cached;
 }
 
-// kind = "scarabs" | "obelisks" (API path segment). Votes dedupe per account: voter id + account hash.
 JSValueRef WorldEventVote(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 3) return JSValueMakeBoolean(ctx, false);
@@ -2813,12 +2717,10 @@ JSValueRef WorldEventVote(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// Same serving rules as ScarabCached.
 JSValueRef ObeliskCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     bool allow_refresh = (argc >= 1) && JSValueToBoolean(ctx, argv[0]);
     if (allow_refresh && sse_alive_now()) allow_refresh = false;
-    // Floor on the attempt clock, not the data clock.
     long long now = (long long)GetTickCount64();
     long long prev = g_obelisk_get_ms.load();
     if (allow_refresh && (prev == 0 || now - prev >= 120'000) &&
@@ -2841,7 +2743,6 @@ JSValueRef ObeliskCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_obelisk_json);
 }
 
-// SSE push keeps this fresh; the GET fallback runs only when asked, the stream is down, and >=2min passed.
 JSValueRef ScarabCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     bool allow_refresh = (argc >= 1) && JSValueToBoolean(ctx, argv[0]);
@@ -2868,7 +2769,6 @@ JSValueRef ScarabCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_scarab_json);
 }
 
-// Scene-event scanner (scarabs + soul obelisk); scans immediately on start.
 void world_event_scan_loop() {
     for (;;) {
         scarab_scan_pass();
@@ -2876,8 +2776,6 @@ void world_event_scan_loop() {
     }
 }
 
-// Always-on Voice of Seren reporter: reads the VoS varbits from every attached in-Priff client and
-// posts a pair that fills an empty hour slot or disagrees with the cached one (per pool).
 void vos_report_loop() {
     for (;;) {
         SYSTEMTIME st; GetSystemTime(&st);
@@ -2895,8 +2793,7 @@ void vos_report_loop() {
         for (const auto& s : snaps) {
             if (s.status != 30) continue;                 // in-game only
             const bool lgWorld = is_leagues_world(s.world);
-            // varp 4783 freezes on leaving Priff and varbit 26416 is hour-only, so gate on the Priff region box
-            // (region = tile>>6; X 32-35, Y 51-54).
+            // varp 4783 freezes on leaving Priff and varbit 26416 is hour-only, so gate on the Priff region box (region = tile>>6; X 32-35, Y 51-54)
             int tx = 0, ty = 0, pl = 0;
             if (!rtx::reader::PlayerTile(s.pid, tx, ty, pl)) continue;
             int rx = tx >> 6, ry = ty >> 6;
@@ -2915,8 +2812,6 @@ void vos_report_loop() {
     }
 }
 
-// SSE stream: "hello" on connect, "update" on publish, plus vos/scarab/obelisk payload pushes.
-// Non-200 responses are rejected before the body so an error page never counts as a clean stream end.
 void update_events_loop() {
     int backoff = 3000;
     std::string buf;
@@ -2939,7 +2834,6 @@ void update_events_loop() {
                     if (line.rfind("event:", 0) == 0) {
                         std::string ev = line.substr(6);
                         if (!ev.empty() && ev.front() == ' ') ev.erase(ev.begin());
-                        // Detached: a synchronous GET here would stall parsing the handshake events behind it.
                         if (ev == "update" || ev == "hello") std::thread(refresh_latest).detach();
                         cur_ev = ev;
                     } else if (line.rfind("data:", 0) == 0) {
@@ -2973,7 +2867,6 @@ void update_events_loop() {
             [](int status) { return status == 200; });
         g_sse_alive.store(false);
         backoff = (r.ok && r.status == 200) ? 3000 : (backoff * 2 > 60000 ? 60000 : backoff * 2);
-        // Log rejections only; a 200 stream dying mid-body is routine.
         if (r.status != 0 && r.status != 200)
             rtx::log::Launcher("sse stream rejected: status " + std::to_string(r.status) +
                                ", reconnect in " + std::to_string(backoff / 1000) + "s");
@@ -2982,7 +2875,6 @@ void update_events_loop() {
     }
 }
 
-// Background threads are spun up here on first use.
 JSValueRef LatestVersionCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                size_t, const JSValueRef[], JSValueRef*) {
     bool expected = false;
@@ -2996,13 +2888,11 @@ JSValueRef LatestVersionCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_latest_json);
 }
 
-// ---- Voice of Seren crowdsource ----
 // Varbits 25158/25159 (pair) + 26416 (hour stamp) only update in/near Prifddinas.
 JSValueRef VosCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     bool allow_refresh = (argc >= 1) && JSValueToBoolean(ctx, argv[0]);
     if (allow_refresh && sse_alive_now()) allow_refresh = false;
-    // Once the cache holds this UTC hour's value, no network until the hour flips.
     if (allow_refresh && vos_cache_has_current_hour()) allow_refresh = false;
     long long now = (long long)GetTickCount64();
     long long prev = g_vos_get_ms.load();
@@ -3027,8 +2917,6 @@ JSValueRef VosCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_vos_json);
 }
 
-// ---- RS3 GE prices, relayed through the RuneTools server -------------------------------
-// latest ~530 KB (refetch after 2 min, one attempt per 30 s); mapping ~1.4 MB (6 h / 10 min).
 constexpr wchar_t kPricesLatestPath[]  = L"/api/prices/latest";
 constexpr wchar_t kPricesMappingPath[] = L"/api/prices/mapping";
 std::mutex             g_prices_mu;
@@ -3080,7 +2968,6 @@ JSValueRef PricesMapping(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_prices_map_json);
 }
 
-// Per-item price history keyed by "id:lookback", fresh for 5 minutes; a miss returns "{}" and kicks a fetch.
 struct PricesTsEntry { std::string json = "{}"; long long ms = 0; bool fetching = false; };
 std::mutex g_prices_ts_mu;
 std::map<std::string, PricesTsEntry> g_prices_ts;
@@ -3120,7 +3007,6 @@ JSValueRef PricesTimeseries(JSContextRef ctx, JSObjectRef, JSObjectRef,
                 e.json = std::move(r.body);
                 e.ms = (long long)GetTickCount64();
             } else {
-                // Mark unavailable without clobbering a good series; retry in ~1 minute.
                 if (e.json == "{}") e.json = "{\"unavailable\":1}";
                 e.ms = (long long)GetTickCount64() - 240'000;
             }
@@ -3147,7 +3033,6 @@ JSValueRef LeaguesWorlds(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out);
 }
 
-// vosReport(a, b [, leagues])
 JSValueRef VosReport(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     int a = (argc >= 1) ? js_int(ctx, argv[0]) : 0;
@@ -3156,7 +3041,6 @@ JSValueRef VosReport(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, vos_post_report(a, b, lg));
 }
 
-// Running rs2client.exe count; a running client keeps the in-process module mapped, blocking the installer.
 JSValueRef ClientsRunning(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t, const JSValueRef[], JSValueRef*) {
     int n = 0;
@@ -3173,7 +3057,6 @@ JSValueRef ClientsRunning(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeNumber(ctx, n);
 }
 
-// Ultralight has no navigator.clipboard; read CF_UNICODETEXT directly.
 JSValueRef PasteClipboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t, const JSValueRef[], JSValueRef*) {
     if (!OpenClipboard(nullptr)) return utf8_to_js(ctx, "");
@@ -3198,7 +3081,6 @@ JSValueRef PasteClipboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out);
 }
 
-// Ultralight has no clipboard integration; the panel forwards copies here.
 JSValueRef CopyClipboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::string text = get_string_arg(ctx, argc, argv, 0);
@@ -3232,7 +3114,6 @@ JSValueRef CaptureScreenshot(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, u8);
 }
 
-// ---- wiki browser (in-client, runescape.wiki only) ----
 JSValueRef WikiOpen(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -3297,8 +3178,6 @@ JSValueRef OpenScreenshots(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeUndefined(ctx);
 }
 
-// ---- Alerts: sound playback + config persistence -------------------------
-// Ultralight has no audio; plays a bundled WAV from <exe>/sounds (name reduced to a bare filename).
 JSValueRef PlayAlertSound(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -3318,13 +3197,10 @@ JSValueRef PlayAlertSound(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, ok ? true : false);
 }
 
-// ---- Game location: which RuneScape.exe gets launched ----------------------
-// gamePath() -> {"path","auto","custom":bool,"found":bool,"signed","signer","reason"}
 std::string game_path_json() {
     const std::wstring custom = loader::CustomRsClientPath();
     const std::wstring autod  = loader::AutoRsClientPath();
     const std::wstring path   = custom.empty() ? autod : custom;
-    // Polled every few seconds; the signature check is cached per (path, size, mtime).
     static std::mutex cache_mu;
     static std::wstring cache_path; static std::uintmax_t cache_size = 0;
     static std::filesystem::file_time_type cache_mtime{};
@@ -3356,7 +3232,6 @@ JSValueRef GamePath(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JS
     return utf8_to_js(ctx, game_path_json());
 }
 
-// gamePathPick() -> gamePath() JSON plus "cancelled":true or "error".
 JSValueRef GamePathPick(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
     HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     std::wstring chosen; bool cancelled = true;
@@ -3420,7 +3295,6 @@ std::filesystem::path alerts_user_dir() {
     return std::filesystem::path(up) / L"RuneToolsX";
 }
 
-// Per-account config path; empty when the account can't be resolved (nothing shared is read or written).
 std::filesystem::path alerts_cfg_path(std::uint32_t pid) {
     if (!pid) return {};
     std::string acct = account_key_for(pid);
@@ -3440,7 +3314,6 @@ std::string alerts_read_file(const std::filesystem::path& p) {
     return ss.str();
 }
 
-// Per-account JSON store under feature folder `sub`; empty when unresolved.
 std::filesystem::path account_store_path(std::uint32_t pid, const wchar_t* sub) {
     if (!pid) return {};
     std::string acct = account_key_for(pid);
@@ -3452,7 +3325,6 @@ std::filesystem::path account_store_path(std::uint32_t pid, const wchar_t* sub) 
     return dir / (acct + ".json");
 }
 
-// Per-account JSON blob stores; the UI owns each schema.
 JSValueRef AlertsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -3493,7 +3365,6 @@ JSValueRef GoalsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, f.good());
 }
 
-// Window-manager layout ({v:1, menu:{...}, windows:{tab:{x,y,w,h,...}}}), written via tmp + rename.
 JSValueRef LayoutLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -3525,7 +3396,6 @@ JSValueRef LayoutSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, !ec);
 }
 
-// ---- Cache Explorer snapshots: %USERPROFILE%\RuneToolsX\cachex\<name>.json, machine-wide ----
 std::filesystem::path cachex_path(const std::string& name) {
     std::string safe;
     for (char c : name) {
@@ -3555,7 +3425,6 @@ JSValueRef CacheStoreSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto p = cachex_path(js_to_utf8(ctx, argv[0]));
     if (p.empty()) return JSValueMakeBoolean(ctx, false);
     std::string body = js_to_utf8(ctx, argv[1]);
-    // Empty body clears the snapshot.
     if (body.empty()) {
         std::error_code ec; std::filesystem::remove(p, ec);
         return JSValueMakeBoolean(ctx, true);
@@ -3577,7 +3446,6 @@ JSValueRef NotesLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, s.empty() ? std::string("[]") : s);
 }
 
-// Plugin permission grants, per account (localStorage is machine-wide and wiped on update).
 JSValueRef PluginGrantsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -3611,7 +3479,6 @@ JSValueRef NotesSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, f.good());
 }
 
-// Entity uids change every session, so pinned nameplates persist by player name.
 JSValueRef NameplatesLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
@@ -3672,7 +3539,6 @@ JSValueRef QuestSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, f.good());
 }
 
-// ---- CS2 Scripts panel (Cs2Browser.cpp): sidecar extraction + search/view ----
 JSValueRef Cs2Status(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, cs2browser::StatusJson());
@@ -3772,7 +3638,6 @@ JSValueRef SidebarSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, f.good());
 }
 
-// Launcher-level (not per-account) config files.
 std::filesystem::path launcher_cfg_path(const wchar_t* file) {
     auto dir = alerts_user_dir();
     if (dir.empty()) return {};
@@ -3796,7 +3661,6 @@ JSValueRef HiddenPanelsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, f.good());
 }
 
-// Global Vars-tab pin list; on disk because localStorage is wiped on ui-asset re-extract.
 JSValueRef VarPinsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t, const JSValueRef[], JSValueRef*) {
     std::string s = alerts_read_file(launcher_cfg_path(L"varpins.json"));
@@ -3804,7 +3668,6 @@ JSValueRef VarPinsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 namespace {
 
-// Launcher-page metadata (last played / last world / total level per account).
 JSValueRef LauncherMetaLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t, const JSValueRef[], JSValueRef*) {
     std::string s = alerts_read_file(launcher_cfg_path(L"launcher-meta.json"));
@@ -3830,7 +3693,6 @@ JSValueRef LauncherMetaSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, !ec);
 }
 
-// Borderless-chrome window commands: drag (HTCAPTION), min, close.
 JSValueRef WinCmd(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     HWND h = reinterpret_cast<HWND>(g_launcherHwnd);
@@ -3838,7 +3700,6 @@ JSValueRef WinCmd(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string cmd = js_to_utf8(ctx, argv[0]);
     if (cmd == "drag") {
         ReleaseCapture();
-        // The OS drag loop consumes the button release, so hand the view a synthetic mouse-up after.
         SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, 0);
         POINT pt{};
         if (GetCursorPos(&pt) && ScreenToClient(h, &pt)) {
@@ -3915,7 +3776,6 @@ JSValueRef MenuSearch(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::cache::MenuSearchJson(kind, js_to_utf8(ctx, argv[1]), limit));
 }
 
-// Global right-click menu reorder rules, on disk for the same reason as the var pins.
 JSValueRef MenuRulesLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
     std::string s = alerts_read_file(launcher_cfg_path(L"menurules.json"));
@@ -3953,7 +3813,6 @@ JSValueRef Metronome(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// autoSkills = rows appear as skills gain XP; otherwise mask bit i = always show skill i.
 JSValueRef XpPanelFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4027,14 +3886,12 @@ JSValueRef CenterTextFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    // Optional: banner slot, 0xRRGGBB accent (-1 = default red).
     int slot = (argc >= 3) ? js_int(ctx, argv[2]) : 0;
     int rgb  = (argc >= 4) ? js_int(ctx, argv[3]) : -1;
     rtx::overlay::SetCenterText(pid, js_to_utf8(ctx, argv[1]), slot, rgb);
     return JSValueMakeBoolean(ctx, true);
 }
 
-// Client pixels; w<=0 clears.
 JSValueRef UiHighlightFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4050,7 +3907,6 @@ JSValueRef UiHighlightFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// "x,y,w,h;..." replaces the whole set; empty clears.
 JSValueRef UiHighlightsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4097,7 +3953,6 @@ JSValueRef InvSlotRectFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::InvSlotRectJson(pid, idx));
 }
 
-// Payload "x,y,w,h,Label|..."; empty clears.
 JSValueRef PanelVizFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4128,7 +3983,6 @@ JSValueRef PanelVizFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// Payload "x,y,w,h,step;..."; empty clears. step 0 = the immediate next tile.
 JSValueRef PuzzleCellsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4159,7 +4013,6 @@ JSValueRef PuzzleCellsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// Skills-panel XP bars: "x,y,w,h,pct[,rgb];..." (pct in tenths of a percent); empty clears.
 JSValueRef SkillBarsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4229,7 +4082,6 @@ JSValueRef OverlayToast(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-// ttl_ms 0 = sticky until clicked.
 JSValueRef OverlayNotify(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return JSValueMakeBoolean(ctx, false);
@@ -4249,10 +4101,7 @@ void install_fn(JSContextRef ctx, JSObjectRef obj, const char* name,
     JSStringRelease(key);
 }
 
-// ===================== Plugin SDK (host side) =====================
-// Main frame only; the broker in client.html calls these on a plugin's behalf. See PLUGIN_SDK.md.
 
-// Reverse-DNS charset; empty = invalid.
 std::string sanitize_plugin_id(const std::string& id) {
     std::string out;
     for (char c : id) {
@@ -4264,7 +4113,6 @@ std::string sanitize_plugin_id(const std::string& id) {
     return out;
 }
 
-// alnum, '-', '_'; empty = invalid.
 std::string sanitize_plugin_key(const std::string& key) {
     std::string out;
     for (char c : key) {
@@ -4274,7 +4122,6 @@ std::string sanitize_plugin_key(const std::string& key) {
     return out;
 }
 
-// %USERPROFILE%/RuneToolsX/plugin-data/<acct>/<id>/
 std::filesystem::path plugin_store_dir(std::uint32_t pid, const std::string& pluginId) {
     if (!pid) return {};
     std::string id = sanitize_plugin_id(pluginId);
@@ -4288,7 +4135,6 @@ std::filesystem::path plugin_store_dir(std::uint32_t pid, const std::string& plu
     return dir;
 }
 
-// %USERPROFILE%/RuneToolsX/plugins-dev/
 std::filesystem::path plugin_dev_root() {
     auto dir = alerts_user_dir();
     if (dir.empty()) return {};
@@ -4381,7 +4227,6 @@ JSValueRef PluginDevManifest(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, alerts_read_file(root / id / "manifest.json"));
 }
 
-// Change fingerprint of the dev-sideload root: <id>:<fileCount>:<maxWriteTime>; per plugin dir.
 JSValueRef PluginDevStamp(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t, const JSValueRef[], JSValueRef*) {
     auto root = plugin_dev_root();
@@ -4414,7 +4259,6 @@ JSValueRef PluginDevStamp(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out);
 }
 
-// entryFile must be a bare filename.
 JSValueRef PluginDevEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, std::string());
@@ -4429,8 +4273,6 @@ JSValueRef PluginDevEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, s);
 }
 
-// ===================== Plugin marketplace (in-client install) =====================
-// Signed bundle (SHA-256 + ECDSA P-256 against the pinned key) extracted to plugins/<id>/.
 
 constexpr wchar_t kPluginListPath[] = L"/api/plugins/client/list";
 
@@ -4534,7 +4376,6 @@ std::string install_plugin(const std::string& slug) {
     return {};
 }
 
-// Marketplace list, fetched off the JS thread; returns the cached body ("{}" until the first fetch lands).
 std::mutex   g_pluginListMu;
 std::string  g_pluginListBody;              // "" = never fetched
 std::string  g_pluginListErr;               // "" = none
@@ -4566,13 +4407,11 @@ JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
             });
         }
     }
-    // A stale body still beats an error.
     if (body.empty() && !err.empty())
         return utf8_to_js(ctx, "{\"error\":\"" + json_escape(err) + "\"}");
     return utf8_to_js(ctx, body.empty() ? std::string("{}") : body);
 }
 
-// Install runs on a detached thread; returns "pending"|"busy" and the JS polls pluginInstallStatus().
 std::mutex   g_installMu;
 std::string  g_installResult;               // "" while running, "ok", or error text
 bool         g_installInFlight = false;
@@ -4595,7 +4434,6 @@ JSValueRef PluginMarketInstall(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, std::string("pending"));
 }
 
-// "pending" | "ok" | "idle" | error text
 JSValueRef PluginInstallStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                size_t, const JSValueRef[], JSValueRef*) {
     std::lock_guard<std::mutex> lk(g_installMu);
@@ -4603,7 +4441,6 @@ JSValueRef PluginInstallStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_installResult.empty() ? std::string("idle") : g_installResult);
 }
 
-// Installed plugins live under plugins/<id>/; list/read mirror the dev ones.
 JSValueRef PluginInstalledList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                                size_t, const JSValueRef[], JSValueRef*) {
     auto root = plugin_install_root();
@@ -4659,7 +4496,6 @@ JSValueRef PluginUninstallLocal(JSContextRef ctx, JSObjectRef, JSObjectRef,
 
 }  // namespace
 
-// Called from the Dock host window proc on a key down-edge; 0 = unbound.
 int ScreenshotVk() {
     std::lock_guard<std::mutex> lk(g_ss_mu);
     ss_load_locked();
@@ -4674,7 +4510,6 @@ bool CaptureScreenshotForPid(std::uint32_t pid) {
     return !capture_for_pid(pid).empty();
 }
 
-// Releases a client's HUD section on teardown; called from dock Detach.
 void HudClose(std::uint32_t pid) {
     std::lock_guard<std::mutex> lk(g_hudMu);
     auto it = g_hudMaps.find(pid);
@@ -4684,7 +4519,6 @@ void HudClose(std::uint32_t pid) {
     g_hudMaps.erase(it);
 }
 
-// "x y" text file per account.
 void SaveWindowPos(std::uint32_t pid, int x, int y) {
     auto p = account_store_path(pid, L"window");
     if (p.empty()) return;

@@ -14,7 +14,6 @@
 
 namespace rtx::cache {
 
-// Shared cache state, exposed by CacheReader.cpp so this decoder reuses the one Store + lock.
 Store* CacheStore();
 std::mutex& AchievementsMutex();
 void EnsureCacheInit();
@@ -23,7 +22,6 @@ namespace {
 
 using std::uint8_t; using std::uint16_t; using std::uint32_t;
 
-// Big-endian bounds-checked reader: past the end every read yields 0 / "".
 struct Reader {
     const uint8_t* d; std::size_t n, p = 0;
     bool eof() const { return p >= n; }
@@ -34,7 +32,6 @@ struct Reader {
     uint16_t usmart() { uint16_t i = u8(); if (i >= 0x80) { i -= 0x80; return (uint16_t)((i << 8) | u8()); } return i; }
     // smart32: high bit set -> 4 bytes & 0x7fffffff; else 2 bytes (0x7fff sentinel -> 0).
     uint32_t smart32() { if (p < n && (d[p] & 0x80)) return u32v() & 0x7FFFFFFFu; uint32_t v = u16(); return v == 0x7FFF ? 0 : v; }
-    // Padded string, CP-1252 -> UTF-8 (a raw high byte would make the whole JSON invalid UTF-8).
     std::string pstr() {
         static const uint32_t kHigh[32] = {
             0x20AC,0x0081,0x201A,0x0192,0x201E,0x2026,0x2020,0x2021,
@@ -72,8 +69,6 @@ struct Ach {
     std::vector<int> subreqCount;   // op 30: how many subreqs must be satisfied (per group)
 };
 
-// Decode one achievement file. On an unknown opcode keep what was parsed and stop; stop_op
-// receives that opcode (0 = clean end).
 Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
     Ach a; a.id = id;
     if (stop_op) *stop_op = 0;
@@ -84,7 +79,6 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
         if (op == 0) break;
         switch (op) {
             case 1: a.name = r.pstr(); a.named = true; break;
-            // count(u8) x [tag(u8) + padded string]; first = standard description, rest = GIM variants.
             case 2: { int cnt = r.u8(); if (cnt < 0) cnt = 0; if (cnt > 16) cnt = 16;
                       for (int i = 0; i < cnt; ++i) { r.u8(); std::string s = r.pstr(); if (i == 0) a.desc = std::move(s); }
                       break; }
@@ -96,7 +90,6 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 8: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); r.u8(); r.pstr(); r.u8(); r.u16(); } break; }  // skill req (ironman)
             case 9: case 10: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.smart32(); r.pstr(); r.u8(); r.u16(); } break; }
             case 11: { int c = r.u8(); for (int i = 0; i < c; ++i) a.prereqs.push_back((int)r.u24()); break; }   // previous achievements (judged by the game's req walk)
-            // skill req: (u8 ?, u8 LEVEL, name, u8 ?, u16 SKILL).
             case 12: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); int lvl = r.u8(); r.pstr(); r.u8(); int sk = r.u16(); a.skills.push_back({ sk, lvl }); } break; }
             // op 13: op 14's shape but the u16 ids are VARP ids; multi-id entries SUM.
             case 13: { int c = r.usmart(); for (int i = 0; i < c; ++i) { VarpReq q; r.u8(); q.value = r.smart32(); q.desc = r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) q.varps.push_back(r.u16()); a.varpreqs.push_back(std::move(q)); } break; }
@@ -108,10 +101,8 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 19: a.members = false; break;   // op 19 present = free-to-play
             case 20: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }
             case 21: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }
-            // packed bit req: (u8 ?, u16 id, u8 stepsize, name, u8 BIT).
             // op 23 = bit of VARP id; op 25 = bit of VARBIT id's value.
             case 23: case 25: { int c = r.usmart(); for (int i = 0; i < c; ++i) { BitReq q; r.u8(); q.id = r.u16(); r.u8(); q.desc = r.pstr(); q.bit = r.u8(); (op == 23 ? a.bitreqs23 : a.bitreqs25).push_back(std::move(q)); } break; }
-            // combat mastery: tier id, byte, then the NAME (these carry their name here, not in op 1).
             case 26: a.combatMastery = (int)r.u16(); r.u8(); a.name = r.pstr(); a.named = true; break;
             case 27: break;
             case 28: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u8(); break; }
@@ -224,8 +215,6 @@ const std::string& AchievementsJson() {
                 for (std::size_t i = 0; i < a.subach.size(); ++i) { if (i) out += ','; out += std::to_string(a.subach[i]); }
                 out += "]";
             }
-            // "skills" must be emitted exactly once (last JSON key wins). Do not reintroduce
-            // the retired merged "reqs23" key; panels special-case it.
             if (!a.bitreqs23.empty()) {
                 out += ",\"reqsvpb\":[";
                 for (std::size_t i = 0; i < a.bitreqs23.size(); ++i) {
@@ -255,7 +244,6 @@ const std::string& AchievementsJson() {
                     if (q.varps.empty()) continue;
                     if (!f2) out += ',';
                     f2 = false;
-                    // "vp" = first id; "vps" = the full sum group when there is more than one.
                     out += "{\"vp\":" + std::to_string(q.varps[0]);
                     if (q.varps.size() > 1) {
                         out += ",\"vps\":[";
@@ -281,7 +269,6 @@ const std::string& AchievementsJson() {
     return g_ach_json;
 }
 
-// Unknown-opcode probe over every achievement def (Probe.h). Caller holds the shared cache mutex.
 void AchievementsProbeUnknown(std::string& log) {
     EnsureCacheInit();
     auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;
@@ -344,7 +331,6 @@ void AchievementsParseHealth(int& ok, int& total, int& stop_op, int& stop_n) {
         if (kv.second > stop_n) { stop_op = kv.first; stop_n = kv.second; }
 }
 
-// Quests required for the Quest Cape (achievement id 1). Caller holds the shared cache mutex.
 void QuestCapeQuestNames(std::vector<std::string>& out) {
     EnsureCacheInit();
     auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;

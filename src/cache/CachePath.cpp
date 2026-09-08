@@ -42,7 +42,6 @@ std::string env_str(const char* name) {
     return (n > 0 && n < sizeof(buf)) ? std::string(buf, n) : std::string();
 }
 
-// Steam library roots: the Steam install plus every "path" in libraryfolders.vdf.
 std::vector<std::string> steam_libraries() {
     std::vector<std::string> libs;
     std::wstring steam = reg_str(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", 0);
@@ -70,7 +69,6 @@ std::vector<std::string> steam_libraries() {
     return libs;
 }
 
-// `cache_folder=` out of a preferences.cfg.
 std::string cache_folder_from(const fs::path& prefs) {
     std::error_code ec;
     if (!fs::is_regular_file(prefs, ec)) return {};
@@ -103,14 +101,12 @@ void probe(CacheCandidate& c) {
             if (secs > c.newest) c.newest = secs;
         }
     }
-    // NXT fills archives lazily; a partial cache is still a cache.
     c.usable = c.archives >= 8;
 }
 
 void add(std::vector<CacheCandidate>& out, std::string path, std::string source) {
     if (path.empty()) return;
     std::error_code ec;
-    // Canonicalise so the same directory reached two ways is not weighed twice.
     fs::path p = fs::weakly_canonical(fs::path(path), ec);
     std::string s = ec ? path : p.string();
     for (const auto& c : out)
@@ -135,10 +131,8 @@ void add_folder_or_parent(std::vector<CacheCandidate>& out, const std::string& d
 std::vector<CacheCandidate> CacheCandidates() {
     std::vector<CacheCandidate> out;
 
-    // 1) Explicit override, for a layout nothing else predicts.
     add_folder_or_parent(out, env_str("RTX_CACHE_DIR"), "RTX_CACHE_DIR");
 
-    // 2) The client's own record, per install.
     add_folder_or_parent(out, cache_folder_from(R"(C:\ProgramData\Jagex\launcher\preferences.cfg)"),
                          "preferences.cfg (Jagex)");
     const auto libs = steam_libraries();
@@ -147,7 +141,6 @@ std::vector<CacheCandidate> CacheCandidates() {
         add_folder_or_parent(out, cache_folder_from(rs / "launcher" / "preferences.cfg"),
                              "preferences.cfg (Steam)");
     }
-    // The Jagex Launcher's install dir can hold a preferences.cfg too.
     {
         std::wstring inst = reg_str(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Jagex\\JagexLauncher\\RuneScape",
                                     L"InstallLocation", 0);
@@ -160,13 +153,11 @@ std::vector<CacheCandidate> CacheCandidates() {
                                  "preferences.cfg (install dir)");
     }
 
-    // 3) Known defaults, for when no preferences.cfg has been written yet.
     add(out, kDefaultCacheRoot, "default (ProgramData)");
     for (const auto& lib : libs)
         add(out, (fs::path(lib) / "steamapps" / "common" / "RuneScape" / "RuneScape").string(),
             "default (Steam)");
 
-    // 4) Last resort: standard layouts on every fixed drive. Shallow, no recursive search.
     DWORD mask = GetLogicalDrives();
     for (int i = 0; i < 26 && mask; ++i) {
         if (!(mask & (1u << i))) continue;
@@ -193,7 +184,6 @@ const std::string& ResolveCacheRoot() {
         const CacheCandidate* best = nullptr;
         for (const auto& c : cands) {
             if (!c.usable) continue;
-            // An explicit override wins outright.
             if (c.source.rfind("RTX_CACHE_DIR", 0) == 0) { best = &c; break; }
             if (!best || c.newest > best->newest) best = &c;
         }

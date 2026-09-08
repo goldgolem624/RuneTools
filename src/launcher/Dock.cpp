@@ -27,13 +27,7 @@
 #include <unordered_map>
 #include <vector>
 
-// Unified-window model: one host window per client, the game filling the host client area; the
-// panel UI is composited in-frame by the companion (GameUi.h).
-// TRUE EMBED (kTrueEmbed=1): the game becomes a WS_CHILD. Invariant: cross-process SetParent
-// silently attaches both threads' input queues (the window-switch stall), so it is severed right
-// after; the host owns keyboard focus and relays keys, the companion's keep-focused layer fakes
-// focus for the game. GLUED (kTrueEmbed=0, fallback): the game stays top-level, frame stripped,
-// flush over the host. All on the AppCore main thread; the host WndProc must not block.
+// Unified-window model: one host window per client; kTrueEmbed=1 makes the game a WS_CHILD, and cross-process SetParent attaches both threads' input queues, so it is severed right after. Main thread only.
 
 namespace rtx::launcher { void HudClose(std::uint32_t pid); }   // Bridge.cpp: releases a client's HUD section on teardown
 
@@ -47,7 +41,6 @@ App*        g_app = nullptr;
 std::string g_client_html_path;
 HBRUSH      g_darkBrush = nullptr;   // dark erase brush (#0b0d12)
 
-// Dev UI hot-reload (RTX_UI_DIR): Tick polls the ui dir's newest mtime and reloads once it settles.
 bool      g_uiWatch = false;
 long long g_uiMtime = 0, g_uiPending = 0;
 ULONGLONG g_uiPollMs = 0;
@@ -68,9 +61,6 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
-// LoadHTML has no base URL, so every file is inlined ahead of client.html's own <script>, one
-// <script> block per file (keeps per-file line numbers). A file's top level may only use names from
-// files spliced before it (tools/ui-ordercheck.js). Panels are IIFEs that self-register via registerTab.
 void inject_panel_scripts(std::string& html, const std::string& html_path) {
     static const char* kCoreFiles[] = {
         "core/rtx-shim.js",       // window.onerror first, then the localStorage shim
@@ -205,14 +195,12 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         blob += "<script>\n" + js + "\n</script>\n";
     };
     for (const char* f : kCoreFiles) splice(f);
-    // A few panels register their own guide into window.QUEST_GUIDES at load time; create it up front.
     blob += "<script>window.QUEST_GUIDES = window.QUEST_GUIDES || {};</script>\n";
     for (const char* f : kFiles) splice(f);
     for (const char* f : kBootFiles) splice(f);
     html.insert(pos, blob);
 }
 
-// Sibling UI asset by bare name; rejects path separators and dot segments.
 std::string ReadUiAssetImpl(const std::string& name) {
     if (name.empty() || name.size() > 64) return {};
     if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return {};
@@ -224,7 +212,6 @@ std::string ReadUiAssetImpl(const std::string& name) {
     return read_file(dir + name);
 }
 
-// Newest write time (raw tick count) across client.html, its sibling .js files and core/.
 long long ui_dir_mtime() {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -246,7 +233,6 @@ long long ui_dir_mtime() {
     return m;
 }
 
-// Per-client host bookkeeping; the panel view lives in gameui keyed by the same pid.
 struct Dock {
     std::uint32_t pid = 0;
     double uiScaleMul = 1.0;     // Preferences "UI scale": multiplies the DPI-derived view scale
@@ -265,7 +251,6 @@ struct Dock {
     HWND      gameInput = nullptr;        // companion-published child the game takes keyboard on
     bool      embedFlagApplied = false;   // companion told (RenderToggle 4); Tick retries
     bool      keyHeld[256] = {};  // keys relayed down to the game; released synthetically on focus loss
-    // Host-side borderless fullscreen (the WS_CHILD game cannot do it itself); saved for restore.
     bool             fullscreen = false;
     LONG_PTR         savedStyle = 0;
     WINDOWPLACEMENT  savedPlace{};
@@ -283,7 +268,6 @@ std::unordered_map<std::uint32_t, Dock*> g_docks;
 std::mutex                              g_embedded_mu;
 std::unordered_map<std::uint32_t, HWND> g_embedded_games;
 
-// Cross-thread companion client size (the game's own backbuffer size) for GameSpaceFactor.
 std::mutex                                                g_gamesize_mu;
 std::unordered_map<std::uint32_t, std::pair<int, int>>    g_game_sizes;
 
@@ -293,7 +277,6 @@ void SetEmbeddedGame(std::uint32_t pid, HWND game) {   // main thread only
     else      g_embedded_games.erase(pid);
 }
 
-// ---- game-window discovery -------------------------------------------------
 struct FindCtx { DWORD pid; HWND best; long area; };
 BOOL CALLBACK EnumProc(HWND hwnd, LPARAM lp) {
     auto* c = reinterpret_cast<FindCtx*>(lp);
@@ -314,7 +297,6 @@ HWND FindGameWindow(DWORD pid) {
     return c.best;
 }
 
-// ---- glued layout ----------------------------------------------------------
 void PositionGame(Dock* d, int w, int h) {
     if (!d || !d->host || !d->game || !IsWindow(d->game)) return;
     if (w < 0) w = 0;
@@ -331,7 +313,6 @@ void PositionGame(Dock* d, int w, int h) {
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
 }
 
-// Game to the top, then host directly beneath; z-order only, no activation handshake.
 void RaiseGame(Dock* d) {
     if (!d || !d->host || !d->game || !IsWindow(d->game) || d->inRaise) return;
     if (d->gameIsChild) return;   // true embed: one window, the shell handles z-order
@@ -353,8 +334,6 @@ void Layout(Dock* d) {
 
 void SyncUiDpi(Dock* d);   // fwd
 
-// Borderless fullscreen, no display-mode change. rcMonitor on purpose (covers the taskbar); HWND_TOP
-// not TOPMOST (would pin above our other clients); SWP_FRAMECHANGED for the style change.
 void SetFullscreen(Dock* d, bool on) {
     if (!d || !d->host || !IsWindow(d->host) || d->fullscreen == on) return;
     if (on) {
@@ -378,7 +357,6 @@ void SetFullscreen(Dock* d, bool on) {
         SetWindowLongPtrW(d->host, GWL_STYLE,
                           d->savedStyle ? d->savedStyle
                                         : (LONG_PTR)(WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE));
-        // Frame first, then placement, or the client comes up short by the frame.
         SetWindowPos(d->host, nullptr, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         if (d->savedPlace.length) SetWindowPlacement(d->host, &d->savedPlace);
@@ -388,9 +366,6 @@ void SetFullscreen(Dock* d, bool on) {
     SyncUiDpi(d);     // the new monitor/size may carry a different scale
 }
 
-// UI view device scale = host DPI x GameSpaceFactor: the layer composites into the game's swapchain,
-// and when the game is DPI-virtualized DWM upscales the frame, so monitor DPI alone would double-scale.
-// Re-run from Tick once the companion presents the measured factor.
 void SyncUiDpi(Dock* d) {
     if (!d || !d->host) return;
     unsigned dpi = DpiForWindow(d->host);
@@ -404,13 +379,10 @@ void SyncUiDpi(Dock* d) {
 void Detach(Dock* d, bool closeGame = false);   // fwd
 void FinishEmbed(Dock* d);                      // fwd (kMsgEmbedDone handler)
 
-// Independent lifetimes: closing the last client leaves the launcher open.
 void QuitIfNoClients(const char* why) {
     (void)why;   // intentionally a no-op: the launcher persists past the last client
 }
 
-// True embed: on focus loss the real key-ups land elsewhere, so synthesize them into the game's
-// input window (the companion's GetKeyState mirror clears too). Alt/F10 are SYSKEYs.
 void ReleaseHeldKeysToGame(Dock* d) {
     if (!d || !d->gameIsChild) return;
     HWND kb = (d->gameInput && IsWindow(d->gameInput)) ? d->gameInput : d->game;
@@ -425,7 +397,6 @@ void ReleaseHeldKeysToGame(Dock* d) {
     }
 }
 
-// ---- host window proc ------------------------------------------------------
 LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     Dock* d = reinterpret_cast<Dock*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
@@ -440,7 +411,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     if (wp != SIZE_MINIMIZED) Layout(d);
                     return 0;
                 }
-                // The glued game has no owner, so minimize/restore it with the host here.
                 if (wp == SIZE_MINIMIZED) {
                     if (d->game && IsWindow(d->game)) ShowWindow(d->game, SW_HIDE);
                 } else {
@@ -455,14 +425,11 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (d && !d->gameIsChild) Layout(d);
             return 0;
         case WM_EXITSIZEMOVE:
-            // User finished dragging/resizing: remember the placement per account.
             if (d && d->host) {
                 RECT r; if (GetWindowRect(d->host, &r)) rtx::launcher::SaveWindowPos(d->pid, r.left, r.top);
             }
             break;
         case WM_DPICHANGED:
-            // Under per-monitor v2 DefWindowProc does not apply the suggested rect; the window must move
-            // itself or it keeps its old physical size. Apply it, refit the game, re-sync the UI device scale.
             if (d && !d->fullscreen) {
                 const RECT* pr = reinterpret_cast<const RECT*>(lp);
                 if (pr)
@@ -476,7 +443,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (d) { SyncUiDpi(d); return 0; }   // fullscreen: monitor-sized; scale only
             break;
         case rtx::render::kMsgGameClicked:
-            // Companion: click in the game area; take real keyboard focus (SetFocus only if not already held).
             if (d && d->gameIsChild) {
                 if (GetFocus() != hwnd) SetFocus(hwnd);
             }
@@ -485,7 +451,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (d) FinishEmbed(d);
             return 0;
         case WM_NCACTIVATE:
-            // True embed: in-game clicks flip the host's perceived active state; keep the caption painted active.
             if (d && d->gameIsChild)
                 return DefWindowProcW(hwnd, WM_NCACTIVATE, TRUE, lp);
             break;
@@ -497,16 +462,13 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     RaiseGame(d);
                 }
             } else if (d) {
-                // Losing focus: release relayed keys (the game's detached queue won't get the real key-ups).
                 ReleaseHeldKeysToGame(d);
             }
             return 0;
         case WM_ACTIVATEAPP:
-            // App-level deactivation: same stuck-key risk.
             if (d && wp == FALSE) ReleaseHeldKeysToGame(d);
             break;
         case WM_INPUTLANGCHANGE:
-            // Keyboard layout is per-thread; the detached game never sees the host's switch, so tell it.
             if (d && d->gameIsChild) {
                 HWND kbl = (d->gameInput && IsWindow(d->gameInput)) ? d->gameInput : d->game;
                 if (kbl && IsWindow(kbl)) PostMessageW(kbl, WM_INPUTLANGCHANGEREQUEST, 0, lp);
@@ -514,11 +476,8 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case WM_KEYDOWN: case WM_KEYUP: case WM_CHAR: case WM_DEADCHAR:
         case WM_SYSKEYDOWN: case WM_SYSKEYUP: case WM_SYSCHAR:
-            // True embed: relay keys to the companion-published input window (the frame discards them). The
-            // companion suppresses the game's own translation and mirrors key state for GetKeyState.
             if (d && d->gameIsChild) {
                 if (msg == WM_SYSKEYDOWN && wp == VK_F4) break;   // keep Alt+F4 = close
-                // Release a key the game believes held even under UI capture, or it sticks; the view still sees it.
                 bool releasedToGame = false;
                 if ((msg == WM_KEYUP || msg == WM_SYSKEYUP) && wp < 256 && d->keyHeld[wp]) {
                     d->keyHeld[wp] = false;
@@ -528,12 +487,9 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         releasedToGame = true;
                     }
                 }
-                // UI keyboard capture: keys feed the off-screen view, never the game; keybinds must not fire.
                 if (gameui::FireHostKey(d->pid, msg, (std::uintptr_t)wp, (std::intptr_t)lp))
                     return 0;
                 if (releasedToGame) return 0;   // already delivered above
-                // Tile-marker keybinds: only while the Markers panel is open (MarkAtCursor no-ops when disarmed).
-                // Down-edge only.
                 if (msg == WM_KEYDOWN && !(lp & 0x40000000) && d->pid) {
                     // Screenshot keybind: consume the key on match. 0 = unbound.
                     int ssVk = rtx::launcher::ScreenshotVk();
@@ -552,7 +508,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         return 0;
                     }
                     auto kb2 = rtx::markers::GetKeybinds();
-                    // Consume only when a tile was actually marked/deleted; otherwise fall through to the game.
                     if (kb2.markVk && (int)wp == kb2.markVk) {
                         if (rtx::markers::MarkAtCursor(d->pid, 1)) { rtx::overlay::EnableMarkers(d->pid); return 0; }
                     } else if (kb2.removeVk && (int)wp == kb2.removeVk) {
@@ -561,7 +516,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 HWND kb = (d->gameInput && IsWindow(d->gameInput)) ? d->gameInput : d->game;
                 if (kb && IsWindow(kb)) {
-                    // Mirror what the game now believes is held, so a focus-loss can release it.
                     if (wp < 256) {
                         if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) d->keyHeld[wp] = true;
                         else if (msg == WM_KEYUP || msg == WM_SYSKEYUP) d->keyHeld[wp] = false;
@@ -572,7 +526,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
-            // Wheel goes to the focus window; route it to the child under the cursor.
             if (d && d->gameIsChild) {
                 POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };   // screen coords
                 ScreenToClient(hwnd, &pt);
@@ -584,8 +537,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             break;
         case WM_WINDOWPOSCHANGED:
-            // The system also raises the host on its own (title-bar click, after WM_ACTIVATE ran), leaving the
-            // frame above the game. Re-glue on any z-order change not issued here; inRaise guards recursion.
             if (d && d->embedded && !d->inRaise) {
                 auto* wpos = reinterpret_cast<WINDOWPOS*>(lp);
                 if (!(wpos->flags & SWP_NOZORDER)) RaiseGame(d);
@@ -595,7 +546,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
             mmi->ptMinTrackSize.x = 480;   // a usable minimum game viewport
             mmi->ptMinTrackSize.y = 320;
-            // Allow growth to the current monitor's work area (the OS default clamps to about the primary).
             HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             MONITORINFO mi{ sizeof(mi) };
             if (GetMonitorInfoW(mon, &mi)) {
@@ -607,7 +557,6 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_CLOSE:
-            // Closing the unified window terminates the game immediately (Detach kills the pid first).
             if (d) {
                 std::uint32_t pid = d->pid;
                 Detach(d, /*closeGame=*/true);
@@ -639,7 +588,6 @@ void EnsureHostClass() {
     reg = true;
 }
 
-// ---- DPI diagnostics -------------------------------------------------------------------------
 // Dynamically resolved: GetDpiForWindow is Win10 1607+, the awareness-context pair 1607/1803+.
 unsigned DpiForWindow(HWND h) {
     using Fn = UINT(WINAPI*)(HWND);
@@ -663,14 +611,12 @@ const char* DpiAwarenessStr(HWND h) {
     }
 }
 
-// Strip the game's frame; it stays top-level with no parent/owner, so no queue attachment.
 void MakeIndependentTopLevel(HWND game) {
     LONG_PTR st = GetWindowLongPtrW(game, GWL_STYLE);
     st &= ~(WS_CHILD | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
             WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
     st |= WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS;
     SetWindowLongPtrW(game, GWL_STYLE, st);
-    // Glued: strip taskbar/Alt-Tab identity; the shell only re-reads it on a show, so toggle visibility.
     LONG_PTR ex   = GetWindowLongPtrW(game, GWL_EXSTYLE);
     LONG_PTR want = (ex & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW)) | WS_EX_TOOLWINDOW;
     if (want != ex) {
@@ -682,26 +628,20 @@ void MakeIndependentTopLevel(HWND game) {
                  SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW);
 }
 
-// True embed, on the embed worker: SetParent + style strip are synchronous sends into the game's
-// thread (can park for minutes). Severs the queue attachment SetParent creates; posts kMsgEmbedDone.
 void EmbedSurgery(HWND game, HWND host, DWORD hostThread) {
     LONG_PTR st = GetWindowLongPtrW(game, GWL_STYLE);
     st &= ~(WS_POPUP | WS_OVERLAPPED | WS_CAPTION | WS_THICKFRAME |
             WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_BORDER | WS_DLGFRAME);
     st |= WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS;
     SetWindowLongPtrW(game, GWL_STYLE, st);
-    // Drop the app-window identity and mark it a tool window. Hide first: Explorer only drops a taskbar
-    // button on a visibility cycle; the SetWindowPos below re-shows it.
     ShowWindow(game, SW_HIDE);
     LONG_PTR ex = GetWindowLongPtrW(game, GWL_EXSTYLE);
     SetWindowLongPtrW(game, GWL_EXSTYLE,
                       (ex & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW)) | WS_EX_TOOLWINDOW);
-    // WM_PARENTNOTIFY suppression on the inner input window is the companion's job.
     SetLastError(0);
     SetParent(game, host);
     DWORD spErr = GetLastError();
     bool reparented = (GetParent(game) == host);   // did the child relationship actually take?
-    // Sever the queue attachment both directions; Tick re-asserts (the system can re-attach later).
     DWORD gameThread = GetWindowThreadProcessId(game, nullptr);
     AttachThreadInput(gameThread, hostThread, FALSE);
     AttachThreadInput(hostThread, gameThread, FALSE);
@@ -715,8 +655,7 @@ void EmbedSurgery(HWND game, HWND host, DWORD hostThread) {
     PostMessageW(host, kMsgEmbedDone, reinterpret_cast<WPARAM>(game), reparented ? 1 : 0);
 }
 
-// Explorer groups taskbar buttons by AppUserModelID (defaults to the exe, so hosts would group under
-// the launcher). id=nullptr clears the store. PROPERTYKEY spelled out to avoid propkey.h.
+// id=nullptr clears the store. PROPERTYKEY spelled out to avoid propkey.h.
 const PROPERTYKEY kPkeyAppUserModelId =
     { {0x9F4C2855, 0x9F79, 0x4B39, {0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3}}, 5 };
 constexpr wchar_t kHostAppId[] = L"RuneTools.RuneScape";
@@ -752,7 +691,6 @@ void WearGameIcon(HWND host, HWND game) {
 bool Embed(Dock* d) {
     if (d->embedded) return true;
     if (d->embedPending) return false;   // surgery in flight; kMsgEmbedDone finalizes
-    // Destroy a previous attempt's surviving host or it leaks holding a stale Dock pointer.
     if (d->host) {
         SetWindowLongPtrW(d->host, GWLP_USERDATA, 0);
         SetHostAppId(d->host, nullptr);
@@ -772,7 +710,6 @@ bool Embed(Dock* d) {
     d->gameExStyle = GetWindowLongPtrW(game, GWL_EXSTYLE);
     GetWindowRect(game, &d->gameOrigRect);
 
-    // Size from the game's CLIENT rect: the embed strips the frame, so the window rect would inflate it.
     RECT gw = d->gameOrigRect;
     RECT gcr{};
     int gameW, gameH;
@@ -786,7 +723,6 @@ bool Embed(Dock* d) {
     AdjustWindowRectEx(&want, WS_OVERLAPPEDWINDOW, FALSE, 0);
     int hostW = want.right - want.left, hostH = want.bottom - want.top;
 
-    // Reopen where the user last left it (per account); fall back to the game's position.
     int x = gw.left, y = gw.top;
     { int sx, sy; if (rtx::launcher::LoadWindowPos(d->pid, sx, sy)) { x = sx; y = sy; } }
 
@@ -803,7 +739,6 @@ bool Embed(Dock* d) {
     }
 
     EnsureHostClass();
-    // WS_EX_APPWINDOW: the host is the one shell entry for this client.
     d->host = CreateWindowExW(WS_EX_APPWINDOW, kHostClass, L"RuneScape",
                               WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                               x, y, hostW, hostH,
@@ -825,12 +760,10 @@ bool Embed(Dock* d) {
     SetWindowLongPtrW(d->host, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(d));
     SetHostAppId(d->host, kHostAppId);   // own taskbar group, BEFORE the host is ever shown
     WearGameIcon(d->host, game);
-    // Disable the DWM activation transition on the host.
     BOOL noTransitions = TRUE;
     DwmSetWindowAttribute(d->host, DWMWA_TRANSITIONS_FORCEDISABLED, &noTransitions, sizeof(noTransitions));
 
     if (kTrueEmbed) {
-        // Hand the hierarchy surgery to a worker; the host stays hidden until kMsgEmbedDone.
         d->embedPending = true;
         HWND host = d->host;
         DWORD hostThread = GetCurrentThreadId();
@@ -853,11 +786,9 @@ bool Embed(Dock* d) {
     return true;
 }
 
-// kMsgEmbedDone: finalize dock state on the main thread and reveal the host.
 void FinishEmbed(Dock* d) {
     if (!d || !d->host || d->embedded) return;
     d->embedPending = false;
-    // Detach requested mid-surgery: adopt the actual outcome, then run the deferred teardown.
     if (d->pendingDetach) {
         bool cg = d->pendingDetachClose;
         d->pendingDetach = false;
@@ -871,14 +802,12 @@ void FinishEmbed(Dock* d) {
         return;
     }
     if (!d->game || !IsWindow(d->game)) return;   // client died mid-surgery; Tick cleans up
-    // Confirm the child relationship holds; proceed regardless, the log records it.
     if (GetParent(d->game) != d->host)
         rtx::log::Client(d->pid,
             "warning: game is not our child at finalize -- a separate game window may appear; "
             "reparent failed or was reverted by the shell");
     d->gameThread = GetWindowThreadProcessId(d->game, nullptr);
     d->gameIsChild = true;
-    // keep-focused is required: the game's detached queue never gets real focus again.
     d->keepFocusedApplied = false;
     d->embedded = true;
     SetEmbeddedGame(d->pid, d->game);   // publish for the overlay/marker thread
@@ -905,7 +834,6 @@ void FinishEmbed(Dock* d) {
 void Detach(Dock* d, bool closeGame) {
     if (!d) return;
 
-    // Surgery in flight: defer teardown to FinishEmbed; a close still terminates the client now.
     if (d->embedPending) {
         d->pendingDetach = true;
         d->pendingDetachClose = d->pendingDetachClose || closeGame;
@@ -920,8 +848,6 @@ void Detach(Dock* d, bool closeGame) {
         return;
     }
 
-    // 0) Kill the client first, immediately (no graceful WM_CLOSE): a windowless zombie poisons the
-    // next launch. Hide the host before the kill or it ghosts as Not Responding while the kernel reaps.
     if (closeGame) {
         if (d->host) ShowWindow(d->host, SW_HIDE);   // host window, own thread: instant
         if (HANDLE hp = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)d->pid)) {
@@ -931,8 +857,6 @@ void Detach(Dock* d, bool closeGame) {
         rtx::log::Client(d->pid, "client terminated with its window");
     }
 
-    // 1) Stand the companion down completely before touching the game, keep-focused included: it
-    // fakes the game's foreground state, and RS3's close path hangs waiting on activation it never sees.
     rtx::launcher::wiki::Close(d->pid);
     gameui::Destroy(d->pid);
     rtx::overlay::QuiesceMarkers(d->pid);
@@ -941,8 +865,6 @@ void Detach(Dock* d, bool closeGame) {
     rtx::reader::VarsWatch(d->pid, false);
     rtx::launcher::HudClose(d->pid);   // release the HUD section mapping (else one handle + view leaks per client pid)
 
-    // 2) Restore the game to top-level (detach only). True embed: un-parent first so the host's destroy
-    // cannot take it.
     if (!closeGame && d->game && IsWindow(d->game) && d->embedded) {
         if (d->gameIsChild) {
             SetParent(d->game, nullptr);
@@ -1004,7 +926,6 @@ double GameSpaceFactor(void* gameHwnd, std::uint32_t pid) {
         if (cw > 0 && ch > 0 && GetClientRect(game, &rc) && rc.right > 0 && rc.bottom > 0) {
             const double fx = (double)cw / (double)rc.right;
             const double fy = (double)ch / (double)rc.bottom;
-            // Non-uniform or out-of-range ratio is a torn measurement; fall through to the DPI inference.
             if (fx > 0.2 && fx < 5.0 && fy > 0.2 && fy < 5.0 && std::fabs(fx - fy) < 0.02) {
                 const double f = (fx + fy) * 0.5;
                 return (std::fabs(f - 1.0) < 0.005) ? 1.0 : f;   // snap rounding jitter to exact 1.0
@@ -1040,7 +961,6 @@ void EnsureClient(std::uint32_t pid) {
 
     auto* d = new Dock();
     d->pid = pid;
-    // Prepare the UI layer now so the page boots during the embed; it binds once the host exists.
     double scale = 1.0;
     if (HWND game = FindGameWindow(pid)) {
         unsigned dpi = DpiForWindow(game);
@@ -1061,7 +981,6 @@ void RemoveClient(std::uint32_t pid) {
     Dock* d = it->second;
     g_docks.erase(it);
     Detach(d);   // panel closed, game restored to a normal window (left running)
-    // Drop every companion-side effect so the module goes inert. No-op if never loaded.
     for (int which = 0; which <= 4; ++which) rtx::reader::RenderToggle(pid, which, false);
     rtx::reader::VarsWatch(pid, false);
 }
@@ -1110,8 +1029,6 @@ void* GameWindowHandle(std::uint32_t pid) {
 
 std::string ReadUiAsset(const std::string& name) { return ReadUiAssetImpl(name); }
 
-// True when the foreground window is the game, its host, or any window rooted in either;
-// process-id compare for an undocked client. Must be cheap: nothing that can block on a hung client.
 bool GameFocused(std::uint32_t pid) {
     HWND fg = GetForegroundWindow();
     if (!fg) return false;
@@ -1126,7 +1043,6 @@ bool GameFocused(std::uint32_t pid) {
     DWORD fgPid = 0;
     GetWindowThreadProcessId(fg, &fgPid);
     if (fgPid == pid) return true;
-    // This process's own windows count as at the game.
     if (it != g_docks.end() && fgPid == GetCurrentProcessId()) return true;
     return false;
 }
@@ -1135,7 +1051,6 @@ void Tick() {
     if (g_docks.empty()) return;
     gameui::Tick();   // resize handshake + dirty-surface publish + pump pacing
     rtx::launcher::wiki::Tick();   // wiki pane follows the host; reaps closed/dead windows
-    // Dev UI hot-reload: re-splice and reload every open panel when the ui dir's newest mtime settles.
     if (g_uiWatch) {
         ULONGLONG now = GetTickCount64();
         if (now - g_uiPollMs >= 1500) {
@@ -1171,38 +1086,31 @@ void Tick() {
         Dock* d = kv.second;
         if (!d) continue;
         if (!d->embedded) {                          // game wasn't ready at EnsureClient
-            // A client that dies before embedding must still tear its dock down.
             if (!Embed(d) && !d->embedPending && !processAlive(kv.first))
                 dead.push_back(kv.first);
             continue;
         }
         if (!d->game || !IsWindow(d->game)) { dead.push_back(kv.first); continue; }
-        // Re-drive the UI device scale once the companion presents the measured factor (SetDeviceScale dedups).
         {
             ULONGLONG nowMs = GetTickCount64();
             if (nowMs - d->lastDpiSyncMs >= 500) { d->lastDpiSyncMs = nowMs; SyncUiDpi(d); }
         }
-        // Push keep-focused once the companion's channel exists; true embed requires it regardless of the toggle.
         if (!d->keepFocusedApplied &&
             rtx::reader::RenderToggle(kv.first, 3, d->keepFocused || d->gameIsChild))
             d->keepFocusedApplied = true;
         if (d->gameIsChild && !d->embedFlagApplied &&
             rtx::reader::RenderToggle(kv.first, 4, true))
             d->embedFlagApplied = true;
-        // Resolve the game's real keyboard window (companion-published); retry until valid.
         if (d->gameIsChild && (!d->gameInput || !IsWindow(d->gameInput))) {
             if (std::uint64_t w = rtx::reader::RenderInputWindow(kv.first))
                 d->gameInput = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(w));
         }
-        // Re-assert the queue detach (Windows can silently re-attach). Throttled + hung-gated: AttachThreadInput
-        // blocks on a stalled client.
         if (d->gameIsChild && d->gameThread &&
             GetTickCount64() - d->lastDetachMs > 1000 && !IsHungAppWindow(d->game)) {
             d->lastDetachMs = GetTickCount64();
             AttachThreadInput(d->gameThread, GetCurrentThreadId(), FALSE);
             AttachThreadInput(GetCurrentThreadId(), d->gameThread, FALSE);
         }
-        // Glued z-group: when the game becomes foreground, lift the host right behind it. Edge-triggered.
         if (d->host && !d->gameIsChild && fg != d->lastGroupFg) {
             if (fg == d->game)
                 SetWindowPos(d->host, d->game, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -1225,7 +1133,6 @@ void Shutdown() {
     std::vector<Dock*> ds;
     for (auto& kv : g_docks) ds.push_back(kv.second);
     g_docks.clear();
-    // Tied lifetimes: launcher exit kills its clients now (restoring would leave hung game windows on screen).
     for (Dock* d : ds) Detach(d, /*closeGame=*/true);
 }
 

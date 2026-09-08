@@ -14,8 +14,7 @@
 #include <map>
 #include <mutex>
 
-// One window per game client (pid). The AppCore window must stay top-level (WS_CHILD ate
-// every click), so it is owned by the game host instead: z-follows, hides with it, no taskbar.
+// One window per game client (pid); the AppCore window stays top-level and is owned by the game host (z-follows, hides with it, no taskbar).
 // Every URL goes through allow_url(). "rtx:" is a private scheme used only by the injected toolbar.
 
 namespace rtx::launcher::wiki {
@@ -35,7 +34,6 @@ static void quiet_frame(HWND h) {
 }
 constexpr int kEdge = 6;           // resize border thickness
 
-// ---- URL policy ------------------------------------------------------------------------
 bool host_allowed(const std::string& host) {
     if (host == "runescape.wiki") return true;
     const std::string suf = ".runescape.wiki";
@@ -60,22 +58,11 @@ std::string ul_to_std(const String& s) {
     return std::string(u8.data(), u8.length());
 }
 
-// Guard + theme script injected into every committed wiki page (page world, no rtx bridge).
 constexpr const char* kGuardJs = R"JS(
 (function () {
-  // ---- the wiki's OWN dark theme, guaranteed -------------------------------------
-  // Weird Gloop themes: the `theme` cookie picks the theme at page load; without it
-  // the wiki follows prefers-color-scheme (the source of the intermittent light
-  // pages). Per their docs, the theme stylesheet loads on the next refresh once the
-  // cookie exists -- so a page that arrived without the dark indicator is refreshed
-  // ONCE (session-guarded), after which the server serves its native dark theme.
   try {
     document.cookie = 'theme=dark;path=/;max-age=31536000';
     document.cookie = 'theme=dark;domain=.runescape.wiki;path=/;max-age=31536000';
-    // MediaWiki core's OWN night mode (separate from the Weird Gloop theme): Minerva
-    // styles some surfaces from skin-theme-clientpref-{day|night|os} on <html>, driven
-    // by the mwclientpreferences cookie. Seen live: wgl dark active while this sat on
-    // "day". Set the pref cookie and swap the class exactly as core's inline script does.
     document.cookie = 'mwclientpreferences=skin-theme-clientpref-night;path=/;max-age=31536000';
     var hEl = document.documentElement;
     if (hEl && hEl.className.indexOf('skin-theme-clientpref-') >= 0)
@@ -100,14 +87,6 @@ constexpr const char* kGuardJs = R"JS(
     else document.addEventListener('DOMContentLoaded', maybeReload);
   } catch (e) {}
   if (window.__rtxWikiGuard) return; window.__rtxWikiGuard = 1;
-  // ---- the wiki's OWN icons ------------------------------------------------------
-  // Skin icons are a solid fill clipped by a CSS mask whose URL IS the icon SVG. The
-  // renderer parses mask properties but never applies them (solid white squares).
-  // Conversion: read every mask declaration out of the LIVE CSSOM -- ResourceLoader
-  // injects most styles as inline <style> blobs via JS, so fetching <link> hrefs saw
-  // nothing -- and emit background-image rules of the same SVG for the same selector,
-  // inverted to read on the dark theme. Styles land late and async, so rescan on a
-  // timer until the page settles.
   try {
     var doneSel = {};
     var Q = String.fromCharCode(34);
@@ -151,7 +130,6 @@ constexpr const char* kGuardJs = R"JS(
     window.addEventListener('load', sweep);
     setTimeout(sweep, 800); setTimeout(sweep, 2000); setTimeout(sweep, 4000);
   } catch (e) {}
-  // ---- reader-pane cleanup (login-gated controls have no purpose here) -----------
   try {
     var st = document.createElement('style');
     st.textContent = '.page-actions-menu,#page-actions,.language-selector,.mw-editsection,'
@@ -159,7 +137,6 @@ constexpr const char* kGuardJs = R"JS(
       + '#ca-edit,.mw-mf-watch,.menu__item--language { display:none !important; }';
     (document.head || document.documentElement).appendChild(st);
   } catch (e) {}
-  // ---- domain lock (layer 2) -----------------------------------------------------
   var ALLOW = /(^|[.])runescape[.]wiki$/i;
   function hostOf(u) { try { return new URL(u, location.href).hostname; } catch (e) { return ''; } }
   function okUrl(u)  { var h = hostOf(u); return h && ALLOW.test(h); }
@@ -173,7 +150,6 @@ constexpr const char* kGuardJs = R"JS(
 })();
 )JS";
 
-// ---- persisted geometry (relative to the host client origin) ---------------------------
 struct SavedRect { int dx = -1, dy = -1, w = 0, h = 0; };
 std::wstring pane_path() {
     wchar_t up[MAX_PATH] = {};
@@ -199,7 +175,6 @@ struct Instance;
 std::map<std::uint32_t, Instance*> g_wins;   // main thread only
 ultralight::App* g_app = nullptr;
 
-// Narrow panes load the wiki's mobile format, wide ones desktop; crossing the threshold reloads.
 bool want_mobile(int paneW) { return paneW < 1000; }
 std::string with_format(std::string url, bool mobile) {
     auto p = url.find("useformat=");
@@ -229,12 +204,10 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
     bool userSizing = false;   // inside a native drag/resize: Tick must not fight it
     SavedRect rel;             // host-relative geometry Tick holds the pane to (cached, not re-read)
     bool mobileFmt = true;     // format currently loaded; flips when a resize crosses the threshold
-    // Last requested geometry, host relative. GetWindowRect reports the DWM frame, so Tick compares against this.
     bool  applied = false;
     int   appDx = 0, appDy = 0, appW = 0, appH = 0;
     long long netDenied = 0;
 
-    // ---- enforcement layer 1: main-frame navigation lock -------------------------------
     void OnBeginLoading(View* v, uint64_t, bool is_main, const String& url) override {
         std::string u = ul_to_std(url);
         if (u.rfind("rtx://", 0) == 0) {
@@ -248,21 +221,18 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
         rtx::log::Client(pid, "[wiki] BLOCKED navigation: " + u);
         if (is_main) v->LoadURL(String(lastGood.c_str()));
     }
-    // ---- enforcement layer 2 + night theme, re-injected on every page -------------------
     void OnWindowObjectReady(View* v, uint64_t, bool is_main, const String&) override {
         if (is_main) v->EvaluateScript(kGuardJs);
     }
     void OnDOMReady(View* v, uint64_t, bool is_main, const String& url) override {
         if (!is_main) return;
         v->EvaluateScript(kGuardJs);   // idempotent (guard flag)
-        // Per-page theme fingerprint for diagnosing light-mode reports.
         String cls = v->EvaluateScript(
             "'html[' + document.documentElement.className + '] body[' + "
             "(document.body?document.body.className:'') + '] cookie=' + "
             "(document.cookie.indexOf('theme=dark')>=0?'dark':'MISSING')");
         rtx::log::Client(pid, "[wiki] page " + ul_to_std(url) + " " + ul_to_std(cls));
     }
-    // ---- enforcement layer 3: subresource allowlist -------------------------------------
     bool OnNetworkRequest(View*, NetworkRequest& req) override {
         std::string host2 = ul_to_std(req.urlHost());
         for (auto& c : host2) c = (char)tolower(c);
@@ -278,7 +248,6 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
 
     void fit_overlay(int, int) {
         if (!ov || !IsWindow(hwnd)) return;
-        // Use the real client rect: with the frameless trick it is larger than what AppCore reports.
         RECT rc{}; GetClientRect(hwnd, &rc);
         int oh = rc.bottom - kChrome; if (oh < 40) oh = 40;
         ov->MoveTo(0, kChrome);
@@ -293,7 +262,6 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
     }
 };
 
-// Caption-strip buttons (Back / Home / Close), painted and hit natively so they never cover page content.
 constexpr int kBtnW = 34, kBtnCount = 3;
 RECT strip_btn_rect(HWND h, int i) {   // i = 0 Back, 1 Home, 2 Close (rightmost)
     RECT rc{}; GetClientRect(h, &rc);
@@ -324,7 +292,6 @@ void fit_to_host(HWND host, int& dx, int& dy, int& w, int& h) {
     if (dy < 0) dy = 0;
 }
 
-// Native chrome: caption-strip paint, drag/resize hit-testing, min size, persist on drop.
 LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR ref) {
     auto* it = reinterpret_cast<Instance*>(ref);
     switch (msg) {
@@ -347,7 +314,6 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         break;
     }
     case WM_PAINT: {
-        // Let AppCore blit the view first, then paint the caption strip on top.
         LRESULT lr = DefSubclassProc(h, msg, wp, lp);
         HDC dc = GetDC(h);
         if (dc) {
@@ -389,10 +355,8 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         if (wp) return 0;   // client area = whole window: WS_THICKFRAME without its frame
         break;
     case WM_NCACTIVATE:
-        // Suppress the frame repaint on focus changes.
         return DefWindowProcW(h, msg, wp, (LPARAM)-1);
     case WM_ERASEBKGND: {
-        // The class brush is white; paint dark to avoid flashes.
         HDC dc = (HDC)wp;
         RECT rc{}; GetClientRect(h, &rc);
         HBRUSH bg = CreateSolidBrush(RGB(11, 13, 18));
@@ -401,7 +365,6 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
     }
     case WM_SIZING:
     case WM_MOVING: {
-        // Live clamp: the pane can never leave the game's client area.
         if (!it || !IsWindow(it->host)) break;
         RECT* pr = reinterpret_cast<RECT*>(lp);
         RECT hc{}; GetClientRect(it->host, &hc);
@@ -422,7 +385,6 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         return TRUE;
     }
     case WM_LBUTTONDOWN: {
-        // Strip buttons (WM_NCHITTEST maps them to HTCLIENT); below the strip belongs to the view.
         if (!it) break;
         POINT pt{ (LONG)(short)LOWORD(lp), (LONG)(short)HIWORD(lp) };
         if (pt.y < kChrome) {
@@ -440,7 +402,6 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         break;
     }
     case WM_KEYDOWN:
-        // Native Escape-to-close (page JS cannot navigate to rtx:).
         if (wp == VK_ESCAPE && it) { it->closing = true; return 0; }
         break;
     case WM_ENTERSIZEMOVE: if (it) it->userSizing = true; break;
@@ -471,7 +432,6 @@ void destroy(Instance* it) {
     delete it;
 }
 
-// ---- keybind (one VK persisted in a small file) ----------------------------------------
 std::mutex g_wk_mu;
 int  g_wk_vk = 0;
 bool g_wk_loaded = false;
@@ -523,7 +483,6 @@ void Open(std::uint32_t pid, const std::string& term) {
         return;
     }
 
-    // Geometry: the saved user rect (host-client-relative) when sane, else the right dock.
     RECT hc{}; GetClientRect(host, &hc);
     RECT r = default_rect(host);
     SavedRect sv = load_rect();
@@ -531,7 +490,6 @@ void Open(std::uint32_t pid, const std::string& term) {
         sv.dx < hc.right - 40 && sv.dy < hc.bottom - 40) {
         r.left = sv.dx; r.top = sv.dy; r.right = sv.dx + sv.w; r.bottom = sv.dy + sv.h;
     }
-    // Fit before creating so a rect saved against a larger host does not hang off the edge.
     { int dx = r.left, dy = r.top, rw = r.right - r.left, rh = r.bottom - r.top;
       fit_to_host(host, dx, dy, rw, rh);
       r.left = dx; r.top = dy; r.right = dx + rw; r.bottom = dy + rh; }
@@ -541,14 +499,12 @@ void Open(std::uint32_t pid, const std::string& term) {
 
     auto* it = new Instance();
     it->pid = pid; it->host = host;
-    // Seed the geometry Tick holds the pane to.
     it->rel = SavedRect{ r.left, r.top, w, h };
     it->win = Window::Create(g_app->main_monitor(), (uint32_t)w, (uint32_t)h, false,
                              kWindowFlags_Borderless | kWindowFlags_Hidden);
     if (!it->win) { delete it; return; }
     it->win->set_listener(it);
     it->hwnd = (HWND)it->win->native_handle();
-    // Owner = host (z-follows, hides with it, no taskbar entry); stays top-level for AppCore input routing.
     SetWindowLongPtrW(it->hwnd, GWLP_HWNDPARENT, (LONG_PTR)host);
     SetWindowLongPtrW(it->hwnd, GWL_EXSTYLE,
                       GetWindowLongPtrW(it->hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);
@@ -558,7 +514,6 @@ void Open(std::uint32_t pid, const std::string& term) {
     quiet_frame(it->hwnd);
     SetWindowSubclass(it->hwnd, PaneProc, 1, (DWORD_PTR)it);
 
-    // The overlay must create its own view (a hand-built view never joined AppCore's repaint clock).
     it->ov = Overlay::Create(it->win, (uint32_t)w, (uint32_t)(h - kChrome), 0, kChrome);
     if (!it->ov) { destroy(it); return; }
     View* v = it->ov->view().get();
@@ -592,7 +547,6 @@ void Tick() {
         Instance* it = f->second; ++f;                       // destroy() erases; advance first
         if (it->closing || !IsWindow(it->host) || !IsWindow(it->hwnd)) { destroy(it); continue; }
         if (it->userSizing) continue;                        // never fight a live drag
-        // One-shot icon sweep diagnostics ~6s after open.
         if (!it->statsLogged && it->openedMs &&
             (long long)GetTickCount64() - it->openedMs > 6000 && it->ov) {
             it->statsLogged = true;
@@ -603,7 +557,6 @@ void Tick() {
         const bool hostUp = IsWindowVisible(it->host) && !IsIconic(it->host);
         if (!hostUp) { ShowWindow(it->hwnd, SW_HIDE); continue; }
         if (!IsWindowVisible(it->hwnd)) ShowWindow(it->hwnd, SW_SHOWNOACTIVATE);
-        // Hold the pane to its host-relative offset; no saved rect yet -> default dock.
         RECT wr{}; GetWindowRect(it->hwnd, &wr);
         POINT o{ 0, 0 }; ClientToScreen(it->host, &o);
         const int curDx = wr.left - o.x, curDy = wr.top - o.y;
@@ -615,9 +568,7 @@ void Tick() {
             RECT d = default_rect(it->host);
             wantDx = d.left; wantDy = d.top; wantW = d.right - d.left; wantH = d.bottom - d.top;
         }
-        // Re-fit against the current host; `rel` keeps the user's size so growing the host restores it.
         fit_to_host(it->host, wantDx, wantDy, wantW, wantH);
-        // Compare against the last request, not the measured rect, so an unchanged pane is left alone.
         const bool moved = !it->applied || it->appDx != wantDx || it->appDy != wantDy ||
                            it->appW != wantW || it->appH != wantH;
         if (moved) {
@@ -626,7 +577,6 @@ void Tick() {
             SetWindowPos(it->hwnd, nullptr, o.x + wantDx, o.y + wantDy, wantW, wantH,
                          SWP_NOZORDER | SWP_NOACTIVATE);
         } else if (curDx != wantDx || curDy != wantDy) {
-            // The host itself moved: keep the offset without touching the size.
             SetWindowPos(it->hwnd, nullptr, o.x + wantDx, o.y + wantDy, 0, 0,
                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE);
         }

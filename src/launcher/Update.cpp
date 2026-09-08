@@ -21,10 +21,8 @@
 
 namespace rtx::launcher {
 
-// ---- one-click self-update ----------------------------------------------
 static constexpr wchar_t kDownloadPath[] = L"/api/client/download-update";
 
-// Running version from the exe's VERSIONINFO (app.rc FILEVERSION).
 std::string running_version() {
     wchar_t path[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, path, MAX_PATH)) {
@@ -103,7 +101,6 @@ static void set_upd(const char* phase, int pct, const std::string& detail) {
     g_upd_phase = phase; g_upd_pct = pct; g_upd_detail = detail;
 }
 
-// Worker: manifest -> download -> verify -> silent installer -> exit (the installer relaunches).
 static void run_update() {
     struct Done { ~Done() { g_upd_running = false; } } done;
     auto log = [](const std::string& m) { rtx::log::Launcher("[update] " + m); };
@@ -139,7 +136,6 @@ static void run_update() {
         }
     }
 
-    // Anti-downgrade: a manifest version <= running is never an update.
     {
         auto parts = [](const std::string& s) {
             std::vector<long> v; long cur = 0; bool any = false;
@@ -159,7 +155,6 @@ static void run_update() {
         }
     }
 
-    // Random destination name: a fixed path would be a swap target.
     wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
     wchar_t rnd[24] = {};
     {
@@ -176,7 +171,6 @@ static void run_update() {
     log("download ok=" + std::to_string(dl.ok) + " status=" + std::to_string(dl.status) + " detail=" + dl.detail);
     if (!dl.ok || dl.status != 200) { log("abort: download failed"); set_upd("error", 0, "Download failed"); return; }
 
-    // Fail closed: a manifest without a hash is broken, never a normal update.
     set_upd("verifying", 100, "Verifying");
     if (hash.size() != 64 || hash.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
         DeleteFileW(dest.c_str());
@@ -231,7 +225,6 @@ JSValueRef Version(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, running_version());
 }
 
-// Idempotent; the caller polls updateState().
 JSValueRef StartUpdate(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t, const JSValueRef[], JSValueRef*) {
     bool expected = false;
