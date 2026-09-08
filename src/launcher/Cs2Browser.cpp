@@ -61,8 +61,7 @@ bool proc_running_locked() {
     return false;
 }
 
-// Sidecar root: RTX_CS2_SIDECAR env, else <exe dir>\cs2sidecar. Must contain
-// dist\cs2export.js. Empty when neither exists; callers report "sidecar not found".
+// Sidecar root: RTX_CS2_SIDECAR env, else <exe dir>\cs2sidecar (must contain dist\cs2export.js).
 std::wstring sidecar_dir() {
     wchar_t buf[MAX_PATH]{};
     if (GetEnvironmentVariableW(L"RTX_CS2_SIDECAR", buf, MAX_PATH) && buf[0]) return buf;
@@ -73,8 +72,7 @@ std::wstring sidecar_dir() {
     return std::wstring();
 }
 
-// Actual game revision = the installed rs2client.exe's VERSIONINFO (the cache
-// itself stores no build number; the game map's meta.json buildnr is a format cap).
+// Game revision = rs2client.exe VERSIONINFO (the cache stores no build number).
 std::string game_client_version() {
     const wchar_t* path = L"C:\\ProgramData\\Jagex\\launcher\\rs2client.exe";
     DWORD ignored = 0, sz = GetFileVersionInfoSizeW(path, &ignored);
@@ -120,8 +118,7 @@ std::string StatusJson() {
     fs::path out = OutDir();
     std::string meta = read_file(out / L"meta.json");
     std::string prog = read_file(out / L"progress.json");
-    // Game revision snapshotted when the extraction was STARTED (the panel's
-    // "extracted at revision" field; clientVer below is the current install).
+    // Revision at extraction start; clientVer below is the current install.
     std::string extract_ver = read_file(out / L"client_version.txt");
     bool sidecar = fs::exists(fs::path(sidecar_dir()) / L"dist" / L"cs2export.js");
     std::string clientver = game_client_version();
@@ -141,8 +138,7 @@ std::string StartExtract() {
     fs::path entry = fs::path(sidecar_dir()) / L"dist" / L"cs2export.js";
     if (!fs::exists(entry))
         return "{\"err\":\"sidecar not found (set RTX_CS2_SIDECAR to the folder containing dist\\\\cs2export.js)\"}";
-    // Stale progress from an earlier run would render as a live bar until the sidecar's
-    // first write; drop it before spawning.
+    // Drop stale progress before spawning.
     std::error_code ec;
     fs::remove(fs::path(OutDir()) / L"progress.json", ec);
     {
@@ -151,8 +147,6 @@ std::string StartExtract() {
         vf << game_client_version();
     }
 
-    // Prefer a node.exe shipped next to the sidecar (self-contained installs);
-    // fall back to node on PATH (dev setups).
     fs::path bundled_node = fs::path(sidecar_dir()) / L"node.exe";
     std::wstring node = fs::exists(bundled_node)
                             ? L"\"" + bundled_node.wstring() + L"\""
@@ -237,10 +231,7 @@ std::string NamesJson() {
     return s.empty() ? "{}" : s;
 }
 
-// Baked CS2 switch maps (case -> var), emitted by the extractor. Panels otherwise
-// hand-transcribe these same switches and have to be re-transcribed after a game update.
-// Absent until an extraction has been run, so a consumer MUST keep its baked fallback:
-// "{}" here is "not extracted yet", not "the game has no such data".
+// Baked CS2 switch maps (case -> var). "{}" means not extracted yet; consumers keep a fallback.
 std::string SwitchesJson() {
     std::string s = read_file(fs::path(OutDir()) / L"switches.json");
     return s.empty() ? "{}" : s;

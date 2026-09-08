@@ -31,8 +31,7 @@ void SqliteIndexFile::DropDb() const {
 }
 
 void SqliteIndexFile::NoteResult(int rc) const {
-    // Another process (the official launcher) may want exclusive access; let go
-    // of the file so it can, and reopen on the next call.
+    // Release the file so the official launcher can take exclusive access; reopen next call.
     const int base = rc & 0xff;
     if (base == SQLITE_BUSY || base == SQLITE_LOCKED || base == SQLITE_IOERR) DropDb();
 }
@@ -65,9 +64,7 @@ std::vector<std::uint8_t> SqliteIndexFile::FetchBlob(const char* sql, sqlite3_st
     return out;
 }
 
-// Archive ids present in the SQLite table itself, independent of the reference table. The
-// audio indexes are browsed this way: the ref table is the authority for archive CONTENTS, but
-// listing what exists only needs the keys, and it works even where the ref table is absent.
+// Archive ids from the SQLite table itself, so it works where the ref table is absent.
 std::vector<int> SqliteIndexFile::ArchiveIdsFrom(int from_key, int limit) const {
     std::vector<int> out;
     if (limit < 1) return out;
@@ -131,8 +128,7 @@ bool SqliteIndexFile::ArchiveHasFile(int archive_id, int file_id) const {
 // ---- decoded-archive cache --------------------------------------------------
 
 void SqliteIndexFile::EvictToBudget(std::size_t incoming) {
-    // Evict least-recently-used loaded slots until the newcomer fits. An archive
-    // bigger than the whole budget is still cached (alone) so lookups work.
+    // LRU-evict until the newcomer fits; an archive bigger than the budget is still cached alone.
     while (cached_bytes_ > 0 && cached_bytes_ + incoming > byte_budget_) {
         Slot* victim = nullptr;
         for (auto& s : archive_cache_) {
@@ -156,7 +152,7 @@ SqliteIndexFile::ReadFile(int archive_id, int file_id) {
     auto& slot = archive_cache_[archive_id];
     if (slot.state == SlotState::Failed) return {};
     if (slot.state == SlotState::NotLoaded) {
-        // Failed decodes are sticky: the blob does not change under us this process.
+        // Failed decodes are sticky.
         auto compressed = FetchArchiveBlob(archive_id);
         if (compressed.empty()) { slot.state = SlotState::Failed; ++failed_count_; return {}; }
         auto decompressed = Decompress(compressed);

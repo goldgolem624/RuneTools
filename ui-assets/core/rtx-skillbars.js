@@ -1,49 +1,16 @@
 // rtx-skillbars.js: In-game Skills XP bars (interface 1466 cells), SKILL_SPRITES/SKILL_LAYOUT, combatLevel, sprite icon loader (setSpriteIcon, attachSkillIcon).
 // Loads after: rtx-registry.js (XP tables).
 // Plain script, page globals by design: every top-level name here is a page global that panels and the other core files use.
-  // ---- in-game Skills XP bars (RuneLite-style) --------------------------------
-  // A thin progress bar along the bottom of every cell of the game's own Skills panel
-  // (interface 1466, comp 2 subs 0..28). Sub order is row-major, which is exactly the
-  // order SKILL_LAYOUT is written in, so cell k is SKILL_LAYOUT[k] with no inference.
-  //
-  // Gated on varc 3165 == 1 (panel open) so a stale rect can never paint bars over a
-  // closed panel; positioned from varcs 3166/3167 via the group's panel-origin entry.
+  // ---- in-game Skills XP bars (RuneLite-style) ----
+  // A progress bar along the bottom of every cell of the game's Skills panel (interface 1466, comp 2 subs 0..28, row-major = SKILL_LAYOUT order). Gated on varc 3165 == 1 (panel open); positioned from varcs 3166/3167.
   const SK_GROUP = 1466, SK_OPEN_VARC = 3165, SK_CELL_COMP = 2;
-  // The panel CHROME is not part of 1466: the brown title bar and the tab strip are
-  // layers in the game frame (1477), so the position varcs point at the window's outer
-  // top-left and everything inside 1466 lands that much too high. Rather than a constant,
-  // find the tab layer by the skills-tab sprite and take its BOTTOM as the content top --
-  // that measures whatever chrome is actually present, which matters because the brown
-  // bar is hidden while the UI is locked (with "hide title bars when locked",
-  // varbit 19928). Frame widgets are positioned from screen 0,0, so accumulating their
-  // relative rects down the tree gives absolute pixels directly.
-  // CHROME FROM GEOMETRY, not from hunting the tab strip. Live capture of the running
-  // client settled it: the window record reads 224x291 while group 1466's root -- the
-  // content -- is 216x243. The content is inset 4px each side, and the 48px height
-  // difference is the chrome: 44 above (title bar + tab strip) and a 4px bottom border
-  // matching the sides. So:
-  //     inset  = (panelW - contentW) / 2
-  //     offset = panelH - contentH - inset
-  // That is self-correcting for every state we chased separately before -- tabbed,
-  // untabbed, and title-bar-hidden-while-locked all change the panel/content height
-  // difference, and the formula follows. It also needs no sprite, no component id and no
-  // visibility flag, each of which turned out to be unreliable: the tab strip is comp 109
-  // in one layout and 306 in another, its sprite appears twice, and it reports vis=0 even
-  // while the tabs are on screen.
-  // The panel's own window record (it decodes as w,h,?,x,y -- see the Leagues research
-  // notes on script8701). All four are needed: the position seeds the walk, the size gives
-  // the chrome.
+  // Panel chrome (title bar + tab strip) is in frame group 1477, not 1466, so the position varcs point at the window's outer top-left. Chrome is derived from geometry: inset = (panelW - contentW) / 2, offset = panelH - contentH - inset (live: window 224x291, content 216x243 -> inset 4, top chrome 44). The tab strip comp id and visibility flag are unreliable across layouts.
+  // The panel's window record decodes as w,h,?,x,y (see script8701 notes).
   const SK_POS_VARC_X = 3166, SK_POS_VARC_Y = 3167;
   const SK_SIZE_VARC_W = 3162, SK_SIZE_VARC_H = 3163;
   let skContentDx = 0, skContentDy = 0, skChromeAt = 0, skChromeSeen = '';
   let skChromeOk = false;   // a varc-derived chrome measurement from SANE inputs exists
-  // Returns {dx,dy}, or null if either rect was unreadable -- in which case the caller
-  // keeps its last good value rather than snapping the bars to a wrong place.
-  // panelW/panelH from the window record, contentW/contentH from group 1466's root node.
-  // The side border is the same 4px top-to-bottom, so the width gap gives it directly and
-  // the leftover height is the top chrome. Two live captures at different panel sizes
-  // (224x291/216x243 and 206x291/198x243) both yield inset 4 and dy 44, and 44 is also what
-  // measuring the tab strip's bottom edge gave for the first of them.
+  // Returns {dx,dy}, or null if either rect was unreadable (caller keeps its last good value).
   function skMeasureChrome(panelW, panelH, contentW, contentH) {
     if (!(panelW > 0 && panelH > 0 && contentW > 0 && contentH > 0)) return null;
     if (contentW > panelW || contentH > panelH) return null;      // torn read
@@ -54,7 +21,6 @@
   let skBarsOn = false, skBarsDrawn = false, skBarsAt = 0, skBarsLoaded = false;
   let skBarsDiag = null;                       // last tick's findings (see skBarsWhy)
   function skBarsWhy() { return JSON.stringify(skBarsDiag); }
-  // One sentence naming the stage that failed, so "nothing is drawn" is never silent.
   function skBarsWhyText() {
     const d = skBarsDiag;
     if (!skBarsOn || !d) return 'Progress to the next level, under each skill in the game\'s own panel';
@@ -88,24 +54,19 @@
   }
   let skBarsBootCleared = false;   // one unconditional wipe per page life (see below)
   function skBarsClear(force) {
-    // `force` clears even when THIS page never drew: the overlay keeps the last
-    // published commands, so after a UI reload (dev hot-reload, panel restart) a
-    // previous page's bars would otherwise survive with the toggle off forever.
+    // `force` clears even when this page never drew: the overlay keeps the last published commands across a UI reload.
     if (!skBarsDrawn && !force) return;
     try { if (bridge() && bridge().skillBars) bridge().skillBars(myPid(), ''); } catch (e) {}
     skBarsDrawn = false;
   }
-  // Red -> yellow -> green across the level. Ramped through yellow at the halfway
-  // point rather than blending red to green directly, which passes through a muddy
-  // brown and reads as "broken" rather than "half way".
+  // Red -> yellow -> green across the level (ramped through yellow to avoid muddy brown).
   function skBarColour(pct) {
     let f = pct / 1000; if (f < 0) f = 0; if (f > 1) f = 1;
     const r = f < 0.5 ? 235 : Math.round(235 - 190 * ((f - 0.5) / 0.5));
     const g = f < 0.5 ? Math.round(70 + 165 * (f / 0.5)) : 235;
     return (r << 16) | (g << 8) | 45;      // a little blue keeps it from going neon
   }
-  // Progress to the NEXT level as tenths of a percent. Uses the same caps the grid
-  // uses (120, or 150 for Invention's elite curve); a maxed skill reads full.
+  // Progress to the next level in tenths of a percent (caps 120, or 150 for Invention); maxed reads full.
   function skBarPct(xp, elite) {
     if (!(xp >= 0)) return -1;
     const t = xpTable(elite), cap = elite ? 150 : 120;
@@ -127,19 +88,10 @@
     }
     skBarsBootCleared = true;   // drawing path owns the channel from here on
     const now = Date.now(); if (now - skBarsAt < 400) return; skBarsAt = now;
-    // Open state is the REAL gate. Group 1466's widgets stay in the tree when the panel
-    // is tabbed away - they are hidden, not removed - so "has widgets" is not a test for
-    // visible, and relying on it drew bars over whatever tab replaced Skills. An
-    // unreadable var still does NOT disable the feature: only an explicit 0 closes us.
-    // SANITY-GATED: on some game builds these varcs hold packed or garbage 64-bit values
-    // (seen live: 19-digit numbers where w/h should be), so a value only counts when it
-    // is a plausible small int. Anything else reads as "unknown", never as pixels.
+    // Open varc is the real gate: 1466's widgets stay in the tree when tabbed away. Only an explicit 0 closes; unreadable does not disable. Values only count when they are plausible small ints (some builds hold garbage 64-bit values).
     let openVar = null, originX = null, originY = null, panelW = 0, panelH = 0;
     try {
-      // varcInts, NOT varcLongs: these are int-typed varcs, and the 64-bit read widens
-      // adjacent union bytes into the value (seen live: 3165's clean 0/1 arriving as
-      // 19-digit garbage, which blinded the open gate). Fall back to the longs read
-      // only while running against an older host without varcInts.
+      // varcInts, not varcLongs: the 64-bit read widens adjacent union bytes into int-typed varcs. Longs only as a fallback on an older host.
       const rd = bridge().varcInts || bridge().varcLongs;
       const d = JSON.parse(await rd(myPid(),
                   SK_OPEN_VARC + ',' + SK_POS_VARC_X + ',' + SK_POS_VARC_Y
@@ -153,24 +105,14 @@
       const rh = Number(d[String(SK_SIZE_VARC_H)]); if (sane(rh)) panelH = rh;
     } catch (e) {}
     const sk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
-    // uiSc = interface->pixel scale (the game's Interface Scaling setting, e.g. 1.35 at
-    // 135%). Widget-tree coords are in the UNSCALED interface space; the overlay draws in
-    // pixels, so the anchor-path output below multiplies through by this. Two sources:
-    //  - PRIMARY (set in the anchor block): companion client width / 1477 root frame
-    //    width. Both span the full client, one in the overlay's pixel space and one in
-    //    tree space, so their ratio IS the tree->pixel factor by construction.
-    //  - FALLBACK: the reader's gameview-varc / gameview-tree ratio ("ui"). Seen live
-    //    reading 2/3 after a runtime Windows-DPI change while bars were anchored fine,
-    //    so it only fills in when the 1477 root is unavailable.
+    // uiSc = interface->pixel scale (Interface Scaling setting). Primary: companion client width / 1477 root frame width. Fallback: the reader's gameview-varc / gameview-tree ratio ("ui").
     let ws = [], uiSc = 1, gj = null;
     try {
       gj = JSON.parse(bridge().interfaceGroup(myPid(), SK_GROUP) || '{}');
       ws = gj.widgets || [];
       if (typeof gj.ui === 'number' && gj.ui > 0.2 && gj.ui < 5) uiSc = gj.ui;
     } catch (e) {}
-    // Diagnostics are recorded BEFORE any bail-out, and painted live onto the toggle
-    // row -- the skills pane is signature-deduped, so leaving this to the next pane
-    // render meant the row kept showing its default text and explained nothing.
+    // Diagnostics are recorded before any bail-out and painted live onto the toggle row (the skills pane is signature-deduped).
     skBarsDiag = { widgets: ws.length, openVar: openVar, skills: sk ? sk.length : 0,
                    px: originX, py: originY, pw: panelW,
                    comp2: ws.filter(w => w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0).length,
@@ -179,37 +121,16 @@
     skBarsPaintWhy();
     if (openVar === 0) { skBarsClear(); return; }        // tabbed away / closed
     if (!sk || !sk.length) { skBarsClear(); return; }
-    // The skill cells are comp 2's SUBS (owner-captured: 2:0..2:28, 60x27, three per
-    // row at x 7/79/151). Sub order is already row-major, which is the order
-    // SKILL_LAYOUT is written in, so no sorting by position and no guessing.
-    // Only widgets the reader resolved to an absolute position can be drawn on.
-    // VISIBILITY IS PART OF THE GATE. When the Skills panel is tabbed away, its 1466
-    // widgets stay in the tree (hidden, not removed) and the frame anchor still finds
-    // the interface slot, which is now hosting whatever tab replaced Skills; on builds
-    // where the open varc reads as garbage (openVar unknown) that drew bars over the
-    // backpack. The reader flags each rendered widget with v:1, so require it on every
-    // cell: zero visible cells reads as "tabbed away", and if the flag ever breaks on
-    // a future build the failure is hidden bars, never bars over the wrong panel.
-    // VISIBILITY: per-cell v:1 exists to stop bars drawing over whatever tab replaced Skills
-    // on builds where the open varc reads as garbage. But the v flag itself is layout-dependent:
-    // in classic fullscreen layouts the +0x50 render bytes read differently and every cell
-    // reports not-visible even with the panel plainly open (reported live: "0 of 29 cells
-    // visible [open var 1]"). So the varc is the primary gate whenever it is READABLE: a sane
-    // nonzero open varc means the panel is open and cells are accepted without the flag; the
-    // per-cell flag only becomes a requirement when the varc is unreadable. openVar === 0
-    // (tabbed away) already cleared above in both worlds.
+    // Skill cells = comp 2's subs (2:0..2:28, 60x27, three per row at x 7/79/151), row-major. Only widgets with a resolved absolute position are drawn on.
+    // Visibility: a sane nonzero open varc accepts cells without the per-cell v:1 flag (the flag reads false in classic fullscreen layouts); the flag is only required when the varc is unreadable.
     const openTrusted = openVar !== null && openVar > 0;
     const ok = w => w && w.r && w.a && w.r[2] > 8 && w.r[3] > 8 && (openTrusted || w.v === 1);
     let cells = ws.filter(w => ok(w) && w.t && w.t[1] === SK_CELL_COMP && w.t[2] >= 0)
                   .sort((p, q) => p.t[2] - q.t[2]);
-    // Primary path: each cell CARRIES its skill slot (the sub index). Pairing cells[k]
-    // with SKILL_LAYOUT[k] positionally instead broke as soon as ONE mid-list cell was
-    // filtered out (no resolved rect on that tick): every bar after it shifted onto the
-    // wrong skill. The fallback path has no sub index, so only it stays positional.
+    // Primary path: each cell carries its skill slot (the sub index); positional pairing broke whenever one cell was filtered out.
     let bySub = true;
     if (cells.length < 20) {
-      // Fallback if the interface is ever restructured: the one widget size that
-      // repeats ~29 times is the cell grid. Ordered by position, not by sub.
+      // Fallback if the interface is restructured: the widget size that repeats ~29 times is the cell grid, ordered by position.
       const bySize = {};
       for (const w of ws) { if (!ok(w)) continue; const k = w.r[2] + 'x' + w.r[3]; (bySize[k] = bySize[k] || []).push(w); }
       let best = null;
@@ -219,24 +140,14 @@
       bySub = false;
     }
     cells = cells.slice(0, SKILL_LAYOUT.length);
-    // TRUE ORIGIN + CHROME FROM THE LIVE 1477 FRAME, mirroring the C++ inventory-slot
-    // solution (Reader.cpp InvSlotRectJson). The window-record varcs proved unreliable
-    // across game builds, so instead: group 1477's walk seeds at 0,0 (true screen px),
-    // and the frame window that OWNS this grid is the 1477 widget slightly larger than
-    // 1466's content root, nearest the varc origin hint. border = (frameW - contentW)/2,
-    // header = the vertical rest. Cells position as frame + (cell - contentRoot), so the
-    // 1466 seed cancels out and even a stale or garbage origin varc cannot displace bars.
+    // True origin + chrome from the live 1477 frame (mirrors Reader.cpp InvSlotRectJson): 1477's walk seeds at 0,0; the owning frame is the 1477 widget slightly larger than 1466's content root, nearest the varc origin hint. border = (frameW - contentW)/2, header = the vertical rest. Cells = frame + (cell - contentRoot), so a garbage origin varc cannot displace bars.
     const root = ws.find(w => w.d === 0 && w.r && w.r[2] > 0 && w.r[3] > 0);
     let anchor = null;
     if (root && root.a) {
       const cw = root.r[2], ch = root.r[3];
       let fr = [];
       try { fr = (JSON.parse(bridge().interfaceGroup(myPid(), 1477) || '{}').widgets) || []; } catch (e) {}
-      // PRIMARY interface->pixel scale: companion client width (the overlay's pixel
-      // space) over the 1477 ROOT frame width (tree space). 1477 hosts the whole HUD at
-      // screen 0,0, so its widest depth-0 frame spans the full client and the ratio is
-      // exactly the factor the bar coords below need. Overrides the reader's varc-based
-      // guess whenever both measures resolve sanely.
+      // Primary interface->pixel scale: companion client width over the 1477 root frame width.
       let rootW = 0;
       for (const f of fr)
         if (f && f.d === 0 && f.r && f.r[2] > rootW) rootW = f.r[2];
@@ -251,10 +162,7 @@
       }
       skBarsDiag.ui = { sc: Math.round(uiSc * 1000) / 1000, pw: pw, rootW: rootW,
                         rd: gj ? gj.ui : null, vw: gj ? gj.uiw : null, gw: gj ? gj.uig : null };
-      // 1477's walk seeds at screen 0,0, but the group has no panel-origin spec, so its
-      // widgets can arrive WITHOUT `a` (seen live: "no 1477 frame anchor" with bars
-      // hidden). The JSON is a strict depth-first walk with parent-relative rects, so
-      // absolutes reconstruct from a depth stack: abs = parent's abs + own r offset.
+      // 1477 widgets can arrive without `a` (no panel-origin spec): the JSON is a strict depth-first walk with parent-relative rects, so absolutes reconstruct from a depth stack.
       const stk = [];
       for (const f of fr) {
         if (!f || !f.r) continue;
@@ -274,9 +182,7 @@
         if (dist === bestD && best && fw * fh >= best.r[2] * best.r[3]) continue;
         bestD = dist; best = f;
       }
-      // The distance gate disambiguates when SEVERAL frames match the size; a unique
-      // match is trusted at any distance (a stale origin hint can drift far past 200px,
-      // e.g. a docked panel whose drag varc kept its old spot).
+      // The distance gate only disambiguates when several frames match the size; a unique match is trusted at any distance.
       if (best && bestD > 200 && sizeMatches > 1) best = null;
       if (best) {
         const bd = Math.round((best.r[2] - cw) / 2);
@@ -289,9 +195,7 @@
     }
     skBarsDiag.anchor = anchor ? (anchor.x + ',' + anchor.y) : null;
     skBarsPaintWhy();
-    // Fallback: varc-measured chrome, accepted only from SANE inputs. With garbage varcs
-    // (openVar unknown) the live frame is also the presence gate: no frame, no bars --
-    // strictly better than drawing them displaced or over another tab.
+    // Fallback: varc-measured chrome, from sane inputs only. With garbage varcs the live frame is also the presence gate.
     if (!anchor) {
       if (now - skChromeAt > 1500) {
         skChromeAt = now;
@@ -309,10 +213,7 @@
       if (!t) continue;
       const pct = skBarPct(t[2] === undefined ? -1 : t[2], i === 26);
       if (pct < 0) continue;
-      // Anchor path: every term is a pure widget-TREE coordinate (the 1477 frame walk
-      // seeds at 0,0 and the 1466 varc origin cancels in c.a - anchor.rx), so the whole
-      // rect converts to pixels by uiSc. The varc-chrome fallback mixes a pixel origin
-      // with tree offsets and cannot be converted exactly -> left unscaled, as before.
+      // Anchor path: every term is a widget-tree coordinate, so the rect converts to pixels by uiSc. The varc-chrome fallback mixes spaces and stays unscaled.
       const bx = anchor ? (anchor.x + (c.a[0] - anchor.rx)) : (c.a[0] + skContentDx);
       const by = anchor ? (anchor.y + (c.a[1] - anchor.ry)) : (c.a[1] + skContentDy);
       const s = anchor ? uiSc : 1;
@@ -353,16 +254,12 @@
 
   const SPRITES = new Map();
   const SPRITE_PENDING = new Set();
-  // Frame-budgeted sprite loader (~8ms/frame): long icon lists render instantly and
-  // icons fill in progressively instead of stalling on N synchronous decodes.
+  // Frame-budgeted sprite loader (~8ms/frame).
   const SPRITE_QUEUE = [];
   let spriteDraining = false;
   const rafSchedule = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : (cb => setTimeout(cb, 16));
   const nowMs = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
-  // Background-image, NOT <img>: oversized cache sprites hit Ultralight's
-  // replaced-element intrinsic-size bug and render blank in a small box.
-  // No Node.isConnected guard: Ultralight doesn't implement it (undefined -> falsy
-  // would skip every paint); styling a detached element is harmless.
+  // Background-image, not <img>: oversized cache sprites hit Ultralight's replaced-element intrinsic-size bug. No isConnected guard: Ultralight does not implement it.
   function setSpriteIcon(el, url) {
     if (!url || !el) return;
     el.style.backgroundImage = 'url("' + url + '")';
@@ -370,9 +267,7 @@
     el.style.backgroundRepeat = 'no-repeat';
     el.style.backgroundPosition = 'center';
   }
-  // Optional `px` asks the C++ for an area-average downscale capped to px on the longest
-  // side (pass ~2x the CSS box for a clean 2:1 in-browser rescale). Cached per (id,px);
-  // an older bridge without the arg just serves the default-cap sprite.
+  // Optional `px` asks the C++ for an area-average downscale capped to px on the longest side (pass ~2x the CSS box). Cached per (id,px).
   function loadSpriteIcon(el, id, px) {
     if (!id || id <= 0 || !el) return;
     const k = px ? (id + '|' + px) : id;

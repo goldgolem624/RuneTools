@@ -10,7 +10,7 @@ namespace {
 std::vector<std::uint8_t> InflateImpl(const std::uint8_t* in, std::size_t in_len,
                                       std::size_t initial_out_hint, int window_bits) {
     std::vector<std::uint8_t> out;
-    // Clamp the hint: a bogus header size must not allocate gigabytes up front.
+    // Clamp the size hint.
     constexpr std::size_t kMaxInitial = (std::size_t)32 * 1024 * 1024;
     if (initial_out_hint > kMaxInitial) initial_out_hint = kMaxInitial;
     out.resize(initial_out_hint > 0 ? initial_out_hint : (std::size_t)64 * 1024);
@@ -58,8 +58,7 @@ std::uint32_t be32(const std::vector<std::uint8_t>& b, std::size_t o) {
 
 std::vector<std::uint8_t> Decompress(const std::vector<std::uint8_t>& raw) {
     if (raw.size() < 9) return {};
-    // Legacy "ZL"-prefixed format: bytes 0..1 magic, 4..7 uncompressed
-    // size, 8+ zlib stream. NXT writes its js5-* archives this way.
+    // "ZL" format: bytes 0..1 magic, 4..7 uncompressed size, 8+ zlib stream.
     if (raw[0] == 0x5A && raw[1] == 0x4C) {
         return InflateImpl(raw.data() + 8, raw.size() - 8, be32(raw, 4), 0);
     }
@@ -78,8 +77,7 @@ std::vector<std::uint8_t> DecompressStandard(const std::vector<std::uint8_t>& ra
     if (raw.size() < 9) return {};
     std::uint32_t orig_size = be32(raw, 5);
     if (type == 1) {
-        // bzip2. RS3 strips the 4-byte "BZh1" stream header, so the body begins
-        // at the first block magic. Newer (Necromancy-era) sprites use this.
+        // bzip2 with the 4-byte "BZh1" header stripped; body begins at the first block magic.
         return Bzip2Decompress(raw.data() + 9, raw.size() - 9, orig_size);
     }
     if (type == 2) {

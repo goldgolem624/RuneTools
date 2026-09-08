@@ -1,18 +1,9 @@
 // RuneToolsX panel: Dungeoneering (Daemonheim floor status + explored floor map).
 const dgEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-// Spliced inline into client.html at load; IIFE (window exports + registerTab; see the RTX registry in client.html).
-//
-// Sources = the live interface trees (bridge interfaceGroup), which mirror the
-// server-pushed varcs (CS2-mapped: keys held = varc 1812-1875 via enum 5734
-// (script2725 rebuilds the HUD key row from them), floor timer = varc 4190 seconds
-// (script9734 ticks it on 945:11), speedrun progress = varc 1233/2381 (script5873),
-// gatestone flags = varc 6569/6570 (spr 13165 set / 13166 unset on 945:2 / 945:4).
-// Group 945 = the floor HUD; group 942 = the floor map (32px room tiles + 2831 start
-// overlay, 24px key markers, 11px spr 2825 gatestone marker; pooled widgets park at
-// garbage coords like 2534,-30969 and are dropped by the sane-rect clamp).
-// The "Hard Mode!" text exists in the tree even when inactive (the +0x50 vis mask reads
-// 0 across groups 942/945), so hidden-vs-shown text cannot be trusted -- only dynamic
-// content (created key rows, text values, sprite ids) is displayed here.
+// Spliced inline into client.html at load; IIFE (window exports + registerTab).
+// Sources: interface group 945 (floor HUD) and 942 (floor map). Keys held = varc 1812-1875 via enum 5734,
+// floor timer = varc 4190 (seconds), speedrun = varc 1233/2381, gatestone flags = varc 6569/6570 (spr 13165/13166).
+// Visibility masks read 0 across 942/945, so only dynamic content (key rows, text values, sprite ids) is trusted.
 (function () {
 
 let dungData = null; let dungFetching = false; dungSig = '';
@@ -21,138 +12,76 @@ const DUNG_KEY_COLORS = ['Orange', 'Silver', 'Yellow', 'Green', 'Blue', 'Purple'
 const DUNG_KEY_SHAPES = ['triangle', 'diamond', 'rectangle', 'pentagon', 'corner', 'crescent', 'wedge', 'shield'];
 const DUNG_KEY_HEX = { Orange: '#f59e42', Silver: '#c9ced9', Yellow: '#f5d442', Green: '#5fd07a',
                        Blue: '#5b9cf6', Purple: '#a06bff', Crimson: '#f25c5c', Gold: '#f0c419' };
-// World-tile -> map-cell mapping. Rooms are 14x14 tiles with a 2-tile unwalkable
-// gap on every side -> 16-tile pitch ( The grid is
-// grounded per floor by the start-room CONSTELLATION FIT below (the smuggler
-// wanders, so his tile can't anchor it); world +x = east (map col+), +y = north
-// (map row-). The anchor is cached per floor; cleared on floor reset / exit.
+// Rooms are 14x14 tiles with a 2-tile gap on every side (16-tile pitch); world +x = east (map col+), +y = north (map row-).
+// The grid is anchored per floor by the start-room constellation fit (dungReconcileScene).
 const DUNG_ROOM_PITCH = 16, DUNG_ROOM_W = 14;
 const DUNG_MAP_XSIGN = 1, DUNG_MAP_YSIGN = -1;
 let dungPlanDbg = '';      // planner counters for the debug line
 let dungMandatoryKeyRooms = {};   // cell -> 1: yielded a key nothing works without
-let dungForcedKeys = {};          // key idx -> 'route' | 'blocks': proven-forced keys,
-                                  // published for the tooltip tier between "marked
-                                  // critical" (human) and "not critical" (nothing)
+let dungForcedKeys = {};          // key idx -> 'route' | 'blocks': proven-forced keys
 let dungKeyFillerVeto = {};       // key idx -> 1: planner ignores its crit mark (behind filler)
 let dungFloorSW = null;    // {x,y} world tile of the start room's SW corner (constellation fit)
-// Start-room reference constellation: loc id -> room-local [x,y] from the SW corner
-// (-1/14 = door locs in the gaps). The fit in dungReconcileScene matches these under
-// 4 rotations to ground each new floor. One merged table serves every theme: themes
-// never coexist on a floor, absent ids simply don't vote, and the SHARED ids (2342,
-// 49257, 123933, 137198/199/205 -- same local spot in both themes measured so far)
-// keep one consistent entry. Only single-instance locs are listed; ids that appear
-// several times in a start room (abandoned: 25636 x10, 50343 doors x4, 51050-52 x2)
-// would vote for several translations and are left out.
+// Start-room reference constellation: loc id -> room-local [x,y] from the SW corner (-1/14 = door locs in the gaps).
+// Matched under 4 rotations. Only single-instance locs are listed; shared ids keep one entry across themes.
 const DUNG_SW_REF = {
-  // frozen theme (wall-touch calibrated
+  // frozen theme
   2342: [1, 12], 17144: [1, 12], 49257: [6, 6], 49934: [6, 12], 49937: [0, 5],
   50035: [9, 13], 50191: [1, 1], 50195: [3, 0], 50196: [0, 3], 50197: [2, 2],
   50205: [6, 8], 50229: [7, 0], 50241: [13, 7], 50346: [-1, 7], 50374: [7, -1],
   50386: [14, 7], 51156: [12, -1], 51456: [10, 0], 51457: [13, 0], 51577: [4, 9],
   53124: [14, 3], 123933: [1, 1], 123948: [7, 7], 137159: [6, 6],
   137198: [13, 12], 137199: [13, 13], 137205: [13, 11],
-  // abandoned theme (floor-12 live snapshot: SW corner pinned by the four
-  // 50343 door locs at the wall-centre gaps; bridged into this canonical frame by the
-  // six shared ids, which all fit one rot-180 placement exactly)
+  // abandoned theme
   17146: [1, 12], 49935: [9, 8], 49938: [0, 4], 50036: [9, 12], 50192: [0, 0],
   50198: [2, 0], 50199: [0, 2], 50200: [2, 2], 50206: [6, 8], 50224: [6, 0],
   50232: [0, 6], 50240: [13, 6], 50273: [6, 14], 50433: [6, -1], 50441: [-1, 6],
   50449: [14, 6], 50604: [11, -1], 50910: [10, 0], 50911: [13, 0], 51030: [3, 9],
   53125: [14, 3], 123932: [6, 6],
-  // remaining themes, CACHE-derived (js5-5 start-room template bank at x=113,
-  // y 5249-5313 / 5377-5441 / 5505-5537; bank order after frozen+abandoned suggests
-  // furnished / occult / warped -- label unconfirmed, the fit doesn't need it).
-  // Only rotation-safe ids: 1x1 footprints whose class is  to surface
-  // (Anvil/Summoning obelisk/Statue counterparts matched the template EXACTLY on
-  // both live-measured themes), plus the 3x3 smuggler-stall family 17142/48/50 at
-  // the live-consistent [1,12] (square footprints report rotation-invariant tiles;
-  // 17144/17146 both measured there live). Non-square locs (furnace 2x2, anvils
-  // 1x2, table 3x2, RC altar 4x3) shift with floor rotation -> deliberately absent.
-  // UNVALIDATED until a live floor 18+ fit confirms (expect >=6 votes there).
+  // remaining themes, cache-derived (js5-5 start-room template bank at x=113, y 5249-5313 / 5377-5441 / 5505-5537).
+  // Only rotation-safe (square footprint) ids; non-square locs shift with floor rotation. Unvalidated live.
   17142: [1, 12], 50203: [2, 2], 50207: [6, 8], 52004: [10, 0], 52005: [13, 0],   // theme bank 3
   17148: [1, 12], 54887: [2, 2], 53883: [6, 8], 54662: [10, 0], 54663: [13, 0],   // theme bank 4
   17150: [1, 12], 55815: [2, 2], 55605: [6, 8],                                   // theme bank 5
 };
 let dungLastTimer = -1;   // varc 4190 seconds; a drop means a new floor -> re-anchor
-let dungKeyCache = {};    // "x,y" -> {x,y,ki}: ground keys REMEMBERED until picked up
-let dungOpenedAt = {};    // cell -> Date.now() the room was FIRST seen opened. The map
-                          // reveals a room instantly but its ground key is only scanned
-                          // a beat later, so "this room holds no key" is not trusted
-                          // until the room has been open for a moment (see the prune).
-let dungRoomRes = {};     // cell -> { "skillIdx|tier|level": {skill,skillIdx,tier,level} }
-                          // EVERY resource ever seen in that room. `rooms` is rebuilt
-                          // each poll from the LIVE scene, so without this a room's
-                          // contents vanish the moment you walk out of render range.
-let dungHeldInit = false; // the first poll on a floor seeds dungHeldSeen WITHOUT
-                          // attributing: keys already in the ring were not picked up here
-let dungHeldSeen = {};    // key idx -> 1: already seen in the key ring, so a later
-                          // appearance is not a fresh pickup
-let dungKeyDoor = {};     // key idx -> cell of the door that NEEDS it. Follows the marker
-                          // while visible, latches on open, because opening the door clears
-                          // the requirement and the fact would otherwise be lost -- and it
-                          // is the fact that proves the trip to fetch the key was forced.
-let dungKeySrc = {};      // key idx -> {x,y} world tile the key was PICKED UP from: the
-                          // source room of a critical key stays on the critical path
-                          // even after pickup turns it into a "dead end"
+let dungKeyCache = {};    // "x,y" -> {x,y,ki}: ground keys remembered until picked up
+let dungOpenedAt = {};    // cell -> Date.now() first seen opened (ground keys scan a beat after reveal; see the prune)
+let dungRoomRes = {};     // cell -> { "skillIdx|tier|level": {skill,skillIdx,tier,level} }, every resource ever seen there
+let dungHeldInit = false; // first poll on a floor seeds dungHeldSeen without attributing pickups
+let dungHeldSeen = {};    // key idx -> 1: already seen in the key ring
+let dungKeyDoor = {};     // key idx -> cell of the door that needs it; latches on open (the requirement clears then)
+let dungKeySrc = {};      // key idx -> {x,y} world tile the key was picked up from
 const DUNG_KEY_MANUAL = 'manual promotion';   // dungCritKeys value for a hand-promoted key
 const DUNG_KEY_PARTY = 'party mark';          // dungCritKeys value for a party-relayed mark
-let dungCritKeyBlock = {};   // key idx -> 1: hand-DEMOTED keys the auto-latch must not re-add
-// STRUCTURALLY DERIVED crit keys (planner-written): a key fetched from a proven-critical
-// dead end is critical, because that branch exists to fetch it and reaches nothing else.
-// Kept apart from dungCritKeys so a derivation is never relayed to the party as if it
-// were a human mark, and a hand demotion still silences it like any other mark.
+let dungCritKeyBlock = {};   // key idx -> 1: hand-demoted keys the auto-latch must not re-add
+// Planner-derived crit keys, kept apart from dungCritKeys so they are never relayed to the party as human marks.
 let dungDerivedCritKeys = {};   // key idx -> why-string
-let dungCritKeyTouch = {};   // key idx -> Date.now() of the last local toggle: the party merge
-                             // won't override it for ~3s (same optimistic hold as noncrit)
-let dungRestored = false;    // floor-marks restore ran this UI session (a panel rebuild resets
-                             // every module variable -- manual marks must survive it)
-// Persist the floor's marks across PANEL REBUILDS (a hand-promoted
-// critical key vanished on reload). Keyed to the floor by the timer varc: restore only
-// when the current timer is AT/PAST the saved one, so a new floor never inherits.
+let dungCritKeyTouch = {};   // key idx -> Date.now() of the last local toggle (~3s optimistic hold against the party merge)
+let dungRestored = false;    // floor-marks restore ran this UI session (a panel rebuild resets module state)
+// Persist the floor's marks across panel rebuilds, keyed to the floor by the timer varc.
 function dungSaveMarks() {
   try {
     localStorage.setItem('rtxDgMarks', JSON.stringify({ t: Date.now(), tm: dungLastTimer,
       ck: dungCritKeys, cb: dungCritKeyBlock, nc: dungManualNonCrit, mc: dungManualCrit, dl: dungDoorLevels, ks: dungKeySrc, kd: dungKeyDoor, rr: dungRoomRes,
       cl: dungCritLatch,
-      sw: dungFloorSW }));   // the ANCHOR too -- see below
+      sw: dungFloorSW }));
   } catch (e) {}
 }
 function dungDropMarks() { try { localStorage.removeItem('rtxDgMarks'); } catch (e) {} }
-// A KEY IS CRITICAL ONLY IF A HUMAN SAID SO. There is exactly one tier: dungCritKeys,
-// holding keys promoted by hand (right-click) and marks relayed by a party mate.
-// The panel derives nothing: "this key was found somewhere critical, therefore the key is
-// critical" is unsound, and a guess relayed over the party channel comes back as
-// DUNG_KEY_PARTY, latched and indistinguishable from an observation. A sound derivation
-// would need its own tier, ranked BELOW this one, unlatched, and never relayed.
+// Keys are critical only by human mark (local right-click or party relay); nothing derives it from position.
 let dungCritKeys = {};        // key idx -> why: hand promotions, local and party mates'
-// Critical unless hand-demoted.
-// **A key found on the critical path does NOT guarantee its door leads to another
-// critical room** -- it is an indicator, not a proof. That is why
-// nothing derives criticality any more.
 function dungKeyIsCrit(i) { return !dungCritKeyBlock[i] && (!!dungCritKeys[i] || !!dungDerivedCritKeys[i]); }
 function dungKeyWhy(i) { return dungCritKeys[i] || dungDerivedCritKeys[i] || ''; }
 function dungKeyName(i) { const k = dungKeyInfo(18202 + 2 * (i - 1)); return k ? k.name : ''; }
-// attribute-safe text for the panel's own tooltips (names come from the game, so quotes and
-// angle brackets must not be able to break out of the attribute)
+// attribute-safe text for the panel's own tooltips
 function dungAttr(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-let dungDoorLevels = {};  // map cell 'gx,gy' -> {skill, level}: skill-door requirement
-                          // parsed from the examine tooltip (group 1177 text / varc-str
-                          // 2251, "...requires level N <Skill> to optimally unlock...");
-                          // EXAMINING the door is required, hover alone never writes it.
+let dungDoorLevels = {};  // map cell 'gx,gy' -> {skill, level}: parsed from the examine tooltip
+                          // (group 1177 text / varc-str 2251, "...requires level N <Skill> to optimally unlock...")
 let dungTipLast = '';     // last processed 1177 tooltip sentence (change-triggered)
-// The examine sentence is TRANSIENT and the door it describes can only be resolved
-// once the map is built. Capturing and attaching in one step meant an examine was
-// silently lost whenever the Dungeoneering tab wasn't the active one (fetch is
-// tab-gated) or the tooltip closed between polls. So the SENTENCE is now observed on
-// the tab-independent 600ms tick and parked here -- anchored by the EXAMINED DOOR'S
-// OWN TILE (from the engine hover slot, which holds the loc's id + world tile while
-// the cursor is on it), with the player's tile as fallback -- and attached by the
-// next full fetch.
-let dungPendingTip = null;   // {text, x, y, dx, dy, t} -- x/y = player tile, dx/dy = examined door's own tile
+// The examine sentence is transient: captured on the tab-independent 600ms tick, attached by the next full fetch.
+let dungPendingTip = null;   // {text, x, y, dx, dy, t}: x/y = player tile, dx/dy = examined door's own tile
 let dungTipDbg = '';         // last attach attempt, surfaced on the map's debug line
-let dungHoverLoc = null;     // {x, y, t}: last hovered scenery. The engine hover slot carries the
-                             // loc's OWN world tile, and examining requires the cursor on the door,
-                             // so this is the exact door tile at examine time.
+let dungHoverLoc = null;     // {x, y, t}: last hovered scenery (engine hover slot carries the loc's own world tile)
 function dungReadDoorTip() {
   try {
     if (bridge().hoverEntity) {
@@ -171,48 +100,26 @@ function dungReadDoorTip() {
     }
   } catch (e) {}
 }
-let dungPartyStats = {};  // display name -> [level per SKILL_NAMES idx] from the official
-                          // hiscores (index_lite). Session cache; usage is gated to the
-                          // CURRENT floor's roster, so stale non-party stats never apply.
-let dungHsPoll = {};      // names whose fetch is in flight (polled, no re-ping)
-let dungHsDone = {};      // names resolved (ok or error) this session -- never re-asked
+let dungPartyStats = {};  // display name -> [level per SKILL_NAMES idx] from hiscores index_lite; gated to the current roster
+let dungHsPoll = {};      // names whose fetch is in flight
+let dungHsDone = {};      // names resolved (ok or error) this session
 let dungPbOpen = false;   // Party best validation grid: collapsed by default
 let dungPartyOpen = false;   // master Party section (roster + best + sync): collapsed by default
 let dungSelfLvSig = '';   // last own-live-levels report (code|name|levels); re-sent on change
 let dungSyncInput = '';   // in-progress text in the "join a code" box (survives re-renders)
-let dungManualNonCrit = {};   // map-cell 'gx,gy' -> 1: right-clicked to force NON-critical
-                              // (excluded from crit evidence + faded). Per-floor; shared across
-                              // party clients via the 'noncrit' sync fact.
-let dungNonCritTouch = {};    // cell -> Date.now() of the last local mark/unmark: the party
-                              // merge won't override a cell for ~3s so an optimistic local
-                              // change isn't undone before its report round-trips.
-let dungPartyHoldUntil = 0;   // after a local floor reset: skip re-ingesting the launcher's
-                              // door/noncrit cache until the party 'reset' round-trips (the
-                              // cache may briefly still hold the PREVIOUS floor's facts).
-let dungManualCrit = {};      // map-cell 'gx,gy' -> 1: LEFT-CLICKED to force CRITICAL
-                              // (evidence like any other; approach chain lights). Mutually
-                              // exclusive with dungManualNonCrit; party-synced ('critroom').
-let dungManualCritTouch = {}; // cell -> Date.now() of the last local crit mark/unmark (3s
-                              // optimistic hold against the party mirror, like noncrit)
-// ROOMS PROVEN CRITICAL THIS FLOOR. Demotion needs proof, not an inference or evidence
-// going stale: onPath is rebuilt from scratch every poll, so a proof that stops being
-// OBSERVABLE (key spent, marker gone) would unmark rooms mid-floor. Point facts latch
-// here and only the player's own non-crit mark clears one. Floor-scoped, persisted.
+let dungManualNonCrit = {};   // map-cell 'gx,gy' -> 1: right-clicked to force non-critical; party-synced ('noncrit')
+let dungNonCritTouch = {};    // cell -> Date.now() of the last local mark/unmark (~3s hold against the party merge)
+let dungPartyHoldUntil = 0;   // after a local floor reset: skip the launcher's door/noncrit cache until 'reset' round-trips
+let dungManualCrit = {};      // map-cell 'gx,gy' -> 1: left-clicked to force critical; exclusive with noncrit; party-synced ('critroom')
+let dungManualCritTouch = {}; // cell -> Date.now() of the last local crit mark/unmark (3s hold)
+// Rooms proven critical this floor. onPath is rebuilt every poll, so proofs latch here; only the player's own non-crit mark clears one.
 let dungCritLatch = {};       // map-cell 'gx,gy' -> the why-string captured at proof time
-// THE PATH CURRENTLY BEING EXPLORED. Keep exploring one path until it yields either a key
-// that opens another door or a dead end; switching branches early is usually less
-// efficient. The last recommended frontier; the ranking may only move OFF its branch for an
-// openable door or when the branch ends. Floor-scoped, not persisted (a UI preference,
-// not a floor fact).
+// Last recommended frontier; the ranking only leaves its branch for an openable door or when the branch ends. Not persisted.
 let dungStickyObj = '';
-let dungNonCritSeen = {};     // cells CONFIRMED in the shared set at least once: a mirror may
-let dungManualCritSeen = {};  // only REMOVE a mark it has seen (a real teammate un-mark) --
-                              // never one that simply failed to arrive (old build / old server
-                              // rejecting the fact kind deleted fresh local marks otherwise)
-let dungHoverCell = '';       // map cell under the mouse -- H routes to it
-// mark/unmark a room non-critical locally AND relay to the party (same cell coords are
-// absolute floor-grid, identical for every client in the instance). The two manual
-// designations are mutually exclusive: setting one clears the other everywhere.
+let dungNonCritSeen = {};     // cells confirmed in the shared set at least once: a mirror may only
+let dungManualCritSeen = {};  // remove a mark it has seen, never one that simply failed to arrive
+let dungHoverCell = '';       // map cell under the mouse; H routes to it
+// Manual crit/noncrit marks are mutually exclusive and relayed to the party (cells are absolute floor-grid, same for every client).
 function dungSetNonCrit(cell, on) {
   if (on) { dungManualNonCrit[cell] = 1; delete dungManualCrit[cell]; dungManualCritTouch[cell] = Date.now(); }
   else delete dungManualNonCrit[cell];
@@ -248,72 +155,30 @@ function dungSyncAction(act, wrap) {
   } catch (e) {}
   dungSig = ''; renderDungeoneering();
 }
-// skill sprites (cache js5-8), indexed by SKILL_NAMES order -- same table the
-// XP tracker uses (block at 16038 is alphabetical; Necromancy is 30936)
+// skill sprites (cache js5-8), indexed by SKILL_NAMES order; same table the XP tracker uses
 const DUNG_SKILL_SPR = [
   16040, 16045, 16160, 16041, 16058, 16057, 16055, 16043, 16197, 16051,
   16050, 16049, 16044, 16061, 16056, 16052, 16038, 16196, 16060, 16048,
   16059, 16053, 16042, 16195, 16047, 16046, 16054, 16039, 30936];
-// HELP-THE-GHOST (restoration) room. One id per THEME FAMILY, all five cache-verified
-// by matching name+actions across js5-16 -- a solver written from the single
-// live id would go silent on the other four floors, which is how every other room here
-// has broken at least once.
-//   Damaged pillar  Repair
-//   Broken pot      Repair
-//   Jewellery box   Fill
+// Help-the-ghost (restoration) room loc ids, one per theme family (js5-16): pillar Repair, pot Repair, box Fill.
 const DUNG_GHOST_PILLAR = { 54580: 1, 54591: 1, 54602: 1, 55457: 1, 55472: 1 };
 const DUNG_GHOST_POT    = { 54577: 1, 54588: 1, 54599: 1, 55455: 1, 55470: 1 };
 const DUNG_GHOST_BOX    = { 54576: 1, 54587: 1, 54598: 1, 55453: 1, 55468: 1 };
-// The COFFIN is the room's payoff: unlock it once the restoring is done.
-//. Five variants, cache-matched on name+Unlock. NB the families are NOT
-// arithmetically aligned across themes -- the live room showed box 55453 beside coffin
-// 40181 -- so every id is listed and whichever is in the room wins. Do not "derive" the
-// coffin from the box id.
+// Coffin (Unlock) ids. Families are not arithmetically aligned across themes: match by membership only.
 const DUNG_GHOST_COFFIN = { 40181: 1, 54571: 1, 54582: 1, 54593: 1, 55465: 1 };
-//...and once unlocked the same tile also carries a Bless-remains coffin, which is the
-// real last step. Both variants coexist, so the BLESS one being
-// present is what says the unlock is already done -- same rule as the fixed pot/pillar.
-// The families are NOT aligned: four themes pair +1 (54571->54572), but the live room
-// held Unlock 40181 beside Bless 55451. Match by membership, never by arithmetic.
+// Bless-remains coffin: coexists on the same tile once unlocked, so its presence marks the unlock done.
 const DUNG_GHOST_COFFIN_BLESS = { 54572: 1, 54583: 1, 54594: 1, 55451: 1, 55466: 1 };
-// DONE MARKERS. The fixed model appears ALONGSIDE the broken one at the same tile rather than
-// replacing it, and its presence is what says that part is finished. So each task is checked PER TILE: an actionable object whose done-twin
-// shares its tile is already handled and must not be guided, or the room keeps telling
-// you to repair a pot you have already repaired.
+// Done markers appear alongside the broken model on the same tile, so each task is checked per tile.
 const DUNG_GHOST_POT_DONE    = { 54578: 1, 54589: 1, 54600: 1, 55456: 1, 55471: 1 };
 const DUNG_GHOST_PILLAR_DONE = { 54581: 1, 54592: 1, 54603: 1, 55458: 1, 55473: 1 };
-// Box done-ids are the actionless "Jewellery box" locs. 55454 is  and
-// 55469 pairs the same way (+1 from its Fill twin 55468); the rest are the remaining
-// actionless boxes that are NOT clearly other content. UNLIKE the pot and pillar
-// families this mapping is not arithmetically consistent -- the Fill boxes 54576/54587/
-// 54598 are each followed by a Broken pot -- so these three are INFERRED, not verified.
-// A wrong entry here can only matter if that exact id turns up in a ghost room.
+// Actionless "Jewellery box" locs; 40173/40180/55464 are inferred, not verified.
 const DUNG_GHOST_BOX_DONE    = { 55454: 1, 55469: 1, 40173: 1, 40180: 1, 55464: 1 };
-// "Antique ring", the ONLY item in the cache with that name, so no theme table needed.
-// It is a GROUND ITEM both on the floor and in the pack -- dungGroundCache / dungInvCount,
-// never `objs`.
+// "Antique ring": a ground item on the floor and in the pack (dungGroundCache / dungInvCount, never objs).
 const DUNG_GHOST_RING = 19879;
-// Ghost-room puzzle: NPC 10989 is the ghost to KILL (10990 are decoys). Outline
-// its bounding box IN-SCENE (by uid, since all ghosts share the name "Ghost") and
-// reconcile as ghosts come and go. Outline persists in-scene once set.
-// Sliding-block puzzle: 8 block NPCs on a 3x3 grid (SE cell empty when solved). Each
-// id has a fixed TARGET cell [col 0=W..2=E, row 0=N..2=S].
-// FIVE THEME FAMILIES (js5-18 scan: every npc named "Sliding block" with a
-// Move action). Supporting only 12125-12132 meant the solver was silent on four floors
-// out of five -- the same theme-variant gap that hid the Lights-Out, crystal and chest
-// solvers:
-//   12125-12132   12133-12140   12141-12148   12149-12156   12963-12970
-// Each family is 8 CONSECUTIVE ids with 8 DISTINCT models, and the id order within a
-// family is the grid's reading order.
-// *** VERIFIED only for 12125-12132 (the original table). For the other four the
-// index -> cell mapping is INFERRED FROM POSITION: there is no constant model offset
-// between families, so the cache cannot confirm the piece order carries across themes.
-// If a block's marked target is wrong in game, that family needs its own capture --
-// the id set is right regardless, so it will guide to the wrong cell rather than not
-// guide at all. ***
-// EXCLUDED: 17043-17046 and 26307-26310 are also "Sliding block" but come in FOURS,
-// so they are a different (smaller) grid, not a 3x3 -- guessing cells for them would
-// be wrong 8 ways out of 9.
+// Ghost-room puzzle: NPC 10989 is the ghost to kill (10990 are decoys); outlined in-scene by uid.
+// Sliding-block puzzle: 8 block NPCs on a 3x3 grid (SE cell empty when solved); each id has a fixed target cell [col 0=W..2=E, row 0=N..2=S].
+// Five theme families of 8 consecutive ids in grid reading order; only 12125-12132 verified, the rest inferred.
+// 17043-17046 and 26307-26310 are 4-block variants (different grid), excluded.
 const DUNG_PUZZLE = (() => {
   const cells = [[0, 0], [1, 0], [2, 0],   // NW  N  NE
                  [0, 1], [1, 1], [2, 1],   //  W  C   E
@@ -323,58 +188,33 @@ const DUNG_PUZZLE = (() => {
     cells.forEach((c, i) => { t[base + i] = c; });
   return t;
 })();
-// Statues puzzle: pushable -> its static target statue (see dungReconcileScene).
-// ALL FIVE THEME FAMILIES, derived from the cache: js5-18 npcs named "Statue"; PUSHABLE = has Push+Pull,
-// STATIC = no action. Each theme is a block of 4 statics + 4 pushables paired BY
-// INDEX, and every pair is verified to share the same op1 MODEL id (the statue you
-// match by appearance) -- so this is measured, not an assumed id offset. Note the
-// offset is NOT constant: 12 for the 109xx blocks, 4 for the 121xx/129xx ones.
-// (Daemonheim has 6 floor tiers but only 5 statue themes -- Abandoned 1 and 2 share.)
-// NB 13069-13088 are also "Statue" with a Push action but are a DIFFERENT puzzle
-// (Push only, no Pull; 5 models x 4 orientation variants) -- deliberately excluded.
+// Statues puzzle: pushable npc -> its static target statue (js5-18; pairs share the same model id).
+// 13069-13088 are a different Push-only statue puzzle, excluded.
 const DUNG_STATUE_PAIR = {
-  10954: 10942, 10955: 10943, 10956: 10944, 10957: 10945,   // models 54891/54900/54891/54900
-  10958: 10946, 10959: 10947, 10960: 10948, 10961: 10949,   // models 54898/54890/54898/54890 (floor 13)
-  10962: 10950, 10963: 10951, 10964: 10952, 10965: 10953,   // models 54887/54889/54887/54889
-  12121: 12117, 12122: 12118, 12123: 12119, 12124: 12120,   // models 54887/54889/54887/54889
-  12956: 12952, 12957: 12953, 12958: 12954, 12959: 12955,   // models 61661/61660/61661/61660
+  10954: 10942, 10955: 10943, 10956: 10944, 10957: 10945,
+  10958: 10946, 10959: 10947, 10960: 10948, 10961: 10949,
+  10962: 10950, 10963: 10951, 10964: 10952, 10965: 10953,
+  12121: 12117, 12122: 12118, 12123: 12119, 12124: 12120,
+  12956: 12952, 12957: 12953, 12958: 12954, 12959: 12955,
 };
 let dungStatues = null;   // [{id, east, cur:[x,y], tgt:[x,y], done}] while the room is in scene
 let dungMonoCharge = null;   // varc 1233 while in a dungeon (generic room progress: monolith 0-195, emotes 67/134/201)
-// Poison maze: what a mined pedestal is WORTH in running tiles. Measured
-//: ~4s to mine one, ~3.3 tiles/s running -> breaking through is only
-// worth it when the detour round would be longer than ~13 tiles. Tune either
-// number and the router re-balances itself.
+// Poison maze: mining a pedestal (~4s) costs about 13 running tiles; the router balances on these.
 const DUNG_MAZE_MINE_SEC = 4, DUNG_RUN_TILES_PER_SEC = 3.3;
 const DUNG_MAZE_MINE_TILES = Math.round(DUNG_MAZE_MINE_SEC * DUNG_RUN_TILES_PER_SEC);
-const DUNG_MAZE_TIMER_VAR = 1233;   // poison-maze countdown (starts ~205 after the switch is pulled, ticks to 0);
-                                    // shared varc 1233 (also monolith/emote progress) -- room context disambiguates
+const DUNG_MAZE_TIMER_VAR = 1233;   // poison-maze countdown (~205 after the switch, ticks to 0); shared with monolith/emote progress
 let dungMazeTimer = null;    // live maze countdown value while in the maze room
 let dungArmableTiles = {};   // "x,y" -> 1: tiles that held an arm-statue this visit (armed ones re-id as references)
 
-// Daemonheim skilling resources -> {skill, skillIdx, level} from CACHE ids,
-// decoded from js5-16 locs / js5-18 npcs, not the wiki). Hunter + Divination are NPCs;
-// Fishing/Woodcutting/Mining/Farming are locs (id = base + 2*(tier-1), x3 variants at
-// +0/+20/+40). Level = the fixed Dungeoneering tier scale (Divination tops at 85, the
-// rest at 90). skillIdx = the RS3 skill id (SKILL_NAMES order: WC 8, Fish 10, Mine 14,
-// Farm 19, Hunter 21, Div 25).
+// Skilling resources from cache ids (js5-16 locs / js5-18 npcs). Hunter + Divination are NPCs; the rest are locs
+// (id = base + 2*(tier-1), x3 variants at +0/+20/+40). skillIdx = SKILL_NAMES order (WC 8, Fish 10, Mine 14, Farm 19, Hunter 21, Div 25).
 const DUNG_RES_SCALE = [1, 10, 20, 30, 40, 50, 60, 70, 80, 90];
 const DUNG_RES_DIV   = [1, 10, 20, 30, 40, 50, 60, 70, 80, 85];
-// A completable resource within this many levels of the party's best is "guaranteed"
-// critical regardless of tier (at level 120, anything requiring >105
-// is guaranteed critical -> a 15-level margin). Tunable.
+// A completable resource within this many levels of the party's best is critical regardless of tier.
 const DUNG_CRIT_MARGIN = 15;
-// Doors use a TIGHTER near-the-party window than resources ("this
-// filter is 10 levels" on a level-77 door at party best 92 shown as near-critical).
 const DUNG_DOOR_CRIT_MARGIN = 10;
-// Gathering skills that can go PAST 99 (all of them, in modern RS3). The T8 rule is
-// UNIVERSAL for these ("it's universal for the skills that go past 99"
-// -- confirmed live on both a level-102 WC party (T8 tree) AND a level-102 Mining party
-// (T8 rock)): for a party still below 110 in the skill, tier 8 is also on the critical
-// path. Only applies where T8 is actually completable (its level <= the party best;
-// otherwise it's a bonus tier).
+// Skills that go past 99: for a party below 110, tier 8 is also on the critical path when completable.
 const DUNG_CAP110_SKILLS = { Woodcutting: 1, Mining: 1, Fishing: 1, Farming: 1, Hunter: 1 };
-// 10 name sequence).
 const DUNG_RES_FAMS = [
   ['Woodcutting', 8,  2, [49705, 49725, 49745, 53751, 55494, 82267]],
   ['Mining',      14, 2, [49766, 49786, 49806, 53771, 55514, 82247]],
@@ -394,24 +234,17 @@ function dungResource(id) {
     }
   return null;
 }
-// Local player's BASE level in RS3 skill `idx` (skills[idx] = [real, boosted, xp]), or
-// null. FUTURE: the party's HIGHEST in that skill would be more correct, but other
-// players' skill levels aren't in this client's memory -- only the local player's.
+// Local player's base level in RS3 skill idx (skills[idx] = [real, boosted, xp]), or null.
 function dungSkillLevel(idx) {
   try { const s = lastSnap && lastSnap.skills && lastSnap.skills[idx]; return (s && s[0] > 0) ? s[0] : null; } catch (e) { return null; }
 }
-// Is this roster entry the local player? Compare on alphanumerics only, lowercased -- immune to
-// the space-vs-NBSP difference between the account name (JX_DISPLAY_NAME, regular
-// space) and the party interface name (NBSP), and to any stray encoding byte.
+// Compare on alphanumerics only: the party interface name uses NBSP where JX_DISPLAY_NAME has a space.
 function dungIsSelf(n) {
   if (!dungSelfName) return false;
   const strip = s => (s || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
   return strip(n) === strip(dungSelfName);
 }
-// PARTY's best level in RS3 skill idx: own live level, raised by any current
-// roster member's hiscore level (any party member can cut the node / open the
-// door, and the generator scales content to the party). Self's hiscore entry is
-// skipped -- the live skill read is authoritative here.
+// Party's best level in RS3 skill idx: own live level, raised by any roster member's hiscore level.
 function dungPartyBest(idx) {
   let best = dungSkillLevel(idx), by = null;
   for (const n in dungPartyStats) {
@@ -421,8 +254,7 @@ function dungPartyBest(idx) {
   }
   return { best: best, by: by };
 }
-// Highest resource TIER (1-10) the party can actually COMPLETE in a skill: the top
-// tier whose required level is <= the party's best level. null when no level is known.
+// Highest resource tier (1-10) the party can complete in a skill; null when no level is known.
 function dungMaxTier(skillIdx, skillName) {
   const b = dungPartyBest(skillIdx);
   if (b.best == null) return { maxTier: null, best: b.best, by: b.by };
@@ -431,36 +263,21 @@ function dungMaxTier(skillIdx, skillName) {
   for (let t = 0; t < scale.length; t++) if (scale[t] <= b.best) mt = t + 1;
   return { maxTier: mt, best: b.best, by: b.by };
 }
-// A resource's band RELATIVE to the party's ceiling:
-//   'bonus'    = a tier ABOVE the party's level (uncompletable -> likely a bonus room),
-//   'critical' = a completable tier that is either in the top 2 the party can do, OR
-//                within DUNG_CRIT_MARGIN levels of the party's best (guaranteed band,
-//                which widens the band for high-level parties -- at 120, >=105 is
-//                critical), OR tier 8 for a sub-110 party on a 110-cap gathering skill
-//                (a level-102 WC party's critical path includes a T8 tree),
-//   'filler'   = completable but below all of those -> off the critical path.
+// Resource band: 'bonus' = above the party's level, 'critical' = top 2 completable tiers, within
+// DUNG_CRIT_MARGIN of the party's best, or T8 for a sub-110 party on a 110-cap skill; 'filler' otherwise.
 function dungResBand(res, maxTier, best) {
   if (best == null || maxTier == null) return null;
-  if (res.level > best) return 'bonus';                              // can't complete it
-  const topBand = res.tier >= maxTier - 1;                           // top 2 completable tiers
-  const guaranteed = res.level >= best - DUNG_CRIT_MARGIN;           // within the guaranteed margin
-  const t8 = !!DUNG_CAP110_SKILLS[res.skill] && best < 110 && res.tier === 8;   // sub-110 gathering
+  if (res.level > best) return 'bonus';
+  const topBand = res.tier >= maxTier - 1;
+  const guaranteed = res.level >= best - DUNG_CRIT_MARGIN;
+  const t8 = !!DUNG_CAP110_SKILLS[res.skill] && best < 110 && res.tier === 8;
   return (topBand || guaranteed || t8) ? 'critical' : 'filler';
 }
-// Criticality is COMPOSED, not single-factor : a top-band resource
-// marks the PATH only when the room can actually carry it -- a dead-end room with just
-// the resource (one door, no ground key, no locked door, no gatestone) is a detour
-// worth doing, never the route. Its green T-badge stays; the pink path ring does not.
-// Unknown door layout counts as pathworthy (don't suppress on missing data).
+// A top-band resource marks the path only when the room has >= 2 effective doors, a ground key, a locked door or a gatestone.
 function dungResPathworthy(c, kk, roomsMap) {
   if ((c.groundKeys && c.groundKeys.length) || c.key || c.gate) return true;
-  // Same trap as evOf and the prune: a room known but not yet walked into carries
-  // doors = 0, which is missing data, not a one-door dead end.
-  if (c.unex || !c.doors) return true;      // unknown layout: don't suppress on missing data
-  // EFFECTIVE door count : a door into a room marked
-  // NON-critical is an eliminated branch and doesn't count -- a T9 whose only other
-  // exit leads to an eliminated room is effectively a dead end. Doors into unknown
-  // space still count (they could lead onward).
+  if (c.unex || !c.doors) return true;      // doors = 0 is missing data, not a one-door dead end
+  // doors into rooms marked non-critical don't count; doors into unknown space do
   let n = 0;
   if (kk && roomsMap) {
     const p = kk.split(',').map(Number);
@@ -473,29 +290,17 @@ function dungResPathworthy(c, kk, roomsMap) {
   }
   return n >= 2;
 }
-// Party-best level in the skill a captured door requirement names (dungDoorLevels
-// entry); doors say 'Constitution' where SKILL_NAMES says 'Hitpoints'.
+// Party-best level in a captured door's skill; doors say 'Constitution' where SKILL_NAMES says 'Hitpoints'.
 function dungDoorMine(dl) {
   if (!dl) return null;
   const dn = dl.skill === 'Constitution' ? 'Hitpoints' : dl.skill;
   const si = SKILL_NAMES.findIndex(n => n.toLowerCase() === dn.toLowerCase());
   return si >= 0 ? dungPartyBest(si).best : null;
 }
-// A captured door requirement judged against the PARTY's best level in that skill.
-// ONE definition, because this is read by both the planner and the render:
-//   'critical' = at, or within DUNG_DOOR_CRIT_MARGIN below, the party's ceiling -- a
-//                real gate the floor expects this party to open;
-//   'low'      = far below the party -> a trivial side path;
-//   'above'    = ABOVE the party's best -> also likely non-essential :
-//                the generator does not gate the critical path behind a door the party
-//                cannot open, the same reasoning that makes an uncompletable resource
-//                a bonus room. (It can still be forced at a failure chance, so it is
-//                faded rather than hidden.)
+// Door band vs the party's best: 'critical' (within DUNG_DOOR_CRIT_MARGIN of the ceiling), 'low', or 'above' (party can't open it).
 function dungDoorBand(dl) {
   if (!dl) return null;
-  // A requirement of 106+ is critical UNCONDITIONALLY, party levels known or not:
-  // bonus-room skill doors only generate in the 1..105 band, so a 106+ reading can
-  // only sit on the critical path.
+  // bonus-room skill doors only generate in the 1..105 band, so 106+ is critical unconditionally
   if (dl.level >= 106) return 'critical';
   const best = dungDoorMine(dl);
   if (best == null) return null;
@@ -503,93 +308,60 @@ function dungDoorBand(dl) {
   if (dl.level < best - DUNG_DOOR_CRIT_MARGIN) return 'low';
   return 'critical';
 }
-// Emotes puzzle: NPC 10966 performs an emote; pick the matching dialogue option
-// (Wave / Nod head / Shake head / Laugh / Cry). anim id -> option text, filled from
-// live observation -- until mapped, the box label shows the latched anim id so each
-// emote's id can be recorded. Progress = varc 1233: 67/134/201 = 1/2/3 done.
-// 861 laugh, 856 shake head, 863 wave. 855 nod / 860 cry complete
-// the classic emote anim table the verified three sit in.
-// 855/856/860/861/863 are ; the rest are the same classic emote anim run
-// (857 think, 858 bow, 859 angry, 862 cheer, 864 clap, 865 dance -- 858 showed live as
-// a bare "anim 858" label, ). A wrong option word only fails to
-// highlight the dialogue row; the "do: <emote>" label still beats a raw anim number.
+// Emotes puzzle: NPC 10966 performs an emote; anim id -> dialogue option text. Progress = varc 1233 (67/134/201).
 const DUNG_EMOTE_ANIM = { 855: 'nod', 856: 'shake head', 857: 'think', 858: 'bow',
                           859: 'angry', 860: 'cry', 861: 'laugh', 862: 'cheer',
                           863: 'wave', 864: 'clap', 865: 'dance' };
 let dungEmoteLast = -1;   // last non-idle anim the paired statue played (latched until the next)
-let dungEmoteWatch = '';  // "x,y" of the tracked statue -- a pad change drops the stale latch
+let dungEmoteWatch = '';  // "x,y" of the tracked statue; a pad change drops the stale latch
 let dungLodeKey = '', dungLodeTick = -1;   // rotating crystal: active tile + game tick it appeared
 let dungLodeWarnAt = -1, dungLodeCenterOn = false;   // predicted next-appearance tick already warned for; centre text active
 let dungLodeCenterAt = 0, dungLodeSeenAt = 0;   // when the prompt went up / when 49510 was last seen (watchdogs)
-let dungLodeMarkAt = 0;      // Date.now() of the last cycle mark (appearance/arrival) -- the ms countdown anchor
-let dungLodeWinMs = 0;       // measured click-window length (how long the mark persisted), ms
+let dungLodeMarkAt = 0;      // Date.now() of the last cycle mark (appearance/arrival), the ms countdown anchor
+let dungLodeWinMs = 0;       // measured click-window length, ms
 let dungLodeSuppress = false;   // sync phase (all four crystals up) -> no click prompt
-let dungLodeInRoom = false;     // the large crystal is in the PLAYER'S room -> countdown may show
+let dungLodeInRoom = false;     // the large crystal is in the player's room -> countdown may show
 let dungLodeCenter = null;   // {x,y} of the large crystal's tile (the arrival point)
 let dungLodeDbg = '';        // crystal-room pad-resolution readout for the map dbg line
-let dungMonoDone = {};       // "x,y" -> true: monoliths already charged to 100% (stop guiding those)
-let dungSelfPos = null;      // {x,y} live player tile (fetch + tick), for same-room gating
-let dungCurDoors = 0;        // door bitmask (N1 E2 S4 W8) of the player's current room, from the map fetch
-let dungRouteTarget = '';    // map cell 'gx,gy' clicked -- route from the player's room to it
+let dungMonoDone = {};       // "x,y" -> true: monoliths already charged to 100%
+let dungSelfPos = null;      // {x,y} live player tile (fetch + tick)
+let dungCurDoors = 0;        // door bitmask (N1 E2 S4 W8) of the player's current room
+let dungRouteTarget = '';    // map cell 'gx,gy' clicked; route from the player's room to it
 let dungBossWarnOn = false;  // boss 9919 icicle-attack warning currently on screen
-let dungPartyRoster = {};    // name -> 1, every player seen in this instance INCLUDING self;
-                             // p-indices come from the SORTED name list, so every party
-                             // member's client shows identical p-numbers (multibox-friendly)
-let dungSelfName = '';       // this client's own display name (tagged "you" in the list)
-let dungIcePlan = null;      // {sig, anchor:'lx,ly', stops:[{k:'lx,ly', press}...], idx} held slide tour (stable while executing);
-                            // sig = room + sorted UNPRESSED-pad set, so a pressed pad (id change) re-solves
+let dungPartyRoster = {};    // name -> 1, every player seen in this instance including self; p-indices come from the sorted name list
+let dungSelfName = '';       // this client's own display name
+let dungIcePlan = null;      // {sig, anchor:'lx,ly', stops:[{k:'lx,ly', press}...], idx} held slide tour; sig = room + sorted unpressed-pad set
 let dungIceSettle = null;    // {key:'lx,ly', n} consecutive reconciles on the same tile (settle detector)
-let dungIceDump = null;      // ice room model + plan, copyable JSON (map tab) -- live verification beats re-reasoning
-let dungMazeDump = null;     // poison-maze model + route, same paste-back loop (bad routes get fixed against data)
+let dungIceDump = null;      // ice room model + plan, copyable JSON (map tab)
+let dungMazeDump = null;     // poison-maze model + route, copyable JSON
 let dungBarrelDump = null;   // barrel room: live pad-relative geometry + the rotation fit's per-turn scores
 let dungColFerret = null;    // latched colour in the coloured-ferret room: one target at a time
-// Plate marks MUST carry an rgb. The reader hides plain (rgb 0) destination tiles
-// whenever a labelled NPC box stands at the objective -- the "clue NPC found" rule -- and
-// this room always boxes the ferret, so a colourless plate mark was silently dropped
-// ("only showing ferret, not the red plate"). A COLOURED mark counts as
-// an annotation and survives. Matching the plate box to the ferret's own colour also
-// makes the pairing readable at a glance.
+// Plate marks must carry an rgb: the reader hides rgb-0 destination tiles when a labelled NPC box stands at the objective.
 const DUNG_FERRET_RGB = { Red: 0xff4444, Blue: 0x4488ff, Green: 0x33cc66,
                           Yellow: 0xffdd33, Orange: 0xff8822 };
 let dungFerretPlan = null;   // {anchor:'x,y', stops:['x,y'...], idx} held fish route (stable while the ferret walks)
 let dungFerretSettle = null; // {key:'x,y', n} ferret settle detector
-// Shared overlay channels are published ONLY WHEN THE VALUE CHANGES. Re-publishing the
-// same boxes every tick, or clearing and redrawing them within one tick, let the
-// overlay's frame pump catch the gap and the labels flashed.
+// Shared overlay channels are published only when the value changes (re-publishing per tick flashes the labels).
 let dungHerbHlLast = '';     // last uiHighlight rect this panel published ('' = none)
-// WHICH feature published it. uiHighlight is ONE shared rect, so a caller passing its own
-// tag only clears a box IT drew; no tag = force-clear. Without the tag, one feature's
-// per-tick clear wipes another's box and the clear+redraw reads as a flash.
-let dungHerbHlOwner = '';
+let dungHerbHlOwner = '';    // feature that published it; a tagged clear only wipes its own box, no tag = force-clear
 function dungHerbClear(owner) {
-  if (!dungHerbHlLast) return;   // never wipe a box another feature put there
-  if (owner && dungHerbHlOwner && dungHerbHlOwner !== owner) return;   // not ours
+  if (!dungHerbHlLast) return;
+  if (owner && dungHerbHlOwner && dungHerbHlOwner !== owner) return;
   dungHerbHlLast = ''; dungHerbHlOwner = '';
   try { rtxData.sync('overlay.uiHighlight', 0, 0, 0, 0); } catch (e) {}
 }
-// Hoardstalker riddle, latched: the answer must survive the riddle dialogue CLOSING
-// while you walk to the container, so it cannot be read fresh each tick.
+// Hoardstalker riddle, latched (the dialogue closes while walking to the container).
 let dungHoardRiddle = null;  // {k, item, opt|gid, loc} or null
 let dungGroundCache = [];    // last groundItems() result: hoardstalker piles live there
-// Strange-plant room: a colour change REPLACES the loc, and the capture keeps the old
-// state beside the new one at the same tile, so liveness is decided by PER-TILE recency
-// (the id that appeared at a tile most recently is the live state -- see the room block).
+// Strange-plant room: a colour change replaces the loc and the capture keeps both, so liveness is per-tile recency.
 let dungPlantSeen = {};      // 'x,y|loc id' -> tick first seen in this room
-// Seeker room: per-npc patrol/turn memory. Spawns: learned turn TILES (every bend in
-// the walk direction -- legs are 4 ticks and can corner mid-room), measured speed, and
-// the walk heading, for position-based countdowns. Sentinel: turn-phase anchor (moves
-// only EARLIER; observations can only lag) + the learned rotation step.
+// Seeker room: per-npc patrol/turn memory (spawns: turn tiles, speed, heading; sentinel: turn-phase anchor + rotation step).
 let dungSeekerMem = {};      // npc uid -> {face, at, x, y, hd, mt, spd, turns, step, pend}
-// Crystal room: a crystal is INVISIBLE while it sits under its pressure plate, so the
-// scene drops it for a chunk of every cycle. Remember each colour's last position so
-// the readout stays continuous instead of blanking.
+// Crystal room: a crystal is invisible while under its pressure plate, so remember each colour's last position.
 let dungCrysMem = {};        // colour name -> {d, dx, dy, c, t}
-// Poltergeist: the herb is named in the sarcophagus INSCRIPTION, and that dialogue
-// closes while you walk to the patch, so latch it.
+// Poltergeist: herb named in the sarcophagus inscription, latched (the dialogue closes while walking).
 let dungPoltHerb = null;
-// Dialogue TEXT sits at a DIFFERENT comp per group: 1186's inscription is comp 3
-// ('s live tree, 1184's npc line is comp 10. Guessing one comp per
-// group silently reads nothing, so scan a small range and join what comes back.
+// Dialogue text comp differs per group (1186 inscription = comp 3, 1184 npc line = comp 10), so scan a range.
 const DUNG_DLG_GROUPS = [1186, 1184, 1191];   // server-message / npc / player
 const DUNG_DLG_COMPS = Array.from({ length: 24 }, (_, i) => i).join(',');
 function dungDlgText() {
@@ -604,13 +376,10 @@ function dungDlgText() {
   return '';
 }
 let dungInvHlLast = '';      // last panelViz payload this panel published ('' = none)
-// `owner` names the feature doing the clearing. panelViz is a SHARED single channel, and a
-// clear-then-redraw inside one tick is what the frame pump catches as a FLICKER, so a
-// tagged clear only wipes what that same feature published.
-let dungInvHlOwner = '';
+let dungInvHlOwner = '';     // same owner rule as dungHerbHlOwner
 function dungInvClear(owner) {
-  if (owner && dungInvHlOwner && dungInvHlOwner !== owner) return;   // not ours to wipe
-  if (!dungInvHlLast) return;  // same shared-channel rule as dungHerbClear
+  if (owner && dungInvHlOwner && dungInvHlOwner !== owner) return;
+  if (!dungInvHlLast) return;
   dungInvHlLast = ''; dungInvHlOwner = '';
   try { rtxData.sync('overlay.panelViz', ''); } catch (e) {}
 }
@@ -623,16 +392,12 @@ function dungInvCount(itemId) {
     return n;
   } catch (e) { return 0; }
 }
-// Box EVERY backpack slot holding `itemId` (panelViz takes '|'-separated boxes, unlike
-// overlay.highlightItem which stops at the first match) and label each with the action.
+// Box every backpack slot holding itemId (panelViz takes '|'-separated boxes); only the first gets the label.
 function dungHighlightInvItem(itemId, label, owner) {
   try {
     if (!itemId) { dungInvClear(owner); return 0; }
     const inv = JSON.parse(rtxData.sync('state.inventory') || '{}');
     const segs = [];
-    // Box every matching slot but LABEL ONLY THE FIRST: four stacked labels on adjacent
-    // backpack slots just overlapped into an unreadable smear. The
-    // boxes alone show which items are meant; one label says what to do with them.
     let held = 0;
     for (const it of (inv.items || [])) {
       if (it[1] !== itemId) continue;
@@ -643,25 +408,20 @@ function dungHighlightInvItem(itemId, label, owner) {
     if (segs.length) {
       const payload = segs.join('|');
       dungInvHlOwner = owner || '';
-      // PUBLISH EVERY TICK, do not dedupe: re-sending an identical payload is visually a no-op,
-      // whereas not sending lets the highlight lapse after a single tick.
+      // publish every tick: not sending lets the highlight lapse after one tick
       rtxData.sync('overlay.panelViz', payload);
       dungInvHlLast = payload;
       return segs.length;
     }
-    // HELD BUT UNMEASURABLE is not the same as GONE. invSlotRect can transiently return
-    // w=0 while the backpack is mid-redraw, and clearing on that made the box flicker --
-    // and a screenshot landing on a failed frame showed no highlight at all, which read
-    // as "the highlight is broken". Keep the last good boxes and try
-    // again next tick; only clear when the item has actually left the backpack.
+    // invSlotRect can transiently return w=0 mid-redraw: keep the last boxes, only clear when the item is gone
     if (held) return 0;
     dungInvClear(owner);
   } catch (e) {}
   return 0;
 }
-let dungWasIn = false;       // in-dungeon latch: clear the shared overlay channels ONCE on exit
+let dungWasIn = false;       // in-dungeon latch: clear the shared overlay channels once on exit
 function dungClearOverlays() {
-  if (!dungWasIn) return;    // never spam empty pushes outside -- they'd stomp quests/alerts
+  if (!dungWasIn) return;    // empty pushes outside would stomp quests/alerts
   dungWasIn = false;
   dungHighlightList([]); dungGuideTiles([]); dungHerbClear(); dungInvClear();
   dungLodeKey = ''; dungLodeTick = -1; dungLodeWarnAt = -1; dungLodeCenter = null;
@@ -670,16 +430,8 @@ function dungClearOverlays() {
   if (dungLodeCenterOn) { dungLodeCenterOn = false; try { bridge().centerText(myPid(), ''); } catch (e) {} }
 }
 
-// In-scene NPC highlight (box + floating label above the head) via the SAME mechanism
-// every quest guide uses -- overlay.highlightNpc with "#<id>" to match by NPC id + a
-// label. The reader follows the id each frame, so it tracks a moving NPC automatically;
-// the ids here are unique so no tile hint is needed. Empty -> clear the highlight.
-// dungHighlightList: several boxes at once via bridge().overlayHighlight directly (the
-// plugin-facing overlay.highlight sanitiser strips the '#' and '|' the needles need).
-// One box per needle -- "#<id>|label" or "name|label"; ',' is the csv separator.
-// Pushed EVERY reconcile, never latched: the channel is shared (panel_alerts syncs it,
-// clearing it once on load), so like the quest guides these are re-asserted each tick --
-// a latch left the box wiped until the needle set happened to change.
+// In-scene NPC boxes via bridge().overlayHighlight (the overlay.highlight sanitiser strips '#' and '|').
+// One box per needle: "#<id>|label" or "name|label", ',' separated. Re-asserted every reconcile (shared channel).
 function dungHighlightList(needles) {
   try { bridge().overlayHighlight(myPid(), (needles || []).map(s => String(s).replace(/,/g, ' ')).join(',')); } catch (e) {}
 }
@@ -687,15 +439,8 @@ function dungHighlightNpc(id, label) {
   dungHighlightList(id ? ['#' + id + (label ? '|' + label : '')] : []);
 }
 
-// Suspicious grooves puzzle: loc 67103 is the groove to search. Locs aren't NPCs, so it
-// goes through the quest GUIDE-TILE channel (overlay.guideTiles boxes the named loc at
-// the tile, same as qgObject). Same no-flicker latch as the NPC channel.
-// Same channel as the quest guideTiles command, but via bridge().guideMarks directly
-// so marks can carry the optional rgb tail: the reader HIDES plain (rgb 0) destination
-// tiles whenever a labelled NPC box stands at the objective ("clue NPC found" rule),
-// and the statue's boxed pushable is right next to its target tile -- a COLOURED mark
-// is treated as an annotation and stays visible. Fields: x\x1f y\x1f plane\x1f label
-// [\x1f snap \x1f rgb].
+// Guide-tile marks via overlay.guideMarks. Fields: x\x1f y\x1f plane\x1f label [\x1f snap \x1f rgb].
+// The reader hides rgb-0 destination tiles when a labelled NPC box stands at the objective; coloured marks stay.
 function dungGuideTiles(marks) {
   try {
     const recs = (marks || []).map(m =>
@@ -706,74 +451,39 @@ function dungGuideTiles(marks) {
   } catch (e) {}
 }
 
-// From a scene read: refresh the start-room anchor and set the in-scene highlights --
-// the ghost to KILL (10989), else the sliding-block move (NPC channel), plus the
-// suspicious-grooves loc 67103 (guide-tile channel, independent of the NPC one).
-// Puzzle: cluster the blocks into a 3x3, find the empty cell, and prefer the tile whose
-// TARGET is the empty cell (clicking it slides it HOME); else a movable+misplaced tile.
+// Scene read: refresh the start-room anchor and set the in-scene highlights for the room's puzzle.
 function dungReconcileScene(npcs, objs) {
   npcs = npcs || [];
-  if (!dungWasIn) {   // first reconcile since load/exit: sweep a stale centre text left
-    try { bridge().centerText(myPid(), ''); } catch (e) {}   // by a previous UI session
+  if (!dungWasIn) {   // first reconcile since load/exit: sweep a stale centre text
+    try { bridge().centerText(myPid(), ''); } catch (e) {}
   }
-  dungWasIn = true;   // reconcile only runs in a dungeon; arms the one-shot exit clear
-  // Same-room gate: scene range is 100 tiles, so puzzle NPCs from NEIGHBOURING rooms
-  // are in the list too -- without this, a higher-priority puzzle one room over
-  // hijacks the chain (case: a Monolith next door starved the pondskater box).
-  // Anchored on the smuggler's room grid; a fixed mod-16 lattice phase looked right
-  // on three floors but MISPLACED the player on a fourth, so it is NOT trusted.
-  // FAILS CLOSED: no anchor -> nothing guided (a cross-room box is worse).
+  dungWasIn = true;
+  // Same-room gate: scene range is 100 tiles, so neighbouring rooms' puzzle NPCs are listed too. Fails closed without an anchor.
   const here = e => {
     if (!dungFloorSW || !dungSelfPos || typeof e.x !== 'number') return false;
     const a = dungRoomOf(dungFloorSW, e.x, e.y), b = dungRoomOf(dungFloorSW, dungSelfPos.x, dungSelfPos.y);
     return a.rx === b.rx && a.ry === b.ry;
   };
-  // Clear the shared overlay channels only when not in the poltergeist room: clearing
-  // unconditionally and letting the branch redraw below makes the boxes blink every tick.
-  // MUST sit AFTER `here` is declared -- it calls it, and `const` gives no hoisting.
+  // Clear the shared overlay channels only outside the poltergeist room (unconditional clear + redraw blinks).
   {
     const poltHere = npcs.some(n => n.id === 11245 && typeof n.x === 'number' && here(n))
       || (objs || []).some(o => typeof o.x === 'number' && here(o) &&
            ((o.id >= 54074 && o.id <= 54081) || (o.id >= 54094 && o.id <= 54101)));
-    if (!poltHere) { dungHerbClear('herb'); dungInvClear('polt'); dungPoltHerb = null; }   // drop a stale herb
+    if (!poltHere) { dungHerbClear('herb'); dungInvClear('polt'); dungPoltHerb = null; }
   }
   const marks = [];   // guide-tile channel: grooves/switches locs + statue target tile
-  // Suspicious grooves: stepping a WRONG tile leaves a 67097 marker loc on that spot
-  // ( -- same pattern as the pulled-switch 49384).
+  // Suspicious grooves: safe tiles vary per floor and no id rule holds, so only observed 67099 (confirmed safe) is marked.
+  // Wrong steps leave a 67097 marker loc.
   {
-    // NO PREDICTION. The "highest loc id in the row is safe" rule is FALSIFIED
-    //: on this floor the bottom row's safe tile was 67120 while
-    // 67121 -- the higher id, and an entry in a confirmed-safe table from an
-    // EARLIER floor -- sat right beside it. So the safe tile varies per floor and no
-    // id-derived rule (or static id table) can be trusted; guessing here costs real
-    // damage. Only OBSERVED facts are drawn now, and only the few that matter:
-    //   67099  = a confirmed-safe marker -> green, and nothing else
-    // Untried grooves are deliberately NOT marked one by one: a box on every tile was
-    // unreadable ("too busy and hard to tell what's going on"), and an "untried"
-    // box carries no information the tile art doesn't already give. Wrong steps (67097)
-    // replace the groove loc in-world anyway, so they need no box either.
     const marked = {};
-    // 67099 "Grooves" = CONFIRMED safe tiles: plain green marks
     for (const o of (objs || []))
       if (o.id === 67099 && typeof o.x === 'number' && here(o) && !marked[o.x + ',' + o.y] && marks.length < 16) {
         marked[o.x + ',' + o.y] = true;
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: 'Safe', rgb: 0x5fd07a });
       }
   }
-  // Poison maze: concentric SQUARE rings; the WALLS are on the EDGE between adjacent
-  // rings (not on whole tiles). So every tile is walkable, but CROSSING a ring
-  // boundary requires a Barrier on the OUTER (higher) ring at that spot. Room-local
-  // 14x14, centre 6.5,6.5: band 0 = the 4x4 centre (Chebyshev radius <= 1.5), bands
-  // 1..5 = the rings at radius 2.5/3.5/4.5/5.5/6.5. Pedestals + Switches (49351) block
-  // tiles. BFS player -> Locked chest (49345); the barriers crossed get numbered AABB
-  // marks. Validated on the live maze: the 5-barrier route, one barrier per ring.
-  // Poison-maze tile blockers. Pedestals are SEVEN cache families, fully enumerated
-  // (js5-16 audit, was two): Mine-actioned 49360-49374 + 54412-54416,
-  // actionless 50957-50967, 51503-51513, 52051-52061, 54976-54988, 55877-55887 (the
-  // actionless ranges have unused ids inside them -- harmless). Both kinds turn up in
-  // one room (capture: 49371-73 next to 51511). 54110-54117 are the pedestal
-  // ROOM's 2x2 pedestals, a different puzzle -- deliberately NOT listed. The name and
-  // Mine-action fallbacks stay so an unknown future theme still blocks.
+  // Poison maze tile blockers: pedestal families (js5-16), Mine-actioned 49360-49374 + 54412-54416, the rest actionless.
+  // 54110-54117 are the pedestal room's 2x2 pedestals, a different puzzle, not listed.
   const DUNG_MAZE_PEDESTAL = {};
   for (const pr of [[49360, 49374], [50957, 50967], [51503, 51513], [52051, 52061],
                     [54412, 54416], [54976, 54988], [55877, 55887]])
@@ -782,38 +492,20 @@ function dungReconcileScene(npcs, objs) {
     DUNG_MAZE_PEDESTAL[o.id]
     || o.name === 'Pedestal' || o.name === 'Switch'
     || (o.actions || []).some(a => a === 'Mine');
-  // Chest families run in THREE THEME VARIANTS with matching indices (js5-16 scan):
-  // locked 49345/49346/49347 -> open 49348/49349/49350. Matching by id alone covers only
-  // 49345; the other themes rely on the name fallback, which a rename would break.
-  // Daemonheim "Locked chest" (Open) runs to THIRTEEN ids, not three -- 49886-49895 are
-  // the same signature and were only ever matched by the o.name fallback (js5-16 audit
-  //. "Open chest" (Search) has 49348-49350 plus 49896/49897/49908/49909
-  // (no action) as further solved states.
+  // "Locked chest" (Open) and "Open chest" (Search) loc ids across themes (js5-16); name fallbacks cover unknown themes.
   const DUNG_CHEST_LOCKED = { 49345:1, 49346:1, 49347:1, 49886:1, 49887:1, 49888:1,
                               49889:1, 49890:1, 49891:1, 49892:1, 49893:1, 49894:1, 49895:1 };
   const DUNG_CHEST_OPEN   = { 49348:1, 49349:1, 49350:1,
                               49896:1, 49897:1, 49908:1, 49909:1 };
   const mazeChest = (objs || []).find(o => (DUNG_CHEST_LOCKED[o.id] || o.name === 'Locked chest')
                                            && typeof o.x === 'number' && here(o));
-  // SOLVED: the opened chest appears as "Open chest" (Search) AT THE SAME TILE, with the
-  // locked id still listed beside it -- the usual per-tile coexistence. Its presence
-  // ends the puzzle, so stop guiding rather than keep routing the
-  // player to a chest they have already opened.
+  // the opened chest coexists with the locked id on the same tile; its presence ends the puzzle
   const mazeDone = (objs || []).some(o => (DUNG_CHEST_OPEN[o.id] || o.name === 'Open chest')
                                           && typeof o.x === 'number' && here(o));
   const mbars = (objs || []).filter(o => o.name === 'Barrier' && typeof o.x === 'number' && here(o));
-  const isMazeRoom = mazeChest && !mazeDone && mbars.length >= 5;   // Barriers present -> it's the MAZE (a Locked chest also sits in the EMOTE room; varc 1233 is progress there, not a timer)
+  const isMazeRoom = mazeChest && !mazeDone && mbars.length >= 5;   // a Locked chest also sits in the emote room; barriers disambiguate
   if (isMazeRoom && dungFloorSW && dungSelfPos) {
-    // NEVER gate the solution on the timer var. varc 1233 reads 0 while the maze is plainly
-    // running (in-game Time Remaining bar still ticking) -- it is shared with the
-    // monolith/emote progress, so it simply isn't a reliable "started" flag. The route is
-    // valid before the pull as well as during, so it is always drawn; the start Switch is
-    // just an extra mark while it is still there, and the countdown shows only when the var
-    // carries a real value. Start switch = FOUR theme variants (js5-16 scan):
-    // 49351/49352/49353 (block form, alongside chests 49345-50 / fountains 49354-56) + 54409
-    // (the 54xxx theme, beside chest 54407). Name fallback (already inside
-    // isMazeRoom, whose only Switch is the start switch) future-proofs an un-enumerated
-    // theme, matching the chest/pedestal style.
+    // Never gate on varc 1233 (reads 0 while running; shared with monolith/emote progress). Start switch ids per theme (js5-16).
     const DUNG_MAZE_SWITCH = { 49351: 1, 49352: 1, 49353: 1, 54409: 1 };
     const sw = (objs || []).find(o => (DUNG_MAZE_SWITCH[o.id] || o.name === 'Switch') && typeof o.x === 'number' && here(o));
     if (sw) marks.push({ x: sw.x, y: sw.y, plane: 0, label: 'Pull to start the maze', rgb: 0xf0c419, snap: 1 });
@@ -827,16 +519,8 @@ function dungReconcileScene(npcs, objs) {
       const swx = dungFloorSW.x + DUNG_ROOM_PITCH * pr.rx, swy = dungFloorSW.y + DUNG_ROOM_PITCH * pr.ry;
       const barSet = {}, blk = {};
       for (const b of mbars) barSet[(b.x - swx) + ',' + (b.y - swy)] = 1;
-      // In-room test by COORDINATE, not here(): here() re-derives the room through
-      // dungRoomOf and disagrees at the edges, which let pedestals sitting on a ring
-      // wall fall out of the blocked set -- and the route then walked through one
-      //. Anything inside the 14x14 local frame counts, full stop.
-      //
-      // A pedestal with a MINE action is not a wall, it is a TOLL: mining it opens the
-      // tile, and doing so is often much quicker than walking the long way round
-      //. Measured: ~4s to mine, ~3.3 tiles/s running, so breaking
-      // through is worth roughly DUNG_MAZE_MINE_TILES tiles of detour. Pedestals with
-      // no Mine action (the 51503-51513 family) stay hard walls.
+      // In-room test by local coordinate (here() disagrees at the edges). Mine-actioned pedestals are a toll
+      // of DUNG_MAZE_MINE_TILES, not a wall.
       const mineable = {};
       for (const o of (objs || [])) {
         if (typeof o.x !== 'number' || !dungMazeBlocks(o)) continue;
@@ -845,13 +529,8 @@ function dungReconcileScene(npcs, objs) {
         if ((o.actions || []).some(a => a === 'Mine')) mineable[lx + ',' + ly] = 1;
         else blk[lx + ',' + ly] = 1;
       }
-      // GROUND-TRUTH walls (js5-5 room bank, region 2_66..2_75; every template cell and
-      // both themes share ONE interior). Template = 16x16 with a 1-tile shared border, so
-      // live local = rot(template) - (1,1); a live dump validated the mapping 100% (chest,
-      // switch, entry door and all 16 ring barriers matched at rotation 1). The previous
-      // concentric-band abstraction routed through geometry the real room does not have.
-      // Wall entries are [x, y, type, rot]: type 0 = one edge, 2 = corner (rot and rot+1);
-      // edge dirs 0=W 1=N 2=E 3=S; rotation r maps (x,y)->(y,15-x) and d->(d+1)&3.
+      // Walls from the js5-5 room template (region 2_66..2_75; 16x16 with a 1-tile border, live local = rot(template) - (1,1)).
+      // Entries are [x, y, type, rot]: type 0 = one edge, 2 = corner (rot and rot+1); dirs 0=W 1=N 2=E 3=S; rotation r maps (x,y)->(y,15-x).
       const TPL_WALLS = [[0,1,0,2],[0,2,0,2],[0,3,0,2],[0,4,0,2],[0,5,0,2],[0,6,0,2],[0,7,0,2],[0,8,0,2],[0,9,0,2],[0,10,0,2],[0,11,0,2],[0,12,0,2],[0,13,0,2],[0,14,0,2],[1,0,0,1],[1,2,0,2],[1,3,0,2],[1,5,0,2],[1,6,0,2],[1,7,0,2],[1,8,0,2],[1,9,0,2],[1,10,0,2],[1,11,0,2],[1,13,0,2],[1,15,0,3],[2,0,0,1],[2,1,0,1],[2,3,0,2],[2,4,0,2],[2,5,0,2],[2,6,0,2],[2,7,0,2],[2,9,0,2],[2,10,0,2],[2,11,0,2],[2,12,0,2],[2,14,0,3],[2,15,0,3],[3,0,0,1],[3,1,0,1],[3,2,0,1],[3,4,0,2],[3,5,0,2],[3,6,0,2],[3,7,0,2],[3,8,0,2],[3,9,0,2],[3,10,0,2],[3,11,0,2],[3,13,0,3],[3,14,0,3],[3,15,0,3],[4,0,0,1],[4,2,0,1],[4,3,0,1],[4,5,0,2],[4,7,0,2],[4,8,0,2],[4,9,0,2],[4,10,0,2],[4,12,0,3],[4,13,0,3],[4,14,0,3],[4,15,0,3],[5,0,0,1],[5,1,0,1],[5,2,0,1],[5,4,0,1],[5,6,0,2],[5,7,0,2],[5,8,0,2],[5,9,0,2],[5,11,0,3],[5,12,0,3],[5,13,0,3],[5,14,0,3],[5,15,0,3],[6,0,0,1],[6,1,0,1],[6,2,0,1],[6,3,0,1],[6,4,0,1],[6,5,0,1],[6,10,0,3],[6,11,0,3],[6,13,0,3],[6,14,0,3],[6,15,0,3],[7,0,0,1],[7,1,0,1],[7,2,0,1],[7,3,0,1],[7,4,0,1],[7,5,0,1],[7,11,0,3],[7,12,0,3],[7,13,0,3],[7,14,0,3],[7,15,0,3],[8,0,0,1],[8,2,0,1],[8,3,0,1],[8,4,0,1],[8,10,0,3],[8,11,0,3],[8,12,0,3],[8,13,0,3],[8,15,0,3],[9,0,0,1],[9,1,0,1],[9,2,0,1],[9,3,0,1],[9,4,0,1],[9,5,0,1],[9,10,0,3],[9,11,0,3],[9,12,0,3],[9,13,0,3],[9,14,0,3],[9,15,0,3],[10,0,0,1],[10,1,0,1],[10,3,0,1],[10,4,0,1],[10,6,0,0],[10,7,0,0],[10,8,0,0],[10,9,0,0],[10,11,0,3],[10,13,0,3],[10,14,0,3],[10,15,0,3],[11,0,0,1],[11,1,2,0],[11,2,0,1],[11,3,0,1],[11,5,0,0],[11,6,0,0],[11,7,0,0],[11,9,0,0],[11,10,0,0],[11,12,0,3],[11,13,0,3],[11,14,0,3],[11,15,0,3],[12,0,0,1],[12,1,0,1],[12,2,0,1],[12,4,0,0],[12,5,0,0],[12,6,0,0],[12,7,0,0],[12,8,0,0],[12,9,0,0],[12,10,0,0],[12,11,0,0],[12,13,0,3],[12,14,0,3],[12,15,0,3],[13,0,0,1],[13,1,0,1],[13,3,0,0],[13,4,0,0],[13,5,0,0],[13,6,0,0],[13,8,0,0],[13,9,0,0],[13,10,0,0],[13,11,0,0],[13,12,0,0],[13,14,0,3],[13,15,0,3],[14,0,0,1],[14,2,0,0],[14,4,0,0],[14,5,0,0],[14,6,0,0],[14,7,0,0],[14,8,0,0],[14,9,0,0],[14,11,0,0],[14,12,0,0],[14,13,0,0],[14,15,0,3],[15,1,0,0],[15,2,0,0],[15,3,0,0],[15,4,0,0],[15,5,0,0],[15,6,0,0],[15,7,0,0],[15,8,0,0],[15,9,0,0],[15,10,0,0],[15,11,0,0],[15,12,0,0],[15,13,0,0],[15,14,0,0]];
       const TPL_BLOCK = [[6,6],[6,9],[7,6],[9,6],[9,9]];   // centre pillars + rock (scenery on the outer walkway is outside the playfield)
       const TPL_BARS = [[1,4,2],[1,12,2],[2,8,2],[4,1,1],[4,6,2],[5,3,1],[6,12,3],[7,10,3],[8,5,1],[8,14,3],[10,2,1],[10,12,3],[11,8,0],[13,7,0],[14,3,0],[14,10,0]];
@@ -859,8 +538,7 @@ function dungReconcileScene(npcs, objs) {
       const rotP = (x, y, r) => { for (let i2 = 0; i2 < r; i2++) { const t2 = x; x = y; y = 15 - t2; } return [x, y]; };
       const toLive = (x, y, r) => { const p4 = rotP(x, y, r); return [p4[0] - 1, p4[1] - 1]; };
       const gx = chest.x - swx, gy = chest.y - swy, sx = dungSelfPos.x - swx, sy = dungSelfPos.y - swy;
-      // Rotation = the one that puts the template chest on the live chest and the ring
-      // barriers on live barrier tiles (>= 12 of 16: captures can miss a couple).
+      // rotation: template chest on the live chest and >= 12 of 16 ring barriers on live barrier tiles
       let mrot = -1;
       for (let r = 0; r < 4; r++) {
         const c2 = toLive(TPL_CHEST[0], TPL_CHEST[1], r);
@@ -882,9 +560,7 @@ function dungReconcileScene(npcs, objs) {
           passE[p4[0] + ',' + p4[1] + ',' + d0] = p4[0] + ',' + p4[1];
         }
       }
-      // A step is blocked when a wall edge sits on EITHER side of the boundary (edge d
-      // from the source tile, or the opposite edge d^... from the destination). Barrier
-      // and entry-door edges are the passable exceptions - they are the route's marks.
+      // a step is blocked when a wall edge sits on either side of the boundary; barrier and door edges are passable
       const OPP = { 0: 2, 1: 3, 2: 0, 3: 1 };   // W<->E, N<->S
       const DIRD = { '1,0': 2, '-1,0': 0, '0,1': 1, '0,-1': 3 };   // step vector -> edge dir from source (world axes: +y = N)
       const edgeAt = (x, y, d, nx, ny) => {
@@ -892,9 +568,7 @@ function dungReconcileScene(npcs, objs) {
         return { wall: wallE[k1] || wallE[k2], pass: passE[k1] || passE[k2] };
       };
       const open = (x, y) => x >= 0 && x <= 13 && y >= 0 && y <= 13 && !blk[x + ',' + y];
-      // Costed search (not plain BFS) so "mine through" and "run around" compete on
-      // TIME: one tile of running = 1, mining a pedestal = DUNG_MAZE_MINE_TILES more.
-      // 14x14 = 196 nodes, so scanning for the cheapest open node is plenty fast.
+      // costed search: one tile of running = 1, mining a pedestal = DUNG_MAZE_MINE_TILES more
       const mprev = {}, dist = {}, done = {};
       const startK = sx + ',' + sy, goalK = gx + ',' + gy;
       dist[startK] = 0; mprev[startK] = null;
@@ -915,8 +589,6 @@ function dungReconcileScene(npcs, objs) {
           if (dist[k] === undefined || nd < dist[k]) { dist[k] = nd; mprev[k] = bk; }
         }
       }
-      // Room dump for the paste-back loop: everything the router SAW plus the route it
-      // chose, so a nonsensical path gets diagnosed against data instead of screenshots.
       dungMazeDump = {
         origin: [swx, swy], self: [sx, sy], chest: [gx, gy], rot: mrot, timer: dungMazeTimer,
         barriers: Object.keys(barSet), mineable: Object.keys(mineable), blocked: Object.keys(blk),
@@ -929,12 +601,7 @@ function dungReconcileScene(npcs, objs) {
       if (mg) {
         const chain = [];
         for (let k = mg; k; k = mprev[k]) chain.unshift(k);
-        // Mark only what the walk actually USES: the outer barrier tile of each band
-        // crossing, plus mine tolls on the path. Marking every path tile that happened
-        // to hold a barrier numbered the START tile when the route never crossed there
-        // (user dump 2026-07-31: mark "1" at the player's feet, route walking away).
-        // Marks follow the ACTUAL crossings: each barrier/door edge the walk passes gets a
-        // number at the loc's own tile ('enter' for the outer door), mine tolls get MINE.
+        // each barrier/door edge the walk crosses gets a number at the loc's own tile; mine tolls get MINE
         let step = 1;
         const marked = {};
         const doorTile = (() => { const b = mbars.find(b2 => b2.id === 49344); return b ? (b.x - swx) + ',' + (b.y - swy) : ''; })();
@@ -961,58 +628,31 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // BARREL / BREWING ROOM. Repair a barrel, fill it at the spout, push it onto the pad.
-  //
-  //   1. take the Broken barrel bits (item 17422 -- the only item of that name)
-  //   2. Fix the broken barrel with them
-  //   3. push it under the EXPELLING pipe -- the flowing one; Dry pipes are inert
-  //   4. push the filled barrel onto the Pressure pad
-  //
-  // STATE IS READ FROM LIVE ACTIONS, with the id sets only as a fallback. An actionless
-  // Barrel (11074) is the finished article: filled and standing on its pad with nothing
-  // left to do, the same convention as the actionless Coffin meaning "blessed".
-  //
-  // WHAT THIS DOES NOT DO: route the barrel pushes. The pushable barrels spawn in a
-  // fixed layout with a fixed sequence to reach the bits, but that sequence has not been
-  // supplied yet -- and a wrong push in this room is unrecoverable, so it guides the
-  // TARGETS and leaves the pushing to the player rather than inventing a path.
-  // Likewise there is no fill-level readout yet, so stages 3 and 4 are offered together
-  // once the barrel is repaired.
+  // Barrel room: take the bits (item 17422), Fix the barrel, push it under the Expelling pipe, then onto the Pressure pad.
+  // State is read from live actions with id sets as fallback; an actionless Barrel (11074) is finished.
   {
     const inR = e => typeof e.x === 'number' && here(e);
     const B_PUSH = { 11072: 1, 11073: 1, 11686: 1 };
     const B_FIX  = { 11075: 1 };
     const B_DONE = { 11074: 1 };
-    // Dry pipes are listed only to be EXCLUDED -- pointing at one would fill nothing.
     const P_SPOUT = { 39969: 1, 49687: 1, 49689: 1, 49692: 1, 54288: 1 };
     const P_PAD   = { 52206: 1, 54282: 1, 35232: 1 };
     const BITS = 17422;
-    // THE PUSH SOLUTION, anchored on the PRESSURE PAD. The room ROTATES per instance but
-    // the barrels are FIXED relative to the pad, so everything is stored
-    // as (dx,dy) offsets from the pad and matched under rotation at runtime -- no absolute
-    // tiles, no bits anchor.
-    //   BARREL_OFFS = the 13 push-barrel start tiles (the corner barrels make the set
-    //                 rotationally unique, so the orientation fit has one answer).
-    //   BARREL_SOLN = the 5 one-tile pushes, ordered, as [fromOff, toOff].
+    // Push solution as (dx,dy) offsets from the pad, matched under rotation: BARREL_OFFS = the 13 start tiles,
+    // BARREL_SOLN = the 5 one-tile pushes as [fromOff, toOff].
     const BARREL_OFFS = [[3,-4],[3,-3],[3,-2],[4,-5],[4,-2],[4,-1],[5,-4],[5,-3],[5,-1],
                          [-2,-8],[-1,-8],[-2,3],[-1,3]];
     const BARREL_SOLN = [[[5,-3],[5,-4]],[[5,-1],[5,0]],[[4,-1],[3,-1]],[[-1,3],[-1,4]],[[-2,3],[-3,3]]];
-    // One quarter-turn: (x,y) -> (y,-x). Four of these cover every room orientation
-    // (Daemonheim rooms rotate, never mirror), so one handedness suffices.
+    // quarter-turn (x,y) -> (y,-x); rooms rotate, never mirror
     const rotOff = (p, r) => { let x = p[0], y = p[1]; for (let i = 0; i < r; i++) { const t = x; x = y; y = -t; } return [x, y]; };
-    // (no DIR_NAME any more -- push directions are not displayed; see the push step below)
     const isBarrel = n => n.name === 'Barrel';
     const act = (e, a) => (e.actions || []).some(x => x === a);
     const broken = npcs.find(n => inR(n) && (B_FIX[n.id] || (isBarrel(n) && act(n, 'Fix'))));
     const spout  = (objs || []).find(o => inR(o) && (P_SPOUT[o.id] || o.name === 'Expelling pipe'));
     const pad    = (objs || []).find(o => inR(o) && (P_PAD[o.id] || o.name === 'Pressure pad'));
     const doneB  = npcs.find(n => inR(n) && (B_DONE[n.id] || (isBarrel(n) && !(n.actions || []).length)));
-    // A pressure pad ALONE is not barrel-room evidence: the EMOTE room has pads too,
-    // and the shared progress varc 1233 reads 201 there, so the pad-only entry drew
-    // "Full -- push the barrel onto this" in the emote room. Enter
-    // only on something the barrel room alone has: a Barrel npc or the Expelling pipe.
+    // a pressure pad alone is not evidence (the emote room has pads too)
     if (broken || spout || (pad && npcs.some(n => inR(n) && isBarrel(n)))) {
-      // Finished: a barrel with nothing left to do is sitting on the pad.
       const settled = doneB && pad && doneB.x === pad.x && doneB.y === pad.y;
       if (settled) {
         dungGuideTiles(marks);
@@ -1020,10 +660,7 @@ function dungReconcileScene(npcs, objs) {
         return;
       }
       const bitsTile = (dungGroundCache || []).find(g => g && g.id === BITS && here(g));
-      // THE PATH-CLEAR PUSHES come first (they open the way to the bits). Recover the
-      // room's rotation by fitting the captured barrel layout to the LIVE push barrels,
-      // both as pad offsets; the rotation with the most on-tile matches wins (barrels
-      // pushed so far have moved only 1 tile, so the untouched majority still pins it).
+      // fit the captured barrel layout to the live push barrels (pad offsets); most on-tile matches wins
       const pushBarrels = pad ? npcs.filter(n => inR(n) && isBarrel(n) && act(n, 'Push')) : [];
       const liveOff = new Set(pushBarrels.map(n => (n.x - pad.x) + ',' + (n.y - pad.y)));
       let bestR = -1, bestHits = -1;
@@ -1034,16 +671,8 @@ function dungReconcileScene(npcs, objs) {
         rotScores.push(hits);
         if (hits > bestHits) { bestHits = hits; bestR = r; }
       }
-      // A TIE means the fit is guessing: `hits > bestHits` silently keeps the lowest r,
-      // which points the whole solution a quarter-turn wrong (step 1
-      // labelled north when the room wanted east). Refuse to guide on an ambiguous fit
-      // rather than send the player at the wrong barrel.
-      const rotTied = rotScores.filter(h => h === bestHits).length > 1;
-      // The captured push step: the first move (in order) whose source barrel is still on
-      // its start tile. A move completes when the barrel leaves that tile -- driven by
-      // what ACTUALLY moved, so a mis-push just keeps the same step live until it's right.
-      // Require a solid fit (>= 8 of 13) before trusting the rotation. Live geometry + the
-      // fit's working, copyable from the map tab.
+      const rotTied = rotScores.filter(h => h === bestHits).length > 1;   // ambiguous fit: refuse to guide
+      // push step = first move whose source barrel is still on its start tile; requires >= 8 of 13 fit
       if (pad) dungBarrelDump = {
         pad: [pad.x, pad.y], rotScores: rotScores, bestR: bestR, bestHits: bestHits,
         tied: rotTied,
@@ -1068,22 +697,13 @@ function dungReconcileScene(npcs, objs) {
         const ps = pushStep();
         if (ps) {
           dungGuideTiles(marks);
-          // WHICH BARREL ONLY -- no destination mark, no direction word.
-          // The barrel POSITIONS rotate reliably (a live room fit the captured set 13/13 at
-          // 180 degrees, scores 0/0/13/0), but its step 1 still had to go east where the
-          // rotated capture said north: the recorded per-move directions do NOT survive the
-          // rotation, so anything beyond "this barrel" would be a guess pointed at the
-          // player. The step still advances off the barrel LEAVING its tile, which needs no
-          // direction to detect.
-          // TILE-ANCHORED needle: every push barrel is npc 11072, so an id-only needle let
-          // the reader box whichever 11072 it found first. Same bug the ghost room fixed on
-          //; the anchor is what disambiguates same-id entities.
+          // which barrel only: recorded push directions do not survive rotation. Tile-anchored needle (all push barrels share id 11072).
           dungHighlightList(['#' + ps.b.id + '|Push this barrel  ('
                              + ps.step + ' of ' + ps.of + ')|'
                              + ps.b.x + ';' + ps.b.y + ';1']);
           return;
         }
-        // Pushes done (or no fit) -> take the bits. GROUND ITEM: dungGroundCache, not objs.
+        // pushes done (or no fit) -> take the bits (ground item: dungGroundCache, not objs)
         for (const g of (dungGroundCache || []))
           if (g && g.id === BITS && typeof g.x === 'number' && here(g) && marks.length < 16)
             marks.push({ x: g.x, y: g.y, plane: g.plane || 0, rgb: 0x5fd07a,
@@ -1094,16 +714,11 @@ function dungReconcileScene(npcs, objs) {
       }
       if (broken) {
         dungGuideTiles(marks);
-        dungHighlightList(['#' + broken.id + '|Fix this barrel|'    // anchored, as above
+        dungHighlightList(['#' + broken.id + '|Fix this barrel|'
                            + broken.x + ';' + broken.y + ';1']);
         return;
       }
-      // FILL LEVEL = varc 1233, 0..200. Already read each tick into
-      // dungMonoCharge -- 1233 is a GENERIC per-room progress counter, shared with the
-      // monolith (0-195) and the emotes room (67/134/201), so it means nothing on its own
-      // and is only trusted here because the room is known to be a barrel room.
-      // Full -> the barrel goes on the pad; not full -> it goes under the spout. Before
-      // this the two were offered together because there was no way to tell them apart.
+      // fill level = varc 1233, 0..200 (dungMonoCharge); full -> pad, else -> spout
       const fill = (typeof dungMonoCharge === 'number') ? dungMonoCharge : null;
       const full = fill != null && fill >= 200;
       if (!full && spout && marks.length < 16)
@@ -1114,7 +729,6 @@ function dungReconcileScene(npcs, objs) {
       if (full && pad && marks.length < 16)
         marks.push({ x: pad.x, y: pad.y, plane: pad.plane || 0, rgb: 0x5fd07a,
                      label: '-Pressure pad' + String.fromCharCode(10) + 'Full -- push the barrel onto this' });
-      // the other end of the job, shown quietly so the order is visible without a pill
       if (!full && pad && marks.length < 16)
         marks.push({ x: pad.x, y: pad.y, plane: pad.plane || 0, rgb: 0x4a90d9, label: '' });
       dungGuideTiles(marks);
@@ -1122,41 +736,20 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // COLOURED-FERRET ROOM -- a different puzzle from the fish/plate one below. Five
-  // ferrets, each to be SCARED onto the pressure plate of its own colour.
-  //
-  // ENTIRELY NAME- AND ACTION-DRIVEN, no id tables. The cache holds 10 plate ids per
-  // colour across three separate blocks (33xxx, 543xx, 137xxx) and two npc ids per
-  // colour, and the live room mixes them -- so any table would be a large thing to get
-  // wrong for no benefit. The live objects already say everything needed:
-  //
-  //   ferret name  "<Colour> ferret"          -> which plate it wants
-  //   ferret has the Scare action             -> still to do
-  //   ferret has LOST Scare                   -> that colour is finished
-  //   plate name   "<Colour> pressure plate"  -> the target
-  //
-  // Verified against a live room : blue and orange were solved, and
-  // both signals agreed -- their ferrets carried the solved ids (12369 / 13726) AND had
-  // no Scare action, while red/green/yellow kept 1216x ids and the Scare option. The
-  // solved plates also gain a second co-located id, which is a third way to read the
-  // same fact and is deliberately NOT used: one signal is enough and Scare is the one
-  // that says what to DO.
+  // Coloured-ferret room: name/action driven ("<Colour> ferret" with Scare = still to do; "<Colour> pressure plate" = target).
   {
     const colFerrets = npcs.filter(n => typeof n.x === 'number' && here(n)
                                      && /^[A-Z][a-z]+ ferret$/.test(String(n.name || '')));
     if (colFerrets.length) {
       const todo = colFerrets.filter(n => (n.actions || []).some(a => a === 'Scare'));
-      // ONE AT A TIME, and LATCHED rather than recomputed: the pick is the ferret nearest the
-      // player, held until that colour is finished (its Scare disappears) or it leaves the room.
-      // Re-picking every reconcile would swap the target as the player walks past another ferret.
+      // one at a time, latched: nearest ferret, held until its colour is finished or it leaves the room
       if (dungColFerret && !todo.some(n => String(n.name).split(' ')[0] === dungColFerret))
-        dungColFerret = null;                        // finished or gone -> free the latch
+        dungColFerret = null;
       if (!dungColFerret && todo.length) {
         let best = null, bestD = Infinity;
         for (const f of todo) {
           const d = dungSelfPos
             ? Math.max(Math.abs(f.x - dungSelfPos.x), Math.abs(f.y - dungSelfPos.y)) : 0;
-          // deterministic tiebreak on the name, so an exact distance tie cannot flip
           if (d < bestD || (d === bestD && best && f.name < best.name)) { bestD = d; best = f; }
         }
         if (best) dungColFerret = String(best.name).split(' ')[0];
@@ -1167,28 +760,10 @@ function dungReconcileScene(npcs, objs) {
         const plate = (objs || []).find(o => typeof o.x === 'number' && here(o)
                                           && o.name === colour + ' pressure plate');
         const rgb = DUNG_FERRET_RGB[colour] || 0xffffff;
-        // Plate: a coloured box, NO label. The destination is obvious once it is outlined
-        // in the ferret's colour, and three pills at once is unreadable.
         if (plate) marks.push({ x: plate.x, y: plate.y, plane: plate.plane || 0,
                                 label: '', rgb: rgb });
-        // WHERE TO STAND. A scared ferret flees directly AWAY from the player, so to
-        // drive it onto its plate you stand on the far side of it: the tile one step
-        // beyond the ferret along the plate->ferret line. Knowing the
-        // plate is only half the instruction -- the position is the part that is easy to
-        // get wrong and slow to work out by eye.
-        //
-        // CARDINAL ONLY -- a scare drives the ferret along one axis, never diagonally
-        //. So the stand tile is always directly N/S/E/W of it, and the
-        // room is played one axis at a time: a push changes only the axis it is along, so
-        // zero one offset, then the other.
-        //   already on the plate's row    -> push along x, the finishing shot
-        //   already on its column         -> push along y, the finishing shot
-        //   neither                       -> close the BIGGER gap first
-        //
-        // UNVERIFIED: how far one scare moves a ferret. Only the direction is computed
-        // here and that holds either way -- if a scare moves it a single tile, the same
-        // tile is simply re-offered until the axis is zeroed, since it recomputes from
-        // the ferret's live position each reconcile.
+        // Stand one tile beyond the ferret along the plate->ferret line (it flees away from the player, cardinal only);
+        // close the bigger axis gap first.
         if (plate) {
           const dx = pick.x - plate.x, dy = pick.y - plate.y;
           let sx = 0, sy = 0;
@@ -1200,7 +775,7 @@ function dungReconcileScene(npcs, objs) {
                                      label: 'Stand here, scare ' + low, rgb: rgb });
         }
         dungGuideTiles(marks);
-        dungHighlightList(['#' + pick.id]);   // box only; the stand tile carries the text
+        dungHighlightList(['#' + pick.id]);
       } else {
         dungGuideTiles(marks);
         dungHighlightList([]);
@@ -1208,34 +783,15 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // Ferret puzzle: throw fish onto tiles in the ferret's straight-line sight to walk it
-  // onto the pressure plate. Holes must never be on the run. BFS over straight runs in
-  // ALL 8 directions (diagonal moves are legal) from the ferret's LIVE
-  // tile; minimum throws, marked in order, re-solved as it moves.
-  //
-  // ALL FLOOR STYLES (cache-derived, not just the hand-measured themes). The boards sit
-  // in TWO id blocks, not one, so no arithmetic rule reaches them all:
-  //
-  //   49546-49560  three themes, laid out as 3 tiles, then 6 holes (plain x3 then
-  //                corner x3), then 6 plates. A theme is a fixed offset into each run:
-  //                theme 2 = tile 49548, hole 49551, corner 49554, plate 49557, which is
-  //                exactly the floor that exposed the gap.
-  //   54293-54297  a fourth theme: tile 54293, holes 54294/54295, plates 54296/54297.
-  //
-  // Located by scanning js5-16 for the Tile/Hole/Pressure plate families and confirming
-  // each block with its Fishing spot (every ferret room has one) -- there are exactly
-  // four, so this puzzle does not appear in all five theme families.
-  // NB the two plates per theme are presumably the up/pressed states; both are accepted
-  // because they share a tile, so which one is found cannot change the pathing.
+  // Fish-ferret puzzle: throw fish onto tiles in the ferret's straight-line sight (8 directions, holes block) to walk it
+  // onto the plate. BFS over straight runs from its live tile, re-solved as it moves. Board loc ids per theme (js5-16).
   {
     const DUNG_FERRET_TILE = { 49546: 1, 49547: 1, 49548: 1, 54293: 1 };
     const DUNG_FERRET_HOLE = { 49549: 1, 49550: 1, 49551: 1, 49552: 1, 49553: 1, 49554: 1,
                                54294: 1, 54295: 1 };
     const DUNG_FERRET_PLATE = { 49555: 1, 49556: 1, 49557: 1, 49558: 1, 49559: 1, 49560: 1,
                                 54296: 1, 54297: 1 };
-    // 11007 and 11010 are the Daemonheim ferrets; every other npc named "Ferret" is a
-    // Hunter box-trap catch, far outside this id block.
-    const DUNG_FERRET_NPC = { 11007: 1, 11010: 1 };
+    const DUNG_FERRET_NPC = { 11007: 1, 11010: 1 };   // the Daemonheim ferrets; other "Ferret" npcs are Hunter catches
     const ferret = npcs.find(n => DUNG_FERRET_NPC[n.id] && typeof n.x === 'number' && here(n));
     const plateO = (objs || []).find(o => DUNG_FERRET_PLATE[o.id] && typeof o.x === 'number' && here(o));
     if (ferret && plateO) {
@@ -1243,12 +799,10 @@ function dungReconcileScene(npcs, objs) {
         (DUNG_FERRET_TILE[o.id] || DUNG_FERRET_HOLE[o.id]) && typeof o.x === 'number' && here(o));
       if (ftiles.length >= 9) {
         const fsk = ferret.x + ',' + ferret.y, fpk = plateO.x + ',' + plateO.y;
-        // ferret settle: same tile two reconciles running = not mid-walk
         if (dungFerretSettle && dungFerretSettle.key === fsk) dungFerretSettle.n++;
         else dungFerretSettle = { key: fsk, n: 1 };
         const fsettled = dungFerretSettle.n >= 2;
-        // hold the route while the ferret executes it: advance on arrivals, and
-        // only re-solve when it SETTLES somewhere off-plan (a mis-throw)
+        // hold the route while the ferret executes it; re-solve only when it settles off-plan
         if (dungFerretPlan) {
           while (dungFerretPlan.idx < dungFerretPlan.stops.length && dungFerretPlan.stops[dungFerretPlan.idx] === fsk) dungFerretPlan.idx++;
           if (dungFerretPlan.idx >= dungFerretPlan.stops.length) dungFerretPlan = null;
@@ -1296,25 +850,13 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Lodestone pillar room: the jump route is FIXED ("always
-  // exactly this path"; all 7 js5-5 templates are interior-identical, so nothing
-  // per-instance to solve). 7x7 'Gap' lattice (theme family 49567/68/69), the
-  // 'Lodestone' (Unlock) on the platform off one side; the route below is the
-  //  6-gap sequence in lattice-local coords for the CANONICAL
-  // orientation (origin = min-x/min-y lattice corner when the lodestone sits on
-  // the -Y side; entry corner is then max-x/max-y). Other spawns rotate the whole
-  // room, and the lodestone's side of the lattice pins the rotation. Solved room
-  // morphs the lodestone to 'Active lodestone' (no actions) -> guidance clears.
-  // NB rotations only, no mirror seen; a floor drawing this wrong = mirrored
-  // spawn, capture it and add door-based mirror detection.
+  // Lodestone pillar room: fixed jump route over a 7x7 'Gap' lattice (49567/68/69), in lattice-local coords for the
+  // canonical orientation (lodestone on the -Y side); the lodestone's side pins the rotation. Rotations only, no mirror.
   {
     const DUNG_LODE_ROUTE = [[6, 5], [5, 4], [3, 4], [1, 4], [0, 3], [0, 1]];
     const lode = (objs || []).find(o => o.name === 'Lodestone' && typeof o.x === 'number' && here(o) &&
       o.actions && o.actions.length);
-    // solved = the activated morph is in the room (cache: 'Active lodestone' 49573;
-    // 'Activated lodestone' 49319/50785/51053/51099/51601/51647 = the other themes'
-    // wording; all actionless). Checked explicitly in case the Unlock loc REMAINS
-    // alongside it, tunnel-style -- the action filter alone wouldn't clear then.
+    // solved = 'Active lodestone' 49573 / 'Activated lodestone' (other themes), all actionless
     const lodeDone = (objs || []).some(o =>
       (o.name === 'Active lodestone' || o.name === 'Activated lodestone') && typeof o.x === 'number' && here(o));
     const lgaps = (objs || []).filter(o => o.name === 'Gap' && typeof o.x === 'number' && here(o));
@@ -1326,8 +868,6 @@ function dungReconcileScene(npcs, objs) {
       }
       if (gx1 - gx0 === 6 && gy1 - gy0 === 6) {   // full 7x7 lattice in scene
         const dx = lode.x - (gx0 + 3), dy = lode.y - (gy0 + 3);   // lodestone vs lattice centre
-        // map canonical (cx,cy) -> world by the rotation that puts the lodestone
-        // back on the canonical -Y side
         let xf = null;
         if (Math.abs(dy) > Math.abs(dx)) xf = dy < 0
           ? (c => [gx0 + c[0], gy0 + c[1]])                 // lodestone -Y: canonical
@@ -1347,28 +887,11 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Ice-slide room ("Icy pressure pads", frozen theme). Mechanics re-grounded
-  // on the wiki + live routes; the previous model was BACKWARDS
-  // on both stop rules and planned impossible tours:
-  //   (a) PADS STOP THE SLIDE -- a pad is pressed by LANDING on it; you cannot slide
-  //       over one (old model: "buttons never halt, sliding over presses");
-  //   (b) furniture stops you on ENTERING its 3x3 surround -- sliding PAST a barrel
-  //       one tile to the side halts you beside it, not only a head-on collision;
-  //   (c) otherwise you slide to the last free tile before furniture or the wall.
-  // Obstacles are the EXPLICIT furniture ids (Barrels 49328 / Chair 49329 / Crate
-  // 49330). Everything else in the room -- Snow/Trash, the nameless edge locs
-  // 49307-15/49332-34, doors -- is scenery the slide model IGNORES: any looser rule
-  // ("every non-button loc blocks", then "every loc not named Snow/Trash blocks")
-  // degenerated plans into 1-tile hops twice. Pads change id when pressed (49320-23
-  // unpressed -> 49324-27 pressed; PRESSED pads still stop a slide) so the remaining
-  // set reads straight from live loc ids, no stand-tracking. Cache-audited:
-  // 49320-27 is the ONLY Daemonheim Button family (the other cache Button block at
-  // 24588+ is a museum), so this room has NO theme variants. NPCs are NOT in the
-  // model (wiki: purely environmental); they ARE in the copyable dump below so one
-  // live route can falsify that if a slide ever stops at a monster.
+  // Ice-slide room. Pads stop a slide (pressed by landing; 49320-23 unpressed -> 49324-27 pressed, both stop);
+  // otherwise you slide to the last free tile before furniture (49328/49329/49330 only) or the wall. No theme variants.
   {
     const iceUnpressed = (objs || []).filter(o =>
-      o.id >= 49320 && o.id <= 49323 && typeof o.x === 'number' && here(o));   // pads still to press
+      o.id >= 49320 && o.id <= 49323 && typeof o.x === 'number' && here(o));
     const icePressed = (objs || []).filter(o =>
       o.id >= 49324 && o.id <= 49327 && typeof o.x === 'number' && here(o));
     const ICE_FURN = { 49328: 1, 49329: 1, 49330: 1 };
@@ -1378,10 +901,7 @@ function dungReconcileScene(npcs, objs) {
       const pr = dungRoomOf(dungFloorSW, dungSelfPos.x, dungSelfPos.y);
       const swx = dungFloorSW.x + DUNG_ROOM_PITCH * pr.rx, swy = dungFloorSW.y + DUNG_ROOM_PITCH * pr.ry;
       const roomKey = pr.rx + ',' + pr.ry;
-      // The ICE SHEET is inset one tile inside the 14x14 room grid: the 0/13 ring is
-      // the wall base (dump: wall-line 'Rock' at x=0, every pad and
-      // furniture within 1..11; a 0..13 model rested slides ON the ring and its wall
-      // mark floated fully outside the room, screenshot).
+      // the ice sheet is inset one tile inside the 14x14 room grid (the 0/13 ring is the wall base)
       const ICE_LO = 1, ICE_HI = DUNG_ROOM_W - 2;
       const furn = {}, pad = {};   // furn value = the furniture's name, for "stops at X" labels
       for (const o of iceFurn) furn[(o.x - swx) + ',' + (o.y - swy)] = o.name || 'furniture';
@@ -1389,40 +909,22 @@ function dungReconcileScene(npcs, objs) {
       for (const o of icePressed) pad[(o.x - swx) + ',' + (o.y - swy)] = 1;
       const px = dungSelfPos.x - swx, py = dungSelfPos.y - swy;
       const posKey = px + ',' + py;
-      // settle detector: never (re)solve mid-slide
       if (dungIceSettle && dungIceSettle.key === posKey) dungIceSettle.n++;
       else dungIceSettle = { key: posKey, n: 1 };
       const settled = dungIceSettle.n >= 2;
       const rem = iceUnpressed.map(o => ({ x: o.x - swx, y: o.y - swy }));
       const remSig = roomKey + '|' + rem.map(b => b.x + ',' + b.y).sort().join(';');
-      // Hold the plan STABLE while executing (marks don't jump mid-slide); re-solve only
-      // when: settled AND (no plan / the room or remaining-pad set changed / the player
-      // settled somewhere the plan didn't route to). A pressed pad changes the loc id
-      // -> remSig changes -> re-solve for the smaller set.
+      // Hold the plan while executing; re-solve only when settled and the pad set changed or the player is off-plan.
       if (dungIcePlan && dungIcePlan.sig === remSig) {
         while (dungIcePlan.idx < dungIcePlan.stops.length && dungIcePlan.stops[dungIcePlan.idx].k === posKey) dungIcePlan.idx++;
         if (dungIcePlan.idx >= dungIcePlan.stops.length) dungIcePlan = null;
-        // The ONE valid resting place is the tile the next leg starts from: the
-        // anchor at idx 0, the stop just consumed after that -- nothing else.
-        // "Anywhere in the stops list" kept a stale tour alive when the player
-        // wandered onto a LATER stop (dump: player at step 4, panel showing step 1),
-        // and allowing the ANCHOR mid-tour aimed the click tile along a leg that
-        // starts elsewhere (south click tile for a north slide).
-        // Any deviation re-solves from where the player actually is.
+        // the only valid resting place is the tile the next leg starts from
         else if (settled && !(dungIcePlan.idx === 0
                    ? posKey === dungIcePlan.anchor
                    : dungIcePlan.stops[dungIcePlan.idx - 1].k === posKey))
           dungIcePlan = null;
-      } else if (dungIcePlan) dungIcePlan = null;   // set changed -> stale
-      // one maximal slide from (cx,cy): advance tile by tile; stop ON a pad (landing
-      // presses it,  or on the last free tile BEFORE furniture
-      // or the wall. HEAD-ON ONLY: furniture does NOT halt a slide passing beside it
-      // -- a lateral 3x3 stop-field kept predicting 1-tile "stops by Chair/Crate"
-      // hops the game never makes (; the wiki's "stop in
-      // the obstacle's 3x3 range" is just the last-free-tile-before-collision. RS
-      // corner rule: a DIAGONAL step needs BOTH flanking cardinal
-      // tiles furniture-free -- adjacent furniture leaves 5 usable directions and can
-      // also end a diagonal slide early. null = cannot move at all.
+      } else if (dungIcePlan) dungIcePlan = null;
+      // one maximal slide: head-on furniture only; a diagonal step needs both flanking cardinal tiles free. null = cannot move
       const slideTo = (cx, cy, dd) => {
         let nx = cx, ny = cy;
         for (;;) {
@@ -1440,23 +942,19 @@ function dungReconcileScene(npcs, objs) {
         const full = (1 << rem.length) - 1;
         const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
         const popc = m => { let n = 0; while (m) { n += m & 1; m >>= 1; } return n; };
-        // Standing on an unpressed pad does NOT press it (dump: self
-        // on 49323 with the id still in the unpressed range) -- so the start mask is
-        // ALWAYS empty, and a tour that must press the pad underfoot slides away and
-        // lands back on it.
+        // standing on an unpressed pad does not press it, so the start mask is always empty
         const m0 = 0;
         const start = posKey + ':' + m0;
         const prev = {}; prev[start] = null;
         const q = [[px, py, m0]];
         let goalK = null, bestK = null, bestBits = popc(m0);
-        // BFS over (tile, pressed-mask): the first full-mask state reached is the
-        // FEWEST-SLIDES tour (optimal); fallback = most pads when full is unreachable.
+        // BFS over (tile, pressed-mask): first full-mask state = fewest slides; fallback = most pads
         for (let qi = 0; qi < q.length && !goalK; qi++) {
           const cx2 = q[qi][0], cy2 = q[qi][1], m = q[qi][2];
           for (const dd of DIRS) {
             const to = slideTo(cx2, cy2, dd);
             if (!to) continue;
-            const nm = m | (bit[to[0] + ',' + to[1]] || 0);   // a pad presses only where the slide STOPS
+            const nm = m | (bit[to[0] + ',' + to[1]] || 0);
             const k = to[0] + ',' + to[1] + ':' + nm;
             if (prev[k] !== undefined) continue;
             prev[k] = cx2 + ',' + cy2 + ':' + m;
@@ -1468,15 +966,12 @@ function dungReconcileScene(npcs, objs) {
         }
         const endK = goalK || bestK;
         if (endK) {
-          // stops carry the click DIRECTION (compass, y+ = north) and the stop REASON,
-          // so each in-room mark explains itself.
+          // stops carry the click direction (compass, y+ = north) and the stop reason (furniture name, '' = wall/pad)
           const stops = [];
           for (let k = endK; k && k !== start; k = prev[k]) {
             const kp = k.split(':')[0], pp = prev[k].split(':')[0];
             const [sx2, sy2] = kp.split(',').map(Number), [ox2, oy2] = pp.split(',').map(Number);
             const dx2 = Math.sign(sx2 - ox2), dy2 = Math.sign(sy2 - oy2);
-            // stop reason: the furniture the slide ran into (tile ahead, or a corner
-            // flank for a diagonal), else '' = wall/pad
             const by = furn[(sx2 + dx2) + ',' + (sy2 + dy2)]
               || (dx2 && dy2 && (furn[(sx2 + dx2) + ',' + sy2] || furn[sx2 + ',' + (sy2 + dy2)]))
               || '';
@@ -1490,7 +985,7 @@ function dungReconcileScene(npcs, objs) {
       }
       const iceLoc = o => ({ id: o.id, n: o.name || '', x: o.x - swx, y: o.y - swy });
       dungIceDump = {
-        v: 'ice-v6',   // model version stamp -- proves which slide rules built the plan in a pasted dump
+        v: 'ice-v6',   // model version stamp
         room: roomKey, sw: [swx, swy], self: [px, py], settled: settled,
         padsUn: iceUnpressed.map(iceLoc), padsPr: icePressed.map(iceLoc), furn: iceFurn.map(iceLoc),
         other: (objs || []).filter(o => typeof o.x === 'number' && here(o)
@@ -1499,23 +994,14 @@ function dungReconcileScene(npcs, objs) {
           .map(n => ({ id: n.id, n: n.name || '', x: n.x - swx, y: n.y - swy })),
         plan: dungIcePlan ? dungIcePlan.stops.slice(dungIcePlan.idx) : null
       };
-      // render ONLY the next two stops, IN ORDER. The held plan advances as each stop is
-      // reached, so the pair walks the tour step by step; direction + stop reason stay on the
-      // label. NOTHING renders mid-slide: while the position is still changing (!settled) the
-      // marks drop, and the next pair appears once the player has come to rest.
+      // render only the next two stops; nothing renders mid-slide
       if (dungIcePlan && settled) {
         let step = 1;
         for (const s of dungIcePlan.stops.slice(dungIcePlan.idx, dungIcePlan.idx + 2)) {
           if (marks.length >= 16) break;
           const p2 = s.k.split(',').map(Number);
-          // STEP 1 is ONE mark: the adjacent tile to CLICK ( -- no
-          // destination mark). Direction is recomputed from the PLAYER's tile, not
-          // taken from the stored leg, as a second guard against ever aiming a click
-          // tile along a leg that starts elsewhere. Green = this slide lands on a pad.
-          // snap MUST be 0 on any bare-ice tile: snap makes the reader hunt for a
-          // nearby live loc and box ITS model AABB -- a click tile beside furniture
-          // drew the Barrels' 2x1 box half outside the room. Only
-          // step-2 marks that sit ON a pad loc snap to it.
+          // step 1 = the adjacent tile to click, direction recomputed from the player's tile. snap must be 0 on
+          // bare ice (snap boxes a nearby loc's model AABB); only step-2 marks on a pad loc snap.
           if (step === 1) {
             marks.push({ x: swx + px + Math.sign(p2[0] - px), y: swy + py + Math.sign(p2[1] - py), plane: 0,
                          label: '1 - click here', rgb: s.press ? 0x5fd07a : 0xf0c75a, snap: 0 });
@@ -1530,14 +1016,8 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Switches room: every Pull switch in the room gets a Pull mark (first label line =
-  // loc name so the reader boxes the loc itself; second line = the action). A PULLED
-  // switch spawns an actionless done-twin at the SAME tile while the Pull loc stays in
-  // the data, so any switch sharing a done-twin's coordinate is already done -- skip it.
-  // FOUR theme variants, ALL enumerated from a js5-16 whole-index name+action scan
-  //: the done-offset is NOT constant (+3 for the 49381 block, +1 for 54333),
-  // so match on explicit id sets, never an offset. The scan found no 5th 'Switch'/'Lever'
-  // Pull loc anywhere in the Daemonheim range -- 4 is the complete cache set.
+  // Switches room: a pulled switch spawns an actionless done-twin at the same tile (first label line = loc name so the
+  // reader boxes the loc). Done offset is not constant across themes; match on id sets.
   const DUNG_SWITCH_PULL = { 49381: 1, 49382: 1, 49383: 1, 54333: 1 };
   const DUNG_SWITCH_DONE = { 49384: 1, 49385: 1, 49386: 1, 54334: 1 };
   const pulled = {};
@@ -1545,26 +1025,13 @@ function dungReconcileScene(npcs, objs) {
   for (const o of (objs || []))
     if (DUNG_SWITCH_PULL[o.id] && typeof o.x === 'number' && here(o) && !pulled[o.x + ',' + o.y] && marks.length < 16)
       marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: (o.name || '') + '\nPull' });
-  // (Power-up plate marks moved BELOW the lodeSolved read: they were emitted with no
-  // solved gate at all, so the box sat on the pad forever after the room completed.)
-  // FREMENNIK SCOUT room (new content; live capture + js5-16 scan: the
-  // scout (npc 11001, Talk to) wants battleaxes smithed from the Crate of bars, bows
-  // fletched from the Crate of logs and fish cooked from the Crate of raw fish.
-  // Crate id families across themes -- fish 35275/49522-24/54302, bars
-  // 35277/49528-30/54304, logs 35279/49534-36/54306. Only ACTIONED crates mark
-  // (Empty crate 49519-21 and friends are the emptied/decor states), so each task's
-  // box drops off as its crate is used up. The scout presumably re-ids once the room
-  // completes; that solved gate gets added when the id is captured.
-  // Crate STATE MACHINE (cooking replaced raw 49524 with
-  // 'Crate of fish' 49527 Take-from at the same tile, fletching 49536 -> 49539):
-  //   work state (make the goods)  ->  Take-from state (collect them)  ->  Empty.
-  // 35xxx/54xxx themes step +1 per state, the 49xxx theme trios step +3.
+  // Fremennik scout room (npc 11001): crate state machine work -> Take-from -> Empty at the same tile.
+  // Crate ids per theme: fish 35275/49522-24/54302, bars 35277/49528-30/54304, logs 35279/49534-36/54306.
   const DUNG_SCOUT_CRATES = {};
   for (const ci of [35275, 49522, 49523, 49524, 54302]) DUNG_SCOUT_CRATES[ci] = 'Cook the fish';
   for (const ci of [35277, 49528, 49529, 49530, 54304]) DUNG_SCOUT_CRATES[ci] = 'Smith battleaxes';
   for (const ci of [35279, 49534, 49535, 49536, 54306]) DUNG_SCOUT_CRATES[ci] = 'Fletch bows';
-  // The Take-from successor means that task is SOLVED -- it is a done-marker for its
-  // tile, never a task itself.
+  // Take-from successors: done-markers for their tile
   const DUNG_SCOUT_DONE = {};
   for (const ci of [35276, 49525, 49526, 49527, 54303,
                     35278, 49531, 49532, 49533, 54305,
@@ -1574,11 +1041,7 @@ function dungReconcileScene(npcs, objs) {
     const works = (objs || []).filter(o => DUNG_SCOUT_CRATES[o.id] && inSR(o));
     const dones = (objs || []).filter(o => DUNG_SCOUT_DONE[o.id] && inSR(o));
     if (works.length || dones.length) {
-      // SAME-TILE STATE PRECEDENCE: the capture keeps replaced states listed (stale
-      // raw crate beside the new fish crate), so a done state or an Empty crate at a
-      // tile ends that tile -- only a work state with no successor beside it marks.
-      // ROOM SOLVED = all three tasks superseded: every work tile
-      // is then suppressed, nothing marks, and the block goes quiet on its own.
+      // the capture keeps replaced states listed, so a done state or Empty crate at a tile ends that tile
       const doneAt = {};
       for (const o of (objs || [])) {
         if (typeof o.x !== 'number') continue;
@@ -1595,12 +1058,8 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // Divine skinweaver boss (skeletal horde): Tunnel locs 49286-49288 need blocking;
-  // a done one gains a "Blocked tunnel" 49289/49290 at the SAME coordinate while the
-  // Tunnel loc stays ( ) -- skip those. The room spans
-  // two cells and the tunnels sit in wall gaps, so the same-room gate would drop
-  // some; instead gate on the Divine Skinweaver NPC 10058 being in scene (short NPC
-  // capture range = the player is at the boss; the tunnel ids exist nowhere else).
+  // Divine skinweaver boss: Tunnel locs 49286-49288 need blocking; a done one gains "Blocked tunnel" 49289/49290 at the
+  // same tile. The room spans two cells, so gate on NPC 10058 in scene rather than the same-room test.
   if (npcs.some(n => n.id === 10058)) {
     const DUNG_TUNNEL = { 49286: 1, 49287: 1, 49288: 1 };
     const DUNG_TUNNEL_DONE = { 49289: 1, 49290: 1, 49291: 1 };   // blocked = tunnel id + 3
@@ -1610,36 +1069,13 @@ function dungReconcileScene(npcs, objs) {
       if (DUNG_TUNNEL[o.id] && typeof o.x === 'number' && !tdone[o.x + ',' + o.y] && marks.length < 16)
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: (o.name || 'Tunnel') + '\nBlock', rgb: 0xe8b34b });
   }
-  // Rotating crystal: 49510 appears BRIEFLY every 5 game ticks (~3s; 1 tick ~
-  // 600ms). Each appearance restarts the phase clock; the phase persists while
-  // the crystal is absent. The centre-screen prompt (same channel as the BGH
-  // "Bound" banner) fires ONE TICK EARLY -- at phase 4 -- so a click begun on the
-  // prompt lands exactly as the crystal appears; it clears after the moment
-  // passes. The mark on the live crystal stays for aiming.
-  // 49513 present = the crystal puzzle is SOLVED: drop every crystal aid (click
-  // prompt, sync marks, phase clock) for this room.
-  // "Large crystal" 49507-49515 is NINE ids = THREE STATES x THREE THEMES, not nine
-  // themes. Proven by a solved-room capture : 49508 AND 49514 sit
-  // live on the SAME centre tile (10535,2791) with every coloured crystal gone, i.e.
-  // base + solved coexisting, the same per-tile state coexistence as the censers.
-  //   base/idle  49507, 49508, 49509   <- the centre while the puzzle runs
-  //   active     49510, 49511, 49512   <- the "appearing" one that marks the cycle
-  //   solved     49513, 49514, 49515
-  // Theme index is consistent across states: this floor is theme 1 (49508/49511/49514),
-  // the original code was written against theme 0 (49507/49510/49513) and only ever
-  // failed because of THEME coverage. 54275-77 = the FOURTH theme's large crystal
-  // (single-variant 54xxx block, scene capture, in the same base/active/solved
-  // state order the 49xxx block uses (pattern fill).
+  // Rotating crystal room: the active large crystal appears briefly every 5 game ticks (~3s); each appearance
+  // restarts the phase clock and the centre-screen prompt fires one tick early. "Large crystal" states x themes:
+  // base 49507-09/54275, active 49510-12/54276, solved 49513-15/54277.
   const DUNG_BIG_BASE   = { 49507:1, 49508:1, 49509:1, 54275:1 };
   const DUNG_BIG_ACTIVE = { 49510:1, 49511:1, 49512:1, 54276:1 };
   const DUNG_BIG_SOLVED = { 49513:1, 49514:1, 49515:1, 54277:1 };
-  // SOLVED = the SECOND large-crystal state APPEARING in scene : the
-  // game replaces base -> solved at the centre, and since the capture keeps the
-  // replaced base, a solved room lists BOTH states on one tile (proven capture: 49508 +
-  // 49514 at 8263,1848). Matched by the known solved ids, plus -- theme-proof -- any
-  // TWO distinct non-ACTIVE large-crystal states on the same tile ('Large crystal' by
-  // name). ACTIVE is excluded: the appearing state legitimately coexists with the base
-  // every cycle mid-puzzle.
+  // solved = a solved id, or any two distinct non-active large-crystal states on one tile (the capture keeps the replaced base)
   let lodeSolved = (objs || []).some(o => DUNG_BIG_SOLVED[o.id] && typeof o.x === 'number' && here(o));
   if (!lodeSolved) {
     const bigAt = {};
@@ -1655,10 +1091,7 @@ function dungReconcileScene(npcs, objs) {
     dungLodeKey = ''; dungLodeTick = -1; dungLodeWarnAt = -1; dungCrysMem = {};
     if (dungLodeCenterOn) { dungLodeCenterOn = false; try { bridge().centerText(myPid(), ''); } catch (e) {} }
   }
-  // Power-up locs -- cache name "Inactive lodestone" (js5-16 -- all 3
-  // themes per colour plus the 54xxx theme's four singles: mark each with its action,
-  // but NEVER once the room is solved (ungated, the box lingered on the pad after
-  // completion, ).
+  // Power-up locs (cache name "Inactive lodestone"), never marked once the room is solved
   const DUNG_POWERUP = { 54263: 1, 54266: 1, 54269: 1, 54272: 1 };
   for (const pb of [49471, 49480, 49489, 49498]) { DUNG_POWERUP[pb] = 1; DUNG_POWERUP[pb + 1] = 1; DUNG_POWERUP[pb + 2] = 1; }
   if (!lodeSolved)
@@ -1666,43 +1099,25 @@ function dungReconcileScene(npcs, objs) {
       if (DUNG_POWERUP[o.id] && typeof o.x === 'number' && here(o) && marks.length < 16)
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: (o.name || '') + '\nPower up' });
   const activeLode = lodeSolved ? null : (objs || []).find(o => DUNG_BIG_ACTIVE[o.id] && typeof o.x === 'number' && here(o));
-  // Four coloured crystals travel the cross arms toward the centre; they must all
-  // arrive at the same time. While ALL FOUR are in scene the puzzle is in its sync
-  // phase -- no click prompt; instead compare each crystal's distance to the centre
-  // (the large crystal's tile): equal = in sync, and any crystal off the majority
-  // distance gets a mark in its own colour with how far off it is.
-  // THREE THEME VARIANTS PER COLOUR (js5-16 scan) -- hardcoding one id per
-  // colour meant the solver saw nothing on other floors (seen with the
-  // 49487/49496 pair). The cache lays each colour out as NINE CONSECUTIVE ids:
-  //   blue   49468-70 crystal | 49471-73 Power-up | 49474-76 lodestone
-  //   red    49477-79 crystal | 49480-82 Power-up | 49483-85 lodestone
-  //   green  49486-88 crystal | 49489-91 Power-up | 49492-94 lodestone
-  //   yellow 49495-97 crystal | 49498-500 Power-up | 49501-03 lodestone
-  // Plain "Crystal" 49465-67 (no action) are the ARM/track segments, not movers.
+  // Four coloured crystals travel the cross arms toward the centre and must arrive together. Per colour, nine
+  // consecutive ids: 3 crystal | 3 Power-up | 3 lodestone (blue 49468, red 49477, green 49486, yellow 49495).
   const DUNG_CRYSTALS = {};
   for (const [base, n, c] of [[49468, 'Blue crystal', 0x5ab8f0], [49477, 'Red crystal', 0xf25c5c],
                               [49486, 'Green crystal', 0x5fd07a], [49495, 'Yellow crystal', 0xf0c419]])
     for (let v = 0; v < 3; v++) DUNG_CRYSTALS[base + v] = { n: n, c: c };
-  // Fourth theme, single id per colour (54xxx block, js5-16.
+  // fourth theme, single id per colour
   DUNG_CRYSTALS[54262] = { n: 'Blue crystal',   c: 0x5ab8f0 };
   DUNG_CRYSTALS[54265] = { n: 'Red crystal',    c: 0xf25c5c };
   DUNG_CRYSTALS[54268] = { n: 'Green crystal',  c: 0x5fd07a };
   DUNG_CRYSTALS[54271] = { n: 'Yellow crystal', c: 0xf0c419 };
   const crys = lodeSolved ? [] : (objs || []).filter(o => DUNG_CRYSTALS[o.id] && typeof o.x === 'number' && here(o));
-  // Room variant WITHOUT the appearing crystal 49510: the large crystal is the
-  // static 49507 -- the cycle mark is instead the moment ANY coloured crystal
-  // reaches its coordinate (edge-triggered per crystal id).
+  // variant without the appearing crystal: the cycle mark is a coloured crystal reaching the static large crystal
   const bigLode = lodeSolved ? null : (objs || []).find(o => DUNG_BIG_BASE[o.id] && typeof o.x === 'number' && here(o));
   if (bigLode) dungLodeCenter = { x: bigLode.x, y: bigLode.y };
   let ltick = -1;
   if (activeLode || bigLode || dungLodeTick >= 0) { try { ltick = bridge().gameTick(myPid()); } catch (e) {} }
-  const dungLodeMarkEnd = () => { dungLodeKey = ''; };   // (window length is a known 600ms, not measured)
-  // Cycle-anchor with LEEWAY: a mark is DETECTED up to a reconcile (~600ms) after it
-  // actually happened, and that lag varies per cycle -- re-anchoring on every
-  // detection made the countdown jerk back and forth. Instead the anchor persists
-  // across cycles and only tightens: an EARLIER-than-predicted sighting pulls the
-  // anchor back (it is closer to the true mark), a later one is ignored as sampling
-  // lag, and only a large error (>900ms: real desync) re-locks the clock.
+  const dungLodeMarkEnd = () => { dungLodeKey = ''; };
+  // Cycle anchor only tightens: an earlier sighting pulls it back, a later one is sampling lag; >900ms error re-locks.
   const dungLodeAnchor = t => {
     const CYC = 2400;
     if (!dungLodeMarkAt) { dungLodeMarkAt = t; return; }
@@ -1715,46 +1130,32 @@ function dungReconcileScene(npcs, objs) {
     const lk = activeLode.x + ',' + activeLode.y;
     dungLodeCenter = { x: activeLode.x, y: activeLode.y };
     dungLodeSeenAt = Date.now();
-    if (lk !== dungLodeKey) { dungLodeKey = lk; dungLodeAnchor(Date.now()); if (ltick >= 0) dungLodeTick = ltick; }   // appearance = cycle mark
+    if (lk !== dungLodeKey) { dungLodeKey = lk; dungLodeAnchor(Date.now()); if (ltick >= 0) dungLodeTick = ltick; }
   } else if (bigLode) {
-    // a crystal never lands ON the large crystal -- it gets within 1 tile and
-    // resets, so "arrival" = Chebyshev distance <= 1
+    // a crystal never lands on the large crystal: "arrival" = Chebyshev distance <= 1
     const arr = crys.find(c => Math.max(Math.abs(c.x - bigLode.x), Math.abs(c.y - bigLode.y)) <= 1);
     if (arr) {
       dungLodeSeenAt = Date.now();
       const lk = 'arr' + arr.id;
-      if (lk !== dungLodeKey) { dungLodeKey = lk; dungLodeAnchor(Date.now()); if (ltick >= 0) dungLodeTick = ltick; }   // arrival = cycle mark
+      if (lk !== dungLodeKey) { dungLodeKey = lk; dungLodeAnchor(Date.now()); if (ltick >= 0) dungLodeTick = ltick; }
     } else dungLodeMarkEnd();
   } else dungLodeMarkEnd();
-  // staleness: no cycle mark for 12s -> the cycle model is dead, stop prompting
+  // no cycle mark for 12s -> stop prompting
   if (dungLodeTick >= 0 && dungLodeSeenAt && Date.now() - dungLodeSeenAt > 12000) { dungLodeTick = -1; dungLodeWarnAt = -1; }
-  // the fast dungLodeTimerTick (100ms, client.html) owns the centre text: it renders
-  // a live ms countdown to the click window and the window's remaining time. It is
-  // suppressed while the player is outside the crystal room, and (below, once the
-  // sync state is computed) while several active crystals are OUT OF SYNC -- their
-  // staggered pillar arrivals would re-anchor the countdown every few ticks, so the
-  // out-of-sync marks are the only guidance that makes sense then.
+  // dungLodeTimerTick (100ms, client.html) owns the centre text; suppressed outside the room and while out of sync
   dungLodeInRoom = !!(activeLode || bigLode);
   let crysOutSync = false;
   dungLodeDbg = '';
-  // NOT gated on crys.length: a hidden crystal is exactly the case that blanks the readout.
-  // Run whenever the room is known, and let the remembered set decide.
   if (crys.length >= 2 || Object.keys(dungCrysMem).length >= 2) {
     let ctr = dungLodeCenter;
-    if (!ctr && crys.length >= 3) {   // derive: vertical movers share x, horizontal movers share y
+    if (!ctr && crys.length >= 3) {   // vertical movers share x, horizontal movers share y
       const xs = {}, ys = {};
       for (const c of crys) { xs[c.x] = (xs[c.x] || 0) + 1; ys[c.y] = (ys[c.y] || 0) + 1; }
       const cx = Object.keys(xs).find(k => xs[k] >= 2), cy = Object.keys(ys).find(k => ys[k] >= 2);
       if (cx != null && cy != null) ctr = { x: +cx, y: +cy };
     }
     if (ctr) {
-      // the out-of-sync notice belongs on the arm's PRESSURE PAD -- where the player
-      // actually clicks -- not on the moving crystal. The pad for a
-      // colour = the pad loc aligned with that crystal's rail (same row/column as the
-      // centre, on the crystal's side), farthest from the centre (the accessible
-      // end). No pad in scene -> fall back to the crystal itself.
-      // pads = loc 52206 (one per arm at +-5 from the
-      // centre 49507/49510; rail 'Crystal' 49465 locs pave the arms between them)
+      // the out-of-sync notice goes on the arm's pressure pad (loc 52206/54282, +-5 from the centre), not the crystal
       const cpads = (objs || []).filter(o => (o.id === 52206 || o.id === 54282 || /pressure pad/i.test(o.name || '')) && typeof o.x === 'number' && here(o));
       const padFor = c => {
         let best = null, bd = -1;
@@ -1767,16 +1168,12 @@ function dungReconcileScene(npcs, objs) {
           if (dd > bd) { bd = dd; best = p; }
         }
         if (best) return best;
-        // no pad loc matched this reconcile -> SYNTHESIZE the pad tile: pads sit at
-        // exactly +-5 from the centre on each arm (and a
-        // tile mark needs no entity -- the notice must never ride the crystal again.
+        // no pad loc in scene -> synthesize the pad tile at +-5
         if (c.x === ctr.x && c.y !== ctr.y) return { x: ctr.x, y: ctr.y + 5 * Math.sign(c.y - ctr.y), plane: c.plane || 0 };
         if (c.y === ctr.y && c.x !== ctr.x) return { x: ctr.x + 5 * Math.sign(c.x - ctr.x), y: ctr.y, plane: c.plane || 0 };
         return null;
       };
-      // A crystal runs plate -> 1 -> 2 -> 3 -> 4 -> centre, and while it sits UNDER its
-      // plate it is NOT in the scene at all. Remember each colour's arm and distance,
-      // and treat "known here but absent now" as AT THE PLATE, the far end of its arm.
+      // a crystal under its plate is not in the scene: "known here but absent now" = at the plate
       const PLATE_D = 5;                       // pads sit at +-5 from the centre
       const nowT = Date.now(), visible = {};
       for (const c of crys) {
@@ -1793,8 +1190,6 @@ function dungReconcileScene(npcs, objs) {
         ents.push({ nm: nm, hidden: !visible[nm], c: m.c, dx: m.dx, dy: m.dy,
                     d: visible[nm] ? m.d : PLATE_D });
       }
-      // the pad on a given arm, by DIRECTION from the centre (works even when the pad
-      // loc is not in scene: pads sit at exactly +-5, )
       const padOn = (dx, dy) => {
         for (const p of cpads)
           if (Math.sign(p.x - ctr.x) === dx && Math.sign(p.y - ctr.y) === dy) return p;
@@ -1803,26 +1198,11 @@ function dungReconcileScene(npcs, objs) {
       dungLodeDbg = ' | crys[v4] ctr ' + ctr.x + ',' + ctr.y + ' pads ' + cpads.length
                   + ' known ' + ents.length + ' hidden ' + ents.filter(e => e.hidden).length;
       if (ents.length >= 2) {
-        // DO NOT recompute "who is ahead" every tick. Distance-to-centre is a SAWTOOTH:
-        // a crystal that reaches the centre resets to the plate, so its distance jumps
-        // 0 -> PLATE_D and the leader INVERTS once per cycle. That made the marks flip
-        // between pads every few ticks. A cyclic track has no stable
-        // total order, so stop asserting one.
-        // Instead show each arm's OWN cycle step, which is a stable per-crystal fact,
-        // and only state the comparison when it is unambiguous: every step equal.
-        // THE INVARIANT: every crystal advances one step per cycle tick TOGETHER, so
-        // the PAIRWISE OFFSETS never change -- only the absolute distances wrap. So
-        // work in offsets, which are stable, and never in "who is closest right now",
-        // which is not.
-        // FIVE positions, 0-4. A crystal NEVER lands on the centre
-        // tile -- it gets within 1 and resets -- so the occupied distances are 5 (hidden
-        // under the pad) then 4,3,2,1, and the cycle wraps from 4 back to 0. Using 6
-        // here would compute hold counts that are one too long.
+        // Invariant: crystals advance together, so pairwise step offsets are stable while absolute distances wrap.
+        // Five positions 0-4 (a crystal never lands on the centre tile; distance 5 = under the pad).
         const CYC = PLATE_D;                      // 0=under pad, 1..4 = rail, then wrap
         const step = e => PLATE_D - e.d;          // d5->0, d4->1, d3->2, d2->3, d1->4
-        // Hold time to bring everything onto `ref`: a crystal k steps ahead of ref must
-        // be held for k. Pick the ref that minimises TOTAL holding -- also invariant,
-        // so the instruction stays put instead of flipping between pads.
+        // ref = the crystal that minimises total hold time (also invariant, so the instruction stays put)
         let ref = null, refCost = 1e9;
         for (const r of ents) {
           let cost = 0;
@@ -1834,46 +1214,22 @@ function dungReconcileScene(npcs, objs) {
         for (const e of ents) {
           const k = holdFor(e);
           dungLodeDbg += ' ' + e.nm[0] + (e.hidden ? '(plate)' : '') + '+' + k;
-          // Only mark what needs ACTION : a pad reading "leave
-          // running" or "IN SYNC" is a box telling you to do nothing, which just
-          // crowds the room. No hold needed -> no mark.
           if (!k || marks.length >= 16) continue;
           const at = padOn(e.dx, e.dy);
           if (!at) continue;
           const short = e.nm.replace(/ crystal$/i, '');
-          // GOTCHA: the overlay treats a guide label's FIRST LINE as a loc NAME and
-          // snaps the box to the nearest live loc so named within 8 tiles -- putting
-          // the crystal's name first made the box ride the CRYSTAL no matter what tile
-          // anchored. '-Pressure pad' = match the PAD's footprint, hide the title.
+          // the overlay snaps a guide box to the loc named on the label's first line (within 8 tiles); '-' hides the title
           marks.push({ x: at.x, y: at.y, plane: at.plane || 0, rgb: e.c,
                        label: '-Pressure pad\n' + short + '  HOLD ' + k });
         }
       }
     }
   }
-  // several active crystals out of sync -> their staggered arrivals would thrash the
-  // click countdown; sync phase (all four up) also suppresses it
   dungLodeSuppress = crys.length >= 4 || (crys.length >= 2 && crysOutSync);
-  // Tile-flip puzzle (Lights Out): a 5x5 of coloured recesses; flipping one also flips
-  // its + neighbours. THREE THEME VARIANTS EXIST PER COLOUR (js5-16 scan),
-  // so match on a SET -- hardcoding the two ids one floor happened to use meant the
-  // solver silently did nothing on the others (a floor running the
-  // 49639/49642 pair):
-  //   green  "Imbue,Force"  49638, 49639, 49640
-  //   yellow "Imbue,Force"  49641, 49642, 49643
-  // The plain no-action "Tile" locs (49546-49548, 49634-49637) are the recess frames and
-  // COEXIST at the same cells, so they are excluded: the grid is the 25 coloured ones.
-  // The 25 colour locs themselves define the grid (cluster unique xs/ys, like the
-  // sliding blocks).
-  // EVERY loc named "Green/Yellow tile" carrying Imbue+Force (js5-16 audit,
-  // not just the Daemonheim-range three. Extra ids are harmless: the solver only fires
-  // when EXACTLY 25 of them sit in one room, so an unrelated tile cannot trigger it.
+  // Tile-flip puzzle (Lights Out): 5x5 of "Green/Yellow tile" locs with Imbue+Force; flipping one flips its + neighbours.
+  // Solver fires only when exactly 25 sit in one room. Solved over GF(2) by first-row enumeration for both target colours.
   const DUNG_LO_GREEN  = { 3873:1, 39859:1, 49638:1, 49639:1, 49640:1, 54065:1 };
   const DUNG_LO_YELLOW = { 3874:1, 39860:1, 49641:1, 49642:1, 49643:1, 54066:1 };
-  // Solve GF(2) by first-row enumeration (32 cases cover every solution) for BOTH
-  // target colours, keep the fewer-press one, and mark each press tile in-world,
-  // coloured by the target colour. Presses are order-independent; the marks
-  // recompute from live state as tiles flip, so done presses drop off on their own.
   const ftiles = (objs || []).filter(o => (DUNG_LO_GREEN[o.id] || DUNG_LO_YELLOW[o.id])
                                           && typeof o.x === 'number' && here(o));
   if (ftiles.length === 25) {
@@ -1910,10 +1266,10 @@ function dungReconcileScene(npcs, objs) {
         return bestP;
       };
       const toGreen = fsolve(state), toYellow = fsolve(state.map(v => v ^ 1));
-      let pickSol = toGreen, frgb = 0x5fd07a, ftgt = 'green';   // green target -> green marks
+      let pickSol = toGreen, frgb = 0x5fd07a, ftgt = 'green';
       if (toYellow && (!toGreen || toYellow.n < toGreen.n)) { pickSol = toYellow; frgb = 0xf0c419; ftgt = 'yellow'; }
       if (pickSol) {
-        let flbl = 'Flip each marked tile (any order) -> all ' + ftgt;   // one summary pill, rest plain boxes
+        let flbl = 'Flip each marked tile (any order) -> all ' + ftgt;
         for (let i = 0; i < 25 && marks.length < 16; i++) if (pickSol.press[i]) {
           marks.push({ x: fat[i].x, y: fat[i].y, plane: fat[i].plane || 0, label: flbl, rgb: frgb });
           flbl = '';
@@ -1921,17 +1277,8 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Ground the 16-pitch room grid on the START ROOM'S FURNITURE, not the smuggler --
-  // he wanders (measured at local (6,6), (6,7) and (7,7) on different floors). The
-  // start room's loc layout is FIXED but spawns in one of 4 rotations: fit the scene
-  // locs against the reference constellation under each rotation; the consensus
-  // translation IS the room's SW corner (16-vote consensus vs 2 for every
-  // wrong rotation). Reference calibrated by wall-touch on one floor,.
-  // NB: ids are theme furniture -- another floor THEME may need its own table.
-  // Re-fit EVERY reconcile (instances load the whole floor, so the start-room
-  // furniture is always in scene) and OVERWRITE dungFloorSW -- a stale anchor from a
-  // previous floor was drawing the player in the wrong room when the floor-reset
-  // detection missed the transition.
+  // Start-room constellation fit: vote the SW-corner translation under 4 rotations. Re-fit every reconcile
+  // (the whole floor is always in scene) and overwrite dungFloorSW.
   if (objs && objs.length) {
     const cand = objs.filter(o => DUNG_SW_REF[o.id] && typeof o.x === 'number');
     if (cand.length >= 6) {
@@ -1948,29 +1295,19 @@ function dungReconcileScene(npcs, objs) {
           if (votes[key] > bestN) { bestN = votes[key]; bestKey = key; }
         }
       }
-      if (bestN >= 6) {   // confident fit -> (re)set the anchor; a low-vote fit leaves the current one
+      if (bestN >= 6) {
         const p = bestKey.split(',').map(Number);
-        // ANCHOR MOVED -> EVERY CELL-KEYED CACHE IS NOW WRONG. Map cells are derived from
-        // this corner, so a shift silently re-points cached facts at different rooms:
-        // dungRoomRes would show a resource in the wrong room, dungKeyDoor would claim
-        // the wrong door needs a key. This is the "floor-reset detection missed the
-        // transition" case the re-fit exists to correct, so the caches it invalidates
-        // must go with it.
-        // Only the DERIVED caches are dropped -- the player's own marks are left alone
-        // rather than wiped on a fit that might yet prove spurious.
+        // anchor moved -> cell-keyed derived caches are wrong; the player's own marks are left alone
         if (dungFloorSW && (dungFloorSW.x !== p[0] || dungFloorSW.y !== p[1])) {
           dungRoomRes = {}; dungKeyDoor = {};
         }
         dungFloorSW = { x: p[0], y: p[1] };
-        dungSaveMarks();   // latch it immediately: the fit is only possible in the start room
+        dungSaveMarks();
       }
     }
   }
-  // Statues puzzle: statics 10942-10945 (north 5x5 grids) mark TARGET cells; pushables
-  // 10954-10957 (south grids) must be pushed to the SAME cell of their own grid.
-  // Room layout (measured, room-local from the SW corner): four 5x5
-  // grids at cols 1-5 west / 8-12 east, rows 1-5 south / 8-12 north, walkway cross at
-  // 6-7. Pairing 10954->10942, 10955->10943, 10956->10944, 10957->10945.
+  // Statues puzzle: statics (north 5x5 grids) mark target cells; pushables (south grids) go to the same cell of their
+  // own grid. Room-local grids at cols 1-5 west / 8-12 east, rows 1-5 south / 8-12 north, walkway at 6-7.
   dungStatues = null;
   if (dungFloorSW) {
     const gcell = l => { const c = l - (l >= 7 ? 8 : 1); return (c >= 0 && c <= 4) ? c : null; };
@@ -1978,12 +1315,11 @@ function dungReconcileScene(npcs, objs) {
     for (const pIdStr in DUNG_STATUE_PAIR) {
       const pId = +pIdStr, sId = DUNG_STATUE_PAIR[pIdStr];
       const pn = npcs.find(n => n.id === pId && typeof n.x === 'number' && here(n));
-      const sn = npcs.find(n => n.id === sId && typeof n.x === 'number' && here(n));   // same room: scene range sees neighbours
+      const sn = npcs.find(n => n.id === sId && typeof n.x === 'number' && here(n));
       if (!pn || !sn) continue;
       const pl = dungRoomOf(dungFloorSW, pn.x, pn.y), sl = dungRoomOf(dungFloorSW, sn.x, sn.y);
       const cur = [gcell(pl.lx), gcell(pl.ly)], tgt = [gcell(sl.lx), gcell(sl.ly)];
       if (cur[0] == null || cur[1] == null || tgt[0] == null || tgt[1] == null) continue;   // off-grid (mid-push?)
-      // target's WORLD tile: the pushable's room SW + its south-grid origin + target cell
       const swr = { x: dungFloorSW.x + DUNG_ROOM_PITCH * pl.rx, y: dungFloorSW.y + DUNG_ROOM_PITCH * pl.ry };
       rows.push({ id: pId, east: pl.lx >= 7, cur: cur, tgt: tgt,
                   tx: swr.x + (pl.lx >= 7 ? 8 : 1) + tgt[0], ty: swr.y + 1 + tgt[1],
@@ -1991,8 +1327,7 @@ function dungReconcileScene(npcs, objs) {
     }
     if (rows.length) dungStatues = rows;
   }
-  // Boss 9919: animation 13338 = the icicle attack -- flash a centre-screen dodge
-  // warning while it plays (independent side-channel, never blocks the guide chain)
+  // Boss 9919: anim 13338 = the icicle attack; centre-screen dodge warning while it plays
   {
     const iceBoss = npcs.find(n => n.id === 9919 && typeof n.x === 'number' && here(n));
     if (iceBoss && iceBoss.anim === 13338) {
@@ -2002,26 +1337,8 @@ function dungReconcileScene(npcs, objs) {
       try { bridge().centerText(myPid(), ''); } catch (e) {}
     }
   }
-  // Ghost KILL room, matched by ID FAMILY 10981-11000 (js5-18: ten
-  // combat-tier target/decoy pairs, all one model 21154. Verified pairs: 10987/10988,
-  // 10989/10990, 10993/10994 -- the target is ALWAYS the LOWEST Ghost id in the room
-  // (3/3 themes). Needs >= 2 ghosts with >= 2 distinct ids before guiding (a lone or
-  // uniform pack has nothing to pick between). NAME matching is banned here: the
-  // regular Daemonheim ghost MONSTERS (10821-10830) are also attackable "Ghost"s, and
-  // one prowling a NEIGHBOURING room both entered the pick and got boxed through the
-  // wall by the un-anchored needle.
-  // HELP-THE-GHOST ROOM. The ghost (npc 11246 -- a "Ghost" carrying TALK, not Attack,
-  // the only one in the game that does, js5-18 scan is the ROOM MARKER, not
-  // the objective. Talking to it is not the task (correcting an earlier
-  // "Talk to it" guide): the room is RESTORED by repairing its furniture and returning
-  // the ring.
-  //
-  //   Damaged pillar  Repair
-  //   Broken pot      Repair
-  //   Antique ring    ground item 19879 -> pick up -> Fill it into the Jewellery box
-  //
-  // All five theme variants of each loc are listed (cache-verified, one per
-  // theme family); the ring is item 19879 in every theme -- the only item so named.
+  // Help-the-ghost room: npc 11246 (the only Talk-action "Ghost") is the room marker, not the objective.
+  // Tasks: repair pillar and pot, pick up the ring (19879) and Fill it into the box, then the coffin.
   const talkGhost = npcs.find(n => n.id === 11246 && typeof n.x === 'number' && here(n));
   const ghostRoomHere = talkGhost
     || (objs || []).some(o => typeof o.x === 'number' && here(o) &&
@@ -2029,17 +1346,14 @@ function dungReconcileScene(npcs, objs) {
   if (ghostRoomHere) {
     const roomObjs = (objs || []).filter(o => typeof o.x === 'number' && here(o));
     const haveRing = dungInvCount(DUNG_GHOST_RING) > 0;
-    // Tiles that already carry a done-marker, per task. Keyed by tile because the two
-    // models share one, and a room can hold more than one pot or pillar.
-    const doneAt = { pot: {}, pillar: {}, box: {} };
+    const doneAt = { pot: {}, pillar: {}, box: {} };   // done-marker tiles per task
     for (const o of roomObjs) {
       const t = o.x + ',' + o.y;
       if (DUNG_GHOST_POT_DONE[o.id]) doneAt.pot[t] = 1;
       else if (DUNG_GHOST_PILLAR_DONE[o.id]) doneAt.pillar[t] = 1;
       else if (DUNG_GHOST_BOX_DONE[o.id]) doneAt.box[t] = 1;
     }
-    // The ring is a CHAIN: on the floor -> in the pack -> into the box. Guide only the
-    // step that is actually next, or the room reads as three simultaneous jobs.
+    // ring chain: floor -> pack -> box; only the next step is guided
     if (haveRing) {
       for (const o of roomObjs) if (DUNG_GHOST_BOX[o.id] && !doneAt.box[o.x + ',' + o.y])
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: 'Fill -- put the ring back', rgb: 0x33cc66 });
@@ -2048,7 +1362,6 @@ function dungReconcileScene(npcs, objs) {
         if (g && g.id === DUNG_GHOST_RING && typeof g.x === 'number' && here(g))
           marks.push({ x: g.x, y: g.y, plane: g.plane || 0, label: 'Take the antique ring', rgb: 0x33cc66 });
     }
-    // Repairs are independent of the ring chain, so they show alongside it.
     for (const o of roomObjs) {
       const t = o.x + ',' + o.y;
       if (DUNG_GHOST_PILLAR[o.id] && !doneAt.pillar[t])
@@ -2056,25 +1369,9 @@ function dungReconcileScene(npcs, objs) {
       else if (DUNG_GHOST_POT[o.id] && !doneAt.pot[t])
         marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: 'Repair the pot' });
     }
-    // THE COFFIN LAST -- once every task above is marked done, so the room guides in the
-    // order it is actually played: restore, then unlock.
+    // coffin last. Step read from live actions; snap (2x2 footprint) boxes the whole object.
+    // The Unlock variant never goes away, so an actionless coffin is the only completion signal.
     if (!marks.length) {
-      // SNAPPED, because the coffin is the only multi-tile object in this room (config
-      // footprint 2x2; pot, pillar and box are all 1x1, so their single-tile boxes are
-      // already right). A plain tile mark boxed one corner of it.
-      // `snap` makes the reader find the live object, take its loc footprint centred on
-      // the model's AABB, and draw one perimeter around the whole thing. The label's
-      // first line is the NAME it matches on; the leading '-' keeps that name out of the
-      // pill so only the instruction shows.
-      // DRIVEN BY THE LIVE ACTION, not by id. The id tables still gate the room and act
-      // as a fallback, but which STEP is outstanding is read from the object's own
-      // actions, so a theme whose ids are not catalogued still guides correctly.
-      //
-      // THE UNLOCK VARIANT NEVER GOES AWAY. After blessing, the tile still reads
-      // "Coffin 40181 - Unlock" alongside an ACTIONLESS "Coffin 55452".
-      // So Unlock-present cannot mean "still locked", and the actionless coffin is the
-      // only sound completion signal -- it is absent before unlocking, absent after
-      // unlocking, and appears only once blessed.
       const isCoffin = o => o.name === 'Coffin'
                          || DUNG_GHOST_COFFIN[o.id] || DUNG_GHOST_COFFIN_BLESS[o.id];
       const hasAct = (o, a) => (o.actions || []).some(x => x === a);
@@ -2082,8 +1379,7 @@ function dungReconcileScene(npcs, objs) {
       for (const o of roomObjs)
         if (isCoffin(o) && !(o.actions || []).length) coffinDone[o.x + ',' + o.y] = 1;
       const pend = f => roomObjs.filter(o => isCoffin(o) && f(o) && !coffinDone[o.x + ',' + o.y]);
-      // Bless supersedes Unlock: both sit on the tile once it is open, and blessing is
-      // then what is left.
+      // Bless supersedes Unlock (both sit on the tile once open)
       const bless = pend(o => hasAct(o, 'Bless-remains'));
       const coffins = bless.length ? bless : pend(o => hasAct(o, 'Unlock'));
       for (const o of coffins)
@@ -2093,18 +1389,14 @@ function dungReconcileScene(npcs, objs) {
                      snap: true, rgb: 0xffcc33 });
     }
     dungGuideTiles(marks);
-    // The ghost is only worth boxing while nothing else is left to do -- otherwise it
-    // draws the eye away from the objects that ARE the task.
     dungHighlightNpc(marks.length ? 0 : (talkGhost ? 11246 : 0),
                      marks.length ? '' : 'Nothing left to restore');
     return;
   }
-  // The kill room's ghosts, by the puzzle id family (see the comment block above).
+  // Ghost kill room: id family 10981-11000 (target/decoy pairs); the target is always the lowest Ghost id in the room.
+  // Name matching is unsafe (ghost monsters 10821-10830 are also "Ghost"). Needles carry a tile anchor.
   const ghosts = npcs.filter(n => n.id >= 10981 && n.id <= 11000 && typeof n.x === 'number' && here(n));
   const ghostNeedle = g => '#' + g.id + '|Kill this ghost|' + g.x + ';' + g.y + ';1';
-  // Needles carry the ghost's TILE anchor: '#id' alone lets the reader box any same-id ghost
-  // within scene range, including one in the next room.
-  // A LONE ghost has nothing to disambiguate, so it IS the target.
   if (ghosts.length === 1) {
     dungGuideTiles(marks);
     dungHighlightList([ghostNeedle(ghosts[0])]);
@@ -2122,83 +1414,46 @@ function dungReconcileScene(npcs, objs) {
   // Pondskater puzzle: 12091/12092/12093 are decoys; 12089 carries the key.
   const skater = npcs.find(n => n.id === 12089 && typeof n.x === 'number' && here(n));
   if (skater) { dungGuideTiles(marks); dungHighlightNpc(12089, 'Has the key'); return; }
-  // Read-and-arm statues room: 3 REFERENCE statues (one per row) tell the weapon;
-  // arm the SAME-Y armable with the combat-triangle counter. Reference trios share a
-  // weapon model in the cache (tail model): DC02 refs -> staff (11027 anchored live),
-  // DB0F refs = ranged -> sword (11030 anchored), DB2F refs = mage -> bow (by
-  // elimination). All three armables box at once, each labelled with its weapon.
+  // Read-and-arm statues room: reference statues (one per row) tell the weapon; arm the same-row armable with the
+  // combat-triangle counter. Reference id -> weapon to arm with.
   const DUNG_STATUE_READ = {
     11020: 'staff', 11027: 'staff', 11028: 'staff', 11029: 'staff',
     11021: 'sword', 11022: 'sword', 11023: 'sword', 11030: 'sword', 11031: 'sword', 11032: 'sword',
     11024: 'bow', 11025: 'bow', 11026: 'bow', 11033: 'bow', 11034: 'bow', 11035: 'bow',
-    // THEME SIBLINGS (js5-18 models: same statue bodies [55837,55842] and
-    // the SAME weapon tail models as the validated trios above -- 56322 staff,
-    // 56079 sword, 56111 bow -- so the mapping carries over 1:1.
+    // theme siblings (same weapon tail models)
     12108: 'staff', 12109: 'sword', 12110: 'bow', 12111: 'staff', 12112: 'sword', 12113: 'bow',
     13051: 'staff', 13052: 'sword', 13053: 'bow', 13054: 'staff', 13055: 'sword', 13056: 'bow',
   };
-  // "Arm" action families (js5-18): the original two, plus the theme siblings found
-  // when a 12095 room went unguided -- read-room single armables 12106 and
-  // 13049 (same body models as 11012-14), and the simple-room trios 12094-96 and
-  // 13057-59 (param-74 chains to their armed forms, exactly like 11036-44).
+  // "Arm" action npc families (js5-18)
   const DUNG_ARM_IDS = n => (n >= 11012 && n <= 11014) || (n >= 11036 && n <= 11044)
     || n === 12106 || n === 13049 || (n >= 12094 && n <= 12096) || (n >= 13057 && n <= 13059);
   const armables = npcs.filter(n => DUNG_ARM_IDS(n.id) && typeof n.x === 'number' && here(n));
-  // An ARMED statue takes a weapon-holding id IDENTICAL to a reference statue, so its
-  // own tile would then be read as a reference and mis-pair the remaining armables.
-  // Remember every tile that has held an armable this visit and exclude those from the
-  // reference pool; reset when the room is solved / left (no armables present).
+  // an armed statue re-ids to a reference id, so tiles that held an armable are excluded from the reference pool
   if (!armables.length) dungArmableTiles = {};
   for (const a of armables) dungArmableTiles[a.x + ',' + a.y] = 1;
   const readRefs = npcs.filter(n => DUNG_STATUE_READ[n.id] && typeof n.x === 'number' && here(n) && !dungArmableTiles[n.x + ',' + n.y]);
   if (readRefs.length && armables.length) {
-    // all armables can share ONE npc id (three 11012s), so each needle carries
-    // its statue's TILE anchor ("x;y" -- the csv-safe form) to box THAT instance's
-    // model AABB with the label above it, exactly like the quest NPC boxes.
+    // armables can share one npc id, so each needle carries its tile anchor ("x;y")
     const needles = [];
     for (const a of armables) {
-      // rooms rotate: refs pair with armables along EITHER axis (same y in one
-      // orientation, same x in the rotated one) -- exact match first, then +-1
+      // rooms rotate: refs pair along either axis, exact match first, then +-1
       const r = readRefs.find(rr => rr.y === a.y || rr.x === a.x)
              || readRefs.find(rr => Math.abs(rr.y - a.y) <= 1 || Math.abs(rr.x - a.x) <= 1);
       if (r) needles.push('#' + a.id + '|Arm with ' + DUNG_STATUE_READ[r.id] + '|' + a.x + ';' + a.y);
     }
     if (needles.length) { dungGuideTiles(marks); dungHighlightList(needles); return; }
   }
-  // Simple arm-statues room (no reference statues): cache says 11036-11044 are the
-  // armable "Statue" variants (the only ids with an Arm action; param 74 = the armed
-  // id each becomes). The required weapon is FIXED per pose id (11042 -> 11048 staff,
-  // ); fill in the others as observed live.
-  // CACHE-VERIFIED (js5-18 param 74 = the ARMED form each statue becomes;
-  // the raw param reads one byte early, so the id is value >> 8):
-  //   11036-38 -> 11051-53, 11039-41 -> 11045-47, 11042-44 -> 11048-50.
-  // Armed anchors are known -- 11051 sword, 11045 bow, 11048 staff -- so each
-  // triple's weapon follows, and both hardcoded entries (11036 sword,
-  // 11042 staff) fall out of it unchanged. 11039 had no entry, so the box just said
-  // "Arm this statue" when the answer was a bow ; confirmed
-  // independently by the room itself, where 11048 (magic) + 11051 (melee) were already
-  // armed, leaving Ranged as the missing style.
+  // Simple arm-statues room: weapon is fixed per pose id (js5-18 param 74 = the armed form, value >> 8).
   const DUNG_ARM_WEAPON = {
     11036: 'sword', 11037: 'sword', 11038: 'sword',   // -> 11051-53  melee
     11039: 'bow',   11040: 'bow',   11041: 'bow',     // -> 11045-47  ranged
     11042: 'staff', 11043: 'staff', 11044: 'staff',   // -> 11048-50  magic
-    // 12xxx/13xxx themes, PATTERN-FILLED (every theme maps
-    // its armable trio onto its armed-form block by the SAME permutation -- 1st
-    // armable -> 3rd form (sword), 2nd -> 1st form (bow), 3rd -> 2nd form (staff);
-    // that is exactly 11036-44's shape, the param-74 chains repeat it (12094 -> 12099,
-    // 12095 -> 12097, 12096 -> 12098; 13057 -> 13062, 13058 -> 13060, 13059 -> 13061),
-    // and the one live validation (12095 = bow) lands where the pattern predicts.
+    // 12xxx/13xxx themes, pattern-filled from the same permutation
     12094: 'sword', 12095: 'bow', 12096: 'staff',
     13057: 'sword', 13058: 'bow', 13059: 'staff',
   };
   const DUNG_ARM_STYLE = { sword: 'Melee', bow: 'Ranged', staff: 'Magic' };
-  // The other armable family (11012-11014) carries NO param 74, so it has no per-id
-  // answer. Fall back to the room itself: the ARMED statues present show two of the
-  // three styles and the unarmed one takes the missing one. Armed families (cache):
-  // 11045-47 bow, 11048-50 staff, 11051-53 sword. Only used when exactly one style is
-  // missing, so it never guesses.
-  // 12097-99 / 13060-62 follow the 11045/48/51 block order (bow, staff, sword) --
-  // same pattern fill as DUNG_ARM_WEAPON above; 12097 = bow is the  one.
+  // 11012-11014 carry no param 74: infer from the armed statues present when exactly one style is missing.
   const DUNG_ARMED_STYLE = id => (id >= 11045 && id <= 11047) ? 'bow'
                                : (id >= 11048 && id <= 11050) ? 'staff'
                                : (id >= 11051 && id <= 11053) ? 'sword'
@@ -2220,26 +1475,9 @@ function dungReconcileScene(npcs, objs) {
     dungHighlightNpc(armStatue.id, w ? 'Arm with a ' + w + ' (' + DUNG_ARM_STYLE[w] + ')' : 'Arm this statue');
     return;
   }
-  // Emotes puzzle: statue NPCs (10966) perform emotes; each player stands on a
-  // PRESSURE PAD (loc 52206) and copies ONLY the statue paired with THEIR pad -- the
-  // statue NEAREST that pad (the pairing lines run straight out from each pad to the
-  // statue on its row/column, which the nearest-statue rule reproduces under any
-  // room rotation). BROKEN statues (10972) mark the pads the current party size
-  // doesn't need, so pairing runs against working AND broken statues -- a pad whose
-  // nearest statue is broken never steals a farther working one, it's just "not
-  // needed". THREE THEMES x THREE STATES, not one flat block (js5-18 scan + live
-  // captures : ACTIVE 10966-10968 perform the emote; DONE 10969-10971 are the same
-  // statues at +3 once their emote is copied / the room completes (this floor's
-  // 10967 stood at the SAME tiles as 10970 after solving -- treating DONE as active
-  // kept the watch box + anim label up after the puzzle, ); BROKEN 10972-10974 mark
-  // pads the party size doesn't need. DONE and BROKEN both join the pairing set (a
-  // pad whose nearest statue is done/broken needs nobody), only ACTIVE is ever
-  // watched or numbered. No active statue left -> the block does not claim the room
-  // and the function tail clears the channels.
-  // Theme families from js5-18 (blocks anchored by the "Broken statue" ids 10972-74 /
-  // 12116 / 12962). The 121xx and 129xx themes ship only TWO non-broken ids each, so all
-  // active instances share one id (live-confirmed: an unsolved room shows two 12114s);
-  // the second id is the done re-id by positional analogy with the validated 109xx block.
+  // Emotes puzzle: each player stands on a pressure pad and copies the statue nearest that pad. Statue states:
+  // active (performs), done (+3 re-id once copied), broken (pads the party size doesn't need). Done and broken join
+  // the pairing set; only active is watched.
   const DUNG_EMOTE_STATUE = { 10966: 1, 10967: 1, 10968: 1, 12114: 1, 12960: 1 };
   const DUNG_EMOTE_DONE   = { 10969: 1, 10970: 1, 10971: 1, 12115: 1, 12961: 1 };
   const DUNG_EMOTE_BROKEN = { 10972: 1, 10973: 1, 10974: 1, 12116: 1, 12962: 1 };
@@ -2247,9 +1485,7 @@ function dungReconcileScene(npcs, objs) {
     (DUNG_EMOTE_STATUE[n.id] || DUNG_EMOTE_DONE[n.id] || DUNG_EMOTE_BROKEN[n.id])
     && typeof n.x === 'number' && here(n));
   if (emoteStatues.some(n => DUNG_EMOTE_STATUE[n.id])) {
-    // Every "Pressure pad" loc the cache ships for these rooms: 52206 (model 54793, the
-    // original theme), 54282 (59262, the 121xx theme), 35232/97487 (61706). Without the
-    // theme's pad id the watch fell back to "first statue" and boxed the wrong one.
+    // every "Pressure pad" loc id across themes
     const DUNG_EMOTE_PADS = { 52206: 1, 54282: 1, 35232: 1, 97487: 1 };
     const pads = (objs || []).filter(o => DUNG_EMOTE_PADS[o.id] && typeof o.x === 'number' && here(o));
     const nearest = (x, y) => {
@@ -2265,22 +1501,18 @@ function dungReconcileScene(npcs, objs) {
                               : emoteStatues.find(n => DUNG_EMOTE_STATUE[n.id]);
     if (watch && DUNG_EMOTE_STATUE[watch.id]) {
       const wk = watch.x + ',' + watch.y;
-      if (dungEmoteWatch !== wk) { dungEmoteWatch = wk; dungEmoteLast = -1; }   // new statue -> drop the stale latch
+      if (dungEmoteWatch !== wk) { dungEmoteWatch = wk; dungEmoteLast = -1; }
       if (typeof watch.anim === 'number' && watch.anim >= 0) dungEmoteLast = watch.anim;
       const opt = DUNG_EMOTE_ANIM[dungEmoteLast];
       if (opt) { try { PLUGIN_API['overlay.highlightOption'].run([opt], myPid()); } catch (e) {} }
       const prog = (dungMonoCharge != null && dungMonoCharge >= 0 && dungMonoCharge % 67 === 0) ? (dungMonoCharge / 67) : null;
       const lbl = (prog != null ? prog + '/3 done' : '')
         + (dungEmoteLast >= 0 ? (prog != null ? ' - ' : '') + (opt ? 'do: ' + opt : 'anim ' + dungEmoteLast) : '');
-      // tile-hinted needle so the box lands on this statue, not another one sharing the id
       dungGuideTiles(marks);
       dungHighlightList(['#' + watch.id + '|' + (lbl || 'Copy this statue') + '|' + watch.x + ';' + watch.y + ';1']);
       return;
     }
-    // Not standing on a pad: mark only the pads that MATTER, numbered. A pad paired to
-    // a broken statue (10972) needs nobody, and labelling those just crowded the room
-    // -- its absence says "not this one" well enough. The label is the bare number so
-    // positions can be called out.
+    // not on a pad: number only the pads paired to an active statue
     let padN = 0;
     for (const p of pads) {
       if (marks.length >= 16) break;
@@ -2291,41 +1523,18 @@ function dungReconcileScene(npcs, objs) {
     }
     dungGuideTiles(marks); dungHighlightList([]); return;
   }
-  // POLTERGEIST ROOM (cache scan +  mapping). NPC 11245 is
-  // the only "Poltergeist" in js5-18 -- no theme variants to chase. Loc families:
-  //   Sarcophagus 54078-54081  Read/Open -> NAMES the herb the censers want
-  //               54082-54085  (no action) = already read/opened
-  //   Herb patch  54074-54076  Harvest   -> the herb is picked from the CHAT options
-  //   Censer      54094-54097  Add herb  -> still empty
-  //               54098-54101  Light     -> filled, needs lighting
-  //               54102-54105  (no action) = lit, done
-  // NO id->herb TABLE. The inscription is the ONLY source; with no inscription
-  // read yet the room says READ THE SARCOPHAGUS, which is the honest next step.
-  // Interface-720 option order, and also the vocabulary the INSCRIPTION is matched
-  // against. Longest-first is not needed: no herb name contains another.
+  // Poltergeist room (npc 11245). Locs: Sarcophagus 54078-81 Read/Open, 54082-85 opened; Herb patch 54074-76 Harvest;
+  // Censer 54094-97 Add herb, 54098-101 Light, 54102-105 lit. The herb is named only by the sarcophagus inscription.
   const DUNG_POLT_HERBS = ['Corianger', 'Explosemary', 'Parslay',
-                          'Cardamaim', 'Papreaper', 'Slaughtercress'];
-  // The herb picker is the "SELECT AN OPTION" interface GROUP 720, not the chat box, so
-  // overlay.highlightOption -- which only reads the dialogue -- never saw it. Its option rows are TEXT comps on a stride of 3 (tree: 27 =
-  // "4. Cardamaim", 30 = "5. Papreaper", 33 = "6. Slaughtercress" -> comp 15 + 3n for
-  // option n), and interfaceComps already returns ABSOLUTE rects for this group (its
-  // panel origin is in kPanelOrigins), so the box is drawn straight with uiHighlight.
-  // The six harvested herbs carry a "#Consecrate" item action and sit at 19653-19658 in
-  // the SAME order as the interface-720 options (js5-19 scan; consecrating
-  // one yields "Consecrated herb" 19659, which is what a censer actually wants.
+                          'Cardamaim', 'Papreaper', 'Slaughtercress'];   // interface-720 option order
+  // herb items 19653-19658 (same order; "#Consecrate" action) -> Consecrated herb 19659, which the censer wants
   const DUNG_HERB_ITEM = { Corianger: 19653, Explosemary: 19654, Parslay: 19655,
                            Cardamaim: 19656, Papreaper: 19657, Slaughtercress: 19658 };
   const DUNG_HERB_DONE_ITEM = 19659;
-  // Loc 50114 (a plain farming patch) takes the herb patch's place at the SAME tiles
-  // once every herb is picked ( -- by then the 54074-76 patch
-  // is gone, so "no patch in the room" already means spent; kept here for recognition.
-  const DUNG_HERB_SPENT_LOC = 50114;
-  const DUNG_HERB_GROUP = 720;
+  const DUNG_HERB_SPENT_LOC = 50114;   // plain farming patch that replaces the herb patch once picked out
+  const DUNG_HERB_GROUP = 720;         // "SELECT AN OPTION" picker; text comps at 15 + 3n, interfaceComps gives absolute rects
   const DUNG_HERB_COMPS = [18, 21, 24, 27, 30, 33].join(',');   // options 1..6
-  // ALWAYS clear when not drawing -- the interface being CLOSED is the common
-  // case and the early return left the last box stranded on screen.
-  // uiHighlight is a SHARED single-rect channel (quest guides use it too), so only ever
-  // clear a box this panel put up: dungHerbHlLast tracks that.
+  // always clear when not drawing (the interface being closed is the common case)
   function dungHighlightHerb(herb) {
     let drew = false;
     try {
@@ -2349,10 +1558,7 @@ function dungReconcileScene(npcs, objs) {
     } catch (e) {}
     return drew;
   }
-  // Generic option-row matcher, shared with the hoardstalker take-list. Matches on TEXT
-  // and NEVER on the option NUMBER: these lists paginate, so the number shifts between
-  // pages. Does NOT clear on miss -- the caller decides, because a miss can legitimately
-  // mean "try the next page" rather than "nothing to draw".
+  // Option-row matcher by text (option numbers shift between pages). Does not clear on miss; the caller decides.
   function dungHighlightOptionText(group, comps, want, owner) {
     try {
       if (!want) return false;
@@ -2374,10 +1580,7 @@ function dungReconcileScene(npcs, objs) {
   {
     const inRoom = o => typeof o.x === 'number' && here(o);
     const polt      = npcs.find(n => n.id === 11245 && inRoom(n));
-    // Sarcophagi coexist per tile exactly like the censers: an OPENED one is listed as
-    // 54079 "Read, Open" AND 54083 (no action) at the same coordinates.
-    //. Group by tile, keep the most advanced state, and only carry forward
-    // the ones still to interact with -- so a finished room stops marking anything.
+    // states coexist per tile: group by tile and keep the most advanced state
     const sarcAt = {};                     // tile -> {st: 0 still shut | 1 opened, o}
     for (const o of (objs || [])) {
       if (!inRoom(o)) continue;
@@ -2388,17 +1591,10 @@ function dungReconcileScene(npcs, objs) {
     }
     const sarcs = [];
     for (const k in sarcAt) if (sarcAt[k].st === 0) sarcs.push(sarcAt[k].o);
-    // Same coexistence for the patch: loc 50114 (spent) shows up at the patch's own
-    // tiles once every herb is picked, so a patch tile carrying it is finished.
     const spentTiles = {};
     for (const o of (objs || [])) if (o.id === DUNG_HERB_SPENT_LOC && inRoom(o)) spentTiles[o.x + ',' + o.y] = 1;
     const patches   = (objs || []).filter(o => o.id >= 54074 && o.id <= 54076 && inRoom(o)
                                                && !spentTiles[o.x + ',' + o.y]);
-    // A censer's STATES COEXIST in the scene at one tile: once its herb is in, the same
-    // object is listed as 54095 "Add herb" AND 54099 "Light" at identical coordinates
-    // ( Filtering by id alone therefore kept telling you to
-    // add a herb to a censer that already had one. Group by TILE, keep the most
-    // ADVANCED state, and let that decide what the censer still needs.
     const censAt = {};                     // tile -> {st: 0 empty | 1 filled | 2 lit, o}
     for (const o of (objs || [])) {
       if (!inRoom(o)) continue;
@@ -2415,34 +1611,18 @@ function dungReconcileScene(npcs, objs) {
       else if (censAt[k].st === 1) censLight.push(censAt[k].o);
     }
     if (polt || sarcs.length || censEmpty.length || censLight.length) {
-      // THE HERB IS NAMED IN THE SARCOPHAGUS INSCRIPTION, NOT BY ITS LOC ID.
-      // Live proof : "Here lies Leif, posthumously honoured with the
-      // discovery of cardamaim." while the guide was saying Slaughtercress, because the
-      // id->herb table only ever had 54079 confirmed and any other sarcophagus fell
-      // through to the last match. Read the inscription the way the hoardstalker reads
-      // its riddle, and let the id table be a fallback only.
       let herb = dungPoltHerb;
       {
         const t = dungDlgText();
         const hit = t && DUNG_POLT_HERBS.find(h => t.indexOf(h.toLowerCase()) >= 0);
         if (hit) { dungPoltHerb = herb = hit; }
       }
-      // These locs are MULTI-TILE (cache: herb patch 2x1, sarcophagus 2x2, censer 1x1),
-      // so a bare tile mark boxes only the anchor corner. Prefixing the label with
-      // "-<loc name>" makes the overlay snap the box to that loc's real model AABB and
-      // hide the name line, so the box wraps the whole object and only the step text
-      // shows (the patch is 2x1).
-      // Filling and lighting run in PARALLEL, not as two phases: a censer can be lit as
-      // soon as ITS OWN herb is in, without waiting for the other three.
-      //. So every filled censer always carries its Light mark, whatever is
-      // still outstanding elsewhere in the room.
+      // multi-tile locs: the "-<loc name>" label prefix snaps the box to the model AABB and hides the name line.
+      // Filling and lighting run in parallel: a censer can be lit as soon as its own herb is in.
       for (const c2 of censLight)
         if (marks.length < 16) marks.push({ x: c2.x, y: c2.y, plane: c2.plane || 0, label: '-Censer\nLight', rgb: 0xe8b34b });
       if (censEmpty.length) {
-        // Three sub-steps for what is still empty, chosen by what is in the backpack:
-        //   raw herb held    -> CONSECRATE it (the item's own action)
-        //   consecrated held -> put it in a censer
-        //   neither          -> go harvest, and box the herb row in interface 720
+        // raw herb held -> Consecrate; consecrated held -> censer; neither -> harvest
         const herbItem = herb ? DUNG_HERB_ITEM[herb] : 0;
         const rawN = herbItem ? dungInvCount(herbItem) : 0;
         const doneN = dungInvCount(DUNG_HERB_DONE_ITEM);
@@ -2455,49 +1635,30 @@ function dungReconcileScene(npcs, objs) {
             if (marks.length < 16) marks.push({ x: c2.x, y: c2.y, plane: c2.plane || 0, label: '-Censer\nAdd herb', rgb: 0xe8b34b });
         } else {
           dungInvClear();
-          // Only box the patch once the herb is KNOWN. "Harvest the herb" is a step you
-          // cannot act on correctly yet -- picking the wrong one wastes the patch -- and
-          // showing it alongside the sarcophagus prompt just buried the step that
-          // actually unblocks you. Same rule as the crystal pads: mark only what is
-          // actionable.
+          // box the patch only once the herb is known (picking the wrong one wastes the patch)
           if (herb) for (const p2 of patches)
             if (marks.length < 16) marks.push({ x: p2.x, y: p2.y, plane: p2.plane || 0,
               label: '-Herb patch\nHarvest ' + herb + ' x' + censEmpty.length, rgb: 0x5fd07a });
-          if (herb) dungHighlightHerb(herb);   // interface 720, not the chat box
-          // herb unknown -> read a sarcophagus; that is the step that names it
+          if (herb) dungHighlightHerb(herb);
           if (!herb) for (const sc of sarcs)
             if (marks.length < 16) marks.push({ x: sc.x, y: sc.y, plane: sc.plane || 0, label: '-Sarcophagus\nRead: it names the herb', rgb: 0x5ab8f0 });
         }
       } else {
-        dungHerbClear('herb'); dungInvClear();   // nothing left to gather
-        // Every censer LIT (state 2 = the 54102-54105 family, e.g. 54103 seen live) ->
-        // the sarcophagus is the payoff: Open it.
+        dungHerbClear('herb'); dungInvClear();
+        // every censer lit -> Open the sarcophagus
         const censKeys = Object.keys(censAt);
         if (censKeys.length && censKeys.every(k => censAt[k].st === 2))
           for (const sc of sarcs)
             if (marks.length < 16) marks.push({ x: sc.x, y: sc.y, plane: sc.plane || 0, label: '-Sarcophagus\nOpen it', rgb: 0x5fd07a });
       }
-      // The step text belongs on the OBJECT you click, once. Repeating it on the
-      // poltergeist box just doubled the same sentence on screen,
-      // so the NPC carries no label while the room is about the censers.
       dungGuideTiles(marks);
       dungHighlightNpc(0);
       return;
     }
   }
-  // PEDESTAL ROOM (js5-16 scan); every family runs in FOURS):
-  //   Pedestal 54110-54113 idle | 54114-54117 ACTIVATED (2x2, no action either way;
-  //            solved capture shows 54111 and 54115 live together on the same tile)
-  //   Pillar   54118-54121 base | 54122-54125 "Fix" (broken) | 54126-54129 (no action)
-  //   Rubble   54130-54133 + 54138-54141 "Mine" (blocking) | 54134-54137 + 54142-54145 (cleared)
-  // A broken pillar is listed AT THE SAME TILE as its base (capture: 54119 and
-  // 54123 both live at 12330,666), exactly like the poltergeist censers -- so decide
-  // per TILE and let a "done" id at that tile suppress the actionable one.
-  // CONFIRMED by the solved-room capture, and the two families behave DIFFERENTLY:
-  //   pillars  -> the Fix id DISAPPEARS and 54127 appears;
-  //   rubble   -> 54131 STAYS AND KEEPS ITS "Mine" ACTION while 54135 appears.
-  // So the done-tile suppression is load-bearing: without it the guide would go on
-  // telling you to mine rubble that is already cleared.
+  // Pedestal room (js5-16): Pedestal 54110-13 idle | 54114-17 activated; Pillar 54118-21 base | 54122-25 Fix | 54126-29 done;
+  // Rubble 54130-33 + 54138-41 Mine | 54134-37 + 54142-45 cleared. Cleared rubble keeps its Mine action, so done-tile
+  // suppression is load-bearing.
   {
     const inR = o => typeof o.x === 'number' && here(o);
     const isPed      = o => o.id >= 54110 && o.id <= 54117;
@@ -2505,32 +1666,20 @@ function dungReconcileScene(npcs, objs) {
     const isFixDone  = o => o.id >= 54126 && o.id <= 54129;
     const isMine     = o => (o.id >= 54130 && o.id <= 54133) || (o.id >= 54138 && o.id <= 54141);
     const isMineDone = o => (o.id >= 54134 && o.id <= 54137) || (o.id >= 54142 && o.id <= 54145);
-    // PER FAMILY, not one shared map. A single doneTile meant a CLEARED-RUBBLE marker
-    // suppressed a broken PILLAR sharing that tile, and a FIXED-PILLAR marker suppressed
-    // uncleared rubble -- the two families genuinely do share tiles in this room, and the
-    // marker only ever speaks for its own kind.
+    // per family: pillars and rubble share tiles, and a marker only speaks for its own kind
     const fixDone = {}, mineDone = {};
     for (const o of (objs || [])) {
       if (!inR(o)) continue;
       if (isFixDone(o)) fixDone[o.x + ',' + o.y] = 1;
       else if (isMineDone(o)) mineDone[o.x + ',' + o.y] = 1;
     }
-    // the live ACTION is the game's own statement of what is still to do, so require it
     const act = (o, a) => (o.actions || []).some(x => x === a);
-    //...but an action is NOT enough here. A cleared loc can stay in the worldview still
-    // advertising "Mine" while nothing is drawn ("they are actually
-    // showing in scene with the action... there must be something saying they arent
-    // actually visible"). `vis` is the reader's report of whether the object has a live
-    // rendered model, derived from a non-degenerate model AABB -- the same test the guide
-    // code uses before it will draw a 3D box at all.
-    // Tri-state on purpose: undefined means an older reader that does not publish the
-    // field, and that must read as visible rather than silently blanking every mark.
+    // vis = reader's report of a live rendered model (non-degenerate AABB); undefined = older reader, treat as visible
     const shown = o => o.vis !== false;
     const fixes = (objs || []).filter(o => isFix(o) && inR(o) && !fixDone[o.x + ',' + o.y] && act(o, 'Fix') && shown(o));
     const mines = (objs || []).filter(o => isMine(o) && inR(o) && !mineDone[o.x + ',' + o.y] && act(o, 'Mine') && shown(o));
     const peds  = (objs || []).filter(o => isPed(o) && inR(o));
     if (peds.length || fixes.length || mines.length) {
-      // rubble first: it is what blocks the way to the pillars
       for (const o of mines)
         if (marks.length < 16) marks.push({ x: o.x, y: o.y, plane: o.plane || 0, label: '-Rubble\nMine to clear', rgb: 0xe8b34b });
       for (const o of fixes)
@@ -2540,45 +1689,16 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // SEEKER SENTINEL ROOM -- GAZE LINE, CALIBRATION BUILD.
-  // Sentinel npc 10941 rotates on the spot; four "Seeker spawn" (Subdue) patrol the
-  // corners. The sentinel's facing comes from the reader as `face`, a heading in
-  // degrees derived from its yaw quaternion (see Reader.cpp).
-  //
-  // NO OFFSET. The +45 that two calibration readings seemed to demand was not a
-  // coordinate offset at all -- it was the reader sampling the LAGGING quaternion
-  // (sec+0x1D0). Reader.cpp now reads the leading one (sec+0x1E0), which is the live
-  // facing, so the heading is already correct.
+  // Seeker sentinel room: the sentinel rotates on the spot (facing = reader `face`, degrees from the leading yaw
+  // quaternion, no offset needed); four "Seeker spawn" (Subdue) patrol the corners.
   const DUNG_SENTINEL = { 10941: 1, 25128: 1 };   // both npcs named 'Seeker sentinel'
   const DUNG_GAZE_OFFSET = 0;
-  // He blocks a whole SECTION of the room, not a straight line, so
-  // the gaze is a CONE. Half-angle is a calibration constant like the offset was: 45
-  // gives a 90-degree quadrant, which matches "that entire section" for a room split
-  // into four. Narrow or widen it once the drawn wedge is compared against the game.
-  // EIGHT EQUAL SECTIONS, so the wedge is 45 degrees TOTAL:
-  // half-angle 22.5. The previous 45 gave a 90-degree quadrant, and a 90-degree wedge
-  // measured over Chebyshev rings is literally a SQUARE on a diagonal facing -- which is
-  // the square that showed up on SE.
-  // Room is 14x14 with the sentinel at its centre, so reach is ~7 tiles to the wall.
-  const DUNG_GAZE_LEN  = 9;   // walked from the CENTRE, so the body clip eats the
-                              // first tile or two; 9 puts ~8 usable tiles on each
-                              // line, which is the most 16 marks allows for two.
+  // gaze is a 45-degree cone (eight room sections); 9 tiles from the centre gives ~8 usable per line within 16 marks
+  const DUNG_GAZE_LEN  = 9;
   const DUNG_GAZE_HALF = 22.5;
-  // Footprint comes from the npc feed (`size`, cache opcode 12) -- never assumed. The
-  // cache decoder keeps opcode 12 and the
-  // reader publishes it. Origin = the model CENTRE, and the ray starts clear of the
-  // model so it does not draw over him ("starting at 2 tiles so it
-  // looks cleaner").
-  // The four "Seeker spawn" patrollers: subdue each one WHILE IT FACES AWAY and the
-  // sentinel's gaze is elsewhere. A subdued spawn drops its Subdue
-  // action (same tell as the coloured ferrets losing Scare). Matched by name as well
-  // as id so a theme sibling (the 25128-sentinel floors) still matches.
+  // Subdue a spawn while it faces away and the gaze is elsewhere; a subdued spawn drops its Subdue action.
   const DUNG_SEEKER_SPAWN = { 10933: 1, 10935: 1, 10938: 1, 10939: 1 };
-  // Turn cadences, in ms (game tick 600ms): the sentinel re-aims every 5 ticks; a spawn
-  // patrols in 4-TICK LEGS and changes direction at the end of EVERY leg -- the
-  // straight-line model (turns only at the far extremes, every 8 ticks) ran a constant
-  // one-leg (~2.7s) late on every turnaround. The stamp period is a
-  // fallback only; the real countdown walks to a LEARNED turn tile (see turnEta).
+  // sentinel re-aims every 5 ticks; a spawn patrols in 4-tick legs, turning at the end of every leg (fallback period only)
   const DUNG_SENT_TURN_MS = 5 * 600, DUNG_SPAWN_TURN_MS = 4 * 600;
   {
     const sent = npcs.filter(n => DUNG_SENTINEL[n.id] && typeof n.x === 'number' && here(n));

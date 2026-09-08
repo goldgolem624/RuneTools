@@ -14,8 +14,7 @@ struct Header {
 };
 
 struct Response {
-    // `ok` means the request reached the server. `status` may still be
-    // 4xx/5xx; transport failures (DNS/TLS/timeout) set `ok=false`.
+    // `ok` = reached the server (status may still be 4xx/5xx); transport failures clear it.
     bool        ok      = false;
     int         status  = 0;
     std::string body;
@@ -30,51 +29,37 @@ Response PostJson(const std::wstring& host,
                   const std::vector<Header>& headers,
                   const std::string& body);
 
-// GET https://host<path>; body returned in-memory (1 MB cap) -- for small JSON
-// like the update manifest. Same TLS/headers as PostJson.
+// GET https://host<path> to memory, 1 MB cap.
 Response Get(const std::wstring& host,
              const std::wstring& path,
              const std::vector<Header>& headers);
 
-// GET https://host<path> to memory with a configurable cap and captured response
-// headers -- for plugin bundles: the bytes are hashed/verified and the
-// X-Plugin-Signature/Hash/Version headers are read.
+// GET https://host<path> to memory with a configurable cap and captured response headers.
 Response Fetch(const std::wstring& host,
                const std::wstring& path,
                const std::vector<Header>& headers,
                std::size_t max_bytes = 16u * 1024 * 1024);
 
-// GET https://host<path> streamed to `dest_path` on disk (no size cap) -- for the
-// update download. `on_progress(received, total)` fires per chunk (total is 0 if
-// the server sends no Content-Length). `.ok && .status==200` means fully written;
-// a partial/failed file is deleted. Overwrites dest_path.
+// GET https://host<path> streamed to `dest_path` (no cap). `total` is 0 without Content-Length.
+// `.ok && .status==200` means fully written; a partial or failed file is deleted.
 Response Download(const std::wstring& host,
                   const std::wstring& path,
                   const std::vector<Header>& headers,
                   const std::wstring& dest_path,
                   const std::function<void(long long, long long)>& on_progress);
 
-// GET https://host<path> as a LONG-LIVED stream (e.g. Server-Sent Events). `on_data(data,len)`
-// is invoked per chunk AS bytes arrive; return false to abort. Blocks until the server closes the
-// connection (or on_data aborts), so run on a worker thread and reconnect in a loop. The session
-// receive timeout (120s) means a stream must produce data (e.g. an SSE heartbeat) within that
-// window or it returns and the caller reconnects.
-// `on_status(code)` fires once, after the response headers land and BEFORE any body bytes reach
-// on_data; return false to abort (Response keeps .status, .ok stays false). Without it a 429/5xx
-// error body would stream into the caller's parser and the completed drain would look like a
-// clean end (.ok == true).
+// Long-lived GET stream (SSE). Blocks until the server closes, on_data returns false, or the
+// 120s receive timeout hits. `on_status` fires before any body bytes; return false to abort
+// (.ok stays false) so error bodies never reach on_data.
 Response Stream(const std::wstring& host,
                 const std::wstring& path,
                 const std::vector<Header>& headers,
                 const std::function<bool(const char*, std::size_t)>& on_data,
                 const std::function<bool(int)>& on_status = nullptr);
 
-// Bounded fire-and-forget worker for one-shot network jobs (reports, cache refreshes).
-// 2 workers, queue capped at 64: a burst (e.g. many uncached hiscore names) no longer
-// spawns a thread per request. When full the OLDEST job is dropped (logged once).
-// Jobs run under try/catch so a throw cannot terminate the launcher. Started lazily.
+// Fire-and-forget worker pool: 2 workers, queue capped at 64, oldest job dropped when full.
 void Enqueue(std::function<void()> job);
-// Stops the workers (pending jobs are discarded). Call once on exit; safe if never started.
+// Stops the workers, discarding pending jobs. Safe if never started.
 void Shutdown();
 
 }  // namespace rtx::launcher::http

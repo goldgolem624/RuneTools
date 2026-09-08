@@ -14,16 +14,12 @@ struct ArchiveEntry {
     int largest_file_id = -1;            // max element of valid_file_ids
 };
 
-// Parsed reference table for one cache index. The reference table is a
-// per-index manifest -- it tells us which archives exist, how many files
-// each one has, and (optionally) names. Stored in the SQLite `cache_index`
-// table at KEY=1; the bytes are zlib-wrapped via the same JagexContainer.
+// Per-index manifest: which archives exist, files per archive, optional names.
+// Stored zlib-wrapped in the SQLite `cache_index` table at KEY=1.
 
 class ReferenceTable {
 public:
-    // `index_id` is unused (diagnostics only). `default_file_count` is the
-    // per-archive file count to assume when the table doesn't encode one
-    // (0 = use highest-seen file id + 1).
+    // default_file_count: assumed per-archive file count when not encoded (0 = highest id + 1).
     ReferenceTable(int index_id,
                    const std::vector<std::uint8_t>& zlib_wrapped_blob,
                    int default_file_count);

@@ -8,8 +8,7 @@
 
 #pragma comment(lib, "bcrypt.lib")
 
-// Stable per-machine secret used locally to seal at-rest data (the saved-
-// accounts vault and the bank cache). Never sent over the network.
+// Per-machine secret for sealing at-rest data; never sent over the network.
 // SHA-256(volumeSerial(C:) | MachineGuid | computerName), 64 hex chars.
 
 namespace rtx::shared {
@@ -71,10 +70,7 @@ inline std::string Sha256Hex(const std::string& data) {
         return {};
     }
     UCHAR digest[32]{};
-    // One-shot BCryptHash: no separate hash-object buffer to size. The
-    // older BCryptCreateHash path with a hardcoded 256-byte object fails
-    // when the SHA implementation's object exceeds that, falling back
-    // to the all-'f' sentinel.
+    // One-shot BCryptHash avoids sizing a hash-object buffer.
     NTSTATUS st = BCryptHash(
         hAlg, nullptr, 0,
         reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
@@ -105,8 +101,7 @@ inline const std::string& GetMachineFingerprint() {
         raw += detail::ComputerNameUtf8();
         cached = detail::Sha256Hex(raw);
         if (cached.empty()) {
-            // Hash unexpectedly failed; use a sentinel so we don't
-            // accidentally pin a key to an all-zeros fingerprint.
+            // Sentinel: never pin a key to an all-zeros fingerprint.
             cached.assign(64, 'f');
         }
     });

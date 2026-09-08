@@ -24,7 +24,7 @@ namespace rtx::launcher {
 // ---- one-click self-update ----------------------------------------------
 static constexpr wchar_t kDownloadPath[] = L"/api/client/download-update";
 
-// Running launcher version from the exe's own VERSIONINFO (app.rc FILEVERSION), the single source of truth.
+// Running version from the exe's VERSIONINFO (app.rc FILEVERSION).
 std::string running_version() {
     wchar_t path[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, path, MAX_PATH)) {
@@ -47,7 +47,6 @@ std::string running_version() {
     return kAppVersion;
 }
 
-// Minimal JSON string-field reader (find "key":"value"); the backend response is flat enough for that.
 std::string json_str(const std::string& body, const char* key) {
     std::string pat = std::string("\"") + key + "\"";
     size_t k = body.find(pat);
@@ -66,7 +65,6 @@ std::string json_str(const std::string& body, const char* key) {
     return out;
 }
 
-// SHA-256 of a file as lowercase hex ("" on failure); verifies a download against the manifest hash.
 std::string sha256_hex(const std::wstring& file) {
     HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -105,8 +103,7 @@ static void set_upd(const char* phase, int pct, const std::string& detail) {
     g_upd_phase = phase; g_upd_pct = pct; g_upd_detail = detail;
 }
 
-// Worker: fetch manifest -> download the build -> verify -> run the per-user installer silently ->
-// exit so it can replace the launcher's files (the installer relaunches it).
+// Worker: manifest -> download -> verify -> silent installer -> exit (the installer relaunches).
 static void run_update() {
     struct Done { ~Done() { g_upd_running = false; } } done;
     auto log = [](const std::string& m) { rtx::log::Launcher("[update] " + m); };
@@ -142,9 +139,7 @@ static void run_update() {
         }
     }
 
-    // ANTI-DOWNGRADE: a compromised (or replayed) manifest must not be able to push an
-    // older, vulnerable build. Dotted-numeric compare; a manifest version <= what is
-    // already running is never an update.
+    // Anti-downgrade: a manifest version <= running is never an update.
     {
         auto parts = [](const std::string& s) {
             std::vector<long> v; long cur = 0; bool any = false;
@@ -164,8 +159,7 @@ static void run_update() {
         }
     }
 
-    // Random destination name: a fixed %TEMP% path was a predictable target for a
-    // same-user swap between verification and launch.
+    // Random destination name: a fixed path would be a swap target.
     wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
     wchar_t rnd[24] = {};
     {
@@ -182,10 +176,7 @@ static void run_update() {
     log("download ok=" + std::to_string(dl.ok) + " status=" + std::to_string(dl.status) + " detail=" + dl.detail);
     if (!dl.ok || dl.status != 200) { log("abort: download failed"); set_upd("error", 0, "Download failed"); return; }
 
-    // FAIL CLOSED. A manifest without a usable hash used to skip verification and run the
-    // downloaded exe anyway, which made "omit the hash" a way to turn verification off - the one
-    // thing an attacker who could serve the manifest would do first. client_versions.hash is NOT
-    // NULL server-side, so a missing hash is a broken manifest, never a normal update.
+    // Fail closed: a manifest without a hash is broken, never a normal update.
     set_upd("verifying", 100, "Verifying");
     if (hash.size() != 64 || hash.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
         DeleteFileW(dest.c_str());
@@ -193,9 +184,7 @@ static void run_update() {
         set_upd("error", 0, "Update verification failed");
         return;
     }
-    // TOCTOU guard: hold a read handle with FILE_SHARE_READ ONLY (no write, no
-    // delete sharing) from before hashing until after the installer has launched.
-    // Nobody can swap or modify the verified bytes while this handle is open.
+    // TOCTOU guard: FILE_SHARE_READ only, held from before hashing until the installer is running.
     HANDLE guard = CreateFileW(dest.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (guard == INVALID_HANDLE_VALUE) {
@@ -216,8 +205,7 @@ static void run_update() {
 
     set_upd("launching", 100, "Installing v" + ver);
 
-    // Inno postinstall [Run] entries don't fire under /VERYSILENT; the dual [Run]
-    // in RuneToolsX.iss handles the silent relaunch.
+    // Inno postinstall [Run] does not fire under /VERYSILENT; RuneToolsX.iss handles the relaunch.
     std::wstring instlog = rtx::log::LogDir();
     if (!instlog.empty() && instlog.back() != L'\\' && instlog.back() != L'/') instlog += L'\\';
     instlog += L"installer.log";
@@ -232,11 +220,9 @@ static void run_update() {
     if (code <= 32) { CloseHandle(guard); log("abort: ShellExecuteW failed (<=32)"); set_upd("error", 0, "Couldn't start the installer"); return; }
     Sleep(1500);          // let the installer spin up before this process releases its files
     CloseHandle(guard);   // the installer is running from the verified bytes now
-    // Must be TerminateProcess, NOT ExitProcess: ExitProcess runs module detach callbacks, which can
-    // deadlock with the Ultralight/GPU/SSE threads live -- the process then hangs, keeps the exe locked,
-    // and the update silently fails. TerminateProcess exits instantly.
+    // TerminateProcess, not ExitProcess: DLL detach can deadlock with live Ultralight/GPU threads.
     log("exiting now (TerminateProcess) so the installer can replace our files");
-    rtx::log::BeginShutdown();   // suppress crash reports from threads killed by the terminate below
+    rtx::log::BeginShutdown();
     TerminateProcess(GetCurrentProcess(), 0);
 }
 

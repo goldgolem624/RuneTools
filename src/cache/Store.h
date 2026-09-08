@@ -8,16 +8,13 @@
 
 namespace rtx::cache {
 
-// Registry of the jcache indexes we open. Each index is identified by its
-// numeric id (e.g. 19 for items); add new ones by calling `Add` at boot.
+// Registry of opened jcache indexes, keyed by numeric index id.
 class Store {
 public:
     explicit Store(std::string cache_root)
         : cache_root_(std::move(cache_root)) {}
 
-    // Opens `<cache_root>/js5-<index_id>.jcache` if it exists, parses the
-    // reference table. Returns false on any failure (missing file, bad
-    // schema, decompression error).
+    // Opens `<cache_root>/js5-<index_id>.jcache` and parses the reference table; false on failure.
     bool Add(int index_id, int default_files_per_archive);
 
     SqliteIndexFile* Get(int index_id) const;

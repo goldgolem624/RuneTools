@@ -59,8 +59,7 @@ std::wstring widen(const std::string& s) {
     return w;
 }
 
-// "https://host/path" -> host, path. Only runescape.com hosts are accepted (the server
-// already filters, this is the client's own check).
+// "https://host/path" -> host, path. Only runescape.com hosts are accepted.
 bool split_cdn_url(const std::string& url, std::wstring& host, std::wstring& path) {
     if (url.rfind("https://", 0) != 0) return false;
     auto slash = url.find('/', 8);
@@ -75,10 +74,8 @@ bool split_cdn_url(const std::string& url, std::wstring& host, std::wstring& pat
     return true;
 }
 
-// Resample a cover to `width` with WIC's high-quality scaler and re-encode it as JPEG. The
-// engine scales images with a plain bilinear filter, so handing it a 1200 px PNG for a
-// 220 px card came out soft and aliased; a properly filtered downscale looks crisp and is a
-// fraction of the bytes. Returns "" on any failure (the caller then keeps the original).
+// Resample a cover to `width` with WIC and re-encode as JPEG (the engine's own bilinear scaler
+// aliases). "" on failure.
 std::string resample_cover(const std::string& bytes, UINT width) {
     using Microsoft::WRL::ComPtr;
     ComPtr<IWICImagingFactory> f;
@@ -142,9 +139,7 @@ std::string fetch_cover(const std::string& url, UINT width) {
     return "data:" + type + ";base64," + base64(r.body);
 }
 
-// The document carries "image":"https://..." per item. Replace the first few with data URLs
-// so the page can show covers without any network access of its own. String surgery on
-// purpose: the URLs are exact substrings the server emitted, no JSON parser needed.
+// Replace the first few "image":"https://..." values with data URLs (string surgery, no JSON parser).
 std::string inline_covers(std::string doc) {
     const std::string key = "\"image\":\"";
     std::size_t pos = 0; int done = 0;
@@ -172,7 +167,7 @@ void refresh_news() {
         rtx::log::Launcher("news: fetch failed (ok=" + std::to_string(r.ok) + " status=" + std::to_string(r.status) + ")");
         return;
     }
-    // Publish the text first so the page has headlines within a second; covers follow.
+    // Text first, covers follow.
     { std::lock_guard<std::mutex> lk(g_news_mu); g_news_json = r.body; }
     std::string with_covers = inline_covers(r.body);
     std::lock_guard<std::mutex> lk(g_news_mu);
@@ -185,7 +180,6 @@ void news_loop() {
         refresh_news();
         bool have = false;
         { std::lock_guard<std::mutex> lk(g_news_mu); have = g_news_json.size() > 2; }
-        // A failed first fetch (offline at boot) retries quickly, then settles to the slow poll.
         const int delay = have ? kRefreshMs : 20'000;
         for (int slept = 0; slept < delay; slept += 1000)
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));

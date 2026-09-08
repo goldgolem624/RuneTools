@@ -1,8 +1,5 @@
 #pragma once
-//
-// Launcher <-> companion contract for GROUND ITEMS (dropped stacks on a tile,
-// scene entity TYPE 3; separate section from rtx::scene locs). Companion publishes
-// item id + tile; launcher resolves names from the item cache. Plain C-layout POD.
+// Launcher <-> companion contract for ground items (scene entity type 3).
 
 #include <cstdint>
 
@@ -23,7 +20,6 @@ inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
     out[i] = 0;
 }
 
-// One ground-item stack. Names resolve launcher-side from the item cache by `id`.
 struct Item {
     std::int32_t id;      // item config id
     std::int32_t x;       // world tile X
@@ -31,8 +27,6 @@ struct Item {
     std::int32_t plane;   // 0..3
 };
 
-// Header + inline item array. `seq` goes odd before a write, even after; reader
-// retries while odd or if it changed across the copy.
 struct Share {
     std::uint32_t magic;      // kMagic once initialised
     std::uint32_t version;    // kVersion

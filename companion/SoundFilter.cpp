@@ -1,40 +1,12 @@
 // In-client sound observation and muting (see SoundFilter.h / SoundShare.h).
-//
-// Hook target is the engine's shared sound-play function, reached from every CS2 op that starts
-// a sound. Build 950-1 changed its shape (949-5 and earlier had 13 args and returned void):
-//
-//   PLAY(subsystem, ctx, kind, id, loops, volume, group, a8, ..., flag)  // 15 args, returns
-//         rcx       rdx  r8w   r9d  +0x20  +0x28   +0x30                  // the sound object
-//
-// The callers pass the subsystem twice (rcx and rdx), `delay` is no longer an argument (the
-// caller stores it on the returned object at +0xB4 afterwards), and a trailing byte flag was
-// added. Everything else kept its order, shifted one slot right.
-//
-// `id` is the js5 archive id - the same id the Sounds panel lists and plays - and `group` is
-// the engine's own source tag: 6 = sound effects (js5-14), 8 = vorbis/music (js5-40).
-//
-// MUTING SETS volume TO 0 AND CALLS THROUGH. Nothing is written into the client's memory. A
-// zero volume is not a special case invented here: SOUND_SYNTH hardcodes 0xFF while
-// SOUND_SYNTH_VOLUME passes whatever the script chose, so the engine already drives the full
-// range of this exact argument. All of its own bookkeeping still runs.
-//
-// This replaced an earlier hook on the audio MIXER that zeroed decoded sample buffers. That
-// crashed the client twice - it wrote over fields that are only a right-channel buffer for
-// STEREO chunks, and js5-14 effects are mono - and it could not have worked anyway: the id
-// available at the mix point is a per-voice handle (six-digit values against a js5-14 space
-// ending near 7.4k), so muted sounds leaked through the voices that were not muted.
-//
-// --- how the target is located -------------------------------------------------------------
-// NOT by opcode number: the CS2 opcode scramble was re-shuffled after build 949, so the old
-// numbers name different ops now (SOUND_SYNTH was opcode 1522 on 949, 168 on 949-5, 297 on 950-1).
-// NOT by a hardcoded address: those move every build.
-//
-// Instead, scan for the SOUND_SYNTH handler's body and decode the call it makes. That
-// self-locates PLAY even when PLAY itself moves. The pattern is 151 bytes and matches EXACTLY
-// ONCE in .text (verified against the 950-1 binary; the 949 body was 125 bytes and is gone).
-//
-// Everything here runs on whichever thread started the sound. No allocation, no locks: while
-// the panel is closed the detour is one relaxed load and a branch.
+// Hook: the engine's shared sound-play function, 950-1 shape (949-5 had 13 args, void):
+//   PLAY(subsystem, ctx, kind, id, loops, volume, group, a8, ..., flag)  15 args, returns the sound object
+//         rcx       rdx  r8w   r9d  +0x20  +0x28   +0x30
+// id = js5 archive id; group = engine source tag, 6 = effects (js5-14), 8 = vorbis/music (js5-40).
+// Muting sets volume to 0 and calls through (SOUND_SYNTH_VOLUME already drives that argument).
+// Located by scanning the SOUND_SYNTH handler body (op 297 on 950-1; opcodes reshuffle per build)
+// and decoding the CALL it makes. Pattern is 151 bytes, matches exactly once in .text.
+// Runs on whichever thread started the sound; no allocation, no locks.
 
 #include "SoundFilter.h"
 #include "SoundShare.h"
@@ -48,8 +20,7 @@
 namespace rtx::soundfilter {
 namespace {
 
-// 15 args, returns the sound object (or null) - taken from the 950-1 call sites, which all
-// consume rax afterwards. All 15 are forwarded verbatim and the return value passed back.
+// 15 args, returns the sound object or null (950-1 call sites consume rax).
 typedef std::uint64_t(__fastcall* Play_t)(std::uint64_t, std::uint64_t, std::uint32_t,
                                           std::int32_t, std::int32_t, std::int32_t,
                                           std::int32_t, std::int32_t, std::int32_t,
@@ -61,23 +32,10 @@ rtx::sound::Share*  g_share     = nullptr;
 bool                g_installed = false;
 std::uint64_t       g_base      = 0;
 
-// SOUND_SYNTH handler body (950-1). Address-bearing operands are wildcarded: the two
-// rip-relative disp32s and the JZ rel32.
-//
-//   sub  rsp,0x88
-//   add  dword [rdx+0x10A0],-3        <- pops 3 ints; the -3 is what identifies THIS op
-//   mov  eax,[rdx+0x10A0]
-//   mov  rcx,[rcx+0x19A30]            <- audio subsystem, off the engine context (0x199F0 on 949)
-//   lea  r8,[rdx+rax*4] / test rcx,rcx / jz rel32
-//   mov  eax,[r8+0x104]               <- loops
-//   lea  rdx,[rip+..]                 <- position vector
-//   mov  r9d,[r8+0x100]               <- ID
-//   mov  byte [rsp+0x70],0 / [rsp+0x60],0xFF / [rsp+0x58],-1 / [rsp+0x50],rdx
-//   xor  edx,edx / [rsp+0x48],edx / [rsp+0x40],edx / mov rdx,rcx
-//   mov  [rsp+0x38],4 / [rsp+0x30],6   <- a8, group
-//   mov  [rsp+0x80],rbx / ebx,[r8+0x108]   <- delay, applied after the call
-//   movzx r8d,word [rip+..]           <- kind
-//   mov  [rsp+0x28],0xFF / [rsp+0x20],eax   <- volume, loops
+// SOUND_SYNTH handler body (950-1). Wildcarded: two rip-relative disp32s and the JZ rel32.
+// Identifying signals: add [rdx+0x10A0],-3 (pops 3 ints), audio subsystem at [rcx+0x19A30]
+// (0x199F0 on 949), id from [r8+0x100], loops [r8+0x104], delay [r8+0x108],
+// stack args [rsp+0x20]=loops, +0x28=volume 0xFF, +0x30=group 6, +0x38=a8 4.
 const unsigned char kSynth[] = {
     0x48,0x81,0xEC,0x88,0x00,0x00,0x00,
     0x83,0x82,0xA0,0x10,0x00,0x00,0xFD,
@@ -134,9 +92,7 @@ const unsigned char kSynthMask[] = {
 };
 static_assert(sizeof(kSynth) == sizeof(kSynthMask), "pattern and mask must match in length");
 
-// Find the SOUND_SYNTH handler, then decode the CALL that follows its argument setup to get the
-// shared play function. Returns 0 if either step fails, in which case nothing is hooked and the
-// client is left untouched.
+// Returns 0 (nothing hooked) if the pattern is not unique or no CALL follows it.
 std::uint64_t FindPlayFn() {
     auto dos = (const IMAGE_DOS_HEADER*)g_base;
     auto nt  = (const IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
@@ -161,7 +117,6 @@ std::uint64_t FindPlayFn() {
             if (ok) { if (hit) return 0; hit = tb + i; }
         }
         if (!hit) return 0;
-        // PLAY is called immediately after the argument setup the pattern covers.
         const unsigned char* p = (const unsigned char*)(hit + sizeof(kSynth));
         for (int k = 0; k < 24; ++k) {
             if (p[k] != 0xE8) continue;
@@ -175,14 +130,12 @@ std::uint64_t FindPlayFn() {
     return 0;
 }
 
-// `group` is the engine's own source tag on the play call. Key packing itself lives in
-// SoundShare.h so the companion, the launcher and the panel cannot drift apart on it.
+// Key packing lives in SoundShare.h, shared with the launcher and panel.
 inline std::int32_t IndexOf(std::int32_t group) {
     return (group == 8) ? rtx::sound::kIndexMusic : rtx::sound::kIndexEffects;
 }
 
-// Binary search the launcher-written list under its seqlock. A torn read declines to mute
-// rather than retrying: at worst one sound plays that a moment later would not have.
+// Binary search under the launcher's seqlock; a torn read declines to mute rather than retry.
 bool IsMuted(std::int32_t key) {
     const std::uint32_t s0 = g_share->blockSeq;
     if (s0 & 1u) return false;
@@ -199,8 +152,7 @@ bool IsMuted(std::int32_t key) {
     return hit && g_share->blockSeq == s0;
 }
 
-// One ring entry per playback START. Unlike the old mixer hook this fires once per sound rather
-// than once per audio chunk, so it needs no rate limiting and the ids never repeat spuriously.
+// One ring entry per playback start.
 void NoteObserved(std::int32_t id, std::int32_t idx, bool muted) {
     const std::uint32_t seq = g_share->recentSeq;
     rtx::sound::RecentEntry e;
@@ -209,8 +161,8 @@ void NoteObserved(std::int32_t id, std::int32_t idx, bool muted) {
     e.muted = muted ? 1 : 0;
     e.ms    = (std::uint32_t)GetTickCount64();
     g_share->recent[seq % rtx::sound::kMaxRecent] = e;
-    MemoryBarrier();                              // slot must land before the seq bump
-    g_share->recentSeq = seq + 1;                 // publish only once the slot is written
+    MemoryBarrier();                              // slot lands before the seq bump
+    g_share->recentSeq = seq + 1;
     ++g_share->diag[2];
 }
 
@@ -225,7 +177,7 @@ std::uint64_t __fastcall Detour_Play(std::uint64_t subsystem, std::uint64_t ctx,
         const bool muted = IsMuted(rtx::sound::MakeKey(idx, id));
         NoteObserved(id, idx, muted);
         if (muted) {
-            volume = 0;                            // the engine's own silent value
+            volume = 0;
             ++g_share->diag[1];
         }
     }
@@ -263,7 +215,7 @@ bool Install() {
     for (int i = 0; i < 8; ++i) g_share->diag[i] = 0;
 
     std::uint64_t fn = FindPlayFn();
-    if (!fn) return false;                          // pattern moved -> feature off, client fine
+    if (!fn) return false;                          // pattern moved: feature off
     g_share->playRva = (std::uint32_t)(fn - g_base);
 
     g_orig = (Play_t)fn;

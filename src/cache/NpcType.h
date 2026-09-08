@@ -8,9 +8,7 @@
 
 namespace rtx::cache {
 
-// Decoded NPC definition (index 18). We keep the fields the launcher needs
-// (name, right-click options, combat level, morph transforms); every other
-// opcode is consumed to its correct width so the stream stays aligned.
+// Decoded NPC definition (index 18); unused opcodes are consumed to keep the stream aligned.
 struct NpcDef {
     int                      id = -1;
     std::string              name;

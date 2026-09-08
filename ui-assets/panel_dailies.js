@@ -1,89 +1,22 @@
-// RuneToolsX panel: Dailies & Weeklies (reset-capped activity tracker). Reads the activity
-// varbits live and shows progress toward each daily / weekly / monthly cap with live countdowns
-// to the resets (daily 00:00 UTC, weekly Wednesday 00:00 UTC, monthly 1st 00:00 UTC).
-// Every rule below ports the game's own D&D tracker CS2: the list is enums 6452/8014-8017
-// (idx -> activity struct, js5-22), each struct's param 1268 is a timer key, and script3723
-// dispatches the key to a per-activity handler returning [state, minutes] (states per
-// script9135: 0 available, 1/7 resets in, 2 begins in, 3 play again in, 4 ends in, 5 lobby
-// opens, 6 no upcoming stars). Reset clocks: script9170 = vb20736 (daily), script10889 =
-// vb20743*1440+vb20736 (weekly), script9169 = vb20737*1440+vb20736 (monthly); the panel derives
-// the same countdowns from the wall clock (UTC).
-// Build-once DOM: countdown/timer pills update per render pass with idempotent writes; value
-// rows repaint only when a varbit actually changed (dwSig).
-// Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html).
+// RuneToolsX panel: Dailies & Weeklies (reset-capped activity tracker). Ports the game's D&D tracker CS2: enums 6452/8014-8017 (idx -> activity struct), struct param 1268 = timer key, script3723 dispatches to per-activity handlers returning [state, minutes] (states per script9135: 0 available, 1/7 resets in, 2 begins in, 3 play again in, 4 ends in, 5 lobby opens, 6 no upcoming stars). Resets: daily 00:00 UTC, weekly Wednesday, monthly 1st.
+// Spliced inline into client.html; IIFE.
 (function () {
 
   let dwData = null, dwVp = null, dwFetching = false, dwFetchAt = 0, dwSig = '';
-  // The VoS varbits (25158/25159 pair + 26416 hour stamp) only read LIVE while the player is in
-  // Prifddinas; they freeze at the last in-Priff values on leaving, so the hour stamp (0-23 only)
-  // re-matches the wall-clock hour a day later and a stale pair would look "live". Gate the live
-  // trust on the player being IN the Priff region box (region = tile>>6; X 32-35, Y 51-54),
-  // refreshed each dailies tick. Matches the C++ vos_report_loop gate.
+  // VoS varbits (25158/25159 pair + 26416 hour stamp) only read live inside Prifddinas and freeze on leaving; trust them only while the player is in the Priff region box (region = tile>>6; X 32-35, Y 51-54).
   let dwInPriff = false;
   function dwRegionInPriff(p) {
     if (!p) return false;
     const rx = (p.x | 0) >> 6, ry = (p.y | 0) >> 6;
     return rx >= 32 && rx <= 35 && ry >= 51 && ry <= 54;
   }
-  // Availability notifications: per-event bell toggles (persisted) fire an in-game card + native
-  // Windows notification on the edge where an armed event becomes available. dwPrev is the
-  // previous availability snapshot; the first fetch only sets the baseline.
+  // Availability notifications: per-event bells fire when an armed event becomes available; dwPrev is the previous snapshot.
   let dwNotify = {};
   try { dwNotify = JSON.parse(localStorage.getItem('rtxDwNotify') || '{}') || {}; } catch (e) {}
   function dwNotifySave() { try { prefSet('rtxDwNotify', JSON.stringify(dwNotify)); } catch (e) {} }   // durable pref
   function dwNotifyAny() { for (const k in dwNotify) if (dwNotify[k]) return true; return false; }
   let dwPrev = null;
 
-  // Varbit map (CS2 ground truth; handler script in parentheses):
-  //  penguins: 4164 spied /10, 4165 == 1 spying unlocked (Larry/Chuck, Ardougne Zoo),
-  //    4163 total points, hard cap 250
-  //  sinkholes (9150): 17933 played /2, 20747 hourly cycle (< 15 = open, collapses in
-  //    15 - v, else next begins in 60 - v)
-  //  big chinchompa (9144): 4882 catch count (cap 2/day), 20742 hourly cycle (< 20 =
-  //    open, ends in 20 - v, else next in 60 - v)
-  //  fish flingers (9155): 20740 played today, 20744 (<= 5 = competition ends in v,
-  //    else lobby opens in v - 5)
-  //  runesphere (6416): 16526 == 1 = siphoned today
-  //  guthixian cache (2026-03 rework, read via varp 4846):
-  //    25543 = points this cache, cap 100 PER INSTANCE (script10706's "of 200 today"
-  //    text is stale); 25551 = memories converted;
-  //    25552 = automatons subdued. Rifts are player-driven (800 deposited memories
-  //    open one) -- no spawn schedule exists. 25533/25534 (tracker handler 10705)
-  //    25533/25534 (tracker handler 10705) are also polled.
-  //  goebie supply runs (13784): 28796 == 10 = done today; 12h wall-clock windows
-  //    (720 - DATE_MINUTES%720 >= 700 = run open, ends in rem - 700, else next in rem)
-  //  shooting star (9166): 20739 window active, 20750 minutes (0+active = star up now,
-  //    0+inactive = no upcoming stars)
-  //  evil tree (9158): 20745 == 1 = tree up now, else next in 20746 minutes (no cap)
-  //  demon flashmob (11604): next mob in 28370 minutes
-  //  familiarisation (10539/10538): 39271 > 0 done weekly, 20738 == 1 session active,
-  //    20749 session minutes (ends in / begins in)
-  //  meg (11375/9146): 17439 == 1 sent this week, 17445 == 0 never visited
-  //  nomad's bounty (12783/12782): 33780 == 1 looted this week
-  //  thalmund (4298/3872): gate Kili Row = quest vb 53496 >= 35; Wednesdays only
-  //    (DATE_RUNEDAY-7847 mod 7); stock pairs purchased/stock 55086/87 55088/89 55090/91
-  //    55092/93 (any stock > 0 viewed, all purchased >= stock bought out)
-  //  herby werby (7226/7225): 44349 == 1 done weekly, 44351 spirit points /100
-  //  jadinkos (7363/7362): 16096 regular state (0 catching / 1 XP+clothing / 2 clothing /
-  //    3 claimed) species 16101-16110; 16127 god state (0..4) species 16111-16113
-  //  tears of guthix (9152): 26630 == 1 done weekly
-  //  wisps of the grove (12168): 30284 == 1 done weekly
-  //  agoroth (9088/9089/9091): 22285 kills, weekly target 2 members / 1 free-to-play
-  //  rush of blood (10606/10607): 25048 != 0 done weekly
-  //  skeletal horror (11548/11549): 26628 done weekly, gate vb 9902 >= 10 (Fur 'n Seek)
-  //  champion's challenge (11551/11552): VARPS 5441 == 5442 = done weekly
-  //  shattered worlds (14930): 35817/35818/35819 all == 1 = weekly challenges done
-  //  circus (9140/9141): 5479/5480/5481 agility/magic/ranged, all == 1 = done
-  //  troll invasion (9153/9154): 20741 done monthly
-  //  effigy incubator (4720): 15893 == 1 powered this month
-  //  giant oyster (11959): DONE = 30084 >= 2 && 30087 == 30 && 30088 == 30 (two feed
-  //    counters /30); 30084 == 1 available to feed; gate Beneath Cursed Tides = vb 30071 >= 200
-  //  god statues (9163): built = 17687,60099,17689,17690,24942 each > 0; prayed =
-  //    17691+60100+17693+17694+24943
-  //  daily challenges (18249/16319/16442): five slots, stride 4 from 16574 --
-  //    per slot: category (16574), index (16575), progress (16576); challenge struct =
-  //    enum 17112[category] -> sub-enum[index]; struct params 1266 name (+4940 suffix,
-  //    script17039), 1273 description, 2235 target, 1271 icon sprite
   const DW_IDS = '16574,16575,16576,16578,16579,16580,16582,16583,16584,' +
                  '16586,16587,16588,16590,16591,16592,' +
                  '25543,25548,25533,25534,25551,25552,52328,' +
@@ -111,19 +44,15 @@
   }
   async function fetchDailies(force, bg) {
     if (!bridge() || !bridge().varbits || dwFetching) return;
-    // bg = armed-notification background poll while the tab is closed: the activity varbits are
-    // minute-granular, so 10s is plenty there.
     const t = Date.now(); if (!force && t - dwFetchAt < (bg ? 10000 : 2000)) return; dwFetchAt = t;
     dwFetching = true;
     try {
       const vb = await rtxData.call('state.varbitsCsv', DW_IDS);
-      // Refresh the in-Priff gate BEFORE dwVosMaybeReport so the tab-report path never posts (and the
-      // panel never labels 'live') a stale out-of-Priff varbit read.
+      // Refresh the in-Priff gate before dwVosMaybeReport.
       try { dwInPriff = dwRegionInPriff(await scanPlayerTile()); } catch (e) { dwInPriff = false; }
       if (vb && typeof vb === 'object') { dwData = vb; dwCheckNotify(); dwVosMaybeReport(); }
       await dwLoadFFCosts();
-      // Varp-based rows: Champion's Challenge (CS2 script11552: varp 5441 == 5442 = done) + the
-      // Menaphos journal collections (CS2 script13412: found-bits packed into varps 6989/6990).
+      // Varp-based rows: Champion's Challenge (script11552: varp 5441 == 5442) + Menaphos journal collections (script13412: varps 6989/6990).
       if (bridge().varps) {
         {
           const vp = await rtxData.call('state.varps', '5441,5442,6989,6990,3079,6601');
@@ -135,8 +64,7 @@
     paneRun('dailies', renderDailies);
   }
 
-  // Next reset instants (all 00:00 UTC): daily = tomorrow, weekly = next Wednesday, monthly = the
-  // 1st of next month.
+  // Next reset instants (00:00 UTC): daily, weekly (Wednesday), monthly (1st).
   function dwNextResets() {
     const now = new Date();
     const y = now.getUTCFullYear(), mo = now.getUTCMonth(), d = now.getUTCDate();
@@ -162,7 +90,6 @@
     return h > 0 ? h + 'h ' + (mm < 10 ? '0' : '') + mm + 'm' : mm + 'm';
   }
 
-  // Bell toggle: arm/disarm the availability notification for one event key.
   function dwBell(key) {
     const b = document.createElement('button'); b.className = 'dw-bell' + (dwNotify[key] ? ' on' : '');
     b.dataset.tip = 'Notify when available';
@@ -200,11 +127,7 @@
     return r;
   }
 
-  // Edge-triggered availability notifications (fired from fetchDailies, so armed bells work with
-  // the tab closed via the background poll). Done-states suppress events the player can no longer
-  // benefit from today/this week.
-  // Availability per event key from a tracker-varbit map (dwData-shaped). Shared by the
-  // notification bells and the plugin SDK's state.dailies.
+  // Edge-triggered availability notifications (fired from fetchDailies so armed bells work with the tab closed). Availability per event key from a dwData-shaped varbit map; shared with the plugin SDK's state.dailies.
   function dwAvail(vb) {
     const v = k => (vb[k] | 0);
     const now = new Date();
@@ -238,17 +161,9 @@
   // Clan district sprites (CS2 script10599 code -> sprite id, shown by interface 1536).
   const VOS_SPRITES = { 1: 24205, 2: 24211, 3: 24206, 4: 24209, 5: 24204, 6: 24210, 7: 24207, 8: 24208 };
   let dwVosReportedHour = '';   // 'YYYY-M-D-H' already reported (once per hour)
-  // The HOUR STAMP (vb 26416) is what makes stale pairs safe to reject: the varbits (pair AND
-  // stamp) do NOT clear on leaving Prifddinas, they keep their last in-Priff value. So the stamp
-  // only equals the current UTC hour when the player is genuinely in Priff THIS hour, which makes
-  // `stamp === hr` valid at hour 0 too.
+  // The hour stamp (vb 26416) does not clear on leaving Prifddinas, so stamp === hr is only trustworthy while in Priff.
   const VOS_TRUST_HOUR0 = true;
-  // Community value for hour `hr`, or null. The cache is fed passively by the SSE `vos` push (plus
-  // the connect handshake); pass allowRefresh ONLY when displaying with a stale cache, which lets
-  // the C++ kick its slow GET fallback (floored to 1 per 5 min).
-  // True while this client sits on a leagues world. Leagues rotates its OWN Voice of Seren,
-  // so both the value we read and the value we report belong to a separate pool, served
-  // under `lg` in the same payload.
+  // Community value for hour `hr`, or null; fed by the SSE `vos` push. allowRefresh lets the C++ kick its slow GET fallback (1 per 5 min). Leagues worlds use a separate pool under `lg`.
   function dwOnLeaguesWorld() {
     try {
       return !!(lastSnap && lastSnap.world && bridge() && bridge().isLeaguesWorld
@@ -264,9 +179,7 @@
         return lg ? (j && j.lg) : j;      // leagues value rides under `lg`
       } catch (e) { return null; }
     };
-    // `c.d` (UTC day number) rejects a value from a previous day at the same hour -- the hour stamp
-    // alone (0-23) cannot. `c.d == null` = a server without the date stamp (accept on the hour
-    // check alone).
+    // `c.d` (UTC day number) rejects a value from a previous day at the same hour; null = server without the date stamp.
     const today = Math.floor(Date.now() / 86400000);
     const valid = c => c && c.a >= 1 && c.a <= 8 && c.b >= 1 && c.b <= 8 && c.h === hr && (c.d == null || c.d === today);
     let c = read(false);
@@ -277,8 +190,7 @@
     const now = new Date(), hr = now.getUTCHours();
     const hourKey = now.getUTCFullYear() + '-' + now.getUTCMonth() + '-' + now.getUTCDate() + '-' + hr;
     const a = vb['25158'] | 0, b = vb['25159'] | 0, stamp = vb['26416'] | 0;
-    // stamp==hr is necessary but NOT sufficient: a stale varbit (frozen on leaving Priff) re-matches
-    // the same hour a day later. Require the player to be IN Priff right now.
+    // stamp==hr is not sufficient (frozen varbits re-match a day later): require the player to be in Priff.
     const stampOk = stamp === hr && (stamp !== 0 || VOS_TRUST_HOUR0) && dwInPriff;
     if (a >= 1 && a <= 8 && b >= 1 && b <= 8 && stampOk) {
       return { a, b, hour: hr, hourKey, src: 'live' };
@@ -287,25 +199,18 @@
     if (c) return { a: c.a, b: c.b, hour: hr, hourKey, src: 'community', n: c.n | 0 };
     return null;
   }
-  // The always-on background reporter is C++ (Bridge.cpp vos_report_loop, view-free); this view
-  // only runs once a panel has been opened. The path below is the tab-open complement: it also
-  // CORRECTS a mismatched community value, which the background reporter deliberately does not do.
-  // Report a live reading only when the community value already held (SSE-fed; no network read
-  // here) is missing or DISAGREES -- so normally exactly one client posts per hour, and a wrong
-  // value gets consensus-correcting reports. At most once per hour.
+  // Tab-open complement to the C++ background reporter (Bridge.cpp vos_report_loop): reports only when the held community value is missing or disagrees, at most once per hour.
   function dwVosMaybeReport() {
     if (!dwData || !bridge() || !bridge().vosReport) return;
     const s = dwVosState(dwData);
     if (!s || s.src !== 'live') return;
     const c = dwVosCommunity(s.hour, false);
     if (c && c.a === s.a && c.b === s.b) { dwVosReportedHour = s.hourKey; return; }   // server already has it
-    // RE-ARM: reported earlier but the served value vanished (website restart) -> report again. A
-    // present-but-DIFFERENT value keeps the once-per-hour gate (one correction).
+    // Re-arm if the served value vanished; a present-but-different value keeps the once-per-hour gate.
     if (!c && dwVosReportedHour === s.hourKey) dwVosReportedHour = '';
     if (dwVosReportedHour === s.hourKey) return;
     dwVosReportedHour = s.hourKey;
-    // Reported INTO the pool this world belongs to, so leagues readings build the leagues
-    // consensus rather than contradicting the main one.
+    // Reported into the pool this world belongs to (leagues vs main).
     try { rtxData.sync('act.vosReport', s.a, s.b, dwOnLeaguesWorld()); } catch (e) {}
   }
 
@@ -335,10 +240,7 @@
   }
 
   // ---- Daily challenges (CS2 18249/16319/16442) ----
-  // Slot vars stride 4 from 16574: category / index / progress. Challenge struct id =
-  // enum 17112[category] -> sub-enum[index] (script16318); display per script17039 = param 1266
-  // (+ ": " + 4940), target = 2235, icon sprite = 1271, description = 1273.
-  // Enum/struct lookups are cache-static -> memoized for the session.
+  // Slot vars stride 4 from 16574: category / index / progress. Struct id = enum 17112[category] -> sub-enum[index] (script16318); name = param 1266 (+ ": " + 4940, script17039), target 2235, icon sprite 1271, description 1273.
   let dwChalEnum17112 = null;            // category -> sub-enum id
   const dwChalSubEnums = {};             // sub-enum id -> { index: structId }
   const dwChalStructs = {};              // struct id -> {name, desc, target, icon}
@@ -356,10 +258,7 @@
       slots.push({ cat: v(String(b)), idx: v(String(b + 1)), prog: v(String(b + 2)) });
     }
     const sig = slots.map(s => s.cat + '.' + s.idx + '.' + s.prog).join('|');
-    // The signature is stamped ON THE BOX ELEMENT, not in a module variable: renderDailies rebuilds
-    // the whole panel (a fresh "Reading..." box) on every tab switch, and a module-level sig would
-    // then match the old state and skip the repaint. A new element has no stamp, so it always
-    // repaints.
+    // Signature stamped on the box element: renderDailies rebuilds the panel on every tab switch, so a module-level sig would skip the repaint.
     if (box.dataset.chalSig === sig) return;
     dwChalBusy = true;
     try {
@@ -420,11 +319,7 @@
   }
 
   // ---- Meg's cases (CS2 script12480/12477/12475) ----
-  // DBTable 9 (43 rows): col 0 = case number, col 2 = case name, col 9 = the case's DAY KEY.
-  // script12480 joins col 9 against script12477(), which reads the LIVE key from varp 3079
-  // (group-1477 context) / varp 6601 (group 906) -- NOT today's runeday (col-9 values are the
-  // original release runedays). Completion flag = varbit 31222 + caseNumber (script12475's
-  // 1->31223, 2->31224, ... switch).
+  // DBTable 9: col 0 = case number, col 2 = case name, col 9 = day key, joined against varp 3079 (group 1477) / varp 6601 (group 906). Completion = varbit 31222 + caseNumber.
   let dwMegRows = null, dwMegKey = -1, dwMegBusy = false;
   async function dwMegCase() {
     if (dwMegBusy || !bridge() || !bridge().dbRows || !dwVp) return;
@@ -466,8 +361,7 @@
   }
   function dwSetPill(id, text, cls) {
     const p = $('dwp-' + id); if (!p) return;
-    // Idempotent writes: timer pills repaint every render pass (live countdowns), so identical
-    // values must not touch the DOM.
+    // Idempotent writes: timer pills repaint every render pass.
     if (p.textContent !== text) p.textContent = text;
     const cn = 'dw-pill' + (cls ? ' ' + cls : '');
     if (p.className !== cn) p.className = cn;
@@ -524,8 +418,7 @@
         wrap.appendChild(s);
         return card;
       };
-      {   // Daily challenges: five live slots painted by dwPaintChallenges; names change daily, so the
-// card holds one rebuildable box.
+      {   // Daily challenges: five live slots painted by dwPaintChallenges
         const chal = sec('Daily challenges', 'dwt-chal');
         const box = document.createElement('div'); box.id = 'dwChalBox';
         box.innerHTML = '<div class="dw-row"><div class="dw-nm">Reading...</div></div>';
@@ -616,21 +509,17 @@
     };
     tick('dwt-daily', r.daily - r.now);
     tick('dwt-chal', r.daily - r.now);
-    // Daily challenges paint EVERY pass, not inside the varbit-sig gate: they carry their own
-    // change-signature + busy guard, and a failed resolve does not stamp its sig, so this retries
-    // each pass until the cache serves the enum/struct lookups.
+    // Daily challenges paint every pass: they carry their own signature + busy guard and retry until the cache serves the lookups.
     if (dwData) dwPaintChallenges(k => (dwData[k] | 0));
     tick('dwt-weekly', r.weekly - r.now);
     tick('dwt-monthly', r.monthly - r.now);
-    // Voice of Seren: painted every pass (a community report can arrive between varbit changes) with
-    // idempotent writes; runs even with no varbit data (community-only).
+    // Voice of Seren: painted every pass with idempotent writes (community-only data still renders).
     {
       const now = new Date();
       const nextHr = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours() + 1);
       tick('dwt-vos', nextHr - now.getTime());
       const s = dwVosState(dwData || {});
-      // District sprite chips (CSS background-image, per the Ultralight icon rule); the clan name +
-      // effect lines live in the tooltip. dataset.vos makes writes idempotent.
+      // District sprite chips (CSS background-image); dataset.vos makes writes idempotent.
       const setChip = (id, code) => {
         const el = $('dwc-' + id); if (!el) return;
         code = code | 0;
@@ -659,9 +548,7 @@
     if (empty) empty.style.display = dwData ? 'none' : '';
     if (!dwData) return;
     const v = k => (dwData[k] | 0);
-    // Thalmund's Wares (CS2 script4298/3872 + reqs case 3087). Painted every pass: the away-state
-    // pill counts down live to his Wednesday return (= the weekly reset instant). All-bought wins
-    // over the Wednesday check: the purchase state persists through the week.
+    // Thalmund's Wares (CS2 script4298/3872 + reqs case 3087): painted every pass; all-bought wins over the Wednesday check.
     {
       const viewed = v('55087') > 0 || v('55089') > 0 || v('55091') > 0 || v('55093') > 0;
       const allBought = viewed &&
@@ -673,8 +560,7 @@
       else if (viewed)                       dwSetPill('thal', 'Wares remaining', 'go');
       else                                   dwSetPill('thal', 'In the Um smithy now', 'go');
     }
-    // Goebie supply runs (CS2 script13784): wall-clock 12h cycle (windows open for the last 20
-    // minutes of each half-day); vb 28796 == 10 = both runs done today.
+    // Goebie supply runs (CS2 script13784): 12h wall-clock cycle, windows open the last 20 minutes; vb 28796 == 10 = both done.
     {
       const now = new Date();
       const rem = 720 - ((now.getUTCHours() * 60 + now.getUTCMinutes()) % 720);
@@ -706,25 +592,20 @@
     if (v('28370') === 0) dwSetPill('dmob', 'Starting now', 'ok');
     else dwSetPill('dmob', 'Next mob in ' + dwM2S(v('28370')), 'go');
     // -- daily --
-    // Sinkholes (CS2 script9150): vb 17933 = played today of 2; vb 20747 = minutes into the hourly
-    // cycle (< 15 = open, collapses in 15 - v; else next in 60 - v).
+    // Sinkholes (CS2 script9150): vb 17933 = played today of 2; vb 20747 = minutes into the hourly cycle (< 15 open).
     dwSetBar('sink', v('17933'), 2);
     if (v('17933') >= 2)       dwSetSub('sink', 'Done for today');
     else if (v('20747') < 15)  dwSetSub('sink', 'Open now, collapses in ' + (15 - v('20747')) + 'm');
     else                       dwSetSub('sink', 'Next sinkhole in ' + (60 - v('20747')) + 'm');
-    // Big Chinchompa (CS2 script9144): daily catches (bar, cap 2) + the hourly session from
-    // vb 20742 (< 20 = open, ends in 20 - v; else next in 60 - v).
+    // Big Chinchompa (CS2 script9144): daily catches (cap 2) + hourly session from vb 20742 (< 20 open).
     dwSetBar('chin', v('4882'), 2);
     if (v('20742') < 20) dwSetSub('chin', 'Open now, ends in ' + (20 - v('20742')) + 'm');
     else                 dwSetSub('chin', 'Next opens in ' + (60 - v('20742')) + 'm');
-    // Fish Flingers (CS2 script9155): vb 20740 = played today; vb 20744 <= 5 = a competition is
-    // running (ends in v), else the next lobby opens in v - 5.
+    // Fish Flingers (CS2 script9155): vb 20740 = played today; vb 20744 <= 5 = competition running, else lobby opens in v - 5.
     if (v('20740'))            dwSetPill('ff', 'Played today', 'ok');
     else if (v('20744') <= 5)  dwSetPill('ff', 'Competition ends in ' + v('20744') + 'm', 'go');
     else                       dwSetPill('ff', 'Lobby opens in ' + dwM2S(v('20744') - 5), 'go');
-    // Fish Flingers economy (CS2 script6263): vb 4662 tokens, 4649 medals, 4673 tackle box tier 0-5
-    // (names from the script's own switch); next-tier costs read from the cache at runtime
-    // (enum 5886 tokens / 5887 medals); outfit purchase flags vb 4693-96 at 140 tokens each.
+    // Fish Flingers economy (CS2 script6263): vb 4662 tokens, 4649 medals, 4673 tackle box tier 0-5; costs from enum 5886/5887; outfit flags vb 4693-96.
     {
       const tk = ["Beginner's", 'Basic', 'Standard', 'Professional', "Champion's", "Champion's"];
       const t = v('4673');
@@ -743,11 +624,7 @@
     // Runesphere (CS2 script6416): vb 16526 == 1 = siphoned today.
     if (v('16526') === 1) dwSetPill('rsphere', 'Done today', 'ok');
     else dwSetPill('rsphere', 'Available', 'go');
-    // Guthixian Cache (2026-03 rework): vb 52328 (bits 0-13 of varp 12668, locmorph of the energy
-    // rift) = memories deposited toward opening the rift, 800 = open. vb 25543 = points this cache,
-    // cap 100 PER INSTANCE; vb 25551 = memories converted; vb 25552 = automatons subdued. Rifts are
-    // player-driven, so the rift progress IS the schedule; the bell fires when it reaches 800.
-    // Inside a cache (points > 0) the bar switches to the run's points instead.
+    // Guthixian Cache: vb 52328 (bits 0-13 of varp 12668) = memories deposited toward the rift, 800 = open. vb 25543 = points this cache (cap 100 per instance), 25551 memories converted, 25552 automatons subdued.
     {
       const pts = v('25543'), rift = v('52328');
       if (pts > 0) {
@@ -764,8 +641,7 @@
     }
     // -- weekly --
     dwSetBar('peng', v('4164'), 10);
-    // Penguin spying gates (D&D-reqs CS2 case 3002): vb 4165 == 1 = unlocked (else visit Larry or
-    // Chuck in Ardougne Zoo), total points vb 4163 cap at 250.
+    // Penguin spying (D&D-reqs CS2 case 3002): vb 4165 == 1 = unlocked, total points vb 4163 cap 250.
     if (v('4165') !== 1)       dwSetSub('peng', 'Visit Larry or Chuck in Ardougne Zoo to unlock');
     else if (v(String(typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163)) >= 250) dwSetSub('peng', 'Penguin points at the 250 cap');
     else                       dwSetSub('peng', v(String(typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163)) + ' / 250 penguin points');
@@ -774,9 +650,7 @@
       ch.classList.toggle('on', v(cd[1]) > 0);
       ch.title = 'varbit ' + cd[1] + ' = ' + v(cd[1]);
     });
-    // Familiarisation (CS2 script10539): vb 39271 > 0 = helped Pikkenmix this week; sessions run on
-    // a schedule -> vb 20738 == 1 = active (ends in vb 20749 minutes), else the next session begins
-    // in vb 20749 minutes.
+    // Familiarisation (CS2 script10539): vb 39271 > 0 = done this week; vb 20738 == 1 = session active, vb 20749 = minutes.
     if (v('39271') > 0)       dwSetPill('famil', 'Helped this week', 'ok');
     else if (v('20738') === 1) dwSetPill('famil', 'Active, ends in ' + dwM2S(v('20749')), 'go');
     else                       dwSetPill('famil', 'Begins in ' + dwM2S(v('20749')), 'go');
@@ -797,14 +671,11 @@
     // Rush of Blood (CS2 script10607): vb 25048 != 0 = done this week.
     if (v('25048') !== 0) dwSetPill('rush', 'Done this week', 'ok');
     else dwSetPill('rush', 'Available', 'go');
-    // Skeletal Horror (CS2 script11548): gate = Fur 'n Seek: the wish list (vb 9902 >= 10);
-    // vb 26628 = killed this week.
+    // Skeletal Horror (CS2 script11548): gate vb 9902 >= 10 (Fur 'n Seek); vb 26628 = killed this week.
     if (v('9902') < 10) dwSetPill('skel', "Requires Fur 'n Seek: the wish list");
     else if (v('26628')) dwSetPill('skel', 'Done this week', 'ok');
     else dwSetPill('skel', 'Available', 'go');
-    // Champion's Challenge (CS2 script11552): varp 5441 == varp 5442 = nothing left this week. Both
-    // 0 = no champion scrolls banked at all, where the equality is trivially true and the game's
-    // rule would misread as "done", so that case shows as nothing-available instead.
+    // Champion's Challenge (CS2 script11552): varp 5441 == varp 5442 = done; both 0 shows as nothing-available.
     if (dwVp) {
       const c1 = dwVp['5441'] | 0, c2 = dwVp['5442'] | 0;
       if (c1 === 0 && c2 === 0) dwSetPill('champ', 'No challenges available');
@@ -822,16 +693,13 @@
     }
     // Shattered Worlds weekly challenges (CS2 script14930): 35817/35818/35819 each == 1.
     dwSetBar('sworlds', (v('35817') === 1 ? 1 : 0) + (v('35818') === 1 ? 1 : 0) + (v('35819') === 1 ? 1 : 0), 3);
-    // Herby Werby (CS2 script7225): vb 44349 == 1 -> completed this week (green regardless of
-    // points); vb 44351 = spirit points collected this week, of 100.
+    // Herby Werby (CS2 script7225): vb 44349 == 1 = done this week; vb 44351 = spirit points of 100.
     {
       const hwDone = v('44349') === 1;
       dwSetBar('herby', v('44351'), 100, hwDone || v('44351') >= 100);
       dwSetSub('herby', hwDone ? 'Completed this week' : 'Spirit points');
     }
-    // Herblore Habitat jadinkos (CS2 script7362). Once the weekly state advances past 0 every
-    // species counts as caught, so the bar fills from the state, not the species varbits; the sub
-    // shows which Papa Mambo claim is still outstanding.
+    // Herblore Habitat jadinkos (CS2 script7362): once the weekly state passes 0 every species counts as caught.
     {
       const JADS = [['16101', 'Common'], ['16103', 'Amphibious'], ['16102', 'Aquatic'],
                     ['16108', 'Shadow'], ['16105', 'Carrion'], ['16106', 'Cannibal'],
@@ -861,9 +729,7 @@
     // Effigy incubator (CS2 script4720): vb 15893 == 1 -> already powered this month.
     if (v('15893') === 1) dwSetPill('effigy', 'Powered this month', 'ok');
     else dwSetPill('effigy', 'Available', 'go');
-    // Giant oyster: gated by Beneath Cursed Tides (D&D-reqs case 3074: quest vb 30071 >= 200). Full
-    // completion per the timer handler (CS2 script11959): oyster state vb 30084 >= 2 AND both feed
-    // counters vb 30087 / vb 30088 at 30.
+    // Giant oyster: gate vb 30071 >= 200 (Beneath Cursed Tides); done (CS2 script11959) = vb 30084 >= 2 and vb 30087 / 30088 at 30.
     {
       const oy = v('30084'), fed = v('30087') === 30 && v('30088') === 30;
       if (v('30071') < 200)     dwSetPill('oyster', 'Requires Beneath Cursed Tides');
@@ -877,18 +743,9 @@
     dwSetBar('gsb', built, 5);
     dwSetBar('gsp', prayed, 5);
     // -- Menaphos journal collections (CS2 script13412 via 13411/13421) --
-    // found = TESTBIT(varp, bit): Insects of the Desert = varp 6989 bits 0-15, Jewels of the Elid =
-    // varp 6989 bits 16-31, Cats of Menaphos = varp 6990 bits 0-15. Item order and names from the
-    // cache (enum 12605 -> 12606/12607/12608, struct param 6063; the bit index is each struct's
-    // param 6059 = its enum index). Locations + schedules are NOT in the cache (cat spawns are
-    // server-side, no morph vars): they come from the RS Wiki. Six cats wander Menaphos on fixed
-    // UTC weekdays; the Scabarite crystal / Apmeken amethyst houses follow a 200-day rotation.
+    // found = TESTBIT: Insects = varp 6989 bits 0-15, Jewels = varp 6989 bits 16-31, Cats = varp 6990 bits 0-15. Names from enum 12605 -> 12606/12607/12608, struct param 6063; bit index = param 6059. Locations and schedules come from the wiki.
     if (dwVp) {
-      // Jewel-house rotation (wiki Module:Rotations/RsRandom): one Java-Random step on seed
-      // (runedate*2^32) ^ 0x5DEECE66D, then (seed >> 17) mod 5 -- slot 0 = Scabarite crystal open,
-      // 2 = Apmeken amethyst open, else neither. Runedate = days since 27 Feb 2002 UTC. 16-bit limb
-      // arithmetic keeps every product exact in doubles. The wiki notes the pattern "slightly breaks"
-      // every ~3 years, presumably a reseed, so a far-future prediction can drift.
+      // Jewel-house rotation (wiki Module:Rotations/RsRandom): one Java-Random step on seed (runedate*2^32) ^ 0x5DEECE66D, then (seed >> 17) mod 5; slot 0 = Scabarite crystal, 2 = Apmeken amethyst. Runedate = days since 27 Feb 2002 UTC.
       const jewelSlot = (rd) => {
         const x0 = 0xE66D, x1 = 0xDEEC, x2 = ((rd & 0xFFFF) ^ 5) & 0xFFFF;
         const r0 = x0 * 0xE66D + 11;
@@ -951,8 +808,7 @@
           ['Blanchy', ''],
           ['Qat', 'locked house near Banafrit, north-west Imperial district (tier 5 Imperial rep)']]],
       ];
-      // Weekday wanderers (cat enum idx -> UTC day; game days flip at 00:00 UTC) and the
-      // rotation-locked jewel houses (jewel enum idx -> LCG slot code).
+      // Weekday wanderers (cat enum idx -> UTC day) and rotation-locked jewel houses (jewel enum idx -> LCG slot).
       const CAT_DAYS = { 3: 0, 4: 2, 8: 3, 11: 4, 13: 5, 14: 6 };
       const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
       const JEWEL_ROT = { 11: 0, 14: 2 };
@@ -991,12 +847,7 @@
   }
 
   // ---- Meg's weekly questions: highlight the best answer ----
-  // Meg's answer quality is rolled once per session (wiki-sourced table): every question offers
-  // Excellent/Good/Neutral/Bad/Terrible options. The dialogue (group 1188) shows 4-5 options;
-  // WHICH question is identified by matching the visible option texts against the table (answer
-  // texts repeat across questions with DIFFERENT ratings, so the question is chosen by most
-  // matches, never by a single option), then the best-rated visible option is boxed via
-  // uiHighlight. Data: '#Skill' starts a question; 'R|answer' lines with R = E/G/N/B/T.
+  // Dialogue group 1188; the question is identified by most option-text matches (answer texts repeat across questions), then the best-rated option is boxed via uiHighlight. Data: '#Skill' starts a question; 'R|answer' with R = E/G/N/B/T.
   const MEG_QA_RAW = "\n" +
     "#Hunter\nE|They'll probably use sound to track prey.\nE|Dance on the ground to attract them.\nG|Use kebbits as bait.\nG|I think your friend is pulling your leg, Meg.\nN|Dig a moat to trap them\nB|Stay on rock. They won't swim through that\nB|Dig underground to find them.\nB|You'll need a strong harpoon.\nT|Keep above the ground.\nT|Use fire to trap them in one place.\n" +
     "#Thieving\nE|Take the most valuable pieces with you.\nG|Don't get carried away by greed. Take what you need.\nN|Get a big, sturdy bag.\nB|Throw the loot into the sea for safekeeping.\nT|Ask the seadogs to carry it for you.\n" +
@@ -1082,11 +933,7 @@
       (MEG_ANSWERS[key] = MEG_ANSWERS[key] || []).push([qi, rank]);
     }
   }
-  // Tab-independent tick: when the option dialogue (group 1188) shows Meg answers, box the
-  // best-rated one. Shares the single uiHighlight box with the Dungeoneering option highlighter;
-  // Meg questions and Daemonheim dialogs cannot be open at the same time.
-  // MUST stay <= 64 ids: InterfaceCompsJson rejects a longer list outright ("{}"). Live comps for
-  // a 4-option Meg dialogue are 6 / 33 / 35 / 37, so 0-63 covers every observed row.
+  // Tab-independent tick: box the best Meg answer in group 1188. Shares the uiHighlight box with the Dungeoneering highlighter. Comp list must stay <= 64 ids (InterfaceCompsJson rejects longer); live comps are 6 / 33 / 35 / 37.
   const MEG_OPT_COMPS = Array.from({ length: 64 }, (_, i) => i).join(',');
   let megHlLast = '';
   function megHlClear() {
@@ -1099,8 +946,7 @@
       if (!bridge() || !bridge().interfaceComps) return;
       const d = JSON.parse(bridge().interfaceComps(myPid(), 1188, MEG_OPT_COMPS) || '{}');
       if (!d || !d.open || !Array.isArray(d.comps)) { megHlClear(); return; }
-      // Visible answer options: text comps wide enough to be rows, numbers filtered out.
-      // Comps for the rune-golem question are 6/33/35/37, each w=344.
+      // Visible answer options: text comps wide enough to be rows (w=344), numbers filtered out.
       const opts = [];
       for (const c2 of d.comps) {
         if (!c2.text || !(c2.w > 40)) continue;
@@ -1109,8 +955,7 @@
         opts.push({ c: c2, key: megNorm(t) });
       }
       if (opts.length < 2) { megHlClear(); return; }
-      // Identify the question: most visible options matched (>= 2, so a single shared answer text can
-      // never mis-pick a question).
+      // Identify the question: most visible options matched (>= 2).
       const score = {};
       for (const o of opts) for (const [qi] of (MEG_ANSWERS[o.key] || [])) score[qi] = (score[qi] || 0) + 1;
       let q = -1, best = 1;
@@ -1127,8 +972,7 @@
       }
       if (!target) { megHlClear(); return; }
       const c2 = target.c;
-      // ALWAYS report the answer in the panel; the in-game box needs absolute screen coords, which
-      // only resolve when the dialogue's panel origin is published.
+      // Always report in the panel; the in-game box needs absolute screen coords.
       dwSetSub('meg', 'Best answer (' + MEG_RANK_NAME[tr] + '): ' + String(c2.text).trim()
                       + (d.hasAbs ? '' : ' [no screen origin - panel only]'));
       if (!d.hasAbs || !bridge().uiHighlight) { megHlClear(); return; }

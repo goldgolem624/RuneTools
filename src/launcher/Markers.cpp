@@ -1,10 +1,10 @@
 #include "Markers.h"
 
 #include "Process.h"
-#include "Dock.h"                    // game window handle for cursor mapping
-#include "../reader/Reader.h"        // BuildOverlayFrame (live camera matrix)
-#include "../cache/CacheReader.h"    // TileHeight (terrain-followed tile corners)
-#include "Overlay.h"                 // Toast (tell the user when there is no account to store to)
+#include "Dock.h"
+#include "../reader/Reader.h"
+#include "../cache/CacheReader.h"
+#include "Overlay.h"
 
 #include <Windows.h>
 #include <cmath>
@@ -34,8 +34,7 @@ std::map<std::string, Account> g_accounts;   // keyed by sanitized account name 
 // ---- keybind config (global, loaded once) ----
 Keybinds g_kb;
 bool     g_kb_loaded = false;
-// Per-pid arm state: the mark/delete keys only place tiles while the client's Markers panel is
-// open. Guarded by g_mu. A pid absent from the set is disarmed (the safe default).
+// Per-pid arm state, guarded by g_mu. Absent = disarmed.
 std::map<std::uint32_t, bool> g_kb_armed;
 
 std::filesystem::path user_dir() {
@@ -63,9 +62,7 @@ std::string sanitize_account(const std::string& name) {
     return out;
 }
 
-// pid -> account name, cached: account_for() is called every overlay frame, and ReadJxEnv()
-// walks the remote PEB -- far too heavy to repeat at frame rate. The mapping is stable for a
-// process's lifetime, so resolve once. Empty is also cached (unresolved account stays empty).
+// pid -> account name, cached: account_for() runs every overlay frame and ReadJxEnv() walks the remote PEB.
 std::mutex                              g_acct_mu;
 std::map<std::uint32_t, std::string>    g_pid_acct;
 
@@ -76,18 +73,14 @@ std::string account_for(std::uint32_t pid) {
         auto it = g_pid_acct.find(pid);
         if (it != g_pid_acct.end()) return it->second;
     }
-    // Reader::AccountKey, NOT the JX env var directly: the STEAM client sets no JX_ vars, so an
-    // env-only lookup returned empty there and every marker Add() bailed silently - the key was
-    // swallowed and nothing ever saved (owner-reported: markers work on the Jagex launcher,
-    // do nothing on Steam). AccountKey falls back to the in-memory character name, which both
-    // launchers have, so one account keys the same either way.
+    // Reader::AccountKey, not the JX env var: the Steam client sets no JX_ vars.
     std::string acct = sanitize_account(rtx::reader::AccountKey(pid));
-    if (acct.empty()) {                       // reader not attached yet: last-resort direct read
+    if (acct.empty()) {                       // reader not attached yet
         auto env = process::ReadJxEnv(pid);
         auto it = env.find("JX_DISPLAY_NAME");
         if (it != env.end()) acct = sanitize_account(it->second);
     }
-    // Only cache a resolved name; a momentary empty (pre-login, no name anywhere yet) retries.
+    // Only cache a resolved name.
     if (!acct.empty()) {
         std::lock_guard<std::mutex> lk(g_acct_mu);
         g_pid_acct[pid] = acct;
@@ -131,9 +124,7 @@ void save_locked(const std::string& acct, const Account& a) {
     if (!f) return;
     for (const auto& m : a.markers) {
         char hdr[80];
-        // Two-tone markers write "RRGGBB/RRGGBB" in the colour field: older builds'
-        // hex parse stops at the '/', so they read the primary colour and keep the
-        // label column intact (forward-compatible by construction).
+        // Two-tone markers write "RRGGBB/RRGGBB"; older builds' hex parse stops at the '/'.
         if (m.color2)
             std::snprintf(hdr, sizeof(hdr), "%d\t%d\t%d\t%d\t%06X/%06X\t",
                           m.region, m.lx, m.ly, m.plane, m.color & 0xFFFFFF, m.color2 & 0xFFFFFF);
@@ -197,11 +188,10 @@ void load_keybinds_locked() {
     if (dir.empty()) return;
     std::ifstream f(dir / L"_input.txt");
     if (!f) return;
-    // Format: markVk removeVk [unused flag] colorHex. The middle field is read and ignored so
-    // existing files still parse.
+    // Format: markVk removeVk [unused flag] colorHex.
     int mk = 0, rm = 0, legacy = 0; unsigned col = 0x46E0C0;
     if (f >> mk >> rm >> legacy >> std::hex >> col) {
-        if (mk) g_kb.markVk = mk;          // 0 = unbound -> keep the A / D defaults
+        if (mk) g_kb.markVk = mk;          // 0 = unbound -> keep the default
         if (rm) g_kb.removeVk = rm;
         g_kb.defColor = col & 0xFFFFFF;
     }
@@ -348,7 +338,7 @@ bool world_to_screen(const float* m, float vpX, float vpY, float vpW, float vpH,
     return true;
 }
 
-// Is (px,py) inside the convex quad p0..p3 (perimeter order)? Same-sign edge cross products.
+// Convex quad containment via same-sign edge cross products.
 bool point_in_quad(float px, float py, const float* qx, const float* qy) {
     auto cr = [](float ax, float ay, float bx, float by, float cx, float cy) {
         return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
@@ -362,8 +352,7 @@ bool point_in_quad(float px, float py, const float* qx, const float* qy) {
     return !(neg && pos);
 }
 
-// Resolve the world tile under the mouse cursor for `pid`. Builds a live frame, then finds the
-// ground tile whose projected quad contains the cursor (front-most on overlap). false = no hit.
+// World tile under the cursor: the ground tile whose projected quad contains it (front-most on overlap).
 bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     HWND hwnd = reinterpret_cast<HWND>(rtx::launcher::dock::GameWindowHandle(pid));
     if (!hwnd || !IsWindow(hwnd)) return false;
@@ -371,8 +360,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     if (!GetCursorPos(&pt) || !ScreenToClient(hwnd, &pt)) return false;
     RECT rc;
     if (!GetClientRect(hwnd, &rc)) return false;
-    // Cursor + client rect are this process's physical px; the projection viewport (gv_*)
-    // is in the game's own pixel space. Convert both once so every comparison is same-space.
+    // Cursor and client rect are physical px; the projection viewport (gv_*) is in game pixel space.
     const float gsf = (float)rtx::launcher::dock::GameSpaceFactor(hwnd, pid);
     float W = (float)(rc.right - rc.left) * gsf, H = (float)(rc.bottom - rc.top) * gsf;
     if (W < 16 || H < 16) return false;
@@ -387,8 +375,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, none, noOutline, noOutlineLocs, noGuides, f) || !f.ok)
         return false;
 
-    // gv_* is logical interface space, W/H backbuffer px; convert like PublishMarkers
-    // (per-monitor-aware client on an OS-scaled monitor lays out at physical/scale).
+    // gv_* is logical interface space, W/H backbuffer px; convert like PublishMarkers.
     float gvScale = 1.0f;
     if (f.gv_w > 0 && f.lc_w > 0) {
         const float s = W / (float)f.lc_w;
@@ -400,8 +387,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     float vpY = f.gv_h > 0 ? (float)f.gv_y * gvScale : 0.f; if (vpY < 0) vpY = 0; if (vpY + vpH > H) vpY = H - vpH;
 
     const float mx = curX, my = curY;
-    // Cursor isn't over the 3D viewport (e.g. it's on the chat box / a panel) -> not a tile pick,
-    // and skip the per-tile search entirely so the key falls through to the game cheaply.
+    // Cursor outside the 3D viewport: not a tile pick.
     if (mx < vpX || my < vpY || mx > vpX + vpW || my > vpY + vpH) return false;
 
     const int R = 24;
@@ -442,9 +428,8 @@ bool KeybindArmed(std::uint32_t pid) {
 }
 
 bool MarkAtCursor(std::uint32_t pid, int action) {
-    if (!KeybindArmed(pid)) return false;             // Markers panel not open -> key falls through to the game
-    // No identity = nowhere to store a marker. SAY SO: this used to fail silently, which on the
-    // Steam client (no JX_ env vars, see account_for) looked exactly like the key being ignored.
+    if (!KeybindArmed(pid)) return false;             // panel not open: key falls through to the game
+    // No identity = nowhere to store; say so rather than failing silently.
     if (account_for(pid).empty()) {
         rtx::overlay::Toast(pid, "Markers need a logged-in character - none detected yet");
         return false;

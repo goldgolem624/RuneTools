@@ -1,6 +1,4 @@
-// CS2 Scripts panel backend: runs the cs2export sidecar (the game map, separate GPL
-// process) against the user's live cache, tracks its progress, and serves
-// search/read over the extracted clientscript-<id>.ts files.
+// CS2 Scripts panel backend: runs the cs2export sidecar (separate GPL process) and serves its output.
 #pragma once
 #include <string>
 
@@ -25,7 +23,6 @@ std::string SearchJson(const std::string& query, int max_results);
 // One script's text, chunked. {"id":n,"size":n,"offset":n,"more":bool,"text":".."}
 std::string ScriptJson(int id, size_t offset);
 
-// Ground-truth var names from the last extraction (names.json):
 // {"varbit":{"<id>":"name"},"varp":{"<id>":"name"}} or {} when never extracted.
 std::string NamesJson();
 // Baked switch maps from the last extraction; "{}" when none has been run.

@@ -1,33 +1,10 @@
-// RuneToolsX panel: Leagues (league picker, tiers, relics, blessings, trophies,
-// searchable task browser). Spliced inline into client.html; IIFE (window exports + registerTab; see the RTX registry in client.html)
-// IIFE (window exports + registerTab; see the RTX registry in client.html).
-// Everything renders from the live cache DBTables (CS2-space ids, bridge dbRows):
-//   326 headers (one row per league: 17039 Catalyst, 19883 Equilibrium)
-//   327 tier-order rows, 328 tier rows, 329 relic/blessing rows
-//   333 trophies, 334 tasks, 335 config, 336 localities
-// Header row (verified against both live rows, build 940 post-Equilibrium):
-//   col 0  = league NUMBER (1, 2, ...) - also the task-table membership column index
-//   col 1/2 = name / short name;  col 6 = points bar max;  col 7 = interface group
-//   col 9  = relic tier-order row (327);  col 10 = blessing tier-order row (327, L2+)
-//   col 12 = trophies row (333);  col 13 = config row (335)
-//   col 22 = region-unlock enum (9287: tasks needed per region, shared)
-//   col 28 = league points var_reference (L1 varp 12426, L2 varp 13521)
-// Tier row (328): col 1 = relic ids, col 2 = points cost, col 4 = XP multiplier,
-//   col 5/6/7 = tier passive (ref, value, text) tuples, col 10 = unlock notes.
-// Relic/blessing row (329): col 0/1 = name/desc, col 2 = blessing cost, col 3 =
-//   blessing alignment, col 5 = granted item (obj), col 7/8 = normal/selected icon
-//   SPRITES (script20257 renders them as graphic), col 10..13 = effect
-//   (var_reference, value, any-flag, text) quads. Blessing rows also carry an
-//   (alignment ref, int) tuple at col 9 whose 2nd sub flattens into the col-10
-//   list ahead of the effect refs - mkRelic right-aligns to shed it.
-// Task row (334, schema CHANGED with Equilibrium - old col2=ach/col3=ref is gone):
-//   col 0 = UI component id, col 1..N = per-league membership booleans (script20981
-//   reads db 334.<leagueNum> with the number compiled in), col 3 = achievement id,
-//   col 4 = completion var_reference, col 5 = type code, col 6 = locality id
-//   (336 tuple col 1; the 336 row's col 0 value = the "Global" id), col 7 = tier
-//   1-5 (points enum 9332 = {1:10,2:30,3:80,4:200,5:400}), col 8 = members-only.
-// Task text mirrors script20131: quest subcats phrase as "Complete the quest: X.",
-// Archaeology-mystery achievements as "Solve the Archaeology mystery: X.", else name.
+// RuneToolsX panel: Leagues (league picker, tiers, relics, blessings, trophies, task browser).
+// Spliced inline into client.html; IIFE.
+// Renders from live cache DBTables (CS2-space ids, bridge dbRows): 326 headers (17039 Catalyst, 19883 Equilibrium), 327 tier order, 328 tiers, 329 relics/blessings, 333 trophies, 334 tasks, 335 config, 336 localities.
+// Header (326): col 0 league number (= task membership column), 1/2 name/short, 6 points max, 7 interface group, 9 relic tier-order row, 10 blessing tier-order row, 12 trophies row, 13 config row, 22 region-unlock enum (9287), 28 points var_reference (L1 varp 12426, L2 varp 13521).
+// Tier (328): col 1 relic ids, 2 cost, 4 XP mult, 5/6/7 passive (ref, value, text), 10 unlock notes.
+// Relic/blessing (329): col 0/1 name/desc, 2 blessing cost, 3 alignment, 5 item, 7/8 icon sprites, 10..13 effect (ref, value, any-flag, text) quads; blessing rows spill a col-9 tuple into col 10 (mkRelic right-aligns).
+// Task (334, post-Equilibrium schema): col 0 component id, 1..N per-league membership, 3 achievement id, 4 completion ref, 5 type, 6 locality id (336), 7 tier 1-5 (points enum 9332 = {1:10,2:30,3:80,4:200,5:400}), 8 members-only. Text mirrors script20131.
 (function () {
 
   lgData = null; let lgFetching = false; let lgFetchAt = 0; let lgSig = '';
@@ -45,57 +22,20 @@
   const lgFilter = { q: '', tier: 0, cat: -1, status: 'all' };
   let lgShowMax = 80, lgListDirty = false;
 
-  // A var_reference resolves to a varbit ((1<<24)|id) or a raw varp id.
+  // var_reference: varbit ((1<<24)|id) or raw varp id.
   const lgRefIsVb = ref => (ref >>> 24) === 1;
   const lgRefId = ref => lgRefIsVb(ref) ? (ref & 0xFFFFFF) : (ref >>> 0);
   function lgRefVal(ref) { return lgRefIsVb(ref) ? ((lgVbVals && lgVbVals[ref & 0xFFFFFF]) | 0) : (lgVpVals[ref >>> 0] | 0); }
 
-  // Per-tier relic-pick vars: enum 9082 (0-based tier -> var_reference, varbits
-  // 58410+), vb 58460 grants a bonus pick on tiers 1-3 (script20141). Shared across
-  // leagues; the server resets the values per league. Tasks-completed counter for
-  // region unlocks is per league and hardcoded in the game (script21081: vb 58389
-  // for Equilibrium; Catalyst's is dead weight now that the league ended).
+  // Per-tier relic-pick vars: enum 9082 (tier -> var_reference, varbits 58410+); vb 58460 = bonus pick on tiers 1-3 (script20141). Tasks-completed counter for region unlocks: vb 58389 (Equilibrium, script21081).
   const LG_PICK_ENUM = 9082, LG_BONUS_VB = 58460;
-  // League status vars (research/leagues2/LEAGUES2.md, verified vs build 940; the bar maths is
-  // script20244, the game's own mini tracker):
-  //   blessings: progress = vb61497 - vb1668, span = vb61498 - vb1668;
-  //   vb61499 = blessing tier index (15 = none), vb61498 = next cost (255 = all done),
-  //   vb1668 = previous cost (REPURPOSED in the cache from varp 659 to varp 13489).
-  //   alignments (db 329 col 9 by slot): vb61678 Zamorak, vb61680 Guthix, vb61679 Saradomin.
-  //   vb61518 = relic resets remaining; vb61685 = adrenaline costs zeroed (script16990);
-  //   vb58531 = Necromancy ritual soul bonus percent (db 328 row 19890).
-  //   vb61500 / vb61501 = next region task threshold (2047 = done) / region tier index.
+  // League status vars (research/leagues2/LEAGUES2.md; bar maths = script20244): blessings progress = vb61497 - vb1668, span = vb61498 - vb1668; vb61499 blessing tier (15 = none); vb61498 next cost (255 = done); vb1668 previous cost (varp 13489).
+  // Alignments: vb61678 Zamorak, vb61680 Guthix, vb61679 Saradomin. vb61518 relic resets remaining; vb61685 adrenaline costs zeroed; vb58531 ritual soul bonus percent; vb61500 / vb61501 next region threshold (2047 = done) / region tier.
   const LG_STATUS_VBS = [61497, 61498, 61499, 1668, 61678, 61679, 61680, 61518, 61685, 58531, 61500, 61501];
   const LG_TASKSDONE_VB = { 2: 58389 };
-  // Region unlock state: varp 12327 is a locality BITMASK indexed by locality id
-  // (script20136 = unk10982(varplayer_12327, bit); script20133 requires every bit of
-  // the region's table-382 col-1 enum - so locality id IS the bit index).
-  //
-  // WHAT IS PROVEN: the 32-bit read of 12327 resolves every region whose bits are all
-  // below 32, and it does so correctly in both directions (Karamja/Tirannwn unlocked,
-  // Fremennik/Wilderness locked, live-verified).
-  //
-  // BITS 32-40 live in the HIGH DWORD of the same varp node, read through varpsLong,
-  // with one catch: the high dword carries a 0x80000000 MARKER BIT that is not data.
-  // Live capture settled it - varp 12327 read 0x8000001C_08AC2046, i.e.
-  //   low  0x08AC2046 -> bits 1,2,6,13,18,19,21,23,27
-  //   high 0x8000001C -> marker + bits 34,35,36
-  // and 34/35 (Misthalin) + 36 (Havenhythe) are exactly the two regions the game had
-  // open while the panel drew them locked. Clearing the marker yields the four
-  // unlocked regions the game shows and locks the other seven, all eleven correct.
-  //
-  // The halves are kept SEPARATE and tested with integer ops on purpose. Number() on
-  // the raw i64 string loses the low bits (19 digits vs ~16 of precision), and the
-  // earlier "one double" version was worse than useless: any double >= 2^54 is even,
-  // so every bit tested 0 and the whole card went dark. The high dword survives that
-  // rounding (its error is far below 2^32), so it is taken from the wide read while
-  // the low half comes from the exact 32-bit read.
-  // The league this character is actually IN (script20117 matches it against db 326.0).
-  // Relic "picked" state is derived from EFFECT VARS (script20144), and those vars are
-  // heavily SHARED between leagues - L1 Production Master reuses all five of L2's - so
-  // the check is only meaningful for the live league. On a finished league it reports
-  // the current league's picks (false positives, two lit in one tier) while the real
-  // picks read inactive, their vars having been cleared. Found in testing on Catalyst.
+  // Region unlock state: varp 12327 is a locality bitmask (locality id = bit index; script20133 requires every bit of the region's table-382 col-1 enum).
+  // Bits 32-40 live in the high dword (varpsLong), which carries a 0x80000000 marker bit that is not data. The halves are kept separate and tested with integer ops: a single double loses the low bits.
+  // lgActiveLeague: the league the character is in (script20117 vs db 326.0). Relic pick state comes from effect vars (script20144), which are shared between leagues, so it is only meaningful for the live league.
   const LG_ACTIVE_VP = typeof VP !== 'undefined' ? VP.LEAGUE : 12314;
   let lgActiveLeague = null;   // varp 12314, null until read
   const LG_REGION_VP = 12327;
@@ -117,8 +57,7 @@
   async function lgEnum(id) {
     if (!id) return null;
     if (lgEnums[id]) return lgEnums[id];
-    // misses are NOT cached: the bridge may simply not be ready yet, and the
-    // 5s poll makes retries free
+    // misses are not cached: the bridge may not be ready yet
     if (bridge() && bridge().enumInfo) {
       try {
         const em = JSON.parse(await rtxData.raw('cache.enumInfo', id) || 'null');
@@ -143,9 +82,7 @@
       const orderBy = by(orders), tierBy = by(tiers), relicBy = by(relics),
             trophyBy = by(trophies), cfgBy = by(cfgs), catBy = by(cats), regInfoBy = by(regionInfos);
 
-      // Region catalog (table 382, alphabetical): col 1 = locality-bit enum, col 2 =
-      // table-383 info row. The info row carries no name column; pull it out of the
-      // "The <name> region covers ..." description string.
+      // Region catalog (table 382): col 1 = locality-bit enum, col 2 = table-383 info row; the name is pulled from the description string.
       const regionCatalog = regions.map(r => {
         const info = regInfoBy[lgCol(r, 'i', '2')];
         let name = '';
@@ -164,10 +101,7 @@
       const mkRelic = id => {
         const r = relicBy[id];
         if (!r) return { row: id, name: '#' + id, desc: '', fx: [] };
-        // Blessing rows carry an (alignment var_reference, int) tuple at col 9 whose
-        // 2nd sub flattens into the col-10 list AHEAD of the effect refs. Right-align
-        // the refs to the value count to shed the spill (relic rows have no col 9,
-        // so this is a no-op there).
+        // Blessing rows spill a col-9 tuple sub into col 10 ahead of the effect refs; right-align to shed it.
         const refsRaw = lgList(r, 'i', '10'), vals = lgList(r, 'i', '11'),
               bools = lgList(r, 'i', '12'), texts = lgList(r, 's', '13');
         const refs = refsRaw.slice(Math.max(0, refsRaw.length - vals.length));
@@ -180,8 +114,7 @@
           desc: lgCol(r, 's', '1') || '',
           item: lgCol(r, 'i', '5') | 0,
           cost: lgCol(r, 'i', '2') | 0,        // blessings only
-          // 329.7/329.8 are the normal/selected icon SPRITES (script20257 renders
-          // them as graphic), not varbits
+          // 329.7/329.8 are icon sprites, not varbits
           spr: lgCol(r, 'i', '7') | 0, sprOn: lgCol(r, 'i', '8') | 0,
           fx: fx
         };
@@ -202,12 +135,7 @@
       for (const h of hdrs) {
         const num = lgCol(h, 'i', '0') | 0;
         if (!num) continue;
-        // localities: cfg col 6 tuple's 3rd entry names the 336 row. Its col 1 is a
-        // FOUR-sub tuple (int, graphic, string, int) flattening to keys 1/2/3/4, and
-        // the game matches a task's locality against sub [4] and shows sub [3]
-        // (script20120), so the id list is key '4'. Key '1' is a different int with
-        // duplicates; pairing on it scrambled the labels (found in testing: a Kandarin:
-        // Ardougne task tagged Misthalin: City of Um).
+        // localities: cfg col 6 tuple's 3rd entry names the 336 row; its col 1 tuple flattens to keys 1/2/3/4 and the game matches sub [4], shows sub [3] (script20120).
         const cfg = cfgBy[lgCol(h, 'i', '13')];
         const catRow = cfg ? catBy[lgList(cfg, 'i', '6')[2]] : null;
         const catName = {};
@@ -224,9 +152,7 @@
           sub: lgCol(h, 's', '2') || '',
           barMax: lgCol(h, 'i', '6') | 0,
           ptsRef: (lgCol(h, 'i', '28') | 0) >>> 0,
-          // db 326.21 = this league HAS region locking (script20129 gates the game's
-          // own Regions features on it; Catalyst carries 0, Equilibrium 1). The region
-          // enum in col 22 sits on BOTH headers, so it alone cannot gate the card.
+          // db 326.21 = league has region locking (script20129; Catalyst 0, Equilibrium 1).
           hasRegions: (lgCol(h, 'i', '21') | 0) === 1,
           regionEnum: lgCol(h, 'i', '22') | 0,
           ptsEnum: cfg ? (lgList(cfg, 'i', '2')[0] | 0) : 0,
@@ -243,10 +169,7 @@
             return {
               f: r.f,
               comp: lgCol(r, 'i', '0') | 0,
-              // Columns 1 and 2 are the only ones this table has that nothing reads. Carried
-              // purely so the row tooltip can show them: a task whose printed target disagrees
-              // with the achievement's requirement (100 in the sentence, 102 from the cache) is
-              // either bad cache data or a league-specific target sitting in one of these.
+              // Columns 1 and 2 are unread by the game; carried for the row tooltip only.
               c1: lgCol(r, 'i', '1') | 0,
               c2: lgCol(r, 'i', '2') | 0,
               ach: lgCol(r, 'i', '3') | 0,
@@ -254,8 +177,7 @@
               type: lgCol(r, 'i', '5') | 0,
               cat: lgCol(r, 'i', '6') | 0,
               tier: lgCol(r, 'i', '7') | 0,
-              // db 334.8 = "allowed on FREE worlds" (script20296 shows the Membership
-              // Required badge when it is false), so 1 = F2P-capable, 0 = members-only
+              // db 334.8 = allowed on free worlds (script20296)
               f2p: (lgCol(r, 'i', '8') | 0) === 1
             };
           })
@@ -269,8 +191,7 @@
     paneRun('leagues', renderLeagues);
   }
 
-  // Achievement defs (shared cache with the Achievements tab): the task's col-3 id
-  // points straight at its achievement - hidden entries carry the task sentence.
+  // Achievement defs (shared with the Achievements tab): task col-3 id -> achievement; hidden entries carry the task sentence.
   async function lgEnsureAch() {
     if (lgAchById) return;
     if (!achDefs && bridge() && bridge().achievements) {
@@ -309,9 +230,7 @@
       if (Object.keys(m).length) lgPickVbs = m;
     }
   }
-  // Live vars for the SELECTED league: task completion vars, relic/blessing effect +
-  // state vars, pick vars, the points var, the tasks-done counter. Varbits go through
-  // the shared chunked resolver; raw-varp references through varps().
+  // Live vars for the selected league; varbits via the shared chunked resolver, raw varps via varps().
   async function lgVbKick() {
     const l = lgCur(); if (!l) return;
     await lgPickEnsure();
@@ -321,8 +240,7 @@
     const addRef = ref => (lgRefIsVb(ref) ? vbs : vps).add(lgRefId(ref));
     for (const t of l.tasks) {
       if (t.vb > 0) vbs.add(t.vb);
-      // the task's achievement carries the REAL progress counters (op-14 reqs),
-      // which are often different varbits from the db-334 completion var
+      // the task's achievement carries the real progress counters (op-14 reqs)
       const a = lgAchById && lgAchById[t.ach];
       if (a) for (const q of (a.reqs || [])) for (const vb of q.varbits) if (vb > 0) vbs.add(vb);
     }
@@ -350,9 +268,7 @@
     lgVbVals = out; lgVpVals = vpOut;
     lgPoints = l.ptsRef > 0 ? lgRefVal(l.ptsRef) : null;
     lgActiveLeague = vpOut[LG_ACTIVE_VP] !== undefined ? (vpOut[LG_ACTIVE_VP] | 0) : null;
-    // Region mask: keep the 32-bit value, then try to widen it. The wide read is
-    // adopted ONLY if it is in range for a locality mask AND its low half matches
-    // what the 32-bit read already returned - a garbage high dword fails both.
+    // Region mask: keep the 32-bit value; adopt the wide read only if in range and its low half matches.
     if (l.hasRegions && vpOut[LG_REGION_VP] !== undefined) {
       lgRegionLow = (vpOut[LG_REGION_VP] | 0) >>> 0;
       lgRegionHigh = null;
@@ -387,10 +303,7 @@
     }
     return true;
   }
-  // script20133's rule: unlocked <=> every locality bit of the region is set.
-  // Returns true / false / null, where null means "not knowable from what we can
-  // read" - either the mask has not arrived, or the region needs a bit above 31 and
-  // the wide read did not validate. Never guesses locked for an unread bit.
+  // script20133: unlocked <=> every locality bit set. Returns true / false / null (null = not knowable yet; never guesses locked).
   function lgRegionUnlocked(reg) {
     const em = reg.bitsEnum ? lgEnums[reg.bitsEnum] : null;
     if (!em || lgRegionLow === null) return null;
@@ -414,11 +327,7 @@
     if (i <= 2 && ((lgVbVals[LG_BONUS_VB] | 0) === 1)) n += 1;
     return n;
   }
-  // Task progress, evaluated the same way the game's achievement system does: each
-  // op-14 requirement sums its varbits' live values against its target (e.g. the
-  // "Harvest any memory from a wisp 200 times" task counts in vb 59669 -> 180/200).
-  // The db-334 completion var (t.vb) is only a done FLAG when it is not itself one
-  // of the requirement counters.
+  // Task progress evaluated like the achievement system: each op-14 requirement sums its varbits against its target. The db-334 completion var is only a done flag when it is not itself a counter.
   function lgTaskState(t) {
     if (!lgVbVals) return { v: 0, tgt: 1, done: false, known: false, reqs: [] };
     const a = lgAchById && lgAchById[t.ach];
@@ -446,11 +355,8 @@
     return { v: v, tgt: tgt, done: done, known: !!(t.vb || reqs.length), reqs: reqs };
   }
 
-  // ---- pinned tasks: sticky toasts with live progress -------------------------
-  // Pins are task ROW ids (unique across leagues), persisted in localStorage.
-  // lgPinsPoll runs from the main refresh loop every tick regardless of open
-  // windows, reads only the pinned tasks' varbits, and updates each task's
-  // sticky toast in place. Dismissing a toast (its X) unpins the task.
+  // ---- pinned tasks: sticky toasts with live progress ----
+  // Pins are task row ids (unique across leagues), persisted in localStorage; lgPinsPoll runs every main-loop tick.
   const LG_PINS_KEY = 'rtxLeaguePins';
   let lgPinsCache = null, lgPinToasts = {}, lgPinsAt = 0;
   function lgPinsList() {
@@ -469,11 +375,7 @@
   function lgPinToastSync(t) {
     const st = lgTaskState(t);
     const showN = st.tgt > 1 || st.v > 0;
-    // Completion is shown by the card turning GREEN (.done), not by a glyph in the
-    // text - a "/" prefix read as part of the task name and told you nothing the
-    // colour does not.
-    // No separator glyph: the count just follows the sentence, spaced with
-    // non-breaking spaces (plain ones collapse to a single space in HTML).
+    // Completion shows as the card turning green (.done); the count follows the sentence with non-breaking spaces.
     const msg = lgTaskText(t)
       + (showN ? '\u00a0\u00a0' + st.v.toLocaleString() + ' / ' + st.tgt.toLocaleString() : '');
     let rec = lgPinToasts[t.f];
@@ -489,10 +391,7 @@
         lgPinToasts[t.f] = rec;
         if (rec.el) rec.el.classList.add('nodot');   // the left edge already carries the state
         if (st.done && rec.el) rec.el.classList.add('done');
-        // Unpin the moment the card is dismissed instead of waiting for the next
-        // poll to notice rec.closing, so the star in the task list tracks the card
-        // immediately. The closing check below still covers cards retired some
-        // other way (e.g. the toast-stack cap).
+        // Unpin the moment the card is dismissed so the task-list star tracks it immediately.
         const x = rec.el && rec.el.querySelector('.toast-x');
         if (x) x.addEventListener('click', () => {
           delete lgPinToasts[t.f];
@@ -518,11 +417,7 @@
     lgPinsAt = now;
     if (!lgData) { fetchLeagues(); return; }    // table data first; toasts next tick
     if (!lgAchById) lgEnsureAch();
-    // ONE entry per pinned ROW. Table 334 is shared, and 997 rows are flagged for
-    // both leagues, so the same row is present in two leagues' task lists. Without
-    // this dedupe a pinned row synced twice per tick, and dismissing its card
-    // reopened it immediately: the first pass saw the close and unpinned, the
-    // second found no record and built a fresh toast.
+    // One entry per pinned row: table 334 is shared and 997 rows are flagged for both leagues.
     const tasks = [], seenRow = {};
     for (const l of lgData.leagues) for (const t of l.tasks) {
       if (seenRow[t.f] || pins.indexOf(t.f) < 0) continue;
@@ -591,22 +486,7 @@
       if (st.done) ttl.style.color = 'var(--ok)';
       nm.appendChild(ttl);
       const sub = document.createElement('div'); sub.className = 'lg-sub';
-      // NO F2P tag. It used to read db 334.8 unless the achievement was members-flagged,
-      // mirroring script20296's ACHIEVEMENT_GETMEMBERS || !col8 test. The logic matched the
-      // game, but the inputs do not survive contact with the data: "Equip a magic shortbow"
-      // and "Fletch 200 magic stocks" came out tagged F2P with db334.8=1 and members=0, and
-      // both are plainly members content.
-      //
-      // The reason both signals are junk here is that the game never renders this badge for a
-      // league task. Its test is gated on MAP_MEMBERS() == 0, and a league runs on members
-      // worlds, so the flags behind it are never exercised and there is nothing keeping them
-      // honest. The task's `ach` also points at a HIDDEN league entry that exists to carry the
-      // task sentence, not at the real-world achievement whose membership status we would
-      // actually want.
-      //
-      // A tag that is wrong on obvious cases is worse than no tag, so it is gone rather than
-      // patched. Both inputs stay visible in the row tooltip, so if a trustworthy source for
-      // this turns up the tag can come back with evidence behind it.
+      // No F2P tag: db 334.8 and the achievement members flag are both unreliable for league tasks (the game never renders this badge on members worlds). Both stay visible in the row tooltip.
       sub.textContent = (l.catName[t.cat] || ('Locality ' + t.cat)) + ' · Tier ' + t.tier;
       nm.appendChild(sub);
       r.appendChild(nm);
@@ -633,18 +513,12 @@
       const a = lgAchById && lgAchById[t.ach];
       const tipParts = [];
       if (a && (a.name || '').trim() && (a.desc || '').trim() && a.name.trim() !== a.desc.trim()) tipParts.push(lgCleanText(a.desc));
-      // one line per requirement counter, so each task's live varbit tracker is
-      // reviewable in place (value/target + which varbit feeds it)
+      // one line per requirement counter (value/target + feeding varbit)
       for (const q of (st.reqs || [])) {
         tipParts.push((q.desc ? q.desc + ': ' : '') + q.cur.toLocaleString() + '/' + q.tgt.toLocaleString()
           + '  [vb ' + q.vbs.join('+') + ']' + (q.ok ? ' ✓' : ''));
       }
-      // Both halves of the F2P rule, because the label is a conjunction and a wrong tag gives
-      // no clue which half produced it. The game's own test (script20296) is: membership is
-      // required when ACHIEVEMENT_GETMEMBERS == 1 OR db 334.8 is false, so a task is F2P only
-      // when col8 is true AND the achievement is not members-flagged. `members` here is
-      // inferred from achievement op 19, which is the part most worth checking against a task
-      // that is obviously members content.
+      // Both halves of the F2P rule (script20296: members required when ACHIEVEMENT_GETMEMBERS == 1 or db 334.8 false); `members` inferred from achievement op 19.
       const achDbg = lgAchById && lgAchById[t.ach];
       tipParts.push('Row ' + t.f + ' · achievement ' + t.ach
         + (t.vb ? ' · completion vb ' + t.vb + ' = ' + (lgVbVals ? (lgVbVals[t.vb] | 0) : '?') : ''));
@@ -666,17 +540,12 @@
     }
   }
 
-  // Game strings carry Jagex markup: <br> is a LINE BREAK, <col=...> and friends are
-  // styling. Convert the breaks to \n (the tooltip renders them), then strip the rest.
-  // Stripping everything in one pass deleted the breaks too and ran sentences together
-  // ("...the Icyene.When worn:- The tome provides...").
+  // Jagex markup: <br> -> \n, then strip <col=...> and friends.
   function lgCleanText(s) {
     return String(s == null ? '' : s).replace(/<\/?br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '').trim();
   }
 
-  // One relic/blessing tier list card (shared by the Relics and Blessings sections).
-  // `live` = this league is the one the character is in; only then does the effect-var
-  // pick state mean anything (see LG_ACTIVE_VP).
+  // One relic/blessing tier list card. `live` = this league is the one the character is in (see LG_ACTIVE_VP).
   function lgPaintTierList(tc, tierList, kind, live) {
     tc.innerHTML = '';
     if (!live) {
@@ -717,8 +586,7 @@
         chips.appendChild(ch);
       }
       nm.appendChild(chips);
-      // Tier passives (db 328.7) + any unlock notes (328.10), collapsed by default:
-      // a tier can carry six of them, and expanded-by-default buried the relics.
+      // Tier passives (db 328.7) + unlock notes (328.10), collapsed by default.
       if (t.passives.length || t.notes.length) {
         const key = kind + i, open = !!lgPassOpen[key];
         const sb = document.createElement('div'); sb.className = 'lg-sub lg-exp';
@@ -761,9 +629,7 @@
     const l = lgCur(), hd = $('lgHead');
     if (!l) return;
     if (hd) hd.textContent = l.name + (l.sub ? ' · ' + l.sub : '') + (lgPoints != null ? ' · ' + lgPoints.toLocaleString() + ' pts' : '');
-    // Pick state is only meaningful for the league the character is actually in.
-    // Unknown (var not read yet) is treated as live, so nothing regresses while the
-    // first poll is still in flight.
+    // Pick state is only meaningful for the live league; unknown is treated as live.
     const live = (lgActiveLeague === null) || (lgActiveLeague === l.num);
     const tc = $('lgTierCard');
     if (tc) lgPaintTierList(tc, l.tiers, 'relic', live);
@@ -801,8 +667,7 @@
           const need = em[k] | 0;
           const r = document.createElement('div'); r.className = 'lg-row';
           const nm = document.createElement('div'); nm.className = 'lg-nm';
-          // slot 1 is always Karamja (hardcoded in the game's own script21081);
-          // later slots are free picks, so they have no fixed name
+          // slot 1 is always Karamja (script21081); later slots are free picks
           nm.textContent = i === 0 ? 'Karamja' : 'Region choice ' + i;
           r.appendChild(nm);
           const p = document.createElement('span'); p.className = 'lg-pill';
@@ -817,9 +682,7 @@
           cap.style.color = 'var(--text-dim)';
           rgc.appendChild(cap);
         }
-        // Which regions are actually open (varp 12327 bit array; the picks are a
-        // bitmask, so the ORDER slots were chosen in is not recoverable - this
-        // list is the ground truth of what is unlocked right now).
+        // Regions actually open (varp 12327 bit array); pick order is not recoverable.
         if (lgData.regions && lgData.regions.length && lgRegionLow !== null) {
           const r = document.createElement('div'); r.className = 'lg-row';
           const nm = document.createElement('div'); nm.className = 'lg-nm';
@@ -872,13 +735,9 @@
     }
     const za = v(61678), gu = v(61680), sa = v(61679);
     if (za || gu || sa) row('Alignment', 'Zamorak ' + za + ' · Guthix ' + gu + ' · Saradomin ' + sa);
-    // vb 61518 (db 327 col 2) is the shared reset pool for relics AND blessings; the league
-    // grants 4 (owner-confirmed cap), so read it as n of 4.
+    // vb 61518 (db 327 col 2) = shared reset pool for relics and blessings, of 4.
     if (vb[61518] !== undefined) row('Resets left (relics & blessings)', v(61518) + ' / 4');
-    // Tier passives: the game's own Passive Effects list is db 328.7 per tier, already loaded
-    // into l.tiers; a tier's passives are live once points reach its cost. The two var-backed
-    // flags below are confirmations of specific passives (script16990 adrenaline, ritual souls),
-    // shown only as a suffix so the row reads like the in-game interface's tier summary.
+    // Tier passives = db 328.7 per tier, live once points reach its cost; the var-backed flags below (script16990 adrenaline, ritual souls) show as a suffix.
     if (l.tiers.length && lgPoints != null) {
       let active = 0, effects = 0;
       for (const t of l.tiers) if (lgPoints >= t.cost) { active++; effects += (t.passives || []).length; }
@@ -956,8 +815,7 @@
       if (lgSig !== 'wait') { lgSig = 'wait'; wrap.innerHTML = '<div class="lg-empty">Reading league data from the cache... (be in-world). Before a league is live the cache holds placeholder data only.</div>'; }
       return;
     }
-    // Sections available for THIS league, in the game's own tab order. The section
-    // is part of the signature below, so switching tabs rebuilds the body.
+    // Sections for this league in the game's tab order; the section is part of the signature.
     const sections = [];
     if (l.tasks.length) sections.push(['tasks', 'Tasks']);
     if (l.hasRegions && l.regionEnum) sections.push(['regions', 'Regions']);
@@ -965,8 +823,7 @@
     if (l.blessTiers.length) sections.push(['blessings', 'Blessings']);
     if (l.trophies.length) sections.push(['trophies', 'Trophies']);
     if (!sections.length) sections.push(['tasks', 'Tasks']);
-    // A league without the selected section (Leagues I has no regions/blessings)
-    // falls back to its first, rather than rendering an empty body.
+    // A league without the selected section falls back to its first.
     if (!sections.some(s => s[0] === lgSection)) lgSection = sections[0][0];
 
     const sig = l.num + '|' + l.name + '|' + l.tasks.length + '|'
@@ -1005,8 +862,7 @@
 
     sec(l.name + (l.sub ? ' · ' + l.sub : ''));
     wrap.lastChild.id = 'lgHead';
-    // Live status card: blessing/alignment/reset state read straight from vars, always visible
-    // above the section tabs. Only leagues that HAVE blessings get it (Leagues I has none).
+    // Live status card, only for leagues that have blessings.
     if (l.blessTiers.length) {
       const st = document.createElement('div'); st.className = 'lg-card'; st.id = 'lgStatus';
       wrap.appendChild(st);
@@ -1031,8 +887,7 @@
       wrap.appendChild(stabs);
     }
 
-    // Only the active section's cards exist; the paint helpers look their card up by
-    // id and skip whatever is absent, so they need no per-section branching.
+    // Only the active section's cards exist; paint helpers skip absent cards.
     if (lgSection === 'relics')    { const tc = card();  tc.id  = 'lgTierCard'; }
     if (lgSection === 'blessings') { const bc = card();  bc.id  = 'lgBlessCard'; }
     if (lgSection === 'regions')   { const rc = card();  rc.id  = 'lgRegionCard'; }
@@ -1042,8 +897,7 @@
 
     // controls (built once per data signature; the list repaints without touching them)
     const ctl = document.createElement('div'); ctl.className = 'lg-ctl';
-    // Search + a clear button that only appears once there is something to clear
-    // (an always-on x reads as part of the field and invites a stray click).
+    // Search + a clear button that only appears once there is something to clear.
     const sbox = document.createElement('div'); sbox.className = 'lg-searchbox';
     const inp = document.createElement('input'); inp.className = 'lg-search'; inp.type = 'text';
     inp.placeholder = 'Search tasks, objectives, localities...'; inp.value = lgFilter.q;
@@ -1052,11 +906,7 @@
     const syncClr = () => { clr.style.display = inp.value ? '' : 'none'; };
     const applyQ = () => { lgFilter.q = inp.value.trim(); lgShowMax = 80; syncClr(); lgPaintList(); };
     inp.addEventListener('input', applyQ);
-    // Esc clears. Matched on keyCode as well as `key`: Ultralight's WebKit does not
-    // reliably report key === 'Escape', and a name-only test silently never fired.
-    // stopPropagation keeps client.html's global Esc handler from blurring the field
-    // (it drops focus to hand the keyboard back to the game), so focus survives the
-    // clear and you can keep typing.
+    // Esc clears; matched on keyCode too (Ultralight does not reliably report key === 'Escape'). stopPropagation keeps client.html's global Esc handler from blurring the field.
     inp.addEventListener('keydown', e => {
       const esc = e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27 || e.which === 27;
       if (!esc || !inp.value) return;
@@ -1068,8 +918,7 @@
     syncClr();
     sbox.appendChild(inp); sbox.appendChild(clr);
     ctl.appendChild(sbox);
-    // Themed dropdown (native <select> renders with system chrome in Ultralight): the
-    // alerts panel's trigger + body-level .sndmenu popup pattern, via its shared placeMenu.
+    // Themed dropdown (native <select> renders system chrome in Ultralight), via the shared placeMenu.
     const mkSel = (opts, cur, set) => {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'al-typesel';
       let curV = String(cur);
@@ -1079,10 +928,7 @@
       b.appendChild(txt); b.appendChild(car);
       b.addEventListener('click', e => {
         e.stopPropagation();
-        // wmRectsSoon after every open/close/pick: the popup is body-level and can
-        // hang past the panel's window rect, and input over the transparent overlay
-        // only reaches the page inside registered rects - without the refresh the
-        // menu's overhang is click-through to the GAME (wheel spun the camera).
+        // wmRectsSoon after every open/close/pick: the body-level popup can hang past the window rect, and unregistered overhang is click-through to the game.
         const old = document.getElementById('lgMenu');
         if (old) { old.remove(); try { wmRectsSoon(); } catch (e2) {} return; }
         const pop = document.createElement('div'); pop.className = 'sndmenu'; pop.id = 'lgMenu';

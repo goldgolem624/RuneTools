@@ -15,9 +15,7 @@ bool ieq(const std::wstring& a, const wchar_t* b) {
     return _wcsicmp(a.c_str(), b) == 0;
 }
 
-// rs2client.exe is the only target -- the RuneScape.exe / rs3client.exe
-// shells just spawn rs2client and exit, so attaching to those wouldn't
-// be useful even when they show up in the process list.
+// rs2client.exe only: RuneScape.exe / rs3client.exe are shells that spawn it and exit.
 bool is_rs_client(const std::wstring& exe) {
     return ieq(exe, L"rs2client.exe");
 }
@@ -61,9 +59,7 @@ std::vector<Info> ScanRsClients() {
                 pi.x64  = is_x64(h);
                 CloseHandle(h);
             } else {
-                // No read handle. An access denial means the client is out of reach -- almost always
-                // launched elevated (Jagex Launcher as administrator) against a medium-integrity
-                // launcher. QUERY_LIMITED_INFORMATION still works, so the row can still be listed.
+                // Access denied (client launched elevated): still listable via QUERY_LIMITED_INFORMATION.
                 if (GetLastError() == ERROR_ACCESS_DENIED) pi.accessible = false;
                 pi.x64 = true;
                 HANDLE h2 = OpenProcess(
@@ -91,7 +87,7 @@ bool TerminateByPid(std::uint32_t pid) {
     return ok != 0;
 }
 
-// Hardcoded x64 PEB offsets -- avoids the WDK dep for full layouts.
+// Hardcoded x64 PEB offsets (no WDK dependency).
 
 namespace {
 
@@ -181,7 +177,7 @@ std::unordered_map<std::string, std::string> ReadJxEnv(std::uint32_t pid) {
     }
     CloseHandle(proc);
 
-    // NAME=VALUE\0 entries; filter to JX_ to skip ambient env.
+    // NAME=VALUE\0 entries; JX_ only.
     const wchar_t* p   = buf.data();
     const wchar_t* end = buf.data() + buf.size();
     while (p < end && *p) {

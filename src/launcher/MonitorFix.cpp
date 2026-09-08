@@ -10,10 +10,7 @@ namespace {
 using GetMonitorInfoW_t = BOOL(WINAPI*)(HMONITOR, LPMONITORINFO);
 GetMonitorInfoW_t g_real_get_monitor_info = nullptr;
 
-// Replacement for user32!GetMonitorInfoW as seen by AppCore.dll. On the expected
-// path it forwards. When AppCore's cached handle has gone stale the real call
-// returns FALSE; rather than let AppCore show its modal box, the wrapper re-resolves the
-// current primary monitor and retries so window sizing still gets real geometry.
+// GetMonitorInfoW wrapper for AppCore.dll: on a stale HMONITOR, re-resolve the primary and retry.
 BOOL WINAPI Hooked_GetMonitorInfoW(HMONITOR monitor, LPMONITORINFO info) {
     GetMonitorInfoW_t real = g_real_get_monitor_info;
     if (!real) return FALSE;
@@ -22,9 +19,7 @@ BOOL WINAPI Hooked_GetMonitorInfoW(HMONITOR monitor, LPMONITORINFO info) {
     HMONITOR primary = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
     if (primary && real(primary, info)) return TRUE;
 
-    // No monitor answered (extremely rare -- e.g. all displays asleep mid call). Hand back sane
-    // primary-ish geometry so AppCore proceeds silently; the window is resizable and gets
-    // corrected on the next resize event.
+    // No monitor answered: fake primary geometry so AppCore proceeds silently.
     if (info && info->cbSize >= sizeof(MONITORINFO)) {
         info->rcMonitor = RECT{0, 0, 1920, 1080};
         info->rcWork    = RECT{0, 0, 1920, 1040};
@@ -34,10 +29,7 @@ BOOL WINAPI Hooked_GetMonitorInfoW(HMONITOR monitor, LPMONITORINFO info) {
     return FALSE;
 }
 
-// Locate the IAT slot for an imported function by name across every import
-// descriptor (matching the descriptor's module name is unreliable -- the loader
-// may record an api-set alias rather than "user32.dll"). Returns the address
-// of the writable function pointer, or nullptr if not imported.
+// IAT slot for an import by name, scanning every descriptor (module names may be api-set aliases).
 FARPROC* find_iat_slot(HMODULE module, const char* func) {
     auto* base = reinterpret_cast<BYTE*>(module);
     auto* dos  = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
@@ -51,9 +43,7 @@ FARPROC* find_iat_slot(HMODULE module, const char* func) {
 
     auto* imp = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + dir.VirtualAddress);
     for (; imp->Name; ++imp) {
-        // OriginalFirstThunk holds the import names; FirstThunk is the live IAT.
-        // Some images omit the former, in which case FirstThunk still carries
-        // the name thunks pre-binding.
+        // OriginalFirstThunk holds the names; FirstThunk is the live IAT (and the names when OFT is absent).
         DWORD names_rva = imp->OriginalFirstThunk ? imp->OriginalFirstThunk
                                                   : imp->FirstThunk;
         if (!names_rva) continue;

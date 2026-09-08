@@ -1,14 +1,5 @@
-// In-process Ogg Vorbis playback for cache audio.
-//
-// Two halves:
-//   1. DECODE - stb_vorbis (public domain) compiled into this translation unit and nowhere else.
-//      Windows has no Vorbis codec, so this is the only way to hear cache audio in the client.
-//   2. MIX - waveOut. PlaySound was the first attempt and cannot pause, seek or say where it is,
-//      which a player needs; waveOut gives all three for one prepared buffer.
-//
-// Nothing here runs on the caller's thread except bookkeeping: decoding a music track is tens of
-// milliseconds of MDCT work, and the JS bridge calls in on the UI thread, which shares the host
-// with the game's presentation - doing it inline froze the game while a sound loaded.
+// In-process Ogg Vorbis playback for cache audio: stb_vorbis decode (this TU only), waveOut mix.
+// Decoding runs on a worker; the JS bridge calls in on the UI thread, which shares the game's host.
 
 #include "Audio.h"
 
@@ -23,13 +14,13 @@
 
 #pragma comment(lib, "winmm.lib")
 
-// stb_vorbis is upstream code that will not be edited here; silence its MSVC noise for this TU.
+// Silence stb_vorbis MSVC warnings for this TU.
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4244 4245 4456 4457 4701 4702 4703 4996)
 #endif
-#define STB_VORBIS_NO_STDIO          // decode from memory only; no path ever reaches the decoder
-#define STB_VORBIS_NO_PUSHDATA_API   // the pull API is all this needs
+#define STB_VORBIS_NO_STDIO
+#define STB_VORBIS_NO_PUSHDATA_API
 #include "../../ThirdParty/stb/stb_vorbis.c"
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -48,10 +39,10 @@ std::atomic<int>  g_vol{100};
 std::atomic<int>  g_loading{0};          // a decode is in flight
 std::atomic<unsigned> g_gen{0};          // bumped per request; a stale decode drops itself
 
-// Close the device and release the prepared buffer. Caller holds g_mu.
+// Caller holds g_mu.
 void CloseDeviceLocked() {
     if (!g_dev) return;
-    waveOutReset(g_dev);                              // stops playback, returns the buffer
+    waveOutReset(g_dev);
     if (g_hdr.lpData) {
         waveOutUnprepareHeader(g_dev, &g_hdr, sizeof(g_hdr));
         g_hdr = WAVEHDR{};
@@ -61,7 +52,7 @@ void CloseDeviceLocked() {
     g_paused = false;
 }
 
-// Start (or restart) playback at `from_frame`. Caller holds g_mu.
+// Caller holds g_mu.
 bool StartAtLocked(std::size_t from_frame) {
     CloseDeviceLocked();
     if (g_pcm.empty() || g_ch <= 0 || g_rate <= 0) return false;
@@ -97,7 +88,7 @@ bool StartAtLocked(std::size_t from_frame) {
     return true;
 }
 
-// Frames played of the CURRENT write. Caller holds g_mu.
+// Frames played of the current write. Caller holds g_mu.
 std::size_t PositionFramesLocked() {
     if (!g_dev) return 0;
     MMTIME t{};
@@ -126,7 +117,7 @@ bool Play(const std::vector<std::vector<std::uint8_t>>& chunks, int volume_pct) 
             short* pcm = nullptr;
             const int frames = stb_vorbis_decode_memory(ogg.data(), (int)ogg.size(), &ch, &hz, &pcm);
             if (frames <= 0 || !pcm) { if (pcm) free(pcm); continue; }
-            // Every chunk of one sound shares a format; a mismatch would splice noise, so stop.
+            // Every chunk of one sound shares a format; stop on mismatch.
             if (!rate) { rate = hz; channels = ch; }
             if (hz != rate || ch != channels) { free(pcm); break; }
             all.insert(all.end(), pcm, pcm + (std::size_t)frames * ch);
@@ -139,14 +130,8 @@ bool Play(const std::vector<std::vector<std::uint8_t>>& chunks, int volume_pct) 
         }
         {
             std::lock_guard<std::mutex> lk(g_mu);
-            // Re-check under the lock: two decodes can both pass the check above and then queue
-            // here, and the older one must not overwrite the newer one's audio.
             if (gen != g_gen.load()) { g_loading.store(0); return; }
-            // CLOSE THE DEVICE BEFORE TOUCHING g_pcm. waveOut plays directly out of that buffer,
-            // so replacing it while a previous clip is still running hands the audio driver freed
-            // memory - that crashed the client when a second sound was started over a first.
-            // waveOutReset + waveOutUnprepareHeader inside here are what make the buffer safe to
-            // release.
+            // Close the device before touching g_pcm: waveOut plays directly out of that buffer.
             CloseDeviceLocked();
             g_pcm = std::move(all);
             g_rate = rate;
@@ -182,7 +167,6 @@ void Seek(int ms) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_pcm.empty() || g_rate <= 0 || g_ch <= 0) return;
     if (ms < 0) ms = 0;
-    // waveOut plays one prepared buffer, so seeking means re-writing from the new offset.
     std::size_t frame = (std::size_t)((std::int64_t)ms * g_rate / 1000);
     const std::size_t total = g_pcm.size() / (std::size_t)g_ch;
     if (frame >= total) frame = total ? total - 1 : 0;

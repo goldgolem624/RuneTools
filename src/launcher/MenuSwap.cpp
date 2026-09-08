@@ -10,8 +10,7 @@
 namespace rtx::launcher::menuswap {
 namespace {
 
-// Open + map for one call. The panel polls at UI rate, so the open/close cost is irrelevant and
-// it avoids holding a view across a client's exit.
+// Open + map for one call; never holds a view across a client's exit.
 struct View {
     HANDLE            map = nullptr;
     rtx::menu::Share* sh  = nullptr;
@@ -24,8 +23,7 @@ struct View {
         if (!map) return;
         sh = (rtx::menu::Share*)MapViewOfFile(map, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
                                               sizeof(rtx::menu::Share));
-        // A section that exists but isn't initialised (or speaks another version) must not be
-        // written through: treat it as absent.
+        // Uninitialised or wrong-version section: treat as absent.
         if (sh && (sh->magic != rtx::menu::kMagic || sh->version != rtx::menu::kVersion)) {
             UnmapViewOfFile(sh);
             sh = nullptr;
@@ -60,15 +58,13 @@ bool SetEnabled(std::uint32_t pid, std::uint32_t mode) {
     return true;
 }
 
-// Rules arrive one per line as "verb<TAB>target" - an empty target means "any object".
-// Order is significant: line i draws above line i+1.
+// Rules: one per line as "verb<TAB>target" (empty target = any object); line i draws above i+1.
 bool SetPins(std::uint32_t pid, const std::string& rules) {
     View v(pid);
     if (!v) return false;
     std::uint32_t n = 0;
     std::size_t i = 0;
-    // Odd/even seqlock: odd while the pin rows are being rewritten, so the companion
-    // can retry instead of mixing rows from two lists.
+    // Seqlock: odd while the pin rows are being rewritten.
     v.sh->pinSeq = v.sh->pinSeq + 1;        // odd: mid-update
     MemoryBarrier();
     while (i <= rules.size() && n < (std::uint32_t)rtx::menu::kMaxPins) {
@@ -117,7 +113,6 @@ std::string StatusJson(std::uint32_t pid) {
     out += "],\"lastVerb\":\"";
     append_escaped(out, sh->lastVerb, rtx::menu::kVerbLen);
     out += '"';
-    // Class-promotion verdict, so the panel can explain a refusal on its own.
     out += ",\"promo\":"      + std::to_string(sh->promoState);
     out += ",\"promoPrio\":"  + std::to_string(sh->promoPrio);
     out += ",\"promoPartner\":" + std::to_string(sh->promoPartnerPrio);
@@ -132,9 +127,7 @@ std::string StatusJson(std::uint32_t pid) {
         for (std::uint32_t i = 0; i < pn; ++i) {
             if (i) out += ',';
             out += '"';
-            // Display only - the panel keeps the authoritative rules itself. A separator that
-            // is not a control character, because a raw tab inside a JSON string is invalid and
-            // would fail the parse for the whole payload.
+            // Display only; a raw tab is invalid inside a JSON string.
             append_escaped(out, sh->pins[i].verb, rtx::menu::kVerbLen);
             out += " on ";
             append_escaped(out, sh->pins[i].target, rtx::menu::kTargetLen);

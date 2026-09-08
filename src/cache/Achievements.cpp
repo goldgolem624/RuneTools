@@ -23,9 +23,7 @@ namespace {
 
 using std::uint8_t; using std::uint16_t; using std::uint32_t;
 
-// Big-endian reader over a cache file, mirroring the reference decode's Buf helpers exactly so the
-// opcode offsets never drift. Bounds-checked: past the end every read yields 0 / "" and the
-// decode loop stops on the next opcode read.
+// Big-endian bounds-checked reader: past the end every read yields 0 / "".
 struct Reader {
     const uint8_t* d; std::size_t n, p = 0;
     bool eof() const { return p >= n; }
@@ -36,10 +34,7 @@ struct Reader {
     uint16_t usmart() { uint16_t i = u8(); if (i >= 0x80) { i -= 0x80; return (uint16_t)((i << 8) | u8()); } return i; }
     // smart32: high bit set -> 4 bytes & 0x7fffffff; else 2 bytes (0x7fff sentinel -> 0).
     uint32_t smart32() { if (p < n && (d[p] & 0x80)) return u32v() & 0x7FFFFFFFu; uint32_t v = u16(); return v == 0x7FFF ? 0 : v; }
-    // Padded string -> UTF-8. Cache strings are CP-1252; a lone high byte (curly apostrophe,
-    // em-dash, accented letter) is invalid UTF-8 and would make JSStringCreateWithUTF8CString
-    // reject the WHOLE achievements JSON -> empty panel. Convert here, same map as
-    // InputStream::ReadString.
+    // Padded string, CP-1252 -> UTF-8 (a raw high byte would make the whole JSON invalid UTF-8).
     std::string pstr() {
         static const uint32_t kHigh[32] = {
             0x20AC,0x0081,0x201A,0x0192,0x201E,0x2026,0x2020,0x2021,
@@ -67,8 +62,7 @@ struct VarpReq { std::vector<int> varps; uint32_t value = 0; std::string desc; }
 struct Ach {
     int id; std::string name, desc, reward;
     int cat = -1, subcat = -1, sprite = -1, points = 0, hidden = 0, combatMastery = -1;
-    // members defaults TRUE: op 19's presence marks an achievement free-to-play,
-    // so entries without it are members content.
+    // op 19 present = free-to-play; absent = members.
     bool members = true; bool named = false;
     std::vector<Req> reqs; std::vector<int> subach; std::vector<int> prereqs;
     std::vector<SkillReq> skills;   // op 12
@@ -78,10 +72,8 @@ struct Ach {
     std::vector<int> subreqCount;   // op 30: how many subreqs must be satisfied (per group)
 };
 
-// Decode one achievement file (the reference decode opcode loop, re-validated in full on build 949:
-// 5009/5009 decode clean and the Quest Cape's 273 sub-achievement names all match quest
-// config names). On an unknown opcode keep what was parsed and stop; stop_op (optional)
-// receives that opcode (0 = clean end) for the cache parse-health check.
+// Decode one achievement file. On an unknown opcode keep what was parsed and stop; stop_op
+// receives that opcode (0 = clean end).
 Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
     Ach a; a.id = id;
     if (stop_op) *stop_op = 0;
@@ -92,8 +84,7 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
         if (op == 0) break;
         switch (op) {
             case 1: a.name = r.pstr(); a.named = true; break;
-            // Descriptions: COUNT(u8), then count x [tag(u8) + padded string]. First = standard
-            // description; the rest are group-ironman variants.
+            // count(u8) x [tag(u8) + padded string]; first = standard description, rest = GIM variants.
             case 2: { int cnt = r.u8(); if (cnt < 0) cnt = 0; if (cnt > 16) cnt = 16;
                       for (int i = 0; i < cnt; ++i) { r.u8(); std::string s = r.pstr(); if (i == 0) a.desc = std::move(s); }
                       break; }
@@ -107,10 +98,7 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 11: { int c = r.u8(); for (int i = 0; i < c; ++i) a.prereqs.push_back((int)r.u24()); break; }   // previous achievements (judged by the game's req walk)
             // skill req: (u8 ?, u8 LEVEL, name, u8 ?, u16 SKILL).
             case 12: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); int lvl = r.u8(); r.pstr(); r.u8(); int sk = r.u16(); a.skills.push_back({ sk, lvl }); } break; }
-            // op 13 = same SHAPE as op 14 but the u16 ids are VARP ids, not varbits
-            // (data-verified: Very Important tiers need values 400-4500, far beyond any
-            // varbit those ids could be). Multi-id entries SUM, like op 14: Treasure
-            // Seeker I-III sum clue counts across varps 7802-7806.
+            // op 13: op 14's shape but the u16 ids are VARP ids; multi-id entries SUM.
             case 13: { int c = r.usmart(); for (int i = 0; i < c; ++i) { VarpReq q; r.u8(); q.value = r.smart32(); q.desc = r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) q.varps.push_back(r.u16()); a.varpreqs.push_back(std::move(q)); } break; }
             case 14: { int c = r.usmart(); for (int i = 0; i < c; ++i) { Req q; r.u8(); q.value = r.smart32(); q.desc = r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) q.varbits.push_back(r.u16()); a.reqs.push_back(std::move(q)); } break; }
             case 15: { int c = r.usmart(); for (int i = 0; i < c; ++i) a.subach.push_back((int)r.u24()); break; }
@@ -120,17 +108,10 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 19: a.members = false; break;   // op 19 present = free-to-play
             case 20: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }
             case 21: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }
-            // packed bit req: (u8 ?, u16 id, u8 stepsize, name, u8 BIT). The u16's id SPACE
-            // depends on the opcode:
-            //   op 23 = bit BIT of VARP id (Archaeology mysteries: varp 9302/9303 bitmasks,
-            //           the hand-verified ARCH_MYSTERIES table in panel_metalbank.js)
-            //   op 25 = bit BIT of VARBIT id's VALUE (ach 1787 "I Can't Stop Eating Them!":
-            //           varbit 43924 = varp 8525 [0-6], live value 127 = all 7 flavours;
-            //           "A Bit TOO Familiar" packs bits 0-11 of the 12-bit varbit 42410)
+            // packed bit req: (u8 ?, u16 id, u8 stepsize, name, u8 BIT).
+            // op 23 = bit of VARP id; op 25 = bit of VARBIT id's value.
             case 23: case 25: { int c = r.usmart(); for (int i = 0; i < c; ++i) { BitReq q; r.u8(); q.id = r.u16(); r.u8(); q.desc = r.pstr(); q.bit = r.u8(); (op == 23 ? a.bitreqs23 : a.bitreqs25).push_back(std::move(q)); } break; }
-            // combat_mastery_category: tier id (Easy..Grandmaster), then (build 949) a byte
-            // and the achievement NAME as a padded string -- combat-mastery achievements
-            // carry their name HERE instead of op 1.
+            // combat mastery: tier id, byte, then the NAME (these carry their name here, not in op 1).
             case 26: a.combatMastery = (int)r.u16(); r.u8(); a.name = r.pstr(); a.named = true; break;
             case 27: break;
             case 28: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u8(); break; }
@@ -138,11 +119,8 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 30: { int c = r.u8(); for (int i = 0; i < c; ++i) a.subreqCount.push_back((int)r.usmart()); break; }  // how many subreqs needed
             case 31: r.u8(); break;
             case 32: r.u8(); r.u8(); r.u8(); break;
-            // ---- build 950-1 (payloads recovered with the unknown-opcode probe, Probe.h) ----
-            // 33 and 35 share the op 13/14 shape but carry u24 ids (35 was a bare flag through 949-5):
-            //   count(u8) x { u8, smart32 value, padded desc, u8 m, m x u24 id }
-            // 36 is the op 23/25 packed-bit shape with a u24 id:
-            //   count(u8) x { u8, u24 id, u8, padded name, u8 bit }
+            // 950-1: 33/35 = count(u8) x { u8, smart32 value, padded desc, u8 m, m x u24 id }
+            //        36 = count(u8) x { u8, u24 id, u8, padded name, u8 bit }
             case 33: case 35: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.smart32(); r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) r.u24(); } break; }
             case 36: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.u24(); r.u8(); r.pstr(); r.u8(); } break; }
             case 37: r.u8(); break;
@@ -228,10 +206,6 @@ const std::string& AchievementsJson() {
                 }
                 out += "]";
             }
-            // Skill and prerequisite requirements: the game's requirement walk (script19623 /
-            // ACHIEVEMENT_REQSTATE) judges SEVEN kinds; these two were decoded and then
-            // dropped, so the panel could neither list nor judge them and any achievement
-            // mixing them with var-based reqs misjudged its completion.
             if (!a.skills.empty()) {
                 out += ",\"skills\":[";
                 for (std::size_t i = 0; i < a.skills.size(); ++i) {
@@ -250,12 +224,8 @@ const std::string& AchievementsJson() {
                 for (std::size_t i = 0; i < a.subach.size(); ++i) { if (i) out += ','; out += std::to_string(a.subach[i]); }
                 out += "]";
             }
-            // (NOTE: "skills" is emitted once above in [skill, level] array form; a second
-            // object-form emission here used to override it after JSON.parse (last key wins)
-            // and silently broke the panel's skill-gate judging. Do not reintroduce it.)
-            // op 23 goes out as "reqsvpb" (varp bits) and op 25 as "reqs25" (varbit bits).
-            // The legacy merged "reqs23" key is retired: panels heuristically classify it
-            // when reading output from pre-split builds, so it must not reappear here.
+            // "skills" must be emitted exactly once (last JSON key wins). Do not reintroduce
+            // the retired merged "reqs23" key; panels special-case it.
             if (!a.bitreqs23.empty()) {
                 out += ",\"reqsvpb\":[";
                 for (std::size_t i = 0; i < a.bitreqs23.size(); ++i) {
@@ -311,9 +281,7 @@ const std::string& AchievementsJson() {
     return g_ach_json;
 }
 
-// Parse-health sweep over every achievement def. Lock-free (caller holds the shared
-// cache mutex). See header.
-// Unknown-opcode probe over every achievement def (see Probe.h). Appends its report to `log`.
+// Unknown-opcode probe over every achievement def (Probe.h). Caller holds the shared cache mutex.
 void AchievementsProbeUnknown(std::string& log) {
     EnsureCacheInit();
     auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;
@@ -376,8 +344,7 @@ void AchievementsParseHealth(int& ok, int& total, int& stop_op, int& stop_n) {
         if (kv.second > stop_n) { stop_op = kv.first; stop_n = kv.second; }
 }
 
-// Names of the quests required for the Quest Cape (achievement id 1) = the authoritative current
-// quest set. Lock-free (caller holds the shared cache mutex). See header.
+// Quests required for the Quest Cape (achievement id 1). Caller holds the shared cache mutex.
 void QuestCapeQuestNames(std::vector<std::string>& out) {
     EnsureCacheInit();
     auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;

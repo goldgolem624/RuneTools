@@ -1,16 +1,15 @@
 #include "Overlay.h"
 
 #include "Companion.h"
-#include "Dock.h"                           // embedded game-window handle lookup
-#include "Markers.h"                        // persistent user tile-marker store
+#include "Dock.h"
+#include "Markers.h"
 #include "../reader/Reader.h"
-#include "../cache/CacheReader.h"           // per-tile terrain height for marker placement
+#include "../cache/CacheReader.h"           // terrain height for marker placement
 #include "../shared/Log.h"
-#include "../../companion/MarkerShare.h"   // in-frame world-marker command channel
+#include "../../companion/MarkerShare.h"   // in-frame marker command channel
 
 #include <Windows.h>
-// gdiplus.h references unqualified min/max; if the project suppresses the
-// Windows macros (NOMINMAX) the std versions must be pulled into scope first.
+// gdiplus.h uses unqualified min/max; under NOMINMAX pull in the std versions first.
 #ifdef NOMINMAX
 #include <algorithm>
 using std::max;
@@ -41,43 +40,31 @@ namespace rtx::overlay {
 namespace {
 
 std::mutex        g_mu;
-// PER-CLIENT overlay state: each panel/alert engine configures ITS pid, and everything in-frame
-// (grid, markers, highlights, alert flash) publishes into that pid's own marker section, drawn by
-// that client's present layer. One client can never paint on another's render. (Guarded by g_mu.)
+// Per-client state; each pid publishes into its own marker section. Guarded by g_mu.
 std::map<DWORD, Config>    g_cfgs;
-std::uint64_t              g_cfgsVer = 0;     // bumped on every g_cfgs mutation (guarded by g_mu):
-                                              // the render loop re-snapshots only when this moves
-// Every g_cfgs WRITE goes through this (never index g_cfgs directly): it marks
-// the render loop's snapshot stale. Caller holds g_mu.
+std::uint64_t              g_cfgsVer = 0;     // bumped on every g_cfgs mutation; render loop re-snapshots when it moves
+// All g_cfgs writes go through this. Caller holds g_mu.
 Config& cfg_slot(DWORD pid) {
     ++g_cfgsVer;
     Config& c = g_cfgs[pid];
     c.pid = pid;
     return c;
 }
-std::map<DWORD, long long> g_flash_until;     // per-pid alert-flash deadline (steady ms)
+std::map<DWORD, long long> g_flash_until;     // per-pid flash deadline (steady ms)
 std::thread       g_thread;
 std::atomic<bool> g_running{false};
-constexpr long long    kFlashMs = 480;        // flash duration
-std::atomic<DWORD>     g_toast_pid{0};         // game pid for the on-screen notification
+constexpr long long    kFlashMs = 480;
+std::atomic<DWORD>     g_toast_pid{0};
 std::atomic<long long> g_toast_until_ms{0};    // toast visible while now < this
-std::string            g_toast_text;           // notification text (guarded by g_mu)
+std::string            g_toast_text;           // guarded by g_mu
 
-// In-world design tokens, mirroring the panel palette in ui-assets/client.html :root. Deep
-// neutral surfaces, hairline borders, and TWO semantic accents where there used to be one
-// colour saying both "the thing you are going to" and "which way you are facing":
-//   accent purple = the OBJECTIVE      ok green = YOU and your heading
-// SINGLE SOURCE OF TRUTH -- do not hardcode per site.
+// Design tokens mirroring ui-assets/client.html :root. Purple accent = objective, green = the player/heading.
 constexpr int kSurfR = 11,  kSurfG = 13,  kSurfB = 18;    // #0B0D12  plate / scrim fill
 constexpr int kInkR  = 5,   kInkG  = 7,   kInkB  = 11;    // #05070B  contour underlay
 constexpr int kTxtR  = 232, kTxtG  = 237, kTxtB  = 244;   // #E8EDF4  primary type
 constexpr int kAccR  = 140, kAccG  = 111, kAccB  = 253;   // #8C6FFD  --accent-hi
 
-// Identity of a highlight for the anti-flicker hold. Labelled highlights (guide / alert NPCs)
-// are one-per-label. The Scene-tab outline carries NO label by contract (the empty label is
-// what routes it to the neutral style), so it is identified by entity uid when there is one
-// (NPC outline) and otherwise by the centre tile of its box (object outline): the live AABB
-// jitters per frame while an object animates, the tile it sits on does not.
+// Anti-flicker hold identity: label, else uid, else centre tile (an animating object's AABB jitters, its tile does not).
 static std::string HighlightHoldKey(const rtx::reader::OverlayPoint& hp) {
     if (!hp.label.empty()) return hp.label;
     if (hp.uid) return "u:" + std::to_string(hp.uid);
@@ -87,46 +74,39 @@ static std::string HighlightHoldKey(const rtx::reader::OverlayPoint& hp) {
 }
 constexpr int kOkR   = 77,  kOkG   = 210, kOkB   = 138;   // #4DD28A  --ok
 constexpr int kOkTxR = 142, kOkTxG = 240, kOkTxB = 192;   // #8EF0C0  green type on dark
-// Mix a hue 1:3 into the surface -> a dark tinted scrim that still reads as that hue. A
-// saturated wash competes with the scene at the same luminance; a dark one never does.
+// Mix a hue 1:3 into the surface: a dark tinted scrim.
 inline int MixSurf(int c, int s) { return (c + s * 3) / 4; }
 
-// Persistent, manually-dismissed notifications: they stack at the top-right of the game window and
-// are removed by clicking them (the overlay turns interactive only while the cursor is over one).
-std::atomic<DWORD>     g_notif_pid{0};         // game pid for the notifications
+// Click-to-dismiss notification cards; the overlay is interactive only while the cursor is over one.
+std::atomic<DWORD>     g_notif_pid{0};
 struct Notif    { int id; std::string text; long long expire_ms = 0; };  // expire_ms 0 = sticky
-struct NotifHit { int id; RECT rect; };        // panel rect in client coords
-std::vector<Notif>     g_notifs;               // sticky (guarded by g_mu)
-std::vector<NotifHit>  g_notif_hit;            // hit rects, last frame (guarded by g_mu)
-int                    g_notif_seq = 0;        // monotonic id (guarded by g_mu)
-constexpr long long    kToastMs     = 4000;    // on-screen notification duration
-constexpr long long    kToastFadeMs = 500;     // fade-out tail
+struct NotifHit { int id; RECT rect; };        // client coords
+std::vector<Notif>     g_notifs;               // guarded by g_mu
+std::vector<NotifHit>  g_notif_hit;            // last frame (guarded by g_mu)
+int                    g_notif_seq = 0;        // guarded by g_mu
+constexpr long long    kToastMs     = 4000;
+constexpr long long    kToastFadeMs = 500;
 
-// Tick metronome widget: a clock-style pulse drawn over the game window, phase-aligned to the
-// server tick. Click-drag to move, mouse-wheel to resize; position/size persist to disk.
+// Tick metronome widget, phase-aligned to the server tick; position/size persist to disk.
 constexpr double kTickMs = 600.0;              // RS3 server tick
 struct Metro {
     bool  on    = false;
     bool  audio = false;
     int   interval = 1;                        // beat every N ticks (1..6)
     DWORD pid   = 0;
-    int   x     = -1, y = -1;                   // centre in game-client coords
-    int   size  = 46;                          // radius in px
-    bool  placed = false;                       // false = auto-centre on the frame; true = user-positioned
-    bool  locked = false;                       // true = click-through, non-interactive (no drag/resize)
+    int   x     = -1, y = -1;                   // centre, game-client coords
+    int   size  = 46;                          // radius px
+    bool  placed = false;                       // false = auto-centre
+    bool  locked = false;                       // click-through
     bool  dragging = false;
     POINT dragOff{0, 0};
-    std::uint32_t lastTick = 0xFFFFFFFFu;       // for new-tick edge detection (audio)
+    std::uint32_t lastTick = 0xFFFFFFFFu;       // new-tick edge detection (audio)
 };
 Metro g_metro;                                  // guarded by g_mu
-RECT  g_metro_hit{0, 0, 0, 0};                  // last-frame widget bbox, client coords (guarded by g_mu)
-// Physical px -> game-space px for the external input window (widget rects live in the game's
-// pixel space, the window in physical px; they differ when the game runs DPI-virtualized).
-// Written by the render loop, read by OverlayWndProc.
+RECT  g_metro_hit{0, 0, 0, 0};                  // last-frame bbox, client coords (guarded by g_mu)
+// Physical px -> game px for the input window (differ when the game is DPI-virtualized). Render loop writes, WndProc reads.
 std::atomic<double> g_inputScale{1.0};
 
-// Play the metronome click (sounds/metronome.wav next to the exe). SND_ASYNC so it
-// never blocks the render loop; a new call pre-empts a still-playing one.
 void PlayMetroClick() {
     wchar_t exe[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -155,7 +135,7 @@ void LoadMetro() {   // caller holds g_mu
     int x = -1, y = -1, s = 46;
     if (f && (f >> x >> y >> s)) {
         g_metro.x = x; g_metro.y = y; g_metro.size = (s < 20 ? 20 : (s > 240 ? 240 : s));
-        g_metro.placed = true;   // a saved position exists -> honour it (else auto-centre)
+        g_metro.placed = true;
     }
 }
 
@@ -164,54 +144,44 @@ long long now_ms() {
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
-// XP-tracker panel: session XP gains + XP/h drawn over the game window. Sampled off the live skill
-// records (1 Hz); per-skill rates run from each skill's FIRST gain, so idle time before training
-// doesn't dilute them. Capped skills (200M) show no gains. Position/minimized persist.
+// XP tracker: sampled 1 Hz; per-skill rates run from each skill's first gain. Capped (200M) skills show no gains.
 struct XpPanelState {
     bool  on = false;
-    bool  locked = false;                       // click-through, no drag/minimize
-    bool  showTotal = true;                     // the all-skills combined row
-    bool  autoSkills = true;                    // rows appear as skills gain XP (else mask)
-    std::uint32_t mask = 0;                     // custom mode: bit i = show skill i
+    bool  locked = false;                       // click-through
+    bool  showTotal = true;
+    bool  autoSkills = true;                    // rows appear on gain (else mask)
+    std::uint32_t mask = 0;                     // bit i = show skill i
     DWORD pid = 0;
     int   x = -1, y = -1;                       // top-left, game-client coords
-    bool  placed = false;                       // false = default spot until dragged
+    bool  placed = false;
     bool  minimized = false;
     bool  dragging = false;
     POINT dragOff{0, 0};
-    float scale = 1.0f;                         // mouse-wheel resize (0.7..1.8), persisted
-    // presentation state (render-loop only): eased minimize progress + count-up values,
-    // so the card animates instead of snapping.
-    double animMin = 0.0;                       // 0 = fully expanded, 1 = fully minimized
-    double disp[29] = {};                       // displayed session-gain per skill (eases to target)
+    float scale = 1.0f;                         // 0.7..1.8, persisted
+    // presentation state (render-loop only)
+    double animMin = 0.0;                       // 0 = expanded, 1 = minimized
+    double disp[29] = {};                       // eased displayed gain per skill
     double dispTotal = 0.0;
-    // session (all guarded by g_mu)
+    // session (guarded by g_mu)
     bool      haveBase = false;
-    long long startMs = 0;                      // first observed gain (total-row basis)
-    long long sampleMs = 0;                     // last sample time
-    int       base[29] = {};                    // session baseline XP (-1 = unseen)
-    int       cur[29]  = {};                    // latest XP (-1 = unseen)
-    long long firstGain[29] = {};               // per-skill first-gain time (0 = none)
+    long long startMs = 0;                      // first observed gain
+    long long sampleMs = 0;
+    int       base[29] = {};                    // -1 = unseen
+    int       cur[29]  = {};                    // -1 = unseen
+    long long firstGain[29] = {};               // 0 = none
 };
 XpPanelState g_xp;                              // guarded by g_mu
-RECT g_xp_hit{0, 0, 0, 0};                      // last-frame panel bbox (guarded by g_mu)
+RECT g_xp_hit{0, 0, 0, 0};                      // last-frame bbox (guarded by g_mu)
 RECT g_xp_min{0, 0, 0, 0};                      // minimize-box rect (guarded by g_mu)
 
-std::map<DWORD, std::vector<GuideMark>> g_guides;   // transient guide marks per pid (guarded by g_mu)
-std::map<DWORD, std::vector<UiHighlight>> g_uiHighlights;   // transient screen-space UI highlights per pid (guarded by g_mu)
-// Transient screen-centre banners per pid, keyed by SLOT (guarded by g_mu). Slotted rather
-// than a single string because independent callers need to be readable at the same time: a
-// prayer call and a boss mechanic can fire together, and ranking one over the other loses
-// information the player needs. Slot 0 keeps the original position and colour, so every
-// existing caller is unaffected.
-std::map<DWORD, std::map<int, CenterBanner>> g_centerTexts;
-std::map<DWORD, std::vector<PanelBox>> g_panelViz;  // Interfaces-tab panel visualizer boxes per pid (guarded by g_mu)
-std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;  // puzzle-box next-moves cells per pid (guarded by g_mu)
-std::map<DWORD, std::vector<KnotCell>> g_knotCells;      // celtic-knot arrow highlights per pid (guarded by g_mu)
-// Skills-panel XP progress bars per pid (guarded by g_mu). at_ms is the last publish
-// time: the UI layer refreshes every ~400ms while the feature is ON, so bars older
-// than kSkillBarsTtlMs mean the publisher is gone (page reloaded, plugin crashed,
-// feature toggled off in a dead page) and they must NOT keep drawing on stale data.
+// Transient per-pid channels below are all guarded by g_mu.
+std::map<DWORD, std::vector<GuideMark>> g_guides;
+std::map<DWORD, std::vector<UiHighlight>> g_uiHighlights;
+std::map<DWORD, std::map<int, CenterBanner>> g_centerTexts;   // keyed by slot
+std::map<DWORD, std::vector<PanelBox>> g_panelViz;
+std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;
+std::map<DWORD, std::vector<KnotCell>> g_knotCells;
+// Skill bars: the UI republishes every ~400ms, so entries older than kSkillBarsTtlMs mean the publisher is gone.
 struct SkillBarsEntry { std::vector<SkillBar> bars; long long at_ms = 0; };
 constexpr long long kSkillBarsTtlMs = 5000;
 std::map<DWORD, SkillBarsEntry> g_skillBars;
@@ -240,36 +210,28 @@ void LoadXp() {   // caller holds g_mu
     int x = -1, y = -1, m = 0; float sc = 1.0f;
     if (f && (f >> x >> y >> m)) {
         g_xp.x = x; g_xp.y = y; g_xp.minimized = (m != 0);
-        g_xp.animMin = g_xp.minimized ? 1.0 : 0.0;   // start settled, no open animation on boot
-        g_xp.placed = true;   // a saved position exists -> honour it (else default spot)
-        if (f >> sc) g_xp.scale = (sc < 0.7f ? 0.7f : (sc > 1.8f ? 1.8f : sc));   // pre-scale files simply omit it
+        g_xp.animMin = g_xp.minimized ? 1.0 : 0.0;
+        g_xp.placed = true;
+        if (f >> sc) g_xp.scale = (sc < 0.7f ? 0.7f : (sc > 1.8f ? 1.8f : sc));   // older files omit it
     }
 }
 
-// gained XP -> rate per hour, from `since`. Suppressed for the first moments so a
-// single drop doesn't show as an absurd rate.
+// Suppressed for the first 3s so a single drop is not an absurd rate.
 long long XpRatePerHour(long long gained, long long since, long long now) {
     long long el = now - since;
     return (gained > 0 && since > 0 && el > 3000) ? (gained * 3600000LL) / el : 0;
 }
 
-// ---- target game window ------------------------------------------------
-// Only a client whose panel is open (embedded in the host) is drawn into -- the dock publishes
-// that window handle. A hidden client has no open panel, so this returns null and the overlay
-// never draws on (or projects markers into) it: no panel => no drawing.
+// Null unless the client's panel is open (embedded): no panel, no drawing.
 HWND FindGameWindow(DWORD pid) {
     return (HWND)rtx::launcher::dock::GameWindowHandle(pid);
 }
 
-// ---- projection (RE'd WorldToScreen) ----------------------------
-// Projects to the GAMEVIEW viewport: (vpX,vpY) = its top-left within the window, (vpW,vpH) = its
-// size. The camera renders into the gameview rect, which is smaller than the client when UI
-// panels are docked -- projecting against the full window drifts the tiles. Callers pass the
-// window rect when the gameview rect isn't resolved.
+// RE'd WorldToScreen. Projects into the gameview rect (vpX,vpY,vpW,vpH), not the full client.
 bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
                    float x, float y, float z, float& sx, float& sy) {
     float w = m[3] * x + m[11] * y + m[7] * z + m[15];
-    if (w <= 1.0f) return false;                          // behind / on camera plane
+    if (w <= 1.0f) return false;                          // behind camera
     float nx = (m[0] * x + m[8] * y + m[4] * z + m[12]) / w;
     float ny = (m[1] * x + m[9] * y + m[5] * z + m[13]) / w;
     float cx = vpW / 2.0f, cy = vpH / 2.0f;
@@ -278,19 +240,14 @@ bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
     return true;
 }
 
-// ---- near-plane clipping ----------------------------------------------------
-// A shape whose corners must ALL project drops out entirely the moment ONE corner crosses behind
-// the camera. w (the projection denominator) is AFFINE in world position, so the point where an
-// edge crosses the near plane is a plain world-space lerp: clip there and draw the surviving part.
-// Points behind the camera are never projected (their coords are garbage); the GL consumer
-// scissors off-screen spans.
+// Near-plane clipping: w is affine in world position, so edges are clipped by a world-space lerp.
 constexpr float kNearW = 32.0f;   // in front of WorldToScreen's w<=1 cull
 
 inline float ProjW(const float* m, const float* p) {
     return m[3] * p[0] + m[11] * p[1] + m[7] * p[2] + m[15];
 }
 
-// Project a world segment, clipping against w >= kNearW. False = fully behind.
+// False = fully behind.
 bool ClipProjectSegment(const float* m, float vpX, float vpY, float vpW, float vpH,
                         const float* A, const float* B,
                         float& ax, float& ay, float& bx, float& by) {
@@ -308,9 +265,7 @@ bool ClipProjectSegment(const float* m, float vpX, float vpY, float vpW, float v
            WorldToScreen(m, vpX, vpY, vpW, vpH, Bc[0], Bc[1], Bc[2], bx, by);
 }
 
-// Project a world polygon (perimeter order, n <= 8), clipping against
-// w >= kNearW (Sutherland-Hodgman on one plane: at most n+1 verts out).
-// Returns the projected vertex count; 0 = fully behind the camera.
+// Perimeter order, n <= 8; Sutherland-Hodgman on one plane (at most n+1 verts out). 0 = fully behind.
 int ClipProjectPoly(const float* m, float vpX, float vpY, float vpW, float vpH,
                     const float (*P)[3], int n, float* sx, float* sy) {
     float C[9][3]; int cn = 0;
@@ -334,7 +289,6 @@ int ClipProjectPoly(const float* m, float vpX, float vpY, float vpW, float vpH,
     return outn;
 }
 
-// ---- cached DIB --------------------------------------------------------
 struct Dib {
     HDC     dc = nullptr;
     HBITMAP bmp = nullptr, old = nullptr;
@@ -362,7 +316,7 @@ struct Dib {
         return true;
     }
     void clear() { if (bits) memset(bits, 0, (size_t)w * h * 4); }
-    // GDI+ writes straight-alpha ARGB; UpdateLayeredWindow wants premultiplied.
+    // GDI+ writes straight alpha; UpdateLayeredWindow wants premultiplied.
     void premultiply() {
         auto* p = reinterpret_cast<unsigned char*>(bits);
         if (!p) return;
@@ -386,14 +340,10 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                const rtx::reader::OverlayFrame& f, int W, int H) {
     using namespace Gdiplus;
     g.SetSmoothingMode(SmoothingModeAntiAlias);
-    // GridFit/ClearType writes broken alpha on a transparent layered window
-    // (text disappears); plain AntiAlias writes coverage alpha that survives.
+    // ClearType writes broken alpha on a layered window; AntiAlias survives.
     g.SetTextRenderingHint(TextRenderingHintAntiAlias);
 
-    // The camera renders into the gameview viewport -- a sub-rect of the window when UI panels are
-    // docked. Project against it; fall back to the full window when the reader couldn't resolve the
-    // gameview rect (gv_w/h == 0). Clamp to the client rect: the widget can read oversized during a
-    // resize, and a gameview larger than the window would throw the grid off.
+    // Gameview viewport, falling back to the full window when unresolved (gv_w/h == 0); clamped to the client.
     float vpW = f.gv_w > 0 ? (float)f.gv_w : (float)W;
     float vpH = f.gv_h > 0 ? (float)f.gv_h : (float)H;
     if (vpW > (float)W) vpW = (float)W;
@@ -405,19 +355,16 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
     if (vpX + vpW > (float)W) vpX = (float)W - vpW;
     if (vpY + vpH > (float)H) vpY = (float)H - vpH;
 
-    // --- tile grid (corners projected at the player's plane height), coloured
-    //     by walkability: blocked tiles tinted red, or hidden when walk_only ---
+    // --- tile grid ---
     if (cfg.grid && f.grid_r > 0) {
         const int R = f.grid_r;
         const int T = 2 * R + 1;          // tiles per axis
-        // PER-TILE corners (SW,SE,NE,NW), not a shared lattice. A shared corner cannot hold
-        // two heights, so at a bridge edge the deck quad was dragged down to the ravine.
-        static thread_local std::vector<float> px, py;   // reused each frame (render thread only)
+        // Per-tile corners (SW,SE,NE,NW), not a shared lattice: a shared corner cannot hold two heights at a bridge edge.
+        static thread_local std::vector<float> px, py;
         static thread_local std::vector<char>  vis;
         px.assign((size_t)T * T * 4, 0.0f); py.assign((size_t)T * T * 4, 0.0f);
         vis.assign((size_t)T * T * 4, 0);
-        // Terrain-follow: heights are ABSOLUTE -- live fine-z = 32 * cache surface
-        // height (bridge-aware cumulative, see CacheReader::AbsHeightLocked).
+        // fine-z = 32 * cache surface height (see CacheReader::AbsHeightLocked)
         const float kHScale = 32.0f;
         const std::int16_t kNoH = -32768;
         bool haveH = (int)f.heights.size() == T * T * 4;
@@ -428,15 +375,10 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                     size_t i = ((size_t)tgx * T + tgy) * 4 + c;
                     float wx = (float)(f.player_tx - R + tgx + CX[c]) * 512.0f;
                     float wy = (float)(f.player_ty - R + tgy + CY[c]) * 512.0f;
-                    // Corners with no cache height belong to a region with no map data, so leave
-                    // them invisible instead of drawing a fake flat grid over unmapped space
-                    // (cells need all 4 corners visible).
-                    if (haveH && f.heights[i] == kNoH) continue;
+                    if (haveH && f.heights[i] == kNoH) continue;   // no map data: leave invisible
                     float cz = (haveH && f.heights[i] != kNoH)
                              ? kHScale * (float)f.heights[i] : f.player_z;
                     float sx, sy;
-                    // Corners closest to the camera have tiny w and project to huge coords at
-                    // grazing angles -- clip anything more than ~one screen off-edge.
                     if (WorldToScreen(f.matrix, vpX, vpY, vpW, vpH, wx, wy, cz, sx, sy) &&
                         sx > -(float)W && sx < 2.0f * W && sy > -(float)H && sy < 2.0f * H) {
                         px[i] = sx; py[i] = sy; vis[i] = 1;
@@ -444,10 +386,10 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                 }
             }
         }
-        Pen pen(Color(175, 150, 215, 255), 1.3f);        // brighter cyan-white grid
+        Pen pen(Color(175, 150, 215, 255), 1.3f);
         Pen center(Color(255, 150, 250, 150), 2.4f);     // player's own tile
-        Pen wallPen(Color(255, 95, 175, 255), 2.6f);     // blue directional wall edges
-        SolidBrush blockFill(Color(125, 240, 80, 80));   // stronger red on full-blocked tiles
+        Pen wallPen(Color(255, 95, 175, 255), 2.6f);
+        SolidBrush blockFill(Color(125, 240, 80, 80));
         // flags byte per tile: 0x01 N,0x02 S,0x04 E,0x08 W edges; 0x10 full-block; 0x20 has-wall
         auto flagAt = [&](int tgx, int tgy) -> int {
             size_t idx = (size_t)tgx * T + tgy;
@@ -458,7 +400,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                 int fl = flagAt(tgx, tgy);
                 bool full = (fl & 0x10) != 0;
                 if (full && cfg.walk_only) continue;
-                const size_t base = ((size_t)tgx * T + tgy) * 4;   // this tile's own corners
+                const size_t base = ((size_t)tgx * T + tgy) * 4;
                 size_t a = base + 0, b = base + 1, c = base + 2, d = base + 3;   // SW,SE,NE,NW
                 if (!(vis[a] && vis[b] && vis[c] && vis[d])) continue;
                 if (full) {
@@ -471,7 +413,6 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                 g.DrawLine(e, px[b], py[b], px[c], py[c]);
                 g.DrawLine(e, px[c], py[c], px[d], py[d]);
                 g.DrawLine(e, px[d], py[d], px[a], py[a]);
-                // directional wall edges (corner map: a=SW b=SE c=NE d=NW)
                 if (fl & 0x08) g.DrawLine(&wallPen, px[a], py[a], px[d], py[d]);  // W
                 if (fl & 0x04) g.DrawLine(&wallPen, px[b], py[b], px[c], py[c]);  // E
                 if (fl & 0x02) g.DrawLine(&wallPen, px[a], py[a], px[b], py[b]);  // S
@@ -480,19 +421,16 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
         }
     }
 
-    // --- entity / object markers ---
-    // Two passes: dots first, then labels with a dark rounded background and overlap avoidance.
-    // Higher-priority kinds (players > NPCs > objects) claim label space first; a label that would
-    // collide with one already placed is dropped (its dot still shows).
+    // --- entity / object markers: dots, then labels with overlap avoidance (players > NPCs > objects) ---
     FontFamily ff(L"Segoe UI");
     Font font(&ff, 11.0f, FontStyleRegular, UnitPixel);
     SolidBrush textBrush(Color(255, 245, 245, 245));
-    SolidBrush pill(Color(170, 14, 16, 24));         // dark translucent label bg
-    Color kindCol[5] = { Color(255, 90, 200, 235),   // 0 object  (cyan)
-                         Color(255, 245, 210, 80),   // 1 npc     (yellow)
-                         Color(255, 90, 220, 120),   // 2 player  (green)
-                         Color(255, 245, 165, 60),   // 3 special (amber)
-                         Color(255, kTxtR, kTxtG, kTxtB) };  // 4 Scene object outline (neutral)
+    SolidBrush pill(Color(170, 14, 16, 24));
+    Color kindCol[5] = { Color(255, 90, 200, 235),   // 0 object
+                         Color(255, 245, 210, 80),   // 1 npc
+                         Color(255, 90, 220, 120),   // 2 player
+                         Color(255, 245, 165, 60),   // 3 special
+                         Color(255, kTxtR, kTxtG, kTxtB) };  // 4 Scene object outline
     auto wanted = [&](int kind) {
         return kind == 4 ? true : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
     };
@@ -509,16 +447,14 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
         path.CloseFigure();
         gr.FillPath(b, &path);
     };
-    for (const auto& p : f.points) {                 // dots / object footprints
+    for (const auto& p : f.points) {
         if (!wanted(p.kind)) continue;
-        // Anything with a live model AABB (objects + NPCs) draws a true 3D box (real
-        // size + height): project the 8 corners, fill the base, outline the 12 edges.
+        // Live model AABB: 3D box, corner bits 0=east 1=north 2=up.
         if (p.has_box3d) {
-            float ex[2] = { p.bmin[0], p.bmax[0] };   // east
-            float ny[2] = { p.bmin[1], p.bmax[1] };   // north
-            float uz[2] = { p.bmin[2], p.bmax[2] };   // up
+            float ex[2] = { p.bmin[0], p.bmax[0] };
+            float ny[2] = { p.bmin[1], p.bmax[1] };
+            float uz[2] = { p.bmin[2], p.bmax[2] };
             Gdiplus::PointF v[8]; bool okAll = true;
-            // corner order: bit0=east, bit1=north, bit2=up
             for (int c = 0; c < 8; ++c) {
                 float sx, sy;
                 if (!WorldToScreen(f.matrix, vpX, vpY, vpW, vpH,
@@ -527,21 +463,19 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                 v[c] = Gdiplus::PointF(sx, sy);
             }
             if (okAll) {
-                Color kc = kindCol[p.kind];               // box coloured by kind (cyan obj / yellow npc)
+                Color kc = kindCol[p.kind];
                 Pen edge(Color(235, kc.GetR(), kc.GetG(), kc.GetB()), 1.8f);
                 SolidBrush baseFill(Color(40, kc.GetR(), kc.GetG(), kc.GetB()));
-                Gdiplus::PointF base[4] = { v[0], v[1], v[3], v[2] };   // up=min face (east,north quad)
+                Gdiplus::PointF base[4] = { v[0], v[1], v[3], v[2] };   // up=min face
                 g.FillPolygon(&baseFill, base, 4);
-                static const int E[12][2] = { {0,1},{1,3},{3,2},{2,0},   // bottom (up=min)
-                                              {4,5},{5,7},{7,6},{6,4},   // top (up=max)
-                                              {0,4},{1,5},{2,6},{3,7} }; // verticals
+                static const int E[12][2] = { {0,1},{1,3},{3,2},{2,0},
+                                              {4,5},{5,7},{7,6},{6,4},
+                                              {0,4},{1,5},{2,6},{3,7} };
                 for (auto& e : E) g.DrawLine(&edge, v[e[0]], v[e[1]]);
                 continue;
             }
-            // projection failed -> fall through to dot
         }
-        // Objects with a footprint draw the covered tiles extruded by box_h into a prism
-        // (flat quads read as floor decals, not scenery): corners 0-3 = ground, 4-7 = top.
+        // Footprint extruded by box_h: corners 0-3 = ground, 4-7 = top.
         if (p.kind == 0 && p.has_box) {
             Gdiplus::PointF poly[8];
             bool okAll = true;
@@ -555,9 +489,9 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                 poly[i] = Gdiplus::PointF(sx, sy);
             }
             if (okAll) {
-                SolidBrush fill(Color(46, 90, 200, 235));    // translucent cyan fill
+                SolidBrush fill(Color(46, 90, 200, 235));
                 g.FillPolygon(&fill, poly, 4);               // ground face only
-                Pen edge(Color(230, 120, 215, 245), 2.0f);   // cyan outline
+                Pen edge(Color(230, 120, 215, 245), 2.0f);
                 g.DrawPolygon(&edge, poly, 4);
                 if (nv == 8) {
                     Gdiplus::PointF top[4] = { poly[4], poly[5], poly[6], poly[7] };
@@ -566,16 +500,15 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                 }
                 continue;
             }
-            // projection failed -> fall through to a dot
         }
         float sx, sy;
         if (!project(p, sx, sy)) continue;
         SolidBrush dot(kindCol[p.kind]);
         if (p.kind == 0)      g.FillRectangle(&dot, sx - 2.5f, sy - 2.5f, 5.0f, 5.0f);
-        else if (p.kind == 3) g.FillEllipse(&dot, sx - 4.0f, sy - 4.0f, 8.0f, 8.0f);   // specials: bigger
+        else if (p.kind == 3) g.FillEllipse(&dot, sx - 4.0f, sy - 4.0f, 8.0f, 8.0f);
         else                  g.FillEllipse(&dot, sx - 3.0f, sy - 3.0f, 6.0f, 6.0f);
     }
-    std::vector<RectF> placed;                        // labels (priority 3->2->1->0)
+    std::vector<RectF> placed;
     for (int kp = 3; kp >= 0; --kp) {
         if (!wanted(kp)) continue;
         for (const auto& p : f.points) {
@@ -598,10 +531,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
         }
     }
 
-    // --- highlighted NPCs (e.g. random events): a pulsing gold ring + label,
-    //     drawn until the NPC leaves the scene. Independent of the npc toggle. ---
-    // Same anti-flicker hold as PublishMarkers: a labelled highlight that fails to resolve on
-    // individual frames (morph or animation churn) keeps drawing for a short grace period.
+    // --- highlighted NPCs: pulsing ring + label, with the same anti-flicker hold as PublishMarkers ---
     std::vector<rtx::reader::OverlayPoint> dfHls;
     {
         static std::map<std::string, std::pair<rtx::reader::OverlayPoint, ULONGLONG>> s_hold;
@@ -622,7 +552,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
         float pulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
         SolidBrush goldText(Color(255, 255, 226, 128));
         for (const auto& hp : dfHls) {
-            if (hp.has_box3d) {                              // Scene-tab outline -> 3D box
+            if (hp.has_box3d) {
                 float ex[2] = { hp.bmin[0], hp.bmax[0] }, ny[2] = { hp.bmin[1], hp.bmax[1] }, uz[2] = { hp.bmin[2], hp.bmax[2] };
                 Gdiplus::PointF v[8]; bool okAll = true;
                 for (int c = 0; c < 8; ++c) {
@@ -662,10 +592,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
     }
 }
 
-// ---- in-frame world markers --------------------------------------------
-// Mirror of DrawFrame's projection, but emitting MarkerShare primitive commands (lines / fills)
-// into the game's own frame via the companion instead of GDI+ draws on the external layered
-// window. Same WorldToScreen + viewport, so positions match the external overlay.
+// ---- in-frame world markers: DrawFrame's projection emitted as MarkerShare commands into the game's frame ----
 namespace marker = rtx::marker;
 
 struct MarkerOut {
@@ -687,7 +614,7 @@ struct MarkerOut {
         if (!p) { CloseHandle(map); map = nullptr; return false; }
         p->version = marker::kVersion;
         p->pid     = target;
-        p->magic   = marker::kMagic;       // last: signals "initialised" to the reader
+        p->magic   = marker::kMagic;       // written last: signals initialised
         pid = target;
         return true;
     }
@@ -697,12 +624,10 @@ struct MarkerOut {
         pid = 0;
     }
 };
-std::map<DWORD, MarkerOut> g_marker_outs;   // one channel PER client; render thread only
+std::map<DWORD, MarkerOut> g_marker_outs;   // one channel per client; render thread only
 
-// Publish the marker command list for `f` (already gathered for WxH) into cfg.pid's OWN section.
-// `f == nullptr` with no flash marks the channel not-visible so that client's in-frame layer stops
-// drawing. flashAlpha > 0 paints the alert flash into that client's render. Grid/markers are gated
-// on cfg.enabled; highlights + flash draw even with the overlay off (they are alert-driven).
+// f == nullptr with no flash marks the channel not-visible. Grid/markers gate on cfg.enabled;
+// highlights, guides and flash draw regardless.
 void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W, int H,
                     float flashAlpha = 0.0f,
                     const std::vector<marker::Command>* widgets = nullptr) {
@@ -710,9 +635,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     if (!out.ensure(cfg.pid)) return;
     marker::Share* sh = out.p;
 
-    // Mystery guide marks draw INDEPENDENTLY of the overlay toggles (like alert highlights), so they
-    // must count as content here or the early-out below publishes an empty frame first.
-    bool hasGuides = false;   // gate only -- drawing uses the frame's RESOLVED guides
+    bool hasGuides = false;   // gate only; drawing uses the frame's resolved guides
     std::vector<UiHighlight> uihls;
     std::map<int, CenterBanner> ctext;
     std::vector<PanelBox> pviz;
@@ -736,13 +659,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       if (sbit != g_skillBars.end() && now_ms() - sbit->second.at_ms <= kSkillBarsTtlMs)
           sbars = sbit->second.bars; }
 
-    // Highlights get a short HOLD: the reader resolves them per frame from the live scene, and a
-    // morphing or animating NPC (or a torn runtime-object read) can fail name or box resolution
-    // on individual frames, which made the box and label blink visibly. Each highlight seen is
-    // kept drawing for a grace period after it stops resolving. Labelled ones key on the label;
-    // the Scene-tab outline has an empty label by contract (that is what selects the neutral
-    // style), so it keys on the entity uid / centre tile instead. A cleared needle empties the
-    // hold with the frame. PublishMarkers runs on the overlay thread only, so statics are fine.
+    // Anti-flicker hold: a highlight that fails to resolve on a frame keeps drawing for kHiHoldMs.
     std::vector<rtx::reader::OverlayPoint> hls;
     {
         static std::map<DWORD, std::map<std::string, std::pair<rtx::reader::OverlayPoint, ULONGLONG>>> s_hiHold;
@@ -774,12 +691,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         return;
     }
 
-    // Same gameview viewport math as DrawFrame (full client area when flash-only).
-    // gv_* is in the game's LOGICAL interface space; W/H is the backbuffer. They differ
-    // when a per-monitor-aware client sits on an OS-scaled monitor (seen live: viewport
-    // 1707x890 inside a 2560-wide backbuffer at 150% -- every world overlay compressed
-    // toward the top-left). lc_w is the full client in the SAME logical space, so
-    // W / lc_w converts exactly; snapped to 1 within noise, bounded against torn reads.
+    // gv_* is in logical interface space, W/H is the backbuffer; they differ under OS DPI scaling.
+    // lc_w is the full client in the same logical space, so W / lc_w converts.
     float gvScale = 1.0f;
     if (f && f->gv_w > 0 && f->lc_w > 0) {
         const float s = (float)W / (float)f->lc_w;
@@ -796,7 +709,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     if (vpX + vpW > (float)W) vpX = (float)W - vpW;
     if (vpY + vpH > (float)H) vpY = (float)H - vpH;
 
-    static std::vector<marker::Command> cmds;   // reused each frame (render thread only)
+    static std::vector<marker::Command> cmds;   // render thread only
     cmds.clear();
     auto push = [&](const marker::Command& c) { if (cmds.size() < marker::kMaxCmds) cmds.push_back(c); };
     auto line = [&](float x0, float y0, float x1, float y1, float th,
@@ -813,24 +726,20 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         push(c);
     };
 
-    // --- tile grid: corner lattice projected at plane height; walls + blocked ---
+    // --- tile grid ---
     if (f && cfg.enabled && cfg.grid && f->grid_r > 0) {
         const int R = f->grid_r;
         const int T = 2 * R + 1;
-        // PER-TILE corners (SW,SE,NE,NW). A shared lattice corner can hold only one height,
-        // so where a bridge deck meets the ravine beside it the deck quad was pulled down
-        // into the water; each tile now carries its own four, decided at its own plane.
-        static thread_local std::vector<float> px, py, wz;   // reused each frame (render thread only)
+        // Per-tile corners (SW,SE,NE,NW), not a shared lattice (bridge edges need two heights).
+        static thread_local std::vector<float> px, py, wz;
         static thread_local std::vector<char>  vis;
         const size_t NC = (size_t)T * T * 4;
         px.assign(NC, 0.0f); py.assign(NC, 0.0f); wz.assign(NC, 0.0f); vis.assign(NC, 0);
-        const float kHScale = 32.0f;       // absolute: live fine-z = 32 * cache height
+        const float kHScale = 32.0f;       // fine-z = 32 * cache height
         const std::int16_t kNoH = -32768;
         bool haveH = f->heights.size() == NC;
         static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
-        // Corner classes: 0 = unusable (no height / projects far off-screen), 1 = drawable,
-        // 2 = behind the near plane (edges to it get clipped instead of dropped, so the
-        // grid stays continuous down to the screen edge when the camera tilts low).
+        // vis: 0 = unusable, 1 = drawable, 2 = behind the near plane (edges to it are clipped, not dropped)
         for (int tgx = 0; tgx < T; ++tgx)
             for (int tgy = 0; tgy < T; ++tgy)
                 for (int c = 0; c < 4; ++c) {
@@ -853,13 +762,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             size_t idx = (size_t)tgx * T + tgy;
             return idx < f->blocked.size() ? f->blocked[idx] : 0;
         };
-        // Blocked ground. Two designs failed before this one: a flat 55-alpha red wash
-        // disappeared on red terrain, and darken-plus-hatch turned a mostly-blocked scene into
-        // wall-to-wall noise. The information that matters is WHERE WALKABLE ENDS, so blocked
-        // tiles get only a faint veil (and no lattice at all, see below) while the
-        // walkable/blocked boundary is drawn once, strongly, by the edge pass. Structure does
-        // the talking: gridded ground is walkable, ungridded ground is not, and one amber
-        // line divides them.
+        // Blocked tiles: faint veil, no lattice; the walkable/blocked boundary is drawn by the edge pass.
         if (!cfg.walk_only)
             for (int tgx = 0; tgx < T; ++tgx)
                 for (int tgy = 0; tgy < T; ++tgy) {
@@ -873,17 +776,15 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     q.r = 8; q.g = 6; q.b = 8; q.a = 62;
                     push(q);
                 }
-        // The lattice belongs to WALKABLE tiles only: a blocked tile draws no grid, so the
-        // gridded carpet itself says "you can stand here" and its absence says you cannot.
         auto tileShown = [&](int tgx, int tgy, bool& shown, bool& self) {
             shown = self = false;
             if (tgx < 0 || tgy < 0 || tgx >= T || tgy >= T) return;
-            if (flagAt(tgx, tgy) & 0x10) return;             // blocked: no lattice, veil only
+            if (flagAt(tgx, tgy) & 0x10) return;             // blocked: no lattice
             shown = true;
             self = (tgx == R && tgy == R);
         };
         auto blockedAt = [&](int tgx, int tgy) {
-            if (tgx < 0 || tgy < 0 || tgx >= T || tgy >= T) return false;  // outside the ring: unknown, not blocked
+            if (tgx < 0 || tgy < 0 || tgx >= T || tgy >= T) return false;  // outside the ring: unknown
             return (flagAt(tgx, tgy) & 0x10) != 0;
         };
         auto cornerWorld = [&](size_t i, float* out) {
@@ -892,19 +793,17 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             out[1] = (float)(f->player_ty - R + (int)(tile % T) + CY[c]) * 512.0f;
             out[2] = wz[i];
         };
-        // border: this edge separates walkable from blocked -> the amber coastline, the one
-        // strong stroke in the design. self: the player's tile. Everything else is quiet.
+        // border = walkable/blocked boundary (amber); self = the player's tile.
         auto edge = [&](size_t c0, size_t c1, bool self, bool border) {
             bool clipped = (vis[c0] == 1 && vis[c1] == 2) || (vis[c0] == 2 && vis[c1] == 1);
             if (!clipped && !(vis[c0] == 1 && vis[c1] == 1)) return;
             float x0 = px[c0], y0 = py[c0], x1 = px[c1], y1 = py[c1];
-            if (clipped) {                     // one corner behind the camera
+            if (clipped) {
                 float A[3], B[3];
                 cornerWorld(c0, A); cornerWorld(c1, B);
                 if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, A, B, x0, y0, x1, y1)) return;
             }
-            // Cartographic halo: a soft dark understroke first, the colour line on top, so
-            // every stroke stays crisp on bright stone and pale sand alike.
+            // dark understroke, then the colour line
             if (self) {
                 line(x0, y0, x1, y1, 3.8f, 8, 24, 10, 165);
                 line(x0, y0, x1, y1, 2.0f, 150, 250, 150, 255);
@@ -916,10 +815,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 line(x0, y0, x1, y1, 1.0f, 170, 225, 255, 175);
             }
         };
-        // Each tile draws its OWN four edges, so a bridge seam can be a step rather than a
-        // shared corner both sides have to agree on. Interior edges are therefore drawn twice
-        // (identical colour, so no visual change); the player's tile is drawn in a second pass
-        // so its green edges land on top of a neighbour's cyan.
+        // Second pass draws the player's tile so its green lands on top.
         for (int pass = 0; pass < 2; ++pass)
             for (int tgx = 0; tgx < T; ++tgx)
                 for (int tgy = 0; tgy < T; ++tgy) {
@@ -927,12 +823,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     tileShown(tgx, tgy, shown, self);
                     if (!shown || self != (pass == 1)) continue;
                     const size_t base = ((size_t)tgx * T + tgy) * 4;
-                    // EACH SHARED EDGE DRAWN ONCE. Both tiles drawing their own four edges
-                    // stacked halo on halo along every interior line and read as blur (owner
-                    // report). A tile owns its S and W edges; it draws N/E only when the
-                    // neighbour will not (carpet edge: neighbour hidden), or when the two rims
-                    // genuinely differ in height (a bridge step is two real lines). The player
-                    // tile still draws all four in its own pass so green lands on top.
+                    // Shared edges drawn once (stacked halos blur): a tile owns S and W, draws N/E only
+                    // when the neighbour is hidden or differs in height (bridge step).
                     auto neighbourDrawsShared = [&](int nx, int ny, size_t c0, size_t c1, size_t n0, size_t n1) {
                         bool ns, nself;
                         tileShown(nx, ny, ns, nself);
@@ -947,7 +839,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     if (self || !neighbourDrawsShared(tgx, tgy + 1, 3, 2, 0, 1))
                         edge(base + 2, base + 3, self, blockedAt(tgx, tgy + 1));   // N
                 }
-        // directional wall edges on top (a=SW b=SE c=NE d=NW)
+        // wall edges on top (a=SW b=SE c=NE d=NW)
         for (int tgx = 0; tgx < T; ++tgx)
             for (int tgy = 0; tgy < T; ++tgy) {
                 int fl = flagAt(tgx, tgy);
@@ -956,8 +848,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 const size_t base = ((size_t)tgx * T + tgy) * 4;
                 size_t a = base + 0, b = base + 1, c = base + 2, d = base + 3;
                 if (vis[a] != 1 || vis[b] != 1 || vis[c] != 1 || vis[d] != 1) continue;
-                // Wall edges get the same halo treatment, slightly heavier: they are the
-                // "you cannot cross THIS side" signal and must dominate the lattice.
                 auto wall = [&](size_t e0, size_t e1) {
                     line(px[e0], py[e0], px[e1], py[e1], 4.4f, 4, 10, 18, 180);
                     line(px[e0], py[e0], px[e1], py[e1], 2.6f, 120, 190, 255, 255);
@@ -969,10 +859,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             }
     }
 
-    // --- entity / object markers: live AABB / footprint outline, else a dot ---
+    // --- entity / object markers: live AABB / footprint outline, else a dot. kind 4 = Scene-tab outline, always drawn ---
     struct KC { int r, g, b; };
-    // kind 4 = Scene-tab object outline: always drawn, neutral tone (an inspected object is
-    // not an objective; matches the NPC outline treatment).
     const KC kindCol[5] = { {90,200,235}, {245,210,80}, {90,220,120}, {245,165,60}, {kTxtR,kTxtG,kTxtB} };
     auto wanted = [&](int kind) {
         return kind == 4 ? true : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
@@ -980,10 +868,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     if (f && cfg.enabled) for (const auto& p : f->points) {
         if (!wanted(p.kind)) continue;
         const KC kc = kindCol[p.kind >= 0 && p.kind < 5 ? p.kind : 0];
-        // Box/prism edges are clipped at the near plane INDIVIDUALLY, so a shape keeps its
-        // visible part when the camera moves inside it instead of vanishing whole; a shape
-        // projecting entirely outside the expanded screen guard still skips.
-        if (p.has_box3d) {                                   // true 3D box -> 12 edges
+        // Edges are near-plane clipped individually so a shape survives the camera moving inside it.
+        if (p.has_box3d) {
             float wc[8][3];                                  // corner bits: 1=maxE 2=maxN 4=maxUp
             for (int cc = 0; cc < 8; ++cc) {
                 wc[cc][0] = (cc & 1) ? p.bmax[0] : p.bmin[0];
@@ -1008,7 +894,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 continue;
             }
         }
-        if (p.kind == 0 && p.has_box) {                      // object footprint -> prism
+        if (p.kind == 0 && p.has_box) {
             float wc[8][3];                                  // corners 0-3 ground, 4-7 top
             for (int i = 0; i < 4; ++i) {
                 wc[i][0] = p.box[i * 3]; wc[i][1] = p.box[i * 3 + 1]; wc[i][2] = p.box[i * 3 + 2];
@@ -1046,32 +932,25 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         dot(sx, sy, half, kc.r, kc.g, kc.b, 255);
     }
 
-    // --- entity nameplates: a floating name label over each player / NPC / object, independent of
-    //     "Enable overlay" (driven from the Scene tab). Two-stage layout: (1) every entity on the SAME
-    //     tile shares that tile's centre anchor -> one column per tile (capped, overflow -> "+N
-    //     more"); (2) a greedy 2D de-collision pushes any overlapping pill UPWARD. ---
+    // --- nameplates: one column per tile (capped, "+N more"), then greedy upward de-collision ---
     if (f && cfg.nameplates) {
-        // Fixed glyph height; derive the pill box (see companion DrawLabel) so slot pitch + collision
-        // are exact. Width is estimated from the label length (the atlas is proportional).
         const float npTextPx = 11.0f;
         const float cellH  = 34.0f * (npTextPx / 21.0f);     // atlas cell -> screen px
-        // MIRRORS Composite.cpp DrawLabel's plate metrics -- these must move in lockstep with
-        // it or nameplate stacking silently drifts from what is actually drawn.
+        // Pill metrics must match Composite.cpp DrawLabel or stacking drifts.
         const float pillH  = cellH * 0.78f + 10.0f;          // + padY*2  (padY 5)
-        const float padX   = 8.0f;                           // pill horizontal padding
-        const float avgAdv = npTextPx * 0.62f;               // over-estimate of a glyph's advance
-        const float slotH  = pillH + 3.0f;                   // vertical pitch inside a column
-        const float gap    = 2.0f;                           // min gap enforced by de-collision
-        const int   kMaxRows = 12;                           // cap per tile; extra -> "+N more"
-        const float kMaxRise = slotH * 5.0f;                 // drop a label rather than push it >5 rows off its object
+        const float padX   = 8.0f;
+        const float avgAdv = npTextPx * 0.62f;               // over-estimate of glyph advance
+        const float slotH  = pillH + 3.0f;
+        const float gap    = 2.0f;
+        const int   kMaxRows = 12;                           // per tile; extra -> "+N more"
+        const float kMaxRise = slotH * 5.0f;                 // drop a label rather than push it further
 
         auto npWanted = [&](int kind) {
             return kind == 0 ? cfg.np_objects : kind == 1 ? cfg.np_npcs
-                 : kind == 2 ? cfg.np_players : false;        // specials excluded (scan ring, no tile)
+                 : kind == 2 ? cfg.np_players : false;        // specials excluded
         };
         auto pillW = [&](const std::string& s) { return padX * 2.0f + (float)s.size() * avgAdv; };
 
-        // Gather entities into per-tile buckets; each bucket becomes one column.
         struct Ent { int kind; float wz, head_z; const std::string* label; };
         struct Bucket { int tx, ty, dist; float cx, cy, cwx, cwy; float repZ; bool anyHead; std::vector<Ent> ents; };
         std::map<long long, int> bmap;
@@ -1079,7 +958,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const int npR = cfg.np_range > 0 ? cfg.np_range : 20;
         for (const auto& p : f->points) {
             if (p.is_self || p.label.empty()) continue;
-            if (p.kind == 2) {   // player: if any are individually picked, show ONLY those; else the master toggle = all
+            if (p.kind == 2) {   // picked players override the master toggle
                 bool show = cfg.np_player_uids.empty()
                     ? cfg.np_players
                     : (std::find(cfg.np_player_uids.begin(), cfg.np_player_uids.end(), p.uid) != cfg.np_player_uids.end());
@@ -1102,18 +981,17 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             } else bi = it->second;
             Bucket& b = buckets[bi];
             b.ents.push_back({ p.kind, p.wz, p.head_z, &p.label });
-            // Column height = the tallest head on the tile (NPC box top); players carry none.
+            // column anchor = tallest head on the tile; players carry none
             if (p.head_z != 0.0f) { if (!b.anyHead || p.head_z > b.repZ) b.repZ = p.head_z; b.anyHead = true; }
             else if (!b.anyHead && (b.ents.size() == 1 || p.wz > b.repZ)) b.repZ = p.wz;
         }
 
-        // Project each tile's shared anchor (tile centre at the column's head height).
         std::vector<int> keep; keep.reserve(buckets.size());
         for (int i = 0; i < (int)buckets.size(); ++i) {
             Bucket& b = buckets[i];
             float sx, sy;
             if (!WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, b.cwx, b.cwy, b.repZ, sx, sy)) continue;
-            if (!b.anyHead) sy -= 26.0f;     // no model box on the tile -> lift off the feet
+            if (!b.anyHead) sy -= 26.0f;     // no model box: lift off the feet
             if (sx < -120 || sx > W + 120 || sy < -160 || sy > H + 160) continue;
             b.cx = sx; b.cy = sy;
             std::sort(b.ents.begin(), b.ents.end(),
@@ -1121,8 +999,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             keep.push_back(i);
         }
 
-        // Flatten to individual rows (real names + one "+N more" per over-full tile), each with a
-        // desired centre. Nearest tiles + lower rows are placed first so they keep their spot.
+        // Rows: nearest tiles and lower slots are placed first so they keep their spot.
         struct Row { float cx, cy, w; int kind; std::string label; int dist, slot; };
         std::vector<Row> rows;
         for (int bi : keep) {
@@ -1144,14 +1021,12 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             return a.dist != b.dist ? a.dist < b.dist : a.slot < b.slot;
         });
 
-        // Greedy 2D de-collision: keep the desired X, push the row UP past any placed pill it overlaps.
-        // Same-tile rows share X so they stack; adjacent columns interleave upward.
         auto kindRGB = [&](int kind, int& r, int& g, int& b) {
             switch (kind) {
-                case 2: r = 120; g = 235; b = 140; break;    // player  green
-                case 1: r = 245; g = 210; b = 90;  break;    // NPC     yellow
-                case 0: r = 120; g = 215; b = 245; break;    // object  cyan
-                default: r = 205; g = 205; b = 210; break;   // overflow / neutral
+                case 2: r = 120; g = 235; b = 140; break;    // player
+                case 1: r = 245; g = 210; b = 90;  break;    // NPC
+                case 0: r = 120; g = 215; b = 245; break;    // object
+                default: r = 205; g = 205; b = 210; break;   // overflow
             }
         };
         struct Rect { float cx, cy, w, h; };
@@ -1166,12 +1041,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     if (ovX && ovY) { hit = true; float top = pr.cy - pr.h * 0.5f; if (top < bestTop) bestTop = top; }
                 }
                 if (!hit) break;
-                cy = bestTop - pillH * 0.5f - gap;           // jump just above the highest collider
+                cy = bestTop - pillH * 0.5f - gap;
             }
-            // Rows are placed nearest-first, so a label that had to rise past kMaxRise is a FAR one
-            // buried under a dense cluster -- drop it instead of building a tall disconnected tower.
-            // Sparse scenes never hit this; only crowded hubs thin out, keeping the nearest.
-            if (row.cy - cy > kMaxRise) continue;
+            if (row.cy - cy > kMaxRise) continue;   // buried far label: drop rather than tower
             placed.push_back({ row.cx, cy, row.w, pillH });
             int r, g, b; kindRGB(row.kind, r, g, b);
             marker::Command t{}; t.type = marker::kText;
@@ -1190,10 +1062,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- highlighted NPCs (independent of the grid/NPC toggles) ---
-    //   label EMPTY + has_box3d (Scene-tab outline) -> teal model box only;
-    //   labelled (guide/alert NPC) -> tile under the NPC (gold, follows them) +
-    //   gold model box + compact label panel above the head.
+    // --- highlights (independent of grid/NPC toggles): empty label + box = neutral Scene-tab outline;
+    //     labelled = objective accent box/beacon + label panel ---
     if (f && !hls.empty()) {
         float pulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
         auto box3d = [&](const rtx::reader::OverlayPoint& hp, float th, int r, int g, int b, int a) {
@@ -1216,19 +1086,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             return true;
         };
         for (const auto& hp : hls) {
-            // NEUTRAL, not an accent: an inspected entity is not an objective, and the two must
-            // never be confusable. Discriminated on an EMPTY label -- do not give this path a
-            // default caption or it silently reroutes into the objective style below.
-            if (hp.has_box3d && hp.label.empty()) {       // Scene-tab outline
+            // Empty label selects the neutral style; do not add a default caption here.
+            if (hp.has_box3d && hp.label.empty()) {
                 if (box3d(hp, 1.4f, kTxtR, kTxtG, kTxtB, 190)) continue;
             }
             float sx, sy;
             if (!WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, hp.wx, hp.wy, hp.wz, sx, sy)) continue;
             if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) continue;
-            // A labelled highlight IS the objective (guide/alert NPC), so it takes the same
-            // accent as the guide box. The pulsing square is only the fallback when no live
-            // AABB is known -- pulse stays here because it is a "look here" cue, but it is
-            // tightened so it reads as a beacon rather than a throb.
+            // Pulsing square is the fallback when no live AABB is known.
             const bool boxed = hp.has_box3d && box3d(hp, 1.6f, kAccR, kAccG, kAccB, 235);
             if (!boxed) {
                 float rad = 14.0f + 3.0f * pulse;
@@ -1238,8 +1103,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 line(sx - rad, sy + rad, sx - rad, sy - rad, 2.4f, kAccR, kAccG, kAccB, 255);
                 dot(sx, sy, 2.5f, kAccR, kAccG, kAccB, 235);
             }
-            // label above the head (model-box top when known); one kText command,
-            // '\n' renders module-side as a single multi-line panel
+            // label above the head; '\n' renders module-side as one multi-line panel
             if (!hp.label.empty()) {
                 float lx = sx, ly = sy - 21.0f;
                 if (hp.head_z != 0.0f) {
@@ -1254,8 +1118,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 marker::Command t{}; t.type = marker::kText;
                 const float estH = 13.0f * (float)nl + 10.0f;   // rough panel height (padY 5, mirrors DrawLabel)
                 t.x0 = lx; t.y0 = ly - 6.0f - estH * 0.5f;
-                t.x1 = 10.5f;                                   // compact: stay out of the way
-                t.r = kAccR; t.g = kAccG; t.b = kAccB; t.a = 230;              // match the box: OBJECTIVE accent
+                t.x1 = 10.5f;
+                t.r = kAccR; t.g = kAccG; t.b = kAccB; t.a = 230;
                 int n = (int)hp.label.size();
                 if (n > marker::kTextMax) {
                     std::memcpy(t.text, hp.label.data(), marker::kTextMax - 2);
@@ -1271,8 +1135,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- user tile markers: persistent region+local markers projected as a filled tile +
-    //     outline with an optional floating label. Player's plane only; terrain-followed. ---
+    // --- user tile markers: player's plane only, terrain-followed ---
     if (f && cfg.markers) {
         auto mlist = rtx::markers::Snapshot(cfg.pid);
         const std::int16_t kNo = -32768;
@@ -1282,9 +1145,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             int gy = ((m.region & 0xFF) << 6) + m.ly;
             int adx = gx - f->player_tx; if (adx < 0) adx = -adx;
             int ady = gy - f->player_ty; if (ady < 0) ady = -ady;
-            if ((adx > ady ? adx : ady) > 128) continue;     // keep projection sane / uncluttered
+            if ((adx > ady ? adx : ady) > 128) continue;
             int cr = (m.color >> 16) & 0xFF, cg = (m.color >> 8) & 0xFF, cb = m.color & 0xFF;
-            // per-tile corner heights (one bridge decision per tile: no morphing at seams)
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(gx, gy, f->plane, ch);
             auto cz = [&](int c) { return (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c]; };
@@ -1300,12 +1162,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             bool any = false;
             for (int i = 0; i < nq; ++i)
                 if (qx[i] > -(float)W && qx[i] < 2.f * W && qy[i] > -(float)H && qy[i] < 2.f * H) any = true;
-            // Fill helper: fan of kFillQuads off vert 0 in the marker's scrim mix
-            // (denser but far darker than a colour wash - the tile reads as a lit
-            // outline instead of a stain).
-            // `bright` (two-tone halves): a 50% colour mix at slightly higher alpha, so the
-            // two hues actually read as two hues - the standard 25% scrim made both halves
-            // near-identical dark panes (owner feedback).
+            // Fan of kFillQuads off vert 0. `bright` = 50% mix for two-tone halves, else the 25% scrim.
             auto fillPoly = [&](const float* px2, const float* py2, int n, int r2, int g2, int b2,
                                 bool bright) {
                 for (int i = 1; i + 1 < n; i += 2) {
@@ -1325,10 +1182,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             };
             if (nq >= 3 && any) {
                 if (m.color2) {
-                    // TWO-TONE: split the tile along its SW->NE diagonal in WORLD space
-                    // (stable under any camera angle) - primary colour keeps the NW half,
-                    // the second colour takes the SE half. Each half projects and clips
-                    // independently; the outline below stays in the primary colour.
+                    // Two-tone: split along the SW->NE diagonal in world space; primary = NW half, second = SE half.
                     const int c2r = (m.color2 >> 16) & 0xFF, c2g = (m.color2 >> 8) & 0xFF, c2b = m.color2 & 0xFF;
                     const float triSE[3][3] = { { wc[0][0], wc[0][1], wc[0][2] },
                                                 { wc[1][0], wc[1][1], wc[1][2] },
@@ -1344,19 +1198,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 } else {
                     fillPoly(qx, qy, nq, cr, cg, cb, false);
                 }
-                // No corner ticks here: a single tile's perimeter already IS four short edges,
-                // and ticking it would leave nothing. Ticks are for prisms only.
-                //
-                // TWO-TONE outline: the bright 255-alpha outline is what actually carries the
-                // colours (the fill is a dark scrim), so each half owns its two perimeter
-                // edges - S+E in the second tone, N+W in the primary - with the diagonal
-                // seam inked between them. Needs all four corners on screen; a clipped tile
-                // falls back to the single-colour perimeter below.
+                // Two-tone outline: edge i runs corner i -> i+1 (SW,SE,NE,NW); S+E take the second tone, N+W the primary.
                 if (m.color2) {
-                    // Per-edge clip-projection, so the split border survives a partially
-                    // clipped tile too (the earlier all-corners-or-fallback version dropped
-                    // the split at screen edges). Edge i runs corner i -> i+1 in SW,SE,NE,NW
-                    // order: S(0) + E(1) belong to the second tone, N(2) + W(3) to the primary.
                     const int c2r = (m.color2 >> 16) & 0xFF, c2g = (m.color2 >> 8) & 0xFF, c2b = m.color2 & 0xFF;
                     for (int i = 0; i < 4; ++i) {
                         float ax2, ay2, bx2, by2;
@@ -1367,13 +1210,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         line(ax2, ay2, bx2, by2, 1.8f,
                              second ? c2r : cr, second ? c2g : cg, second ? c2b : cb, 255);
                     }
-                    float sx2, sy2, ex2, ey2;   // the diagonal seam, inked between the halves
+                    float sx2, sy2, ex2, ey2;   // diagonal seam
                     if (ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, wc[0], wc[2], sx2, sy2, ex2, ey2))
                         line(sx2, sy2, ex2, ey2, 1.4f, kInkR, kInkG, kInkB, 170);
                 } else
                     for (int i = 0; i < nq; ++i) {
                         line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 3.0f, kInkR, kInkG, kInkB, 140);
-                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 1.6f, cr, cg, cb, 255);   // USER COLOUR, verbatim
+                        line(qx[i], qy[i], qx[(i + 1) % nq], qy[(i + 1) % nq], 1.6f, cr, cg, cb, 255);
                     }
             }
             if (!m.label.empty()) {
@@ -1382,15 +1225,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH,
                                   (gx + 0.5f) * 512.f, (gy + 0.5f) * 512.f, zc, cx, cy) &&
                     cx > -200.f && cx < W + 200.f && cy > -120.f && cy < H + 120.f) {
-                    // One kText command: the module measures + lays the string out proportionally
-                    // and draws a rounded pill (dark fill + accent border = the tile's colour).
                     marker::Command t{}; t.type = marker::kText;
                     t.x0 = cx;
-                    t.y0 = cy - 22.0f;        // float the label above the tile centre
-                    t.x1 = 14.0f;             // glyph height in px
+                    t.y0 = cy - 22.0f;
+                    t.x1 = 14.0f;             // glyph height px
                     t.r = (std::uint8_t)cr; t.g = (std::uint8_t)cg; t.b = (std::uint8_t)cb; t.a = 235;
                     int n = (int)m.label.size();
-                    if (n > marker::kTextMax) {   // truncate over-long labels with ".."
+                    if (n > marker::kTextMax) {
                         std::memcpy(t.text, m.label.data(), marker::kTextMax - 2);
                         t.text[marker::kTextMax - 2] = '.';
                         t.text[marker::kTextMax - 1] = '.';
@@ -1405,14 +1246,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- guide path: the BFS walkable route drawn as the actual tiles walked,
-    //     a dim gold fill per tile with a thin dark edge for contrast ---
+    // --- guide path: BFS route drawn as the tiles walked ---
     if (f && f->guide_path.size() >= 4) {
         const std::int16_t kNo = -32768;
         const std::size_t nT = f->guide_path.size() / 2;
-        // Pass 1: per-tile corner heights (one bridge decision per tile). Pass 2: weld the
-        // shared edge of consecutive path tiles to the average of the two tiles' values, so
-        // the ribbon reads as ONE continuous height map (a deck-to-stair becomes a slope).
+        // Per-tile corner heights, then weld the shared edge of consecutive tiles so the ribbon is continuous.
         std::vector<float> cz((std::size_t)nT * 4);
         for (std::size_t i = 0; i < nT; ++i) {
             std::int16_t ch[4];
@@ -1423,12 +1261,12 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         for (std::size_t i = 0; i + 1 < nT; ++i) {
             int dx = f->guide_path[(i + 1) * 2]     - f->guide_path[i * 2];
             int dy = f->guide_path[(i + 1) * 2 + 1] - f->guide_path[i * 2 + 1];
-            // corner order SW(0) SE(1) NE(2) NW(3); pairs = (mine, next's) per direction
+            // corner order SW(0) SE(1) NE(2) NW(3); (own, next) pairs per direction
             int a0, a1, b0, b1;
-            if      (dx ==  1) { a0 = 1; b0 = 0; a1 = 2; b1 = 3; }   // east:  own SE/NE = next SW/NW
-            else if (dx == -1) { a0 = 0; b0 = 1; a1 = 3; b1 = 2; }   // west:  own SW/NW = next SE/NE
-            else if (dy ==  1) { a0 = 3; b0 = 0; a1 = 2; b1 = 1; }   // north: own NW/NE = next SW/SE
-            else if (dy == -1) { a0 = 0; b0 = 3; a1 = 1; b1 = 2; }   // south: own SW/SE = next NW/NE
+            if      (dx ==  1) { a0 = 1; b0 = 0; a1 = 2; b1 = 3; }   // east
+            else if (dx == -1) { a0 = 0; b0 = 1; a1 = 3; b1 = 2; }   // west
+            else if (dy ==  1) { a0 = 3; b0 = 0; a1 = 2; b1 = 1; }   // north
+            else if (dy == -1) { a0 = 0; b0 = 3; a1 = 1; b1 = 2; }   // south
             else continue;
             float w0 = (cz[i * 4 + a0] + cz[(i + 1) * 4 + b0]) * 0.5f;
             float w1 = (cz[i * 4 + a1] + cz[(i + 1) * 4 + b1]) * 0.5f;
@@ -1450,7 +1288,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             for (int c = 0; c < nq; ++c)
                 if (qx[c] > -200 && qx[c] < W + 200 && qy[c] > -200 && qy[c] < H + 200) onscr = true;
             if (nq < 3 || !onscr) continue;
-            for (int c = 1; c + 1 < nq; c += 2) {        // fan fill (see tile markers)
+            for (int c = 1; c + 1 < nq; c += 2) {        // fan fill
                 int j = (c + 2 < nq) ? c + 2 : c + 1;
                 marker::Command q{}; q.type = marker::kFillQuad;
                 q.x0 = qx[0]; q.y0 = qy[0]; q.x1 = qx[c]; q.y1 = qy[c];
@@ -1458,24 +1296,18 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 q.r = 255; q.g = 215; q.b = 60; q.a = 70;
                 push(q);
             }
-            for (int c = 0; c < nq; ++c)                 // dark edge: contrast on sand
+            for (int c = 0; c < nq; ++c)
                 line(qx[c], qy[c], qx[(c + 1) % nq], qy[(c + 1) % nq], 1.6f, 30, 24, 8, 130);
         }
     }
 
-    // --- mystery guide marks: resolved guide sites from the frame build -- the named object's
-    //     footprint prism with the label above its top, or a flat tile when no cache loc matched.
-    //     Labels are collected first and placed in a declutter pass below (co-located marks
-    //     otherwise stack their pills on top of each other). ---
+    // --- guide marks: footprint prism (or flat tile when no cache loc matched); labels placed in the declutter pass below ---
     struct GuideLbl { float cx, cy; int nl, mc; const std::string* text; int r, g, b; bool hazard; };
     std::vector<GuideLbl> glbls;
     if (f) for (const auto& p : f->guides) {
-        // World corners: base ring 0-3 (SW,SE,NE,NW), top ring 4-7. Each edge and the base
-        // fill are near-plane clipped individually, so walking INTO a mark (or tilting the
-        // camera across it) trims the shape instead of blinking it out.
+        // corners: base ring 0-3 (SW,SE,NE,NW), top ring 4-7
         float wc[8][3]; int nv;
         if (p.has_box3d) {
-            // live model AABB: the object's true visual volume
             nv = 8;
             static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
             for (int i = 0; i < 8; ++i) {
@@ -1484,17 +1316,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 wc[i][2] = (i >> 2) ? p.bmax[2] : p.bmin[2];
             }
         } else {
-            nv = (p.box_h > 0.f) ? 8 : 4;                // corners 0-3 ground, 4-7 top
+            nv = (p.box_h > 0.f) ? 8 : 4;
             for (int i = 0; i < nv; ++i) {
                 wc[i][0] = p.box[(i & 3) * 3];
                 wc[i][1] = p.box[(i & 3) * 3 + 1];
                 wc[i][2] = p.box[(i & 3) * 3 + 2] + ((i & 4) ? p.box_h : 0.f);
             }
         }
-        // Per-mark colour: rgb 0 = the default OBJECTIVE accent (single source of truth);
-        // hazard/area marks carry their own 0xRRGGBB (BGH: red bones, green/yellow grass).
-        // A caller's hue is passed through UNCHANGED -- rgb is load-bearing beyond paint
-        // (it gates the direction arrow and drives the declutter hazard priority).
+        // rgb 0 = objective accent; a caller's rgb passes through unchanged (it also gates the arrow and declutter priority).
         const int mr = p.rgb ? ((p.rgb >> 16) & 255) : kAccR;
         const int mg = p.rgb ? ((p.rgb >> 8) & 255)  : kAccG;
         const int mb = p.rgb ? (p.rgb & 255)         : kAccB;
@@ -1504,9 +1333,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         for (int i = 0; i < nq; ++i)
             if (qx[i] > -2.f * W && qx[i] < 3.f * W && qy[i] > -2.f * H && qy[i] < 3.f * H) onscr = true;
         if (nq >= 3 && onscr) {
-            // Dark TINTED scrim rather than a coloured wash: the ground under a marker is
-            // whatever the scene happens to be, so a saturated fill washes out on bright
-            // terrain and the object we are pointing at fights its own highlight.
             const int sr = MixSurf(mr, kSurfR), sg = MixSurf(mg, kSurfG), sb = MixSurf(mb, kSurfB);
             auto gfan = [&](const float* fx, const float* fy, int n, int r3, int g3, int b3) {
                 for (int i = 1; i + 1 < n; i += 2) {
@@ -1519,8 +1345,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 }
             };
             if (p.rgb2 && p.box_h <= 0.f) {
-                // TWO-TONE flat guide tile (SDK color2): SW->NE world-space diagonal,
-                // primary keeps the NW half - identical split to two-tone user markers.
+                // two-tone flat tile: same SW->NE split as user markers
                 const int r2c = (p.rgb2 >> 16) & 255, g2c = (p.rgb2 >> 8) & 255, b2c = p.rgb2 & 255;
                 const float tSE[3][3] = { { wc[0][0], wc[0][1], wc[0][2] },
                                           { wc[1][0], wc[1][1], wc[1][2] },
@@ -1537,14 +1362,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 gfan(qx, qy, nq, sr, sg, sb);
             }
         }
-        // Two techniques carry the legibility here, both forced by what the renderer can do:
-        // there is no anti-aliasing and no depth test, so contrast has to be BUILT rather
-        // than sampled. (1) every silhouette stroke gets a dark CONTOUR underneath it, the
-        // same trick the guide path already uses to stay readable on sand. (2) `ticks` draws
-        // only the ENDS of an edge, so a prism reads as corner brackets and the object shows
-        // through its own outline instead of being caged by twelve opaque lines.
-        // er/eg/eb: this edge's colour (-1 = the mark's colour). Lets a two-tone flat
-        // tile give each perimeter edge to its own half.
+        // No AA or depth test in the renderer: `contour` lays a dark understroke, `ticks` draws only the
+        // edge ends (corner brackets). er/eg/eb override the edge colour (-1 = the mark's colour).
         auto edgeLine = [&](int i0, int i1, float th, int alpha, bool contour, bool ticks,
                             int er = -1, int eg = -1, int eb = -1) {
             if (er < 0) { er = mr; eg = mg; eb = mb; }
@@ -1556,10 +1375,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             const float dx = bx - ax, dy = by - ay;
             const float len = std::sqrt(dx * dx + dy * dy);
             float f0 = 1.0f;
-            if (ticks && len >= 26.0f) {              // short edges: the whole edge IS the tick
+            if (ticks && len >= 26.0f) {              // shorter edges: the whole edge is the tick
                 f0 = 14.0f / len;                     // ~14px minimum bracket
                 if (f0 < 0.18f) f0 = 0.18f;
-                if (f0 > 0.38f) f0 = 0.38f;           // never more than ~a third of the edge
+                if (f0 > 0.38f) f0 = 0.38f;
             }
             auto seg = [&](float t0, float t1) {
                 const float x0 = ax + dx * t0, y0 = ay + dy * t0;
@@ -1568,37 +1387,26 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 line(x0, y0, x1, y1, th, er, eg, eb, alpha);
             };
             if (f0 >= 0.999f) { seg(0.0f, 1.0f); return; }
-            // Corners alone lose the SHAPE on a long thin prism -- the two ends stop reading
-            // as one object. A faint full-length edge underneath keeps the silhouette legible
-            // while the brackets carry the emphasis and still let the model show through.
-            line(ax, ay, bx, by, th * 0.75f, er, eg, eb, alpha / 4);
+            line(ax, ay, bx, by, th * 0.75f, er, eg, eb, alpha / 4);   // faint full edge keeps the silhouette
             seg(0.0f, f0); seg(1.0f - f0, 1.0f);
         };
-        // Prisms tick; flat zone tiles must NOT, because edge_mask merges them into one shape
-        // and a zone's continuous perimeter is precisely the information it carries.
-        const bool tick = (nv == 8);
+        const bool tick = (nv == 8);   // flat zone tiles never tick: their merged perimeter is the information
         for (int i = 0; i < 4; ++i) {
-            // Flat region tiles mask off edges shared with a neighbouring tile of the same
-            // zone (bit i: 0 south, 1 east, 2 north, 3 west -- corner order SW,SE,NE,NW), so
-            // the union outlines as ONE shape. Prisms always draw every edge.
+            // edge_mask bit i: 0 south, 1 east, 2 north, 3 west; flat zone tiles skip edges shared with the zone
             if (nv == 4 && !((p.edge_mask >> i) & 1)) continue;
-            // Two-tone flat tile: the border splits with the fill - S(0)+E(1) edges carry
-            // the second tone, N(2)+W(3) the primary (corner order SW,SE,NE,NW).
+            // two-tone: S(0)+E(1) take the second tone, N(2)+W(3) the primary
             if (p.rgb2 && nv == 4 && p.box_h <= 0.f && i < 2)
                 edgeLine(i, (i + 1) & 3, 2.2f, 245, true, tick,
                          (p.rgb2 >> 16) & 255, (p.rgb2 >> 8) & 255, p.rgb2 & 255);
             else
-                edgeLine(i, (i + 1) & 3, 2.2f, 245, true, tick);          // base ring: silhouette
+                edgeLine(i, (i + 1) & 3, 2.2f, 245, true, tick);          // base ring
             if (nv == 8) {
                 edgeLine(4 + i, 4 + ((i + 1) & 3), 1.9f, 215, true, tick);   // top ring
-                // Verticals draw WHOLE, never ticked: they are short, they are what joins the
-                // two rings into a solid, and bracketing them just scattered loose fragments.
-                edgeLine(i, 4 + i, 1.5f, 140, false, false);                 // depth cue
+                edgeLine(i, 4 + i, 1.5f, 140, false, false);                 // verticals: whole, never ticked
             }
         }
         if (p.label.empty()) continue;
-        // anchor the label off the projected IN-FRONT corners (robust for both AABB
-        // and prism shapes): centred horizontally, just above the box's screen top
+        // label anchor: centred on the projected corners, just above the screen top
         float cx = 0.f, cy = 0.f; int np = 0;
         for (int i = 0; i < nv; ++i) {
             float sxx, syy;
@@ -1617,10 +1425,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         glbls.push_back({ cx, cy, nl, mc, &p.label, mr, mg, mb, p.rgb != 0 });
     }
 
-    // Label DECLUTTER: marks that sit together would stack their pills unreadably. Objective
-    // (default-colour) labels place first and keep their natural spot; every later pill is nudged
-    // straight UP until it clears what's already placed. Same-text pills anchored within ~70 px
-    // collapse into one. Sizes are estimates, but good enough for collision.
+    // Label declutter: objective labels place first, later pills are pushed up; same text within ~70px collapses.
     if (!glbls.empty()) {
         std::stable_sort(glbls.begin(), glbls.end(),
                          [](const GuideLbl& a, const GuideLbl& b){ return !a.hazard && b.hazard; });
@@ -1634,9 +1439,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             if (dup) continue;
             placedL.push_back(&l);
             const float estH = 13.0f * (float)l.nl + 10.0f;           // padY 5, mirrors DrawLabel
-            const float estW = 0.62f * 10.5f * (float)l.mc + 24.0f;   // proportional-font estimate + pill padding (padX 8)
+            const float estW = 0.62f * 10.5f * (float)l.mc + 24.0f;   // glyph estimate + padX 8
             float y = l.cy - 8.0f - estH * 0.5f;
-            for (int guard = 0; guard < 12; ++guard) {                // shift up past each collision
+            for (int guard = 0; guard < 12; ++guard) {
                 bool hit = false;
                 for (const auto& r : placedR)
                     if (l.cx - estW * 0.5f < r.r && l.cx + estW * 0.5f > r.l &&
@@ -1646,7 +1451,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             placedR.push_back({ l.cx - estW * 0.5f, y - estH * 0.5f, l.cx + estW * 0.5f, y + estH * 0.5f });
             marker::Command t{}; t.type = marker::kText;
             t.x0 = l.cx; t.y0 = y;
-            t.x1 = 10.5f;                                    // compact: stay out of the way
+            t.x1 = 10.5f;
             t.r = (std::uint8_t)l.r; t.g = (std::uint8_t)l.g; t.b = (std::uint8_t)l.b; t.a = 230;
             int n = (int)l.text->size();
             if (n > marker::kTextMax) {
@@ -1662,16 +1467,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- screen-centre text (e.g. the BGH "Bound - 2s" stun countdown): big kText pills above
-    //     the gameview centre, no world projection. Red accent = warning by default.
-    //     Slots stack UPWARD from the original slot-0 position, so adding a second banner never
-    //     moves the one callers already rely on. ---
+    // --- screen-centre banners: slots stack upward from slot 0 ---
     for (const auto& cb : ctext) {
         if (cb.second.text.empty()) continue;
         marker::Command t{}; t.type = marker::kText;
         t.x0 = vpX + vpW * 0.5f;
-        t.y0 = vpY + vpH * (0.35f - 0.075f * (float)cb.first);   // above centre: clear of the player model
-        t.x1 = 22.0f;                                    // big: must read at a glance mid-fight
+        t.y0 = vpY + vpH * (0.35f - 0.075f * (float)cb.first);   // above centre, clear of the player model
+        t.x1 = 22.0f;
         int rgb = cb.second.rgb;
         if (rgb < 0) { t.r = 235; t.g = 90; t.b = 90; }  // default warning red
         else { t.r = (std::uint8_t)((rgb >> 16) & 0xFF); t.g = (std::uint8_t)((rgb >> 8) & 0xFF);
@@ -1685,10 +1487,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     }
 
 
-    // --- direction indicator: a marker ring on the ground UNDER THE PLAYER, with a sleek arrowhead
-    //     on its edge pointing toward the objective. Centred on the player's FINE (sub-tile) world
-    //     position, so it never jumps tile-to-tile as the player walks. Drawn in-world. ---
-    // Within 2 tiles the objective's own box/label is the cue, so the whole cue needs >= 3 tiles.
+    // --- direction indicator: ground ring under the player's fine position + arrowhead toward the objective.
+    //     Only when the objective is >= 3 tiles away. ---
     int arrowDist = 0;
     if (f && f->has_arrow) {
         int adx = f->arrow_tx - f->player_tx, ady = f->arrow_ty - f->player_ty;
@@ -1699,48 +1499,26 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     if (f && f->has_arrow && arrowDist >= 3) {
         const float* m = f->matrix;
         const float z = f->player_z;
-        const float cwx = f->player_fx, cwy = f->player_fy;   // ring centre = under the player (smooth fine pos)
-        // The cue is deliberately FLAT, drawn on the player's own ground plane.
-        //
-        // Terrain-following was tried and removed. Sampling the ground per vertex is correct on
-        // open hillside and wrong on everything this cue actually appears over: stairs, wall
-        // tops, ledges and bridges all change height by a full step INSIDE the ring's 0.59-tile
-        // radius, so the dashes scatter to different heights and the circle reads as debris.
-        // The arrow was worse -- its tip sits ~0.84 tile out, so on a descending flight it
-        // landed a step below its own wings and projection sheared the dart across the screen.
-        // Clamping the deviation, and adaptively draping only over smooth ground, each fixed one
-        // case and left the others; every guard added complexity for a benefit nobody had asked
-        // for. A flat cue may clip a step, which reads as a cue drawn on the ground. A torn one
-        // reads as a bug. Keep it flat.
+        const float cwx = f->player_fx, cwy = f->player_fy;
+        // Deliberately flat on the player's plane: terrain-following tears the cue on stairs, ledges and bridges.
         {
             float ccsx, ccsy;
-            if (WorldToScreen(m, vpX, vpY, vpW, vpH, cwx, cwy, z, ccsx, ccsy)) {   // player is in front of camera
+            if (WorldToScreen(m, vpX, vpY, vpW, vpH, cwx, cwy, z, ccsx, ccsy)) {
                 const float twx = f->arrow_tx * 512.f + 256.f, twy = f->arrow_ty * 512.f + 256.f;
                 float wdx = twx - cwx, wdy = twy - cwy;
                 float wlen = std::sqrt(wdx * wdx + wdy * wdy);
                 if (wlen > 1.0f) {
                     wdx /= wlen; wdy /= wlen;
                     const float perpx = -wdy, perpy = wdx;
-                    // Pulled in from 340: with the arrow base pushed out (below) this opens a
-                    // real gap between ring and dart instead of welding them into one blob.
-                    const float R = 300.f;                  // ring radius in world-fine units (~0.59 tile)
-                    // Lowest on-screen point of the whole cue (ring + arrow): the distance pill anchors
-                    // just below it. Measuring the real projected extent keeps the gap constant at any
-                    // camera pitch/yaw/zoom.
-                    float cueMaxY = ccsy + 34.0f;           // fallback when no cue point projects
-                    // thin, subtle ground ring
+                    const float R = 300.f;                  // ring radius, world-fine units (~0.59 tile)
+                    float cueMaxY = ccsy + 34.0f;           // lowest projected point of the cue; distance pill anchors below it
                     const int NSEG = 32;
                     float prevX = 0, prevY = 0; bool prevOk = false;
                     for (int i = 0; i <= NSEG; ++i) {
                         double a = (double)i / NSEG * 6.28318530717959;
                         float wx = cwx + (float)std::cos(a) * R, wy = cwy + (float)std::sin(a) * R;
                         float sx, sy; bool ok = WorldToScreen(m, vpX, vpY, vpW, vpH, wx, wy, z, sx, sy);
-                        // DASHED, and that is structural rather than decorative: the ring is 32
-                        // independent butt-ended quads with no joins, so a solid stroke notches
-                        // visibly at every seam. Emitting alternate segments turns the seam into
-                        // the design and halves the segment count, which pays for the dark
-                        // contour underneath -- needed because the ring sits on whatever ground
-                        // the player happens to be standing on.
+                        // dashed: butt-ended segments notch at every seam when drawn solid
                         if (ok && prevOk && (i & 1)) {
                             line(prevX, prevY, sx, sy, 3.2f, kInkR, kInkG, kInkB, 130);
                             line(prevX, prevY, sx, sy, 1.8f, kOkR, kOkG, kOkB, 225);
@@ -1748,27 +1526,20 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         if (ok && sy > cueMaxY) cueMaxY = sy;
                         prevX = sx; prevY = sy; prevOk = ok;
                     }
-                    // Arrowhead just past the ring, pointing at the objective. Local coords = (along-heading,
-                    // sideways), projected to the ground; filled as two triangles so the back notch stays open.
-                    // Same plane as the ring: the dart is a rigid POINTER, and its proportions
-                    // must not depend on what the ground happens to do 0.84 tile ahead.
+                    // Arrowhead: local (along, side) coords on the ring's plane; two triangles so the notch stays open.
                     auto W2S = [&](float along, float side, float& sx, float& sy) {
                         return WorldToScreen(m, vpX, vpY, vpW, vpH,
                                              cwx + wdx * along + perpx * side,
                                              cwy + wdy * along + perpy * side, z, sx, sy);
                     };
                     float Tx, Ty, Lx, Ly, Nx, Ny, Rx, Ry;
-                    // Base pushed from R+60 to R+150 (0.29 tile clear of the ring) so the dart
-                    // reads as a separate pointer rather than a spur welded onto the circle.
-                    if (W2S(R + 430.f,   0.f, Tx, Ty) &&    // tip (longer / more visible)
-                        W2S(R + 150.f,  96.f, Lx, Ly) &&    // left wing (widest, at the back)
-                        W2S(R + 275.f,   0.f, Nx, Ny) &&    // back notch (forward of the wings -> concave)
+                    if (W2S(R + 430.f,   0.f, Tx, Ty) &&    // tip
+                        W2S(R + 150.f,  96.f, Lx, Ly) &&    // left wing
+                        W2S(R + 275.f,   0.f, Nx, Ny) &&    // back notch
                         W2S(R + 150.f, -96.f, Rx, Ry)) {    // right wing
                         marker::Command q1{}; q1.type = marker::kFillQuad;
                         q1.x0 = Tx; q1.y0 = Ty; q1.x1 = Lx; q1.y1 = Ly; q1.x2 = Nx; q1.y2 = Ny; q1.x3 = Tx; q1.y3 = Ty;
-                        // Painter's algorithm IS the mechanism here (no depth test): lay the dark
-                        // contour down FIRST so the fills cover its inner half and only an outer
-                        // rim survives, then the bright edge last.
+                        // dark contour first (no depth test), fills cover its inner half, bright edge last
                         line(Tx, Ty, Lx, Ly, 3.0f, kInkR, kInkG, kInkB, 170);
                         line(Lx, Ly, Nx, Ny, 3.0f, kInkR, kInkG, kInkB, 170);
                         line(Nx, Ny, Rx, Ry, 3.0f, kInkR, kInkG, kInkB, 170);
@@ -1777,26 +1548,18 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         marker::Command q2{}; q2.type = marker::kFillQuad;
                         q2.x0 = Tx; q2.y0 = Ty; q2.x1 = Nx; q2.y1 = Ny; q2.x2 = Rx; q2.y2 = Ry; q2.x3 = Tx; q2.y3 = Ty;
                         q2.r = kOkR; q2.g = kOkG; q2.b = kOkB; q2.a = 235; push(q2);
-                        line(Tx, Ty, Lx, Ly, 1.3f, kOkR, kOkG, kOkB, 255);   // crisp outline: tip -> L -> notch -> R -> tip
+                        line(Tx, Ty, Lx, Ly, 1.3f, kOkR, kOkG, kOkB, 255);
                         line(Lx, Ly, Nx, Ny, 1.3f, kOkR, kOkG, kOkB, 255);
                         line(Nx, Ny, Rx, Ry, 1.3f, kOkR, kOkG, kOkB, 255);
                         line(Rx, Ry, Tx, Ty, 1.3f, kOkR, kOkG, kOkB, 255);
-                        // The arrow can extend below the ring when the objective is screen-down;
-                        // include it so the pill clears the whole cue.
                         if (Ty > cueMaxY) cueMaxY = Ty;
                         if (Ly > cueMaxY) cueMaxY = Ly;
                         if (Ry > cueMaxY) cueMaxY = Ry;
                     }
-                    // distance readout under the ring: tiles to the objective (Chebyshev, the game's
-                    // interaction metric). Anchored a fixed 12px below the cue's lowest projected
-                    // point, so the gap never changes with camera pitch/yaw/zoom.
+                    // distance readout (Chebyshev tiles) 12px below the cue's lowest point
                     const int dist = arrowDist;
                     {
-                        // Composed badge rather than a kText pill, because this is the one label
-                        // that wants COLOURED type and kText hardcodes its glyph colour module
-                        // side. Three commands gets the World Map badge exactly: dark plate,
-                        // accent hairline, accent text. Short fixed string, so the 0.62 advance
-                        // over-estimate is a couple of px and always errs toward not cropping.
+                        // Composed badge (plate, hairline, text) because kText hardcodes its glyph colour module side.
                         char dtxt[24];
                         std::snprintf(dtxt, sizeof(dtxt), "%d tile%s", dist, dist == 1 ? "" : "s");
                         int dn = 0; for (const char* q = dtxt; *q; ++q) ++dn;
@@ -1821,59 +1584,34 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // RS3 UI scale: interface coords are in 800x600 DESIGN SPACE. At/above an 800x600 window the UI is
-    // 1:1 (scale 1.0); below it the engine keeps design coords and renders downscaled by
-    // min(w/800, h/600). Overlays draw in real pixels, so multiply design-space UI coords by this.
-    //
-    // NOT the reader's derived ui_scale. Every rect that reaches this function through
-    // iface_panel_origin already carries a PIXEL panel origin (the position varcs) plus
-    // tree-relative offsets, so scaling the whole thing multiplies the origin too and
-    // throws it off-screen -- observed live at 150% Interface Scaling. Getting that right
-    // means scaling only the tree-relative part, which has to happen where the two are
-    // still separate: the reader publishes the factor as InterfaceGroupJson's "ui" field
-    // and the skills XP bars (client.html skBarsTick) apply it to their pure-tree anchor
-    // math. The iface_panel_origin-based rects below still await that per-path work.
+    // Interface coords are 800x600 design space; below that size the engine downscales by min(w/800, h/600).
+    // Not the reader's ui_scale: iface_panel_origin rects already carry a pixel origin (only the tree part may scale).
     float uiScale;
     { float sx = (float)W / 800.0f, sy = (float)H / 600.0f; uiScale = sx < sy ? sx : sy; if (uiScale > 1.0f) uiScale = 1.0f; }
 
-    // ONE conversion for EVERY screen-space rect that reaches this function (UI highlight, panel
-    // visualizer, puzzle and knot cells, skill bars). All of them come out of the game's interface
-    // tree, i.e. the game's LOGICAL interface layout. Two independent factors turn that into
-    // backbuffer pixels:
-    //   * uiScale  - the engine's sub-800x600 downscale (1.0 at or above 800x600), applied to
-    //                design-space rects only (opt-in per path, see the note above);
-    //   * gvScale  - the OS display scaling: a per-monitor-aware client lays its interface out at
-    //                physical/scale and upscales into the backbuffer, so logical coords are short by
-    //                exactly backbuffer / logical-client width (1.0 on an unscaled monitor). Seen
-    //                live at 150%: every screen-space overlay compressed toward the top-left.
-    // Add new screen-space paths through this and nowhere else.
+    // Single conversion for every screen-space rect: gvScale (OS display scaling) always, uiScale only for design-space rects.
     struct ScreenRect { float x0, y0, x1, y1; };
     auto toScreen = [&](int x, int y, int w, int h, bool designSpace) -> ScreenRect {
         const float k = gvScale * (designSpace ? uiScale : 1.0f);
         return { (float)x * k, (float)y * k, (float)(x + w) * k, (float)(y + h) * k };
     };
 
-    // --- UI highlight: a screen-space accent box over a game UI element. Coords are already client
-    //     pixels (panel-position varc + within-group offset, x uiScale), so NO world projection.
-    //     Pulses so it reads as a "click here" cue. A caller may set SEVERAL at once
-    //     (SetUiHighlights); they all draw the same way, in the order given. ---
+    // --- UI highlight: pulsing accent box, design-space coords ---
     for (const auto& uihl : uihls) {
         if (uihl.w <= 0 || uihl.h <= 0) continue;
         float uipulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
-        // A small target (a puzzle-box CELL, ~49px) INSETS so the highlight clearly sits inside that one
-        // tile and never bleeds into its neighbours; a larger box (a dialogue option) keeps a slight outset.
+        // small targets (a puzzle cell) inset so the highlight never bleeds into neighbours
         const ScreenRect sr = toScreen(uihl.x, uihl.y, uihl.w, uihl.h, true);
         const bool cell = ((sr.x1 - sr.x0) < 90.0f * gvScale && (sr.y1 - sr.y0) < 90.0f * gvScale);
         float pad = cell ? -3.5f : 3.0f;
         float x0 = sr.x0 - pad, y0 = sr.y0 - pad;
         float x1 = sr.x1 + pad, y1 = sr.y1 + pad;
-        // Translucent fill -- stronger on a cell (no text to keep readable).
         marker::Command q{}; q.type = marker::kFillRect;
         q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
         q.r = kAccR; q.g = kAccG; q.b = kAccB;
         q.a = (std::uint8_t)((cell ? 105 : 58) + (int)((cell ? 70.0f : 46.0f) * uipulse));
         push(q);
-        // Soft outer glow (wider, lower alpha) just OUTSIDE the border, so the text inside isn't darkened.
+        // outer glow
         float g = 2.5f, gx0 = x0 - g, gy0 = y0 - g, gx1 = x1 + g, gy1 = y1 + g;
         int ga = 80 + (int)(45.0f * uipulse);
         line(gx0, gy0, gx1, gy0, 4.5f, kAccR, kAccG, kAccB, ga);
@@ -1884,7 +1622,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         line(x1, y0, x1, y1, 3.4f, kAccR, kAccG, kAccB, 255);
         line(x1, y1, x0, y1, 3.4f, kAccR, kAccG, kAccB, 255);
         line(x0, y1, x0, y0, 3.4f, kAccR, kAccG, kAccB, 255);
-        // Corner brackets: disambiguate a single grid cell.
         if (cell) {
             float L = (x1 - x0) * 0.34f;
             const float bw = 4.2f; const int ba2 = 255;
@@ -1895,14 +1632,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- Puzzle-box next moves: bold GOLD numbered cells on the live board so the click order is obvious in
-    //     advance. step 0 = click now (brightest + pulsing + thickest border), 1/2 = upcoming. Coords are
-    //     already LOGICAL interface pixels (puzzleCellRects walks the widget tree), so NO uiScale.
-    //     Converted by toScreen like every other screen-space rect (OS display scaling). ---
+    // --- Puzzle-box next moves: numbered cells, step 0 = click now. Logical interface pixels, no uiScale ---
     if (!pcells.empty()) {
-        // Diagnostic sibling of [gv]/[ovl] frame: the raw cell rect and every factor applied to
-        // it, change-gated. A misplaced solver overlay report + this line pins down whether the
-        // reader's rect or the conversion is wrong, on a machine we cannot inspect.
+        // change-gated diagnostic: raw cell rect and every factor applied
         {
             static std::map<DWORD, std::tuple<int,int,int,int>> l_pc;
             auto cur = std::make_tuple(pcells[0].x, pcells[0].y, W, f ? f->lc_w : -1);
@@ -1923,37 +1655,33 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             if (pc.w <= 0 || pc.h <= 0) continue;
             const ScreenRect sr = toScreen(pc.x, pc.y, pc.w, pc.h, false);
             float x0 = sr.x0, y0 = sr.y0, x1 = sr.x1, y1 = sr.y1;
-            const int R = 255, G = 196, B = 64;                    // gold (matches the side-panel hot tile)
+            const int R = 255, G = 196, B = 64;                    // gold, matches the side-panel hot tile
             int fillA, bordA; float bordTh;
-            if (pc.step == 0) { fillA = 85 + (int)(80.0f * ppulse); bordTh = 4.0f; bordA = 255; }   // next: pulsing, boldest
+            if (pc.step == 0) { fillA = 85 + (int)(80.0f * ppulse); bordTh = 4.0f; bordA = 255; }
             else if (pc.step == 1) { fillA = 60; bordTh = 3.0f; bordA = 225; }
             else if (pc.step == 2) { fillA = 44; bordTh = 2.5f; bordA = 190; }
-            else { fillA = 32; bordTh = 2.0f; bordA = 155; }                                        // step 3 (and beyond): faintest
+            else { fillA = 32; bordTh = 2.0f; bordA = 155; }
             marker::Command q{}; q.type = marker::kFillRect; q.x0 = x0; q.y0 = y0; q.x1 = x1; q.y1 = y1;
             q.r = (std::uint8_t)R; q.g = (std::uint8_t)G; q.b = (std::uint8_t)B; q.a = (std::uint8_t)fillA; push(q);
-            // gold border drawn INSIDE the cell edge (no outward bleed -> never touches a neighbouring cell),
-            // plus a thin dark line just inside it so it stays crisp over bright tile art.
+            // border inside the cell edge so it never touches a neighbour, plus a dark inner line
             float in = bordTh * 0.5f, bx0 = x0 + in, by0 = y0 + in, bx1 = x1 - in, by1 = y1 - in;
             line(bx0, by0, bx1, by0, bordTh, R, G, B, bordA); line(bx1, by0, bx1, by1, bordTh, R, G, B, bordA);
             line(bx1, by1, bx0, by1, bordTh, R, G, B, bordA); line(bx0, by1, bx0, by0, bordTh, R, G, B, bordA);
             float dx0 = x0 + bordTh + 1.0f, dy0 = y0 + bordTh + 1.0f, dx1 = x1 - bordTh - 1.0f, dy1 = y1 - bordTh - 1.0f;
             line(dx0, dy0, dx1, dy0, 1.4f, 0, 0, 0, 130); line(dx1, dy0, dx1, dy1, 1.4f, 0, 0, 0, 130);
             line(dx1, dy1, dx0, dy1, 1.4f, 0, 0, 0, 130); line(dx0, dy1, dx0, dy0, 1.4f, 0, 0, 0, 130);
-            // big step number, centred (dark on the bright next cell, gold on the dimmer ones)
             marker::Command t{}; t.type = marker::kText;
-            float gh = (y1 - y0) * 0.5f; if (gh > 24.0f) gh = 24.0f; if (gh < 10.0f) gh = 10.0f;   // glyph height scales to the cell: caps at 24 (big slider tiles), shrinks for small lockbox tiles
+            float gh = (y1 - y0) * 0.5f; if (gh > 24.0f) gh = 24.0f; if (gh < 10.0f) gh = 10.0f;   // glyph height scales with the cell
             t.x0 = (x0 + x1) * 0.5f; t.y0 = (y0 + y1) * 0.5f; t.x1 = gh;
             if (pc.step == 0) { t.r = 20; t.g = 20; t.b = 24; } else { t.r = (std::uint8_t)R; t.g = (std::uint8_t)G; t.b = (std::uint8_t)B; }
             t.a = 255;
-            if (pc.num >= 0) { std::snprintf(t.text, sizeof(t.text), "%d", pc.num); }   // explicit label (knot click count)
-            else { t.text[0] = (char)('1' + pc.step); t.text[1] = 0; }                   // default: step number
+            if (pc.num >= 0) { std::snprintf(t.text, sizeof(t.text), "%d", pc.num); }
+            else { t.text[0] = (char)('1' + pc.step); t.text[1] = 0; }
             push(t);
         }
     }
 
-    // --- Celtic-knot arrows: an Interfaces-hover-style box (sky-blue, corner brackets) on each arrow to click,
-    //     with the remaining click count in a pill ABOVE the box so it never covers the arrow. Coords are
-    //     logical interface pixels (resolved live each tick), converted by toScreen. ---
+    // --- Celtic-knot arrows: bracket box + click-count pill above. Logical interface pixels ---
     if (!kcells.empty()) {
         float kpulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1100) / 1100.0 * 6.2831853));
         for (const auto& kc : kcells) {
@@ -1969,7 +1697,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             line(x1, y0, x1 - L, y0, bw, 255, 255, 255, 255); line(x1, y0, x1, y0 + L, bw, 255, 255, 255, 255);
             line(x0, y1, x0 + L, y1, bw, 255, 255, 255, 255); line(x0, y1, x0, y1 - L, bw, 255, 255, 255, 255);
             line(x1, y1, x1 - L, y1, bw, 255, 255, 255, 255); line(x1, y1, x1, y1 - L, bw, 255, 255, 255, 255);
-            // count pill ABOVE the box (centred), dark bg + sky-blue edge + bold white number -> readable, off the button
             char lbl[8]; std::snprintf(lbl, sizeof(lbl), "%d", kc.count);
             float cx = (x0 + x1) * 0.5f;
             float pw = (float)((int)std::strlen(lbl) * 11 + 16), ph = 21.0f;
@@ -1983,25 +1710,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- Skills XP progress bars: a thin track along the bottom edge of each skill cell, filled by
-    //     progress to the next level. Rects arrive as screen pixels (client.html converts its
-    //     tree-walk coords by the reader-published interface scale), like the
-    //     puzzle/knot cells, so NO uiScale; toScreen adds the OS display scaling. No pulse and no label: this is ambient information
-    //     sitting under the game's own numbers, and it has to stay readable at a glance across
-    //     29 cells without competing with them.
-    //
-    //     OVERLAP GUARD: this layer composites ABOVE the finished game frame, so the bars can
-    //     never render "under" the game's own pixels -- a hover tooltip or the cell numbers
-    //     would always lose. Instead the bars step aside: while the cursor is inside the
-    //     bars' panel area (exactly when the game shows its skill tooltip, and when the
-    //     player is actually reading the panel), they are skipped for the frame; they return
-    //     the moment the cursor leaves. Publish runs every ~33ms, so it feels instant. ---
+    // --- Skills XP bars: rects already scaled by client.html, no uiScale. This layer composites above the game,
+    //     so the bars are skipped while the cursor is over the panel (where the game's tooltip would be). ---
     bool sbarsHide = false;
     if (!sbars.empty()) {
         if (HWND sgw = FindGameWindow(cfg.pid)) {
             POINT cur;
             if (GetCursorPos(&cur) && ScreenToClient(sgw, &cur)) {
-                // Cursor is this process's physical px; the bar rects are game-space px.
+                // cursor is physical px, bar rects are game-space px
                 const double sgsf = rtx::launcher::dock::GameSpaceFactor(sgw, cfg.pid);
                 const float cx = (float)(cur.x * sgsf), cy = (float)(cur.y * sgsf);
                 float bx0 = 0, by0 = 0, bx1 = 0, by1 = 0; bool any = false;
@@ -2015,7 +1731,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         if (sx1 > bx1) bx1 = sx1; if (sy1 > by1) by1 = sy1;
                     }
                 }
-                const float pad = 8.0f;   // a tooltip anchors just past the hovered cell edge
+                const float pad = 8.0f;
                 sbarsHide = any && cx >= bx0 - pad && cx <= bx1 + pad &&
                                    cy >= by0 - pad && cy <= by1 + pad;
             }
@@ -2027,12 +1743,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const ScreenRect sr = toScreen(sb.x, sb.y, sb.w, sb.h, false);
         float x0 = sr.x0, y1 = sr.y1;
         float x1 = sr.x1;
-        // Inset from the cell edge, and a height that scales with the cell but stays legible.
         float inset = 2.0f;
         float bh = (float)sb.h * 0.10f; if (bh < 2.5f) bh = 2.5f; if (bh > 5.0f) bh = 5.0f;
         float bx0 = x0 + inset, bx1 = x1 - inset, by1 = y1 - inset, by0 = by1 - bh;
         if (bx1 <= bx0) continue;
-        // Track: dark plate so the fill reads on any cell art.
         { marker::Command q{}; q.type = marker::kFillRect;
           q.x0 = bx0; q.y0 = by0; q.x1 = bx1; q.y1 = by1;
           q.r = 0; q.g = 0; q.b = 0; q.a = 165; push(q); }
@@ -2042,23 +1756,21 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             std::uint8_t r = (std::uint8_t)((sb.rgb >> 16) & 0xFF);
             std::uint8_t g2 = (std::uint8_t)((sb.rgb >> 8) & 0xFF);
             std::uint8_t b = (std::uint8_t)(sb.rgb & 0xFF);
-            if (!sb.rgb) { r = kOkR; g2 = kOkG; b = kOkB; }     // default: the same green as "done"
+            if (!sb.rgb) { r = kOkR; g2 = kOkG; b = kOkB; }
             marker::Command q{}; q.type = marker::kFillRect;
             q.x0 = bx0; q.y0 = by0; q.x1 = bx0 + fw; q.y1 = by1;
             q.r = r; q.g = g2; q.b = b; q.a = 240; push(q);
         }
     }
 
-    // --- Interfaces-tab panel visualizer: each toggled panel's true screen rect, in client pixels
-    //     (panel-position varc + size varc). Teal outline + name label so it reads as "panel bounds",
-    //     distinct from the sky-blue "click here" highlight above. No pulse (steady reference frame). ---
+    // --- Interfaces-tab panel visualizer: teal outline + label, design-space coords ---
     for (const auto& pb : pviz) {
         if (pb.w <= 0 || pb.h <= 0) continue;
         const ScreenRect sr = toScreen(pb.x, pb.y, pb.w, pb.h, true);
         float bx0 = sr.x0, by0 = sr.y0, bx1 = sr.x1, by1 = sr.y1;
         marker::Command fillc{}; fillc.type = marker::kFillRect;
         fillc.x0 = bx0; fillc.y0 = by0; fillc.x1 = bx1; fillc.y1 = by1;
-        fillc.r = 64; fillc.g = 210; fillc.b = 224; fillc.a = 26;     // faint teal wash
+        fillc.r = 64; fillc.g = 210; fillc.b = 224; fillc.a = 26;
         push(fillc);
         line(bx0, by0, bx1, by0, 2.4f, 90, 220, 235, 235);
         line(bx1, by0, bx1, by1, 2.4f, 90, 220, 235, 235);
@@ -2066,26 +1778,21 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         line(bx0, by1, bx0, by0, 2.4f, 90, 220, 235, 235);
         if (!pb.label.empty()) {
             marker::Command t{}; t.type = marker::kText;
-            // Small boxes (an inventory slot, ~36x32) -> label ABOVE the box so it never covers the
-            // highlighted item; large boxes (panel-visualizer) keep the compact top-left label.
-            bool smallBox = (by1 - by0) < 60.0f;                    // 'small' is a Windows macro (= char); don't use it
-            t.x1 = 11.0f;                                           // compact font
-            // kText CENTRES on x0/y0. Centre a small box's label over the box (not its left edge), then
-            // clamp both axes so the pill stays on-screen.
+            // small boxes label above (kText centres on x0/y0), large ones top-left; clamped on-screen
+            bool smallBox = (by1 - by0) < 60.0f;                    // 'small' is a Windows macro
+            t.x1 = 11.0f;
             float cx = smallBox ? ((bx0 + bx1) * 0.5f) : (bx0 + 3.0f);
-            float labelW = (float)pb.label.size() * (t.x1 * 0.62f) + 14.0f;   // estimated pill width (padX*2 + advances)
+            float labelW = (float)pb.label.size() * (t.x1 * 0.62f) + 14.0f;   // padX*2 + advances
             float halfW = labelW * 0.5f;
-            // Wide, short boxes (dropdown-style rows, e.g. the deduction-notes selects) read better
-            // with the label BESIDE them: place it to the right when it fits on-screen. Near-square
-            // slots (inventory cells) keep the above-the-box label.
+            // wide short rows take the label beside them when it fits
             bool wideRow = smallBox && (bx1 - bx0) > 3.0f * (by1 - by0);
             float ty;
             if (wideRow && bx1 + labelW + 12.0f <= (float)W) { cx = bx1 + 8.0f + halfW; ty = (by0 + by1) * 0.5f; }
             else ty = smallBox ? (by0 - 14.0f) : (by0 + 2.0f);
             if (cx - halfW < 4.0f)                cx = 4.0f + halfW;
             if (cx + halfW > (float)W - 4.0f)     cx = (float)W - 4.0f - halfW;
-            if (ty < 12.0f) ty = by1 + 2.0f;                        // no room above -> below the box
-            if (ty > (float)H - 12.0f) ty = (float)H - 12.0f;       // keep on-screen vertically
+            if (ty < 12.0f) ty = by1 + 2.0f;                        // no room above: below the box
+            if (ty > (float)H - 12.0f) ty = (float)H - 12.0f;
             t.x0 = cx; t.y0 = ty;
             t.r = 200; t.g = 245; t.b = 250; t.a = 245;
             int n = (int)pb.label.size();
@@ -2096,8 +1803,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    // --- alert flash (random events etc.): a fading translucent wash over the whole
-    //     viewport, drawn INTO this client's frame -- strictly per-pid by construction ---
+    // --- alert flash: fading wash over the viewport ---
     if (flashAlpha > 0.0f) {
         marker::Command c{}; c.type = marker::kFillRect;
         c.x0 = vpX; c.y0 = vpY; c.x1 = vpX + vpW; c.y1 = vpY + vpH;
@@ -2106,8 +1812,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         push(c);
     }
 
-    // --- screen-space widgets (toast / notifications / metronome / XP tracker):
-    //     pre-built by BuildWidgetCommands, appended LAST so they sit on top ---
+    // --- widgets from BuildWidgetCommands, appended last so they sit on top ---
     if (widgets)
         for (const auto& wc : *widgets) push(wc);
 
@@ -2125,14 +1830,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     MemoryBarrier(); sh->seq = s + 1;                        // even: done
 }
 
-// ---- in-frame widgets ---------------------------------------------------------
-// The toast, sticky notifications, tick metronome and XP tracker are composed as marker commands
-// and rendered INSIDE the game frame by the companion present layer, like every other overlay
-// element. The external layered window is an invisible INPUT surface only (see RenderLoop): the
-// widget hit rects are filled with alpha-2 pads to catch drag/dismiss clicks.
+// ---- in-frame widgets: composed as marker commands and drawn by the companion; the external
+//      layered window is an invisible input surface only (alpha-2 pads over the hit rects) ----
 
-// Text width estimate for atlas text. Slight OVER-estimate (the companion lays glyphs out with
-// its real advances), so panels sized from it never crop their text.
+// Slight over-estimate of atlas text width, so panels never crop.
 float WTextW(const char* s, float px) {
     int n = 0;
     for (const char* p = s; *p && *p != '\n'; ++p) ++n;
@@ -2160,7 +1861,7 @@ void WRect(std::vector<marker::Command>& v, float x0, float y0, float x1, float 
     c.r = (std::uint8_t)r; c.g = (std::uint8_t)g; c.b = (std::uint8_t)b; c.a = (std::uint8_t)a;
     v.push_back(c);
 }
-// Plain aligned text line (no pill): y = vertical centre; align 0 left / 1 centre / 2 right.
+// y = vertical centre; align 0 left / 1 centre / 2 right.
 void WText(std::vector<marker::Command>& v, const char* s, float x, float y, float px,
            int align, int r, int g, int b, int a) {
     marker::Command c{}; c.type = marker::kText;
@@ -2173,7 +1874,6 @@ void WText(std::vector<marker::Command>& v, const char* s, float x, float y, flo
     if (n) v.push_back(c);
 }
 
-// Greedy word wrap on the estimated width (toast / notification bodies).
 std::vector<std::string> WWrap(const std::string& s, float px, float maxW, int maxLines) {
     std::vector<std::string> lines;
     std::string cur;
@@ -2191,8 +1891,7 @@ std::vector<std::string> WWrap(const std::string& s, float px, float maxW, int m
     return lines;
 }
 
-// Rounded card chrome shared by the toast / notification / XP panels: soft drop
-// shadow + accent border + dark fill (the kText-pill look, launcher-sized).
+// Card chrome shared by the toast / notification / XP panels.
 void WCard(std::vector<marker::Command>& v, float x, float y, float w, float h,
            float rad, int ar, int ag, int ab, float alpha) {
     WRound(v, x, y + 3.0f, w, h, rad, 0, 0, 0, (int)(95.0f * alpha));
@@ -2200,8 +1899,6 @@ void WCard(std::vector<marker::Command>& v, float x, float y, float w, float h,
     WRound(v, x, y, w, h, rad, 20, 21, 28, (int)(240.0f * alpha));
 }
 
-// Toast: centred card near the top of the frame, purple accent, fading tail.
-// Used for the augmented-item level alert ("... level X reached on <item>").
 void BuildToastCmds(std::vector<marker::Command>& out, int W, int H,
                     const std::string& text, float alpha) {
     const float px = 14.0f;
@@ -2218,9 +1915,7 @@ void BuildToastCmds(std::vector<marker::Command>& out, int W, int H,
               px, 1, 245, 245, 250, (int)(255.0f * alpha));
 }
 
-// Sticky notifications: stacked cards at the top-right, amber accent, close 'x'.
-// Refreshes g_notif_hit (client coords -> the input window's dismiss pads).
-// Caller holds g_mu.
+// Refreshes g_notif_hit. Caller holds g_mu.
 void BuildNotifCmds(std::vector<marker::Command>& out, int W) {
     g_notif_hit.clear();
     const float margin = 12.0f, padX = 14.0f, padY = 10.0f, gap = 8.0f, cxw = 22.0f, maxW = 340.0f;
@@ -2246,14 +1941,7 @@ void BuildNotifCmds(std::vector<marker::Command>& out, int W) {
     }
 }
 
-// (BuildMetroCmds / BuildXpCmds deleted: the companion-drawn metronome and XP widgets moved
-// into the in-game window layer in 2.0.9 and nothing could set g_metro.on / g_xp.on since.
-// The state structs remain for their persisted positions and inert hit rects.)
-
-// Assemble every widget targeting `pid` into `out` and refresh the widget hit
-// rects the input window uses. W/H = the game window's client size (the input
-// window overlays the client area 1:1, so the rects share one space). mTick/
-// mAge/mHave = this iteration's tick sample for the metronome pid. Locks g_mu.
+// Widgets for `pid` plus their input-window hit rects. W/H = game client size. Locks g_mu.
 void BuildWidgetCommands(DWORD pid, int W, int H, long long tnow,
                          std::uint32_t mTick, double mAge, bool mHave,
                          std::vector<marker::Command>& out) {
@@ -2272,17 +1960,14 @@ void BuildWidgetCommands(DWORD pid, int W, int H, long long tnow,
         if (!g_notifs.empty()) BuildNotifCmds(out, W);
         else g_notif_hit.clear();
     }
-    // Old companion-drawn metronome / XP widgets: never on since 2.0.9; keep the hit rects clear.
+    // metronome / XP widgets moved in-game in 2.0.9; keep the hit rects clear
     if (g_metro.pid == pid) g_metro_hit = RECT{0, 0, 0, 0};
     if (g_xp.pid == pid) { g_xp_hit = RECT{0, 0, 0, 0}; g_xp_min = RECT{0, 0, 0, 0}; }
 }
 
-// Overlay window proc: drag/resize the metronome widget, or dismiss a clicked
-// notification. The window is made interactive only while the cursor is over a
-// widget (see the render loop), so these only fire for deliberate clicks.
+// Interactive only while the cursor is over a widget (see RenderLoop).
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    // Window coords are physical px; every widget rect and position (g_metro.x ...) is in
-    // the game's pixel space -- convert incoming points once, then all math is same-space.
+    // window coords are physical px; widget rects are game px
     auto toGameSpace = [](POINT& pt) {
         double f = g_inputScale.load();
         if (f > 0.0 && f != 1.0) {
@@ -2294,21 +1979,21 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt{ (LONG)(short)LOWORD(lp), (LONG)(short)HIWORD(lp) };
         toGameSpace(pt);
         std::lock_guard<std::mutex> lk(g_mu);
-        if (g_metro.on && !g_metro.locked && PtInRect(&g_metro_hit, pt)) {  // start dragging the metronome
+        if (g_metro.on && !g_metro.locked && PtInRect(&g_metro_hit, pt)) {
             g_metro.dragging = true;
-            g_metro.placed   = true;                        // user-positioned -> stop auto-centring
+            g_metro.placed   = true;
             g_metro.dragOff.x = pt.x - g_metro.x;
             g_metro.dragOff.y = pt.y - g_metro.y;
             SetCapture(hwnd);
             return 0;
         }
         if (g_xp.on && !g_xp.locked) {
-            if (PtInRect(&g_xp_min, pt)) {                  // minimize / restore the XP panel
+            if (PtInRect(&g_xp_min, pt)) {
                 g_xp.minimized = !g_xp.minimized;
                 SaveXp();
                 return 0;
             }
-            if (PtInRect(&g_xp_hit, pt)) {                  // start dragging the XP panel
+            if (PtInRect(&g_xp_hit, pt)) {
                 g_xp.dragging = true;
                 g_xp.placed   = true;
                 g_xp.dragOff.x = pt.x - g_xp.x;
@@ -2348,7 +2033,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           if (g_xp.dragging)    { g_xp.dragging    = false; was = true; SaveXp(); } }
         if (was) { ReleaseCapture(); return 0; }
     }
-    if (msg == WM_MOUSEWHEEL) {                       // wheel over the widget = resize
+    if (msg == WM_MOUSEWHEEL) {                       // resize
         POINT pt{ (LONG)(short)LOWORD(lp), (LONG)(short)HIWORD(lp) };
         ScreenToClient(hwnd, &pt);                    // wheel coords are screen-relative
         toGameSpace(pt);
@@ -2360,7 +2045,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SaveMetro();
             return 0;
         }
-        if (g_xp.on && !g_xp.locked && PtInRect(&g_xp_hit, pt)) {   // wheel over the XP card = resize
+        if (g_xp.on && !g_xp.locked && PtInRect(&g_xp_hit, pt)) {
             float d = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 0.08f : -0.08f;
             float s = g_xp.scale + d;
             g_xp.scale = (s < 0.7f ? 0.7f : (s > 1.8f ? 1.8f : s));
@@ -2382,9 +2067,7 @@ void RenderLoop() {
     wc.lpfnWndProc = OverlayWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = kClass;
-    // Without a class cursor, when the overlay drops WS_EX_TRANSPARENT to catch a
-    // notification click it owns the cursor area but defines no cursor, so Windows
-    // shows the app-starting/busy cursor. Give it a normal arrow.
+    // Without a class cursor Windows shows the busy cursor while the overlay is interactive.
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassExW(&wc);
 
@@ -2394,14 +2077,11 @@ void RenderLoop() {
 
     Dib dib;
     bool shown = false;
-    // Last good overlay frame per client: a transient build failure (root/worker hiccup during a
-    // region reload, rescan pending after a game update) re-serves the previous frame briefly instead
-    // of publishing an empty one, which reads as a full-screen flicker of every marker.
+    // Last good frame per client, re-served briefly on a transient build failure to avoid flicker.
     struct HeldFrame { rtx::reader::OverlayFrame frame; long long at_ms = 0; };
     std::unordered_map<DWORD, HeldFrame> held;
     constexpr long long kHoldMs = 600;
-    // Config snapshot, refreshed only when g_cfgsVer moves: Config carries strings and vectors, so
-    // deep-copying the whole map every frame is pure heap churn for data that changes on interaction.
+    // Config snapshot, refreshed only when g_cfgsVer moves.
     std::map<DWORD, Config> cfgs;
     std::uint64_t cfgsSeen = ~0ull;
 
@@ -2420,10 +2100,8 @@ void RenderLoop() {
           metroPid = g_metro.pid; metroInterval = g_metro.interval < 1 ? 1 : g_metro.interval;
           xpOn = g_xp.on; xpPid = g_xp.pid; }
 
-        // XP-tracker sampling (1 Hz) -- runs whenever a client is configured, even with
-        // the on-game panel hidden, so the XP Tracker tab's session mirror tracks either
-        // way. The baseline captures on the first readable sample; a character switch in
-        // the same client (any skill's XP DECREASING) re-baselines the session.
+        // XP sampling (1 Hz) runs whenever a client is configured, panel visible or not.
+        // Any skill's XP decreasing = character switch: re-baseline.
         if (xpPid) {
             long long t = now_ms();
             bool due;
@@ -2433,12 +2111,8 @@ void RenderLoop() {
                 bool ok = rtx::reader::SkillsXp(xpPid, cur);
                 std::lock_guard<std::mutex> lk(g_mu);
                 g_xp.sampleMs = t;
-                // A sample is only trustworthy once the skill table is populated: during login,
-                // a world hop or a reload the reader can return zeros for a moment. Baselining
-                // on those made the next real read count the player's ENTIRE XP as a session
-                // gain (19M on the first action, a 400B/h rate). Constitution can never be 0
-                // on a logged-in account (level 10 = 1,154 XP), and a skill that read > 0 a
-                // second ago cannot read 0 now, so either condition marks the sample unreadable.
+                // Unreadable while the table is unpopulated (login / hop): Constitution is never 0
+                // when logged in, and a skill cannot drop from > 0 to 0.
                 bool readable = ok && cur[3] > 0;
                 if (readable) for (int i = 0; i < 29 && readable; ++i)
                     if (cur[i] == 0 && g_xp.cur[i] > 0) readable = false;
@@ -2454,9 +2128,7 @@ void RenderLoop() {
                         for (int i = 0; i < 29; ++i) {
                             if (cur[i] < 0) continue;
                             if (g_xp.base[i] < 0) g_xp.base[i] = cur[i];   // record appeared mid-session
-                            // An impossible one-second jump (> 5M) is a table reload or an
-                            // account change we did not catch, never play: absorb it into the
-                            // baseline so it is not counted as a gain.
+                            // a > 5M jump in one second is a reload, not play: absorb into the baseline
                             if (g_xp.cur[i] >= 0 && cur[i] - g_xp.cur[i] > 5000000) g_xp.base[i] += cur[i] - g_xp.cur[i];
                             if (g_xp.firstGain[i] == 0 && g_xp.cur[i] >= 0 && cur[i] > g_xp.base[i])
                                 g_xp.firstGain[i] = t;
@@ -2468,9 +2140,7 @@ void RenderLoop() {
             }
         }
 
-        // Metronome tick state: count drives the beat (every N ticks), age the
-        // smooth visual phase. Audio plays ONLY on a confirmed new tick (count
-        // change) -> no doubles, no prediction, locked to the real server tick.
+        // Metronome: audio only on a confirmed tick-count change, no prediction.
         std::uint32_t mTick = 0; double mAge = -1.0; bool mHave = false;
         if ((metroOn || metroAudio) && metroPid)
             mHave = rtx::reader::TickState(metroPid, mTick, mAge);
@@ -2481,12 +2151,8 @@ void RenderLoop() {
                 PlayMetroClick();
         }
 
-        // ---- PER-CLIENT in-frame publishing: each configured pid gets its own frame build
-        //      + marker-section publish, so grids, markers, highlights, the alert flash AND the
-        //      screen-space widgets draw in the REQUESTING client's render only. ----
+        // ---- per-client publishing ----
         long long tnow = now_ms();
-        // Drop expired auto-dismiss notifications BEFORE publishing, so a timed
-        // card leaves the frame the moment its ttl lapses.
         bool anyNotifs;
         { std::lock_guard<std::mutex> lk(g_mu);
           for (size_t i = 0; i < g_notifs.size(); )
@@ -2531,9 +2197,7 @@ void RenderLoop() {
                                (anyNotifs && g_notif_pid.load() == cpid) ||
                                (metroOn && metroPid == cpid) ||
                                (xpOn && xpPid == cpid);
-            // A screen-space UI highlight, centre text, a panel-viz box (inventory-slot test /
-            // Interfaces visualizer) OR a widget needs no world frame, but still needs the live
-            // window size + a publish, so it can't take the cheap early-out.
+            // screen-space channels and widgets need no world frame but still need the window size + a publish
             if (!wantF && !hasUiHl && !hasPanelViz && !hasCenter && !hasSolverCells && !hasSkillBars &&
                 fa <= 0.0f && !wantWidgets) { PublishMarkers(ccfg, nullptr, 0, 0); continue; }
             HWND gw = FindGameWindow(cpid);
@@ -2542,19 +2206,12 @@ void RenderLoop() {
                 continue;
             }
             RECT rc2; GetClientRect(gw, &rc2);
-            // Command coordinates live in the GAME's pixel space: they are drawn into its frame
-            // beside viewport values read from its memory. GetClientRect here is this process's
-            // physical px, which differs when the game runs DPI-virtualized -- convert. The pid
-            // overload uses the companion's MEASURED backbuffer size (the DPI inference reads
-            // 1.0 once the game is our embedded child, which put every overlay at 2/3 scale on
-            // a 150% display).
+            // GetClientRect is physical px; commands are game px. The pid overload uses the companion's measured backbuffer.
             double gsf = rtx::launcher::dock::GameSpaceFactor(gw, cpid);
             int W2 = (int)std::lround((rc2.right - rc2.left) * gsf);
             int H2 = (int)std::lround((rc2.bottom - rc2.top) * gsf);
             if (W2 < 16 || H2 < 16) continue;
-            // Diagnostic sibling of the reader's [gv] line: the overlay-side frame size and
-            // the factor that produced it, logged only when they change. Together the two
-            // lines fully describe the projection inputs on a user's machine.
+            // change-gated diagnostic, pairs with the reader's [gv] line
             {
                 static std::map<DWORD, std::tuple<int, int, int>> l_sz;   // pid -> {W2, H2, gsf*1000}
                 auto cur = std::make_tuple(W2, H2, (int)std::lround(gsf * 1000.0));
@@ -2575,9 +2232,7 @@ void RenderLoop() {
             rtx::reader::OverlayFrame frame;
             bool ok = false;
             if (wantF)
-                // "Enable overlay" gates the grid + markers; highlights are alert-driven and draw
-                // even when the overlay is disabled. Nameplates gather entities independently: a
-                // kind is walked when the grid overlay OR the Scene-tab nameplates want it.
+                // a kind is walked when the grid overlay or the nameplates want it
                 ok = rtx::reader::BuildOverlayFrame(
                          cpid,
                          (ccfg.enabled && ccfg.players)  || (ccfg.nameplates && (ccfg.np_players || !ccfg.np_player_uids.empty())),
@@ -2586,22 +2241,14 @@ void RenderLoop() {
                          ccfg.enabled && ccfg.specials,
                          (ccfg.enabled && ccfg.grid) ? ccfg.radius : 0,
                          ccfg.interactable, ccfg.highlight, ccfg.outline, ccfg.outlineLocs, gsites, frame);
-            // Screen-space rects (solver cells, UI highlights, panel viz, skill bars) come out of
-            // the game's LOGICAL interface layout and need the logical->pixel factor even when the
-            // world overlay is off; without a frame the factor silently read 1.0 and every solver
-            // cell drew compressed toward the top-left under Windows display scaling. Metrics
-            // only -- no entity walk.
+            // screen-space rects still need lc/gv metrics for the logical->pixel factor (no entity walk)
             if (!ok && (hasUiHl || hasPanelViz || hasSolverCells || hasSkillBars))
                 ok = rtx::reader::ReadViewMetrics(cpid, frame);
             if (ok) {
-                // ok can also mean a metrics-only frame (wantF false): publish it so the
-                // screen-space conversion has lc/gv, but only a full world frame enters the
-                // hold cache -- a held metrics frame would freeze nothing useful.
+                // only a full world frame enters the hold cache
                 PublishMarkers(ccfg, &frame, W2, H2, fa, wptr);
                 if (wantF) held[cpid] = { std::move(frame), tnow };
             } else if (wantF) {
-                // Transient failure: re-serve the held frame within the hold window (positions
-                // freeze for a beat). Past the window, publish empty.
                 auto hit = held.find(cpid);
                 bool hold = hit != held.end() && tnow - hit->second.at_ms < kHoldMs;
                 PublishMarkers(ccfg, hold ? &hit->second.frame : nullptr, W2, H2, fa, wptr);
@@ -2611,21 +2258,17 @@ void RenderLoop() {
             anyFrames = anyFrames || wantF || hasUiHl || hasPanelViz || hasCenter ||
                         hasSolverCells || hasSkillBars || wptr != nullptr;
         }
-        // Drop held frames for clients no longer configured (closed docks).
+        // drop held frames and marker channels for clients no longer configured
         for (auto it = held.begin(); it != held.end(); )
             if (cfgs.find(it->first) == cfgs.end()) it = held.erase(it);
             else ++it;
-        // Drop marker channels for clients that no longer have a config (closed docks).
         for (auto it = g_marker_outs.begin(); it != g_marker_outs.end(); ) {
             if (cfgs.find(it->first) == cfgs.end()) { it->second.close(); it = g_marker_outs.erase(it); }
             else ++it;
         }
 
-        // ---- external layered window: INPUT ONLY. Every widget's pixels render in-frame
-        //      (see BuildWidgetCommands); this invisible window just catches drag/dismiss
-        //      clicks over the widget hit rects. A layered window hit-tests per PIXEL --
-        //      alpha-0 areas pass clicks through no matter the WS_EX_TRANSPARENT state -- so
-        //      the hit rects are filled with imperceptible alpha-2 pads. ----
+        // ---- external layered window: input only. A layered window hit-tests per pixel (alpha 0 passes
+        //      clicks through regardless of WS_EX_TRANSPARENT), so the hit rects get alpha-2 pads. ----
         bool notifying = anyNotifs, metroLocked, xpLocked;
         { std::lock_guard<std::mutex> lk(g_mu);
           metroLocked = g_metro.locked; xpLocked = g_xp.locked; }
@@ -2633,7 +2276,7 @@ void RenderLoop() {
         DWORD pid  = (notifying && np)                     ? np
                    : (metroOn && metroPid && !metroLocked) ? metroPid
                    : (xpOn && xpPid && !xpLocked)          ? xpPid : 0;
-        HWND  game = pid ? FindGameWindow(pid) : nullptr;   // embedded (panel-open) window only
+        HWND  game = pid ? FindGameWindow(pid) : nullptr;
         bool  visible = game && !IsIconic(game) && IsWindowVisible(game);
         bool  padMetro = metroOn && metroPid && pid == metroPid && !metroLocked;
         bool  padXp    = xpOn && xpPid && pid == xpPid && !xpLocked;
@@ -2641,7 +2284,6 @@ void RenderLoop() {
 
         if (!visible || (!padNotif && !padMetro && !padXp)) {
             if (shown) { ShowWindow(hwnd, SW_HIDE); shown = false; }
-            // Keep polling fast for the metronome sweep / audio beats / active frames.
             std::this_thread::sleep_for(std::chrono::milliseconds(
                 (metroOn || metroAudio) ? 16 : (anyFrames || anyFlash || toasting) ? 33 : 120));
             continue;
@@ -2650,19 +2292,14 @@ void RenderLoop() {
         RECT cr; GetClientRect(game, &cr);
         POINT tl{cr.left, cr.top};
         ClientToScreen(game, &tl);
-        int W = cr.right - cr.left, H = cr.bottom - cr.top;   // PHYSICAL px: this window's space
+        int W = cr.right - cr.left, H = cr.bottom - cr.top;   // physical px
         if (W < 16 || H < 16) { std::this_thread::sleep_for(std::chrono::milliseconds(60)); continue; }
-        // Widget hit rects were computed in the game's pixel space; this window lives in
-        // physical px. gsfIn maps physical -> game space; pads convert the other way.
+        // gsfIn maps physical -> game px (hit rects are game px)
         double gsfIn = rtx::launcher::dock::GameSpaceFactor(game, pid);
         if (gsfIn <= 0.0) gsfIn = 1.0;
         g_inputScale.store(gsfIn);
 
-        // Repaint/upload ONLY when the visual state changed: the pads are static for
-        // seconds at a time, but this used to clear + repaint + UpdateLayeredWindow the
-        // full client-sized surface every iteration (~0.5-1 GB/s of memset + a 30-60Hz
-        // DWM upload on a 1440p client). Fingerprint the inputs; a pure window move
-        // takes the position-only UpdateLayeredWindow form, which uploads nothing.
+        // Repaint/upload only when the fingerprint changes; a pure move uses the position-only UpdateLayeredWindow form.
         static std::vector<long long> fpPrev; static POINT tlPrev{ LONG_MIN, LONG_MIN };
         std::vector<long long> fp;
         fp.reserve(16);
@@ -2682,9 +2319,8 @@ void RenderLoop() {
         const bool fpChanged = fp != fpPrev;
         const bool moved = tl.x != tlPrev.x || tl.y != tlPrev.y;
         if (!fpChanged && !moved && shown) {
-            // visually identical, same place: nothing to paint or upload
+            // nothing to paint or upload
         } else if (!fpChanged && shown) {
-            // same pixels, new place: move the layered window without re-uploading
             POINT dst{ tl.x, tl.y };
             UpdateLayeredWindow(hwnd, nullptr, &dst, nullptr, nullptr, nullptr, 0, nullptr, 0);
             tlPrev = tl;
@@ -2693,16 +2329,14 @@ void RenderLoop() {
         } else if (dib.ensure(W, H)) {
             fpPrev = std::move(fp); tlPrev = tl;
             dib.clear();
-            // Alpha-2 pads over the interactive rects: invisible, but they receive
-            // clicks once the window drops WS_EX_TRANSPARENT. Premultiplied black at
-            // alpha 2 is (B,G,R,A) = (0,0,0,2), so no premultiply pass is needed.
-            auto pad = [&](const RECT& rcG) {   // rcG: game-space px -> convert to physical
+            // premultiplied black at alpha 2 is (0,0,0,2): no premultiply pass needed
+            auto pad = [&](const RECT& rcG) {   // rcG: game px
                 RECT rc{ (LONG)std::lround(rcG.left  / gsfIn), (LONG)std::lround(rcG.top    / gsfIn),
                          (LONG)std::lround(rcG.right / gsfIn), (LONG)std::lround(rcG.bottom / gsfIn) };
                 int x0 = rc.left < 0 ? 0 : rc.left, y0 = rc.top < 0 ? 0 : rc.top;
                 int x1 = rc.right > W ? W : rc.right, y1 = rc.bottom > H ? H : rc.bottom;
                 auto* px = (std::uint32_t*)dib.bits;
-                for (int yy = y0; yy < y1; ++yy)                       // row-span fills
+                for (int yy = y0; yy < y1; ++yy)
                     std::fill(px + (size_t)yy * W + x0, px + (size_t)yy * W + x1, 0x02000000u);
             };
             {
@@ -2721,20 +2355,16 @@ void RenderLoop() {
             HDC screen = GetDC(nullptr);
             UpdateLayeredWindow(hwnd, screen, &dst, &sz, dib.dc, &src, 0, &bf, ULW_ALPHA);
             ReleaseDC(nullptr, screen);
-            // keep it above the game without stealing focus
             SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         } else if (shown) {
             ShowWindow(hwnd, SW_HIDE); shown = false;
         }
 
-        // Toggle click-through: steal clicks ONLY while the cursor is over a sticky notification
-        // (to dismiss it), the metronome (to drag/resize it) or the XP card (to drag/minimize it);
-        // elsewhere stay transparent so gameplay clicks pass straight to the game.
+        // Click-through everywhere except over a widget hit rect.
         bool overUi = false;
         if (shown) {
             POINT cur; GetCursorPos(&cur); ScreenToClient(hwnd, &cur);
-            // Into game space: the hit rects below are in the game's px, cur is physical.
             cur.x = (LONG)std::lround(cur.x * gsfIn);
             cur.y = (LONG)std::lround(cur.y * gsfIn);
             std::lock_guard<std::mutex> lk(g_mu);
@@ -2774,11 +2404,11 @@ void Configure(const Config& c) {
     bool need_thread; size_t hisz;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        Config& dst = cfg_slot(c.pid);    // per-client slot: panels never clobber each other
-        auto hl = dst.highlight;          // highlight is owned by SetHighlight; preserve it
-        auto ol = dst.outline;            // outline is owned by SetOutline; preserve it
-        auto oll = dst.outlineLocs;       // owned by SetOutlineLocs; preserve it
-        auto npu = dst.np_player_uids;    // owned by SetNameplatePlayers; preserve it
+        Config& dst = cfg_slot(c.pid);
+        auto hl = dst.highlight;          // these four are owned by their own setters; preserve
+        auto ol = dst.outline;
+        auto oll = dst.outlineLocs;
+        auto npu = dst.np_player_uids;
         dst = c;
         dst.highlight = hl;
         dst.outline = ol;
@@ -2788,16 +2418,14 @@ void Configure(const Config& c) {
         hisz = dst.highlight.size();
     }
     rtx::log::Launcher("[ovl] Configure pid=" + std::to_string(c.pid) + " en=" + std::to_string((int)c.enabled) + " hi=" + std::to_string(hisz));
-    // The render thread is also needed for flashes/highlights, so once started it
-    // stays running (idling cheaply, window hidden); Stop() tears it down.
-    if (need_thread) ensure_thread();
+    if (need_thread) ensure_thread();   // once started it idles until Stop()
 }
 
 void EnableMarkers(std::uint32_t pid) {
     if (!pid) return;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        Config& dst = cfg_slot((DWORD)pid);   // creates a slot if none exists yet
+        Config& dst = cfg_slot((DWORD)pid);
         dst.pid = pid;
         dst.markers = true;
     }
@@ -2813,13 +2441,13 @@ void Metronome(std::uint32_t pid, bool visual, bool audio, int interval, bool lo
         g_metro.locked   = locked;
         g_metro.interval = (interval < 1 ? 1 : (interval > 6 ? 6 : interval));
         g_metro.pid      = pid;
-        if (locked) g_metro.dragging = false;          // can't be mid-drag while locked
-        if (visual && !wasVisual) LoadMetro();         // restore saved position/size on enable
-        if (!visual) g_metro_hit = RECT{0, 0, 0, 0};   // no widget -> no input pad
-        if (audio && !wasAudio)   g_metro.lastTick = 0xFFFFFFFFu;  // don't fire on the first detection
+        if (locked) g_metro.dragging = false;
+        if (visual && !wasVisual) LoadMetro();
+        if (!visual) g_metro_hit = RECT{0, 0, 0, 0};
+        if (audio && !wasAudio)   g_metro.lastTick = 0xFFFFFFFFu;  // no click on the first detection
         if (pid && visual) {
-            Config& dst = cfg_slot((DWORD)pid);          // ensure the per-pid frame slot exists
-            dst.pid = pid;                             // (the widget publishes in-frame)
+            Config& dst = cfg_slot((DWORD)pid);
+            dst.pid = pid;
         }
     }
     if (visual || audio) ensure_thread();
@@ -2831,29 +2459,27 @@ void XpPanel(std::uint32_t pid, bool visible, bool locked, bool total,
     {
         std::lock_guard<std::mutex> lk(g_mu);
         bool wasOn = g_xp.on;
-        if (g_xp.pid != (DWORD)pid) ResetXpSession();   // new client/account -> fresh session
+        if (g_xp.pid != (DWORD)pid) ResetXpSession();
         g_xp.on         = visible;
         g_xp.locked     = locked;
         g_xp.showTotal  = total;
         g_xp.autoSkills = auto_skills;
         g_xp.mask       = mask;
         g_xp.pid        = (DWORD)pid;
-        if (locked) g_xp.dragging = false;              // can't be mid-drag while locked
-        if (visible && !wasOn) LoadXp();                // restore saved position/minimized
+        if (locked) g_xp.dragging = false;
+        if (visible && !wasOn) LoadXp();
         if (!visible) { g_xp_hit = RECT{0, 0, 0, 0}; g_xp_min = RECT{0, 0, 0, 0}; }
         if (pid && visible) {
-            Config& dst = cfg_slot((DWORD)pid);           // ensure the per-pid frame slot exists
-            dst.pid = pid;                              // (the widget publishes in-frame)
+            Config& dst = cfg_slot((DWORD)pid);
+            dst.pid = pid;
         }
     }
-    // The render thread also hosts the 1 Hz sampler, so it must run even while the
-    // panel is hidden (the tab's session mirror tracks either way). It idles cheaply.
-    if (pid) ensure_thread();
+    if (pid) ensure_thread();   // the thread hosts the 1 Hz sampler even while hidden
 }
 
 void XpPanelReset(std::uint32_t) {
     std::lock_guard<std::mutex> lk(g_mu);
-    ResetXpSession();                                   // next 1 Hz sample re-baselines
+    ResetXpSession();
 }
 
 std::string XpPanelStateJson(std::uint32_t) {
@@ -2887,7 +2513,7 @@ void SetGuideMarks(std::uint32_t pid, std::vector<GuideMark> marks) {
         std::lock_guard<std::mutex> lk(g_mu);
         if (marks.empty()) g_guides.erase((DWORD)pid);
         else {
-            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_guides[(DWORD)pid] = std::move(marks);
         }
@@ -2909,7 +2535,7 @@ void SetUiHighlights(std::uint32_t pid, const std::vector<UiHighlight>& rects) {
         for (const auto& r : rects) if (r.w > 0 && r.h > 0) keep.push_back(r);
         if (keep.empty()) g_uiHighlights.erase((DWORD)pid);
         else {
-            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_uiHighlights[(DWORD)pid] = keep;
         }
@@ -2923,7 +2549,7 @@ void SetPanelViz(std::uint32_t pid, const std::vector<PanelBox>& boxes) {
         std::lock_guard<std::mutex> lk(g_mu);
         if (boxes.empty()) g_panelViz.erase((DWORD)pid);
         else {
-            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_panelViz[(DWORD)pid] = boxes;
         }
@@ -2937,15 +2563,13 @@ void SetCenterText(std::uint32_t pid, const std::string& text, int slot, int rgb
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (text.empty()) {
-            // Clear only THIS slot, and drop the pid entry once its last banner is gone so the
-            // map keeps no residue for a client that stopped drawing.
             auto it = g_centerTexts.find((DWORD)pid);
             if (it != g_centerTexts.end()) {
                 it->second.erase(slot);
                 if (it->second.empty()) g_centerTexts.erase(it);
             }
         } else {
-            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_centerTexts[(DWORD)pid][slot] = CenterBanner{ text, rgb };
         }
@@ -2959,7 +2583,7 @@ void SetPuzzleCells(std::uint32_t pid, const std::vector<PuzzleCell>& cells) {
         std::lock_guard<std::mutex> lk(g_mu);
         if (cells.empty()) g_puzzleCells.erase((DWORD)pid);
         else {
-            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_puzzleCells[(DWORD)pid] = cells;
         }
@@ -2973,7 +2597,7 @@ void SetSkillBars(std::uint32_t pid, const std::vector<SkillBar>& bars) {
         std::lock_guard<std::mutex> lk(g_mu);
         if (bars.empty()) g_skillBars.erase((DWORD)pid);
         else {
-            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_skillBars[(DWORD)pid] = { bars, now_ms() };
         }
@@ -2987,7 +2611,7 @@ void SetKnotCells(std::uint32_t pid, const std::vector<KnotCell>& cells) {
         std::lock_guard<std::mutex> lk(g_mu);
         if (cells.empty()) g_knotCells.erase((DWORD)pid);
         else {
-            Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
+            Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_knotCells[(DWORD)pid] = cells;
         }
@@ -2999,7 +2623,7 @@ void SetHighlight(std::uint32_t pid, const std::vector<std::string>& names) {
     if (!pid) return;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        Config& dst = cfg_slot((DWORD)pid);     // creates a (disabled) slot if the grid is off
+        Config& dst = cfg_slot((DWORD)pid);
         dst.pid = pid;
         dst.highlight = names;
     }
@@ -3044,7 +2668,7 @@ void Flash(std::uint32_t pid) {
     if (!pid) return;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        Config& dst = cfg_slot((DWORD)pid);     // ensure the per-pid slot exists
+        Config& dst = cfg_slot((DWORD)pid);
         dst.pid = pid;
         g_flash_until[(DWORD)pid] = now_ms() + kFlashMs;
     }
@@ -3055,16 +2679,15 @@ void Toast(std::uint32_t pid, const std::string& text) {
     { std::lock_guard<std::mutex> lk(g_mu);
       g_toast_text = text;
       if (pid) {
-          Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
-          dst.pid = pid;                      // (the toast publishes in-frame)
+          Config& dst = cfg_slot((DWORD)pid);
+          dst.pid = pid;
       } }
     g_toast_pid.store((DWORD)pid);
     g_toast_until_ms.store(now_ms() + kToastMs);
     ensure_thread();
 }
 
-// ttl_ms 0 = sticky (stays until clicked); ttl_ms > 0 = auto-dismiss after that long.
-// Identical text is deduped -- an existing card's timer is refreshed instead of stacking.
+// Identical text refreshes the existing card's timer instead of stacking.
 void Notify(std::uint32_t pid, const std::string& text, long long ttl_ms) {
     { std::lock_guard<std::mutex> lk(g_mu);
       long long exp = (ttl_ms > 0) ? now_ms() + ttl_ms : 0;
@@ -3072,10 +2695,10 @@ void Notify(std::uint32_t pid, const std::string& text, long long ttl_ms) {
       for (auto& n : g_notifs) if (n.text == text) { n.expire_ms = exp; found = true; break; }
       if (!found) {
           g_notifs.push_back(Notif{ ++g_notif_seq, text, exp });
-          while (g_notifs.size() > 6) g_notifs.erase(g_notifs.begin()); }   // cap the stack
+          while (g_notifs.size() > 6) g_notifs.erase(g_notifs.begin()); }
       if (pid) {
-          Config& dst = cfg_slot((DWORD)pid);   // ensure the per-pid frame slot exists
-          dst.pid = pid;                      // (the cards publish in-frame)
+          Config& dst = cfg_slot((DWORD)pid);
+          dst.pid = pid;
       } }
     g_notif_pid.store((DWORD)pid);
     ensure_thread();
@@ -3092,19 +2715,15 @@ void Stop() {
     }
 }
 
-// Synchronously mark a client's in-frame marker channel not-visible, so the companion's present
-// callback stops drawing into the game's GL context immediately. Used at teardown: it must be
-// inert BEFORE the game destroys that context, or it draws into a dying context and crashes.
-// Safe from any thread -- opens the pid's section directly and seqlock-writes visible=0.
+// Synchronous seqlock write of visible=0 to the pid's section; safe from any thread. Must run
+// before the game destroys its GL context.
 void QuiesceMarkers(std::uint32_t pid) {
     if (!pid) return;
-    // Drop the per-pid overlay state too: the render loop stops building frames for this
-    // client and prunes its marker channel on the next pass.
     {
         std::lock_guard<std::mutex> lk(g_mu);
         g_cfgs.erase((DWORD)pid); ++g_cfgsVer;
         g_flash_until.erase((DWORD)pid);
-        g_guides.erase((DWORD)pid);         // else these per-pid maps keep a small residue per closed client
+        g_guides.erase((DWORD)pid);
         g_uiHighlights.erase((DWORD)pid);
         g_centerTexts.erase((DWORD)pid);
         g_panelViz.erase((DWORD)pid);
@@ -3112,7 +2731,7 @@ void QuiesceMarkers(std::uint32_t pid) {
     wchar_t name[64];
     marker::MakeSectionName(pid, name);
     HANDLE map = OpenFileMappingW(FILE_MAP_WRITE, FALSE, name);
-    if (!map) return;                       // section never created -> nothing is drawing
+    if (!map) return;                       // section never created
     auto* sh = reinterpret_cast<marker::Share*>(
         MapViewOfFile(map, FILE_MAP_WRITE, 0, 0, sizeof(marker::Share)));
     if (sh) {

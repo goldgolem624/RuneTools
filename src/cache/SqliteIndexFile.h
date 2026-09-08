@@ -14,13 +14,9 @@ struct sqlite3_stmt;
 
 namespace rtx::cache {
 
-// One .jcache file (e.g. `js5-19.jcache` for items). The jcache is a
-// SQLite database with two interesting tables:
-//   cache_index  KEY=1 -> reference-table blob (zlib-wrapped manifest)
-//   cache        KEY=<archive_id> -> archive blob (zlib-wrapped files)
-// One READONLY connection is kept per index and dropped on any BUSY/LOCKED/
-// IOERR so the official launcher in another client can still take exclusive
-// access; the next call simply reopens.
+// One .jcache (SQLite) file: cache_index KEY=1 -> reference-table blob; cache KEY=<archive_id>
+// -> archive blob. One READONLY connection, dropped on BUSY/LOCKED/IOERR so the official
+// launcher can take exclusive access; reopened on the next call.
 
 class SqliteIndexFile {
 public:
@@ -35,25 +31,17 @@ public:
     bool                ready()    const     { return ref_table_ != nullptr; }
     const ReferenceTable& ref()   const     { return *ref_table_; }
 
-    // Returns the decompressed bytes of one file inside one archive, or
-    // empty if the file/archive doesn't exist or decompression fails.
-    // Decoded archives are cached under a byte budget with LRU eviction;
-    // archives that failed to decode are remembered and not retried.
+    // Decompressed bytes of one file, or empty. Decoded archives are LRU-cached under a byte
+    // budget; failed decodes are not retried.
     std::vector<std::uint8_t> ReadFile(int archive_id, int file_id);
 
-    // Raw archive blob straight from the SQLite `cache` table (no
-    // decompression, no reference-table validation). The sprite index
-    // uses the standard container, so callers decompress it themselves
-    // with DecompressStandard.
+    // Raw archive blob from the `cache` table, no decompression or ref-table validation.
     std::vector<std::uint8_t> ReadRawArchive(int archive_id);
 
     // Archive ids present in the SQLite table, ascending from `from_key`, at most `limit`.
-    // Read straight from the table rather than the reference table, so it works for indexes
-    // whose ref table this build does not parse.
     std::vector<int> ArchiveIdsFrom(int from_key, int limit) const;
 
-    // Health reporting: bytes of decoded files currently cached, and archives
-    // whose decode failed (not retried this process).
+    // Health reporting.
     std::size_t CachedBytes()     const;
     int         FailedArchives()  const;
 
@@ -84,8 +72,7 @@ private:
     int                            default_files_per_archive_;
     std::unique_ptr<ReferenceTable> ref_table_;
 
-    // All access is already serialised by the launcher's g_mu; this mutex is
-    // a cheap guard in case that assumption ever changes.
+    // Access is already serialised by the launcher's g_mu; this is a cheap extra guard.
     mutable std::mutex             db_mu_;
     mutable sqlite3*               db_ = nullptr;
     mutable sqlite3_stmt*          stmt_ref_table_ = nullptr;

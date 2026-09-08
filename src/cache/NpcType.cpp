@@ -5,10 +5,7 @@ namespace rtx::cache {
 
 namespace {
 
-// Opcode dispatcher for the RS3 NPCType decoder. Returns false
-// on an unknown opcode (terminates the loop -- a misaligned stream past an
-// unknown opcode is garbage anyway). Only name/options/combat/transforms are
-// retained; the rest are consumed to keep the stream aligned.
+// NPCType opcode dispatcher. Returns false on an unknown opcode.
 bool ReadOne(InputStream& s, NpcDef& d, int op) {
     switch (op) {
         case 1: {                                   // model ids
@@ -42,8 +39,7 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
         case 100: case 101: case 102: s.ReadUnsignedByte(); return true;
         case 103: s.ReadShort();                    return true;
         case 106: case 118: {                        // varbit/varp transform
-            // varbit/varp are u16 ids -- read UNSIGNED so large ids (e.g. the 40000+ range) aren't
-            // sign-truncated to a negative "no selector"; 0xFFFF = none.
+            // u16 ids, read unsigned; 0xFFFF = none.
             d.varbit = s.ReadUnsignedShort(); if (d.varbit == 0xFFFF) d.varbit = -1;
             d.varp   = s.ReadUnsignedShort(); if (d.varp   == 0xFFFF) d.varp   = -1;
             int def  = (op == 118) ? s.ReadShort() : -1;
@@ -155,7 +151,7 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
         }
         case 252: s.ReadShort();                    return true;
         case 253: s.skip(1);                        return true;
-        // ---- build 950-1 additions (payloads recovered with the unknown-opcode probe, Probe.h) ----
+        // ---- build 950-1 additions ----
         case 92: {                                   // u8 x3, string, u8, u8 n, n x bigsmart (11 defs, "Trainee adventurer")
             s.ReadUnsignedByte(); s.ReadUnsignedByte(); s.ReadUnsignedByte();
             (void)s.ReadString(); s.ReadUnsignedByte();
@@ -177,14 +173,9 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
             s.ReadBigSmart();
             return true;
         }
-        case 189: {                                  // 950-1. Live shapes (191 defs, see docs/cs2_opcodes.md):
-            //   u16, u8, u16, u16 (header), u8 mask, then 10-byte sub-records S = {u8 slot, u8 01, u16 0003,
-            //   u16 0003, i32 value} with 1-byte glue between them (00 = spacer, 01..03 = a group count),
-            //   then a 1-byte tail (02 in every def). The glue/mask semantics were not pinned down
-            //   (multi-sub defs contradict every simple count or bitmask reading), so this consumes by
-            //   SIGNATURE: a byte that starts an S is an S; otherwise 00 is skipped, a byte followed by an
-            //   S is a group count (up to that many contiguous S), and anything else is the tail and ends
-            //   the payload. Matches all 191 defs exactly.
+        case 189: {                                  // 950-1: u16, u8, u16, u16, u8 mask, then 10-byte sub-records
+            //   S = {u8 slot, u8 01, u16 0003, u16 0003, i32 value} with 1-byte glue (00 spacer, 01..03 group
+            //   count), then a 1-byte tail. Glue semantics unknown, so S is recognised by signature.
             s.ReadUnsignedShort(); s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
             s.ReadUnsignedByte();                                    // mask
             auto subAt = [&](int o) {

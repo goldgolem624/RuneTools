@@ -1,7 +1,4 @@
-  /* RuneToolsX in-game shell, "Obsidian Aurora". This head of the stylesheet owns the tokens
-     and the shell chrome (menu bar, floating windows, tab strip, glyphs, HUD windows, toasts,
-     the wiki palette, the pane scaffolding). Panel styles follow it and only consume tokens.
-     Every selector keeps its name: panels and the window manager address these classes. */
+  /* RuneToolsX in-game shell stylesheet: tokens and shell chrome first, panel styles after. Selector names are load-bearing: panels and the window manager address these classes. */
   :root {
     --bg:           #07090f;
     --bg-elev:      #0e1119;
@@ -41,8 +38,7 @@
     --glass-line:   rgba(255,255,255,0.07);
   }
   * { box-sizing: border-box; }
-  /* Preferences: high contrast lifts the dim/mute text and borders; reduce-motion kills every
-     animation and transition (aura pulses, toast bars, pill slides) for motion-sensitive users. */
+  /* Preferences: high contrast and reduce-motion overrides. */
   html.hc { --text-dim: #d6dae4; --text-mute: #a3abbe; --border: #3a4257; --border-hi: #55607a; }
   html.nomotion *, html.nomotion *::before, html.nomotion *::after { animation: none !important; transition: none !important; }
   html.tabnums body { font-variant-numeric: tabular-nums; }
@@ -54,13 +50,11 @@
   .mb-info b { color: var(--text); font-weight: 600; }
   html, body {
     margin: 0; padding: 0; height: 100%;
-    /* TRANSPARENT on purpose: this page is composited OVER the game frame; only
-       the menu bar and windows paint pixels. An opaque body hides the game. */
+    /* Transparent on purpose: this page is composited over the game frame. */
     background: transparent;
     color: var(--text);
     font-family: var(--font-ui); font-size: var(--font-size); line-height: 1.5;
-    /* WebKit (Ultralight) honours the -webkit- prefix; the unprefixed form alone
-       doesn't stop drag-selection in this engine. */
+    /* Ultralight only honours the -webkit- prefix here. */
     -webkit-user-select: none; user-select: none;
     overflow: hidden;
   }
@@ -76,8 +70,6 @@
   #menubar {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     display: flex; align-items: stretch; gap: 2px;
-    /* Content-sized, capped to the client so the middle sections give way (see .mb-cats /
-       .mb-status) instead of the bar running off the edge on a small window. */
     max-width: calc(100vw - 12px); box-sizing: border-box;
     height: 38px; padding: 4px 6px;
     background: var(--bar-bg);
@@ -96,8 +88,7 @@
   }
   #menubar.dragging { transition: none; }
   #menubar.pill { padding: 4px; }
-  /* Collapsed: drop the CATEGORY RAIL only. Search, the restore chips, the status readout
-     and the clock stay: a slim always-on bar must still reach every panel. */
+  /* Collapsed: drops the category rail only. */
   #menubar.pill .mb-cats { display: none; }
   #menubar.pill .mb-chips { border-left: none; margin-left: 0; padding-left: 0; }
   .mb-drag {
@@ -106,8 +97,7 @@
   }
   .mb-drag:active { cursor: grabbing; }
   .mb-drag svg { width: 14px; height: 14px; }
-  /* No horizontal scrolling: what does not fit moves into the More menu (see mbFitCats),
-     so nothing is ever cut mid-word or reachable only by a wheel gesture with no affordance. */
+  /* No horizontal scroll: overflow moves into the More menu (mbFitCats). */
   .mb-cats {
     display: flex; align-items: stretch; gap: 2px;
     min-width: 0; flex: 1 1 auto; overflow: hidden;
@@ -133,9 +123,7 @@
     width: 5px; height: 5px; border-radius: 0; background: rgb(var(--aurora-rgb));
     box-shadow: 0 0 6px rgba(var(--aurora-rgb),0.9); transform: translateX(-50%) rotate(45deg);
   }
-  /* Shrinks BEFORE the categories do (flex-shrink 3 vs their 1): a truncated character name
-     costs less than losing access to a panel. Both texts ellipsis rather than wrap, because
-     the bar is a fixed 38px tall. */
+  /* Shrinks before the categories (flex-shrink 3 vs 1); the bar is a fixed 38px. */
   .mb-status {
     display: flex; flex-direction: column; justify-content: center;
     padding: 0 12px; margin: 0 2px; min-width: 0; flex: 0 3 auto; overflow: hidden;
@@ -149,9 +137,7 @@
   .mb-status .meta { font: 500 9.5px var(--font-mono); color: var(--text-mute); font-variant-numeric: tabular-nums;
                      letter-spacing: 0.02em; line-height: 1.25; white-space: nowrap;
                      overflow: hidden; text-overflow: ellipsis; }
-  /* Restore chips for minimized windows. Capped so the bar can never grow with the number of
-     open windows, but SCROLLABLE rather than clipped: a control that disappears with no trace
-     reads as a bug. Scrollbar hidden: a 24px strip has no room for one; the chips scroll on the wheel. */
+  /* Restore chips for minimized windows: capped, scrollable, scrollbar hidden. */
   .mb-chips {
     display: flex; align-items: center; gap: 3px;
     padding: 0 4px; margin: 0 2px;
@@ -173,8 +159,6 @@
   .mb-chip svg { width: 12px; height: 12px; flex: none; color: var(--brass); opacity: 0.9; }
   .mb-chip:hover { background: rgba(var(--accent-rgb),0.2); color: var(--text); border-color: rgba(var(--accent-rgb),0.55); }
   .mb-chip span { max-width: 88px; overflow: hidden; text-overflow: ellipsis; }
-  /* Search and the collapse pill never shrink: the pill is the only way back from a
-     squeezed bar, and search is the only control that still reaches every panel. */
   .mb-btn {
     appearance: none; background: transparent; border: none; flex: none;
     display: flex; align-items: center; justify-content: center;
@@ -254,10 +238,7 @@
     font: 700 10.5px var(--font-mono); color: var(--text); letter-spacing: 0.14em; text-transform: uppercase;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  /* Tab strip (group members AND docked panels): its OWN row under the title bar, so it
-     never squeezes the window name and never clips its tail; pills wrap at narrow widths.
-     A solo window renders no pills, so :empty hides the row entirely. Every tab is the same
-     shape, an equal pill of equal height, so the row reads as one control. */
+  /* Tab strip: its own row under the title bar; :empty hides it for a solo window. */
   .win-tabs {
     flex: none; display: flex; flex-wrap: wrap; gap: 3px;
     padding: 0 8px;
@@ -279,8 +260,7 @@
   .win-tabs button:hover { color: var(--text); }
   .win-tabs button.on { color: var(--brass); border-bottom-color: var(--brass); background: transparent; }
   .win-tabs button.tabdrag { opacity: 0.45; }
-  /* Close mark: its slot is ALWAYS reserved (only the glyph fades in), so hovering a
-     tab cannot reflow the row, which would make tabs shuffle under a drag. */
+  /* Close slot is always reserved so hover cannot reflow the row. */
   .win-tabs .win-tabx {
     font-style: normal; font-size: 13px; line-height: 1;
     width: 14px; height: 14px; border-radius: 2px;
@@ -291,8 +271,7 @@
   }
   .win-tabs button:hover .win-tabx, .win-tabs button.on .win-tabx { opacity: 0.7; }
   .win-tabs .win-tabx:hover { opacity: 1; color: #ff9b9b; background: rgba(240,82,82,0.22); }
-  /* UI Settings chips. Defined HERE, not borrowed from a panel's injectStyle: those
-     only exist once that panel has rendered, so a shell-owned view must own its CSS. */
+  /* UI Settings chips: shell-owned, not borrowed from a panel's injectStyle. */
   .uis-chips { display: flex; flex-wrap: wrap; gap: 5px; }
   .uis-chip {
     font: 600 10px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 6px 10px; border-radius: 3px; cursor: pointer;
@@ -306,9 +285,7 @@
     color: #1a1406; background: var(--brass); border-color: var(--brass);
     font-weight: 700;
   }
-  /* Preferences page: section cards; each setting is label (+hint) left, control right.
-     Chip groups and wide controls drop to a full-width line under the label, so the page
-     keeps its shape from a 300px sliver to a full-width window. */
+  /* Preferences page: section cards; label (+hint) left, control right. */
   .pf-card { background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 4px; border-left: 2px solid var(--brass);
              padding: 2px 14px 4px; margin: 0 0 12px; }
   .pf-title { font: 700 10px var(--font-mono); letter-spacing: .16em; text-transform: uppercase;
@@ -329,11 +306,7 @@
   .uis-row input[type=range] { flex: 1; min-width: 90px; }
   .uis-row b { min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
 
-  /* ---- Shell glyphs, drawn in CSS -------------------------------------------
-     This renderer proved unreliable with fine SVG line work, so these use gradients and
-     shadows only: no path parsing, no font dependency, no transforms (a transform on a
-     hit-tested element also offsets this engine's CPU hit-testing). They inherit
-     currentColor and scale with their box. */
+  /* Shell glyphs drawn in CSS (gradients and shadows only): this renderer is unreliable with fine SVG, and transforms offset its hit-testing. */
   .g { display: inline-block; flex: none; width: 12px; height: 12px; }
   .g-x {
     background:
@@ -350,8 +323,7 @@
                 5px 0 currentColor, 5px -5px currentColor, 5px 5px currentColor;
   }
   .g-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-  /* Padlock: shackle (::before) over body (::after). Open state tilts the shackle so the
-     two states are distinguishable without relying on colour alone. */
+  /* Padlock: shackle (::before) over body (::after). */
   .g-lock { position: relative; }
   .g-lock::after {
     content: ''; position: absolute; left: 1px; right: 1px; bottom: 0; height: 7px;
@@ -377,26 +349,17 @@
   .win-btns button:hover { background: rgba(255,255,255,0.08); color: var(--text); }
   .win-btns button.win-close:hover { background: rgba(240,82,82,0.2); color: #ff8b8b; }
   .win-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column;
-              /* Preferences font size: panels set explicit px sizes throughout, so the size
-                 preference zooms window content as a whole (text, icons, controls together). */
+              /* Font size preference zooms window content as a whole. */
               zoom: var(--content-zoom, 1);
-              /* Panels show arbitrary game data (item lists, hex payloads, names with no spaces).
-                 A long unbroken run has nothing to wrap on, so a word that cannot fit its line
-                 is allowed to break; break-word (not anywhere) keeps names breaking at spaces
-                 first. white-space: nowrap still wins where a panel keeps something on one line. */
+              /* overflow-wrap: break-word so unbroken game data can wrap; nowrap still wins where set. */
               overflow-wrap: break-word; }
-  /* HUD windows (aura groups, XP meter, metronome) are pixel-precise overlays sized by the
-     user: a fractional zoom re-rasterises their text and blurs it. They keep 1:1. */
+  /* HUD windows keep 1:1 zoom: fractional zoom blurs their text. */
   .win.hud .win-body { zoom: 1; }
   /* Rolled up (window shade): only the title strip remains. */
   .win.rolled .win-body { display: none; }
   .win.rolled { min-height: 0; }
 
-  /* ---- HUD widgets (XP Meter, Metronome) ----
-     Read-at-a-glance overlays rather than data panels. They keep the full window machinery
-     (drag, 8-way resize, snap, persistence) but shed the visual weight: the normal floor is
-     lifted, the chrome collapses to a slim strip that only appears on hover/focus, and the
-     body is transparent so the widget itself is the window. Locked = click-through. */
+  /* HUD widgets (XP Meter, Metronome): full window machinery, minimal chrome, transparent body. Locked = click-through. */
   .win.hud { min-width: 0; min-height: 0; background: transparent; border-color: transparent;
              box-shadow: none; }
   .win.hud .win-title {
@@ -407,39 +370,30 @@
   .win.hud:hover .win-title, .win.hud.focus .win-title { opacity: 1; }
   .win.hud .win-name { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
   .win.hud .win-btns button { width: 18px; height: 18px; border-radius: 5px; }
-  /* The frame's corner resize zones (.rz, z-index 5) overlap the HUD's small title buttons;
-     the buttons must stay on top or hovering the X shows a resize cursor and eats the click. */
+  /* Title buttons must sit above the .rz corner zones (z-index 5). */
   .win.hud .win-btns { position: relative; z-index: 7; }
   .win.hud .win-btns button svg { width: 11px; height: 11px; }
   .win.hud .win-lock.on { color: var(--accent); }
   .win.hud .win-tabs { display: none; }
   .win.hud .win-body { background: transparent; }
   .win.hud .content { padding: 0; overflow: hidden; }
-  /* Locked: no input on this side, and wmPushRects drops it so the companion passes the
-     click to the game. Chrome is hidden outright: a control you cannot click is noise. */
+  /* Locked: no input, wmPushRects drops the rect, chrome hidden. */
   .win.hud.locked { pointer-events: none; }
-  /* visibility, not display: the strip must keep its height so the content does not jump up
-     by 20px on lock, which would move a carefully placed aura. */
+  /* visibility, not display: the strip keeps its height so content does not jump on lock. */
   .win.hud.locked .win-title { visibility: hidden; }
   .win.hud.locked .rz { display: none; }
 
-  /* ---- In-game notifications ------------------------------------------------
-     DOM cards composited by the same UI layer as the windows. The stack is pointer-events:none
-     so a transient toast can never eat a click meant for the game; only a dismissible card
-     opts back in (and only those publish an input rect). */
+  /* In-game notifications. Stack is pointer-events:none; only dismissible cards opt back in (and publish an input rect). */
   #toaster {
     position: absolute;
     display: flex; flex-direction: column; gap: 8px;
     z-index: 99000;
     pointer-events: none;
   }
-  /* Placement mode (UI Settings): the stack itself becomes draggable and shows a
-     dashed frame so an EMPTY stack is still visible and grabbable. */
+  /* Placement mode (UI Settings): stack is draggable with a dashed frame. */
   #toaster.placing { pointer-events: auto; cursor: grab; }
   #toaster.placing:active { cursor: grabbing; }
-  /* A REAL element, not ::before: it carries a width grip, and a pseudo-element cannot take
-     events. order:-1 keeps it at the stack's leading edge whichever flex direction the current
-     anchor uses. Deliberately loud: a transient editing affordance over a busy game scene. */
+  /* A real element, not ::before: it carries a width grip and needs events. */
   #toastGhost {
     position: relative; order: -1;
     display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -479,14 +433,12 @@
   }
   .toast.out { animation: toast-out 200ms var(--ease) forwards; }
   .toast.sticky { pointer-events: auto; border-left-color: var(--warn); }
-  /* A sticky card that has reached its goal (a completed pinned task): the amber
-     "still needs you" edge turns green, the same done colour the panels use. */
+  /* Sticky card that reached its goal: amber edge turns green. */
   .toast.sticky.done { border-left-color: var(--ok); }
   @keyframes toast-in  { from { opacity: 0; transform: translateY(-10px) scale(0.97); }
                          to   { opacity: 1; transform: none; } }
   @keyframes toast-out { from { opacity: 1; transform: none; }
                          to   { opacity: 0; transform: translateY(-6px) scale(0.98); } }
-  /* Every card carries its state on the coloured left edge, so the status dot is redundant. */
   .toast-ico { display: none; }
 
   /* ---- wiki palette: hotkey-opened search over a dimmed backdrop ---- */
@@ -519,9 +471,7 @@
     font: 700 9.5px/16px var(--font-mono); color: var(--brass);
     background: rgba(var(--brass-rgb),0.12); border: 1px solid rgba(var(--brass-rgb),0.35); border-radius: 3px; padding: 0 6px;
   }
-  /* Full-height dismiss column on the card's trailing edge. The negative margins cancel the
-     card's own padding so it reaches the true edges; .toast has overflow:hidden, so the corner
-     radius clips it. A tint, not transparent: an unfilled column reads as a floating glyph. */
+  /* Full-height dismiss column; negative margins cancel the card padding. */
   .toast-x {
     flex: none; align-self: stretch;
     appearance: none; padding: 0; border: none; border-left: 1px solid var(--border-hi);
@@ -538,10 +488,7 @@
                background: rgba(255,255,255,0.06); }
   .toast-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--brass), rgb(var(--aurora-rgb))); opacity: 0.85; }
 
-  /* Resize grab bands, entirely INSIDE the border box. They must not overhang: .win is
-     overflow:hidden + contain:paint (which CLIPS anything outside), and the rect published as
-     the input-consume region is the border box, so a handle sticking out is both invisible AND
-     lands its clicks in the GAME. Edges stay slim (5px); corners are generous. */
+  /* Resize bands stay inside the border box: .win clips overflow and the published input rect is the border box, so an overhang would land clicks in the game. */
   .rz { position: absolute; z-index: 5; }
   .rz-n  { top: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
   .rz-s  { bottom: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
@@ -552,12 +499,7 @@
   .rz-ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
   .rz-sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
 
-  /* min-width: 0 is load-bearing: without it this flex child refuses to shrink below its
-     widest descendant, so fixed-width content slides out of the window.
-     overflow-y: SCROLL (not auto) on purpose: panels rebuild their DOM wholesale on data
-     changes, and with auto the scrollbar vanished for the empty frame and reappeared after,
-     a width change that reflowed every flexible cell twice per repaint. A permanently
-     reserved scrollbar lane keeps the content width constant no matter what the repaint does. */
+  /* min-width: 0 is load-bearing for shrinking. overflow-y: scroll (not auto) keeps the content width constant across wholesale DOM rebuilds. */
   .content { flex: 1; padding: 14px 16px; overflow-y: scroll; overflow-x: hidden; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
   .content::-webkit-scrollbar { width: 10px; }
   .content::-webkit-scrollbar-track { background: transparent; }
@@ -566,17 +508,12 @@
     border: 2px solid transparent; background-clip: padding-box;
   }
   .content::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: padding-box; }
-  /* SAFETY NET for the overflow-x: hidden above. A panel whose content is wider than the pane
-     has its right edge CLIPPED AND UNREACHABLE. Panels should size their own layouts to fit,
-     but these two rules stop an un-audited panel from silently losing content: grid/flex rows
-     shrink instead of standing at their widest descendant, and a direct child cannot be wider
-     than the pane. */
+  /* Safety net for overflow-x: hidden: stops an un-audited panel from silently losing content wider than the pane. */
   .content > * { max-width: 100%; }
   .content [class*="row"], .content [class*="grid"], .content [class*="head"] { min-width: 0; }
   /* Width classes replace the old viewport media queries (per-WINDOW width drives layout). */
   .win.narrow .content { padding: 10px 12px; }
-  /* Sounds rows: the meta column is the row's only flexible child, so it must be able to
-     shrink or the Export button is pushed out of the pane and cannot be clicked. */
+  /* Sounds rows: the meta column must shrink or the Export button is pushed out of the pane. */
   .snd-meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
               white-space: nowrap; opacity: 0.75; }
   .win.tight .snd-meta { display: none; }
@@ -615,8 +552,7 @@
     padding: 36px 0;
     text-align: center; color: var(--text-mute); font-size: 12px;
   }
-  /* Bridge status strip (see updateStatusStrip): thin, top-left, under the menubar's z so
-     the bar stays clickable; pointer-events off so it never steals a click. */
+  /* Bridge status strip (updateStatusStrip): under the menubar z, pointer-events off. */
   #rtxStatusStrip {
     position: fixed; top: 0; left: 0; right: 0; height: 20px; line-height: 20px;
     padding: 0 10px; box-sizing: border-box;
@@ -793,16 +729,8 @@
   .pk-xp { color: var(--text-dim); font-size: 10px; margin-top: 6px; font-variant-numeric: tabular-nums; }
   .bf-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
 
-  /* --- Auras HUD: watched buffs/debuffs as icons with a radial time sweep ---
-     DESIGN NOTE. This sits over live gameplay, so nothing may depend on what is behind it.
-     Earlier versions used translucent tiles and leaned on drop shadows: readable over dark
-     ground, illegible over a bright, busy scene. Every layer here is therefore OPAQUE, the
-     label is lifted out of the artwork into its own chip, and the timer is outlined on all
-     four sides rather than merely shadowed. */
-  /* ===== Auras (panel_auras.js): HUD windows + editor ===== */
+  /* ===== Auras (panel_auras.js): HUD windows + editor. Sits over live gameplay, so every layer is opaque and the label has its own chip. ===== */
   .au-wrap { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
-  /* The root fills the HUD window's content box by absolute inset, so it is exactly the visible
-     area whatever the flex column above it computes. */
   .win.hud .content { position: relative; }
   .au-root { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: visible; }
   .au-kids { position: relative; width: 100%; height: 100%; }
@@ -811,8 +739,7 @@
   .au-el { position: absolute; box-sizing: border-box; overflow: visible; }
   .au-el.au-editable { cursor: move; }
   .au-el.au-sel { outline: 2px solid var(--accent); outline-offset: 1px; }
-  /* Edit mode (Auras panel open, window unlocked): tint every group's space and every root's
-     box so the area an aura occupies is visible even when nothing is triggered. */
+  /* Edit mode (Auras panel open, window unlocked): tint every group's space and root box. */
   .au-root.au-edit { background: rgba(var(--accent-rgb),0.12); outline: 1px dashed rgba(var(--accent-rgb),0.7); outline-offset: -1px; border-radius: 6px; }
   .au-root.au-edit::after { content: attr(data-label); position: absolute; left: 4px; top: 2px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,0.65); pointer-events: none; text-shadow: 0 1px 2px #000; }
   .au-edit .au-t-group, .au-edit .au-t-dyngroup { background: rgba(79,178,255,0.10); outline: 1px dashed rgba(79,178,255,0.7); outline-offset: -1px; border-radius: 6px; }
@@ -868,11 +795,9 @@
   .au-t-ring .au-time b { font-size: clamp(10px, calc(var(--au-size, 56px) * 0.3), 30px); }
   /* bar */
   .au-t-bar { border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.30); box-shadow: 0 2px 8px rgba(0,0,0,0.85); background-repeat: no-repeat; background-size: 100% 100%; }
-  /* Bar text: sized from the bar HEIGHT but capped so a tall bar does not outgrow its width; the
-     label may shrink/ellipsize, the number never does. */
+  /* Bar text: sized from bar height, capped by width; the number never shrinks. */
   .au-vtext { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 7px; font-size: clamp(11px, calc(var(--au-size, 22px) * 0.5), 15px); line-height: 1; color: #fff; font-weight: 700;
-              /* One crisp drop shadow, not a 4-way outline plus halo: the outline fused the
-                 counters of small bold glyphs and read as blur on every bar. */
+              /* One drop shadow, not an outline: the outline fused small bold glyphs. */
               text-shadow: 0 1px 1px rgba(0,0,0,0.95), 0 0 1px rgba(0,0,0,0.8); white-space: nowrap; overflow: hidden; }
   .au-vtext span { font-weight: 600; opacity: .9; text-transform: uppercase; letter-spacing: .04em; font-size: .85em; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .au-vtext b { font-variant-numeric: tabular-nums; flex: none; }
@@ -1020,7 +945,6 @@
   .al-typesel { display: inline-flex; align-items: center; gap: 12px; justify-content: space-between; border: 1px solid var(--border-hi); background: var(--bg-elev-2); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 4px 9px 4px 11px; cursor: pointer; min-width: 108px; }
   .al-typesel:hover { border-color: var(--accent-hi); }
   .al-typesel .cv { color: var(--text-mute); font-size: 10px; }
-  /* padding-right reserves the scrollbar lane so a long menu's bar never sits on the text. */
   .sndmenu { position: fixed; z-index: 100000; background: var(--bg-elev-2); border: 1px solid var(--border-hi); border-radius: 8px; padding: 4px 12px 4px 4px; box-shadow: 0 10px 28px rgba(0,0,0,0.5); min-width: 134px; max-height: 70vh; overflow-y: auto; }
   .sndmenu::-webkit-scrollbar { width: 8px; }
   .sndmenu::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
@@ -1074,9 +998,7 @@
     overflow-y: auto;
     overflow-x: hidden;
   }
-  /* auto-fit, NOT a hard 3 columns: total XP is 13 characters at 4.7B and a fixed third of a
-     narrow panel clipped it. Tracks now drop to 2 (or 1) as the panel narrows, and auto-fit
-     collapses the spare tracks so 4 tiles still span the full width when there is room. */
+  /* auto-fit, not a hard 3 columns: total XP (13 chars at 4.7B) clipped in a fixed third. */
   .skill-stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
@@ -1095,8 +1017,6 @@
   .skill-stat .ss-label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
   .skill-stat .ss-val   { color: var(--accent-hi); font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600;
                           max-width: 100%; white-space: nowrap; }
-  /* Long figures (total XP past a billion) step down instead of being clipped; the exact
-     value is always in the tile's tooltip either way. */
   .skill-stat .ss-val.ss-long  { font-size: 11px; letter-spacing: -0.2px; }
   .skill-stat .ss-val.ss-long2 { font-size: 9.5px; letter-spacing: -0.3px; }
   .skill-stat .ss-virtual { color: var(--text-dim); font-size: 9.5px; font-weight: 600;
@@ -1121,10 +1041,7 @@
   .skill-cell .sk-val { color: var(--text); font-variant-numeric: tabular-nums; font-size: 11px; }
   .skill-cell.buffed  .sk-val { color: #4dd28a; }
   .skill-cell.drained .sk-val { color: #fc7c7c; }
-  /* Per-skill goal bar. No width transition: the grid rebuilds every poll, so a transition
-       would restart from 0 each time. Fill + spacer split the track by flex-grow ratios --
-       Ultralight renders flex-grow reliably every rebuild, unlike a child % width / transform,
-       which it intermittently resolves to 0. */
+  /* Goal bar: no width transition (grid rebuilds every poll). Fill + spacer split by flex-grow; Ultralight intermittently resolves child % width to 0. */
   .skill-cell .sk-goal { position: absolute; left: 5px; bottom: 4px; width: calc(100% - 10px); height: 5px;
     border-radius: 3px; background: rgba(255,255,255,0.12); overflow: hidden; display: flex; }
   .skill-cell .sk-goal-fill { height: 100%; flex: 0 0 0; min-width: 0; border-radius: 3px;
@@ -1261,8 +1178,7 @@
   .dg-none, .dg-hint { font-size: 11.5px; color: var(--text-mute); }
   .dg-prog { padding: 6px 9px; border-radius: 7px; background: var(--bg-elev); border: 1px solid var(--border);
              font-size: 12px; color: var(--text); }
-  /* overflow VISIBLE: edge markers (party p-tags, arrow tips) may poke a few px past the board
-       rect; the scaled board is visually smaller than its layout box, so nothing else can leak. */
+  /* overflow visible: edge markers may poke a few px past the board rect. */
   .dg-boardscale { position: relative; width: 100%; overflow: visible; margin: 4px 0 2px; }
   .dg-board { position: relative; transform-origin: top left; }
   .dg-conn { position: absolute; border-radius: 4px; background: #4b5470;
@@ -1301,9 +1217,7 @@
     box-shadow: 0 0 0 3px #e8b34b, 0 0 16px rgba(232,179,75,.8);
   }
   .dg-cell.dg-crit { border-color: #ff5ad1; box-shadow: 0 0 0 1px #ff5ad1, 0 0 10px rgba(255,90,209,.55); }
-  /* have-key green + a rec/need ring on the SAME cell: keep the green as the inner border and
-       push the ring OUTSIDE it, so neither state hides the other (single border-color/box-shadow
-       rules would just overwrite each other). */
+  /* have-key green stays the inner border; the rec/need ring is pushed outside it. */
   .dg-cell.dg-havekey.dg-rec { border-color: var(--ok);
     box-shadow: 0 0 0 1px var(--ok), 0 0 0 3.5px var(--accent-hi), 0 0 12px var(--accent-hi); }
   .dg-cell.dg-havekey.dg-need { border-color: var(--ok);
@@ -1322,8 +1236,7 @@
   .dg-lg-crit { flex: none; width: 12px; height: 12px; border-radius: 3px; border: 1.5px solid #ff5ad1;
                 box-shadow: 0 0 5px rgba(160,107,255,.6); }
   .dg-key.dg-key-crit { box-shadow: 0 0 0 1px #a06bff, 0 0 6px rgba(160,107,255,.5); }
-  /* Ultralight renders no native `title` tooltips (same gap as the missing
-     contextmenu event), so the map draws its own on hover. */
+  /* Ultralight renders no native title tooltips, so the map draws its own. */
   .dg-pbhd { cursor: pointer; user-select: none; }
   .dg-phd { cursor: pointer; user-select: none; margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
   .dg-party-box { border: 1px solid var(--border); border-radius: 8px; padding: 2px 8px 8px; margin-top: 2px; }
@@ -1336,8 +1249,7 @@
   .dg-pbspr { width: 15px; height: 15px; background-size: contain;
               background-repeat: no-repeat; background-position: center; }
   .dg-pbw { font-size: 9.5px; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  /* room sprite clipped to the rounded tile; markers (below) are NOT clipped so
-     their glows/plates aren't cut at the cell edge */
+  /* room sprite clipped to the tile; markers are not clipped */
   .dg-tile { position: absolute; inset: 0; border-radius: 8px; overflow: hidden; }
   .dg-cell.dg-boss { border-color: var(--err); box-shadow: 0 0 0 1px var(--err); }
   .dg-cell.dg-havekey { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok), 0 0 8px rgba(74,222,128,.4); }
@@ -1473,8 +1385,7 @@
   .bank-search:focus { border-color: var(--accent-hi); }
   .bank-meta { flex: 0 0 auto; margin-left: auto; color: var(--text-dim); font-size: 10px; text-align: right; line-height: 1.3; }
   .bank-meta .live { color: #4dd28a; }
-  /* Cells are squared off their column width via padding-bottom:100%; a definite
-     container-height chain doesn't propagate reliably in Ultralight's WebKit. */
+  /* Squared via padding-bottom:100%; container-height chains are unreliable in Ultralight. */
   .bank-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
@@ -1488,8 +1399,7 @@
     border-radius: 5px; overflow: hidden;
   }
   .bank-cell.empty { background: transparent; border-color: transparent; }
-  /* Placeholder (quantity 0): amber border only; a faded icon / inset box-shadow
-     did not paint reliably in Ultralight. */
+  /* Placeholder (quantity 0): amber border only; a faded icon did not paint reliably in Ultralight. */
   .bank-cell.placeholder { border-color: rgba(240, 190, 90, 0.85); }
   .bank-icon { position: absolute; inset: 3px; background-repeat: no-repeat; background-position: center; background-size: contain; image-rendering: -webkit-optimize-contrast; }
   .bank-amt {
@@ -1501,11 +1411,7 @@
                  -1px  1px 0 #000, 1px  1px 0 #000, 0 0 2px #000;
     pointer-events: none;
   }
-  /* The compacted tiers carry two decimals (161.94M), which is far wider than the game's
-     floored 161M, so they get a tighter box: the label sits over the icon and must not run
-     past the cell. */
-  /* A compacted label is at most "999.99M", seven characters. At 9px tabular that is about
-     33px, inside the 46px cell, so it fits rather than being clipped. */
+  /* Compacted labels (up to "999.99M", seven chars) get a tighter box so they fit the 46px cell. */
   .bank-amt { white-space: nowrap; }
   .bank-amt.k, .bank-amt.m, .bank-amt.b, .bank-amt.t, .bank-amt.q {
     font-size: 9px; letter-spacing: -0.4px;
@@ -1537,37 +1443,22 @@
 
   .inv-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .inv-grid {
-    /* minmax: tracks shrink below 52px on narrow panels; a fixed 4x52px grid clips its left
-           column off-screen. */
+    /* minmax: tracks shrink below 52px on narrow panels. */
     display: grid; grid-template-columns: repeat(4, minmax(36px, 52px));
-    /* start, not center: once the rows are taller than the panel, centred overflow puts the
-       first rows above the scroll origin where they cannot be reached. */
+    /* start, not center: centred overflow puts the first rows above the scroll origin. */
     gap: 4px; align-content: start; justify-content: center;
     flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 6px; margin-top: 8px;
   }
-  /* Icons render at native pixel size, downscale-only: the bundled icons are tightly cropped,
-       so `contain` blows small items up. */
+  /* Icons render at native pixel size, downscale-only: `contain` blows small items up. */
   .inv-grid .bank-icon { inset: 0; }   /* size is set per-icon (downscale-only) */
   .inv-grid .bank-amt { font-size: 13px; top: 3px; left: 4px; }
-  /* Inventory cells stack an icon box over a name strip; the square-by-padding trick
-     moves onto the inner icon box so the name can extend the cell downward. */
-  /* Explicit pixel heights, no percentage padding and no flex stacking: this engine resolves
-     percentage padding inside a grid item against an indefinite width and squeezes flex children,
-     which clipped the name through its glyphs whichever way the strip was constrained. 46 icon +
-     36 name = 82. */
+  /* Inventory cells: icon box over a name strip, explicit pixel heights (46 icon + 36 name = 82); percentage padding and flex stacking clip the name in this engine. */
   .inv-grid .bank-cell { height: 82px; padding-bottom: 0; display: block; }
   .inv-ico-box { position: relative; width: 100%; height: 46px; padding-bottom: 0; }
-  /* Up to three tight lines with an ellipsis, so "Exquisite woodcutting urn" stays readable
-     instead of being sliced mid-glyph at the second line; the tooltip has the full name. */
-  /* Three lines at 11px, so the cap is a whole multiple of the line box and the last line is
-     never sliced. The full name is always in the tooltip. */
+  /* Three lines at 11px with an ellipsis; the full name is in the tooltip. */
   .inv-name {
     display: block; height: 36px; font-size: 9px; line-height: 11px; color: var(--text-dim);
-    /* Never split a word. NOT word-break: break-word either, which is a legacy alias the
-       engine resolves to overflow-wrap: anywhere. Cells cap at 52px, narrower than words
-       like "Stormberry" at 9px, so any wrapping rule that is allowed to break WILL break
-       one; fitName() in core/rtx-storage.js steps the size down until the longest word
-       fits instead. */
+    /* Never split a word (word-break: break-word resolves to overflow-wrap: anywhere here); fitName() in core/rtx-storage.js steps the size down instead. */
     text-align: center; padding: 1px 2px 2px; overflow: hidden;
     overflow-wrap: normal; word-break: normal;
   }
@@ -1575,8 +1466,7 @@
   .inv-grid::-webkit-scrollbar-track { background: transparent; }
   .inv-grid::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
   .cont-empty { flex: 1; min-height: 0; display: none; align-items: center; justify-content: center; padding: 12px; color: var(--text-dim); font-size: 12px; }
-  /* Equipment paperdoll: 3-wide grid mirroring the in-game screen; gear fits the slot
-       (contain), unlike the native-size inventory. */
+  /* Equipment paperdoll: 3-wide grid mirroring the in-game screen; gear fits the slot (contain). */
   .eq-grid {
     display: grid; grid-template-columns: repeat(3, minmax(40px, 54px)); gap: 8px;
     justify-content: center; align-content: start; flex: 0 0 auto; margin: auto;
@@ -1693,16 +1583,11 @@
   .ge-cell.is-complete .ge-value { color: #4dd28a; }
   .ge-cell.is-active   { box-shadow: inset 0 0 0 1px rgba(240,181,60,0.30); }
   .ge-cell.is-complete { box-shadow: inset 0 0 0 1px rgba(77, 210, 138, 0.40); }
-  /* Window width, NOT viewport: every .win lives in one document spanning the whole game
-     client, so the @media rules these replace could only fire if the entire client were
-     430px wide -- meaning the intended narrow layout never actually arrived, and three
-     columns in a 330px window clipped the BUY/SELL badge (the one thing distinguishing an
-     offer's direction) out of its own cell. */
+  /* Window width, not viewport: every .win lives in one document spanning the whole client, so @media rules never fired. */
   .win.narrow .ge-grid { grid-template-columns: repeat(2, 1fr); }
   .win.tight  .ge-grid { grid-template-columns: 1fr; }
 
-  /* Ultralight doesn't render native title= tooltips, and a CSS ::after gets clipped
-     by parent overflow:hidden -- one fixed bubble on <body>, positioned by JS. */
+  /* Ultralight renders no native title= tooltips and ::after gets clipped, so one fixed bubble on <body>, positioned by JS. */
   #global-tip {
     position: fixed;
     background: #0b0d12;
@@ -1725,15 +1610,7 @@
     box-shadow: 0 4px 14px rgba(0,0,0,0.45);
   }
 
-  /* Icon-grid tooltips (collection logs). Reading forty item NAMES tells you far less than
-     seeing the loot, so Missing/Collected render as two grids of item icons instead.
-     #global-tip is body-level and pointer-events:none, so it can stand taller than the window
-     that spawned it -- but it can never be scrolled, so the builder budgets its cell count to
-     the viewport rather than letting overflow:hidden silently eat the tail. */
-  /* A DEFINITE width, not just max-width. #global-tip is shrink-to-fit, and inside an
-     intrinsically-sized container `repeat(auto-fill, minmax(34px, 1fr))` resolves to its
-     minimum - the grid collapsed to two columns, turning 55 items into 28 rows of
-     full-screen-tall tooltip. With a definite inline size auto-fill gets nine columns. */
+  /* Icon-grid tooltips (collection logs). #global-tip is body-level and cannot scroll, so the builder budgets cells to the viewport. A definite width is required: auto-fill inside a shrink-to-fit container collapses to its minimum. */
   #global-tip.tg { width: 356px; max-width: calc(100vw - 24px); }
   #global-tip.tg .tg-body { white-space: normal; }   /* the tip itself is pre-line */
   .tg-h { color: var(--text-dim); font-size: 10px; font-weight: 700; text-transform: uppercase;
@@ -1784,16 +1661,12 @@
   .comp-toggle { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-dim); cursor: pointer; white-space: nowrap; user-select: none; }
   .comp-toggle input { accent-color: var(--accent-hi); margin: 0; }
   .stor-grid { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-  /* fixed square -- override .bank-cell's padding-bottom:100% (in a flex row the % resolves against the
-     whole row width, making cells absurdly tall). */
+  /* fixed square: overrides .bank-cell's padding-bottom:100%, which resolves against the whole row width in a flex row. */
   .stor-cell { flex: 0 0 46px; width: 46px; height: 46px; padding-bottom: 0; }
   .stor-cell .bank-amt { font-size: 11px; top: 2px; left: 3px; }
   .stor-cell .stor-tn { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
                         text-align: center; font-size: 8.5px; line-height: 1.05; color: var(--text-dim); padding: 3px 2px 12px; overflow: hidden; }
-  /* GRID, not flex-wrap: the cells used to be content-sized with the default flex-shrink,
-     so every value change (count digits, durability chip, essence icon appearing) altered
-     cell widths and re-packed the row - the panel visibly "zoomed" on each repaint while
-     runecrafting. Fixed tracks make cell geometry depend ONLY on the container width. */
+  /* Grid, not flex-wrap: cell geometry must depend only on the container width or the panel visibly re-packs on every repaint. */
   .stor-egrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
                 gap: 6px; margin-top: 4px; }
   .stor-ecell { display: flex; align-items: center; gap: 5px; padding: 4px 9px 4px 5px; min-width: 0;
@@ -1997,10 +1870,7 @@
   .clue-map-stage::-webkit-scrollbar { width: 0; height: 0; display: none; }   /* pan by dragging, no bars */
   .clue-map-stage.grabbing { cursor: grabbing; }
   .clue-map-inner { position: relative; width: 100%; height: 100%; }
-  /* The canvas is rendered at the zoomed size (see the zoomPx maths in the draw paths), but a
-     redraw is coalesced, so between the zoom gesture and the redraw the browser stretches the
-     old bitmap. Nearest-neighbour keeps that interim frame CRISP instead of smearing the
-     terrain and the 1 px grid lines into a blur. */
+  /* Canvas is drawn at the zoomed size but redraws are coalesced; nearest-neighbour keeps the interim stretched frame crisp. */
   .clue-map { display: block; width: 100%; height: 100%;
               image-rendering: -webkit-optimize-contrast; image-rendering: pixelated; }
   .clue-map-pulse { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; pointer-events: none; }
@@ -2019,28 +1889,18 @@
       image-rendering: -webkit-optimize-contrast; }
   /* Every visible teleport gets its own marker; the container just spans the map. */
   .clue-map-teles { position: absolute; inset: 0; pointer-events: none; }
-  /* Non-lodestone teleports (skills necklace and friends) share the lodestone marker
-     layout but carry a green badge so the two are told apart at a glance. */
-  /* The keybind badge sits over terrain, so it needs solid fill and a dark rim to stay
-     readable rather than relying on the map behind it. */
-  /* Teleports are REFERENCE, not the subject: quiet by default so the scan spots own the
-     map, full-strength on hover for reading a specific marker. */
+  /* Non-lodestone teleports share the lodestone marker layout with a green badge. Teleports are reference: quiet by default, full-strength on hover. */
   .clue-map-tele { pointer-events: auto; opacity: 0.5; transition: opacity 120ms var(--ease); }
   .clue-map-tele:hover { opacity: 1; }
   .clue-map-tele .cml-icon { width: 19px; height: 19px; }
-  /* Keybind badges only materialise on hover - dozens of bright green chips were the
-     map's loudest layer while carrying information the tooltip already has. */
+  /* Keybind badges only on hover. */
   .clue-map-tele .cml-kb { display: none; font-size: 9.5px; line-height: 12px; padding: 0 4px; }
   .clue-map-tele:hover .cml-kb { display: block; }
-  /* The nearest teleport the player can actually use: full strength, badge showing -
-     it IS the route; everything else stays faded reference. */
+  /* The nearest usable teleport: full strength with its badge showing. */
   .clue-map-tele.cml-primary { opacity: 1; }
   .clue-map-tele.cml-primary .cml-icon { width: 24px; height: 24px; }
   .clue-map-tele.cml-primary .cml-kb { display: block; }
-  /* When two markers crowd, the covered one puts its badge to the side instead of below,
-     so the neighbouring icon cannot sit on top of it. */
-  /* A single teleport keeps the stacked icon-over-badge look. Only a GROUP lays its cells
-     out in a row, with the lightest possible backing so the map stays readable. */
+  /* Crowded markers put the badge to the side; only a group lays its cells out in a row. */
   .cml-cell { display: flex; flex-direction: column; align-items: center; pointer-events: auto; }
   .clue-map-telebox { flex-direction: row; align-items: flex-start; gap: 3px;
       padding: 1px 2px; border-radius: 6px; background: rgba(10, 13, 20, 0.42); }
@@ -2092,8 +1952,7 @@
   .cs2-viewtitle { font-size: 11px; color: var(--text); font-family: Consolas, monospace; }
   .cs2-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--bg-elev);
     border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
-  /* pre-wrap: decompiled lines can be very long; wrapping beats a sideways scrollbar in a
-     docked panel. Selectable so code can be copied out (Ctrl+C / right-click Copy). */
+  /* pre-wrap: decompiled lines can be very long. Selectable so code can be copied. */
   .cs2-pre { margin: 0; font-size: 10.5px; line-height: 1.45; font-family: Consolas, monospace;
     color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere;
     -webkit-user-select: text; user-select: text; }
@@ -2206,8 +2065,7 @@
   .tsp-in { width: 100%; box-sizing: border-box; background: #14151c; color: var(--text);
     border: 1px solid var(--border-hi); border-radius: 8px; padding: 7px 10px; font-size: 12.5px; outline: none; }
   .tsp-in:focus { border-color: var(--accent-lo); }
-  /* padding-right leaves a lane for the scrollbar: this list overflows, and the
-     rows' right-aligned category text ran underneath the thumb without it. */
+  /* padding-right leaves a lane for the scrollbar. */
   .tsp-list { overflow-y: auto; max-height: 46vh; display: flex; flex-direction: column; gap: 2px;
     padding-right: 8px; }
   .tsp-list::-webkit-scrollbar { width: 8px; }
@@ -2242,9 +2100,7 @@
   .vw-pop-h .vw-pop-nm { color: var(--accent-hi); font-size: 10px; font-weight: 600; }
   .vw-pl b { margin-left: auto; color: var(--text); }
   .vw-pl.chg { background: rgba(var(--accent-rgb),0.16); }
-  /* Window width, not viewport (see the .ge-grid note): as an @media rule this compaction
-     never ran, so a narrow varswatcher squeezed .vw-vals -- the actual value -- to a few
-     pixels while the id column held its full width. */
+  /* Window width, not viewport (see the .ge-grid note). */
   .win.tight .vw-row { gap: 5px; padding: 6px 7px; }
   .win.tight .vw-row .vw-id { min-width: 0; font-size: 12px; }
   .win.tight .vw-tag { padding: 2px 5px; }

@@ -62,10 +62,8 @@ std::string format_winhttp_error(DWORD err) {
     return out;
 }
 
-// Shared request engine. `sink(data,len)` consumes each body chunk (return false
-// to abort -- set out.detail first); `on_progress(received,total)` fires per chunk
-// when set; `on_status(code)` fires after the status line, before the body -- return
-// false to abort with .ok == false (the body is never drained). Fills out.status/ok/detail.
+// Shared request engine. `sink` returns false to abort (set out.detail first); `on_status`
+// fires before the body, false aborts with .ok == false and the body undrained.
 void do_request(Response& out,
                 const std::wstring& host, const std::wstring& path,
                 const wchar_t* verb,
@@ -83,14 +81,10 @@ void do_request(Response& out,
     DWORD secProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
     WinHttpSetOption(sess.h, WINHTTP_OPTION_SECURE_PROTOCOLS,
                      &secProtocols, sizeof(secProtocols));
-    // On a network whose IPv6 routes are dead, the AAAA-first connect attempts eat the
-    // whole connect budget and EVERY request dies with 12002 before IPv4 is tried
-    // (live-hit: runetools.io behind Cloudflare AAAA). Fast fallback races IPv4 in
-    // parallel, browser-style; verified 12002/11.6s -> 200/0.4s on such a network.
+    // Race IPv4 against IPv6: dead IPv6 routes otherwise burn the connect budget (12002).
     BOOL fastFallback = TRUE;
     WinHttpSetOption(sess.h, WINHTTP_OPTION_IPV6_FAST_FALLBACK,
                      &fastFallback, sizeof(fastFallback));
-    // Long receive timeout: the update download can be tens of MB.
     WinHttpSetTimeouts(sess.h, 10000, 10000, 30000, 120000);
 
     ConnectScope conn;
@@ -103,8 +97,7 @@ void do_request(Response& out,
                                WINHTTP_FLAG_SECURE);
     if (!req.h) { out.detail = format_winhttp_error(GetLastError()); return; }
 
-    // Per-row AddRequestHeaders; packing into pwszHeaders intermittently
-    // drops headers on the server side.
+    // Per-row AddRequestHeaders: packing into pwszHeaders intermittently drops headers.
     bool saw_content_type = false;
     for (const auto& h : headers) {
         if (h.name.empty()) continue;
@@ -143,7 +136,6 @@ void do_request(Response& out,
         return;                                      // .ok stays false; body never drained
     }
 
-    // Capture response headers (raw CRLF block) so callers can read X-Plugin-* etc.
     {
         DWORD hsz = 0;
         WinHttpQueryHeaders(req.h, WINHTTP_QUERY_RAW_HEADERS_CRLF,
@@ -295,7 +287,6 @@ void pool_worker() {
             job = std::move(g_pool_q.front());
             g_pool_q.pop_front();
         }
-        // one bad job must not take the process down with std::terminate
         try { job(); }
         catch (const std::exception& e) { rtx::log::Launcher(std::string("http worker: job threw: ") + e.what()); }
         catch (...) { rtx::log::Launcher("http worker: job threw (non-std)"); }
@@ -333,7 +324,7 @@ void Shutdown() {
         threads.swap(g_pool_threads);
     }
     g_pool_cv.notify_all();
-    // a worker stuck in a slow request would hold exit hostage: detach instead of join
+    // detach: a worker stuck in a slow request must not block exit
     for (auto& t : threads) t.detach();
 }
 

@@ -5,17 +5,9 @@
 
 namespace rtx::cache {
 
-// Splits one decompressed archive blob into per-file byte ranges.
-//
-// NXT layout (single-chunk; the only one we've ever observed in the
-// indexes we read):
-//   byte 0          : chunk count, always 1 (skipped)
-//   bytes 1..N*4+4  : N+1 big-endian i32 offsets, end-exclusive
-//   bytes N*4+5..   : the file payloads concatenated, file i runs
-//                     from offsets[i] to offsets[i+1]
-//
-// Returns a vector indexed by file_id (largest_file_id + 1 entries);
-// non-`valid_file_ids` slots are left empty.
+// Splits one decompressed archive blob into per-file byte ranges. Single-chunk NXT layout:
+// byte 0 = chunk count (1), then N+1 big-endian i32 end-exclusive offsets, then the payloads.
+// Result is indexed by file_id (largest_file_id + 1 entries); invalid slots left empty.
 
 std::vector<std::vector<std::uint8_t>>
 SplitArchive(const std::vector<std::uint8_t>& decompressed,

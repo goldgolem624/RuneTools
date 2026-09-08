@@ -20,31 +20,19 @@ struct ItemDef {
     int         ge_limit    = -1;
     int         category    = -1;
     long long   value       = -1;   // opcode 181 (gp); drives high/low alch
-    bool        augmented   = false; // Invention-augmented: a "Disassemble" worn
-                                      // option or a destroy message naming "gizmos"
-    // opcode-249 params, kept verbatim. Most items have none; the ones that do carry
-    // real gameplay data (e.g. Player-Owned Ports crew: 3080 icon sprite, 3081-3084
-    // stats, 3093/3094 + 3095/3096 cost pairs).
+    bool        augmented   = false; // "Disassemble" worn option or a destroy message naming "gizmos"
+    // opcode-249 params, kept verbatim.
     std::map<int, int>         params_i;
     std::map<int, std::string> params_s;
-    // Right-click options, kept in slot order (empty slots stay empty): opcodes 30-34 are the
-    // ground/floor set, 35-39 the carried/worn set. Needed to author a menu-reorder rule from an
-    // item id without hovering the item in game.
+    // Right-click options in slot order: opcodes 30-34 ground, 35-39 carried/worn.
     std::string options[5];
     std::string worn_options[5];
-    // opcode 132: the item's VAROBJ list, in slot order. A live item instance stores its
-    // per-slot ints keyed by POSITION in this list (Reader.cpp "instance vars" key N), and the
-    // client scripts address them by varobj id (INV_GETVAR(inv, slot, 30215)). So key N of an
-    // instance means varobjs[N]. Augmented gear: 30212 item XP, 30215/30216 gizmo-1 perk-1
-    // id/rank, 30217/30218 gizmo-1 perk-2, 30219..30222 gizmo-2 (CS2 12197/12199).
+    // opcode 132: VAROBJ list in slot order; instance-var key N means varobjs[N]. Augmented gear:
+    // 30212 item XP, 30215/30216 gizmo-1 perk-1 id/rank, 30217/30218 perk-2, 30219..30222 gizmo-2.
     std::vector<int> varobjs;
 };
 
-// Parses the file bytes for one item id. Walks opcode-by-opcode until
-// opcode 0; only the fields we care about are kept, the rest are
-// consumed correctly to advance the stream. stop_op (optional) receives the
-// opcode that terminated the decode early (0 = clean end) -- used by the
-// cache parse-health check.
+// Decodes one item def. stop_op receives the opcode that ended the decode early (0 = clean end).
 ItemDef DecodeItem(int id, std::vector<std::uint8_t> file_bytes, int* stop_op = nullptr);
 
 }  // namespace rtx::cache

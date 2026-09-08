@@ -4,16 +4,11 @@
 
   const PuzzleKit = (function () {
 "use strict";
-// 24-puzzle (5x5) optimal solver: Walking-Distance heuristic via a perfect
-// composition-rank + rank/select-compressed table + incremental IDA*.
-// blobBytes: Uint8Array of wd_table.bin (header + presence bitvector + values).
-// Board: int[25] row-major, 0..23 tiles, 24 = blank. Goal board[i] === i.
-// A move = board index of the tile clicked (slides into the adjacent blank).
+// 24-puzzle (5x5) optimal solver: Walking-Distance heuristic via a perfect composition-rank + rank/select-compressed table + incremental IDA*.
+// blobBytes: Uint8Array of wd_table.bin. Board: int[25] row-major, 0..23 tiles, 24 = blank; goal board[i] === i. A move = board index of the tile clicked.
 
 function createWDSolver(blob){
-  // 1) Perfect contingency-table rank of a 5x5 WD line/group count-matrix: rank(blankLine,
-  //    M25) in [0, 65650495), M25[line*5 + group]. By square symmetry the SAME rank and
-  //    table serve BOTH the vertical (rows) and horizontal (columns) WD.
+  // 1) Perfect contingency-table rank of a 5x5 WD count-matrix: rank(blankLine, M25) in [0, 65650495), M25[line*5 + group]. By symmetry the same table serves rows and columns.
   const COLCAPS = [5,5,5,5,4];           // group sizes (col sums); blank in group 4
   function rowSum(bl, ri){ return ri===bl ? 4 : 5; }
   function capsKey(c){ return c[0]+c[1]*6+c[2]*36+c[3]*216+c[4]*1296; }
@@ -34,8 +29,7 @@ function createWDSolver(blob){
     fArr[key]=tot; return tot;
   }
 
-  // H(bl,ri,col,rem,caps) gives O(1)-per-column row ranking; 138981 entries, packed below
-  // into an open-addressing table.
+  // H(bl,ri,col,rem,caps): O(1)-per-column row ranking; 138981 entries packed into an open-addressing table.
   let HK, HV, HMASK;
   const Hbuild = new Map();
   function Hcompute(bl, ri, col, rem, c){
@@ -134,10 +128,7 @@ function createWDSolver(blob){
     return values[cnt];
   }
 
-  // 2b) WD line memo for lookup(rank(bl,M)), the hottest call in the search. The key is
-  //     EXACT, not a fingerprint: each line's counts for groups 0..3 as base-6 digits
-  //     (group 4 is implied, since bl fixes every line sum: 4 for the blank's line, 5
-  //     otherwise), packed into two 32-bit words. Direct-mapped; a clash just overwrites.
+  // 2b) WD line memo for lookup(rank(bl,M)). Exact key: each line's counts for groups 0..3 as base-6 digits packed into two 32-bit words. Direct-mapped.
   const WDC_N = 1 << 17, WDC_MASK = WDC_N - 1;
   const wdcK1 = new Int32Array(WDC_N), wdcK2 = new Int32Array(WDC_N).fill(-1), wdcV = new Uint8Array(WDC_N);
   function wdSide(bl, C) {                                  // C[line*5 + group]
@@ -208,8 +199,7 @@ function createWDSolver(blob){
     for(let i=0;i<25;i++) if(b[i]!==i) return {ok:false,reason:"not goal"}; return {ok:true}; }
   function rootH(src){ initFromBoard(src); return vWD+hWD; }
 
-  // 3b) Weighted A* deep-board fallback: a closed set expands each state once, so unlike
-  //     weighted IDA* it can't thrash. f = g + W*h, W>1, no reopening => length ~W*optimal.
+  // 3b) Weighted A* deep-board fallback: closed set, f = g + W*h, no reopening => length ~W*optimal.
   const _vc=new Int8Array(25), _hc=new Int8Array(25);
   function _wdCounts(arr){                              // returns the blank index
     _vc.fill(0); _hc.fill(0); let bp=24;
@@ -226,8 +216,7 @@ function createWDSolver(blob){
     return lookup(rank((bp/5)|0,_vc)) + lookup(rank(bp%5,_hc));
   }
 
-  // 3c) Standalone incremental WD state, so several searches can each hold their own. peek(cz)
-  //     = WD after sliding cz into the blank, WITHOUT committing; only one axis changes.
+  // 3c) Standalone incremental WD state. peek(cz) = WD after sliding cz into the blank, without committing.
   function newInc(){
     const vC=new Int32Array(25), hC=new Int32Array(25), bd=new Int32Array(25);
     let bp=24, vw=0, hw=0;
@@ -307,8 +296,7 @@ function createWDSolver(blob){
     }
     return {moves:null,expanded};
   }
-  // Panel entry point: proven-optimal within budget, else the shortest weighted A* result
-  // found inside it. Returns {moves, optimal, len, weight?}.
+  // Panel entry point: proven-optimal within budget, else the shortest weighted A* result. Returns {moves, optimal, len, weight?}.
   function solveGuide(src,budgetMs,opts){ opts=opts||{};
     const start=Date.now(), MARGIN=40, dl=start+(budgetMs||600)-MARGIN;
     const OPT_SLICE=opts.optSlice==null?300:opts.optSlice;
@@ -336,12 +324,8 @@ function createWDSolver(blob){
 }
 
 
-// Production 24-puzzle optimal solver for the panel; createSession(board).step(nodeBudget)
-// is the resumable form the UI drives so the client never blocks.
-// Heuristic = max(WalkingDistance, additivePDB(board), additivePDB(reflect)); all three
-// admissible => the max is admissible => IDA* is optimal. PDB = 5-5-5-5-4 disjoint additive
-// pattern database; diagonal reflection is distance-preserving so PDB(reflect(s)) is also a
-// valid lower bound.
+// Production 24-puzzle solver; createSession(board).step(nodeBudget) is the resumable form the UI drives.
+// Heuristic = max(WalkingDistance, additivePDB(board), additivePDB(reflect)), all admissible. PDB = 5-5-5-5-4 disjoint additive pattern database.
 const N = 25;
 
 function createPuzzleSolver(wdBlob, pdbBlob) {
@@ -380,8 +364,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
   const RP = new Int32Array(N), RT = new Int32Array(N), rb = new Int32Array(N);
   for (let p = 0; p < N; p++) RP[p] = (p % 5) * 5 + ((p / 5) | 0);
   for (let t = 0; t < N; t++) RT[t] = (t === 24) ? 24 : (t % 5) * 5 + ((t / 5) | 0);
-  // From-scratch heuristic: initialisation, plus the reference the incremental engine is
-  // checked against in debug mode. Uses WD.wdOf's own scratch, so it never disturbs a search.
+  // From-scratch heuristic: initialisation, plus the debug-mode reference for the incremental engine.
   function hMax(board) {
     let a = pdbOf(board);
     for (let p = 0; p < N; p++) rb[RP[p]] = RT[board[p]];
@@ -392,12 +375,8 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
   }
   function rootH(board) { return hMax(board); }
 
-  // ---- incremental heuristic engine -------------------------------------------------
-  // A slide moves one tile, so of the three components of hMax only ONE additive PDB group
-  // changes on the board, one on the reflected board (a tile's reflection is a fixed tile,
-  // hence a fixed group), and one WD axis. peek(cz) evaluates a child without touching the
-  // state; commit() is O(1) and records what uncommit() needs, so a child's heuristic is
-  // computed exactly once.
+  // ---- incremental heuristic engine ----
+  // A slide changes one PDB group on the board, one on the reflection, and one WD axis. peek(cz) evaluates a child without touching state; commit() is O(1) and records what uncommit() needs.
   const GC = G.length;
   const gOff = new Int32Array(GC + 1);
   for (let i = 0; i < GC; i++) gOff[i + 1] = gOff[i] + G[i].k;
@@ -468,11 +447,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
     return { init, peek, commit, uncommit, h, pk, board: eb, blank: function () { return ebl; } };
   }
 
-  // Resumable (non-blocking) IDA* over the combined heuristic: explicit-stack iterative
-  // deepening runnable in node-budget slices, driving the incremental engine. Every child's
-  // heuristic is computed ONCE, in the parent, by engine.peek(), and children are expanded
-  // in increasing f, so the first child over the bound ends the frame and its f is the
-  // frame's min. opts.debug re-derives hMax from scratch per child and stops on a mismatch.
+  // Resumable IDA* over the combined heuristic: explicit stack, node-budget slices. Children are evaluated once (engine.peek in the parent) and expanded in increasing f. opts.debug re-derives hMax per child.
   const MAXD = 200;                       // optimal 24-puzzle solutions are <= 152 moves
   function createSession(src, opts) {
     opts = opts || {};
@@ -493,9 +468,7 @@ function createPuzzleSolver(wdBlob, pdbBlob) {
 
     const h0 = eng.init(src);
     let bound = h0, top = 0, finished = false, moves = null, nodes = 1, childMin = Infinity;
-    // Optimality CERTIFICATE bound: a known solution of length ub (the displayed fallback
-    // plan) is proven optimal the moment the next IDA* bound reaches ub - every bound is a
-    // true lower bound on the optimal length, so bound >= ub => optimal >= ub = ub exactly.
+    // Optimality certificate: a known solution of length ub is proven optimal once the IDA* bound reaches ub.
     let ub = (opts.ub == null) ? Infinity : opts.ub;
     function resetIteration() {
       eng.init(src);
@@ -639,8 +612,7 @@ function solveWAStarMax(src, dl, W) {
     }
     return { moves: null, expanded };
   }
-  // solveGuide is re-exported so the panel can bail out of an optimal proof that can take
-  // billions of nodes, while weighted A* answers in ms.
+  // solveGuide is re-exported so the panel can bail out of a long optimal proof.
   return { solve, createSession, solveGuide: WD.solveGuide, solveWAStar: solveWAStarMax,
            rootH, verify: WD.verify, _pdbOf: pdbOf, _hMax: hMax,
            _wdOf: WD.wdOf, _wdOfRaw: WD.wdOfRaw };
@@ -650,10 +622,7 @@ function solveWAStarMax(src, dl, W) {
   return { createWDSolver: createWDSolver, createPuzzleSolver: createPuzzleSolver };
   })();
 
-  // Puzzle-box (24-puzzle) live guide. Board from interface 1931 / comp 18 (bridge
-  // puzzleState -> 25 raw cell sprites); tables lazy-loaded from wd_table.bin / pdb_5554.bin
-  // via the puzzleWdTable / puzzlePdbTable bridges. Re-solve only when the live board
-  // diverges from the planned next state.
+  // Puzzle-box live guide. Board from interface 1931 / comp 18 (bridge puzzleState -> 25 raw cell sprites); tables lazy-loaded via puzzleWdTable / puzzlePdbTable. Re-solve only when the live board diverges from the plan.
   const PUZZLE_OPT_MS = 2000;       // publish a fallback past this; the proof continues in the background
   const PUZZLE_PROOF_MAX_MS = 90000; // total background-proof budget per board before giving up
   let puzzleFailedSig = null;       // board that beat both searches; retried when it moves
@@ -670,8 +639,7 @@ function solveWAStarMax(src, dl, W) {
   // Raw cell sprites -> board[25] in 0..23 (tile), 24 (blank). Gap sprite = 65535.
   function puzzleBoardFromSprites(sprites) {
     if (!Array.isArray(sprites) || sprites.length !== 25) return null;
-    // Tile sprites are NOT guaranteed consecutive ids (some boxes use two clusters), so
-    // tile number = the sprite's RANK among sorted distinct non-gap sprites.
+    // Tile sprite ids are not guaranteed consecutive: tile number = rank among sorted distinct non-gap sprites.
     const uniq = [...new Set(sprites.filter(s => s !== 65535 && s >= 0))].sort((a, b) => a - b);
     if (uniq.length !== 24) return null;
     const rank = new Map(uniq.map((s, i) => [s, i]));
@@ -684,10 +652,7 @@ function solveWAStarMax(src, dl, W) {
     return blanks === 1 ? board : null;
   }
   function puzzleIsGoal(b) { for (let i = 0; i < 25; i++) if (b[i] !== i) return false; return true; }
-  // SOLVABILITY (parity). Half of all 24-puzzle arrangements cannot reach the goal, and an
-  // optimal search on one runs until it exhausts the space. The grid is 5 wide (odd), so the
-  // blank's row is irrelevant and a board is solvable iff the inversion count among the 24
-  // tiles (row-major, blank removed) is even. A failing board is unsolvable or a misread.
+  // Solvability (parity): width 5 is odd, so a board is solvable iff the inversion count among the 24 tiles (blank removed) is even.
   function puzzleSolvable(b) {
     const t = b.filter(v => v !== 24);
     let inv = 0;
@@ -699,9 +664,7 @@ function solveWAStarMax(src, dl, W) {
     for (const click of moves) { const blank = b.indexOf(24); b[blank] = b[click]; b[click] = 24; states.push(b.join(',')); }
     return states;
   }
-  // Solver build: decode the tables and construct the solver on a deferred tick, so the
-  // "loading" banner paints first if a box is already open. Normally this has run at
-  // start-up (see below) and opening a box is instant.
+  // Solver build on a deferred tick so the "loading" banner paints first; normally already run at start-up.
   function puzzleEnsureSolver() {
     if (puzzleTableState === 2) return !!puzzleSolver;
     if (puzzleTableState === 1) return false;
@@ -715,24 +678,20 @@ function solveWAStarMax(src, dl, W) {
         const wd = dec('puzzleWdTable'), pdb = dec('puzzlePdbTable');
         if (wd && pdb) puzzleSolver = PuzzleKit.createPuzzleSolver(wd, pdb);
       } catch (e) { puzzleSolver = null; reachedBridge = false; }
-      // A bridge that was not up yet is not a missing table: stay untried so the next call
-      // retries, or the panel would report "tables missing" for the rest of the session.
+      // A bridge that was not up yet is not a missing table: stay untried.
       puzzleTableState = (!puzzleSolver && !reachedBridge) ? 0 : 2;
       puzzleDrawSig = null;                           // force a repaint with the result
     }, 0);
     return false;
   }
-  // Warm the tables at start-up rather than on the first box: decoding them takes long enough
-  // to show a banner, and it costs nothing to have done it already. Retries while the bridge
-  // is still coming up, then stops.
+  // Warm the tables at start-up; retries while the bridge is coming up.
   (function puzzleWarm(tries) {
     setTimeout(function () {
       puzzleEnsureSolver();
       setTimeout(function () { if (puzzleTableState === 0 && tries < 10) puzzleWarm(tries + 1); }, 400);
     }, tries ? 1000 : 1500);
   })(0);
-  // Weighted-A* ladder over one board, keeping the SHORTEST result (high W answers almost
-  // instantly, low W runs closer to optimal). msTotal caps the ladder, which blocks the panel.
+  // Weighted-A* ladder over one board, keeping the shortest result; msTotal caps the ladder (blocking).
   function puzzleWeighted(board, Ws, msTotal) {
     const end = Date.now() + msTotal;
     let best = null;
@@ -746,9 +705,7 @@ function solveWAStarMax(src, dl, W) {
     }
     return best;
   }
-  // Install a solution as the live plan, but only as an UPGRADE: the board on screen must
-  // lie on the candidate path, and the remaining click count must improve (or the candidate
-  // is proven optimal against a merely near-optimal plan). True if adopted.
+  // Install a solution as the live plan only as an upgrade: the screen board must lie on the path and the remaining clicks must improve (or the candidate is proven optimal). True if adopted.
   function puzzleAdopt(board, moves, optimal, weight) {
     if (!moves || !moves.length) return false;
     const states = puzzleStates(board, moves);
@@ -762,14 +719,11 @@ function solveWAStarMax(src, dl, W) {
     puzzlePlan = { moves: moves, states: states, idx: k, optimal: optimal, weight: weight };
     return true;
   }
-  // Self-scheduling search pump: advances the optimal session in short wall-clock bursts and
-  // publishes exactly one plan -- optimal if it lands within PUZZLE_OPT_MS, else weighted.
+  // Self-scheduling search pump: publishes exactly one plan, optimal if it lands within PUZZLE_OPT_MS, else weighted.
   function puzzlePump() {
     puzzlePumping = false;
-    // Improvement queue: one weight per timer slice. Weighted A* is not resumable, so a low
-    // weight would freeze the panel unless each rung runs from its own capped callback.
+    // Improvement queue: one weight per timer slice (weighted A* is not resumable).
     if (puzzleImp && puzzleSolver) {
-      // Every rung runs BEFORE anything is published, so a displayed plan is never swapped.
       const imp = puzzleImp, better = puzzleWeighted(imp.board, [imp.ws[imp.i++]], 250);
       if (puzzleImp !== imp) {                       // rebased mid-rung: this result is stale
         if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
@@ -786,13 +740,10 @@ function solveWAStarMax(src, dl, W) {
         const liveSig = puzzleLastBoard ? puzzleLastBoard.join(',') : '';
         if (!adopted && imp.best && liveSig && liveSig !== imp.sig
             && puzzleSolvable(puzzleLastBoard) && !puzzleIsGoal(puzzleLastBoard)) {
-          // The player moved while the fallback computed, so the answer no longer attaches
-          // to the screen - REBASE on the live board instead of dropping all guidance and
-          // burning another full optimal-proof budget from scratch.
+          // The player moved while the fallback computed: rebase on the live board.
           puzzleImp = { board: puzzleLastBoard.slice(), sig: liveSig, ws: [3, 2], i: 0, best: null };
         }
-        // Nothing found even greedily: remember the board so the poll does not restart the
-        // same doomed search until it moves.
+        // Nothing found even greedily: remember the board until it moves.
         else if (!imp.best && !puzzlePlan) puzzleFailedSig = imp.sig;
         puzzleDrawSig = null; puzzlePaint();
         if (puzzleLastBoard) puzzleHighlight(puzzlePlan);
@@ -801,28 +752,20 @@ function solveWAStarMax(src, dl, W) {
       return;
     }
     if (!puzzleSess || !puzzleSolver) return;
-    // NO SEED PLAN: seeding a weighted plan and upgrading it in place moves the click target
-    // under the cursor, so the proof gets the full PUZZLE_OPT_MS and nothing is drawn until
-    // there is a final answer -- shown once and never swapped.
+    // No seed plan: nothing is drawn until there is a final answer, so the click target never moves under the cursor.
     const t0 = Date.now();
     let r;
     do { r = puzzleSess.stepper.step(20000); puzzleSess.nodes = r.nodes; } while (!r.done && (Date.now() - t0) < 30);
-    // Give up on the proof at PUZZLE_OPT_MS: the search is exponential in the IDA* bound and
-    // hard boards need 1e8-1e9+ nodes, while weighted A* answers in ms a few moves longer.
+    // Give up on the proof at PUZZLE_OPT_MS; weighted A* answers in ms a few moves longer.
     if (!r.done && !puzzleSess.fallback && (Date.now() - puzzleSess.startedAt) >= PUZZLE_OPT_MS) {
       const liveSig = puzzleLastBoard ? puzzleLastBoard.join(',') : puzzleSess.sig;
       if (liveSig === puzzleSess.sig) {
-        // Board untouched: publish a fast fallback NOW but KEEP the resumable proof running
-        // in the background (throttled). Once the fallback plan lands, its length becomes
-        // the proof's upper bound; reaching it certifies the shown plan optimal without
-        // ever finding a second solution.
+        // Board untouched: publish a fast fallback now, keep the proof running throttled; the fallback length becomes the proof's upper bound.
         puzzleSess.fallback = true;
         puzzleSess.hardStopAt = puzzleSess.startedAt + PUZZLE_PROOF_MAX_MS;
         puzzleImp = { board: puzzleSess.board.slice(), sig: puzzleSess.sig, ws: [3, 2], i: 0, best: null };
       } else {
-        // The player moved during the proof: the session board is stale - drop the proof
-        // and fall back from the live board (a plan built from a stale board is discarded
-        // on the next poll anyway).
+        // The player moved during the proof: drop it and fall back from the live board.
         const board = (puzzleLastBoard && puzzleSolvable(puzzleLastBoard)) ? puzzleLastBoard : puzzleSess.board;
         puzzleProofSpentSig = puzzleSess.sig;
         puzzleSess = null;
@@ -848,8 +791,7 @@ function solveWAStarMax(src, dl, W) {
       return;
     }
     if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, puzzleSess && puzzleSess.fallback ? 45 : 0); }   // background proof runs at ~40% duty
-    // Repainting rebuilds the grid and re-crosses the C++ bridge, costing more than a 30ms
-    // search slice; only the node counter moves, so refresh it a few times a second.
+    // Repainting costs more than a search slice; refresh the node counter a few times a second.
     if (Date.now() - (puzzleSess.paintedAt || 0) >= 250) {
       puzzleSess.paintedAt = Date.now(); puzzleDrawSig = null; puzzlePaint();
     }
@@ -858,18 +800,15 @@ function solveWAStarMax(src, dl, W) {
     const board = puzzleLastBoard; if (board) puzzleDraw(board, puzzlePlan);
   }
   let puzzleLastBoard = null, puzzleHl = false;
-  // In-game highlight of the next tile: puzzleCellRects gives absolute rects of interface
-  // 1931 / comp 18, and draws only when cr.abs resolves them to screen pixels.
+  // In-game highlight of the next tile: puzzleCellRects gives absolute rects of interface 1931 / comp 18.
   function puzzleClearHl() {
     if (!puzzleHl) return;
     try { if (bridge() && bridge().puzzleCells) rtxData.sync('solver.puzzleCells', ''); } catch (e) {}
     puzzleHl = false;
   }
-  // Collapse the move list into CLICKS: a straight run along one row/column (constant step
-  // +-1 / +-5, not crossing a row edge) is ONE in-game click on the run's FURTHEST tile.
+  // Collapse moves into clicks: a straight run along one row/column (step +-1 / +-5, not crossing a row edge) is one click on the furthest tile.
   function puzzleClicks(moves, startIdx, blank) {
-    // moves = the blank's successive positions; `blank` = its position BEFORE moves[startIdx].
-    // A run's step is measured from the blank INTO its first move, so an L-turn splits in two.
+    // moves = the blank's successive positions; `blank` = its position before moves[startIdx].
     const out = [];
     let i = startIdx | 0;
     let b = (typeof blank === 'number') ? blank : (moves.length ? moves[i] : 0);
@@ -886,8 +825,7 @@ function solveWAStarMax(src, dl, W) {
     }
     return out;
   }
-  // Mirror the next up-to-3 clicks onto the live board as numbered cells (step 0 = click now),
-  // re-sent every tick so the boxes track the interface if it moves.
+  // Mirror the next up-to-3 clicks onto the live board as numbered cells, re-sent every tick.
   function puzzleHighlight(plan) {
     if (!plan || plan.idx >= plan.moves.length || !bridge() || !bridge().puzzleCellRects || !bridge().puzzleCells) { puzzleClearHl(); return; }
     try {
@@ -914,8 +852,7 @@ function solveWAStarMax(src, dl, W) {
       const board = puzzleBoardFromSprites(sprites);
       cluePuzzleOpen = !!board;                        // tracked so the carousel can auto-focus the puzzle slot
       const el = $('cluePuzzle');
-      // Show the solver only on the focused puzzle-box slot; if no held puzzle item was
-      // identified, don't gate, so the solver never silently vanishes.
+      // Show the solver only on the focused puzzle-box slot; if no held puzzle item was identified, do not gate.
       const onSlot = cluePuzzleHeld.length === 0 || cluePuzzleHeld.some(z => z.i === activeClueId);
       if (!board || !onSlot) {
         if (!board) { puzzleLastBoard = null; puzzlePlan = null; puzzleSess = null; puzzleImp = null; puzzleDrawSig = null; puzzleClearHl(); }
@@ -941,9 +878,7 @@ function solveWAStarMax(src, dl, W) {
           else {
             puzzlePlan = null;                        // reached goal, or diverged
             puzzleSess = null;                        // a proof of the abandoned plan's root is moot
-            // Diverged mid-solve: reseed guidance IMMEDIATELY from the live board with fast
-            // weighted rungs instead of going dark for the whole optimal-proof budget. The
-            // optimal session below still runs and upgrades the plan when it lands.
+            // Diverged mid-solve: reseed guidance immediately from the live board with fast weighted rungs.
             if (sig !== puzzleFailedSig && puzzleSolvable(board) && !puzzleIsGoal(board)) {
               puzzleImp = { board: board.slice(), sig: sig, ws: [3, 2], i: 0, best: null };
               if (!puzzlePumping) { puzzlePumping = true; setTimeout(puzzlePump, 0); }
@@ -951,10 +886,7 @@ function solveWAStarMax(src, dl, W) {
           }
         }
       }
-      // A new solution is needed: (re)start the resumable session, unless this exact board
-      // already exhausted its proof budget (it would relaunch every poll), beat both
-      // searches outright, or is parity-unsolvable. A running reseed does NOT block the
-      // proof - the fallback publishes fast and the proof upgrades it.
+      // (Re)start the resumable session unless this board already exhausted its proof budget, beat both searches, or is unsolvable.
       if (!puzzlePlan && sig !== puzzleFailedSig && sig !== puzzleProofSpentSig && puzzleSolvable(board)
           && (!puzzleSess || puzzleSess.sig !== sig)) {
         puzzleSess = { stepper: puzzleSolver.createSession(board), sig: sig, board: board, nodes: 0, startedAt: Date.now() };

@@ -42,8 +42,7 @@ std::string env_str(const char* name) {
     return (n > 0 && n < sizeof(buf)) ? std::string(buf, n) : std::string();
 }
 
-// Steam library roots: the Steam install plus every "path" in libraryfolders.vdf, so a game
-// moved to another drive or a custom-named library is still found.
+// Steam library roots: the Steam install plus every "path" in libraryfolders.vdf.
 std::vector<std::string> steam_libraries() {
     std::vector<std::string> libs;
     std::wstring steam = reg_str(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", 0);
@@ -71,8 +70,7 @@ std::vector<std::string> steam_libraries() {
     return libs;
 }
 
-// `cache_folder=` out of a preferences.cfg. This is the client's own record of where it put the
-// cache, so it survives the user moving it - which nothing in the registry does.
+// `cache_folder=` out of a preferences.cfg.
 std::string cache_folder_from(const fs::path& prefs) {
     std::error_code ec;
     if (!fs::is_regular_file(prefs, ec)) return {};
@@ -97,8 +95,7 @@ void probe(CacheCandidate& c) {
         const std::string fn = e.path().filename().string();
         if (fn.rfind("js5-", 0) != 0 || e.path().extension() != ".jcache") continue;
         ++c.archives;
-        // Newest js5 write = when this cache was last played. GlobalSettings/Settings are
-        // deliberately excluded: they are touched by merely opening a client.
+        // Newest js5 write = last played. GlobalSettings/Settings are touched by merely opening a client.
         auto t = fs::last_write_time(e.path(), ec);
         if (!ec) {
             auto secs = std::chrono::duration_cast<std::chrono::seconds>(
@@ -106,8 +103,7 @@ void probe(CacheCandidate& c) {
             if (secs > c.newest) c.newest = secs;
         }
     }
-    // A partially downloaded cache is still a real cache (NXT fills archives lazily), so the
-    // bar is only "enough to be a cache and not a stray folder".
+    // NXT fills archives lazily; a partial cache is still a cache.
     c.usable = c.archives >= 8;
 }
 
@@ -126,8 +122,7 @@ void add(std::vector<CacheCandidate>& out, std::string path, std::string source)
     out.push_back(std::move(c));
 }
 
-// A cache_folder value points at the PARENT; the cache itself is <cache_folder>\RuneScape.
-// Accept either form, so an override may name the cache directly.
+// cache_folder points at the PARENT (cache = <cache_folder>\RuneScape); accept either form.
 void add_folder_or_parent(std::vector<CacheCandidate>& out, const std::string& dir,
                           const std::string& source) {
     if (dir.empty()) return;
@@ -143,7 +138,7 @@ std::vector<CacheCandidate> CacheCandidates() {
     // 1) Explicit override, for a layout nothing else predicts.
     add_folder_or_parent(out, env_str("RTX_CACHE_DIR"), "RTX_CACHE_DIR");
 
-    // 2) The client's own record, per install. This is what makes a MOVED cache findable.
+    // 2) The client's own record, per install.
     add_folder_or_parent(out, cache_folder_from(R"(C:\ProgramData\Jagex\launcher\preferences.cfg)"),
                          "preferences.cfg (Jagex)");
     const auto libs = steam_libraries();
@@ -152,8 +147,7 @@ std::vector<CacheCandidate> CacheCandidates() {
         add_folder_or_parent(out, cache_folder_from(rs / "launcher" / "preferences.cfg"),
                              "preferences.cfg (Steam)");
     }
-    // The Jagex Launcher's install dir can hold a preferences.cfg too when the game was
-    // relocated wholesale.
+    // The Jagex Launcher's install dir can hold a preferences.cfg too.
     {
         std::wstring inst = reg_str(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Jagex\\JagexLauncher\\RuneScape",
                                     L"InstallLocation", 0);
@@ -172,8 +166,7 @@ std::vector<CacheCandidate> CacheCandidates() {
         add(out, (fs::path(lib) / "steamapps" / "common" / "RuneScape" / "RuneScape").string(),
             "default (Steam)");
 
-    // 4) Last resort: the standard layouts on every fixed drive, for a hand-moved install that
-    //    left no preferences.cfg behind. Bounded and shallow - no recursive search.
+    // 4) Last resort: standard layouts on every fixed drive. Shallow, no recursive search.
     DWORD mask = GetLogicalDrives();
     for (int i = 0; i < 26 && mask; ++i) {
         if (!(mask & (1u << i))) continue;
@@ -200,7 +193,7 @@ const std::string& ResolveCacheRoot() {
         const CacheCandidate* best = nullptr;
         for (const auto& c : cands) {
             if (!c.usable) continue;
-            // An explicit override is an instruction, not a hint: take it and stop weighing.
+            // An explicit override wins outright.
             if (c.source.rfind("RTX_CACHE_DIR", 0) == 0) { best = &c; break; }
             if (!best || c.newest > best->newest) best = &c;
         }

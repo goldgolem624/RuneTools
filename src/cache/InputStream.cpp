@@ -33,10 +33,7 @@ int InputStream::Read24BitInt() {
 }
 
 std::string InputStream::ReadString() {
-    // Jagex cache strings are CP-1252, not UTF-8. Decode to UTF-8 so the
-    // result is safe to embed in JSON for the WebView bridge: one lone high
-    // byte is invalid UTF-8 and makes JSStringCreateWithUTF8CString reject
-    // the whole payload. 0x00-0x7F pass through; 0x80-0xFF map via CP-1252.
+    // Cache strings are CP-1252; decode to UTF-8 so they are safe to embed in JSON.
     static const std::uint16_t kCp1252High[32] = {
         0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
         0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,

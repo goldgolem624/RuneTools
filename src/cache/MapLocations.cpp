@@ -6,8 +6,7 @@ namespace rtx::cache {
 
 namespace {
 
-// id delta = get_smarts: chained unsigned smarts, each 0x7FFF means "add and
-// continue" so deltas can exceed a single 15-bit smart.
+// Chained unsigned smarts: 0x7FFF means "add and continue".
 int ReadSmarts(InputStream& s) {
     int value = 0;
     for (;;) {
@@ -46,9 +45,7 @@ std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_byte
             p.rotation = data & 0x3;
             out.push_back(p);
 
-            // RS3-only extra block: present whenever the attribute byte has
-            // bit 0x80 set (effectively every placement). The sub-data byte's
-            // bits select trailing u16s we don't need but must consume.
+            // Extra block when attribute bit 0x80 is set; sub-data bits select trailing u16s.
             if (data >= 0x80) {
                 int sub = s.ReadUnsignedByte();
                 if (sub != 0) {

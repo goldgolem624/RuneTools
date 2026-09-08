@@ -19,10 +19,8 @@ namespace rtx::launcher::accounts {
 
 namespace {
 
-// File layout. Header bytes (magic..nonce) are bound into the GCM tag
-// as AAD so KDF-parameter tampering is detected at unlock.
-//   magic u32 'RTXA' | version u32 | iterations u32 | salt[16] |
-//   nonce[12] | ct_len u32 | ciphertext | tag[16]
+// File layout: magic u32 'RTXA' | version u32 | iterations u32 | salt[16] | nonce[12] | ct_len u32 | ciphertext | tag[16].
+// Header bytes (magic..nonce) are bound into the GCM tag as AAD.
 
 constexpr std::uint32_t kFileMagic   = 0x41585452u;   // 'RTXA' little-endian
 constexpr std::uint32_t kFileVersion = 1;
@@ -45,19 +43,8 @@ std::filesystem::path accounts_path() {
 }
 
 // ---- capture suppression ----
-//
-// Removing an account is an explicit act, but auto-capture re-adds any account whose client is
-// running the moment the client list is next enumerated. The account therefore reappeared
-// immediately, which read as "Remove does nothing".
-//
-// A removed account is suppressed so capture will not put it straight back. The suppression is
-// lifted as soon as that account's client is gone (see PruneCaptureSuppressions), so a fresh
-// login is captured normally: the rule is "removing it now actually removes it", not "never
-// save this account again", which would be unclearable given capture is the only way in.
-//
-// Ids are stored HASHED. The vault is encrypted precisely so account identifiers are not
-// sitting in the clear next to it, and a suppression list of plaintext character ids would
-// hand back exactly that.
+// A removed account is kept out of auto-capture until its client is gone (PruneCaptureSuppressions).
+// Ids are stored hashed so the list does not leak account identifiers next to the vault.
 std::filesystem::path suppress_path() {
     auto p = accounts_path();
     p.replace_filename(L"account_suppress.txt");
@@ -69,18 +56,14 @@ std::set<std::string>      g_suppressed;      // hex HMAC-SHA256(install secret,
 constexpr const char*      kSuppressHeader = "#rtx-suppress-v2";
 bool                       g_sup_loaded = false;
 
-// The suppression list is keyed by HMAC-SHA256(install secret, account id), not a bare hash:
-// account ids are character names, so an unkeyed digest next to the vault was a brute-forceable
-// list of which characters this machine has. The 32-byte secret is minted once per install and
-// kept under per-user DPAPI (suppress.key beside the list), so the file alone reveals nothing.
+// Keyed HMAC: the 32-byte per-install secret lives under per-user DPAPI in suppress.key.
 std::filesystem::path suppress_key_path() {
     auto p = accounts_path();
     p.replace_filename(L"suppress.key");
     return p;
 }
 
-// Thread-safe one-time initialisation (callers run outside g_sup_mu): a failed first attempt
-// yields an empty secret for the rest of the process and is retried on the next launch.
+// One-time init; a failed first attempt yields an empty secret until the next launch.
 std::string suppress_secret_locked() {
     static const std::string cached = []() -> std::string {
     const auto path = suppress_key_path();
@@ -112,8 +95,7 @@ std::string suppress_secret_locked() {
     return cached;
 }
 
-// HMAC-SHA256 over SHA-256 (64-byte block), hex encoded. Empty when no secret is available,
-// which callers treat as "cannot suppress" (fail open to normal capture, never to a fixed key).
+// HMAC-SHA256, hex. Empty when no secret is available (callers fail open to normal capture).
 std::string id_digest(const std::string& id) {
     const std::string key = suppress_secret_locked();
     if (key.empty()) return {};
@@ -280,8 +262,7 @@ bool read_header(const std::string& blob, Header& h) {
     return true;
 }
 
-// Saves keep the salt stable and rotate only the nonce; the salt rotates on
-// Create/ChangePassphrase, where the key is re-derived.
+// Saves keep the salt and rotate only the nonce; the salt rotates on Create/ChangePassphrase.
 struct SessionMeta {
     std::array<std::uint8_t, crypto::kSaltBytes> salt{};
     std::uint32_t iterations = crypto::kKdfDefaultIterations;
@@ -538,7 +519,7 @@ std::string Upsert(Account a) {
         bool replaced = false;
         for (auto& other : g_accounts) {
             if (other.id == a.id || same(other)) {
-                // No-op when nothing changed so the periodic scan doesn't re-encrypt every tick.
+                // No-op when nothing changed (the periodic scan would re-encrypt every tick).
                 if (other.display_name == a.display_name &&
                     other.character_id == a.character_id &&
                     other.env          == a.env) {
@@ -572,9 +553,7 @@ bool Remove(const std::string& id) {
         }
     }
     if (!changed) return false;
-    // Report the SAVE, not the in-memory erase. This returned true whenever the account was
-    // found, even when writing the vault failed, so the row vanished from the list and came
-    // back on the next load with nothing having said the removal did not stick.
+    // Report the save, not the in-memory erase.
     if (!save_with_cached_key()) return false;
     SuppressCapture(id);
     return true;
@@ -606,7 +585,7 @@ void PruneCaptureSuppressions(const std::vector<std::string>& live_ids) {
     bool changed = false;
     for (auto it = g_suppressed.begin(); it != g_suppressed.end(); ) {
         if (live.count(*it)) { ++it; continue; }
-        it = g_suppressed.erase(it);          // its client is gone: a fresh login may be captured
+        it = g_suppressed.erase(it);
         changed = true;
     }
     if (changed) suppress_save_locked();
@@ -617,9 +596,9 @@ bool DiscardVault() {
     auto path = accounts_path();
     auto bak  = path; bak += L".bak";
     std::error_code ec;
-    std::filesystem::remove(bak, ec);           // drop any previous backup
+    std::filesystem::remove(bak, ec);
     std::filesystem::rename(path, bak, ec);     // keep the orphaned vault recoverable
-    if (ec) { std::error_code ec2; std::filesystem::remove(path, ec2); }  // else just delete
+    if (ec) { std::error_code ec2; std::filesystem::remove(path, ec2); }
     for (auto& a : g_accounts)
         for (auto& [k, v] : a.env) SecureZeroMemory((void*)v.data(), v.size());
     g_accounts.clear();

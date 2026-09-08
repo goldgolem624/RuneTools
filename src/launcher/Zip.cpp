@@ -11,7 +11,7 @@ inline std::uint32_t rd32(const std::uint8_t* p) {
     return (std::uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((std::uint32_t)p[3] << 24));
 }
 
-// Raw DEFLATE (no zlib header) -- ZIP stores raw streams, hence windowBits -15.
+// Raw DEFLATE (no zlib header), hence windowBits -15.
 bool inflate_raw(const std::uint8_t* in, std::size_t in_len, std::size_t out_len, std::string& out) {
     out.assign(out_len, '\0');
     if (out_len == 0) return true;

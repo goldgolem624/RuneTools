@@ -1,17 +1,6 @@
-// In-game window UI host (see GameUi.h). Pipeline per client:
-//
-//   Ultralight off-screen View (CPU, transparent, device-scaled)
-//     -> Surface dirty rows copied into FrameShare v2 under its seqlock (Tick)
-//     -> companion uploads the dirty sub-rect + draws one quad in the present hook.
-//
-//   Game-window input the companion consumed over our UI rects
-//     -> InputShare v2 SPSC ring -> named wake event -> waiter thread
-//     -> PostMessage(host, kMsgUiInput) -> DrainInput on the main thread
-//     -> View::FireMouse/Scroll/KeyEvent.
-//
-// Perf contract: idle publishes nothing (dirty-bounds gate), a drag costs one
-// dirty-rect row copy per painted frame, and the 16 ms pump timer only runs
-// while something recently painted or received input.
+// In-game window UI host (see GameUi.h). Off-screen View -> dirty rows into FrameShare v2 under its
+// seqlock (Tick) -> companion composites in the present hook. Input: InputShare v2 ring -> wake event
+// -> waiter thread -> PostMessage(host, kMsgUiInput) -> DrainInput. Idle publishes nothing.
 
 #include "GameUi.h"
 #include "Bridge.h"
@@ -40,17 +29,11 @@ namespace {
 
 App* g_app = nullptr;
 
-// These views hang off the Renderer directly -- no AppCore Window or Overlay --
-// so nothing drives their frame clock: AppCore only refreshes the display ids of
-// its own MONITORS (AppCore/Monitor.h), and the documented per-frame contract is
-// RefreshDisplay-then-Render (Ultralight/Renderer.h). Left on the default id 0
-// they get neither, so animations/transitions/rAF never advance, the views never
-// need painting, and the surface dirty bounds stay empty forever. We own an id no
-// monitor will ever be assigned and refresh it ourselves from Tick.
+// Views hang off the Renderer with no AppCore Window, so nothing refreshes their display id;
+// we own an id no monitor gets and RefreshDisplay it from Tick, or animations never advance.
 constexpr std::uint32_t kUiDisplayId = 1000;
 
-// Waiter-thread context: owned by the THREAD (freed on exit), so Destroy never
-// races it. The event handle is a duplicate; the thread closes its own copy.
+// Owned by the waiter thread (freed on exit). evt is a duplicate handle.
 struct WaiterCtx {
     HWND          host = nullptr;
     std::uint32_t pid = 0;
@@ -102,18 +85,14 @@ struct Ui : public LoadListener, public ViewListener {
                               msg.message().utf8().data());
     }
 
-    // The page's requested cursor, forwarded to the game-side filter (it answers
-    // WM_SETCURSOR while the pointer is over our consume rects).
+    // Forwarded to the game-side filter, which answers WM_SETCURSOR over our consume rects.
     void OnChangeCursor(View*, Cursor cursor) override {
         if (input) input->cursor_id = (std::uint32_t)cursor;
         if (frame) frame->cursor = (std::uint32_t)cursor;
     }
 
-    // PRIVILEGED VIEW LOCKDOWN. This view only ever shows our own LoadHTML document
-    // and it holds the full native bridge, so a main-frame navigation to anything
-    // remote is never legitimate: stop it at begin-loading (same pattern as the wiki
-    // pane), and gate attach() on the frame still being the local document, so the
-    // bridge can never be installed into foreign content even if a load slips by.
+    // Privileged view: only our own LoadHTML document is legitimate. Block remote main-frame
+    // navigation at begin-loading and gate attach() on the frame still being local.
     static bool local_url(const String& url) {
         String8 u8 = url.utf8();
         std::string u(u8.data(), u8.length());
@@ -131,8 +110,7 @@ struct Ui : public LoadListener, public ViewListener {
     void OnDOMReady(View* v, std::uint64_t, bool is_main, const String& url) override {
         if (is_main && local_url(url)) attach(v);
     }
-    // Same contract as the old dock panel: bridge + read-only __rtx_pid global,
-    // re-run on both load events (idempotent property overwrite).
+    // Bridge + read-only __rtx_pid global; re-run on both load events (idempotent).
     void attach(View* v) {
         rtx::launcher::AttachBridge(v);
         auto scoped = v->LockJSContext();
@@ -155,8 +133,7 @@ Ui* find(std::uint32_t pid) {
     return it == g_uis.end() ? nullptr : it->second;
 }
 
-// Physical client size of the game render area: prefer the companion's live
-// per-present feedback; fall back to GetClientRect while the module is absent.
+// Prefer the companion's live client size; fall back to GetClientRect while the module is absent.
 bool ClientSize(Ui* u, int& w, int& h) {
     if (u->frame && u->frame->client_w > 0 && u->frame->client_h > 0) {
         w = u->frame->client_w;
@@ -166,8 +143,7 @@ bool ClientSize(Ui* u, int& w, int& h) {
     HWND game = reinterpret_cast<HWND>(dock::GameWindowHandle(u->pid));
     RECT rc;
     if (game && GetClientRect(game, &rc) && rc.right > 0 && rc.bottom > 0) {
-        // GetClientRect is this process's physical px; convert into the game's own pixel
-        // space so the fallback agrees with the companion's client_w/h feedback above.
+        // GetClientRect is this process's physical px; convert into the game's pixel space.
         double f = dock::GameSpaceFactor(game);
         w = (int)(rc.right * f + 0.5);
         h = (int)(rc.bottom * f + 0.5);
@@ -176,18 +152,15 @@ bool ClientSize(Ui* u, int& w, int& h) {
     return false;
 }
 
-// Copy the surface's dirty region into the share under its seqlock. Row-by-row:
-// the share is tightly packed (stride = width*4) while the surface row_bytes may
-// include padding.
+// Copy the surface's dirty region into the share under its seqlock. Row-by-row: the share is
+// tightly packed (stride = width*4) while the surface row_bytes may be padded.
 void Publish(Ui* u) {
     if (!u->frame || !u->view) return;
     Surface* s = u->view->surface();
     if (!s) return;
     IntRect db = s->dirty_bounds();
     if (db.IsEmpty()) {
-        // Nothing painted since the last publish. Normal while idle -- but a view
-        // that has NEVER painted means the render pass below never reached it, so
-        // say it once instead of leaving an invisible UI unexplained.
+        // A view that has never painted means the render pass never reached it; report once.
         if (!u->publishedOnce) {
             u->frame->diag = 3;              // "surface not painted yet"
             if (!u->paintWarned && u->boundMs && GetTickCount64() - u->boundMs > 5000) {
@@ -239,10 +212,7 @@ void Publish(Ui* u) {
         f->diag = 4;
         MemoryBarrier();
         f->seq = f->seq + 1;            // even: published
-        // Pixels exist -> the layer composites. Visibility is deliberately NOT tied
-        // to the page publishing input rects: the layer is transparent where nothing
-        // is drawn, so compositing it always costs one quad, while gating it on a JS
-        // call meant any hiccup in that call left the whole UI invisible.
+        // Visibility is tied to pixels existing, not to the page publishing input rects.
         f->visible = 1;
         if (!u->publishedOnce) {
             u->publishedOnce = true;
@@ -260,8 +230,7 @@ void WaiterThread(WaiterCtx* ctx) {
         DWORD r = WaitForSingleObject(ctx->evt, 250);
         if (InterlockedCompareExchange(&ctx->stop, 0, 0)) break;
         if (r != WAIT_OBJECT_0 || !ctx->host) continue;
-        // Destroy sets stop then signals the event; re-check right before posting so a wake that
-        // raced the stop cannot post into a host that is already tearing down.
+        // Re-check stop right before posting: Destroy sets stop then signals the event.
         if (InterlockedCompareExchange(&ctx->stop, 0, 0)) break;
         PostMessageW(ctx->host, kMsgUiInput, (WPARAM)ctx->pid, 0);
     }
@@ -292,10 +261,7 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
     double sc = (u->scale > 0.01) ? u->scale : 1.0;
     switch (e.msg) {
         case WM_MOUSEMOVE: {
-            // Self-heal lost releases: a button-up delivered outside the game
-            // window (or dropped by a full ring) never reaches the view, leaving
-            // its drag stuck to the cursor. The forwarded wparam carries the REAL
-            // held state -- synthesize the missing ups first.
+            // Self-heal lost releases: wparam carries the real held state, synthesize missing ups.
             unsigned held = ((e.wparam & MK_LBUTTON) ? 1u : 0u) |
                             ((e.wparam & MK_RBUTTON) ? 2u : 0u) |
                             ((e.wparam & MK_MBUTTON) ? 4u : 0u);
@@ -319,8 +285,7 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
         }
         case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
         case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK: {
-            // DBLCLK replaces the second button-down on Windows; WebKit detects
-            // double-clicks by timing, so replay it as a plain down.
+            // DBLCLK replaces the second down on Windows; WebKit times double-clicks itself.
             u->viewButtons |= ViewButtonBit(ButtonFor(e.msg));
             MouseEvent me{ MouseEvent::kType_MouseDown,
                            (int)(e.x / sc), (int)(e.y / sc), ButtonFor(e.msg) };
@@ -344,11 +309,8 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
             break;
         }
         case WM_KEYDOWN: {
-            // Editing shortcuts: WebCore does not act on Ctrl+A/C/X/V from a raw key event in
-            // this embedding, so drive the editor command directly. The script walks into a
-            // focused IFRAME (plugin panels) so the command lands on the field that actually
-            // has focus; execCommand copy/paste goes through the platform clipboard AppCore
-            // installed. The raw event is swallowed for these four so nothing double-fires.
+            // WebCore does not act on Ctrl+A/C/X/V from a raw key event here, so drive the editor
+            // command directly (walks into a focused plugin iframe). Raw event swallowed for these four.
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool alt  = (GetKeyState(VK_MENU) & 0x8000) != 0;
             if (ctrl && !alt) {
@@ -360,8 +322,6 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
                     case 'V': cmd = "paste"; break;
                 }
                 if (cmd) {
-                    // __rtxEditCmd (rtx-input.js) also routes the command into sandboxed
-                    // plugin iframes, whose contentDocument is unreachable from here.
                     u->view->EvaluateScript(String((std::string(
                         "(function(){if(window.__rtxEditCmd){window.__rtxEditCmd('") + cmd + "');return;}"
                         "var d=document;"
@@ -384,12 +344,8 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
                                            e.msg == WM_SYSKEYUP));
             break;
         case WM_CHAR: case WM_SYSCHAR: {
-            // Control characters are NOT text. Windows sends WM_CHAR alongside the key event for
-            // Ctrl combinations -- 0x7F for Ctrl+Backspace, 0x01..0x1A for Ctrl+letter -- and
-            // forwarding those verbatim inserted them into whatever field had focus, which is why
-            // Ctrl+Backspace typed a box glyph instead of deleting a word. A browser never inserts
-            // these; the editing behaviour itself comes from the RawKeyDown we already sent above.
-            // Tab, LF and CR are real text and stay, as does backspace, which works today.
+            // Control characters are not text: Windows sends WM_CHAR for Ctrl combinations (0x7F for
+            // Ctrl+Backspace, 0x01..0x1A for Ctrl+letter). Tab, LF, CR and backspace stay.
             const unsigned ch = (unsigned)e.wparam;
             if (ch == 0x7F || (ch < 0x20 && ch != 0x08 && ch != 0x09 && ch != 0x0A && ch != 0x0D))
                 break;
@@ -399,8 +355,7 @@ void FireOne(Ui* u, const rtx::input::Event& e) {
             break;
         }
         case WM_KILLFOCUS:
-            // Companion sentinel: a click went to the game while the UI held
-            // keyboard capture -- have the page blur its field.
+            // Companion sentinel: a click went to the game while the UI held keyboard capture.
             u->view->EvaluateScript("window.__rtxGameClick && window.__rtxGameClick()");
             break;
         default:
@@ -423,8 +378,6 @@ void Prepare(std::uint32_t pid, const std::string& html, double initialScale) {
     cfg.is_transparent = true;
     cfg.initial_device_scale = u->scale;
     cfg.display_id = kUiDisplayId;       // our own frame clock (see kUiDisplayId)
-    // Start at a sane size; the resize handshake snaps it to the real client
-    // area on the first Tick after the companion reports in.
     u->view = g_app->renderer()->CreateView(1280, 720, cfg, nullptr);
     if (!u->view) { delete u; return; }
     u->view->set_load_listener(u);
@@ -444,9 +397,8 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
 
     wchar_t name[64];
 
-    // FrameShare v2 (pixel layer). CreateFileMapping returns the EXISTING object
-    // when the companion still holds a mapping from a previous session for this
-    // pid, so both sides always converge on one section per name.
+    // FrameShare v2. CreateFileMapping returns the existing object when the companion still maps
+    // a section from a previous session for this pid.
     rtx::frame::MakeSectionName(pid, name);
     u->frameMap = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
                                      0, (DWORD)sizeof(rtx::frame::Share), name);
@@ -461,20 +413,12 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
         MemoryBarrier();
         f->pid = pid;
         f->width = f->height = f->stride = 0;
-        // frame_id continues MONOTONICALLY from whatever the (possibly still-mapped)
-        // companion last consumed: its upload latch persists across our re-binds, and
-        // restarting at 0 would make the first frame look already-seen (skipped) or
-        // non-contiguous forever. Bind zeroed width/height, so the first publish is a
-        // full-surface dirty rect either way.
+        // frame_id continues monotonically from whatever the still-mapped companion last consumed;
+        // restarting at 0 would make the first frame look already-seen.
         u->frameId = f->frame_id;
         f->dirty_x = f->dirty_y = f->dirty_w = f->dirty_h = 0;
         f->origin_x = f->origin_y = 0;
-        // module -> launcher feedback. A section reused from a previous session
-        // (the companion still maps it) arrives carrying a stale non-zero
-        // module_seq, which makes the very first Tick see it "change" and disarms
-        // the stale-companion warning for the whole session; the stale client size
-        // would likewise answer the resize handshake for a dead session. A live
-        // companion rewrites both on its next present.
+        // Clear module -> launcher feedback: a reused section carries stale module_seq/client size.
         f->module_seq = 0;
         f->client_w = f->client_h = 0;
         f->visible = 0;
@@ -487,9 +431,8 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
         f->seq = (f->seq + 1) & ~1u;     // even
     }
 
-    // InputShare v2 (consume rects + event ring + wake event). The EVENT is created
-    // BEFORE the section: the companion opens the event only while the section maps,
-    // so this order guarantees it can never observe section-without-event.
+    // InputShare v2. The event is created before the section: the companion opens the event only
+    // while the section maps.
     rtx::input::MakeEventName(pid, name);
     u->inputEvt = CreateEventW(nullptr, FALSE /*auto-reset*/, FALSE, name);
     rtx::input::MakeSectionName(pid, name);
@@ -513,7 +456,6 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
         in->magic = rtx::input::kMagic;
     }
 
-    // Input waiter: sleeps on the wake event, marshals to the main thread.
     if (u->inputEvt) {
         auto* ctx = new WaiterCtx();
         ctx->host = u->host;
@@ -531,7 +473,7 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
     rtx::log::Client(pid, std::string("in-game ui: bound to host (frame ") +
                           (u->frame ? "ok" : "FAILED") + ", input " +
                           (u->input ? "ok" : "FAILED") + ")");
-    // Replay any consume-rect publish that arrived before the shares existed.
+    // Replay a consume-rect publish that arrived before the shares existed.
     if (u->hasPendingRects && u->input) {
         u->hasPendingRects = false;
         std::string csv = u->pendingRects;
@@ -543,8 +485,7 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
 void Destroy(std::uint32_t pid) {
     Ui* u = find(pid);
     if (!u) return;
-    // Quiesce FIRST: the present hook must stop touching the layer before the
-    // launcher-side view goes away (same ordering rule as QuiesceMarkers).
+    // Quiesce first: the present hook must stop touching the layer before the view goes away.
     if (u->input) {
         u->input->active = 0;
         u->input->capture_keyboard = 0;
@@ -579,28 +520,19 @@ void Tick() {
     if (g_uis.empty()) return;
     ULONGLONG now = GetTickCount64();
 
-    // Frame clock for our unattached views (see kUiDisplayId): drives animations,
-    // transitions, smooth scroll and requestAnimationFrame, which is what marks
-    // them as needing paint. ONCE per Tick, not per view -- our views share the
-    // id, and refreshing it N times would advance their animations N times.
+    // Frame clock for our unattached views (see kUiDisplayId). Once per Tick, not per view.
     if (g_app) g_app->renderer()->RefreshDisplay(kUiDisplayId);
 
     for (auto& kv : g_uis) {
         Ui* u = kv.second;
         if (!u || !u->view) continue;
 
-        // Companion liveness (module_seq advances every present while mapped). A
-        // companion that never reports is a STALE DLL: the module is only injected
-        // at client launch, so an updated rtxscene.dll needs a client restart --
-        // say so once instead of leaving an invisible UI unexplained.
+        // Companion liveness (module_seq advances every present). A companion that never reports is
+        // a stale DLL: the module is only injected at launch, so a client restart is needed.
         if (u->frame) {
             std::uint32_t ms = u->frame->module_seq;
             if (ms != u->lastModSeq) { u->lastModSeq = ms; u->lastModChangeMs = now; }
-            // Publish the companion-measured client size (the game's own backbuffer size)
-            // for dock::GameSpaceFactor's measured path: ground truth for the game's pixel
-            // space, where the DPI inference lies once the game is our embedded child. Only
-            // while the heartbeat is fresh -- a dead companion's stale size must not steer
-            // overlay scaling; cleared entries fall back to the DPI inference.
+            // Companion-measured client size for dock::GameSpaceFactor, only while the heartbeat is fresh.
             const bool live = u->lastModChangeMs && now - u->lastModChangeMs < 2000;
             dock::PublishGameClientSize(u->pid,
                                         live ? (int)u->frame->client_w : 0,
@@ -625,20 +557,15 @@ void Tick() {
                 u->view->Resize((std::uint32_t)cw, (std::uint32_t)ch);
         }
 
-        // Paint into the CPU surface ourselves, after the resize and before the
-        // copy, so a frame lands in the SAME tick it was painted. Tick runs from
-        // AppListener::OnUpdate, which fires right before the run loop's own
-        // Renderer::Update/Render -- the documented refresh-then-render point, and
-        // never re-entrant (unlike DrainInput, whose Fire*Event can pump). Costs
-        // nothing when idle: the renderer skips views that don't need painting.
+        // Paint here, after the resize and before the copy, so a frame lands in the same tick. Tick
+        // runs from AppListener::OnUpdate and is never re-entrant (unlike DrainInput).
         if (g_app) {
             View* v = u->view.get();
             g_app->renderer()->RenderOnly(&v, 1);
         }
         Publish(u);
 
-        // Pump pacing: 16 ms wakeups only while something recently painted or
-        // received input; idle clients fall back to the 100 ms keep-alive.
+        // Pump pacing: 16 ms only while recently active; idle falls back to the 100 ms keep-alive.
         bool wantPump = u->host && (now - u->lastActivityMs) < 2000;
         if (wantPump && !u->pumpTimerOn) {
             SetTimer(u->host, kUiPumpTimerId, 16, nullptr);
@@ -654,9 +581,8 @@ void DrainInput(std::uint32_t pid) {
     Ui* u = find(pid);
     if (!u || !u->input) return;
     rtx::input::Share* in = u->input;
-    // The SHARED cursor is the single source of truth: FireOne can re-enter this
-    // drain (message pumping inside Fire*Event), and a stale local tail would
-    // both double-fire events and move in->tail backwards.
+    // The shared tail is the source of truth: FireOne can re-enter this drain (message pumping
+    // inside Fire*Event).
     int guard = 0;
     while (in->tail != in->head && guard++ < (int)rtx::input::kRingSize) {
         std::uint32_t t = in->tail;
@@ -687,8 +613,6 @@ bool FireHostKey(std::uint32_t pid, unsigned msg, std::uintptr_t wparam, std::in
 bool Notify(std::uint32_t pid, const std::string& msg, int ttl_ms) {
     Ui* u = find(pid);
     if (!u || !u->view) return false;
-    // JSON-escape into a JS string literal; uiNotify handles the rest (card, edge
-    // colour, animation, stacking) exactly like every panel-raised alert.
     std::string js = "typeof uiNotify==='function'&&uiNotify(\"";
     for (unsigned char c : msg) {
         if (c == '"' || c == '\\') { js += '\\'; js += (char)c; }
@@ -721,9 +645,8 @@ void SetDeviceScale(std::uint32_t pid, double scale) {
     if (u->scale > scale - 0.005 && u->scale < scale + 0.005) return;
     u->scale = scale;
     u->view->set_device_scale(scale);
-    // A scale change re-rasterises the page; without an explicit full paint request only the
-    // regions later dirtied by input (hover) redraw, leaving windows invisible until moused
-    // over (seen in testing when switching the UI scale preset).
+    // A scale change re-rasterises the page; without a full paint request only input-dirtied
+    // regions redraw.
     u->view->set_needs_paint(true);
     u->view->EvaluateScript("try{window.dispatchEvent(new Event('resize'));}catch(e){}");
     rtx::log::Client(pid, "in-game ui: device scale -> " + std::to_string(scale));
@@ -733,9 +656,7 @@ void SetConsumeRects(std::uint32_t pid, const std::string& rectsCsv, bool visibl
     Ui* u = find(pid);
     if (!u) return;
     if (!u->input) {
-        // Published before Bind (the page boots while the embed completes): buffer
-        // and replay at Bind, or -- combined with the page's payload dedup -- the
-        // layer would stay invisible and input-dead for the whole session.
+        // Published before Bind (the page boots while the embed completes): buffer and replay at Bind.
         u->pendingRects = rectsCsv;
         u->pendingVisible = visible;
         u->hasPendingRects = true;
@@ -774,9 +695,7 @@ void SetConsumeRects(std::uint32_t pid, const std::string& rectsCsv, bool visibl
     in->rect_count = n;
     MemoryBarrier();
     in->rect_seq = (in->rect_seq + 1) & ~1u;
-    // Input only: whether the module consumes messages over our regions. Pixel
-    // visibility is owned by Publish (see there) so a missing rect publish can
-    // never blank the whole UI.
+    // Input only: pixel visibility is owned by Publish so a missing rect publish never blanks the UI.
     in->active = (visible && n > 0) ? 1u : 0u;
     u->visible = visible;
     u->lastActivityMs = GetTickCount64();

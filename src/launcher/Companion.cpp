@@ -24,8 +24,7 @@ std::wstring ModulePath() {
     return (std::filesystem::path(exe).parent_path() / L"rtxscene.dll").wstring();
 }
 
-// The shared section exists iff the module is loaded AND running in the pid. This
-// doubles as the liveness check (a dead/recycled pid has no live section).
+// Section exists iff the module is loaded and running in the pid (doubles as liveness).
 bool SectionLive(std::uint32_t pid) {
     wchar_t name[64];
     rtx::scene::MakeSectionName(pid, name);
@@ -35,8 +34,6 @@ bool SectionLive(std::uint32_t pid) {
     return true;
 }
 
-// Is the module already in the target's module list (loaded, perhaps still
-// initialising its section)? Avoids a redundant second load.
 bool ModuleListed(std::uint32_t pid) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
     if (snap == INVALID_HANDLE_VALUE) return false;
@@ -68,8 +65,7 @@ bool LoadInto(std::uint32_t pid, const std::wstring& dll) {
                 if (th) {
                     DWORD w = WaitForSingleObject(th, 10000);
                     CloseHandle(th);
-                    // The exit code is only the LOW 32 bits of the HMODULE, so 0 does not mean
-                    // failure (a base with a zero low dword is legal). Ask the module list instead.
+                    // Exit code is only the low 32 bits of the HMODULE; 0 is not failure.
                     ok = ModuleListed(pid) || SectionLive(pid);
                     if (!ok && w == WAIT_TIMEOUT)
                         rtx::log::Launcher("companion: pid " + std::to_string(pid) + " LoadLibraryW still running after 10s");
@@ -88,9 +84,7 @@ bool EnsureLoaded(std::uint32_t pid) {
     if (!pid) return false;
     if (SectionLive(pid)) return true;             // already live (cheap fast path)
 
-    // Not live yet: short back-off. The companion must be present BEFORE the client's
-    // first world render (later can miss render-pass slots like the clue-scan ring),
-    // and a just-created client isn't ready on the first tick -- so retry fast.
+    // Retry fast: the companion must be in before the client's first world render.
     ULONGLONG now = GetTickCount64();
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -99,9 +93,7 @@ bool EnsureLoaded(std::uint32_t pid) {
         g_last_try[pid] = now;
     }
 
-    // Out of reach: the client can't be opened for read -- almost always launched elevated
-    // (Jagex Launcher as administrator) against a medium-integrity launcher. Log once per
-    // pid and stop the retry churn.
+    // Access denied (client launched elevated): log once per pid, stop retrying.
     {
         HANDLE probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!probe && GetLastError() == ERROR_ACCESS_DENIED) {

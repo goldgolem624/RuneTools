@@ -39,8 +39,7 @@ bool looks_like_png(const std::vector<std::uint8_t>& b) {
     return b.size() >= 8 && b[0]==0x89 && b[1]==0x50 && b[2]==0x4E && b[3]==0x47;
 }
 
-// Decode the legacy footer-based sprite formats (0 = paletted, 1 = raw RGB)
-// into a single RGBA frame. Mirrors the SpriteType decoder.
+// Decode the footer-based sprite formats (0 = paletted, 1 = raw RGB) into one RGBA frame.
 bool decode_frame(const std::vector<std::uint8_t>& bytes, Frame& out, int frame = 0) {
     if (bytes.size() < 2) return false;
     Reader br(bytes.data(), bytes.size());
@@ -73,9 +72,7 @@ bool decode_frame(const std::vector<std::uint8_t>& bytes, Frame& out, int frame 
         std::vector<std::uint8_t> palette((std::size_t)palette_count * 3);
         for (auto& p : palette) p = br.u8();
 
-        // Frames are stored back to back from offset 0: [flags][pixels][alpha?]. Icons want
-        // frame 0; chat <img=N> tags index frame N of the modicons group, so walk past the
-        // earlier frames (their sizes are known from the header) to reach the requested one.
+        // Frames are stored back to back from offset 0: [flags][pixels][alpha?].
         if (frame < 0 || frame >= count) return false;
         br.set_pos(0);
         for (int k = 0; k < frame; ++k) {
@@ -160,15 +157,8 @@ void put_chunk(std::vector<std::uint8_t>& png, const char tag[4],
     put_be32(png, crc);
 }
 
-// ---- Minimal deflate (fixed Huffman + LZ77) --------------------------------------------------
-// The vendored zlib carries only the INFLATE half, so there is no compressor to call. This is
-// enough of one for PNG: a single fixed-Huffman block (RFC 1951 3.2.6) over an LZ77 pass with a
-// hash-chain matcher. Every decoder handles it - it is ordinary deflate, just without dynamic
-// code tables, which costs a few percent and saves the whole Huffman-tree builder.
-//
-// Bit order is the easy thing to get wrong: deflate packs bits LSB-first, but a Huffman code is
-// emitted MSB-first. Both forms are separate helpers below for that reason. The algorithm was
-// prototyped and round-tripped against a reference inflate before being written here.
+// ---- Minimal deflate (single fixed-Huffman block, RFC 1951 3.2.6, over hash-chain LZ77) ----
+// The vendored zlib has only the inflate half. Deflate packs bits LSB-first; Huffman codes are MSB-first.
 class BitWriter {
 public:
     void bits(std::uint32_t v, int n) {          // LSB-first: block header, extra bits
@@ -214,8 +204,7 @@ std::vector<std::uint8_t> deflate_fixed(const std::vector<std::uint8_t>& d) {
     w.bits(1, 1);                                 // BFINAL
     w.bits(1, 2);                                 // BTYPE = 01 (fixed Huffman)
     const std::ptrdiff_t n = (std::ptrdiff_t)d.size();
-    // head/prev are WINDOW-sized, not input-sized: a per-byte chain would be tens of MB on a
-    // 2048x2048 image, this is 160KB whatever the input.
+    // head/prev are window-sized, not input-sized.
     std::vector<std::int32_t> head((std::size_t)kHashSize, -1), prev((std::size_t)kWindow, -1);
     auto h3 = [&](std::ptrdiff_t p) {
         return (int)(((std::uint32_t)d[p] << 10) ^ ((std::uint32_t)d[p + 1] << 5) ^ d[p + 2]) & (kHashSize - 1);
@@ -275,9 +264,7 @@ std::vector<std::uint8_t> zlib_deflate(const std::vector<std::uint8_t>& raw) {
     return z;
 }
 
-// Uncompressed ("stored") zlib stream. Still used for ICONS: they are capped at 64px, so the
-// deflate above would save a few hundred bytes per sprite for a per-icon CPU cost. The map
-// render is the case where compression matters and it uses zlib_deflate.
+// Uncompressed ("stored") zlib stream; used for icons, where deflate is not worth the CPU.
 std::vector<std::uint8_t> zlib_store(const std::vector<std::uint8_t>& raw) {
     std::vector<std::uint8_t> z;
     z.push_back(0x78); z.push_back(0x01);          // zlib header
@@ -301,10 +288,7 @@ std::vector<std::uint8_t> zlib_store(const std::vector<std::uint8_t>& raw) {
 
 std::vector<std::uint8_t> encode_png(const Frame& f) {
     if (f.width <= 0 || f.height <= 0) return {};
-    // Scanlines with a leading filter byte (0 = none) per row. Sprites are flat colour with big
-    // transparent margins, which LZ77 matches directly - MEASURED, filtering those rows makes the
-    // result 1.5-2x LARGER because it breaks up exactly the runs deflate wants. (The map render
-    // is the opposite case - smooth gradients - and does filter; see EncodePngRgb.)
+    // Filter byte 0 per row: filtering flat-colour sprites makes the output 1.5-2x larger.
     std::vector<std::uint8_t> raw;
     raw.reserve((std::size_t)f.height * (1 + (std::size_t)f.width * 4));
     for (int y = 0; y < f.height; ++y) {
@@ -328,14 +312,8 @@ std::vector<std::uint8_t> encode_png(const Frame& f) {
 
 }  // namespace
 
-// RGBA in, PNG (colour type 2, no alpha) out, deflate-compressed.
-//
-// Three separate savings, in order of size: the UP filter (each byte stored as its difference
-// from the pixel above), then deflate, then dropping the alpha channel the map never uses.
-// Filtering is what does most of the work here - the render is smooth blended terrain, so
-// vertical neighbours differ by very little and the differences compress far better than the
-// colours do. Measured on representative terrain: ~4.3x smaller than the raw RGBA this replaces,
-// where deflate alone (unfiltered) gave only ~1.5x.
+// RGBA in, PNG (colour type 2, no alpha) out. The UP filter does most of the compression
+// work on smooth terrain (~4.3x vs ~1.5x unfiltered).
 std::vector<std::uint8_t> EncodePngRgb(const std::uint8_t* rgba, int w, int h) {
     if (!rgba || w <= 0 || h <= 0) return {};
     const std::size_t stride = (std::size_t)w * 3;
@@ -367,12 +345,8 @@ std::vector<std::uint8_t> EncodePngRgb(const std::uint8_t* rgba, int w, int h) {
     return png;
 }
 
-// Panel icons render in small boxes but interface sprites can be huge; cap the longest
-// side to keep the uncompressed-PNG data URL small. AREA-AVERAGE (box) filter: each
-// destination pixel integrates the exact source rectangle it covers (fractional edges
-// included), with colours alpha-weighted so transparent texels don't darken edges.
-// The earlier nearest-sample here visibly jaggied detailed sprites (the 80px Prifddinas
-// clan crests were the reported case) before Ultralight blurred them further.
+// Cap the longest side. Area-average (box) filter, alpha-weighted so transparent texels
+// don't darken edges; nearest-sample visibly jaggied detailed sprites.
 void downscale_to(Frame& f, int max_side) {
     if (f.width <= max_side && f.height <= max_side) return;
     double s = (double)max_side / (f.width > f.height ? f.width : f.height);
@@ -433,8 +407,7 @@ std::vector<std::uint8_t> SpriteAsPngScaled(SqliteIndexFile& sprites, int sprite
     return encode_png(f);
 }
 
-// Raw RGBA of a sprite's first frame, for compositing into the map render (no PNG round-trip).
-// Returns empty (w=h=0) on failure or if the cache stores it as a PNG (map-scene icons are raw frames).
+// Raw RGBA of a sprite's first frame. Empty (w=h=0) on failure or if the cache stores a PNG.
 std::vector<std::uint8_t> SpriteRawRgba(SqliteIndexFile& sprites, int sprite_id, int& w, int& h) {
     w = h = 0;
     auto raw = sprites.ReadRawArchive(sprite_id);

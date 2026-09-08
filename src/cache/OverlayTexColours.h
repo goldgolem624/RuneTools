@@ -1,8 +1,5 @@
-// GENERATED - overlay material (config opcode 3) -> average diffuse-texture colour.
-// RS3 map overlays are TEXTURED: their flat RGB is a neutral tint (Tuai Leit paths are
-// literally [68,68,68]) while the game paints the texture, so rendering the RGB makes
-// stone paths and building floors read as near-black. Averages computed offline from
-// js5-26 materials -> js5-52 textures; regenerate after a cache update.
+// GENERATED: overlay material (config opcode 3) -> average diffuse-texture colour (the flat RGB
+// is only a tint). Computed offline from js5-26 materials -> js5-52 textures; regenerate after a cache update.
 static const int kOverlayMatIds[] = {
     38, 39, 40, 46, 48, 50, 55, 66, 75, 322, 1135, 1304,
     1410, 1417, 1444, 1621, 1740, 1768, 1769, 1772, 1780, 1785, 1787, 1788,

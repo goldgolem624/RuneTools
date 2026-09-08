@@ -1,14 +1,5 @@
 #pragma once
-//
-// Launcher <-> companion contract for the EVENT CHANNEL: a filtered copy of decoded
-// server -> client packets (same capture point as NetProbeShare.h, the inbound framer)
-// that panels and plugins subscribe to instead of polling. Always on while the framer
-// hook lives; the launcher chooses WHICH opcodes land here through `mask`.
-//
-// Single writer (the game's network thread), many readers. Each record is its own
-// odd/even seqlock (seq odd while the body is being filled, even once published) and
-// `written` is the monotonic record count, published after the record. Plain C-layout
-// POD; zero allocations on the hook path.
+// Event channel (framer packets filtered by `mask`); single writer, per-record odd/even seqlock, `written` published last.
 
 #include <cstdint>
 #include "ServerOps.h"
@@ -18,20 +9,17 @@ namespace rtx::events {
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXEvents_v2_";   // moves with kVersion
 inline constexpr std::uint32_t kMagic   = 0x54564552;   // 'REVT'
 inline constexpr std::uint32_t kVersion = 2;
-inline constexpr int kMaxRecords = 2048;   // ~20 s of the busiest observed rate (106 op-0x52 / 45 s + per-tick ops)
+inline constexpr int kMaxRecords = 2048;   // ~20 s at the busiest observed rate
 inline constexpr int kPayload    = 1024;    // bytes kept; `length` still reports the true wire size
 
-// Default opcode mask (launcher never wrote one): the named game events in ServerOps.h
-// (skill_update, ge_offer, container_update, runclientscript, run_energy, run_weight,
-// ping_echo). message_game is never recorded here: the chat ring owns it.
 inline constexpr std::uint32_t kDefaultMask[8] = {
     rtx::sops::DefaultMaskWord(0), rtx::sops::DefaultMaskWord(1), rtx::sops::DefaultMaskWord(2), rtx::sops::DefaultMaskWord(3),
     rtx::sops::DefaultMaskWord(4), rtx::sops::DefaultMaskWord(5), rtx::sops::DefaultMaskWord(6), rtx::sops::DefaultMaskWord(7) };
 
 struct Record {
     std::uint32_t seq;        // seqlock: (index+1)*2 when published, that value | 1 while filling
-    std::uint32_t tick;       // GetTickCount() at capture (client cycle is not cheaply reachable here)
-    std::uint32_t wallMs;     // epoch ms, low 32 bits (wraps every ~49.7 days; pair with tick)
+    std::uint32_t tick;       // GetTickCount() at capture
+    std::uint32_t wallMs;     // epoch ms, low 32 bits
     std::int32_t  opcode;     // deciphered server opcode
     std::int32_t  length;     // TRUE payload length on the wire (may exceed kPayload)
     std::uint8_t  payload[kPayload];   // first min(length, kPayload) bytes
@@ -44,7 +32,7 @@ struct Share {
     std::uint32_t maskSet;             // launcher wrote `mask` at least once
     std::uint32_t mask[8];             // bit (op & 31) of word (op >> 5): record this opcode
     std::uint32_t flags;               // bit0 = hook feeding this ring
-    volatile std::uint64_t written;    // records ever written; published AFTER the record. slot = i % kMaxRecords
+    volatile std::uint64_t written;    // records ever written, published after the record; slot = i % kMaxRecords
     std::uint64_t truncated;           // records whose length exceeded kPayload
     std::uint64_t inbound;             // every framed inbound message seen (any opcode)
     Record recs[kMaxRecords];

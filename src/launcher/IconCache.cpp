@@ -1,5 +1,5 @@
 #include "IconCache.h"
-#include "../reader/Reader.h"   // client version -> the rendered-icon directory for this build
+#include "../reader/Reader.h"
 
 #include <Windows.h>
 #include <wincrypt.h>
@@ -18,11 +18,8 @@
 
 #pragma comment(lib, "crypt32.lib")
 
-// Icons are served from bundled packs staged next to the exe: items.pack (item icons, noted
-// items composited as item-on-note PNGs) and modelicons.pack (interface type-6 MODEL comps
-// rendered with their def cameras, indexed by MODEL id). Shared format:
-//   "RTIP", u32 version(1), u32 N, then N*(u32 offset, u32 len) indexed by
-//   id (len 0 = absent), then the raw image blobs (gif or png).
+// Bundled packs next to the exe: items.pack (item icons), modelicons.pack (type-6 model comps by model id).
+// Format: "RTIP", u32 version(1), u32 N, N*(u32 offset, u32 len) indexed by id (len 0 = absent), then gif/png blobs.
 
 namespace rtx::launcher::icons {
 
@@ -39,18 +36,16 @@ struct Pack {
     std::vector<std::uint32_t>           off, len;
     std::uint32_t                        present = 0;   // index entries with len > 0
 };
-// Requested-but-absent item ids (id -> request count); capped so a runaway poll cannot grow it.
+// Requested-but-absent item ids (id -> request count), capped.
 std::mutex                   g_miss_mu;
 std::unordered_map<int, int> g_misses;
 constexpr std::size_t        kMissCap = 10000;
 Pack g_items_pack { L"items.pack" };
-// Icons rendered offline from the cache for items the bundled pack predates. Ships with
-// the app exactly like items.pack, so a user gets them by opening the client: nothing is
-// rendered or downloaded on their machine.
+// Offline-rendered icons for items the bundled pack predates; shipped like items.pack.
 Pack g_extra_pack { L"items_extra.pack" };
 Pack g_model_pack { L"modelicons.pack" };
 
-// Load a pack's index once. Caller holds p.mu.
+// Caller holds p.mu.
 void ensure_index(Pack& p) {
     if (p.tried) return;
     p.tried = true;
@@ -94,7 +89,7 @@ const char* sniff_mime(const std::vector<unsigned char>& b) {
     return "image/gif";            // library default (GIF87a/GIF89a)
 }
 
-// Does this pack hold an icon for the id? Index only, so it is cheap to ask.
+// Index only.
 bool PackHas(Pack& p, int item_id) {
     if (item_id <= 0) return false;
     std::lock_guard<std::mutex> lk(p.mu);
@@ -113,7 +108,7 @@ std::string pack_icon_url(Pack& p, int id) {
 
     ensure_index(p);
     if (!p.ready || (std::size_t)id >= p.off.size() || p.len[id] == 0) {
-        p.mem_url[id] = "";    // cache the miss so the pack isn't re-checked
+        p.mem_url[id] = "";    // cache the miss
         return {};
     }
     std::ifstream f(p.path, std::ios::binary);
@@ -132,10 +127,7 @@ std::string pack_icon_url(Pack& p, int id) {
 }
 }  // namespace
 
-// ---- Offline-rendered icons ------------------------------------------------------------
-// Icons are rendered from the game cache into
-//   %USERPROFILE%\RuneToolsX\icons\<clientVersion>\<itemId>.png
-// and are served before items.pack, so a build newer than the bundled pack still shows art.
+// ---- Offline-rendered icons: %USERPROFILE%\RuneToolsX\icons\<clientVersion>\<itemId>.png, served before items.pack.
 
 std::wstring icons_root() {
     wchar_t buf[MAX_PATH] = {};
@@ -150,8 +142,7 @@ std::wstring sanitize_version(const std::string& v) {
     return out;
 }
 
-// Newest version directory under the icons root (by mtime), so a launcher started with no
-// client attached still serves the last render instead of nothing.
+// Newest version directory by mtime, for a launcher with no client attached.
 std::wstring newest_dir() {
     std::wstring root = icons_root();
     if (root.empty()) return {};
@@ -166,10 +157,7 @@ std::wstring newest_dir() {
     return best;
 }
 
-// The directory serving icons this session, or "" when there is none to trust.
-// A directory is used ONLY when it holds a `.validated` marker: a half-written render, or
-// one from the wrong source, would answer every lookup and silently shadow items.pack, and
-// because it answers them no miss is ever logged to reveal the bad art.
+// Directory serving icons this session; used only when it holds a `.validated` marker.
 std::mutex   g_dir_mu;
 bool         g_dir_done = false;
 std::wstring g_dir;
@@ -199,7 +187,7 @@ std::wstring active_dir() {
     return g_dir;
 }
 
-// Path of a rendered PNG for the id, or "" (memoized per id: one stat per id per session).
+// Rendered PNG path for the id, memoized.
 std::mutex                            g_ren_mu;
 std::unordered_map<int, std::wstring> g_ren_path;
 std::wstring rendered_png(int item_id) {
@@ -222,7 +210,7 @@ std::wstring rendered_png(int item_id) {
     return path;
 }
 
-// Rendered PNG -> data URL, memoized per id alongside the path memo.
+// Rendered PNG -> data URL, memoized.
 std::mutex                           g_ren_url_mu;
 std::unordered_map<int, std::string> g_ren_url;
 std::string rendered_icon_url(int item_id) {
@@ -300,12 +288,12 @@ std::string IconMissesJson() {
 
 int RenderedIconCount() {
     static std::mutex mu;
-    static int        cached = -1;      // counted once per process: a directory walk per poll is not free
+    static int        cached = -1;      // counted once per process
     std::lock_guard<std::mutex> lk(mu);
     if (cached >= 0) return cached;
     int n = 0;
     {
-        Pack& p = g_extra_pack;                 // shipped renders: every user has these
+        Pack& p = g_extra_pack;
         std::lock_guard<std::mutex> lk(p.mu);
         ensure_index(p);
         if (p.ready) n += (int)p.present;
@@ -338,7 +326,7 @@ std::string AssetFileBase64(const std::wstring& filename) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (f) {
         std::streamoff sz = f.tellg();
-        if (sz > 0 && sz <= 64ll * 1024 * 1024) {           // sane bound (tables are ~10-26MB)
+        if (sz > 0 && sz <= 64ll * 1024 * 1024) {           // tables are ~10-26MB
             f.seekg(0, std::ios::beg);
             std::vector<unsigned char> bytes(static_cast<std::size_t>(sz));
             f.read(reinterpret_cast<char*>(bytes.data()), sz);

@@ -1,9 +1,5 @@
 #pragma once
-//
-// World-marker transport: launcher projects the live scene to screen-space
-// primitives and publishes a compact command list; the in-client module draws
-// them into the game frame. Launcher -> module. Plain C-layout POD; coords are
-// client pixels (origin top-left). Labels reference a module-built glyph atlas.
+// World-marker draw list, launcher -> module; client pixels, origin top-left.
 
 #include <cstdint>
 
@@ -15,9 +11,6 @@ inline constexpr std::uint32_t kVersion = 5;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
-// Glyph atlas layout (shared by both sides): ASCII first..last, one cell each,
-// kGlyphCellW x kGlyphCellH px in a kGlyphCols-wide grid. A label at pixel height H
-// advances H * (kGlyphCellW / kGlyphCellH) per character (fixed pitch).
 inline constexpr std::uint16_t kGlyphFirst = 32;    // space
 inline constexpr std::uint16_t kGlyphLast  = 126;   // '~'
 inline constexpr int kGlyphCols  = 16;
@@ -30,13 +23,9 @@ enum Type : std::uint16_t {
     kFillRect  = 3,  // filled [x0,y0]-(x1,y1]
     kGlyph     = 4,  // atlas cell `glyph` drawn with top-left at (x0,y0), size (x1,y1)
     kFillQuad  = 5,  // filled arbitrary quad (x0,y0)(x1,y1)(x2,y2)(x3,y3), perimeter order
-    kText      = 6,  // proportional label `text`; x1 = glyph px height. glyph = flags:
-                     //   0 -> legacy pill centred at (x0,y0), rgba = accent (border).
-                     //   bit0 -> PLAIN single-line text, no pill; rgba = text colour;
-                     //   y0 = the line's vertical centre; align = (glyph>>1)&3:
-                     //   0 x0=left edge, 1 x0=centre, 2 x0=right edge.
-    kRoundFill = 7,  // filled rounded rect: (x0,y0) top-left, (x1,y1) = w,h,
-                     // thickness = corner radius (>= half min extent = capsule/circle)
+    kText      = 6,  // label `text`, x1 = glyph px height; glyph = flags: 0 pill centred at (x0,y0),
+                     //   bit0 plain text (rgba = colour, y0 = line centre), align (glyph>>1)&3: 0 left 1 centre 2 right
+    kRoundFill = 7,  // filled rounded rect: (x0,y0) top-left, (x1,y1) = w,h, thickness = corner radius
 };
 
 inline constexpr std::uint16_t kTextPlain = 1;              // kText glyph-field flags
@@ -64,7 +53,7 @@ inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
 }
 
 struct Share {
-    std::uint32_t magic;       // kMagic once the launcher has initialised it
+    std::uint32_t magic;       // kMagic once initialised
     std::uint32_t version;     // kVersion
     std::uint32_t pid;         // target client pid (sanity)
     volatile std::uint32_t seq;    // write seqlock (odd = mid-update)

@@ -1,9 +1,5 @@
 #pragma once
-//
-// HUD-reminder transport: the launcher decodes a sprite to RGBA + a caption and publishes
-// them here; the in-client module draws a top-center sprite + caption over the game frame.
-// The launcher CREATES + writes this section; the module OPENS it read-only. launcher -> module.
-//
+// HUD-reminder transport, launcher -> module: sprite RGBA + caption drawn top-centre.
 #include <cstdint>
 
 namespace rtx::hud {

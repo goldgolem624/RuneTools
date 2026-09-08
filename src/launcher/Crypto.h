@@ -40,17 +40,14 @@ bool DecryptAesGcm(const std::uint8_t* key,   std::size_t key_len,
                    const std::uint8_t* tag,        std::size_t tag_len,
                    std::vector<std::uint8_t>& out_plaintext);
 
-// Per-user DPAPI: a copy moved to a different Windows account
-// cannot be unwrapped.
+// Per-user DPAPI: not unwrappable under another Windows account.
 std::vector<std::uint8_t> ProtectForCurrentUser(const std::string& plaintext);
 std::string               UnprotectForCurrentUser(const std::vector<std::uint8_t>& cipher);
 
 // SHA-256 of a buffer into out[32].
 bool Sha256(const std::uint8_t* data, std::size_t len, std::uint8_t out[32]);
 
-// Verify an ECDSA P-256 signature over `msg`. `sig` is the raw 64-byte r||s form
-// (IEEE-P1363, as emitted by the server) and `pubkey_xy` is the raw 64-byte X||Y
-// public key (the pinned key). Returns true ONLY for a cryptographically valid signature.
+// ECDSA P-256 verify. `sig` is raw 64-byte r||s (IEEE-P1363); `pubkey_xy` is raw 64-byte X||Y.
 bool VerifyEcdsaP256(const std::uint8_t* msg, std::size_t msg_len,
                      const std::uint8_t* sig, std::size_t sig_len,
                      const std::uint8_t* pubkey_xy, std::size_t pubkey_len);

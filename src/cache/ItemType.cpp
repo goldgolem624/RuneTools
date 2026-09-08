@@ -4,11 +4,7 @@ namespace rtx::cache {
 
 namespace {
 
-// Opcode dispatcher for the RS3 ItemType definition decode. We only
-// keep a handful of fields (name + a few cheap extras for future use);
-// every other opcode is consumed to its correct byte width so the stream
-// stays aligned. Unknown opcodes terminate the loop -- a misaligned
-// stream beyond an unknown opcode produces garbage anyway.
+// ItemType opcode dispatcher; unused opcodes are consumed to keep the stream aligned.
 bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
     switch (opcode) {
         case 1:  d.inv_model_id = s.ReadBigSmart();           return true;
@@ -19,11 +15,7 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 11: d.stackable = true;                          return true;
         case 12: s.ReadInt();                                 return true;
         case 9: {
-            // count x BigSmart (model-id-range values). Misread as a payload-less flag
-            // until build ~950: with count 1 the stream stayed aligned by aliasing the
-            // list as an op-1 read (which silently overwrote inv_model_id -- unconsumed,
-            // so harmless), but counts 2/4 in newer files misparse. Full-index
-            // validated 62959/62959 with this shape.
+            // count(u8) x BigSmart.
             int n = s.ReadUnsignedByte();
             for (int i = 0; i < n; ++i) s.ReadBigSmart();
             return true;
@@ -36,9 +28,7 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 30: case 31: case 32: case 33: case 34:
                  d.options[opcode - 30] = s.ReadString();         return true;
         case 35: case 36: case 37: case 38: case 39: {
-            // Worn (equipped) right-click options. Augmented gear uniquely carries
-            // a "Disassemble" worn option (to recover the augmentor); plain worn
-            // gear has "Destroy"/"Drop" instead.
+            // Worn options; only augmented gear carries a "Disassemble" worn option.
             std::string opt = s.ReadString();
             if (opt == "Disassemble") d.augmented = true;
             d.worn_options[opcode - 35] = opt;
@@ -93,10 +83,8 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 167: case 168: case 178:                         return true;
         case 181: d.value = s.ReadLong();                     return true;
         case 182: s.Read24BitInt();                           return true;   // item-id-sized link (build ~950)
-        // Build 949 widened every item-id link field to u24 (ids passed 65535):
-        // 190..199 supersede the u16,u16 pairs 100..109; 201/202 supersede the
-        // note links 97/98; 203..208 supersede the remaining u16 links. Decoded
-        // for alignment (note links kept -- the noted-icon compositing uses them).
+        // 949: u24 item-id links. 190..199 supersede 100..109, 201/202 the note links 97/98,
+        // 203..208 the remaining u16 links.
         case 190: case 191: case 192: case 193: case 194:
         case 195: case 196: case 197: case 198: case 199:
                  s.Read24BitInt(); s.ReadUnsignedShort();     return true;
@@ -112,9 +100,7 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
                 bool is_string = s.ReadUnsignedByte() == 1;
                 int  key       = s.Read24BitInt();
                 if (is_string) {
-                    // The augmented destroy message ("...lose all the item's XP and
-                    // gizmos") is a string param -- a reliable augmentation marker
-                    // even when the item name has no "Augmented" prefix.
+                    // A destroy message naming "gizmos" marks augmented gear even without the name prefix.
                     std::string v = s.ReadString();
                     if (v.find("gizmo") != std::string::npos) d.augmented = true;
                     d.params_s[key] = std::move(v);

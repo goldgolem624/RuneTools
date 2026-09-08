@@ -5,16 +5,11 @@
 
 namespace rtx::cache {
 
-// NXT "ZL" wrapper (how NXT writes its js5-* archive blobs): bytes 0-1 = "ZL"
-// magic, 4-7 = uncompressed size (BE), 8+ = zlib stream. Returns the
-// file-container payload (the bytes SplitArchive walks); empty on any other
-// input.
+// NXT "ZL" wrapper: bytes 0-1 "ZL", 4-7 uncompressed size (BE), 8+ zlib stream. Empty on other input.
 std::vector<std::uint8_t> Decompress(const std::vector<std::uint8_t>& raw);
 
-// Standard RS3 container: [type:1][compressedSize:4][ (origSize:4) ][payload].
-// type 0 = stored, 1 = bzip2 ("BZh1" header stripped), 2 = zlib/gzip
-// (auto-detected); lzma unsupported -> empty. Used by the sprite index (8),
-// which doesn't use the "ZL" wrapper.
+// Standard container: [type:1][compressedSize:4][(origSize:4)][payload]. type 0 stored,
+// 1 bzip2 ("BZh1" stripped), 2 zlib/gzip; lzma -> empty. Used by the sprite index (8).
 std::vector<std::uint8_t> DecompressStandard(const std::vector<std::uint8_t>& raw);
 
 }  // namespace rtx::cache

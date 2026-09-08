@@ -20,7 +20,7 @@ constexpr UINT kTrayId  = 1;
 constexpr UINT kMsgTray = WM_APP + 1;   // tray icon callback (legacy format: lParam = mouse msg)
 constexpr wchar_t kClass[] = L"RuneToolsXNotifyWnd";
 
-bool ensure_icon();   // fwd (needs WndProc, which needs restore_main)
+bool ensure_icon();
 
 std::wstring widen(const std::string& s) {
     if (s.empty()) return std::wstring();
@@ -36,7 +36,6 @@ HICON load_app_icon(int px) {
     return h ? h : LoadIconW(nullptr, IDI_APPLICATION);
 }
 
-// Bring the parked launcher window back from the tray.
 void restore_main() {
     HWND w = g_main;
     if (!w || !IsWindow(w)) return;
@@ -46,8 +45,7 @@ void restore_main() {
 }
 
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    // Explorer restarted (crash / update): every tray icon died with it. Re-register on
-    // the shell's broadcast, or a minimized-to-tray launcher becomes unreachable.
+    // Explorer restart kills every tray icon: re-register on the shell's broadcast.
     static const UINT s_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     if (m == s_taskbarCreated) {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -55,9 +53,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         ensure_icon();
         return 0;
     }
-    // A second launcher instance bowing out asks the running one to show itself. Broadcast
-    // registered message (see main.cpp single-instance guard): it works whether the launcher
-    // window is minimized or parked (hidden) in the tray, which a window search cannot tell.
+    // Second-instance "show yourself" broadcast (see main.cpp single-instance guard).
     static const UINT s_showMain = RegisterWindowMessageW(L"RuneToolsX.ShowMain");
     if (m == s_showMain) { restore_main(); return 0; }
     if (m == kMsgTray) {
@@ -68,9 +64,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING, 2, L"Exit");
             POINT pt; GetCursorPos(&pt);
-            // Tray-menu incantation: the owner must be foreground or the menu never
-            // dismisses on an outside click; the WM_NULL kick covers the last edge
-            // (menu still up while the shell re-activates itself).
+            // Owner must be foreground or the menu never dismisses; WM_NULL kick per MSDN.
             SetForegroundWindow(h);
             UINT cmd = (UINT)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
                                             pt.x, pt.y, 0, h, nullptr);
@@ -84,9 +78,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-// Subclass of the LAUNCHER window: a minimize completes normally, then the window hides,
-// which drops its taskbar button -- the tray icon (guaranteed present, see EnableTray)
-// is the way back. Only the minimize path is touched; everything else chains through.
+// Launcher window subclass: minimize completes, then the window hides (tray icon is the way back).
 LRESULT CALLBACK MainSubclass(HWND h, UINT m, WPARAM w, LPARAM l) {
     WNDPROC prev = g_mainPrev;
     LRESULT r = prev ? CallWindowProcW(prev, h, m, w, l) : DefWindowProcW(h, m, w, l);
@@ -94,7 +86,7 @@ LRESULT CALLBACK MainSubclass(HWND h, UINT m, WPARAM w, LPARAM l) {
     return r;
 }
 
-// Create the hidden window + register the tray icon once. Caller holds g_mu.
+// Caller holds g_mu.
 bool ensure_icon() {
     if (g_added) return true;
     if (!g_hwnd) {
@@ -103,7 +95,7 @@ bool ensure_icon() {
         wc.lpfnWndProc   = WndProc;
         wc.hInstance     = GetModuleHandleW(nullptr);
         wc.lpszClassName = kClass;
-        RegisterClassExW(&wc);   // harmless if already registered (returns 0 + ERROR_CLASS_ALREADY_EXISTS)
+        RegisterClassExW(&wc);   // harmless if already registered
         g_hwnd = CreateWindowExW(0, kClass, L"RuneTools", 0, 0, 0, 0, 0,
                                  HWND_MESSAGE, nullptr, wc.hInstance, nullptr);
         if (!g_hwnd) return false;
@@ -132,7 +124,6 @@ bool Show(const std::string& title, const std::string& body) {
     nid.hWnd   = g_hwnd;
     nid.uID    = kTrayId;
     nid.uFlags = NIF_INFO;
-    // Use the app icon in the toast (large), not the generic info glyph.
     nid.dwInfoFlags  = NIIF_USER | NIIF_LARGE_ICON;
     nid.hBalloonIcon = load_app_icon(32);
 

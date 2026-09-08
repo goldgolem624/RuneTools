@@ -6,21 +6,10 @@
 
 namespace rtx::audio {
 
-// Ogg Vorbis playback for cache audio, in-process.
-//
-// The cache stores every sound effect and music track as Ogg Vorbis (CacheReader::SoundOgg).
-// Windows ships no Vorbis codec - verified: no decoder DLL, and MediaPlayer reports
-// HasAudio=false for these files - and the panel's renderer has no media element, so both the
-// decode (stb_vorbis) and the mixing (waveOut) happen here.
-//
-// waveOut rather than PlaySound because a player needs to pause, seek and report where it is;
-// PlaySound can only fire and forget.
+// In-process Ogg Vorbis playback for cache audio (stb_vorbis decode, waveOut mix).
 
-// Decode and start playing. Returns false only if the bytes are not decodable - the decode
-// itself runs on a worker, so this never blocks the caller.
-// `chunks` are the sound's Ogg streams in order (see CacheReader::SoundOggChunks). Each is a
-// complete stream, so they are decoded separately and their PCM joined - passing the
-// concatenated bytes to a decoder would yield only the first chunk.
+// Decode on a worker and start playing; never blocks the caller. `chunks` are the sound's
+// Ogg streams in order (CacheReader::SoundOggChunks), each decoded separately and joined.
 bool Play(const std::vector<std::vector<std::uint8_t>>& chunks, int volume_pct);
 
 void Pause();

@@ -48,8 +48,7 @@ std::string w2u(const std::wstring& w) {
     return s;
 }
 
-// Read a REG_SZ / REG_EXPAND_SZ value; empty on any failure. `view` is KEY_WOW64_64KEY /
-// KEY_WOW64_32KEY (or 0 for HKCU / the default view).
+// REG_SZ / REG_EXPAND_SZ value, empty on failure. `view` = KEY_WOW64_64KEY / KEY_WOW64_32KEY / 0.
 std::wstring reg_str(HKEY root, const wchar_t* subkey, const wchar_t* value, REGSAM view) {
     HKEY h{};
     if (RegOpenKeyExW(root, subkey, 0, KEY_READ | view, &h) != ERROR_SUCCESS) return {};
@@ -90,8 +89,7 @@ std::wstring uninstall_install_location(const wchar_t* displayName) {
     return {};
 }
 
-// Steam library roots: the Steam install dir + every "path" listed in libraryfolders.vdf
-// (so a game moved to another drive / a custom-named library is still found).
+// Steam install dir + every "path" listed in libraryfolders.vdf.
 std::vector<std::wstring> steam_libraries() {
     std::vector<std::wstring> libs;
     std::wstring steam = reg_str(HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath", 0);
@@ -171,13 +169,12 @@ SignerCheck VerifyGameSigner(const std::wstring& path) {
     WINTRUST_FILE_INFO fi{}; fi.cbStruct = sizeof(fi); fi.pcwszFilePath = path.c_str();
     WINTRUST_DATA wd{}; wd.cbStruct = sizeof(wd);
     wd.dwUIChoice       = WTD_UI_NONE;
-    wd.fdwRevocationChecks = WTD_REVOKE_NONE;          // no network round trip on every launch
+    wd.fdwRevocationChecks = WTD_REVOKE_NONE;          // no network round trip
     wd.dwUnionChoice    = WTD_CHOICE_FILE;
     wd.pFile            = &fi;
     wd.dwStateAction    = WTD_STATEACTION_VERIFY;
     wd.dwProvFlags      = WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_SAFER_FLAG;
-    // No WTD_LIFETIME_SIGNING_FLAG: a countersigned (timestamped) file stays valid after the
-    // certificate's own expiry, which is how an older genuine build keeps launching.
+    // No WTD_LIFETIME_SIGNING_FLAG: a timestamped file stays valid after certificate expiry.
     GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     LONG st = WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
 
@@ -190,8 +187,7 @@ SignerCheck VerifyGameSigner(const std::wstring& path) {
     WinVerifyTrust((HWND)INVALID_HANDLE_VALUE, &action, &wd);
 
     if (st != ERROR_SUCCESS) {
-        // A signer name with a failed check means the signature is present but the bytes no
-        // longer match it: the file was modified after signing.
+        // Signer name with a failed check = the file was modified after signing.
         if (!out.subject.empty())
             out.reason = "This file has been modified since \"" + out.subject + "\" signed it, so it cannot be trusted.";
         else if (st == TRUST_E_NOSIGNATURE)
@@ -252,30 +248,28 @@ std::wstring DefaultRsClientPath() {
 }
 
 std::wstring AutoRsClientPath() {
-    // RuneScape.exe (the Jagex Launcher game wrapper). The wrapper refreshes stale session tokens
-    // before spawning the real rs2client.exe child; spawning rs2client directly skips that and lands
-    // on the shell "no app for rs-launch" dialog. Resolved via the registry and Steam libraries
-    // first, then a per-fixed-drive scan of the standard relative layouts as a backstop.
+    // RuneScape.exe (the Jagex Launcher wrapper) refreshes session tokens before spawning
+    // rs2client.exe; spawning rs2client directly lands on the "no app for rs-launch" dialog.
     std::vector<std::wstring> cands;
 
-    // 1) Jagex Launcher install dir from the registry (covers a custom dir on any drive).
+    // 1) Jagex Launcher install dir from the registry.
     if (std::wstring jx = uninstall_install_location(L"Jagex Launcher"); !jx.empty()) {
         if (jx.back() != L'\\' && jx.back() != L'/') jx.push_back(L'\\');
         cands.push_back(jx + L"Games\\RuneScape\\RuneScape.exe");
     }
 
-    // 2) Every Steam library (Steam dir + libraryfolders.vdf paths).
+    // 2) Steam libraries.
     for (std::wstring lib : steam_libraries()) {
         if (!lib.empty() && lib.back() != L'\\' && lib.back() != L'/') lib.push_back(L'\\');
         cands.push_back(lib + L"steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe");
     }
 
-    // 3) Per-fixed-drive scan of the standard relative layouts (in-place move to D:/E:/...).
+    // 3) Standard relative layouts on every fixed drive.
     static const wchar_t* kRel[] = {
         L"Program Files (x86)\\Jagex Launcher\\Games\\RuneScape\\RuneScape.exe",
         L"Program Files\\Jagex Launcher\\Games\\RuneScape\\RuneScape.exe",
         L"Program Files\\Jagex\\RuneScape Launcher\\RuneScape.exe",
-        L"ProgramData\\Jagex\\launcher\\RuneScape.exe",   // Jagex Launcher game cache (e.g. C:\ProgramData\Jagex\launcher)
+        L"ProgramData\\Jagex\\launcher\\RuneScape.exe",   // Jagex Launcher game cache
         L"Program Files (x86)\\Steam\\steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe",
         L"Steam\\steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe",
         L"SteamLibrary\\steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe",
@@ -297,9 +291,7 @@ std::wstring AutoRsClientPath() {
 
 namespace {
 
-// Parent env minus any existing JX_ entries, then overrides appended
-// (doubled-NUL terminated wide block). Wiping parent JX_ stops a stale
-// launcher-env entry from outranking a saved-account value.
+// Parent env minus JX_ entries, then overrides appended (double-NUL terminated wide block).
 std::wstring build_env_block(
     const std::unordered_map<std::string, std::string>& env_overrides) {
 
@@ -349,8 +341,7 @@ LaunchResult launch_impl(
         rtx::log::Launcher("launch failed: " + r.detail);
         return r;
     }
-    // Checked on every launch, not only when chosen: the file at that path can change under
-    // us, and the environment below carries the account's session identifiers.
+    // Checked on every launch: the file can change under us and the env carries session identifiers.
     if (SignerCheck sc = VerifyGameSigner(rs); !sc.ok) {
         r.detail = "Launch refused: " + sc.reason;
         rtx::log::Launcher("launch refused: " + w2u(rs) + " signer=\"" + sc.subject + "\": " + sc.reason);
@@ -387,9 +378,7 @@ LaunchResult launch_impl(
         return r;
     }
     r.pid = pi.dwProcessId;
-    // Tie every spawned client's lifetime to the launcher via a kill-on-close job object: the whole
-    // tree (the bootstrap re-spawns the real client, which inherits job membership) is terminated
-    // the moment this process goes away -- normal exit, crash, or task-kill.
+    // Kill-on-close job object ties the whole spawned client tree to the launcher's lifetime.
     static HANDLE s_job = [] {
         HANDLE j = CreateJobObjectW(nullptr, nullptr);
         if (j) {

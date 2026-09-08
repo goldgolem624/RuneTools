@@ -8,11 +8,7 @@
 
 namespace rtx::cache {
 
-// Decoded location ("object") definition (index 16). We keep the fields the
-// Scene panel needs (name, right-click options, footprint); every other opcode
-// is consumed to its correct width so the stream stays aligned. Faithful to the
-// RS3 LocationConfig opcode table (the reference decode src/definitions/location_configs.rs,
-// feature "rs3").
+// Decoded location definition (index 16); unused opcodes are consumed to keep the stream aligned.
 struct LocDef {
     int                        id = -1;
     std::string                name;
@@ -25,9 +21,7 @@ struct LocDef {
     bool                       members = false;   // opcode 91
     bool                       no_clip = false;   // opcode 17 (unknown_17): tile stays walkable
     std::vector<int>           morph_children;    // opcodes 77/92 configChangeDest -- varbit-selected variant ids (>=0 only)
-    // Morph selector: the live variant is morph_variants[value], where value is the
-    // varbit (or varp) reading. morph_variants is index-aligned (keeps -1 = "no
-    // change"); morph_default is op92's fallback when the value is out of range.
+    // Live variant = morph_variants[varbit/varp value] (-1 = no change); morph_default when out of range.
     int                        morph_varbit = -1;  // opcodes 77/92 first field (0xFFFF -> -1)
     int                        morph_varp = -1;    // opcodes 77/92 second field (0xFFFF -> -1)
     int                        morph_default = -1; // opcode 92 default child

@@ -4,10 +4,8 @@
 #include <string>
 #include <vector>
 
-// Persistent per-character bank cache. The RS3 bank (container 95) only exists in
-// client memory while the bank is open, so snapshot it while open and keep it on disk
-// to display when closed / next session. Stored encrypted at
-// %USERPROFILE%\RuneToolsX\bankcache\<character>.bnk (format in BankCache.cpp).
+// Persistent per-character container cache (bank 95 exists in memory only while open).
+// Stored encrypted at %USERPROFILE%\RuneToolsX\bankcache\<character>.bnk (format in BankCache.cpp).
 
 namespace rtx::reader {
 
@@ -21,9 +19,7 @@ struct BankCacheData {
     long long             cached_at = 0;
 };
 
-// Generic per-character container cache (same encrypted format). `kind` selects the cache
-// subdir/file ("bank" -> bankcache, "metalbank" -> metalbankcache, ...) so multiple
-// on-demand containers (bank 95, metal bank 858) each persist independently.
+// `kind` selects the cache subdir ("bank" -> bankcache, "metalbank" -> metalbankcache, ...).
 bool          WriteContainerCache(const std::string& kind, const std::string& character,
                                   const std::vector<BankSlot>& slots);
 BankCacheData ReadContainerCache(const std::string& kind, const std::string& character);

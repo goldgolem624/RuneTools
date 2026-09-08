@@ -1,6 +1,5 @@
 #pragma once
-// Helpers shared by the JS bridge translation units (Bridge.cpp, Update.cpp): JSValue <-> UTF-8
-// conversion, JSON string escaping, the detached-thread guard, and the RuneTools server host.
+// Helpers shared by the JS bridge translation units (Bridge.cpp, Update.cpp).
 #include <JavaScriptCore/JavaScript.h>
 #include <exception>
 #include <string>
@@ -8,15 +7,12 @@
 
 namespace rtx::launcher {
 
-// The RuneTools server and the two public update endpoints (party-sync, VoS, world events and
-// the self-updater all talk to the same host).
 inline constexpr wchar_t kUpdateHost[]  = L"runetools.io";
 inline constexpr wchar_t kLatestPath[]  = L"/api/client/latest-version";
-// Fallback launcher version; the real one is read from the exe's FILEVERSION (app.rc).
+// Fallback only; the real version comes from the exe's FILEVERSION (app.rc).
 inline constexpr const char* kAppVersion = "1.0.0";
 
-// Body wrapper for the long-lived detached threads: an escaping exception would std::terminate
-// the whole launcher, so log it and let the thread end.
+// Detached-thread body wrapper: an escaping exception would std::terminate the launcher.
 template <class F>
 void guarded(const char* what, F&& f) {
     try { f(); }

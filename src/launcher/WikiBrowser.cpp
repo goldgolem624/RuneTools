@@ -14,18 +14,9 @@
 #include <map>
 #include <mutex>
 
-// Model notes:
-//  - One window per game client (pid), created on demand and reused.
-//  - The AppCore window stays TOP-LEVEL (AppCore's input routing expects that; running it
-//    as a WS_CHILD ate every click) and is GLUED to the game host instead: owner = host,
-//    so it z-orders above the host, hides with it, and never appears in the taskbar.
-//  - A slim native caption strip (painted in the subclass) drags the pane; 6px edges
-//    resize it; geometry persists relative to the host client origin so it reopens where
-//    the user left it, on any monitor.
-//  - URL policy lives in one function, allow_url(): scheme https, host runescape.wiki or
-//    *.runescape.wiki. Everything, everywhere in this file goes through it.
-//  - "rtx:" is a private command scheme used ONLY by our injected toolbar (rtx://close).
-//    It never reaches the network: the load listener intercepts and Stop()s.
+// One window per game client (pid). The AppCore window must stay top-level (WS_CHILD ate
+// every click), so it is owned by the game host instead: z-follows, hides with it, no taskbar.
+// Every URL goes through allow_url(). "rtx:" is a private scheme used only by the injected toolbar.
 
 namespace rtx::launcher::wiki {
 namespace {
@@ -35,9 +26,7 @@ using namespace ultralight;
 constexpr const char* kHome = "https://runescape.wiki/";
 constexpr int kChrome = 26;        // native caption strip height (drag handle)
 
-// Windows 11 draws a one pixel system border around every top-level window, which showed
-// as a white ring around the pane. Square corners (rounded ones force the border) and
-// DWMWA_COLOR_NONE remove it; both are no-ops before Windows 11.
+// Win11 draws a 1px system border around top-level windows; square corners + DWMWA_COLOR_NONE remove it.
 static void quiet_frame(HWND h) {
     DWORD pref = 1 /* DWMWCP_DONOTROUND */;
     DwmSetWindowAttribute(h, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &pref, sizeof(pref));
@@ -71,10 +60,7 @@ std::string ul_to_std(const String& s) {
     return std::string(u8.data(), u8.length());
 }
 
-// Guard + theme script injected into EVERY committed wiki page. Runs in the wiki's own
-// world; it has no rtx bridge to reach, and nothing here grants one. The theme block
-// runs at window-object time (before the wiki's scripts), so dark mode applies without
-// a flash and the cookie makes every later load server-side dark.
+// Guard + theme script injected into every committed wiki page (page world, no rtx bridge).
 constexpr const char* kGuardJs = R"JS(
 (function () {
   // ---- the wiki's OWN dark theme, guaranteed -------------------------------------
@@ -213,10 +199,7 @@ struct Instance;
 std::map<std::uint32_t, Instance*> g_wins;   // main thread only
 ultralight::App* g_app = nullptr;
 
-// The wiki decides its layout per FORMAT, not per width, so the pane picks the format
-// the wiki itself would recommend for the current dimensions: narrow panes browse the
-// mobile format, desktop-sized panes the full layout. Crossing the threshold during a
-// resize reloads the current page in the other format.
+// Narrow panes load the wiki's mobile format, wide ones desktop; crossing the threshold reloads.
 bool want_mobile(int paneW) { return paneW < 1000; }
 std::string with_format(std::string url, bool mobile) {
     auto p = url.find("useformat=");
@@ -246,9 +229,7 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
     bool userSizing = false;   // inside a native drag/resize: Tick must not fight it
     SavedRect rel;             // host-relative geometry Tick holds the pane to (cached, not re-read)
     bool mobileFmt = true;     // format currently loaded; flips when a resize crosses the threshold
-    // What Tick last ASKED for, host relative. GetWindowRect reports the DWM frame, which does
-    // not match what SetWindowPos was given, so comparing measured against wanted never settles
-    // and the pane resized on every tick: the caption strip and its buttons visibly blinked.
+    // Last requested geometry, host relative. GetWindowRect reports the DWM frame, so Tick compares against this.
     bool  applied = false;
     int   appDx = 0, appDy = 0, appW = 0, appH = 0;
     long long netDenied = 0;
@@ -274,9 +255,7 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
     void OnDOMReady(View* v, uint64_t, bool is_main, const String& url) override {
         if (!is_main) return;
         v->EvaluateScript(kGuardJs);   // idempotent (guard flag)
-        // Per-page fingerprint: html/body theme classes + cookie state. A light-mode
-        // report is diagnosed from this line alone: no line = the guard never ran on
-        // that page; a line with light classes = enforcement lost to the page.
+        // Per-page theme fingerprint for diagnosing light-mode reports.
         String cls = v->EvaluateScript(
             "'html[' + document.documentElement.className + '] body[' + "
             "(document.body?document.body.className:'') + '] cookie=' + "
@@ -293,17 +272,13 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
             rtx::log::Client(pid, "[wiki] blocked request: " + ul_to_std(req.url()));
         return ok;
     }
-    // Hand / text / arrow cursor follows the page (links get the pointing hand): the
-    // view reports cursor changes here and the AppCore window applies them natively.
     void OnChangeCursor(View*, Cursor cursor) override { if (win) win->SetCursor(cursor); }
     void OnResize(Window*, uint32_t w, uint32_t h) override { fit_overlay((int)w, (int)h); }
     void OnClose(Window*) override { closing = true; }
 
     void fit_overlay(int, int) {
         if (!ov || !IsWindow(hwnd)) return;
-        // Size from the REAL client rect: with the frameless-resize trick the client is
-        // a frame's-width larger than the size AppCore reports, and the uncovered margin
-        // painted the window-class white (the "white borders").
+        // Use the real client rect: with the frameless trick it is larger than what AppCore reports.
         RECT rc{}; GetClientRect(hwnd, &rc);
         int oh = rc.bottom - kChrome; if (oh < 40) oh = 40;
         ov->MoveTo(0, kChrome);
@@ -318,8 +293,7 @@ struct Instance : public LoadListener, public NetworkListener, public WindowList
     }
 };
 
-// Caption-strip buttons (Back / Home / Close), right-aligned. Painted natively and
-// hit natively, so they sit OUTSIDE the page and can never cover wiki content.
+// Caption-strip buttons (Back / Home / Close), painted and hit natively so they never cover page content.
 constexpr int kBtnW = 34, kBtnCount = 3;
 RECT strip_btn_rect(HWND h, int i) {   // i = 0 Back, 1 Home, 2 Close (rightmost)
     RECT rc{}; GetClientRect(h, &rc);
@@ -337,12 +311,7 @@ RECT default_rect(HWND host) {
     return r;
 }
 
-// Fit a host-client-relative box inside the host's client area: never bigger than the host,
-// never hanging off an edge. WM_MOVING/WM_SIZING already do this, but only while the USER is
-// dragging -- so the initial placement and any host resize could leave the pane overhanging
-// until it was touched. Deliberately allowed to go under the 360x300 minimum: that minimum
-// is about usability during a resize, and a host smaller than it should still get a pane
-// that fits rather than one that hangs off the screen.
+// Clamp a host-relative box inside the host client area. Deliberately allowed under the 360x300 minimum.
 void fit_to_host(HWND host, int& dx, int& dy, int& w, int& h) {
     RECT hc{}; GetClientRect(host, &hc);
     const int cw = hc.right, ch = hc.bottom;
@@ -378,9 +347,7 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         break;
     }
     case WM_PAINT: {
-        // AppCore's paint handler blits the web view (CPU mode); swallowing WM_PAINT
-        // here left the whole pane white. Let it paint FIRST, then draw the caption
-        // strip on top with a plain window DC.
+        // Let AppCore blit the view first, then paint the caption strip on top.
         LRESULT lr = DefSubclassProc(h, msg, wp, lp);
         HDC dc = GetDC(h);
         if (dc) {
@@ -399,7 +366,6 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
             tr.right = strip_btn_rect(h, 0).left - 8;
             DrawTextW(dc, L"RuneScape Wiki", -1,
                       &tr, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-            // Back / Home / Close, painted in the strip so they never cover page content.
             static const wchar_t* kGlyphs[kBtnCount] = { L"\u25C0", L"\u2302", L"\u2715" };
             for (int i = 0; i < kBtnCount; ++i) {
                 RECT br = strip_btn_rect(h, i);
@@ -423,11 +389,10 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         if (wp) return 0;   // client area = whole window: WS_THICKFRAME without its frame
         break;
     case WM_NCACTIVATE:
-        // No frame repaint on focus changes (it drew a white 3D edge around the pane).
+        // Suppress the frame repaint on focus changes.
         return DefWindowProcW(h, msg, wp, (LPARAM)-1);
     case WM_ERASEBKGND: {
-        // Dark ground everywhere the overlay hasn't painted yet: the class brush is
-        // white, which flashed at the edges and on first show.
+        // The class brush is white; paint dark to avoid flashes.
         HDC dc = (HDC)wp;
         RECT rc{}; GetClientRect(h, &rc);
         HBRUSH bg = CreateSolidBrush(RGB(11, 13, 18));
@@ -457,8 +422,7 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         return TRUE;
     }
     case WM_LBUTTONDOWN: {
-        // Strip buttons (client-coordinate clicks land here because WM_NCHITTEST maps
-        // the button rects to HTCLIENT). Everything below the strip belongs to the view.
+        // Strip buttons (WM_NCHITTEST maps them to HTCLIENT); below the strip belongs to the view.
         if (!it) break;
         POINT pt{ (LONG)(short)LOWORD(lp), (LONG)(short)HIWORD(lp) };
         if (pt.y < kChrome) {
@@ -476,8 +440,7 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         break;
     }
     case WM_KEYDOWN:
-        // Native Escape-to-close: the page-side handler navigated to the private
-        // rtx: scheme, which WebKit refuses from page JS, so Esc did nothing.
+        // Native Escape-to-close (page JS cannot navigate to rtx:).
         if (wp == VK_ESCAPE && it) { it->closing = true; return 0; }
         break;
     case WM_ENTERSIZEMOVE: if (it) it->userSizing = true; break;
@@ -485,7 +448,6 @@ LRESULT CALLBACK PaneProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWOR
         if (it) {
             it->userSizing = false; it->persist();
             it->applied = false;   // the user moved or resized it: re-apply the request once
-            // Crossing the width threshold switches the wiki format for the new size.
             const bool m = want_mobile(it->rel.w);
             if (m != it->mobileFmt && it->ov) {
                 it->mobileFmt = m;
@@ -509,7 +471,7 @@ void destroy(Instance* it) {
     delete it;
 }
 
-// ---- keybind (screenshot-keybind pattern: one VK in a small file) ----------------------
+// ---- keybind (one VK persisted in a small file) ----------------------------------------
 std::mutex g_wk_mu;
 int  g_wk_vk = 0;
 bool g_wk_loaded = false;
@@ -569,9 +531,7 @@ void Open(std::uint32_t pid, const std::string& term) {
         sv.dx < hc.right - 40 && sv.dy < hc.bottom - 40) {
         r.left = sv.dx; r.top = sv.dy; r.right = sv.dx + sv.w; r.bottom = sv.dy + sv.h;
     }
-    // Fit before creating: a rect saved while the host was larger (or saved against a right
-    // dock and reopened on a smaller client) would otherwise hang off the edge until the
-    // first drag clamped it.
+    // Fit before creating so a rect saved against a larger host does not hang off the edge.
     { int dx = r.left, dy = r.top, rw = r.right - r.left, rh = r.bottom - r.top;
       fit_to_host(host, dx, dy, rw, rh);
       r.left = dx; r.top = dy; r.right = dx + rw; r.bottom = dy + rh; }
@@ -581,31 +541,24 @@ void Open(std::uint32_t pid, const std::string& term) {
 
     auto* it = new Instance();
     it->pid = pid; it->host = host;
-    // Seed the geometry Tick holds the pane to. Without this `rel` stayed zeroed until the
-    // first user drag, so the very next tick moved a restored pane to the DEFAULT dock
-    // origin while keeping its restored SIZE -- which is what pushed a wider saved pane off
-    // the right edge on open.
+    // Seed the geometry Tick holds the pane to.
     it->rel = SavedRect{ r.left, r.top, w, h };
     it->win = Window::Create(g_app->main_monitor(), (uint32_t)w, (uint32_t)h, false,
                              kWindowFlags_Borderless | kWindowFlags_Hidden);
     if (!it->win) { delete it; return; }
     it->win->set_listener(it);
     it->hwnd = (HWND)it->win->native_handle();
-    // Glued top-level: owner = host (z-follows, hides with it, no taskbar entry). The
-    // window itself stays top-level, which is what AppCore's input routing requires.
+    // Owner = host (z-follows, hides with it, no taskbar entry); stays top-level for AppCore input routing.
     SetWindowLongPtrW(it->hwnd, GWLP_HWNDPARENT, (LONG_PTR)host);
     SetWindowLongPtrW(it->hwnd, GWL_EXSTYLE,
                       GetWindowLongPtrW(it->hwnd, GWL_EXSTYLE) | WS_EX_TOOLWINDOW);
-    // WS_THICKFRAME is what makes DefWindowProc honour the edge hit-codes (without it
-    // only the caption drag worked); WM_NCCALCSIZE below erases its visible frame.
+    // WS_THICKFRAME makes DefWindowProc honour the edge hit-codes; WM_NCCALCSIZE erases its frame.
     SetWindowLongPtrW(it->hwnd, GWL_STYLE,
                       GetWindowLongPtrW(it->hwnd, GWL_STYLE) | WS_THICKFRAME);
     quiet_frame(it->hwnd);
     SetWindowSubclass(it->hwnd, PaneProc, 1, (DWORD_PTR)it);
 
-    // The overlay creates its own view (a hand-built view never joined AppCore's repaint
-    // clock and rendered white). Mobile layout is requested through the page instead:
-    // useformat=mobile on the first URL + the sticky mf_useformat cookie the guard sets.
+    // The overlay must create its own view (a hand-built view never joined AppCore's repaint clock).
     it->ov = Overlay::Create(it->win, (uint32_t)w, (uint32_t)(h - kChrome), 0, kChrome);
     if (!it->ov) { destroy(it); return; }
     View* v = it->ov->view().get();
@@ -619,7 +572,7 @@ void Open(std::uint32_t pid, const std::string& term) {
 
     SetWindowPos(it->hwnd, HWND_TOP, o.x + r.left, o.y + r.top, w, h,
                  SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-    quiet_frame(it->hwnd);   // again now that the frame exists: the pre-show request alone still showed the ring
+    quiet_frame(it->hwnd);   // again now that the frame exists
     it->fit_overlay(0, 0);   // real client rect is known only after the frame trick lands
     it->ov->Focus();
     it->openedMs = (long long)GetTickCount64();
@@ -639,8 +592,7 @@ void Tick() {
         Instance* it = f->second; ++f;                       // destroy() erases; advance first
         if (it->closing || !IsWindow(it->host) || !IsWindow(it->hwnd)) { destroy(it); continue; }
         if (it->userSizing) continue;                        // never fight a live drag
-        // One-shot diagnostics ~6s after open: how many stylesheets the icon sweep saw
-        // and how many mask selectors it converted. Turns icon reports into one log line.
+        // One-shot icon sweep diagnostics ~6s after open.
         if (!it->statsLogged && it->openedMs &&
             (long long)GetTickCount64() - it->openedMs > 6000 && it->ov) {
             it->statsLogged = true;
@@ -648,12 +600,10 @@ void Tick() {
                 "window.__rtxIconStats || 'sweep never emitted'");
             rtx::log::Client(it->pid, "[wiki] icons: " + ul_to_std(st));
         }
-        // Follow host visibility and movement: the pane keeps its host-relative offset.
         const bool hostUp = IsWindowVisible(it->host) && !IsIconic(it->host);
         if (!hostUp) { ShowWindow(it->hwnd, SW_HIDE); continue; }
         if (!IsWindowVisible(it->hwnd)) ShowWindow(it->hwnd, SW_SHOWNOACTIVATE);
-        // Hold the pane to its host-relative offset (cached: the file is written by
-        // persist(), never re-read here). No saved rect yet -> hold the default dock.
+        // Hold the pane to its host-relative offset; no saved rect yet -> default dock.
         RECT wr{}; GetWindowRect(it->hwnd, &wr);
         POINT o{ 0, 0 }; ClientToScreen(it->host, &o);
         const int curDx = wr.left - o.x, curDy = wr.top - o.y;
@@ -665,13 +615,9 @@ void Tick() {
             RECT d = default_rect(it->host);
             wantDx = d.left; wantDy = d.top; wantW = d.right - d.left; wantH = d.bottom - d.top;
         }
-        // Re-fit every tick against the CURRENT host: shrinking the game window must pull the
-        // pane back in. `rel` keeps the user's wish untouched, so growing the host again
-        // restores the size they chose rather than the shrunken one.
+        // Re-fit against the current host; `rel` keeps the user's size so growing the host restores it.
         fit_to_host(it->host, wantDx, wantDy, wantW, wantH);
-        // Compare against the last REQUEST, not the measured rect. A user drag (which updates
-        // rel) or a host resize changes the request; nothing else does, so the window is left
-        // alone and stops repainting its chrome every tick.
+        // Compare against the last request, not the measured rect, so an unchanged pane is left alone.
         const bool moved = !it->applied || it->appDx != wantDx || it->appDy != wantDy ||
                            it->appW != wantW || it->appH != wantH;
         if (moved) {

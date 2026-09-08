@@ -9,8 +9,7 @@
 namespace rtx::launcher::soundfilter {
 namespace {
 
-// Open + map the pid's section for the duration of one call. Polls run at panel tick rate, so
-// the open/close cost is irrelevant and it avoids holding a view across a client's exit.
+// Open + map for one call; never holds a view across a client's exit.
 struct View {
     HANDLE              map = nullptr;
     rtx::sound::Share*  sh  = nullptr;
@@ -23,8 +22,7 @@ struct View {
         if (!map) return;
         sh = (rtx::sound::Share*)MapViewOfFile(map, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
                                                sizeof(rtx::sound::Share));
-        // A section that exists but hasn't been initialised (or is a version we don't speak)
-        // must not be written through: treat it as absent.
+        // Uninitialised or wrong-version section: treat as absent.
         if (sh && (sh->magic != rtx::sound::kMagic || sh->version != rtx::sound::kVersion)) {
             UnmapViewOfFile(sh);
             sh = nullptr;
@@ -55,8 +53,7 @@ bool SetMuted(std::uint32_t pid, std::vector<int> ids) {
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     if (ids.size() > (std::size_t)rtx::sound::kMaxBlocked) ids.resize(rtx::sound::kMaxBlocked);
 
-    // Seqlock: the audio thread reads this list without locking, so bracket the write with an
-    // odd sequence and publish the count only once the ids are in place.
+    // Seqlock: the audio thread reads lock-free; count is published after the ids.
     const std::uint32_t s = v.sh->blockSeq + 1;
     v.sh->blockSeq = s;                        // odd -> mid-update, reader declines to mute
     MemoryBarrier();

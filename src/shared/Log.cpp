@@ -70,13 +70,8 @@ std::ofstream& client_stream(std::uint32_t pid) {
     return out;
 }
 
-// ---- crash capture ----------------------------------------------------------
-// The launcher has died on an unhandled C++ exception (seen as 0xe06d7363 / fail-fast
-// 0xc0000409) with nothing in its logs -- and under true embed a launcher death destroys the
-// host window and the client's window with it. Capture enough to find the thrower: a
-// crash-*.txt with the exception (including e.what() on the terminate path) plus a minidump
-// openable in Visual Studio. Writes use their own streams, never the logging mutex (the
-// crashing thread may already hold it).
+// Crash capture: crash-*.txt plus a minidump. Must not take the logging mutex (the crashing
+// thread may hold it).
 void write_crash_report(const char* tag, EXCEPTION_POINTERS* ep, const char* detail) {
     SYSTEMTIME st; GetLocalTime(&st);
     wchar_t base[64];
@@ -108,10 +103,7 @@ void write_crash_report(const char* tag, EXCEPTION_POINTERS* ep, const char* det
 }
 
 LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
-    // Once shutdown has begun, a fault is almost always a background thread (overlay/render/reader)
-    // being killed mid-teardown -- benign, and the dump would be empty since the process is going
-    // away. Don't record it, but still let WER decide (EXCEPTION_CONTINUE_SEARCH) so the exit path
-    // is unchanged.
+    // After BeginShutdown, faults are teardown races on background threads: skip the report.
     if (g_shutting_down.load(std::memory_order_relaxed)) return EXCEPTION_CONTINUE_SEARCH;
     write_crash_report("unhandled SEH exception", ep, nullptr);
     return EXCEPTION_CONTINUE_SEARCH;   // let WER record it as well
@@ -165,7 +157,6 @@ void Init() {
     if (g_inited) return;
     g_inited = true;
 
-    // Snapshot USERPROFILE for redaction (trim trailing separators).
     char up[MAX_PATH] = {};
     if (GetEnvironmentVariableA("USERPROFILE", up, MAX_PATH) > 0) {
         std::string s = up;
@@ -177,8 +168,6 @@ void Init() {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
 
-    // Purge stale per-PID logs from previous sessions; keep nothing but this
-    // run's output around.
     if (std::filesystem::exists(dir, ec)) {
         for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
             if (!e.is_regular_file(ec)) continue;
@@ -192,8 +181,7 @@ void Init() {
 
     g_launcher.open(dir / L"launcher.log", std::ios::out | std::ios::trunc);
 
-    // Crash capture (see write_crash_report above). Launcher-only: Init() is not called by
-    // the in-client module, so these never touch the game process.
+    // Launcher-only: the in-client module never calls Init().
     SetUnhandledExceptionFilter(CrashFilter);
     std::set_terminate(TerminateHandler);
 }

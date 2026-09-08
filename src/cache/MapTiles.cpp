@@ -39,14 +39,8 @@ MapTileData DecodeMapTiles(std::vector<std::uint8_t> file_bytes, int* leftover) 
             }
         }
     }
-    // After the full 4*64*64 walk the file continues with an 8-byte non-members
-    // bitmask and an opcode-based ENVIRONMENT section (the game map mapsquare_tiles.jsonc:
-    // ops 0x80 env id, 0x00/0x01 lighting records, 0x02 three floats, 0x81 4x256B
-    // blocks...). It is intentionally NOT consumed: op 0x01's record format varies
-    // per entry in ways neither the game map nor empirical brute-forcing resolves, and none
-    // of it feeds a feature. The tile walk above was validated complete on all 5120
-    // regions. `leftover` reports the trailer size for the health check;
-    // -1 above (ran SHORT mid-walk) is the only misparse signal.
+    // Trailer (8-byte non-members bitmask + opcode-based environment section) is intentionally
+    // not consumed: op 0x01's record format is unresolved and nothing uses it.
     if (leftover) *leftover = (int)s.remaining();
     return out;
 }

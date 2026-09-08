@@ -6,10 +6,7 @@
 
 namespace rtx::cache {
 
-// Read-only big-endian binary reader over a fixed byte buffer. Mirrors the
-// subset of RS3 NXT cache primitives our decoders actually use (smart /
-// big-smart integers, null-terminated strings). Out-of-range reads return
-// 0 / "" rather than throwing so a partial archive doesn't kill a lookup.
+// Big-endian reader over a fixed buffer. Out-of-range reads return 0 / "" rather than throwing.
 class InputStream {
 public:
     explicit InputStream(std::vector<std::uint8_t> bytes)
@@ -18,7 +15,7 @@ public:
     int  remaining() const { return (int)buf_.size() - offset_; }
     int  offset()    const { return offset_; }
     int  peek(int abs) const { return (abs >= 0 && abs < (int)buf_.size()) ? (buf_[abs] & 0xff) : -1; }   // byte at an absolute offset, no advance
-    // Clamped to [0, size] so remaining() is never negative on hostile lengths.
+    // Clamped to [0, size].
     void skip(int n)       { seek(offset_ + n); }
     void seek(int p)       { offset_ = p < 0 ? 0 : (p > (int)buf_.size() ? (int)buf_.size() : p); }
 

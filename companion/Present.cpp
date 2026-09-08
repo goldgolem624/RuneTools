@@ -1,14 +1,11 @@
-// Present callback (see Present.h): runs before the system buffer-swap
-// (opengl32 wglSwapBuffers), draws launcher-published overlays into the game's GL
-// frame, then calls the original swap through unchanged. SEH-guarded: a bad frame
-// degrades to "no overlay this frame", never a crash.
+// Present callback (see Present.h): detours opengl32 wglSwapBuffers. SEH-guarded, a bad frame skips the overlay.
 
 #include "Present.h"
 #include "Composite.h"
-#include "InputFilter.h"   // window-message filter for render continuity (keep-focused)
-#include "MarkerShare.h"   // launcher-published world-marker command list
-#include "HudShare.h"      // launcher-published HUD-reminder (top-center sprite + caption)
-#include "FrameShare.h"    // launcher-published in-game window UI layer (pixel surface)
+#include "InputFilter.h"
+#include "MarkerShare.h"
+#include "HudShare.h"
+#include "FrameShare.h"
 
 #include <windows.h>
 #include <detours.h>
@@ -23,11 +20,10 @@ typedef BOOL (WINAPI* SwapBuffers_t)(HDC);
 SwapBuffers_t g_origSwap = nullptr;
 bool          g_installed = false;
 
-// Diagnostic: 1 = draw a fixed cyan box every present, independent of the marker
-// channel (confirms the present callback draws when projected markers don't show).
+// Diagnostic: 1 = draw a fixed cyan box every present.
 #define RTX_MARKER_SELFTEST 0
 
-// World-marker command channel; the launcher creates it, this side maps it read-only.
+// Launcher-created shared sections; marker and HUD are mapped read-only.
 rtx::marker::Share* g_marker    = nullptr;
 HANDLE              g_markerMap = nullptr;
 
@@ -40,10 +36,9 @@ void EnsureMarkerMapped() {
     g_marker = reinterpret_cast<rtx::marker::Share*>(
         MapViewOfFile(g_markerMap, FILE_MAP_READ, 0, 0, sizeof(rtx::marker::Share)));
     if (!g_marker) { CloseHandle(g_markerMap); g_markerMap = nullptr; return; }
-    OutputDebugStringA("RuneToolsX: marker channel mapped");   // one-time (g_marker guards re-entry)
+    OutputDebugStringA("RuneToolsX: marker channel mapped");
 }
 
-// HUD-reminder channel; the launcher creates it, this side maps it read-only.
 rtx::hud::Share* g_hud    = nullptr;
 HANDLE           g_hudMap = nullptr;
 void EnsureHudMapped() {
@@ -57,10 +52,7 @@ void EnsureHudMapped() {
     if (!g_hud) { CloseHandle(g_hudMap); g_hudMap = nullptr; }
 }
 
-// In-game window UI layer; the launcher creates it. Mapped read+write because this
-// side publishes the live client size + a liveness counter back (resize handshake).
-// Retry is backed off: OpenFileMapping every present before the launcher creates
-// the section would be a per-frame syscall.
+// UI layer is read+write: this side publishes client size and a liveness counter. Retry backed off to 1 s.
 rtx::frame::Share* g_frame    = nullptr;
 HANDLE             g_frameMap = nullptr;
 void EnsureFrameMapped() {
@@ -81,7 +73,7 @@ void EnsureFrameMapped() {
 }
 
 
-// Draw one command. Coords are client pixels in the projected space (cw x ch).
+// Coords are client pixels in the projected space (cw x ch).
 void DrawCommand(const rtx::marker::Command& c, int cw, int ch) {
     const float r = c.r / 255.0f, g = c.g / 255.0f, b = c.b / 255.0f, a = c.a / 255.0f;
     switch (c.type) {
@@ -95,11 +87,11 @@ void DrawCommand(const rtx::marker::Command& c, int cw, int ch) {
             break;
         }
         case rtx::marker::kRect: {
-            float t = c.thickness < 1.0f ? 1.0f : c.thickness;   // outline = four edges
-            rtx::composite::DrawLine(c.x0, c.y0, c.x1, c.y0, t, r, g, b, a, cw, ch);  // top
-            rtx::composite::DrawLine(c.x1, c.y0, c.x1, c.y1, t, r, g, b, a, cw, ch);  // right
-            rtx::composite::DrawLine(c.x1, c.y1, c.x0, c.y1, t, r, g, b, a, cw, ch);  // bottom
-            rtx::composite::DrawLine(c.x0, c.y1, c.x0, c.y0, t, r, g, b, a, cw, ch);  // left
+            float t = c.thickness < 1.0f ? 1.0f : c.thickness;
+            rtx::composite::DrawLine(c.x0, c.y0, c.x1, c.y0, t, r, g, b, a, cw, ch);
+            rtx::composite::DrawLine(c.x1, c.y0, c.x1, c.y1, t, r, g, b, a, cw, ch);
+            rtx::composite::DrawLine(c.x1, c.y1, c.x0, c.y1, t, r, g, b, a, cw, ch);
+            rtx::composite::DrawLine(c.x0, c.y1, c.x0, c.y0, t, r, g, b, a, cw, ch);
             break;
         }
         case rtx::marker::kFillQuad:
@@ -107,13 +99,11 @@ void DrawCommand(const rtx::marker::Command& c, int cw, int ch) {
                                          r, g, b, a, cw, ch);
             break;
         case rtx::marker::kGlyph:
-            // x0,y0 = top-left; x1,y1 = size (w,h); glyph = atlas cell (ASCII - kGlyphFirst).
+            // x0,y0 = top-left; x1,y1 = w,h; glyph = ASCII - kGlyphFirst.
             rtx::composite::DrawGlyph(c.glyph, c.x0, c.y0, c.x1, c.y1, r, g, b, a, cw, ch);
             break;
         case rtx::marker::kText: {
-            // x1 = glyph px height. glyph = flags: 0 -> pill centred at (x0,y0), rgba =
-            // accent; kTextPlain -> bare aligned line, rgba = text colour (see MarkerShare).
-            // Guard against a missing terminator from a torn read.
+            // x1 = px height; glyph = flags (0 pill, kTextPlain bare line, see MarkerShare). Copy guards a torn terminator.
             char buf[rtx::marker::kTextMax + 1];
             std::memcpy(buf, c.text, rtx::marker::kTextMax);
             buf[rtx::marker::kTextMax] = '\0';
@@ -133,11 +123,10 @@ void DrawCommand(const rtx::marker::Command& c, int cw, int ch) {
     }
 }
 
-// Diagnostic: log abnormally long render frames. Off by default -- the per-frame
-// file I/O itself loads the render thread.
+// Diagnostic: log long render frames.
 #define RTX_DIAG 0
 
-// Pure-POD inner so the SEH wrapper has nothing to unwind.
+// No C++ objects here: the SEH wrapper must have nothing to unwind.
 BOOL WINAPI OnPresent_inner(HDC hdc) {
 #if RTX_DIAG
     {
@@ -145,7 +134,7 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
         unsigned long now = (unsigned long)GetTickCount64();
         if (s_last) {
             unsigned long dt = now - s_last;
-            if (dt > 40) {   // ~2.5 frames at 60 fps = a visible hitch
+            if (dt > 40) {
                 char buf[80];
                 wsprintfA(buf, "[%lu] LONG FRAME %lu ms", now, dt);
                 rtx::winmsg::DiagLogLine(buf);
@@ -156,8 +145,7 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
 #endif
     HWND hwnd = WindowFromDC(hdc);
     if (hwnd) {
-        // Engage the render-continuity filter (idempotent; inert until the launcher
-        // sets keepFocused). This window renders AND receives focus-loss notifications.
+        // Idempotent; inert until the launcher sets keepFocused.
         rtx::winmsg::Install(hwnd);
         RECT rc;
         if (GetClientRect(hwnd, &rc)) {
@@ -167,32 +155,25 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                 EnsureMarkerMapped();
                 EnsureHudMapped();
                 EnsureFrameMapped();
-                // Resize handshake + liveness: publish the authoritative client size
-                // every present (even while the layer is hidden) so the launcher can
-                // size its off-screen UI view and detect a live v2 companion.
+                // Client size + liveness counter every present, even while hidden.
                 if (g_frame && g_frame->magic == rtx::frame::kMagic &&
                     g_frame->version == rtx::frame::kVersion) {
                     g_frame->client_w = fbw;
                     g_frame->client_h = fbh;
                     g_frame->module_seq = g_frame->module_seq + 1;
                 }
-                // Decide whether there's anything to draw BEFORE touching GL: overlay
-                // off = skip Begin()/End(), zero GL state save/restore on idle frames.
+                // Decide before touching GL so idle frames skip Begin()/End().
                 bool haveMarkers = g_marker && g_marker->magic == rtx::marker::kMagic &&
                                    g_marker->version == rtx::marker::kVersion &&
                                    (g_marker->seq & 1u) == 0 && g_marker->visible &&
                                    g_marker->count > 0;
-                // w/h come from a shared section any same-user process could have
-                // pre-created: clamp to the layout's real bounds or UploadHud would
-                // read w*h*4 bytes past the 64 KB buffer (OOB game-heap disclosure).
+                // w/h are untrusted (any same-user process can pre-create the section): clamp or UploadHud reads OOB.
                 bool haveHud = g_hud && g_hud->magic == rtx::hud::kMagic &&
                                g_hud->version == rtx::hud::kVersion &&
                                (g_hud->seq & 1u) == 0 && g_hud->enable &&
                                g_hud->w > 0 && g_hud->h > 0 &&
                                g_hud->w <= rtx::hud::kMaxW && g_hud->h <= rtx::hud::kMaxH;
-                // Drawing the UI layer only needs the last-uploaded texture, so a
-                // mid-write seq (odd) still draws; only the UPLOAD requires a stable
-                // snapshot.
+                // Odd seq still draws (last texture); only the upload needs a stable snapshot.
                 bool haveUi = g_frame && g_frame->magic == rtx::frame::kMagic &&
                               g_frame->version == rtx::frame::kVersion &&
                               g_frame->visible &&
@@ -216,14 +197,13 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                     if (haveMarkers) {
                         std::uint32_t n = g_marker->count;
                         if (n > rtx::marker::kMaxCmds) n = rtx::marker::kMaxCmds;
-                        // Project against the size the launcher used; fall back to live.
+                        // Use the size the launcher projected against; fall back to live.
                         int cw = g_marker->fb_w > 0 ? g_marker->fb_w : fbw;
                         int ch = g_marker->fb_h > 0 ? g_marker->fb_h : fbh;
                         for (std::uint32_t i = 0; i < n; ++i)
                             DrawCommand(g_marker->cmds[i], cw, ch);
                         static bool s_logged = false;
                         if (!s_logged) { s_logged = true; OutputDebugStringA("RuneToolsX: drawing world markers"); }
-                        // Rare tear (launcher wrote mid-read) = one glitched frame, no crash.
                     }
                     if (haveHud) {
                         static std::uint32_t s_hudImg = 0xFFFFFFFFu;
@@ -234,17 +214,14 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                         char cap[rtx::hud::kCaptionMax + 1];
                         std::memcpy(cap, g_hud->caption, rtx::hud::kCaptionMax);
                         cap[rtx::hud::kCaptionMax] = '\0';
-                        // A bare sprite on the game view reads as scenery. Seat it in a framed
-                        // card: dark rounded panel, accent edge, icon above its caption. The
-                        // frame is what makes it register as a prompt rather than decoration.
-                        const int sw = 56;                             // icon width, aspect-preserved
+                        // Framed card: shadow, dark panel, 2px accent rule, icon above caption.
+                        const int sw = 56;
                         const int sh = (g_hud->w > 0) ? (sw * g_hud->h / g_hud->w) : sw;
                         const int pad = 10;
                         const int capH = cap[0] ? 20 : 0;
                         const int cw = sw + pad * 2;
                         const int ch = sh + capH + pad * 2;
                         const int cx = (fbw - cw) / 2, cy = fbh / 3 - pad;
-                        // shadow, panel, then a 2px accent rule along the top edge
                         rtx::composite::DrawRoundRect((float)(cx + 2), (float)(cy + 3), (float)cw, (float)ch,
                                                       9.0f, 0.0f, 0.0f, 0.0f, 0.35f, fbw, fbh);
                         rtx::composite::DrawRoundRect((float)cx, (float)cy, (float)cw, (float)ch,
@@ -258,9 +235,7 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                                                           15.0f, 1, 0.96f, 0.93f, 1.0f, 0.98f, fbw, fbh);
                     }
                     if (haveUi) {
-                        // Upload only when the content generation changed AND the writer
-                        // is not mid-publish. If the launcher writes during our copy,
-                        // leave frame_id unlatched so the next present re-uploads clean.
+                        // Upload on a new frame_id with even seq; a torn copy leaves frame_id unlatched for a retry.
                         static std::uint32_t s_uiFrameId = 0xFFFFFFFFu;
                         std::uint32_t seq0 = g_frame->seq;
                         std::uint32_t fid0 = g_frame->frame_id;
@@ -268,17 +243,12 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                             int lw = (int)g_frame->width;
                             int lh = (int)g_frame->height;
                             const std::uint32_t lstride = g_frame->stride;
-                            // Stride is launcher-written: it must cover a row and the
-                            // whole surface must fit the pixel area, or the upload reads
-                            // past the section.
+                            // Stride is untrusted: must cover a row and fit the section.
                             if (lw <= (int)rtx::frame::kMaxWidth &&
                                 lh <= (int)rtx::frame::kMaxHeight &&
                                 lstride >= (std::uint32_t)lw * 4u &&
                                 (size_t)lstride * (size_t)lh <= (size_t)rtx::frame::kMaxBytes) {
-                                // The share's dirty rect describes only the LATEST
-                                // publish; if more than one publish happened since
-                                // our last upload the earlier rects are lost --
-                                // upload the whole surface in that case.
+                                // Dirty rect covers only the latest publish; skipped publishes force a full upload.
                                 bool contiguous = (fid0 == s_uiFrameId + 1);
                                 int dx = contiguous ? g_frame->dirty_x : 0;
                                 int dy = contiguous ? g_frame->dirty_y : 0;
@@ -291,9 +261,6 @@ BOOL WINAPI OnPresent_inner(HDC hdc) {
                                     s_uiFrameId = fid0;
                             }
                         }
-                        // Always 1:1 pixels, top-left anchored: DrawUiLayer sizes the
-                        // quad from its own uploaded texture, so a mid-resize stale
-                        // frame renders unscaled instead of swimming.
                         rtx::composite::DrawUiLayer(g_frame->origin_x, g_frame->origin_y,
                                                     fbw, fbh);
                     }

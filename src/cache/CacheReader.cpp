@@ -73,13 +73,8 @@ std::unordered_map<int, MapsceneIcon> g_mapscene_px;       // mapscene id -> dec
 std::unordered_map<int, int>          g_loc_mapscene;      // loc id -> mapscene id (-1 = none)
 bool                                  g_mapscenes_loaded = false;
 
-// World-map labels: a loc with a mapFunction (loc opcode 0x6B/107) draws a worldmap label icon
-// (bank/altar/teleport/...). mapFunction id -> sprite via the MAPLABELS config (index 2, archive 36,
-// opcode 1 = sprite). Memoized.
-// The icon is NOT always op 1. 1,917 of the 5,809 elements carry no sprite of their own and
-// draw one of the op-0x1a switch's CHILDREN instead (child 0 = the 23x23 HD plate, child 1 =
-// the 15x15 legacy glyph) -- which is why bank, altar, anvil, shortcut and fishing-spot symbols
-// drew nothing while the switch was being skipped over.
+// World-map labels: loc opcode 107 mapFunction -> MAPLABELS config (index 2, archive 36, opcode 1 = sprite).
+// Many elements carry no sprite of their own and draw an op-0x1a switch child (0 = 23x23 HD, 1 = 15x15 legacy).
 struct MaplabelSwitch { int varbit = -1, varp = -1; std::vector<int> kids; };
 struct MaplabelDef {
     int sprite = -1; int category = -1; std::string text;
@@ -91,9 +86,7 @@ struct MaplabelDef {
 std::unordered_map<int, MaplabelDef>  g_maplabel_def;       // maplabel id -> {sprite, category, text}
 std::unordered_map<int, MapsceneIcon> g_maplabel_px;        // maplabel id -> decoded RGBA icon
 std::unordered_map<int, int>          g_loc_mapfunc;        // loc id -> mapFunction (maplabel) id (-1 = none)
-// loc id -> the loc's own name, filled by the same decode as the two above. The world map's
-// last-resort tooltip text for an element that has no name of its own -- see the pin blob comment
-// in MapWindowJson. DecodeLoc already parses it and used to throw it away.
+// loc id -> loc name, filled by the same decode; the world map's fallback tooltip text.
 std::unordered_map<int, std::string>  g_loc_name;
 bool                                  g_maplabels_loaded = false;
 
@@ -117,21 +110,8 @@ void EnsureInit() {
     g_store->Add(kIndexMusic,        0); // ditto, music streams
 }
 
-// ---------------------------------------------------------------------------
-// Audio (js5-14 sound effects, js5-40 music).
-//
-// Archives are JAGA containers wrapping ordinary Ogg Vorbis. Header, big-endian:
-//     +0   'JAGA'
-//     +4   u32  0
-//     +8   u32  total samples
-//     +12  u32  sample rate        22050 (effects) / 22050-44100 (music)
-//     +16  u32  channels           1 = effects, 2 = music
-//     +20  u32  chunk count N
-//     +24  N x (u32 length, u32 offset)
-//     +24+8N  the Ogg stream(s)
-// Verified against archive length on index 14 (header + chunk length == archive size exactly)
-// and by the Ogg being valid Vorbis once the header is skipped.
-// ---------------------------------------------------------------------------
+// Audio (js5-14 effects, js5-40 music): JAGA header, big-endian: +0 'JAGA', +4 u32 0, +8 u32 total samples,
+// +12 u32 rate, +16 u32 channels, +20 u32 chunk count N, +24 N x (u32 length, u32 offset), then the Ogg stream(s).
 namespace {
 
 struct JagaInfo {
@@ -329,7 +309,7 @@ void EnsureMaplabelsLocked() {
                 case 0x13: def.category = s.ReadUnsignedShort(); break;      // category
                 case 0x15: case 0x16: s.skip(4); break;
                 case 0x19: def.bg_sprite = s.ReadBigSmart(); break;          // backing plate behind the icon
-                case 0x1a: {                             // icon SWITCH -- see MaplabelDef above.
+                case 0x1a: {                             // icon switch, see MaplabelDef
                     def.sw.varbit = s.ReadUnsignedShort();
                     def.sw.varp   = s.ReadUnsignedShort();
                     int n = s.ReadUnsignedByte();        // children = n + 1
@@ -341,19 +321,13 @@ void EnsureMaplabelsLocked() {
                 default: stop = true; break;                                 // unknown -> stop (alignment lost)
             }
         }
-        // Keep every record that can produce a pixel or a word. The old test (sprite or text)
-        // dropped 2,437 of the 5,809 elements -- including 579 of the 594 ids the world actually
-        // places -- because their icon hangs off the 0x1a switch and their tooltip off a param.
+        // Keep every record that can produce a pixel or a word (icons may hang off the 0x1a switch, tooltips off a param).
         if (def.sprite >= 0 || !def.text.empty() || !def.sw.kids.empty()
             || def.category >= 0 || !def.pi.empty() || !def.ps.empty())
             g_maplabel_def[fid] = std::move(def);
     }
 }
-// Every sprite an element could draw, best first: its own if it has one, then each switch child
-// (child 0 is the 23x23 HD plate, child 1 the 15x15 legacy glyph). Returns ALL candidates rather
-// than one pick, because either can be absent: an element whose HD child carries no sprite must
-// still fall back to the legacy one, and a sprite id that exists can still fail to decode, so the
-// panel needs a second option to try. Assumes g_mu held.
+// Every sprite an element could draw, best first (own, then switch children); any may be absent or fail to decode. Assumes g_mu held.
 void MaplabelSpritesLocked(int id, std::vector<int>& out) {
     out.clear();
     EnsureMaplabelsLocked();
@@ -397,8 +371,7 @@ const MapTileData& RegionTilesLocked(int rx, int ry) {
     auto hit = g_tiles_cache.find(key);
     if (hit != g_tiles_cache.end()) return hit->second;
     auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
-    // DecodeMapTiles always returns fully-sized arrays (sentinel heights for
-    // absent tiles), so an empty input still yields a valid all-default grid.
+    // DecodeMapTiles returns fully-sized arrays even for empty input.
     MapTileData td = DecodeMapTiles(index ? index->ReadFile(rx | (ry << 7), 3)
                                           : std::vector<std::uint8_t>{});
     g_tiles_cache[key] = std::move(td);
@@ -421,9 +394,7 @@ const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
             blk[(plane * 64 + x) * 64 + y] |= bits;
     };
 
-    // Bridge tiles: settings bit 0x2 on PLANE 1 marks the column as a bridge.
-    // Plane z content collides at plane z-1, and the void flag on the plane
-    // below (under the deck) is dropped.
+    // Bridge: settings bit 0x2 on plane 1. Plane z content collides at z-1; the void flag under the deck is dropped.
     const auto& settings = RegionTilesLocked(rx, ry).settings;
     auto isBridge = [&](int x, int y) {
         return (settings[(std::size_t)(64 + x) * 64 + y] & 0x2) != 0;
@@ -473,8 +444,7 @@ const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
 
 }  // namespace
 
-// Accessors so sibling decoders (Achievements.cpp) reuse the one Store + init + lock instead
-// of opening their own handles. EnsureCacheInit must be called with AchievementsMutex held.
+// Shared Store/init/lock for sibling decoders (Achievements.cpp). EnsureCacheInit requires AchievementsMutex held.
 Store* CacheStore() { return g_store.get(); }
 std::mutex& AchievementsMutex() { return g_mu; }
 void EnsureCacheInit() { EnsureInit(); }
@@ -510,24 +480,20 @@ std::string ItemInfoJson(int item_id) {
     return buf;
 }
 
-// NPC display-name overrides for defs whose cache name is an internal dev name
-// (e.g. "combatv2_necromancy_..."). Applied in GetNpc.
+// NPC display-name overrides for defs whose cache name is an internal dev name. Applied in GetNpc.
 static const std::unordered_map<int, std::string> g_npc_name_overrides = {
-    // Necromancy combat conjures (cache def name is the internal "combatv2_necromancy_...").
     { 30265, "Skeleton Warrior" },
     { 30266, "Putrid Zombie" },
     { 30267, "Vengeful Ghost" },
     { 31142, "Phantom Guardian" },
 };
 
-// A name "looks internal" when it has underscores and no spaces (e.g.
-// "combatv2_necromancy_conjure") -- never a real display name.
+// Underscores and no spaces = internal dev name.
 static bool name_looks_internal(const std::string& s) {
     return !s.empty() && s.find('_') != std::string::npos && s.find(' ') == std::string::npos;
 }
 
-// Interim readability for internal names until an explicit override is set:
-// drop a leading "combatv2" marker, '_' -> ' ', capitalise each word.
+// Drop a leading "combatv2", '_' -> ' ', capitalise each word.
 static std::string prettify_internal_name(std::string s) {
     for (char& ch : s) if (ch == '_') ch = ' ';
     const std::string mk = "combatv2 ";
@@ -550,10 +516,7 @@ NpcMeta GetNpc(int npc_id) {
     NpcMeta meta;
     auto* index = g_store ? g_store->Get(kIndexNpcs) : nullptr;
     if (index) {
-        // Follow morph children when the def is a nameless/actionless morph BASE:
-        // the real name/actions live on a varbit-selected child that can't be
-        // resolved here, but children almost always share them, so the first
-        // valid child is a safe approximation. 128 files per archive.
+        // Nameless/actionless morph base: take the first valid morph child as an approximation. 128 files per archive.
         int cur = npc_id;
         meta.id = npc_id;                    // resolved model id (updated as we follow morph children)
         for (int guard = 0; guard < 6; ++guard) {
@@ -565,8 +528,7 @@ NpcMeta GetNpc(int npc_id) {
             if (meta.combat_level < 0) meta.combat_level = def.combat_level;
             if (meta.size <= 1 && def.size > 1) meta.size = def.size;   // tile footprint
             if (meta.actions.empty()) {
-                // Per-slot, members option (150..154) overrides base option
-                // (30..34) -- many NPCs store real actions only in 150..154.
+                // Members option (150..154) overrides base option (30..34) per slot.
                 for (std::size_t i = 0; i < def.options.size(); ++i) {
                     const std::string& opt = !def.members_options[i].empty()
                                                  ? def.members_options[i] : def.options[i];
@@ -601,7 +563,7 @@ void JsonEscTo(std::string& out, const std::string& in) {
     }
 }
 
-// name -> ids, one map per kind, decoded on first use. Guarded by g_mu like every other cache.
+// name -> ids, one map per kind, decoded on first use. Guarded by g_mu.
 std::map<std::string, std::vector<int>> g_name_index[3];
 bool g_name_index_built[3] = { false, false, false };
 
@@ -653,18 +615,14 @@ std::string MenuDefJson(int kind, int id) {
             if (!bytes.empty()) {
                 ItemDef d = DecodeItem(id, std::move(bytes));
                 name = d.name;
-                // The carried set is what a backpack menu draws; fall back to the ground set
-                // for items that only exist on the floor.
+                // Backpack menu draws the worn set; ground set only as fallback.
                 for (const auto& o : d.worn_options) if (!o.empty()) opts.push_back(o);
                 if (opts.empty())
                     for (const auto& o : d.options) if (!o.empty()) opts.push_back(o);
             }
         }
     }
-    // Options the CLIENT appends rather than the def carrying them - without these the authored
-    // list disagreed with the real menu (Pharaoh's sceptre offered Teleport/Wield/Examine here
-    // while the game drew Teleport/Wield/Use/Drop/Examine). Live menus put Use and Drop after the
-    // def's own options and Examine last, for every kind; skipped if the def already names one.
+    // Options the client appends: Use and Drop after the def's own, Examine last; skipped if the def names one.
     {
         auto addTail = [&opts](const char* v) {
             for (const auto& o : opts) if (o == v) return;
@@ -672,10 +630,7 @@ std::string MenuDefJson(int kind, int id) {
         };
         if (kind == 0) {
             addTail("Use");
-            // DESTROY REPLACES DROP: an item that can be destroyed cannot be dropped, so the
-            // client appends no Drop for it. Live: TokKul-Zo (Charged) draws Teleport / Wear /
-            // Check-charge / Destroy / Use / Examine - Destroy comes from the def and there is
-            // no Drop at all.
+            // A destroyable item gets no Drop.
             bool destroyable = false;
             for (const auto& o : opts) if (o == "Destroy") destroyable = true;
             if (!destroyable) addTail("Drop");
@@ -722,8 +677,7 @@ std::string MenuSearchJson(int kind, const std::string& query, int limit) {
     EnsureInit();
     BuildNameIndexLocked(kind);
 
-    // Exact and prefix matches first: searching "bank" should lead with "Bank booth", not with
-    // whatever alphabetically-first def merely contains the word.
+    // Exact and prefix matches rank first.
     struct Hit { int id; const std::string* name; int rank; };
     std::vector<Hit> hits;
     for (const auto& kv : g_name_index[kind]) {
@@ -763,9 +717,7 @@ LocMeta GetLoc(int loc_id) {
     LocMeta meta;
     auto* index = g_store ? g_store->Get(kIndexLocations) : nullptr;
     if (index) {
-        // Follow morph children (opcodes 77/92) when the placed loc is a nameless
-        // morph BASE: the name lives on a varbit-selected child; the first named
-        // child is a safe label. 256 files per archive (archive = id >> 8).
+        // Nameless morph base (opcodes 77/92): take the first named morph child. 256 files per archive.
         int cur = loc_id;
         for (int guard = 0; guard < 6; ++guard) {
             auto bytes = index->ReadFile(cur >> 8, cur & 0xff);
@@ -861,15 +813,8 @@ bool GetNpcMorph(int npc_id, int& varbit, int& varp, int& def_child, std::vector
 }
 
 namespace {
-// Lazily decode every DBRows perk row into g_perk_names. Caller holds g_mu.
-// Faithful to the DBRowsType decode: op4 = tableId; op3 = a column block
-// (totalCols, then per group: id byte (col = b&0x3F, 0xFF ends), sub count,
-// per-sub unsigned-smart type [0x24 = string], row count as an UNSIGNED SMART,
-// then the values as ROW-MAJOR tuples: row0's subcolumns, then row1's, ...
-// (validated 18394/18394 on build 949; column-major misparsed every mixed
-// string+int multi-sub column, and a u8 rowcount broke rows with >127 entries).
-// A perk row has tableId 8; its id = first int column's first-row value, name =
-// first string column's first-row value (both by ascending column id).
+// DBRow decode: op4 = tableId; op3 = column block: totalCols, then per group: id byte (col = b&0x3F, 0xFF ends),
+// sub count, per-sub usmart type (0x24 = string), usmart row count, values as row-major tuples. Perk rows: tableId 8. Caller holds g_mu.
 void LoadPerkNamesLocked() {
     if (g_perks_loaded) return;
     g_perks_loaded = true;
@@ -930,12 +875,8 @@ void LoadPerkNamesLocked() {
     }
 }
 
-// Archaeology mystery -> collectible lists, straight from the DBRows archive (the same
-// linkage script14584 counts via DB_GETFIELDCOUNT). One sweep of archive 41: table-92
-// rows (op4 master 92; mysteries) keep their name + column-4/5 row-id lists; referenced
-// rows resolve to (col0, col3) = (bit index, item id) -- table 81 = journal pages
-// (script13039 varp banks), table 31 = collectibles (varp 11733 bits, script18966).
-// Row decode = the LoadPerkNamesLocked shape (validated 18394/18394 on build 949).
+// Archaeology mysteries: table-92 rows keep name + column-4/5 row-id lists; referenced rows give (col0, col3) =
+// (bit index, item id); table 81 = journal pages, table 31 = collectibles (varp 11733 bits).
 std::string g_myst_pages_json;
 
 void LoadMystPagesLocked() {
@@ -1014,8 +955,7 @@ void LoadMystPagesLocked() {
     for (auto& [fid, row] : rows) {
         if (row.master != 92 || row.name.empty()) continue;
         if (row.c4.empty() && row.c5.empty()) continue;
-        // Other subtables share master 92; a real mystery is one whose refs resolve to
-        // page/collectible rows, so skip entries where both lists come out empty.
+        // Other subtables share master 92; skip entries whose refs resolve to nothing.
         std::string pg = emit_refs(row.c4, 81), c31 = emit_refs(row.c5, 31);
         if (pg == "[]" && c31 == "[]") continue;
         out += first ? "\"" : ",\""; first = false;
@@ -1037,9 +977,7 @@ std::string PerkName(int perk_id) {
     return it != g_perk_names.end() ? it->second : std::string();
 }
 
-// Perk effect description, from the same DBRows perk row (2nd string column, col 4) --
-// e.g. Precise: "Increases your minimum damage by 1.5% per rank of your maximum damage."
-// May carry Jagex markup (<col=..>); the UI renders it via the tip-html path.
+// Perk description: 2nd string column (col 4) of the perk row. May carry <col=..> markup.
 std::string PerkDesc(int perk_id) {
     if (perk_id <= 0) return {};
     std::lock_guard<std::mutex> lk(g_mu);
@@ -1058,11 +996,7 @@ int PerkRankCount(int perk_id) {
     return it != g_perk_ranks.end() ? it->second : 0;
 }
 
-// ---- Archaeology research (DBTable 90) -------------------------------------
-// One row per research topic. CS2 script14843 renders a row as name (col 3) plus
-// "Field Study: <col 6>" and "Report: <col 7>"; script14629/14630 gate those on a
-// BIT (col 0) in varp 9297/9298/11740 and 9299/9300/11741 respectively. We publish
-// the static half here and let the panel test the live bits.
+// ---- Archaeology research (DBTable 90): col 0 bit, col 3 name, col 6 field study, col 7 report ----
 namespace {
 std::string g_arch_research_json;
 
@@ -1074,10 +1008,8 @@ void LoadArchResearchLocked() {
     const auto& entries = index->ref().entries();
     if ((int)entries.size() <= kDbRowsArchive) return;
 
-    // `row` is the DBRow file id -- the per-culture book enums (14083/14084/14085/10575/3016/
-    // 14086/14087/14088, indexed by enum 14082) list research BY ROW ID, so the panel needs it
-    // to group the list into Armadylean / Bandosian / Dragonkin / ... pages. `kind` is column 1:
-    // 1 = the site-wide "your research team excavates materials here" entry, 2 = a named discovery.
+    // `row` = DBRow file id (the per-culture book enums under enum 14082 list research by row id).
+    // `kind` = column 1: 1 = site-wide entry, 2 = named discovery.
     struct Res { int bit = -1, row = -1, kind = 0; std::string name, field, report; };
     std::vector<Res> out;
     for (int fid : entries[kDbRowsArchive].valid_file_ids) {
@@ -1130,15 +1062,13 @@ void LoadArchResearchLocked() {
         e.name   = strs.count(3) ? strs[3] : std::string();
         e.field  = strs.count(6) ? strs[6] : std::string();
         e.report = strs.count(7) ? strs[7] : std::string();
-        // A row with no name is a placeholder, not research the player can ever see -- keeping
-        // them only padded the total with unnameable "Research #N" rows.
+        // Unnamed rows are placeholders.
         if (e.name.empty()) continue;
         out.push_back(std::move(e));
     }
     std::sort(out.begin(), out.end(), [](const Res& a, const Res& b) { return a.bit < b.bit; });
 
-    // ReadString already emits UTF-8, so only JSON escaping is needed here (same
-    // shape as the quest journal strings).
+    // ReadString already emits UTF-8; only JSON escaping is needed.
     std::string j = "[";
     auto jstr = [&j](const char* k, const std::string& v) {
         j += ",\""; j += k; j += "\":\"";
@@ -1177,30 +1107,16 @@ std::string MystPagesJson() {
 }
 
 namespace {
-// DBTABLE schemas: CONFIGS index 2, archive 40 -- the declared column types
-// (and defaults) that DBRows carry inline. The schema is the ground truth the
-// row decode is checked against in the health sweep, so the next DBRows format
-// change shows up as a red row instead of silently wrong perk names.
-//
-// Linkage (derived and verified on build 949: the inline column types of all
-// 18394 live rows match the schema found this way, 0 mismatches): a row's op4
-// tag packs (master << 8) | subtable (plain master id when < 256), and that
-// table's schema is FILE subtable*128 + master. Live subtables are 0/1/2.
-//
-// File format: every non-empty live file uses op 2 (op 1 = the older variant
-// per the game, kept but unobserved on 949). op 2: u32 unknown, u8 column count,
-// then per column: id byte (0xFF ends the list; id = b & 0x3F), u8 unknown,
-// u8 subcolumn count, per-sub usmart type, u8 flags; flags & 2 -> default
-// values (u8, first value, u8, then the remaining values; string when type
-// 0x24, else i32). op 1: the id byte's 0x80 bit marks defaults (single u8
-// before the values). 121 of 365 live files are a bare 0x00 footer (a table
-// with no declared columns; a third of the live rows reference one).
+// DBTABLE schemas: CONFIGS index 2, archive 40; the health sweep checks DBRows against them.
+// Linkage: a row's op4 tag = (master << 8) | subtable (plain master when < 256); schema file = subtable*128 + master.
+// op 2: u32 unknown, u8 column count, then per column: id byte (0xFF ends; id = b & 0x3F), u8 unknown, u8 sub count,
+// per-sub usmart type, u8 flags; flags & 2 -> defaults (u8, first value, u8, remaining values; string when type 0x24, else i32).
+// op 1 (older): id byte's 0x80 bit marks defaults (single u8 before the values). A bare 0x00 file = no declared columns.
 constexpr int kDbTablesArchive = 40;
 std::unordered_map<int, std::map<int, std::vector<int>>> g_dbtable_cols;  // file -> col -> sub types
 bool g_dbtables_loaded = false;
 
-// Decode one table file into `cols` (null = validate only). Returns 0 on a
-// clean end, the opcode that broke the read otherwise (256 = stream ran out).
+// Decode one table file (cols = null validates only). Returns 0 on a clean end, else the breaking opcode (256 = overrun).
 int DecodeDbTableFile(std::vector<std::uint8_t> bytes,
                       std::map<int, std::vector<int>>* cols) {
     InputStream s(std::move(bytes));
@@ -1249,11 +1165,8 @@ void LoadDbTablesLocked() {
     }
 }
 
-// Decode one DBRow (tag + inline column types; row layout as LoadPerkNamesLocked)
-// and check it against the loaded schemas. Returns 0 when every column's types
-// match (or the table declares no columns), 257 on a linkage/type mismatch, the
-// breaking opcode on a structural break (256 = overrun). Caller holds g_mu with
-// dbtables loaded.
+// Check one DBRow against the loaded schemas: 0 = match, 257 = linkage/type mismatch, else breaking opcode (256 = overrun).
+// Caller holds g_mu with dbtables loaded.
 int DbRowSchemaCheckLocked(std::vector<std::uint8_t> bytes) {
     InputStream s(std::move(bytes));
     int tag = -1;
@@ -1294,11 +1207,8 @@ int DbRowSchemaCheckLocked(std::vector<std::uint8_t> bytes) {
     return 0;
 }
 
-// PARAM definitions: CONFIGS index 2, archive 11 (file = param id). op1/op101 =
-// vartype byte, op2 = default int, op5 = default string, op4/131/207/209 =
-// payload-less flags (131/207/209 added build 949). The whole archive decodes
-// once (9420/9420 clean on 949) so param defaults come from one shared table
-// instead of per-param point reads.
+// PARAM defs: CONFIGS index 2, archive 11 (file = param id). op1/op101 = vartype byte, op2 = default int,
+// op5 = default string, op4/131/207/209 = payload-less flags (131/207/209 since build 949).
 constexpr int kParamsArchive = 11;
 struct ParamDef {
     int  type = 0;                    // vartype byte from op1/101 (0 when absent)
@@ -1308,9 +1218,7 @@ struct ParamDef {
 std::unordered_map<int, ParamDef> g_param_defs;
 bool g_params_loaded = false;
 
-// Decode one param file (out = null to validate only). Returns 0 on a clean
-// end, else the stopping opcode. Owns the opcode table for both the loader
-// and the health sweep.
+// Decode one param file (out = null validates only). Returns 0 on a clean end, else the stopping opcode.
 int DecodeParamFile(std::vector<std::uint8_t> bytes, ParamDef* out) {
     InputStream s(std::move(bytes));
     while (s.remaining() > 0) {
@@ -1365,30 +1273,16 @@ std::string ParamDefJson(int param_id) {
 }
 
 namespace {
-// Varbit definitions: CONFIGS index 2, archive 69 (file_id = varbit id). Each
-// varbit is the bit-slice [lsb,msb] of a var. We decode the whole archive once
-// into a varp-id -> [[varbitId,lsb,msb],..] map so the watcher can name which
-// varbit owns a changed bit. Per the varbit config decode:
-//   opcode 1 -> u8 var DOMAIN + u16 var index
-//   opcode 2 -> u8 lsb + u8 msb
-//   opcode 16 -> boolean flag, no payload ; opcode 0 ends.
-// Only domain 0 (player varp) entries go in the map: other domains (npc/client/
-// world/clan/..) are separate id-spaces, and keying them by index here would
-// misfile them under same-numbered player varps (every domain's var 0 showed
-// up on varp 0, and VarbitsJson read them from the wrong varp).
-// Read from the live game cache so the mapping matches the running build.
-// Cached as JSON.
+// Varbit defs: CONFIGS index 2, archive 69 (file = varbit id). opcode 1 = u8 domain + u16 var index, opcode 2 = u8 lsb + u8 msb,
+// opcode 16 = flag (no payload), 0 ends. Only domain 0 (player) goes in the varp map; other domains are separate id spaces.
 constexpr int kVarbitArchive = 69;
 std::string g_varbit_map_json;
 bool        g_varbit_map_loaded = false;
 std::unordered_map<int, std::array<int, 3>> g_varbit_defs;   // varbit id -> {varp,lsb,msb}
-// Domain-5 ("object") varbits: bit fields over an ITEM INSTANCE's vars, the ints a live
-// container slot carries keyed 0..N (Reader.cpp "instance vars"). The client scripts read
-// them with INV_GETVAR(inv, slot, varbit): 30215 = var 1 bits 0..14 = gizmo-1 perk-1 id.
+// Domain-5 (item instance) varbits, read by scripts via INV_GETVAR: 30215 = var 1 bits 0..14 = gizmo-1 perk-1 id.
 std::unordered_map<int, std::array<int, 3>> g_objvarbit_defs;   // varbit id -> {var,lsb,msb}
-// Every non-player domain, keyed domain -> base var -> [{varbit id, lsb, msb}, ..]. Domain byte
-// per the client scripts' variable sources: 0 player, 1 npc, 2 client, 3 world, 4 region,
-// 5 object (item instance), 6 clan, 7 clan settings, 8 campaign, 9 player group.
+// Non-player domains: domain -> base var -> [{varbit, lsb, msb}]. Domains: 0 player, 1 npc, 2 client, 3 world, 4 region,
+// 5 object, 6 clan, 7 clan settings, 8 campaign, 9 player group.
 std::map<int, std::map<int, std::vector<std::array<int, 3>>>> g_dombit_defs;
 
 void LoadVarbitMapLocked() {
@@ -1463,17 +1357,11 @@ bool GetObjVarbit(int varbit_id, int& var, int& lsb, int& msb) {
 }
 
 namespace {
-// Quest configs: CONFIGS index 2, archive 35 (file_id = quest config id). Opcode
-// table for the RS3 QuestType decode (all live files parse):
-//   1 name / 2 list name (version byte + cstring), 3 progress varps / 4 progress
-//   varbits (u8 n x {u16 var, i32 start, i32 end}), 5 parent quest, 6 category,
-//   7 difficulty, 8 members flag, 9 QP reward, 10 start path (n x i32), 12 i32,
-//   13 required quests (n x u16), 14 required skills (n x {u8 skill, u8 level}),
-//   15 QP required (u16), 17 graphic (big smart), 18/19 varp/varbit requirement
-//   blocks (n x {i32,i32,i32,cstring}; empty in the live cache), 249 params.
-// Re-released quests leave stub configs behind (same name, no progress vars, case
-// or spelling variants); stubs are dropped and every questreq/parent link is
-// remapped to the canonical entry so the UI never sees a duplicate or dead link.
+// Quest configs: CONFIGS index 2, archive 35 (file = quest id). Opcodes: 1 name / 2 list name (version byte + cstring),
+// 3 progress varps / 4 progress varbits (u8 n x {u16 var, i32 start, i32 end}), 5 parent, 6 category, 7 difficulty,
+// 8 members, 9 QP reward, 10 start path (n x i32), 12 i32, 13 required quests (n x u16), 14 required skills
+// (n x {u8 skill, u8 level}), 15 QP required (u16), 17 graphic (big smart), 18/19 requirement blocks
+// (n x {i32,i32,i32,cstring}), 249 params. Re-released quests leave stub configs; those are dropped and links remapped.
 constexpr int kQuestArchive = 35;
 std::string g_quests_json;
 bool        g_quests_loaded = false;
@@ -1490,9 +1378,7 @@ struct QuestDef {
     int icon = -1;                                   // param 7829 (journal icon sprite)
     int year = 0;                                    // param 7834 (release year)
     int journal = -1;                                // param 1345 (quest-journal id; absent = not in the in-game list)
-    // Journal text + classification surfaces. Label enums are the game's own (CS2 ground
-    // truth: script4011 renders 7855 via enum 13354 and 7831 via enum 13275; script20412
-    // names 9393 via enum 9686) -- the panel fetches those enums itself (bridge enumInfo).
+    // Label enums: 7855 via enum 13354, 7831 via enum 13275, 9393 via enum 9686 (the panel fetches those).
     std::string desc;                                // param 5968 (journal description)
     std::string start;                               // param 7814 (start point; 9392 = seasonal phrasing)
     std::string items;                               // param 7815 (required items)
@@ -1576,8 +1462,7 @@ bool DecodeQuestFile(std::vector<std::uint8_t> bytes, QuestDef& q, int* stop_op 
     return !q.name.empty();
 }
 
-// Dedupe key: lower-cased alphanumerics, with the known legacy stub spellings
-// folded onto their canonical names.
+// Dedupe key: lower-cased alphanumerics, legacy stub spellings folded onto canonical names.
 std::string QuestNameKey(const std::string& name) {
     static const std::unordered_map<std::string, const char*> kAlias = {
         { "Mournings Ends Part 1",      "Mourning's End Part I" },
@@ -1626,17 +1511,14 @@ void LoadQuestsLocked() {
         if (c != fid) { remap[fid] = c; drop.insert(fid); }
     }
     auto canon_id = [&](int id) { auto it = remap.find(id); return it != remap.end() ? it->second : id; };
-    // The journal's generic quest icon = param 7829's own DEFAULT value (its
-    // param config in archive 11). Quests without the param render this in the
-    // game's quest list, so mirror it.
+    // Generic quest icon = param 7829's default value.
     int default_icon = -1;
     {
         LoadParamsLocked();
         auto it = g_param_defs.find(7829);
         if (it != g_param_defs.end() && it->second.has_int) default_icon = it->second.def_int;
     }
-    // journal icon: param 7829, else op17 graphic, inherited through the parent
-    // chain, else the journal's generic default.
+    // Icon: param 7829, else op17 graphic, inherited through the parent chain, else the generic default.
     auto icon_of = [&](const QuestDef& q) {
         const QuestDef* cur = &q;
         for (int hop = 0; cur && hop < 8; ++hop) {
@@ -1665,15 +1547,8 @@ void LoadQuestsLocked() {
         std::string t; for (char c : s) t += (char)((c >= 'A' && c <= 'Z') ? (c | 0x20) : c);
         return t.find(needle) != std::string::npos;
     };
-    // Current-quest filter: param 1345 is the game's own quest-journal id. Every entry the
-    // in-game quest list shows carries one (quests, miniquests, sagas, permanent seasonal
-    // quests; 361 in the live cache, ids unique), while everything the game no longer lists
-    // has had it stripped even though most keep an old progress varp: replaced quests
-    // (Romeo and Juliet, Black Knights' Fortress, Prince Ali Rescue, Doric's Quest),
-    // discontinued holiday events (Holly, A Towering Feast, ...), retired tutorials
-    // (Tutorial, Unstable Foundations) and internal stubs (Achievement System, Philipe's
-    // Big Adventure). Fail-safe: if a cache update ever strips the param wholesale, drop
-    // nothing rather than empty the list.
+    // Param 1345 (journal id) marks every entry the in-game list shows; delisted quests lack it.
+    // If a cache update strips the param wholesale, drop nothing.
     int journalN = 0;
     for (auto& [fid, q] : defs) if (q.journal >= 0) ++journalN;
     int droppedLegacy = 0;
@@ -1692,10 +1567,7 @@ void LoadQuestsLocked() {
         if (q.members) out += ",\"m\":1";
         if (q.has_diff) out += ",\"d\":" + std::to_string(q.difficulty);
         out += ",\"p\":" + std::to_string(q.points);
-        // Journal id (quest config param 1345), already parsed for the legacy-drop filter above and
-        // otherwise unused. A map element's requirement struct names a prerequisite quest by its
-        // JOURNAL id, not by the archive-35 file id this list is keyed on, so without this the
-        // world map cannot turn "requires quest 204" into "Plague's End".
+        // Journal id (param 1345): map element requirement structs name quests by it, not by file id.
         if (q.journal >= 0) out += ",\"j\":" + std::to_string(q.journal);
         if (q.vp >= 0) {
             out += ",\"v\":[" + std::to_string(q.vp) + "," + std::to_string(q.vp_start) + "," +
@@ -1762,7 +1634,7 @@ void LoadQuestsLocked() {
         }
         out += "}";
     }
-    // journalN = configs carrying the journal id (the in-game list size); dropped = delisted configs removed.
+    // journalN = configs carrying the journal id; dropped = delisted configs removed.
     out += "],\"journalN\":" + std::to_string(journalN) +
            ",\"dropped\":" + std::to_string(droppedLegacy) + "}";
     g_quests_json = std::move(out);
@@ -1819,8 +1691,7 @@ std::string EnumJson(int enum_id) {
     return out;
 }
 
-// {"id":N,"name":".."} for an NPC id. GetNpc does its own locking + caching and follows morph
-// children / applies name overrides, so this just formats its result.
+// {"id":N,"name":".."} formatted from GetNpc (which does its own locking).
 std::string NpcJson(int npc_id) {
     NpcMeta m = GetNpc(npc_id);
     std::string out = "{\"id\":" + std::to_string(m.id) + ",\"name\":\"";
@@ -1834,15 +1705,9 @@ std::string NpcJson(int npc_id) {
 
 // ---- Static interface-component defs (js5-3) --------------------------------------------------
 namespace {
-// One component (js5-3: archive = interface group, file = component id). The
-// serialized component is FIXED-LAYOUT (no opcodes): a header (version, type,
-// content-type, geometry, parent, hidden) then a type-specific block; the tail
-// after that block (option strings, script hooks) is never entered. Layout per
-// interface config, live-validated on build 949: all 104103 components in
-// 1871 groups decode (version bytes -1..11) and every parent id resolves within
-// its group (17 dangling refs exist in the cache data itself). Types 10-16
-// carry undocumented variable-size payloads; their headers still decode and the
-// payload is left as the (unread) tail.
+// One component (js5-3: archive = group, file = component). Fixed layout, no opcodes: header (version, type,
+// content-type, geometry, parent, hidden), then a type-specific block; the option/script tail is never read.
+// Types 10-16 carry undocumented variable-size payloads (header still decodes).
 struct IfaceCompDef {
     int  type = -1, contenttype = 0, parent = -1;
     int  x = 0, y = 0, w = 0, h = 0;
@@ -1852,10 +1717,7 @@ struct IfaceCompDef {
     int  model  = -1;                 // type 6
 };
 
-// Decode the component prefix. Returns 0 on success, the type value for an
-// unknown type-specific block (header fields are still valid), 256 when the
-// stream ran out mid-prefix (the option/script tail always follows a clean
-// prefix -- >= 36 bytes on every live component).
+// Returns 0 on success, the type value for an unknown type block (header still valid), 256 on overrun.
 int DecodeIfaceComp(std::vector<std::uint8_t> bytes, IfaceCompDef& c) {
     InputStream s(std::move(bytes));
     int ver = s.ReadUnsignedByte(); if (ver >= 0x80) ver -= 0x100;   // signed; -1 in old groups
@@ -1976,11 +1838,9 @@ std::string IfaceGroupDefsJson(int group_id) {
 
 #include "OverlayTexColours.h"
 
-// ---- Map terrain colours + flat region render (cache-native) ---------------------------------
-// Resolve an underlay (archive 1) / overlay (archive 4) tile colour from the CONFIG index (2)
-// -> 0xRRGGBB, or -1 (none). opcode 1 = primary RGB, 7 = secondary, 13 = ternary. Many textured
-// overlays carry no primary colour, so fall through primary -> secondary -> ternary.
-// Caller holds g_mu. Cached across calls.
+// ---- Map terrain colours + flat region render ----
+// Underlay (archive 1) / overlay (archive 4) colour from CONFIGS -> 0xRRGGBB or -1. opcode 1 = primary RGB,
+// 7 = secondary, 13 = ternary; fall through in that order. Caller holds g_mu. Cached.
 static int ConfigColourLocked(int archive, int id) {
     if (id < 0) return -1;
     static std::unordered_map<int, int> cache;
@@ -2000,12 +1860,7 @@ static int ConfigColourLocked(int archive, int id) {
                 else if (op == 1)  { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col  = (r << 16) | (g << 8) | b; }
                 else if (op == 7)  { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col2 = (r << 16) | (g << 8) | b; }   // secondary RGB
                 else if (op == 13) { int r = s.ReadUnsignedByte(), g = s.ReadUnsignedByte(), b = s.ReadUnsignedByte(); col3 = (r << 16) | (g << 8) | b; }   // ternary RGB
-                // The material id lives at a DIFFERENT opcode per archive: overlays (4) carry the
-                // material at 3 and the texture scale at 9; underlays (1) carry the material at 2
-                // and the scale at 3. Reading 3 as the material for both made every underlay's
-                // "material" actually a scale (measured 48..2048, overwhelmingly 512/256/1024)
-                // and discarded the real texture id. Byte consumption is unchanged: all three
-                // fields are u16, so the walk stayed aligned and the bug was invisible.
+                // Material opcode differs per archive: overlays (4) material at 3, scale at 9; underlays (1) material at 2, scale at 3.
                 else if (op == 3)  { int v = s.ReadUnsignedShort(); if (archive == 4) material = v; }
                 else if (op == 2)  { int v = s.ReadUnsignedShort(); if (archive == 1) material = v; }
                 else if (op == 9)  s.ReadUnsignedShort();                          // texture scale
@@ -2015,13 +1870,11 @@ static int ConfigColourLocked(int archive, int id) {
             }
         }
     }
-    // Textured overlays are painted from their texture in game; their flat RGB is only a
-    // neutral tint, so prefer the material's average texture colour.
+    // Textured overlays: prefer the material's average texture colour over the flat tint.
     if (archive == 4 && material >= 0) {
         int flat = (col2 >= 0) ? col2 : (col >= 0) ? col : col3;
         if (flat == 0xFF00FF) flat = -1;
-        // Only where the flat value cannot be the intended look: absent, or a neutral grey
-        // tint. Overlays carrying a real colour keep rendering as they are.
+        // Only when the flat value is absent or a neutral grey.
         bool neutral = false;
         if (flat >= 0) {
             int r = (flat >> 16) & 0xff, g = (flat >> 8) & 0xff, b = flat & 0xff;
@@ -2034,16 +1887,11 @@ static int ConfigColourLocked(int archive, int id) {
             while (lo <= hi) { int mid = (lo + hi) / 2;
                 if (kOverlayMatIds[mid] == material) { found = mid; break; }
                 if (kOverlayMatIds[mid] < material) lo = mid + 1; else hi = mid - 1; }
-            // A ZERO entry is a failed texture average, not a black overlay. Thirteen of the
-            // generated materials carry 0x000000 (see OverlayTexColours.h); taking those
-            // literally painted overlay 561 - 17% of the Anachronia island - pure black.
-            // Fall through to the flat RGB instead, which is the neutral tint we came here
-            // to improve on but is still enormously better than a black hole in the map.
+            // A 0x000000 entry is a failed texture average, not black; fall through to the flat RGB.
             if (found >= 0 && kOverlayMatCols[found] != 0) { cache[key] = kOverlayMatCols[found]; return kOverlayMatCols[found]; }
         }
     }
-    // Overlays (archive 4) take SECONDARY colour first (per the game map); everything
-    // else takes the primary.
+    // Overlays (archive 4) take the secondary colour first; everything else the primary.
     int out = (archive == 4) ? ((col2 >= 0) ? col2 : (col >= 0) ? col : col3)
                              : ((col >= 0) ? col : (col2 >= 0) ? col2 : col3);
     cache[key] = out;
@@ -2115,12 +1963,10 @@ static void OverlayMaskLocal(int shape, int size, std::vector<unsigned char>& m)
     }
 }
 
-// Region object placements, assuming g_mu is already held (defined with RegionLocations below).
+// Assumes g_mu held (defined with RegionLocations below).
 static const std::vector<LocPlacement>& RegionLocationsLocked(int region_x, int region_y);
 
-// Wall line pixels for a location of type 0/2/9 at a rotation: a strip along one tile edge (type 0),
-// an L of two edges (type 2), or a diagonal band (type 9). Mirrors the wall line draw; widths
-// floor at 1 px so walls still show at small tile sizes. Emits tile-local (a,b) into out.
+// Wall pixels for loc type 0 (one edge), 2 (L of two edges), 9 (diagonal) at a rotation; tile-local (a,b) into out.
 static void WallLine(int ty, int rot, int size, std::vector<std::pair<int, int>>& out) {
     out.clear();
     int q = size / 4; if (q < 1) q = 1;
@@ -2147,9 +1993,7 @@ static void WallLine(int ty, int rot, int size, std::vector<std::pair<int, int>>
     }
 }
 
-// Every chunk of a sound, in order. Each chunk is a COMPLETE Ogg stream carrying its own vorbis
-// headers, so concatenating them and handing the result to a decoder yields only the first chunk -
-// which is how a 32.7s effect played as 3.5s. Decode each separately and join the PCM.
+// Every chunk in order; each is a complete Ogg stream, so decode separately and join the PCM.
 std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id) {
     SqliteIndexFile* idx = nullptr;
     {
@@ -2174,14 +2018,13 @@ std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id
                          bytes.begin() + (std::ptrdiff_t)(pos + len));
         pos += len;
     }
-    // If the table looks wrong, fall back to "everything after the header" so the sound still
-    // plays as far as its first stream rather than not at all.
+    // Bad chunk table: fall back to everything after the header.
     if (out.empty() && j.ogg_off < bytes.size())
         out.emplace_back(bytes.begin() + (std::ptrdiff_t)j.ogg_off, bytes.end());
     return out;
 }
 
-// One sound's Ogg bytes, header stripped -- a complete, playable .ogg file.
+// One sound's Ogg bytes, JAGA header stripped.
 std::vector<std::uint8_t> SoundOgg(int index_id, int sound_id) {
     SqliteIndexFile* idx = nullptr;          // same reasoning as SoundListJson: do not hold
     {                                        // g_mu across the read + inflate
@@ -2200,15 +2043,11 @@ std::vector<std::uint8_t> SoundOgg(int index_id, int sound_id) {
     return std::vector<std::uint8_t>(bytes.begin() + (std::ptrdiff_t)j.ogg_off, bytes.end());
 }
 
-// Metadata for a page of sounds: [{id, rate, ch, ms, bytes}, ...]. Reading every archive of
-// index 14 would decompress ~250MB, so the caller pages through it.
+// [{id, rate, ch, ms, bytes}, ...] for one page; a full index-14 walk would decompress ~250MB.
 std::string SoundListJson(int index_id, int start_id, int limit) {
     if (limit < 1) limit = 1;
     if (limit > 512) limit = 512;
-    // Take the cache mutex ONLY to resolve the index. The scan below reads and inflates up to
-    // `limit` archives, and g_mu is the same lock the overlay's per-frame terrain lookups use -
-    // holding it across the scan stalled the game's render thread for the whole listing.
-    // SqliteIndexFile opens its own transient connection per call, so the reads are safe here.
+    // Hold g_mu only to resolve the index: the scan inflates many archives and g_mu is shared with per-frame lookups.
     SqliteIndexFile* idx = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -2216,8 +2055,7 @@ std::string SoundListJson(int index_id, int start_id, int limit) {
         idx = g_store ? g_store->Get(index_id) : nullptr;
     }
     if (!idx) return "[]";
-    // Ids come from the SQLite table, not the reference table: the audio indexes list fine this
-    // way whether or not their ref table parsed.
+    // Ids come from the SQLite table, not the reference table.
     const auto ids = idx->ArchiveIdsFrom(start_id, limit);
     std::string out = "[";
     int emitted = 0;
@@ -2241,24 +2079,17 @@ std::string SoundListJson(int index_id, int start_id, int limit) {
     return out;
 }
 
-// Rendering a window is expensive - an underlay box blur, a hillshade pass and a per-pixel
-// bilinear sample over the whole image - and the panel redraws on a poll, asking for the SAME
-// window again while the player stands still. Keep the last few results; the inputs are static
-// cache data, so a hit stays valid for the life of the process.
+// Window render is expensive and the panel re-requests the same window on a poll; keep the last few results.
 namespace {
 struct MapWinCacheEntry { int cx, cy, plane, half, ts, want; std::string json; };
 std::deque<MapWinCacheEntry> g_mapWinCache;      // most-recent first; guarded by g_mu
 constexpr std::size_t kMapWinCacheMax = 48;   // a zoomed-out viewport spans dozens of chunks; 3 never hit
 }  // namespace
 
-// See the header. A clue item states the tile but never the object, so the object is read back
-// off the map. Matched by right-click option rather than by name: "Search" is the ordinary case
-// and "Open" is what a LOCKED container shows, and those two together are exactly the set of
-// clue-searchable things - which beats maintaining a list of names like Crate/Drawers/Chest.
+// Matched by right-click option (Search, or Open for a locked container), not by name.
 std::string ClueSearchTargetJson(int x, int y, int plane) {
     if (x <= 0 || y <= 0 || plane < 0 || plane > 3) return "{}";
-    // A multi-tile object is anchored at its SW corner, so the placement covering this tile can
-    // be up to a few tiles away; widen to the neighbouring regions for one on a boundary.
+    // Multi-tile objects anchor at their SW corner; widen to neighbouring regions.
     struct Best { int id = -1; std::string name, action; int dx = 1, dy = 1; int rank = 99; };
     Best best;
     for (int rgx = (x - 4) >> 6; rgx <= ((x + 4) >> 6); ++rgx) {
@@ -2271,8 +2102,7 @@ std::string ClueSearchTargetJson(int x, int y, int plane) {
                 if (p.rotation == 1 || p.rotation == 3) { int t = dx; dx = dy; dy = t; }
                 const int gx = rgx * 64 + p.x, gy = rgy * 64 + p.y;
                 if (x < gx || x >= gx + dx || y < gy || y >= gy + dy) continue;
-                // Prefer Search over Open: a room can hold both a searchable object and an
-                // ordinary door, and only the former is ever the clue target.
+                // Prefer Search over Open (a door is never the clue target).
                 for (std::size_t a = 0; a < m.actions.size(); ++a) {
                     const std::string& act = m.actions[a];
                     int rank = (act == "Search") ? 0 : (act == "Open") ? 1 : 99;
@@ -2308,14 +2138,12 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
     if (half < 8 || half > 384) half = 40;       // tiles each side of the centre (panel-controlled zoom)
     if (ts < 2 || ts > 32) ts = 6;               // px per tile (32 = ~3x zoom before upscaling)
     if (ts & 1) ++ts;                            // even keeps the tile-shape split exact
-    // half and ts are clamped independently; together they could demand a 24576px (2.4 GB)
-    // window. Shrink ts first (cheapest to lose), then half, until the buffer is sane.
+    // Shrink ts first, then half, until the buffer is sane.
     constexpr int kMaxW = 4096;
     while (2 * half * ts > kMaxW && ts > 2) ts -= 2;
     while (2 * half * ts > kMaxW && half > 8) --half;
     if (2 * half * ts > kMaxW) return "{}";
-    // Looked up AFTER the clamps, so two requests differing only in an out-of-range argument
-    // still share an entry.
+    // Looked up after the clamps so out-of-range variants share an entry.
     for (std::size_t i = 0; i < g_mapWinCache.size(); ++i) {
         const auto& e = g_mapWinCache[i];
         if (e.cx == cx && e.cy == cy && e.plane == plane && e.half == half && e.ts == ts && e.want == want) {
@@ -2328,14 +2156,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
     }
     const int HALF = half, TS = ts;
     const int WT = 2 * HALF, W = WT * TS;
-    // Void is pre-filled with the panels' backdrop colour rather than left at {0,0,0,0}.
-    // EncodePngRgb DROPS alpha (it documents the render as "fully opaque"), so transparent
-    // void encoded as OPAQUE BLACK: every chunk holding even one real tile stamped a black
-    // rectangle over its void, while chunks with no data at all fell through to the canvas
-    // backdrop - which is what produced the hard rectangular seams at chunk boundaries.
-    // Filling here also fixes the icon blend below, which composites src over dst and so
-    // haloed dark wherever a map icon overhung void. Must stay byte-identical to the JS
-    // backdrop (panel_worldmap.js wmDraw / .wm-stage) or the seams come straight back.
+    // Void is pre-filled with the panel backdrop (EncodePngRgb drops alpha). Must match panel_worldmap.js exactly.
     constexpr int kMapVoidCol = 0x0B0D12;
     std::vector<unsigned char> rgba((size_t)W * W * 4);
     for (std::size_t p = 0; p < rgba.size(); p += 4) {
@@ -2345,20 +2166,14 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         rgba[p + 3] = 255;
     }
 
-    // Column shift (bridge flag): settings bit 0x2 on PLANE 1 lifts the whole column one plane,
-    // so the tile you SEE on plane p is stored at p+1. Same rule as EffPlaneLocked (heights).
-    // This is piers and bridges, but also the whole Daemonheim castle platform - painting those
-    // as flat "deck wood" erased the platform's real ground; render the shifted tile instead.
+    // Bridge flag (settings bit 0x2 on plane 1) lifts the column: the tile seen on plane p is stored at p+1.
     auto effPlaneAt = [&](int gx, int gy) -> int {
         if (plane >= 3 || gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return plane;
         const auto& s = RegionTilesLocked(gx >> 6, gy >> 6).settings;
         if (s.empty()) return plane;
         return (s[(std::size_t)(64 + (gx & 63)) * 64 + (gy & 63)] & 0x2) ? plane + 1 : plane;
     };
-    // Does this tile actually put anything on screen? An underlay always does. An overlay only
-    // does if it resolves to a colour: overlays 42 and 43 are the cache's authored "there is no
-    // ground here" markers, whose whole config is the 0xFF00FF magenta sentinel with no secondary
-    // colour and no material. Same resolution the paint loop uses, kept in step with it.
+    // Underlay always draws; an overlay only if it resolves to a colour (42/43 are the 0xFF00FF "no ground" markers).
     auto drawableTile = [&](int u, int o) -> bool {
         if (u >= 1) return true;
         if (o < 1)  return false;
@@ -2367,31 +2182,14 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         if (o == 112 && c == 0xFFFFFF) return true;       // ocean is remapped to blue, not dropped
         return c >= 0;
     };
-    // Plane 0 explicitly says "hole" here: an authored void, not merely an absent tile. Nothing
-    // may be promoted over it.
+    // Authored hole on plane 0: nothing may be promoted over it.
     auto groundHoleAt = [&](const MapTileData& td, int gx, int gy) -> bool {
         const std::size_t b0 = (std::size_t)(gx & 63) * 64 + (gy & 63);
         return (td.underlay[b0] >= 1 || td.overlay[b0] >= 1) &&
                !drawableTile(td.underlay[b0], td.overlay[b0]);
     };
-    // Highest plane 1..3 at this column that is flagged "belongs on the GROUND map" (settings bit
-    // 0x8) and actually carries ground; 0 when there is none. The LOC-side companion to the
-    // promotion tileAt already does for TERRAIN below - without it the two halves disagree and a
-    // promoted city renders its ground with none of its objects on it.
-    //
-    // Prifddinas is the case that exposed this. Its geometry lives on plane 1 and the cache ships a
-    // near-duplicate copy on plane 3 flagged 0x8 purely so the ground map has something to draw
-    // (region 34,52: plane 0 has no drawn tiles at all, 2009 tiles flagged on plane 3, and plane 3
-    // matches plane 1 on 1630 of 2010 tiles). Terrain promoted and drew; all 5,728 plane-1 locs
-    // failed the filter below. Ithell kept 0 of its 14 map-scene icons and 0 of 557 wall lines.
-    //
-    // The worldmap index does NOT remap Prifddinas - archive 1 file 231 is all srcPlane 0 ->
-    // dstPlane 0 once its 11-byte records are parsed correctly. The 0x8 duplicate is the whole
-    // mechanism, which is why this rule has to exist rather than reading a remap table.
-    //
-    // Accepts any plane UP TO the promoted one, not the promoted plane alone: the flagged copy and
-    // the locs are on different planes (3 and 1 here), which is the whole reason a
-    // p.plane == promoted test does nothing.
+    // Highest plane 1..3 flagged "ground map" (settings bit 0x8) with real ground, 0 if none. Locs on any plane
+    // up to it are drawn (Prifddinas: flagged copy on plane 3, locs on plane 1).
     auto promoPlaneAt = [&](int gx, int gy) -> int {
         if (plane != 0 || gx < 0 || gy < 0 || gx > 16383 || gy > 16383) return 0;
         const MapTileData& td = RegionTilesLocked(gx >> 6, gy >> 6);
@@ -2413,24 +2211,18 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         int ep = effPlaneAt(gx, gy);
         int idx = (ep * 64 + (gx & 63)) * 64 + (gy & 63);
         ul = td.underlay[idx]; ov = td.overlay[idx]; sh = td.shape[idx];
-        // A shifted column only overrides the base plane where the upper plane really has
-        // ground; over open terrain the flag is set on columns whose upper plane is empty.
+        // A shifted column only overrides the base plane where the upper plane has ground.
         if (ep != plane && ul < 1 && ov < 1) {
             int b = (plane * 64 + (gx & 63)) * 64 + (gy & 63);
             ul = td.underlay[b]; ov = td.overlay[b]; sh = td.shape[b];
         }
-        // Settings bit 0x8 marks an upper-plane tile that belongs on the GROUND map: cave
-        // rims, overhangs and raised structures. Without this they read as void and paint
-        // black. Highest flagged plane wins, matching the order the tiles are drawn in.
-        // An authored hole on plane 0 outranks the promotion: the cache is saying "no ground here",
-        // and a flagged upper plane must not fill it in. 6,317 tiles world-wide had their void
-        // overwritten this way, which is what laid terrain across every moat and chasm - the
-        // Wilderness moated fortress, the Clan Wars arena, the walkways in Small cave.
+        // Settings bit 0x8 promotes an upper-plane tile onto the ground map; highest flagged plane wins.
+        // An authored hole on plane 0 outranks the promotion.
         if (plane == 0 && !td.settings.empty() && !groundHoleAt(td, gx, gy)) {
             for (int p = 3; p >= 1; --p) {
                 std::size_t i2 = (std::size_t)(p * 64 + (gx & 63)) * 64 + (gy & 63);
                 if (!(td.settings[i2] & 0x8)) continue;
-                // An INVISIBLE upper tile is not content worth promoting (~3,280 tiles).
+                // Invisible upper tiles are not promoted.
                 if (!drawableTile(td.underlay[i2], td.overlay[i2])) continue;
                 ul = td.underlay[i2]; ov = td.overlay[i2]; sh = td.shape[i2];
                 break;
@@ -2449,15 +2241,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         auto cl = [](double v){ int i = (int)(v + 0.5); return i < 0 ? 0 : (i > 255 ? 255 : i); };
         return (cl(((col >> 16) & 0xff) * f) << 16) | (cl(((col >> 8) & 0xff) * f) << 8) | cl((col & 0xff) * f);
     };
-    // Underlay blend: each tile's colour is the average underlay RGB over a (2*UBR+1)^2 box,
-    // precomputed over a padded window with a separable box blur (O(1) per tile). Overlays /
-    // walls / map-scene icons draw crisply ON TOP.
-    // Underlay blend kernel, in tiles. The game map blends ground colour very widely, which is
-    // right when a tile is a few pixels - it hides the tile grid. Held at that width while zoomed
-    // IN it is why terrain looked low-resolution: every pixel was the average of a 10x10 tile
-    // neighbourhood, so no local variation survived however many pixels the tile was drawn at.
-    // Tighten the kernel as tiles grow, so zooming in actually reveals terrain instead of a
-    // bigger smear. Tiles still blend into their neighbours - just over a smaller radius.
+    // Underlay blend: average underlay RGB over a (2*UBR+1)^2 box (separable box blur); the kernel tightens as tiles grow.
     const int UBR  = (TS >= 24) ? 1 : (TS >= 16) ? 2 : (TS >= 10) ? 3 : 4;
     const int UBLO = -UBR, UBHI = UBR + 1;
     const int PAD = 5, PW = WT + 2 * PAD;   // padding sized for the widest kernel; over-pad is free
@@ -2478,8 +2262,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             size_t j = (size_t)qx * PW + py; if (!rawM[j]) continue; sR += rawR[j]; sG += rawG[j]; sB += rawB[j]; ++sC; }
         size_t i = (size_t)px * PW + py; hR[i] = sR; hG[i] = sG; hB[i] = sB; hC[i] = sC;
     }
-    // Blend colours are kept for a 1-tile ring beyond the window (index (wx+1)*BW+(wy+1)) so the
-    // per-pixel bilinear sampling below stays continuous across adjacent windows (no chunk seams).
+    // 1-tile ring beyond the window (index (wx+1)*BW+(wy+1)) keeps bilinear sampling continuous across chunks.
     const int BW = WT + 2;
     std::vector<int> blendUl((size_t)BW * BW, -1);
     for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
@@ -2488,8 +2271,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             size_t j = (size_t)px * PW + qy; sR += hR[j]; sG += hG[j]; sB += hB[j]; sC += hC[j]; }
         if (sC > 0) blendUl[(size_t)(wx + 1) * BW + (wy + 1)] = ((sR / sC) << 16) | ((sG / sC) << 8) | (sB / sC);
     }
-    // Height-relief hillshade factor per tile (map lighting): brighten NW-facing slopes,
-    // darken SE-facing ones. Precomputed with the same 1-tile ring so it interpolates seamlessly.
+    // Hillshade factor per tile: brighten NW-facing slopes, darken SE-facing. Same 1-tile ring.
     std::vector<float> shadeF((size_t)BW * BW, 1.0f);
     for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
         int gx = cx - HALF + wx, gy = cy - HALF + wy;
@@ -2502,13 +2284,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         if (d < -0.18) d = -0.18; else if (d > 0.18) d = 0.18;
         shadeF[(size_t)(wx + 1) * BW + (wy + 1)] = (float)(1.0 + d);
     }
-    // Bilinear underlay sample at a pixel centre: interpolates both the blended colour and the
-    // hillshade between the four surrounding tile centres. This is what stops the ground looking
-    // like a flat-tile mosaic at large TS; a void corner just renormalises over the rest.
-    // Per-pixel shade factor, interpolated exactly like the underlay colour but CLAMPED.
-    // Overlays were left flat because full relief shading bleached paths white along height
-    // cliffs (Prifddinas, a whole raised platform, was the worst case). A narrow band gives
-    // them form and a gradient across the tile without that failure.
+    // Per-pixel shade factor, bilinear between tile centres, clamped to [lo,hi] (full relief bleaches overlays at cliffs).
     auto sampleShade = [&](int wx, int wy, int a, int bb, double lo, double hi) -> double {
         double u = wx + (a + 0.5) / (double)TS - 0.5;
         double v = wy + 1.0 - (bb + 0.5) / (double)TS - 0.5;
@@ -2526,10 +2302,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         double f = acc / wsum;
         return f < lo ? lo : (f > hi ? hi : f);
     };
-    // Deterministic dither, keyed on the tile and the pixel within it. Ground here is ONE colour
-    // per tile - there is no sub-tile detail in the cache to sample - so at high zoom a tile
-    // reads as a solid block however many pixels it is given. A tiny stable jitter breaks that
-    // up without inventing features: it never moves, and it is invisible below ~8 px per tile.
+    // Deterministic per-pixel dither so a single-colour tile does not read as a solid block at high zoom.
     auto dither = [](int tx, int ty, int a, int bb) -> int {
         unsigned h = (unsigned)tx * 73856093u ^ (unsigned)ty * 19349663u
                    ^ (unsigned)a * 83492791u ^ (unsigned)bb * 2971215073u;
@@ -2563,11 +2336,8 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
         auto cl = [](double q) { int i = (int)(q + 0.5); return i < 0 ? 0 : (i > 255 ? 255 : i); };
         return (cl(r / wsum) << 16) | (cl(g / wsum) << 8) | cl(b / wsum);
     };
-    // Shoreline softening: WATER pixels bilinear-sample a combined water/land colour field, so a
-    // coast melts from land into water over ~1 tile (a shallow fringe) instead of snapping at hard
-    // tile steps. waterCol (1-tile ring) = the shaded colour of a water tile, -1 elsewhere; water =
-    // the ocean overlay 112 or a blue-dominant overlay colour (rivers/ponds; heuristic, visual-only).
-    // Non-water overlays (roads, floors) keep their crisp flat edges.
+    // Shoreline softening: water pixels bilinear-sample a water/land field. waterCol (1-tile ring) = shaded water colour
+    // or -1; water = ocean overlay 112 or a blue-dominant overlay colour (heuristic).
     std::vector<int> waterCol((size_t)BW * BW, -1);
     if (TS >= 4) {
         for (int wx = -1; wx <= WT; ++wx) for (int wy = -1; wy <= WT; ++wy) {
@@ -2625,31 +2395,15 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             if (ocol == 0xFF00FF) ocol = -1;                       // magenta = transparent overlay
             if (ov == 112 && ocol == 0xFFFFFF) ocol = 0x3D4E63;    // ocean (white -> blue, per the game map)
             if (deck && ucol < 0 && ocol < 0) ucol = 0x6E5436;     // shifted tile with no colourable floor (plank piers) -> deck wood
-            // A tile whose ONLY data is an invisible overlay is an authored HOLE, and must stay
-            // backdrop. This used to paint 0x534E47 on the theory that such a tile was a textured
-            // city/dungeon floor; no tile in the live cache supports that. Every plane-0 tile that
-            // reaches here carries overlay 42 or 43 (144,393 and 28 of them) - and overlay 42's
-            // whole config is `05 01 ff00ff 0b 7f 00`: magenta, no secondary colour, no material.
-            // That is Jagex's "there is no ground here" marker, the same 0xFF00FF sentinel already
-            // honoured just above and in the underlay pass. Filling it is what put terrain across
-            // every chasm and moat, and painted five entire map squares that are 100% overlay 42
-            // ("Dream world", "Korasi's dream", "Silas's Dream") as solid grey slabs.
+            // Only an invisible overlay (42/43, the 0xFF00FF marker) = authored hole; stays backdrop.
             if (ucol < 0 && ocol < 0) continue;                    // authored void -> backdrop
             any = true;
             const double tf = shadeF[(size_t)(wx + 1) * BW + (wy + 1)];
-            // Overlays (water/roads/floors) stay flat per tile; the underlay ground gets the
-            // per-pixel gradient at TS >= 4 (at TS 2 a tile is 4 px, flat is indistinguishable).
-            // Ground paints FLAT per tile at map zoom, as the game's map does; interpolating
-            // between tile centres washes small terrain patches into their neighbours.
+            // Underlay ground gets the per-pixel gradient only at TS >= 8; flat at map zoom like the game's map.
             const bool smoothUl = (TS >= 8) && (ul >= 1);
             const bool tileWater = (TS >= 4) && waterCol[(size_t)(wx + 1) * BW + (wy + 1)] >= 0;
             int ucolFlat = (ucol >= 0) ? shade(ucol, tf) : -1;
-            // Relief ceiling that cannot CLIP. Prifddinas paths are #EEEEEE straight from the
-            // cache (overlay 135, op7); at the fixed 1.07 ceiling that is 254.66 -> 255, so the
-            // lit half of every path tile went pure white and the map read as bleached. Cap the
-            // ceiling at whatever leaves the brightest channel just under 255: dark overlays keep
-            // the full band, near-white ones simply get no highlight, which is what the game
-            // shows anyway. Black is unaffected either way, since shade() is a multiply.
+            // Relief ceiling capped so the brightest channel stays under 255 (near-white overlays get no highlight).
             double ovHi = 1.07;
             if (ocol >= 0) {
                 int mxc = (ocol >> 16) & 0xff;
@@ -2661,15 +2415,11 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                     if (ovHi < 1.0)  ovHi = 1.0;
                 }
             }
-            // Overlays take a CLAMPED relief light, not the full one. Unshaded (which is what
-            // the game map does) they read as solid blocks once a tile is 16-32 px; fully shaded,
-            // they bleach white along height cliffs - Prifddinas, a whole raised platform, was
-            // the case that forced them flat before. The narrow band gives shape without that.
+            // Overlays take a clamped relief light: unshaded they read as blocks, fully shaded they bleach at cliffs.
             int px0 = wx * TS, py0 = ((WT - 1) - wy) * TS;          // north-up tile origin
             bool useMask = (ocol >= 0);
             if (useMask) OverlayMaskLocal(sh < 0 ? 0 : sh, TS, mask);
-            // Detail only where a tile is big enough for it to read; below this a tile is a few
-            // pixels and both effects are noise.
+            // Detail only where a tile is big enough to read.
             const bool detail = (TS >= 8);
             for (int a = 0; a < TS; ++a) {
                 for (int bb = 0; bb < TS; ++bb) {
@@ -2677,9 +2427,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                     if (useMask && mask[a * TS + bb]) {
                         if (tileWater) { col = sampleSurf(wx, wy, a, bb); if (col < 0) col = ocol; }
                         else if (detail) {
-                            // Overlays now take a GENTLE, interpolated light instead of being
-                            // flat: enough to give a path or a swamp patch shape across the
-                            // tile, tight enough not to bleach at cliffs.
+                            // Gentle interpolated light for overlays.
                             col = shade(ocol, sampleShade(wx, wy, a, bb, 0.93, ovHi));
                         }
                         else col = ocol;
@@ -2695,9 +2443,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             }
         }
     }
-    // Structures built on the levels ABOVE this one (walkways, platforms, building floors)
-    // belong on the map: the game's map shows them over the ground, not hidden on their own
-    // level. They sit on top, so they draw over this level's overlays too.
+    // Structures on the planes above draw over this plane, as on the game's map.
     if (plane < 3) {
         std::vector<unsigned char> umask((size_t)TS * TS);
         for (int up = plane + 1; up <= 3; ++up) {
@@ -2725,27 +2471,10 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             }
         }
     }
-    // ---- locs: map-scene ICONS (trees/anvils/rocks/... via loc opcode 102) composited at the tile, plus
-    //      light WALL lines from type-0/2/9 locs. map parity: a loc with a map-scene draws its icon INSTEAD
-    //      of a wall. One pass over the regions' locs handles both. ----
+    // ---- locs: map-scene icons (loc opcode 102) composited at the tile, else wall lines from type-0/2/9 locs ----
     std::vector<unsigned char> objsOut;   // objects layer: scenery footprints (wtx u16, wty u16, dx u8, dy u8, id u32) for the toggleable client overlay
-    // Map ELEMENT pins: (wtx u16, wty u16, maplabel id u16, loc id u32) LE, 10 bytes each.
-    // Deliberately carries no sprite/category/text -- those are per-ELEMENT, not per-placement, and
-    // all 5,809 of them come down once via bridge().mapLabels(). Repeating them per chunk would
-    // multiply the payload for no gain.
-    //
-    // The loc id IS per-placement, so it has to travel here. It is the tooltip's name of last
-    // resort: 22 elements carry no name by any route (no param 4149, no op-3 text, no category in
-    // enum 8586) and hover as the "MAP SYMBOL" placeholder, which is 597 pins. The placing loc's
-    // own name rescues 142 of them - including the 107-pin "Dungeon exit" cluster - and gets none
-    // of them wrong. It cannot rescue the other 450: elements 1089/4129/709 sit on locs that
-    // genuinely have no op-2 name (verified byte-for-byte on loc 12678), so those stay placeholder
-    // until someone finds where the game gets their text.
-    //
-    // Per-PLACEMENT, not the element's majority loc name. The majority shortcut needs no blob
-    // change and names more pins, but it stamps one loc's name onto unrelated placements of the
-    // same element - measured at 36 mislabelled, e.g. "Impling manager" spread over 30 pins that
-    // are not one.
+    // Map element pins: (wtx u16, wty u16, maplabel id u16, loc id u32) LE, 10 bytes each. Per-element data
+    // (sprite/category/text) comes from MapLabelsJson; the per-placement loc id is the tooltip's name of last resort.
     std::vector<unsigned char> iconsOut;
     {
         EnsureMapscenesLocked();
@@ -2757,13 +2486,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                 const auto& locs = RegionLocationsLocked(rgx, rgy);
                 for (const auto& p : locs) {
                     int gx = rgx * 64 + p.x, gy = rgy * 64 + p.y;
-                    // Map ELEMENT pins are exported BEFORE the plane filter below, and from every
-                    // plane. The game's world map shows a symbol wherever it is in the building --
-                    // a bank or altar on an upper floor still appears on the ground view -- but
-                    // this loop's filter is built for TERRAIN (walls, mapscenes), which genuinely
-                    // is per-plane. Filtering symbols with it dropped every one that happens to
-                    // live above the floor you are looking at, which is most of them indoors.
-                    // The panel dedupes a symbol that repeats across planes at the same tile.
+                    // Element pins are exported from every plane, before the terrain plane filter; the panel dedupes.
                     {
                         int mfAny = LocMapFunctionLocked(p.id);
                         if (mfAny >= 0) {
@@ -2779,12 +2502,7 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                             continue;   // an element replaces the wall, on any plane
                         }
                     }
-                    // Shifted columns also pull their plane+1 locs down (bridge rails, the walls
-                    // and map icons on the Daemonheim platform), and a column whose ground map is
-                    // PROMOTED from an upper plane brings that plane's locs with it (see
-                    // promoPlaneAt) - otherwise Prifddinas and its like draw as empty ground.
-                    // promoPlaneAt is only reached for a loc the first two rules already rejected,
-                    // so the common case still costs one effPlaneAt.
+                    // Shifted columns pull their plane+1 locs down; promoted columns bring that plane's locs (promoPlaneAt).
                     if (p.plane != plane
                         && !(p.plane == plane + 1 && effPlaneAt(gx, gy) != plane)
                         && !(plane == 0 && p.plane >= 1 && p.plane <= promoPlaneAt(gx, gy))) continue;
@@ -2802,7 +2520,6 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
                         objsOut.push_back((unsigned char)(oid & 0xff)); objsOut.push_back((unsigned char)((oid >> 8) & 0xff));
                         objsOut.push_back((unsigned char)((oid >> 16) & 0xff)); objsOut.push_back((unsigned char)((oid >> 24) & 0xff));
                     }
-                    // (map ELEMENT pins were exported above, before the plane filter)
                     int ms = LocMapsceneLocked(p.id);
                     if (ms >= 0) {                                     // map-scene icon: composite, no wall
                         const MapsceneIcon& ic = MapsceneIconLocked(ms);
@@ -2843,23 +2560,12 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             }
         }
     }
-    // Emptiness is decided AFTER the collision grids below used to be built, which meant any
-    // window returning "{}" silently dropped its walkability data too. `any` tracks only
-    // whether there is something to LOOK at; a window can be visually blank yet still carry
-    // scenery footprints the objects overlay needs, so objs is part of the test now.
-    // Deliberately NOT part of it: "has a blocked tile". Void counts as full-blocked, so that
-    // test is true for every empty window in the world and would turn each one into a
-    // multi-hundred-KB collision payload instead of two bytes.
-    // iconsOut is part of the test: map elements no longer set `any` (they are exported, not
-    // painted), so a window whose only content is pins would otherwise report itself empty and
-    // the panel would cache it as "no data here" and never draw them.
+    // Empty = nothing visible, no objs, no pins. "Has a blocked tile" is deliberately not part of it (void counts as blocked).
     if (!any && objsOut.empty() && iconsOut.empty()) return "{}";
-    // Per-tile "cannot stand here" grid for the window (1 = full-blocked: trees, scenery footprints, void,
-    // diagonal walls). Edge-only walls are NOT counted (the tile is still standable). Row-major by wx
-    // (index = wx*WT + wy); the panel uses it so suggested scan tiles are always walkable.
+    // Per-tile full-blocked grid (edge-only walls excluded), row-major by wx (index = wx*WT + wy).
     std::vector<unsigned char> blkOut, nomove;
     if (want & 4) {
-    blkOut.assign((std::size_t)WT * WT, 0);   // full-block 1/0 -- feeds the scan-tile walkability check (unchanged semantics)
+    blkOut.assign((std::size_t)WT * WT, 0);   // full-block 1/0 for the scan-tile walkability check
     nomove.assign((std::size_t)WT * WT, 0);   // FULL collision flag byte (block + N/E/S/W wall edges) for the walkability OVERLAY (mejrs nomove layer)
     for (int wx = 0; wx < WT; ++wx)
         for (int wy = 0; wy < WT; ++wy) {
@@ -2871,14 +2577,10 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
             nomove[(std::size_t)wx * WT + wy] = f & (kTileBlockFull | kTileBlockN | kTileBlockS | kTileBlockE | kTileBlockW);
         }
     }
-    // The world map never reads the collision grids or objs: at ts=2 they were ~175 KB of
-    // base64 per chunk plus a per-tile blocked-grid walk, all discarded on arrival.
     std::string out = "{\"w\":" + std::to_string(W) + ",\"t\":" + std::to_string(TS) +
            ",\"h\":" + std::to_string(HALF) + ",\"wt\":" + std::to_string(WT) +
            ",\"cx\":" + std::to_string(cx) + ",\"cy\":" + std::to_string(cy) + ",\"p\":" + std::to_string(plane) +
-           // A visually blank window that only reached here for its objs/collision ships NO
-           // png: it would be a whole chunk of flat backdrop. Consumers already treat a
-           // missing png as "no terrain" and fall back to the canvas backdrop.
+           // No png for a visually blank window; consumers treat a missing png as "no terrain".
            ",\"png\":\"" + ((any && (want & 1)) ? Base64Std(EncodePngRgb(rgba.data(), W, W)) : std::string()) +
            "\",\"blk\":\"" + ((want & 4) ? Base64Std(blkOut) : std::string()) +
            "\",\"nomove\":\"" + ((want & 4) ? Base64Std(nomove) : std::string()) +
@@ -2890,14 +2592,8 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
 }
 
 
-// ---------------------------------------------------------------------------
-// Buff / debuff name resolution.
-//
-// Every player-visible buff/debuff is a StructType (index 22) whose params
-// carry the display name and the buff-bar icon id. The param KEYS aren't fixed
-// (a game update renumbers them), so they're discovered at runtime from known
-// probe strings, then every struct is walked to build sprite/item id -> name.
-// ---------------------------------------------------------------------------
+// Buff / debuff names: StructTypes (index 22) whose params carry name + bar icon id. Param keys get renumbered
+// by updates, so they are discovered from probe strings, then every struct is walked.
 namespace {
 
 struct DecodedStruct {
@@ -2905,8 +2601,7 @@ struct DecodedStruct {
     std::unordered_map<int, std::string> strs;
 };
 
-// opcode 249 = a param block (count, then per param a type byte, a 24-bit key,
-// and an int or string value). Any other opcode ends the record.
+// opcode 249 = param block (count, then per param: type byte, 24-bit key, int or string). Any other opcode ends the record.
 bool DecodeStructFile(std::vector<std::uint8_t> bytes, DecodedStruct& out) {
     if (bytes.empty()) return false;
     InputStream s(std::move(bytes));
@@ -2932,8 +2627,7 @@ int BuffNameScore(const std::string& s) {
     return (int)s.size() + punct + ((int)s.size() > 40 ? 10 : 0);
 }
 
-// First line only; strip <...> tags, trailing whitespace, and a trailing
-// " Active" (redundant once it's on the buff bar).
+// First line only; strip <...> tags, trailing whitespace and a trailing " Active".
 std::string CleanBuffName(std::string name) {
     auto br = name.find("<br>");
     if (br != std::string::npos) name.resize(br);
@@ -2954,8 +2648,7 @@ std::string CleanBuffName(std::string name) {
     return name;
 }
 
-// Item-backed buffs (overloads, flasks) store an item id; the item's cache
-// name is the right label. Strip a dose suffix "(4)" and a trailing " Active".
+// Item-backed buffs: the item's cache name, minus a dose suffix "(4)" and a trailing " Active".
 std::string BuffItemName(int id) {
     if (id <= 0) return {};
     std::string n = ResolveLocked(id).name;
@@ -3003,8 +2696,7 @@ void LoadBuffNamesLocked() {
         { "Supreme Overload Active", true, 0 },
     };
 
-    // Step 1: discover the name key, the sprite/item key(s), and the
-    // buff-or-debuff key from structs that contain a probe string.
+    // Step 1: discover the name, sprite/item and buff-or-debuff keys from structs containing a probe string.
     int nameKey = -1;
     std::unordered_map<int, bool> spriteKeyIsItem;          // key -> value is an item id
     std::vector<const DecodedStruct*> matchStructs;
@@ -3049,8 +2741,7 @@ void LoadBuffNamesLocked() {
         if (!cand.empty()) bodKey = *cand.begin();
     }
 
-    // Step 2: walk every struct carrying the name key; for each discovered
-    // sprite/item key present, map its value -> name into the right bar.
+    // Step 2: map every struct's sprite/item value -> name into the right bar.
     for (const auto& s : structs) {
         auto nit = s.strs.find(nameKey);
         if (nit == s.strs.end() || nit->second.empty()) continue;
@@ -3063,9 +2754,7 @@ void LoadBuffNamesLocked() {
             auto sp = s.ints.find(kv.first);
             if (sp == s.ints.end() || sp->second <= 0) continue;
             int id = sp->second;
-            // Remember whether this icon id is an item or a sprite, so the buff
-            // bar can render it from the right source (the +0x188 widget value
-            // alone is ambiguous -- e.g. Bone Shield's 30099 is an item id).
+            // Item or sprite: the +0x188 widget value alone is ambiguous.
             g_buff_icon_item[id] = kv.second;
             std::string name = kv.second ? BuffItemName(id) : std::string();
             if (name.empty()) name = fallback;
@@ -3084,8 +2773,7 @@ void LoadBuffNamesLocked() {
     }
 }
 
-// Exact, then +/-1: RS3 stores inactive/active icon pairs at adjacent ids
-// (e.g. Bloodlust struct records 23876, the active bar icon is 23875).
+// Exact, then +/-1: inactive/active icon pairs sit at adjacent ids.
 std::string LookupBuffNameAdj(int id, const std::unordered_map<int, std::string>& m) {
     auto it = m.find(id);     if (it != m.end()) return it->second;
     it = m.find(id - 1);      if (it != m.end()) return it->second;
@@ -3095,31 +2783,13 @@ std::string LookupBuffNameAdj(int id, const std::unordered_map<int, std::string>
 
 }  // namespace
 
-// Ability configs from the struct cache (index 22). Each real ability is a StructType carrying
-// param 2794 (name), 2799 (tier: 1 basic / 2 threshold / 3 defensive / 4 ultimate / 5 special /
-// 7 utility), 2795 (description), 4650 (unlock text), 2796 (cooldown in 0.6-s game ticks) and
-// 2802 (ability/sprite id == the action-bar slot id). Cosmetic ability overrides carry no 2799,
-// so requiring a valid tier keeps only genuine abilities. Walked once (version-static) and cached,
-// keyed by ability NAME so the abilities panel joins its live slot names to real cache data instead
-// of a shipped snapshot. {"Overpower":{"t":4,"d":"Strike ...","u":""}, ...}. {} until the cache opens.
-// Ability cooldown-clock varc pairs, parsed STRAIGHT from the raw bytecode of CS2
-// script 6506 in the player's own cache (js5-12, archive == script id) -- no sidecar,
-// no extraction, nothing shipped or hardcoded. Script 6506 is the game's cooldown-clock
-// resolver: one switch over ability STRUCT ids where each case body pushes the two
-// varc-int ids ([castClock, readyClock], CLIENTCLOCK 50/s cycles) and returns.
-//
-// CS2 opcode ids are build-shuffled (the game map's "calibration" problem), so this decodes NO
-// opcodes at all. Two structural facts carry the whole parse:
-//  - the FOOTER layout is stable: ...ops... [6x u16 + u32 arg/local/op counts]
-//    [switch block] [u16 switch-block size]. Switch block = u8 switch count, per switch
-//    a u16 case count then (value i32, jump u32) per case -- and consuming it must land
-//    EXACTLY at size-2 or the parse is rejected.
-//  - every case body starts with the same two 6-byte varc-push ops:
-//    [opcode u16][0x02 <varc u16 BE> 0x00], 6 bytes apart, identical opcode bytes.
-//    Enumerate those pairs in byte order and zip with the DISTINCT jumps ascending
-//    (jump order == body order). Excess bodies at the front are the pre-switch prelude
-//    (the param-2976 global-cooldown branch); more than a few extra = the script's
-//    shape changed -> fail closed, emit nothing (the panel then simply shows no clock).
+// Ability structs (index 22): param 2794 name, 2799 tier (1 basic, 2 threshold, 3 defensive, 4 ultimate, 5 special,
+// 7 utility; cosmetic overrides carry none), 2795 description, 4650 unlock text, 2796 cooldown (0.6 s ticks), 2802 ability/sprite id.
+// Cooldown-clock varc pairs come from the bytecode of CS2 script 6506 (js5-12): a switch over struct ids whose case bodies
+// each push [castClock, readyClock] varc ids. CS2 opcode ids are build-shuffled, so no opcodes are decoded; the parse relies on
+// the stable footer ([6x u16 + u32 counts][switch block][u16 switch-block size]; switch block = u8 count, per switch u16 case
+// count then (i32 value, u32 jump)) and on every case body starting with two 6-byte varc-push ops [opcode u16][0x02 varc u16 BE 0x00].
+// Pairs are zipped with the distinct jumps ascending; more than a few excess bodies = shape changed, emit nothing.
 std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
     std::unordered_map<int, std::pair<int, int>> out;
     auto* idx = g_store ? g_store->Get(kIndexClientScript) : nullptr;
@@ -3173,11 +2843,7 @@ std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
     return out;
 }
 
-// Every buff/debuff the struct cache names, with the icon id the bar draws for it, so the UI
-// can show the art of an effect that is NOT up right now (aura placeholders, pickers).
-// {"buffs":[[name,id,isItem],...],"debuffs":[...]}; id is a sprite id unless isItem is 1, in
-// which case it is an item id (overloads, flasks). Built from the same walk as GetBuffName, so
-// it costs nothing extra once the names are loaded. {} until the cache opens. Cached.
+// {"buffs":[[name,id,isItem],...],"debuffs":[...]}; id is a sprite unless isItem is 1 (item id). Cached.
 std::string BuffCatalogJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3222,8 +2888,7 @@ std::string AbilityConfigsJson() {
     std::string out = "{"; bool first = true;
     std::unordered_map<std::string, char> seen;
     std::map<int, std::string> byId;   // sprite id (param 2802) -> record; every tier incl. 0
-    // struct id -> [castVarc, readyVarc], from the player's own script 6506 (see above).
-    // Empty (e.g. js5-12 absent, or a layout change) just means no "v" fields.
+    // struct id -> [castVarc, readyVarc] from script 6506; empty just means no "v" fields.
     const auto cdPairs = AbilityCooldownVarcsLocked();
     const auto& entries = index->ref().entries();
     for (int a = 0; a < (int)entries.size(); ++a) {
@@ -3234,18 +2899,14 @@ std::string AbilityConfigsJson() {
             auto itTier = ds.ints.find(2799);
             if (itName == ds.strs.end() || itTier == ds.ints.end()) continue;
             int tier = itTier->second;
-            // Tier 0 = the auto-attacks ("Basic<nbsp>Attack" per style): kept for the by-id
-            // map below, excluded from the by-name map like before.
+            // Tier 0 = auto-attacks: kept in the by-id map, excluded from the by-name map.
             if (tier != 0 && tier != 1 && tier != 2 && tier != 3 && tier != 4 && tier != 5 && tier != 7) continue;
             const std::string& name = itName->second;
             if (name.empty()) continue;
             auto itId0 = ds.ints.find(2802);
             const int sprId = (itId0 != ds.ints.end()) ? itId0->second : 0;
-            // Tooltip header / requirement params, mirroring the game's own tooltip script
-            // (clientscript 967 / 7473-7478): st = combat style 2806, l = level 2807,
-            // ag = adrenaline gain 2800 (tenths of %), ac = adrenaline cost 2798, tg = target
-            // type 8170, sh/dw/wp = shield / dual-wield / weapon requirement flags, acc =
-            // accuracy 9090 when not 100.
+            // Tooltip params (CS2 967): st = style 2806, l = level 2807, ag = adrenaline gain 2800 (tenths of %),
+            // ac = adrenaline cost 2798, tg = target type 8170, sh/dw/wp = requirement flags, acc = accuracy 9090 when not 100.
             std::string extra;
             auto addInt = [&](int key, const char* tag) {
                 auto it = ds.ints.find(key);
@@ -3269,14 +2930,8 @@ std::string AbilityConfigsJson() {
             if (itD != ds.strs.end() && !itD->second.empty()) out += ",\"d\":" + jstr(itD->second);
             auto itU = ds.strs.find(4650);
             if (itU != ds.strs.end() && !itU->second.empty()) out += ",\"u\":" + jstr(itU->second);
-            // Cooldown wiring for the panel:
-            //   "c" = the ability's cooldown in GAME TICKS (param 2796, 0.6 s each)
-            //   "i" = the ability id the action-bar slot carries at widget+0x188 (param 2802)
-            //   "s" = this struct's id -- the key CS2 script 6506 switches on to pick the
-            //         cooldown-clock varc pair; the panel joins against the live CS2
-            //         extraction rather than any shipped table
-            //   "g" = param 2976 set: the ability uses the GLOBAL-cooldown varc pair, so
-            //         script 6506's per-struct table does not apply
+            // "c" = cooldown in game ticks (param 2796), "i" = ability id at widget+0x188 (param 2802),
+            // "s" = struct id (script 6506 switch key), "g" = param 2976 set (uses the global-cooldown varc pair).
             auto itCd = ds.ints.find(2796);
             if (itCd != ds.ints.end() && itCd->second > 0) out += ",\"c\":" + std::to_string(itCd->second);
             auto itId = ds.ints.find(2802);
@@ -3285,9 +2940,7 @@ std::string AbilityConfigsJson() {
             auto itG = ds.ints.find(2976);
             const bool gcd = itG != ds.ints.end() && itG->second == 1;
             if (gcd) out += ",\"g\":1";
-            //   "v" = this ability's cooldown-clock varc pair [castClock, readyClock]
-            //         (CLIENTCLOCK 50/s cycles), from script 6506 -- skipped for
-            //         global-pair abilities, whose clock is the shared GCD pair
+            // "v" = [castClock, readyClock] varc pair (CLIENTCLOCK 50/s) from script 6506; skipped for global-pair abilities.
             if (!gcd) {
                 auto pv = cdPairs.find(a * 32 + fid);
                 if (pv != cdPairs.end())
@@ -3297,8 +2950,7 @@ std::string AbilityConfigsJson() {
             out += "}";
         }
     }
-    // "_byId": the same abilities keyed by the sprite/ability id the action bar carries, so
-    // the panel resolves a slot without a name round-trip (and reaches the tier-0 attacks).
+    // "_byId": the same abilities keyed by the action-bar sprite/ability id (includes tier 0).
     out += first ? "" : ","; out += "\"_byId\":{"; bool f2 = true;
     for (const auto& kv : byId) { out += f2 ? "" : ","; f2 = false; out += "\"" + std::to_string(kv.first) + "\":" + kv.second; }
     out += "}}";
@@ -3306,11 +2958,7 @@ std::string AbilityConfigsJson() {
     return cached;
 }
 
-// Raw param map of ONE StructType (js5-22; struct id = archive*32 + file):
-// {"ints":{"<key>":v,..},"strs":{"<key>":"v",..}}, {} when absent/unreadable. Generic
-// accessor so panels can read cache struct definitions (e.g. daily-challenge structs:
-// param 1266 name, 4940 name suffix, 1273 description, 2235 target, 1271 icon sprite)
-// without a bespoke C++ decoder per feature.
+// StructType params (js5-22; id = archive*32 + file): {"ints":{"<key>":v},"strs":{"<key>":"v"}}, {} when absent.
 std::string StructParamsJson(int structId) {
     if (structId < 0) return "{}";
     std::lock_guard<std::mutex> lk(g_mu);
@@ -3355,10 +3003,7 @@ std::string JStr(const std::string& v) {
 }
 }  // namespace
 
-// Every world-map ELEMENT, sent to the panel once at open: id -> {s sprite, c category,
-// t op-3 text, n param 4149 (the tooltip body the game prefers over the category name)}.
-// Per-ELEMENT data lives here rather than in each chunk's icons blob because there are only
-// ~5,800 of them in the entire game, against thousands of placements.
+// Every world-map element: id -> {s sprite, c category, t op-3 text, n param 4149 tooltip body}.
 std::string MapLabelsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3371,7 +3016,6 @@ std::string MapLabelsJson() {
         int sp = sprites.empty() ? -1 : sprites.front();
         const auto& d = kv.second;
         auto n4149 = d.ps.find(4149);
-        // Nothing to draw and nothing to say -> not worth the payload.
         if (sp < 0 && d.text.empty() && d.category < 0 && n4149 == d.ps.end()) continue;
         out += first ? "" : ","; first = false;
         out += "\"" + std::to_string(kv.first) + "\":{\"s\":" + std::to_string(sp) +
@@ -3380,9 +3024,7 @@ std::string MapLabelsJson() {
         if (sprites.size() > 1) out += ",\"s2\":" + std::to_string(sprites[1]);
         if (!d.text.empty())      out += ",\"t\":" + JStr(d.text);
         if (n4149 != d.ps.end())  out += ",\"n\":" + JStr(n4149->second);
-        // Int params, verbatim. 4147 is the DB key the game's per-category tooltip layouts look
-        // up (fishing spots, trees, mining sites...) and 4148 is a packed coordgrid for dungeon
-        // links, so the panel needs them to build the structured tooltips the game shows.
+        // Int params verbatim: 4147 = DB key for per-category tooltip layouts, 4148 = packed coordgrid for dungeon links.
         if (!d.pi.empty()) {
             out += ",\"p\":{";
             bool pf = true;
@@ -3398,14 +3040,8 @@ std::string MapLabelsJson() {
     return out;
 }
 
-// Every map-symbol PLACEMENT in the world, for search: 7 bytes each, little-endian
-// (element u16, x u16, y u16, plane u8), base64'd as {"n":count,"b":"..."}.
-//
-// Search has to reach symbols the panel has never fetched a chunk for, so this walks every
-// region once. It deliberately does NOT go through RegionLocationsLocked: that memoises each
-// region's placements, and touching all ~5,000 of them would pin the entire world's locs in
-// memory for a one-shot index. Decode, harvest, discard. The result is memoised as a string,
-// so the walk happens once per session and the panel persists it across sessions itself.
+// Every map-symbol placement: 7 bytes LE each (element u16, x u16, y u16, plane u8) as {"n":count,"b":"<base64>"}.
+// Walks every region once without RegionLocationsLocked (memoising all ~5,000 regions would pin every loc in memory).
 std::string MapSymbolsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3443,15 +3079,8 @@ std::string MapSymbolsJson() {
     return cached;
 }
 
-// Loc id -> the placing loc's own name, for the world map's last-resort tooltip text. Only locs
-// that actually carry a mapFunction are included: ~349 named entries of the 1,051 such locs, a few
-// KB, fetched once at panel open. Sending it up front rather than resolving per hover keeps the
-// tooltip synchronous - a round-trip on mouseover would land after the cursor had moved on.
-//
-// Piggybacks on MapSymbolsJson's world walk instead of decoding all ~89k locs: that walk already
-// calls LocMapFunctionLocked for every placement, which fills g_loc_mapfunc and g_loc_name in the
-// same decode. Called BEFORE the lock below - it takes g_mu itself, and its result is cached after
-// the first call, so this is a map read on every path but the first.
+// Loc id -> loc name for mapFunction-bearing locs. Piggybacks on MapSymbolsJson's walk (which fills g_loc_name);
+// that call takes g_mu itself, so it runs before the lock below.
 std::string MapLocNamesJson() {
     MapSymbolsJson();
     std::lock_guard<std::mutex> lk(g_mu);
@@ -3468,10 +3097,7 @@ std::string MapLocNamesJson() {
     return out;
 }
 
-// Map element CATEGORY names -- the caps header the game shows above a map tooltip ("BANK",
-// "SHORTCUT", "DUNGEON"). Enum 8586 maps category id -> StructType id, and struct param 596 is
-// the display name. Resolved here rather than in JS because it is 167 struct reads; one call
-// returning a few KB beats 167 bridge round-trips at panel open.
+// Element category names: enum 8586 category id -> StructType id, struct param 596 = display name.
 std::string MapCategoriesJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3525,14 +3151,8 @@ std::string MapCategoriesJson() {
 
 // ---- HUD panel mount registry (enum 7716 + panel structs) -------------------------------------
 namespace {
-// Content INTERFACE GROUP id -> mount comp SUB under group 1477. Enum 7716 (js5-17) maps each
-// HUD content-slot id to a panel StructType (js5-22); the slot ids themselves are NOT group
-// ids (live-disproven 2026-08-02: keys are 0-46/1000-1053/2000-2008). The group link is params
-// 3514-3517 = the panel's CONTENT interface comps packed (group<<16)|sub (Skills 320:0,
-// Prayers 1457:2, Backpack 1474:0; some panels carry none). Param 3503 packs the panel's
-// mount comp the same way; every registered mount sits under 1477 (the gameframe), so only
-// the sub is kept (a non-1477 mount is skipped rather than guessed at). Built once the
-// enum + struct indexes are ready; until then every lookup retries the build.
+// Content group id -> mount comp sub under group 1477. Enum 7716 maps slot id (not a group id) -> panel struct;
+// params 3514-3517 = content comps packed (group<<16)|sub, param 3503 = mount comp packed the same way (non-1477 skipped).
 std::unordered_map<int, int> g_panel_mounts;
 bool                         g_panel_mounts_built = false;
 
@@ -3543,7 +3163,7 @@ void BuildPanelMountsLocked() {
     if (!enums || !enums->ready() || !structs || !structs->ready()) return;
     auto bytes = enums->ReadFile(7716 >> 8, 7716 & 0xff);
     if (bytes.empty()) return;
-    // Same opcode walk as EnumJson, int maps only (ops 6/8) -- 7716 is slot id -> struct id.
+    // Same opcode walk as EnumJson, int maps only (ops 6/8).
     std::vector<std::pair<int, int>> pairs;
     InputStream s(std::move(bytes));
     while (s.remaining() > 0) {
@@ -3580,7 +3200,7 @@ void BuildPanelMountsLocked() {
             int cg = ct->second >> 16;
             if (cg > 0 && cg != 1477 && !g_panel_mounts.count(cg)) g_panel_mounts[cg] = mount_sub;
         }
-        (void)slot;   // slot ids are registry-internal, not group ids -- never key on them
+        (void)slot;   // slot ids are registry-internal, not group ids
     }
     g_panel_mounts_built = true;
 }
@@ -3594,12 +3214,7 @@ int PanelMountComp(int group_id) {
     return it == g_panel_mounts.end() ? -1 : it->second;
 }
 
-// Raw op-249 param map of ONE item (js5-19; archive = id>>8, file = id&0xff):
-// {"ints":{"<key>":v,..},"strs":{"<key>":"v",..}}, {} when absent. ItemInfoJson only
-// carries name/limit/value, and ItemType.cpp parses params purely to sniff the
-// augmentation marker, so this is the only way a panel can read them. Used by the
-// Player-Owned Ports crew list (3080 icon sprite, 3081-3084 stats, 3093/3094 +
-// 3095/3096 = cost pairs of (resource id, amount)).
+// Raw op-249 params of one item (js5-19; archive = id>>8, file = id&0xff): {"ints":{"<key>":v},"strs":{"<key>":"v"}}.
 std::vector<int> ItemVarobjs(int item_id) {
     static std::unordered_map<int, std::vector<int>> cache;   // guarded by g_mu
     if (item_id < 0) return {};
@@ -3630,11 +3245,7 @@ std::string ConfigFileHex(int archive, int file) {
     return out;
 }
 
-// Per-domain census of the VARBIT archive: {"<domain>":{"n":count,"var":[min,max],"vb":[min,max],
-// "sample":[ids..]}}. Research aid (cq "vbdomains"): which var domains the cache defines bit
-// fields over and how many. Domain byte per the client scripts' variable sources: 0 player,
-// 1 npc, 2 client, 3 world, 4 region, 5 object (item instance), 6 clan, 7 clan settings,
-// 8 campaign, 9 player group.
+// Per-domain varbit census (cq "vbdomains"): {"<domain>":{"n":count,"var":[min,max],"vb":[min,max],"sample":[ids..]}}.
 std::string VarbitDomainsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3699,13 +3310,8 @@ std::string VarbitDomainMapJson() {
     return out + "}";
 }
 
-// Var definitions of one domain: the config file per var id carries op 3 = value type (CS2
-// subtype id: 0 int, 1 boolean, 33 obj, 39 inv, 71 hash64, 73 struct, 110 long, ...), op 4 =
-// u8 flag (1 = persists across sessions on player vars), op 110 = u16. Only vars whose type
-// is not int are listed, so the JSON stays small: {"archive":60,"n":13270,"types":{"<id>":33,..},
-// "flags":{"<id>":1,..}} plus "ops" = count of every opcode seen (research: an unknown opcode
-// means the format moved). Archives: 60 player, 61 npc, 62 client, 63 world, 64 region,
-// 65 object, 66 clan, 67 clan settings, 68 campaign, 75 player group.
+// Var defs: op 3 = value type (CS2 subtype: 0 int, 1 boolean, 33 obj, 39 inv, 71 hash64, 73 struct, 110 long, ...),
+// op 4 = u8 flag (1 = persists), op 110 = u16. Non-int vars only: {"archive":60,"n":N,"types":{"<id>":33},"flags":{"<id>":1},"ops":{..}}.
 std::string VarDefsJson(int archive) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -3804,31 +3410,20 @@ std::string ItemParamsJson(int item_id) {
     return out;
 }
 
-// All DBRows of one master table (archive 41), decoded with the validated row shape
-// (see LoadPerkNamesLocked): [{"f":fileId,"i":{"<col>":[ints..]},"s":{"<col>":[strs..]}},..].
-// Generic accessor for panels that join a table by column value (e.g. Meg's cases,
-// DBTable 9: col 0 case number, col 2 case name, col 9 runeday). Capped at 2000 rows.
+// All DBRows of one table (archive 41): [{"f":fileId,"i":{"<col>":[ints..]},"s":{"<col>":[strs..]}},..]. Capped at 2000 rows.
 std::string DbRowsJson(int masterTable) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
-    // Memoized per table: the archive walk touches ~19,560 files whatever the table asked for,
-    // and the cache is version-static for a session, so the second call for the SAME table was
-    // pure waste (panel_worldmap documents the cost). Only a non-empty result is cached - "[]"
-    // can mean "cache not open yet" and must stay retryable.
+    // Memoized per table (the walk touches every file). "[]" can mean "cache not open yet", so only non-empty results are cached.
     static std::map<int, std::string> s_dbrows_memo;
     { auto it = s_dbrows_memo.find(masterTable); if (it != s_dbrows_memo.end()) return it->second; }
     auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
     if (!index || !index->ready()) return "[]";
-    // The wardrobe catalogue (table 163) carries 5,313 rows; everything else stays under the
-    // historical 2,000 guard against a runaway table.
+    // Wardrobe catalogue (table 163) exceeds the 2,000-row guard.
     const int kMaxRows = (masterTable == 163) ? 6000 : 2000;
     constexpr int kDbRowsArchive = 41;
-    // Table ids are CS2-space: id = sub*128 + master, while the row's op-4 tag is
-    // master*256 + sub. Ids < 128 keep the historical any-subtable match (their callers
-    // predate this and their data sits at sub 0); ids >= 128 - e.g. the Leagues tables
-    // 326-336 = masters 70-80 at sub 2 - REQUIRE the exact (master, sub) pair, because
-    // the same master's other subtables hold unrelated rows (verified live: master 72
-    // sub 0 has 871 foreign rows beside the 7 sub-2 league tiers).
+    // Table id (CS2-space) = sub*128 + master; the row's op-4 tag = master*256 + sub. Ids < 128 match any subtable;
+    // ids >= 128 require the exact (master, sub) pair.
     const int wantMaster = masterTable & 127, wantSub = masterTable >> 7;
     const auto& entries = index->ref().entries();
     if ((int)entries.size() <= kDbRowsArchive) return "[]";
@@ -3934,9 +3529,7 @@ int GetBuffKind(int id) {
     return 0;
 }
 
-// True when a buff-bar icon id refers to an ITEM (render via the item pack)
-// rather than a SPRITE (render via the sprite cache). Unknown ids -> false
-// (sprite), so non-struct buffs keep their direct-sprite behaviour.
+// True when the bar icon id is an item rather than a sprite. Unknown -> false.
 bool GetBuffIconIsItem(int id) {
     if (id <= 0) return false;
     std::lock_guard<std::mutex> lk(g_mu);
@@ -3954,17 +3547,14 @@ namespace { const int kItemXpTable[20] = {
     0, 1160, 2607, 5176, 8286, 11760, 15835, 21152, 28761, 40120,
     57095, 81960, 117397, 166496, 232755, 320080, 432785, 575592, 753631, 972440 }; }
 int ItemLevelFromXp(int item_xp) {
-    // kItemXpTable[L] = XP needed to REACH level L+1, so the highest L with
-    // xp >= kItemXpTable[L-1] is the current level.
+    // kItemXpTable[L] = XP to reach level L+1.
     if (item_xp <= 0) return 1;
     for (int level = 1; level < 20; ++level)
         if (item_xp < kItemXpTable[level]) return level;
     return 20;
 }
 
-// Region object placements assuming g_mu is already held (used by the in-process map render so it can
-// read locations without re-locking). Archive id = rx | (ry << 7): rx must fit 7 bits; ry spans the
-// full map height (cap 255 so the (rx<<8|ry) memo key stays unambiguous).
+// Assumes g_mu held. Archive id = rx | (ry << 7); rx must fit 7 bits, ry capped at 255 for the (rx<<8|ry) memo key.
 static const std::vector<LocPlacement>& RegionLocationsLocked(int region_x, int region_y) {
     static const std::vector<LocPlacement> kEmpty;
     if (region_x < 0 || region_x > 127 || region_y < 0 || region_y > 255) return kEmpty;
@@ -4017,10 +3607,8 @@ void RegionBlockedFill(int player_x, int player_y, int plane, int radius,
 }
 
 namespace {
-// Absolute surface height of a tile column at a display plane. Per-plane cache
-// heights are DELTAS: the absolute surface is the sum through the effective
-// plane, and a bridge column (0x2 on plane 1) shifts the surface one plane up.
-// Entity fine-z = 32 * absolute height.
+// Per-plane cache heights are deltas: absolute surface = sum through the effective plane; a bridge column
+// (0x2 on plane 1) shifts the surface one plane up. Entity fine-z = 32 * absolute height.
 int EffPlaneLocked(const MapTileData& td, int lx, int ly, int plane) {
     std::size_t si = (std::size_t)(64 + lx) * 64 + ly;
     if (si < td.settings.size() && (td.settings[si] & 0x2) && plane < 3) return plane + 1;
@@ -4062,9 +3650,7 @@ std::int16_t TileHeightAtPlane(int wx, int wy, int eff_plane) {
 }
 
 void TileCornerHeights(int wx, int wy, int plane, std::int16_t out[4]) {
-    // Four corner surface heights of one tile (SW,SE,NE,NW), all summed through
-    // THIS tile column's effective plane. Per-corner bridge detection morphs
-    // quads at deck/stair seams (each corner picking a different layer).
+    // All four corners summed through this column's effective plane (per-corner detection morphs quads at seams).
     out[0] = out[1] = out[2] = out[3] = (std::int16_t)-32768;
     if (wx < 0 || wy < 0) return;
     if (plane < 0 || plane > 3) plane = 0;
@@ -4109,7 +3695,7 @@ void RegionCornerHeightsFill(int player_x, int player_y, int plane, int radius,
             if (wx < 0 || wy < 0) continue;
             const int rx = wx >> 6, ry = wy >> 6;
             if (rx > 127 || ry > 255) continue;
-            // ONE layer decision for this tile column, then all four corners read at it.
+            // One layer decision per tile column.
             const int ep = EffPlaneLocked(RegionTilesLocked(rx, ry), wx & 0x3f, wy & 0x3f, plane);
             const std::size_t base = ((std::size_t)tx * T + ty) * 4;
             for (int c = 0; c < 4; ++c) {
@@ -4143,20 +3729,11 @@ void RegionHeightsFill(int player_x, int player_y, int plane, int radius,
     }
 }
 
-// ---- World-map areas (js5-23) -----------------------------------------------------------
-// Decoded offline against build 949 (offline decode script) and the game's own scripts:
-//   archive 0, file = area id: "details". cstr internal name, cstr display name, then an
-//       11-byte header (u8 flags, u32, u32 background colour, u8, u8 zoom) and a u8 record
-//       count; records are 17 bytes: u8 type, source rect x0,y0,x1,y1 and DISPLAY rect
-//       x0,y0,x1,y1 (u16 tiles, inclusive). Source rects are the membership that
-//       WORLDMAP_COORDINMAP answers; the display rect is where that block sits on the map.
-//   archive 1, file = area id: "compositemap". u16 count, then records: u8 type; type 0 =
-//       u8 planes, u16 srcX, u16 srcY (mapsquares), u8 dstPlane, u16 dstX, u16 dstY: source
-//       square -> display square. This is how the surface map floats dungeons in the sea
-//       (surface file 28 maps square (33,172) to display (64,21)).
-//   archive 4 / 2, file = area id: u32 length + PNG: the game's composited map image, full
-//       size (1 px per tile, 64 px per display square, north up, origin = the minimum display
-//       square) and a thumbnail.
+// ---- World-map areas (js5-23), file = area id ----
+// archive 0 "details": cstr internal name, cstr display name, 11-byte header (u8 flags, u32, u32 bg colour, u8, u8 zoom),
+// u8 record count; 17-byte records: u8 type, source rect x0,y0,x1,y1, display rect x0,y0,x1,y1 (u16 tiles, inclusive).
+// archive 1 "compositemap": u16 count, records: u8 type; type 0 = u8 planes, u16 srcX, u16 srcY, u8 dstPlane, u16 dstX, u16 dstY.
+// archive 4 / 2: u32 length + PNG (full composited image, 1 px per tile, north up) / thumbnail.
 namespace {
 struct WmZone { int planes, sx, sy, dp, dx, dy; };
 struct WmArea {
@@ -4221,7 +3798,7 @@ std::string MapAreasJson() {
                     WmZone z{ c[q+1], u16(q+2), u16(q+4), c[q+6], u16(q+7), u16(q+9) };
                     a.zones.push_back(z); q += 11;
                 } else {
-                    // Zone-level (8x8) record; not present on 949. Skip its 15 bytes, keep going.
+                    // Zone-level (8x8) record, 15 bytes; skip.
                     if (q + 15 > c.size()) break;
                     q += 15;
                 }
@@ -4296,17 +3873,12 @@ std::string SpriteDataUrl(int sprite_id) {
             if (!b64.empty()) url = "data:image/png;base64," + b64;
         }
     }
-    // Only a SUCCESS is memoised. Caching the empty string poisoned the entry permanently: a
-    // request that arrives before the sprites index is open (or during any transient failure)
-    // returned empty, and every later request for that sprite was then served the cached empty
-    // rather than retrying. With the world map asking for hundreds of icon sprites the moment it
-    // opens, that silently and permanently blanked whichever ones lost the race.
+    // Only a success is memoised; an empty result (index not open yet) must stay retryable.
     if (!url.empty()) g_sprite_cache[sprite_id] = url;
     return url;
 }
 
-// Sprite data URL capped to `px` on the longest side (area-average filtered) -- panels
-// request their display box (or 2x it) so the in-browser rescale stays small and clean.
+// Sprite data URL capped to `px` on the longest side (area-average filtered).
 std::string SpriteDataUrlScaled(int sprite_id, int px, int frame) {
     if (sprite_id < 0) return {};
     if (frame < 0) frame = 0;
@@ -4333,16 +3905,13 @@ std::string SpriteDataUrlScaled(int sprite_id, int px, int frame) {
     return url;
 }
 
-// Sprite archive id whose reference-table name hash matches `name` (Jagex ASCII hash), e.g.
-// "modicons" for the chat <img=N> icon strip. -1 when the sprites ref table is not parsed or
-// no archive carries that name.
+// Sprite archive id whose reference-table name hash (Jagex ASCII hash) matches `name`, e.g. "modicons". -1 if none.
 int SpriteIdByName(const std::string& name) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
     auto* idx = g_store ? g_store->Get(kIndexSprites) : nullptr;
     if (!idx || !idx->ready()) return -1;
-    // The archive NAME hash is the reference table's `identifier` (the has_names block);
-    // `hash` is the optional alternate digest and never carries names.
+    // The name hash is the reference table's `identifier`, not `hash`.
     const int want = NameHash(name);
     const auto& ents = idx->ref().entries();
     for (std::size_t i = 0; i < ents.size(); ++i)
@@ -4387,18 +3956,9 @@ std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
            ",\"missing\":[" + missing + "]}";
 }
 
-// ---- cache parse health -----------------------------------------------------
-// One sweep per parsed cache surface: how many records decode to a clean end
-// and, when they don't, the opcode that stopped the read (how the 949 item /
-// achievement format changes were caught). Big indexes are SAMPLED (every Nth
-// file, ~1200 records): a format change hits nearly every record, so a sample
-// is as diagnostic as a full pass at a fraction of the cost. stop_op 256 means
-// the stream ran out mid-record (structural overrun, no single opcode to blame);
-// 257 means the record parsed but disagrees with its schema (DBRows vs dbtables).
-// User-triggered from the Info-tab health check; holds g_mu for the sweep.
-// Unknown-opcode probe (Probe.h): for every surface that stops at an opcode, brute-force the
-// payload size that lets each failing record parse to a clean terminator, and dump the first
-// records' bytes from the opcode on. Holds the cache mutex; seconds of work.
+// ---- cache parse health: per surface, clean-decode count and the most frequent stopping opcode ----
+// Big indexes are sampled (every Nth file). stop_op 256 = stream overrun, 257 = schema mismatch.
+// Unknown-opcode probe (Probe.h): brute-force the payload size that lets each failing record parse cleanly. Holds g_mu.
 std::string CacheProbeUnknownOps() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
@@ -4427,7 +3987,7 @@ std::string CacheProbeUnknownOps() {
             for (size_t i = 0; i < recs.size() && i < 400; ++i) {
                 probe::g_op = -1; (void)decode(recs[i]);
                 int from = probe::g_stop > 0 ? probe::g_stop - 1 : 0; char hx[6];
-                // per-record payload length: the L values for which the WHOLE record then decodes to an exact end
+                // L values for which the whole record then decodes to an exact end
                 std::string lens;
                 for (int L = 0; L <= 300; ++L) { probe::g_op = op; probe::g_len = L; int st = decode(recs[i]); if (st == 0 && probe::g_tail == 0) { if (!lens.empty()) lens += ','; lens += std::to_string(L); } }
                 probe::g_op = -1;
@@ -4466,8 +4026,7 @@ std::vector<CacheParseRow> CacheParseHealth() {
         for (const auto& kv : stops)
             if (kv.second > row.stop_n) { row.stop_op = kv.first; row.stop_n = kv.second; }
     };
-    // Sweep one index (or a single archive of it when `archive` >= 0). `decode`
-    // gets (archive, file, bytes) and returns the stopping opcode (0 = clean).
+    // Sweep one index (or one archive when `archive` >= 0); `decode` returns the stopping opcode (0 = clean).
     auto sweep = [&](const char* name, int index_id, int archive, auto&& decode) {
         CacheParseRow row; row.name = name;
         auto* idx = g_store->Get(index_id);
@@ -4574,15 +4133,8 @@ std::vector<CacheParseRow> CacheParseHealth() {
         return 0; });
     sweep("dbtables", kIndexConfigs, kDbTablesArchive, [](int, int, std::vector<std::uint8_t> b) {
         return DecodeDbTableFile(std::move(b), nullptr); });
-    // DBRows cross-checked against the dbtables schemas: linkage (op4 tag ->
-    // schema file) + declared column types. stop 257 = row parses but the
-    // schema disagrees -- the "silently wrong values" failure mode the
-    // structural sweeps above can't see.
-    // Reload the schemas for every health run instead of trusting the latch:
-    // the game client rewrites the .jcache in place on updates while this
-    // process keeps running, so a map latched before the update cross-checks
-    // fresh row bytes against pre-update schemas and reports a false mismatch
-    // until the launcher restarts (~379 small files; negligible cost).
+    // DBRows vs dbtables schemas (stop 257 = schema disagrees). Schemas are reloaded every run: the client
+    // rewrites the .jcache in place on updates while this process keeps running.
     g_dbtable_cols.clear();
     g_dbtables_loaded = false;
     LoadDbTablesLocked();
@@ -4595,8 +4147,7 @@ std::vector<CacheParseRow> CacheParseHealth() {
         AchievementsParseHealth(row.ok, row.total, row.stop_op, row.stop_n);
         rows.push_back(std::move(row));
     }
-    {   // map tiles: known-populated sample regions; ok = the full 4*64*64 walk
-        // completed (a trailing section is normal on 949+, running SHORT is not)
+    {   // map tiles: sample regions; ok = the full 4*64*64 walk completed (a trailing section is normal, running short is not)
         static const int kRegions[][2] = { {49,54},{50,50},{48,54},{52,53},{55,24},{58,25},{39,52} };
         CacheParseRow row; row.name = "map tiles"; row.sampled = true;
         auto* idx = g_store->Get(kIndexMaps);

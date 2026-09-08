@@ -5,10 +5,7 @@ namespace rtx::cache {
 
 namespace {
 
-// Opcode dispatcher for the RS3 LocationConfig format. Returns false
-// on an unknown opcode (terminates the loop -- a misaligned stream past an
-// unknown opcode is garbage anyway). Only name/options/footprint/members are
-// retained; the rest are consumed to keep the stream aligned.
+// LocationConfig opcode dispatcher. Returns false on an unknown opcode.
 bool ReadOne(InputStream& s, LocDef& d, int op) {
     switch (op) {
         case 1: {                                    // models: count x (type, sub-count x smart32)
@@ -93,8 +90,7 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
             return true;
         }
         case 107: d.mapFunction = s.ReadUnsignedShort(); return true;   // worldmap maplabel id (0x6B) -> config 2/arch 36 icon+text
-        // Build ~950 additions, all derived from live data and full-index validated
-        // (139143/139143 clean; the alternatives break real files):
+        // Build ~950 additions:
         case 108: case 109: case 110:                return true;   // payload-less flags
         case 159:                                    return true;
         case 166: s.ReadShort();                     return true;   // i16 (observed +-200)
@@ -125,11 +121,8 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
             }
             return true;
         }
-        // Ops 205/206 (build ~950) carry a u16 payload-length prefix, but we parse the
-        // fields rather than skip: the boundary check then doubles as drift detection
-        // (a mismatch surfaces as an unknown-op stop instead of silently misreading).
-        // Both structures full-index validated 139143/139143 with exact boundary
-        // landings.
+        // Ops 205/206 carry a u16 payload-length prefix; fields are parsed rather than skipped
+        // so the boundary check doubles as drift detection.
         case 205: {                                  // sparse morph table: value ranges -> child
             int len = s.ReadUnsignedShort();
             int end = s.offset() + len;
@@ -144,8 +137,7 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
                 int hi = s.ReadUnsignedShort();           // live data so far)
                 int c  = s.ReadBigSmart();
                 if (hi < lo || hi > 1024) return false;   // hostile/drifted range
-                // Keep the value-indexed morph_variants contract (variants[value] =
-                // child): expand the range, padding unmapped values with -1.
+                // Expand the range into value-indexed morph_variants, padding with -1.
                 while ((int)d.morph_variants.size() < lo) d.morph_variants.push_back(-1);
                 for (int v = lo; v <= hi; ++v) {
                     if ((int)d.morph_variants.size() <= v) d.morph_variants.push_back(c);
@@ -182,7 +174,7 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
             }
             return true;
         }
-        // ---- build 950-1 additions (payloads recovered with the unknown-opcode probe, Probe.h) ----
+        // ---- build 950-1 additions ----
         case 111:                                    return true;   // flag, no payload
         case 207: {                                  // u8, u16, u16, usmart n, n x bigsmart, bigsmart (same shape as npc 187)
             s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();

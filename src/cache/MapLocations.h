@@ -5,9 +5,8 @@
 
 namespace rtx::cache {
 
-// One object placement decoded from a MAPSV2 region (index 5, file 0 = land,
-// file 1 = water). Coordinates are local to the 64x64 region; the caller adds
-// the region origin (rx*64, ry*64) for world tiles.
+// One object placement from a MAPSV2 region (index 5, file 0 = land, 1 = water).
+// Coordinates are local to the 64x64 region.
 struct LocPlacement {
     int id       = -1;
     int plane    = 0;    // 0..3
@@ -17,10 +16,8 @@ struct LocPlacement {
     int rotation = 0;    // 0..3
 };
 
-// Decode a MAPSV2 LOCATIONS file (index 5, file 0 or 1) into placements.
-// Faithful to the reference decode Location::dump (feature "rs3"): id-delta loop +
-// per-id position-delta loop, attribute byte, and the RS3 sub-data extra
-// block read when the attribute byte has bit 0x80 set.
+// Decode a MAPSV2 LOCATIONS file: id-delta loop, per-id position-delta loop, attribute byte,
+// extra block when attribute bit 0x80 is set.
 std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_bytes);
 
 }  // namespace rtx::cache

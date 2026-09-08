@@ -1,18 +1,16 @@
-// Frame composite (see Composite.h). OpenGL 3.3 core path: GL 2.0+ entry points are
-// resolved via wglGetProcAddress at first use; GL state is saved before each draw and
-// restored after so the game's renderer is left exactly as it was.
+// Frame composite (see Composite.h). GL 3.3 core; GL 2.0+ entry points resolved via wglGetProcAddress.
 
 #include "Composite.h"
-#include "MarkerShare.h"    // shared glyph-atlas layout constants
+#include "MarkerShare.h"    // glyph-atlas layout constants
 
 #include <windows.h>
-#include <GL/gl.h>          // brings the GL 1.1 names (GL_BLEND, GL_VIEWPORT, GL_FLOAT, ...)
+#include <GL/gl.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-#pragma comment(lib, "gdi32.lib")   // glyph-atlas rasterisation (CreateFontW / TextOutW / DIB)
+#pragma comment(lib, "gdi32.lib")   // glyph-atlas rasterisation
 
 namespace rtx::composite {
 namespace {
@@ -123,8 +121,7 @@ GLuint g_tex        = 0;
 int    g_tex_w      = 0;
 int    g_tex_h      = 0;
 GLint  g_loc_sampler = -1;
-// Glyph atlas path: a coverage texture (GL_RED) of ASCII cells + a tint shader. Reuses the
-// textured VAO/VBO (pos.xy, uv.xy). Built lazily the first time a label is drawn.
+// Glyph atlas: GL_RED coverage texture + tint shader, built lazily on first label draw.
 GLuint g_glyph_prog  = 0;
 GLuint g_glyph_tex   = 0;
 GLint  g_loc_glyph_color = -1;
@@ -132,8 +129,7 @@ GLint  g_loc_glyph_tex   = -1;
 int    g_atlas_w   = 0;
 int    g_atlas_h   = 0;
 bool   g_atlas_ready = false;
-// Per-glyph advance width in atlas pixels (cell = ASCII - kGlyphFirst), measured when the
-// atlas is rasterised. Lets DrawLabel lay text out proportionally instead of fixed-pitch.
+// Per-glyph advance in atlas pixels (cell = ASCII - kGlyphFirst), for proportional layout.
 int    g_glyph_adv[rtx::marker::kGlyphLast - rtx::marker::kGlyphFirst + 1] = { 0 };
 
 void ResolveAll() {
@@ -166,8 +162,7 @@ void ResolveAll() {
                  pVertexAttribPointer && pBindVertexArray && pActiveTexture && pUniform1i;
 }
 
-// Solid-colour quad. Positions arrive in NDC; the fragment premultiplies the colour
-// by its alpha so the premultiplied compositor blend layers correctly over the game.
+// Solid quad, NDC positions; fragment premultiplies by alpha for the compositor blend.
 const char* kVertSrc = R"GLSL(#version 330 core
 layout(location = 0) in vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
@@ -179,8 +174,7 @@ uniform vec4 u_color;
 void main() { frag = vec4(u_color.rgb * u_color.a, u_color.a); }
 )GLSL";
 
-// Textured quad. (vec2 pos, vec2 uv) per vertex. The sidebar surface is premultiplied
-// BGRA uploaded via GL_BGRA, so texture() already yields premultiplied RGBA.
+// Textured quad (pos.xy, uv.xy). Source is premultiplied BGRA, so texture() is already premultiplied.
 const char* kTexVertSrc = R"GLSL(#version 330 core
 layout(location = 0) in vec2 a_pos;
 layout(location = 1) in vec2 a_uv;
@@ -195,8 +189,7 @@ uniform sampler2D u_tex;
 void main() { frag = texture(u_tex, v_uv); }
 )GLSL";
 
-// Glyph: the atlas stores coverage in the red channel; tint by u_color and premultiply
-// (coverage * alpha) so it layers with the same premultiplied blend as the solid path.
+// Glyph: red-channel coverage, tinted and premultiplied.
 const char* kGlyphFragSrc = R"GLSL(#version 330 core
 in vec2 v_uv;
 out vec4 frag;
@@ -236,9 +229,7 @@ void SaveState(SavedState& s) {
     if (pActiveTexture) pActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D_E, &s.texture_2d);
     glGetIntegerv(GL_VIEWPORT,             s.viewport);
-    // Pixel-unpack state: the game may leave a nonzero ROW_LENGTH/SKIP or a bound
-    // PBO, which would garble (or crash) every texture upload below; captured here,
-    // normalized in Begin(), restored in RestoreState().
+    // The game may leave nonzero ROW_LENGTH/SKIP or a bound PBO; both would break uploads.
     glGetIntegerv(GL_UNPACK_ROW_LENGTH_E,           &s.unpack_row_length);
     glGetIntegerv(GL_UNPACK_ALIGNMENT_E,            &s.unpack_alignment);
     glGetIntegerv(GL_UNPACK_SKIP_ROWS_E,            &s.unpack_skip_rows);
@@ -250,9 +241,7 @@ void SaveState(SavedState& s) {
     glGetIntegerv(GL_BLEND_DST_ALPHA,      &s.blend_dst_alpha);
     glGetIntegerv(GL_BLEND_EQUATION_RGB,   &s.blend_equation_rgb);
     glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &s.blend_equation_alpha);
-    // The scissor BOX, not just its enable bit: Begin() disables the test but leaves the
-    // rectangle alone, so any future scissored draw here would overwrite the game's box and
-    // silently clip its own rendering once it re-enables the test.
+    // Box as well as enable bit: the game re-enables the test and expects its rectangle intact.
     glGetIntegerv(GL_SCISSOR_BOX, s.scissor_box);
     s.blend   = glIsEnabled(GL_BLEND);
     s.scissor = glIsEnabled(GL_SCISSOR_TEST);
@@ -288,11 +277,10 @@ void RestoreState(const SavedState& s) {
     if (pBindBuffer) pBindBuffer(GL_PIXEL_UNPACK_BUFFER_E, (GLuint_l)s.pixel_unpack_buffer);
 }
 
-// Rasterise the ASCII glyph atlas once (GDI) into a GL_RED coverage texture. Called from
-// DrawGlyph on the render thread, so a GL context is current for the upload. One-time cost.
+// Rasterise the ASCII glyph atlas once (GDI) into a GL_RED coverage texture. Render thread only.
 void EnsureGlyphAtlas() {
     if (g_atlas_ready || !g_have_gl) return;
-    g_atlas_ready = true;   // attempt once; on failure glyphs simply never draw
+    g_atlas_ready = true;   // attempt once; on failure glyphs never draw
 
     const int first = rtx::marker::kGlyphFirst, last = rtx::marker::kGlyphLast;
     const int cols  = rtx::marker::kGlyphCols;
@@ -316,8 +304,7 @@ void EnsureGlyphAtlas() {
     HGDIOBJ oldBmp = SelectObject(memDC, dib);
     std::memset(bits, 0, (size_t)aw * ah * 4);   // black, transparent
 
-    // Semibold UI font sized to the cell; ANTIALIASED (grayscale coverage, not ClearType --
-    // ClearType's per-channel fringe would tint the white text).
+    // ANTIALIASED, not ClearType: per-channel fringe would tint the white text.
     HFONT font = CreateFontW(-(chh - 13), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
                              ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
@@ -329,8 +316,7 @@ void EnsureGlyphAtlas() {
         int col = i % cols, row = i / cols;
         SIZE sz{};
         GetTextExtentPoint32W(memDC, &wc, 1, &sz);
-        // Left-align each glyph at the cell origin so DrawLabel can crop the cell's UV
-        // to the glyph's advance. sz.cx is the full pen advance, so [0, adv] is exact.
+        // Left-aligned in the cell so [0, adv] can be cropped by UV.
         int adv = sz.cx; if (adv < 1) adv = 1; if (adv > cw) adv = cw;
         g_glyph_adv[i] = adv;
         int tx = col * cw;                       // left-aligned
@@ -418,8 +404,7 @@ void EnsureGL() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // Glyph tint program: shares the (pos.xy, uv.xy) vertex shader + textured VAO/VBO; the
-    // atlas coverage texture is created lazily in EnsureGlyphAtlas() on the first label draw.
+    // Glyph tint program shares the textured vertex shader and VAO/VBO.
     GLuint gvs = CompileShader(GL_VERTEX_SHADER,   kTexVertSrc);
     GLuint gfs = CompileShader(GL_FRAGMENT_SHADER, kGlyphFragSrc);
     g_glyph_prog = pCreateProgram();
@@ -435,8 +420,7 @@ void EnsureGL() {
                  g_tex_prog != 0 && g_tex_vao != 0 && g_tex != 0);
 }
 
-// Viewport de-dup: every primitive in a frame targets the same framebuffer size, so
-// only call glViewport when it changes. Begin() resets the tracker.
+// glViewport only when the size changes; Begin() resets the tracker.
 int g_vp_w = -1, g_vp_h = -1;
 inline void SetViewport(int w, int h) {
     if (w == g_vp_w && h == g_vp_h) return;
@@ -447,13 +431,12 @@ inline void SetViewport(int w, int h) {
 void Begin() {
     ResolveAll();
     if (!g_resolved) return;
-    // Capture the game's pristine state before EnsureGL() creates or binds resources.
+    // Save before EnsureGL() creates or binds anything.
     SaveState(g_saved);
     g_active = true;
     EnsureGL();
     if (!g_have_gl) return;
-    // Set all marker-draw state once per frame; End()/RestoreState puts it back, so
-    // per-primitive draws touch only colour, verts and viewport.
+    // Draw state is set once per frame; per-primitive draws touch only colour, verts, viewport.
     glEnable(GL_BLEND);
     if (pBlendEquationSeparate) pBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
     if (pBlendFuncSeparate)     pBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
@@ -462,9 +445,7 @@ void Begin() {
     glDisable(GL_CULL_FACE);
     glDisable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);
-    // Normalize pixel-unpack state once per frame (captured by SaveState, put back
-    // by RestoreState): every upload below assumes tightly-packed client memory,
-    // and a game-left PBO binding would reinterpret upload pointers as offsets.
+    // Uploads assume tightly packed client memory and no PBO.
     if (pBindBuffer) pBindBuffer(GL_PIXEL_UNPACK_BUFFER_E, 0);
     glPixelStorei(GL_UNPACK_ROW_LENGTH_E, 0);
     glPixelStorei(GL_UNPACK_SKIP_ROWS_E, 0);
@@ -473,7 +454,7 @@ void Begin() {
     pUseProgram(g_solid_prog);
     pBindVertexArray(g_vao);
     pBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-    g_vp_w = g_vp_h = -1;   // force the first draw of this frame to set the viewport
+    g_vp_w = g_vp_h = -1;
 }
 
 void End() {
@@ -487,7 +468,7 @@ void DrawSolidRect(int x, int y, int w, int h,
                    int fb_w, int fb_h) {
     if (!g_have_gl || fb_w <= 0 || fb_h <= 0 || w <= 0 || h <= 0) return;
 
-    // Client-pixel rect (top-left origin) -> NDC; GL screen space is bottom-up, Y flips.
+    // Client px -> NDC, Y flipped.
     float L = (float)x / (float)fb_w * 2.0f - 1.0f;
     float R = (float)(x + w) / (float)fb_w * 2.0f - 1.0f;
     float T = 1.0f - (float)y / (float)fb_h * 2.0f;
@@ -507,10 +488,9 @@ void DrawLine(float x0, float y0, float x1, float y1, float thickness,
     float len = std::sqrt(dx * dx + dy * dy);
     if (len < 0.001f) return;
     if (thickness < 1.0f) thickness = 1.0f;
-    // Unit normal, scaled to half-width: offsets the segment into a quad.
     float hx = (-dy / len) * thickness * 0.5f;
     float hy = ( dx / len) * thickness * 0.5f;
-    // 4 corners (client px) -> NDC (Y flipped); tri-strip order x0+, x1+, x0-, x1-.
+    // Tri-strip order x0+, x1+, x0-, x1-.
     const float cx[4] = { x0 + hx, x1 + hx, x0 - hx, x1 - hx };
     const float cy[4] = { y0 + hy, y1 + hy, y0 - hy, y1 - hy };
     float verts[8];
@@ -529,7 +509,7 @@ void DrawFillQuad(float x0, float y0, float x1, float y1,
                   float x2, float y2, float x3, float y3,
                   float r, float g, float b, float a, int fb_w, int fb_h) {
     if (!g_have_gl || fb_w <= 0 || fb_h <= 0) return;
-    // Perimeter corners p0,p1,p2,p3 -> triangle strip order p0,p1,p3,p2 (covers the quad).
+    // Perimeter p0..p3 -> strip order p0,p1,p3,p2.
     const float cx[4] = { x0, x1, x3, x2 };
     const float cy[4] = { y0, y1, y3, y2 };
     float verts[8];
@@ -559,7 +539,6 @@ void DrawGlyph(int cell, float x, float y, float w, float h,
     float u1 = (float)(col * cw + cw) / (float)g_atlas_w;
     float v1 = (float)(row * chh + chh) / (float)g_atlas_h;
 
-    // Screen rect (client px, top-left origin) -> NDC (Y flipped); tri-strip TL,TR,BL,BR.
     float L = x / (float)fb_w * 2.0f - 1.0f;
     float R = (x + w) / (float)fb_w * 2.0f - 1.0f;
     float T = 1.0f - y / (float)fb_h * 2.0f;
@@ -582,15 +561,14 @@ void DrawGlyph(int cell, float x, float y, float w, float h,
     pBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-    // Restore the solid-marker state Begin() established so subsequent line/fill/quad draws work.
+    // Back to the solid state Begin() established.
     glBindTexture(GL_TEXTURE_2D, 0);
     pUseProgram(g_solid_prog);
     pBindVertexArray(g_vao);
     pBindBuffer(GL_ARRAY_BUFFER, g_vbo);
 }
 
-// Filled rounded rect (pixel rect), solid program, drawn as a triangle fan. Each corner is
-// tessellated into SEG segments; the shape is convex so a centroid fan is watertight.
+// Rounded rect as a centroid triangle fan, SEG segments per corner.
 static void DrawRoundFill(float x, float y, float w, float h, float rad,
                           float r, float g, float b, float a, int fb_w, int fb_h) {
     if (!g_have_gl || fb_w <= 0 || fb_h <= 0 || w <= 0.f || h <= 0.f) return;
@@ -637,13 +615,13 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     if (text_px < 6.0f)  text_px = 6.0f;
     if (text_px > 40.0f) text_px = 40.0f;
 
-    // The atlas font is ~ (chh-13)px tall; scale the whole cell so the glyph renders ~text_px.
+    // Atlas font is (chh-13)px tall.
     const float fontPx = (float)(chh - 13);
-    const float scale  = text_px / fontPx;     // atlas-px -> screen-px
-    const float cellH  = (float)chh * scale;   // full cell height on screen
-    const float track  = 0.6f * scale;         // small inter-glyph tracking
+    const float scale  = text_px / fontPx;
+    const float cellH  = (float)chh * scale;
+    const float track  = 0.6f * scale;
 
-    // Split on '\n': a multi-line label renders as one panel with centred lines.
+    // Up to 4 lines split on '\n', one panel, centred.
     const char* lstart[4]; int llen[4]; int nl = 0;
     const char* st = s;
     for (const char* p = s;; ++p) {
@@ -655,7 +633,6 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     }
     if (!nl) return;
 
-    // Measure each line's proportional width from the per-glyph advances.
     float lw[4] = {}; float maxW = 0.0f; int glyphsTotal = 0;
     for (int li = 0; li < nl; ++li) {
         float tw = 0.0f; int glyphs = 0;
@@ -671,25 +648,20 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     }
     if (glyphsTotal == 0) return;
 
-    // One rounded panel behind all lines, in the panel design language: a deep neutral
-    // surface at 0.90, a 1px accent hairline, a small radius and a drop shadow straight down.
-    // The old radius was 0.42x the pill height, i.e. 84% of a capsule -- that lozenge, plus a
-    // 1.2px full-bright ring, is what read as "debug". A FIXED 5px radius is on-language and
-    // short enough that the un-AA'd 5-segment corner arc never shows.
-    // ar/ag/ab/aa is the CALLER's colour (a user's tile-marker colour, or a plugin's guide
-    // rgb) arriving from the launcher -- it is passed through untouched. Only chrome is set here.
+    // Panel chrome: #0B0D12 @ 0.90, 1px hairline in the caller's colour, fixed 5px radius
+    // (small enough that the un-AA'd 5-segment arc never shows), shadow straight down.
     const float padX = 8.0f, padY = 5.0f;
-    const float lineH = cellH * 0.92f;                                   // line pitch
+    const float lineH = cellH * 0.92f;
     const float pillW = maxW + padX * 2.0f;
     const float pillH = cellH * 0.78f + lineH * (float)(nl - 1) + padY * 2.0f;
     const float pillX = cx - pillW * 0.5f;
     const float pillY = cy - pillH * 0.5f;
     const float rad   = 5.0f;
-    DrawRoundFill(pillX, pillY + 2.0f, pillW, pillH, rad, 0.0f, 0.0f, 0.0f, 0.45f, fb_w, fb_h);                 // shadow: straight down = elevation
-    DrawRoundFill(pillX - 1.0f, pillY - 1.0f, pillW + 2.0f, pillH + 2.0f, rad + 1.0f, ar, ag, ab, aa, fb_w, fb_h); // 1px hairline
-    DrawRoundFill(pillX, pillY, pillW, pillH, rad, 0.043f, 0.051f, 0.071f, 0.90f, fb_w, fb_h);                  // #0B0D12 @ 0.90
+    DrawRoundFill(pillX, pillY + 2.0f, pillW, pillH, rad, 0.0f, 0.0f, 0.0f, 0.45f, fb_w, fb_h);
+    DrawRoundFill(pillX - 1.0f, pillY - 1.0f, pillW + 2.0f, pillH + 2.0f, rad + 1.0f, ar, ag, ab, aa, fb_w, fb_h);
+    DrawRoundFill(pillX, pillY, pillW, pillH, rad, 0.043f, 0.051f, 0.071f, 0.90f, fb_w, fb_h);
 
-    // Accumulate every glyph quad and submit the whole label in one upload + draw.
+    // All glyph quads in one upload + draw.
     SetViewport(fb_w, fb_h);
     pUseProgram(g_glyph_prog);
     if (g_loc_glyph_tex >= 0) pUniform1i(g_loc_glyph_tex, 0);
@@ -699,9 +671,7 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     pBindVertexArray(g_tex_vao);
     pBindBuffer(GL_ARRAY_BUFFER, g_tex_vbo);
 
-    // First line's ink centre sits padY + ~0.39 cell below the panel top; later lines
-    // step down by lineH, each centred horizontally on cx.
-    static thread_local std::vector<float> gverts;   // reused each call (present thread only)
+    static thread_local std::vector<float> gverts;
     gverts.clear();
     float yc = pillY + padY + cellH * 0.39f;
     for (int li = 0; li < nl; ++li) {
@@ -714,7 +684,7 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
             int adv  = g_glyph_adv[cell];
             int col  = cell % cols, row = cell / cols;
             float u0 = (float)(col * cw)        / (float)g_atlas_w;
-            float u1 = (float)(col * cw + adv)  / (float)g_atlas_w;   // crop to glyph advance
+            float u1 = (float)(col * cw + adv)  / (float)g_atlas_w;
             float v0 = (float)(row * chh)       / (float)g_atlas_h;
             float v1 = (float)(row * chh + chh) / (float)g_atlas_h;
             float gw = adv * scale;
@@ -722,7 +692,6 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
             float R = (penX + gw) / (float)fb_w * 2.0f - 1.0f;
             float T = 1.0f - gTop / (float)fb_h * 2.0f;
             float B = 1.0f - (gTop + cellH) / (float)fb_h * 2.0f;
-            // Two triangles (TL,TR,BL) + (TR,BR,BL), 4 floats (x,y,u,v) per vertex.
             const float quad[24] = {
                 L, T, u0, v0,   R, T, u1, v0,   L, B, u0, v1,
                 R, T, u1, v0,   R, B, u1, v1,   L, B, u0, v1,
@@ -759,8 +728,7 @@ void DrawPlainText(const char* s, float x, float y, float text_px, int align,
     const float cellH  = (float)chh * scale;
     const float track  = 0.6f * scale;
 
-    // Single line: stop at '\n' or NUL. Measure with the real advances so
-    // centre/right alignment is exact regardless of the launcher's estimate.
+    // Single line, stops at '\n'. Measured with real advances so alignment is exact.
     float tw = 0.0f; int glyphs = 0;
     for (const char* p = s; *p && *p != '\n'; ++p) {
         unsigned char ch = (unsigned char)*p;
@@ -782,7 +750,7 @@ void DrawPlainText(const char* s, float x, float y, float text_px, int align,
     pBindVertexArray(g_tex_vao);
     pBindBuffer(GL_ARRAY_BUFFER, g_tex_vbo);
 
-    static thread_local std::vector<float> pverts;   // reused each call (present thread only)
+    static thread_local std::vector<float> pverts;
     pverts.clear();
     for (const char* p = s; *p && *p != '\n'; ++p) {
         unsigned char ch = (unsigned char)*p;
@@ -826,11 +794,8 @@ void UploadUiLayer(const void* bgra, int w, int h, int stride,
                    int dx, int dy, int dw, int dh) {
     if (!g_have_gl || !bgra || w <= 0 || h <= 0) return;
     if (stride <= 0) stride = w * 4;
-    // Begin() left the active unit at GL_TEXTURE0 and saved its binding; End() restores it.
     glBindTexture(GL_TEXTURE_2D, g_tex);
     if (w != g_tex_w || h != g_tex_h) {
-        // Size change: the whole surface content is fresh; upload it all. ROW_LENGTH
-        // is set explicitly on every path (Begin() normalized it to 0).
         glPixelStorei(GL_UNPACK_ROW_LENGTH_E, stride / 4);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, bgra);
         glPixelStorei(GL_UNPACK_ROW_LENGTH_E, 0);
@@ -838,7 +803,7 @@ void UploadUiLayer(const void* bgra, int w, int h, int stride,
         g_tex_h = h;
         return;
     }
-    // Same size: push only the dirty sub-rect (clamped). An empty rect = no-op.
+    // Dirty sub-rect only, clamped.
     if (dx < 0) { dw += dx; dx = 0; }
     if (dy < 0) { dh += dy; dy = 0; }
     if (dx + dw > w) dw = w - dx;
@@ -853,17 +818,14 @@ void UploadUiLayer(const void* bgra, int w, int h, int stride,
 
 void DrawUiLayer(int dst_x, int dst_y, int fb_w, int fb_h) {
     if (!g_have_gl || fb_w <= 0 || fb_h <= 0) return;
-    if (g_tex_w <= 0 || g_tex_h <= 0) return;   // nothing uploaded yet
-    // ALWAYS the texture's own size: 1:1 pixels, top-left anchored. Sizing from
-    // the share's live fields would scale a stale texture during a resize (the
-    // share updates before the upload happens) -- visible swimming.
+    if (g_tex_w <= 0 || g_tex_h <= 0) return;
+    // Texture's own size, never the share's live size: that would scale a stale texture mid-resize.
     int dst_w = g_tex_w, dst_h = g_tex_h;
 
     float L = (float)dst_x / (float)fb_w * 2.0f - 1.0f;
     float R = (float)(dst_x + dst_w) / (float)fb_w * 2.0f - 1.0f;
     float T = 1.0f - (float)dst_y / (float)fb_h * 2.0f;
     float B = 1.0f - (float)(dst_y + dst_h) / (float)fb_h * 2.0f;
-    // (pos.xy, uv.xy): screen top maps to texture row 0 (top of the panel).
     const float verts[16] = {
         L, T, 0.0f, 0.0f,
         R, T, 1.0f, 0.0f,
@@ -892,8 +854,7 @@ void DrawUiLayer(int dst_x, int dst_y, int fb_w, int fb_h) {
     pBindVertexArray(0);
 }
 
-// HUD sprite: its own texture (separate from the panel's g_tex), RGBA (straight alpha), drawn
-// as a screen-space quad. Mirrors Upload/DrawSidebar but with straight-alpha blend.
+// HUD sprite: own texture, straight-alpha RGBA.
 GLuint g_hud_tex = 0; int g_hud_w = 0, g_hud_h = 0;
 
 void UploadHud(const void* rgba, int w, int h) {
@@ -939,9 +900,7 @@ void DrawHud(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h) {
     pBindBuffer(GL_ARRAY_BUFFER, g_tex_vbo);
     pBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    // Restore the solid-marker state Begin() established (mirror DrawGlyph's tail) --
-    // INCLUDING the premultiplied blend func this path switched to straight alpha,
-    // or every later draw this frame (HUD caption, UI layer) blends alpha twice.
+    // Restore Begin() state including the premultiplied blend func, else later draws blend alpha twice.
     if (pBlendFuncSeparate) pBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA,
                                                GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glBindTexture(GL_TEXTURE_2D, 0);
