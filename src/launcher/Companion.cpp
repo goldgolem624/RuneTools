@@ -110,11 +110,20 @@ bool EnsureLoaded(std::uint32_t pid) {
         rtx::log::Launcher("scene module not staged next to the launcher");
         return false;
     }
+    // Several callers race here on a fresh client; only one performs the load.
+    static std::mutex s_loadMu;
+    static std::unordered_set<std::uint32_t> s_loading;
+    {
+        std::lock_guard<std::mutex> lk(s_loadMu);
+        if (s_loading.count(pid)) return SectionLive(pid);
+        s_loading.insert(pid);
+    }
     if (!ModuleListed(pid)) {
         bool loaded = LoadInto(pid, dll);
         rtx::log::Launcher(std::string("scene module ") + (loaded ? "started" : "not listed after load attempt") +
                            " for pid " + std::to_string(pid));
     }
+    { std::lock_guard<std::mutex> lk(s_loadMu); s_loading.erase(pid); }
     return SectionLive(pid);                        // may need a tick to appear
 }
 

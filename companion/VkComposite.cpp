@@ -62,7 +62,7 @@ struct Image {
     float           probeZ = 0.f;
 };
 
-struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; };
+struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; VkPipeline pipeMS; };   // pipeMS samples a multisampled scene depth
 
 struct Swapchain {
     VkSwapchainKHR     sc = VK_NULL_HANDLE;
@@ -89,7 +89,7 @@ VkPipelineLayout      g_pipeLayout = VK_NULL_HANDLE;
 VkDescriptorPool      g_descPool  = VK_NULL_HANDLE;
 VkSampler             g_sampler   = VK_NULL_HANDLE;
 VkSampler             g_depthSampler = VK_NULL_HANDLE;
-VkShaderModule        g_vert = VK_NULL_HANDLE, g_frag = VK_NULL_HANDLE;
+VkShaderModule        g_vert = VK_NULL_HANDLE, g_frag = VK_NULL_HANDLE, g_fragMS = VK_NULL_HANDLE;
 std::vector<FormatRes> g_formats;
 std::vector<Swapchain> g_chains;
 Texture               g_tex[kTexCount];
@@ -98,6 +98,8 @@ Texture               g_tex[kTexCount];
 VkImage         g_depthImg = VK_NULL_HANDLE;
 VkFormat        g_depthFmt = VK_FORMAT_UNDEFINED;
 VkImageLayout   g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+VkSampleCountFlagBits g_depthSamples = VK_SAMPLE_COUNT_1_BIT;
+VkImage         g_refusedImg = VK_NULL_HANDLE;
 VkImageView     g_depthView = VK_NULL_HANDLE;
 VkDescriptorSet g_depthSet = VK_NULL_HANDLE;
 std::uint32_t   g_depthFlags = 0;
@@ -297,6 +299,8 @@ std::size_t ResForFormat(VkFormat fmt) {
     st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = g_vert; st[0].pName = "main";
     st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_frag; st[1].pName = "main";
+    VkPipelineShaderStageCreateInfo stMS[2] = { st[0], st[1] };
+    stMS[1].module = g_fragMS;
     VkVertexInputBindingDescription bind{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription attr[4] = {
         { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 },
@@ -333,11 +337,15 @@ std::size_t ResForFormat(VkFormat fmt) {
     pi.pViewportState = &vp; pi.pRasterizationState = &rs; pi.pMultisampleState = &ms;
     pi.pColorBlendState = &cb; pi.pDynamicState = &ds; pi.layout = g_pipeLayout;
     pi.renderPass = rp; pi.subpass = 0;
-    VkPipeline pipe = VK_NULL_HANDLE;
+    VkPipeline pipe = VK_NULL_HANDLE, pipeMS = VK_NULL_HANDLE;
     if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &pipe) != VK_SUCCESS) {
         g_fn.DestroyRenderPass(g_dev, rp, nullptr); return SIZE_MAX;
     }
-    g_formats.push_back({ fmt, rp, pipe });
+    if (g_fragMS) {
+        pi.pStages = stMS;
+        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeMS) != VK_SUCCESS) pipeMS = VK_NULL_HANDLE;
+    }
+    g_formats.push_back({ fmt, rp, pipe, pipeMS });
     return g_formats.size() - 1;
 }
 
@@ -586,6 +594,8 @@ bool Init(VkDevice dev, const DeviceFns& fns,
     if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_vert) != VK_SUCCESS) { Shutdown(); return false; }
     smi.codeSize = sizeof(rtx::vkshaders::kFrag); smi.pCode = rtx::vkshaders::kFrag;
     if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_frag) != VK_SUCCESS) { Shutdown(); return false; }
+    smi.codeSize = sizeof(rtx::vkshaders::kFragMS); smi.pCode = rtx::vkshaders::kFragMS;
+    if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_fragMS) != VK_SUCCESS) g_fragMS = VK_NULL_HANDLE;
 
     BuildGlyphAtlas();
     if (!CreateTexture(g_tex[kTexWhite], VK_FORMAT_R8G8B8A8_UNORM, 1, 1, false)) { Shutdown(); return false; }
@@ -609,19 +619,23 @@ void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsage
     // Only an image the driver allows us to sample and copy from: single-sampled, sampled usage,
     // transfer source for the calibration probe, not transient, and a known plain depth format.
     const bool depthFmt = fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT;
-    const bool ok = depthFmt && samples == VK_SAMPLE_COUNT_1_BIT && (usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
-                    (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && !(usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+    const bool msOk = samples == VK_SAMPLE_COUNT_1_BIT || (g_fragMS && samples <= VK_SAMPLE_COUNT_8_BIT);
+    const bool ok = depthFmt && msOk && (usage & VK_IMAGE_USAGE_SAMPLED_BIT) && !(usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
     if (!ok) {
-        Log("scene depth image %p refused: format %d usage 0x%x samples %d flags 0x%x", (void*)img, (int)fmt, (unsigned)usage, (int)samples, (unsigned)flags);
+        if (img != g_refusedImg) {
+            g_refusedImg = img;
+            Log("scene depth image %p refused: format %d usage 0x%x samples %d flags 0x%x", (void*)img, (int)fmt, (unsigned)usage, (int)samples, (unsigned)flags);
+        }
         g_depthImg = VK_NULL_HANDLE; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         return;
     }
+    g_depthSamples = samples;
     VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
     vi.image = img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
     vi.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
     if (g_fn.CreateImageView(g_dev, &vi, nullptr, &g_depthView) != VK_SUCCESS) { g_depthView = VK_NULL_HANDLE; return; }
     WriteSet(g_depthSet, g_depthSampler, g_depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-    Log("scene depth image %p format %d, layout %d, usage 0x%x", (void*)img, (int)fmt, (int)layout, (unsigned)usage);
+    Log("scene depth image %p format %d, layout %d, usage 0x%x, samples %d", (void*)img, (int)fmt, (int)layout, (unsigned)usage, (int)samples);
 }
 
 void OnImageDestroyed(VkImage img) {
@@ -772,7 +786,8 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
                              c->w <= rtx::capture::kMaxWidth && c->h <= rtx::capture::kMaxHeight;
     bool useDepth = false;
     for (const auto& b : g_batches) if (b.mode & kModeDepth) { useDepth = true; break; }
-    const bool wantProbe = useDepth && g_ref[0] >= 0.f && g_ref[1] >= 0.f && g_ref[2] >= 0.f &&
+    const bool wantProbe = useDepth && g_depthSamples == VK_SAMPLE_COUNT_1_BIT && (g_depthFmt == VK_FORMAT_D32_SFLOAT) &&
+                           g_ref[0] >= 0.f && g_ref[1] >= 0.f && g_ref[2] >= 0.f &&
                            (g_frameNo % 300) == 1 && !im->probePending &&
                            g_ref[0] < (float)c->w && g_ref[1] < (float)c->h;
     if (g_verts.empty() && g_uploads.empty() && !wantCapture && !g_alwaysRecord) return VK_NULL_HANDLE;
@@ -810,7 +825,8 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     }
 
     // The game's depth image: borrow it read-only for the overlay pass, hand it back in its own layout.
-    const bool depthPass = g_featDepth && useDepth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED;
+    const bool depthPass = g_featDepth && useDepth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED &&
+                           (g_depthSamples == VK_SAMPLE_COUNT_1_BIT || g_formats[c->res].pipeMS);
     static bool s_depthLogged = false;
     if (depthPass && !s_depthLogged) { s_depthLogged = true; Log("depth pass active: image %p layout %d probe %d", (void*)g_depthImg, (int)g_depthLayout, wantProbe ? 1 : 0); }
     if (depthPass) {
@@ -837,7 +853,8 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         rp.renderPass = g_formats[c->res].rp; rp.framebuffer = im->fb;
         rp.renderArea = { { 0, 0 }, { c->w, c->h } };
         g_fn.CmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
-        g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_formats[c->res].pipe);
+        const bool ms = depthPass && g_depthSamples != VK_SAMPLE_COUNT_1_BIT && g_formats[c->res].pipeMS;
+        g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ms ? g_formats[c->res].pipeMS : g_formats[c->res].pipe);
         VkViewport vp{ 0.f, 0.f, (float)c->w, (float)c->h, 0.f, 1.f };
         VkRect2D sc{ { 0, 0 }, { c->w, c->h } };
         g_fn.CmdSetViewport(cmd, 0, 1, &vp);
@@ -905,10 +922,12 @@ void Shutdown() {
     for (auto& t : g_tex) DestroyTexture(t);
     for (auto& r : g_formats) {
         if (r.pipe) g_fn.DestroyPipeline(g_dev, r.pipe, nullptr);
+        if (r.pipeMS) g_fn.DestroyPipeline(g_dev, r.pipeMS, nullptr);
         if (r.rp)   g_fn.DestroyRenderPass(g_dev, r.rp, nullptr);
     }
     g_formats.clear();
     if (g_vert)         g_fn.DestroyShaderModule(g_dev, g_vert, nullptr);
+    if (g_fragMS)       g_fn.DestroyShaderModule(g_dev, g_fragMS, nullptr);
     if (g_frag)         g_fn.DestroyShaderModule(g_dev, g_frag, nullptr);
     if (g_sampler)      g_fn.DestroySampler(g_dev, g_sampler, nullptr);
     if (g_depthSampler) g_fn.DestroySampler(g_dev, g_depthSampler, nullptr);
@@ -916,7 +935,7 @@ void Shutdown() {
     if (g_pipeLayout)   g_fn.DestroyPipelineLayout(g_dev, g_pipeLayout, nullptr);
     if (g_setLayout)    g_fn.DestroyDescriptorSetLayout(g_dev, g_setLayout, nullptr);
     if (g_pool)         g_fn.DestroyCommandPool(g_dev, g_pool, nullptr);
-    g_vert = g_frag = VK_NULL_HANDLE; g_sampler = g_depthSampler = VK_NULL_HANDLE; g_descPool = VK_NULL_HANDLE;
+    g_vert = g_frag = g_fragMS = VK_NULL_HANDLE; g_sampler = g_depthSampler = VK_NULL_HANDLE; g_descPool = VK_NULL_HANDLE;
     g_pipeLayout = VK_NULL_HANDLE; g_setLayout = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_depthSet = VK_NULL_HANDLE;
     for (auto& t : g_tex) t.set = VK_NULL_HANDLE;
     g_dev = VK_NULL_HANDLE; g_ready = false; g_staticUploaded = false;
