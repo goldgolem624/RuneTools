@@ -1202,7 +1202,7 @@
       const r = alertCfg.rules[meta.id];
       const en = $('al_' + meta.id + '_en');    if (en) en.classList.toggle('on', r.enabled);
       const fl = $('al_' + meta.id + '_flash'); if (fl) fl.classList.toggle('on', r.flash);
-      const fl = $('al_' + meta.id + '_discord'); if (fl) fl.classList.toggle('on', r.discord);
+      const dcl = $('al_' + meta.id + '_discord'); if (dcl) dcl.classList.toggle('on', !!r.discord);
       const nf = $('al_' + meta.id + '_notify'); if (nf) nf.textContent = NOTIFY_LABELS[r.notify] || 'In-game';
       const rp = $('al_' + meta.id + '_repeat'); if (rp) rp.classList.toggle('on', !!r.repeat);
       const ctl = $('al_' + meta.id + '_ctl');  if (ctl) ctl.style.opacity = (alertCfg.master && r.enabled) ? 1 : 0.4;
