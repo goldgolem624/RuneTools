@@ -95,7 +95,7 @@ void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsage
 const char* LastSubmit();                         // one-line description of the last recorded frame
 void OnImageDestroyed(VkImage img);
 // Marker share depth flags and the player's projected reference point (calibration log).
-void SetDepthMode(std::uint32_t flags, float rx, float ry, float rz);
+void SetDepthMode(std::uint32_t flags, const float* ref);   // {x,y,z, a,b, x2,y2,z2}
 void SetDepth(const float* z4);                   // per-command clip-space depths; nullptr = none
 // Capture channel (rtx::capture::Share*); nullptr detaches.
 void SetCaptureShare(void* share);

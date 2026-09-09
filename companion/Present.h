@@ -20,7 +20,7 @@ struct Backend {
     void (*UploadHud)(const void*, int, int);
     void (*DrawHud)(int, int, int, int, int, int);
     void (*SetDepth)(const float*);                       // per-command clip depths, nullptr = none
-    void (*SetDepthMode)(unsigned, float, float, float);  // marker share flags + reference point
+    void (*SetDepthMode)(unsigned, const float*);          // marker share flags + calibration {x,y,z, a,b, x2,y2,z2}
 };
 
 const Backend& GlBackend();

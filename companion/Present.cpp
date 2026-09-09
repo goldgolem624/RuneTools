@@ -169,7 +169,9 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         if (n > rtx::marker::kMaxCmds) n = rtx::marker::kMaxCmds;
         int cw = g_marker->fb_w > 0 ? g_marker->fb_w : fbw;
         int ch = g_marker->fb_h > 0 ? g_marker->fb_h : fbh;
-        b.SetDepthMode(g_marker->flags, g_marker->ref_x, g_marker->ref_y, g_marker->ref_z);
+        const float ref[8] = { g_marker->ref_x, g_marker->ref_y, g_marker->ref_z, g_marker->ref_a, g_marker->ref_b,
+                               g_marker->ref2_x, g_marker->ref2_y, g_marker->ref2_z };
+        b.SetDepthMode(g_marker->flags, ref);
         for (std::uint32_t i = 0; i < n; ++i) {
             const rtx::marker::Command& c = g_marker->cmds[i];
             const float z[4] = { c.z0, c.z1, c.z2, c.z3 };
@@ -304,7 +306,7 @@ bool InstallVk() {
 }
 
 void GlSetDepth(const float*) {}
-void GlSetDepthMode(unsigned, float, float, float) {}
+void GlSetDepthMode(unsigned, const float*) {}
 
 }  // namespace
 

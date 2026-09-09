@@ -7,7 +7,7 @@ namespace rtx::marker {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMarker_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5254584D;   // 'RTXM'
-inline constexpr std::uint32_t kVersion = 6;
+inline constexpr std::uint32_t kVersion = 7;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
@@ -66,6 +66,8 @@ struct Share {
     volatile std::uint32_t visible;         // 0 = module skips drawing markers
     std::uint32_t flags;       // kFlagDepth: occlude by the scene depth; kFlagDepthReversed: nearer = larger z
     float ref_x, ref_y, ref_z; // player's projected point, for depth calibration
+    float ref_a, ref_b;        // projection constants: depth = -a + b / view distance (b = 0: unknown)
+    float ref2_x, ref2_y, ref2_z;   // open-ground point three tiles from the player, second calibration sample
 
     Command cmds[kMaxCmds];
 };

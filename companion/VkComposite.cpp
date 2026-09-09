@@ -9,6 +9,7 @@
 #include <windows.h>
 #undef CreateSemaphore
 #include <cmath>
+#include <cstddef>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -21,7 +22,11 @@ namespace {
 
 struct Vertex { float x, y, z, u, v, r, g, b, a; };
 struct Batch  { int tex; int mode; std::uint32_t first, count; };
-struct PushConst { float sx, sy, tx, ty; std::int32_t mode; float dsx, dsy; };
+// Mirrors the shader block under std430: the vec2 after `mode` is 8-byte aligned, hence the pad.
+struct PushConst { float sx, sy, tx, ty; std::int32_t mode; std::int32_t pad; float dsx, dsy; float a, b, bias; };
+static_assert(sizeof(PushConst) == 44, "push constant block layout");
+static_assert(offsetof(PushConst, dsx) == 24 && offsetof(PushConst, a) == 32 && offsetof(PushConst, bias) == 40, "push constant offsets");
+constexpr float kOccludeBiasUnits = 128.0f;   // a quarter tile: how far in front the scene must be to hide a marker
 
 enum Tex { kTexWhite = 0, kTexAtlas = 1, kTexUi = 2, kTexHud = 3, kTexCount = 4 };
 enum Mode { kModeStraight = 1, kModeDepth = 2, kModeReversed = 4 };
@@ -57,9 +62,10 @@ struct Image {
     // Readbacks recorded into this image's command buffer, resolved once its fence has passed.
     Buffer          cap;          // frame capture
     std::uint32_t   capSerial = 0, capW = 0, capH = 0;
-    Buffer          probe;        // one depth texel at the reference point
+    Buffer          probe;        // depth texels at the two reference points
     bool            probePending = false;
-    float           probeZ = 0.f;
+    float           probeZ = 0.f, probeZ2 = -1.f, probeA = 0.f, probeB = 0.f;
+    bool            probeHas2 = false;
 };
 
 struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; VkPipeline pipeMS; };   // pipeMS samples a multisampled scene depth
@@ -103,7 +109,7 @@ VkImage         g_refusedImg = VK_NULL_HANDLE;
 VkImageView     g_depthView = VK_NULL_HANDLE;
 VkDescriptorSet g_depthSet = VK_NULL_HANDLE;
 std::uint32_t   g_depthFlags = 0;
-float           g_ref[3] = { -1.f, -1.f, -1.f };
+float           g_ref[8] = { -1.f, -1.f, -1.f, 0.f, 0.f, -1.f, -1.f, -1.f };
 float           g_z[4] = { -1.f, -1.f, -1.f, -1.f };
 unsigned        g_frameNo = 0;
 
@@ -238,11 +244,13 @@ void FinishReadbacks(Image& im) {
     }
     if (im.probePending && im.probe.map) {
         static unsigned s_logged = 0;
-        float d = 0.f; std::memcpy(&d, im.probe.map, 4);
-        if (s_logged < 12) {
+        float d = 0.f, d2 = 0.f; std::memcpy(&d, im.probe.map, 4); std::memcpy(&d2, static_cast<std::uint8_t*>(im.probe.map) + 16, 4);
+        auto dist = [&](float z) { double q = (double)z + (double)im.probeA; return (im.probeB != 0.f && std::fabs(q) > 1e-12) ? (double)im.probeB / q : 0.0; };
+        if (s_logged < 16) {
             ++s_logged;
-            Log("depth calibration: sampled %.6f at ref (%.0f,%.0f), marker z %.6f, reversed flag %u",
-                (double)d, (double)g_ref[0], (double)g_ref[1], (double)im.probeZ, (g_depthFlags >> 1) & 1u);
+            Log("depth calibration: player px scene %.6f marker %.6f (view dist %.1f vs %.1f); ground px scene %.6f marker %.6f (view dist %.1f vs %.1f); a %.9g b %.9g",
+                (double)d, (double)im.probeZ, dist(d), dist(im.probeZ),
+                (double)(im.probeHas2 ? d2 : -1.f), (double)im.probeZ2, im.probeHas2 ? dist(d2) : 0.0, im.probeHas2 ? dist(im.probeZ2) : 0.0, (double)im.probeA, (double)im.probeB);
         }
         im.probePending = false;
     }
@@ -441,7 +449,7 @@ inline VkImageAspectFlags DepthAspects() {
     return (g_depthFmt == VK_FORMAT_D24_UNORM_S8_UINT || g_depthFmt == VK_FORMAT_D32_SFLOAT_S8_UINT || g_depthFmt == VK_FORMAT_D16_UNORM_S8_UINT)
         ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_DEPTH_BIT;
 }
-inline bool DepthOn() { return g_featDepth && (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE; }
+inline bool DepthOn() { return g_featDepth && (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE && g_ref[4] != 0.f; }
 
 int DrawMode(int texMode) {
     int m = texMode;
@@ -644,8 +652,9 @@ void OnImageDestroyed(VkImage img) {
     g_depthImg = VK_NULL_HANDLE; g_depthFmt = VK_FORMAT_UNDEFINED; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
-void SetDepthMode(std::uint32_t flags, float rx, float ry, float rz) {
-    g_depthFlags = flags; g_ref[0] = rx; g_ref[1] = ry; g_ref[2] = rz;
+void SetDepthMode(std::uint32_t flags, const float* ref) {
+    g_depthFlags = flags;
+    for (int i = 0; i < 8; ++i) g_ref[i] = ref ? ref[i] : -1.f;
 }
 
 void SetDepth(const float* z4) {
@@ -831,17 +840,27 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     if (depthPass && !s_depthLogged) { s_depthLogged = true; Log("depth pass active: image %p layout %d probe %d", (void*)g_depthImg, (int)g_depthLayout, wantProbe ? 1 : 0); }
     if (depthPass) {
         VkImageLayout cur = g_depthLayout;
-        if (wantProbe && EnsureBuffer(im->probe, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+        if (wantProbe && EnsureBuffer(im->probe, 32, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
             ImageBarrier(cmd, g_depthImg, DepthAspects(), cur, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-            VkBufferImageCopy rg{};
-            rg.imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
-            rg.imageOffset = { (std::int32_t)g_ref[0], (std::int32_t)g_ref[1], 0 };
-            rg.imageExtent = { 1, 1, 1 };
-            g_fn.CmdCopyImageToBuffer(cmd, g_depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, im->probe.buf, 1, &rg);
+            VkBufferImageCopy rg[2]{};
+            std::uint32_t n = 0;
+            rg[n].imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+            rg[n].imageOffset = { (std::int32_t)g_ref[0], (std::int32_t)g_ref[1], 0 };
+            rg[n].imageExtent = { 1, 1, 1 };
+            ++n;
+            im->probeHas2 = g_ref[5] >= 0.f && g_ref[6] >= 0.f && g_ref[7] >= 0.f && g_ref[5] < (float)c->w && g_ref[6] < (float)c->h;
+            if (im->probeHas2) {
+                rg[n].bufferOffset = 16;
+                rg[n].imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+                rg[n].imageOffset = { (std::int32_t)g_ref[5], (std::int32_t)g_ref[6], 0 };
+                rg[n].imageExtent = { 1, 1, 1 };
+                ++n;
+            }
+            g_fn.CmdCopyImageToBuffer(cmd, g_depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, im->probe.buf, n, rg);
             cur = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            im->probePending = true; im->probeZ = g_ref[2];
+            im->probePending = true; im->probeZ = g_ref[2]; im->probeZ2 = g_ref[7]; im->probeA = g_ref[3]; im->probeB = g_ref[4];
         }
         ImageBarrier(cmd, g_depthImg, DepthAspects(), cur, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
@@ -862,7 +881,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         VkDeviceSize zero = 0;
         g_fn.CmdBindVertexBuffers(cmd, 0, 1, &im->vbuf.buf, &zero);
         g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 1, &g_depthSet, 0, nullptr);
-        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 1.0f / (float)c->w, 1.0f / (float)c->h };
+        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 0, 1.0f / (float)c->w, 1.0f / (float)c->h, g_ref[3], g_ref[4], kOccludeBiasUnits };
         for (const auto& b : g_batches) {
             Texture& t = g_tex[b.tex];
             if (!t.img || t.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;
