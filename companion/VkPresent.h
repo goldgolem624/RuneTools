@@ -7,5 +7,7 @@ namespace rtx::vkpresent {
 bool Install();    // detour the vulkan-1 exports; false when the loader is not loaded
 void Poll();       // worker tick: arm on a captured device, bootstrap the swapchain
 bool Active();
+void SetHideScene(bool on);   // skip the client's depth-tested draws
+bool HideSceneAvailable();
 
 }  // namespace rtx::vkpresent

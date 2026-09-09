@@ -28,6 +28,7 @@
 #include "EventShare.h"
 #include "ServerOps.h"
 #include "Present.h"
+#include "VkPresent.h"
 #include "SoundFilter.h"
 #include "MenuProbe.h"
 
@@ -1713,6 +1714,8 @@ DWORD WINAPI Worker(LPVOID) {
             if (lps) g_localPlayerSub.store(lps, std::memory_order_relaxed);
             bool wantBlank = g_renderShare->hideAll != 0;
             if (wantBlank != g_sceneBlankPatched) SceneBlankSet(wantBlank);
+            rtx::vkpresent::SetHideScene(wantBlank);
+            if (rtx::vkpresent::HideSceneAvailable()) g_renderShare->installed |= 4;
         }
         Sleep(250);
     }

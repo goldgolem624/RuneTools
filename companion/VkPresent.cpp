@@ -7,6 +7,7 @@
 
 #include "VkPresent.h"
 #include "VkComposite.h"
+#include "VkProbe.h"
 #include "Present.h"
 
 #include <windows.h>
@@ -246,6 +247,7 @@ void DetachDeviceHooks() {
 void Disarm() {
     g_armed.store(false);
     __try { rtx::vkcomposite::Shutdown(); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    rtx::vkprobe::Detach();
     DetachDeviceHooks();
     g_dev = VK_NULL_HANDLE;
     g_queueCheck = 0;
@@ -285,6 +287,7 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
     }
     if (n) { local->waitSemaphoreCount = wc; local->pWaitSemaphores = waits; }
     g_frames.fetch_add(1, std::memory_order_relaxed);
+    rtx::vkprobe::FrameEnd();
     return n;
 }
 
@@ -351,6 +354,26 @@ VkPhysicalDevice PickPhysicalDevice() {
     return discrete ? discrete : devs[0];
 }
 
+// Device-level entry points resolve only when their extension (or core version) is enabled.
+void LogExtensions(VkDevice dev) {
+    static const char* const names[] = {
+        "vkCmdBeginRendering", "vkCmdBeginRenderingKHR", "vkCmdBeginRenderPass2", "vkCmdPushDescriptorSetKHR",
+        "vkCmdDrawIndexedIndirectCount", "vkCmdDrawMeshTasksEXT", "vkCmdTraceRaysKHR", "vkCreateRayTracingPipelinesKHR",
+        "vkCmdBuildAccelerationStructuresKHR", "vkGetBufferDeviceAddress", "vkCmdSetDepthTestEnable",
+        "vkCmdBindDescriptorBuffersEXT", "vkCmdSetFragmentShadingRateKHR", "vkGetCalibratedTimestampsEXT",
+        "vkCmdWriteTimestamp", "vkCmdBeginQuery", "vkCmdBindShadersEXT", "vkCmdPipelineBarrier2",
+        "vkQueueSubmit2", "vkCreateShadersEXT", "vkCmdBindIndexBuffer2KHR", "vkCmdDrawIndirectByteCountEXT",
+        "vkCmdSetPolygonModeEXT", "vkCmdCopyImage2", "vkCmdBlitImage2", "vkWaitSemaphores",
+    };
+    char line[1024] = {};
+    for (const char* n : names) {
+        if (!g_realGDPA(dev, n)) continue;
+        if (line[0]) strncat_s(line, ", ", _TRUNCATE);
+        strncat_s(line, n + 2, _TRUNCATE);
+    }
+    Log("device entry points available: %s", line);
+}
+
 template <typename T>
 bool Dev(VkDevice dev, T& fp, const char* name) {
     fp = reinterpret_cast<T>(g_realGDPA(dev, name));
@@ -410,6 +433,8 @@ bool Arm(VkDevice dev) {
     g_nudged = false; g_warnedNoChain = false;
     g_armed.store(true);
     Log("armed on device %p, graphics family %u (%u queues), present %p", (void*)dev, g_family, g_familyQueues, (void*)g_realQueuePresent);
+    LogExtensions(dev);
+    rtx::vkprobe::Attach(dev, g_realGDPA, Log);
     return true;
 }
 
@@ -444,6 +469,8 @@ void Bootstrap() {
 }  // namespace
 
 bool Active() { return g_armed.load(std::memory_order_relaxed); }
+void SetHideScene(bool on) { rtx::vkprobe::SetHideScene(on); }
+bool HideSceneAvailable() { return g_armed.load(std::memory_order_relaxed) && rtx::vkprobe::HideSceneAvailable(); }
 
 void Poll() {
     if (!g_installed) return;

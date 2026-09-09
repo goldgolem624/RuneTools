@@ -80,6 +80,7 @@
     <ClCompile Include="Composite.cpp" />
     <ClCompile Include="Present.cpp" />
     <ClCompile Include="VkPresent.cpp" />
+    <ClCompile Include="VkProbe.cpp" />
     <ClCompile Include="VkComposite.cpp" />
     <ClCompile Include="MenuProbe.cpp" />
     <ClCompile Include="SoundFilter.cpp" />
@@ -98,6 +99,7 @@
     <ClInclude Include="Composite.h" />
     <ClInclude Include="Present.h" />
     <ClInclude Include="VkPresent.h" />
+    <ClInclude Include="VkProbe.h" />
     <ClInclude Include="VkComposite.h" />
     <ClInclude Include="VkShaders.h" />
     <ClInclude Include="MenuProbe.h" />

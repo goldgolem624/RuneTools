@@ -125,11 +125,17 @@ bool CreateHostBuffer(Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage) {
     return true;
 }
 
-bool EnsureBuffer(Buffer& b, VkDeviceSize need, VkBufferUsageFlags usage) {
+// Growth keeps the first `live` bytes: staging data queued earlier in the frame still refers to them.
+bool EnsureBuffer(Buffer& b, VkDeviceSize need, VkBufferUsageFlags usage, VkDeviceSize live = 0) {
     if (b.buf && b.size >= need) return true;
     VkDeviceSize sz = b.size ? b.size : (VkDeviceSize)(1u << 20);
     while (sz < need) sz *= 2;
-    return CreateHostBuffer(b, sz, usage);
+    Buffer fresh;
+    if (!CreateHostBuffer(fresh, sz, usage)) return false;
+    if (live && b.map) std::memcpy(fresh.map, b.map, (size_t)(live < b.size ? live : b.size));
+    DestroyBuffer(b);
+    b = fresh;
+    return true;
 }
 
 void DestroyTexture(Texture& t) {
@@ -308,7 +314,7 @@ void BuildGlyphAtlas() {
 void* Stage(VkDeviceSize bytes, VkDeviceSize* off) {
     if (!g_cur) return nullptr;
     VkDeviceSize start = (g_stageUsed + 15) & ~(VkDeviceSize)15;
-    if (!EnsureBuffer(g_cur->sbuf, start + bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) return nullptr;
+    if (!EnsureBuffer(g_cur->sbuf, start + bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, g_stageUsed)) return nullptr;
     *off = start;
     g_stageUsed = start + bytes;
     return static_cast<std::uint8_t*>(g_cur->sbuf.map) + start;
