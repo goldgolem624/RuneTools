@@ -3432,8 +3432,8 @@ std::filesystem::path store_path() {
 }
 
 bool parse_url(const std::string& url, std::wstring& host, std::wstring& path, std::string& hint) {
-    static const std::regex re("^https://((?:www\\.|ptb\\.|canary\\.)?discord\\.com|discordapp\\.com)"
-                               "(/api/webhooks/[0-9]{17,20}/[A-Za-z0-9_\\-]{60,120})$");
+    // discord.com only: the copy button in Discord produces exactly this shape.
+    static const std::regex re("^https://(discord\\.com)(/api/webhooks/[0-9]{17,20}/[A-Za-z0-9_\\-]{60,120})$");
     std::smatch m;
     if (url.size() > 300 || !std::regex_match(url, m, re)) return false;
     std::string h = m[1].str(), p = m[2].str();
@@ -3470,14 +3470,12 @@ std::string set_url(std::string url) {
     g_loaded = false;
     std::error_code ec;
     if (url.empty()) { std::filesystem::remove(store_path(), ec); load_locked(); return "{\"configured\":false,\"hint\":\"\"}"; }
-    // Accept the full URL, a schemeless one, or just "<id>/<token>".
-    if (url.rfind("discord.com/", 0) == 0 || url.rfind("discordapp.com/", 0) == 0 || url.rfind("ptb.discord.com/", 0) == 0 ||
-        url.rfind("canary.discord.com/", 0) == 0 || url.rfind("www.discord.com/", 0) == 0)
-        url = "https://" + url;
+    // Accept the URL as Discord copies it, a schemeless one, or just "<id>/<token>".
+    if (url.rfind("discord.com/", 0) == 0) url = "https://" + url;
     else if (url.rfind("http", 0) != 0)
         url = "https://discord.com/api/webhooks/" + url;
     std::wstring h, p; std::string hint;
-    if (!parse_url(url, h, p, hint)) return "{\"error\":\"That is not a Discord webhook URL. It should look like https://discord.com/api/webhooks/<id>/<token>.\"}";
+    if (!parse_url(url, h, p, hint)) return "{\"error\":\"Only https://discord.com/api/webhooks/<id>/<token> is accepted, exactly as Discord copies it.\"}";
     auto sealed = crypto::ProtectForCurrentUser(url);
     if (sealed.empty()) return "{\"error\":\"Could not seal the URL for this Windows account.\"}";
     auto path = store_path();

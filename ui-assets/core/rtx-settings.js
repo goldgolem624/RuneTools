@@ -54,8 +54,8 @@
     if (typeof kbGrab === 'function') kbGrab(false);
     if (uisHpPaint) uisHpPaint();
   }, true);
-  // Discord webhook: only the "<id>/<token>" tail is typed; the host normalises, seals and stores
-  // it, and hands back a masked hint. Copy puts the full URL on the clipboard from the host side.
+  // Discord webhook: the URL as Discord copies it (discord.com only); the host validates, seals and
+  // stores it, and hands back a masked hint. Copy puts the full URL on the clipboard from the host side.
   function uisDiscordRow() {
     const r = document.createElement('div'); r.className = 'row';
     const k = document.createElement('span'); k.className = 'k'; k.textContent = 'Discord webhook';
@@ -64,9 +64,7 @@
     const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;width:100%';
     const status = document.createElement('div'); status.className = 'pf-hint';
     const line = document.createElement('div'); line.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap';
-    const pre = document.createElement('span'); pre.textContent = 'discord.com/api/webhooks/';
-    pre.style.cssText = 'font:11px var(--font-mono);color:var(--text-mute);white-space:nowrap';
-    const inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = '<id>/<token>';
+    const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = 'https://discord.com/api/webhooks/...';
     inp.autocomplete = 'off'; inp.spellcheck = false;
     inp.style.cssText = 'flex:1;min-width:160px;font:12px var(--font-mono);padding:5px 8px;background:rgba(0,0,0,.35);color:var(--text);border:1px solid var(--border-hi);border-radius:4px;outline:none';
     inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--brass)'; });
@@ -80,7 +78,7 @@
     const render = (info) => {
       configured = !!(info && info.configured);
       if (info && info.error) setStatus(info.error, true);
-      else setStatus(configured ? ('Configured: ' + info.hint) : 'Not configured. Paste the part after discord.com/api/webhooks/ from your server settings.', false);
+      else setStatus(configured ? ('Configured: ' + info.hint) : 'Not configured. Paste the webhook URL copied from your Discord server settings.', false);
       test.disabled = !configured; copy.disabled = !configured; remove.disabled = !configured;
       [test, copy, remove].forEach(b => { b.style.opacity = b.disabled ? '.45' : ''; b.style.cursor = b.disabled ? 'default' : ''; });
       sub.textContent = configured ? 'Sent without pings, at most one every few seconds' : '';
@@ -129,7 +127,7 @@
       setStatus(ok ? 'Webhook URL copied to the clipboard.' : 'Could not copy.', !ok);
     });
     remove.addEventListener('click', () => { if (!configured) return; try { render(JSON.parse(bridge().discordWebhookSet('') || '{}')); } catch (e) {} });
-    line.appendChild(pre); line.appendChild(inp);
+    line.appendChild(inp);
     [paste, save, test, copy, remove].forEach(b => btns.appendChild(b));
     wrap.appendChild(line); wrap.appendChild(btns); wrap.appendChild(status);
     v.appendChild(wrap); r.appendChild(k); r.appendChild(v);
