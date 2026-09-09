@@ -757,6 +757,7 @@
   .side::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 999px; }
   /* The play card is content-sized: never a flexible height, never a scroll box of its own. */
   .card.play-card { max-width: none; min-height: auto; height: auto; flex: none; padding: 20px; overflow: visible; display: block; }
+  .card.play-card.gfx-card { padding: 16px 20px; margin-bottom: 12px; }
   .card.play-card .status { margin-bottom: 0; }
   .card.play-card .status.show { margin: 0 0 12px; }
   .card.play-card .upd { margin: 0 0 16px; }
@@ -967,6 +968,20 @@
 
       <!-- Right: play. -->
       <aside class="side">
+        <div class="card play-card gfx-card" id="gfx-card">
+          <label class="field-lbl" for="gfx-select">Renderer</label>
+          <div class="select-wrap" id="gfx-wrap">
+            <select id="gfx-select" hidden>
+              <option value="opengl">OpenGL</option>
+              <option value="vulkan">Vulkan (Beta)</option>
+            </select>
+            <button type="button" class="acct-btn" id="gfx-btn" aria-haspopup="listbox" aria-expanded="false">
+              <span id="gfx-btn-label">Detecting...</span>
+            </button>
+            <div class="acct-menu" id="gfx-menu" role="listbox" hidden></div>
+          </div>
+          <div class="play-hint" id="gfx-hint">Applies the next time the game starts.</div>
+        </div>
         <div class="card play-card" id="main-card">
           <div class="status" id="main-status"></div>
 
@@ -1558,7 +1573,7 @@
   let _gpTick = 0, _gpKey = null;
   async function refresh() {
     // Game location is live: a renamed, restored or replaced RuneScape.exe shows within seconds.
-    if ((++_gpTick % 3) === 1) gpRefresh();
+    if ((++_gpTick % 3) === 1) { gpRefresh(); gfxRefresh(); }
     let procs = [];
     try { procs = JSON.parse(await bridge().scanProcesses()); } catch (e) {}
     try {
@@ -2020,6 +2035,59 @@
   document.addEventListener('click', (e) => { if (!e.target.closest('#acct-wrap')) acctMenuOpen(false); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') acctMenuOpen(false); });
 
+  // Renderer choice: preferences.cfg next to the game client, read by the Jagex launcher at start.
+  let _gfxKey = null;
+  function gfxMenuOpen(on) {
+    const btn = $('gfx-btn'), menu = $('gfx-menu');
+    if (!btn || !menu) return;
+    if (on && btn.disabled) return;
+    menu.hidden = !on;
+    btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+  }
+  function gfxRender(info) {
+    const sel = $('gfx-select'), btn = $('gfx-btn'), menu = $('gfx-menu'), lbl = $('gfx-btn-label'), hint = $('gfx-hint');
+    if (!sel || !btn) return;
+    const cur = info && (info.renderer === 'vulkan' || info.renderer === 'opengl') ? info.renderer : '';
+    if (cur) sel.value = cur;
+    const opt = cur ? sel.options[sel.selectedIndex] : null;
+    lbl.textContent = opt ? opt.textContent : (info && info.error ? 'Unavailable' : 'Default (OpenGL)');
+    btn.disabled = !!(info && info.error);
+    menu.innerHTML = '';
+    for (const o of sel.options) {
+      const row = document.createElement('div');
+      row.className = 'acct-opt' + (o.value === cur ? ' on' : '');
+      row.setAttribute('role', 'option');
+      const name = document.createElement('span'); name.textContent = o.textContent;
+      row.appendChild(name);
+      if (o.value === 'vulkan') { const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'beta'; row.appendChild(t); }
+      row.addEventListener('click', async () => {
+        gfxMenuOpen(false);
+        if (o.value === cur) return;
+        let raw = null;
+        try { raw = await bridge().rendererSet(o.value); } catch (e) {}
+        _gfxKey = null;
+        try { gfxRender(JSON.parse(raw)); } catch (e) {}
+      });
+      menu.appendChild(row);
+    }
+    if (hint) {
+      hint.textContent = info && info.error ? info.error
+        : info && info.running ? 'A client is running. The change applies when it is restarted.'
+        : 'Applies the next time the game starts.';
+    }
+  }
+  async function gfxRefresh() {
+    if (!bridge().rendererPref) return;
+    let raw = null;
+    try { raw = await bridge().rendererPref(); } catch (e) {}
+    if (raw === _gfxKey) return;
+    _gfxKey = raw;
+    try { gfxRender(JSON.parse(raw)); } catch (e) { gfxRender(null); }
+  }
+  $('gfx-btn').addEventListener('click', (e) => { e.stopPropagation(); gfxMenuOpen($('gfx-menu').hidden); });
+  document.addEventListener('click', (e) => { if (!e.target.closest('#gfx-wrap')) gfxMenuOpen(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') gfxMenuOpen(false); });
+
   $('play-btn').addEventListener('click', playSelected);
   $('acct-select').addEventListener('change', () => { acctSel = $('acct-select').value; metaSelectedSave(acctSel); invalidateRenderCache(); refresh(); });
 
@@ -2118,6 +2186,7 @@
     initAccountCapture();
     initTitlebar();
     gpRefresh();
+    gfxRefresh();
     const la = $('acct-launch-all');
     if (la) la.addEventListener('click', launchAll);
     refresh();

@@ -176,6 +176,19 @@ std::string detect_gfx_mode(HANDLE h) {
     if (vk) return "Vulkan";
     if (gl) return "OpenGL";
     if (dx) return "DirectX";
+    // Renderer libraries load late; until then preferences.cfg next to the exe names the renderer.
+    wchar_t exe[MAX_PATH] = {}; DWORD len = MAX_PATH;
+    if (!QueryFullProcessImageNameW(h, 0, exe, &len)) return {};
+    std::ifstream f(std::filesystem::path(exe).parent_path() / L"preferences.cfg");
+    std::string line;
+    while (f && std::getline(f, line)) {
+        if (line.rfind("renderer=", 0) != 0) continue;
+        std::string v = line.substr(9);
+        while (!v.empty() && (v.back() == '' || v.back() == ' ')) v.pop_back();
+        if (_stricmp(v.c_str(), "vulkan") == 0) return "Vulkan";
+        if (_stricmp(v.c_str(), "opengl") == 0 || _stricmp(v.c_str(), "auto") == 0) return "OpenGL";
+        return {};
+    }
     return {};
 }
 

@@ -3281,6 +3281,63 @@ JSValueRef GamePathReset(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, con
     return utf8_to_js(ctx, game_path_json());
 }
 
+// Renderer choice the Jagex launcher applies at the next game start (preferences.cfg next to rs2client).
+std::filesystem::path renderer_cfg_path() {
+    wchar_t pd[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"ProgramData", pd, MAX_PATH) == 0) return {};
+    return std::filesystem::path(pd) / L"Jagex" / L"launcher" / L"preferences.cfg";
+}
+
+std::string renderer_json() {
+    std::string renderer, err;
+    auto path = renderer_cfg_path();
+    std::ifstream f(path);
+    if (!f) err = "preferences.cfg not found";
+    std::string line;
+    while (f && std::getline(f, line)) {
+        if (line.rfind("renderer=", 0) != 0) continue;
+        renderer = line.substr(9);
+        while (!renderer.empty() && (renderer.back() == '\r' || renderer.back() == ' ')) renderer.pop_back();
+        for (auto& c : renderer) c = (char)std::tolower((unsigned char)c);
+    }
+    bool running = false;
+    try {
+        for (const auto& info : rtx::launcher::process::ScanRsClients())
+            if (_wcsicmp(info.name.c_str(), L"rs2client.exe") == 0) { running = true; break; }
+    } catch (...) {}
+    return "{\"renderer\":\"" + json_escape(renderer) + "\",\"running\":" + (running ? "true" : "false") +
+           ",\"error\":\"" + json_escape(err) + "\"}";
+}
+
+JSValueRef RendererPref(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, renderer_json());
+}
+
+JSValueRef RendererSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    std::string want = argc >= 1 ? js_to_utf8(ctx, argv[0]) : std::string();
+    if (want != "opengl" && want != "vulkan")
+        return utf8_to_js(ctx, "{\"error\":\"unknown renderer\"}");
+    auto path = renderer_cfg_path();
+    std::vector<std::string> lines;
+    bool replaced = false;
+    {
+        std::ifstream f(path);
+        std::string line;
+        while (f && std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.rfind("renderer=", 0) == 0) { line = "renderer=" + want; replaced = true; }
+            lines.push_back(line);
+        }
+    }
+    if (!replaced) lines.push_back("renderer=" + want);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return utf8_to_js(ctx, "{\"error\":\"preferences.cfg is not writable\"}");
+    for (const auto& l : lines) out << l << '\n';
+    out.close();
+    return utf8_to_js(ctx, renderer_json());
+}
+
 JSValueRef NotifyWindows(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4805,6 +4862,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "gamePath",          GamePath);
     install_fn(ctx, ns, "gamePathPick",      GamePathPick);
     install_fn(ctx, ns, "gamePathReset",     GamePathReset);
+    install_fn(ctx, ns, "rendererPref",      RendererPref);
+    install_fn(ctx, ns, "rendererSet",       RendererSet);
 
     install_fn(ctx, ns, "pluginStoreLoad",   PluginStoreLoad);
     install_fn(ctx, ns, "pluginStoreSave",   PluginStoreSave);

@@ -1646,9 +1646,8 @@ DWORD WINAPI Worker(LPVOID) {
 
     // ResolveNetCapture();
 
-    OutputDebugStringA(rtx::present::Install()
-                           ? "RuneToolsX: in-frame compositor active"
-                           : "RuneToolsX: buffer-swap entry not found (compositor off)");
+    RingLog(rtx::present::Install() ? "compositor: %s" : "compositor: present entry not found (off)",
+            rtx::present::Mode());
 
     RingLog(rtx::soundfilter::Install() ? "sound: mix hook ATTACHED"
                                         : "sound: mix fn not found (observation/mute off)");
@@ -1667,6 +1666,7 @@ DWORD WINAPI Worker(LPVOID) {
         bool havePos = PlayerFineOrLast(cpx, cpy);
         PruneInvalid();
         rtx::menuprobe::Poll();
+        rtx::present::Poll();
         const float kMoveArm = 32.f * 512.f;
         const bool moved = havePos && haveScanPos &&
             (std::fabs(cpx - scanPx) > kMoveArm || std::fabs(cpy - scanPy) > kMoveArm);

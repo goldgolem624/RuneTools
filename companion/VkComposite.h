@@ -1,0 +1,113 @@
+#pragma once
+// Vulkan frame composite: same drawing contract as Composite.h, rendered into the swapchain image
+// the game is about to present. Present thread only, between BeginTarget() and Submit().
+
+#include <cstdint>
+#define VK_NO_PROTOTYPES
+#include "vk/vulkan_core.h"
+
+namespace rtx::vkcomposite {
+
+// Device-level entry points, resolved by the caller through the real vkGetDeviceProcAddr.
+struct DeviceFns {
+    PFN_vkCreateRenderPass            CreateRenderPass;
+    PFN_vkDestroyRenderPass           DestroyRenderPass;
+    PFN_vkCreateImageView             CreateImageView;
+    PFN_vkDestroyImageView            DestroyImageView;
+    PFN_vkCreateFramebuffer           CreateFramebuffer;
+    PFN_vkDestroyFramebuffer          DestroyFramebuffer;
+    PFN_vkCreateShaderModule          CreateShaderModule;
+    PFN_vkDestroyShaderModule         DestroyShaderModule;
+    PFN_vkCreatePipelineLayout        CreatePipelineLayout;
+    PFN_vkDestroyPipelineLayout       DestroyPipelineLayout;
+    PFN_vkCreateGraphicsPipelines     CreateGraphicsPipelines;
+    PFN_vkDestroyPipeline             DestroyPipeline;
+    PFN_vkCreateDescriptorSetLayout   CreateDescriptorSetLayout;
+    PFN_vkDestroyDescriptorSetLayout  DestroyDescriptorSetLayout;
+    PFN_vkCreateDescriptorPool        CreateDescriptorPool;
+    PFN_vkDestroyDescriptorPool       DestroyDescriptorPool;
+    PFN_vkAllocateDescriptorSets      AllocateDescriptorSets;
+    PFN_vkUpdateDescriptorSets        UpdateDescriptorSets;
+    PFN_vkCreateSampler               CreateSampler;
+    PFN_vkDestroySampler              DestroySampler;
+    PFN_vkCreateImage                 CreateImage;
+    PFN_vkDestroyImage                DestroyImage;
+    PFN_vkCreateBuffer                CreateBuffer;
+    PFN_vkDestroyBuffer               DestroyBuffer;
+    PFN_vkGetImageMemoryRequirements  GetImageMemoryRequirements;
+    PFN_vkGetBufferMemoryRequirements GetBufferMemoryRequirements;
+    PFN_vkAllocateMemory              AllocateMemory;
+    PFN_vkFreeMemory                  FreeMemory;
+    PFN_vkBindImageMemory             BindImageMemory;
+    PFN_vkBindBufferMemory            BindBufferMemory;
+    PFN_vkMapMemory                   MapMemory;
+    PFN_vkUnmapMemory                 UnmapMemory;
+    PFN_vkCreateCommandPool           CreateCommandPool;
+    PFN_vkDestroyCommandPool          DestroyCommandPool;
+    PFN_vkAllocateCommandBuffers      AllocateCommandBuffers;
+    PFN_vkFreeCommandBuffers          FreeCommandBuffers;
+    PFN_vkBeginCommandBuffer          BeginCommandBuffer;
+    PFN_vkEndCommandBuffer            EndCommandBuffer;
+    PFN_vkResetCommandBuffer          ResetCommandBuffer;
+    PFN_vkCmdPipelineBarrier          CmdPipelineBarrier;
+    PFN_vkCmdCopyBufferToImage        CmdCopyBufferToImage;
+    PFN_vkCmdBeginRenderPass          CmdBeginRenderPass;
+    PFN_vkCmdEndRenderPass            CmdEndRenderPass;
+    PFN_vkCmdBindPipeline             CmdBindPipeline;
+    PFN_vkCmdBindDescriptorSets       CmdBindDescriptorSets;
+    PFN_vkCmdBindVertexBuffers        CmdBindVertexBuffers;
+    PFN_vkCmdPushConstants            CmdPushConstants;
+    PFN_vkCmdSetViewport              CmdSetViewport;
+    PFN_vkCmdSetScissor               CmdSetScissor;
+    PFN_vkCmdDraw                     CmdDraw;
+    PFN_vkCreateFence                 CreateFence;
+    PFN_vkDestroyFence                DestroyFence;
+    PFN_vkWaitForFences               WaitForFences;
+    PFN_vkResetFences                 ResetFences;
+    PFN_vkCreateSemaphore             CreateSemaphore;
+    PFN_vkDestroySemaphore            DestroySemaphore;
+    PFN_vkQueueSubmit                 QueueSubmit;
+    PFN_vkGetSwapchainImagesKHR       GetSwapchainImagesKHR;
+    PFN_vkDeviceWaitIdle              DeviceWaitIdle;
+};
+
+bool Init(VkDevice dev, const DeviceFns& fns,
+          const VkPhysicalDeviceMemoryProperties& mem, std::uint32_t queueFamily);
+void Shutdown();
+bool Ready();
+
+bool RegisterSwapchain(VkSwapchainKHR sc, VkFormat fmt, std::uint32_t w, std::uint32_t h);
+void UnregisterSwapchain(VkSwapchainKHR sc);
+int  SwapchainCount();
+
+// Select the image about to be presented. False when the swapchain is unknown or its fence is stuck.
+bool BeginTarget(VkSwapchainKHR sc, std::uint32_t imageIndex, std::uint32_t* w, std::uint32_t* h);
+// Record and submit whatever was drawn since BeginTarget(). Returns the semaphore the present must
+// wait on, or VK_NULL_HANDLE when nothing was drawn (the caller then leaves the present untouched).
+VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* waits);
+
+void Begin();
+void End();
+
+void DrawSolidRect(int x, int y, int w, int h,
+                   float r, float g, float b, float a, int fb_w, int fb_h);
+void DrawLine(float x0, float y0, float x1, float y1, float thickness,
+              float r, float g, float b, float a, int fb_w, int fb_h);
+void DrawFillQuad(float x0, float y0, float x1, float y1,
+                  float x2, float y2, float x3, float y3,
+                  float r, float g, float b, float a, int fb_w, int fb_h);
+void DrawGlyph(int cell, float x, float y, float w, float h,
+               float r, float g, float b, float a, int fb_w, int fb_h);
+void DrawLabel(const char* s, float cx, float cy, float text_px,
+               float ar, float ag, float ab, float aa, int fb_w, int fb_h);
+void DrawPlainText(const char* s, float x, float y, float text_px, int align,
+                   float r, float g, float b, float a, int fb_w, int fb_h);
+void DrawRoundRect(float x, float y, float w, float h, float rad,
+                   float r, float g, float b, float a, int fb_w, int fb_h);
+void UploadUiLayer(const void* bgra, int w, int h, int stride,
+                   int dx, int dy, int dw, int dh);
+void DrawUiLayer(int dst_x, int dst_y, int fb_w, int fb_h);
+void UploadHud(const void* rgba, int w, int h);
+void DrawHud(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h);
+
+}  // namespace rtx::vkcomposite
