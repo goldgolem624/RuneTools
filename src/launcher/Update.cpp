@@ -23,7 +23,16 @@ namespace rtx::launcher {
 
 static constexpr wchar_t kDownloadPath[] = L"/api/client/download-update";
 
+std::string read_running_version();
+
 std::string running_version() {
+    static const std::string cached = [] { return read_running_version(); }();
+    return cached;
+}
+
+// Read once: the exe can be renamed or replaced under a running launcher (self-update, rebuilds),
+// and a failed read must never turn into a downgrade offer.
+std::string read_running_version() {
     wchar_t path[MAX_PATH] = {};
     if (GetModuleFileNameW(nullptr, path, MAX_PATH)) {
         DWORD ignored = 0, sz = GetFileVersionInfoSizeW(path, &ignored);
