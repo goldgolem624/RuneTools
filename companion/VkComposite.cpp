@@ -27,7 +27,7 @@ struct PushConst { float sx, sy, tx, ty; std::int32_t mode; std::int32_t pad; fl
 static_assert(sizeof(PushConst) == 48, "push constant block layout");
 static_assert(offsetof(PushConst, dsx) == 24 && offsetof(PushConst, a) == 32 && offsetof(PushConst, bias) == 40 && offsetof(PushConst, fade) == 44, "push constant offsets");
 constexpr float kOccludeBiasUnits = 128.0f;   // a quarter tile: how far in front the scene must be to fade a marker
-constexpr float kOccludedAlpha = 0.3f;         // opacity kept where the scene is in front of a marker
+constexpr float kOccludedAlpha = 0.5f;         // opacity kept where the scene is in front of a marker
 
 enum Tex { kTexWhite = 0, kTexAtlas = 1, kTexUi = 2, kTexHud = 3, kTexCount = 4 };
 enum Mode { kModeStraight = 1, kModeDepth = 2, kModeReversed = 4 };
