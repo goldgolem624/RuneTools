@@ -172,7 +172,9 @@
     },
 
     notify: {
-      windows: function (title, body) { return call('notify.windows', [title, body]); }
+      windows: function (title, body) { return call('notify.windows', [title, body]); },
+      // Posts to the user's own Discord webhook (scope notify.discord). Text only, pings stripped, 1 per 10s.
+      discord: function (text) { return call('notify.discord', [text]); }
     },
 
     clipboard: {

@@ -36,6 +36,7 @@
   const NOTIFY_LABELS = { ingame: 'In-game', windows: 'Windows', both: 'Both' };
   const ALERT_DEFAULTS = {
     master: true,
+    discord: false,         // also post every delivered alert to the Discord webhook from Settings
     unfocusedOnly: false,   // every alert: only while the game window is NOT in the foreground
     rules: {
       random:  { enabled: true,  sound: 'alert 1', flash: false, notify: 'ingame' },
@@ -120,6 +121,7 @@
     alertCfg = JSON.parse(JSON.stringify(ALERT_DEFAULTS));
     if (saved && typeof saved === 'object') {
       if (typeof saved.master === 'boolean') alertCfg.master = saved.master;
+      if (typeof saved.discord === 'boolean') alertCfg.discord = saved.discord;
       if (typeof saved.unfocusedOnly === 'boolean') alertCfg.unfocusedOnly = saved.unfocusedOnly;
       else if (saved.rules && saved.rules.idle && saved.rules.idle.unfocusedOnly === true) alertCfg.unfocusedOnly = true;
       if (saved.rules) for (const id in alertCfg.rules) {
@@ -142,7 +144,7 @@
   let _alertSaveT = 0, _alertSaveTries = 0;
   function saveAlertCfg() {
     if (!alertCfg) return;
-    const out = { master: alertCfg.master, unfocusedOnly: !!alertCfg.unfocusedOnly, rules: {}, custom: [] };
+    const out = { master: alertCfg.master, discord: !!alertCfg.discord, unfocusedOnly: !!alertCfg.unfocusedOnly, rules: {}, custom: [] };
     for (const id in alertCfg.rules) {
       const r = alertCfg.rules[id];
       out.rules[id] = { enabled: r.enabled, sound: r.sound, flash: r.flash, notify: r.notify };
@@ -187,6 +189,7 @@
       if (msg) { try { uiNotify(msg, { sticky: sticky, ttl: sticky ? 0 : 5000 }); } catch (e) {} }
     }
     if (nt === 'windows' || nt === 'both') winNotify(msg);
+    if (alertCfg.discord && msg) { try { if (bridge().discordNotify) bridge().discordNotify(msg, 'alerts'); } catch (e) {} }
   }
   function logAlert(now, msg) {
     alertLog.unshift({ t: now, msg: msg }); if (alertLog.length > 5) alertLog.pop();

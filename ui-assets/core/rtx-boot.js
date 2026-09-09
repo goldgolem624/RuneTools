@@ -3,6 +3,23 @@
   let _refreshFailMsg = '';
   attachBridge._waits = 0;
   function refreshFail(msg) { if (msg === _refreshFailMsg) return; _refreshFailMsg = msg; console.error('rtx refresh: ' + msg); }
+  // Per-account fullscreen preference: applied once the host window exists (retried for ~15 s).
+  let _fsPrefPid = 0, _fsPrefTries = 0;
+  function fullscreenPrefApply() {
+    const pid = myPid();
+    if (!pid || _fsPrefPid === pid || !lastSnap || !lastSnap.display_name) return;
+    const b = bridge();
+    if (!b || !b.fullscreenPrefLoad || !b.hostFullscreen) { _fsPrefPid = pid; return; }
+    if (String(b.fullscreenPrefLoad(pid) || '').trim() !== '1') { _fsPrefPid = pid; return; }
+    if (b.hostFullscreen(pid, true)) {
+      _fsPrefPid = pid;
+      if (typeof wm !== 'undefined' && wm) wm.fullscreen = true;
+      const r = $('fsTgl'); if (r) r.classList.add('on');
+      if (typeof wmRectsSoon === 'function') wmRectsSoon();
+    } else if (++_fsPrefTries > 60) {
+      _fsPrefPid = pid;
+    }
+  }
   async function refresh() {
     if (!bridge()) { refreshFail('bridge missing: typeof window.rtx = ' + typeof window.rtx); return; }
     if (refresh._busy) return;      // 250 ms timer vs awaits: no overlapping passes
@@ -16,6 +33,7 @@
     if (!me) refreshFail('no snapshot for pid ' + myPid() + '; have [' + snaps.map(s => s.pid).join(',') + ']');
     else if (_refreshFailMsg) { _refreshFailMsg = ''; console.log('rtx refresh: snapshot for pid ' + myPid() + ' resumed'); }
     lastSnap = me || null;
+    try { fullscreenPrefApply(); } catch (e) {}
     try { pluginGrantsEnsure(); } catch (e) {}
     if ((metroVisual() || metroAudio()) && myPid() !== _metroAppliedPid) applyMetroOverlay();
     if ((xpOn || _xpAppliedPid) && myPid() && myPid() !== _xpAppliedPid) applyXpOverlay();

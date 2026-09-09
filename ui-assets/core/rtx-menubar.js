@@ -386,11 +386,12 @@
     row.addEventListener('click', () => {
       try { wm.fullscreen = !!bridge().hostFullscreen(myPid()); } catch (e) {}
       row.classList.toggle('on', wm.fullscreen);
+      try { if (bridge().fullscreenPrefSave) bridge().fullscreenPrefSave(myPid(), wm.fullscreen); } catch (e) {}
       wmRectsSoon();
     });
     wrap.appendChild(row);
     const hint = document.createElement('div'); hint.className = 'ov-hint';
-    hint.textContent = 'Per-session view state: it is not saved, and the game\'s own Fullscreen setting stays unavailable while embedded.';
+    hint.textContent = 'Remembered for this character: future launches open fullscreen. The game\'s own Fullscreen setting stays unavailable while embedded.';
     wrap.appendChild(hint);
     c.appendChild(wrap);
   }

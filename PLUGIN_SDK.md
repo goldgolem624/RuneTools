@@ -59,6 +59,7 @@ my-plugin/
 | `sound`      | `rtx.plugin.sound.play`                           |
 | `storage`    | `rtx.plugin.storage.*` (per-plugin settings)     |
 | `notify.os`  | `rtx.plugin.notify.windows` (Windows notifications; 1 per 10s) |
+| `notify.discord` | `rtx.plugin.notify.discord` (the user's own Discord webhook; 1 per 10s) |
 | `clipboard`  | `rtx.plugin.clipboard.copy` (copy-only; nothing is read back) |
 | `clipboard.read` | `rtx.plugin.clipboard.paste` (reads clipboard TEXT on user action; ask only if you truly need it) |
 
@@ -485,6 +486,18 @@ rtx.plugin.notify.windows("RuneToolsX", "A ship has returned");
 
 An OS-level toast outside the game window. Hard-capped at one per 10 seconds -- send it
 on real events (a ship returned, a rare drop), never on a timer.
+
+### notify.discord (the user's Discord webhook)
+
+```js
+const r = await rtx.plugin.notify.discord("Ship 3 returned with 120 chimes");
+// r = { queued: true } or { error: "not configured" | "rate limited" }
+```
+
+Posts plain text to the webhook the user entered in Settings. The plugin never sees the URL:
+the host holds it sealed, prefixes every message with the plugin's id, strips all mentions so
+nothing can ping a user or role, caps the text, and allows one message per 10 seconds per
+plugin. Not configured is a normal state; handle it quietly.
 
 ### clipboard (copy-only)
 

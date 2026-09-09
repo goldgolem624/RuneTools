@@ -58,6 +58,8 @@ using std::min;
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <regex>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -3400,6 +3402,160 @@ JSValueRef RendererSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, renderer_json());
 }
 
+
+// ---- Discord webhook alerts ----
+// The URL is DPAPI-sealed on disk and never leaves this process: JS and plugins only ever get a
+// masked hint. Sends carry allowed_mentions.parse=[] so no message can ping anyone, are
+// rate-limited per source and globally, and back off on 429.
+namespace discord {
+
+std::mutex   g_mu;
+bool         g_loaded = false;
+std::wstring g_host, g_path;
+std::string  g_hint;
+double       g_globalTokens = 5.0; long long g_globalTs = 0;
+std::unordered_map<std::string, std::pair<double, long long>> g_srcBuckets;
+long long    g_cooldownUntil = 0;
+
+long long now_ms() { return (long long)GetTickCount64(); }
+
+std::filesystem::path store_path() {
+    auto dir = alerts_user_dir();
+    if (dir.empty()) return {};
+    std::error_code ec; std::filesystem::create_directories(dir, ec);
+    return dir / L"discord.bin";
+}
+
+bool parse_url(const std::string& url, std::wstring& host, std::wstring& path, std::string& hint) {
+    static const std::regex re("^https://((?:www\\.|ptb\\.|canary\\.)?discord\\.com|discordapp\\.com)"
+                               "(/api/webhooks/[0-9]{17,20}/[A-Za-z0-9_\\-]{60,120})$");
+    std::smatch m;
+    if (url.size() > 300 || !std::regex_match(url, m, re)) return false;
+    std::string h = m[1].str(), p = m[2].str();
+    host.assign(h.begin(), h.end());
+    path.assign(p.begin(), p.end());
+    std::size_t tok = p.rfind('/');
+    std::string id = p.substr(14, tok > 14 ? tok - 14 : 0);
+    hint = h + "/api/webhooks/" + (id.size() > 4 ? id.substr(0, 4) + "\xe2\x80\xa6" : id) + "/\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2";
+    return true;
+}
+
+void load_locked() {
+    if (g_loaded) return;
+    g_loaded = true;
+    g_host.clear(); g_path.clear(); g_hint.clear();
+    std::ifstream f(store_path(), std::ios::binary);
+    if (!f) return;
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (bytes.empty()) return;
+    std::string url = crypto::UnprotectForCurrentUser(bytes);
+    std::wstring h, p; std::string hint;
+    if (parse_url(url, h, p, hint)) { g_host = h; g_path = p; g_hint = hint; }
+}
+
+std::string status_json() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    load_locked();
+    return std::string("{\"configured\":") + (g_path.empty() ? "false" : "true") +
+           ",\"hint\":\"" + json_escape(g_hint) + "\"}";
+}
+
+std::string set_url(const std::string& url) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_loaded = false;
+    std::error_code ec;
+    if (url.empty()) { std::filesystem::remove(store_path(), ec); load_locked(); return "{\"configured\":false,\"hint\":\"\"}"; }
+    std::wstring h, p; std::string hint;
+    if (!parse_url(url, h, p, hint)) return "{\"error\":\"That is not a Discord webhook URL. It should look like https://discord.com/api/webhooks/<id>/<token>.\"}";
+    auto sealed = crypto::ProtectForCurrentUser(url);
+    if (sealed.empty()) return "{\"error\":\"Could not seal the URL for this Windows account.\"}";
+    auto path = store_path();
+    if (path.empty()) return "{\"error\":\"No settings directory.\"}";
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return "{\"error\":\"Could not write the settings file.\"}";
+    f.write(reinterpret_cast<const char*>(sealed.data()), (std::streamsize)sealed.size());
+    f.close();
+    load_locked();
+    return std::string("{\"configured\":true,\"hint\":\"") + json_escape(g_hint) + "\"}";
+}
+
+// Printable text only, no control characters, capped; Discord's hard limit is 2000.
+std::string clean_text(const std::string& in, std::size_t cap) {
+    std::string out; out.reserve(in.size());
+    for (unsigned char c : in) {
+        if (c == '\n' || c == '\t') { out.push_back(c == '\t' ? ' ' : '\n'); continue; }
+        if (c < 0x20 || c == 0x7f) continue;
+        out.push_back((char)c);
+    }
+    if (out.size() > cap) {
+        out.resize(cap);
+        while (!out.empty() && ((unsigned char)out.back() & 0xC0) == 0x80) out.pop_back();   // do not cut a UTF-8 sequence
+        out += "\xe2\x80\xa6";
+    }
+    return out;
+}
+
+bool take_token(double& tokens, long long& ts, double cap, double perSec, long long now) {
+    if (ts) tokens = std::min(cap, tokens + (double)(now - ts) / 1000.0 * perSec);
+    ts = now;
+    if (tokens < 1.0) return false;
+    tokens -= 1.0;
+    return true;
+}
+
+std::string send(const std::string& text, const std::string& source) {
+    std::wstring host, path;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        load_locked();
+        if (g_path.empty()) return "{\"error\":\"not configured\"}";
+        const long long now = now_ms();
+        if (now < g_cooldownUntil) return "{\"error\":\"rate limited\"}";
+        auto& sb = g_srcBuckets[source];
+        if (sb.second == 0) sb.first = 3.0;
+        if (!take_token(g_globalTokens, g_globalTs, 5.0, 1.0 / 3.0, now)) return "{\"error\":\"rate limited\"}";
+        if (!take_token(sb.first, sb.second, 3.0, 1.0 / 10.0, now)) return "{\"error\":\"rate limited\"}";
+        host = g_host; path = g_path;
+    }
+    std::string prefix = source.rfind("plugin:", 0) == 0
+        ? "**RuneToolsX plugin " + clean_text(source.substr(7), 40) + "** "
+        : "**RuneToolsX** ";
+    std::string body = "{\"username\":\"RuneToolsX\",\"content\":\"" + json_escape(prefix + clean_text(text, 1500)) +
+                       "\",\"allowed_mentions\":{\"parse\":[]}}";
+    http::Enqueue([host, path, body] {
+        auto r = http::PostJson(host, path, { { "User-Agent", "RuneToolsX" } }, body);
+        if (r.status == 429) {
+            std::lock_guard<std::mutex> lk(g_mu);
+            g_cooldownUntil = now_ms() + 15000;
+            rtx::log::Launcher("discord: rate limited by Discord, pausing 15s");
+        } else if (r.status < 200 || r.status >= 300) {
+            rtx::log::Launcher("discord: send failed, HTTP " + std::to_string(r.status));
+        }
+    });
+    return "{\"queued\":true}";
+}
+
+}  // namespace discord
+
+JSValueRef DiscordWebhookGet(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, discord::status_json());
+}
+JSValueRef DiscordWebhookSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                             size_t argc, const JSValueRef argv[], JSValueRef*) {
+    std::string url = argc >= 1 ? js_to_utf8(ctx, argv[0]) : std::string();
+    while (!url.empty() && (url.back() == ' ' || url.back() == '\r' || url.back() == '\n')) url.pop_back();
+    while (!url.empty() && url.front() == ' ') url.erase(url.begin());
+    return utf8_to_js(ctx, discord::set_url(url));
+}
+JSValueRef DiscordNotify(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    std::string text   = argc >= 1 ? js_to_utf8(ctx, argv[0]) : std::string();
+    std::string source = argc >= 2 ? js_to_utf8(ctx, argv[1]) : std::string("alerts");
+    if (source.size() > 80) source.resize(80);
+    if (text.empty()) return utf8_to_js(ctx, "{\"error\":\"empty\"}");
+    return utf8_to_js(ctx, discord::send(text, source));
+}
+
 JSValueRef NotifyWindows(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -3731,6 +3887,25 @@ JSValueRef KeepFocusedLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
     std::string s = alerts_read_file(account_store_path(pid, L"keepfocus"));
     return utf8_to_js(ctx, s);
+}
+// Borderless fullscreen remembered per account: "1" means every future launch of that
+// character opens fullscreen once the client is embedded.
+JSValueRef FullscreenPrefLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                              size_t argc, const JSValueRef argv[], JSValueRef*) {
+    std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    std::string s = alerts_read_file(account_store_path(pid, L"fullscreen"));
+    return utf8_to_js(ctx, s);
+}
+JSValueRef FullscreenPrefSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                              size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    std::uint32_t pid = (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr);
+    bool on  = JSValueToBoolean(ctx, argv[1]);
+    auto p = account_store_path(pid, L"fullscreen");
+    if (p.empty()) return JSValueMakeBoolean(ctx, false);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    if (f) f << (on ? "1" : "0");
+    return JSValueMakeBoolean(ctx, f.good());
 }
 JSValueRef KeepFocusedSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
                            size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -4863,6 +5038,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "updateState",       UpdateState);
     install_fn(ctx, ns, "playSound",         PlayAlertSound);
     install_fn(ctx, ns, "notifyWindows",     NotifyWindows);
+    install_fn(ctx, ns, "discordWebhookGet", DiscordWebhookGet);
+    install_fn(ctx, ns, "discordWebhookSet", DiscordWebhookSet);
+    install_fn(ctx, ns, "discordNotify",     DiscordNotify);
     install_fn(ctx, ns, "alertsLoad",        AlertsLoad);
     install_fn(ctx, ns, "alertsSave",        AlertsSave);
     install_fn(ctx, ns, "goalsLoad",         GoalsLoad);
@@ -4894,6 +5072,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "sidebarSave",       SidebarSave);
     install_fn(ctx, ns, "keepFocusedLoad",   KeepFocusedLoad);
     install_fn(ctx, ns, "keepFocusedSave",   KeepFocusedSave);
+    install_fn(ctx, ns, "fullscreenPrefLoad", FullscreenPrefLoad);
+    install_fn(ctx, ns, "fullscreenPrefSave", FullscreenPrefSave);
     install_fn(ctx, ns, "hiddenPanelsLoad",  HiddenPanelsLoad);
     install_fn(ctx, ns, "hiddenPanelsSave",  HiddenPanelsSave);
     install_fn(ctx, ns, "varPinsLoad",       VarPinsLoad);

@@ -54,6 +54,47 @@
     if (typeof kbGrab === 'function') kbGrab(false);
     if (uisHpPaint) uisHpPaint();
   }, true);
+  // Discord webhook: the URL goes to the host once and is stored sealed; only a masked hint comes back.
+  function uisDiscordRow() {
+    const r = document.createElement('div'); r.className = 'row';
+    const k = document.createElement('span'); k.className = 'k'; k.textContent = 'Discord webhook';
+    const sub = document.createElement('span'); sub.className = 'pf-sub'; k.appendChild(sub);
+    const v = document.createElement('span'); v.className = 'v pf-full';
+    const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;width:100%';
+    const status = document.createElement('div'); status.className = 'pf-hint';
+    const line = document.createElement('div'); line.style.cssText = 'display:flex;gap:6px;align-items:center';
+    const inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = 'https://discord.com/api/webhooks/...';
+    inp.autocomplete = 'off'; inp.spellcheck = false; inp.style.cssText = 'flex:1;min-width:0;font:12px var(--font-mono);padding:5px 8px;background:rgba(0,0,0,.35);color:var(--text);border:1px solid var(--border-hi);border-radius:4px';
+    const mk = (t) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'ghost btn-sm'; b.textContent = t; return b; };
+    const save = mk('Save'), test = mk('Test'), remove = mk('Remove');
+    let configured = false;
+    const render = (info) => {
+      configured = !!(info && info.configured);
+      status.textContent = info && info.error ? info.error : configured ? ('Configured: ' + info.hint) : 'Not configured. Paste a webhook URL from your Discord server settings.';
+      status.style.color = info && info.error ? '#e07070' : '';
+      test.disabled = !configured; remove.disabled = !configured;
+      sub.textContent = configured ? 'Messages are sent without pings and at most one every few seconds' : '';
+    };
+    const refresh = () => { try { render(JSON.parse(bridge().discordWebhookGet() || '{}')); } catch (e) { render(null); } };
+    save.addEventListener('click', () => {
+      const url = String(inp.value || '').trim();
+      if (!url) return;
+      try { render(JSON.parse(bridge().discordWebhookSet(url) || '{}')); } catch (e) { render({ error: 'Could not save' }); }
+      if (configured) inp.value = '';
+    });
+    test.addEventListener('click', () => {
+      let res = null;
+      try { res = JSON.parse(bridge().discordNotify('Test message. Alerts from this character will arrive here.', 'test') || '{}'); } catch (e) {}
+      status.textContent = res && res.queued ? 'Test sent. Check the channel.' : ('Not sent: ' + ((res && res.error) || 'unknown'));
+    });
+    remove.addEventListener('click', () => { try { render(JSON.parse(bridge().discordWebhookSet('') || '{}')); } catch (e) {} });
+    line.appendChild(inp); line.appendChild(save); line.appendChild(test); line.appendChild(remove);
+    wrap.appendChild(line); wrap.appendChild(status);
+    v.appendChild(wrap); r.appendChild(k); r.appendChild(v);
+    if (!bridge() || !bridge().discordWebhookGet) { status.textContent = 'Discord alerts need the updated launcher.'; }
+    else refresh();
+    return r;
+  }
   function uisSep(rows) { /* sections are cards now; kept for call-site compatibility */ }
   function uisNote(rows, text) { const d = document.createElement('div'); d.className = 'pf-hint'; d.textContent = text; rows.appendChild(d); }
 
@@ -132,6 +173,9 @@
     rows.appendChild(uisPill('Alerts enabled', 'uis_almaster', () => !!(alertCfg && alertCfg.master), v => { if (alertCfg) { alertCfg.master = v; saveAlertCfg(); } }));
     rows.appendChild(uisPill('Only alert when tabbed out', 'uis_alfocus', () => !!(alertCfg && alertCfg.unfocusedOnly), v => { if (alertCfg) { alertCfg.unfocusedOnly = v; saveAlertCfg(); } },
       'Applies to every alert source: idle, custom, auras'));
+    rows.appendChild(uisPill('Send alerts to Discord', 'uis_aldiscord', () => !!(alertCfg && alertCfg.discord), v => { if (alertCfg) { alertCfg.discord = v; saveAlertCfg(); } },
+      'Every delivered alert is also posted to the webhook below'));
+    rows.appendChild(uisDiscordRow());
     rows.appendChild(uisSlider('Sound volume', 'uis_vol', 0, 100, 1, () => (typeof sndVol === 'number' ? sndVol : 70),
       v => { try { sndVol = v; prefSet('rtxSoundVol', String(v)); bridge().soundVolume(v); } catch (e) {} }, v => v + '%'));
     rows.appendChild(uisSlider('Popup duration', 'uis_ttl', 2000, 15000, 500, () => cfg.toastTtl || 5000, v => { cfg.toastTtl = v; save(); }, v => (v / 1000).toFixed(1) + 's'));
