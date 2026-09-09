@@ -1,8 +1,6 @@
 #pragma once
-// In-client wiki browser: an Ultralight window glued to the game host, hard-locked to
-// https://runescape.wiki. Fail-closed layers: main-frame navigation lock, injected guard
-// script, subresource allowlist (the runtime gates the last behind its Pro licence). The
-// wiki view never gets the rtx JS bridge. All entry points main thread (AppCore) unless noted.
+// In-client wiki browser: an Ultralight window glued to the game host, hard-locked to https://runescape.wiki.
+// Fail-closed layers: main-frame navigation lock, injected guard script, subresource allowlist (Pro licence gates the last). No rtx JS bridge in the wiki view. Main thread (AppCore) unless noted.
 
 #include <cstdint>
 #include <string>

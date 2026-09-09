@@ -1,9 +1,8 @@
 // RuneToolsX panel: Invention components (inventory-style grid).
 (function () {
 
-  // Defs from the cache (enum 10742 -> dbrows): [name, countVarp, spriteId, rarity,
-  // description (col 16416), obtainSources (col 16432)]. Count = live varp (CS2 script12054
-  // index->varp table folded into countVarp); image = cache sprite (col 16448).
+  // Defs from cache (enum 10742 -> dbrows): [name, countVarp, spriteId, rarity, description col 16416, obtainSources col 16432].
+  // Count = live varp (cs 12054 index->varp table folded into countVarp); image = cache sprite col 16448.
   const INV_COMPONENTS = [
     ['Simple parts',5998,26311,2,'Useful things for building with.','Ores, logs, hides, bars, planks, leather, basic weapons and clothing.'],
     ['Base parts',5999,26479,2,'Bits of framework for something more complex.','Bolts, weapons with hilts, shields.'],

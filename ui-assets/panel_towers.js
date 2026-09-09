@@ -2733,9 +2733,8 @@
     {n:'Tree Gnome Village Fruit Tree Patch',src:'Enchanted Jewellery',x:2488,y:3178,p:0,rq:'Amulet of nature',ico:20659,item:6040},
     {n:'Vine Bush Patch',src:'Enchanted Jewellery',x:2946,y:2904,p:0,rq:'Amulet of nature',ico:20659,item:6040},
     {n:'Rellekka Market',src:'Enchanted lyre',x:2641,y:3675,p:0,kb:'7',rq:'Enchanted lyre',item:3690},
-    // Gnome glider gates, from clientscript-10747 (hides interface 138 containers 12-15), progress thresholds not quest completion:
-    //   12 key 6 Lemantolly Undri: varp 2671 >= 200; 13 key 7 Priw Gnomo Andralo: varbit 9547 >= 120;
-    //   14 key 8 Dylandra: varbit 25043 != 0 AND varbit 23198 >= 400; 15 key 9 Kai-Undri: varbit 33889 >= 1.
+    // Gnome glider gates, cs 10747 (hides interface 138 containers 12-15), progress thresholds not quest completion:
+    //   12 key 6 Lemantolly Undri varp 2671 >= 200; 13 key 7 Priw Gnomo Andralo vb 9547 >= 120; 14 key 8 Dylandra vb 25043 != 0 AND vb 23198 >= 400; 15 key 9 Kai-Undri vb 33889 >= 1.
     {n:'Dylandra',src:'Gnome gliders',x:2208,y:3445,p:1,kb:'8',rq:'Plague\'s End progress',req:{any:[[{vb:25043,min:1},{vb:23198,min:400}]],anyWhy:'Plague\'s End not far enough'}},
     {n:'Gandius',src:'Gnome gliders',x:2971,y:2969,p:0,kb:'5'},
     {n:'Kai-Undri',src:'Gnome gliders',x:1772,y:11920,p:0,kb:'9',rq:'Kai-Undri spike activated',req:{vb:33889,vbMin:1,vbWhy:'Kai-Undri glider not activated'}},

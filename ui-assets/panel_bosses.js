@@ -2,8 +2,7 @@
 (function () {
 
   // Generated table. kc/pr = [varp, lsb, msb]; pr = 60000-rollover counter, total = kc + 60000*pr.
-  // game has a single combined log for TzTok-Jad + Har-Aken (struct 1532) and for Beastmaster
-  // Durzag + Yakamaru (struct 1552).
+  // Combined logs: TzTok-Jad + Har-Aken struct 1532; Beastmaster Durzag + Yakamaru struct 1552.
   const BOSSES = [
     {n:"Amascut, the Devourer",sp:35070,kc:[11853, 16, 31],pr:[11789, 8, 15],m2:"Enrage",kc2:[12306, 0, 15],pr2:[11789, 16, 23],log:[10235,9]},
     {n:"Araxxi",sp:23969,kc:[4545, 16, 31],pr:[5932, 24, 31],log:[7174,0]},
@@ -42,10 +41,8 @@
     {n:"Raksha, the Shadow Colossus",sp:12371,m1:"Solo",kc:[8390, 0, 15],pr:[8391, 16, 23],m2:"Duo",kc2:[8390, 16, 31],pr2:[8391, 24, 31],log:[7174,31]},
     {n:"Rasial, the First Necromancer",sp:31422,kc:[11319, 16, 31],pr:[10194, 24, 31],log:[10235,4]},
     {n:"Rex Matriarchs",sp:17441,kc:[9848, 0, 15],pr:[8392, 0, 7],log:[8853,27]},
-    // Osseous is its own entry in the game's boss list (enum 9031 idx 41, struct 49885) with its
-    // own collection log (dbrow 13534, done varbit 55486 = varp 10235 bit 6), but has NO kill
-    // counter of its own: both structs 45061 (Rex Matriarchs) and 49885 map onto vb49295+vb49296,
-    // i.e. varp 9848 / 8392. kcWith records that so the row can say why two entries show one number.
+    // Osseous: enum 9031 idx 41, struct 49885, own coll log dbrow 13534, done vb 55486 (varp 10235 bit 6), but no own kc:
+    // structs 45061 (Rex Matriarchs) and 49885 both map to vb 49295 + vb 49296 = varp 9848 / 8392; kcWith records that.
     {n:"Rex Matriarch: Osseous",sp:33817,kc:[9848, 0, 15],pr:[8392, 0, 7],log:[10235,6],kcWith:"Rex Matriarchs"},
     {n:"Seiryu the Azure Serpent",sp:28301,m1:"Group",kc:[7964, 16, 31],pr:[7967, 0, 7],m2:"Solo",kc2:[7964, 0, 15],pr2:[7966, 24, 31]},
     {n:"Solak, Guardian of the Grove",sp:29254,kc:[7715, 16, 31],pr:[6376, 24, 31],log:[7174,27]},
@@ -70,12 +67,8 @@
   ];   // BOSS_GEN_END
   const BOSS_VARPS = [...new Set(BOSSES.flatMap(b => [b.kc, b.pr, b.kc2, b.pr2].filter(Boolean).map(t => t[0]).concat(b.log ? [b.log[0]] : [])))];
 
-  // collection struct col 11, item list col 13). Type-1 rows resolve each item's found flag
-  // through CS2 script14500, an item-id -> VARBIT switch that exists only in the script, so its
-  // parse is baked below (incl. grouped case labels; 34997 via script567; 47660 is the one
-  // composite = vb 33756 + vb 43671). Items NOT in the switch carry the varbit as item param 8994
-  // VAR_REFERENCE ((v >>> 24) == 1 -> varbit = v & 0xFFFFFF), resolved at runtime. Found =
-  // clientscript-14500 after game updates.
+  // Coll struct col 11, item list col 13. Type-1 found flags via CS2 script14500, an item-id -> varbit switch; its parse is baked below.
+  // Baked: grouped case labels, 34997 via script567, 47660 = vb 33756 + vb 43671. Else item param 8994 VAR_REFERENCE, (v >>> 24) == 1 -> vb = v & 0xFFFFFF. Recheck cs 14500 after game updates.
   const COLLECTION_ITEM_VBS = {
     288:45073,546:45079,548:45080,985:45036,987:45037,2577:38058,2579:38059,2581:38137,
     2583:38373,2585:38374,2587:38375,2589:38376,2591:38377,2593:38378,2595:38379,2597:38380,

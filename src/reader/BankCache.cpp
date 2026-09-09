@@ -19,8 +19,7 @@ namespace {
 namespace crypto = rtx::launcher::crypto;
 
 // Encrypted file: 'R','T','X','E' | u16 ver | nonce[12] | tag[16] | ciphertext.
-// The ciphertext is AES-256-GCM of the plaintext blob:
-//   i64 cached_at | u32 count | count x { i32 item_id, i32 stack }
+// Ciphertext = AES-256-GCM of: i64 cached_at | u32 count | count x { i32 item_id, i32 stack }.
 constexpr char          kMagic[4]  = { 'R', 'T', 'X', 'E' };
 constexpr std::uint16_t kVersion   = 2;
 constexpr std::size_t   kHeaderLen = 4 + 2 + crypto::kNonceBytes + crypto::kTagBytes;

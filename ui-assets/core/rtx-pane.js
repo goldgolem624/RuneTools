@@ -1,6 +1,5 @@
-  // ---- Scan elimination from the orb (interface 1752) + player tile. The ring's blue band == "too far"
-  // (sprite 113): destination is > 2*range, so spots within 2*range of you are dropped. When the orb glows
-  // (sprite 131, within detection): spots beyond 2*range are dropped. Chebyshev distance; safe + convergent.
+  // ---- Scan elimination from the orb (interface 1752) + player tile. Blue band (sprite 113) = too far: destination > 2*range, so spots within 2*range are dropped.
+  // Orb glowing (sprite 131, within detection): spots beyond 2*range are dropped. Chebyshev distance; safe + convergent.
   function scanOrbRead() {
     try {
       const ws = (JSON.parse(bridge().interfaceGroup(myPid(), 1752) || '{}').widgets) || [];

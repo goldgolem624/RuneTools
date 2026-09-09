@@ -1,6 +1,5 @@
-// rtx-skillbars.js: In-game Skills XP bars (interface 1466 cells), SKILL_SPRITES/SKILL_LAYOUT, combatLevel, sprite icon loader (setSpriteIcon, attachSkillIcon).
-// Loads after: rtx-registry.js (XP tables).
-  // A progress bar along the bottom of every cell of the game's Skills panel (interface 1466, comp 2 subs 0..28, row-major = SKILL_LAYOUT order). Gated on varc 3165 == 1 (panel open); positioned from varcs 3166/3167.
+// rtx-skillbars.js: In-game Skills XP bars (interface 1466 cells), SKILL_SPRITES/SKILL_LAYOUT, combatLevel, sprite icon loader (setSpriteIcon, attachSkillIcon). Loads after rtx-registry.js (XP tables).
+  // Bar along the bottom of each cell of the game's Skills panel (iface 1466, comp 2 subs 0..28, row-major = SKILL_LAYOUT order). Gated on varc 3165 == 1 (panel open); positioned from varcs 3166/3167.
   const SK_GROUP = 1466, SK_OPEN_VARC = 3165, SK_CELL_COMP = 2;
   // Panel chrome (title bar + tab strip) is in frame group 1477, not 1466, so the position varcs point at the window's outer top-left. Chrome is derived from geometry: inset = (panelW - contentW) / 2, offset = panelH - contentH - inset (live: window 224x291, content 216x243 -> inset 4, top chrome 44). The tab strip comp id and visibility flag are unreliable across layouts.
   const SK_POS_VARC_X = 3166, SK_POS_VARC_Y = 3167;

@@ -3,8 +3,7 @@
 (function () {
 
   // "Obtained" = RS3 unlockables bitfield: unlock-bit index -> TESTBIT(varp[idx/32], idx%32).
-  // Fields: v/b = varp/bit, c: 0 Skilling / 1 Boss / 2 Other; si = skills-table index (-1 none);
-  // ic = pet item icon; s = source description.
+  // Fields: v/b = varp/bit; c: 0 Skilling / 1 Boss / 2 Other; si = skills-table index (-1 none); ic = pet item icon; s = source.
   const PETS = [
     {n:"Ace",ic:38124,v:5054,b:18,c:0,si:21,s:"This pet can be unlocked at random while training Hunter. (Time-based drop chance.)"},
     {n:"Archie",ic:50150,v:9202,b:15,c:0,si:27,s:"This pet can be unlocked at random while training Archaeology. (Experience-based drop chance.)"},

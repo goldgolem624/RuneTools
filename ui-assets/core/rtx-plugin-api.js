@@ -32,10 +32,7 @@ ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(
 settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}},
 prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);},item:function(ids){return call('prices.item',[ids]);}}};
 window.rtx=window.rtx||{};window.rtx.plugin=api;
-// Keyboard focus publishing: the frame is a sandboxed opaque origin, so the host page cannot
-// see our activeElement; without this every keystroke aimed at a plugin text field went to the
-// game. Mirrors the host's own focus test; the 1s interval self-heals a field removed by a
-// rebuild (no focusout fires for that).
+// Keyboard focus publishing: the frame is a sandboxed opaque origin, so the host cannot see our activeElement. Mirrors the host focus test; the 1s interval self-heals a field removed by a rebuild.
 var kbOn=false;function kbSync(){var t=document.activeElement;var on=!!(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable));if(on===kbOn)return;kbOn=on;try{parent.postMessage({__rtxPlugin:P,kind:'kb',on:on},'*');}catch(e){}}
 document.addEventListener('focusin',function(){setTimeout(kbSync,0);});
 document.addEventListener('focusout',function(){setTimeout(kbSync,0);});

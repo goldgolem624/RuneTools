@@ -1,11 +1,5 @@
-// RuneToolsX panel: Currencies (the currency pouch as a ledger: balance vs cap per currency).
-// DBTable 66 (master id 66, so dbRows(66) directly) is the game's own currency registry.
-//   col 0 currency id (scripts 14966/12774), col 1 backing type (0 = var via script14966,
-//   col 6 in-pouch flag (script12774 lists rows via db_find_with_count(270432, 1)), col 7 pouch
-// Item-backed balances = container 889 total + backpack 93 total (script14964 adds
-// INV_TOTAL(93, obj) on top of script14967's INV_TOTAL(889, obj)).
-//   CY_VARS: the dbrow -> backing-var switch of clientscript-14966 (currency_pouch_value_get),
-//   Hidden cap overrides from clientscript-3517: dbrow 2079 cap = enum 11420[varbit 33143]
+// RuneToolsX panel: Currencies (pouch balance vs cap). DBTable 66 = currency registry: col 0 id (scripts 14966/12774), col 1 backing type (0 = var via script14966), col 6 in-pouch flag (script12774, db_find_with_count(270432, 1)), col 7 pouch cap.
+// Item-backed balance = container 889 total + backpack 93 total (script14964 INV_TOTAL(93, obj) on top of script14967 INV_TOTAL(889, obj)). CY_VARS = dbrow -> backing-var switch of cs 14966 (currency_pouch_value_get). Cap overrides from cs 3517: dbrow 2079 cap = enum 11420[vb 33143].
 (function () {
 
   const CY_VARS = {

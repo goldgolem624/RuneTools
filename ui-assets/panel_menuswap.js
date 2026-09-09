@@ -109,9 +109,8 @@
   }
 
   const mnuVarSep = '\u001e';   // record separator: cannot occur in a verb or target
-  // share one rule. Locs 109059 / 109062 / 109065 are all named "Shifting tombs" with different
-  // Next the instance HANDLE (the hover-target block's +0x000: packed (x<<16)|y for a world
-  // An INTERFACE row's handle is the packed (group<<16)|comp of the widget, and every backpack
+  // Locs 109059 / 109062 / 109065 are all "Shifting tombs" and share one rule.
+  // Handle = hover-target block +0x000: packed (x<<16)|y for a world target, (group<<16)|comp for an INTERFACE row.
   const mnuTypeOf = (ents, target) => {
     for (const e of ents || []) if (mnuPlain(e.target) === target) return (e.type | 0);
     return -1;
@@ -217,9 +216,8 @@
     return out.join('\n');
   }
 
-  // This exists for same-NAMED variants with different ids (two "Fishing spot" NPCs, 312
-  // Cage/Harpoon and 313 Net/Harpoon). Pins match on verb + name, so the companion cannot
-  // (seen in testing: putting Harpoon above Cage on 312 also put Harpoon above Net on 313).
+  // For same-NAMED variants with different ids (NPC 312 "Fishing spot" Cage/Harpoon, 313 Net/Harpoon):
+  // pins match on verb + name, so Harpoon above Cage on 312 also puts Harpoon above Net on 313.
   function mnuMergeOrders(orders) {
     const verbs = [];
     const edges = {}, indeg = {}, firstSeen = {};

@@ -3,9 +3,8 @@
 (function () {
 
   const SND_IDX = { sfx: 14, music: 40 };
-  // Track names come from enum 1345 (1347 is the lowercase copy the game's own search uses).
-  // Unlock state is clientscript-837, named `music_getvar`: bit (index & 31) of the varp for
-  // outgrew its original range. 50 blocks x 32 = 1600 slots.
+  // Track names from enum 1345 (1347 = the lowercase copy the game's own search uses).
+  // Unlock state = clientscript-837 `music_getvar`: bit (index & 31) of that block's varp; 50 blocks x 32 = 1600 slots.
   const MUSIC_NAME_ENUM = 1345;
   const MUSIC_VARPS = [37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,
                        61,62,63,64,65,66,67,68,69,70,71,3551,3691,4263,5019,5868,6221,6448,6920,

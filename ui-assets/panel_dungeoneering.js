@@ -1696,11 +1696,8 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  //     blue   54504, 54525, 54546, 54623      green  54506, 54527, 54548, 54625
-  //     yellow 54508, 54529, 54550, 54627      violet 54510, 54531, 54552, 54629
-  //   Shelves "Mix Blue/Green/Yellow/Violet": 35241, 35242, 35243, 35245, 35246
-  //   vials: Blue 19869, Green 19871, Yellow 19873, Violet 19875
-  // 13024, 13029, 13034, 13039, 13044 are the generics. Once a vial is applied the npc
+  //   blue 54504,54525,54546,54623  green 54506,54527,54548,54625  yellow 54508,54529,54550,54627  violet 54510,54531,54552,54629
+  //   Mix shelves 35241,35242,35243,35245,35246; vials Blue 19869 Green 19871 Yellow 19873 Violet 19875; generics 13024,13029,13034,13039,13044.
   const DUNG_BLOCK_COL = {};        // npc id -> '' while generic, colour name once dyed
   for (const base of [13024, 13029, 13034, 13039, 13044]) {
     DUNG_BLOCK_COL[base] = '';
@@ -1778,10 +1775,8 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  //   blue   Uproot 35507/35520  Chop 35577,35616,35715,35799
-  //   purple Uproot 35523/35525  Chop 35602,35655,35719,35804
-  //   red    Uproot 35562/35568  Chop 35606,35689,35734,35809
-  //   yellow Uproot 35569/35576  Chop 35611,35709,35778,35830
+  //   blue Uproot 35507/35520 Chop 35577,35616,35715,35799; purple Uproot 35523/35525 Chop 35602,35655,35719,35804
+  //   red Uproot 35562/35568 Chop 35606,35689,35734,35809; yellow Uproot 35569/35576 Chop 35611,35709,35778,35830
   const DUNG_PLANT_UPROOT = { 35507:'blue',   35520:'blue',   35523:'purple', 35525:'purple',
                               35562:'red',    35568:'red',    35569:'yellow', 35576:'yellow' };
   const DUNG_PLANT_CHOP = {
@@ -1940,9 +1935,8 @@ function dungReconcileScene(npcs, objs) {
       return;
     }
   }
-  // Riddle-giver: NPC 11011 "Enigmatic hoardstalker", action "Get-Riddle". The named
-  //   11146/47 Cub   11148/49 Little  11150/51 Naive  11152/53 Keen   11154/55 Brave
-  //   11156/57 Brah  11158/59 Naabe   11160/61 Wise   11162/63 Adept  11164/65 Sachem
+  // Riddle-giver: NPC 11011 "Enigmatic hoardstalker", action "Get-Riddle". Named:
+  //   11146/47 Cub  11148/49 Little  11150/51 Naive  11152/53 Keen  11154/55 Brave  11156/57 Brah  11158/59 Naabe  11160/61 Wise  11162/63 Adept  11164/65 Sachem
   const DUNG_HOARD_NPCS = { 11011: 1 };
   const dungIsRiddler = n => (n.actions || []).some(a => a === 'Get-Riddle')
                           || DUNG_HOARD_NPCS[n.id];
@@ -2140,9 +2134,8 @@ function dungShape(si, hex, px) {
     + '<path d="' + DUNG_SHAPE_PATHS[si] + '" fill="' + hex + '" stroke="rgba(0,0,0,.5)" stroke-width="0.8"/></svg>';
 }
 
-// Complete map-marker tables from the renderer CS2 script5999:
-//   room graphics 2831 = start, 2833 = boss; keys enum 3008 (24px obj);
-//   player arrow 2825-2829 by facing; gatestone objs 17489 / 29468 / 18829.
+// Map-marker tables from renderer CS2 script5999: room gfx 2831 start, 2833 boss; keys enum 3008 (24px obj);
+// player arrow 2825-2829 by facing; gatestone objs 17489 / 29468 / 18829.
 const DUNG_START_SPR = 2831, DUNG_BOSS_SPR = 2833;
 // unexplored room art: "?" tiles (2787-2790 / 2806-2809) + dark key/skill-locked
 // (35883-35886). A room whose bg is ONLY these hasn't been entered yet.
@@ -3079,10 +3072,8 @@ async function fetchDungeoneering() {
     dungPumpPartyHiscores(party92);
     const d = { in: inDung, mapOpen: mapOpen, party92: party92, keys: [], timer: '', deaths: '',
                 skips: [], prog: '', progW: 0, map: null };
-    // per-floor SKIP indicators (945 comps 1/2 + 3/4, CS2 scripts 6535-6537):
-    // comp 1 icon = lock melter (item 37410, varc 6569), comp 3 icon = warped
-    // gorajan trailblazer body (item 38542, varc 6570); the paired comp 2/4
-    // sprite is 13165 (check = skip USED this floor) or 13166 (X = not used).
+    // Per-floor SKIP indicators (945 comps 1/2 + 3/4, cs 6535-6537): comp 1 icon = lock melter (item 37410, varc 6569),
+    // comp 3 icon = warped gorajan trailblazer body (item 38542, varc 6570); paired comp 2/4 sprite 13165 (skip used) or 13166 (not used).
     const skipMeta = { 1: { name: 'Lock melter', item: 37410 },
                        3: { name: 'Trailblazer outfit', item: 38542 } };
     const skipUsed = {};   // comp 2/4 -> used bool

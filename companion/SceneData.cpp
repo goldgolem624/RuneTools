@@ -994,11 +994,8 @@ void* Detour_ObjSubmit(std::uint64_t a1, std::uint64_t a2) {
     return g_origObjSubmit(a1, a2);
 }
 
-// ===== Per-type display hooks: reached only via each type's vtable, so the arrival IS that type.
-//   type 4  -> vtable 0xB73A50 slot 7 -> 0x326690   (graphic highlights)
-//   type 13 -> vtable 0xB5E878 slot 7 -> 0x1ABBB0   (world markers)
-// rcx = sub. Both callees read stack args 5 and 6 (type 13 @0x1ABBE4/0x1ABCC3, type 4 @0x3266FB/0x32675F),
-// so the detour MUST forward at least 6 args; 8 are declared. No xmm args. Render thread, per entity per frame.
+// Per-type display hooks, reached only via each type's vtable, so the arrival IS that type: type 4 -> vtable 0xB73A50 slot 7 -> 0x326690 (graphic highlights), type 13 -> vtable 0xB5E878 slot 7 -> 0x1ABBB0 (world markers).
+// rcx = sub. Callees read stack args 5 and 6 (type 13 @0x1ABBE4/0x1ABCC3, type 4 @0x3266FB/0x32675F), so the detour forwards >= 6 args; 8 are declared. No xmm args. Render thread, per entity per frame.
 typedef void* (*Display_t)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t,
                            std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 Display_t g_origT4Display = nullptr;
@@ -1291,10 +1288,8 @@ void ResolveNetCapture() {
     }
 }
 
-// Hooked at the game's inbound framer (FUN_1400ff0c0), which ISAAC-deciphers the opcode and
-// looks it up in the packet table (rs2client+0xC70BB0 on 950-1, entries 0..0xDE).
-// Connection object: +0x2C int opcode (-1 = none), +0x30 int length, +0x2D0 payload ptr,
-// +0x2E8 cumulative inbound byte counter.
+// Hooked at the inbound framer FUN_1400ff0c0, which ISAAC-deciphers the opcode and looks it up in the packet table (rs2client+0xC70BB0 on 950-1, entries 0..0xDE).
+// Connection object: +0x2C int opcode (-1 = none), +0x30 int length, +0x2D0 payload ptr, +0x2E8 cumulative inbound byte counter.
 constexpr int kOpMessageGame = rtx::sops::kMessageGame;
 rtx::netprobe::Share* g_netProbeShare = nullptr;
 rtx::events::Share*   g_eventShare    = nullptr;

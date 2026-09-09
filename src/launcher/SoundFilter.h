@@ -15,8 +15,7 @@ bool SetEnabled(std::uint32_t pid, bool on);
 // because the audio path binary-searches them.
 bool SetMuted(std::uint32_t pid, std::vector<int> ids);
 
-// {"ok":bool,"hooked":bool,"enabled":bool,"playRva":n,"muted":n,"seq":n,
-//  "recent":[{"n":n,"id":n,"idx":n,"muted":n,"ms":n},...],"diag":[...]}
+// {"ok":bool,"hooked":bool,"enabled":bool,"playRva":n,"muted":n,"seq":n,"recent":[{"n":n,"id":n,"idx":n,"muted":n,"ms":n},...],"diag":[...]}
 // `recent` is oldest-first; `seq` is the total-ever count; `idx` is the js5 index (14 effects / 40 music).
 std::string StatusJson(std::uint32_t pid);
 

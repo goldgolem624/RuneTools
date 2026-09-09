@@ -14,14 +14,12 @@
   const MOTB_BLUEPRINTS = 125059, MOTB_BP_X = 3287, MOTB_BP_Y = 3555;   // Fort Forinthry blueprints table
   // 12x willow frame 54848/54849n, 6x stone wall segment 54460/54461n.
   const MOTB_FRAME = 54848, MOTB_FRAME_N = 54849, MOTB_WALL = 54460, MOTB_WALL_N = 54461;
-  // Blueprint picking runs in the Make-X window (frame 1371 / content 1370): recipe list = 1371
-  // comp 22, Kitchen (Tier 1) cell = sub 49; selected-recipe title = 1370 comp 13 text; Start
-  // blueprint button = 1370 comp 29 ('Start blueprint' text at 29:3).
+  // Blueprint picking in the Make-X window (frame 1371 / content 1370): recipe list 1371 comp 22, Kitchen (Tier 1) sub 49;
+  // selected-recipe title = 1370 comp 13 text; Start blueprint button = 1370 comp 29 ('Start blueprint' at 29:3).
   const MOTB_MAKEX_FRAME = 1371, MOTB_MAKEX_LIST = 22, MOTB_KITCHEN_SUB = 49;
   const MOTB_MAKEX_CONTENT = 1370, MOTB_MAKEX_TITLE = 13, MOTB_MAKEX_START = 29;
-  // Kitchen construction hotspots (3 spots): per-spot 2-bit loc-morph varbits, 0 = no blueprint,
-  // 1 = plain hotspot, 2 = the OPTIMAL hotspot (loc 125242 'Optimal Construction hotspot', action
-  // unknown, so it is picked by ELIMINATION when neither known varbit reads 2.
+  // Kitchen construction hotspots (3): per-spot 2-bit loc-morph varbits, 0 = no blueprint, 1 = plain, 2 = OPTIMAL
+  // (loc 125242 'Optimal Construction hotspot'); one varbit unknown, so picked by ELIMINATION when neither known varbit reads 2.
   const MOTB_HOT1 = 51675, MOTB_HOT1_TILE = [3315, 3564];   // vb 51675 [30:31]
   const MOTB_HOT2 = 51674, MOTB_HOT2_TILE = [3313, 3565];   // vb 51674 [28:29]
   const MOTB_HOT3 = 51677, MOTB_HOT3_TILE = [3319, 3567];   // vb 51677 [0:1] (the third locmorph, by elimination)

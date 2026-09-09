@@ -1,6 +1,5 @@
-// RuneToolsX panel: Fairy Rings (every destination, its code, and whether YOU can use it).
-// All of it is the game's own data (CS2, build 949):
-//   dbtable 121        the fairy ring travel log: col 1 = ring key, col 2 = code ("A I Q"),
+// RuneToolsX panel: Fairy Rings (destinations, codes, usability). Game data from CS2, build 949:
+//   dbtable 121 = fairy ring travel log: col 1 ring key, col 2 code ("A I Q").
 (function () {
 
   const FR_LOGGED = { 444: 12079, 1: 12082, 2: 12081, 3: 12080, 10: 12091, 11: 12094, 12: 12093, 13: 12092, 20: 12087, 21: 12090, 22: 12089, 23: 12088,

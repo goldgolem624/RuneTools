@@ -1,7 +1,5 @@
-// RuneToolsX panel: Toolbelt (stored tools, missing tools, tool tiers).
-// Baked from CS2 script7090, the game's "is this tool on the belt" resolver; regenerate
-// hatchet vb 18522 -> enum 6397 (bronze 1351 baseline), pickaxe vb 18521 -> enum 2433
-// (bronze 1265), mattock enum 12936 indexed by vb 45999 as a PROGRESSIVE counter
+// RuneToolsX panel: Toolbelt (stored tools, missing tools, tool tiers). Baked from CS2 script7090 (on-belt resolver); regenerate from it.
+// hatchet vb 18522 -> enum 6397 (bronze 1351 baseline); pickaxe vb 18521 -> enum 2433 (bronze 1265); mattock enum 12936 indexed by vb 45999 as a PROGRESSIVE counter.
 (function () {
 
   const TB_TOOLS = [

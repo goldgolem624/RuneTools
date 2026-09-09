@@ -49,9 +49,8 @@ namespace rtx::reader {
 
 namespace {
 
-// BUILD HISTORY. 940..949-5: one MainData layout. 950-1 (2026-09-07): MainData grew by 0x40
-// between +0x550 and +0x18D18, so every MainData-relative offset >= +0x18D18 moved +0x40
-// (0x19F68 -> 0x19FA8, 0x36040 -> 0x36080, 0x53588 -> 0x535C8); inner object layouts unchanged.
+// BUILD HISTORY. 940..949-5: one MainData layout. 950-1 (2026-09-07): MainData grew by 0x40 between +0x550 and +0x18D18.
+// So every MainData-relative offset >= +0x18D18 moved +0x40 (0x19F68 -> 0x19FA8, 0x36040 -> 0x36080, 0x53588 -> 0x535C8); inner object layouts unchanged.
 
 // MainData ctor anchor: `mov [rip+disp32], rax` publishes the MainData root pointer to a global.
 // adjust = -32 walks back to the function start.
@@ -1788,9 +1787,8 @@ std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv) {
     return out;
 }
 
-// Member is engine state, not a var: PLAYERMEMBER op = acct = *(MainData+0x19FA8); *(u8*)(acct+0x28) != 0.
-// Premier = varbit 50572 (varp 10287 bit 5), ANDed with member as script15757 does (legacy varp 12864 reads 0).
-// idleLogoutSeconds is derived (server-enforced): 5 min base, +5 members, +5 Jagex account, cap 15; out of combat only.
+// Member is engine state, not a var: PLAYERMEMBER op = acct = *(MainData+0x19FA8), *(u8*)(acct+0x28) != 0. Premier = varbit 50572 (varp 10287 bit 5) ANDed with member as script15757 does (legacy varp 12864 reads 0).
+// idleLogoutSeconds is derived and server-enforced: 5 min base, +5 members, +5 Jagex account, cap 15, out of combat only.
 constexpr std::uint32_t kOffAccount      = 0x19FA8;   // MainData -> account / user-detail object
 constexpr std::uint32_t kOffAcctIsMember = 0x28;      // u8, nonzero = members
 constexpr std::uint32_t kOffAcctExpiry   = 0x30;      // u64, raw value LOBBY_MEMBERSHIP divides down
@@ -1923,15 +1921,14 @@ std::string VarcsDumpAllJson(std::uint32_t pid) {
     return out;
 }
 
-// Domain stores bound by the script context binder (950-1 fn 0x14008df60):
-//   0 player       MainData+0x19fb8           (varp manager; hashmap at +0x36080)
+// Domain stores bound by the script context binder (950-1 fn 0x14008df60); domains 3, 4 and 8 are never bound:
+//   0 player       MainData+0x19fb8            (varp manager; hashmap at +0x36080)
 //   2 client       [MainData+0x19920]+0x7620   (varc object; hashmap at +0x7630)
 //   6 clan         [[MainData+0x19920]+0x77b0] (null until clan join)
 //   7 clansettings [MainData+0x19888] + slot*16
-//   9 playergroup  [[MainData+0x19948]+8]+0x28  (null without a group)
-//   1 npc          script target entity +0x130   (only while a script runs on that NPC)
-// Domains 3, 4 and 8 are never bound. Table (vtable rs2client+0xB609C0): buckets@+0x10, count@+0x18,
-// elements@+0x20; node = {u32 id, value union@+8, type byte@+0x20 (0 int, 1 long, 2 string), next@+0x28}.
+//   9 playergroup  [[MainData+0x19948]+8]+0x28 (null without a group)
+//   1 npc          script target entity +0x130 (only while a script runs on that NPC)
+// Table (vtable rs2client+0xB609C0): buckets@+0x10, count@+0x18, elements@+0x20; node = {u32 id, value union@+8, type byte@+0x20 (0 int, 1 long, 2 string), next@+0x28}.
 struct DomStore { const char* src; std::uint64_t obj; std::uint64_t table; int div; int count; bool typed; };
 
 static bool dom_table(HANDLE h, std::uint64_t table, int& div, int& count) {
@@ -2273,10 +2270,8 @@ bool VarsWatch(std::uint32_t pid, bool on) {
     return ok;
 }
 
-// Inbound opcode descriptor table (base at rs2client+0xC70BB0, opcodes 0x00..0xDE on 950-1). Entry =
-// ptr to 0x50-byte descriptor {+0x00 int opcode, +0x04 int length, +0x10 vtable (handler at vtable+0x10)};
-// length >=0 fixed, -1 var-byte, -2 var-short. Resolution is RVA-first, then a structural scan
-// validated by desc[op].opcode == op.
+// Inbound opcode descriptor table (base rs2client+0xC70BB0, opcodes 0x00..0xDE on 950-1). Entry = ptr to 0x50-byte descriptor {+0x00 int opcode, +0x04 int length, +0x10 vtable, handler at vtable+0x10}.
+// length >= 0 fixed, -1 var-byte, -2 var-short. Resolution is RVA-first, then a structural scan validated by desc[op].opcode == op.
 namespace {
 constexpr std::uint64_t kOpTableRva   = 0xC70BB0;   // module global holding the table base
 constexpr int           kOpMax        = 0xDE;       // highest valid opcode (framer bails above; 0xE5 through 949-5)
@@ -2724,12 +2719,8 @@ bool SkillsXp(std::uint32_t pid, int out[29]) {
     return true;
 }
 
-//   container = *(root + 0x199D0); idx = *(int)(container + 0x70)
-//   worldView = *( *(container + 0x58) + idx*0x10 + 8 ); worker = *(worldView + 0x10170)
-//   vector:   begin = *(worker + 0x138), end = *(worker + 0x140)   (Entity* each)
-//   entity:   sec = *(entity + 0x1A0); type = *(u8)(sec + 0x10)  (1 = NPC, 2 = player)
-//   NPC/player: name(asciiz)@sec+0xB8, uid@sec+0x88, NPC configId@sec+0x1080,
-//               posX(float)@sec+0x270, posY(float)@sec+0x278  (tile = pos / 512)
+//   container = *(root + 0x199D0); idx = *(int)(container + 0x70); worldView = *( *(container + 0x58) + idx*0x10 + 8 ); worker = *(worldView + 0x10170)
+//   vector begin = *(worker + 0x138), end = *(worker + 0x140) (Entity* each); entity sec = *(entity + 0x1A0), type = *(u8)(sec + 0x10) (1 = NPC, 2 = player); name(asciiz)@sec+0xB8, uid@sec+0x88, NPC configId@sec+0x1080, posX/posY(float)@sec+0x270/+0x278 (tile = pos / 512)
 namespace {
 
 struct RuntimeObj {
@@ -3560,12 +3551,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
 
 // View-projection matrix offset drifts across builds (0x13030 -> 0x13070 -> 0x13970 on 949).
 
-// Interface manager: mainData+0x19900 (0x198C0 through 949-5) -> owner; open-group array begin/end
-// at owner+0x50/+0x58 on 950-1 (was a container at owner+0x30, +0x58/+0x60). Entries 0x10 wide:
-// id@+0, group obj@+8.
-// Widget node (950-1): component ids i16 @+0x38/+0x3A/+0x3C, rect x/y/w/h @+0x98..+0xA4, text ptr
-// @+0xB8, SSO string / graphic key union @+0x1B0, item id @+0x1D8, stack @+0x1E0, child vectors
-// @+0x1D0/+0x1B8/+0x200. Hidden flag (was +0x50) not re-derived.
+// Interface manager: mainData+0x19900 (0x198C0 through 949-5) -> owner; open-group array begin/end at owner+0x50/+0x58 on 950-1 (was a container at owner+0x30, +0x58/+0x60). Entries 0x10 wide: id@+0, group obj@+8.
+// Widget node (950-1): component ids i16 @+0x38/+0x3A/+0x3C, rect x/y/w/h @+0x98..+0xA4, text ptr @+0xB8, SSO string / graphic key union @+0x1B0, item id @+0x1D8, stack @+0x1E0, child vectors @+0x1D0/+0x1B8/+0x200. Hidden flag (was +0x50) not re-derived.
 constexpr std::uint64_t kIfaceGroupsBegin = 0x50;
 constexpr std::uint64_t kIfaceGroupsEnd   = 0x58;
 
@@ -3795,9 +3782,8 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     int  spr      = (sprOk && !sprIsObj && !sprUnset && sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
     if (sprIsItem) spr = 131072 + (int)(sprRaw & 0xFFFFFF);
     bool vis = true;   // 950-1: hidden flag no longer at +0x50 and not re-derived; report everything visible
-    // Component type inferred from payload (vtable at +0x0 changes every build). Item icons: id +0x1a0,
-    // amount +0x1a8, plus a matching +0x188 key. Child vectors at +0x198/+0x180/+0x1c8: {begin,end} of
-    // 0x18-byte entries with the pointer 8 bytes in; resolved once here and reused by the child loop.
+    // Component type inferred from payload (vtable at +0x0 changes every build). Item icons: id +0x1a0, amount +0x1a8, plus a matching +0x188 key.
+    // Child vectors at +0x198/+0x180/+0x1c8: {begin,end} of 0x18-byte entries with the pointer 8 bytes in; resolved once here and reused by the child loop.
     struct ChildVec { std::uint64_t ca = 0, cb = 0, first = 0; bool ok = false; };
     auto childVec = [&](std::uint32_t off) {
         ChildVec v;
@@ -4285,9 +4271,8 @@ std::string CompassTargetJson(std::uint32_t pid) {
     return buf;
 }
 
-// Scan-orb ring tiles from the scene-graphic registry: op83 stores a 0x2c-byte record at
-// MainData+0x198f0 (+0x90 + slot*0x2c) with fine coords (0x100 + tile*512) as floats. Base may be
-// the struct or a pointer to it; every plausible tile is returned for the caller to validate.
+// Scan-orb ring tiles from the scene-graphic registry: op83 stores a 0x2c-byte record at MainData+0x198f0 (+0x90 + slot*0x2c) with fine coords (0x100 + tile*512) as floats.
+// Base may be the struct or a pointer to it; every plausible tile is returned for the caller to validate.
 static void ScanRingTilesFromMemory(HANDLE h, std::uint64_t root, std::vector<std::pair<int,int>>& out) {
     constexpr std::uint64_t kOffRegistry = 0x198f0, kRecBase = 0x90, kRecSize = 0x2c, kSlots = 8;
     // Fine coordinate = 0x100 + tile*512; must land on a tile centre.
@@ -4343,10 +4328,8 @@ std::string ScanSolutionJson(std::uint32_t pid) {
     return js;
 }
 
-// Hover slot: input_proc = *(root+0x198E8), slot = *(input_proc+0x13F8). action_obj: name string @+0x00,
-// verb @+0x18, ref @+0x48 (loc: loc id with tile x/y inline at +0x4C/+0x50; npc/player: scene uid).
-// Does the +0x188 key encode this item id? Encodings: all-FF sentinel (no graphic), item + flavour<<16
-// with a small flavour, or bit-62 obj-icon 0x4000000000000000 | flavour<<24 | item.
+// Hover slot: input_proc = *(root+0x198E8), slot = *(input_proc+0x13F8). action_obj: name string @+0x00, verb @+0x18, ref @+0x48 (loc: loc id with tile x/y inline at +0x4C/+0x50; npc/player: scene uid).
+// +0x188 key encodings: all-FF sentinel (no graphic), item + flavour<<16 with a small flavour, or bit-62 obj-icon 0x4000000000000000 | flavour<<24 | item.
 static bool iface_key_is_item(std::uint64_t key, int item) {
     if (key == ~0ull) return true;
     if ((key >> 62) == 1) return (int)(key & 0xFFFFFF) == item;
@@ -5516,8 +5499,7 @@ static std::string iface_inline(HANDLE h, std::uint64_t node) {
     return s;
 }
 
-// Slot box's keybind label and per-ability cooldown text. Each slot is a 13-component block;
-// typically box+4 = name, box+5 = GCD swirl, box+11 = keybind, box+12 = cooldown (+0x180 inline).
+// Slot box's keybind label and per-ability cooldown text. Each slot is a 13-component block; typically box+4 = name, box+5 = GCD swirl, box+11 = keybind, box+12 = cooldown (+0x180 inline).
 // mod: 0 none, 1 shift, 2 ctrl, 3 alt.
 static std::string box_keybind(HANDLE h, std::uint64_t box, int& mod, std::string& cd) {
     mod = 0; cd.clear();
@@ -5647,9 +5629,8 @@ static void abar_collect(HANDLE h, std::uint64_t node, std::uint64_t parent, std
     }
 }
 
-// Bound abilities on every action bar: main (group 1430) + secondaries (1670..1673; the UI gates
-// them on varbits 29138..29141, >0 = visible, value = preset). Read from the interface tree.
-// clock = engine wall-clock ms; cycles = CLIENTCLOCK units (50/s), the unit cooldown varcs are stamped in.
+// Bound abilities on every action bar: main (group 1430) + secondaries (1670..1673; the UI gates them on varbits 29138..29141, >0 = visible, value = preset). Read from the interface tree.
+// clock = engine wall-clock ms; cycles = CLIENTCLOCK units (50/s), the unit the cooldown varcs are stamped in.
 std::string ActionBarJson(std::uint32_t pid) {
     const char* kEmpty = "{\"clock\":0,\"cycles\":0,\"bars\":[]}";
     auto ps = snap_proc(pid);

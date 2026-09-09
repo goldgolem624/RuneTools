@@ -1,6 +1,5 @@
 // RuneToolsX panel: Miscellania kingdom management (Throne of Miscellania / Royal Trouble).
-//   script10838 - approval = vb 10057 stored 0-127, shown as (v*100)/127 %, coloured green
-//                 >= 75, red <= 25, orange between; last visit = varp 6987 (DATE_MINUTES
+//   script10838: approval vb 10057 stored 0-127, shown as (v*100)/127 %, green >= 75, red <= 25, orange between; last visit varp 6987 (DATE_MINUTES).
 (function () {
 
   const KD_BARS = [['Fishing', 10069], ['Wood', 10067], ['Mining', 10070],

@@ -68,13 +68,8 @@
     memo.set(id, done);
     return done;
   }
-  // Per-mystery PROGRESS-STAGE varbits (CS2 script14584 = the journal's own status fn; dbrow table
-  // 92 ids joined to names via the archive-41 rows). [vb, solvedAt] -- the stage clamps at solvedAt
-  // for display; {bits, n} = bitmask form (Contract Claws: BITCOUNT(vb 47091) of 12 gargoyles,
-  // vb 47151 flips when Ophiuchus frees). Most of these varbits are LOC/NPC MORPHS. Page-only
-  // (script14630/14629 over the research bit-banks; started varps 9297/9298/11740, completed
-  // 9299/9300/11741, bit = row field-368640 index; research 2922 "Mysterious Monolith: Existence"
-  // = index 38 -> started varp 9298 bit 6, completed varp 9300 bit 6).
+  // Per-mystery PROGRESS-STAGE varbits (cs 14584 = journal status fn; dbrow table 92 ids joined to archive-41 names). [vb, solvedAt] clamps at solvedAt for display; {bits, n} = bitmask (Contract Claws BITCOUNT(vb 47091) of 12 gargoyles, vb 47151 = Ophiuchus freed). Most are LOC/NPC morphs.
+  // Page-only via cs 14630/14629 over the research bit-banks: started varps 9297/9298/11740, completed 9299/9300/11741, bit = row field-368640 index (research 2922 "Mysterious Monolith: Existence" = index 38 -> started varp 9298 bit 6, completed varp 9300 bit 6).
   const MYST_STAGE = {
     'Secrets of the Monolith': { vp: 9298, bit: 6 },
     'Writings on the Walls': [46695, 2],

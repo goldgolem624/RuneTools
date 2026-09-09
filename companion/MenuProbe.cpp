@@ -1,9 +1,5 @@
-// Right-click menu probe. Manager rvas: string-init 0x161C10, clear(bool) 0x164880, add 0x160AB0, finalize 0x1661E0.
-// mgr+0x90/+0x98: menu entries, 16-byte records { action object*, target string* }, REVERSE display order.
-// mgr+0x1380/+0x1388 stride 0x2E8: hover-target list. Subset lanes: +0x0d30 all-but-Cancel, +0x06e0 targeted.
-// Action object: +0x08 refcount, +0x0c = 1, +0x20 EASTL target, +0x38 EASTL verb.
-// Poll() reads on the companion thread while ApplyOrder writes on the game thread; lane reads can tear.
-// Hover block +0x000 = entity handle ((x<<16)|y world object, index actor); item decoder rva 0x2DCDF0.
+// Right-click menu probe rvas: string-init 0x161C10, clear(bool) 0x164880, add 0x160AB0, finalize 0x1661E0, item decoder 0x2DCDF0. Poll() reads on the companion thread while ApplyOrder writes on the game thread, so lane reads can tear.
+// mgr+0x90/+0x98 entries: 16-byte {action object*, target string*}, REVERSE display order. mgr+0x1380/+0x1388 stride 0x2E8 hover-target list; subset lanes +0x0d30 all-but-Cancel, +0x06e0 targeted; hover block +0x000 = entity handle ((x<<16)|y world object, index actor). Action object: +0x08 refcount, +0x0c = 1, +0x20 EASTL target, +0x38 EASTL verb.
 
 #include "SceneOffsets.h"
 #include "MenuProbe.h"
@@ -408,9 +404,8 @@ void StripTags(const char* in, char* out) {
 
 // Reorder: permuting whole 16-byte records is refcount-neutral. "Top of menu" = end of array.
 struct Lane { std::uint64_t begin, end; int stat; const char* name; };
-// Only the drawn menu (+0x90) and +0x3b8, which FUN_14012d660 copies over +0x90 wholesale for
-// interface/inventory menus. Do not add the subset lanes (+0x6e0, +0xa08, +0xd30, +0x13a0):
-// permuting them independently desyncs draw from dispatch (row i clicks row i+1).
+// Permute only the drawn menu (+0x90) and +0x3b8, which FUN_14012d660 copies over +0x90 wholesale for interface/inventory menus.
+// Never the subset lanes (+0x6e0, +0xa08, +0xd30, +0x13a0): permuting them independently desyncs draw from dispatch (row i clicks row i+1).
 const Lane kLanes[] = {
     { 0x0090, 0x0098, 0, "menu"  },
     { 0x03B8, 0x03C0, 4, "iface" },
@@ -772,10 +767,8 @@ void LogLaneTops(std::uint64_t mgr, const char* when) {
     }
 }
 
-// Hover record slots mgr+0x13e0/0x13f0/0x1400/0x1410 hold {base, display} pairs; display =
-// base+0x20, verb at display+0x18, target at display+0x00, type at *(display+0x38)+0x44.
-// The CS2 hover-info op reads 0x13e0 or 0x1410 by a settings byte; the snap rebuilds
-// +0x1468/+0x1790 from +0x90/+0x13a0 when mgr+0x1420 is set and empties +0x3b8 each tick.
+// Hover record slots mgr+0x13e0/0x13f0/0x1400/0x1410 hold {base, display}; display = base+0x20, verb @display+0x18, target @display+0x00, type @*(display+0x38)+0x44.
+// The CS2 hover-info op reads 0x13e0 or 0x1410 by a settings byte; the snap rebuilds +0x1468/+0x1790 from +0x90/+0x13a0 when mgr+0x1420 is set, and empties +0x3b8 each tick.
 int g_slotLog = 0;                        // budget, re-armed when the panel is opened
 
 void DumpHoverSlots(std::uint64_t mgr) {

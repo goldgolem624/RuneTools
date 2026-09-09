@@ -1,8 +1,5 @@
 // RuneToolsX panel: Necromancy - ritual site HUD + City of Um talents / vessel souls.
-// Ritual HUD: varp 11130 = ritual SITE dbrow (master 106), varp 11131 = selected RECIPE
-//   dbrow (master 107; name = string col 0, size req 0/1/2 = int col 7). vb 53833 = site
-//   tier 0/1/2, vb 53861 = soul attraction %, vb 53849 = light sources placed.
-// Talents: vb 53597 points earned, vb 53598 spent, vb 53627 vessel souls, vb 53546 = Rune
+// HUD: varp 11130 site dbrow (master 106), varp 11131 recipe dbrow (master 107; name col 0, size req 0/1/2 col 7), vb 53833 site tier 0/1/2, vb 53861 soul attraction %, vb 53849 light sources. Talents: vb 53597 points earned, 53598 spent, 53627 vessel souls, 53546 Rune.
 (function () {
 
   const rtGlyphNames = {};

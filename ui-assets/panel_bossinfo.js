@@ -1,6 +1,5 @@
 // RuneToolsX panel: Boss Info (daily encounter rotations + minigame spotlight).
-// Ground truth: clientscript-11074 + helpers 19823/19825 (Araxxi), 3293/14605 + enum 7211
-// (Vorago), 19847 + enum 7655 (Barrows: Rise of the Six), 6747 + enum 10016 (spotlight).
+// Ground truth: cs 11074 + 19823/19825 (Araxxi), 3293/14605 + enum 7211 (Vorago), 19847 + enum 7655 (Barrows RotS), 6747 + enum 10016 (spotlight).
 (function () {
 
   let biSig = '';

@@ -1,9 +1,5 @@
-// RuneToolsX panel: Leagues (league picker, tiers, relics, blessings, trophies, task browser).
-// Renders from live cache DBTables (CS2-space ids, bridge dbRows): 326 headers (17039 Catalyst, 19883 Equilibrium), 327 tier order, 328 tiers, 329 relics/blessings, 333 trophies, 334 tasks, 335 config, 336 localities.
-// Header (326): col 0 league number (= task membership column), 1/2 name/short, 6 points max, 7 interface group, 9 relic tier-order row, 10 blessing tier-order row, 12 trophies row, 13 config row, 22 region-unlock enum (9287), 28 points var_reference (L1 varp 12426, L2 varp 13521).
-// Tier (328): col 1 relic ids, 2 cost, 4 XP mult, 5/6/7 passive (ref, value, text), 10 unlock notes.
-// Relic/blessing (329): col 0/1 name/desc, 2 blessing cost, 3 alignment, 5 item, 7/8 icon sprites, 10..13 effect (ref, value, any-flag, text) quads; blessing rows spill a col-9 tuple into col 10 (mkRelic right-aligns).
-// Task (334, post-Equilibrium schema): col 0 component id, 1..N per-league membership, 3 achievement id, 4 completion ref, 5 type, 6 locality id (336), 7 tier 1-5 (points enum 9332 = {1:10,2:30,3:80,4:200,5:400}), 8 members-only. Text mirrors script20131.
+// RuneToolsX panel: Leagues. Live cache DBTables (CS2 ids, bridge dbRows): 326 headers (17039 Catalyst, 19883 Equilibrium), 327 tier order, 328 tiers, 329 relics/blessings, 333 trophies, 334 tasks, 335 config, 336 localities. 326: col 0 league number (= task membership column), 1/2 name/short, 6 points max, 7 interface group, 9 relic tier-order row, 10 blessing tier-order row, 12 trophies row, 13 config row, 22 region-unlock enum 9287, 28 points var_reference (L1 varp 12426, L2 varp 13521).
+// 328: col 1 relic ids, 2 cost, 4 XP mult, 5/6/7 passive (ref, value, text), 10 unlock notes. 329: col 0/1 name/desc, 2 blessing cost, 3 alignment, 5 item, 7/8 icon sprites, 10..13 effect quads (ref, value, any-flag, text); blessing rows spill a col-9 tuple into col 10 (mkRelic right-aligns). 334 (post-Equilibrium): col 0 component id, 1..N per-league membership, 3 achievement id, 4 completion ref, 5 type, 6 locality id (336), 7 tier 1-5 (points enum 9332 = {1:10,2:30,3:80,4:200,5:400}), 8 members-only; text mirrors script20131.
 (function () {
 
   lgData = null; let lgFetching = false; let lgFetchAt = 0; let lgSig = '';

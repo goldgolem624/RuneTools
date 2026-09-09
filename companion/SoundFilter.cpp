@@ -1,5 +1,4 @@
-//   PLAY(subsystem, ctx, kind, id, loops, volume, group, a8, ..., flag)  15 args, returns the sound object
-//         rcx       rdx  r8w   r9d  +0x20  +0x28   +0x30
+// PLAY(subsystem=rcx, ctx=rdx, kind=r8w, id=r9d, loops=+0x20, volume=+0x28, group=+0x30, a8, ..., flag): 15 args, returns the sound object.
 // id = js5 archive id; group = engine source tag, 6 = effects (js5-14), 8 = vorbis/music (js5-40).
 
 #include "SoundFilter.h"

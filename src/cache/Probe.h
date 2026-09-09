@@ -1,7 +1,6 @@
 #pragma once
-// Unknown-opcode probe shared by every cache decoder (driven by CacheProbeUnknownOps()): with
-// g_op = N, g_len = L decoders treat opcode N as "skip L bytes"; the harness sweeps L and
-// counts clean-terminating records to find a new opcode's payload size. Off when g_op = -1.
+// Unknown-opcode probe shared by every cache decoder (CacheProbeUnknownOps()): with g_op = N, g_len = L, decoders treat opcode N as "skip L bytes".
+// The harness sweeps L and counts clean-terminating records to find a new opcode's payload size. Off when g_op = -1.
 namespace rtx::cache::probe {
 inline int g_op   = -1;   // opcode to treat as a fixed-size skip (-1 = off)
 inline int g_len  = 0;    // bytes to skip after it

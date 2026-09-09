@@ -1072,11 +1072,8 @@ std::string MystPagesJson() {
 }
 
 namespace {
-// DBTABLE schemas: CONFIGS index 2, archive 40; the health sweep checks DBRows against them.
-// Linkage: a row's op4 tag = (master << 8) | subtable (plain master when < 256); schema file = subtable*128 + master.
-// op 2: u32 unknown, u8 column count, then per column: id byte (0xFF ends; id = b & 0x3F), u8 unknown, u8 sub count,
-// per-sub usmart type, u8 flags; flags & 2 -> defaults (u8, first value, u8, remaining values; string when type 0x24, else i32).
-// op 1 (older): id byte's 0x80 bit marks defaults (single u8 before the values). A bare 0x00 file = no declared columns.
+// DBTABLE schemas: CONFIGS index 2, archive 40; the health sweep checks DBRows against them. Row op4 tag = (master << 8) | subtable (plain master when < 256); schema file = subtable*128 + master.
+// op 2: u32, u8 column count, per column: id byte (0xFF ends; id = b & 0x3F), u8, u8 sub count, per-sub usmart type, u8 flags (& 2 -> defaults: u8, first value, u8, remaining values; string when type 0x24, else i32). op 1: id byte's 0x80 bit marks defaults (single u8 before the values). Bare 0x00 file = no declared columns.
 constexpr int kDbTablesArchive = 40;
 std::unordered_map<int, std::map<int, std::vector<int>>> g_dbtable_cols;  // file -> col -> sub types
 bool g_dbtables_loaded = false;
@@ -1320,11 +1317,8 @@ bool GetObjVarbit(int varbit_id, int& var, int& lsb, int& msb) {
 }
 
 namespace {
-// Quest configs: CONFIGS index 2, archive 35 (file = quest id). Opcodes: 1 name / 2 list name (version byte + cstring),
-// 3 progress varps / 4 progress varbits (u8 n x {u16 var, i32 start, i32 end}), 5 parent, 6 category, 7 difficulty,
-// 8 members, 9 QP reward, 10 start path (n x i32), 12 i32, 13 required quests (n x u16), 14 required skills
-// (n x {u8 skill, u8 level}), 15 QP required (u16), 17 graphic (big smart), 18/19 requirement blocks
-// (n x {i32,i32,i32,cstring}), 249 params. Re-released quests leave stub configs; those are dropped and links remapped.
+// Quest configs: CONFIGS index 2, archive 35 (file = quest id). Opcodes 1 name / 2 list name (version byte + cstring), 3 progress varps / 4 progress varbits (u8 n x {u16 var, i32 start, i32 end}), 5 parent, 6 category, 7 difficulty, 8 members, 9 QP reward, 10 start path (n x i32), 12 i32.
+// 13 required quests (n x u16), 14 required skills (n x {u8 skill, u8 level}), 15 QP required (u16), 17 graphic (big smart), 18/19 requirement blocks (n x {i32,i32,i32,cstring}), 249 params. Re-released quests leave stub configs: dropped, links remapped.
 constexpr int kQuestArchive = 35;
 std::string g_quests_json;
 bool        g_quests_loaded = false;
@@ -2675,13 +2669,8 @@ std::string LookupBuffNameAdj(int id, const std::unordered_map<int, std::string>
 
 }  // namespace
 
-// Ability structs (index 22): param 2794 name, 2799 tier (1 basic, 2 threshold, 3 defensive, 4 ultimate, 5 special,
-// 7 utility; cosmetic overrides carry none), 2795 description, 4650 unlock text, 2796 cooldown (0.6 s ticks), 2802 ability/sprite id.
-// Cooldown-clock varc pairs come from the bytecode of CS2 script 6506 (js5-12): a switch over struct ids whose case bodies
-// each push [castClock, readyClock] varc ids. CS2 opcode ids are build-shuffled, so no opcodes are decoded; the parse relies on
-// the stable footer ([6x u16 + u32 counts][switch block][u16 switch-block size]; switch block = u8 count, per switch u16 case
-// count then (i32 value, u32 jump)) and on every case body starting with two 6-byte varc-push ops [opcode u16][0x02 varc u16 BE 0x00].
-// Pairs are zipped with the distinct jumps ascending; more than a few excess bodies = shape changed, emit nothing.
+// Ability structs (index 22): param 2794 name, 2795 description, 2796 cooldown (0.6 s ticks), 2799 tier (1 basic, 2 threshold, 3 defensive, 4 ultimate, 5 special, 7 utility; cosmetic overrides carry none), 2802 ability/sprite id, 4650 unlock text.
+// Cooldown-clock varc pairs come from CS2 script 6506 bytecode (js5-12), a switch over struct ids. Opcode ids are build-shuffled, so the parse relies on the stable footer ([6x u16 + u32 counts][switch block][u16 switch-block size]; switch block = u8 count, per switch u16 case count then (i32 value, u32 jump)) and on case bodies starting with two 6-byte varc-push ops [opcode u16][0x02 varc u16 BE 0x00]; pairs zip with the distinct jumps ascending, and more than a few excess bodies emits nothing.
 std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
     std::unordered_map<int, std::pair<int, int>> out;
     auto* idx = g_store ? g_store->Get(kIndexClientScript) : nullptr;
@@ -3605,10 +3594,8 @@ void RegionHeightsFill(int player_x, int player_y, int plane, int radius,
     }
 }
 
-// archive 0 "details": cstr internal name, cstr display name, 11-byte header (u8 flags, u32, u32 bg colour, u8, u8 zoom),
-// u8 record count; 17-byte records: u8 type, source rect x0,y0,x1,y1, display rect x0,y0,x1,y1 (u16 tiles, inclusive).
-// archive 1 "compositemap": u16 count, records: u8 type; type 0 = u8 planes, u16 srcX, u16 srcY, u8 dstPlane, u16 dstX, u16 dstY.
-// archive 4 / 2: u32 length + PNG (full composited image, 1 px per tile, north up) / thumbnail.
+// archive 0 "details": cstr internal name, cstr display name, 11-byte header (u8 flags, u32, u32 bg colour, u8, u8 zoom), u8 record count; 17-byte records: u8 type, source rect x0,y0,x1,y1, display rect x0,y0,x1,y1 (u16 tiles, inclusive).
+// archive 1 "compositemap": u16 count, records u8 type; type 0 = u8 planes, u16 srcX, u16 srcY, u8 dstPlane, u16 dstX, u16 dstY. archive 4 / 2: u32 length + PNG (full composited image, 1 px per tile, north up) / thumbnail.
 namespace {
 struct WmZone { int planes, sx, sy, dp, dx, dy; };
 struct WmArea {

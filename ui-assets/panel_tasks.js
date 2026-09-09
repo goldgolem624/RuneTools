@@ -6,20 +6,16 @@
   let taskVp = null;
   let slayerCreatures = null;
   let reaperBosses = null;
-  // Codex varps (CS2 script13488: creature id c -> varp[c/32] bit c%32, cases 0-6 in this
-  // order; its default branch literally asks for "another slayer_codex_x var"). 7*32 = 224 bits
-  // of "soul claimed", joined to names through enum 1563, which this panel already loads.
+  // Codex varps (cs 13488: creature id c -> varp[c/32] bit c%32, cases 0-6 in order; default branch asks for another slayer_codex_x var).
+  // 7*32 = 224 bits of "soul claimed", joined to names through enum 1563.
   const ST_CODEX_VARPS = [7020, 7021, 7022, 7023, 7024, 7025, 12309];
   const TASK_VARP_IDS = '183,185,4519,10077,' + ST_CODEX_VARPS.join(',');
   // Block/prefer slot varbits (clientscript-6410); slot values are task-category ids in varp
   // 185's id space, resolved through enum 1563.
   const ST_BLOCK_VBS = [9073, 9075, 9076, 9077, 9081, 9082, 22707, 42839];
   const ST_PREFER_VBS = [24948, 24949, 24950, 24951, 24952, 24953, 24954, 42535];
-  // Standing vars: slayer points vb 9071, reaper points vb 22905, streak vb 23260. The reaper
-  // ASSIGNMENT itself belongs to the task card, read from packed varp 4519. Gates:
-  // vb 9072 == 0 means "complete one task"; special assignment = vb 525 > 0 or vb 24968 == 1
-  // or vb 44233 == 1, and vb 24968 == 1 also means the cancel is free. Costs (clientscript-6410
-  // button texts): cancel 30 / extend 30 / block 100 / prefer 100 points.
+  // vb 9071 slayer pts, 22905 reaper pts, 23260 streak; varp 4519 packed reaper assignment (task card).
+  // Gates: vb 9072==0 one-task, special = vb 525>0 | 24968==1 | 44233==1 (24968 = free cancel). Costs 30/30/100/100 (cs 6410).
   const ST_STANDING_VBS = [9071, 9072, 525, 24968, 44233, 22905, 23260];
   const ST_MASKS = [
     [27616, 18238, 0],     [27618, 18242, 0],     [27620, 18246, 0],     [27622, 18250, 0],

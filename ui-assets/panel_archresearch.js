@@ -1,7 +1,5 @@
-// RuneToolsX panel: Archaeology research (Field Study / Report status).
-// DBTable 90 is the research list: column 0 is the progress BIT, 3 the name, 6 the Field Study
-//   field study known -> varp 9297 (bits 0-31), 9298 (32-63), 11740 (64-95)
-//   report filed      -> varp 9299,             9300,          11741
+// RuneToolsX panel: Archaeology research (Field Study / Report status). DBTable 90 = research list: col 0 progress BIT, 3 name, 6 Field Study.
+// Field study known -> varp 9297 (bits 0-31), 9298 (32-63), 11740 (64-95); report filed -> varp 9299, 9300, 11741.
 (function () {
 
 const ARCH_RES_FIELD_VARPS  = [9297, 9298, 11740];

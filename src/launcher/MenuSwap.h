@@ -15,8 +15,7 @@ bool SetEnabled(std::uint32_t pid, std::uint32_t mode);
 // draws above i+1. Standing rules, not one-shot swaps: the client rebuilds the entry array every tick.
 bool SetPins(std::uint32_t pid, const std::string& rulesNewlineSeparated);
 
-// {"ok":bool,"hooked":bool,"enabled":bool,"seq":n,"reordered":n,"pins":["Bank",...],
-//  "entries":[{"verb":"Bank","target":"<col=..>Bank booth","slot":n,"refs":n},...]}
+// {"ok":bool,"hooked":bool,"enabled":bool,"seq":n,"reordered":n,"pins":["Bank",...],"entries":[{"verb":"Bank","target":"<col=..>Bank booth","slot":n,"refs":n},...]}
 // `entries` is in display order; `slot` is the game's array index, which runs the other way.
 std::string StatusJson(std::uint32_t pid);
 

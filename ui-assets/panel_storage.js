@@ -27,9 +27,8 @@
       boxes: { 51022: 'Plank box' }, container: 895, roster: 16107
     },
     essence: {   // RC essence pouches; COUNT and stored TYPE are PER-POUCH.
-                 // Durability% = (decayMax - varp)*100/decayMax, integer div (Med/Large/Giant wear
-                 // on varps 3217/3218/3219, max 800/1000/1200); Small never decays and the
-                 // Conservation of Energy relic forces 100%. The Massive pouch (24205) packs count
+                 // Durability% = (decayMax - varp)*100/decayMax, integer div; Med/Large/Giant wear varps 3217/3218/3219, max 800/1000/1200.
+                 // Small never decays; Conservation of Energy relic forces 100%. Massive pouch (24205) packs count.
       pouches: [
         ['Small pouch',     16497, 16502, 3,  5509,  0,    0],
         ['Medium pouch',    16498, 16503, 6,  5510,  3217, 800],
