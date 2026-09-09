@@ -87,6 +87,7 @@ std::vector<Pass> g_slotPasses[kSlots];
 VkQueryPool       g_pools[kSlots] = {};
 std::atomic<int>  g_slot{ 0 };
 std::atomic<unsigned> g_pairs[kSlots] = {};
+std::atomic<bool>     g_poolReady[kSlots] = {};   // reset on the GPU at least once
 ULONGLONG         g_lastPresentMs = 0;
 unsigned          g_frameUs = 0;
 
@@ -152,7 +153,7 @@ int BeginPass(VkCommandBuffer cmd, const char* kind, std::uint32_t w, std::uint3
     }
     const int slot = g_slot.load(std::memory_order_relaxed);
     t.slot = slot;
-    if (g_pools[slot] && fCmdWriteTimestamp && g_timing.load(std::memory_order_relaxed)) {
+    if (g_pools[slot] && fCmdWriteTimestamp && g_timing.load(std::memory_order_relaxed) && g_poolReady[slot].load(std::memory_order_relaxed)) {
         unsigned pair = g_pairs[slot].fetch_add(1, std::memory_order_relaxed);
         if (pair < kMaxPairs) {
             p.query = (int)pair;
@@ -166,22 +167,25 @@ int BeginPass(VkCommandBuffer cmd, const char* kind, std::uint32_t w, std::uint3
     return (int)passes.size() - 1;
 }
 
-void EndPass(VkCommandBuffer cmd) {
+// Returns the query pair to close, or -1. The end timestamp is written by the caller after the
+// pass instance has ended: inside a pass executing secondary command buffers it would be illegal.
+int EndPass() {
+    int query = -1;
     if (t.pass >= 0) {
-        int query = -1;
-        {
-            std::lock_guard<std::mutex> lk(g_passMu);
-            auto& passes = g_slotPasses[t.slot];
-            if ((size_t)t.pass < passes.size()) {
-                Pass& p = passes[(size_t)t.pass];
-                p.draws += t.draws; p.indirect += t.indirect; p.dispatch += t.dispatch; p.skipped += t.skipped;
-                query = p.query;
-            }
+        std::lock_guard<std::mutex> lk(g_passMu);
+        auto& passes = g_slotPasses[t.slot];
+        if ((size_t)t.pass < passes.size()) {
+            Pass& p = passes[(size_t)t.pass];
+            p.draws += t.draws; p.indirect += t.indirect; p.dispatch += t.dispatch; p.skipped += t.skipped;
+            query = p.query;
         }
-        if (query >= 0 && g_pools[t.slot] && fCmdWriteTimestamp)
-            fCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_pools[t.slot], (std::uint32_t)query * 2 + 1);
     }
     t.inPass = false; t.pass = -1; t.draws = t.indirect = t.dispatch = t.skipped = 0;
+    return query;
+}
+void CloseQuery(VkCommandBuffer cmd, int slot, int query) {
+    if (query >= 0 && g_pools[slot] && fCmdWriteTimestamp)
+        fCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_pools[slot], (std::uint32_t)query * 2 + 1);
 }
 
 void FromRenderPass(const VkRenderPassBeginInfo* info, VkFormat* colors, VkAttachmentLoadOp* loads, std::uint32_t& nc,
@@ -251,9 +255,9 @@ void VKAPI_CALL HookBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* i
     }
     rBeginRendering(cmd, info);
 }
-void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { EndPass(cmd); rEndRP(cmd); }
-void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { EndPass(cmd); rEndRP2(cmd, e); }
-void VKAPI_CALL HookEndRendering(VkCommandBuffer cmd) { EndPass(cmd); rEndRendering(cmd); }
+void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { int slot = t.slot; int q = EndPass(); rEndRP(cmd); CloseQuery(cmd, slot, q); }
+void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { int slot = t.slot; int q = EndPass(); rEndRP2(cmd, e); CloseQuery(cmd, slot, q); }
+void VKAPI_CALL HookEndRendering(VkCommandBuffer cmd) { int slot = t.slot; int q = EndPass(); rEndRendering(cmd); CloseQuery(cmd, slot, q); }
 
 void VKAPI_CALL HookBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bp, VkPipeline pipe) {
     if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) {
@@ -487,7 +491,6 @@ bool Attach(VkDevice dev, PFN_vkGetDeviceProcAddr gdpa, float timestampPeriodNs,
             VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
             qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kMaxPairs * 2;
             if (fCreateQueryPool(dev, &qi, nullptr, &g_pools[i]) != VK_SUCCESS) { g_pools[i] = VK_NULL_HANDLE; break; }
-            if (fResetQueryPool) fResetQueryPool(dev, g_pools[i], 0, kMaxPairs * 2);
         }
     }
     CreateShare();
@@ -516,7 +519,7 @@ void Detach() {
     g_attached = false;
     for (int i = 0; i < kSlots; ++i) {
         if (g_pools[i] && fDestroyQueryPool) fDestroyQueryPool(g_dev, g_pools[i], nullptr);
-        g_pools[i] = VK_NULL_HANDLE;
+        g_pools[i] = VK_NULL_HANDLE; g_poolReady[i].store(false);
     }
     std::lock_guard<std::mutex> lk(g_mapMu);
     g_views.clear(); g_rps.clear(); g_fbs.clear(); g_depthPipes.clear(); g_dynDepthPipes.clear();
@@ -543,6 +546,7 @@ void OnOverlayCmd(VkCommandBuffer cmd) {
     if (g_pools[next]) {
         fCmdResetQueryPool(cmd, g_pools[next], 0, kMaxPairs * 2);
         g_pairs[next].store(0, std::memory_order_relaxed);
+        g_poolReady[next].store(true, std::memory_order_relaxed);
     }
 }
 
