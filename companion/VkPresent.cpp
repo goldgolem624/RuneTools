@@ -60,6 +60,7 @@ bool              g_nudged = false;
 ULONGLONG         g_nudgeRestoreMs = 0;
 int               g_nudgeW = 0, g_nudgeH = 0;
 bool              g_warnedNoChain = false;
+std::atomic<bool> g_everRegistered{ false };
 std::atomic<unsigned> g_frames{ 0 };
 
 void Log(const char* fmt, ...) {
@@ -199,6 +200,7 @@ VkResult VKAPI_CALL HookCreateSwapchain(VkDevice dev, const VkSwapchainCreateInf
         __try {
             ok = rtx::vkcomposite::RegisterSwapchain(*out, ci->imageFormat, ci->imageExtent.width, ci->imageExtent.height);
         } __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+        if (ok) g_everRegistered.store(true);
         Log("swapchain %p format %d %ux%u minImages %u -> %s", (void*)*out, (int)ci->imageFormat,
             ci->imageExtent.width, ci->imageExtent.height, ci->minImageCount, ok ? "registered" : "NOT registered");
     }
@@ -430,7 +432,7 @@ bool Arm(VkDevice dev) {
     g_dev = dev;
     g_queueCheck = 0;
     g_armedMs = GetTickCount64();
-    g_nudged = false; g_warnedNoChain = false;
+    g_nudged = false; g_warnedNoChain = false; g_everRegistered.store(false);
     g_armed.store(true);
     Log("armed on device %p, graphics family %u (%u queues), present %p", (void*)dev, g_family, g_familyQueues, (void*)g_realQueuePresent);
     LogExtensions(dev);
@@ -447,7 +449,7 @@ void Bootstrap() {
         if (g_hwnd && IsWindow(g_hwnd))
             SetWindowPos(g_hwnd, nullptr, 0, 0, g_nudgeW, g_nudgeH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
-    if (rtx::vkcomposite::SwapchainCount() > 0) return;
+    if (g_everRegistered.load()) return;
     if (!g_nudged && now - g_armedMs > 1500) {
         g_nudged = true;
         RefreshWindow();
