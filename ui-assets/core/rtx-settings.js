@@ -54,7 +54,8 @@
     if (typeof kbGrab === 'function') kbGrab(false);
     if (uisHpPaint) uisHpPaint();
   }, true);
-  // Discord webhook: the URL goes to the host once and is stored sealed; only a masked hint comes back.
+  // Discord webhook: only the "<id>/<token>" tail is typed; the host normalises, seals and stores
+  // it, and hands back a masked hint. Copy puts the full URL on the clipboard from the host side.
   function uisDiscordRow() {
     const r = document.createElement('div'); r.className = 'row';
     const k = document.createElement('span'); k.className = 'k'; k.textContent = 'Discord webhook';
@@ -62,36 +63,77 @@
     const v = document.createElement('span'); v.className = 'v pf-full';
     const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;width:100%';
     const status = document.createElement('div'); status.className = 'pf-hint';
-    const line = document.createElement('div'); line.style.cssText = 'display:flex;gap:6px;align-items:center';
-    const inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = 'https://discord.com/api/webhooks/...';
-    inp.autocomplete = 'off'; inp.spellcheck = false; inp.style.cssText = 'flex:1;min-width:0;font:12px var(--font-mono);padding:5px 8px;background:rgba(0,0,0,.35);color:var(--text);border:1px solid var(--border-hi);border-radius:4px';
-    const mk = (t) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'ghost btn-sm'; b.textContent = t; return b; };
-    const save = mk('Save'), test = mk('Test'), remove = mk('Remove');
+    const line = document.createElement('div'); line.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap';
+    const pre = document.createElement('span'); pre.textContent = 'discord.com/api/webhooks/';
+    pre.style.cssText = 'font:11px var(--font-mono);color:var(--text-mute);white-space:nowrap';
+    const inp = document.createElement('input'); inp.type = 'password'; inp.placeholder = '<id>/<token>';
+    inp.autocomplete = 'off'; inp.spellcheck = false;
+    inp.style.cssText = 'flex:1;min-width:160px;font:12px var(--font-mono);padding:5px 8px;background:rgba(0,0,0,.35);color:var(--text);border:1px solid var(--border-hi);border-radius:4px;outline:none';
+    inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--brass)'; });
+    inp.addEventListener('blur', () => { inp.style.borderColor = 'var(--border-hi)'; });
+    const btns = document.createElement('div'); btns.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    const mk = (t, title) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'uis-chip'; b.textContent = t; if (title) b.title = title; return b; };
+    const paste = mk('Paste', 'Paste the clipboard into the field'), save = mk('Save'), test = mk('Test', 'Send a test message');
+    const copy = mk('Copy', 'Copy the saved webhook URL to the clipboard'), remove = mk('Remove');
     let configured = false;
+    const setStatus = (t, err) => { status.textContent = t; status.style.color = err ? '#e07070' : ''; };
     const render = (info) => {
       configured = !!(info && info.configured);
-      status.textContent = info && info.error ? info.error : configured ? ('Configured: ' + info.hint) : 'Not configured. Paste a webhook URL from your Discord server settings.';
-      status.style.color = info && info.error ? '#e07070' : '';
-      test.disabled = !configured; remove.disabled = !configured;
-      sub.textContent = configured ? 'Messages are sent without pings and at most one every few seconds' : '';
+      if (info && info.error) setStatus(info.error, true);
+      else setStatus(configured ? ('Configured: ' + info.hint) : 'Not configured. Paste the part after discord.com/api/webhooks/ from your server settings.', false);
+      test.disabled = !configured; copy.disabled = !configured; remove.disabled = !configured;
+      [test, copy, remove].forEach(b => { b.style.opacity = b.disabled ? '.45' : ''; b.style.cursor = b.disabled ? 'default' : ''; });
+      sub.textContent = configured ? 'Sent without pings, at most one every few seconds' : '';
     };
     const refresh = () => { try { render(JSON.parse(bridge().discordWebhookGet() || '{}')); } catch (e) { render(null); } };
+    const insertClipboard = () => {
+      let t = '';
+      try { t = String(bridge().pasteClipboard() || ''); } catch (e) {}
+      t = t.trim();
+      if (!t) return;
+      const a = inp.selectionStart == null ? inp.value.length : inp.selectionStart, b = inp.selectionEnd == null ? a : inp.selectionEnd;
+      inp.value = inp.value.slice(0, a) + t + inp.value.slice(b);
+      try { inp.setSelectionRange(a + t.length, a + t.length); } catch (e) {}
+      inp.focus();
+    };
+    inp.addEventListener('keydown', (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = String(e.key || '').toLowerCase();
+      if (key === 'v') { e.preventDefault(); insertClipboard(); }
+      else if (key === 'c' || key === 'x') {
+        e.preventDefault();
+        const a = inp.selectionStart == null ? 0 : inp.selectionStart, b = inp.selectionEnd == null ? inp.value.length : inp.selectionEnd;
+        const sel = a === b ? inp.value : inp.value.slice(a, b);
+        try { bridge().copyClipboard(sel); } catch (err) {}
+        if (key === 'x') { inp.value = inp.value.slice(0, a) + inp.value.slice(b); }
+      } else if (key === 'a') { e.preventDefault(); try { inp.select(); } catch (err) {} }
+    });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') save.click(); });
+    paste.addEventListener('click', insertClipboard);
     save.addEventListener('click', () => {
-      const url = String(inp.value || '').trim();
-      if (!url) return;
-      try { render(JSON.parse(bridge().discordWebhookSet(url) || '{}')); } catch (e) { render({ error: 'Could not save' }); }
+      const val = String(inp.value || '').trim();
+      if (!val) { setStatus('Nothing to save: paste the webhook first.', true); return; }
+      try { render(JSON.parse(bridge().discordWebhookSet(val) || '{}')); } catch (e) { render({ error: 'Could not save' }); }
       if (configured) inp.value = '';
     });
     test.addEventListener('click', () => {
+      if (!configured) return;
       let res = null;
       try { res = JSON.parse(bridge().discordNotify('Test message. Alerts from this character will arrive here.', 'test') || '{}'); } catch (e) {}
-      status.textContent = res && res.queued ? 'Test sent. Check the channel.' : ('Not sent: ' + ((res && res.error) || 'unknown'));
+      setStatus(res && res.queued ? 'Test sent. Check the channel.' : ('Not sent: ' + ((res && res.error) || 'unknown')), !(res && res.queued));
     });
-    remove.addEventListener('click', () => { try { render(JSON.parse(bridge().discordWebhookSet('') || '{}')); } catch (e) {} });
-    line.appendChild(inp); line.appendChild(save); line.appendChild(test); line.appendChild(remove);
-    wrap.appendChild(line); wrap.appendChild(status);
+    copy.addEventListener('click', () => {
+      if (!configured) return;
+      let ok = false;
+      try { ok = !!bridge().discordWebhookCopy(); } catch (e) {}
+      setStatus(ok ? 'Webhook URL copied to the clipboard.' : 'Could not copy.', !ok);
+    });
+    remove.addEventListener('click', () => { if (!configured) return; try { render(JSON.parse(bridge().discordWebhookSet('') || '{}')); } catch (e) {} });
+    line.appendChild(pre); line.appendChild(inp);
+    [paste, save, test, copy, remove].forEach(b => btns.appendChild(b));
+    wrap.appendChild(line); wrap.appendChild(btns); wrap.appendChild(status);
     v.appendChild(wrap); r.appendChild(k); r.appendChild(v);
-    if (!bridge() || !bridge().discordWebhookGet) { status.textContent = 'Discord alerts need the updated launcher.'; }
+    if (!bridge() || !bridge().discordWebhookGet) { setStatus('Discord alerts need the updated launcher.', true); }
     else refresh();
     return r;
   }

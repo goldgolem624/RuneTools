@@ -3140,11 +3140,9 @@ JSValueRef PasteClipboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out);
 }
 
-JSValueRef CopyClipboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                         size_t argc, const JSValueRef argv[], JSValueRef*) {
-    std::string text = get_string_arg(ctx, argc, argv, 0);
+bool clipboard_set_text(const std::string& text) {
     int wn = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-    if (wn <= 0 || !OpenClipboard(nullptr)) return JSValueMakeBoolean(ctx, false);
+    if (wn <= 0 || !OpenClipboard(nullptr)) return false;
     bool ok = false;
     if (EmptyClipboard()) {
         if (HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)wn * sizeof(wchar_t))) {
@@ -3159,7 +3157,12 @@ JSValueRef CopyClipboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
         }
     }
     CloseClipboard();
-    return JSValueMakeBoolean(ctx, ok);
+    return ok;
+}
+
+JSValueRef CopyClipboard(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    return JSValueMakeBoolean(ctx, clipboard_set_text(get_string_arg(ctx, argc, argv, 0)));
 }
 
 JSValueRef CaptureScreenshot(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -3403,6 +3406,8 @@ JSValueRef RendererSet(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 
 
+bool clipboard_set_text(const std::string& text);
+
 // ---- Discord webhook alerts ----
 // The URL is DPAPI-sealed on disk and never leaves this process: JS and plugins only ever get a
 // masked hint. Sends carry allowed_mentions.parse=[] so no message can ping anyone, are
@@ -3436,7 +3441,7 @@ bool parse_url(const std::string& url, std::wstring& host, std::wstring& path, s
     path.assign(p.begin(), p.end());
     std::size_t tok = p.rfind('/');
     std::string id = p.substr(14, tok > 14 ? tok - 14 : 0);
-    hint = h + "/api/webhooks/" + (id.size() > 4 ? id.substr(0, 4) + "\xe2\x80\xa6" : id) + "/\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2";
+    hint = (id.size() > 4 ? id.substr(0, 4) + "\xe2\x80\xa6" : id) + "/\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2";
     return true;
 }
 
@@ -3460,11 +3465,17 @@ std::string status_json() {
            ",\"hint\":\"" + json_escape(g_hint) + "\"}";
 }
 
-std::string set_url(const std::string& url) {
+std::string set_url(std::string url) {
     std::lock_guard<std::mutex> lk(g_mu);
     g_loaded = false;
     std::error_code ec;
     if (url.empty()) { std::filesystem::remove(store_path(), ec); load_locked(); return "{\"configured\":false,\"hint\":\"\"}"; }
+    // Accept the full URL, a schemeless one, or just "<id>/<token>".
+    if (url.rfind("discord.com/", 0) == 0 || url.rfind("discordapp.com/", 0) == 0 || url.rfind("ptb.discord.com/", 0) == 0 ||
+        url.rfind("canary.discord.com/", 0) == 0 || url.rfind("www.discord.com/", 0) == 0)
+        url = "https://" + url;
+    else if (url.rfind("http", 0) != 0)
+        url = "https://discord.com/api/webhooks/" + url;
     std::wstring h, p; std::string hint;
     if (!parse_url(url, h, p, hint)) return "{\"error\":\"That is not a Discord webhook URL. It should look like https://discord.com/api/webhooks/<id>/<token>.\"}";
     auto sealed = crypto::ProtectForCurrentUser(url);
@@ -3535,7 +3546,23 @@ std::string send(const std::string& text, const std::string& source) {
     return "{\"queued\":true}";
 }
 
+bool copy_to_clipboard() {
+    std::wstring host, path;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        load_locked();
+        if (g_path.empty()) return false;
+        host = g_host; path = g_path;
+    }
+    std::string url = "https://" + std::string(host.begin(), host.end()) + std::string(path.begin(), path.end());
+    return clipboard_set_text(url);
+}
+
 }  // namespace discord
+
+JSValueRef DiscordWebhookCopy(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return JSValueMakeBoolean(ctx, discord::copy_to_clipboard());
+}
 
 JSValueRef DiscordWebhookGet(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, discord::status_json());
@@ -5041,6 +5068,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "discordWebhookGet", DiscordWebhookGet);
     install_fn(ctx, ns, "discordWebhookSet", DiscordWebhookSet);
     install_fn(ctx, ns, "discordNotify",     DiscordNotify);
+    install_fn(ctx, ns, "discordWebhookCopy", DiscordWebhookCopy);
     install_fn(ctx, ns, "alertsLoad",        AlertsLoad);
     install_fn(ctx, ns, "alertsSave",        AlertsSave);
     install_fn(ctx, ns, "goalsLoad",         GoalsLoad);
