@@ -231,14 +231,17 @@ static inline float ZAt(float x, float y) {
 
 bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
                    float x, float y, float z, float& sx, float& sy) {
-    float w = m[3] * x + m[11] * y + m[7] * z + m[15];
-    if (w <= 1.0f) return false;                          // behind camera
-    float nx = (m[0] * x + m[8] * y + m[4] * z + m[12]) / w;
-    float ny = (m[1] * x + m[9] * y + m[5] * z + m[13]) / w;
-    float cx = vpW / 2.0f, cy = vpH / 2.0f;
-    sx = nx * cx - nx * 2.0f + cx + vpX;
-    sy = -(ny * cy) + ny + cy + vpY;
-    float nz = (m[2] * x + m[10] * y + m[6] * z + m[14]) / w;
+    // Double precision: fine world coordinates run into the millions, and the row sums cancel
+    // to a few thousand, which costs float32 about 1e-5 of depth.
+    const double dx = x, dy = y, dz = z;
+    const double w = m[3] * dx + m[11] * dy + m[7] * dz + m[15];
+    if (w <= 1.0) return false;                           // behind camera
+    const double nx = (m[0] * dx + m[8] * dy + m[4] * dz + m[12]) / w;
+    const double ny = (m[1] * dx + m[9] * dy + m[5] * dz + m[13]) / w;
+    const double cx = vpW / 2.0, cy = vpH / 2.0;
+    sx = (float)(nx * cx - nx * 2.0 + cx + vpX);
+    sy = (float)(-(ny * cy) + ny + cy + vpY);
+    const float nz = (float)((m[2] * dx + m[10] * dy + m[6] * dz + m[14]) / w);
     if (t_ptZ.size() < 200000) t_ptZ[PtKey(sx, sy)] = nz;
     return true;
 }
@@ -246,7 +249,7 @@ bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
 constexpr float kNearW = 32.0f;   // in front of WorldToScreen's w<=1 cull
 
 inline float ProjW(const float* m, const float* p) {
-    return m[3] * p[0] + m[11] * p[1] + m[7] * p[2] + m[15];
+    return (float)(m[3] * (double)p[0] + m[11] * (double)p[1] + m[7] * (double)p[2] + m[15]);
 }
 
 // False = fully behind.
