@@ -15,6 +15,8 @@ void SetTargetExtent(unsigned w, unsigned h);   // swapchain size: which depth p
 void FrameBegin();                              // present-time boundary, before the overlay is recorded
 void OnOverlayCmd(VkCommandBuffer cmd);         // start of the overlay command buffer
 bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout);
+struct ImageInfo { VkImageUsageFlags usage; VkSampleCountFlagBits samples; VkImageCreateFlags flags; unsigned w, h, mips, layers; };
+bool LookupImage(VkImage img, ImageInfo* out);   // create info recorded by the vkCreateImage hook
 void SetHideScene(bool on);
 void SetTimingEnabled(bool on);
 bool HideSceneAvailable();

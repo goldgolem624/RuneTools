@@ -91,7 +91,8 @@ void UnregisterSwapchain(VkSwapchainKHR sc);
 int  SwapchainCount();
 
 // Scene depth attachment of the frame (the game's image) and the layout it is left in.
-void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout);
+void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsageFlags usage, VkSampleCountFlagBits samples, VkImageCreateFlags flags);
+const char* LastSubmit();                         // one-line description of the last recorded frame
 void OnImageDestroyed(VkImage img);
 // Marker share depth flags and the player's projected reference point (calibration log).
 void SetDepthMode(std::uint32_t flags, float rx, float ry, float rz);

@@ -106,6 +106,7 @@ float           g_z[4] = { -1.f, -1.f, -1.f, -1.f };
 unsigned        g_frameNo = 0;
 
 rtx::capture::Share* g_capShare = nullptr;
+char g_lastSubmit[200] = "none";
 
 std::vector<unsigned char> g_atlasCov;
 int  g_atlas_w = 0, g_atlas_h = 0;
@@ -592,18 +593,30 @@ bool Init(VkDevice dev, const DeviceFns& fns,
 
 bool Ready() { return g_ready; }
 
-void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout) {
+const char* LastSubmit() { return g_lastSubmit; }
+
+void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsageFlags usage, VkSampleCountFlagBits samples, VkImageCreateFlags flags) {
     if (!g_ready) return;
     if (img == g_depthImg && fmt == g_depthFmt) { g_depthLayout = layout; return; }
     DropDepthView();
     g_depthImg = img; g_depthFmt = fmt; g_depthLayout = layout;
     if (!img || layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    // Only an image the driver allows us to sample and copy from: single-sampled, sampled usage,
+    // transfer source for the calibration probe, not transient, and a known plain depth format.
+    const bool depthFmt = fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    const bool ok = depthFmt && samples == VK_SAMPLE_COUNT_1_BIT && (usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
+                    (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) && !(usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
+    if (!ok) {
+        Log("scene depth image %p refused: format %d usage 0x%x samples %d flags 0x%x", (void*)img, (int)fmt, (unsigned)usage, (int)samples, (unsigned)flags);
+        g_depthImg = VK_NULL_HANDLE; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        return;
+    }
     VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
     vi.image = img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
     vi.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
     if (g_fn.CreateImageView(g_dev, &vi, nullptr, &g_depthView) != VK_SUCCESS) { g_depthView = VK_NULL_HANDLE; return; }
     WriteSet(g_depthSet, g_depthSampler, g_depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-    Log("scene depth image %p format %d, layout %d", (void*)img, (int)fmt, (int)layout);
+    Log("scene depth image %p format %d, layout %d, usage 0x%x", (void*)img, (int)fmt, (int)layout, (unsigned)usage);
 }
 
 void OnImageDestroyed(VkImage img) {
@@ -864,6 +877,8 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     }
 
     if (g_fn.EndCommandBuffer(cmd) != VK_SUCCESS) return VK_NULL_HANDLE;
+    std::snprintf(g_lastSubmit, sizeof(g_lastSubmit), "frame %u: %zu verts %zu batches %zu uploads depth %d probe %d capture %d waits %u swapchain %ux%u",
+                  g_frameNo, g_verts.size(), g_batches.size(), g_uploads.size(), depthPass ? 1 : 0, (depthPass && wantProbe) ? 1 : 0, wantCapture ? 1 : 0, waitCount, c->w, c->h);
 
     VkPipelineStageFlags stages[32];
     if (waitCount > 32) waitCount = 32;

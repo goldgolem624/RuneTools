@@ -324,8 +324,10 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
         if (!rtx::vkcomposite::BeginTarget(info->pSwapchains[i], info->pImageIndices[i], &w, &h)) continue;
         rtx::vkprobe::SetTargetExtent(w, h);
         VkImage dimg = VK_NULL_HANDLE; VkFormat dfmt = VK_FORMAT_UNDEFINED; VkImageLayout dlay = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (rtx::vkprobe::SceneDepth(&dimg, &dfmt, &dlay)) rtx::vkcomposite::SetSceneDepth(dimg, dfmt, dlay);
-        else rtx::vkcomposite::SetSceneDepth(VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED);
+        rtx::vkprobe::ImageInfo ii{};
+        if (rtx::vkprobe::SceneDepth(&dimg, &dfmt, &dlay) && rtx::vkprobe::LookupImage(dimg, &ii))
+            rtx::vkcomposite::SetSceneDepth(dimg, dfmt, dlay, ii.usage, ii.samples, ii.flags);
+        else rtx::vkcomposite::SetSceneDepth(VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_SAMPLE_COUNT_1_BIT, 0);
         rtx::present::RenderOverlay(rtx::present::VkBackend(), g_hwnd, (int)w, (int)h);
         VkSemaphore s = rtx::vkcomposite::Submit(queue, wc, waits);
         if (s) { chain[n++] = s; waits = &chain[n - 1]; wc = 1; }
@@ -555,9 +557,23 @@ void PollFeatures() {
     Log("features: depth %d timing %d capture %d", depth ? 1 : 0, timing ? 1 : 0, capture ? 1 : 0);
 }
 
+// Presents stopping while the game is alive means the GPU never finished something we queued:
+// record what the last frame contained so the cause is in the log, not a guess.
+void StallWatch() {
+    static unsigned s_lastFrames = 0; static ULONGLONG s_lastChangeMs = 0; static bool s_reported = false;
+    const unsigned f = g_frames.load(std::memory_order_relaxed);
+    const ULONGLONG now = GetTickCount64();
+    if (f != s_lastFrames) { s_lastFrames = f; s_lastChangeMs = now; s_reported = false; return; }
+    if (!s_reported && f > 60 && s_lastChangeMs && now - s_lastChangeMs > 4000) {
+        s_reported = true;
+        Log("no present for %llu ms after %u frames; last submit: %s", (unsigned long long)(now - s_lastChangeMs), f, rtx::vkcomposite::LastSubmit());
+    }
+}
+
 void Poll() {
     if (!g_installed) return;
     PollFeatures();
+    if (g_armed.load()) StallWatch();
     VkDevice dev = g_seenDevice.load(std::memory_order_relaxed);
     if (dev && dev != g_dev) {
         if (g_armed.load()) Disarm();

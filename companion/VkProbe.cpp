@@ -73,6 +73,7 @@ std::unordered_map<VkRenderPass, RpInfo>    g_rps;
 std::unordered_map<VkFramebuffer, FbInfo>   g_fbs;
 std::unordered_set<VkPipeline>              g_depthPipes;
 std::unordered_set<VkPipeline>              g_dynDepthPipes;
+std::unordered_map<VkImage, ImageInfo>      g_imageInfo;
 
 struct Pass {
     char desc[rtx::gputime::kDescMax];
@@ -355,11 +356,16 @@ VkResult VKAPI_CALL HookCreateImage(VkDevice dev, const VkImageCreateInfo* ci, c
         g_imageTotal.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lk(g_mapMu);
         Tally(g_images, (std::uint32_t)ci->format, ci->usage, ci->extent.width, ci->extent.height);
+        if (out && *out) {
+            g_imageInfo[*out] = { ci->usage, ci->samples, ci->flags, ci->extent.width, ci->extent.height, ci->mipLevels, ci->arrayLayers };
+            if (g_imageInfo.size() > 65536) g_imageInfo.clear();
+        }
     }
     return r;
 }
 void VKAPI_CALL HookDestroyImage(VkDevice dev, VkImage img, const VkAllocationCallbacks* a) {
     if (img) {
+        { std::lock_guard<std::mutex> lk(g_mapMu); g_imageInfo.erase(img); }
         {
             std::lock_guard<std::mutex> lk(g_passMu);
             if (g_sceneImg == img) { g_sceneImg = VK_NULL_HANDLE; g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
@@ -532,6 +538,14 @@ void SetHideScene(bool on) { g_hide.store(on, std::memory_order_relaxed); }
 bool HideSceneAvailable() { return g_attached; }
 void RequestProbe() { g_probeNext.store(true); }
 
+bool LookupImage(VkImage img, ImageInfo* out) {
+    std::lock_guard<std::mutex> lk(g_mapMu);
+    auto it = g_imageInfo.find(img);
+    if (it == g_imageInfo.end()) return false;
+    *out = it->second;
+    return true;
+}
+
 bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout) {
     std::lock_guard<std::mutex> lk(g_passMu);
     if (!g_sceneImg) return false;
@@ -577,8 +591,9 @@ void FrameBegin() {
         for (const auto& p : current)
             if (p.depthImg && p.w == tw && p.h == th) most = std::max(most, p.draws + p.skipped);
         const Pass* best = nullptr;
-        for (const auto& p : current)
-            if (p.depthImg && p.w == tw && p.h == th && (p.draws + p.skipped) * 4 >= most && most > 0) best = &p;
+        if (most >= 32)
+            for (const auto& p : current)
+                if (p.depthImg && p.w == tw && p.h == th && (p.draws + p.skipped) * 4 >= most) best = &p;
         if (best) {
             if (best->depthImg != g_sceneImg && g_log)
                 g_log("scene depth from pass: %s (%u draws of %u max)", best->desc, best->draws + best->skipped, most);
