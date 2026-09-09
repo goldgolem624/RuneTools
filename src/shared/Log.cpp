@@ -5,6 +5,7 @@
 #pragma comment(lib, "Dbghelp.lib")
 
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <exception>
@@ -17,6 +18,10 @@
 namespace rtx::log {
 
 namespace {
+
+// Per file ceiling. Reached only by a runaway caller, so the file is closed off with one
+// final line rather than growing without bound.
+constexpr std::streamoff                       kFileByteCap = 16 * 1024 * 1024;
 
 std::mutex                                     g_mu;
 std::ofstream                                  g_launcher;
@@ -49,6 +54,12 @@ std::string timestamp() {
 // g_mu must be held.
 void write_line(std::ofstream& f, const std::string& msg) {
     if (!f.is_open()) return;
+    if (f.tellp() > kFileByteCap) {
+        f << timestamp() << "log size cap reached, no further lines this session\n";
+        f.flush();
+        f.close();
+        return;
+    }
     f << timestamp() << Redact(msg) << "\n";
     f.flush();
 }
@@ -168,13 +179,19 @@ void Init() {
     std::filesystem::create_directories(dir, ec);
 
     if (std::filesystem::exists(dir, ec)) {
+        const auto now = std::filesystem::file_time_type::clock::now();
         for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
             if (!e.is_regular_file(ec)) continue;
-            auto fn = e.path().filename().string();
-            if (fn.rfind("client-", 0) == 0 &&
-                fn.size() > 4 && fn.compare(fn.size() - 4, 4, ".log") == 0) {
-                std::filesystem::remove(e.path(), ec);
-            }
+            const auto fn = e.path().filename().string();
+            const bool is_log = fn.size() > 4 && fn.compare(fn.size() - 4, 4, ".log") == 0;
+            const auto age = now - e.last_write_time(ec);
+            // Previous sessions' client logs go immediately. Companion logs may still belong to a
+            // game that outlived the launcher, so they wait an hour. Crash artefacts keep a fortnight.
+            bool drop = false;
+            if (is_log && fn.rfind("client-", 0) == 0) drop = true;
+            else if (is_log && fn.rfind("companion-", 0) == 0) drop = age > std::chrono::hours(1);
+            else if (fn.rfind("crash-", 0) == 0) drop = age > std::chrono::hours(24 * 14);
+            if (drop) std::filesystem::remove(e.path(), ec);
         }
     }
 

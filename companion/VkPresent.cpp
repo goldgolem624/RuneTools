@@ -85,7 +85,13 @@ void OnImageDestroyedCb(VkImage img) {
     __try { rtx::vkcomposite::OnImageDestroyed(img); } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+// Hard ceiling on the companion log for one game process. A hooked path that goes wrong can
+// otherwise write a line per frame for hours.
+constexpr long long kLogByteCap = 4 * 1024 * 1024;
+static std::atomic<long long> g_logBytes{ 0 };
+
 void Log(const char* fmt, ...) {
+    if (g_logBytes.load(std::memory_order_relaxed) > kLogByteCap) return;
     char buf[512];
     va_list ap; va_start(ap, fmt);
     int n = std::vsnprintf(buf, sizeof(buf) - 2, fmt, ap);
@@ -103,6 +109,10 @@ void Log(const char* fmt, ...) {
     int m = std::snprintf(line, sizeof(line), "[%02u:%02u:%02u.%03u] vk: %s\r\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
     DWORD w = 0;
     if (m > 0) WriteFile(f, line, (DWORD)m, &w, nullptr);
+    if (m > 0 && g_logBytes.fetch_add(m, std::memory_order_relaxed) + m > kLogByteCap) {
+        const char* cap = "[--:--:--.---] vk: log size cap reached, no further lines this session\r\n";
+        WriteFile(f, cap, (DWORD)strlen(cap), &w, nullptr);
+    }
     CloseHandle(f);
 }
 
