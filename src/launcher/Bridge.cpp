@@ -3512,7 +3512,15 @@ bool take_token(double& tokens, long long& ts, double cap, double perSec, long l
     return true;
 }
 
-std::string send(const std::string& text, const std::string& source) {
+std::string iso_now() {
+    SYSTEMTIME st; GetSystemTime(&st);
+    char b[40];
+    std::snprintf(b, sizeof(b), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    return b;
+}
+
+std::string send(const std::string& text, const std::string& source,
+                 const std::string& title, const std::string& character, const std::string& world) {
     std::wstring host, path;
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -3526,11 +3534,20 @@ std::string send(const std::string& text, const std::string& source) {
         if (!take_token(sb.first, sb.second, 3.0, 1.0 / 10.0, now)) return "{\"error\":\"rate limited\"}";
         host = g_host; path = g_path;
     }
-    std::string prefix = source.rfind("plugin:", 0) == 0
-        ? "**RuneToolsX plugin " + clean_text(source.substr(7), 40) + "** "
-        : "**RuneToolsX** ";
-    std::string body = "{\"username\":\"RuneToolsX\",\"content\":\"" + json_escape(prefix + clean_text(text, 1500)) +
-                       "\",\"allowed_mentions\":{\"parse\":[]}}";
+    // One embed per message: title, the alert text as the body, character and world as fields.
+    const bool plugin = source.rfind("plugin:", 0) == 0;
+    std::string t = plugin ? "Plugin: " + clean_text(source.substr(7), 40)
+                  : !title.empty() ? clean_text(title, 120) : std::string("Alert");
+    std::string fields;
+    if (!character.empty()) fields += "{\"name\":\"Character\",\"value\":\"" + json_escape(clean_text(character, 40)) + "\",\"inline\":true}";
+    if (!world.empty()) fields += std::string(fields.empty() ? "" : ",") + "{\"name\":\"World\",\"value\":\"" + json_escape(clean_text(world, 12)) + "\",\"inline\":true}";
+    std::string body = "{\"username\":\"RuneToolsX\",\"allowed_mentions\":{\"parse\":[]},\"embeds\":[{"
+                       "\"title\":\"" + json_escape(t) + "\","
+                       "\"description\":\"" + json_escape(clean_text(text, 1500)) + "\","
+                       "\"color\":13213735,"                                    // brass, matches the launcher accent
+                       "\"fields\":[" + fields + "],"
+                       "\"footer\":{\"text\":\"RuneToolsX" + std::string(plugin ? " plugin" : "") + "\"},"
+                       "\"timestamp\":\"" + iso_now() + "\"}]}";
     http::Enqueue([host, path, body] {
         auto r = http::PostJson(host, path, { { "User-Agent", "RuneToolsX" } }, body);
         if (r.status == 429) {
@@ -3576,9 +3593,12 @@ JSValueRef DiscordNotify(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::string text   = argc >= 1 ? js_to_utf8(ctx, argv[0]) : std::string();
     std::string source = argc >= 2 ? js_to_utf8(ctx, argv[1]) : std::string("alerts");
+    std::string title  = argc >= 3 ? js_to_utf8(ctx, argv[2]) : std::string();
+    std::string who    = argc >= 4 ? js_to_utf8(ctx, argv[3]) : std::string();
+    std::string world  = argc >= 5 ? js_to_utf8(ctx, argv[4]) : std::string();
     if (source.size() > 80) source.resize(80);
     if (text.empty()) return utf8_to_js(ctx, "{\"error\":\"empty\"}");
-    return utf8_to_js(ctx, discord::send(text, source));
+    return utf8_to_js(ctx, discord::send(text, source, title, who, world));
 }
 
 JSValueRef NotifyWindows(JSContextRef ctx, JSObjectRef, JSObjectRef,

@@ -117,7 +117,8 @@
     test.addEventListener('click', () => {
       if (!configured) return;
       let res = null;
-      try { res = JSON.parse(bridge().discordNotify('Test message. Alerts from this character will arrive here.', 'test') || '{}'); } catch (e) {}
+      try { res = JSON.parse(bridge().discordNotify('Alerts for this character will arrive here.', 'test', 'Test message',
+        (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.display_name) || '', (typeof lastSnap !== 'undefined' && lastSnap && lastSnap.in_world && lastSnap.world) ? String(lastSnap.world) : '') || '{}'); } catch (e) {}
       setStatus(res && res.queued ? 'Test sent. Check the channel.' : ('Not sent: ' + ((res && res.error) || 'unknown')), !(res && res.queued));
     });
     copy.addEventListener('click', () => {

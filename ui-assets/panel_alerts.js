@@ -180,7 +180,7 @@
     try { return !!(bridge() && bridge().gameFocused && rtxData.sync('state.gameFocused')); } catch (e) { return false; }
   }
   function alertsSuppressed() { return !!(alertCfg && alertCfg.unfocusedOnly && gameHasFocus()); }
-  function deliverAlert(cfg, msg, sticky) {
+  function deliverAlert(cfg, msg, sticky, title) {
     if (alertsSuppressed()) return;
     const nt = cfg.notify || 'ingame';
     if (cfg.sound && cfg.sound !== 'none') { try { bridge().playSound(cfg.sound); } catch (e) {} }
@@ -189,7 +189,12 @@
       if (msg) { try { uiNotify(msg, { sticky: sticky, ttl: sticky ? 0 : 5000 }); } catch (e) {} }
     }
     if (nt === 'windows' || nt === 'both') winNotify(msg);
-    if (alertCfg.discord && msg) { try { if (bridge().discordNotify) bridge().discordNotify(msg, 'alerts'); } catch (e) {} }
+    if (alertCfg.discord && msg) {
+      try {
+        if (bridge().discordNotify) bridge().discordNotify(msg, 'alerts', title || 'Alert',
+          (lastSnap && lastSnap.display_name) || '', (lastSnap && lastSnap.in_world && lastSnap.world) ? String(lastSnap.world) : '');
+      } catch (e) {}
+    }
   }
   function logAlert(now, msg) {
     alertLog.unshift({ t: now, msg: msg }); if (alertLog.length > 5) alertLog.pop();
@@ -200,7 +205,8 @@
     const now = Date.now();
     if (!force && r._last && now - r._last < 1500) return;  // per-rule debounce (repeats pass force)
     r._last = now;
-    deliverAlert(r, msg, false);
+    const desc = ALERT_META.find(x => x.id === id);
+    deliverAlert(r, msg, false, desc ? desc.name : 'Alert');
     logAlert(now, msg);
   }
   function invSlotsLabel(w) {
@@ -374,17 +380,17 @@
     const now = Date.now();
     if (!force && w._last && now - w._last < 1500) return;
     w._last = now;
-    deliverAlert(w, customLabel(w), false);
+    deliverAlert(w, customLabel(w), false, w.label || 'Custom alert');
     logAlert(now, customLabel(w));
   }
   function fireFarm(w, msg) {
-    deliverAlert(w, msg, false);
+    deliverAlert(w, msg, false, w.label || 'Custom alert');
     logAlert(Date.now(), msg);
   }
   function fireAugment(w, it) {
     const now = Date.now();
     const msg = 'Augmented item level ' + (it.level || 0) + ' reached on ' + (it.name || ('item ' + it.id));
-    deliverAlert(w, msg, true);
+    deliverAlert(w, msg, true, w.label || 'Custom alert');
     logAlert(now, msg);
   }
   function fireToast(msg) {
