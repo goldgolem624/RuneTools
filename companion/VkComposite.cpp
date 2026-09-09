@@ -234,9 +234,13 @@ void FinishReadbacks(Image& im) {
         im.capSerial = 0;
     }
     if (im.probePending && im.probe.map) {
+        static unsigned s_logged = 0;
         float d = 0.f; std::memcpy(&d, im.probe.map, 4);
-        Log("depth calibration: sampled %.6f at ref (%.0f,%.0f), marker z %.6f, reversed flag %u",
-            (double)d, (double)g_ref[0], (double)g_ref[1], (double)im.probeZ, (g_depthFlags >> 1) & 1u);
+        if (s_logged < 12) {
+            ++s_logged;
+            Log("depth calibration: sampled %.6f at ref (%.0f,%.0f), marker z %.6f, reversed flag %u",
+                (double)d, (double)g_ref[0], (double)g_ref[1], (double)im.probeZ, (g_depthFlags >> 1) & 1u);
+        }
         im.probePending = false;
     }
 }
