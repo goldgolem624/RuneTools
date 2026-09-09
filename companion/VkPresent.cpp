@@ -158,9 +158,25 @@ BOOL CALLBACK TopLevel(HWND hwnd, LPARAM lp) {
     EnumChildWindows(hwnd, ConsiderWindow, lp);
     return TRUE;
 }
+// Input lands on the deepest window under the cursor: the client draws through a child
+// (JagRenderView) that covers its main window, so descend while a visible child covers the parent.
+BOOL CALLBACK CoveringChild(HWND hwnd, LPARAM lp) {
+    auto* c = reinterpret_cast<FindCtx*>(lp);
+    if (!IsWindowVisible(hwnd) || GetParent(hwnd) != c->best) return TRUE;
+    RECT r;
+    if (!GetClientRect(hwnd, &r)) return TRUE;
+    long area = (long)(r.right - r.left) * (r.bottom - r.top);
+    if (area * 10 >= c->area * 9 && area > 0) { c->area = area; c->best = hwnd; return FALSE; }
+    return TRUE;
+}
 HWND FindGameWindow() {
     FindCtx c{ GetCurrentProcessId(), nullptr, 0 };
     EnumWindows(TopLevel, reinterpret_cast<LPARAM>(&c));
+    for (int depth = 0; c.best && depth < 4; ++depth) {
+        HWND before = c.best;
+        EnumChildWindows(before, CoveringChild, reinterpret_cast<LPARAM>(&c));
+        if (c.best == before) break;
+    }
     return c.best;
 }
 
