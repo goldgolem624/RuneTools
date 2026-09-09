@@ -1805,9 +1805,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         for (int i = 1; i < nr; ++i) spread = std::max(spread, std::fabs(ratios[i] - A) / std::max(1e-9, std::fabs(A)));
                     }
                     const double B = m14 + A * m15;
-                    static bool s_checked = false;
-                    if (!s_checked) {
-                        s_checked = true;
+                    // Logged on the first frame and again whenever the projection changes, so a
+                    // view distance or field of view change can be checked against the model.
+                    static double s_lastA = 1e30, s_lastB = 1e30;
+                    static int s_logs = 0;
+                    const bool moved = std::fabs(A - s_lastA) > 1e-6 * std::max(1.0, std::fabs(A)) ||
+                                       std::fabs(B - s_lastB) > 1e-4 * std::max(1.0, std::fabs(B));
+                    if (moved && s_logs < 40) {
+                        ++s_logs; s_lastA = A; s_lastB = B;
                         char lb[220];
                         std::snprintf(lb, sizeof(lb), "[ovl] projection depth model: a=%.9g b=%.9g row-ratio spread %.3g (%d ratios); player w %.0f z %.7f model %.7f",
                                       A, B, spread, nr, (double)ProjW(f->matrix, p0), (double)rz, -A + B / std::max(1e-9, (double)ProjW(f->matrix, p0)));
