@@ -506,8 +506,41 @@ bool Active() { return g_armed.load(std::memory_order_relaxed); }
 void SetHideScene(bool on) { rtx::vkprobe::SetHideScene(on); }
 bool HideSceneAvailable() { return g_armed.load(std::memory_order_relaxed) && rtx::vkprobe::HideSceneAvailable(); }
 
+// %USERPROFILE%\\RuneToolsX\\vk-features.txt: lines depth=0/1, timing=0/1, capture=0/1 (default all on).
+void PollFeatures() {
+    static ULONGLONG s_next = 0;
+    ULONGLONG now = GetTickCount64();
+    if (now < s_next) return;
+    s_next = now + 2000;
+    wchar_t up[MAX_PATH] = {};
+    if (!GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) return;
+    wchar_t path[MAX_PATH + 40];
+    _snwprintf_s(path, _TRUNCATE, L"%s\\RuneToolsX\\vk-features.txt", up);
+    bool depth = true, timing = true, capture = true;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        char buf[512]; DWORD got = 0;
+        if (ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr)) {
+            buf[got] = 0;
+            if (std::strstr(buf, "depth=0")) depth = false;
+            if (std::strstr(buf, "timing=0")) timing = false;
+            if (std::strstr(buf, "capture=0")) capture = false;
+        }
+        CloseHandle(f);
+    }
+    static int s_last = -1;
+    int cur = (depth ? 1 : 0) | (timing ? 2 : 0) | (capture ? 4 : 0);
+    if (cur == s_last) return;
+    s_last = cur;
+    rtx::vkcomposite::SetFeatures(depth, capture);
+    rtx::vkprobe::SetTimingEnabled(timing);
+    rtx::vkcomposite::SetAlwaysRecord(timing);
+    Log("features: depth %d timing %d capture %d", depth ? 1 : 0, timing ? 1 : 0, capture ? 1 : 0);
+}
+
 void Poll() {
     if (!g_installed) return;
+    PollFeatures();
     VkDevice dev = g_seenDevice.load(std::memory_order_relaxed);
     if (dev && dev != g_dev) {
         if (g_armed.load()) Disarm();

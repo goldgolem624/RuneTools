@@ -80,6 +80,8 @@ bool                             g_ready = false;
 void (*g_log)(const char*, ...) = nullptr;
 void (*g_cmdHook)(VkCommandBuffer) = nullptr;
 bool                             g_alwaysRecord = false;
+bool                             g_featDepth = true, g_featCapture = true;
+unsigned                         g_stalls = 0;
 
 VkCommandPool         g_pool      = VK_NULL_HANDLE;
 VkDescriptorSetLayout g_setLayout = VK_NULL_HANDLE;
@@ -421,7 +423,7 @@ void Barrier(VkCommandBuffer cmd, Texture& t, VkImageLayout to,
 }
 
 inline bool Drawing() { return g_active && g_cur != nullptr; }
-inline bool DepthOn() { return (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE; }
+inline bool DepthOn() { return g_featDepth && (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE; }
 
 int DrawMode(int texMode) {
     int m = texMode;
@@ -524,6 +526,7 @@ float RunWidth(const char* s, int len, float scale, float track) {
 void SetLog(void (*log)(const char*, ...)) { g_log = log; }
 void SetCmdHook(void (*hook)(VkCommandBuffer)) { g_cmdHook = hook; }
 void SetAlwaysRecord(bool on) { g_alwaysRecord = on; }
+void SetFeatures(bool depth, bool capture) { g_featDepth = depth; g_featCapture = capture; }
 void SetCaptureShare(void* share) { g_capShare = static_cast<rtx::capture::Share*>(share); }
 
 bool Init(VkDevice dev, const DeviceFns& fns,
@@ -691,7 +694,13 @@ bool BeginTarget(VkSwapchainKHR sc, std::uint32_t imageIndex, std::uint32_t* w, 
         if (imageIndex >= c.images.size()) return false;
         Image& im = c.images[imageIndex];
         if (im.pending) {
-            if (g_fn.WaitForFences(g_dev, 1, &im.fence, VK_TRUE, 500000000ull) != VK_SUCCESS) return false;
+            if (g_fn.WaitForFences(g_dev, 1, &im.fence, VK_TRUE, 500000000ull) != VK_SUCCESS) {
+                // A fence that does not clear in half a second means the overlay submit is stuck on
+                // the GPU: drop the new paths so the present chain can drain.
+                if (++g_stalls == 1) Log("fence stall: disabling depth sampling, capture and per-frame recording");
+                g_featDepth = false; g_featCapture = false; g_alwaysRecord = false; g_cmdHook = nullptr;
+                return false;
+            }
             g_fn.ResetFences(g_dev, 1, &im.fence);
             im.pending = false;
             FinishReadbacks(im);
@@ -724,7 +733,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     if (!im || !c) return VK_NULL_HANDLE;
     ++g_frameNo;
 
-    const bool wantCapture = g_capShare && g_capShare->magic == rtx::capture::kMagic &&
+    const bool wantCapture = g_featCapture && g_capShare && g_capShare->magic == rtx::capture::kMagic &&
                              g_capShare->request != g_capShare->done && im->capSerial == 0 &&
                              c->w <= rtx::capture::kMaxWidth && c->h <= rtx::capture::kMaxHeight;
     bool useDepth = false;
@@ -767,7 +776,9 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     }
 
     // The game's depth image: borrow it read-only for the overlay pass, hand it back in its own layout.
-    const bool depthPass = useDepth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED;
+    const bool depthPass = g_featDepth && useDepth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED;
+    static bool s_depthLogged = false;
+    if (depthPass && !s_depthLogged) { s_depthLogged = true; Log("depth pass active: image %p layout %d probe %d", (void*)g_depthImg, (int)g_depthLayout, wantProbe ? 1 : 0); }
     if (depthPass) {
         VkImageLayout cur = g_depthLayout;
         if (wantProbe && EnsureBuffer(im->probe, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {

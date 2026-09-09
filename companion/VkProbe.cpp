@@ -25,6 +25,7 @@ bool  g_attached = false;
 VkDevice g_dev = VK_NULL_HANDLE;
 float g_tsPeriod = 1.0f;
 std::atomic<bool>     g_hide{ false };
+std::atomic<bool>     g_timing{ true };
 std::atomic<bool>     g_probeNext{ false };
 std::atomic<unsigned> g_frame{ 0 };
 std::atomic<unsigned> g_dispatchOutside{ 0 };
@@ -151,7 +152,7 @@ int BeginPass(VkCommandBuffer cmd, const char* kind, std::uint32_t w, std::uint3
     }
     const int slot = g_slot.load(std::memory_order_relaxed);
     t.slot = slot;
-    if (g_pools[slot] && fCmdWriteTimestamp) {
+    if (g_pools[slot] && fCmdWriteTimestamp && g_timing.load(std::memory_order_relaxed)) {
         unsigned pair = g_pairs[slot].fetch_add(1, std::memory_order_relaxed);
         if (pair < kMaxPairs) {
             p.query = (int)pair;
@@ -534,14 +535,18 @@ bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout) {
     return true;
 }
 
+// FrameBegin already advanced g_slot to the slot the next frame records into; its pool was read
+// there, so reset it here, ahead of that frame's submissions in queue order.
 void OnOverlayCmd(VkCommandBuffer cmd) {
-    if (!fCmdResetQueryPool) return;
-    const int next = (g_slot.load(std::memory_order_relaxed) + 1) % kSlots;
+    if (!fCmdResetQueryPool || !g_timing.load(std::memory_order_relaxed)) return;
+    const int next = g_slot.load(std::memory_order_relaxed);
     if (g_pools[next]) {
         fCmdResetQueryPool(cmd, g_pools[next], 0, kMaxPairs * 2);
         g_pairs[next].store(0, std::memory_order_relaxed);
     }
 }
+
+void SetTimingEnabled(bool on) { g_timing.store(on); }
 
 // Present boundary: the frame just recorded becomes the current slot's completed list; the slot
 // presented two frames ago has its timestamps read and published; recording moves to the next slot.

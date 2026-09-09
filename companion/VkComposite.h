@@ -80,6 +80,7 @@ bool Ready();
 void SetLog(void (*log)(const char*, ...));
 void SetCmdHook(void (*hook)(VkCommandBuffer));   // start of every recorded overlay command buffer
 void SetAlwaysRecord(bool on);                    // record and submit even when nothing is drawn
+void SetFeatures(bool depth, bool capture);       // runtime switches (vk-features.txt)
 
 bool RegisterSwapchain(VkSwapchainKHR sc, VkFormat fmt, std::uint32_t w, std::uint32_t h);
 void UnregisterSwapchain(VkSwapchainKHR sc);

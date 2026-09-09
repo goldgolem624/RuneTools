@@ -16,6 +16,7 @@ void FrameBegin();                              // present-time boundary, before
 void OnOverlayCmd(VkCommandBuffer cmd);         // start of the overlay command buffer
 bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout);
 void SetHideScene(bool on);
+void SetTimingEnabled(bool on);
 bool HideSceneAvailable();
 void RequestProbe();
 
