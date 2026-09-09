@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <detours.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -568,12 +569,21 @@ void FrameBegin() {
         std::lock_guard<std::mutex> lk(g_passMu);
         current = g_slotPasses[cur];
         old.swap(g_slotPasses[done]);
-        // Scene depth: the client-size depth pass with the most draws in the frame just recorded.
+        // Scene depth: among client-size depth passes with a substantial draw count, the last one.
+        // The reflection render comes first with a mirrored camera and nearly the same draw count;
+        // the main scene and the water pass that follows share the depth image we want.
         const unsigned tw = g_targetW.load(), th = g_targetH.load();
+        unsigned most = 0;
+        for (const auto& p : current)
+            if (p.depthImg && p.w == tw && p.h == th) most = std::max(most, p.draws + p.skipped);
         const Pass* best = nullptr;
         for (const auto& p : current)
-            if (p.depthImg && p.w == tw && p.h == th && (!best || p.draws + p.skipped > best->draws + best->skipped)) best = &p;
-        if (best) { g_sceneImg = best->depthImg; g_sceneFmt = best->depthFmt; g_sceneLayout = best->depthFinal; }
+            if (p.depthImg && p.w == tw && p.h == th && (p.draws + p.skipped) * 4 >= most && most > 0) best = &p;
+        if (best) {
+            if (best->depthImg != g_sceneImg && g_log)
+                g_log("scene depth from pass: %s (%u draws of %u max)", best->desc, best->draws + best->skipped, most);
+            g_sceneImg = best->depthImg; g_sceneFmt = best->depthFmt; g_sceneLayout = best->depthFinal;
+        }
         else { g_sceneImg = VK_NULL_HANDLE; g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
     }
 
