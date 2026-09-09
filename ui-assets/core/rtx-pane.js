@@ -311,11 +311,9 @@
       rows.appendChild(row('Graphics',    s.gfx_mode || 'Detecting...'));
       rows.appendChild(row('Process RAM', s.working_set_mb ? (s.working_set_mb + ' MB') : '--'));
       rows.appendChild(row('Process CPU', s.cpu_pct > 0.05 ? (s.cpu_pct.toFixed(1) + ' %') : '0.0 %'));
-      if (s.gfx_mode && s.gfx_mode !== 'OpenGL') {
+      if (s.gfx_mode === 'Vulkan') {
         const w = document.createElement('div'); w.className = 'sys-warn';
-        w.textContent = s.gfx_mode === 'Vulkan'
-          ? 'RuneTools does not support Vulkan yet. The in-game overlay draws through OpenGL, so overlay markers, tile grid and object outlines stay off. Panels that read game state still work. Set the game to OpenGL for full support.'
-          : 'RuneTools supports the OpenGL renderer. On ' + s.gfx_mode + ' the in-game overlay stays off; panels that read game state still work.';
+        w.textContent = 'RuneTools has not been updated for the Vulkan client yet. In-game overlay markers, the tile grid, object outlines and scene hiding are unavailable on this client. Panels that read game state still work.';
         rows.appendChild(w);
       }
       if (host) {
