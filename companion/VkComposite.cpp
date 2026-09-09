@@ -428,6 +428,11 @@ void Barrier(VkCommandBuffer cmd, Texture& t, VkImageLayout to,
 }
 
 inline bool Drawing() { return g_active && g_cur != nullptr; }
+// Layout transitions must cover every aspect the format has; the sampled view stays depth-only.
+inline VkImageAspectFlags DepthAspects() {
+    return (g_depthFmt == VK_FORMAT_D24_UNORM_S8_UINT || g_depthFmt == VK_FORMAT_D32_SFLOAT_S8_UINT || g_depthFmt == VK_FORMAT_D16_UNORM_S8_UINT)
+        ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_DEPTH_BIT;
+}
 inline bool DepthOn() { return g_featDepth && (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE; }
 
 int DrawMode(int texMode) {
@@ -811,7 +816,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     if (depthPass) {
         VkImageLayout cur = g_depthLayout;
         if (wantProbe && EnsureBuffer(im->probe, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
-            ImageBarrier(cmd, g_depthImg, VK_IMAGE_ASPECT_DEPTH_BIT, cur, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            ImageBarrier(cmd, g_depthImg, DepthAspects(), cur, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
             VkBufferImageCopy rg{};
@@ -822,7 +827,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
             cur = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             im->probePending = true; im->probeZ = g_ref[2];
         }
-        ImageBarrier(cmd, g_depthImg, VK_IMAGE_ASPECT_DEPTH_BIT, cur, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        ImageBarrier(cmd, g_depthImg, DepthAspects(), cur, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     }
@@ -857,7 +862,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     }
 
     if (depthPass)
-        ImageBarrier(cmd, g_depthImg, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
+        ImageBarrier(cmd, g_depthImg, DepthAspects(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
 
