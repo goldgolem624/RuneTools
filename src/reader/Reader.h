@@ -35,6 +35,7 @@ struct Snapshot {
     int           status        = -1;
     std::string   status_label;             // "" when raw byte is unverified
     std::string   display_name;             // JX_DISPLAY_NAME from target PEB
+    std::string   gfx_mode;                 // OpenGL | Vulkan | DirectX; empty when undetermined
 
     std::uint64_t tick_count    = 0;
     double        last_tick_ms  = 0.0;     // wall-clock ms between the last two ticks (~1 ms resolution)

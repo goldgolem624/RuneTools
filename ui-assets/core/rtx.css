@@ -2111,6 +2111,8 @@
   .vw-cur span { color: var(--text); }
   .vw-cur.vw-bin { font-family: ui-monospace, Consolas, monospace; letter-spacing: 0.5px; color: var(--text-dim); }
 
+  .sys-warn { margin: 8px 0 2px; padding: 8px 10px; border-radius: 6px; font-size: 11px; line-height: 1.45;
+    color: #f0c674; background: rgba(224,168,90,0.10); border: 1px solid rgba(224,168,90,0.35); }
   .notes-wrap { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; }
   .notes-head { display: flex; align-items: center; justify-content: space-between; }
   .notes-count { font-size: 12px; color: var(--text-mute); }

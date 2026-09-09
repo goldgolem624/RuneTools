@@ -158,6 +158,27 @@ ModuleRange main_module_range(HANDLE h, const wchar_t* name) {
     return {};
 }
 
+// Renderer actually in use. vulkan-1.dll loads only in Vulkan mode; the overlay hooks
+// opengl32!wglSwapBuffers, so anything but OpenGL means no in-game overlay.
+std::string detect_gfx_mode(HANDLE h) {
+    HMODULE mods[1024];
+    DWORD needed = 0;
+    if (!EnumProcessModulesEx(h, mods, sizeof(mods), &needed, LIST_MODULES_64BIT)) return {};
+    const DWORD n = needed / sizeof(HMODULE);
+    bool gl = false, vk = false, dx = false;
+    for (DWORD i = 0; i < n; ++i) {
+        wchar_t base[260] = {};
+        if (!GetModuleBaseNameW(h, mods[i], base, 260)) continue;
+        if      (_wcsicmp(base, L"vulkan-1.dll") == 0) vk = true;
+        else if (_wcsicmp(base, L"opengl32.dll") == 0) gl = true;
+        else if (_wcsicmp(base, L"d3d11.dll")    == 0) dx = true;
+    }
+    if (vk) return "Vulkan";
+    if (gl) return "OpenGL";
+    if (dx) return "DirectX";
+    return {};
+}
+
 bool rpm_bytes(HANDLE h, std::uint64_t addr, void* out, SIZE_T n) {
     SIZE_T got = 0;
     return ReadProcessMemory(h, (LPCVOID)addr, out, n, &got) && got == n;
@@ -444,6 +465,7 @@ struct State {
     std::uint64_t  mod_size         = 0;
     std::string    client_version;
     std::string    display_name;
+    std::string    gfx_mode;
 
     std::uint64_t  main_global_va   = 0;
     std::uint64_t  tick_owner_va    = 0;
@@ -597,6 +619,7 @@ bool attach_state(State& s, DWORD pid) {
 
     s.client_version = read_client_version(h);
     s.display_name   = read_target_env(h, L"JX_DISPLAY_NAME");
+    s.gfx_mode       = detect_gfx_mode(h);
 
     s.main_global_va = resolve_main_global(h, range.base, range.size);
     s.tick_owner_va  = resolve_tick_owner_global(h, range.base, range.size);
@@ -698,6 +721,8 @@ Snapshot sample_one(State& s) {
     snap.pid            = s.pid;
     snap.client_version = s.client_version;
     snap.display_name   = s.display_name;
+    if (s.gfx_mode.empty()) s.gfx_mode = detect_gfx_mode(s.proc);
+    snap.gfx_mode       = s.gfx_mode;
 
     if (s.main_global_va) {
         auto root = rpm<std::uint64_t>(s.proc, s.main_global_va);
@@ -1024,7 +1049,7 @@ std::string BuildSamplesJson() {
         std::snprintf(buf, sizeof(buf),
             "{\"pid\":%u,\"client_version\":\"%s\","
              "\"in_world\":%s,\"world\":%d,\"status\":%d,\"status_label\":\"%s\","
-             "\"display_name\":\"%s\","
+             "\"display_name\":\"%s\",\"gfx_mode\":\"%s\","
              "\"tick_count\":%llu,\"last_tick_ms\":%.1f,"
              "\"working_set_mb\":%lld,\"priv_bytes_mb\":%lld,\"cpu_pct\":%.1f,"
              "\"bank_open\":%s,\"bank_count\":%d,\"bank_cached_at\":%lld,"
@@ -1039,6 +1064,7 @@ std::string BuildSamplesJson() {
             s.in_world ? "true" : "false",
             s.world, s.status, json_escape(s.status_label).c_str(),
             json_escape(s.display_name).c_str(),
+            json_escape(s.gfx_mode).c_str(),
             (unsigned long long)s.tick_count,
             s.last_tick_ms,
             s.working_set_mb, s.priv_bytes_mb, s.cpu_pct,
