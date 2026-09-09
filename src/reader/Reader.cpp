@@ -3784,7 +3784,7 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     if (count >= 6000 || depth > 12) return;
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    std::uint8_t nb[0x1d8];
+    std::uint8_t nb[0x220];                    // covers the +0x200 child vector end at +0x208
     const bool blk = rpm_bytes(h, node, nb, sizeof(nb));
     auto f64 = [&](std::uint32_t off) -> std::uint64_t {
         if (!blk) return r64(node + off);
