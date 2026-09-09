@@ -81,7 +81,7 @@
       else setStatus(configured ? ('Configured: ' + info.hint) : 'Not configured. Paste the webhook URL copied from your Discord server settings.', false);
       test.disabled = !configured; copy.disabled = !configured; remove.disabled = !configured;
       [test, copy, remove].forEach(b => { b.style.opacity = b.disabled ? '.45' : ''; b.style.cursor = b.disabled ? 'default' : ''; });
-      sub.textContent = configured ? 'Sent without pings, at most one every few seconds' : '';
+      sub.textContent = configured ? 'Turn Discord on per alert in the Alerts panel. Sent without pings, at most one every few seconds.' : '';
     };
     const refresh = () => { try { render(JSON.parse(bridge().discordWebhookGet() || '{}')); } catch (e) { render(null); } };
     const insertClipboard = () => {
@@ -214,8 +214,6 @@
     rows.appendChild(uisPill('Alerts enabled', 'uis_almaster', () => !!(alertCfg && alertCfg.master), v => { if (alertCfg) { alertCfg.master = v; saveAlertCfg(); } }));
     rows.appendChild(uisPill('Only alert when tabbed out', 'uis_alfocus', () => !!(alertCfg && alertCfg.unfocusedOnly), v => { if (alertCfg) { alertCfg.unfocusedOnly = v; saveAlertCfg(); } },
       'Applies to every alert source: idle, custom, auras'));
-    rows.appendChild(uisPill('Send alerts to Discord', 'uis_aldiscord', () => !!(alertCfg && alertCfg.discord), v => { if (alertCfg) { alertCfg.discord = v; saveAlertCfg(); } },
-      'Every delivered alert is also posted to the webhook below'));
     rows.appendChild(uisDiscordRow());
     rows.appendChild(uisSlider('Sound volume', 'uis_vol', 0, 100, 1, () => (typeof sndVol === 'number' ? sndVol : 70),
       v => { try { sndVol = v; prefSet('rtxSoundVol', String(v)); bridge().soundVolume(v); } catch (e) {} }, v => v + '%'));

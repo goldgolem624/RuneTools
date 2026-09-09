@@ -36,15 +36,14 @@
   const NOTIFY_LABELS = { ingame: 'In-game', windows: 'Windows', both: 'Both' };
   const ALERT_DEFAULTS = {
     master: true,
-    discord: false,         // also post every delivered alert to the Discord webhook from Settings
     unfocusedOnly: false,   // every alert: only while the game window is NOT in the foreground
     rules: {
-      random:  { enabled: true,  sound: 'alert 1', flash: false, notify: 'ingame' },
-      levelup: { enabled: false, sound: 'alert 2', flash: true,  notify: 'ingame' },
-      target:  { enabled: false, sound: 'alert 2', flash: true,  notify: 'ingame' },
-      ge:      { enabled: false, sound: 'alert 3', flash: false, notify: 'ingame' },
-      idle:    { enabled: false, sound: 'alert 4', flash: false, val: 5, repeat: false, notify: 'ingame' },
-      logout:  { enabled: false, sound: 'alert 9', flash: true,  val: 10, repeat: false, notify: 'both' },
+      random:  { enabled: true,  sound: 'alert 1', flash: false, notify: 'ingame', discord: false },
+      levelup: { enabled: false, sound: 'alert 2', flash: true,  notify: 'ingame', discord: false },
+      target:  { enabled: false, sound: 'alert 2', flash: true,  notify: 'ingame', discord: false },
+      ge:      { enabled: false, sound: 'alert 3', flash: false, notify: 'ingame', discord: false },
+      idle:    { enabled: false, sound: 'alert 4', flash: false, val: 5, repeat: false, notify: 'ingame', discord: false },
+      logout:  { enabled: false, sound: 'alert 9', flash: true,  val: 10, repeat: false, notify: 'both', discord: false },
     },
     custom: [],
   };
@@ -110,6 +109,7 @@
       sound:   (ALERT_SOUNDS.indexOf(w.sound) >= 0 ? w.sound : 'alert 1'),
       flash:   typeof w.flash === 'boolean' ? w.flash : false,
       notify:  (NOTIFY_TYPES.indexOf(w.notify) >= 0 ? w.notify : 'ingame'),
+      discord: typeof w.discord === 'boolean' ? w.discord : false,   // also post to the Discord webhook
       repeat:  typeof w.repeat === 'boolean' ? w.repeat : false,
       enabled: typeof w.enabled === 'boolean' ? w.enabled : true,
       also:    Array.isArray(w.also) ? w.also.map(normAnd).filter(Boolean).slice(0, AND_MAX) : [],
@@ -121,7 +121,6 @@
     alertCfg = JSON.parse(JSON.stringify(ALERT_DEFAULTS));
     if (saved && typeof saved === 'object') {
       if (typeof saved.master === 'boolean') alertCfg.master = saved.master;
-      if (typeof saved.discord === 'boolean') alertCfg.discord = saved.discord;
       if (typeof saved.unfocusedOnly === 'boolean') alertCfg.unfocusedOnly = saved.unfocusedOnly;
       else if (saved.rules && saved.rules.idle && saved.rules.idle.unfocusedOnly === true) alertCfg.unfocusedOnly = true;
       if (saved.rules) for (const id in alertCfg.rules) {
@@ -130,6 +129,7 @@
         if (typeof s.sound === 'string' && ALERT_SOUNDS.indexOf(s.sound) >= 0) alertCfg.rules[id].sound = s.sound;
         if (typeof s.flash === 'boolean') alertCfg.rules[id].flash = s.flash;
         if (typeof s.notify === 'string' && NOTIFY_TYPES.indexOf(s.notify) >= 0) alertCfg.rules[id].notify = s.notify;
+        if (typeof s.discord === 'boolean') alertCfg.rules[id].discord = s.discord;
         if (typeof s.repeat === 'boolean' && 'repeat' in alertCfg.rules[id]) alertCfg.rules[id].repeat = s.repeat;
         if (typeof s.val === 'number' && 'val' in alertCfg.rules[id]) alertCfg.rules[id].val = s.val;
         if (s.off && typeof s.off === 'object') {
@@ -144,10 +144,10 @@
   let _alertSaveT = 0, _alertSaveTries = 0;
   function saveAlertCfg() {
     if (!alertCfg) return;
-    const out = { master: alertCfg.master, discord: !!alertCfg.discord, unfocusedOnly: !!alertCfg.unfocusedOnly, rules: {}, custom: [] };
+    const out = { master: alertCfg.master, unfocusedOnly: !!alertCfg.unfocusedOnly, rules: {}, custom: [] };
     for (const id in alertCfg.rules) {
       const r = alertCfg.rules[id];
-      out.rules[id] = { enabled: r.enabled, sound: r.sound, flash: r.flash, notify: r.notify };
+      out.rules[id] = { enabled: r.enabled, sound: r.sound, flash: r.flash, notify: r.notify, discord: !!r.discord };
       if ('repeat' in r) out.rules[id].repeat = r.repeat;
       if ('val' in r) out.rules[id].val = r.val;
       if (r.off && typeof r.off === 'object') {
@@ -156,7 +156,7 @@
         if (Object.keys(off).length) out.rules[id].off = off;
       }
     }
-    out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, item: w.item, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, repeat: w.repeat, enabled: w.enabled,
+    out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, item: w.item, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, discord: !!w.discord, repeat: w.repeat, enabled: w.enabled,
       also: (w.also || []).map(c => ({ type: c.type, kind: c.kind, text: c.text, anim: c.anim, cond: c.cond, num: c.num, stat: c.stat, item: c.item, not: c.not })) }));
     let ok = false;
     try { ok = !!rtxData.sync('act.alertsSave', JSON.stringify(out)); } catch (e) {}
@@ -189,7 +189,7 @@
       if (msg) { try { uiNotify(msg, { sticky: sticky, ttl: sticky ? 0 : 5000 }); } catch (e) {} }
     }
     if (nt === 'windows' || nt === 'both') winNotify(msg);
-    if (alertCfg.discord && msg) {
+    if (cfg.discord && msg) {
       try {
         if (bridge().discordNotify) bridge().discordNotify(msg, 'alerts', title || 'Alert',
           (lastSnap && lastSnap.display_name) || '', (lastSnap && lastSnap.in_world && lastSnap.world) ? String(lastSnap.world) : '');
@@ -996,6 +996,7 @@
     const ntl = document.createElement('span'); ntl.className = 'al-lab'; ntl.textContent = 'Notify';
     nt.appendChild(ntl); nt.appendChild(notifyControl(() => w.notify, v => { w.notify = v; }));
     foot.appendChild(nt);
+    foot.appendChild(mkTog('Discord', w.discord, v => w.discord = v, 'Also post this alert to the Discord webhook from Settings'));
     foot.appendChild(mkTog('Repeat', w.repeat, v => w.repeat = v, 'Keep notifying while the trigger stays active'));
     card.appendChild(foot);
     return card;
@@ -1143,8 +1144,14 @@
       const play = document.createElement('button'); play.type = 'button'; play.className = 'al-play'; play.textContent = '▶'; play.title = 'Preview';
       play.addEventListener('click', e => { e.stopPropagation(); if (r.sound !== 'none') { try { bridge().playSound(r.sound); } catch (_) {} } });
       snd.appendChild(slab); snd.appendChild(strig); snd.appendChild(play);
+      const dc = document.createElement('div'); dc.className = 'al-flash';
+      const dlab = document.createElement('span'); dlab.className = 'lab'; dlab.textContent = 'Discord';
+      const dcp = alertPill(!!r.discord); dcp.id = 'al_' + meta.id + '_discord'; dcp.title = 'Also post this alert to the Discord webhook from Settings';
+      dcp.addEventListener('click', e => { e.stopPropagation(); r.discord = !r.discord; reflectAlerts(); saveAlertCfg(); });
+      dc.appendChild(dlab); dc.appendChild(dcp);
       ctl.appendChild(fl);
       ctl.appendChild(nf);
+      ctl.appendChild(dc);
       if (meta.repeatable) {     // "keep notifying" while the condition holds (e.g. idle)
         const rp = document.createElement('div'); rp.className = 'al-flash';
         const rlab = document.createElement('span'); rlab.className = 'lab'; rlab.textContent = 'Repeat';
@@ -1195,6 +1202,7 @@
       const r = alertCfg.rules[meta.id];
       const en = $('al_' + meta.id + '_en');    if (en) en.classList.toggle('on', r.enabled);
       const fl = $('al_' + meta.id + '_flash'); if (fl) fl.classList.toggle('on', r.flash);
+      const fl = $('al_' + meta.id + '_discord'); if (fl) fl.classList.toggle('on', r.discord);
       const nf = $('al_' + meta.id + '_notify'); if (nf) nf.textContent = NOTIFY_LABELS[r.notify] || 'In-game';
       const rp = $('al_' + meta.id + '_repeat'); if (rp) rp.classList.toggle('on', !!r.repeat);
       const ctl = $('al_' + meta.id + '_ctl');  if (ctl) ctl.style.opacity = (alertCfg.master && r.enabled) ? 1 : 0.4;
