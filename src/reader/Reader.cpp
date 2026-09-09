@@ -184,7 +184,7 @@ std::string detect_gfx_mode(HANDLE h) {
     while (f && std::getline(f, line)) {
         if (line.rfind("renderer=", 0) != 0) continue;
         std::string v = line.substr(9);
-        while (!v.empty() && (v.back() == '' || v.back() == ' ')) v.pop_back();
+        while (!v.empty() && (v.back() == '\r' || v.back() == ' ')) v.pop_back();
         if (_stricmp(v.c_str(), "vulkan") == 0) return "Vulkan";
         if (_stricmp(v.c_str(), "opengl") == 0 || _stricmp(v.c_str(), "auto") == 0) return "OpenGL";
         return {};
