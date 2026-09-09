@@ -1786,28 +1786,31 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, farp[0], farp[1], farp[2], fx2, fy2)) {
                     float fz = ZAt(fx2, fy2);
                     if (fz >= 0.f && rz >= 0.f && fz < rz) mflags |= marker::kFlagDepthReversed;
-                    // depth = -a + b / w holds for a perspective projection; solve a, b from the player
-                    // and the far point, then check a third point so the form is verified, not assumed.
-                    const double w1 = ProjW(f->matrix, p0), w2 = ProjW(f->matrix, farp);
-                    if (fz >= 0.f && rz >= 0.f && w1 > 0.0 && w2 > 0.0 && std::fabs(1.0 / w1 - 1.0 / w2) > 1e-12) {
-                        const double B = ((double)rz - (double)fz) / (1.0 / w1 - 1.0 / w2);
-                        const double A = B / w1 - (double)rz;
-                        const float p3[3] = { p0[0], p0[1] + 2048.f, p0[2] + 256.f };
-                        float tx, ty;
-                        const double w3 = ProjW(f->matrix, p3);
-                        if (w3 > 0.0 && WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, p3[0], p3[1], p3[2], tx, ty)) {
-                            const float tz = ZAt(tx, ty);
-                            const double resid = tz >= 0.f ? std::fabs((-A + B / w3) - (double)tz) : 1.0;
-                            static bool s_checked = false;
-                            if (!s_checked) {
-                                s_checked = true;
-                                char lb[200];
-                                std::snprintf(lb, sizeof(lb), "[ovl] projection depth model: a=%.9g b=%.9g third-point residual %.3g (w %.0f, %.0f, %.0f)", A, B, resid, w1, w2, w3);
-                                rtx::log::Client(cfg.pid, lb);
-                            }
-                            if (resid < 1e-5) { ra = (float)A; rb = (float)B; }
-                        }
+                    // Exact depth model from the matrix itself: clip z = -a * clip w + b for every point
+                    // (the z row is a multiple of the w row plus a constant), so depth = -a + b / w.
+                    // The three coordinate ratios must agree; a disagreement means a non-standard
+                    // projection and the constants are withheld.
+                    const double m2 = f->matrix[2], m3 = f->matrix[3], m10 = f->matrix[10], m11 = f->matrix[11],
+                                 m6 = f->matrix[6], m7 = f->matrix[7], m14 = f->matrix[14], m15 = f->matrix[15];
+                    double ratios[3]; int nr = 0;
+                    if (std::fabs(m3) > 1e-12) ratios[nr++] = -m2 / m3;
+                    if (std::fabs(m11) > 1e-12) ratios[nr++] = -m10 / m11;
+                    if (std::fabs(m7) > 1e-12) ratios[nr++] = -m6 / m7;
+                    double A = 0.0, spread = 1.0;
+                    if (nr) {
+                        A = ratios[0]; spread = 0.0;
+                        for (int i = 1; i < nr; ++i) spread = std::max(spread, std::fabs(ratios[i] - A) / std::max(1e-9, std::fabs(A)));
                     }
+                    const double B = m14 + A * m15;
+                    static bool s_checked = false;
+                    if (!s_checked) {
+                        s_checked = true;
+                        char lb[220];
+                        std::snprintf(lb, sizeof(lb), "[ovl] projection depth model: a=%.9g b=%.9g row-ratio spread %.3g (%d ratios); player w %.0f z %.7f model %.7f",
+                                      A, B, spread, nr, (double)ProjW(f->matrix, p0), (double)rz, -A + B / std::max(1e-9, (double)ProjW(f->matrix, p0)));
+                        rtx::log::Client(cfg.pid, lb);
+                    }
+                    if (nr >= 2 && spread < 1e-6 && std::fabs(B) > 0.0) { ra = (float)A; rb = (float)B; }
                 }
                 // Second calibration point: three tiles diagonal on the grid at the tile-corner height.
                 float q[3] = { p0[0] + 3.f * 512.f, p0[1] + 3.f * 512.f, p0[2] };
