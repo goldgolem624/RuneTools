@@ -688,6 +688,18 @@ bool RegisterSwapchain(VkSwapchainKHR sc, VkFormat fmt, std::uint32_t w, std::ui
 
 int SwapchainCount() { return (int)g_chains.size(); }
 
+bool KnownSwapchain(VkSwapchainKHR sc) {
+    for (const auto& c : g_chains) if (c.sc == sc) return true;
+    return false;
+}
+
+VkFormat RegisterSwapchainLate(VkSwapchainKHR sc, std::uint32_t w, std::uint32_t h) {
+    static const VkFormat order[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_A2B10G10R10_UNORM_PACK32 };
+    for (VkFormat f : order)
+        if (RegisterSwapchain(sc, f, w, h)) return f;
+    return VK_FORMAT_UNDEFINED;
+}
+
 bool BeginTarget(VkSwapchainKHR sc, std::uint32_t imageIndex, std::uint32_t* w, std::uint32_t* h) {
     g_curChain = nullptr; g_cur = nullptr;
     g_verts.clear(); g_batches.clear(); g_uploads.clear(); g_stageUsed = 0; g_active = false;

@@ -304,8 +304,23 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
     std::uint32_t wc = info->waitSemaphoreCount;
     int n = 0;
     std::uint32_t count = info->swapchainCount < 8 ? info->swapchainCount : 8;
+    static unsigned s_logged = 0;
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint32_t w = 0, h = 0;
+        if (!rtx::vkcomposite::KnownSwapchain(info->pSwapchains[i])) {
+            // Created before injection: adopt it from the present with the window size.
+            static ULONGLONG s_lastTry = 0;
+            ULONGLONG now = GetTickCount64();
+            RECT rc{};
+            if (now - s_lastTry > 1500 && g_hwnd && IsWindow(g_hwnd) && GetClientRect(g_hwnd, &rc) && rc.right > 0 && rc.bottom > 0) {
+                s_lastTry = now;
+                VkFormat f = rtx::vkcomposite::RegisterSwapchainLate(info->pSwapchains[i], (std::uint32_t)rc.right, (std::uint32_t)rc.bottom);
+                Log("swapchain %p adopted from present: %ldx%ld format %d (%s)", (void*)info->pSwapchains[i], rc.right, rc.bottom, (int)f,
+                    f != VK_FORMAT_UNDEFINED ? "ok" : "failed");
+                if (f != VK_FORMAT_UNDEFINED) g_everRegistered.store(true);
+            }
+        }
+        if (s_logged < 5) { ++s_logged; Log("present %u: swapchain %p image %u known %d window %p", s_logged, (void*)info->pSwapchains[i], info->pImageIndices[i], rtx::vkcomposite::KnownSwapchain(info->pSwapchains[i]) ? 1 : 0, (void*)g_hwnd); }
         if (!rtx::vkcomposite::BeginTarget(info->pSwapchains[i], info->pImageIndices[i], &w, &h)) continue;
         rtx::vkprobe::SetTargetExtent(w, h);
         VkImage dimg = VK_NULL_HANDLE; VkFormat dfmt = VK_FORMAT_UNDEFINED; VkImageLayout dlay = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -482,21 +497,23 @@ void Bootstrap() {
             SetWindowPos(g_hwnd, nullptr, 0, 0, g_nudgeW, g_nudgeH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
     if (g_everRegistered.load()) return;
-    if (!g_nudged && now - g_armedMs > 1500) {
-        g_nudged = true;
+    static int s_nudges = 0;
+    static ULONGLONG s_nextNudge = 0;
+    if (s_nudges < 3 && now - g_armedMs > 1500 && now >= s_nextNudge && !g_nudgeRestoreMs) {
         RefreshWindow();
         RECT r{};
-        if (g_hwnd && GetWindowRect(g_hwnd, &r)) {
+        if (g_hwnd && IsWindow(g_hwnd) && IsWindowVisible(g_hwnd) && GetWindowRect(g_hwnd, &r)) {
+            ++s_nudges; s_nextNudge = now + 3000; g_nudged = true;
             g_nudgeW = r.right - r.left; g_nudgeH = r.bottom - r.top;
-            Log("nudging window %p (%dx%d) to learn the swapchain", (void*)g_hwnd, g_nudgeW, g_nudgeH);
+            Log("nudging window %p (%dx%d) to learn the swapchain (attempt %d)", (void*)g_hwnd, g_nudgeW, g_nudgeH, s_nudges);
             SetWindowPos(g_hwnd, nullptr, 0, 0, g_nudgeW + 1, g_nudgeH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             g_nudgeRestoreMs = now + 200;
         } else {
-            Log("no game window to nudge");
+            s_nextNudge = now + 1000;   // window not up yet or hidden mid-embed: try again
         }
-    } else if (g_nudged && !g_warnedNoChain && now - g_armedMs > 6000) {
+    } else if (s_nudges >= 3 && !g_warnedNoChain && now - g_armedMs > 12000) {
         g_warnedNoChain = true;
-        Log("swapchain still unknown after nudge (frames seen %u)", g_frames.load());
+        Log("swapchain still unknown after %d nudges (presents seen %u)", s_nudges, g_frames.load());
     }
 }
 

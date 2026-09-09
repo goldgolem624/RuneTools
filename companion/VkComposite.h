@@ -83,6 +83,10 @@ void SetAlwaysRecord(bool on);                    // record and submit even when
 void SetFeatures(bool depth, bool capture);       // runtime switches (vk-features.txt)
 
 bool RegisterSwapchain(VkSwapchainKHR sc, VkFormat fmt, std::uint32_t w, std::uint32_t h);
+// A swapchain that existed before injection: size from the window, format tried in the order
+// the client has been seen to use. Returns the format that took, or VK_FORMAT_UNDEFINED.
+VkFormat RegisterSwapchainLate(VkSwapchainKHR sc, std::uint32_t w, std::uint32_t h);
+bool KnownSwapchain(VkSwapchainKHR sc);
 void UnregisterSwapchain(VkSwapchainKHR sc);
 int  SwapchainCount();
 
