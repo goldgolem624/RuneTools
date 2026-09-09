@@ -271,14 +271,19 @@ std::wstring AutoRsClientPath() {
         for (const wchar_t* rel : kRel)
             cands.push_back(drive + rel);
 
+    // Polled every few seconds; log only when the answer changes.
+    static std::wstring s_last;
+    static bool s_lastMissing = false;
     std::error_code ec;
     for (const auto& p : cands) {
         if (std::filesystem::exists(p, ec)) {
-            rtx::log::Launcher("RuneScape.exe resolved: " + w2u(p));
+            if (p != s_last || s_lastMissing) rtx::log::Launcher("RuneScape.exe resolved: " + w2u(p));
+            s_last = p; s_lastMissing = false;
             return p;
         }
     }
-    rtx::log::Launcher("RuneScape.exe not found (registry, Steam libraries, drive scan all empty)");
+    if (!s_lastMissing) rtx::log::Launcher("RuneScape.exe not found (registry, Steam libraries, drive scan all empty)");
+    s_lastMissing = true; s_last.clear();
     return {};
 }
 
