@@ -23,10 +23,11 @@ namespace {
 struct Vertex { float x, y, z, u, v, r, g, b, a; };
 struct Batch  { int tex; int mode; std::uint32_t first, count; };
 // Mirrors the shader block under std430: the vec2 after `mode` is 8-byte aligned, hence the pad.
-struct PushConst { float sx, sy, tx, ty; std::int32_t mode; std::int32_t pad; float dsx, dsy; float a, b, bias; };
-static_assert(sizeof(PushConst) == 44, "push constant block layout");
-static_assert(offsetof(PushConst, dsx) == 24 && offsetof(PushConst, a) == 32 && offsetof(PushConst, bias) == 40, "push constant offsets");
-constexpr float kOccludeBiasUnits = 128.0f;   // a quarter tile: how far in front the scene must be to hide a marker
+struct PushConst { float sx, sy, tx, ty; std::int32_t mode; std::int32_t pad; float dsx, dsy; float a, b, bias, fade; };
+static_assert(sizeof(PushConst) == 48, "push constant block layout");
+static_assert(offsetof(PushConst, dsx) == 24 && offsetof(PushConst, a) == 32 && offsetof(PushConst, bias) == 40 && offsetof(PushConst, fade) == 44, "push constant offsets");
+constexpr float kOccludeBiasUnits = 128.0f;   // a quarter tile: how far in front the scene must be to fade a marker
+constexpr float kOccludedAlpha = 0.3f;         // opacity kept where the scene is in front of a marker
 
 enum Tex { kTexWhite = 0, kTexAtlas = 1, kTexUi = 2, kTexHud = 3, kTexCount = 4 };
 enum Mode { kModeStraight = 1, kModeDepth = 2, kModeReversed = 4 };
@@ -881,7 +882,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         VkDeviceSize zero = 0;
         g_fn.CmdBindVertexBuffers(cmd, 0, 1, &im->vbuf.buf, &zero);
         g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 1, &g_depthSet, 0, nullptr);
-        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 0, 1.0f / (float)c->w, 1.0f / (float)c->h, g_ref[3], g_ref[4], kOccludeBiasUnits };
+        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 0, 1.0f / (float)c->w, 1.0f / (float)c->h, g_ref[3], g_ref[4], kOccludeBiasUnits, kOccludedAlpha };
         for (const auto& b : g_batches) {
             Texture& t = g_tex[b.tex];
             if (!t.img || t.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;

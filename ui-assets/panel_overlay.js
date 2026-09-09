@@ -64,7 +64,7 @@
     const sep = document.createElement('div'); sep.className = 'ov-sep'; wrap.appendChild(sep);
     wrap.appendChild(ovToggleRow('ov_grid', 'Tile grid', 'World grid lines on the ground'));
     wrap.appendChild(ovToggleRow('ov_walkonly', 'Walkable only', 'Hide unwalkable tiles (else they tint red)'));
-    wrap.appendChild(ovToggleRow('ov_occlude', 'Hide behind terrain', 'Markers are cut where the scene is in front of them (Vulkan client)'));
+    wrap.appendChild(ovToggleRow('ov_occlude', 'Fade behind scenery', 'Marker parts behind terrain or objects are drawn faint instead of hidden (Vulkan client)'));
     wrap.appendChild(ovToggleRow('ov_players', 'Players', 'Marker + name per player'));
     wrap.appendChild(ovToggleRow('ov_npcs', 'NPCs', 'Marker + name per NPC'));
     wrap.appendChild(ovToggleRow('ov_objects', 'Objects', 'Footprint box per named scenery object'));
