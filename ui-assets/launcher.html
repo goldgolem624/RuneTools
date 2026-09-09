@@ -980,7 +980,7 @@
             </button>
             <div class="acct-menu" id="gfx-menu" role="listbox" hidden></div>
           </div>
-          <div class="play-hint" id="gfx-hint">Applies the next time the game starts.</div>
+          <div class="play-hint" id="gfx-hint" hidden></div>
         </div>
         <div class="card play-card" id="main-card">
           <div class="status" id="main-status"></div>
@@ -2071,9 +2071,10 @@
       menu.appendChild(row);
     }
     if (hint) {
-      hint.textContent = info && info.error ? info.error
-        : info && info.running ? 'A client is running. The change applies when it is restarted.'
-        : 'Applies the next time the game starts.';
+      const msg = info && info.error ? info.error
+        : info && info.running ? 'A client is running. The change applies when it is restarted.' : '';
+      hint.textContent = msg;
+      hint.hidden = !msg;
     }
   }
   async function gfxRefresh() {
