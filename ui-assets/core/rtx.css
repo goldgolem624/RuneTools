@@ -1138,6 +1138,15 @@
              color: var(--accent-hi); line-height: 1.5; }
   .qg-ctxt { font-size: 11px; color: var(--text); line-height: 1.5; }
   .qg-cond { font-size: 10.5px; color: #f4c566; line-height: 1.45; margin-top: 3px; }
+  /* Wikitables lifted out of a quick-guide step (recipe / lookup grids). */
+  .qg-tbl { border-collapse: collapse; margin: 6px 0 2px; font-size: 11px; line-height: 1.5;
+            display: block; width: max-content; max-width: 100%; overflow-x: auto; }
+  .qg-tbl th, .qg-tbl td { border: 1px solid var(--border); padding: 3px 8px; text-align: left;
+                           color: var(--text); font-variant-numeric: tabular-nums; }
+  .qg-tbl th { background: rgba(var(--accent-rgb),0.14); color: var(--accent-hi);
+               font-weight: 700; white-space: nowrap; }
+  .qg-tbl tr:nth-child(even) td:not(.hl) { background: rgba(255,255,255,0.025); }
+  .qg-tbl td.hl { background: rgba(var(--accent-rgb),0.30); color: #fff; font-weight: 700; }
   .fam-head { display: flex; align-items: center; gap: 10px; padding: 2px 2px 10px; }
   .fam-ico { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--border);
              background-color: var(--bg-elev); background-size: 28px; background-position: center; background-repeat: no-repeat; }

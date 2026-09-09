@@ -48,6 +48,10 @@ private:
 
     std::vector<std::uint8_t> FetchReferenceTableBlob();
     std::vector<std::uint8_t> FetchArchiveBlob(int archive_id);
+    // True when the last FetchBlob could not read the db at all (locked/busy/io error, or the
+    // connection would not open) as opposed to the key simply not being present. Transient: the
+    // game client holds js5-2.jcache open and writes it while it downloads cache updates.
+    bool          LastReadFailed() const { return db_error_; }
     bool ArchiveHasFile(int archive_id, int file_id) const;
 
     bool          EnsureDb() const;          // lazy open; false if it cannot open
@@ -69,6 +73,7 @@ private:
     mutable sqlite3_stmt*          stmt_ref_table_ = nullptr;
     mutable sqlite3_stmt*          stmt_archive_   = nullptr;
     mutable sqlite3_stmt*          stmt_keys_      = nullptr;
+    mutable bool                   db_error_       = false;
 
     mutable std::mutex             archive_cache_mu_;
     std::vector<Slot>              archive_cache_;

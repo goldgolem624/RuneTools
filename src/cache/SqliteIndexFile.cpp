@@ -46,10 +46,12 @@ std::vector<std::uint8_t> SqliteIndexFile::FetchBlob(const char* sql, sqlite3_st
                                                      int key) const {
     std::vector<std::uint8_t> out;
     std::lock_guard<std::mutex> lk(db_mu_);
+    db_error_ = false;
     sqlite3_stmt* stmt = Prepare(sql, cached);
-    if (!stmt) return out;
+    if (!stmt) { db_error_ = true; return out; }
     if (key >= 0) sqlite3_bind_int(stmt, 1, key);
     int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) db_error_ = true;   // busy/locked/io: retryable
     if (rc == SQLITE_ROW) {
         const void* blob = sqlite3_column_blob(stmt, 0);
         int         size = sqlite3_column_bytes(stmt, 0);
@@ -146,9 +148,14 @@ SqliteIndexFile::ReadFile(int archive_id, int file_id) {
     auto& slot = archive_cache_[archive_id];
     if (slot.state == SlotState::Failed) return {};
     if (slot.state == SlotState::NotLoaded) {
-        // Failed decodes are sticky.
+        // Failed decodes are sticky, but a db that could not be read at all is not a failed decode:
+        // the game client writes js5-2.jcache while it downloads, and a BUSY/LOCKED there would
+        // otherwise blank a whole archive (e.g. 69, every varbit def) for the life of the process.
         auto compressed = FetchArchiveBlob(archive_id);
-        if (compressed.empty()) { slot.state = SlotState::Failed; ++failed_count_; return {}; }
+        if (compressed.empty()) {
+            if (LastReadFailed()) return {};                       // leave NotLoaded: retry later
+            slot.state = SlotState::Failed; ++failed_count_; return {};
+        }
         auto decompressed = Decompress(compressed);
         if (decompressed.empty()) { slot.state = SlotState::Failed; ++failed_count_; return {}; }
         const auto& a = ref_table_->entries()[archive_id];

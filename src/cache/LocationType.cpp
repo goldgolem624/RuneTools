@@ -174,31 +174,63 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
         }
         // ---- build 950-1 additions ----
         case 111:                                    return true;   // flag, no payload
-        case 207: {                                  // u8, u16, u16, usmart n, n x bigsmart, bigsmart (same shape as npc 187)
-            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
+        case 207: {                                  // 950-1: op 77's morph table, now domain-tagged
+            int dom = s.ReadUnsignedByte();          // u8 domain, u16 varbit, u16 varp, usmart n, (n+1) x bigsmart
+            int vb = s.ReadUnsignedShort(); int vp = s.ReadUnsignedShort();
             int n = s.ReadUnsignedSmart();
-            for (int i = 0; i < n; ++i) s.ReadBigSmart();
-            s.ReadBigSmart();
+            for (int i = 0; i <= n; ++i) {
+                int c = s.ReadBigSmart();
+                if (dom != 0) continue;              // only player-domain vars are readable here
+                d.morph_variants.push_back(c);       // index-aligned (keeps -1)
+                if (c >= 0) d.morph_children.push_back(c);
+            }
+            if (dom == 0) {
+                d.morph_varbit = (vb == 0xFFFF) ? -1 : vb;
+                d.morph_varp   = (vp == 0xFFFF) ? -1 : vp;
+            }
             return true;
         }
-        case 208: {                                  // u8, u16, u16, bigsmart, usmart n, n x bigsmart, bigsmart (same shape as npc 188)
-            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart();
+        case 208: {                                  // 950-1: op 92's morph table (+ default child), domain-tagged
+            int dom = s.ReadUnsignedByte();
+            int vb = s.ReadUnsignedShort(); int vp = s.ReadUnsignedShort();
+            int def_child = s.ReadBigSmart();
+            if (dom == 0) {
+                d.morph_default = def_child;
+                if (def_child >= 0) d.morph_children.push_back(def_child);
+            }
             int n = s.ReadUnsignedSmart();
-            for (int i = 0; i < n; ++i) s.ReadBigSmart();
-            s.ReadBigSmart();
+            for (int i = 0; i <= n; ++i) {
+                int c = s.ReadBigSmart();
+                if (dom != 0) continue;
+                d.morph_variants.push_back(c);
+                if (c >= 0) d.morph_children.push_back(c);
+            }
+            if (dom == 0) {
+                d.morph_varbit = (vb == 0xFFFF) ? -1 : vb;
+                d.morph_varp   = (vp == 0xFFFF) ? -1 : vp;
+            }
             return true;
         }
-        case 209: {                                  // u16, u8, u16, u16, u8, u8 n, n x entry, u8 (nested entries: slot, t, u16, u16, bigsmart, 00,
-            s.ReadUnsignedShort(); s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();   //   then t-1 x {u8, u16, bigsmart, 00}; empirical)
+        case 209: {                                  // 950-1: op 205's block, domain-tagged. Fitted on all 33 live records:
+            // u16 len, u8 domain, u16 varbit, u16 varp, u8 (2), u8 n (1), n x { u8, u8 t, u8, t x { u8 value,
+            // u16 value, bigsmart MODEL, u8 0 } }, u8 (first value - 1). Every record keys on varbit 57011 and
+            // the ids are model ids (Oak -> 110681/120719/124743, none an Oak loc), so like npc 189 this is a
+            // per-var-value appearance override, not a child-loc morph: leave morph_* alone.
+            int len = s.ReadUnsignedShort();
+            int end = s.offset() + len;
+            int dom = s.ReadUnsignedByte();
+            int vb = s.ReadUnsignedShort(); s.ReadUnsignedShort();
+            if (dom == 0) probe::cand(vb != 0xFFFF ? vb : -1);
             s.ReadUnsignedByte();
             int n = s.ReadUnsignedByte();
             for (int i = 0; i < n; ++i) {
                 s.ReadUnsignedByte();
                 int t = s.ReadUnsignedByte();
-                s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart(); s.ReadUnsignedByte();
-                for (int k = 1; k < t; ++k) { s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadBigSmart(); s.ReadUnsignedByte(); }
+                s.ReadUnsignedByte();
+                for (int k = 0; k < t; ++k) { s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadBigSmart(); s.ReadUnsignedByte(); }
             }
             s.ReadUnsignedByte();
+            if (s.offset() != end) s.seek(end);                      // length is authoritative
             return true;
         }
         default:
@@ -221,6 +253,7 @@ LocDef DecodeLoc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op) {
     InputStream s(std::move(file_bytes));
     for (;;) {
         int op = s.ReadUnsignedByte();
+        probe::note(op);
         if (op == 0) break;
         if (!ReadOne(s, d, op)) { if (stop_op) *stop_op = op; probe::g_stop = s.offset(); break; }
     }

@@ -89,6 +89,9 @@ std::string ArchResearchJson();
 std::string VarbitMapJson();
 
 std::string QuestsJson();
+// Quest-tracker health: how many listed quests resolved a progress tracker, and whether the
+// CONFIGS index had an archive it could not read. {"quests":n,"tracked":n,"failedArchives":n}
+std::string QuestHealthJson();
 
 std::string ParamDefJson(int param_id);
 

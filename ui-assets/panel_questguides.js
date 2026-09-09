@@ -114,7 +114,58 @@
     s = s.replace(/\{\{\s*[Cc]hecklist\b[\s|;*]*/g, '');
     s = s.replace(/\{\{[\s\S]*$/g, '');                    // unmatched opener -> drop marker + its params
     s = s.replace(/\}\}/g, '');
+    // Wikilinks, including the truncated "[[page]" the extractor sometimes leaves behind.
+    s = s.replace(/\[\[([^\[\]|]*)\|([^\[\]]*?)\]?\]?/g, '$2');
+    s = s.replace(/\[\[([^\[\]]*?)\]?\]?/g, '$1');
     return s.replace(/[ \t]{2,}/g, ' ').trim();
+  }
+  // A few quick guides carry an inline wikitable ({| ... |}) that the extractor left as raw markup:
+  // recipe/lookup tables the player actually needs. Parse them instead of printing the source.
+  const QG_HL = '@@HL@@';                    // marks a cell the wiki highlighted (i.e. the answers)
+  function qgTableRows(body) {
+    body = body.replace(/(\|\|?)\s*class\s*=\s*"[^"]*table-bg-[^"]*"\s*\|/g, '$1' + QG_HL);
+    body = body.replace(/\b[A-Za-z-]+\s*=\s*"[^"]*"/g, ' ')      // class="wikitable"
+               .replace(/\b[A-Za-z-]+\s*=\s*"[^"|!]*/g, ' ');    // unterminated: class="wikitable ...
+    const rows = [];
+    for (const raw of body.split(/\|-+/)) {
+      const r = raw.trim(); if (!r) continue;
+      const hdr = r.charAt(0) === '!';
+      const cells = r.split(hdr ? /!!|\|\||[!|]/ : /\|\||\|/).map(c => {
+        const t = c.trim();
+        return t.indexOf(QG_HL) === 0 ? { t: t.slice(QG_HL.length).trim(), hl: true } : { t: t, hl: false };
+      });
+      while (cells.length && !cells[0].t) cells.shift();
+      while (cells.length && !cells[cells.length - 1].t) cells.pop();
+      if (cells.length) rows.push({ hdr: hdr, cells: cells });
+    }
+    if (!rows.length) return null;
+    let n = 0; for (const r of rows) n = Math.max(n, r.cells.length);
+    const data = rows.filter(r => !r.hdr), src = data.length ? data : rows;
+    const keep = [];                             // drop columns that are empty in every data row
+    for (let i = 0; i < n; i++) if (src.some(r => r.cells[i] && r.cells[i].t)) keep.push(i);
+    if (!keep.length) return null;
+    return rows.map(r => ({ hdr: r.hdr, cells: keep.map(i => r.cells[i] || { t: '', hl: false }) }));
+  }
+  function qgTableHtml(body) {
+    const rows = qgTableRows(body); if (!rows) return '';
+    let h = '<table class="qg-tbl">';
+    for (const r of rows) {
+      h += '<tr>';
+      for (const c of r.cells) {
+        h += r.hdr ? '<th>' + qgEsc(c.t) + '</th>'
+                   : '<td' + (c.hl ? ' class="hl"' : '') + '>' + qgEsc(c.t) + '</td>';
+      }
+      h += '</tr>';
+    }
+    return h + '</table>';
+  }
+  // Lift every table out of a line -> { text, html }; the ":" that introduced it goes with it.
+  function qgSplitTables(line) {
+    let html = '';
+    const text = String(line).replace(/\{\|([\s\S]*?)\|\}/g, function (m, body) {
+      html += qgTableHtml(body); return ' ';
+    });
+    return { text: text.replace(/[ \t]{2,}/g, ' ').replace(/\s*:\s*$/, '').trim(), html: html };
   }
   const QG_REQ = {
     'Hermit Permits': [{ id: 954, n: 3, name: 'Rope' }, { id: 401, n: 6, name: 'Seaweed' }, { id: 1759, n: 1, name: 'Ball of wool' }],
@@ -181,13 +232,16 @@
       if (sr) h += '<div class="myst-tip">Recommended: ' + qgEsc(sr) + '</div>';
       h += '<div class="myst-steps">';
       for (const s of sec.s) {
-        const lines = s.split('\n').map(qgWiki).filter(l => l.trim());
-        if (!lines.length) { i++; continue; }   // step was pure wiki markup -> hide it but keep the index stable
+        let tbl = '';
+        const lines = s.split('\n').map(qgWiki).map(l => {
+          const r = qgSplitTables(l); tbl += r.html; return r.text;
+        }).filter(l => l.trim());
+        if (!lines.length && !tbl) { i++; continue; }   // pure wiki markup -> hide it, keep the index stable
         const dn = done || manual.indexOf(i) >= 0 || (typeof qgAutoDone !== 'undefined' && qgAutoDone[nm] && qgAutoDone[nm].has(i));
         h += '<div class="myst-step' + (dn ? ' done' : '') + '" data-qn="' + qgEsc(nm) + '" data-i="' + i + '">' +
              '<span class="myst-cb"></span><span class="tx">' + qgChatHtml(lines[0]) +
              lines.slice(1).map(l => '<br><span style="opacity:.75;">' + qgChatHtml(l) + '</span>').join('') +
-             '</span></div>';
+             tbl + '</span></div>';
         i++;
       }
       h += '</div>';

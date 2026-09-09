@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1251,11 +1252,22 @@ void LoadVarbitMapLocked() {
     if (!index || !index->ready()) return;          // cache not open yet -> retry next call
     const auto& entries = index->ref().entries();
     if ((int)entries.size() <= kVarbitArchive) return;
-    g_varbit_map_loaded = true;
+    const auto& vb_files = entries[kVarbitArchive].valid_file_ids;
+    if (vb_files.empty()) return;
+
+    // Retrying a locked jcache must stay cheap: the archive holds ~62k files and QuestsJson() polls
+    // at 4 Hz, so probe one file first and back off rather than re-querying every id.
+    static std::chrono::steady_clock::time_point s_vb_retry_at{};
+    auto now = std::chrono::steady_clock::now();
+    if (now < s_vb_retry_at) return;
+    if (index->ReadFile(kVarbitArchive, vb_files.front()).empty()) {
+        s_vb_retry_at = now + std::chrono::seconds(3);
+        return;
+    }
 
     std::unordered_map<int, std::string> per_varp;  // varp id -> "[id,lsb,msb],.."
     char buf[64];
-    for (int fid : entries[kVarbitArchive].valid_file_ids) {
+    for (int fid : vb_files) {
         auto bytes = index->ReadFile(kVarbitArchive, fid);
         if (bytes.empty()) continue;
         InputStream s(std::move(bytes));
@@ -1276,6 +1288,16 @@ void LoadVarbitMapLocked() {
                       per_varp[varp].empty() ? "" : ",", fid, lsb, msb);
         per_varp[varp] += buf;
     }
+    // A locked/busy jcache yields an empty archive read, not a decode failure. Latching that would
+    // leave every varbit unresolvable for the life of the process: quest trackers resolve through
+    // this map, so the Quests panel would show ~300 quests "Untracked" until the app restarts.
+    if (g_varbit_defs.empty()) {
+        g_dombit_defs.clear();
+        g_objvarbit_defs.clear();
+        return;                                     // stay unloaded -> the next call retries
+    }
+    g_varbit_map_loaded = true;
+
     std::string out = "{"; bool first = true;
     for (auto& kv : per_varp) {
         std::snprintf(buf, sizeof(buf), "%s\"%d\":[", first ? "" : ",", kv.first);
@@ -1319,6 +1341,7 @@ bool GetObjVarbit(int varbit_id, int& var, int& lsb, int& msb) {
 namespace {
 // Quest configs: CONFIGS index 2, archive 35 (file = quest id). Opcodes 1 name / 2 list name (version byte + cstring), 3 progress varps / 4 progress varbits (u8 n x {u16 var, i32 start, i32 end}), 5 parent, 6 category, 7 difficulty, 8 members, 9 QP reward, 10 start path (n x i32), 12 i32.
 // 13 required quests (n x u16), 14 required skills (n x {u8 skill, u8 level}), 15 QP required (u16), 17 graphic (big smart), 18/19 requirement blocks (n x {i32,i32,i32,cstring}), 249 params. Re-released quests leave stub configs: dropped, links remapped.
+// 22 progress trackers as of 950-1 (n x {u8 domain, u16 varbit, i32 start, i32 end}); it superseded 3/4, which no live quest config still uses.
 constexpr int kQuestArchive = 35;
 std::string g_quests_json;
 bool        g_quests_loaded = false;
@@ -1407,7 +1430,16 @@ bool DecodeQuestFile(std::vector<std::uint8_t> bytes, QuestDef& q, int* stop_op 
                                else if (key == 7855) q.length = v;
                                else if (key == 7831) q.age = v;
                                else if (key == 9393) q.area = v; } } } break;
-        case 22: s.skip(12); break;    // 950-1: fixed 12-byte payload (probe: 308/308 quest defs parse clean with exactly 12)
+        case 22: {   // 950-1 moved the progress tracker here and domain-tagged it:
+                     // n x { u8 var domain, u16 varbit, i32 start, i32 end }. Domain 0 = player
+                     // varps (all 308 tracked quests); other domains are not ours to read.
+                   int n = s.ReadUnsignedByte();
+                   for (int i = 0; i < n; ++i) {
+                       int dom = s.ReadUnsignedByte();
+                       int v = s.ReadUnsignedShort();
+                       int a = s.ReadInt(), b = s.ReadInt();
+                       if (dom == 0 && q.vb < 0) { q.vb = v; q.vb_start = a; q.vb_end = b; }
+                   } } break;
         default:
             if (op == probe::g_op && probe::g_len <= s.remaining()) { s.skip(probe::g_len); break; }   // unknown-opcode probe (Probe.h)
             probe::g_stop = s.offset(); probe::g_tail = s.remaining();
@@ -1443,13 +1475,16 @@ void LoadQuestsLocked() {
     const auto& entries = index->ref().entries();
     if ((int)entries.size() <= kQuestArchive) return;
     LoadVarbitMapLocked();                           // varbit trackers resolve below
-    g_quests_loaded = true;
+    if (!g_varbit_map_loaded) return;                // no varbit map -> every "b" tracker would be
+                                                     // dropped and baked in; retry on the next call
 
     std::map<int, QuestDef> defs;
     for (int fid : entries[kQuestArchive].valid_file_ids) {
         QuestDef q; q.id = fid;
         if (DecodeQuestFile(index->ReadFile(kQuestArchive, fid), q)) defs[fid] = std::move(q);
     }
+    if (defs.empty()) return;                        // quest archive unreadable: retry, do not bake
+    g_quests_loaded = true;
     auto tracked = [](const QuestDef& q) { return q.vp >= 0 || q.vb >= 0; };
     std::unordered_map<std::string, int> canon;      // name key -> config id
     for (auto& [fid, q] : defs) {
@@ -1457,7 +1492,14 @@ void LoadQuestsLocked() {
         auto it = canon.find(key);
         if (it == canon.end()) { canon[key] = fid; continue; }
         QuestDef& cur = defs[it->second];
-        if (tracked(q) != tracked(cur) ? tracked(q) : fid > it->second) it->second = fid;
+        // Param 1345 (journal id) is the game's own quest-list marker and outranks the id tiebreak:
+        // picking a journal-less duplicate as canonical drops the sibling, then the journal pass
+        // below drops the winner too, and the quest vanishes from the list entirely.
+        const bool jq = q.journal >= 0, jc = cur.journal >= 0;
+        const bool take = (jq != jc)                   ? jq
+                        : (tracked(q) != tracked(cur)) ? tracked(q)
+                                                       : fid > it->second;
+        if (take) it->second = fid;
     }
     std::unordered_map<int, int> remap;              // stub id -> canonical id
     std::set<int> drop;
@@ -1596,6 +1638,27 @@ std::string QuestsJson() {
     EnsureInit();
     LoadQuestsLocked();
     return g_quests_json.empty() ? std::string("{\"vb\":{},\"quests\":[]}") : g_quests_json;
+}
+
+// Counts what the Quests panel would actually be able to track. A quest with neither "v" nor "b"
+// renders as Untracked, so a low count here is the single number that tells the difference between
+// "this account has not done much" and "the cache read or the config format broke".
+std::string QuestHealthJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    LoadQuestsLocked();
+    int total = 0, tracked = 0;
+    for (std::size_t i = 0; (i = g_quests_json.find("{\"id\":", i)) != std::string::npos; ++i) {
+        std::size_t end = g_quests_json.find("{\"id\":", i + 1);
+        const std::string one = g_quests_json.substr(i, end == std::string::npos ? std::string::npos : end - i);
+        ++total;
+        if (one.find(",\"v\":[") != std::string::npos || one.find(",\"b\":[") != std::string::npos) ++tracked;
+    }
+    auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    const int failed = index ? index->FailedArchives() : -1;
+    return "{\"quests\":" + std::to_string(total) + ",\"tracked\":" + std::to_string(tracked) +
+           ",\"failedArchives\":" + std::to_string(failed) +
+           ",\"varbits\":" + std::to_string((int)g_varbit_defs.size()) + "}";
 }
 
 std::string EnumJson(int enum_id) {

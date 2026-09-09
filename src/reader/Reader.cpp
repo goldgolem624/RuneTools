@@ -7171,6 +7171,28 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         add("Var domains", st, doms == 0 ? "varbit archive not readable yet" :
             std::to_string(doms) + "/9 domains defined; unknown var-config opcodes: player " + std::to_string(u60) + ", client " + std::to_string(u62));
     }
+    {   // Quest tracking: a quest with no progress tracker renders as "Untracked", so this is the
+        // number that separates a quiet account from a broken cache read or a changed config format.
+        const std::string j = rtx::cache::QuestHealthJson();
+        auto num = [&](const char* k) {
+            auto p2 = j.find(std::string("\"") + k + "\":");
+            return p2 == std::string::npos ? -1 : std::atoi(j.c_str() + p2 + std::strlen(k) + 3);
+        };
+        const int quests = num("quests"), tracked = num("tracked");
+        const int failed = num("failedArchives"), varbits = num("varbits");
+        int st; std::string d;
+        if (quests <= 0) {
+            st = 2; d = "cache not open yet";
+        } else {
+            d = std::to_string(tracked) + "/" + std::to_string(quests) + " quests resolve a progress tracker";
+            if (varbits <= 0) d += "; varbit map EMPTY (config archive 69 unreadable)";
+            else              d += "; " + std::to_string(varbits) + " varbits";
+            if (failed > 0)   d += "; " + std::to_string(failed) + " config archive(s) failed to read";
+            st = (tracked == quests && failed <= 0) ? 1 : 0;
+            if (tracked < quests) d += " -- the rest show as Untracked (quest config opcode moved?)";
+        }
+        add("Quest tracking", st, d);
+    }
     {   // Var domain stores: player and client tables must resolve; clan / player group absent is normal.
         std::string j = VarDomainStoresJson(pid);
         auto field = [&](const char* dom, const char* name) -> std::string {

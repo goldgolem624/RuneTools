@@ -158,37 +158,79 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
             for (int i = 0; i < n; ++i) s.ReadBigSmart();
             return true;
         }
-        case 187: {                                  // u8, u16, u16, usmart n, n x bigsmart, bigsmart (same shape as loc 207)
-            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
+        case 187: case 188: {                        // 950-1: op 106/118's morph table, domain-tagged.
+            // u8 domain, u16 varbit, u16 varp, [bigsmart default on 188], usmart n, (n+1) x bigsmart.
+            // Ids widened from u16 to bigsmart; transform_to keeps the old "variants then default"
+            // order that GetNpcMorph reads.
+            int dom = s.ReadUnsignedByte();
+            int vb = s.ReadUnsignedShort(); int vp = s.ReadUnsignedShort();
+            int def = (op == 188) ? s.ReadBigSmart() : -1;
             int n = s.ReadUnsignedSmart();
-            for (int i = 0; i < n; ++i) s.ReadBigSmart();
-            s.ReadBigSmart();
+            std::vector<int> variants;
+            for (int i = 0; i <= n; ++i) variants.push_back(s.ReadBigSmart());
+            if (dom != 0) return true;               // only player-domain vars are readable here
+            d.varbit = (vb == 0xFFFF) ? -1 : vb;
+            d.varp   = (vp == 0xFFFF) ? -1 : vp;
+            d.transform_to = std::move(variants);
+            d.transform_to.push_back(def);
             return true;
         }
-        case 188: {                                  // u8, u16, u16, bigsmart, usmart n, n x bigsmart, bigsmart (same shape as loc 208)
-            s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart();
-            int n = s.ReadUnsignedSmart();
-            for (int i = 0; i < n; ++i) s.ReadBigSmart();
-            s.ReadBigSmart();
-            return true;
-        }
-        case 189: {                                  // 950-1: u16, u8, u16, u16, u8 mask, then 10-byte sub-records
-            //   S = {u8 slot, u8 01, u16 0003, u16 0003, i32 value} with 1-byte glue (00 spacer, 01..03 group
-            //   count), then a 1-byte tail. Glue semantics unknown, so S is recognised by signature.
-            s.ReadUnsignedShort(); s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
-            s.ReadUnsignedByte();                                    // mask
-            auto subAt = [&](int o) {
-                return s.remaining() >= (o - s.offset()) + 10 &&
-                       s.peek(o + 1) == 0x01 && s.peek(o + 2) == 0x00 && s.peek(o + 3) == 0x03 &&
-                       s.peek(o + 4) == 0x00 && s.peek(o + 5) == 0x03;
-            };
-            for (int guard = 0; guard < 96 && s.remaining() > 0; ++guard) {
-                if (subAt(s.offset())) { s.skip(10); continue; }   // a sub-record starts here
-                int c = s.ReadUnsignedByte();                        // glue
-                if (c == 0) continue;                                // spacer
-                if (!subAt(s.offset())) break;                       // tail consumed -> done
-                for (int i = 0; i < c && subAt(s.offset()); ++i) s.skip(10);
+        case 189: {                                  // 950-1: op 186's APPEARANCE OVERRIDE block, length-prefixed and
+            // domain-tagged. Fitted on all 191 live records: u16 len, u8 domain, u16 varbit, u16 varp, u8 flags,
+            // then 186's five flag lists with ids widened to bigsmart, then u16 0002. Every record keys on
+            // varbit 57011 (varp 11645 bits 25-28) and 210/211 ids exceed the npc id space: they are MODEL
+            // ids per var value (KBD, Barrows brothers...). Not an identity morph, so nothing goes into
+            // varbit/varp/transform_to; GetNpcMorph must not report it.
+            const int op_start = s.offset() - 1;
+            int len = s.ReadUnsignedShort();
+            int end = s.offset() + len;
+            int dom = s.ReadUnsignedByte();
+            int vb = s.ReadUnsignedShort(); s.ReadUnsignedShort();
+            if (dom == 0) probe::cand(vb != 0xFFFF ? vb : -1);
+            int flags = s.ReadUnsignedByte();
+            if (flags & 1) {
+                int l1 = s.ReadUnsignedByte();
+                for (int i = 0; i < l1; ++i) {
+                    s.ReadUnsignedByte();
+                    int l2 = s.ReadUnsignedByte();
+                    for (int j = 0; j < l2; ++j) {
+                        s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart();
+                        int n = s.ReadUnsignedByte();
+                        for (int kk = 0; kk < n; ++kk) s.ReadUnsignedByte();
+                    }
+                }
             }
+            if (flags & 2) {
+                int l1 = s.ReadUnsignedByte();
+                for (int i = 0; i < l1; ++i) {
+                    s.ReadUnsignedByte();
+                    int l2 = s.ReadUnsignedByte();
+                    for (int j = 0; j < l2; ++j) { s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadBigSmart(); }
+                }
+            }
+            for (int bit : { 4, 8 }) {
+                if (!(flags & bit)) continue;
+                int l1 = s.ReadUnsignedByte();
+                for (int i = 0; i < l1; ++i) {
+                    s.ReadUnsignedByte();
+                    int l2 = s.ReadUnsignedByte();
+                    for (int j = 0; j < l2; ++j) { s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadUnsignedShort(); s.ReadUnsignedShort(); }
+                }
+            }
+            if (flags & 16) {
+                int l1 = s.ReadUnsignedByte();
+                for (int i = 0; i < l1; ++i) {
+                    s.ReadUnsignedByte(); s.ReadUnsignedShort(); s.ReadUnsignedShort();
+                    s.ReadUnsignedByte(); s.ReadUnsignedByte(); s.ReadUnsignedByte(); s.ReadUnsignedByte();
+                }
+            }
+            s.ReadUnsignedShort();                                   // 0002 on every live record
+            if (probe::g_hist_on) {
+                probe::g_payload.clear(); probe::g_tail_bytes.clear();
+                for (int o = op_start; o < s.offset(); ++o) probe::g_payload.push_back((char)s.peek(o));
+                for (int o = s.offset(); s.peek(o) >= 0; ++o) probe::g_tail_bytes.push_back((char)s.peek(o));
+            }
+            if (s.offset() != end) s.seek(end);                      // length is authoritative
             return true;
         }
         default:
@@ -210,6 +252,7 @@ NpcDef DecodeNpc(int id, std::vector<std::uint8_t> file_bytes, int* stop_op) {
     InputStream s(std::move(file_bytes));
     for (;;) {
         int op = s.ReadUnsignedByte();
+        probe::note(op);
         if (op == 0) break;
         if (!ReadOne(s, d, op)) { if (stop_op) *stop_op = op; probe::g_stop = s.offset(); break; }
     }

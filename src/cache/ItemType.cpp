@@ -1,4 +1,5 @@
 #include "ItemType.h"
+#include "Probe.h"
 
 namespace rtx::cache {
 
@@ -122,6 +123,7 @@ ItemDef DecodeItem(int id, std::vector<std::uint8_t> file_bytes, int* stop_op) {
     for (;;) {
         int op = s.ReadUnsignedByte();
         if (op == 0) break;
+        probe::note(op);
         if (!ReadOne(s, def, op)) { if (stop_op) *stop_op = op; break; }
     }
     return def;
