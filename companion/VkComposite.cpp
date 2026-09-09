@@ -4,10 +4,13 @@
 #include "VkComposite.h"
 #include "VkShaders.h"
 #include "MarkerShare.h"
+#include "CaptureShare.h"
 
 #include <windows.h>
 #undef CreateSemaphore
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -16,11 +19,12 @@
 namespace rtx::vkcomposite {
 namespace {
 
-struct Vertex { float x, y, u, v, r, g, b, a; };
+struct Vertex { float x, y, z, u, v, r, g, b, a; };
 struct Batch  { int tex; int mode; std::uint32_t first, count; };
-struct PushConst { float sx, sy, tx, ty; std::int32_t mode; };
+struct PushConst { float sx, sy, tx, ty; std::int32_t mode; float dsx, dsy; };
 
 enum Tex { kTexWhite = 0, kTexAtlas = 1, kTexUi = 2, kTexHud = 3, kTexCount = 4 };
+enum Mode { kModeStraight = 1, kModeDepth = 2, kModeReversed = 4 };
 
 struct Buffer {
     VkBuffer       buf  = VK_NULL_HANDLE;
@@ -50,6 +54,12 @@ struct Image {
     VkSemaphore     sem   = VK_NULL_HANDLE;
     bool            pending = false;
     Buffer          vbuf, sbuf;
+    // Readbacks recorded into this image's command buffer, resolved once its fence has passed.
+    Buffer          cap;          // frame capture
+    std::uint32_t   capSerial = 0, capW = 0, capH = 0;
+    Buffer          probe;        // one depth texel at the reference point
+    bool            probePending = false;
+    float           probeZ = 0.f;
 };
 
 struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; };
@@ -67,16 +77,33 @@ DeviceFns                        g_fn{};
 VkPhysicalDeviceMemoryProperties g_mem{};
 std::uint32_t                    g_family = 0;
 bool                             g_ready = false;
+void (*g_log)(const char*, ...) = nullptr;
+void (*g_cmdHook)(VkCommandBuffer) = nullptr;
+bool                             g_alwaysRecord = false;
 
 VkCommandPool         g_pool      = VK_NULL_HANDLE;
 VkDescriptorSetLayout g_setLayout = VK_NULL_HANDLE;
 VkPipelineLayout      g_pipeLayout = VK_NULL_HANDLE;
 VkDescriptorPool      g_descPool  = VK_NULL_HANDLE;
 VkSampler             g_sampler   = VK_NULL_HANDLE;
+VkSampler             g_depthSampler = VK_NULL_HANDLE;
 VkShaderModule        g_vert = VK_NULL_HANDLE, g_frag = VK_NULL_HANDLE;
 std::vector<FormatRes> g_formats;
 std::vector<Swapchain> g_chains;
 Texture               g_tex[kTexCount];
+
+// Scene depth (the game's image; we only own the view).
+VkImage         g_depthImg = VK_NULL_HANDLE;
+VkFormat        g_depthFmt = VK_FORMAT_UNDEFINED;
+VkImageLayout   g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+VkImageView     g_depthView = VK_NULL_HANDLE;
+VkDescriptorSet g_depthSet = VK_NULL_HANDLE;
+std::uint32_t   g_depthFlags = 0;
+float           g_ref[3] = { -1.f, -1.f, -1.f };
+float           g_z[4] = { -1.f, -1.f, -1.f, -1.f };
+unsigned        g_frameNo = 0;
+
+rtx::capture::Share* g_capShare = nullptr;
 
 std::vector<unsigned char> g_atlasCov;
 int  g_atlas_w = 0, g_atlas_h = 0;
@@ -91,6 +118,15 @@ std::vector<Vertex> g_verts;
 std::vector<Batch>  g_batches;
 std::vector<Upload> g_uploads;
 VkDeviceSize        g_stageUsed = 0;
+
+void Log(const char* fmt, ...) {
+    if (!g_log) return;
+    char buf[400];
+    va_list ap; va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    g_log("%s", buf);
+}
 
 std::uint32_t FindMemType(std::uint32_t bits, VkMemoryPropertyFlags want) {
     for (std::uint32_t i = 0; i < g_mem.memoryTypeCount; ++i)
@@ -138,6 +174,14 @@ bool EnsureBuffer(Buffer& b, VkDeviceSize need, VkBufferUsageFlags usage, VkDevi
     return true;
 }
 
+void WriteSet(VkDescriptorSet set, VkSampler sampler, VkImageView view, VkImageLayout layout) {
+    VkDescriptorImageInfo di{ sampler, view, layout };
+    VkWriteDescriptorSet wr{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    wr.dstSet = set; wr.dstBinding = 0; wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; wr.pImageInfo = &di;
+    g_fn.UpdateDescriptorSets(g_dev, 1, &wr, 0, nullptr);
+}
+
 void DestroyTexture(Texture& t) {
     if (t.view) g_fn.DestroyImageView(g_dev, t.view, nullptr);
     if (t.img)  g_fn.DestroyImage(g_dev, t.img, nullptr);
@@ -170,13 +214,29 @@ bool CreateTexture(Texture& t, VkFormat fmt, std::uint32_t w, std::uint32_t h, b
     vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     if (g_fn.CreateImageView(g_dev, &vi, nullptr, &t.view) != VK_SUCCESS) { DestroyTexture(t); return false; }
     t.fmt = fmt; t.w = w; t.h = h; t.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VkDescriptorImageInfo di{ g_sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkWriteDescriptorSet wr{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-    wr.dstSet = t.set; wr.dstBinding = 0; wr.descriptorCount = 1;
-    wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; wr.pImageInfo = &di;
-    g_fn.UpdateDescriptorSets(g_dev, 1, &wr, 0, nullptr);
+    WriteSet(t.set, g_sampler, t.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     return true;
+}
+
+// Readbacks recorded into an image's command buffer land here once its fence has passed.
+void FinishReadbacks(Image& im) {
+    if (im.capSerial && im.cap.map && g_capShare) {
+        rtx::capture::Share* sh = g_capShare;
+        const std::uint32_t stride = im.capW * 4;
+        if ((std::size_t)stride * im.capH <= rtx::capture::kMaxBytes) {
+            std::memcpy(sh->pixels, im.cap.map, (size_t)stride * im.capH);
+            sh->width = im.capW; sh->height = im.capH; sh->stride = stride;
+            MemoryBarrier();
+            sh->done = im.capSerial;
+        }
+        im.capSerial = 0;
+    }
+    if (im.probePending && im.probe.map) {
+        float d = 0.f; std::memcpy(&d, im.probe.map, 4);
+        Log("depth calibration: sampled %.6f at ref (%.0f,%.0f), marker z %.6f, reversed flag %u",
+            (double)d, (double)g_ref[0], (double)g_ref[1], (double)im.probeZ, (g_depthFlags >> 1) & 1u);
+        im.probePending = false;
+    }
 }
 
 void WaitImage(Image& im) {
@@ -184,10 +244,19 @@ void WaitImage(Image& im) {
     g_fn.WaitForFences(g_dev, 1, &im.fence, VK_TRUE, 2000000000ull);
     g_fn.ResetFences(g_dev, 1, &im.fence);
     im.pending = false;
+    FinishReadbacks(im);
 }
 
 void WaitAll() {
     for (auto& c : g_chains) for (auto& im : c.images) WaitImage(im);
+}
+
+void DropDepthView() {
+    if (!g_depthView) return;
+    WaitAll();
+    g_fn.DestroyImageView(g_dev, g_depthView, nullptr);
+    g_depthView = VK_NULL_HANDLE;
+    if (g_tex[kTexWhite].view) WriteSet(g_depthSet, g_sampler, g_tex[kTexWhite].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 std::size_t ResForFormat(VkFormat fmt) {
@@ -222,14 +291,15 @@ std::size_t ResForFormat(VkFormat fmt) {
     st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_frag; st[1].pName = "main";
     VkVertexInputBindingDescription bind{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
-    VkVertexInputAttributeDescription attr[3] = {
+    VkVertexInputAttributeDescription attr[4] = {
         { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 },
-        { 1, 0, VK_FORMAT_R32G32_SFLOAT, 8 },
-        { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16 },
+        { 1, 0, VK_FORMAT_R32G32_SFLOAT, 12 },
+        { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 20 },
+        { 3, 0, VK_FORMAT_R32_SFLOAT, 8 },
     };
     VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
     vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
-    vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attr;
+    vin.vertexAttributeDescriptionCount = 4; vin.pVertexAttributeDescriptions = attr;
     VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
@@ -310,7 +380,6 @@ void BuildGlyphAtlas() {
     g_atlas_w = aw; g_atlas_h = ah;
 }
 
-// Reserve staging bytes in the current image; returns the mapped pointer or null.
 void* Stage(VkDeviceSize bytes, VkDeviceSize* off) {
     if (!g_cur) return nullptr;
     VkDeviceSize start = (g_stageUsed + 15) & ~(VkDeviceSize)15;
@@ -332,19 +401,36 @@ void QueueUpload(int tex, const void* px, std::uint32_t x, std::uint32_t y,
     g_uploads.push_back({ tex, x, y, w, h, off });
 }
 
+void ImageBarrier(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspect,
+                  VkImageLayout from, VkImageLayout to,
+                  VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
+                  VkPipelineStageFlags dstStage, VkAccessFlags dstAccess) {
+    VkImageMemoryBarrier b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    b.srcAccessMask = srcAccess; b.dstAccessMask = dstAccess;
+    b.oldLayout = from; b.newLayout = to;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img; b.subresourceRange = { aspect, 0, 1, 0, 1 };
+    g_fn.CmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
+}
+
 void Barrier(VkCommandBuffer cmd, Texture& t, VkImageLayout to,
              VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
              VkPipelineStageFlags dstStage, VkAccessFlags dstAccess) {
-    VkImageMemoryBarrier b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    b.srcAccessMask = srcAccess; b.dstAccessMask = dstAccess;
-    b.oldLayout = t.layout; b.newLayout = to;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = t.img; b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    g_fn.CmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
+    ImageBarrier(cmd, t.img, VK_IMAGE_ASPECT_COLOR_BIT, t.layout, to, srcStage, srcAccess, dstStage, dstAccess);
     t.layout = to;
 }
 
 inline bool Drawing() { return g_active && g_cur != nullptr; }
+inline bool DepthOn() { return (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE; }
+
+int DrawMode(int texMode) {
+    int m = texMode;
+    if (DepthOn()) {
+        m |= kModeDepth;
+        if (g_depthFlags & rtx::marker::kFlagDepthReversed) m |= kModeReversed;
+    }
+    return m;
+}
 
 void Push(int tex, int mode, const Vertex* v, std::uint32_t n) {
     if (g_batches.empty() || g_batches.back().tex != tex || g_batches.back().mode != mode)
@@ -353,24 +439,24 @@ void Push(int tex, int mode, const Vertex* v, std::uint32_t n) {
     g_batches.back().count += n;
 }
 
-void PushQuad(int tex, int mode, const float* px, const float* py, const float* u, const float* v,
+// Corners TL, TR, BL, BR with a depth per corner.
+void PushQuad(int tex, int mode, const float* px, const float* py, const float* pz, const float* u, const float* v,
               float r, float g, float b, float a) {
-    // Corners TL, TR, BL, BR.
     Vertex q[6] = {
-        { px[0], py[0], u[0], v[0], r, g, b, a }, { px[1], py[1], u[1], v[1], r, g, b, a }, { px[2], py[2], u[2], v[2], r, g, b, a },
-        { px[1], py[1], u[1], v[1], r, g, b, a }, { px[3], py[3], u[3], v[3], r, g, b, a }, { px[2], py[2], u[2], v[2], r, g, b, a },
+        { px[0], py[0], pz[0], u[0], v[0], r, g, b, a }, { px[1], py[1], pz[1], u[1], v[1], r, g, b, a }, { px[2], py[2], pz[2], u[2], v[2], r, g, b, a },
+        { px[1], py[1], pz[1], u[1], v[1], r, g, b, a }, { px[3], py[3], pz[3], u[3], v[3], r, g, b, a }, { px[2], py[2], pz[2], u[2], v[2], r, g, b, a },
     };
     Push(tex, mode, q, 6);
 }
 
 void PushRect(int tex, int mode, float x0, float y0, float x1, float y1,
-              float u0, float v0, float u1, float v1, float r, float g, float b, float a) {
-    const float px[4] = { x0, x1, x0, x1 }, py[4] = { y0, y0, y1, y1 };
+              float u0, float v0, float u1, float v1, float r, float g, float b, float a, float z = -1.f) {
+    const float px[4] = { x0, x1, x0, x1 }, py[4] = { y0, y0, y1, y1 }, pz[4] = { z, z, z, z };
     const float u[4] = { u0, u1, u0, u1 }, v[4] = { v0, v0, v1, v1 };
-    PushQuad(tex, mode, px, py, u, v, r, g, b, a);
+    PushQuad(tex, mode, px, py, pz, u, v, r, g, b, a);
 }
 
-void RoundFill(float x, float y, float w, float h, float rad, float r, float g, float b, float a) {
+void RoundFill(float x, float y, float w, float h, float rad, float r, float g, float b, float a, float z) {
     if (w <= 0.f || h <= 0.f) return;
     float maxr = (w < h ? w : h) * 0.5f;
     if (rad > maxr) rad = maxr;
@@ -392,15 +478,15 @@ void RoundFill(float x, float y, float w, float h, float rad, float r, float g, 
     int t = 0;
     for (int i = 0; i < n; ++i) {
         int j = (i + 1) % n;
-        tri[t++] = { cenx, ceny, 0.5f, 0.5f, r, g, b, a };
-        tri[t++] = { ring[i * 2], ring[i * 2 + 1], 0.5f, 0.5f, r, g, b, a };
-        tri[t++] = { ring[j * 2], ring[j * 2 + 1], 0.5f, 0.5f, r, g, b, a };
+        tri[t++] = { cenx, ceny, z, 0.5f, 0.5f, r, g, b, a };
+        tri[t++] = { ring[i * 2], ring[i * 2 + 1], z, 0.5f, 0.5f, r, g, b, a };
+        tri[t++] = { ring[j * 2], ring[j * 2 + 1], z, 0.5f, 0.5f, r, g, b, a };
     }
-    Push(kTexWhite, 0, tri, (std::uint32_t)t);
+    Push(kTexWhite, DrawMode(0), tri, (std::uint32_t)t);
 }
 
 void GlyphRun(const char* s, int len, float penX, float gTop, float scale, float cellH, float track,
-              float r, float g, float b, float a) {
+              float r, float g, float b, float a, float z) {
     const int first = rtx::marker::kGlyphFirst, last = rtx::marker::kGlyphLast;
     const int cols  = rtx::marker::kGlyphCols;
     const int cw = rtx::marker::kGlyphCellW, chh = rtx::marker::kGlyphCellH;
@@ -415,7 +501,7 @@ void GlyphRun(const char* s, int len, float penX, float gTop, float scale, float
         float v0 = (float)(row * chh)       / (float)g_atlas_h;
         float v1 = (float)(row * chh + chh) / (float)g_atlas_h;
         float gw = adv * scale;
-        PushRect(kTexAtlas, 0, penX, gTop, penX + gw, gTop + cellH, u0, v0, u1, v1, r, g, b, a);
+        PushRect(kTexAtlas, DrawMode(0), penX, gTop, penX + gw, gTop + cellH, u0, v0, u1, v1, r, g, b, a, z);
         penX += gw + track;
     }
 }
@@ -435,6 +521,11 @@ float RunWidth(const char* s, int len, float scale, float track) {
 
 }  // namespace
 
+void SetLog(void (*log)(const char*, ...)) { g_log = log; }
+void SetCmdHook(void (*hook)(VkCommandBuffer)) { g_cmdHook = hook; }
+void SetAlwaysRecord(bool on) { g_alwaysRecord = on; }
+void SetCaptureShare(void* share) { g_capShare = static_cast<rtx::capture::Share*>(share); }
+
 bool Init(VkDevice dev, const DeviceFns& fns,
           const VkPhysicalDeviceMemoryProperties& mem, std::uint32_t queueFamily) {
     if (g_ready) return true;
@@ -450,27 +541,32 @@ bool Init(VkDevice dev, const DeviceFns& fns,
     if (g_fn.CreateDescriptorSetLayout(g_dev, &li, nullptr, &g_setLayout) != VK_SUCCESS) { Shutdown(); return false; }
 
     VkPushConstantRange pcr{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConst) };
+    VkDescriptorSetLayout twoSets[2] = { g_setLayout, g_setLayout };
     VkPipelineLayoutCreateInfo pli{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-    pli.setLayoutCount = 1; pli.pSetLayouts = &g_setLayout; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
+    pli.setLayoutCount = 2; pli.pSetLayouts = twoSets; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
     if (g_fn.CreatePipelineLayout(g_dev, &pli, nullptr, &g_pipeLayout) != VK_SUCCESS) { Shutdown(); return false; }
 
-    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kTexCount };
+    constexpr std::uint32_t nsets = kTexCount + 1;
+    VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nsets };
     VkDescriptorPoolCreateInfo dpi{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-    dpi.maxSets = kTexCount; dpi.poolSizeCount = 1; dpi.pPoolSizes = &ps;
+    dpi.maxSets = nsets; dpi.poolSizeCount = 1; dpi.pPoolSizes = &ps;
     if (g_fn.CreateDescriptorPool(g_dev, &dpi, nullptr, &g_descPool) != VK_SUCCESS) { Shutdown(); return false; }
-    VkDescriptorSetLayout layouts[kTexCount];
+    VkDescriptorSetLayout layouts[nsets];
     for (auto& l : layouts) l = g_setLayout;
-    VkDescriptorSet sets[kTexCount];
+    VkDescriptorSet sets[nsets];
     VkDescriptorSetAllocateInfo dai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-    dai.descriptorPool = g_descPool; dai.descriptorSetCount = kTexCount; dai.pSetLayouts = layouts;
+    dai.descriptorPool = g_descPool; dai.descriptorSetCount = nsets; dai.pSetLayouts = layouts;
     if (g_fn.AllocateDescriptorSets(g_dev, &dai, sets) != VK_SUCCESS) { Shutdown(); return false; }
     for (int i = 0; i < kTexCount; ++i) g_tex[i].set = sets[i];
+    g_depthSet = sets[kTexCount];
 
     VkSamplerCreateInfo si{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     si.magFilter = VK_FILTER_LINEAR; si.minFilter = VK_FILTER_LINEAR; si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; si.maxLod = 0.0f;
     if (g_fn.CreateSampler(g_dev, &si, nullptr, &g_sampler) != VK_SUCCESS) { Shutdown(); return false; }
+    si.magFilter = VK_FILTER_NEAREST; si.minFilter = VK_FILTER_NEAREST;
+    if (g_fn.CreateSampler(g_dev, &si, nullptr, &g_depthSampler) != VK_SUCCESS) { Shutdown(); return false; }
 
     VkShaderModuleCreateInfo smi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
     smi.codeSize = sizeof(rtx::vkshaders::kVert); smi.pCode = rtx::vkshaders::kVert;
@@ -481,12 +577,42 @@ bool Init(VkDevice dev, const DeviceFns& fns,
     BuildGlyphAtlas();
     if (!CreateTexture(g_tex[kTexWhite], VK_FORMAT_R8G8B8A8_UNORM, 1, 1, false)) { Shutdown(); return false; }
     if (g_atlas_w > 0 && !CreateTexture(g_tex[kTexAtlas], VK_FORMAT_R8_UNORM, g_atlas_w, g_atlas_h, true)) { Shutdown(); return false; }
+    WriteSet(g_depthSet, g_sampler, g_tex[kTexWhite].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     g_staticUploaded = false;
     g_ready = true;
     return true;
 }
 
 bool Ready() { return g_ready; }
+
+void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout) {
+    if (!g_ready) return;
+    if (img == g_depthImg && fmt == g_depthFmt) { g_depthLayout = layout; return; }
+    DropDepthView();
+    g_depthImg = img; g_depthFmt = fmt; g_depthLayout = layout;
+    if (!img || layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vi.image = img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
+    vi.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+    if (g_fn.CreateImageView(g_dev, &vi, nullptr, &g_depthView) != VK_SUCCESS) { g_depthView = VK_NULL_HANDLE; return; }
+    WriteSet(g_depthSet, g_depthSampler, g_depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    Log("scene depth image %p format %d, layout %d", (void*)img, (int)fmt, (int)layout);
+}
+
+void OnImageDestroyed(VkImage img) {
+    if (!g_ready || img != g_depthImg) return;
+    DropDepthView();
+    g_depthImg = VK_NULL_HANDLE; g_depthFmt = VK_FORMAT_UNDEFINED; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+void SetDepthMode(std::uint32_t flags, float rx, float ry, float rz) {
+    g_depthFlags = flags; g_ref[0] = rx; g_ref[1] = ry; g_ref[2] = rz;
+}
+
+void SetDepth(const float* z4) {
+    if (!z4) { for (auto& z : g_z) z = -1.f; return; }
+    for (int i = 0; i < 4; ++i) g_z[i] = z4[i];
+}
 
 void UnregisterSwapchain(VkSwapchainKHR sc) {
     for (size_t i = 0; i < g_chains.size(); ++i) {
@@ -501,8 +627,9 @@ void UnregisterSwapchain(VkSwapchainKHR sc) {
             if (im.cmd)   g_fn.FreeCommandBuffers(g_dev, g_pool, 1, &im.cmd);
             DestroyBuffer(im.vbuf);
             DestroyBuffer(im.sbuf);
+            DestroyBuffer(im.cap);
+            DestroyBuffer(im.probe);
         }
-        if (g_curChain == &c) { g_curChain = nullptr; g_cur = nullptr; }
         g_chains.erase(g_chains.begin() + (std::ptrdiff_t)i);
         g_curChain = nullptr; g_cur = nullptr;
         return;
@@ -557,6 +684,7 @@ int SwapchainCount() { return (int)g_chains.size(); }
 bool BeginTarget(VkSwapchainKHR sc, std::uint32_t imageIndex, std::uint32_t* w, std::uint32_t* h) {
     g_curChain = nullptr; g_cur = nullptr;
     g_verts.clear(); g_batches.clear(); g_uploads.clear(); g_stageUsed = 0; g_active = false;
+    for (auto& z : g_z) z = -1.f;
     if (!g_ready) return false;
     for (auto& c : g_chains) {
         if (c.sc != sc) continue;
@@ -566,6 +694,7 @@ bool BeginTarget(VkSwapchainKHR sc, std::uint32_t imageIndex, std::uint32_t* w, 
             if (g_fn.WaitForFences(g_dev, 1, &im.fence, VK_TRUE, 500000000ull) != VK_SUCCESS) return false;
             g_fn.ResetFences(g_dev, 1, &im.fence);
             im.pending = false;
+            FinishReadbacks(im);
         }
         g_curChain = &c; g_cur = &im;
         if (w) *w = c.w;
@@ -592,7 +721,18 @@ void End() { g_active = false; }
 VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* waits) {
     Image* im = g_cur; Swapchain* c = g_curChain;
     g_cur = nullptr; g_curChain = nullptr; g_active = false;
-    if (!im || !c || (g_verts.empty() && g_uploads.empty())) return VK_NULL_HANDLE;
+    if (!im || !c) return VK_NULL_HANDLE;
+    ++g_frameNo;
+
+    const bool wantCapture = g_capShare && g_capShare->magic == rtx::capture::kMagic &&
+                             g_capShare->request != g_capShare->done && im->capSerial == 0 &&
+                             c->w <= rtx::capture::kMaxWidth && c->h <= rtx::capture::kMaxHeight;
+    bool useDepth = false;
+    for (const auto& b : g_batches) if (b.mode & kModeDepth) { useDepth = true; break; }
+    const bool wantProbe = useDepth && g_ref[0] >= 0.f && g_ref[1] >= 0.f && g_ref[2] >= 0.f &&
+                           (g_frameNo % 300) == 1 && !im->probePending &&
+                           g_ref[0] < (float)c->w && g_ref[1] < (float)c->h;
+    if (g_verts.empty() && g_uploads.empty() && !wantCapture && !g_alwaysRecord) return VK_NULL_HANDLE;
 
     const VkDeviceSize vbytes = (VkDeviceSize)g_verts.size() * sizeof(Vertex);
     if (vbytes && !EnsureBuffer(im->vbuf, vbytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return VK_NULL_HANDLE;
@@ -603,6 +743,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (g_fn.BeginCommandBuffer(cmd, &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (g_cmdHook) g_cmdHook(cmd);
 
     for (const auto& u : g_uploads) {
         Texture& t = g_tex[u.tex];
@@ -625,6 +766,27 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     }
 
+    // The game's depth image: borrow it read-only for the overlay pass, hand it back in its own layout.
+    const bool depthPass = useDepth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED;
+    if (depthPass) {
+        VkImageLayout cur = g_depthLayout;
+        if (wantProbe && EnsureBuffer(im->probe, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+            ImageBarrier(cmd, g_depthImg, VK_IMAGE_ASPECT_DEPTH_BIT, cur, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            VkBufferImageCopy rg{};
+            rg.imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+            rg.imageOffset = { (std::int32_t)g_ref[0], (std::int32_t)g_ref[1], 0 };
+            rg.imageExtent = { 1, 1, 1 };
+            g_fn.CmdCopyImageToBuffer(cmd, g_depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, im->probe.buf, 1, &rg);
+            cur = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            im->probePending = true; im->probeZ = g_ref[2];
+        }
+        ImageBarrier(cmd, g_depthImg, VK_IMAGE_ASPECT_DEPTH_BIT, cur, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
+
     if (!g_batches.empty()) {
         VkRenderPassBeginInfo rp{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
         rp.renderPass = g_formats[c->res].rp; rp.framebuffer = im->fb;
@@ -637,12 +799,15 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         g_fn.CmdSetScissor(cmd, 0, 1, &sc);
         VkDeviceSize zero = 0;
         g_fn.CmdBindVertexBuffers(cmd, 0, 1, &im->vbuf.buf, &zero);
-        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1 };
+        g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 1, &g_depthSet, 0, nullptr);
+        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 1.0f / (float)c->w, 1.0f / (float)c->h };
         for (const auto& b : g_batches) {
             Texture& t = g_tex[b.tex];
             if (!t.img || t.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;
-            if (pc.mode != b.mode) {
-                pc.mode = b.mode;
+            int mode = b.mode;
+            if (!depthPass) mode &= ~(kModeDepth | kModeReversed);
+            if (pc.mode != mode) {
+                pc.mode = mode;
                 g_fn.CmdPushConstants(cmd, g_pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
             }
             g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0, 1, &t.set, 0, nullptr);
@@ -650,6 +815,27 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         }
         g_fn.CmdEndRenderPass(cmd);
     }
+
+    if (depthPass)
+        ImageBarrier(cmd, g_depthImg, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+
+    if (wantCapture && EnsureBuffer(im->cap, (VkDeviceSize)c->w * c->h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+        ImageBarrier(cmd, im->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        VkBufferImageCopy rg{};
+        rg.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        rg.imageExtent = { c->w, c->h, 1 };
+        g_fn.CmdCopyImageToBuffer(cmd, im->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, im->cap.buf, 1, &rg);
+        ImageBarrier(cmd, im->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0);
+        im->capSerial = g_capShare->request; im->capW = c->w; im->capH = c->h;
+        g_capShare->format = (std::uint32_t)c->fmt;
+    }
+
     if (g_fn.EndCommandBuffer(cmd) != VK_SUCCESS) return VK_NULL_HANDLE;
 
     VkPipelineStageFlags stages[32];
@@ -667,21 +853,24 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
 void Shutdown() {
     if (g_dev && g_fn.DeviceWaitIdle) g_fn.DeviceWaitIdle(g_dev);
     while (!g_chains.empty()) UnregisterSwapchain(g_chains.back().sc);
+    if (g_depthView) { g_fn.DestroyImageView(g_dev, g_depthView, nullptr); g_depthView = VK_NULL_HANDLE; }
+    g_depthImg = VK_NULL_HANDLE; g_depthFmt = VK_FORMAT_UNDEFINED; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     for (auto& t : g_tex) DestroyTexture(t);
     for (auto& r : g_formats) {
         if (r.pipe) g_fn.DestroyPipeline(g_dev, r.pipe, nullptr);
         if (r.rp)   g_fn.DestroyRenderPass(g_dev, r.rp, nullptr);
     }
     g_formats.clear();
-    if (g_vert)       g_fn.DestroyShaderModule(g_dev, g_vert, nullptr);
-    if (g_frag)       g_fn.DestroyShaderModule(g_dev, g_frag, nullptr);
-    if (g_sampler)    g_fn.DestroySampler(g_dev, g_sampler, nullptr);
-    if (g_descPool)   g_fn.DestroyDescriptorPool(g_dev, g_descPool, nullptr);
-    if (g_pipeLayout) g_fn.DestroyPipelineLayout(g_dev, g_pipeLayout, nullptr);
-    if (g_setLayout)  g_fn.DestroyDescriptorSetLayout(g_dev, g_setLayout, nullptr);
-    if (g_pool)       g_fn.DestroyCommandPool(g_dev, g_pool, nullptr);
-    g_vert = g_frag = VK_NULL_HANDLE; g_sampler = VK_NULL_HANDLE; g_descPool = VK_NULL_HANDLE;
-    g_pipeLayout = VK_NULL_HANDLE; g_setLayout = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE;
+    if (g_vert)         g_fn.DestroyShaderModule(g_dev, g_vert, nullptr);
+    if (g_frag)         g_fn.DestroyShaderModule(g_dev, g_frag, nullptr);
+    if (g_sampler)      g_fn.DestroySampler(g_dev, g_sampler, nullptr);
+    if (g_depthSampler) g_fn.DestroySampler(g_dev, g_depthSampler, nullptr);
+    if (g_descPool)     g_fn.DestroyDescriptorPool(g_dev, g_descPool, nullptr);
+    if (g_pipeLayout)   g_fn.DestroyPipelineLayout(g_dev, g_pipeLayout, nullptr);
+    if (g_setLayout)    g_fn.DestroyDescriptorSetLayout(g_dev, g_setLayout, nullptr);
+    if (g_pool)         g_fn.DestroyCommandPool(g_dev, g_pool, nullptr);
+    g_vert = g_frag = VK_NULL_HANDLE; g_sampler = g_depthSampler = VK_NULL_HANDLE; g_descPool = VK_NULL_HANDLE;
+    g_pipeLayout = VK_NULL_HANDLE; g_setLayout = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_depthSet = VK_NULL_HANDLE;
     for (auto& t : g_tex) t.set = VK_NULL_HANDLE;
     g_dev = VK_NULL_HANDLE; g_ready = false; g_staticUploaded = false;
     g_cur = nullptr; g_curChain = nullptr; g_active = false;
@@ -689,7 +878,7 @@ void Shutdown() {
 
 void DrawSolidRect(int x, int y, int w, int h, float r, float g, float b, float a, int fb_w, int fb_h) {
     if (!Drawing() || fb_w <= 0 || fb_h <= 0 || w <= 0 || h <= 0) return;
-    PushRect(kTexWhite, 0, (float)x, (float)y, (float)(x + w), (float)(y + h), 0.5f, 0.5f, 0.5f, 0.5f, r, g, b, a);
+    PushRect(kTexWhite, DrawMode(0), (float)x, (float)y, (float)(x + w), (float)(y + h), 0.5f, 0.5f, 0.5f, 0.5f, r, g, b, a, g_z[0]);
 }
 
 void DrawLine(float x0, float y0, float x1, float y1, float thickness,
@@ -703,8 +892,9 @@ void DrawLine(float x0, float y0, float x1, float y1, float thickness,
     float hy = ( dx / len) * thickness * 0.5f;
     const float px[4] = { x0 + hx, x1 + hx, x0 - hx, x1 - hx };
     const float py[4] = { y0 + hy, y1 + hy, y0 - hy, y1 - hy };
+    const float pz[4] = { g_z[0], g_z[1], g_z[0], g_z[1] };
     const float uv[4] = { 0.5f, 0.5f, 0.5f, 0.5f };
-    PushQuad(kTexWhite, 0, px, py, uv, uv, r, g, b, a);
+    PushQuad(kTexWhite, DrawMode(0), px, py, pz, uv, uv, r, g, b, a);
 }
 
 void DrawFillQuad(float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3,
@@ -712,8 +902,9 @@ void DrawFillQuad(float x0, float y0, float x1, float y1, float x2, float y2, fl
     if (!Drawing() || fb_w <= 0 || fb_h <= 0) return;
     const float px[4] = { x0, x1, x3, x2 };
     const float py[4] = { y0, y1, y3, y2 };
+    const float pz[4] = { g_z[0], g_z[1], g_z[3], g_z[2] };
     const float uv[4] = { 0.5f, 0.5f, 0.5f, 0.5f };
-    PushQuad(kTexWhite, 0, px, py, uv, uv, r, g, b, a);
+    PushQuad(kTexWhite, DrawMode(0), px, py, pz, uv, uv, r, g, b, a);
 }
 
 void DrawGlyph(int cell, float x, float y, float w, float h,
@@ -728,7 +919,7 @@ void DrawGlyph(int cell, float x, float y, float w, float h,
     float v0 = (float)(row * chh)       / (float)g_atlas_h;
     float u1 = (float)(col * cw + cw)   / (float)g_atlas_w;
     float v1 = (float)(row * chh + chh) / (float)g_atlas_h;
-    PushRect(kTexAtlas, 0, x, y, x + w, y + h, u0, v0, u1, v1, r, g, b, a);
+    PushRect(kTexAtlas, DrawMode(0), x, y, x + w, y + h, u0, v0, u1, v1, r, g, b, a, g_z[0]);
 }
 
 void DrawLabel(const char* s, float cx, float cy, float text_px,
@@ -741,6 +932,7 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     const float scale  = text_px / fontPx;
     const float cellH  = (float)chh * scale;
     const float track  = 0.6f * scale;
+    const float z = g_z[0];
 
     const char* lstart[4]; int llen[4]; int nl = 0;
     const char* st = s;
@@ -768,14 +960,14 @@ void DrawLabel(const char* s, float cx, float cy, float text_px,
     const float pillX = cx - pillW * 0.5f;
     const float pillY = cy - pillH * 0.5f;
     const float rad   = 5.0f;
-    RoundFill(pillX, pillY + 2.0f, pillW, pillH, rad, 0.0f, 0.0f, 0.0f, 0.45f);
-    RoundFill(pillX - 1.0f, pillY - 1.0f, pillW + 2.0f, pillH + 2.0f, rad + 1.0f, ar, ag, ab, aa);
-    RoundFill(pillX, pillY, pillW, pillH, rad, 0.043f, 0.051f, 0.071f, 0.90f);
+    RoundFill(pillX, pillY + 2.0f, pillW, pillH, rad, 0.0f, 0.0f, 0.0f, 0.45f, z);
+    RoundFill(pillX - 1.0f, pillY - 1.0f, pillW + 2.0f, pillH + 2.0f, rad + 1.0f, ar, ag, ab, aa, z);
+    RoundFill(pillX, pillY, pillW, pillH, rad, 0.043f, 0.051f, 0.071f, 0.90f, z);
 
     float yc = pillY + padY + cellH * 0.39f;
     for (int li = 0; li < nl; ++li) {
         GlyphRun(lstart[li], llen[li], cx - lw[li] * 0.5f, yc - cellH * 0.5f, scale, cellH, track,
-                 0.910f, 0.929f, 0.957f, 1.0f);
+                 0.910f, 0.929f, 0.957f, 1.0f, z);
         yc += lineH;
     }
 }
@@ -795,13 +987,13 @@ void DrawPlainText(const char* s, float x, float y, float text_px, int align,
     float tw = RunWidth(s, len, scale, track);
     if (tw < 0.0f) return;
     float penX = (align == 1) ? x - tw * 0.5f : (align == 2) ? x - tw : x;
-    GlyphRun(s, len, penX, y - cellH * 0.5f, scale, cellH, track, r, g, b, a);
+    GlyphRun(s, len, penX, y - cellH * 0.5f, scale, cellH, track, r, g, b, a, g_z[0]);
 }
 
 void DrawRoundRect(float x, float y, float w, float h, float rad,
                    float r, float g, float b, float a, int fb_w, int fb_h) {
     if (!Drawing() || fb_w <= 0 || fb_h <= 0) return;
-    RoundFill(x, y, w, h, rad, r, g, b, a);
+    RoundFill(x, y, w, h, rad, r, g, b, a, g_z[0]);
 }
 
 void UploadUiLayer(const void* bgra, int w, int h, int stride, int dx, int dy, int dw, int dh) {
@@ -843,7 +1035,7 @@ void UploadHud(const void* rgba, int w, int h) {
 void DrawHud(int dst_x, int dst_y, int dst_w, int dst_h, int fb_w, int fb_h) {
     if (!Drawing() || dst_w <= 0 || dst_h <= 0 || fb_w <= 0 || fb_h <= 0) return;
     if (!g_tex[kTexHud].img) return;
-    PushRect(kTexHud, 1, (float)dst_x, (float)dst_y, (float)(dst_x + dst_w), (float)(dst_y + dst_h),
+    PushRect(kTexHud, kModeStraight, (float)dst_x, (float)dst_y, (float)(dst_x + dst_w), (float)(dst_y + dst_h),
              0.f, 0.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f);
 }
 

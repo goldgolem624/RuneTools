@@ -16,6 +16,7 @@ struct Config {
     bool          objects  = false;
     bool          specials = false;  // type-4 markers (Time Sprite / Rockertunity)
     bool          walk_only = false; // grid: hide unwalkable tiles (else tint red)
+    bool          occlude = true;    // markers hidden where the scene is in front of them (Vulkan)
     bool          interactable = false;  // markers: only NPCs/objects with actions
     bool          markers  = false;  // persistent tile markers, independent of the grid
     bool          nameplates = false;  // in-frame name labels, independent of `enabled`

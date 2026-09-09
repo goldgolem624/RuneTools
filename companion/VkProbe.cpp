@@ -1,7 +1,8 @@
 // Draw-stream hooks (see VkProbe.h). Recording threads keep their own pass state; the pass table
-// is flushed at the present boundary.
+// rotates through three frame slots so timestamp results can be read two presents later.
 
 #include "VkProbe.h"
+#include "GpuTimeShare.h"
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -19,11 +20,15 @@ namespace {
 
 using LogFn = void (*)(const char*, ...);
 LogFn g_log = nullptr;
+void (*g_imageDestroyed)(VkImage) = nullptr;
 bool  g_attached = false;
+VkDevice g_dev = VK_NULL_HANDLE;
+float g_tsPeriod = 1.0f;
 std::atomic<bool>     g_hide{ false };
 std::atomic<bool>     g_probeNext{ false };
 std::atomic<unsigned> g_frame{ 0 };
 std::atomic<unsigned> g_dispatchOutside{ 0 };
+std::atomic<unsigned> g_targetW{ 0 }, g_targetH{ 0 };
 
 PFN_vkCmdBeginRenderPass         rBeginRP = nullptr;
 PFN_vkCmdBeginRenderPass2        rBeginRP2 = nullptr;
@@ -47,10 +52,17 @@ PFN_vkCreateRenderPass2          rCreateRenderPass2 = nullptr;
 PFN_vkCreateFramebuffer          rCreateFramebuffer = nullptr;
 PFN_vkCreateImageView            rCreateImageView = nullptr;
 PFN_vkCreateImage                rCreateImage = nullptr;
+PFN_vkDestroyImage               rDestroyImage = nullptr;
 PFN_vkCreateBuffer               rCreateBuffer = nullptr;
+PFN_vkCreateQueryPool            fCreateQueryPool = nullptr;
+PFN_vkDestroyQueryPool           fDestroyQueryPool = nullptr;
+PFN_vkGetQueryPoolResults        fGetQueryPoolResults = nullptr;
+PFN_vkCmdResetQueryPool          fCmdResetQueryPool = nullptr;
+PFN_vkCmdWriteTimestamp          fCmdWriteTimestamp = nullptr;
+PFN_vkResetQueryPool             fResetQueryPool = nullptr;
 
-struct ViewInfo { VkFormat fmt; VkImageAspectFlags aspect; };
-struct RpInfo   { std::vector<VkFormat> fmts; std::vector<VkAttachmentLoadOp> loads; };
+struct ViewInfo { VkImage image; VkFormat fmt; VkImageAspectFlags aspect; };
+struct RpInfo   { std::vector<VkFormat> fmts; std::vector<VkAttachmentLoadOp> loads; std::vector<VkImageLayout> finals; };
 struct FbInfo   { VkRenderPass rp; std::uint32_t w, h; std::vector<VkImageView> views; };
 
 std::mutex g_mapMu;
@@ -58,19 +70,40 @@ std::unordered_map<VkImageView, ViewInfo>   g_views;
 std::unordered_map<VkRenderPass, RpInfo>    g_rps;
 std::unordered_map<VkFramebuffer, FbInfo>   g_fbs;
 std::unordered_set<VkPipeline>              g_depthPipes;
-std::unordered_set<VkPipeline>              g_dynDepthPipes;   // depth test toggled by dynamic state
+std::unordered_set<VkPipeline>              g_dynDepthPipes;
 
-struct Pass { char desc[200]; unsigned draws, indirect, dispatch, skipped; };
+struct Pass {
+    char desc[rtx::gputime::kDescMax];
+    unsigned draws, indirect, dispatch, skipped;
+    VkImage depthImg; VkFormat depthFmt; VkImageLayout depthFinal;
+    std::uint32_t w, h;
+    int query;      // pair index in the slot's pool, -1 = none
+};
+constexpr int kSlots = 3;
+constexpr unsigned kMaxPairs = 256;
 std::mutex        g_passMu;
-std::vector<Pass> g_passes;
+std::vector<Pass> g_slotPasses[kSlots];
+VkQueryPool       g_pools[kSlots] = {};
+std::atomic<int>  g_slot{ 0 };
+std::atomic<unsigned> g_pairs[kSlots] = {};
+ULONGLONG         g_lastPresentMs = 0;
+unsigned          g_frameUs = 0;
+
+VkImage       g_sceneImg = VK_NULL_HANDLE;
+VkFormat      g_sceneFmt = VK_FORMAT_UNDEFINED;
+VkImageLayout g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 struct ResStat { std::uint32_t key[4]; unsigned count; };
 std::vector<ResStat> g_images, g_buffers;
 std::atomic<unsigned> g_imageTotal{ 0 }, g_bufferTotal{ 0 };
 
+rtx::gputime::Share* g_share = nullptr;
+HANDLE               g_shareMap = nullptr;
+
 struct ThreadState {
     bool inPass = false;
     int  pass = -1;
+    int  slot = 0;
     bool skip = false;
     unsigned draws = 0, indirect = 0, dispatch = 0, skipped = 0;
 };
@@ -83,7 +116,7 @@ const char* FmtName(VkFormat f) {
         case 76: return "R16_SFLOAT"; case 83: return "R16G16_SFLOAT"; case 91: return "R16G16B16A16_UNORM"; case 97: return "R16G16B16A16_SFLOAT";
         case 100: return "R32G32_SFLOAT"; case 103: return "R32_SFLOAT"; case 109: return "R32G32B32A32_SFLOAT"; case 122: return "B10G11R11_UFLOAT";
         case 124: return "D16_UNORM"; case 126: return "D32_SFLOAT"; case 127: return "S8_UINT"; case 129: return "D24_UNORM_S8_UINT"; case 130: return "D32_SFLOAT_S8_UINT";
-        case 98: return "R32_UINT"; case 74: return "R16_UINT"; case 13: return "R8_UINT";
+        case 98: return "R32_UINT"; case 74: return "R16_UINT"; case 13: return "R8_UINT"; case 4: return "R4G4B4A4";
         case 131: return "BC1_RGB_UNORM"; case 133: return "BC1_RGBA_UNORM"; case 137: return "BC3_UNORM"; case 139: return "BC4_UNORM"; case 141: return "BC5_UNORM"; case 145: return "BC7_UNORM"; case 146: return "BC7_SRGB";
         default: return nullptr;
     }
@@ -94,82 +127,100 @@ void AppendFmt(char* buf, size_t cap, VkFormat f) {
     if (nm) std::snprintf(buf + n, cap - n, "%s", nm);
     else    std::snprintf(buf + n, cap - n, "fmt%d", (int)f);
 }
+void Cat(char* buf, size_t cap, const char* s) { std::strncat(buf, s, cap - std::strlen(buf) - 1); }
 
-int BeginPass(const char* kind, std::uint32_t w, std::uint32_t h,
+inline bool IsDepth(VkFormat f) { return (int)f >= 124 && (int)f <= 130; }
+
+int BeginPass(VkCommandBuffer cmd, const char* kind, std::uint32_t w, std::uint32_t h,
               const VkFormat* colors, const VkAttachmentLoadOp* loads, std::uint32_t ncolor,
-              VkFormat depth, VkAttachmentLoadOp depthLoad) {
-    Pass p{}; p.draws = p.indirect = p.dispatch = p.skipped = 0;
-    std::snprintf(p.desc, sizeof(p.desc), "%s %ux%u color[", kind, w, h);
+              VkFormat depth, VkAttachmentLoadOp depthLoad, VkImage depthImg, VkImageLayout depthFinal) {
+    Pass p{};
+    p.depthImg = depthImg; p.depthFmt = depth; p.depthFinal = depthFinal; p.w = w; p.h = h; p.query = -1;
+    std::snprintf(p.desc, sizeof(p.desc), "%s %ux%u [", kind, w, h);
     for (std::uint32_t i = 0; i < ncolor; ++i) {
-        if (i) std::strncat(p.desc, ",", sizeof(p.desc) - std::strlen(p.desc) - 1);
+        if (i) Cat(p.desc, sizeof(p.desc), ",");
         AppendFmt(p.desc, sizeof(p.desc), colors[i]);
-        if (loads && loads[i] == VK_ATTACHMENT_LOAD_OP_CLEAR) std::strncat(p.desc, "*", sizeof(p.desc) - std::strlen(p.desc) - 1);
+        if (loads && loads[i] == VK_ATTACHMENT_LOAD_OP_CLEAR) Cat(p.desc, sizeof(p.desc), "*");
     }
-    std::strncat(p.desc, "]", sizeof(p.desc) - std::strlen(p.desc) - 1);
+    Cat(p.desc, sizeof(p.desc), "]");
     if (depth != VK_FORMAT_UNDEFINED) {
-        std::strncat(p.desc, " depth[", sizeof(p.desc) - std::strlen(p.desc) - 1);
+        Cat(p.desc, sizeof(p.desc), " D[");
         AppendFmt(p.desc, sizeof(p.desc), depth);
-        if (depthLoad == VK_ATTACHMENT_LOAD_OP_CLEAR) std::strncat(p.desc, "*", sizeof(p.desc) - std::strlen(p.desc) - 1);
-        std::strncat(p.desc, "]", sizeof(p.desc) - std::strlen(p.desc) - 1);
+        if (depthLoad == VK_ATTACHMENT_LOAD_OP_CLEAR) Cat(p.desc, sizeof(p.desc), "*");
+        Cat(p.desc, sizeof(p.desc), "]");
+    }
+    const int slot = g_slot.load(std::memory_order_relaxed);
+    t.slot = slot;
+    if (g_pools[slot] && fCmdWriteTimestamp) {
+        unsigned pair = g_pairs[slot].fetch_add(1, std::memory_order_relaxed);
+        if (pair < kMaxPairs) {
+            p.query = (int)pair;
+            fCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_pools[slot], pair * 2);
+        }
     }
     std::lock_guard<std::mutex> lk(g_passMu);
-    if (g_passes.size() >= 256) return -1;
-    g_passes.push_back(p);
-    return (int)g_passes.size() - 1;
+    auto& passes = g_slotPasses[slot];
+    if (passes.size() >= 256) return -1;
+    passes.push_back(p);
+    return (int)passes.size() - 1;
 }
 
-void EndPass() {
+void EndPass(VkCommandBuffer cmd) {
     if (t.pass >= 0) {
-        std::lock_guard<std::mutex> lk(g_passMu);
-        if ((size_t)t.pass < g_passes.size()) {
-            Pass& p = g_passes[(size_t)t.pass];
-            p.draws += t.draws; p.indirect += t.indirect; p.dispatch += t.dispatch; p.skipped += t.skipped;
+        int query = -1;
+        {
+            std::lock_guard<std::mutex> lk(g_passMu);
+            auto& passes = g_slotPasses[t.slot];
+            if ((size_t)t.pass < passes.size()) {
+                Pass& p = passes[(size_t)t.pass];
+                p.draws += t.draws; p.indirect += t.indirect; p.dispatch += t.dispatch; p.skipped += t.skipped;
+                query = p.query;
+            }
         }
+        if (query >= 0 && g_pools[t.slot] && fCmdWriteTimestamp)
+            fCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_pools[t.slot], (std::uint32_t)query * 2 + 1);
     }
     t.inPass = false; t.pass = -1; t.draws = t.indirect = t.dispatch = t.skipped = 0;
 }
 
+void FromRenderPass(const VkRenderPassBeginInfo* info, VkFormat* colors, VkAttachmentLoadOp* loads, std::uint32_t& nc,
+                    VkFormat& depth, VkAttachmentLoadOp& dload, VkImage& depthImg, VkImageLayout& depthFinal,
+                    std::uint32_t& w, std::uint32_t& h) {
+    nc = 0; depth = VK_FORMAT_UNDEFINED; dload = VK_ATTACHMENT_LOAD_OP_DONT_CARE; depthImg = VK_NULL_HANDLE; depthFinal = VK_IMAGE_LAYOUT_UNDEFINED;
+    w = info->renderArea.extent.width; h = info->renderArea.extent.height;
+    std::lock_guard<std::mutex> lk(g_mapMu);
+    auto rp = g_rps.find(info->renderPass);
+    auto fb = g_fbs.find(info->framebuffer);
+    if (rp == g_rps.end()) return;
+    for (size_t i = 0; i < rp->second.fmts.size(); ++i) {
+        VkFormat f = rp->second.fmts[i];
+        if (IsDepth(f)) {
+            depth = f; dload = rp->second.loads[i]; depthFinal = rp->second.finals[i];
+            if (fb != g_fbs.end() && i < fb->second.views.size()) {
+                auto v = g_views.find(fb->second.views[i]);
+                if (v != g_views.end()) depthImg = v->second.image;
+            }
+        } else if (nc < 8) { colors[nc] = f; loads[nc] = rp->second.loads[i]; ++nc; }
+    }
+    if (fb != g_fbs.end() && w == 0) { w = fb->second.w; h = fb->second.h; }
+}
+
 void VKAPI_CALL HookBeginRP(VkCommandBuffer cmd, const VkRenderPassBeginInfo* info, VkSubpassContents contents) {
     if (info) {
-        VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc = 0;
-        VkFormat depth = VK_FORMAT_UNDEFINED; VkAttachmentLoadOp dload = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        std::uint32_t w = info->renderArea.extent.width, h = info->renderArea.extent.height;
-        {
-            std::lock_guard<std::mutex> lk(g_mapMu);
-            auto fb = g_fbs.find(info->framebuffer);
-            auto rp = g_rps.find(info->renderPass);
-            if (rp != g_rps.end()) {
-                for (size_t i = 0; i < rp->second.fmts.size(); ++i) {
-                    VkFormat f = rp->second.fmts[i];
-                    bool isDepth = (int)f >= 124 && (int)f <= 130;
-                    if (isDepth) { depth = f; dload = rp->second.loads[i]; }
-                    else if (nc < 8) { colors[nc] = f; loads[nc] = rp->second.loads[i]; ++nc; }
-                }
-            }
-            if (fb != g_fbs.end() && w == 0) { w = fb->second.w; h = fb->second.h; }
-        }
-        t.pass = BeginPass("renderpass", w, h, colors, loads, nc, depth, dload);
+        VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc, w, h;
+        VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
+        FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
+        t.pass = BeginPass(cmd, "renderpass", w, h, colors, loads, nc, depth, dload, dimg, dfinal);
         t.inPass = true;
     }
     rBeginRP(cmd, info, contents);
 }
 void VKAPI_CALL HookBeginRP2(VkCommandBuffer cmd, const VkRenderPassBeginInfo* info, const VkSubpassBeginInfo* sb) {
     if (info) {
-        VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc = 0;
-        VkFormat depth = VK_FORMAT_UNDEFINED; VkAttachmentLoadOp dload = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        std::uint32_t w = info->renderArea.extent.width, h = info->renderArea.extent.height;
-        {
-            std::lock_guard<std::mutex> lk(g_mapMu);
-            auto rp = g_rps.find(info->renderPass);
-            if (rp != g_rps.end())
-                for (size_t i = 0; i < rp->second.fmts.size(); ++i) {
-                    VkFormat f = rp->second.fmts[i];
-                    bool isDepth = (int)f >= 124 && (int)f <= 130;
-                    if (isDepth) { depth = f; dload = rp->second.loads[i]; }
-                    else if (nc < 8) { colors[nc] = f; loads[nc] = rp->second.loads[i]; ++nc; }
-                }
-        }
-        t.pass = BeginPass("renderpass2", w, h, colors, loads, nc, depth, dload);
+        VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc, w, h;
+        VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
+        FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
+        t.pass = BeginPass(cmd, "renderpass2", w, h, colors, loads, nc, depth, dload, dimg, dfinal);
         t.inPass = true;
     }
     rBeginRP2(cmd, info, sb);
@@ -178,6 +229,7 @@ void VKAPI_CALL HookBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* i
     if (info) {
         VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc = 0;
         VkFormat depth = VK_FORMAT_UNDEFINED; VkAttachmentLoadOp dload = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        VkImage dimg = VK_NULL_HANDLE; VkImageLayout dfinal = VK_IMAGE_LAYOUT_UNDEFINED;
         {
             std::lock_guard<std::mutex> lk(g_mapMu);
             for (std::uint32_t i = 0; i < info->colorAttachmentCount && nc < 8; ++i) {
@@ -188,17 +240,19 @@ void VKAPI_CALL HookBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* i
             if (info->pDepthAttachment && info->pDepthAttachment->imageView) {
                 auto v = g_views.find(info->pDepthAttachment->imageView);
                 depth = v != g_views.end() ? v->second.fmt : VK_FORMAT_D32_SFLOAT;
+                if (v != g_views.end()) dimg = v->second.image;
                 dload = info->pDepthAttachment->loadOp;
+                dfinal = info->pDepthAttachment->imageLayout;
             }
         }
-        t.pass = BeginPass("rendering", info->renderArea.extent.width, info->renderArea.extent.height, colors, loads, nc, depth, dload);
+        t.pass = BeginPass(cmd, "rendering", info->renderArea.extent.width, info->renderArea.extent.height, colors, loads, nc, depth, dload, dimg, dfinal);
         t.inPass = true;
     }
     rBeginRendering(cmd, info);
 }
-void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { EndPass(); rEndRP(cmd); }
-void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { EndPass(); rEndRP2(cmd, e); }
-void VKAPI_CALL HookEndRendering(VkCommandBuffer cmd) { EndPass(); rEndRendering(cmd); }
+void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { EndPass(cmd); rEndRP(cmd); }
+void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { EndPass(cmd); rEndRP2(cmd, e); }
+void VKAPI_CALL HookEndRendering(VkCommandBuffer cmd) { EndPass(cmd); rEndRendering(cmd); }
 
 void VKAPI_CALL HookBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bp, VkPipeline pipe) {
     if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) {
@@ -247,7 +301,10 @@ VkResult VKAPI_CALL HookCreateRenderPass(VkDevice dev, const VkRenderPassCreateI
     VkResult r = rCreateRenderPass(dev, ci, a, out);
     if (r == VK_SUCCESS && ci && out) {
         RpInfo info;
-        for (std::uint32_t i = 0; i < ci->attachmentCount; ++i) { info.fmts.push_back(ci->pAttachments[i].format); info.loads.push_back(ci->pAttachments[i].loadOp); }
+        for (std::uint32_t i = 0; i < ci->attachmentCount; ++i) {
+            info.fmts.push_back(ci->pAttachments[i].format); info.loads.push_back(ci->pAttachments[i].loadOp);
+            info.finals.push_back(ci->pAttachments[i].finalLayout);
+        }
         std::lock_guard<std::mutex> lk(g_mapMu); g_rps[*out] = info;
     }
     return r;
@@ -256,7 +313,10 @@ VkResult VKAPI_CALL HookCreateRenderPass2(VkDevice dev, const VkRenderPassCreate
     VkResult r = rCreateRenderPass2(dev, ci, a, out);
     if (r == VK_SUCCESS && ci && out) {
         RpInfo info;
-        for (std::uint32_t i = 0; i < ci->attachmentCount; ++i) { info.fmts.push_back(ci->pAttachments[i].format); info.loads.push_back(ci->pAttachments[i].loadOp); }
+        for (std::uint32_t i = 0; i < ci->attachmentCount; ++i) {
+            info.fmts.push_back(ci->pAttachments[i].format); info.loads.push_back(ci->pAttachments[i].loadOp);
+            info.finals.push_back(ci->pAttachments[i].finalLayout);
+        }
         std::lock_guard<std::mutex> lk(g_mapMu); g_rps[*out] = info;
     }
     return r;
@@ -274,7 +334,7 @@ VkResult VKAPI_CALL HookCreateImageView(VkDevice dev, const VkImageViewCreateInf
     VkResult r = rCreateImageView(dev, ci, a, out);
     if (r == VK_SUCCESS && ci && out) {
         std::lock_guard<std::mutex> lk(g_mapMu);
-        g_views[*out] = { ci->format, ci->subresourceRange.aspectMask };
+        g_views[*out] = { ci->image, ci->format, ci->subresourceRange.aspectMask };
         if (g_views.size() > 65536) g_views.clear();
     }
     return r;
@@ -291,6 +351,16 @@ VkResult VKAPI_CALL HookCreateImage(VkDevice dev, const VkImageCreateInfo* ci, c
         Tally(g_images, (std::uint32_t)ci->format, ci->usage, ci->extent.width, ci->extent.height);
     }
     return r;
+}
+void VKAPI_CALL HookDestroyImage(VkDevice dev, VkImage img, const VkAllocationCallbacks* a) {
+    if (img) {
+        {
+            std::lock_guard<std::mutex> lk(g_passMu);
+            if (g_sceneImg == img) { g_sceneImg = VK_NULL_HANDLE; g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
+        }
+        if (g_imageDestroyed) g_imageDestroyed(img);
+    }
+    rDestroyImage(dev, img, a);
 }
 VkResult VKAPI_CALL HookCreateBuffer(VkDevice dev, const VkBufferCreateInfo* ci, const VkAllocationCallbacks* a, VkBuffer* out) {
     VkResult r = rCreateBuffer(dev, ci, a, out);
@@ -346,18 +416,81 @@ HookDef g_defs[] = {
     { (void**)&rCreateFramebuffer, (void*)HookCreateFramebuffer, "vkCreateFramebuffer", true },
     { (void**)&rCreateImageView, (void*)HookCreateImageView, "vkCreateImageView", true },
     { (void**)&rCreateImage, (void*)HookCreateImage, "vkCreateImage", true },
+    { (void**)&rDestroyImage, (void*)HookDestroyImage, "vkDestroyImage", true },
     { (void**)&rCreateBuffer, (void*)HookCreateBuffer, "vkCreateBuffer", true },
 };
 
+void CreateShare() {
+    if (g_share) return;
+    wchar_t name[64];
+    rtx::gputime::MakeSectionName(GetCurrentProcessId(), name);
+    g_shareMap = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, (DWORD)sizeof(rtx::gputime::Share), name);
+    if (!g_shareMap) return;
+    g_share = reinterpret_cast<rtx::gputime::Share*>(MapViewOfFile(g_shareMap, FILE_MAP_WRITE, 0, 0, sizeof(rtx::gputime::Share)));
+    if (!g_share) { CloseHandle(g_shareMap); g_shareMap = nullptr; return; }
+    g_share->version = rtx::gputime::kVersion; g_share->pid = GetCurrentProcessId();
+    g_share->seq = 0; g_share->count = 0; g_share->frame = 0;
+    g_share->magic = rtx::gputime::kMagic;
+}
+
+void PublishTimings(const std::vector<Pass>& passes, const std::uint64_t* results, bool haveResults, unsigned frame) {
+    if (!g_share) return;
+    std::uint32_t s = g_share->seq + 1;
+    g_share->seq = s; MemoryBarrier();
+    std::uint32_t n = 0;
+    std::uint64_t first = ~0ull, last = 0;
+    for (const auto& p : passes) {
+        if (n >= rtx::gputime::kMaxPasses) break;
+        rtx::gputime::Pass& o = g_share->passes[n];
+        std::memcpy(o.desc, p.desc, sizeof(o.desc));
+        o.draws = p.draws + p.indirect;
+        o.us = 0;
+        if (haveResults && p.query >= 0) {
+            const std::uint64_t b = results[(size_t)p.query * 4 + 0], ba = results[(size_t)p.query * 4 + 1];
+            const std::uint64_t e = results[(size_t)p.query * 4 + 2], ea = results[(size_t)p.query * 4 + 3];
+            if (ba && ea && e >= b) {
+                o.us = (std::uint32_t)((double)(e - b) * (double)g_tsPeriod / 1000.0);
+                if (b < first) first = b;
+                if (e > last) last = e;
+            }
+        }
+        ++n;
+    }
+    g_share->count = n;
+    g_share->frame = frame;
+    g_share->frame_us = g_frameUs;
+    g_share->total_us = (last > first) ? (std::uint32_t)((double)(last - first) * (double)g_tsPeriod / 1000.0) : 0;
+    MemoryBarrier(); g_share->seq = s + 1;
+}
+
 }  // namespace
 
-bool Attach(VkDevice dev, PFN_vkGetDeviceProcAddr gdpa, void (*log)(const char*, ...)) {
+bool Attach(VkDevice dev, PFN_vkGetDeviceProcAddr gdpa, float timestampPeriodNs,
+            void (*log)(const char*, ...), void (*imageDestroyed)(VkImage)) {
     if (g_attached) return true;
-    g_log = log;
+    g_log = log; g_imageDestroyed = imageDestroyed; g_dev = dev;
+    g_tsPeriod = timestampPeriodNs > 0.f ? timestampPeriodNs : 1.0f;
     for (auto& d : g_defs) {
         *d.real = (void*)gdpa(dev, d.name);
         if (!*d.real && d.required) { if (g_log) g_log("probe: %s missing", d.name); return false; }
     }
+    fCreateQueryPool     = (PFN_vkCreateQueryPool)gdpa(dev, "vkCreateQueryPool");
+    fDestroyQueryPool    = (PFN_vkDestroyQueryPool)gdpa(dev, "vkDestroyQueryPool");
+    fGetQueryPoolResults = (PFN_vkGetQueryPoolResults)gdpa(dev, "vkGetQueryPoolResults");
+    fCmdResetQueryPool   = (PFN_vkCmdResetQueryPool)gdpa(dev, "vkCmdResetQueryPool");
+    fCmdWriteTimestamp   = (PFN_vkCmdWriteTimestamp)gdpa(dev, "vkCmdWriteTimestamp");
+    fResetQueryPool      = (PFN_vkResetQueryPool)gdpa(dev, "vkResetQueryPool");
+    if (!fResetQueryPool) fResetQueryPool = (PFN_vkResetQueryPool)gdpa(dev, "vkResetQueryPoolEXT");
+    if (fCreateQueryPool && fGetQueryPoolResults && fCmdResetQueryPool && fCmdWriteTimestamp) {
+        for (int i = 0; i < kSlots; ++i) {
+            VkQueryPoolCreateInfo qi{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+            qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kMaxPairs * 2;
+            if (fCreateQueryPool(dev, &qi, nullptr, &g_pools[i]) != VK_SUCCESS) { g_pools[i] = VK_NULL_HANDLE; break; }
+            if (fResetQueryPool) fResetQueryPool(dev, g_pools[i], 0, kMaxPairs * 2);
+        }
+    }
+    CreateShare();
+
     ThreadSet ts;
     DetourTransactionBegin();
     UpdateAllThreads(ts);
@@ -366,8 +499,8 @@ bool Attach(VkDevice dev, PFN_vkGetDeviceProcAddr gdpa, void (*log)(const char*,
     CloseThreads(ts);
     if (rc != NO_ERROR) { if (g_log) g_log("probe: attach failed (%ld)", rc); return false; }
     g_attached = true;
-    if (g_log) g_log("probe: draw hooks attached (dynamic rendering %s, renderpass2 %s)",
-                     rBeginRendering ? "yes" : "no", rBeginRP2 ? "yes" : "no");
+    if (g_log) g_log("probe: draw hooks attached (dynamic rendering %s, renderpass2 %s, timestamps %s, period %.3f ns)",
+                     rBeginRendering ? "yes" : "no", rBeginRP2 ? "yes" : "no", g_pools[0] ? "yes" : "no", (double)g_tsPeriod);
     return true;
 }
 
@@ -380,22 +513,75 @@ void Detach() {
     DetourTransactionCommit();
     CloseThreads(ts);
     g_attached = false;
+    for (int i = 0; i < kSlots; ++i) {
+        if (g_pools[i] && fDestroyQueryPool) fDestroyQueryPool(g_dev, g_pools[i], nullptr);
+        g_pools[i] = VK_NULL_HANDLE;
+    }
     std::lock_guard<std::mutex> lk(g_mapMu);
     g_views.clear(); g_rps.clear(); g_fbs.clear(); g_depthPipes.clear(); g_dynDepthPipes.clear();
+    g_sceneImg = VK_NULL_HANDLE;
 }
 
+void SetTargetExtent(unsigned w, unsigned h) { g_targetW.store(w); g_targetH.store(h); }
 void SetHideScene(bool on) { g_hide.store(on, std::memory_order_relaxed); }
 bool HideSceneAvailable() { return g_attached; }
 void RequestProbe() { g_probeNext.store(true); }
 
-void FrameEnd() {
-    unsigned f = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;
-    bool probe = g_probeNext.exchange(false) || f == 300 || f == 3000;
-    std::vector<Pass> passes;
+bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout) {
+    std::lock_guard<std::mutex> lk(g_passMu);
+    if (!g_sceneImg) return false;
+    *img = g_sceneImg; *fmt = g_sceneFmt; *layout = g_sceneLayout;
+    return true;
+}
+
+void OnOverlayCmd(VkCommandBuffer cmd) {
+    if (!fCmdResetQueryPool) return;
+    const int next = (g_slot.load(std::memory_order_relaxed) + 1) % kSlots;
+    if (g_pools[next]) {
+        fCmdResetQueryPool(cmd, g_pools[next], 0, kMaxPairs * 2);
+        g_pairs[next].store(0, std::memory_order_relaxed);
+    }
+}
+
+// Present boundary: the frame just recorded becomes the current slot's completed list; the slot
+// presented two frames ago has its timestamps read and published; recording moves to the next slot.
+void FrameBegin() {
+    const unsigned f = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;
+    const ULONGLONG now = GetTickCount64();
+    g_frameUs = g_lastPresentMs ? (unsigned)((now - g_lastPresentMs) * 1000) : 0;
+    g_lastPresentMs = now;
+    const int cur = g_slot.load(std::memory_order_relaxed);
+    const int done = (cur + 1) % kSlots;   // recorded two presents ago; read before its pool is reset
+    const bool probe = g_probeNext.exchange(false) || f == 300 || f == 3000;
+
+    std::vector<Pass> current, old;
     {
         std::lock_guard<std::mutex> lk(g_passMu);
-        passes.swap(g_passes);
+        current = g_slotPasses[cur];
+        old.swap(g_slotPasses[done]);
+        // Scene depth: the client-size depth pass with the most draws in the frame just recorded.
+        const unsigned tw = g_targetW.load(), th = g_targetH.load();
+        const Pass* best = nullptr;
+        for (const auto& p : current)
+            if (p.depthImg && p.w == tw && p.h == th && (!best || p.draws + p.skipped > best->draws + best->skipped)) best = &p;
+        if (best) { g_sceneImg = best->depthImg; g_sceneFmt = best->depthFmt; g_sceneLayout = best->depthFinal; }
+        else { g_sceneImg = VK_NULL_HANDLE; g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
     }
+
+    static std::uint64_t results[kMaxPairs * 4];
+    bool have = false;
+    if (g_pools[done] && fGetQueryPoolResults && !old.empty()) {
+        unsigned pairs = g_pairs[done].load(std::memory_order_relaxed);
+        if (pairs > kMaxPairs) pairs = kMaxPairs;
+        if (pairs) {
+            VkResult r = fGetQueryPoolResults(g_dev, g_pools[done], 0, pairs * 2, sizeof(std::uint64_t) * 4 * pairs, results,
+                                              sizeof(std::uint64_t) * 2, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            have = (r == VK_SUCCESS || r == VK_NOT_READY);
+        }
+    }
+    PublishTimings(old, results, have, f >= 2 ? f - 2 : 0);
+    g_slot.store((cur + 1) % kSlots, std::memory_order_relaxed);
+
     unsigned outside = g_dispatchOutside.exchange(0);
     if (!probe || !g_log) return;
     size_t depthPipes, dynPipes, views, rps;
@@ -405,17 +591,16 @@ void FrameEnd() {
         depthPipes = g_depthPipes.size(); dynPipes = g_dynDepthPipes.size(); views = g_views.size(); rps = g_rps.size();
         images = g_images; buffers = g_buffers;
     }
-    g_log("probe frame %u: %zu passes, %u compute dispatches outside passes, %zu depth pipelines (%zu dynamic-depth), %zu render passes, %zu views",
-          f, passes.size(), outside, depthPipes, dynPipes, rps, views);
-    for (size_t i = 0; i < passes.size(); ++i)
-        g_log("  pass %2zu: %s draws %u indirect %u dispatch %u skipped %u", i, passes[i].desc, passes[i].draws, passes[i].indirect, passes[i].dispatch, passes[i].skipped);
+    g_log("probe frame %u: %zu passes, %u compute dispatches outside passes, %zu depth pipelines (%zu dynamic-depth), %zu render passes, %zu views, scene depth %p",
+          f, current.size(), outside, depthPipes, dynPipes, rps, views, (void*)g_sceneImg);
+    for (size_t i = 0; i < current.size(); ++i)
+        g_log("  pass %2zu: %s draws %u indirect %u dispatch %u skipped %u", i, current[i].desc, current[i].draws, current[i].indirect, current[i].dispatch, current[i].skipped);
     g_log("  images created so far %u (distinct format/usage/size %zu):", g_imageTotal.load(), images.size());
     for (const auto& s : images) {
         char fb[48] = {}; AppendFmt(fb, sizeof(fb), (VkFormat)s.key[0]);
         g_log("    %5u x %s usage 0x%x %ux%u", s.count, fb, s.key[1], s.key[2], s.key[3]);
     }
-    g_log("  buffers created so far %u (distinct usage/size class %zu):", g_bufferTotal.load(), buffers.size());
-    for (const auto& s : buffers) g_log("    %5u x usage 0x%x ~%u KB", s.count, s.key[0], (unsigned)((1ull << s.key[1]) / 1024));
+    g_log("  buffers created so far %u (distinct usage/size class %zu)", g_bufferTotal.load(), buffers.size());
 }
 
 }  // namespace rtx::vkprobe

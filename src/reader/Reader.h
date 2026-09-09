@@ -198,6 +198,7 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since);
 bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]);
 
 bool RenderToggle(std::uint32_t pid, int which, bool on);
+std::string GpuTimingJson(std::uint32_t pid);   // companion per-pass GPU timing (Vulkan)
 std::uint64_t RenderInputWindow(std::uint32_t pid);
 
 bool TickState(std::uint32_t pid, std::uint32_t& count, double& age_ms);

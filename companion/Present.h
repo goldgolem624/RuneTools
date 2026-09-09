@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 // Present callback: composites launcher UI into the game frame before the swap or present.
 
 namespace rtx::present {
@@ -18,6 +19,8 @@ struct Backend {
     void (*DrawUiLayer)(int, int, int, int);
     void (*UploadHud)(const void*, int, int);
     void (*DrawHud)(int, int, int, int, int, int);
+    void (*SetDepth)(const float*);                       // per-command clip depths, nullptr = none
+    void (*SetDepthMode)(unsigned, float, float, float);  // marker share flags + reference point
 };
 
 const Backend& GlBackend();

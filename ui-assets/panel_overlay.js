@@ -1,6 +1,6 @@
 // RuneToolsX panel: Overlay tab (drives the external world-grid window).
 (function () {
-  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, interactable: false, radius: 12, markers: true };
+  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, interactable: false, radius: 12, markers: true, occlude: true };
   function ovAdopt(raw) {
     try {
       const sv = JSON.parse(raw || 'null');
@@ -32,7 +32,7 @@
     const npRng = (typeof sceneRange !== 'undefined') ? sceneRange : 20;
     const npInter = npOn && (typeof sceneInteractable !== 'undefined') && !!sceneInteractable;
     try { b.overlayConfig(myPid(), s.enabled, s.grid, s.players, s.npcs, s.objects, s.radius, s.walk_only, (s.interactable || npInter), s.specials, markersActive(),
-                          npOn, npPl, npNp, npOb, npRng); } catch (e) {}
+                          npOn, npPl, npNp, npOb, npRng, overlayState.occlude !== false); } catch (e) {}
   }
   function ovToggleRow(id, name, sub) {
     const r = document.createElement('div'); r.className = 'ov-row'; r.id = id; r.setAttribute('role', 'button');
@@ -45,7 +45,7 @@
     return r;
   }
   function reflectOverlay() {
-    const map = { ov_enabled: 'enabled', ov_grid: 'grid', ov_players: 'players', ov_npcs: 'npcs', ov_objects: 'objects', ov_interactable: 'interactable', ov_specials: 'specials', ov_walkonly: 'walk_only' };
+    const map = { ov_enabled: 'enabled', ov_grid: 'grid', ov_players: 'players', ov_npcs: 'npcs', ov_objects: 'objects', ov_interactable: 'interactable', ov_occlude: 'occlude', ov_specials: 'specials', ov_walkonly: 'walk_only' };
     for (const id in map) { const el = $(id); if (el) el.classList.toggle('on', !!overlayState[map[id]]); }
     const rng = $('ov_radius');
     if (rng) { rng.value = overlayState.radius; const lbl = $('ov_radlbl'); if (lbl) lbl.textContent = overlayState.radius + ' tiles'; }
@@ -64,6 +64,7 @@
     const sep = document.createElement('div'); sep.className = 'ov-sep'; wrap.appendChild(sep);
     wrap.appendChild(ovToggleRow('ov_grid', 'Tile grid', 'World grid lines on the ground'));
     wrap.appendChild(ovToggleRow('ov_walkonly', 'Walkable only', 'Hide unwalkable tiles (else they tint red)'));
+    wrap.appendChild(ovToggleRow('ov_occlude', 'Hide behind terrain', 'Markers are cut where the scene is in front of them (Vulkan client)'));
     wrap.appendChild(ovToggleRow('ov_players', 'Players', 'Marker + name per player'));
     wrap.appendChild(ovToggleRow('ov_npcs', 'NPCs', 'Marker + name per NPC'));
     wrap.appendChild(ovToggleRow('ov_objects', 'Objects', 'Footprint box per named scenery object'));
@@ -86,7 +87,7 @@
     hint.textContent = 'Markers are drawn into the game\'s 3D view. Grid follows your current plane height.';
     wrap.appendChild(hint);
     c.appendChild(wrap);
-    [['ov_enabled', 'enabled'], ['ov_grid', 'grid'], ['ov_walkonly', 'walk_only'], ['ov_players', 'players'],
+    [['ov_enabled', 'enabled'], ['ov_grid', 'grid'], ['ov_walkonly', 'walk_only'], ['ov_occlude', 'occlude'], ['ov_players', 'players'],
      ['ov_npcs', 'npcs'], ['ov_objects', 'objects'], ['ov_interactable', 'interactable'], ['ov_specials', 'specials']].forEach(([id, key]) => {
       $(id).addEventListener('click', () => { overlayState[key] = !overlayState[key]; reflectOverlay(); pushOverlay(); });
     });

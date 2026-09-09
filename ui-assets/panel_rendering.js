@@ -13,7 +13,23 @@
     hint.textContent = 'Client-side only - these never reach the game or other players, and reset when you ' +
                        'restart. Needs the in-process companion (the same one that powers the Vars/Scene tabs).';
     wrap.appendChild(hint);
+    const gpuTitle = document.createElement('div'); gpuTitle.className = 'section-title'; gpuTitle.textContent = 'GPU frame (Vulkan)';
+    const gpu = document.createElement('div'); gpu.id = 'rndGpu'; gpu.className = 'ov-hint'; gpu.textContent = 'No timing data. The Vulkan client publishes per-pass GPU times once its companion is armed.';
+    wrap.appendChild(gpuTitle); wrap.appendChild(gpu);
     c.appendChild(wrap);
+    const tick = async () => {
+      const el = $('rndGpu');
+      if (!el || !document.body.contains(el)) { clearInterval(timer); return; }
+      let d = null;
+      try { if (bridge() && bridge().gpuTiming) d = JSON.parse(await Promise.resolve(bridge().gpuTiming(myPid())) || '{}'); } catch (e) {}
+      if (!d || !Array.isArray(d.passes) || !d.passes.length) return;
+      const rows = d.passes.map((p, i) => '<div style="display:flex;gap:8px;font:11px var(--font-mono)"><span style="flex:none;width:22px;color:var(--text-mute)">' + i + '</span>'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + String(p.desc).replace(/</g, '&lt;') + '</span>'
+        + '<span style="flex:none;width:52px;text-align:right;color:var(--text-mute)">' + p.draws + '</span>'
+        + '<span style="flex:none;width:64px;text-align:right">' + (p.us / 1000).toFixed(2) + ' ms</span></div>');
+      el.innerHTML = '<div style="margin-bottom:4px">Frame ' + d.frame + ': GPU ' + (d.total_us / 1000).toFixed(2) + ' ms across ' + d.passes.length + ' passes, present interval ' + (d.frame_us / 1000).toFixed(1) + ' ms</div>' + rows.join('');
+    };
+    const timer = setInterval(tick, 1000); tick();
     [['rh_npcs', 'npcs', 0], ['rh_players', 'players', 1], ['rh_all', 'all', 2]].forEach(([id, key, which]) => {
       const el = $(id); if (!el) return;
       el.classList.toggle('on', !!renderHide[key]);

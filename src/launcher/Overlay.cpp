@@ -27,6 +27,7 @@ using std::min;
 #include <fstream>
 #include <map>
 #include <tuple>
+#include <unordered_map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -216,6 +217,18 @@ HWND FindGameWindow(DWORD pid) {
     return (HWND)rtx::launcher::dock::GameWindowHandle(pid);
 }
 
+// Every projected point registers its clip-space depth by screen position, so the marker builder
+// can attach depth to lines and quads without threading it through each helper.
+static thread_local std::unordered_map<std::uint64_t, float> t_ptZ;
+static inline std::uint64_t PtKey(float x, float y) {
+    std::uint32_t a, b; std::memcpy(&a, &x, 4); std::memcpy(&b, &y, 4);
+    return ((std::uint64_t)a << 32) | b;
+}
+static inline float ZAt(float x, float y) {
+    auto it = t_ptZ.find(PtKey(x, y));
+    return it == t_ptZ.end() ? -1.0f : it->second;
+}
+
 bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
                    float x, float y, float z, float& sx, float& sy) {
     float w = m[3] * x + m[11] * y + m[7] * z + m[15];
@@ -225,6 +238,8 @@ bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
     float cx = vpW / 2.0f, cy = vpH / 2.0f;
     sx = nx * cx - nx * 2.0f + cx + vpX;
     sy = -(ny * cy) + ny + cy + vpY;
+    float nz = (m[2] * x + m[10] * y + m[6] * z + m[14]) / w;
+    if (t_ptZ.size() < 200000) t_ptZ[PtKey(sx, sy)] = nz;
     return true;
 }
 
@@ -685,7 +700,20 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     static std::vector<marker::Command> cmds;   // render thread only
     cmds.clear();
-    auto push = [&](const marker::Command& c) { if (cmds.size() < marker::kMaxCmds) cmds.push_back(c); };
+    t_ptZ.clear();
+    auto push = [&](const marker::Command& c0) {
+        if (cmds.size() >= marker::kMaxCmds) return;
+        marker::Command c = c0;
+        c.z0 = c.z1 = c.z2 = c.z3 = -1.0f;
+        if (c.type == marker::kLine) {
+            c.z0 = ZAt(c.x0, c.y0); c.z1 = ZAt(c.x1, c.y1);
+            if (c.z0 < 0.0f || c.z1 < 0.0f) c.z0 = c.z1 = -1.0f;
+        } else if (c.type == marker::kFillQuad) {
+            c.z0 = ZAt(c.x0, c.y0); c.z1 = ZAt(c.x1, c.y1); c.z2 = ZAt(c.x2, c.y2); c.z3 = ZAt(c.x3, c.y3);
+            if (c.z0 < 0.0f || c.z1 < 0.0f || c.z2 < 0.0f || c.z3 < 0.0f) c.z0 = c.z1 = c.z2 = c.z3 = -1.0f;
+        }
+        cmds.push_back(c);
+    };
     auto line = [&](float x0, float y0, float x1, float y1, float th,
                     int r, int g, int b, int a) {
         marker::Command c{}; c.type = marker::kLine;
@@ -1741,6 +1769,27 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     sh->fb_w = W; sh->fb_h = H;
     sh->gv_x = (std::int32_t)vpX; sh->gv_y = (std::int32_t)vpY;
     sh->gv_w = (std::int32_t)vpW; sh->gv_h = (std::int32_t)vpH;
+    {
+        std::uint32_t mflags = 0;
+        float rx = -1.f, ry = -1.f, rz = -1.f;
+        if (f && cfg.occlude) {
+            mflags |= marker::kFlagDepth;
+            // Depth direction: the player against a point farther from the camera.
+            float sx, sy;
+            if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, f->player_fx, f->player_fy, f->player_z, sx, sy)) {
+                rx = sx; ry = sy; rz = ZAt(sx, sy);
+                const float p0[3] = { f->player_fx, f->player_fy, f->player_z };
+                float farp[3] = { p0[0] + 4096.f, p0[1], p0[2] };
+                if (ProjW(f->matrix, farp) < ProjW(f->matrix, p0)) farp[0] = p0[0] - 4096.f;
+                float fx2, fy2;
+                if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, farp[0], farp[1], farp[2], fx2, fy2)) {
+                    float fz = ZAt(fx2, fy2);
+                    if (fz >= 0.f && rz >= 0.f && fz < rz) mflags |= marker::kFlagDepthReversed;
+                }
+            }
+        }
+        sh->flags = mflags; sh->ref_x = rx; sh->ref_y = ry; sh->ref_z = rz;
+    }
     for (std::uint32_t i = 0; i < n; ++i) sh->cmds[i] = cmds[i];
     sh->count = n;
     sh->visible = 1;

@@ -7,6 +7,7 @@
 #include "../../companion/GroundShare.h"  // shared layout for dropped ground items (type 3)
 #include "../../companion/VarcShare.h"    // shared layout for live client-var values
 #include "../../companion/RenderShare.h"  // launcher->companion render toggles
+#include "../../companion/GpuTimeShare.h"
 #include "../../companion/SpecialShare.h" // shared layout for transient render-pass highlights
 #include "../../companion/NetProbeShare.h" // decoded server->client packet feed (companion framer hook)
 #include "../../companion/EventShare.h"    // opcode-filtered event ring (the event channel)
@@ -2687,6 +2688,38 @@ bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]) {
 }
 
 // which: 0 hide NPCs, 1 hide other players, 2 hide scene, 3 keep-focused, 4 true-embed.
+std::string GpuTimingJson(std::uint32_t pid) {
+    const char* kEmpty = "{\"passes\":[]}";
+    wchar_t name[64];
+    rtx::gputime::MakeSectionName(pid, name);
+    HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
+    if (!h) return kEmpty;
+    auto* sh = reinterpret_cast<const rtx::gputime::Share*>(MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(rtx::gputime::Share)));
+    if (!sh) { CloseHandle(h); return kEmpty; }
+    std::string out = kEmpty;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        std::uint32_t s0 = sh->seq;
+        if (s0 & 1u) { Sleep(1); continue; }
+        rtx::gputime::Share snap;
+        std::memcpy(&snap, sh, sizeof(snap));
+        if (sh->seq != s0 || snap.magic != rtx::gputime::kMagic) { Sleep(1); continue; }
+        std::uint32_t n = snap.count < rtx::gputime::kMaxPasses ? snap.count : rtx::gputime::kMaxPasses;
+        out = "{\"frame\":" + std::to_string(snap.frame) + ",\"total_us\":" + std::to_string(snap.total_us) +
+              ",\"frame_us\":" + std::to_string(snap.frame_us) + ",\"passes\":[";
+        for (std::uint32_t i = 0; i < n; ++i) {
+            char desc[rtx::gputime::kDescMax + 1];
+            std::memcpy(desc, snap.passes[i].desc, rtx::gputime::kDescMax); desc[rtx::gputime::kDescMax] = 0;
+            out += (i ? "," : "") + std::string("{\"desc\":\"") + json_escape(desc) + "\",\"draws\":" +
+                   std::to_string(snap.passes[i].draws) + ",\"us\":" + std::to_string(snap.passes[i].us) + "}";
+        }
+        out += "]}";
+        break;
+    }
+    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
+    CloseHandle(h);
+    return out;
+}
+
 bool RenderToggle(std::uint32_t pid, int which, bool on) {
     wchar_t name[64];
     rtx::render::MakeSectionName(pid, name);

@@ -14,6 +14,7 @@
 #include "Markers.h"
 #include "WinNotify.h"
 #include "Process.h"
+#include "../../companion/CaptureShare.h"
 #include "../cache/CacheReader.h"
 #include "../cache/Constants.h"
 #include "Audio.h"
@@ -186,9 +187,64 @@ std::filesystem::path next_screenshot_path() {
     return p;
 }
 
-std::wstring capture_to_screenshots(HWND hwnd) {
+// Presented-frame capture through the companion (Vulkan clients): exact swapchain pixels, overlay
+// included, independent of window occlusion. The section stays mapped so the module can find it.
+std::mutex g_capmu;
+std::unordered_map<std::uint32_t, std::pair<HANDLE, rtx::capture::Share*>> g_capshares;
+HBITMAP capture_companion_dib(std::uint32_t pid, int& outW, int& outH) {
+    if (!pid) return nullptr;
+    rtx::capture::Share* sh = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_capmu);
+        auto it = g_capshares.find(pid);
+        if (it == g_capshares.end()) {
+            wchar_t name[64];
+            rtx::capture::MakeSectionName(pid, name);
+            HANDLE map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, (DWORD)sizeof(rtx::capture::Share), name);
+            if (!map) return nullptr;
+            auto* p = reinterpret_cast<rtx::capture::Share*>(MapViewOfFile(map, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::capture::Share)));
+            if (!p) { CloseHandle(map); return nullptr; }
+            if (p->magic != rtx::capture::kMagic) {
+                p->version = rtx::capture::kVersion; p->pid = pid; p->request = 0; p->done = 0;
+                p->magic = rtx::capture::kMagic;
+            }
+            it = g_capshares.emplace(pid, std::make_pair(map, p)).first;
+        }
+        sh = it->second.second;
+    }
+    const std::uint32_t serial = sh->request + 1;
+    sh->request = serial;
+    for (int i = 0; i < 60 && sh->done != serial; ++i) Sleep(10);
+    if (sh->done != serial || sh->width == 0 || sh->height == 0) return nullptr;
+    const int w = (int)sh->width, h = (int)sh->height;
+    if ((std::size_t)sh->stride * h > rtx::capture::kMaxBytes) return nullptr;
+    HDC screen = GetDC(nullptr);
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
+    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    if (!dib || !bits) { if (dib) DeleteObject(dib); return nullptr; }
+    const bool rgba = sh->format == 37 || sh->format == 43;   // R8G8B8A8 swapchains need a swap
+    for (int y = 0; y < h; ++y) {
+        const std::uint8_t* src = sh->pixels + (std::size_t)y * sh->stride;
+        std::uint8_t* dst = static_cast<std::uint8_t*>(bits) + (std::size_t)y * w * 4;
+        for (int x = 0; x < w; ++x) {
+            dst[x * 4 + 0] = rgba ? src[x * 4 + 2] : src[x * 4 + 0];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = rgba ? src[x * 4 + 0] : src[x * 4 + 2];
+            dst[x * 4 + 3] = 255;
+        }
+    }
+    outW = w; outH = h;
+    return dib;
+}
+
+std::wstring capture_to_screenshots(HWND hwnd, std::uint32_t pid = 0) {
     int w = 0, h = 0;
-    HBITMAP dib = capture_window_dib(hwnd, w, h);
+    HBITMAP dib = capture_companion_dib(pid, w, h);
+    if (!dib) dib = capture_window_dib(hwnd, w, h);
     if (!dib) return {};
     std::wstring result;
     std::error_code ec;
@@ -210,7 +266,7 @@ std::wstring capture_to_screenshots(HWND hwnd) {
 std::wstring capture_for_pid(std::uint32_t pid) {
     HWND hwnd = pid ? (HWND)rtx::launcher::dock::GameWindowHandle(pid) : nullptr;
     if (!hwnd) return {};
-    std::wstring path = capture_to_screenshots(hwnd);
+    std::wstring path = capture_to_screenshots(hwnd, pid);
     if (path.empty()) {
         if (!rtx::launcher::gameui::Notify(pid, "Screenshot failed", 5000))
             rtx::overlay::Toast(pid, "Screenshot failed");
@@ -1534,6 +1590,7 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc >= 13) c.np_players = JSValueToBoolean(ctx, argv[12]);
     if (argc >= 14) c.np_npcs    = JSValueToBoolean(ctx, argv[13]);
     if (argc >= 15) c.np_objects = JSValueToBoolean(ctx, argv[14]);
+    if (argc >= 17) c.occlude    = JSValueToBoolean(ctx, argv[16]);
     if (argc >= 16) c.np_range   = js_int(ctx, argv[15]);
     rtx::overlay::Configure(c);
     return JSValueMakeBoolean(ctx, true);
@@ -3309,6 +3366,11 @@ std::string renderer_json() {
            ",\"error\":\"" + json_escape(err) + "\"}";
 }
 
+JSValueRef GpuTiming(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    return utf8_to_js(ctx, rtx::reader::GpuTimingJson(pid));
+}
+
 JSValueRef RendererPref(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
     return utf8_to_js(ctx, renderer_json());
 }
@@ -4863,6 +4925,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "gamePathPick",      GamePathPick);
     install_fn(ctx, ns, "gamePathReset",     GamePathReset);
     install_fn(ctx, ns, "rendererPref",      RendererPref);
+    install_fn(ctx, ns, "gpuTiming",         GpuTiming);
     install_fn(ctx, ns, "rendererSet",       RendererSet);
 
     install_fn(ctx, ns, "pluginStoreLoad",   PluginStoreLoad);

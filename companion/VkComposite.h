@@ -51,6 +51,7 @@ struct DeviceFns {
     PFN_vkResetCommandBuffer          ResetCommandBuffer;
     PFN_vkCmdPipelineBarrier          CmdPipelineBarrier;
     PFN_vkCmdCopyBufferToImage        CmdCopyBufferToImage;
+    PFN_vkCmdCopyImageToBuffer        CmdCopyImageToBuffer;
     PFN_vkCmdBeginRenderPass          CmdBeginRenderPass;
     PFN_vkCmdEndRenderPass            CmdEndRenderPass;
     PFN_vkCmdBindPipeline             CmdBindPipeline;
@@ -76,14 +77,27 @@ bool Init(VkDevice dev, const DeviceFns& fns,
 void Shutdown();
 bool Ready();
 
+void SetLog(void (*log)(const char*, ...));
+void SetCmdHook(void (*hook)(VkCommandBuffer));   // start of every recorded overlay command buffer
+void SetAlwaysRecord(bool on);                    // record and submit even when nothing is drawn
+
 bool RegisterSwapchain(VkSwapchainKHR sc, VkFormat fmt, std::uint32_t w, std::uint32_t h);
 void UnregisterSwapchain(VkSwapchainKHR sc);
 int  SwapchainCount();
 
+// Scene depth attachment of the frame (the game's image) and the layout it is left in.
+void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout);
+void OnImageDestroyed(VkImage img);
+// Marker share depth flags and the player's projected reference point (calibration log).
+void SetDepthMode(std::uint32_t flags, float rx, float ry, float rz);
+void SetDepth(const float* z4);                   // per-command clip-space depths; nullptr = none
+// Capture channel (rtx::capture::Share*); nullptr detaches.
+void SetCaptureShare(void* share);
+
 // Select the image about to be presented. False when the swapchain is unknown or its fence is stuck.
 bool BeginTarget(VkSwapchainKHR sc, std::uint32_t imageIndex, std::uint32_t* w, std::uint32_t* h);
 // Record and submit whatever was drawn since BeginTarget(). Returns the semaphore the present must
-// wait on, or VK_NULL_HANDLE when nothing was drawn (the caller then leaves the present untouched).
+// wait on, or VK_NULL_HANDLE when nothing was recorded (the caller then leaves the present untouched).
 VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* waits);
 
 void Begin();

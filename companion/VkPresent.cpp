@@ -9,6 +9,7 @@
 #include "VkComposite.h"
 #include "VkProbe.h"
 #include "Present.h"
+#include "CaptureShare.h"
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -62,6 +63,27 @@ int               g_nudgeW = 0, g_nudgeH = 0;
 bool              g_warnedNoChain = false;
 std::atomic<bool> g_everRegistered{ false };
 std::atomic<unsigned> g_frames{ 0 };
+rtx::capture::Share* g_cap = nullptr;
+HANDLE g_capMap = nullptr;
+ULONGLONG g_capTryMs = 0;
+
+void EnsureCaptureMapped() {
+    if (g_cap) return;
+    ULONGLONG now = GetTickCount64();
+    if (now - g_capTryMs < 1000) return;
+    g_capTryMs = now;
+    wchar_t name[64];
+    rtx::capture::MakeSectionName(GetCurrentProcessId(), name);
+    g_capMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
+    if (!g_capMap) return;
+    g_cap = reinterpret_cast<rtx::capture::Share*>(MapViewOfFile(g_capMap, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(rtx::capture::Share)));
+    if (!g_cap) { CloseHandle(g_capMap); g_capMap = nullptr; return; }
+    rtx::vkcomposite::SetCaptureShare(g_cap);
+}
+
+void OnImageDestroyedCb(VkImage img) {
+    __try { rtx::vkcomposite::OnImageDestroyed(img); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
 
 void Log(const char* fmt, ...) {
     char buf[512];
@@ -276,6 +298,8 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
     if (g_queueCheck == 0) CheckQueue(queue);
     if (g_queueCheck < 0) return 0;
     RefreshWindow();
+    EnsureCaptureMapped();
+    rtx::vkprobe::FrameBegin();
     const VkSemaphore* waits = info->pWaitSemaphores;
     std::uint32_t wc = info->waitSemaphoreCount;
     int n = 0;
@@ -283,13 +307,16 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint32_t w = 0, h = 0;
         if (!rtx::vkcomposite::BeginTarget(info->pSwapchains[i], info->pImageIndices[i], &w, &h)) continue;
+        rtx::vkprobe::SetTargetExtent(w, h);
+        VkImage dimg = VK_NULL_HANDLE; VkFormat dfmt = VK_FORMAT_UNDEFINED; VkImageLayout dlay = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (rtx::vkprobe::SceneDepth(&dimg, &dfmt, &dlay)) rtx::vkcomposite::SetSceneDepth(dimg, dfmt, dlay);
+        else rtx::vkcomposite::SetSceneDepth(VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED);
         rtx::present::RenderOverlay(rtx::present::VkBackend(), g_hwnd, (int)w, (int)h);
         VkSemaphore s = rtx::vkcomposite::Submit(queue, wc, waits);
         if (s) { chain[n++] = s; waits = &chain[n - 1]; wc = 1; }
     }
     if (n) { local->waitSemaphoreCount = wc; local->pWaitSemaphores = waits; }
     g_frames.fetch_add(1, std::memory_order_relaxed);
-    rtx::vkprobe::FrameEnd();
     return n;
 }
 
@@ -397,7 +424,7 @@ bool Arm(VkDevice dev) {
     RTX_DEV(BindImageMemory); RTX_DEV(BindBufferMemory); RTX_DEV(MapMemory); RTX_DEV(UnmapMemory);
     RTX_DEV(CreateCommandPool); RTX_DEV(DestroyCommandPool); RTX_DEV(AllocateCommandBuffers); RTX_DEV(FreeCommandBuffers);
     RTX_DEV(BeginCommandBuffer); RTX_DEV(EndCommandBuffer); RTX_DEV(ResetCommandBuffer); RTX_DEV(CmdPipelineBarrier);
-    RTX_DEV(CmdCopyBufferToImage); RTX_DEV(CmdBeginRenderPass); RTX_DEV(CmdEndRenderPass); RTX_DEV(CmdBindPipeline);
+    RTX_DEV(CmdCopyBufferToImage); RTX_DEV(CmdCopyImageToBuffer); RTX_DEV(CmdBeginRenderPass); RTX_DEV(CmdEndRenderPass); RTX_DEV(CmdBindPipeline);
     RTX_DEV(CmdBindDescriptorSets); RTX_DEV(CmdBindVertexBuffers); RTX_DEV(CmdPushConstants); RTX_DEV(CmdSetViewport);
     RTX_DEV(CmdSetScissor); RTX_DEV(CmdDraw); RTX_DEV(CreateFence); RTX_DEV(DestroyFence); RTX_DEV(WaitForFences);
     RTX_DEV(ResetFences); RTX_DEV(CreateSemaphore); RTX_DEV(DestroySemaphore); RTX_DEV(QueueSubmit);
@@ -415,6 +442,8 @@ bool Arm(VkDevice dev) {
     if (!pd) { Log("no physical device"); return false; }
     VkPhysicalDeviceMemoryProperties mem{};
     g_realGetPDMem(pd, &mem);
+    VkPhysicalDeviceProperties pdp{};
+    g_realGetPDProps(pd, &pdp);
     std::uint32_t nq = 0;
     g_getQueueFamilies(pd, &nq, nullptr);
     VkQueueFamilyProperties qf[32];
@@ -436,7 +465,10 @@ bool Arm(VkDevice dev) {
     g_armed.store(true);
     Log("armed on device %p, graphics family %u (%u queues), present %p", (void*)dev, g_family, g_familyQueues, (void*)g_realQueuePresent);
     LogExtensions(dev);
-    rtx::vkprobe::Attach(dev, g_realGDPA, Log);
+    rtx::vkcomposite::SetLog(Log);
+    rtx::vkcomposite::SetCmdHook(rtx::vkprobe::OnOverlayCmd);
+    if (rtx::vkprobe::Attach(dev, g_realGDPA, pdp.limits.timestampPeriod, Log, OnImageDestroyedCb))
+        rtx::vkcomposite::SetAlwaysRecord(true);
     return true;
 }
 

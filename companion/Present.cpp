@@ -169,8 +169,14 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         if (n > rtx::marker::kMaxCmds) n = rtx::marker::kMaxCmds;
         int cw = g_marker->fb_w > 0 ? g_marker->fb_w : fbw;
         int ch = g_marker->fb_h > 0 ? g_marker->fb_h : fbh;
-        for (std::uint32_t i = 0; i < n; ++i)
-            DrawCommand(b, g_marker->cmds[i], cw, ch);
+        b.SetDepthMode(g_marker->flags, g_marker->ref_x, g_marker->ref_y, g_marker->ref_z);
+        for (std::uint32_t i = 0; i < n; ++i) {
+            const rtx::marker::Command& c = g_marker->cmds[i];
+            const float z[4] = { c.z0, c.z1, c.z2, c.z3 };
+            b.SetDepth(z);
+            DrawCommand(b, c, cw, ch);
+        }
+        b.SetDepth(nullptr);
         static bool s_logged = false;
         if (!s_logged) { s_logged = true; OutputDebugStringA("RuneToolsX: drawing world markers"); }
     }
@@ -297,6 +303,9 @@ bool InstallVk() {
     return g_vkInstalled;
 }
 
+void GlSetDepth(const float*) {}
+void GlSetDepthMode(unsigned, float, float, float) {}
+
 }  // namespace
 
 const Backend& GlBackend() {
@@ -306,6 +315,7 @@ const Backend& GlBackend() {
         rtx::composite::DrawGlyph, rtx::composite::DrawLabel, rtx::composite::DrawPlainText,
         rtx::composite::DrawRoundRect, rtx::composite::UploadUiLayer, rtx::composite::DrawUiLayer,
         rtx::composite::UploadHud, rtx::composite::DrawHud,
+        GlSetDepth, GlSetDepthMode,
     };
     return b;
 }
@@ -317,6 +327,7 @@ const Backend& VkBackend() {
         rtx::vkcomposite::DrawGlyph, rtx::vkcomposite::DrawLabel, rtx::vkcomposite::DrawPlainText,
         rtx::vkcomposite::DrawRoundRect, rtx::vkcomposite::UploadUiLayer, rtx::vkcomposite::DrawUiLayer,
         rtx::vkcomposite::UploadHud, rtx::vkcomposite::DrawHud,
+        rtx::vkcomposite::SetDepth, rtx::vkcomposite::SetDepthMode,
     };
     return b;
 }
