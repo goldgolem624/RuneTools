@@ -50,15 +50,30 @@
                                                                     ] },
 	"0x1c": { "name":                          "unknown_1c", "read": "ubyte" },
 	"0x1e": { "name":                          "unknown_1e", "read": "ubyte" },
-	// Added by game update 950-1: a varbit/varp gated sprite pair, same shape as legacy_switch
-	// with a leading selector byte.
-	"0xFC": { "name":                          "unknown_fc", "read": ["struct",
+	// Added by game update 950-1: selector-prefixed forms of the three var-gated opcodes.
+	// 0xFA and 0xFB carry a leading byte then the same fields as toggle_1/toggle_2 (0x09/0x14);
+	// 0xFC carries a leading byte then the same fields as legacy_switch (0x1a).
+	"0xFA": { "name":                          "toggle_3", "read": ["struct",
+                                                                        ["selector","ubyte"],
+                                                                        ["varbit","ushort"],
+                                                                        ["varp","ushort"],
+                                                                        ["lower","uint"],
+                                                                        ["upper","uint"]
+                                                                    ] },
+	"0xFB": { "name":                          "toggle_4", "read": ["struct",
+                                                                        ["selector","ubyte"],
+                                                                        ["varbit","ushort"],
+                                                                        ["varp","ushort"],
+                                                                        ["lower","uint"],
+                                                                        ["upper","uint"]
+                                                                    ] },
+	"0xFC": { "name":                     "legacy_switch_2", "read": ["struct",
                                                                         ["selector","ubyte"],
                                                                         ["varbit","ushort"],
                                                                         ["varp","ushort"],
                                                                         ["value","ubyte"],
-                                                                        ["ref_1","ushort"],
-                                                                        ["ref_2","ushort"]
+                                                                        ["default_ref","ushort"],
+                                                                        ["legacy_ref","ushort"]
                                                                     ] },
 	"0xF9": { "name":                               "extra", "read": "extrasmap" }
 }
