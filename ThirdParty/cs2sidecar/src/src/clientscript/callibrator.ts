@@ -21,6 +21,8 @@ import { loadParams } from "./util";
 
 const detectableImmediates = ["byte", "int", "tribyte", "switch"] satisfies ImmediateType[];
 const lastNonObfuscatedBuild = 668;
+//bump whenever opcode recovery changes, so saved callibrations from an older build are not reused
+const callibratorRevision = 2;
 const firstModernOpsBuild = 751;
 
 type OpreadInstance = {
@@ -471,6 +473,67 @@ function applyHookOpSignatures(calli: ClientscriptObfuscation) {
     }
 }
 
+// The client's opcode table shifts on every game update. The reference bounce can only bind an
+// op when it appears byte-identical inside a matched reference script, so an update that touches
+// the scripts using the varbit read/write ops leaves those two ops with build-local ids. Every
+// consumer (codewriter, ast, extractmodule) tests the canonical ids by identity, so the ops lose
+// their name, their type and their stack signature at once, every varbit access renders as
+// unk<id>[imm]() and no variable name resolves.
+//
+// Recover them from the data rather than by pinning an id that shifts again next update: a varbit
+// op's immediate is (varbit id << 8 | array index), so an op whose immediates all resolve to
+// varbits this cache actually declares, at the volume varbit access has, can only be a varbit op.
+// Read and write are told apart by the solved stack signature, so this runs after the operand
+// solver. Nothing is rebound unless the evidence is unanimous.
+const varbitRebindMinUses = 200;          // varbit access is the most common op in the corpus
+const varbitRebindMinAgreement = 0.999;   // every immediate must name a declared varbit
+function rebindVarOps(calli: ClientscriptObfuscation) {
+    if (calli.varbitmeta.size == 0) { return; }
+    if (calli.decodedMappings.has(namedClientScriptOps.pushvarbit)
+        && calli.decodedMappings.has(namedClientScriptOps.popvarbit)) { return; }
+
+    let uses = new Map<number, { total: number, valid: number }>();
+    for (let cand of calli.candidates.values()) {
+        let ops = cand.scriptcontents?.opcodedata;
+        if (!ops) { continue; }
+        for (let op of ops) {
+            if (knownClientScriptOpNames[op.opcode]) { continue; }
+            if (typeof op.imm != "number" || op.imm <= 0) { continue; }
+            let e = uses.get(op.opcode);
+            if (!e) { e = { total: 0, valid: 0 }; uses.set(op.opcode, e); }
+            e.total++;
+            if ((op.imm & 0xff) < 8 && calli.varbitmeta.has(op.imm >>> 8)) { e.valid++; }
+        }
+    }
+
+    let push: OpcodeInfo | null = null, pop: OpcodeInfo | null = null;
+    let pushuses = 0, popuses = 0;
+    for (let [id, e] of uses) {
+        if (e.total < varbitRebindMinUses || e.valid / e.total < varbitRebindMinAgreement) { continue; }
+        let op = calli.decodedMappings.get(id);
+        if (!op || !op.stackinfo.initializedthrough) { continue; }
+        let sin = op.stackinfo.in.getStackdiff(), sout = op.stackinfo.out.getStackdiff();
+        let isread = sin.equals(new StackDiff()) && sout.equals(new StackDiff(1, 0, 0, 0));
+        let iswrite = sout.equals(new StackDiff()) && sin.equals(new StackDiff(1, 0, 0, 0));
+        if (isread && e.total > pushuses) { push = op; pushuses = e.total; }
+        if (iswrite && e.total > popuses) { pop = op; popuses = e.total; }
+    }
+
+    let rebind = (op: OpcodeInfo | null, target: number, label: string) => {
+        if (!op) { return; }
+        if (calli.decodedMappings.has(target)) {
+            console.log(`${label} already bound, leaving generated op ${op.id} alone`);
+            return;
+        }
+        console.log(`rebinding generated op ${op.id} to ${target} (${label})`);
+        calli.decodedMappings.delete(op.id);
+        op.id = target;
+        calli.decodedMappings.set(target, op);
+    };
+    rebind(push, namedClientScriptOps.pushvarbit, "PUSH_VARBIT");
+    rebind(pop, namedClientScriptOps.popvarbit, "POP_VARBIT");
+}
+
 export class ClientscriptObfuscation {
     mappings = new Map<number, OpcodeInfo>();
     decodedMappings = new Map<number, OpcodeInfo>();
@@ -522,6 +585,8 @@ export class ClientscriptObfuscation {
         } else {
             await r.loadCandidates();
             r.parseCandidateContents();
+            //a cached callibration can predate this recovery, so run it here too
+            rebindVarOps(r);
             try {
                 callibrateSubtypes(r, r.candidates);//TODO is this needed?
             } catch (e) {
@@ -563,7 +628,9 @@ export class ClientscriptObfuscation {
             scripthash = crc32addInt(index[i].crc, scripthash)
         }
         return {
-            opcodename: `opcodes-build${source.getBuildNr()}-${crc}.json`,
+            //callibratorRevision is part of the key so a decoder fix invalidates callibrations
+            //saved by an older build of this tool, which would otherwise be reused forever
+            opcodename: `opcodes-build${source.getBuildNr()}r${callibratorRevision}-${crc}.json`,
             scriptname: `scripts-build${source.getBuildNr()}-${scripthash}.json`
         }
     }
@@ -739,6 +806,9 @@ export class ClientscriptObfuscation {
         callibrateOperants(this, this.candidates);
         callibrateOperants(this, this.candidates);
         callibrateOperants(this, this.candidates);
+        //the varbit ops must carry their canonical ids before subtypes are solved, the solver
+        //keys on those ids
+        rebindVarOps(this);
         try {
             callibrateSubtypes(this, this.candidates);
         } catch (e) {

@@ -216,7 +216,23 @@ function decodeAchievementName(buf: Buffer): { name: string | null, reqVbs: numb
         else if (op === 11) { const n = r.u8(); for (let i = 0; i < n; i++) { r.u24(); } }
         else if (op === 15) { const n = r.usmart(); for (let i = 0; i < n; i++) { r.u24(); } }
         else if (op === 16) r.u16();
-        else if ([17, 19, 27, 35].includes(op)) { }
+        //950-1: the multi-requirement block moved to op 35 and each varbit now carries a
+        //leading var domain byte. Same field order as ops 13/14 otherwise.
+        else if (op === 35) {
+            const n = r.usmart();
+            for (let i = 0; i < n; i++) {
+                r.u8(); r.smart32(); r.u8(); r.cstr();
+                const m = r.u8();
+                for (let j = 0; j < m; j++) { const domain = r.u8(); const vb = r.u16(); if (domain === 0) { reqVbs.push(vb); } }
+            }
+        }
+        //950-1: op 23/25's entry list moved to op 36, each entry gaining a leading var domain
+        //byte. Carries no requirement varbit of its own.
+        else if (op === 36) {
+            const n = r.u8();
+            for (let i = 0; i < n; i++) { r.u8(); r.u8(); r.u16(); r.u8(); r.u8(); r.cstr(); r.u8(); }
+        }
+        else if ([17, 19, 27].includes(op)) { }
         else if ([18, 29, 31, 37, 38].includes(op)) r.u8();
         else if (op === 20 || op === 21) { const n = r.u8(); for (let i = 0; i < n; i++) { r.u24(); } }
         else if (op === 26) { r.u16(); r.u8(); r.u8(); name = r.cstr(); }
@@ -440,9 +456,25 @@ function decodeDbtable(buf: Buffer): Map<number, number[]> {
     return cols;
 }
 
-// morphs blocks parsed by rsmv: unk1 = (varbit << 16) | varp, 0xFFFF = none.
+// Pre-950 morph blocks: unk1 = (varbit << 16) | varp, 0xFFFF = none.
+// From 950-1 the varbit and varp are separate fields behind a domain byte; only domain 0 (player)
+// vars are readable, so any other domain names nothing.
 function morphVars(m: any): { vb: number, vp: number, kids: number[] } | null {
-    if (!m || typeof m.unk1 != "number") { return null; }
+    if (!m) { return null; }
+    if (typeof m.varbit == "number" && typeof m.varp == "number") {
+        if (m.domain !== 0) { return null; }
+        const kids: number[] = [];
+        for (const key of ["default_child", "child_0"]) {
+            if (typeof m[key] == "number") { kids.push(m[key]); }
+        }
+        if (Array.isArray(m.children)) { for (const x of m.children) { if (typeof x == "number") kids.push(x); } }
+        return {
+            vb: m.varbit === 0xFFFF ? -1 : m.varbit,
+            vp: m.varp === 0xFFFF ? -1 : m.varp,
+            kids: kids.filter(k => k >= 0 && k < 0x7FFFFF),
+        };
+    }
+    if (typeof m.unk1 != "number") { return null; }
     const vb = (m.unk1 >>> 16) & 0xFFFF, vp = m.unk1 & 0xFFFF;
     const kids: number[] = [];
     for (const key of ["unk2", "unk3", "unk4"]) {
@@ -500,7 +532,8 @@ async function buildTables(engine: EngineCache, notes: string[],
                                  "members_action_4", "members_action_5"]) {
                     if (cfg[k]) { ops.push(String(cfg[k])); }
                 }
-                const mv = morphVars(cfg.morphs_1) ?? morphVars(cfg.morphs_2);
+                const mv = morphVars(cfg.morphs_1) ?? morphVars(cfg.morphs_2)
+                        ?? morphVars(cfg.morphs_3) ?? morphVars(cfg.morphs_4);
                 if (!cfg.name && !mv) { continue; }
                 const e: typeof locDump[0] = { id };
                 if (cfg.name && cfg.name !== "null") { e.name = cfg.name; }
@@ -527,7 +560,7 @@ async function buildTables(engine: EngineCache, notes: string[],
         const kSharedChildMax = 25;
         const childParents = new Map<number, number>();
         for (const [, cfg] of cfgs) {
-            for (const key of ["morphs_1", "morphs_2"]) {
+            for (const key of ["morphs_1", "morphs_2", "morphs_3", "morphs_4"]) {
                 const mv = morphVars(cfg[key]);
                 if (!mv) { continue; }
                 for (const kid of new Set(mv.kids)) { childParents.set(kid, (childParents.get(kid) ?? 0) + 1); }
@@ -538,7 +571,7 @@ async function buildTables(engine: EngineCache, notes: string[],
         // point at something you can look up in locs.json.
         const tiedLoc = { varbit: new Map<number, number>(), varp: new Map<number, number>() };
         for (const [id, cfg] of cfgs) {
-            for (const key of ["morphs_1", "morphs_2"]) {
+            for (const key of ["morphs_1", "morphs_2", "morphs_3", "morphs_4"]) {
                 const mv = morphVars(cfg[key]);
                 if (!mv) { continue; }
                 const nms: string[] = [];

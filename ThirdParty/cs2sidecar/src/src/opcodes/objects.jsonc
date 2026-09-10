@@ -138,5 +138,22 @@
 	"0xCB": { "name":						   "unknown_CB", "read": "true" },
 	"0xCC": { "name":						   "unknown_CC", "read": ["array","ubyte",["buffer",27,"hex"]] },
 	"0xCD": { "name":						   "unknown_CD", "read": "modelmorphs" },
+	// 950-1: the morph tables moved here, now carrying a var domain byte and bigsmart child ids.
+	// 0xCF replaces 0x4D, 0xD0 replaces 0x5C (which also carries a default child).
+	"0xCF": { "name":                            "morphs_3", "read": [ "struct",
+														["domain", "ubyte"],
+														["varbit", "ushort"],
+														["varp", "ushort"],
+														["count", "varushort"],
+														["child_0", "varuint"],
+														["children", ["array", ["ref", "count"], "varuint"]] ] },
+	"0xD0": { "name":                            "morphs_4", "read": [ "struct",
+														["domain", "ubyte"],
+														["varbit", "ushort"],
+														["varp", "ushort"],
+														["default_child", "varuint"],
+														["count", "varushort"],
+														["child_0", "varuint"],
+														["children", ["array", ["ref", "count"], "varuint"]] ] },
 	"0xF9": { "name":                               "extra", "read": "extrasmap" }
 }
