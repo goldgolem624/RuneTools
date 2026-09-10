@@ -175,9 +175,10 @@ function decodeItemName(buf: Buffer, refKeys?: Set<number>): { name: string | nu
 // ---- achievements (js5-57), build-949 table (validated 5009/5009) ----
 // Also captures the requirement VARBITS (ops 9/10 single, 13/14 multi) so achievement
 // names can annotate otherwise-unnamed varbits.
-function decodeAchievementName(buf: Buffer): { name: string | null, reqVbs: number[] } {
+function decodeAchievementName(buf: Buffer): { name: string | null, desc: string | null, reqVbs: number[] } {
     const r = new R(buf);
     let name: string | null = null;
+    let desc: string | null = null;
     const reqVbs: number[] = [];
     try {
     while (r.p < r.len) {
@@ -185,7 +186,7 @@ function decodeAchievementName(buf: Buffer): { name: string | null, reqVbs: numb
         if (op === 0) break;
         else if (op === 1) { r.u8(); name = r.cstr(); }
         else if (op === 2) {
-            const isi = r.u8(); r.u8(); r.u8(); r.cstr();
+            const isi = r.u8(); r.u8(); r.u8(); desc ??= r.cstr() || null;
             for (let i = 0; i < Math.max(0, isi - 1); i++) { r.u8(); r.u8(); r.cstr(); }
         }
         else if (op === 3) r.u16();
@@ -242,7 +243,7 @@ function decodeAchievementName(buf: Buffer): { name: string | null, reqVbs: numb
         else break;
     }
     } catch (e) { }   // partial decode: keep any name already read
-    return { name, reqVbs };
+    return { name, desc, reqVbs };
 }
 
 // ---- structs (js5-22): op249 params only; label = first string param by lowest key ----
@@ -659,10 +660,12 @@ async function buildTables(engine: EngineCache, notes: string[],
     progress("xref", 2, 6);
     let achFiles = 0;
     const achReqVbs = new Map<number, string>();   // varbit -> achievement name (first wins)
+    const achAll = new Map<number, { name: string | null, desc: string | null, reqVbs: number[] }>();
     for await (const { id, file } of iterateConfigFiles(engine, cacheMajors.achievements)) {
         achFiles++;
         try {
             const a = decodeAchievementName(file);
+            achAll.set(id, a);
             if (a.name) {
                 cast.achievement.set(id, a.name);
                 for (const vb of a.reqVbs) {
@@ -741,6 +744,24 @@ async function buildTables(engine: EngineCache, notes: string[],
     }
     notes.push(`dbrow labels: ${cast.dbrow.size}`);
 
+    // League tasks live in the achievement archive but carry no title, only a description,
+    // which is what the game displays. Table 334 is the shared league task table; its column 3
+    // cites the achievement and column 4 is the completion var reference. Naming these ach_
+    // would file league tasks under achievements, so they get their own prefix.
+    const leagueTaskVbs = new Map<number, string>();   // varbit -> task description
+    for (const row of dbrowDump) {
+        if (row.table != LEAGUE_TASK_TABLE) { continue; }
+        for (const achid of (row.cols[3] ?? [])) {
+            if (typeof achid != "number") { continue; }
+            const a = achAll.get(achid);
+            if (!a || a.name || !a.desc) { continue; }
+            for (const vb of a.reqVbs) {
+                if (vb > 0 && !leagueTaskVbs.has(vb)) { leagueTaskVbs.set(vb, a.desc); }
+            }
+        }
+    }
+    notes.push(`league task varbits: ${leagueTaskVbs.size}`);
+
     // 9. dbtable schemas (js5-2/40) for the type-tag rules (param types moved to step 4)
     const dbschema = new Map<number, Map<number, number[]>>();
     for (const sub of await engine.getArchiveById(cacheMajors.config, 40)) {
@@ -776,7 +797,7 @@ async function buildTables(engine: EngineCache, notes: string[],
     notes.push(`interface groups: ${ifaceGroups}, labeled comps: ${ifaceComps.size}`);
     progress("xref", 6, 6);
 
-    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, ifaceCounts, ifaceComps, dbrowDump, enumDump, structDump, locDump };
+    return { names, cast, enumTables, paramtypes, dbschema, achReqVbs, leagueTaskVbs, refVarbits, structStrs, ifaceCounts, ifaceComps, dbrowDump, enumDump, structDump, locDump };
 }
 
 // ---- CS2 cross-reference tables (ver 3) --------------------------------------------------
@@ -1034,6 +1055,10 @@ const IFACE_NAMES: { [k: number]: string } = {
 };
 
 // ---- annotation pass (ports the verified offline cs2_annotate.py rules 1-6) ----
+// Shared league task table: rows are tasks, column 3 the achievement, column 4 the
+// completion var reference. See research/leagues2/LEAGUES2.md.
+const LEAGUE_TASK_TABLE = 334;
+
 const SWITCH_TYPES = ["obj", "npc", "loc", "quest", "stat", "achievement", "dbrow", "struct"];
 const TYPE_ALT = SWITCH_TYPES.join("|");
 const CAST_RE = /(?<![\w.\-])(\d+) as (obj|npc|loc|quest|stat|achievement|dbrow|struct|category)\b/g;
@@ -1320,7 +1345,7 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     const buildnr = engine.getBuildNr();
 
     writeProgress("names", 0, 0);
-    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, refVarbits, structStrs, dbrowDump, enumDump, structDump, locDump,
+    const { names, cast, enumTables, paramtypes, dbschema, achReqVbs, leagueTaskVbs, refVarbits, structStrs, dbrowDump, enumDump, structDump, locDump,
             ifaceCounts, ifaceComps } = await buildTables(engine, notes, writeProgress);
 
     // script-table renames (fills gaps only, so quest/morph names keep priority)...
@@ -1345,7 +1370,11 @@ function annotate(text: string, cast: CastTables, enumTables: Map<number, Map<nu
     for (const [vb, nm] of achReqVbs) {
         if (!names.varbit.has(vb)) { names.varbit.set(vb, `ach_${slug(nm)}`); achN++; }
     }
-    notes.push(`ref_ fills: ${refN}, ach_ fills: ${achN}`);
+    let leagueN = 0;
+    for (const [vb, desc] of leagueTaskVbs) {
+        if (!names.varbit.has(vb)) { names.varbit.set(vb, `league_${slug(desc)}`); leagueN++; }
+    }
+    notes.push(`ref_ fills: ${refN}, ach_ fills: ${achN}, league_ fills: ${leagueN}`);
 
     // Analysis dumps: the full dbrow columns and every decoded enum, regenerated from the
     // LIVE cache on every extraction so league/table analysis never relies on stale files.
