@@ -132,7 +132,9 @@ static void run_update() {
         {
             size_t k = man.body.find("\"size\"");
             size_t c = k == std::string::npos ? k : man.body.find(':', k);
-            if (c != std::string::npos) { for (size_t i = c + 1; i < man.body.size(); ++i) { char ch = man.body[i]; if (ch == ' ') continue; if (ch >= '0' && ch <= '9') size.push_back(ch); else break; } }
+            // The size may arrive bare or quoted (a BIGINT column serialises as a string), and
+            // the signature covers its digits either way, so skip both spaces and quotes.
+            if (c != std::string::npos) { for (size_t i = c + 1; i < man.body.size(); ++i) { char ch = man.body[i]; if (ch == ' ' || (ch == '"' && size.empty())) continue; if (ch >= '0' && ch <= '9') size.push_back(ch); else break; } }
         }
         std::vector<std::uint8_t> sig;
         std::string lhash = hash; for (auto& ch : lhash) ch = (char)tolower((unsigned char)ch);
