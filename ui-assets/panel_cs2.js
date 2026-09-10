@@ -70,7 +70,12 @@
       btn.textContent = m ? 'Re-extract CS2 scripts' : 'Start extraction of CS2 scripts';
       btn.classList.remove('danger');
       btn.disabled = !s.sidecar;
-      if (bar) bar.style.display = 'none';
+      if (s.lastError && lab && bar) {
+        bar.style.display = '';
+        if (fill) fill.style.width = '0%';
+        lab.textContent = s.lastError === 'cancelled' ? 'Extraction cancelled.'
+          : 'Extraction stopped: ' + s.lastError;
+      } else if (bar) bar.style.display = 'none';
     }
   }
   function cs2DoExtract() {

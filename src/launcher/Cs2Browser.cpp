@@ -52,12 +52,51 @@ std::string read_file(const fs::path& p) {
 
 std::mutex g_mu;
 HANDLE g_proc = nullptr;   // running sidecar, owned under g_mu
+HANDLE g_log = nullptr;    // sidecar stdout/stderr, owned under g_mu
+bool   g_started = false;  // an extraction ran this session
+bool   g_cancelled = false;   // the last run was stopped from the panel
+std::string g_exit;        // why the last run ended, empty while it is healthy
+
+fs::path log_path() {
+    wchar_t buf[MAX_PATH]{};
+    GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH);
+    return fs::path(buf) / L"RuneToolsX" / L"logs" / L"cs2export.log";
+}
+
+// Last non-empty line of the sidecar log, for the panel to show when a run dies early.
+std::string last_log_line() {
+    std::string all = read_file(log_path());
+    if (all.size() > 8192) all = all.substr(all.size() - 8192);
+    std::string best;
+    size_t start = 0;
+    while (start < all.size()) {
+        size_t end = all.find('\n', start);
+        if (end == std::string::npos) end = all.size();
+        std::string line = all.substr(start, end - start);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (!line.empty()) best = line;
+        start = end + 1;
+    }
+    if (best.size() > 300) best = best.substr(0, 300);
+    return best;
+}
 
 bool proc_running_locked() {
     if (!g_proc) return false;
     if (WaitForSingleObject(g_proc, 0) == WAIT_TIMEOUT) return true;
+    DWORD code = 0;
+    GetExitCodeProcess(g_proc, &code);
     CloseHandle(g_proc);
     g_proc = nullptr;
+    if (g_log) { CloseHandle(g_log); g_log = nullptr; }
+    // The sidecar reports its own failures on stdout and exits 0, so the exit code alone does
+    // not say whether the run produced anything.
+    std::string tail = last_log_line();
+    if (g_cancelled) g_exit = "cancelled";
+    else if (!tail.empty() && (tail.rfind("ERR", 0) == 0 || tail.find("Error") != std::string::npos))
+        g_exit = tail;
+    else if (code != 0) g_exit = "sidecar exited with code " + std::to_string((int)code);
+    else if (!fs::exists(fs::path(OutDir()) / L"meta.json")) g_exit = "sidecar exited without writing anything";
     return false;
 }
 
@@ -122,7 +161,9 @@ std::string StatusJson() {
     bool sidecar = fs::exists(fs::path(sidecar_dir()) / L"dist" / L"cs2export.js");
     std::string clientver = game_client_version();
     std::ostringstream os;
-    os << "{\"running\":" << (proc_running_locked() ? "true" : "false")
+    const bool running = proc_running_locked();
+    os << "{\"running\":" << (running ? "true" : "false")
+       << ",\"lastError\":\"" << json_escape(running || !g_started ? std::string() : g_exit) << "\""
        << ",\"sidecar\":" << (sidecar ? "true" : "false")
        << ",\"clientVer\":\"" << json_escape(clientver) << "\""
        << ",\"extractVer\":\"" << json_escape(extract_ver) << "\""
@@ -145,6 +186,15 @@ std::string StartExtract() {
         vf << game_client_version();
     }
 
+    g_exit.clear();
+    g_started = true;
+    g_cancelled = false;
+
+    // Sidecar output goes to a log so a run that dies on a cache read leaves a reason behind.
+    SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+    HANDLE logf = CreateFileW(log_path().c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
     fs::path bundled_node = fs::path(sidecar_dir()) / L"node.exe";
     std::wstring node = fs::exists(bundled_node)
                             ? L"\"" + bundled_node.wstring() + L"\""
@@ -153,14 +203,23 @@ std::string StartExtract() {
                        L"\" \"" + OutDir() + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
+    if (logf != INVALID_HANDLE_VALUE) {
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = logf;
+        si.hStdError = logf;
+        si.hStdInput = nullptr;
+    }
     PROCESS_INFORMATION pi{};
     std::wstring mutable_cmd = cmd;   // CreateProcessW may write to the buffer
-    if (!CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, FALSE,
+    if (!CreateProcessW(nullptr, mutable_cmd.data(), nullptr, nullptr, TRUE,
                         CREATE_NO_WINDOW, nullptr, sidecar_dir().c_str(), &si, &pi)) {
+        if (logf != INVALID_HANDLE_VALUE) CloseHandle(logf);
+        g_exit = "failed to start node";
         return "{\"err\":\"failed to start node (is node.exe on PATH?)\"}";
     }
     CloseHandle(pi.hThread);
     g_proc = pi.hProcess;
+    g_log = (logf == INVALID_HANDLE_VALUE) ? nullptr : logf;
     return "{\"ok\":true}";
 }
 
@@ -170,6 +229,9 @@ std::string Cancel() {
     TerminateProcess(g_proc, 1);
     CloseHandle(g_proc);
     g_proc = nullptr;
+    if (g_log) { CloseHandle(g_log); g_log = nullptr; }
+    g_cancelled = true;
+    g_exit = "cancelled";
     return "{\"ok\":true}";
 }
 

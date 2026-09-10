@@ -50,5 +50,15 @@
                                                                     ] },
 	"0x1c": { "name":                          "unknown_1c", "read": "ubyte" },
 	"0x1e": { "name":                          "unknown_1e", "read": "ubyte" },
+	// Added by game update 950-1: a varbit/varp gated sprite pair, same shape as legacy_switch
+	// with a leading selector byte.
+	"0xFC": { "name":                          "unknown_fc", "read": ["struct",
+                                                                        ["selector","ubyte"],
+                                                                        ["varbit","ushort"],
+                                                                        ["varp","ushort"],
+                                                                        ["value","ubyte"],
+                                                                        ["ref_1","ushort"],
+                                                                        ["ref_2","ushort"]
+                                                                    ] },
 	"0xF9": { "name":                               "extra", "read": "extrasmap" }
 }
