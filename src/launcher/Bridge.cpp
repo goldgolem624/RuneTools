@@ -1593,6 +1593,7 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc >= 14) c.np_npcs    = JSValueToBoolean(ctx, argv[13]);
     if (argc >= 15) c.np_objects = JSValueToBoolean(ctx, argv[14]);
     if (argc >= 17) c.occlude    = JSValueToBoolean(ctx, argv[16]);
+    if (argc >= 18) c.true_tile  = JSValueToBoolean(ctx, argv[17]);
     if (argc >= 16) c.np_range   = js_int(ctx, argv[15]);
     rtx::overlay::Configure(c);
     return JSValueMakeBoolean(ctx, true);

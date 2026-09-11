@@ -139,10 +139,14 @@ exact JSON the host returns; log a call's result during development to see every
 ```js
 await rtx.plugin.state.player();   // alias of state.info()
 await rtx.plugin.state.info();
-// -> { in:true, x:3221, y:3218, plane:0, region:12850, lx:33, ly:18, anim:-1, moving:false,
-//      interact: { type:1, id:3079, uid:12345, name:"Goblin" } | null }
+// -> { in:true, x:3221, y:3218, trueTile:{ x:3221, y:3218 }, plane:0, region:12850, lx:33, ly:18,
+//      anim:-1, moving:false, interact: { type:1, id:3079, uid:12345, name:"Goblin" } | null }
 // -> { in:false }                       when not in-game / unreadable
 //    type: 1 = NPC, 2 = player. x/y are world tile coords. anim -1 = none.
+//    x/y is the visible position, which interpolates between tiles while moving. trueTile is the
+//    tile the game currently holds for the actor, read from its movement route; while moving it
+//    leads x/y by up to two tiles, and when stationary it equals x/y. The Overlay tab's "True tile"
+//    toggle draws the same value in the game view for debugging.
 //    region = (x>>6)<<8 | (y>>6); lx/ly = local tile within the region (0..63) --
 //    the instance-stable coordinate the tile-marker feature stores by.
 
@@ -170,8 +174,10 @@ await rtx.plugin.state.groundItems();
 await rtx.plugin.state.scene(range);  // range = 1..64 tiles (clamped)
 // -> { players:[..], npcs:[..], objects:[..], specials:[..], walk, ... }
 //    Entities are grouped by kind, NOT a single flat list:
-//      npcs:    { id, uid, x, y, plane, combat, anim, face, size, name, actions[] }
-//      players: { uid, x, y, plane, combat, anim, self, name }
+//      npcs:    { id, uid, x, y, trueTile:{x,y}, plane, combat, anim, face, size, name, actions[] }
+//      players: { uid, x, y, trueTile:{x,y}, plane, combat, anim, self, name }
+//    x/y is the visible (interpolated) tile; trueTile is the tile the game holds for the actor,
+//    from its movement route (same rule as state.info()).
 //      objects: { id, x, y, plane, type, dist, name, actions[] }
 //    `anim` is the live animation id (-1 = none), which is how attack telegraphs are
 //    read (see the Jad Prayer Helper plugin). `walk` is the click-to-walk destination

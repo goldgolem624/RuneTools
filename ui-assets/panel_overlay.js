@@ -1,6 +1,6 @@
 // RuneToolsX panel: Overlay tab (drives the external world-grid window).
 (function () {
-  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, interactable: false, radius: 12, markers: true, occlude: true };
+  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, true_tile: false, interactable: false, radius: 12, markers: true, occlude: true };
   function ovAdopt(raw) {
     try {
       const sv = JSON.parse(raw || 'null');
@@ -32,7 +32,7 @@
     const npRng = (typeof sceneRange !== 'undefined') ? sceneRange : 20;
     const npInter = npOn && (typeof sceneInteractable !== 'undefined') && !!sceneInteractable;
     try { b.overlayConfig(myPid(), s.enabled, s.grid, s.players, s.npcs, s.objects, s.radius, s.walk_only, (s.interactable || npInter), s.specials, markersActive(),
-                          npOn, npPl, npNp, npOb, npRng, overlayState.occlude !== false); } catch (e) {}
+                          npOn, npPl, npNp, npOb, npRng, overlayState.occlude !== false, s.true_tile); } catch (e) {}
   }
   function ovToggleRow(id, name, sub) {
     const r = document.createElement('div'); r.className = 'ov-row'; r.id = id; r.setAttribute('role', 'button');
@@ -45,12 +45,12 @@
     return r;
   }
   function reflectOverlay() {
-    const map = { ov_enabled: 'enabled', ov_grid: 'grid', ov_players: 'players', ov_npcs: 'npcs', ov_objects: 'objects', ov_interactable: 'interactable', ov_occlude: 'occlude', ov_specials: 'specials', ov_walkonly: 'walk_only' };
+    const map = { ov_enabled: 'enabled', ov_grid: 'grid', ov_players: 'players', ov_npcs: 'npcs', ov_objects: 'objects', ov_interactable: 'interactable', ov_occlude: 'occlude', ov_specials: 'specials', ov_walkonly: 'walk_only', ov_truetile: 'true_tile' };
     for (const id in map) { const el = $(id); if (el) el.classList.toggle('on', !!overlayState[map[id]]); }
     const rng = $('ov_radius');
     if (rng) { rng.value = overlayState.radius; const lbl = $('ov_radlbl'); if (lbl) lbl.textContent = overlayState.radius + ' tiles'; }
     const dim = !overlayState.enabled;
-    ['ov_grid', 'ov_players', 'ov_npcs', 'ov_objects', 'ov_interactable', 'ov_specials', 'ov_walkonly', 'ov_radius'].forEach(id => {
+    ['ov_grid', 'ov_players', 'ov_npcs', 'ov_objects', 'ov_interactable', 'ov_specials', 'ov_walkonly', 'ov_truetile', 'ov_radius'].forEach(id => {
       const el = $(id); if (el) { const r = el.closest('.ov-row'); if (r) r.style.opacity = dim ? 0.45 : 1; }
     });
     const wo = $('ov_walkonly'); if (wo && !dim) wo.style.opacity = overlayState.grid ? 1 : 0.45;
@@ -64,6 +64,7 @@
     const sep = document.createElement('div'); sep.className = 'ov-sep'; wrap.appendChild(sep);
     wrap.appendChild(ovToggleRow('ov_grid', 'Tile grid', 'World grid lines on the ground'));
     wrap.appendChild(ovToggleRow('ov_walkonly', 'Walkable only', 'Hide unwalkable tiles (else they tint red)'));
+    wrap.appendChild(ovToggleRow('ov_truetile', 'True tile', 'Outline the tile the game holds for you (pink); with Players or NPCs on, also for those that are moving. Same value as trueTile in the plugin API'));
     wrap.appendChild(ovToggleRow('ov_occlude', 'Fade behind scenery', 'Marker parts behind terrain or objects are drawn faint instead of hidden (Vulkan client)'));
     wrap.appendChild(ovToggleRow('ov_players', 'Players', 'Marker + name per player'));
     wrap.appendChild(ovToggleRow('ov_npcs', 'NPCs', 'Marker + name per NPC'));
@@ -87,7 +88,7 @@
     hint.textContent = 'Markers are drawn into the game\'s 3D view. Grid follows your current plane height.';
     wrap.appendChild(hint);
     c.appendChild(wrap);
-    [['ov_enabled', 'enabled'], ['ov_grid', 'grid'], ['ov_walkonly', 'walk_only'], ['ov_occlude', 'occlude'], ['ov_players', 'players'],
+    [['ov_enabled', 'enabled'], ['ov_grid', 'grid'], ['ov_walkonly', 'walk_only'], ['ov_truetile', 'true_tile'], ['ov_occlude', 'occlude'], ['ov_players', 'players'],
      ['ov_npcs', 'npcs'], ['ov_objects', 'objects'], ['ov_interactable', 'interactable'], ['ov_specials', 'specials']].forEach(([id, key]) => {
       $(id).addEventListener('click', () => { overlayState[key] = !overlayState[key]; reflectOverlay(); pushOverlay(); });
     });

@@ -431,7 +431,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                          Color(255, 245, 165, 60),   // 3 special
                          Color(255, kTxtR, kTxtG, kTxtB) };  // 4 Scene object outline
     auto wanted = [&](int kind) {
-        return kind == 4 ? true : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
+        return kind == 4 ? true : kind == 5 ? false : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
     };
     auto project = [&](const rtx::reader::OverlayPoint& p, float& sx, float& sy) {
         if (!WorldToScreen(f.matrix, vpX, vpY, vpW, vpH, p.wx, p.wy, p.wz, sx, sy)) return false;
@@ -859,11 +859,30 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     struct KC { int r, g, b; };
     const KC kindCol[5] = { {90,200,235}, {245,210,80}, {90,220,120}, {245,165,60}, {kTxtR,kTxtG,kTxtB} };
     auto wanted = [&](int kind) {
-        return kind == 4 ? true : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
+        return kind == 4 ? true : kind == 5 ? cfg.true_tile : kind == 0 ? cfg.objects : kind == 1 ? cfg.npcs : kind == 2 ? cfg.players : cfg.specials;
     };
     if (f && cfg.enabled) for (const auto& p : f->points) {
         if (!wanted(p.kind)) continue;
         const KC kc = kindCol[p.kind >= 0 && p.kind < 5 ? p.kind : 0];
+        if (p.kind == 5) {                                   // true-tile outline, flat on the ground
+            if (!p.has_box) continue;
+            if (!p.is_self && !(p.src == 1 ? cfg.npcs : cfg.players)) continue;
+            const KC tc = p.is_self ? KC{ 255, 110, 230 } : kindCol[p.src == 1 ? 1 : 2];
+            float wc[4][3];
+            for (int i = 0; i < 4; ++i) { wc[i][0] = p.box[i * 3]; wc[i][1] = p.box[i * 3 + 1]; wc[i][2] = p.box[i * 3 + 2]; }
+            float ex0[4], ey0[4], ex1[4], ey1[4]; int ns = 0; bool onscr = false;
+            for (int i = 0; i < 4; ++i) {
+                float ax, ay, bx, by;
+                if (!ClipProjectSegment(f->matrix, vpX, vpY, vpW, vpH, wc[i], wc[(i + 1) & 3], ax, ay, bx, by)) continue;
+                ex0[ns] = ax; ey0[ns] = ay; ex1[ns] = bx; ey1[ns] = by; ++ns;
+                onscr = onscr || (ax > -2.0f * W && ax < 3.0f * W && ay > -2.0f * H && ay < 3.0f * H)
+                              || (bx > -2.0f * W && bx < 3.0f * W && by > -2.0f * H && by < 3.0f * H);
+            }
+            if (!ns || !onscr) continue;
+            for (int i = 0; i < ns; ++i) line(ex0[i], ey0[i], ex1[i], ey1[i], 4.6f, 8, 4, 10, 170);   // dark underlay
+            for (int i = 0; i < ns; ++i) line(ex0[i], ey0[i], ex1[i], ey1[i], 2.6f, tc.r, tc.g, tc.b, 245);
+            continue;
+        }
         if (p.has_box3d) {
             float wc[8][3];                                  // corner bits: 1=maxE 2=maxN 4=maxUp
             for (int cc = 0; cc < 8; ++cc) {
@@ -2234,7 +2253,8 @@ void RenderLoop() {
                          (ccfg.enabled && ccfg.objects)  || (ccfg.nameplates && ccfg.np_objects),
                          ccfg.enabled && ccfg.specials,
                          (ccfg.enabled && ccfg.grid) ? ccfg.radius : 0,
-                         ccfg.interactable, ccfg.highlight, ccfg.outline, ccfg.outlineLocs, gsites, frame);
+                         ccfg.interactable, ccfg.enabled && ccfg.true_tile,
+                         ccfg.highlight, ccfg.outline, ccfg.outlineLocs, gsites, frame);
             if (!ok && (hasUiHl || hasPanelViz || hasSolverCells || hasSkillBars))
                 ok = rtx::reader::ReadViewMetrics(cpid, frame);
             if (ok) {

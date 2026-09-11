@@ -38,6 +38,18 @@ inline constexpr std::uint64_t kPlane    = 0x50;    // sec -> plane (0x40 throug
 inline constexpr std::uint64_t kPosX     = 0x270;   // sec -> fine east
 inline constexpr std::uint64_t kPosZ     = 0x274;   // sec -> fine up (height)
 inline constexpr std::uint64_t kPosY     = 0x278;   // sec -> fine north
+// Movement route (950-1, live-verified 2026-09-11 on players and NPCs, one class for both):
+// sec+0x268 -> route object {vtable, begin@+0x08, end@+0x10, cap@+0x18, read@+0x20, write@+0x28}, 21 entries
+// of 0x18 bytes {i32, f32 east, f32 up, f32 north, i32, i32} in fine units. The entry just below the write
+// cursor is the newest server tile (tile-centred); the visible position trails it by about a tick. An
+// empty route (write == begin) means stationary: the visible position is the true tile.
+inline constexpr std::uint64_t kMoveMgr     = 0x268;  // sec -> movement route object
+inline constexpr std::uint64_t kRouteBegin  = 0x08;   // route -> entry array begin
+inline constexpr std::uint64_t kRouteEnd    = 0x10;   // route -> entry array end (begin + 21 * stride)
+inline constexpr std::uint64_t kRouteWrite  = 0x28;   // route -> write cursor (one past the newest entry)
+inline constexpr std::uint64_t kRouteStride = 0x18;   // entry size
+inline constexpr std::uint64_t kRouteX      = 0x04;   // entry -> f32 fine east
+inline constexpr std::uint64_t kRouteY      = 0x0C;   // entry -> f32 fine north
 inline constexpr std::uint64_t kT4Size   = 0x1C0;   // type-4 (graphic highlight) object size (0x1B0 + 0x10 header growth; assumed)
 inline constexpr std::uint64_t kT4Gfx    = 0x84;    // type-4 -> graphic id (int)   (0x74 through 949-5; live-verified on 950-1)
 inline constexpr std::uint64_t kT4PosE   = 0x88;    // type-4 -> fine east  (int32) (0x78 through 949-5)

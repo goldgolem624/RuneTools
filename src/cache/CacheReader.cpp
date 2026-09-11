@@ -39,6 +39,8 @@
 
 namespace rtx::cache {
 
+static const std::vector<LocPlacement>& RegionLocationsLocked(int region_x, int region_y);   // memoised placements (g_mu held)
+
 namespace {
 
 std::mutex                            g_mu;
@@ -373,7 +375,6 @@ const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
     auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
     if (!index) { g_blocked_cache[key] = std::move(blk); return g_blocked_cache[key]; }
 
-    int archive = rx | (ry << 7);
     auto orFlag = [&](int plane, int x, int y, std::uint8_t bits) {
         if (x >= 0 && x < 64 && y >= 0 && y < 64 && plane >= 0 && plane < 4)
             blk[(plane * 64 + x) * 64 + y] |= bits;
@@ -390,34 +391,47 @@ const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
                 if (!(settings[(std::size_t)(z * 64 + x) * 64 + y] & 0x1)) continue;
                 orFlag(isBridge(x, y) ? z - 1 : z, x, y, kTileBlockFull);
             }
-    for (int file : {0, 1}) {
-        auto bytes = index->ReadFile(archive, file);
-        if (bytes.empty()) continue;
-        for (const auto& p : DecodeMapLocations(std::move(bytes))) {
-            const int pl = isBridge(p.x, p.y) ? p.plane - 1 : p.plane;
-            if (pl < 0) continue;
-            if (p.type == 9) {                                // diagonal wall: full block
-                if (!LocClipLocked(p.id).no_clip) orFlag(pl, p.x, p.y, kTileBlockFull);
-            } else if (p.type == 0) {                         // straight wall: one blocked edge
-                if (LocClipLocked(p.id).no_clip) continue;
-                std::uint8_t e = p.rotation == 0 ? kTileBlockW : p.rotation == 1 ? kTileBlockN
-                               : p.rotation == 2 ? kTileBlockE : kTileBlockS;
-                orFlag(pl, p.x, p.y, e | kTileHasWall);
-            } else if (p.type == 2) {                         // corner wall: two blocked edges
-                if (LocClipLocked(p.id).no_clip) continue;
-                std::uint8_t e = p.rotation == 0 ? (kTileBlockN | kTileBlockW)
-                               : p.rotation == 1 ? (kTileBlockN | kTileBlockE)
-                               : p.rotation == 2 ? (kTileBlockS | kTileBlockE)
-                                                 : (kTileBlockS | kTileBlockW);
-                orFlag(pl, p.x, p.y, e | kTileHasWall);
-            } else if (p.type == 10 || p.type == 11) {        // scenery: full-block footprint if it clips
-                LocClip c = LocClipLocked(p.id);
-                if (c.no_clip) continue;
-                int dx = c.dim_x, dy = c.dim_y;
-                if (p.rotation == 1 || p.rotation == 3) { int t = dx; dx = dy; dy = t; }
-                for (int ox = 0; ox < dx; ++ox)
-                    for (int oy = 0; oy < dy; ++oy)
-                        orFlag(pl, p.x + ox, p.y + oy, kTileBlockFull);
+    // Placements are keyed by their south-west anchor tile, so a multi-tile loc anchored in the
+    // region to the west, south or south-west can extend into this one. The client clips the
+    // whole footprint on the loaded scene; per-region building must pull those neighbours in.
+    for (int nrx = rx - 1; nrx <= rx; ++nrx) {
+        for (int nry = ry - 1; nry <= ry; ++nry) {
+            if (nrx < 0 || nry < 0) continue;
+            const int ox = (nrx - rx) * 64, oy = (nry - ry) * 64;   // anchor offset into this region
+            const bool neighbour = ox != 0 || oy != 0;
+            const auto& nsettings = neighbour ? RegionTilesLocked(nrx, nry).settings : settings;
+            auto anchorBridge = [&](int x, int y) {
+                return (nsettings[(std::size_t)(64 + x) * 64 + y] & 0x2) != 0;
+            };
+            for (const auto& p : RegionLocationsLocked(nrx, nry)) {
+                const int pl = anchorBridge(p.x, p.y) ? p.plane - 1 : p.plane;
+                if (pl < 0) continue;
+                const int ax = p.x + ox, ay = p.y + oy;           // anchor in this region's frame
+                if (neighbour && p.type != 9 && p.type != 10 && p.type != 11) continue;   // walls are one tile
+                if (p.type == 9) {                                // diagonal wall: full block
+                    if (!LocClipLocked(p.id).no_clip) orFlag(pl, ax, ay, kTileBlockFull);
+                } else if (p.type == 0) {                         // straight wall: one blocked edge
+                    if (LocClipLocked(p.id).no_clip) continue;
+                    std::uint8_t e = p.rotation == 0 ? kTileBlockW : p.rotation == 1 ? kTileBlockN
+                                   : p.rotation == 2 ? kTileBlockE : kTileBlockS;
+                    orFlag(pl, ax, ay, e | kTileHasWall);
+                } else if (p.type == 2) {                         // corner wall: two blocked edges
+                    if (LocClipLocked(p.id).no_clip) continue;
+                    std::uint8_t e = p.rotation == 0 ? (kTileBlockN | kTileBlockW)
+                                   : p.rotation == 1 ? (kTileBlockN | kTileBlockE)
+                                   : p.rotation == 2 ? (kTileBlockS | kTileBlockE)
+                                                     : (kTileBlockS | kTileBlockW);
+                    orFlag(pl, ax, ay, e | kTileHasWall);
+                } else if (p.type == 10 || p.type == 11) {        // scenery: full-block footprint if it clips
+                    LocClip c = LocClipLocked(p.id);
+                    if (c.no_clip) continue;
+                    int dx = c.dim_x, dy = c.dim_y;
+                    if (p.rotation == 1 || p.rotation == 3) { int t = dx; dx = dy; dy = t; }
+                    if (neighbour && (ax + dx <= 0 || ay + dy <= 0)) continue;   // never reaches this region
+                    for (int oxx = 0; oxx < dx; ++oxx)
+                        for (int oyy = 0; oyy < dy; ++oyy)
+                            orFlag(pl, ax + oxx, ay + oyy, kTileBlockFull);
+                }
             }
         }
     }

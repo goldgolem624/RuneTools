@@ -546,10 +546,11 @@ struct ProcSnap {
     HANDLE        h = nullptr;       // duplicated handle, closed in the dtor
     std::uint64_t mgva = 0;          // main_global_va: address of the MainData root pointer
     std::uint64_t mod_base = 0;      // rs2client.exe image base (for module-relative reads)
+    std::uint64_t mod_size = 0;      // image size (for "points into the module" checks)
     ProcSnap() = default;
     ProcSnap(const ProcSnap&) = delete;
     ProcSnap& operator=(const ProcSnap&) = delete;
-    ProcSnap(ProcSnap&& o) noexcept : h(o.h), mgva(o.mgva), mod_base(o.mod_base) { o.h = nullptr; }
+    ProcSnap(ProcSnap&& o) noexcept : h(o.h), mgva(o.mgva), mod_base(o.mod_base), mod_size(o.mod_size) { o.h = nullptr; }
     ~ProcSnap() { if (h) CloseHandle(h); }
     explicit operator bool() const { return h != nullptr && mgva != 0; }
 };
@@ -562,6 +563,7 @@ static ProcSnap snap_proc(std::uint32_t pid) {
                         &s.h, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
         s.mgva     = it->second.main_global_va;
         s.mod_base = it->second.mod_base;
+        s.mod_size = it->second.mod_size;
     }
     return s;
 }
@@ -1968,7 +1970,9 @@ std::string VarcsDumpAllJson(std::uint32_t pid) {
 //   7 clansettings [MainData+0x19888] + slot*16
 //   9 playergroup  [[MainData+0x19948]+8]+0x28 (null without a group)
 //   1 npc          script target entity +0x130 (only while a script runs on that NPC)
-// Table (vtable rs2client+0xB609C0): buckets@+0x10, count@+0x18, elements@+0x20; node = {u32 id, value union@+8, type byte@+0x20 (0 int, 1 long, 2 string), next@+0x28}.
+// Table (vtable rs2client+0xB609C0 on the 950-1 OpenGL build, +0xC6D818 on the 950-1 Vulkan build; the
+// player table at MainData+0x36078 carries no vtable): buckets@+0x10, count@+0x18, elements@+0x20;
+// node = {u32 id, value union@+8, type byte@+0x20 (0 int, 1 long, 2 string), next@+0x28}.
 struct DomStore { const char* src; std::uint64_t obj; std::uint64_t table; int div; int count; bool typed; };
 
 static bool dom_table(HANDLE h, std::uint64_t table, int& div, int& count) {
@@ -2010,6 +2014,19 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
     auto root = rpm<std::uint64_t>(h, ps.mgva);
     if (!root || *root <= 0x10000) return "{}";
     const std::uint64_t kTableVt = ps.mod_base ? ps.mod_base + 0xB609C0 : 0;
+    // The store class vtable sits at a different RVA in each rs2client.exe build (OpenGL and Vulkan
+    // are separate binaries), so beyond the pinned RVA accept any vtable that lies in the image and
+    // whose first slots are code pointers into the image. No RTTI is present to name the class.
+    auto in_image = [&](std::uint64_t a) {
+        return ps.mod_base && ps.mod_size && a >= ps.mod_base && a < ps.mod_base + ps.mod_size;
+    };
+    auto vt_ok = [&](std::uint64_t vt) {
+        if (kTableVt && vt == kTableVt) return true;
+        if (!in_image(vt)) return false;
+        for (int i = 0; i < 5; ++i)
+            if (!in_image(rpm<std::uint64_t>(h, vt + (std::uint64_t)i * 8).value_or(0))) return false;
+        return true;
+    };
     std::uint64_t store = rpm<std::uint64_t>(h, *root + kOffVarcStore).value_or(0);
     std::uint64_t clan  = store > 0x10000 ? rpm<std::uint64_t>(h, store + 0x77b0).value_or(0) : 0;
     std::uint64_t grp   = rpm<std::uint64_t>(h, *root + 0x19948).value_or(0);
@@ -2022,9 +2039,9 @@ std::string VarDomainStoresJson(std::uint32_t pid) {
     auto emit = [&](const char* key, const char* src, std::uint64_t obj, std::uint64_t table) {
         int div = 0, count = 0; bool ok = obj > 0x10000 && dom_table(h, table, div, count);
         std::uint64_t vt = obj > 0x10000 ? rpm<std::uint64_t>(h, table).value_or(0) : 0;
-        std::snprintf(buf, sizeof(buf), "%s\"%s\":{\"src\":\"%s\",\"ptr\":\"0x%llx\",\"live\":%s,\"div\":%d,\"count\":%d,\"vt\":%s}",
+        std::snprintf(buf, sizeof(buf), "%s\"%s\":{\"src\":\"%s\",\"ptr\":\"0x%llx\",\"live\":%s,\"div\":%d,\"count\":%d,\"vt\":%s,\"vt_rva\":\"0x%llx\"}",
                       firstS ? "" : ",", key, src, (unsigned long long)obj, ok ? "true" : "false", ok ? div : 0, ok ? count : 0,
-                      (kTableVt && vt == kTableVt) ? "true" : "false");
+                      vt_ok(vt) ? "true" : "false", (unsigned long long)(in_image(vt) ? vt - ps.mod_base : 0));
         out += buf; firstS = false;
     };
     emit("0",  "MainData+0x19fb8 (varp manager)", *root + 0x19fb8, *root + kOffVarpHash - 8);
@@ -3267,6 +3284,24 @@ bool read_view_matrix(HANDLE h, std::uint32_t pid, std::uint64_t root,
 }
 }  // namespace
 
+// True (server) tile of an actor from its movement route; see kMoveMgr in SceneOffsets.h. Returns
+// false when the route is empty (stationary) or unreadable, leaving tx/ty as the caller's fallback,
+// which should be the visible tile. Live-verified 2026-09-11: 99.6 % of moving samples within 2 tiles.
+static bool actor_true_tile(HANDLE h, std::uint64_t sec, int& tx, int& ty) {
+    auto mm = rpm<std::uint64_t>(h, sec + rtx::scn::kMoveMgr);
+    if (!mm || *mm <= 0x10000 || *mm > 0x00007FFFFFFFFFFFull) return false;
+    auto beg = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteBegin);
+    auto end = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteEnd);
+    auto wr  = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteWrite);
+    if (!beg || !end || !wr || *beg <= 0x10000 || *end < *beg || *end - *beg > 64 * rtx::scn::kRouteStride) return false;
+    if (*wr <= *beg || *wr > *end || (*wr - *beg) % rtx::scn::kRouteStride) return false;   // empty: stationary
+    const std::uint64_t e = *wr - rtx::scn::kRouteStride;
+    auto x = rpm<float>(h, e + rtx::scn::kRouteX), y = rpm<float>(h, e + rtx::scn::kRouteY);
+    if (!x || !y || !(*x > 0.f) || !(*y > 0.f) || *x >= 16384.f * 512.f || *y >= 16384.f * 512.f) return false;
+    tx = (int)(*x / 512.f); ty = (int)(*y / 512.f);
+    return true;
+}
+
 std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kContainer = rtx::scn::kContainer;   // all from SceneOffsets.h --
     constexpr std::uint64_t kActiveIdx = rtx::scn::kActiveIdx;   // shared with the companion
@@ -3394,6 +3429,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 int tx = fx ? (int)(*fx / 512.f) : 0;
                 int ty = fy ? (int)(*fy / 512.f) : 0;
                 if (tx <= 0 || ty <= 0) continue;
+                int ttx = tx, tty = ty;                       // server tile; visible tile when stationary
+                actor_true_tile(h, *sec, ttx, tty);
 
                 char nm[40] = {0};
                 rpm_bytes(h, *sec + kName, nm, sizeof(nm) - 1);
@@ -3405,7 +3442,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 }
                 int uid = rpm<std::int32_t>(h, *sec + kUid).value_or(0);
 
-                char buf[160];
+                char buf[256];
                 if (type == 2) {                              // player
                     if (name.empty()) continue;               // players always carry a live name
                     bool self = (uid == local_uid);
@@ -3417,8 +3454,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     int plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // shared actor plane
                     if (pc) players.push_back(',');
                     std::snprintf(buf, sizeof(buf),
-                        "{\"uid\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"combat\":%d,\"anim\":%d,\"self\":%s,\"name\":\"",
-                        uid, tx, ty, plane, combat, anim, self ? "true" : "false");
+                        "{\"uid\":%d,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"combat\":%d,\"anim\":%d,\"self\":%s,\"name\":\"",
+                        uid, tx, ty, ttx, tty, plane, combat, anim, self ? "true" : "false");
                     players += buf; players += json_escape(name); players += "\"}";
                     ++pc;
                 } else {                                      // NPC
@@ -3452,8 +3489,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     }
                     int npcPlane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // shared actor plane
                     std::snprintf(buf, sizeof(buf),
-                        "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
-                        reportId, uid, tx, ty, npcPlane, meta.combat_level, anim, face, meta.size);
+                        "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
+                        reportId, uid, tx, ty, ttx, tty, npcPlane, meta.combat_level, anim, face, meta.size);
                     npcs += buf; npcs += json_escape(npcName);
                     npcs += "\",\"actions\":["; npcs += acts; npcs += "]}";
                     ++nc;
@@ -5859,6 +5896,7 @@ bool ReadViewMetrics(std::uint32_t pid, OverlayFrame& out) {
 
 bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        bool want_objects, bool want_specials, int grid_radius, bool interactable,
+                       bool want_true_tile,
                        const std::vector<std::string>& highlight_names,
                        const std::vector<int>& outline_uids,
                        const std::vector<OutlineLocReq>& outline_locs,
@@ -5977,11 +6015,14 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             regions.insert(((tx / 64) << 8) | (ty / 64));
 
             int uid = rpm<std::int32_t>(h, *sec + kUid).value_or(0);
+            int ttx = tx, tty = ty;                                    // server tile (movement route)
+            const bool onRoute = actor_true_tile(h, *sec, ttx, tty);
             if (type == 2 && uid == local_uid) {
                 have_player = true;
                 out.player_tx = tx; out.player_ty = ty; out.player_z = fz.value_or(0);
                 out.player_fx = *fx; out.player_fy = *fy;   // smooth sub-tile position for the ground indicator
                 out.plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);  // live plane
+                out.player_ttx = ttx; out.player_tty = tty; out.player_route = onRoute;
             }
 
             char nm[40] = {0};
@@ -6076,6 +6117,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             p.label = label;
             p.uid = uid;
             p.is_self = (type == 2 && uid == local_uid);
+            p.has_true = onRoute; p.true_x = ttx; p.true_y = tty;
             if (have_box) {
                 p.head_z = bmxU;
                 if (type == 1) {   // 3D box outline is NPC-only
@@ -6147,6 +6189,26 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         if (m > 4) m = 4;
         op.box_h = 280.f + 120.f * (float)(m - 1) + (atTop ? 0.f : (top - base));
     };
+
+    if (want_true_tile && have_player) {
+        // True-tile outlines (kind 5): the local player's server tile always, and the server tile of
+        // every other marked actor whose movement route is live. Drawn flat on the ground.
+        auto trueTilePoint = [&](int gx, int gy, int src, int uid, bool self) {
+            OverlayPoint op;
+            op.kind = 5; op.src = src; op.uid = uid; op.is_self = self;
+            fillBox(op, gx, gy, 1, 1);
+            op.box_h = 0.f;
+            op.wx = ((float)gx + 0.5f) * 512.f; op.wy = ((float)gy + 0.5f) * 512.f;
+            op.wz = op.box[2]; op.head_z = op.wz;
+            return op;
+        };
+        std::vector<OverlayPoint> extra;
+        extra.push_back(trueTilePoint(out.player_ttx, out.player_tty, 2, local_uid, true));
+        for (const auto& p : out.points)
+            if ((p.kind == 1 || p.kind == 2) && p.has_true && !p.is_self)
+                extra.push_back(trueTilePoint(p.true_x, p.true_y, p.kind, p.uid, false));
+        out.points.insert(out.points.end(), extra.begin(), extra.end());
+    }
 
     if (have_player && !guide_sites.empty()) {
         std::uint64_t groot = (root && *root > 0x10000) ? *root : 0;
@@ -6611,6 +6673,8 @@ std::string PlayerInfoJson(std::uint32_t pid) {
 
     float fx = rpm<float>(h, psec + kPosX).value_or(0), fy = rpm<float>(h, psec + kPosY).value_or(0);
     int tx = (int)(fx / 512.f), ty = (int)(fy / 512.f);
+    int ttx = tx, tty = ty;                                   // server tile; visible tile when stationary
+    actor_true_tile(h, psec, ttx, tty);
     int plane = rpm<std::int32_t>(h, psec + rtx::scn::kPlane).value_or(0);   // live plane (sec + 0x40)
     if (plane < 0 || plane > 3) plane = 0;
     int anim = rpm<std::int32_t>(h, psec + kAnim).value_or(-1);
@@ -6721,12 +6785,12 @@ std::string PlayerInfoJson(std::uint32_t pid) {
             if (f && *f > 0.0f && *f < 4000.0f) fps = (int)*f;
         }
     }
-    char buf[460];
+    char buf[512];
     std::snprintf(buf, sizeof(buf),
-        "{\"in\":true,\"x\":%d,\"y\":%d,\"plane\":%d,\"region\":%d,\"lx\":%d,\"ly\":%d,"
+        "{\"in\":true,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"region\":%d,\"lx\":%d,\"ly\":%d,"
         "\"anim\":%d,\"moving\":%s,\"progress\":%d,\"energy\":%d,\"weight\":%d,\"combat\":%d,"
         "\"fps\":%d,\"interact\":",
-        tx, ty, plane, region, lx, ly, anim, moving ? "true" : "false", progress, energy, weight, combat, fps);
+        tx, ty, ttx, tty, plane, region, lx, ly, anim, moving ? "true" : "false", progress, energy, weight, combat, fps);
     std::string out = buf; out += interactJson; out += "}";
     return out;
 }
@@ -7268,6 +7332,50 @@ std::string ReaderHealthJson(std::uint32_t pid) {
                 std::to_string(rendered) + " with a live model" + (ok ? "" : " (companion loc-id field moved)"));
         } else {
             add("Scene objects", 2, "no runtime objects published yet");
+        }
+    }
+    {   // Actor true tile: every player and NPC must carry a well-formed movement route, and a moving
+        // actor's newest route entry must sit within 2 tiles of its visible position.
+        int total = 0, routes = 0, moving = 0, close = 0;
+        auto root = rpm<std::uint64_t>(h, ps.mgva);
+        auto cont = (root && *root > 0x10000) ? rpm<std::uint64_t>(h, *root + rtx::scn::kContainer) : std::nullopt;
+        auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
+        auto arr  = (cont && *cont > 0x10000) ? rpm<std::uint64_t>(h, *cont + rtx::scn::kEntryArr) : std::nullopt;
+        auto wv   = (idx && *idx >= 0 && arr && *arr > 0x10000) ? rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + rtx::scn::kEntryWv) : std::nullopt;
+        auto worker = (wv && *wv > 0x10000) ? scene_worker(h, pid, *wv, nullptr) : std::optional<std::uint64_t>{};
+        auto vb = worker ? rpm<std::uint64_t>(h, *worker + rtx::scn::kVecBegin) : std::nullopt;
+        auto ve = worker ? rpm<std::uint64_t>(h, *worker + rtx::scn::kVecEnd) : std::nullopt;
+        if (vb && ve && *vb > 0x10000 && *ve >= *vb) {
+            std::uint64_t n = (*ve - *vb) / 8; if (n > 20000) n = 20000;
+            for (std::uint64_t i = 0; i < n && total < 300; ++i) {
+                auto ep = rpm<std::uint64_t>(h, *vb + i * 8);
+                if (!ep || *ep <= 0x10000) continue;
+                auto sec = rpm<std::uint64_t>(h, *ep + rtx::scn::kSecPtr);
+                if (!sec || *sec <= 0x10000) continue;
+                int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
+                if (type != 1 && type != 2) continue;
+                auto fx = rpm<float>(h, *sec + rtx::scn::kPosX), fy = rpm<float>(h, *sec + rtx::scn::kPosY);
+                if (!fx || !fy || *fx <= 0.f || *fy <= 0.f) continue;
+                ++total;
+                auto mm = rpm<std::uint64_t>(h, *sec + rtx::scn::kMoveMgr);
+                if (!mm || *mm <= 0x10000) continue;
+                auto beg = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteBegin), end = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteEnd);
+                auto wr  = rpm<std::uint64_t>(h, *mm + rtx::scn::kRouteWrite);
+                if (!beg || !end || !wr || *beg <= 0x10000 || *end - *beg != 21 * rtx::scn::kRouteStride || *wr < *beg || *wr > *end) continue;
+                ++routes;
+                int tx = (int)(*fx / 512.f), ty = (int)(*fy / 512.f), ttx = tx, tty = ty;
+                if (!actor_true_tile(h, *sec, ttx, tty)) continue;
+                ++moving;
+                if (std::abs(ttx - tx) <= 2 && std::abs(tty - ty) <= 2) ++close;
+            }
+        }
+        if (total == 0) add("Actor true tile", 2, "no players or NPCs in the scene yet");
+        else {
+            const bool ok = routes * 10 >= total * 9 && (moving == 0 || close * 10 >= moving * 9);
+            add("Actor true tile", ok ? 1 : 0,
+                std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route, " +
+                std::to_string(close) + "/" + std::to_string(moving) + " moving within 2 tiles of the visible position" +
+                (ok ? "" : " (route object at sec+0x268 moved?)"));
         }
     }
     for (const auto& r : rtx::cache::CacheParseHealth()) {

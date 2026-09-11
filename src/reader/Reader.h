@@ -108,6 +108,9 @@ struct OverlayPoint {
     int         rgb = 0;                  // guide marks only: 0 = default marker colour, else 0xRRGGBB
     int         rgb2 = 0;                 // guide marks only: optional second tone (two-tone flat tile)
     int         edge_mask = 15;           // flat guide tiles only: outline edges to draw (bit 0 south, 1 east, 2 north, 3 west)
+    bool        has_true = false;         // players/NPCs: true_x/y came from a live movement route (actor is moving)
+    int         true_x = 0, true_y = 0;   // players/NPCs: server tile (visible tile when has_true is false)
+    int         src = 0;                  // kind 5 (true-tile outline) only: 1 = NPC, 2 = player
 };
 
 struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false; int rgb = 0; int gx2 = 0, gy2 = 0; int region = 0; int plane = 0; int rgb2 = 0; };
@@ -119,6 +122,8 @@ struct OverlayFrame {
     int         player_tx = 0, player_ty = 0, plane = 0;
     float       player_z  = 0;            // fine z used as the grid plane height
     float       player_fx = 0, player_fy = 0;   // player FINE world position (smooth, sub-tile)
+    int         player_ttx = 0, player_tty = 0; // player server tile from the movement route (visible tile when stationary)
+    bool        player_route = false;           // the route was non-empty (player is moving)
     std::int16_t anchor_h = -32768;       // player tile cache surface height (informational; heights are absolute: fine-z = 32 * h); -32768 = none
     std::vector<OverlayPoint> points;     // players/NPCs/objects (per the want* flags)
     int         grid_r = 0;               // grid radius; blocked grid is (2r+1)^2
@@ -139,6 +144,7 @@ struct OutlineLocReq { int id = 0, x = 0, y = 0, plane = 0; };
 
 bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                        bool want_objects, bool want_specials, int grid_radius, bool interactable,
+                       bool want_true_tile,
                        const std::vector<std::string>& highlight_names,
                        const std::vector<int>& outline_uids,
                        const std::vector<OutlineLocReq>& outline_locs,

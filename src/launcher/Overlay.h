@@ -16,6 +16,7 @@ struct Config {
     bool          objects  = false;
     bool          specials = false;  // type-4 markers (Time Sprite / Rockertunity)
     bool          walk_only = false; // grid: hide unwalkable tiles (else tint red)
+    bool          true_tile = false; // outline the server tile (movement route) of the local player, and of moving NPCs/players whose markers are on
     bool          occlude = true;    // markers faded where the scene is in front of them (Vulkan)
     bool          interactable = false;  // markers: only NPCs/objects with actions
     bool          markers  = false;  // persistent tile markers, independent of the grid

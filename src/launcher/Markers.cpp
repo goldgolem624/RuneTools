@@ -364,7 +364,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
     std::vector<int> noOutline;
     std::vector<rtx::reader::GuideSite> noGuides;
     std::vector<rtx::reader::OutlineLocReq> noOutlineLocs;
-    if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, none, noOutline, noOutlineLocs, noGuides, f) || !f.ok)
+    if (!rtx::reader::BuildOverlayFrame(pid, false, false, false, false, 0, false, false, none, noOutline, noOutlineLocs, noGuides, f) || !f.ok)
         return false;
 
     float gvScale = 1.0f;
