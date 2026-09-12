@@ -58,13 +58,29 @@
       const ids = (docked ? st.tabs : [st.tab || wid])
         .filter(id => avail.some(x => x.id === id) && !wmWinOf(id));
       if (!ids.length) continue;              // nothing left to show -> no empty window
-      const t = avail.find(x => x.id === (ids.indexOf(st.tab) >= 0 ? st.tab : ids[0]));
       const geom = (st.w > 0 && st.h > 0)
         ? { x: st.x | 0, y: st.y | 0, w: st.w | 0, h: st.h | 0, min: !!st.min, lock: !!st.lock }
         : { min: !!st.min, lock: !!st.lock, nogeom: 1 };
-      const w2 = openTab(t, { noFocus: true, geom, restoring: true });
-      if (w2 && docked) wmSetTabs(w2, ids);
-      if (w2 && st.roll) wmToggleRoll(w2);
+      // HUD panels never share a window: a layout saved while one was docked with normal tabs
+      // comes back as separate windows, the saved geometry going to the tab that was shown.
+      const shown = ids.indexOf(st.tab) >= 0 ? st.tab : ids[0];
+      const hudIds = ids.filter(id => wmIsHud(id)), normIds = ids.filter(id => !wmIsHud(id));
+      const sets = [];
+      if (wmIsHud(shown)) {
+        sets.push({ ids: [shown], geom });
+        for (const id of hudIds) if (id !== shown) sets.push({ ids: [id], geom: { min: !!st.min, lock: !!st.lock, nogeom: 1 } });
+        if (normIds.length) sets.push({ ids: normIds, geom: { min: !!st.min, nogeom: 1 } });
+      } else {
+        sets.push({ ids: normIds, geom });
+        for (const id of hudIds) sets.push({ ids: [id], geom: { min: !!st.min, lock: !!st.lock, nogeom: 1 } });
+      }
+      for (const set of sets) {
+        const t = avail.find(x => x.id === (set.ids.indexOf(shown) >= 0 ? shown : set.ids[0]));
+        if (!t) continue;
+        const w2 = openTab(t, { noFocus: true, geom: set.geom, restoring: true });
+        if (w2 && docked && set.ids.length > 1) wmSetTabs(w2, set.ids);
+        if (w2 && st.roll) wmToggleRoll(w2);
+      }
     }
     wm.restored = true;
     renderMenubar();

@@ -15,8 +15,8 @@
     { id: 'tasks',    label: 'Slayer & Reaper', cat: 'Progression', icon: '<path d="M9 6h11M9 12h11M9 18h8"/><path d="M3.5 5.5l1 1 2-2.2M3.5 11.5l1 1 2-2.2M3.5 17.5l1 1 2-2.2"/>' },
     { id: 'leagues', label: 'Leagues', cat: 'Progression', icon: '<path d="M8 21h8M12 17v4"/><path d="M7 4h10v6a5 5 0 0 1-10 0V4z"/><path d="M7 6H4v2a4 4 0 0 0 3 3.87M17 6h3v2a4 4 0 0 1-3 3.87"/>' },
     { id: 'dailies',  label: 'D&D Tracker', cat: 'Progression', icon: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/><path d="M9 15l2 2 4-4"/>' },
-    { id: 'xptracker',label: 'XP Tracker',   cat: 'Progression', icon: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3.5-4 3 2.5L18 8"/><path d="M18 8h-3.5M18 8v3.5"/>' },
-    { id: 'xpmeter',  label: 'XP Meter',     cat: 'Progression', icon: '<path d="M4 17h16"/><path d="M6 17v-4"/><path d="M11 17V9"/><path d="M16 17v-6"/>' },
+    { id: 'xptracker',label: 'XP',           cat: 'Progression', icon: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3.5-4 3 2.5L18 8"/><path d="M18 8h-3.5M18 8v3.5"/>' },
+    { id: 'xpmeter',  label: 'XP Meter',     cat: 'Progression', hidden: true, icon: '<path d="M4 17h16"/><path d="M6 17v-4"/><path d="M11 17V9"/><path d="M16 17v-6"/>' },
     { id: 'chatlog',  label: 'Chat Log',     cat: 'Utility', icon: '<path d="M4 5h16v10H9l-4 4V15H4z"/><path d="M8 9h8M8 12h5"/>' },
     { id: 'inventory', label: 'Inventory', cat: 'Items', icon: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>' },
     { id: 'equipment', label: 'Equipment', cat: 'Items', icon: '<path d="M8 4l4 2 4-2 3 2.5-3 3v9.5H8V9.5l-3-3z"/>' },
@@ -184,7 +184,6 @@
     { id: 'farm',    label: 'Farming',        cat: 'World',       tabs: ['farming', 'pof'],                                      subs: ['Patches', 'Animal Pens'] },
     { id: 'utils',   label: 'Utilities',      cat: 'Utility',     tabs: ['notes', 'counter', 'stopwatch'],                       subs: ['Notes', 'Counter', 'Stopwatch'] },
     { id: 'taskhub', label: 'Tasks & Dailies', cat: 'Progression',  tabs: ['tasks', 'dailies'],                                    subs: ['Slayer & Reaper', 'Dailies'] },
-    { id: 'xp',      label: 'XP',             cat: 'Progression', tabs: ['xptracker', 'xpmeter'],                                subs: ['Tracker', 'Meter'] },
     { id: 'invent',  label: 'Invention',      cat: 'Items',       tabs: ['components', 'machines'],                              subs: ['Components', 'Machines'] },
   ];
   const TAB_GROUP_OF = {};   // tab id -> group

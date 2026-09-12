@@ -248,6 +248,10 @@
     'stroke-linecap="round" stroke-linejoin="round">' + (p || '') + '</svg>';
 
   function wmCreateWindow(wid, tab, group, geom, noAnim) {
+    // HUD panels (XP meter, metronome, aura bars) are always solo windows: their chrome, lock
+    // button and leave handlers belong to that one panel, so they never share a window with a
+    // settings tab and a group never mounts inside HUD chrome.
+    if (group && wmIsHud(tab.id)) group = null;
     const sz = winSizeFor(wid, tab.id);
     const hasBox = !!(geom && !geom.nogeom);
     const pos = hasBox ? { x: geom.x, y: geom.y } : wmSpawnPos(sz);
@@ -263,7 +267,7 @@
     };
     if (group) {
       const avail = allTabs();
-      w.tabs = group.tabs.filter(id => avail.some(t => t.id === id) && !wmWinOf(id));
+      w.tabs = group.tabs.filter(id => avail.some(t => t.id === id) && !wmWinOf(id) && !wmIsHud(id));
       if (w.tabs.indexOf(tab.id) < 0) w.tabs.push(tab.id);
     }
     const el = document.createElement('section');
@@ -415,7 +419,7 @@
     wmSaveSoon();
   }
   function wmSetTabs(w, ids) {
-    w.tabs = ids.slice();
+    w.tabs = wmIsHud(w.tab) ? [w.tab] : ids.filter(id => !wmIsHud(id));   // HUD panels stay solo
     if (w.tabs.indexOf(w.tab) < 0) w.tabs.unshift(w.tab);
     wmRenderTabs(w);
   }
