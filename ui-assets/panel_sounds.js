@@ -28,6 +28,7 @@
   const sndKey = function (idx, id) { return (idx * 0x1000000) + (id & 0xFFFFFF); };
   let sndMuted = new Set();
   sndLive = new Map();       // key -> {id, idx, ms, hits, heardAt}; keyed so a repeat never re-adds
+  sndRecentLog = [];         // newest first, every play as it came (origin, tile), for the read-only list under the chips
   let sndLiveSig = '';           // last painted chip set, so the strip only repaints when it changes
   let sndLiveSeq = 0;            // highest companion sequence merged into sndLive
   const SND_HOT_MS = 1200;       // a chip pulses this long after its sound fires (wall clock)
@@ -211,6 +212,8 @@
             sndLiveSeq = fresh[fresh.length - 1].n + 1;
             const nowWall = Date.now();
             for (const ev of fresh) {
+              sndRecentLog.unshift({ t: nowWall, id: ev.id, idx: ev.idx, origin: ev.origin || '', x: ev.x, y: ev.y, group: ev.group, kind: ev.kind, caller: ev.caller });
+              if (sndRecentLog.length > 60) sndRecentLog.length = 60;
               const k = sndKey(ev.idx, ev.id);
               const prev = sndLive.get(k);
               if (prev) { prev.ms = ev.ms; prev.hits++; prev.heardAt = nowWall; prev.origin = ev.origin || prev.origin; prev.x = ev.x; prev.y = ev.y; prev.group = ev.group; prev.kind = ev.kind; }
@@ -281,6 +284,18 @@
       }
       live.innerHTML = h;
     }
+    // Latest plays as plain rows (newest first): hover is useless on chips that keep re-rendering.
+    let rec = $('sndRecent');
+    if (!rec) { rec = document.createElement('div'); rec.id = 'sndRecent'; rec.style.cssText = 'margin-top:6px;font-size:11.5px;line-height:1.5;opacity:0.85;font-variant-numeric:tabular-nums'; live.parentNode.insertBefore(rec, live.nextSibling); }
+    const ORIGIN_WORD = { script: 'script', server: 'server', server_tile: 'server, at tile', zone: 'zone ambient', actor: 'actor animation', engine: 'engine', other: 'other' };
+    const nowT = Date.now();
+    const rows = sndRecentLog.slice(0, 12).map(function (r) {
+      const age = Math.max(0, nowT - r.t) / 1000;
+      return (r.idx === SND_IDX.music ? 'M' : 'E') + r.id + '  ' + (ORIGIN_WORD[r.origin] || ('call 0x' + Number(r.caller || 0).toString(16)))
+        + (r.x >= 0 ? '  at ' + r.x + ',' + r.y : '') + '  g' + r.group + ' k' + r.kind + '  ' + (age < 1 ? 'now' : age.toFixed(1) + 's ago');
+    });
+    const recText = rows.length ? 'Latest plays\n' + rows.join('\n') : '';
+    if (rec.textContent !== recText) { rec.textContent = recText; rec.style.whiteSpace = 'pre'; }
     const cts = $('sndLiveCounts');
     if (cts && d.length >= 2) cts.textContent = '  ·  ' + d[0] + ' played, ' + d[1] + ' silenced';
     const nowWall = Date.now();
