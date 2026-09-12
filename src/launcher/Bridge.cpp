@@ -1083,6 +1083,13 @@ JSValueRef CombatLogFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::CombatLogJson(pid, (std::uint64_t)since, max_events));
 }
 
+JSValueRef ClientState(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return utf8_to_js(ctx, rtx::reader::ClientStateJson(pid));
+}
+
 JSValueRef GameTick(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeNumber(ctx, -1);
@@ -5018,6 +5025,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "sceneEntities",     SceneEntities);
     install_fn(ctx, ns, "playerInfo",        PlayerInfo);
     install_fn(ctx, ns, "gameTick",          GameTick);
+    install_fn(ctx, ns, "clientState",       ClientState);
     install_fn(ctx, ns, "gameTickState",     GameTickState);
     install_fn(ctx, ns, "perks",             Perks);
     install_fn(ctx, ns, "inventory",         Inventory);

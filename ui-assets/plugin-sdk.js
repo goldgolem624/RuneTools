@@ -139,7 +139,8 @@
       interfaceGroup: function (groupId) { return call('state.interfaceGroup', [groupId]); },
       varcs:        function (ids) { return call('state.varcs', [ids]); },
       ports:        function () { return call('state.ports', []); },
-      gameTick:     function () { return call('state.gameTick', []); }
+      gameTick:     function () { return call('state.gameTick', []); },
+      clientState:  function () { return call('state.clientState', []); }
     },
 
     cache: {

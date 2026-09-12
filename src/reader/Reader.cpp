@@ -1844,6 +1844,44 @@ constexpr std::uint32_t kOffRepPointerA   = 0x28;     // u64 ms, last pointer fl
 constexpr std::uint32_t kOffRepPointerB   = 0x50;     // u64 ms, last pointer flush (recorder B)
 constexpr std::uint32_t kOffRepKeyboard   = 0x2858;   // u64 ms, last key batch (0 = none yet)
 
+
+// Client state that lives outside the var stores, from the engine op handlers (950-1):
+// TEXTINPUT_ISFOCUSED (0x14009F310) pushes [[MainData+0x19FA8]+0x14]; client script 11370 treats
+// -8388608, 8388607, 8388606 and 8388605 as "no text input has focus" and anything else as focused
+// (keys go to a text field). CUTSCENE ops read [MainData+0x19A18]: +0x150 = current cutscene id,
+// -1 when none. CLIENTOPTION_GET (0x1401BE8F0): option objects at [[MainData+0x535D0]+0x2DA8 + id*8],
+// value i32 at +0x18 (option 39 is a byte), 44 options; the op adds 1 to option 28. Option names are
+// not in the client; the ids are what the settings scripts pass to CLIENTOPTION_GET/SET.
+std::string ClientStateJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "{}";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{}";
+    std::string out = "{";
+    long long focus = 0; bool typing = false;
+    if (auto acct = rpm<std::uint64_t>(h, *root + 0x19FA8); acct && *acct > 0x10000) {
+        focus = rpm<std::int32_t>(h, *acct + 0x14).value_or(0);
+        typing = !(focus == -8388608 || focus == 8388607 || focus == 8388606 || focus == 8388605);
+    }
+    out += "\"typing\":" + std::string(typing ? "true" : "false") + ",\"focus\":" + std::to_string(focus);
+    int cutscene = -1;
+    if (auto cs = rpm<std::uint64_t>(h, *root + 0x19A18); cs && *cs > 0x10000) cutscene = rpm<std::int32_t>(h, *cs + 0x150).value_or(-1);
+    out += ",\"cutscene\":" + std::to_string(cutscene) + ",\"inCutscene\":" + std::string(cutscene != -1 ? "true" : "false");
+    out += ",\"options\":[";
+    if (auto opt = rpm<std::uint64_t>(h, *root + 0x535D0); opt && *opt > 0x10000) {
+        for (int i = 0; i < 44; ++i) {
+            auto o = rpm<std::uint64_t>(h, *opt + 0x2DA8 + (std::uint64_t)i * 8);
+            long long v = 0;
+            if (o && *o > 0x10000) v = (i == 39) ? (long long)rpm<std::uint8_t>(h, *o + 0x18).value_or(0) : (long long)rpm<std::int32_t>(h, *o + 0x18).value_or(0);
+            if (i == 28) v += 1;
+            out += (i ? "," : "") + std::to_string(v);
+        }
+    }
+    out += "]}";
+    return out;
+}
+
 std::string MembershipJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     if (!ps) return "{}";

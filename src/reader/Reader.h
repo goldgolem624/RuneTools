@@ -199,6 +199,7 @@ std::string VarpsJson(std::uint32_t pid, const std::string& ids_csv);
 std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv);
 
 std::string MembershipJson(std::uint32_t pid);
+std::string ClientStateJson(std::uint32_t pid);   // typing focus, cutscene id, client option values
 
 std::string VarpsDumpAllJson(std::uint32_t pid);
 std::string ServerOpsJson();
