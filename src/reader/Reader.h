@@ -90,6 +90,11 @@ std::string ReadAsync(const std::string& key, std::function<std::string()> build
 
 std::string SceneJson(std::uint32_t pid, int obj_range = 20);
 
+// Combat log: hitsplat events on every actor in the scene. Poll at 5 Hz from one thread; read
+// events with seq > since (max_events capped at 2000). JSON: {seq, gap, events:[...]}.
+void CombatLogPoll(std::uint32_t pid);
+std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events);
+
 std::string GroundItemsJson(std::uint32_t pid);
 
 struct OverlayPoint {
@@ -154,6 +159,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
 bool ReadViewMetrics(std::uint32_t pid, OverlayFrame& out);
 
 std::string PlayerInfoJson(std::uint32_t pid);
+std::string SocialJson(std::uint32_t pid);   // world id + friends list with worlds
 
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane);
 

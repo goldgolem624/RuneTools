@@ -1063,6 +1063,26 @@ JSValueRef PlayerInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   [pid]{ return rtx::reader::PlayerInfoJson(pid); });
 }
 
+JSValueRef SocialFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                    size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{\"in\":false}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return served(ctx, "social:" + std::to_string(pid), "{\"in\":false}",
+                  [pid]{ return rtx::reader::SocialJson(pid); });
+}
+
+// Combat log events after a sequence number. Served from the launcher's own ring (no client
+// reads), so it is not cached; the poller behind it runs at 5 Hz for every logged-in client.
+JSValueRef CombatLogFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{\"seq\":0,\"gap\":false,\"events\":[]}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    double since = argc >= 2 ? JSValueToNumber(ctx, argv[1], nullptr) : 0.0;
+    if (!(since >= 0)) since = 0;
+    int max_events = argc >= 3 ? js_int(ctx, argv[2]) : 500;
+    return utf8_to_js(ctx, rtx::reader::CombatLogJson(pid, (std::uint64_t)since, max_events));
+}
+
 JSValueRef GameTick(JSContextRef ctx, JSObjectRef, JSObjectRef,
                     size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeNumber(ctx, -1);
@@ -1262,6 +1282,34 @@ JSValueRef VarcStringsDumpAll(JSContextRef ctx, JSObjectRef, JSObjectRef,
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
     return served(ctx, "varcstrall:" + std::to_string(pid), "{}",
                   [pid]{ return rtx::reader::VarcStringsDumpAllJson(pid); });
+}
+
+// Walkability of the (2r+1)^2 tiles around x,y on a plane, from the map cache's collision grid
+// (the same data the overlay's tile tint uses). rows[i] is the row y-r+i, one char per x-r+j:
+// '0' walkable, '1' fully blocked (scenery footprints, walls as tiles, void).
+JSValueRef WalkGridFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 4) return utf8_to_js(ctx, "{}");
+    int x = js_int(ctx, argv[0]), y = js_int(ctx, argv[1]), plane = js_int(ctx, argv[2]), r = js_int(ctx, argv[3]);
+    if (x <= 0 || y <= 0 || x > 16383 || y > 16383) return utf8_to_js(ctx, "{}");
+    if (r < 1) r = 1;
+    if (r > 8) r = 8;
+    if (plane < 0 || plane > 3) plane = 0;
+    std::vector<std::uint8_t> g;
+    rtx::cache::RegionBlockedFill(x, y, plane, r, g);
+    const int T = 2 * r + 1;
+    std::string rows;
+    for (int gy = 0; gy < T; ++gy) {
+        if (gy) rows += ",";
+        rows += "\"";
+        for (int gx = 0; gx < T; ++gx) {
+            const std::size_t i = (std::size_t)gx * T + gy;
+            rows += (i < g.size() && (g[i] & rtx::cache::kTileBlockFull)) ? '1' : '0';
+        }
+        rows += "\"";
+    }
+    return utf8_to_js(ctx, "{\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) + ",\"plane\":" + std::to_string(plane) +
+                           ",\"r\":" + std::to_string(r) + ",\"rows\":[" + rows + "]}");
 }
 
 JSValueRef GroundItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -2829,6 +2877,21 @@ JSValueRef ScarabCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, g_scarab_json);
 }
 
+// Feeds the combat log: every logged-in client's actor rings, five times a second. The client
+// list refreshes every two seconds; the ring poll itself is a few hundred small reads.
+void combat_log_loop() {
+    std::vector<std::uint32_t> pids; long long listed = 0;
+    for (;;) {
+        long long now = (long long)GetTickCount64();
+        if (now - listed >= 2000) {
+            listed = now; pids.clear();
+            for (const auto& s : rtx::reader::SampleAll()) if (s.status == 30) pids.push_back(s.pid);
+        }
+        for (auto pid : pids) rtx::reader::CombatLogPoll(pid);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+}
+
 void world_event_scan_loop() {
     for (;;) {
         scarab_scan_pass();
@@ -2943,6 +3006,7 @@ JSValueRef LatestVersionCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
         std::thread([] { guarded("update events", update_events_loop); }).detach();
         std::thread([] { guarded("vos report", vos_report_loop); }).detach();
         std::thread([] { guarded("world event scan", world_event_scan_loop); }).detach();
+        std::thread([] { guarded("combat log", combat_log_loop); }).detach();
     }
     std::lock_guard<std::mutex> lk(g_latest_mu);
     return utf8_to_js(ctx, g_latest_json);
@@ -5069,6 +5133,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "latestVersion",     LatestVersion);
     install_fn(ctx, ns, "latestVersionCached", LatestVersionCached);
     install_fn(ctx, ns, "newsCached",        NewsCached);
+    install_fn(ctx, ns, "social",            SocialFn);
+    install_fn(ctx, ns, "walkGrid",          WalkGridFn);
+    install_fn(ctx, ns, "combatLog",         CombatLogFn);
     install_fn(ctx, ns, "vosCached", VosCached);
     install_fn(ctx, ns, "pricesCached", PricesCached);
     install_fn(ctx, ns, "pricesMapping", PricesMapping);

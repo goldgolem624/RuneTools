@@ -42,7 +42,8 @@ std::string SpriteDataUrl(int sprite_id);
 std::string SpriteDataUrlScaled(int sprite_id, int px, int frame = 0);
 int SpriteIdByName(const std::string& name);
 
-std::vector<std::uint8_t> SpriteRgba(int sprite_id, int& w, int& h);   // raw RGBA pixels (for the HUD overlay)
+std::vector<std::uint8_t> SpriteRgba(int sprite_id, int& w, int& h);
+std::vector<std::uint8_t> SpritePng(int sprite_id, int frame);   // one frame as PNG bytes (empty when absent)   // raw RGBA pixels (for the HUD overlay)
 
 struct NpcMeta {
     std::string              name;

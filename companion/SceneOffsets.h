@@ -31,6 +31,9 @@ inline constexpr std::uint64_t kSecPtr   = 0x1A0;   // entity -> object-data (se
 inline constexpr std::uint64_t kBack     = 0x18;    // sec -> entity back-pointer (was +0x8 through 949-5)
 inline constexpr std::uint64_t kType     = 0x20;    // sec -> type byte (0x10 through 949-5; header grew 0x10 on 950-1, +0x88 onward unchanged)
 inline constexpr std::uint64_t kName     = 0xB8;    // sec -> live name
+inline constexpr std::uint64_t kLocFlags = 0xF8;    // scenery sub -> state flags; bit 16 = hidden (the tree/stump swap
+                                                     // and the depleted state of every rework tree flip it; a copy sits at +0x230)
+inline constexpr std::int32_t  kLocHidden = 0x10000;
 inline constexpr std::uint64_t kUid      = 0x88;    // sec -> world uid
 inline constexpr std::uint64_t kConfig   = 0x1080;  // sec -> config/model id
 inline constexpr std::uint64_t kCombat   = 0x10BC;  // sec -> player combat level
@@ -50,6 +53,28 @@ inline constexpr std::uint64_t kRouteWrite  = 0x28;   // route -> write cursor (
 inline constexpr std::uint64_t kRouteStride = 0x18;   // entry size
 inline constexpr std::uint64_t kRouteX      = 0x04;   // entry -> f32 fine east
 inline constexpr std::uint64_t kRouteY      = 0x0C;   // entry -> f32 fine north
+// Overhead object (950-1, live-verified 2026-09-12 on a combat dummy, the local player and the
+// Woodcutters' Grove tree helpers): sec+0xF08 -> {i32 active hitsplats @0, i32 capacity 6 @4,
+// hitsplat ring @+0x20 (6 x 0x18: i32 hitmark, i32 value, i32 start cycle, i32 -1, i32 -1, i32 duration
+// 60 cycles), head-bar slots @+0x28 (6 x 0x120: cycle stamp @+0x78, fill 0..255 @+0x7C)}.
+inline constexpr std::uint64_t kOverhead     = 0xF08;   // sec -> overhead object
+inline constexpr std::uint64_t kOvSplatCount = 0x00;
+inline constexpr std::uint64_t kOvRing       = 0x20;
+inline constexpr std::uint64_t kOvSlots      = 0x28;
+inline constexpr std::uint64_t kSplatStride  = 0x18;
+inline constexpr std::uint64_t kBarStride    = 0x120;
+inline constexpr std::uint64_t kBarStamp     = 0x78;
+inline constexpr std::uint64_t kBarFill      = 0x7C;
+inline constexpr std::uint64_t kLpCur        = 0x114C;  // sec -> NPC current life points (local player: varp 13537)
+inline constexpr std::uint64_t kLpMax        = 0x1168;  // sec -> NPC max life points
+inline constexpr std::uint64_t kNpcTarget    = 0x1364;  // sec -> NPC target player index, -1 none
+// Scene entity classes by sec type byte: 1 NPC, 2 player, 3 ground item, 4 world spot animation
+// (gfx @+0x84, fine x/up/y @+0x88/+0x8C/+0x90), 5 projectile (fine src x/y @+0x84/+0x88, dst x/y
+// @+0x8C/+0x90), 10 scenery, 13 walk marker.
+inline constexpr std::uint64_t kProjSrcX     = 0x84;
+inline constexpr std::uint64_t kProjSrcY     = 0x88;
+inline constexpr std::uint64_t kProjDstX     = 0x8C;
+inline constexpr std::uint64_t kProjDstY     = 0x90;
 inline constexpr std::uint64_t kT4Size   = 0x1C0;   // type-4 (graphic highlight) object size (0x1B0 + 0x10 header growth; assumed)
 inline constexpr std::uint64_t kT4Gfx    = 0x84;    // type-4 -> graphic id (int)   (0x74 through 949-5; live-verified on 950-1)
 inline constexpr std::uint64_t kT4PosE   = 0x88;    // type-4 -> fine east  (int32) (0x78 through 949-5)

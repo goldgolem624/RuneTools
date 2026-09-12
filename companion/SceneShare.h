@@ -20,12 +20,15 @@ inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
     out[i] = 0;
 }
 
+inline constexpr std::int16_t kHiddenBit = 0x100;   // Object::kind flag: loc hidden (sub+0xF8 bit 16),
+                                                     // how a depleted tree or a stump is switched off
+
 struct Object {
     std::int32_t config_id;   // loc config id (resolve name/actions from the cache)
     std::int32_t x;           // world tile X
     std::int32_t y;           // world tile Y
     std::int16_t plane;       // 0..3
-    std::int16_t kind;        // sub type byte (0 / 12 = scenery)
+    std::int16_t kind;        // sub type byte (0 / 12 = scenery) | kHiddenBit when the game hides it
     float        bmin[3];     // AABB min, world-fine (east, north, up)
     float        bmax[3];     // AABB max; bmax.x <= bmin.x = no valid box
 };

@@ -18,6 +18,7 @@
     { id: 'xptracker',label: 'XP',           cat: 'Progression', icon: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M7 15l3.5-4 3 2.5L18 8"/><path d="M18 8h-3.5M18 8v3.5"/>' },
     { id: 'xpmeter',  label: 'XP Meter',     cat: 'Progression', hidden: true, icon: '<path d="M4 17h16"/><path d="M6 17v-4"/><path d="M11 17V9"/><path d="M16 17v-6"/>' },
     { id: 'chatlog',  label: 'Chat Log',     cat: 'Utility', icon: '<path d="M4 5h16v10H9l-4 4V15H4z"/><path d="M8 9h8M8 12h5"/>' },
+    { id: 'combatlog', label: 'Combat Log',  cat: 'Combat',  icon: '<path d="M4 20l6-6M14 4l6 6-9 9-6-6z"/><path d="M4 4h5M4 8h3M4 12h2"/>' },
     { id: 'inventory', label: 'Inventory', cat: 'Items', icon: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>' },
     { id: 'equipment', label: 'Equipment', cat: 'Items', icon: '<path d="M8 4l4 2 4-2 3 2.5-3 3v9.5H8V9.5l-3-3z"/>' },
     { id: 'bank',      label: 'Bank',      cat: 'Items', icon: '<path d="M3 10l9-6 9 6M4 10h16M6 10v8M12 10v8M18 10v8M3 20h18"/>' },

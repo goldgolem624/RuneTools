@@ -13,6 +13,7 @@
     menuswap: { w: 540, h: 600, minW: 420 },
     netprobe: { w: 580, h: 620, minW: 440 },
     chatlog: { w: 520, h: 400 },
+    combatlog: { w: 640, h: 460, minW: 480 },
     scene: { w: 470, h: 560, minW: 360 },
     alerts: { w: 470, h: 600 },
     ticks: { w: 360, h: 330, minH: 200 },

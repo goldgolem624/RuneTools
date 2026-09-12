@@ -818,6 +818,7 @@ void Publish(Share* sh, bool wantDiag) {
             o.x = tx; o.y = ty;
             o.plane = (std::int16_t)R32(sub + kFloor);
             o.kind = (std::int16_t)t;
+            if (R32(sub + rtx::scn::kLocFlags) & rtx::scn::kLocHidden) o.kind |= rtx::scene::kHiddenBit;   // depleted tree / dormant stump
             ReadBox(ep, o);
             if ((R32(sub + kModelLo) | R32(sub + kModelMid) | R32(sub + kModelHi)) == 0) {
                 o.bmin[0] = o.bmin[1] = o.bmin[2] = 0.f;

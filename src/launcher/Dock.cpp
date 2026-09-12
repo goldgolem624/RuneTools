@@ -129,6 +129,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "panel_geprices.js",   // GE Prices (server-relayed real-time prices)
         "panel_mysteries.js",  // Archaeology mysteries (requirements + focused mystery)
         "panel_chatlog.js",
+        "panel_combatlog.js",  // Combat Log (hitsplat stream from the reader's combat log)
         "panel_achievements.js",
         "panel_areatasks.js",   // shared task scaffold (also used by panel_gimtasks.js)
         "panel_gimtasks.js",

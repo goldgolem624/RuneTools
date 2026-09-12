@@ -147,6 +147,10 @@ await rtx.plugin.state.info();
 //    tile the game currently holds for the actor, read from its movement route; while moving it
 //    leads x/y by up to two tiles, and when stationary it equals x/y. The Overlay tab's "True tile"
 //    toggle draws the same value in the game view for debugging.
+//    Also present: splats (hitsplats landing on you, same shape as scene npcs[].splats), bar (your
+//    first head bar fill 0..255 or -1), world (current world id), mouse { x, y, buttons } in client
+//    pixels with buttons bits 1 left 2 right 4 middle, keys { shift, alt, ctrl }, and
+//    loading { pct, screen } (map load percent and whether the loading screen is up).
 //    region = (x>>6)<<8 | (y>>6); lx/ly = local tile within the region (0..63) --
 //    the instance-stable coordinate the tile-marker feature stores by.
 
@@ -166,18 +170,84 @@ await rtx.plugin.state.baitBox();     // Anachronia Big Game Hunter bait box (co
 //    Same shape as bank(): live while that storage UI is open, otherwise the
 //    per-character disk cache (open:false).
 
+await rtx.plugin.state.social();
+// -> { in:true, world:70, friendsLoaded:true, online:3, friends:[ { name, world }, ... ] }
+//    world 0 on a friend means offline. Names are display names.
+
+await rtx.plugin.state.walkable(3221, 3218, 0, 2);
+// -> { x, y, plane, r, rows:[ "00100", "00100", ... ] }   the (2r+1)^2 tiles around x,y, r 1..8;
+//    rows[i] is world row y-r+i, character j is column x-r+j; '0' walkable, '1' blocked (scenery
+//    footprint, wall tile or void), from the map cache's collision data. Instance tiles are unknown.
+
 await rtx.plugin.state.groundItems();
 // -> [ { id, x, y, plane }, ... ]   dropped item stacks lying on the ground
 //    id = item id (resolve the name with cache.itemInfo); x/y are world tile coords.
 //    Empty [] when there are none / you're not in-game.
 
+await rtx.plugin.state.combatLog(since, max);   // since = last seq you have seen (0 = from the start), max <= 2000
+// -> { seq, gap, events:[ { seq, t, type, uid, id, name, x, y, plane, hitmark, kind, other, value,
+//                            cycle, dur, lp, lpMax }, ... ] }
+//    The combat log: every hitsplat the game drew on any actor near you, one event each, in the
+//    order the hits landed. The host polls the actors' hitsplat rings five times a second and logs
+//    each record exactly once, so you never need to dedupe. Keep the returned seq and pass it back
+//    as since on the next call to get only new events; gap is true when you asked for events the
+//    ring has already dropped (it keeps the last 4096).
+//      seq      monotonic id per client session
+//      t        wall clock, ms since the Unix epoch, when the host first saw the record
+//      type     "npc", "player" or "self" (the local player: a hit taken)
+//      uid/id   actor uid; id is the NPC config id (-1 for players); name as shown in game
+//      x/y/plane the actor's tile when the hit was read
+//      hitmark  raw hitmark id; kind names it ("melee", "ranged crit", "necromancy", "typeless",
+//               "poison", "heal", "absorbed", "blocked", "deflect", "text", ...); other is true for
+//               the game's "Other Hitsplats" set, meaning a hit between other players and NPCs.
+//               Hits involving you (dealt or taken) always use the personal set (other false).
+//               Heals are the exception: a heal on any player uses 143 (other false), so read
+//               other on damage kinds only. A heal of 0 is drawn on you at the first hit of a
+//               burst you start; ignore it.
+//      value    damage (or heal amount); 0 for blocked/absorbed
+//      cycle/dur the record's start on the actor's 20 ms cycle clock and its lifetime (60)
+//      lp/lpMax the actor's life points at the poll: NPCs from the actor, "self" from your own
+//               varps (13537 / 13538); -1 for other players, whose life points are not sent
+//    DPM: sum value over events with type "npc" or "player", other false and a damage kind; damage
+//    taken is type "self". The DPM Meter sample plugin is built on this call; the client's own
+//    Combat Log panel (Combat category) is a live searchable, filterable viewer of the same stream.
+
 await rtx.plugin.state.scene(range);  // range = 1..64 tiles (clamped)
 // -> { players:[..], npcs:[..], objects:[..], specials:[..], walk, ... }
 //    Entities are grouped by kind, NOT a single flat list:
-//      npcs:    { id, uid, x, y, trueTile:{x,y}, plane, combat, anim, face, size, name, actions[] }
-//      players: { uid, x, y, trueTile:{x,y}, plane, combat, anim, self, name }
+//      npcs:    { id, uid, x, y, trueTile:{x,y}, plane, combat, anim, face, size, name, actions[],
+//                 lp, lpMax, target, bar, splats[] }
+//      players: { uid, x, y, trueTile:{x,y}, plane, combat, anim, self, name, bar, splats[] }
+//      projectiles: [ { sx, sy, dx, dy, fsx, fsy, fdx, fdy } ]   in flight this frame; tiles + fine units
+//      effects:     [ { gfx, x, y, fx, fy } ]                     world spot animations this frame
 //    x/y is the visible (interpolated) tile; trueTile is the tile the game holds for the actor,
 //    from its movement route (same rule as state.info()).
+//    lp/lpMax are the NPC's current and max life points (-1 unknown); target is the player index
+//    the NPC is attacking (-1 none); bar is the fill 0..255 of the actor's first head bar (-1 none),
+//    which is a health bar on most NPCs and a lifetime timer on helper NPCs such as the Eternal
+//    magic tree's (config 31500). splats are the hitsplat records the game is drawing on the actor:
+//    [hitmark, value, startCycle, durationCycles]. A record lives durationCycles x 20 ms (usually
+//    1.2 s) and is reused only after it expires, but an expired record stays in memory until then, so
+//    the last hits of a fight linger for as long as the actor exists. Poll at 4 Hz or faster and
+//    count a record only when it was absent from that actor's list on your previous poll (key on
+//    ring slot, startCycle, value, hitmark); never forget records on a timer or you will count them
+//    twice. Hitmark ids resolve through cache config archive 46, and the id alone says whose hit it
+//    is: the game draws every hit that involves you with its "Personal Hitsplats" set and every
+//    hit between other players and NPCs with its "Other Hitsplats" set (the one players can hide).
+//      personal: 133 melee, 134 melee critical, 136 ranged, 137 ranged critical, 139 magic,
+//                140 magic critical, 477 necromancy, 478 necromancy critical, 480 conjured spirit,
+//                481 conjured spirit critical, 144 typeless, 142 poison, 145 cannon, 146 and 238
+//                deflect (reflected damage), 248 split soul, 346 blight, 416 pierced shield,
+//                435 shadow pool, 143 heal, 148 absorbed (crystal shield), 482 blocked (value 0)
+//      other:    150 melee, 151 melee critical, 153 ranged, 154 ranged critical, 156 magic,
+//                157 magic critical, 487 necromancy, 488 necromancy critical, 490 conjured spirit,
+//                491 conjured spirit critical, 161 typeless, 159 poison, 162 cannon, 352 deflect,
+//                353 split soul, 351 blight, 415 pierced shield, 160 heal, 165 absorbed,
+//                163 blocked, 492 hidden zero splat
+//    Text marks (Dodged 141, Immune 347, Executed 407, Perfect cut! 48, ...) are not damage. For
+//    DPS count personal damage marks on the actor you hit and ignore heals and zero marks; personal
+//    marks on your own player are damage taken. state.combatLog() delivers all of this pre-classified.
+//    A projectile whose dx/dy is your tile is an incoming ranged or magic attack.
 //      objects: { id, x, y, plane, type, dist, name, actions[] }
 //    `anim` is the live animation id (-1 = none), which is how attack telegraphs are
 //    read (see the Jad Prayer Helper plugin). `walk` is the click-to-walk destination
@@ -460,6 +530,8 @@ rtx.plugin.overlay.guideTiles([{ x:2474, y:3430, x2:2474, y2:3435, plane:0, labe
 // color keeping the north-west half -- the same rendering as two-tone user tile markers.
 // (Two-tone applies to single tiles; an area rect uses color alone.)
 rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"swap", color:"#57C6E0", color2:"#C07AE0" }]);
+rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"stand", merge:true },
+                               { x:3222, y:3218, plane:0, label:"stand", merge:true }]);   // same label + merge: one zone, one label
 
 // Open the in-client wiki browser on a search term ('' = the wiki home page). The pane is
 // hard-locked to runescape.wiki: a plugin chooses the page, never the site.

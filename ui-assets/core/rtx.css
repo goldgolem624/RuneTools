@@ -1829,6 +1829,27 @@
   .chat-msg .chat-img { height: 1.05em; width: auto; vertical-align: -0.18em; margin: 0 2px 0 1px; image-rendering: auto; }
   .chat-empty { color: var(--text-dim); font-size: 12px; padding: 10px 4px; }
   .chat-count { font-size: 11px; color: var(--text-dim); margin-bottom: 6px; }
+  .cl-line { display: flex; gap: 8px; padding: 2px 7px; border-radius: 5px; font-size: 12px; line-height: 1.45; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cl-line:nth-child(even) { background: rgba(255,255,255,0.018); }
+  .cl-line:hover { background: var(--bg-elev); }
+  .cl-head { color: var(--text-mute); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border, rgba(255,255,255,0.08)); margin-bottom: 2px; }
+  .cl-head:hover { background: transparent; }
+  .cl-ts { flex: 0 0 82px; color: var(--text-mute); font-size: 11px; }
+  .cl-actor { flex: 1 1 190px; min-width: 0; white-space: normal; color: var(--text); }
+  .cl-dir { font-weight: 700; }
+  .cl-own .cl-dir { color: #5fd07a; }
+  .cl-self .cl-dir { color: #ff6b6b; }
+  .cl-heal .cl-dir { color: #cf6fd0; }
+  .cl-zero .cl-dir, .cl-other .cl-dir { color: var(--text-mute); font-weight: 600; }
+  .cl-kind { flex: 1 1 150px; min-width: 0; color: var(--text-dim); white-space: normal; }
+  .cl-kind .cl-oth { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-mute); margin-left: 5px; }
+  .cl-val { flex: 0 0 62px; text-align: right; font-weight: 600; }
+  .cl-lp { flex: 0 0 110px; text-align: right; color: var(--text-dim); }
+  .cl-mark { flex: 0 0 38px; text-align: right; color: var(--text-mute); font-size: 11px; }
+  .cl-own .cl-val { color: #5fd07a; }
+  .cl-self .cl-val { color: #ff6b6b; }
+  .cl-heal .cl-val { color: #cf6fd0; }
+  .cl-zero .cl-val, .cl-other .cl-val, .cl-other .cl-actor { color: var(--text-mute); }
   .ach-desc { flex: 1 1 0; color: var(--text-dim); font-size: 10px; min-width: 0; overflow: hidden;
               text-overflow: ellipsis; white-space: nowrap; align-self: center; }
   .ach-cm { flex: 0 0 auto; font-size: 9px; font-weight: 800; letter-spacing: .04em;

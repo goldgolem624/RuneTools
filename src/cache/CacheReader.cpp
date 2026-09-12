@@ -3866,6 +3866,15 @@ std::vector<std::uint8_t> SpriteRgba(int sprite_id, int& w, int& h) {
     return SpriteRawRgba(*idx, sprite_id, w, h);
 }
 
+std::vector<std::uint8_t> SpritePng(int sprite_id, int frame) {
+    if (sprite_id < 0 || frame < 0) return {};
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = g_store ? g_store->Get(kIndexSprites) : nullptr;
+    if (!idx) return {};
+    return SpriteAsPngScaled(*idx, sprite_id, 4096, frame);
+}
+
 std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();

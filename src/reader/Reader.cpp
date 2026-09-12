@@ -1,5 +1,6 @@
 #include "Reader.h"
 #include "BankCache.h"
+#include "Hitmarks.h"
 #include "../cache/CacheReader.h"
 #include "../shared/Log.h"
 #include "../../companion/SceneOffsets.h" // client memory offsets shared with the companion
@@ -2814,6 +2815,7 @@ namespace {
 
 struct RuntimeObj {
     int config_id, x, y, plane, kind;
+    bool hidden;              // the game has switched the loc off (depleted tree, dormant stump)
     float bmin[3], bmax[3];   // live model world AABB (east,north,up); bmax.x==bmin.x = none
 };
 
@@ -2836,7 +2838,8 @@ bool ReadRuntimeObjects(std::uint32_t pid, std::vector<RuntimeObj>& out) {
             out.clear(); out.reserve(cnt);
             for (std::uint32_t i = 0; i < cnt; ++i) {
                 const auto& o = sh->objects[i];
-                RuntimeObj r{ o.config_id, o.x, o.y, o.plane, o.kind,
+                RuntimeObj r{ o.config_id, o.x, o.y, o.plane, o.kind & 0xFF,
+                              (o.kind & rtx::scene::kHiddenBit) != 0,
                               { o.bmin[0], o.bmin[1], o.bmin[2] },
                               { o.bmax[0], o.bmax[1], o.bmax[2] } };
                 out.push_back(r);
@@ -3302,6 +3305,236 @@ static bool actor_true_tile(HANDLE h, std::uint64_t sec, int& tx, int& ty) {
     return true;
 }
 
+// Overhead object of an actor: hitsplat ring and the first head bar. splats = JSON array of
+// [hitmark, value, startCycle, durationCycles] for records that hold a hit (an expired record stays
+// until reused, so consumers key on start+value); bar = fill 0..255 of head-bar slot 0, -1 when none.
+static void actor_overhead_json(HANDLE h, std::uint64_t sec, std::string& splats, int& bar) {
+    splats = "[]"; bar = -1;
+    auto hb = rpm<std::uint64_t>(h, sec + rtx::scn::kOverhead);
+    if (!hb || *hb <= 0x10000 || *hb > 0x00007FFFFFFFFFFFull) return;
+    auto ring = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvRing);
+    if (ring && *ring > 0x10000 && *ring < 0x00007FFFFFFFFFFFull) {
+        std::int32_t rec[6 * 6];
+        if (rpm_bytes(h, *ring, rec, sizeof(rec))) {
+            std::string out = "["; bool first = true;
+            for (int i = 0; i < 6; ++i) {
+                const std::int32_t* r = rec + i * 6;
+                if (r[0] < 0 || r[1] < 0 || r[2] <= 0 || r[5] <= 0 || r[0] > 100000 || r[1] > 100000000) continue;
+                char b[96];
+                std::snprintf(b, sizeof(b), "%s[%d,%d,%d,%d]", first ? "" : ",", r[0], r[1], r[2], r[5]);
+                out += b; first = false;
+            }
+            out += "]"; splats = out;
+        }
+    }
+    auto slots = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvSlots);
+    if (slots && *slots > 0x10000 && *slots < 0x00007FFFFFFFFFFFull) {
+        auto fill = rpm<std::int32_t>(h, *slots + rtx::scn::kBarFill);
+        auto stamp = rpm<std::int32_t>(h, *slots + rtx::scn::kBarStamp);
+        if (fill && stamp && *fill >= 0 && *fill <= 255 && *stamp > 0) bar = *fill;
+    }
+}
+
+// Local player actor through the player registry: [[MD+0x19950]+0x10][idx]+0x38, idx = local uid.
+// Validated by type and uid; 0 when the chain does not resolve (callers fall back to the scan).
+static std::uint64_t local_player_sec_fast(HANDLE h, std::uint64_t root, int local_uid) {
+    if (root <= 0x10000 || local_uid < 0 || local_uid >= 4096) return 0;
+    auto reg = rpm<std::uint64_t>(h, root + 0x19950);
+    if (!reg || *reg <= 0x10000) return 0;
+    auto tbl = rpm<std::uint64_t>(h, *reg + 0x10);
+    if (!tbl || *tbl <= 0x10000) return 0;
+    auto ent = rpm<std::uint64_t>(h, *tbl + (std::uint64_t)local_uid * 8);
+    if (!ent || *ent <= 0x10000) return 0;
+    auto sec = rpm<std::uint64_t>(h, *ent + 0x38);
+    if (!sec || *sec <= 0x10000 || *sec > 0x00007FFFFFFFFFFFull) return 0;
+    if (rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff) != 2) return 0;
+    if (rpm<std::int32_t>(h, *sec + rtx::scn::kUid).value_or(-1) != local_uid) return 0;
+    return *sec;
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Combat log. Every hitsplat the game draws on an actor in the scene becomes one event in an
+// append-only stream that developers read with state.combatLog(sinceSeq). The launcher polls
+// CombatLogPoll at 5 Hz; a record lives 60 cycles (1.2 s) in the actor's ring, so no hit is missed.
+// Records are keyed on (ring slot, start cycle, value, hitmark) per actor and compared with the
+// previous poll, which logs each hit exactly once even though expired records linger in the ring
+// until the game overwrites them.
+namespace {
+struct CombatEvent {
+    std::uint64_t seq; long long t;          // t = wall clock, ms since the Unix epoch
+    int type;                                // 1 NPC, 2 player
+    bool self;                               // the local player (a hit taken)
+    int uid, id;                             // actor uid; NPC config id (-1 for players)
+    std::string name;
+    int x, y, plane;
+    int hitmark, value, cycle, dur;          // raw ring record
+    int lp, lpMax;                           // NPC life points at the poll (-1 unknown)
+};
+struct CombatLogState {
+    std::uint64_t seq = 0;
+    std::deque<CombatEvent> events;
+    std::unordered_map<int, std::vector<std::uint64_t>> present;   // uid -> record keys seen last poll
+    long long polls = 0;
+};
+std::mutex g_combat_mu;
+std::unordered_map<std::uint32_t, CombatLogState> g_combat;
+constexpr std::size_t kCombatLogMax = 4096;
+}  // namespace
+
+void CombatLogPoll(std::uint32_t pid) {
+    HANDLE h = nullptr; std::uint64_t mgva = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto it = g_states.find((DWORD)pid);
+        if (it != g_states.end() && it->second.proc && it->second.main_global_va &&
+            DuplicateHandle(GetCurrentProcess(), it->second.proc, GetCurrentProcess(),
+                            &h, 0, FALSE, DUPLICATE_SAME_ACCESS))
+            mgva = it->second.main_global_va;
+    }
+    struct DupGuard { HANDLE h; ~DupGuard() { if (h) CloseHandle(h); } } _dup{ h };
+    if (!h || !mgva) return;
+    auto deref = [&](std::optional<std::uint64_t> p, std::uint64_t off) -> std::optional<std::uint64_t> {
+        if (!p || *p <= 0x10000) return std::nullopt;
+        return rpm<std::uint64_t>(h, *p + off);
+    };
+    auto root = rpm<std::uint64_t>(h, mgva);
+    if (!root || *root <= 0x10000) return;
+    auto pdata = deref(root, rtx::scn::kPlayerData);
+    int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    auto cont = deref(root, rtx::scn::kContainer);
+    auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
+    auto arr  = deref(cont, rtx::scn::kEntryArr);
+    std::optional<std::uint64_t> wv, worker, vb, ve;
+    if (idx && *idx >= 0 && arr && *arr > 0x10000) {
+        wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + rtx::scn::kEntryWv);
+        if (wv && *wv > 0x10000) worker = scene_worker(h, pid, *wv, nullptr);
+        vb = deref(worker, rtx::scn::kVecBegin);
+        ve = deref(worker, rtx::scn::kVecEnd);
+    }
+    if (!(vb && ve && *vb > 0x10000 && *ve >= *vb)) return;
+
+    std::unordered_map<int, std::vector<std::uint64_t>> prev;
+    { std::lock_guard<std::mutex> lk(g_combat_mu); prev = g_combat[pid].present; }
+    using namespace std::chrono;
+    const long long now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    std::unordered_map<int, std::vector<std::uint64_t>> cur;
+    std::vector<CombatEvent> fresh;
+    std::uint64_t n = (*ve - *vb) / 8;
+    if (n > 20000) n = 20000;
+    // The hit record names no source. The personal/other set of the hitmark is the only ownership
+    // the game gives, so nothing here guesses an attacker from who was targeting whom.
+    for (std::uint64_t i = 0; i < n; ++i) {
+        auto ep = rpm<std::uint64_t>(h, *vb + i * 8);
+        if (!ep || *ep <= 0x10000) continue;
+        auto sec = rpm<std::uint64_t>(h, *ep + rtx::scn::kSecPtr);
+        if (!sec || *sec <= 0x10000) continue;
+        int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
+        if (type != 1 && type != 2) continue;
+        // Every actor is tracked from the poll it is first seen, ring or no ring: an NPC only gets
+        // its overhead object the first time it is hit, and those first hits (a killing blow that
+        // spreads onto untouched enemies, a fresh spawn you open on) must not look like a stale ring.
+        int uid = rpm<std::int32_t>(h, *sec + rtx::scn::kUid).value_or(0);
+        std::vector<std::uint64_t>& keys = cur[uid];
+        const std::vector<std::uint64_t>* old = nullptr;
+        { auto pit = prev.find(uid); if (pit != prev.end()) old = &pit->second; }
+        auto hb = rpm<std::uint64_t>(h, *sec + rtx::scn::kOverhead);
+        if (!hb || *hb <= 0x10000 || *hb > 0x00007FFFFFFFFFFFull) continue;
+        auto ring = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvRing);
+        if (!ring || *ring <= 0x10000 || *ring > 0x00007FFFFFFFFFFFull) continue;
+        std::int32_t rec[6 * 6];
+        if (!rpm_bytes(h, *ring, rec, sizeof(rec))) continue;
+        // An actor seen for the first time may carry old records; on NPCs the actor's own cycle
+        // clock (+0x1330) tells which records are fresh (started within the last 300 ms).
+        int freshAfter = -1;
+        if (!old && type == 1) {
+            int clk = rpm<std::int32_t>(h, *sec + 0x1330).value_or(0);
+            if (clk > 15) freshAfter = clk - 15;
+        }
+        bool actorRead = false; CombatEvent base{};
+        for (int s = 0; s < 6; ++s) {
+            const std::int32_t* r = rec + s * 6;
+            if (r[0] < 0 || r[1] < 0 || r[2] <= 0 || r[5] <= 0 || r[0] > 100000 || r[1] > 100000000) continue;
+            std::uint64_t key = ((std::uint64_t)(std::uint32_t)r[2] << 32) ^ (std::uint64_t)(std::uint32_t)r[1]
+                              ^ ((std::uint64_t)(std::uint32_t)r[0] << 52) ^ ((std::uint64_t)s << 60);
+            keys.push_back(key);
+            if (old && std::find(old->begin(), old->end(), key) != old->end()) continue;   // seen before
+            if (!old && (freshAfter < 0 || r[2] < freshAfter)) continue;   // first sight: only records that just started
+            if (!actorRead) {
+                actorRead = true;
+                base.type = type; base.uid = uid; base.self = (type == 2 && uid == local_uid);
+                auto fx = rpm<float>(h, *sec + rtx::scn::kPosX), fy = rpm<float>(h, *sec + rtx::scn::kPosY);
+                base.x = fx ? (int)(*fx / 512.f) : 0; base.y = fy ? (int)(*fy / 512.f) : 0;
+                base.plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
+                char nm[40] = {0};
+                rpm_bytes(h, *sec + rtx::scn::kName, nm, sizeof(nm) - 1);
+                for (int j = 0; j < (int)sizeof(nm) && nm[j]; ++j) {
+                    unsigned char c = (unsigned char)nm[j];
+                    if (c >= 0x20 && c <= 0x7e) base.name.push_back((char)c);
+                    else if (c == 0xA0) base.name.push_back(' ');
+                }
+                base.id = -1; base.lp = -1; base.lpMax = -1;
+                if (base.self) {                  // your own life points: varps 13537 current / 13538 max
+                    int cur = read_varp(h, *root, 13537), mx = read_varp(h, *root, 13538);
+                    if (mx > 0 && mx < 100000 && cur >= 0) { base.lp = cur; base.lpMax = mx; }
+                }
+                if (type == 1) {
+                    int cfg = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
+                    auto meta = resolve_npc(h, *root, cfg);
+                    base.id = meta.id >= 0 ? meta.id : cfg;
+                    if (!meta.name.empty()) base.name = meta.name;
+                    int lp = rpm<std::int32_t>(h, *sec + rtx::scn::kLpCur).value_or(-1);
+                    int lpMax = rpm<std::int32_t>(h, *sec + rtx::scn::kLpMax).value_or(-1);
+                    base.lp = (lp < 0 || lp > 1000000000) ? -1 : lp;
+                    base.lpMax = (lpMax <= 0 || lpMax > 1000000000) ? -1 : lpMax;
+                }
+            }
+            CombatEvent ev = base;
+            ev.t = now; ev.hitmark = r[0]; ev.value = r[1]; ev.cycle = r[2]; ev.dur = r[5];
+            fresh.push_back(std::move(ev));
+        }
+    }
+    // Oldest start cycle first within a poll, so a burst reads in the order it landed.
+    std::stable_sort(fresh.begin(), fresh.end(), [](const CombatEvent& a, const CombatEvent& b) { return a.cycle < b.cycle; });
+    std::lock_guard<std::mutex> lk(g_combat_mu);
+    CombatLogState& st = g_combat[pid];
+    st.present = std::move(cur);
+    ++st.polls;
+    for (auto& ev : fresh) {
+        ev.seq = ++st.seq;
+        st.events.push_back(std::move(ev));
+    }
+    while (st.events.size() > kCombatLogMax) st.events.pop_front();
+}
+
+std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events) {
+    if (max_events < 1) max_events = 1;
+    if (max_events > 2000) max_events = 2000;
+    std::lock_guard<std::mutex> lk(g_combat_mu);
+    auto it = g_combat.find(pid);
+    if (it == g_combat.end()) return "{\"seq\":0,\"gap\":false,\"events\":[]}";
+    const CombatLogState& st = it->second;
+    bool gap = since != 0 && !st.events.empty() && since + 1 < st.events.front().seq;
+    std::string out = "{\"seq\":" + std::to_string(st.seq) + ",\"gap\":" + (gap ? "true" : "false") + ",\"events\":[";
+    int c = 0;
+    for (const auto& ev : st.events) {
+        if (ev.seq <= since) continue;
+        if (c >= max_events) break;
+        const auto* hm = rtx::hitmarks::Find(ev.hitmark);
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "%s{\"seq\":%llu,\"t\":%lld,\"type\":\"%s\",\"uid\":%d,\"id\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,"
+            "\"hitmark\":%d,\"kind\":\"%s\",\"other\":%s,\"value\":%d,\"cycle\":%d,\"dur\":%d,\"lp\":%d,\"lpMax\":%d,\"name\":\"",
+            c ? "," : "", (unsigned long long)ev.seq, ev.t, ev.self ? "self" : ev.type == 1 ? "npc" : "player",
+            ev.uid, ev.id, ev.x, ev.y, ev.plane, ev.hitmark, hm ? hm->kind : "unknown", (hm && hm->other) ? "true" : "false",
+            ev.value, ev.cycle, ev.dur, ev.lp, ev.lpMax);
+        out += buf; out += json_escape(ev.name); out += "\"}";
+        ++c;
+    }
+    out += "]}";
+    return out;
+}
+
 std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kContainer = rtx::scn::kContainer;   // all from SceneOffsets.h --
     constexpr std::uint64_t kActiveIdx = rtx::scn::kActiveIdx;   // shared with the companion
@@ -3320,7 +3553,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kPlayerData = rtx::scn::kPlayerData;
     constexpr std::uint64_t kLocalUid   = rtx::scn::kLocalUid;
 
-    std::string players, npcs, specials;
+    std::string players, npcs, specials, projectiles, effects;
+    int prc = 0, efc = 0;
     std::unordered_set<int> seenSpecialUids;
     std::unordered_set<std::uint64_t> seenSpecialTiles;
     auto tileKey = [](int t, int x, int y, int p) -> std::uint64_t {
@@ -3380,6 +3614,12 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     int sx4 = ex ? (int)(*ex / 512.f) : 0;
                     int sy4 = ey ? (int)(*ey / 512.f) : 0;
                     ++vt4; vgfx4 = gfx;
+                    if (sx4 > 0 && sy4 > 0 && efc < 64) {    // every world spot animation, by gfx id
+                        char eb[128];
+                        std::snprintf(eb, sizeof(eb), "%s{\"gfx\":%d,\"x\":%d,\"y\":%d,\"fx\":%d,\"fy\":%d}",
+                                      efc ? "," : "", gfx, sx4, sy4, (int)*ex, (int)*ey);
+                        effects += eb; ++efc;
+                    }
                     if (sx4 > 0 && sy4 > 0) {
                         int uid4 = rpm<std::int32_t>(h, *sec + 0x98).value_or(0);
                         int pl4  = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);   // plane (sec+0x40)
@@ -3422,6 +3662,17 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     }
                     continue;
                 }
+                if (type == 5 && prc < 64) {                  // projectile: source and target tiles
+                    auto sx = rpm<std::int32_t>(h, *sec + rtx::scn::kProjSrcX), sy = rpm<std::int32_t>(h, *sec + rtx::scn::kProjSrcY);
+                    auto dx = rpm<std::int32_t>(h, *sec + rtx::scn::kProjDstX), dy = rpm<std::int32_t>(h, *sec + rtx::scn::kProjDstY);
+                    if (sx && sy && dx && dy && *sx > 0 && *sy > 0 && *dx > 0 && *dy > 0 && *sx < 8388608 && *dx < 8388608) {
+                        char pb[160];
+                        std::snprintf(pb, sizeof(pb), "%s{\"sx\":%d,\"sy\":%d,\"dx\":%d,\"dy\":%d,\"fsx\":%d,\"fsy\":%d,\"fdx\":%d,\"fdy\":%d}",
+                                      prc ? "," : "", *sx / 512, *sy / 512, *dx / 512, *dy / 512, *sx, *sy, *dx, *dy);
+                        projectiles += pb; ++prc;
+                    }
+                    continue;
+                }
                 if (type != 1 && type != 2) continue;        // players + NPCs only
 
                 auto fx = rpm<float>(h, *sec + kPosX);
@@ -3431,6 +3682,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 if (tx <= 0 || ty <= 0) continue;
                 int ttx = tx, tty = ty;                       // server tile; visible tile when stationary
                 actor_true_tile(h, *sec, ttx, tty);
+                std::string ovSplats; int ovBar = -1;         // hitsplat ring + head bar (empty / -1 when none)
+                actor_overhead_json(h, *sec, ovSplats, ovBar);
 
                 char nm[40] = {0};
                 rpm_bytes(h, *sec + kName, nm, sizeof(nm) - 1);
@@ -3456,7 +3709,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     std::snprintf(buf, sizeof(buf),
                         "{\"uid\":%d,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"combat\":%d,\"anim\":%d,\"self\":%s,\"name\":\"",
                         uid, tx, ty, ttx, tty, plane, combat, anim, self ? "true" : "false");
-                    players += buf; players += json_escape(name); players += "\"}";
+                    players += buf; players += json_escape(name);
+                    players += "\",\"bar\":" + std::to_string(ovBar) + ",\"splats\":" + ovSplats + "}";
                     ++pc;
                 } else {                                      // NPC
                     int cfg = rpm<std::int32_t>(h, *sec + kConfig).value_or(-1);
@@ -3464,7 +3718,10 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     bool morphHidden = false;
                     auto meta = resolve_npc(h, root.value_or(0), cfg, &morphHidden);
                     std::string npcName = !meta.name.empty() ? meta.name : (morphHidden ? std::string() : name);
-                    if (npcName.empty()) continue;            // hidden morph variant / nameless decoration
+                    // Hidden morph variants and nameless decorations are dropped, except a nameless NPC
+                    // that carries a head bar: the game hangs object timers on those (the Eternal magic
+                    // tree helper, config 31500), and plugins match them by id.
+                    if (npcName.empty() && ovBar < 0) continue;
                     std::string acts;
                     for (const auto& a : meta.actions) {
                         if (!acts.empty()) acts.push_back(',');
@@ -3492,7 +3749,16 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         "{\"id\":%d,\"uid\":%d,\"x\":%d,\"y\":%d,\"trueTile\":{\"x\":%d,\"y\":%d},\"plane\":%d,\"combat\":%d,\"anim\":%d,\"face\":%d,\"size\":%d,\"name\":\"",
                         reportId, uid, tx, ty, ttx, tty, npcPlane, meta.combat_level, anim, face, meta.size);
                     npcs += buf; npcs += json_escape(npcName);
-                    npcs += "\",\"actions\":["; npcs += acts; npcs += "]}";
+                    int lp = rpm<std::int32_t>(h, *sec + rtx::scn::kLpCur).value_or(-1);
+                    int lpMax = rpm<std::int32_t>(h, *sec + rtx::scn::kLpMax).value_or(-1);
+                    if (lp < 0 || lp > 1000000000) lp = -1;
+                    if (lpMax <= 0 || lpMax > 1000000000) lpMax = -1;
+                    int npcTarget = rpm<std::int32_t>(h, *sec + rtx::scn::kNpcTarget).value_or(-1);
+                    if (npcTarget < -1 || npcTarget >= 4096) npcTarget = -1;
+                    npcs += "\",\"actions\":["; npcs += acts;
+                    npcs += "],\"lp\":" + std::to_string(lp) + ",\"lpMax\":" + std::to_string(lpMax) +
+                            ",\"target\":" + std::to_string(npcTarget) +
+                            ",\"bar\":" + std::to_string(ovBar) + ",\"splats\":" + ovSplats + "}";
                     ++nc;
                 }
             }
@@ -3550,12 +3816,14 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 auto meta = resolve_loc(rh, rroot, r.config_id);
                 if (meta.name.empty()) continue;
                 long long dk = ((long long)r.config_id << 40) | ((long long)r.x << 20) | (unsigned)r.y;
-                if (!seen.insert(dk).second) continue;       // already have it from the cache (exact tile)
                 int tol = std::max(meta.dim_x, meta.dim_y) - 1; if (tol < 0) tol = 0;
-                bool dup = false;
-                for (const auto& o : objs)
+                bool dup = !seen.insert(dk).second;          // already have it from the cache (exact tile)
+                // The cache lists a loc whether or not the game is showing it; the live entity knows.
+                // A depleted tree (and a stump waiting to be shown) carries the hidden flag, so the
+                // cache entry's vis follows the live flag. Match on id, plane and footprint tolerance.
+                for (auto& o : objs)
                     if (!o.rt && o.id == r.config_id && o.plane == r.plane &&
-                        std::abs(o.x - r.x) <= tol && std::abs(o.y - r.y) <= tol) { dup = true; break; }
+                        std::abs(o.x - r.x) <= tol && std::abs(o.y - r.y) <= tol) { dup = true; if (r.hidden) o.vis = false; }
                 if (dup) continue;
                 std::string acts;
                 for (const auto& a : meta.actions) {
@@ -3574,7 +3842,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     }
                 }
                 objs.push_back({ r.config_id, ox, oy, r.plane, -1, dist, meta.name, std::move(acts), true,
-                                 r.bmax[0] > r.bmin[0],      // degenerate AABB = not rendered
+                                 r.bmax[0] > r.bmin[0] && !r.hidden,   // degenerate AABB or hidden flag = not shown
                                  fw, fh });
             }
         }
@@ -3655,6 +3923,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
 
     return "{\"players\":[" + players + "],\"npcs\":[" + npcs +
            "],\"objects\":[" + objects + "],\"specials\":[" + specials + "],\"walk\":" + walk +
+           ",\"projectiles\":[" + projectiles + "],\"effects\":[" + effects + "]" +
            ",\"sdiag\":" + sdbuf + ",\"vdiag\":" + vdbuf + "}";
 }
 
@@ -6657,8 +6926,8 @@ std::string PlayerInfoJson(std::uint32_t pid) {
     auto worker = (wv && *wv > 0x10000) ? scene_worker(h, pid, *wv, nullptr)
                                         : std::optional<std::uint64_t>{};
     auto vb = deref(worker, kVecBegin), ve = deref(worker, kVecEnd);
-    std::uint64_t psec = 0;
-    if (vb && ve && *vb > 0x10000 && *ve >= *vb) {
+    std::uint64_t psec = (root && *root > 0x10000) ? local_player_sec_fast(h, *root, local_uid) : 0;
+    if (!psec && vb && ve && *vb > 0x10000 && *ve >= *vb) {   // registry miss: scan the scene vector
         std::uint64_t n = (*ve - *vb) / 8; if (n > 20000) n = 20000;
         for (std::uint64_t i = 0; i < n; ++i) {
             auto ep = rpm<std::uint64_t>(h, *vb + i * 8);
@@ -6791,8 +7060,85 @@ std::string PlayerInfoJson(std::uint32_t pid) {
         "\"anim\":%d,\"moving\":%s,\"progress\":%d,\"energy\":%d,\"weight\":%d,\"combat\":%d,"
         "\"fps\":%d,\"interact\":",
         tx, ty, ttx, tty, plane, region, lx, ly, anim, moving ? "true" : "false", progress, energy, weight, combat, fps);
-    std::string out = buf; out += interactJson; out += "}";
+    std::string out = buf; out += interactJson;
+    {   // Overhead (incoming hitsplats + head bar), world id, mouse, modifier keys, map loading.
+        std::string pSplats; int pBar = -1;
+        actor_overhead_json(h, psec, pSplats, pBar);
+        int world = -1, mx = -1, my = -1, mb = 0, mods = 0, loadPct = -1, loadScreen = 0;
+        if (root && *root > 0x10000) {
+            auto w = rpm<std::uint64_t>(h, *root + 0x199B0);
+            auto w2 = (w && *w > 0x10000) ? rpm<std::uint64_t>(h, *w + 0x20) : std::nullopt;
+            if (w2 && *w2 > 0x10000) world = rpm<std::int32_t>(h, *w2 + 8).value_or(-1);
+            auto st = rpm<std::uint64_t>(h, *root + kOffVarcStore);      // 0x19920: the settings/input store
+            if (st && *st > 0x10000) {
+                auto fx2 = rpm<float>(h, *st + 0x46D8), fy2 = rpm<float>(h, *st + 0x46DC);
+                if (fx2 && fy2 && *fx2 >= -1.f && *fx2 < 32768.f && *fy2 >= -1.f && *fy2 < 32768.f) { mx = (int)*fx2; my = (int)*fy2; }
+                std::uint8_t btn[3] = {0, 0, 0};
+                if (rpm_bytes(h, *st + 0x46E8, btn, 3)) mb = (btn[0] ? 1 : 0) | (btn[1] ? 2 : 0) | (btn[2] ? 4 : 0);
+                mods = rpm<std::uint8_t>(h, *st + 0x4F0).value_or(0);
+            }
+            auto cam = rpm<std::uint64_t>(h, *root + 0x19898);
+            if (cam && *cam > 0x10000) {
+                int a = rpm<std::int32_t>(h, *cam + 0x710).value_or(-1), b = rpm<std::int32_t>(h, *cam + 0x714).value_or(-1);
+                if (a >= 0 && b >= 0) loadPct = std::min(a, b);
+                loadScreen = rpm<std::uint8_t>(h, *cam + 0x71C).value_or(0) ? 1 : 0;
+            }
+        }
+        char xb[320];
+        std::snprintf(xb, sizeof(xb),
+            ",\"bar\":%d,\"world\":%d,\"mouse\":{\"x\":%d,\"y\":%d,\"buttons\":%d},"
+            "\"keys\":{\"shift\":%s,\"alt\":%s,\"ctrl\":%s},\"loading\":{\"pct\":%d,\"screen\":%s},\"splats\":",
+            pBar, world, mx, my, mb, (mods & 1) ? "true" : "false", (mods & 2) ? "true" : "false", (mods & 4) ? "true" : "false",
+            loadPct, loadScreen ? "true" : "false");
+        out += xb; out += pSplats;
+    }
+    out += "}";
     return out;
+}
+
+// Friends list and current world (950-1): [MD+0x19970] state i32 +0x10 (2 = loaded), entries
+// +0x18..+0x20 stride 0x78, display name as a NUL-terminated buffer at +0x00, world i32 +0x30 (0 = offline).
+std::string SocialJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "{\"in\":false}";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{\"in\":false}";
+    int world = -1;
+    {
+        auto w = rpm<std::uint64_t>(h, *root + 0x199B0);
+        auto w2 = (w && *w > 0x10000) ? rpm<std::uint64_t>(h, *w + 0x20) : std::nullopt;
+        if (w2 && *w2 > 0x10000) world = rpm<std::int32_t>(h, *w2 + 8).value_or(-1);
+    }
+    std::string friends; int fc = 0, online = 0; bool loaded = false;
+    auto fr = rpm<std::uint64_t>(h, *root + 0x19970);
+    if (fr && *fr > 0x10000) {
+        loaded = rpm<std::int32_t>(h, *fr + 0x10).value_or(0) == 2;
+        auto b0 = rpm<std::uint64_t>(h, *fr + 0x18), e0 = rpm<std::uint64_t>(h, *fr + 0x20);
+        if (loaded && b0 && e0 && *b0 > 0x10000 && *e0 >= *b0 && (*e0 - *b0) / 0x78 <= 600) {
+            const int n = (int)((*e0 - *b0) / 0x78);
+            for (int i = 0; i < n; ++i) {
+                std::uint64_t e = *b0 + (std::uint64_t)i * 0x78;
+                char nm[16] = {0};
+                if (!rpm_bytes(h, e, nm, 15)) continue;
+                std::string name;
+                for (int j = 0; j < 15 && nm[j]; ++j) {
+                    unsigned char c = (unsigned char)nm[j];
+                    if (c >= 0x20 && c <= 0x7e) name.push_back((char)c);
+                    else if (c == 0xA0) name.push_back(' ');
+                }
+                if (name.empty()) continue;
+                int fw = rpm<std::int32_t>(h, e + 0x30).value_or(0);
+                if (fw < 0 || fw > 1000) fw = 0;
+                if (fw > 0) ++online;
+                if (fc) friends.push_back(',');
+                friends += "{\"name\":\"" + json_escape(name) + "\",\"world\":" + std::to_string(fw) + "}";
+                ++fc;
+            }
+        }
+    }
+    return "{\"in\":true,\"world\":" + std::to_string(world) + ",\"friendsLoaded\":" + (loaded ? "true" : "false") +
+           ",\"online\":" + std::to_string(online) + ",\"friends\":[" + friends + "]}";
 }
 
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {

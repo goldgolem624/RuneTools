@@ -40,6 +40,7 @@
     if (!alertCfg) loadAlertCfg();
     if (typeof nameplatesLoaded !== 'undefined' && !nameplatesLoaded) loadNameplateNames();
     if (lastSnap && lastSnap.in_world) fetchChat(false);
+    if (lastSnap && lastSnap.in_world && typeof fetchCombatLog === 'function') fetchCombatLog();
     if ((alertsNeedScene() || (typeof nameplatesActive === 'function' && nameplatesActive())) && !paneVisible('scene')) fetchScene();
     if (alertsNeedInfo() && !paneVisible('info')) fetchInfo();
     if (alertsNeedVitals() && !paneVisible('info') && !paneVisible('player')) fetchPlayerVp();
