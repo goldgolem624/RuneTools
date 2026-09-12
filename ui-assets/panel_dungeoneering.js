@@ -439,17 +439,72 @@ function dungIceSolve(mdl) {
     if (doors & 8) exitTiles[lo + ',' + m] = 'W';
   }
   const wantExit = Object.keys(exitTiles).length > 0;
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const mkStop = (ox, oy, sx, sy, press, exit) => {
+    const dx = Math.sign(sx - ox), dy = Math.sign(sy - oy);
+    const again = slideTo(ox, oy, [dx, dy]);
+    return { k: sx + ',' + sy, press: press,
+             dir: (dy > 0 ? 'N' : dy < 0 ? 'S' : '') + (dx > 0 ? 'E' : dx < 0 ? 'W' : ''),
+             ddx: dx, ddy: dy, padStop: !!pad[sx + ',' + sy],
+             by: again && again.by && again.by !== 'wall' ? again.by : '', exit: !!exit };
+  };
+  // Plain tile search (no pad state): shortest slide sequence from (x, y) to any tile accepted by
+  // goalFn. Used by the greedy tour. Returns the list of [x, y] stops or null.
+  const tileRoute = (sx0, sy0, goalFn) => {
+    const start = sx0 + ',' + sy0;
+    const prev = {}; prev[start] = null;
+    const q = [[sx0, sy0]];
+    for (let qi = 0; qi < q.length; qi++) {
+      const cx = q[qi][0], cy = q[qi][1];
+      for (const dd of DIRS) {
+        const to = slideTo(cx, cy, dd);
+        if (!to) continue;
+        const k = to.x + ',' + to.y;
+        if (prev[k] !== undefined) continue;
+        prev[k] = cx + ',' + cy;
+        if (goalFn(to.x, to.y)) {
+          const out = [];
+          for (let z = k; z && z !== start; z = prev[z]) out.unshift(z.split(',').map(Number));
+          return out;
+        }
+        q.push([to.x, to.y]);
+      }
+    }
+    return null;
+  };
+  const greedy = () => {
+    const stops = []; let x = px, y = py;
+    const left = {}; for (const b of unpressed) left[b.x + ',' + b.y] = 1;
+    let full = true;
+    while (Object.keys(left).length) {
+      const route = tileRoute(x, y, (tx, ty) => !!left[tx + ',' + ty]);
+      if (!route) { full = false; break; }
+      for (const p of route) { const press = !!left[p[0] + ',' + p[1]]; delete left[p[0] + ',' + p[1]]; stops.push(mkStop(x, y, p[0], p[1], press, false)); x = p[0]; y = p[1]; }
+    }
+    let exit = false;
+    if (full && wantExit) {
+      if (exitTiles[x + ',' + y]) exit = true;
+      else {
+        const route = tileRoute(x, y, (tx, ty) => !!exitTiles[tx + ',' + ty]);
+        if (route) { for (let i = 0; i < route.length; i++) { const p = route[i]; stops.push(mkStop(x, y, p[0], p[1], false, i === route.length - 1)); x = p[0]; y = p[1]; } exit = true; }
+      }
+    }
+    if (!stops.length && !(full && (exit || !wantExit))) return null;
+    return { stops: stops, full: full, exit: exit, greedy: true };
+  };
+  if (unpressed.length > 10) return greedy();   // 2^n pad states: past ten pads the exact search cannot finish
   const bit = {};
   unpressed.forEach((b, i) => { bit[b.x + ',' + b.y] = 1 << i; });
   const full = (1 << unpressed.length) - 1;
-  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
   const popc = m => { let n = 0; while (m) { n += m & 1; m >>= 1; } return n; };
   const start = px + ',' + py + ':0';
   const prev = {}; prev[start] = null;
   const q = [[px, py, 0]];
   let exitK = null, goalK = null, bestK = null, bestBits = 0;
-  if (full === 0 && wantExit && exitTiles[px + ',' + py]) return { stops: [], full: true, exit: true };
+  const BUDGET = 250000;   // states; rooms with four pads need a few thousand
+  if (full === 0 && wantExit && exitTiles[px + ',' + py]) return { stops: [], full: true, exit: true, greedy: false };
   for (let qi = 0; qi < q.length && !exitK; qi++) {
+    if (q.length > BUDGET) { const g = greedy(); if (g && (g.full || !bestK)) return g; break; }
     const cx = q[qi][0], cy = q[qi][1], m = q[qi][2];
     for (const dd of DIRS) {
       const to = slideTo(cx, cy, dd);
@@ -475,17 +530,10 @@ function dungIceSolve(mdl) {
   for (let k = endK; k && k !== start; k = prev[k]) {
     const kp = k.split(':')[0], pp = prev[k].split(':')[0];
     const [sx, sy] = kp.split(',').map(Number), [ox, oy] = pp.split(',').map(Number);
-    const dx = Math.sign(sx - ox), dy = Math.sign(sy - oy);
-    // recover why the slide stopped there
-    const again = slideTo(ox, oy, [dx, dy]);
-    stops.unshift({ k: kp,
-                    press: k.split(':')[1] !== prev[k].split(':')[1],
-                    dir: (dy > 0 ? 'N' : dy < 0 ? 'S' : '') + (dx > 0 ? 'E' : dx < 0 ? 'W' : ''),
-                    ddx: dx, ddy: dy, padStop: !!pad[kp],
-                    by: again && again.by && again.by !== 'wall' ? again.by : '',
-                    exit: !!exitTiles[kp] && k === endK && !!exitK && k.split(':')[1] === String(full) });
+    stops.unshift(mkStop(ox, oy, sx, sy, k.split(':')[1] !== prev[k].split(':')[1],
+                         !!exitTiles[kp] && k === endK && !!exitK && k.split(':')[1] === String(full)));
   }
-  return { stops: stops, full: !!(exitK || goalK), exit: !!exitK && wantExit };
+  return { stops: stops, full: !!(exitK || goalK), exit: !!exitK && wantExit, greedy: false };
 }
 
 function dungReconcileScene(npcs, objs) {
