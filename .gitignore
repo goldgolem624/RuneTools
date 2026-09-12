@@ -66,7 +66,8 @@ docs/
 research/
 scratchpad/
 
-# Sample/tutorial plugins ship through the plugin store, not with the client
+# Every plugin folder: plugins ship through the plugin hub on the website, never with the client repo
+*PluginX/
 SamplePluginX/
 ArchTutorialPluginX/
 
