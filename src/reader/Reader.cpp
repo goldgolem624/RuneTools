@@ -2586,6 +2586,31 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         if (n < 2) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"run_weight\",\"value\":%d", (int)(std::int16_t)((b[0] << 8) | b[1]));
         o += t; return true;
+    case rtx::sops::kVarpInt: {    // [id: (b0-0x80)&0xFF | b1<<8][value: b4 b5 b2 b3 big-endian order]
+        if (n < 6) return false;
+        const int id = ((b[0] - 0x80) & 0xFF) | (b[1] << 8);
+        const std::int32_t v = (std::int32_t)(((std::uint32_t)b[4] << 24) | ((std::uint32_t)b[5] << 16) | ((std::uint32_t)b[2] << 8) | b[3]);
+        std::snprintf(t, sizeof(t), "\"kind\":\"varp_set\",\"id\":%d,\"value\":%d", id, v);
+        o += t; return true;
+    }
+    case rtx::sops::kVarpByte: {   // [value: i8][id: (b2-0x80)&0xFF | b1<<8]
+        if (n < 3) return false;
+        const int id = ((b[2] - 0x80) & 0xFF) | (b[1] << 8);
+        std::snprintf(t, sizeof(t), "\"kind\":\"varp_set\",\"id\":%d,\"value\":%d", id, (int)(std::int8_t)b[0]);
+        o += t; return true;
+    }
+    case rtx::sops::kVarcInt: {    // [id: (b1-0x80)&0xFF | b0<<8][value: b2 b3 b5 b4]
+        if (n < 6) return false;
+        const int id = ((b[1] - 0x80) & 0xFF) | (b[0] << 8);
+        const std::int32_t v = (std::int32_t)(((std::uint32_t)b[2] << 24) | ((std::uint32_t)b[3] << 16) | ((std::uint32_t)b[5] << 8) | b[4]);
+        std::snprintf(t, sizeof(t), "\"kind\":\"varc_set\",\"id\":%d,\"value\":%d", id, v);
+        o += t; return true;
+    }
+    case rtx::sops::kVarcByte: {   // [id: b0 | b1<<8][value: (0x80-b2)&0xFF]
+        if (n < 3) return false;
+        std::snprintf(t, sizeof(t), "\"kind\":\"varc_set\",\"id\":%d,\"value\":%d", b[0] | (b[1] << 8), (0x80 - b[2]) & 0xFF);
+        o += t; return true;
+    }
     case rtx::sops::kPingEcho:     // two u32 BE, client echoes back (9-byte reply)
         if (n < 8) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"ping\",\"a\":%u,\"b\":%u", ev_u32be(b), ev_u32be(b + 4));

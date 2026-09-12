@@ -13,7 +13,8 @@
   const NP_CAP = 5000;
   // the seed is 950-1. Opcodes not in it are unnamed until re-derived (see docs/cs2_opcodes.md).
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x23,
-                 ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0 };
+                 ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0,
+                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E };
   let npNames = {};
   function npApplySops(m) {
     Object.assign(SOPS, m || {});

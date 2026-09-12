@@ -6,17 +6,22 @@
   const evCounts = {};                    // kind -> count since page load
   const evTick = { count: 0, last: -1, dts: [], lastAt: 0 };
   let evPaused = false, evDirty = false, evTimer = null;
-  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
-  const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x82,
-                 ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0 };
+  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'varp_set', 'varc_set', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
+  const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x23,
+                 ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0,
+                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E };
   (async () => { try { const m = await rtxData.call('state.serverOps'); if (m && typeof m === 'object') Object.assign(SOPS, m); } catch (e) {} })();
-  const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo']
+  const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo', 'varp_int', 'varp_byte', 'varc_int', 'varc_byte']
       .map(k => SOPS[k]).sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h
   const EV_OPNAMES = { [SOPS.server_tick]: 'server_tick' };
   const EV_TYPES = [
     { name: 'skill_update',     kind: 'skill_update',     label: 'XP and levels',    note: 'every xp drop' },
     { name: 'container_update', kind: 'container_update', label: 'Inventory and bank', note: 'slot changes in any container' },
     { name: 'runclientscript',  kind: 'runclientscript',  label: 'Interface scripts', note: 'buff bar, notices, popups' },
+    { name: 'varp_int',         kind: 'varp_set',         label: 'Varp (int)',       note: 'server variable set, 32-bit' },
+    { name: 'varp_byte',        kind: 'varp_set',         label: 'Varp (byte)',      note: 'server variable set, small' },
+    { name: 'varc_int',         kind: 'varc_set',         label: 'Varc (int)',       note: 'client variable set, 32-bit' },
+    { name: 'varc_byte',        kind: 'varc_set',         label: 'Varc (byte)',      note: 'client variable set, small' },
     { name: 'ge_offer',         kind: 'ge_offer',         label: 'Grand Exchange',   note: 'offer changes' },
     { name: 'run_energy',       kind: 'run_energy',       label: 'Run energy',       note: '' },
     { name: 'run_weight',       kind: 'run_weight',       label: 'Weight',           note: '' },
@@ -156,6 +161,8 @@
   function evFields(ev) {
     switch (ev.kind) {
       case 'skill_update': return (ev.name || ('skill ' + ev.skill)) + ' Lv' + ev.level + ' xp=' + Number(ev.xp).toLocaleString('en-US');
+      case 'varp_set': return 'varp ' + ev.id + ' = ' + ev.value;
+      case 'varc_set': return 'varc ' + ev.id + ' = ' + ev.value;
       case 'container_update': {
         const sl = ev.slots || [];
         const parts = [];
