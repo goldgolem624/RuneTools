@@ -114,6 +114,9 @@ std::string NpcJson(int npc_id);
 std::string MapWindowJson(int cx, int cy, int plane, int half = 0, int ts = 0, int want = 15);
 
 std::string StructParamsJson(int structId);
+// Single struct params (decoded once per struct and memoised). false when the struct or key is absent.
+bool StructIntParam(int structId, int key, int& out);
+bool StructStrParam(int structId, int key, std::string& out);
 
 std::string MapLabelsJson();
 

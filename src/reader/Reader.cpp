@@ -1,6 +1,7 @@
 #include "Reader.h"
 #include "BankCache.h"
 #include "Hitmarks.h"
+#include "BuffVars.h"
 #include "../cache/CacheReader.h"
 #include "../shared/Log.h"
 #include "../../companion/SceneOffsets.h" // client memory offsets shared with the companion
@@ -2571,6 +2572,14 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         if (!partial) {
             if (p + 4 > n) { if (!cut) return false; partial = true; }
             else script = ev_u32be(b + p);
+        }
+        // Script 10623(struct, active) is the server adding (1) or removing (0) a buff-bar entry
+        // (client scripts 10624 -> 10625 add / 15426 remove). Reported as its own kind with the name.
+        if (script == 10623 && sig == "ii" && !partial) {
+            const int structId = std::atoi(args[0].c_str());
+            std::string nm; rtx::cache::StructStrParam(structId, 2794, nm);
+            std::snprintf(t, sizeof(t), "\"kind\":\"buff_update\",\"struct\":%d,\"active\":%s,\"name\":\"", structId, args[1] == "0" ? "false" : "true");
+            o += t; o += json_escape(nm); o += "\""; return true;
         }
         std::snprintf(t, sizeof(t), "\"kind\":\"runclientscript\",\"script\":%lld,\"sig\":\"%s\",\"partial\":%s,\"args\":[",
                       (long long)script, sig.c_str(), partial ? "true" : "false");
@@ -5832,6 +5841,45 @@ static int parse_buff_secs(const std::string& t) {
 }
 
 // Active buffs (group 284) + debuffs (group 291) from the buff-bar widgets.
+// Each slot component carries the buff STRUCT the game rendered it from (cc param 8106, set by
+// client script 10819), so identity is exact. Component params live at [[comp+0x170]]: a vector of
+// 40-byte records {key i32, pad, value i32 ...} (found on 950-1 by matching the record's 8106 value
+// against the slot's icon: struct 48340 Bone Shield -> graphic 30099). The countdown the bar shows
+// is client script 10886: seconds = 1 + (end - CLIENTCLOCK) / 50 where end = script 11073(struct),
+// a switch over struct ids onto the varc that holds the end cycle; script 11077 gives the stack
+// count var. Those two switches are lifted verbatim into BuffVars.h (tools/rtx_buffvars.py), so
+// `secs`, `remainMs` and `count` below are the game's own numbers, not parsed from "2m" text.
+// Struct 2794 = display name, 2802 = graphic, 4677 = item icon. Slots with no struct are inert
+// (script 10823 returns early for them) and are not reported.
+static bool comp_int_param(HANDLE h, std::uint64_t comp, int key, int& out) {
+    auto vec = rpm<std::uint64_t>(h, comp + 0x170);
+    if (!vec || *vec <= 0x10000) return false;
+    auto b = rpm<std::uint64_t>(h, *vec), e = rpm<std::uint64_t>(h, *vec + 8);
+    if (!b || !e || *b <= 0x10000 || *e < *b || *e - *b > 0x4000) return false;
+    for (std::uint64_t rec = *b; rec + 40 <= *e; rec += 40) {
+        if (rpm<std::int32_t>(h, rec).value_or(-1) != key) continue;
+        auto v = rpm<std::int32_t>(h, rec + 8);
+        if (!v) return false;
+        out = *v; return true;
+    }
+    return false;
+}
+// Value of a var named by a BuffVars entry (1 varc, 2 varp, 3 varbit). false when unreadable.
+static bool buff_var_value(HANDLE h, std::uint64_t root, const rtx::buffvars::Entry& e, int& out) {
+    switch (e.kind) {
+    case 1: return read_varc_found(h, root, e.var, out);
+    case 2: return read_varp_found(h, root, e.var, out);
+    case 3: {
+        int wvp = -1, lsb = -1, msb = -1;
+        if (!rtx::cache::GetVarbit(e.var, wvp, lsb, msb) || wvp < 0 || lsb < 0 || msb < lsb || msb >= 32) return false;
+        int raw = 0;
+        if (!read_varp_found(h, root, wvp, raw)) return false;
+        unsigned mask = (msb - lsb + 1 >= 32) ? 0xFFFFFFFFu : ((1u << (msb - lsb + 1)) - 1);
+        out = (int)(((unsigned)raw >> lsb) & mask); return true;
+    }
+    default: return false;
+    }
+}
 std::string BuffsJson(std::uint32_t pid) {
     const char* kEmpty = "{\"buffs\":[],\"debuffs\":[]}";
     auto ps = snap_proc(pid);
@@ -5844,6 +5892,7 @@ std::string BuffsJson(std::uint32_t pid) {
     auto r16 = [&](std::uint64_t a){ return (int)rpm<std::uint16_t>(h, a).value_or(0); };
     std::uint64_t gs, ge; iface_groups_range(h, *root, gs, ge);
     if (!gs) return kEmpty;
+    const long long cycles = (long long)rpm<std::uint32_t>(h, *root + kOffClientClock).value_or(0);   // CLIENTCLOCK, 50/s
 
     auto kids = [&](std::uint64_t node, std::vector<std::uint64_t>& dst) {
         const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
@@ -5917,30 +5966,54 @@ std::string BuffsJson(std::uint32_t pid) {
             if (!itemBased && !spriteOk) continue;            // no real icon -> not a buff
             // Expired-buff filter: a torn-down icon's content count at icon+0x8 reads 0, a live one 1.
             if (r32(icon + 0x8) == 0) continue;
+            int structId = -1;
+            if (!comp_int_param(h, slot, 8106, structId) || structId <= 0) continue;   // inert slot: no buff bound
             // 949-5 also required icon+0x50 & 0x01010000 (visible state); that flag moved on 950-1 and is not re-derived.
             int id = itemBased ? item : sprite;
             unsigned dkey = itemBased ? (0x80000000u | (unsigned)item) : (unsigned)sprite;
             bool dup = false; for (unsigned k : seen) if (k == dkey) { dup = true; break; }
             if (dup) continue; seen.push_back(dkey);
-            std::string name = debuff ? rtx::cache::GetDebuffName(id)
-                                      : rtx::cache::GetBuffName(id);
+            std::string name;
+            { std::string sn; if (rtx::cache::StructStrParam(structId, 2794, sn) && !sn.empty()) name = sn; }
+            if (name.empty()) name = debuff ? rtx::cache::GetDebuffName(id) : rtx::cache::GetBuffName(id);
             if (name.empty() && itemBased) name = rtx::cache::ItemName(item);
-            if (name.empty() && timer.empty()) continue;
-            int knd = rtx::cache::GetBuffKind(id);
+            int knd = 0;
+            { int f = 0;
+              if (rtx::cache::StructIntParam(structId, 8112, f) && f) knd |= 1;
+              if (rtx::cache::StructIntParam(structId, 8110, f) && f) knd |= 2;
+              if (rtx::cache::StructIntParam(structId, 8111, f) && f) knd |= 4;
+              if (rtx::cache::StructIntParam(structId, 8113, f) && f) knd |= 8;
+              if (!knd) knd = rtx::cache::GetBuffKind(id); }
             const char* kindStr = (knd & 1) ? "timer" : (knd & 4) ? "pct" : (knd & 2) ? "count" : "";
-            int sc = (kindStr[0] == '\0' || (knd & 1)) ? parse_buff_secs(timer) : 0;
+            // Exact countdown from the game's own end-cycle var (BuffVars.h); text parse only as a fallback.
+            long long endCycle = -1, remainMs = -1; bool exact = false;
+            if (const auto* te = rtx::buffvars::FindTimer(structId)) {
+                int endv = 0;
+                if (buff_var_value(h, *root, *te, endv)) {
+                    endCycle = endv; const long long rem = endCycle - cycles;
+                    remainMs = rem > 0 ? rem * 20 : 0; exact = true;
+                }
+            }
+            int sc = exact ? (int)((endCycle - cycles) > 0 ? 1 + (endCycle - cycles) / 50 : 0)
+                           : ((kindStr[0] == '\0' || (knd & 1)) ? parse_buff_secs(timer) : 0);
+            long long count = -1; bool haveCount = false;
+            if (const auto* ce = rtx::buffvars::FindCount(structId)) { int cv = 0; if (buff_var_value(h, *root, *ce, cv)) { count = cv; haveCount = true; } }
             out += first ? "" : ","; first = false;
             out += "{\"sprite\":" + std::to_string(itemBased ? 0 : sprite) +
                    ",\"item\":"   + std::to_string(itemBased ? item : 0) +
                    ",\"name\":\"" + json_escape(name) + "\"" +
                    ",\"timer\":\"" + json_escape(timer) + "\"" +
                    ",\"kind\":\"" + std::string(kindStr) + "\"" +
-                   ",\"secs\":"   + std::to_string(sc) + "}";
+                   ",\"secs\":"   + std::to_string(sc) +
+                   ",\"struct\":" + std::to_string(structId) +
+                   ",\"exact\":"  + std::string(exact ? "true" : "false") +
+                   (exact ? ",\"endCycle\":" + std::to_string(endCycle) + ",\"remainMs\":" + std::to_string(remainMs) : std::string()) +
+                   (haveCount ? ",\"count\":" + std::to_string(count) : std::string()) + "}";
         }
         return out;
     };
 
-    std::string out = "{\"buffs\":[";
+    std::string out = "{\"cycles\":" + std::to_string(cycles) + ",\"buffs\":[";
     out += bar_json(284, 18, false);
     out += "],\"debuffs\":[";
     out += bar_json(291, 1, true);

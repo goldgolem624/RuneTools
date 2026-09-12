@@ -6,7 +6,7 @@
   const evCounts = {};                    // kind -> count since page load
   const evTick = { count: 0, last: -1, dts: [], lastAt: 0 };
   let evPaused = false, evDirty = false, evTimer = null;
-  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'varp_set', 'varbit_set', 'varc_set', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
+  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'buff_update', 'varp_set', 'varbit_set', 'varc_set', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x23,
                  ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0,
                  varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E, varp_long: 0xA5, varbit_varint: 0x74 };
@@ -166,6 +166,7 @@
       case 'varp_set': return 'varp ' + ev.id + ' = ' + ev.value;
       case 'varbit_set': return 'varbit ' + ev.id + ' = ' + ev.value;
       case 'varc_set': return 'varc ' + ev.id + ' = ' + ev.value;
+      case 'buff_update': return (ev.active ? 'buff on: ' : 'buff off: ') + (ev.name || ('struct ' + ev.struct));
       case 'container_update': {
         const sl = ev.slots || [];
         const parts = [];

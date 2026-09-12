@@ -122,12 +122,14 @@ rtx.plugin.events.on("runclientscript", (ev) => { /* {script,sig,args} */ });
 rtx.plugin.events.on("varp_set", (ev) => { /* {id,value}: the server changed a player variable */ });
 rtx.plugin.events.on("varbit_set", (ev) => { /* {id,value}: the server set a varbit directly */ });
 rtx.plugin.events.on("varc_set", (ev) => { /* {id,value}: the server changed a client variable */ });
+rtx.plugin.events.on("buff_update", (ev) => { /* {struct,active,name}: a buff-bar entry was added or removed */ });
 rtx.plugin.events.on("gameTick", (ev) => { /* {tick, dtMs}: one per 600 ms server tick */ });
 rtx.plugin.events.on("*", (ev) => { /* every kind */ });
 rtx.plugin.events.off("skill_update", fn);
 ```
 
-Kinds: `skill_update`, `container_update`, `runclientscript`, `varp_set`, `varbit_set` and `varc_set` (`id`,
+Kinds: `skill_update`, `container_update`, `runclientscript`, `buff_update` (`struct`, `active`,
+`name`: the server bound or cleared a buff-bar entry; pair with `state.buffs()` for its timer), `varp_set`, `varbit_set` and `varc_set` (`id`,
 `value`; every server-driven variable change the moment it arrives, so you can react to a varp or
 varbit changing without polling: a varbit is a bit range of its varp, see `cache.varbitDomains`),
 `run_energy` (`value`), `run_weight` (`value`), `ping` (`a`, `b`), `ge_offer` and other undocumented opcodes as `raw`
@@ -306,7 +308,15 @@ await rtx.plugin.state.ports();
 //    null until readable (not in-world / port not started).
 
 await rtx.plugin.state.buffs();
-// -> { buffs:[ ... ], debuffs:[ ... ] }     active buff/debuff entries
+// -> { cycles, buffs:[ { struct, name, sprite, item, kind, timer, secs, exact,
+//                        endCycle, remainMs, count }, ... ], debuffs:[ ... ] }
+//    One entry per buff-bar slot the game has bound to a buff STRUCT (`struct`, the
+//    definition the client drew the slot from; `name` is its display name). `exact` is
+//    true when the countdown came from the game's own end-cycle variable: `endCycle` is
+//    in CLIENTCLOCK cycles (50/s, `cycles` = now), `remainMs` the exact time left, and
+//    `secs` matches the number the bar draws (1 + remaining/50). With `exact` false,
+//    `secs` is parsed from the bar text ("2m" rounds) and `timer` holds that text.
+//    `count` is the stack count var (e.g. Bloodlust stacks) when the game has one.
 
 await rtx.plugin.state.cooldowns();   // -> { cooldowns:[ ... ] } (legacy engine registry; may be empty)
 await rtx.plugin.state.perks();       // -> { items:[ ... ] } augmented gear + perks

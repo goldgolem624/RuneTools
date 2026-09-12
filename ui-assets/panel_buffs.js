@@ -49,7 +49,17 @@
     const buffs = (buffsData && Array.isArray(buffsData.buffs)) ? buffsData.buffs : null;
     const debuffs = (buffsData && Array.isArray(buffsData.debuffs)) ? buffsData.debuffs : [];
     $('bfCnt').textContent = (buffs === null) ? '...' : (buffs.length + debuffs.length);
-    const idOf = b => (b.item ? 'i' + b.item : 's' + b.sprite) + '|' + (b.name || '') + '|' + (b.kind || '');
+    // Exact countdown when the host read the game's own end cycle (b.exact); the bar text otherwise.
+    const fmtTime = b => {
+      if (b && b.exact && typeof b.remainMs === 'number') {
+        const t = Math.max(0, Math.floor(b.remainMs / 1000)), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+        const base = h ? (h + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0')) : (m + ':' + String(sec).padStart(2, '0'));
+        return (typeof b.count === 'number' && b.count > 0) ? base + ' (' + b.count + ')' : base;
+      }
+      if (b && typeof b.count === 'number' && b.count > 0 && !b.timer) return String(b.count);
+      return (b && b.timer) || '';
+    };
+    const idOf = b => (b.item ? 'i' + b.item : 's' + b.sprite) + '|' + (b.name || '') + '|' + (b.kind || '') + '|' + (b.struct || '');
     const structSig = (buffs === null) ? 'null'
       : buffs.map(idOf).join(',') + '#' + debuffs.map(idOf).join(',');
     if (structSig !== buffsSig) {
@@ -67,9 +77,10 @@
           nm.textContent = b.name || (b.item ? ('Item ' + b.item) : ('Sprite ' + b.sprite));
           const tm = document.createElement('div');
           tm.className = 'bf-time' + (b.kind && b.kind !== 'timer' ? ' bf-static' : '');
-          tm.textContent = b.timer || '';
+          tm.textContent = fmtTime(b);
           row.dataset.tip = (b.name || '(unnamed)') + '\n' +
-                            (b.item ? ('item ' + b.item) : ('sprite ' + b.sprite));
+                            (b.item ? ('item ' + b.item) : ('sprite ' + b.sprite)) +
+                            (b.struct ? ('\nstruct ' + b.struct + (b.exact ? ' (exact timer)' : '')) : '');
           row.appendChild(ico); row.appendChild(nm); row.appendChild(tm); list.appendChild(row);
         }
       };
@@ -77,8 +88,8 @@
       section('Debuffs', debuffs);
     }
     if (buffs !== null) {
-      const order = buffs.map(b => b.timer || '')
-        .concat(debuffs.map(b => b.timer || ''));
+      const order = buffs.map(fmtTime)
+        .concat(debuffs.map(fmtTime));
       const timeEls = list.querySelectorAll('.bf-time');
       for (let i = 0; i < timeEls.length && i < order.length; i++)
         if (timeEls[i].textContent !== order[i]) timeEls[i].textContent = order[i];

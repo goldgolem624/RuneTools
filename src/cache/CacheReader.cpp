@@ -2913,6 +2913,41 @@ std::string AbilityConfigsJson() {
 }
 
 // StructType params (js5-22; id = archive*32 + file): {"ints":{"<key>":v},"strs":{"<key>":"v"}}, {} when absent.
+namespace {
+std::unordered_map<int, DecodedStruct> g_struct_memo;   // under g_mu
+const DecodedStruct* struct_memo_locked(int structId) {
+    if (structId < 0) return nullptr;
+    auto it = g_struct_memo.find(structId);
+    if (it != g_struct_memo.end()) return &it->second;
+    auto* index = g_store ? g_store->Get(kIndexStructs) : nullptr;
+    if (!index || !index->ready()) return nullptr;            // not memoised: retry once the cache is open
+    const auto& entries = index->ref().entries();
+    int a = structId >> 5, f = structId & 31;
+    DecodedStruct ds;
+    if (a >= 0 && a < (int)entries.size()) DecodeStructFile(index->ReadFile(a, f), ds);
+    return &g_struct_memo.emplace(structId, std::move(ds)).first->second;
+}
+}  // namespace
+
+bool StructIntParam(int structId, int key, int& out) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    const DecodedStruct* ds = struct_memo_locked(structId);
+    if (!ds) return false;
+    auto it = ds->ints.find(key);
+    if (it == ds->ints.end()) return false;
+    out = it->second; return true;
+}
+bool StructStrParam(int structId, int key, std::string& out) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    const DecodedStruct* ds = struct_memo_locked(structId);
+    if (!ds) return false;
+    auto it = ds->strs.find(key);
+    if (it == ds->strs.end()) return false;
+    out = it->second; return true;
+}
+
 std::string StructParamsJson(int structId) {
     if (structId < 0) return "{}";
     std::lock_guard<std::mutex> lk(g_mu);
