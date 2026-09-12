@@ -136,6 +136,7 @@ std::vector<int> ItemVarobjs(int item_id);
 
 std::string ItemFileHex(int item_id);
 std::string ConfigFileHex(int archive, int file);
+std::string LocFileHex(int loc_id);
 std::string ConfigArchiveInfo(int archive);
 std::string VarbitDomainsJson();
 std::string VarbitDomainMapJson();

@@ -3214,6 +3214,20 @@ std::vector<int> ItemVarobjs(int item_id) {
     return out;
 }
 
+// Raw loc definition bytes (index 16, archive id >> 8, file id & 0xff) as hex, for opcode digging.
+std::string LocFileHex(int loc_id) {
+    if (loc_id < 0) return {};
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = g_store ? g_store->Get(kIndexLocations) : nullptr;
+    if (!idx || !idx->ready()) return {};
+    auto bytes = idx->ReadFile(loc_id >> 8, loc_id & 0xff);
+    static const char* hx = "0123456789abcdef";
+    std::string out; out.reserve(bytes.size() * 2);
+    for (auto b : bytes) { out.push_back(hx[b >> 4]); out.push_back(hx[b & 15]); }
+    return out;
+}
+
 std::string ConfigFileHex(int archive, int file) {
     if (archive < 0 || file < 0) return {};
     std::lock_guard<std::mutex> lk(g_mu);
