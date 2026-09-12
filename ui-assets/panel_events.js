@@ -6,12 +6,15 @@
   const evCounts = {};                    // kind -> count since page load
   const evTick = { count: 0, last: -1, dts: [], lastAt: 0 };
   let evPaused = false, evDirty = false, evTimer = null;
-  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'buff_update', 'varp_set', 'varbit_set', 'varc_set', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
+  const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'buff_update', 'varp_set', 'varbit_set', 'varc_set', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim_actor', 'projectile', 'sound', 'area_sound', 'zone_update', 'zone_base', 'zone_clear', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x23,
                  ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0,
-                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E, varp_long: 0xA5, varbit_varint: 0x74 };
+                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E, varp_long: 0xA5, varbit_varint: 0x74,
+                 zone_base: 0x60, zone_clear: 0x02, zone_update: 0x31, obj_add: 0x33, obj_del: 0x6D, obj_count: 0x46, loc_add: 0x4B, loc_del: 0x1A,
+                 spotanim: 0x0E, spotanim2: 0xBC, spotanim_actor: 0x75, spotanim_actor2: 0xC5, projectile: 0x9A, sound: 0x2C, area_sound: 0xA4, area_sound_abs: 0x5F };
   (async () => { try { const m = await rtxData.call('state.serverOps'); if (m && typeof m === 'object') Object.assign(SOPS, m); } catch (e) {} })();
-  const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo', 'varp_int', 'varp_byte', 'varc_int', 'varc_byte', 'varp_long', 'varbit_varint']
+  const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo', 'varp_int', 'varp_byte', 'varc_int', 'varc_byte', 'varp_long', 'varbit_varint',
+                               'zone_base', 'zone_clear', 'zone_update', 'obj_add', 'obj_del', 'obj_count', 'loc_add', 'loc_del', 'spotanim', 'spotanim2', 'spotanim_actor', 'spotanim_actor2', 'projectile', 'sound', 'area_sound', 'area_sound_abs']
       .map(k => SOPS[k]).sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h
   const EV_OPNAMES = { [SOPS.server_tick]: 'server_tick' };
   const EV_TYPES = [
@@ -24,6 +27,22 @@
     { name: 'varc_byte',        kind: 'varc_set',         label: 'Varc (byte)',      note: 'client variable set, small' },
     { name: 'varp_long',        kind: 'varp_set',         label: 'Varp (64-bit)',    note: 'server variable set, 64-bit' },
     { name: 'varbit_varint',    kind: 'varbit_set',       label: 'Varbit',           note: 'server varbit set' },
+    { name: 'zone_base',        kind: 'zone_base',        label: 'Zone base',        note: 'sets the 8x8 zone the next items belong to' },
+    { name: 'zone_clear',       kind: 'zone_clear',       label: 'Zone clear',       note: 'drops a zone\'s ground items' },
+    { name: 'zone_update',      kind: 'zone_update',      label: 'Zone update',      note: 'batched zone items' },
+    { name: 'obj_add',          kind: 'obj_add',          label: 'Ground item add',  note: 'item appears on a tile' },
+    { name: 'obj_del',          kind: 'obj_del',          label: 'Ground item gone', note: 'item leaves a tile' },
+    { name: 'obj_count',        kind: 'obj_count',        label: 'Ground item count', note: 'stack quantity changed' },
+    { name: 'loc_add',          kind: 'loc_add',          label: 'Object add',       note: 'map object placed or replaced' },
+    { name: 'loc_del',          kind: 'loc_del',          label: 'Object remove',    note: 'map object removed' },
+    { name: 'spotanim',         kind: 'spotanim',         label: 'Graphic (tile)',   note: 'spot animation on a tile' },
+    { name: 'spotanim2',        kind: 'spotanim',         label: 'Graphic (tile, offset)', note: 'spot animation with offsets' },
+    { name: 'spotanim_actor',   kind: 'spotanim_actor',   label: 'Graphic (actor)',  note: 'spot animation on a player or NPC' },
+    { name: 'spotanim_actor2',  kind: 'spotanim_actor',   label: 'Graphic (actor, offset)', note: 'with offsets' },
+    { name: 'projectile',       kind: 'projectile',       label: 'Projectile',       note: 'projectile launched' },
+    { name: 'sound',            kind: 'sound',            label: 'Sound',            note: 'sound effect' },
+    { name: 'area_sound',       kind: 'area_sound',       label: 'Sound (zone tile)', note: 'sound at a tile' },
+    { name: 'area_sound_abs',   kind: 'area_sound',       label: 'Sound (world tile)', note: 'sound at a packed tile' },
     { name: 'ge_offer',         kind: 'ge_offer',         label: 'Grand Exchange',   note: 'offer changes' },
     { name: 'run_energy',       kind: 'run_energy',       label: 'Run energy',       note: '' },
     { name: 'run_weight',       kind: 'run_weight',       label: 'Weight',           note: '' },
@@ -167,6 +186,18 @@
       case 'varbit_set': return 'varbit ' + ev.id + ' = ' + ev.value;
       case 'varc_set': return 'varc ' + ev.id + ' = ' + ev.value;
       case 'buff_update': return (ev.active ? 'buff on: ' : 'buff off: ') + (ev.name || ('struct ' + ev.struct));
+      case 'obj_add': return 'item ' + ev.item + ' x' + ev.qty + ' at ' + ev.x + ',' + ev.y + (ev.owner != null ? ' (owner ' + ev.owner + ')' : '');
+      case 'obj_del': return 'item ' + ev.item + ' gone at ' + ev.x + ',' + ev.y;
+      case 'obj_count': return 'item ' + ev.item + ' at ' + ev.x + ',' + ev.y + ': ' + ev.from + ' -> ' + ev.qty;
+      case 'loc_add': return 'loc ' + ev.loc + ' type ' + ev.type + ' rot ' + ev.rot + ' at ' + ev.x + ',' + ev.y;
+      case 'loc_del': return 'loc removed at ' + ev.x + ',' + ev.y + ' (type ' + ev.type + ')';
+      case 'spotanim': return 'gfx ' + ev.gfx + ' at ' + ev.x + ',' + ev.y + ' h' + ev.height + ' d' + ev.delay;
+      case 'spotanim_actor': return 'gfx ' + ev.gfx + ' on ' + ev.target + (ev.index != null ? ' #' + ev.index : ' ' + ev.x + ',' + ev.y) + ' slot ' + ev.slot;
+      case 'projectile': return 'projectile gfx ' + ev.gfx + ' a=' + ev.a + ' b=' + ev.b + ' t ' + ev.t0 + '-' + ev.t1;
+      case 'sound': return 'sound ' + ev.id;
+      case 'area_sound': return 'sound ' + ev.id + ' at ' + ev.x + ',' + ev.y;
+      case 'zone_update': return 'zone ' + ev.x + ',' + ev.y + ': ' + (ev.items || []).length + ' item(s)' + ((ev.items || []).length ? ' [' + ev.items.map(i => i.kind).join(', ') + ']' : '');
+      case 'zone_base': case 'zone_clear': return ev.kind + ' ' + ev.x + ',' + ev.y + ' plane ' + ev.plane;
       case 'container_update': {
         const sl = ev.slots || [];
         const parts = [];

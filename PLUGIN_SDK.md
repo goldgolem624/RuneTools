@@ -123,12 +123,26 @@ rtx.plugin.events.on("varp_set", (ev) => { /* {id,value}: the server changed a p
 rtx.plugin.events.on("varbit_set", (ev) => { /* {id,value}: the server set a varbit directly */ });
 rtx.plugin.events.on("varc_set", (ev) => { /* {id,value}: the server changed a client variable */ });
 rtx.plugin.events.on("buff_update", (ev) => { /* {struct,active,name}: a buff-bar entry was added or removed */ });
+rtx.plugin.events.on("obj_add", (ev) => { /* {x,y,plane,item,qty,owner?}: an item appeared on a tile (drops, spawns) */ });
+rtx.plugin.events.on("obj_del", (ev) => { /* {x,y,plane,item}: an item left a tile (picked up, despawned) */ });
+rtx.plugin.events.on("obj_count", (ev) => { /* {x,y,plane,item,from,qty}: a ground stack changed quantity */ });
+rtx.plugin.events.on("loc_add", (ev) => { /* {x,y,plane,loc,type,rot}: a map object was placed or replaced */ });
+rtx.plugin.events.on("loc_del", (ev) => { /* {x,y,plane,type,rot}: a map object was removed */ });
+rtx.plugin.events.on("spotanim", (ev) => { /* {x,y,plane,gfx,height,delay}: a graphic played on a tile */ });
+rtx.plugin.events.on("spotanim_actor", (ev) => { /* {target:"player"|"npc"|"tile",index?,x?,y?,gfx,height,delay,slot}: a graphic on an actor */ });
+rtx.plugin.events.on("projectile", (ev) => { /* {form,gfx,...}: a projectile launched (fields still being confirmed live) */ });
+rtx.plugin.events.on("sound", (ev) => { /* {id,...} */ }); rtx.plugin.events.on("area_sound", (ev) => { /* {x,y,plane,id,loops,radius} */ });
+rtx.plugin.events.on("zone_update", (ev) => { /* {x,y,plane,items:[...]}: several of the above batched for one 8x8 zone */ });
 rtx.plugin.events.on("gameTick", (ev) => { /* {tick, dtMs}: one per 600 ms server tick */ });
 rtx.plugin.events.on("*", (ev) => { /* every kind */ });
 rtx.plugin.events.off("skill_update", fn);
 ```
 
-Kinds: `skill_update`, `container_update`, `runclientscript`, `buff_update` (`struct`, `active`,
+Kinds: `obj_add`, `obj_del`, `obj_count` (ground items by world tile, item id and quantity; the
+drop log every plugin has wanted), `loc_add`, `loc_del` (map objects appearing and vanishing),
+`spotanim`, `spotanim_actor` (graphics on tiles and on players or NPCs, with the target's index),
+`projectile`, `sound`, `area_sound`, `zone_base`, `zone_clear`, `zone_update` (a batch of the
+tile kinds for one zone, in `items`), `skill_update`, `container_update`, `runclientscript`, `buff_update` (`struct`, `active`,
 `name`: the server bound or cleared a buff-bar entry; pair with `state.buffs()` for its timer), `varp_set`, `varbit_set` and `varc_set` (`id`,
 `value`; every server-driven variable change the moment it arrives, so you can react to a varp or
 varbit changing without polling: a varbit is a bit range of its varp, see `cache.varbitDomains`),

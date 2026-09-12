@@ -2,6 +2,7 @@
 #include "BankCache.h"
 #include "Hitmarks.h"
 #include "BuffVars.h"
+#include "EventZone.h"
 #include "../cache/CacheReader.h"
 #include "../shared/Log.h"
 #include "../../companion/SceneOffsets.h" // client memory offsets shared with the companion
@@ -2503,6 +2504,8 @@ std::uint32_t ev_u32be(const std::uint8_t* b) {
 
 bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, int len) {
     char t[128];
+    { const int sub = rtx::evzone::subForOpcode(op); if (sub >= 0) return rtx::evzone::subJson(o, sub, b, n); }
+    if (rtx::evzone::topJson(o, op, b, n)) return true;
     switch (op) {
     case rtx::sops::kSkillUpdate: {   // 950-1: [skill: -b0][level: -b1][xp: u32 BE]  (949: [xp LE][level b4+0x80][skill -b5])
         if (n < 6) return false;
@@ -2685,6 +2688,17 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
     } else {
         std::uint32_t tickCount = 0; double age = 0;
         const bool haveTick = TickState(pid, tickCount, age);
+        {   // map origin for zone-relative packets: [MainData+0x19898]+0x698 / +0x69C (the loaded map's base tile)
+            ProcSnap ps = snap_proc(pid);
+            if (ps) {
+                auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
+                auto mgr = root && *root > 0x10000 ? rpm<std::uint64_t>(ps.h, *root + 0x19898) : std::nullopt;
+                if (mgr && *mgr > 0x10000) {
+                    auto bx = rpm<std::int32_t>(ps.h, *mgr + 0x698), by = rpm<std::int32_t>(ps.h, *mgr + 0x69C);
+                    if (bx && by) { rtx::evzone::g_mapBaseX = *bx; rtx::evzone::g_mapBaseY = *by; }
+                }
+            }
+        }
         const std::uint64_t written = sh->written;
         const std::uint64_t oldest  = written > (std::uint64_t)rtx::events::kMaxRecords
                                      ? written - rtx::events::kMaxRecords : 0;

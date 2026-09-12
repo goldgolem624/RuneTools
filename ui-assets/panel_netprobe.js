@@ -14,7 +14,9 @@
   // the seed is 950-1. Opcodes not in it are unnamed until re-derived (see docs/cs2_opcodes.md).
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x23,
                  ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0,
-                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E, varp_long: 0xA5, varbit_varint: 0x74 };
+                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E, varp_long: 0xA5, varbit_varint: 0x74,
+                 zone_base: 0x60, zone_clear: 0x02, zone_update: 0x31, obj_add: 0x33, obj_del: 0x6D, obj_count: 0x46, loc_add: 0x4B, loc_del: 0x1A,
+                 spotanim: 0x0E, spotanim2: 0xBC, spotanim_actor: 0x75, spotanim_actor2: 0xC5, projectile: 0x9A, sound: 0x2C, area_sound: 0xA4, area_sound_abs: 0x5F };
   let npNames = {};
   function npApplySops(m) {
     Object.assign(SOPS, m || {});

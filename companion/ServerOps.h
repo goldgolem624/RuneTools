@@ -21,6 +21,24 @@ inline constexpr int kVarcInt         = 0x77;   // 6 bytes  : id = ((b1-0x80)&0x
 inline constexpr int kVarcByte        = 0x7E;   // 3 bytes  : id = b0|(b1<<8); value = (int8)(0x80-b2)                                 (Ghidra FUN_140141fc0)
 inline constexpr int kVarbitVarint    = 0x74;   // var-byte : two LEB128 varints (7 bits per byte, low first, high bit = continue): varbit id, value (Ghidra FUN_1401420d0, config slot +0x230)
 inline constexpr int kVarpLong        = 0xA5;   // 10 bytes : value = i64 hi=(b1<<24)|(b0<<16)|(b3<<8)|b2, lo=(b5<<24)|(b4<<16)|(b7<<8)|b6; id = (b8<<8)|b9 (Ghidra FUN_140142390; op from the live descriptor table, see tools/rtx_pkt_table.py)
+// Zone packets (docs/fieldmap-950-1.md "Zone packets"): a zone base, then items positioned by a
+// local (x << 4 | y) byte. Decoded in src/reader/EventZone.h.
+inline constexpr int kZoneBase        = 0x60;   // 3 bytes  : y offset, -x offset (zones from the map base), plane+0x80
+inline constexpr int kZoneClear       = 0x02;   // 3 bytes  : plane+0x80, x offset, y offset; drops the zone's ground items
+inline constexpr int kZoneUpdate      = 0x31;   // var-short: zone base header then [sub id][body] items (table exe+0xD96B08)
+inline constexpr int kObjAdd          = 0x33;   // 6 bytes  : ground item added (id 24-bit, position, quantity)
+inline constexpr int kObjDel          = 0x6D;   // 4 bytes  : ground item removed
+inline constexpr int kObjCount        = 0x46;   // 8 bytes  : ground item quantity changed (old, new)
+inline constexpr int kLocAdd          = 0x4B;   // 7 bytes  : map object added or replaced (loc id, type, rotation)
+inline constexpr int kLocDel          = 0x1A;   // 2 bytes  : map object removed
+inline constexpr int kSpotAnim        = 0x0E;   // 11 bytes : graphic at a tile
+inline constexpr int kSpotAnim2       = 0xBC;   // 14 bytes : graphic at a tile with offsets
+inline constexpr int kSpotAnimActor   = 0x75;   // 12 bytes : graphic on a player, NPC or tile
+inline constexpr int kSpotAnimActor2  = 0xC5;   // 15 bytes : graphic on a player, NPC or tile, with offsets
+inline constexpr int kProjectile      = 0x9A;   // 21 bytes : projectile (manager at MainData+0x19960)
+inline constexpr int kSound           = 0x2C;   // 8 bytes  : sound effect
+inline constexpr int kAreaSound       = 0xA4;   // 10 bytes : sound at a zone tile
+inline constexpr int kAreaSoundAbs    = 0x5F;   // 11 bytes : sound at a packed world tile
 inline constexpr int kOpMax           = 0xDE;   // framer bound (`cmp eax,0xDE; ja`); 0xE5 on 949
 
 struct Expect { int op; int len; const char* name; };
@@ -40,11 +58,29 @@ inline constexpr Expect kExpected[] = {
     { kVarcByte,         3, "varc_byte"        },
     { kVarpLong,        10, "varp_long"        },
     { kVarbitVarint,    -1, "varbit_set"       },
+    { kZoneBase,         3, "zone_base"        },
+    { kZoneClear,        3, "zone_clear"       },
+    { kZoneUpdate,      -2, "zone_update"      },
+    { kObjAdd,           6, "obj_add"          },
+    { kObjDel,           4, "obj_del"          },
+    { kObjCount,         8, "obj_count"        },
+    { kLocAdd,           7, "loc_add"          },
+    { kLocDel,           2, "loc_del"          },
+    { kSpotAnim,        11, "spotanim"         },
+    { kSpotAnim2,       14, "spotanim"         },
+    { kSpotAnimActor,   12, "spotanim_actor"   },
+    { kSpotAnimActor2,  15, "spotanim_actor"   },
+    { kProjectile,      21, "projectile"       },
+    { kSound,            8, "sound"            },
+    { kAreaSound,       10, "area_sound"       },
+    { kAreaSoundAbs,    11, "area_sound"       },
 };
 
 inline constexpr int kDefaultCaptured[] = {
     kSkillUpdate, kGeOffer, kContainerUpdate, kRunClientScript, kRunEnergy, kRunWeight, kPingEcho,
     kVarpInt, kVarpByte, kVarcInt, kVarcByte, kVarpLong, kVarbitVarint,
+    kZoneBase, kZoneClear, kZoneUpdate, kObjAdd, kObjDel, kObjCount, kLocAdd, kLocDel,
+    kSpotAnim, kSpotAnim2, kSpotAnimActor, kSpotAnimActor2, kProjectile, kSound, kAreaSound, kAreaSoundAbs,
 };
 constexpr std::uint32_t DefaultMaskWord(int word) {
     std::uint32_t m = 0;
