@@ -3582,6 +3582,115 @@ std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events
     return out;
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Live terrain heights. The game places every actor with FUN_140357a50(actor, xy): plane =
+// actor plane (+1 on a bridge tile), then per region (x>>6, y>>6) the terrain object at
+// region+0xA0 (or +0xEBB0) holds one height grid per plane at +0x170 (0x10 per plane, grid ptr at
+// +8; plane 0 also has an adjusted grid at +0x1F8 that the actor path uses). A grid is a column
+// table: column x at [grid] + 0x18*(x+1), value (y) at column + 4*(y+1), i32 fine units, padded
+// by one on each side. The client interpolates bilinearly on the 9-bit tile fraction and adds 5.0
+// for the actor's feet. Decompiled from 950-1 (docs/fieldmap-950-1.md "Terrain heights"); the
+// values match the actor heights exactly, in instances too, where the cache has nothing.
+// Region grid: scene = actor+0x60; manager = [scene+0x140C0]; bounds i32 at +0x14034 (min x),
+// +0x14038 (min y), +0x1403C (max x), +0x14040 (max y); cells: [[mgr+0x14080] + (rx-minx)*0x18]
+// + (ry-miny)*0x18, region object at cell+8.
+namespace {
+constexpr std::int32_t kNoFine = INT32_MIN;
+struct TerrainRegion { std::int32_t h[66][66]; bool ok = false; };   // h[lx+1][ly+1], lx/ly 0..64
+struct TerrainSnap { std::uint32_t pid = 0; int plane = -1; int cx = 0, cy = 0; std::uint32_t stamp = 0; std::unordered_map<int, TerrainRegion> regions; };  // key (plane<<16)|(rx<<8)|ry
+std::mutex g_terr_mu;
+TerrainSnap g_terr;
+bool terrain_read_region(HANDLE h, std::uint64_t scene, int rx, int ry, int plane, TerrainRegion& out) {
+    out.ok = false;
+    auto mgr = rpm<std::uint64_t>(h, scene + 0x140C0);
+    if (!mgr || *mgr <= 0x10000) return false;
+    auto minx = rpm<std::int32_t>(h, *mgr + 0x14034), miny = rpm<std::int32_t>(h, *mgr + 0x14038);
+    auto maxx = rpm<std::int32_t>(h, *mgr + 0x1403C), maxy = rpm<std::int32_t>(h, *mgr + 0x14040);
+    if (!minx || !miny || !maxx || !maxy || rx < *minx || rx > *maxx || ry < *miny || ry > *maxy) return false;
+    auto rows = rpm<std::uint64_t>(h, *mgr + 0x14080);
+    if (!rows || *rows <= 0x10000) return false;
+    auto col = rpm<std::uint64_t>(h, *rows + (std::uint64_t)(rx - *minx) * 0x18);
+    if (!col || *col <= 0x10000) return false;
+    auto region = rpm<std::uint64_t>(h, *col + (std::uint64_t)(ry - *miny) * 0x18 + 8);
+    if (!region || *region <= 0x10000) return false;
+    std::uint64_t terrain = 0;
+    for (std::uint64_t off : { (std::uint64_t)0xA0, (std::uint64_t)0xEBB0 }) {
+        auto t = rpm<std::uint64_t>(h, *region + off);
+        if (t && *t > 0x10000 && rpm<std::uint8_t>(h, *t + 0x21).value_or(1) == rpm<std::uint8_t>(h, *t + 0x22).value_or(2)) { terrain = *t; break; }
+    }
+    if (!terrain || rpm<std::uint8_t>(h, terrain + 0x169).value_or(1) != 0) return false;
+    auto p0 = rpm<std::uint64_t>(h, terrain + 0x170), p1 = rpm<std::uint64_t>(h, terrain + 0x178);
+    if (!p0 || !p1 || *p1 < *p0) return false;
+    const int nplanes = (int)((*p1 - *p0) / 16);
+    if (plane < 0 || plane >= nplanes) return false;
+    std::optional<std::uint64_t> grid = (plane == 0) ? rpm<std::uint64_t>(h, terrain + 0x1F8) : std::nullopt;
+    if (!grid || *grid <= 0x10000) grid = rpm<std::uint64_t>(h, *p0 + (std::uint64_t)plane * 0x10 + 8);
+    if (!grid || *grid <= 0x10000) return false;
+    auto cols = rpm<std::uint64_t>(h, *grid);
+    if (!cols || *cols <= 0x10000) return false;
+    std::uint64_t colptr[66];
+    for (int lx = 0; lx < 66; ++lx) {
+        auto c = rpm<std::uint64_t>(h, *cols + 0x18 * (std::uint64_t)lx);
+        if (!c || *c <= 0x10000) return false;
+        colptr[lx] = *c;
+    }
+    for (int lx = 0; lx < 66; ++lx)
+        if (!rpm_bytes(h, colptr[lx], out.h[lx], sizeof(out.h[lx]))) return false;
+    out.ok = true;
+    return true;
+}
+}  // namespace
+
+// Refresh the live terrain snapshot for the 3x3 regions around (cx, cy) on `plane` (and plane 0
+// for bridge fallbacks). Called once per overlay build; lookups then hit the snapshot only.
+bool LiveTerrainSnapshot(std::uint32_t pid, int cx, int cy, int plane) {
+    ProcSnap ps = snap_proc(pid);
+    if (!ps) return false;
+    HANDLE h = ps.h; const std::uint64_t mgva = ps.mgva;
+    auto root = rpm<std::uint64_t>(h, mgva);
+    if (!root || *root <= 0x10000) return false;
+    auto pdata = rpm<std::uint64_t>(h, *root + rtx::scn::kPlayerData);
+    int local_uid = (pdata && *pdata > 0x10000) ? rpm<std::int32_t>(h, *pdata + rtx::scn::kLocalUid).value_or(-1) : -1;
+    std::uint64_t psec = local_player_sec_fast(h, *root, local_uid);
+    if (!psec) return false;
+    auto scene = rpm<std::uint64_t>(h, psec + 0x60);
+    if (!scene || *scene <= 0x10000) return false;
+    TerrainSnap snap; snap.pid = pid; snap.plane = plane; snap.cx = cx; snap.cy = cy; snap.stamp = (std::uint32_t)GetTickCount64();
+    const int rx0 = cx >> 6, ry0 = cy >> 6;
+    for (int pl : { plane, 0 }) {
+        for (int rx = rx0 - 1; rx <= rx0 + 1; ++rx)
+            for (int ry = ry0 - 1; ry <= ry0 + 1; ++ry) {
+                const int key = (pl << 16) | (rx << 8) | ry;
+                if (snap.regions.count(key)) continue;
+                TerrainRegion r;
+                if (terrain_read_region(h, *scene, rx, ry, pl, r)) snap.regions.emplace(key, r);
+            }
+        if (plane == 0) break;
+    }
+    std::lock_guard<std::mutex> lk(g_terr_mu);
+    g_terr = std::move(snap);
+    return !g_terr.regions.empty();
+}
+
+// Height of the tile corner (wx, wy) on `plane`, fine units, from the last snapshot; kNoFine when
+// that region/plane was not readable (caller falls back to the cache).
+std::int32_t LiveCornerHeight(std::uint32_t pid, int wx, int wy, int plane) {
+    if (wx < 0 || wy < 0) return kNoFine;
+    std::lock_guard<std::mutex> lk(g_terr_mu);
+    if (g_terr.pid != pid) return kNoFine;
+    const int rx = wx >> 6, ry = wy >> 6;
+    auto it = g_terr.regions.find((plane << 16) | (rx << 8) | ry);
+    if (it == g_terr.regions.end() || !it->second.ok) return kNoFine;
+    return it->second.h[(wx & 63) + 1][(wy & 63) + 1];
+}
+bool LiveCornerHeights(std::uint32_t pid, int wx, int wy, int plane, std::int32_t out[4]) {
+    static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
+    bool all = true;
+    for (int c = 0; c < 4; ++c) { out[c] = LiveCornerHeight(pid, wx + CX[c], wy + CY[c], plane); if (out[c] == kNoFine) all = false; }
+    return all;
+}
+
 std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kContainer = rtx::scn::kContainer;   // all from SceneOffsets.h --
     constexpr std::uint64_t kActiveIdx = rtx::scn::kActiveIdx;   // shared with the companion
@@ -6468,13 +6577,23 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         for (int bi : best) if (bi >= 0) out.highlights.push_back(hcands[bi].hp);
     }
 
-    // Heights are absolute: live fine-z = 32 * cache surface height.
+    // Heights are absolute: live fine-z = 32 * cache surface height. The game's own terrain grid is
+    // preferred when readable (exact, and the only source inside instances); the cache is the fallback.
     constexpr std::int16_t kNoH = -32768;
     constexpr float kHScale = 32.0f;
+    out.pid = pid;
+    const bool liveTerrain = have_player && LiveTerrainSnapshot(pid, out.player_tx, out.player_ty, out.plane);
+    auto liveZ = [&](int tx, int ty, int plane, float& z) -> bool {
+        if (!liveTerrain) return false;
+        const std::int32_t v = LiveCornerHeight(pid, tx, ty, plane);
+        if (v == INT32_MIN) return false;
+        z = (float)v; return true;
+    };
     out.anchor_h = have_player
         ? rtx::cache::TileHeight(out.player_tx, out.player_ty, out.plane) : kNoH;
 
     auto cornerZ = [&](int tx, int ty) -> float {
+        float lz; if (liveZ(tx, ty, out.plane, lz)) return lz;
         std::int16_t hh = rtx::cache::TileHeight(tx, ty, out.plane);
         return (hh == kNoH) ? out.player_z : kHScale * (float)hh;
     };
@@ -6488,9 +6607,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         const int cy[4] = { swy, swy, swy + H, swy + H };
         float base = out.player_z, top = out.player_z; bool haveBase = false;
         for (int i = 0; i < 4; ++i) {
-            std::int16_t hh = rtx::cache::TileHeightAtPlane(cx[i], cy[i], ep);
-            if (hh == kNoH) continue;
-            float z = kHScale * (float)hh;
+            float z;
+            if (!liveZ(cx[i], cy[i], ep, z)) {
+                std::int16_t hh = rtx::cache::TileHeightAtPlane(cx[i], cy[i], ep);
+                if (hh == kNoH) continue;
+                z = kHScale * (float)hh;
+            }
             if (!haveBase) { base = top = z; haveBase = true; }
             else { if (z < base) base = z; if (z > top) top = z; }
         }
@@ -6535,9 +6657,10 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             const int cy[4] = { gy, gy, gy + 1, gy + 1 };
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(gx, gy, plane, ch);
+            std::int32_t lch[4]; const bool liveOk = liveTerrain && LiveCornerHeights(pid, gx, gy, plane, lch);
             float fallback = out.player_z;
             bool haveFallback = false;
-            if (ch[0] == kNoH || ch[1] == kNoH || ch[2] == kNoH || ch[3] == kNoH) {
+            if (!liveOk && (ch[0] == kNoH || ch[1] == kNoH || ch[2] == kNoH || ch[3] == kNoH)) {
                 int bestD2 = 4 * 4 + 1;                            // within 4 tiles or not at all
                 for (const auto& r : gobjs) {
                     if (r.config_id <= 0 || r.plane != plane) continue;
@@ -6559,14 +6682,15 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     }
                 }
                 if (!haveFallback && plane != out.plane) {
-                    std::int16_t g0 = rtx::cache::TileHeight(gx, gy, 0);
-                    if (g0 != kNoH) fallback = kHScale * (float)g0;
+                    float lz0;
+                    if (liveZ(gx, gy, 0, lz0)) fallback = lz0;
+                    else { std::int16_t g0 = rtx::cache::TileHeight(gx, gy, 0); if (g0 != kNoH) fallback = kHScale * (float)g0; }
                 }
             }
             for (int i = 0; i < 4; ++i) {
                 op.box[i * 3 + 0] = cx[i] * 512.f;
                 op.box[i * 3 + 1] = cy[i] * 512.f;
-                op.box[i * 3 + 2] = (ch[i] != kNoH) ? kHScale * (float)ch[i] : fallback;
+                op.box[i * 3 + 2] = liveOk ? (float)lch[i] : (ch[i] != kNoH) ? kHScale * (float)ch[i] : fallback;
             }
             op.has_box = true;
             op.box_h = 0.f;                                        // ground tile, not a prism
@@ -6687,8 +6811,9 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             op.rgb2 = gs.rgb2;
             op.wx = gs.gx * 512.f + 256.f; op.wy = gs.gy * 512.f + 256.f;
             {   // label anchor height on the mark's plane
-                std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane);
-                op.wz = (hh == kNoH) ? out.player_z : kHScale * (float)hh;
+                float lz;
+                if (liveZ(gs.gx, gs.gy, gs.plane, lz)) op.wz = lz;
+                else { std::int16_t hh = rtx::cache::TileHeight(gs.gx, gs.gy, gs.plane); op.wz = (hh == kNoH) ? out.player_z : kHScale * (float)hh; }
             }
             if (gs.gx2 >= gs.gx && gs.gy2 >= gs.gy && gs.gx2 > 0 && gs.gy2 > 0) {
                 fillBox(op, gs.gx, gs.gy, gs.gx2 - gs.gx + 1, gs.gy2 - gs.gy + 1, gs.plane, true);
@@ -6832,8 +6957,8 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     if (pl.rotation == 1 || pl.rotation == 3) std::swap(W, H);
                     break;
                 }
-                std::int16_t objH = rtx::cache::TileHeight(ax, ay, out.plane);
-                float gz = (objH == kNoH) ? out.player_z : kHScale * (float)objH;
+                float gz;
+                if (!liveZ(ax, ay, out.plane, gz)) { std::int16_t objH = rtx::cache::TileHeight(ax, ay, out.plane); gz = (objH == kNoH) ? out.player_z : kHScale * (float)objH; }
                 op.has_box3d = true;
                 op.bmin[0] = ax * 512.f;            op.bmin[1] = ay * 512.f;            op.bmin[2] = gz;
                 op.bmax[0] = (ax + W) * 512.f;      op.bmax[1] = (ay + H) * 512.f;      op.bmax[2] = gz + 512.f;
@@ -6919,8 +7044,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 if (dup) continue;
                 OverlayPoint op;
                 op.wx = wx * 512.f + 256.f; op.wy = wy * 512.f + 256.f;
-                std::int16_t objH = rtx::cache::TileHeight(wx, wy, out.plane);
-                op.wz = (objH == kNoH) ? out.player_z : kHScale * (float)objH;
+                if (!liveZ(wx, wy, out.plane, op.wz)) { std::int16_t objH = rtx::cache::TileHeight(wx, wy, out.plane); op.wz = (objH == kNoH) ? out.player_z : kHScale * (float)objH; }
                 op.kind = 0; op.label = meta.name;
                 int W = meta.dim_x, H = meta.dim_y;
                 if (p.rotation == 1 || p.rotation == 3) std::swap(W, H);
@@ -6939,6 +7063,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                                       grid_radius, out.blocked);
         rtx::cache::RegionCornerHeightsFill(out.player_tx, out.player_ty, out.plane,
                                             grid_radius, out.heights);
+        if (liveTerrain) {   // same indexing as heights: ((gx*T)+gy)*4+c, corners SW SE NE NW
+            const int T = 2 * grid_radius + 1; static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
+            out.heights_fine.assign((std::size_t)T * T * 4, INT32_MIN);
+            for (int gx = 0; gx < T; ++gx) for (int gy = 0; gy < T; ++gy) for (int c = 0; c < 4; ++c)
+                out.heights_fine[((std::size_t)gx * T + gy) * 4 + c] = LiveCornerHeight(pid, out.player_tx - grid_radius + gx + CX[c], out.player_ty - grid_radius + gy + CY[c], out.plane);
+        }
     }
 
     out.ok = have_player || !out.highlights.empty();

@@ -90,6 +90,12 @@ std::string ReadAsync(const std::string& key, std::function<std::string()> build
 
 std::string SceneJson(std::uint32_t pid, int obj_range = 20);
 
+// Live terrain (the game's own height grids, fine units). Snapshot once per overlay build for the
+// 3x3 regions around a tile, then look corners up from the snapshot. INT32_MIN = unknown.
+bool LiveTerrainSnapshot(std::uint32_t pid, int cx, int cy, int plane);
+std::int32_t LiveCornerHeight(std::uint32_t pid, int wx, int wy, int plane);
+bool LiveCornerHeights(std::uint32_t pid, int wx, int wy, int plane, std::int32_t out[4]);
+
 // Combat log: hitsplat events on every actor in the scene. Poll at 5 Hz from one thread; read
 // events with seq > since (max_events capped at 2000). JSON: {seq, gap, events:[...]}.
 void CombatLogPoll(std::uint32_t pid);
@@ -134,6 +140,8 @@ struct OverlayFrame {
     int         grid_r = 0;               // grid radius; blocked grid is (2r+1)^2
     std::vector<std::uint8_t> blocked;    // 1 = unwalkable; idx gx*(2r+1)+gy, tile (player-r+g)
     std::vector<std::int16_t> heights;    // cache tile-height per grid corner ((2r+2)^2); -32768 = unknown
+    std::vector<std::int32_t> heights_fine; // live terrain per grid corner, fine units, same indexing; INT32_MIN = unknown (empty when the live grid was unreadable)
+    std::uint32_t pid = 0;                // client the frame was built from (live terrain lookups)
     std::vector<OverlayPoint> highlights; // NPCs to highlight (e.g. random events), drawn prominently
     std::vector<OverlayPoint> guides;     // resolved guide sites (footprint prism or flat tile + label)
     std::vector<int> guide_path;          // BFS walkable path player -> first guide site, tile (x,y) pairs

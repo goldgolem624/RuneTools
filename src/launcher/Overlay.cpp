@@ -368,6 +368,7 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
         const float kHScale = 32.0f;
         const std::int16_t kNoH = -32768;
         bool haveH = (int)f.heights.size() == T * T * 4;
+        const bool haveF = (int)f.heights_fine.size() == T * T * 4;   // the game's own terrain, exact
         static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
         for (int tgx = 0; tgx < T; ++tgx) {
             for (int tgy = 0; tgy < T; ++tgy) {
@@ -375,9 +376,10 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
                     size_t i = ((size_t)tgx * T + tgy) * 4 + c;
                     float wx = (float)(f.player_tx - R + tgx + CX[c]) * 512.0f;
                     float wy = (float)(f.player_ty - R + tgy + CY[c]) * 512.0f;
-                    if (haveH && f.heights[i] == kNoH) continue;   // no map data: leave invisible
-                    float cz = (haveH && f.heights[i] != kNoH)
-                             ? kHScale * (float)f.heights[i] : f.player_z;
+                    const bool liveC = haveF && f.heights_fine[i] != INT32_MIN;
+                    if (!liveC && haveH && f.heights[i] == kNoH) continue;   // no data at all: leave invisible
+                    float cz = liveC ? (float)f.heights_fine[i]
+                             : (haveH && f.heights[i] != kNoH) ? kHScale * (float)f.heights[i] : f.player_z;
                     float sx, sy;
                     if (WorldToScreen(f.matrix, vpX, vpY, vpW, vpH, wx, wy, cz, sx, sy) &&
                         sx > -(float)W && sx < 2.0f * W && sy > -(float)H && sy < 2.0f * H) {
@@ -741,6 +743,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const float kHScale = 32.0f;       // fine-z = 32 * cache height
         const std::int16_t kNoH = -32768;
         bool haveH = f->heights.size() == NC;
+        const bool haveF = f->heights_fine.size() == NC;   // the game's own terrain, exact
         static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
         // vis: 0 = unusable, 1 = drawable, 2 = behind the near plane (edges to it are clipped, not dropped)
         for (int tgx = 0; tgx < T; ++tgx)
@@ -749,9 +752,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     size_t i = ((size_t)tgx * T + tgy) * 4 + c;
                     float wx = (float)(f->player_tx - R + tgx + CX[c]) * 512.0f;
                     float wy = (float)(f->player_ty - R + tgy + CY[c]) * 512.0f;
-                    if (haveH && f->heights[i] == kNoH) continue;
-                    float cz = (haveH && f->heights[i] != kNoH)
-                             ? kHScale * (float)f->heights[i] : f->player_z;
+                    const bool liveC = haveF && f->heights_fine[i] != INT32_MIN;
+                    if (!liveC && haveH && f->heights[i] == kNoH) continue;
+                    float cz = liveC ? (float)f->heights_fine[i]
+                             : (haveH && f->heights[i] != kNoH) ? kHScale * (float)f->heights[i] : f->player_z;
                     wz[i] = cz;
                     const float wpt[3] = { wx, wy, cz };
                     if (ProjW(f->matrix, wpt) < kNearW) { vis[i] = 2; continue; }
@@ -1154,7 +1158,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             int cr = (m.color >> 16) & 0xFF, cg = (m.color >> 8) & 0xFF, cb = m.color & 0xFF;
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(gx, gy, f->plane, ch);
-            auto cz = [&](int c) { return (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c]; };
+            std::int32_t lch[4]; const bool liveOk = rtx::reader::LiveCornerHeights(f->pid, gx, gy, f->plane, lch);
+            auto cz = [&](int c) { return liveOk ? (float)lch[c] : (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c]; };
             float zSW = cz(0), zSE = cz(1), zNE = cz(2), zNW = cz(3);
             const float wc[4][3] = {
                 { gx * 512.f,       gy * 512.f,       zSW },
@@ -1256,8 +1261,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         for (std::size_t i = 0; i < nT; ++i) {
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(f->guide_path[i * 2], f->guide_path[i * 2 + 1], f->plane, ch);
+            std::int32_t lch[4]; const bool liveOk = rtx::reader::LiveCornerHeights(f->pid, f->guide_path[i * 2], f->guide_path[i * 2 + 1], f->plane, lch);
             for (int c = 0; c < 4; ++c)
-                cz[i * 4 + c] = (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c];
+                cz[i * 4 + c] = liveOk ? (float)lch[c] : (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c];
         }
         for (std::size_t i = 0; i + 1 < nT; ++i) {
             int dx = f->guide_path[(i + 1) * 2]     - f->guide_path[i * 2];
