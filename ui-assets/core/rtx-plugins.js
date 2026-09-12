@@ -45,11 +45,13 @@
   }
   function pluginUnmount(id) {
     const m = pluginMounts.get(id);
+    if (m && m.lua) { try { bridge().luaUnload(id); } catch (e) {} }
     if (m && m.kbFocus) kbGrab(false);
     pluginMounts.delete(id);
   }
 
   function pluginSendEvent(m, event, data) {
+    if (m && m.lua) { luaSendEvent(m, event, data); return; }
     if (!m || !m.frame || !m.frame.contentWindow) return;
     try { m.frame.contentWindow.postMessage({ __rtxPlugin: PLUGIN_PROTO, kind: 'event', event, data }, '*'); } catch (e) {}
   }
@@ -58,6 +60,7 @@
   function pluginPush() {
     const batch = pluginEventQueue.length ? pluginEventQueue.splice(0) : null;
     for (const m of pluginMounts.values()) {
+      if (m.lua) { luaTickPlugin(m, batch); continue; }   // the Lua runtime gets tick, events and state in one call
       if (!m.frame) continue;
       pluginSendEvent(m, 'tick', null);
       if (m.scopes.indexOf('state.read') !== -1) {
@@ -244,6 +247,8 @@
     else
         h += '<div style="color:#34d399;font-size:.8em;margin-bottom:12px;">Verified - signed by RuneTools.</div>';
     if (m.description) h += '<div style="font-size:.9em;margin-bottom:12px;">' + pluginEsc(m.description) + '</div>';
+    if (m.runtime === 'lua')
+      h += '<div style="color:#8b8b9e;font-size:.8em;margin:-6px 0 12px;">Lua plugin: runs in the built-in Lua runtime with no web content, and reaches the game only through the access listed below.</div>';
     if (isUpdate)
       h += '<div style="color:#e0b000;font-size:.82em;margin-bottom:10px;">This plugin now asks for more access than you allowed. Review the new items before enabling it.</div>';
     h += '<div style="font-size:.82em;color:#8b8b9e;margin-bottom:6px;">This plugin can:</div><ul style="margin:0 0 14px 18px;font-size:.88em;line-height:1.6;">';
@@ -296,6 +301,7 @@
     const cur = c.firstElementChild;
     if (cur && cur.dataset && cur.dataset.pluginHost === id) return;      // already mounted
     c.innerHTML = '';
+    if (tab.manifest.runtime === 'lua') { luaMountPlugin(c, id, tab, granted); return; }   // core/rtx-plugin-lua.js
     const wrap = document.createElement('div'); wrap.dataset.pluginHost = id;
     wrap.style.cssText = 'padding:0;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;';
     const fr = document.createElement('iframe');
@@ -338,9 +344,12 @@
       const scopes = Array.isArray(man.scopes) ? man.scopes.filter(s => PLUGIN_SCOPES.has(s)) : [];
       const clean = s => String(s == null ? '' : s).replace(/[<>&"']/g, '');
       const entry = (typeof man.entry === 'string' && man.entry && !/[\\/]|\.\./.test(man.entry)) ? man.entry : 'index.html';
+      // runtime "lua": the launcher runs <main> in its sandboxed Lua host instead of mounting <entry> in a frame
+      const runtime = (man.runtime === 'lua') ? 'lua' : 'html';
+      const main = (typeof man.main === 'string' && /^[A-Za-z0-9_.-]+\.lua$/.test(man.main) && man.main.indexOf('..') < 0) ? man.main : 'main.lua';
       out.push({
         id, source,
-        manifest: { id: clean(man.id).slice(0, 80) || id, name: clean(man.name).slice(0, 48) || id, version: clean(man.version).slice(0, 20), author: clean(man.author).slice(0, 60), entry, description: clean(man.description).slice(0, 280) },
+        manifest: { id: clean(man.id).slice(0, 80) || id, name: clean(man.name).slice(0, 48) || id, version: clean(man.version).slice(0, 20), author: clean(man.author).slice(0, 60), entry, runtime, main, description: clean(man.description).slice(0, 280) },
         scopes
       });
     }

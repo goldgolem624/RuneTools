@@ -82,6 +82,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "core/rtx-plugin-api.js", // plugin SDK method table, clamps, rate limiter, SDK shim
         "core/rtx-plugin-hud.js", // host-rendered plugin ability HUD strip
         "core/rtx-plugins.js",    // plugin SDK host broker: mounts, grants, sandbox, windows
+        "core/rtx-plugin-lua.js", // Lua plugin host: mount, widget tree renderer, __rtxLuaCall shim over PLUGIN_API
         "core/rtx-plugin-market.js", // in-client marketplace (browse / install)
         "core/rtx-data.js",       // rtxData: panels' data path over PLUGIN_API (per-tick coalescer)
     };

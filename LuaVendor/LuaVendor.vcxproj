@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Vendored Lua 5.4.7 (src/lua/vendor/lua-5.4.7, MIT, unmodified upstream sources minus the
+    lua.c / luac.c standalone front ends). Compiled once into a static .lib the launcher links,
+    like CacheVendor: the interpreter never changes between launcher edits.
+  -->
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{A4F1C9D2-7B3E-4E61-9C0D-2F8B5A6E7D91}</ProjectGuid>
+    <RootNamespace>LuaVendor</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
+    <TargetName>LuaVendor</TargetName>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <CompileAs>CompileAsC</CompileAs>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <SDLCheck>false</SDLCheck>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PreprocessorDefinitions>WIN64;NDEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <CompileAs>CompileAsC</CompileAs>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <SDLCheck>false</SDLCheck>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PreprocessorDefinitions>WIN64;_DEBUG;_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClInclude Include="..\src\lua\vendor\lua-5.4.7\lua.h" />
+    <ClInclude Include="..\src\lua\vendor\lua-5.4.7\luaconf.h" />
+    <ClInclude Include="..\src\lua\vendor\lua-5.4.7\lualib.h" />
+    <ClInclude Include="..\src\lua\vendor\lua-5.4.7\lauxlib.h" />
+    <ClInclude Include="..\src\lua\vendor\lua-5.4.7\lua.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lapi.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lauxlib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lbaselib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lcode.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lcorolib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lctype.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\ldblib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\ldebug.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\ldo.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\ldump.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lfunc.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lgc.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\linit.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\liolib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\llex.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lmathlib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lmem.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\loadlib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lobject.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lopcodes.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\loslib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lparser.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lstate.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lstring.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lstrlib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\ltable.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\ltablib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\ltm.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lundump.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lutf8lib.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lvm.c" />
+    <ClCompile Include="..\src\lua\vendor\lua-5.4.7\lzio.c" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

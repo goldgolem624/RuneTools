@@ -57,7 +57,8 @@
     el.innerHTML =
       '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px 10px;">' +
         '<div style="min-width:0;"><div style="font-weight:600;">' + pluginEsc(p.name) + '</div>' +
-        '<div style="color:#8b8b9e;font-size:0.8em;">v' + pluginEsc(p.version) + (p.author ? (' - ' + pluginEsc(p.author)) : '') + '</div></div>' +
+        '<div style="color:#8b8b9e;font-size:0.8em;">v' + pluginEsc(p.version) + (p.author ? (' - ' + pluginEsc(p.author)) : '') +
+        (p.runtime === 'lua' ? ' <span title="Runs in the built-in Lua runtime" style="background:rgba(255,255,255,0.08);border-radius:999px;padding:1px 7px;font-size:0.85em;">Lua</span>' : '') + '</div></div>' +
         '<div class="acts" style="display:flex;align-items:center;margin-left:auto;"></div></div>' +
       (p.description ? ('<div style="color:#c7c7d4;font-size:0.85em;margin:8px 0;">' + pluginEsc(p.description) + '</div>') : '') +
       (scopes ? ('<div style="margin-top:4px;">' + scopes + '</div>') : '');

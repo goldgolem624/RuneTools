@@ -4,6 +4,7 @@
 #include "Companion.h"
 #include "Dock.h"
 #include "Http.h"
+#include "LuaHost.h"
 #include "MonitorFix.h"
 #include "Overlay.h"
 #include "Process.h"
@@ -15,6 +16,7 @@
 
 #include <Windows.h>
 #include <ShlObj.h>
+#include <shellapi.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
 #include <cctype>
@@ -341,6 +343,21 @@ void DeclareDpiAwareness() {
 
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     rtx::log::Init();
+    {   // --lua-selftest [plugin dir]: exercise the Lua plugin host against a stub page, write
+        // lua-selftest.txt next to the working directory and exit with 0 on pass. No window, no game.
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        if (argv && argc >= 2 && std::wstring(argv[1]) == L"--lua-selftest") {
+            std::filesystem::path dir = (argc >= 3) ? std::filesystem::path(argv[2]) : std::filesystem::path(L"SampleLuaPluginX");
+            std::string report;
+            int rc = rtx::launcher::lua::SelfTest(dir, report);
+            { std::ofstream f("lua-selftest.txt", std::ios::binary | std::ios::trunc); f << report; }
+            boot_log("lua selftest rc=" + std::to_string(rc) + "\n" + report);
+            LocalFree(argv);
+            return rc;
+        }
+        if (argv) LocalFree(argv);
+    }
     boot_log("=== RuneToolsX starting ===");
     DeclareDpiAwareness();
 

@@ -31,6 +31,7 @@
 #include "Crypto.h"
 #include <shobjidl.h>
 #include "Zip.h"
+#include "LuaHost.h"
 
 #include <Ultralight/Ultralight.h>
 #include <JavaScriptCore/JavaScript.h>
@@ -4736,6 +4737,64 @@ std::string sha256_hex_buf(const std::uint8_t* d, std::size_t n) {
     return o;
 }
 
+// ---- Lua bundles: every allowed file in the zip is written under plugins\<id>\ (the runtime
+// reads modules and data files from disk; the JavaScript path only ever needed the entry HTML).
+bool lua_bundle_path_ok(const std::string& n) {
+    if (n.empty() || n.size() > 200 || n[0] == '/' || n.find("..") != std::string::npos ||
+        n.find('\\') != std::string::npos || n.find(':') != std::string::npos) return false;
+    int segs = 1;
+    for (char c : n) { if ((unsigned char)c < 0x20) return false; if (c == '/') ++segs; }
+    if (segs > 8) return false;
+    auto dot = n.rfind('.');
+    if (dot == std::string::npos || n.rfind('/') != std::string::npos && n.rfind('/') > dot) return false;
+    std::string ext = n.substr(dot);
+    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+    static const char* kOk[] = {".lua", ".json", ".txt", ".md", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".wav"};
+    for (auto e : kOk) if (ext == e) return true;
+    return false;
+}
+
+std::string install_lua_bundle(const std::uint8_t* body, std::size_t blen, const std::string& manStr, const std::string& id) {
+    std::string mainFile = json_str(manStr, "main");
+    if (mainFile.empty()) mainFile = "main.lua";
+    if (mainFile.find('/') != std::string::npos || mainFile.find('\\') != std::string::npos ||
+        mainFile.find("..") != std::string::npos || mainFile.size() < 5 ||
+        mainFile.compare(mainFile.size() - 4, 4, ".lua") != 0) return "Invalid main filename";
+    std::vector<std::string> names;
+    if (!zip::ListFiles(body, blen, names)) return "Bundle unreadable";
+    if (names.size() > 200) return "Bundle has too many files";
+    std::vector<std::pair<std::string, std::string>> files;
+    std::size_t total = 0; bool haveMain = false, haveManifest = false;
+    for (auto& n : names) {
+        if (!lua_bundle_path_ok(n)) return "Disallowed file in bundle: " + n;
+        std::string data;
+        if (!zip::ExtractFile(body, blen, n, data)) return "Bundle entry unreadable: " + n;
+        if (data.size() > kPluginEntryMaxBytes) return "Bundle file too large: " + n;
+        total += data.size();
+        if (total > 5 * 1024 * 1024) return "Bundle too large";
+        if (n == mainFile) haveMain = true;
+        if (n == "manifest.json") haveManifest = true;
+        files.emplace_back(n, std::move(data));
+    }
+    if (!haveMain) return "Bundle missing " + mainFile;
+    if (!haveManifest) return "Bundle missing manifest.json";
+    auto root = plugin_install_root();
+    if (root.empty()) return "No install location";
+    auto dir = root / id;
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    ec.clear();
+    std::filesystem::create_directories(dir, ec);
+    for (auto& [n, data] : files) {
+        auto path = dir / std::filesystem::path(n);
+        std::error_code pec; std::filesystem::create_directories(path.parent_path(), pec);
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        if (!f) return "Write failed: " + n;
+        f.write(data.data(), (std::streamsize)data.size());
+    }
+    return {};
+}
+
 std::string install_plugin(const std::string& slug) {
     std::string id = sanitize_plugin_id(slug);
     if (id.empty()) return "Invalid plugin id";
@@ -4762,6 +4821,7 @@ std::string install_plugin(const std::string& slug) {
     if (!zip::ExtractFile(body, blen, "manifest.json", manStr) || manStr.empty())
         return "Bundle missing manifest.json";
     if (sanitize_plugin_id(json_str(manStr, "id")) != id) return "Manifest id mismatch";
+    if (json_str(manStr, "runtime") == "lua") return install_lua_bundle(body, blen, manStr, id);
     std::string entryName = json_str(manStr, "entry");
     if (entryName.empty()) entryName = "index.html";
     if (entryName.find('/') != std::string::npos || entryName.find('\\') != std::string::npos ||
@@ -4903,6 +4963,71 @@ JSValueRef PluginUninstallLocal(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (id.empty() || root.empty()) return JSValueMakeBoolean(ctx, false);
     std::error_code ec; std::filesystem::remove_all(root / id, ec);
     return JSValueMakeBoolean(ctx, !ec);
+}
+
+// ---- Lua plugins: JavaScriptCore wrappers over LuaHost (core/rtx-plugin-lua.js drives these) ----
+std::vector<std::string> split_csv(const std::string& s) {
+    std::vector<std::string> out; std::string cur;
+    for (char c : s) { if (c == ',') { if (!cur.empty()) out.push_back(cur); cur.clear(); } else cur.push_back(c); }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+JSValueRef LuaLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 4) return utf8_to_js(ctx, std::string("{\"ok\":false,\"error\":\"bad request\",\"failed\":true,\"log\":[]}"));
+    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
+    std::string source = js_to_utf8(ctx, argv[1]);
+    auto root = (source == "dev") ? plugin_dev_root() : plugin_install_root();
+    if (id.empty() || root.empty()) return utf8_to_js(ctx, std::string("{\"ok\":false,\"error\":\"unknown plugin\",\"failed\":true,\"log\":[]}"));
+    rtx::launcher::lua::ScopedContext sc(ctx);
+    return utf8_to_js(ctx, rtx::launcher::lua::Load(id, root / id, split_csv(js_to_utf8(ctx, argv[2])), js_to_utf8(ctx, argv[3])));
+}
+
+JSValueRef LuaUnload(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                     size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
+    if (id.empty()) return JSValueMakeBoolean(ctx, false);
+    rtx::launcher::lua::ScopedContext sc(ctx);
+    rtx::launcher::lua::Unload(id);
+    return JSValueMakeBoolean(ctx, true);
+}
+
+JSValueRef LuaTick(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, std::string("{}"));
+    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
+    std::string events = argc >= 2 ? js_to_utf8(ctx, argv[1]) : std::string();
+    std::string state  = argc >= 3 ? js_to_utf8(ctx, argv[2]) : std::string();
+    rtx::launcher::lua::ScopedContext sc(ctx);
+    return utf8_to_js(ctx, rtx::launcher::lua::Tick(id, events, state));
+}
+
+JSValueRef LuaEvent(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                    size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return utf8_to_js(ctx, std::string("{}"));
+    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
+    rtx::launcher::lua::ScopedContext sc(ctx);
+    return utf8_to_js(ctx, rtx::launcher::lua::Event(id, js_to_utf8(ctx, argv[1]), js_to_utf8(ctx, argv[2])));
+}
+
+JSValueRef LuaUiEvent(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return utf8_to_js(ctx, std::string("{}"));
+    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
+    rtx::launcher::lua::ScopedContext sc(ctx);
+    return utf8_to_js(ctx, rtx::launcher::lua::UiEvent(id, js_to_utf8(ctx, argv[1]), js_to_utf8(ctx, argv[2])));
+}
+
+JSValueRef LuaInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                   size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, std::string("{\"loaded\":false}"));
+    return utf8_to_js(ctx, rtx::launcher::lua::Info(sanitize_plugin_id(js_to_utf8(ctx, argv[0]))));
+}
+
+JSValueRef LuaVersion(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, std::string(rtx::launcher::lua::RuntimeVersion()));
 }
 
 }  // namespace
@@ -5245,6 +5370,14 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pluginInstalledManifest", PluginInstalledManifest);
     install_fn(ctx, ns, "pluginInstalledEntry",    PluginInstalledEntry);
     install_fn(ctx, ns, "pluginUninstallLocal",    PluginUninstallLocal);
+
+    install_fn(ctx, ns, "luaLoad",                 LuaLoad);
+    install_fn(ctx, ns, "luaUnload",               LuaUnload);
+    install_fn(ctx, ns, "luaTick",                 LuaTick);
+    install_fn(ctx, ns, "luaEvent",                LuaEvent);
+    install_fn(ctx, ns, "luaUiEvent",              LuaUiEvent);
+    install_fn(ctx, ns, "luaInfo",                 LuaInfo);
+    install_fn(ctx, ns, "luaVersion",              LuaVersion);
 
 }
 

@@ -1,7 +1,9 @@
 # RuneTools Plugin SDK
 
 Build your own tools inside RuneTools -- custom tabs and overlays -- using plain HTML, CSS,
-and JS. A plugin reads live game state and draws overlays through the `window.rtx.plugin` API.
+and JS, or in Lua. A plugin reads live game state and draws overlays through the `window.rtx.plugin`
+API (HTML plugins) or the `rtx` table (Lua plugins, see "Lua plugins" below); both runtimes expose
+the same methods, scopes and event kinds, so everything documented here applies to both.
 
 ## Quick start
 
@@ -44,7 +46,9 @@ my-plugin/
 | `version`           | string   | Semver.                                                         |
 | `author`            | string   | Shown on the plugin page.                                       |
 | `description`       | string   | Short summary.                                                  |
-| `entry`             | string   | Entry HTML file inside the bundle.                              |
+| `entry`             | string   | Entry HTML file inside the bundle (HTML plugins).               |
+| `runtime`           | string   | Optional. `"lua"` runs the plugin in the Lua runtime; omit for HTML. |
+| `main`              | string   | Lua plugins: the entry chunk, a bare `.lua` filename (default `main.lua`). |
 | `icon`              | string   | Optional. Bare filename of a plugin icon inside the bundle.     |
 | `scopes`            | string[] | Permissions you request (see below). Request only what you use. |
 | `minHostVersion`    | string   | Optional minimum RuneTools version.                            |
@@ -709,6 +713,198 @@ Limits: 24 controls, key `[A-Za-z0-9_.-]` up to 32 chars, labels 48 / hints 120 
 select up to 12 options, text values 200 chars. Values are clamped to the schema on
 every write. The storage key `~settings` in your plugin store is reserved for this.
 
+## Lua plugins
+
+RuneTools also runs plugins written in Lua 5.4. A Lua plugin is the same product as an HTML
+plugin from the user's side: it is discovered from the same folders, installed from the same
+Browse tab, asks for the same scopes on the same consent card, keeps its settings on the same
+Preferences page and hot-reloads the same way. What changes is the runtime: instead of a sandboxed
+frame the launcher runs your `main.lua` in its own sandboxed Lua state, on the host's refresh
+cadence, and renders the panel you describe.
+
+Why offer both: the official RuneScape client is adding a Lua plugin API. Its shape is not public
+yet, so the RuneTools Lua SDK mirrors the JavaScript SDK one to one rather than guessing at
+Jagex's namespaces. When that API ships, plugins written against `rtx.*` keep working unchanged
+(the host can map an official data source under the same method names, and an API profile can
+alias another namespace onto `rtx` without touching plugin code).
+
+### Layout
+
+```
+my-plugin/
+  manifest.json
+  main.lua
+  util.lua          (optional modules, loaded with require)
+  data/rows.json    (optional data files, read with rtx.plugin.readFile)
+```
+
+```json
+{
+  "rtxPluginManifest": 1,
+  "apiVersion": "1.0",
+  "runtime": "lua",
+  "id": "com.yourname.tool",
+  "name": "Your Tool",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "description": "What it does.",
+  "main": "main.lua",
+  "scopes": ["state.read", "overlay", "storage"],
+  "minHostVersion": "2.5.0"
+}
+```
+
+`runtime: "lua"` selects the Lua runtime and `main` names the entry chunk (default `main.lua`,
+a bare filename). `entry` is not used. Everything else is identical to an HTML plugin, including
+the `id` rules, the scopes and the consent flow. Put the folder in
+`%USERPROFILE%\RuneToolsX\plugins-dev\<your-id>\` for development; saving any file in it reloads
+the plugin.
+
+### The `rtx` table
+
+Your chunk runs once at load with a global `rtx` table. It is generated from the host's method
+table, so it has exactly the namespaces and method names of the JavaScript SDK (`rtx.plugin.state.*`
+becomes `rtx.state.*`, and so on for `cache`, `overlay`, `notify`, `clipboard`, `sound`, `storage`,
+`prices`, `ui`, `settings`). Scopes gate the same methods, and the same rate limits apply.
+
+The one deliberate difference: **calls are synchronous**. There are no promises.
+
+```lua
+local inv = rtx.state.inventory()          -- table or nil
+if inv then print(#inv.items .. " items") end
+
+local v, err = rtx.state.player()          -- err is a string when the call failed
+if not v then rtx.warn("player: " .. tostring(err)) end
+```
+
+- A method returns its value (tables for JSON objects and arrays, `nil` for JSON null).
+- On failure it returns `nil, reason` and sets `rtx.lastError`. Reasons are the same strings the
+  JavaScript SDK rejects with: `scope not granted: <scope>`, `rate limited`, `unknown method`.
+- A few methods are computed asynchronously by the host (`state.quests`, `state.quest`,
+  `state.pets`, `state.bosses`, `state.dailies`, `state.mysteries`, `state.varbits`, `state.varcs`,
+  `state.achievements`, `ui.settings`, `overlay.highlightOption`, `overlay.highlightItem`). The first
+  call with a given argument list returns `nil, "pending"`; the value arrives on a later call, then
+  stays fresh as you keep calling. Read them in your `tick` handler and treat `nil` as "not yet".
+
+```lua
+rtx.plugin.id()               -- "com.yourname.tool"
+rtx.plugin.apiVersion()       -- "1.0"
+rtx.plugin.runtime()          -- "lua"
+rtx.plugin.runtimeVersion()   -- "Lua 5.4.7"
+rtx.plugin.grantedScopes()    -- { "state.read", "overlay", "storage" }
+rtx.plugin.hasScope("overlay")
+rtx.plugin.readFile("data/rows.json")   -- a text file inside your plugin folder, or nil
+rtx.json.encode(value) / rtx.json.decode(text)
+rtx.call("state.scene", { 20 })         -- the generic form every namespace method uses
+```
+
+### Events, timers and logging
+
+```lua
+rtx.on("ready", function() end)             -- once, on the first host tick after load
+rtx.on("tick", function() end)              -- the host refresh, about 4 times a second
+rtx.on("state", function(snapshot) end)     -- the same snapshot the JavaScript "state" event carries (state.read)
+rtx.on("settings", function(values) end)    -- a settings value changed on the Preferences page
+rtx.events.on("skill_update", function(ev) end)   -- game events, same kinds and fields as the JavaScript SDK
+rtx.events.on("*", function(ev) end)
+rtx.events.off("skill_update", fn)
+
+local id = rtx.timer.after(5, function() end)     -- seconds; resolved on the host tick
+local id2 = rtx.timer.every(60, function() end)
+rtx.timer.cancel(id2)
+
+print("hello", 42, { a = 1 })   -- goes to the plugin's console (tables are printed as JSON)
+rtx.log(...)  rtx.warn(...)
+```
+
+Handlers run inside the host's tick. An error in a handler is logged to the plugin console and
+the plugin keeps running; an error in the main chunk stops the plugin. Each tick has an execution
+budget (about 40 million instructions or 1.5 seconds) and each plugin a 64 MB memory limit; a
+plugin that keeps failing eight ticks in a row is stopped until it is saved (developer folder) or
+reinstalled.
+
+### Panels
+
+A Lua plugin describes its panel as a tree of widgets and the host renders it with the RuneTools
+theme. Publish a new tree whenever your data changes; the host only re-renders when the tree
+differs.
+
+```lua
+rtx.ui.render({
+  { type = "heading", text = "Drop log" },
+  { type = "text", text = "Ground items seen this session.", muted = true },
+  { type = "card", title = "Totals", children = {
+    { type = "kv", items = { { "Items", tostring(n) }, { "Value", fmt(gp) } } },
+    { type = "progress", value = n, max = 100, label = "Progress" },
+  } },
+  { type = "row", children = {
+    { type = "button", id = "clear", label = "Clear", onClick = function() reset() end },
+    { type = "toggle", id = "alerts", label = "Alert on rare drops", value = alerts,
+      onChange = function(v) alerts = v end },
+  } },
+  { type = "table", columns = { "Item", "Qty" }, rows = rows },
+})
+rtx.ui.clear()
+rtx.ui.settings({ { key = "alerts", type = "toggle", label = "Alerts", default = true } })   -- same schema as ui.settings
+rtx.settings.get()
+```
+
+Widgets: `heading{text}`, `text{text, muted, color}`, `card{title, children}`, `row{children}`,
+`col{children}`, `button{id, label, primary, disabled, onClick}`, `toggle{id, label, value, onChange}`,
+`input{id, label, value, placeholder, onChange}`, `select{id, label, value, options = {{v, label}, ...}, onChange}`,
+`progress{value, max, label, text}`, `table{columns, rows}`, `kv{items = {{k, v}, ...}}`,
+`badge{text, tone = "ok" | "warn" | "err"}`, `sep`, `spacer{h}`. A tree holds at most 500 widgets,
+eight levels deep; text is plain (never HTML). Callbacks receive the new value for `toggle`,
+`input` and `select`. Below the panel the host shows a collapsible console with everything the
+plugin printed and every error it raised.
+
+### Modules and the sandbox
+
+`require("./util")`, `require("lib.colors")` and `require("sub/mod")` load `.lua` files inside the
+plugin folder, once, and cache the returned value. Paths never leave the folder. The standard
+`string`, `table`, `math`, `utf8` and `coroutine` libraries are available, plus `os.time`,
+`os.clock`, `os.date` and `os.difftime`. There is no `io`, `debug`, `package`, `dofile` or
+`loadfile`, `load` only compiles text, and nothing in the plugin can reach the file system,
+the network, other plugins or the host page. Everything reaches the game through `rtx.*`, under the
+scopes the user approved.
+
+### Porting an HTML plugin
+
+- `await rtx.plugin.state.inventory()` becomes `rtx.state.inventory()`.
+- `rtx.plugin.on("tick", fn)` becomes `rtx.on("tick", fn)`; `rtx.plugin.events.on` becomes `rtx.events.on`.
+- Replace the page markup with `rtx.ui.render(tree)`; replace DOM event handlers with widget callbacks.
+- `manifest.json`: add `"runtime": "lua"` and `"main": "main.lua"`, drop `entry`. Scopes and `id` stay.
+- The editor stubs in `rtx.d.lua` (shipped next to `plugin-sdk.js`) give completion and types for the whole API in any editor that understands LuaLS annotations.
+
+### Reference plugin
+
+```lua
+-- main.lua
+local invCount, alertFull = -1, rtx.storage.get("alertFull") == true
+
+local function render()
+  rtx.ui.render({
+    { type = "heading", text = "Sample Lua Plugin" },
+    { type = "card", children = {
+      { type = "kv", items = { { "Items in inventory", invCount >= 0 and tostring(invCount) or "--" } } },
+      { type = "toggle", id = "alertFull", label = "Toast when the inventory is full", value = alertFull,
+        onChange = function(v) alertFull = v; rtx.storage.set("alertFull", v); render() end },
+      { type = "button", id = "test", label = "Test overlay toast", primary = true,
+        onClick = function() rtx.overlay.toast("Hello from Lua") end },
+    } },
+  })
+end
+
+rtx.on("ready", render)
+rtx.on("tick", function()
+  local inv = rtx.state.inventory()
+  if not inv then return end
+  local n = #(inv.items or {})
+  if n ~= invCount then invCount = n; render() end
+  if n >= 28 and alertFull then rtx.overlay.toast("Inventory full") end
+end)
+```
+
 ## Complete example
 
 ```html
@@ -761,10 +957,11 @@ Plugins run in a sandboxed frame and use the `rtx.plugin` APIs documented above:
 
 A submission is one `.zip` with `manifest.json` at its root. Upload limits: at most 200 files,
 2 MB per file, 5 MB uncompressed, 8 MB zip. Allowed types: `.html`, `.htm`, `.css`, `.js`, `.mjs`,
-`.json`, `.svg`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.woff`, `.woff2`, `.wav`. A bundle is
-rejected if it isn't a valid zip, the manifest is missing or invalid, a file type isn't allowed, a
-path is unsafe (`..` or a leading `/`), the `entry`/`icon` file is missing, or anything references a
-remote resource. (`eval` / `fetch` / `WebSocket` / dynamic `import` are flagged for the reviewer but
+`.lua`, `.json`, `.txt`, `.md`, `.svg`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.woff`, `.woff2`, `.wav`.
+A bundle is rejected if it isn't a valid zip, the manifest is missing or invalid, a file type isn't
+allowed, a path is unsafe (`..` or a leading `/`), the `entry`/`main`/`icon` file is missing, or
+anything references a remote resource. A Lua bundle (`runtime: "lua"`) is installed whole: every
+allowed file lands in the plugin folder so `require` and `rtx.plugin.readFile` can reach it. (`eval` / `fetch` / `WebSocket` / dynamic `import` are flagged for the reviewer but
 are already blocked by the frame CSP.)
 
 ## Submission and signing

@@ -83,4 +83,35 @@ bool ExtractFile(const std::uint8_t* data, std::size_t len,
     return false;
 }
 
+bool ListFiles(const std::uint8_t* data, std::size_t len, std::vector<std::string>& names) {
+    names.clear();
+    if (!data || len < 22) return false;
+    const std::size_t kMaxComment = 65557;
+    std::size_t start = (len > kMaxComment) ? len - kMaxComment : 0;
+    long long eocd = -1;
+    for (std::size_t i = len - 22 + 1; i-- > start; ) {
+        if (rd32(data + i) == 0x06054b50) { eocd = (long long)i; break; }
+    }
+    if (eocd < 0 || (std::size_t)eocd + 22 > len) return false;
+    const std::uint8_t* e = data + eocd;
+    std::uint16_t total  = rd16(e + 10);
+    std::uint32_t cdSize = rd32(e + 12);
+    std::uint32_t cdOff  = rd32(e + 16);
+    if ((std::size_t)cdOff + cdSize > len) return false;
+    std::size_t p = cdOff;
+    for (std::uint16_t n = 0; n < total; ++n) {
+        if (p + 46 > len) return false;
+        const std::uint8_t* c = data + p;
+        if (rd32(c) != 0x02014b50) return false;
+        std::uint16_t fnLen = rd16(c + 28);
+        std::uint16_t exLen = rd16(c + 30);
+        std::uint16_t cmLen = rd16(c + 32);
+        if (p + 46 + fnLen > len) return false;
+        std::string fn((const char*)(c + 46), fnLen);
+        if (!fn.empty() && fn.back() != '/') names.push_back(fn);
+        p += 46 + fnLen + exLen + cmLen;
+    }
+    return true;
+}
+
 }  // namespace rtx::launcher::zip
