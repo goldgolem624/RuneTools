@@ -3606,7 +3606,7 @@ std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events
 // + (ry-miny)*0x18, region object at cell+8.
 namespace {
 constexpr std::int32_t kNoFine = INT32_MIN;
-struct TerrainRegion { std::int32_t h[66][66]; std::int16_t lift[64][64]; std::uint8_t bridge[64][64]; bool ok = false; bool liftOk = false; bool flagsOk = false; };   // h[lx+1][ly+1], lx/ly 0..64; lift[lx][ly] = standing offset; bridge = plane-1 tile flag bit 1
+struct TerrainRegion { std::int32_t h[66][66]; std::int16_t lift[64][64]; std::uint8_t bridge[64][64]; std::uint8_t flag[64][64]; bool ok = false; bool liftOk = false; bool flagsOk = false; bool planeFlagsOk = false; };   // h[lx+1][ly+1], lx/ly 0..64; lift = standing offset; bridge = plane-1 flag bit 1; flag = this plane's tile flag byte (bit 0 = blocked)
 struct TerrainSnap { std::uint32_t pid = 0; int plane = -1; int cx = 0, cy = 0; std::uint32_t stamp = 0; std::unordered_map<int, TerrainRegion> regions; };  // key (plane<<16)|(rx<<8)|ry
 std::mutex g_terr_mu;
 TerrainSnap g_terr;
@@ -3664,24 +3664,27 @@ bool terrain_read_region(HANDLE h, std::uint64_t scene, int rx, int ry, int plan
     // pointer at +8), columns of 0x18-byte byte vectors, one pad byte each side like the heights.
     // The actor plane helper (FUN_1403579f0) asks plane 1 and treats bit 1 (value 2) as "bridge":
     // the tile is drawn and stood on one plane up. Read plane 1's flags for every region.
-    std::memset(out.bridge, 0, sizeof(out.bridge));
-    auto f0 = rpm<std::uint64_t>(h, terrain + 0x200), f1 = rpm<std::uint64_t>(h, terrain + 0x208);
-    if (f0 && f1 && *f1 >= *f0 + 0x20) {
-        auto fcols = rpm<std::uint64_t>(h, *f0 + 1 * 0x10 + 8);
-        if (fcols && *fcols > 0x10000) {
-            auto cb = rpm<std::uint64_t>(h, *fcols), ce = rpm<std::uint64_t>(h, *fcols + 8);
-            if (cb && ce && *ce >= *cb + 66 * 0x18) {
-                bool all = true;
-                for (int lx = 0; lx < 64 && all; ++lx) {
-                    auto colb = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18), cole = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18 + 8);
-                    std::uint8_t fb[66];
-                    if (!colb || !cole || *cole < *colb + 66 || !rpm_bytes(h, *colb, fb, sizeof(fb))) { all = false; break; }
-                    for (int ly = 0; ly < 64; ++ly) out.bridge[lx][ly] = (fb[ly + 1] & 2) ? 1 : 0;
-                }
-                out.flagsOk = all;
-            }
+    // The flag byte is the map's tile settings byte (bit 0 blocked/void, bit 1 bridge, bit 3 force
+    // lowest plane); the cache builds its blocked grid from the same bit 0, so reading it live
+    // gives the void tiles inside instances, where the cache has nothing.
+    std::memset(out.bridge, 0, sizeof(out.bridge)); std::memset(out.flag, 0, sizeof(out.flag));
+    auto readFlags = [&](int fplane, std::uint8_t dst[64][64], int mask) -> bool {
+        auto f0 = rpm<std::uint64_t>(h, terrain + 0x200), f1 = rpm<std::uint64_t>(h, terrain + 0x208);
+        if (!f0 || !f1 || *f1 < *f0 + (std::uint64_t)(fplane + 1) * 0x10) return false;
+        auto fcols = rpm<std::uint64_t>(h, *f0 + (std::uint64_t)fplane * 0x10 + 8);
+        if (!fcols || *fcols <= 0x10000) return false;
+        auto cb = rpm<std::uint64_t>(h, *fcols), ce = rpm<std::uint64_t>(h, *fcols + 8);
+        if (!cb || !ce || *ce < *cb + 66 * 0x18) return false;
+        for (int lx = 0; lx < 64; ++lx) {
+            auto colb = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18), cole = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18 + 8);
+            std::uint8_t fb[66];
+            if (!colb || !cole || *cole < *colb + 66 || !rpm_bytes(h, *colb, fb, sizeof(fb))) return false;
+            for (int ly = 0; ly < 64; ++ly) dst[lx][ly] = (std::uint8_t)(fb[ly + 1] & mask);
         }
-    }
+        return true;
+    };
+    out.flagsOk = readFlags(1, out.bridge, 2);
+    out.planeFlagsOk = readFlags(plane, out.flag, 0xFF);
     return true;
 }
 }  // namespace
@@ -3750,6 +3753,18 @@ int LiveTileEffPlane(std::uint32_t pid, int wx, int wy, int plane) {
         return it->second.bridge[wx & 63][wy & 63] ? plane + 1 : plane;
     }
     return plane;
+}
+// Blocked (void) flag of tile (wx, wy): bit 0 of the map's tile settings on the tile's effective
+// plane, from the snapshot. -1 when that region/plane was not readable, else 0 or 1. Only the
+// map's own void flag: loc footprints are not part of it (the client keeps no loc collision map).
+int LiveTileVoid(std::uint32_t pid, int wx, int wy, int plane) {
+    if (wx < 0 || wy < 0) return -1;
+    const int ep = LiveTileEffPlane(pid, wx, wy, plane);
+    std::lock_guard<std::mutex> lk(g_terr_mu);
+    if (g_terr.pid != pid) return -1;
+    auto it = g_terr.regions.find((ep << 16) | ((wx >> 6) << 8) | (wy >> 6));
+    if (it == g_terr.regions.end() || !it->second.planeFlagsOk) return -1;
+    return (it->second.flag[wx & 63][wy & 63] & 1) ? 1 : 0;
 }
 // The four corner heights of tile (wx, wy) as the game stands an actor on it: sampled on the
 // tile's effective plane (bridges) plus the tile's standing offset. SW SE NE NW.
@@ -7206,6 +7221,12 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         out.grid_r = grid_radius;
         rtx::cache::RegionBlockedFill(out.player_tx, out.player_ty, out.plane,
                                       grid_radius, out.blocked);
+        if (liveTerrain) {   // the map's void flag read live: adds the blocked tiles of instances, where the cache is empty
+            const int T = 2 * grid_radius + 1;
+            for (int gx = 0; gx < T; ++gx) for (int gy = 0; gy < T; ++gy)
+                if (LiveTileVoid(pid, out.player_tx - grid_radius + gx, out.player_ty - grid_radius + gy, out.plane) == 1)
+                    out.blocked[(std::size_t)gx * T + gy] |= rtx::cache::kTileBlockFull;
+        }
         rtx::cache::RegionCornerHeightsFill(out.player_tx, out.player_ty, out.plane,
                                             grid_radius, out.heights);
         if (liveTerrain) {   // same indexing as heights: ((gx*T)+gy)*4+c, corners SW SE NE NW
