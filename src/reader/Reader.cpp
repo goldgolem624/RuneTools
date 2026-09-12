@@ -2619,6 +2619,20 @@ bool ev_decode(std::string& o, int op, const std::uint8_t* b, std::uint32_t n, i
         std::snprintf(t, sizeof(t), "\"kind\":\"varp_set\",\"id\":%d,\"value\":%lld,\"long\":true", (b[8] << 8) | b[9], v);
         o += t; return true;
     }
+    case rtx::sops::kVarbitVarint: {   // two LEB128 varints: varbit id, value  (FUN_1401420d0)
+        std::uint32_t p = 0; std::uint64_t vals[2] = { 0, 0 };
+        for (int k = 0; k < 2; ++k) {
+            int sh = 0;
+            for (;;) {
+                if (p >= n || sh > 56) return false;
+                const std::uint8_t c = b[p++];
+                vals[k] |= (std::uint64_t)(c & 0x7F) << sh; sh += 7;
+                if (c < 0x80) break;
+            }
+        }
+        std::snprintf(t, sizeof(t), "\"kind\":\"varbit_set\",\"id\":%u,\"value\":%d", (unsigned)vals[0], (int)(std::uint32_t)vals[1]);
+        o += t; return true;
+    }
     case rtx::sops::kPingEcho:     // two u32 BE, client echoes back (9-byte reply)
         if (n < 8) return false;
         std::snprintf(t, sizeof(t), "\"kind\":\"ping\",\"a\":%u,\"b\":%u", ev_u32be(b), ev_u32be(b + 4));

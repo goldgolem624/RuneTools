@@ -19,7 +19,8 @@ inline constexpr int kVarpInt         = 0x04;   // 6 bytes  : id = ((b0-0x80)&0x
 inline constexpr int kVarpByte        = 0x4F;   // 3 bytes  : value = i8 b0; id = ((b2-0x80)&0xFF)|(b1<<8)                            (10/14)
 inline constexpr int kVarcInt         = 0x77;   // 6 bytes  : id = ((b1-0x80)&0xFF)|(b0<<8); value = (b3<<24)|(b2<<16)|(b5<<8)|b4     (Ghidra FUN_140141e90)
 inline constexpr int kVarcByte        = 0x7E;   // 3 bytes  : id = b0|(b1<<8); value = (int8)(0x80-b2)                                 (Ghidra FUN_140141fc0)
-inline constexpr int kVarpLong        = 0x36;   // 10 bytes : value = i64 hi=(b1<<24)|(b0<<16)|(b3<<8)|b2, lo=(b5<<24)|(b4<<16)|(b7<<8)|b6; id = (b8<<8)|b9 (Ghidra FUN_140142390)
+inline constexpr int kVarbitVarint    = 0x74;   // var-byte : two LEB128 varints (7 bits per byte, low first, high bit = continue): varbit id, value (Ghidra FUN_1401420d0, config slot +0x230)
+inline constexpr int kVarpLong        = 0xA5;   // 10 bytes : value = i64 hi=(b1<<24)|(b0<<16)|(b3<<8)|b2, lo=(b5<<24)|(b4<<16)|(b7<<8)|b6; id = (b8<<8)|b9 (Ghidra FUN_140142390; op from the live descriptor table, see tools/rtx_pkt_table.py)
 inline constexpr int kOpMax           = 0xDE;   // framer bound (`cmp eax,0xDE; ja`); 0xE5 on 949
 
 struct Expect { int op; int len; const char* name; };
@@ -38,11 +39,12 @@ inline constexpr Expect kExpected[] = {
     { kVarcInt,          6, "varc_int"         },
     { kVarcByte,         3, "varc_byte"        },
     { kVarpLong,        10, "varp_long"        },
+    { kVarbitVarint,    -1, "varbit_set"       },
 };
 
 inline constexpr int kDefaultCaptured[] = {
     kSkillUpdate, kGeOffer, kContainerUpdate, kRunClientScript, kRunEnergy, kRunWeight, kPingEcho,
-    kVarpInt, kVarpByte, kVarcInt, kVarcByte, kVarpLong,
+    kVarpInt, kVarpByte, kVarcInt, kVarcByte, kVarpLong, kVarbitVarint,
 };
 constexpr std::uint32_t DefaultMaskWord(int word) {
     std::uint32_t m = 0;
