@@ -213,8 +213,8 @@
             for (const ev of fresh) {
               const k = sndKey(ev.idx, ev.id);
               const prev = sndLive.get(k);
-              if (prev) { prev.ms = ev.ms; prev.hits++; prev.heardAt = nowWall; }
-              else sndLive.set(k, { id: ev.id, idx: ev.idx, ms: ev.ms, hits: 1, heardAt: nowWall });
+              if (prev) { prev.ms = ev.ms; prev.hits++; prev.heardAt = nowWall; prev.origin = ev.origin || prev.origin; prev.x = ev.x; prev.y = ev.y; prev.group = ev.group; prev.kind = ev.kind; }
+              else sndLive.set(k, { id: ev.id, idx: ev.idx, ms: ev.ms, hits: 1, heardAt: nowWall, origin: ev.origin || '', x: ev.x, y: ev.y, group: ev.group, kind: ev.kind, caller: ev.caller });
             }
             if (sndLive.size > 24) {
               const byAge = Array.from(sndLive.values()).sort(function (a, b) { return a.ms - b.ms; });
@@ -269,8 +269,10 @@
         for (const k of keys) {
           const e = sndLive.get(k);
           const m = sndMuted.has(k);
-          const tag = (e.idx === SND_IDX.music ? 'M' : 'E') + e.id;
-          h += '<button class="pet-chip snd-heard" data-liveplay="' + e.idx + ':' + e.id + '" data-tag="' + tag + '">'
+          const ORIG = { script: 'script', server: 'server', server_tile: 'server, at tile', zone: 'zone', actor: 'actor animation', engine: 'engine' };
+          const tag = (e.idx === SND_IDX.music ? 'M' : 'E') + e.id + (e.origin ? ' ' + ({ script: 'S', server: 'P', server_tile: 'T', zone: 'Z', actor: 'N', engine: 'G' }[e.origin] || '?') : '');
+          const tip = 'origin: ' + (ORIG[e.origin] || ('call site 0x' + Number(e.caller || 0).toString(16))) + (e.x >= 0 ? ' at ' + e.x + ',' + e.y : '') + ' · group ' + e.group + ' kind ' + e.kind;
+          h += '<button class="pet-chip snd-heard" title="' + tip + '" data-liveplay="' + e.idx + ':' + e.id + '" data-tag="' + tag + '">'
              + tag + (e.hits > 1 ? ' &times;' + e.hits : '') + ' &#9654;</button>'
              + '<button class="pet-chip' + (m ? ' on' : '') + '" data-live="' + k + '">'
              + (m ? 'Unmute' : 'Mute') + '</button>';

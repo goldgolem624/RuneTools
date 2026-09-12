@@ -6,6 +6,7 @@
 
 #include <windows.h>
 #include <detours.h>
+#include <intrin.h>
 
 #include <cstdint>
 #include <cstring>
@@ -138,13 +139,14 @@ bool IsMuted(std::int32_t key) {
     return hit && g_share->blockSeq == s0;
 }
 
-void NoteObserved(std::int32_t id, std::int32_t idx, bool muted) {
+void NoteObserved(std::int32_t id, std::int32_t idx, bool muted, std::uint32_t caller, int x, int y, std::uint8_t group, std::uint8_t kind) {
     const std::uint32_t seq = g_share->recentSeq;
     rtx::sound::RecentEntry e;
     e.id    = id;
     e.idx   = (std::int16_t)idx;
     e.muted = muted ? 1 : 0;
     e.ms    = (std::uint32_t)GetTickCount64();
+    e.caller = caller; e.x = (std::int16_t)x; e.y = (std::int16_t)y; e.group = group; e.kind = kind; e.pad = 0;
     g_share->recent[seq % rtx::sound::kMaxRecent] = e;
     MemoryBarrier();                              // slot lands before the seq bump
     g_share->recentSeq = seq + 1;
@@ -160,7 +162,16 @@ std::uint64_t __fastcall Detour_Play(std::uint64_t subsystem, std::uint64_t ctx,
         ++g_share->diag[0];
         const std::int32_t idx = IndexOf(group);
         const bool muted = IsMuted(rtx::sound::MakeKey(idx, id));
-        NoteObserved(id, idx, muted);
+        // Who asked: the return address names the subsystem (script op, server packet, zone sound,
+        // actor animation, engine). Positioned sounds (mode a8 != 4) carry a fine-unit position at a11.
+        const std::uint64_t ret = (std::uint64_t)_ReturnAddress();
+        const std::uint32_t caller = (ret >= g_base && ret < g_base + 0x2000000) ? (std::uint32_t)(ret - g_base) : 0;
+        int tx = -1, ty = -1;
+        if (a8 != 4 && a11) {
+            __try { const float* pos = (const float*)a11; tx = (int)pos[0] >> 9; ty = (int)pos[2] >> 9; }
+            __except (EXCEPTION_EXECUTE_HANDLER) { tx = ty = -1; }
+        }
+        NoteObserved(id, idx, muted, caller, tx, ty, (std::uint8_t)group, (std::uint8_t)kind);
         if (muted) {
             volume = 0;
             ++g_share->diag[1];

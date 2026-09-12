@@ -4,9 +4,9 @@
 
 namespace rtx::sound {
 
-inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXSound_v1_";
+inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXSound_v2_";
 inline constexpr std::uint32_t kMagic   = 0x53545852;   // 'RTXS'
-inline constexpr std::uint32_t kVersion = 1;
+inline constexpr std::uint32_t kVersion = 2;   // 2: recent entries carry the caller, tile, group and kind
 
 inline constexpr int kMaxBlocked = 512;    // muted ids
 inline constexpr int kMaxRecent  = 64;     // "recently played" ring
@@ -16,6 +16,11 @@ struct RecentEntry {
     std::int16_t  idx;      // 14 = sound effects, 40 = music
     std::int16_t  muted;    // 1 if this playback was silenced
     std::uint32_t ms;       // GetTickCount64 truncated; relative ordering only, wrap is harmless
+    std::uint32_t caller;   // return address of the play call, module-relative: which subsystem asked for the sound
+    std::int16_t  x, y;     // world tile of a positioned sound (mode != 4), else -1
+    std::uint8_t  group;    // volume category the caller passed (6 effects, 7 area, 8 music)
+    std::uint8_t  kind;     // low byte of the kind word (7 script synth, 8 server, 9 world-tile sound)
+    std::uint16_t pad;
 };
 
 inline constexpr std::int32_t kIndexEffects = 14;
