@@ -9,9 +9,9 @@
   const EV_KINDS = ['skill_update', 'container_update', 'runclientscript', 'varp_set', 'varc_set', 'ge_offer', 'run_energy', 'run_weight', 'ping', 'raw'];
   const SOPS = { message_game: 0x21, skill_update: 0x5C, container_update: 0x32, runclientscript: 0x23,
                  ge_offer: 0x54, run_energy: 0x15, run_weight: 0x07, ping_echo: 0xBE, server_tick: 0xA0,
-                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E };
+                 varp_int: 0x04, varp_byte: 0x4F, varc_int: 0x77, varc_byte: 0x7E, varp_long: 0x36 };
   (async () => { try { const m = await rtxData.call('state.serverOps'); if (m && typeof m === 'object') Object.assign(SOPS, m); } catch (e) {} })();
-  const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo', 'varp_int', 'varp_byte', 'varc_int', 'varc_byte']
+  const evDefaultMask = () => ['run_weight', 'skill_update', 'ge_offer', 'container_update', 'runclientscript', 'run_energy', 'ping_echo', 'varp_int', 'varp_byte', 'varc_int', 'varc_byte', 'varp_long']
       .map(k => SOPS[k]).sort((a, b) => a - b).join(',');   // mirrors kDefaultMask in companion/EventShare.h
   const EV_OPNAMES = { [SOPS.server_tick]: 'server_tick' };
   const EV_TYPES = [
@@ -22,6 +22,7 @@
     { name: 'varp_byte',        kind: 'varp_set',         label: 'Varp (byte)',      note: 'server variable set, small' },
     { name: 'varc_int',         kind: 'varc_set',         label: 'Varc (int)',       note: 'client variable set, 32-bit' },
     { name: 'varc_byte',        kind: 'varc_set',         label: 'Varc (byte)',      note: 'client variable set, small' },
+    { name: 'varp_long',        kind: 'varp_set',         label: 'Varp (64-bit)',    note: 'server variable set, 64-bit' },
     { name: 'ge_offer',         kind: 'ge_offer',         label: 'Grand Exchange',   note: 'offer changes' },
     { name: 'run_energy',       kind: 'run_energy',       label: 'Run energy',       note: '' },
     { name: 'run_weight',       kind: 'run_weight',       label: 'Weight',           note: '' },

@@ -17,8 +17,9 @@ inline constexpr int kServerTick      = 0xA0;   // 0xB4 on 949   0 bytes  : tick
 // Var set packets, layouts confirmed live against the varp/varc stores on 2026-09-12 (docs/fieldmap-950-1.md):
 inline constexpr int kVarpInt         = 0x04;   // 6 bytes  : id = ((b0-0x80)&0xFF)|(b1<<8); value = (b4<<24)|(b5<<16)|(b2<<8)|b3   (26/27 matched)
 inline constexpr int kVarpByte        = 0x4F;   // 3 bytes  : value = i8 b0; id = ((b2-0x80)&0xFF)|(b1<<8)                            (10/14)
-inline constexpr int kVarcInt         = 0x77;   // 6 bytes  : id = ((b1-0x80)&0xFF)|(b0<<8); value = (b2<<24)|(b3<<16)|(b5<<8)|b4     (2/2, high bytes unproven)
-inline constexpr int kVarcByte        = 0x7E;   // 3 bytes  : id = b0|(b1<<8); value = (0x80-b2)&0xFF                                  (2/2)
+inline constexpr int kVarcInt         = 0x77;   // 6 bytes  : id = ((b1-0x80)&0xFF)|(b0<<8); value = (b3<<24)|(b2<<16)|(b5<<8)|b4     (Ghidra FUN_140141e90)
+inline constexpr int kVarcByte        = 0x7E;   // 3 bytes  : id = b0|(b1<<8); value = (int8)(0x80-b2)                                 (Ghidra FUN_140141fc0)
+inline constexpr int kVarpLong        = 0x36;   // 10 bytes : value = i64 hi=(b1<<24)|(b0<<16)|(b3<<8)|b2, lo=(b5<<24)|(b4<<16)|(b7<<8)|b6; id = (b8<<8)|b9 (Ghidra FUN_140142390)
 inline constexpr int kOpMax           = 0xDE;   // framer bound (`cmp eax,0xDE; ja`); 0xE5 on 949
 
 struct Expect { int op; int len; const char* name; };
@@ -36,11 +37,12 @@ inline constexpr Expect kExpected[] = {
     { kVarpByte,         3, "varp_byte"        },
     { kVarcInt,          6, "varc_int"         },
     { kVarcByte,         3, "varc_byte"        },
+    { kVarpLong,        10, "varp_long"        },
 };
 
 inline constexpr int kDefaultCaptured[] = {
     kSkillUpdate, kGeOffer, kContainerUpdate, kRunClientScript, kRunEnergy, kRunWeight, kPingEcho,
-    kVarpInt, kVarpByte, kVarcInt, kVarcByte,
+    kVarpInt, kVarpByte, kVarcInt, kVarcByte, kVarpLong,
 };
 constexpr std::uint32_t DefaultMaskWord(int word) {
     std::uint32_t m = 0;
