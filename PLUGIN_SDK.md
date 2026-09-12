@@ -333,9 +333,7 @@ await rtx.plugin.state.buffs();
 //    `count` is the stack count var (e.g. Bloodlust stacks) when the game has one.
 
 await rtx.plugin.state.clientState();
-// -> { typing, focus, cutscene, inCutscene, options:[44 ints] }
-//    typing: a text field has keyboard focus (the chat box, a name prompt), read from the same
-//    flag the game's own scripts test, so keybinds can stand down while the player types.
+// -> { cutscene, inCutscene, options:[44 ints] }
 //    cutscene: the running cutscene id, -1 when none. options: the client's 44 option values
 //    (graphics, audio and interface settings) by id; names are not carried by the client.
 
