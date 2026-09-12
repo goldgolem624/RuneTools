@@ -2147,11 +2147,16 @@
   }
   $('news-all').addEventListener('click', () => openNews(NEWS_ALL_URL));
   (async () => {
-    // Headlines land a few seconds after boot and the covers a few seconds after THAT (the client
-    // fetches them from the CDN one by one), so keep polling until the covers are in, or for
-    // three minutes, then fall back to the slow poll.
+    // Headlines land a moment after boot; the covers follow one by one (disk cache first, then the
+    // CDN, several in flight). Poll every second while any cover is missing, easing off after two
+    // minutes, and never stop polling: a slow network must not strand the page without covers.
     const coversIn = () => _newsKey && _newsKey.split('|').every(k => k.indexOf('#img') >= 0);
-    for (let i = 0; i < 180 && !coversIn(); i++) { await pollNews(); await new Promise(r => setTimeout(r, 1000)); }
+    const started = Date.now();
+    while (!coversIn()) {
+      await pollNews();
+      const age = Date.now() - started;
+      await new Promise(r => setTimeout(r, age < 120000 ? 1000 : age < 30 * 60 * 1000 ? 5000 : 60000));
+    }
     setInterval(pollNews, 10 * 60 * 1000);
   })();
 
