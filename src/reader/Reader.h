@@ -94,6 +94,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range = 20);
 // 3x3 regions around a tile, then look corners up from the snapshot. INT32_MIN = unknown.
 bool LiveTerrainSnapshot(std::uint32_t pid, int cx, int cy, int plane);
 std::int32_t LiveCornerHeight(std::uint32_t pid, int wx, int wy, int plane);
+std::int32_t LiveTileLift(std::uint32_t pid, int wx, int wy, int plane);   // per-tile standing offset the game adds for actors (usually 0)
 bool LiveCornerHeights(std::uint32_t pid, int wx, int wy, int plane, std::int32_t out[4]);
 
 // Combat log: hitsplat events on every actor in the scene. Poll at 5 Hz from one thread; read

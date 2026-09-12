@@ -387,6 +387,7 @@ bool cursor_tile(std::uint32_t pid, int& outTx, int& outTy, int& outPlane) {
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(tx, ty, f.plane, ch);
             std::int32_t lch[4]; const bool liveOk = rtx::reader::LiveCornerHeights(f.pid, tx, ty, f.plane, lch);
+            if (liveOk) { const std::int32_t lift = rtx::reader::LiveTileLift(f.pid, tx, ty, f.plane); for (auto& v : lch) v += lift; }
             auto cz = [&](int c) { return liveOk ? (float)lch[c] : (ch[c] == -32768) ? f.player_z : 32.0f * (float)ch[c]; };
             float zSW = cz(0), zSE = cz(1), zNE = cz(2), zNW = cz(3);
             float qx[4], qy[4];
