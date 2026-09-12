@@ -290,7 +290,7 @@ let dungBossWarnOn = false;  // boss 9919 icicle-attack warning currently on scr
 let dungPartyRoster = {};    // name -> 1, every player seen in this instance including self; p-indices come from the sorted name list
 let dungSelfName = '';       // this client's own display name
 let dungIcePlan = null;      // {sig, anchor:'lx,ly', stops:[{k:'lx,ly', press}...], idx} held slide tour; sig = room + sorted unpressed-pad set
-let dungIceSettle = null;    // {key:'lx,ly', n} consecutive reconciles on the same tile (settle detector)
+let dungIceSettle = null;    // {key:'lx,ly', since} first time the player was seen on this tile (settle detector)
 let dungIceDump = null;      // ice room model + plan, copyable JSON (map tab)
 let dungMazeDump = null;     // poison-maze model + route, copyable JSON
 let dungBarrelDump = null;   // barrel room: live pad-relative geometry + the rotation fit's per-turn scores
@@ -396,6 +396,96 @@ function dungGuideTiles(marks) {
       + ((m.rgb || m.snap) ? '\x1f' + (m.snap ? 1 : 0) + '\x1f' + ((m.rgb | 0) || 0) : ''));
     rtxData.sync('overlay.guideMarks', recs.join('\x1e'));
   } catch (e) {}
+}
+
+// Icy pressure-pad room (Dungeoneering "Icy pressure pad"). Pure model + search, no DOM.
+// Rules (RuneScape wiki, Dungeoneering/Puzzles, "Icy pressure pad"): the floor is ice; you keep
+// sliding in the direction you started (the eight directions) and stop when you land on a pad
+// ("hit a tile", pressed or not), when you are near an obstacle (any tile of the obstacle's 3x3
+// range) or when the next tile is a wall or the obstacle itself. Landing on all four pads opens
+// the doors; after that you still have to slide to a door.
+// model: { px, py, lo, hi, furn: {'x,y': name}, pad: {'x,y': 1}, unpressed: [{x,y}], doors: bitmask N1 E2 S4 W8 }
+// returns null or { stops: [{k, press, dir, ddx, ddy, padStop, by, exit}], full: bool, exit: bool }
+function dungIceSolve(mdl) {
+  const { px, py, lo, hi, furn, pad } = mdl;
+  const unpressed = mdl.unpressed || [];
+  const near = {};   // tiles inside the 3x3 range of any obstacle: a slide stops on entering one
+  for (const fk in furn) {
+    const [fx, fy] = fk.split(',').map(Number);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) near[(fx + dx) + ',' + (fy + dy)] = fk;
+  }
+  const inb = (x, y) => x >= lo && y >= lo && x <= hi && y <= hi;
+  const slideTo = (cx, cy, dd) => {
+    let nx = cx, ny = cy; let by = '';
+    for (;;) {
+      const tx = nx + dd[0], ty = ny + dd[1];
+      if (!inb(tx, ty)) { by = 'wall'; break; }
+      if (furn[tx + ',' + ty]) { by = furn[tx + ',' + ty]; break; }
+      if (dd[0] && dd[1] && (furn[tx + ',' + ny] || furn[nx + ',' + ty])) { by = furn[tx + ',' + ny] || furn[nx + ',' + ty]; break; }
+      nx = tx; ny = ty;
+      if (pad[nx + ',' + ny]) break;
+      if (near[nx + ',' + ny]) { by = furn[near[nx + ',' + ny]]; break; }
+    }
+    return (nx === cx && ny === cy) ? null : { x: nx, y: ny, by: by };
+  };
+  // Exit targets: the tile in front of each door of the room (doors are the centre pair of a wall).
+  const exitTiles = {};
+  const mid = [Math.floor((lo + hi) / 2), Math.ceil((lo + hi) / 2)];
+  const doors = mdl.doors | 0;
+  for (const m of mid) {
+    if (doors & 1) exitTiles[m + ',' + hi] = 'N';
+    if (doors & 4) exitTiles[m + ',' + lo] = 'S';
+    if (doors & 2) exitTiles[hi + ',' + m] = 'E';
+    if (doors & 8) exitTiles[lo + ',' + m] = 'W';
+  }
+  const wantExit = Object.keys(exitTiles).length > 0;
+  const bit = {};
+  unpressed.forEach((b, i) => { bit[b.x + ',' + b.y] = 1 << i; });
+  const full = (1 << unpressed.length) - 1;
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const popc = m => { let n = 0; while (m) { n += m & 1; m >>= 1; } return n; };
+  const start = px + ',' + py + ':0';
+  const prev = {}; prev[start] = null;
+  const q = [[px, py, 0]];
+  let exitK = null, goalK = null, bestK = null, bestBits = 0;
+  if (full === 0 && wantExit && exitTiles[px + ',' + py]) return { stops: [], full: true, exit: true };
+  for (let qi = 0; qi < q.length && !exitK; qi++) {
+    const cx = q[qi][0], cy = q[qi][1], m = q[qi][2];
+    for (const dd of DIRS) {
+      const to = slideTo(cx, cy, dd);
+      if (!to) continue;
+      const tk = to.x + ',' + to.y;
+      const nm = m | (bit[tk] || 0);
+      const k = tk + ':' + nm;
+      if (prev[k] !== undefined) continue;
+      prev[k] = cx + ',' + cy + ':' + m;
+      q.push([to.x, to.y, nm]);
+      const pb = popc(nm);
+      if (pb > bestBits) { bestBits = pb; bestK = k; }
+      if (nm === full) {
+        if (!goalK) goalK = k;
+        if (wantExit && exitTiles[tk]) { exitK = k; break; }
+        if (!wantExit) { exitK = k; break; }
+      }
+    }
+  }
+  const endK = exitK || goalK || bestK;
+  if (!endK) return null;
+  const stops = [];
+  for (let k = endK; k && k !== start; k = prev[k]) {
+    const kp = k.split(':')[0], pp = prev[k].split(':')[0];
+    const [sx, sy] = kp.split(',').map(Number), [ox, oy] = pp.split(',').map(Number);
+    const dx = Math.sign(sx - ox), dy = Math.sign(sy - oy);
+    // recover why the slide stopped there
+    const again = slideTo(ox, oy, [dx, dy]);
+    stops.unshift({ k: kp,
+                    press: k.split(':')[1] !== prev[k].split(':')[1],
+                    dir: (dy > 0 ? 'N' : dy < 0 ? 'S' : '') + (dx > 0 ? 'E' : dx < 0 ? 'W' : ''),
+                    ddx: dx, ddy: dy, padStop: !!pad[kp],
+                    by: again && again.by && again.by !== 'wall' ? again.by : '',
+                    exit: !!exitTiles[kp] && k === endK && !!exitK && k.split(':')[1] === String(full) });
+  }
+  return { stops: stops, full: !!(exitK || goalK), exit: !!exitK && wantExit };
 }
 
 function dungReconcileScene(npcs, objs) {
@@ -805,7 +895,7 @@ function dungReconcileScene(npcs, objs) {
       }
     }
   }
-  // Ice-slide room. Pads stop a slide (pressed by landing; 49320-23 unpressed -> 49324-27 pressed, both stop);
+  // Icy pressure-pad room (rules in dungIceSolve). Pads 49320-23 unpressed -> 49324-27 pressed; both stop a slide.
   {
     const iceUnpressed = (objs || []).filter(o =>
       o.id >= 49320 && o.id <= 49323 && typeof o.x === 'number' && here(o));
@@ -814,7 +904,7 @@ function dungReconcileScene(npcs, objs) {
     const ICE_FURN = { 49328: 1, 49329: 1, 49330: 1 };
     const iceFurn = (objs || []).filter(o =>
       ICE_FURN[o.id] && typeof o.x === 'number' && here(o));
-    if (iceUnpressed.length && dungFloorSW && dungSelfPos) {
+    if ((iceUnpressed.length || icePressed.length) && dungFloorSW && dungSelfPos) {   // stays on after the last pad: the slide to the door remains
       const pr = dungRoomOf(dungFloorSW, dungSelfPos.x, dungSelfPos.y);
       const swx = dungFloorSW.x + DUNG_ROOM_PITCH * pr.rx, swy = dungFloorSW.y + DUNG_ROOM_PITCH * pr.ry;
       const roomKey = pr.rx + ',' + pr.ry;
@@ -825,78 +915,29 @@ function dungReconcileScene(npcs, objs) {
       for (const o of icePressed) pad[(o.x - swx) + ',' + (o.y - swy)] = 1;
       const px = dungSelfPos.x - swx, py = dungSelfPos.y - swy;
       const posKey = px + ',' + py;
-      if (dungIceSettle && dungIceSettle.key === posKey) dungIceSettle.n++;
-      else dungIceSettle = { key: posKey, n: 1 };
-      const settled = dungIceSettle.n >= 2;
+      // Settled = same tile for 900 ms. A slide covers at least a tile per game tick (600 ms) and the
+      // scene is polled every 600 ms, so two consecutive polls on one tile can happen mid-slide.
+      const nowMs = Date.now();
+      if (!dungIceSettle || dungIceSettle.key !== posKey) dungIceSettle = { key: posKey, since: nowMs };
+      const settled = nowMs - dungIceSettle.since >= 900;
       const rem = iceUnpressed.map(o => ({ x: o.x - swx, y: o.y - swy }));
-      const remSig = roomKey + '|' + rem.map(b => b.x + ',' + b.y).sort().join(';');
+      const remSig = roomKey + '|' + rem.map(b => b.x + ',' + b.y).sort().join(';') + '|d' + (dungCurDoors | 0);
       if (dungIcePlan && dungIcePlan.sig === remSig) {
         while (dungIcePlan.idx < dungIcePlan.stops.length && dungIcePlan.stops[dungIcePlan.idx].k === posKey) dungIcePlan.idx++;
         if (dungIcePlan.idx >= dungIcePlan.stops.length) dungIcePlan = null;
         else if (settled && !(dungIcePlan.idx === 0
                    ? posKey === dungIcePlan.anchor
                    : dungIcePlan.stops[dungIcePlan.idx - 1].k === posKey))
-          dungIcePlan = null;
+          dungIcePlan = null;   // came to rest somewhere the tour did not predict: plan again from here
       } else if (dungIcePlan) dungIcePlan = null;
-      const slideTo = (cx, cy, dd) => {
-        let nx = cx, ny = cy;
-        for (;;) {
-          const tx = nx + dd[0], ty = ny + dd[1];
-          if (tx < ICE_LO || ty < ICE_LO || tx > ICE_HI || ty > ICE_HI || furn[tx + ',' + ty]) break;
-          if (dd[0] && dd[1] && (furn[tx + ',' + ny] || furn[nx + ',' + ty])) break;
-          nx = tx; ny = ty;
-          if (pad[nx + ',' + ny]) break;
-        }
-        return (nx === cx && ny === cy) ? null : [nx, ny];
-      };
-      if (!dungIcePlan && settled && rem.length) {
-        const bit = {};
-        rem.forEach((b, i) => { bit[b.x + ',' + b.y] = 1 << i; });
-        const full = (1 << rem.length) - 1;
-        const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-        const popc = m => { let n = 0; while (m) { n += m & 1; m >>= 1; } return n; };
-        const m0 = 0;
-        const start = posKey + ':' + m0;
-        const prev = {}; prev[start] = null;
-        const q = [[px, py, m0]];
-        let goalK = null, bestK = null, bestBits = popc(m0);
-        for (let qi = 0; qi < q.length && !goalK; qi++) {
-          const cx2 = q[qi][0], cy2 = q[qi][1], m = q[qi][2];
-          for (const dd of DIRS) {
-            const to = slideTo(cx2, cy2, dd);
-            if (!to) continue;
-            const nm = m | (bit[to[0] + ',' + to[1]] || 0);
-            const k = to[0] + ',' + to[1] + ':' + nm;
-            if (prev[k] !== undefined) continue;
-            prev[k] = cx2 + ',' + cy2 + ':' + m;
-            q.push([to[0], to[1], nm]);
-            const pb = popc(nm);
-            if (pb > bestBits) { bestBits = pb; bestK = k; }
-            if (nm === full) { goalK = k; break; }
-          }
-        }
-        const endK = goalK || bestK;
-        if (endK) {
-          const stops = [];
-          for (let k = endK; k && k !== start; k = prev[k]) {
-            const kp = k.split(':')[0], pp = prev[k].split(':')[0];
-            const [sx2, sy2] = kp.split(',').map(Number), [ox2, oy2] = pp.split(',').map(Number);
-            const dx2 = Math.sign(sx2 - ox2), dy2 = Math.sign(sy2 - oy2);
-            const by = furn[(sx2 + dx2) + ',' + (sy2 + dy2)]
-              || (dx2 && dy2 && (furn[(sx2 + dx2) + ',' + sy2] || furn[sx2 + ',' + (sy2 + dy2)]))
-              || '';
-            stops.unshift({ k: kp,
-                            press: k.split(':')[1] !== prev[k].split(':')[1],
-                            dir: (dy2 > 0 ? 'N' : dy2 < 0 ? 'S' : '') + (dx2 > 0 ? 'E' : dx2 < 0 ? 'W' : ''),
-                            ddx: dx2, ddy: dy2, padStop: !!pad[kp], by: by });
-          }
-          if (stops.length) dungIcePlan = { sig: remSig, anchor: posKey, stops: stops, idx: 0 };
-        }
+      if (!dungIcePlan && settled && (rem.length || dungCurDoors)) {
+        const r = dungIceSolve({ px: px, py: py, lo: ICE_LO, hi: ICE_HI, furn: furn, pad: pad, unpressed: rem, doors: dungCurDoors | 0 });
+        if (r && r.stops.length) dungIcePlan = { sig: remSig, anchor: posKey, stops: r.stops, idx: 0, full: r.full, exit: r.exit };
       }
       const iceLoc = o => ({ id: o.id, n: o.name || '', x: o.x - swx, y: o.y - swy });
       dungIceDump = {
-        v: 'ice-v6',   // model version stamp
-        room: roomKey, sw: [swx, swy], self: [px, py], settled: settled,
+        v: 'ice-v7',   // model version stamp: wiki stop rule (pad, 3x3 of an obstacle, wall) + exit slide
+        room: roomKey, sw: [swx, swy], self: [px, py], settled: settled, doors: dungCurDoors | 0,
         padsUn: iceUnpressed.map(iceLoc), padsPr: icePressed.map(iceLoc), furn: iceFurn.map(iceLoc),
         other: (objs || []).filter(o => typeof o.x === 'number' && here(o)
           && !(o.id >= 49320 && o.id <= 49330)).map(iceLoc),
@@ -909,15 +950,18 @@ function dungReconcileScene(npcs, objs) {
         for (const s of dungIcePlan.stops.slice(dungIcePlan.idx, dungIcePlan.idx + 2)) {
           if (marks.length >= 16) break;
           const p2 = s.k.split(',').map(Number);
+          const why = s.press ? ', land on pad' : s.exit ? ', to the door' : s.padStop ? ', stops on pad'
+                    : s.by ? ' (stops by ' + s.by + ')' : ' (to wall)';
           if (step === 1) {
-            marks.push({ x: swx + px + Math.sign(p2[0] - px), y: swy + py + Math.sign(p2[1] - py), plane: 0,
-                         label: '1 - click here', rgb: s.press ? 0x5fd07a : 0xf0c75a, snap: 0 });
+            marks.push({ x: swx + px + s.ddx, y: swy + py + s.ddy, plane: 0,
+                         label: '1 - click here' + (s.dir ? ' (' + s.dir + why + ')' : ''),
+                         rgb: s.press ? 0x5fd07a : s.exit ? 0xf0c419 : 0xf0c75a, snap: 0 });
+            marks.push({ x: swx + p2[0], y: swy + p2[1], plane: 0, label: '1 - you stop here',
+                         rgb: s.press ? 0x5fd07a : 0x5ab8f0, snap: (s.press || s.padStop) ? 1 : 0 });
           } else
             marks.push({ x: swx + p2[0], y: swy + p2[1], plane: 0,
-                         label: '2 - then ' + (s.dir || '?')
-                           + (s.press ? ', land on pad' : s.padStop ? ', stops on pad'
-                              : s.by ? ' (stops at ' + s.by + ')' : ' (to wall)'),
-                         rgb: s.press ? 0x5fd07a : 0x5ab8f0, snap: (s.press || s.padStop) ? 1 : 0 });
+                         label: '2 - then ' + (s.dir || '?') + why,
+                         rgb: s.press ? 0x5fd07a : s.exit ? 0xf0c419 : 0x5ab8f0, snap: (s.press || s.padStop) ? 1 : 0 });
           step++;
         }
       }
