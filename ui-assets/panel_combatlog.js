@@ -112,7 +112,7 @@
       const chips = document.createElement('div'); chips.id = 'clChips'; chips.className = 'pet-chips'; chips.style.marginBottom = '6px'; wrap.appendChild(chips);
       const cnt = document.createElement('div'); cnt.id = 'clCnt'; cnt.className = 'chat-count'; wrap.appendChild(cnt);
       const head = document.createElement('div'); head.className = 'cl-line cl-head';
-      head.innerHTML = '<span class="cl-ts">Time</span><span class="cl-actor">Event</span><span class="cl-kind">Kind</span><span class="cl-val">Value</span><span class="cl-lp">Life points</span><span class="cl-mark">Mark</span>';
+      head.innerHTML = '<span class="cl-ts">Time</span><span class="cl-actor">Event</span><span class="cl-kind">Kind</span><span class="cl-val">Value</span><span class="cl-lp">Life points after</span><span class="cl-mark">Mark</span>';
       wrap.appendChild(head);
       const list = document.createElement('div'); list.id = 'clList'; list.className = 'chat-list'; wrap.appendChild(list);
       search.addEventListener('input', () => { clSearch = search.value; clSig = ''; renderCombatList(); });
