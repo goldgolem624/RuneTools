@@ -85,18 +85,18 @@ std::string StatusJson(std::uint32_t pid) {
         const std::uint32_t abs = seq - valid + i;          // oldest-first
         const auto& e = sh->recent[abs % rtx::sound::kMaxRecent];
         if (i) out += ',';
-        // Origin from the return address (950-1 call sites, each +5 = the instruction after the call):
-        // 0x949A4/0x94ACF/0x9513F script ops, 0xF0620 server sound (0x2C), 0xF09E0 server world-tile
-        // sound (0x5F), 0x115250/0x115510 zone sounds (0xA4 and the zone-update sub-packets),
-        // 0x3E7040 actor animation slots, 0x3E8970 engine. Unknown call sites are reported by RVA.
+        // Origin from the return address (950-1: the instruction after each `call FUN_1403E8C50`):
+        // 0x949CC/0x94AEE/0x9515E script ops, 0xF0718 server sound (0x2C), 0xF0B71 server world-tile
+        // sound (0x5F), 0x115478/0x115750 zone sounds (0xA4 and the zone-update sub-packets),
+        // 0x3E70F0 actor animation slots, 0x3E89EB engine. Unknown call sites are reported by RVA.
         const char* origin = "other";
         switch (e.caller) {
-        case 0x949A4 + 5: case 0x94ACF + 5: case 0x9513F + 5: origin = "script"; break;
-        case 0xF0620 + 5: origin = "server"; break;
-        case 0xF09E0 + 5: origin = "server_tile"; break;
-        case 0x115250 + 5: case 0x115510 + 5: origin = "zone"; break;
-        case 0x3E7040 + 5: origin = "actor"; break;
-        case 0x3E8970 + 5: origin = "engine"; break;
+        case 0x949CC: case 0x94AEE: case 0x9515E: origin = "script"; break;
+        case 0xF0718: origin = "server"; break;
+        case 0xF0B71: origin = "server_tile"; break;
+        case 0x115478: case 0x115750: origin = "zone"; break;
+        case 0x3E70F0: origin = "actor"; break;
+        case 0x3E89EB: origin = "engine"; break;
         default: break;
         }
         out += "{\"n\":" + std::to_string(abs) +

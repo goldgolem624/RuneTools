@@ -270,7 +270,7 @@
           const e = sndLive.get(k);
           const m = sndMuted.has(k);
           const ORIG = { script: 'script', server: 'server', server_tile: 'server, at tile', zone: 'zone', actor: 'actor animation', engine: 'engine' };
-          const tag = (e.idx === SND_IDX.music ? 'M' : 'E') + e.id + (e.origin ? ' ' + ({ script: 'S', server: 'P', server_tile: 'T', zone: 'Z', actor: 'N', engine: 'G' }[e.origin] || '?') : '');
+          const tag = (e.idx === SND_IDX.music ? 'M' : 'E') + e.id + (e.origin ? ' ' + ({ script: 'S', server: 'P', server_tile: 'T', zone: 'Z', actor: 'N', engine: 'G', other: 'O' }[e.origin] || '?') : '');
           const tip = 'origin: ' + (ORIG[e.origin] || ('call site 0x' + Number(e.caller || 0).toString(16))) + (e.x >= 0 ? ' at ' + e.x + ',' + e.y : '') + ' · group ' + e.group + ' kind ' + e.kind;
           h += '<button class="pet-chip snd-heard" title="' + tip + '" data-liveplay="' + e.idx + ':' + e.id + '" data-tag="' + tag + '">'
              + tag + (e.hits > 1 ? ' &times;' + e.hits : '') + ' &#9654;</button>'
