@@ -7,7 +7,8 @@ namespace rtx::sops {
 inline constexpr int kMessageGame     = 0x21;   // 0x15 on 949   var-byte : [type smart][u32][flags][sender?][text]
 inline constexpr int kSkillUpdate     = 0x5C;   // 0x04 on 949   6 bytes  : [skill -b0][level -b1][xp u32 BE]
 inline constexpr int kContainerUpdate = 0x32;   // 0x2B on 949   var-short: [container u16 BE][flags u8] slots...
-inline constexpr int kRunClientScript = 0x82;   // 0x52 on 949   var-short
+inline constexpr int kRunClientScript = 0x23;   // 0x52 on 949   var-short : [sig][args reversed][script i32]; live 2026-09-12: 278/304 decode
+                                                //   (0x82 is NOT runclientscript: its handler reads a script id + one byte into the 5-slot table at MainData+0x19850)
 inline constexpr int kGeOffer         = 0x54;   // 0x51 on 949   36 bytes (949 also had a 35-byte 0x05; no 950-1 counterpart)
 inline constexpr int kRunEnergy       = 0x15;   // 0x5C on 949   1 byte   : [energy u8] -> skill block +0x18
 inline constexpr int kRunWeight       = 0x07;   // 0x00 on 949   2 bytes  : [weight i16 BE] -> skill block +0x1C
