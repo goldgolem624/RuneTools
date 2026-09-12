@@ -1159,7 +1159,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(gx, gy, f->plane, ch);
             std::int32_t lch[4]; const bool liveOk = rtx::reader::LiveCornerHeights(f->pid, gx, gy, f->plane, lch);
-            if (liveOk) { const std::int32_t lift = rtx::reader::LiveTileLift(f->pid, gx, gy, f->plane); for (auto& v : lch) v += lift; }
             auto cz = [&](int c) { return liveOk ? (float)lch[c] : (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c]; };
             float zSW = cz(0), zSE = cz(1), zNE = cz(2), zNW = cz(3);
             const float wc[4][3] = {
@@ -1263,7 +1262,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(f->guide_path[i * 2], f->guide_path[i * 2 + 1], f->plane, ch);
             std::int32_t lch[4]; const bool liveOk = rtx::reader::LiveCornerHeights(f->pid, f->guide_path[i * 2], f->guide_path[i * 2 + 1], f->plane, lch);
-            if (liveOk) { const std::int32_t lift = rtx::reader::LiveTileLift(f->pid, f->guide_path[i * 2], f->guide_path[i * 2 + 1], f->plane); for (auto& v : lch) v += lift; }
             for (int c = 0; c < 4; ++c)
                 cz[i * 4 + c] = liveOk ? (float)lch[c] : (ch[c] == kNo) ? f->player_z : 32.0f * (float)ch[c];
         }

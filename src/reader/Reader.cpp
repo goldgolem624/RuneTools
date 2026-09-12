@@ -3606,7 +3606,7 @@ std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events
 // + (ry-miny)*0x18, region object at cell+8.
 namespace {
 constexpr std::int32_t kNoFine = INT32_MIN;
-struct TerrainRegion { std::int32_t h[66][66]; std::int16_t lift[64][64]; bool ok = false; bool liftOk = false; };   // h[lx+1][ly+1], lx/ly 0..64; lift[lx][ly] = standing offset
+struct TerrainRegion { std::int32_t h[66][66]; std::int16_t lift[64][64]; std::uint8_t bridge[64][64]; bool ok = false; bool liftOk = false; bool flagsOk = false; };   // h[lx+1][ly+1], lx/ly 0..64; lift[lx][ly] = standing offset; bridge = plane-1 tile flag bit 1
 struct TerrainSnap { std::uint32_t pid = 0; int plane = -1; int cx = 0, cy = 0; std::uint32_t stamp = 0; std::unordered_map<int, TerrainRegion> regions; };  // key (plane<<16)|(rx<<8)|ry
 std::mutex g_terr_mu;
 TerrainSnap g_terr;
@@ -3660,6 +3660,28 @@ bool terrain_read_region(HANDLE h, std::uint64_t scene, int rx, int ry, int plan
             out.liftOk = true;
         }
     }
+    // Tile flags (FUN_1403bf100 over terrain+0x200): a vector of planes (0x10 each, column table
+    // pointer at +8), columns of 0x18-byte byte vectors, one pad byte each side like the heights.
+    // The actor plane helper (FUN_1403579f0) asks plane 1 and treats bit 1 (value 2) as "bridge":
+    // the tile is drawn and stood on one plane up. Read plane 1's flags for every region.
+    std::memset(out.bridge, 0, sizeof(out.bridge));
+    auto f0 = rpm<std::uint64_t>(h, terrain + 0x200), f1 = rpm<std::uint64_t>(h, terrain + 0x208);
+    if (f0 && f1 && *f1 >= *f0 + 0x20) {
+        auto fcols = rpm<std::uint64_t>(h, *f0 + 1 * 0x10 + 8);
+        if (fcols && *fcols > 0x10000) {
+            auto cb = rpm<std::uint64_t>(h, *fcols), ce = rpm<std::uint64_t>(h, *fcols + 8);
+            if (cb && ce && *ce >= *cb + 66 * 0x18) {
+                bool all = true;
+                for (int lx = 0; lx < 64 && all; ++lx) {
+                    auto colb = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18), cole = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18 + 8);
+                    std::uint8_t fb[66];
+                    if (!colb || !cole || *cole < *colb + 66 || !rpm_bytes(h, *colb, fb, sizeof(fb))) { all = false; break; }
+                    for (int ly = 0; ly < 64; ++ly) out.bridge[lx][ly] = (fb[ly + 1] & 2) ? 1 : 0;
+                }
+                out.flagsOk = all;
+            }
+        }
+    }
     return true;
 }
 }  // namespace
@@ -3680,7 +3702,8 @@ bool LiveTerrainSnapshot(std::uint32_t pid, int cx, int cy, int plane) {
     if (!scene || *scene <= 0x10000) return false;
     TerrainSnap snap; snap.pid = pid; snap.plane = plane; snap.cx = cx; snap.cy = cy; snap.stamp = (std::uint32_t)GetTickCount64();
     const int rx0 = cx >> 6, ry0 = cy >> 6;
-    for (int pl : { plane, 0 }) {
+    for (int pl : { plane, plane + 1, 0 }) {   // plane + 1: bridge tiles are sampled one plane up
+        if (pl < 0 || pl > 3) continue;
         for (int rx = rx0 - 1; rx <= rx0 + 1; ++rx)
             for (int ry = ry0 - 1; ry <= ry0 + 1; ++ry) {
                 const int key = (pl << 16) | (rx << 8) | ry;
@@ -3688,7 +3711,6 @@ bool LiveTerrainSnapshot(std::uint32_t pid, int cx, int cy, int plane) {
                 TerrainRegion r;
                 if (terrain_read_region(h, *scene, rx, ry, pl, r)) snap.regions.emplace(key, r);
             }
-        if (plane == 0) break;
     }
     std::lock_guard<std::mutex> lk(g_terr_mu);
     g_terr = std::move(snap);
@@ -3716,10 +3738,27 @@ std::int32_t LiveTileLift(std::uint32_t pid, int wx, int wy, int plane) {
     if (it == g_terr.regions.end() || !it->second.liftOk) return 0;
     return it->second.lift[wx & 63][wy & 63];
 }
+// The plane the game draws and stands on for tile (wx, wy) whose logical plane is `plane`: one up
+// on bridge tiles (plane-1 flag bit 1), as FUN_1403579f0 does for every actor. `plane` when unknown.
+int LiveTileEffPlane(std::uint32_t pid, int wx, int wy, int plane) {
+    if (wx < 0 || wy < 0 || plane < 0 || plane >= 3) return plane;
+    std::lock_guard<std::mutex> lk(g_terr_mu);
+    if (g_terr.pid != pid) return plane;
+    for (int pl : { plane, plane + 1, 0 }) {   // flags are per region, any loaded plane entry carries them
+        auto it = g_terr.regions.find((pl << 16) | ((wx >> 6) << 8) | (wy >> 6));
+        if (it == g_terr.regions.end() || !it->second.flagsOk) continue;
+        return it->second.bridge[wx & 63][wy & 63] ? plane + 1 : plane;
+    }
+    return plane;
+}
+// The four corner heights of tile (wx, wy) as the game stands an actor on it: sampled on the
+// tile's effective plane (bridges) plus the tile's standing offset. SW SE NE NW.
 bool LiveCornerHeights(std::uint32_t pid, int wx, int wy, int plane, std::int32_t out[4]) {
     static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
+    const int ep = LiveTileEffPlane(pid, wx, wy, plane);
+    const std::int32_t lift = LiveTileLift(pid, wx, wy, ep);
     bool all = true;
-    for (int c = 0; c < 4; ++c) { out[c] = LiveCornerHeight(pid, wx + CX[c], wy + CY[c], plane); if (out[c] == kNoFine) all = false; }
+    for (int c = 0; c < 4; ++c) { out[c] = LiveCornerHeight(pid, wx + CX[c], wy + CY[c], ep); if (out[c] == kNoFine) all = false; else out[c] += lift; }
     return all;
 }
 
@@ -6679,11 +6718,20 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     constexpr float kHScale = 32.0f;
     out.pid = pid;
     const bool liveTerrain = have_player && LiveTerrainSnapshot(pid, out.player_tx, out.player_ty, out.plane);
-    auto liveZ = [&](int tx, int ty, int plane, float& z) -> bool {   // corner height + the tile's standing offset
+    // SW corner of tile (tx, ty) as the game stands on it: effective plane (bridges) + standing offset.
+    auto liveZ = [&](int tx, int ty, int plane, float& z) -> bool {
         if (!liveTerrain) return false;
-        const std::int32_t v = LiveCornerHeight(pid, tx, ty, plane);
+        const int ep = LiveTileEffPlane(pid, tx, ty, plane);
+        const std::int32_t v = LiveCornerHeight(pid, tx, ty, ep);
         if (v == INT32_MIN) return false;
-        z = (float)(v + LiveTileLift(pid, tx, ty, plane)); return true;
+        z = (float)(v + LiveTileLift(pid, tx, ty, ep)); return true;
+    };
+    // Raw corner on an explicit plane plus a given tile's offset (multi-tile boxes).
+    auto liveRawZ = [&](int cx, int cy, int ep, int liftTx, int liftTy, float& z) -> bool {
+        if (!liveTerrain) return false;
+        const std::int32_t v = LiveCornerHeight(pid, cx, cy, ep);
+        if (v == INT32_MIN) return false;
+        z = (float)(v + LiveTileLift(pid, liftTx, liftTy, ep)); return true;
     };
     out.anchor_h = have_player
         ? rtx::cache::TileHeight(out.player_tx, out.player_ty, out.plane) : kNoH;
@@ -6698,13 +6746,14 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         if (W < 1) W = 1;
         if (H < 1) H = 1;
         if (forPlane < 0) forPlane = out.plane;
-        const int ep = rtx::cache::TileEffPlane(swx + W / 2, swy + H / 2, forPlane);
+        const int ep = liveTerrain ? LiveTileEffPlane(pid, swx + W / 2, swy + H / 2, forPlane)
+                                   : rtx::cache::TileEffPlane(swx + W / 2, swy + H / 2, forPlane);
         const int cx[4] = { swx, swx + W, swx + W, swx };
         const int cy[4] = { swy, swy, swy + H, swy + H };
         float base = out.player_z, top = out.player_z; bool haveBase = false;
         for (int i = 0; i < 4; ++i) {
             float z;
-            if (!liveZ(cx[i], cy[i], ep, z)) {
+            if (!liveRawZ(cx[i], cy[i], ep, swx + W / 2, swy + H / 2, z)) {
                 std::int16_t hh = rtx::cache::TileHeightAtPlane(cx[i], cy[i], ep);
                 if (hh == kNoH) continue;
                 z = kHScale * (float)hh;
@@ -6754,7 +6803,6 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             std::int16_t ch[4];
             rtx::cache::TileCornerHeights(gx, gy, plane, ch);
             std::int32_t lch[4]; const bool liveOk = liveTerrain && LiveCornerHeights(pid, gx, gy, plane, lch);
-            if (liveOk) { const std::int32_t lift = LiveTileLift(pid, gx, gy, plane); for (auto& v : lch) v += lift; }
             float fallback = out.player_z;
             bool haveFallback = false;
             if (!liveOk && (ch[0] == kNoH || ch[1] == kNoH || ch[2] == kNoH || ch[3] == kNoH)) {
@@ -7165,11 +7213,9 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             out.heights_fine.assign((std::size_t)T * T * 4, INT32_MIN);
             for (int gx = 0; gx < T; ++gx) for (int gy = 0; gy < T; ++gy) {
                 const int tx = out.player_tx - grid_radius + gx, ty = out.player_ty - grid_radius + gy;
-                const std::int32_t lift = LiveTileLift(pid, tx, ty, out.plane);
-                for (int c = 0; c < 4; ++c) {
-                    const std::int32_t v = LiveCornerHeight(pid, tx + CX[c], ty + CY[c], out.plane);
-                    out.heights_fine[((std::size_t)gx * T + gy) * 4 + c] = (v == INT32_MIN) ? v : v + lift;
-                }
+                std::int32_t lch[4];
+                LiveCornerHeights(pid, tx, ty, out.plane, lch);   // effective plane + standing offset per tile; INT32_MIN corners stay unknown
+                for (int c = 0; c < 4; ++c) out.heights_fine[((std::size_t)gx * T + gy) * 4 + c] = lch[c];
             }
         }
     }
