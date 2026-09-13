@@ -744,7 +744,7 @@
   let bankPer = BANK_PER_PAGE;
   // The estimate is checked after painting: if the grid still overflows, a row is dropped and the page
   // repainted, and that corrected size is remembered for the grid's current dimensions.
-  let bankCols = 1, bankPerFit = { key: '', per: 0 };
+  let bankCols = 1, bankPerFit = { key: '', per: 0 }, bankFitSteps = 0;
   // The bottom edge the bank is actually allowed to reach on screen: the nearest of the pane, the window
   // body and the window. The grid's own box can run past it (the pane scrolls or clips), so the grid's
   // clientHeight is not the truth; the screen rects are. Screen px throughout (uiScreenRect).
@@ -775,15 +775,25 @@
     const rows = Math.max(1, Math.floor((H - 2) / (cell + gap)));   // every row wants its full cell plus gap
     bankCols = cols;
     let per = cols * rows;
-    const key = W + 'x' + H;
-    if (bankPerFit.key === key && bankPerFit.per > 0) per = Math.min(per, bankPerFit.per);
+    bankPerKey = W + 'x' + H;
+    if (bankPerFit.key === bankPerKey && bankPerFit.per > 0) per = bankPerFit.per;   // settled by measurement
     return per;
   }
-  function bankOverflows(grid, pager) {                 // anything below the grid past the visible bottom?
+  let bankPerKey = '';
+  // After a paint: is the last cell clipped, or is there a whole spare row? Returns -1 (drop a row),
+  // +1 (add a row) or 0 (fits). Measured, not estimated: the last cell's rect against the grid's rect
+  // and the pager against the visible bottom.
+  function bankFitCheck(grid, pager, more) {
     try {
-      const bottom = pager ? uiScreenRect(pager).bottom : uiScreenRect(grid).bottom;
-      return bottom > bankVisibleBottom(grid) + 1 || grid.scrollHeight > grid.clientHeight + 1;
-    } catch (e) { return grid.scrollHeight > grid.clientHeight + 1; }
+      const cells = grid.children; if (!cells.length) return 0;
+      const gr = uiScreenRect(grid), lr = uiScreenRect(cells[cells.length - 1]);
+      const vis = bankVisibleBottom(grid);
+      const pb = pager ? uiScreenRect(pager).bottom : gr.bottom;
+      if (lr.bottom > gr.bottom + 1 || lr.bottom > vis + 1 || pb > vis + 1) return -1;
+      const rowH = lr.height + 4 * ((uiZoomOf(grid) || 1));
+      if (more && gr.bottom - lr.bottom >= rowH + 1 && Math.min(gr.bottom, vis) - lr.bottom >= rowH + 1) return 1;
+      return 0;
+    } catch (e) { return grid.scrollHeight > grid.clientHeight + 1 ? -1 : 0; }
   }
   function paintBankPage() {
     const grid = document.getElementById('bankGrid');
@@ -881,16 +891,15 @@
       grid.appendChild(cell);
     }
     // the grid is measured before the tools and pager settle; if the last row does not fit, drop it and repaint
-    if (slice.length > bankCols && bankOverflows(grid, pager)) {
-      const per = Math.max(bankCols, bankPer - bankCols);
-      if (per < bankPer) {
-        // remember the corrected size under the same key bankPerPage will compute next time
-        let Z = 1; try { Z = uiZoomOf(grid) || 1; } catch (e) {}
-        let H = grid.clientHeight;
-        try { const gr = uiScreenRect(grid), pr = pager ? uiScreenRect(pager) : { height: 0 }; H = Math.floor((bankVisibleBottom(grid) - gr.top - pr.height - 8 * Z) / Z); } catch (e) {}
-        if (H < 40) H = 40;
-        bankPerFit = { key: grid.clientWidth + 'x' + H, per: per }; bankPaintSig = ''; paintBankPage(); return;
-      }
+    {   // settle the page size by measurement: drop a clipped row, or take a spare one; at most one step per paint
+        const fullPage = slice.length === bankPer, more = filtered.length > start + slice.length;
+        const dir = bankFitCheck(grid, pager, more && fullPage);
+        const per = dir < 0 ? Math.max(bankCols, bankPer - bankCols) : dir > 0 ? bankPer + bankCols : bankPer;
+        if (per !== bankPer && slice.length > bankCols && bankFitSteps < 8) {
+          bankFitSteps++;
+          bankPerFit = { key: bankPerKey, per: per }; bankPaintSig = ''; paintBankPage(); return;
+        }
+        bankFitSteps = 0;
     }
 
     const meta = document.getElementById('bankMeta');
