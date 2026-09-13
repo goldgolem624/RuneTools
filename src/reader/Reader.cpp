@@ -1907,7 +1907,10 @@ std::string MembershipJson(std::uint32_t pid) {
     long long idleMs = -1;
     std::uint64_t rep = rpm<std::uint64_t>(h, *root + kOffInputReporter).value_or(0);
     if (rep > 0x10000 && rep <= 0x00007FFFFFFFFFFFull) {
-        std::uint64_t now = rpm<std::uint64_t>(h, ps.mgva + 8).value_or(0);
+        // The flush stamps are GetTickCount64 values (system uptime, ms). The client keeps its own
+        // copy next to the MainData slot, but that slot moved between builds (+8 on 949-5, +0x10 on
+        // 950-1); the launcher runs on the same machine, so its own tick clock is the same domain.
+        std::uint64_t now = (std::uint64_t)GetTickCount64();
         std::uint64_t pa  = rpm<std::uint64_t>(h, rep + kOffRepPointerA).value_or(0);
         std::uint64_t pb  = rpm<std::uint64_t>(h, rep + kOffRepPointerB).value_or(0);
         std::uint64_t kb  = rpm<std::uint64_t>(h, rep + kOffRepKeyboard).value_or(0);
