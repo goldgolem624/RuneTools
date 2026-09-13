@@ -66,6 +66,10 @@ struct LocMeta {
 
 LocMeta GetLoc(int loc_id);
 
+// Every loc definition as TSV (id, name, dim_x, dim_y, actions '|'-joined, model ids '|'-joined, morph varbit,
+// morph varp, morph children '|'-joined) for offline tooling. Returns rows written, -1 when the cache is closed.
+int LocDumpTsv(const std::string& path);
+
 std::string MenuDefJson(int kind, int id);
 
 std::string MenuFindJson(int kind, const std::string& name);

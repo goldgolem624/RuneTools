@@ -12,7 +12,7 @@ bool ReadOne(InputStream& s, LocDef& d, int op) {
             for (int i = 0; i < n; ++i) {
                 s.ReadByte();                        // model type
                 int sub = s.ReadUnsignedByte();
-                for (int j = 0; j < sub; ++j) s.ReadBigSmart();
+                for (int j = 0; j < sub; ++j) { int m = s.ReadBigSmart(); if (m >= 0) d.models.push_back(m); }
             }
             return true;
         }

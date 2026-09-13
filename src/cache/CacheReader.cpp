@@ -24,6 +24,7 @@
 #include <deque>
 #include <map>
 #include <array>
+#include <fstream>
 #include <mutex>
 #include <queue>
 #include <set>
@@ -3247,6 +3248,42 @@ std::vector<int> ItemVarobjs(int item_id) {
     }
     cache[item_id] = out;
     return out;
+}
+
+int LocDumpTsv(const std::string& path) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = g_store ? g_store->Get(kIndexLocations) : nullptr;
+    if (!idx || !idx->ready()) return -1;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return -1;
+    auto esc = [](std::string v) { for (auto& c : v) if (c == '\t' || c == '\n' || c == '\r') c = ' '; return v; };
+    f << "id\tname\tdim_x\tdim_y\tactions\tmodels\tmorph_varbit\tmorph_varp\tmorph_children\n";
+    int rows = 0;
+    const auto& entries = idx->ref().entries();
+    for (std::size_t a = 0; a < entries.size(); ++a) {
+        for (int fid : entries[a].valid_file_ids) {
+            auto bytes = idx->ReadFile((int)a, fid);
+            if (bytes.empty()) continue;
+            const int id = ((int)a << 8) | fid;
+            LocDef d = DecodeLoc(id, std::move(bytes));
+            if (d.name.empty() && d.models.empty() && d.morph_children.empty()) continue;
+            f << id << '\t' << esc(d.name) << '\t' << d.dim_x << '\t' << d.dim_y << '\t';
+            bool first = true;
+            for (std::size_t i = 0; i < d.options.size(); ++i) {
+                const std::string& o = !d.members_options[i].empty() ? d.members_options[i] : d.options[i];
+                if (o.empty()) continue;
+                f << (first ? "" : "|") << esc(o); first = false;
+            }
+            f << '\t';
+            for (std::size_t i = 0; i < d.models.size(); ++i) f << (i ? "|" : "") << d.models[i];
+            f << '\t' << d.morph_varbit << '\t' << d.morph_varp << '\t';
+            for (std::size_t i = 0; i < d.morph_children.size(); ++i) f << (i ? "|" : "") << d.morph_children[i];
+            f << '\n';
+            ++rows;
+        }
+    }
+    return rows;
 }
 
 // Raw loc definition bytes (index 16, archive id >> 8, file id & 0xff) as hex, for opcode digging.

@@ -4,6 +4,7 @@
 #include "Companion.h"
 #include "Dock.h"
 #include "Http.h"
+#include "IconCache.h"
 #include "LuaHost.h"
 #include "MonitorFix.h"
 #include "Overlay.h"
@@ -370,6 +371,43 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
                 out = rtx::reader::InterfaceGroupsJson(pid);
             }
             { std::ofstream f("iface-dump.txt", std::ios::binary | std::ios::trunc); f << diag << out; }
+            LocalFree(argv);
+            return 0;
+        }
+        // --loc-dump <out.tsv>: every loc definition (name, footprint, actions, models, morphs) for offline tooling.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--loc-dump") {
+            std::wstring wp = argv[2];
+            int rows = rtx::cache::LocDumpTsv(std::string(wp.begin(), wp.end()));
+            { std::ofstream f("loc-dump.txt", std::ios::binary | std::ios::trunc); f << rows; }
+            LocalFree(argv);
+            return rows >= 0 ? 0 : 1;
+        }
+        // --model-icons <ids.txt> <outdir>: write modelicons.pack entries as <outdir>/<modelId>.png (one id per line).
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--model-icons") {
+            std::wstring wi = argv[2], wo = argv[3];
+            std::ifstream in{ std::filesystem::path(wi) };
+            std::filesystem::create_directories(std::filesystem::path(wo));
+            auto b64val = [](char c) -> int {
+                if (c >= 'A' && c <= 'Z') return c - 'A'; if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+                if (c >= '0' && c <= '9') return c - '0' + 52; if (c == '+') return 62; if (c == '/') return 63; return -1; };
+            int written = 0, missing = 0; std::string line;
+            while (std::getline(in, line)) {
+                int id = std::atoi(line.c_str()); if (id <= 0) continue;
+                std::string url = rtx::launcher::icons::ModelIconDataUrl(id);
+                std::size_t comma = url.find(',');
+                if (url.empty() || comma == std::string::npos) { ++missing; continue; }
+                std::string ext = url.rfind("data:image/gif", 0) == 0 ? ".gif" : ".png";
+                std::vector<unsigned char> bytes; int acc = 0, bits = 0;
+                for (std::size_t i = comma + 1; i < url.size(); ++i) {
+                    int v = b64val(url[i]); if (v < 0) continue;
+                    acc = (acc << 6) | v; bits += 6;
+                    if (bits >= 8) { bits -= 8; bytes.push_back((unsigned char)((acc >> bits) & 0xFF)); }
+                }
+                std::ofstream o(std::filesystem::path(wo) / (std::to_wstring(id) + std::wstring(ext.begin(), ext.end())), std::ios::binary | std::ios::trunc);
+                o.write((const char*)bytes.data(), (std::streamsize)bytes.size());
+                ++written;
+            }
+            { std::ofstream f("model-icons.txt", std::ios::binary | std::ios::trunc); f << written << " written, " << missing << " missing"; }
             LocalFree(argv);
             return 0;
         }

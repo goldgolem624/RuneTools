@@ -14,6 +14,7 @@ struct LocDef {
     std::string                name;
     std::array<std::string, 5> options;          // opcodes 30..34 (base right-click actions)
     std::array<std::string, 5> members_options;  // opcodes 150..154 (override on members worlds)
+    std::vector<int>           models;            // opcode 1: every model id, all types flattened
     int                        dim_x = 1;         // opcode 14
     int                        dim_y = 1;         // opcode 15
     int                        mapscene = -1;     // opcode 102: world-map scene icon (-> mapscene def -> sprite)
