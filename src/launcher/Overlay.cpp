@@ -2637,6 +2637,9 @@ void SetHighlight(std::uint32_t pid, const std::vector<std::string>& names) {
         std::lock_guard<std::mutex> lk(g_mu);
         Config& dst = cfg_slot((DWORD)pid);
         dst.pid = pid;
+        // The Dungeoneering scene tick and the quest guides re-assert their list every pass (the
+        // channel is shared, so the last writer wins). An unchanged list is a no-op: no log, no wake.
+        if (dst.highlight == names) return;
         dst.highlight = names;
     }
     rtx::log::Launcher("[ovl] SetHighlight pid=" + std::to_string(pid) + " n=" + std::to_string(names.size()));
