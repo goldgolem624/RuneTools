@@ -160,24 +160,27 @@
         try { const d = JSON.parse(await bridge().bankItems(myPid())); if (d && Array.isArray(d.items)) bankData = d; } catch (e) {}
       }
       if (!bankData || !bankData.open || !bankData.items || !bankData.items.length) { bankOverlayClear(); return; }
-      // Anchor on the bank window itself (517's root is the frame's content rect): the title bar sits in the
-      // 32 px above the content, and the close button takes the right-most 32 px of it.
-      let frame = null;
+      // The title bar is part of the bank group itself: layer 517:311 holds the "Bank of Gielinor" text as a
+      // dynamic child (723x40 across the top). Right-align the totals inside that bar, clear of the info icon.
+      let title = null;
       try {
-        const d = JSON.parse(rtxData.sync('state.interface', 517, '0') || '{}');
-        if (d && d.open && d.hasAbs && Array.isArray(d.comps)) frame = d.comps.find(c => c.sub === -1 && c.w > 200) || null;
+        const d = JSON.parse(rtxData.sync('state.interface', 517, '311') || '{}');
+        if (d && d.open && d.hasAbs && Array.isArray(d.comps)) {
+          title = d.comps.find(c => c.sub >= 0 && c.w > 300 && /bank/i.test(c.text || '')) || d.comps.find(c => c.sub === -1 && c.w > 300) || null;
+        }
       } catch (e) {}
-      if (!frame) { bankOverlayClear(); return; }
+      if (!title) { bankOverlayClear(); return; }
       const t = bankTotals(bankData.items);
       const text = 'GE ' + fmtGp(t.ge) + '  |  HA ' + fmtGp(t.ha);
-      const x = frame.x + frame.w - 40 - Math.round(text.length * 7.2);   // right-aligned in the title bar, clear of the close button
-      const y = frame.y - 16;                                              // vertical centre of the 32 px title bar
-      rtxData.sync('overlay.uiLabels', x + '\x1f' + y + '\x1f-1\x1f13\x1f' + text);
+      const x = title.x + title.w - 80 - Math.round(text.length * 7.2);   // right-aligned in the title bar, left of the info button
+      const y = title.y + Math.round((title.h || 40) / 2);
+      rtxData.sync('overlay.uiLabels', x + '' + y + '-113' + text);
       bankOverlayShown = true;
     } catch (e) {} finally { bankOverlayBusy = false; }
   }
   function bankOverlaySet(on) {
     bankOverlayOn = !!on; prefSet('rtxBankOverlay', on ? '1' : '0');
+    if (on && bridge() && !bridge().uiLabels) { try { uiNotify('In-game totals need the newer launcher build: rebuild and relaunch RuneToolsX', { ttl: 8000 }); } catch (e) {} }
     if (bankOverlayTimer) { clearInterval(bankOverlayTimer); bankOverlayTimer = 0; }
     if (on) { bankOverlayTimer = setInterval(bankOverlayTick, 2000); bankOverlayTick(); }
     else bankOverlayClear();
