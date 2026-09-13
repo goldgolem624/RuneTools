@@ -11,6 +11,12 @@
                     ['Consolas', 'consolas', "Consolas, 'Cascadia Mono', monospace"]];
   const UI_ACCENTS = [['Gold', '#e8c26a'], ['Violet', '#8c6ffd'], ['Blue', '#5b9cff'], ['Teal', '#2fd0c4'], ['Green', '#4dd28a'],
                       ['Amber', '#f5b241'], ['Red', '#ff6b6b'], ['Pink', '#ff7ac8'], ['Mono', '#c9cfdd']];
+  function uiHexLum(hex) {                  // relative luminance 0..1 of a #rrggbb colour
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+    if (!m) return 0;
+    const n = parseInt(m[1], 16), ch = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * ch(n >> 16) + 0.7152 * ch((n >> 8) & 255) + 0.0722 * ch(n & 255);
+  }
   function uiZoomOf(el) {
     let z = 1;
     for (let n = el; n && n.nodeType === 1; n = n.parentNode) {
@@ -61,6 +67,8 @@
     r.setProperty('--accent-lo', uiHexMul(c.accent, 0.78));
     r.setProperty('--accent-rgb', uiHexRgb(c.accent));
     r.setProperty('--accent-ring', 'rgba(' + uiHexRgb(c.accent) + ',0.28)');
+    // Text drawn on a solid accent fill: dark ink on light accents (Gold, Amber, Mono), white on dark ones.
+    r.setProperty('--accent-ink', uiHexLum(c.accent) > 0.5 ? '#16120a' : '#fff');
     const op = Math.max(0.3, Math.min(1, (Number(c.opacity) || 93) / 100));
     const bgRgb = (getComputedStyle(document.documentElement).getPropertyValue('--bg-rgb') || '').trim() || '12,14,20';
     r.setProperty('--win-bg', 'rgba(' + bgRgb + ',' + op.toFixed(2) + ')');
