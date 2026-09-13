@@ -872,9 +872,6 @@
   main { padding: 20px 22px 16px; }
   .home { grid-template-columns: minmax(0, 1fr) 320px; }
   .card.play-card { padding: 22px; }
-  .play-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
-  .play-foot .link { font: 600 10px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim); cursor: pointer; margin-left: auto; }
-  .play-foot .link:hover { color: var(--brass-2); }
   .settings-box { width: min(520px, calc(100vw - 48px)); }
   .settings-box .credits-hd { display: flex; align-items: center; justify-content: space-between; }
   .settings-box .credits-hd .btn-min { font-size: 10px; padding: 5px 10px; }
@@ -1027,10 +1024,6 @@
             <span class="link" id="gp-locate">Locate it</span>
           </div>
           <div id="proc-list" hidden></div><span id="proc-count" hidden></span>
-          <div class="play-foot">
-            <button class="ghost btn-sm" id="acct-launch-all" type="button" style="display:none">Launch all</button>
-            <span class="link" id="open-settings">Manage accounts</span>
-          </div>
         </div>
       </aside>
     </div>
@@ -1524,38 +1517,6 @@
     }
   }
 
-  // Launch every idle saved account, spaced out so the Jagex launcher hand-off
-  // never races itself. Visible only when 2+ accounts are launchable.
-  let launchAllBusy = false;
-  async function launchAll() {
-    if (launchAllBusy) return;
-    if (updateMandatory) {
-      showStatus($('main-status'), 'err',
-                 'This version is out of date - click "Update now" above before launching.');
-      return;
-    }
-    let procs = [], accts = [];
-    try { procs = JSON.parse(await bridge().scanProcesses()); } catch (e) {}
-    try { accts = JSON.parse(await bridge().listAccounts()); } catch (e) {}
-    const running = new Set(procs.filter(p => p.display_name).map(p => lcKey(p.display_name)));
-    const todo = accts.filter(a => !running.has(lcKey(a.display_name)));
-    if (!todo.length) return;
-    launchAllBusy = true;
-    const btn = $('acct-launch-all');
-    if (btn) btn.disabled = true;
-    for (let i = 0; i < todo.length; i++) {
-      const a = todo[i];
-      showStatus($('main-status'), 'warn',
-                 'Launching ' + (a.display_name || 'account') + ' (' + (i + 1) + '/' + todo.length + ')...');
-      try { await bridge().launchAccount(a.id); } catch (e) {}
-      if (i + 1 < todo.length) await new Promise(rz => setTimeout(rz, 2500));
-    }
-    showStatus($('main-status'), 'ok', 'Launched ' + todo.length + ' account' + (todo.length === 1 ? '' : 's'));
-    launchAllBusy = false;
-    if (btn) btn.disabled = false;
-    setTimeout(refresh, 900);
-  }
-
   // null, not '': an EMPTY list keys to '' too, and the skeletons never cleared on a machine
   // with no client running until one appeared.
   let _lastProcKey = null;
@@ -1601,9 +1562,6 @@
       _lastAcctKey = ak;
       renderAccounts(accts, runningSet);
     }
-    const la = $('acct-launch-all');
-    if (la) la.style.display =
-      (accts.filter(a => !runningSet.has(lcKey(a.display_name))).length >= 2) ? '' : 'none';
     updateProcStats();
   }
 
@@ -1892,7 +1850,6 @@
 
   const settingsSet = (on) => { $('settingsOv').classList.toggle('on', !!on); if (on) gpRefresh(); };
   $('tb-settings').addEventListener('click', () => settingsSet(true));
-  $('open-settings').addEventListener('click', () => settingsSet(true));
   $('settingsClose').addEventListener('click', () => settingsSet(false));
   $('settingsOv').addEventListener('click', (e) => { if (e.target === $('settingsOv')) settingsSet(false); });
 
@@ -2193,8 +2150,6 @@
     initTitlebar();
     gpRefresh();
     gfxRefresh();
-    const la = $('acct-launch-all');
-    if (la) la.addEventListener('click', launchAll);
     refresh();
     checkForUpdate();
     startUpdateChecks();
