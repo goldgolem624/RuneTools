@@ -256,7 +256,7 @@
     rows.appendChild(num('Offset X', 'dx'));
     rows.appendChild(num('Offset Y', 'dy'));
     rows.appendChild(num('Width', 'w'));
-    rows.appendChild(num('Height', 'h'));   // 0 = automatic (4 alerts); otherwise how many alerts fit
+    rows.appendChild(num('Height', 'h'));   // alert card height; 0 = natural
     const btnRow = (label, id, buttons) => {
       const r = document.createElement('div'); r.className = 'row';
       const k = document.createElement('span'); k.className = 'k'; k.textContent = label;

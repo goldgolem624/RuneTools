@@ -447,6 +447,8 @@
     overflow: hidden;
     animation: toast-in 240ms var(--ease-out);
   }
+  /* A dragged height on the placement box is the card height: content centres in the taller card. */
+  #toaster.sized .toast { min-height: var(--toast-h, auto); align-items: center; }
   .toast.out { animation: toast-out 200ms var(--ease) forwards; }
   .toast.sticky { pointer-events: auto; border-left-color: var(--warn); }
   /* Sticky card that reached its goal: amber edge turns green. */

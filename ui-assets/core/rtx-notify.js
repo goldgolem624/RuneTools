@@ -1,9 +1,8 @@
-  const TOAST_ROW = 52;            // one alert card plus the stack gap, for the height budget
+  const TOAST_MAX = 4;
   const toasts = [];               // { el, msg, until, sticky, n, barEl, countEl }
   let _toastTimer = 0;
-  // h = 0 is automatic (4 alerts); a dragged height sets how many alerts may stack at once.
+  // w and h are the alert card's size: the placement box is one card. h = 0 keeps the card's natural height.
   const TOAST_DEF = { anchor: 'top-center', dx: 0, dy: 58, w: 420, h: 0 };
-  function toastCap() { const h = Number(toastCfg.h) || 0; return h > 0 ? Math.max(1, Math.floor((h + 8) / TOAST_ROW)) : 4; }
   let toastCfg = Object.assign({}, TOAST_DEF);
   let toastPlacing = false;        // UI Settings "position on screen" mode
 
@@ -24,8 +23,11 @@
     else { el.style.left = '50%'; el.style.transform = 'translateX(calc(-50% + ' + dx + 'px))'; }
     el.style.flexDirection = (a.indexOf('bottom') === 0) ? 'column-reverse' : 'column';
     el.classList.toggle('placing', !!toastPlacing);
+    const hh = Number(c.h) || 0;
+    el.classList.toggle('sized', hh > 0);
+    el.style.setProperty('--toast-h', (hh > 0 ? hh : 42) + 'px');
     let g = $('toastGhost');
-    if (g) g.style.minHeight = ((Number(c.h) || 0) > 0 ? Number(c.h) : 42) + 'px';
+    if (g) g.style.minHeight = (hh > 0 ? hh : 42) + 'px';
     if (toastPlacing && !g) {
       g = document.createElement('div');
       g.id = 'toastGhost';
@@ -42,8 +44,12 @@
         rz.addEventListener('mousedown', (e) => {
           e.preventDefault(); e.stopPropagation();          // not a move-drag
           const sx = e.clientX, sy = e.clientY;
-          const ow = Number(toastCfg.w) || TOAST_DEF.w, odx = Number(toastCfg.dx) || 0, ody = Number(toastCfg.dy) || 0;
-          const oh = (Number(toastCfg.h) || 0) > 0 ? Number(toastCfg.h) : g.offsetHeight;
+          // Start from the box as rendered, not from the stored numbers: the first drag of a fresh
+          // box (or one clamped to the screen) must grow from the size actually on screen.
+          const gr = g.getBoundingClientRect();
+          const ow = Math.round(gr.width) || Number(toastCfg.w) || TOAST_DEF.w;
+          const oh = Math.round(gr.height) || 42;
+          const odx = Number(toastCfg.dx) || 0, ody = Number(toastCfg.dy) || 0;
           const a = String(toastCfg.anchor || 'top-center');
           const left = a.indexOf('left') > 0, right = a.indexOf('right') > 0, bottom = a.indexOf('bottom') === 0;
           const mv = (ev) => {
@@ -101,17 +107,20 @@
       if (!el || !e.target.closest || !e.target.closest('#toaster')) return;
       if (e.target.closest('.ghost-rz')) return;
       e.preventDefault();
+      // Pointer deltas from the grab point, applied to the stored offsets: the grabbed spot stays
+      // under the cursor whatever the anchor, without depending on how the stack is laid out.
       const r = el.getBoundingClientRect();
-      const ox = e.clientX - r.left, oy = e.clientY - r.top;
+      const sx = e.clientX, sy = e.clientY;
+      const odx = Number(toastCfg.dx) || 0, ody = Number(toastCfg.dy) || 0;
+      const a = String(toastCfg.anchor || 'top-center');
+      const signX = a.indexOf('right') > 0 ? -1 : 1, signY = a.indexOf('bottom') === 0 ? -1 : 1;
       const mv = (ev) => {
         const vw = window.innerWidth || 1280, vh = window.innerHeight || 720;
-        const left = Math.max(0, Math.min(vw - r.width, ev.clientX - ox));
-        const top = Math.max(0, Math.min(vh - r.height, ev.clientY - oy));
-        const a = String(toastCfg.anchor || 'top-center');
-        toastCfg.dy = Math.round((a.indexOf('bottom') === 0) ? (vh - top - r.height) : top);
-        toastCfg.dx = Math.round(a.indexOf('left') > 0 ? left
-                              : a.indexOf('right') > 0 ? (vw - left - r.width)
-                              : (left + r.width / 2 - vw / 2));
+        let ndx = odx + (ev.clientX - sx) * signX, ndy = ody + (ev.clientY - sy) * signY;
+        ndy = Math.max(0, Math.min(Math.max(0, vh - r.height), ndy));
+        if (a.indexOf('left') > 0 || a.indexOf('right') > 0) ndx = Math.max(0, Math.min(Math.max(0, vw - r.width), ndx));
+        else { const half = Math.max(0, (vw - r.width) / 2); ndx = Math.max(-half, Math.min(half, ndx)); }
+        toastCfg.dx = Math.round(ndx); toastCfg.dy = Math.round(ndy);
         applyToastPos();
         reflectUiSettings();      // values only: a rebuild here would kill this drag
       };
@@ -169,7 +178,7 @@
                   until: ttl ? now + ttl : 0, barEl, countEl: cnt, closing: false };
     $('toaster').appendChild(el);
     toasts.push(rec);
-    while (toasts.filter(t => !t.closing).length > toastCap()) {
+    while (toasts.filter(t => !t.closing).length > TOAST_MAX) {
       const victim = toasts.find(t => !t.closing && !t.sticky) ||
                      toasts.find(t => !t.closing);
       if (!victim) break;
