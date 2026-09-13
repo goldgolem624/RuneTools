@@ -742,13 +742,20 @@
   // Items per page = whole cells that fit the grid's area (it takes the space left under the tools, and the
   // pager sits below it), so a page fills the panel instead of stopping at a fixed count.
   let bankPer = BANK_PER_PAGE;
+  // The estimate is checked after painting: if the grid still overflows, a row is dropped and the page
+  // repainted, and that corrected size is remembered for the grid's current dimensions.
+  let bankCols = 1, bankPerFit = { key: '', per: 0 };
   function bankPerPage(grid) {
     const W = grid.clientWidth, H = grid.clientHeight;
     if (W < 40 || H < 40) return bankPer;
     const gap = 4, cols = Math.max(1, Math.floor((W + gap) / (40 + gap)));
     const cell = (W - (cols - 1) * gap) / cols;
-    const rows = Math.max(1, Math.floor((H - 2) / (cell + gap)));   // every row wants its full cell plus gap: no clipped last row
-    return cols * rows;
+    const rows = Math.max(1, Math.floor((H - 2) / (cell + gap)));   // every row wants its full cell plus gap
+    bankCols = cols;
+    let per = cols * rows;
+    const key = W + 'x' + H;
+    if (bankPerFit.key === key && bankPerFit.per > 0) per = Math.min(per, bankPerFit.per);
+    return per;
   }
   function paintBankPage() {
     const grid = document.getElementById('bankGrid');
@@ -845,6 +852,12 @@
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);
     }
+    // the grid is measured before the tools and pager settle; if the last row does not fit, drop it and repaint
+    if (slice.length > bankCols && grid.scrollHeight > grid.clientHeight + 1) {
+      const key = grid.clientWidth + 'x' + grid.clientHeight;
+      const per = Math.max(bankCols, bankPer - bankCols);
+      if (per < bankPer) { bankPerFit = { key: key, per: per }; bankPaintSig = ''; paintBankPage(); return; }
+    }
 
     const meta = document.getElementById('bankMeta');
     if (meta) {
@@ -856,7 +869,7 @@
     }
     const pg = document.getElementById('bankPg');
     if (pg) pg.textContent = filtered.length ? ('Page ' + (bankPage + 1) + ' / ' + pages) : 'No items';
-    if (pager) pager.hidden = pages <= 1;                         // a single page needs no paging
+    if (pager) pager.style.visibility = pages <= 1 ? 'hidden' : '';   // a single page needs no paging; keep its space so the grid never reflows
     const prev = document.getElementById('bankPrev'); if (prev) prev.disabled = bankPage <= 0;
     const next = document.getElementById('bankNext'); if (next) next.disabled = bankPage >= pages - 1;
     if (bankOverlayOn) bankOverlayTick();
