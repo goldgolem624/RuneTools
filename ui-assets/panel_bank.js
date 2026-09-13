@@ -321,7 +321,8 @@
   // order (creation order), and varbit 45175+(t-2) is the creation id (block index + 2) of the tab shown
   // at display position t. The main tab (position 1) is every slot after the blocks. Names ("Tab N - Name")
   // and icons come from the bank interface while it is open (517:203 headers, 517:170 tab bar whose child
-  // sub is position + 2), keyed by creation id so they survive reordering, and are cached per character in
+  // sub is the display position; the all-tabs button is not one of them), keyed by creation id so they
+  // survive reordering, and are cached per character in
   // the durable prefs. Slot membership is therefore always live: it follows every deposit and withdrawal.
   const BANK_VB_SIZE0 = 45143, BANK_VB_ORDER0 = 45175, BANK_TABS_MAX = 32;
   let bankTabsData = null, bankTabsMeta = null, bankTabsVb = null, bankTabsVbAt = 0, bankTabsVbBusy = false, bankTab = 0;
@@ -334,14 +335,14 @@
     bankTabsMeta = { character: key, byCid: {} };
     try {
       const all = JSON.parse(prefGet('rtxBankTabs', '{}') || '{}');
-      if (all && all[key] && all[key].byCid) bankTabsMeta.byCid = all[key].byCid;
+      if (all && all[key] && all[key].byCid && all[key].v === 2) bankTabsMeta.byCid = all[key].byCid;
     } catch (e) {}
   }
   function bankTabsMetaSave() {
     const key = bankTabsKey(); if (!key || !bankTabsMeta) return;
     let all = {};
     try { all = JSON.parse(prefGet('rtxBankTabs', '{}') || '{}') || {}; } catch (e) { all = {}; }
-    all[key] = { byCid: bankTabsMeta.byCid };
+    all[key] = { v: 2, byCid: bankTabsMeta.byCid };
     prefSet('rtxBankTabs', JSON.stringify(all));
   }
   function bankTabsVbRefresh() {                 // the layout vars, at most every 2 s
@@ -416,8 +417,8 @@
           const name = (m[2] || '').trim();
           const e = bankTabsMeta.byCid[cid] || (bankTabsMeta.byCid[cid] = {});
           if (e.name !== name) { e.name = name; changed = true; }
-        } else if (c.comp === 170 && c.sub >= 3 && (c.obj > 0 || c.spr > 0)) {
-          const cid = cidAt(c.sub - 2); if (!cid) continue;
+        } else if (c.comp === 170 && c.sub >= 2 && (c.obj > 0 || c.spr > 0)) {
+          const cid = cidAt(c.sub); if (!cid) continue;
           const icon = c.obj > 0 ? { item: c.obj } : { spr: c.spr };
           const e = bankTabsMeta.byCid[cid] || (bankTabsMeta.byCid[cid] = {});
           if (JSON.stringify(e.icon) !== JSON.stringify(icon)) { e.icon = icon; changed = true; }
