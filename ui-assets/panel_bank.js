@@ -28,7 +28,12 @@
   // copy the game hands out (same name, different id), "Augmented X" as X, and the broken / damaged /
   // degraded / used / new / uncharged forms of degradable gear as the plain name. Resolved by name through
   // the price mapping, which is the tradeable item list.
-  let bankNameToId = null, bankMapLen = -1;
+  let bankNameToId = null, bankIdToName = null, bankMapLen = -1;
+  function bankItemName(id) {
+    if (bankIdToName && bankIdToName[id]) return bankIdToName[id];
+    try { const info = JSON.parse(bridge().itemInfo(id) || '{}'); if (info && info.name) return info.name; } catch (e) {}
+    return 'item #' + id;
+  }
   const bankBaseOf = Object.create(null);     // item id -> base item id for pricing (or the id itself)
   function bankBaseId(id, name) {
     if (bankBaseOf[id] !== undefined) return bankBaseOf[id];
@@ -37,7 +42,8 @@
       const raw = bridge().pricesMapping() || '[]';
       if (raw.length !== bankMapLen) {
         bankMapLen = raw.length; bankNameToId = Object.create(null);
-        for (const it of JSON.parse(raw)) if (it && it.name) bankNameToId[String(it.name).toLowerCase()] = it.id;
+        bankIdToName = Object.create(null);
+        for (const it of JSON.parse(raw)) if (it && it.name) { bankNameToId[String(it.name).toLowerCase()] = it.id; bankIdToName[it.id] = it.name; }
       }
       if (bankNameToId) {
         const own = String(name || '').toLowerCase();
@@ -83,30 +89,71 @@
     else v = hi != null ? hi : lo;
     return v > 0 ? v : null;
   }
-  const bankPartsOf = Object.create(null);    // item id -> { item, extras: [{ label, price }] } behind the last GE figure (for the tooltip)
-  function bankGeOf(id, name) {
-    const prices = bankPrices();
-    let v = bankPriceAt(prices && prices[id]);
-    bankPartsOf[id] = null;
-    if (v == null && name) {
-      const b = bankBaseId(id, name);
-      if (b !== id) v = bankPriceAt(prices && prices[b]);
-      if (v != null && b !== id) {
-        const parts = { item: v, extras: [] };
-        for (const ex of (bankExtrasOf[id] || [])) {     // dyes and ornament kits sit on top of the base piece
-          const pv = bankPriceAt(prices && prices[ex.id]);
-          if (pv != null) { parts.extras.push({ label: ex.label, price: pv }); v += pv; }
+  // An Essence of Finality amulet holds one weapon's special attack, chosen per amulet, so it is read per bank
+  // slot rather than per item id: the amulet's own item var 3 is an index into enum 15970, which maps that
+  // index to the weapon the special came from. The weapon's GE price is then counted on top of the amulet.
+  const BANK_EOF_ENUM = 15970, BANK_EOF_VAR = 3, BANK_CONTAINER = 95;
+  let bankEofTable = null, bankEofLoading = false, bankEofSig = '';
+  const bankEofOf = Object.create(null);      // 'slot:id' -> { weaponId, weaponName } or null when nothing is stored
+  function bankIsEof(name) { return /^(?:augmented\s+)?essence of finality amulet/i.test(name || ''); }
+  async function bankEofRefresh(items) {
+    if (!items || !bridge() || !bridge().itemExtraInts || !myPid()) return;
+    const sig = (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
+    if (sig === bankEofSig || bankEofLoading) return;
+    bankEofLoading = true;
+    let changed = false;
+    try {
+      if (!bankEofTable) { try { bankEofTable = JSON.parse(await rtxData.raw('cache.enumInfo', BANK_EOF_ENUM) || 'null'); } catch (e) {} }
+      if (bankEofTable) {
+        for (const it of items) {
+          if (!bankIsEof(it[3])) continue;
+          const key = it[0] + ':' + it[1];
+          let next = null;
+          try {
+            const r = JSON.parse(await bridge().itemExtraInts(myPid(), BANK_CONTAINER, it[1], it[0])) || {};
+            const idx = r.present && Array.isArray(r.key) ? (r.key[BANK_EOF_VAR] | 0) : 0;
+            const wid = bankEofTable[idx] > 0 ? bankEofTable[idx] : null;
+            if (wid) next = { weaponId: wid, weaponName: bankItemName(wid) };
+          } catch (e) {}
+          if (JSON.stringify(bankEofOf[key] || null) !== JSON.stringify(next)) { bankEofOf[key] = next; changed = true; }
         }
-        bankPartsOf[id] = parts;
+        bankEofSig = sig;
+      }
+    } catch (e) {}
+    bankEofLoading = false;
+    if (changed) { bankPaintSig = ''; paintBankPage(); if (bankOverlayOn) bankOverlayTick(); }
+  }
+  // GE value of one bank row and, when it is built from more than one price, the parts behind it (for the tooltip):
+  // { item, extras: [{ label, price }] }. slot picks up the per-amulet Essence of Finality special.
+  function bankGeOf(id, name, slot) {
+    const prices = bankPrices();
+    let v = bankPriceAt(prices && prices[id]), parts = null;
+    const b = (v == null && name) ? bankBaseId(id, name) : id;
+    if (v == null && b !== id) v = bankPriceAt(prices && prices[b]);
+    if (v != null && b !== id) {
+      parts = { item: v, extras: [] };
+      for (const ex of (bankExtrasOf[id] || [])) {     // dyes and ornament kits sit on top of the base piece
+        const pv = bankPriceAt(prices && prices[ex.id]);
+        if (pv != null) { parts.extras.push({ label: ex.label, price: pv }); v += pv; }
       }
     }
-    return v;
+    const eof = slot != null ? bankEofOf[slot + ':' + id] : null;
+    if (eof && eof.weaponId) {
+      let pv = bankPriceAt(prices && prices[eof.weaponId]);
+      if (pv == null) { const wb = bankBaseId(eof.weaponId, eof.weaponName); if (wb !== eof.weaponId) pv = bankPriceAt(prices && prices[wb]); }
+      if (pv != null) {
+        if (!parts) parts = { item: v, extras: [] };
+        parts.extras.push({ label: eof.weaponName + ' (stored special attack)', price: pv });
+        v = (v || 0) + pv;
+      }
+    }
+    return { v: v, parts: parts };
   }
   // per-item valuation for a row [slot, id, stack, name]
   function bankValue(it) {
     const id = it[1], stack = it[2] | 0;
-    const ge = bankGeOf(id, it[3]), ha = bankHaOf(id);
-    return { ge: ge, ha: ha, geTotal: ge != null ? ge * stack : 0, haTotal: ha != null ? ha * stack : 0 };
+    const g = bankGeOf(id, it[3], it[0]), ge = g.v, ha = bankHaOf(id);
+    return { ge: ge, ha: ha, geTotal: ge != null ? ge * stack : 0, haTotal: ha != null ? ha * stack : 0, parts: g.parts };
   }
   function fmtGp(n) {
     n = Math.round(n || 0);
@@ -160,6 +207,7 @@
         try { const d = JSON.parse(await bridge().bankItems(myPid())); if (d && Array.isArray(d.items)) bankData = d; } catch (e) {}
       }
       if (!bankData || !bankData.open || !bankData.items || !bankData.items.length) { bankOverlayClear(); return; }
+      bankEofRefresh(bankData.items);
       // The title bar is part of the bank group itself: layer 517:311 holds the "Bank of Gielinor" text as a
       // dynamic child (723x40 across the top). Right-align the totals inside that bar, clear of the info icon.
       let title = null;
@@ -284,9 +332,21 @@
     paintBankPage();
   }
 
+  // Tooltip line for an Essence of Finality: which special attack it holds and where that price comes from.
+  function bankEofLine(slot, id) {
+    const key = slot + ':' + id;
+    if (bankEofOf[key] === undefined) return 'Stored special attack: reading the amulet';
+    const eof = bankEofOf[key];
+    if (!eof) return 'Stored special attack: none (nothing added to the price)';
+    const prices = bankPrices();
+    let pv = bankPriceAt(prices && prices[eof.weaponId]);
+    if (pv == null) { const wb = bankBaseId(eof.weaponId, eof.weaponName); if (wb !== eof.weaponId) pv = bankPriceAt(prices && prices[wb]); }
+    return 'Stored special attack: ' + eof.weaponName + (pv != null ? ' (the weapon\'s GE price, ' + pv.toLocaleString() + ', is added to this amulet)' : ' (no GE price for the weapon, nothing added)');
+  }
   function paintBankPage() {
     const grid = document.getElementById('bankGrid');
     if (!grid) return;
+    if (bankData && bankData.items) bankEofRefresh(bankData.items);
     const emptyBox = document.getElementById('bankEmpty');
     const pager = grid.parentElement.querySelector('.bank-pager');
     const total = (bankData && bankData.count) ? bankData.count : 0;
@@ -369,8 +429,9 @@
       }
       cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
-        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankPartsOf[id] ? (bankPartsOf[id].extras.length ? ' = ' + fmtGp(bankPartsOf[id].item) + ' item' + bankPartsOf[id].extras.map(e => ' + ' + fmtGp(e.price) + ' ' + e.label).join('') : ' (priced as the base item)') : '') : 'no price') +
-        '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
+        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (v.parts ? (v.parts.extras.length ? ' = ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price') + ' item' + v.parts.extras.map(e => ' + ' + fmtGp(e.price) + ' ' + e.label).join('') : ' (priced as the base item)') : '') : 'no price') +
+        '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a') +
+        (bankIsEof(name) ? '\n' + bankEofLine(slot, id) : '');
       grid.appendChild(cell);
     }
 

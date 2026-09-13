@@ -1,7 +1,8 @@
   const rtxPrefs = Object.create(null);
   let _prefsReady = false, _prefsSaveT = 0, _prefsInitP = null;
   const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView', 'rtxAuras', 'rtxAuraSeen', 'rtxAuraIcons',
-                        'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify', 'rtxResDungCoords', 'rtxSceneMarks'];
+                        'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify', 'rtxResDungCoords', 'rtxSceneMarks',
+                        'rtxBankOverlay', 'rtxBankSort', 'rtxBankPriceBasis'];
   function prefGet(key, def) {
     if (Object.prototype.hasOwnProperty.call(rtxPrefs, key)) return rtxPrefs[key];
     try { const s = localStorage.getItem(key); if (s !== null) return s; } catch (e) {}

@@ -402,21 +402,59 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         if (argv && argc >= 4 && std::wstring(argv[1]) == L"--enum-scan") {
             const int ka = _wtoi(argv[2]), kb = _wtoi(argv[3]);
             std::ofstream f("enum-scan.txt", std::ios::binary | std::ios::trunc);
-            auto valueAt = [](const std::string& j, int k, long long& out) {
+            std::string strA, strB;   // string-valued enums report the text instead of an item
+            auto valueAt = [&](const std::string& j, int k, long long& out, std::string& str) {
                 std::string key = "\"" + std::to_string(k) + "\":";
                 std::size_t at = j.find(key); if (at == std::string::npos) return false;
-                const char* p = j.c_str() + at + key.size(); if (*p == '"') return false;
+                const char* p = j.c_str() + at + key.size();
+                if (*p == '"') { std::size_t e = j.find('"', at + key.size() + 1); str = j.substr(at + key.size() + 1, e == std::string::npos ? 0 : e - (at + key.size() + 1)); out = -1; return true; }
                 out = std::atoll(p); return true;
             };
             for (int id = 0; id < 40000; ++id) {
                 std::string j = rtx::cache::EnumJson(id);
                 if (j.size() < 8) continue;
-                long long va = 0, vb = 0;
-                if (!valueAt(j, ka, va) || !valueAt(j, kb, vb)) continue;
+                long long va = 0, vb = 0; strA.clear(); strB.clear();
+                if (!valueAt(j, ka, va, strA) || !valueAt(j, kb, vb, strB)) continue;
                 int n = 0; for (char c : j) if (c == ':') ++n;
                 if (n < 8 || n > 400) continue;
-                std::string na = va > 0 && va < 100000 ? rtx::cache::ItemInfoJson((int)va) : "", nb = vb > 0 && vb < 100000 ? rtx::cache::ItemInfoJson((int)vb) : "";
+                std::string na = !strA.empty() ? ("\"" + strA + "\"") : (va > 0 && va < 100000 ? rtx::cache::ItemInfoJson((int)va) : "");
+                std::string nb = !strB.empty() ? ("\"" + strB + "\"") : (vb > 0 && vb < 100000 ? rtx::cache::ItemInfoJson((int)vb) : "");
                 f << id << "\tentries=" << n << "\t" << ka << "=" << va << " " << na << "\t" << kb << "=" << vb << " " << nb << "\n";
+            }
+            LocalFree(argv);
+            return 0;
+        }
+        // --enum-dump <id>: one cache enum as JSON to enum-<id>.txt.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--enum-dump") {
+            const int id = _wtoi(argv[2]);
+            std::ofstream f("enum-" + std::to_string(id) + ".txt", std::ios::binary | std::ios::trunc);
+            f << rtx::cache::EnumJson(id);
+            LocalFree(argv);
+            return 0;
+        }
+        // --enum-rscan <valA> <valB>: enums that map some key to valA and another key to valB (reverse lookup, e.g.
+        // weapon item id -> special attack index), with the item names of those keys, to enum-rscan.txt.
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--enum-rscan") {
+            const long long va = _wtoi(argv[2]), vb = _wtoi(argv[3]);
+            std::ofstream f("enum-rscan.txt", std::ios::binary | std::ios::trunc);
+            for (int id = 0; id < 40000; ++id) {
+                std::string j = rtx::cache::EnumJson(id);
+                if (j.size() < 8) continue;
+                long long ka = -1, kb = -1; int n = 0;
+                std::size_t pos = 1;
+                while (pos < j.size()) {
+                    if (j[pos] != '"') { ++pos; continue; }
+                    std::size_t e = j.find('"', pos + 1); if (e == std::string::npos) break;
+                    long long key = std::atoll(j.c_str() + pos + 1);
+                    std::size_t colon = e + 1; if (colon >= j.size() || j[colon] != ':') break;
+                    if (j[colon + 1] == '"') { std::size_t e2 = j.find('"', colon + 2); pos = e2 == std::string::npos ? j.size() : e2 + 1; ++n; continue; }
+                    long long val = std::atoll(j.c_str() + colon + 1); ++n;
+                    if (val == va) ka = key; if (val == vb) kb = key;
+                    pos = j.find_first_of(",}", colon + 1); if (pos == std::string::npos) break; ++pos;
+                }
+                if (ka < 0 || kb < 0) continue;
+                std::string na = ka > 0 && ka < 100000 ? rtx::cache::ItemName((int)ka) : "", nb = kb > 0 && kb < 100000 ? rtx::cache::ItemName((int)kb) : "";
+                f << id << "\tentries=" << n << "\tkey(" << va << ")=" << ka << " " << na << "\tkey(" << vb << ")=" << kb << " " << nb << "\n";
             }
             LocalFree(argv);
             return 0;
