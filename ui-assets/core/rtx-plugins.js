@@ -190,7 +190,8 @@
       const granted = pluginGetGranted(id);
       if (!granted || !pluginGrantCovers(granted, tab.scopes)) continue;   // not enabled: nothing runs
       if (pluginMounts.get(id)) continue;                                   // already running, windowed or not
-      if (wmWinOf('plugin:' + id)) continue;                                // its window mounts it
+      const w = wmWinOf('plugin:' + id);
+      if (w && !w.min && w.tab === 'plugin:' + id) continue;              // showing in a window: that mounts it
       const h = pluginHolderFor(id, null);
       if (h.el.parentNode !== pluginBgHost()) pluginBgHost().appendChild(h.el);
       h.el.hidden = false; h.wid = null;
@@ -200,7 +201,8 @@
   // A plugin window closed: a background plugin restarts off-screen, any other plugin stops.
   function pluginRelease(id) {
     pluginUnmount(id);
-    try { pluginBackgroundSync(); } catch (e) {}
+    // the window manager calls this before it drops the tab or window: sync once that has happened
+    setTimeout(() => { try { pluginBackgroundSync(); } catch (e) {} }, 0);
   }
 
   const PLUGIN_TAB_ICON = '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13.5 17h6.5M16.75 13.75v6.5"/>';
