@@ -414,22 +414,23 @@
     background: rgba(0,0,0,0.20);
   }
   .ghost-rz:hover { background: rgba(255,255,255,0.16); }
-  .ghost-rz-l, .ghost-rz-r { top: 2px; bottom: 2px; width: 22px; cursor: ew-resize; }
-  .ghost-rz-l { left: 2px; border-radius: 10px 0 0 10px; }
-  .ghost-rz-r { right: 2px; border-radius: 0 10px 10px 0; }
+  /* Grips sit on the outside of the dashed border, like window resize handles. */
+  .ghost-rz-l, .ghost-rz-r { top: 6px; bottom: 6px; width: 18px; cursor: ew-resize; }
+  .ghost-rz-l { left: -20px; border-radius: 6px 0 0 6px; }
+  .ghost-rz-r { right: -20px; border-radius: 0 6px 6px 0; }
   .ghost-rz-l::after, .ghost-rz-r::after {
     content: ''; width: 2px; height: 17px; border-radius: 1px; background: #fff;
     box-shadow: 5px 0 0 -0.5px rgba(255,255,255,0.8), -5px 0 0 -0.5px rgba(255,255,255,0.8);
   }
-  .ghost-rz-t, .ghost-rz-b { left: 26px; right: 26px; height: 9px; cursor: ns-resize; }
-  .ghost-rz-tl, .ghost-rz-tr, .ghost-rz-bl, .ghost-rz-br { width: 16px; height: 16px; z-index: 1; border-radius: 4px; }
-  .ghost-rz-tl { top: 2px; left: 2px; cursor: nwse-resize; }   .ghost-rz-br { bottom: 2px; right: 2px; cursor: nwse-resize; }
-  .ghost-rz-tr { top: 2px; right: 2px; cursor: nesw-resize; }  .ghost-rz-bl { bottom: 2px; left: 2px; cursor: nesw-resize; }
+  .ghost-rz-t, .ghost-rz-b { left: 6px; right: 6px; height: 12px; cursor: ns-resize; }
+  .ghost-rz-t { top: -14px; border-radius: 6px 6px 0 0; }
+  .ghost-rz-b { bottom: -14px; border-radius: 0 0 6px 6px; }
+  .ghost-rz-tl, .ghost-rz-tr, .ghost-rz-bl, .ghost-rz-br { width: 18px; height: 18px; z-index: 1; border-radius: 4px; }
+  .ghost-rz-tl { top: -16px; left: -20px; cursor: nwse-resize; }   .ghost-rz-br { bottom: -16px; right: -20px; cursor: nwse-resize; }
+  .ghost-rz-tr { top: -16px; right: -20px; cursor: nesw-resize; }  .ghost-rz-bl { bottom: -16px; left: -20px; cursor: nesw-resize; }
   .ghost-rz-tl::after, .ghost-rz-tr::after, .ghost-rz-bl::after, .ghost-rz-br::after {
     content: ''; width: 6px; height: 6px; border-radius: 1px; background: #fff;
   }
-  .ghost-rz-t { top: 2px; border-radius: 0 0 6px 6px; }
-  .ghost-rz-b { bottom: 2px; border-radius: 6px 6px 0 0; }
   .ghost-rz-t::after, .ghost-rz-b::after {
     content: ''; width: 17px; height: 2px; border-radius: 1px; background: #fff;
     box-shadow: 0 4px 0 -0.5px rgba(255,255,255,0.8), 0 -4px 0 -0.5px rgba(255,255,255,0.8);
