@@ -28,27 +28,48 @@
       g.id = 'toastGhost';
       const lab = document.createElement('span');
       lab.textContent = 'Drag to position alerts';
-      const rz = document.createElement('i');
-      rz.className = 'ghost-rz'; rz.title = 'Drag to set width';
-      rz.addEventListener('mousedown', (e) => {
-        e.preventDefault(); e.stopPropagation();          // not a move-drag
-        const sx = e.clientX, ow = Number(toastCfg.w) || TOAST_DEF.w;
-        const a = String(toastCfg.anchor || 'top-center');
-        const dir = (a.indexOf('right') > 0) ? -1 : 1;
-        const mv = (ev) => {
-          const vwNow = window.innerWidth || 1280;
-          toastCfg.w = Math.max(220, Math.min(vwNow - 20, ow + (ev.clientX - sx) * dir));
-          applyToastPos(); reflectUiSettings();
-        };
-        const up = () => {
-          document.removeEventListener('mousemove', mv);
-          document.removeEventListener('mouseup', up);
-          wmSaveSoon();
-        };
-        document.addEventListener('mousemove', mv);
-        document.addEventListener('mouseup', up);
-      });
-      g.appendChild(lab); g.appendChild(rz);
+      g.appendChild(lab);
+      // Edge grips: left and right resize the width with the opposite edge held still (whatever the
+      // anchor), top and bottom slide the stack vertically. The body of the box moves it freely.
+      const grips = [['l', 'Drag to set width'], ['r', 'Drag to set width'], ['t', 'Drag to move up or down'], ['b', 'Drag to move up or down']];
+      for (const [side, title] of grips) {
+        const rz = document.createElement('i');
+        rz.className = 'ghost-rz ghost-rz-' + side; rz.title = title;
+        rz.addEventListener('mousedown', (e) => {
+          e.preventDefault(); e.stopPropagation();          // not a move-drag
+          const sx = e.clientX, sy = e.clientY;
+          const ow = Number(toastCfg.w) || TOAST_DEF.w, odx = Number(toastCfg.dx) || 0, ody = Number(toastCfg.dy) || 0;
+          const a = String(toastCfg.anchor || 'top-center');
+          const left = a.indexOf('left') > 0, right = a.indexOf('right') > 0, bottom = a.indexOf('bottom') === 0;
+          const mv = (ev) => {
+            const vwNow = window.innerWidth || 1280, vhNow = window.innerHeight || 720;
+            const dxm = ev.clientX - sx, dym = ev.clientY - sy;
+            if (side === 'l' || side === 'r') {
+              // width change, then the offset that keeps the far edge where it was
+              let nw = side === 'r' ? ow + dxm : ow - dxm;
+              nw = Math.max(220, Math.min(vwNow - 20, nw));
+              const d = nw - ow;                            // effective growth after clamping
+              let ndx = odx;
+              if (left)       ndx = side === 'l' ? odx - d : odx;
+              else if (right) ndx = side === 'r' ? odx - d : odx;
+              else            ndx = side === 'l' ? odx - d / 2 : odx + d / 2;
+              toastCfg.w = nw; toastCfg.dx = Math.round(ndx);
+            } else {
+              const ndy = bottom ? ody - dym : ody + dym;
+              toastCfg.dy = Math.round(Math.max(0, Math.min(vhNow - 40, ndy)));
+            }
+            applyToastPos(); reflectUiSettings();
+          };
+          const up = () => {
+            document.removeEventListener('mousemove', mv);
+            document.removeEventListener('mouseup', up);
+            wmSaveSoon();
+          };
+          document.addEventListener('mousemove', mv);
+          document.addEventListener('mouseup', up);
+        });
+        g.appendChild(rz);
+      }
       el.appendChild(g);
     } else if (!toastPlacing && g) {
       g.parentNode.removeChild(g);

@@ -397,7 +397,7 @@
   #toastGhost {
     position: relative; order: -1;
     display: flex; align-items: center; justify-content: center; gap: 8px;
-    min-height: 42px; padding: 9px 30px 9px 14px;
+    min-height: 42px; padding: 12px 30px;
     border-radius: 4px;
     border: 2px dashed var(--brass);
     background: linear-gradient(180deg, rgba(var(--accent-rgb),0.34), rgba(var(--accent-rgb),0.20));
@@ -408,17 +408,26 @@
     user-select: none;
   }
   #toaster.placing { outline: 1px dashed rgba(167,139,250,0.5); outline-offset: 6px; border-radius: 6px; }
+  /* Four edge grips: left/right set the width, top/bottom slide the stack; the middle moves it. */
   .ghost-rz {
-    position: absolute; top: 2px; right: 2px; bottom: 2px; width: 22px;
-    cursor: ew-resize; border-radius: 0 10px 10px 0;
-    display: flex; align-items: center; justify-content: center;
+    position: absolute; display: flex; align-items: center; justify-content: center;
     background: rgba(0,0,0,0.20);
   }
-  .ghost-rz::after {
+  .ghost-rz:hover { background: rgba(255,255,255,0.16); }
+  .ghost-rz-l, .ghost-rz-r { top: 2px; bottom: 2px; width: 22px; cursor: ew-resize; }
+  .ghost-rz-l { left: 2px; border-radius: 10px 0 0 10px; }
+  .ghost-rz-r { right: 2px; border-radius: 0 10px 10px 0; }
+  .ghost-rz-l::after, .ghost-rz-r::after {
     content: ''; width: 2px; height: 17px; border-radius: 1px; background: #fff;
     box-shadow: 5px 0 0 -0.5px rgba(255,255,255,0.8), -5px 0 0 -0.5px rgba(255,255,255,0.8);
   }
-  .ghost-rz:hover { background: rgba(255,255,255,0.16); }
+  .ghost-rz-t, .ghost-rz-b { left: 26px; right: 26px; height: 9px; cursor: ns-resize; }
+  .ghost-rz-t { top: 2px; border-radius: 0 0 6px 6px; }
+  .ghost-rz-b { bottom: 2px; border-radius: 6px 6px 0 0; }
+  .ghost-rz-t::after, .ghost-rz-b::after {
+    content: ''; width: 17px; height: 2px; border-radius: 1px; background: #fff;
+    box-shadow: 0 4px 0 -0.5px rgba(255,255,255,0.8), 0 -4px 0 -0.5px rgba(255,255,255,0.8);
+  }
   .toast {
     position: relative; width: 100%;
     display: flex; align-items: flex-start; gap: 10px;
