@@ -174,7 +174,7 @@
       const text = 'GE ' + fmtGp(t.ge) + '  |  HA ' + fmtGp(t.ha);
       const x = title.x + title.w - 80 - Math.round(text.length * 7.2);   // right-aligned in the title bar, left of the info button
       const y = title.y + Math.round((title.h || 40) / 2);
-      rtxData.sync('overlay.uiLabels', x + '' + y + '-113' + text);
+      rtxData.sync('overlay.uiLabels', x + '\x1f' + y + '\x1f-1\x1f13\x1f' + text);
       bankOverlayShown = true;
     } catch (e) {} finally { bankOverlayBusy = false; }
   }

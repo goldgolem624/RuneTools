@@ -382,6 +382,45 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             LocalFree(argv);
             return rows >= 0 ? 0 : 1;
         }
+        // --item-extra <pid> <container> <slot>: the per-instance ints of one container slot (varobj keys) to item-extra.txt.
+        if (argv && argc >= 5 && std::wstring(argv[1]) == L"--item-extra") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            int cont = _wtoi(argv[3]), slot = _wtoi(argv[4]);
+            rtx::reader::SampleAll();
+            std::string items = rtx::reader::ContainerItemsJson(pid, cont);
+            int itemId = -1;
+            std::string key = "[" + std::to_string(slot) + ",";
+            std::size_t at = items.find(key);
+            if (at != std::string::npos) itemId = std::atoi(items.c_str() + at + key.size());
+            std::string out = "{\"itemId\":" + std::to_string(itemId) + ",\"extra\":" + rtx::reader::ItemExtraIntsJson(pid, cont, itemId, slot) + "}";
+            { std::ofstream f("item-extra.txt", std::ios::binary | std::ios::trunc); f << out; }
+            LocalFree(argv);
+            return 0;
+        }
+        // --enum-scan <keyA> <keyB>: every cache enum holding int values at both keys, with the item names those
+        // values would be, to enum-scan.txt. Finds the table behind a per-item index (e.g. a stored special attack).
+        if (argv && argc >= 4 && std::wstring(argv[1]) == L"--enum-scan") {
+            const int ka = _wtoi(argv[2]), kb = _wtoi(argv[3]);
+            std::ofstream f("enum-scan.txt", std::ios::binary | std::ios::trunc);
+            auto valueAt = [](const std::string& j, int k, long long& out) {
+                std::string key = "\"" + std::to_string(k) + "\":";
+                std::size_t at = j.find(key); if (at == std::string::npos) return false;
+                const char* p = j.c_str() + at + key.size(); if (*p == '"') return false;
+                out = std::atoll(p); return true;
+            };
+            for (int id = 0; id < 40000; ++id) {
+                std::string j = rtx::cache::EnumJson(id);
+                if (j.size() < 8) continue;
+                long long va = 0, vb = 0;
+                if (!valueAt(j, ka, va) || !valueAt(j, kb, vb)) continue;
+                int n = 0; for (char c : j) if (c == ':') ++n;
+                if (n < 8 || n > 400) continue;
+                std::string na = va > 0 && va < 100000 ? rtx::cache::ItemInfoJson((int)va) : "", nb = vb > 0 && vb < 100000 ? rtx::cache::ItemInfoJson((int)vb) : "";
+                f << id << "\tentries=" << n << "\t" << ka << "=" << va << " " << na << "\t" << kb << "=" << vb << " " << nb << "\n";
+            }
+            LocalFree(argv);
+            return 0;
+        }
         // --model-icons <ids.txt> <outdir>: write modelicons.pack entries as <outdir>/<modelId>.png (one id per line).
         if (argv && argc >= 4 && std::wstring(argv[1]) == L"--model-icons") {
             std::wstring wi = argv[2], wo = argv[3];
