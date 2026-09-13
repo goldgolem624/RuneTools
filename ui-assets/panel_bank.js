@@ -105,13 +105,21 @@
   // An Essence of Finality amulet holds one weapon's special attack, chosen per amulet, so it is read per bank
   // slot rather than per item id: the amulet's own item var 3 is an index into enum 15970, which maps that
   // index to the weapon the special came from. The weapon's GE price is then counted on top of the amulet.
-  const BANK_EOF_ENUM = 15970, BANK_EOF_VAR = 3, BANK_CONTAINER = 95;
+  // The per-item vars ride on each bank row as its fifth element ([[key, value], ...]); the launcher captures
+  // them with the items and keeps them in the bank cache, so this works with the bank closed too.
+  const BANK_EOF_ENUM = 15970, BANK_EOF_VAR = 3;
   let bankEofTable = null, bankEofLoading = false, bankEofSig = '';
   const bankEofOf = Object.create(null);      // 'slot:id' -> { weaponId, weaponName } or null when nothing is stored
   function bankIsEof(name) { return /^(?:augmented\s+)?essence of finality amulet/i.test(name || ''); }
+  function bankVarOf(it, key) {               // value of per-item var `key` on a bank row, or null when the row has none
+    const vars = it[4];
+    if (!Array.isArray(vars)) return null;
+    for (const kv of vars) if (kv && kv[0] === key) return kv[1] | 0;
+    return 0;
+  }
   async function bankEofRefresh(items) {
-    if (!items || !bridge() || !bridge().itemExtraInts || !myPid()) return;
-    const sig = (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
+    if (!items) return;
+    const sig = (bankData ? bankData.cached_at + '|' + bankData.open + '|' + items.length : 'x');
     if (sig === bankEofSig || bankEofLoading) return;
     bankEofLoading = true;
     let changed = false;
@@ -121,14 +129,13 @@
         for (const it of items) {
           if (!bankIsEof(it[3])) continue;
           const key = it[0] + ':' + it[1];
+          const idx = bankVarOf(it, BANK_EOF_VAR);
           let next = null;
-          try {
-            const r = JSON.parse(await bridge().itemExtraInts(myPid(), BANK_CONTAINER, it[1], it[0])) || {};
-            const idx = r.present && Array.isArray(r.key) ? (r.key[BANK_EOF_VAR] | 0) : 0;
-            const wid = bankEofTable[idx] > 0 ? bankEofTable[idx] : null;
-            if (wid) next = { weaponId: wid, weaponName: bankItemName(wid) };
-          } catch (e) {}
-          if (JSON.stringify(bankEofOf[key] || null) !== JSON.stringify(next)) { bankEofOf[key] = next; changed = true; }
+          if (idx === null) next = undefined;                 // no vars on this row (older cache file): unknown
+          else { const wid = bankEofTable[idx] > 0 ? bankEofTable[idx] : null; if (wid) next = { weaponId: wid, weaponName: bankItemName(wid) }; }
+          const prevJ = key in bankEofOf ? JSON.stringify(bankEofOf[key]) : 'unknown', nextJ = next === undefined ? 'unknown' : JSON.stringify(next);
+          if (prevJ !== nextJ) changed = true;
+          if (next === undefined) delete bankEofOf[key]; else bankEofOf[key] = next;
         }
         bankEofSig = sig;
       }
@@ -348,7 +355,7 @@
   // Tooltip line for an Essence of Finality: which special attack it holds and where that price comes from.
   function bankEofLine(slot, id) {
     const key = slot + ':' + id;
-    if (bankEofOf[key] === undefined) return 'Stored special attack: reading the amulet';
+    if (bankEofOf[key] === undefined) return 'Stored special attack: not known yet (open the bank once so the amulet is read)';
     const eof = bankEofOf[key];
     if (!eof) return 'Stored special attack: none (nothing added to the price)';
     const prices = bankPrices();

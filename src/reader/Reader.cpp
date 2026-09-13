@@ -501,6 +501,7 @@ struct State {
 
     // Bank (container 95): live while open, persisted to disk on change.
     std::vector<BankSlot> bank_slots;       // full array; slot = index
+    std::vector<SlotVar>  bank_vars;        // per-item vars of those slots (sparse)
     bool                  bank_open      = false;
     long long             bank_cached_at = 0;   // unix seconds of last disk write
     std::uint64_t         bank_hash      = 0;   // FNV-1a of slots, change detect
@@ -835,7 +836,7 @@ Snapshot sample_one(State& s) {
                     if (n > 0 && rpm_bytes(s.proc, *cstart, cbuf.data(), cbuf.size())) {
                         auto capture = [&](const std::uint8_t* e, std::vector<BankSlot>& dst,
                                            std::uint64_t& hashRef, long long& cachedAtRef,
-                                           const char* kind) {
+                                           const char* kind, std::vector<SlotVar>* varsDst = nullptr) {
                             std::uint64_t istart = *(const std::uint64_t*)(e + 0x18);
                             std::uint64_t iend   = *(const std::uint64_t*)(e + 0x20);
                             if (istart <= 0x10000 || iend <= istart) return;
@@ -850,9 +851,39 @@ Snapshot sample_one(State& s) {
                             for (std::size_t bi = 0; bi < items.size() * sizeof(BankSlot); ++bi) {
                                 hsh ^= p[bi]; hsh *= 1099511628211ull;
                             }
+                            // Per-item vars sit in a parallel array (0x38 per slot: +0x10 ptr array, +0x18 count;
+                            // each entry {i32 key, pad, i32 value}). Read for the bank only; they are what tells an
+                            // Essence of Finality's stored special apart, and they go with the items into the cache.
+                            std::vector<SlotVar> vars;
+                            if (varsDst) {
+                                std::uint64_t xstart = *(const std::uint64_t*)(e + 0x30);
+                                std::vector<std::uint8_t> xb((std::size_t)slots * 0x38);
+                                if (xstart > 0x10000 && rpm_bytes(s.proc, xstart, xb.data(), xb.size())) {
+                                    for (int si = 0; si < slots; ++si) {
+                                        if (items[(std::size_t)si].item_id <= 0) continue;
+                                        const std::uint8_t* X = xb.data() + (std::size_t)si * 0x38;
+                                        int cnt = *(const std::int32_t*)(X + 0x18);
+                                        std::uint64_t arr = *(const std::uint64_t*)(X + 0x10);
+                                        if (cnt <= 0 || cnt > 32 || arr <= 0x10000) continue;
+                                        std::uint64_t ptrs[32];
+                                        if (!rpm_bytes(s.proc, arr, ptrs, (SIZE_T)cnt * 8)) continue;
+                                        for (int j = 0; j < cnt; ++j) {
+                                            if (ptrs[j] <= 0x10000) continue;
+                                            std::int32_t kv[3];
+                                            if (!rpm_bytes(s.proc, ptrs[j], kv, sizeof(kv))) continue;
+                                            vars.push_back({ si, kv[0], kv[2] });
+                                        }
+                                    }
+                                }
+                                const std::uint8_t* vp = (const std::uint8_t*)vars.data();
+                                for (std::size_t bi = 0; bi < vars.size() * sizeof(SlotVar); ++bi) {
+                                    hsh ^= vp[bi]; hsh *= 1099511628211ull;
+                                }
+                                *varsDst = std::move(vars);
+                            }
                             dst = std::move(items);
                             if (hsh != hashRef && !bank_key.empty() &&
-                                WriteContainerCache(kind, bank_key, dst)) {
+                                WriteContainerCache(kind, bank_key, dst, varsDst)) {
                                 hashRef     = hsh;
                                 cachedAtRef = (long long)std::time(nullptr);
                                 rtx::log::Client(s.pid, std::string(kind) + " changed; cached " +
@@ -864,7 +895,7 @@ Snapshot sample_one(State& s) {
                             int cid = *(const std::int32_t*)(e + 0x10);
                             if (cid == kBankContainerId && !found_bank) {
                                 found_bank = true;
-                                capture(e, s.bank_slots, s.bank_hash, s.bank_cached_at, "bank");
+                                capture(e, s.bank_slots, s.bank_hash, s.bank_cached_at, "bank", &s.bank_vars);
                             } else if (cid == kMetalBankContainerId && !found_metal) {
                                 found_metal = true;
                                 capture(e, s.metalbank_slots, s.metalbank_hash, s.metalbank_cached_at, "metalbank");
@@ -1306,23 +1337,30 @@ std::string SamplesJson() {
     return s_samples_json;
 }
 
-static void append_slot_json(std::string& out, std::size_t slot, int iid, int stack, int& count) {
+// One bank row: [slot, id, stack, "name"] plus, when the slot carries per-item vars, a fifth element
+// [[key, value], ...] so consumers can tell one Essence of Finality (or charged item) from another.
+static void append_slot_json(std::string& out, std::size_t slot, int iid, int stack, int& count,
+                             const std::string* vars = nullptr) {
     char buf[96];
     if (count) out.push_back(',');
     std::snprintf(buf, sizeof(buf), "[%zu,%d,%d,\"", slot, iid, stack);
     out += buf;
     out += json_escape(rtx::cache::ItemName(iid));
-    out += "\"]";
+    out += "\"";
+    if (vars && !vars->empty()) { out += ",["; out += *vars; out += "]"; }
+    out += "]";
     ++count;
 }
 
 static std::string cached_container_json(std::uint32_t pid, const char* cacheKey,
                                          std::vector<BankSlot> State::*slotsM,
-                                         long long State::*cachedAtM, bool State::*openM) {
+                                         long long State::*cachedAtM, bool State::*openM,
+                                         std::vector<SlotVar> State::*varsM = nullptr) {
     std::string           character;
     bool                  open = false;
     long long             cached_at = 0;
     std::vector<BankSlot> mem_slots;
+    std::vector<SlotVar>  mem_vars;
     long long             mem_cached_at = 0;
 
     {
@@ -1333,6 +1371,7 @@ static std::string cached_container_json(std::uint32_t pid, const char* cacheKey
             character = !st.display_name.empty() ? st.display_name : st.character;
             if (!(st.*slotsM).empty()) {
                 mem_slots     = st.*slotsM;
+                if (varsM) mem_vars = st.*varsM;
                 mem_cached_at = st.*cachedAtM;
                 open          = st.*openM;
             }
@@ -1340,20 +1379,37 @@ static std::string cached_container_json(std::uint32_t pid, const char* cacheKey
     }
 
     const std::vector<BankSlot>* items = nullptr;
+    const std::vector<SlotVar>*  vars  = nullptr;
     std::vector<BankSlot> from_disk;
+    std::vector<SlotVar>  vars_disk;
     if (open && !mem_slots.empty()) {
         cached_at = mem_cached_at;
         items     = &mem_slots;
+        vars      = &mem_vars;
     }
     if (!items) {
         BankCacheData d = ReadContainerCache(cacheKey, character);
         if (!d.slots.empty()) {
             from_disk = std::move(d.slots);
+            vars_disk = std::move(d.vars);
             cached_at = d.cached_at;
             items     = &from_disk;
+            vars      = &vars_disk;
         } else if (!mem_slots.empty()) {
             cached_at = mem_cached_at;
             items     = &mem_slots;
+            vars      = &mem_vars;
+        }
+    }
+    // per-slot "[k,v],[k,v]" fragments, keyed by slot
+    std::unordered_map<std::size_t, std::string> varsBySlot;
+    if (vars) {
+        char vb[48];
+        for (const auto& v : *vars) {
+            if (v.slot < 0) continue;
+            std::string& f = varsBySlot[(std::size_t)v.slot];
+            std::snprintf(vb, sizeof(vb), "%s[%d,%d]", f.empty() ? "" : ",", v.key, v.value);
+            f += vb;
         }
     }
 
@@ -1368,7 +1424,9 @@ static std::string cached_container_json(std::uint32_t pid, const char* cacheKey
     if (items) {
         for (std::size_t slot = 0; slot < items->size(); ++slot) {
             const auto& bs = (*items)[slot];
-            if (bs.item_id > 0) append_slot_json(out, slot, bs.item_id, bs.stack, count);
+            if (bs.item_id <= 0) continue;
+            auto vf = varsBySlot.find(slot);
+            append_slot_json(out, slot, bs.item_id, bs.stack, count, vf == varsBySlot.end() ? nullptr : &vf->second);
         }
     }
     std::snprintf(hdr, sizeof(hdr), "],\"count\":%d}", count);
@@ -1377,7 +1435,7 @@ static std::string cached_container_json(std::uint32_t pid, const char* cacheKey
 }
 
 std::string BankJson(std::uint32_t pid) {
-    return cached_container_json(pid, "bank", &State::bank_slots, &State::bank_cached_at, &State::bank_open);
+    return cached_container_json(pid, "bank", &State::bank_slots, &State::bank_cached_at, &State::bank_open, &State::bank_vars);
 }
 std::string MetalBankJson(std::uint32_t pid) {
     return cached_container_json(pid, "metalbank", &State::metalbank_slots, &State::metalbank_cached_at, &State::metalbank_open);

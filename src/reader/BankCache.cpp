@@ -19,7 +19,8 @@ namespace {
 namespace crypto = rtx::launcher::crypto;
 
 // Encrypted file: 'R','T','X','E' | u16 ver | nonce[12] | tag[16] | ciphertext.
-// Ciphertext = AES-256-GCM of: i64 cached_at | u32 count | count x { i32 item_id, i32 stack }.
+// Ciphertext = AES-256-GCM of: i64 cached_at | u32 count | count x { i32 item_id, i32 stack }
+//              [ | u32 nvars | nvars x { i32 slot, i32 key, i32 value } ]   (per-item vars; absent in older files)
 constexpr char          kMagic[4]  = { 'R', 'T', 'X', 'E' };
 constexpr std::uint16_t kVersion   = 2;
 constexpr std::size_t   kHeaderLen = 4 + 2 + crypto::kNonceBytes + crypto::kTagBytes;
@@ -84,7 +85,7 @@ std::vector<std::uint8_t> read_file(const std::filesystem::path& p) {
 }  // namespace
 
 bool WriteContainerCache(const std::string& kind, const std::string& character,
-                         const std::vector<BankSlot>& slots) {
+                         const std::vector<BankSlot>& slots, const std::vector<SlotVar>* vars) {
     std::uint8_t key[crypto::kKeyBytes];
     if (!cache_key(key)) return false;   // no key -> no cache
 
@@ -97,6 +98,13 @@ bool WriteContainerCache(const std::string& kind, const std::string& character,
     if (count)
         blob.insert(blob.end(), (std::uint8_t*)slots.data(),
                     (std::uint8_t*)slots.data() + slots.size() * sizeof(BankSlot));
+    if (vars) {
+        std::uint32_t nv = (std::uint32_t)vars->size();
+        blob.insert(blob.end(), (std::uint8_t*)&nv, (std::uint8_t*)&nv + 4);
+        if (nv)
+            blob.insert(blob.end(), (const std::uint8_t*)vars->data(),
+                        (const std::uint8_t*)vars->data() + nv * sizeof(SlotVar));
+    }
 
     std::uint8_t nonce[crypto::kNonceBytes];
     if (!crypto::RandomBytes(nonce, crypto::kNonceBytes)) return false;
@@ -155,6 +163,13 @@ BankCacheData ReadContainerCache(const std::string& kind, const std::string& cha
     out.slots.resize(count);
     if (count)
         std::memcpy(out.slots.data(), blob.data() + 12, count * sizeof(BankSlot));
+    if (blob.size() >= need + 4) {                      // per-item vars trailer (newer files)
+        std::uint32_t nv; std::memcpy(&nv, blob.data() + need, 4);
+        if (nv <= 65536 && blob.size() >= need + 4 + (std::size_t)nv * sizeof(SlotVar)) {
+            out.vars.resize(nv);
+            if (nv) std::memcpy(out.vars.data(), blob.data() + need + 4, nv * sizeof(SlotVar));
+        }
+    }
     return out;
 }
 
