@@ -44,7 +44,11 @@
         // strip "Augmented", then any trailing dye or condition tags, repeatedly ("Augmented X (Soul)" -> X)
         let plain = own.replace(/^augmented\s+/, '').trim(), prevPlain = '';
         while (plain !== prevPlain) { prevPlain = plain; plain = plain.replace(/\s+\((?:augmented|broken|damaged|degraded|used|new|uncharged|shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle)\)$/, '').trim(); }
-        const hit = bankNameToId[own] != null ? bankNameToId[own] : (plain && bankNameToId[plain] != null ? bankNameToId[plain] : null);
+        // the tradeable listing may carry a state the bank item has grown out of: "The Devourer's Nexus" trades as
+        // "The Devourer's Nexus (unattuned)", charged tools as "(uncharged)", and so on
+        const cands = [own, plain, plain + ' (unattuned)', plain + ' (uncharged)', plain + ' (inactive)', plain + ' (empty)', plain + ' (unpowered)'];
+        let hit = null;
+        for (const c of cands) if (c && bankNameToId[c] != null) { hit = bankNameToId[c]; break; }
         if (hit != null && hit !== id) base = hit;
         // a dyed item is worth the base item plus the dye: remember which dye so the price can include it
         const dye = own.match(/\((shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle)\)/);
