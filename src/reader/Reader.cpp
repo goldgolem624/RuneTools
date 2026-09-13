@@ -4517,9 +4517,10 @@ static const char* iface_type_name(int t) {
 // Full live tree of one group as JSON widgets. "r"=[relX,relY,w,h], "a"=[absX,absY] when an origin is known,
 // "v":1 only when the widget is actually drawn (its entry and every ancestor's entry unhidden), "p" parent
 // comp, "col" colour on rect/text/graphic, "ty" from the learned class map (payload heuristics as fallback).
+constexpr int kIfaceWalkCap = 12000, kIfaceDynPerParent = 150;
 static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
                        std::string& out, int& count, bool& first, int baseX, int baseY, bool haveAbs, bool hidden) {
-    if (count >= 6000 || depth > 12) return;
+    if (count >= kIfaceWalkCap || depth > 12) return;
     IfaceNode n;
     if (!iface_read_node(h, node, n)) return;
     const int ax = baseX + n.x, ay = baseY + n.y;        // absolute screen position of this node
@@ -4556,8 +4557,14 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
     if (!hidden)               out += ",\"v\":1";
     out += "}";
     first = false; ++count;
+    // Big grids (the bank's hundreds of item slots) would swallow the whole budget with dynamic children, so
+    // every static comp is always emitted and each parent contributes at most kIfaceDynPerParent dynamic ones.
+    int dyn = 0;
     for (const auto& k : kids) {
-        if (count >= 6000) break;
+        if (count >= kIfaceWalkCap) break;
+        IfaceNode peek;
+        if (!iface_read_node(h, k.addr, peek)) continue;
+        if (peek.sub >= 0 && ++dyn > kIfaceDynPerParent) continue;
         iface_walk(h, group, k.addr, depth + 1, out, count, first, ax, ay, haveAbs, hidden || k.hidden);
     }
 }
@@ -5603,7 +5610,7 @@ std::string InterfaceGroupJson(std::uint32_t pid, int groupId) {
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
         { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots);
-          for (const auto& rt : roots) { if (count >= 6000) break; iface_walk(h, groupId, rt.addr, 0, out, count, first, ox, oy, haveAbs, rt.hidden); } }
+          for (const auto& rt : roots) { if (count >= kIfaceWalkCap) break; iface_walk(h, groupId, rt.addr, 0, out, count, first, ox, oy, haveAbs, rt.hidden); } }
         break;   // only the matching group
     }
     out += "]}";
