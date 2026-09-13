@@ -460,7 +460,29 @@
     };
     strip.appendChild(mk(0, null, 'All tabs', total));
     for (const t of td.tabs) if (t.n !== 1) strip.appendChild(mk(t.n, t.icon, bankTabName(t.n), counts[t.n] || 0));   // the game has no button for the main tab: the all view shows it first
-    el.appendChild(strip);
+    // One row like the game's bar: cells shrink to fit the width down to a floor, past which the row scrolls
+    // behind a pair of arrows.
+    const row = document.createElement('div'); row.className = 'bank-tabrow';
+    const left = document.createElement('button'); left.type = 'button'; left.className = 'bank-tabarrow'; left.textContent = String.fromCharCode(8249); left.title = 'Earlier tabs';
+    const right = document.createElement('button'); right.type = 'button'; right.className = 'bank-tabarrow'; right.textContent = String.fromCharCode(8250); right.title = 'Later tabs';
+    row.appendChild(left); row.appendChild(strip); row.appendChild(right);
+    el.appendChild(row);
+    const fit = () => {
+      const n = strip.children.length, gap = 2, avail = row.clientWidth - 2;
+      let w = Math.floor((avail + gap) / Math.max(1, n)) - gap;
+      const scrolls = w < 30;
+      w = Math.max(30, Math.min(40, w));
+      strip.style.setProperty('--tab-w', w + 'px');
+      row.classList.toggle('scrolls', scrolls);
+      const sync = () => { left.disabled = strip.scrollLeft <= 0; right.disabled = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1; };
+      left.onclick = () => { strip.scrollBy({ left: -strip.clientWidth, behavior: 'smooth' }); setTimeout(sync, 350); };
+      right.onclick = () => { strip.scrollBy({ left: strip.clientWidth, behavior: 'smooth' }); setTimeout(sync, 350); };
+      strip.onscroll = sync;
+      const on = strip.querySelector('.bank-tab.on'); if (on && scrolls) { try { on.scrollIntoView({ inline: 'nearest', block: 'nearest' }); } catch (e) {} }
+      sync();
+    };
+    fit();
+    if (!el._fitBound) { el._fitBound = true; window.addEventListener('resize', () => { const r = el.querySelector('.bank-tabrow'); if (r) fit(); }); }
     const cap = document.createElement('div'); cap.className = 'bank-tabcap';
     const cur = bankTab ? td.tabs.find(t => t.n === bankTab) : null;
     cap.textContent = cur ? bankTabName(cur.n) + ' (' + (counts[cur.n] || 0) + ' items)' : 'All tabs (' + total + ' items)';
