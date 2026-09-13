@@ -391,6 +391,7 @@
   }
   function bankTabName(n) {
     const t = bankTabsData && bankTabsData.tabs ? bankTabsData.tabs.find(tt => tt.n === n) : null;
+    if (n === 1) return 'Main tab';
     return 'Tab ' + n + (t && t.name ? ' - ' + t.name : '');
   }
   function bankTabLine(slot) {
@@ -458,7 +459,7 @@
       return b;
     };
     strip.appendChild(mk(0, null, 'All tabs', total));
-    for (const t of td.tabs) strip.appendChild(mk(t.n, t.icon, bankTabName(t.n), counts[t.n] || 0));
+    for (const t of td.tabs) if (t.n !== 1) strip.appendChild(mk(t.n, t.icon, bankTabName(t.n), counts[t.n] || 0));   // the game has no button for the main tab: the all view shows it first
     el.appendChild(strip);
     const cap = document.createElement('div'); cap.className = 'bank-tabcap';
     const cur = bankTab ? td.tabs.find(t => t.n === bankTab) : null;
