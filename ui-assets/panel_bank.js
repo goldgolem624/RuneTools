@@ -745,9 +745,31 @@
   // The estimate is checked after painting: if the grid still overflows, a row is dropped and the page
   // repainted, and that corrected size is remembered for the grid's current dimensions.
   let bankCols = 1, bankPerFit = { key: '', per: 0 };
-  function bankPerPage(grid) {
-    const W = grid.clientWidth, H = grid.clientHeight;
-    if (W < 40 || H < 40) return bankPer;
+  // The bottom edge the bank is actually allowed to reach on screen: the nearest of the pane, the window
+  // body and the window. The grid's own box can run past it (the pane scrolls or clips), so the grid's
+  // clientHeight is not the truth; the screen rects are. Screen px throughout (uiScreenRect).
+  function bankVisibleBottom(grid) {
+    let b = Infinity;
+    for (let el = grid.parentElement; el; el = el.parentElement) {
+      if (el === document.body) break;
+      if (el.classList && (el.classList.contains('pane') || el.classList.contains('win-body') || el.classList.contains('win') || el.id === 'content')) {
+        try { b = Math.min(b, uiScreenRect(el).bottom); } catch (e) {}
+      }
+      if (el.classList && el.classList.contains('win')) break;
+    }
+    if (!isFinite(b)) b = window.innerHeight;
+    return b;
+  }
+  function bankPerPage(grid, pager) {
+    const W = grid.clientWidth;
+    if (W < 40) return bankPer;
+    let Z = 1; try { Z = uiZoomOf(grid) || 1; } catch (e) {}
+    let H = grid.clientHeight;
+    try {
+      const gr = uiScreenRect(grid), pr = pager ? uiScreenRect(pager) : { height: 0 };
+      H = Math.floor((bankVisibleBottom(grid) - gr.top - pr.height - 8 * Z) / Z);   // css px left for the grid above the pager
+    } catch (e) {}
+    if (H < 40) H = 40;
     const gap = 4, cols = Math.max(1, Math.floor((W + gap) / (40 + gap)));
     const cell = (W - (cols - 1) * gap) / cols;
     const rows = Math.max(1, Math.floor((H - 2) / (cell + gap)));   // every row wants its full cell plus gap
@@ -757,10 +779,16 @@
     if (bankPerFit.key === key && bankPerFit.per > 0) per = Math.min(per, bankPerFit.per);
     return per;
   }
+  function bankOverflows(grid, pager) {                 // anything below the grid past the visible bottom?
+    try {
+      const bottom = pager ? uiScreenRect(pager).bottom : uiScreenRect(grid).bottom;
+      return bottom > bankVisibleBottom(grid) + 1 || grid.scrollHeight > grid.clientHeight + 1;
+    } catch (e) { return grid.scrollHeight > grid.clientHeight + 1; }
+  }
   function paintBankPage() {
     const grid = document.getElementById('bankGrid');
     if (!grid) return;
-    bankPer = bankPerPage(grid);
+    bankPer = bankPerPage(grid, grid.parentElement.querySelector('.bank-pager'));
     if (bankData && bankData.items) bankEofRefresh(bankData.items);
     bankTabsVbRefresh();
     if (!bankTabsData && bankTabsVb) bankTabsBuild();
@@ -853,10 +881,16 @@
       grid.appendChild(cell);
     }
     // the grid is measured before the tools and pager settle; if the last row does not fit, drop it and repaint
-    if (slice.length > bankCols && grid.scrollHeight > grid.clientHeight + 1) {
-      const key = grid.clientWidth + 'x' + grid.clientHeight;
+    if (slice.length > bankCols && bankOverflows(grid, pager)) {
       const per = Math.max(bankCols, bankPer - bankCols);
-      if (per < bankPer) { bankPerFit = { key: key, per: per }; bankPaintSig = ''; paintBankPage(); return; }
+      if (per < bankPer) {
+        // remember the corrected size under the same key bankPerPage will compute next time
+        let Z = 1; try { Z = uiZoomOf(grid) || 1; } catch (e) {}
+        let H = grid.clientHeight;
+        try { const gr = uiScreenRect(grid), pr = pager ? uiScreenRect(pager) : { height: 0 }; H = Math.floor((bankVisibleBottom(grid) - gr.top - pr.height - 8 * Z) / Z); } catch (e) {}
+        if (H < 40) H = 40;
+        bankPerFit = { key: grid.clientWidth + 'x' + H, per: per }; bankPaintSig = ''; paintBankPage(); return;
+      }
     }
 
     const meta = document.getElementById('bankMeta');
