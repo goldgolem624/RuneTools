@@ -184,6 +184,7 @@ std::string MaterialsJson(std::uint32_t pid);
 std::string GroupBankJson(std::uint32_t pid);
 
 std::string BaitBoxJson(std::uint32_t pid);
+std::string NexusJson(std::uint32_t pid);      // Necromancy nexus (container 953), disk-cached
 
 std::string WorkbenchJson(std::uint32_t pid);
 

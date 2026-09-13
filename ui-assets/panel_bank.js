@@ -184,6 +184,38 @@
       if (bankRuneTable) { bankPaintSig = ''; paintBankPage(); if (bankOverlayOn) bankOverlayTick(); }
     });
   }
+  // Necromancy nexus: every nexus item shares the account's necrotic runes (container 953, cached by the
+  // launcher like the bank), so the runes are counted once, on the first nexus in bank order; the other nexus
+  // rows point at it. Items with "Fill / Check contents / Retrieve contents" on a Necromancy piece are the nexus.
+  let bankNexusData = null, bankNexusAt = 0, bankNexusBusy = false;
+  function bankIsNexus(name) { return /\bnexus$/i.test(name || ''); }
+  function bankNexusRefresh() {
+    if (bankNexusBusy || !bridge() || !bridge().nexusItems || !myPid()) return;
+    if (Date.now() - bankNexusAt < 5000) return;
+    bankNexusBusy = true;
+    Promise.resolve().then(async () => {
+      try {
+        const d = JSON.parse(await bridge().nexusItems(myPid()));
+        if (d && Array.isArray(d.items)) {
+          const sig = JSON.stringify(d.items);
+          if (!bankNexusData || JSON.stringify(bankNexusData.items) !== sig) { bankNexusData = d; bankPaintSig = ''; paintBankPage(); if (bankOverlayOn) bankOverlayTick(); }
+          else bankNexusData = d;
+        }
+      } catch (e) {}
+      bankNexusAt = Date.now(); bankNexusBusy = false;
+    });
+  }
+  function bankNexusHost() {                // slot of the nexus row that carries the shared runes
+    const items = (bankData && bankData.items) ? bankData.items : [];
+    let host = null;
+    for (const it of items) if (bankIsNexus(it[3]) && (it[2] | 0) > 0 && (host === null || it[0] < host)) host = it[0];
+    return host;
+  }
+  function bankNexusRunes() {               // [{ id, name, qty }] from the cached container
+    const out = [];
+    for (const it of ((bankNexusData && bankNexusData.items) || [])) if (it[1] > 0 && (it[2] | 0) > 0) out.push({ id: it[1], name: it[3] || bankItemName(it[1]), qty: it[2] | 0 });
+    return out;
+  }
   // GE value of one bank row and, when it is built from more than one price, the parts behind it (for the tooltip):
   // { item, extras: [{ label, price }] }. slot picks up the per-amulet Essence of Finality special.
   function bankGeOf(id, name, slot, row) {
@@ -196,6 +228,16 @@
       for (const ex of (bankExtrasOf[id] || [])) {     // dyes and ornament kits sit on top of the base piece
         const pv = bankPriceAt(prices && prices[ex.id]);
         if (pv != null) { parts.extras.push({ label: ex.label, price: pv }); v += pv; }
+      }
+    }
+    if (bankIsNexus(name) && slot != null && bankNexusHost() === slot) {
+      bankNexusRefresh();
+      for (const rn of bankNexusRunes()) {      // the account's necrotic runes, counted on this nexus only
+        const pv = bankPriceAt(prices && prices[rn.id]);
+        if (pv == null) continue;
+        if (!parts) parts = { item: v, extras: [] };
+        parts.extras.push({ label: rn.qty.toLocaleString() + ' ' + rn.name + (rn.qty === 1 ? '' : 's'), price: pv * rn.qty, kind: 'nexus', id: rn.id });
+        v = (v || 0) + pv * rn.qty;
       }
     }
     if (bankIsRunePouch(name) && row) {
@@ -424,13 +466,25 @@
     if (v.parts) {
       if (!v.parts.extras.length) s += ' (priced as the tradeable base item)';
       else {
-        s += '\n- ' + (bankIsRunePouch(name) ? 'Pouch' : bankIsEof(name) ? 'Amulet' : 'Item') + ': ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price');
+        s += '\n- ' + (bankIsRunePouch(name) ? 'Pouch' : bankIsEof(name) ? 'Amulet' : bankIsNexus(name) ? 'Nexus' : 'Item') + ': ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price');
         for (const e of v.parts.extras) s += '\n- ' + e.label + ': ' + fmtGp(e.price);
       }
     }
     if (bankIsEof(name)) { const l = bankEofLine(slot, id, v); if (l) s += '\n- ' + l; }
     if (bankIsRunePouch(name)) { const l = bankPouchLine(it, v); if (l) s += '\n- ' + l; }
+    if (bankIsNexus(name)) { const l = bankNexusLine(slot, v); if (l) s += '\n- ' + l; }
     return s;
+  }
+  // Nexus note: where the shared necrotic runes are counted, or why they are not.
+  function bankNexusLine(slot, v) {
+    const host = bankNexusHost();
+    if (host !== null && host !== slot) return 'Necrotic runes: shared by every nexus, counted on the nexus in slot ' + host;
+    if (!bankNexusData) { bankNexusRefresh(); return 'Necrotic runes: not known yet (open a nexus once so they are read)'; }
+    const runes = bankNexusRunes();
+    if (!runes.length) return 'Necrotic runes: none stored';
+    const priced = new Set(((v && v.parts) ? v.parts.extras : []).filter(e => e.kind === 'nexus').map(e => e.id));
+    const missing = runes.filter(rn => !priced.has(rn.id));
+    return (missing.length ? 'No GE price for: ' + missing.map(rn => rn.qty.toLocaleString() + ' ' + rn.name).join(', ') + '. ' : '') + 'Shared by every nexus, counted once here';
   }
   // Rune pouch note: only what the per-line breakdown could not say (unknown, empty, or runes without a price).
   function bankPouchLine(it, v) {

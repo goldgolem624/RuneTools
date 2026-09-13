@@ -84,6 +84,7 @@ constexpr int           kMaterialsContainerId = 885;   // Archaeology material s
 constexpr int           kGroupBankContainerId = 963;   // Group Ironman shared bank (964 is its inventory, not the storage)
 constexpr int           kBaitBoxContainerId = 867;   // Anachronia Big Game Hunter bait box
 constexpr int           kWorkbenchContainerId = 1008; // Archaeologist's workbench damaged-artefact storage
+constexpr int           kNexusContainerId = 953;      // Necromancy nexus: the necrotic runes every nexus shares
 constexpr int           kMaxContainers   = 64;
 constexpr int           kMaxBankSlots    = 8192;
 
@@ -529,6 +530,11 @@ struct State {
     bool                  baitbox_open      = false;
     long long             baitbox_cached_at = 0;
     std::uint64_t         baitbox_hash      = 0;
+    // Necromancy nexus (container 953): the account's necrotic runes, shared by every nexus item.
+    std::vector<BankSlot> nexus_slots;
+    bool                  nexus_open      = false;
+    long long             nexus_cached_at = 0;
+    std::uint64_t         nexus_hash      = 0;
     // Archaeologist's workbench storage (container 1008): loaded only while the workbench UI is open.
     std::vector<BankSlot> workbench_slots;
     bool                  workbench_open      = false;
@@ -825,7 +831,7 @@ Snapshot sample_one(State& s) {
                 !s.display_name.empty() ? s.display_name : s.character;
 
             bool found_bank = false, found_metal = false, found_mats = false, found_group = false, found_bait = false,
-                 found_wb = false;
+                 found_wb = false, found_nexus = false;
             auto cmgr = rpm<std::uint64_t>(s.proc, *root + kOffInvData);
             if (cmgr && *cmgr > 0x10000) {
                 auto cstart = rpm<std::uint64_t>(s.proc, *cmgr + 0x8);
@@ -890,7 +896,7 @@ Snapshot sample_one(State& s) {
                                                  std::to_string(slots) + " slots for " + bank_key);
                             }
                         };
-                        for (int c = 0; c < n && !(found_bank && found_metal && found_mats && found_group && found_bait && found_wb); ++c) {
+                        for (int c = 0; c < n && !(found_bank && found_metal && found_mats && found_group && found_bait && found_wb && found_nexus); ++c) {
                             const std::uint8_t* e = cbuf.data() + (std::size_t)c * kContainerStride;
                             int cid = *(const std::int32_t*)(e + 0x10);
                             if (cid == kBankContainerId && !found_bank) {
@@ -911,6 +917,9 @@ Snapshot sample_one(State& s) {
                             } else if (cid == kWorkbenchContainerId && !found_wb) {
                                 found_wb = true;
                                 capture(e, s.workbench_slots, s.workbench_hash, s.workbench_cached_at, "workbench");
+                            } else if (cid == kNexusContainerId && !found_nexus) {
+                                found_nexus = true;
+                                capture(e, s.nexus_slots, s.nexus_hash, s.nexus_cached_at, "nexus");
                             }
                         }
                     }
@@ -956,6 +965,7 @@ Snapshot sample_one(State& s) {
                 snap.baitbox_count     = filled;
                 snap.baitbox_cached_at = s.baitbox_cached_at;
             }
+            s.nexus_open = found_nexus;
             s.workbench_open = found_wb;
             snap.workbench_open = found_wb;
             if (found_wb) {
@@ -1445,6 +1455,11 @@ std::string MaterialsJson(std::uint32_t pid) {
 }
 std::string BaitBoxJson(std::uint32_t pid) {
     return cached_container_json(pid, "baitbox", &State::baitbox_slots, &State::baitbox_cached_at, &State::baitbox_open);
+}
+// Necromancy nexus (container 953): the necrotic runes, cached to disk like the bank so they can be valued
+// with no nexus loaded.
+std::string NexusJson(std::uint32_t pid) {
+    return cached_container_json(pid, "nexus", &State::nexus_slots, &State::nexus_cached_at, &State::nexus_open);
 }
 // Archaeologist's workbench (container 1008). Empty until the first workbench upgrade (varbit 61463).
 std::string WorkbenchJson(std::uint32_t pid) {

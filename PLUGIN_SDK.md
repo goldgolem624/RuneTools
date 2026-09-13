@@ -191,6 +191,7 @@ await rtx.plugin.state.groupBank();   // Group Ironman shared bank (container 96
 await rtx.plugin.state.metalBank();   // Metal bank (smithing ores + bars)
 await rtx.plugin.state.materials();   // Archaeology material storage
 await rtx.plugin.state.baitBox();     // Anachronia Big Game Hunter bait box (container 867)
+await rtx.plugin.state.nexus();       // Necromancy nexus necrotic runes (container 953), cached like the bank
 // -> { open, character, cached_at, count, items:[ [slot, id, stack, name], ... ] }
 //    Same shape as bank(): live while that storage UI is open, otherwise the
 //    per-character disk cache (open:false).

@@ -1037,6 +1037,14 @@ JSValueRef BaitBoxItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       [pid]{ return rtx::reader::BaitBoxJson(pid); });
 }
 
+JSValueRef NexusItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return served_obj(ctx, pid, "nexus:" + std::to_string(pid),
+                      [pid]{ return rtx::reader::NexusJson(pid); });
+}
+
 JSValueRef WorkbenchItems(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
@@ -5205,6 +5213,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "materialItems",     MaterialItems);
     install_fn(ctx, ns, "groupBankItems",    GroupBankItems);
     install_fn(ctx, ns, "baitBoxItems",      BaitBoxItems);
+    install_fn(ctx, ns, "nexusItems",        NexusItems);
     install_fn(ctx, ns, "workbenchItems",    WorkbenchItems);
     install_fn(ctx, ns, "sceneEntities",     SceneEntities);
     install_fn(ctx, ns, "playerInfo",        PlayerInfo);
