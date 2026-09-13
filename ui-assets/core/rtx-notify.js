@@ -1,7 +1,9 @@
-  const TOAST_MAX = 4;
+  const TOAST_ROW = 52;            // one alert card plus the stack gap, for the height budget
   const toasts = [];               // { el, msg, until, sticky, n, barEl, countEl }
   let _toastTimer = 0;
-  const TOAST_DEF = { anchor: 'top-center', dx: 0, dy: 58, w: 420 };
+  // h = 0 is automatic (4 alerts); a dragged height sets how many alerts may stack at once.
+  const TOAST_DEF = { anchor: 'top-center', dx: 0, dy: 58, w: 420, h: 0 };
+  function toastCap() { const h = Number(toastCfg.h) || 0; return h > 0 ? Math.max(1, Math.floor((h + 8) / TOAST_ROW)) : 4; }
   let toastCfg = Object.assign({}, TOAST_DEF);
   let toastPlacing = false;        // UI Settings "position on screen" mode
 
@@ -23,6 +25,7 @@
     el.style.flexDirection = (a.indexOf('bottom') === 0) ? 'column-reverse' : 'column';
     el.classList.toggle('placing', !!toastPlacing);
     let g = $('toastGhost');
+    if (g) g.style.minHeight = ((Number(c.h) || 0) > 0 ? Number(c.h) : 42) + 'px';
     if (toastPlacing && !g) {
       g = document.createElement('div');
       g.id = 'toastGhost';
@@ -31,8 +34,8 @@
       g.appendChild(lab);
       // Edge grips: left and right resize the width with the opposite edge held still (whatever the
       // anchor), top and bottom slide the stack vertically. The body of the box moves it freely.
-      const grips = [['l', 'Drag to set width'], ['r', 'Drag to set width'], ['t', 'Drag to move up or down'], ['b', 'Drag to move up or down'],
-                     ['tl', 'Drag to set width and position'], ['tr', 'Drag to set width and position'], ['bl', 'Drag to set width and position'], ['br', 'Drag to set width and position']];
+      const grips = [['l', 'Drag to set width'], ['r', 'Drag to set width'], ['t', 'Drag to set height'], ['b', 'Drag to set height'],
+                     ['tl', 'Drag to set size'], ['tr', 'Drag to set size'], ['bl', 'Drag to set size'], ['br', 'Drag to set size']];
       for (const [side, title] of grips) {
         const rz = document.createElement('i');
         rz.className = 'ghost-rz ghost-rz-' + side; rz.title = title;
@@ -40,6 +43,7 @@
           e.preventDefault(); e.stopPropagation();          // not a move-drag
           const sx = e.clientX, sy = e.clientY;
           const ow = Number(toastCfg.w) || TOAST_DEF.w, odx = Number(toastCfg.dx) || 0, ody = Number(toastCfg.dy) || 0;
+          const oh = (Number(toastCfg.h) || 0) > 0 ? Number(toastCfg.h) : g.offsetHeight;
           const a = String(toastCfg.anchor || 'top-center');
           const left = a.indexOf('left') > 0, right = a.indexOf('right') > 0, bottom = a.indexOf('bottom') === 0;
           const mv = (ev) => {
@@ -59,7 +63,16 @@
               toastCfg.w = nw; toastCfg.dx = Math.round(ndx);
             }
             if (vt) {
-              const ndy = bottom ? ody - dym : ody + dym;
+              // height change with the far edge held still: on a top-anchored stack the bottom edge
+              // grows downward as is, the top edge grows upward by moving the stack up; mirrored below.
+              const topEdge = side.indexOf('t') >= 0;
+              let nh = topEdge ? oh - dym : oh + dym;
+              nh = Math.max(42, Math.min(vhNow - 40, nh));
+              const d = nh - oh;
+              let ndy = ody;
+              if (!bottom && topEdge) ndy = ody - d;
+              if (bottom && !topEdge) ndy = ody - d;
+              toastCfg.h = Math.round(nh);
               toastCfg.dy = Math.round(Math.max(0, Math.min(vhNow - 40, ndy)));
             }
             applyToastPos(); reflectUiSettings();
@@ -156,7 +169,7 @@
                   until: ttl ? now + ttl : 0, barEl, countEl: cnt, closing: false };
     $('toaster').appendChild(el);
     toasts.push(rec);
-    while (toasts.filter(t => !t.closing).length > TOAST_MAX) {
+    while (toasts.filter(t => !t.closing).length > toastCap()) {
       const victim = toasts.find(t => !t.closing && !t.sticky) ||
                      toasts.find(t => !t.closing);
       if (!victim) break;

@@ -246,7 +246,7 @@
       const out = document.createElement('b'); out.id = 'uis_' + key + 'v';
       inp.addEventListener('input', () => {
         toastCfg[key] = Number(inp.value) | 0;
-        out.textContent = inp.value + 'px';
+        out.textContent = (key === 'h' && !(Number(inp.value) | 0)) ? 'auto' : (inp.value + 'px');
         applyToastPos(); wmSaveSoon();
       });
       v.appendChild(inp); v.appendChild(out);
@@ -256,6 +256,7 @@
     rows.appendChild(num('Offset X', 'dx'));
     rows.appendChild(num('Offset Y', 'dy'));
     rows.appendChild(num('Width', 'w'));
+    rows.appendChild(num('Height', 'h'));   // 0 = automatic (4 alerts); otherwise how many alerts fit
     const btnRow = (label, id, buttons) => {
       const r = document.createElement('div'); r.className = 'row';
       const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
@@ -411,15 +412,16 @@
       dx: [-Math.round(vw / 2), Math.round(vw / 2)],
       dy: [0, Math.max(40, vh - 80)],
       w:  [220, Math.max(260, vw - 40)],
+      h:  [0, Math.max(100, vh - 40)],
     };
-    for (const key of ['dx', 'dy', 'w']) {
+    for (const key of ['dx', 'dy', 'w', 'h']) {
       const inp = $('uis_' + key), out = $('uis_' + key + 'v');
       if (!inp) continue;
       inp.min = String(range[key][0]);
       inp.max = String(range[key][1]);
       const val = Number(toastCfg[key]) || 0;
       if (document.activeElement !== inp) inp.value = String(val);
-      if (out) out.textContent = val + 'px';
+      if (out) out.textContent = (key === 'h' && !val) ? 'auto' : (val + 'px');
     }
     const pb = $('uis_placeBtn');
     if (pb) {

@@ -7,7 +7,7 @@
                     roll: w.rolled ? 1 : 0, lock: w.locked ? 1 : 0 };
     }
     return { v: 1, bar: { x: wm.barX, y: wm.barY, yf: wm.barYf, pill: wm.barPill ? 1 : 0 },
-             toast: { anchor: toastCfg.anchor, dx: toastCfg.dx | 0, dy: toastCfg.dy | 0, w: toastCfg.w | 0 },
+             toast: { anchor: toastCfg.anchor, dx: toastCfg.dx | 0, dy: toastCfg.dy | 0, w: toastCfg.w | 0, h: toastCfg.h | 0 },
              wins };
   }
   function wmSaveNow() {
@@ -47,6 +47,7 @@
       if (typeof t.dx === 'number') toastCfg.dx = t.dx | 0;
       if (typeof t.dy === 'number') toastCfg.dy = t.dy | 0;
       if (typeof t.w === 'number' && t.w >= 220) toastCfg.w = t.w | 0;
+      if (typeof t.h === 'number' && t.h >= 0) toastCfg.h = t.h | 0;
       applyToastPos();
     }
     const ws = saved.wins || {};
