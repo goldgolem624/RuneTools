@@ -1440,6 +1440,19 @@
   }
   /* Compacted labels (up to "999.99M", seven chars) get a tighter box so they fit the 46px cell. */
   .bank-amt { white-space: nowrap; }
+  .bank-val {
+    position: absolute; bottom: 2px; right: 3px;
+    font-size: 8.5px; font-weight: 700; line-height: 1; letter-spacing: -0.3px;
+    color: #f0be5a; text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 2px #000;
+    pointer-events: none; white-space: nowrap;
+  }
+  .bank-val.ha { color: #9ad6ff; }
+  .bank-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; flex: 0 0 auto; font-size: 11px; color: var(--text-dim); }
+  .bank-tools label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  .bank-tools select { font: inherit; font-size: 11px; color: var(--text); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; }
+  .bank-totals { flex: 1 1 auto; display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
+  .bank-totals b { color: #f0be5a; font-weight: 700; }
+  .bank-totals b.ha { color: #9ad6ff; }
   .bank-amt.k, .bank-amt.m, .bank-amt.b, .bank-amt.t, .bank-amt.q {
     font-size: 9px; letter-spacing: -0.4px;
   }

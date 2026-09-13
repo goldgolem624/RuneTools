@@ -4319,6 +4319,37 @@ JSValueRef UiHighlightFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
+JSValueRef UiLabelsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                      size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::string s = (argc >= 2) ? js_to_utf8(ctx, argv[1]) : std::string();
+    std::vector<rtx::overlay::UiLabel> v;
+    std::size_t pos = 0;
+    while (pos < s.size() && v.size() < 32) {
+        std::size_t end = s.find('\x1e', pos);
+        if (end == std::string::npos) end = s.size();
+        std::string rec = s.substr(pos, end - pos);
+        pos = end + 1;
+        std::vector<std::string> f;
+        std::size_t at = 0;
+        while (f.size() < 5) {
+            std::size_t sep = rec.find('\x1f', at);
+            if (sep == std::string::npos) { f.push_back(rec.substr(at)); break; }
+            f.push_back(rec.substr(at, sep - at)); at = sep + 1;
+        }
+        if (f.size() < 5 || f[4].empty()) continue;
+        rtx::overlay::UiLabel lb;
+        lb.x = std::atoi(f[0].c_str()); lb.y = std::atoi(f[1].c_str());
+        lb.rgb = std::atoi(f[2].c_str()); lb.px = std::atoi(f[3].c_str());
+        if (lb.px < 8) lb.px = 8; if (lb.px > 40) lb.px = 40;
+        lb.text = f[4].substr(0, 90);
+        v.push_back(lb);
+    }
+    rtx::overlay::SetUiLabels(pid, v);
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef UiHighlightsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -5234,6 +5265,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "dialog",            Dialog);
     install_fn(ctx, ns, "uiHighlight",       UiHighlightFn);
     install_fn(ctx, ns, "uiHighlights",      UiHighlightsFn);
+    install_fn(ctx, ns, "uiLabels",          UiLabelsFn);
     install_fn(ctx, ns, "centerText",        CenterTextFn);
     install_fn(ctx, ns, "panelRects",        PanelRectsFn);
     install_fn(ctx, ns, "panelViz",          PanelVizFn);

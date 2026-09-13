@@ -1,13 +1,115 @@
 // RuneToolsX panel: Bank (searchable, paged item grid; state stays declared in client.html).
+// Adds Grand Exchange and high alchemy values: per item, as totals, as a sort order, and optionally as a
+// label drawn in the game next to the bank title while the bank is open.
 (function () {
 
+  // ---- values: GE from the price relay the GE Prices tab already caches, HA from the item definition ----
+  const bankHa = Object.create(null);         // item id -> high alch coins (value * 0.6), null = no definition
+  let bankGe = null, bankGeAt = 0;            // id -> { high, low }
+  function bankPrices() {
+    const now = Date.now();
+    if (bankGe && now - bankGeAt < 30000) return bankGe;
+    try {
+      const d = JSON.parse(bridge().pricesCached() || '{}');
+      const data = d && d.data ? d.data : d;
+      if (data && Object.keys(data).length) bankGe = data;
+    } catch (e) {}
+    bankGeAt = now;
+    return bankGe;
+  }
+  function bankHaOf(id) {
+    if (bankHa[id] !== undefined) return bankHa[id];
+    let ha = null;
+    try { const info = JSON.parse(bridge().itemInfo(id) || '{}'); if (info && info.value > 0) ha = Math.floor(info.value * 0.6); } catch (e) {}
+    bankHa[id] = ha;
+    return ha;
+  }
+  function bankGeOf(id) {
+    const p = bankPrices() && bankPrices()[id];
+    if (!p) return null;
+    const v = p.high != null ? p.high : p.low;   // instant-buy first, matching the GE Prices tab's default
+    return v > 0 ? v : null;
+  }
+  // per-item valuation for a row [slot, id, stack, name]
+  function bankValue(it) {
+    const id = it[1], stack = it[2] | 0;
+    const ge = bankGeOf(id), ha = bankHaOf(id);
+    return { ge: ge, ha: ha, geTotal: ge != null ? ge * stack : 0, haTotal: ha != null ? ha * stack : 0 };
+  }
+  function fmtGp(n) {
+    n = Math.round(n || 0);
+    const a = Math.abs(n);
+    if (a >= 1e9) return (n / 1e9).toFixed(a >= 1e10 ? 1 : 2) + 'b';
+    if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 1 : 2) + 'm';
+    if (a >= 1e4) return Math.round(n / 1e3) + 'k';
+    return n.toLocaleString();
+  }
+  function bankTotals(items) {
+    let ge = 0, ha = 0, priced = 0;
+    for (const it of items) { const v = bankValue(it); ge += v.geTotal; ha += v.haTotal; if (v.ge != null) ++priced; }
+    return { ge: ge, ha: ha, priced: priced };
+  }
+
+  // ---- sort + filter ----
+  let bankSort = prefGet('rtxBankSort', 'slot');
+  const BANK_SORTS = {
+    slot:   { label: 'Bank order',         cmp: (a, b) => a[0] - b[0] },
+    name:   { label: 'Name',               cmp: (a, b) => String(a[3] || '').localeCompare(String(b[3] || '')) },
+    qty:    { label: 'Quantity',           cmp: (a, b) => (b[2] | 0) - (a[2] | 0) },
+    getot:  { label: 'GE value (stack)',   cmp: (a, b) => bankValue(b).geTotal - bankValue(a).geTotal },
+    geunit: { label: 'GE price (each)',    cmp: (a, b) => (bankValue(b).ge || 0) - (bankValue(a).ge || 0) },
+    hatot:  { label: 'High alch (stack)',  cmp: (a, b) => bankValue(b).haTotal - bankValue(a).haTotal },
+    haunit: { label: 'High alch (each)',   cmp: (a, b) => (bankValue(b).ha || 0) - (bankValue(a).ha || 0) },
+  };
   function bankFilter() {
     const items = (bankData && bankData.items) ? bankData.items : [];
     const t = bankTerm.trim().toLowerCase();
-    if (!t) return items;
-    return items.filter(it => String(it[1]).indexOf(t) !== -1 ||
+    const list = !t ? items.slice() : items.filter(it => String(it[1]).indexOf(t) !== -1 ||
                               (it[3] || '').toLowerCase().indexOf(t) !== -1);
+    const s = BANK_SORTS[bankSort] || BANK_SORTS.slot;
+    if (bankSort !== 'slot') list.sort((a, b) => s.cmp(a, b) || a[0] - b[0]);
+    return list;
   }
+
+  // ---- in-game label beside the bank title: "GE 1.23b | HA 456m" ----
+  let bankOverlayOn = prefGet('rtxBankOverlay', '0') === '1';
+  let bankOverlayShown = false, bankOverlayTimer = 0, bankOverlayBusy = false;
+  function bankOverlayClear() {
+    if (!bankOverlayShown) return;
+    bankOverlayShown = false;
+    try { rtxData.sync('overlay.uiLabels', ''); } catch (e) {}
+  }
+  async function bankOverlayTick() {
+    if (!bankOverlayOn || !bridge() || !bridge().uiLabels || bankOverlayBusy) return;
+    bankOverlayBusy = true;
+    try {
+      if (!paneVisible('bank')) {                          // the tab's own fetch is idle: pull the bank ourselves
+        try { const d = JSON.parse(await bridge().bankItems(myPid())); if (d && Array.isArray(d.items)) bankData = d; } catch (e) {}
+      }
+      if (!bankData || !bankData.open || !bankData.items || !bankData.items.length) { bankOverlayClear(); return; }
+      // Anchor on the bank window itself (517's root is the frame's content rect): the title bar sits in the
+      // 32 px above the content, and the close button takes the right-most 32 px of it.
+      let frame = null;
+      try {
+        const d = JSON.parse(rtxData.sync('state.interface', 517, '0') || '{}');
+        if (d && d.open && d.hasAbs && Array.isArray(d.comps)) frame = d.comps.find(c => c.sub === -1 && c.w > 200) || null;
+      } catch (e) {}
+      if (!frame) { bankOverlayClear(); return; }
+      const t = bankTotals(bankData.items);
+      const text = 'GE ' + fmtGp(t.ge) + '  |  HA ' + fmtGp(t.ha);
+      const x = frame.x + frame.w - 40 - Math.round(text.length * 7.2);   // right-aligned in the title bar, clear of the close button
+      const y = frame.y - 16;                                              // vertical centre of the 32 px title bar
+      rtxData.sync('overlay.uiLabels', x + '\x1f' + y + '\x1f-1\x1f13\x1f' + text);
+      bankOverlayShown = true;
+    } catch (e) {} finally { bankOverlayBusy = false; }
+  }
+  function bankOverlaySet(on) {
+    bankOverlayOn = !!on; prefSet('rtxBankOverlay', on ? '1' : '0');
+    if (bankOverlayTimer) { clearInterval(bankOverlayTimer); bankOverlayTimer = 0; }
+    if (on) { bankOverlayTimer = setInterval(bankOverlayTick, 2000); bankOverlayTick(); }
+    else bankOverlayClear();
+  }
+  if (bankOverlayOn) setTimeout(() => bankOverlaySet(true), 2500);
 
   function renderBank() {
     const c = $('content');
@@ -25,6 +127,19 @@
       const meta = document.createElement('div'); meta.id = 'bankMeta'; meta.className = 'bank-meta';
       top.appendChild(inp); top.appendChild(meta);
 
+      const tools = document.createElement('div'); tools.className = 'bank-tools';
+      const sortLab = document.createElement('label'); sortLab.textContent = 'Sort ';
+      const sortSel = document.createElement('select'); sortSel.id = 'bankSortSel';
+      for (const k in BANK_SORTS) { const o = document.createElement('option'); o.value = k; o.textContent = BANK_SORTS[k].label; if (k === bankSort) o.selected = true; sortSel.appendChild(o); }
+      sortSel.addEventListener('change', () => { bankSort = sortSel.value; prefSet('rtxBankSort', bankSort); bankPage = 0; bankPaintSig = ''; paintBankPage(); });
+      sortLab.appendChild(sortSel);
+      const totals = document.createElement('div'); totals.id = 'bankTotals'; totals.className = 'bank-totals';
+      const ovLab = document.createElement('label'); ovLab.title = 'Draw the GE and high alch totals in game, next to the bank title, while the bank is open';
+      const ov = document.createElement('input'); ov.type = 'checkbox'; ov.id = 'bankOverlayChk'; ov.checked = bankOverlayOn;
+      ov.addEventListener('change', () => bankOverlaySet(ov.checked));
+      ovLab.appendChild(ov); ovLab.appendChild(document.createTextNode('Show totals in game'));
+      tools.appendChild(sortLab); tools.appendChild(totals); tools.appendChild(ovLab);
+
       const grid = document.createElement('div'); grid.id = 'bankGrid'; grid.className = 'bank-grid';
 
       const empty = document.createElement('div'); empty.id = 'bankEmpty'; empty.className = 'bank-empty';
@@ -37,9 +152,10 @@
       next.addEventListener('click', () => { bankPage++; paintBankPage(); });
       pager.appendChild(prev); pager.appendChild(pg); pager.appendChild(next);
 
-      wrap.appendChild(top); wrap.appendChild(grid); wrap.appendChild(empty); wrap.appendChild(pager);
+      wrap.appendChild(top); wrap.appendChild(tools); wrap.appendChild(grid); wrap.appendChild(empty); wrap.appendChild(pager);
       c.appendChild(wrap);
       bankPaintSig = '';
+      try { bridge().pricesCached(); } catch (e) {}   // kick the price fetch so values fill in on the first paint
     }
     paintBankPage();
   }
@@ -55,10 +171,23 @@
     if (bankPage >= pages) bankPage = pages - 1;
     if (bankPage < 0) bankPage = 0;
 
-    const sig = bankTerm + '|' + bankPage + '|' + filtered.length + '|' +
+    const priceGen = bankGe ? bankGeAt : 0;
+    const sig = bankTerm + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + priceGen + '|' +
                 (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
     if (sig === bankPaintSig) { topUpBankIcons(); return; }
     bankPaintSig = sig;
+
+    const totalsEl = document.getElementById('bankTotals');
+    if (totalsEl) {
+      const all = (bankData && bankData.items) ? bankData.items : [];
+      if (!all.length) totalsEl.innerHTML = '';
+      else {
+        const t = bankTotals(all);
+        totalsEl.innerHTML = '<span title="Grand Exchange value of every priced item, instant-buy price times quantity">GE <b>' + fmtGp(t.ge) + '</b></span>'
+          + '<span title="High alchemy value of every item, 60% of the item value times quantity">HA <b class="ha">' + fmtGp(t.ha) + '</b></span>'
+          + (t.priced < all.length ? '<span title="Items without a Grand Exchange price count as 0 in the GE total">' + (all.length - t.priced) + ' unpriced</span>' : '');
+      }
+    }
 
     if (total === 0 || filtered.length === 0) {
       grid.style.display = 'none';
@@ -90,6 +219,7 @@
     if (pager) pager.style.display = '';
     if (emptyBox) emptyBox.style.display = 'none';
 
+    const showHa = bankSort === 'hatot' || bankSort === 'haunit';
     const start = bankPage * BANK_PER_PAGE;
     const slice = filtered.slice(start, start + BANK_PER_PAGE);
     grid.innerHTML = '';
@@ -107,8 +237,16 @@
         const a = document.createElement('span'); a.className = 'bank-amt' + (amt.c ? ' ' + amt.c : '');
         a.textContent = amt.t; cell.appendChild(a);
       }
+      const v = bankValue(it);
+      const badgeVal = showHa ? v.haTotal : v.geTotal;
+      if (badgeVal > 0 && stack > 0) {
+        const b = document.createElement('span'); b.className = 'bank-val' + (showHa ? ' ha' : '');
+        b.textContent = fmtGp(badgeVal); cell.appendChild(b);
+      }
       cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
-        (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot;
+        (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
+        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') : 'no price') +
+        '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);
     }
 
@@ -124,6 +262,7 @@
     if (pg) pg.textContent = filtered.length ? ('Page ' + (bankPage + 1) + ' / ' + pages) : 'No items';
     const prev = document.getElementById('bankPrev'); if (prev) prev.disabled = bankPage <= 0;
     const next = document.getElementById('bankNext'); if (next) next.disabled = bankPage >= pages - 1;
+    if (bankOverlayOn) bankOverlayTick();
   }
 
 Object.assign(window, { paintBankPage });

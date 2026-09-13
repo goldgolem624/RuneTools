@@ -5765,7 +5765,7 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
     std::string comps; bool firstC = true; bool open = false; int found = 0;
     std::function<void(std::uint64_t,int,int,int,bool)> walk;
     walk = [&](std::uint64_t node, int bx, int by, int depth, bool hid) {
-        if (depth > 12 || found > 4000) return;
+        if (depth > 14 || found > 16000) return;   // the game frame alone holds ~5000 widgets
         ++found;
         int comp = r16(node + 0x3a);
         int x = r32(node + 0x98), y = r32(node + 0x9c), w = r32(node + 0xa0), hh = r32(node + 0xa4);

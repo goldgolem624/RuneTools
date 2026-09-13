@@ -170,6 +170,7 @@ RECT g_xp_min{0, 0, 0, 0};                      // minimize-box rect (guarded by
 // Transient per-pid channels below are all guarded by g_mu.
 std::map<DWORD, std::vector<GuideMark>> g_guides;
 std::map<DWORD, std::vector<UiHighlight>> g_uiHighlights;
+std::map<DWORD, std::vector<UiLabel>> g_uiLabels;
 std::map<DWORD, std::map<int, CenterBanner>> g_centerTexts;   // keyed by slot
 std::map<DWORD, std::vector<PanelBox>> g_panelViz;
 std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;
@@ -634,6 +635,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 
     bool hasGuides = false;   // gate only; drawing uses the frame's resolved guides
     std::vector<UiHighlight> uihls;
+    std::vector<UiLabel> uilbls;
     std::map<int, CenterBanner> ctext;
     std::vector<PanelBox> pviz;
     std::vector<PuzzleCell> pcells;
@@ -644,6 +646,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       hasGuides = (git != g_guides.end() && !git->second.empty());
       auto uit = g_uiHighlights.find(cfg.pid);
       if (uit != g_uiHighlights.end()) uihls = uit->second;
+      auto ult = g_uiLabels.find(cfg.pid);
+      if (ult != g_uiLabels.end()) uilbls = ult->second;
       auto ctit = g_centerTexts.find(cfg.pid);
       if (ctit != g_centerTexts.end()) ctext = ctit->second;
       auto pit = g_panelViz.find(cfg.pid);
@@ -676,7 +680,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         } else hold.clear();
     }
 
-    bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
+    bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !uilbls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
                        (widgets && !widgets->empty()) ||
                        (f && (cfg.enabled || cfg.markers || cfg.nameplates || !hls.empty() || hasGuides));
     if (!wantContent) {
@@ -1618,6 +1622,23 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
+    for (const auto& lb : uilbls) {
+        if (lb.text.empty()) continue;
+        const ScreenRect sr = toScreen(lb.x, lb.y, 1, 1, true);
+        marker::Command t{}; t.type = marker::kText;
+        t.glyph = marker::kTextPlain;                       // left aligned at x, centred on y, no pill
+        t.x0 = sr.x0; t.y0 = sr.y0;
+        t.x1 = (float)lb.px * gvScale * uiScale;
+        if (lb.rgb < 0) { t.r = 255; t.g = 226; t.b = 74; }  // RS yellow like the game's own value text
+        else { t.r = (std::uint8_t)((lb.rgb >> 16) & 0xFF); t.g = (std::uint8_t)((lb.rgb >> 8) & 0xFF); t.b = (std::uint8_t)(lb.rgb & 0xFF); }
+        t.a = 250;
+        int n = (int)lb.text.size();
+        if (n > marker::kTextMax) n = marker::kTextMax;
+        std::memcpy(t.text, lb.text.data(), (size_t)n);
+        t.text[n] = '\0';
+        push(t);
+    }
+
     if (!pcells.empty()) {
         {
             static std::map<DWORD, std::tuple<int,int,int,int>> l_pc;
@@ -2550,6 +2571,22 @@ void SetUiHighlights(std::uint32_t pid, const std::vector<UiHighlight>& rects) {
             Config& dst = cfg_slot((DWORD)pid);
             dst.pid = pid;
             g_uiHighlights[(DWORD)pid] = keep;
+        }
+    }
+    ensure_thread();
+}
+
+void SetUiLabels(std::uint32_t pid, const std::vector<UiLabel>& labels) {
+    if (!pid) return;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        std::vector<UiLabel> keep;
+        for (const auto& l : labels) if (!l.text.empty()) keep.push_back(l);
+        if (keep.empty()) g_uiLabels.erase((DWORD)pid);
+        else {
+            Config& dst = cfg_slot((DWORD)pid);
+            dst.pid = pid;
+            g_uiLabels[(DWORD)pid] = keep;
         }
     }
     ensure_thread();

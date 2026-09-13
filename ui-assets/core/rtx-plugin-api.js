@@ -316,6 +316,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'overlay.guideMarks':     { scope: 'overlay',     json: false, run: (a, pid) => bridge().guideMarks(pid, ...pOverlayArgs(a)) },
     'overlay.panelViz':       { scope: 'overlay',     json: false, run: (a, pid) => bridge().panelViz(pid, ...pOverlayArgs(a)) },
     'overlay.uiHighlight':    { scope: 'overlay',     json: false, run: (a, pid) => bridge().uiHighlight(pid, ...pOverlayArgs(a)) },
+    'overlay.uiLabels':       { scope: 'overlay',     json: false, run: (a, pid) => (bridge().uiLabels ? bridge().uiLabels(pid, ...pOverlayArgs(a)) : false) },
     'overlay.hudSprite':      { scope: 'overlay',     json: false, run: (a, pid) => bridge().hudSprite(pid, ...pOverlayArgs(a)) },
     'overlay.outlineObject':  { scope: 'overlay',     json: false, run: (a, pid) => bridge().outlineObject(pid, ...pOverlayArgs(a)) },
     'chat.messages':          { scope: 'chat.read',   json: true,  run: (a, pid) => bridge().chat(pid, ...pArgs(a)) },
