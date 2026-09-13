@@ -35,6 +35,7 @@
     try { ovApplyDurablePrefs(); } catch (e) {}
     try { sceneApplyDurablePrefs(); } catch (e) {}
     try { if (typeof auraApplyDurablePrefs === 'function') auraApplyDurablePrefs(); } catch (e) {}
+    try { if (typeof bankApplyDurablePrefs === 'function') bankApplyDurablePrefs(); } catch (e) {}
     try { _uiCfg = null; uiApply(); const w = $('uisWrap'); if (w) w.remove(); } catch (e) {}
   }
 

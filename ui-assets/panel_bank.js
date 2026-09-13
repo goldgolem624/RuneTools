@@ -316,76 +316,113 @@
     return { ge: ge, ha: ha, priced: priced };
   }
 
-  // ---- bank tabs: names, icons and slot membership, read from the bank interface (517) while it is open ----
-  // 517:203 holds one "Tab N[ - Name]" header per custom tab (tab 1, the main tab, has none and is drawn
-  // first), 517:201 the item grid with one child per bank slot, and 517:170 the tab bar (sub 2 = all, then
-  // one icon per tab: an item or a sprite; the bar scrolls). A slot belongs to the last header above it in
-  // the scroll, so slot order (tabs in creation order, main tab last) and screen order both come out. The
-  // result is kept per character in the durable prefs, so the layout is there with the bank closed.
-  let bankTabsData = null, bankTabsBusy = false, bankTabsAt = -1, bankTab = 0;   // bankTab 0 = every tab
+  // ---- bank tabs ----
+  // The game keeps the tab layout in vars: varbit 45143+i is the size of the i-th tab block in container
+  // order (creation order), and varbit 45175+(t-2) is the creation id (block index + 2) of the tab shown
+  // at display position t. The main tab (position 1) is every slot after the blocks. Names ("Tab N - Name")
+  // and icons come from the bank interface while it is open (517:203 headers, 517:170 tab bar whose child
+  // sub is position + 2), keyed by creation id so they survive reordering, and are cached per character in
+  // the durable prefs. Slot membership is therefore always live: it follows every deposit and withdrawal.
+  const BANK_VB_SIZE0 = 45143, BANK_VB_ORDER0 = 45175, BANK_TABS_MAX = 32;
+  let bankTabsData = null, bankTabsMeta = null, bankTabsVb = null, bankTabsVbAt = 0, bankTabsVbBusy = false, bankTab = 0;
+  let bankTabsMetaAt = -1, bankTabsMetaBusy = false;
   const bankSprUrl = Object.create(null);
   function bankTabsKey() { return (bankData && bankData.character) ? String(bankData.character).toLowerCase() : ''; }
-  function bankTabsLoad() {
+  function bankTabsMetaLoad() {
     const key = bankTabsKey(); if (!key) return;
-    if (bankTabsData && bankTabsData.character === key) return;
-    bankTabsData = null;
+    if (bankTabsMeta && bankTabsMeta.character === key) return;
+    bankTabsMeta = { character: key, byCid: {} };
     try {
       const all = JSON.parse(prefGet('rtxBankTabs', '{}') || '{}');
-      if (all && all[key] && Array.isArray(all[key].tabs)) { bankTabsData = all[key]; bankTabsData.character = key; }
+      if (all && all[key] && all[key].byCid) bankTabsMeta.byCid = all[key].byCid;
     } catch (e) {}
   }
-  function bankTabsSave() {
-    const key = bankTabsKey(); if (!key || !bankTabsData) return;
+  function bankTabsMetaSave() {
+    const key = bankTabsKey(); if (!key || !bankTabsMeta) return;
     let all = {};
     try { all = JSON.parse(prefGet('rtxBankTabs', '{}') || '{}') || {}; } catch (e) { all = {}; }
-    const copy = Object.assign({}, bankTabsData); delete copy.character; delete copy.idx;
-    all[key] = copy;
+    all[key] = { byCid: bankTabsMeta.byCid };
     prefSet('rtxBankTabs', JSON.stringify(all));
   }
-  function bankTabsDiscover() {
-    if (bankTabsBusy || !bankData || !bankData.open) return;
-    if (bankTabsAt === bankData.cached_at && bankTabsData) return;
-    bankTabsBusy = true;
-    try {
-      const d = JSON.parse(rtxData.sync('state.interface', 517, '170,201,203') || '{}');
-      if (!d || !d.open || !d.hasAbs || !Array.isArray(d.comps)) return;
-      const hdr = d.comps.filter(c => c.comp === 203 && c.sub >= 0 && c.text)
-        .map(c => { const m = /^Tab (\d+)(?:\s*-\s*(.*))?$/.exec(String(c.text).replace(/<[^>]*>/g, '').trim()); return m ? { n: +m[1], name: (m[2] || '').trim(), y: c.y } : null; })
-        .filter(Boolean).sort((a, b) => a.y - b.y);
-      const items = d.comps.filter(c => c.comp === 201 && c.sub >= 0 && c.obj > 0);
-      if (!items.length) return;
-      const tabOf = y => { let t = 1; for (const h of hdr) if (y >= h.y) t = h.n; return t; };
-      const slotTab = [];
-      for (const c of items) slotTab[c.sub] = tabOf(c.y);
-      const onScreen = items.slice().sort((a, b) => a.y - b.y || a.x - b.x);
-      const order = onScreen.map(c => c.sub);
-      const tabs = [{ n: 1, name: '' }].concat(hdr.map(h => ({ n: h.n, name: h.name })));
-      const firstOf = {};                         // first item on screen per tab: the game's default tab icon
-      for (const c of onScreen) { const t = tabOf(c.y); if (firstOf[t] === undefined) firstOf[t] = c.obj; }
-      const bar = d.comps.filter(c => c.comp === 170 && c.sub >= 3 && c.vis && (c.obj > 0 || c.spr > 0)).sort((a, b) => a.sub - b.sub);
-      let offset = 0;                             // the bar scrolls: line its first item icon up with the tab that item opens
-      for (const b of bar) { if (b.obj > 0) { const ti = tabs.findIndex(tt => firstOf[tt.n] === b.obj); if (ti >= 0) offset = ti - (b.sub - 3); break; } }
-      for (const b of bar) { const t = tabs[b.sub - 3 + offset]; if (t) t.icon = b.obj > 0 ? { item: b.obj } : { spr: b.spr }; }
-      for (const t of tabs) if (!t.icon && firstOf[t.n]) t.icon = { item: firstOf[t.n] };
-      bankTabsData = { character: bankTabsKey(), at: bankData.cached_at, tabs: tabs, slotTab: slotTab, order: order };
-      bankTabsAt = bankData.cached_at;
-      bankTabsSave();
-      bankPaintSig = '';
-    } catch (e) {} finally { bankTabsBusy = false; }
+  function bankTabsVbRefresh() {                 // the layout vars, at most every 2 s
+    if (bankTabsVbBusy || Date.now() - bankTabsVbAt < 2000 || !bridge() || !bridge().varbits || !myPid()) return;
+    bankTabsVbBusy = true;
+    const ids = [];
+    for (let i = 0; i < BANK_TABS_MAX; ++i) { ids.push(BANK_VB_SIZE0 + i); ids.push(BANK_VB_ORDER0 + i); }
+    Promise.resolve().then(async () => {
+      try {
+        const v = JSON.parse(await bridge().varbits(myPid(), ids.join(',')) || '{}');
+        const sizes = [], order = [];
+        for (let i = 0; i < BANK_TABS_MAX; ++i) { sizes.push(v[BANK_VB_SIZE0 + i] | 0); order.push(v[BANK_VB_ORDER0 + i] | 0); }
+        const sig = sizes.join(',') + '|' + order.join(',');
+        if (!bankTabsVb || bankTabsVb.sig !== sig) { bankTabsVb = { sizes: sizes, order: order, sig: sig }; bankTabsBuild(); bankPaintSig = ''; paintBankPage(); }
+      } catch (e) {}
+      bankTabsVbAt = Date.now(); bankTabsVbBusy = false;
+    });
   }
-  function bankOrderIndex() {                     // slot -> position on the game's own scroll
-    const td = bankTabsData;
-    if (!td || !Array.isArray(td.order)) return null;
-    if (!td.idx) { td.idx = Object.create(null); td.order.forEach((s, i) => { td.idx[s] = i; }); }
-    return td.idx;
+  function bankTabsBuild() {
+    const vb = bankTabsVb; if (!vb) { bankTabsData = null; return; }
+    bankTabsMetaLoad();
+    const starts = []; let acc = 0;
+    for (let i = 0; i < vb.sizes.length; ++i) { starts.push(acc); acc += vb.sizes[i]; }
+    const tabs = [{ n: 1, cid: 1, from: acc, count: -1 }];       // main tab: every slot from the end of the blocks
+    for (let t = 2; t < 2 + BANK_TABS_MAX; ++t) {
+      const cid = vb.order[t - 2]; if (!cid) break;
+      const b = cid - 2; if (b < 0 || b >= vb.sizes.length) break;
+      tabs.push({ n: t, cid: cid, from: starts[b], count: vb.sizes[b] });
+    }
+    const slotTab = [], orderIdx = [];               // orderIdx: position on the game's own scroll (main tab first)
+    tabs.forEach((t, p) => { if (t.count > 0) for (let s = t.from; s < t.from + t.count; ++s) { slotTab[s] = t.n; orderIdx[s] = 1e7 + p * 1e5 + (s - t.from); } });
+    for (const t of tabs) { const m = bankTabsMeta && bankTabsMeta.byCid[t.cid]; t.name = m && m.name ? m.name : ''; t.icon = m && m.icon ? m.icon : null; }
+    bankTabsData = { tabs: tabs, slotTab: slotTab, orderIdx: orderIdx, mainFrom: acc };
+  }
+  function bankSlotTab(slot) {
+    const td = bankTabsData; if (!td) return 0;
+    if (td.slotTab[slot] !== undefined) return td.slotTab[slot];
+    return slot >= td.mainFrom ? 1 : 0;
+  }
+  function bankOrderIndex() {
+    const td = bankTabsData; if (!td) return null;
+    return s => td.orderIdx[s] !== undefined ? td.orderIdx[s] : (s >= td.mainFrom ? s - td.mainFrom : 5e7 + s);
   }
   function bankTabName(n) {
     const t = bankTabsData && bankTabsData.tabs ? bankTabsData.tabs.find(tt => tt.n === n) : null;
     return 'Tab ' + n + (t && t.name ? ' - ' + t.name : '');
   }
   function bankTabLine(slot) {
-    const t = bankTabsData && bankTabsData.slotTab ? bankTabsData.slotTab[slot] : 0;
+    const t = bankSlotTab(slot);
     return t ? '\n' + bankTabName(t) : '';
+  }
+  // Names and icons from the open bank window; any view will do, headers are read only when drawn.
+  function bankTabsMetaDiscover() {
+    if (bankTabsMetaBusy || !bankData || !bankData.open || !bankTabsVb) return;
+    if (bankTabsMetaAt === bankData.cached_at) return;
+    bankTabsMetaBusy = true;
+    try {
+      const d = JSON.parse(rtxData.sync('state.interface', 517, '170,203') || '{}');
+      if (!d || !d.open || !Array.isArray(d.comps)) return;
+      bankTabsMetaLoad();
+      if (!bankTabsMeta) return;
+      const cidAt = t => t === 1 ? 1 : (bankTabsVb.order[t - 2] || 0);
+      let changed = false;
+      for (const c of d.comps) {
+        if (c.comp === 203 && c.sub >= 0 && c.vis && c.text) {
+          const m = /^Tab (\d+)(?:\s*-\s*(.*))?$/.exec(String(c.text).replace(/<[^>]*>/g, '').trim());
+          if (!m) continue;
+          const cid = cidAt(+m[1]); if (!cid) continue;
+          const name = (m[2] || '').trim();
+          const e = bankTabsMeta.byCid[cid] || (bankTabsMeta.byCid[cid] = {});
+          if (e.name !== name) { e.name = name; changed = true; }
+        } else if (c.comp === 170 && c.sub >= 3 && (c.obj > 0 || c.spr > 0)) {
+          const cid = cidAt(c.sub - 2); if (!cid) continue;
+          const icon = c.obj > 0 ? { item: c.obj } : { spr: c.spr };
+          const e = bankTabsMeta.byCid[cid] || (bankTabsMeta.byCid[cid] = {});
+          if (JSON.stringify(e.icon) !== JSON.stringify(icon)) { e.icon = icon; changed = true; }
+        }
+      }
+      bankTabsMetaAt = bankData.cached_at;
+      if (changed) { bankTabsMetaSave(); bankTabsBuild(); bankPaintSig = ''; }
+    } catch (e) {} finally { bankTabsMetaBusy = false; }
   }
   function bankSpriteInto(el, sid) {
     if (bankSprUrl[sid]) { el.style.backgroundImage = 'url(' + bankSprUrl[sid] + ')'; return; }
@@ -395,30 +432,34 @@
       try { const u = await rtxData.raw('cache.sprite', sid); if (u) { bankSprUrl[sid] = u; el.style.backgroundImage = 'url(' + u + ')'; } } catch (e) {}
     });
   }
+  // The strip mirrors the game's tab bar: the all-tabs button, then one icon per tab in display order.
   function bankTabsStrip() {
     const el = document.getElementById('bankTabs'); if (!el) return;
-    bankTabsLoad();
     const td = bankTabsData;
-    if (!td || !td.tabs || td.tabs.length < 2) { el.innerHTML = ''; el.hidden = true; if (bankTab) { bankTab = 0; bankPaintSig = ''; } return; }
+    if (!td || td.tabs.length < 2) { el.innerHTML = ''; el.hidden = true; if (bankTab) bankTab = 0; return; }
     el.hidden = false;
-    const counts = {};
-    for (const it of ((bankData && bankData.items) || [])) { const t = td.slotTab[it[0]]; if (t) counts[t] = (counts[t] || 0) + 1; }
+    const counts = {}; let total = 0;
+    for (const it of ((bankData && bankData.items) || [])) { const t = bankSlotTab(it[0]); if (t) counts[t] = (counts[t] || 0) + 1; ++total; }
     if (bankTab && !td.tabs.some(t => t.n === bankTab)) bankTab = 0;
     el.innerHTML = '';
-    const mk = (n, label, icon, count) => {
+    const strip = document.createElement('div'); strip.className = 'bank-tabstrip';
+    const mk = (n, icon, label, count) => {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'bank-tab' + (n === bankTab ? ' on' : '');
-      b.title = (n ? bankTabName(n) : 'Every tab') + (count != null ? ' (' + count + ' item' + (count === 1 ? '' : 's') + ')' : '');
-      const ic = document.createElement('span'); ic.className = 'bank-tab-ic';
-      if (!n) ic.textContent = String.fromCharCode(8734);
-      else if (icon && icon.item) { ic.dataset.itemId = String(icon.item); attachBankIcon(ic, icon.item); }
-      else if (icon && icon.spr) bankSpriteInto(ic, icon.spr);
-      const nm = document.createElement('span'); nm.className = 'bank-tab-nm'; nm.textContent = n ? (label || ('Tab ' + n)) : 'All';
-      b.appendChild(ic); b.appendChild(nm);
+      b.title = label + ' (' + count + ' item' + (count === 1 ? '' : 's') + ')';
+      if (!n) { b.classList.add('all'); b.textContent = String.fromCharCode(8734); }
+      else if (icon && icon.item) { b.dataset.itemId = String(icon.item); attachBankIcon(b, icon.item); }
+      else if (icon && icon.spr) bankSpriteInto(b, icon.spr);
+      else b.textContent = String(n);
       b.addEventListener('click', () => { bankTab = n; bankPage = 0; bankPaintSig = ''; paintBankPage(); });
       return b;
     };
-    el.appendChild(mk(0, '', null, (bankData && bankData.items) ? bankData.items.length : null));
-    for (const t of td.tabs) el.appendChild(mk(t.n, t.name, t.icon, counts[t.n] || 0));
+    strip.appendChild(mk(0, null, 'All tabs', total));
+    for (const t of td.tabs) strip.appendChild(mk(t.n, t.icon, bankTabName(t.n), counts[t.n] || 0));
+    el.appendChild(strip);
+    const cap = document.createElement('div'); cap.className = 'bank-tabcap';
+    const cur = bankTab ? td.tabs.find(t => t.n === bankTab) : null;
+    cap.textContent = cur ? bankTabName(cur.n) + ' (' + (counts[cur.n] || 0) + ' items)' : 'All tabs (' + total + ' items)';
+    el.appendChild(cap);
   }
 
   // ---- sort + filter ----
@@ -437,11 +478,11 @@
     const t = bankTerm.trim().toLowerCase();
     let list = !t ? items.slice() : items.filter(it => String(it[1]).indexOf(t) !== -1 ||
                               bankRowName(it[1], it[3]).toLowerCase().indexOf(t) !== -1);
-    if (bankTab && bankTabsData && bankTabsData.slotTab) list = list.filter(it => bankTabsData.slotTab[it[0]] === bankTab);
+    if (bankTab && bankTabsData) list = list.filter(it => bankSlotTab(it[0]) === bankTab);
     const s = BANK_SORTS[bankSort] || BANK_SORTS.slot;
     // placeholders (quantity 0) hold no value, so every value or quantity sort sinks them to the end
     if (bankSort !== 'slot') list.sort((a, b) => ((b[2] | 0) > 0) - ((a[2] | 0) > 0) || s.cmp(a, b) || a[0] - b[0]);
-    else { const idx = bankOrderIndex(); if (idx) list.sort((a, b) => { const ia = idx[a[0]] === undefined ? 1e9 : idx[a[0]], ib = idx[b[0]] === undefined ? 1e9 : idx[b[0]]; return ia - ib || a[0] - b[0]; }); }
+    else { const idx = bankOrderIndex(); if (idx) list.sort((a, b) => idx(a[0]) - idx(b[0]) || a[0] - b[0]); }
     return list;
   }
 
@@ -504,6 +545,15 @@
     else { bankOverlayClear(); bankOverlayStatus(''); }
   }
   if (bankOverlayOn) setTimeout(() => bankOverlaySet(true), 2500);
+  function bankApplyDurablePrefs() {
+    bankBasis = prefGet('rtxBankPriceBasis', 'buy');
+    bankSort = prefGet('rtxBankSort', 'slot');
+    const on = prefGet('rtxBankOverlay', '0') === '1';
+    if (on !== bankOverlayOn) bankOverlaySet(on);
+    bankTabsMeta = null; bankPaintSig = '';
+    const w = document.getElementById('bankWrap');          // the tools row was built from the old values
+    if (w) { w.remove(); try { if (paneVisible('bank')) renderBank(); } catch (e) {} }
+  }
 
   function bankMenuClose() { const m = document.getElementById('bankMenu'); if (m) { m.remove(); try { wmRectsSoon(); } catch (e) {} } }
   function bankMenuOpen(anchor, items, current, onPick) {
@@ -665,8 +715,9 @@
     const grid = document.getElementById('bankGrid');
     if (!grid) return;
     if (bankData && bankData.items) bankEofRefresh(bankData.items);
-    bankTabsLoad();
-    if (bankData && bankData.open) bankTabsDiscover();
+    bankTabsVbRefresh();
+    if (!bankTabsData && bankTabsVb) bankTabsBuild();
+    if (bankData && bankData.open) bankTabsMetaDiscover();
     const emptyBox = document.getElementById('bankEmpty');
     const pager = grid.parentElement.querySelector('.bank-pager');
     const total = (bankData && bankData.count) ? bankData.count : 0;
@@ -676,7 +727,7 @@
     if (bankPage < 0) bankPage = 0;
 
     const priceGen = (bankGe ? bankGeAt : 0) + '/' + bankMapping();   // repaint when prices or the name mapping arrive
-    const sig = bankTerm + '|' + bankTab + '|' + (bankTabsData ? bankTabsData.at : '') + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
+    const sig = bankTerm + '|' + bankTab + '|' + (bankTabsVb ? bankTabsVb.sig : '') + '|' + (bankTabsMeta ? JSON.stringify(bankTabsMeta.byCid).length : 0) + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
                 (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
     if (sig === bankPaintSig) { topUpBankIcons(); return; }
     bankPaintSig = sig;
