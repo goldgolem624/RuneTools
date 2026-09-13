@@ -28,10 +28,14 @@
   // copy the game hands out (same name, different id), "Augmented X" as X, and the broken / damaged /
   // degraded / used / new / uncharged forms of degradable gear as the plain name. Resolved by name through
   // the price mapping, which is the tradeable item list.
-  let bankNameToId = null, bankIdToName = null, bankMapLen = -1, bankMapCount = 0;
+  let bankNameToId = null, bankIdToName = null, bankMapLen = -1, bankMapCount = 0, bankMapAt = 0;
   // (Re)build the name maps from the price mapping. Returns how many names are known: 0 until the relay's
-  // mapping has arrived, at which point every memoised base id is dropped so items resolve again.
+  // mapping has arrived, at which point every memoised base id is dropped so items resolve again. Once the
+  // mapping is in, it is only re-read once a minute (the mapping string is large).
   function bankMapping() {
+    const now = Date.now();
+    if (bankMapCount > 0 && now - bankMapAt < 60000) return bankMapCount;
+    bankMapAt = now;
     let raw = '';
     try { raw = bridge().pricesMapping() || ''; } catch (e) { raw = ''; }
     if (raw.length === bankMapLen) return bankMapCount;
@@ -461,4 +465,7 @@
 
 Object.assign(window, { paintBankPage });
 registerTab({ id: 'bank', render: renderBank, open: function () { bankFetchKey = ''; fetchBank(); } });
+// Prices and the name mapping arrive from the relay after the first paint; repaint while the tab is showing
+// (a no-op when nothing changed) so values fill in without waiting for the bank itself to change.
+setInterval(function () { try { if (paneVisible('bank')) paintBankPage(); } catch (e) {} }, 2000);
 })();
