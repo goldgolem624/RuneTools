@@ -345,7 +345,7 @@
             + ' title="click: watch this component for 30s">' + idtxt + '</span>'
             + (w.ty ? '<span class="if-ty t-' + w.ty + '">' + w.ty + '</span>' : '')
             + (shown ? '' : '<span class="if-ty t-hid">hidden</span>')
-            + (w.col ? '<span class="if-col" style="background:#' + w.col + '" title="#' + w.col + '"></span>' : '')
+            + (w.col && !tx ? '<span class="if-col" style="background:#' + w.col + '" title="#' + w.col + '"></span>' : '')
             + (w.it ? '<span class="if-itemico" data-item="' + w.it + '"></span><span class="if-item">#' + w.it + '</span>' : '')
             + (w.n ? '<span class="if-amt">×' + Number(w.n).toLocaleString() + '</span>' : '')
             // "s" >= 131072 is the reader's synthetic encoding (131072 + item id) of an obj-icon graphic:
@@ -357,7 +357,7 @@
                       ? '<span class="if-modelico" data-model="' + ifaceDefModels[g.id][t[1]] + '"></span><span class="if-mdl">model ' + ifaceDefModels[g.id][t[1]] + '</span>'
                       : '<span class="if-dyn">dynamic</span>')
                    : ''))
-            + (tx ? '<span class="if-txt" data-tip="' + txFull.replace(/"/g, '&quot;').replace(/\n/g, '&#10;') + '">' + tx + '</span>' : '')
+            + (tx ? '<span class="if-txt"' + (w.col ? ' style="color:#' + w.col + '"' : '') + ' data-tip="' + txFull.replace(/"/g, '&quot;').replace(/\n/g, '&#10;') + '">' + tx + '</span>' : '')
             + '<span class="if-rect">' + r[0] + ',' + r[1] + ' · ' + r[2] + '×' + r[3] + '</span></div>';
         }
       }
