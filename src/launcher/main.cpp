@@ -463,6 +463,30 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             LocalFree(argv);
             return 0;
         }
+        // --var-block <pid> <lo> <hi>: player varps lo..hi with their cache type code, live int value and live long
+        // value (long-typed varps keep a full i64), to var-block.txt. For mapping a family of related vars.
+        if (argv && argc >= 5 && std::wstring(argv[1]) == L"--var-block") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            const int lo = _wtoi(argv[3]), hi = _wtoi(argv[4]);
+            rtx::reader::SampleAll();
+            std::string csv;
+            for (int id = lo; id <= hi; ++id) { if (!csv.empty()) csv += ","; csv += std::to_string(id); }
+            std::string defs = rtx::cache::VarDefsJson(60);
+            std::string ints = rtx::reader::VarpsJson(pid, csv), longs = rtx::reader::VarpsLongJson(pid, csv);
+            auto field = [](const std::string& j, int id) -> std::string {
+                std::string key = "\"" + std::to_string(id) + "\":";
+                std::size_t at = j.find(key); if (at == std::string::npos) return "";
+                std::size_t e = j.find_first_of(",}", at + key.size()); return j.substr(at + key.size(), e == std::string::npos ? std::string::npos : e - at - key.size());
+            };
+            std::size_t tpos = defs.find("\"types\":{");
+            std::string types = tpos == std::string::npos ? "" : defs.substr(tpos + 8);
+            std::ofstream f("var-block.txt", std::ios::binary | std::ios::trunc);
+            f << "id\ttype\tint\tlong\n";
+            for (int id = lo; id <= hi; ++id)
+                f << id << "\t" << field(types, id) << "\t" << field(ints, id) << "\t" << field(longs, id) << "\n";
+            LocalFree(argv);
+            return 0;
+        }
         // --enum-dump <id>: one cache enum as JSON to enum-<id>.txt.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--enum-dump") {
             const int id = _wtoi(argv[2]);
