@@ -471,8 +471,9 @@
       const n = strip.children.length, gap = 2, avail = row.clientWidth - 2;
       let w = Math.floor((avail + gap) / Math.max(1, n)) - gap;
       const scrolls = w < 30;
-      w = Math.max(30, Math.min(40, w));
+      w = Math.max(30, Math.min(52, w));                        // grow into a wide panel, shrink into a narrow one
       strip.style.setProperty('--tab-w', w + 'px');
+      strip.style.setProperty('--tab-h', Math.round(w * 0.9) + 'px');
       row.classList.toggle('scrolls', scrolls);
       const sync = () => { left.disabled = strip.scrollLeft <= 0; right.disabled = strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1; };
       left.onclick = () => { strip.scrollBy({ left: -strip.clientWidth, behavior: 'smooth' }); setTimeout(sync, 350); };
@@ -855,6 +856,7 @@
     }
     const pg = document.getElementById('bankPg');
     if (pg) pg.textContent = filtered.length ? ('Page ' + (bankPage + 1) + ' / ' + pages) : 'No items';
+    if (pager) pager.hidden = pages <= 1;                         // a single page needs no paging
     const prev = document.getElementById('bankPrev'); if (prev) prev.disabled = bankPage <= 0;
     const next = document.getElementById('bankNext'); if (next) next.disabled = bankPage >= pages - 1;
     if (bankOverlayOn) bankOverlayTick();

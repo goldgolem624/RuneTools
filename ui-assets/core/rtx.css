@@ -1457,11 +1457,11 @@
   .bank-tabs { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; padding: 5px 6px; background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: 8px; }
   .bank-tabrow { display: flex; align-items: center; gap: 2px; min-width: 0; }
   .bank-tabstrip { display: flex; flex-wrap: nowrap; gap: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; scroll-behavior: smooth; }
-  .bank-tabarrow { flex: 0 0 auto; display: none; width: 18px; height: 34px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-mute); font-size: 18px; line-height: 1; cursor: pointer; }
+  .bank-tabarrow { flex: 0 0 auto; display: none; width: 18px; height: var(--tab-h, 36px); padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-mute); font-size: 18px; line-height: 1; cursor: pointer; }
   .bank-tabarrow:hover:not(:disabled) { background: rgba(255,255,255,.06); color: var(--text); }
   .bank-tabarrow:disabled { opacity: .3; cursor: default; }
   .bank-tabrow.scrolls .bank-tabarrow { display: inline-flex; align-items: center; justify-content: center; }
-  .bank-tab { flex: 0 0 auto; width: var(--tab-w, 40px); height: 36px; padding: 0; border: 1px solid transparent; border-radius: 6px; background-color: transparent; background-size: calc(var(--tab-w, 40px) - 8px) 30px; background-position: center; background-repeat: no-repeat; color: var(--text-mute); font-family: inherit; font-weight: 600; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background-color .12s, border-color .12s; }
+  .bank-tab { flex: 0 0 auto; width: var(--tab-w, 40px); height: var(--tab-h, 36px); padding: 0; border: 1px solid transparent; border-radius: 6px; background-color: transparent; background-size: calc(var(--tab-w, 40px) - 8px) calc(var(--tab-h, 36px) - 6px); background-position: center; background-repeat: no-repeat; color: var(--text-mute); font-family: inherit; font-weight: 600; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background-color .12s, border-color .12s; }
   .bank-tab.all { font-size: 22px; line-height: 1; color: var(--text-dim); }
   .bank-tab:hover { background-color: rgba(255,255,255,.06); color: var(--text); }
   .bank-tab.on { background-color: rgba(var(--accent-rgb), .18); border-color: var(--accent-hi); color: var(--accent-hi); }
