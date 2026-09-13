@@ -89,6 +89,7 @@
     { id: 'menuswap',   label: 'Right-click menu', cat: 'Utility', icon: '<path d="M4 5h16v4H4z"/><path d="M4 11h16v8H4z"/><path d="M7 14h7"/><path d="M7 17h5"/>' },
     { id: 'health',     label: 'Health Check', cat: 'Developer', icon: '<path d="M3 12h4l2-6 4 12 2-6h6"/>' },
     { id: 'events',     label: 'Events',     cat: 'Developer', icon: '<path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="2"/>' },
+    { id: 'console',    label: 'Console',    cat: 'Developer', icon: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>' },
     { id: 'uisettings', label: 'Preferences', cat: 'Settings', icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M8 14h8M8 17h5"/>' },
     { id: 'system',     label: 'System',     cat: 'Settings', icon: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.4 5.4l2.1 2.1M16.5 16.5l2.1 2.1M18.6 5.4l-2.1 2.1M7.5 16.5l-2.1 2.1"/>' },
   ];

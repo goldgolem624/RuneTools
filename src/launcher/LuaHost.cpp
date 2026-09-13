@@ -74,9 +74,14 @@ void l_hook(lua_State* L, lua_Debug*) {
     if (ms > kWallBudgetMs) luaL_error(L, "execution budget exceeded (%.0f ms in one tick)", ms);
 }
 
-void plog(Plugin* p, const char* level, const std::string& msg) {
-    std::string line = std::string(level) + ": " + msg;
-    if (line.size() > 2000) line.resize(2000);
+// Log records are JSON objects {"l":level,"t":text,"tag":tag}; the page feeds them to rtxConsole and
+// to the plugin's own console strip.
+void plog(Plugin* p, const char* level, const std::string& msg, const std::string& tag = std::string()) {
+    std::string text = msg;
+    if (text.size() > 4000) text.resize(4000);
+    std::string tg = tag.size() > 24 ? tag.substr(0, 24) : tag;
+    std::string line = "{\"l\":\"" + std::string(level) + "\",\"t\":\"" + json_escape(text) + "\"" +
+                       (tg.empty() ? std::string() : ",\"tag\":\"" + json_escape(tg) + "\"") + "}";
     p->log.push_back(line);
     while (p->log.size() > kLogKeep) p->log.pop_front();
     p->fresh.push_back(line);
@@ -130,8 +135,10 @@ int h_log(lua_State* L) {
     const char* level = luaL_optstring(L, 1, "info");
     std::size_t n = 0;
     const char* s = luaL_optlstring(L, 2, "", &n);
-    const char* lv = (std::strcmp(level, "warn") == 0) ? "warn" : (std::strcmp(level, "error") == 0) ? "error" : "info";
-    plog(p, lv, std::string(s, n));
+    const char* tag = luaL_optstring(L, 3, "");
+    const char* lv = (std::strcmp(level, "warn") == 0) ? "warn" : (std::strcmp(level, "error") == 0) ? "error"
+                   : (std::strcmp(level, "debug") == 0) ? "debug" : "info";
+    plog(p, lv, std::string(s, n), tag);
     return 0;
 }
 
@@ -294,8 +301,20 @@ local function fmtArgs(...)
   end
   return tconcat(parts, " ")
 end
-function rtx.log(...) host.log("info", fmtArgs(...)) end
-function rtx.warn(...) host.log("warn", fmtArgs(...)) end
+-- rtx.console mirrors rtx.plugin.console of the JavaScript SDK: debug/info/warn/error, and
+-- scoped(tag) for a logger whose lines carry a tag the Console panel can filter on.
+local function mkConsole(tag)
+  return {
+    debug = function(...) host.log("debug", fmtArgs(...), tag) end,
+    info  = function(...) host.log("info",  fmtArgs(...), tag) end,
+    log   = function(...) host.log("info",  fmtArgs(...), tag) end,
+    warn  = function(...) host.log("warn",  fmtArgs(...), tag) end,
+    error = function(...) host.log("error", fmtArgs(...), tag) end,
+  }
+end
+rtx.console = mkConsole("")
+rtx.console.scoped = function(tag) return mkConsole(rawtostring(tag or ""):sub(1, 24)) end
+rtx.log, rtx.debug, rtx.warn, rtx.error = rtx.console.info, rtx.console.debug, rtx.console.warn, rtx.console.error
 _G.print = rtx.log
 
 -- ui: a widget tree the page renders; callbacks are kept here and dispatched by widget id
@@ -479,7 +498,7 @@ bool run_protected(Plugin* p, int nargs) {
     plog(p, "error", err);
     if (++p->consecutiveErrors >= kMaxErrors) {
         p->failed = true;
-        plog(p, "error", "plugin stopped after " + std::to_string(kMaxErrors) + " consecutive errors; save a change (dev) or reinstall to restart it");
+        plog(p, "error", "plugin stopped after " + std::to_string(kMaxErrors) + " consecutive errors; save a change (dev) or reinstall to restart it", "host");
     }
     return false;
 }
@@ -498,7 +517,7 @@ std::string result_json(Plugin* p, bool ok) {
     o += ",\"failed\":"; o += p->failed ? "true" : "false";
     o += ",\"wantsState\":"; o += p->wantsState ? "true" : "false";
     o += ",\"log\":[";
-    for (std::size_t i = 0; i < p->fresh.size(); ++i) { if (i) o += ','; o += '"'; o += json_escape(p->fresh[i]); o += '"'; }
+    for (std::size_t i = 0; i < p->fresh.size(); ++i) { if (i) o += ','; o += p->fresh[i]; }   // already JSON objects
     p->fresh.clear();
     o += "]";
     if (p->uiSent != p->uiVersion) { o += ",\"ui\":"; o += p->uiJson; p->uiSent = p->uiVersion; }
@@ -627,7 +646,7 @@ std::string Load(const std::string& id, const std::filesystem::path& root,
     }
     bool ok = run_protected(p, 0);
     if (!ok) p->failed = true;   // a main chunk that throws never gets ticks
-    else plog(p, "info", "loaded " + mainFile + " (" + RuntimeVersion() + ")");
+    else plog(p, "info", "loaded " + mainFile + " (" + RuntimeVersion() + ")", "host");
     return result_json(p, ok);
 }
 
@@ -693,7 +712,7 @@ std::string Info(const std::string& id) {
     o += ",\"failed\":"; o += p->failed ? "true" : "false";
     o += ",\"log\":[";
     bool first = true;
-    for (auto& l : p->log) { if (!first) o += ','; first = false; o += '"'; o += json_escape(l); o += '"'; }
+    for (auto& l : p->log) { if (!first) o += ','; first = false; o += l; }
     o += "]}";
     return o;
 }

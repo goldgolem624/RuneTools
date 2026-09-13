@@ -211,7 +211,36 @@
     settings: {
       get: function () { return call('settings.get', []); },
       on:  function (cb) { if (typeof cb === 'function') listeners.settings.push(cb); }
-    }
+    },
+
+    // Console (always available, write-only): lines land in the host's Console panel, stamped with
+    // your plugin id. Arguments are joined like console.log (objects as JSON). scoped(tag) returns a
+    // logger whose lines carry a tag for filtering. 60 lines per second per plugin.
+    console: (function () {
+      function fmt(args) {
+        var out = [];
+        for (var i = 0; i < args.length; i++) {
+          var v = args[i];
+          if (typeof v === 'string') out.push(v);
+          else if (v instanceof Error) out.push(v.stack || v.message || String(v));
+          else if (v === undefined) out.push('undefined');
+          else { try { out.push(JSON.stringify(v)); } catch (e) { out.push(String(v)); } }
+        }
+        return out.join(' ');
+      }
+      function make(tag) {
+        return {
+          debug: function () { return call('console.debug', [fmt(arguments), tag]); },
+          info:  function () { return call('console.info',  [fmt(arguments), tag]); },
+          log:   function () { return call('console.info',  [fmt(arguments), tag]); },
+          warn:  function () { return call('console.warn',  [fmt(arguments), tag]); },
+          error: function () { return call('console.error', [fmt(arguments), tag]); }
+        };
+      }
+      var c = make('');
+      c.scoped = function (tag) { return make(String(tag == null ? '' : tag).slice(0, 24)); };
+      return c;
+    })()
   };
 
   window.rtx = window.rtx || {};

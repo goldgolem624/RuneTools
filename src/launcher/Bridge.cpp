@@ -5030,6 +5030,34 @@ JSValueRef LuaVersion(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const 
     return utf8_to_js(ctx, std::string(rtx::launcher::lua::RuntimeVersion()));
 }
 
+// launcher.log tail for the Console panel: {"offset":n,"text":"..."} with the bytes after `offset`
+// (at most 256 KB per call, starting on a line boundary when trimmed). A file shorter than the
+// offset (new session) starts over. The log is already profile-path redacted by rtx::log.
+JSValueRef LauncherLogTail(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                           size_t argc, const JSValueRef argv[], JSValueRef*) {
+    long long off = (argc >= 1) ? (long long)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    if (off < 0 || off > (1LL << 40)) off = 0;
+    std::filesystem::path p = std::filesystem::path(rtx::log::LogDir()) / L"launcher.log";
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return utf8_to_js(ctx, std::string("{\"offset\":0,\"text\":\"\"}"));
+    f.seekg(0, std::ios::end);
+    long long size = (long long)f.tellg();
+    if (size < 0) size = 0;
+    if (off > size) off = 0;
+    constexpr long long kMax = 256 * 1024;
+    bool trimmed = false;
+    long long want = size - off;
+    if (want > kMax) { off = size - kMax; want = kMax; trimmed = true; }
+    std::string buf((std::size_t)want, '\0');
+    f.seekg(off);
+    f.read(buf.data(), want);
+    buf.resize((std::size_t)f.gcount());
+    if (trimmed) { auto nl = buf.find('\n'); if (nl != std::string::npos) buf.erase(0, nl + 1); }
+    std::string out = "{\"offset\":" + std::to_string(off + (long long)buf.size()) + ",\"size\":" + std::to_string(size) +
+                      ",\"text\":\"" + json_escape(buf) + "\"}";
+    return utf8_to_js(ctx, out);
+}
+
 }  // namespace
 
 int ScreenshotVk() {
@@ -5378,6 +5406,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "luaUiEvent",              LuaUiEvent);
     install_fn(ctx, ns, "luaInfo",                 LuaInfo);
     install_fn(ctx, ns, "luaVersion",              LuaVersion);
+    install_fn(ctx, ns, "launcherLogTail",         LauncherLogTail);
 
 }
 

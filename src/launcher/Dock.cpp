@@ -74,6 +74,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         "core/rtx-player.js",     // Player State data, skill goals, metronome + XP overlay cfg
         "core/rtx-wm.js",         // window manager
         "core/rtx-notify.js",     // toasts / uiNotify
+        "core/rtx-console.js",    // rtxConsole log bus (page console capture, plugin lines, launcher tail)
         "core/rtx-settings.js",   // Preferences page
         "core/rtx-input.js",      // input rects + keyboard capture, wiki palette
         "core/rtx-layout.js",     // layout persistence, openTab, tabEntryKicks
@@ -93,6 +94,7 @@ void inject_panel_scripts(std::string& html, const std::string& html_path) {
         // quest_guides.js (~1.3MB) is not spliced; it is loaded via bridge().uiAsset() on demand.
         "rtx_vars.js",          // shared var-id table (VB/VP), before every panel
         "panel_stopwatch.js",
+        "panel_console.js",        // Developer: the client-wide console (rtxConsole)
         "panel_notes.js",
         "panel_counter.js",
         "panel_auras.js",          // HUD window: watched buff/debuff icons + time sweep

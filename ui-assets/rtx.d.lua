@@ -343,6 +343,18 @@ function timer.every(seconds, fn) end
 ---@param id integer
 function timer.cancel(id) end
 
+---@class rtx.console
+local console = {}
+function console.debug(...) end
+function console.info(...) end
+function console.log(...) end
+function console.warn(...) end
+function console.error(...) end
+--- A logger whose lines carry `tag` (up to 24 characters) for filtering in the Console panel.
+---@param tag string
+---@return rtx.console
+function console.scoped(tag) end
+
 ---@class rtx.json
 local json = {}
 ---@param value rtx.Value
@@ -367,6 +379,7 @@ function json.decode(text) end
 ---@field events rtx.events
 ---@field timer rtx.timer
 ---@field json rtx.json
+---@field console rtx.console
 ---@field lastError string|nil
 rtx = {}
 
@@ -385,4 +398,6 @@ function rtx.off(event, fn) end
 ---@return string|nil err
 function rtx.call(method, args) end
 function rtx.log(...) end
+function rtx.debug(...) end
 function rtx.warn(...) end
+function rtx.error(...) end

@@ -30,7 +30,10 @@ sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);},settings:function(schema){return call('ui.settings',[schema]);}},
 settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}},
-prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);},item:function(ids){return call('prices.item',[ids]);}}};
+prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);},item:function(ids){return call('prices.item',[ids]);}},
+console:(function(){function f(a){var o=[];for(var i=0;i<a.length;i++){var v=a[i];if(typeof v==='string')o.push(v);else if(v instanceof Error)o.push(v.stack||v.message||String(v));else if(v===undefined)o.push('undefined');else{try{o.push(JSON.stringify(v));}catch(e){o.push(String(v));}}}return o.join(' ');}
+function mk(tag){return{debug:function(){return call('console.debug',[f(arguments),tag]);},info:function(){return call('console.info',[f(arguments),tag]);},log:function(){return call('console.info',[f(arguments),tag]);},warn:function(){return call('console.warn',[f(arguments),tag]);},error:function(){return call('console.error',[f(arguments),tag]);}};}
+var c=mk('');c.scoped=function(t){return mk(String(t==null?'':t).slice(0,24));};return c;})()};
 window.rtx=window.rtx||{};window.rtx.plugin=api;
 // Keyboard focus publishing: the frame is a sandboxed opaque origin, so the host cannot see our activeElement. Mirrors the host focus test; the 1s interval self-heals a field removed by a rebuild.
 var kbOn=false;function kbSync(){var t=document.activeElement;var on=!!(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable));if(on===kbOn)return;kbOn=on;try{parent.postMessage({__rtxPlugin:P,kind:'kb',on:on},'*');}catch(e){}}
@@ -396,6 +399,13 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'act.cacheStoreSave':     { scope: 'actuator',    json: false, run: (a) => bridge().cacheStoreSave(...pArgs(a)) },
     'act.xpPanelReset':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().xpPanelReset(pid, ...pArgs(a)) },
     'act.ifaceOffset':        { scope: 'actuator',    json: false, run: (a) => bridge().ifaceOffset(...pArgs(a)) },
+    // Console: always available, write-only. The host stamps the plugin id and runtime; the text and
+    // tag are clamped and rate limited in rtxConsole.pushPlugin (60 lines per second per plugin).
+    'console.debug':    { scope: null,         json: false,   run: (a, pid, id, fr) => rtxConsole.pushPlugin(id, fr ? 'html' : 'lua', 'debug', pClampStr(a[0], 4000), pClampStr(a[1], 24)) },
+    'console.info':     { scope: null,         json: false,   run: (a, pid, id, fr) => rtxConsole.pushPlugin(id, fr ? 'html' : 'lua', 'info',  pClampStr(a[0], 4000), pClampStr(a[1], 24)) },
+    'console.warn':     { scope: null,         json: false,   run: (a, pid, id, fr) => rtxConsole.pushPlugin(id, fr ? 'html' : 'lua', 'warn',  pClampStr(a[0], 4000), pClampStr(a[1], 24)) },
+    'console.error':    { scope: null,         json: false,   run: (a, pid, id, fr) => rtxConsole.pushPlugin(id, fr ? 'html' : 'lua', 'error', pClampStr(a[0], 4000), pClampStr(a[1], 24)) },
+    'host.logTail':     { scope: 'host',       json: true,    run: (a) => bridge().launcherLogTail(pClampNum(a[0], 0, 1e12)) },
     'ui.setHeight':     { scope: null,         json: false,   run: (a, pid, id, fr) => { if (fr) fr.style.height = pClampNum(a[0], 60, 4000) + 'px'; return true; } },
     'ui.setTitle':      { scope: null,         json: false,   run: () => true },
     'ui.settings':      { scope: null,         json: false,   run: async (a, pid, id) => {
@@ -449,6 +459,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                : method.indexOf('clipboard.') === 0 ? 1
                : method === 'prices.item' ? 4             // tiny answers from a local parsed cache
                : method.indexOf('prices.') === 0 ? 0.5    // half-MB payloads; data changes every 90s anyway
+               : method.indexOf('console.') === 0 ? 120   // rtxConsole applies its own 60/s budget with a burst
                : 20;
     const cap = Math.max(1, rate);
     const k = id + '|' + method, now = Date.now();

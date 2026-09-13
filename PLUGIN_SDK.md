@@ -669,6 +669,23 @@ rtx.plugin.ui.setHeight(420);     // resize the plugin frame (60..4000 px)
 rtx.plugin.ui.setTitle("My Tool");// reserved (no-op for now)
 ```
 
+### console (always available)
+
+```js
+rtx.plugin.console.info("loaded", { version: 3 });   // objects are printed as JSON
+rtx.plugin.console.debug(...) / .warn(...) / .error(...)
+const log = rtx.plugin.console.scoped("combat");       // lines carry a tag the panel can filter on
+log.warn("no target");
+```
+
+Lines land in the client's **Console** panel (Developer), stamped by the host with your plugin id
+and runtime, alongside the client's own messages and the launcher log. The panel filters by level,
+source and tag, searches, and copies single lines or the whole view. Console is write-only: a
+plugin never reads the console, other plugins' lines, or the launcher log. Limits: 4000 characters
+per line, 60 lines per second per plugin (a burst of 120), past which lines are dropped and the
+panel says so. The plugin's own `console.log` still goes to its frame only; use `rtx.plugin.console`
+for anything you want to see in the panel.
+
 ### Theming (automatic)
 
 Your plugin runs in its own document, so it inherits none of the client's CSS. The
@@ -813,9 +830,15 @@ local id = rtx.timer.after(5, function() end)     -- seconds; resolved on the ho
 local id2 = rtx.timer.every(60, function() end)
 rtx.timer.cancel(id2)
 
-print("hello", 42, { a = 1 })   -- goes to the plugin's console (tables are printed as JSON)
-rtx.log(...)  rtx.warn(...)
+print("hello", 42, { a = 1 })   -- objects are printed as JSON
+rtx.console.debug(...) / .info(...) / .warn(...) / .error(...)
+local log = rtx.console.scoped("combat")   -- tagged lines, same as rtx.plugin.console.scoped in JavaScript
+rtx.log / rtx.debug / rtx.warn / rtx.error  -- shorthands for rtx.console.*
 ```
+
+Every line goes to the plugin's own console strip under its panel and to the client's Console panel
+(Developer), stamped with the plugin id and the Lua runtime; the same 60 lines per second budget as
+HTML plugins applies.
 
 Handlers run inside the host's tick. An error in a handler is logged to the plugin console and
 the plugin keeps running; an error in the main chunk stops the plugin. Each tick has an execution

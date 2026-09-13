@@ -126,11 +126,15 @@
     if (!r || typeof r !== 'object') return;
     if (Array.isArray(r.log) && r.log.length) {
       for (const line of r.log) {
-        const s = String(line);
+        // {l, t, tag} records from the runtime; a plain string is treated as an info line
+        const rec = (line && typeof line === 'object') ? line : { l: 'info', t: String(line) };
+        const lvl = ['debug', 'info', 'warn', 'error'].indexOf(rec.l) >= 0 ? rec.l : 'info';
+        const text = String(rec.t == null ? '' : rec.t), tag = String(rec.tag == null ? '' : rec.tag);
+        if (tag === 'host') rtxConsole.push({ level: lvl, source: 'plugin', plugin: m.id, runtime: 'lua', tag, text });   // runtime notices are never rate limited
+        else rtxConsole.pushPlugin(m.id, 'lua', lvl, text, tag);
         const span = document.createElement('span');
-        const lvl = s.indexOf('warn:') === 0 ? 'warn' : (s.indexOf('error:') === 0 ? 'error' : '');
-        if (lvl) span.className = lvl;
-        span.textContent = s + '\n';
+        if (lvl === 'warn' || lvl === 'error') span.className = lvl;
+        span.textContent = lvl + ': ' + (tag ? '[' + tag + '] ' : '') + text + '\n';
         m.pre.appendChild(span);
         m.logCount++;
         if (lvl === 'error' && m.sum) { m.sum.textContent = 'Console (errors)'; }
