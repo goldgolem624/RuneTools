@@ -635,7 +635,7 @@
       ovBtn.classList.toggle('on', bankOverlayOn);
       ovBtn.addEventListener('click', () => { bankOverlaySet(!bankOverlayOn); ovBtn.classList.toggle('on', bankOverlayOn); });
       ovSeg.appendChild(ovBtn);
-      tools.appendChild(sortBtn); tools.appendChild(basisBtn); tools.appendChild(totals); tools.appendChild(ovSeg);
+      tools.appendChild(sortBtn); tools.appendChild(basisBtn); tools.appendChild(ovSeg); tools.appendChild(totals);
       const ovWhy = document.createElement('span'); ovWhy.id = 'bankOvWhy'; ovWhy.className = 'bank-ovwhy'; tools.appendChild(ovWhy);
 
       const grid = document.createElement('div'); grid.id = 'bankGrid'; grid.className = 'bank-grid';
@@ -643,9 +643,9 @@
       const empty = document.createElement('div'); empty.id = 'bankEmpty'; empty.className = 'bank-empty';
 
       const pager = document.createElement('div'); pager.className = 'bank-pager';
-      const prev = document.createElement('button'); prev.id = 'bankPrev'; prev.textContent = '<';
+      const prev = document.createElement('button'); prev.id = 'bankPrev'; prev.textContent = String.fromCharCode(8249); prev.title = 'Previous page';
       const pg   = document.createElement('span');   pg.id = 'bankPg'; pg.className = 'pg';
-      const next = document.createElement('button'); next.id = 'bankNext'; next.textContent = '>';
+      const next = document.createElement('button'); next.id = 'bankNext'; next.textContent = String.fromCharCode(8250); next.title = 'Next page';
       prev.addEventListener('click', () => { bankPage--; paintBankPage(); });
       next.addEventListener('click', () => { bankPage++; paintBankPage(); });
       pager.appendChild(prev); pager.appendChild(pg); pager.appendChild(next);
@@ -716,9 +716,21 @@
     if (v && v.parts && v.parts.extras.some(e => e.kind === 'eof')) return '';   // already a line of the breakdown
     return 'Stored special attack: ' + eof.weaponName + ' (no GE price for the weapon, nothing added)';
   }
+  // Items per page = whole cells that fit the grid's area (it takes the space left under the tools, and the
+  // pager sits below it), so a page fills the panel instead of stopping at a fixed count.
+  let bankPer = BANK_PER_PAGE;
+  function bankPerPage(grid) {
+    const W = grid.clientWidth, H = grid.clientHeight;
+    if (W < 40 || H < 40) return bankPer;
+    const gap = 4, cols = Math.max(1, Math.floor((W + gap) / (40 + gap)));
+    const cell = (W - (cols - 1) * gap) / cols;
+    const rows = Math.max(1, Math.floor((H + gap) / (cell + gap)));
+    return cols * rows;
+  }
   function paintBankPage() {
     const grid = document.getElementById('bankGrid');
     if (!grid) return;
+    bankPer = bankPerPage(grid);
     if (bankData && bankData.items) bankEofRefresh(bankData.items);
     bankTabsVbRefresh();
     if (!bankTabsData && bankTabsVb) bankTabsBuild();
@@ -727,12 +739,12 @@
     const pager = grid.parentElement.querySelector('.bank-pager');
     const total = (bankData && bankData.count) ? bankData.count : 0;
     const filtered = bankFilter();
-    const pages = Math.max(1, Math.ceil(filtered.length / BANK_PER_PAGE));
+    const pages = Math.max(1, Math.ceil(filtered.length / bankPer));
     if (bankPage >= pages) bankPage = pages - 1;
     if (bankPage < 0) bankPage = 0;
 
     const priceGen = (bankGe ? bankGeAt : 0) + '/' + bankMapping();   // repaint when prices or the name mapping arrive
-    const sig = bankTerm + '|' + bankTab + '|' + (bankTabsVb ? bankTabsVb.sig : '') + '|' + (bankTabsMeta ? JSON.stringify(bankTabsMeta.byCid).length : 0) + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
+    const sig = bankTerm + '|' + bankTab + '|' + (bankTabsVb ? bankTabsVb.sig : '') + '|' + (bankTabsMeta ? JSON.stringify(bankTabsMeta.byCid).length : 0) + '|' + bankPage + '|' + bankPer + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
                 (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
     if (sig === bankPaintSig) { topUpBankIcons(); return; }
     bankPaintSig = sig;
@@ -781,8 +793,8 @@
     if (emptyBox) emptyBox.style.display = 'none';
 
     const showHa = bankSort === 'hatot' || bankSort === 'haunit';
-    const start = bankPage * BANK_PER_PAGE;
-    const slice = filtered.slice(start, start + BANK_PER_PAGE);
+    const start = bankPage * bankPer;
+    const slice = filtered.slice(start, start + bankPer);
     grid.innerHTML = '';
     for (let i = 0; i < slice.length; ++i) {
       const cell = document.createElement('div'); cell.className = 'bank-cell';

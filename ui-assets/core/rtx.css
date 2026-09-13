@@ -1417,7 +1417,7 @@
   .bank-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
-    gap: 4px; align-content: start; flex: 0 0 auto;
+    gap: 4px; align-content: start; flex: 1 1 auto; min-height: 0; overflow: hidden;   /* fills the panel; the page size follows */
   }
   .bank-cell {
     position: relative;
@@ -1462,7 +1462,7 @@
   .bank-tab.on { background-color: rgba(var(--accent-rgb), .18); border-color: var(--accent-hi); color: var(--accent-hi); }
   .bank-tabcap { font-size: 11px; color: var(--text-mute); padding: 2px 2px 0; }
   .bank-ovwhy { flex-basis: 100%; font-size: 11px; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bank-totals { flex: 1 1 auto; display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
+  .bank-totals { flex: 1 0 100%; display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
   .bank-totals b { color: #f0be5a; font-weight: 700; }
   .bank-totals b.ha { color: #9ad6ff; }
   .bank-amt.k, .bank-amt.m, .bank-amt.b, .bank-amt.t, .bank-amt.q {
@@ -1475,9 +1475,10 @@
   .bank-amt.q { color: #ff9d3c; }  /* 10Q+   "##Q" orange   */
   .bank-pager { display: flex; align-items: center; justify-content: center; gap: 10px; flex: 0 0 auto; }
   .bank-pager button {
-    background: var(--bg-elev); border: 1px solid var(--border);
-    color: var(--text); border-radius: 6px; height: 26px; min-width: 30px;
-    padding: 0 10px; font-size: 13px; cursor: pointer;
+    background: var(--bg-elev-2); border: 1px solid var(--border-hi);
+    color: var(--text-dim); border-radius: 6px; height: 26px; width: 32px;
+    padding: 0; font-size: 18px; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
   }
   .bank-pager button:hover:not(:disabled) { border-color: var(--accent-hi); }
   .bank-pager button:disabled { opacity: 0.35; cursor: default; }
