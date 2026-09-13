@@ -159,6 +159,30 @@
   // hold the four quantities in that order. Each pouch has its own runes, so this is per bank slot as well.
   const BANK_RUNE_ENUM = 11885, BANK_POUCH_QTY_VARS = [0, 2, 3, 4];
   let bankRuneTable = null, bankRuneLoading = false;
+  // Pernix's quivers carry two ammo stacks in their item vars: var 0 = (second type << 23) | (first count << 8)
+  // | first type, var 1 = second count (low 16 bits); the type is a key of enum 16608 (ammo item ids).
+  const BANK_AMMO_ENUM = 16608;
+  let bankAmmoTable = null, bankAmmoLoading = false;
+  function bankIsQuiver(name) { return /\bquiver\b/i.test(name || ''); }
+  function bankQuiverAmmo(it) {              // [{ id, name, qty }] for a quiver row, [] when empty or unknown
+    if (!bankAmmoTable || !Array.isArray(it[4])) return [];
+    let k0 = 0, k1 = 0;
+    for (const kv of it[4]) { if (!kv) continue; if (kv[0] === 0) k0 = kv[1] >>> 0; else if (kv[0] === 1) k1 = kv[1] >>> 0; }
+    const pType = k0 & 0xFF, pCount = (k0 >>> 8) & 0x7FFF, sType = (k0 >>> 23) & 0x1FF, sCount = k1 & 0xFFFF;
+    const out = [];
+    if (pType && bankAmmoTable[pType] > 0 && pCount > 0) out.push({ id: bankAmmoTable[pType], name: bankItemName(bankAmmoTable[pType]), qty: pCount });
+    if (sType && bankAmmoTable[sType] > 0 && sCount > 0) out.push({ id: bankAmmoTable[sType], name: bankItemName(bankAmmoTable[sType]), qty: sCount });
+    return out;
+  }
+  function bankAmmoTableLoad() {
+    if (bankAmmoTable || bankAmmoLoading) return;
+    bankAmmoLoading = true;
+    Promise.resolve().then(async () => {
+      try { bankAmmoTable = JSON.parse(await rtxData.raw('cache.enumInfo', BANK_AMMO_ENUM) || 'null'); } catch (e) {}
+      bankAmmoLoading = false;
+      if (bankAmmoTable) { bankPaintSig = ''; paintBankPage(); if (bankOverlayOn) bankOverlayTick(); }
+    });
+  }
   function bankIsRunePouch(name) { return /rune pouch/i.test(name || ''); }
   function bankPouchRunes(it) {                // [{ id, name, qty }] for a rune pouch row, [] when empty or unknown
     if (!bankRuneTable || !Array.isArray(it[4])) return [];
@@ -238,6 +262,16 @@
         if (!parts) parts = { item: v, extras: [] };
         parts.extras.push({ label: rn.qty.toLocaleString() + ' ' + rn.name + (rn.qty === 1 ? '' : 's'), price: pv * rn.qty, kind: 'nexus', id: rn.id });
         v = (v || 0) + pv * rn.qty;
+      }
+    }
+    if (bankIsQuiver(name) && row) {
+      if (!bankAmmoTable) bankAmmoTableLoad();
+      for (const am of bankQuiverAmmo(row)) {    // the ammo inside counts at its own GE price times quantity
+        const pv = bankPriceAt(prices && prices[am.id]);
+        if (pv == null) continue;
+        if (!parts) parts = { item: v, extras: [] };
+        parts.extras.push({ label: am.qty.toLocaleString() + ' ' + am.name, price: pv * am.qty, kind: 'ammo', id: am.id });
+        v = (v || 0) + pv * am.qty;
       }
     }
     if (bankIsRunePouch(name) && row) {
@@ -469,14 +503,25 @@
     if (v.parts) {
       if (!v.parts.extras.length) s += ' (priced as the tradeable base item)';
       else {
-        s += '\n- ' + (bankIsRunePouch(name) ? 'Pouch' : bankIsEof(name) ? 'Amulet' : bankIsNexus(name) ? 'Nexus' : 'Item') + ': ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price');
+        s += '\n- ' + (bankIsRunePouch(name) ? 'Pouch' : bankIsEof(name) ? 'Amulet' : bankIsNexus(name) ? 'Nexus' : bankIsQuiver(name) ? 'Quiver' : 'Item') + ': ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price');
         for (const e of v.parts.extras) s += '\n- ' + e.label + ': ' + fmtGp(e.price);
       }
     }
     if (bankIsEof(name)) { const l = bankEofLine(slot, id, v); if (l) s += '\n- ' + l; }
     if (bankIsRunePouch(name)) { const l = bankPouchLine(it, v); if (l) s += '\n- ' + l; }
     if (bankIsNexus(name)) { const l = bankNexusLine(slot, v); if (l) s += '\n- ' + l; }
+    if (bankIsQuiver(name)) { const l = bankQuiverLine(it, v); if (l) s += '\n- ' + l; }
     return s;
+  }
+  // Quiver note: only what the per-line breakdown could not say (unknown, empty, or ammo without a price).
+  function bankQuiverLine(it, v) {
+    if (!Array.isArray(it[4])) return 'Ammo inside: not known yet (open the bank once so the quiver is read)';
+    if (!bankAmmoTable) return 'Ammo inside: reading the ammo table';
+    const ammo = bankQuiverAmmo(it);
+    if (!ammo.length) return 'Ammo inside: none';
+    const priced = new Set(((v && v.parts) ? v.parts.extras : []).filter(e => e.kind === 'ammo').map(e => e.id));
+    const missing = ammo.filter(am => !priced.has(am.id));
+    return missing.length ? 'No GE price for: ' + missing.map(am => am.qty.toLocaleString() + ' ' + am.name).join(', ') : '';
   }
   // Nexus note: where the shared necrotic runes are counted, or why they are not.
   function bankNexusLine(slot, v) {
