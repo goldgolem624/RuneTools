@@ -2095,7 +2095,8 @@
   .vw-legend-h, .vw-legend-f { margin: 2px 0 6px; }
   .vw-legend-t { border-collapse: collapse; width: 100%; font-family: ui-monospace, Consolas, monospace; }
   .vw-legend-t th { text-align: left; font-weight: 600; color: var(--text); padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); }
-  .vw-legend-t td { padding: 2px 6px 2px 0; color: var(--text); white-space: nowrap; }
+  .vw-legend-t td { padding: 2px 6px 2px 0; color: var(--text); white-space: nowrap; vertical-align: top; }
+  .vw-legend-t td:last-child { white-space: normal; overflow-wrap: anywhere; }   /* the notes column wraps instead of running off the panel */
   .vw-legend-t td.dim { color: var(--text-dim); }
   .vw-row .vw-id { font-family: ui-monospace, Consolas, monospace; font-size: 13px; font-weight: 700;
     color: var(--text); font-variant-numeric: tabular-nums; flex: 0 0 auto; min-width: 54px; }
