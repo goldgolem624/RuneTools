@@ -24,8 +24,35 @@
     bankHa[id] = ha;
     return ha;
   }
-  function bankGeOf(id) {
-    const p = bankPrices() && bankPrices()[id];
+  // Items without a price of their own are priced as the tradeable item of the same name: the untradeable
+  // copy the game hands out (same name, different id), "Augmented X" as X, and the broken / damaged /
+  // degraded / used / new / uncharged forms of degradable gear as the plain name. Resolved by name through
+  // the price mapping, which is the tradeable item list.
+  let bankNameToId = null, bankMapLen = -1;
+  const bankBaseOf = Object.create(null);     // item id -> base item id for pricing (or the id itself)
+  function bankBaseId(id, name) {
+    if (bankBaseOf[id] !== undefined) return bankBaseOf[id];
+    let base = id;
+    try {
+      const raw = bridge().pricesMapping() || '[]';
+      if (raw.length !== bankMapLen) {
+        bankMapLen = raw.length; bankNameToId = Object.create(null);
+        for (const it of JSON.parse(raw)) if (it && it.name) bankNameToId[String(it.name).toLowerCase()] = it.id;
+      }
+      if (bankNameToId) {
+        const own = String(name || '').toLowerCase();
+        const plain = own.replace(/^augmented\s+/, '').replace(/\s+\((?:augmented|broken|damaged|degraded|used|new|uncharged)\)$/, '').trim();
+        const hit = bankNameToId[own] != null ? bankNameToId[own] : (plain && bankNameToId[plain] != null ? bankNameToId[plain] : null);
+        if (hit != null && hit !== id) base = hit;
+      }
+    } catch (e) {}
+    if (bankNameToId) bankBaseOf[id] = base;   // only memoise once the mapping is in
+    return base;
+  }
+  function bankGeOf(id, name) {
+    const prices = bankPrices();
+    let p = prices && prices[id];
+    if (!p && name) { const b = bankBaseId(id, name); if (b !== id) p = prices && prices[b]; }
     if (!p) return null;
     const v = p.high != null ? p.high : p.low;   // instant-buy first, matching the GE Prices tab's default
     return v > 0 ? v : null;
@@ -33,7 +60,7 @@
   // per-item valuation for a row [slot, id, stack, name]
   function bankValue(it) {
     const id = it[1], stack = it[2] | 0;
-    const ge = bankGeOf(id), ha = bankHaOf(id);
+    const ge = bankGeOf(id, it[3]), ha = bankHaOf(id);
     return { ge: ge, ha: ha, geTotal: ge != null ? ge * stack : 0, haTotal: ha != null ? ha * stack : 0 };
   }
   function fmtGp(n) {
@@ -111,6 +138,31 @@
   }
   if (bankOverlayOn) setTimeout(() => bankOverlaySet(true), 2500);
 
+  function bankMenuClose() { const m = document.getElementById('bankMenu'); if (m) { m.remove(); try { wmRectsSoon(); } catch (e) {} } }
+  function bankMenuOpen(anchor, items, current, onPick) {
+    bankMenuClose();
+    const pop = document.createElement('div'); pop.className = 'sndmenu bank-menu'; pop.id = 'bankMenu';
+    for (const it of items) {
+      const el = document.createElement('div'); el.className = 'sndmenu-it' + (it.v === current ? ' sel' : '');
+      const nm = document.createElement('span'); nm.textContent = it.label; el.appendChild(nm);
+      el.addEventListener('click', () => { onPick(it.v); bankMenuClose(); });
+      pop.appendChild(el);
+    }
+    document.body.appendChild(pop);
+    const r = anchor.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, SB = 20;
+    const below = H - r.bottom - 8, above = r.top - 8, openUp = above > below, avail = Math.max(80, openUp ? above : below);
+    if (pop.offsetHeight > avail) pop.style.maxHeight = avail + 'px';
+    const pw = pop.offsetWidth, ph = Math.min(pop.offsetHeight, avail);
+    let left = r.left; if (left + pw > W - SB) left = r.right - pw; left = Math.max(8, Math.min(left, W - pw - SB));
+    let top = openUp ? (r.top - ph - 4) : (r.bottom + 4); top = Math.max(8, Math.min(top, H - ph - 8));
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+    try { wmRectsSoon(); } catch (e) {}
+  }
+  const bankInsideMenu = e => !!(e && e.target && e.target.nodeType === 1 && e.target.closest && e.target.closest('#bankMenu'));
+  document.addEventListener('click', e => { if (!bankInsideMenu(e)) bankMenuClose(); });
+  document.addEventListener('scroll', e => { if (!bankInsideMenu(e)) bankMenuClose(); }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') bankMenuClose(); });
+
   function renderBank() {
     const c = $('content');
     let wrap = document.getElementById('bankWrap');
@@ -128,17 +180,26 @@
       top.appendChild(inp); top.appendChild(meta);
 
       const tools = document.createElement('div'); tools.className = 'bank-tools';
-      const sortLab = document.createElement('label'); sortLab.textContent = 'Sort ';
-      const sortSel = document.createElement('select'); sortSel.id = 'bankSortSel';
-      for (const k in BANK_SORTS) { const o = document.createElement('option'); o.value = k; o.textContent = BANK_SORTS[k].label; if (k === bankSort) o.selected = true; sortSel.appendChild(o); }
-      sortSel.addEventListener('change', () => { bankSort = sortSel.value; prefSet('rtxBankSort', bankSort); bankPage = 0; bankPaintSig = ''; paintBankPage(); });
-      sortLab.appendChild(sortSel);
+      const sortBtn = document.createElement('button'); sortBtn.type = 'button'; sortBtn.className = 'al-sndsel bank-pick'; sortBtn.id = 'bankSortSel';
+      const sortLab = document.createElement('span'); sortLab.className = 'lab'; sortLab.textContent = 'Sort';
+      const sortCur = document.createElement('span'); sortCur.className = 'cur';
+      const sortCar = document.createElement('span'); sortCar.className = 'cv'; sortCar.textContent = '\u25BE';
+      sortBtn.appendChild(sortLab); sortBtn.appendChild(sortCur); sortBtn.appendChild(sortCar);
+      const sortRefresh = () => { sortCur.textContent = (BANK_SORTS[bankSort] || BANK_SORTS.slot).label; };
+      sortBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (document.getElementById('bankMenu')) { bankMenuClose(); return; }
+        bankMenuOpen(sortBtn, Object.keys(BANK_SORTS).map(k => ({ v: k, label: BANK_SORTS[k].label })), bankSort,
+                     v => { bankSort = v; prefSet('rtxBankSort', bankSort); bankPage = 0; bankPaintSig = ''; sortRefresh(); paintBankPage(); });
+      });
+      sortRefresh();
       const totals = document.createElement('div'); totals.id = 'bankTotals'; totals.className = 'bank-totals';
-      const ovLab = document.createElement('label'); ovLab.title = 'Draw the GE and high alch totals in game, next to the bank title, while the bank is open';
-      const ov = document.createElement('input'); ov.type = 'checkbox'; ov.id = 'bankOverlayChk'; ov.checked = bankOverlayOn;
-      ov.addEventListener('change', () => bankOverlaySet(ov.checked));
-      ovLab.appendChild(ov); ovLab.appendChild(document.createTextNode('Show totals in game'));
-      tools.appendChild(sortLab); tools.appendChild(totals); tools.appendChild(ovLab);
+      const ovSeg = document.createElement('div'); ovSeg.className = 'al-seg bank-seg'; ovSeg.title = 'Draw the GE and high alch totals in game, in the bank window title bar, while the bank is open';
+      const ovBtn = document.createElement('button'); ovBtn.type = 'button'; ovBtn.id = 'bankOverlayBtn'; ovBtn.textContent = 'Totals in game';
+      ovBtn.classList.toggle('on', bankOverlayOn);
+      ovBtn.addEventListener('click', () => { bankOverlaySet(!bankOverlayOn); ovBtn.classList.toggle('on', bankOverlayOn); });
+      ovSeg.appendChild(ovBtn);
+      tools.appendChild(sortBtn); tools.appendChild(totals); tools.appendChild(ovSeg);
 
       const grid = document.createElement('div'); grid.id = 'bankGrid'; grid.className = 'bank-grid';
 
@@ -155,7 +216,7 @@
       wrap.appendChild(top); wrap.appendChild(tools); wrap.appendChild(grid); wrap.appendChild(empty); wrap.appendChild(pager);
       c.appendChild(wrap);
       bankPaintSig = '';
-      try { bridge().pricesCached(); } catch (e) {}   // kick the price fetch so values fill in on the first paint
+      try { bridge().pricesCached(); bridge().pricesMapping(); } catch (e) {}   // kick the price fetches so values fill in on the first paint
     }
     paintBankPage();
   }
@@ -245,7 +306,7 @@
       }
       cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
-        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') : 'no price') +
+        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankBaseOf[id] !== undefined && bankBaseOf[id] !== id ? ' (base item)' : '') : 'no price') +
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);
     }

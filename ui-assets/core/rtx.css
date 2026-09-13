@@ -1449,7 +1449,9 @@
   .bank-val.ha { color: #9ad6ff; }
   .bank-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; flex: 0 0 auto; font-size: 11px; color: var(--text-dim); }
   .bank-tools label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
-  .bank-tools select { font: inherit; font-size: 11px; color: var(--text); background: var(--bg-elev); border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; }
+  .bank-tools .bank-pick { padding: 3px 8px; font-size: 11px; }
+  .bank-tools .bank-pick .lab { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; }
+  .bank-tools .bank-pick .cur { color: var(--text); font-weight: 600; }
   .bank-totals { flex: 1 1 auto; display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
   .bank-totals b { color: #f0be5a; font-weight: 700; }
   .bank-totals b.ha { color: #9ad6ff; }
