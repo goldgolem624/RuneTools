@@ -146,6 +146,7 @@
     <ClInclude Include="..\src\launcher\BridgeUtil.h" />
     <ClInclude Include="..\src\launcher\Update.h" />
     <ClInclude Include="..\src\launcher\Link.h" />
+    <ClInclude Include="..\src\launcher\Loot.h" />
     <ClInclude Include="..\src\launcher\News.h" />
     <ClInclude Include="..\src\launcher\GameUi.h" />
     <ClInclude Include="..\src\launcher\Cs2Browser.h" />
@@ -191,6 +192,7 @@
     <ClCompile Include="..\src\launcher\BridgeUtil.cpp" />
     <ClCompile Include="..\src\launcher\Update.cpp" />
     <ClCompile Include="..\src\launcher\Link.cpp" />
+    <ClCompile Include="..\src\launcher\Loot.cpp" />
     <ClCompile Include="..\src\launcher\News.cpp" />
     <ClCompile Include="..\src\launcher\Bridge.cpp" />
     <ClCompile Include="..\src\launcher\LuaHost.cpp" />

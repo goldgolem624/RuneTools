@@ -20,6 +20,20 @@
       _fsPrefPid = pid;
     }
   }
+  // Rune Caches: the launcher's heartbeat thread learns about drops from runetools.io; each client
+  // window asks once every few seconds whether its own character earned one and announces it.
+  function lootTick() {
+    try {
+      const b = bridge();
+      if (!b || !b.lootPoll || !myPid()) return;
+      const st = JSON.parse(b.lootPoll(myPid()) || '{}');
+      if (!st || !st.drop) return;
+      const more = st.unopened > 1 ? ' You have ' + st.unopened + ' waiting.' : '';
+      uiNotify('Rune Cache obtained! Open it on the RuneTools website at runetools.io/loot.' + more, { sticky: true });
+      try { if (b.playSound) b.playSound('alert1'); } catch (e) {}
+    } catch (e) {}
+  }
+
   async function refresh() {
     if (!bridge()) { refreshFail('bridge missing: typeof window.rtx = ' + typeof window.rtx); return; }
     if (refresh._busy) return;      // 250 ms timer vs awaits: no overlapping passes
@@ -242,6 +256,7 @@
     setInterval(function () { try { if (typeof sndTick === 'function') sndTick(); } catch (e) {} }, 250);   // Sounds transport (no-op unless that tab is active)
     setInterval(function () { try { if (typeof mnuTick === 'function') mnuTick(); } catch (e) {} }, 300);   // Right-click menu inspector (no-op unless that tab is active)
     setInterval(knotTick, 250);       // celtic-knot arrow overlay: tab-independent so it tracks the panel anywhere
+    setInterval(lootTick, 5000);      // Rune Caches: announce a cache earned by this character (linked launchers only)
     if (DUNG_ENABLED) {
       setInterval(dungSceneTick, 600);  // Dungeoneering ghost / sliding-puzzle in-scene highlight
       setInterval(dungLodeTimerTick, 100);  // Dungeoneering crystal-room ms click countdown (centre text)

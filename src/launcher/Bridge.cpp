@@ -33,6 +33,7 @@
 #include "Zip.h"
 #include "LuaHost.h"
 #include "Link.h"
+#include "Loot.h"
 
 #include <Ultralight/Ultralight.h>
 #include <JavaScriptCore/JavaScript.h>
@@ -466,6 +467,11 @@ JSValueRef LinkUnlink(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const 
 JSValueRef LinkVerify(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
     link::Verify();
     return utf8_to_js(ctx, link::StatusJson());
+}
+// Rune Caches: per-client progress and the one-shot "a cache dropped" flag for the in-game UI.
+JSValueRef LootPoll(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
+    return utf8_to_js(ctx, loot::PollJson(pid));
 }
 
 JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -5189,6 +5195,7 @@ void AttachBridge(ultralight::View* view) {
     JSStringRelease(ns_name);
 
     ensure_vault_unlocked();
+    loot::Start();
 
     install_fn(ctx, ns, "openExternal",           OpenExternal);
     install_fn(ctx, ns, "linkStatus",        LinkStatus);
@@ -5196,6 +5203,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "linkCancel",        LinkCancel);
     install_fn(ctx, ns, "linkUnlink",        LinkUnlink);
     install_fn(ctx, ns, "linkVerify",        LinkVerify);
+    install_fn(ctx, ns, "lootPoll",          LootPoll);
     install_fn(ctx, ns, "scanProcesses",     ScanProcesses);
     install_fn(ctx, ns, "gameSnapshots",     GameSnapshots);
     install_fn(ctx, ns, "uiAsset",           UiAsset);
