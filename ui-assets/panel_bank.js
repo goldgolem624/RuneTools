@@ -103,7 +103,8 @@
     const list = !t ? items.slice() : items.filter(it => String(it[1]).indexOf(t) !== -1 ||
                               (it[3] || '').toLowerCase().indexOf(t) !== -1);
     const s = BANK_SORTS[bankSort] || BANK_SORTS.slot;
-    if (bankSort !== 'slot') list.sort((a, b) => s.cmp(a, b) || a[0] - b[0]);
+    // placeholders (quantity 0) hold no value, so every value or quantity sort sinks them to the end
+    if (bankSort !== 'slot') list.sort((a, b) => ((b[2] | 0) > 0) - ((a[2] | 0) > 0) || s.cmp(a, b) || a[0] - b[0]);
     return list;
   }
 
