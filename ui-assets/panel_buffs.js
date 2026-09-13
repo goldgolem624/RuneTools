@@ -60,13 +60,14 @@
       return (b && b.timer) || '';
     };
     const idOf = b => (b.item ? 'i' + b.item : 's' + b.sprite) + '|' + (b.name || '') + '|' + (b.kind || '') + '|' + (b.struct || '');
+    const inWorld = !!(lastSnap && lastSnap.in_world);
     const structSig = (buffs === null) ? 'null'
-      : buffs.map(idOf).join(',') + '#' + debuffs.map(idOf).join(',');
+      : buffs.map(idOf).join(',') + '#' + debuffs.map(idOf).join(',') + (inWorld ? '' : '#lobby');
     if (structSig !== buffsSig) {
       buffsSig = structSig;
       list.innerHTML = '';
       if (buffs === null) { list.innerHTML = '<div class="empty">Reading...</div>'; return; }
-      if (!buffs.length && !debuffs.length) { list.innerHTML = '<div class="empty">No active buffs or debuffs (or not in-world).</div>'; return; }
+      if (!buffs.length && !debuffs.length) { list.innerHTML = '<div class="empty">' + (inWorld ? 'No active buffs or debuffs.' : 'Not in world. Buffs and debuffs appear once you are logged in.') + '</div>'; return; }
       const section = (label, arr) => {
         if (!arr.length) return;
         const gh = document.createElement('div'); gh.className = 'bf-grp'; gh.textContent = label; list.appendChild(gh);

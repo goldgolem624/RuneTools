@@ -42,12 +42,13 @@
     const list = document.getElementById('pkList');
     const items = (perksData && Array.isArray(perksData.items)) ? perksData.items : null;
     $('pkCnt').textContent = (items === null) ? '...' : items.length;
+    const inWorld = !!(lastSnap && lastSnap.in_world);
     const sig = (items === null) ? 'null'
-      : items.map(i => i.container + ':' + i.slot + ':' + i.id + ':' + i.xp + ':' + (i.perks || []).map(p => p.id + '.' + p.rank).join('|')).join(';');
+      : items.map(i => i.container + ':' + i.slot + ':' + i.id + ':' + i.xp + ':' + (i.perks || []).map(p => p.id + '.' + p.rank).join('|')).join(';') + (inWorld ? '' : '#lobby');
     if (sig === perksSig) return; perksSig = sig;
     list.innerHTML = '';
     if (items === null) { list.innerHTML = '<div class="empty">Reading...</div>'; return; }
-    if (!items.length) { list.innerHTML = '<div class="empty">No augmented items found (or not in-world).</div>'; return; }
+    if (!items.length) { list.innerHTML = '<div class="empty">' + (inWorld ? 'No augmented items equipped or in the inventory.' : 'Not in world. Augmented items appear once you are logged in.') + '</div>'; return; }
     const GROUP = [[94, 'Equipment'], [93, 'Inventory']];
     for (const [gid, label] of GROUP) {
       const gi = items.filter(i => i.container === gid).sort((a, b) => (b.level - a.level) || (a.slot - b.slot));
