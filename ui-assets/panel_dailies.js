@@ -890,6 +890,7 @@
   function megAnswerTick() {
     try {
       if (!bridge() || !bridge().interfaceComps) return;
+      if (!lastSnap || !lastSnap.in_world) return;
       const d = JSON.parse(bridge().interfaceComps(myPid(), 1188, MEG_OPT_COMPS) || '{}');
       if (!d || !d.open || !Array.isArray(d.comps)) { megHlClear(); return; }
       const opts = [];

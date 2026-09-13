@@ -319,7 +319,7 @@
         st.textContent =
             '.snd-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;'
           +   'background:var(--ok,#4dd28a);margin-left:8px;vertical-align:1px;'
-          +   'animation:sndLivePulse 2s ease-in-out infinite}'
+          +   'animation:sndLivePulse 2s ease-in-out 4}'
           + '@keyframes sndLivePulse{0%,100%{opacity:.4}50%{opacity:1}}'
           + '.pet-chip.snd-heard{transition:box-shadow 250ms,border-color 250ms,color 250ms}'
           + '.pet-chip.snd-hot{border-color:var(--accent-hi);color:var(--accent-hi);'

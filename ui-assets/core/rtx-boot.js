@@ -236,8 +236,9 @@
     refresh();
     setInterval(refresh, 250);
     console.log('rtx boot: refresh scheduled');
-    setInterval(rtxEventsTick, 100);   // event channel (rtxEvents); not tied to refresh
-    setInterval(function () { try { if (bridge() && bridge().varsWatch) bridge().varsWatch(myPid(), true); } catch (e) {} }, 250);
+    setInterval(rtxEventsTick, 150);   // event channel (rtxEvents); not tied to refresh
+    // varsWatch is a latch in the companion share (it only clears on a companion reset): re-arm at 0.5 Hz
+    setInterval(function () { try { if (bridge() && bridge().varsWatch) bridge().varsWatch(myPid(), true); } catch (e) {} }, 2000);
     setInterval(function () { try { if (typeof sndTick === 'function') sndTick(); } catch (e) {} }, 250);   // Sounds transport (no-op unless that tab is active)
     setInterval(function () { try { if (typeof mnuTick === 'function') mnuTick(); } catch (e) {} }, 300);   // Right-click menu inspector (no-op unless that tab is active)
     setInterval(knotTick, 250);       // celtic-knot arrow overlay: tab-independent so it tracks the panel anywhere
@@ -247,9 +248,9 @@
     }
     setInterval(megAnswerTick, 600);  // Meg weekly-question best-answer highlight (dialogue 1188, tab-independent)
     // lockbox solver overlay (interface 1933): tab-independent; 90 ms while it owns the panel, else 300.
-    (function lockboxLoop() { try { lockboxTick(); } catch (e) {} setTimeout(lockboxLoop, lockboxOwnsPanel ? 90 : 300); })();
+    (function lockboxLoop() { try { lockboxTick(); } catch (e) {} setTimeout(lockboxLoop, lockboxOwnsPanel ? 90 : 600); })();
     // towers (Skyscrapers) solver overlay (interface 1934): tab-independent, adaptive like the lockbox.
-    (function towersLoop() { try { towersTick(); } catch (e) {} setTimeout(towersLoop, towersOwnsPanel ? 120 : 400); })();
+    (function towersLoop() { try { towersTick(); } catch (e) {} setTimeout(towersLoop, towersOwnsPanel ? 120 : 800); })();
     setInterval(ifaceMonTick, 600);   // Interfaces tab: open/close monitor (no-op unless that tab is active)
     loadPlugins();   // discover installed (signed) + sideloaded dev plugins -> Plugins category
     setInterval(pluginDevWatch, 2000);   // hot-reload sideloaded dev plugins on folder changes

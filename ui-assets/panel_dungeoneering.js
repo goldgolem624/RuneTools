@@ -3954,6 +3954,7 @@ function dungLodeTimerTick() {
 async function dungSceneTick() {
   if (dungTickBusy || (typeof paneVisible !== 'undefined' && paneVisible('dung'))) return;
   if (!bridge() || !bridge().sceneEntities || typeof PLUGIN_API === 'undefined') return;
+  if (!lastSnap || !lastSnap.in_world) { if (dungWasIn) dungClearOverlays(); return; }
   dungTickBusy = true;
   try {
     let inDung = false, party92 = false;

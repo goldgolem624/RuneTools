@@ -1,7 +1,8 @@
-// Coalescer (state.* and cache.* only): within one 100 ms window (a refresh() pass is 250 ms)
+// Coalescer (state.* and cache.* only): within one 200 ms window (a refresh() pass is 250 ms,
+// so two panels reading the same thing in one pass share a single bridge call)
 const rtxData = (function () {
   const HOT = /^(state|cache)\./;
-  const WINDOW_MS = 100;
+  const WINDOW_MS = 200;
   // merged CSV instead of run(): the per-plugin clamp on run() (pClampStr 200) is a plugin
   const BATCH = { 'state.varps': 'varps', 'state.varbitsCsv': 'varbits', 'state.varpsLong': 'varpsLong' };
   const memo = new Map();       // key -> { t, p }: shared in-flight/just-finished promise per (method, args)

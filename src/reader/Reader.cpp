@@ -724,7 +724,9 @@ void fast_tick_loop() {
             }
         }
 
-        Sleep(5);
+        // 10 ms keeps the tick-edge timestamp within a frame; with no attached client there is
+        // nothing to probe, so idle at 4 Hz instead of spinning.
+        Sleep(probes.empty() ? 250 : 10);
     }
 }
 
@@ -1226,7 +1228,7 @@ void sample_loop() {
         { std::lock_guard<std::mutex> lk(s_samples_mu); s_samples_json.swap(j); }
         const std::uint64_t t = GetTickCount64();
         if (t - lastChatDrain >= 1000) { lastChatDrain = t; drain_chat_rings(); }
-        Sleep(150);
+        Sleep(200);   // the page refreshes at 250 ms; sampling faster than that is wasted
     }
 }
 
@@ -1248,7 +1250,7 @@ void panel_loop() {
             std::lock_guard<std::mutex> lk(s_async_mu);
             auto now = steady_clock::now();
             for (auto it = s_async.begin(); it != s_async.end(); ) {
-                if (now - it->second.last_used > seconds(5)) { it = s_async.erase(it); continue; }
+                if (now - it->second.last_used > seconds(2)) { it = s_async.erase(it); continue; }   // a closed panel stops costing reads within 2 s
                 jobs.emplace_back(it->first, it->second.build);
                 ++it;
             }
@@ -1260,7 +1262,7 @@ void panel_loop() {
             auto it = s_async.find(key);
             if (it != s_async.end()) { it->second.value = std::move(v); it->second.has_value = true; }
         }
-        Sleep(jobs.empty() ? 60 : 100);
+        Sleep(jobs.empty() ? 250 : 100);
     }
 }
 

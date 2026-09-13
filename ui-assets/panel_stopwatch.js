@@ -12,7 +12,7 @@
   function swStopTimer() { if (swTimer) { clearInterval(swTimer); swTimer = 0; } }
   function swStartStop() {
     if (swRunning) { swAccum += performance.now() - swStart; swRunning = false; swStopTimer(); }
-    else { swStart = performance.now(); swRunning = true; if (!swTimer) swTimer = setInterval(swTick, 33); }
+    else { swStart = performance.now(); swRunning = true; if (!swTimer) swTimer = setInterval(swTick, 50); }
     renderStopwatch();
   }
   function swReset() { swRunning = false; swAccum = 0; swLaps = []; swStopTimer(); renderStopwatch(); }

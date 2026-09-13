@@ -212,6 +212,7 @@ std::string rendered_icon_url(int item_id) {
     std::lock_guard<std::mutex> lk(g_ren_url_mu);
     auto it = g_ren_url.find(item_id);
     if (it != g_ren_url.end() && !it->second.empty()) return it->second;
+    if (g_ren_url.size() > 3000) g_ren_url.clear();   // bound the data-URL memo (each entry can be a few hundred KB)
     std::string url;
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (f) {

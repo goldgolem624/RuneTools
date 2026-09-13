@@ -99,8 +99,7 @@
         '.xpm-head{display:flex;align-items:center;gap:5px;padding:0 2px 3px;' +
         'border-bottom:1px solid rgba(255,255,255,0.07);margin-bottom:2px}' +
         '.xpm-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none;' +
-        'box-shadow:0 0 6px var(--accent);animation:xpm-breathe 2.2s ease-in-out infinite}' +
-        '@keyframes xpm-breathe{0%,100%{opacity:.45}50%{opacity:1}}' +
+        'box-shadow:0 0 6px var(--accent)}' +
         '.xpm-t{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-mute)}' +
         '.xpm-el{font-size:9.5px;color:var(--text-mute);opacity:.75;margin-left:auto}' +
         '.xpm-ph{font-size:11px;color:var(--text);font-weight:600}' +

@@ -492,11 +492,18 @@ void Tick() {
     if (g_uis.empty()) return;
     ULONGLONG now = GetTickCount64();
 
-    if (g_app) g_app->renderer()->RefreshDisplay(kUiDisplayId);
+    // A layer the page has hidden (every panel closed) and that saw no input for 2 s is not
+    // rendered: the companion is not compositing it, so the paint would be thrown away. It is
+    // rendered again on the next tick after it becomes visible or receives input.
+    auto idle = [&](Ui* u) { return !u->visible && u->publishedOnce && (now - u->lastActivityMs) > 2000; };
+    bool anyActive = false;
+    for (auto& kv : g_uis) if (kv.second && kv.second->view && !idle(kv.second)) { anyActive = true; break; }
+    if (g_app && anyActive) g_app->renderer()->RefreshDisplay(kUiDisplayId);
 
     for (auto& kv : g_uis) {
         Ui* u = kv.second;
         if (!u || !u->view) continue;
+        const bool render = !idle(u);
 
         if (u->frame) {
             std::uint32_t ms = u->frame->module_seq;
@@ -524,11 +531,11 @@ void Tick() {
                 u->view->Resize((std::uint32_t)cw, (std::uint32_t)ch);
         }
 
-        if (g_app) {
+        if (g_app && render) {
             View* v = u->view.get();
             g_app->renderer()->RenderOnly(&v, 1);
         }
-        Publish(u);
+        if (render) Publish(u);
 
         bool wantPump = u->host && (now - u->lastActivityMs) < 2000;
         if (wantPump && !u->pumpTimerOn) {

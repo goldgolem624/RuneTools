@@ -20,6 +20,7 @@
   }
   async function knotTick() {
     if (knotBusy || lockboxOwnsPanel || towersOwnsPanel || !bridge() || !bridge().interfaceGroup || !bridge().varbits) return;
+    if (!lastSnap || !lastSnap.in_world) return;   // no interfaces to scan at the lobby or login screen
     knotBusy = true;
     try {
       const el = $('clueKnot');   // banner; absent when the clues tab isn't open

@@ -404,7 +404,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             } catch (...) {
                 boot_log("companion scan: non-std exception");
             }
-            Sleep(any_loaded ? 500 : 100);
+            // A process snapshot per pass: 2 Hz while looking for a client, 1 Hz once one is attached.
+            Sleep(any_loaded ? 1000 : 500);
         }
     }).detach();
 
