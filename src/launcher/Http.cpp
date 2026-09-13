@@ -71,7 +71,8 @@ void do_request(Response& out,
                 const std::string& body,
                 const std::function<bool(const char*, DWORD)>& sink,
                 const std::function<void(long long, long long)>& on_progress,
-                const std::function<bool(int)>& on_status = nullptr) {
+                const std::function<bool(int)>& on_status = nullptr,
+                bool decompress = false) {
     SessionScope sess;
     sess.h = WinHttpOpen(L"RuneToolsX/0.1",
                          WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -96,6 +97,12 @@ void do_request(Response& out,
                                WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                WINHTTP_FLAG_SECURE);
     if (!req.h) { out.detail = format_winhttp_error(GetLastError()); return; }
+    if (decompress) {
+        // WinHTTP adds Accept-Encoding: gzip, deflate and inflates the body itself (Windows 8.1+; a no-op
+        // where unsupported). The price relay's 536 KB latest becomes 121 KB on the wire.
+        DWORD dec = WINHTTP_DECOMPRESSION_FLAG_ALL;
+        WinHttpSetOption(req.h, WINHTTP_OPTION_DECOMPRESSION, &dec, sizeof(dec));
+    }
 
     // Per-row AddRequestHeaders: packing into pwszHeaders intermittently drops headers.
     bool saw_content_type = false;
@@ -207,7 +214,7 @@ Response PostJson(const std::wstring& host, const std::wstring& path,
                   const std::vector<Header>& headers, const std::string& body) {
     Response out;
     do_request(out, host, path, L"POST", headers, body,
-        [&out](const char* d, DWORD n) { return append_capped(out, d, n); }, nullptr);
+        [&out](const char* d, DWORD n) { return append_capped(out, d, n); }, nullptr, nullptr, true);
     return out;
 }
 
@@ -215,7 +222,7 @@ Response Get(const std::wstring& host, const std::wstring& path,
              const std::vector<Header>& headers) {
     Response out;
     do_request(out, host, path, L"GET", headers, std::string(),
-        [&out](const char* d, DWORD n) { return append_capped(out, d, n); }, nullptr);
+        [&out](const char* d, DWORD n) { return append_capped(out, d, n); }, nullptr, nullptr, true);
     return out;
 }
 
@@ -233,7 +240,7 @@ Response Fetch(const std::wstring& host, const std::wstring& path,
             if (out.body.size() + (size_t)n > max_bytes) { out.detail = "response too large"; return false; }
             out.body.append(d, n);
             return true;
-        }, nullptr);
+        }, nullptr, nullptr, true);
     return out;
 }
 

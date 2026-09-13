@@ -3068,8 +3068,11 @@ std::atomic<bool>      g_prices_fetching{ false };
 std::atomic<long long> g_prices_map_ms{ 0 };
 std::atomic<long long> g_prices_map_get_ms{ 0 };
 std::atomic<bool>      g_prices_map_fetching{ false };
+std::string            g_prices_etag, g_prices_map_etag;   // relay ETags (guarded by g_prices_mu)
 
-void prices_kick(const wchar_t* path, std::size_t cap, std::string* slot,
+// One relay fetch per TTL, gzip on the wire, and conditional: the relay answers If-None-Match with a 304
+// when nothing changed (the mapping changes once a day), which costs a few hundred bytes instead of the body.
+void prices_kick(const wchar_t* path, std::size_t cap, std::string* slot, std::string* etag_slot,
                  std::atomic<long long>& data_ms, std::atomic<long long>& get_ms,
                  std::atomic<bool>& fetching, long long ttl_ms, long long floor_ms) {
     long long now = (long long)GetTickCount64();
@@ -3081,12 +3084,19 @@ void prices_kick(const wchar_t* path, std::size_t cap, std::string* slot,
     bool expected = false;
     if (!fetching.compare_exchange_strong(expected, true)) return;
     std::wstring p(path);
-    http::Enqueue([p, cap, slot, &data_ms, &fetching] {
-        auto r = http::Fetch(kUpdateHost, p, {}, cap);
-        if (r.ok && r.status == 200 && !r.body.empty() &&
-            (r.body.front() == '{' || r.body.front() == '[')) {
+    std::string etag;
+    { std::lock_guard<std::mutex> lk(g_prices_mu); etag = *etag_slot; }
+    http::Enqueue([p, cap, slot, etag_slot, etag, &data_ms, &fetching] {
+        std::vector<http::Header> hdrs;
+        if (!etag.empty()) hdrs.push_back({ "If-None-Match", etag });
+        auto r = http::Fetch(kUpdateHost, p, hdrs, cap);
+        if (r.status == 304 && !etag.empty()) {
+            data_ms.store((long long)GetTickCount64());     // still current: extend the TTL, keep the body
+        } else if (r.ok && r.status == 200 && !r.body.empty() &&
+                   (r.body.front() == '{' || r.body.front() == '[')) {
             std::lock_guard<std::mutex> lk(g_prices_mu);
             *slot = std::move(r.body);
+            *etag_slot = r.header("ETag");
             data_ms.store((long long)GetTickCount64());
         }
         fetching.store(false);
@@ -3095,14 +3105,14 @@ void prices_kick(const wchar_t* path, std::size_t cap, std::string* slot,
 
 JSValueRef PricesCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
                         size_t, const JSValueRef[], JSValueRef*) {
-    prices_kick(kPricesLatestPath, 1u * 1024 * 1024, &g_prices_json,
+    prices_kick(kPricesLatestPath, 1u * 1024 * 1024, &g_prices_json, &g_prices_etag,
                 g_prices_ms, g_prices_get_ms, g_prices_fetching, 120'000, 30'000);
     std::lock_guard<std::mutex> lk(g_prices_mu);
     return utf8_to_js(ctx, g_prices_json);
 }
 JSValueRef PricesMapping(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
-    prices_kick(kPricesMappingPath, 4u * 1024 * 1024, &g_prices_map_json,
+    prices_kick(kPricesMappingPath, 4u * 1024 * 1024, &g_prices_map_json, &g_prices_map_etag,
                 g_prices_map_ms, g_prices_map_get_ms, g_prices_map_fetching, 21'600'000, 600'000);
     std::lock_guard<std::mutex> lk(g_prices_mu);
     return utf8_to_js(ctx, g_prices_map_json);
