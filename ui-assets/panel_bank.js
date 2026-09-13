@@ -746,7 +746,7 @@
     if (W < 40 || H < 40) return bankPer;
     const gap = 4, cols = Math.max(1, Math.floor((W + gap) / (40 + gap)));
     const cell = (W - (cols - 1) * gap) / cols;
-    const rows = Math.max(1, Math.floor((H + gap) / (cell + gap)));
+    const rows = Math.max(1, Math.floor((H - 2) / (cell + gap)));   // every row wants its full cell plus gap: no clipped last row
     return cols * rows;
   }
   function paintBankPage() {
