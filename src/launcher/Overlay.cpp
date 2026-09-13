@@ -1625,6 +1625,18 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     for (const auto& lb : uilbls) {
         if (lb.text.empty()) continue;
         const ScreenRect sr = toScreen(lb.x, lb.y, 1, 1, true);
+        {   // one line per distinct placement: the design-to-screen mapping is the usual suspect when a label lands off
+            static std::map<DWORD, std::pair<int,int>> l_lb;
+            auto cur = std::make_pair(lb.x, lb.y);
+            auto lit = l_lb.find(cfg.pid);
+            if (lit == l_lb.end() || lit->second != cur) {
+                l_lb[cfg.pid] = cur;
+                char b[200];
+                std::snprintf(b, sizeof(b), "uilabel: design %d,%d -> screen %.0f,%.0f  W=%d H=%d gvScale=%.3f uiScale=%.3f lc=%dx%d gv=%dx%d px=%d",
+                              lb.x, lb.y, sr.x0, sr.y0, W, H, gvScale, uiScale, f ? f->lc_w : -1, f ? f->lc_h : -1, f ? f->gv_w : -1, f ? f->gv_h : -1, lb.px);
+                rtx::log::Client(cfg.pid, b);
+            }
+        }
         marker::Command t{}; t.type = marker::kText;
         t.glyph = marker::kTextPlain;                       // left aligned at x, centred on y, no pill
         t.x0 = sr.x0; t.y0 = sr.y0;

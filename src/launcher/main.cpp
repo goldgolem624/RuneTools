@@ -434,6 +434,35 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             LocalFree(argv);
             return 0;
         }
+        // --var-scan <pid> <lo> <hi>: every varp and varbit whose live value lies in [lo, hi], to var-scan.txt.
+        // Finds the vars behind a number the game shows (rune counts in a nexus, charges, ...).
+        if (argv && argc >= 5 && std::wstring(argv[1]) == L"--var-scan") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            const long long lo = _wtoi64(argv[3]), hi = _wtoi64(argv[4]);
+            rtx::reader::SampleAll();
+            std::ofstream f("var-scan.txt", std::ios::binary | std::ios::trunc);
+            auto scan = [&](const char* kind, int maxId, auto&& reader) {
+                for (int base = 0; base < maxId; base += 400) {
+                    std::string csv;
+                    for (int id = base; id < base + 400 && id < maxId; ++id) { if (!csv.empty()) csv += ","; csv += std::to_string(id); }
+                    std::string j = reader(csv);
+                    std::size_t pos = 1;
+                    while (pos < j.size()) {
+                        if (j[pos] != '"') { ++pos; continue; }
+                        std::size_t e = j.find('"', pos + 1); if (e == std::string::npos) break;
+                        int id = std::atoi(j.c_str() + pos + 1);
+                        if (e + 1 >= j.size() || j[e + 1] != ':') break;
+                        long long v = std::atoll(j.c_str() + e + 2);
+                        if (v >= lo && v <= hi) f << kind << "\t" << id << "\t" << v << "\n";
+                        pos = j.find_first_of(",}", e + 2); if (pos == std::string::npos) break; ++pos;
+                    }
+                }
+            };
+            scan("varp",   20000, [&](const std::string& csv) { return rtx::reader::VarpsJson(pid, csv); });
+            scan("varbit", 70000, [&](const std::string& csv) { return rtx::reader::VarbitsJson(pid, csv); });
+            LocalFree(argv);
+            return 0;
+        }
         // --enum-dump <id>: one cache enum as JSON to enum-<id>.txt.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--enum-dump") {
             const int id = _wtoi(argv[2]);

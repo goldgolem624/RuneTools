@@ -92,7 +92,7 @@
           const m2 = plain.match(/^(.+?) (?:necklace|amulet|ring|bracelet)$/); if (m2) kitCands.push(m2[1] + ' ornament kit');   // Reaper necklace -> Reaper ornament kit
           if (/^dragon plate(?:legs|skirt)$/.test(plain)) kitCands.push('dragon platelegs/skirt ornament kit (' + tag + ')');
           if (/^essence of finality amulet$/.test(plain)) kitCands.push('essence of finality ornament kit');
-          for (const c of kitCands) if (bankNameToId[c] != null) { extras.push({ label: 'ornament kit', id: bankNameToId[c] }); break; }
+          for (const c of kitCands) if (bankNameToId[c] != null) { extras.push({ label: 'Ornament kit', id: bankNameToId[c] }); break; }
         }
         bankExtrasOf[id] = extras;
       }
@@ -154,9 +154,39 @@
     bankEofLoading = false;
     if (changed) { bankPaintSig = ''; paintBankPage(); if (bankOverlayOn) bankOverlayTick(); }
   }
+  // Rune pouches carry their runes in the pouch's own item vars: var 1 packs four 6-bit rune slots (bits 0-5 =
+  // first slot; 0 = empty, otherwise a key of enum 11885, which maps it to the rune item), and vars 0, 2, 3, 4
+  // hold the four quantities in that order. Each pouch has its own runes, so this is per bank slot as well.
+  const BANK_RUNE_ENUM = 11885, BANK_POUCH_QTY_VARS = [0, 2, 3, 4];
+  let bankRuneTable = null, bankRuneLoading = false;
+  function bankIsRunePouch(name) { return /rune pouch/i.test(name || ''); }
+  function bankPouchRunes(it) {                // [{ id, name, qty }] for a rune pouch row, [] when empty or unknown
+    if (!bankRuneTable || !Array.isArray(it[4])) return [];
+    let packed = 0; const qty = [0, 0, 0, 0];
+    for (const kv of it[4]) {
+      if (!kv) continue;
+      if (kv[0] === 1) packed = kv[1] >>> 0;
+      const qi = BANK_POUCH_QTY_VARS.indexOf(kv[0]); if (qi >= 0) qty[qi] = kv[1] | 0;
+    }
+    const out = [];
+    for (let i = 0; i < 4; ++i) {
+      const idx = (packed >>> (6 * i)) & 63, rid = idx > 0 ? bankRuneTable[idx] : null;
+      if (rid > 0 && qty[i] > 0) out.push({ id: rid, name: bankItemName(rid), qty: qty[i] });
+    }
+    return out;
+  }
+  function bankRuneTableLoad() {
+    if (bankRuneTable || bankRuneLoading) return;
+    bankRuneLoading = true;
+    Promise.resolve().then(async () => {
+      try { bankRuneTable = JSON.parse(await rtxData.raw('cache.enumInfo', BANK_RUNE_ENUM) || 'null'); } catch (e) {}
+      bankRuneLoading = false;
+      if (bankRuneTable) { bankPaintSig = ''; paintBankPage(); if (bankOverlayOn) bankOverlayTick(); }
+    });
+  }
   // GE value of one bank row and, when it is built from more than one price, the parts behind it (for the tooltip):
   // { item, extras: [{ label, price }] }. slot picks up the per-amulet Essence of Finality special.
-  function bankGeOf(id, name, slot) {
+  function bankGeOf(id, name, slot, row) {
     const prices = bankPrices();
     let v = bankPriceAt(prices && prices[id]), parts = null;
     const b = (v == null && name) ? bankBaseId(id, name) : id;
@@ -168,13 +198,23 @@
         if (pv != null) { parts.extras.push({ label: ex.label, price: pv }); v += pv; }
       }
     }
+    if (bankIsRunePouch(name) && row) {
+      if (!bankRuneTable) bankRuneTableLoad();
+      for (const rn of bankPouchRunes(row)) {   // the runes inside count at their own GE price times quantity
+        const pv = bankPriceAt(prices && prices[rn.id]);
+        if (pv == null) continue;
+        if (!parts) parts = { item: v, extras: [] };
+        parts.extras.push({ label: rn.qty.toLocaleString() + ' ' + rn.name + (rn.qty === 1 ? '' : 's'), price: pv * rn.qty, kind: 'rune', id: rn.id });
+        v = (v || 0) + pv * rn.qty;
+      }
+    }
     const eof = slot != null ? bankEofOf[slot + ':' + id] : null;
     if (eof && eof.weaponId) {
       let pv = bankPriceAt(prices && prices[eof.weaponId]);
       if (pv == null) { const wb = bankBaseId(eof.weaponId, eof.weaponName); if (wb !== eof.weaponId) pv = bankPriceAt(prices && prices[wb]); }
       if (pv != null) {
         if (!parts) parts = { item: v, extras: [] };
-        parts.extras.push({ label: eof.weaponName + ' (stored special attack)', price: pv });
+        parts.extras.push({ label: 'Stored special attack (' + eof.weaponName + ')', price: pv, kind: 'eof' });
         v = (v || 0) + pv;
       }
     }
@@ -183,7 +223,7 @@
   // per-item valuation for a row [slot, id, stack, name]
   function bankValue(it) {
     const id = it[1], stack = it[2] | 0;
-    const g = bankGeOf(id, it[3], it[0]), ge = g.v, ha = bankHaOf(id);
+    const g = bankGeOf(id, it[3], it[0], it), ge = g.v, ha = bankHaOf(id);
     return { ge: ge, ha: ha, geTotal: ge != null ? ge * stack : 0, haTotal: ha != null ? ha * stack : 0, parts: g.parts };
   }
   function fmtGp(n) {
@@ -377,16 +417,39 @@
     paintBankPage();
   }
 
+  // The GE block of a tooltip: the figure, then one line per part when the price is built from several
+  // (the item itself, a dye, an ornament kit, the runes inside a pouch, the special stored in an amulet).
+  function bankGeLines(v, stack, name, slot, id, it) {
+    let s = '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') : 'no price');
+    if (v.parts) {
+      if (!v.parts.extras.length) s += ' (priced as the tradeable base item)';
+      else {
+        s += '\n- ' + (bankIsRunePouch(name) ? 'Pouch' : bankIsEof(name) ? 'Amulet' : 'Item') + ': ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price');
+        for (const e of v.parts.extras) s += '\n- ' + e.label + ': ' + fmtGp(e.price);
+      }
+    }
+    if (bankIsEof(name)) { const l = bankEofLine(slot, id, v); if (l) s += '\n- ' + l; }
+    if (bankIsRunePouch(name)) { const l = bankPouchLine(it, v); if (l) s += '\n- ' + l; }
+    return s;
+  }
+  // Rune pouch note: only what the per-line breakdown could not say (unknown, empty, or runes without a price).
+  function bankPouchLine(it, v) {
+    if (!Array.isArray(it[4])) return 'Runes inside: not known yet (open the bank once so the pouch is read)';
+    if (!bankRuneTable) return 'Runes inside: reading the rune table';
+    const runes = bankPouchRunes(it);
+    if (!runes.length) return 'Runes inside: none';
+    const priced = new Set(((v && v.parts) ? v.parts.extras : []).filter(e => e.kind === 'rune').map(e => e.id));
+    const missing = runes.filter(rn => !priced.has(rn.id));
+    return missing.length ? 'No GE price for: ' + missing.map(rn => rn.qty.toLocaleString() + ' ' + rn.name).join(', ') : '';
+  }
   // Tooltip line for an Essence of Finality: which special attack it holds and where that price comes from.
-  function bankEofLine(slot, id) {
+  function bankEofLine(slot, id, v) {
     const key = slot + ':' + id;
     if (bankEofOf[key] === undefined) return 'Stored special attack: not known yet (open the bank once so the amulet is read)';
     const eof = bankEofOf[key];
-    if (!eof) return 'Stored special attack: none (nothing added to the price)';
-    const prices = bankPrices();
-    let pv = bankPriceAt(prices && prices[eof.weaponId]);
-    if (pv == null) { const wb = bankBaseId(eof.weaponId, eof.weaponName); if (wb !== eof.weaponId) pv = bankPriceAt(prices && prices[wb]); }
-    return 'Stored special attack: ' + eof.weaponName + (pv != null ? ' (the weapon\'s GE price, ' + pv.toLocaleString() + ', is added to this amulet)' : ' (no GE price for the weapon, nothing added)');
+    if (!eof) return 'Stored special attack: none';
+    if (v && v.parts && v.parts.extras.some(e => e.kind === 'eof')) return '';   // already a line of the breakdown
+    return 'Stored special attack: ' + eof.weaponName + ' (no GE price for the weapon, nothing added)';
   }
   function paintBankPage() {
     const grid = document.getElementById('bankGrid');
@@ -474,9 +537,8 @@
       }
       cell.dataset.tip = (bankRowName(id, name) || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
-        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (v.parts ? (v.parts.extras.length ? ' = ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price') + ' item' + v.parts.extras.map(e => ' + ' + fmtGp(e.price) + ' ' + e.label).join('') : ' (priced as the base item)') : '') : 'no price') +
-        '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a') +
-        (bankIsEof(name) ? '\n' + bankEofLine(slot, id) : '');
+        bankGeLines(v, stack, name, slot, id, it) +
+        '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);
     }
 
