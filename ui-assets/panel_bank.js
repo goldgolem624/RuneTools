@@ -366,9 +366,12 @@
     const starts = []; let acc = 0;
     for (let i = 0; i < vb.sizes.length; ++i) { starts.push(acc); acc += vb.sizes[i]; }
     const tabs = [{ n: 1, cid: 1, from: acc, count: -1 }];       // main tab: every slot from the end of the blocks
-    for (let t = 2; t < 2 + BANK_TABS_MAX; ++t) {
+    let nBlocks = 0; vb.sizes.forEach((sz, i) => { if (sz > 0) nBlocks = i + 1; });   // blocks in use (trailing zeros are spare)
+    const seen = new Set();                                        // the order table carries stray values past the last tab
+    for (let t = 2; t < 2 + nBlocks; ++t) {
       const cid = vb.order[t - 2]; if (!cid) break;
-      const b = cid - 2; if (b < 0 || b >= vb.sizes.length) break;
+      const b = cid - 2; if (b < 0 || b >= nBlocks || seen.has(cid)) break;
+      seen.add(cid);
       tabs.push({ n: t, cid: cid, from: starts[b], count: vb.sizes[b] });
     }
     const slotTab = [], orderIdx = [];               // orderIdx: position on the game's own scroll (main tab first)
