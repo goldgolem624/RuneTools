@@ -48,6 +48,7 @@
     if (m && m.lua) { try { bridge().luaUnload(id); } catch (e) {} }
     if (m && m.kbFocus) kbGrab(false);
     pluginMounts.delete(id);
+    if (typeof pluginHolderDrop === 'function') pluginHolderDrop(id);
   }
 
   function pluginSendEvent(m, event, data) {
@@ -286,6 +287,47 @@
     c.appendChild(card);
   }
 
+  // ---- plugin holders: a mounted plugin lives in a layer over the window body, not in the pane ----
+  // The pane is wiped on every tab switch (wmMountTab). An iframe removed from the DOM is destroyed
+  // and re-parenting one reloads it, so a plugin that shares a window with other tabs would lose its
+  // state, and its overlay (tree timers, guide tiles) would freeze, whenever another tab was in
+  // front. Holders keep the frame alive and merely hide it while another tab shows; ticks, state
+  // and events keep flowing so overlays stay current. A holder is removed only on unmount.
+  const pluginHolders = new Map();   // plugin id -> { el, wid }
+  let _pluginHoldCss = false;
+  function pluginHolderFor(id, w) {
+    if (!_pluginHoldCss) {
+      _pluginHoldCss = true;
+      try { injectStyle('pluginHoldCss',
+        '.win-body { position: relative; }' +
+        '.plugin-host { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 14px 16px; overflow: hidden; background: var(--win-bg, transparent); }' +
+        '.plugin-host[hidden] { display: none; }'); } catch (e) {}
+    }
+    let h = pluginHolders.get(id);
+    if (!h) {
+      h = { el: document.createElement('div'), wid: null };
+      h.el.className = 'plugin-host'; h.el.dataset.pluginHost = id;
+      pluginHolders.set(id, h);
+    }
+    const body = w && w.body;
+    if (body && h.el.parentNode !== body) { body.appendChild(h.el); h.wid = w.wid; }   // moving between windows reloads a frame; same window never does
+    return h;
+  }
+  // Called by wmMountTab: show the holder of the tab now in front, hide every other holder in that window.
+  function pluginHoldersSync(w) {
+    if (!w || !w.body) return;
+    for (const [id, h] of pluginHolders) {
+      if (h.el.parentNode !== w.body) continue;
+      h.el.hidden = (w.tab !== 'plugin:' + id);
+    }
+  }
+  function pluginHolderDrop(id) {
+    const h = pluginHolders.get(id);
+    if (!h) return;
+    pluginHolders.delete(id);
+    try { h.el.remove(); } catch (e) {}
+  }
+
   function renderPlugin(id) {
     const c = $('content');
     if (!c) return;
@@ -298,11 +340,19 @@
       if (cur && cur.dataset && cur.dataset.pluginPerm === id) return;   // build-once
       renderPluginPermission(id, tab, granted); pluginUnmount(id); return;
     }
+    const w = wmWinOf('plugin:' + id);
+    const h = pluginHolderFor(id, w);
+    h.el.hidden = false;
     const cur = c.firstElementChild;
-    if (cur && cur.dataset && cur.dataset.pluginHost === id) return;      // already mounted
-    c.innerHTML = '';
-    if (tab.manifest.runtime === 'lua') { luaMountPlugin(c, id, tab, granted); return; }   // core/rtx-plugin-lua.js
-    const wrap = document.createElement('div'); wrap.dataset.pluginHost = id;
+    if (!(cur && cur.dataset && cur.dataset.pluginPane === id)) {
+      c.innerHTML = '';
+      const ph = document.createElement('div'); ph.dataset.pluginPane = id; ph.style.cssText = 'flex:1 1 auto;min-height:0;';
+      c.appendChild(ph);                 // the pane stays empty behind the holder
+    }
+    if (pluginMounts.get(id) && h.el.firstChild) return;                   // alive from an earlier show: nothing to rebuild
+    h.el.innerHTML = '';
+    if (tab.manifest.runtime === 'lua') { luaMountPlugin(h.el, id, tab, granted); return; }   // core/rtx-plugin-lua.js
+    const wrap = document.createElement('div'); wrap.dataset.pluginFrame = id;
     wrap.style.cssText = 'padding:0;flex:1 1 auto;min-height:0;display:flex;flex-direction:column;';
     const fr = document.createElement('iframe');
     fr.setAttribute('sandbox', 'allow-scripts');     // NO allow-same-origin -> opaque origin
@@ -312,14 +362,14 @@
       frLoads++;
       if (frLoads > 1) {
         pluginUnmount(id);
-        try { fr.remove(); } catch (e) {}
-        c.innerHTML = '<div class="empty">Plugin disabled: ' + pluginEsc(tab.manifest.name) +
-                      ' tried to navigate its page, which plugins are not permitted to do.</div>';
+        const hh = pluginHolderFor(id, wmWinOf('plugin:' + id));
+        hh.el.innerHTML = '<div class="empty">Plugin disabled: ' + pluginEsc(tab.manifest.name) +
+                          ' tried to navigate its page, which plugins are not permitted to do.</div>';
         try { rtx.log && rtx.log('plugin ' + id + ' unmounted: unexpected frame navigation'); } catch (e) {}
       }
     });
     fr.style.cssText = 'border:0;display:block;width:100%;flex:1 1 auto;min-height:0;background:#14151c;';
-    c.appendChild(wrap);
+    h.el.appendChild(wrap);
     pluginMounts.set(id, { id, frame: fr, scopes: granted.filter(s => tab.scopes.indexOf(s) !== -1) });
     (async () => {
       let entry = '';
@@ -327,7 +377,7 @@
       try { entry = await entryFn.call(bridge(), id, tab.manifest.entry); } catch (e) {}
       const m = pluginMounts.get(id);
       if (!m || m.frame !== fr) return;             // window closed / remounted while loading
-      if (!entry) { c.innerHTML = '<div class="empty">Failed to load plugin entry file.</div>'; pluginUnmount(id); return; }
+      if (!entry) { h.el.innerHTML = '<div class="empty">Failed to load plugin entry file.</div>'; pluginUnmount(id); return; }
       fr.srcdoc = pluginBuildSrcdoc(entry);
       wrap.appendChild(fr);
     })();

@@ -488,6 +488,7 @@
     w.tab = id;
     __paneRoots[id] = w.pane;
     w.pane.innerHTML = '';
+    try { if (typeof pluginHoldersSync === 'function') pluginHoldersSync(w); } catch (e) {}   // plugin frames survive a tab switch hidden
     if (wm.focused === w.wid) { activeTab = id; try { localStorage.setItem('rtxDevTab', id); } catch (e) {} }
     wmRenderTabs(w);
     renderPaneFor(w);
