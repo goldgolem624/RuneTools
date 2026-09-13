@@ -2228,13 +2228,15 @@ void RenderLoop() {
                 anyFlash = true;
             }
             std::vector<rtx::reader::GuideSite> gsites;
-            bool hasUiHl = false, hasPanelViz = false, hasCenter = false, hasSolverCells = false, hasSkillBars = false;
+            bool hasUiHl = false, hasPanelViz = false, hasCenter = false, hasSolverCells = false, hasSkillBars = false, hasUiLabels = false;
             { std::lock_guard<std::mutex> lk(g_mu);
               auto git = g_guides.find(cpid);
               if (git != g_guides.end())
                   for (const auto& m : git->second) gsites.push_back({ m.gx, m.gy, m.label, m.snapObj, m.rgb, m.gx2, m.gy2, m.region, m.plane, m.rgb2 });
               auto uit = g_uiHighlights.find(cpid);
               hasUiHl = (uit != g_uiHighlights.end() && !uit->second.empty());
+              auto ulit = g_uiLabels.find(cpid);
+              hasUiLabels = (ulit != g_uiLabels.end() && !ulit->second.empty());
               auto ctit = g_centerTexts.find(cpid);
               hasCenter = false;
               if (ctit != g_centerTexts.end())
@@ -2253,7 +2255,9 @@ void RenderLoop() {
                                (anyNotifs && g_notif_pid.load() == cpid) ||
                                (metroOn && metroPid == cpid) ||
                                (xpOn && xpPid == cpid);
-            if (!wantF && !hasUiHl && !hasPanelViz && !hasCenter && !hasSolverCells && !hasSkillBars &&
+            // Labels (the bank's in-game totals) need the window size and view metrics like highlights do;
+            // without them PublishMarkers gets W=H=0 and the label collapses to the top-left corner.
+            if (!wantF && !hasUiHl && !hasUiLabels && !hasPanelViz && !hasCenter && !hasSolverCells && !hasSkillBars &&
                 fa <= 0.0f && !wantWidgets) { PublishMarkers(ccfg, nullptr, 0, 0); continue; }
             HWND gw = FindGameWindow(cpid);
             if (!gw || IsIconic(gw) || !IsWindowVisible(gw)) {
@@ -2294,7 +2298,7 @@ void RenderLoop() {
                          (ccfg.enabled && ccfg.grid) ? ccfg.radius : 0,
                          ccfg.interactable, ccfg.enabled && ccfg.true_tile,
                          ccfg.highlight, ccfg.outline, ccfg.outlineLocs, gsites, frame);
-            if (!ok && (hasUiHl || hasPanelViz || hasSolverCells || hasSkillBars))
+            if (!ok && (hasUiHl || hasUiLabels || hasPanelViz || hasSolverCells || hasSkillBars))
                 ok = rtx::reader::ReadViewMetrics(cpid, frame);
             if (ok) {
                 PublishMarkers(ccfg, &frame, W2, H2, fa, wptr);
@@ -2306,7 +2310,7 @@ void RenderLoop() {
             } else {
                 PublishMarkers(ccfg, nullptr, W2, H2, fa, wptr);
             }
-            anyFrames = anyFrames || wantF || hasUiHl || hasPanelViz || hasCenter ||
+            anyFrames = anyFrames || wantF || hasUiHl || hasUiLabels || hasPanelViz || hasCenter ||
                         hasSolverCells || hasSkillBars || wptr != nullptr;
         }
         for (auto it = held.begin(); it != held.end(); )
