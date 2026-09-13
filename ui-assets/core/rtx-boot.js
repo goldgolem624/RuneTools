@@ -27,7 +27,7 @@
       const b = bridge();
       if (!b || !b.lootPoll || !myPid()) return;
       const st = JSON.parse(b.lootPoll(myPid()) || '{}');
-      if (!st || !st.drop) return;
+      if (!st || !st.enabled || !st.drop) return;   // opt-in in Settings; off means nothing is announced
       const more = st.unopened > 1 ? ' You have ' + st.unopened + ' waiting.' : '';
       uiNotify('Rune Cache obtained! Open it on the RuneTools website at runetools.io/loot.' + more, { sticky: true });
       try { if (b.playSound) b.playSound('alert1'); } catch (e) {}

@@ -473,6 +473,11 @@ JSValueRef LootPoll(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, con
     auto pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
     return utf8_to_js(ctx, loot::PollJson(pid));
 }
+// Opt-in for Rune Caches (Settings). lootEnabled() reads, lootEnabled(bool) sets; returns the value.
+JSValueRef LootEnabled(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) loot::SetEnabled(JSValueToBoolean(ctx, argv[0]));
+    return JSValueMakeBoolean(ctx, loot::Enabled());
+}
 
 JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
@@ -5204,6 +5209,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "linkUnlink",        LinkUnlink);
     install_fn(ctx, ns, "linkVerify",        LinkVerify);
     install_fn(ctx, ns, "lootPoll",          LootPoll);
+    install_fn(ctx, ns, "lootEnabled",       LootEnabled);
     install_fn(ctx, ns, "scanProcesses",     ScanProcesses);
     install_fn(ctx, ns, "gameSnapshots",     GameSnapshots);
     install_fn(ctx, ns, "uiAsset",           UiAsset);

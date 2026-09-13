@@ -6,8 +6,12 @@
 #include "../reader/Reader.h"
 #include "../shared/Log.h"
 
+#include <Windows.h>
+
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -32,6 +36,18 @@ std::mutex g_mu;
 std::map<std::string, CharState> g_chars;   // by display name
 long long g_unopened = 0;
 std::atomic<bool> g_started{ false };
+std::mutex g_en_mu;
+bool g_enabled = false, g_enabled_loaded = false;
+
+std::filesystem::path enabled_path() {
+    wchar_t up[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH) > 0) {
+        auto dir = std::filesystem::path(up) / L"RuneToolsX";
+        std::error_code ec; std::filesystem::create_directories(dir, ec);
+        return dir / L"rune_caches.txt";
+    }
+    return L"runetoolsx-rune-caches.txt";
+}
 
 // Reads {"n":"...","s":N,"d":N,"e":N,"g":N,"c":N} objects out of the "chars" array. The server
 // emits flat objects with no nesting, so a scan for each '{' ... '}' pair is enough.
@@ -80,6 +96,7 @@ void apply_response(const std::string& body) {
 }
 
 void beat_once() {
+    if (!Enabled()) return;                              // opt-in: nothing is reported while off
     std::string auth = link::AuthHeader();
     if (auth.empty()) return;
     std::vector<std::string> names;
@@ -114,6 +131,33 @@ void beat_once() {
 
 }  // namespace
 
+bool Enabled() {
+    std::lock_guard<std::mutex> lk(g_en_mu);
+    if (!g_enabled_loaded) {
+        g_enabled_loaded = true;
+        std::ifstream f(enabled_path());
+        int v = 0;
+        if (f && (f >> v)) g_enabled = (v != 0);
+    }
+    return g_enabled;
+}
+
+void SetEnabled(bool on) {
+    {
+        std::lock_guard<std::mutex> lk(g_en_mu);
+        g_enabled_loaded = true;
+        g_enabled = on;
+        std::ofstream f(enabled_path(), std::ios::trunc);
+        if (f) f << (on ? 1 : 0);
+    }
+    if (!on) {
+        // Turning it off also drops any progress shown in game; the website keeps the credited time.
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (auto& kv : g_chars) kv.second.pending_drops = 0;
+    }
+    rtx::log::Launcher(std::string("loot: Rune Caches ") + (on ? "enabled" : "disabled"));
+}
+
 void Start() {
     bool expected = false;
     if (!g_started.compare_exchange_strong(expected, true)) return;
@@ -131,9 +175,11 @@ void Start() {
 std::string PollJson(std::uint32_t pid) {
     std::string name = rtx::reader::AccountKey(pid);
     bool linked = !link::Token().empty();
+    bool enabled = Enabled();
     std::lock_guard<std::mutex> lk(g_mu);
     std::ostringstream os;
-    os << "{\"linked\":" << (linked ? "true" : "false") << ",\"name\":\"" << json_escape(name) << "\"";
+    os << "{\"linked\":" << (linked ? "true" : "false") << ",\"enabled\":" << (enabled ? "true" : "false")
+       << ",\"name\":\"" << json_escape(name) << "\"";
     auto it = name.empty() ? g_chars.end() : g_chars.find(name);
     if (it != g_chars.end()) {
         auto& st = it->second;

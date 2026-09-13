@@ -7,10 +7,15 @@
 
 namespace rtx::launcher::loot {
 
-void Start();   // starts the heartbeat thread once (cheap no-op while not linked)
+void Start();   // starts the heartbeat thread once (cheap no-op while not linked or not opted in)
+
+// Opt-in, default OFF and remembered on this PC (%USERPROFILE%\RuneToolsX\rune_caches.txt). No
+// heartbeat leaves this PC while it is off, so no play time is reported and nothing can drop.
+bool Enabled();
+void SetEnabled(bool on);
 
 // Per-client poll from the in-game UI. Returns JSON:
-//   {"linked":bool,"name":"...","seconds":n,"eligible":1200,"guaranteed":3600,"unopened":n,
+//   {"linked":bool,"enabled":bool,"name":"...","seconds":n,"eligible":1200,"guaranteed":3600,"unopened":n,
 //    "capped":bool,"drop":bool}
 // "drop" is true exactly once per cache earned by that character (cleared by this call).
 std::string PollJson(std::uint32_t pid);
