@@ -49,12 +49,19 @@
     if (bankNameToId) bankBaseOf[id] = base;   // only memoise once the mapping is in
     return base;
   }
+  // Which Grand Exchange figure a bank is valued at: instant-buy (high), instant-sell (low) or their average.
+  let bankBasis = prefGet('rtxBankPriceBasis', 'buy');
+  const BANK_BASES = { buy: 'Instant buy', sell: 'Instant sell', avg: 'Buy/sell average' };
   function bankGeOf(id, name) {
     const prices = bankPrices();
     let p = prices && prices[id];
     if (!p && name) { const b = bankBaseId(id, name); if (b !== id) p = prices && prices[b]; }
     if (!p) return null;
-    const v = p.high != null ? p.high : p.low;   // instant-buy first, matching the GE Prices tab's default
+    const hi = p.high > 0 ? p.high : null, lo = p.low > 0 ? p.low : null;
+    let v;
+    if (bankBasis === 'sell') v = lo != null ? lo : hi;
+    else if (bankBasis === 'avg') v = hi != null && lo != null ? Math.round((hi + lo) / 2) : (hi != null ? hi : lo);
+    else v = hi != null ? hi : lo;
     return v > 0 ? v : null;
   }
   // per-item valuation for a row [slot, id, stack, name]
@@ -193,13 +200,27 @@
                      v => { bankSort = v; prefSet('rtxBankSort', bankSort); bankPage = 0; bankPaintSig = ''; sortRefresh(); paintBankPage(); });
       });
       sortRefresh();
+      const basisBtn = document.createElement('button'); basisBtn.type = 'button'; basisBtn.className = 'al-sndsel bank-pick'; basisBtn.id = 'bankBasisSel';
+      basisBtn.title = 'Which Grand Exchange price values the bank: instant-buy, instant-sell, or the average of the two';
+      const basisLab = document.createElement('span'); basisLab.className = 'lab'; basisLab.textContent = 'GE';
+      const basisCur = document.createElement('span'); basisCur.className = 'cur';
+      const basisCar = document.createElement('span'); basisCar.className = 'cv'; basisCar.textContent = '\u25BE';
+      basisBtn.appendChild(basisLab); basisBtn.appendChild(basisCur); basisBtn.appendChild(basisCar);
+      const basisRefresh = () => { basisCur.textContent = BANK_BASES[bankBasis] || BANK_BASES.buy; };
+      basisBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (document.getElementById('bankMenu')) { bankMenuClose(); return; }
+        bankMenuOpen(basisBtn, Object.keys(BANK_BASES).map(k => ({ v: k, label: BANK_BASES[k] })), bankBasis,
+                     v => { bankBasis = v; prefSet('rtxBankPriceBasis', bankBasis); bankPaintSig = ''; basisRefresh(); paintBankPage(); if (bankOverlayOn) bankOverlayTick(); });
+      });
+      basisRefresh();
       const totals = document.createElement('div'); totals.id = 'bankTotals'; totals.className = 'bank-totals';
       const ovSeg = document.createElement('div'); ovSeg.className = 'al-seg bank-seg'; ovSeg.title = 'Draw the GE and high alch totals in game, in the bank window title bar, while the bank is open';
       const ovBtn = document.createElement('button'); ovBtn.type = 'button'; ovBtn.id = 'bankOverlayBtn'; ovBtn.textContent = 'Totals in game';
       ovBtn.classList.toggle('on', bankOverlayOn);
       ovBtn.addEventListener('click', () => { bankOverlaySet(!bankOverlayOn); ovBtn.classList.toggle('on', bankOverlayOn); });
       ovSeg.appendChild(ovBtn);
-      tools.appendChild(sortBtn); tools.appendChild(totals); tools.appendChild(ovSeg);
+      tools.appendChild(sortBtn); tools.appendChild(basisBtn); tools.appendChild(totals); tools.appendChild(ovSeg);
 
       const grid = document.createElement('div'); grid.id = 'bankGrid'; grid.className = 'bank-grid';
 
@@ -233,7 +254,7 @@
     if (bankPage < 0) bankPage = 0;
 
     const priceGen = bankGe ? bankGeAt : 0;
-    const sig = bankTerm + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + priceGen + '|' +
+    const sig = bankTerm + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
                 (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
     if (sig === bankPaintSig) { topUpBankIcons(); return; }
     bankPaintSig = sig;
@@ -244,7 +265,7 @@
       if (!all.length) totalsEl.innerHTML = '';
       else {
         const t = bankTotals(all);
-        totalsEl.innerHTML = '<span title="Grand Exchange value of every priced item, instant-buy price times quantity">GE <b>' + fmtGp(t.ge) + '</b></span>'
+        totalsEl.innerHTML = '<span title="Grand Exchange value of every priced item at the ' + (BANK_BASES[bankBasis] || 'instant buy').toLowerCase() + ' price, times quantity">GE <b>' + fmtGp(t.ge) + '</b></span>'
           + '<span title="High alchemy value of every item, 60% of the item value times quantity">HA <b class="ha">' + fmtGp(t.ha) + '</b></span>'
           + (t.priced < all.length ? '<span title="Items without a Grand Exchange price count as 0 in the GE total">' + (all.length - t.priced) + ' unpriced</span>' : '');
       }
