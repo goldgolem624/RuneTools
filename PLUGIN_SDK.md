@@ -281,6 +281,8 @@ await rtx.plugin.state.scene(range);  // range = 1..64 tiles (clamped)
 //    as { x, y, fx, fy, src } in tiles plus raw fine units, or null.
 
 await rtx.plugin.state.varps("659,3274");  // comma-separated varp ids (string capped at 200 chars)
+await rtx.plugin.state.varpsLong("12932,12933"); // long-typed varps: the full 64-bit value of each, as a decimal
+//    string ("{"12932":"13019417610"}"); varps() would give only the low 32 bits of these
 await rtx.plugin.state.varDomainStores(); // -> { stores: { "<domain>": { src, ptr, live, div, count, vt } },
 //    vars: { "6:<id>": v, "9:<id>": v } }: the live var store of each script-visible domain, resolved the
 //    way the client binds them for scripts; clan (6) and player-group (9) values are listed when those
