@@ -73,7 +73,8 @@ void SetUiHighlights(std::uint32_t pid, const std::vector<UiHighlight>& rects);
 
 // Interface-space text labels (same coordinate space as UiHighlight): drawn plain, left aligned, vertically
 // centred on y. Used by panels that annotate an open interface, e.g. the bank value readout by its title.
-struct UiLabel { int x = 0, y = 0; int rgb = -1; int px = 13; std::string text; };
+// style 0: bare text, left edge at x, centred on y. style 1: pill (dark rounded box) centred at (x, y).
+struct UiLabel { int x = 0, y = 0; int rgb = -1; int px = 13; int style = 0; std::string text; };
 void SetUiLabels(std::uint32_t pid, const std::vector<UiLabel>& labels);
 
 struct PuzzleCell { int x = 0, y = 0, w = 0, h = 0, step = 0, num = -1; };   // num >= 0 overrides the step+1 label

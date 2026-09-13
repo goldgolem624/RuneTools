@@ -1638,7 +1638,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             }
         }
         marker::Command t{}; t.type = marker::kText;
-        t.glyph = marker::kTextPlain;                       // left aligned at x, centred on y, no pill
+        t.glyph = lb.style == 1 ? 0 : marker::kTextPlain;   // pill centred at (x, y), or bare text left aligned at x, centred on y
         t.x0 = sr.x0; t.y0 = sr.y0;
         t.x1 = (float)lb.px * gvScale * uiScale;
         if (lb.rgb < 0) { t.r = 255; t.g = 226; t.b = 74; }  // RS yellow like the game's own value text

@@ -4341,7 +4341,7 @@ JSValueRef UiLabelsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
         pos = end + 1;
         std::vector<std::string> f;
         std::size_t at = 0;
-        while (f.size() < 5) {
+        while (f.size() < 6) {
             std::size_t sep = rec.find('\x1f', at);
             if (sep == std::string::npos) { f.push_back(rec.substr(at)); break; }
             f.push_back(rec.substr(at, sep - at)); at = sep + 1;
@@ -4350,6 +4350,7 @@ JSValueRef UiLabelsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
         rtx::overlay::UiLabel lb;
         lb.x = std::atoi(f[0].c_str()); lb.y = std::atoi(f[1].c_str());
         lb.rgb = std::atoi(f[2].c_str()); lb.px = std::atoi(f[3].c_str());
+        lb.style = f.size() >= 6 ? std::atoi(f[5].c_str()) : 0;   // optional sixth field: 1 = pill
         if (lb.px < 8) lb.px = 8; if (lb.px > 40) lb.px = 40;
         lb.text = f[4].substr(0, 90);
         v.push_back(lb);

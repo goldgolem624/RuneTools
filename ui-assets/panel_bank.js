@@ -344,10 +344,17 @@
       } catch (e) { why = 'interface read failed: ' + (e && e.message ? e.message : e); }
       if (!title) { bankOverlayClear(); bankOverlayStatus(why); return; }
       const t = bankTotals(bankData.items);
-      const text = 'GE ' + fmtGp(t.ge) + '  |  HA ' + fmtGp(t.ha);
-      const x = title.x + title.w - 80 - Math.round(text.length * 7.2);   // right-aligned in the title bar, left of the info button
-      const y = title.y + Math.round((title.h || 40) / 2);
-      const ok = rtxData.sync('overlay.uiLabels', x + '\x1f' + y + '\x1f-1\x1f13\x1f' + text);
+      const text = '( GE ' + fmtGp(t.ge) + ' | HA ' + fmtGp(t.ha) + ' )';
+      // same colour as the title text itself (the game's interface orange when the text comp carries none)
+      const rgb = (title.sub >= 0 && title.col > 0) ? title.col : 0xFF981F;
+      const tw = Math.round(text.length * 7.2);
+      let x, y, style;
+      if (title.y >= 30) {                                   // its own pill just above the frame, over the right end of the title bar
+        x = title.x + title.w - 40 - Math.round(tw / 2); y = title.y - 14; style = 1;
+      } else {                                               // frame flush with the top of the screen: inside the title bar instead
+        x = title.x + title.w - 80 - tw; y = title.y + Math.round((title.h || 40) / 2); style = 0;
+      }
+      const ok = rtxData.sync('overlay.uiLabels', x + '\x1f' + y + '\x1f' + rgb + '\x1f13\x1f' + text + '\x1f' + style);
       bankOverlayShown = true;
       bankOverlayStatus((ok === false ? 'label rejected by the launcher' : 'drawing') + ' at ' + x + ',' + y + ' (title ' + title.x + ',' + title.y + ' ' + title.w + 'x' + title.h + ')');
     } catch (e) { bankOverlayStatus('failed: ' + (e && e.message ? e.message : e)); } finally { bankOverlayBusy = false; }
