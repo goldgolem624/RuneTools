@@ -28,7 +28,22 @@
   // copy the game hands out (same name, different id), "Augmented X" as X, and the broken / damaged /
   // degraded / used / new / uncharged forms of degradable gear as the plain name. Resolved by name through
   // the price mapping, which is the tradeable item list.
-  let bankNameToId = null, bankIdToName = null, bankMapLen = -1;
+  let bankNameToId = null, bankIdToName = null, bankMapLen = -1, bankMapCount = 0;
+  // (Re)build the name maps from the price mapping. Returns how many names are known: 0 until the relay's
+  // mapping has arrived, at which point every memoised base id is dropped so items resolve again.
+  function bankMapping() {
+    let raw = '';
+    try { raw = bridge().pricesMapping() || ''; } catch (e) { raw = ''; }
+    if (raw.length === bankMapLen) return bankMapCount;
+    bankMapLen = raw.length; bankMapCount = 0;
+    bankNameToId = Object.create(null); bankIdToName = Object.create(null);
+    try {
+      for (const it of JSON.parse(raw || '[]')) if (it && it.name) { bankNameToId[String(it.name).toLowerCase()] = it.id; bankIdToName[it.id] = it.name; ++bankMapCount; }
+    } catch (e) {}
+    for (const k in bankBaseOf) delete bankBaseOf[k];
+    for (const k in bankExtrasOf) delete bankExtrasOf[k];
+    return bankMapCount;
+  }
   function bankItemName(id) {
     if (bankIdToName && bankIdToName[id]) return bankIdToName[id];
     try { const info = JSON.parse(bridge().itemInfo(id) || '{}'); if (info && info.name) return info.name; } catch (e) {}
@@ -39,13 +54,7 @@
     if (bankBaseOf[id] !== undefined) return bankBaseOf[id];
     let base = id;
     try {
-      const raw = bridge().pricesMapping() || '[]';
-      if (raw.length !== bankMapLen) {
-        bankMapLen = raw.length; bankNameToId = Object.create(null);
-        bankIdToName = Object.create(null);
-        for (const it of JSON.parse(raw)) if (it && it.name) { bankNameToId[String(it.name).toLowerCase()] = it.id; bankIdToName[it.id] = it.name; }
-      }
-      if (bankNameToId) {
+      if (bankMapping() > 0) {
         const own = String(name || '').toLowerCase();
         // strip "Augmented", then any trailing dye or condition tags, repeatedly ("Augmented X (Soul)" -> X)
         let plain = own.replace(/^augmented\s+/, '').trim(), prevPlain = '';
@@ -73,7 +82,7 @@
         bankExtrasOf[id] = extras;
       }
     } catch (e) {}
-    if (bankNameToId) bankBaseOf[id] = base;   // only memoise once the mapping is in
+    if (bankMapCount > 0) bankBaseOf[id] = base;   // only memoise once the mapping is in
     return base;
   }
   const bankExtrasOf = Object.create(null);   // item id -> [{ label, id }] add-ons (dye, ornament kit) priced on top of the base
@@ -355,7 +364,7 @@
     if (bankPage >= pages) bankPage = pages - 1;
     if (bankPage < 0) bankPage = 0;
 
-    const priceGen = bankGe ? bankGeAt : 0;
+    const priceGen = (bankGe ? bankGeAt : 0) + '/' + bankMapping();   // repaint when prices or the name mapping arrive
     const sig = bankTerm + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
                 (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
     if (sig === bankPaintSig) { topUpBankIcons(); return; }
