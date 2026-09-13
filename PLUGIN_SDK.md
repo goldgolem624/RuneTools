@@ -290,20 +290,26 @@ await rtx.plugin.state.varbits([46468, 46463]); // array of varbit ids (<=64)
 //                                          resolved from the cache automatically)
 
 await rtx.plugin.state.interface(1184, [4, 10, 15]); // group id + component ids
-// -> { group:1184, open:true, hasAbs:true,
-//      comps:[ { comp:4, text:"Acting Guildmaster Reiniger", x, y, w, h },
-//              { comp:10, text:"Are you here to sign up...", x, y, w, h },
-//              { comp:15, x, y, w, h } ] }
+// -> { group:1184, open:true, hasAbs:true, exact:true,
+//      comps:[ { comp:4, sub:-1, text:"Acting Guildmaster Reiniger", vis:1, x, y, w, h },
+//              { comp:10, sub:-1, text:"Are you here to sign up...", vis:1, x, y, w, h },
+//              { comp:15, sub:-1, vis:1, x, y, w, h } ] }
 //    Live text + absolute screen rect of named components of an open interface. e.g. the NPC chat
 //    box (1184): comp 4 = NPC name, comp 10 = message, comp 15 = the continue button. open:false
-//    when that interface isn't showing; x/y/w/h present only when hasAbs (movable-panel origin known).
+//    when that interface isn't showing. x/y/w/h are screen coordinates: the origin comes from the
+//    engine's own sub-interface table (exact:true), so every attached group resolves without any
+//    per-interface knowledge. vis is 1 only when the component is actually drawn (neither it nor
+//    any ancestor is hidden); a hidden comp still reports its rect, so skip vis:0 before highlighting.
 
 await rtx.plugin.state.interfaceGroup(919); // one OPEN interface group id
-// -> { widgets:[ { t:[group,comp,sub], d:<depth>, r:[x,y,w,h], ty, x:<text>, s:<sprite>,
-//                  it:<itemId>, n:<amount>, a:[absX,absY]? }, ... ] }
+// -> { widgets:[ { t:[group,comp,sub], d:<depth>, p:<parentComp>, r:[x,y,w,h], a:[absX,absY]?,
+//                  ty, x:<text>, s:<sprite>, it:<itemId>, n:<amount>, col:"RRGGBB"?, v:1? }, ... ] }
 //    The FULL live widget tree of one open group (what the Interfaces tab shows) --
 //    use when you need every component rather than a few named ones. Heavier than
-//    state.interface; poll it sparingly.
+//    state.interface; poll it sparingly. ty is the component class as the engine defines it
+//    (layer, rect, text, graphic, model, line; item for an item icon). v:1 marks widgets that are
+//    drawn right now; widgets without v are hidden (their own entry or an ancestor). col is the
+//    fill / text / tint colour of rect, text and graphic widgets.
 
 await rtx.plugin.state.varcs([1118, 1119]); // array of varc-int ids (<=64)
 // -> { "1118": 384, "1119": 2 }            map of id -> live varc value (0 when absent)

@@ -4410,94 +4410,155 @@ static std::string iface_sso_text(HANDLE h, std::uint64_t node) {
     return iface_encode_text(buf, len);
 }
 
-// +0x70/+0x74 is parent-relative. Emits "r"=[relX,relY,w,h] and "a"=[absX,absY] when an origin is known.
-static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
-                       std::string& out, int& count, bool& first, int baseX, int baseY, bool haveAbs) {
-    if (count >= 6000 || depth > 12) return;
+// ---- 950-1 interface component node ---------------------------------------------------------------
+// Verified live (2026-09-13) against the js5 definitions of the same components:
+//   +0x00 class table pointer (one per component class: layer, rect, three text classes, graphic, model)
+//   +0x38 group u16, +0x3A comp i16, +0x3C sub i16 (-1 = static comp), +0x3E parent comp i16
+//   +0x60 def-derived flag bits (0x200 mirrors the definition's hidden byte; NOT the live visibility)
+//   +0x98/+0x9C x/y parent-relative, +0xA0/+0xA4 w/h, +0xA8 colour (rect fill / text / graphic tint)
+//   +0x1A8 sprite id (graphic classes; other classes reuse the slot), +0x1B0 24-byte union: SSO string on
+//   text classes, item key 0x4000000002000000|item on item icons, graphic key otherwise
+//   +0x1D8 item id, +0x1E0 item amount
+//   +0x1D0 / +0x1B8 / +0x200 child vectors {begin,end} of 0x18-byte entries {+0 tagged pointer, +8 node}.
+// LIVE VISIBILITY is bit 0 of the entry's +0 word in the vector that holds the node (root widgets use the
+// same entry format at group+0x20/+0x28); a hidden entry hides its whole subtree. The engine flips that bit
+// for if_sethide, which is why 1477's panel frames all carry 0x200 at +0x60 yet only the docked ones draw.
+constexpr std::size_t kIfaceNodeBytes = 0x210;
+struct IfaceNode {
+    std::uint64_t addr = 0, kind = 0;
+    int group = 0, comp = -1, sub = -1, parent = -1;
+    int x = 0, y = 0, w = 0, h = 0;
+    std::uint32_t colour = 0, flags = 0;
+    int sprite = -1, item = 0, amount = 0;
+    std::uint64_t key = 0;
+    std::uint8_t raw[kIfaceNodeBytes];
+};
+struct IfaceChildRef { std::uint64_t addr; bool hidden; };
+static void iface_groups_range(HANDLE h, std::uint64_t mainData, std::uint64_t& gs, std::uint64_t& ge);
+
+static bool iface_read_node(HANDLE h, std::uint64_t addr, IfaceNode& n) {
+    if (addr <= 0x10000 || addr >= 0x7ff000000000ull) return false;
+    if (!rpm_bytes(h, addr, n.raw, sizeof(n.raw))) return false;
+    auto u64 = [&](std::size_t o){ std::uint64_t v; std::memcpy(&v, n.raw + o, 8); return v; };
+    auto i32 = [&](std::size_t o){ std::int32_t v; std::memcpy(&v, n.raw + o, 4); return (int)v; };
+    auto i16 = [&](std::size_t o){ std::int16_t v; std::memcpy(&v, n.raw + o, 2); return (int)v; };
+    n.addr = addr; n.kind = u64(0);
+    n.group = (int)(std::uint16_t)i16(0x38); n.comp = i16(0x3a); n.sub = i16(0x3c); n.parent = i16(0x3e);
+    n.x = i32(0x98); n.y = i32(0x9c); n.w = i32(0xa0); n.h = i32(0xa4);
+    n.colour = (std::uint32_t)i32(0xa8); n.flags = (std::uint32_t)i32(0x60);
+    n.sprite = i32(0x1a8); n.key = u64(0x1b0); n.item = i32(0x1d8); n.amount = i32(0x1e0);
+    return true;
+}
+
+// Entries of one {begin,end} vector: +0 tagged pointer (bit 0 = hidden), +8 node pointer.
+static void iface_entry_refs(HANDLE h, std::uint64_t begin, std::uint64_t end, std::vector<IfaceChildRef>& out) {
+    if (!begin || !end || begin <= 0x10000 || end < begin || (end - begin) > 0x100000) return;
+    std::vector<std::uint8_t> blk((std::size_t)(end - begin));
+    if (blk.empty() || !rpm_bytes(h, begin, blk.data(), blk.size())) return;
+    for (std::size_t o = 0; o + 0x10 <= blk.size(); o += 0x18) {
+        std::uint64_t tag, ch; std::memcpy(&tag, blk.data() + o, 8); std::memcpy(&ch, blk.data() + o + 8, 8);
+        if (ch <= 0x10000 || ch >= 0x7ff000000000ull) continue;     // nodes are heap objects; image pointers are union payload
+        std::int64_t d = (std::int64_t)(begin + o + 8) - (std::int64_t)ch; if (d < 0) d = -d;
+        if (d <= 0x3000) continue;                                    // child lives in a separate alloc
+        out.push_back({ ch, (tag & 1) != 0 });
+    }
+}
+static void iface_child_refs(HANDLE h, const IfaceNode& n, std::vector<IfaceChildRef>& out) {
+    const std::size_t co[3] = { 0x1d0, 0x1b8, 0x200 };   // order matters for the inspector's listing
+    for (std::size_t off : co) {
+        std::uint64_t cs, ce; std::memcpy(&cs, n.raw + off, 8); std::memcpy(&ce, n.raw + off + 8, 8);
+        iface_entry_refs(h, cs, ce, out);
+    }
+}
+static void iface_child_refs(HANDLE h, std::uint64_t node, std::vector<IfaceChildRef>& out) {
+    IfaceNode n;
+    if (iface_read_node(h, node, n)) iface_child_refs(h, n, out);
+}
+static std::uint64_t iface_group_obj(HANDLE h, std::uint64_t main_data, int gid) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    std::uint8_t nb[0x220];                    // covers the +0x200 child vector end at +0x208
-    const bool blk = rpm_bytes(h, node, nb, sizeof(nb));
-    auto f64 = [&](std::uint32_t off) -> std::uint64_t {
-        if (!blk) return r64(node + off);
-        std::uint64_t v; std::memcpy(&v, nb + off, 8); return v;
-    };
-    auto f32 = [&](std::uint32_t off) -> int {
-        if (!blk) return r32(node + off);
-        std::int32_t v; std::memcpy(&v, nb + off, 4); return v;
-    };
-    auto f16 = [&](std::uint32_t off) -> int {
-        if (!blk) return (int)rpm<std::int16_t>(h, node + off).value_or(0);
-        std::int16_t v; std::memcpy(&v, nb + off, 2); return v;
-    };
-    int i1 = f16(0x38), i2 = f16(0x3a), i3 = f16(0x3c);
-    int x = f32(0x98), y = f32(0x9c), w = f32(0xa0), hh = f32(0xa4);
-    int ax = baseX + x, ay = baseY + y;        // absolute screen position of this node
-    std::string txt = iface_text(h, node);     // *(node+0x90) display text (chat, labels, ...)
-    if (txt.empty()) txt = iface_sso_text(h, node);   // +0x180 SSO member (dialogue options, inline labels)
-    int item = f32(0x1d8);                     // item id on an item slot; a packed ARGB colour on text/graphic
-    int amt  = f32(0x1e0);              // item stack / quantity (currency amounts, item counts)
-    // node+0x188: small sprite id or dynamic-graphic pointer, graphic classes only. On text nodes
-    std::uint64_t sprRaw = f64(0x1b0);
-    bool sprUnset = sprRaw == ~0ull;               // all-FF = the unset sentinel: NO graphic content (not "dynamic")
-    bool sprOk = txt.empty();
-    if (sprOk) {
-        std::uint8_t sb[8] = {};
-        if (blk ? (std::memcpy(sb, nb + 0x1b0, 8), true) : rpm_bytes(h, node + 0x1b0, sb, 8))
-            for (int i = 1; i < 8 && sprOk; ++i)
-                if (sb[i] >= 0x20 && sb[i] < 0x7f) sprOk = false;
+    std::uint64_t gs, ge; iface_groups_range(h, main_data, gs, ge);
+    if (!gs) return 0;
+    for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
+        std::uint64_t ap = r64(g + 8);
+        if (ap > 0x10000 && r32(ap) == gid) return ap;
     }
-    // Bit-62-flagged +0x188 = obj-icon graphic: 0x4000000000000000 | flavour<<24 | itemId (low 24 bits).
-    bool sprIsItem = sprOk && !sprUnset && (sprRaw >> 62) == 1 && (sprRaw & 0xFFFFFF) < 200000;
-    bool sprIsObj = sprOk && !sprUnset && !sprIsItem && sprRaw > 0xFFFFFFFFull;   // 64-bit heap pointer -> dynamic graphic
-    int  spr      = (sprOk && !sprIsObj && !sprUnset && sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
-    if (sprIsItem) spr = 131072 + (int)(sprRaw & 0xFFFFFF);
-    bool vis = true;   // 950-1: hidden flag no longer at +0x50 and not re-derived; report everything visible
-    // Component type inferred from payload (vtable at +0x0 changes every build). Item icons: id +0x1a0, amount +0x1a8, plus a matching +0x188 key.
-    // Child vectors at +0x198/+0x180/+0x1c8: {begin,end} of 0x18-byte entries with the pointer 8 bytes in; resolved once here and reused by the child loop.
-    struct ChildVec { std::uint64_t ca = 0, cb = 0, first = 0; bool ok = false; };
-    auto childVec = [&](std::uint32_t off) {
-        ChildVec v;
-        std::uint64_t cs = f64(off), ce = f64(off + 8);
-        v.ca = cs + 8; v.cb = ce + 8;
-        if (!cs || !ce || v.ca <= 0x10000 || v.cb <= v.ca || (v.cb - v.ca) > 0x100000) return v;
-        v.ok = true; v.first = r64(v.ca);
-        return v;
-    };
-    const ChildVec cv198 = childVec(0x1d0), cv180 = childVec(0x1b8), cv1c8 = childVec(0x200);
-    auto hasChild = [](const ChildVec& v) { return v.ok && v.first > 0x10000; };   // at least one real child pointer
-    bool hasKids   = hasChild(cv198) || hasChild(cv1c8) || (txt.empty() && hasChild(cv180));
-    // +0x1a0 is class-dependent, so a real item icon must also carry the +0x188 key: 0x60000+item
-    // (equipment/backpack slots) or the unset sentinel (currency pouch 1473).
-    bool realItem  = (item > 0 && item < 200000) &&
-                     (sprUnset || sprRaw == 0x60000ull + (std::uint64_t)item);
-    bool sized     = (w > 0 && hh > 0);
-    bool okSpr     = (spr > 0) && sized;   // spr already gated to a plausible sprite-id range above
-    const char* ty = hasKids ? "layer" : realItem ? "item" : !txt.empty() ? "text" : (okSpr || (sprIsObj && sized)) ? "graphic" : "rect";
+    return 0;
+}
+// Root widgets of a group object: same entry format at +0x20/+0x28.
+static void iface_root_refs(HANDLE h, std::uint64_t group_obj, std::vector<IfaceChildRef>& out) {
+    if (group_obj <= 0x10000) return;
+    std::uint64_t ws = rpm<std::uint64_t>(h, group_obj + 0x20).value_or(0), we = rpm<std::uint64_t>(h, group_obj + 0x28).value_or(0);
+    iface_entry_refs(h, ws, we, out);
+}
+
+// Component class -> definition type, learned from the js5 definitions of static comps as they are seen
+// (the class table pointers move every build; the mapping is rebuilt per process for free). -1 = unknown.
+static std::mutex g_ifaceKindMu;
+static std::unordered_map<std::uint64_t, int> g_ifaceKindType;
+static int iface_learn_type(const IfaceNode& n) {
+    if (n.sub == -1 && n.group > 0 && n.comp >= 0) {
+        rtx::cache::IfaceCompDefLite d;
+        if (rtx::cache::IfaceCompDefLookup(n.group, n.comp, d) && d.type >= 0) {
+            std::lock_guard<std::mutex> lk(g_ifaceKindMu);
+            g_ifaceKindType[n.kind] = d.type;
+            return d.type;
+        }
+    }
+    std::lock_guard<std::mutex> lk(g_ifaceKindMu);
+    auto it = g_ifaceKindType.find(n.kind);
+    return it == g_ifaceKindType.end() ? -1 : it->second;
+}
+static const char* iface_type_name(int t) {
+    switch (t) { case 0: return "layer"; case 3: return "rect"; case 4: return "text"; case 5: return "graphic";
+                 case 6: return "model"; case 9: return "line"; default: return t < 0 ? "" : "other"; }
+}
+
+// Full live tree of one group as JSON widgets. "r"=[relX,relY,w,h], "a"=[absX,absY] when an origin is known,
+// "v":1 only when the widget is actually drawn (its entry and every ancestor's entry unhidden), "p" parent
+// comp, "col" colour on rect/text/graphic, "ty" from the learned class map (payload heuristics as fallback).
+static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
+                       std::string& out, int& count, bool& first, int baseX, int baseY, bool haveAbs, bool hidden) {
+    if (count >= 6000 || depth > 12) return;
+    IfaceNode n;
+    if (!iface_read_node(h, node, n)) return;
+    const int ax = baseX + n.x, ay = baseY + n.y;        // absolute screen position of this node
+    int type = iface_learn_type(n);
+    std::string txt;
+    if (type < 0 || type == 4) {
+        txt = iface_sso_text(h, node);                   // +0x1B0 SSO member (labels, options, chat)
+        if (txt.empty() && type < 0) txt = iface_text(h, node);   // legacy pointer slot, unused on 950-1
+    }
+    const bool sprUnset = n.key == ~0ull;
+    const bool sprIsItem = !sprUnset && (n.key >> 62) == 1 && (n.key & 0xFFFFFF) < 200000;
+    // A real item icon carries the item key 0x4000000002000000|item (or the unset sentinel on currency pouches).
+    const bool realItem = (n.item > 0 && n.item < 200000) && (sprUnset || (sprIsItem && (int)(n.key & 0xFFFFFF) == n.item) ||
+                                                              n.key == 0x60000ull + (std::uint64_t)n.item);
+    int spr = 0;
+    if (type == 5 || type < 0) { if (n.sprite > 0 && n.sprite < 0x100000) spr = n.sprite; }
+    if (sprIsItem && !realItem) spr = 131072 + (int)(n.key & 0xFFFFFF);   // obj-icon graphic without an item field
+    std::vector<IfaceChildRef> kids; iface_child_refs(h, n, kids);
+    const char* ty;
+    if (type >= 0) ty = realItem ? "item" : iface_type_name(type);
+    else ty = realItem ? "item" : !txt.empty() ? "text" : (spr > 0 && n.w > 0 && n.h > 0) ? "graphic" : !kids.empty() ? "layer" : "rect";   // class not learned yet
     out += first ? "" : ",";
-    out += "{\"g\":" + std::to_string(group) + ",\"t\":[" + std::to_string(i1) + "," +
-           std::to_string(i2) + "," + std::to_string(i3) + "],\"d\":" + std::to_string(depth) +
-           ",\"ty\":\"" + ty + "\",\"r\":[" + std::to_string(x) + "," + std::to_string(y) + "," +
-           std::to_string(w) + "," + std::to_string(hh) + "]";
+    out += "{\"g\":" + std::to_string(group) + ",\"t\":[" + std::to_string(n.group) + "," +
+           std::to_string(n.comp) + "," + std::to_string(n.sub) + "],\"d\":" + std::to_string(depth) +
+           ",\"ty\":\"" + ty + "\",\"r\":[" + std::to_string(n.x) + "," + std::to_string(n.y) + "," +
+           std::to_string(n.w) + "," + std::to_string(n.h) + "]";
     if (haveAbs) out += ",\"a\":[" + std::to_string(ax) + "," + std::to_string(ay) + "]";
+    if (n.parent >= 0)         out += ",\"p\":" + std::to_string(n.parent);
     if (!txt.empty())          out += ",\"x\":\"" + txt + "\"";
-    if (realItem)              out += ",\"it\":" + std::to_string(item);
-    if (realItem && amt > 0)   out += ",\"n\":" + std::to_string(amt);          // stack / amount (e.g. currency)
-    if (okSpr && !realItem)    out += ",\"s\":" + std::to_string(spr);          // a graphic's sprite (not an item echo)
-    if (vis)                   out += ",\"v\":1";
+    if (realItem)              out += ",\"it\":" + std::to_string(n.item);
+    if (realItem && n.amount > 0) out += ",\"n\":" + std::to_string(n.amount);          // stack / amount
+    if (spr > 0 && !realItem)  out += ",\"s\":" + std::to_string(spr);
+    if ((type == 3 || type == 4 || type == 5) && n.colour) { char cb[16]; std::snprintf(cb, sizeof(cb), "%06X", n.colour & 0xFFFFFF); out += ",\"col\":\""; out += cb; out += "\""; }
+    if (!hidden)               out += ",\"v\":1";
     out += "}";
     first = false; ++count;
-    const ChildVec* co[3] = { &cv198, &cv180, &cv1c8 };   // child-array order matters for output
-    for (int k = 0; k < 3; ++k) {
-        const ChildVec& v = *co[k];
-        if (!v.ok) continue;
-        for (std::uint64_t c = v.ca; c + 0x18 <= v.cb && count < 6000; c += 0x18) {
-            std::uint64_t ch = (c == v.ca) ? v.first : r64(c);
-            if (ch <= 0x10000 || ch >= 0x7ff000000000ull) continue;   // image pointer = union payload, not a child (its fake vector fans out to ~440k dead reads)
-            std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-            if (d <= 0x3000) continue;                     // child in a separate alloc
-            iface_walk(h, group, ch, depth + 1, out, count, first, ax, ay, haveAbs);
-        }
+    for (const auto& k : kids) {
+        if (count >= 6000) break;
+        iface_walk(h, group, k.addr, depth + 1, out, count, first, ax, ay, haveAbs, hidden || k.hidden);
     }
 }
 
@@ -4799,7 +4860,6 @@ static bool iface_group_open(HANDLE h, std::uint64_t main_data, int gid) {
 static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    auto spr = [&](std::uint64_t a){ return (int)rpm<std::uint16_t>(h, a).value_or(0); };
     std::uint64_t gs, ge; iface_groups_range(h, main_data, gs, ge);
     if (!gs) return false;
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
@@ -4810,19 +4870,9 @@ static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
         bool found = false;
         std::function<void(std::uint64_t,int)> walk = [&](std::uint64_t node, int depth) {
             if (found || depth > 16) return;
-            if (spr(node + 0x1b0) == sprite_id) { found = true; return; }
-            const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-            for (int k = 0; k < 3 && !found; ++k) {
-                std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8), ca = cs + 8, cb = ce + 8;
-                if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-                for (std::uint64_t c = ca; c + 0x18 <= cb && !found; c += 0x18) {
-                    std::uint64_t ch = r64(c);
-                    if (ch <= 0x10000) continue;
-                    std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                    if (d <= 0x3000) continue;
-                    walk(ch, depth + 1);
-                }
-            }
+            if (r32(node + 0x1a8) == sprite_id) { found = true; return; }
+            { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+              for (const auto& kid_ : kids_) { if (!(true && !found && !found)) break; walk(kid_.addr, depth + 1); } }
         };
         for (std::uint64_t w = a; w + 0x18 <= b && !found; w += 0x18) {
             std::uint64_t nd = r64(w);
@@ -4921,19 +4971,8 @@ static bool iface_live_frame_origin(HANDLE h, std::uint64_t gs, std::uint64_t ge
                 }
             }
         }
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3; ++k) {
-            std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
-            std::uint64_t ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb; c += 0x18) {
-                std::uint64_t ch = r64(c);
-                if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                fwalk(ch, ax, ay, depth + 1);
-            }
-        }
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true)) break; fwalk(kid_.addr, ax, ay, depth + 1); } }
     };
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
         std::uint64_t ap = r64(g + 8);
@@ -5171,19 +5210,8 @@ static int iface_item_at(HANDLE h, std::uint64_t mainData, int group, int comp, 
                 if (d < nearDist) { nearDist = d; nearItem = item; }
             }
         }
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3 && found < 0; ++k) {
-            std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8);
-            std::uint64_t ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb && found < 0; c += 0x18) {
-                std::uint64_t ch = r64(c);
-                if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                walk(ch, depth + 1);
-            }
-        }
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true && found < 0 && found < 0)) break; walk(kid_.addr, depth + 1); } }
     };
     for (std::uint64_t g = gs; g + 0x10 <= ge && found < 0; g += 0x10) {
         std::uint64_t ap2 = r64(g + 8);
@@ -5426,17 +5454,8 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
         if (grid || depth > 14) return;
         int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
         if (r16s(node + 0x3a) == 18 && r16s(node + 0x3c) == -1) { grid = node; gx = ax; gy = ay; return; }
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3 && !grid; ++k) {
-            std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8), ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb && !grid; c += 0x18) {
-                std::uint64_t ch = r64(c); if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                find(ch, ax, ay, depth + 1);
-            }
-        }
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true && !grid && !grid)) break; find(kid_.addr, ax, ay, depth + 1); } }
     };
     std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
     for (std::uint64_t w = ws + 8; w + 0x18 <= we + 8 && !grid; w += 0x18) { std::uint64_t nd = r64(w); if (nd > 0x10000) find(nd, ox, oy, 0); }
@@ -5495,8 +5514,8 @@ std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& 
     bool haveAbs = iface_panel_origin(h, *root, pid, group, ox, oy);
     if (!haveAbs && mountComp > 0) haveAbs = read_iface_mount_origin(h, *root, mountComp, ox, oy);
     std::vector<int> seen; std::string comps;
-    std::function<void(std::uint64_t,int,int,int)> walk =
-        [&](std::uint64_t node, int bx, int by, int depth) {
+    std::function<void(std::uint64_t,int,int,int,bool)> walk =
+        [&](std::uint64_t node, int bx, int by, int depth, bool hid) {
         if (depth > 16) return;
         int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
         int comp = r16s(node + 0x3a);
@@ -5505,22 +5524,13 @@ std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& 
             seen.push_back(comp);
             comps += (comps.empty() ? "" : ",");
             comps += "\"" + std::to_string(comp) + "\":[" + std::to_string(ax) + "," + std::to_string(ay)
-                   + "," + std::to_string(r32(node + 0xa0)) + "," + std::to_string(r32(node + 0xa4)) + "]";
+                   + "," + std::to_string(r32(node + 0xa0)) + "," + std::to_string(r32(node + 0xa4)) + "," + (hid ? "0" : "1") + "]";   // [x,y,w,h,visible]
         }
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3; ++k) {
-            std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8), ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb; c += 0x18) {
-                std::uint64_t ch = r64(c); if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                walk(ch, ax, ay, depth + 1);
-            }
-        }
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true)) break; walk(kid_.addr, ax, ay, depth + 1, hid || kid_.hidden); } }
     };
     std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
-    for (std::uint64_t w = ws + 8; w + 0x18 <= we + 8; w += 0x18) { std::uint64_t nd = r64(w); if (nd > 0x10000) walk(nd, ox, oy, 0); }
+    { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots); for (const auto& rt : roots) walk(rt.addr, ox, oy, 0, rt.hidden); }
     std::string out = "{\"abs\":"; out += haveAbs ? "1" : "0"; out += ",\"comps\":{" + comps + "}}";
     return out;
 }
@@ -5544,33 +5554,22 @@ std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite) 
     int ox = 0, oy = 0;
     iface_panel_origin(h, *root, pid, group, ox, oy);   // 1477 seeds at 0,0 -> already screen
     bool found = false; int fx = 0, fy = 0, fw = 0, fh = 0, fv = 0;
-    std::function<void(std::uint64_t,int,int,int,int,int,int,int,int)> walk =
-        [&](std::uint64_t node, int bx, int by, int depth, int px, int py, int pw, int ph, int pv) {
+    std::function<void(std::uint64_t,int,int,int,int,int,int,int,int,bool)> walk =
+        [&](std::uint64_t node, int bx, int by, int depth, int px, int py, int pw, int ph, int pv, bool hid) {
         if (found || depth > 16) return;
         int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
         int w = r32(node + 0xa0), hh = r32(node + 0xa4);
-        int vis = 1;   // see the node reader: hidden flag not re-derived on 950-1
-        std::uint64_t sprRaw = r64(node + 0x1b0);
-        if (sprRaw > 0 && sprRaw < 0x100000 && (int)sprRaw == sprite && pw > 0 && ph > 0) {
+        int vis = hid ? 0 : 1;
+        int sprRaw = r32(node + 0x1a8);   // sprite id slot (graphic classes)
+        if (sprRaw == sprite && pw > 0 && ph > 0) {
             fx = px; fy = py; fw = pw; fh = ph; fv = pv; found = true; return;
         }
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3 && !found; ++k) {
-            std::uint64_t cs = r64(node + co[k]), ce = r64(node + co[k] + 8), ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb && !found; c += 0x18) {
-                std::uint64_t ch = r64(c); if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                walk(ch, ax, ay, depth + 1, ax, ay, w, hh, vis);
-            }
-        }
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true && !found && !found)) break; walk(kid_.addr, ax, ay, depth + 1, ax, ay, w, hh, vis, hid || kid_.hidden); } }
     };
     std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
-    for (std::uint64_t wn = ws + 8; wn + 0x18 <= we + 8 && !found; wn += 0x18) {
-        std::uint64_t nd = r64(wn);
-        if (nd > 0x10000) walk(nd, ox, oy, 0, 0, 0, 0, 0, 0);
-    }
+    { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots);
+      for (const auto& rt : roots) { if (found) break; walk(rt.addr, ox, oy, 0, 0, 0, 0, 0, 0, rt.hidden); } }
     if (!found) return kEmpty;
     char buf[160];
     std::snprintf(buf, sizeof(buf), "{\"ok\":1,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,\"v\":%d}",
@@ -5603,11 +5602,8 @@ std::string InterfaceGroupJson(std::uint32_t pid, int groupId) {
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         std::uint64_t a = ws + 8, b = we + 8;
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
-        for (std::uint64_t w = a; w + 0x18 <= b && count < 4000; w += 0x18) {
-            std::uint64_t nd = r64(w);
-            if (nd <= 0x10000) continue;
-            iface_walk(h, groupId, nd, 0, out, count, first, ox, oy, haveAbs);
-        }
+        { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots);
+          for (const auto& rt : roots) { if (count >= 6000) break; iface_walk(h, groupId, rt.addr, 0, out, count, first, ox, oy, haveAbs, rt.hidden); } }
         break;   // only the matching group
     }
     out += "]}";
@@ -5640,8 +5636,8 @@ std::string InterfaceSizeSearchJson(std::uint32_t pid, int tw, int th, int tol) 
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) continue;
         int ox = 0, oy = 0;
         bool haveAbs = iface_panel_origin(h, *root, pid, gid, ox, oy);
-        std::function<void(std::uint64_t,int,int,int)> walk =
-            [&](std::uint64_t node, int bx, int by, int depth) {
+        std::function<void(std::uint64_t,int,int,int,bool)> walk =
+            [&](std::uint64_t node, int bx, int by, int depth, bool hid) {
             if (depth > 14 || total > 120000 || matched >= 600) return;
             ++total;
             int x = r32(node+0x98), y = r32(node+0x9c), w = r32(node+0xa0), hh = r32(node+0xa4);
@@ -5650,29 +5646,16 @@ std::string InterfaceSizeSearchJson(std::uint32_t pid, int tw, int th, int tol) 
                 out += first ? "" : ","; first = false;
                 out += "{\"g\":" + std::to_string(gid) + ",\"c\":" + std::to_string(r16(node+0x3a))
                      + ",\"s\":" + std::to_string(r16(node+0x3c)) + ",\"w\":" + std::to_string(w)
-                     + ",\"h\":" + std::to_string(hh);
+                     + ",\"h\":" + std::to_string(hh) + ",\"v\":" + (hid ? "0" : "1");
                 if (haveAbs) out += ",\"ax\":" + std::to_string(ax) + ",\"ay\":" + std::to_string(ay);
                 out += "}";
                 ++matched;
             }
-            const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-            for (int k = 0; k < 3; ++k) {
-                std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
-                std::uint64_t ca = cs + 8, cb = ce + 8;
-                if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-                for (std::uint64_t c = ca; c + 0x18 <= cb && matched < 600; c += 0x18) {
-                    std::uint64_t ch = r64(c);
-                    if (ch <= 0x10000) continue;
-                    std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                    if (d <= 0x3000) continue;
-                    walk(ch, ax, ay, depth + 1);
-                }
-            }
+            { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+              for (const auto& kid_ : kids_) { if (!(true && matched < 600)) break; walk(kid_.addr, ax, ay, depth + 1, hid || kid_.hidden); } }
         };
-        for (std::uint64_t wn = a; wn + 0x18 <= b && matched < 600; wn += 0x18) {
-            std::uint64_t nd = r64(wn);
-            if (nd > 0x10000) walk(nd, ox, oy, 0);
-        }
+        { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots);
+          for (const auto& rt : roots) { if (matched >= 600) break; walk(rt.addr, ox, oy, 0, rt.hidden); } }
     }
     out += "]}";
     return out;
@@ -5695,7 +5678,7 @@ std::string DialogJson(std::uint32_t pid) {
     int ox = 0, oy = 0; bool exactOrigin = false;
     bool haveAbs = iface_panel_origin(h, *root, pid, kGroup, ox, oy, &exactOrigin);
 
-    std::function<void(std::uint64_t,int,int,int)> walk;
+    std::function<void(std::uint64_t,int,int,int,bool)> walk;
     std::string opts; bool firstOpt = true; std::string header; int headerComp = -1; int optN = 0;
     int found = 0;
     auto isNumText = [](const std::string& t) {   // text made only of digits / '.' / ' ' (e.g. "1." or "38.")
@@ -5703,7 +5686,7 @@ std::string DialogJson(std::uint32_t pid) {
         for (char c : t) if (!(c >= '0' && c <= '9') && c != '.' && c != ' ') return false;
         return true;
     };
-    walk = [&](std::uint64_t node, int bx, int by, int depth) {
+    walk = [&](std::uint64_t node, int bx, int by, int depth, bool hid) {
         if (depth > 16 || found > 600) return;
         int comp = r16(node + 0x3a);
         int tag  = r32(node + 0x1a8);   // 0x178 through 949-5; +0x30 like the neighbouring SSO member (unverified on 950-1)
@@ -5712,7 +5695,7 @@ std::string DialogJson(std::uint32_t pid) {
         ++found;
         std::string txt = iface_sso_text(h, node);
         if (comp == 3 && tag == 2 && !txt.empty() && header.empty()) { header = txt; headerComp = comp; }
-        else if (!txt.empty() && w > 0 && !(comp == 3 && tag == 2) && !(isNumText(txt) && w < 48)) {
+        else if (!hid && !txt.empty() && w > 0 && !(comp == 3 && tag == 2) && !(isNumText(txt) && w < 48)) {
             opts += firstOpt ? "" : ","; firstOpt = false; ++optN;
             opts += "{\"n\":" + std::to_string(optN) + ",\"comp\":" + std::to_string(comp) +
                     ",\"tag\":" + std::to_string(tag) + ",\"text\":\"" + txt + "\"";
@@ -5720,19 +5703,8 @@ std::string DialogJson(std::uint32_t pid) {
                                  ",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(hh);
             opts += "}";
         }
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3; ++k) {
-            std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
-            std::uint64_t ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb; c += 0x18) {
-                std::uint64_t ch = r64(c);
-                if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                walk(ch, ax, ay, depth + 1);
-            }
-        }
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true)) break; walk(kid_.addr, ax, ay, depth + 1, hid || kid_.hidden); } }
     };
     bool open = false;
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
@@ -5750,10 +5722,7 @@ std::string DialogJson(std::uint32_t pid) {
             int fx = 0, fy = 0;
             if (rw > 0 && rh > 0 && iface_live_frame_origin(h, gs, ge, ox, oy, rw - 2, rw + 2, rh - 2, rh + 2, fx, fy)) { ox = fx; oy = fy; }
         }
-        for (std::uint64_t w = a; w + 0x18 <= b; w += 0x18) {
-            std::uint64_t nd = r64(w);
-            if (nd > 0x10000) walk(nd, ox, oy, 0);
-        }
+        { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots); for (const auto& rt : roots) walk(rt.addr, ox, oy, 0, rt.hidden); }
         break;
     }
     if (!open) return "{}";
@@ -5787,19 +5756,20 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
     bool haveAbs = iface_panel_origin(h, *root, pid, group, ox, oy, &exactOrigin);
 
     std::string comps; bool firstC = true; bool open = false; int found = 0;
-    std::function<void(std::uint64_t,int,int,int)> walk;
-    walk = [&](std::uint64_t node, int bx, int by, int depth) {
+    std::function<void(std::uint64_t,int,int,int,bool)> walk;
+    walk = [&](std::uint64_t node, int bx, int by, int depth, bool hid) {
         if (depth > 12 || found > 4000) return;
         ++found;
         int comp = r16(node + 0x3a);
         int x = r32(node + 0x98), y = r32(node + 0x9c), w = r32(node + 0xa0), hh = r32(node + 0xa4);
-        int vflags = r32(node + 0x60);   // state flags (+0x50 through 949-5, bit 0x1800 = hidden; 950-1 bits not re-derived)
+        const int vflags = hid ? 0 : 1;   // effective visibility: the node's own vector entry and every ancestor's are unhidden
         int ax = bx + x, ay = by + y;
         if (want.count(comp)) {
             std::string txt = iface_text(h, node);          // +0x90 display text
             if (txt.empty()) txt = iface_sso_text(h, node); // +0x180 SSO text
-            std::uint64_t sprRaw = rpm<std::uint64_t>(h, node + 0x1b0).value_or(0);
-            int sprv = (sprRaw > 0 && sprRaw < 0x100000) ? (int)sprRaw : 0;
+            std::uint64_t sprRaw = rpm<std::uint64_t>(h, node + 0x1b0).value_or(0);   // item / graphic key union
+            int sprId = r32(node + 0x1a8);
+            int sprv = (sprId > 0 && sprId < 0x100000 && txt.empty()) ? sprId : 0;
             int objv = ((sprRaw >> 62) == 1 && (sprRaw & 0xFFFFFF) < 200000) ? (int)(sprRaw & 0xFFFFFF) : 0;
             int subv = r16(node + 0x3c);   // entry index within a templated grid
             comps += firstC ? "" : ","; firstC = false;
@@ -5811,19 +5781,8 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
                                   ",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(hh);
             comps += "}";
         }
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3; ++k) {
-            std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
-            std::uint64_t ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb; c += 0x18) {
-                std::uint64_t ch = r64(c);
-                if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                walk(ch, ax, ay, depth + 1);
-            }
-        }
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true)) break; walk(kid_.addr, ax, ay, depth + 1, hid || kid_.hidden); } }
     };
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
         std::uint64_t ap2 = r64(g + 8);
@@ -5840,10 +5799,7 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
             int fx = 0, fy = 0;
             if (rw > 0 && rh > 0 && iface_live_frame_origin(h, gs, ge, ox, oy, rw - 2, rw + 2, rh - 2, rh + 2, fx, fy)) { ox = fx; oy = fy; }
         }
-        for (std::uint64_t w = a; w + 0x18 <= b; w += 0x18) {
-            std::uint64_t nd = r64(w);
-            if (nd > 0x10000) walk(nd, ox, oy, 0);
-        }
+        { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots); for (const auto& rt : roots) walk(rt.addr, ox, oy, 0, rt.hidden); }
         break;
     }
     return "{\"group\":" + std::to_string(group) + ",\"open\":" + (open ? "true" : "false") +
@@ -5870,27 +5826,16 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
 
     int vpx0 = 0, vpy0 = 0, vpx1 = 0, vpy1 = 0; bool haveVp = false;
 
-    struct Cell { int x, y, w, h; std::uint64_t parent; std::uint64_t node; };
+    struct Cell { int x, y, w, h; std::uint64_t parent; std::uint64_t node; bool hid; };
     std::vector<Cell> cells;
-    std::function<void(std::uint64_t,std::uint64_t,int,int,int)> walk;
-    walk = [&](std::uint64_t node, std::uint64_t parent, int bx, int by, int depth) {
+    std::function<void(std::uint64_t,std::uint64_t,int,int,int,bool)> walk;
+    walk = [&](std::uint64_t node, std::uint64_t parent, int bx, int by, int depth, bool hid) {
         if (depth > 12 || cells.size() > 4000) return;
         int x = r32(node + 0x98), y = r32(node + 0x9c), w = r32(node + 0xa0), hh = r32(node + 0xa4);
         int ax = bx + x, ay = by + y;
-        if (w >= 28 && w <= 60 && hh >= 26 && hh <= 52) cells.push_back({ ax, ay, w, hh, parent, node }); // a backpack cell (size-gated; tolerates UI scale)
-        const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-        for (int k = 0; k < 3; ++k) {
-            std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
-            std::uint64_t ca = cs + 8, cb = ce + 8;
-            if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-            for (std::uint64_t c = ca; c + 0x18 <= cb; c += 0x18) {
-                std::uint64_t ch = r64(c);
-                if (ch <= 0x10000) continue;
-                std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                if (d <= 0x3000) continue;
-                walk(ch, node, ax, ay, depth + 1);   // `node` is the parent of `ch`
-            }
-        }
+        if (w >= 28 && w <= 60 && hh >= 26 && hh <= 52) cells.push_back({ ax, ay, w, hh, parent, node, hid }); // a backpack cell (size-gated; tolerates UI scale)
+        { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
+          for (const auto& kid_ : kids_) { if (!(true)) break; walk(kid_.addr, node, ax, ay, depth + 1, hid || kid_.hidden); } }
     };
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
         std::uint64_t ap2 = r64(g + 8);
@@ -5938,14 +5883,12 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
             if (vpx0 < px) vpx0 = px;            if (vpy0 < py) vpy0 = py;
             if (vpx1 > px + panelW) vpx1 = px + panelW;  if (vpy1 > py + panelH) vpy1 = py + panelH;
         }
-        for (std::uint64_t w = a; w + 0x18 <= b; w += 0x18) {
-            std::uint64_t nd = r64(w);
-            if (nd > 0x10000) walk(nd, c0, ox, oy, 0);   // c0 (group root) is the parent of each top-level widget
-        }
+        { std::vector<IfaceChildRef> roots; iface_entry_refs(h, ws, we, roots); for (const auto& rt : roots) walk(rt.addr, c0, ox, oy, 0, rt.hidden); }   // c0 (group root) is the parent of each top-level widget
         break;
     }
     std::size_t rawCells = cells.size();
     auto visible = [&](const Cell& c) {
+        if (c.hid) return false;               // hidden subtree (other tab / collapsed section)
         if (!haveVp) return true;
         int cx = c.x + c.w / 2, cy = c.y + c.h / 2;
         return cx >= vpx0 && cx <= vpx1 && cy >= vpy0 && cy <= vpy1;

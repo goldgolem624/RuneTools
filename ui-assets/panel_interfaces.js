@@ -208,6 +208,11 @@
           + '.t-graphic{color:#79c6d6;background:rgba(121,198,214,.14)}'
           + '.t-item{color:#79d6a6;background:rgba(121,214,166,.14)}'
           + '.t-rect{color:#b59ad0;background:rgba(181,154,208,.14)}'
+          + '.t-model{color:#d6a679;background:rgba(214,166,121,.14)}'
+          + '.t-line,.t-other{color:#9aa0b5;background:rgba(154,160,181,.14)}'
+          + '.t-hid{color:#8a8a96;background:rgba(138,138,150,.12);opacity:.8}'
+          + '.if-row.if-hid{opacity:.45}'
+          + '.if-col{flex:none;width:10px;height:10px;border-radius:3px;border:1px solid rgba(255,255,255,.25)}'
           + '.if-amt{color:#e8c06a;flex:none;font-size:10px;font-weight:700}'
           + '.if-spr{color:#79c6d6;flex:none;font-size:10px;opacity:.85}'
           + '.if-sprico{flex:none;width:18px;height:18px;border-radius:3px;background:rgba(255,255,255,.05)}'
@@ -331,12 +336,16 @@
           const txFull = (w.x || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')
                                     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').trim();
           const a = w.a;
-          const absAttr = (a && r[2] > 0 && r[3] > 0) ? ' data-ax="' + a[0] + '" data-ay="' + a[1] + '" data-aw="' + r[2] + '" data-ah="' + r[3] + '"' : '';
+          const shown = !!w.v;   // drawn right now (own vector entry and every ancestor unhidden)
+          const absAttr = (a && shown && r[2] > 0 && r[3] > 0) ? ' data-ax="' + a[0] + '" data-ay="' + a[1] + '" data-aw="' + r[2] + '" data-ah="' + r[3] + '"' : '';
           const sizeAttr = (r[2] > 0 && r[3] > 0) ? ' data-w="' + r[2] + '" data-h="' + r[3] + '"' : '';
-          html += '<div class="if-row"' + absAttr + sizeAttr + ' title="' + full + (sizeAttr ? '  (click: find this size everywhere' + (absAttr ? '; hover: highlight in-game' : '') + ')' : '') + '" style="padding-left:' + pad + 'px">'
+          const tip = full + (w.p !== undefined ? '  parent ' + w.p : '') + (w.col ? '  colour #' + w.col : '') + (shown ? '' : '  hidden') + (a ? '  screen ' + a[0] + ',' + a[1] : '');
+          html += '<div class="if-row' + (shown ? '' : ' if-hid') + '"' + absAttr + sizeAttr + ' title="' + tip + (sizeAttr ? '  (click: find this size everywhere' + (absAttr ? '; hover: highlight in-game' : '') + ')' : '') + '" style="padding-left:' + pad + 'px">'
             + '<span class="if-id if-watchable" data-wg="' + t[0] + '" data-wk="' + full + '"'
             + ' title="click: watch this component for 30s">' + idtxt + '</span>'
             + (w.ty ? '<span class="if-ty t-' + w.ty + '">' + w.ty + '</span>' : '')
+            + (shown ? '' : '<span class="if-ty t-hid">hidden</span>')
+            + (w.col ? '<span class="if-col" style="background:#' + w.col + '" title="#' + w.col + '"></span>' : '')
             + (w.it ? '<span class="if-itemico" data-item="' + w.it + '"></span><span class="if-item">#' + w.it + '</span>' : '')
             + (w.n ? '<span class="if-amt">×' + Number(w.n).toLocaleString() + '</span>' : '')
             // "s" >= 131072 is the reader's synthetic encoding (131072 + item id) of an obj-icon graphic:

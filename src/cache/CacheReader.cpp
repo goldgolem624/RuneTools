@@ -1737,6 +1737,8 @@ struct IfaceCompDef {
     std::string text;                 // type 4: default text
     int  sprite = -1;                 // type 5
     int  model  = -1;                 // type 6
+    int  scrollw = 0, scrollh = 0;    // type 0: scrollable content size
+    int  colour = -1;                 // types 3/4/5
 };
 
 // Returns 0 on success, the type value for an unknown type block (header still valid), 256 on overrun.
@@ -1757,14 +1759,14 @@ int DecodeIfaceComp(std::vector<std::uint8_t> bytes, IfaceCompDef& c) {
     c.hidden = s.ReadUnsignedByte() != 0;
     switch (c.type) {
     case 0:                                           // container
-        s.ReadUnsignedShort();
-        if (s.ReadUnsignedShort() & 0x8000) s.ReadInt();
+        c.scrollw = s.ReadUnsignedShort();
+        { int sh = s.ReadUnsignedShort(); c.scrollh = sh & 0x7FFF; if (sh & 0x8000) s.ReadInt(); }
         if (ver == -1) s.ReadUnsignedByte();          // disable-hover bool
         if (ver >= 6)  s.ReadInt();
         if (ver == 6)  s.ReadInt();
         break;
     case 3:                                           // filled figure
-        s.ReadInt(); s.ReadUnsignedByte(); s.ReadByte();
+        c.colour = s.ReadInt(); s.ReadUnsignedByte(); s.ReadByte();
         break;
     case 4:                                           // text
         s.ReadBigSmart();                             // font id
@@ -1773,7 +1775,7 @@ int DecodeIfaceComp(std::vector<std::uint8_t> bytes, IfaceCompDef& c) {
         s.ReadUnsignedByte();                                        // unknown u8
         s.ReadUnsignedByte(); s.ReadUnsignedByte();                  // align h/v
         s.ReadUnsignedByte();                                        // shadow
-        s.ReadInt();                                                 // colour
+        c.colour = s.ReadInt();                                      // colour
         s.ReadUnsignedByte();                                        // transparency
         if (ver >= 0) s.ReadUnsignedByte();                          // multiline
         break;
@@ -1784,7 +1786,7 @@ int DecodeIfaceComp(std::vector<std::uint8_t> bytes, IfaceCompDef& c) {
         if (ah == 4) s.ReadInt();
         s.ReadUnsignedByte(); s.ReadUnsignedByte();                  // transparency, border
         s.ReadInt(); s.ReadUnsignedByte(); s.ReadUnsignedByte();     // unknown, vflip, hflip
-        s.ReadInt();                                                 // colour
+        c.colour = s.ReadInt();                                      // colour
         if (ver >= 0) s.ReadUnsignedByte();                          // clickmask
         if (ver >= 6) s.ReadInt();
         break;
@@ -1850,12 +1852,45 @@ std::string IfaceGroupDefsJson(int group_id) {
             }
             if (c.sprite >= 0) out += ",\"sprite\":" + std::to_string(c.sprite);
             if (c.model  >= 0) out += ",\"model\":"  + std::to_string(c.model);
+            if (c.scrollw || c.scrollh) out += ",\"sw\":" + std::to_string(c.scrollw) + ",\"sh\":" + std::to_string(c.scrollh);
+            if (c.colour != -1) out += ",\"col\":" + std::to_string(c.colour);
             out += "}";
         }
     }
     out += "]}";
     g_iface_defs_json[group_id] = out;
     return out;
+}
+
+namespace {
+std::unordered_map<int, std::unordered_map<int, IfaceCompDefLite>> g_iface_defs_lite;   // group -> comp -> def
+}
+bool IfaceCompDefLookup(int group_id, int comp_id, IfaceCompDefLite& out) {
+    if (group_id < 0 || comp_id < 0) return false;
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto git = g_iface_defs_lite.find(group_id);
+    if (git == g_iface_defs_lite.end()) {
+        auto* index = g_store ? g_store->Get(kIndexInterfaces) : nullptr;
+        if (!index || !index->ready()) return false;      // cache not open yet -> retry next call
+        std::unordered_map<int, IfaceCompDefLite> m;
+        const auto& entries = index->ref().entries();
+        if (group_id < (int)entries.size()) {
+            for (int fid : entries[group_id].valid_file_ids) {
+                auto bytes = index->ReadFile(group_id, fid);
+                if (bytes.empty()) continue;
+                IfaceCompDef d;
+                if (DecodeIfaceComp(std::move(bytes), d) == 256) continue;
+                IfaceCompDefLite l; l.type = d.type; l.hidden = d.hidden; l.parent = d.parent; l.sprite = d.sprite; l.colour = d.colour;
+                m[fid] = l;
+            }
+        }
+        git = g_iface_defs_lite.emplace(group_id, std::move(m)).first;
+    }
+    auto it = git->second.find(comp_id);
+    if (it == git->second.end()) return false;
+    out = it->second;
+    return true;
 }
 
 #include "OverlayTexColours.h"

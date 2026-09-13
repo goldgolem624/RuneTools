@@ -17,6 +17,20 @@
     return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
   }
 
+  // Time to the next level at the current rate, as dd:hh:mm:ss (hours only once a day is needed).
+  function xpmTtl(xp, ph, elite) {
+    if (!(xp >= 0) || !(ph > 0) || typeof xpToNext !== 'function') return '';
+    const nx = xpToNext(xp, elite);
+    if (!nx || !(nx.next > 0)) return '';
+    let s = Math.ceil(nx.next / ph * 3600);
+    if (s > 99 * 86400) return '99d+';
+    const dd = Math.floor(s / 86400); s -= dd * 86400;
+    const hh = Math.floor(s / 3600); s -= hh * 3600;
+    const mm = Math.floor(s / 60); s -= mm * 60;
+    const p2 = n => (n < 10 ? '0' : '') + n;
+    return (dd ? p2(dd) + ':' : '') + p2(hh) + ':' + p2(mm) + ':' + p2(s);
+  }
+
   function xpmVisibleRows(d) {
     if (!d || !d.rows) return [];
     return d.rows.filter(r => xpAuto ? r.gained > 0 : ((xpMask >>> r.id) & 1) !== 0);
@@ -34,10 +48,10 @@
     const mk = (id, label, cls) => {
       const r = document.createElement('div'); r.className = 'xpm-row' + (cls ? ' ' + cls : '');
       r.innerHTML = '<span class="xpm-bar"></span><span class="xpm-n"></span>' +
-                    '<span class="xpm-g"></span><span class="xpm-p"></span>';
+                    '<span class="xpm-g"></span><span class="xpm-ttl" title="Time to next level at the current rate"></span><span class="xpm-p"></span>';
       r.querySelector('.xpm-n').textContent = label;
       host.appendChild(r);
-      return { el: r, bar: r.querySelector('.xpm-bar'), g: r.querySelector('.xpm-g'), p: r.querySelector('.xpm-p') };
+      return { el: r, bar: r.querySelector('.xpm-bar'), g: r.querySelector('.xpm-g'), p: r.querySelector('.xpm-p'), ttl: r.querySelector('.xpm-ttl') };
     };
     if (xpTotal && d && d.total) xpmEls.total = mk(-1, 'Total', 'is-total');
     for (const r of xpmVisibleRows(d)) xpmEls.rows[r.id] = mk(r.id, SKILL_NAMES[r.id] || ('#' + r.id), '');
@@ -79,6 +93,7 @@
         if (cur !== target) settled = false;
         e.g.textContent = '+' + fmtXpNum(Math.round(cur));
         e.p.textContent = fmtXpNum(+r.ph || 0) + '/h';
+        if (e.ttl) { const t = xpmTtl(+r.xp, +r.ph || 0, r.id === 26); e.ttl.textContent = t ? 'TTL ' + t : ''; }
         e.bar.style.width = Math.max(0, Math.min(100, ((+r.ph || 0) / maxPh) * 100)).toFixed(1) + '%';
       }
       if (settled) return;
@@ -112,6 +127,7 @@
         'text-overflow:ellipsis;white-space:nowrap;color:var(--text)}' +
         '.xpm-g{position:relative;z-index:1;color:var(--ok);flex:none}' +
         '.xpm-p{position:relative;z-index:1;color:var(--text-mute);flex:none;min-width:52px;text-align:right}' +
+        '.xpm-ttl{position:relative;z-index:1;color:var(--text-mute);opacity:.85;flex:none;font-size:10px;letter-spacing:.02em}' +
         '.xpm-empty{font-size:10.5px;color:var(--text-mute);padding:6px 3px;text-align:center}');
       const body = document.createElement('div');
       body.id = 'xpmBody'; body.className = 'xpm';

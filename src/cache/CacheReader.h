@@ -104,6 +104,11 @@ std::string SoundListJson(int index_id, int start_id, int limit);
 
 std::string IfaceGroupDefsJson(int group_id);
 
+// One component's js5 definition (interface archive), decoded once per group and cached. type: 0 layer,
+// 3 rect, 4 text, 5 graphic, 6 model, 9 line. false when the cache is not open or the comp is unknown.
+struct IfaceCompDefLite { int type = -1; bool hidden = false; int parent = -1; int sprite = -1; int colour = -1; };
+bool IfaceCompDefLookup(int group_id, int comp_id, IfaceCompDefLite& out);
+
 std::string EnumJson(int enum_id);
 
 std::string AbilityConfigsJson();

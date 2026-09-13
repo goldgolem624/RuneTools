@@ -9,6 +9,7 @@
 #include "Overlay.h"
 #include "Process.h"
 #include "../reader/Reader.h"
+#include "../cache/CacheReader.h"
 #include "WinNotify.h"
 #include "../shared/Log.h"
 
@@ -359,7 +360,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
                 std::wstring spec = argv[3];
                 size_t colon = spec.find(L':');
                 int gid = _wtoi(spec.substr(0, colon).c_str());
-                if (colon == std::wstring::npos) out = rtx::reader::InterfaceGroupJson(pid, gid);
+                if (spec.rfind(L"cache:", 0) == 0) out = rtx::cache::IfaceGroupDefsJson(_wtoi(spec.c_str() + 6));   // js5 definitions
+                else if (colon == std::wstring::npos) out = rtx::reader::InterfaceGroupJson(pid, gid);
                 else {
                     std::wstring wc = spec.substr(colon + 1);
                     out = rtx::reader::InterfaceCompsJson(pid, gid, std::string(wc.begin(), wc.end()));
