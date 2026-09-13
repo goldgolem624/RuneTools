@@ -67,14 +67,23 @@
     else v = hi != null ? hi : lo;
     return v > 0 ? v : null;
   }
+  const bankPartsOf = Object.create(null);    // item id -> { item, dye, dyeName } behind the last GE figure (for the tooltip)
   function bankGeOf(id, name) {
     const prices = bankPrices();
     let v = bankPriceAt(prices && prices[id]);
+    bankPartsOf[id] = null;
     if (v == null && name) {
       const b = bankBaseId(id, name);
       if (b !== id) v = bankPriceAt(prices && prices[b]);
       const dyeId = bankDyeOf[id];                      // dyed: the item is worth the base piece plus the dye
-      if (v != null && dyeId != null) { const dv = bankPriceAt(prices && prices[dyeId]); if (dv != null) v += dv; }
+      if (v != null && b !== id) {
+        const parts = { item: v, dye: null, dyeName: '' };
+        if (dyeId != null) {
+          const dv = bankPriceAt(prices && prices[dyeId]);
+          if (dv != null) { parts.dye = dv; const m = String(name).match(/\(([^)]+)\)\s*$/); parts.dyeName = m ? m[1].replace(/\b\w/g, c => c.toUpperCase()) + ' dye' : 'dye'; v += dv; }
+        }
+        bankPartsOf[id] = parts;
+      }
     }
     return v;
   }
@@ -342,7 +351,7 @@
       }
       cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
-        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankBaseOf[id] !== undefined && bankBaseOf[id] !== id ? (bankDyeOf[id] != null ? ' (base item + dye)' : ' (base item)') : '') : 'no price') +
+        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankPartsOf[id] ? (bankPartsOf[id].dye != null ? ' = ' + fmtGp(bankPartsOf[id].item) + ' item + ' + fmtGp(bankPartsOf[id].dye) + ' ' + bankPartsOf[id].dyeName : ' (priced as the base item)') : '') : 'no price') +
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);
     }
