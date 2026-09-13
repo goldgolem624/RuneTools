@@ -8,6 +8,7 @@
 #include "MonitorFix.h"
 #include "Overlay.h"
 #include "Process.h"
+#include "../reader/Reader.h"
 #include "WinNotify.h"
 #include "../shared/Log.h"
 
@@ -342,6 +343,36 @@ void DeclareDpiAwareness() {
 }
 
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+    {   // Headless switches that must not touch the running launcher's logs (no rtx::log::Init).
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        // --iface-dump <pid> [group[:comps]]: print the open interface groups (with the engine mount and the
+        // resolved screen origin of each) or one group's comps to iface-dump.txt and exit. No window.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--iface-dump") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            auto snaps = rtx::reader::SampleAll();   // attach + resolve MainData for the live client(s)
+            std::string diag = "{\"clients\":[";
+            for (size_t i = 0; i < snaps.size(); ++i) diag += (i ? "," : "") + std::to_string(snaps[i].pid) + ":" + (snaps[i].in_world ? "1" : "0");
+            diag += "]}\n";
+            std::string out;
+            if (argc >= 4) {
+                std::wstring spec = argv[3];
+                size_t colon = spec.find(L':');
+                int gid = _wtoi(spec.substr(0, colon).c_str());
+                if (colon == std::wstring::npos) out = rtx::reader::InterfaceGroupJson(pid, gid);
+                else {
+                    std::wstring wc = spec.substr(colon + 1);
+                    out = rtx::reader::InterfaceCompsJson(pid, gid, std::string(wc.begin(), wc.end()));
+                }
+            } else {
+                out = rtx::reader::InterfaceGroupsJson(pid);
+            }
+            { std::ofstream f("iface-dump.txt", std::ios::binary | std::ios::trunc); f << diag << out; }
+            LocalFree(argv);
+            return 0;
+        }
+        if (argv) LocalFree(argv);
+    }
     rtx::log::Init();
     {   // --lua-selftest [plugin dir]: exercise the Lua plugin host against a stub page, write
         // lua-selftest.txt next to the working directory and exit with 0 on pass. No window, no game.

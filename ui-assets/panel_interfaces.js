@@ -198,6 +198,7 @@
           + '.if-caret{display:inline-block;width:10px;color:#caa85a}'
           + '.if-gname{font-weight:400;color:#bfe3c8;font-size:11px}'
           + '.if-n{margin-left:auto;font-weight:400;color:#9a9aa6;font-size:10px}'
+          + '.if-mount{font-weight:400;color:#8fb8ff;font-size:10px;margin-left:6px;white-space:nowrap}'
           + '.if-row{display:flex;align-items:center;gap:7px;padding:2px 12px 2px 8px;border-bottom:1px solid rgba(255,255,255,.04)}'
           + '.if-row:hover{background:rgba(255,255,255,.05)}'
           + '.if-id{color:#8fb6ff;flex:none}'
@@ -305,6 +306,7 @@
       html += '<div class="if-group" data-gid="' + g.id + '">'
         + '<span class="if-caret">' + (open ? '▾' : '▸') + '</span>Group ' + g.id
         + (nm ? '<span class="if-gname">' + nm + '</span>' : '')
+        + (g.mount ? '<span class="if-mount" title="Engine mount: parent component and resolved screen origin">@' + g.mount          + (typeof g.ox === 'number' ? ' (' + g.ox + ',' + g.oy + ')' : '') + '</span>' : '')
         + '<span class="if-n">' + g.n + ' widget' + (g.n === 1 ? '' : 's') + '</span></div>';
       if (open) {
         const o = ifaceOff[g.id] || { x: 0, y: 0 };

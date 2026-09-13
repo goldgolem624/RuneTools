@@ -4493,7 +4493,7 @@ static void iface_walk(HANDLE h, int group, std::uint64_t node, int depth,
         if (!v.ok) continue;
         for (std::uint64_t c = v.ca; c + 0x18 <= v.cb && count < 6000; c += 0x18) {
             std::uint64_t ch = (c == v.ca) ? v.first : r64(c);
-            if (ch <= 0x10000) continue;
+            if (ch <= 0x10000 || ch >= 0x7ff000000000ull) continue;   // image pointer = union payload, not a child (its fake vector fans out to ~440k dead reads)
             std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
             if (d <= 0x3000) continue;                     // child in a separate alloc
             iface_walk(h, group, ch, depth + 1, out, count, first, ax, ay, haveAbs);
@@ -4542,6 +4542,9 @@ static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
     return found;
 }
 
+// FALLBACK ONLY (see iface_panel_origin): origins now come from the engine's sub-interface table, which
+// gives the exact parent-component rect for every attached group. This manual varc / mount table is
+// consulted only for groups the engine has not attached; its offsets compensate varc-vs-content chrome.
 // Movable-panel origin table: a group's origin = its X/Y varc-ints (scope 5); dialogues share 9102/9103.
 struct PanelOriginSpec { int group; int var_x; int var_y; int off_left; int off_top; int mount_comp; bool is_varc; int req_group; };
 static const PanelOriginSpec kPanelOrigins[] = {
@@ -4601,48 +4604,162 @@ void SetIfaceOffset(int gid, int dx, int dy) {
     else g_ifaceOff[gid] = { dx, dy };
 }
 
-static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount_comp, int& ox, int& oy) {
+// Absolute (group-tree) positions of every top-level comp (sub == -1, non-empty rect) in group `gid`,
+// accumulated through the child vectors from the group's root widgets. One walk per group per 100 ms,
+// each node fetched as a single block, because the origin resolver asks for many game-frame slots a frame.
+struct IfaceGroupPos { unsigned long long ms = 0; std::unordered_map<int, std::pair<int,int>> pos; };
+static IfaceGroupPos iface_walk_positions(HANDLE h, std::uint64_t main_data, int gid) {
+    IfaceGroupPos gp;
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
     auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    auto r16 = [&](std::uint64_t a){ return (int)rpm<std::int16_t>(h, a).value_or(0); };
     std::uint64_t gs, ge; iface_groups_range(h, main_data, gs, ge);
-    if (!gs) return false;
+    if (!gs) return gp;
     for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
         std::uint64_t ap2 = r64(g + 8);
-        if (ap2 <= 0x10000 || r32(ap2) != 1477) continue;            // game frame
+        if (ap2 <= 0x10000 || r32(ap2) != gid) continue;
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         std::uint64_t a = ws + 8, b = we + 8;
-        if (!ws || !we || a <= 0x10000 || b <= a) return false;
-        bool found = false; int fx = 0, fy = 0;
+        if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
+        int visited = 0;
+        std::vector<std::uint8_t> vec;
         std::function<void(std::uint64_t,int,int,int)> walk =
             [&](std::uint64_t node, int bx, int by, int depth) {
-            if (found || depth > 14) return;
-            int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
-            if (r16(node + 0x3a) == mount_comp && r32(node + 0xa0) > 0 && r32(node + 0xa4) > 0) {
-                fx = ax; fy = ay; found = true; return;
-            }
-            const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
-            for (int k = 0; k < 3 && !found; ++k) {
-                std::uint64_t cs = r64(node+co[k]), ce = r64(node+co[k]+8);
+            if (depth > 14 || visited > 30000) return;
+            std::uint8_t nb[0x210];
+            if (!rpm_bytes(h, node, nb, sizeof(nb))) return;
+            ++visited;
+            auto i32 = [&](std::size_t o){ std::int32_t v; std::memcpy(&v, nb + o, 4); return (int)v; };
+            auto i16 = [&](std::size_t o){ std::int16_t v; std::memcpy(&v, nb + o, 2); return (int)v; };
+            auto u64 = [&](std::size_t o){ std::uint64_t v; std::memcpy(&v, nb + o, 8); return v; };
+            const int ax = bx + i32(0x98), ay = by + i32(0x9c);
+            if (i16(0x3c) == -1 && i32(0xa0) > 0 && i32(0xa4) > 0) gp.pos.emplace(i16(0x3a), std::make_pair(ax, ay));
+            const std::size_t co[3] = { 0x1d0, 0x1b8, 0x200 };
+            for (int k = 0; k < 3; ++k) {
+                std::uint64_t cs = u64(co[k]), ce = u64(co[k] + 8);
                 std::uint64_t ca = cs + 8, cb = ce + 8;
                 if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-                for (std::uint64_t c = ca; c + 0x18 <= cb && !found; c += 0x18) {
-                    std::uint64_t ch = r64(c);
-                    if (ch <= 0x10000) continue;
-                    std::int64_t d = (std::int64_t)c - (std::int64_t)ch; if (d < 0) d = -d;
-                    if (d <= 0x3000) continue;
-                    walk(ch, ax, ay, depth + 1);
+                vec.resize((std::size_t)(cb - ca));
+                if (!rpm_bytes(h, ca, vec.data(), vec.size())) continue;
+                std::vector<std::uint64_t> kids;
+                for (std::size_t o = 0; o + 8 <= vec.size(); o += 0x18) {
+                    std::uint64_t ch; std::memcpy(&ch, vec.data() + o, 8);
+                    if (ch <= 0x10000 || ch >= 0x7ff000000000ull) continue;   // nodes are heap objects; an image pointer here is a union payload
+                    std::int64_t d = (std::int64_t)(ca + o) - (std::int64_t)ch; if (d < 0) d = -d;
+                    if (d <= 0x3000) continue;                         // child lives in a separate alloc
+                    kids.push_back(ch);
                 }
+                for (std::uint64_t ch : kids) walk(ch, ax, ay, depth + 1);   // vec is reused by the callee
             }
         };
-        for (std::uint64_t wn = a; wn + 0x18 <= b && !found; wn += 0x18) {
+        for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
             std::uint64_t nd = r64(wn);
             if (nd > 0x10000) walk(nd, 0, 0, 0);
         }
-        if (found) { ox = fx; oy = fy; return true; }
-        return false;
+        break;
     }
-    return false;
+    return gp;
+}
+
+static bool iface_comp_abs(HANDLE h, std::uint64_t main_data, int gid, int comp, int& ox, int& oy) {
+    static std::mutex mu;
+    static std::unordered_map<std::uint64_t, IfaceGroupPos> cache;   // (main_data, gid) -> positions
+    const std::uint64_t key = (main_data << 8) ^ (std::uint64_t)(std::uint32_t)gid;
+    const unsigned long long now = GetTickCount64();
+    auto lookup = [&](const IfaceGroupPos& gp) {
+        auto it = gp.pos.find(comp);
+        if (it == gp.pos.end()) return false;
+        ox = it->second.first; oy = it->second.second;
+        return true;
+    };
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = cache.find(key);
+        if (it != cache.end() && now - it->second.ms < 100) return lookup(it->second);
+    }
+    IfaceGroupPos fresh = iface_walk_positions(h, main_data, gid);   // walk outside the lock
+    fresh.ms = now;
+    std::lock_guard<std::mutex> lk(mu);
+    if (cache.size() > 512) cache.clear();
+    IfaceGroupPos& gp = cache[key];
+    gp = std::move(fresh);
+    return lookup(gp);
+}
+
+static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount_comp, int& ox, int& oy) {
+    return iface_comp_abs(h, main_data, 1477, mount_comp, ox, oy);
+}
+
+// Sub-interface table (950-1). The interface owner keeps a hash map of every attached sub-interface, keyed by
+// the PARENT component hash ((group << 16) | comp): owner+0xE0 = bucket array, owner+0xE8 = bucket count,
+// owner+0xF0 = entry count. Entry: +0 u32 parent hash, +8 ref-counted holder, +0x10 attachment node, +0x18 next.
+// Attachment node: +8 i32 state (2 = closed / detached), +0xC i32 sub group id, +0x10 u32 parent hash.
+// Inbound packets 0x2D (move sub, two hashes) and 0x45 (close sub, one hash) resolve through this same map
+// (FUN_1400e2080 / FUN_1401a0840 / FUN_1401a09f0), so it is the engine's own answer to "where is group G
+// mounted". Snapshotted for 250 ms per client.
+constexpr std::uint64_t kIfaceSubBuckets = 0xE0, kIfaceSubBucketCount = 0xE8;
+struct IfaceSubParent { int group; int comp; };
+static bool iface_sub_parent(HANDLE h, std::uint64_t main_data, int gid, IfaceSubParent& out) {
+    static std::mutex mu;
+    struct Snap { unsigned long long ms; std::unordered_map<int, IfaceSubParent> map; };
+    static std::unordered_map<std::uint64_t, Snap> snaps;   // main_data -> snapshot
+    const unsigned long long now = GetTickCount64();
+    std::lock_guard<std::mutex> lk(mu);
+    auto& sn = snaps[main_data];
+    if (sn.ms == 0 || now - sn.ms >= 250) {
+        sn.ms = now; sn.map.clear();
+        auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
+        auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
+        std::uint64_t owner = r64(main_data + 0x19900);
+        if (owner > 0x10000) {
+            std::uint64_t buckets = r64(owner + kIfaceSubBuckets);
+            int nb = r32(owner + kIfaceSubBucketCount);
+            if (buckets > 0x10000 && nb > 0 && nb <= 65536) {
+                int total = 0;
+                for (int i = 0; i < nb && total < 4096; ++i) {
+                    std::uint64_t e = r64(buckets + (std::uint64_t)i * 8);
+                    for (int guard = 0; e > 0x10000 && guard < 256; ++guard, ++total) {
+                        std::uint32_t key = (std::uint32_t)r32(e);
+                        std::uint64_t node = r64(e + 0x10);
+                        if (node > 0x10000 && r32(node + 8) != 2) {
+                            int sub = r32(node + 0xC);
+                            std::uint32_t ph = (std::uint32_t)r32(node + 0x10);
+                            if (ph != key) ph = key;
+                            if (sub > 0 && sub < 70000) sn.map[sub] = { (int)(ph >> 16), (int)(ph & 0xFFFF) };
+                        }
+                        e = r64(e + 0x18);
+                    }
+                }
+            }
+        }
+    }
+    auto it = sn.map.find(gid);
+    if (it == sn.map.end()) return false;
+    out = it->second;
+    return true;
+}
+
+// Automatic origin: follow the sub-interface table up to the game frame (1477, screen-absolute) and add the
+// absolute position of each parent component along the way. Exact for every group the engine attached as a
+// sub-interface, with no per-group knowledge; false only for groups that are not attached (or hidden slots).
+static bool iface_auto_origin(HANDLE h, std::uint64_t main_data, int gid, int& ox, int& oy, int depth = 0) {
+    if (gid == 1477) { ox = 0; oy = 0; return true; }
+    if (depth > 6) return false;
+    IfaceSubParent p;
+    if (!iface_sub_parent(h, main_data, gid, p)) return false;
+    if (p.group == gid) return false;
+    int px = 0, py = 0;
+    if (!iface_auto_origin(h, main_data, p.group, px, py, depth + 1)) return false;
+    int cx = 0, cy = 0;
+    if (!iface_comp_abs(h, main_data, p.group, p.comp, cx, cy)) return false;
+    ox = px + cx; oy = py + cy;
+    return true;
+}
+
+// Mount of a group as the engine sees it ("1477:501"), for the Interfaces tab; empty when not attached.
+static std::string iface_mount_label(HANDLE h, std::uint64_t main_data, int gid) {
+    IfaceSubParent p;
+    if (!iface_sub_parent(h, main_data, gid, p)) return std::string();
+    return std::to_string(p.group) + ":" + std::to_string(p.comp);
 }
 
 static bool read_panel_pos_var(HANDLE h, std::uint64_t main_data, std::uint32_t pid,
@@ -4716,7 +4833,23 @@ static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
     return false;
 }
 
-static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t pid, int gid, int& ox, int& oy) {
+static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t pid, int gid, int& ox, int& oy,
+                               bool* exact = nullptr) {
+    if (exact) *exact = false;
+    // 1. Engine sub-interface table: the parent component's live rect IS the group's origin. No varcs, no
+    //    per-group offsets, no size-matched frame search; the manual table below is only a fallback.
+    {
+        int ax = 0, ay = 0;
+        if (iface_auto_origin(h, main_data, gid, ax, ay)) {
+            ox = ax; oy = ay;
+            { std::lock_guard<std::mutex> lk(g_ifaceOffMu);   // live calibration nudge from the Interfaces tab
+              auto ov = g_ifaceOff.find(gid);
+              if (ov != g_ifaceOff.end()) { ox += ov->second.first; oy += ov->second.second; } }
+            if (exact) *exact = true;
+            return true;
+        }
+    }
+    // 2. Fallback: manual varc / mount table (groups the engine did not attach as a sub-interface).
     for (const auto& s : kPanelOrigins) {
         if (s.group != gid) continue;
         if (s.req_group && !iface_group_open(h, main_data, s.req_group)) continue;   // variant gate
@@ -4893,7 +5026,12 @@ std::string InterfaceGroupsJson(std::uint32_t pid) {
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
         int n = (ws && we && we > ws + 8 && (we - ws) < 0x100000) ? (int)((we - ws) / 0x18) : 0;
         out += first ? "" : ","; first = false;
-        out += "{\"id\":" + std::to_string(gid) + ",\"n\":" + std::to_string(n) + "}";
+        out += "{\"id\":" + std::to_string(gid) + ",\"n\":" + std::to_string(n);
+        std::string mount = iface_mount_label(h, *root, gid);
+        if (!mount.empty()) out += ",\"mount\":\"" + mount + "\"";
+        int ax = 0, ay = 0;
+        if (iface_auto_origin(h, *root, gid, ax, ay)) out += ",\"ox\":" + std::to_string(ax) + ",\"oy\":" + std::to_string(ay);
+        out += "}";
     }
     out += "]}";
     return out;
@@ -5506,12 +5644,12 @@ std::string InterfaceSizeSearchJson(std::uint32_t pid, int tw, int th, int tol) 
             [&](std::uint64_t node, int bx, int by, int depth) {
             if (depth > 14 || total > 120000 || matched >= 600) return;
             ++total;
-            int x = r32(node+0x70), y = r32(node+0x74), w = r32(node+0x78), hh = r32(node+0x7c);
+            int x = r32(node+0x98), y = r32(node+0x9c), w = r32(node+0xa0), hh = r32(node+0xa4);
             int ax = bx + x, ay = by + y;
             if (adiff(w, tw) <= tol && adiff(hh, th) <= tol) {
                 out += first ? "" : ","; first = false;
-                out += "{\"g\":" + std::to_string(gid) + ",\"c\":" + std::to_string(r16(node+0x2a))
-                     + ",\"s\":" + std::to_string(r16(node+0x2c)) + ",\"w\":" + std::to_string(w)
+                out += "{\"g\":" + std::to_string(gid) + ",\"c\":" + std::to_string(r16(node+0x3a))
+                     + ",\"s\":" + std::to_string(r16(node+0x3c)) + ",\"w\":" + std::to_string(w)
                      + ",\"h\":" + std::to_string(hh);
                 if (haveAbs) out += ",\"ax\":" + std::to_string(ax) + ",\"ay\":" + std::to_string(ay);
                 out += "}";
@@ -5554,8 +5692,8 @@ std::string DialogJson(std::uint32_t pid) {
     if (!gs) return "{}";
 
     const int kGroup = 1188;   // option-select is the one the quest highlight uses
-    int ox = 0, oy = 0;
-    bool haveAbs = iface_panel_origin(h, *root, pid, kGroup, ox, oy);
+    int ox = 0, oy = 0; bool exactOrigin = false;
+    bool haveAbs = iface_panel_origin(h, *root, pid, kGroup, ox, oy, &exactOrigin);
 
     std::function<void(std::uint64_t,int,int,int)> walk;
     std::string opts; bool firstOpt = true; std::string header; int headerComp = -1; int optN = 0;
@@ -5605,7 +5743,7 @@ std::string DialogJson(std::uint32_t pid) {
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
         open = true;
         bool varcPositioned = false;
-        for (const auto& s : kPanelOrigins) if (s.group == kGroup) { varcPositioned = s.var_x != 0; break; }
+        if (!exactOrigin) for (const auto& s : kPanelOrigins) if (s.group == kGroup) { varcPositioned = s.var_x != 0; break; }
         if (haveAbs && varcPositioned) {
             std::uint64_t c0 = r64(a);
             int rw = (c0 > 0x10000) ? r32(c0 + 0xa0) : 0, rh = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
@@ -5645,8 +5783,8 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
                                 else if (any) { want.insert(v); v = 0; any = false; } }
       if (any) want.insert(v); }
     if (want.empty() || want.size() > 64) return "{}";
-    int ox = 0, oy = 0;
-    bool haveAbs = iface_panel_origin(h, *root, pid, group, ox, oy);
+    int ox = 0, oy = 0; bool exactOrigin = false;
+    bool haveAbs = iface_panel_origin(h, *root, pid, group, ox, oy, &exactOrigin);
 
     std::string comps; bool firstC = true; bool open = false; int found = 0;
     std::function<void(std::uint64_t,int,int,int)> walk;
@@ -5695,7 +5833,7 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
         open = true;
         bool varcPositioned = false;
-        for (const auto& s : kPanelOrigins) if (s.group == group) { varcPositioned = s.var_x != 0; break; }
+        if (!exactOrigin) for (const auto& s : kPanelOrigins) if (s.group == group) { varcPositioned = s.var_x != 0; break; }
         if (haveAbs && varcPositioned) {
             std::uint64_t c0 = r64(a);
             int rw = (c0 > 0x10000) ? r32(c0 + 0xa0) : 0, rh = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
@@ -5709,7 +5847,8 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
         break;
     }
     return "{\"group\":" + std::to_string(group) + ",\"open\":" + (open ? "true" : "false") +
-           ",\"hasAbs\":" + (haveAbs ? "true" : "false") + ",\"comps\":[" + comps + "]}";
+           ",\"hasAbs\":" + (haveAbs ? "true" : "false") + ",\"exact\":" + (exactOrigin ? "true" : "false") +
+           ",\"comps\":[" + comps + "]}";
 }
 
 // Live backpack slot rect from group 1473 (origin varcs 3040/3041, size 8990/8991): cells found by size,
@@ -5724,8 +5863,8 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
     std::uint64_t gs, ge; iface_groups_range(h, *root, gs, ge);
     if (!gs) return "{}";
     const int kGroup = 1473;
-    int ox = 0, oy = 0;
-    bool originOk = iface_panel_origin(h, *root, pid, kGroup, ox, oy);
+    int ox = 0, oy = 0; bool exactOrigin = false;
+    bool originOk = iface_panel_origin(h, *root, pid, kGroup, ox, oy, &exactOrigin);
     if (!originOk) return "{}";   // panel position varc not resolved yet
     int px = ox, py = oy;   // outer frame origin, before the chrome inset
 
@@ -5764,12 +5903,12 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
         int contentH = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
         int panelW = 0, panelH = 0;
         int frameX = 0, frameY = 0;
-        if (contentW > 0 && contentH > 0 &&
+        if (!exactOrigin && contentW > 0 && contentH > 0 &&
             iface_live_frame_origin(h, gs, ge, px, py, contentW + 1, contentW + 119,
                                     contentH + 1, contentH + 299, frameX, frameY, &panelW, &panelH)) {
             ox = frameX; oy = frameY; px = frameX; py = frameY;
         }
-        if (panelW == 0) for (std::uint64_t g2 = gs; g2 + 0x10 <= ge; g2 += 0x10) {
+        if (!exactOrigin && panelW == 0) for (std::uint64_t g2 = gs; g2 + 0x10 <= ge; g2 += 0x10) {
             std::uint64_t ap = r64(g2 + 8);
             if (ap <= 0x10000 || r32(ap) != 1477) continue;
             std::uint64_t ws2 = r64(ap + 0x20), a2 = ws2 + 8;
@@ -5783,7 +5922,9 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
             break;
         }
         int border, header;
-        if (panelW > 0 && panelH > 0) {
+        if (exactOrigin) {
+            border = 0; header = 0;   // engine origin = content origin (the sub's parent component rect)
+        } else if (panelW > 0 && panelH > 0) {
             border = (panelW - contentW) / 2;
             header = (panelH - contentH) - border;
         } else {
