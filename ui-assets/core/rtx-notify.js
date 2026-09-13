@@ -31,7 +31,8 @@
       g.appendChild(lab);
       // Edge grips: left and right resize the width with the opposite edge held still (whatever the
       // anchor), top and bottom slide the stack vertically. The body of the box moves it freely.
-      const grips = [['l', 'Drag to set width'], ['r', 'Drag to set width'], ['t', 'Drag to move up or down'], ['b', 'Drag to move up or down']];
+      const grips = [['l', 'Drag to set width'], ['r', 'Drag to set width'], ['t', 'Drag to move up or down'], ['b', 'Drag to move up or down'],
+                     ['tl', 'Drag to set width and position'], ['tr', 'Drag to set width and position'], ['bl', 'Drag to set width and position'], ['br', 'Drag to set width and position']];
       for (const [side, title] of grips) {
         const rz = document.createElement('i');
         rz.className = 'ghost-rz ghost-rz-' + side; rz.title = title;
@@ -44,17 +45,20 @@
           const mv = (ev) => {
             const vwNow = window.innerWidth || 1280, vhNow = window.innerHeight || 720;
             const dxm = ev.clientX - sx, dym = ev.clientY - sy;
-            if (side === 'l' || side === 'r') {
+            const hz = side.indexOf('l') >= 0 ? 'l' : side.indexOf('r') >= 0 ? 'r' : '';   // corners carry both axes
+            const vt = side.indexOf('t') >= 0 || side.indexOf('b') >= 0;
+            if (hz) {
               // width change, then the offset that keeps the far edge where it was
-              let nw = side === 'r' ? ow + dxm : ow - dxm;
+              let nw = hz === 'r' ? ow + dxm : ow - dxm;
               nw = Math.max(220, Math.min(vwNow - 20, nw));
               const d = nw - ow;                            // effective growth after clamping
               let ndx = odx;
-              if (left)       ndx = side === 'l' ? odx - d : odx;
-              else if (right) ndx = side === 'r' ? odx - d : odx;
-              else            ndx = side === 'l' ? odx - d / 2 : odx + d / 2;
+              if (left)       ndx = hz === 'l' ? odx - d : odx;
+              else if (right) ndx = hz === 'r' ? odx - d : odx;
+              else            ndx = hz === 'l' ? odx - d / 2 : odx + d / 2;
               toastCfg.w = nw; toastCfg.dx = Math.round(ndx);
-            } else {
+            }
+            if (vt) {
               const ndy = bottom ? ody - dym : ody + dym;
               toastCfg.dy = Math.round(Math.max(0, Math.min(vhNow - 40, ndy)));
             }

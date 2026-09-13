@@ -422,6 +422,12 @@
     box-shadow: 5px 0 0 -0.5px rgba(255,255,255,0.8), -5px 0 0 -0.5px rgba(255,255,255,0.8);
   }
   .ghost-rz-t, .ghost-rz-b { left: 26px; right: 26px; height: 9px; cursor: ns-resize; }
+  .ghost-rz-tl, .ghost-rz-tr, .ghost-rz-bl, .ghost-rz-br { width: 16px; height: 16px; z-index: 1; border-radius: 4px; }
+  .ghost-rz-tl { top: 2px; left: 2px; cursor: nwse-resize; }   .ghost-rz-br { bottom: 2px; right: 2px; cursor: nwse-resize; }
+  .ghost-rz-tr { top: 2px; right: 2px; cursor: nesw-resize; }  .ghost-rz-bl { bottom: 2px; left: 2px; cursor: nesw-resize; }
+  .ghost-rz-tl::after, .ghost-rz-tr::after, .ghost-rz-bl::after, .ghost-rz-br::after {
+    content: ''; width: 6px; height: 6px; border-radius: 1px; background: #fff;
+  }
   .ghost-rz-t { top: 2px; border-radius: 0 0 6px 6px; }
   .ghost-rz-b { bottom: 2px; border-radius: 6px 6px 0 0; }
   .ghost-rz-t::after, .ghost-rz-b::after {
