@@ -549,6 +549,12 @@ if (d.hasAbs && d.comps[0]) { const c = d.comps[0]; rtx.plugin.overlay.highlight
 // to them. Note there is ONE highlight set per game client, shared with highlightRect and
 // with the panel's own guides - the last caller wins, and clearing clears everything.
 await rtx.plugin.overlay.highlightRects(d.comps.map(c => [c.x, c.y, c.w, c.h]));
+
+// Text drawn over the game in the same coordinates (up to 32 labels, 90 chars each). style 0 is bare
+// text with its left edge at x, centred on y; style 1 is a pill (dark rounded box) centred on x,y.
+// rgb is an RGB int (-1 = the game's yellow). Each call replaces the previous set; [] clears.
+rtx.plugin.overlay.uiLabels([{ x: c.x + 18, y: c.y - 12, text: 'Buy 30.0m | Sell 29.5m', style: 1 }]);
+rtx.plugin.overlay.uiLabels([]);
 await rtx.plugin.overlay.highlightRects([]);   // clear
 
 // Draw ground markers on world tiles (the same primitive the clue/quest guides use). Up to 64
