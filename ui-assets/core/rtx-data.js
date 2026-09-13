@@ -22,8 +22,11 @@ const rtxData = (function () {
     return b;
   }
 
+  // Timing reads are never coalesced: the metronome interpolates from the age it gets back and a
+  // memoised answer would make it jump.
+  const NOMEMO = { 'state.gameTickState': 1, 'state.gameTick': 1 };
   function memoKey(method, args) {
-    if (!HOT.test(method)) return null;
+    if (!HOT.test(method) || NOMEMO[method]) return null;
     let a = '';
     try { a = JSON.stringify(args); } catch (e) { return null; }
     return method + ' ' + a;
