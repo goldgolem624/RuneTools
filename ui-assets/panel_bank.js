@@ -41,7 +41,9 @@
       }
       if (bankNameToId) {
         const own = String(name || '').toLowerCase();
-        const plain = own.replace(/^augmented\s+/, '').replace(/\s+\((?:augmented|broken|damaged|degraded|used|new|uncharged)\)$/, '').trim();
+        // strip "Augmented", then any trailing dye or condition tags, repeatedly ("Augmented X (Soul)" -> X)
+        let plain = own.replace(/^augmented\s+/, '').trim(), prevPlain = '';
+        while (plain !== prevPlain) { prevPlain = plain; plain = plain.replace(/\s+\((?:augmented|broken|damaged|degraded|used|new|uncharged|shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle)\)$/, '').trim(); }
         const hit = bankNameToId[own] != null ? bankNameToId[own] : (plain && bankNameToId[plain] != null ? bankNameToId[plain] : null);
         if (hit != null && hit !== id) base = hit;
       }
