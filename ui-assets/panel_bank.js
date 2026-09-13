@@ -316,6 +316,111 @@
     return { ge: ge, ha: ha, priced: priced };
   }
 
+  // ---- bank tabs: names, icons and slot membership, read from the bank interface (517) while it is open ----
+  // 517:203 holds one "Tab N[ - Name]" header per custom tab (tab 1, the main tab, has none and is drawn
+  // first), 517:201 the item grid with one child per bank slot, and 517:170 the tab bar (sub 2 = all, then
+  // one icon per tab: an item or a sprite; the bar scrolls). A slot belongs to the last header above it in
+  // the scroll, so slot order (tabs in creation order, main tab last) and screen order both come out. The
+  // result is kept per character in the durable prefs, so the layout is there with the bank closed.
+  let bankTabsData = null, bankTabsBusy = false, bankTabsAt = -1, bankTab = 0;   // bankTab 0 = every tab
+  const bankSprUrl = Object.create(null);
+  function bankTabsKey() { return (bankData && bankData.character) ? String(bankData.character).toLowerCase() : ''; }
+  function bankTabsLoad() {
+    const key = bankTabsKey(); if (!key) return;
+    if (bankTabsData && bankTabsData.character === key) return;
+    bankTabsData = null;
+    try {
+      const all = JSON.parse(prefGet('rtxBankTabs', '{}') || '{}');
+      if (all && all[key] && Array.isArray(all[key].tabs)) { bankTabsData = all[key]; bankTabsData.character = key; }
+    } catch (e) {}
+  }
+  function bankTabsSave() {
+    const key = bankTabsKey(); if (!key || !bankTabsData) return;
+    let all = {};
+    try { all = JSON.parse(prefGet('rtxBankTabs', '{}') || '{}') || {}; } catch (e) { all = {}; }
+    const copy = Object.assign({}, bankTabsData); delete copy.character; delete copy.idx;
+    all[key] = copy;
+    prefSet('rtxBankTabs', JSON.stringify(all));
+  }
+  function bankTabsDiscover() {
+    if (bankTabsBusy || !bankData || !bankData.open) return;
+    if (bankTabsAt === bankData.cached_at && bankTabsData) return;
+    bankTabsBusy = true;
+    try {
+      const d = JSON.parse(rtxData.sync('state.interface', 517, '170,201,203') || '{}');
+      if (!d || !d.open || !d.hasAbs || !Array.isArray(d.comps)) return;
+      const hdr = d.comps.filter(c => c.comp === 203 && c.sub >= 0 && c.text)
+        .map(c => { const m = /^Tab (\d+)(?:\s*-\s*(.*))?$/.exec(String(c.text).replace(/<[^>]*>/g, '').trim()); return m ? { n: +m[1], name: (m[2] || '').trim(), y: c.y } : null; })
+        .filter(Boolean).sort((a, b) => a.y - b.y);
+      const items = d.comps.filter(c => c.comp === 201 && c.sub >= 0 && c.obj > 0);
+      if (!items.length) return;
+      const tabOf = y => { let t = 1; for (const h of hdr) if (y >= h.y) t = h.n; return t; };
+      const slotTab = [];
+      for (const c of items) slotTab[c.sub] = tabOf(c.y);
+      const onScreen = items.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+      const order = onScreen.map(c => c.sub);
+      const tabs = [{ n: 1, name: '' }].concat(hdr.map(h => ({ n: h.n, name: h.name })));
+      const firstOf = {};                         // first item on screen per tab: the game's default tab icon
+      for (const c of onScreen) { const t = tabOf(c.y); if (firstOf[t] === undefined) firstOf[t] = c.obj; }
+      const bar = d.comps.filter(c => c.comp === 170 && c.sub >= 3 && c.vis && (c.obj > 0 || c.spr > 0)).sort((a, b) => a.sub - b.sub);
+      let offset = 0;                             // the bar scrolls: line its first item icon up with the tab that item opens
+      for (const b of bar) { if (b.obj > 0) { const ti = tabs.findIndex(tt => firstOf[tt.n] === b.obj); if (ti >= 0) offset = ti - (b.sub - 3); break; } }
+      for (const b of bar) { const t = tabs[b.sub - 3 + offset]; if (t) t.icon = b.obj > 0 ? { item: b.obj } : { spr: b.spr }; }
+      for (const t of tabs) if (!t.icon && firstOf[t.n]) t.icon = { item: firstOf[t.n] };
+      bankTabsData = { character: bankTabsKey(), at: bankData.cached_at, tabs: tabs, slotTab: slotTab, order: order };
+      bankTabsAt = bankData.cached_at;
+      bankTabsSave();
+      bankPaintSig = '';
+    } catch (e) {} finally { bankTabsBusy = false; }
+  }
+  function bankOrderIndex() {                     // slot -> position on the game's own scroll
+    const td = bankTabsData;
+    if (!td || !Array.isArray(td.order)) return null;
+    if (!td.idx) { td.idx = Object.create(null); td.order.forEach((s, i) => { td.idx[s] = i; }); }
+    return td.idx;
+  }
+  function bankTabName(n) {
+    const t = bankTabsData && bankTabsData.tabs ? bankTabsData.tabs.find(tt => tt.n === n) : null;
+    return 'Tab ' + n + (t && t.name ? ' - ' + t.name : '');
+  }
+  function bankTabLine(slot) {
+    const t = bankTabsData && bankTabsData.slotTab ? bankTabsData.slotTab[slot] : 0;
+    return t ? '\n' + bankTabName(t) : '';
+  }
+  function bankSpriteInto(el, sid) {
+    if (bankSprUrl[sid]) { el.style.backgroundImage = 'url(' + bankSprUrl[sid] + ')'; return; }
+    if (bankSprUrl[sid] === '') return;
+    bankSprUrl[sid] = '';
+    Promise.resolve().then(async () => {
+      try { const u = await rtxData.raw('cache.sprite', sid); if (u) { bankSprUrl[sid] = u; el.style.backgroundImage = 'url(' + u + ')'; } } catch (e) {}
+    });
+  }
+  function bankTabsStrip() {
+    const el = document.getElementById('bankTabs'); if (!el) return;
+    bankTabsLoad();
+    const td = bankTabsData;
+    if (!td || !td.tabs || td.tabs.length < 2) { el.innerHTML = ''; el.hidden = true; if (bankTab) { bankTab = 0; bankPaintSig = ''; } return; }
+    el.hidden = false;
+    const counts = {};
+    for (const it of ((bankData && bankData.items) || [])) { const t = td.slotTab[it[0]]; if (t) counts[t] = (counts[t] || 0) + 1; }
+    if (bankTab && !td.tabs.some(t => t.n === bankTab)) bankTab = 0;
+    el.innerHTML = '';
+    const mk = (n, label, icon, count) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'bank-tab' + (n === bankTab ? ' on' : '');
+      b.title = (n ? bankTabName(n) : 'Every tab') + (count != null ? ' (' + count + ' item' + (count === 1 ? '' : 's') + ')' : '');
+      const ic = document.createElement('span'); ic.className = 'bank-tab-ic';
+      if (!n) ic.textContent = String.fromCharCode(8734);
+      else if (icon && icon.item) { ic.dataset.itemId = String(icon.item); attachBankIcon(ic, icon.item); }
+      else if (icon && icon.spr) bankSpriteInto(ic, icon.spr);
+      const nm = document.createElement('span'); nm.className = 'bank-tab-nm'; nm.textContent = n ? (label || ('Tab ' + n)) : 'All';
+      b.appendChild(ic); b.appendChild(nm);
+      b.addEventListener('click', () => { bankTab = n; bankPage = 0; bankPaintSig = ''; paintBankPage(); });
+      return b;
+    };
+    el.appendChild(mk(0, '', null, (bankData && bankData.items) ? bankData.items.length : null));
+    for (const t of td.tabs) el.appendChild(mk(t.n, t.name, t.icon, counts[t.n] || 0));
+  }
+
   // ---- sort + filter ----
   let bankSort = prefGet('rtxBankSort', 'slot');
   const BANK_SORTS = {
@@ -330,11 +435,13 @@
   function bankFilter() {
     const items = (bankData && bankData.items) ? bankData.items : [];
     const t = bankTerm.trim().toLowerCase();
-    const list = !t ? items.slice() : items.filter(it => String(it[1]).indexOf(t) !== -1 ||
+    let list = !t ? items.slice() : items.filter(it => String(it[1]).indexOf(t) !== -1 ||
                               bankRowName(it[1], it[3]).toLowerCase().indexOf(t) !== -1);
+    if (bankTab && bankTabsData && bankTabsData.slotTab) list = list.filter(it => bankTabsData.slotTab[it[0]] === bankTab);
     const s = BANK_SORTS[bankSort] || BANK_SORTS.slot;
     // placeholders (quantity 0) hold no value, so every value or quantity sort sinks them to the end
     if (bankSort !== 'slot') list.sort((a, b) => ((b[2] | 0) > 0) - ((a[2] | 0) > 0) || s.cmp(a, b) || a[0] - b[0]);
+    else { const idx = bankOrderIndex(); if (idx) list.sort((a, b) => { const ia = idx[a[0]] === undefined ? 1e9 : idx[a[0]], ib = idx[b[0]] === undefined ? 1e9 : idx[b[0]]; return ia - ib || a[0] - b[0]; }); }
     return list;
   }
 
@@ -488,7 +595,8 @@
       next.addEventListener('click', () => { bankPage++; paintBankPage(); });
       pager.appendChild(prev); pager.appendChild(pg); pager.appendChild(next);
 
-      wrap.appendChild(top); wrap.appendChild(tools); wrap.appendChild(grid); wrap.appendChild(empty); wrap.appendChild(pager);
+      const tabsEl = document.createElement('div'); tabsEl.id = 'bankTabs'; tabsEl.className = 'bank-tabs'; tabsEl.hidden = true;
+      wrap.appendChild(top); wrap.appendChild(tabsEl); wrap.appendChild(tools); wrap.appendChild(grid); wrap.appendChild(empty); wrap.appendChild(pager);
       c.appendChild(wrap);
       bankPaintSig = '';
       try { bridge().pricesCached(); bridge().pricesMapping(); } catch (e) {}   // kick the price fetches so values fill in on the first paint
@@ -557,6 +665,8 @@
     const grid = document.getElementById('bankGrid');
     if (!grid) return;
     if (bankData && bankData.items) bankEofRefresh(bankData.items);
+    bankTabsLoad();
+    if (bankData && bankData.open) bankTabsDiscover();
     const emptyBox = document.getElementById('bankEmpty');
     const pager = grid.parentElement.querySelector('.bank-pager');
     const total = (bankData && bankData.count) ? bankData.count : 0;
@@ -566,10 +676,11 @@
     if (bankPage < 0) bankPage = 0;
 
     const priceGen = (bankGe ? bankGeAt : 0) + '/' + bankMapping();   // repaint when prices or the name mapping arrive
-    const sig = bankTerm + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
+    const sig = bankTerm + '|' + bankTab + '|' + (bankTabsData ? bankTabsData.at : '') + '|' + bankPage + '|' + filtered.length + '|' + bankSort + '|' + bankBasis + '|' + priceGen + '|' +
                 (bankData ? bankData.cached_at + '|' + bankData.open : 'x');
     if (sig === bankPaintSig) { topUpBankIcons(); return; }
     bankPaintSig = sig;
+    bankTabsStrip();
 
     const totalsEl = document.getElementById('bankTotals');
     if (totalsEl) {
@@ -638,7 +749,7 @@
         b.textContent = fmtGp(badgeVal); cell.appendChild(b);
       }
       cell.dataset.tip = (bankRowName(id, name) || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
-        (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
+        (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot + bankTabLine(slot) +
         bankGeLines(v, stack, name, slot, id, it) +
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);

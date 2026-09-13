@@ -159,7 +159,7 @@
       try { if (bridge() && bridge().overlayHighlight) bridge().overlayHighlight(myPid(), ''); } catch (e) {}
       try { overlayHighlightResync(); } catch (e) {}
       try { if (bridge() && bridge().centerText) bridge().centerText(myPid(), ''); } catch (e) {}
-      pluginUnmount(id.slice(7));
+      if (typeof pluginRelease === 'function') pluginRelease(id.slice(7)); else pluginUnmount(id.slice(7));
     }
   }
 

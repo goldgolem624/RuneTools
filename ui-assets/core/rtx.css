@@ -1453,6 +1453,12 @@
   .bank-tools .bank-pick { padding: 3px 8px; font-size: 11px; }
   .bank-tools .bank-pick .lab { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; }
   .bank-tools .bank-pick .cur { color: var(--text); font-weight: 600; }
+  .bank-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 0 8px; }
+  .bank-tab { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 4px; border: 1px solid var(--border-hi); border-radius: 6px; background: var(--bg-elev-2); color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; max-width: 100%; }
+  .bank-tab:hover { border-color: var(--accent-hi); color: var(--text); }
+  .bank-tab.on { background: var(--accent-hi); color: var(--accent-ink); border-color: var(--accent-hi); }
+  .bank-tab-ic { width: 22px; height: 20px; flex: 0 0 auto; background-size: contain; background-repeat: no-repeat; background-position: center; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+  .bank-tab-nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
   .bank-ovwhy { flex-basis: 100%; font-size: 11px; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bank-totals { flex: 1 1 auto; display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
   .bank-totals b { color: #f0be5a; font-weight: 700; }

@@ -139,6 +139,7 @@
     if (first) pluginGrantsSaveSoon();
     if (!first) for (const w of wm.wins.values())
       if (String(w.tab).indexOf('plugin:') === 0) { pluginUnmount(w.tab.slice(7)); renderPaneFor(w); }
+    try { pluginBackgroundSync(); } catch (e) {}
   }
   function pluginGrantsSaveSoon(delay) {
     if (_pgSaveT) return;
@@ -154,15 +155,52 @@
   function pluginSetGranted(id, scopes) {
     pluginGrants[id] = scopes || [];
     pluginGrantsSaveSoon();
+    try { pluginBackgroundSync(); } catch (e) {}
   }
   function pluginClearGranted(id) {
     delete pluginGrants[id];
     pluginGrantsSaveSoon();
+    if (pluginInBackground(id)) pluginUnmount(id);
   }
   function pluginGrantCovers(granted, want) {
     if (!Array.isArray(granted)) return false;
     for (const s of (want || [])) if (granted.indexOf(s) === -1) return false;
     return true;
+  }
+
+  // ---- background plugins: manifest "background": true keeps a granted plugin running with no window open ----
+  // Its frame lives in an off-screen host and gets the same ticks, state and events as a windowed one. Opening
+  // its window mounts it there instead (a fresh frame: an iframe cannot be moved without reloading), and
+  // closing the window sends it back off-screen. Revoking its scopes stops it.
+  function pluginBgHost() {
+    let el = document.getElementById('pluginBg');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'pluginBg';
+      el.style.cssText = 'position:absolute;left:-4000px;top:0;width:800px;height:600px;overflow:hidden;pointer-events:none;opacity:0;';
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function pluginIsBackground(id) { const t = pluginTabs.find(p => p.id === id); return !!(t && t.manifest && t.manifest.background); }
+  function pluginInBackground(id) { const h = pluginHolders.get(id); return !!(h && h.el.parentNode && h.el.parentNode.id === 'pluginBg'); }
+  function pluginBackgroundSync() {
+    for (const tab of pluginTabs) {
+      if (!tab.manifest.background) continue;
+      const id = tab.id;
+      const granted = pluginGetGranted(id);
+      if (!granted || !pluginGrantCovers(granted, tab.scopes)) continue;   // not enabled: nothing runs
+      if (pluginMounts.get(id)) continue;                                   // already running, windowed or not
+      if (wmWinOf('plugin:' + id)) continue;                                // its window mounts it
+      const h = pluginHolderFor(id, null);
+      if (h.el.parentNode !== pluginBgHost()) pluginBgHost().appendChild(h.el);
+      h.el.hidden = false; h.wid = null;
+      pluginMountInto(id, tab, granted, h);
+    }
+  }
+  // A plugin window closed: a background plugin restarts off-screen, any other plugin stops.
+  function pluginRelease(id) {
+    pluginUnmount(id);
+    try { pluginBackgroundSync(); } catch (e) {}
   }
 
   const PLUGIN_TAB_ICON = '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><path d="M13.5 17h6.5M16.75 13.75v6.5"/>';
@@ -340,6 +378,7 @@
       if (cur && cur.dataset && cur.dataset.pluginPerm === id) return;   // build-once
       renderPluginPermission(id, tab, granted); pluginUnmount(id); return;
     }
+    if (pluginInBackground(id)) pluginUnmount(id);   // running off-screen: restart inside the window instead
     const w = wmWinOf('plugin:' + id);
     const h = pluginHolderFor(id, w);
     h.el.hidden = false;
@@ -349,6 +388,10 @@
       const ph = document.createElement('div'); ph.dataset.pluginPane = id; ph.style.cssText = 'flex:1 1 auto;min-height:0;';
       c.appendChild(ph);                 // the pane stays empty behind the holder
     }
+    pluginMountInto(id, tab, granted, h);
+  }
+  // Build the plugin's frame (or Lua state) inside holder h; shared by windowed and background mounts.
+  function pluginMountInto(id, tab, granted, h) {
     if (pluginMounts.get(id) && h.el.firstChild) return;                   // alive from an earlier show: nothing to rebuild
     h.el.innerHTML = '';
     if (tab.manifest.runtime === 'lua') { luaMountPlugin(h.el, id, tab, granted); return; }   // core/rtx-plugin-lua.js
@@ -399,7 +442,7 @@
       const main = (typeof man.main === 'string' && /^[A-Za-z0-9_.-]+\.lua$/.test(man.main) && man.main.indexOf('..') < 0) ? man.main : 'main.lua';
       out.push({
         id, source,
-        manifest: { id: clean(man.id).slice(0, 80) || id, name: clean(man.name).slice(0, 48) || id, version: clean(man.version).slice(0, 20), author: clean(man.author).slice(0, 60), entry, runtime, main, description: clean(man.description).slice(0, 280) },
+        manifest: { id: clean(man.id).slice(0, 80) || id, name: clean(man.name).slice(0, 48) || id, version: clean(man.version).slice(0, 20), author: clean(man.author).slice(0, 60), entry, runtime, main, background: man.background === true, description: clean(man.description).slice(0, 280) },
         scopes
       });
     }
@@ -430,6 +473,7 @@
         }
       }
     }
+    try { pluginBackgroundSync(); } catch (e) {}
   }
 
   let pluginDevStampLast = null;
@@ -454,5 +498,6 @@
         const w = wmWinOf('plugin:' + id);
         if (w && !w.min && w.tab === ('plugin:' + id)) { w.pane.innerHTML = ''; renderPaneFor(w); }
       }
+      try { pluginBackgroundSync(); } catch (e) {}
     } catch (e) {}
   }

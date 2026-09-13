@@ -50,6 +50,7 @@ my-plugin/
 | `runtime`           | string   | Optional. `"lua"` runs the plugin in the Lua runtime; omit for HTML. |
 | `main`              | string   | Lua plugins: the entry chunk, a bare `.lua` filename (default `main.lua`). |
 | `icon`              | string   | Optional. Bare filename of a plugin icon inside the bundle.     |
+| `background`        | boolean  | Optional. `true` keeps the plugin running with no window open once its scopes are granted: it gets ticks, state and events off-screen and its overlays stay up. Opening the window restarts it there; closing the window restarts it off-screen. Give such a plugin its own enabled setting. |
 | `scopes`            | string[] | Permissions you request (see below). Request only what you use. |
 | `minHostVersion`    | string   | Optional minimum RuneTools version.                            |
 
