@@ -301,6 +301,10 @@ await rtx.plugin.state.interface(1184, [4, 10, 15]); // group id + component ids
 //    engine's own sub-interface table (exact:true), so every attached group resolves without any
 //    per-interface knowledge. vis is 1 only when the component is actually drawn (neither it nor
 //    any ancestor is hidden); a hidden comp still reports its rect, so skip vis:0 before highlighting.
+//    Every comp also carries obj (item id of an item slot, 0 otherwise), amt (its stack size), spr
+//    (sprite id) and col (fill / text / tint colour as an RGB int). A templated grid such as a trade
+//    offer lists one entry per filled slot with sub = the slot index, so
+//    state.interface(335, [14, 17]) gives both sides of a trade as {sub, obj, amt} rows.
 
 await rtx.plugin.state.interfaceGroup(919); // one OPEN interface group id
 // -> { widgets:[ { t:[group,comp,sub], d:<depth>, p:<parentComp>, r:[x,y,w,h], a:[absX,absY]?,

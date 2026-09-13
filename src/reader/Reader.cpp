@@ -5851,12 +5851,16 @@ std::string InterfaceCompsJson(std::uint32_t pid, int group, const std::string& 
             int sprId = r32(node + 0x1a8);
             int sprv = (sprId > 0 && sprId < 0x100000 && txt.empty()) ? sprId : 0;
             int objv = ((sprRaw >> 62) == 1 && (sprRaw & 0xFFFFFF) < 200000) ? (int)(sprRaw & 0xFFFFFF) : 0;
+            int itemv = r32(node + 0x1d8), amtv = r32(node + 0x1e0);   // item slot: id and stack size
+            if (objv <= 0 && itemv > 0 && itemv < 200000) objv = itemv;
+            if (objv <= 0) amtv = 0;
             int subv = r16(node + 0x3c);   // entry index within a templated grid
             comps += firstC ? "" : ","; firstC = false;
             comps += "{\"comp\":" + std::to_string(comp) + ",\"sub\":" + std::to_string(subv) +
                      ",\"text\":\"" + json_escape(txt) + "\"" +
                      ",\"vis\":" + std::to_string(vflags) + ",\"spr\":" + std::to_string(sprv) +
-                     ",\"obj\":" + std::to_string(objv) + ",\"col\":" + std::to_string(r32(node + 0xa8) & 0xFFFFFF);
+                     ",\"obj\":" + std::to_string(objv) + ",\"amt\":" + std::to_string(amtv) +
+                     ",\"col\":" + std::to_string(r32(node + 0xa8) & 0xFFFFFF);
             if (haveAbs) comps += ",\"x\":" + std::to_string(ax) + ",\"y\":" + std::to_string(ay) +
                                   ",\"w\":" + std::to_string(w) + ",\"h\":" + std::to_string(hh);
             comps += "}";
