@@ -27,7 +27,6 @@
     el.classList.toggle('sized', hh > 0);
     el.style.setProperty('--toast-h', (hh > 0 ? hh : 42) + 'px');
     let g = $('toastGhost');
-    if (g) g.style.minHeight = (hh > 0 ? hh : 42) + 'px';
     if (toastPlacing && !g) {
       g = document.createElement('div');
       g.id = 'toastGhost';
@@ -96,7 +95,9 @@
       el.appendChild(g);
     } else if (!toastPlacing && g) {
       g.parentNode.removeChild(g);
+      g = null;
     }
+    if (g) g.style.minHeight = (hh > 0 ? hh : 42) + 'px';   // after creation too, so a reopened box shows its saved height
     wmRectsSoon();
   }
 
