@@ -122,7 +122,7 @@
   // ---- themed dropdown (same classes as the Alerts sound picker; own ids and listeners) ----
   function menuClose() { const m = document.getElementById('csMenu'); if (m) { m.remove(); try { wmRectsSoon(); } catch (e) {} } }
   function menuPlace(pop, anchor) {
-    const r = anchor.getBoundingClientRect();
+    const r = uiScreenRect(anchor);                 // zoom-corrected: the menu lives at body level
     const W = window.innerWidth, H = window.innerHeight, SB = 20;
     const below = H - r.bottom - 8, above = r.top - 8;
     const openUp = above > below;

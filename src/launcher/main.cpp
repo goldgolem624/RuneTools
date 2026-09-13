@@ -424,6 +424,16 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             LocalFree(argv);
             return 0;
         }
+        // --bank-dump <pid>: the bank rows as the Bank tab sees them (live or from the cache, with per-item vars)
+        // to bank-dump.txt.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--bank-dump") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            rtx::reader::SampleAll();
+            std::ofstream f("bank-dump.txt", std::ios::binary | std::ios::trunc);
+            f << rtx::reader::BankJson(pid);
+            LocalFree(argv);
+            return 0;
+        }
         // --enum-dump <id>: one cache enum as JSON to enum-<id>.txt.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--enum-dump") {
             const int id = _wtoi(argv[2]);

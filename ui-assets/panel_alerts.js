@@ -633,7 +633,7 @@
 
   function closeSoundMenu() { const m = document.getElementById('sndMenu'); if (m) { m.remove(); try { wmRectsSoon(); } catch (e) {} } }
   function placeMenu(pop, anchor) {
-    const r = anchor.getBoundingClientRect();
+    const r = uiScreenRect(anchor);                 // zoom-corrected: the menu lives at body level
     const W = window.innerWidth, H = window.innerHeight;
     const SB = 20;                                  // gutter so the scrollbar never overlaps the menu
     const below = H - r.bottom - 8, above = r.top - 8;

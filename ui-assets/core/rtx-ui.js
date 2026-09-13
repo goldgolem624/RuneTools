@@ -19,6 +19,14 @@
     }
     return z;
   }
+  // Screen-space rect of an element. Window bodies are zoomed by the font-size preference, and WebKit's
+  // getBoundingClientRect divides by that zoom, so a popup appended to <body> (zoom 1) lands off the anchor
+  // unless the rect is scaled back up. Every dropdown and context menu should position through this.
+  function uiScreenRect(el) {
+    const r = el.getBoundingClientRect(), Z = uiZoomOf(el);
+    if (Z === 1) return r;
+    return { left: r.left * Z, top: r.top * Z, right: r.right * Z, bottom: r.bottom * Z, width: r.width * Z, height: r.height * Z };
+  }
   function uiEvPt(e, el) {
     const Z = uiZoomOf(el), t = e.target;
     if (t === el && typeof e.offsetX === 'number') return { x: e.offsetX / Z, y: e.offsetY / Z };

@@ -537,7 +537,7 @@
     if (!fillVarbitPop(pop, key)) return;
     varPopKey = key; varPopAnchor = rowEl;
     pop.style.display = 'block';
-    const rc = rowEl.getBoundingClientRect();
+    const rc = uiScreenRect(rowEl);                 // zoom-corrected: the popup lives at body level
     let top = rc.bottom + 4;
     if (top + pop.offsetHeight + 8 > window.innerHeight) top = Math.max(6, rc.top - pop.offsetHeight - 4);
     pop.style.top = top + 'px';

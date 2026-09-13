@@ -48,6 +48,17 @@
     for (const k in bankExtrasOf) delete bankExtrasOf[k];
     return bankMapCount;
   }
+  // Display name for a bank row. Tiered gear (Deathwarden robe bottom, tier 30) is one item id per tier, but
+  // the game's item definition names them all alike; the tradeable listing has the full name, so prefer it
+  // whenever it extends the plain name.
+  function bankRowName(id, name) {
+    const own = String(name || '');
+    if (!bankIdToName) bankMapping();
+    const full = bankIdToName && bankIdToName[id];
+    if (full && full.length > own.length && full.toLowerCase().indexOf(own.toLowerCase()) === 0)
+      return full.replace(/\((tier|level) (\d+)\)/i, (m, w, n) => '(' + w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() + ' ' + n + ')');
+    return own;
+  }
   function bankItemName(id) {
     if (bankIdToName && bankIdToName[id]) return bankIdToName[id];
     try { const info = JSON.parse(bridge().itemInfo(id) || '{}'); if (info && info.name) return info.name; } catch (e) {}
@@ -204,7 +215,7 @@
     const items = (bankData && bankData.items) ? bankData.items : [];
     const t = bankTerm.trim().toLowerCase();
     const list = !t ? items.slice() : items.filter(it => String(it[1]).indexOf(t) !== -1 ||
-                              (it[3] || '').toLowerCase().indexOf(t) !== -1);
+                              bankRowName(it[1], it[3]).toLowerCase().indexOf(t) !== -1);
     const s = BANK_SORTS[bankSort] || BANK_SORTS.slot;
     // placeholders (quantity 0) hold no value, so every value or quantity sort sinks them to the end
     if (bankSort !== 'slot') list.sort((a, b) => ((b[2] | 0) > 0) - ((a[2] | 0) > 0) || s.cmp(a, b) || a[0] - b[0]);
@@ -219,39 +230,52 @@
     bankOverlayShown = false;
     try { rtxData.sync('overlay.uiLabels', ''); } catch (e) {}
   }
+  // Why the in-game label is or is not showing, shown next to the toggle so a blank title bar can be read.
+  let bankOverlayWhy = '';
+  function bankOverlayStatus(msg) {
+    bankOverlayWhy = msg || '';
+    const el = document.getElementById('bankOvWhy');
+    if (el) { el.textContent = bankOverlayOn ? bankOverlayWhy : ''; el.title = bankOverlayOn ? bankOverlayWhy : ''; }
+  }
   async function bankOverlayTick() {
-    if (!bankOverlayOn || !bridge() || !bridge().uiLabels || bankOverlayBusy) return;
+    if (!bankOverlayOn || !bridge() || bankOverlayBusy) return;
+    if (!bridge().uiLabels) { bankOverlayStatus('needs the newer launcher build'); return; }
     bankOverlayBusy = true;
     try {
       if (!paneVisible('bank')) {                          // the tab's own fetch is idle: pull the bank ourselves
         try { const d = JSON.parse(await bridge().bankItems(myPid())); if (d && Array.isArray(d.items)) bankData = d; } catch (e) {}
       }
-      if (!bankData || !bankData.open || !bankData.items || !bankData.items.length) { bankOverlayClear(); return; }
+      if (!bankData || !bankData.open || !bankData.items || !bankData.items.length) { bankOverlayClear(); bankOverlayStatus('bank is closed'); return; }
       bankEofRefresh(bankData.items);
       // The title bar is part of the bank group itself: layer 517:311 holds the "Bank of Gielinor" text as a
       // dynamic child (723x40 across the top). Right-align the totals inside that bar, clear of the info icon.
-      let title = null;
+      let title = null, why = '';
       try {
         const d = JSON.parse(rtxData.sync('state.interface', 517, '311') || '{}');
-        if (d && d.open && d.hasAbs && Array.isArray(d.comps)) {
+        if (!d || !d.open) why = 'bank window 517 not open';
+        else if (!d.hasAbs) why = 'bank window position unknown';
+        else if (!Array.isArray(d.comps) || !d.comps.length) why = 'title layer 517:311 not found';
+        else {
           title = d.comps.find(c => c.sub >= 0 && c.w > 300 && /bank/i.test(c.text || '')) || d.comps.find(c => c.sub === -1 && c.w > 300) || null;
+          if (!title) why = 'title bar not found among ' + d.comps.length + ' comps (' + d.comps.slice(0, 3).map(c => c.sub + ':' + c.w + 'x' + c.h + ' ' + (c.text || '').slice(0, 12)).join(', ') + ')';
         }
-      } catch (e) {}
-      if (!title) { bankOverlayClear(); return; }
+      } catch (e) { why = 'interface read failed: ' + (e && e.message ? e.message : e); }
+      if (!title) { bankOverlayClear(); bankOverlayStatus(why); return; }
       const t = bankTotals(bankData.items);
       const text = 'GE ' + fmtGp(t.ge) + '  |  HA ' + fmtGp(t.ha);
       const x = title.x + title.w - 80 - Math.round(text.length * 7.2);   // right-aligned in the title bar, left of the info button
       const y = title.y + Math.round((title.h || 40) / 2);
-      rtxData.sync('overlay.uiLabels', x + '\x1f' + y + '\x1f-1\x1f13\x1f' + text);
+      const ok = rtxData.sync('overlay.uiLabels', x + '\x1f' + y + '\x1f-1\x1f13\x1f' + text);
       bankOverlayShown = true;
-    } catch (e) {} finally { bankOverlayBusy = false; }
+      bankOverlayStatus((ok === false ? 'label rejected by the launcher' : 'drawing') + ' at ' + x + ',' + y + ' (title ' + title.x + ',' + title.y + ' ' + title.w + 'x' + title.h + ')');
+    } catch (e) { bankOverlayStatus('failed: ' + (e && e.message ? e.message : e)); } finally { bankOverlayBusy = false; }
   }
   function bankOverlaySet(on) {
     bankOverlayOn = !!on; prefSet('rtxBankOverlay', on ? '1' : '0');
     if (on && bridge() && !bridge().uiLabels) { try { uiNotify('In-game totals need the newer launcher build: rebuild and relaunch RuneToolsX', { ttl: 8000 }); } catch (e) {} }
     if (bankOverlayTimer) { clearInterval(bankOverlayTimer); bankOverlayTimer = 0; }
     if (on) { bankOverlayTimer = setInterval(bankOverlayTick, 2000); bankOverlayTick(); }
-    else bankOverlayClear();
+    else { bankOverlayClear(); bankOverlayStatus(''); }
   }
   if (bankOverlayOn) setTimeout(() => bankOverlaySet(true), 2500);
 
@@ -266,7 +290,7 @@
       pop.appendChild(el);
     }
     document.body.appendChild(pop);
-    const r = anchor.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight, SB = 20;
+    const r = uiScreenRect(anchor), W = window.innerWidth, H = window.innerHeight, SB = 20;   // zoom-corrected
     const below = H - r.bottom - 8, above = r.top - 8, openUp = above > below, avail = Math.max(80, openUp ? above : below);
     if (pop.offsetHeight > avail) pop.style.maxHeight = avail + 'px';
     const pw = pop.offsetWidth, ph = Math.min(pop.offsetHeight, avail);
@@ -331,6 +355,7 @@
       ovBtn.addEventListener('click', () => { bankOverlaySet(!bankOverlayOn); ovBtn.classList.toggle('on', bankOverlayOn); });
       ovSeg.appendChild(ovBtn);
       tools.appendChild(sortBtn); tools.appendChild(basisBtn); tools.appendChild(totals); tools.appendChild(ovSeg);
+      const ovWhy = document.createElement('span'); ovWhy.id = 'bankOvWhy'; ovWhy.className = 'bank-ovwhy'; tools.appendChild(ovWhy);
 
       const grid = document.createElement('div'); grid.id = 'bankGrid'; grid.className = 'bank-grid';
 
@@ -447,7 +472,7 @@
         const b = document.createElement('span'); b.className = 'bank-val' + (showHa ? ' ha' : '');
         b.textContent = fmtGp(badgeVal); cell.appendChild(b);
       }
-      cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
+      cell.dataset.tip = (bankRowName(id, name) || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
         '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (v.parts ? (v.parts.extras.length ? ' = ' + (v.parts.item != null ? fmtGp(v.parts.item) : 'no price') + ' item' + v.parts.extras.map(e => ' + ' + fmtGp(e.price) + ' ' + e.label).join('') : ' (priced as the base item)') : '') : 'no price') +
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a') +
