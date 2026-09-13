@@ -896,6 +896,23 @@
 
   /* ==================== game location ==================== */
   .set-row-col { flex-direction: column; align-items: stretch; gap: 10px; }
+
+  /* ==================== RuneTools account (linked PC) ==================== */
+  .link-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .link-tag { display: inline-flex; align-items: center; gap: 7px; font: 600 10px var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); }
+  .link-tag::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--text-mute); }
+  .link-tag.ok::before { background: var(--ok); box-shadow: 0 0 6px rgba(77, 210, 138, 0.6); }
+  .link-tag.wait::before { background: var(--warn); box-shadow: 0 0 6px rgba(245, 178, 65, 0.6); }
+  .link-tag.bad::before { background: var(--err); box-shadow: 0 0 6px rgba(255, 107, 107, 0.6); }
+  .link-code { display: flex; align-items: center; justify-content: center; padding: 12px 14px; background: rgba(0,0,0,0.32); border: 1px solid var(--border-hi); border-radius: 4px; font: 700 26px var(--font-mono); letter-spacing: 0.28em; color: var(--brass-2); text-indent: 0.28em; user-select: text; }
+  .link-hint { color: var(--text-mute); font-size: 11.5px; line-height: 1.5; }
+  .link-hint b { color: var(--text); font-weight: 600; }
+  .link-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .link-who b { color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+  .link-who span { color: var(--text-mute); font-size: 11px; font-family: var(--font-mono); }
+  .link-note { color: var(--text-dim); font-size: 11.5px; line-height: 1.45; }
+  .link-note.err { color: var(--err); }
+  .link-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
   @keyframes gp-flash { 0%, 100% { box-shadow: none; } 20% { box-shadow: inset 0 0 0 1px var(--brass), 0 0 18px -4px rgba(var(--brass-rgb), 0.7); } }
   .set-row.flash { animation: gp-flash 1.8s var(--ease) 1; }
   .gp-field { padding: 9px 12px; background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: 3px; min-width: 0; }
@@ -1090,6 +1107,13 @@
             <button class="ghost btn-sm" id="gp-reset" type="button" hidden>Use detected</button>
           </div>
         </div>
+      </div>
+      <div class="set-row set-row-col" id="link-row">
+        <div class="set-text">
+          <b>RuneTools account</b>
+          <span>Optional. Link this PC to your runetools.io account for account features such as trading between RuneTools accounts. One account can be linked on any number of PCs; manage them at runetools.io under Settings.</span>
+        </div>
+        <div id="link-body"></div>
       </div>
       <div class="set-head">Saved accounts <span class="count" id="acct-count">0</span></div>
       <div class="list" id="acct-list">
@@ -1848,7 +1872,81 @@
     n.style.display = (n.style.display === 'none') ? 'block' : 'none';
   });
 
-  const settingsSet = (on) => { $('settingsOv').classList.toggle('on', !!on); if (on) gpRefresh(); };
+  // ---- RuneTools account link (device code flow; the launcher never sees the account password) ----
+  let linkTimer = null, linkLast = null, linkVerifiedAt = 0;
+  function linkEsc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function linkCall(name) {
+    const b = bridge();
+    if (!b[name]) return null;
+    try { return JSON.parse(b[name]()); } catch (e) { return null; }
+  }
+  function linkTtl(expiresAt) {
+    const left = Math.max(0, Math.floor((Number(expiresAt) - Date.now()) / 1000));
+    return Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+  }
+  function linkRender(st) {
+    const body = $('link-body');
+    if (!body) return;
+    if (!st) { body.innerHTML = '<div class="link-state"><span class="link-tag">Unavailable</span></div>'; return; }
+    const note = st.note ? '<div class="link-note">' + linkEsc(st.note) + '</div>' : '';
+    let html = '';
+    if (st.state === 'idle') {
+      html = '<div class="link-state"><span class="link-tag">Not linked</span>'
+           + '<div class="link-actions"><button class="primary btn-sm" id="link-start" type="button">Link account</button></div></div>' + note;
+    } else if (st.state === 'starting') {
+      html = '<div class="link-state"><span class="link-tag wait">Contacting runetools.io</span>'
+           + '<div class="link-actions"><button class="ghost btn-sm" id="link-cancel" type="button">Cancel</button></div></div>';
+    } else if (st.state === 'pending') {
+      html = '<div class="link-code" id="link-code">' + linkEsc(st.userCode) + '</div>'
+           + '<div class="link-hint">Sign in at <b>runetools.io/link</b> and enter this code. Open link page takes it there for you. '
+           + 'The code expires in <b id="link-ttl">' + linkTtl(st.expiresAt) + '</b>. Nobody from RuneTools will ever ask you for it.</div>'
+           + '<div class="link-state"><span class="link-tag wait">Waiting for approval</span>'
+           + '<div class="link-actions">'
+           + '<button class="primary btn-sm" id="link-open" type="button">Open link page</button>'
+           + '<button class="ghost btn-sm" id="link-copy" type="button">Copy code</button>'
+           + '<button class="ghost btn-sm" id="link-cancel" type="button">Cancel</button></div></div>';
+    } else if (st.state === 'linked') {
+      const n = Number(st.linkedCount) || 0;
+      const pcs = n === 0 ? 'PC count not checked yet' : (n === 1 ? 'the only linked PC' : 'one of ' + n + ' linked PCs');
+      const tag = st.verified ? '<span class="link-tag ok">Linked</span>' : '<span class="link-tag wait" title="runetools.io has not been reached yet this session">Linked, not checked yet</span>';
+      html = '<div class="gp-field"><div class="link-who"><b>' + linkEsc(st.displayName || st.username) + '</b>'
+           + '<span>' + linkEsc(st.username) + ' \u00b7 this PC is "' + linkEsc(st.deviceName || 'Windows PC') + '", ' + pcs + '</span></div></div>'
+           + '<div class="link-state">' + tag
+           + '<div class="link-actions">'
+           + '<button class="ghost btn-sm" id="link-manage" type="button" title="Every PC linked to this account, and unlink any you do not recognise">Manage PCs</button>'
+           + '<button class="ghost btn-sm danger" id="link-unlink" type="button">Unlink this PC</button></div></div>'
+           + (n > 1 ? '<div class="link-note">Not expecting ' + n + ' PCs? Manage PCs shows each one; unlink anything you do not recognise and change your password.</div>' : '') + note;
+    } else {
+      html = '<div class="link-note err">' + linkEsc(st.error || 'Linking failed.') + '</div>'
+           + '<div class="link-state"><span class="link-tag bad">Not linked</span>'
+           + '<div class="link-actions"><button class="primary btn-sm" id="link-retry" type="button">Try again</button>'
+           + '<button class="ghost btn-sm" id="link-cancel" type="button">Dismiss</button></div></div>';
+    }
+    body.innerHTML = html;
+    const on = (id, fn) => { const el = $(id); if (el) el.addEventListener('click', fn); };
+    on('link-start',  () => linkRender(linkCall('linkStart')));
+    on('link-retry',  () => { linkCall('linkCancel'); linkRender(linkCall('linkStart')); });
+    on('link-cancel', () => linkRender(linkCall('linkCancel')));
+    on('link-open',   () => bridge().openExternal && bridge().openExternal(st.verifyUrl || 'https://runetools.io/link'));
+    on('link-copy',   () => { if (bridge().copyClipboard) bridge().copyClipboard(st.userCode || ''); const b = $('link-copy'); if (b) { b.textContent = 'Copied'; setTimeout(() => { if ($('link-copy')) $('link-copy').textContent = 'Copy code'; }, 1400); } });
+    on('link-manage', () => bridge().openExternal && bridge().openExternal('https://runetools.io/settings'));
+    on('link-unlink', () => linkRender(linkCall('linkUnlink')));
+  }
+  function linkTick() {
+    const st = linkCall('linkStatus');
+    const key = JSON.stringify(st);
+    if (key !== linkLast) { linkLast = key; linkRender(st); }
+    else if (st && st.state === 'pending' && $('link-ttl')) $('link-ttl').textContent = linkTtl(st.expiresAt);
+  }
+  function linkPollSet(on) {
+    if (linkTimer) { clearInterval(linkTimer); linkTimer = null; }
+    if (!on) return;
+    if (Date.now() - linkVerifiedAt > 60000) { linkVerifiedAt = Date.now(); linkCall('linkVerify'); }
+    linkLast = null; linkTick();
+    linkTimer = setInterval(linkTick, 1000);
+  }
+
+  const settingsSet = (on) => { $('settingsOv').classList.toggle('on', !!on); if (on) gpRefresh(); linkPollSet(!!on); };
   $('tb-settings').addEventListener('click', () => settingsSet(true));
   $('settingsClose').addEventListener('click', () => settingsSet(false));
   $('settingsOv').addEventListener('click', (e) => { if (e.target === $('settingsOv')) settingsSet(false); });

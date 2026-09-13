@@ -32,6 +32,7 @@
 #include <shobjidl.h>
 #include "Zip.h"
 #include "LuaHost.h"
+#include "Link.h"
 
 #include <Ultralight/Ultralight.h>
 #include <JavaScriptCore/JavaScript.h>
@@ -445,6 +446,27 @@ JSValueRef OpenExternal(JSContextRef ctx, JSObjectRef, JSObjectRef,
 }
 
 bool account_capture_get();
+
+// RuneTools account linking (Settings). Network work runs off-thread; the page polls linkStatus.
+JSValueRef LinkStatus(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    return utf8_to_js(ctx, link::StatusJson());
+}
+JSValueRef LinkStart(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    link::Start();
+    return utf8_to_js(ctx, link::StatusJson());
+}
+JSValueRef LinkCancel(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    link::Cancel();
+    return utf8_to_js(ctx, link::StatusJson());
+}
+JSValueRef LinkUnlink(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    link::Unlink();
+    return utf8_to_js(ctx, link::StatusJson());
+}
+JSValueRef LinkVerify(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
+    link::Verify();
+    return utf8_to_js(ctx, link::StatusJson());
+}
 
 JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
@@ -5169,6 +5191,11 @@ void AttachBridge(ultralight::View* view) {
     ensure_vault_unlocked();
 
     install_fn(ctx, ns, "openExternal",           OpenExternal);
+    install_fn(ctx, ns, "linkStatus",        LinkStatus);
+    install_fn(ctx, ns, "linkStart",         LinkStart);
+    install_fn(ctx, ns, "linkCancel",        LinkCancel);
+    install_fn(ctx, ns, "linkUnlink",        LinkUnlink);
+    install_fn(ctx, ns, "linkVerify",        LinkVerify);
     install_fn(ctx, ns, "scanProcesses",     ScanProcesses);
     install_fn(ctx, ns, "gameSnapshots",     GameSnapshots);
     install_fn(ctx, ns, "uiAsset",           UiAsset);
