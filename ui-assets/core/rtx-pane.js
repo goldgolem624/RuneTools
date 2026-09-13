@@ -311,11 +311,6 @@
       rows.appendChild(row('Graphics',    s.gfx_mode || 'Detecting...'));
       rows.appendChild(row('Process RAM', s.working_set_mb ? (s.working_set_mb + ' MB') : '--'));
       rows.appendChild(row('Process CPU', s.cpu_pct > 0.05 ? (s.cpu_pct.toFixed(1) + ' %') : '0.0 %'));
-      if (s.gfx_mode === 'Vulkan') {
-        const w = document.createElement('div'); w.className = 'sys-warn';
-        w.textContent = 'RuneTools has not been updated for the Vulkan client yet. In-game overlay markers, the tile grid, object outlines and scene hiding are unavailable on this client. Panels that read game state still work.';
-        rows.appendChild(w);
-      }
       if (host) {
         const sep = document.createElement('div');
         sep.style.cssText = 'border-top:1px solid var(--border); margin:8px 0 4px;';
