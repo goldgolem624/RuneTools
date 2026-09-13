@@ -46,18 +46,19 @@
         while (plain !== prevPlain) { prevPlain = plain; plain = plain.replace(/\s+\((?:augmented|broken|damaged|degraded|used|new|uncharged|shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle)\)$/, '').trim(); }
         const hit = bankNameToId[own] != null ? bankNameToId[own] : (plain && bankNameToId[plain] != null ? bankNameToId[plain] : null);
         if (hit != null && hit !== id) base = hit;
+        // a dyed item is worth the base item plus the dye: remember which dye so the price can include it
+        const dye = own.match(/\((shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle)\)/);
+        bankDyeOf[id] = dye && bankNameToId[dye[1] + ' dye'] != null ? bankNameToId[dye[1] + ' dye'] : null;
       }
     } catch (e) {}
     if (bankNameToId) bankBaseOf[id] = base;   // only memoise once the mapping is in
     return base;
   }
+  const bankDyeOf = Object.create(null);      // item id -> the dye item's id when the name carries a dye tag
   // Which Grand Exchange figure a bank is valued at: instant-buy (high), instant-sell (low) or their average.
   let bankBasis = prefGet('rtxBankPriceBasis', 'buy');
   const BANK_BASES = { buy: 'Instant buy', sell: 'Instant sell', avg: 'Buy/sell average' };
-  function bankGeOf(id, name) {
-    const prices = bankPrices();
-    let p = prices && prices[id];
-    if (!p && name) { const b = bankBaseId(id, name); if (b !== id) p = prices && prices[b]; }
+  function bankPriceAt(p) {
     if (!p) return null;
     const hi = p.high > 0 ? p.high : null, lo = p.low > 0 ? p.low : null;
     let v;
@@ -65,6 +66,17 @@
     else if (bankBasis === 'avg') v = hi != null && lo != null ? Math.round((hi + lo) / 2) : (hi != null ? hi : lo);
     else v = hi != null ? hi : lo;
     return v > 0 ? v : null;
+  }
+  function bankGeOf(id, name) {
+    const prices = bankPrices();
+    let v = bankPriceAt(prices && prices[id]);
+    if (v == null && name) {
+      const b = bankBaseId(id, name);
+      if (b !== id) v = bankPriceAt(prices && prices[b]);
+      const dyeId = bankDyeOf[id];                      // dyed: the item is worth the base piece plus the dye
+      if (v != null && dyeId != null) { const dv = bankPriceAt(prices && prices[dyeId]); if (dv != null) v += dv; }
+    }
+    return v;
   }
   // per-item valuation for a row [slot, id, stack, name]
   function bankValue(it) {
@@ -330,7 +342,7 @@
       }
       cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
-        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankBaseOf[id] !== undefined && bankBaseOf[id] !== id ? ' (base item)' : '') : 'no price') +
+        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankBaseOf[id] !== undefined && bankBaseOf[id] !== id ? (bankDyeOf[id] != null ? ' (base item + dye)' : ' (base item)') : '') : 'no price') +
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);
     }
