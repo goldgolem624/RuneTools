@@ -43,22 +43,34 @@
         const own = String(name || '').toLowerCase();
         // strip "Augmented", then any trailing dye or condition tags, repeatedly ("Augmented X (Soul)" -> X)
         let plain = own.replace(/^augmented\s+/, '').trim(), prevPlain = '';
-        while (plain !== prevPlain) { prevPlain = plain; plain = plain.replace(/\s+\((?:augmented|broken|damaged|degraded|used|new|uncharged|shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle)\)$/, '').trim(); }
+        const TAG = /\s*\((?:augmented|broken|damaged|degraded|used|new|uncharged|shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle|or|sp|red|blue|green|yellow|purple|white|black|orange|pink|cyan|grey|gray|brown)\)$/;
+        while (plain !== prevPlain) { prevPlain = plain; plain = plain.replace(TAG, '').trim(); }
         // the tradeable listing may carry a state the bank item has grown out of: "The Devourer's Nexus" trades as
         // "The Devourer's Nexus (unattuned)", charged tools as "(uncharged)", and so on
         const cands = [own, plain, plain + ' (unattuned)', plain + ' (uncharged)', plain + ' (inactive)', plain + ' (empty)', plain + ' (unpowered)'];
         let hit = null;
         for (const c of cands) if (c && bankNameToId[c] != null) { hit = bankNameToId[c]; break; }
         if (hit != null && hit !== id) base = hit;
-        // a dyed item is worth the base item plus the dye: remember which dye so the price can include it
+        // add-ons the item carries on top of the base piece: a dye ("(blood)") and an ornament kit ("(or)" / "(sp)")
+        const extras = [];
         const dye = own.match(/\((shadow|barrows|third age|blood|ice|soul|aurora|sun|jungle)\)/);
-        bankDyeOf[id] = dye && bankNameToId[dye[1] + ' dye'] != null ? bankNameToId[dye[1] + ' dye'] : null;
+        if (dye && bankNameToId[dye[1] + ' dye'] != null) extras.push({ label: dye[1].replace(/\b\w/g, c => c.toUpperCase()) + ' dye', id: bankNameToId[dye[1] + ' dye'] });
+        const orn = own.match(/\((or|sp)\)/);
+        if (orn) {
+          const tag = orn[1], kitCands = [plain + ' ornament kit (' + tag + ')', plain + ' ornament kit'];
+          const m1 = plain.match(/^amulet of (.+)$/); if (m1) kitCands.push(m1[1] + ' ornament kit');           // Amulet of fury -> Fury ornament kit
+          const m2 = plain.match(/^(.+?) (?:necklace|amulet|ring|bracelet)$/); if (m2) kitCands.push(m2[1] + ' ornament kit');   // Reaper necklace -> Reaper ornament kit
+          if (/^dragon plate(?:legs|skirt)$/.test(plain)) kitCands.push('dragon platelegs/skirt ornament kit (' + tag + ')');
+          if (/^essence of finality amulet$/.test(plain)) kitCands.push('essence of finality ornament kit');
+          for (const c of kitCands) if (bankNameToId[c] != null) { extras.push({ label: 'ornament kit', id: bankNameToId[c] }); break; }
+        }
+        bankExtrasOf[id] = extras;
       }
     } catch (e) {}
     if (bankNameToId) bankBaseOf[id] = base;   // only memoise once the mapping is in
     return base;
   }
-  const bankDyeOf = Object.create(null);      // item id -> the dye item's id when the name carries a dye tag
+  const bankExtrasOf = Object.create(null);   // item id -> [{ label, id }] add-ons (dye, ornament kit) priced on top of the base
   // Which Grand Exchange figure a bank is valued at: instant-buy (high), instant-sell (low) or their average.
   let bankBasis = prefGet('rtxBankPriceBasis', 'buy');
   const BANK_BASES = { buy: 'Instant buy', sell: 'Instant sell', avg: 'Buy/sell average' };
@@ -71,7 +83,7 @@
     else v = hi != null ? hi : lo;
     return v > 0 ? v : null;
   }
-  const bankPartsOf = Object.create(null);    // item id -> { item, dye, dyeName } behind the last GE figure (for the tooltip)
+  const bankPartsOf = Object.create(null);    // item id -> { item, extras: [{ label, price }] } behind the last GE figure (for the tooltip)
   function bankGeOf(id, name) {
     const prices = bankPrices();
     let v = bankPriceAt(prices && prices[id]);
@@ -79,12 +91,11 @@
     if (v == null && name) {
       const b = bankBaseId(id, name);
       if (b !== id) v = bankPriceAt(prices && prices[b]);
-      const dyeId = bankDyeOf[id];                      // dyed: the item is worth the base piece plus the dye
       if (v != null && b !== id) {
-        const parts = { item: v, dye: null, dyeName: '' };
-        if (dyeId != null) {
-          const dv = bankPriceAt(prices && prices[dyeId]);
-          if (dv != null) { parts.dye = dv; const m = String(name).match(/\(([^)]+)\)\s*$/); parts.dyeName = m ? m[1].replace(/\b\w/g, c => c.toUpperCase()) + ' dye' : 'dye'; v += dv; }
+        const parts = { item: v, extras: [] };
+        for (const ex of (bankExtrasOf[id] || [])) {     // dyes and ornament kits sit on top of the base piece
+          const pv = bankPriceAt(prices && prices[ex.id]);
+          if (pv != null) { parts.extras.push({ label: ex.label, price: pv }); v += pv; }
         }
         bankPartsOf[id] = parts;
       }
@@ -355,7 +366,7 @@
       }
       cell.dataset.tip = (name || ('Item #' + id)) + '\nID ' + id + '\nx' + stack.toLocaleString() +
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot +
-        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankPartsOf[id] ? (bankPartsOf[id].dye != null ? ' = ' + fmtGp(bankPartsOf[id].item) + ' item + ' + fmtGp(bankPartsOf[id].dye) + ' ' + bankPartsOf[id].dyeName : ' (priced as the base item)') : '') : 'no price') +
+        '\nGE ' + (v.ge != null ? v.ge.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.geTotal) + ' total' : '') + (bankPartsOf[id] ? (bankPartsOf[id].extras.length ? ' = ' + fmtGp(bankPartsOf[id].item) + ' item' + bankPartsOf[id].extras.map(e => ' + ' + fmtGp(e.price) + ' ' + e.label).join('') : ' (priced as the base item)') : '') : 'no price') +
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
       grid.appendChild(cell);
     }
