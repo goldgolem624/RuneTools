@@ -53,6 +53,13 @@ void Log(const char* fmt, ...) {
     const DWORD n = GetEnvironmentVariableA("USERPROFILE", home, sizeof(home));
     if (n > 0 && n < sizeof(home)) std::snprintf(path, sizeof(path), "%s\\rtx_menu.log", home);
     FILE* f = nullptr;
+    // Bounded: start over once the file passes 4 MB so a long session cannot fill the profile.
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (GetFileAttributesExA(path, GetFileExInfoStandard, &fa) &&
+            (((std::uint64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow) > 4ull * 1024 * 1024)
+            DeleteFileA(path);
+    }
     if (fopen_s(&f, path, "a") != 0 || !f) return;
     char msg[1024];
     va_list ap;
