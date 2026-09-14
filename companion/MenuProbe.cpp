@@ -279,6 +279,7 @@ constexpr std::uint64_t kObjVerb      = 0x38;
 constexpr std::uint64_t kDispTag  = 0x38;
 constexpr std::uint64_t kTagPrio  = 0x40;
 constexpr std::int32_t  kPromoted = 1000;
+constexpr std::int32_t  kDemotedIface = 1007;   // interface demoted class: the only one with a proven promoted partner
 
 bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio);
 
@@ -544,6 +545,26 @@ void ApplyOrder(std::uint64_t mgr) {
                         }
         }
         if (out != m) continue;
+        // A demoted row (class priority >= 1000) cannot be the left-click default, and world-object
+        // classes cannot be promoted safely (the class picks which option is sent). Putting one on top
+        // makes the game fall back to "Walk here" as the left-click. So when the rule would place a
+        // demoted, non-interface row above the game's own promoted default, keep that default on top
+        // and let the rule order the rest beneath it.
+        if (m >= 2) {
+            std::uint64_t tg = 0; std::int32_t pNew = 0, pOld = 0;
+            const bool newDemoted = EntryTag(begin + (std::uint64_t)items[0] * kRecSize, tg, pNew) &&
+                                    pNew >= kPromoted && pNew != kDemotedIface;
+            const bool oldPromoted = EntryTag(begin + (std::uint64_t)slots[0] * kRecSize, tg, pOld) && pOld < kPromoted;
+            if (newDemoted && oldPromoted) {
+                int at = -1;
+                for (int j = 0; j < m; ++j) if (items[j] == slots[0]) { at = j; break; }
+                if (at > 0) {
+                    const int keep = items[at];
+                    for (int j = at; j > 0; --j) items[j] = items[j - 1];
+                    items[0] = keep;
+                }
+            }
+        }
         if (lane.stat == 0) ++g_share->stage[2];
 
         bool changed = false;
@@ -576,7 +597,7 @@ bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio) {
 }
 
 // Gated to the interface demoted class (1007); world demoted classes (1002/1003) have no proven
-constexpr std::int32_t  kDemotedIface   = 1007;
+// kDemotedIface is declared with kPromoted above.
 
 struct ClassObs {
     std::uint64_t cls;
