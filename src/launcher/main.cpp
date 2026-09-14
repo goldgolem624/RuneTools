@@ -350,6 +350,18 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
         // --iface-dump <pid> [group[:comps]]: print the open interface groups (with the engine mount and the
         // resolved screen origin of each) or one group's comps to iface-dump.txt and exit. No window.
+        // --health <pid>: the reader health rows for a live client to health.txt and exit. No window.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--health") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            rtx::log::Init();
+            rtx::reader::SampleAll();
+            Sleep(3000);
+            rtx::reader::SampleAll();
+            std::string out = rtx::reader::ReaderHealthJson(pid);
+            { std::ofstream f("health.txt", std::ios::binary | std::ios::trunc); f << out; }
+            LocalFree(argv);
+            return 0;
+        }
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--iface-dump") {
             std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
             auto snaps = rtx::reader::SampleAll();   // attach + resolve MainData for the live client(s)

@@ -4327,6 +4327,23 @@ static bool read_gameview_rect(HANDLE h, std::uint64_t mainData,
                 if (w > 0 && hh > 0 && area > best) { best = area; *rootW = w; *rootH = hh; }
             }
         }
+        // Since the 2026-09-14 interface update 1477:28 is its own root rather than a child of 1477:27, so
+        // the child walk below finds nothing. Find both nodes directly in the group's node list first.
+        std::uint64_t n27 = 0, n28 = 0;
+        for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
+            std::uint64_t nd = r64(wn);
+            if (nd <= 0x10000 || r16(nd + 0x38) != 1477 || r16(nd + 0x3c) != -1) continue;
+            const int cid = r16(nd + 0x3a);
+            if (cid == 27 && !n27) n27 = nd; else if (cid == 28 && !n28) n28 = nd;
+            if (n27 && n28) break;
+        }
+        if (n28) {
+            int cw = r32(n28 + 0xa0), chh = r32(n28 + 0xa4);
+            if (cw > 0 && chh > 0) {
+                gx = r32(n28 + 0x98); gy = r32(n28 + 0x9c); gw = cw; gh = chh;
+                return true;
+            }
+        }
         for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
             std::uint64_t nd = r64(wn);
             if (nd <= 0x10000) continue;
