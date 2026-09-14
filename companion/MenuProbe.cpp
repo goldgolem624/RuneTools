@@ -948,29 +948,41 @@ bool RotateRuleTop(std::uint64_t mgr) {
     int  decoded = 0;
     if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded) || decoded != n) return false;
 
-    // New order, top to bottom: the rule's rows as one block in rule order, then every other row
-    // (Walk here, Cancel, rows of other entities) in the order the game sorted them. Moving only the
-    // top row left "Walk here" wedged between the rule's options.
+    // New order, top to bottom. The rule's first row becomes the top (the left-click). Every other
+    // row keeps the game's layout: rule rows only swap places with rule rows of the same kind (action
+    // options above "Walk here", Examine-type options below it), and rows the rule does not name
+    // (Walk here, Cancel, another object's options) stay where the game put them. A rule saved on one
+    // "Fishing spot" also applies to a same-named spot with other options, so it must not drag
+    // Examine above Walk here or strand that spot's own options below it.
+    int best = -1;
+    for (int i = 0; i < n; ++i)
+        if (!fixedSlot[i] && rank[i] != 0x7FFFFFFF && (best < 0 || rank[i] < rank[best])) best = i;
+    if (best < 0) return false;                              // no rule row in this menu
+
     int order[rtx::menu::kMaxEntries];
+    bool demoted[rtx::menu::kMaxEntries];
     int m = 0;
-    for (;;) {
-        int pick = -1;
-        for (int i = n - 1; i >= 0; --i) {
-            if (fixedSlot[i] || rank[i] == 0x7FFFFFFF) continue;
-            bool taken = false;
-            for (int k = 0; k < m; ++k) if (order[k] == i) { taken = true; break; }
-            if (!taken && (pick < 0 || rank[i] < rank[pick])) pick = i;
-        }
-        if (pick < 0) break;
-        order[m++] = pick;
+    order[m++] = best;
+    for (int i = n - 1; i >= 0; --i)
+        if (i != best) order[m++] = i;
+    for (int i = 0; i < n; ++i) {
+        std::uint64_t tag = 0;
+        std::int32_t prio = 0;
+        demoted[i] = EntryTag(begin + (std::uint64_t)i * kRecSize, tag, prio) && prio >= kPromoted;
     }
-    if (m == 0) return false;                                // no rule row in this menu
-    const int best = order[0];
-    const int ruleRows = m;
-    for (int i = n - 1; i >= 0; --i) {
-        bool taken = false;
-        for (int k = 0; k < ruleRows; ++k) if (order[k] == i) { taken = true; break; }
-        if (!taken) order[m++] = i;
+    for (int group = 0; group < 2; ++group) {
+        int pos[rtx::menu::kMaxEntries], rows[rtx::menu::kMaxEntries];
+        int c = 0;
+        for (int k = 1; k < n; ++k) {
+            const int r = order[k];
+            if (fixedSlot[r] || rank[r] == 0x7FFFFFFF || demoted[r] != (group == 1)) continue;
+            pos[c] = k; rows[c] = r; ++c;
+        }
+        for (int a = 1; a < c; ++a)                          // stable insertion sort by rule rank
+            for (int b = a; b > 0 && rank[rows[b]] < rank[rows[b - 1]]; --b) {
+                const int t = rows[b]; rows[b] = rows[b - 1]; rows[b - 1] = t;
+            }
+        for (int a = 0; a < c; ++a) order[pos[a]] = rows[a];
     }
     bool same = true;
     for (int k = 0; k < n; ++k) if (order[k] != n - 1 - k) { same = false; break; }
