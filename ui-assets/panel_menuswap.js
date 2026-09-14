@@ -204,73 +204,56 @@
     return out;
   }
 
-  function mnuFlatten(ents) {
+  // Pins go to the companion as rules: each rule is one group of "verb<TAB>name" lines, groups
+  // separated by a marker line. Same-NAMED objects with different ids (npc 321 "Fishing spot"
+  // Harpoon/Cage, npc 322 Harpoon/Net) look identical in the menu, so the companion applies a group
+  // only when the menu offers every option it names; the first group that qualifies wins.
+  const mnuGroupMark = '\u001d';
+  function mnuGroupsFor(ents) {
     const out = [];
     const seen = {};
     for (const t of mnuTargets(ents)) {
       if (seen[t]) continue;
       seen[t] = 1;
       const key = mnuRuleKey(ents, t);
-      for (const verb of (key && mnuRules[key]) || []) out.push(verb + '	' + t);
+      const verbs = (key && mnuRules[key]) || [];
+      if (verbs.length) out.push(verbs.map(v => v + '\t' + t));
     }
-    return out.join('\n');
-  }
-
-  // For same-NAMED variants with different ids (NPC 312 "Fishing spot" Cage/Harpoon, 313 Net/Harpoon):
-  // pins match on verb + name, so Harpoon above Cage on 312 also puts Harpoon above Net on 313.
-  function mnuMergeOrders(orders) {
-    const verbs = [];
-    const edges = {}, indeg = {}, firstSeen = {};
-    let n = 0;
-    for (const o of orders) for (const v of o) {
-      if (firstSeen[v] === undefined) { firstSeen[v] = n++; verbs.push(v); edges[v] = {}; indeg[v] = 0; }
-    }
-    for (const o of orders)
-      for (let i = 0; i < o.length; i++)
-        for (let j = i + 1; j < o.length; j++)
-          if (!edges[o[i]][o[j]]) { edges[o[i]][o[j]] = 1; indeg[o[j]]++; }
-    const avail = verbs.filter(v => indeg[v] === 0);
-    const out = [];
-    while (avail.length) {
-      avail.sort((a, b) => firstSeen[a] - firstSeen[b]);
-      const v = avail.shift(); out.push(v);
-      for (const w in edges[v]) if (--indeg[w] === 0) avail.push(w);
-    }
-    return out.length === verbs.length ? out : null;
+    return out;
   }
   function mnuPrearm() {
-    const byName = {};
+    const out = [];
     for (const k in mnuRules) {
       if (k === '*') continue;
       const nm = mnuPlain(mnuNames[k] || (/^(item|loc|npc):/.test(k) ? '' : k.split(mnuVarSep)[0]));
-      if (!nm) continue;
-      (byName[nm] = byName[nm] || []).push(k);
+      const verbs = mnuRules[k] || [];
+      if (nm && verbs.length) out.push(verbs.map(v => v + '\t' + nm));
     }
-    const out = [];
-    for (const nm in byName) {
-      const keys = byName[nm];
-      const merged = mnuMergeOrders(keys.map(k => mnuRules[k] || []));
-      if (!merged) continue;                     // contradictory variants: latch-only
-      for (const verb of merged) out.push(verb + '\t' + nm);
-    }
-    for (const verb of mnuRules['*'] || []) out.push(verb + '\t');
-    return out.join('\n');
+    const any = mnuRules['*'] || [];
+    if (any.length) out.push(any.map(v => v + '\t'));
+    return out;
   }
 
   async function mnuPush() {
     mnuSaveRules();
     const live = (mnuData && mnuData.entries) || [];
-    const parts = [mnuFlatten(live)];
-    if (mnuSel && paneVisible('menuswap')) {
-      const sel = mnuFlatten(mnuActiveEnts());
-      if (sel && parts.indexOf(sel) < 0) parts.push(sel);
+    let groups = mnuGroupsFor(live);
+    if (mnuSel && paneVisible('menuswap')) groups = groups.concat(mnuGroupsFor(mnuActiveEnts()));
+    groups = groups.concat(mnuPrearm());
+    // One copy of each rule, duplicate options inside a rule dropped, capped to the share buffer
+    // (kMaxPins = 256, markers included).
+    const seenGroup = {};
+    const lines = [];
+    for (const g of groups) {
+      const inner = {};
+      const rows = g.filter(ln => ln && (inner[ln] ? false : (inner[ln] = 1)));
+      const sig = rows.join('\n');
+      if (!rows.length || seenGroup[sig]) continue;
+      seenGroup[sig] = 1;
+      if (lines.length + rows.length + 1 > 256) break;
+      lines.push(mnuGroupMark);
+      for (const r of rows) lines.push(r);
     }
-    parts.push(mnuPrearm());
-    // Dedupe verb+target lines and cap to the share buffer (kMaxPins = 256).
-    const seen = {};
-    const lines = parts.filter(Boolean).join('\n').split('\n')
-      .filter(ln => ln && (seen[ln] ? false : (seen[ln] = 1)))
-      .slice(0, 256);
     try { await rtxData.raw('act.menuPins', lines.join('\n')); } catch (e) {}
   }
 

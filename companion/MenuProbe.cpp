@@ -450,6 +450,9 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
     }
     char verb[288], raw[288], tgt[rtx::menu::kTargetLen];
     static rtx::menu::Pin pinsLocal[rtx::menu::kMaxPins];
+    static char rowVerb[rtx::menu::kMaxEntries][rtx::menu::kVerbLen];
+    static char rowTgt[rtx::menu::kMaxEntries][rtx::menu::kTargetLen];
+    bool rowOk[rtx::menu::kMaxEntries] = {};
     std::uint32_t pins = 0;
     for (int tries = 0; tries < 8; ++tries) {
         const std::uint32_t s0 = g_share->pinSeq;
@@ -477,27 +480,52 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         std::uint64_t tstr = 0;
         std::memcpy(&tstr, recs[i] + kRecTarget, 8);     // already copied out with the record
         if (tstr && ReadEastl(tstr, raw, sizeof(raw), &hp) > 0) StripTags(raw, tgt);
+        std::strncpy(rowVerb[i], verb, rtx::menu::kVerbLen - 1);
+        rowVerb[i][rtx::menu::kVerbLen - 1] = 0;
+        std::strncpy(rowTgt[i], tgt, rtx::menu::kTargetLen - 1);
+        rowTgt[i][rtx::menu::kTargetLen - 1] = 0;
+        rowOk[i] = true;
         if (i == 0 || (anyTargeted && !tgt[0])) { fixedSlot[i] = true; continue; }
+    }
+    // Pins arrive as rules separated by a group marker (verb "\x1d"). Objects that share a name
+    // ("Fishing spot" npc 321 Harpoon/Cage, npc 322 Harpoon/Net) cannot be told apart by name, so a
+    // rule only applies when every option the menu offers for that target is one the rule names: the
+    // 321 rule has no Net, so it leaves the 322 menu alone. Options the rule names but the menu lacks
+    // are fine ("Deposit all fish" only shows while carrying fish). The first rule that qualifies wins.
+    int  pinGroup[rtx::menu::kMaxPins];
+    bool groupBad[rtx::menu::kMaxPins + 1] = {};
+    {
+        int g = 0;
         for (std::uint32_t p = 0; p < pins; ++p) {
-            if (std::strncmp(verb, pinsLocal[p].verb, rtx::menu::kVerbLen) != 0) continue;
+            if ((unsigned char)pinsLocal[p].verb[0] == 0x1D) { ++g; pinGroup[p] = -1; continue; }
+            pinGroup[p] = g;
+        }
+        for (std::uint32_t p = 0; p < pins; ++p) {
+            const int pg = pinGroup[p];
+            // one check per group: its first targeted pin (a rule names a single target)
+            if (pg < 0 || groupBad[pg] || !pinsLocal[p].target[0]) continue;
+            if (p > 0 && pinGroup[p - 1] == pg && pinsLocal[p - 1].target[0]) continue;
+            const char* tg = pinsLocal[p].target;
+            for (int i = 0; i < n && !groupBad[pg]; ++i) {
+                if (!rowOk[i] || std::strncmp(rowTgt[i], tg, rtx::menu::kTargetLen) != 0) continue;
+                bool named = false;
+                for (std::uint32_t q = p; q < pins && pinGroup[q] == pg && !named; ++q)
+                    if (std::strncmp(rowVerb[i], pinsLocal[q].verb, rtx::menu::kVerbLen) == 0) named = true;
+                if (!named) groupBad[pg] = true;
+            }
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        if (!rowOk[i] || fixedSlot[i]) continue;
+        for (std::uint32_t p = 0; p < pins; ++p) {
+            if (pinGroup[p] < 0) continue;
+            if (std::strncmp(rowVerb[i], pinsLocal[p].verb, rtx::menu::kVerbLen) != 0) continue;
             if (pinsLocal[p].target[0] &&
-                std::strncmp(tgt, pinsLocal[p].target, rtx::menu::kTargetLen) != 0) continue;
+                (groupBad[pinGroup[p]] ||
+                 std::strncmp(rowTgt[i], pinsLocal[p].target, rtx::menu::kTargetLen) != 0)) continue;
             rank[i] = (int)p;
             ++g_share->stage[1];
             break;
-        }
-    }
-    {
-        bool pinMatched[rtx::menu::kMaxPins] = {};
-        for (int i = 0; i < n; ++i)
-            if (rank[i] != 0x7FFFFFFF) pinMatched[rank[i]] = true;
-        for (int i = 0; i < n; ++i) {
-            if (rank[i] == 0x7FFFFFFF) continue;
-            const char* rt = pinsLocal[rank[i]].target;
-            int first = -1;
-            for (std::uint32_t p = 0; p < pins; ++p)
-                if (std::strncmp(rt, pinsLocal[p].target, rtx::menu::kTargetLen) == 0) { first = (int)p; break; }
-            if (first >= 0 && !pinMatched[first]) rank[i] = 0x7FFFFFFF;
         }
     }
     return true;
