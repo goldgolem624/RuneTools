@@ -28,6 +28,8 @@ inline constexpr std::uint32_t kPromoOtherClass  = 3;
 inline constexpr std::uint32_t kPromoNoPartner   = 4;
 inline constexpr std::uint32_t kPromoWriteFailed = 5;
 inline constexpr std::uint32_t kPromoUnverified  = 6;   // the display record did not carry the expected class tag: not written
+inline constexpr std::uint32_t kPromoLifted      = 7;   // rule's top row moved to the top after the game's sort; left-click slots refreshed
+inline constexpr std::uint32_t kPromoNoAssign    = 8;   // lift wanted but the game's slot-assign helper was not found on this build
 
 inline constexpr std::uint32_t kEnableOff        = 0;
 inline constexpr std::uint32_t kEnablePanel      = 1;   // publish + re-arm dumps

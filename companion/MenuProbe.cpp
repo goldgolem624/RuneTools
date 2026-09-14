@@ -545,26 +545,6 @@ void ApplyOrder(std::uint64_t mgr) {
                         }
         }
         if (out != m) continue;
-        // A demoted row (class priority >= 1000) cannot be the left-click default, and world-object
-        // classes cannot be promoted safely (the class picks which option is sent). Putting one on top
-        // makes the game fall back to "Walk here" as the left-click. So when the rule would place a
-        // demoted, non-interface row above the game's own promoted default, keep that default on top
-        // and let the rule order the rest beneath it.
-        if (m >= 2) {
-            std::uint64_t tg = 0; std::int32_t pNew = 0, pOld = 0;
-            const bool newDemoted = EntryTag(begin + (std::uint64_t)items[0] * kRecSize, tg, pNew) &&
-                                    pNew >= kPromoted && pNew != kDemotedIface;
-            const bool oldPromoted = EntryTag(begin + (std::uint64_t)slots[0] * kRecSize, tg, pOld) && pOld < kPromoted;
-            if (newDemoted && oldPromoted) {
-                int at = -1;
-                for (int j = 0; j < m; ++j) if (items[j] == slots[0]) { at = j; break; }
-                if (at > 0) {
-                    const int keep = items[at];
-                    for (int j = at; j > 0; --j) items[j] = items[j - 1];
-                    items[0] = keep;
-                }
-            }
-        }
         if (lane.stat == 0) ++g_share->stage[2];
 
         bool changed = false;
@@ -889,6 +869,93 @@ void DumpHoverSlots(std::uint64_t mgr) {
     }
 }
 
+// ---- left-click lift ----
+// The game's snapshot (FUN_140166980 on 950-1) pulls every row whose class priority is below 1000 out
+// of +0x90 and appends them on top, re-sorts, then copies the top rows into the left-click slots
+// (+0x13f0 = top, +0x1400 = second, +0x13e0 = top or second by a setting) through a refcounted
+// assign helper. That is why a demoted rule row ("Deposit all fish", class 1001) never became the
+// default and "Walk here" jumped above it. Changing the class is not an option for world objects
+// (the class selects which option is sent), so instead, after the snapshot, the rule's top row is
+// moved to the top of +0x90 (a permutation of whole records, refcount neutral) and the slots are
+// re-assigned with the game's own helper, found by scanning the snapshot body for its two calls.
+typedef void(__fastcall* Assign_t)(std::uint64_t slot, std::uint64_t src);
+Assign_t g_assign = nullptr;
+
+std::uint64_t CallTargetAfter(const unsigned char* body, std::size_t n, const unsigned char* lea) {
+    for (std::size_t i = 0; i + 12 <= n; ++i) {
+        if (std::memcmp(body + i, lea, 7) != 0 || body[i + 7] != 0xE8) continue;
+        std::int32_t rel = 0;
+        std::memcpy(&rel, body + i + 8, 4);
+        return (std::uint64_t)((std::int64_t)(std::uintptr_t)(body + i + 12) + rel);
+    }
+    return 0;
+}
+
+void ResolveAssign(std::uint64_t snap) {
+    if (!snap) return;
+    const unsigned char* body = (const unsigned char*)snap;
+    static const unsigned char kLea13f0[] = { 0x48,0x8D,0x8F,0xF0,0x13,0x00,0x00 };   // lea rcx,[rdi+0x13f0]
+    static const unsigned char kLea13e0[] = { 0x48,0x8D,0x8F,0xE0,0x13,0x00,0x00 };   // lea rcx,[rdi+0x13e0]
+    std::uint64_t a = 0, b = 0;
+    __try {
+        a = CallTargetAfter(body, 0x1400, kLea13f0);
+        b = CallTargetAfter(body, 0x1400, kLea13e0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { a = b = 0; }
+    if (a && a == b && a > g_base && a < g_modEnd) g_assign = (Assign_t)a;
+    Log("slot assign helper: %s", g_assign ? "found" : "NOT FOUND (left-click lift unavailable)");
+    if (g_assign) Log("  assign rva 0x%llx", (unsigned long long)(a - g_base));
+}
+
+void LiftRuleTop(std::uint64_t mgr) {
+    if (!g_share || !g_share->pinCount) return;
+    std::uint64_t begin = 0, e = 0;
+    if (!Rd(mgr + 0x90, &begin, 8) || !Rd(mgr + 0x98, &e, 8) || !begin || e <= begin) return;
+    const std::uint64_t span = e - begin;
+    if (span % kRecSize || span > kRecSize * rtx::menu::kMaxEntries) return;
+    const int n = (int)(span / kRecSize);
+    if (n < 2) return;
+
+    unsigned char recs[rtx::menu::kMaxEntries][kRecSize];
+    int  rank[rtx::menu::kMaxEntries];
+    bool fixedSlot[rtx::menu::kMaxEntries];
+    int  decoded = 0;
+    if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded) || decoded != n) return;
+
+    int best = -1;
+    for (int i = 0; i < n; ++i)
+        if (!fixedSlot[i] && rank[i] != 0x7FFFFFFF && (best < 0 || rank[i] < rank[best])) best = i;
+    if (best < 0 || best == n - 1) return;                   // no rule row here, or already the default
+    if (!g_assign) { g_share->promoState = rtx::menu::kPromoNoAssign; return; }
+
+    std::uint64_t old13e0 = 0, old13f0 = 0;
+    Rd(mgr + 0x13E0, &old13e0, 8);
+    Rd(mgr + 0x13F0, &old13f0, 8);
+    const bool hoverWasTop = old13e0 == old13f0;
+
+    __try {
+        for (int j = best; j < n - 1; ++j)
+            std::memcpy((void*)(begin + (std::uint64_t)j * kRecSize), recs[j + 1], kRecSize);
+        std::memcpy((void*)(begin + (std::uint64_t)(n - 1) * kRecSize), recs[best], kRecSize);
+        const std::uint64_t top = begin + (std::uint64_t)(n - 1) * kRecSize;
+        const std::uint64_t second = begin + (std::uint64_t)(n - 2) * kRecSize;
+        g_assign(mgr + 0x13F0, top);
+        g_assign(mgr + 0x13E0, hoverWasTop || n < 3 ? top : second);
+        if (n > 2) g_assign(mgr + 0x1400, second);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_share->promoState = rtx::menu::kPromoWriteFailed;
+        return;
+    }
+    g_share->promoState = rtx::menu::kPromoLifted;
+    bool hp = false;
+    std::uint64_t obj = 0;
+    std::memcpy(&obj, recs[best], 8);
+    char verb[rtx::menu::kVerbLen];
+    if (obj && ReadEastl(obj + kObjVerb, verb, sizeof(verb), &hp) > 0) {
+        std::strncpy(g_share->promoVerb, verb, rtx::menu::kVerbLen - 1);
+        g_share->promoVerb[rtx::menu::kVerbLen - 1] = 0;
+    }
+}
+
 void __fastcall Detour_Init(std::uint64_t mgr) {
     g_mgr = mgr;
     g_origInit(mgr);
@@ -908,6 +975,7 @@ std::uint64_t __fastcall Detour_Snap(std::uint64_t mgr) {
         LogLaneTops(mgr, "snap");
     }
     const std::uint64_t r = g_origSnap(mgr);
+    if (mgr) LiftRuleTop(mgr);       // after the game's sort and slot copy: the rule's top row becomes the default
     if (mgr) DumpHoverSlots(mgr);
     // Publish here on the game thread; doing it from Poll() races the +0x90 rebuild.
     if (mgr && g_share && g_share->enable) Publish(mgr);
@@ -965,6 +1033,7 @@ bool Install() {
     if (init)  { g_origInit  = (Init_t)init;   DetourAttach(&(PVOID&)g_origInit,  (PVOID)Detour_Init); }
     if (clear) { g_origClear = (Clear_t)clear; DetourAttach(&(PVOID&)g_origClear, (PVOID)Detour_Clear); }
     if (build) { g_origBuild = (Build_t)build; DetourAttach(&(PVOID&)g_origBuild, (PVOID)Detour_Build); }
+    if (snap)  ResolveAssign(snap);     // read the original body before Detours patches its first bytes
     if (snap)  { g_origSnap  = (Snap_t)snap;   DetourAttach(&(PVOID&)g_origSnap,  (PVOID)Detour_Snap); }
     if (DetourTransactionCommit() != NO_ERROR) {
         g_origInit = nullptr; g_origClear = nullptr;

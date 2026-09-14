@@ -580,6 +580,8 @@
                      + (d.promoPartner | 0) + ', expected 57) - a game update likely moved them'
         : st === 5 ? 'Left-click: the class write failed'
         : st === 6 ? 'Left-click: the row did not carry the expected class on this game build, so the default was left alone'
+        : st === 7 ? 'Left-click: "' + pv + '" is now the default'
+        : st === 8 ? 'Left-click: this game build does not expose the helper the default needs, so the game keeps its own'
         : '';
       promo.style.display = promo.textContent ? '' : 'none';
     }
