@@ -8,6 +8,7 @@
 #include "../reader/Reader.h"   // RenderToggle (keep-focused / embed flag channel)
 #include "../../companion/RenderShare.h"   // kMsgGameClicked (companion -> host click routing)
 #include "../shared/Log.h"
+#include "../cache/CacheReader.h"
 
 #include <Ultralight/Ultralight.h>
 #include <AppCore/AppCore.h>
@@ -1052,6 +1053,31 @@ bool GameFocused(std::uint32_t pid) {
 }
 
 void Tick() {
+    {   // Game cache updated under us: rebuild the cache view, then reload the in-game UI layers so
+        // panels drop what they derived from the old data. Checked every few seconds; the check
+        // itself is throttled and never waits on the cache lock.
+        static ULONGLONG s_cacheCheckMs = 0;
+        static std::uint64_t s_cacheGen = 0;
+        ULONGLONG now = GetTickCount64();
+        if (now - s_cacheCheckMs >= 3000) {
+            s_cacheCheckMs = now;
+            if (rtx::cache::CheckCacheUpdate())
+                rtx::log::Launcher("cache: the game updated its cache while running; cache view rebuilt (generation " +
+                                   std::to_string(rtx::cache::CacheGeneration()) + ")");
+            const std::uint64_t gen = rtx::cache::CacheGeneration();
+            if (s_cacheGen == 0) s_cacheGen = gen;
+            else if (gen != s_cacheGen) {
+                s_cacheGen = gen;
+                if (!g_docks.empty()) {
+                    std::string h = BuildClientHtml();
+                    auto sp = h.find("<script>");
+                    if (sp != std::string::npos) h.insert(sp, "<script>window.__rtxDevReload=1;</script>\n");
+                    for (auto& kv : g_docks) gameui::ReloadHtml(kv.first, h);
+                    rtx::log::Launcher("cache: " + std::to_string(g_docks.size()) + " ui layer(s) reloaded for the new cache");
+                }
+            }
+        }
+    }
     if (g_docks.empty()) return;
     gameui::Tick();   // resize handshake + dirty-surface publish + pump pacing
     rtx::launcher::wiki::Tick();   // wiki pane follows the host; reaps closed/dead windows

@@ -5,8 +5,22 @@
 #include "vendor/sqlite/sqlite3.h"
 
 #include <algorithm>
+#include <filesystem>
 
 namespace rtx::cache {
+
+namespace {
+std::uint64_t Fnv1a(const std::vector<std::uint8_t>& b) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (auto c : b) { h ^= c; h *= 1099511628211ull; }
+    return h ^ (std::uint64_t)b.size();
+}
+long long FileMtime(const std::string& path) {
+    std::error_code ec;
+    auto t = std::filesystem::last_write_time(std::filesystem::u8path(path), ec);
+    return ec ? 0 : (long long)t.time_since_epoch().count();
+}
+}  // namespace
 
 
 bool SqliteIndexFile::EnsureDb() const {
@@ -90,11 +104,23 @@ SqliteIndexFile::SqliteIndexFile(int index_id, std::string jcache_path,
       jcache_path_(std::move(jcache_path)),
       default_files_per_archive_(default_files_per_archive),
       byte_budget_(byte_budget) {
+    ref_mtime_ = FileMtime(jcache_path_);
     auto blob = FetchReferenceTableBlob();
     if (blob.empty()) return;
+    ref_fp_ = Fnv1a(blob);
     ref_table_ = std::make_unique<ReferenceTable>(index_id, blob,
                                                   default_files_per_archive);
     archive_cache_.resize(ref_table_->entries().size());
+}
+
+bool SqliteIndexFile::RefTableChanged() {
+    if (!ref_table_) return false;
+    const long long m = FileMtime(jcache_path_);
+    if (m == 0 || m == ref_mtime_) return false;
+    auto blob = FetchReferenceTableBlob();
+    if (blob.empty()) return false;        // busy or mid-write: keep the old mtime so we look again
+    ref_mtime_ = m;
+    return Fnv1a(blob) != ref_fp_;
 }
 
 SqliteIndexFile::~SqliteIndexFile() {

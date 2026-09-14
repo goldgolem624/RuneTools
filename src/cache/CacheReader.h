@@ -32,6 +32,15 @@ struct CacheParseRow {
     int  stop_n  = 0;              // records that stopped on stop_op
 };
 std::vector<CacheParseRow> CacheParseHealth();
+
+// Cache updates while running. The game client patches its jcache files (usually as it starts)
+// without telling us; every index read after that through the old reference tables is misaligned.
+// CheckCacheUpdate() compares each open index's stored reference table with the one on disk
+// (throttled, never blocks: skips when the cache lock is busy) and, on a change, drops every open
+// index and every memo so the next call rebuilds from the new cache. CacheGeneration() increments
+// on each rebuild so layers above can refresh what they derived from the old data.
+bool          CheckCacheUpdate();
+std::uint64_t CacheGeneration();
 std::string CacheProbeUnknownOps();
 
 std::string ItemIconCoverageJson(bool (*has)(int item_id));
@@ -138,6 +147,11 @@ std::string MapSymbolsJson();
 int PanelMountComp(int group_id);
 
 std::string DbRowsJson(int masterTable);
+// Diagnostic: decode every DBRow with the current grammar and report clean vs desynced rows, value-type
+// histograms and the first bad rows per table (hex). Used after cache updates.
+std::string DbRowScanJson();
+// Diagnostic: every DBRow as {id, table, sub, cols:{col:[values]}} (strings quoted), the cs2export shape.
+std::string DbRowDumpJson();
 
 std::string ItemParamsJson(int item_id);
 

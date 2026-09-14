@@ -30,6 +30,12 @@ public:
 
     std::vector<std::uint8_t> ReadFile(int archive_id, int file_id);
 
+    // True once the reference table stored in the jcache differs from the one this object was built
+    // from, which happens when the game client downloads a cache update while we are running. The
+    // file list per archive then no longer matches the archive data, so every read from this object
+    // is suspect: the owner must rebuild it. Cheap when nothing changed (file mtime gate).
+    bool RefTableChanged();
+
     std::vector<std::uint8_t> ReadRawArchive(int archive_id);
 
     std::vector<int> ArchiveIdsFrom(int from_key, int limit) const;
@@ -66,6 +72,8 @@ private:
     std::string                    jcache_path_;
     int                            default_files_per_archive_;
     std::unique_ptr<ReferenceTable> ref_table_;
+    std::uint64_t                  ref_fp_ = 0;       // FNV-1a of the reference table blob it was built from
+    long long                      ref_mtime_ = 0;    // jcache last-write time when last compared
 
     // Access is already serialised by the launcher's g_mu; this is a cheap extra guard.
     mutable std::mutex             db_mu_;

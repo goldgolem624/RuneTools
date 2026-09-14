@@ -149,6 +149,12 @@ bool                                 g_ach_built = false;
 
 }  // namespace
 
+// Called by CacheReader with g_mu (AchievementsMutex) held when the game cache updates.
+void AchievementsResetLocked() {
+    g_ach_json.clear();
+    g_ach_built = false;
+}
+
 const std::string& AchievementsJson() {
     std::lock_guard<std::mutex> lk(AchievementsMutex());
     if (g_ach_built) return g_ach_json;

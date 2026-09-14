@@ -15,6 +15,7 @@
 #include "Store.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -1898,9 +1899,10 @@ bool IfaceCompDefLookup(int group_id, int comp_id, IfaceCompDefLite& out) {
 
 // Underlay (archive 1) / overlay (archive 4) colour from CONFIGS -> 0xRRGGBB or -1. opcode 1 = primary RGB,
 // 7 = secondary, 13 = ternary; fall through in that order. Caller holds g_mu. Cached.
+std::unordered_map<int, int> g_config_colour_cache;   // under g_mu; cleared on cache update
 static int ConfigColourLocked(int archive, int id) {
     if (id < 0) return -1;
-    static std::unordered_map<int, int> cache;
+    auto& cache = g_config_colour_cache;
     int key = (archive << 24) | id;
     auto hit = cache.find(key);
     if (hit != cache.end()) return hit->second;
@@ -2837,10 +2839,11 @@ std::unordered_map<int, std::pair<int, int>> AbilityCooldownVarcsLocked() {
     return out;
 }
 
+std::string g_buff_catalog_json;   // under g_mu; cleared on cache update
 std::string BuffCatalogJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
-    static std::string cached;
+    std::string& cached = g_buff_catalog_json;
     if (!cached.empty()) return cached;
     LoadBuffNamesLocked();
     if (!g_buffs_loaded) return "{}";
@@ -2865,10 +2868,11 @@ std::string BuffCatalogJson() {
     return cached;
 }
 
+std::string g_ability_configs_json;   // under g_mu; cleared on cache update
 std::string AbilityConfigsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
-    static std::string cached;
+    std::string& cached = g_ability_configs_json;
     if (!cached.empty()) return cached;
     auto* index = g_store ? g_store->Get(kIndexStructs) : nullptr;
     if (!index || !index->ready()) return "{}";          // cache not open yet -> retry, don't cache
@@ -3064,10 +3068,11 @@ std::string MapLabelsJson() {
 }
 
 // Every map-symbol placement: 7 bytes LE each (element u16, x u16, y u16, plane u8) as {"n":count,"b":"<base64>"}.
+std::string g_map_symbols_json;   // under g_mu; cleared on cache update
 std::string MapSymbolsJson() {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
-    static std::string cached;
+    std::string& cached = g_map_symbols_json;
     if (!cached.empty()) return cached;
     EnsureMaplabelsLocked();
     auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
@@ -3233,8 +3238,9 @@ int PanelMountComp(int group_id) {
 }
 
 // Raw op-249 params of one item (js5-19; archive = id>>8, file = id&0xff): {"ints":{"<key>":v},"strs":{"<key>":"v"}}.
+std::unordered_map<int, std::vector<int>> g_item_varobjs_cache;   // under g_mu; cleared on cache update
 std::vector<int> ItemVarobjs(int item_id) {
-    static std::unordered_map<int, std::vector<int>> cache;   // guarded by g_mu
+    auto& cache = g_item_varobjs_cache;
     if (item_id < 0) return {};
     std::lock_guard<std::mutex> lk(g_mu);
     auto hit = cache.find(item_id);
@@ -3478,10 +3484,141 @@ std::string ItemParamsJson(int item_id) {
 }
 
 // All DBRows of one table (archive 41): [{"f":fileId,"i":{"<col>":[ints..]},"s":{"<col>":[strs..]}},..]. Capped at 2000 rows.
+std::string DbRowScanJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!index || !index->ready()) return "{}";
+    constexpr int kDbRowsArchive = 41;
+    const auto& entries = index->ref().entries();
+    if ((int)entries.size() <= kDbRowsArchive) return "{}";
+    std::map<int, int> typeHist, opHist;
+    struct T { int rows = 0, clean = 0, bad = 0; std::map<int, int> types; std::vector<std::string> samples; };
+    std::map<int, T> tables;
+    static const char* hx = "0123456789abcdef";
+    int total = 0;
+    for (int fid : entries[kDbRowsArchive].valid_file_ids) {
+        auto bytes = index->ReadFile(kDbRowsArchive, fid);
+        if (bytes.size() < 2) continue;
+        std::string hex; for (std::size_t i = 0; i < bytes.size() && i < 120; ++i) { hex.push_back(hx[bytes[i] >> 4]); hex.push_back(hx[bytes[i] & 15]); }
+        std::size_t len = bytes.size();
+        InputStream s(std::move(bytes));
+        int master = -1; bool bad = false, ended = false;
+        std::map<int, int> rowTypes;
+        while (s.remaining() > 0 && !bad) {
+            int op = s.ReadUnsignedByte();
+            opHist[op]++;
+            if (op == 0) { ended = true; break; }
+            if (op == 4) { int t = s.ReadUnsignedSmart(); master = t >= 256 ? (t >> 8) : t; continue; }
+            if (op != 3) { bad = true; break; }
+            s.ReadUnsignedByte();
+            while (s.remaining() > 0) {
+                int b = s.ReadUnsignedByte();
+                if (b == 0xFF) break;
+                int subN = s.ReadUnsignedByte();
+                if (subN <= 0) continue;
+                std::vector<int> types((std::size_t)subN);
+                for (int i = 0; i < subN; ++i) { types[i] = s.ReadUnsignedSmart(); typeHist[types[i]]++; rowTypes[types[i]]++; }
+                int rowCount = s.ReadUnsignedSmart();
+                if (rowCount < 0 || rowCount > 100000) { bad = true; break; }
+                for (int r = 0; r < rowCount && !bad; ++r)
+                    for (int sub = 0; sub < subN; ++sub) {
+                        if (s.remaining() <= 0) { bad = true; break; }
+                        if (types[sub] == 0x24) s.ReadString(); else s.ReadInt();
+                    }
+            }
+        }
+        ++total;
+        T& t = tables[master];
+        t.rows++;
+        for (auto& kv : rowTypes) t.types[kv.first] += kv.second;
+        if (!bad && ended && s.remaining() == 0) t.clean++;
+        else {
+            t.bad++;
+            if (t.samples.size() < 3) t.samples.push_back(std::to_string(fid) + ":" + std::to_string(len) + ":rem" + std::to_string((int)s.remaining()) + ":" + hex);
+        }
+    }
+    std::string out = "{\"rows\":" + std::to_string(total) + ",\"types\":{";
+    bool f = true;
+    for (auto& kv : typeHist) { out += (f ? "" : ",") + std::string("\"") + std::to_string(kv.first) + "\":" + std::to_string(kv.second); f = false; }
+    out += "},\"ops\":{"; f = true;
+    for (auto& kv : opHist) { out += (f ? "" : ",") + std::string("\"") + std::to_string(kv.first) + "\":" + std::to_string(kv.second); f = false; }
+    out += "},\"tables\":{"; f = true;
+    for (auto& kv : tables) {
+        if (!kv.second.bad) continue;
+        out += (f ? "" : ",") + std::string("\"") + std::to_string(kv.first) + "\":{\"rows\":" + std::to_string(kv.second.rows) + ",\"bad\":" + std::to_string(kv.second.bad) + ",\"types\":{";
+        f = false; bool g = true;
+        for (auto& tv : kv.second.types) { out += (g ? "" : ",") + std::string("\"") + std::to_string(tv.first) + "\":" + std::to_string(tv.second); g = false; }
+        out += "},\"samples\":[";
+        for (std::size_t i = 0; i < kv.second.samples.size(); ++i) out += (i ? ",\"" : "\"") + kv.second.samples[i] + "\"";
+        out += "]}";
+    }
+    out += "}}";
+    return out;
+}
+
+std::string DbRowDumpJson() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
+    if (!index || !index->ready()) return "[]";
+    constexpr int kDbRowsArchive = 41;
+    const auto& entries = index->ref().entries();
+    if ((int)entries.size() <= kDbRowsArchive) return "[]";
+    std::string out = "["; bool first = true;
+    for (int fid : entries[kDbRowsArchive].valid_file_ids) {
+        auto bytes = index->ReadFile(kDbRowsArchive, fid);
+        if (bytes.size() < 2) continue;
+        InputStream s(std::move(bytes));
+        int master = -1, subt = 0;
+        std::map<int, std::string> cols; std::map<int, int> ctype;
+        bool bad = false;
+        while (s.remaining() > 0 && !bad) {
+            int op = s.ReadUnsignedByte();
+            if (op == 0) break;
+            if (op == 4) { int t = s.ReadUnsignedSmart(); master = t >= 256 ? (t >> 8) : t; subt = t >= 256 ? (t & 0xff) : 0; continue; }
+            if (op != 3) break;
+            s.ReadUnsignedByte();
+            while (s.remaining() > 0) {
+                int b = s.ReadUnsignedByte();
+                if (b == 0xFF) break;
+                int columnId = b & 0x3F;
+                int subN = s.ReadUnsignedByte();
+                if (subN <= 0) continue;
+                std::vector<int> types((std::size_t)subN);
+                for (int i = 0; i < subN; ++i) types[i] = s.ReadUnsignedSmart();
+                int rowCount = s.ReadUnsignedSmart();
+                for (int r = 0; r < rowCount && !bad; ++r)
+                    for (int sub = 0; sub < subN; ++sub) {
+                        if (s.remaining() <= 0) { bad = true; break; }
+                        int col = columnId + sub;
+                        std::string& c = cols[col];
+                        ctype[col] = types[sub];
+                        if (!c.empty()) c += ",";
+                        if (types[sub] == 0x24) {
+                            std::string v = s.ReadString(), q = "\"";
+                            for (char ch : v) { if (ch == '"' || ch == '\\') q += '\\'; if ((unsigned char)ch >= 0x20) q += ch; }
+                            c += q + "\"";
+                        } else c += std::to_string(s.ReadInt());
+                    }
+            }
+        }
+        out += first ? "" : ","; first = false;
+        out += "{\"id\":" + std::to_string(fid) + ",\"table\":" + std::to_string(master) + ",\"sub\":" + std::to_string(subt) + ",\"cols\":{";
+        bool f = true;
+        for (auto& kv : cols) { out += (f ? "" : ",") + std::string("\"") + std::to_string(kv.first) + "\":[" + kv.second + "]"; f = false; }
+        out += "},\"types\":{"; f = true;
+        for (auto& kv : ctype) { out += (f ? "" : ",") + std::string("\"") + std::to_string(kv.first) + "\":" + std::to_string(kv.second); f = false; }
+        out += "}}";
+    }
+    return out + "]";
+}
+
+std::map<int, std::string> g_dbrows_memo;   // under g_mu; cleared on cache update
 std::string DbRowsJson(int masterTable) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
-    static std::map<int, std::string> s_dbrows_memo;
+    auto& s_dbrows_memo = g_dbrows_memo;
     { auto it = s_dbrows_memo.find(masterTable); if (it != s_dbrows_memo.end()) return it->second; }
     auto* index = g_store ? g_store->Get(kIndexConfigs) : nullptr;
     if (!index || !index->ready()) return "[]";
@@ -4239,5 +4376,58 @@ std::vector<CacheParseRow> CacheParseHealth() {
     }
     return rows;
 }
+
+// ---- cache updates while running ----
+void AchievementsResetLocked();   // Achievements.cpp
+
+namespace {
+std::atomic<std::uint64_t>             g_cache_gen{ 1 };
+std::chrono::steady_clock::time_point  g_update_check_at{};
+
+void ResetCacheStateLocked() {
+    g_store.reset();
+    g_init_attempted = false;
+    g_item_cache.clear(); g_sprite_cache.clear(); g_sprite_scaled_cache.clear();
+    g_npc_cache.clear(); g_loc_cache.clear(); g_region_cache.clear();
+    g_perk_names.clear(); g_perk_descs.clear(); g_perk_ranks.clear(); g_perks_loaded = false;
+    g_buff_names.clear(); g_debuff_names.clear(); g_buff_kind.clear(); g_buff_icon_item.clear(); g_buffs_loaded = false;
+    g_locclip_cache.clear(); g_blocked_cache.clear(); g_tiles_cache.clear();
+    g_mapscene_sprite.clear(); g_mapscene_px.clear(); g_loc_mapscene.clear(); g_mapscenes_loaded = false;
+    g_maplabel_def.clear(); g_maplabel_px.clear(); g_loc_mapfunc.clear(); g_loc_name.clear(); g_maplabels_loaded = false;
+    for (int i = 0; i < 3; ++i) { g_name_index[i].clear(); g_name_index_built[i] = false; }
+    g_loc_morph_cache.clear(); g_npc_morph_cache.clear();
+    g_myst_pages_json.clear(); g_arch_research_json.clear();
+    g_dbtable_cols.clear(); g_dbtables_loaded = false;
+    g_param_defs.clear(); g_params_loaded = false;
+    g_varbit_map_json.clear(); g_varbit_map_loaded = false; g_varbit_defs.clear(); g_objvarbit_defs.clear(); g_dombit_defs.clear();
+    g_quests_json.clear(); g_quests_loaded = false;
+    g_iface_defs_json.clear(); g_iface_defs_lite.clear();
+    g_mapWinCache.clear();
+    g_struct_memo.clear();
+    g_panel_mounts.clear(); g_panel_mounts_built = false;
+    g_wmAreasJson.clear();
+    g_config_colour_cache.clear(); g_buff_catalog_json.clear(); g_ability_configs_json.clear(); g_map_symbols_json.clear();
+    g_item_varobjs_cache.clear(); g_dbrows_memo.clear();
+    AchievementsResetLocked();
+}
+}  // namespace
+
+bool CheckCacheUpdate() {
+    std::unique_lock<std::mutex> lk(g_mu, std::try_to_lock);
+    if (!lk.owns_lock() || !g_store) return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (now < g_update_check_at) return false;
+    g_update_check_at = now + std::chrono::seconds(10);
+    for (int id : g_store->Ids()) {
+        auto* f = g_store->Get(id);
+        if (!f || !f->RefTableChanged()) continue;
+        ResetCacheStateLocked();
+        g_cache_gen.fetch_add(1);
+        return true;
+    }
+    return false;
+}
+
+std::uint64_t CacheGeneration() { return g_cache_gen.load(); }
 
 }  // namespace rtx::cache

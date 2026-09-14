@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace rtx::cache {
 
@@ -18,6 +19,9 @@ public:
     bool Add(int index_id, int default_files_per_archive);
 
     SqliteIndexFile* Get(int index_id) const;
+
+    // Index ids that opened, for update checks.
+    std::vector<int> Ids() const { std::vector<int> v; for (const auto& kv : indexes_) v.push_back(kv.first); return v; }
 
 private:
     std::string cache_root_;
