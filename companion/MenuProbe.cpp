@@ -9,6 +9,7 @@
 #include <detours.h>
 
 #include <cstdarg>
+#include <intrin.h>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -163,6 +164,18 @@ const unsigned char kSnapMask[] = {
     1,1,1,0,0,0,0,
 };
 static_assert(sizeof(kSnap) == sizeof(kSnapMask), "snapshot pattern/mask length mismatch");
+
+// Menu action executor (950-1 rva 0x167c80): rcx = manager, rdx = 16-byte record {base, display}, r8 = click pos.
+// Every way of running a menu row (left-click, right-click select, script select) ends here.
+const unsigned char kExec[] = {
+    0x40,0x53,0x41,0x56,0x41,0x57,0x48,0x83,0xEC,0x20,0x48,0x8B,0x41,0x08,0x4D,0x8B,0xF0,
+    0x4C,0x8B,0xFA,0x48,0x8B,0xD9,0x83,0xB8,0,0,0,0,0x28,0x0F,0x84,
+};
+const unsigned char kExecMask[] = {
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,0,0,0,0,1,1,1,
+};
+static_assert(sizeof(kExec) == sizeof(kExecMask), "executor pattern/mask length mismatch");
 
 std::uint64_t Scan(const unsigned char* pat, const unsigned char* mask, std::size_t n) {
     auto dos = (const IMAGE_DOS_HEADER*)g_base;
@@ -906,6 +919,38 @@ void ResolveAssign(std::uint64_t snap) {
     if (g_assign) Log("  assign rva 0x%llx", (unsigned long long)(a - g_base));
 }
 
+// The snapshot also copies +0x90 into +0x1468 (the list the script click op reads: index -1 picks
+// its top row) before our lift runs. Apply the same move there, but only when that list holds exactly
+// the records we just ranked, so a stale or unrelated list is never touched.
+bool LiftMirror(std::uint64_t mgr, unsigned char recs[][kRecSize], int n, int best) {
+    std::uint64_t mb = 0, me = 0;
+    if (!Rd(mgr + 0x1468, &mb, 8) || !Rd(mgr + 0x1470, &me, 8) || !mb || me <= mb) return false;
+    if ((me - mb) != (std::uint64_t)n * kRecSize) return false;
+    unsigned char mir[rtx::menu::kMaxEntries][kRecSize];
+    bool used[rtx::menu::kMaxEntries] = { false };
+    for (int i = 0; i < n; ++i)
+        if (!Rd(mb + (std::uint64_t)i * kRecSize, mir[i], kRecSize)) return false;
+    int at = -1;
+    for (int i = 0; i < n; ++i) {            // same multiset of records, or leave it alone
+        int hit = -1;
+        for (int j = 0; j < n; ++j)
+            if (!used[j] && std::memcmp(mir[i], recs[j], kRecSize) == 0) { hit = j; break; }
+        if (hit < 0) return false;
+        used[hit] = true;
+        if (hit == best) at = i;
+    }
+    if (at < 0) return false;
+    if (at == n - 1) return true;
+    unsigned char keep[kRecSize];
+    std::memcpy(keep, mir[at], kRecSize);
+    __try {
+        for (int j = at; j < n - 1; ++j)
+            std::memcpy((void*)(mb + (std::uint64_t)j * kRecSize), mir[j + 1], kRecSize);
+        std::memcpy((void*)(mb + (std::uint64_t)(n - 1) * kRecSize), keep, kRecSize);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    return true;
+}
+
 void LiftRuleTop(std::uint64_t mgr) {
     if (!g_share || !g_share->pinCount) return;
     std::uint64_t begin = 0, e = 0;
@@ -945,6 +990,13 @@ void LiftRuleTop(std::uint64_t mgr) {
         g_share->promoState = rtx::menu::kPromoWriteFailed;
         return;
     }
+    const bool mirrored = LiftMirror(mgr, recs, n, best);
+    static int liftLog = 0;
+    if (liftLog < 100) {
+        ++liftLog;
+        Log("  [lift] rotated row %d of %d to top, click list +0x1468 %s", best, n,
+            mirrored ? "updated" : "not matching (left alone)");
+    }
     g_share->promoState = rtx::menu::kPromoLifted;
     bool hp = false;
     std::uint64_t obj = 0;
@@ -982,6 +1034,41 @@ std::uint64_t __fastcall Detour_Snap(std::uint64_t mgr) {
     return r;
 }
 
+// Diagnostic: log every executed menu row with its caller, so a left-click that runs a different
+// row than the default slot shows up in the log.
+typedef void(__fastcall* Exec_t)(std::uint64_t, std::uint64_t, std::uint64_t);
+Exec_t g_origExec = nullptr;
+int g_execLog = 0;
+
+void DescribeRec(std::uint64_t rec, char* out, std::size_t cap) {
+    out[0] = 0;
+    std::uint64_t obj = 0, disp = 0, tag = 0;
+    std::int32_t prio = 0;
+    char verb[rtx::menu::kVerbLen] = { 0 };
+    bool hp = false;
+    __try {
+        if (Rd(rec, &obj, 8) && obj) ReadEastl(obj + kObjVerb, verb, sizeof(verb), &hp);
+        if (Rd(rec + 8, &disp, 8) && disp && Rd(disp + kDispTag, &tag, 8) && tag) Rd(tag + kTagPrio, &prio, 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    std::snprintf(out, cap, "\"%s\" p%d disp=%llx cls=%llx", verb, (int)prio,
+                  (unsigned long long)disp, (unsigned long long)(tag ? tag - g_base : 0));
+}
+
+void __fastcall Detour_Exec(std::uint64_t mgr, std::uint64_t rec, std::uint64_t pos) {
+    if (g_execLog < 200) {
+        ++g_execLog;
+        char a[160], b[160];
+        DescribeRec(rec, a, sizeof(a));
+        DescribeRec(mgr + 0x13E0, b, sizeof(b));
+        const std::uint64_t ret = (std::uint64_t)_ReturnAddress();
+        Log("[exec] caller rva 0x%llx rec=%s%s | slot13e0=%s",
+            (unsigned long long)(ret - g_base), a,
+            rec == mgr + 0x13E0 ? " (slot 13e0)" : rec == mgr + 0x1400 ? " (slot 1400)" :
+            rec == mgr + 0x17B0 ? " (deferred 17b0)" : "", b);
+    }
+    g_origExec(mgr, rec, pos);
+}
+
 // Per-tick menu builder (rcx = manager, 4 args); the array is rebuilt every tick.
 void __fastcall Detour_Build(std::uint64_t ctx, std::uint32_t a2, std::uint32_t a3, std::uint8_t a4) {
     if (g_mgr) LogLaneTops(g_mgr, "pre");
@@ -1015,6 +1102,7 @@ bool Install() {
     const std::uint64_t clear = Scan(kClear, kClearMask, sizeof(kClear));
     const std::uint64_t build = Scan(kBuild, kBuildMask, sizeof(kBuild));
     const std::uint64_t snap  = Scan(kSnap,  kSnapMask,  sizeof(kSnap));
+    const std::uint64_t exec  = Scan(kExec,  kExecMask,  sizeof(kExec));
     Log("=== RuneToolsX menu probe ===");
     Log("string-init: %s", init  ? "found" : "NOT FOUND");
     Log("clear()    : %s", clear ? "found" : "NOT FOUND");
@@ -1035,6 +1123,8 @@ bool Install() {
     if (build) { g_origBuild = (Build_t)build; DetourAttach(&(PVOID&)g_origBuild, (PVOID)Detour_Build); }
     if (snap)  ResolveAssign(snap);     // read the original body before Detours patches its first bytes
     if (snap)  { g_origSnap  = (Snap_t)snap;   DetourAttach(&(PVOID&)g_origSnap,  (PVOID)Detour_Snap); }
+    Log("executor   : %s", exec ? "found" : "NOT FOUND");
+    if (exec)  { g_origExec  = (Exec_t)exec;   DetourAttach(&(PVOID&)g_origExec,  (PVOID)Detour_Exec); }
     if (DetourTransactionCommit() != NO_ERROR) {
         g_origInit = nullptr; g_origClear = nullptr;
         Log("Detour commit failed - nothing hooked.");
@@ -1186,6 +1276,7 @@ void Uninstall() {
     if (g_origClear) DetourDetach(&(PVOID&)g_origClear, (PVOID)Detour_Clear);
     if (g_origBuild) DetourDetach(&(PVOID&)g_origBuild, (PVOID)Detour_Build);
     if (g_origSnap)  DetourDetach(&(PVOID&)g_origSnap,  (PVOID)Detour_Snap);
+    if (g_origExec)  DetourDetach(&(PVOID&)g_origExec,  (PVOID)Detour_Exec);
     DetourTransactionCommit();
     g_installed = false;
 }
