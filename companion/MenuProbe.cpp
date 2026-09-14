@@ -295,6 +295,7 @@ constexpr std::int32_t  kPromoted = 1000;
 constexpr std::int32_t  kDemotedIface = 1007;   // interface demoted class: the only one with a proven promoted partner
 
 bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio);
+int RuleOrder(std::uint64_t begin, int n, const int* rank, const bool* fixedSlot, int* order);
 
 rtx::menu::Share* MapShare() {
     wchar_t name[64];
@@ -522,8 +523,6 @@ void ApplyOrder(std::uint64_t mgr) {
     unsigned char recs[rtx::menu::kMaxEntries][kRecSize];
     int  rank[rtx::menu::kMaxEntries];
     bool fixedSlot[rtx::menu::kMaxEntries];
-    int  slots[rtx::menu::kMaxEntries];
-    int  items[rtx::menu::kMaxEntries];
 
     for (const Lane& lane : kLanes) {
         std::uint64_t begin = 0, e = 0;
@@ -537,32 +536,9 @@ void ApplyOrder(std::uint64_t mgr) {
         int decoded = 0;
         if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded)) continue;
 
-        int m = 0;
-        for (int d = 0; d < n; ++d) {
-            const int idx = n - 1 - d;
-            if (!fixedSlot[idx]) slots[m++] = idx;
-        }
-        int out = 0;
-        for (int pass = 0; pass < 2; ++pass) {
-            for (int j = 0; j < m; ++j) {
-                const int idx = slots[j];
-                const bool ranked = rank[idx] != 0x7FFFFFFF;
-                if ((pass == 0) != ranked) continue;
-                items[out++] = idx;
-            }
-            if (pass == 0 && out > 1)
-                for (int a = 0; a < out - 1; ++a)
-                    for (int b2 = a + 1; b2 < out; ++b2)
-                        if (rank[items[b2]] < rank[items[a]]) {
-                            const int t = items[a]; items[a] = items[b2]; items[b2] = t;
-                        }
-        }
-        if (out != m) continue;
+        int order[rtx::menu::kMaxEntries];
         if (lane.stat == 0) ++g_share->stage[2];
-
-        bool changed = false;
-        for (int j = 0; j < m; ++j) if (items[j] != slots[j]) { changed = true; break; }
-        if (!changed) continue;
+        if (RuleOrder(begin, n, rank, fixedSlot, order) < 0) continue;
         if (lane.stat == 0) ++g_share->stage[3];
 
         // Structural check instead of an exe-stamp allow-list: the write is a permutation of whole
@@ -571,8 +547,8 @@ void ApplyOrder(std::uint64_t mgr) {
         // clients alike and survives rebuilds; a layout change fails it and nothing is written.
         if (decoded != n) { g_share->flags |= rtx::menu::kFlagUnverified; continue; }
         __try {
-            for (int j = 0; j < m; ++j)
-                std::memcpy((void*)(begin + (std::uint64_t)slots[j] * kRecSize), recs[items[j]], kRecSize);
+            for (int k = 0; k < n; ++k)
+                std::memcpy((void*)(begin + (std::uint64_t)(n - 1 - k) * kRecSize), recs[order[k]], kRecSize);
             ++g_share->lane[lane.stat];             // which lanes actually moved
             if (lane.stat == 0) ++g_share->diag[1];
             g_share->flags &= ~rtx::menu::kFlagUnverified;
@@ -588,6 +564,48 @@ bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio) {
     if (!Rd(q1 + kDispTag, &tag, 8) || !tag) return false;
     return Rd(tag + kTagPrio, &prio, 4);
 }
+
+// Rule order for one menu list (index 0 = bottom row). Fills order[] top to bottom with record
+// indices and returns the rule's first row, or -1 when no row is ranked or nothing would change.
+// The rule's first row becomes the top (the left-click). Every other row keeps the game's layout:
+// rule rows only swap places with rule rows of the same kind (action options above "Walk here",
+// Examine-type options below it), and rows the rule does not name (Walk here, Cancel, another
+// object's options) stay where the game put them. A rule saved on one "Fishing spot" also applies
+// to a same-named spot with other options, so it must not drag Examine above Walk here or strand
+// that spot's own options below it.
+int RuleOrder(std::uint64_t begin, int n, const int* rank, const bool* fixedSlot, int* order) {
+    int best = -1;
+    for (int i = 0; i < n; ++i)
+        if (!fixedSlot[i] && rank[i] != 0x7FFFFFFF && (best < 0 || rank[i] < rank[best])) best = i;
+    if (best < 0) return -1;
+    bool demoted[rtx::menu::kMaxEntries];
+    for (int i = 0; i < n; ++i) {
+        std::uint64_t tag = 0;
+        std::int32_t prio = 0;
+        demoted[i] = EntryTag(begin + (std::uint64_t)i * kRecSize, tag, prio) && prio >= kPromoted;
+    }
+    int m = 0;
+    order[m++] = best;
+    for (int i = n - 1; i >= 0; --i)
+        if (i != best) order[m++] = i;
+    for (int group = 0; group < 2; ++group) {
+        int pos[rtx::menu::kMaxEntries], rows[rtx::menu::kMaxEntries];
+        int c = 0;
+        for (int k = 1; k < n; ++k) {
+            const int r = order[k];
+            if (fixedSlot[r] || rank[r] == 0x7FFFFFFF || demoted[r] != (group == 1)) continue;
+            pos[c] = k; rows[c] = r; ++c;
+        }
+        for (int a = 1; a < c; ++a)                          // stable insertion sort by rule rank
+            for (int b = a; b > 0 && rank[rows[b]] < rank[rows[b - 1]]; --b) {
+                const int t = rows[b]; rows[b] = rows[b - 1]; rows[b - 1] = t;
+            }
+        for (int a = 0; a < c; ++a) order[pos[a]] = rows[a];
+    }
+    for (int k = 0; k < n; ++k) if (order[k] != n - 1 - k) return best;
+    return -1;                                               // already in rule order
+}
+
 
 // Gated to the interface demoted class (1007); world demoted classes (1002/1003) have no proven
 // kDemotedIface is declared with kPromoted above.
@@ -948,45 +966,9 @@ bool RotateRuleTop(std::uint64_t mgr) {
     int  decoded = 0;
     if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded) || decoded != n) return false;
 
-    // New order, top to bottom. The rule's first row becomes the top (the left-click). Every other
-    // row keeps the game's layout: rule rows only swap places with rule rows of the same kind (action
-    // options above "Walk here", Examine-type options below it), and rows the rule does not name
-    // (Walk here, Cancel, another object's options) stay where the game put them. A rule saved on one
-    // "Fishing spot" also applies to a same-named spot with other options, so it must not drag
-    // Examine above Walk here or strand that spot's own options below it.
-    int best = -1;
-    for (int i = 0; i < n; ++i)
-        if (!fixedSlot[i] && rank[i] != 0x7FFFFFFF && (best < 0 || rank[i] < rank[best])) best = i;
-    if (best < 0) return false;                              // no rule row in this menu
-
     int order[rtx::menu::kMaxEntries];
-    bool demoted[rtx::menu::kMaxEntries];
-    int m = 0;
-    order[m++] = best;
-    for (int i = n - 1; i >= 0; --i)
-        if (i != best) order[m++] = i;
-    for (int i = 0; i < n; ++i) {
-        std::uint64_t tag = 0;
-        std::int32_t prio = 0;
-        demoted[i] = EntryTag(begin + (std::uint64_t)i * kRecSize, tag, prio) && prio >= kPromoted;
-    }
-    for (int group = 0; group < 2; ++group) {
-        int pos[rtx::menu::kMaxEntries], rows[rtx::menu::kMaxEntries];
-        int c = 0;
-        for (int k = 1; k < n; ++k) {
-            const int r = order[k];
-            if (fixedSlot[r] || rank[r] == 0x7FFFFFFF || demoted[r] != (group == 1)) continue;
-            pos[c] = k; rows[c] = r; ++c;
-        }
-        for (int a = 1; a < c; ++a)                          // stable insertion sort by rule rank
-            for (int b = a; b > 0 && rank[rows[b]] < rank[rows[b - 1]]; --b) {
-                const int t = rows[b]; rows[b] = rows[b - 1]; rows[b - 1] = t;
-            }
-        for (int a = 0; a < c; ++a) order[pos[a]] = rows[a];
-    }
-    bool same = true;
-    for (int k = 0; k < n; ++k) if (order[k] != n - 1 - k) { same = false; break; }
-    if (same) return false;                                  // already in rule order
+    const int best = RuleOrder(begin, n, rank, fixedSlot, order);
+    if (best < 0) return false;                              // no rule row, or already in order
 
     __try {
         for (int k = 0; k < n; ++k)
