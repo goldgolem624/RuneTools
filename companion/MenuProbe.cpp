@@ -948,15 +948,37 @@ bool RotateRuleTop(std::uint64_t mgr) {
     int  decoded = 0;
     if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded) || decoded != n) return false;
 
-    int best = -1;
-    for (int i = 0; i < n; ++i)
-        if (!fixedSlot[i] && rank[i] != 0x7FFFFFFF && (best < 0 || rank[i] < rank[best])) best = i;
-    if (best < 0 || best == n - 1) return false;             // no rule row here, or already the default
+    // New order, top to bottom: the rule's rows as one block in rule order, then every other row
+    // (Walk here, Cancel, rows of other entities) in the order the game sorted them. Moving only the
+    // top row left "Walk here" wedged between the rule's options.
+    int order[rtx::menu::kMaxEntries];
+    int m = 0;
+    for (;;) {
+        int pick = -1;
+        for (int i = n - 1; i >= 0; --i) {
+            if (fixedSlot[i] || rank[i] == 0x7FFFFFFF) continue;
+            bool taken = false;
+            for (int k = 0; k < m; ++k) if (order[k] == i) { taken = true; break; }
+            if (!taken && (pick < 0 || rank[i] < rank[pick])) pick = i;
+        }
+        if (pick < 0) break;
+        order[m++] = pick;
+    }
+    if (m == 0) return false;                                // no rule row in this menu
+    const int best = order[0];
+    const int ruleRows = m;
+    for (int i = n - 1; i >= 0; --i) {
+        bool taken = false;
+        for (int k = 0; k < ruleRows; ++k) if (order[k] == i) { taken = true; break; }
+        if (!taken) order[m++] = i;
+    }
+    bool same = true;
+    for (int k = 0; k < n; ++k) if (order[k] != n - 1 - k) { same = false; break; }
+    if (same) return false;                                  // already in rule order
 
     __try {
-        for (int j = best; j < n - 1; ++j)
-            std::memcpy((void*)(begin + (std::uint64_t)j * kRecSize), recs[j + 1], kRecSize);
-        std::memcpy((void*)(begin + (std::uint64_t)(n - 1) * kRecSize), recs[best], kRecSize);
+        for (int k = 0; k < n; ++k)
+            std::memcpy((void*)(begin + (std::uint64_t)(n - 1 - k) * kRecSize), recs[order[k]], kRecSize);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_share->promoState = rtx::menu::kPromoWriteFailed;
         return false;
