@@ -894,14 +894,23 @@ void DumpHoverSlots(std::uint64_t mgr) {
 typedef void(__fastcall* Assign_t)(std::uint64_t slot, std::uint64_t src);
 Assign_t g_assign = nullptr;
 
-std::uint64_t CallTargetAfter(const unsigned char* body, std::size_t n, const unsigned char* lea) {
-    for (std::size_t i = 0; i + 12 <= n; ++i) {
-        if (std::memcmp(body + i, lea, 7) != 0 || body[i + 7] != 0xE8) continue;
-        std::int32_t rel = 0;
-        std::memcpy(&rel, body + i + 8, 4);
-        return (std::uint64_t)((std::int64_t)(std::uintptr_t)(body + i + 12) + rel);
-    }
+// Call site of the 13e0 assign inside the snapshot: `lea rcx,[rdi+0x13e0]; call rel32`.
+std::uint64_t g_siteCall = 0;          // address of the E8 byte
+std::int32_t  g_siteRel  = 0;          // original rel32, restored on uninstall
+void*         g_siteTramp = nullptr;   // near trampoline: mov rax, imm64; jmp rax
+bool          g_sitePatched = false;
+
+std::uint64_t CallSiteAfter(const unsigned char* body, std::size_t n, const unsigned char* lea) {
+    for (std::size_t i = 0; i + 12 <= n; ++i)
+        if (std::memcmp(body + i, lea, 7) == 0 && body[i + 7] == 0xE8)
+            return (std::uint64_t)(std::uintptr_t)(body + i + 7);
     return 0;
+}
+
+std::uint64_t CallTarget(std::uint64_t site) {
+    std::int32_t rel = 0;
+    std::memcpy(&rel, (void*)(site + 1), 4);
+    return (std::uint64_t)((std::int64_t)site + 5 + rel);
 }
 
 void ResolveAssign(std::uint64_t snap) {
@@ -909,93 +918,48 @@ void ResolveAssign(std::uint64_t snap) {
     const unsigned char* body = (const unsigned char*)snap;
     static const unsigned char kLea13f0[] = { 0x48,0x8D,0x8F,0xF0,0x13,0x00,0x00 };   // lea rcx,[rdi+0x13f0]
     static const unsigned char kLea13e0[] = { 0x48,0x8D,0x8F,0xE0,0x13,0x00,0x00 };   // lea rcx,[rdi+0x13e0]
-    std::uint64_t a = 0, b = 0;
+    std::uint64_t sa = 0, sb = 0, a = 0, b = 0;
     __try {
-        a = CallTargetAfter(body, 0x1400, kLea13f0);
-        b = CallTargetAfter(body, 0x1400, kLea13e0);
+        sa = CallSiteAfter(body, 0x1400, kLea13f0);
+        sb = CallSiteAfter(body, 0x1400, kLea13e0);
+        if (sa) a = CallTarget(sa);
+        if (sb) b = CallTarget(sb);
     } __except (EXCEPTION_EXECUTE_HANDLER) { a = b = 0; }
-    if (a && a == b && a > g_base && a < g_modEnd) g_assign = (Assign_t)a;
+    if (a && a == b && a > g_base && a < g_modEnd && sb < sa) { g_assign = (Assign_t)a; g_siteCall = sb; }
     Log("slot assign helper: %s", g_assign ? "found" : "NOT FOUND (left-click lift unavailable)");
-    if (g_assign) Log("  assign rva 0x%llx", (unsigned long long)(a - g_base));
+    if (g_assign) Log("  assign rva 0x%llx, left-click site rva 0x%llx", (unsigned long long)(a - g_base),
+                      (unsigned long long)(sb - g_base));
 }
 
-// The snapshot also copies +0x90 into +0x1468 (the list the script click op reads: index -1 picks
-// its top row) before our lift runs. Apply the same move there, but only when that list holds exactly
-// the records we just ranked, so a stale or unrelated list is never touched.
-bool LiftMirror(std::uint64_t mgr, unsigned char recs[][kRecSize], int n, int best) {
-    std::uint64_t mb = 0, me = 0;
-    if (!Rd(mgr + 0x1468, &mb, 8) || !Rd(mgr + 0x1470, &me, 8) || !mb || me <= mb) return false;
-    if ((me - mb) != (std::uint64_t)n * kRecSize) return false;
-    unsigned char mir[rtx::menu::kMaxEntries][kRecSize];
-    bool used[rtx::menu::kMaxEntries] = { false };
-    for (int i = 0; i < n; ++i)
-        if (!Rd(mb + (std::uint64_t)i * kRecSize, mir[i], kRecSize)) return false;
-    int at = -1;
-    for (int i = 0; i < n; ++i) {            // same multiset of records, or leave it alone
-        int hit = -1;
-        for (int j = 0; j < n; ++j)
-            if (!used[j] && std::memcmp(mir[i], recs[j], kRecSize) == 0) { hit = j; break; }
-        if (hit < 0) return false;
-        used[hit] = true;
-        if (hit == best) at = i;
-    }
-    if (at < 0) return false;
-    if (at == n - 1) return true;
-    unsigned char keep[kRecSize];
-    std::memcpy(keep, mir[at], kRecSize);
-    __try {
-        for (int j = at; j < n - 1; ++j)
-            std::memcpy((void*)(mb + (std::uint64_t)j * kRecSize), mir[j + 1], kRecSize);
-        std::memcpy((void*)(mb + (std::uint64_t)(n - 1) * kRecSize), keep, kRecSize);
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-    return true;
-}
-
-void LiftRuleTop(std::uint64_t mgr) {
-    if (!g_share || !g_share->pinCount) return;
+// Moves the rule's top-ranked row to the top of +0x90 (a permutation of whole records, refcount
+// neutral). Returns true when a row moved.
+bool RotateRuleTop(std::uint64_t mgr) {
+    if (!g_share || !g_share->pinCount) return false;
     std::uint64_t begin = 0, e = 0;
-    if (!Rd(mgr + 0x90, &begin, 8) || !Rd(mgr + 0x98, &e, 8) || !begin || e <= begin) return;
+    if (!Rd(mgr + 0x90, &begin, 8) || !Rd(mgr + 0x98, &e, 8) || !begin || e <= begin) return false;
     const std::uint64_t span = e - begin;
-    if (span % kRecSize || span > kRecSize * rtx::menu::kMaxEntries) return;
+    if (span % kRecSize || span > kRecSize * rtx::menu::kMaxEntries) return false;
     const int n = (int)(span / kRecSize);
-    if (n < 2) return;
+    if (n < 2) return false;
 
     unsigned char recs[rtx::menu::kMaxEntries][kRecSize];
     int  rank[rtx::menu::kMaxEntries];
     bool fixedSlot[rtx::menu::kMaxEntries];
     int  decoded = 0;
-    if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded) || decoded != n) return;
+    if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded) || decoded != n) return false;
 
     int best = -1;
     for (int i = 0; i < n; ++i)
         if (!fixedSlot[i] && rank[i] != 0x7FFFFFFF && (best < 0 || rank[i] < rank[best])) best = i;
-    if (best < 0 || best == n - 1) return;                   // no rule row here, or already the default
-    if (!g_assign) { g_share->promoState = rtx::menu::kPromoNoAssign; return; }
-
-    std::uint64_t old13e0 = 0, old13f0 = 0;
-    Rd(mgr + 0x13E0, &old13e0, 8);
-    Rd(mgr + 0x13F0, &old13f0, 8);
-    const bool hoverWasTop = old13e0 == old13f0;
+    if (best < 0 || best == n - 1) return false;             // no rule row here, or already the default
 
     __try {
         for (int j = best; j < n - 1; ++j)
             std::memcpy((void*)(begin + (std::uint64_t)j * kRecSize), recs[j + 1], kRecSize);
         std::memcpy((void*)(begin + (std::uint64_t)(n - 1) * kRecSize), recs[best], kRecSize);
-        const std::uint64_t top = begin + (std::uint64_t)(n - 1) * kRecSize;
-        const std::uint64_t second = begin + (std::uint64_t)(n - 2) * kRecSize;
-        g_assign(mgr + 0x13F0, top);
-        g_assign(mgr + 0x13E0, hoverWasTop || n < 3 ? top : second);
-        if (n > 2) g_assign(mgr + 0x1400, second);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_share->promoState = rtx::menu::kPromoWriteFailed;
-        return;
-    }
-    const bool mirrored = LiftMirror(mgr, recs, n, best);
-    static int liftLog = 0;
-    if (liftLog < 100) {
-        ++liftLog;
-        Log("  [lift] rotated row %d of %d to top, click list +0x1468 %s", best, n,
-            mirrored ? "updated" : "not matching (left alone)");
+        return false;
     }
     g_share->promoState = rtx::menu::kPromoLifted;
     bool hp = false;
@@ -1006,6 +970,67 @@ void LiftRuleTop(std::uint64_t mgr) {
         std::strncpy(g_share->promoVerb, verb, rtx::menu::kVerbLen - 1);
         g_share->promoVerb[rtx::menu::kVerbLen - 1] = 0;
     }
+    return true;
+}
+
+// Replaces the snapshot's `call assign(mgr+0x13e0, src)`. The snapshot has just sorted +0x90 and
+// points src at its top (or second) record, and the click is processed later in the same call from
+// these slots. Rotating the list here, before the three slot assigns, makes the game itself copy the
+// rule's row into every slot and run it on click. src is an address inside +0x90 and the rotation
+// keeps addresses, so passing it through unchanged picks the same position.
+void __fastcall Hook_Assign13e0(std::uint64_t slot, std::uint64_t src) {
+    const std::uint64_t mgr = slot - 0x13E0;
+    std::uint64_t begin = 0, e = 0;
+    if (g_share && g_share->enable && Rd(mgr + 0x90, &begin, 8) && Rd(mgr + 0x98, &e, 8) &&
+        src >= begin && src < e)
+        RotateRuleTop(mgr);
+    g_assign(slot, src);
+}
+
+// Patches the call site on the game thread (called from the snapshot detour before the original
+// runs, so the site is never mid-execution while its rel32 is rewritten).
+void PatchAssignSite() {
+    static bool tried = false;
+    if (tried || g_sitePatched || !g_siteCall || !g_assign) return;
+    tried = true;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    const std::uint64_t gran = si.dwAllocationGranularity;
+    const std::uint64_t home = g_siteCall & ~(gran - 1);
+    for (std::uint64_t d = gran; d < 0x7FF00000ull && !g_siteTramp; d += gran) {
+        if (home > d)
+            g_siteTramp = VirtualAlloc((void*)(home - d), 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (!g_siteTramp)
+            g_siteTramp = VirtualAlloc((void*)(home + d), 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    }
+    if (!g_siteTramp) { Log("left-click site: no trampoline memory"); return; }
+    const std::int64_t rel = (std::int64_t)(std::uint64_t)(std::uintptr_t)g_siteTramp - (std::int64_t)(g_siteCall + 5);
+    if (rel < INT32_MIN || rel > INT32_MAX) { Log("left-click site: trampoline out of range"); return; }
+    unsigned char t[12] = { 0x48,0xB8, 0,0,0,0,0,0,0,0, 0xFF,0xE0 };   // mov rax, imm64; jmp rax
+    const std::uint64_t fn = (std::uint64_t)&Hook_Assign13e0;
+    std::memcpy(t + 2, &fn, 8);
+    std::memcpy(g_siteTramp, t, sizeof(t));
+    DWORD old = 0;
+    if (!VirtualProtect((void*)g_siteCall, 5, PAGE_EXECUTE_READWRITE, &old)) { Log("left-click site: protect failed"); return; }
+    std::memcpy(&g_siteRel, (void*)(g_siteCall + 1), 4);
+    const std::int32_t r32 = (std::int32_t)rel;
+    std::memcpy((void*)(g_siteCall + 1), &r32, 4);
+    VirtualProtect((void*)g_siteCall, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), (void*)g_siteCall, 5);
+    g_sitePatched = true;
+    Log("left-click site: patched");
+}
+
+void UnpatchAssignSite() {
+    if (!g_sitePatched) return;
+    DWORD old = 0;
+    if (VirtualProtect((void*)g_siteCall, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        std::memcpy((void*)(g_siteCall + 1), &g_siteRel, 4);
+        VirtualProtect((void*)g_siteCall, 5, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), (void*)g_siteCall, 5);
+        g_sitePatched = false;
+    }
+    // The trampoline stays allocated: a game thread could still be returning through it.
 }
 
 void __fastcall Detour_Init(std::uint64_t mgr) {
@@ -1026,8 +1051,9 @@ std::uint64_t __fastcall Detour_Snap(std::uint64_t mgr) {
         PromotePinnedEntry(mgr);
         LogLaneTops(mgr, "snap");
     }
+    if (mgr && g_share && g_share->enable) PatchAssignSite();
     const std::uint64_t r = g_origSnap(mgr);
-    if (mgr) LiftRuleTop(mgr);       // after the game's sort and slot copy: the rule's top row becomes the default
+    // The left-click lift runs inside the snapshot, at its slot assign (Hook_Assign13e0).
     if (mgr) DumpHoverSlots(mgr);
     // Publish here on the game thread; doing it from Poll() races the +0x90 rebuild.
     if (mgr && g_share && g_share->enable) Publish(mgr);
@@ -1277,6 +1303,7 @@ void Uninstall() {
     if (g_origBuild) DetourDetach(&(PVOID&)g_origBuild, (PVOID)Detour_Build);
     if (g_origSnap)  DetourDetach(&(PVOID&)g_origSnap,  (PVOID)Detour_Snap);
     if (g_origExec)  DetourDetach(&(PVOID&)g_origExec,  (PVOID)Detour_Exec);
+    UnpatchAssignSite();
     DetourTransactionCommit();
     g_installed = false;
 }
