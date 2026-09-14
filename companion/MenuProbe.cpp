@@ -412,7 +412,8 @@ const Lane kLanes[] = {
 };
 
 bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* rank,
-              bool* fixedSlot) {
+              bool* fixedSlot, int* decoded) {
+    *decoded = 0;
     bool anyTargeted = false;
     for (int k = 0; k < n && !anyTargeted; ++k) {
         std::uint64_t t = 0;
@@ -447,6 +448,7 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         fixedSlot[i] = false;
         bool hp = false;
         if (!obj || ReadEastl(obj + kObjVerb, verb, sizeof(verb), &hp) <= 0) continue;
+        ++*decoded;
         std::strncpy(g_share->lastVerb, verb, rtx::menu::kVerbLen - 1);
         g_share->lastVerb[rtx::menu::kVerbLen - 1] = 0;
         tgt[0] = 0;
@@ -511,7 +513,8 @@ void ApplyOrder(std::uint64_t mgr) {
         const int n = (int)(span / kRecSize);
         if (n < 2) continue;
         if (lane.stat == 0) ++g_share->stage[0];
-        if (!RankLane(begin, n, recs, rank, fixedSlot)) continue;
+        int decoded = 0;
+        if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded)) continue;
 
         int m = 0;
         for (int d = 0; d < n; ++d) {
@@ -541,12 +544,17 @@ void ApplyOrder(std::uint64_t mgr) {
         if (!changed) continue;
         if (lane.stat == 0) ++g_share->stage[3];
 
-        if (!rtx::scn::KnownBuild(g_base)) continue;
+        // Structural check instead of an exe-stamp allow-list: the write is a permutation of whole
+        // records that were just read, so it is safe exactly when every record in the lane decoded
+        // as a menu entry (object pointer -> readable verb). That holds on the OpenGL and Vulkan
+        // clients alike and survives rebuilds; a layout change fails it and nothing is written.
+        if (decoded != n) { g_share->flags |= rtx::menu::kFlagUnverified; continue; }
         __try {
             for (int j = 0; j < m; ++j)
                 std::memcpy((void*)(begin + (std::uint64_t)slots[j] * kRecSize), recs[items[j]], kRecSize);
             ++g_share->lane[lane.stat];             // which lanes actually moved
             if (lane.stat == 0) ++g_share->diag[1];
+            g_share->flags &= ~rtx::menu::kFlagUnverified;
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
 
@@ -694,9 +702,19 @@ void PromotePinnedEntry(std::uint64_t mgr) {
     }
 
     std::uint64_t disp = 0;
-    if (!rtx::scn::KnownBuild(g_base) || !Rd(top + kRecTarget, &disp, 8) || !disp) {
+    if (!Rd(top + kRecTarget, &disp, 8) || !disp) {
         g_share->promoState = rtx::menu::kPromoWriteFailed;
         return;
+    }
+    {   // Structural check instead of the exe stamp: the slot we overwrite must hold the very tag we
+        // read for this row, and the replacement must be a class object of the same concrete type.
+        std::uint64_t cur = 0, vtTop = 0, vtNew = 0;
+        if (!Rd(disp + kDispTag, &cur, 8) || cur != topTag ||
+            !Rd(topTag, &vtTop, 8) || !Rd(promoted, &vtNew, 8) || vtTop != vtNew ||
+            vtNew <= g_base || vtNew >= g_modEnd) {
+            g_share->promoState = rtx::menu::kPromoUnverified;
+            return;
+        }
     }
     __try {
         *(volatile std::uint64_t*)(disp + kDispTag) = promoted;

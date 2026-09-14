@@ -27,6 +27,7 @@ inline constexpr std::uint32_t kPromoApplied     = 2;
 inline constexpr std::uint32_t kPromoOtherClass  = 3;
 inline constexpr std::uint32_t kPromoNoPartner   = 4;
 inline constexpr std::uint32_t kPromoWriteFailed = 5;
+inline constexpr std::uint32_t kPromoUnverified  = 6;   // the display record did not carry the expected class tag: not written
 
 inline constexpr std::uint32_t kEnableOff        = 0;
 inline constexpr std::uint32_t kEnablePanel      = 1;   // publish + re-arm dumps
@@ -51,6 +52,9 @@ struct Entry {
 };
 
 inline constexpr std::uint32_t kFlagHooked = 1u << 0;
+// Set when a reorder was withheld because the live records did not pass the structural check
+// (every row must decode a verb). Cleared on the next write that passes.
+inline constexpr std::uint32_t kFlagUnverified = 1u << 1;
 
 struct Share {
     std::uint32_t magic;

@@ -100,6 +100,8 @@ std::string StatusJson(std::uint32_t pid) {
     std::string out = "{\"ok\":true";
     out += ",\"hooked\":";  out += (sh->flags & rtx::menu::kFlagHooked) ? "true" : "false";
     out += ",\"enabled\":"; out += sh->enable ? "true" : "false";
+    out += ",\"unverified\":"; out += (sh->flags & rtx::menu::kFlagUnverified) ? "true" : "false";
+    out += ",\"pinCount\":" + std::to_string(sh->pinCount);
     out += ",\"seq\":"     + std::to_string(sh->seq);
     out += ",\"handle\":"  + std::to_string(sh->handle);
     out += ",\"reordered\":" + std::to_string(sh->diag[1]);

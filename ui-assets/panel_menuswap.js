@@ -293,6 +293,14 @@
     let d = null;
     try { d = JSON.parse(await rtxData.raw('host.menuStatus') || '{}'); } catch (e) { return; }
     if (!want) return;               // no rules stored: nothing to resolve, nothing to push
+    // Self-heal: the companion resets its switch and rule list whenever it (re)attaches to a client
+    // (new client, relog, companion reload). Our own mode does not change then, so re-send both.
+    if (d && d.ok && d.hooked) {
+      if (!d.enabled && mnuOn > 0) { try { await rtxData.raw('act.menuEnable', mnuOn); } catch (e) {} }
+      if (!(d.pinCount | 0) && Object.keys(mnuRules).length && Date.now() - (mnuTick._lastRepush || 0) > 2000) {
+        mnuTick._lastRepush = Date.now(); mnuPinCtx = '';
+      }
+    }
     if (d && mnuData && d.seq !== mnuData.seq) mnuOrder = null;
     mnuData = d || {};
     mnuSelfResolve();
@@ -544,6 +552,7 @@
             : !(st[1] | 0) ? 'no match (last verb: "' + (d.lastVerb || '') + '")'
             : !(st[2] | 0) ? 'permutation incomplete'
             : !(st[3] | 0) ? 'order already correct'
+            : d.unverified ? 'menu records did not pass the safety check on this game build, so nothing was moved'
                            : 'write failed';
       }
       const ln = d.lane || [];
@@ -570,6 +579,7 @@
         : st === 4 ? 'Left-click: no promoted class found for "' + pv + '" (found '
                      + (d.promoPartner | 0) + ', expected 57) - a game update likely moved them'
         : st === 5 ? 'Left-click: the class write failed'
+        : st === 6 ? 'Left-click: the row did not carry the expected class on this game build, so the default was left alone'
         : '';
       promo.style.display = promo.textContent ? '' : 'none';
     }
