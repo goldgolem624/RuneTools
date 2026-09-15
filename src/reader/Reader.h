@@ -77,6 +77,18 @@ struct HostInfo {
 };
 
 std::vector<Snapshot> SampleAll();
+
+// What the background sampler (every 200 ms) last saw of each client, without sampling again: for callers
+// that only need who is where and their skill XP.
+struct ClientPresence {
+    std::uint32_t pid = 0;
+    int           status = -1;
+    bool          in_world = false;
+    std::string   display_name;
+    bool          have_xp = false;
+    int           xp[29] = {};        // -1 where unavailable
+};
+std::vector<ClientPresence> LastPresence();
 HostInfo              ReadHost();
 
 std::string SamplesJson();
@@ -197,6 +209,8 @@ std::string ItemExtraIntsJson(std::uint32_t pid, int container_id, int item_id, 
 
 std::string LocMorphsJson(std::uint32_t pid, const std::string& ids_csv);
 std::string VarpsJson(std::uint32_t pid, const std::string& ids_csv);
+// The same read without JSON: out[i] = value of ids[i]. False when the client is not readable.
+bool Varps(std::uint32_t pid, const std::vector<int>& ids, std::vector<int>& out);
 std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv);
 
 std::string MembershipJson(std::uint32_t pid);

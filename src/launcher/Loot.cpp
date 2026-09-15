@@ -129,31 +129,15 @@ void post_kill(const std::string& name, std::map<std::string, int> kills) {
 void post_enter(const std::vector<std::string>& names) { post_names(kEnterPath, "entered", names); }
 
 // ---- boss kill counts -------------------------------------------------------------------------
-std::string boss_varps_csv() {
-    static std::string csv;
-    if (!csv.empty()) return csv;
-    std::vector<int> ids;
+// Every varp the kill log uses, once.
+const std::vector<int>& boss_varp_ids() {
+    static std::vector<int> ids;
+    if (!ids.empty()) return ids;
     auto add = [&](const int* t) { if (t[0] > 0) { for (int v : ids) if (v == t[0]) return; ids.push_back(t[0]); } };
     for (const auto& b : kBosses) { add(b.kc); add(b.pr); add(b.kc2); add(b.pr2); }
-    for (size_t i = 0; i < ids.size(); ++i) { if (i) csv += ","; csv += std::to_string(ids[i]); }
-    return csv;
+    return ids;
 }
 
-// {"4534":123,"4535":-1,...} -> map
-std::map<int, long long> parse_varps(const std::string& j) {
-    std::map<int, long long> out;
-    size_t i = 0;
-    while ((i = j.find('"', i)) != std::string::npos) {
-        size_t e = j.find('"', i + 1);
-        if (e == std::string::npos) break;
-        int id = std::atoi(j.substr(i + 1, e - i - 1).c_str());
-        size_t c = j.find(':', e);
-        if (c == std::string::npos) break;
-        out[id] = std::strtoll(j.c_str() + c + 1, nullptr, 10);
-        i = c + 1;
-    }
-    return out;
-}
 
 long long field(const std::map<int, long long>& vp, const int* t) {
     auto it = vp.find(t[0]);
@@ -186,7 +170,8 @@ void sample_once() {
     // names whose client is at the lobby, logging in or logging out right now: they left for certain
     std::vector<std::string> out_now;
     std::vector<std::string> running;
-    const auto snaps = rtx::reader::SampleAll();
+    // the reader's background sampler already reads every client five times a second: reuse what it saw
+    const auto snaps = rtx::reader::LastPresence();
     for (const auto& s : snaps) {
         if (s.display_name.empty()) continue;
         running.push_back(s.display_name);
@@ -197,7 +182,8 @@ void sample_once() {
         seen.push_back(s.pid);
         in_world.push_back(s.display_name);
         int xp[29];
-        const bool okxp = rtx::reader::SkillsXp(s.pid, xp);
+        std::memcpy(xp, s.xp, sizeof(xp));
+        const bool okxp = s.have_xp;
         bool read_kc = false;
         std::map<int, long long> vp;
         {
@@ -205,7 +191,11 @@ void sample_once() {
             auto& p = g_pids[s.pid];
             read_kc = !p.have_kc || now - p.last_kc >= std::chrono::milliseconds(kBossSampleMs);
         }
-        if (read_kc) vp = parse_varps(rtx::reader::VarpsJson(s.pid, boss_varps_csv()));
+        if (read_kc) {
+            std::vector<int> vals;
+            if (rtx::reader::Varps(s.pid, boss_varp_ids(), vals))
+                for (size_t k = 0; k < vals.size(); ++k) vp[boss_varp_ids()[k]] = vals[k];
+        }
 
         std::lock_guard<std::mutex> lk(g_mu);
         auto& p = g_pids[s.pid];
@@ -331,7 +321,7 @@ void beat_once() {
     std::string auth = link::AuthHeader();
     if (auth.empty()) return;
     std::vector<std::string> names;
-    for (const auto& s : rtx::reader::SampleAll()) {
+    for (const auto& s : rtx::reader::LastPresence()) {
         if (s.status != 30 || !s.in_world || s.display_name.empty()) continue;   // 30 = In-game
         bool dup = false;
         for (const auto& n : names) if (n == s.display_name) { dup = true; break; }

@@ -21,6 +21,23 @@ namespace rtx::launcher::http {
 namespace {
 
 struct SessionScope { HINTERNET h = nullptr; ~SessionScope() { if (h) WinHttpCloseHandle(h); } };
+
+// The launcher-wide WinHTTP session (thread safe; never closed, the process exit releases it).
+HINTERNET shared_session() {
+    static std::mutex mu;
+    static HINTERNET h = nullptr;
+    std::lock_guard<std::mutex> lk(mu);
+    if (h) return h;
+    h = WinHttpOpen(L"RuneToolsX/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!h) return nullptr;
+    DWORD secProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+    WinHttpSetOption(h, WINHTTP_OPTION_SECURE_PROTOCOLS, &secProtocols, sizeof(secProtocols));
+    // Race IPv4 against IPv6: dead IPv6 routes otherwise burn the connect budget (12002).
+    BOOL fastFallback = TRUE;
+    WinHttpSetOption(h, WINHTTP_OPTION_IPV6_FAST_FALLBACK, &fastFallback, sizeof(fastFallback));
+    WinHttpSetTimeouts(h, 10000, 10000, 30000, 120000);
+    return h;
+}
 struct ConnectScope { HINTERNET h = nullptr; ~ConnectScope() { if (h) WinHttpCloseHandle(h); } };
 struct RequestScope { HINTERNET h = nullptr; ~RequestScope() { if (h) WinHttpCloseHandle(h); } };
 
@@ -73,23 +90,13 @@ void do_request(Response& out,
                 const std::function<void(long long, long long)>& on_progress,
                 const std::function<bool(int)>& on_status = nullptr,
                 bool decompress = false) {
-    SessionScope sess;
-    sess.h = WinHttpOpen(L"RuneToolsX/0.1",
-                         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!sess.h) { out.detail = format_winhttp_error(GetLastError()); return; }
-
-    DWORD secProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-    WinHttpSetOption(sess.h, WINHTTP_OPTION_SECURE_PROTOCOLS,
-                     &secProtocols, sizeof(secProtocols));
-    // Race IPv4 against IPv6: dead IPv6 routes otherwise burn the connect budget (12002).
-    BOOL fastFallback = TRUE;
-    WinHttpSetOption(sess.h, WINHTTP_OPTION_IPV6_FAST_FALLBACK,
-                     &fastFallback, sizeof(fastFallback));
-    WinHttpSetTimeouts(sess.h, 10000, 10000, 30000, 120000);
+    // One session for the whole launcher: WinHTTP keeps finished connections alive inside a session, so the
+    // minute heartbeat, kill events and panel requests reuse an open TLS connection instead of a new handshake.
+    HINTERNET session = shared_session();
+    if (!session) { out.detail = format_winhttp_error(GetLastError()); return; }
 
     ConnectScope conn;
-    conn.h = WinHttpConnect(sess.h, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    conn.h = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!conn.h) { out.detail = format_winhttp_error(GetLastError()); return; }
 
     RequestScope req;

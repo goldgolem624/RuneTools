@@ -26,8 +26,12 @@
     try {
       const b = bridge();
       if (!b || !b.lootPoll || !myPid()) return;
+      const now = Date.now();
+      if (!quiet && lootTick.offUntil && now < lootTick.offUntil) return;   // switched off: check again in a while
       const st = JSON.parse(b.lootPoll(myPid()) || '{}');
-      if (!st || !st.enabled || !st.drop) return;   // opt-in in Settings; off means nothing is announced
+      if (!st || !st.linked || !st.enabled) { lootTick.offUntil = now + 15000; return; }
+      lootTick.offUntil = 0;
+      if (!st.drop) return;   // opt-in in Settings; off means nothing is announced
       // the site sends "Folk Cache", "3 Mastery Caches (Attack 99)" or "1 Mastery Cache from your milestone bank"
       const raw = st.dropName || 'Rune Cache';
       let name = raw, count = 1, sub = '';

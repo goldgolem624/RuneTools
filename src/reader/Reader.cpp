@@ -1099,10 +1099,26 @@ std::string json_escape(const std::string& v) {
 namespace {
 std::mutex        s_samples_mu;
 std::string       s_samples_json;
+std::vector<ClientPresence> s_presence;
+bool              s_presence_set = false;
 std::atomic<bool> s_sampler_started{false};
 
 std::string BuildSamplesJson() {
     auto snaps = SampleAll();
+    {
+        std::vector<ClientPresence> pres;
+        pres.reserve(snaps.size());
+        for (const auto& s : snaps) {
+            ClientPresence p;
+            p.pid = s.pid; p.status = s.status; p.in_world = s.in_world; p.display_name = s.display_name;
+            for (int i = 0; i < 29; ++i) p.xp[i] = -1;
+            for (size_t i = 0; i < s.skills.size() && i < 29; ++i) p.xp[i] = s.skills[i].xp;
+            p.have_xp = !s.skills.empty();
+            pres.push_back(std::move(p));
+        }
+        std::lock_guard<std::mutex> lk(s_samples_mu);
+        s_presence.swap(pres); s_presence_set = true;
+    }
     std::string out = "[";
     char buf[1536];
     for (size_t i = 0; i < snaps.size(); ++i) {
@@ -1333,6 +1349,17 @@ std::string ReadAsync(const std::string& key, std::function<std::string()> build
     e.value = v; e.has_value = true;
     e.last_used = std::chrono::steady_clock::now();
     return v;
+}
+
+std::vector<ClientPresence> LastPresence() {
+    ensure_sampler_started();
+    {
+        std::lock_guard<std::mutex> lk(s_samples_mu);
+        if (s_presence_set) return s_presence;
+    }
+    BuildSamplesJson();   // first call before the background loop has run
+    std::lock_guard<std::mutex> lk(s_samples_mu);
+    return s_presence;
 }
 
 std::string SamplesJson() {
@@ -1877,6 +1904,16 @@ std::string VarpsJson(std::uint32_t pid, const std::string& ids_csv) {
     }
     out += "}";
     return out;
+}
+
+bool Varps(std::uint32_t pid, const std::vector<int>& ids, std::vector<int>& out) {
+    auto ps = snap_proc(pid);
+    if (!ps) return false;
+    auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
+    if (!root || *root <= 0x10000) return false;
+    out.resize(ids.size());
+    for (size_t i = 0; i < ids.size(); ++i) out[i] = read_varp(ps.h, *root, ids[i]);
+    return true;
 }
 
 // CSV of varbit ids -> {"<id>":value,..}; each varbit (cache idx2/arch69) = varp + [lsb,msb]. Unset -> 0.
