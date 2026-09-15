@@ -1,4 +1,5 @@
 #include "Loot.h"
+#include "LootBosses.h"
 #include "BridgeUtil.h"
 #include "Http.h"
 #include "Link.h"
@@ -9,7 +10,9 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <cstring>
 #include <chrono>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -24,16 +27,31 @@ namespace {
 
 constexpr wchar_t kHeartbeatPath[] = L"/api/client/loot/heartbeat";
 constexpr int kBeatSeconds = 60;
+constexpr int kXpSampleMs = 500;      // XP drops arrive at most every game tick (600 ms)
+constexpr int kBossSampleMs = 5000;   // kill counts change once per kill; five seconds is plenty
 
+// What one character has done since the last successful heartbeat, plus running totals for the UI.
 struct CharState {
-    long long seconds = 0;
-    long long eligible = 1200, guaranteed = 3600;
+    int xp_events = 0;                        // XP drops not yet reported
+    std::map<std::string, int> kills;         // boss key -> kills not yet reported
+    long long xp_total = 0, kills_total = 0, caches_total = 0;
     bool capped = false;
-    int pending_drops = 0;        // caches earned and not yet announced in game
+    std::deque<std::string> pending_drops;    // cache names earned and not yet announced in game
+};
+
+// Per client process: the last XP array and the last boss totals, so rises can be counted.
+struct PidState {
+    std::string name;
+    bool have_xp = false;
+    int xp[29] = {};
+    bool have_kc = false;
+    std::map<std::string, long long> kc;      // boss key -> total kills
+    std::chrono::steady_clock::time_point last_kc{};
 };
 
 std::mutex g_mu;
-std::map<std::string, CharState> g_chars;   // by display name
+std::map<std::string, CharState> g_chars;     // by display name
+std::map<std::uint32_t, PidState> g_pids;
 long long g_unopened = 0;
 std::atomic<bool> g_started{ false };
 std::mutex g_en_mu;
@@ -49,39 +67,151 @@ std::filesystem::path enabled_path() {
     return L"runetoolsx-rune-caches.txt";
 }
 
-// Reads {"n":"...","s":N,"d":N,"e":N,"g":N,"c":N} objects out of the "chars" array. The server
-// emits flat objects with no nesting, so a scan for each '{' ... '}' pair is enough.
+bool active() { return Enabled() && !link::AuthHeader().empty(); }
+
+// ---- boss kill counts -------------------------------------------------------------------------
+std::string boss_varps_csv() {
+    static std::string csv;
+    if (!csv.empty()) return csv;
+    std::vector<int> ids;
+    auto add = [&](const int* t) { if (t[0] > 0) { for (int v : ids) if (v == t[0]) return; ids.push_back(t[0]); } };
+    for (const auto& b : kBosses) { add(b.kc); add(b.pr); add(b.kc2); add(b.pr2); }
+    for (size_t i = 0; i < ids.size(); ++i) { if (i) csv += ","; csv += std::to_string(ids[i]); }
+    return csv;
+}
+
+// {"4534":123,"4535":-1,...} -> map
+std::map<int, long long> parse_varps(const std::string& j) {
+    std::map<int, long long> out;
+    size_t i = 0;
+    while ((i = j.find('"', i)) != std::string::npos) {
+        size_t e = j.find('"', i + 1);
+        if (e == std::string::npos) break;
+        int id = std::atoi(j.substr(i + 1, e - i - 1).c_str());
+        size_t c = j.find(':', e);
+        if (c == std::string::npos) break;
+        out[id] = std::strtoll(j.c_str() + c + 1, nullptr, 10);
+        i = c + 1;
+    }
+    return out;
+}
+
+long long field(const std::map<int, long long>& vp, const int* t) {
+    auto it = vp.find(t[0]);
+    if (it == vp.end()) return 0;
+    const unsigned long long v = (unsigned long long)(std::uint32_t)it->second;
+    const int width = t[2] - t[1] + 1;
+    const unsigned long long mask = width >= 32 ? 0xFFFFFFFFull : ((1ull << width) - 1);
+    return (long long)((v >> t[1]) & mask);
+}
+
+std::map<std::string, long long> boss_totals(const std::map<int, long long>& vp) {
+    std::map<std::string, long long> out;
+    for (const auto& b : kBosses) {
+        std::string k1 = b.name; if (b.m1[0]) { k1 += "|"; k1 += b.m1; }
+        out[k1] = field(vp, b.kc) + 60000 * field(vp, b.pr);
+        if (b.kc2[0] > 0) {
+            std::string k2 = std::string(b.name) + "|" + b.m2;
+            out[k2] = field(vp, b.kc2) + 60000 * field(vp, b.pr2);
+        }
+    }
+    return out;
+}
+
+// ---- sampler -------------------------------------------------------------------------------------
+void sample_once() {
+    if (!active()) return;
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::uint32_t> seen;
+    for (const auto& s : rtx::reader::SampleAll()) {
+        if (s.status != 30 || !s.in_world || s.display_name.empty()) continue;   // 30 = In-game
+        seen.push_back(s.pid);
+        int xp[29];
+        const bool okxp = rtx::reader::SkillsXp(s.pid, xp);
+        bool read_kc = false;
+        std::map<int, long long> vp;
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            auto& p = g_pids[s.pid];
+            read_kc = !p.have_kc || now - p.last_kc >= std::chrono::milliseconds(kBossSampleMs);
+        }
+        if (read_kc) vp = parse_varps(rtx::reader::VarpsJson(s.pid, boss_varps_csv()));
+
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto& p = g_pids[s.pid];
+        if (p.name != s.display_name) {                   // new character on this client: start fresh
+            p = PidState(); p.name = s.display_name;
+        }
+        auto& c = g_chars[s.display_name];
+        if (okxp) {
+            if (p.have_xp) {
+                bool rose = false;
+                for (int i = 0; i < 29; ++i) if (xp[i] >= 0 && p.xp[i] >= 0 && xp[i] > p.xp[i]) rose = true;
+                if (rose) { c.xp_events += 1; c.xp_total += 1; }
+            }
+            std::memcpy(p.xp, xp, sizeof(xp)); p.have_xp = true;
+        }
+        if (read_kc && !vp.empty()) {
+            auto totals = boss_totals(vp);
+            if (p.have_kc) {
+                for (const auto& kv : totals) {
+                    auto it = p.kc.find(kv.first);
+                    if (it == p.kc.end()) continue;
+                    const long long d = kv.second - it->second;
+                    if (d > 0 && d <= 50) { c.kills[kv.first] += (int)d; c.kills_total += d; }   // a jump beyond 50 is a re-read glitch, not kills
+                }
+            }
+            p.kc = std::move(totals); p.have_kc = true; p.last_kc = now;
+        }
+    }
+    std::lock_guard<std::mutex> lk(g_mu);
+    for (auto it = g_pids.begin(); it != g_pids.end();) {
+        bool alive = false;
+        for (auto pid : seen) if (pid == it->first) alive = true;
+        it = alive ? std::next(it) : g_pids.erase(it);
+    }
+}
+
+// ---- heartbeat -----------------------------------------------------------------------------------
+// Reads {"n":"...","d":N,"dl":["Melee Cache",...],"x":N,"b":N,"k":N,"c":N} objects out of the
+// "chars" array. Each object is flat apart from the dl string list.
 void apply_response(const std::string& body) {
     size_t arr = body.find("\"chars\":[");
     if (arr == std::string::npos) return;
-    size_t end = body.find(']', arr);
-    if (end == std::string::npos) return;
     std::lock_guard<std::mutex> lk(g_mu);
-    size_t pos = arr;
+    size_t pos = arr + 9;
     while (true) {
         size_t o = body.find('{', pos);
-        if (o == std::string::npos || o > end) break;
+        if (o == std::string::npos) break;
         size_t c = body.find('}', o);
         if (c == std::string::npos) break;
         std::string obj = body.substr(o, c - o + 1);
         std::string name = json_str(obj, "n");
-        if (!name.empty()) {
-            auto& st = g_chars[name];
-            auto num = [&](const char* k) -> long long {
-                std::string pat = std::string("\"") + k + "\":";
-                size_t p = obj.find(pat);
-                if (p == std::string::npos) return -1;
-                p += pat.size();
-                long long v = 0; bool any = false;
-                while (p < obj.size() && obj[p] >= '0' && obj[p] <= '9') { v = v * 10 + (obj[p] - '0'); ++p; any = true; }
-                return any ? v : -1;
-            };
-            long long s = num("s"), d = num("d"), e = num("e"), g = num("g"), cap = num("c");
-            if (s >= 0) st.seconds = s;
-            if (e > 0) st.eligible = e;
-            if (g > 0) st.guaranteed = g;
-            st.capped = cap == 1;
-            if (d == 1) { st.pending_drops += 1; rtx::log::Launcher("loot: Rune Cache dropped for " + name); }
+        if (name.empty()) break;                  // past the chars array
+        auto& st = g_chars[name];
+        auto num = [&](const char* k) -> long long {
+            std::string pat = std::string("\"") + k + "\":";
+            size_t p = obj.find(pat);
+            if (p == std::string::npos) return -1;
+            p += pat.size();
+            long long v = 0; bool any = false;
+            while (p < obj.size() && obj[p] >= '0' && obj[p] <= '9') { v = v * 10 + (obj[p] - '0'); ++p; any = true; }
+            return any ? v : -1;
+        };
+        const long long caches = num("k"), cap = num("c");
+        if (caches >= 0) st.caches_total = caches;
+        st.capped = cap == 1;
+        size_t dl = obj.find("\"dl\":[");
+        if (dl != std::string::npos) {
+            size_t e = obj.find(']', dl);
+            size_t q = dl;
+            while (e != std::string::npos && (q = obj.find('"', q + 1)) != std::string::npos && q < e) {
+                size_t q2 = obj.find('"', q + 1);
+                if (q2 == std::string::npos || q2 > e) break;
+                st.pending_drops.push_back(obj.substr(q + 1, q2 - q - 1));
+                rtx::log::Launcher("loot: " + obj.substr(q + 1, q2 - q - 1) + " dropped for " + name);
+                q = q2;
+            }
         }
         pos = c + 1;
     }
@@ -107,10 +237,24 @@ void beat_once() {
         if (!dup) names.push_back(s.display_name);
     }
     if (names.empty()) return;
+    // Snapshot the counts to report; they are cleared only once the site has accepted them.
+    struct Rep { std::string name; int xp; std::map<std::string, int> kills; };
+    std::vector<Rep> reps;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const auto& n : names) { auto& c = g_chars[n]; reps.push_back({ n, c.xp_events, c.kills }); }
+    }
     std::string body = "{\"characters\":[";
-    for (size_t i = 0; i < names.size(); ++i) {
+    for (size_t i = 0; i < reps.size(); ++i) {
         if (i) body += ",";
-        body += "\"" + json_escape(names[i]) + "\"";
+        body += "{\"n\":\"" + json_escape(reps[i].name) + "\",\"x\":" + std::to_string(reps[i].xp) + ",\"k\":[";
+        bool first = true;
+        for (const auto& kv : reps[i].kills) {
+            if (kv.second <= 0) continue;
+            body += std::string(first ? "" : ",") + "[\"" + json_escape(kv.first) + "\"," + std::to_string(kv.second) + "]";
+            first = false;
+        }
+        body += "]}";
     }
     body += "]}";
     std::vector<http::Header> hdrs = {
@@ -120,11 +264,19 @@ void beat_once() {
         { "Authorization", auth },
     };
     auto r = http::PostJson(kUpdateHost, kHeartbeatPath, hdrs, body);
-    if (!r.ok) return;                                   // offline: nothing to credit, try next minute
+    if (!r.ok) return;                                   // offline: keep counting, try next minute
     if (r.status == 401) { link::Verify(); return; }     // revoked or unlinked: let the link module find out
     if (r.status != 200) {
         rtx::log::Launcher("loot heartbeat: status " + std::to_string(r.status) + " " + r.detail);
         return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const auto& rep : reps) {
+            auto& c = g_chars[rep.name];
+            c.xp_events -= rep.xp; if (c.xp_events < 0) c.xp_events = 0;
+            for (const auto& kv : rep.kills) { c.kills[kv.first] -= kv.second; if (c.kills[kv.first] <= 0) c.kills.erase(kv.first); }
+        }
     }
     apply_response(r.body);
 }
@@ -151,9 +303,9 @@ void SetEnabled(bool on) {
         if (f) f << (on ? 1 : 0);
     }
     if (!on) {
-        // Turning it off also drops any progress shown in game; the website keeps the credited time.
+        // Turning it off drops anything counted and not yet reported, and anything not yet announced.
         std::lock_guard<std::mutex> lk(g_mu);
-        for (auto& kv : g_chars) kv.second.pending_drops = 0;
+        for (auto& kv : g_chars) { kv.second.pending_drops.clear(); kv.second.xp_events = 0; kv.second.kills.clear(); }
     }
     rtx::log::Launcher(std::string("loot: Rune Caches ") + (on ? "enabled" : "disabled"));
 }
@@ -162,8 +314,17 @@ void Start() {
     bool expected = false;
     if (!g_started.compare_exchange_strong(expected, true)) return;
     std::thread([] {
+        guarded("loot sampler", [] {
+            std::this_thread::sleep_for(std::chrono::seconds(15));   // let the readers attach first
+            while (true) {
+                sample_once();
+                std::this_thread::sleep_for(std::chrono::milliseconds(kXpSampleMs));
+            }
+        });
+    }).detach();
+    std::thread([] {
         guarded("loot heartbeat", [] {
-            std::this_thread::sleep_for(std::chrono::seconds(20));   // let the readers attach first
+            std::this_thread::sleep_for(std::chrono::seconds(20));
             while (true) {
                 beat_once();
                 std::this_thread::sleep_for(std::chrono::seconds(kBeatSeconds));
@@ -183,12 +344,13 @@ std::string PollJson(std::uint32_t pid) {
     auto it = name.empty() ? g_chars.end() : g_chars.find(name);
     if (it != g_chars.end()) {
         auto& st = it->second;
-        bool drop = st.pending_drops > 0;
-        if (drop) st.pending_drops -= 1;
-        os << ",\"seconds\":" << st.seconds << ",\"eligible\":" << st.eligible << ",\"guaranteed\":" << st.guaranteed
-           << ",\"capped\":" << (st.capped ? "true" : "false") << ",\"drop\":" << (drop ? "true" : "false");
+        std::string drop;
+        if (!st.pending_drops.empty()) { drop = st.pending_drops.front(); st.pending_drops.pop_front(); }
+        os << ",\"xp\":" << st.xp_total << ",\"kills\":" << st.kills_total << ",\"caches\":" << st.caches_total
+           << ",\"capped\":" << (st.capped ? "true" : "false") << ",\"drop\":" << (drop.empty() ? "false" : "true")
+           << ",\"dropName\":\"" << json_escape(drop) << "\"";
     } else {
-        os << ",\"seconds\":0,\"eligible\":1200,\"guaranteed\":3600,\"capped\":false,\"drop\":false";
+        os << ",\"xp\":0,\"kills\":0,\"caches\":0,\"capped\":false,\"drop\":false,\"dropName\":\"\"";
     }
     os << ",\"unopened\":" << g_unopened << "}";
     return os.str();

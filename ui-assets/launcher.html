@@ -1896,7 +1896,7 @@
     if (st.state === 'idle') {
       html = '<div class="link-state"><span class="link-tag">Not linked</span>'
            + '<div class="link-actions"><button class="primary btn-sm" id="link-start" type="button">Link account</button></div></div>'
-           + '<div class="link-note">Rune Caches (earned in game, opened on the website) are opt-in and appear here once this PC is linked.</div>' + note;
+           + '<div class="link-note">Rune Caches (earned from XP drops and boss kills, opened on the website) are opt-in and appear here once this PC is linked.</div>' + note;
     } else if (st.state === 'starting') {
       html = '<div class="link-state"><span class="link-tag wait">Contacting runetools.io</span>'
            + '<div class="link-actions"><button class="ghost btn-sm" id="link-cancel" type="button">Cancel</button></div></div>';
@@ -1921,8 +1921,8 @@
            + '<button class="ghost btn-sm danger" id="link-unlink" type="button">Unlink this PC</button></div></div>'
            + (n > 1 ? '<div class="link-note">Not expecting ' + n + ' PCs? Manage PCs shows each one; unlink anything you do not recognise and change your password.</div>' : '')
            + '<div class="link-opt"><div class="set-text"><b>Earn Rune Caches</b>'
-           + '<span>Off by default. When on, the launcher tells runetools.io once a minute which of your characters are in game so each can earn a Rune Cache after 20 minutes of play. Caches are announced in game and opened on the website.</span></div>'
-           + '<label class="acct-cap" title="Off: nothing about your play time leaves this PC."><input type="checkbox" id="link-loot"' + (lootOn ? ' checked' : '') + '><span class="box"></span><span class="lbl" id="link-loot-lbl">' + (lootOn ? 'On' : 'Off') + '</span></label></div>'
+           + '<span>Off by default. When on, the launcher counts each character's XP drops and boss kills and tells runetools.io once a minute. Every XP drop can give a Mastery Cache and every boss kill a Melee Cache, with harder bosses giving more. Caches are announced in game and opened on the website.</span></div>'
+           + '<label class="acct-cap" title="Off: nothing about your XP drops or boss kills leaves this PC."><input type="checkbox" id="link-loot"' + (lootOn ? ' checked' : '') + '><span class="box"></span><span class="lbl" id="link-loot-lbl">' + (lootOn ? 'On' : 'Off') + '</span></label></div>'
            + note;
     } else {
       html = '<div class="link-note err">' + linkEsc(st.error || 'Linking failed.') + '</div>'
