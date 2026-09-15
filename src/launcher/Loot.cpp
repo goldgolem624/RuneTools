@@ -185,12 +185,20 @@ void sample_once() {
         if (read_kc && !vp.empty()) {
             auto totals = boss_totals(vp);
             if (p.have_kc) {
+                // One read is five seconds apart: a real kill moves one boss by a kill or two. Several bosses
+                // moving at once, or a big jump, is the kill log loading in (after login counts read as 0
+                // first), so it only resets the baseline.
+                std::vector<std::pair<std::string, long long>> rises;
                 for (const auto& kv : totals) {
                     auto it = p.kc.find(kv.first);
                     if (it == p.kc.end()) continue;
                     const long long d = kv.second - it->second;
-                    if (d > 0 && d <= 50) { c.kills[kv.first] += (int)d; c.kills_total += d; }   // a jump beyond 50 is a re-read glitch, not kills
+                    if (d > 0) rises.push_back({ kv.first, d });
                 }
+                bool resync = rises.size() > 1;
+                for (const auto& r : rises) if (r.second > 3) resync = true;
+                if (resync) rtx::log::Launcher("loot: kill log re-read for " + s.display_name + " (" + std::to_string(rises.size()) + " bosses moved), not counted");
+                else for (const auto& r : rises) { c.kills[r.first] += (int)r.second; c.kills_total += r.second; }
             }
             p.kc = std::move(totals); p.have_kc = true; p.last_kc = now;
         }
