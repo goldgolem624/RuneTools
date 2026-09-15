@@ -22,7 +22,7 @@
   }
   // Rune Caches: the launcher's heartbeat thread learns about drops from runetools.io; each client
   // window asks once every few seconds whether its own character earned one and announces it.
-  function lootTick() {
+  function lootTick(quiet) {
     try {
       const b = bridge();
       if (!b || !b.lootPoll || !myPid()) return;
@@ -30,13 +30,27 @@
       if (!st || !st.enabled || !st.drop) return;   // opt-in in Settings; off means nothing is announced
       // the site sends "Folk Cache", "3 Mastery Caches (Attack 99)" or "1 Mastery Cache from your milestone bank"
       const raw = st.dropName || 'Rune Cache';
-      let title = raw + ' obtained', sub = '';
+      let name = raw, count = 1, sub = '';
       let m = /^(\d+) (.+?) from your milestone bank$/.exec(raw);
-      if (m) { title = m[1] + ' ' + m[2] + ' obtained'; sub = 'Released from your milestone bank'; }
-      else if ((m = /^(\d+) (.+?) \((.+)\)$/.exec(raw))) { title = m[1] + ' ' + m[2] + ' obtained'; sub = 'Milestone: ' + m[3]; }
+      if (m) { count = +m[1]; name = m[2]; sub = 'Released from your milestone bank'; }
+      else if ((m = /^(\d+) (.+?) \((.+)\)$/.exec(raw))) { count = +m[1]; name = m[2]; sub = 'Milestone: ' + m[3]; }
+      name = name.replace(/s$/, '');
       const foot = 'runetools.io/loot' + (st.unopened > 0 ? '  ·  ' + st.unopened + ' to open' : '');
-      uiNotify(title + ' ' + sub + ' ' + foot, { sticky: true, title, sub, foot });
-      try { if (b.playSound) b.playSound('alert1'); } catch (e) {}
+      // repeats of the same kind of drop fold into one card with a running count in its title
+      const key = name + '|' + sub;
+      const open = lootTick.cards && lootTick.cards[key];
+      if (open && !open.closing && open.el.parentNode) {
+        open.lootCount += count;
+        const t = open.el.querySelector('.toast-t'), f = open.el.querySelector('.toast-f');
+        if (t) t.textContent = open.lootCount + ' ' + name + 's obtained';
+        if (f) f.textContent = foot;
+      } else {
+        const title = count > 1 ? count + ' ' + name + 's obtained' : name + ' obtained';
+        const rec = uiNotify(key + ' ' + Date.now(), { sticky: true, title, sub, foot });
+        if (rec) { rec.lootCount = count; (lootTick.cards = lootTick.cards || {})[key] = rec; }
+      }
+      if (!quiet) { try { if (b.playSound) b.playSound('alert1'); } catch (e) {} }
+      setTimeout(() => lootTick(true), 0);   // drain the rest of this beat's drops into the same cards, one sound
     } catch (e) {}
   }
 
@@ -262,7 +276,7 @@
     setInterval(function () { try { if (typeof sndTick === 'function') sndTick(); } catch (e) {} }, 250);   // Sounds transport (no-op unless that tab is active)
     setInterval(function () { try { if (typeof mnuTick === 'function') mnuTick(); } catch (e) {} }, 300);   // Right-click menu inspector (no-op unless that tab is active)
     setInterval(knotTick, 250);       // celtic-knot arrow overlay: tab-independent so it tracks the panel anywhere
-    setInterval(lootTick, 5000);      // Rune Caches: announce a cache earned by this character (linked launchers only)
+    setInterval(() => lootTick(false), 5000);      // Rune Caches: announce a cache earned by this character (linked launchers only)
     if (DUNG_ENABLED) {
       setInterval(dungSceneTick, 600);  // Dungeoneering ghost / sliding-puzzle in-scene highlight
       setInterval(dungLodeTimerTick, 100);  // Dungeoneering crystal-room ms click countdown (centre text)
