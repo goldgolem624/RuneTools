@@ -28,6 +28,7 @@ namespace {
 
 constexpr wchar_t kHeartbeatPath[] = L"/api/client/loot/heartbeat";
 constexpr wchar_t kLeavePath[] = L"/api/client/loot/leave";
+constexpr wchar_t kEnterPath[] = L"/api/client/loot/enter";
 constexpr int kBeatSeconds = 60;
 constexpr int kXpSampleMs = 500;      // XP drops arrive at most every game tick (600 ms)
 constexpr int kBossSampleMs = 5000;   // kill counts change once per kill; five seconds is plenty
@@ -75,9 +76,9 @@ std::filesystem::path enabled_path() {
 
 bool active() { return Enabled() && !link::AuthHeader().empty(); }
 
-// Tells the site these characters left the game world, so their session ends at once instead of
-// waiting for the heartbeats to go quiet.
-void post_leave(const std::vector<std::string>& names) {
+// Tells the site characters entered or left the game world, so the page and the session follow at once
+// instead of waiting for the heartbeats to start or go quiet.
+void post_names(const wchar_t* path, const char* what, const std::vector<std::string>& names) {
     if (names.empty() || !Enabled()) return;
     std::string auth = link::AuthHeader();
     if (auth.empty()) return;
@@ -90,9 +91,11 @@ void post_leave(const std::vector<std::string>& names) {
         { "X-RTX-Version", running_version() },
         { "Authorization", auth },
     };
-    auto r = http::PostJson(kUpdateHost, kLeavePath, hdrs, body);
-    if (r.ok && r.status == 200) rtx::log::Launcher("loot: left the game world (" + std::to_string(names.size()) + ")");
+    auto r = http::PostJson(kUpdateHost, path, hdrs, body);
+    if (r.ok && r.status == 200) rtx::log::Launcher(std::string("loot: ") + what + " the game world (" + std::to_string(names.size()) + ")");
 }
+void post_leave(const std::vector<std::string>& names) { post_names(kLeavePath, "left", names); }
+void post_enter(const std::vector<std::string>& names) { post_names(kEnterPath, "entered", names); }
 
 // ---- boss kill counts -------------------------------------------------------------------------
 std::string boss_varps_csv() {
@@ -192,15 +195,16 @@ void sample_once() {
             p.kc = std::move(totals); p.have_kc = true; p.last_kc = now;
         }
     }
-    std::vector<std::string> left;
+    std::vector<std::string> left, entered;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        for (const auto& n : in_world) g_in_world[n] = now;
+        for (const auto& n : in_world) { if (!g_in_world.count(n)) entered.push_back(n); g_in_world[n] = now; }
         for (auto it = g_in_world.begin(); it != g_in_world.end();) {
             if (now - it->second >= std::chrono::milliseconds(kLeaveAfterMs)) { left.push_back(it->first); it = g_in_world.erase(it); }
             else ++it;
         }
     }
+    if (!entered.empty()) std::thread([entered] { guarded("loot enter", [&] { post_enter(entered); }); }).detach();
     if (!left.empty()) std::thread([left] { guarded("loot leave", [&] { post_leave(left); }); }).detach();
     std::lock_guard<std::mutex> lk(g_mu);
     for (auto it = g_pids.begin(); it != g_pids.end();) {
