@@ -479,6 +479,14 @@ JSValueRef LootEnabled(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, 
     return JSValueMakeBoolean(ctx, loot::Enabled());
 }
 
+// In-game Rune Cache alerts (Settings). lootAlerts() reads, lootAlerts(message, sound) sets; returns
+// {"message":bool,"sound":bool}.
+JSValueRef LootAlerts(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 2) loot::SetAlerts(JSValueToBoolean(ctx, argv[0]), JSValueToBoolean(ctx, argv[1]));
+    std::string out = std::string("{\"message\":") + (loot::AlertMessage() ? "true" : "false") + ",\"sound\":" + (loot::AlertSound() ? "true" : "false") + "}";
+    return utf8_to_js(ctx, out);
+}
+
 JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
     auto procs = process::ScanRsClients();
@@ -5210,6 +5218,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "linkVerify",        LinkVerify);
     install_fn(ctx, ns, "lootPoll",          LootPoll);
     install_fn(ctx, ns, "lootEnabled",       LootEnabled);
+    install_fn(ctx, ns, "lootAlerts",        LootAlerts);
     install_fn(ctx, ns, "scanProcesses",     ScanProcesses);
     install_fn(ctx, ns, "gameSnapshots",     GameSnapshots);
     install_fn(ctx, ns, "uiAsset",           UiAsset);

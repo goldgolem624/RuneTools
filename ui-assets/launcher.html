@@ -913,6 +913,7 @@
   .link-note { color: var(--text-dim); font-size: 11.5px; line-height: 1.45; }
   .link-note.err { color: var(--err); }
   .link-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .link-opt.link-sub { padding-left: 16px; border-top-style: dashed; }
   .link-opt { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0 2px; margin-top: 4px; border-top: 1px solid var(--border); }
   @keyframes gp-flash { 0%, 100% { box-shadow: none; } 20% { box-shadow: inset 0 0 0 1px var(--brass), 0 0 18px -4px rgba(var(--brass-rgb), 0.7); } }
   .set-row.flash { animation: gp-flash 1.8s var(--ease) 1; }
@@ -1888,8 +1889,9 @@
   function linkRender(st) {
     const body = $('link-body');
     if (!body) return;
-    let lootOn = false;
+    let lootOn = false, alerts = { message: true, sound: true };
     try { lootOn = !!(bridge().lootEnabled && bridge().lootEnabled()); } catch (e) {}
+    try { if (bridge().lootAlerts) alerts = JSON.parse(bridge().lootAlerts()) || alerts; } catch (e) {}
     if (!st) { body.innerHTML = '<div class="link-state"><span class="link-tag">Unavailable</span></div>'; return; }
     const note = st.note ? '<div class="link-note">' + linkEsc(st.note) + '</div>' : '';
     let html = '';
@@ -1923,6 +1925,12 @@
            + '<div class="link-opt"><div class="set-text"><b>Earn Rune Caches</b>'
            + '<span>Off by default. When on, the launcher reports which characters are in game with their XP drops and boss kills to runetools.io once a minute. Time in game (AFK included) earns Folk Caches, every XP drop can give a Mastery Cache and every boss kill a combat cache for the style in rotation, with harder bosses giving more. Caches are announced in game and opened on the website.</span></div>'
            + '<label class="acct-cap" title="Off: nothing about your XP drops or boss kills leaves this PC."><input type="checkbox" id="link-loot"' + (lootOn ? ' checked' : '') + '><span class="box"></span><span class="lbl" id="link-loot-lbl">' + (lootOn ? 'On' : 'Off') + '</span></label></div>'
+           + (lootOn
+              ? '<div class="link-opt link-sub"><div class="set-text"><b>In-game message</b><span>A card in the game window when a cache drops.</span></div>'
+                + '<label class="acct-cap"><input type="checkbox" id="link-loot-msg"' + (alerts.message ? ' checked' : '') + '><span class="box"></span><span class="lbl">' + (alerts.message ? 'On' : 'Off') + '</span></label></div>'
+                + '<div class="link-opt link-sub"><div class="set-text"><b>In-game sound</b><span>A chime when a cache drops.</span></div>'
+                + '<label class="acct-cap"><input type="checkbox" id="link-loot-snd"' + (alerts.sound ? ' checked' : '') + '><span class="box"></span><span class="lbl">' + (alerts.sound ? 'On' : 'Off') + '</span></label></div>'
+              : '')
            + note;
     } else {
       html = '<div class="link-note err">' + linkEsc(st.error || 'Linking failed.') + '</div>'
@@ -1945,13 +1953,26 @@
       try { v = !!bridge().lootEnabled(loot.checked); } catch (e) {}
       loot.checked = v;
       if ($('link-loot-lbl')) $('link-loot-lbl').textContent = v ? 'On' : 'Off';
+      linkLast = ''; linkTick();   // show or hide the alert options
     });
+    const setAlerts = () => {
+      const m = $('link-loot-msg'), s = $('link-loot-snd');
+      if (!m || !s) return;
+      let cur = { message: m.checked, sound: s.checked };
+      try { cur = JSON.parse(bridge().lootAlerts(m.checked, s.checked)) || cur; } catch (e) {}
+      m.checked = !!cur.message; s.checked = !!cur.sound;
+      m.parentNode.querySelector('.lbl').textContent = cur.message ? 'On' : 'Off';
+      s.parentNode.querySelector('.lbl').textContent = cur.sound ? 'On' : 'Off';
+    };
+    ['link-loot-msg', 'link-loot-snd'].forEach(id => { const el = $(id); if (el) el.addEventListener('change', setAlerts); });
   }
   function linkTick() {
     const st = linkCall('linkStatus');
     let lootOn = false;
     try { lootOn = !!(bridge().lootEnabled && bridge().lootEnabled()); } catch (e) {}
-    const key = JSON.stringify(st) + (lootOn ? '|loot' : '');
+    let alertsKey = '';
+    try { alertsKey = bridge().lootAlerts ? bridge().lootAlerts() : ''; } catch (e) {}
+    const key = JSON.stringify(st) + (lootOn ? '|loot' : '') + alertsKey;
     if (key !== linkLast) { linkLast = key; linkRender(st); }
     else if (st && st.state === 'pending' && $('link-ttl')) $('link-ttl').textContent = linkTtl(st.expiresAt);
   }

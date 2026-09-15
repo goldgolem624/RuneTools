@@ -32,6 +32,13 @@
       if (!st || !st.linked || !st.enabled) { lootTick.offUntil = now + 15000; return; }
       lootTick.offUntil = 0;
       if (!st.drop) return;   // opt-in in Settings; off means nothing is announced
+      // Settings > Earn Rune Caches: the message and the sound can each be switched off (the drop is still consumed)
+      const showMsg = st.alertMessage !== false, playIt = st.alertSound !== false;
+      if (!showMsg) {
+        if (!quiet && playIt) { try { if (b.playSound) b.playSound('alert1'); } catch (e) {} }
+        setTimeout(() => lootTick(true), 0);
+        return;
+      }
       // the site sends "Folk Cache", "3 Mastery Caches (Attack 99)" or "1 Mastery Cache from your milestone bank"
       const raw = st.dropName || 'Rune Cache';
       let name = raw, count = 1, sub = '';
@@ -53,7 +60,7 @@
         const rec = uiNotify(key + ' ' + Date.now(), { sticky: true, title, sub, foot });
         if (rec) { rec.lootCount = count; (lootTick.cards = lootTick.cards || {})[key] = rec; }
       }
-      if (!quiet) { try { if (b.playSound) b.playSound('alert1'); } catch (e) {} }
+      if (!quiet && playIt) { try { if (b.playSound) b.playSound('alert1'); } catch (e) {} }
       setTimeout(() => lootTick(true), 0);   // drain the rest of this beat's drops into the same cards, one sound
     } catch (e) {}
   }
