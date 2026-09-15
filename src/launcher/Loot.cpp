@@ -183,7 +183,16 @@ void sample_once() {
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::uint32_t> seen;
     std::vector<std::string> in_world;
-    for (const auto& s : rtx::reader::SampleAll()) {
+    // names whose client is at the lobby, logging in or logging out right now: they left for certain
+    std::vector<std::string> out_now;
+    std::vector<std::string> running;
+    const auto snaps = rtx::reader::SampleAll();
+    for (const auto& s : snaps) {
+        if (s.display_name.empty()) continue;
+        running.push_back(s.display_name);
+        if (s.status == 10 || s.status == 20 || s.status == 40) out_now.push_back(s.display_name);   // logging in, lobby, logging out
+    }
+    for (const auto& s : snaps) {
         if (s.status != 30 || !s.in_world || s.display_name.empty()) continue;   // 30 = In-game
         seen.push_back(s.pid);
         in_world.push_back(s.display_name);
@@ -244,7 +253,12 @@ void sample_once() {
         std::lock_guard<std::mutex> lk(g_mu);
         for (const auto& n : in_world) { if (!g_in_world.count(n)) entered.push_back(n); g_in_world[n] = now; }
         for (auto it = g_in_world.begin(); it != g_in_world.end();) {
-            if (now - it->second >= std::chrono::milliseconds(kLeaveAfterMs)) { left.push_back(it->first); it = g_in_world.erase(it); }
+            const bool here = std::find(in_world.begin(), in_world.end(), it->first) != in_world.end();
+            // gone at once: the lobby / a login screen, or its client closed; otherwise (a world hop, a
+            // loading screen) only after kLeaveAfterMs
+            const bool certain = !here && (std::find(out_now.begin(), out_now.end(), it->first) != out_now.end()
+                                           || std::find(running.begin(), running.end(), it->first) == running.end());
+            if (certain || now - it->second >= std::chrono::milliseconds(kLeaveAfterMs)) { left.push_back(it->first); it = g_in_world.erase(it); }
             else ++it;
         }
     }
