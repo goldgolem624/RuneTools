@@ -32,6 +32,8 @@ constexpr int kBossSampleMs = 5000;   // kill counts change once per kill; five 
 
 // What one character has done since the last successful heartbeat, plus running totals for the UI.
 struct CharState {
+    int xp_now[29] = {};                      // latest skill XP read (milestones and level-ups are judged on the site)
+    bool have_xp_now = false;
     int xp_events = 0;                        // XP drops not yet reported
     std::map<std::string, int> kills;         // boss key -> kills not yet reported
     long long xp_total = 0, kills_total = 0, caches_total = 0;
@@ -150,6 +152,7 @@ void sample_once() {
                 if (rose) { c.xp_events += 1; c.xp_total += 1; }
             }
             std::memcpy(p.xp, xp, sizeof(xp)); p.have_xp = true;
+            std::memcpy(c.xp_now, xp, sizeof(xp)); c.have_xp_now = true;
         }
         if (read_kc && !vp.empty()) {
             auto totals = boss_totals(vp);
@@ -238,16 +241,27 @@ void beat_once() {
     }
     if (names.empty()) return;
     // Snapshot the counts to report; they are cleared only once the site has accepted them.
-    struct Rep { std::string name; int xp; std::map<std::string, int> kills; };
+    struct Rep { std::string name; int xp; std::map<std::string, int> kills; bool have_sx; int sx[29]; };
     std::vector<Rep> reps;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        for (const auto& n : names) { auto& c = g_chars[n]; reps.push_back({ n, c.xp_events, c.kills }); }
+        for (const auto& n : names) {
+            auto& c = g_chars[n];
+            Rep r{ n, c.xp_events, c.kills, c.have_xp_now, {} };
+            std::memcpy(r.sx, c.xp_now, sizeof(r.sx));
+            reps.push_back(std::move(r));
+        }
     }
     std::string body = "{\"characters\":[";
     for (size_t i = 0; i < reps.size(); ++i) {
         if (i) body += ",";
-        body += "{\"n\":\"" + json_escape(reps[i].name) + "\",\"x\":" + std::to_string(reps[i].xp) + ",\"k\":[";
+        body += "{\"n\":\"" + json_escape(reps[i].name) + "\",\"x\":" + std::to_string(reps[i].xp);
+        if (reps[i].have_sx) {
+            body += ",\"sx\":[";
+            for (int s = 0; s < 29; ++s) { if (s) body += ","; body += std::to_string(reps[i].sx[s]); }
+            body += "]";
+        }
+        body += ",\"k\":[";
         bool first = true;
         for (const auto& kv : reps[i].kills) {
             if (kv.second <= 0) continue;
