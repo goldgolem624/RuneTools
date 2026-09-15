@@ -317,6 +317,14 @@ void beat_once() {
         { "X-RTX-Version", running_version() },
         { "Authorization", auth },
     };
+    {
+        std::string line = "loot beat:";
+        for (const auto& rep : reps) {
+            int kills = 0; for (const auto& kv : rep.kills) kills += kv.second;
+            line += " " + rep.name + " xp_drops=" + std::to_string(rep.xp) + " kills=" + std::to_string(kills);
+        }
+        rtx::log::Launcher(line);
+    }
     auto r = http::PostJson(kUpdateHost, kHeartbeatPath, hdrs, body);
     if (!r.ok) return;                                   // offline: keep counting, try next minute
     if (r.status == 401) { link::Verify(); return; }     // revoked or unlinked: let the link module find out
@@ -324,6 +332,9 @@ void beat_once() {
         rtx::log::Launcher("loot heartbeat: status " + std::to_string(r.status) + " " + r.detail);
         return;
     }
+    // too soon after another beat from this PC (a second launcher, a restart): nothing was credited, so
+    // keep the counts for the next beat instead of clearing them
+    if (r.body.find("\"slowDown\":true") != std::string::npos) return;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         for (const auto& rep : reps) {
