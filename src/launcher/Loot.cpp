@@ -206,8 +206,9 @@ void apply_response(const std::string& body) {
         st.capped = cap == 1;
         size_t dl = obj.find("\"dl\":[");
         if (dl != std::string::npos) {
-            size_t e = obj.find(']', dl);
-            size_t q = dl;
+            size_t lb = obj.find('[', dl);                // scan the names from the list's opening bracket,
+            size_t e = obj.find(']', lb);                 // not from the "dl" key's own quotes
+            size_t q = lb;
             while (e != std::string::npos && (q = obj.find('"', q + 1)) != std::string::npos && q < e) {
                 size_t q2 = obj.find('"', q + 1);
                 if (q2 == std::string::npos || q2 > e) break;
