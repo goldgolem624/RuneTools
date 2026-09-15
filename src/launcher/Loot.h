@@ -19,9 +19,15 @@ void Shutdown();
 bool Enabled();
 void SetEnabled(bool on);
 
+// In-game alerts for a cache earned: the message card and its sound, each on by default and remembered
+// on this PC (%USERPROFILE%\RuneToolsX\rune_caches_alerts.txt). Caches are still earned with both off.
+bool AlertMessage();
+bool AlertSound();
+void SetAlerts(bool message, bool sound);
+
 // Per-client poll from the in-game UI. Returns JSON:
 //   {"linked":bool,"enabled":bool,"name":"...","xp":n,"kills":n,"caches":n,"unopened":n,
-//    "capped":bool,"drop":bool,"dropName":"Mastery Cache"}
+//    "capped":bool,"drop":bool,"dropName":"Mastery Cache","alertMessage":bool,"alertSound":bool}
 // xp / kills / caches are this character's totals since the launcher started; "drop" is true exactly
 // once per cache earned by that character (cleared by this call), with the cache's name.
 std::string PollJson(std::uint32_t pid);

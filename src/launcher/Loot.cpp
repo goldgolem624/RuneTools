@@ -32,7 +32,8 @@ constexpr wchar_t kEnterPath[] = L"/api/client/loot/enter";
 constexpr wchar_t kKillPath[] = L"/api/client/loot/kill";
 constexpr int kBeatSeconds = 60;
 constexpr int kXpSampleMs = 500;      // XP drops arrive at most every game tick (600 ms)
-constexpr int kBossSampleMs = 1000;   // kill counts: read every second so a kill is announced right away
+constexpr int kBossSampleMs = 1000;
+constexpr int kLeagueVarp = 12314;      // active league: non-zero while the character plays a league   // kill counts: read every second so a kill is announced right away
 
 // What one character has done since the last successful heartbeat, plus running totals for the UI.
 struct CharState {
@@ -42,6 +43,7 @@ struct CharState {
     std::map<std::string, int> kills;         // boss key -> kills not yet reported
     long long xp_total = 0, kills_total = 0, caches_total = 0;
     bool capped = false;
+    int league = -1;                          // active league varp (-1 not read yet); leagues characters earn Leagues caches
     std::deque<std::string> pending_drops;    // cache names earned and not yet announced in game
 };
 
@@ -75,6 +77,16 @@ std::filesystem::path enabled_path() {
     return L"runetoolsx-rune-caches.txt";
 }
 
+std::filesystem::path alerts_path() { return enabled_path().parent_path() / L"rune_caches_alerts.txt"; }
+bool g_alert_msg = true, g_alert_sound = true, g_alerts_loaded = false;   // guarded by g_en_mu
+void load_alerts_locked() {
+    if (g_alerts_loaded) return;
+    g_alerts_loaded = true;
+    std::ifstream f(alerts_path());
+    int m = 1, s = 1;
+    if (f && (f >> m >> s)) { g_alert_msg = (m != 0); g_alert_sound = (s != 0); }
+}
+
 bool active() { return Enabled() && !link::AuthHeader().empty(); }
 
 // Tells the site characters entered or left the game world, so the page and the session follow at once
@@ -104,8 +116,10 @@ void apply_response(const std::string& body);
 void post_kill(const std::string& name, std::map<std::string, int> kills) {
     std::string auth = link::AuthHeader();
     bool ok = false;
+    int league = -1;
+    { std::lock_guard<std::mutex> lk(g_mu); league = g_chars[name].league; }
     if (!auth.empty() && Enabled()) {
-        std::string body = "{\"n\":\"" + json_escape(name) + "\",\"k\":[";
+        std::string body = "{\"n\":\"" + json_escape(name) + "\"" + (league >= 0 ? ",\"lg\":" + std::to_string(league) : std::string()) + ",\"k\":[";
         bool first = true;
         for (const auto& kv : kills) { body += std::string(first ? "" : ",") + "[\"" + json_escape(kv.first) + "\"," + std::to_string(kv.second) + "]"; first = false; }
         body += "]}";
@@ -135,6 +149,7 @@ const std::vector<int>& boss_varp_ids() {
     if (!ids.empty()) return ids;
     auto add = [&](const int* t) { if (t[0] > 0) { for (int v : ids) if (v == t[0]) return; ids.push_back(t[0]); } };
     for (const auto& b : kBosses) { add(b.kc); add(b.pr); add(b.kc2); add(b.pr2); }
+    ids.push_back(kLeagueVarp);
     return ids;
 }
 
@@ -213,6 +228,8 @@ void sample_once() {
             std::memcpy(c.xp_now, xp, sizeof(xp)); c.have_xp_now = true;
         }
         if (read_kc && !vp.empty()) {
+            auto lg = vp.find(kLeagueVarp);
+            if (lg != vp.end()) c.league = (int)lg->second;
             auto totals = boss_totals(vp);
             if (p.have_kc) {
                 // Reads are a second apart: a real kill moves one boss by a kill or two. Several bosses
@@ -329,13 +346,13 @@ void beat_once() {
     }
     if (names.empty()) return;
     // Snapshot the counts to report; they are cleared only once the site has accepted them.
-    struct Rep { std::string name; int xp; std::map<std::string, int> kills; bool have_sx; int sx[29]; };
+    struct Rep { std::string name; int xp; std::map<std::string, int> kills; bool have_sx; int sx[29]; int league; };
     std::vector<Rep> reps;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         for (const auto& n : names) {
             auto& c = g_chars[n];
-            Rep r{ n, c.xp_events, c.kills, c.have_xp_now, {} };
+            Rep r{ n, c.xp_events, c.kills, c.have_xp_now, {}, c.league };
             std::memcpy(r.sx, c.xp_now, sizeof(r.sx));
             reps.push_back(std::move(r));
         }
@@ -344,6 +361,7 @@ void beat_once() {
     for (size_t i = 0; i < reps.size(); ++i) {
         if (i) body += ",";
         body += "{\"n\":\"" + json_escape(reps[i].name) + "\",\"x\":" + std::to_string(reps[i].xp);
+        if (reps[i].league >= 0) body += ",\"lg\":" + std::to_string(reps[i].league);
         if (reps[i].have_sx) {
             body += ",\"sx\":[";
             for (int s = 0; s < 29; ++s) { if (s) body += ","; body += std::to_string(reps[i].sx[s]); }
@@ -423,6 +441,16 @@ void SetEnabled(bool on) {
     rtx::log::Launcher(std::string("loot: Rune Caches ") + (on ? "enabled" : "disabled"));
 }
 
+bool AlertMessage() { std::lock_guard<std::mutex> lk(g_en_mu); load_alerts_locked(); return g_alert_msg; }
+bool AlertSound() { std::lock_guard<std::mutex> lk(g_en_mu); load_alerts_locked(); return g_alert_sound; }
+void SetAlerts(bool message, bool sound) {
+    std::lock_guard<std::mutex> lk(g_en_mu);
+    g_alerts_loaded = true;
+    g_alert_msg = message; g_alert_sound = sound;
+    std::ofstream f(alerts_path(), std::ios::trunc);
+    if (f) f << (message ? 1 : 0) << ' ' << (sound ? 1 : 0);
+}
+
 void Start() {
     bool expected = false;
     if (!g_started.compare_exchange_strong(expected, true)) return;
@@ -460,6 +488,7 @@ std::string PollJson(std::uint32_t pid) {
     std::string name = rtx::reader::AccountKey(pid);
     bool linked = !link::Token().empty();
     bool enabled = Enabled();
+    const bool alert_msg = AlertMessage(), alert_sound = AlertSound();
     std::lock_guard<std::mutex> lk(g_mu);
     std::ostringstream os;
     os << "{\"linked\":" << (linked ? "true" : "false") << ",\"enabled\":" << (enabled ? "true" : "false")
@@ -475,7 +504,8 @@ std::string PollJson(std::uint32_t pid) {
     } else {
         os << ",\"xp\":0,\"kills\":0,\"caches\":0,\"capped\":false,\"drop\":false,\"dropName\":\"\"";
     }
-    os << ",\"unopened\":" << g_unopened << "}";
+    os << ",\"unopened\":" << g_unopened << ",\"alertMessage\":" << (alert_msg ? "true" : "false")
+       << ",\"alertSound\":" << (alert_sound ? "true" : "false") << "}";
     return os.str();
 }
 
