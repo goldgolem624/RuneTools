@@ -276,7 +276,7 @@
     setInterval(function () { try { if (typeof sndTick === 'function') sndTick(); } catch (e) {} }, 250);   // Sounds transport (no-op unless that tab is active)
     setInterval(function () { try { if (typeof mnuTick === 'function') mnuTick(); } catch (e) {} }, 300);   // Right-click menu inspector (no-op unless that tab is active)
     setInterval(knotTick, 250);       // celtic-knot arrow overlay: tab-independent so it tracks the panel anywhere
-    setInterval(() => lootTick(false), 5000);      // Rune Caches: announce a cache earned by this character (linked launchers only)
+    setInterval(() => lootTick(false), 1000);      // Rune Caches: announce a cache earned by this character (linked launchers only)
     if (DUNG_ENABLED) {
       setInterval(dungSceneTick, 600);  // Dungeoneering ghost / sliding-puzzle in-scene highlight
       setInterval(dungLodeTimerTick, 100);  // Dungeoneering crystal-room ms click countdown (centre text)

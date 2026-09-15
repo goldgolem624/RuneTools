@@ -29,9 +29,10 @@ namespace {
 constexpr wchar_t kHeartbeatPath[] = L"/api/client/loot/heartbeat";
 constexpr wchar_t kLeavePath[] = L"/api/client/loot/leave";
 constexpr wchar_t kEnterPath[] = L"/api/client/loot/enter";
+constexpr wchar_t kKillPath[] = L"/api/client/loot/kill";
 constexpr int kBeatSeconds = 60;
 constexpr int kXpSampleMs = 500;      // XP drops arrive at most every game tick (600 ms)
-constexpr int kBossSampleMs = 5000;   // kill counts change once per kill; five seconds is plenty
+constexpr int kBossSampleMs = 1000;   // kill counts: read every second so a kill is announced right away
 
 // What one character has done since the last successful heartbeat, plus running totals for the UI.
 struct CharState {
@@ -95,6 +96,36 @@ void post_names(const wchar_t* path, const char* what, const std::vector<std::st
     if (r.ok && r.status == 200) rtx::log::Launcher(std::string("loot: ") + what + " the game world (" + std::to_string(names.size()) + ")");
 }
 void post_leave(const std::vector<std::string>& names) { post_names(kLeavePath, "left", names); }
+void apply_response(const std::string& body);
+
+// Tells the site the moment a character's kill counts rise; the caches come back in the answer and are
+// announced in game at once. The kills are held aside while in flight: an accepted event consumes them,
+// anything else puts them back for the next heartbeat, so a kill is never counted twice or lost.
+void post_kill(const std::string& name, std::map<std::string, int> kills) {
+    std::string auth = link::AuthHeader();
+    bool ok = false;
+    if (!auth.empty() && Enabled()) {
+        std::string body = "{\"n\":\"" + json_escape(name) + "\",\"k\":[";
+        bool first = true;
+        for (const auto& kv : kills) { body += std::string(first ? "" : ",") + "[\"" + json_escape(kv.first) + "\"," + std::to_string(kv.second) + "]"; first = false; }
+        body += "]}";
+        std::vector<http::Header> hdrs = {
+            { "Content-Type", "application/json" },
+            { "User-Agent", "RuneToolsX/" + running_version() },
+            { "X-RTX-Version", running_version() },
+            { "Authorization", auth },
+        };
+        auto r = http::PostJson(kUpdateHost, kKillPath, hdrs, body);
+        ok = r.ok && r.status == 200;
+        if (ok) apply_response(r.body);
+        else if (r.ok && r.status == 401) link::Verify();
+    }
+    if (!ok) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto& c = g_chars[name];
+        for (const auto& kv : kills) c.kills[kv.first] += kv.second;
+    }
+}
 void post_enter(const std::vector<std::string>& names) { post_names(kEnterPath, "entered", names); }
 
 // ---- boss kill counts -------------------------------------------------------------------------
@@ -185,7 +216,7 @@ void sample_once() {
         if (read_kc && !vp.empty()) {
             auto totals = boss_totals(vp);
             if (p.have_kc) {
-                // One read is five seconds apart: a real kill moves one boss by a kill or two. Several bosses
+                // Reads are a second apart: a real kill moves one boss by a kill or two. Several bosses
                 // moving at once, or a big jump, is the kill log loading in (after login counts read as 0
                 // first), so it only resets the baseline.
                 std::vector<std::pair<std::string, long long>> rises;
@@ -198,7 +229,12 @@ void sample_once() {
                 bool resync = rises.size() > 1;
                 for (const auto& r : rises) if (r.second > 3) resync = true;
                 if (resync) rtx::log::Launcher("loot: kill log re-read for " + s.display_name + " (" + std::to_string(rises.size()) + " bosses moved), not counted");
-                else for (const auto& r : rises) { c.kills[r.first] += (int)r.second; c.kills_total += r.second; }
+                else if (!rises.empty()) {
+                    std::map<std::string, int> ev;
+                    for (const auto& r : rises) { ev[r.first] += (int)r.second; c.kills_total += r.second; }
+                    const std::string who = s.display_name;
+                    std::thread([who, ev] { guarded("loot kill", [&] { post_kill(who, ev); }); }).detach();
+                }
             }
             p.kc = std::move(totals); p.have_kc = true; p.last_kc = now;
         }
