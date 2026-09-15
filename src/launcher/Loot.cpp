@@ -9,6 +9,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <chrono>
@@ -26,6 +27,7 @@ namespace rtx::launcher::loot {
 namespace {
 
 constexpr wchar_t kHeartbeatPath[] = L"/api/client/loot/heartbeat";
+constexpr wchar_t kLeavePath[] = L"/api/client/loot/leave";
 constexpr int kBeatSeconds = 60;
 constexpr int kXpSampleMs = 500;      // XP drops arrive at most every game tick (600 ms)
 constexpr int kBossSampleMs = 5000;   // kill counts change once per kill; five seconds is plenty
@@ -53,6 +55,8 @@ struct PidState {
 
 std::mutex g_mu;
 std::map<std::string, CharState> g_chars;     // by display name
+std::map<std::string, std::chrono::steady_clock::time_point> g_in_world;   // name -> last sampled in the game world
+constexpr int kLeaveAfterMs = 10000;         // gone this long (not a loading screen blip) = left
 std::map<std::uint32_t, PidState> g_pids;
 long long g_unopened = 0;
 std::atomic<bool> g_started{ false };
@@ -70,6 +74,25 @@ std::filesystem::path enabled_path() {
 }
 
 bool active() { return Enabled() && !link::AuthHeader().empty(); }
+
+// Tells the site these characters left the game world, so their session ends at once instead of
+// waiting for the heartbeats to go quiet.
+void post_leave(const std::vector<std::string>& names) {
+    if (names.empty() || !Enabled()) return;
+    std::string auth = link::AuthHeader();
+    if (auth.empty()) return;
+    std::string body = "{\"characters\":[";
+    for (size_t i = 0; i < names.size(); ++i) { if (i) body += ","; body += "\"" + json_escape(names[i]) + "\""; }
+    body += "]}";
+    std::vector<http::Header> hdrs = {
+        { "Content-Type", "application/json" },
+        { "User-Agent", "RuneToolsX/" + running_version() },
+        { "X-RTX-Version", running_version() },
+        { "Authorization", auth },
+    };
+    auto r = http::PostJson(kUpdateHost, kLeavePath, hdrs, body);
+    if (r.ok && r.status == 200) rtx::log::Launcher("loot: left the game world (" + std::to_string(names.size()) + ")");
+}
 
 // ---- boss kill counts -------------------------------------------------------------------------
 std::string boss_varps_csv() {
@@ -125,9 +148,11 @@ void sample_once() {
     if (!active()) return;
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::uint32_t> seen;
+    std::vector<std::string> in_world;
     for (const auto& s : rtx::reader::SampleAll()) {
         if (s.status != 30 || !s.in_world || s.display_name.empty()) continue;   // 30 = In-game
         seen.push_back(s.pid);
+        in_world.push_back(s.display_name);
         int xp[29];
         const bool okxp = rtx::reader::SkillsXp(s.pid, xp);
         bool read_kc = false;
@@ -167,6 +192,16 @@ void sample_once() {
             p.kc = std::move(totals); p.have_kc = true; p.last_kc = now;
         }
     }
+    std::vector<std::string> left;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const auto& n : in_world) g_in_world[n] = now;
+        for (auto it = g_in_world.begin(); it != g_in_world.end();) {
+            if (now - it->second >= std::chrono::milliseconds(kLeaveAfterMs)) { left.push_back(it->first); it = g_in_world.erase(it); }
+            else ++it;
+        }
+    }
+    if (!left.empty()) std::thread([left] { guarded("loot leave", [&] { post_leave(left); }); }).detach();
     std::lock_guard<std::mutex> lk(g_mu);
     for (auto it = g_pids.begin(); it != g_pids.end();) {
         bool alive = false;
@@ -346,6 +381,16 @@ void Start() {
             }
         });
     }).detach();
+}
+
+void Shutdown() {
+    std::vector<std::string> names;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        for (const auto& kv : g_in_world) names.push_back(kv.first);
+        g_in_world.clear();
+    }
+    post_leave(names);
 }
 
 std::string PollJson(std::uint32_t pid) {

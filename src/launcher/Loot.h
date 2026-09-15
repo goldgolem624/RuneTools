@@ -10,6 +10,9 @@
 namespace rtx::launcher::loot {
 
 void Start();   // starts the sampler and heartbeat threads once (cheap no-ops while not linked or not opted in)
+// The launcher is closing: tells the site the characters still in the game world have left.
+// Also sent automatically whenever a character goes to the lobby or its client closes.
+void Shutdown();
 
 // Opt-in, default OFF and remembered on this PC (%USERPROFILE%\RuneToolsX\rune_caches.txt). No
 // heartbeat leaves this PC while it is off, so nothing is reported and nothing can drop.

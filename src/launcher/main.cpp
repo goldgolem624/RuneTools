@@ -6,6 +6,7 @@
 #include "Http.h"
 #include "IconCache.h"
 #include "LuaHost.h"
+#include "Loot.h"
 #include "MonitorFix.h"
 #include "Overlay.h"
 #include "Process.h"
@@ -635,6 +636,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     try {
         LauncherApp app;
         app.Run();
+        rtx::launcher::loot::Shutdown();
         rtx::log::BeginShutdown();
         rtx::overlay::Stop();
         rtx::launcher::dock::Shutdown();
