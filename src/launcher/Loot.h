@@ -25,6 +25,11 @@ bool AlertMessage();
 bool AlertSound();
 void SetAlerts(bool message, bool sound);
 
+// The play screen's "Rune Caches" notice (shown while the feature is off) was closed with its X; remembered on
+// this PC (%USERPROFILE%\RuneToolsX\rune_caches_notice.txt).
+bool NoticeDismissed();
+void DismissNotice();
+
 // Per-client poll from the in-game UI. Returns JSON:
 //   {"linked":bool,"enabled":bool,"name":"...","xp":n,"kills":n,"caches":n,"unopened":n,
 //    "capped":bool,"drop":bool,"dropName":"Mastery Cache","alertMessage":bool,"alertSound":bool}

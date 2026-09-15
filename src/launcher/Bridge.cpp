@@ -487,6 +487,12 @@ JSValueRef LootAlerts(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, c
     return utf8_to_js(ctx, out);
 }
 
+// Play screen notice about Rune Caches. lootNotice() reads whether it was dismissed; lootNotice(true) dismisses it.
+JSValueRef LootNotice(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1 && JSValueToBoolean(ctx, argv[0])) loot::DismissNotice();
+    return JSValueMakeBoolean(ctx, loot::NoticeDismissed());
+}
+
 JSValueRef ScanProcesses(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
     auto procs = process::ScanRsClients();
@@ -5219,6 +5225,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "lootPoll",          LootPoll);
     install_fn(ctx, ns, "lootEnabled",       LootEnabled);
     install_fn(ctx, ns, "lootAlerts",        LootAlerts);
+    install_fn(ctx, ns, "lootNotice",        LootNotice);
     install_fn(ctx, ns, "scanProcesses",     ScanProcesses);
     install_fn(ctx, ns, "gameSnapshots",     GameSnapshots);
     install_fn(ctx, ns, "uiAsset",           UiAsset);

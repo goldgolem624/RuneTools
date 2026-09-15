@@ -451,6 +451,15 @@ void SetAlerts(bool message, bool sound) {
     if (f) f << (message ? 1 : 0) << ' ' << (sound ? 1 : 0);
 }
 
+bool NoticeDismissed() {
+    std::error_code ec;
+    return std::filesystem::exists(enabled_path().parent_path() / L"rune_caches_notice.txt", ec);
+}
+void DismissNotice() {
+    std::ofstream f(enabled_path().parent_path() / L"rune_caches_notice.txt", std::ios::trunc);
+    if (f) f << 1;
+}
+
 void Start() {
     bool expected = false;
     if (!g_started.compare_exchange_strong(expected, true)) return;

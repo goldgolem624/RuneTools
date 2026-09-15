@@ -809,6 +809,24 @@
   .acct-opt.off { color: var(--text-mute); cursor: default; }
   .acct-opt.off:hover { background: transparent; }
   .acct-opt .tag { font: 600 9px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: rgb(var(--aurora-rgb)); }
+  /* Rune Caches notice (play screen, while the feature is off) */
+  .rc-notice { position: relative; padding: 14px 16px 14px; border-color: rgba(226,185,90,0.45); background: radial-gradient(120% 90% at 0% 0%, rgba(226,185,90,0.12), transparent 60%), var(--card, #111620); }
+  .rc-notice[hidden] { display: none !important; }
+  .rc-notice .rc-x { position: absolute; top: 6px; right: 8px; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--text-mute); font-size: 18px; line-height: 1; cursor: pointer; }
+  .rc-notice .rc-x:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+  .rc-notice .rc-row { display: flex; gap: 12px; align-items: flex-start; padding-right: 18px; }
+  .rc-notice .rc-chest { position: relative; flex: none; width: 34px; height: 26px; margin-top: 3px; border-radius: 5px 5px 6px 6px; background: linear-gradient(180deg, #4a4356, #2a2634); border: 1px solid #6d6480; box-shadow: 0 0 14px -4px rgba(226,185,90,0.6); }
+  .rc-notice .rc-chest::before { content: ""; position: absolute; left: -2px; right: -2px; top: -1px; height: 10px; border-radius: 6px 6px 2px 2px; background: linear-gradient(180deg, #5b5369, #35303f); border: 1px solid #7a7090; }
+  .rc-notice .rc-chest i { position: absolute; left: 50%; top: 5px; width: 8px; height: 9px; margin-left: -4px; border-radius: 2px; background: linear-gradient(180deg, #f0d27a, #9c7a2e); }
+  .rc-notice .rc-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .rc-notice .rc-text b { font-size: 13px; color: var(--text); }
+  .rc-notice .rc-text span { font-size: 11.5px; color: var(--text-mute); line-height: 1.5; }
+  .rc-notice .rc-link { color: #f0d27a; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; white-space: nowrap; }
+  .rc-notice .rc-link:hover { color: #ffe7a3; }
+  .rc-notice .rc-go { margin-top: 10px; width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(226,185,90,0.55); background: rgba(226,185,90,0.10); color: #f0d27a; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .rc-notice .rc-go:hover { background: rgba(226,185,90,0.2); color: #ffe7a3; }
+  #link-row.rc-flash, .link-opt.rc-flash { animation: rcFlash 1.6s ease-out 1; border-radius: 10px; }
+  @keyframes rcFlash { 0%, 30% { box-shadow: 0 0 0 2px rgba(226,185,90,0.9), 0 0 24px -4px rgba(226,185,90,0.8); } 100% { box-shadow: 0 0 0 0 transparent; } }
   .play-hint { font-size: 11px; color: var(--text-mute); line-height: 1.5; margin: 8px 0 0; }
   .play-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
   .play-row .acct-cap { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-dim); cursor: pointer; white-space: nowrap; margin-left: auto; }
@@ -984,6 +1002,17 @@
 
       <!-- Right: play. -->
       <aside class="side">
+        <div class="card play-card rc-notice" id="rc-notice" hidden>
+          <button type="button" class="rc-x" id="rc-notice-x" aria-label="Hide this notice" title="Hide">&times;</button>
+          <div class="rc-row">
+            <span class="rc-chest" aria-hidden="true"><i></i></span>
+            <div class="rc-text">
+              <b>Rune Caches</b>
+              <span>Earn collectible loot boxes from time in game, XP and boss kills. Open them at <a href="#" class="rc-link" id="rc-notice-link">runetools.io/loot</a>.</span>
+            </div>
+          </div>
+          <button type="button" class="rc-go" id="rc-notice-go">Turn on in Settings</button>
+        </div>
         <div class="card play-card gfx-card" id="gfx-card">
           <label class="field-lbl" for="gfx-select">Renderer</label>
           <div class="select-wrap" id="gfx-wrap">
@@ -1984,7 +2013,29 @@
     linkTimer = setInterval(linkTick, 1000);
   }
 
-  const settingsSet = (on) => { $('settingsOv').classList.toggle('on', !!on); if (on) gpRefresh(); linkPollSet(!!on); };
+  const settingsSet = (on) => { $('settingsOv').classList.toggle('on', !!on); if (on) gpRefresh(); linkPollSet(!!on); if (!on) rcNoticeRefresh(); };
+  // Rune Caches notice on the play screen: shown while the feature is off and until its X is pressed.
+  function rcNoticeRefresh() {
+    const card = $('rc-notice'); if (!card) return;
+    let on = false, dismissed = true;
+    try { on = !!(bridge().lootEnabled && bridge().lootEnabled()); } catch (e) {}
+    try { dismissed = bridge().lootNotice ? !!bridge().lootNotice() : true; } catch (e) {}
+    card.hidden = on || dismissed;
+  }
+  $('rc-notice-x').addEventListener('click', () => { try { if (bridge().lootNotice) bridge().lootNotice(true); } catch (e) {} $('rc-notice').hidden = true; });
+  $('rc-notice-link').addEventListener('click', (e) => { e.preventDefault(); if (bridge().openExternal) bridge().openExternal('https://runetools.io/loot'); });
+  $('rc-notice-go').addEventListener('click', () => {
+    settingsSet(true);
+    setTimeout(() => {
+      // the Earn Rune Caches option itself once linked; before that, the account row where linking starts
+      const opt = $('link-loot') && $('link-loot').closest('.link-opt');
+      const row = opt || $('link-row'); if (!row) return;
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      row.classList.remove('rc-flash'); void row.offsetWidth; row.classList.add('rc-flash');
+    }, 60);
+  });
+  rcNoticeRefresh();
+  setInterval(rcNoticeRefresh, 3000);   // the bridge may attach after this script, and the setting can change elsewhere
   $('tb-settings').addEventListener('click', () => settingsSet(true));
   $('settingsClose').addEventListener('click', () => settingsSet(false));
   $('settingsOv').addEventListener('click', (e) => { if (e.target === $('settingsOv')) settingsSet(false); });
