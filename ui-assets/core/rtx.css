@@ -485,6 +485,9 @@
     font-size: 12.5px; line-height: 1.45; color: var(--text);
     overflow-wrap: break-word;
   }
+  .toast-msg .toast-t { font-weight: 700; font-size: 13.5px; line-height: 1.3; }
+  .toast-msg .toast-s { margin-top: 2px; color: var(--text); opacity: 0.85; }
+  .toast-msg .toast-f { margin-top: 6px; font: 600 10.5px/1.3 var(--font-mono); letter-spacing: 0.04em; color: var(--text-mute); }
   .toast-n {
     flex: none; align-self: flex-start; margin-top: 1px;
     font: 700 9.5px/16px var(--font-mono); color: var(--brass);

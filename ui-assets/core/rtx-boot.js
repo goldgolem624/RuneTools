@@ -28,8 +28,14 @@
       if (!b || !b.lootPoll || !myPid()) return;
       const st = JSON.parse(b.lootPoll(myPid()) || '{}');
       if (!st || !st.enabled || !st.drop) return;   // opt-in in Settings; off means nothing is announced
-      const more = st.unopened > 1 ? ' ' + st.unopened + ' caches waiting in total.' : '';
-      uiNotify((st.dropName || 'Rune Cache') + ' obtained! Open it at runetools.io/loot.' + more, { sticky: true });
+      // the site sends "Folk Cache", "3 Mastery Caches (Attack 99)" or "1 Mastery Cache from your milestone bank"
+      const raw = st.dropName || 'Rune Cache';
+      let title = raw + ' obtained', sub = '';
+      let m = /^(\d+) (.+?) from your milestone bank$/.exec(raw);
+      if (m) { title = m[1] + ' ' + m[2] + ' obtained'; sub = 'Released from your milestone bank'; }
+      else if ((m = /^(\d+) (.+?) \((.+)\)$/.exec(raw))) { title = m[1] + ' ' + m[2] + ' obtained'; sub = 'Milestone: ' + m[3]; }
+      const foot = 'runetools.io/loot' + (st.unopened > 0 ? '  ·  ' + st.unopened + ' to open' : '');
+      uiNotify(title + ' ' + sub + ' ' + foot, { sticky: true, title, sub, foot });
       try { if (b.playSound) b.playSound('alert1'); } catch (e) {}
     } catch (e) {}
   }

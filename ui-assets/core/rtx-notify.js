@@ -159,7 +159,13 @@
     const ico = document.createElement('span');
     ico.className = 'toast-ico'; ico.innerHTML = toastIcon(sticky);
     const body = document.createElement('div');
-    body.className = 'toast-msg'; body.textContent = msg;
+    body.className = 'toast-msg';
+    if (opts.title) {
+      // structured card: a bold title, an optional detail line and a muted footer; msg stays the dedupe key
+      const add = (cls, text) => { if (!text) return; const d = document.createElement('div'); d.className = cls; d.textContent = String(text).slice(0, 160); body.appendChild(d); };
+      add('toast-t', opts.title); add('toast-s', opts.sub); add('toast-f', opts.foot);
+      if (opts.accent) el.style.borderLeftColor = opts.accent;
+    } else body.textContent = msg;
     const cnt = document.createElement('span');
     cnt.className = 'toast-n'; cnt.style.display = 'none';
     el.appendChild(ico); el.appendChild(body); el.appendChild(cnt);
