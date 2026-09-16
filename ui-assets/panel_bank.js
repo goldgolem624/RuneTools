@@ -608,6 +608,43 @@
   document.addEventListener('scroll', e => { if (!bankInsideMenu(e)) bankMenuClose(); }, true);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') bankMenuClose(); });
 
+  // ---- export: the bank as JSON or CSV on the clipboard, for spreadsheets or an AI assistant ----
+  // Exports what the panel is showing (the search box and the selected tab apply), in the chosen sort order.
+  function bankExportRows() {
+    return bankFilter().map(it => {
+      const v = bankValue(it), stack = it[2] | 0;
+      return { slot: it[0] | 0, id: it[1] | 0, name: bankRowName(it[1], it[3]), quantity: stack,
+               tab: bankSlotTab(it[0]) | 0,
+               gePrice: v.ge != null ? v.ge : null, geTotal: v.ge != null ? v.geTotal : null,
+               highAlch: v.ha != null ? v.ha : null, highAlchTotal: v.ha != null ? v.haTotal : null };
+    });
+  }
+  function bankExportText(kind) {
+    const rows = bankExportRows();
+    if (kind === 'csv') {
+      const esc = v => v === null || v === undefined ? '' : (/[",\r\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
+      const cols = ['slot', 'id', 'name', 'quantity', 'tab', 'gePrice', 'geTotal', 'highAlch', 'highAlchTotal'];
+      return [cols.join(',')].concat(rows.map(r => cols.map(c => esc(r[c])).join(','))).join('\r\n');
+    }
+    const tot = rows.reduce((a, r) => { a.ge += r.geTotal || 0; a.ha += r.highAlchTotal || 0; return a; }, { ge: 0, ha: 0 });
+    return JSON.stringify({
+      source: 'RuneToolsX bank export', exportedAt: new Date().toISOString(),
+      priceBasis: BANK_BASES[bankBasis] || bankBasis, items: rows.length,
+      totals: { geValue: tot.ge, highAlchValue: tot.ha }, bank: rows,
+    }, null, 2);
+  }
+  function bankExport(kind) {
+    const rows = bankExportRows();
+    if (!rows.length) { try { uiNotify('Nothing to export: open your bank in game first', { ttl: 5000 }); } catch (e) {} return; }
+    const text = bankExportText(kind);
+    let ok = false;
+    try { ok = !!(bridge().copyClipboard && bridge().copyClipboard(text)); } catch (e) {}
+    try {
+      uiNotify(ok ? rows.length + ' bank items copied as ' + kind.toUpperCase() + ': paste them anywhere'
+                  : 'Could not copy: the clipboard was not available', { ttl: 5000 });
+    } catch (e) {}
+  }
+
   function renderBank() {
     const c = $('content');
     let wrap = document.getElementById('bankWrap');
@@ -658,7 +695,18 @@
       ovBtn.classList.toggle('on', bankOverlayOn);
       ovBtn.addEventListener('click', () => { bankOverlaySet(!bankOverlayOn); ovBtn.classList.toggle('on', bankOverlayOn); });
       ovSeg.appendChild(ovBtn);
-      tools.appendChild(sortBtn); tools.appendChild(basisBtn); tools.appendChild(ovSeg); tools.appendChild(totals);
+      const expBtn = document.createElement('button'); expBtn.type = 'button'; expBtn.className = 'al-sndsel bank-pick'; expBtn.id = 'bankExportSel';
+      expBtn.title = 'Copy the bank list to the clipboard, as shown (search and tab apply)';
+      const expLab = document.createElement('span'); expLab.className = 'lab'; expLab.textContent = 'Export';
+      const expCur = document.createElement('span'); expCur.className = 'cur'; expCur.textContent = 'Copy';
+      const expCar = document.createElement('span'); expCar.className = 'cv'; expCar.textContent = '▾';
+      expBtn.appendChild(expLab); expBtn.appendChild(expCur); expBtn.appendChild(expCar);
+      expBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (document.getElementById('bankMenu')) { bankMenuClose(); return; }
+        bankMenuOpen(expBtn, [{ v: 'json', label: 'Copy as JSON' }, { v: 'csv', label: 'Copy as CSV' }], '', v => bankExport(v));
+      });
+      tools.appendChild(sortBtn); tools.appendChild(basisBtn); tools.appendChild(expBtn); tools.appendChild(ovSeg); tools.appendChild(totals);
       const ovWhy = document.createElement('span'); ovWhy.id = 'bankOvWhy'; ovWhy.className = 'bank-ovwhy'; tools.appendChild(ovWhy);
 
       const grid = document.createElement('div'); grid.id = 'bankGrid'; grid.className = 'bank-grid';
