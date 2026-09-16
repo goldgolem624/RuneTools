@@ -27,13 +27,16 @@
     clearTimeout(_wmSaveT); _wmSaveT = 0;
     wmSaveNow();
   });
+  // 'waiting' while the character is unknown (the launcher answers with an empty string), so the caller
+  // keeps trying instead of starting from defaults and saving over the layout this character had.
   async function wmLayoutRestore() {
-    let saved = null;
+    let saved = null, raw = '';
     try {
-      const s = await bridge().layoutLoad(myPid());
-      saved = s ? JSON.parse(s) : null;
+      raw = await bridge().layoutLoad(myPid());
+      saved = raw ? JSON.parse(raw) : null;
     } catch (e) {}
-    if (!saved || saved.v !== 1) return false;   // first run, or account not resolved yet
+    if (raw === '' || raw === null || raw === undefined) return 'waiting';
+    if (!saved || saved.v !== 1) return false;   // this character has no saved layout yet
     if (uiCfg().restore === false) saved.wins = {};
     if (saved.bar) {
       if (typeof saved.bar.x === 'number') wm.barX = saved.bar.x;

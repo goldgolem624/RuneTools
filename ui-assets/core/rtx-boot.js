@@ -268,7 +268,10 @@
       if (_prefsInitP) { try { await _prefsInitP; } catch (e) {} }
       let ok = false;
       try { ok = await wmLayoutRestore(); } catch (e) {}
-      if (ok) { try { xpSyncWindow(true); metroSyncWindow(true); } catch (e) {} return; }
+      if (ok === true) { try { xpSyncWindow(true); metroSyncWindow(true); } catch (e) {} return; }
+      // 'waiting' = the character is not known yet (login screen). Keep waiting: giving up here would open
+      // windows at their defaults and then save that over the layout this character already had.
+      if (ok === 'waiting' && !wm.dirty) { setTimeout(() => bootLayout(tries), 2000); return; }
       if (tries > 0 && !wm.dirty) { setTimeout(() => bootLayout(tries - 1), 2000); return; }
       wm.restored = true;                       // enable saves from here on
       if (!wm.wins.size && !wm.dirty) {

@@ -3826,7 +3826,11 @@ JSValueRef GoalsSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef LayoutLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
-    std::string s = alerts_read_file(account_store_path(pid, L"layout"));
+    // "" means the character is not resolved yet (login screen): the page keeps waiting instead of
+    // treating it as a first run and saving a fresh layout over the saved one.
+    auto p = account_store_path(pid, L"layout");
+    if (p.empty()) return utf8_to_js(ctx, std::string());
+    std::string s = alerts_read_file(p);
     return utf8_to_js(ctx, s.empty() ? std::string("{}") : s);
 }
 

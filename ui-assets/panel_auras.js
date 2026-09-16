@@ -228,6 +228,7 @@
     }
   }
   function auraWinRemember(uid) {
+    if (typeof wm === 'object' && wm && !wm.restored) return;   // see auraRepaintAll
     const a = auraGet(uid); if (!a) return;
     const w = (typeof wmWinOf === 'function') ? wmWinOf(auraTabId(uid)) : null;
     if (!w || !(w.w > 0 && w.h > 0)) return;
@@ -297,6 +298,7 @@
     if (now - _auraGeomAt > 3000) {
       _auraGeomAt = now;
       for (const a of auraRoots()) {
+        if (typeof wm === 'object' && wm && !wm.restored) break;   // boot positions are not the user's
         const w = (typeof wmWinOf === 'function') ? wmWinOf(auraTabId(a.uid)) : null;
         if (w && w.w > 0 && w.h > 0) {
           const g = a.winGeom;
