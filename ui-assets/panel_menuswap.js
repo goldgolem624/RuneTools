@@ -615,7 +615,7 @@
             + (r.scope ? '<span style="opacity:' + (r.solid ? '.55' : '.45') + '"> &middot; '
                        + htmlEsc(r.scope) + '</span>' : '')
             + '<div style="opacity:.6;font-size:11px">Menu order: '
-            + htmlEsc(r.verbs.join('  →  ')) + '</div>'
+            + htmlEsc(r.verbs.map(mnuPlain).join('  →  ')) + '</div>'
             + '</div>'
             + (mnuConfirmForget === r.key
                 ? '<span style="opacity:.7;font-size:11px;margin-right:6px">Delete it?</span>'
@@ -654,7 +654,7 @@
                            : twin ? '<span style="opacity:.5"> &middot; another '
                                   + htmlEsc(r.name) + ' has its own rule</span>' : '')
               + '<div style="opacity:.5;font-size:11px">'
-              + htmlEsc(r.ents.filter(e => mnuMovable(e, r.ents)).map(e => e.verb).join('  →  '))
+              + htmlEsc(r.ents.filter(e => mnuMovable(e, r.ents)).map(e => mnuPlain(e.verb)).join('  →  '))
               + '</div></div>'
               + (km ? '<button class="pet-chip" data-sel="' + htmlEsc(r.key) + '">Reorder</button>'
                     : '<button class="pet-chip" style="opacity:.3">Reorder</button>')
@@ -672,7 +672,7 @@
       if (!mnuMovable(ents[i], ents)) {
         h += '<div class="pet-row" style="opacity:.45" title="' + htmlEsc(diag) + '">'
            + '<div style="flex:0 0 24px;font-variant-numeric:tabular-nums">' + (i + 1) + '</div>'
-           + '<div style="flex:1">' + htmlEsc(ents[i].verb || '') + '</div>'
+           + '<div style="flex:1">' + htmlEsc(mnuPlain(ents[i].verb) || '') + '</div>'
            + '<div style="font-size:11px">' + (function () {
                const tg = mnuPlain(ents[i].target), tl = mnuTargets(ents);
                return (tg && !mnuVarKeys(ents, tg).length)
@@ -687,7 +687,7 @@
       const p = mnuSplit(key);
       h += '<div class="pet-row" title="' + htmlEsc(diag) + '">'
          + '<div style="flex:0 0 24px;opacity:.4;font-variant-numeric:tabular-nums">' + (i + 1) + '</div>'
-         + '<div style="flex:1"><b>' + htmlEsc(p.verb || '(none)') + '</b>'
+         + '<div style="flex:1"><b>' + htmlEsc(mnuPlain(p.verb) || '(none)') + '</b>'
          + (p.target ? '<span style="opacity:.45"> &middot; ' + htmlEsc(p.target) + '</span>' : '')
          + '</div>'
          + '<button class="pet-chip" data-up="' + htmlEsc(key) + '"'
