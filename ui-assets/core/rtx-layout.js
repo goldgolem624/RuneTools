@@ -1,4 +1,22 @@
   let _wmSaveT = 0;
+  // The in-game view is measured in CSS px, and its size changes whenever the device scale does: the display's
+  // DPI, the game's own scaling, or the UI scale setting. Clamping alone can only push a panel toward the top
+  // left, and the clamped value is then saved, so every scale change walked the windows further into the corner.
+  // Track the viewport and move the windows with it instead.
+  const vpW = () => window.innerWidth || 1280;
+  const vpH = () => window.innerHeight || 720;
+  let _vpW = vpW(), _vpH = vpH();
+  function wmRescale(kx, ky) {
+    if (!isFinite(kx) || !isFinite(ky) || kx <= 0 || ky <= 0) return;
+    if (Math.abs(kx - 1) < 0.002 && Math.abs(ky - 1) < 0.002) return;
+    for (const w of wm.wins.values()) {
+      w.x = Math.round(w.x * kx); w.y = Math.round(w.y * ky);
+      w.w = Math.round(w.w * kx); w.h = Math.round(w.h * ky);
+    }
+    if (typeof wm.barX === 'number') wm.barX = Math.round(wm.barX * kx);
+    if (typeof toastCfg.dx === 'number') toastCfg.dx = Math.round(toastCfg.dx * kx);
+    if (typeof toastCfg.dy === 'number') toastCfg.dy = Math.round(toastCfg.dy * ky);
+  }
   function wmSnapshot() {
     const wins = {};
     for (const [wid, w] of wm.wins) {
@@ -6,7 +24,8 @@
                     w: Math.round(w.w), h: Math.round(w.h), z: w.z, min: w.min ? 1 : 0,
                     roll: w.rolled ? 1 : 0, lock: w.locked ? 1 : 0 };
     }
-    return { v: 1, bar: { x: wm.barX, y: wm.barY, yf: wm.barYf, pill: wm.barPill ? 1 : 0 },
+    return { v: 1, vp: { w: Math.round(vpW()), h: Math.round(vpH()) },
+             bar: { x: wm.barX, y: wm.barY, yf: wm.barYf, pill: wm.barPill ? 1 : 0 },
              toast: { anchor: toastCfg.anchor, dx: toastCfg.dx | 0, dy: toastCfg.dy | 0, w: toastCfg.w | 0, h: toastCfg.h | 0 },
              wins };
   }
@@ -53,6 +72,17 @@
       if (typeof t.h === 'number' && t.h >= 0) toastCfg.h = t.h | 0;
       applyToastPos();
     }
+    // a layout captured at a different device scale was saved in that viewport's CSS px
+    let kx = 1, ky = 1;
+    if (saved.vp && saved.vp.w > 0 && saved.vp.h > 0) {
+      kx = vpW() / saved.vp.w; ky = vpH() / saved.vp.h;
+      if (!isFinite(kx) || kx <= 0 || kx > 8) kx = 1;
+      if (!isFinite(ky) || ky <= 0 || ky > 8) ky = 1;
+      if (Math.abs(kx - 1) < 0.002) kx = 1;
+      if (Math.abs(ky - 1) < 0.002) ky = 1;
+      if (kx !== 1 && typeof wm.barX === 'number') wm.barX = Math.round(wm.barX * kx);
+    }
+    _vpW = vpW(); _vpH = vpH();
     const ws = saved.wins || {};
     const order = Object.keys(ws).sort((a, b) => (ws[a].z || 0) - (ws[b].z || 0));
     for (const wid of order) {
@@ -63,7 +93,9 @@
         .filter(id => avail.some(x => x.id === id) && !wmWinOf(id));
       if (!ids.length) continue;              // nothing left to show -> no empty window
       const geom = (st.w > 0 && st.h > 0)
-        ? { x: st.x | 0, y: st.y | 0, w: st.w | 0, h: st.h | 0, min: !!st.min, lock: !!st.lock }
+        ? { x: Math.round((st.x | 0) * kx), y: Math.round((st.y | 0) * ky),
+            w: Math.round((st.w | 0) * kx), h: Math.round((st.h | 0) * ky),
+            min: !!st.min, lock: !!st.lock }
         : { min: !!st.min, lock: !!st.lock, nogeom: 1 };
       // HUD panels never share a window: a layout saved while one was docked with normal tabs
       // comes back as separate windows, the saved geometry going to the tab that was shown.
@@ -118,6 +150,9 @@
   }
 
   window.addEventListener('resize', () => {
+    const vw = vpW(), vh = vpH();
+    wmRescale(vw / _vpW, vh / _vpH);
+    _vpW = vw; _vpH = vh;
     for (const w of wm.wins.values()) { wmClamp(w); wmApplyGeom(w); }
     positionMenubar();
     applyToastPos();     // anchored, so it re-derives from the new client size

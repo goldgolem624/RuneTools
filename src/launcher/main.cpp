@@ -7,6 +7,7 @@
 #include "IconCache.h"
 #include "LuaHost.h"
 #include "Loot.h"
+#include "Music.h"
 #include "MonitorFix.h"
 #include "Overlay.h"
 #include "Process.h"
@@ -103,6 +104,10 @@ static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             }
             return 0;
         }
+        break;
+    case WM_SIZE:
+        // minimised: no music into an empty desktop. It comes back with the window.
+        rtx::launcher::music::Minimised(w == SIZE_MINIMIZED);
         break;
     case WM_GETMINMAXINFO: {
         LRESULT r0 = CallWindowProcW(g_launcherPrevProc, h, m, w, l);

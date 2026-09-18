@@ -385,6 +385,15 @@ await rtx.plugin.state.bosses();
 //    reads). mode2/kills2 are the boss's second tracked mode (hard/duo/group)
 //    where one exists; total = kills + kills2.
 
+await rtx.plugin.state.encounter();
+// -> { struct, name, mode, modeValue, health, healthMax }  or null when not in an instance
+//    The boss instance you are in right now, already decoded. mode is the same label the
+//    game shows: 'Normal', 'Hard', 'Challenge', 'Story', 'Solo', 'Duo', 'Trio',
+//    'Enrage 250%', '4 player', 'Barrier 60%'. It is null for a mode the game itself
+//    leaves blank. health/healthMax are live and do move with enrage, so healthMax is the
+//    figure to compare against, not any fixed per-boss number. struct/modeValue are the raw
+//    varp 10946 / 10950 values if you need to special-case an encounter yourself.
+
 await rtx.plugin.state.hideyHoles();
 // -> [ { name, tier:'Easy'|'Medium'|'Hard'|'Master', location, build,
 //        fillItems:[ ... ], state, built, filled }, ... ]
@@ -818,7 +827,7 @@ if not v then rtx.warn("player: " .. tostring(err)) end
 - On failure it returns `nil, reason` and sets `rtx.lastError`. Reasons are the same strings the
   JavaScript SDK rejects with: `scope not granted: <scope>`, `rate limited`, `unknown method`.
 - A few methods are computed asynchronously by the host (`state.quests`, `state.quest`,
-  `state.pets`, `state.bosses`, `state.dailies`, `state.mysteries`, `state.varbits`, `state.varcs`,
+  `state.pets`, `state.bosses`, `state.encounter`, `state.dailies`, `state.mysteries`, `state.varbits`, `state.varcs`,
   `state.achievements`, `ui.settings`, `overlay.highlightOption`, `overlay.highlightItem`). The first
   call with a given argument list returns `nil, "pending"`; the value arrives on a later call, then
   stays fresh as you keep calling. Read them in your `tick` handler and treat `nil` as "not yet".

@@ -94,6 +94,10 @@ function state.itemExtra(containerId, slot) end
 function state.pets() end
 ---@return table|nil  # asynchronous
 function state.bosses() end
+--- The instance you are in right now, or nil when you are not in one.
+--- { struct, name, mode, modeValue, health, healthMax }
+---@return table|nil  # asynchronous
+function state.encounter() end
 ---@return table|nil  # asynchronous
 function state.hideyHoles() end
 ---@param sinceSeq? integer

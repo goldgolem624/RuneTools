@@ -918,6 +918,9 @@ double GameSpaceFactor(void* gameHwnd) {
     return (double)gd / (double)md;
 }
 
+static std::mutex g_gsf_mu;
+static std::unordered_map<std::uint32_t, double> g_gsf_last;   // pid -> last module-derived factor
+
 double GameSpaceFactor(void* gameHwnd, std::uint32_t pid) {
     HWND game = reinterpret_cast<HWND>(gameHwnd);
     if (pid && game && IsWindow(game)) {
@@ -932,18 +935,29 @@ double GameSpaceFactor(void* gameHwnd, std::uint32_t pid) {
             const double fx = (double)cw / (double)rc.right;
             const double fy = (double)ch / (double)rc.bottom;
             if (fx > 0.2 && fx < 5.0 && fy > 0.2 && fy < 5.0 && std::fabs(fx - fy) < 0.02) {
-                const double f = (fx + fy) * 0.5;
-                return (std::fabs(f - 1.0) < 0.005) ? 1.0 : f;   // snap rounding jitter to exact 1.0
+                double f = (fx + fy) * 0.5;
+                if (std::fabs(f - 1.0) < 0.005) f = 1.0;         // snap rounding jitter to exact 1.0
+                { std::lock_guard<std::mutex> lk(g_gsf_mu); g_gsf_last[pid] = f; }
+                return f;
             }
         }
+        // the module is quiet (starting up, or between heartbeats): hold the last value we measured
+        std::lock_guard<std::mutex> lk(g_gsf_mu);
+        auto it = g_gsf_last.find(pid);
+        if (it != g_gsf_last.end()) return it->second;
     }
     return GameSpaceFactor(gameHwnd);
+}
+
+void ForgetGameSpaceFactor(std::uint32_t pid) {
+    std::lock_guard<std::mutex> lk(g_gsf_mu);
+    g_gsf_last.erase(pid);
 }
 
 void PublishGameClientSize(std::uint32_t pid, int w, int h) {
     std::lock_guard<std::mutex> lk(g_gamesize_mu);
     if (w > 0 && h > 0) g_game_sizes[pid] = { w, h };
-    else                g_game_sizes.erase(pid);
+    else              { g_game_sizes.erase(pid); ForgetGameSpaceFactor(pid); }
 }
 
 void Init(App* app, std::string client_html_path, bool uiDevWatch) {
@@ -969,7 +983,9 @@ void EnsureClient(std::uint32_t pid) {
     double scale = 1.0;
     if (HWND game = FindGameWindow(pid)) {
         unsigned dpi = DpiForWindow(game);
-        if (dpi) scale = dpi / 96.0;
+        double gsf = GameSpaceFactor(game, pid);
+        if (gsf <= 0.0) gsf = 1.0;
+        if (dpi) scale = (dpi / 96.0) * gsf;   // the same formula SyncUiDpi settles on
     }
     gameui::Prepare(pid, BuildClientHtml(), scale);
     if (g_uiWatch) { g_uiMtime = ui_dir_mtime(); g_uiPending = 0; }   // this load IS the current disk state

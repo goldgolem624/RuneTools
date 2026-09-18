@@ -34,6 +34,7 @@
 #include "LuaHost.h"
 #include "Link.h"
 #include "Loot.h"
+#include "Music.h"
 
 #include <Ultralight/Ultralight.h>
 #include <JavaScriptCore/JavaScript.h>
@@ -2479,6 +2480,55 @@ void account_capture_set(bool on) {
     std::error_code ec; std::filesystem::create_directories(runetools_dir(), ec);
     std::ofstream f(account_capture_cfg(), std::ios::trunc);
     if (f) f << (on ? 1 : 0);
+}
+
+// Launcher look and its music, kept as one small JSON blob in %USERPROFILE%\RuneToolsX\launcher_theme.json:
+//   {"theme":"default"|"halloween","music":0|1,"volume":0..100}
+// uiTheme() reads it; uiTheme(json) writes it and returns what was stored.
+std::filesystem::path ui_theme_cfg() { return runetools_dir() / L"launcher_theme.json"; }
+std::mutex g_theme_mu;
+std::string g_theme_json, g_theme_loaded;
+
+std::string ui_theme_get() {
+    std::lock_guard<std::mutex> lk(g_theme_mu);
+    if (g_theme_loaded.empty()) {
+        g_theme_loaded = "1";
+        std::ifstream f(ui_theme_cfg(), std::ios::binary);
+        if (f) { std::ostringstream ss; ss << f.rdbuf(); g_theme_json = ss.str(); }
+    }
+    return g_theme_json.empty() ? std::string("{}") : g_theme_json;
+}
+
+void ui_theme_set(const std::string& json) {
+    std::lock_guard<std::mutex> lk(g_theme_mu);
+    g_theme_loaded = "1";
+    g_theme_json = json;
+    std::error_code ec; std::filesystem::create_directories(runetools_dir(), ec);
+    std::ofstream f(ui_theme_cfg(), std::ios::binary | std::ios::trunc);
+    if (f) f.write(json.data(), (std::streamsize)json.size());
+}
+
+JSValueRef UiTheme(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc >= 1) {
+        std::string s = js_to_utf8(ctx, argv[0]);
+        if (s.size() <= 4096 && !s.empty() && s[0] == '{') ui_theme_set(s);
+    }
+    return utf8_to_js(ctx, ui_theme_get());
+}
+
+// Launcher background music: the page cannot play audio itself (no Web Audio in Ultralight), so it drives the
+// launcher's own player. launcherMusic("play"|"stop"|"volume", 0..100, "sounds/<file>.mp3") -> true while it is playing.
+JSValueRef LauncherMusic(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    const std::string cmd = (argc >= 1) ? js_to_utf8(ctx, argv[0]) : std::string("play");
+    const double vol = (argc >= 2) ? JSValueToNumber(ctx, argv[1], nullptr) : 35.0;
+    std::string track = (argc >= 3) ? js_to_utf8(ctx, argv[2]) : std::string();
+    // only a track that ships with the launcher, and only from its own sounds folder
+    if (track.find("..") != std::string::npos || track.rfind("sounds/", 0) != 0) track.clear();
+    const float v = (float)((vol != vol ? 0.0 : vol) / 100.0);
+    if (cmd == "stop") music::Stop();
+    else if (cmd == "volume") music::SetVolume(v);
+    else if (!track.empty()) music::Play(track, v);
+    return JSValueMakeBoolean(ctx, music::Playing());
 }
 
 JSValueRef AccountCapture(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -5488,6 +5538,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "listAccounts",      ListAccounts);
     install_fn(ctx, ns, "removeAccount",     RemoveAccount);
     install_fn(ctx, ns, "accountCapture",    AccountCapture);
+    install_fn(ctx, ns, "uiTheme",           UiTheme);
+    install_fn(ctx, ns, "launcherMusic",     LauncherMusic);
     install_fn(ctx, ns, "launchAccount",     LaunchAccount);
     install_fn(ctx, ns, "gamePath",          GamePath);
     install_fn(ctx, ns, "gamePathPick",      GamePathPick);

@@ -409,6 +409,81 @@
     return v == null ? null : v >= 1;
   }
   let bossFSearch = '', bossFSort = 0;   // sort 0 = most kills, 1 = name
+
+  // Current encounter. varp 10946 is the struct id of the instance you are in, -1 when not in one,
+  // varp 10950 is its mode value, read differently per encounter (clientscript-17553). The struct gives
+  // the display name (param 8849). Health is NOT param 8850: that is a static authored base and does not
+  // move with enrage. The boss bar (clientscript-17545/17547) uses varbits 53292 / 53294, shown in tenths
+  // when varbit 27168 is 1 and the struct's param 8867 is 1. See docs/instance-mode.md.
+  const ENC_VARPS = '10946,10950';
+  const ENC_VARBITS = '53292,53294,27168';
+  let encSid = 0, encMode = 0, encInfo = {}, encSig = '', encHp = 0, encHpMax = 0;
+  function encVb(vb) { return (bcVbIndex && bcVarps) ? (bcVbValue(vb) || 0) : 0; }
+  // glacorEnrage is varbit 50177; the panel reads it off its own varbit index, the plugin API passes it in.
+  function encLabel(sid, v, glacorEnrage) {
+    if (v === -1) return 'Story';        // the script checks this last, and it overrides every branch
+    switch (sid) {
+      case 49995: case 49996: case 49997: return v === 0 ? 'Normal' : v === 1 ? 'Hard' : '';
+      case 45585: { if (v === 0) return 'Normal'; if (v !== 1) return '';
+                    const e = glacorEnrage == null ? encVb(50177) : (glacorEnrage | 0);
+                    return e ? 'Enrage ' + e + '%' : 'Enrage'; }
+      case 46256: return v === 0 ? 'Normal' : v === 1 ? 'Story' : 'Enrage ' + v + '%';
+      case 51839: return v === 0 ? 'Normal' : 'Enrage ' + v + '%';
+      case 45037: return v === 1 ? 'Solo' : v === 2 ? 'Duo' : v === 3 ? 'Trio' : '';
+      case 47804: case 47805: return v === 1 ? 'Normal' : v + ' player';
+      case 32142: case 32143: return 'Enrage ' + v + '%';
+      case 50215: return 'Barrier ' + v + '%';
+    }
+    return v === 1 ? 'Normal' : v === 2 ? 'Hard' : v === 3 ? 'Challenge' : '';
+  }
+  async function encLoad(vp) {
+    const sid = vp['10946'] | 0, mode = vp['10950'] | 0;
+    encSid = sid > 0 ? sid : 0;
+    encMode = mode;
+    if (!encSid) { encHp = encHpMax = 0; return; }
+    if (bridge().varbits) {
+      try {
+        const vb = JSON.parse(await rtxData.raw('state.varbitsCsv', ENC_VARBITS)) || {};
+        const d = (encInfo[sid] && encInfo[sid].tenth && (vb['27168'] | 0) === 1) ? 10 : 1;
+        encHp = ((vb['53292'] | 0) / d) | 0;
+        encHpMax = ((vb['53294'] | 0) / d) | 0;
+      } catch (e) {}
+    }
+    if (encInfo[sid] !== undefined) return;
+    encInfo[sid] = null;                                  // in flight, so we only ask the cache once
+    if (!bridge().structParams) { delete encInfo[sid]; return; }
+    try {
+      const sp = JSON.parse(await rtxData.raw('cache.structParams', sid) || 'null');
+      if (sp) encInfo[sid] = { name: (sp.strs && sp.strs['8849']) || '', tenth: ((sp.ints && sp.ints['8867']) | 0) === 1 };
+      else delete encInfo[sid];                           // cache not ready, ask again next tick
+    } catch (e) { delete encInfo[sid]; }
+  }
+  function renderEncounter() {
+    const box = $('encCard'); if (!box) return;
+    const inf = encSid ? encInfo[encSid] : null;
+    const show = !!(inf && inf.name);
+    const label = show ? encLabel(encSid, encMode) : '';
+    const sig = encSid + '|' + encMode + '|' + label + '|' + encHp + '|' + encHpMax;
+    if (sig === encSig) return;
+    encSig = sig;
+    if (!show) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    box.innerHTML = '';
+    const r = document.createElement('div'); r.className = 'bc-row';
+    const nm = document.createElement('div'); nm.className = 'bc-nm';
+    nm.appendChild(Object.assign(document.createElement('div'), { textContent: inf.name }));
+    const sb = document.createElement('div'); sb.className = 'bc-sub';
+    sb.textContent = 'Current encounter' + (encHpMax > 0
+      ? ' - ' + encHp.toLocaleString() + ' / ' + encHpMax.toLocaleString() + ' life points' : '');
+    nm.appendChild(sb); r.appendChild(nm);
+    if (label) {
+      const p = document.createElement('span');
+      p.className = 'bc-pill' + (/Enrage|Hard|Challenge/.test(label) ? ' go' : ' ok');
+      p.textContent = label; r.appendChild(p);
+    }
+    r.dataset.tip = 'Current encounter\nstruct ' + encSid + ', mode value ' + encMode;
+    box.appendChild(r);
+  }
   function bossField(vp, t) {
     if (!t) return 0;
     const w = t[2] - t[1] + 1, m = w >= 31 ? 0x7FFFFFFF : ((1 << w) - 1);
@@ -420,7 +495,7 @@
     bossFetching = true;
     try {
       let vp = {};
-      if (bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', BOSS_VARPS.join(','))); } catch (e) {} }
+      if (bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', BOSS_VARPS.join(',') + ',' + ENC_VARPS)); } catch (e) {} }
       if (!vp || !Object.keys(vp).length) return;   // empty read -> keep last good (no all-zero flash)
       bossesData = BOSSES.map(b => {
         const k1 = bossField(vp, b.kc) + 60000 * bossField(vp, b.pr);
@@ -430,6 +505,7 @@
       });
       await bcLoadCols();
       await bcLoadVarps();
+      await encLoad(vp);
     } finally { bossFetching = false; }
     paneRun('bosses', renderBosses);
   }
@@ -439,6 +515,9 @@
     if (!wrap) {
       c.innerHTML = ''; bossListSig = '';
       wrap = document.createElement('div'); wrap.id = 'bossWrap'; wrap.className = 'pk-wrap'; c.appendChild(wrap);
+      bcEnsureCss();
+      const enc = document.createElement('div'); enc.id = 'encCard'; enc.className = 'bc-card enc-card'; enc.hidden = true;
+      wrap.appendChild(enc); encSig = '';
       const tb = document.createElement('div'); tb.className = 'pet-toolbar';
       const srtRow = document.createElement('div'); srtRow.className = 'pet-chips';
       ['Most kills', 'Name'].forEach((nm, i) => {
@@ -449,7 +528,6 @@
       tb.appendChild(srtRow); tb.appendChild(search); wrap.appendChild(tb);
       const cnt = document.createElement('div'); cnt.id = 'bossCnt'; cnt.className = 'pet-count'; wrap.appendChild(cnt);
       const list = document.createElement('div'); list.id = 'bossList'; list.className = 'pet-list'; wrap.appendChild(list);
-      bcEnsureCss();
       const bcList = document.createElement('div'); bcList.id = 'bcList'; bcList.className = 'bc-card'; wrap.appendChild(bcList);
       bcSig = '';
       tb.addEventListener('click', e => {
@@ -460,6 +538,7 @@
       });
       search.addEventListener('input', () => { bossFSearch = search.value.toLowerCase(); bossListSig = ''; renderBossList(); });
     }
+    renderEncounter();
     renderBossList();
     renderBossCollections();
   }
@@ -479,6 +558,8 @@
       .bc-bar { flex: 0 0 110px; height: 6px; border-radius: 3px; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
       .bc-fill { height: 100%; background: linear-gradient(90deg, var(--accent-lo), var(--accent-hi)); }
       .bc-fill.full { background: var(--ok); }
+      .enc-card { margin: 0 0 8px; border-color: var(--accent-lo); flex: 0 0 auto; }
+      .enc-card .bc-pill { min-width: 74px; }
       .bs-chip.en { color: var(--text-mute); }
       .bs-chip.en.hot { color: var(--accent-hi); border-color: var(--accent-lo); }`);
   }
@@ -691,7 +772,7 @@
     }
   }
 
-Object.assign(window, { BOSSES, BOSS_VARPS, COLLECTION_ITEM_VBS, COLLECTION_ITEM_VB_PAIR, bcAdoptSwitches, bcColSig, bcEnsureCss, bcLoadCols, bcLoadVarps, bcPaintList, bossField, fetchBosses, fetchClueCol });
+Object.assign(window, { BOSSES, BOSS_VARPS, ENC_VARPS, ENC_VARBITS, encLabel, COLLECTION_ITEM_VBS, COLLECTION_ITEM_VB_PAIR, bcAdoptSwitches, bcColSig, bcEnsureCss, bcLoadCols, bcLoadVarps, bcPaintList, bossField, fetchBosses, fetchClueCol });
 registerTab({ id: 'bosses', render: renderBosses, open: function () { bossListSig = ''; fetchBosses(true); } });
 registerTab({ id: 'collections', render: renderClueCol, open: function () { clueColSig = ''; fetchClueCol(); } });
 })();

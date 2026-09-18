@@ -107,6 +107,7 @@
       bank:       function () { return call('state.bank', []); },
       scene:      function (range) { return call('state.scene', [range]); },
       varps:      function (ids) { return call('state.varps', [ids]); },
+      varpsLong:  function (ids) { return call('state.varpsLong', [ids]); },
       // Live var stores per domain, resolved the way the client binds them for scripts:
       // Clan (6) and player-group (9) values are listed when those stores exist.
       varDomainStores: function () { return call('state.varDomainStores', []); },
@@ -118,6 +119,7 @@
       itemExtra:  function (containerId, itemId) { return call('state.itemExtra', [containerId, itemId]); },
       pets:       function () { return call('state.pets', []); },
       bosses:     function () { return call('state.bosses', []); },
+      encounter:  function () { return call('state.encounter', []); },
       hideyHoles: function () { return call('state.hideyHoles', []); },
       groupBank:  function () { return call('state.groupBank', []); },
       varbits:    function (ids) { return call('state.varbits', [ids]); },
@@ -127,6 +129,7 @@
       metalBank:    function () { return call('state.metalBank', []); },
       materials:    function () { return call('state.materials', []); },
       baitBox:      function () { return call('state.baitBox', []); },
+      nexus:        function () { return call('state.nexus', []); },
       groundItems:  function () { return call('state.groundItems', []); },
       social:       function () { return call('state.social', []); },
       walkable:     function (x, y, plane, r) { return call('state.walkable', [x, y, plane, r]); },
@@ -170,6 +173,7 @@
       highlightRects: function (list) { return call('overlay.highlightRects', [list || []]); },
       guideTiles: function (marks) { return call('overlay.guideTiles', [marks]); },
       wikiSearch: function (term) { return call('overlay.wikiSearch', [term || '']); },
+      uiLabels: function (list) { return call('overlay.uiLabels', [Array.isArray(list) ? list.map(function (l) { return [l.x, l.y, l.rgb == null ? -1 : l.rgb, l.px || 13, l.text || '', l.style || 0].join(''); }).join('') : (list || '')]); },
       clearHighlight: function () { return call('overlay.clearHighlight', []); },
       centerText: function (text, slot, rgb) { return call('overlay.centerText', [text, slot, rgb]); },
       flashGame: function () { return call('overlay.flashGame', []); }
