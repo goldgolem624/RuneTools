@@ -49,6 +49,7 @@
     if (m && m.kbFocus) kbGrab(false);
     pluginMounts.delete(id);
     if (typeof pluginHolderDrop === 'function') pluginHolderDrop(id);
+    if (typeof ovPointAt === 'function') { try { ovPointAt('plugin:' + id, '', ''); } catch (e) {} }   // its arrow goes with it
   }
 
   function pluginSendEvent(m, event, data) {

@@ -2,6 +2,7 @@
 // UI input pre-filter channel. SPSC ring (head/tail release/acquire); messages are only dropped or passed, never re-injected.
 
 #include <cstdint>
+#include "ShareName.h"
 
 namespace rtx::input {
 
@@ -24,18 +25,15 @@ struct Rect {
     std::int32_t x, y, w, h;   // client pixels; w<=0 marks an empty slot
 };
 
-inline void make_name(const wchar_t* prefix, std::uint32_t pid, wchar_t* out) {
-    int i = 0;
-    for (const wchar_t* s = prefix; *s; ++s) out[i++] = *s;
-    wchar_t tmp[16]; int n = 0;
-    if (pid == 0) tmp[n++] = L'0';
-    while (pid) { tmp[n++] = (wchar_t)(L'0' + pid % 10); pid /= 10; }
-    while (n) out[i++] = tmp[--n];
-    out[i] = 0;
+template <std::size_t N>
+inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kSectionPrefix, pid);
 }
 
-inline void MakeSectionName(std::uint32_t pid, wchar_t* out) { make_name(kSectionPrefix, pid, out); }
-inline void MakeEventName(std::uint32_t pid, wchar_t* out) { make_name(kEventPrefix, pid, out); }
+template <std::size_t N>
+inline void MakeEventName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kEventPrefix, pid);
+}
 
 struct Share {
     std::uint32_t magic;       // kMagic once initialised

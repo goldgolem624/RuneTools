@@ -2,6 +2,7 @@
 // Event channel (framer packets filtered by `mask`); single writer, per-record odd/even seqlock, `written` published last.
 
 #include <cstdint>
+#include "ShareName.h"
 #include "ServerOps.h"
 
 namespace rtx::events {
@@ -38,14 +39,9 @@ struct Share {
     Record recs[kMaxRecords];
 };
 
-inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
-    int i = 0;
-    for (const wchar_t* s = kSectionPrefix; *s; ++s) out[i++] = *s;
-    wchar_t tmp[16]; int n = 0;
-    if (pid == 0) tmp[n++] = L'0';
-    while (pid) { tmp[n++] = (wchar_t)(L'0' + pid % 10); pid /= 10; }
-    while (n) out[i++] = tmp[--n];
-    out[i] = 0;
+template <std::size_t N>
+inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kSectionPrefix, pid);
 }
 
 }  // namespace rtx::events

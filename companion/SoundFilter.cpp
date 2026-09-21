@@ -181,7 +181,7 @@ std::uint64_t __fastcall Detour_Play(std::uint64_t subsystem, std::uint64_t ctx,
 }
 
 rtx::sound::Share* MapShare() {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::sound::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                   (DWORD)sizeof(rtx::sound::Share), name);
@@ -223,6 +223,32 @@ bool Install() {
     g_share->flags |= rtx::sound::kFlagHooked;
     g_installed = true;
     return true;
+}
+
+// Re-create the share under the current session names. The play hook stays
+// attached; only the published view moves. The old view is left mapped because
+// the detour writes through it from the audio thread.
+void Rebind() {
+    static std::uint32_t s_gen = 0;
+    if (!rtx::ipc::SessionChanged(s_gen)) return;
+    if (!g_installed) return;
+
+    std::uint32_t playRva = g_share ? g_share->playRva : 0;
+    std::uint32_t flags   = g_share ? g_share->flags   : 0;
+
+    rtx::sound::Share* fresh = MapShare();
+    if (!fresh) return;
+    fresh->magic   = rtx::sound::kMagic;
+    fresh->version = rtx::sound::kVersion;
+    fresh->pid     = GetCurrentProcessId();
+    fresh->flags   = flags;                // hook is still attached
+    fresh->enable  = 0;
+    fresh->playRva = playRva;
+    fresh->blockSeq = 0; fresh->blockCount = 0;
+    fresh->recentSeq = 0;
+    for (int i = 0; i < 8; ++i) fresh->diag[i] = 0;
+
+    g_share = fresh;                       // publish last, fully built
 }
 
 void Uninstall() {

@@ -1219,7 +1219,7 @@ void drain_chat_rings() {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
     for (std::uint32_t pid : pids) {
-        wchar_t name[64];
+        wchar_t name[rtx::ipc::kNameChars];
         rtx::netprobe::MakeSectionName(pid, name);
         HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
         if (!h) continue;
@@ -2415,7 +2415,7 @@ std::string VarcStringsDumpAllJson(std::uint32_t pid) {
 }
 
 std::string VarsDumpJson(std::uint32_t pid) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::varc::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return "{}";
@@ -2463,7 +2463,7 @@ std::string VarsDumpJson(std::uint32_t pid) {
 }
 
 bool VarsWatch(std::uint32_t pid, bool on) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::varc::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
     if (!h) return false;
@@ -2562,7 +2562,7 @@ std::string ServerPacketsJson(std::uint32_t pid) {
 }
 
 std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::netprobe::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return "{\"ok\":false,\"reason\":\"companion not loaded / panel not built in\"}";
@@ -2620,7 +2620,7 @@ std::string ServerPacketFeedJson(std::uint32_t pid, std::uint64_t since) {
 }
 
 bool ServerPacketFeedEnable(std::uint32_t pid, bool on) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::netprobe::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
     if (!h) return false;
@@ -2822,7 +2822,7 @@ static std::string ge_slot_json(std::uint32_t pid, int slot) {
 }
 
 std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::events::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return "{\"ok\":false,\"why\":\"companion not loaded\"}";
@@ -2904,7 +2904,7 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
 
 // Opcode mask the hook records (bit op&31 of word op>>5). Creates the section if the companion
 bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::events::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
     if (!h) h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
@@ -2925,7 +2925,7 @@ bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]) {
 // which: 0 hide NPCs, 1 hide other players, 2 hide scene, 3 keep-focused, 4 true-embed.
 std::string GpuTimingJson(std::uint32_t pid) {
     const char* kEmpty = "{\"passes\":[]}";
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::gputime::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return kEmpty;
@@ -2956,7 +2956,7 @@ std::string GpuTimingJson(std::uint32_t pid) {
 }
 
 bool RenderToggle(std::uint32_t pid, int which, bool on) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::render::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
     if (!h) return false;
@@ -2978,7 +2978,7 @@ bool RenderToggle(std::uint32_t pid, int which, bool on) {
 }
 
 std::uint64_t RenderInputWindow(std::uint32_t pid) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::render::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return 0;
@@ -3038,7 +3038,7 @@ struct RuntimeObj {
 
 bool ReadRuntimeObjects(std::uint32_t pid, std::vector<RuntimeObj>& out) {
     out.clear();
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::scene::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return false;
@@ -3074,7 +3074,7 @@ bool ReadRuntimeObjects(std::uint32_t pid, std::vector<RuntimeObj>& out) {
 struct GroundItem { int id, x, y, plane; };
 bool ReadGroundItems(std::uint32_t pid, std::vector<GroundItem>& out) {
     out.clear();
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::ground::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return false;
@@ -3106,7 +3106,7 @@ bool ReadGroundItems(std::uint32_t pid, std::vector<GroundItem>& out) {
 struct RuntimeHi { int gfx, x, y, uid, plane, type, kind; std::uint32_t stamp; };
 bool ReadRuntimeHighlights(std::uint32_t pid, std::vector<RuntimeHi>& out, std::uint32_t* diag = nullptr) {
     out.clear();
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::special::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
     if (!h) return false;
@@ -4709,7 +4709,7 @@ static void iface_groups_range(HANDLE h, std::uint64_t mainData,
 
 // Companion-published var by (scope,id): 4 = varp/varbit, 5 = varc-int.
 static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::varc::MakeSectionName(pid, name);
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!h) return false;
@@ -5506,6 +5506,61 @@ std::string HoverEntityJson(std::uint32_t pid) {
         }
     }
     return out + ",\"name\":\"" + json_escape(name) + "\"}";
+}
+
+bool HoverLoc(std::uint32_t pid, HoverLocInfo& out) {
+    out = HoverLocInfo{};
+    const std::string j = HoverEntityJson(pid);
+    auto num = [&](const char* key, int& v) {
+        auto p = j.find(key);
+        if (p == std::string::npos) return false;
+        v = std::atoi(j.c_str() + p + std::strlen(key));
+        return true;
+    };
+    if (j.find("\"kind\":\"item\"") != std::string::npos) {
+        int id = -1;
+        if (num("\"id\":", id) && num("\"slot\":", out.item_slot) && num("\"iface\":", out.item_iface) && num("\"comp\":", out.item_comp))
+            out.item_id = id;
+        return false;
+    }
+    if (j.find("\"kind\":\"loc\"") == std::string::npos) return false;
+    {
+        const char* key = "\"verb\":\"";
+        auto p = j.find(key);
+        if (p != std::string::npos) {
+            p += std::strlen(key);
+            auto e = j.find('"', p);
+            if (e != std::string::npos) out.verb = j.substr(p, e - p);
+        }
+    }
+    if (!num("\"id\":", out.id) || !num("\"x\":", out.x) || !num("\"y\":", out.y)) return false;
+
+    // The hovered tile is any tile of the loc. A scene object stands on the centre of its
+    // footprint (a tile centre for an odd size, a tile corner for an even one), so the object
+    // meant is the nearest one of this loc whose footprint reaches the hovered tile; failing
+    // that, the nearest of any id, which is the case for a loc that changes with a var.
+    std::vector<RuntimeObj> objs;
+    if (!ReadRuntimeObjects(pid, objs)) return true;
+    const RuntimeObj* best = nullptr;
+    float bestD = 1e30f;
+    const auto meta = rtx::cache::GetLoc(out.id);
+    const float hx = (out.x + 0.5f) * 512.f, hy = (out.y + 0.5f) * 512.f;
+    const float reach = (float)std::max(meta.dim_x, meta.dim_y) * 256.f + 1.f;
+    for (int pass = 0; pass < 2 && !best; ++pass)
+        for (const auto& r : objs) {
+            if (r.hidden) continue;
+            if (pass == 0 && r.config_id != out.id) continue;
+            const float cx = ((float)r.x + ((meta.dim_x & 1) ? 0.5f : 0.0f)) * 512.f;
+            const float cy = ((float)r.y + ((meta.dim_y & 1) ? 0.5f : 0.0f)) * 512.f;
+            if (std::fabs(cx - hx) > reach || std::fabs(cy - hy) > reach) continue;
+            const float d = (cx - hx) * (cx - hx) + (cy - hy) * (cy - hy);
+            if (d < bestD) { bestD = d; best = &r; }
+        }
+    if (best) {
+        out.in_scene = true;
+        out.scene_x = best->x; out.scene_y = best->y; out.scene_id = best->config_id;
+    }
+    return true;
 }
 
 // Puzzle box board: interface 1931 comp 18, 25 cells each with a sprite u16 @+0x188 (consecutive ids,
@@ -6792,6 +6847,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
     if (!worker) return false;
     std::uint64_t rootv = (root && *root > 0x10000) ? *root : 0;
     if (!read_view_matrix(h, pid, rootv, *wv, mprobes, out.matrix)) return false;
+    out.matrix_addr = *wv + g_matrixOff.load(std::memory_order_relaxed);
 
     fill_view_metrics(h, rootv, pid, out);
 
@@ -8108,7 +8164,7 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         add("Companion: world objects", ok ? 1 : 2, ok ? "" : "inactive (loads with the game client)");
     }
     {
-        wchar_t name[64]; rtx::varc::MakeSectionName(pid, name);
+        wchar_t name[rtx::ipc::kNameChars]; rtx::varc::MakeSectionName(pid, name);
         HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
         bool ok = false;
         if (m) {
@@ -8180,7 +8236,7 @@ std::string ReaderHealthJson(std::uint32_t pid) {
         std::string cj = ChatJson(pid);
         int lines = 0; for (size_t i = 0; (i = cj.find("\"raw\":", i)) != std::string::npos; ++i) ++lines;
         add("Chat (interface)", lines > 0 ? 1 : 0, lines > 0 ? (std::to_string(lines) + " lines") : "chatbox text not readable (widget layout)");
-        wchar_t name[64]; rtx::netprobe::MakeSectionName(pid, name);
+        wchar_t name[rtx::ipc::kNameChars]; rtx::netprobe::MakeSectionName(pid, name);
         HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
         int st = 2; std::string d = "inactive (loads with the game client)";
         if (m) {

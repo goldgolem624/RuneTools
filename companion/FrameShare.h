@@ -2,6 +2,7 @@
 // UI pixel transport, launcher -> module; BGRA premultiplied, row 0 = top; diag 0 idle/1 no window/2 size/3 unpainted/4 publishing.
 
 #include <cstdint>
+#include "ShareName.h"
 
 namespace rtx::frame {
 
@@ -13,14 +14,9 @@ inline constexpr std::uint32_t kMaxWidth  = 3840;
 inline constexpr std::uint32_t kMaxHeight = 2160;
 inline constexpr std::uint32_t kMaxBytes  = kMaxWidth * kMaxHeight * 4;
 
-inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
-    int i = 0;
-    for (const wchar_t* s = kSectionPrefix; *s; ++s) out[i++] = *s;
-    wchar_t tmp[16]; int n = 0;
-    if (pid == 0) tmp[n++] = L'0';
-    while (pid) { tmp[n++] = (wchar_t)(L'0' + pid % 10); pid /= 10; }
-    while (n) out[i++] = tmp[--n];
-    out[i] = 0;
+template <std::size_t N>
+inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kSectionPrefix, pid);
 }
 
 struct Share {

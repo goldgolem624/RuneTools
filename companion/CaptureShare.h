@@ -3,6 +3,7 @@
 // `pixels` and sets `done` to the request it served.
 #pragma once
 #include <cstdint>
+#include "ShareName.h"
 
 namespace rtx::capture {
 
@@ -24,14 +25,9 @@ struct Share {
     std::uint8_t  pixels[kMaxBytes];
 };
 
-inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
-    int i = 0;
-    for (const wchar_t* s = kSectionPrefix; *s; ++s) out[i++] = *s;
-    wchar_t tmp[16]; int n = 0;
-    if (pid == 0) tmp[n++] = L'0';
-    while (pid) { tmp[n++] = (wchar_t)(L'0' + pid % 10); pid /= 10; }
-    while (n) out[i++] = tmp[--n];
-    out[i] = 0;
+template <std::size_t N>
+inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kSectionPrefix, pid);
 }
 
 }  // namespace rtx::capture

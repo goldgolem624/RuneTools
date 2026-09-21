@@ -14,6 +14,13 @@ struct LocPlacement {
     int y        = 0;    // 0..63 within region (south tile)
     int type     = 0;    // shape/type 0..31 (walls 0-3, scenery 10/11, deco 22, ...)
     int rotation = 0;    // 0..3
+    // Optional per-placement adjustment (attribute bit 0x80), what makes two trees of one kind
+    // differ: a free rotation (quaternion x,y,z,w in 1/32768), an offset in fine units and scales
+    // in 1/128. Defaults leave the model as the definition places it.
+    bool  has_extra = false;
+    short quat[4] = { 0, 0, 0, 0 };   // all zero = none
+    short tx = 0, ty = 0, tz = 0;
+    int   scale = 128, sx = 128, sy = 128, sz = 128;
 };
 
 // Decode a MAPSV2 LOCATIONS file: id-delta loop, per-id position-delta loop, attribute byte,

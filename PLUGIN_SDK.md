@@ -604,6 +604,15 @@ rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"stand", merge:t
 // hard-locked to runescape.wiki: a plugin chooses the page, never the site.
 rtx.plugin.overlay.wikiSearch("Abyssal whip");
 
+// Have the game itself point the way to one target: its arrow over the target, its chevrons
+// at the player's feet turning towards it and its trail of markers on the ground. The target
+// is looked up around the player once a second and the nearest match is used; nothing shows
+// while it is out of view. One request per plugin; it ends when the plugin is closed.
+rtx.plugin.overlay.pointAt("npc", "Banker");        // a name, part of one, or an id
+rtx.plugin.overlay.pointAt("object", "Bank chest");
+rtx.plugin.overlay.pointAt("tile", "3221, 3218");    // or "x, y, plane"
+rtx.plugin.overlay.pointClear();
+
 rtx.plugin.overlay.clearHighlight();         // clear both highlight layers
 
 // A small floating HUD strip over the game showing ability icons -- rotation playback,

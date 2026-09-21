@@ -7,6 +7,9 @@
 #include "CaptureShare.h"
 
 #include <windows.h>
+#include <algorithm>
+#include <atomic>
+#include <mutex>
 #undef CreateSemaphore
 #include <cmath>
 #include <cstddef>
@@ -30,7 +33,9 @@ constexpr float kOccludeBiasUnits = 128.0f;   // a quarter tile: how far in fron
 constexpr float kOccludedAlpha = 0.5f;         // opacity kept where the scene is in front of a marker
 
 enum Tex { kTexWhite = 0, kTexAtlas = 1, kTexUi = 2, kTexHud = 3, kTexCount = 4 };
-enum Mode { kModeStraight = 1, kModeDepth = 2, kModeReversed = 4 };
+enum Mode { kModeStraight = 1, kModeDepth = 2, kModeReversed = 4,
+            kModeShowDepth = 8, kModeFlipped = 16, kModeLinear = 32, kModeLine = 64,
+            kModeTop = 128 };   // not for the shader: keeps a batch out of the game's frame, see SetTopLayer
 
 struct Buffer {
     VkBuffer       buf  = VK_NULL_HANDLE;
@@ -69,7 +74,7 @@ struct Image {
     bool            probeHas2 = false;
 };
 
-struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; VkPipeline pipeMS; };   // pipeMS samples a multisampled scene depth
+struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; VkPipeline pipeMS; VkPipeline scene; VkPipeline sceneMS; };   // MS: samples a multisampled scene depth; scene: see RecordScene
 
 struct Swapchain {
     VkSwapchainKHR     sc = VK_NULL_HANDLE;
@@ -97,6 +102,34 @@ VkDescriptorPool      g_descPool  = VK_NULL_HANDLE;
 VkSampler             g_sampler   = VK_NULL_HANDLE;
 VkSampler             g_depthSampler = VK_NULL_HANDLE;
 VkShaderModule        g_vert = VK_NULL_HANDLE, g_frag = VK_NULL_HANDLE, g_fragMS = VK_NULL_HANDLE;
+VkShaderModule        g_fragScene = VK_NULL_HANDLE, g_fragSceneMS = VK_NULL_HANDLE;
+
+// The world markers of the last presented frames, for RecordScene. The present thread fills the
+// slots in turn and names the newest; a slot comes round again only after the GPU is long done with it.
+struct ViewInfo { float m[16] = {}; std::uint64_t addr = 0; float vp[4] = {}; int cw = 0, ch = 0; };
+struct SceneSnap { Buffer vbuf; std::vector<Vertex> verts; ViewInfo view; std::vector<Batch> batches; std::uint32_t w = 0, h = 0, whole = 0; float a = 0.f, b = 0.f, fade = 0.f; bool depth = false; };   // whole: first vertex of a rectangle over everything
+constexpr int kSceneSnaps = 8;
+SceneSnap             g_sceneSnaps[kSceneSnaps];
+std::atomic<int>      g_sceneNewest{ -1 };
+int                   g_sceneNext = 0;                 // present thread only
+ViewInfo              g_view;                          // present thread only: of the frame being built
+// Where the reprojected markers are drawn from: the recording side writes one of these per frame,
+// in turn, so the GPU is never still reading the one being written.
+constexpr int         kDrawBufs = 6;
+Buffer                g_drawBufs[kDrawBufs];
+int                   g_drawNext = 0;                  // recording thread only
+std::vector<Buffer>   g_drawRetired;                   // recording thread only
+unsigned              g_sceneEmptyRun = 0;             // present thread only: frames in a row without markers
+constexpr unsigned    kSceneEmptyFrames = 6;
+std::atomic<bool>     g_inScene{ false };
+std::atomic<unsigned> g_sceneDrawnAt{ 0 };            // g_frameNo at the last RecordScene that drew
+std::atomic<unsigned> g_frameNoShared{ 0 };
+std::atomic<int>      g_trialWhere{ 1 };
+std::atomic<unsigned> g_trialLook{ 0 };
+// pipelines built against render passes of the game's, see RecordInPass
+struct GamePassPipes { VkRenderPass rp; VkPipeline pipe; VkPipeline pipeMS; };
+std::vector<GamePassPipes> g_gamePipes;
+std::mutex            g_gamePipesMu;
 std::vector<FormatRes> g_formats;
 std::vector<Swapchain> g_chains;
 Texture               g_tex[kTexCount];
@@ -354,7 +387,18 @@ std::size_t ResForFormat(VkFormat fmt) {
         pi.pStages = stMS;
         if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeMS) != VK_SUCCESS) pipeMS = VK_NULL_HANDLE;
     }
-    g_formats.push_back({ fmt, rp, pipe, pipeMS });
+    // the in scene variants: same everything, the fragment shaders that know about that image
+    VkPipeline scene = VK_NULL_HANDLE, sceneMS = VK_NULL_HANDLE;
+    if (g_fragScene) {
+        VkPipelineShaderStageCreateInfo stS[2] = { st[0], st[1] };
+        stS[1].module = g_fragScene; pi.pStages = stS;
+        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &scene) != VK_SUCCESS) scene = VK_NULL_HANDLE;
+        if (g_fragSceneMS) {
+            stS[1].module = g_fragSceneMS;
+            if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &sceneMS) != VK_SUCCESS) sceneMS = VK_NULL_HANDLE;
+        }
+    }
+    g_formats.push_back({ fmt, rp, pipe, pipeMS, scene, sceneMS });
     return g_formats.size() - 1;
 }
 
@@ -452,8 +496,10 @@ inline VkImageAspectFlags DepthAspects() {
 }
 inline bool DepthOn() { return g_featDepth && (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE && g_ref[4] != 0.f; }
 
+bool g_topLayer = true;    // until a marker says otherwise
 int DrawMode(int texMode) {
     int m = texMode;
+    if (g_topLayer) m |= kModeTop;
     if (DepthOn()) {
         m |= kModeDepth;
         if (g_depthFlags & rtx::marker::kFlagDepthReversed) m |= kModeReversed;
@@ -601,10 +647,14 @@ bool Init(VkDevice dev, const DeviceFns& fns,
     VkShaderModuleCreateInfo smi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
     smi.codeSize = sizeof(rtx::vkshaders::kVert); smi.pCode = rtx::vkshaders::kVert;
     if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_vert) != VK_SUCCESS) { Shutdown(); return false; }
-    smi.codeSize = sizeof(rtx::vkshaders::kFrag); smi.pCode = rtx::vkshaders::kFrag;
+    smi.codeSize = sizeof(rtx::vkshaders::kFragScene); smi.pCode = rtx::vkshaders::kFragScene;
     if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_frag) != VK_SUCCESS) { Shutdown(); return false; }
-    smi.codeSize = sizeof(rtx::vkshaders::kFragMS); smi.pCode = rtx::vkshaders::kFragMS;
+    smi.codeSize = sizeof(rtx::vkshaders::kFragSceneMS); smi.pCode = rtx::vkshaders::kFragSceneMS;
     if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_fragMS) != VK_SUCCESS) g_fragMS = VK_NULL_HANDLE;
+    smi.codeSize = sizeof(rtx::vkshaders::kFragScene); smi.pCode = rtx::vkshaders::kFragScene;
+    if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_fragScene) != VK_SUCCESS) g_fragScene = VK_NULL_HANDLE;
+    smi.codeSize = sizeof(rtx::vkshaders::kFragSceneMS); smi.pCode = rtx::vkshaders::kFragSceneMS;
+    if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_fragSceneMS) != VK_SUCCESS) g_fragSceneMS = VK_NULL_HANDLE;
 
     BuildGlyphAtlas();
     if (!CreateTexture(g_tex[kTexWhite], VK_FORMAT_R8G8B8A8_UNORM, 1, 1, false)) { Shutdown(); return false; }
@@ -790,16 +840,40 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     g_cur = nullptr; g_curChain = nullptr; g_active = false;
     if (!im || !c) return VK_NULL_HANDLE;
     ++g_frameNo;
+    g_frameNoShared.store(g_frameNo, std::memory_order_relaxed);
+    if (g_trialWhere.load(std::memory_order_relaxed) == 2 && (g_trialLook.load(std::memory_order_relaxed) & kLookDepth) && g_inScene.load(std::memory_order_relaxed))
+        PushRect(kTexWhite, kModeDepth | kModeShowDepth, 0.f, 0.f, (float)c->w, (float)c->h, 0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f, 0.f);
 
     const bool wantCapture = g_featCapture && g_capShare && g_capShare->magic == rtx::capture::kMagic &&
                              g_capShare->request != g_capShare->done && im->capSerial == 0 &&
                              c->w <= rtx::capture::kMaxWidth && c->h <= rtx::capture::kMaxHeight;
     bool useDepth = false;
     for (const auto& b : g_batches) if (b.mode & kModeDepth) { useDepth = true; break; }
+    {
+        // what the depth test is actually doing, said once and again whenever it changes
+        unsigned withDepth = 0;
+        for (const auto& b : g_batches) if (b.mode & kModeDepth) ++withDepth;
+        const unsigned state = (DepthOn() ? 1u : 0u) | (g_depthFlags << 1) | ((unsigned)g_depthSamples << 8) | (withDepth ? 1u << 16 : 0u) |
+                               (g_formats[c->res].pipeMS ? 1u << 17 : 0u);
+        static unsigned s_state = ~0u;
+        static int s_said = 0;
+        if (state != s_state && s_said < 40 && !g_batches.empty()) {
+            s_state = state; ++s_said;
+            Log("overlay depth: test %s, flags 0x%x, a %.7g b %.7g, depth image %p samples %d, multisample pipeline %d, batches %zu of which %u depth tested",
+                DepthOn() ? "on" : "OFF", (unsigned)g_depthFlags, (double)g_ref[3], (double)g_ref[4], (void*)g_depthImg, (int)g_depthSamples,
+                g_formats[c->res].pipeMS ? 1 : 0, g_batches.size(), withDepth);
+        }
+    }
     const bool wantProbe = useDepth && g_depthSamples == VK_SAMPLE_COUNT_1_BIT && (g_depthFmt == VK_FORMAT_D32_SFLOAT) &&
                            g_ref[0] >= 0.f && g_ref[1] >= 0.f && g_ref[2] >= 0.f &&
                            (g_frameNo % 300) == 1 && !im->probePending &&
                            g_ref[0] < (float)c->w && g_ref[1] < (float)c->h;
+    if (g_verts.empty() && g_inScene.load(std::memory_order_relaxed) && ++g_sceneEmptyRun > kSceneEmptyFrames) {
+        // nothing to draw any more: say so, or the last markers would stay in the game's frame for good
+        g_sceneSnaps[g_sceneNext].batches.clear();
+        g_sceneNewest.store(g_sceneNext, std::memory_order_release);
+        g_sceneNext = (g_sceneNext + 1) % kSceneSnaps;
+    }
     if (g_verts.empty() && g_uploads.empty() && !wantCapture && !g_alwaysRecord) return VK_NULL_HANDLE;
 
     const VkDeviceSize vbytes = (VkDeviceSize)g_verts.size() * sizeof(Vertex);
@@ -848,14 +922,14 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
             VkBufferImageCopy rg[2]{};
             std::uint32_t n = 0;
             rg[n].imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
-            rg[n].imageOffset = { (std::int32_t)g_ref[0], (std::int32_t)g_ref[1], 0 };
+            rg[n].imageOffset = { (std::int32_t)g_ref[0], (std::int32_t)c->h - 1 - (std::int32_t)g_ref[1], 0 };   // upside down, see the draw loop
             rg[n].imageExtent = { 1, 1, 1 };
             ++n;
             im->probeHas2 = g_ref[5] >= 0.f && g_ref[6] >= 0.f && g_ref[7] >= 0.f && g_ref[5] < (float)c->w && g_ref[6] < (float)c->h;
             if (im->probeHas2) {
                 rg[n].bufferOffset = 16;
                 rg[n].imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
-                rg[n].imageOffset = { (std::int32_t)g_ref[5], (std::int32_t)g_ref[6], 0 };
+                rg[n].imageOffset = { (std::int32_t)g_ref[5], (std::int32_t)c->h - 1 - (std::int32_t)g_ref[6], 0 };
                 rg[n].imageExtent = { 1, 1, 1 };
                 ++n;
             }
@@ -866,6 +940,43 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         ImageBarrier(cmd, g_depthImg, DepthAspects(), cur, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
+
+    // The markers (plain colour and glyph batches) go into the game's frame when that is on and
+    // working: this frame's are kept for the next RecordScene and left out of the pass below. A few
+    // frames without a RecordScene that drew and they are back here, so they never just vanish.
+    const bool toScene = g_inScene.load(std::memory_order_relaxed) && g_frameNo - g_sceneDrawnAt.load(std::memory_order_relaxed) < 8;
+    auto forScene = [](const Batch& b) { return (b.tex == kTexWhite || b.tex == kTexAtlas) && !(b.mode & kModeTop); };
+    std::uint32_t sceneCount = 0;
+    for (const auto& b : g_batches) if (forScene(b)) sceneCount += b.count;
+    // A frame without markers is most often one where the marker share was caught mid-write. The
+    // present pass simply shows that for a frame; here the game would draw a frame without them and
+    // the markers flash, so the last snapshot stays until the markers have been gone for a few frames.
+    if (sceneCount) g_sceneEmptyRun = 0;
+    if (g_inScene.load(std::memory_order_relaxed) && (sceneCount || ++g_sceneEmptyRun > kSceneEmptyFrames)) {
+        SceneSnap& sn = g_sceneSnaps[g_sceneNext];
+        sn.batches.clear();
+        sn.verts.clear();
+        sn.view = g_view;
+        const std::uint32_t count = sceneCount;
+        if (count && EnsureBuffer(sn.vbuf, (VkDeviceSize)(count + 6) * sizeof(Vertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) {
+            const float fw = (float)c->w, fh = (float)c->h;
+            const float qx[6] = { 0.f, fw, 0.f, fw, fw, 0.f }, qy[6] = { 0.f, 0.f, fh, 0.f, fh, fh };
+            for (int i = 0; i < 6; ++i) static_cast<Vertex*>(sn.vbuf.map)[count + i] = { qx[i], qy[i], 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f };
+            sn.whole = count;
+            std::uint32_t at = 0;
+            for (const auto& b : g_batches) {
+                if (!forScene(b)) continue;
+                std::memcpy(static_cast<Vertex*>(sn.vbuf.map) + at, g_verts.data() + b.first, (size_t)b.count * sizeof(Vertex));
+                sn.verts.insert(sn.verts.end(), g_verts.begin() + b.first, g_verts.begin() + b.first + b.count);
+                sn.batches.push_back({ b.tex, b.mode, at, b.count });
+                at += b.count;
+            }
+        }
+        sn.w = c->w; sn.h = c->h; sn.a = g_ref[3]; sn.b = g_ref[4]; sn.depth = depthPass;
+        sn.fade = (g_depthFlags & rtx::marker::kFlagOccludeHide) ? 0.0f : kOccludedAlpha;
+        g_sceneNewest.store(g_sceneNext, std::memory_order_release);
+        g_sceneNext = (g_sceneNext + 1) % kSceneSnaps;
     }
 
     if (!g_batches.empty()) {
@@ -882,12 +993,20 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         VkDeviceSize zero = 0;
         g_fn.CmdBindVertexBuffers(cmd, 0, 1, &im->vbuf.buf, &zero);
         g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 1, &g_depthSet, 0, nullptr);
-        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 0, 1.0f / (float)c->w, 1.0f / (float)c->h, g_ref[3], g_ref[4], kOccludeBiasUnits, kOccludedAlpha };
+        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 0, 1.0f / (float)c->w, 1.0f / (float)c->h, g_ref[3], g_ref[4], kOccludeBiasUnits,
+                      (g_depthFlags & rtx::marker::kFlagOccludeHide) ? 0.0f : kOccludedAlpha };
+        const unsigned look = g_trialLook.load(std::memory_order_relaxed);
+        const bool showDepth = depthPass && (look & kLookDepth) && g_trialWhere.load(std::memory_order_relaxed) == 2;
         for (const auto& b : g_batches) {
+            if (toScene && forScene(b)) continue;
             Texture& t = g_tex[b.tex];
             if (!t.img || t.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;
             int mode = b.mode;
             if (!depthPass) mode &= ~(kModeDepth | kModeReversed);
+            // the game draws its whole frame upside down and turns it over on the way to the screen:
+            // seen from here, the scene depth is upside down
+            if (!(look & kLookDepthTurned)) mode |= kModeFlipped;
+            if ((mode & kModeShowDepth) && !showDepth) continue;
             if (pc.mode != mode) {
                 pc.mode = mode;
                 g_fn.CmdPushConstants(cmd, g_pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
@@ -934,20 +1053,297 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
     return im->sem;
 }
 
+void SetTopLayer(bool on) { g_topLayer = on; }
+void SetInScene(bool on) { g_inScene.store(on, std::memory_order_relaxed); }
+void SetViewInfo(const float* m16, std::uint64_t addr, const std::int32_t* gv, int cw, int ch) {
+    std::memcpy(g_view.m, m16, sizeof(g_view.m)); g_view.addr = addr;
+    for (int i = 0; i < 4; ++i) g_view.vp[i] = (float)gv[i];
+    g_view.cw = cw; g_view.ch = ch;
+}
+
+// on its own: a guarded read may not share a function with objects that need unwinding
+bool ReadGameMatrix(std::uint64_t addr, float* out) {
+    __try { std::memcpy(out, reinterpret_cast<const void*>(addr), 16 * sizeof(float)); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    for (int i = 0; i < 16; ++i) if (!std::isfinite(out[i])) return false;
+    return true;
+}
+
+// Clip position = P * (x, y, z, 1), in the order the launcher projects with.
+void ProjRows(const float* m, double P[4][4]) {
+    const int col[4] = { 0, 8, 4, 12 };                       // x, y, z, 1
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) P[r][c] = (double)m[col[c] + r];
+}
+bool Invert4(const double a[4][4], double inv[4][4]) {
+    double w[4][8];
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 8; ++c) w[r][c] = c < 4 ? a[r][c] : (c - 4 == r ? 1.0 : 0.0);
+    for (int i = 0; i < 4; ++i) {
+        int piv = i;
+        for (int r = i + 1; r < 4; ++r) if (std::fabs(w[r][i]) > std::fabs(w[piv][i])) piv = r;
+        if (std::fabs(w[piv][i]) < 1e-300) return false;
+        if (piv != i) for (int c = 0; c < 8; ++c) std::swap(w[i][c], w[piv][c]);
+        const double d = w[i][i];
+        for (int c = 0; c < 8; ++c) w[i][c] /= d;
+        for (int r = 0; r < 4; ++r) if (r != i) { const double f = w[r][i]; if (f != 0.0) for (int c = 0; c < 8; ++c) w[r][c] -= f * w[i][c]; }
+    }
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) inv[r][c] = w[r][c + 4];
+    return true;
+}
+
+// The markers were projected by the launcher with the camera of a frame or more ago. Drawn as
+// they are, they trail behind a moving camera, and their depths belong to that older view: while
+// the camera turns or zooms, whole stretches of ground compare as nearer than the markers on them
+// and those markers drop out. Here every vertex that carries a depth goes back to the world through
+// the matrix it was projected with and out again through the one the game holds right now.
+// Returns the buffer to draw from: `out` filled, or the snapshot's own when there is nothing to do.
+const Buffer* Reproject(const SceneSnap& sn) {
+    const ViewInfo& v = sn.view;
+    if (!v.addr || sn.b == 0.f || sn.verts.empty() || v.vp[2] < 8.f || v.vp[3] < 8.f) return &sn.vbuf;
+    if (v.cw != (int)sn.w || v.ch != (int)sn.h) return &sn.vbuf;
+    float now[16];
+    if (!ReadGameMatrix(v.addr, now)) return &sn.vbuf;
+    if (std::memcmp(now, v.m, sizeof(now)) == 0) return &sn.vbuf;          // the camera has not moved since
+    double Po[4][4], Pn[4][4], Pi[4][4], R[4][4];
+    ProjRows(v.m, Po); ProjRows(now, Pn);
+    if (!Invert4(Po, Pi)) return &sn.vbuf;
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) { double s = 0; for (int k = 0; k < 4; ++k) s += Pn[r][k] * Pi[k][c]; R[r][c] = s; }
+    for (int r = 0; r < 4; ++r) for (int c = 0; c < 4; ++c) if (!std::isfinite(R[r][c])) return &sn.vbuf;
+
+    Buffer& out = g_drawBufs[g_drawNext];
+    const VkDeviceSize need = (VkDeviceSize)(sn.verts.size() + 6) * sizeof(Vertex);
+    if (out.size < need) {
+        // a frame in flight may still read the old one: it is kept until shutdown, and the new one has room to spare
+        if (out.buf && g_drawRetired.size() < 64) { g_drawRetired.push_back(out); out = Buffer{}; }
+        if (!EnsureBuffer(out, need * 2, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return &sn.vbuf;
+    }
+    g_drawNext = (g_drawNext + 1) % kDrawBufs;
+    Vertex* dst = static_cast<Vertex*>(out.map);
+    const double cx = v.vp[2] / 2.0, cy = v.vp[3] / 2.0, vx = v.vp[0], vy = v.vp[1];
+    const double a = sn.a, b = sn.b;
+    const size_t n = sn.verts.size();
+    for (size_t t = 0; t + 2 < n + 0 && t + 3 <= n; t += 3) {
+        Vertex tri[3] = { sn.verts[t], sn.verts[t + 1], sn.verts[t + 2] };
+        bool ok = tri[0].z >= 0.f && tri[1].z >= 0.f && tri[2].z >= 0.f;      // all three know where they are in the world
+        for (int k = 0; ok && k < 3; ++k) {
+            const double q = (double)tri[k].z + a;
+            if (std::fabs(q) < 1e-12) { ok = false; break; }
+            const double w = b / q;
+            if (!(w > 1.0)) { ok = false; break; }
+            const double nx = ((double)tri[k].x - cx - vx) / (cx - 2.0), ny = ((double)tri[k].y - cy - vy) / (1.0 - cy);
+            const double c0 = nx * w, c1 = ny * w, c2 = (double)tri[k].z * w, c3 = w;
+            const double o0 = R[0][0] * c0 + R[0][1] * c1 + R[0][2] * c2 + R[0][3] * c3;
+            const double o1 = R[1][0] * c0 + R[1][1] * c1 + R[1][2] * c2 + R[1][3] * c3;
+            const double o2 = R[2][0] * c0 + R[2][1] * c1 + R[2][2] * c2 + R[2][3] * c3;
+            const double o3 = R[3][0] * c0 + R[3][1] * c1 + R[3][2] * c2 + R[3][3] * c3;
+            if (!(o3 > 1.0)) { tri[0].a = tri[1].a = tri[2].a = 0.f; tri[0].r = tri[0].g = tri[0].b = 0.f; tri[1] = tri[2] = tri[0]; break; }   // now behind the camera: not drawn
+            const double mx = o0 / o3, my = o1 / o3;
+            tri[k].x = (float)(mx * cx - mx * 2.0 + cx + vx);
+            tri[k].y = (float)(-(my * cy) + my + cy + vy);
+            tri[k].z = (float)(o2 / o3);
+        }
+        if (!ok) { tri[0] = sn.verts[t]; tri[1] = sn.verts[t + 1]; tri[2] = sn.verts[t + 2]; }
+        dst[t] = tri[0]; dst[t + 1] = tri[1]; dst[t + 2] = tri[2];
+    }
+    for (size_t t = n - n % 3; t < n; ++t) dst[t] = sn.verts[t];
+    std::memcpy(dst + n, static_cast<const Vertex*>(sn.vbuf.map) + sn.whole, 6 * sizeof(Vertex));
+    return &out;
+}
+void SetTrial(int where, unsigned look) { g_trialWhere.store(where, std::memory_order_relaxed); g_trialLook.store(look, std::memory_order_relaxed); }
+
+// What RecordScene and RecordInPass share: the newest snapshot, drawn with whatever pipeline is bound.
+std::uint32_t DrawSnap(VkCommandBuffer cmd, const SceneSnap& sn, std::uint32_t w, std::uint32_t h, bool depth, bool flipped, int extraMode, bool showDepth) {
+    VkViewport vp{ 0.f, 0.f, (float)w, (float)h, 0.f, 1.f };
+    VkRect2D sc{ { 0, 0 }, { w, h } };
+    g_fn.CmdSetViewport(cmd, 0, 1, &vp);
+    g_fn.CmdSetScissor(cmd, 0, 1, &sc);
+    VkDeviceSize zero = 0;
+    const Buffer* from = Reproject(sn);
+    g_fn.CmdBindVertexBuffers(cmd, 0, 1, &from->buf, &zero);
+    g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 1, &g_depthSet, 0, nullptr);
+    // a target that is upside down on the way to the screen: y runs the other way
+    PushConst pc{ 2.0f / (float)w, (flipped ? -2.0f : 2.0f) / (float)h, -1.0f, flipped ? 1.0f : -1.0f, -1, 0,
+                  1.0f / (float)w, 1.0f / (float)h, sn.a, sn.b, kOccludeBiasUnits, sn.fade };
+    std::uint32_t drawn = 0;
+    if (showDepth && depth && g_tex[kTexWhite].img && g_tex[kTexWhite].layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        pc.mode = kModeShowDepth | extraMode;
+        g_fn.CmdPushConstants(cmd, g_pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+        g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0, 1, &g_tex[kTexWhite].set, 0, nullptr);
+        g_fn.CmdDraw(cmd, 6, 1, sn.whole, 0);
+        pc.mode = -1;
+    }
+    for (const auto& b : sn.batches) {
+        const Texture& t = g_tex[b.tex];
+        if (!t.img || t.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;
+        int mode = b.mode;
+        if (!depth) mode &= ~(kModeDepth | kModeReversed);
+        mode |= extraMode;
+        if (pc.mode != mode) {
+            pc.mode = mode;
+            g_fn.CmdPushConstants(cmd, g_pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+        }
+        g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0, 1, &t.set, 0, nullptr);
+        g_fn.CmdDraw(cmd, b.count, 1, b.first, 0);
+        drawn += b.count;
+    }
+    return drawn;
+}
+
+bool RecordScene(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::uint32_t w, std::uint32_t h, unsigned look) {
+    if (!g_ready || !g_inScene.load(std::memory_order_relaxed)) return false;
+    const int newest = g_sceneNewest.load(std::memory_order_acquire);
+    if (newest < 0) return false;
+    const SceneSnap& sn = g_sceneSnaps[newest];
+    if (sn.batches.empty() || !sn.vbuf.buf || sn.w != w || sn.h != h) return false;
+    const std::size_t res = ResForFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
+    if (res == SIZE_MAX || !g_formats[res].scene) return false;
+    const bool depth = sn.depth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED &&
+                       (g_depthSamples == VK_SAMPLE_COUNT_1_BIT || g_formats[res].sceneMS);
+    const bool ms = depth && g_depthSamples != VK_SAMPLE_COUNT_1_BIT;
+
+    // the game's depth image, read only for the length of our pass and handed back as it was
+    if (depth)
+        ImageBarrier(cmd, g_depthImg, DepthAspects(), g_depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    VkRenderPassBeginInfo bi{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    bi.renderPass = rp; bi.framebuffer = fb; bi.renderArea = { { 0, 0 }, { w, h } };
+    g_fn.CmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
+    g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ms ? g_formats[res].sceneMS : g_formats[res].scene);
+    // the finished scene image: upside down on the way to the screen, and linear light
+    const bool flipped = (look & kLookTurned) == 0;
+    const std::uint32_t drawn = DrawSnap(cmd, sn, w, h, depth, flipped, ((look & kLookDepthTurned) ? kModeFlipped : 0) | kModeLinear, (look & kLookDepth) != 0);
+    g_fn.CmdEndRenderPass(cmd);
+    if (depth)
+        ImageBarrier(cmd, g_depthImg, DepthAspects(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+    if (!drawn) return false;
+    g_sceneDrawnAt.store(g_frameNoShared.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    static bool s_said = false;
+    if (!s_said) { s_said = true; Log("in scene: %u vertices drawn into the game's frame %ux%u, depth %d (multisampled %d)", drawn, w, h, depth ? 1 : 0, ms ? 1 : 0); }
+    return true;
+}
+
+// The in frame pipelines, for a render pass of the game's that has a depth attachment. Same layout
+// and vertex format as at present time; depth is neither tested nor written, the shader does the
+// comparison against the scene depth itself.
+bool PipesForGamePass(VkRenderPass rp, VkPipeline* pipe, VkPipeline* pipeMS) {
+    std::lock_guard<std::mutex> lk(g_gamePipesMu);
+    for (const auto& g : g_gamePipes) if (g.rp == rp) { *pipe = g.pipe; *pipeMS = g.pipeMS; return g.pipe != VK_NULL_HANDLE; }
+    if (!g_fragScene) return false;
+    VkPipelineShaderStageCreateInfo st[2]{};
+    st[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = g_vert; st[0].pName = "main";
+    st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_fragScene; st[1].pName = "main";
+    VkVertexInputBindingDescription bind{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attr[4] = {
+        { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 }, { 1, 0, VK_FORMAT_R32G32_SFLOAT, 12 },
+        { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 20 }, { 3, 0, VK_FORMAT_R32_SFLOAT, 8 },
+    };
+    VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
+    vin.vertexAttributeDescriptionCount = 4; vin.pVertexAttributeDescriptions = attr;
+    VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    vp.viewportCount = 1; vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };   // all off
+    VkPipelineColorBlendAttachmentState ba{};
+    ba.blendEnable = VK_TRUE;
+    ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; ba.colorBlendOp = VK_BLEND_OP_ADD;
+    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; ba.alphaBlendOp = VK_BLEND_OP_ADD;
+    ba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    cb.attachmentCount = 1; cb.pAttachments = &ba;
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+    VkGraphicsPipelineCreateInfo pi{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    pi.stageCount = 2; pi.pStages = st; pi.pVertexInputState = &vin; pi.pInputAssemblyState = &ia;
+    pi.pViewportState = &vp; pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pDepthStencilState = &dss;
+    pi.pColorBlendState = &cb; pi.pDynamicState = &ds; pi.layout = g_pipeLayout; pi.renderPass = rp; pi.subpass = 0;
+    GamePassPipes g{ rp, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipe) != VK_SUCCESS) g.pipe = VK_NULL_HANDLE;
+    if (g.pipe && g_fragSceneMS) {
+        st[1].module = g_fragSceneMS;
+        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipeMS) != VK_SUCCESS) g.pipeMS = VK_NULL_HANDLE;
+    }
+    if (g_gamePipes.size() < 8) g_gamePipes.push_back(g);         // a refusal is remembered too: not tried again every frame
+    *pipe = g.pipe; *pipeMS = g.pipeMS;
+    Log("in pass: pipelines for the game's interface pass: %s, multisampled depth %s", g.pipe ? "ok" : "REFUSED", g.pipeMS ? "ok" : "none");
+    return g.pipe != VK_NULL_HANDLE;
+}
+
+bool SceneDepthBorrow(VkCommandBuffer cmd, VkImage passDepth) {
+    if (!g_ready || !g_inScene.load(std::memory_order_relaxed)) return false;
+    if (!g_featDepth || !g_depthImg || !g_depthView || g_depthLayout == VK_IMAGE_LAYOUT_UNDEFINED) return false;
+    if (g_depthImg == passDepth) return false;                    // an image cannot be sampled by the pass that writes it
+    ImageBarrier(cmd, g_depthImg, DepthAspects(), g_depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    return true;
+}
+
+void SceneDepthReturn(VkCommandBuffer cmd) {
+    if (!g_depthImg || g_depthLayout == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    ImageBarrier(cmd, g_depthImg, DepthAspects(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+}
+
+bool RecordInPass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, bool depthBorrowed, unsigned look) {
+    if (!g_ready || !g_inScene.load(std::memory_order_relaxed)) return false;
+    const int newest = g_sceneNewest.load(std::memory_order_acquire);
+    if (newest < 0) return false;
+    const SceneSnap& sn = g_sceneSnaps[newest];
+    if (sn.batches.empty() || !sn.vbuf.buf || sn.w != w || sn.h != h) return false;
+    VkPipeline pipe = VK_NULL_HANDLE, pipeMS = VK_NULL_HANDLE;
+    if (!PipesForGamePass(gameRp, &pipe, &pipeMS)) return false;
+    const bool depth = depthBorrowed && sn.depth && (g_depthSamples == VK_SAMPLE_COUNT_1_BIT || pipeMS);
+    const bool ms = depth && g_depthSamples != VK_SAMPLE_COUNT_1_BIT;
+    g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ms ? pipeMS : pipe);
+    // that target too is upside down on the way to the screen, the same way up as the scene depth
+    const bool flipped = (look & kLookTurned) == 0;
+    const std::uint32_t drawn = DrawSnap(cmd, sn, w, h, depth, flipped, (look & kLookDepthTurned) ? kModeFlipped : 0, (look & kLookDepth) != 0);
+    if (!drawn) return false;
+    g_sceneDrawnAt.store(g_frameNoShared.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    static bool s_said = false;
+    if (!s_said) { s_said = true; Log("in pass: %u vertices drawn inside the game's interface pass %ux%u, depth %d (multisampled %d)", drawn, w, h, depth ? 1 : 0, ms ? 1 : 0); }
+    return true;
+}
+
 void Shutdown() {
     if (g_dev && g_fn.DeviceWaitIdle) g_fn.DeviceWaitIdle(g_dev);
     while (!g_chains.empty()) UnregisterSwapchain(g_chains.back().sc);
     if (g_depthView) { g_fn.DestroyImageView(g_dev, g_depthView, nullptr); g_depthView = VK_NULL_HANDLE; }
     g_depthImg = VK_NULL_HANDLE; g_depthFmt = VK_FORMAT_UNDEFINED; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     for (auto& t : g_tex) DestroyTexture(t);
+    for (auto& d : g_drawBufs) DestroyBuffer(d);
+    for (auto& d : g_drawRetired) DestroyBuffer(d);
+    g_drawRetired.clear();
+    {
+        std::lock_guard<std::mutex> lk(g_gamePipesMu);
+        for (auto& g : g_gamePipes) { if (g.pipe) g_fn.DestroyPipeline(g_dev, g.pipe, nullptr); if (g.pipeMS) g_fn.DestroyPipeline(g_dev, g.pipeMS, nullptr); }
+        g_gamePipes.clear();
+    }
     for (auto& r : g_formats) {
         if (r.pipe) g_fn.DestroyPipeline(g_dev, r.pipe, nullptr);
         if (r.pipeMS) g_fn.DestroyPipeline(g_dev, r.pipeMS, nullptr);
+        if (r.scene) g_fn.DestroyPipeline(g_dev, r.scene, nullptr);
+        if (r.sceneMS) g_fn.DestroyPipeline(g_dev, r.sceneMS, nullptr);
         if (r.rp)   g_fn.DestroyRenderPass(g_dev, r.rp, nullptr);
     }
     g_formats.clear();
     if (g_vert)         g_fn.DestroyShaderModule(g_dev, g_vert, nullptr);
     if (g_fragMS)       g_fn.DestroyShaderModule(g_dev, g_fragMS, nullptr);
+    if (g_fragScene)    g_fn.DestroyShaderModule(g_dev, g_fragScene, nullptr);
+    if (g_fragSceneMS)  g_fn.DestroyShaderModule(g_dev, g_fragSceneMS, nullptr);
+    g_fragScene = g_fragSceneMS = VK_NULL_HANDLE;
+    g_sceneNewest.store(-1);
+    for (auto& sn : g_sceneSnaps) { DestroyBuffer(sn.vbuf); sn.batches.clear(); }
     if (g_frag)         g_fn.DestroyShaderModule(g_dev, g_frag, nullptr);
     if (g_sampler)      g_fn.DestroySampler(g_dev, g_sampler, nullptr);
     if (g_depthSampler) g_fn.DestroySampler(g_dev, g_depthSampler, nullptr);
@@ -974,13 +1370,18 @@ void DrawLine(float x0, float y0, float x1, float y1, float thickness,
     float len = std::sqrt(dx * dx + dy * dy);
     if (len < 0.001f) return;
     if (thickness < 1.0f) thickness = 1.0f;
-    float hx = (-dy / len) * thickness * 0.5f;
-    float hy = ( dx / len) * thickness * 0.5f;
+    // A pixel wider on each side than the line: the shader fades that rim by how much of each pixel
+    // the line covers. A bare quad this thin is drawn without any smoothing and comes out in steps,
+    // and broken where it slips between pixel centres.
+    const float half = thickness * 0.5f, reach = half + 1.0f;
+    float hx = (-dy / len) * reach;
+    float hy = ( dx / len) * reach;
     const float px[4] = { x0 + hx, x1 + hx, x0 - hx, x1 - hx };
     const float py[4] = { y0 + hy, y1 + hy, y0 - hy, y1 - hy };
     const float pz[4] = { g_z[0], g_z[1], g_z[0], g_z[1] };
-    const float uv[4] = { 0.5f, 0.5f, 0.5f, 0.5f };
-    PushQuad(kTexWhite, DrawMode(0), px, py, pz, uv, uv, r, g, b, a);
+    const float across[4] = { reach, reach, -reach, -reach };
+    const float width[4]  = { half, half, half, half };
+    PushQuad(kTexWhite, DrawMode(0) | kModeLine, px, py, pz, across, width, r, g, b, a);
 }
 
 void DrawFillQuad(float x0, float y0, float x1, float y1, float x2, float y2, float x3, float y3,

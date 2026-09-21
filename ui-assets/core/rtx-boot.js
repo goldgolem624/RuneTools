@@ -257,7 +257,10 @@
       if (vk && vk !== 27) { markerKb[markerCapturing] = vk; saveMarkerKb(); }
       markerCapturing = null; paintKbKeys();
     }, true);
-    pushOverlay();
+    // Only once the saved settings are in: pushOverlay() saves what it pushes, and the settings
+    // load keeps whatever is already in memory, so pushing the defaults here used to overwrite
+    // the saved overlay settings on every start.
+    Promise.resolve(_prefsInitP).then(() => { try { pushOverlay(); } catch (e) {} }, () => { try { pushOverlay(); } catch (e) {} });
     pluginBrokerInit();
     renderMenubar();
     applyToastPos();   // defaults until wmLayoutRestore supplies the saved placement

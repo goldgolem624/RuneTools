@@ -277,6 +277,27 @@
   .status.err   { background: var(--err-soft);  color: var(--err);  border-color: rgba(255,107,107,0.30); }
   .status.warn  { background: var(--warn-soft); color: var(--warn); border-color: rgba(245,178,65,0.30); }
 
+  /* Missing files: a strip across the top, under the title bar. */
+  .miss {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(240,98,84,0.45);
+    background: linear-gradient(90deg, rgba(240,98,84,0.22), rgba(245,178,65,0.10));
+    color: var(--text);
+    animation: card-in var(--tx-med) var(--ease-out);
+  }
+  .miss[hidden] { display: none; }
+  .miss-icon { flex: none; width: 22px; height: 22px; color: #f06254; }
+  .miss-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .miss-text { flex: 1 1 320px; min-width: 0; }
+  .miss-title { font-weight: 700; font-size: 13px; }
+  .miss-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; overflow-wrap: anywhere; }
+  .miss-actions { display: flex; gap: 8px; flex: none; }
+  .miss-actions button { padding: 6px 12px; font-size: 12px; }
+  .miss-bar { flex: 1 0 100%; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.10); overflow: hidden; }
+  .miss-bar[hidden] { display: none; }
+  .miss-bar i { display: block; height: 100%; width: 0; background: var(--brass); transition: width 0.3s ease; }
+
   /* Update banner: accent when optional, amber when below minVersion (Launch gated). */
   .upd {
     position: relative; overflow: hidden;
@@ -2450,6 +2471,18 @@
     <button class="tb-btn tb-close" id="tb-close" title="Close" type="button"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
   </div>
 
+  <div class="miss" id="miss-banner" role="alert" hidden>
+    <span class="miss-icon"><svg viewBox="0 0 24 24"><path d="M12 3 2.5 20h19z"/><path d="M12 10v4.5M12 17.5v.01"/></svg></span>
+    <div class="miss-text">
+      <div class="miss-title" id="miss-title">RuneTools files are missing</div>
+      <div class="miss-sub" id="miss-sub"></div>
+    </div>
+    <div class="miss-actions">
+      <button class="primary" id="miss-repair-btn" type="button">Repair</button>
+      <button class="ghost" id="miss-folder-btn" type="button">Open folder</button>
+    </div>
+    <div class="miss-bar" id="miss-bar" hidden><i id="miss-bar-fill"></i></div>
+  </div>
 
   <main>
     <div class="home">
@@ -3393,6 +3426,74 @@
   }
 
   $('upd-now-btn').addEventListener('click', beginUpdate);
+
+  // Missing files. Antivirus software removes a file it dislikes without a word, and the feature
+  // that needed it then simply does nothing: say which files are gone and offer to put them back.
+  // A file can go at any time (often the moment it is first used), so this keeps looking.
+  const MISSING_POLL_MS = 30 * 1000;
+  let missRepairing = false;
+  function showMissing(files) {
+    if (missRepairing) return;   // the banner is telling the repair's story
+    const b = $('miss-banner');
+    if (!files.length) { b.hidden = true; return; }
+    const shown = files.slice(0, 4).join(', ') + (files.length > 4 ? ' and ' + (files.length - 4) + ' more' : '');
+    $('miss-title').textContent = files.length === 1 ? 'A RuneTools file is missing' : files.length + ' RuneTools files are missing';
+    $('miss-sub').textContent = 'Missing: ' + shown + '. Antivirus software may have removed ' + (files.length === 1 ? 'it' : 'them') +
+      '. Add the RuneTools folder to its exclusions, then press Repair.';
+    b.hidden = false;
+  }
+  async function checkMissing() {
+    if (location.hash === '#missing-preview') return;
+    let files = [];
+    try { files = (JSON.parse(await bridge().installHealth()) || {}).missing || []; } catch (e) { return; }
+    showMissing(files);
+  }
+  $('miss-folder-btn').addEventListener('click', () => { try { bridge().openInstallDir(); } catch (e) {} });
+  // Repair: the installer of this same version is fetched, checked and run, and every file comes
+  // back. The whole of it is told in the banner, in a line and a bar.
+  function missSay(title, sub, pct) {
+    $('miss-title').textContent = title; $('miss-sub').textContent = sub;
+    $('miss-bar').hidden = pct == null;
+    if (pct != null) $('miss-bar-fill').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  }
+  function missRepairFailed(why) {
+    missRepairing = false;
+    const btn = $('miss-repair-btn'); btn.disabled = false; btn.textContent = 'Try again';
+    missSay('The repair did not finish', why, null);
+  }
+  $('miss-repair-btn').addEventListener('click', async () => {
+    const btn = $('miss-repair-btn');
+    let clients = 0;
+    try { clients = Number(await bridge().clientsRunning()) || 0; } catch (e) {}
+    if (clients > 0) {   // a running game keeps the files open and the installer cannot replace them
+      missSay('Close RuneScape first', 'The game is still open, so the files cannot be replaced. Close it, then press Repair.', null);
+      return;
+    }
+    missRepairing = true; btn.disabled = true;
+    missSay('Repairing RuneTools', 'Starting...', 0);
+    try { await bridge().startRepair(); } catch (e) { missRepairFailed('RuneTools could not start the repair. Reopen the launcher and try again.'); return; }
+    const tick = async () => {
+      let st = { phase: 'idle', pct: 0, detail: '' };
+      try { st = JSON.parse(await bridge().updateState()); } catch (e) {}
+      if (st.phase === 'error') {
+        missRepairFailed((st.detail || 'Something went wrong') + '. Check your connection and try again, or download the installer from runetools.io.');
+        return;
+      }
+      if (st.phase === 'downloading') missSay('Repairing RuneTools', (st.detail || 'Downloading the installer') + (st.pct ? ' ' + st.pct + '%' : '...'), st.pct || 0);
+      else if (st.phase === 'verifying') missSay('Repairing RuneTools', 'Checking the download...', 100);
+      else if (st.phase === 'launching') missSay('Repairing RuneTools', 'Putting the files back. RuneTools closes and reopens by itself in a few seconds.', 100);
+      setTimeout(tick, st.phase === 'launching' ? 1000 : 400);
+    };
+    tick();
+  });
+  // Ctrl+Shift+M shows the banner with sample files, to see how it looks; again to take it away.
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey && e.shiftKey && (e.key === 'M' || e.key === 'm'))) return;
+    if ($('miss-banner').hidden) showMissing(['rtxscene.dll', 'panel_overlay.js']); else checkMissing();
+  });
+  if (location.hash === '#missing-preview') showMissing(['rtxscene.dll', 'panel_overlay.js']);
+  checkMissing();
+  setInterval(checkMissing, MISSING_POLL_MS);
   $('upd-dismiss-btn').addEventListener('click', dismissUpdate);
   $('upd-notes-btn').addEventListener('click', () => {
     const n = $('upd-notes');
@@ -4135,7 +4236,6 @@
   function renderSelect(list, runningSet) {
     const sel = $('acct-select'), play = $('play-btn'), hint = $('play-hint');
     if (!sel) return;
-    if (acctSel === null) acctSel = metaSelectedLoad();
     sel.innerHTML = '';
     if (!list || !list.length) {
       const o = document.createElement('option'); o.value = ''; o.textContent = 'No saved accounts yet';
@@ -4145,6 +4245,16 @@
       return;
     }
     sel.disabled = false;
+    if (acctSel === null) {
+      // opens on the character played last; the saved pick only breaks a tie or fills in when none has played
+      const saved = metaSelectedLoad();
+      let best = null, bestAt = 0;
+      for (const a of list) {
+        const m = metaFor(a.display_name), at = (m && m.lastPlayed) || 0;
+        if (at > bestAt) { best = a; bestAt = at; }
+      }
+      acctSel = best ? best.id : (list.some(a => a.id === saved) ? saved : list[0].id);
+    }
     let chosen = null;
     for (const a of list) {
       const running = runningSet.has(lcKey(a.display_name));
@@ -4157,7 +4267,8 @@
     }
     if (!chosen) chosen = list.find(a => !runningSet.has(lcKey(a.display_name))) || null;
     sel.value = chosen ? chosen.id : (list[0] && list[0].id) || '';
-    acctSel = sel.value;
+    // a pick that is running right now stays the pick: the stand-in shown meanwhile is not remembered
+    if (!list.some(a => a.id === acctSel)) acctSel = sel.value;
     const idle = !!chosen;
     play.disabled = !idle || updateMandatory;
     const m = chosen ? metaFor(chosen.display_name) : null;
@@ -4169,6 +4280,7 @@
     const sel = $('acct-select'), play = $('play-btn');
     const id = sel && sel.value;
     if (!id) return;
+    acctSel = id;
     if (updateMandatory) { showStatus($('main-status'), 'err', 'This version is out of date. Update first.'); return; }
     play.disabled = true; play.textContent = 'Launching...';
     const name = (sel.options[sel.selectedIndex] || {}).textContent || 'account';

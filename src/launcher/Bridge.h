@@ -16,6 +16,10 @@ void SetLauncherWindow(void* hwnd);
 void SaveWindowPos(std::uint32_t pid, int x, int y);
 bool LoadWindowPos(std::uint32_t pid, int& x, int& y);
 
+// Grand Exchange price of an item from the cached price relay: instant buy, else instant sell.
+// 0 when the relay has no price for it (or has not answered yet; asking starts the fetch).
+long long ItemGePrice(int item_id);
+
 // Screenshot keybind (virtual-key, 0 = unbound); the Dock host proc fires the capture on key down.
 int  ScreenshotVk();
 int  HidePanelsVk();          // 0 when unbound

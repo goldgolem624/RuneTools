@@ -26,6 +26,7 @@
 #include "../../companion/HudShare.h"
 #include "../reader/Reader.h"
 #include "../shared/Log.h"
+#include "IpcGuard.h"
 #include "../shared/MachineFingerprint.h"
 #include "Http.h"
 #include "Crypto.h"
@@ -202,11 +203,20 @@ HBITMAP capture_companion_dib(std::uint32_t pid, int& outW, int& outH) {
     rtx::capture::Share* sh = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_capmu);
+        // A new session renames the channels. Entries are dropped rather
+        // than closed: the module may still be writing through its own
+        // mapping of the old section.
+        static std::uint32_t s_capGen = 0;
+        if (rtx::ipc::SessionChanged(s_capGen)) g_capshares.clear();
         auto it = g_capshares.find(pid);
         if (it == g_capshares.end()) {
-            wchar_t name[64];
+            wchar_t name[rtx::ipc::kNameChars];
             rtx::capture::MakeSectionName(pid, name);
-            HANDLE map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, (DWORD)sizeof(rtx::capture::Share), name);
+            bool capPre = false;
+            HANDLE map = rtx::ipc::CreateSection(name, (std::uint32_t)sizeof(rtx::capture::Share), capPre);
+            if (capPre)
+                rtx::log::Launcher("ipc: capture section for pid " + std::to_string(pid) +
+                                   " was already present at create");
             if (!map) return nullptr;
             auto* p = reinterpret_cast<rtx::capture::Share*>(MapViewOfFile(map, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::capture::Share)));
             if (!p) { CloseHandle(map); return nullptr; }
@@ -555,7 +565,7 @@ JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
                      ",\"d\":\"" + d + "\"}";
         };
         {
-            wchar_t name[64]; rtx::frame::MakeSectionName(pid, name);
+            wchar_t name[rtx::ipc::kNameChars]; rtx::frame::MakeSectionName(pid, name);
             HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
             int ok = 2; std::string d = "inactive (loads with the game client)";
             if (m) {
@@ -587,7 +597,7 @@ JSValueRef ReaderHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
         }
         {
             // Chat capture: framer hook + op-0x15 ring.
-            wchar_t name[64]; rtx::netprobe::MakeSectionName(pid, name);
+            wchar_t name[rtx::ipc::kNameChars]; rtx::netprobe::MakeSectionName(pid, name);
             HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
             int ok = 2; std::string d = "inactive (loads with the game client)";
             if (m) {
@@ -840,11 +850,17 @@ std::unordered_map<std::uint32_t, HudMap> g_hudMaps;
 std::mutex g_hudMu;
 HudMap* HudFor(std::uint32_t pid) {
     std::lock_guard<std::mutex> lk(g_hudMu);
+    // See the note in capture_companion_dib: dropped, not closed.
+    static std::uint32_t s_hudGen = 0;
+    if (rtx::ipc::SessionChanged(s_hudGen)) g_hudMaps.clear();
     auto it = g_hudMaps.find(pid);
     if (it != g_hudMaps.end()) return &it->second;
-    wchar_t name[64]; rtx::hud::MakeSectionName(pid, name);
-    HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
-                                  sizeof(rtx::hud::Share), name);
+    wchar_t name[rtx::ipc::kNameChars]; rtx::hud::MakeSectionName(pid, name);
+    bool hudPre = false;
+    HANDLE h = rtx::ipc::CreateSection(name, (std::uint32_t)sizeof(rtx::hud::Share), hudPre);
+    if (hudPre)
+        rtx::log::Launcher("ipc: hud section for pid " + std::to_string(pid) +
+                           " was already present at create");
     if (!h) return nullptr;
     auto* s = reinterpret_cast<rtx::hud::Share*>(
         MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::hud::Share)));
@@ -1706,6 +1722,61 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc >= 15) c.np_objects = JSValueToBoolean(ctx, argv[14]);
     if (argc >= 17) c.occlude    = JSValueToBoolean(ctx, argv[16]);
     if (argc >= 18) c.true_tile  = JSValueToBoolean(ctx, argv[17]);
+    if (argc >= 19) c.hover_outline = JSValueToBoolean(ctx, argv[18]);
+    // outline colours: scenery, NPCs, attackable (the game's highlight categories 5, 3 and 4)
+    static const int kHoverCats[] = { 5, 3, 4 };
+    for (int i = 0; i < 3 && (size_t)(19 + i) < argc; ++i)
+        c.hover_rgb[kHoverCats[i]] = (std::uint32_t)js_int(ctx, argv[19 + i]) & 0xFFFFFFu;
+    if (argc >= 24) c.tooltip_values = JSValueToBoolean(ctx, argv[23]);
+    if (argc >= 29) {
+        c.mark_test = JSValueToBoolean(ctx, argv[24]);
+        const int model = js_int(ctx, argv[25]), style = js_int(ctx, argv[26]), height = js_int(ctx, argv[27]);
+        // anything else draws no tile
+        static const int kTileModels[] = { 140133 };   // the one frame that marks a tile
+        c.mark_model = 0;
+        for (int known : kTileModels) if (model == known) c.mark_model = (std::uint32_t)known;
+        c.mark_style = (std::uint32_t)(style < 0 ? 0 : style > 11 ? 11 : style);   // the game has twelve
+        c.mark_height = (std::uint32_t)(height < 0 ? 0 : height > 255 ? 255 : height);
+        // anything else draws none
+        static const int kPointerModels[] = { 92026 };   // the chevrons the game itself lays at the player's feet
+        const int pointer = js_int(ctx, argv[28]);
+        c.mark_pointer = -1;
+        for (int known : kPointerModels) if (pointer == known) c.mark_pointer = known;
+    }
+    if (argc >= 33) {
+        auto width = [&](JSValueRef v) { int w = js_int(ctx, v); return (std::uint32_t)(w < 0 ? 0 : w > 4 ? 4 : w); };
+        c.mark_tile_rgb = (std::uint32_t)js_int(ctx, argv[29]) & 0xFFFFFFu;  c.mark_tile_width = width(argv[30]);
+        c.mark_arrow_rgb = (std::uint32_t)js_int(ctx, argv[31]) & 0xFFFFFFu; c.mark_arrow_width = width(argv[32]);
+    }
+    if (argc >= 35) {
+        const int range = js_int(ctx, argv[33]), scale = js_int(ctx, argv[34]);
+        c.mark_range = (std::uint32_t)(range < 1 ? 1 : range > 90 ? 90 : range);
+        c.mark_pointer_scale = (std::uint32_t)(scale < 100 ? 100 : scale > 400 ? 400 : scale);
+    }
+    if (argc >= 37) {
+        const int reach = js_int(ctx, argv[35]);
+        c.mark_pointer_reach = (std::uint32_t)(reach < 0 ? 0 : reach > 1024 ? 1024 : reach);
+        c.mark_arrow = JSValueToBoolean(ctx, argv[36]);
+    }
+    if (argc >= 42) {
+        const int kind = js_int(ctx, argv[37]);
+        c.mark_kind = (kind == 0 || kind == 1) ? kind : -1;
+        c.mark_x = js_int(ctx, argv[38], 0, 0, 16383); c.mark_y = js_int(ctx, argv[39], 0, 0, 16383);
+        c.mark_plane = js_int(ctx, argv[40], 0, 0, 3);
+        c.mark_npc_uid = js_int(ctx, argv[41], -1, -1, 65535);
+    }
+    if (argc >= 45) {
+        c.mark_path = JSValueToBoolean(ctx, argv[42]);
+        c.mark_from_x = js_int(ctx, argv[43], 0, 0, 16383); c.mark_from_y = js_int(ctx, argv[44], 0, 0, 16383);
+    }
+    {
+        // outline widths for scenery, NPCs and attackable NPCs (highlight categories 5, 3, 4); one value alone sets all three
+        auto width = [&](size_t i) { int w = js_int(ctx, argv[i]); return (std::uint32_t)(w < 0 ? 0 : w > 16 ? 16 : w); };
+        if (argc >= 23) c.hover_width[5] = c.hover_width[3] = c.hover_width[4] = width(22);
+        if (argc >= 47) { c.hover_width[3] = width(45); c.hover_width[4] = width(46); }
+        if (argc >= 48) c.occlude_hide = JSValueToBoolean(ctx, argv[47]);
+        if (argc >= 49) c.inframe_trial = JSValueToBoolean(ctx, argv[48]);
+    }
     if (argc >= 16) c.np_range   = js_int(ctx, argv[15]);
     rtx::overlay::Configure(c);
     return JSValueMakeBoolean(ctx, true);
@@ -3207,6 +3278,29 @@ JSValueRef PricesCached(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::lock_guard<std::mutex> lk(g_prices_mu);
     return utf8_to_js(ctx, g_prices_json);
 }
+}  // namespace
+
+long long ItemGePrice(int item_id) {
+    if (item_id < 0) return 0;
+    prices_kick(kPricesLatestPath, 1u * 1024 * 1024, &g_prices_json, &g_prices_etag,
+                g_prices_ms, g_prices_get_ms, g_prices_fetching, 120'000, 30'000);
+    // {"data":{"<id>":{"high":N,"low":N,...},...}}: found by key, the body is about a megabyte
+    const std::string key = "\"" + std::to_string(item_id) + "\":{";
+    std::lock_guard<std::mutex> lk(g_prices_mu);
+    auto p = g_prices_json.find(key);
+    if (p == std::string::npos) return 0;
+    const auto end = g_prices_json.find('}', p);
+    auto field = [&](const char* name) -> long long {
+        auto f = g_prices_json.find(name, p);
+        if (f == std::string::npos || f > end) return 0;
+        return std::atoll(g_prices_json.c_str() + f + std::strlen(name));
+    };
+    const long long high = field("\"high\":"), low = field("\"low\":");
+    return high > 0 ? high : low > 0 ? low : 0;
+}
+
+namespace {
+
 JSValueRef PricesMapping(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
     prices_kick(kPricesMappingPath, 4u * 1024 * 1024, &g_prices_map_json, &g_prices_map_etag,
@@ -5004,8 +5098,11 @@ std::string  g_pluginListErr;               // "" = none
 bool         g_pluginListInFlight = false;
 ULONGLONG    g_pluginListAt = 0;            // tick of the last success
 
+void plugin_check_revocations(bool force);   // defined below, self-throttled to hourly
+
 JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t, const JSValueRef[], JSValueRef*) {
+    plugin_check_revocations(false);
     std::string body, err;
     {
         std::lock_guard<std::mutex> lk(g_pluginListMu);
@@ -5032,6 +5129,179 @@ JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (body.empty() && !err.empty())
         return utf8_to_js(ctx, "{\"error\":\"" + json_escape(err) + "\"}");
     return utf8_to_js(ctx, body.empty() ? std::string("{}") : body);
+}
+
+// ---- Revocation list -------------------------------------------------
+// The launcher polls a signed list of withdrawn plugin versions and removes
+// any that are installed.
+//
+// The list is signed with the same pinned key as bundles, over
+//   "rtx-plugin-revocation-v1" + issuedAt + sorted "id|version|hash" lines
+// and is only applied once that verifies. issuedAt is part of the signed
+// message and the highest value seen is kept on disk, so the list only ever
+// moves forward.
+
+
+constexpr wchar_t kPluginRevokePath[] = L"/api/plugins/revocations";
+
+std::filesystem::path plugin_revocation_state_path() {
+    auto dir = alerts_user_dir();
+    if (dir.empty()) return {};
+    return dir / L"plugin-revocations.txt";
+}
+
+long long plugin_revocation_floor() {
+    auto p = plugin_revocation_state_path();
+    if (p.empty()) return 0;
+    std::string s = alerts_read_file(p);
+    return s.empty() ? 0 : std::atoll(s.c_str());
+}
+
+void plugin_revocation_store(long long issuedAt) {
+    auto p = plugin_revocation_state_path();
+    if (p.empty()) return;
+    std::ofstream f(p, std::ios::trunc);
+    if (f) f << issuedAt;
+}
+
+// Pull "id", "version" and "hash" out of each object of the "entries" array.
+struct RevokedEntry { std::string id, version, hash; };
+
+std::vector<RevokedEntry> plugin_parse_revocations(const std::string& body) {
+    std::vector<RevokedEntry> out;
+    auto arr = body.find("\"entries\"");
+    if (arr == std::string::npos) return out;
+    arr = body.find('[', arr);
+    if (arr == std::string::npos) return out;
+
+    int depth = 0;
+    std::size_t objStart = std::string::npos;
+    for (std::size_t i = arr; i < body.size(); ++i) {
+        char c = body[i];
+        if (c == '[' && depth == 0) { depth = 1; continue; }
+        if (c == ']' && depth == 1) break;
+        if (c == '{') { if (depth == 1) objStart = i; ++depth; continue; }
+        if (c == '}') {
+            --depth;
+            if (depth == 1 && objStart != std::string::npos) {
+                std::string obj = body.substr(objStart, i - objStart + 1);
+                RevokedEntry e;
+                e.id      = json_str_field(obj, "id");
+                e.version = json_str_field(obj, "version");
+                e.hash    = json_str_field(obj, "hash");
+                if (!e.id.empty() && !e.version.empty()) out.push_back(e);
+                objStart = std::string::npos;
+            }
+        }
+    }
+    return out;
+}
+
+std::string plugin_revocation_message(long long issuedAt, const std::vector<RevokedEntry>& entries) {
+    std::vector<std::string> lines;
+    lines.reserve(entries.size());
+    for (const auto& e : entries) {
+        std::string h = e.hash;
+        for (char& c : h) c = (char)std::tolower((unsigned char)c);
+        lines.push_back(e.id + "|" + e.version + "|" + h);
+    }
+    std::sort(lines.begin(), lines.end());
+
+    std::string msg = "rtx-plugin-revocation-v1\n" + std::to_string(issuedAt) + "\n";
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (i) msg += "\n";
+        msg += lines[i];
+    }
+    return msg;
+}
+
+// Returns the number of plugins removed, or -1 if the list was rejected.
+int plugin_apply_revocations(const std::string& body) {
+    long long issuedAt = json_num_field(body, "issuedAt");
+    if (issuedAt <= 0) return -1;
+
+    std::string sigB64 = json_str_field(body, "signature");
+    std::vector<std::uint8_t> sig;
+    if (!plugin_b64_decode(sigB64, sig) || sig.size() != 64) {
+        rtx::log::Launcher("revocations: missing or malformed signature, list ignored");
+        return -1;
+    }
+
+    auto entries = plugin_parse_revocations(body);
+    std::string msg = plugin_revocation_message(issuedAt, entries);
+    if (!crypto::VerifyEcdsaP256(reinterpret_cast<const std::uint8_t*>(msg.data()), msg.size(),
+                                 sig.data(), sig.size(), kPluginPubKey, sizeof(kPluginPubKey))) {
+        rtx::log::Launcher("revocations: signature verification failed, list ignored");
+        return -1;
+    }
+
+    // Older than something already applied.
+    long long floor = plugin_revocation_floor();
+    if (issuedAt < floor) {
+        rtx::log::Launcher("revocations: stale list (issuedAt " + std::to_string(issuedAt) +
+                           " < " + std::to_string(floor) + "), ignored");
+        return -1;
+    }
+
+    auto root = plugin_install_root();
+    int removed = 0;
+    if (!root.empty()) {
+        for (const auto& e : entries) {
+            std::string id = sanitize_plugin_id(e.id);
+            if (id.empty()) continue;
+            auto dir = root / id;
+            std::error_code ec;
+            if (!std::filesystem::exists(dir, ec)) continue;
+
+            // Only the revoked version goes; a later fixed release may be installed.
+            std::string man = alerts_read_file(dir / "manifest.json");
+            if (man.empty()) continue;
+            if (json_str_field(man, "version") != e.version) continue;
+
+            std::error_code rec;
+            std::filesystem::remove_all(dir, rec);
+            if (!rec) {
+                ++removed;
+                rtx::log::Launcher("revocations: removed " + id + " " + e.version);
+            } else {
+                rtx::log::Launcher("revocations: FAILED to remove " + id + " " + e.version);
+            }
+        }
+    }
+
+    plugin_revocation_store(issuedAt);
+    return removed;
+}
+
+// A deadline rather than a plain flag: http::Enqueue can drop a job (pool
+// stopping, or a full queue evicting the oldest), and a flag cleared only from
+// inside the job would then stay set and stop revocations for the whole run.
+std::atomic<ULONGLONG> g_revokeInFlightUntil{0};
+ULONGLONG              g_revokeAt = 0;
+
+// Checked at startup and hourly thereafter.
+void plugin_check_revocations(bool force) {
+    ULONGLONG now = GetTickCount64();
+    if (!force && g_revokeAt && now - g_revokeAt < 3600000) return;
+
+    ULONGLONG busy = g_revokeInFlightUntil.load(std::memory_order_relaxed);
+    if (busy > now) return;                       // one in flight, or its deadline has not passed
+    if (!g_revokeInFlightUntil.compare_exchange_strong(busy, now + 120000)) return;
+    g_revokeAt = now;
+
+    http::Enqueue([] {
+        auto r = http::Get(kUpdateHost, kPluginRevokePath, {});
+        if (r.ok && r.status == 200 && !r.body.empty()) {
+            guarded("plugin revocations", [&] {
+                int n = plugin_apply_revocations(r.body);
+                if (n > 0) rtx::log::Launcher("revocations: " + std::to_string(n) + " plugin(s) removed");
+            });
+        } else {
+            // A fetch failure leaves the previous state in place and retries later.
+            rtx::log::Launcher("revocations: fetch failed, HTTP " + std::to_string(r.status));
+        }
+        g_revokeInFlightUntil.store(0, std::memory_order_relaxed);
+    });
 }
 
 std::mutex   g_installMu;
@@ -5454,6 +5724,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "hidePanelsKeybindSet", HidePanelsKeybindSet);
     install_fn(ctx, ns, "openScreenshots",    OpenScreenshots);
     install_fn(ctx, ns, "version",           Version);
+    install_fn(ctx, ns, "installHealth",     InstallHealth);
+    install_fn(ctx, ns, "startRepair",       StartRepair);
+    install_fn(ctx, ns, "openInstallDir",    OpenInstallDir);
     install_fn(ctx, ns, "latestVersion",     LatestVersion);
     install_fn(ctx, ns, "latestVersionCached", LatestVersionCached);
     install_fn(ctx, ns, "newsCached",        NewsCached);
@@ -5557,6 +5830,9 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pluginDevStamp",    PluginDevStamp);
 
     install_fn(ctx, ns, "pluginMarketList",        PluginMarketList);
+    // Runs once as soon as the bridge is up, then hourly, so a withdrawn
+    // plugin is removed before the UI can mount it.
+    plugin_check_revocations(false);
     install_fn(ctx, ns, "pluginMarketInstall",     PluginMarketInstall);
     install_fn(ctx, ns, "pluginInstallStatus",     PluginInstallStatus);
     install_fn(ctx, ns, "pluginInstalledList",     PluginInstalledList);

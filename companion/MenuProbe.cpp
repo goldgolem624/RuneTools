@@ -298,7 +298,7 @@ bool EntryTag(std::uint64_t rec, std::uint64_t& tag, std::int32_t& prio);
 int RuleOrder(std::uint64_t begin, int n, const int* rank, const bool* fixedSlot, int* order);
 
 rtx::menu::Share* MapShare() {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::menu::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                   (DWORD)sizeof(rtx::menu::Share), name);
@@ -1220,6 +1220,34 @@ bool Install() {
     Log("Hooked. Hover something in game; the next %d menus are recorded here.", kMaxDumps);
     ScanHoverSlotRefs();
     return true;
+}
+
+// Re-create the share under the current session names. The hooks stay where
+// they are; only the published view moves. The old view is left mapped because
+// the detours write through it from their own threads.
+void Rebind() {
+    static std::uint32_t s_gen = 0;
+    if (!rtx::ipc::SessionChanged(s_gen)) return;
+    if (!g_installed) return;              // nothing published yet
+
+    rtx::menu::Share* fresh = MapShare();
+    if (!fresh) return;
+    fresh->magic = rtx::menu::kMagic;
+    fresh->version = rtx::menu::kVersion;
+    fresh->pid = GetCurrentProcessId();
+    fresh->flags = rtx::menu::kFlagHooked;
+    fresh->enable = 0; fresh->seq = 0; fresh->count = 0;
+    fresh->pinSeq = 0; fresh->pinCount = 0;
+    for (int i = 0; i < 4; ++i) { fresh->diag[i] = 0; fresh->stage[i] = 0; }
+    for (auto& l : fresh->lane) l = 0;
+    fresh->lastTarget[0] = 0; fresh->lastTargeted = 0;
+    fresh->lastVerb[0] = 0;
+    fresh->promoState = rtx::menu::kPromoIdle;
+    fresh->promoPrio = 0; fresh->promoPartnerPrio = 0; fresh->promoVerb[0] = 0;
+    fresh->promoSource = rtx::menu::kPromoSrcNone;
+
+    g_share = fresh;                       // publish last, fully built
+    Log("session: menu share rebound");
 }
 
 void Poll() {

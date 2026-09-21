@@ -4,6 +4,7 @@
 #include "Bridge.h"
 #include "Dock.h"
 #include "../shared/Log.h"
+#include "IpcGuard.h"
 #include "../../companion/FrameShare.h"
 #include "../../companion/InputShare.h"
 
@@ -62,6 +63,8 @@ struct Ui : public LoadListener, public ViewListener {
     std::string   pendingRects;              // consume rects published before Bind
     bool          pendingVisible = false;
     bool          hasPendingRects = false;
+    std::string   lastRects;                 // last rects actually written, replayed after a rebind
+    bool          lastVisible = false;
     ULONGLONG     lastActivityMs = 0;        // last publish or input (pump pacing)
     bool          pumpTimerOn = false;
     std::uint32_t lastModSeq = 0;
@@ -371,16 +374,18 @@ void Prepare(std::uint32_t pid, const std::string& html, double initialScale) {
                           ", display " + std::to_string(kUiDisplayId) + ")");
 }
 
-void Bind(std::uint32_t pid, void* hostHwnd) {
-    Ui* u = find(pid);
-    if (!u || !hostHwnd || u->host) return;
-    u->host = static_cast<HWND>(hostHwnd);
-
-    wchar_t name[64];
+// Creates this client's frame and input channels and starts the input waiter.
+// Split out of Bind so a session change can redo it without tearing the view
+// down: see RebindChannels below.
+void OpenChannels(Ui* u, std::uint32_t pid) {
+    wchar_t name[rtx::ipc::kNameChars];
 
     rtx::frame::MakeSectionName(pid, name);
-    u->frameMap = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
-                                     0, (DWORD)sizeof(rtx::frame::Share), name);
+    bool framePre = false;
+    u->frameMap = rtx::ipc::CreateSection(name, (std::uint32_t)sizeof(rtx::frame::Share), framePre);
+    if (framePre)
+        rtx::log::Launcher("ipc: frame section for pid " + std::to_string(pid) +
+                           " was already present at create");
     if (u->frameMap) {
         u->frame = reinterpret_cast<rtx::frame::Share*>(
             MapViewOfFile(u->frameMap, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
@@ -408,10 +413,13 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
     }
 
     rtx::input::MakeEventName(pid, name);
-    u->inputEvt = CreateEventW(nullptr, FALSE /*auto-reset*/, FALSE, name);
+    bool evtPre = false, inPre = false;
+    u->inputEvt = rtx::ipc::CreateEvent(name, FALSE /*auto-reset*/, FALSE, evtPre);
     rtx::input::MakeSectionName(pid, name);
-    u->inputMap = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
-                                     0, (DWORD)sizeof(rtx::input::Share), name);
+    u->inputMap = rtx::ipc::CreateSection(name, (std::uint32_t)sizeof(rtx::input::Share), inPre);
+    if (evtPre || inPre)
+        rtx::log::Launcher("ipc: input channel for pid " + std::to_string(pid) +
+                           " was already present at create");
     if (u->inputMap) {
         u->input = reinterpret_cast<rtx::input::Share*>(
             MapViewOfFile(u->inputMap, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0,
@@ -443,6 +451,44 @@ void Bind(std::uint32_t pid, void* hostHwnd) {
             delete ctx;
         }
     }
+}
+
+// Re-open the channels under the current session names.
+//
+// The previous views are dropped without unmapping and the handles are left
+// open: the module writes frames through its own mapping of the old section on
+// its own thread, and it has no way to tell us when it is between writes. A
+// client rebinds at most once per launcher run, so this holds a single spare
+// view per client until exit.
+void SetConsumeRects(std::uint32_t pid, const std::string& rectsCsv, bool visible);   // fwd
+
+void RebindChannels(Ui* u, std::uint32_t pid) {
+    if (u->waiter) {
+        InterlockedExchange(&u->waiter->stop, 1);
+        if (u->inputEvt) SetEvent(u->inputEvt);   // wake it so it sees the flag
+        u->waiter = nullptr;                      // thread frees the ctx
+    }
+    u->frame    = nullptr;
+    u->frameMap = nullptr;
+    u->input    = nullptr;
+    u->inputMap = nullptr;
+    u->inputEvt = nullptr;
+    OpenChannels(u, pid);
+    rtx::log::Client(pid, std::string("in-game ui: channels rebound (frame ") +
+                          (u->frame ? "ok" : "FAILED") + ", input " +
+                          (u->input ? "ok" : "FAILED") + ")");
+    // The new section starts empty, so without this the companion stops
+    // consuming clicks over the panels until the page next pushes rects.
+    if (u->input && !u->lastRects.empty()) SetConsumeRects(pid, u->lastRects, u->lastVisible);
+}
+
+void Bind(std::uint32_t pid, void* hostHwnd) {
+    Ui* u = find(pid);
+    if (!u || !hostHwnd || u->host) return;
+    u->host = static_cast<HWND>(hostHwnd);
+
+    OpenChannels(u, pid);
+
     u->boundMs = GetTickCount64();
     rtx::log::Client(pid, std::string("in-game ui: bound to host (frame ") +
                           (u->frame ? "ok" : "FAILED") + ", input " +
@@ -491,6 +537,16 @@ bool IsOpen(std::uint32_t pid) { return g_uis.count(pid) != 0; }
 void Tick() {
     if (g_uis.empty()) return;
     ULONGLONG now = GetTickCount64();
+
+    // A client whose channels were opened before its session existed is still
+    // on the previous names; move it across once, here, off the render path.
+    {
+        static std::uint32_t s_gen = 0;
+        if (rtx::ipc::SessionChanged(s_gen)) {
+            for (auto& kv : g_uis)
+                if (kv.second && kv.second->host) RebindChannels(kv.second, kv.first);
+        }
+    }
 
     // A layer the page has hidden (every panel closed) and that saw no input for 2 s is not
     // rendered: the companion is not compositing it, so the paint would be thrown away. It is
@@ -628,6 +684,8 @@ void SetConsumeRects(std::uint32_t pid, const std::string& rectsCsv, bool visibl
         u->hasPendingRects = true;
         return;
     }
+    u->lastRects   = rectsCsv;
+    u->lastVisible = visible;
     // Parse "x,y,w,h;..." (CSS px), scale to physical px.
     rtx::input::Rect rects[rtx::input::kMaxRects];
     std::uint32_t n = 0;

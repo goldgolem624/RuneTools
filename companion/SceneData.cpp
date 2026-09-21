@@ -13,6 +13,9 @@
 #include <fstream>
 
 #include "SceneOffsets.h"
+#include "SceneHover.h"
+#include "TooltipHook.h"
+#include "EngineMarkers.h"
 #include <cstdio>
 #include <cstdarg>
 #include <unordered_map>
@@ -42,12 +45,30 @@ std::uint64_t g_base = 0;     // game module base
 std::uint64_t g_size = 0;
 
 std::mutex g_ringLogMu;
+constexpr std::uint64_t kRingLogMaxBytes = 16ull * 1024 * 1024;
+
+
 void RingLog(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_ringLogMu);
     char path[MAX_PATH] = "C:\\rtx_ring.log";
     char home[MAX_PATH];
     DWORD n = GetEnvironmentVariableA("USERPROFILE", home, sizeof(home));
     if (n > 0 && n < sizeof(home)) std::snprintf(path, sizeof(path), "%s\\rtx_ring.log", home);
+    // Bounded: past kRingLogMaxBytes the file is rolled to <name>.1 and a new
+    // one starts, so a long session cannot fill the profile while the previous
+    // run stays readable. Every client writes to this one file, so the roll is
+    // best effort: if another process has it open the rename fails and the next
+    // call tries again.
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (GetFileAttributesExA(path, GetFileExInfoStandard, &fa) &&
+            (((std::uint64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow) >= kRingLogMaxBytes) {
+            char prev[MAX_PATH];
+            std::snprintf(prev, sizeof(prev), "%s.1", path);
+            MoveFileExA(path, prev, MOVEFILE_REPLACE_EXISTING);
+        }
+    }
+
     FILE* f = nullptr;
     if (fopen_s(&f, path, "a") != 0 || !f) return;
     char buf[512];
@@ -667,7 +688,7 @@ std::uint64_t FindVarOpWild(const unsigned char* body, const unsigned char* mask
 }
 
 rtx::varc::Share* MapVarcShare() {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::varc::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
         (DWORD)(sizeof(rtx::varc::Share) >> 32), (DWORD)(sizeof(rtx::varc::Share) & 0xFFFFFFFF), name);
@@ -783,7 +804,7 @@ void PublishVarcs(rtx::varc::Share* vsh) {
 }
 
 Share* MapShare() {
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::scene::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE hMap = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
                                      (DWORD)(sizeof(Share) >> 32), (DWORD)(sizeof(Share) & 0xFFFFFFFF),
@@ -795,6 +816,14 @@ Share* MapShare() {
 
 // Staging buffer: game-memory reads happen outside the seqlock, which is held only for the memcpy.
 Object g_pubbuf[rtx::scene::kMaxObjects];
+
+// Where each published object lives, for the hover mark. Written by the walk, read by the render
+// thread; the sequence is odd while it is being rewritten.
+struct HoverRef { std::uint64_t sub; std::int32_t x, y, id; };
+HoverRef g_hoverRefs[rtx::scene::kMaxObjects];
+HoverRef g_hoverStage[rtx::scene::kMaxObjects];
+std::atomic<std::uint32_t> g_hoverSeq{ 0 };
+std::atomic<std::uint32_t> g_hoverCount{ 0 };
 
 std::unordered_set<std::uint64_t> DeadSnapshot();
 
@@ -816,6 +845,7 @@ void Publish(Share* sh, bool wantDiag) {
             Object& o = g_pubbuf[c++];
             o.config_id = ReadConfig(sub);
             o.x = tx; o.y = ty;
+            g_hoverStage[c - 1] = HoverRef{ sub, tx, ty, o.config_id };
             o.plane = (std::int16_t)R32(sub + kFloor);
             o.kind = (std::int16_t)t;
             if (R32(sub + rtx::scn::kLocFlags) & rtx::scn::kLocHidden) o.kind |= rtx::scene::kHiddenBit;   // depleted tree / dormant stump
@@ -841,6 +871,11 @@ void Publish(Share* sh, bool wantDiag) {
     sh->count = c;
     MemoryBarrier();
     sh->seq++;                                    // even: complete
+
+    g_hoverSeq.fetch_add(1);                      // odd: mid-update
+    std::memcpy(g_hoverRefs, g_hoverStage, (std::size_t)c * sizeof(HoverRef));
+    g_hoverCount.store(c);
+    g_hoverSeq.fetch_add(1);
 }
 
 // Display detours skip the draw call; scene blank flips one Jcc byte in the render thread.
@@ -884,7 +919,7 @@ void SceneBlankSet(bool on) {
 }
 
 rtx::render::Share* MapRenderShare() {
-    wchar_t name[64]; rtx::render::MakeSectionName(GetCurrentProcessId(), name);
+    wchar_t name[rtx::ipc::kNameChars]; rtx::render::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                   sizeof(rtx::render::Share), name);
     if (!h) return nullptr;
@@ -1082,36 +1117,8 @@ static void ScanOneEnt(std::uint64_t ent) {
         if (!IsHeap(sub)) return;
         int type = R8(sub + kType);
         if (g_specialShare) g_specialShare->diag[4] |= (1u << (type & 31));
-        // Type-13 diag dump: fine-unit floats at type-specific offsets (obj 0x16C, decor 0x9C, npc 0x270).
-        if (type == 13) {
-            static std::uint64_t s_lastT13 = 0;
-            std::uint64_t now = GetTickCount64();
-            if (now - s_lastT13 > 1200) { s_lastT13 = now;
-                auto dump = [&](const char* tag, std::uint64_t base, int last) {
-                    for (int off = 0; off <= last; off += 4) {
-                        int v = R32(base + off);
-                        union { int i; float f; } u; u.i = v;
-                        float tile = u.f / 512.0f;
-                        if ((tile > 200.0f && tile < 16000.0f) || (u.f > 200.0f && u.f < 16000.0f) ||
-                            (v > 100000 && v < 8400000))
-                            RingLog("  T13 %s+0x%x: i=%d f=%.1f f/512=%.2f", tag, off, v, u.f, tile);
-                    }
-                };
-                RingLog("TYPE13 ent=0x%llx sub=0x%llx -- tile candidates (f/512 = world tile):", (unsigned long long)ent, (unsigned long long)sub);
-                // Type-13 object size from ctor 0x19F6F0 (mov ecx,0xF8); do not dump past it.
-                dump("sub", sub, rtx::scn::kT13Size - 4);
-                dump("ent", ent, 0x100);
-            }
-            return;
-        }
         if (type != 4) return;
         int gfx = R32(sub + 0x74);                                 // proj_otherId
-        {
-            static std::uint64_t s_lastT4Ms = 0;
-            std::uint64_t now = GetTickCount64();
-            if (now - s_lastT4Ms > 1500) { s_lastT4Ms = now;
-                RingLog("TYPE4 LIVE: ent=0x%llx sub=0x%llx gfx=%d ring=%d", (unsigned long long)ent, (unsigned long long)sub, gfx, (gfx >= 6841 && gfx <= 6843) ? 1 : 0); }
-        }
         if (g_specialShare) {
             g_specialShare->diag[1]++;
             std::uint32_t prev = g_specialShare->diag[2];
@@ -1143,7 +1150,7 @@ void ScanTrackedForRing() {
 }
 
 rtx::special::Share* MapSpecialShare() {
-    wchar_t name[64]; rtx::special::MakeSectionName(GetCurrentProcessId(), name);
+    wchar_t name[rtx::ipc::kNameChars]; rtx::special::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                   sizeof(rtx::special::Share), name);
     if (!h) return nullptr;
@@ -1155,7 +1162,7 @@ rtx::special::Share* MapSpecialShare() {
 rtx::ground::Share* g_groundShare = nullptr;
 
 rtx::ground::Share* MapGroundShare() {
-    wchar_t name[64]; rtx::ground::MakeSectionName(GetCurrentProcessId(), name);
+    wchar_t name[rtx::ipc::kNameChars]; rtx::ground::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                   sizeof(rtx::ground::Share), name);
     if (!h) return nullptr;
@@ -1253,8 +1260,7 @@ static int WSAAPI Detour_WSARecv(SOCKET s, LPWSABUF bufs, DWORD count, LPDWORD g
 
 static rtx::net::Share* MapNetShare() {
     wchar_t name[128];
-    swprintf_s(name, L"%s%lu", rtx::net::kSectionPrefix,
-               (unsigned long)GetCurrentProcessId());
+    rtx::net::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                   sizeof(rtx::net::Share), name);
     if (!h) return nullptr;
@@ -1400,9 +1406,8 @@ static rtx::events::Share* MapEventShare() {
 }
 
 static rtx::netprobe::Share* MapNetProbeShare() {
-    wchar_t name[128];
-    swprintf_s(name, L"%s%lu", rtx::netprobe::kSectionPrefix,
-               (unsigned long)GetCurrentProcessId());
+    wchar_t name[rtx::ipc::kNameChars];
+    rtx::netprobe::MakeSectionName(GetCurrentProcessId(), name);
     HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
                                   sizeof(rtx::netprobe::Share), name);
     if (!h) return nullptr;
@@ -1583,6 +1588,129 @@ std::uint64_t FindLocalPlayerSub() {
     return 0;
 }
 
+// ---- Session rebind --------------------------------------------------
+// The channels this module publishes are created once while the hooks go in.
+// When the launcher issues a new session the names change, so each one is
+// re-created here and its header re-initialised. Called from the worker loop,
+// where it costs a pointer test per tick until a session actually changes.
+//
+// Old views are left mapped. Detours on other threads write through these
+// pointers, and a rebind cannot know when they are between instructions, so
+// the previous view stays valid for the life of the process. The cost is a few
+// kilobytes per rebind, and a rebind only happens when the launcher restarts.
+//
+// State that came from installing the hooks is carried across, because the
+// hooks are installed once and are deliberately not touched here.
+std::uint32_t g_varcFlagsSticky      = 0;
+std::uint32_t g_renderInstalledStick = 0;
+std::uint32_t g_eventFlagsSticky     = 0;
+std::uint32_t g_netProbeFlagsSticky  = 0;
+std::uint32_t g_netProbeFramerRva    = 0;
+
+void EnsureProducers(Share*& sh) {
+    static std::uint32_t s_gen = 0;
+    if (rtx::ipc::SessionChanged(s_gen)) {
+        if (g_varcShare)   g_varcFlagsSticky      = g_varcShare->flags;
+        if (g_renderShare) g_renderInstalledStick = g_renderShare->installed;
+        if (g_eventShare)  g_eventFlagsSticky     = g_eventShare->flags;
+        if (g_netProbeShare) {
+            g_netProbeFlagsSticky = g_netProbeShare->flags;
+            g_netProbeFramerRva   = g_netProbeShare->framerRva;
+        }
+
+        sh                = nullptr;
+        g_groundShare     = nullptr;
+        g_varcShare       = nullptr;
+        g_renderShare     = nullptr;
+        g_specialShare    = nullptr;
+        g_eventShare      = nullptr;
+        g_netProbeShare   = nullptr;
+        RingLog("session: producer channels rebinding");
+    }
+
+    const std::uint32_t pid = GetCurrentProcessId();
+
+    if (!sh) {
+        sh = MapShare();
+        if (sh) {
+            sh->magic = rtx::scene::kMagic;
+            sh->version = rtx::scene::kVersion;
+            sh->pid = pid;
+            sh->count = 0; sh->diag_len = 0; sh->seq = 0;
+        }
+    }
+
+    if (!g_groundShare) {
+        g_groundShare = MapGroundShare();
+        if (g_groundShare) {
+            g_groundShare->magic = rtx::ground::kMagic; g_groundShare->version = rtx::ground::kVersion;
+            g_groundShare->pid = pid;
+            g_groundShare->count = 0; g_groundShare->seq = 0; g_groundShare->flags = 0;
+        }
+    }
+
+    if (!g_varcShare) {
+        g_varcShare = MapVarcShare();
+        if (g_varcShare) {
+            g_varcShare->magic = rtx::varc::kMagic; g_varcShare->version = rtx::varc::kVersion;
+            g_varcShare->pid = pid; g_varcShare->count = 0; g_varcShare->strCount = 0;
+            g_varcShare->enable = 0; g_varcShare->seq = 0;
+            g_varcShare->flags = g_varcFlagsSticky;      // observers are still attached
+            for (int i = 0; i < 8; ++i) g_varcShare->diag[i] = 0;
+        }
+    }
+
+    if (!g_renderShare) {
+        g_renderShare = MapRenderShare();
+        if (g_renderShare) {
+            g_renderShare->magic = rtx::render::kMagic; g_renderShare->version = rtx::render::kVersion;
+            g_renderShare->pid = pid;
+            g_renderShare->hideNpcs = 0; g_renderShare->hidePlayers = 0; g_renderShare->hideAll = 0;
+            g_renderShare->keepFocused = 0;
+            g_renderShare->installed = g_renderInstalledStick;   // hooks are still attached
+        }
+    }
+
+    if (!g_specialShare) {
+        g_specialShare = MapSpecialShare();
+        if (g_specialShare) {
+            g_specialShare->magic = rtx::special::kMagic; g_specialShare->version = rtx::special::kVersion;
+            g_specialShare->pid = pid;
+            g_specialShare->enable = 0; g_specialShare->count = 0; g_specialShare->seq = 0; g_specialShare->flags = 0;
+            for (int i = 0; i < 12; ++i) g_specialShare->diag[i] = 0;
+        }
+    }
+
+    if (!g_eventShare) {
+        g_eventShare = MapEventShare();
+        if (g_eventShare) {
+            auto* ev = g_eventShare;
+            if (ev->magic != rtx::events::kMagic || ev->version != rtx::events::kVersion || !ev->maskSet)
+                for (int i = 0; i < 8; ++i) ev->mask[i] = rtx::events::kDefaultMask[i];
+            ev->magic = rtx::events::kMagic; ev->version = rtx::events::kVersion;
+            ev->pid = pid;
+            ev->flags = g_eventFlagsSticky;      // framer hook is still attached
+            ev->written = 0; ev->truncated = 0; ev->inbound = 0;
+        }
+    }
+
+    if (!g_netProbeShare) {
+        g_netProbeShare = MapNetProbeShare();
+        if (g_netProbeShare) {
+            auto* np = g_netProbeShare;
+            np->magic = rtx::netprobe::kMagic; np->version = rtx::netprobe::kVersion;
+            np->pid = pid; np->enable = 0; np->written = 0; np->seen = 0;
+            np->flags = g_netProbeFlagsSticky;   // framer hook is still attached
+            np->framerRva = g_netProbeFramerRva;
+            np->chatWritten = 0; np->chatSeen = 0;
+            for (int i = 0; i < 8; ++i) np->diag[i] = 0;
+        }
+    }
+
+    rtx::menuprobe::Rebind();
+    rtx::soundfilter::Rebind();
+}
+
 DWORD WINAPI Worker(LPVOID) {
     HMODULE gm = GetModuleHandleW(L"rs2client.exe");
     if (!gm) return 0;
@@ -1657,6 +1785,10 @@ DWORD WINAPI Worker(LPVOID) {
     // Menu probe dump only runs with RTX_MENU_PROBE=1 set.
     RingLog(rtx::menuprobe::Install() ? "menu: probe installed"
                                       : "menu: string-init pattern not found");
+    RingLog(rtx::tooltip::Install() ? "tooltip: text hook installed"
+                                    : "tooltip: hover entry op not recognised (off)");
+    RingLog(rtx::enginemark::Install() ? "markers: game arrow and tile routines found"
+                                       : "markers: game arrow and tile routines not recognised (off)");
 
     constexpr ULONGLONG kRescanMs = 12000;               // base deep-sweep period
     constexpr ULONGLONG kRescanMaxMs = 300000;           // backoff ceiling (5 min)
@@ -1664,6 +1796,9 @@ DWORD WINAPI Worker(LPVOID) {
     float scanPx = 0, scanPy = 0; bool haveScanPos = false;
     int emptyTicks = 0;
     for (;;) {
+        { char said[400]; if (rtx::enginemark::TakeLog(said, sizeof(said))) RingLog("%s", said); }
+        EnsureProducers(sh);
+        if (!sh) { Sleep(250); continue; }
         float cpx = 0, cpy = 0;
         bool havePos = PlayerFineOrLast(cpx, cpy);
         PruneInvalid();
@@ -1701,9 +1836,9 @@ DWORD WINAPI Worker(LPVOID) {
         if (g_specialOn.load(std::memory_order_relaxed)) ScanTrackedForRing();
         if (g_specialShare) PublishSpecials(g_specialShare);
         if (g_groundShare) PublishGround(g_groundShare);
-        {   // ~every 5s
+        {   // heartbeat
             static int s_logCnt = 0;
-            if (g_specialShare && (++s_logCnt % 20) == 0)
+            if (g_specialShare && (++s_logCnt % 120) == 0)      // ~30 s
                 RingLog("diag: uptime=%us armed=%d fires=%u tracked=%u type4=%u gfx=%u workervec=%u root=0x%llx",
                         g_specialShare->diag[8], g_specialOn.load(std::memory_order_relaxed) ? 1 : 0,
                         g_specialShare->diag[0], g_specialShare->diag[6], g_specialShare->diag[1],
@@ -1723,6 +1858,122 @@ DWORD WINAPI Worker(LPVOID) {
 }
 
 }  // namespace
+
+// The game keeps the same small interface on everything it can outline: slot 31 of the object's
+// method table is "hovered this frame", taking the frame number the highlight settings count in.
+// The game calls it for what is under the cursor, except for scenery whose definition opts out,
+// and that is the call made here. The method is checked by how it starts before it is trusted:
+//   mov rax, [rcx+18h] ; test rax, rax ; je ; mov rax, [rax+130h]
+namespace {
+constexpr std::uint64_t kHoverSlot = 0xF8;
+constexpr std::uint64_t kHlOwner = 0x60, kHlSettings = 0x20, kHlFrame = 0xBC;
+constexpr std::uint8_t  kHoverProlog[] = { 0x48, 0x8B, 0x41, 0x18, 0x48, 0x85, 0xC0, 0x74, 0x1F,
+                                           0x48, 0x8B, 0x80, 0x30, 0x01, 0x00, 0x00 };
+
+// The game's own sequence for something under the cursor: "hovered" once, which also starts the
+// short pulse a fresh hover gets, then the plain setter every frame to keep it lit. Repeating
+// "hovered" instead holds the pulse at its start, and it then plays as a flash when the cursor
+// leaves. Both methods begin the same way, which is what is checked before either is called.
+constexpr std::uint64_t kKeepSlot = 0x100;
+constexpr std::uint64_t kHlId = 0x10C;
+
+bool LooksLikeHoverMethod(std::uint64_t fn) {
+    if (!InModule(fn)) return false;
+    for (std::size_t i = 0; i < sizeof(kHoverProlog); ++i)
+        if (R8(fn + i) != kHoverProlog[i]) return false;
+    return true;
+}
+
+bool MarkSub(std::uint64_t sub) {
+    static std::uint64_t s_sub = 0;        // what this marked last, and with which frame number
+    static std::int32_t  s_frame = 0;
+    static std::uint32_t s_said = 0;
+    __try {
+        if (!IsScenery(R8(sub + kType))) return false;            // freed and reused since the walk
+        const std::uint64_t vt = R64(sub);
+        if (!InModule(vt)) return false;
+        const std::uint64_t hover = R64(vt + kHoverSlot), keep = R64(vt + kKeepSlot);
+        if (!LooksLikeHoverMethod(hover) || !LooksLikeHoverMethod(keep)) return false;
+        const std::uint64_t owner = R64(sub + kHlOwner);
+        const std::uint64_t settings = IsHeap(owner) ? R64(owner + kHlSettings) : 0;
+        if (!IsHeap(settings)) return false;
+        const std::int32_t frame = R32(settings + kHlFrame);
+        if (frame <= 0) return false;
+
+        const std::int32_t id = R32(sub + kHlId);
+        const bool fresh = id < frame - 1 || id > frame;             // nobody marked it lately
+        // this did, last time round. A few frames may have gone by without a mark (a present that
+        // was skipped, a stall): that is still the same hover, and saying "hovered" again would
+        // start the pulse over, which shows as the outline flashing white.
+        const bool ours = sub == s_sub && id == s_frame && frame - id <= 30;
+        int path;
+        if (id == frame && ours) {
+            path = 0;                                                // already done for this frame
+        } else if (ours) {
+            reinterpret_cast<void (*)(std::uint64_t, std::int32_t)>(keep)(sub, frame);
+            path = 1;
+        } else if (fresh) {
+            reinterpret_cast<void (*)(std::uint64_t, std::int32_t)>(hover)(sub, frame);
+            path = 2;
+        } else {
+            path = 3;                                                // the game is marking it itself: leave it be
+        }
+        if (path == 1 || path == 2) { s_sub = sub; s_frame = frame; }
+        if (path >= 2 && s_said < 60) {
+            ++s_said;
+            RingLog("hover mark: obj %llx frame %d id %d -> %s", (unsigned long long)sub, frame, id,
+                    path == 2 ? "started" : "left to the game");
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+}  // namespace
+
+bool rtx::scenehover::Mark(int x, int y, int id) {
+    std::uint64_t sub = 0;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const std::uint32_t s1 = g_hoverSeq.load();
+        if (s1 & 1u) continue;
+        const std::uint32_t n = g_hoverCount.load();
+        std::uint64_t exact = 0, tile = 0;
+        for (std::uint32_t i = 0; i < n && i < (std::uint32_t)rtx::scene::kMaxObjects; ++i) {
+            const HoverRef& r = g_hoverRefs[i];
+            if (r.x != x || r.y != y) continue;
+            if (r.id == id) { exact = r.sub; break; }
+            if (!tile) tile = r.sub;
+        }
+        if (g_hoverSeq.load() != s1) continue;
+        sub = exact ? exact : tile;
+        break;
+    }
+    return IsHeap(sub) && MarkSub(sub);
+}
+
+// Entry point the launcher calls through a remote thread to hand this module
+// the session it should use. Called once after load and again whenever the
+// launcher opens a new session for this client, so a launcher restart while
+// the game keeps running is an ordinary rebind rather than a special case.
+//
+// param points at a SessionBlob the launcher allocated in this process. It is
+// read once and not retained.
+extern "C" __declspec(dllexport) DWORD WINAPI RtxSetSession(LPVOID param) {
+    if (!param) return 1;
+
+    rtx::ipc::SessionBlob blob{};
+    __try {
+        blob = *reinterpret_cast<const rtx::ipc::SessionBlob*>(param);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 2;
+    }
+
+    if (blob.version != rtx::ipc::kSessionBlobVersion) return 3;
+    if (blob.pid != GetCurrentProcessId()) return 4;
+
+    rtx::ipc::SetSessionKey(GetCurrentProcessId(), blob.key, sizeof(blob.key));
+    return 0;
+}
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {

@@ -2,10 +2,12 @@
 
 #include "Companion.h"
 #include "Dock.h"
+#include "Bridge.h"                         // cached Grand Exchange prices
 #include "Markers.h"
 #include "../reader/Reader.h"
 #include "../cache/CacheReader.h"           // terrain height for marker placement
 #include "../shared/Log.h"
+#include "IpcGuard.h"
 #include "../../companion/MarkerShare.h"   // in-frame marker command channel
 
 #include <Windows.h>
@@ -230,6 +232,31 @@ static inline float ZAt(float x, float y) {
     return it == t_ptZ.end() ? -1.0f : it->second;
 }
 
+// The same points in 8 pixel cells. A marker end that was moved after it was projected (the corner
+// of a line drawn as a quad, an end pulled in to the edge of the view) no longer matches a
+// projected point exactly, and without a depth it would be drawn over everything in front of it.
+struct PtNear { float x, y, z; };
+static thread_local std::unordered_map<std::uint64_t, std::vector<PtNear>> t_ptCells;
+static inline std::uint64_t CellKey(int cx, int cy) { return ((std::uint64_t)(std::uint32_t)cx << 32) | (std::uint32_t)cy; }
+static inline float ZNear(float x, float y, float reach) {
+    const int cx = (int)std::floor(x / 8.0f), cy = (int)std::floor(y / 8.0f);
+    const int span = (int)std::ceil(reach / 8.0f);
+    float best = reach * reach, z = -1.0f;
+    for (int dx = -span; dx <= span; ++dx)
+        for (int dy = -span; dy <= span; ++dy) {
+            auto it = t_ptCells.find(CellKey(cx + dx, cy + dy));
+            if (it == t_ptCells.end()) continue;
+            for (const auto& p : it->second) {
+                const float d = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+                if (d <= best) { best = d; z = p.z; }
+            }
+        }
+    return z;
+}
+// how the depths of this frame's markers were found, for the log
+struct DepthTally { unsigned exact = 0, nearest = 0, none = 0; };
+static thread_local DepthTally t_depthTally;
+
 bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
                    float x, float y, float z, float& sx, float& sy) {
     // Double precision: fine world coordinates run into the millions, and the row sums cancel
@@ -243,7 +270,10 @@ bool WorldToScreen(const float* m, float vpX, float vpY, float vpW, float vpH,
     sx = (float)(nx * cx - nx * 2.0 + cx + vpX);
     sy = (float)(-(ny * cy) + ny + cy + vpY);
     const float nz = (float)((m[2] * dx + m[10] * dy + m[6] * dz + m[14]) / w);
-    if (t_ptZ.size() < 200000) t_ptZ[PtKey(sx, sy)] = nz;
+    if (t_ptZ.size() < 200000) {
+        t_ptZ[PtKey(sx, sy)] = nz;
+        t_ptCells[CellKey((int)std::floor(sx / 8.0f), (int)std::floor(sy / 8.0f))].push_back({ sx, sy, nz });
+    }
     return true;
 }
 
@@ -600,14 +630,23 @@ struct MarkerOut {
     marker::Share* p   = nullptr;
     std::uint32_t  pid = 0;
 
+    std::uint32_t boundGen = 0;
+
     bool ensure(std::uint32_t target) {
+        // A new session renames the channel. The old view is dropped without
+        // unmapping: the module reads markers through its own mapping of the
+        // old section on the render thread.
+        if (rtx::ipc::SessionChanged(boundGen)) { p = nullptr; map = nullptr; pid = 0; }
         if (p && pid == target) return true;
         close();
         if (!target) return false;
-        wchar_t name[64];
+        wchar_t name[rtx::ipc::kNameChars];
         marker::MakeSectionName(target, name);
-        map = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
-                                 (DWORD)sizeof(marker::Share), name);
+        bool markPre = false;
+        map = rtx::ipc::CreateSection(name, (std::uint32_t)sizeof(marker::Share), markPre);
+        if (markPre)
+            rtx::log::Launcher("ipc: marker section for pid " + std::to_string(target) +
+                               " was already present at create");
         if (!map) return false;
         p = reinterpret_cast<marker::Share*>(
             MapViewOfFile(map, FILE_MAP_WRITE, 0, 0, sizeof(marker::Share)));
@@ -625,6 +664,186 @@ struct MarkerOut {
     }
 };
 std::map<DWORD, MarkerOut> g_marker_outs;   // one channel per client; render thread only
+
+// What the cursor is on, as far as the module needs to know: scenery the game should outline
+// (it has to offer something other than Examine; NPCs and players the game marks itself), and
+// the values of an item in an interface slot, for the game's own tooltip.
+struct HoverPick {
+    bool on = false; int x = 0, y = 0, id = 0;
+    bool tip = false; int tipSlot = 0; std::uint32_t tipComp = 0; char tipText[192] = {};
+};
+
+// 1,234 up to six digits, then 1.23m / 4.5b: what fits beside an item name
+std::string ShortCoins(long long v) {
+    char b[32];
+    if (v >= 1000000000LL)  std::snprintf(b, sizeof(b), "%.2fb", (double)v / 1e9);
+    else if (v >= 1000000LL) std::snprintf(b, sizeof(b), "%.2fm", (double)v / 1e6);
+    else {
+        std::string d = std::to_string(v);
+        for (int i = (int)d.size() - 3; i > 0; i -= 3) d.insert((std::size_t)i, ",");
+        return d;
+    }
+    return b;
+}
+
+// What the game is asked to point at: its arrow over a tile or over an NPC's head, its chevrons at
+// the player's feet turning towards it, and for a tile its marker on the ground. The panel finds
+// the target (an NPC or an object by name or id, or plain coordinates) and sends where it is.
+void FillEngineMarks(rtx::marker::Share* sh, const Config& cfg) {
+    // the model the game itself lays along a path stands upright and is meant to rise and fall
+    constexpr std::uint32_t kPathModel = 49207;
+    // The game places these on ground it has loaded and falls over on a tile it has not: nothing
+    // is asked for unless it is known where the player stands and the target is close to that.
+    constexpr int kReach = 48;
+    const auto inReach = [&](int x, int y) {
+        return cfg.mark_from_x > 0 && cfg.mark_from_y > 0 && x > 0 && y > 0 &&
+               std::abs(x - cfg.mark_from_x) <= kReach && std::abs(y - cfg.mark_from_y) <= kReach;
+    };
+    const bool on = cfg.mark_test && cfg.mark_kind >= 0 && inReach(cfg.mark_x, cfg.mark_y);
+    const bool npc = on && cfg.mark_kind == 1 && cfg.mark_npc_uid >= 0;
+    sh->mark_tile_x = cfg.mark_x; sh->mark_tile_y = cfg.mark_y; sh->mark_tile_model = cfg.mark_model;
+    // an arrow over an NPC follows the NPC by itself: where the NPC stands is no news for it
+    sh->mark_arrow_x = npc ? 0 : cfg.mark_x; sh->mark_arrow_y = npc ? 0 : cfg.mark_y; sh->mark_arrow_plane = cfg.mark_plane;
+    sh->mark_arrow_style = cfg.mark_style; sh->mark_arrow_height = cfg.mark_height; sh->mark_arrow_pointer = cfg.mark_pointer;
+    sh->mark_tile_rgb = cfg.mark_tile_rgb; sh->mark_tile_width = cfg.mark_tile_width;
+    sh->mark_arrow_rgb = cfg.mark_arrow_rgb; sh->mark_arrow_width = cfg.mark_arrow_width;
+    sh->mark_arrow_range = cfg.mark_range; sh->mark_pointer_scale = cfg.mark_pointer_scale;
+    sh->mark_pointer_reach = cfg.mark_pointer_reach;
+    sh->mark_arrow_npc = npc ? cfg.mark_npc_uid : -1;
+    sh->mark_tile_steady = cfg.mark_model == kPathModel ? 0u : 1u;
+    sh->mark_tile_on = (on && !npc && cfg.mark_kind == 0 && cfg.mark_model != 0) ? 1u : 0u;   // an NPC walks off its tile
+    sh->mark_arrow_on = (on && cfg.mark_arrow && (cfg.mark_kind == 0 || npc)) ? 1u : 0u;
+    const bool apart = cfg.mark_from_x != cfg.mark_x || cfg.mark_from_y != cfg.mark_y;
+    sh->mark_path_x0 = cfg.mark_from_x; sh->mark_path_y0 = cfg.mark_from_y;
+    sh->mark_path_x1 = cfg.mark_x; sh->mark_path_y1 = cfg.mark_y;
+    sh->mark_path_model = kPathModel;
+    sh->mark_path_on = (on && cfg.mark_path && apart && cfg.mark_from_x > 0 && (cfg.mark_kind == 0 || npc)) ? 1u : 0u;
+}
+
+HoverPick PickHover(const Config& cfg) {
+    HoverPick p;
+    if (!cfg.hover_outline && !cfg.tooltip_values) return p;
+    rtx::reader::HoverLocInfo hv;
+    const bool isLoc = rtx::reader::HoverLoc(cfg.pid, hv);
+    // Extra lines for the game's own tooltip. Inline <sprite=N> tags are the game's: 1158 is the
+    // coin stack it puts beside market prices, 31785 the 24 pixel High Level Alchemy icon (inline
+    // sprites are not scaled, so the 60 pixel spell icon will not do), the skill icons come with
+    // the guide data.
+    auto reqLine = [](const std::vector<rtx::cache::SkillReq>& reqs) {
+        std::string t;
+        int shown = 0;
+        for (const auto& r : reqs) {
+            if (shown++ == 4) break;
+            if (!t.empty()) t += "  ";
+            const int spr = rtx::cache::SkillGuideSkillSprite(r.skill);
+            if (spr) t += "<sprite=" + std::to_string(spr) + "> " + std::to_string(r.level);
+            else     t += std::string(rtx::cache::SkillGuideSkillName(r.skill)) + " " + std::to_string(r.level);
+        }
+        return t;
+    };
+    // memoised: the price lookup scans the relay's whole answer. key = item id, or -(loc id) - 1
+    static std::map<int, std::pair<std::string, ULONGLONG>> s_text;
+    auto publish = [&](int key, int slot, std::uint32_t comp, auto build) {
+        const ULONGLONG now = GetTickCount64();
+        auto it = s_text.find(key);
+        if (it == s_text.end() || now > it->second.second) {
+            bool settled = true;
+            std::string t = build(settled);
+            if (s_text.size() > 512) s_text.clear();
+            // an answer that is still on its way (price relay, guide index) is asked for again shortly
+            it = s_text.insert_or_assign(key, std::make_pair(t, now + (settled ? 60000 : 3000))).first;
+        }
+        if (it->second.first.empty()) return;
+        p.tip = true; p.tipSlot = slot; p.tipComp = comp;
+        std::snprintf(p.tipText, sizeof(p.tipText), "%s", it->second.first.c_str());
+    };
+    if (cfg.tooltip_values && hv.item_id >= 0) {
+        const std::uint32_t comp = ((std::uint32_t)(hv.item_iface & 0xFFFF) << 16) | (std::uint32_t)(hv.item_comp & 0xFFFF);
+        publish(hv.item_id, hv.item_slot, comp, [&](bool& settled) {
+            const long long ge = rtx::launcher::ItemGePrice(hv.item_id);
+            const long long value = rtx::cache::GetItem(hv.item_id).value;
+            const long long alch = value > 0 ? (value * 6) / 10 : 0;
+            std::string t;
+            if (ge > 0)   t += "<sprite=1158> " + ShortCoins(ge);
+            if (alch > 0) t += std::string(t.empty() ? "" : "   ") + "<sprite=31785> " + ShortCoins(alch);
+            std::vector<rtx::cache::SkillReq> need = rtx::cache::SkillGuideForItem(hv.item_id);
+            {
+                // logs: the guide lists what is fletched from them under the products, by wood
+                std::string nm = rtx::cache::ItemName(hv.item_id);
+                for (char& ch : nm) if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+                const std::string tail = " logs";
+                int fletch = 0;
+                if (nm == "logs") {
+                    for (const char* first : { "arrow shaft", "shortbow", "shieldbow" }) {
+                        const int lv = rtx::cache::SkillGuideLevelByPrefix(19, first, {});
+                        if (lv > 0 && (fletch == 0 || lv < fletch)) fletch = lv;
+                    }
+                } else if (nm.size() > tail.size() && nm.compare(nm.size() - tail.size(), tail.size(), tail) == 0) {
+                    fletch = rtx::cache::SkillGuideLevelByPrefix(19, nm.substr(0, nm.size() - tail.size()) + " ", { "bow", "stock", "shaft" });
+                }
+                bool has = false;
+                for (const auto& r : need) if (r.skill == 19) has = true;
+                if (fletch > 0 && !has) need.push_back(rtx::cache::SkillReq{ 19, fletch });
+            }
+            const std::string reqs = reqLine(need);
+            if (!reqs.empty()) t += std::string(t.empty() ? "" : "<br>") + reqs;
+            settled = ge > 0 && rtx::cache::SkillGuideReady();
+            return t.empty() ? t : "<br><col=d0d0d0>" + t;
+        });
+    } else if (cfg.tooltip_values && isLoc && !hv.verb.empty() && hv.verb != "Walk here" && hv.verb != "Cancel") {
+        // the hover object keeps the tile where an item keeps its slot, so the same two fields key it
+        publish(-hv.id - 1, hv.x, (std::uint32_t)hv.y, [&](bool& settled) {
+            std::string name = rtx::cache::GetLoc(hv.id).name;
+            if (name.empty() && hv.scene_id > 0) name = rtx::cache::GetLoc(hv.scene_id).name;
+            // the guide does not always name a thing the way the scene does: "Yew" is its "Yew tree",
+            // "Tree" its "Normal tree", a rock goes by its ore
+            std::vector<std::string> tries;
+            if (!name.empty()) {
+                tries.push_back(name);
+                tries.push_back(name + " tree");
+                if (name == "Tree") tries.push_back("Normal tree");
+                const std::string rock = " rock";
+                if (name.size() > rock.size() && name.compare(name.size() - rock.size(), rock.size(), rock) == 0) {
+                    const std::string stem = name.substr(0, name.size() - rock.size());
+                    tries.push_back(stem + " ore");
+                    tries.push_back(stem);
+                }
+            }
+            // what is being done says which skill it takes: a yew is also a Farming entry, but chopping it is not
+            int only = 0;
+            {
+                std::string v = hv.verb;
+                for (char& ch : v) if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+                auto starts = [&](const char* w) { return v.compare(0, std::strlen(w), w) == 0; };
+                if (starts("mine")) only = 13;
+                else if (starts("chop") || starts("cut down")) only = 18;
+                else if (starts("steal") || starts("pick-lock") || starts("pickpocket")) only = 10;
+                else if (starts("smelt") || starts("smith")) only = 14;
+                else if (starts("rake") || starts("harvest") || starts("pick") || starts("check-health") || starts("inspect")) only = 21;
+            }
+            std::string reqs;
+            for (const auto& t : tries) {
+                std::vector<rtx::cache::SkillReq> need = rtx::cache::SkillGuideForName(t);
+                if (only) {
+                    std::vector<rtx::cache::SkillReq> kept;
+                    for (const auto& r : need) if (r.skill == only) kept.push_back(r);
+                    need.swap(kept);
+                }
+                reqs = reqLine(need);
+                if (!reqs.empty()) break;
+            }
+            settled = rtx::cache::SkillGuideReady();
+            return reqs.empty() ? reqs : "<br><col=d0d0d0>" + reqs;
+        });
+    }
+    if (!cfg.hover_outline || !isLoc || !hv.in_scene) return p;
+    // The slot keeps the last loc's id and tile after the cursor has moved on to bare ground, so
+    // the action shown is what says whether a loc is under the cursor at all.
+    if (hv.verb.empty() || hv.verb == "Examine" || hv.verb == "Walk here" || hv.verb == "Cancel" || hv.verb == "Continue") return p;
+    if (rtx::cache::GetLoc(hv.id).actions.empty() && rtx::cache::GetLoc(hv.scene_id).actions.empty()) return p;
+    p.on = true; p.x = hv.scene_x; p.y = hv.scene_y; p.id = hv.scene_id;
+    return p;
+}
 
 void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W, int H,
                     float flashAlpha = 0.0f,
@@ -687,6 +906,9 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         std::uint32_t s = sh->seq + 1;
         sh->seq = s; MemoryBarrier();
         sh->count = 0; sh->visible = 0;
+        sh->flags = (cfg.hover_outline ? marker::kFlagEngineHover : 0u) | (cfg.inframe_trial ? marker::kFlagInFrameTrial : 0u);   // honoured with nothing to draw
+        { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
+          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) sh->hover_width[k] = cfg.hover_width[k]; FillEngineMarks(sh, cfg); }
         MemoryBarrier(); sh->seq = s + 1;
         return;
     }
@@ -710,16 +932,30 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     static std::vector<marker::Command> cmds;   // render thread only
     cmds.clear();
     t_ptZ.clear();
+    t_ptCells.clear();
+    t_depthTally = DepthTally{};
+    bool topLayer = false;   // what follows marks the game's interface, not the world: it stays over that interface
     auto push = [&](const marker::Command& c0) {
         if (cmds.size() >= marker::kMaxCmds) return;
         marker::Command c = c0;
+        c.top = topLayer ? 1 : 0;
         c.z0 = c.z1 = c.z2 = c.z3 = -1.0f;
+        // the projected point itself, else the projected point nearest to it within the marker's own width
+        bool allExact = true;
+        auto depthAt = [&](float x, float y) {
+            float z = ZAt(x, y);
+            if (z < 0.0f) { allExact = false; z = ZNear(x, y, std::max(4.0f, c.thickness + 2.0f)); }
+            return z;
+        };
         if (c.type == marker::kLine) {
-            c.z0 = ZAt(c.x0, c.y0); c.z1 = ZAt(c.x1, c.y1);
+            c.z0 = depthAt(c.x0, c.y0); c.z1 = depthAt(c.x1, c.y1);
             if (c.z0 < 0.0f || c.z1 < 0.0f) c.z0 = c.z1 = -1.0f;
         } else if (c.type == marker::kFillQuad) {
-            c.z0 = ZAt(c.x0, c.y0); c.z1 = ZAt(c.x1, c.y1); c.z2 = ZAt(c.x2, c.y2); c.z3 = ZAt(c.x3, c.y3);
+            c.z0 = depthAt(c.x0, c.y0); c.z1 = depthAt(c.x1, c.y1); c.z2 = depthAt(c.x2, c.y2); c.z3 = depthAt(c.x3, c.y3);
             if (c.z0 < 0.0f || c.z1 < 0.0f || c.z2 < 0.0f || c.z3 < 0.0f) c.z0 = c.z1 = c.z2 = c.z3 = -1.0f;
+        }
+        if (c.type == marker::kLine || c.type == marker::kFillQuad) {
+            if (c.z0 < 0.0f) ++t_depthTally.none; else if (allExact) ++t_depthTally.exact; else ++t_depthTally.nearest;
         }
         cmds.push_back(c);
     };
@@ -1471,6 +1707,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
+    topLayer = true;         // text a plugin put at a place on the screen
     for (const auto& cb : ctext) {
         if (cb.second.text.empty()) continue;
         marker::Command t{}; t.type = marker::kText;
@@ -1490,6 +1727,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     }
 
 
+    topLayer = false;
     int arrowDist = 0;
     if (f && f->has_arrow) {
         int adx = f->arrow_tx - f->player_tx, ady = f->arrow_ty - f->player_ty;
@@ -1579,6 +1817,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
+    topLayer = true;         // from here on everything sits on a component of the game's interface
     // Interface coords are 800x600 design space; below that size the engine downscales by min(w/800, h/600).
     float uiScale;
     { float sx = (float)W / 800.0f, sy = (float)H / 600.0f; uiScale = sx < sy ? sx : sy; if (uiScale > 1.0f) uiScale = 1.0f; }
@@ -1831,11 +2070,14 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     sh->gv_x = (std::int32_t)vpX; sh->gv_y = (std::int32_t)vpY;
     sh->gv_w = (std::int32_t)vpW; sh->gv_h = (std::int32_t)vpH;
     {
-        std::uint32_t mflags = 0;
+        // the game draws the hover outline itself, the module only has to be asked
+        std::uint32_t mflags = (cfg.hover_outline ? marker::kFlagEngineHover : 0u) | (cfg.inframe_trial ? marker::kFlagInFrameTrial : 0u);
         float rx = -1.f, ry = -1.f, rz = -1.f, ra = 0.f, rb = 0.f;
         float r2x = -1.f, r2y = -1.f, r2z = -1.f;
-        if (f && cfg.occlude) {
-            mflags |= marker::kFlagDepth;
+        if (f) {
+            // the projection constants go out either way: the module also needs them to move the markers with the camera
+            if (cfg.occlude || cfg.occlude_hide) mflags |= marker::kFlagDepth;
+            if (cfg.occlude_hide) mflags |= marker::kFlagOccludeHide;   // hiding is a depth test of its own, whatever the other switch says
             // Depth direction: the player against a point farther from the camera.
             float sx, sy;
             if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, f->player_fx, f->player_fy, f->player_z, sx, sy)) {
@@ -1876,6 +2118,12 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     if ((moved || due) && s_logs < 400) {
                         ++s_logs; s_lastA = A; s_lastB = B; s_lastTick = tick;
                         char lb[220];
+                        {
+                            char tb[160];
+                            std::snprintf(tb, sizeof(tb), "[ovl] marker depths this frame: %u from their own point, %u from the nearest point, %u with none (drawn over everything)",
+                                          t_depthTally.exact, t_depthTally.nearest, t_depthTally.none);
+                            rtx::log::Client(cfg.pid, tb);
+                        }
                         std::snprintf(lb, sizeof(lb), "[ovl] projection depth model: a=%.9g b=%.9g row-ratio spread %.3g (%d ratios); player w %.0f z %.7f model %.7f",
                                       A, B, spread, nr, (double)ProjW(f->matrix, p0), (double)rz, -A + B / std::max(1e-9, (double)ProjW(f->matrix, p0)));
                         rtx::log::Client(cfg.pid, lb);
@@ -1893,7 +2141,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, q[0], q[1], q[2], qx, qy)) { r2x = qx; r2y = qy; r2z = ZAt(qx, qy); }
             }
         }
+        { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
+          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) sh->hover_width[k] = cfg.hover_width[k]; FillEngineMarks(sh, cfg); }
         sh->flags = mflags; sh->ref_x = rx; sh->ref_y = ry; sh->ref_z = rz; sh->ref_a = ra; sh->ref_b = rb;
+        if (f && f->matrix_addr) { std::memcpy(sh->view_m, f->matrix, sizeof(sh->view_m)); sh->view_addr = f->matrix_addr; }
+        else sh->view_addr = 0;
         sh->ref2_x = r2x; sh->ref2_y = r2y; sh->ref2_z = r2z;
     }
     for (std::uint32_t i = 0; i < n; ++i) sh->cmds[i] = cmds[i];
@@ -2258,7 +2510,12 @@ void RenderLoop() {
             // Labels (the bank's in-game totals) need the window size and view metrics like highlights do;
             // without them PublishMarkers gets W=H=0 and the label collapses to the top-left corner.
             if (!wantF && !hasUiHl && !hasUiLabels && !hasPanelViz && !hasCenter && !hasSolverCells && !hasSkillBars &&
-                fa <= 0.0f && !wantWidgets) { PublishMarkers(ccfg, nullptr, 0, 0); continue; }
+                fa <= 0.0f && !wantWidgets) {
+                // the hover outline is drawn by the game, but it is the module that asks for it
+                if (ccfg.hover_outline || ccfg.tooltip_values || ccfg.mark_test || ccfg.inframe_trial) rtx::launcher::companion::EnsureLoaded(cpid);
+                PublishMarkers(ccfg, nullptr, 0, 0);
+                continue;
+            }
             HWND gw = FindGameWindow(cpid);
             if (!gw || IsIconic(gw) || !IsWindowVisible(gw)) {
                 PublishMarkers(ccfg, nullptr, 0, 0);
@@ -2794,7 +3051,7 @@ void QuiesceMarkers(std::uint32_t pid) {
         g_centerTexts.erase((DWORD)pid);
         g_panelViz.erase((DWORD)pid);
     }
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     marker::MakeSectionName(pid, name);
     HANDLE map = OpenFileMappingW(FILE_MAP_WRITE, FALSE, name);
     if (!map) return;                       // section never created

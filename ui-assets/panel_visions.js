@@ -159,7 +159,7 @@
       return;
     }
     let focused = ''; try { focused = qgFocusName(); } catch (e) {}
-    const step = QUEST_GUIDES[focused];
+    const step = QG_STEP_FNS[focused];
     if (!step) { if (qgOn) { qgClearAll(); qgOn = false; } return; }
     qgOn = true;
     qgP = await scanPlayerTile();
@@ -658,8 +658,10 @@
     }
     qgClearAll();   // v=80 = quest complete
   }
-  const QUEST_GUIDES = { 'Visions of Havenhythe': vohStep, 'Hearts of Sanguine': hosStep, 'Hermit Permits': hpStep, 'Secrets of Amberfell': () => amberStep(), 'Wiz Kid': () => wizkidStep(), 'Necromancy!': () => necroStep(), 'The Restless Ghost': () => rgStep(), 'Making History': () => mhStep(), 'New Foundations': () => nfStep(), "There's No Place Like Home...": () => tnpStep(), 'Murder on the Border': () => motbStep() };   // focused quest name -> step fn (later-spliced panels' steps are called via lazy arrows)
+  // Not named QUEST_GUIDES: that is the page-wide table of guide text, and exporting this map
+  // under that name replaced it, so every quest listed here lost its guide.
+  const QG_STEP_FNS = { 'Visions of Havenhythe': vohStep, 'Hearts of Sanguine': hosStep, 'Hermit Permits': hpStep, 'Secrets of Amberfell': () => amberStep(), 'Wiz Kid': () => wizkidStep(), 'Necromancy!': () => necroStep(), 'The Restless Ghost': () => rgStep(), 'Making History': () => mhStep(), 'New Foundations': () => nfStep(), "There's No Place Like Home...": () => tnpStep(), 'Murder on the Border': () => motbStep() };   // focused quest name -> step fn (later-spliced panels' steps are called via lazy arrows)
   (function () { function guideLoop() { questGuideTick().catch(function () {}); setTimeout(guideLoop, 700); } setTimeout(guideLoop, 900); })();   // first tick deferred so PLUGIN_API (declared later) is ready
 
-Object.assign(window, { QG_AUTO, QUEST_GUIDES, hudSet, qgClearAll, qgClrDlg, qgClrItem, qgClrNpc, qgClrTiles, qgDialogNpc, qgEquipCount, qgExtraAction, qgIdMarks, qgIfaceComp, qgInInstance, qgInvCount, qgItem, qgItems, qgNpc, qgObject, qgObjectById, qgOv, qgRand, qgScene, qgSceneNpc, qgTile });
+Object.assign(window, { QG_AUTO, hudSet, qgClearAll, qgClrDlg, qgClrItem, qgClrNpc, qgClrTiles, qgDialogNpc, qgEquipCount, qgExtraAction, qgIdMarks, qgIfaceComp, qgInInstance, qgInvCount, qgItem, qgItems, qgNpc, qgObject, qgObjectById, qgOv, qgRand, qgScene, qgSceneNpc, qgTile });
 })();

@@ -8,9 +8,14 @@
 #include "VkPresent.h"
 #include "InputFilter.h"
 #include "MarkerShare.h"
+#include "EngineHighlight.h"
+#include "SceneHover.h"
+#include "TooltipHook.h"
+#include "EngineMarkers.h"
 #include "HudShare.h"
 #include "FrameShare.h"
 
+#include <vector>
 #include <windows.h>
 #include <detours.h>
 #include <GL/gl.h>
@@ -32,8 +37,10 @@ rtx::marker::Share* g_marker    = nullptr;
 HANDLE              g_markerMap = nullptr;
 
 void EnsureMarkerMapped() {
+    static std::uint32_t s_gen = 0;
+    rtx::ipc::RebindIfStale(s_gen, g_marker, g_markerMap);
     if (g_marker) return;
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::marker::MakeSectionName(GetCurrentProcessId(), name);
     g_markerMap = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!g_markerMap) return;
@@ -46,8 +53,10 @@ void EnsureMarkerMapped() {
 rtx::hud::Share* g_hud    = nullptr;
 HANDLE           g_hudMap = nullptr;
 void EnsureHudMapped() {
+    static std::uint32_t s_gen = 0;
+    rtx::ipc::RebindIfStale(s_gen, g_hud, g_hudMap);
     if (g_hud) return;
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::hud::MakeSectionName(GetCurrentProcessId(), name);
     g_hudMap = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
     if (!g_hudMap) return;
@@ -59,12 +68,14 @@ void EnsureHudMapped() {
 rtx::frame::Share* g_frame    = nullptr;
 HANDLE             g_frameMap = nullptr;
 void EnsureFrameMapped() {
+    static std::uint32_t s_gen = 0;
+    rtx::ipc::RebindIfStale(s_gen, g_frame, g_frameMap);
     if (g_frame) return;
     static ULONGLONG s_nextTry = 0;
     ULONGLONG now = GetTickCount64();
     if (now < s_nextTry) return;
     s_nextTry = now + 1000;
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::frame::MakeSectionName(GetCurrentProcessId(), name);
     g_frameMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
     if (!g_frameMap) return;
@@ -121,6 +132,61 @@ void DrawCommand(const Backend& b, const rtx::marker::Command& c, int cw, int ch
     }
 }
 
+// The markers as of their last complete write. The launcher rewrites the whole list every frame
+// under a sequence lock; drawn straight from the share, a frame that falls into that write shows
+// nothing, or half of the old list and half of the new. Such a frame draws the last complete list.
+struct MarkerLatch {
+    std::vector<rtx::marker::Command> cmds;
+    std::int32_t  fb_w = 0, fb_h = 0;
+    std::uint32_t flags = 0;
+    float         ref[8] = {};
+    float         view_m[16] = {};
+    std::uint64_t view_addr = 0;
+    std::int32_t  gv[4] = {};
+    bool          hover_on = false;   // scenery under the cursor for the game to outline, see scenehover::Mark
+    std::int32_t  hover_x = 0, hover_y = 0, hover_id = 0;
+    bool          visible = false;
+    unsigned      stale = 0;          // frames in a row without a complete read
+};
+MarkerLatch g_latch;
+
+bool LatchMarkers() {
+    if (!g_marker || g_marker->magic != rtx::marker::kMagic || g_marker->version != rtx::marker::kVersion) {
+        g_latch.visible = false; g_latch.cmds.clear();
+        return false;
+    }
+    bool got = false;
+    for (int attempt = 0; attempt < 4 && !got; ++attempt) {
+        const std::uint32_t s0 = g_marker->seq;
+        if (s0 & 1u) { for (int k = 0; k < 400; ++k) YieldProcessor(); continue; }
+        std::uint32_t n = g_marker->visible ? g_marker->count : 0;
+        if (n > rtx::marker::kMaxCmds) n = rtx::marker::kMaxCmds;
+        static std::vector<rtx::marker::Command> scratch;
+        scratch.resize(n);
+        if (n) std::memcpy(scratch.data(), g_marker->cmds, (size_t)n * sizeof(rtx::marker::Command));
+        const std::int32_t w = g_marker->fb_w, h = g_marker->fb_h;
+        const std::uint32_t flags = g_marker->flags;
+        const float ref[8] = { g_marker->ref_x, g_marker->ref_y, g_marker->ref_z, g_marker->ref_a, g_marker->ref_b,
+                               g_marker->ref2_x, g_marker->ref2_y, g_marker->ref2_z };
+        float vm[16]; std::memcpy(vm, g_marker->view_m, sizeof(vm));
+        const std::uint64_t vaddr = g_marker->view_addr;
+        const std::int32_t gv[4] = { g_marker->gv_x, g_marker->gv_y, g_marker->gv_w, g_marker->gv_h };
+        const bool hon = g_marker->hover_on != 0;
+        const std::int32_t hx = g_marker->hover_x, hy = g_marker->hover_y, hid = g_marker->hover_id;
+        if (g_marker->seq != s0) continue;                    // written to while it was read: not this one
+        g_latch.hover_on = hon; g_latch.hover_x = hx; g_latch.hover_y = hy; g_latch.hover_id = hid;
+        std::memcpy(g_latch.view_m, vm, sizeof(vm)); g_latch.view_addr = vaddr; std::memcpy(g_latch.gv, gv, sizeof(gv));
+        g_latch.cmds.swap(scratch);
+        g_latch.fb_w = w; g_latch.fb_h = h; g_latch.flags = flags;
+        std::memcpy(g_latch.ref, ref, sizeof(ref));
+        g_latch.visible = n > 0;
+        got = true;
+    }
+    if (got) g_latch.stale = 0;
+    else if (++g_latch.stale > 120) { g_latch.visible = false; g_latch.hover_on = false; g_latch.cmds.clear(); }   // a launcher that stopped mid-write
+    return g_latch.visible && !g_latch.cmds.empty();
+}
+
 // No C++ objects here: the SEH wrapper must have nothing to unwind.
 void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
     if (hwnd) rtx::winmsg::Install(hwnd);
@@ -134,10 +200,48 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         g_frame->client_h = fbh;
         g_frame->module_seq = g_frame->module_seq + 1;
     }
-    bool haveMarkers = g_marker && g_marker->magic == rtx::marker::kMagic &&
-                       g_marker->version == rtx::marker::kVersion &&
-                       (g_marker->seq & 1u) == 0 && g_marker->visible &&
-                       g_marker->count > 0;
+    // The engine's own hover outline follows the launcher's flag whether or not there is anything
+    // to draw this frame.
+    const bool haveMarkers = LatchMarkers();
+    if (g_marker && g_marker->magic == rtx::marker::kMagic && g_marker->version == rtx::marker::kVersion) {
+        const bool wantHover = (g_marker->flags & rtx::marker::kFlagEngineHover) != 0;
+        rtx::vkpresent::SetInFrameTrial((g_marker->flags & rtx::marker::kFlagInFrameTrial) != 0);
+        const rtx::enginehl::Status st = rtx::enginehl::Set(wantHover, g_marker->hover_rgb, g_marker->hover_width);
+        // NPCs and players the game marks itself; scenery that opted out is marked here
+        // from the last complete write: a frame that falls into a write must not skip the mark, the
+        // game takes a gap for the end of the hover and the next mark for a new one, pulse and all
+        if (wantHover && st == rtx::enginehl::kActive && g_latch.hover_on)
+            rtx::scenehover::Mark(g_latch.hover_x, g_latch.hover_y, g_latch.hover_id);
+        static rtx::enginehl::Status s_said = rtx::enginehl::kUnknown;
+        if (st != s_said) {
+            s_said = st;
+            OutputDebugStringA(st == rtx::enginehl::kActive ? "RuneToolsX: engine hover outline available"
+                                                            : "RuneToolsX: engine hover outline not recognised in this build");
+        }
+    }
+    if (g_marker && g_marker->magic == rtx::marker::kMagic && g_marker->version == rtx::marker::kVersion &&
+        (g_marker->seq & 1u) == 0) {
+        char tip[sizeof(g_marker->tip_text)];
+        std::memcpy(tip, g_marker->tip_text, sizeof(tip));
+        tip[sizeof(tip) - 1] = 0;
+        rtx::tooltip::Update(g_marker->tip_on != 0, g_marker->tip_slot, g_marker->tip_comp, tip);
+        rtx::enginemark::Want mk;
+        mk.tile_on = g_marker->mark_tile_on != 0;
+        mk.tile_x = g_marker->mark_tile_x; mk.tile_y = g_marker->mark_tile_y; mk.tile_model = g_marker->mark_tile_model;
+        mk.arrow_on = g_marker->mark_arrow_on != 0;
+        mk.arrow_x = g_marker->mark_arrow_x; mk.arrow_y = g_marker->mark_arrow_y; mk.arrow_plane = g_marker->mark_arrow_plane;
+        mk.arrow_style = g_marker->mark_arrow_style; mk.arrow_height = g_marker->mark_arrow_height;
+        mk.arrow_pointer = g_marker->mark_arrow_pointer;
+        mk.tile_rgb = g_marker->mark_tile_rgb & 0xFFFFFFu; mk.tile_width = g_marker->mark_tile_width;
+        mk.arrow_rgb = g_marker->mark_arrow_rgb & 0xFFFFFFu; mk.arrow_width = g_marker->mark_arrow_width;
+        mk.arrow_range = g_marker->mark_arrow_range; mk.pointer_scale = g_marker->mark_pointer_scale;
+        mk.pointer_reach = g_marker->mark_pointer_reach;
+        mk.arrow_npc = g_marker->mark_arrow_npc; mk.tile_steady = g_marker->mark_tile_steady != 0;
+        mk.path_on = g_marker->mark_path_on != 0; mk.path_model = g_marker->mark_path_model;
+        mk.path_x0 = g_marker->mark_path_x0; mk.path_y0 = g_marker->mark_path_y0;
+        mk.path_x1 = g_marker->mark_path_x1; mk.path_y1 = g_marker->mark_path_y1;
+        rtx::enginemark::Update(mk);
+    }
     // w/h are untrusted (any same-user process can pre-create the section): clamp or UploadHud reads OOB.
     bool haveHud = g_hud && g_hud->magic == rtx::hud::kMagic &&
                    g_hud->version == rtx::hud::kVersion &&
@@ -165,20 +269,20 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
     }
 #endif
     if (haveMarkers) {
-        std::uint32_t n = g_marker->count;
-        if (n > rtx::marker::kMaxCmds) n = rtx::marker::kMaxCmds;
-        int cw = g_marker->fb_w > 0 ? g_marker->fb_w : fbw;
-        int ch = g_marker->fb_h > 0 ? g_marker->fb_h : fbh;
-        const float ref[8] = { g_marker->ref_x, g_marker->ref_y, g_marker->ref_z, g_marker->ref_a, g_marker->ref_b,
-                               g_marker->ref2_x, g_marker->ref2_y, g_marker->ref2_z };
-        b.SetDepthMode(g_marker->flags, ref);
+        const std::uint32_t n = (std::uint32_t)g_latch.cmds.size();
+        int cw = g_latch.fb_w > 0 ? g_latch.fb_w : fbw;
+        int ch = g_latch.fb_h > 0 ? g_latch.fb_h : fbh;
+        b.SetDepthMode(g_latch.flags, g_latch.ref);
+        rtx::vkcomposite::SetViewInfo(g_latch.view_m, g_latch.view_addr, g_latch.gv, cw, ch);
         for (std::uint32_t i = 0; i < n; ++i) {
-            const rtx::marker::Command& c = g_marker->cmds[i];
+            const rtx::marker::Command& c = g_latch.cmds[i];
             const float z[4] = { c.z0, c.z1, c.z2, c.z3 };
             b.SetDepth(z);
+            rtx::vkcomposite::SetTopLayer(c.top != 0);
             DrawCommand(b, c, cw, ch);
         }
         b.SetDepth(nullptr);
+        rtx::vkcomposite::SetTopLayer(true);    // what follows is ours (the HUD card, the panels): over the interface
         static bool s_logged = false;
         if (!s_logged) { s_logged = true; OutputDebugStringA("RuneToolsX: drawing world markers"); }
     }
@@ -358,6 +462,7 @@ const char* Mode() {
 }
 
 void Uninstall() {
+    rtx::enginehl::Restore();
     if (!g_glInstalled || !g_origSwap) return;
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());

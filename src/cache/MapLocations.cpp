@@ -43,24 +43,20 @@ std::vector<LocPlacement> DecodeMapLocations(std::vector<std::uint8_t> file_byte
             p.y        = pos & 0x3F;
             p.type     = (data >> 2) & 0x1F;
             p.rotation = data & 0x3;
-            out.push_back(p);
 
             if (data >= 0x80) {
                 int sub = s.ReadUnsignedByte();
-                if (sub != 0) {
-                    if (sub & 0x01) s.skip(8);   // 4 x u16
-                    if (sub & 0x02) s.skip(2);
-                    if (sub & 0x04) s.skip(2);
-                    if (sub & 0x08) s.skip(2);
-                    if (sub & 0x10) {
-                        s.skip(2);
-                    } else {
-                        if (sub & 0x20) s.skip(2);
-                        if (sub & 0x40) s.skip(2);
-                        if (sub & 0x80) s.skip(2);
-                    }
-                }
+                p.has_extra = sub != 0;
+                if (sub & 0x01) for (int k = 0; k < 4; ++k) p.quat[k] = (short)s.ReadShort();
+                if (sub & 0x02) p.tx = (short)s.ReadShort();
+                if (sub & 0x04) p.ty = (short)s.ReadShort();
+                if (sub & 0x08) p.tz = (short)s.ReadShort();
+                if (sub & 0x10) p.scale = s.ReadUnsignedShort();
+                if (sub & 0x20) p.sx = s.ReadUnsignedShort();
+                if (sub & 0x40) p.sy = s.ReadUnsignedShort();
+                if (sub & 0x80) p.sz = s.ReadUnsignedShort();
             }
+            out.push_back(p);
         }
     }
     return out;

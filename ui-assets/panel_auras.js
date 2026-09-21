@@ -1747,6 +1747,6 @@
     body.appendChild(row);
   }
 
-Object.assign(window, { auraAnyHudVisible, auraApplyDurablePrefs, auraColor, auraGet, auraGroupTabs, auraIsHudTab, auraNeedsPoll, fetchAuras, renderAuraGroup });
+Object.assign(window, { auraAnyHudVisible, auraApplyDurablePrefs, auraColor, auraColorPicker, auraGet, auraGroupTabs, auraIsHudTab, auraNeedsPoll, fetchAuras, renderAuraGroup });
 registerTab({ id: 'auras', render: renderAuras });
 })();

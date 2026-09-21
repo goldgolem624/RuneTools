@@ -145,6 +145,7 @@ struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false;
 struct OverlayFrame {
     bool        ok = false;
     float       matrix[16] = {0};
+    std::uint64_t matrix_addr = 0;        // where in the game that matrix was read from
     int         player_tx = 0, player_ty = 0, plane = 0;
     float       player_z  = 0;            // fine z used as the grid plane height
     float       player_fx = 0, player_fy = 0;   // player FINE world position (smooth, sub-tile)
@@ -256,6 +257,18 @@ std::string CompassTargetJson(std::uint32_t pid);
 std::string ScanSolutionJson(std::uint32_t pid);
 // Hover target from the engine slot *(input_proc+0x13F8).
 std::string HoverEntityJson(std::uint32_t pid);
+// The scenery under the cursor, from the same slot, and the entry the scene walk has for it:
+// the tile and definition id the scene share lists the object under. in_scene is false when
+// the walk has no such object.
+struct HoverLocInfo {
+    int         id = 0, x = 0, y = 0;   // what the game reports: definition and hovered tile
+    std::string verb;                   // the default action the game shows for it
+    // an item in an interface slot instead of scenery: HoverLoc returns false and fills these
+    int         item_id = -1, item_slot = -1, item_iface = 0, item_comp = 0;
+    bool        in_scene = false;
+    int         scene_x = 0, scene_y = 0, scene_id = 0;
+};
+bool HoverLoc(std::uint32_t pid, HoverLocInfo& out);
 std::string PuzzleStateJson(std::uint32_t pid);
 std::string PuzzleCellRectsJson(std::uint32_t pid);
 std::string InterfaceSizeSearchJson(std::uint32_t pid, int w, int h, int tol);

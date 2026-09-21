@@ -30,6 +30,7 @@
 #include <queue>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -2988,6 +2989,157 @@ bool StructStrParam(int structId, int key, std::string& out) {
     out = it->second; return true;
 }
 
+// The game's own skill guides: one struct per entry, with the level (2212), the skill as the
+// guides number them (2215: 1 Attack .. 29 Necromancy, the order of the skills tab), a name
+// (2210) and the item that illustrates it (2213). An entry without a name goes by its item's.
+// Indexed by that item and by the name, keeping the lowest level per skill.
+//
+// The item of an entry only illustrates it: yew logs stand for the yew tree under Woodcutting and
+// Farming, for pyre ships under Crafting and for themselves under Firemaking. So an item is only
+// given the skills of entries that are about the item itself, by name. Under the gathering skills
+// an entry without a name is the thing gathered FROM (the ore stands for its rock), so there the
+// name has to be spelled out and equal, which leaves the tools: hatchets, pickaxes, nets.
+namespace {
+struct GuideEntry { int skill; int level; std::string lname; bool named; };
+std::unordered_map<int, std::vector<GuideEntry>>       g_guide_by_item;   // under g_mu
+std::vector<GuideEntry>                                g_guide_all;       // under g_mu
+std::unordered_map<std::string, std::vector<SkillReq>> g_guide_by_name;   // lower case
+int g_guide_state = 0;                                                     // 0 not built, 1 building, 2 ready
+
+std::string LowerAscii(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    return s;
+}
+
+void GuideAdd(std::vector<SkillReq>& list, int skill, int level) {
+    for (auto& r : list) if (r.skill == skill) { if (level < r.level) r.level = level; return; }
+    list.push_back(SkillReq{ skill, level });
+}
+
+// A sweep over every struct takes a second or two, so it runs on its own thread and the
+// callers, which ask every frame, get nothing until it is done.
+void EnsureGuideIndex() {
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_guide_state != 0) return;
+        EnsureInit();
+        auto* index = g_store ? g_store->Get(kIndexStructs) : nullptr;
+        if (!index || !index->ready()) return;       // cache not open yet: ask again later
+        g_guide_state = 1;
+    }
+    std::thread([] {
+        std::unordered_map<int, std::vector<GuideEntry>> byItem;
+        std::vector<GuideEntry> all;
+        std::unordered_map<std::string, std::vector<SkillReq>> byName;
+        SqliteIndexFile* index = nullptr;
+        std::vector<std::pair<int, int>> ids;
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            index = g_store ? g_store->Get(kIndexStructs) : nullptr;
+            if (index) {
+                const auto& entries = index->ref().entries();
+                for (int a = 0; a < (int)entries.size(); ++a)
+                    for (int fid : entries[a].valid_file_ids) ids.emplace_back(a, fid);
+            }
+        }
+        for (const auto& id : ids) {
+            DecodedStruct ds;
+            if (!DecodeStructFile(index->ReadFile(id.first, id.second), ds)) continue;
+            auto lv = ds.ints.find(2212), sk = ds.ints.find(2215);
+            if (lv == ds.ints.end() || sk == ds.ints.end()) continue;
+            if (sk->second < 1 || sk->second > 29 || lv->second < 1 || lv->second > 200) continue;
+            auto it = ds.ints.find(2213);
+            const int item = (it != ds.ints.end()) ? it->second : -1;
+            auto nm = ds.strs.find(2210);
+            GuideEntry e{ sk->second, lv->second, std::string(), nm != ds.strs.end() && !nm->second.empty() };
+            e.lname = LowerAscii(e.named ? nm->second : (item >= 0 ? ItemName(item) : std::string()));
+            if (item >= 0) byItem[item].push_back(e);
+            if (!e.lname.empty()) { GuideAdd(byName[e.lname], e.skill, e.level); all.push_back(e); }
+        }
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_guide_by_item = std::move(byItem);
+        g_guide_by_name = std::move(byName);
+        g_guide_all = std::move(all);
+        g_guide_state = 2;
+    }).detach();
+}
+}  // namespace
+
+namespace {
+bool GuideGathers(int skill) {   // Mining, Fishing, Woodcutting, Farming, Hunter, Divination
+    return skill == 13 || skill == 15 || skill == 18 || skill == 21 || skill == 23 || skill == 26;
+}
+// `word` inside `text` on word boundaries
+bool HoldsWords(const std::string& text, const std::string& word) {
+    if (word.empty()) return false;
+    for (size_t at = text.find(word); at != std::string::npos; at = text.find(word, at + 1)) {
+        const bool l = at == 0 || !std::isalnum((unsigned char)text[at - 1]);
+        const size_t end = at + word.size();
+        const bool r = end == text.size() || !std::isalnum((unsigned char)text[end]);
+        if (l && r) return true;
+    }
+    return false;
+}
+}  // namespace
+
+std::vector<SkillReq> SkillGuideForItem(int item_id) {
+    EnsureGuideIndex();
+    const std::string name = LowerAscii(ItemName(item_id));      // takes the lock itself
+    std::vector<SkillReq> out;
+    if (name.empty()) return out;
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_guide_by_item.find(item_id);
+    if (it == g_guide_by_item.end()) return out;
+    for (const auto& e : it->second) {
+        bool about;
+        if (GuideGathers(e.skill)) about = e.named && e.lname == name;
+        else about = e.lname == name || HoldsWords(name, e.lname) || HoldsWords(e.lname, name);
+        if (about) GuideAdd(out, e.skill, e.level);
+    }
+    return out;
+}
+
+int SkillGuideLevelByPrefix(int skill, const std::string& prefix, const std::vector<std::string>& words) {
+    EnsureGuideIndex();
+    std::lock_guard<std::mutex> lk(g_mu);
+    int best = 0;
+    for (const auto& e : g_guide_all) {
+        if (e.skill != skill || e.lname.compare(0, prefix.size(), prefix) != 0) continue;
+        bool hit = words.empty();
+        for (const auto& w : words) if (e.lname.find(w) != std::string::npos) { hit = true; break; }
+        if (hit && (best == 0 || e.level < best)) best = e.level;
+    }
+    return best;
+}
+
+std::vector<SkillReq> SkillGuideForName(const std::string& name) {
+    EnsureGuideIndex();
+    const std::string key = LowerAscii(name);
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_guide_by_name.find(key);
+    return it == g_guide_by_name.end() ? std::vector<SkillReq>{} : it->second;
+}
+
+bool SkillGuideReady() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_guide_state == 2;
+}
+
+const char* SkillGuideSkillName(int skill) {
+    static const char* kNames[] = { "", "Attack", "Strength", "Ranged", "Magic", "Defence", "Constitution", "Prayer", "Agility",
+        "Herblore", "Thieving", "Crafting", "Runecrafting", "Mining", "Smithing", "Fishing", "Cooking", "Firemaking",
+        "Woodcutting", "Fletching", "Slayer", "Farming", "Construction", "Hunter", "Summoning", "Dungeoneering",
+        "Divination", "Invention", "Archaeology", "Necromancy" };
+    return (skill >= 1 && skill <= 29) ? kNames[skill] : "";
+}
+
+// The 25 pixel skill icons the game itself puts inline in text; 0 for the skills that have none there.
+int SkillGuideSkillSprite(int skill) {
+    static const int kSprites[] = { 0, 197, 198, 200, 202, 199, 203, 201, 204, 205, 206, 207, 215, 209, 210, 211, 212, 213,
+        214, 208, 216, 217, 221, 220, 222, 0, 0, 0, 0, 0 };
+    return (skill >= 1 && skill <= 29) ? kSprites[skill] : 0;
+}
+
 std::string StructParamsJson(int structId) {
     if (structId < 0) return "{}";
     std::lock_guard<std::mutex> lk(g_mu);
@@ -4392,6 +4544,7 @@ void ResetCacheStateLocked() {
     g_perk_names.clear(); g_perk_descs.clear(); g_perk_ranks.clear(); g_perks_loaded = false;
     g_buff_names.clear(); g_debuff_names.clear(); g_buff_kind.clear(); g_buff_icon_item.clear(); g_buffs_loaded = false;
     g_locclip_cache.clear(); g_blocked_cache.clear(); g_tiles_cache.clear();
+    if (g_guide_state == 2) { g_guide_by_item.clear(); g_guide_by_name.clear(); g_guide_state = 0; }   // rebuilt on the next ask
     g_mapscene_sprite.clear(); g_mapscene_px.clear(); g_loc_mapscene.clear(); g_mapscenes_loaded = false;
     g_maplabel_def.clear(); g_maplabel_px.clear(); g_loc_mapfunc.clear(); g_loc_name.clear(); g_maplabels_loaded = false;
     for (int i = 0; i < 3; ++i) { g_name_index[i].clear(); g_name_index_built[i] = false; }

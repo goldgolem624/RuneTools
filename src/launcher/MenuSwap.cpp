@@ -16,7 +16,7 @@ struct View {
 
     explicit View(std::uint32_t pid) {
         if (!pid) return;
-        wchar_t name[64];
+        wchar_t name[rtx::ipc::kNameChars];
         rtx::menu::MakeSectionName(pid, name);
         map = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
         if (!map) return;

@@ -24,6 +24,7 @@
 #include <shellapi.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
+#include <cwchar>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -89,8 +90,34 @@ bool preload_ultralight_dlls(const std::filesystem::path& self) {
 }
 
 static WNDPROC g_launcherPrevProc = nullptr;
+
+// Started again by the installer after an update or a repair. The installer runs unseen, so
+// Windows hands the focus back to whatever was in front before it, and the launcher that has
+// just come back ends up behind that window: to the user it never reopened. It steps in front
+// again a few times while that settles, and flashes its taskbar button if it is still refused.
+constexpr UINT_PTR kFrontTimer = 2;
+static int g_frontTries = 0;
+static void BringLauncherToFront(HWND h) {
+    if (GetForegroundWindow() == h) return;
+    if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+    SetWindowPos(h, HWND_TOPMOST,   0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetForegroundWindow(h);
+    if (GetForegroundWindow() != h) {
+        FLASHWINFO f{ sizeof(f), h, FLASHW_ALL | FLASHW_TIMERNOFG, 3, 0 };
+        FlashWindowEx(&f);
+    }
+}
+
 static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
+    case WM_TIMER:
+        if (w == kFrontTimer) {
+            BringLauncherToFront(h);
+            if (++g_frontTries >= 3) KillTimer(h, kFrontTimer);
+            return 0;
+        }
+        break;
     case WM_NCACTIVATE:
         return DefWindowProcW(h, m, w, (LPARAM)-1);
     case WM_NCCALCSIZE:
@@ -261,6 +288,7 @@ public:
             SetActiveWindow(hwnd);
 
             SetTimer(hwnd, 1, 100, nullptr);
+            if (std::wcsstr(GetCommandLineW(), L"/relaunched")) SetTimer(hwnd, kFrontTimer, 1200, nullptr);
 
             rtx::winnotify::EnableTray(hwnd);
         }
@@ -608,9 +636,9 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
 
     auto self = exe_dir();
     if (!preload_ultralight_dlls(self)) {
-        fatal("Failed to load Ultralight runtime DLLs from "
-              "Ultralight\\ subdir next to the exe. Rebuild to ensure "
-              "the StageRuntime MSBuild target copied them.");
+        fatal("RuneTools cannot start: some of its files are missing from the Ultralight folder next to "
+              "RuneToolsXLauncher.exe.\n\nAntivirus software sometimes removes them. Add the RuneTools "
+              "folder to your antivirus exclusions, then install RuneTools again to put the files back.");
         return 1;
     }
 

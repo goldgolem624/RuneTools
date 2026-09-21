@@ -2,6 +2,7 @@
 // Launcher <-> companion shared section for the live scene-object list. Plain C-layout POD only.
 
 #include <cstdint>
+#include "ShareName.h"
 
 namespace rtx::scene {
 
@@ -10,14 +11,9 @@ inline constexpr std::uint32_t kMagic   = 0x52545853;   // 'RTXS'
 inline constexpr std::uint32_t kVersion = 2;
 inline constexpr int kMaxObjects        = 4000;
 
-inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
-    int i = 0;
-    for (const wchar_t* s = kSectionPrefix; *s; ++s) out[i++] = *s;
-    wchar_t tmp[16]; int n = 0;
-    if (pid == 0) tmp[n++] = L'0';
-    while (pid) { tmp[n++] = (wchar_t)(L'0' + pid % 10); pid /= 10; }
-    while (n) out[i++] = tmp[--n];
-    out[i] = 0;
+template <std::size_t N>
+inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kSectionPrefix, pid);
 }
 
 inline constexpr std::int16_t kHiddenBit = 0x100;   // Object::kind flag: loc hidden (sub+0xF8 bit 16),

@@ -1,6 +1,7 @@
 #include "Update.h"
 #include "BridgeUtil.h"
 #include "Crypto.h"
+#include "Dock.h"
 #include "Http.h"
 #include "../shared/Log.h"
 
@@ -9,6 +10,9 @@
 #include <bcrypt.h>
 #include <atomic>
 #include <cstdio>
+#include <algorithm>
+#include <fstream>
+#include <filesystem>
 #include <mutex>
 #include <random>                   // random_device: unpredictable installer temp name
 #include <sstream>
@@ -104,6 +108,9 @@ static std::string       g_upd_phase = "idle";   // idle|downloading|verifying|l
 static int               g_upd_pct   = 0;
 static std::string       g_upd_detail;
 static std::atomic<bool> g_upd_running{ false };
+// A repair fetches and runs the installer of the version already running, to put back files that
+// have gone missing; an update only ever goes to a newer one.
+static std::atomic<bool> g_upd_repair{ false };
 
 static void set_upd(const char* phase, int pct, const std::string& detail) {
     std::lock_guard<std::mutex> lk(g_upd_mu);
@@ -113,11 +120,12 @@ static void set_upd(const char* phase, int pct, const std::string& detail) {
 static void run_update() {
     struct Done { ~Done() { g_upd_running = false; } } done;
     auto log = [](const std::string& m) { rtx::log::Launcher("[update] " + m); };
-    log("worker start (running v" + running_version() + ")");
+    const bool repair = g_upd_repair.load();
+    log(std::string(repair ? "repair" : "update") + " worker start (running v" + running_version() + ")");
 
     std::vector<http::Header> hdrs;   // public update endpoints; no auth headers
 
-    set_upd("downloading", 0, "Checking update");
+    set_upd("downloading", 0, repair ? "Finding the installer" : "Checking update");
     auto man = http::Get(kUpdateHost, kLatestPath, hdrs);
     log("manifest GET ok=" + std::to_string(man.ok) + " status=" + std::to_string(man.status));
     if (!man.ok || man.status != 200) { log("abort: manifest unreachable: " + man.detail); set_upd("error", 0, "Couldn't reach the update server"); return; }
@@ -159,7 +167,12 @@ static void run_update() {
             return v;
         };
         const auto nv = parts(ver), rv = parts(running_version());
-        if (!(nv > rv)) {   // lexicographic on equal-length numeric vectors
+        if (repair && nv < rv) {   // never put an older build over a newer one
+            log("abort: repair: published version " + ver + " is older than running " + running_version());
+            set_upd("error", 0, "The published installer (v" + ver + ") is older than this version");
+            return;
+        }
+        if (!repair && !(nv > rv)) {   // lexicographic on equal-length numeric vectors
             log("abort: manifest version " + ver + " is not newer than running " + running_version());
             set_upd("error", 0, "No update available");
             return;
@@ -174,7 +187,7 @@ static void run_update() {
     }
     std::wstring dest = std::wstring(tmp) + L"RuneToolsXSetup" + rnd + L".exe";
 
-    set_upd("downloading", 0, "Downloading v" + ver);
+    set_upd("downloading", 0, repair ? "Downloading the installer" : "Downloading v" + ver);
     auto dl = http::Download(kUpdateHost, kDownloadPath, hdrs, dest,
         [](long long got, long long total) {
             set_upd("downloading", total > 0 ? (int)((got * 100) / total) : 0, "");
@@ -208,7 +221,7 @@ static void run_update() {
         return;
     }
 
-    set_upd("launching", 100, "Installing v" + ver);
+    set_upd("launching", 100, repair ? "Putting the files back" : "Installing v" + ver);
 
     // Inno postinstall [Run] does not fire under /VERYSILENT; RuneToolsX.iss handles the relaunch.
     std::wstring instlog = rtx::log::LogDir();
@@ -216,6 +229,8 @@ static void run_update() {
     instlog += L"installer.log";
     std::wstring args = L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"" + instlog + L"\"";
 
+    // this process has the user's attention right now: let the launcher the installer starts take it over
+    AllowSetForegroundWindow(ASFW_ANY);
     log("launching installer /VERYSILENT (+/LOG=installer.log), then Sleep(1500) + TerminateProcess");
     HINSTANCE rc = ShellExecuteW(nullptr, L"open", dest.c_str(),
                                  args.c_str(),
@@ -236,10 +251,66 @@ JSValueRef Version(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, running_version());
 }
 
+namespace {
+
+std::filesystem::path install_dir() {
+    wchar_t buf[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    return std::filesystem::path(buf).parent_path();
+}
+
+// The files the install cannot do without: the game module, the item data, and every script the
+// client page is put together from (the same list the page is built with, so a panel added later
+// is covered by itself).
+std::vector<std::string> missing_install_files() {
+    const std::filesystem::path dir = install_dir();
+    std::vector<std::string> wanted = { "rtxscene.dll", "launcher.html", "items.pack", "items_extra.pack" };
+    for (auto& f : dock::UiAssetFiles()) wanted.push_back(std::move(f));
+    std::vector<std::string> missing;
+    std::error_code ec;
+    for (const auto& name : wanted)
+        if (!std::filesystem::exists(dir / std::filesystem::u8path(name), ec)) missing.push_back(name);
+    return missing;
+}
+
+}  // namespace
+
+JSValueRef InstallHealth(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    std::ostringstream o;
+    o << "{\"missing\":[";
+    bool first = true;
+    for (const auto& name : missing_install_files()) {
+        o << (first ? "" : ",") << '"' << json_escape(name) << '"';
+        first = false;
+    }
+    o << "],\"dir\":\"" << json_escape(install_dir().u8string()) << "\"}";
+    return utf8_to_js(ctx, o.str());
+}
+
+JSValueRef OpenInstallDir(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t, const JSValueRef[], JSValueRef*) {
+    const std::wstring dir = install_dir().wstring();
+    const auto code = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"explore", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    return JSValueMakeBoolean(ctx, code > 32);
+}
+
+JSValueRef StartRepair(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                       size_t, const JSValueRef[], JSValueRef*) {
+    bool expected = false;
+    if (g_upd_running.compare_exchange_strong(expected, true)) {
+        g_upd_repair = true;
+        set_upd("downloading", 0, "Starting");
+        std::thread([] { guarded("repair", run_update); }).detach();
+    }
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef StartUpdate(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t, const JSValueRef[], JSValueRef*) {
     bool expected = false;
     if (g_upd_running.compare_exchange_strong(expected, true)) {
+        g_upd_repair = false;
         set_upd("downloading", 0, "Starting");
         std::thread([] { guarded("update", run_update); }).detach();
     }

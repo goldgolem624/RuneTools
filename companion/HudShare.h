@@ -1,6 +1,7 @@
 #pragma once
 // HUD-reminder transport, launcher -> module: sprite RGBA + caption drawn top-centre.
 #include <cstdint>
+#include "ShareName.h"
 
 namespace rtx::hud {
 
@@ -10,14 +11,9 @@ inline constexpr std::uint32_t kVersion = 1;
 inline constexpr int kMaxW = 128, kMaxH = 128;          // sprite cap (px)
 inline constexpr int kCaptionMax = 95;
 
-inline void MakeSectionName(std::uint32_t pid, wchar_t* out) {
-    int i = 0;
-    for (const wchar_t* s = kSectionPrefix; *s; ++s) out[i++] = *s;
-    wchar_t tmp[16]; int n = 0;
-    if (pid == 0) tmp[n++] = L'0';
-    while (pid) { tmp[n++] = (wchar_t)(L'0' + pid % 10); pid /= 10; }
-    while (n) out[i++] = tmp[--n];
-    out[i] = 0;
+template <std::size_t N>
+inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kSectionPrefix, pid);
 }
 
 struct Share {

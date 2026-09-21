@@ -95,7 +95,29 @@ Source: "..\LICENSE";                    DestDir: "{app}"; Flags: ignoreversion
 Source: "..\NOTICE";                     DestDir: "{app}"; Flags: ignoreversion
 Source: "..\THIRD-PARTY-NOTICES.md";     DestDir: "{app}"; Flags: ignoreversion
 ; CS2 extractor sidecar (GPL rsmv-based, runs as a separate process; ships node.exe + npm dep closure)
-Source: "{#SrcDir}\cs2sidecar\*";   DestDir: "{app}\cs2sidecar"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; Its parts are named one by one. A bare wildcard once shipped 21,000 files that a tool run inside
+; the staging folder had left there, and every install and update took half a minute longer for it.
+Source: "{#SrcDir}\cs2sidecar\NOTICE.md";      DestDir: "{app}\cs2sidecar"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SrcDir}\cs2sidecar\build.cmd";      DestDir: "{app}\cs2sidecar"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SrcDir}\cs2sidecar\node.exe";       DestDir: "{app}\cs2sidecar"; Flags: ignoreversion skipifsourcedoesntexist
+; dist: only the entry point the launcher runs. The second one built beside it is a command line
+; tool, and the assets folder belongs to a viewer that is not part of this.
+Source: "{#SrcDir}\cs2sidecar\dist\cs2export.js"; DestDir: "{app}\cs2sidecar\dist"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SrcDir}\cs2sidecar\node_modules\*"; DestDir: "{app}\cs2sidecar\node_modules"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; src and build.cmd are the corresponding source the sidecar's licence requires beside its binary
+Source: "{#SrcDir}\cs2sidecar\src\*";          DestDir: "{app}\cs2sidecar\src"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; cache: only the reference data every first run would otherwise have to download. Calibration
+; results are made on the user's machine for the user's game build; ones made elsewhere never match.
+; The sidecar adds to this file as it runs, so an update leaves the user's copy alone.
+Source: "{#SrcDir}\cs2sidecar\cache\fscache.sqlite3"; DestDir: "{app}\cs2sidecar\cache"; Flags: onlyifdoesntexist skipifsourcedoesntexist
+
+[InstallDelete]
+; what earlier installers put on disk and should not have
+Type: filesandordirs; Name: "{app}\cs2sidecar\--help"
+Type: filesandordirs; Name: "{app}\cs2sidecar\dist\assets"
+Type: files;          Name: "{app}\cs2sidecar\dist\cs2decomp.js"
+Type: files;          Name: "{app}\cs2sidecar\cache\opcodes-build940*.json"
+Type: files;          Name: "{app}\cs2sidecar\cache\scripts-build940*.json"
 
 [Icons]
 Name: "{group}\{#MyAppName}";       Filename: "{app}\{#MyAppExe}"
@@ -109,7 +131,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 ;    whenever WizardSilent is true. skipifsilent on the first entry prevents a
 ;    double launch in silent mode.
 Filename: "{app}\{#MyAppExe}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\{#MyAppExe}"; Flags: nowait; Check: WizardSilent
+Filename: "{app}\{#MyAppExe}"; Parameters: "/relaunched"; Flags: nowait; Check: WizardSilent
 
 [Code]
 function InitializeSetup(): Boolean;

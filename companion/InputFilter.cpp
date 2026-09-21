@@ -19,12 +19,14 @@ rtx::render::Share* g_render     = nullptr;
 HANDLE              g_renderMap  = nullptr;
 
 void EnsureRenderMapped() {
+    static std::uint32_t s_renderGen = 0;
+    rtx::ipc::RebindIfStale(s_renderGen, g_render, g_renderMap);
     if (g_render) return;
     static ULONGLONG s_nextTry = 0;
     ULONGLONG now = GetTickCount64();
     if (now < s_nextTry) return;
     s_nextTry = now + 1000;
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::render::MakeSectionName(GetCurrentProcessId(), name);
     g_renderMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
     if (!g_renderMap) return;
@@ -39,12 +41,16 @@ HANDLE             g_inputMap = nullptr;
 HANDLE             g_inputEvt = nullptr;
 
 void EnsureInputMapped() {
+    static std::uint32_t s_inputGen = 0;
+    if (rtx::ipc::SessionChanged(s_inputGen)) {
+        g_input = nullptr; g_inputMap = nullptr; g_inputEvt = nullptr;
+    }
     if (g_input && g_inputEvt) return;
     static ULONGLONG s_nextTry = 0;
     ULONGLONG now = GetTickCount64();
     if (now < s_nextTry) return;
     s_nextTry = now + 1000;
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     if (!g_input) {
         rtx::input::MakeSectionName(GetCurrentProcessId(), name);
         g_inputMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);

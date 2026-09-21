@@ -83,6 +83,9 @@
     <ClCompile Include="VkProbe.cpp" />
     <ClCompile Include="VkComposite.cpp" />
     <ClCompile Include="MenuProbe.cpp" />
+    <ClCompile Include="EngineHighlight.cpp" />
+    <ClCompile Include="TooltipHook.cpp" />
+    <ClCompile Include="EngineMarkers.cpp" />
     <ClCompile Include="SoundFilter.cpp" />
     <ClCompile Include="InputFilter.cpp" />
   </ItemGroup>
@@ -105,6 +108,10 @@
     <ClInclude Include="VkComposite.h" />
     <ClInclude Include="VkShaders.h" />
     <ClInclude Include="MenuProbe.h" />
+    <ClInclude Include="EngineHighlight.h" />
+    <ClInclude Include="SceneHover.h" />
+    <ClInclude Include="TooltipHook.h" />
+    <ClInclude Include="EngineMarkers.h" />
     <ClInclude Include="MenuShare.h" />
     <ClInclude Include="SoundFilter.h" />
     <ClInclude Include="SoundShare.h" />

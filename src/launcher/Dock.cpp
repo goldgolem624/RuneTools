@@ -62,127 +62,130 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+// Every script the client page is put together from, in load order. Also what an install is
+// checked against for files that have gone missing, see UiAssetFiles().
+const char* const kCoreFiles[] = {
+    "core/rtx-shim.js",       // window.onerror first, then the localStorage shim
+    "core/rtx-prefs.js",      // durable prefs: prefGet/prefSet/prefsInit
+    "core/rtx-ui.js",         // rtxUi preferences blob, uiApply, number format, bar chips
+    "core/rtx-registry.js",   // TABS, RTX + registerTab, CAT_META, TAB_GROUPS, XP tables
+    "core/rtx-skillbars.js",  // in-game Skills XP bars + sprite icons
+    "core/rtx-bridge.js",     // pane roots + $, bridge/bridgeJson, myPid, paneEmpty
+    "core/rtx-icons.js",      // item icon/info caches, tooltips, attachIcon/attachInfo
+    "core/rtx-storage.js",    // bank / metal bank / guild shop / bait box / workbench
+    "core/rtx-player.js",     // Player State data, skill goals, metronome + XP overlay cfg
+    "core/rtx-wm.js",         // window manager
+    "core/rtx-notify.js",     // toasts / uiNotify
+    "core/rtx-console.js",    // rtxConsole log bus (page console capture, plugin lines, launcher tail)
+    "core/rtx-settings.js",   // Preferences page
+    "core/rtx-input.js",      // input rects + keyboard capture, wiki palette
+    "core/rtx-layout.js",     // layout persistence, openTab, tabEntryKicks
+    "core/rtx-menubar.js",    // menu bar, wiki pane, fullscreen, tab search
+    "core/rtx-pane.js",       // renderPane / renderHeader
+    "core/rtx-plugin-api.js", // plugin SDK method table, clamps, rate limiter, SDK shim
+    "core/rtx-plugin-hud.js", // host-rendered plugin ability HUD strip
+    "core/rtx-plugins.js",    // plugin SDK host broker: mounts, grants, sandbox, windows
+    "core/rtx-plugin-lua.js", // Lua plugin host: mount, widget tree renderer, __rtxLuaCall shim over PLUGIN_API
+    "core/rtx-plugin-market.js", // in-client marketplace (browse / install)
+    "core/rtx-data.js",       // rtxData: panels' data path over PLUGIN_API (per-tick coalescer)
+};
+const char* const kBootFiles[] = {
+    "core/rtx-boot.js",       // refresh loop + attachBridge
+};
+const char* const kFiles[] = {
+    // quest_guides.js (~1.3MB) is not spliced; it is loaded via bridge().uiAsset() on demand.
+    "rtx_vars.js",          // shared var-id table (VB/VP), before every panel
+    "panel_stopwatch.js",
+    "panel_console.js",        // Developer: the client-wide console (rtxConsole)
+    "panel_notes.js",
+    "panel_counter.js",
+    "panel_auras.js",          // HUD window: watched buff/debuff icons + time sweep
+    "panel_metronome.js",      // HUD window: tick dial (was drawn by the companion)
+    "panel_familiar.js",
+    "panel_dungeoneering.js",  // Daemonheim floor status + explored map
+    "panel_archresearch.js",   // Archaeology Field Study / Report status
+    "panel_reputation.js",
+    "panel_wardrobe.js",     // cosmetic override ownership (dbtable 163)
+    "panel_bossinfo.js",
+    "panel_groupbank.js",
+    "panel_pets.js",
+    "panel_bosses.js",
+    "panel_compass.js",    // Clues: compass solver
+    "panel_puzzle.js",     // Clues: puzzle-box solver
+    "panel_celtic.js",     // Clues: celtic-knot solver
+    "panel_lockbox.js",    // Clues: lockbox solver
+    "panel_towers.js",     // Clues: towers (skyscrapers) solver
+    "panel_globetrotter.js",// Clues: globetrotter outfit guide
+    "panel_visions.js",    // Visions of Havenhythe quest guide
+    "panel_amberfell.js",  // Secrets of Amberfell quest guide
+    "panel_wizkid.js",     // Wiz Kid quest guide
+    "panel_necromancy.js", // Necromancy! quest guide
+    "panel_restless.js",   // The Restless Ghost quest guide
+    "panel_makinghistory.js", // Making History quest guide
+    "panel_newfoundations.js", // New Foundations quest guide
+    "panel_noplacelikehome.js", // There's No Place Like Home... quest guide
+    "panel_murderborder.js", // Murder on the Border quest guide
+    "panel_interfaces.js", // Interfaces inspector
+    "panel_invention.js",  // Invention components
+    "panel_farming.js",    // Farming patch tracker + tool leprechaun
+    "panel_lodestones.js", // Hidey-holes + Lodestones status
+    "panel_clueguide.js",  // Clue scrolls map + emote/cryptic guide
+    "panel_metalbank.js",  // Metal bank
+    "panel_geprices.js",   // GE Prices (server-relayed real-time prices)
+    "panel_mysteries.js",  // Archaeology mysteries (requirements + focused mystery)
+    "panel_chatlog.js",
+    "panel_combatlog.js",  // Combat Log (hitsplat stream from the reader's combat log)
+    "panel_achievements.js",
+    "panel_areatasks.js",   // shared task scaffold (also used by panel_gimtasks.js)
+    "panel_gimtasks.js",
+    "panel_perks.js",
+    "panel_buffs.js",
+    "panel_tasks.js",
+    "panel_dailies.js",    // Dailies & Weeklies reset tracker
+    "panel_scene.js",
+    "panel_overlay.js",
+    "panel_markers.js",
+    "panel_worldmap.js",   // World Map (full-world terrain browser: pan/zoom/search/layers)
+    "panel_zygomites.js",  // Anachronia base camp guide (zygomite tracker moved to a plugin 2026-08-03)
+    "panel_rendering.js",
+    "panel_storage.js",
+    "panel_containers.js",
+    "panel_pof.js",
+    "panel_resdungeons.js",
+    "panel_fairyrings.js",
+    "panel_abilitytips.js",   // AB_TIPS: per-ability tooltip bullets extracted from the CS2 builders
+    "panel_abilities.js",
+    "panel_alerts.js",
+    "panel_inventory.js",
+    "panel_quests.js",
+    "panel_questguides.js",
+    "panel_xptracker.js",
+    "panel_xpmeter.js",        // HUD XP readout; must follow panel_xptracker.js (reads its state)
+    "panel_varswatcher.js",
+    "panel_netprobe.js",   // Server Packets (server->client protocol + live inbound feed)
+    "panel_cs2.js",        // CS2 Scripts browser (extraction + search/view)
+    "panel_skillbonus.js", // Bonus XP for the Skills tab
+    "panel_bank.js",
+    "panel_screenshot.js", // Screenshot capture (user keybind + game-window PNG)
+    "panel_scarabs.js",    // Corrupted Scarabs community world tracker
+    "panel_obelisks.js",   // Soul Obelisk community world+district tracker
+    "panel_portsinfo.js",  // Ports state reference panel + the state.ports broker decode
+    "panel_kingdom.js",    // Miscellania kingdom management (approval/coffer/workers)
+    "panel_rituals.js",    // Necromancy ritual site HUD + City of Um talents
+    "panel_toolbelt.js",   // Toolbelt contents + tool tiers (missing tools first)
+    "panel_shopcaps.js",   // Capped shop purchases with reset countdowns
+    "panel_currencies.js", // Currency pouch ledger (balances vs caps, DBTable 66)
+    "panel_farmcol.js",    // Player-Owned Farm breed collections (needs panel_bosses.js loader)
+    "panel_archcol.js",    // Archaeology faction artefact collections (needs panel_bosses.js loader)
+    "panel_leagues.js",    // Leagues tiers/relics/tasks from the live cache DBTables
+    "panel_sounds.js",     // Sounds: cache audio browser (js5-14 effects / js5-40 music)
+    "panel_cachex.js",     // Cache Explorer (Developer): enums/structs/dbtables/vars
+    "panel_health.js",     // Reader health check (Developer; moved out of Player State)
+    "panel_events.js",     // Event channel stream + tick meter (Developer; the rtxEvents instrument)
+    "panel_menuswap.js",   // Right-click menu inspector + reorder (Developer)
+};
+
 void inject_panel_scripts(std::string& html, const std::string& html_path) {
-    static const char* kCoreFiles[] = {
-        "core/rtx-shim.js",       // window.onerror first, then the localStorage shim
-        "core/rtx-prefs.js",      // durable prefs: prefGet/prefSet/prefsInit
-        "core/rtx-ui.js",         // rtxUi preferences blob, uiApply, number format, bar chips
-        "core/rtx-registry.js",   // TABS, RTX + registerTab, CAT_META, TAB_GROUPS, XP tables
-        "core/rtx-skillbars.js",  // in-game Skills XP bars + sprite icons
-        "core/rtx-bridge.js",     // pane roots + $, bridge/bridgeJson, myPid, paneEmpty
-        "core/rtx-icons.js",      // item icon/info caches, tooltips, attachIcon/attachInfo
-        "core/rtx-storage.js",    // bank / metal bank / guild shop / bait box / workbench
-        "core/rtx-player.js",     // Player State data, skill goals, metronome + XP overlay cfg
-        "core/rtx-wm.js",         // window manager
-        "core/rtx-notify.js",     // toasts / uiNotify
-        "core/rtx-console.js",    // rtxConsole log bus (page console capture, plugin lines, launcher tail)
-        "core/rtx-settings.js",   // Preferences page
-        "core/rtx-input.js",      // input rects + keyboard capture, wiki palette
-        "core/rtx-layout.js",     // layout persistence, openTab, tabEntryKicks
-        "core/rtx-menubar.js",    // menu bar, wiki pane, fullscreen, tab search
-        "core/rtx-pane.js",       // renderPane / renderHeader
-        "core/rtx-plugin-api.js", // plugin SDK method table, clamps, rate limiter, SDK shim
-        "core/rtx-plugin-hud.js", // host-rendered plugin ability HUD strip
-        "core/rtx-plugins.js",    // plugin SDK host broker: mounts, grants, sandbox, windows
-        "core/rtx-plugin-lua.js", // Lua plugin host: mount, widget tree renderer, __rtxLuaCall shim over PLUGIN_API
-        "core/rtx-plugin-market.js", // in-client marketplace (browse / install)
-        "core/rtx-data.js",       // rtxData: panels' data path over PLUGIN_API (per-tick coalescer)
-    };
-    static const char* kBootFiles[] = {
-        "core/rtx-boot.js",       // refresh loop + attachBridge
-    };
-    static const char* kFiles[] = {
-        // quest_guides.js (~1.3MB) is not spliced; it is loaded via bridge().uiAsset() on demand.
-        "rtx_vars.js",          // shared var-id table (VB/VP), before every panel
-        "panel_stopwatch.js",
-        "panel_console.js",        // Developer: the client-wide console (rtxConsole)
-        "panel_notes.js",
-        "panel_counter.js",
-        "panel_auras.js",          // HUD window: watched buff/debuff icons + time sweep
-        "panel_metronome.js",      // HUD window: tick dial (was drawn by the companion)
-        "panel_familiar.js",
-        "panel_dungeoneering.js",  // Daemonheim floor status + explored map
-        "panel_archresearch.js",   // Archaeology Field Study / Report status
-        "panel_reputation.js",
-        "panel_wardrobe.js",     // cosmetic override ownership (dbtable 163)
-        "panel_bossinfo.js",
-        "panel_groupbank.js",
-        "panel_pets.js",
-        "panel_bosses.js",
-        "panel_compass.js",    // Clues: compass solver
-        "panel_puzzle.js",     // Clues: puzzle-box solver
-        "panel_celtic.js",     // Clues: celtic-knot solver
-        "panel_lockbox.js",    // Clues: lockbox solver
-        "panel_towers.js",     // Clues: towers (skyscrapers) solver
-        "panel_globetrotter.js",// Clues: globetrotter outfit guide
-        "panel_visions.js",    // Visions of Havenhythe quest guide
-        "panel_amberfell.js",  // Secrets of Amberfell quest guide
-        "panel_wizkid.js",     // Wiz Kid quest guide
-        "panel_necromancy.js", // Necromancy! quest guide
-        "panel_restless.js",   // The Restless Ghost quest guide
-        "panel_makinghistory.js", // Making History quest guide
-        "panel_newfoundations.js", // New Foundations quest guide
-        "panel_noplacelikehome.js", // There's No Place Like Home... quest guide
-        "panel_murderborder.js", // Murder on the Border quest guide
-        "panel_interfaces.js", // Interfaces inspector
-        "panel_invention.js",  // Invention components
-        "panel_farming.js",    // Farming patch tracker + tool leprechaun
-        "panel_lodestones.js", // Hidey-holes + Lodestones status
-        "panel_clueguide.js",  // Clue scrolls map + emote/cryptic guide
-        "panel_metalbank.js",  // Metal bank
-        "panel_geprices.js",   // GE Prices (server-relayed real-time prices)
-        "panel_mysteries.js",  // Archaeology mysteries (requirements + focused mystery)
-        "panel_chatlog.js",
-        "panel_combatlog.js",  // Combat Log (hitsplat stream from the reader's combat log)
-        "panel_achievements.js",
-        "panel_areatasks.js",   // shared task scaffold (also used by panel_gimtasks.js)
-        "panel_gimtasks.js",
-        "panel_perks.js",
-        "panel_buffs.js",
-        "panel_tasks.js",
-        "panel_dailies.js",    // Dailies & Weeklies reset tracker
-        "panel_scene.js",
-        "panel_overlay.js",
-        "panel_markers.js",
-        "panel_worldmap.js",   // World Map (full-world terrain browser: pan/zoom/search/layers)
-        "panel_zygomites.js",  // Anachronia base camp guide (zygomite tracker moved to a plugin 2026-08-03)
-        "panel_rendering.js",
-        "panel_storage.js",
-        "panel_containers.js",
-        "panel_pof.js",
-        "panel_resdungeons.js",
-        "panel_fairyrings.js",
-        "panel_abilitytips.js",   // AB_TIPS: per-ability tooltip bullets extracted from the CS2 builders
-        "panel_abilities.js",
-        "panel_alerts.js",
-        "panel_inventory.js",
-        "panel_quests.js",
-        "panel_questguides.js",
-        "panel_xptracker.js",
-        "panel_xpmeter.js",        // HUD XP readout; must follow panel_xptracker.js (reads its state)
-        "panel_varswatcher.js",
-        "panel_netprobe.js",   // Server Packets (server->client protocol + live inbound feed)
-        "panel_cs2.js",        // CS2 Scripts browser (extraction + search/view)
-        "panel_skillbonus.js", // Bonus XP for the Skills tab
-        "panel_bank.js",
-        "panel_screenshot.js", // Screenshot capture (user keybind + game-window PNG)
-        "panel_scarabs.js",    // Corrupted Scarabs community world tracker
-        "panel_obelisks.js",   // Soul Obelisk community world+district tracker
-        "panel_portsinfo.js",  // Ports state reference panel + the state.ports broker decode
-        "panel_kingdom.js",    // Miscellania kingdom management (approval/coffer/workers)
-        "panel_rituals.js",    // Necromancy ritual site HUD + City of Um talents
-        "panel_toolbelt.js",   // Toolbelt contents + tool tiers (missing tools first)
-        "panel_shopcaps.js",   // Capped shop purchases with reset countdowns
-        "panel_currencies.js", // Currency pouch ledger (balances vs caps, DBTable 66)
-        "panel_farmcol.js",    // Player-Owned Farm breed collections (needs panel_bosses.js loader)
-        "panel_archcol.js",    // Archaeology faction artefact collections (needs panel_bosses.js loader)
-        "panel_leagues.js",    // Leagues tiers/relics/tasks from the live cache DBTables
-        "panel_sounds.js",     // Sounds: cache audio browser (js5-14 effects / js5-40 music)
-        "panel_cachex.js",     // Cache Explorer (Developer): enums/structs/dbtables/vars
-        "panel_health.js",     // Reader health check (Developer; moved out of Player State)
-        "panel_events.js",     // Event channel stream + tick meter (Developer; the rtxEvents instrument)
-        "panel_menuswap.js",   // Right-click menu inspector + reorder (Developer)
-    };
     auto slash = html_path.find_last_of("\\/");
     std::string dir = (slash == std::string::npos) ? std::string() : html_path.substr(0, slash + 1);
     static const char kCssMarker[] = "<!-- rtx:css -->";
@@ -894,6 +897,14 @@ void Detach(Dock* d, bool closeGame) {
 
 }  // namespace
 
+std::vector<std::string> UiAssetFiles() {
+    std::vector<std::string> out = { "client.html", "core/rtx.css" };
+    for (const char* f : kCoreFiles) out.emplace_back(f);
+    for (const char* f : kBootFiles) out.emplace_back(f);
+    for (const char* f : kFiles) out.emplace_back(f);
+    return out;
+}
+
 double GameSpaceFactor(void* gameHwnd) {
     HWND game = reinterpret_cast<HWND>(gameHwnd);
     if (!game || !IsWindow(game)) return 1.0;
@@ -1004,6 +1015,7 @@ void RemoveClient(std::uint32_t pid) {
     Detach(d);   // panel closed, game restored to a normal window (left running)
     for (int which = 0; which <= 4; ++which) rtx::reader::RenderToggle(pid, which, false);
     rtx::reader::VarsWatch(pid, false);
+    rtx::launcher::companion::Forget(pid);   // release this client's session slot
 }
 
 bool IsOpen(std::uint32_t pid) {

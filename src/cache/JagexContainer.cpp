@@ -1,6 +1,7 @@
 #include "JagexContainer.h"
 
 #include "Bzip2.h"
+#include "Lzma.h"
 #include "vendor/zlib/zlib.h"
 
 namespace rtx::cache {
@@ -60,6 +61,9 @@ std::vector<std::uint8_t> Decompress(const std::vector<std::uint8_t>& raw) {
     if (raw[0] == 0x5A && raw[1] == 0x4C) {
         return InflateImpl(raw.data() + 8, raw.size() - 8, be32(raw, 4), 0);
     }
+    // Anything else is the standard container (type byte 0..3). The model index is stored that
+    // way, LZMA throughout, and every archive read comes through here.
+    if (raw[0] <= 3) return DecompressStandard(raw);
     return {};
 }
 
@@ -80,7 +84,10 @@ std::vector<std::uint8_t> DecompressStandard(const std::vector<std::uint8_t>& ra
     if (type == 2) {
         return InflateImpl(raw.data() + 9, raw.size() - 9, orig_size, 47);
     }
-    return {};  // lzma unsupported
+    if (type == 3) {
+        return LzmaDecompress(raw.data() + 9, raw.size() - 9, orig_size);
+    }
+    return {};
 }
 
 }  // namespace rtx::cache

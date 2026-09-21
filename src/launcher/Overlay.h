@@ -18,8 +18,32 @@ struct Config {
     bool          walk_only = false; // grid: hide unwalkable tiles (else tint red)
     bool          true_tile = false; // outline the server tile (movement route) of the local player, and of moving NPCs/players whose markers are on
     bool          occlude = true;    // markers faded where the scene is in front of them (Vulkan)
+    bool          occlude_hide = false;   // with occlude: those parts are not drawn at all
+    bool          inframe_trial = false;  // trial of drawing inside the game's frame, under its interface (Vulkan)
     bool          interactable = false;  // markers: only NPCs/objects with actions
     bool          markers  = false;  // persistent tile markers, independent of the grid
+    bool          hover_outline = false;  // outline the object under the cursor, independent of `enabled`
+    bool          tooltip_values = false; // Grand Exchange price and alch value in the game's item tooltips
+    std::uint32_t hover_width[8] = {};    // outline width per highlight category, the game uses 4; 0 = the game's own
+    // The game's own world markers pointed at a target: its arrow, the chevrons at the player's
+    // feet and a marker on the target's tile.
+    bool          mark_test = false;
+    std::uint32_t mark_model = 0;         // model laid on the tile
+    std::uint32_t mark_style = 0;         // which of the game's arrows
+    std::uint32_t mark_height = 0;        // arrow height, 0..255
+    std::int32_t  mark_pointer = -1;      // the arrow at the player's feet; -1 = none
+    std::uint32_t mark_tile_rgb = 0, mark_tile_width = 0;     // the game's outline around each; rgb 0 = none
+    std::uint32_t mark_arrow_rgb = 0, mark_arrow_width = 0;   // the arrow at the player's feet
+    std::uint32_t mark_range = 90;        // tiles within which the arrows show, 1..90
+    std::uint32_t mark_pointer_scale = 100;   // percent, 100..400
+    std::uint32_t mark_pointer_reach = 0;     // how far from the player it sits, 512 = one tile
+    bool          mark_arrow = true;          // the arrow over the tile; off leaves the marked tile alone
+    // where the target is, found by the panel: -1 = nowhere in view, 0 = a tile, 1 = an NPC by its index in the game
+    int           mark_kind = -1;
+    int           mark_x = 0, mark_y = 0, mark_plane = 0, mark_npc_uid = -1;
+    bool          mark_path = true;           // the game's trail of diamonds from the player to the target
+    int           mark_from_x = 0, mark_from_y = 0;   // the player's tile, the near end of that trail
+    std::uint32_t hover_rgb[8] = {};      // 0xRRGGBB per game highlight category (3 NPCs, 4 attackable, 5 scenery), 0 = the game's own
     bool          nameplates = false;  // in-frame name labels, independent of `enabled`
     bool          np_players = true;
     bool          np_npcs    = true;

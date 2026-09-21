@@ -132,6 +132,22 @@ std::string NpcJson(int npc_id);
 std::string MapWindowJson(int cx, int cy, int plane, int half = 0, int ts = 0, int want = 15);
 
 std::string StructParamsJson(int structId);
+
+// Level requirements from the game's own skill guides. `skill` is the guides' numbering: 1 Attack,
+// 2 Strength, 3 Ranged, 4 Magic, 5 Defence, 6 Constitution, 7 Prayer, 8 Agility, 9 Herblore,
+// 10 Thieving, 11 Crafting, 12 Runecrafting, 13 Mining, 14 Smithing, 15 Fishing, 16 Cooking,
+// 17 Firemaking, 18 Woodcutting, 19 Fletching, 20 Slayer, 21 Farming, 22 Construction, 23 Hunter,
+// 24 Summoning, 25 Dungeoneering, 26 Divination, 27 Invention, 28 Archaeology, 29 Necromancy.
+// The index is built in the background on the first ask; until it is ready the lists are empty.
+struct SkillReq { int skill = 0; int level = 0; };
+std::vector<SkillReq> SkillGuideForItem(int item_id);             // entries that are about this item itself
+// Lowest level among one skill's entries whose name starts with `prefix` and holds one of `words`
+// (all lower case; no words = any). 0 = none.
+int SkillGuideLevelByPrefix(int skill, const std::string& prefix, const std::vector<std::string>& words);
+std::vector<SkillReq> SkillGuideForName(const std::string& name); // entries named exactly this
+bool        SkillGuideReady();
+const char* SkillGuideSkillName(int skill);
+int         SkillGuideSkillSprite(int skill);                     // small inline icon, 0 = none
 // Single struct params (decoded once per struct and memoised). false when the struct or key is absent.
 bool StructIntParam(int structId, int key, int& out);
 bool StructStrParam(int structId, int key, std::string& out);

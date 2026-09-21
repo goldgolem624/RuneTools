@@ -134,6 +134,7 @@
     <ClInclude Include="..\src\cache\JagexContainer.h" />
     <ClInclude Include="..\src\cache\LocationType.h" />
     <ClInclude Include="..\src\cache\MapLocations.h" />
+    <ClInclude Include="..\src\cache\Lzma.h" />
     <ClInclude Include="..\src\cache\MapTiles.h" />
     <ClInclude Include="..\src\cache\NpcType.h" />
     <ClInclude Include="..\src\cache\ReferenceTable.h" />
@@ -182,6 +183,7 @@
     <ClCompile Include="..\src\cache\JagexContainer.cpp" />
     <ClCompile Include="..\src\cache\LocationType.cpp" />
     <ClCompile Include="..\src\cache\MapLocations.cpp" />
+    <ClCompile Include="..\src\cache\Lzma.cpp" />
     <ClCompile Include="..\src\cache\MapTiles.cpp" />
     <ClCompile Include="..\src\cache\NpcType.cpp" />
     <ClCompile Include="..\src\cache\ReferenceTable.cpp" />

@@ -2,10 +2,16 @@
 // Raw inbound socket bytes (ws2_32 recv/WSARecv), still ISAAC-ciphered; single-writer ring, `written` published last.
 
 #include <cstdint>
+#include "ShareName.h"
 
 namespace rtx::net {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXNetData_v1_";
+
+template <std::size_t N>
+inline void MakeSectionName(std::uint32_t pid, wchar_t (&out)[N]) {
+    rtx::ipc::BuildName(out, kSectionPrefix, pid);
+}
 inline constexpr std::uint32_t kMagic   = 0x454E5452;   // 'RTNE'
 inline constexpr std::uint32_t kVersion = 1;
 inline constexpr int kMaxRecords = 2048;   // ring depth

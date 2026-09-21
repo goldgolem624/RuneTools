@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace ultralight { class App; }
 
@@ -34,6 +35,9 @@ bool IsHostFullscreen(std::uint32_t pid);
 void SetKeepFocused(std::uint32_t pid, bool on);
 
 std::string ReadUiAsset(const std::string& name);
+
+// Every file the client page is assembled from, relative to the install folder.
+std::vector<std::string> UiAssetFiles();
 
 void Tick();
 

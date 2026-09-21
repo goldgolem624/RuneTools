@@ -27,10 +27,11 @@
     if (!qgDataState) questGuidesLoad();      // first ask kicks the load; this call returns null
     const G = window.QUEST_GUIDES;
     if (!G || !name) return null;
-    if (G[name]) return G[name];
+    const guide = g => (g && Array.isArray(g.sections)) ? g : null;   // anything else is not guide text
+    if (guide(G[name])) return G[name];
     if (!_qgByLower) { _qgByLower = {}; for (const k in G) _qgByLower[k.toLowerCase()] = G[k]; }
-    return _qgByLower[name.toLowerCase()] ||
-           _qgByLower[(name + ' (miniquest)').toLowerCase()] || null;
+    return guide(_qgByLower[name.toLowerCase()]) ||
+           guide(_qgByLower[(name + ' (miniquest)').toLowerCase()]) || null;
   }
   let qgLoadedPid = -1;
   async function qgEnsureLoaded() {

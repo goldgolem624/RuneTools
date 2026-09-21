@@ -92,10 +92,39 @@ int  SwapchainCount();
 
 // Scene depth attachment of the frame (the game's image) and the layout it is left in.
 void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsageFlags usage, VkSampleCountFlagBits samples, VkImageCreateFlags flags);
+
+// Drawing the world markers inside the game's frame instead of over the presented one.
+// SetInScene(true) asks for it. While it is on and RecordScene is being called, the markers of each
+// presented frame are kept back from the overlay pass and handed to the next RecordScene instead.
+// RecordScene records them into `cmd`, which is the game's own command buffer between two of its
+// render passes: `rp` and `fb` are a pass over the game's finished scene image (16 bit float,
+// contents kept, single sampled). Returns false when it drew nothing. Any thread.
+void SetInScene(bool on);
+// `look`: kLookDepth shows the scene depth as bands over the view, to check the lookup by eye;
+// kLookTurned draws for a target the other way up than the one expected, kLookDepthTurned reads
+// the scene depth the other way up than expected.
+enum : unsigned { kLookDepth = 1, kLookTurned = 2, kLookDepthTurned = 4 };
+void SetTrial(int where, unsigned look);   // where 2: at present time as always, with `look` applied there
+bool RecordScene(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::uint32_t w, std::uint32_t h, unsigned look);
+// The same markers, recorded INSIDE a render pass the game has open: its interface pass, after it
+// has copied the finished scene in and before its first interface batch. Colours land exactly as
+// given, since the game's tone mapping is already behind. `gameRp` is that pass (8 bit colour plus
+// depth, single sampled). A render pass cannot change an image's layout, so the scene depth is
+// borrowed before the game begins that pass and returned after it ends; `passDepth` is that
+// pass's own depth image, which cannot be the one sampled.
+bool SceneDepthBorrow(VkCommandBuffer cmd, VkImage passDepth);
+void SceneDepthReturn(VkCommandBuffer cmd);
+bool RecordInPass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, bool depthBorrowed, unsigned look);
 const char* LastSubmit();                         // one-line description of the last recorded frame
 void OnImageDestroyed(VkImage img);
 // Marker share depth flags and the player's projected reference point (calibration log).
 void SetDepthMode(std::uint32_t flags, const float* ref);   // {x,y,z, a,b, x2,y2,z2}
+// The matrix this frame's markers were projected with, where the game keeps it, the game view
+// {x, y, w, h} and the client size they were projected for. See Reproject in the .cpp.
+// What is drawn next marks the game's interface: it stays in the pass at present time, over that
+// interface, when the world markers go into the game's frame under it.
+void SetTopLayer(bool on);
+void SetViewInfo(const float* m16, std::uint64_t addr, const std::int32_t* gv, int cw, int ch);
 void SetDepth(const float* z4);                   // per-command clip-space depths; nullptr = none
 // Capture channel (rtx::capture::Share*); nullptr detaches.
 void SetCaptureShare(void* share);

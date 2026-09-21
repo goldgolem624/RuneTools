@@ -68,11 +68,13 @@ HANDLE g_capMap = nullptr;
 ULONGLONG g_capTryMs = 0;
 
 void EnsureCaptureMapped() {
+    static std::uint32_t s_gen = 0;
+    rtx::ipc::RebindIfStale(s_gen, g_cap, g_capMap);
     if (g_cap) return;
     ULONGLONG now = GetTickCount64();
     if (now - g_capTryMs < 1000) return;
     g_capTryMs = now;
-    wchar_t name[64];
+    wchar_t name[rtx::ipc::kNameChars];
     rtx::capture::MakeSectionName(GetCurrentProcessId(), name);
     g_capMap = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
     if (!g_capMap) return;
@@ -116,25 +118,12 @@ void Log(const char* fmt, ...) {
     CloseHandle(f);
 }
 
-// Every thread but ours gets suspended across the transaction so no thread is mid-prologue.
-struct ThreadSet { HANDLE h[512]; int n = 0; };
-void UpdateAllThreads(ThreadSet& ts) {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snap == INVALID_HANDLE_VALUE) { DetourUpdateThread(GetCurrentThread()); return; }
-    THREADENTRY32 te{}; te.dwSize = sizeof(te);
-    const DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
-    if (Thread32First(snap, &te)) {
-        do {
-            if (te.th32OwnerProcessID != pid || te.th32ThreadID == me || ts.n >= 512) continue;
-            HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
-            if (!h) continue;
-            ts.h[ts.n++] = h;
-            DetourUpdateThread(h);
-        } while (Thread32Next(snap, &te));
-    }
-    CloseHandle(snap);
-}
-void CloseThreads(ThreadSet& ts) { for (int i = 0; i < ts.n; ++i) CloseHandle(ts.h[i]); ts.n = 0; }
+// Only this thread is handed to the transaction. Suspending every other thread for it, as was done
+// here before, deadlocks: the transaction allocates, and a thread that was suspended while it held
+// the heap lock never lets go of it, so the game froze for good with most of its threads asleep.
+// Nothing is lost by it: these hooks go in while the device is being created or taken down, when no
+// other thread is inside the functions being patched.
+void UpdateThisThread() { DetourUpdateThread(GetCurrentThread()); }
 
 // ---- export hooks: handle capture only ----
 
@@ -250,15 +239,13 @@ VkResult VKAPI_CALL HookQueuePresent(VkQueue queue, const VkPresentInfoKHR* info
 void VKAPI_CALL HookDestroyDevice(VkDevice dev, const VkAllocationCallbacks* a);
 
 bool AttachDeviceHooks() {
-    ThreadSet ts;
     DetourTransactionBegin();
-    UpdateAllThreads(ts);
+    UpdateThisThread();
     DetourAttach(&(PVOID&)g_realQueuePresent,     (PVOID)HookQueuePresent);
     DetourAttach(&(PVOID&)g_realCreateSwapchain,  (PVOID)HookCreateSwapchain);
     DetourAttach(&(PVOID&)g_realDestroySwapchain, (PVOID)HookDestroySwapchain);
     DetourAttach(&(PVOID&)g_realDestroyDevice,    (PVOID)HookDestroyDevice);
     LONG rc = DetourTransactionCommit();
-    CloseThreads(ts);
     if (rc != NO_ERROR) { Log("device hook attach failed (%ld)", rc); return false; }
     g_deviceHooks = true;
     return true;
@@ -266,15 +253,13 @@ bool AttachDeviceHooks() {
 
 void DetachDeviceHooks() {
     if (!g_deviceHooks) return;
-    ThreadSet ts;
     DetourTransactionBegin();
-    UpdateAllThreads(ts);
+    UpdateThisThread();
     DetourDetach(&(PVOID&)g_realQueuePresent,     (PVOID)HookQueuePresent);
     DetourDetach(&(PVOID&)g_realCreateSwapchain,  (PVOID)HookCreateSwapchain);
     DetourDetach(&(PVOID&)g_realDestroySwapchain, (PVOID)HookDestroySwapchain);
     DetourDetach(&(PVOID&)g_realDestroyDevice,    (PVOID)HookDestroyDevice);
     DetourTransactionCommit();
-    CloseThreads(ts);
     g_deviceHooks = false;
 }
 
@@ -494,6 +479,8 @@ bool Arm(VkDevice dev) {
     LogExtensions(dev);
     rtx::vkcomposite::SetLog(Log);
     rtx::vkcomposite::SetCmdHook(rtx::vkprobe::OnOverlayCmd);
+    rtx::vkprobe::SetSceneRecorder(rtx::vkcomposite::RecordScene);
+    rtx::vkprobe::SetPassRecorder({ rtx::vkcomposite::SceneDepthBorrow, rtx::vkcomposite::SceneDepthReturn, rtx::vkcomposite::RecordInPass, rtx::vkcomposite::SetTrial });
     if (rtx::vkprobe::Attach(dev, g_realGDPA, pdp.limits.timestampPeriod, Log, OnImageDestroyedCb))
         rtx::vkcomposite::SetAlwaysRecord(true);
     return true;
@@ -533,6 +520,7 @@ void Bootstrap() {
 
 bool Active() { return g_armed.load(std::memory_order_relaxed); }
 void SetHideScene(bool on) { rtx::vkprobe::SetHideScene(on); }
+void SetInFrameTrial(bool on) { rtx::vkprobe::SetInFrameTrial(on); rtx::vkcomposite::SetInScene(on); }
 bool HideSceneAvailable() { return g_armed.load(std::memory_order_relaxed) && rtx::vkprobe::HideSceneAvailable(); }
 
 // %USERPROFILE%\\RuneToolsX\\vk-features.txt: lines depth=0/1, timing=0/1, capture=0/1 (default all on).
@@ -616,9 +604,8 @@ bool Install() {
         return false;
     }
 
-    ThreadSet ts;
     DetourTransactionBegin();
-    UpdateAllThreads(ts);
+    UpdateThisThread();
     DetourAttach(&(PVOID&)g_realGDPA,           (PVOID)HookGDPA);
     DetourAttach(&(PVOID&)g_realAllocateMemory, (PVOID)HookAllocateMemory);
     DetourAttach(&(PVOID&)g_realCreateBuffer,   (PVOID)HookCreateBuffer);
@@ -628,7 +615,6 @@ bool Install() {
     if (g_realGetPDMem2) DetourAttach(&(PVOID&)g_realGetPDMem2, (PVOID)HookGetPDMem2);
     DetourAttach(&(PVOID&)g_realGetPDProps,     (PVOID)HookGetPDProps);
     LONG rc = DetourTransactionCommit();
-    CloseThreads(ts);
     if (rc != NO_ERROR) { Log("export hook attach failed (%ld)", rc); return false; }
     g_installed = true;
     Log("loader hooks installed (%p)", (void*)g_loader);
