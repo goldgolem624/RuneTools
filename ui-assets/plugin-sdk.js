@@ -175,6 +175,9 @@
       wikiSearch: function (term) { return call('overlay.wikiSearch', [term || '']); },
       uiLabels: function (list) { return call('overlay.uiLabels', [Array.isArray(list) ? list.map(function (l) { return [l.x, l.y, l.rgb == null ? -1 : l.rgb, l.px || 13, l.text || '', l.style || 0].join(''); }).join('') : (list || '')]); },
       clearHighlight: function () { return call('overlay.clearHighlight', []); },
+      // The game itself points the way: kind 'npc' | 'object' (a name, part of one, or an id) or 'tile' ('x, y' or 'x, y, plane')
+      pointAt: function (kind, target) { return call('overlay.pointAt', [kind, target]); },
+      pointClear: function () { return call('overlay.pointAt', ['', '']); },
       centerText: function (text, slot, rgb) { return call('overlay.centerText', [text, slot, rgb]); },
       flashGame: function () { return call('overlay.flashGame', []); }
     },

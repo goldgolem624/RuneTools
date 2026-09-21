@@ -250,6 +250,11 @@ function overlay.highlightItem(itemId, label) end
 ---@param marks table[]  # {x,y,plane,label,x2,y2,color,color2,merge}
 function overlay.guideTiles(marks) end
 function overlay.clearHighlight() end
+--- The game itself points the way to one target: its arrow, chevrons and ground trail.
+---@param kind string    # "npc" | "object" | "tile"
+---@param target string  # a name, part of one, or an id; for a tile "x, y" or "x, y, plane"
+function overlay.pointAt(kind, target) end
+function overlay.pointClear() end
 ---@param rects table[]  # {x,y,w,h} or {{x,y,w,h},...}
 function overlay.highlightRects(rects) end
 ---@param x number
