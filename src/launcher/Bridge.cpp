@@ -4954,6 +4954,225 @@ JSValueRef PluginStoreKeys(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, out);
 }
 
+// ---- plugin log files (telemetry scope) ----
+// One folder per plugin id, shared by every account so a user can zip and send it in one go.
+// Names are a bare stem plus an allowed text extension; nothing else reaches the filesystem.
+// Links are refused at every level: the folder, its parent and the file must be plain entries,
+// and a file with a second hard link is never written, so a write cannot land outside the folder.
+constexpr std::uint64_t kPluginLogFileMax   = 64ull * 1024 * 1024;
+constexpr std::uint64_t kPluginLogDirMax    = 512ull * 1024 * 1024;
+constexpr std::size_t   kPluginLogExportMax = 16 * 1024 * 1024;
+constexpr std::size_t   kPluginLogAppendMax = 4 * 1024 * 1024;
+constexpr std::size_t   kPluginLogMaxFiles  = 200;
+
+std::map<std::string, std::uint64_t> g_pluginLogBytes;   // sanitized id -> bytes on disk (lazy)
+
+// CON, NUL, COM1.txt, lpt3.log ... open a device instead of a file.
+bool plugin_log_reserved(const std::string& name) {
+    std::string base = name.substr(0, name.find('.'));
+    for (auto& c : base) c = (char)std::tolower((unsigned char)c);
+    if (base == "con" || base == "prn" || base == "aux" || base == "nul") return true;
+    return base.size() == 4 && (base.compare(0, 3, "com") == 0 || base.compare(0, 3, "lpt") == 0) &&
+           base[3] >= '0' && base[3] <= '9';
+}
+
+bool plugin_log_plain_dir(const std::filesystem::path& p) {
+    DWORD a = GetFileAttributesW(p.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) && !(a & FILE_ATTRIBUTE_REPARSE_POINT);
+}
+
+std::filesystem::path plugin_log_dir(const std::string& pluginId, std::string* idOut = nullptr) {
+    std::string id = sanitize_plugin_id(pluginId);
+    if (id.empty() || id.size() > 80 || plugin_log_reserved(id) || id.back() == '.') return {};
+    auto root = alerts_user_dir();
+    if (root.empty()) return {};
+    auto logs = root / L"plugin-logs";
+    auto dir = logs / id;
+    std::error_code ec; std::filesystem::create_directories(dir, ec);
+    if (!plugin_log_plain_dir(logs) || !plugin_log_plain_dir(dir)) return {};
+    if (idOut) *idOut = id;
+    return dir;
+}
+
+// "encounter.jsonl" -> "encounter.jsonl"; "../x" / "a.exe" / "nul.txt" / "" -> "". No extension means .jsonl.
+std::string sanitize_plugin_log_name(const std::string& name) {
+    if (name.empty() || name.size() > 64) return {};
+    std::string stem = name, ext = "jsonl";
+    auto dot = name.rfind('.');
+    if (dot != std::string::npos) { stem = name.substr(0, dot); ext = name.substr(dot + 1); }
+    for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext != "jsonl" && ext != "json" && ext != "csv" && ext != "txt" && ext != "log") return {};
+    if (stem.empty() || stem.size() > 48) return {};
+    for (char c : stem)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '-' || c == '_' || c == '.')) return {};
+    if (stem.front() == '.' || stem.back() == '.' || stem.find("..") != std::string::npos) return {};
+    if (plugin_log_reserved(stem)) return {};
+    return stem + "." + ext;
+}
+
+// A directory entry's name as the sanitized ASCII name, or "" for anything else (never throws).
+std::string plugin_log_entry_name(const std::filesystem::directory_entry& e) {
+    const std::wstring w = e.path().filename().wstring();
+    std::string a;
+    for (wchar_t c : w) { if (c < 0x20 || c > 0x7E) return {}; a.push_back((char)c); }
+    return sanitize_plugin_log_name(a);
+}
+
+struct PluginLogFile { std::string name; std::uint64_t size = 0; long long modified = 0; };
+struct PluginLogScan { std::uint64_t bytes = 0; std::size_t files = 0; std::vector<PluginLogFile> list; };
+
+// Every regular file counts toward the budget, named or not; only names the API could write are listed.
+PluginLogScan plugin_log_scan(const std::filesystem::path& dir) {
+    PluginLogScan s; std::error_code ec;
+    std::filesystem::directory_iterator it(dir, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const auto& e = *it;
+        std::error_code fe;
+        if (!e.is_regular_file(fe) || fe) continue;
+        std::uint64_t sz = e.file_size(fe); if (fe) sz = 0;
+        s.bytes += sz; ++s.files;
+        std::string name = plugin_log_entry_name(e);
+        if (name.empty()) continue;
+        long long mod = 0;
+        auto ft = e.last_write_time(fe);
+        if (!fe) mod = (long long)std::chrono::duration_cast<std::chrono::seconds>(ft.time_since_epoch()).count()
+                       - 11644473600LL;   // file times count from 1601
+        s.list.push_back({ name, sz, mod });
+    }
+    return s;
+}
+
+std::uint64_t plugin_log_bytes(const std::string& id, const std::filesystem::path& dir, bool rescan) {
+    auto it = g_pluginLogBytes.find(id);
+    if (it == g_pluginLogBytes.end() || rescan) return g_pluginLogBytes[id] = plugin_log_scan(dir).bytes;
+    return it->second;
+}
+
+std::string plugin_log_result(bool ok, const char* err, std::uint64_t size) {
+    if (!ok) return std::string("{\"ok\":false,\"error\":\"") + err + "\"}";
+    return "{\"ok\":true,\"size\":" + std::to_string(size) + "}";
+}
+
+// Shared by append and export: size checks against the file and the folder, then one write.
+std::string plugin_log_write(const std::string& pluginId, const std::string& rawName,
+                             const std::string& data, bool append) {
+    std::string id;
+    auto dir = plugin_log_dir(pluginId, &id);
+    if (dir.empty()) return plugin_log_result(false, "unavailable", 0);
+    std::string name = sanitize_plugin_log_name(rawName);
+    if (name.empty()) return plugin_log_result(false, "bad name", 0);
+    const auto path = dir / name;
+
+    // Open without following links and without truncating, then vet the handle before any byte moves.
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return plugin_log_result(false, "write failed", 0);
+    const bool created = GetLastError() != ERROR_ALREADY_EXISTS;
+    auto fail = [&](const char* err, std::uint64_t sz) {
+        if (created) { CloseHandle(h); DeleteFileW(path.c_str()); } else CloseHandle(h);
+        return plugin_log_result(false, err, sz);
+    };
+    BY_HANDLE_FILE_INFORMATION fi{};
+    if (!GetFileInformationByHandle(h, &fi) || GetFileType(h) != FILE_TYPE_DISK ||
+        (fi.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ||
+        fi.nNumberOfLinks != 1)
+        return fail("bad file", 0);
+    const std::uint64_t cur = ((std::uint64_t)fi.nFileSizeHigh << 32) | fi.nFileSizeLow;
+
+    if (created) {
+        std::size_t files = plugin_log_scan(dir).files;   // includes the one just made
+        if (files > kPluginLogMaxFiles) return fail("too many files", 0);
+    }
+    const std::uint64_t next = append ? cur + data.size() : data.size();   // the file's new size
+    if (next > kPluginLogFileMax) return fail("file full", cur);
+    std::uint64_t total = plugin_log_bytes(id, dir, false);
+    auto fits = [&](std::uint64_t t) { return t - std::min(t, cur) + next <= kPluginLogDirMax; };
+    if (!fits(total)) { total = plugin_log_bytes(id, dir, true); if (!fits(total)) return fail("folder full", cur); }
+
+    LARGE_INTEGER pos{}; pos.QuadPart = append ? (LONGLONG)cur : 0;
+    if (!SetFilePointerEx(h, pos, nullptr, FILE_BEGIN) || (!append && !SetEndOfFile(h))) {
+        CloseHandle(h); g_pluginLogBytes.erase(id);
+        return plugin_log_result(false, "write failed", cur);
+    }
+    bool ok = true;
+    for (std::size_t off = 0; ok && off < data.size(); ) {
+        DWORD chunk = (DWORD)std::min<std::size_t>(data.size() - off, 1u << 20), wrote = 0;
+        ok = WriteFile(h, data.data() + off, chunk, &wrote, nullptr) && wrote == chunk;
+        off += wrote;
+    }
+    CloseHandle(h);
+    if (!ok) { g_pluginLogBytes.erase(id); return plugin_log_result(false, "write failed", cur); }
+    g_pluginLogBytes[id] = total - std::min(total, cur) + next;
+    return plugin_log_result(true, "", next);
+}
+
+// (id, name, text): text is already one or more newline-terminated lines.
+JSValueRef PluginLogAppend(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                           size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return utf8_to_js(ctx, plugin_log_result(false, "bad args", 0));
+    std::string data = js_to_utf8(ctx, argv[2]);
+    if (data.empty() || data.size() > kPluginLogAppendMax || data.back() != '\n')
+        return utf8_to_js(ctx, plugin_log_result(false, "bad record", 0));
+    return utf8_to_js(ctx, plugin_log_write(js_to_utf8(ctx, argv[0]), js_to_utf8(ctx, argv[1]), data, true));
+}
+
+// (id, name, text): replaces the whole file.
+JSValueRef PluginLogExport(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                           size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return utf8_to_js(ctx, plugin_log_result(false, "bad args", 0));
+    std::string data = js_to_utf8(ctx, argv[2]);
+    if (data.size() > kPluginLogExportMax) return utf8_to_js(ctx, plugin_log_result(false, "too large", 0));
+    return utf8_to_js(ctx, plugin_log_write(js_to_utf8(ctx, argv[0]), js_to_utf8(ctx, argv[1]), data, false));
+}
+
+// (id) -> {"files":[{"name","size","modified"}],"bytes","limit"}; modified is unix seconds.
+JSValueRef PluginLogList(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, std::string("null"));
+    std::string id;
+    auto dir = plugin_log_dir(js_to_utf8(ctx, argv[0]), &id);
+    if (dir.empty()) return utf8_to_js(ctx, std::string("null"));
+    PluginLogScan s = plugin_log_scan(dir);
+    g_pluginLogBytes[id] = s.bytes;
+    std::string out = "{\"files\":[";
+    for (std::size_t i = 0; i < s.list.size(); ++i) {
+        const auto& f = s.list[i];   // names are sanitized ASCII: no escaping needed
+        if (i) out += ",";
+        out += "{\"name\":\"" + f.name + "\",\"size\":" + std::to_string(f.size) +
+               ",\"modified\":" + std::to_string(f.modified) + "}";
+    }
+    out += "],\"bytes\":" + std::to_string(s.bytes) + ",\"limit\":" + std::to_string(kPluginLogDirMax) + "}";
+    return utf8_to_js(ctx, out);
+}
+
+// Deletes one of the plugin's own files; a link or anything but a plain file is left alone.
+JSValueRef PluginLogRemove(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                           size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    std::string id;
+    auto dir = plugin_log_dir(js_to_utf8(ctx, argv[0]), &id);
+    std::string name = sanitize_plugin_log_name(js_to_utf8(ctx, argv[1]));
+    if (dir.empty() || name.empty()) return JSValueMakeBoolean(ctx, false);
+    const auto path = dir / name;
+    DWORD a = GetFileAttributesW(path.c_str());
+    if (a == INVALID_FILE_ATTRIBUTES || (a & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)))
+        return JSValueMakeBoolean(ctx, false);
+    bool ok = DeleteFileW(path.c_str()) != 0;
+    g_pluginLogBytes.erase(id);
+    return JSValueMakeBoolean(ctx, ok);
+}
+
+// Shows the folder in Explorer; the broker only allows this while the plugin's window is showing.
+JSValueRef PluginLogOpen(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto dir = plugin_log_dir(js_to_utf8(ctx, argv[0]));
+    if (dir.empty()) return JSValueMakeBoolean(ctx, false);
+    ShellExecuteW(nullptr, L"explore", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef PluginDevList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                          size_t, const JSValueRef[], JSValueRef*) {
     auto root = plugin_dev_root();
@@ -5927,6 +6146,11 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pluginStoreLoad",   PluginStoreLoad);
     install_fn(ctx, ns, "pluginStoreSave",   PluginStoreSave);
     install_fn(ctx, ns, "pluginStoreKeys",   PluginStoreKeys);
+    install_fn(ctx, ns, "pluginLogAppend",   PluginLogAppend);
+    install_fn(ctx, ns, "pluginLogExport",   PluginLogExport);
+    install_fn(ctx, ns, "pluginLogList",     PluginLogList);
+    install_fn(ctx, ns, "pluginLogRemove",   PluginLogRemove);
+    install_fn(ctx, ns, "pluginLogOpen",     PluginLogOpen);
     install_fn(ctx, ns, "pluginDevList",     PluginDevList);
     install_fn(ctx, ns, "pluginDevManifest", PluginDevManifest);
     install_fn(ctx, ns, "pluginDevEntry",    PluginDevEntry);

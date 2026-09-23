@@ -298,6 +298,33 @@ function storage.set(key, value) end
 ---@return string[]|nil
 function storage.keys() end
 
+---@class rtx.TelemetryResult
+---@field ok boolean
+---@field size integer|nil the file's new size in bytes
+---@field error string|nil
+
+---@class rtx.telemetry
+local telemetry = {}
+---@param name string e.g. "encounter.jsonl"
+---@param record rtx.Value one line: a string as is, anything else as JSON
+---@return rtx.TelemetryResult|nil
+function telemetry.append(name, record) end
+---@param name string
+---@param records rtx.Value[] up to 1000
+---@return rtx.TelemetryResult|nil
+function telemetry.appendMany(name, records) end
+---@param name string
+---@param data rtx.Value replaces the whole file
+---@return rtx.TelemetryResult|nil
+function telemetry.export(name, data) end
+---@return {files: {name: string, size: integer, modified: integer}[], bytes: integer, limit: integer}|nil
+function telemetry.list() end
+---@param name string
+---@return boolean|nil
+function telemetry.remove(name) end
+---@return boolean|nil
+function telemetry.open() end
+
 ---@class rtx.prices
 local prices = {}
 ---@return table|nil
@@ -382,6 +409,7 @@ function json.decode(text) end
 ---@field clipboard rtx.clipboard
 ---@field sound rtx.sound
 ---@field storage rtx.storage
+---@field telemetry rtx.telemetry
 ---@field prices rtx.prices
 ---@field ui rtx.ui
 ---@field settings rtx.settings

@@ -67,6 +67,7 @@ my-plugin/
 | `notify.discord` | `rtx.plugin.notify.discord` (the user's own Discord webhook; 1 per 10s) |
 | `clipboard`  | `rtx.plugin.clipboard.copy` (copy-only; nothing is read back) |
 | `clipboard.read` | `rtx.plugin.clipboard.paste` (reads clipboard TEXT on user action; ask only if you truly need it) |
+| `telemetry`  | `rtx.plugin.telemetry.*` (write log files to the plugin's own folder; nothing is read back) |
 
 `rtx.plugin.ui.*` and the meta/event helpers are always available. The user approves scopes
 on first enable, and the host enforces them on every call regardless of the manifest.
@@ -692,6 +693,39 @@ await rtx.plugin.storage.keys();             // -> ["key", ...]
 
 Keys are namespaced to your plugin id and the active account; another plugin cannot read
 them. Key names are capped at 64 chars and each value at ~256 KB.
+
+### telemetry (log files for the user to send you)
+
+```js
+await rtx.plugin.telemetry.append("encounter.jsonl", { tick, kind: "anim", npc, anim });
+await rtx.plugin.telemetry.appendMany("encounter.jsonl", bufferedRecords);   // up to 1000 per call
+await rtx.plugin.telemetry.export("kill-42.json", encounter);   // writes (replaces) the whole file
+await rtx.plugin.telemetry.list();    // -> { files: [{ name, size, modified }], bytes, limit }
+await rtx.plugin.telemetry.remove("kill-41.json");
+await rtx.plugin.telemetry.open();    // shows the folder in Explorer (from a button in your window)
+```
+
+Files go to `%USERPROFILE%\RuneToolsX\plugin-logs\<plugin id>\`, one folder per plugin that
+every character shares, so the user can zip it and send it to you. The host owns the folder;
+you only name files.
+
+- **Names:** letters, digits, `-`, `_` and `.`, up to 48 characters, ending in `.jsonl`, `.json`,
+  `.csv`, `.txt` or `.log` (no extension means `.jsonl`). Anything else, including device
+  names such as `con` or `nul`, is refused.
+- **Records:** `append` writes one line. A string is written as is (line breaks become spaces),
+  anything else as compact JSON, so a `.jsonl` file stays one record per line. A record is at
+  most 64 KB. `export` writes a string as is, anything else as JSON, up to 16 MB.
+- **Limits:** 64 MB per file, 512 MB and 200 files per plugin. `append` 60/s, `appendMany` 10/s,
+  `export` and `open` 1 per 5 s. Buffer records and flush with `appendMany` once per tick or
+  two instead of one call per event.
+- **Results:** writes answer `{ ok: true, size }` (the file's new size) or `{ ok: false, error }`
+  with `error` one of `bad name`, `bad record`, `too large`, `file full`, `folder full`,
+  `too many files`, `bad file`, `write failed`. On `file full` start a new file
+  (`encounter-2.jsonl`); on `folder full` ask the user to send and clear the folder.
+- `open` only works while your window is showing, never from a background plugin.
+- There is no read call and no other path; a plugin cannot see or touch any other file.
+- Tell the user what you record. Logs can include their character name and location, and
+  they decide what to send.
 
 ### prices (scope: cache.read)
 

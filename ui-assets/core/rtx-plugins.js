@@ -281,7 +281,7 @@
     const card = document.createElement('div');
     card.dataset.pluginPerm = id;
     card.style.cssText = 'max-width:420px;margin:24px auto;background:#1a1b23;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:20px;';
-    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings', 'notify.os': 'Show Windows notifications', 'notify.discord': 'Post messages to your Discord webhook (it never sees the URL)', 'clipboard': 'Copy text to your clipboard', 'clipboard.read': 'Read your clipboard contents' };
+    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings', 'notify.os': 'Show Windows notifications', 'notify.discord': 'Post messages to your Discord webhook (it never sees the URL)', 'clipboard': 'Copy text to your clipboard', 'clipboard.read': 'Read your clipboard contents', 'telemetry': 'Write log files to its own folder (RuneToolsX\plugin-logs)' };
     let h = '<div style="font-size:1.1em;font-weight:600;">' + pluginEsc(m.name) + '</div>';
     h += '<div style="color:#8b8b9e;font-size:.85em;margin:2px 0 6px;">v' + pluginEsc(m.version) + (m.author ? (' - ' + pluginEsc(m.author)) : '') + '</div>';
     if (tab.source === 'dev')

@@ -1,5 +1,5 @@
   const PLUGIN_PROTO  = 'rtx.plugin/1';
-  const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'notify.discord', 'clipboard', 'clipboard.read']);
+  const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'notify.discord', 'clipboard', 'clipboard.read', 'telemetry']);
   const pluginBuckets = {};     // "id|method" -> token bucket (pluginRateOk)
 
   const PLUGIN_SDK_SHIM = `(function(){'use strict';if(window.rtx&&window.rtx.plugin)return;
@@ -28,6 +28,7 @@ clipboard:{copy:function(t){return call('clipboard.copy',[t]);},paste:function()
 overlay:{toast:function(t){return call('overlay.toast',[t]);},notify:function(t,ms){return call('overlay.notify',[t,ms]);},centerText:function(t,s,c){return call('overlay.centerText',[t,s,c]);},highlight:function(n){return call('overlay.highlight',[n]);},highlightNpc:function(n,l,tx,ty){return call('overlay.highlightNpc',[n,l,tx,ty]);},flashGame:function(){return call('overlay.flashGame',[]);},highlightOption:function(t){return call('overlay.highlightOption',Array.isArray(t)?t:[t]);},highlightItem:function(i,l){return call('overlay.highlightItem',[i,l]);},guideTiles:function(m){return call('overlay.guideTiles',[m]);},pointAt:function(k,q){return call('overlay.pointAt',[k,q]);},pointClear:function(){return call('overlay.pointAt',['','']);},highlightRect:function(x,y,w,h){return call('overlay.highlightRect',[x,y,w,h]);},highlightRects:function(l){return call('overlay.highlightRects',[l||[]]);},clearHighlight:function(){return call('overlay.clearHighlight',[]);},uiLabels:function(r){return call('overlay.uiLabels',[Array.isArray(r)?r.map(function(l){return [l.x,l.y,l.rgb==null?-1:l.rgb,l.px||13,l.text||'',l.style||0].join('\x1f');}).join('\x1e'):(r||'')]);},hudAbilities:function(p){return call('overlay.hudAbilities',[p||null]);}},
 sound:{play:function(n){return call('sound.play',[n]);}},
 storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){return call('storage.set',[k,v]);},keys:function(){return call('storage.keys',[]);}},
+telemetry:{append:function(n,r){return call('telemetry.append',[n,r]);},appendMany:function(n,l){return call('telemetry.appendMany',[n,l]);},export:function(n,d){return call('telemetry.export',[n,d]);},list:function(){return call('telemetry.list',[]);},remove:function(n){return call('telemetry.remove',[n]);},open:function(){return call('telemetry.open',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);},settings:function(schema){return call('ui.settings',[schema]);}},
 settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}},
 prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);},item:function(ids){return call('prices.item',[ids]);}},
@@ -53,6 +54,14 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
       .map(r => r.split('\x1f').slice(0, 16).map(f => f.slice(0, 256)).join('\x1f'))
       .join('\x1e');
   });
+  // One log line: a string as is (line breaks flattened), anything else as compact JSON. null = unusable.
+  const pLogLine = v => {
+    let t;
+    if (typeof v === 'string') t = v.replace(/[\r\n]+/g, ' ');
+    else { try { t = JSON.stringify(v === undefined ? null : v); } catch (e) { return null; } }
+    return (typeof t === 'string' && t.length <= 65536) ? t + '\n' : null;
+  };
+  const pLogFail = e => JSON.stringify({ ok: false, error: e });
   const pClampList = v => (Array.isArray(v) ? v : []).slice(0, 50).map(x => pClampStr(x, 40).replace(/[^A-Za-z0-9 _'\-]/g, '')).filter(Boolean).join(',');
 
   const PLUGIN_API = {
@@ -314,6 +323,36 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'storage.get':      { scope: 'storage',    json: 'maybe', run: (a, pid, id) => bridge().pluginStoreLoad(pid, id, pClampStr(a[0], 64)) },
     'storage.set':      { scope: 'storage',    json: false,   run: (a, pid, id) => bridge().pluginStoreSave(pid, id, pClampStr(a[0], 64), JSON.stringify(a[1] === undefined ? null : a[1])) },
     'storage.keys':     { scope: 'storage',    json: true,    run: (a, pid, id) => bridge().pluginStoreKeys(pid, id) },
+    // Log files under %USERPROFILE%\RuneToolsX\plugin-logs\<plugin id>\. The host owns the folder; the plugin
+    // only names files (letters, digits, - _ . and a .jsonl/.json/.csv/.txt/.log extension). The bridge caps
+    // each file at 64 MB, the folder at 512 MB and 200 files, and answers {ok, size} or {ok:false, error}.
+    'telemetry.append': { scope: 'telemetry',  json: true,    run: (a, pid, id) => {
+                            if (!bridge().pluginLogAppend) return pLogFail('unavailable');
+                            const line = pLogLine(a[1]); if (line === null) return pLogFail('bad record');
+                            return bridge().pluginLogAppend(id, pClampStr(a[0], 80), line); } },
+    'telemetry.appendMany': { scope: 'telemetry', json: true, run: (a, pid, id) => {
+                            if (!bridge().pluginLogAppend) return pLogFail('unavailable');
+                            const list = Array.isArray(a[1]) ? a[1] : [];
+                            if (list.length > 1000) return pLogFail('too many records');
+                            let text = '';
+                            for (const r of list) { const line = pLogLine(r); if (line === null) return pLogFail('bad record'); text += line; }
+                            if (text.length > 1048576) return pLogFail('too large');
+                            if (!text) return pLogFail('empty');
+                            return bridge().pluginLogAppend(id, pClampStr(a[0], 80), text); } },
+    'telemetry.export': { scope: 'telemetry',  json: true,    run: (a, pid, id) => {
+                            if (!bridge().pluginLogExport) return pLogFail('unavailable');
+                            let text;
+                            if (typeof a[1] === 'string') text = a[1];
+                            else { try { text = JSON.stringify(a[1] === undefined ? null : a[1]); } catch (e) { return pLogFail('bad data'); } }
+                            if (text.length > 16777216) return pLogFail('too large');
+                            return bridge().pluginLogExport(id, pClampStr(a[0], 80), text); } },
+    'telemetry.list':   { scope: 'telemetry',  json: true,    run: (a, pid, id) => (bridge().pluginLogList ? bridge().pluginLogList(id) : 'null') },
+    'telemetry.remove': { scope: 'telemetry',  json: false,   run: (a, pid, id) => (bridge().pluginLogRemove ? bridge().pluginLogRemove(id, pClampStr(a[0], 80)) : false) },
+    // Explorer only opens while the plugin's own window is showing, never from an off-screen plugin.
+    'telemetry.open':   { scope: 'telemetry',  json: false,   run: (a, pid, id) => {
+                            const h = (typeof pluginHolders !== 'undefined') ? pluginHolders.get(id) : null;
+                            if (!h || h.el.hidden || (typeof pluginInBackground === 'function' && pluginInBackground(id))) return false;
+                            return bridge().pluginLogOpen ? bridge().pluginLogOpen(id) : false; } },
     'state.varbitsCsv':       { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varbits(pid, ...pArgs(a)) },
     'state.varcsAll':         { scope: 'state.read',  json: true,  run: (a, pid) => bridge().varcsDumpAll(pid, ...pArgs(a)) },
     'state.varDomainStores':  { scope: 'state.read',  json: true,  run: (a, pid) => (bridge().varDomainStores ? bridge().varDomainStores(pid) : '{}') },
@@ -490,6 +529,11 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
 
   function pluginRateOk(id, method) {
     const rate = method.indexOf('storage.') === 0 ? 4
+               : method === 'telemetry.append' ? 60       // one record per call; batch with appendMany
+               : method === 'telemetry.appendMany' ? 10
+               : method === 'telemetry.export' || method === 'telemetry.open' ? 0.2   // 1 per 5s
+               : method === 'telemetry.list' ? 4
+               : method === 'telemetry.remove' ? 2
                : method.indexOf('overlay.') === 0 ? 6
                : method.indexOf('notify.') === 0 ? 0.1     // OS toasts: 1 per 10s
                : method.indexOf('clipboard.') === 0 ? 1

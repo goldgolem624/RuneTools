@@ -203,6 +203,15 @@
       keys: function () { return call('storage.keys', []); }
     },
 
+    telemetry: {
+      append:     function (name, record) { return call('telemetry.append', [name, record]); },
+      appendMany: function (name, records) { return call('telemetry.appendMany', [name, records]); },
+      export:     function (name, data) { return call('telemetry.export', [name, data]); },
+      list:       function () { return call('telemetry.list', []); },
+      remove:     function (name) { return call('telemetry.remove', [name]); },
+      open:       function () { return call('telemetry.open', []); }
+    },
+
     ui: {
       setHeight: function (px) { return call('ui.setHeight', [px]); },
       setTitle:  function (s) { return call('ui.setTitle', [s]); },
