@@ -179,43 +179,6 @@ std::map<DWORD, EngineReq> g_engineReq;
 struct AccountAsks { std::uint32_t seq = 0; std::vector<AccountAsk> list; };
 std::map<DWORD, AccountAsks> g_accountAsks;
 
-// A check that can be run on the live game: with %TEMP%tx_ask.txt present, its contents are used
-// as the question list ("kind:id,kind:id,..."), so the answers can be held against what the account
-// actually has before a panel is wired to them. Nothing is read unless the file is there.
-bool DevAsks(std::vector<AccountAsk>& out) {
-    static ULONGLONG s_looked = 0; static std::vector<AccountAsk> s_list; static bool s_on = false;
-    const ULONGLONG now = GetTickCount64();
-    if (now - s_looked > 3000) {
-        s_looked = now;
-        wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
-        const std::wstring path = std::wstring(tmp) + L"rtx_ask.txt";
-        s_list.clear(); s_on = false;
-        FILE* f = nullptr;
-        if (_wfopen_s(&f, path.c_str(), L"rb") == 0 && f) {
-            char buf[1024] = {};
-            const std::size_t got = fread(buf, 1, sizeof(buf) - 1, f);
-            fclose(f);
-            buf[got] = 0;
-            s_on = true;
-            const char* p = buf;
-            while (*p) {
-                while (*p && (*p < '0' || *p > '9')) ++p;
-                if (!*p) break;
-                AccountAsk a; a.kind = std::atoi(p);
-                while (*p >= '0' && *p <= '9') ++p;
-                if (*p != ':') continue;
-                ++p; a.id = std::atoi(p);
-                while (*p >= '0' && *p <= '9') ++p;
-                if (*p == ':') { ++p; a.arg = std::atoi(p); while (*p >= '0' && *p <= '9') ++p; }
-                if (a.kind >= 0 && a.kind <= 14 && a.id >= 0) s_list.push_back(a);
-            }
-        }
-    }
-    if (!s_on) return false;
-    out = s_list;
-    return true;
-}
-
 // The questions about the account go out whether or not there is anything to draw this frame: they
 // are answered once per list, so a frame with an empty draw list must still carry them.
 void FillAccountAsks(marker::Share* sh, const AccountAsks& asks) {
@@ -950,29 +913,6 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       if (ult != g_uiLabels.end()) uilbls = ult->second;
       { auto er = g_engineReq.find(cfg.pid); if (er != g_engineReq.end()) engReq = er->second; }
       { auto aa = g_accountAsks.find(cfg.pid); if (aa != g_accountAsks.end()) asksNow = aa->second; }
-      { std::vector<AccountAsk> dev;
-        if (DevAsks(dev)) {
-            // the list only counts as new when it differs, or the module would answer it forever
-            if (dev != asksNow.list) {
-                asksNow.list = dev; ++asksNow.seq; g_accountAsks[cfg.pid] = asksNow;
-                rtx::log::Client(cfg.pid, "account questions: asking " + std::to_string(dev.size()));
-            }
-            // what came back, once a second while the check is on
-            static ULONGLONG s_said = 0;
-            const ULONGLONG nowMs = GetTickCount64();
-            if (nowMs - s_said > 1000) {
-                s_said = nowMs;
-                rtx::launcher::gameui::ModuleAnswer got[128];
-                bool ready = false;
-                const int gn = rtx::launcher::gameui::ModuleAnswers(cfg.pid, got, 128, ready);
-                std::string line = "account questions: " + std::to_string(gn) + " answers, ready " + (ready ? "1" : "0");
-                for (int i = 0; i < gn && i < 20; ++i)
-                    line += "  " + std::to_string((got[i].tag >> 24) & 0xFF) + ":" +
-                            std::to_string(got[i].tag & 0x3FFFF) + ":" + std::to_string((got[i].tag >> 18) & 0x3F) +
-                            "=" + std::to_string(got[i].value) + (got[i].ok ? "" : "?");
-                rtx::log::Client(cfg.pid, line);
-            }
-        } }
       auto ctit = g_centerTexts.find(cfg.pid);
       if (ctit != g_centerTexts.end()) ctext = ctit->second;
       auto pit = g_panelViz.find(cfg.pid);
