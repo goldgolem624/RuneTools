@@ -1158,6 +1158,10 @@
              border-radius: 3px; }
   .qg-cnum { flex: 0 0 auto; min-width: 14px; text-align: center; font-size: 10.5px; font-weight: 700;
              color: var(--accent-hi); line-height: 1.5; }
+  .qg-cvar { font-size: 9.5px; font-weight: 600; letter-spacing: 0.2px; text-transform: uppercase;
+           color: #f4c566; opacity: 0.9; }
+  .qg-clive { color: #6ee7a8; }
+  .qg-copt-live { background: rgba(110,231,168,0.12); border-left-color: rgba(110,231,168,0.7); }
   .qg-ctxt { font-size: 11px; color: var(--text); line-height: 1.5; }
   .qg-cond { font-size: 10.5px; color: #f4c566; line-height: 1.45; margin-top: 3px; }
   /* Wikitables lifted out of a quick-guide step (recipe / lookup grids). */

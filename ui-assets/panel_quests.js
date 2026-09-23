@@ -479,6 +479,7 @@
       gbox.appendChild(gh);
       const gbody = document.createElement('div');
       gbody.innerHTML = qgGuideHtml(q.n, qgg, st === 2);
+      if (typeof qgApplyLiveNums === 'function') qgApplyLiveNums(gbody);
       gbody.addEventListener('click', e => {
         const stp = e.target.closest('.myst-step');
         if (stp && stp.dataset.qn !== undefined) {

@@ -76,6 +76,16 @@
     qgSave(); updateQuestHighlight();
   }
   function qgEsc(s) { return htmlEsc(s); }
+  // Chat option markers as the source pages write them: a number is the option to pick, ? and # mean
+  // the number changes with the state of the conversation, ~ means there is no choice to make.
+  function qgChatOpt(raw) {
+    const o = String(raw || '').trim();
+    let m = o.match(/^(\d+)\s*\.?\s*(.*)$/);
+    if (m && m[2]) return { n: m[1], t: m[2] };
+    m = o.match(/^([?#~])\s*(.*)$/);
+    if (m) return { n: m[1] === '~' ? 'Next' : 'Varies', t: m[2] || (m[1] === '~' ? 'Continue' : '') };
+    return { n: '·', t: o };
+  }
   function qgChatHtml(line) {
     if (line.indexOf('{Chat:') < 0) return qgEsc(line);
     const parts = [];
@@ -100,14 +110,70 @@
            : qgEsc(txt) + ' ';
       } else {
         h += '<span class="qg-chat">' + parts[p].v.trim().split(' > ').map(o => {
-          const m = o.trim().match(/^(\d+)\s+(.+)$/);
-          return '<span class="qg-copt"><span class="qg-cnum">' + qgEsc(m ? m[1] : '·') +
-                 '</span><span class="qg-ctxt">' + qgEsc(m ? m[2] : o.trim()) + '</span></span>';
+          const c = qgChatOpt(o);
+          return '<span class="qg-copt"><span class="qg-cnum' + (c.n === '·' ? '' : ' qg-cvar') + '">' +
+                 qgEsc(c.n) + '</span><span class="qg-ctxt">' + qgEsc(c.t) + '</span></span>';
         }).join('') + '</span>';
       }
     }
     return h;
   }
+  // Live option numbers. A guide can only print the number the source page saw: the game renumbers
+  // the list as the conversation changes, which is what "Varies" means. While an option-select
+  // dialogue is open, match each printed option against the live list by its text and show the
+  // number the player actually has to press.
+  let qgDlgOpts = [];            // [{n, key}] for the dialogue currently open
+  let qgDlgSig = '';
+  let qgDlgBusy = false;
+  function qgOptKey(t) {
+    return String(t || '').toLowerCase()
+      .replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
+      .replace(/\[?player name\]?/g, '').replace(/[^a-z0-9' ]+/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+  }
+  function qgApplyLiveNums(root) {
+    const host = root || document;
+    const opts = host.querySelectorAll ? host.querySelectorAll('.qg-copt') : [];
+    for (const el of opts) {
+      const num = el.querySelector('.qg-cnum'), txt = el.querySelector('.qg-ctxt');
+      if (!num || !txt) continue;
+      if (!num.dataset.qgBase) num.dataset.qgBase = num.textContent;
+      const k = qgOptKey(txt.textContent);
+      let hit = null;
+      if (k) for (const o of qgDlgOpts) {
+        if (o.key === k) { hit = o; break; }
+        if (!hit && o.key && (o.key.indexOf(k) === 0 || k.indexOf(o.key) === 0)) hit = o;
+      }
+      if (hit) {
+        num.textContent = String(hit.n);
+        num.classList.remove('qg-cvar');
+        num.classList.add('qg-clive');
+        el.classList.add('qg-copt-live');
+      } else if (num.classList.contains('qg-clive')) {
+        num.textContent = num.dataset.qgBase;
+        num.classList.remove('qg-clive');
+        el.classList.remove('qg-copt-live');
+        if (num.textContent === 'Varies' || num.textContent === 'Next') num.classList.add('qg-cvar');
+      }
+    }
+  }
+  function qgDlgRefresh() {
+    if (qgDlgBusy) return;
+    if (!paneVisible('quests') && !paneVisible('questfocus')) return;
+    if (!bridge() || !bridge().dialog) return;
+    qgDlgBusy = true;
+    (async () => {
+      try {
+        const d = JSON.parse(await bridge().dialog(myPid()) || '{}');
+        const list = (d && Array.isArray(d.options)) ? d.options : [];
+        const next = list.map(o => ({ n: o.n, key: qgOptKey(o.text) })).filter(o => o.key);
+        const sig = next.map(o => o.n + ':' + o.key).join('|');
+        if (sig !== qgDlgSig) { qgDlgSig = sig; qgDlgOpts = next; qgApplyLiveNums(); }
+      } catch (e) {}
+      qgDlgBusy = false;
+    })();
+  }
+  (function () { function loop() { try { qgDlgRefresh(); } catch (e) {} setTimeout(loop, 700); } setTimeout(loop, 1500); })();
   function qgWiki(s) {
     s = String(s || '');
     let prev;
@@ -296,8 +362,9 @@
     html += '<div class="myst-det">' + (g ? qgGuideHtml(nm, g, done)
                 : '<div class="myst-tip">No quick guide data for this quest.</div>') + '</div>';
     wrap.innerHTML = html;
+    qgApplyLiveNums(wrap);
   }
 
-Object.assign(window, { qgEnsureLoaded, qgFocusName, qgGuideHtml, qgSave, qgToggleStep, questGuideFor, questGuidesReady, renderQuestFocus, setQuestFocus, updateQuestHighlight });
+Object.assign(window, { qgApplyLiveNums, qgEnsureLoaded, qgFocusName, qgGuideHtml, qgSave, qgToggleStep, questGuideFor, questGuidesReady, renderQuestFocus, setQuestFocus, updateQuestHighlight });
 registerTab({ id: 'questfocus', render: renderQuestFocus, open: function () { qgSig = ''; fetchQuests(true); qgEnsureLoaded(); } });
 })();

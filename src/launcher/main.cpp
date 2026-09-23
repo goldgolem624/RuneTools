@@ -421,6 +421,22 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             LocalFree(argv);
             return 0;
         }
+        // --scene-dump <pid> [range]: the scene as plugins receive it, to scene-dump.txt. For
+        // checking what the objects around the player actually report before trusting a plugin rule.
+        // The channels the companion writes (live objects, ground items, specials) are named per
+        // session, so they only resolve for the launcher that owns the client: run from a second
+        // process those lists come back empty and the cache-backed half is what this shows.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--scene-dump") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            int range = argc >= 4 ? _wtoi(argv[3]) : 20;
+            if (range < 1) range = 1;
+            if (range > 64) range = 64;
+            rtx::reader::SampleAll();
+            std::string out = rtx::reader::SceneJson(pid, range);
+            { std::ofstream f("scene-dump.txt", std::ios::binary | std::ios::trunc); f << out; }
+            LocalFree(argv);
+            return 0;
+        }
         // --loc-dump <out.tsv>: every loc definition (name, footprint, actions, models, morphs) for offline tooling.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--loc-dump") {
             std::wstring wp = argv[2];
