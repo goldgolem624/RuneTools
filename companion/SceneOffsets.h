@@ -56,13 +56,16 @@ inline constexpr std::uint64_t kRouteY      = 0x0C;   // entry -> f32 fine north
 // Overhead object (950-1, live-verified 2026-09-12 on a combat dummy, the local player and the
 // Woodcutters' Grove tree helpers): sec+0xF08 -> {i32 active hitsplats @0, i32 capacity 6 @4,
 // hitsplat ring @+0x20 (6 x 0x18: i32 hitmark, i32 value, i32 start cycle, i32 -1, i32 -1, i32 duration
-// 60 cycles), head-bar slots @+0x28 (6 x 0x120: cycle stamp @+0x78, fill 0..255 @+0x7C)}.
+// 60 cycles), head-bar slots @+0x28 .. +0x30}. The bar slots are a vector of 0x1b0 elements, four of
+// them on the actors sampled; only element 0 is ever populated (cycle stamp @+0x78, fill 0..255
+// @+0x7C, both matching the live node the drawing code walks). The rest hold uninitialised bytes,
+// so the count must come from the vector bounds and never from reading slots until one looks blank.
 inline constexpr std::uint64_t kOverhead     = 0xF08;   // sec -> overhead object
 inline constexpr std::uint64_t kOvSplatCount = 0x00;
 inline constexpr std::uint64_t kOvRing       = 0x20;
 inline constexpr std::uint64_t kOvSlots      = 0x28;
 inline constexpr std::uint64_t kSplatStride  = 0x18;
-inline constexpr std::uint64_t kBarStride    = 0x120;
+inline constexpr std::uint64_t kBarStride    = 0x1b0;   // vector element stride, from the drawing code
 inline constexpr std::uint64_t kBarStamp     = 0x78;
 inline constexpr std::uint64_t kBarFill      = 0x7C;
 inline constexpr std::uint64_t kLpCur        = 0x114C;  // sec -> NPC current life points (local player: varp 13537)

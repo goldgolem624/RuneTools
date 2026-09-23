@@ -4148,6 +4148,74 @@ bool ReadLiveLocs(std::uint32_t pid, std::vector<LiveLoc>& out) {
     return !out.empty();
 }
 
+// Head-bar slots on every actor that has an overhead, walked with the stride the drawing code
+// uses. Reports what the single-slot read sees against every slot in the vector, so a stale
+// reading is visible rather than assumed.
+std::string OverheadBarsJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "{\"actors\":[]}";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{\"actors\":[]}";
+    auto deref = [&](std::optional<std::uint64_t> p, std::uint64_t off) -> std::optional<std::uint64_t> {
+        if (!p || *p <= 0x10000) return std::nullopt;
+        return rpm<std::uint64_t>(h, *p + off);
+    };
+    auto cont = deref(root, rtx::scn::kContainer);
+    auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
+    auto arr  = deref(cont, rtx::scn::kEntryArr);
+    if (!idx || *idx < 0 || !arr || *arr <= 0x10000) return "{\"actors\":[]}";
+    auto wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + rtx::scn::kEntryWv);
+    if (!wv || *wv <= 0x10000) return "{\"actors\":[]}";
+    auto worker = scene_worker(h, pid, *wv, nullptr);
+    auto vb = deref(worker, rtx::scn::kVecBegin), ve = deref(worker, rtx::scn::kVecEnd);
+    if (!vb || !ve || *vb <= 0x10000 || *ve < *vb) return "{\"actors\":[]}";
+    std::uint64_t n = (*ve - *vb) / 8;
+    if (n > 30000) n = 30000;
+    std::string out = "{\"actors\":["; bool first = true;
+    for (std::uint64_t i = 0; i < n; ++i) {
+        auto ep = rpm<std::uint64_t>(h, *vb + i * 8);
+        if (!ep || *ep <= 0x10000) continue;
+        auto sec = rpm<std::uint64_t>(h, *ep + rtx::scn::kSecPtr);
+        if (!sec || *sec <= 0x10000) continue;
+        const int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
+        if (type != 1 && type != 2) continue;
+        auto hb = rpm<std::uint64_t>(h, *sec + rtx::scn::kOverhead);
+        if (!hb || *hb <= 0x10000) continue;
+        auto sb = rpm<std::uint64_t>(h, *hb + rtx::scn::kOvSlots);
+        auto se = rpm<std::uint64_t>(h, *hb + 0x30);
+        if (!sb || !se || *sb <= 0x10000 || *se < *sb) continue;
+        const std::uint64_t span = *se - *sb;
+        const int slots = (span % 0x1b0 == 0) ? (int)(span / 0x1b0) : -(int)span;
+        const int cfg = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
+        char b[160];
+        std::snprintf(b, sizeof(b), "%s{\"type\":%d,\"cfg\":%d,\"span\":%llu,\"slots\":%d,\"s\":[",
+                      first ? "" : ",", type, cfg, (unsigned long long)span, slots);
+        out += b; first = false;
+        for (int k = 0; k < 8 && (std::uint64_t)k * 0x1b0 < span; ++k) {
+            const std::uint64_t el = *sb + (std::uint64_t)k * 0x1b0;
+            const int stamp = rpm<std::int32_t>(h, el + 0x78).value_or(-1);
+            const int fill  = rpm<std::int32_t>(h, el + 0x7c).value_or(-1);
+            auto node = rpm<std::uint64_t>(h, el);
+            int ncyc = -1, n34 = -1, n3c = -1, n44 = -1;
+            if (node && *node > 0x10000 && *node != el) {
+                ncyc = rpm<std::int32_t>(h, *node + 0x30).value_or(-1);
+                n34  = rpm<std::int32_t>(h, *node + 0x34).value_or(-1);
+                n3c  = rpm<std::int32_t>(h, *node + 0x3c).value_or(-1);
+                n44  = rpm<std::int32_t>(h, *node + 0x44).value_or(-1);
+            }
+            char c[200];
+            std::snprintf(c, sizeof(c),
+                "%s{\"i\":%d,\"stamp\":%d,\"fill\":%d,\"cyc\":%d,\"a\":%d,\"b\":%d,\"c\":%d}",
+                k ? "," : "", k, stamp, fill, ncyc, n34, n3c, n44);
+            out += c;
+        }
+        out += "]}";
+    }
+    out += "]}";
+    return out;
+}
+
 std::string LiveLocsJson(std::uint32_t pid) {
     std::vector<LiveLoc> v;
     if (!ReadLiveLocs(pid, v)) return "{\"locs\":[]}";

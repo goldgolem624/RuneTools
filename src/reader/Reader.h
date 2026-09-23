@@ -122,6 +122,7 @@ std::string GroundItemsJson(std::uint32_t pid);
 // anchors overhead drawing at, so that slot can be read back in the binary rather than assumed.
 std::string OverheadClassJson(std::uint32_t pid);
 std::string LiveLocsJson(std::uint32_t pid);
+std::string OverheadBarsJson(std::uint32_t pid);
 
 struct OverlayPoint {
     float       wx = 0, wy = 0, wz = 0;   // world FINE coords (tile * 512), z = height
