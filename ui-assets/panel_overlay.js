@@ -160,7 +160,7 @@
   // varp 11718 carries the game's Entity Highlight Mode in bits 0-3 and its Type in bits 8-10;
   // varp 11721 is its border size. Confirmed by changing each setting and reading the varp back.
   const OV_HL_MODES = ['Mouseover', 'Nearby', 'Always on', 'Off'];
-  let ovGameHlAt = 0;
+  let ovGameHlAt = 0, ovGameSilhouette = false;
   async function ovGameHighlight() {
     const el = $('ov_hovgame');
     if (!el || !bridge() || !bridge().varps) return;
@@ -171,8 +171,10 @@
       const vp = await rtxData.call('state.varps', '11718,11721');
       const v = (vp && vp['11718']) | 0, size = (vp && vp['11721']) | 0;
       const mode = OV_HL_MODES[v & 0xF] || String(v & 0xF);
-      const type = ((v >> 8) & 7) === 1 ? 'Silhouette' : 'Border';
-      el.textContent = mode + '  ·  ' + type + (((v >> 8) & 7) === 1 ? '' : '  ·  size ' + size);
+      const sil = ((v >> 8) & 7) === 1;
+      const type = sil ? 'Silhouette' : 'Border';
+      el.textContent = mode + '  ·  ' + type + (sil ? '' : '  ·  size ' + size);
+      if (sil !== ovGameSilhouette) { ovGameSilhouette = sil; reflectOverlay(); }
     } catch (e) {}
   }
   function ovHex(rgb) { return '#' + ('000000' + ((rgb | 0) & 0xFFFFFF).toString(16)).slice(-6); }
@@ -290,6 +292,10 @@
       if (own) { own.classList.toggle('sel', !preset); own.style.background = preset ? 'transparent' : ovHex(cur); own.textContent = preset ? '+' : ''; }
     });
     ovGameHighlight();
+    // The game is filling entities rather than tracing them, so a border size has nothing to act on.
+    if (ow) Array.from(ow.querySelectorAll('.ov-hovrow[data-width]')).forEach(row => {
+      row.style.display = ovGameSilhouette ? 'none' : 'flex';
+    });
     const dim = !overlayState.enabled;
     ['ov_grid', 'ov_players', 'ov_npcs', 'ov_objects', 'ov_interactable', 'ov_specials', 'ov_walkonly', 'ov_truetile', 'ov_radius'].forEach(id => {
       const el = $(id); if (el) { const r = el.closest('.ov-row'); if (r) r.style.opacity = dim ? 0.45 : 1; }
