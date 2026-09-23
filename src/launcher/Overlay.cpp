@@ -58,6 +58,9 @@ std::map<DWORD, long long> g_flash_until;     // per-pid flash deadline (steady 
 std::thread       g_thread;
 std::atomic<bool> g_running{false};
 constexpr long long    kFlashMs = 480;
+// Height the game's own overhead bar takes over an entity, so a label anchored at the model top
+// stacks above that bar rather than across it.
+constexpr float kOverheadBarPx = 16.0f;
 std::atomic<DWORD>     g_toast_pid{0};
 std::atomic<long long> g_toast_until_ms{0};    // toast visible while now < this
 std::string            g_toast_text;           // guarded by g_mu
@@ -1671,7 +1674,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    struct GuideLbl { float cx, cy; int nl, mc; const std::string* text; int r, g, b; bool hazard; };
+    struct GuideLbl { float cx, cy; int nl, mc; const std::string* text; int r, g, b; bool hazard; float lift; };
     std::vector<GuideLbl> glbls;
     if (f) for (const auto& p : f->guides) {
         // corners: base ring 0-3 (SW,SE,NE,NW), top ring 4-7
@@ -1786,7 +1789,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         int nl = 1, mc = 0, run = 0;
         for (char ch : p.label) { if (ch == '\n') { ++nl; run = 0; } else if (++run > mc) mc = run; }
         if (nl > 4) nl = 4;
-        glbls.push_back({ cx, cy, nl, mc, &p.label, mr, mg, mb, p.rgb != 0 });
+        // A mark snapped to a live model sits where the game draws that entity's own overhead bar,
+        // so the label clears the bar's height instead of landing on top of it.
+        const float lift = p.has_box3d ? kOverheadBarPx : 0.f;
+        glbls.push_back({ cx, cy, nl, mc, &p.label, mr, mg, mb, p.rgb != 0, lift });
     }
 
     if (!glbls.empty()) {
@@ -1803,7 +1809,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             placedL.push_back(&l);
             const float estH = 13.0f * (float)l.nl + 10.0f;           // padY 5, mirrors DrawLabel
             const float estW = 0.62f * 10.5f * (float)l.mc + 24.0f;   // glyph estimate + padX 8
-            float y = l.cy - 8.0f - estH * 0.5f;
+            float y = l.cy - 8.0f - l.lift - estH * 0.5f;
             for (int guard = 0; guard < 12; ++guard) {
                 bool hit = false;
                 for (const auto& r : placedR)
