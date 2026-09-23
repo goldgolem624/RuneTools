@@ -235,9 +235,15 @@
   .win-title:active { cursor: grabbing; }
   .win.focus .win-title { background: rgba(0,0,0,0.36); }
   .win-name {
-    flex: 1; min-width: 0;
+    flex: 0 1 auto; min-width: 0;
     font: 700 10.5px var(--font-mono); color: var(--text); letter-spacing: 0.14em; text-transform: uppercase;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Version after the name, when the tab carries one. Takes the free space so the buttons stay right. */
+  .win-ver {
+    flex: 1; min-width: 0; margin-left: 7px;
+    font: 600 9.5px var(--font-mono); color: var(--text-dim); letter-spacing: 0.06em;
+    white-space: nowrap; overflow: hidden;
   }
   /* Tab strip: its own row under the title bar; :empty hides it for a solo window. */
   .win-tabs {

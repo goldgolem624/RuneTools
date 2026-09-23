@@ -264,7 +264,7 @@
       z: ++wm.zTop, min: !!(geom && geom.min),
       hud: wmIsHud(tab.id),
       locked: wmIsHud(tab.id) && !!(geom && geom.lock),
-      el: null, body: null, pane: null, tabsEl: null, nameEl: null, titleEl: null, icoEl: null,
+      el: null, body: null, pane: null, tabsEl: null, nameEl: null, verEl: null, titleEl: null, icoEl: null,
     };
     if (group) {
       const avail = allTabs();
@@ -281,7 +281,12 @@
     name.className = 'win-name';
     name.textContent = group ? group.label : tab.label;
     title.appendChild(name);
+    const ver = document.createElement('span');   // a tab that carries a version shows it after the name
+    ver.className = 'win-ver';
+    ver.textContent = (!group && tab.ver) ? ('v' + tab.ver) : '';
+    title.appendChild(ver);
     w.nameEl = name;
+    w.verEl = ver;
     w.titleEl = title;
     const tabs = document.createElement('div');
     tabs.className = 'win-tabs';   // appended BELOW the title, before the body
@@ -358,6 +363,7 @@
     const t = allTabs().find(x => x.id === w.tab);
     const whole = wmIsWholeGroup(w);
     w.nameEl.textContent = whole ? w.group.label : (t ? t.label : w.tab);
+    if (w.verEl) w.verEl.textContent = (!whole && t && t.ver) ? ('v' + t.ver) : '';
   }
   function wmRenderTabs(w) {
     if (!w.tabsEl) return;

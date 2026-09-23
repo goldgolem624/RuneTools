@@ -222,7 +222,7 @@
   }, 10000);
   function allTabs() {
     const extra = [{ id: 'pluginbrowse', label: 'Browse plugins', cat: 'Plugins', icon: PLUGIN_BROWSE_ICON }];
-    pluginTabs.forEach(p => extra.push({ id: 'plugin:' + p.id, label: p.manifest.name, cat: 'Plugins', icon: PLUGIN_TAB_ICON }));
+    pluginTabs.forEach(p => extra.push({ id: 'plugin:' + p.id, label: p.manifest.name, ver: p.manifest.version || '', cat: 'Plugins', icon: PLUGIN_TAB_ICON }));
     if (typeof auraGroupTabs === 'function') { try { auraGroupTabs().forEach(t => extra.push(t)); } catch (e) {} }
     return TABS.filter(t => (t.id !== 'dung' || DUNG_ENABLED) && (t.id !== 'groupbank' || gimInGroup !== false))
       .map(t => { const g = TAB_GROUP_OF[t.id]; return (g && g.cat && g.cat !== t.cat) ? Object.assign({}, t, { cat: g.cat }) : t; })
