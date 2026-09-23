@@ -1130,8 +1130,18 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const int got = rtx::launcher::gameui::ModuleAnchors(cfg.pid, mp, 64);
         answers.assign(mp, mp + (got > 0 ? got : 0));
     }
-    // The game answers through the same view rect our own projection uses, so its numbers are
-    // already in the frame's pixels and need no conversion.
+    // The game projects through its own view rect, which can be larger than the frame we draw into;
+    // our own projection clamps that rect to the frame. So an answer is mapped from the game's rect
+    // into the clamped one. When the frame is big enough to hold the rect the two are the same and
+    // this is the identity, which is why it only shows on a small window.
+    const float gvW = (f && f->gv_w > 0) ? (float)f->gv_w : (float)W;
+    const float gvH = (f && f->gv_h > 0) ? (float)f->gv_h : (float)H;
+    const float gvOx = (f && f->gv_w > 0) ? (float)f->gv_x : 0.0f;
+    const float gvOy = (f && f->gv_h > 0) ? (float)f->gv_y : 0.0f;
+    const float engKx = gvW > 0.0f ? vpW / gvW : 1.0f, engKy = gvH > 0.0f ? vpH / gvH : 1.0f;
+    auto engX = [&](int x) { return vpX + ((float)x - gvOx) * engKx; };
+    auto engY = [&](int y) { return vpY + ((float)y - gvOy) * engKy; };
+
     // The game's own answer for a world point, when it answered for that point last pass.
     // `lift` is what to raise the point by when the game does not answer for the character, so a
     // point that falls back lands exactly where it used to. Returns 2 when the height came from the
@@ -1150,7 +1160,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         askNow.push_back({ wx, wy, wz, entity, lift, tag });
         for (const auto& a : answers) {
             if (a.tag != tag || !a.ok) continue;
-            sx = (float)a.x; sy = (float)a.y;
+            sx = engX(a.x); sy = engY(a.y);
             return a.ok;
         }
         return 0;
@@ -2312,8 +2322,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         char cb[200];
                         std::snprintf(cb, sizeof(cb),
                                       "[ovl] projection check: ours %.1f,%.1f the game's %d,%d (off by %.1f,%.1f)",
-                                      (double)rx, (double)ry, mp[at].x, mp[at].y,
-                                      (double)(mp[at].x - rx), (double)(mp[at].y - ry));
+                                      (double)rx, (double)ry, (int)engX(mp[at].x), (int)engY(mp[at].y),
+                                      (double)(engX(mp[at].x) - rx), (double)(engY(mp[at].y) - ry));
                         rtx::log::Client(cfg.pid, cb);
                     }
                 }
