@@ -1130,6 +1130,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const int got = rtx::launcher::gameui::ModuleAnchors(cfg.pid, mp, 64);
         answers.assign(mp, mp + (got > 0 ? got : 0));
     }
+    // The game answers in its own interface space, which it shrinks to fit a client under 800x600;
+    // our commands are in the frame's own pixels, so its answers are brought across by the same
+    // factor the interface itself is scaled by. On a large enough client the factor is 1.
+    float ifaceK;
+    { const float kx = (float)W / 800.0f, ky = (float)H / 600.0f; ifaceK = kx < ky ? kx : ky; if (ifaceK > 1.0f) ifaceK = 1.0f; }
+    ifaceK *= gvScale;
+
     // The game's own answer for a world point, when it answered for that point last pass.
     // `lift` is what to raise the point by when the game does not answer for the character, so a
     // point that falls back lands exactly where it used to. Returns 2 when the height came from the
@@ -1148,7 +1155,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         askNow.push_back({ wx, wy, wz, entity, lift, tag });
         for (const auto& a : answers) {
             if (a.tag != tag || !a.ok) continue;
-            sx = (float)a.x; sy = (float)a.y;
+            sx = (float)a.x * ifaceK; sy = (float)a.y * ifaceK;
             return a.ok;
         }
         return 0;
@@ -2310,8 +2317,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                         char cb[200];
                         std::snprintf(cb, sizeof(cb),
                                       "[ovl] projection check: ours %.1f,%.1f the game's %d,%d (off by %.1f,%.1f)",
-                                      (double)rx, (double)ry, mp[at].x, mp[at].y,
-                                      (double)(mp[at].x - rx), (double)(mp[at].y - ry));
+                                      (double)rx, (double)ry, (int)(mp[at].x * ifaceK), (int)(mp[at].y * ifaceK),
+                                      (double)(mp[at].x * ifaceK - rx), (double)(mp[at].y * ifaceK - ry));
                         rtx::log::Client(cfg.pid, cb);
                     }
                 }
