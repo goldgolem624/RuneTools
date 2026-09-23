@@ -77,13 +77,13 @@
   }
   function qgEsc(s) { return htmlEsc(s); }
   // Chat option markers as the source pages write them: a number is the option to pick, ? and # mean
-  // the number changes with the state of the conversation, ~ means there is no choice to make.
+  // the number changes with the state of the conversation, ~ means any option will do.
   function qgChatOpt(raw) {
     const o = String(raw || '').trim();
     let m = o.match(/^(\d+)\s*\.?\s*(.*)$/);
     if (m && m[2]) return { n: m[1], t: m[2] };
     m = o.match(/^([?#~])\s*(.*)$/);
-    if (m) return { n: m[1] === '~' ? 'Next' : 'Varies', t: m[2] || (m[1] === '~' ? 'Continue' : '') };
+    if (m) return { n: m[1] === '~' ? 'Any' : 'Varies', t: m[2] || '' };
     return { n: '·', t: o };
   }
   function qgChatHtml(line) {
@@ -153,7 +153,7 @@
         num.textContent = num.dataset.qgBase;
         num.classList.remove('qg-clive');
         el.classList.remove('qg-copt-live');
-        if (num.textContent === 'Varies' || num.textContent === 'Next') num.classList.add('qg-cvar');
+        if (num.textContent === 'Varies' || num.textContent === 'Any') num.classList.add('qg-cvar');
       }
     }
   }
