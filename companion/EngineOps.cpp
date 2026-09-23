@@ -525,9 +525,12 @@ void PumpAsks(std::uint8_t* root) {
         if (g_askDone || g_askCount <= 0) return;
     }
     if (!Ready()) return;                       // still resolving: the list waits rather than being lost
-    // A few per frame. The game weighs a requirement by walking everything it depends on, which is
-    // far dearer than a projection, so a long list is spread out instead of landing on one frame.
+    // A few per frame, and a time budget on top. The game weighs a requirement by walking
+    // everything it depends on, and how deep that goes is the account's business, not ours: one
+    // question can cost far more than another. So a long list is spread out, and the sweep stops
+    // early if this frame has already spent its share, however few questions that turned out to be.
     constexpr int kPerFrame = 4;
+    constexpr double kBudgetMs = 2.0;
     rtx::marker::Ask todo[kPerFrame];
     int n = 0, at = 0, count = 0;
     std::uint32_t seq = 0;
@@ -537,6 +540,8 @@ void PumpAsks(std::uint8_t* root) {
         for (; n < kPerFrame && at + n < count; ++n) todo[n] = g_ask[at + n];
     }
     rtx::frame::Share::AskAnswer got[kPerFrame];
+    LARGE_INTEGER freq{}, t0{}; QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&t0);
+    int done_n = 0;
     for (int i = 0; i < n; ++i) {
         const char* op = nullptr;
         switch (todo[i].kind) {
@@ -552,12 +557,19 @@ void PumpAsks(std::uint8_t* root) {
         got[i].value = r > 0 ? out[r - 1] : 0;
         got[i].ok = r > 0 ? 1 : 0;
         got[i].tag = todo[i].tag;
+        done_n = i + 1;
+        LARGE_INTEGER t1{}; QueryPerformanceCounter(&t1);
+        if (freq.QuadPart &&
+            (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart >= kBudgetMs) break;
     }
+    n = done_n;
+    if (n <= 0) return;
     bool done = false;
     {
         std::lock_guard<std::mutex> lk(g_askMu);
         // The launcher may have replaced the list while we were answering; those answers are dropped.
         if (seq != g_askSeq || at != g_askAt) return;
+        if (at + n > g_askCount) return;
         for (int i = 0; i < n; ++i) g_answer[at + i] = got[i];
         g_askAt = at + n;
         done = g_askAt >= g_askCount;
