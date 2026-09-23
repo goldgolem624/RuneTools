@@ -1979,7 +1979,8 @@ bool MarkSub(std::uint64_t sub) {
 
 namespace {
 std::uint64_t g_traceSub = 0, g_traceNode = 0; ULONGLONG g_traceUntil = 0; int g_traceOff = -1;
-std::uint8_t g_traceLast[64]; bool g_traceHave = false;
+constexpr int kTraceBytes = 96;
+std::uint8_t g_traceLast[kTraceBytes]; bool g_traceHave = false;
 // The object's render node: the field that points at a heap object holding the outline colour
 // (four floats 0..1 at +0x100, the alpha near 0.85 or 0) and a width float at +0x110.
 // The object's render node, looked for while the outline is on: the heap object, one or two pointers
@@ -2038,16 +2039,19 @@ void rtx::scenehover::Trace() {
     __try {
         if (!IsScenery(R8(g_traceSub + kType))) { g_traceSub = 0; return; }
         if (!g_traceNode) { g_traceNode = FindNode(g_traceSub); if (!g_traceNode) return; RingLog("trace: obj %llx node %llx at +0x%x (two levels when above 0xffff)", (unsigned long long)g_traceSub, (unsigned long long)g_traceNode, g_traceOff); }
-        std::uint8_t cur[64];
-        for (int i = 0; i < 64; i += 4) { std::uint32_t u = R32(g_traceNode + 0x100 + i); std::memcpy(cur + i, &u, 4); }
-        if (g_traceHave && std::memcmp(cur, g_traceLast, 64) == 0) return;
-        std::memcpy(g_traceLast, cur, 64); g_traceHave = true;
-        float f[6]; std::memcpy(f, cur, 24);
-        const std::uint64_t owner = R64(g_traceSub + kHlOwner);
-        const std::uint64_t settings = IsHeap(owner) ? R64(owner + kHlSettings) : 0;
-        RingLog("trace: frame %d id %d rgba %.3f %.3f %.3f %.3f width %.2f +114 %.3f +134 %02x +118 %08x %08x %08x",
-                IsHeap(settings) ? R32(settings + kHlFrame) : -1, R32(g_traceSub + kHlId), f[0], f[1], f[2], f[3], f[4], f[5], cur[0x34],
-                *(std::uint32_t*)(cur + 0x18), *(std::uint32_t*)(cur + 0x1C), *(std::uint32_t*)(cur + 0x20));
+        // The whole highlight block of the lit object, not a handful of fields: every field we had
+        // guessed at reads the same whether it draws or not, so print the lot and diff two states.
+        std::uint8_t cur[kTraceBytes];
+        for (int i = 0; i < kTraceBytes; i += 4) { std::uint32_t u = R32(g_traceNode + 0x100 + i); std::memcpy(cur + i, &u, 4); }
+        if (g_traceHave && std::memcmp(cur, g_traceLast, kTraceBytes) == 0) return;
+        std::memcpy(g_traceLast, cur, kTraceBytes); g_traceHave = true;
+        char hex[kTraceBytes * 2 + kTraceBytes / 16 + 8]; int at = 0;
+        for (int i = 0; i < kTraceBytes && at + 4 < (int)sizeof(hex); ++i) {
+            if (i && (i % 16) == 0) hex[at++] = ' ';
+            at += std::snprintf(hex + at, sizeof(hex) - at, "%02x", cur[i]);
+        }
+        hex[at] = 0;
+        RingLog("trace: id %d node+0x100 %s", R32(g_traceSub + kHlId), hex);
     } __except (EXCEPTION_EXECUTE_HANDLER) { g_traceSub = 0; }
 }
 
