@@ -1,6 +1,7 @@
 #include "EngineMarkers.h"
 #include "EngineComponents.h"
 #include "EngineOps.h"
+#include "EngineIface.h"
 
 #include <windows.h>
 #include <detours.h>
@@ -502,6 +503,7 @@ void FrameHook(void* manager) {
         rtx::engineops::PumpAnchors(root);
         rtx::engineops::PumpAsks(root);
         rtx::engineops::DevProject(root);
+        rtx::engineiface::DevComponent(root);
     }
     g_frame(manager);
 }

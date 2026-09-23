@@ -88,6 +88,7 @@
     <ClCompile Include="VkComposite.cpp" />
     <ClCompile Include="MenuProbe.cpp" />
     <ClCompile Include="EngineHighlight.cpp" />
+    <ClCompile Include="EngineIface.cpp" />
     <ClCompile Include="TooltipHook.cpp" />
     <ClCompile Include="EngineMarkers.cpp" />
     <ClCompile Include="EngineComponents.cpp" />
@@ -115,6 +116,7 @@
     <ClInclude Include="VkShaders.h" />
     <ClInclude Include="MenuProbe.h" />
     <ClInclude Include="EngineHighlight.h" />
+    <ClInclude Include="EngineIface.h" />
     <ClInclude Include="SceneHover.h" />
     <ClInclude Include="TooltipHook.h" />
     <ClInclude Include="EngineMarkers.h" />
