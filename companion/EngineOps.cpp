@@ -28,7 +28,14 @@ constexpr std::size_t kStrStack  = 0x10A8;   // 1000 entries of 0x20
 constexpr std::size_t kStrSp     = 0x8DA8;
 constexpr std::size_t kEntityRef = 0xC3B0;   // the character the state holds: reference, then the character
 constexpr std::size_t kEntityObj = 0xC3B8;
-constexpr std::size_t kOffPlayers = 0x19950;  // player registry off the client's root
+constexpr std::size_t kOffPlayers = 0x19950;
+constexpr std::size_t kOffStatusByte = 0x19FA0;   // 30 = in the world
+// Status byte off the client's root: 30 is in the world. Calling the engine's own operations while
+// the client is still loading is not safe, and there is nothing to answer for anyway.
+bool InTheWorld(std::uint8_t* root) {
+    __try { return *reinterpret_cast<std::int8_t*>(root + kOffStatusByte) == 30; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 
 using OpFn = void* (*)(void* root, std::uint8_t* state);
 
@@ -362,6 +369,7 @@ void Queue(std::int32_t sound, std::int32_t zoom, std::int32_t fov) {
     g_qSound = sound; g_qZoom = zoom; g_qFov = fov; g_qPending = true;
 }
 void Pump(std::uint8_t* root) {
+    if (!root || !InTheWorld(root)) return;
     std::int32_t sound, zoom, fov;
     if (!root) return;
     { std::lock_guard<std::mutex> lk(g_qMu); if (!g_qPending) return; }
@@ -427,6 +435,12 @@ void WantAnchors(const rtx::marker::Anchor* a, int n) {
 }
 
 void PumpAnchors(std::uint8_t* root) {
+    if (!root || !InTheWorld(root)) return;
+    // ten times a second is more than the launcher can use, and keeps this off the frame path
+    static ULONGLONG s_last = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - s_last < 100) return;
+    s_last = now;
     rtx::marker::Anchor want[rtx::marker::kMaxAnchors];
     int n = 0;
     { std::lock_guard<std::mutex> lk(g_aMu); n = g_aCount; if (n) std::memcpy(want, g_aWant, sizeof(rtx::marker::Anchor) * (std::size_t)n); }
