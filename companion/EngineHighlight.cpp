@@ -252,20 +252,24 @@ void ApplyScale(int category, std::int32_t scale) {
         g_haveWidth[category] = false;
         return;
     }
-    const std::uint8_t want = (std::uint8_t)(scale < 0 ? 0 : scale > kMaxScale ? kMaxScale : scale);
-    // A scale of zero is the silhouette, but only while the game itself is drawing silhouettes: its
-    // Entity Highlight Type picks the shape, and a zero-wide border draws nothing at all. The game's
-    // own scale says which it is, zero when it draws silhouettes and its border size otherwise, so a
-    // silhouette is only asked for when the game is already drawing them. Refusing here leaves the
-    // game's own look in place, which beats an empty screen.
+    std::uint8_t want = (std::uint8_t)(scale < 0 ? 0 : scale > kMaxScale ? kMaxScale : scale);
+    // Whether the scale is zero is not a width, it is which path the entity takes. The highlight
+    // vertex shader scales the mesh by uVertexScale, which the game sets to 1 only when the scale is
+    // zero: that draws the mesh at true size and fills it, the silhouette. Any other scale collapses
+    // the mesh out of that pass and the entity is outlined afterwards instead, at this width. The
+    // game's own Entity Highlight Type is what decides which, and it sets up the frame accordingly,
+    // so changing the zero-ness from here produces an entity that is drawn for one path and
+    // finished by the other, which shows nothing or the wrong shape. The width is ours to set; the
+    // choice is not.
     const std::uint8_t theirs = g_haveWidth[category] ? g_gameWidth[category] : *cur;
-    if (want == 0 && theirs != 0) {
+    if ((want == 0) != (theirs == 0)) {
         if (mine && *cur == g_appliedWidth[category]) *cur = g_gameWidth[category];
         g_haveWidth[category] = false;
         static bool s_said = false;
         if (!s_said) {
             s_said = true;
-            Say("highlight: a silhouette needs the game's own Entity Highlight Type set to Silhouette; its border is left alone");
+            Say("highlight: the game is drawing %s, which its own Entity Highlight Type chooses; leaving that alone",
+                theirs == 0 ? "silhouettes" : "borders");
         }
         return;
     }

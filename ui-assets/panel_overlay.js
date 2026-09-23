@@ -284,10 +284,17 @@
     wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs, scenery and loot itself. Off leaves your own game settings alone; on uses the ones below'));
     wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity. Nearby also needs the game’s own Entity Highlight Mode set to Proximity, which is what measures the distances',
       [[0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
-    // Silhouette or border is the game's own Entity Highlight Type. It picks a render path that only
-    // the game's settings page can switch, so there is no control for it here: asking for one while
-    // the game draws the other produced nothing at all. The sizes below apply while the game draws
-    // borders, and are left alone while it draws silhouettes.
+    // Silhouette or border is the game's own Entity Highlight Type: the highlight shader scales the
+    // mesh by uVertexScale, which is 1 only when the border size is zero, and that is what fills the
+    // entity instead of tracing it. The game sets up the frame for whichever it is, so there is no
+    // control for it here. The border sizes below are ours, and apply while the game draws borders.
+    {
+      const note = document.createElement('div'); note.className = 'ov-row';
+      const l = document.createElement('div'); l.className = 'ov-l';
+      const s = document.createElement('div'); s.className = 'ov-sub';
+      s.textContent = 'Silhouette or border is the game’s own Entity Highlight Type. These colours are used either way; the sizes apply to borders.';
+      l.appendChild(s); note.appendChild(l); wrap.appendChild(note);
+    }
     // outline colour per kind of target; the first swatch keeps the colour the game uses for it
     OV_HOVER_KINDS.forEach(([key, label, game, wKey]) => {
       const row = document.createElement('div'); row.className = 'ov-hovrow'; row.dataset.key = key;
@@ -323,7 +330,7 @@
       // its own outline width; the game's is 4
       const wrow = document.createElement('div'); wrow.className = 'ov-hovrow'; wrow.dataset.width = wKey;
       wrow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:0 10px 8px 18px;';
-      const wname = document.createElement('div'); wname.className = 'ov-sub'; wname.textContent = 'Thickness';
+      const wname = document.createElement('div'); wname.className = 'ov-sub'; wname.textContent = 'Border';
       wname.style.cssText = 'width:80px;flex:none;';
       const rng = document.createElement('input'); rng.type = 'range'; rng.min = '1'; rng.max = '24'; rng.id = 'ov_' + wKey; rng.style.cssText = 'flex:1 1 60px;min-width:0;';
       const val = document.createElement('div'); val.className = 'ov-sub'; val.id = 'ov_' + wKey + '_lbl'; val.style.cssText = 'width:22px;text-align:right;flex:none;';
