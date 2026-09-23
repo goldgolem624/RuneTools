@@ -500,6 +500,7 @@ void FrameHook(void* manager) {
         rtx::enginecc::Apply(root);
         rtx::engineops::Pump(root);
         rtx::engineops::PumpAnchors(root);
+        rtx::engineops::PumpAsks(root);
         rtx::engineops::DevProject(root);
     }
     g_frame(manager);

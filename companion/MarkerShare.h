@@ -8,7 +8,7 @@ namespace rtx::marker {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMarker_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5254584D;   // 'RTXM'
-inline constexpr std::uint32_t kVersion = 28;
+inline constexpr std::uint32_t kVersion = 29;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
@@ -59,6 +59,24 @@ struct Anchor {
     // request it belongs to rather than to whatever now sits at the same place in the list.
     std::uint32_t tag;
 };
+// Questions about the account the game answers for itself: whether an achievement's requirements
+// are met, whether a quest is started or finished. The game weighs these against the live stats,
+// the account state and today's date, so the answer is the one the game would give rather than one
+// we work out from tables of our own that go stale with every update.
+inline constexpr int kMaxAsks = 128;
+enum AskKind : std::uint16_t {
+    kAskAchievementState = 0,   // how far along the requirement is, as the game grades it
+    kAskAchievementPrereqs = 1, // every achievement it depends on is done
+    kAskQuestFinished = 2,
+    kAskQuestStarted = 3,
+};
+struct Ask {
+    std::uint16_t kind;         // AskKind
+    std::uint16_t spare;
+    std::int32_t  id;           // achievement or quest id
+    std::uint32_t tag;          // echoed with the answer, so an answer is never read against the wrong question
+};
+
 inline constexpr int kCcSlotBase = 0xE00;   // dynamic ids from here are ours; the game's scripts stay far below
 
 struct Command {
@@ -138,6 +156,11 @@ struct Share {
     std::int32_t op_sound, op_zoom, op_fov;
     std::uint32_t anchor_count;              // entries in anchors[0..anchor_count)
     Anchor        anchors[kMaxAnchors];
+    // The questions above, and a counter that changes whenever the list does. The module answers a
+    // list once and then leaves it alone, so a list that does not change costs nothing.
+    std::uint32_t ask_seq;
+    std::uint32_t ask_count;                 // entries in asks[0..ask_count)
+    Ask           asks[kMaxAsks];
     std::uint32_t cc_count;
     CcRect        cc[kMaxCc];
     Command cmds[kMaxCmds];

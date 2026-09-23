@@ -8,7 +8,7 @@ namespace rtx::frame {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXFrame_v2_";
 inline constexpr std::uint32_t kMagic   = 0x52545846;   // 'RTXF'
-inline constexpr std::uint32_t kVersion = 6;
+inline constexpr std::uint32_t kVersion = 7;
 
 inline constexpr std::uint32_t kMaxWidth  = 3840;
 inline constexpr std::uint32_t kMaxHeight = 2160;
@@ -58,6 +58,17 @@ struct Share {
     volatile std::uint32_t anchor_seq;           // bumped after a set of answers is written
     std::uint32_t anchor_count;
     AnchorPoint   anchor[64];
+
+    // module -> launcher: the game's own answer to each question the launcher asked, in the order
+    // it asked them. `ok` is 0 where the game could not answer: the operation is not in this build,
+    // the call faulted, or the id names nothing. `answer_ask_seq` says which list these belong to,
+    // and `answer_ready` is set once every question in that list has been answered.
+    struct AskAnswer { std::int32_t value, ok; std::uint32_t tag; };
+    volatile std::uint32_t answer_seq;           // bumped as answers are written
+    std::uint32_t answer_ask_seq;
+    volatile std::uint32_t answer_ready;
+    std::uint32_t answer_count;
+    AskAnswer     answer[128];
 
     std::uint8_t  pixels[kMaxBytes];
 };

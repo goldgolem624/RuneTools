@@ -496,6 +496,77 @@ void PumpAnchors(std::uint8_t* root) {
     }
 }
 
+namespace {
+std::mutex g_askMu;
+rtx::marker::Ask g_ask[rtx::marker::kMaxAsks];
+int g_askCount = 0;
+std::uint32_t g_askSeq = 0;
+// Where the sweep has got to, and the answers so far. A list is answered once: until the launcher
+// changes it, nothing here runs at all.
+rtx::frame::Share::AskAnswer g_answer[rtx::marker::kMaxAsks];
+int g_askAt = 0;
+bool g_askDone = true;
+}   // namespace
+
+void WantAsks(const rtx::marker::Ask* a, int n, std::uint32_t seq) {
+    if (n < 0) n = 0;
+    if (n > rtx::marker::kMaxAsks) n = rtx::marker::kMaxAsks;
+    std::lock_guard<std::mutex> lk(g_askMu);
+    if (seq == g_askSeq && n == g_askCount) return;     // the same list again: leave the answers alone
+    if (n) std::memcpy(g_ask, a, sizeof(rtx::marker::Ask) * (std::size_t)n);
+    g_askCount = n; g_askSeq = seq; g_askAt = 0; g_askDone = n == 0;
+    std::memset(g_answer, 0, sizeof(g_answer));
+}
+
+void PumpAsks(std::uint8_t* root) {
+    if (!root || g_poisoned || !InTheWorld(root)) return;
+    {
+        std::lock_guard<std::mutex> lk(g_askMu);
+        if (g_askDone || g_askCount <= 0) return;
+    }
+    if (!Ready()) return;                       // still resolving: the list waits rather than being lost
+    // A few per frame. The game weighs a requirement by walking everything it depends on, which is
+    // far dearer than a projection, so a long list is spread out instead of landing on one frame.
+    constexpr int kPerFrame = 4;
+    rtx::marker::Ask todo[kPerFrame];
+    int n = 0, at = 0, count = 0;
+    std::uint32_t seq = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_askMu);
+        at = g_askAt; count = g_askCount; seq = g_askSeq;
+        for (; n < kPerFrame && at + n < count; ++n) todo[n] = g_ask[at + n];
+    }
+    rtx::frame::Share::AskAnswer got[kPerFrame];
+    for (int i = 0; i < n; ++i) {
+        const char* op = nullptr;
+        switch (todo[i].kind) {
+            case rtx::marker::kAskAchievementState:   op = "ACHIEVEMENT_REQSTATE";    break;
+            case rtx::marker::kAskAchievementPrereqs: op = "ACHIEVEMENT_ALLPREREQMET"; break;
+            case rtx::marker::kAskQuestFinished:      op = "QUEST_FINISHED";          break;
+            case rtx::marker::kAskQuestStarted:       op = "QUEST_STARTED";           break;
+            default: break;
+        }
+        std::int32_t out[4] = {};
+        const std::int32_t in[1] = { todo[i].id };
+        const int r = op ? Call(root, op, in, 1, nullptr, 0, out, 4) : -1;
+        got[i].value = r > 0 ? out[r - 1] : 0;
+        got[i].ok = r > 0 ? 1 : 0;
+        got[i].tag = todo[i].tag;
+    }
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lk(g_askMu);
+        // The launcher may have replaced the list while we were answering; those answers are dropped.
+        if (seq != g_askSeq || at != g_askAt) return;
+        for (int i = 0; i < n; ++i) g_answer[at + i] = got[i];
+        g_askAt = at + n;
+        done = g_askAt >= g_askCount;
+        g_askDone = done;
+        rtx::present::PublishAnswers(g_answer, g_askCount, g_askSeq, done);
+    }
+    if (done && g_probeOn) Say("account questions: %d answered", count);
+}
+
 bool TakeLog(char* out, std::size_t cap) {
     std::lock_guard<std::mutex> lk(g_logMu);
     if (!g_log[0] || cap == 0) return false;

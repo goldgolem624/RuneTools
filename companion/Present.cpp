@@ -184,11 +184,16 @@ bool LatchMarkers() {
         static std::vector<rtx::marker::Anchor> anScratch;
         std::uint32_t ann = g_marker->anchor_count; if (ann > (std::uint32_t)rtx::marker::kMaxAnchors) ann = 0;
         anScratch.assign(g_marker->anchors, g_marker->anchors + ann);
+        static std::vector<rtx::marker::Ask> askScratch;
+        std::uint32_t askn = g_marker->ask_count; if (askn > (std::uint32_t)rtx::marker::kMaxAsks) askn = 0;
+        askScratch.assign(g_marker->asks, g_marker->asks + askn);
+        const std::uint32_t askSeq = g_marker->ask_seq;
         if (g_marker->seq != s0) continue;                    // written to while it was read: not this one
         g_latch.hover_on = hon; g_latch.hover_x = hx; g_latch.hover_y = hy; g_latch.hover_id = hid;
         g_latch.cc.swap(ccScratch);
         if (oseq != g_latch.op_seq) { g_latch.op_seq = oseq; g_latch.op_sound = osnd; g_latch.op_zoom = ozoom; g_latch.op_fov = ofov; rtx::engineops::Queue(osnd, ozoom, ofov); }
         rtx::engineops::WantAnchors(anScratch.empty() ? nullptr : anScratch.data(), (int)anScratch.size());
+        rtx::engineops::WantAsks(askScratch.empty() ? nullptr : askScratch.data(), (int)askScratch.size(), askSeq);
         std::memcpy(g_latch.view_m, vm, sizeof(vm)); g_latch.view_addr = vaddr; std::memcpy(g_latch.gv, gv, sizeof(gv));
         g_latch.cmds.swap(scratch);
         g_latch.fb_w = w; g_latch.fb_h = h; g_latch.flags = flags;
@@ -506,6 +511,23 @@ bool PublishAnchors(const void* points, int count) {
                            sizeof(rtx::frame::Share::AnchorPoint) * (std::size_t)count);
     g_frame->anchor_count = (std::uint32_t)count;
     ++g_frame->anchor_seq;
+    return true;
+}
+
+// The answers to the launcher's questions about the account. Written as they are worked out rather
+// than all at once, because the whole list is spread over several frames to keep any one frame
+// cheap; `ready` says the list is complete.
+bool PublishAnswers(const void* answers, int count, std::uint32_t askSeq, bool ready) {
+    if (!g_frame || g_frame->magic != rtx::frame::kMagic || g_frame->version != rtx::frame::kVersion) return false;
+    if (count < 0) count = 0;
+    if (count > 128) count = 128;
+    if (!answers) count = 0;
+    if (count) std::memcpy(const_cast<rtx::frame::Share::AskAnswer*>(g_frame->answer), answers,
+                           sizeof(rtx::frame::Share::AskAnswer) * (std::size_t)count);
+    g_frame->answer_count = (std::uint32_t)count;
+    g_frame->answer_ask_seq = askSeq;
+    g_frame->answer_ready = ready ? 1u : 0u;
+    ++g_frame->answer_seq;
     return true;
 }
 

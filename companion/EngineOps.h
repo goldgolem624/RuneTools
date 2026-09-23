@@ -9,7 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace rtx::marker { struct Anchor; }
+namespace rtx::marker { struct Anchor; struct Ask; }
 
 namespace rtx::engineops {
 
@@ -52,5 +52,11 @@ void SayFrameState(bool mapped, std::uint32_t magic, std::uint32_t version,
                    std::uint32_t wantMagic, std::uint32_t wantVersion);
 // The points to answer, taken from the launcher's list every time it changes.
 void WantAnchors(const struct rtx::marker::Anchor* a, int n);
+// Questions about the account the game answers for itself: achievement requirements and quest
+// state, weighed against the live stats, the account and today's date. The list is taken whenever
+// the launcher changes it and answered a few at a time, so a long list never lands on one frame;
+// once a list is answered nothing runs again until it changes.
+void WantAsks(const struct rtx::marker::Ask* a, int n, std::uint32_t seq);
+void PumpAsks(std::uint8_t* root);
 
 }  // namespace rtx::engineops
