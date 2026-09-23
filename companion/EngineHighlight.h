@@ -3,6 +3,7 @@
 // exact, but a definition can opt a loc out of it, and most scenery does (trees among them).
 // One byte in the client lifts that opt-out for everything; this finds it and sets it.
 
+#include <cstddef>
 #include <cstdint>
 
 namespace rtx::enginehl {
@@ -25,5 +26,9 @@ Status Set(bool on, const std::uint32_t* rgb, const std::uint32_t* thickness);
 
 // Puts the byte and the colours back the way the game had them. Called on unload.
 void Restore();
+
+// What this found and what it did with it, for the check. One message at a time, cleared as it is
+// taken; empty when there is nothing new to say.
+bool TakeLog(char* out, std::size_t cap);
 
 }  // namespace rtx::enginehl

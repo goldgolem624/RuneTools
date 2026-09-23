@@ -2,6 +2,9 @@
 
 #include <windows.h>
 #include <cstring>
+#include <cstdarg>
+#include <cstdio>
+#include <mutex>
 
 namespace rtx::enginehl {
 namespace {
@@ -47,6 +50,18 @@ constexpr std::size_t kTableDispAt = 24, kTableInsnEnd = 28;
 
 // One category: mode byte, the outline width as a byte, then the colour as three floats 0..1.
 constexpr std::size_t kCategoryStride = 16, kCategoryWidth = 1, kCategoryColour = 4;
+// The mode the game draws an outline in. Written by HIGHLIGHT_SET_CATEGORY_MODE, which takes 0 to 3.
+constexpr std::uint8_t kModeOutline = 0;
+
+std::mutex g_logMu; char g_log[600] = {};
+void Say(const char* fmt, ...) {
+    std::lock_guard<std::mutex> lk(g_logMu);
+    std::size_t used = std::strlen(g_log);
+    if (used && used + 4 < sizeof(g_log)) { std::memcpy(g_log + used, " | ", 4); used += 3; }
+    va_list ap; va_start(ap, fmt);
+    std::vsnprintf(g_log + used, sizeof(g_log) - used, fmt, ap);
+    va_end(ap);
+}
 
 Status        g_status = kUnknown;
 std::uint8_t* g_byte = nullptr;
@@ -57,6 +72,9 @@ std::uint8_t* g_table = nullptr;           // null when only the table was not r
 float         g_gameColour[kCategories][3] = {};
 std::uint32_t g_appliedRgb[kCategories] = {};   // per category; 0 = the game's own colour is in place
 std::uint8_t  g_gameWidth[kCategories] = {};
+std::uint8_t  g_gameMode[kCategories] = {};
+std::uint8_t  g_appliedMode[kCategories] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };   // 0xFF = the game's own mode is in place
+bool          g_haveMode[kCategories] = {};
 std::uint8_t  g_appliedWidth[kCategories] = {};    // per category; 0 = the game's own width is in place
 
 struct Image {
@@ -118,21 +136,36 @@ void Resolve() {
     if (!OpenImage(im)) return;
 
     const std::uint8_t* sw = FindUnique(im, kSwitchSig, sizeof(kSwitchSig) / sizeof(kSwitchSig[0]));
-    if (!sw) return;
+    if (!sw) { Say("outline: the switch was not recognised in this build"); return; }
     std::uint8_t* target = RipTarget(sw, kSwitchDispAt, kSwitchInsnEnd);
-    if (!InWritableData(im, target, 1) || *target > 1) return;   // a flag is 0 or 1
+    if (!InWritableData(im, target, 1) || *target > 1) {
+        Say("outline: switch at exe+0x%llx holds %u, which is not a flag",
+            (unsigned long long)(target - im.base), InWritableData(im, target, 1) ? *target : 0u);
+        return;
+    }
     g_byte = target;
     g_original = *target;
     g_status = kActive;
+    Say("outline: switch at exe+0x%llx, the game had it %u", (unsigned long long)(target - im.base), (unsigned)g_original);
 
     // the colours are optional: without the table the outline still works, in the game's colours
     const std::uint8_t* tb = FindUnique(im, kTableSig, sizeof(kTableSig) / sizeof(kTableSig[0]));
-    if (!tb) return;
+    if (!tb) { Say("outline: no colour table in this build, the game's own colours and widths stay"); return; }
     std::uint8_t* table = RipTarget(tb, kTableDispAt, kTableInsnEnd);
-    if (!InWritableData(im, table, 8 * kCategoryStride)) return;
+    if (!InWritableData(im, table, 8 * kCategoryStride)) {
+        Say("outline: colour table at exe+0x%llx is not where writable data is", (unsigned long long)(table - im.base));
+        return;
+    }
     for (int c = 0; c < 8; ++c)
-        if (table[c * kCategoryStride] > 3) return;              // modes are 0..3
+        if (table[c * kCategoryStride] > 3) {                    // modes are 0..3
+            Say("outline: colour table at exe+0x%llx refused, category %d mode %u is not 0 to 3 (modes %u %u %u %u %u %u %u %u)",
+                (unsigned long long)(table - im.base), c, table[c * kCategoryStride],
+                table[0], table[kCategoryStride], table[2 * kCategoryStride], table[3 * kCategoryStride],
+                table[4 * kCategoryStride], table[5 * kCategoryStride], table[6 * kCategoryStride], table[7 * kCategoryStride]);
+            return;
+        }
     g_table = table;
+    Say("outline: colour table at exe+0x%llx accepted", (unsigned long long)(table - im.base));
 }
 
 float* Colour(int category) {
@@ -166,9 +199,35 @@ void ApplyColour(int category, std::uint32_t rgb) {
     g_appliedRgb[category] = rgb;
 }
 
+// The mode decides whether the category is drawn as an outline at all, and the game sets it from
+// its own highlight setting. A client with that setting off leaves it at a value that draws
+// nothing, so a colour and a width alone are not enough: on a client like that the outline was
+// applied exactly as asked and stayed invisible. While the feature is on, the categories it drives
+// are put into the outline mode, and the game's own mode goes back when it is turned off.
+void ApplyMode(int category, bool on) {
+    if (!g_table) return;
+    std::uint8_t* cur = g_table + (std::size_t)category * kCategoryStride;
+    if (!on) {
+        if (g_appliedMode[category] != 0xFF && g_haveMode[category]) *cur = g_gameMode[category];
+        g_appliedMode[category] = 0xFF;
+        return;
+    }
+    if (*cur != kModeOutline) {
+        // anything other than what this put there came from the game: that is what goes back
+        if (g_appliedMode[category] == 0xFF || *cur != g_appliedMode[category]) {
+            g_gameMode[category] = *cur; g_haveMode[category] = true;
+        }
+        Say("outline: category %d mode %u -> %u (the game's own is %u)", category, (unsigned)*cur,
+            (unsigned)kModeOutline, (unsigned)g_gameMode[category]);
+        *cur = kModeOutline;
+    }
+    g_appliedMode[category] = kModeOutline;
+}
+
 void ApplyWidth(int category, std::uint8_t width) {
     if (!g_table) return;
     std::uint8_t* cur = g_table + (std::size_t)category * kCategoryStride + kCategoryWidth;
+    const std::uint8_t had = *cur;
     if (width == 0) {
         if (g_appliedWidth[category] != 0) *cur = g_gameWidth[category];
     } else if (*cur != width) {
@@ -176,6 +235,8 @@ void ApplyWidth(int category, std::uint8_t width) {
         if (g_appliedWidth[category] == 0 || *cur != g_appliedWidth[category]) g_gameWidth[category] = *cur;
         *cur = width;
     }
+    if (width != g_appliedWidth[category])
+        Say("outline: category %d width %u -> %u (the game's own is %u)", category, (unsigned)had, (unsigned)*cur, (unsigned)g_gameWidth[category]);
     g_appliedWidth[category] = width;
 }
 
@@ -185,7 +246,28 @@ Status Set(bool on, const std::uint32_t* rgb, const std::uint32_t* thickness) {
     if (g_status == kUnknown) Resolve();
     if (g_status != kActive) return g_status;
     const std::uint8_t want = on ? 1 : g_original;
+    const std::uint8_t had = *g_byte;
     if (*g_byte != want) { *g_byte = want; g_touched = true; }
+    // What came in and what the switch did with it, once per change. The read back is the point:
+    // the game writes this byte from its own state too, so ours can be overwritten straight away.
+    {
+        static bool s_first = true;
+        static bool s_on = false;
+        static std::uint32_t s_rgb[kCategories] = {}, s_thick[kCategories] = {};
+        bool same = !s_first && s_on == on;
+        for (int c = 0; same && c < kCategories; ++c)
+            if (s_rgb[c] != (rgb ? rgb[c] : 0u) || s_thick[c] != (thickness ? thickness[c] : 0u)) same = false;
+        if (!same) {
+            s_first = false; s_on = on;
+            for (int c = 0; c < kCategories; ++c) {
+                s_rgb[c] = rgb ? rgb[c] : 0u; s_thick[c] = thickness ? thickness[c] : 0u;
+            }
+            Say("outline: asked %s, switch was %u wanted %u now %u, table %s; scenery colour %06x width %u, npcs %06x/%u, attackable %06x/%u",
+                on ? "on" : "off", (unsigned)had, (unsigned)want, (unsigned)*g_byte, g_table ? "in use" : "not in use",
+                s_rgb[kCatScenery], s_thick[kCatScenery], s_rgb[kCatNpcs], s_thick[kCatNpcs],
+                s_rgb[kCatAttackable], s_thick[kCatAttackable]);
+        }
+    }
     for (int c = 0; c < kCategories; ++c) {
         const std::uint32_t colour = (on && rgb) ? (rgb[c] & 0xFFFFFFu) : 0u;
         if (colour != 0 || g_appliedRgb[c] != 0) ApplyColour(c, colour);
@@ -195,12 +277,23 @@ Status Set(bool on, const std::uint32_t* rgb, const std::uint32_t* thickness) {
         const std::uint8_t width = (std::uint8_t)(asked > kMaxThickness ? kMaxThickness : asked);
         if (width != 0 || g_appliedWidth[c] != 0) ApplyWidth(c, width);
     }
+    // The three the hover outline draws. Left alone unless the feature is on, so a client that
+    // never turns it on keeps the game's own highlight settings untouched.
+    for (const int c : { kCatNpcs, kCatAttackable, kCatScenery }) ApplyMode(c, on);
     return g_status;
+}
+
+bool TakeLog(char* out, std::size_t cap) {
+    std::lock_guard<std::mutex> lk(g_logMu);
+    if (!g_log[0] || cap == 0) return false;
+    std::snprintf(out, cap, "%s", g_log);
+    g_log[0] = 0;
+    return true;
 }
 
 void Restore() {
     if (g_status != kActive) return;
-    for (int c = 0; c < kCategories; ++c) { ApplyColour(c, 0); ApplyWidth(c, 0); }
+    for (int c = 0; c < kCategories; ++c) { ApplyColour(c, 0); ApplyWidth(c, 0); ApplyMode(c, false); }
     if (g_touched) *g_byte = g_original;
     g_touched = false;
 }

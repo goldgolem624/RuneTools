@@ -18,6 +18,7 @@
 #include "EngineMarkers.h"
 #include "EngineComponents.h"
 #include "EngineOps.h"
+#include "EngineHighlight.h"
 #include <cstdio>
 #include <cstdarg>
 #include <unordered_map>
@@ -1804,6 +1805,7 @@ DWORD WINAPI Worker(LPVOID) {
         { char said[400]; if (rtx::enginemark::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         { char said[400]; if (rtx::enginecc::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         { char said[400]; if (rtx::engineops::TakeLog(said, sizeof(said))) RingLog("%s", said); }
+        { char said[600]; if (rtx::enginehl::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         EnsureProducers(sh);
         if (!sh) { Sleep(250); continue; }
         float cpx = 0, cpy = 0;
