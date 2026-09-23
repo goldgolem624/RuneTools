@@ -134,10 +134,11 @@ bool DeleteAll(std::uint8_t* root, int group, int parentComp) {
 
 // Arguments in the order the operation reads them off the stack: the filter to apply (-1 for every
 // row), the table, whether the count is of distinct rows, how many to take and how many to skip.
-int DbRowCount(std::uint8_t* root, int table, int take, int skip) {
+int DbRowCount(std::uint8_t* root, int table, int take, int skip, int* why) {
     std::int32_t ints[5] = { -1, (std::int32_t)table, 0, (std::int32_t)take, (std::int32_t)skip };
     std::int32_t out[4] = {0};
     const int n = rtx::engineops::Call(root, "DBQUERY_EXECUTE_COUNT", ints, 5, nullptr, 0, out, 4);
+    if (why) *why = n;          // -1 the call faulted, 0 it came back leaving nothing, else a count
     if (n < 1) return -1;
     return out[0];
 }
@@ -259,18 +260,28 @@ void DevComponent(std::uint8_t* root) {
     if (type == kTypeText && Create(root, group, parent, type, cat, id) >= 0) CurText(root, line);
 
     // One table counted the same way, so the query side is checked on the same run.
-    // Which table and which row window the operation will answer for is not settled, so a few are
-    // tried once and reported together rather than one guess being taken for the contract.
-    static bool s_counted = false;
-    if (!s_counted) {
-        s_counted = true;
-        static const int kTables[] = { 368, 0, 1, 20, 100 };
-        for (int t : kTables) {
-            const int a = DbRowCount(root, t, -1, 0);
-            const int b = DbRowCount(root, t, 0, 0);
-            const int c = DbRowCount(root, t, 1000, 0);
-            Say("dbcount: table %d -> take -1:%d take 0:%d take 1000:%d", t, a, b, c);
+    // Which ids name a real table is not settled. The count is asked for one row at a time, which
+    // is the smallest amount of work the operation will do, and the ids it answers for are reported.
+    // A limit of 0 is answered without touching the table at all, so it says nothing either way.
+    static int s_sweep = 0;
+    if (s_sweep <= kDbSweepMax) {
+        std::string found;
+        int s_why = 0;
+        const int first = s_sweep;
+        for (int n = 0; n < 64 && s_sweep <= kDbSweepMax; ++n, ++s_sweep) {
+            int why = 0;
+            const int rows = DbRowCount(root, s_sweep, 1, 0, &why);
+            if (s_sweep == first) s_why = why;   // whether it faults or simply answers nothing
+            if (rows >= 0) {
+                char b[32];
+                std::snprintf(b, sizeof(b), "%s%d:%d", found.empty() ? "" : " ", s_sweep, rows);
+                found += b;
+            }
         }
+        if (!found.empty()) Say("dbcount: %d..%d answered %s", first, s_sweep - 1, found.c_str());
+        else if (s_sweep > kDbSweepMax)
+            Say("dbcount: nothing answered up to %d; the call %s", kDbSweepMax,
+                s_why < 0 ? "faulted" : "came back leaving nothing on the stack");
     }
 }
 

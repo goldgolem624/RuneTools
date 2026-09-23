@@ -23,6 +23,9 @@ constexpr int kTypeGraphic = 5;
 // the component with nothing to draw and reports nothing.
 constexpr int kFontDefault = 1;
 
+// How far the table sweep in the check goes, a slice per second so no frame carries it all.
+constexpr int kDbSweepMax = 1024;
+
 // Category 0 holds 4096 ids; every other category holds 256. The client composes the two into the
 // component index the group then knows the child by.
 constexpr int kMaxCategory = 0xEA;
@@ -52,7 +55,7 @@ bool DeleteAll(std::uint8_t* root, int group, int parentComp);
 // The client's own indexed queries over its cache tables. A count is the whole contract for one
 // table with no filter: the filter handle is the engine's own list of built filters, and -1 asks
 // for every row. Returns -1 when the operation is not recognised or the call faulted.
-int DbRowCount(std::uint8_t* root, int table, int take, int skip);
+int DbRowCount(std::uint8_t* root, int table, int take, int skip, int* why = nullptr);
 
 // Drives one component from a file on the live game, so the whole life of one is visible.
 void DevComponent(std::uint8_t* root);

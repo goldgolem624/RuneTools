@@ -4257,9 +4257,14 @@ std::string OverheadClassJson(std::uint32_t pid) {
     }
     if (!(vbo && veo && *vbo > 0x10000 && *veo >= *vbo)) return "{\"entities\":[]}";
     const std::uint64_t vb = *vbo, ve = *veo;
+    // The two pointers the query operations go through before they touch anything else, so a fault
+    // inside them can be told apart from a bad argument.
+    const std::uint64_t dbMgr  = rpm<std::uint64_t>(h, *root + 0x19980).value_or(0);
+    const std::uint64_t dbOther = rpm<std::uint64_t>(h, *root + 0x198c0).value_or(0);
     std::string out = "{\"image\":\"0x" ;
     { char b[32]; std::snprintf(b, sizeof(b), "%llx", (unsigned long long)image); out += b; }
-    out += "\",\"entities\":[";
+    { char b[96]; std::snprintf(b, sizeof(b), "\",\"dbMgr\":\"0x%llx\",\"dbOther\":\"0x%llx\",\"entities\":[",
+                                (unsigned long long)dbMgr, (unsigned long long)dbOther); out += b; }
     bool first = true;
     std::uint64_t n = (ve > vb) ? (ve - vb) / 8 : 0;
     if (n > 30000) n = 30000;
