@@ -4559,7 +4559,9 @@ JSValueRef AccountAskFn(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc,
             rtx::overlay::AccountAsk a;
             a.kind = std::atoi(spec.c_str() + at);
             a.id = std::atoi(spec.c_str() + colon + 1);
-            if (a.kind >= 0 && a.kind <= 3 && a.id >= 0) asks.push_back(a);
+            const std::size_t second = spec.find(':', colon + 1);
+            if (second != std::string::npos && second < end) a.arg = std::atoi(spec.c_str() + second + 1);
+            if (a.kind >= 0 && a.kind <= 14 && a.id >= 0) asks.push_back(a);
         }
         at = end + 1;
     }
@@ -4581,7 +4583,8 @@ JSValueRef AccountAnswersFn(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t a
     for (int i = 0; i < n; ++i) {
         if (i) out += ',';
         out += "{\"kind\":" + std::to_string((got[i].tag >> 24) & 0xFF) +
-               ",\"id\":" + std::to_string(got[i].tag & 0xFFFFFF) +
+               ",\"arg\":" + std::to_string((got[i].tag >> 18) & 0x3F) +
+               ",\"id\":" + std::to_string(got[i].tag & 0x3FFFF) +
                ",\"value\":" + std::to_string(got[i].value) +
                ",\"ok\":" + std::to_string(got[i].ok) + '}';
     }

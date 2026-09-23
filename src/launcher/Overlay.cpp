@@ -206,7 +206,8 @@ bool DevAsks(std::vector<AccountAsk>& out) {
                 if (*p != ':') continue;
                 ++p; a.id = std::atoi(p);
                 while (*p >= '0' && *p <= '9') ++p;
-                if (a.kind >= 0 && a.kind <= 3 && a.id >= 0) s_list.push_back(a);
+                if (*p == ':') { ++p; a.arg = std::atoi(p); while (*p >= '0' && *p <= '9') ++p; }
+                if (a.kind >= 0 && a.kind <= 14 && a.id >= 0) s_list.push_back(a);
             }
         }
     }
@@ -225,7 +226,10 @@ void FillAccountAsks(marker::Share* sh, const AccountAsks& asks) {
         sh->asks[i].kind = (std::uint16_t)q.kind;
         sh->asks[i].spare = 0;
         sh->asks[i].id = q.id;
-        sh->asks[i].tag = ((std::uint32_t)q.kind << 24) | ((std::uint32_t)q.id & 0xFFFFFFu);
+        sh->asks[i].arg = q.arg;
+        // kind, then id, then index: enough to tell every question in a list apart
+        sh->asks[i].tag = ((std::uint32_t)q.kind << 24) | (((std::uint32_t)q.arg & 0x3Fu) << 18) |
+                          ((std::uint32_t)q.id & 0x3FFFFu);
     }
     sh->ask_count = (std::uint32_t)n;
     sh->ask_seq = asks.seq;
@@ -956,7 +960,8 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 const int gn = rtx::launcher::gameui::ModuleAnswers(cfg.pid, got, 128, ready);
                 std::string line = "account questions: " + std::to_string(gn) + " answers, ready " + (ready ? "1" : "0");
                 for (int i = 0; i < gn && i < 20; ++i)
-                    line += "  " + std::to_string((got[i].tag >> 24) & 0xFF) + ":" + std::to_string(got[i].tag & 0xFFFFFF) +
+                    line += "  " + std::to_string((got[i].tag >> 24) & 0xFF) + ":" +
+                            std::to_string(got[i].tag & 0x3FFFF) + ":" + std::to_string((got[i].tag >> 18) & 0x3F) +
                             "=" + std::to_string(got[i].value) + (got[i].ok ? "" : "?");
                 rtx::log::Client(cfg.pid, line);
             }

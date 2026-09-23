@@ -539,21 +539,37 @@ void PumpAsks(std::uint8_t* root) {
         at = g_askAt; count = g_askCount; seq = g_askSeq;
         for (; n < kPerFrame && at + n < count; ++n) todo[n] = g_ask[at + n];
     }
+    // Which operation answers each kind, and whether it needs the index as well as the id. The
+    // three that take nothing are the account-wide ones.
+    struct OpFor { const char* name; int args; };
+    auto opFor = [](std::uint16_t kind) -> OpFor {
+        switch (kind) {
+            case rtx::marker::kAskAchievementState:    return { "ACHIEVEMENT_REQSTATE", 1 };
+            case rtx::marker::kAskAchievementPrereqs:  return { "ACHIEVEMENT_ALLPREREQMET", 1 };
+            case rtx::marker::kAskQuestFinished:       return { "QUEST_FINISHED", 1 };
+            case rtx::marker::kAskQuestStarted:        return { "QUEST_STARTED", 1 };
+            case rtx::marker::kAskQuestStatReqCount:   return { "QUEST_STATREQ_COUNT", 1 };
+            case rtx::marker::kAskQuestStatReqStat:    return { "QUEST_STATREQ_STAT", 2 };
+            case rtx::marker::kAskQuestStatReqLevel:   return { "QUEST_STATREQ_LEVEL", 2 };
+            case rtx::marker::kAskQuestReqCount:       return { "QUEST_QUESTREQ_COUNT", 1 };
+            case rtx::marker::kAskQuestReq:            return { "QUEST_QUESTREQ", 2 };
+            case rtx::marker::kAskQuestPointsReq:      return { "QUEST_POINTSREQ", 1 };
+            case rtx::marker::kAskQuestDifficulty:     return { "QUEST_GETDIFFICULTY", 1 };
+            case rtx::marker::kAskAchievementReqCount: return { "ACHIEVEMENT_ACHIEVEMENT_REQ_COUNT", 1 };
+            case rtx::marker::kAskRunescore:           return { "ACHIEVEMENT_TOTAL_RUNESCORE", 0 };
+            case rtx::marker::kAskGracedCount:         return { "ACHIEVEMENT_FINDGRACED", 0 };
+            case rtx::marker::kAskGracedNext:          return { "ACHIEVEMENT_FINDNEXT", 0 };
+            default:                                   return { nullptr, 0 };
+        }
+    };
     rtx::frame::Share::AskAnswer got[kPerFrame];
     LARGE_INTEGER freq{}, t0{}; QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&t0);
     int done_n = 0;
     for (int i = 0; i < n; ++i) {
-        const char* op = nullptr;
-        switch (todo[i].kind) {
-            case rtx::marker::kAskAchievementState:   op = "ACHIEVEMENT_REQSTATE";    break;
-            case rtx::marker::kAskAchievementPrereqs: op = "ACHIEVEMENT_ALLPREREQMET"; break;
-            case rtx::marker::kAskQuestFinished:      op = "QUEST_FINISHED";          break;
-            case rtx::marker::kAskQuestStarted:       op = "QUEST_STARTED";           break;
-            default: break;
-        }
+        const OpFor use = opFor(todo[i].kind);
         std::int32_t out[4] = {};
-        const std::int32_t in[1] = { todo[i].id };
-        const int r = op ? Call(root, op, in, 1, nullptr, 0, out, 4) : -1;
+        const std::int32_t in[2] = { todo[i].id, todo[i].arg };
+        const int r = use.name ? Call(root, use.name, in, use.args, nullptr, 0, out, 4) : -1;
         got[i].value = r > 0 ? out[r - 1] : 0;
         got[i].ok = r > 0 ? 1 : 0;
         got[i].tag = todo[i].tag;

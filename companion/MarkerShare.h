@@ -8,7 +8,7 @@ namespace rtx::marker {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMarker_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5254584D;   // 'RTXM'
-inline constexpr std::uint32_t kVersion = 29;
+inline constexpr std::uint32_t kVersion = 30;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
@@ -65,15 +65,31 @@ struct Anchor {
 // we work out from tables of our own that go stale with every update.
 inline constexpr int kMaxAsks = 128;
 enum AskKind : std::uint16_t {
-    kAskAchievementState = 0,   // how far along the requirement is, as the game grades it
-    kAskAchievementPrereqs = 1, // every achievement it depends on is done
+    // `id` names the achievement or quest; `arg` is the index into a list where one is wanted.
+    kAskAchievementState = 0,    // progress towards it in ten-thousandths, weighted as the game weights it
+    kAskAchievementPrereqs = 1,  // every achievement it depends on is done
     kAskQuestFinished = 2,
     kAskQuestStarted = 3,
+    kAskQuestStatReqCount = 4,   // how many skill levels it asks for
+    kAskQuestStatReqStat = 5,    // which skill, by index
+    kAskQuestStatReqLevel = 6,   // what level of it, by index
+    kAskQuestReqCount = 7,       // how many other quests it asks for
+    kAskQuestReq = 8,            // which quest, by index
+    kAskQuestPointsReq = 9,
+    kAskQuestDifficulty = 10,
+    kAskAchievementReqCount = 11,
+    // These three take neither id nor arg. The account's total score, then today's graced
+    // achievements: the count comes first and starts the walk, and each next one steps it, so they
+    // must be asked in that order and in one list.
+    kAskRunescore = 12,
+    kAskGracedCount = 13,
+    kAskGracedNext = 14,
 };
 struct Ask {
     std::uint16_t kind;         // AskKind
     std::uint16_t spare;
     std::int32_t  id;           // achievement or quest id
+    std::int32_t  arg;          // index into a list, for the kinds that walk one
     std::uint32_t tag;          // echoed with the answer, so an answer is never read against the wrong question
 };
 

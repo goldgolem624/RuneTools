@@ -109,8 +109,8 @@ void RequestEngine(std::uint32_t pid, int sound, int zoom, int fov);
 // whole list is asked at once and replaces the list before it; answers come back through
 // gameui::ModuleAnswers, matched by a tag of kind and id.
 struct AccountAsk {
-    int kind = 0; int id = 0;
-    bool operator==(const AccountAsk& o) const { return kind == o.kind && id == o.id; }
+    int kind = 0; int id = 0; int arg = 0;
+    bool operator==(const AccountAsk& o) const { return kind == o.kind && id == o.id && arg == o.arg; }
     bool operator!=(const AccountAsk& o) const { return !(*this == o); }
 };
 void AskAccount(std::uint32_t pid, const std::vector<AccountAsk>& asks);
