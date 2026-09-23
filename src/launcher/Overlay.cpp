@@ -2125,7 +2125,25 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             }
         }
     }
-    if (!sbarsHide)
+    // The game draws the bars itself where it can: rectangles inside the skills panel, clipped and
+    // layered with its own cells. The overlay's drawing is the fallback for cells with no component.
+    bool sbarsByGame = false;
+    if (ccDrawn) for (const auto& sb : sbars) {
+        if (sb.cc_parent <= 0 || sb.cw <= 0 || sb.ch <= 0 || ccRects.size() + 2 > (size_t)marker::kMaxCc) continue;
+        const int inset = 2;
+        int bh = sb.ch / 10; if (bh < 3) bh = 3; if (bh > 5) bh = 5;
+        const int bx0 = sb.cx + inset, bw = sb.cw - 2 * inset, by0 = sb.cy + sb.ch - inset - bh;
+        if (bw <= 0) continue;
+        int pct = sb.pct; if (pct < 0) pct = 0; if (pct > 1000) pct = 1000;
+        const int fw = bw * pct / 1000;
+        std::uint32_t rgb = (std::uint32_t)sb.rgb & 0xFFFFFFu;
+        if (!rgb) rgb = ((std::uint32_t)kOkR << 16) | ((std::uint32_t)kOkG << 8) | kOkB;
+        const int slot = marker::kCcSlotBase + sb.cc_sub * 2;
+        ccRects.push_back(CcBox(sb.cc_parent, slot, bx0, by0, bw, bh, 0xA5000000u));
+        ccRects.push_back(CcBox(sb.cc_parent, slot + 1, bx0, by0, fw > 0 ? fw : 0, bh, 0xF0000000u | rgb));
+        sbarsByGame = true;
+    }
+    if (!sbarsHide && !sbarsByGame)
     for (const auto& sb : sbars) {
         if (sb.w <= 0 || sb.h <= 0) continue;
         const ScreenRect sr = toScreen(sb.x, sb.y, sb.w, sb.h, false);
@@ -2276,6 +2294,27 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 }
                 float qx, qy;
                 if (WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, q[0], q[1], q[2], qx, qy)) { r2x = qx; r2y = qy; r2z = ZAt(qx, qy); }
+                // The game's own answer for the player point comes back through the frame share and
+                // is held against ours, so any drift shows up while the two run side by side.
+                {
+                    rtx::launcher::gameui::ModulePoint mp[64];
+                    const int got = rtx::launcher::gameui::ModuleAnchors(cfg.pid, mp, 64);
+                    int at = -1;
+                    for (int k = 0; k < got && at < 0; ++k)
+                        for (const auto& a : g_askThen[cfg.pid])
+                            if (a.entity == 0 && a.tag == mp[k].tag && a.wx == f->player_fx && a.wy == f->player_fy) { at = k; break; }
+                    static unsigned s_cmpAt = 0; static int s_cmpLeft = 60;
+                    const unsigned nowTick = GetTickCount();
+                    if (at >= 0 && mp[at].ok && s_cmpLeft > 0 && (s_cmpAt == 0 || nowTick - s_cmpAt > 2000)) {
+                        s_cmpAt = nowTick; --s_cmpLeft;
+                        char cb[200];
+                        std::snprintf(cb, sizeof(cb),
+                                      "[ovl] projection check: ours %.1f,%.1f the game's %d,%d (off by %.1f,%.1f)",
+                                      (double)rx, (double)ry, mp[at].x, mp[at].y,
+                                      (double)(mp[at].x - rx), (double)(mp[at].y - ry));
+                        rtx::log::Client(cfg.pid, cb);
+                    }
+                }
             }
         }
         { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
@@ -2285,7 +2324,22 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         else sh->view_addr = 0;
         sh->ref2_x = r2x; sh->ref2_y = r2y; sh->ref2_z = r2z;
     }
+    {
+        // The points this pass wants the game to project go out with the markers; it answers them on
+        // its own thread and the next pass reads them back, matched by the name each one carries.
+        auto& askNow = g_askNow[cfg.pid];
+        auto& askThen = g_askThen[cfg.pid];
+        std::uint32_t an = (std::uint32_t)askNow.size();
+        if (an > (std::uint32_t)marker::kMaxAnchors) an = (std::uint32_t)marker::kMaxAnchors;
+        for (std::uint32_t i = 0; i < an; ++i)
+            sh->anchors[i] = { 0, askNow[i].wx, askNow[i].wz, askNow[i].wy, askNow[i].lift, 0, askNow[i].entity, askNow[i].tag };
+        sh->anchor_count = an;
+        askThen.assign(askNow.begin(), askNow.begin() + an);
+    }
     for (std::uint32_t i = 0; i < n; ++i) sh->cmds[i] = cmds[i];
+    sh->op_sound = engReq.sound; sh->op_zoom = engReq.zoom; sh->op_fov = engReq.fov; sh->op_seq = engReq.seq;
+    sh->cc_count = (std::uint32_t)ccRects.size();
+    for (std::uint32_t i = 0; i < sh->cc_count; ++i) sh->cc[i] = ccRects[i];
     sh->count = n;
     sh->visible = 1;
     MemoryBarrier(); sh->seq = s + 1;                        // even: done
