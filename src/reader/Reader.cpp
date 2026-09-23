@@ -4253,6 +4253,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     struct Obj { int id, x, y, plane, type, dist; std::string name, acts; bool rt; bool vis;
                  int w = 1, h = 1; };   // footprint in tiles, rotation-corrected; x/y = SW anchor
     std::vector<Obj> objs;
+    int rt_total = -1;   // live objects the client reported before merging; -1 = channel silent
     if (player_x >= 0) {
         if (obj_range < 1)   obj_range = 1;
         if (obj_range > 128) obj_range = 128;   // a full 8x8 instance floor
@@ -4290,7 +4291,9 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
             }
         }
         std::vector<RuntimeObj> runtime;
-        if (ReadRuntimeObjects(pid, runtime)) {
+        const bool rt_ok = ReadRuntimeObjects(pid, runtime);
+        rt_total = rt_ok ? (int)runtime.size() : -1;
+        if (rt_ok) {
             for (const auto& r : runtime) {
                 if ((int)objs.size() >= kCollectCap) break;
                 if (r.config_id <= 0 || r.plane != player_plane) continue;
@@ -4410,6 +4413,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
     return "{\"players\":[" + players + "],\"npcs\":[" + npcs +
            "],\"objects\":[" + objects + "],\"specials\":[" + specials + "],\"walk\":" + walk +
            ",\"projectiles\":[" + projectiles + "],\"effects\":[" + effects + "]" +
+           ",\"rtObjs\":" + std::to_string(rt_total) +
            ",\"sdiag\":" + sdbuf + ",\"vdiag\":" + vdbuf + "}";
 }
 

@@ -396,10 +396,9 @@
     {
       const lc = $('sceneLive');
       if (lc) {
-        const objs = (sceneData && Array.isArray(sceneData.objects)) ? sceneData.objects : null;
-        const live = objs ? objs.filter(o => o.rt).length : 0;
-        lc.textContent = (sceneShow.objects && objs) ? ('live ' + live + ' / ' + objs.length) : '';
-        lc.style.color = (sceneShow.objects && objs && !live) ? '#f4a15d' : 'var(--text-dim)';
+        const rt = (sceneData && typeof sceneData.rtObjs === 'number') ? sceneData.rtObjs : null;
+        lc.textContent = (sceneShow.objects && rt !== null) ? (rt < 0 ? 'live off' : 'live ' + rt) : '';
+        lc.style.color = (sceneShow.objects && rt !== null && rt <= 0) ? '#f4a15d' : 'var(--text-dim)';
       }
     }
 
