@@ -55,6 +55,8 @@ ThirdParty/cs2sidecar/src/node_modules/
 # Installer + plugin build artifacts
 installer/*.exe
 installer/*.msi
+# Build output and release notes: written per release, not source.
+installer/Output/
 dist/
 
 # OS junk
