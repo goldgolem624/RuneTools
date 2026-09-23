@@ -8,5 +8,11 @@ namespace rtx::scenehover {
 // should stay outlined; the game fades it out by itself once the calls stop. Returns false
 // when the object is not in the last walk or does not look the way this expects.
 bool Mark(int x, int y, int id);
+// Development only: logs the outline state of the object marked last, every frame it changes,
+// for a few seconds after the last mark. Called once per present.
+void Trace();
+// While on, a highlight that continues from one frame to the next keeps its pulse instead of
+// restarting it (the game restarts it every frame a right-click menu is open on the object).
+void SetPulseHold(bool on);
 
 }  // namespace rtx::scenehover

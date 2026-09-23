@@ -1,0 +1,91 @@
+RuneTools 3.1.0
+
+The game now draws more of what RuneTools shows: outlines, tooltips, arrows and
+ground markers are the game's own, and the overlay can be drawn inside the game
+picture so it passes behind scenery and under the game interface.
+
+Outline hovered object
+The game outlines whatever is under your cursor, scenery such as trees, rocks
+and chests included. Objects, NPCs and attackable NPCs each have their own
+colour and thickness, with presets and a full colour picker. Works with the
+overlay switched off. Overlay > Outline hovered object.
+
+Extra info in tooltips
+The game's own tooltip gains a line with the Grand Exchange price and High
+Alchemy value of an item, with the game's coin and spell icons, and the skill
+level a thing needs, with the skill icon. Rocks show their Mining level, trees
+their Woodcutting level, logs Firemaking and Fletching, herbs Herblore. Levels
+come from the game's own skill guides, so they follow game updates.
+
+Point the way
+Type an NPC, an object or a tile and the game points to it with its own hint
+arrow over the target, its chevrons at your feet turning towards it and its
+trail of markers along the ground. The nearest match around you is used and it
+follows an NPC as it walks. Arrow height and chevron size are adjustable, and
+every control only offers values the game accepts.
+
+Overlay inside the game (trial, Vulkan client)
+Overlay > Draw inside the game. The tile grid and world markers are drawn into
+the game picture itself instead of on top of the window: under the minimap,
+inventory, chat, action bar and the game's tooltips, and behind trees, walls
+and roofs. Markers are moved with the camera at the moment they are drawn, so
+they no longer trail behind while the camera turns or zooms. The switch is a
+trial and turns itself off again when RuneTools restarts. Skill bars, interface
+highlights and plugin text stay on top of the interface as before.
+
+Behind scenery
+One choice replaces the two switches: Show, Fade or Hide what is behind
+terrain, walls and trees. Hide works on its own now. The test itself was
+reading the scene upside down on the Vulkan client, which is why faded markers
+looked washed out and appeared in the wrong places; that is fixed for the
+normal overlay as well as the trial. The edge of what is hidden is smooth
+instead of dotted, and takes all samples into account with anti-aliasing on.
+
+Sharper lines
+Overlay lines are drawn with a proper smoothed edge, so thin grid lines are
+crisp and unbroken at every angle instead of stepped.
+
+Missing files banner and repair
+If files of the installation have gone missing, the launcher says so in a
+banner at the top, names them and offers Repair and Open folder. Repair
+downloads the current version again and puts the files back, with progress in
+the banner, and works when no newer version exists. RuneTools comes back to the
+front by itself after an update or a repair. A missing core file at start now
+gets a plain message instead of a silent exit.
+
+Faster install
+The installer no longer carries about 21,000 development files it never
+needed. It is about 10 MB smaller and an update finishes roughly 20 seconds
+sooner.
+
+Launcher
+The character list opens on the character you played last. While that
+character is running, the stand-in shown in its place is no longer remembered
+as your choice.
+
+Plugin SDK
+overlay.pointAt(kind, target) and overlay.pointClear() let a plugin use Point
+the way: pointAt("npc", "Banker"), pointAt("object", "Bank chest"),
+pointAt("tile", "3221, 3218"). One request per plugin, cleared when the plugin
+closes. Available in JavaScript and Lua.
+
+Security and reliability
+Channels between the launcher and the game module are named with a random
+value per session instead of the process number alone, are created for your
+Windows user only, and are rebound cleanly when the launcher restarts while a
+client keeps running. Name buffers are bounded. The cache reader gained its own
+LZMA decoder, so LZMA-packed archives such as the model index now load.
+
+Fixes
+- The game could freeze for good while starting, with most of its threads
+  asleep. The module suspended every game thread while installing its Vulkan
+  hooks; it no longer does.
+- The overlay could blink: a frame that fell into a rewrite of the marker list
+  drew half of it or none. Every frame now draws the last complete list.
+- Hovered scenery could flash from its outline colour to white after the
+  cursor left it.
+- Saved overlay settings were overwritten with the defaults on every start.
+- Quest guides with step tracking (Visions of Havenhythe, Hearts of Sanguine,
+  Hermit Permits and others) had lost their guide text.
+- A marker placed far outside the loaded map could crash the game on load.
+  Marker targets are limited to the area around the player.

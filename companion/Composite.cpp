@@ -1,6 +1,8 @@
 // Frame composite (see Composite.h). GL 3.3 core; GL 2.0+ entry points resolved via wglGetProcAddress.
 
 #include "Composite.h"
+
+#include "Present.h"
 #include "MarkerShare.h"    // glyph-atlas layout constants
 
 #include <windows.h>
@@ -313,6 +315,8 @@ void EnsureGlyphAtlas() {
         TextOutW(memDC, tx, ty, &wc, 1);
     }
     GdiFlush();
+    // the launcher sizes labels from these rather than estimating
+    rtx::present::PublishGlyphWidths(g_glyph_adv, count, chh - 13);
 
     std::vector<unsigned char> cov((size_t)aw * ah);   // white-on-black => any channel = coverage
     const unsigned char* src = static_cast<const unsigned char*>(bits);

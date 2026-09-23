@@ -1,6 +1,6 @@
 // RuneToolsX panel: Overlay tab (drives the external world-grid window).
 (function () {
-  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, true_tile: false, interactable: false, radius: 12, markers: true, occlude: true, occlude_hide: false, inframe_trial: false, hover_outline: false, hover_obj: 0, hover_npc: 0, hover_atk: 0, hover_width: 8, hover_obj_w: 0, hover_npc_w: 0, hover_atk_w: 0, tooltip_values: false, mark_test: false, mark_height: 60, mark_pointer_scale: 100, mark_arrow: 1, mark_target: 0, mark_query: '', mark_path: 1 };
+  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, true_tile: false, interactable: false, radius: 12, markers: true, occlude: true, occlude_hide: true, inframe_trial: true, inframe_default_v1: true, hover_outline: false, hover_obj: 0, hover_npc: 0, hover_atk: 0, hover_width: 8, hover_obj_w: 0, hover_npc_w: 0, hover_atk_w: 0, tooltip_values: true, mark_test: false, mark_height: 60, mark_pointer_scale: 100, mark_arrow: 1, mark_target: 0, mark_query: '', mark_path: 1 };
   // key in overlayState, label, the game's own colour for that kind
   // The game's own look, as the game itself shows it: its chevrons at the feet, its yellow arrow, its
   // diamonds along the way and a wide frame on a marked tile. None of that is a choice. The arrows show
@@ -24,7 +24,9 @@
       overlayState.hover_width = Math.max(2, Math.min(16, overlayState.hover_width | 0)) || 8;
       // one width for everything came first: it seeds the three that replaced it
       OV_HOVER_KINDS.forEach(([, , , wKey]) => { overlayState[wKey] = Math.max(2, Math.min(16, (overlayState[wKey] | 0) || overlayState.hover_width)); });
-      overlayState.inframe_trial = false;   // a trial: never comes back on by itself
+      // settings saved while these were a trial: Hide and drawing inside the game are the defaults now,
+      // and a saved copy from before that day is brought up to them once
+      if (sv.inframe_default_v1 !== true) { overlayState.occlude = true; overlayState.occlude_hide = true; overlayState.inframe_trial = true; overlayState.tooltip_values = true; overlayState.inframe_default_v1 = true; }
       overlayState.mark_test = false;   // never comes back on by itself: a target is asked for again by whoever wants it
       return true;
     } catch (e) { return false; }
@@ -142,7 +144,18 @@
     r.appendChild(l); r.appendChild(pill);
     return r;
   }
+  // Rows that only mean something on the Vulkan client are shown there only. The renderer comes
+  // from the client snapshot; until it is known the rows stay, since hiding them by mistake is worse.
+  function ovIsVulkan() {
+    const g = (lastSnap && lastSnap.gfx_mode) ? String(lastSnap.gfx_mode) : '';
+    return g === '' || /vulkan/i.test(g);
+  }
+  function ovReflectRenderer() {
+    const vk = ovIsVulkan();
+    ['ov_behind', 'ov_inframe'].forEach(id => { const el = $(id); if (el) el.style.display = vk ? '' : 'none'; });
+  }
   function reflectOverlay() {
+    ovReflectRenderer();
     const map = { ov_enabled: 'enabled', ov_grid: 'grid', ov_players: 'players', ov_npcs: 'npcs', ov_objects: 'objects', ov_interactable: 'interactable', ov_inframe: 'inframe_trial', ov_specials: 'specials', ov_walkonly: 'walk_only', ov_truetile: 'true_tile', ov_hoverol: 'hover_outline', ov_tipvals: 'tooltip_values', ov_marktest: 'mark_test' };
     for (const id in map) { const el = $(id); if (el) el.classList.toggle('on', !!overlayState[map[id]]); }
     {
@@ -286,7 +299,7 @@
       const row = document.createElement('div'); row.className = 'ov-row'; row.id = 'ov_behind'; row.style.cursor = 'default';
       const l = document.createElement('div'); l.className = 'ov-l';
       const n = document.createElement('div'); n.className = 'ov-name'; n.textContent = 'Behind scenery';
-      const sub = document.createElement('div'); sub.className = 'ov-sub'; sub.textContent = 'Marker parts behind terrain, walls or trees (Vulkan client)';
+      const sub = document.createElement('div'); sub.className = 'ov-sub'; sub.textContent = 'Marker parts behind terrain, walls, trees, players and NPCs';
       l.appendChild(n); l.appendChild(sub); row.appendChild(l);
       const chips = document.createElement('div'); chips.style.cssText = 'display:flex;gap:6px;flex:none;';
       [[0, 'Show'], [1, 'Fade'], [2, 'Hide']].forEach(([value, text]) => {
@@ -299,7 +312,7 @@
       row.appendChild(chips);
       wrap.appendChild(row);
     }
-    wrap.appendChild(ovToggleRow('ov_inframe', 'Draw inside the game (trial)', 'Vulkan only. The grid and markers are drawn into the game picture itself: hidden behind trees and walls, and under the whole game interface'));
+    wrap.appendChild(ovToggleRow('ov_inframe', 'Draw inside the game', 'The grid and markers are drawn into the game picture itself: behind trees, walls, players and NPCs, and under the whole game interface'));
     wrap.appendChild(ovToggleRow('ov_players', 'Players', 'Marker + name per player'));
     wrap.appendChild(ovToggleRow('ov_npcs', 'NPCs', 'Marker + name per NPC'));
     wrap.appendChild(ovToggleRow('ov_objects', 'Objects', 'Footprint box per named scenery object'));
@@ -329,6 +342,6 @@
     reflectOverlay();
   }
 
-Object.assign(window, { ovApplyDurablePrefs, ovToggleRow, pushOverlay, saveOverlayCfg, ovPointAt });
+Object.assign(window, { ovApplyDurablePrefs, ovToggleRow, pushOverlay, saveOverlayCfg, ovPointAt, ovReflectRenderer });
 registerTab({ id: 'overlay', render: renderOverlay });
 })();

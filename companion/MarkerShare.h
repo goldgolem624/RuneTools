@@ -8,7 +8,7 @@ namespace rtx::marker {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMarker_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5254584D;   // 'RTXM'
-inline constexpr std::uint32_t kVersion = 22;
+inline constexpr std::uint32_t kVersion = 28;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
@@ -36,6 +36,30 @@ inline constexpr std::uint32_t kFlagEngineHover = 4;   // have the game outline 
 inline constexpr std::uint16_t kTextPlain = 1;              // kText glyph-field flags
 inline constexpr std::uint16_t kTextAlignCentre = 1 << 1;
 inline constexpr std::uint16_t kTextAlignRight  = 2 << 1;
+
+// text[0] != 0: a text component instead of a rectangle; font = the game's font id (26 = its 12px text)
+struct CcRect { std::int32_t parent, slot, x, y, w, h; std::uint32_t argb; std::int32_t font; char text[48]; };
+inline constexpr int kMaxCc = 96;
+
+// World points the launcher wants the game's own answer for. The module projects them in the frame
+// hook and writes the screen points back through the frame share, so the launcher can hold them
+// against its own projection and then use them.
+inline constexpr int kMaxAnchors = 64;
+struct Anchor {
+    std::int32_t plane;
+    float        x, height, y;   // the game's fine units, 512 to a tile
+    std::int32_t lift;           // extra height above the point, in the same units
+    std::int32_t on_ground;      // 1 = take the height from the terrain instead
+    // A character the game knows by its own index: the answer then comes from the game's own
+    // position for it, lifted to the height the game puts its own overheads at. 0 = use the point
+    // above. The point is still filled in, both as the fallback and as the check that the index
+    // found the character we meant.
+    std::int32_t entity;
+    // What this request is called. The answer comes back carrying it, so an answer is matched to the
+    // request it belongs to rather than to whatever now sits at the same place in the list.
+    std::uint32_t tag;
+};
+inline constexpr int kCcSlotBase = 0xE00;   // dynamic ids from here are ours; the game's scripts stay far below
 
 struct Command {
     std::uint16_t type;        // Type
@@ -104,6 +128,18 @@ struct Share {
     std::int32_t  mark_path_x0, mark_path_y0, mark_path_x1, mark_path_y1;
     std::uint32_t mark_path_model;
 
+    // Rectangles the game draws itself as components of one of its interfaces, see EngineComponents.h.
+    // parent = interface << 16 | component; slot = the dynamic id, ours from kCcSlotBase up; the
+    // rectangle in the parent's own coordinates; argb with alpha 255 = opaque.
+    // One-shot requests the module carries out through the client's own operations: a sound by id
+    // (played through the game's mixer), the camera zoom and field of view. `op_seq` changes with
+    // every new request; the module acts once per change on the fields that are set (0 = leave).
+    volatile std::uint32_t op_seq;
+    std::int32_t op_sound, op_zoom, op_fov;
+    std::uint32_t anchor_count;              // entries in anchors[0..anchor_count)
+    Anchor        anchors[kMaxAnchors];
+    std::uint32_t cc_count;
+    CcRect        cc[kMaxCc];
     Command cmds[kMaxCmds];
 };
 

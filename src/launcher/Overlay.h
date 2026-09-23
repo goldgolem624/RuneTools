@@ -100,6 +100,9 @@ void SetUiHighlights(std::uint32_t pid, const std::vector<UiHighlight>& rects);
 // style 0: bare text, left edge at x, centred on y. style 1: pill (dark rounded box) centred at (x, y).
 struct UiLabel { int x = 0, y = 0; int rgb = -1; int px = 13; int style = 0; std::string text; };
 void SetUiLabels(std::uint32_t pid, const std::vector<UiLabel>& labels);
+// One-shot requests carried out by the game itself: a sound effect by id, camera zoom, field of
+// view (0 = leave). Each call is one request.
+void RequestEngine(std::uint32_t pid, int sound, int zoom, int fov);
 
 struct PuzzleCell { int x = 0, y = 0, w = 0, h = 0, step = 0, num = -1; };   // num >= 0 overrides the step+1 label
 void SetPuzzleCells(std::uint32_t pid, const std::vector<PuzzleCell>& cells);
@@ -107,7 +110,9 @@ void SetPuzzleCells(std::uint32_t pid, const std::vector<PuzzleCell>& cells);
 struct KnotCell { int x = 0, y = 0, w = 0, h = 0, count = 0; };
 void SetKnotCells(std::uint32_t pid, const std::vector<KnotCell>& cells);
 
-struct SkillBar { int x = 0, y = 0, w = 0, h = 0, pct = 0, rgb = 0; };
+// x,y,w,h: the cell on screen (the overlay draws there); cc_parent > 0: the cell as a component of that
+// interface component, with its rectangle in the parent's own coordinates (the game draws there)
+struct SkillBar { int x = 0, y = 0, w = 0, h = 0, pct = 0, rgb = 0; int cc_parent = 0, cc_sub = 0, cx = 0, cy = 0, cw = 0, ch = 0; };
 void SetSkillBars(std::uint32_t pid, const std::vector<SkillBar>& bars);
 
 struct PanelBox { int x = 0, y = 0, w = 0, h = 0; std::string label; };

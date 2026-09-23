@@ -1,4 +1,5 @@
 #include "Overlay.h"
+#include "GameUi.h"
 
 #include "Companion.h"
 #include "Dock.h"
@@ -173,6 +174,8 @@ RECT g_xp_min{0, 0, 0, 0};                      // minimize-box rect (guarded by
 std::map<DWORD, std::vector<GuideMark>> g_guides;
 std::map<DWORD, std::vector<UiHighlight>> g_uiHighlights;
 std::map<DWORD, std::vector<UiLabel>> g_uiLabels;
+struct EngineReq { std::uint32_t seq = 0; int sound = 0, zoom = 0, fov = 0; };
+std::map<DWORD, EngineReq> g_engineReq;
 std::map<DWORD, std::map<int, CenterBanner>> g_centerTexts;   // keyed by slot
 std::map<DWORD, std::vector<PanelBox>> g_panelViz;
 std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;
@@ -625,6 +628,10 @@ void DrawFrame(Gdiplus::Graphics& g, const Config& cfg,
 
 namespace marker = rtx::marker;
 
+// Defined further down with the rest of the label drawing; needed before that by the overlay pass.
+float WTextW(const char* s, float px);
+void  RefreshGlyphWidths(std::uint32_t pid);
+
 struct MarkerOut {
     HANDLE         map = nullptr;
     marker::Share* p   = nullptr;
@@ -664,6 +671,13 @@ struct MarkerOut {
     }
 };
 std::map<DWORD, MarkerOut> g_marker_outs;   // one channel per client; render thread only
+
+// World points the overlay wants the game to project, per client: what this pass asked for, what
+// the pass before it asked for, and the answers that came back. Render thread only, like the
+// channel above.
+struct AskPoint { float wx, wy, wz; int entity; int lift; std::uint32_t tag; };
+std::map<DWORD, std::vector<AskPoint>> g_askNow, g_askThen;
+std::map<DWORD, std::vector<rtx::launcher::gameui::ModulePoint>> g_answers;
 
 // What the cursor is on, as far as the module needs to know: scenery the game should outline
 // (it has to offer something other than Examine; NPCs and players the game marks itself), and
@@ -855,6 +869,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     bool hasGuides = false;   // gate only; drawing uses the frame's resolved guides
     std::vector<UiHighlight> uihls;
     std::vector<UiLabel> uilbls;
+    EngineReq engReq;
     std::map<int, CenterBanner> ctext;
     std::vector<PanelBox> pviz;
     std::vector<PuzzleCell> pcells;
@@ -867,6 +882,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       if (uit != g_uiHighlights.end()) uihls = uit->second;
       auto ult = g_uiLabels.find(cfg.pid);
       if (ult != g_uiLabels.end()) uilbls = ult->second;
+      { auto er = g_engineReq.find(cfg.pid); if (er != g_engineReq.end()) engReq = er->second; }
       auto ctit = g_centerTexts.find(cfg.pid);
       if (ctit != g_centerTexts.end()) ctext = ctit->second;
       auto pit = g_panelViz.find(cfg.pid);
@@ -899,13 +915,13 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         } else hold.clear();
     }
 
-    bool wantContent = flashAlpha > 0.0f || !uihls.empty() || !uilbls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
+    bool wantContent = engReq.seq != 0 || flashAlpha > 0.0f || !uihls.empty() || !uilbls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
                        (widgets && !widgets->empty()) ||
                        (f && (cfg.enabled || cfg.markers || cfg.nameplates || !hls.empty() || hasGuides));
     if (!wantContent) {
         std::uint32_t s = sh->seq + 1;
         sh->seq = s; MemoryBarrier();
-        sh->count = 0; sh->visible = 0;
+        sh->count = 0; sh->visible = 0; sh->cc_count = 0;
         sh->flags = (cfg.hover_outline ? marker::kFlagEngineHover : 0u) | (cfg.inframe_trial ? marker::kFlagInFrameTrial : 0u);   // honoured with nothing to draw
         { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
           sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) sh->hover_width[k] = cfg.hover_width[k]; FillEngineMarks(sh, cfg); }
@@ -1100,6 +1116,48 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             }
     }
 
+    // World points handed to the game to project, and the answers it gave for the same list last
+    // time. The list is rebuilt every pass in the same order, so an answer belongs to the point that
+    // sits at its index; a point that has moved into or out of the list simply falls back to our own
+    // projection for one pass.
+    auto& askNow = g_askNow[cfg.pid];
+    auto& askThen = g_askThen[cfg.pid];
+    auto& answers = g_answers[cfg.pid];
+    askNow.clear();
+    RefreshGlyphWidths(cfg.pid);
+    {
+        rtx::launcher::gameui::ModulePoint mp[64];
+        const int got = rtx::launcher::gameui::ModuleAnchors(cfg.pid, mp, 64);
+        answers.assign(mp, mp + (got > 0 ? got : 0));
+    }
+    // The game's own answer for a world point, when it answered for that point last pass.
+    // `lift` is what to raise the point by when the game does not answer for the character, so a
+    // point that falls back lands exactly where it used to. Returns 2 when the height came from the
+    // game, 1 when it came from the point as given, 0 when there is no answer to use.
+    auto engineAt = [&](float wx, float wy, float wz, int entity, int lift, float& sx, float& sy) -> int {
+        // The name of a request is its own contents, so the same point asked again is the same
+        // name, and a point that changed at all simply finds no answer and falls back.
+        std::uint32_t tag = 2166136261u;
+        const float parts[3] = { wx, wy, wz };
+        for (float v : parts) {
+            std::uint32_t bits; std::memcpy(&bits, &v, 4);
+            tag = (tag ^ bits) * 16777619u;
+        }
+        tag = (tag ^ (std::uint32_t)entity) * 16777619u;
+        if (!tag) tag = 1;                                   // 0 means "no request" in the channel
+        askNow.push_back({ wx, wy, wz, entity, lift, tag });
+        for (const auto& a : answers) {
+            if (a.tag != tag || !a.ok) continue;
+            sx = (float)a.x; sy = (float)a.y;
+            return a.ok;
+        }
+        return 0;
+    };
+
+    // Slot 0 is always the player, so the running check in the publish always holds the game's
+    // answer against ours for the same point.
+    if (f) { float ex, ey; (void)engineAt(f->player_fx, f->player_fy, f->player_z, 0, 0, ex, ey); }
+
     struct KC { int r, g, b; };
     const KC kindCol[5] = { {90,200,235}, {245,210,80}, {90,220,120}, {245,165,60}, {kTxtR,kTxtG,kTxtB} };
     auto wanted = [&](int kind) {
@@ -1196,7 +1254,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         // Pill metrics must match Composite.cpp DrawLabel or stacking drifts.
         const float pillH  = cellH * 0.78f + 10.0f;          // + padY*2  (padY 5)
         const float padX   = 8.0f;
-        const float avgAdv = npTextPx * 0.62f;               // over-estimate of glyph advance
+        // the module's own measurement of the font it draws with, when it has sent it
         const float slotH  = pillH + 3.0f;
         const float gap    = 2.0f;
         const int   kMaxRows = 12;                           // per tile; extra -> "+N more"
@@ -1206,10 +1264,12 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             return kind == 0 ? cfg.np_objects : kind == 1 ? cfg.np_npcs
                  : kind == 2 ? cfg.np_players : false;        // specials excluded
         };
-        auto pillW = [&](const std::string& s) { return padX * 2.0f + (float)s.size() * avgAdv; };
+        auto pillW = [&](const std::string& s) { return padX * 2.0f + WTextW(s.c_str(), npTextPx); };
 
-        struct Ent { int kind; float wz, head_z; const std::string* label; };
-        struct Bucket { int tx, ty, dist; float cx, cy, cwx, cwy; float repZ; bool anyHead; std::vector<Ent> ents; };
+        struct Ent { int kind; float wz, head_z; const std::string* label; int uid; };
+        // repUid: the character the plate sits over, the tallest in the tile, which the game can
+        // then be asked about by its own index; 0 when the tile holds no character we can name.
+        struct Bucket { int tx, ty, dist; float cx, cy, cwx, cwy; float repZ, repFeet; bool anyHead; int repUid; std::vector<Ent> ents; };
         std::map<long long, int> bmap;
         std::vector<Bucket> buckets;
         const int npR = cfg.np_range > 0 ? cfg.np_range : 20;
@@ -1233,21 +1293,32 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 bi = (int)buckets.size(); bmap.emplace(key, bi);
                 Bucket b{}; b.tx = tx; b.ty = ty; b.dist = d;
                 b.cwx = (float)tx * 512.0f + 256.0f; b.cwy = (float)ty * 512.0f + 256.0f;
-                b.repZ = 0.0f; b.anyHead = false;
+                b.repZ = 0.0f; b.repFeet = 0.0f; b.anyHead = false; b.repUid = 0;
                 buckets.push_back(b);
             } else bi = it->second;
             Bucket& b = buckets[bi];
-            b.ents.push_back({ p.kind, p.wz, p.head_z, &p.label });
-            if (p.head_z != 0.0f) { if (!b.anyHead || p.head_z > b.repZ) b.repZ = p.head_z; b.anyHead = true; }
-            else if (!b.anyHead && (b.ents.size() == 1 || p.wz > b.repZ)) b.repZ = p.wz;
+            b.ents.push_back({ p.kind, p.wz, p.head_z, &p.label, p.uid });
+            // the game knows an NPC by its index and a player by its own; a player travels as a
+            // negative so one field carries either
+            const bool isChar = (p.kind == 1 || p.kind == 2);
+            const int charId = p.kind == 2 ? -(p.uid + 1) : p.uid;
+            if (p.head_z != 0.0f) {
+                if (!b.anyHead || p.head_z > b.repZ) { b.repZ = p.head_z; b.repFeet = p.wz; if (isChar) b.repUid = charId; }
+                b.anyHead = true;
+            } else if (!b.anyHead && (b.ents.size() == 1 || p.wz > b.repZ)) {
+                b.repZ = p.wz; b.repFeet = p.wz; if (isChar) b.repUid = charId;
+            }
         }
 
         std::vector<int> keep; keep.reserve(buckets.size());
         for (int i = 0; i < (int)buckets.size(); ++i) {
             Bucket& b = buckets[i];
             float sx, sy;
-            if (!WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, b.cwx, b.cwy, b.repZ, sx, sy)) continue;
-            if (!b.anyHead) sy -= 26.0f;     // no model box: lift off the feet
+            const int answer = cfg.inframe_trial
+                ? engineAt(b.cwx, b.cwy, b.repFeet, b.repUid, (int)(b.repZ - b.repFeet), sx, sy) : 0;
+            if (!answer && !WorldToScreen(f->matrix, vpX, vpY, vpW, vpH, b.cwx, b.cwy, b.repZ, sx, sy)) continue;
+            // the lift off the feet is ours to guess only while the game has not given its own
+            if (!b.anyHead && answer != 2) sy -= 26.0f;
             if (sx < -120 || sx > W + 120 || sy < -160 || sy > H + 160) continue;
             b.cx = sx; b.cy = sy;
             std::sort(b.ents.begin(), b.ents.end(),
@@ -2155,7 +2226,36 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
 }
 
 
+// The module measures the font it draws labels with and sends the widths over, so a label can be
+// sized exactly as it will be drawn. Until that arrives the old estimate stands.
+namespace {
+std::uint8_t g_glyphAdv[128] = {};
+int          g_glyphPx = 0;
+}
+
+void RefreshGlyphWidths(std::uint32_t pid) {
+    int px = 0;
+    std::uint8_t adv[128] = {};
+    if (rtx::launcher::gameui::ModuleGlyphWidths(pid, adv, (int)sizeof(adv), px) && px > 0) {
+        std::memcpy(g_glyphAdv, adv, sizeof(g_glyphAdv));
+        g_glyphPx = px;
+    }
+}
+
 float WTextW(const char* s, float px) {
+    if (s && g_glyphPx > 0) {
+        const float scale = px / (float)g_glyphPx;
+        const float track = 0.6f * scale;
+        float w = 0.0f; int glyphs = 0;
+        for (const char* q = s; *q && *q != (char)10; ++q) {
+            const unsigned char ch = (unsigned char)*q;
+            if (ch < marker::kGlyphFirst || ch > marker::kGlyphLast) continue;
+            w += (float)g_glyphAdv[ch - marker::kGlyphFirst] * scale + track;
+            ++glyphs;
+        }
+        if (glyphs && w > track) w -= track;
+        return w;
+    }
     int n = 0;
     for (const char* p = s; *p && *p != '\n'; ++p) ++n;
     return (float)n * px * 0.62f;
@@ -2845,6 +2945,17 @@ void SetUiHighlights(std::uint32_t pid, const std::vector<UiHighlight>& rects) {
             dst.pid = pid;
             g_uiHighlights[(DWORD)pid] = keep;
         }
+    }
+    ensure_thread();
+}
+
+void RequestEngine(std::uint32_t pid, int sound, int zoom, int fov) {
+    if (!pid) return;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        EngineReq& r = g_engineReq[(DWORD)pid];
+        r.sound = sound; r.zoom = zoom; r.fov = fov; ++r.seq;
+        Config& dst = cfg_slot((DWORD)pid); dst.pid = pid;
     }
     ensure_thread();
 }

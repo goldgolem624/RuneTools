@@ -103,7 +103,7 @@ void SetInScene(bool on);
 // `look`: kLookDepth shows the scene depth as bands over the view, to check the lookup by eye;
 // kLookTurned draws for a target the other way up than the one expected, kLookDepthTurned reads
 // the scene depth the other way up than expected.
-enum : unsigned { kLookDepth = 1, kLookTurned = 2, kLookDepthTurned = 4 };
+enum : unsigned { kLookDepth = 1, kLookTurned = 2, kLookDepthTurned = 4, kLookGap = 8 };
 void SetTrial(int where, unsigned look);   // where 2: at present time as always, with `look` applied there
 bool RecordScene(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::uint32_t w, std::uint32_t h, unsigned look);
 // The same markers, recorded INSIDE a render pass the game has open: its interface pass, after it
@@ -115,9 +115,19 @@ bool RecordScene(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::ui
 bool SceneDepthBorrow(VkCommandBuffer cmd, VkImage passDepth);
 void SceneDepthReturn(VkCommandBuffer cmd);
 bool RecordInPass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, bool depthBorrowed, unsigned look);
+// The world markers recorded inside the game's SCENE colour pass, ahead of its first draw, with the
+// GPU's depth test against the game's own depth buffer deciding what is in front: the same gate the
+// game's ground markers go through. Only while Behind scenery is Hide; the interface pass then
+// leaves the world markers out. `samples` is the pass's sample count.
+// The scene pass's colour target, where the marks are left; sampled again at the interface pass.
+void SetSceneColour(VkImage img, VkFormat fmt, VkImageLayout layout, VkSampleCountFlagBits samples);
+bool WantsScenePass();
+bool RecordInScenePass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, VkSampleCountFlagBits samples, unsigned look);
 const char* LastSubmit();                         // one-line description of the last recorded frame
 void OnImageDestroyed(VkImage img);
 // Marker share depth flags and the player's projected reference point (calibration log).
+// The characters' depth image, kept apart from the scenery's by the game; markers are tested against both.
+void SetActorDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsageFlags usage, VkSampleCountFlagBits samples);
 void SetDepthMode(std::uint32_t flags, const float* ref);   // {x,y,z, a,b, x2,y2,z2}
 // The matrix this frame's markers were projected with, where the game keeps it, the game view
 // {x, y, w, h} and the client size they were projected for. See Reproject in the .cpp.

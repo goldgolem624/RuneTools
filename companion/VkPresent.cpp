@@ -58,6 +58,10 @@ HWND              g_hwnd = nullptr;
 ULONGLONG         g_hwndMs = 0;
 ULONGLONG         g_armedMs = 0;
 bool              g_nudged = false;
+// Attached to a client that was already drawing: its render targets and render passes were made
+// before the hooks were in, so nothing is known about them. A one pixel resize and back makes the
+// game build its size dependent targets again, this time in view.
+bool              g_lateAttach = false;
 ULONGLONG         g_nudgeRestoreMs = 0;
 int               g_nudgeW = 0, g_nudgeH = 0;
 bool              g_warnedNoChain = false;
@@ -312,7 +316,7 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
                 VkFormat f = rtx::vkcomposite::RegisterSwapchainLate(info->pSwapchains[i], (std::uint32_t)rc.right, (std::uint32_t)rc.bottom);
                 Log("swapchain %p adopted from present: %ldx%ld format %d (%s)", (void*)info->pSwapchains[i], rc.right, rc.bottom, (int)f,
                     f != VK_FORMAT_UNDEFINED ? "ok" : "failed");
-                if (f != VK_FORMAT_UNDEFINED) g_everRegistered.store(true);
+                if (f != VK_FORMAT_UNDEFINED) { g_everRegistered.store(true); g_lateAttach = true; }
             }
         }
         if (s_logged < 5) { ++s_logged; Log("present %u: swapchain %p image %u known %d window %p", s_logged, (void*)info->pSwapchains[i], info->pImageIndices[i], rtx::vkcomposite::KnownSwapchain(info->pSwapchains[i]) ? 1 : 0, (void*)g_hwnd); }
@@ -323,6 +327,9 @@ int PresentInner(VkQueue queue, const VkPresentInfoKHR* info, VkPresentInfoKHR* 
         if (rtx::vkprobe::SceneDepth(&dimg, &dfmt, &dlay) && rtx::vkprobe::LookupImage(dimg, &ii))
             rtx::vkcomposite::SetSceneDepth(dimg, dfmt, dlay, ii.usage, ii.samples, ii.flags);
         else rtx::vkcomposite::SetSceneDepth(VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_SAMPLE_COUNT_1_BIT, 0);
+        if (rtx::vkprobe::ActorDepth(&dimg, &dfmt, &dlay) && rtx::vkprobe::LookupImage(dimg, &ii))
+            rtx::vkcomposite::SetActorDepth(dimg, dfmt, dlay, ii.usage, ii.samples);
+        else rtx::vkcomposite::SetActorDepth(VK_NULL_HANDLE, VK_FORMAT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, 0, VK_SAMPLE_COUNT_1_BIT);
         rtx::present::RenderOverlay(rtx::present::VkBackend(), g_hwnd, (int)w, (int)h);
         VkSemaphore s = rtx::vkcomposite::Submit(queue, wc, waits);
         if (s) { chain[n++] = s; waits = &chain[n - 1]; wc = 1; }
@@ -480,7 +487,8 @@ bool Arm(VkDevice dev) {
     rtx::vkcomposite::SetLog(Log);
     rtx::vkcomposite::SetCmdHook(rtx::vkprobe::OnOverlayCmd);
     rtx::vkprobe::SetSceneRecorder(rtx::vkcomposite::RecordScene);
-    rtx::vkprobe::SetPassRecorder({ rtx::vkcomposite::SceneDepthBorrow, rtx::vkcomposite::SceneDepthReturn, rtx::vkcomposite::RecordInPass, rtx::vkcomposite::SetTrial });
+    rtx::vkprobe::SetPassRecorder({ rtx::vkcomposite::SceneDepthBorrow, rtx::vkcomposite::SceneDepthReturn, rtx::vkcomposite::RecordInPass, rtx::vkcomposite::SetTrial,
+                                    rtx::vkcomposite::WantsScenePass, rtx::vkcomposite::RecordInScenePass, rtx::vkcomposite::SetSceneColour });
     if (rtx::vkprobe::Attach(dev, g_realGDPA, pdp.limits.timestampPeriod, Log, OnImageDestroyedCb))
         rtx::vkcomposite::SetAlwaysRecord(true);
     return true;
@@ -495,8 +503,8 @@ void Bootstrap() {
         if (g_hwnd && IsWindow(g_hwnd))
             SetWindowPos(g_hwnd, nullptr, 0, 0, g_nudgeW, g_nudgeH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
-    if (g_everRegistered.load()) return;
     static int s_nudges = 0;
+    if (g_everRegistered.load() && !(g_lateAttach && s_nudges == 0)) return;
     static ULONGLONG s_nextNudge = 0;
     if (s_nudges < 3 && now - g_armedMs > 1500 && now >= s_nextNudge && !g_nudgeRestoreMs) {
         RefreshWindow();
@@ -504,7 +512,7 @@ void Bootstrap() {
         if (g_hwnd && IsWindow(g_hwnd) && IsWindowVisible(g_hwnd) && GetWindowRect(g_hwnd, &r)) {
             ++s_nudges; s_nextNudge = now + 3000; g_nudged = true;
             g_nudgeW = r.right - r.left; g_nudgeH = r.bottom - r.top;
-            Log("nudging window %p (%dx%d) to learn the swapchain (attempt %d)", (void*)g_hwnd, g_nudgeW, g_nudgeH, s_nudges);
+            Log("nudging window %p (%dx%d) to learn the %s (attempt %d)", (void*)g_hwnd, g_nudgeW, g_nudgeH, g_lateAttach ? "render targets" : "swapchain", s_nudges);
             SetWindowPos(g_hwnd, nullptr, 0, 0, g_nudgeW + 1, g_nudgeH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             g_nudgeRestoreMs = now + 200;
         } else {

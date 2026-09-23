@@ -1,4 +1,5 @@
 #include "Reader.h"
+#include "Calibrate.h"
 #include "BankCache.h"
 #include "Hitmarks.h"
 #include "BuffVars.h"
@@ -64,12 +65,15 @@ const std::size_t   kMainAnchorLen     = sizeof(kMainAnchorBytes);
 constexpr int       kMainAnchorAdjust  = -32;
 // Client cycle counter, u32 at root + this, 50/s (20ms units). From the CLIENTCLOCK engine op
 // (scrambled 1708). NOT the server tick (kTickCounterOff, +1 per 600ms from packet 0xB4).
-constexpr std::uint32_t kOffClientClock = 0x528;
-constexpr std::uint32_t kOffWorld   = 0x199B0;   // root + this -> ptr -> +0x20 -> +0x8 = world(int)
-constexpr std::uint32_t kOffStatus  = 0x19FA0;   // root + this = status(int8)
-constexpr std::uint32_t kOffStats   = 0x19920;   // root + this -> stats container
-constexpr std::uint32_t kStatsInner = 0x7618;    // stats container + this -> skill block
-constexpr std::uint32_t kOffGE      = 0x19990;   // root + this -> ptr -> +0x10 = ge slot array
+// These are read out of the client at attach (see Calibrate.h) and only fall back to the values
+// below when the client cannot prove them, so a game update moves them without a rebuild.
+std::uint32_t kOffClientClock = 0x528;
+std::uint32_t kOffWorld   = 0x199B0;   // root + this -> ptr -> +0x20 -> +0x8 = world(int)
+std::uint32_t kOffStatus  = 0x19FA0;   // root + this = status(int8)
+std::uint32_t kOffStats   = 0x19920;   // root + this -> stats container
+std::uint32_t kStatsInner = 0x7618;    // stats container + this -> skill block
+std::uint32_t kOffGE      = 0x19990;   // root + this -> ptr -> +0x10 = ge slot array
+std::uint32_t kOffAccount = 0x19FA8;   // root + this -> account / user-detail object
 constexpr std::uint32_t kGEArrayPad = 0x10;      // bytes from slot-container start to slot 0
 constexpr std::uint32_t kGESlotSize = 0x28;      // bytes per slot
 constexpr int           kGESlotCount = 8;        // members get 8, non-members 3 (rest read as empty)
@@ -101,7 +105,7 @@ constexpr std::uint32_t kOffVarpHash     = 0x36080;
 
 // Varc (int + string) hashmap at store + kVarcHashOff, store = *(MainData + kOffVarcStore);
 // same node layout as the varp map.
-constexpr std::uint32_t kOffVarcStore    = 0x19920;
+std::uint32_t kOffVarcStore    = 0x19920;
 constexpr std::uint32_t kVarcHashOff     = 0x7630;
 constexpr std::uint32_t kVarNodeNext     = 0x28;
 
@@ -231,6 +235,47 @@ std::string read_jagstring(HANDLE h, std::uint64_t str, std::uint64_t max_len = 
     std::string out;
     for (std::uint64_t i = 0; i < len; ++i)
         if ((unsigned char)buf[i] >= 32) out.push_back(buf[i]);
+    return out;
+}
+
+// The same string, when it can be long: chat lines carry markup and run to a few hundred bytes.
+std::string read_jagstring_long(HANDLE h, std::uint64_t str, std::uint64_t max_len = 512) {
+    auto tag = rpm<std::uint8_t>(h, str + 0x17);
+    if (!tag) return {};
+    std::uint64_t len = 0, data = 0;
+    if (*tag & 0x80) {
+        auto ptr = rpm<std::uint64_t>(h, str + 0x00);
+        auto n   = rpm<std::uint64_t>(h, str + 0x08);
+        if (!ptr || !n || *ptr <= 0x10000) return {};
+        data = *ptr; len = *n;
+    } else {
+        if (*tag > 0x17) return {};
+        len = 0x17u - *tag; data = str;
+    }
+    if (len == 0 || len > max_len) return {};
+    std::vector<char> buf((std::size_t)len);
+    if (!rpm_bytes(h, data, buf.data(), (SIZE_T)len)) return {};
+    std::string out;
+    out.reserve((std::size_t)len);
+    // Chat text is whatever someone typed, so a byte sequence that is not valid UTF-8 would make
+    // the whole reply unparseable and take the panel down with it. Bytes above ASCII are copied
+    // only as complete, well-formed sequences.
+    for (std::uint64_t i = 0; i < len; ) {
+        const unsigned char c = (unsigned char)buf[i];
+        if (c == '"' || c == '\\') { out.push_back('\\'); out.push_back((char)c); ++i; continue; }
+        if (c < 32) { ++i; continue; }
+        if (c < 0x80) { out.push_back((char)c); ++i; continue; }
+        const int extra = (c >= 0xF0 && c <= 0xF4) ? 3 : (c >= 0xE0 && c <= 0xEF) ? 2 : (c >= 0xC2 && c <= 0xDF) ? 1 : -1;
+        if (extra < 0 || i + (std::uint64_t)extra >= len) { ++i; continue; }
+        bool whole = true;
+        for (int k = 1; k <= extra; ++k) {
+            const unsigned char cc = (unsigned char)buf[i + k];
+            if (cc < 0x80 || cc > 0xBF) { whole = false; break; }
+        }
+        if (!whole) { ++i; continue; }
+        for (int k = 0; k <= extra; ++k) out.push_back(buf[i + k]);
+        i += (std::uint64_t)extra + 1;
+    }
     return out;
 }
 
@@ -622,6 +667,43 @@ std::uint64_t resolve_tick_owner_global(HANDLE h,
     return 0;
 }
 
+
+
+// Ask the client itself for the offsets, once per attach. The exe on disk is read, not the process.
+void calibrate_offsets(HANDLE h) {
+    wchar_t path[MAX_PATH] = {};
+    if (!GetModuleFileNameExW(h, nullptr, path, MAX_PATH)) return;
+    std::wstring opcodes;
+    {
+        wchar_t up[MAX_PATH] = {};
+        if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH))
+            opcodes = std::wstring(up) + L"\\RuneToolsX\\cs2\\opcodes.json";
+    }
+    const auto& found = rtx::calib::Run(path, opcodes);
+    if (found.empty()) return;
+    {
+        // what the client proved about itself, on the record at every attach; the report is one
+        // line per offset, and the log takes a line at a time
+        const std::string rep = rtx::calib::Report();
+        const DWORD who = GetProcessId(h);
+        std::size_t at = 0;
+        while (at < rep.size()) {
+            std::size_t nl = rep.find((char)10, at);
+            if (nl == std::string::npos) nl = rep.size();
+            if (nl > at) rtx::log::Client(who, rep.substr(at, nl - at));
+            at = nl + 1;
+        }
+    }
+    kOffClientClock = rtx::calib::Use("kOffClientClock", kOffClientClock);
+    kOffWorld       = rtx::calib::Use("kOffWorld", kOffWorld);
+    kOffStatus      = rtx::calib::Use("kOffStatus", kOffStatus);
+    kOffStats       = rtx::calib::Use("kOffStats", kOffStats);
+    kStatsInner     = rtx::calib::Use("kStatsInner", kStatsInner);
+    kOffGE          = rtx::calib::Use("kOffGE", kOffGE);
+    kOffVarcStore   = rtx::calib::Use("kOffVarcStore", kOffVarcStore);
+    kOffAccount = rtx::calib::Use("kOffAccount", kOffAccount);
+}
+
 bool attach_state(State& s, DWORD pid) {
     HANDLE h = OpenProcess(
         PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
@@ -647,6 +729,7 @@ bool attach_state(State& s, DWORD pid) {
     s.display_name   = read_target_env(h, L"JX_DISPLAY_NAME");
     s.gfx_mode       = detect_gfx_mode(h);
 
+    calibrate_offsets(h);
     s.main_global_va = resolve_main_global(h, range.base, range.size);
     s.tick_owner_va  = resolve_tick_owner_global(h, range.base, range.size);
 
@@ -1946,7 +2029,7 @@ std::string VarbitsJson(std::uint32_t pid, const std::string& ids_csv) {
 
 // Member is engine state, not a var: PLAYERMEMBER op = acct = *(MainData+0x19FA8), *(u8*)(acct+0x28) != 0. Premier = varbit 50572 (varp 10287 bit 5) ANDed with member as script15757 does (legacy varp 12864 reads 0).
 // idleLogoutSeconds is derived and server-enforced: 5 min base, +5 members, +5 Jagex account, cap 15, out of combat only.
-constexpr std::uint32_t kOffAccount      = 0x19FA8;   // MainData -> account / user-detail object
+
 constexpr std::uint32_t kOffAcctIsMember = 0x28;      // u8, nonzero = members
 constexpr std::uint32_t kOffAcctExpiry   = 0x30;      // u64, raw value LOBBY_MEMBERSHIP divides down
 constexpr int           kPremierVarbit   = 50572;
@@ -6132,6 +6215,165 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
 
 // Chat lines from group 137 comp-86 widgets (raw markup at +0x180, newest first) plus the packet log
 // (op-0x15 message_game from the companion ring):
+// The component under a rectangle of the screen, for hanging our own drawing off the game's own
+// interface tree: the smallest visible node that contains the rectangle wins, and what comes back
+// is the parent to put a child under (a dynamic child reports its own component, anything else its
+// parent layer) with that parent's top-left corner, so the caller can give positions relative to it.
+namespace {
+
+struct LocateBest { bool ok = false; int depth = -1; long long area = 0; int parent = 0, px = 0, py = 0; };
+
+// The rectangle is given in the coordinates of whatever it is attached to, so the two things that
+// come back have to belong together: the component to attach under, and that component's corner.
+// A dynamic child can hold children of its own, so it is its own attachment point; anything else
+// attaches to the component it sits inside, which is the one this walk came through, not the
+// `parent` field of the node itself (that is a sub index, not a component id).
+void iface_locate_walk(HANDLE h, int group, std::uint64_t node, int depth,
+                       int baseX, int baseY, int holderComp, bool hidden,
+                       int qx, int qy, int qw, int qh, LocateBest& best, int& budget) {
+    if (budget <= 0 || depth > 12) return;
+    --budget;
+    IfaceNode n;
+    if (!iface_read_node(h, node, n)) return;
+    const int ax = baseX + n.x, ay = baseY + n.y;
+    const bool covers = !hidden && n.w > 0 && n.h > 0 &&
+                        qx >= ax && qy >= ay && qx + qw <= ax + n.w && qy + qh <= ay + n.h;
+    if (covers) {
+        const long long area = (long long)n.w * (long long)n.h;
+        // Smallest wins: a 40x36 slot must beat the 231x213 panel that happens to overlap the same
+        // point on screen. Depth only settles a tie between two of the same size.
+        const bool better = !best.ok || area < best.area || (area == best.area && depth > best.depth);
+        if (better) {
+            best.ok = true; best.depth = depth; best.area = area;
+            // Ours becomes another child of whatever holds this node, so it is placed in that
+            // holder's coordinates. A dynamic child carries its container's own component id and
+            // tells itself apart by its sub index, so the holder is its component either way; only
+            // a node with nothing above it holds ours itself.
+            if (n.sub >= 0) {
+                best.parent = (n.group << 16) | (n.comp & 0xFFFF);
+                best.px = baseX; best.py = baseY;
+            } else if (holderComp >= 0) {
+                best.parent = (n.group << 16) | (holderComp & 0xFFFF);
+                best.px = baseX; best.py = baseY;
+            } else {
+                best.parent = (n.group << 16) | (n.comp & 0xFFFF);
+                best.px = ax; best.py = ay;
+            }
+        }
+    }
+    // Only go into a child that could hold the point. Without this the walk reads every node of
+    // every open interface, which with a hundred of them open runs out of budget long before it
+    // reaches the one under the cursor. A child with no size of its own is a pass-through and is
+    // always followed, since it positions its own children freely.
+    std::vector<IfaceChildRef> kids; iface_child_refs(h, n, kids);
+    for (const auto& k : kids) {
+        if (budget <= 0) break;
+        IfaceNode c;
+        if (!iface_read_node(h, k.addr, c)) continue;
+        --budget;
+        const int cx = ax + c.x, cy = ay + c.y;
+        const bool passthrough = c.w <= 0 || c.h <= 0;
+        const bool holds = qx >= cx && qy >= cy && qx + qw <= cx + c.w && qy + qh <= cy + c.h;
+        if (!passthrough && !holds) continue;
+        iface_locate_walk(h, group, k.addr, depth + 1, ax, ay, n.comp, hidden || k.hidden,
+                          qx, qy, qw, qh, best, budget);
+    }
+}
+
+}  // namespace
+
+IfaceHit InterfaceLocate(std::uint32_t pid, int x, int y, int w, int h) {
+    IfaceHit hit;
+    if (w <= 0) w = 1;
+    if (h <= 0) h = 1;
+    auto ps = snap_proc(pid);
+    if (!ps) return hit;
+    HANDLE ph = ps.h;
+    auto root = rpm<std::uint64_t>(ph, ps.mgva);
+    if (!root || *root <= 0x10000) return hit;
+    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(ph, a).value_or(0); };
+    auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(ph, a).value_or(0); };
+    std::uint64_t gs, ge; iface_groups_range(ph, *root, gs, ge);
+    if (!gs) return hit;
+
+    LocateBest best;
+    int budget = 20000;      // with the subtrees that cannot hold the point skipped, this is ample
+    for (std::uint64_t g = gs; g + 0x10 <= ge && budget > 0; g += 0x10) {
+        std::uint64_t ap2 = r64(g + 8);
+        if (ap2 <= 0x10000) continue;
+        const int gid = r32(ap2);
+        if (gid <= 0) continue;
+        int ox = 0, oy = 0;
+        if (!iface_panel_origin(ph, *root, pid, gid, ox, oy)) continue;   // not on screen
+        std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
+        if (!ws || !we) continue;
+        std::vector<IfaceChildRef> roots; iface_entry_refs(ph, ws, we, roots);
+        for (const auto& rt : roots) {
+            if (budget <= 0) break;
+            iface_locate_walk(ph, gid, rt.addr, 0, ox, oy, -1, rt.hidden, x, y, w, h, best, budget);
+        }
+    }
+    if (best.ok) { hit.ok = true; hit.parent = best.parent; hit.px = best.px; hit.py = best.py; }
+    return hit;
+}
+
+// The game's own message store, which every chat line goes through whether or not the chat window
+// shows it. The store keeps its messages in a hash map keyed by (id - 1); each record carries the
+// ids either side of it, the client clock and the wall clock, the type and channel, the sender in
+// three forms (with tags, with tags again, and plain), the clan or group name, and the text.
+// Layout read from the routine that writes it, and checked against the running game.
+std::string chat_store_json(HANDLE h, std::uint64_t root, int want) {
+    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
+    auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
+
+    const std::uint64_t store = r64(root + 0x19880);
+    if (store <= 0x10000) return "[]";
+    const std::int32_t next = r32(store + 0x18);          // the id the next message will take
+    const std::uint64_t buckets = r64(store + 0x880);
+    const std::uint64_t nbuckets = r64(store + 0x888);
+    if (next <= 0 || buckets <= 0x10000 || nbuckets == 0 || nbuckets > 0x10000) return "[]";
+
+    if (want <= 0 || want > 200) want = 200;
+    std::int32_t from = next - want; if (from < 1) from = 1;
+
+    std::string a = "[";
+    bool first = true;
+    for (std::int32_t id = next - 1; id >= from; --id) {
+        const std::uint32_t key = (std::uint32_t)(id - 1);
+        std::uint64_t node = r64(buckets + (std::uint64_t)(key % nbuckets) * 8);
+        int guard = 0;
+        while (node > 0x10000 && guard++ < 64) {
+            if ((std::uint32_t)r32(node) == key) break;
+            node = r64(node + 0xB8);                       // the next record in this bucket
+        }
+        if (node <= 0x10000 || guard > 64 || (std::uint32_t)r32(node) != key) continue;
+
+        const std::int32_t rid  = r32(node + 0x10);
+        const std::int32_t tick = r32(node + 0x14);
+        const std::uint64_t when = r64(node + 0x18);
+        const std::int32_t type = r32(node + 0x20);
+        const std::int32_t chan = r32(node + 0x24);
+        const std::string tagged = read_jagstring_long(h, node + 0x28, 96);
+        const std::string name   = read_jagstring_long(h, node + 0x58, 96);
+        const std::string clan   = read_jagstring_long(h, node + 0x70, 96);
+        const std::string text   = read_jagstring_long(h, node + 0x90, 480);
+        if (text.empty() && name.empty()) continue;
+
+        a += first ? "" : ","; first = false;
+        a += "{\"id\":" + std::to_string(rid) +
+             ",\"tick\":" + std::to_string(tick) +
+             ",\"t\":" + std::to_string((unsigned long long)when) +
+             ",\"type\":" + std::to_string(type) +
+             ",\"chan\":" + std::to_string(chan) +
+             ",\"name\":\"" + name + "\"" +
+             ",\"tagged\":\"" + tagged + "\"" +
+             ",\"clan\":\"" + clan + "\"" +
+             ",\"raw\":\"" + text + "\"}";
+    }
+    a += "]";
+    return a;
+}
+
 std::string ChatJson(std::uint32_t pid) {
     std::string ifaceArr = "[]";
     do {
@@ -6197,7 +6439,17 @@ std::string ChatJson(std::uint32_t pid) {
     ifaceArr = std::move(a);
     } while (false);
 
-    std::string out = "{\"lines\":" + ifaceArr;
+    std::string storeArr = "[]";
+    {
+        auto ps = snap_proc(pid);
+        if (ps) {
+            auto root = rpm<std::uint64_t>(ps.h, ps.mgva);
+            // the panel keeps every line it is given, so each poll only carries the recent tail
+            if (root && *root > 0x10000) storeArr = chat_store_json(ps.h, *root, 60);
+        }
+    }
+
+    std::string out = "{\"lines\":" + ifaceArr + ",\"store\":" + storeArr;
     {
         std::lock_guard<std::mutex> lk(s_chat_mu);
         auto it = s_chatAcc.find(pid);
@@ -8041,6 +8293,15 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     auto ps = snap_proc(pid);
     add("Game client", ps ? 1 : 0, ps ? "connected" : "not connected");
     if (!buildNote.empty()) add("Game build", buildOk, buildNote);
+    {
+        // The row is always there: silence would look like the check does not exist, when in fact
+        // it means the client could not be read.
+        const std::string cal = rtx::calib::Report();
+        if (cal.empty()) add("Client offsets", 0, "not calibrated");
+        else if (cal.find("registrar not recognised") != std::string::npos)
+            add("Client offsets", 0, "not recognised in this client build");
+        else add("Client offsets", cal.find("not found") == std::string::npos ? 1 : 0, cal);
+    }
     if (!ps) return "{\"version\":\"" + json_escape(version) + "\",\"checks\":[" + checks + "]}";
     HANDLE h = ps.h;
 

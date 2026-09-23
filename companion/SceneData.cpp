@@ -16,6 +16,8 @@
 #include "SceneHover.h"
 #include "TooltipHook.h"
 #include "EngineMarkers.h"
+#include "EngineComponents.h"
+#include "EngineOps.h"
 #include <cstdio>
 #include <cstdarg>
 #include <unordered_map>
@@ -1776,8 +1778,11 @@ DWORD WINAPI Worker(LPVOID) {
 
     // ResolveNetCapture();
 
-    RingLog(rtx::present::Install() ? "compositor: %s" : "compositor: present entry not found (off)",
-            rtx::present::Mode());
+    {
+        // installed first, described second: as two arguments of one call the order was not fixed
+        const bool up = rtx::present::Install();
+        RingLog(up ? "compositor: %s" : "compositor: present entry not found (off)", rtx::present::Mode());
+    }
 
     RingLog(rtx::soundfilter::Install() ? "sound: mix hook ATTACHED"
                                         : "sound: mix fn not found (observation/mute off)");
@@ -1797,6 +1802,8 @@ DWORD WINAPI Worker(LPVOID) {
     int emptyTicks = 0;
     for (;;) {
         { char said[400]; if (rtx::enginemark::TakeLog(said, sizeof(said))) RingLog("%s", said); }
+        { char said[400]; if (rtx::enginecc::TakeLog(said, sizeof(said))) RingLog("%s", said); }
+        { char said[400]; if (rtx::engineops::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         EnsureProducers(sh);
         if (!sh) { Sleep(250); continue; }
         float cpx = 0, cpy = 0;
@@ -1884,6 +1891,42 @@ bool LooksLikeHoverMethod(std::uint64_t fn) {
     return true;
 }
 
+// The "hovered" method does two things: it stamps the object with the frame number, which is what
+// keeps the outline lit, and it restarts the outline's pulse (a time stamp at +0x110, the bright
+// start of the highlight). The plain setter only stamps the frame. The game calls "hovered" every
+// frame while a right-click menu is open on the object, which holds the pulse at its bright start
+// for as long as the menu is up, and lets it play out as a flash once the menu closes. Here a
+// "hovered" call on an object that was lit in the previous frame is turned into the plain setter,
+// so a highlight that merely continues keeps its pulse where it is. A fresh hover still pulses.
+using HoverFn = void (*)(std::uint64_t, std::int32_t);
+HoverFn g_realHovered = nullptr;
+std::atomic<bool> g_pulseHold{ false };
+void HookHovered(std::uint64_t obj, std::int32_t frame) {
+    if (g_pulseHold.load(std::memory_order_relaxed)) {
+        __try {
+            const std::int32_t id = R32(obj + kHlId);
+            if (id == frame || id == frame - 1) {
+                const std::uint64_t vt = R64(obj);
+                const std::uint64_t keep = InModule(vt) ? R64(vt + kKeepSlot) : 0;
+                if (LooksLikeHoverMethod(keep)) { reinterpret_cast<HoverFn>(keep)(obj, frame); return; }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    g_realHovered(obj, frame);
+}
+void InstallPulseHold(std::uint64_t hover) {
+    static bool s_tried = false;
+    if (s_tried) return;
+    s_tried = true;
+    g_realHovered = reinterpret_cast<HoverFn>(hover);
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(&(PVOID&)g_realHovered, (PVOID)HookHovered);
+    const LONG rc = DetourTransactionCommit();
+    RingLog("hover pulse: %s (method at exe+%llx)", rc == NO_ERROR ? "a continuing highlight keeps its pulse" : "hook failed", (unsigned long long)(hover - g_base));
+    if (rc != NO_ERROR) g_realHovered = nullptr;
+}
+
 bool MarkSub(std::uint64_t sub) {
     static std::uint64_t s_sub = 0;        // what this marked last, and with which frame number
     static std::int32_t  s_frame = 0;
@@ -1894,6 +1937,7 @@ bool MarkSub(std::uint64_t sub) {
         if (!InModule(vt)) return false;
         const std::uint64_t hover = R64(vt + kHoverSlot), keep = R64(vt + kKeepSlot);
         if (!LooksLikeHoverMethod(hover) || !LooksLikeHoverMethod(keep)) return false;
+        InstallPulseHold(hover);
         const std::uint64_t owner = R64(sub + kHlOwner);
         const std::uint64_t settings = IsHeap(owner) ? R64(owner + kHlSettings) : 0;
         if (!IsHeap(settings)) return false;
@@ -1931,6 +1975,82 @@ bool MarkSub(std::uint64_t sub) {
 }
 }  // namespace
 
+namespace {
+std::uint64_t g_traceSub = 0, g_traceNode = 0; ULONGLONG g_traceUntil = 0; int g_traceOff = -1;
+std::uint8_t g_traceLast[64]; bool g_traceHave = false;
+// The object's render node: the field that points at a heap object holding the outline colour
+// (four floats 0..1 at +0x100, the alpha near 0.85 or 0) and a width float at +0x110.
+// The object's render node, looked for while the outline is on: the heap object, one or two pointers
+// down from the scene object, that holds the outline colour at +0x100 (rgb not all zero, alpha
+// above a half) and a width at +0x110. The owner at +0x60 has zeros there and is passed over.
+bool NodeLike(std::uint64_t p) {
+    if (!IsHeap(p) || !InModule(R64(p))) return false;
+    float c[5];
+    for (int i = 0; i < 5; ++i) { std::uint32_t u = R32(p + 0x100 + 4 * i); std::memcpy(&c[i], &u, 4); if (!(c[i] >= 0.f && c[i] <= 64.f)) return false; }
+    if (c[0] > 1.f || c[1] > 1.f || c[2] > 1.f || c[3] > 1.f) return false;
+    return c[3] > 0.5f && (c[0] > 0.f || c[1] > 0.f || c[2] > 0.f);
+}
+std::uint64_t FindNode(std::uint64_t sub) {
+    for (std::uint64_t off = 0; off < 0x1800; off += 8) {
+        const std::uint64_t p = R64(sub + off);
+        if (NodeLike(p)) { g_traceOff = (int)off; return p; }
+    }
+    for (std::uint64_t off = 0; off < 0x1800; off += 8) {
+        const std::uint64_t p = R64(sub + off);
+        if (!IsHeap(p) || !InModule(R64(p))) continue;
+        for (std::uint64_t o2 = 0; o2 < 0x800; o2 += 8) {
+            const std::uint64_t q = R64(p + o2);
+            if (NodeLike(q)) { g_traceOff = (int)(off | (o2 << 16)); return q; }
+        }
+    }
+    return 0;
+}
+}  // namespace
+
+void rtx::scenehover::Trace() {
+    // Whatever the game has lit right now, whoever asked for it: the scene object whose highlight
+    // id is the current frame. Looked for among the objects the scene walk knows.
+    if (!g_traceSub || GetTickCount64() > g_traceUntil) {
+        __try {
+            const std::uint32_t n = g_hoverCount.load();
+            std::int32_t frame = -1;
+            for (std::uint32_t i = 0; i < n && i < (std::uint32_t)rtx::scene::kMaxObjects && i < 4096; ++i) {
+                const std::uint64_t sub = g_hoverRefs[i].sub;
+                if (!IsHeap(sub)) continue;
+                if (frame < 0) {
+                    const std::uint64_t owner = R64(sub + kHlOwner);
+                    const std::uint64_t settings = IsHeap(owner) ? R64(owner + kHlSettings) : 0;
+                    if (IsHeap(settings)) frame = R32(settings + kHlFrame);
+                    if (frame <= 0) return;
+                }
+                const std::int32_t id = R32(sub + kHlId);
+                if (id == frame || id == frame - 1) {
+                    if (sub != g_traceSub) { g_traceSub = sub; g_traceNode = 0; g_traceHave = false; RingLog("trace: lit obj %llx (frame %d)", (unsigned long long)sub, frame); }
+                    g_traceUntil = GetTickCount64() + 4000;
+                    break;
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+        if (!g_traceSub || GetTickCount64() > g_traceUntil) return;
+    }
+    __try {
+        if (!IsScenery(R8(g_traceSub + kType))) { g_traceSub = 0; return; }
+        if (!g_traceNode) { g_traceNode = FindNode(g_traceSub); if (!g_traceNode) return; RingLog("trace: obj %llx node %llx at +0x%x (two levels when above 0xffff)", (unsigned long long)g_traceSub, (unsigned long long)g_traceNode, g_traceOff); }
+        std::uint8_t cur[64];
+        for (int i = 0; i < 64; i += 4) { std::uint32_t u = R32(g_traceNode + 0x100 + i); std::memcpy(cur + i, &u, 4); }
+        if (g_traceHave && std::memcmp(cur, g_traceLast, 64) == 0) return;
+        std::memcpy(g_traceLast, cur, 64); g_traceHave = true;
+        float f[6]; std::memcpy(f, cur, 24);
+        const std::uint64_t owner = R64(g_traceSub + kHlOwner);
+        const std::uint64_t settings = IsHeap(owner) ? R64(owner + kHlSettings) : 0;
+        RingLog("trace: frame %d id %d rgba %.3f %.3f %.3f %.3f width %.2f +114 %.3f +134 %02x +118 %08x %08x %08x",
+                IsHeap(settings) ? R32(settings + kHlFrame) : -1, R32(g_traceSub + kHlId), f[0], f[1], f[2], f[3], f[4], f[5], cur[0x34],
+                *(std::uint32_t*)(cur + 0x18), *(std::uint32_t*)(cur + 0x1C), *(std::uint32_t*)(cur + 0x20));
+    } __except (EXCEPTION_EXECUTE_HANDLER) { g_traceSub = 0; }
+}
+
+void rtx::scenehover::SetPulseHold(bool on) { g_pulseHold.store(on, std::memory_order_relaxed); }
+
 bool rtx::scenehover::Mark(int x, int y, int id) {
     std::uint64_t sub = 0;
     for (int attempt = 0; attempt < 4; ++attempt) {
@@ -1948,6 +2068,7 @@ bool rtx::scenehover::Mark(int x, int y, int id) {
         sub = exact ? exact : tile;
         break;
     }
+    if (IsHeap(sub)) { if (sub != g_traceSub) { g_traceSub = sub; g_traceNode = 0; g_traceHave = false; } g_traceUntil = GetTickCount64() + 4000; }
     return IsHeap(sub) && MarkSub(sub);
 }
 

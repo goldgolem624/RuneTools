@@ -1,4 +1,6 @@
 #include "EngineMarkers.h"
+#include "EngineComponents.h"
+#include "EngineOps.h"
 
 #include <windows.h>
 #include <detours.h>
@@ -492,6 +494,14 @@ void TileDrawHook(void* self, void* a2, void* a3, void* a4, void* pass, void* a6
 
 void FrameHook(void* manager) {
     if (manager) Apply(static_cast<std::uint8_t*>(manager));
+    if (manager) {
+        std::uint8_t* root = *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(manager) + 8);
+        rtx::enginecc::DevProbe(root);
+        rtx::enginecc::Apply(root);
+        rtx::engineops::Pump(root);
+        rtx::engineops::PumpAnchors(root);
+        rtx::engineops::DevProject(root);
+    }
     g_frame(manager);
 }
 

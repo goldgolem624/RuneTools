@@ -78,6 +78,7 @@
     if (!me) refreshFail('no snapshot for pid ' + myPid() + '; have [' + snaps.map(s => s.pid).join(',') + ']');
     else if (_refreshFailMsg) { _refreshFailMsg = ''; console.log('rtx refresh: snapshot for pid ' + myPid() + ' resumed'); }
     lastSnap = me || null;
+    try { if (typeof ovReflectRenderer === 'function') ovReflectRenderer(); } catch (e) {}   // rows that only apply to one renderer
     try { fullscreenPrefApply(); } catch (e) {}
     try { pluginGrantsEnsure(); } catch (e) {}
     if ((metroVisual() || metroAudio()) && myPid() !== _metroAppliedPid) applyMetroOverlay();

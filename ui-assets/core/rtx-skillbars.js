@@ -196,9 +196,12 @@
       const bx = anchor ? (anchor.x + (c.a[0] - anchor.rx)) : (c.a[0] + skContentDx);
       const by = anchor ? (anchor.y + (c.a[1] - anchor.ry)) : (c.a[1] + skContentDy);
       const s = anchor ? uiSc : 1;
+      // the cell as the game's own component too (parent id, sub, rectangle inside the parent), so the
+      // module can have the game draw the bar inside the panel; the launcher falls back to the overlay
+      const cc = (bySub && c.r) ? (',' + ((SK_GROUP << 16) | SK_CELL_COMP) + ',' + k + ',' + Math.round(c.r[0]) + ',' + Math.round(c.r[1]) + ',' + Math.round(c.r[2]) + ',' + Math.round(c.r[3])) : '';
       segs.push(Math.round(bx * s) + ',' + Math.round(by * s) + ','
               + Math.round(c.r[2] * s) + ',' + Math.round(c.r[3] * s) + ','
-              + pct + ',' + skBarColour(pct));
+              + pct + ',' + skBarColour(pct) + cc);
     }
     try { bridge().skillBars(myPid(), segs.join(';')); skBarsDrawn = segs.length > 0; } catch (e) {}
   }

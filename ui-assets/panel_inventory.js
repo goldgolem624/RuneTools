@@ -59,6 +59,33 @@
   function invUsed()    { return invItems().length; }
   function invCapacity(){ return (invData && invData.cap) ? invData.cap : INV_CAP; }
 
+  // The game's own inventory slot gets a frame (the same highlight the quest guides use), so the
+  // slot geometry and the game-drawn frames can be checked from here. Click again to clear.
+  let invHlSlots = [];
+  async function invHighlightSlot(slot, cell) {
+    if (!bridge() || !bridge().invSlotRect || !bridge().uiHighlights) return;
+    const i = invHlSlots.indexOf(slot);
+    if (i >= 0) invHlSlots.splice(i, 1); else invHlSlots.push(slot);
+    const recs = [];
+    for (const sl of invHlSlots) {
+      let r = null; try { r = JSON.parse(await bridge().invSlotRect(myPid(), sl)); } catch (e) {}
+      if (r && r.w > 0) recs.push([r.x, r.y, r.w, r.h].join(','));
+    }
+    try { bridge().uiHighlights(myPid(), recs.join(';')); } catch (e) {}
+    document.querySelectorAll('#invGrid .bank-cell').forEach(c => c.classList.toggle('inv-hl', invHlSlots.indexOf(c.dataset.slot | 0) >= 0));
+  }
+  // A text label the game draws over the slot, through the same channel as the plugin labels.
+  let invLblSlots = {};
+  async function invLabelSlot(slot) {
+    if (!bridge() || !bridge().invSlotRect || !bridge().uiLabels) return;
+    if (invLblSlots[slot]) delete invLblSlots[slot]; else invLblSlots[slot] = true;
+    const list = [];
+    for (const k in invLblSlots) {
+      let r = null; try { r = JSON.parse(await bridge().invSlotRect(myPid(), k | 0)); } catch (e) {}
+      if (r && r.w > 0) list.push([Math.round(r.x + r.w / 2), Math.round(r.y + r.h / 2), -1, 12, 'S' + k, 1].join(''));
+    }
+    try { bridge().uiLabels(myPid(), list.join(';')); } catch (e) {}
+  }
   function renderInventory() {
     const c = $('content');
     let w = document.getElementById('invWrap');
@@ -69,6 +96,8 @@
       const t = document.createElement('div'); t.textContent = 'Inventory';
       const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.id = 'invCnt'; cnt.textContent = '...';
       hdr.appendChild(t); hdr.appendChild(cnt);
+      const hint = document.createElement('span'); hint.className = 'cnt'; hint.style.marginLeft = '10px'; hint.textContent = 'click a slot to highlight it in the game, shift-click for a label';
+      hdr.appendChild(hint);
       const grid = document.createElement('div'); grid.id = 'invGrid'; grid.className = 'inv-grid';
       const empty = document.createElement('div'); empty.id = 'invEmpty'; empty.className = 'cont-empty';
       w.appendChild(hdr); w.appendChild(grid); w.appendChild(empty); c.appendChild(w); invSig = '';
@@ -112,6 +141,9 @@
         cell.dataset.ei = '93:' + id + ':' + slot;
       }
       cell.appendChild(box); cell.appendChild(nm);
+      cell.dataset.slot = String(s);
+      cell.style.cursor = 'pointer';
+      cell.addEventListener('click', (ev) => ev.shiftKey ? invLabelSlot(s) : invHighlightSlot(s, cell));
       grid.appendChild(cell);
     }
   }

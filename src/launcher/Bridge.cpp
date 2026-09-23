@@ -4532,6 +4532,16 @@ JSValueRef UiHighlightFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
+// engineRequest(pid, soundId, zoom, fov): each 0 = leave; carried out by the game's own operations
+JSValueRef EngineRequestFn(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    const int sound = js_int(ctx, argv[1]);
+    const int zoom = argc >= 3 ? js_int(ctx, argv[2]) : 0, fov = argc >= 4 ? js_int(ctx, argv[3]) : 0;
+    rtx::overlay::RequestEngine(pid, sound < 0 ? 0 : sound, zoom < 0 ? 0 : zoom, fov < 0 ? 0 : fov);
+    return JSValueMakeBoolean(ctx, true);
+}
+
 JSValueRef UiLabelsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -4683,8 +4693,8 @@ JSValueRef SkillBarsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
             std::string seg = s.substr(pos, semi == std::string::npos ? std::string::npos : semi - pos);
             pos = (semi == std::string::npos) ? s.size() : semi + 1;
             if (seg.empty()) continue;
-            int v[6] = {0,0,0,0,0,0}; std::size_t fp = 0; int fi = 0;
-            for (; fi < 6; ++fi) {
+            int v[12] = {0}; std::size_t fp = 0; int fi = 0;
+            for (; fi < 12; ++fi) {
                 std::size_t comma = seg.find(',', fp);
                 std::string tok = seg.substr(fp, comma == std::string::npos ? std::string::npos : comma - fp);
                 v[fi] = std::atoi(tok.c_str());
@@ -4694,6 +4704,7 @@ JSValueRef SkillBarsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
             if (fi < 5) continue;
             rtx::overlay::SkillBar sb{};
             sb.x = v[0]; sb.y = v[1]; sb.w = v[2]; sb.h = v[3]; sb.pct = v[4]; sb.rgb = v[5];
+            if (fi >= 12) { sb.cc_parent = v[6]; sb.cc_sub = v[7]; sb.cx = v[8]; sb.cy = v[9]; sb.cw = v[10]; sb.ch = v[11]; }
             bars.push_back(sb);
         }
     }
@@ -5667,6 +5678,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "uiHighlight",       UiHighlightFn);
     install_fn(ctx, ns, "uiHighlights",      UiHighlightsFn);
     install_fn(ctx, ns, "uiLabels",          UiLabelsFn);
+    install_fn(ctx, ns, "engineRequest",     EngineRequestFn);
     install_fn(ctx, ns, "centerText",        CenterTextFn);
     install_fn(ctx, ns, "panelRects",        PanelRectsFn);
     install_fn(ctx, ns, "panelViz",          PanelVizFn);

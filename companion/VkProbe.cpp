@@ -15,8 +15,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <string>
 
 namespace rtx::vkprobe {
+bool LookupImage(VkImage img, ImageInfo* out);   // below
 namespace {
 
 using LogFn = void (*)(const char*, ...);
@@ -75,7 +77,9 @@ PFN_vkCmdPushConstants           rPushConstants = nullptr;
 // `look` is handed to the recorder.
 std::atomic<int>      g_where{ 1 };
 std::atomic<unsigned> g_look{ 0 };
-std::atomic<unsigned> g_statArmed{ 0 }, g_statDrew{ 0 };   // interface passes found, and those our markers went into
+std::atomic<unsigned> g_statArmed{ 0 }, g_statDrew{ 0 }, g_statScene{ 0 };
+struct DrawRec { unsigned verts; VkShaderModule frag; std::uint8_t depth; };
+std::mutex g_recMu; std::vector<DrawRec> g_rec; std::string g_recDesc;   // the scene depth pass of the last probe frame, draw by draw   // interface passes found, and those our markers went into
 PFN_vkDestroyFramebuffer         fDestroyFramebuffer = nullptr;
 PFN_vkDestroyRenderPass          fDestroyRenderPass = nullptr;
 PFN_vkCmdResetQueryPool          fCmdResetQueryPool = nullptr;
@@ -94,6 +98,10 @@ std::unordered_set<VkPipeline>              g_depthPipes;
 std::unordered_set<VkPipeline>              g_dynDepthPipes;
 // Depth state of every pipeline, for the frame probe: bit 0 test, bit 1 write, bits 2..4 the compare op.
 std::unordered_map<VkPipeline, std::uint8_t> g_pipeDepth;
+// The fragment shader of every pipeline: what a draw looks like is decided there (a foliage shader
+// discards pixels by its texture's alpha, an opaque one does not), so it is the one key that
+// groups draws by material for the frame record.
+std::unordered_map<VkPipeline, VkShaderModule> g_pipeFrag;
 std::unordered_map<VkImage, ImageInfo>      g_imageInfo;
 
 struct Pass {
@@ -119,6 +127,9 @@ unsigned          g_frameUs = 0;
 VkImage       g_sceneImg = VK_NULL_HANDLE;
 VkFormat      g_sceneFmt = VK_FORMAT_UNDEFINED;
 VkImageLayout g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+VkImage       g_actorImg = VK_NULL_HANDLE;
+VkFormat      g_actorFmt = VK_FORMAT_UNDEFINED;
+VkImageLayout g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 struct ResStat { std::uint32_t key[4]; unsigned count; };
 std::vector<ResStat> g_images, g_buffers;
@@ -136,11 +147,16 @@ struct ThreadState {
     std::uint8_t depth = 0;             // depth state of the bound pipeline, while a probe frame is near
     unsigned depthTest = 0, depthWrite = 0, depthOff = 0, depthOps = 0;
     unsigned first[8] = {}, firstCount = 0;
+    VkShaderModule frag = VK_NULL_HANDLE;   // of the bound pipeline, probe frames
+    // probe frames, the pass that writes the scene depth: every draw's size and material
+    DrawRec recs[160]; unsigned recCount = 0;
     // the pass being recorded, and the one that ended before it on this thread
     VkFramebuffer curFb = VK_NULL_HANDLE; VkRenderPass curRp = VK_NULL_HANDLE;
     VkFormat curColour = VK_FORMAT_UNDEFINED; std::uint32_t curColours = 0, curW = 0, curH = 0; bool curDepth = false;
     // the interface pass while it is open and nothing of ours is in it yet; the scene depth while it is lent out
     bool inject = false, borrowed = false; VkCommandBuffer lentIn = VK_NULL_HANDLE;
+    // the scene colour pass while it is open and nothing of ours is in it yet
+    bool injectScene = false; VkSampleCountFlagBits sceneSamples = VK_SAMPLE_COUNT_1_BIT; unsigned sceneFrame = ~0u;
     VkFramebuffer prevFb = VK_NULL_HANDLE; VkRenderPass prevRp = VK_NULL_HANDLE;
     VkFormat prevColour = VK_FORMAT_UNDEFINED; std::uint32_t prevColours = 0, prevW = 0, prevH = 0, prevDraws = 0; bool prevDepth = false;
 };
@@ -180,6 +196,7 @@ bool ProbeNear() {
 void TallyDepth(unsigned size = 0) {
     if (!ProbeNear()) return;
     if (t.firstCount < 8) t.first[t.firstCount++] = size;
+    if (t.recCount < 160) t.recs[t.recCount++] = { size, t.frag, t.depth };
     if (t.depth & 1) ++t.depthTest;
     if (t.depth & 2) ++t.depthWrite;
     if (!(t.depth & 3)) ++t.depthOff;
@@ -255,6 +272,11 @@ int EndPass() {
             p.draws += t.draws; p.indirect += t.indirect; p.dispatch += t.dispatch; p.skipped += t.skipped;
             p.depthTest += t.depthTest; p.depthWrite += t.depthWrite; p.depthOff += t.depthOff; p.depthOps |= t.depthOps;
             for (unsigned i = 0; i < t.firstCount && p.firstCount < 8; ++i) p.first[p.firstCount++] = t.first[i];
+            // the draw-by-draw record, kept for the one pass that writes the scene depth
+            if (t.recCount && t.depthWrite >= 20 && t.curDepth) {
+                std::lock_guard<std::mutex> lk2(g_recMu);
+                if (g_rec.empty()) { g_rec.assign(t.recs, t.recs + t.recCount); g_recDesc = p.desc; }
+            }
             query = p.query;
         }
     }
@@ -262,7 +284,7 @@ int EndPass() {
     t.prevW = t.curW; t.prevH = t.curH; t.prevDepth = t.curDepth; t.prevDraws = t.draws + t.indirect;
     t.curFb = VK_NULL_HANDLE; t.curRp = VK_NULL_HANDLE;
     t.inPass = false; t.pass = -1; t.draws = t.indirect = t.dispatch = t.skipped = 0;
-    t.depthTest = t.depthWrite = t.depthOff = t.depthOps = 0; t.firstCount = 0;
+    t.depthTest = t.depthWrite = t.depthOff = t.depthOps = 0; t.firstCount = 0; t.recCount = 0;
     return query;
 }
 void CloseQuery(VkCommandBuffer cmd, int slot, int query) {
@@ -278,7 +300,23 @@ void FromRenderPass(const VkRenderPassBeginInfo* info, VkFormat* colors, VkAttac
     std::lock_guard<std::mutex> lk(g_mapMu);
     auto rp = g_rps.find(info->renderPass);
     auto fb = g_fbs.find(info->framebuffer);
-    if (rp == g_rps.end()) return;
+    if (rp == g_rps.end()) {
+        // A render pass made before the hooks were in (the module attached to a running client). Its
+        // attachments are taken from the framebuffer's views instead, once those are all known: the
+        // formats are exact, the load ops are taken as LOAD and a depth attachment as left in the
+        // layout the game keeps its depth in, which is what the barriers around our reads need.
+        if (fb == g_fbs.end() || fb->second.views.empty()) return;
+        RpInfo made;
+        for (VkImageView v : fb->second.views) {
+            auto it = g_views.find(v);
+            if (it == g_views.end()) return;
+            made.fmts.push_back(it->second.fmt); made.loads.push_back(VK_ATTACHMENT_LOAD_OP_LOAD);
+            made.finals.push_back(IsDepth(it->second.fmt) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        }
+        rp = g_rps.emplace(info->renderPass, made).first;
+        static unsigned s_said = 0;
+        if (s_said < 8 && g_log) { ++s_said; g_log("render pass %p was made before the hooks: %zu attachments taken from its framebuffer", (void*)info->renderPass, made.fmts.size()); }
+    }
     for (size_t i = 0; i < rp->second.fmts.size(); ++i) {
         VkFormat f = rp->second.fmts[i];
         if (IsDepth(f)) {
@@ -387,6 +425,57 @@ bool CallBorrow(VkCommandBuffer cmd, VkImage passDepth) {
 }
 void CallGiveBack(VkCommandBuffer cmd) {
     __try { g_passRecorder.giveBack(cmd); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+bool CallSceneRecord(VkCommandBuffer cmd, VkRenderPass rp, std::uint32_t w, std::uint32_t h, VkSampleCountFlagBits samples) {
+    __try { return g_passRecorder.recordScene(cmd, rp, w, h, samples, g_look.load(std::memory_order_relaxed)); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool CallWantsScene() {
+    __try { return g_passRecorder.wantsScene(); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+// The scene colour pass: client size, one 16 bit colour attachment, on the depth image the scene
+// depth was taken from, the first such pass of the frame. Our markers go in ahead of its first
+// draw with the GPU's depth test against that depth, and everything the game draws after them
+// in the pass paints over them where it is in front, as it does over the game's own markers.
+bool IsScenePass(const VkFormat* colours, std::uint32_t nc, VkImage depthImg, std::uint32_t w, std::uint32_t h) {
+    const unsigned tw = g_targetW.load(), th = g_targetH.load();
+    if (nc != 1 || colours[0] != VK_FORMAT_R16G16B16A16_SFLOAT || !depthImg || !tw || w != tw || h != th) return false;
+    std::lock_guard<std::mutex> lk(g_passMu);
+    return depthImg == g_sceneImg;
+}
+void ArmScenePass(VkCommandBuffer cmd, VkImage depthImg, VkFramebuffer fbh, VkRenderPass rph) {
+    if (!g_passRecorder.recordScene || !g_passRecorder.wantsScene) return;
+    const unsigned f = g_frame.load(std::memory_order_relaxed);
+    if (t.sceneFrame == f) return;                       // one scene pass per frame; a later one is effects
+    if (!CallWantsScene()) return;
+    ImageInfo ii{};
+    if (!rtx::vkprobe::LookupImage(depthImg, &ii)) return;
+    t.sceneFrame = f; t.sceneSamples = ii.samples; t.injectScene = true; t.lentIn = cmd;
+    // the pass's colour target, for the marks to be read back at the interface pass
+    if (g_passRecorder.sceneColour) {
+        VkImage col = VK_NULL_HANDLE; VkFormat fmt = VK_FORMAT_UNDEFINED; VkImageLayout lay = VK_IMAGE_LAYOUT_UNDEFINED; VkSampleCountFlagBits smp = ii.samples;
+        {
+            std::lock_guard<std::mutex> lk(g_mapMu);
+            auto fb = g_fbs.find(fbh); auto rp = g_rps.find(rph);
+            if (fb != g_fbs.end() && rp != g_rps.end())
+                for (size_t i = 0; i < fb->second.views.size() && i < rp->second.fmts.size(); ++i) {
+                    if (IsDepth(rp->second.fmts[i])) continue;
+                    auto v = g_views.find(fb->second.views[i]);
+                    if (v != g_views.end()) { col = v->second.image; fmt = v->second.fmt; lay = rp->second.finals[i]; }
+                    break;
+                }
+        }
+        ImageInfo ci{};
+        if (col && rtx::vkprobe::LookupImage(col, &ci)) smp = ci.samples;
+        if (col) g_passRecorder.sceneColour(col, fmt, lay, smp);
+    }
+}
+void InjectInScenePass(VkCommandBuffer cmd) {
+    t.injectScene = false;
+    if (cmd != t.lentIn) return;
+    tb.ours = true;
+    const bool drew = CallSceneRecord(cmd, t.curRp, t.curW, t.curH, t.sceneSamples);
+    tb.ours = false;
+    if (drew) { RestoreGameState(cmd); g_statScene.fetch_add(1, std::memory_order_relaxed); }
 }
 bool CallPassRecord(VkCommandBuffer cmd, VkRenderPass rp, std::uint32_t w, std::uint32_t h, bool borrowed) {
     __try { return g_passRecorder.record(cmd, rp, w, h, borrowed, g_look.load(std::memory_order_relaxed)); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
@@ -502,7 +591,8 @@ void VKAPI_CALL HookBeginRP(VkCommandBuffer cmd, const VkRenderPassBeginInfo* in
         VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc, w, h;
         VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
         FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
-        t.inject = false;
+        t.inject = false; t.injectScene = false;
+        if (g_inFrameTrial.load(std::memory_order_relaxed) && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
         if (g_inFrameTrial.load(std::memory_order_relaxed) && SceneIsFinished(colors, loads, nc, depth, w, h)) {
             const int where = g_where.load(std::memory_order_relaxed); if (where == 1) ArmInterfacePass(cmd, dimg); else if (where == 0) DrawUnderInterface(cmd, w, h);
         }
@@ -518,7 +608,8 @@ void VKAPI_CALL HookBeginRP2(VkCommandBuffer cmd, const VkRenderPassBeginInfo* i
         VkFormat colors[8]; VkAttachmentLoadOp loads[8]; std::uint32_t nc, w, h;
         VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
         FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
-        t.inject = false;
+        t.inject = false; t.injectScene = false;
+        if (g_inFrameTrial.load(std::memory_order_relaxed) && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
         if (g_inFrameTrial.load(std::memory_order_relaxed) && SceneIsFinished(colors, loads, nc, depth, w, h)) {
             const int where = g_where.load(std::memory_order_relaxed); if (where == 1) ArmInterfacePass(cmd, dimg); else if (where == 0) DrawUnderInterface(cmd, w, h);
         }
@@ -554,8 +645,8 @@ void VKAPI_CALL HookBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* i
     }
     rBeginRendering(cmd, info);
 }
-void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { if (t.inject) InjectInPass(cmd); int slot = t.slot; int q = EndPass(); rEndRP(cmd); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
-void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { if (t.inject) InjectInPass(cmd); int slot = t.slot; int q = EndPass(); rEndRP2(cmd, e); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
+void VKAPI_CALL HookEndRP(VkCommandBuffer cmd) { t.injectScene = false; if (t.inject) InjectInPass(cmd); int slot = t.slot; int q = EndPass(); rEndRP(cmd); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
+void VKAPI_CALL HookEndRP2(VkCommandBuffer cmd, const VkSubpassEndInfo* e) { t.injectScene = false; if (t.inject) InjectInPass(cmd); int slot = t.slot; int q = EndPass(); rEndRP2(cmd, e); InterfacePassEnded(cmd); CloseQuery(cmd, slot, q); }
 void VKAPI_CALL HookEndRendering(VkCommandBuffer cmd) { int slot = t.slot; int q = EndPass(); rEndRendering(cmd); CloseQuery(cmd, slot, q); }
 
 void VKAPI_CALL HookBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bp, VkPipeline pipe) {
@@ -571,13 +662,14 @@ void VKAPI_CALL HookBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bp, Vk
             std::lock_guard<std::mutex> lk(g_mapMu);
             auto it = g_pipeDepth.find(pipe);
             t.depth = it == g_pipeDepth.end() ? 0 : it->second;
+            auto fi = g_pipeFrag.find(pipe); t.frag = fi == g_pipeFrag.end() ? VK_NULL_HANDLE : fi->second;
         }
     }
     rBindPipeline(cmd, bp, pipe);
 }
 
-void VKAPI_CALL HookDraw(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::uint32_t e) { if (t.inject && a != 4) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDraw(c, a, b, d, e); }
-void VKAPI_CALL HookDrawIndexed(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::int32_t e, std::uint32_t f) { if (t.inject && a != 4) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDrawIndexed(c, a, b, d, e, f); }
+void VKAPI_CALL HookDraw(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::uint32_t e) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a != 4) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDraw(c, a, b, d, e); }
+void VKAPI_CALL HookDrawIndexed(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::int32_t e, std::uint32_t f) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a != 4) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDrawIndexed(c, a, b, d, e, f); }
 void VKAPI_CALL HookDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, std::uint32_t n, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndirect(c, b, o, n, s); }
 void VKAPI_CALL HookDrawIndexedIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, std::uint32_t n, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndexedIndirect(c, b, o, n, s); }
 void VKAPI_CALL HookDrawIndirectCount(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkBuffer cb, VkDeviceSize co, std::uint32_t m, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndirectCount(c, b, o, cb, co, m, s); }
@@ -600,12 +692,14 @@ VkResult VKAPI_CALL HookCreateGraphicsPipelines(VkDevice dev, VkPipelineCache ca
             if (const auto* ds = ci.pDepthStencilState)
                 g_pipeDepth[out[i]] = (std::uint8_t)((ds->depthTestEnable ? 1 : 0) | (ds->depthWriteEnable ? 2 : 0) | (((unsigned)ds->depthCompareOp & 7u) << 2));
             if (dyn) g_dynDepthPipes.insert(out[i]);
+            for (std::uint32_t st = 0; ci.pStages && st < ci.stageCount; ++st)
+                if (ci.pStages[st].stage == VK_SHADER_STAGE_FRAGMENT_BIT) g_pipeFrag[out[i]] = ci.pStages[st].module;
         }
     }
     return r;
 }
 void VKAPI_CALL HookDestroyPipeline(VkDevice dev, VkPipeline p, const VkAllocationCallbacks* a) {
-    { std::lock_guard<std::mutex> lk(g_mapMu); g_depthPipes.erase(p); g_dynDepthPipes.erase(p); g_pipeDepth.erase(p); }
+    { std::lock_guard<std::mutex> lk(g_mapMu); g_depthPipes.erase(p); g_dynDepthPipes.erase(p); g_pipeDepth.erase(p); g_pipeFrag.erase(p); }
     rDestroyPipeline(dev, p, a);
 }
 VkResult VKAPI_CALL HookCreateRenderPass(VkDevice dev, const VkRenderPassCreateInfo* ci, const VkAllocationCallbacks* a, VkRenderPass* out) {
@@ -833,7 +927,7 @@ void Detach() {
     }
     std::lock_guard<std::mutex> lk(g_mapMu);
     g_views.clear(); g_rps.clear(); g_fbs.clear(); g_depthPipes.clear(); g_dynDepthPipes.clear();
-    g_sceneImg = VK_NULL_HANDLE;
+    g_sceneImg = VK_NULL_HANDLE; g_actorImg = VK_NULL_HANDLE;
 }
 
 void SetTargetExtent(unsigned w, unsigned h) { g_targetW.store(w); g_targetH.store(h); }
@@ -849,6 +943,13 @@ bool LookupImage(VkImage img, ImageInfo* out) {
     auto it = g_imageInfo.find(img);
     if (it == g_imageInfo.end()) return false;
     *out = it->second;
+    return true;
+}
+
+bool ActorDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout) {
+    std::lock_guard<std::mutex> lk(g_passMu);
+    if (!g_actorImg) return false;
+    *img = g_actorImg; *fmt = g_actorFmt; *layout = g_actorLayout;
     return true;
 }
 
@@ -873,12 +974,42 @@ void OnOverlayCmd(VkCommandBuffer cmd) {
 
 void SetTimingEnabled(bool on) { g_timing.store(on); }
 
+// Development only, taken out before a release: a text file in the temp folder, "<where> <look>",
+// switches where the trial draws and what it shows (a depth view among them) without a restart.
+bool buf_probe_once(const char* switchPath) {
+    char path[MAX_PATH]; lstrcpyA(path, switchPath);
+    char* tail = path + lstrlenA(path) - lstrlenA("rtx_inframe.txt"); lstrcpyA(tail, "rtx_probe.txt");
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) return false;
+    DeleteFileA(path); return true;
+}
+void ReadTrialSwitch() {
+    char path[MAX_PATH]; const DWORD n = GetTempPathA(MAX_PATH, path);
+    if (!n || n > MAX_PATH - 24) return;
+    lstrcatA(path, "rtx_inframe.txt");
+    int where = 1; unsigned look = 0;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        char buf[16] = {}; DWORD got = 0;
+        if (ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr) && got >= 1) {
+            where = buf[0] == '0' ? 0 : buf[0] == '2' ? 2 : 1;
+            if (got >= 3 && buf[2] >= '0' && buf[2] <= '9') look = (unsigned)(buf[2] - '0');
+            else if (got >= 3 && buf[2] >= 'a' && buf[2] <= 'f') look = 10u + (unsigned)(buf[2] - 'a');
+        }
+        CloseHandle(h);
+    }
+    if (g_where.exchange(where) != where && g_log) g_log("in-frame: drawing %s", where == 1 ? "inside the interface pass" : where == 2 ? "at present time" : "into the finished scene");
+    g_look.store(look, std::memory_order_relaxed);
+    if (g_passRecorder.trial) g_passRecorder.trial(where, look);
+    if (buf_probe_once(path)) g_probeNext.store(true);
+}
+
 // Present boundary: the frame just recorded becomes the current slot's completed list; the slot
 // presented two frames ago has its timestamps read and published; recording moves to the next slot.
 void FrameBegin() {
     const unsigned f = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (f % 30 == 0 && g_inFrameTrial.load(std::memory_order_relaxed)) ReadTrialSwitch();
     if (f % 1800 == 0 && g_inFrameTrial.load(std::memory_order_relaxed) && g_log)
-        g_log("in-frame: last 1800 frames, interface pass found %u times, markers drawn in %u", g_statArmed.exchange(0), g_statDrew.exchange(0));
+        g_log("in-frame: last 1800 frames, interface pass found %u times, markers drawn in %u, drawn in the scene pass %u", g_statArmed.exchange(0), g_statDrew.exchange(0), g_statScene.exchange(0));
     if (fDestroyFramebuffer) {
         // the trial's framebuffers, once the GPU is sure to be done with them
         std::lock_guard<std::mutex> lk(g_mapMu);
@@ -905,23 +1036,42 @@ void FrameBegin() {
         if (current.size() >= 40) { if (!s_worldSince) s_worldSince = f; } else s_worldSince = 0;
         if (s_worldSince && !g_worldProbeAt.load() && f - s_worldSince == 600) g_worldProbeAt.store(f + 4);
         if (f == g_worldProbeAt.load() && f != 0) probe = true;
-        // Scene depth: among client-size depth passes with a substantial draw count, the last one.
-        // The reflection render comes first with a mirrored camera and nearly the same draw count;
-        // the main scene and the water pass that follows share the depth image we want.
+        // Scene depth: the client-size depth image that the most drawing goes to, over every pass
+        // that uses it. The scenery's pre-pass, its colour pass, the characters' colour pass and the
+        // effects all share that one image; the interface pass has a depth image too, but only its
+        // own few draws. Its layout is what the last pass using it left it in.
         const unsigned tw = g_targetW.load(), th = g_targetH.load();
-        unsigned most = 0;
-        for (const auto& p : current)
-            if (p.depthImg && p.w == tw && p.h == th) most = std::max(most, p.draws + p.skipped);
+        VkImage sceneImg = VK_NULL_HANDLE; unsigned sceneDraws = 0;
+        for (size_t i = 0; i < current.size(); ++i) {
+            const Pass& p = current[i];
+            if (!p.depthImg || p.w != tw || p.h != th) continue;
+            unsigned sum = 0;
+            for (const auto& q : current) if (q.depthImg == p.depthImg && q.w == tw && q.h == th) sum += q.draws + q.skipped;
+            if (sum > sceneDraws) { sceneDraws = sum; sceneImg = p.depthImg; }
+        }
         const Pass* best = nullptr;
-        if (most >= 32)
-            for (const auto& p : current)
-                if (p.depthImg && p.w == tw && p.h == th && (p.draws + p.skipped) * 4 >= most) best = &p;
+        if (sceneImg && sceneDraws >= 32)
+            for (const auto& p : current) if (p.depthImg == sceneImg && p.w == tw && p.h == th) best = &p;
         if (best) {
             if (best->depthImg != g_sceneImg && g_log)
-                g_log("scene depth from pass: %s (%u draws of %u max)", best->desc, best->draws + best->skipped, most);
+                g_log("scene depth image %p: %u draws over its passes, last %s", (void*)best->depthImg, sceneDraws, best->desc);
             g_sceneImg = best->depthImg; g_sceneFmt = best->depthFmt; g_sceneLayout = best->depthFinal;
         }
         else { g_sceneImg = VK_NULL_HANDLE; g_sceneLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
+        // The characters' depth: a client-size pass with no colour attachment, several draws, and a
+        // depth image other than the scenery's. One-draw passes of that shape are depth copies.
+        const Pass* actor = nullptr;
+        if (best)
+            for (const auto& p : current)
+                if (p.depthImg && p.depthImg != best->depthImg && p.w == tw && p.h == th && p.draws + p.skipped >= 2 &&
+                    std::strncmp(p.desc, "renderpass", 10) == 0 && std::strstr(p.desc, " [] D[") &&
+                    (!actor || p.draws + p.skipped > actor->draws + actor->skipped)) actor = &p;
+        if (actor) {
+            if (actor->depthImg != g_actorImg && g_log)
+                g_log("character depth image %p: %s (%u draws)", (void*)actor->depthImg, actor->desc, actor->draws + actor->skipped);
+            g_actorImg = actor->depthImg; g_actorFmt = actor->depthFmt; g_actorLayout = actor->depthFinal;
+        }
+        else { g_actorImg = VK_NULL_HANDLE; g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
     }
 
     static std::uint64_t results[kMaxPairs * 4];
@@ -954,8 +1104,26 @@ void FrameBegin() {
     {
         char sizes[96] = {};
         for (unsigned k = 0; k < current[i].firstCount; ++k) { char one[16]; std::snprintf(one, sizeof(one), "%s%u", k ? "," : "", current[i].first[k]); Cat(sizes, sizeof(sizes), one); }
-        g_log("  pass %2zu: %s draws %u indirect %u dispatch %u skipped %u | depth test %u write %u off %u ops 0x%02x | first draws %s", i, current[i].desc, current[i].draws,
-              current[i].indirect, current[i].dispatch, current[i].skipped, current[i].depthTest, current[i].depthWrite, current[i].depthOff, current[i].depthOps, sizes);
+        g_log("  pass %2zu: %s draws %u indirect %u dispatch %u skipped %u | depth test %u write %u off %u ops 0x%02x | depth image %p | first draws %s", i, current[i].desc, current[i].draws,
+              current[i].indirect, current[i].dispatch, current[i].skipped, current[i].depthTest, current[i].depthWrite, current[i].depthOff, current[i].depthOps, (void*)current[i].depthImg, sizes);
+    }
+    {
+        std::lock_guard<std::mutex> lk2(g_recMu);
+        if (!g_rec.empty()) {
+            g_log("  scene depth pass %s, %zu draws in order (verts@material, w = writes depth):", g_recDesc.c_str(), g_rec.size());
+            std::vector<VkShaderModule> mats;
+            char line[380] = {}; unsigned inLine = 0;
+            for (const DrawRec& r : g_rec) {
+                size_t k = 0; for (; k < mats.size(); ++k) if (mats[k] == r.frag) break;
+                if (k == mats.size()) mats.push_back(r.frag);
+                char one[32]; std::snprintf(one, sizeof(one), "%s%u@%c%zu", inLine ? " " : "", r.verts, (r.depth & 2) ? 'w' : '-', k);
+                Cat(line, sizeof(line), one);
+                if (++inLine == 24) { g_log("    %s", line); line[0] = 0; inLine = 0; }
+            }
+            if (inLine) g_log("    %s", line);
+            for (size_t k = 0; k < mats.size(); ++k) g_log("    material %zu = fragment shader %p", k, (void*)mats[k]);
+            g_rec.clear();
+        }
     }
     g_log("  images created so far %u (distinct format/usage/size %zu):", g_imageTotal.load(), images.size());
     for (const auto& s : images) {

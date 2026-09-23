@@ -17,6 +17,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -123,11 +124,63 @@ struct Ui : public LoadListener, public ViewListener {
 
 std::unordered_map<std::uint32_t, Ui*> g_uis;   // main thread only
 
+// The module writes into the frame channel and the overlay's render thread wants to read parts of
+// it (whether the game is drawing our components, and the screen points it worked out). The map
+// above belongs to the main thread, so the channel pointer is kept here as well, behind a lock, and
+// the render thread only ever goes through this.
+std::mutex g_channelMu;
+std::unordered_map<std::uint32_t, rtx::frame::Share*> g_channels;
+
+void SetChannel(std::uint32_t pid, rtx::frame::Share* f) {
+    std::lock_guard<std::mutex> lk(g_channelMu);
+    if (f) g_channels[pid] = f; else g_channels.erase(pid);
+}
+
 Ui* find(std::uint32_t pid) {
     auto it = g_uis.find(pid);
     return it == g_uis.end() ? nullptr : it->second;
 }
 
+}  // namespace
+int ModuleAnchors(std::uint32_t pid, ModulePoint* out, int cap) {
+    if (cap <= 0) return 0;
+    std::lock_guard<std::mutex> lk(g_channelMu);
+    auto it = g_channels.find(pid);
+    if (it == g_channels.end() || !it->second) return 0;
+    const rtx::frame::Share* f = it->second;
+    if (f->magic != rtx::frame::kMagic || f->version != rtx::frame::kVersion) return 0;
+    int n = (int)f->anchor_count;
+    if (n < 0) n = 0;
+    if (n > cap) n = cap;
+    if (n > 64) n = 64;
+    for (int i = 0; i < n; ++i) {
+        out[i].x = f->anchor[i].x; out[i].y = f->anchor[i].y;
+        out[i].depth = f->anchor[i].depth; out[i].ok = f->anchor[i].ok;
+        out[i].tag = f->anchor[i].tag;
+    }
+    return n;
+}
+
+bool ModuleGlyphWidths(std::uint32_t pid, std::uint8_t* adv, int count, int& px) {
+    if (!adv || count <= 0) return false;
+    std::lock_guard<std::mutex> lk(g_channelMu);
+    auto it = g_channels.find(pid);
+    if (it == g_channels.end() || !it->second) return false;
+    const rtx::frame::Share* f = it->second;
+    if (f->magic != rtx::frame::kMagic || f->version != rtx::frame::kVersion) return false;
+    if (!f->glyph_ready || f->glyph_px == 0) return false;
+    const int n = count < (int)sizeof(f->glyph_adv) ? count : (int)sizeof(f->glyph_adv);
+    for (int i = 0; i < n; ++i) adv[i] = f->glyph_adv[i];
+    px = (int)f->glyph_px;
+    return true;
+}
+
+bool ModuleDrawsComponents(std::uint32_t pid) {
+    std::lock_guard<std::mutex> lk(g_channelMu);
+    auto it = g_channels.find(pid);
+    return it != g_channels.end() && it->second && it->second->module_cc == 1;
+}
+namespace {
 bool ClientSize(Ui* u, int& w, int& h) {
     if (u->frame && u->frame->client_w > 0 && u->frame->client_h > 0) {
         w = u->frame->client_w;
@@ -400,7 +453,7 @@ void OpenChannels(Ui* u, std::uint32_t pid) {
         u->frameId = f->frame_id;
         f->dirty_x = f->dirty_y = f->dirty_w = f->dirty_h = 0;
         f->origin_x = f->origin_y = 0;
-        f->module_seq = 0;
+        f->module_seq = 0; f->module_cc = 0;
         f->client_w = f->client_h = 0;
         f->visible = 0;
         f->cursor = 0;
@@ -410,6 +463,7 @@ void OpenChannels(Ui* u, std::uint32_t pid) {
         f->magic = rtx::frame::kMagic;   // valid only once everything above is set
         MemoryBarrier();
         f->seq = (f->seq + 1) & ~1u;     // even
+        SetChannel(pid, f);
     }
 
     rtx::input::MakeEventName(pid, name);
@@ -522,6 +576,7 @@ void Destroy(std::uint32_t pid) {
         u->view->set_view_listener(nullptr);
         u->view = nullptr;
     }
+    SetChannel(pid, nullptr);
     if (u->frame)    { UnmapViewOfFile(const_cast<rtx::frame::Share*>(u->frame)); u->frame = nullptr; }
     if (u->frameMap) { CloseHandle(u->frameMap); u->frameMap = nullptr; }
     if (u->input)    { UnmapViewOfFile(const_cast<rtx::input::Share*>(u->input)); u->input = nullptr; }

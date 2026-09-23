@@ -8,7 +8,7 @@ namespace rtx::frame {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXFrame_v2_";
 inline constexpr std::uint32_t kMagic   = 0x52545846;   // 'RTXF'
-inline constexpr std::uint32_t kVersion = 2;
+inline constexpr std::uint32_t kVersion = 6;
 
 inline constexpr std::uint32_t kMaxWidth  = 3840;
 inline constexpr std::uint32_t kMaxHeight = 2160;
@@ -42,6 +42,22 @@ struct Share {
 
     volatile std::int32_t  client_w, client_h;   // module -> launcher: GetClientRect size, every present
     volatile std::uint32_t module_seq;           // module -> launcher: bumped every present (liveness)
+    volatile std::uint32_t module_cc;            // module -> launcher: 1 while the game draws the launcher's component rectangles itself
+
+    // module -> launcher: the game's own screen point for each world point asked about, in the same
+    // order. `ok` is 0 when the game could not answer (off screen behind the camera, or the
+    // operation is not recognised in this build).
+    struct AnchorPoint { std::int32_t x, y, depth, ok; std::uint32_t tag; };
+    // module -> launcher: how wide each glyph of the label font is, in atlas pixels, so the
+    // launcher can size a label exactly as the module will draw it instead of estimating. Cells run
+    // from marker::kGlyphFirst. glyph_px is the size the widths were measured at.
+    volatile std::uint32_t glyph_ready;
+    std::uint32_t glyph_px;
+    std::uint8_t  glyph_adv[128];
+
+    volatile std::uint32_t anchor_seq;           // bumped after a set of answers is written
+    std::uint32_t anchor_count;
+    AnchorPoint   anchor[64];
 
     std::uint8_t  pixels[kMaxBytes];
 };

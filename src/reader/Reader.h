@@ -272,6 +272,11 @@ bool HoverLoc(std::uint32_t pid, HoverLocInfo& out);
 std::string PuzzleStateJson(std::uint32_t pid);
 std::string PuzzleCellRectsJson(std::uint32_t pid);
 std::string InterfaceSizeSearchJson(std::uint32_t pid, int w, int h, int tol);
+// The interface component a rectangle (interface coordinates) lies in: the smallest visible one
+// that contains it. `parent` = group << 16 | the layer to put a child under (the component's own
+// container when it is a dynamic child, else its parent), `px`,`py` = that layer's position.
+struct IfaceHit { bool ok = false; int parent = 0, px = 0, py = 0; };
+IfaceHit InterfaceLocate(std::uint32_t pid, int x, int y, int w, int h);
 
 void SetIfaceOffset(int group, int dx, int dy);
 

@@ -10,6 +10,8 @@
 #include "MarkerShare.h"
 #include "EngineHighlight.h"
 #include "SceneHover.h"
+#include "EngineComponents.h"
+#include "EngineOps.h"
 #include "TooltipHook.h"
 #include "EngineMarkers.h"
 #include "HudShare.h"
@@ -145,6 +147,8 @@ struct MarkerLatch {
     std::int32_t  gv[4] = {};
     bool          hover_on = false;   // scenery under the cursor for the game to outline, see scenehover::Mark
     std::int32_t  hover_x = 0, hover_y = 0, hover_id = 0;
+    std::vector<rtx::marker::CcRect> cc;
+    std::uint32_t op_seq = 0; std::int32_t op_sound = 0, op_zoom = 0, op_fov = 0;
     bool          visible = false;
     unsigned      stale = 0;          // frames in a row without a complete read
 };
@@ -173,8 +177,18 @@ bool LatchMarkers() {
         const std::int32_t gv[4] = { g_marker->gv_x, g_marker->gv_y, g_marker->gv_w, g_marker->gv_h };
         const bool hon = g_marker->hover_on != 0;
         const std::int32_t hx = g_marker->hover_x, hy = g_marker->hover_y, hid = g_marker->hover_id;
+        static std::vector<rtx::marker::CcRect> ccScratch;
+        std::uint32_t ccn = g_marker->cc_count; if (ccn > (std::uint32_t)rtx::marker::kMaxCc) ccn = 0;
+        ccScratch.assign(g_marker->cc, g_marker->cc + ccn);
+        const std::uint32_t oseq = g_marker->op_seq; const std::int32_t osnd = g_marker->op_sound, ozoom = g_marker->op_zoom, ofov = g_marker->op_fov;
+        static std::vector<rtx::marker::Anchor> anScratch;
+        std::uint32_t ann = g_marker->anchor_count; if (ann > (std::uint32_t)rtx::marker::kMaxAnchors) ann = 0;
+        anScratch.assign(g_marker->anchors, g_marker->anchors + ann);
         if (g_marker->seq != s0) continue;                    // written to while it was read: not this one
         g_latch.hover_on = hon; g_latch.hover_x = hx; g_latch.hover_y = hy; g_latch.hover_id = hid;
+        g_latch.cc.swap(ccScratch);
+        if (oseq != g_latch.op_seq) { g_latch.op_seq = oseq; g_latch.op_sound = osnd; g_latch.op_zoom = ozoom; g_latch.op_fov = ofov; rtx::engineops::Queue(osnd, ozoom, ofov); }
+        rtx::engineops::WantAnchors(anScratch.empty() ? nullptr : anScratch.data(), (int)anScratch.size());
         std::memcpy(g_latch.view_m, vm, sizeof(vm)); g_latch.view_addr = vaddr; std::memcpy(g_latch.gv, gv, sizeof(gv));
         g_latch.cmds.swap(scratch);
         g_latch.fb_w = w; g_latch.fb_h = h; g_latch.flags = flags;
@@ -199,6 +213,7 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         g_frame->client_w = fbw;
         g_frame->client_h = fbh;
         g_frame->module_seq = g_frame->module_seq + 1;
+        g_frame->module_cc = rtx::enginecc::Usable() ? 1u : 0u;
     }
     // The engine's own hover outline follows the launcher's flag whether or not there is anything
     // to draw this frame.
@@ -212,6 +227,10 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         // game takes a gap for the end of the hover and the next mark for a new one, pulse and all
         if (wantHover && st == rtx::enginehl::kActive && g_latch.hover_on)
             rtx::scenehover::Mark(g_latch.hover_x, g_latch.hover_y, g_latch.hover_id);
+        rtx::scenehover::SetPulseHold(wantHover && st == rtx::enginehl::kActive);
+        rtx::scenehover::Trace();
+        // the rectangles the game draws as components: handed to the game thread, which applies them
+        rtx::enginecc::Want(g_latch.cc.data(), (std::uint32_t)g_latch.cc.size());
         static rtx::enginehl::Status s_said = rtx::enginehl::kUnknown;
         if (st != s_said) {
             s_said = st;
@@ -446,18 +465,70 @@ void RenderOverlay(const Backend& b, void* hwnd, int fbw, int fbh) {
     }
 }
 
+// Both hooks go in whenever their library is present. Which renderer the client uses cannot be
+// told at load time: the client loads vulkan-1.dll for a moment at start-up to see whether Vulkan
+// is available, and the module is injected while that may be so. Choosing Vulkan on that evidence
+// left OpenGL clients without a compositor for the whole session (no present ever came through
+// the Vulkan hook and nothing fell back). A hook on a renderer the client does not use is inert:
+// an OpenGL client never presents through Vulkan and a Vulkan client never calls wglSwapBuffers.
+// Written on the game thread, read by the launcher; the count goes up only after the points are in
+// place, and the sequence number changes last, so a reader never sees a half-written set.
+// What the channel looks like from here, for the check: mapped at all, and the mark and version
+// found in it against the ones this build writes.
+void FrameChannelState(bool& mapped, std::uint32_t& magic, std::uint32_t& version,
+                       std::uint32_t& wantMagic, std::uint32_t& wantVersion) {
+    mapped = g_frame != nullptr;
+    magic = g_frame ? g_frame->magic : 0u;
+    version = g_frame ? g_frame->version : 0u;
+    wantMagic = rtx::frame::kMagic; wantVersion = rtx::frame::kVersion;
+}
+
+void PublishGlyphWidths(const int* adv, int count, int px) {
+    if (!g_frame || g_frame->magic != rtx::frame::kMagic || g_frame->version != rtx::frame::kVersion) return;
+    if (!adv || count <= 0 || px <= 0) return;
+    if (count > (int)sizeof(g_frame->glyph_adv)) count = (int)sizeof(g_frame->glyph_adv);
+    for (int i = 0; i < count; ++i) {
+        const int a = adv[i];
+        g_frame->glyph_adv[i] = (std::uint8_t)(a < 0 ? 0 : (a > 255 ? 255 : a));
+    }
+    g_frame->glyph_px = (std::uint32_t)px;
+    g_frame->glyph_ready = 1;
+}
+
+bool PublishAnchors(const void* points, int count) {
+    // Only into a frame share this build understands: a launcher of another version has the
+    // fields somewhere else.
+    if (!g_frame || g_frame->magic != rtx::frame::kMagic || g_frame->version != rtx::frame::kVersion) return false;
+    if (count < 0) count = 0;
+    if (count > 64) count = 64;
+    if (!points) count = 0;
+    if (count) std::memcpy(const_cast<rtx::frame::Share::AnchorPoint*>(g_frame->anchor), points,
+                           sizeof(rtx::frame::Share::AnchorPoint) * (std::size_t)count);
+    g_frame->anchor_count = (std::uint32_t)count;
+    ++g_frame->anchor_seq;
+    return true;
+}
+
 bool Install() {
-    if (PrefersVulkan() || GetModuleHandleW(L"vulkan-1.dll")) return InstallVk();
-    return InstallGl();
+    const bool wantVk = PrefersVulkan() || GetModuleHandleW(L"vulkan-1.dll") != nullptr;
+    const bool wantGl = !PrefersVulkan() || GetModuleHandleW(L"opengl32.dll") != nullptr;
+    bool any = false;
+    if (wantVk) any |= InstallVk();
+    if (wantGl) any |= InstallGl();
+    return any;
 }
 
 void Poll() {
+    // a library that arrives later gets its hook then
     if (!g_vkInstalled && GetModuleHandleW(L"vulkan-1.dll")) InstallVk();
+    if (!g_glInstalled && GetModuleHandleW(L"opengl32.dll")) InstallGl();
     if (g_vkInstalled) rtx::vkpresent::Poll();
 }
 
 const char* Mode() {
-    if (g_vkInstalled) return rtx::vkpresent::Active() ? "vulkan" : "vulkan (waiting for device)";
+    if (g_vkInstalled && rtx::vkpresent::Active()) return g_glInstalled ? "vulkan (opengl hook idle)" : "vulkan";
+    if (g_vkInstalled && g_glInstalled) return "opengl and vulkan hooks in, waiting for the first present";
+    if (g_vkInstalled) return "vulkan (waiting for device)";
     return g_glInstalled ? "opengl" : "off";
 }
 

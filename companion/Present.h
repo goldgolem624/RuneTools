@@ -2,7 +2,17 @@
 #include <cstdint>
 // Present callback: composites launcher UI into the game frame before the swap or present.
 
+namespace rtx::frame { struct Share; }
+
 namespace rtx::present {
+// Hands the game's own screen points for the launcher's world points to the frame share; a null
+// list clears them.
+bool PublishAnchors(const void* points, int count);
+// The width of each glyph of the label font, as the compositor measured it; `px` is the font size
+// those widths belong to. Sent once, when the atlas is built.
+void PublishGlyphWidths(const int* adv, int count, int px);
+void FrameChannelState(bool& mapped, std::uint32_t& magic, std::uint32_t& version,
+                       std::uint32_t& wantMagic, std::uint32_t& wantVersion);
 
 // Drawing surface a renderer backend provides; see Composite.h for the contract.
 struct Backend {

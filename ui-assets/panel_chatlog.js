@@ -3,13 +3,15 @@
 
   //  - packets: op-0x15 message_game from the companion's always-on capture ring; arrives
   //  - interface: the chatbox widget walk (group 137), the pre-packet source; still covers
-  const chatLogs = {};   // pid -> { seen:Set, pseq, pkPlain:Map, ifPlain:Map, lines:[{raw, ts, tokens, plain, chan, src}] }
+  //  - store: the game's own message store, read straight from the client: every message it has,
+  //    with its id, type, sender and clan, whether or not the chatbox is open or filtered
+  const chatLogs = {};   // pid -> { seen:Set, pseq, gid, pkPlain:Map, ifPlain:Map, lines:[{raw, ts, tokens, plain, chan, src}] }
   let chatFetching = false; let chatFetchAt = 0; chatSearch = ''; let chatSig = ''; let chatChan = 'All';
-  let chatPkHook = false;
+  let chatPkHook = false; let chatFromStore = 0;
   const CHAT_CHANS = ['All', 'Game', 'Public', 'Private', 'Friends', 'Clan', 'Guest', 'Group'];
   function chatStore() {
     const p = myPid();
-    if (!chatLogs[p]) chatLogs[p] = { seen: new Set(), pseq: 0, pkPlain: new Map(), ifPlain: new Map(), lines: [] };
+    if (!chatLogs[p]) chatLogs[p] = { seen: new Set(), pseq: 0, gid: 0, pkPlain: new Map(), ifPlain: new Map(), gmPlain: new Map(), lines: [] };
     return chatLogs[p];
   }
   function chatMark(map, plain) { map.set(plain, Date.now()); if (map.size > 600) map.delete(map.keys().next().value); }
@@ -168,10 +170,47 @@
       const j = JSON.parse(await rtxData.raw('chat.messages'));
       const lines = (j && Array.isArray(j.lines)) ? j.lines : [];
       const pkts = (j && Array.isArray(j.packets)) ? j.packets : [];
+      const gmsgs = (j && Array.isArray(j.store)) ? j.store : [];
       chatPkHook = !!(j && j.phook);
       const store = chatStore();
       const fresh = [];
       const bootPk = (store.pseq === 0 && store.lines.length === 0) ? new Set() : null;
+      // The same message can reach us from the store, from the packet capture and from the chatbox
+      // walk. The short-lived text match below only covers lines arriving together, so history
+      // carries its own key: the time it is shown at and the text, which every source agrees on.
+      const already = new Set(store.lines.slice(0, 1200).map(l => (l.ts || '') + '|' + l.plain));
+      const keep = (ts, plain) => {
+        const k = (ts || '') + '|' + plain;
+        if (already.has(k)) return false;
+        already.add(k);
+        return true;
+      };
+      // The game's own store, oldest first. Every message it holds is taken the first time, which
+      // fills in what happened before the panel was opened; after that only ids we have not seen.
+      for (let gi = gmsgs.length - 1; gi >= 0; --gi) {
+        const m = gmsgs[gi];
+        if (!m || typeof m.id !== 'number') continue;
+        const key = 'gm:' + m.id;
+        if (store.seen.has(key)) continue;
+        store.seen.add(key);
+        if (m.id > store.gid) store.gid = m.id;
+        const pr = chatParse(String(m.raw || ''), null);
+        if (!pr.plain) continue;
+        const nm = chatNormSpace(String(m.name || '').replace(/<[^>]*>/g, '')).trim();
+        if (nm) {
+          pr.tokens.unshift({ text: nm + ': ', color: null });
+          pr.plain = nm + ': ' + pr.plain;
+        }
+        if (bootPk) bootPk.add(pr.plain);
+        if (chatConsume(store.pkPlain, pr.plain)) continue;   // the packet capture already had it
+        if (chatConsume(store.ifPlain, pr.plain)) continue;   // the chatbox walk already had it
+        const gts = m.t ? chatFmtTime(m.t * 1000) : '';
+        if (!keep(gts, pr.plain)) continue;
+        chatMark(store.gmPlain, pr.plain);
+        fresh.push({ raw: key, ts: gts, tokens: pr.tokens,
+                     plain: pr.plain, chan: chatClassifyPkt(m.type, nm, String(m.clan || '')), src: 'gm' });
+        ++chatFromStore;
+      }
       for (const pk of pkts) {
         if (!pk || !(pk.seq > store.pseq)) continue;
         const p = chatParse(String(pk.raw || ''), null);
@@ -182,9 +221,12 @@
           p.plain = name + ': ' + p.plain;
         }
         if (bootPk) bootPk.add(p.plain);
+        if (chatConsume(store.gmPlain, p.plain)) continue;  // the game's own log already delivered it
         if (chatConsume(store.ifPlain, p.plain)) continue;  // chatbox walk already delivered it
+        const pts = pk.t ? chatFmtTime(pk.t) : '';
+        if (!keep(pts, p.plain)) continue;
         chatMark(store.pkPlain, p.plain);
-        fresh.push({ raw: 'pk:' + pk.seq, ts: pk.t ? chatFmtTime(pk.t) : '', tokens: p.tokens,
+        fresh.push({ raw: 'pk:' + pk.seq, ts: pts, tokens: p.tokens,
                      plain: p.plain, chan: chatClassifyPkt(pk.type, name, String(pk.chan || '')), src: 'pk',
                      pkraw: String(pk.raw || ''), pkname: name });
       }
@@ -201,12 +243,16 @@
           }
           continue;
         }
+        if (chatConsume(store.gmPlain, p.plain)) continue;   // the game's own log already delivered it
         chatMark(store.ifPlain, p.plain);
         const name = chatNormSpace(String(ln.name || '').replace(/<[^>]*>/g, '')).trim();
+        if (!keep(p.ts, p.plain)) continue;
         fresh.push({ raw, ts: p.ts, tokens: p.tokens, plain: p.plain, chan: chatClassify(p.plain, name), src: 'if' });
       }
       if (fresh.length) {
-        store.lines = fresh.concat(store.lines);
+        const gm = fresh.filter(l => l.src === 'gm').reverse();   // the store gave them oldest first
+        const rest = fresh.filter(l => l.src !== 'gm');
+        store.lines = rest.concat(gm, store.lines);
         if (store.lines.length > 5000) {            // cap session log; drop oldest
           const drop = store.lines.splice(5000);
           for (const d of drop) store.seen.delete(d.raw);
@@ -275,8 +321,9 @@
     const cnt = $('chatCnt');
     if (cnt) cnt.textContent = store.lines.length + ' lines captured' +
       (chatChan !== 'All' || q ? '  ·  ' + shown.length + ' shown' : '') +
-      (chatPkHook ? '  ·  live packet capture' :
-        (store.lines.length === 0 ? '  ·  open the game chat to capture' : ''));
+      (chatFromStore ? '  ·  from the game\'s own log' :
+        (chatPkHook ? '  ·  live packet capture' :
+          (store.lines.length === 0 ? '  ·  open the game chat to capture' : '')));
     if (!shown.length) {
       list.innerHTML = '<div class="chat-empty">' + (store.lines.length ? 'No lines match.' :
         (chatPkHook ? 'No chat captured yet. Messages are logged as they arrive, even with the chatbox closed.'

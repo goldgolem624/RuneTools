@@ -2,6 +2,8 @@
 // game's present queue between its last submit and the present.
 
 #include "VkComposite.h"
+
+#include "Present.h"
 #include "VkShaders.h"
 #include "MarkerShare.h"
 #include "CaptureShare.h"
@@ -26,16 +28,20 @@ namespace {
 struct Vertex { float x, y, z, u, v, r, g, b, a; };
 struct Batch  { int tex; int mode; std::uint32_t first, count; };
 // Mirrors the shader block under std430: the vec2 after `mode` is 8-byte aligned, hence the pad.
-struct PushConst { float sx, sy, tx, ty; std::int32_t mode; std::int32_t pad; float dsx, dsy; float a, b, bias, fade; };
-static_assert(sizeof(PushConst) == 48, "push constant block layout");
+struct PushConst { float sx, sy, tx, ty; std::int32_t mode; std::int32_t pad; float dsx, dsy; float a, b, bias, fade; float view[4]; float up[4]; float east[4]; float north[4]; };
+static_assert(sizeof(PushConst) == 112, "push constant block layout");
 static_assert(offsetof(PushConst, dsx) == 24 && offsetof(PushConst, a) == 32 && offsetof(PushConst, bias) == 40 && offsetof(PushConst, fade) == 44, "push constant offsets");
-constexpr float kOccludeBiasUnits = 128.0f;   // a quarter tile: how far in front the scene must be to fade a marker
+constexpr float kHwDepthBiasUnits = 24.0f;   // hardware depth mode: the markers sit this much nearer the camera than the ground they lie on
+constexpr float kOccludeHeight = 96.0f;       // world height above a marker from which SCENERY hides it (fully at half again); a tile is 512 across.
+                                              // Characters hide it from a sixth of that, see the shader.
+                                              // Tighter, and the grass on the ground cuts the grid lines.
 constexpr float kOccludedAlpha = 0.5f;         // opacity kept where the scene is in front of a marker
 
 enum Tex { kTexWhite = 0, kTexAtlas = 1, kTexUi = 2, kTexHud = 3, kTexCount = 4 };
 enum Mode { kModeStraight = 1, kModeDepth = 2, kModeReversed = 4,
             kModeShowDepth = 8, kModeFlipped = 16, kModeLinear = 32, kModeLine = 64,
-            kModeTop = 128 };   // not for the shader: keeps a batch out of the game's frame, see SetTopLayer
+            kModeTop = 128, kModeShowGap = 256, kModeHwDepth = 512,   // 512: the vertex carries its depth, the GPU tests it
+            kModeMaskWrite = 1024, kModeMaskGate = 2048 };              // the visibility mark, see RecordInScenePass   // not for the shader: keeps a batch out of the game's frame, see SetTopLayer
 
 struct Buffer {
     VkBuffer       buf  = VK_NULL_HANDLE;
@@ -74,7 +80,8 @@ struct Image {
     bool            probeHas2 = false;
 };
 
-struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe; VkPipeline pipeMS; VkPipeline scene; VkPipeline sceneMS; };   // MS: samples a multisampled scene depth; scene: see RecordScene
+// pipe[s][a]: s = the scenery depth is multisampled, a = the characters' depth is
+struct FormatRes { VkFormat fmt; VkRenderPass rp; VkPipeline pipe[2][2]; };
 
 struct Swapchain {
     VkSwapchainKHR     sc = VK_NULL_HANDLE;
@@ -101,8 +108,8 @@ VkPipelineLayout      g_pipeLayout = VK_NULL_HANDLE;
 VkDescriptorPool      g_descPool  = VK_NULL_HANDLE;
 VkSampler             g_sampler   = VK_NULL_HANDLE;
 VkSampler             g_depthSampler = VK_NULL_HANDLE;
-VkShaderModule        g_vert = VK_NULL_HANDLE, g_frag = VK_NULL_HANDLE, g_fragMS = VK_NULL_HANDLE;
-VkShaderModule        g_fragScene = VK_NULL_HANDLE, g_fragSceneMS = VK_NULL_HANDLE;
+VkShaderModule        g_vert = VK_NULL_HANDLE;
+VkShaderModule        g_frag[2][2] = {};                    // [scene depth multisampled][character depth multisampled]
 
 // The world markers of the last presented frames, for RecordScene. The present thread fills the
 // slots in turn and names the newest; a slot comes round again only after the GPU is long done with it.
@@ -127,7 +134,10 @@ std::atomic<unsigned> g_frameNoShared{ 0 };
 std::atomic<int>      g_trialWhere{ 1 };
 std::atomic<unsigned> g_trialLook{ 0 };
 // pipelines built against render passes of the game's, see RecordInPass
-struct GamePassPipes { VkRenderPass rp; VkPipeline pipe; VkPipeline pipeMS; };
+struct GamePassPipes { VkRenderPass rp; VkPipeline pipe[2][2]; };
+// for the game's scene colour pass: depth tested and written, at the pass's sample count
+struct ScenePassPipe { VkRenderPass rp; VkSampleCountFlagBits samples; VkPipeline pipe; };
+std::vector<ScenePassPipe> g_scenePipes;
 std::vector<GamePassPipes> g_gamePipes;
 std::mutex            g_gamePipesMu;
 std::vector<FormatRes> g_formats;
@@ -142,6 +152,23 @@ VkSampleCountFlagBits g_depthSamples = VK_SAMPLE_COUNT_1_BIT;
 VkImage         g_refusedImg = VK_NULL_HANDLE;
 VkImageView     g_depthView = VK_NULL_HANDLE;
 VkDescriptorSet g_depthSet = VK_NULL_HANDLE;
+// The characters' depth (the game's image; we own only the view). Absent: the scenery's is bound in its place.
+VkImage         g_actorImg = VK_NULL_HANDLE;
+VkFormat        g_actorFmt = VK_FORMAT_UNDEFINED;
+VkImageLayout   g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+VkSampleCountFlagBits g_actorSamples = VK_SAMPLE_COUNT_1_BIT;
+VkImage         g_actorRefused = VK_NULL_HANDLE;
+// The scene pass's colour target (the game's image; we own only the view), holding the marks.
+VkImage         g_sceneColImg = VK_NULL_HANDLE;
+VkFormat        g_sceneColFmt = VK_FORMAT_UNDEFINED;
+VkImageLayout   g_sceneColLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+VkSampleCountFlagBits g_sceneColSamples = VK_SAMPLE_COUNT_1_BIT;
+VkImageView     g_sceneColView = VK_NULL_HANDLE;
+VkDescriptorSet g_sceneColSet = VK_NULL_HANDLE;
+VkDescriptorSet g_gateSet = VK_NULL_HANDLE;              // bound in the depth slot while the marks gate a draw
+std::atomic<unsigned> g_markedAt{ 0 };            // g_frameNo when marks were last written
+VkImageView     g_actorView = VK_NULL_HANDLE;
+VkDescriptorSet g_actorSet = VK_NULL_HANDLE;
 std::uint32_t   g_depthFlags = 0;
 float           g_ref[8] = { -1.f, -1.f, -1.f, 0.f, 0.f, -1.f, -1.f, -1.f };
 float           g_z[4] = { -1.f, -1.f, -1.f, -1.f };
@@ -309,6 +336,18 @@ void DropDepthView() {
     g_depthView = VK_NULL_HANDLE;
     if (g_tex[kTexWhite].view) WriteSet(g_depthSet, g_sampler, g_tex[kTexWhite].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
+void DropActorView() {
+    if (!g_actorView) return;
+    WaitAll();
+    g_fn.DestroyImageView(g_dev, g_actorView, nullptr);
+    g_actorView = VK_NULL_HANDLE;
+    if (g_tex[kTexWhite].view) WriteSet(g_actorSet, g_sampler, g_tex[kTexWhite].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+// Which shader build a draw needs, and the set to bind as the characters' depth: without one of
+// its own the scenery's is bound twice, so the two reads agree and nothing is hidden by it.
+bool ActorUsable() { return g_actorImg && g_actorView && g_actorLayout != VK_IMAGE_LAYOUT_UNDEFINED && g_actorImg != g_depthImg; }
+int  ActorMSIndex() { return ActorUsable() ? (g_actorSamples != VK_SAMPLE_COUNT_1_BIT ? 1 : 0) : (g_depthSamples != VK_SAMPLE_COUNT_1_BIT ? 1 : 0); }
+VkDescriptorSet ActorSet() { return ActorUsable() ? g_actorSet : g_depthSet; }
 
 std::size_t ResForFormat(VkFormat fmt) {
     for (std::size_t i = 0; i < g_formats.size(); ++i) if (g_formats[i].fmt == fmt) return i;
@@ -340,9 +379,7 @@ std::size_t ResForFormat(VkFormat fmt) {
     st[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = g_vert; st[0].pName = "main";
     st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_frag; st[1].pName = "main";
-    VkPipelineShaderStageCreateInfo stMS[2] = { st[0], st[1] };
-    stMS[1].module = g_fragMS;
+    st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_frag[0][0]; st[1].pName = "main";
     VkVertexInputBindingDescription bind{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription attr[4] = {
         { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 },
@@ -379,26 +416,14 @@ std::size_t ResForFormat(VkFormat fmt) {
     pi.pViewportState = &vp; pi.pRasterizationState = &rs; pi.pMultisampleState = &ms;
     pi.pColorBlendState = &cb; pi.pDynamicState = &ds; pi.layout = g_pipeLayout;
     pi.renderPass = rp; pi.subpass = 0;
-    VkPipeline pipe = VK_NULL_HANDLE, pipeMS = VK_NULL_HANDLE;
-    if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &pipe) != VK_SUCCESS) {
-        g_fn.DestroyRenderPass(g_dev, rp, nullptr); return SIZE_MAX;
+    FormatRes res{ fmt, rp, {} };
+    for (int sm = 0; sm < 2; ++sm) for (int am = 0; am < 2; ++am) {
+        if (!g_frag[sm][am]) continue;
+        st[1].module = g_frag[sm][am];
+        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &res.pipe[sm][am]) != VK_SUCCESS) res.pipe[sm][am] = VK_NULL_HANDLE;
     }
-    if (g_fragMS) {
-        pi.pStages = stMS;
-        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &pipeMS) != VK_SUCCESS) pipeMS = VK_NULL_HANDLE;
-    }
-    // the in scene variants: same everything, the fragment shaders that know about that image
-    VkPipeline scene = VK_NULL_HANDLE, sceneMS = VK_NULL_HANDLE;
-    if (g_fragScene) {
-        VkPipelineShaderStageCreateInfo stS[2] = { st[0], st[1] };
-        stS[1].module = g_fragScene; pi.pStages = stS;
-        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &scene) != VK_SUCCESS) scene = VK_NULL_HANDLE;
-        if (g_fragSceneMS) {
-            stS[1].module = g_fragSceneMS;
-            if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &sceneMS) != VK_SUCCESS) sceneMS = VK_NULL_HANDLE;
-        }
-    }
-    g_formats.push_back({ fmt, rp, pipe, pipeMS, scene, sceneMS });
+    if (!res.pipe[0][0]) { g_fn.DestroyRenderPass(g_dev, rp, nullptr); return SIZE_MAX; }
+    g_formats.push_back(res);
     return g_formats.size() - 1;
 }
 
@@ -437,6 +462,8 @@ void BuildGlyphAtlas() {
         TextOutW(memDC, col * cw, row * chh + (chh - sz.cy) / 2, &wc, 1);
     }
     GdiFlush();
+    // the launcher sizes labels from these rather than estimating
+    rtx::present::PublishGlyphWidths(g_glyph_adv, count, chh - 13);
     g_atlasCov.resize((size_t)aw * ah);
     const unsigned char* src = static_cast<const unsigned char*>(bits);
     for (size_t i = 0; i < g_atlasCov.size(); ++i) g_atlasCov[i] = src[i * 4];
@@ -481,6 +508,7 @@ void ImageBarrier(VkCommandBuffer cmd, VkImage img, VkImageAspectFlags aspect,
     g_fn.CmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
+
 void Barrier(VkCommandBuffer cmd, Texture& t, VkImageLayout to,
              VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
              VkPipelineStageFlags dstStage, VkAccessFlags dstAccess) {
@@ -493,6 +521,20 @@ inline bool Drawing() { return g_active && g_cur != nullptr; }
 inline VkImageAspectFlags DepthAspects() {
     return (g_depthFmt == VK_FORMAT_D24_UNORM_S8_UINT || g_depthFmt == VK_FORMAT_D32_SFLOAT_S8_UINT || g_depthFmt == VK_FORMAT_D16_UNORM_S8_UINT)
         ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_DEPTH_BIT;
+}
+
+// Borrow and return the characters' depth around a read, alongside the scenery's.
+void ActorBarrierIn(VkCommandBuffer cmd) {
+    if (!ActorUsable()) return;
+    ImageBarrier(cmd, g_actorImg, DepthAspects(), g_actorLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+}
+void ActorBarrierOut(VkCommandBuffer cmd) {
+    if (!ActorUsable()) return;
+    ImageBarrier(cmd, g_actorImg, DepthAspects(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_actorLayout,
+                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
 }
 inline bool DepthOn() { return g_featDepth && (g_depthFlags & rtx::marker::kFlagDepth) && g_depthView != VK_NULL_HANDLE && g_ref[4] != 0.f; }
 
@@ -617,12 +659,12 @@ bool Init(VkDevice dev, const DeviceFns& fns,
     if (g_fn.CreateDescriptorSetLayout(g_dev, &li, nullptr, &g_setLayout) != VK_SUCCESS) { Shutdown(); return false; }
 
     VkPushConstantRange pcr{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConst) };
-    VkDescriptorSetLayout twoSets[2] = { g_setLayout, g_setLayout };
+    VkDescriptorSetLayout threeSets[3] = { g_setLayout, g_setLayout, g_setLayout };   // texture, scenery depth, characters' depth
     VkPipelineLayoutCreateInfo pli{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-    pli.setLayoutCount = 2; pli.pSetLayouts = twoSets; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
+    pli.setLayoutCount = 3; pli.pSetLayouts = threeSets; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
     if (g_fn.CreatePipelineLayout(g_dev, &pli, nullptr, &g_pipeLayout) != VK_SUCCESS) { Shutdown(); return false; }
 
-    constexpr std::uint32_t nsets = kTexCount + 1;
+    constexpr std::uint32_t nsets = kTexCount + 3;
     VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nsets };
     VkDescriptorPoolCreateInfo dpi{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     dpi.maxSets = nsets; dpi.poolSizeCount = 1; dpi.pPoolSizes = &ps;
@@ -635,6 +677,8 @@ bool Init(VkDevice dev, const DeviceFns& fns,
     if (g_fn.AllocateDescriptorSets(g_dev, &dai, sets) != VK_SUCCESS) { Shutdown(); return false; }
     for (int i = 0; i < kTexCount; ++i) g_tex[i].set = sets[i];
     g_depthSet = sets[kTexCount];
+    g_actorSet = sets[kTexCount + 1];
+    g_sceneColSet = sets[kTexCount + 2];
 
     VkSamplerCreateInfo si{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     si.magFilter = VK_FILTER_LINEAR; si.minFilter = VK_FILTER_LINEAR; si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -647,14 +691,15 @@ bool Init(VkDevice dev, const DeviceFns& fns,
     VkShaderModuleCreateInfo smi{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
     smi.codeSize = sizeof(rtx::vkshaders::kVert); smi.pCode = rtx::vkshaders::kVert;
     if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_vert) != VK_SUCCESS) { Shutdown(); return false; }
-    smi.codeSize = sizeof(rtx::vkshaders::kFragScene); smi.pCode = rtx::vkshaders::kFragScene;
-    if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_frag) != VK_SUCCESS) { Shutdown(); return false; }
-    smi.codeSize = sizeof(rtx::vkshaders::kFragSceneMS); smi.pCode = rtx::vkshaders::kFragSceneMS;
-    if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_fragMS) != VK_SUCCESS) g_fragMS = VK_NULL_HANDLE;
-    smi.codeSize = sizeof(rtx::vkshaders::kFragScene); smi.pCode = rtx::vkshaders::kFragScene;
-    if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_fragScene) != VK_SUCCESS) g_fragScene = VK_NULL_HANDLE;
-    smi.codeSize = sizeof(rtx::vkshaders::kFragSceneMS); smi.pCode = rtx::vkshaders::kFragSceneMS;
-    if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_fragSceneMS) != VK_SUCCESS) g_fragSceneMS = VK_NULL_HANDLE;
+    struct { const std::uint32_t* code; std::size_t size; int sm, am; } frags[4] = {
+        { rtx::vkshaders::kFragScene00, sizeof(rtx::vkshaders::kFragScene00), 0, 0 }, { rtx::vkshaders::kFragScene10, sizeof(rtx::vkshaders::kFragScene10), 1, 0 },
+        { rtx::vkshaders::kFragScene01, sizeof(rtx::vkshaders::kFragScene01), 0, 1 }, { rtx::vkshaders::kFragScene11, sizeof(rtx::vkshaders::kFragScene11), 1, 1 },
+    };
+    for (const auto& f : frags) {
+        smi.codeSize = f.size; smi.pCode = f.code;
+        if (g_fn.CreateShaderModule(g_dev, &smi, nullptr, &g_frag[f.sm][f.am]) != VK_SUCCESS) g_frag[f.sm][f.am] = VK_NULL_HANDLE;
+    }
+    if (!g_frag[0][0]) { Shutdown(); return false; }
 
     BuildGlyphAtlas();
     if (!CreateTexture(g_tex[kTexWhite], VK_FORMAT_R8G8B8A8_UNORM, 1, 1, false)) { Shutdown(); return false; }
@@ -678,7 +723,7 @@ void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsage
     // Only an image the driver allows us to sample and copy from: single-sampled, sampled usage,
     // transfer source for the calibration probe, not transient, and a known plain depth format.
     const bool depthFmt = fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT;
-    const bool msOk = samples == VK_SAMPLE_COUNT_1_BIT || (g_fragMS && samples <= VK_SAMPLE_COUNT_8_BIT);
+    const bool msOk = samples == VK_SAMPLE_COUNT_1_BIT || (g_frag[1][0] && samples <= VK_SAMPLE_COUNT_8_BIT);
     const bool ok = depthFmt && msOk && (usage & VK_IMAGE_USAGE_SAMPLED_BIT) && !(usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
     if (!ok) {
         if (img != g_refusedImg) {
@@ -697,10 +742,47 @@ void SetSceneDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsage
     Log("scene depth image %p format %d, layout %d, usage 0x%x, samples %d", (void*)img, (int)fmt, (int)layout, (unsigned)usage, (int)samples);
 }
 
+void SetActorDepth(VkImage img, VkFormat fmt, VkImageLayout layout, VkImageUsageFlags usage, VkSampleCountFlagBits samples) {
+    if (!g_ready) return;
+    if (img == g_actorImg && fmt == g_actorFmt) { g_actorLayout = layout; return; }
+    DropActorView();
+    g_actorImg = img; g_actorFmt = fmt; g_actorLayout = layout;
+    if (!img || layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    const bool depthFmt = fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    const bool msOk = samples == VK_SAMPLE_COUNT_1_BIT || (g_frag[0][1] && samples <= VK_SAMPLE_COUNT_8_BIT);
+    if (!(depthFmt && msOk && (usage & VK_IMAGE_USAGE_SAMPLED_BIT) && !(usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))) {
+        if (img != g_actorRefused) { g_actorRefused = img; Log("character depth image %p refused: format %d usage 0x%x samples %d", (void*)img, (int)fmt, (unsigned)usage, (int)samples); }
+        g_actorImg = VK_NULL_HANDLE; g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        return;
+    }
+    g_actorSamples = samples;
+    VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vi.image = img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
+    vi.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+    if (g_fn.CreateImageView(g_dev, &vi, nullptr, &g_actorView) != VK_SUCCESS) { g_actorView = VK_NULL_HANDLE; return; }
+    WriteSet(g_actorSet, g_depthSampler, g_actorView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    Log("character depth image %p format %d, layout %d, usage 0x%x, samples %d", (void*)img, (int)fmt, (int)layout, (unsigned)usage, (int)samples);
+}
+
+void SetSceneColour(VkImage img, VkFormat fmt, VkImageLayout layout, VkSampleCountFlagBits samples) {
+    if (!g_ready) return;
+    if (img == g_sceneColImg && fmt == g_sceneColFmt) { g_sceneColLayout = layout; return; }
+    if (g_sceneColView) { WaitAll(); g_fn.DestroyImageView(g_dev, g_sceneColView, nullptr); g_sceneColView = VK_NULL_HANDLE; }
+    g_sceneColImg = img; g_sceneColFmt = fmt; g_sceneColLayout = layout; g_sceneColSamples = samples;
+    if (!img || layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vi.image = img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = fmt;
+    vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    if (g_fn.CreateImageView(g_dev, &vi, nullptr, &g_sceneColView) != VK_SUCCESS) { g_sceneColView = VK_NULL_HANDLE; return; }
+    WriteSet(g_sceneColSet, g_depthSampler, g_sceneColView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    Log("scene colour image %p format %d, layout %d, samples %d: the visibility marks go here", (void*)img, (int)fmt, (int)layout, (int)samples);
+}
+
 void OnImageDestroyed(VkImage img) {
-    if (!g_ready || img != g_depthImg) return;
-    DropDepthView();
-    g_depthImg = VK_NULL_HANDLE; g_depthFmt = VK_FORMAT_UNDEFINED; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!g_ready) return;
+    if (img == g_sceneColImg) { if (g_sceneColView) { WaitAll(); g_fn.DestroyImageView(g_dev, g_sceneColView, nullptr); g_sceneColView = VK_NULL_HANDLE; } g_sceneColImg = VK_NULL_HANDLE; g_sceneColLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
+    if (img == g_depthImg) { DropDepthView(); g_depthImg = VK_NULL_HANDLE; g_depthFmt = VK_FORMAT_UNDEFINED; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
+    if (img == g_actorImg) { DropActorView(); g_actorImg = VK_NULL_HANDLE; g_actorFmt = VK_FORMAT_UNDEFINED; g_actorLayout = VK_IMAGE_LAYOUT_UNDEFINED; }
 }
 
 void SetDepthMode(std::uint32_t flags, const float* ref) {
@@ -835,6 +917,7 @@ void Begin() {
 
 void End() { g_active = false; }
 
+void SetViewConst(PushConst& pc, const ViewInfo& v, const float* m);   // below, with Reproject
 VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* waits) {
     Image* im = g_cur; Swapchain* c = g_curChain;
     g_cur = nullptr; g_curChain = nullptr; g_active = false;
@@ -854,14 +937,14 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         unsigned withDepth = 0;
         for (const auto& b : g_batches) if (b.mode & kModeDepth) ++withDepth;
         const unsigned state = (DepthOn() ? 1u : 0u) | (g_depthFlags << 1) | ((unsigned)g_depthSamples << 8) | (withDepth ? 1u << 16 : 0u) |
-                               (g_formats[c->res].pipeMS ? 1u << 17 : 0u);
+                               (g_formats[c->res].pipe[1][0] ? 1u << 17 : 0u) | (ActorUsable() ? 1u << 18 : 0u);
         static unsigned s_state = ~0u;
         static int s_said = 0;
         if (state != s_state && s_said < 40 && !g_batches.empty()) {
             s_state = state; ++s_said;
             Log("overlay depth: test %s, flags 0x%x, a %.7g b %.7g, depth image %p samples %d, multisample pipeline %d, batches %zu of which %u depth tested",
                 DepthOn() ? "on" : "OFF", (unsigned)g_depthFlags, (double)g_ref[3], (double)g_ref[4], (void*)g_depthImg, (int)g_depthSamples,
-                g_formats[c->res].pipeMS ? 1 : 0, g_batches.size(), withDepth);
+                g_formats[c->res].pipe[1][0] ? 1 : 0, g_batches.size(), withDepth, (void*)(ActorUsable() ? g_actorImg : VK_NULL_HANDLE), (int)g_actorSamples);
         }
     }
     const bool wantProbe = useDepth && g_depthSamples == VK_SAMPLE_COUNT_1_BIT && (g_depthFmt == VK_FORMAT_D32_SFLOAT) &&
@@ -910,7 +993,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
 
     // The game's depth image: borrow it read-only for the overlay pass, hand it back in its own layout.
     const bool depthPass = g_featDepth && useDepth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED &&
-                           (g_depthSamples == VK_SAMPLE_COUNT_1_BIT || g_formats[c->res].pipeMS);
+                           g_formats[c->res].pipe[g_depthSamples != VK_SAMPLE_COUNT_1_BIT ? 1 : 0][ActorMSIndex()];
     static bool s_depthLogged = false;
     if (depthPass && !s_depthLogged) { s_depthLogged = true; Log("depth pass active: image %p layout %d probe %d", (void*)g_depthImg, (int)g_depthLayout, wantProbe ? 1 : 0); }
     if (depthPass) {
@@ -940,6 +1023,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         ImageBarrier(cmd, g_depthImg, DepthAspects(), cur, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        ActorBarrierIn(cmd);
     }
 
     // The markers (plain colour and glyph batches) go into the game's frame when that is on and
@@ -984,17 +1068,20 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         rp.renderPass = g_formats[c->res].rp; rp.framebuffer = im->fb;
         rp.renderArea = { { 0, 0 }, { c->w, c->h } };
         g_fn.CmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
-        const bool ms = depthPass && g_depthSamples != VK_SAMPLE_COUNT_1_BIT && g_formats[c->res].pipeMS;
-        g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ms ? g_formats[c->res].pipeMS : g_formats[c->res].pipe);
+        // without the depth the shader build does not matter; the [0][0] build reads whatever is bound
+        const VkPipeline pipe = depthPass ? g_formats[c->res].pipe[g_depthSamples != VK_SAMPLE_COUNT_1_BIT ? 1 : 0][ActorMSIndex()] : g_formats[c->res].pipe[0][0];
+        g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
         VkViewport vp{ 0.f, 0.f, (float)c->w, (float)c->h, 0.f, 1.f };
         VkRect2D sc{ { 0, 0 }, { c->w, c->h } };
         g_fn.CmdSetViewport(cmd, 0, 1, &vp);
         g_fn.CmdSetScissor(cmd, 0, 1, &sc);
         VkDeviceSize zero = 0;
         g_fn.CmdBindVertexBuffers(cmd, 0, 1, &im->vbuf.buf, &zero);
-        g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 1, &g_depthSet, 0, nullptr);
-        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 0, 1.0f / (float)c->w, 1.0f / (float)c->h, g_ref[3], g_ref[4], kOccludeBiasUnits,
+        { const VkDescriptorSet depthSets[2] = { g_depthSet, depthPass ? ActorSet() : g_depthSet };
+          g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 2, depthSets, 0, nullptr); }
+        PushConst pc{ 2.0f / (float)c->w, 2.0f / (float)c->h, -1.0f, -1.0f, -1, 0, 1.0f / (float)c->w, 1.0f / (float)c->h, g_ref[3], g_ref[4], kOccludeHeight,
                       (g_depthFlags & rtx::marker::kFlagOccludeHide) ? 0.0f : kOccludedAlpha };
+        SetViewConst(pc, g_view, g_view.m);
         const unsigned look = g_trialLook.load(std::memory_order_relaxed);
         const bool showDepth = depthPass && (look & kLookDepth) && g_trialWhere.load(std::memory_order_relaxed) == 2;
         for (const auto& b : g_batches) {
@@ -1006,6 +1093,7 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
             // the game draws its whole frame upside down and turns it over on the way to the screen:
             // seen from here, the scene depth is upside down
             if (!(look & kLookDepthTurned)) mode |= kModeFlipped;
+            if (look & kLookGap) mode |= kModeShowGap;
             if ((mode & kModeShowDepth) && !showDepth) continue;
             if (pc.mode != mode) {
                 pc.mode = mode;
@@ -1017,10 +1105,12 @@ VkSemaphore Submit(VkQueue queue, std::uint32_t waitCount, const VkSemaphore* wa
         g_fn.CmdEndRenderPass(cmd);
     }
 
-    if (depthPass)
+    if (depthPass) {
         ImageBarrier(cmd, g_depthImg, DepthAspects(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+        ActorBarrierOut(cmd);
+    }
 
     if (wantCapture && EnsureBuffer(im->cap, (VkDeviceSize)c->w * c->h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
         ImageBarrier(cmd, im->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1096,12 +1186,28 @@ bool Invert4(const double a[4][4], double inv[4][4]) {
 // and those markers drop out. Here every vertex that carries a depth goes back to the world through
 // the matrix it was projected with and out again through the one the game holds right now.
 // Returns the buffer to draw from: `out` filled, or the snapshot's own when there is nothing to do.
-const Buffer* Reproject(const SceneSnap& sn) {
+// The view for the shader: where the game view sits, and the row of the inverse view that gives
+// world height from a clip position. `m` is the matrix the depth being tested was rendered with.
+void SetViewConst(PushConst& pc, const ViewInfo& v, const float* m) {
+    for (int i = 0; i < 4; ++i) { pc.view[i] = v.vp[i]; pc.up[i] = pc.east[i] = pc.north[i] = 0.f; }
+    if (!m || v.vp[2] < 8.f || v.vp[3] < 8.f) return;
+    double P[4][4], Pi[4][4];
+    ProjRows(m, P);
+    if (!Invert4(P, Pi)) return;
+    for (int r = 0; r < 3; ++r) for (int i = 0; i < 4; ++i) if (!std::isfinite(Pi[r][i])) return;
+    // rows of the inverse: 0 = world x, 1 = world y (north), 2 = world z (height), in the launcher's order
+    for (int i = 0; i < 4; ++i) { pc.east[i] = (float)Pi[0][i]; pc.north[i] = (float)Pi[1][i]; pc.up[i] = (float)Pi[2][i]; }
+}
+
+const Buffer* Reproject(const SceneSnap& sn, const float** usedMatrix) {
+    *usedMatrix = sn.view.addr ? sn.view.m : nullptr;
     const ViewInfo& v = sn.view;
     if (!v.addr || sn.b == 0.f || sn.verts.empty() || v.vp[2] < 8.f || v.vp[3] < 8.f) return &sn.vbuf;
     if (v.cw != (int)sn.w || v.ch != (int)sn.h) return &sn.vbuf;
     float now[16];
     if (!ReadGameMatrix(v.addr, now)) return &sn.vbuf;
+    static thread_local float s_now[16];
+    std::memcpy(s_now, now, sizeof(now)); *usedMatrix = s_now;
     if (std::memcmp(now, v.m, sizeof(now)) == 0) return &sn.vbuf;          // the camera has not moved since
     double Po[4][4], Pn[4][4], Pi[4][4], R[4][4];
     ProjRows(v.m, Po); ProjRows(now, Pn);
@@ -1157,12 +1263,15 @@ std::uint32_t DrawSnap(VkCommandBuffer cmd, const SceneSnap& sn, std::uint32_t w
     g_fn.CmdSetViewport(cmd, 0, 1, &vp);
     g_fn.CmdSetScissor(cmd, 0, 1, &sc);
     VkDeviceSize zero = 0;
-    const Buffer* from = Reproject(sn);
+    const float* used = nullptr;
+    const Buffer* from = Reproject(sn, &used);
     g_fn.CmdBindVertexBuffers(cmd, 0, 1, &from->buf, &zero);
-    g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 1, &g_depthSet, 0, nullptr);
+    { const VkDescriptorSet depthSets[2] = { g_gateSet ? g_gateSet : g_depthSet, depth && !g_gateSet ? ActorSet() : g_depthSet };
+      g_fn.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 1, 2, depthSets, 0, nullptr); }
     // a target that is upside down on the way to the screen: y runs the other way
     PushConst pc{ 2.0f / (float)w, (flipped ? -2.0f : 2.0f) / (float)h, -1.0f, flipped ? 1.0f : -1.0f, -1, 0,
-                  1.0f / (float)w, 1.0f / (float)h, sn.a, sn.b, kOccludeBiasUnits, sn.fade };
+                  1.0f / (float)w, 1.0f / (float)h, sn.a, sn.b, (extraMode & kModeHwDepth) ? kHwDepthBiasUnits : kOccludeHeight, sn.fade };
+    SetViewConst(pc, sn.view, used);
     std::uint32_t drawn = 0;
     if (showDepth && depth && g_tex[kTexWhite].img && g_tex[kTexWhite].layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         pc.mode = kModeShowDepth | extraMode;
@@ -1175,7 +1284,7 @@ std::uint32_t DrawSnap(VkCommandBuffer cmd, const SceneSnap& sn, std::uint32_t w
         const Texture& t = g_tex[b.tex];
         if (!t.img || t.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;
         int mode = b.mode;
-        if (!depth) mode &= ~(kModeDepth | kModeReversed);
+        if (!depth || (extraMode & kModeMaskGate)) mode &= ~(kModeDepth | kModeReversed);
         mode |= extraMode;
         if (pc.mode != mode) {
             pc.mode = mode;
@@ -1195,28 +1304,31 @@ bool RecordScene(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::ui
     const SceneSnap& sn = g_sceneSnaps[newest];
     if (sn.batches.empty() || !sn.vbuf.buf || sn.w != w || sn.h != h) return false;
     const std::size_t res = ResForFormat(VK_FORMAT_R16G16B16A16_SFLOAT);
-    if (res == SIZE_MAX || !g_formats[res].scene) return false;
-    const bool depth = sn.depth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED &&
-                       (g_depthSamples == VK_SAMPLE_COUNT_1_BIT || g_formats[res].sceneMS);
-    const bool ms = depth && g_depthSamples != VK_SAMPLE_COUNT_1_BIT;
+    if (res == SIZE_MAX) return false;
+    const int sm = g_depthSamples != VK_SAMPLE_COUNT_1_BIT ? 1 : 0, am = ActorMSIndex();
+    const bool depth = sn.depth && g_depthImg && g_depthView && g_depthLayout != VK_IMAGE_LAYOUT_UNDEFINED && g_formats[res].pipe[sm][am];
+    const bool ms = depth && sm;
 
     // the game's depth image, read only for the length of our pass and handed back as it was
     if (depth)
         ImageBarrier(cmd, g_depthImg, DepthAspects(), g_depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    if (depth) ActorBarrierIn(cmd);
     VkRenderPassBeginInfo bi{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     bi.renderPass = rp; bi.framebuffer = fb; bi.renderArea = { { 0, 0 }, { w, h } };
     g_fn.CmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
-    g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ms ? g_formats[res].sceneMS : g_formats[res].scene);
+    g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depth ? g_formats[res].pipe[sm][am] : g_formats[res].pipe[0][0]);
     // the finished scene image: upside down on the way to the screen, and linear light
     const bool flipped = (look & kLookTurned) == 0;
     const std::uint32_t drawn = DrawSnap(cmd, sn, w, h, depth, flipped, ((look & kLookDepthTurned) ? kModeFlipped : 0) | kModeLinear, (look & kLookDepth) != 0);
     g_fn.CmdEndRenderPass(cmd);
-    if (depth)
+    if (depth) {
         ImageBarrier(cmd, g_depthImg, DepthAspects(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+        ActorBarrierOut(cmd);
+    }
     if (!drawn) return false;
     g_sceneDrawnAt.store(g_frameNoShared.load(std::memory_order_relaxed), std::memory_order_relaxed);
     static bool s_said = false;
@@ -1227,13 +1339,13 @@ bool RecordScene(VkCommandBuffer cmd, VkRenderPass rp, VkFramebuffer fb, std::ui
 // The in frame pipelines, for a render pass of the game's that has a depth attachment. Same layout
 // and vertex format as at present time; depth is neither tested nor written, the shader does the
 // comparison against the scene depth itself.
-bool PipesForGamePass(VkRenderPass rp, VkPipeline* pipe, VkPipeline* pipeMS) {
+const GamePassPipes* PipesForGamePass(VkRenderPass rp) {
     std::lock_guard<std::mutex> lk(g_gamePipesMu);
-    for (const auto& g : g_gamePipes) if (g.rp == rp) { *pipe = g.pipe; *pipeMS = g.pipeMS; return g.pipe != VK_NULL_HANDLE; }
-    if (!g_fragScene) return false;
+    for (const auto& g : g_gamePipes) if (g.rp == rp) return g.pipe[0][0] ? &g : nullptr;
+    if (!g_frag[0][0] || g_gamePipes.size() >= 8) return nullptr;
     VkPipelineShaderStageCreateInfo st[2]{};
     st[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = g_vert; st[0].pName = "main";
-    st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_fragScene; st[1].pName = "main";
+    st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_frag[0][0]; st[1].pName = "main";
     VkVertexInputBindingDescription bind{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
     VkVertexInputAttributeDescription attr[4] = {
         { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 }, { 1, 0, VK_FORMAT_R32G32_SFLOAT, 12 },
@@ -1265,25 +1377,104 @@ bool PipesForGamePass(VkRenderPass rp, VkPipeline* pipe, VkPipeline* pipeMS) {
     pi.stageCount = 2; pi.pStages = st; pi.pVertexInputState = &vin; pi.pInputAssemblyState = &ia;
     pi.pViewportState = &vp; pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pDepthStencilState = &dss;
     pi.pColorBlendState = &cb; pi.pDynamicState = &ds; pi.layout = g_pipeLayout; pi.renderPass = rp; pi.subpass = 0;
-    GamePassPipes g{ rp, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipe) != VK_SUCCESS) g.pipe = VK_NULL_HANDLE;
-    if (g.pipe && g_fragSceneMS) {
-        st[1].module = g_fragSceneMS;
-        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipeMS) != VK_SUCCESS) g.pipeMS = VK_NULL_HANDLE;
+    GamePassPipes g{ rp, {} };
+    for (int sm = 0; sm < 2; ++sm) for (int am = 0; am < 2; ++am) {
+        if (!g_frag[sm][am]) continue;
+        st[1].module = g_frag[sm][am];
+        if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipe[sm][am]) != VK_SUCCESS) g.pipe[sm][am] = VK_NULL_HANDLE;
     }
-    if (g_gamePipes.size() < 8) g_gamePipes.push_back(g);         // a refusal is remembered too: not tried again every frame
-    *pipe = g.pipe; *pipeMS = g.pipeMS;
-    Log("in pass: pipelines for the game's interface pass: %s, multisampled depth %s", g.pipe ? "ok" : "REFUSED", g.pipeMS ? "ok" : "none");
-    return g.pipe != VK_NULL_HANDLE;
+    g_gamePipes.push_back(g);                                       // a refusal is remembered too: not tried again every frame
+    Log("in pass: pipelines for the game's interface pass: %s", g.pipe[0][0] ? "ok" : "REFUSED");
+    return g.pipe[0][0] ? &g_gamePipes.back() : nullptr;
+}
+
+VkPipeline PipeForScenePass(VkRenderPass rp, VkSampleCountFlagBits samples) {
+    std::lock_guard<std::mutex> lk(g_gamePipesMu);
+    for (const auto& g : g_scenePipes) if (g.rp == rp && g.samples == samples) return g.pipe;
+    if (!g_frag[0][0] || g_scenePipes.size() >= 8) return VK_NULL_HANDLE;
+    VkPipelineShaderStageCreateInfo st[2]{};
+    st[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[0].stage = VK_SHADER_STAGE_VERTEX_BIT; st[0].module = g_vert; st[0].pName = "main";
+    st[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO; st[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; st[1].module = g_frag[0][0]; st[1].pName = "main";
+    VkVertexInputBindingDescription bind{ 0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attr[4] = {
+        { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 }, { 1, 0, VK_FORMAT_R32G32_SFLOAT, 12 },
+        { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 20 }, { 3, 0, VK_FORMAT_R32_SFLOAT, 8 },
+    };
+    VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
+    vin.vertexAttributeDescriptionCount = 4; vin.pVertexAttributeDescriptions = attr;
+    VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    vp.viewportCount = 1; vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    ms.rasterizationSamples = samples;
+    // the game's own compare in this pass: nearer or equal passes; the markers write their depth so
+    // the ground drawn after them, a little farther, does not paint over them
+    VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_TRUE; dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    // only the mark is written, into the alpha the scene does not use, and without blending: the
+    // colour target keeps its light untouched and the mark reads back exactly
+    VkPipelineColorBlendAttachmentState ba{};
+    ba.blendEnable = VK_FALSE;
+    ba.colorWriteMask = VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    cb.attachmentCount = 1; cb.pAttachments = &ba;
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+    VkGraphicsPipelineCreateInfo pi{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    pi.stageCount = 2; pi.pStages = st; pi.pVertexInputState = &vin; pi.pInputAssemblyState = &ia;
+    pi.pViewportState = &vp; pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pDepthStencilState = &dss;
+    pi.pColorBlendState = &cb; pi.pDynamicState = &ds; pi.layout = g_pipeLayout; pi.renderPass = rp; pi.subpass = 0;
+    ScenePassPipe g{ rp, samples, VK_NULL_HANDLE };
+    if (g_fn.CreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipe) != VK_SUCCESS) g.pipe = VK_NULL_HANDLE;
+    g_scenePipes.push_back(g);
+    Log("in scene pass: pipeline for the game's scene pass (%d samples): %s", (int)samples, g.pipe ? "ok" : "REFUSED");
+    return g.pipe;
+}
+
+bool WantsScenePass() {
+    if (!g_ready || !g_inScene.load(std::memory_order_relaxed)) return false;
+    const int newest = g_sceneNewest.load(std::memory_order_acquire);
+    if (newest < 0) return false;
+    const SceneSnap& sn = g_sceneSnaps[newest];
+    return sn.depth && sn.fade == 0.0f;
+}
+
+bool RecordInScenePass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, VkSampleCountFlagBits samples, unsigned look) {
+    if (!WantsScenePass()) return false;
+    const int newest = g_sceneNewest.load(std::memory_order_acquire);
+    const SceneSnap& sn = g_sceneSnaps[newest];
+    if (sn.batches.empty() || !sn.vbuf.buf || sn.w != w || sn.h != h) return false;
+    VkPipeline pipe = PipeForScenePass(gameRp, samples);
+    if (!pipe) return false;
+    g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    // no depth is sampled here (the depth buffer is this pass's own attachment): the shader's
+    // compare is off, the vertex depth and the GPU do the work; the target holds linear light
+    const bool flipped = (look & kLookTurned) == 0;
+    const std::uint32_t drawn = DrawSnap(cmd, sn, w, h, false, flipped, kModeHwDepth | kModeMaskWrite, false);
+    if (!drawn) return false;
+    g_markedAt.store(g_frameNoShared.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    static bool s_said = false;
+    if (!s_said) { s_said = true; Log("in scene pass: %u vertices marked inside the game's scene pass %ux%u, %d samples, GPU depth test", drawn, w, h, (int)samples); }
+    return true;
 }
 
 bool SceneDepthBorrow(VkCommandBuffer cmd, VkImage passDepth) {
     if (!g_ready || !g_inScene.load(std::memory_order_relaxed)) return false;
     if (!g_featDepth || !g_depthImg || !g_depthView || g_depthLayout == VK_IMAGE_LAYOUT_UNDEFINED) return false;
-    if (g_depthImg == passDepth) return false;                    // an image cannot be sampled by the pass that writes it
+    if (g_depthImg == passDepth || g_actorImg == passDepth) return false;   // an image cannot be sampled by the pass that writes it
     ImageBarrier(cmd, g_depthImg, DepthAspects(), g_depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    ActorBarrierIn(cmd);
+    if (WantsScenePass() && g_sceneColView && g_sceneColLayout != VK_IMAGE_LAYOUT_UNDEFINED && g_sceneColImg != passDepth)
+        ImageBarrier(cmd, g_sceneColImg, VK_IMAGE_ASPECT_COLOR_BIT, g_sceneColLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     return true;
 }
 
@@ -1292,6 +1483,11 @@ void SceneDepthReturn(VkCommandBuffer cmd) {
     ImageBarrier(cmd, g_depthImg, DepthAspects(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, g_depthLayout,
                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
                  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+    ActorBarrierOut(cmd);
+    if (WantsScenePass() && g_sceneColView && g_sceneColLayout != VK_IMAGE_LAYOUT_UNDEFINED)
+        ImageBarrier(cmd, g_sceneColImg, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, g_sceneColLayout,
+                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
 }
 
 bool RecordInPass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, bool depthBorrowed, unsigned look) {
@@ -1300,14 +1496,21 @@ bool RecordInPass(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std
     if (newest < 0) return false;
     const SceneSnap& sn = g_sceneSnaps[newest];
     if (sn.batches.empty() || !sn.vbuf.buf || sn.w != w || sn.h != h) return false;
-    VkPipeline pipe = VK_NULL_HANDLE, pipeMS = VK_NULL_HANDLE;
-    if (!PipesForGamePass(gameRp, &pipe, &pipeMS)) return false;
-    const bool depth = depthBorrowed && sn.depth && (g_depthSamples == VK_SAMPLE_COUNT_1_BIT || pipeMS);
-    const bool ms = depth && g_depthSamples != VK_SAMPLE_COUNT_1_BIT;
-    g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ms ? pipeMS : pipe);
+    const GamePassPipes* gp = PipesForGamePass(gameRp);
+    if (!gp) return false;
+    // The marks left in the scene pass this frame decide visibility: the scene target is bound where
+    // the depth would be and read the same way, so the multisampled build is the one for it.
+    const bool gate = WantsScenePass() && g_sceneColView && g_markedAt.load(std::memory_order_relaxed) == g_frameNoShared.load(std::memory_order_relaxed) &&
+                      g_sceneColLayout != VK_IMAGE_LAYOUT_UNDEFINED && depthBorrowed;
+    const int sm = gate ? (g_sceneColSamples != VK_SAMPLE_COUNT_1_BIT ? 1 : 0) : (g_depthSamples != VK_SAMPLE_COUNT_1_BIT ? 1 : 0), am = ActorMSIndex();
+    const bool depth = gate ? (gp->pipe[sm][am] != VK_NULL_HANDLE) : (depthBorrowed && sn.depth && gp->pipe[sm][am]);
+    const bool ms = depth && sm;
+    g_fn.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depth ? gp->pipe[sm][am] : gp->pipe[0][0]);
     // that target too is upside down on the way to the screen, the same way up as the scene depth
     const bool flipped = (look & kLookTurned) == 0;
-    const std::uint32_t drawn = DrawSnap(cmd, sn, w, h, depth, flipped, (look & kLookDepthTurned) ? kModeFlipped : 0, (look & kLookDepth) != 0);
+    g_gateSet = gate ? g_sceneColSet : VK_NULL_HANDLE;
+    const std::uint32_t drawn = DrawSnap(cmd, sn, w, h, depth, flipped, ((look & kLookDepthTurned) ? kModeFlipped : 0) | ((look & kLookGap) ? kModeShowGap : 0) | (gate ? kModeMaskGate : 0), (look & kLookDepth) != 0);
+    g_gateSet = VK_NULL_HANDLE;
     if (!drawn) return false;
     g_sceneDrawnAt.store(g_frameNoShared.load(std::memory_order_relaxed), std::memory_order_relaxed);
     static bool s_said = false;
@@ -1319,6 +1522,7 @@ void Shutdown() {
     if (g_dev && g_fn.DeviceWaitIdle) g_fn.DeviceWaitIdle(g_dev);
     while (!g_chains.empty()) UnregisterSwapchain(g_chains.back().sc);
     if (g_depthView) { g_fn.DestroyImageView(g_dev, g_depthView, nullptr); g_depthView = VK_NULL_HANDLE; }
+    if (g_sceneColView) { g_fn.DestroyImageView(g_dev, g_sceneColView, nullptr); g_sceneColView = VK_NULL_HANDLE; }
     g_depthImg = VK_NULL_HANDLE; g_depthFmt = VK_FORMAT_UNDEFINED; g_depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     for (auto& t : g_tex) DestroyTexture(t);
     for (auto& d : g_drawBufs) DestroyBuffer(d);
@@ -1326,32 +1530,27 @@ void Shutdown() {
     g_drawRetired.clear();
     {
         std::lock_guard<std::mutex> lk(g_gamePipesMu);
-        for (auto& g : g_gamePipes) { if (g.pipe) g_fn.DestroyPipeline(g_dev, g.pipe, nullptr); if (g.pipeMS) g_fn.DestroyPipeline(g_dev, g.pipeMS, nullptr); }
+        for (auto& g : g_gamePipes) for (auto& row : g.pipe) for (auto& p : row) if (p) g_fn.DestroyPipeline(g_dev, p, nullptr);
+        for (auto& g : g_scenePipes) if (g.pipe) g_fn.DestroyPipeline(g_dev, g.pipe, nullptr);
+        g_scenePipes.clear();
         g_gamePipes.clear();
     }
     for (auto& r : g_formats) {
-        if (r.pipe) g_fn.DestroyPipeline(g_dev, r.pipe, nullptr);
-        if (r.pipeMS) g_fn.DestroyPipeline(g_dev, r.pipeMS, nullptr);
-        if (r.scene) g_fn.DestroyPipeline(g_dev, r.scene, nullptr);
-        if (r.sceneMS) g_fn.DestroyPipeline(g_dev, r.sceneMS, nullptr);
+        for (auto& row : r.pipe) for (auto& p : row) if (p) g_fn.DestroyPipeline(g_dev, p, nullptr);
         if (r.rp)   g_fn.DestroyRenderPass(g_dev, r.rp, nullptr);
     }
     g_formats.clear();
     if (g_vert)         g_fn.DestroyShaderModule(g_dev, g_vert, nullptr);
-    if (g_fragMS)       g_fn.DestroyShaderModule(g_dev, g_fragMS, nullptr);
-    if (g_fragScene)    g_fn.DestroyShaderModule(g_dev, g_fragScene, nullptr);
-    if (g_fragSceneMS)  g_fn.DestroyShaderModule(g_dev, g_fragSceneMS, nullptr);
-    g_fragScene = g_fragSceneMS = VK_NULL_HANDLE;
+    for (auto& row : g_frag) for (auto& f : row) { if (f) g_fn.DestroyShaderModule(g_dev, f, nullptr); f = VK_NULL_HANDLE; }
     g_sceneNewest.store(-1);
     for (auto& sn : g_sceneSnaps) { DestroyBuffer(sn.vbuf); sn.batches.clear(); }
-    if (g_frag)         g_fn.DestroyShaderModule(g_dev, g_frag, nullptr);
     if (g_sampler)      g_fn.DestroySampler(g_dev, g_sampler, nullptr);
     if (g_depthSampler) g_fn.DestroySampler(g_dev, g_depthSampler, nullptr);
     if (g_descPool)     g_fn.DestroyDescriptorPool(g_dev, g_descPool, nullptr);
     if (g_pipeLayout)   g_fn.DestroyPipelineLayout(g_dev, g_pipeLayout, nullptr);
     if (g_setLayout)    g_fn.DestroyDescriptorSetLayout(g_dev, g_setLayout, nullptr);
     if (g_pool)         g_fn.DestroyCommandPool(g_dev, g_pool, nullptr);
-    g_vert = g_frag = g_fragMS = VK_NULL_HANDLE; g_sampler = g_depthSampler = VK_NULL_HANDLE; g_descPool = VK_NULL_HANDLE;
+    g_vert = VK_NULL_HANDLE; g_sampler = g_depthSampler = VK_NULL_HANDLE; g_descPool = VK_NULL_HANDLE;
     g_pipeLayout = VK_NULL_HANDLE; g_setLayout = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_depthSet = VK_NULL_HANDLE;
     for (auto& t : g_tex) t.set = VK_NULL_HANDLE;
     g_dev = VK_NULL_HANDLE; g_ready = false; g_staticUploaded = false;

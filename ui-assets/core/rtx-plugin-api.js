@@ -279,6 +279,10 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     // The game's own guidance towards one target: its arrow over it, its chevrons at the player's feet and its
     // trail on the ground. kind 'npc' | 'object' (a name, or part of one, or an id) or 'tile' ('x, y' or 'x, y, plane');
     // an empty kind takes this caller's request away again.
+    // the game's own sound effect by id, through its mixer and volume settings
+    'game.sound':       { scope: 'overlay', json: false, run: (a, pid) => { const id = pClampNum(a[0], 1, 200000); if (!id) return false; try { bridge().engineRequest(pid, id, 0, 0); } catch (e) { return false; } return true; } },
+    // camera zoom and field of view as the client's own viewport operations take them (0 = leave)
+    'game.camera':      { scope: 'overlay', json: false, run: (a, pid) => { const z = pClampNum(a[0], 0, 4096), f = pClampNum(a[1], 0, 4096); try { bridge().engineRequest(pid, 0, z, f); } catch (e) { return false; } return true; } },
     'overlay.pointAt':  { scope: 'overlay', json: false, run: (a, pid, id) =>
                             (typeof ovPointAt === 'function') ? ovPointAt('plugin:' + (id || ''), pClampStr(a[0], 8), pClampStr(a[1], 96)) : false },
     'overlay.clearHighlight':{ scope: 'overlay', json: false, run: (a, pid) => {

@@ -165,6 +165,7 @@
     <ClInclude Include="..\src\launcher\Process.h" />
     <ClInclude Include="..\src\reader\BankCache.h" />
     <ClInclude Include="..\src\reader\Reader.h" />
+    <ClInclude Include="..\src\reader\Calibrate.h" />
     <ClInclude Include="..\src\shared\Log.h" />
     <ClInclude Include="..\src\shared\MachineFingerprint.h" />
   </ItemGroup>
@@ -177,6 +178,7 @@
     <ClCompile Include="..\src\cache\Bzip2.cpp" />
     <ClCompile Include="..\src\cache\CachePath.cpp" />
     <ClCompile Include="..\src\cache\CacheReader.cpp" />
+    <ClCompile Include="..\src\reader\Calibrate.cpp" />
     <ClCompile Include="..\src\cache\FileContainer.cpp" />
     <ClCompile Include="..\src\cache\InputStream.cpp" />
     <ClCompile Include="..\src\cache\ItemType.cpp" />

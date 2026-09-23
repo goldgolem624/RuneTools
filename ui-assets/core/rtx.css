@@ -1515,6 +1515,7 @@
   .inv-grid .bank-amt { font-size: 13px; top: 3px; left: 4px; }
   /* Inventory cells: icon box over a name strip, explicit pixel heights (46 icon + 36 name = 82); percentage padding and flex stacking clip the name in this engine. */
   .inv-grid .bank-cell { height: 82px; padding-bottom: 0; display: block; }
+  .inv-grid .bank-cell.inv-hl { outline: 2px solid var(--accent); outline-offset: -2px; }
   .inv-ico-box { position: relative; width: 100%; height: 46px; padding-bottom: 0; }
   /* Three lines at 11px with an ellipsis; the full name is in the tooltip. */
   .inv-name {

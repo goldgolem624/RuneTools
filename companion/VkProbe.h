@@ -16,6 +16,9 @@ void SetTargetExtent(unsigned w, unsigned h);   // swapchain size: which depth p
 void FrameBegin();                              // present-time boundary, before the overlay is recorded
 void OnOverlayCmd(VkCommandBuffer cmd);         // start of the overlay command buffer
 bool SceneDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout);
+// The characters' depth: the game writes it in a depth-only pass of its own and never into the
+// scenery's depth image (characters are tested against the scenery, not added to it).
+bool ActorDepth(VkImage* img, VkFormat* fmt, VkImageLayout* layout);
 struct ImageInfo { VkImageUsageFlags usage; VkSampleCountFlagBits samples; VkImageCreateFlags flags; unsigned w, h, mips, layers; };
 bool LookupImage(VkImage img, ImageInfo* out);   // create info recorded by the vkCreateImage hook
 void SetHideScene(bool on);
@@ -33,6 +36,9 @@ struct PassRecorder {
     void (*giveBack)(VkCommandBuffer cmd);
     bool (*record)(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, bool borrowed, unsigned look);
     void (*trial)(int where, unsigned look);
+    bool (*wantsScene)();
+    bool (*recordScene)(VkCommandBuffer cmd, VkRenderPass gameRp, std::uint32_t w, std::uint32_t h, VkSampleCountFlagBits samples, unsigned look);
+    void (*sceneColour)(VkImage img, VkFormat fmt, VkImageLayout layout, VkSampleCountFlagBits samples);
 };
 void SetPassRecorder(const PassRecorder& r);
 void SetTimingEnabled(bool on);
