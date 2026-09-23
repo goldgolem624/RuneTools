@@ -273,9 +273,10 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                               const merge = m.merge ? 1 : 0;   // region 1: same-label marks fuse into one zone with one label
                               // snap: box the live entity on this tile instead of the flat tile, so the
                               // label rides above the model and clears the game's own overhead bar
-                              const snap = m.snap ? 1 : 0;
-                              if (hasArea || col || col2 || merge || snap)
-                                rec += '\x1f' + snap + '\x1f' + col + '\x1f' + (hasArea ? x2 : 0) + '\x1f' + (hasArea ? y2 : 0) + '\x1f' + merge + '\x1f' + col2;
+                              const snapId = pClampNum(m.snapId, 0, 300000) | 0;   // the loc the mark names
+                              const snap = (m.snap || snapId) ? 1 : 0;
+                              if (hasArea || col || col2 || merge || snap || snapId)
+                                rec += '\x1f' + snap + '\x1f' + col + '\x1f' + (hasArea ? x2 : 0) + '\x1f' + (hasArea ? y2 : 0) + '\x1f' + merge + '\x1f' + col2 + '\x1f' + snapId;
                               recs.push(rec);
                             }
                             return bridge().guideMarks(pid, recs.join('\x1e')); } },

@@ -7572,10 +7572,22 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             if (nameHidden) oname.erase(0, 1);
             bool found = false;
             if (gs.snap_obj) {
-                int bestD2 = 5 * 5 + 1; const RuntimeObj* bestR = nullptr;
+                // With a loc id the caller has named the object, so only that id is considered and
+                // the mark's tile must fall inside its model footprint. Without one, the nearest
+                // live object within a tile of the mark: a caller that cannot name what it marked
+                // gets no room to pick up a neighbour.
+                // Named: the footprint test below is the gate, so distance only breaks a tie between
+                // two placements of the same loc. Unnamed: one tile of slack and no more.
+                int bestD2 = gs.snap_id ? 0x7fffffff : 2; const RuntimeObj* bestR = nullptr;
                 for (const auto& r : gobjs) {
                     if (r.config_id <= 0 || r.plane != gs.plane) continue;
+                    if (gs.snap_id && r.config_id != gs.snap_id) continue;
                     if (!(r.bmax[0] > r.bmin[0])) continue;       // need a real AABB
+                    if (gs.snap_id) {
+                        const float fx = (float)gs.gx * 512.f, fy = (float)gs.gy * 512.f;
+                        if (fx + 512.f <= r.bmin[0] || fx >= r.bmax[0] ||
+                            fy + 512.f <= r.bmin[1] || fy >= r.bmax[1]) continue;   // tile outside the model
+                    }
                     int dx = r.x - gs.gx, dy = r.y - gs.gy;
                     int d2 = dx * dx + dy * dy;
                     if (d2 >= bestD2) continue;

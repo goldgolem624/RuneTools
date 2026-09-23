@@ -87,7 +87,7 @@ void XpPanelReset(std::uint32_t pid);
 
 std::string XpPanelStateJson(std::uint32_t pid);
 
-struct GuideMark { int gx = 0; int gy = 0; int plane = 0; std::string label; bool snapObj = false; int rgb = 0; int gx2 = 0; int gy2 = 0; int region = 0; int rgb2 = 0; };
+struct GuideMark { int gx = 0; int gy = 0; int plane = 0; std::string label; bool snapObj = false; int rgb = 0; int gx2 = 0; int gy2 = 0; int region = 0; int rgb2 = 0; int snapId = 0; };
 void SetGuideMarks(std::uint32_t pid, std::vector<GuideMark> marks);
 
 struct CenterBanner { std::string text; int rgb = -1; };

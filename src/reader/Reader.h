@@ -139,7 +139,7 @@ struct OverlayPoint {
     int         src = 0;                  // kind 5 (true-tile outline) only: 1 = NPC, 2 = player
 };
 
-struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false; int rgb = 0; int gx2 = 0, gy2 = 0; int region = 0; int plane = 0; int rgb2 = 0; };
+struct GuideSite { int gx = 0, gy = 0; std::string label; bool snap_obj = false; int rgb = 0; int gx2 = 0, gy2 = 0; int region = 0; int plane = 0; int rgb2 = 0; int snap_id = 0; };
 
 // matrix: live view-projection, 16 floats at worldView + 0x13070; perspective-divide to project.
 struct OverlayFrame {

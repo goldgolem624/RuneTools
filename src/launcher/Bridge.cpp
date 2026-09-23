@@ -4529,15 +4529,16 @@ JSValueRef GuideMarksFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
             gmk.label = rec.substr(c + 1);
         } else {
             gmk.label = rec.substr(c + 1, d - c - 1);
-            int extra[6] = { 0, 0, 0, 0, 0, 0 };   // snap, rgb, gx2, gy2, region, rgb2
+            int extra[7] = { 0, 0, 0, 0, 0, 0, 0 };   // snap, rgb, gx2, gy2, region, rgb2, snap loc id
             std::size_t p2 = d;
-            for (int i = 0; i < 6 && p2 != std::string::npos; ++i) {
+            for (int i = 0; i < 7 && p2 != std::string::npos; ++i) {
                 std::size_t n2 = rec.find('\x1f', p2 + 1);
                 extra[i] = std::atoi(rec.substr(p2 + 1, (n2 == std::string::npos ? rec.size() : n2) - p2 - 1).c_str());
                 p2 = n2;
             }
             gmk.snapObj = extra[0] != 0;
             gmk.rgb = extra[1]; gmk.gx2 = extra[2]; gmk.gy2 = extra[3]; gmk.region = extra[4]; gmk.rgb2 = extra[5];
+            gmk.snapId = extra[6];
         }
         if (gmk.gx > 0 && gmk.gy > 0) v.push_back(std::move(gmk));
     }
