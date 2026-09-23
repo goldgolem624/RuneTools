@@ -233,14 +233,19 @@ void DevComponent(std::uint8_t* root) {
         s_comp = Create(root, group, parent, type, cat, id);
         if (s_comp < 0) { Say("check: nothing was made"); return; }
         s_group = group; s_parent = parent; s_made = true;
+        // Two ways of naming what was just made, reported separately: the operations that act on the
+        // component the client left current, and the ones that take the component by its index. The
+        // index is the one the client itself composes from the category and the id.
         const bool p = CurPosition(root, x, y, 0, 0);
         const bool z = CurSize(root, w, h, 0, 0);
-        const bool f = CurTextFont(root, 494);       // a font the client has loaded; text draws nothing without one
         const bool c = CurColour(root, rgb);
         const bool v = CurHide(root, false);
-        const bool t = CurText(root, line);
-        Say("check: made under %d:%d, pos %d size %d font %d colour %d shown %d text %d",
-            group, parent, (int)p, (int)z, (int)f, (int)c, (int)v, (int)t);
+        SetPosition(root, group, s_comp, x, y, 0, 0);
+        SetSize(root, group, s_comp, w, h, 0, 0);
+        SetColour(root, group, s_comp, rgb);
+        SetHide(root, group, s_comp, false);
+        Say("check: made under %d:%d as index %d, current pos %d size %d colour %d shown %d",
+            group, parent, s_comp, (int)p, (int)z, (int)c, (int)v);
         return;
     }
     // Later updates have to name it again: only the making leaves it current.
