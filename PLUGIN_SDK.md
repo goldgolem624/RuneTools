@@ -600,6 +600,12 @@ rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"swap", color:"#
 rtx.plugin.overlay.guideTiles([{ x:3221, y:3218, plane:0, label:"stand", merge:true },
                                { x:3222, y:3218, plane:0, label:"stand", merge:true }]);   // same label + merge: one zone, one label
 
+// Optional snap boxes the live entity standing on the tile instead of the tile itself, so the
+// label rides above that model and clears the game's own overhead bar rather than sitting across
+// it. Pair it with a plain footprint mark carrying no label when you want both.
+rtx.plugin.overlay.guideTiles([{ x:2330, y:3595, x2:2332, y2:3597, plane:0, color:"#63DD9B" },
+                               { x:2331, y:3596, plane:0, snap:true, label:"4:12", color:"#63DD9B" }]);
+
 // Open the in-client wiki browser on a search term ('' = the wiki home page). The pane is
 // hard-locked to runescape.wiki: a plugin chooses the page, never the site.
 rtx.plugin.overlay.wikiSearch("Abyssal whip");
