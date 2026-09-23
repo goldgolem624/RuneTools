@@ -35,6 +35,7 @@
       OV_HOVER_KINDS.forEach(([, , , wKey]) => { overlayState[wKey] = Math.max(1, Math.min(24, (overlayState[wKey] | 0) || overlayState.hover_width)); });
       // these used to carry "leave the game's setting", which the toggle now means on its own
       if ((overlayState.hover_when | 0) < 0) overlayState.hover_when = 0;
+      if ((overlayState.hover_when | 0) === 1) overlayState.hover_when = 0;   // Nearby was dropped
       if ((overlayState.hover_style | 0) < 0) overlayState.hover_style = 0;
       // settings saved while these were a trial: Hide and drawing inside the game are the defaults now,
       // and a saved copy from before that day is brought up to them once
@@ -301,8 +302,10 @@
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'ovWrap'; wrap.className = 'ov-wrap';
     wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs, scenery and loot itself. Off leaves your own game settings alone; on uses the ones below'));
-    wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity. Nearby also needs the game’s own Entity Highlight Mode set to Proximity, which is what measures the distances',
-      [[0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
+    // Nearby is not offered: proximity needs distances the game only measures while its own Entity
+    // Highlight Mode is set to Proximity, so asking for it from here highlights nothing.
+    wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity',
+      [[0, 'Mouseover'], [2, 'Always on']]));
     // Silhouette or border is the game's own Entity Highlight Type: the highlight shader scales the
     // mesh by uVertexScale, which is 1 only when the border size is zero, and that is what fills the
     // entity instead of tracing it. The game sets up the frame for whichever it is, so there is no
