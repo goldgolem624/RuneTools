@@ -1,6 +1,6 @@
 // RuneToolsX panel: Overlay tab (drives the external world-grid window).
 (function () {
-  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, true_tile: false, interactable: false, radius: 12, markers: true, occlude: true, occlude_hide: true, inframe_trial: true, inframe_default_v1: true, hover_outline: false, hover_obj: 0, hover_npc: 0, hover_atk: 0, hover_width: 8, hover_obj_w: 0, hover_npc_w: 0, hover_atk_w: 0, tooltip_values: true, mark_test: false, mark_height: 60, mark_pointer_scale: 100, mark_arrow: 1, mark_target: 0, mark_query: '', mark_path: 1 };
+  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, true_tile: false, interactable: false, radius: 12, markers: true, occlude: true, occlude_hide: true, inframe_trial: true, inframe_default_v1: true, hover_outline: false, hover_when: -1, hover_style: -1, hover_self: 0, hover_pl: 0, hover_npc: 0, hover_atk: 0, hover_obj: 0, hover_loot: 0, hover_width: 8, hover_self_w: 0, hover_pl_w: 0, hover_npc_w: 0, hover_atk_w: 0, hover_obj_w: 0, hover_loot_w: 0, tooltip_values: true, mark_test: false, mark_height: 60, mark_pointer_scale: 100, mark_arrow: 1, mark_target: 0, mark_query: '', mark_path: 1 };
   // key in overlayState, label, the game's own colour for that kind
   // The game's own look, as the game itself shows it: its chevrons at the feet, its yellow arrow, its
   // diamonds along the way and a wide frame on a marked tile. None of that is a choice. The arrows show
@@ -11,7 +11,16 @@
                            ['mark_arrow', 'Arrow', [[1, 'On'], [0, 'Off']]],
                            ['mark_path', 'Trail', [[1, 'On'], [0, 'Off']]]];
   // key of the colour, label, the game's own colour for it, key of the outline width
-  const OV_HOVER_KINDS = [['hover_obj', 'Objects', 0x1AEBFF, 'hover_obj_w'], ['hover_npc', 'NPCs', 0xFFD300, 'hover_npc_w'], ['hover_atk', 'Attackable', 0xFF0D16, 'hover_atk_w']];
+  // The game's own highlight categories, each confirmed by setting a distinct colour in the game
+  // and reading the table back. Friendly players and loot each occupy two slots, which the launcher
+  // keeps in step.
+  const OV_HOVER_KINDS = [
+    ['hover_self', 'Yourself',          0xFFD300, 'hover_self_w', 0],
+    ['hover_pl',   'Friendly players',  0x821FFF, 'hover_pl_w',   1],
+    ['hover_npc',  'Friendly NPCs',     0xFC8EAC, 'hover_npc_w',  3],
+    ['hover_atk',  'Enemies',           0xFF0D16, 'hover_atk_w',  4],
+    ['hover_obj',  'Interactables',     0x1AEBFF, 'hover_obj_w',  5],
+    ['hover_loot', 'Loot',              0x1AFF1A, 'hover_loot_w', 6]];
   const OV_HOVER_COLOURS = [0x46E0C0, 0x57C6E0, 0x8BE05A, 0xF0C04A, 0xE0564E, 0xC07AE0, 0xE0903C, 0xECEFF3];
   function ovAdopt(raw) {
     try {
@@ -131,9 +140,34 @@
                           0, 0, 0, 0, OV_MARK_LOOK.range, s.mark_pointer_scale | 0, 0, !!s.mark_arrow,
                           ovMarkFound.kind, ovMarkFound.x | 0, ovMarkFound.y | 0, ovMarkFound.plane | 0, ovMarkFound.uid,
                           !!s.mark_path, ovMarkFound.fromX | 0, ovMarkFound.fromY | 0,
-                          s.hover_npc_w | 0, s.hover_atk_w | 0, !!s.occlude_hide, !!s.inframe_trial); } catch (e) {}
+                          s.hover_npc_w | 0, s.hover_atk_w | 0, !!s.occlude_hide, !!s.inframe_trial,
+                          s.hover_when | 0, s.hover_style | 0, ovHoverSpec('c'), ovHoverSpec('w')); } catch (e) {}
+  }
+  // "category:value,..." for the categories that are set; the launcher leaves the rest to the game.
+  function ovHoverSpec(which) {
+    const out = [];
+    OV_HOVER_KINDS.forEach(([key, , , wKey, cat]) => {
+      const v = which === 'c' ? (overlayState[key] | 0) : (overlayState[wKey] | 0);
+      if (which === 'c') { if (v) out.push(cat + ':' + v); }
+      else if (v > 0) out.push(cat + ':' + v);
+    });
+    return out.join(',');
   }
   function ovHex(rgb) { return '#' + ('000000' + ((rgb | 0) & 0xFFFFFF).toString(16)).slice(-6); }
+  // A dropdown row in the same shape as a toggle row, for the settings that are not on or off.
+  function ovSelectRow(id, key, name, sub, opts) {
+    const r = document.createElement('div'); r.className = 'ov-row'; r.dataset.sel = key;
+    const l = document.createElement('div'); l.className = 'ov-l';
+    const n = document.createElement('div'); n.className = 'ov-name'; n.textContent = name;
+    l.appendChild(n);
+    if (sub) { const s = document.createElement('div'); s.className = 'ov-sub'; s.textContent = sub; l.appendChild(s); }
+    const sel = document.createElement('select'); sel.id = id; sel.className = 'ov-select';
+    sel.style.cssText = 'min-width:118px;';
+    opts.forEach(([v, t]) => { const o = document.createElement('option'); o.value = String(v); o.textContent = t; sel.appendChild(o); });
+    sel.addEventListener('change', () => { overlayState[key] = parseInt(sel.value, 10); pushOverlay(); });
+    r.appendChild(l); r.appendChild(sel);
+    return r;
+  }
   function ovToggleRow(id, name, sub) {
     const r = document.createElement('div'); r.className = 'ov-row'; r.id = id; r.setAttribute('role', 'button');
     const l = document.createElement('div'); l.className = 'ov-l';
@@ -186,6 +220,17 @@
       });
     });
     const ow = $('ovWrap');
+    if (ow) Array.from(ow.querySelectorAll('.ov-row[data-sel]')).forEach(row => {
+      row.style.opacity = overlayState.hover_outline ? 1 : 0.45;
+      const sel = row.querySelector('select');
+      if (sel) sel.value = String(overlayState[row.dataset.sel] | 0);
+    });
+    // the per-kind sizes only mean anything while the style is a border
+    if (ow) { const borders = (overlayState.hover_style | 0) !== 1;
+      Array.from(ow.querySelectorAll('.ov-hovrow')).forEach(row => {
+        const w = row.dataset.width ? $('ov_' + row.dataset.width) : null;
+        if (w) { w.disabled = !borders; w.style.opacity = borders ? 1 : 0.4; }
+      }); }
     if (ow) Array.from(ow.querySelectorAll('.ov-hovrow')).forEach(row => {
       row.style.opacity = overlayState.hover_outline ? 1 : 0.45;
       const wKey = row.dataset.width;
@@ -208,7 +253,11 @@
     if ($('ovWrap')) { reflectOverlay(); return; }
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'ovWrap'; wrap.className = 'ov-wrap';
-    wrap.appendChild(ovToggleRow('ov_hoverol', 'Outline hovered object', 'The game outlines what is under your cursor, scenery such as trees included. Works with the overlay off'));
+    wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs and scenery itself. Works with the overlay off, and leaves your game settings alone where these say to'));
+    wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'Leave your game setting, or override it',
+      [[-1, 'Game setting'], [0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
+    wrap.appendChild(ovSelectRow('ov_hoverstyle', 'hover_style', 'Style', 'A silhouette fills the whole entity; a border traces its edge at the sizes below',
+      [[-1, 'Game setting'], [1, 'Silhouette'], [0, 'Border']]));
     // outline colour per kind of target; the first swatch keeps the colour the game uses for it
     OV_HOVER_KINDS.forEach(([key, label, game, wKey]) => {
       const row = document.createElement('div'); row.className = 'ov-hovrow'; row.dataset.key = key;

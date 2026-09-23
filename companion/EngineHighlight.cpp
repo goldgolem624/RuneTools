@@ -76,7 +76,8 @@ std::uint8_t  g_gameWidth[kCategories] = {};
 std::uint8_t  g_gameMode[kCategories] = {};
 std::uint8_t  g_appliedMode[kCategories] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };   // 0xFF = the game's own mode is in place
 bool          g_haveMode[kCategories] = {};
-std::uint8_t  g_appliedWidth[kCategories] = {};    // per category; 0 = the game's own width is in place
+std::uint8_t  g_appliedWidth[kCategories] = {};    // what this last wrote, while g_haveWidth says it did
+bool          g_haveWidth[kCategories] = {};
 
 struct Image {
     const std::uint8_t* base = nullptr;
@@ -205,51 +206,66 @@ void ApplyColour(int category, std::uint32_t rgb) {
 // nothing, so a colour and a width alone are not enough: on a client like that the outline was
 // applied exactly as asked and stayed invisible. While the feature is on, the categories it drives
 // are put into the outline mode, and the game's own mode goes back when it is turned off.
-void ApplyMode(int category, bool on) {
+// Mode: when the game highlights the category. What the launcher asks for is written; kModeKeep
+// leaves the player's own choice in place, except that a category the player switched off is lifted
+// to mouseover while the feature is on, since otherwise the feature looks broken through no fault of
+// its own. Whatever the game had is remembered and put back.
+void ApplyMode(int category, std::int32_t mode, bool on) {
     if (!g_table) return;
     std::uint8_t* cur = g_table + (std::size_t)category * kCategoryStride;
     const bool mine = g_appliedMode[category] != kModeNone;
-    if (!on) {
-        // only put the game's mode back over the value this left there; if the game has written its
-        // own since, that is the one to keep
+    // Give the category back: only over the value this left there, so a mode the player changed
+    // underneath us is kept rather than clobbered.
+    auto release = [&] {
         if (mine && g_haveMode[category] && *cur == g_appliedMode[category]) *cur = g_gameMode[category];
         g_appliedMode[category] = kModeNone;
-        return;
+    };
+    if (!on) { release(); return; }
+
+    std::int32_t want = mode;
+    if (want == kModeKeep) {
+        // nothing of ours belongs here unless the player's own choice draws nothing
+        const std::uint8_t player = mine && g_haveMode[category] ? g_gameMode[category] : *cur;
+        if (player != kModeOff) { release(); return; }
+        want = kModeMouseover;
     }
-    if (mine) {
-        if (*cur == g_appliedMode[category]) return;   // still ours, nothing to do
-        g_appliedMode[category] = kModeNone;           // the game took the category back
+    if (want < 0) want = kModeMouseover;
+    if (want > kModeOff) want = kModeOff;
+    const std::uint8_t put = (std::uint8_t)want;
+    if (mine && *cur == g_appliedMode[category] && *cur == put) return;      // already ours
+    if (!mine || *cur != g_appliedMode[category]) {                          // the game wrote its own
+        g_gameMode[category] = *cur; g_haveMode[category] = true;
     }
-    // Only the mode that draws nothing is overridden. The others are the outline style the player
-    // chose in the game's own settings, and the outline is drawn in all of them, so leaving them
-    // alone means turning our feature on never quietly changes how the game looks.
-    if (*cur != kModeOff) return;
-    g_gameMode[category] = *cur; g_haveMode[category] = true;
-    *cur = kModeOutline;
-    g_appliedMode[category] = kModeOutline;
-    Say("outline: category %d was off (mode %u), drawn as mode %u while the outline is on",
-        category, (unsigned)kModeOff, (unsigned)kModeOutline);
+    if (*cur != put)
+        Say("highlight: category %d mode %u -> %u (the player's own is %u)", category,
+            (unsigned)*cur, (unsigned)put, (unsigned)g_gameMode[category]);
+    *cur = put;
+    g_appliedMode[category] = put;
 }
 
-void ApplyWidth(int category, std::uint8_t width) {
+void ApplyScale(int category, std::int32_t scale) {
     if (!g_table) return;
     std::uint8_t* cur = g_table + (std::size_t)category * kCategoryStride + kCategoryWidth;
-    const std::uint8_t had = *cur;
-    if (width == 0) {
-        if (g_appliedWidth[category] != 0) *cur = g_gameWidth[category];
-    } else if (*cur != width) {
-        // anything other than the width this put there is the game's own
-        if (g_appliedWidth[category] == 0 || *cur != g_appliedWidth[category]) g_gameWidth[category] = *cur;
-        *cur = width;
+    const bool mine = g_haveWidth[category];
+    if (scale == kScaleKeep) {
+        if (mine && *cur == g_appliedWidth[category]) *cur = g_gameWidth[category];
+        g_haveWidth[category] = false;
+        return;
     }
-    if (width != g_appliedWidth[category])
-        Say("outline: category %d width %u -> %u (the game's own is %u)", category, (unsigned)had, (unsigned)*cur, (unsigned)g_gameWidth[category]);
-    g_appliedWidth[category] = width;
+    const std::uint8_t want = (std::uint8_t)(scale < 0 ? 0 : scale > kMaxScale ? kMaxScale : scale);
+    if (mine && *cur == want) return;                       // already ours
+    if (!mine || *cur != g_appliedWidth[category]) g_gameWidth[category] = *cur;   // the game's, to go back
+    if (*cur != want)
+        Say("highlight: category %d scale %u -> %u (%s; the game's own is %u)", category,
+            (unsigned)*cur, (unsigned)want, want ? "border" : "silhouette", (unsigned)g_gameWidth[category]);
+    *cur = want;
+    g_appliedWidth[category] = want;
+    g_haveWidth[category] = true;
 }
 
 }  // namespace
 
-Status Set(bool on, const std::uint32_t* rgb, const std::uint32_t* thickness) {
+Status Set(bool on, const std::uint32_t* rgb, const std::int32_t* scale, const std::int32_t* mode) {
     if (g_status == kUnknown) Resolve();
     if (g_status != kActive) return g_status;
     const std::uint8_t want = on ? 1 : g_original;
@@ -258,35 +274,35 @@ Status Set(bool on, const std::uint32_t* rgb, const std::uint32_t* thickness) {
     // What came in and what the switch did with it, once per change. The read back is the point:
     // the game writes this byte from its own state too, so ours can be overwritten straight away.
     {
-        static bool s_first = true;
-        static bool s_on = false;
-        static std::uint32_t s_rgb[kCategories] = {}, s_thick[kCategories] = {};
+        static bool s_first = true; static bool s_on = false;
+        static std::uint32_t s_rgb[kCategories] = {};
+        static std::int32_t  s_scale[kCategories] = {}, s_mode[kCategories] = {};
         bool same = !s_first && s_on == on;
         for (int c = 0; same && c < kCategories; ++c)
-            if (s_rgb[c] != (rgb ? rgb[c] : 0u) || s_thick[c] != (thickness ? thickness[c] : 0u)) same = false;
+            if (s_rgb[c] != (rgb ? rgb[c] : 0u) || s_scale[c] != (scale ? scale[c] : kScaleKeep) ||
+                s_mode[c] != (mode ? mode[c] : kModeKeep)) same = false;
         if (!same) {
             s_first = false; s_on = on;
             for (int c = 0; c < kCategories; ++c) {
-                s_rgb[c] = rgb ? rgb[c] : 0u; s_thick[c] = thickness ? thickness[c] : 0u;
+                s_rgb[c] = rgb ? rgb[c] : 0u;
+                s_scale[c] = scale ? scale[c] : kScaleKeep;
+                s_mode[c] = mode ? mode[c] : kModeKeep;
             }
-            Say("outline: asked %s, switch was %u wanted %u now %u, table %s; scenery colour %06x width %u, npcs %06x/%u, attackable %06x/%u",
-                on ? "on" : "off", (unsigned)had, (unsigned)want, (unsigned)*g_byte, g_table ? "in use" : "not in use",
-                s_rgb[kCatScenery], s_thick[kCatScenery], s_rgb[kCatNpcs], s_thick[kCatNpcs],
-                s_rgb[kCatAttackable], s_thick[kCatAttackable]);
+            Say("highlight: asked %s, switch was %u now %u, table %s; interactables %06x scale %d mode %d, npcs %06x/%d/%d, enemies %06x/%d/%d",
+                on ? "on" : "off", (unsigned)had, (unsigned)*g_byte, g_table ? "in use" : "not in use",
+                s_rgb[kCatScenery], s_scale[kCatScenery], s_mode[kCatScenery],
+                s_rgb[kCatNpcs], s_scale[kCatNpcs], s_mode[kCatNpcs],
+                s_rgb[kCatAttackable], s_scale[kCatAttackable], s_mode[kCatAttackable]);
         }
     }
     for (int c = 0; c < kCategories; ++c) {
         const std::uint32_t colour = (on && rgb) ? (rgb[c] & 0xFFFFFFu) : 0u;
         if (colour != 0 || g_appliedRgb[c] != 0) ApplyColour(c, colour);
     }
-    for (int c = 0; c < kCategories; ++c) {
-        const std::uint32_t asked = (on && thickness) ? thickness[c] : 0u;
-        const std::uint8_t width = (std::uint8_t)(asked > kMaxThickness ? kMaxThickness : asked);
-        if (width != 0 || g_appliedWidth[c] != 0) ApplyWidth(c, width);
-    }
-    // The three the hover outline draws. Left alone unless the feature is on, so a client that
-    // never turns it on keeps the game's own highlight settings untouched.
-    for (const int c : { kCatNpcs, kCatAttackable, kCatScenery }) ApplyMode(c, on);
+    for (int c = 0; c < kCategories; ++c)
+        ApplyScale(c, on && scale ? scale[c] : kScaleKeep);
+    for (int c = 0; c < kCategories; ++c)
+        ApplyMode(c, mode ? mode[c] : kModeKeep, on);
     return g_status;
 }
 
@@ -300,7 +316,7 @@ bool TakeLog(char* out, std::size_t cap) {
 
 void Restore() {
     if (g_status != kActive) return;
-    for (int c = 0; c < kCategories; ++c) { ApplyColour(c, 0); ApplyWidth(c, 0); ApplyMode(c, false); }
+    for (int c = 0; c < kCategories; ++c) { ApplyColour(c, 0); ApplyScale(c, kScaleKeep); ApplyMode(c, kModeKeep, false); }
     if (g_touched) *g_byte = g_original;
     g_touched = false;
 }

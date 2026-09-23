@@ -24,7 +24,10 @@ struct Config {
     bool          markers  = false;  // persistent tile markers, independent of the grid
     bool          hover_outline = false;  // outline the object under the cursor, independent of `enabled`
     bool          tooltip_values = false; // Grand Exchange price and alch value in the game's item tooltips
-    std::uint32_t hover_width[8] = {};    // outline width per highlight category, the game uses 4; 0 = the game's own
+    // The game's own entity highlight, per category. -1 leaves the player's setting alone; scale 0
+    // is the silhouette that fills the entity, above it a border of that size.
+    std::int32_t  hover_scale[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+    std::int32_t  hover_mode[8]  = { -1, -1, -1, -1, -1, -1, -1, -1 };
     // The game's own world markers pointed at a target: its arrow, the chevrons at the player's
     // feet and a marker on the target's tile.
     bool          mark_test = false;

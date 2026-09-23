@@ -1770,10 +1770,46 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
         c.mark_from_x = js_int(ctx, argv[43], 0, 0, 16383); c.mark_from_y = js_int(ctx, argv[44], 0, 0, 16383);
     }
     {
-        // outline widths for scenery, NPCs and attackable NPCs (highlight categories 5, 3, 4); one value alone sets all three
-        auto width = [&](size_t i) { int w = js_int(ctx, argv[i]); return (std::uint32_t)(w < 0 ? 0 : w > 16 ? 16 : w); };
-        if (argc >= 23) c.hover_width[5] = c.hover_width[3] = c.hover_width[4] = width(22);
-        if (argc >= 47) { c.hover_width[3] = width(45); c.hover_width[4] = width(46); }
+        // The game's own entity highlight, for interactables, friendly NPCs and enemies (its
+        // categories 5, 3 and 4). A border size of 0 is the silhouette that fills the entity; -1
+        // anywhere leaves the player's own setting alone.
+        auto size = [&](size_t i) { int w = js_int(ctx, argv[i]); return w < 0 ? -1 : w > 255 ? 255 : w; };
+        static const int kCats[] = { 5, 3, 4 };
+        if (argc >= 23) for (int k : kCats) c.hover_scale[k] = size(22);
+        if (argc >= 47) { c.hover_scale[3] = size(45); c.hover_scale[4] = size(46); }
+        // one mode for every category, matching the game's own single Entity Highlight Mode setting
+        int wantMode = -1;
+        if (argc >= 50) { const int m = js_int(ctx, argv[49]); wantMode = (m < 0 || m > 3) ? -1 : m; }
+        const bool silhouette = argc >= 51 && js_int(ctx, argv[50]) == 1;
+        // "category:value,..." for the game's six highlight categories: colours, then border sizes.
+        // Anything not named is left to the game. Categories: 1 you, 2 friendly players,
+        // 3 friendly NPCs, 4 enemies, 5 interactables, 6 loot.
+        auto spec = [&](size_t i, void (*put)(rtx::overlay::Config&, int, int)) {
+            if (argc <= i) return;
+            const std::string s = js_to_utf8(ctx, argv[i]);
+            std::size_t at = 0;
+            while (at < s.size()) {
+                std::size_t end = s.find(',', at); if (end == std::string::npos) end = s.size();
+                const std::size_t colon = s.find(':', at);
+                if (colon != std::string::npos && colon < end) {
+                    const int cat = std::atoi(s.c_str() + at);
+                    const int val = std::atoi(s.c_str() + colon + 1);
+                    if (cat >= 0 && cat < 8) put(c, cat, val);
+                }
+                at = end + 1;
+            }
+        };
+        spec(51, [](rtx::overlay::Config& cc, int cat, int v) { cc.hover_rgb[cat] = (std::uint32_t)v & 0xFFFFFFu; });
+        spec(52, [](rtx::overlay::Config& cc, int cat, int v) { cc.hover_scale[cat] = v < 0 ? -1 : v > 255 ? 255 : v; });
+        // Friendly players and loot each have two slots in the table and the game keeps both the
+        // same, so whatever is set for the first goes to its twin as well.
+        c.hover_rgb[2] = c.hover_rgb[1]; c.hover_scale[2] = c.hover_scale[1];
+        c.hover_rgb[7] = c.hover_rgb[6]; c.hover_scale[7] = c.hover_scale[6];
+        // the mode and the silhouette apply to every category the game highlights
+        for (int k = 0; k < 8; ++k) {
+            if (wantMode >= 0) c.hover_mode[k] = wantMode;
+            if (silhouette) c.hover_scale[k] = 0;
+        }
         if (argc >= 48) c.occlude_hide = JSValueToBoolean(ctx, argv[47]);
         if (argc >= 49) c.inframe_trial = JSValueToBoolean(ctx, argv[48]);
     }

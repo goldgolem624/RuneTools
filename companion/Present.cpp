@@ -226,7 +226,7 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
     if (g_marker && g_marker->magic == rtx::marker::kMagic && g_marker->version == rtx::marker::kVersion) {
         const bool wantHover = (g_marker->flags & rtx::marker::kFlagEngineHover) != 0;
         rtx::vkpresent::SetInFrameTrial((g_marker->flags & rtx::marker::kFlagInFrameTrial) != 0);
-        const rtx::enginehl::Status st = rtx::enginehl::Set(wantHover, g_marker->hover_rgb, g_marker->hover_width);
+        const rtx::enginehl::Status st = rtx::enginehl::Set(wantHover, g_marker->hover_rgb, g_marker->hover_scale, g_marker->hover_mode);
         // NPCs and players the game marks itself; scenery that opted out is marked here
         // from the last complete write: a frame that falls into a write must not skip the mark, the
         // game takes a gap for the end of the hover and the next mark for a new one, pulse and all

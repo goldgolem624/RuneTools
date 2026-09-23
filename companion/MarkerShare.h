@@ -8,7 +8,7 @@ namespace rtx::marker {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMarker_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5254584D;   // 'RTXM'
-inline constexpr std::uint32_t kVersion = 30;
+inline constexpr std::uint32_t kVersion = 31;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
@@ -140,8 +140,13 @@ struct Share {
     std::int32_t  tip_slot;       // interface slot of an item; tile x of scenery
     std::uint32_t tip_comp;       // interface id << 16 | component; tile y of scenery
     char          tip_text[192];
-    std::uint32_t hover_width[8]; // outline width per highlight category; the game uses 4, 0 = leave it
-    std::uint32_t hover_rgb[8];   // per highlight category, 0xRRGGBB for the game's outline while kFlagEngineHover is on; 0 = the game's own
+    // The game's own entity highlight, per category (3 friendly NPCs, 4 enemies, 5 interactables).
+    // -1 leaves the player's own setting alone; anything else is written while the feature is on and
+    // put back when it stops. Scale 0 is the silhouette that fills the entity, above that a border
+    // of that many units. Colour 0 keeps the player's own.
+    std::int32_t  hover_scale[8];  // 0 silhouette, 1..255 border size, -1 leave alone
+    std::int32_t  hover_mode[8];   // 0 mouseover, 1 proximity, 2 always on, 3 off, -1 leave alone
+    std::uint32_t hover_rgb[8];    // 0xRRGGBB, 0 = the player's own
     // World markers the game draws itself, see EngineMarkers.h: one marked tile and an arrow over a tile.
     volatile std::uint32_t mark_tile_on;
     std::int32_t  mark_tile_x, mark_tile_y;

@@ -1015,7 +1015,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         sh->count = 0; sh->visible = 0; sh->cc_count = 0;
         sh->flags = (cfg.hover_outline ? marker::kFlagEngineHover : 0u) | (cfg.inframe_trial ? marker::kFlagInFrameTrial : 0u);   // honoured with nothing to draw
         { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
-          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) sh->hover_width[k] = cfg.hover_width[k]; FillEngineMarks(sh, cfg); }
+          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = cfg.hover_scale[k]; sh->hover_mode[k] = cfg.hover_mode[k]; } FillEngineMarks(sh, cfg); }
         MemoryBarrier(); sh->seq = s + 1;
         return;
     }
@@ -2421,7 +2421,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             }
         }
         { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
-          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) sh->hover_width[k] = cfg.hover_width[k]; FillEngineMarks(sh, cfg); }
+          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = cfg.hover_scale[k]; sh->hover_mode[k] = cfg.hover_mode[k]; } FillEngineMarks(sh, cfg); }
         sh->flags = mflags; sh->ref_x = rx; sh->ref_y = ry; sh->ref_z = rz; sh->ref_a = ra; sh->ref_b = rb;
         if (f && f->matrix_addr) { std::memcpy(sh->view_m, f->matrix, sizeof(sh->view_m)); sh->view_addr = f->matrix_addr; }
         else sh->view_addr = 0;
