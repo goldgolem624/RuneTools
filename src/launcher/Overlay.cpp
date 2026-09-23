@@ -1701,10 +1701,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         const int mb = p.rgb ? (p.rgb & 255)         : kAccB;
         float qx[9], qy[9];
         int nq = ClipProjectPoly(f->matrix, vpX, vpY, vpW, vpH, wc, 4, qx, qy);
+        const bool drawShape = !p.label_only;   // a label anchor contributes its text and nothing else
         bool onscr = false;
         for (int i = 0; i < nq; ++i)
             if (qx[i] > -2.f * W && qx[i] < 3.f * W && qy[i] > -2.f * H && qy[i] < 3.f * H) onscr = true;
-        if (nq >= 3 && onscr) {
+        if (drawShape && nq >= 3 && onscr) {
             const int sr = MixSurf(mr, kSurfR), sg = MixSurf(mg, kSurfG), sb = MixSurf(mb, kSurfB);
             auto gfan = [&](const float* fx, const float* fy, int n, int r3, int g3, int b3) {
                 for (int i = 1; i + 1 < n; i += 2) {
@@ -1760,7 +1761,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             seg(0.0f, f0); seg(1.0f - f0, 1.0f);
         };
         const bool tick = (nv == 8);   // flat zone tiles never tick: their merged perimeter is the information
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; drawShape && i < 4; ++i) {
             // edge_mask bit i: 0 south, 1 east, 2 north, 3 west; flat zone tiles skip edges shared with the zone
             if (nv == 4 && !((p.edge_mask >> i) & 1)) continue;
             if (p.rgb2 && nv == 4 && p.box_h <= 0.f && i < 2)

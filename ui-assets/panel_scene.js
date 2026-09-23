@@ -87,7 +87,7 @@
       for (const o of sceneData.objects) {
         if (sceneInteractable && !hasActs(o)) continue;
         if (o.vis === false) continue;
-        out.push({ type: 'object', name: o.name, x: o.x, y: o.y, dist: (o.dist == null ? -1 : o.dist), id: o.id, plane: o.plane, otype: o.type, actions: o.actions, rt: !!o.rt, w: o.w | 0 || 1, h: o.h | 0 || 1 });
+        out.push({ type: 'object', name: o.name, x: o.x, y: o.y, dist: (o.dist == null ? -1 : o.dist), id: o.id, plane: o.plane, otype: o.type, actions: o.actions, rt: !!o.rt, w: o.w | 0 || 1, h: o.h | 0 || 1, mh: (typeof o.mh === 'number' ? o.mh : -1) });
       }
     if (sceneShow.ground && Array.isArray(sceneGround))
       for (const g of sceneGround) {
@@ -531,6 +531,10 @@
       tipLines.push('Tile (' + n.x + ', ' + n.y + (typeof n.plane === 'number' ? ', ' + n.plane : '') + ')');
       if (acts) tipLines.push('Actions: ' + acts);
       if (n.rt) tipLines.push('Live-tracked');
+      // Model height the client reports, in world units (512 = one tile). What a mark anchored to
+      // this object measures its label height against.
+      if (typeof n.mh === 'number' && n.mh > 0)
+        tipLines.push('Model height ' + n.mh + ' (' + (n.mh / 512).toFixed(1) + ' tiles)');
       row.dataset.tip = tipLines.join('\n');
       const lvlc = document.createElement('div'); lvlc.className = 'num lvl';
       lvlc.textContent = (n.combat && n.combat > 0) ? n.combat : '-';

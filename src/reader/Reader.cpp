@@ -4251,7 +4251,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
         }
     }
     struct Obj { int id, x, y, plane, type, dist; std::string name, acts; bool rt; bool vis;
-                 int w = 1, h = 1; };   // footprint in tiles, rotation-corrected; x/y = SW anchor
+                 int w = 1, h = 1;      // footprint in tiles, rotation-corrected; x/y = SW anchor
+                 int mh = -1; };        // live model height in world-fine units; -1 = not live-tracked
     std::vector<Obj> objs;
     int rt_total = -1;   // live objects the client reported before merging; -1 = channel silent
     if (player_x >= 0) {
@@ -4312,7 +4313,11 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 // cache entry's vis follows the live flag. Match on id, plane and footprint tolerance.
                 for (auto& o : objs)
                     if (!o.rt && o.id == r.config_id && o.plane == r.plane &&
-                        std::abs(o.x - r.x) <= tol && std::abs(o.y - r.y) <= tol) { dup = true; if (r.hidden) o.vis = false; }
+                        std::abs(o.x - r.x) <= tol && std::abs(o.y - r.y) <= tol) {
+                        dup = true;
+                        if (r.hidden) o.vis = false;
+                        if (r.bmax[2] > r.bmin[2]) o.mh = (int)(r.bmax[2] - r.bmin[2]);
+                    }
                 if (dup) continue;
                 std::string acts;
                 for (const auto& a : meta.actions) {
@@ -4330,9 +4335,10 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                         fw = tw; fh = th; ox = ax; oy = ay;
                     }
                 }
+                const int mh = (r.bmax[2] > r.bmin[2]) ? (int)(r.bmax[2] - r.bmin[2]) : -1;
                 objs.push_back({ r.config_id, ox, oy, r.plane, -1, dist, meta.name, std::move(acts), true,
                                  r.bmax[0] > r.bmin[0] && !r.hidden,   // degenerate AABB or hidden flag = not shown
-                                 fw, fh });
+                                 fw, fh, mh });
             }
         }
         std::sort(objs.begin(), objs.end(), [](const Obj& a, const Obj& b) {
@@ -4347,8 +4353,8 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
         char buf[208];
         if (oc) objects.push_back(',');
         std::snprintf(buf, sizeof(buf),
-            "{\"id\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"type\":%d,\"dist\":%d,\"w\":%d,\"h\":%d,\"rt\":%s,\"vis\":%s,\"name\":\"",
-            o.id, o.x, o.y, o.plane, o.type, o.dist, o.w, o.h, o.rt ? "true" : "false",
+            "{\"id\":%d,\"x\":%d,\"y\":%d,\"plane\":%d,\"type\":%d,\"dist\":%d,\"w\":%d,\"h\":%d,\"mh\":%d,\"rt\":%s,\"vis\":%s,\"name\":\"",
+            o.id, o.x, o.y, o.plane, o.type, o.dist, o.w, o.h, o.mh, o.rt ? "true" : "false",
             o.vis ? "true" : "false");
         objects += buf; objects += json_escape(o.name);
         objects += "\",\"actions\":["; objects += o.acts; objects += "]}";
@@ -7595,6 +7601,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 }
                 if (!bestR) continue;
                 op.has_box3d = true;
+                op.label_only = true;        // the caller marks the ground itself; this only lifts the label
                 for (int j = 0; j < 3; ++j) { op.bmin[j] = bestR->bmin[j]; op.bmax[j] = bestR->bmax[j]; }
                 op.wx = (bestR->bmin[0] + bestR->bmax[0]) * 0.5f;
                 op.wy = (bestR->bmin[1] + bestR->bmax[1]) * 0.5f;

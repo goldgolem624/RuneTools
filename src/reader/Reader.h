@@ -126,6 +126,7 @@ struct OverlayPoint {
     float       box[12] = {0};             // 4 * (x,y,z)
     float       box_h = 0;                 // prism height in world-fine units (0 = flat)
     bool        has_box3d = false;
+    bool        label_only = false;        // anchor a label on this shape and draw no geometry for it
     float       bmin[3] = {0}, bmax[3] = {0};
     int         tile_x = 0, tile_y = 0;
     float       head_z = 0;
