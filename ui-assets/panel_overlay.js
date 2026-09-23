@@ -154,20 +154,45 @@
     return out.join(',');
   }
   function ovHex(rgb) { return '#' + ('000000' + ((rgb | 0) & 0xFFFFFF).toString(16)).slice(-6); }
-  // A dropdown row in the same shape as a toggle row, for the settings that are not on or off.
+  // A dropdown row in the same shape as a toggle row. The app's own dark dropdown is used rather
+  // than a native select, which Ultralight draws with an OS-white popup.
   function ovSelectRow(id, key, name, sub, opts) {
     const r = document.createElement('div'); r.className = 'ov-row'; r.dataset.sel = key;
     const l = document.createElement('div'); l.className = 'ov-l';
     const n = document.createElement('div'); n.className = 'ov-name'; n.textContent = name;
     l.appendChild(n);
     if (sub) { const s = document.createElement('div'); s.className = 'ov-sub'; s.textContent = sub; l.appendChild(s); }
-    const sel = document.createElement('select'); sel.id = id; sel.className = 'ov-select';
-    sel.style.cssText = 'min-width:118px;';
-    opts.forEach(([v, t]) => { const o = document.createElement('option'); o.value = String(v); o.textContent = t; sel.appendChild(o); });
-    sel.addEventListener('change', () => { overlayState[key] = parseInt(sel.value, 10); pushOverlay(); });
-    r.appendChild(l); r.appendChild(sel);
+    const dd = document.createElement('div'); dd.className = 'pet-dd'; dd.id = id;
+    dd.style.cssText = 'flex:0 0 auto;min-width:132px;max-width:150px;';
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'pet-dd-btn'; dd.appendChild(btn);
+    const pop = document.createElement('div'); pop.className = 'pet-dd-pop'; pop.style.right = '0'; pop.style.left = 'auto'; dd.appendChild(pop);
+    const paint = () => {
+      const cur = overlayState[key] | 0;
+      const sel = opts.find(([v]) => v === cur) || opts[0];
+      btn.textContent = sel[1];
+      pop.innerHTML = '';
+      opts.forEach(([v, t]) => {
+        const o = document.createElement('div'); o.className = 'pet-dd-opt' + (v === cur ? ' on' : '');
+        o.textContent = t;
+        o.addEventListener('click', (e) => {
+          e.stopPropagation(); dd.classList.remove('open');
+          overlayState[key] = v; paint(); pushOverlay();
+        });
+        pop.appendChild(o);
+      });
+    };
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = dd.classList.contains('open');
+      document.querySelectorAll('.pet-dd.open').forEach(x => x.classList.remove('open'));
+      if (!open) dd.classList.add('open');
+    });
+    dd.repaint = paint;
+    paint();
+    r.appendChild(l); r.appendChild(dd);
     return r;
   }
+  if (!window._petDDClose) { window._petDDClose = true; document.addEventListener('click', () => document.querySelectorAll('.pet-dd.open').forEach(x => x.classList.remove('open'))); }
   function ovToggleRow(id, name, sub) {
     const r = document.createElement('div'); r.className = 'ov-row'; r.id = id; r.setAttribute('role', 'button');
     const l = document.createElement('div'); l.className = 'ov-l';
@@ -222,8 +247,8 @@
     const ow = $('ovWrap');
     if (ow) Array.from(ow.querySelectorAll('.ov-row[data-sel]')).forEach(row => {
       row.style.opacity = overlayState.hover_outline ? 1 : 0.45;
-      const sel = row.querySelector('select');
-      if (sel) sel.value = String(overlayState[row.dataset.sel] | 0);
+      const dd = row.querySelector('.pet-dd');
+      if (dd && dd.repaint) dd.repaint();
     });
     // the per-kind sizes only mean anything while the style is a border
     if (ow) { const borders = (overlayState.hover_style | 0) !== 1;
