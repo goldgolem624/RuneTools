@@ -26,6 +26,10 @@ bool ModuleDrawsComponents(std::uint32_t pid);
 // The game's own screen points for the world points last asked about, newest set only.
 struct ModulePoint { std::int32_t x, y, depth, ok; std::uint32_t tag; };
 int ModuleAnchors(std::uint32_t pid, ModulePoint* out, int cap);
+// The game's own answers to the questions last asked about the account, newest set only. `ready`
+// is false while the module is still working through the list.
+struct ModuleAnswer { std::int32_t value, ok; std::uint32_t tag; };
+int ModuleAnswers(std::uint32_t pid, ModuleAnswer* out, int cap, bool& ready);
 // The label font's glyph widths as the module measured them, in the pixels of the size it reports.
 // False until the module has drawn its first label.
 bool ModuleGlyphWidths(std::uint32_t pid, std::uint8_t* adv, int count, int& px);

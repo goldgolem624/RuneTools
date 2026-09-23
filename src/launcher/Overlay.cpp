@@ -176,6 +176,24 @@ std::map<DWORD, std::vector<UiHighlight>> g_uiHighlights;
 std::map<DWORD, std::vector<UiLabel>> g_uiLabels;
 struct EngineReq { std::uint32_t seq = 0; int sound = 0, zoom = 0, fov = 0; };
 std::map<DWORD, EngineReq> g_engineReq;
+struct AccountAsks { std::uint32_t seq = 0; std::vector<AccountAsk> list; };
+std::map<DWORD, AccountAsks> g_accountAsks;
+
+// The questions about the account go out whether or not there is anything to draw this frame: they
+// are answered once per list, so a frame with an empty draw list must still carry them.
+void FillAccountAsks(marker::Share* sh, const AccountAsks& asks) {
+    int n = (int)asks.list.size();
+    if (n > marker::kMaxAsks) n = marker::kMaxAsks;
+    for (int i = 0; i < n; ++i) {
+        const AccountAsk& q = asks.list[(std::size_t)i];
+        sh->asks[i].kind = (std::uint16_t)q.kind;
+        sh->asks[i].spare = 0;
+        sh->asks[i].id = q.id;
+        sh->asks[i].tag = ((std::uint32_t)q.kind << 24) | ((std::uint32_t)q.id & 0xFFFFFFu);
+    }
+    sh->ask_count = (std::uint32_t)n;
+    sh->ask_seq = asks.seq;
+}
 std::map<DWORD, std::map<int, CenterBanner>> g_centerTexts;   // keyed by slot
 std::map<DWORD, std::vector<PanelBox>> g_panelViz;
 std::map<DWORD, std::vector<PuzzleCell>> g_puzzleCells;
@@ -870,6 +888,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     std::vector<UiHighlight> uihls;
     std::vector<UiLabel> uilbls;
     EngineReq engReq;
+    AccountAsks asksNow;
     std::map<int, CenterBanner> ctext;
     std::vector<PanelBox> pviz;
     std::vector<PuzzleCell> pcells;
@@ -883,6 +902,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       auto ult = g_uiLabels.find(cfg.pid);
       if (ult != g_uiLabels.end()) uilbls = ult->second;
       { auto er = g_engineReq.find(cfg.pid); if (er != g_engineReq.end()) engReq = er->second; }
+      { auto aa = g_accountAsks.find(cfg.pid); if (aa != g_accountAsks.end()) asksNow = aa->second; }
       auto ctit = g_centerTexts.find(cfg.pid);
       if (ctit != g_centerTexts.end()) ctext = ctit->second;
       auto pit = g_panelViz.find(cfg.pid);
@@ -915,6 +935,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         } else hold.clear();
     }
 
+    FillAccountAsks(sh, asksNow);
     bool wantContent = engReq.seq != 0 || flashAlpha > 0.0f || !uihls.empty() || !uilbls.empty() || !ctext.empty() || !pviz.empty() || !pcells.empty() || !kcells.empty() || !sbars.empty() ||
                        (widgets && !widgets->empty()) ||
                        (f && (cfg.enabled || cfg.markers || cfg.nameplates || !hls.empty() || hasGuides));
@@ -2350,6 +2371,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     }
     for (std::uint32_t i = 0; i < n; ++i) sh->cmds[i] = cmds[i];
     sh->op_sound = engReq.sound; sh->op_zoom = engReq.zoom; sh->op_fov = engReq.fov; sh->op_seq = engReq.seq;
+    FillAccountAsks(sh, asksNow);
     sh->cc_count = (std::uint32_t)ccRects.size();
     for (std::uint32_t i = 0; i < sh->cc_count; ++i) sh->cc[i] = ccRects[i];
     sh->count = n;
@@ -3087,6 +3109,19 @@ void RequestEngine(std::uint32_t pid, int sound, int zoom, int fov) {
         std::lock_guard<std::mutex> lk(g_mu);
         EngineReq& r = g_engineReq[(DWORD)pid];
         r.sound = sound; r.zoom = zoom; r.fov = fov; ++r.seq;
+        Config& dst = cfg_slot((DWORD)pid); dst.pid = pid;
+    }
+    ensure_thread();
+}
+
+void AskAccount(std::uint32_t pid, const std::vector<AccountAsk>& asks) {
+    if (!pid) return;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        AccountAsks& a = g_accountAsks[(DWORD)pid];
+        a.list = asks;
+        if (a.list.size() > (std::size_t)rtx::marker::kMaxAsks) a.list.resize(rtx::marker::kMaxAsks);
+        ++a.seq;
         Config& dst = cfg_slot((DWORD)pid); dst.pid = pid;
     }
     ensure_thread();

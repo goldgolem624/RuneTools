@@ -4542,6 +4542,53 @@ JSValueRef EngineRequestFn(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t ar
     return JSValueMakeBoolean(ctx, true);
 }
 
+// accountAsk(pid, "kind:id,kind:id,..."): what to ask the game about the account. kind 0 = how far
+// along an achievement's requirements are, 1 = its prerequisites are all done, 2 = quest finished,
+// 3 = quest started. The list replaces the one before it; an empty list asks nothing.
+JSValueRef AccountAskFn(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    const std::string spec = argc >= 2 ? js_to_utf8(ctx, argv[1]) : std::string();
+    std::vector<rtx::overlay::AccountAsk> asks;
+    std::size_t at = 0;
+    while (at < spec.size()) {
+        std::size_t end = spec.find(',', at);
+        if (end == std::string::npos) end = spec.size();
+        const std::size_t colon = spec.find(':', at);
+        if (colon != std::string::npos && colon < end) {
+            rtx::overlay::AccountAsk a;
+            a.kind = std::atoi(spec.c_str() + at);
+            a.id = std::atoi(spec.c_str() + colon + 1);
+            if (a.kind >= 0 && a.kind <= 3 && a.id >= 0) asks.push_back(a);
+        }
+        at = end + 1;
+    }
+    rtx::overlay::AskAccount(pid, asks);
+    return JSValueMakeBoolean(ctx, true);
+}
+
+// accountAnswers(pid): what the game answered, as JSON. `ready` is 0 while it is still working
+// through the list, and each answer carries the kind and id it belongs to.
+JSValueRef AccountAnswersFn(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{\"ready\":0,\"answers\":[]}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    rtx::launcher::gameui::ModuleAnswer got[128];
+    bool ready = false;
+    const int n = rtx::launcher::gameui::ModuleAnswers(pid, got, 128, ready);
+    std::string out = "{\"ready\":";
+    out += ready ? "1" : "0";
+    out += ",\"answers\":[";
+    for (int i = 0; i < n; ++i) {
+        if (i) out += ',';
+        out += "{\"kind\":" + std::to_string((got[i].tag >> 24) & 0xFF) +
+               ",\"id\":" + std::to_string(got[i].tag & 0xFFFFFF) +
+               ",\"value\":" + std::to_string(got[i].value) +
+               ",\"ok\":" + std::to_string(got[i].ok) + '}';
+    }
+    out += "]}";
+    return utf8_to_js(ctx, out);
+}
+
 JSValueRef UiLabelsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -5679,6 +5726,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "uiHighlights",      UiHighlightsFn);
     install_fn(ctx, ns, "uiLabels",          UiLabelsFn);
     install_fn(ctx, ns, "engineRequest",     EngineRequestFn);
+    install_fn(ctx, ns, "accountAsk",        AccountAskFn);
+    install_fn(ctx, ns, "accountAnswers",    AccountAnswersFn);
     install_fn(ctx, ns, "centerText",        CenterTextFn);
     install_fn(ctx, ns, "panelRects",        PanelRectsFn);
     install_fn(ctx, ns, "panelViz",          PanelVizFn);

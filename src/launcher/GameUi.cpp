@@ -161,6 +161,25 @@ int ModuleAnchors(std::uint32_t pid, ModulePoint* out, int cap) {
     return n;
 }
 
+int ModuleAnswers(std::uint32_t pid, ModuleAnswer* out, int cap, bool& ready) {
+    ready = false;
+    if (cap <= 0) return 0;
+    std::lock_guard<std::mutex> lk(g_channelMu);
+    auto it = g_channels.find(pid);
+    if (it == g_channels.end() || !it->second) return 0;
+    const rtx::frame::Share* f = it->second;
+    if (f->magic != rtx::frame::kMagic || f->version != rtx::frame::kVersion) return 0;
+    int n = (int)f->answer_count;
+    if (n < 0) n = 0;
+    if (n > cap) n = cap;
+    if (n > 128) n = 128;
+    for (int i = 0; i < n; ++i) {
+        out[i].value = f->answer[i].value; out[i].ok = f->answer[i].ok; out[i].tag = f->answer[i].tag;
+    }
+    ready = f->answer_ready != 0;
+    return n;
+}
+
 bool ModuleGlyphWidths(std::uint32_t pid, std::uint8_t* adv, int count, int& px) {
     if (!adv || count <= 0) return false;
     std::lock_guard<std::mutex> lk(g_channelMu);

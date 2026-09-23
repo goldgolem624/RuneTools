@@ -103,6 +103,13 @@ void SetUiLabels(std::uint32_t pid, const std::vector<UiLabel>& labels);
 // One-shot requests carried out by the game itself: a sound effect by id, camera zoom, field of
 // view (0 = leave). Each call is one request.
 void RequestEngine(std::uint32_t pid, int sound, int zoom, int fov);
+// Questions the game answers about the account: whether an achievement's requirements are met and
+// how far along they are, and whether a quest is started or finished. The game weighs them against
+// the live stats, the account and today's date, so the answers are its own rather than ours. The
+// whole list is asked at once and replaces the list before it; answers come back through
+// gameui::ModuleAnswers, matched by a tag of kind and id.
+struct AccountAsk { int kind = 0; int id = 0; };
+void AskAccount(std::uint32_t pid, const std::vector<AccountAsk>& asks);
 
 struct PuzzleCell { int x = 0, y = 0, w = 0, h = 0, step = 0, num = -1; };   // num >= 0 overrides the step+1 label
 void SetPuzzleCells(std::uint32_t pid, const std::vector<PuzzleCell>& cells);
