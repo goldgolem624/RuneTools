@@ -157,6 +157,9 @@ struct ThreadState {
     bool inject = false, borrowed = false; VkCommandBuffer lentIn = VK_NULL_HANDLE;
     // the scene colour pass while it is open and nothing of ours is in it yet
     bool injectScene = false; VkSampleCountFlagBits sceneSamples = VK_SAMPLE_COUNT_1_BIT; unsigned sceneFrame = ~0u;
+    // The frame the world was last drawn in, and the frame the interface pass was last taken in.
+    // Together they place the interface pass in the frame without relying on which pass ran before it.
+    unsigned sceneSeenFrame = ~0u, ifaceFrame = ~0u;
     VkFramebuffer prevFb = VK_NULL_HANDLE; VkRenderPass prevRp = VK_NULL_HANDLE;
     VkFormat prevColour = VK_FORMAT_UNDEFINED; std::uint32_t prevColours = 0, prevW = 0, prevH = 0, prevDraws = 0; bool prevDepth = false;
 };
@@ -442,6 +445,36 @@ bool IsScenePass(const VkFormat* colours, std::uint32_t nc, VkImage depthImg, st
     std::lock_guard<std::mutex> lk(g_passMu);
     return depthImg == g_sceneImg;
 }
+// A pass at client size on the scene's own depth image: the world is being drawn. Used only as
+// "the world has happened this frame", which is what tells the interface pass apart from the passes
+// that run before the world.
+bool OnSceneDepth(VkImage depthImg, std::uint32_t w, std::uint32_t h) {
+    const unsigned tw = g_targetW.load(), th = g_targetH.load();
+    if (!depthImg || !tw || w != tw || h != th) return false;
+    std::lock_guard<std::mutex> lk(g_passMu);
+    return depthImg == g_sceneImg;
+}
+
+// The interface pass, recognised on its own terms: client size, one 8 bit colour attachment that
+// keeps what is already in it, and a depth image of its own rather than the scene's. Taken once a
+// frame and only after the world has been drawn.
+//
+// It used to be recognised by the pass before it instead, a single-draw full-screen pass on the
+// scene image. That pass is part of the game's post-processing, and at low detail settings it runs
+// at a fraction of the client size or not at all, so the interface pass was never found and the
+// whole feature quietly fell back to drawing over the game instead of inside it.
+bool InterfacePassBegins(const VkFormat* colours, const VkAttachmentLoadOp* loads, std::uint32_t nc,
+                         VkFormat depth, VkImage depthImg, std::uint32_t w, std::uint32_t h) {
+    if (nc != 1 || colours[0] != VK_FORMAT_R8G8B8A8_UNORM || loads[0] != VK_ATTACHMENT_LOAD_OP_LOAD) return false;
+    if (depth == VK_FORMAT_UNDEFINED || !depthImg) return false;
+    const unsigned tw = g_targetW.load(), th = g_targetH.load();
+    if (!tw || w != tw || h != th) return false;
+    const unsigned f = g_frame.load(std::memory_order_relaxed);
+    if (t.sceneSeenFrame != f || t.ifaceFrame == f) return false;
+    std::lock_guard<std::mutex> lk(g_passMu);
+    return depthImg != g_sceneImg;
+}
+
 void ArmScenePass(VkCommandBuffer cmd, VkImage depthImg, VkFramebuffer fbh, VkRenderPass rph) {
     if (!g_passRecorder.recordScene || !g_passRecorder.wantsScene) return;
     const unsigned f = g_frame.load(std::memory_order_relaxed);
@@ -484,6 +517,7 @@ bool CallPassRecord(VkCommandBuffer cmd, VkRenderPass rp, std::uint32_t w, std::
 // The interface pass is about to begin: lend the scene depth out for its length.
 void ArmInterfacePass(VkCommandBuffer cmd, VkImage passDepth) {
     if (!g_passRecorder.record || !g_passRecorder.borrow || !g_passRecorder.giveBack) return;
+    t.ifaceFrame = g_frame.load(std::memory_order_relaxed);   // one interface pass a frame
     tb.ours = true;
     t.borrowed = CallBorrow(cmd, passDepth);
     tb.ours = false;
@@ -592,9 +626,16 @@ void VKAPI_CALL HookBeginRP(VkCommandBuffer cmd, const VkRenderPassBeginInfo* in
         VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
         FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
         t.inject = false; t.injectScene = false;
-        if (g_inFrameTrial.load(std::memory_order_relaxed) && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
-        if (g_inFrameTrial.load(std::memory_order_relaxed) && SceneIsFinished(colors, loads, nc, depth, w, h)) {
-            const int where = g_where.load(std::memory_order_relaxed); if (where == 1) ArmInterfacePass(cmd, dimg); else if (where == 0) DrawUnderInterface(cmd, w, h);
+        const bool trial = g_inFrameTrial.load(std::memory_order_relaxed);
+        if (trial && OnSceneDepth(dimg, w, h)) t.sceneSeenFrame = g_frame.load(std::memory_order_relaxed);
+        if (trial && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
+        if (trial) {
+            const int where = g_where.load(std::memory_order_relaxed);
+            // Inside the interface pass: the pass is recognised on its own terms. Into the finished
+            // scene ahead of it: that one draws into the pass before, so it still has to be the
+            // post-processed scene image and keeps the stricter test.
+            if (where == 1) { if (InterfacePassBegins(colors, loads, nc, depth, dimg, w, h)) ArmInterfacePass(cmd, dimg); }
+            else if (where == 0) { if (SceneIsFinished(colors, loads, nc, depth, w, h)) DrawUnderInterface(cmd, w, h); }
         }
         t.curFb = info->framebuffer; t.curRp = info->renderPass; t.curColour = nc ? colors[0] : VK_FORMAT_UNDEFINED;
         t.curColours = nc; t.curW = w; t.curH = h; t.curDepth = depth != VK_FORMAT_UNDEFINED;
@@ -609,9 +650,16 @@ void VKAPI_CALL HookBeginRP2(VkCommandBuffer cmd, const VkRenderPassBeginInfo* i
         VkFormat depth; VkAttachmentLoadOp dload; VkImage dimg; VkImageLayout dfinal;
         FromRenderPass(info, colors, loads, nc, depth, dload, dimg, dfinal, w, h);
         t.inject = false; t.injectScene = false;
-        if (g_inFrameTrial.load(std::memory_order_relaxed) && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
-        if (g_inFrameTrial.load(std::memory_order_relaxed) && SceneIsFinished(colors, loads, nc, depth, w, h)) {
-            const int where = g_where.load(std::memory_order_relaxed); if (where == 1) ArmInterfacePass(cmd, dimg); else if (where == 0) DrawUnderInterface(cmd, w, h);
+        const bool trial = g_inFrameTrial.load(std::memory_order_relaxed);
+        if (trial && OnSceneDepth(dimg, w, h)) t.sceneSeenFrame = g_frame.load(std::memory_order_relaxed);
+        if (trial && IsScenePass(colors, nc, dimg, w, h)) ArmScenePass(cmd, dimg, info->framebuffer, info->renderPass);
+        if (trial) {
+            const int where = g_where.load(std::memory_order_relaxed);
+            // Inside the interface pass: the pass is recognised on its own terms. Into the finished
+            // scene ahead of it: that one draws into the pass before, so it still has to be the
+            // post-processed scene image and keeps the stricter test.
+            if (where == 1) { if (InterfacePassBegins(colors, loads, nc, depth, dimg, w, h)) ArmInterfacePass(cmd, dimg); }
+            else if (where == 0) { if (SceneIsFinished(colors, loads, nc, depth, w, h)) DrawUnderInterface(cmd, w, h); }
         }
         t.curFb = info->framebuffer; t.curRp = info->renderPass; t.curColour = nc ? colors[0] : VK_FORMAT_UNDEFINED;
         t.curColours = nc; t.curW = w; t.curH = h; t.curDepth = depth != VK_FORMAT_UNDEFINED;
