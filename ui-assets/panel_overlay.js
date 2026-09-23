@@ -286,7 +286,7 @@
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'ovWrap'; wrap.className = 'ov-wrap';
     wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs, scenery and loot itself. Off leaves your own game settings alone; on uses the ones below'));
-    wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity',
+    wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity. Nearby also needs the game’s own Entity Highlight Mode set to Proximity, which is what measures the distances',
       [[0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
     wrap.appendChild(ovSelectRow('ov_hoverstyle', 'hover_style', 'Style', 'A silhouette fills the whole entity; a border traces its edge at the sizes below',
       [[1, 'Silhouette'], [0, 'Border']]));
