@@ -108,7 +108,11 @@ void RequestEngine(std::uint32_t pid, int sound, int zoom, int fov);
 // the live stats, the account and today's date, so the answers are its own rather than ours. The
 // whole list is asked at once and replaces the list before it; answers come back through
 // gameui::ModuleAnswers, matched by a tag of kind and id.
-struct AccountAsk { int kind = 0; int id = 0; };
+struct AccountAsk {
+    int kind = 0; int id = 0;
+    bool operator==(const AccountAsk& o) const { return kind == o.kind && id == o.id; }
+    bool operator!=(const AccountAsk& o) const { return !(*this == o); }
+};
 void AskAccount(std::uint32_t pid, const std::vector<AccountAsk>& asks);
 
 struct PuzzleCell { int x = 0, y = 0, w = 0, h = 0, step = 0, num = -1; };   // num >= 0 overrides the step+1 label
