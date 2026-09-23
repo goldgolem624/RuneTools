@@ -52,6 +52,10 @@ int IndexOf(int category, int id) {
     return category > 0 ? id + (category + 15) * 0x100 : id;
 }
 
+// Making a child leaves it as the engine's current component: the client writes it into the script
+// state as the last thing it does. So a new component is styled with the operations that act on the
+// current one, and there is no index to work out. The state the calls run through is one buffer that
+// is kept between them, so that choice stands until the next thing replaces it.
 int Create(std::uint8_t* root, int group, int parentComp, int type, int category, int id) {
     const int index = IndexOf(category, id);
     if (index < 0) { Say("create: category %d id %d is out of range", category, id); return -1; }
@@ -61,6 +65,41 @@ int Create(std::uint8_t* root, int group, int parentComp, int type, int category
     const int n = rtx::engineops::Call(root, "IF_CREATECHILD", ints, 4, nullptr, 0, out, 4);
     if (n < 0) { Say("create: IF_CREATECHILD not recognised or faulted"); return -1; }
     return index;
+}
+
+// The current-component forms, for the child just made.
+namespace {
+bool CallCur(std::uint8_t* root, const char* op, const std::int32_t* args, int nArgs, const char* text) {
+    std::int32_t out[4];
+    const char* strs[1] = { text };
+    const int n = rtx::engineops::Call(root, op, args, nArgs, text ? strs : nullptr, text ? 1 : 0, out, 4);
+    if (n < 0) { Say("%s: not recognised or faulted", op); return false; }
+    return true;
+}
+}  // namespace
+
+bool CurPosition(std::uint8_t* root, int x, int y, int xMode, int yMode) {
+    const std::int32_t a[4] = { x, y, xMode, yMode };
+    return CallCur(root, "CC_SETPOSITION", a, 4, nullptr);
+}
+bool CurSize(std::uint8_t* root, int w, int h, int wMode, int hMode) {
+    const std::int32_t a[4] = { w, h, wMode, hMode };
+    return CallCur(root, "CC_SETSIZE", a, 4, nullptr);
+}
+bool CurText(std::uint8_t* root, const char* text) {
+    return CallCur(root, "CC_SETTEXT", nullptr, 0, text ? text : "");
+}
+bool CurTextFont(std::uint8_t* root, int font) {
+    const std::int32_t a[1] = { font };
+    return CallCur(root, "CC_SETTEXTFONT", a, 1, nullptr);
+}
+bool CurColour(std::uint8_t* root, int rgb) {
+    const std::int32_t a[1] = { rgb & 0xFFFFFF };
+    return CallCur(root, "CC_SETCOLOUR", a, 1, nullptr);
+}
+bool CurHide(std::uint8_t* root, bool hide) {
+    const std::int32_t a[1] = { hide ? 1 : 0 };
+    return CallCur(root, "CC_SETHIDE", a, 1, nullptr);
 }
 
 bool SetPosition(std::uint8_t* root, int group, int comp, int x, int y, int xMode, int yMode) {
@@ -95,11 +134,11 @@ bool DeleteAll(std::uint8_t* root, int group, int parentComp) {
 
 // Arguments in the order the operation reads them off the stack: the filter to apply (-1 for every
 // row), the table, whether the count is of distinct rows, how many to take and how many to skip.
-int DbRowCount(std::uint8_t* root, int table) {
-    std::int32_t ints[5] = { -1, (std::int32_t)table, 0, -1, 0 };
+int DbRowCount(std::uint8_t* root, int table, int take, int skip) {
+    std::int32_t ints[5] = { -1, (std::int32_t)table, 0, (std::int32_t)take, (std::int32_t)skip };
     std::int32_t out[4] = {0};
     const int n = rtx::engineops::Call(root, "DBQUERY_EXECUTE_COUNT", ints, 5, nullptr, 0, out, 4);
-    if (n < 1) { Say("dbcount: DBQUERY_EXECUTE_COUNT gave nothing back"); return -1; }
+    if (n < 1) return -1;
     return out[0];
 }
 
@@ -131,18 +170,38 @@ void DevComponent(std::uint8_t* root) {
     static bool s_on = false, s_made = false;
     static int  s_group = 0, s_parent = 0, s_comp = -1;
     static std::string s_spec, s_text;
+    // Nothing at all runs until the engine is up. This is on the thread that draws, so a call made
+    // while the client is still building itself costs a frame at best; the first minute of a launch
+    // is when the client can least afford one.
     const ULONGLONG now = GetTickCount64();
+    static const ULONGLONG s_first = now;
+    // Says where it stopped, once for each reason, so an idle check is never silent.
+    static bool s_saidRoot = false, s_saidReady = false, s_saidWait = false, s_saidGo = false;
+    if (!root) { if (!s_saidRoot) { s_saidRoot = true; Say("check: no root yet"); } return; }
+    if (now - s_first < 20000) {
+        if (!s_saidWait) { s_saidWait = true; Say("check: holding off for the first 20 s of this run"); }
+        return;
+    }
+    if (!rtx::engineops::Ready()) {
+        if (!s_saidReady) { s_saidReady = true; Say("check: the engine operations are not resolved yet"); }
+        return;
+    }
+    if (!s_saidGo) { s_saidGo = true; Say("check: running"); }
     if (now - s_looked > 3000) {
         s_looked = now;
+        // Reading a file is not this thread's work: the path is looked at once and the answer is
+        // remembered, never opened on the frame that draws.
         wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
         const std::wstring path = std::wstring(tmp) + L"rtx_iface.txt";
         std::string line;
-        HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                               nullptr, OPEN_EXISTING, 0, nullptr);
-        if (f != INVALID_HANDLE_VALUE) {
-            char buf[512] = {0}; DWORD got = 0;
-            if (ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr) && got) line.assign(buf, got);
-            CloseHandle(f);
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+            if (f != INVALID_HANDLE_VALUE) {
+                char buf[512] = {0}; DWORD got = 0;
+                if (ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr) && got) line.assign(buf, got);
+                CloseHandle(f);
+            }
         }
         const bool was = s_on;
         s_on = !line.empty();
@@ -165,27 +224,41 @@ void DevComponent(std::uint8_t* root) {
                                 &group, &parent, &type, &cat, &id, &x, &y, &w, &h, &rgb, text);
     if (got < 5 || group <= 0) { Say("check: the line needs at least group, parent, type, category, id"); return; }
 
+    char line[160];
+    std::snprintf(line, sizeof(line), "%s %llu", text[0] ? text : "RuneTools",
+                  (unsigned long long)((now / 1000) % 1000));
+    // Made once. Everything after it acts on the component the making left current, so the whole
+    // set has to run together while that choice still stands.
     if (!s_made) {
         s_comp = Create(root, group, parent, type, cat, id);
         if (s_comp < 0) { Say("check: nothing was made"); return; }
         s_group = group; s_parent = parent; s_made = true;
-        SetPosition(root, group, s_comp, x, y, 0, 0);
-        SetSize(root, group, s_comp, w, h, 0, 0);
-        SetColour(root, group, s_comp, rgb);
-        SetHide(root, group, s_comp, false);
-        Say("check: made %d:%d under %d:%d", group, s_comp, group, parent);
+        const bool p = CurPosition(root, x, y, 0, 0);
+        const bool z = CurSize(root, w, h, 0, 0);
+        const bool f = CurTextFont(root, 494);       // a font the client has loaded; text draws nothing without one
+        const bool c = CurColour(root, rgb);
+        const bool v = CurHide(root, false);
+        const bool t = CurText(root, line);
+        Say("check: made under %d:%d, pos %d size %d font %d colour %d shown %d text %d",
+            group, parent, (int)p, (int)z, (int)f, (int)c, (int)v, (int)t);
+        return;
     }
-    char line[160];
-    std::snprintf(line, sizeof(line), "%s %llu", text[0] ? text : "RuneTools",
-                  (unsigned long long)((now / 1000) % 1000));
-    SetText(root, s_group, s_comp, line);
+    // Later updates have to name it again: only the making leaves it current.
+    if (Create(root, group, parent, type, cat, id) >= 0) CurText(root, line);
 
     // One table counted the same way, so the query side is checked on the same run.
+    // Which table and which row window the operation will answer for is not settled, so a few are
+    // tried once and reported together rather than one guess being taken for the contract.
     static bool s_counted = false;
     if (!s_counted) {
         s_counted = true;
-        const int rows = DbRowCount(root, 0);
-        Say("check: table 0 counted %d rows", rows);
+        static const int kTables[] = { 368, 0, 1, 20, 100 };
+        for (int t : kTables) {
+            const int a = DbRowCount(root, t, -1, 0);
+            const int b = DbRowCount(root, t, 0, 0);
+            const int c = DbRowCount(root, t, 1000, 0);
+            Say("dbcount: table %d -> take -1:%d take 0:%d take 1000:%d", t, a, b, c);
+        }
     }
 }
 

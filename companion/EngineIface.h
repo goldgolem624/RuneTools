@@ -26,6 +26,16 @@ int IndexOf(int category, int id);
 // Makes a child of `parentComp` in `group`. Returns its component index, or -1.
 int Create(std::uint8_t* root, int group, int parentComp, int type, int category, int id);
 
+// Making a child leaves it as the engine's current component, so these style what was just made
+// without naming it. The script state is kept between calls, so that choice holds until something
+// else replaces it.
+bool CurPosition(std::uint8_t* root, int x, int y, int xMode, int yMode);
+bool CurSize(std::uint8_t* root, int w, int h, int wMode, int hMode);
+bool CurText(std::uint8_t* root, const char* text);
+bool CurTextFont(std::uint8_t* root, int font);
+bool CurColour(std::uint8_t* root, int rgb);
+bool CurHide(std::uint8_t* root, bool hide);
+
 bool SetPosition(std::uint8_t* root, int group, int comp, int x, int y, int xMode, int yMode);
 bool SetSize(std::uint8_t* root, int group, int comp, int w, int h, int wMode, int hMode);
 bool SetText(std::uint8_t* root, int group, int comp, const char* text);
@@ -37,7 +47,7 @@ bool DeleteAll(std::uint8_t* root, int group, int parentComp);
 // The client's own indexed queries over its cache tables. A count is the whole contract for one
 // table with no filter: the filter handle is the engine's own list of built filters, and -1 asks
 // for every row. Returns -1 when the operation is not recognised or the call faulted.
-int DbRowCount(std::uint8_t* root, int table);
+int DbRowCount(std::uint8_t* root, int table, int take, int skip);
 
 // Drives one component from a file on the live game, so the whole life of one is visible.
 void DevComponent(std::uint8_t* root);
