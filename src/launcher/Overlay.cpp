@@ -982,8 +982,15 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     t_ptCells.clear();
     t_depthTally = DepthTally{};
     bool topLayer = false;   // what follows marks the game's interface, not the world: it stays over that interface
+    // The tile grid can be thousands of lines on its own, and it is emitted before the labels,
+    // markers and plugin guides. Without a reserve it fills the list and everything after it is
+    // dropped in silence, which looked like those features not working at all while the grid was on.
+    // The grid is the one thing that gives way: it stops short so the rest always has room.
+    constexpr std::size_t kReserveForContent = 1536;
+    bool gridding = false;
     auto push = [&](const marker::Command& c0) {
         if (cmds.size() >= marker::kMaxCmds) return;
+        if (gridding && cmds.size() >= marker::kMaxCmds - kReserveForContent) return;
         marker::Command c = c0;
         c.top = topLayer ? 1 : 0;
         c.z0 = c.z1 = c.z2 = c.z3 = -1.0f;
@@ -1021,6 +1028,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     };
 
     if (f && cfg.enabled && cfg.grid && f->grid_r > 0) {
+        gridding = true;
         const int R = f->grid_r;
         const int T = 2 * R + 1;
         static thread_local std::vector<float> px, py, wz;
@@ -1146,6 +1154,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                 if (fl & 0x01) wall(d, c);
             }
     }
+    gridding = false;   // everything after this draws with the whole list available to it
 
     // World points handed to the game to project, and the answers it gave for the same list last
     // time. The list is rebuilt every pass in the same order, so an answer belongs to the point that
