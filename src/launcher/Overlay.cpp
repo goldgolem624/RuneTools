@@ -1899,8 +1899,46 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         return { (float)x * k, (float)y * k, (float)(x + w) * k, (float)(y + h) * k };
     };
 
-    for (const auto& uihl : uihls) {
-        if (uihl.w <= 0 || uihl.h <= 0) continue;
+    // Highlights the game draws itself: the component under each rectangle is found in the
+    // interface tree and the frame goes in as children of it, so it is clipped and layered exactly
+    // as the game's own parts are. Looked up once a second per rectangle; anything with no
+    // component under it stays with the overlay.
+    std::vector<marker::CcRect> ccRects;
+    auto CcBox = [](int parent, int slot, int x, int y, int w, int h, std::uint32_t argb) {
+        marker::CcRect r{}; r.parent = parent; r.slot = slot; r.x = x; r.y = y; r.w = w; r.h = h; r.argb = argb; return r;
+    };
+    const bool ccDrawn = rtx::launcher::gameui::ModuleDrawsComponents(cfg.pid);
+    struct HlCc { int x, y, w, h; rtx::reader::IfaceHit hit; ULONGLONG at; };
+    static std::map<DWORD, std::vector<HlCc>> s_hlcc;
+    std::vector<bool> hlByGame(uihls.size(), false);
+    if (ccDrawn) {
+        auto& cache = s_hlcc[cfg.pid];
+        const ULONGLONG nowc = now_ms();
+        for (size_t i = 0; i < uihls.size(); ++i) {
+            const auto& u = uihls[i];
+            if (u.w <= 0 || u.h <= 0) continue;
+            HlCc* c = nullptr;
+            for (auto& e : cache) if (e.x == u.x && e.y == u.y && e.w == u.w && e.h == u.h) { c = &e; break; }
+            if (!c) { if (cache.size() > 64) cache.clear(); cache.push_back({ u.x, u.y, u.w, u.h, {}, 0 }); c = &cache.back(); }
+            if (nowc - c->at > 1000) { c->at = nowc; c->hit = rtx::reader::InterfaceLocate(cfg.pid, u.x, u.y, u.w, u.h); }
+            if (!c->hit.ok || ccRects.size() + 5 > (size_t)marker::kMaxCc) continue;
+            const bool cell = u.w < 90 && u.h < 90;
+            const int pad = cell ? 0 : 3, t = 2;
+            const int x0 = u.x - c->hit.px - pad, y0 = u.y - c->hit.py - pad;
+            const int x1 = u.x - c->hit.px + u.w + pad, y1 = u.y - c->hit.py + u.h + pad;
+            const std::uint32_t acc = ((std::uint32_t)kAccR << 16) | ((std::uint32_t)kAccG << 8) | kAccB;
+            const int slot = marker::kCcSlotBase + 0x100 + (int)i * 5;
+            ccRects.push_back(CcBox(c->hit.parent, slot,     x0, y0, x1 - x0, y1 - y0, (cell ? 0x60000000u : 0x38000000u) | acc));
+            ccRects.push_back(CcBox(c->hit.parent, slot + 1, x0, y0, x1 - x0, t,       0xFF000000u | acc));
+            ccRects.push_back(CcBox(c->hit.parent, slot + 2, x0, y1 - t, x1 - x0, t,   0xFF000000u | acc));
+            ccRects.push_back(CcBox(c->hit.parent, slot + 3, x0, y0, t, y1 - y0,       0xFF000000u | acc));
+            ccRects.push_back(CcBox(c->hit.parent, slot + 4, x1 - t, y0, t, y1 - y0,   0xFF000000u | acc));
+            hlByGame[i] = true;
+        }
+    } else s_hlcc.erase(cfg.pid);
+    for (size_t hi = 0; hi < uihls.size(); ++hi) {
+        const auto& uihl = uihls[hi];
+        if (uihl.w <= 0 || uihl.h <= 0 || hlByGame[hi]) continue;
         float uipulse = (float)(0.5 + 0.5 * std::sin((now_ms() % 1000) / 1000.0 * 6.2831853));
         const ScreenRect sr = toScreen(uihl.x, uihl.y, uihl.w, uihl.h, true);
         const bool cell = ((sr.x1 - sr.x0) < 90.0f * gvScale && (sr.y1 - sr.y0) < 90.0f * gvScale);
@@ -1932,8 +1970,36 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         }
     }
 
-    for (const auto& lb : uilbls) {
-        if (lb.text.empty()) continue;
+    // Labels the game draws itself, as text components of the layer under each: the same lookup and
+    // cache as the highlights. A label with no component under it stays with the overlay.
+    std::vector<bool> lbByGame(uilbls.size(), false);
+    if (ccDrawn) {
+        auto& cache = s_hlcc[cfg.pid];
+        const ULONGLONG nowc = now_ms();
+        for (size_t i = 0; i < uilbls.size(); ++i) {
+            const auto& lb = uilbls[i];
+            if (lb.text.empty()) continue;
+            HlCc* c = nullptr;
+            for (auto& e : cache) if (e.x == lb.x && e.y == lb.y && e.w == 1 && e.h == 1) { c = &e; break; }
+            if (!c) { if (cache.size() > 64) cache.clear(); cache.push_back({ lb.x, lb.y, 1, 1, {}, 0 }); c = &cache.back(); }
+            if (nowc - c->at > 1000) { c->at = nowc; c->hit = rtx::reader::InterfaceLocate(cfg.pid, lb.x, lb.y, 1, 1); }
+            if (!c->hit.ok || ccRects.size() + 1 > (size_t)marker::kMaxCc) continue;
+            marker::CcRect t{};
+            t.parent = c->hit.parent; t.slot = marker::kCcSlotBase + 0x300 + (int)i;
+            const int px = lb.px > 0 ? lb.px : 12;
+            const int tw = (int)lb.text.size() * (px * 3 / 5 + 1) + 6, th = px + 4;
+            // style 1 centres the label on the point, else it starts there, centred on the line
+            t.x = lb.x - c->hit.px - (lb.style == 1 ? tw / 2 : 0); t.y = lb.y - c->hit.py - th / 2; t.w = tw; t.h = th;
+            const std::uint32_t rgb = lb.rgb < 0 ? 0xFFE24Au : ((std::uint32_t)lb.rgb & 0xFFFFFFu);
+            t.argb = 0xFF000000u | rgb; t.font = px <= 11 ? 66 : 26;
+            std::snprintf(t.text, sizeof(t.text), "%s", lb.text.c_str());
+            ccRects.push_back(t);
+            lbByGame[i] = true;
+        }
+    }
+    for (size_t li = 0; li < uilbls.size(); ++li) {
+        const auto& lb = uilbls[li];
+        if (lb.text.empty() || lbByGame[li]) continue;
         const ScreenRect sr = toScreen(lb.x, lb.y, 1, 1, true);
         {   // one line per distinct placement: the design-to-screen mapping is the usual suspect when a label lands off
             static std::map<DWORD, std::pair<int,int>> l_lb;
