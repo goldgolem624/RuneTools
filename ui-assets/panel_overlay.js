@@ -1,6 +1,6 @@
 // RuneToolsX panel: Overlay tab (drives the external world-grid window).
 (function () {
-  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, true_tile: false, interactable: false, radius: 12, markers: true, occlude: true, occlude_hide: true, inframe_trial: true, inframe_default_v1: true, hover_outline: false, hover_when: -1, hover_style: -1, hover_self: 0, hover_pl: 0, hover_npc: 0, hover_atk: 0, hover_obj: 0, hover_loot: 0, hover_width: 8, hover_self_w: 0, hover_pl_w: 0, hover_npc_w: 0, hover_atk_w: 0, hover_obj_w: 0, hover_loot_w: 0, tooltip_values: true, mark_test: false, mark_height: 60, mark_pointer_scale: 100, mark_arrow: 1, mark_target: 0, mark_query: '', mark_path: 1 };
+  overlayState = { enabled: false, grid: true, players: false, npcs: false, objects: false, specials: false, walk_only: false, true_tile: false, interactable: false, radius: 12, markers: true, occlude: true, occlude_hide: true, inframe_trial: true, inframe_default_v1: true, hover_outline: false, hover_when: 0, hover_style: 0, hover_self: 0, hover_pl: 0, hover_npc: 0, hover_atk: 0, hover_obj: 0, hover_loot: 0, hover_width: 8, hover_self_w: 0, hover_pl_w: 0, hover_npc_w: 0, hover_atk_w: 0, hover_obj_w: 0, hover_loot_w: 0, tooltip_values: true, mark_test: false, mark_height: 60, mark_pointer_scale: 100, mark_arrow: 1, mark_target: 0, mark_query: '', mark_path: 1 };
   // key in overlayState, label, the game's own colour for that kind
   // The game's own look, as the game itself shows it: its chevrons at the feet, its yellow arrow, its
   // diamonds along the way and a wide frame on a marked tile. None of that is a choice. The arrows show
@@ -32,7 +32,10 @@
       overlayState.radius = Math.max(1, Math.min(64, overlayState.radius | 0)) || 12;
       overlayState.hover_width = Math.max(2, Math.min(16, overlayState.hover_width | 0)) || 8;
       // one width for everything came first: it seeds the three that replaced it
-      OV_HOVER_KINDS.forEach(([, , , wKey]) => { overlayState[wKey] = Math.max(2, Math.min(16, (overlayState[wKey] | 0) || overlayState.hover_width)); });
+      OV_HOVER_KINDS.forEach(([, , , wKey]) => { overlayState[wKey] = Math.max(1, Math.min(24, (overlayState[wKey] | 0) || overlayState.hover_width)); });
+      // these used to carry "leave the game's setting", which the toggle now means on its own
+      if ((overlayState.hover_when | 0) < 0) overlayState.hover_when = 0;
+      if ((overlayState.hover_style | 0) < 0) overlayState.hover_style = 0;
       // settings saved while these were a trial: Hide and drawing inside the game are the defaults now,
       // and a saved copy from before that day is brought up to them once
       if (sv.inframe_default_v1 !== true) { overlayState.occlude = true; overlayState.occlude_hide = true; overlayState.inframe_trial = true; overlayState.tooltip_values = true; overlayState.inframe_default_v1 = true; }
@@ -282,11 +285,11 @@
     if ($('ovWrap')) { reflectOverlay(); return; }
     c.innerHTML = '';
     const wrap = document.createElement('div'); wrap.id = 'ovWrap'; wrap.className = 'ov-wrap';
-    wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs and scenery itself. Works with the overlay off, and leaves your game settings alone where these say to'));
-    wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'Leave your game setting, or override it',
-      [[-1, 'Game setting'], [0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
+    wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs, scenery and loot itself. Off leaves your own game settings alone; on uses the ones below'));
+    wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity',
+      [[0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
     wrap.appendChild(ovSelectRow('ov_hoverstyle', 'hover_style', 'Style', 'A silhouette fills the whole entity; a border traces its edge at the sizes below',
-      [[-1, 'Game setting'], [1, 'Silhouette'], [0, 'Border']]));
+      [[1, 'Silhouette'], [0, 'Border']]));
     // outline colour per kind of target; the first swatch keeps the colour the game uses for it
     OV_HOVER_KINDS.forEach(([key, label, game, wKey]) => {
       const row = document.createElement('div'); row.className = 'ov-hovrow'; row.dataset.key = key;
