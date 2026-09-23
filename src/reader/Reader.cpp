@@ -7801,14 +7801,32 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                     if (d2 >= bestD2) continue;
                     bestD2 = d2; bestL = &L;
                 }
-                if (!bestL) continue;
-                const float top = bestL->ground + (float)bestL->head;
+                // A miss must not drop the label. The loc list is rebuilt every frame and a single
+                // frame without this entity would blink the label out and back; hold the last
+                // anchor for a moment instead, and only give up once it is really gone.
+                struct Held { float p[3]; long long at; };
+                static std::unordered_map<long long, Held> s_hold;
+                const long long hk = ((long long)gs.snap_id << 32) ^ ((long long)gs.gx << 16) ^ gs.gy;
+                const long long nowMs = (long long)GetTickCount64();
+                float ax = 0, ay = 0, top = 0;
+                if (bestL) {
+                    ax = bestL->cx; ay = bestL->cz; top = bestL->ground + (float)bestL->head;
+                    Held& e = s_hold[hk];
+                    e.p[0] = ax; e.p[1] = ay; e.p[2] = top; e.at = nowMs;
+                } else {
+                    auto it = s_hold.find(hk);
+                    if (it == s_hold.end() || nowMs - it->second.at > 1500) {
+                        if (it != s_hold.end()) s_hold.erase(it);
+                        continue;
+                    }
+                    ax = it->second.p[0]; ay = it->second.p[1]; top = it->second.p[2];
+                }
                 op.has_box3d = true;
                 op.label_only = true;        // the caller marks the ground itself; this only lifts the label
-                op.bmin[0] = op.bmax[0] = bestL->cx;
-                op.bmin[1] = op.bmax[1] = bestL->cz;
+                op.bmin[0] = op.bmax[0] = ax;
+                op.bmin[1] = op.bmax[1] = ay;
                 op.bmin[2] = op.bmax[2] = top;
-                op.wx = bestL->cx; op.wy = bestL->cz; op.wz = top;
+                op.wx = ax; op.wy = ay; op.wz = top;
                 out.guides.push_back(std::move(op));
                 continue;
             }
