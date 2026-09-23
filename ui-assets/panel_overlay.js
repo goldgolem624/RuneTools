@@ -288,7 +288,7 @@
     wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs, scenery and loot itself. Off leaves your own game settings alone; on uses the ones below'));
     wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity. Nearby also needs the game’s own Entity Highlight Mode set to Proximity, which is what measures the distances',
       [[0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
-    wrap.appendChild(ovSelectRow('ov_hoverstyle', 'hover_style', 'Style', 'A silhouette fills the whole entity; a border traces its edge at the sizes below',
+    wrap.appendChild(ovSelectRow('ov_hoverstyle', 'hover_style', 'Style', 'A border traces the entity at the sizes below. Silhouette fills it, and needs the game’s own Entity Highlight Type set to Silhouette as well',
       [[1, 'Silhouette'], [0, 'Border']]));
     // outline colour per kind of target; the first swatch keeps the colour the game uses for it
     OV_HOVER_KINDS.forEach(([key, label, game, wKey]) => {

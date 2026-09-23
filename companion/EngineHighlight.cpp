@@ -253,6 +253,22 @@ void ApplyScale(int category, std::int32_t scale) {
         return;
     }
     const std::uint8_t want = (std::uint8_t)(scale < 0 ? 0 : scale > kMaxScale ? kMaxScale : scale);
+    // A scale of zero is the silhouette, but only while the game itself is drawing silhouettes: its
+    // Entity Highlight Type picks the shape, and a zero-wide border draws nothing at all. The game's
+    // own scale says which it is, zero when it draws silhouettes and its border size otherwise, so a
+    // silhouette is only asked for when the game is already drawing them. Refusing here leaves the
+    // game's own look in place, which beats an empty screen.
+    const std::uint8_t theirs = g_haveWidth[category] ? g_gameWidth[category] : *cur;
+    if (want == 0 && theirs != 0) {
+        if (mine && *cur == g_appliedWidth[category]) *cur = g_gameWidth[category];
+        g_haveWidth[category] = false;
+        static bool s_said = false;
+        if (!s_said) {
+            s_said = true;
+            Say("highlight: a silhouette needs the game's own Entity Highlight Type set to Silhouette; its border is left alone");
+        }
+        return;
+    }
     if (mine && *cur == want) return;                       // already ours
     if (!mine || *cur != g_appliedWidth[category]) g_gameWidth[category] = *cur;   // the game's, to go back
     if (*cur != want)
