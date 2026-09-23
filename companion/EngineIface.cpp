@@ -246,7 +246,7 @@ void DevComponent(std::uint8_t* root) {
         // Text only means anything on a text component, and it draws nothing without a font.
         bool f = true, t = true;
         if (type == kTypeText) {
-            f = CurTextFont(root, 494);
+            f = CurTextFont(root, kFontDefault);
             t = CurText(root, line);
         }
         Say("check: made under %d:%d as index %d, selected %s, pos %d size %d colour %d shown %d font %d text %d",

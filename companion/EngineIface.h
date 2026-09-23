@@ -18,6 +18,11 @@ constexpr int kTypeLayer   = 0;
 constexpr int kTypeText    = 4;
 constexpr int kTypeGraphic = 5;
 
+// Fonts are small ids, not the cache keys they look like: 1, 2 and 5 through 12 all draw,
+// checked by laying a line out in each and reading the screen. An id that names no font leaves
+// the component with nothing to draw and reports nothing.
+constexpr int kFontDefault = 1;
+
 // Category 0 holds 4096 ids; every other category holds 256. The client composes the two into the
 // component index the group then knows the child by.
 constexpr int kMaxCategory = 0xEA;
