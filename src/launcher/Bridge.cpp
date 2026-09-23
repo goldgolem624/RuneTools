@@ -1780,7 +1780,9 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
         // one mode for every category, matching the game's own single Entity Highlight Mode setting
         int wantMode = -1;
         if (argc >= 50) { const int m = js_int(ctx, argv[49]); wantMode = (m < 0 || m > 3) ? -1 : m; }
-        const bool silhouette = argc >= 51 && js_int(ctx, argv[50]) == 1;
+        // The style control is gone: silhouette against border drew nothing, because the game's own
+        // Entity Highlight Type picks the render path and only its settings page can switch it.
+        const bool silhouette = false;
         // "category:value,..." for the game's six highlight categories: colours, then border sizes.
         // Anything not named is left to the game. Categories: 1 you, 2 friendly players,
         // 3 friendly NPCs, 4 enemies, 5 interactables, 6 loot.
@@ -1808,7 +1810,7 @@ JSValueRef OverlayConfig(JSContextRef ctx, JSObjectRef, JSObjectRef,
         // the mode and the silhouette apply to every category the game highlights
         for (int k = 0; k < 8; ++k) {
             if (wantMode >= 0) c.hover_mode[k] = wantMode;
-            if (silhouette) c.hover_scale[k] = 0;
+            if (silhouette) c.hover_scale[k] = 0;   // never, while the type is the game's to choose
         }
         if (argc >= 48) c.occlude_hide = JSValueToBoolean(ctx, argv[47]);
         if (argc >= 49) c.inframe_trial = JSValueToBoolean(ctx, argv[48]);

@@ -258,11 +258,7 @@
       const dd = row.querySelector('.pet-dd');
       if (dd && dd.repaint) dd.repaint();
     });
-    // a silhouette fills the entity and has no border, so the size rows have nothing to say
-    if (ow) { const borders = (overlayState.hover_style | 0) !== 1;
-      Array.from(ow.querySelectorAll('.ov-hovrow[data-width]')).forEach(row => {
-        row.style.display = borders ? 'flex' : 'none';
-      }); }
+
     if (ow) Array.from(ow.querySelectorAll('.ov-hovrow')).forEach(row => {
       row.style.opacity = overlayState.hover_outline ? 1 : 0.45;
       const wKey = row.dataset.width;
@@ -288,8 +284,10 @@
     wrap.appendChild(ovToggleRow('ov_hoverol', 'Highlight entities', 'The game highlights NPCs, scenery and loot itself. Off leaves your own game settings alone; on uses the ones below'));
     wrap.appendChild(ovSelectRow('ov_hoverwhen', 'hover_when', 'When', 'When the game highlights an entity. Nearby also needs the game’s own Entity Highlight Mode set to Proximity, which is what measures the distances',
       [[0, 'Mouseover'], [1, 'Nearby'], [2, 'Always on']]));
-    wrap.appendChild(ovSelectRow('ov_hoverstyle', 'hover_style', 'Style', 'A border traces the entity at the sizes below. Silhouette fills it, and needs the game’s own Entity Highlight Type set to Silhouette as well',
-      [[1, 'Silhouette'], [0, 'Border']]));
+    // Silhouette or border is the game's own Entity Highlight Type. It picks a render path that only
+    // the game's settings page can switch, so there is no control for it here: asking for one while
+    // the game draws the other produced nothing at all. The sizes below apply while the game draws
+    // borders, and are left alone while it draws silhouettes.
     // outline colour per kind of target; the first swatch keeps the colour the game uses for it
     OV_HOVER_KINDS.forEach(([key, label, game, wKey]) => {
       const row = document.createElement('div'); row.className = 'ov-hovrow'; row.dataset.key = key;
