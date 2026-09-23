@@ -106,6 +106,10 @@ std::uint32_t g_rootMethod = 0;   // 0 = unresolved, 1 = byte anchor, 2 = struct
 bool RootGlobalValid(std::uint64_t globalAddr) {
     std::uint64_t root = R64(globalAddr);
     if (!IsHeap(root)) return false;
+    // A real root is a class instance (vtable in the image) that owns the local-player block. Loose data
+    // can pass the scenery walk below by chance; a text buffer did on 950-1 and pinned the scene at zero.
+    if (!InModule(R64(root))) return false;
+    if (!IsHeap(R64(root + rtx::scn::kPlayerData))) return false;
     std::uint64_t cont = R64(root + rtx::scn::kContainer);
     if (!IsHeap(cont)) return false;
     std::int32_t idx = R32(cont + rtx::scn::kActiveIdx);
@@ -133,32 +137,49 @@ bool RootGlobalValid(std::uint64_t globalAddr) {
     return false;
 }
 
+std::uint64_t g_anchorGlobal = 0;   // the global the MainData constructor publishes to, once decoded
+bool          g_anchorSearched = false;
+
 std::uint64_t ScanRootGlobal() {
     const std::uint8_t* img = reinterpret_cast<const std::uint8_t*>(g_base);
     std::uint64_t n = (g_size ? g_size : 0x2000000);
     if (n < 0x1300) return 0;
     static const std::uint8_t kAnchor[] = { 0x48, 0x2D, 0xA8, 0x00, 0x00, 0x00, 0x48, 0x83 };
-    __try {
-        for (std::uint64_t i = 0x1000; i + 0x220 < n; ++i) {
-            if (std::memcmp(img + i, kAnchor, sizeof(kAnchor)) != 0) continue;
-            const std::uint8_t* fn = img + i - 32;   // anchor sits 32 bytes into the fn
-            for (int j = 0; j + 7 <= 0x200; ++j) {
-                if (fn[j] == 0x48 && fn[j + 1] == 0x89 && fn[j + 2] == 0x05) {
-                    std::int32_t disp = 0;
-                    std::memcpy(&disp, fn + j + 3, 4);
-                    std::uint64_t cand = (std::uint64_t)(fn + j + 7) + (std::int64_t)disp;
-                    if (RootGlobalValid(cand)) { g_rootMethod = 1; return cand; }
-                    break;
+    if (!g_anchorSearched) {
+        g_anchorSearched = true;
+        __try {
+            for (std::uint64_t i = 0x1000; i + 0x220 < n && !g_anchorGlobal; ++i) {
+                if (std::memcmp(img + i, kAnchor, sizeof(kAnchor)) != 0) continue;
+                const std::uint8_t* fn = img + i - 32;   // anchor sits 32 bytes into the fn
+                for (int j = 0; j + 7 <= 0x200; ++j) {
+                    if (fn[j] == 0x48 && fn[j + 1] == 0x89 && fn[j + 2] == 0x05) {
+                        std::int32_t disp = 0;
+                        std::memcpy(&disp, fn + j + 3, 4);
+                        g_anchorGlobal = (std::uint64_t)(fn + j + 7) + (std::int64_t)disp;
+                        break;
+                    }
                 }
             }
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (g_anchorGlobal) RingLog("scene root: anchor global at exe+0x%llX", (unsigned long long)(g_anchorGlobal - g_base));
+    }
+    // With the anchor decoded, that global is the root; before the scene loads it is simply not valid
+    // yet. Guessing another global in the meantime is how a wrong one got pinned for a whole session.
+    if (g_anchorGlobal) {
+        if (RootGlobalValid(g_anchorGlobal)) { g_rootMethod = 1; return g_anchorGlobal; }
+        g_rootMethod = 0;
+        return 0;
+    }
     __try {
         for (std::uint64_t o = 0; o + 8 <= n; o += 8) {
             std::uint64_t cand = g_base + o;
             std::uint64_t v = R64(cand);
             if (!IsHeap(v)) continue;
-            if (RootGlobalValid(cand)) { g_rootMethod = 2; return cand; }
+            if (RootGlobalValid(cand)) {
+                g_rootMethod = 2;
+                RingLog("scene root: structural global at exe+0x%llX", (unsigned long long)o);
+                return cand;
+            }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     g_rootMethod = 0;
@@ -382,12 +403,16 @@ void FindContainers(bool deep) {
     }
 }
 
+// Drops containers that are malformed or no longer hold scenery (freed or reused after the player left
+// the area); the list only ever grew before, so a long session filled it with dead entries.
 void PruneInvalid() {
     int w = 0;
     for (int i = 0; i < g_mgrCount; ++i) {
         std::uint64_t mgr = g_mgrs[i];
         std::uint64_t vb = R64(mgr + kVecBegin), ve = R64(mgr + kVecEnd);
-        if (IsHeap(vb) && ve >= vb && ((ve - vb) & 7) == 0 && (ve - vb) / 8 <= 30000)
+        int total = 0;
+        if (IsHeap(vb) && ve >= vb && ((ve - vb) & 7) == 0 && (ve - vb) / 8 <= 30000 &&
+            ScoreContainer(mgr, total) >= 1)
             g_mgrs[w++] = mgr;
     }
     g_mgrCount = w;
@@ -1802,6 +1827,7 @@ DWORD WINAPI Worker(LPVOID) {
     ULONGLONG lastScanMs = 0, rescanMs = kRescanMs;
     float scanPx = 0, scanPy = 0; bool haveScanPos = false;
     int emptyTicks = 0;
+    ULONGLONG noPosSinceMs = 0;                          // root resolved but the local player not found since
     for (;;) {
         { char said[400]; if (rtx::enginemark::TakeLog(said, sizeof(said))) RingLog("%s", said); }
         { char said[400]; if (rtx::enginecc::TakeLog(said, sizeof(said))) RingLog("%s", said); }
@@ -1812,6 +1838,17 @@ DWORD WINAPI Worker(LPVOID) {
         if (!sh) { Sleep(250); continue; }
         float cpx = 0, cpy = 0;
         bool havePos = PlayerFineOrLast(cpx, cpy);
+        // Logged in with a root but no local player among the worker's entities for 10 s: the worker offset
+        // or the root is wrong. Start both over rather than keep reading the wrong list for the session.
+        if (g_posSource == 1 || !g_rootGlobal) noPosSinceMs = 0;
+        else if (!noPosSinceMs) noPosSinceMs = GetTickCount64();
+        else if (GetTickCount64() - noPosSinceMs > 10000) {
+            RingLog("scene: no local player for 10 s (root exe+0x%llX, worker +0x%X); resolving again",
+                    (unsigned long long)(g_rootGlobal - g_base), g_workerOff);
+            g_rootGlobal = 0; g_rootMethod = 0;
+            g_workerOff = rtx::scn::kWorkerOffDefault;
+            noPosSinceMs = 0;
+        }
         PruneInvalid();
         rtx::menuprobe::Poll();
         rtx::present::Poll();
@@ -1819,7 +1856,7 @@ DWORD WINAPI Worker(LPVOID) {
         const bool moved = havePos && haveScanPos &&
             (std::fabs(cpx - scanPx) > kMoveArm || std::fabs(cpy - scanPy) > kMoveArm);
         bool stale = moved || GetTickCount64() - lastScanMs > rescanMs;
-        if (havePos) FindContainersFromTracked();
+        FindContainersFromTracked();                     // spawn-tracked entities need no player position
         if (havePos && (g_mgrCount == 0 || stale)) {
             const int before = g_mgrCount;
             FindContainers(true);
