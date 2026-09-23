@@ -50,8 +50,9 @@ constexpr std::size_t kTableDispAt = 24, kTableInsnEnd = 28;
 
 // One category: mode byte, the outline width as a byte, then the colour as three floats 0..1.
 constexpr std::size_t kCategoryStride = 16, kCategoryWidth = 1, kCategoryColour = 4;
-// The mode the game draws an outline in. Written by HIGHLIGHT_SET_CATEGORY_MODE, which takes 0 to 3.
-constexpr std::uint8_t kModeOutline = 0;
+// The mode the game draws an outline in. HIGHLIGHT_SET_CATEGORY_MODE takes 0 to 3, and the renderer
+// returns no outline strength at all for 3, so 3 alone means "off" and 0, 1 and 2 all draw.
+constexpr std::uint8_t kModeOutline = 0, kModeOff = 3, kModeNone = 0xFF;
 
 std::mutex g_logMu; char g_log[600] = {};
 void Say(const char* fmt, ...) {
@@ -207,21 +208,27 @@ void ApplyColour(int category, std::uint32_t rgb) {
 void ApplyMode(int category, bool on) {
     if (!g_table) return;
     std::uint8_t* cur = g_table + (std::size_t)category * kCategoryStride;
+    const bool mine = g_appliedMode[category] != kModeNone;
     if (!on) {
-        if (g_appliedMode[category] != 0xFF && g_haveMode[category]) *cur = g_gameMode[category];
-        g_appliedMode[category] = 0xFF;
+        // only put the game's mode back over the value this left there; if the game has written its
+        // own since, that is the one to keep
+        if (mine && g_haveMode[category] && *cur == g_appliedMode[category]) *cur = g_gameMode[category];
+        g_appliedMode[category] = kModeNone;
         return;
     }
-    if (*cur != kModeOutline) {
-        // anything other than what this put there came from the game: that is what goes back
-        if (g_appliedMode[category] == 0xFF || *cur != g_appliedMode[category]) {
-            g_gameMode[category] = *cur; g_haveMode[category] = true;
-        }
-        Say("outline: category %d mode %u -> %u (the game's own is %u)", category, (unsigned)*cur,
-            (unsigned)kModeOutline, (unsigned)g_gameMode[category]);
-        *cur = kModeOutline;
+    if (mine) {
+        if (*cur == g_appliedMode[category]) return;   // still ours, nothing to do
+        g_appliedMode[category] = kModeNone;           // the game took the category back
     }
+    // Only the mode that draws nothing is overridden. The others are the outline style the player
+    // chose in the game's own settings, and the outline is drawn in all of them, so leaving them
+    // alone means turning our feature on never quietly changes how the game looks.
+    if (*cur != kModeOff) return;
+    g_gameMode[category] = *cur; g_haveMode[category] = true;
+    *cur = kModeOutline;
     g_appliedMode[category] = kModeOutline;
+    Say("outline: category %d was off (mode %u), drawn as mode %u while the outline is on",
+        category, (unsigned)kModeOff, (unsigned)kModeOutline);
 }
 
 void ApplyWidth(int category, std::uint8_t width) {
