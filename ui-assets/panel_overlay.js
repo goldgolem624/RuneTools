@@ -166,17 +166,22 @@
     dd.style.cssText = 'flex:0 0 auto;min-width:132px;max-width:150px;';
     const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'pet-dd-btn'; dd.appendChild(btn);
     const pop = document.createElement('div'); pop.className = 'pet-dd-pop'; pop.style.right = '0'; pop.style.left = 'auto'; dd.appendChild(pop);
+    let shown = null;
     const paint = () => {
       const cur = overlayState[key] | 0;
       const sel = opts.find(([v]) => v === cur) || opts[0];
       btn.textContent = sel[1];
+      // The panel repaints on a timer. Rebuilding the list while it is open takes the option out
+      // from under the cursor before the click lands, so it is only built when it has to be.
+      if (dd.classList.contains('open') || shown === cur) return;
+      shown = cur;
       pop.innerHTML = '';
       opts.forEach(([v, t]) => {
         const o = document.createElement('div'); o.className = 'pet-dd-opt' + (v === cur ? ' on' : '');
         o.textContent = t;
         o.addEventListener('click', (e) => {
           e.stopPropagation(); dd.classList.remove('open');
-          overlayState[key] = v; paint(); pushOverlay();
+          overlayState[key] = v; shown = null; paint(); pushOverlay();
         });
         pop.appendChild(o);
       });
@@ -185,7 +190,7 @@
       e.stopPropagation();
       const open = dd.classList.contains('open');
       document.querySelectorAll('.pet-dd.open').forEach(x => x.classList.remove('open'));
-      if (!open) dd.classList.add('open');
+      if (!open) { shown = null; paint(); dd.classList.add('open'); }
     });
     dd.repaint = paint;
     paint();
@@ -250,11 +255,10 @@
       const dd = row.querySelector('.pet-dd');
       if (dd && dd.repaint) dd.repaint();
     });
-    // the per-kind sizes only mean anything while the style is a border
+    // a silhouette fills the entity and has no border, so the size rows have nothing to say
     if (ow) { const borders = (overlayState.hover_style | 0) !== 1;
-      Array.from(ow.querySelectorAll('.ov-hovrow')).forEach(row => {
-        const w = row.dataset.width ? $('ov_' + row.dataset.width) : null;
-        if (w) { w.disabled = !borders; w.style.opacity = borders ? 1 : 0.4; }
+      Array.from(ow.querySelectorAll('.ov-hovrow[data-width]')).forEach(row => {
+        row.style.display = borders ? 'flex' : 'none';
       }); }
     if (ow) Array.from(ow.querySelectorAll('.ov-hovrow')).forEach(row => {
       row.style.opacity = overlayState.hover_outline ? 1 : 0.45;
@@ -286,10 +290,11 @@
     // outline colour per kind of target; the first swatch keeps the colour the game uses for it
     OV_HOVER_KINDS.forEach(([key, label, game, wKey]) => {
       const row = document.createElement('div'); row.className = 'ov-hovrow'; row.dataset.key = key;
-      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:0 12px 4px 24px;';
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:0 10px 4px 18px;';
       const name = document.createElement('div'); name.className = 'ov-sub'; name.textContent = label;
-      name.style.cssText = 'width:84px;flex:none;';
-      const pal = document.createElement('div'); pal.className = 'mk-pal'; pal.style.padding = '0';
+      name.style.cssText = 'width:80px;flex:none;';
+      const pal = document.createElement('div'); pal.className = 'mk-pal';
+      pal.style.cssText = 'padding:0;flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;gap:4px;';
       [0].concat(OV_HOVER_COLOURS).forEach(col => {
         const sw = document.createElement('div'); sw.className = 'mk-sw'; sw.dataset.col = col;
         sw.title = col ? '' : 'Game colour';
@@ -316,10 +321,10 @@
       row.appendChild(name); row.appendChild(pal); wrap.appendChild(row);
       // its own outline width; the game's is 4
       const wrow = document.createElement('div'); wrow.className = 'ov-hovrow'; wrow.dataset.width = wKey;
-      wrow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:0 12px 8px 24px;';
+      wrow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:0 10px 8px 18px;';
       const wname = document.createElement('div'); wname.className = 'ov-sub'; wname.textContent = 'Thickness';
-      wname.style.cssText = 'width:84px;flex:none;';
-      const rng = document.createElement('input'); rng.type = 'range'; rng.min = '2'; rng.max = '16'; rng.id = 'ov_' + wKey; rng.style.flex = '1';
+      wname.style.cssText = 'width:80px;flex:none;';
+      const rng = document.createElement('input'); rng.type = 'range'; rng.min = '1'; rng.max = '24'; rng.id = 'ov_' + wKey; rng.style.cssText = 'flex:1 1 60px;min-width:0;';
       const val = document.createElement('div'); val.className = 'ov-sub'; val.id = 'ov_' + wKey + '_lbl'; val.style.cssText = 'width:22px;text-align:right;flex:none;';
       rng.addEventListener('input', () => { overlayState[wKey] = parseInt(rng.value, 10) || 8; val.textContent = overlayState[wKey]; pushOverlay(); });
       wrow.appendChild(wname); wrow.appendChild(rng); wrow.appendChild(val); wrap.appendChild(wrow);
