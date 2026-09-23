@@ -118,6 +118,10 @@ std::string CombatLogJson(std::uint32_t pid, std::uint64_t since, int max_events
 
 std::string GroundItemsJson(std::uint32_t pid);
 
+// Every scene entity's class pointer and the entry its class holds for the height the game
+// anchors overhead drawing at, so that slot can be read back in the binary rather than assumed.
+std::string OverheadClassJson(std::uint32_t pid);
+
 struct OverlayPoint {
     float       wx = 0, wy = 0, wz = 0;   // world FINE coords (tile * 512), z = height
     int         kind = 0;

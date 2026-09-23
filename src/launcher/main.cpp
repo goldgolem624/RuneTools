@@ -437,6 +437,16 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             LocalFree(argv);
             return 0;
         }
+        // --overhead <pid>: every scene entity with its class pointer and the class entries the
+        // game's overhead drawing uses, to overhead.txt. For reading those back in the binary.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--overhead") {
+            std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
+            rtx::reader::SampleAll();
+            std::string out = rtx::reader::OverheadClassJson(pid);
+            { std::ofstream f("overhead.txt", std::ios::binary | std::ios::trunc); f << out; }
+            LocalFree(argv);
+            return 0;
+        }
         // --loc-dump <out.tsv>: every loc definition (name, footprint, actions, models, morphs) for offline tooling.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--loc-dump") {
             std::wstring wp = argv[2];

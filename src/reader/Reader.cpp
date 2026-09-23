@@ -4021,6 +4021,81 @@ bool LiveCornerHeights(std::uint32_t pid, int wx, int wy, int plane, std::int32_
     return all;
 }
 
+// Every entity in the scene with its class pointer and the two class entries the game's own
+// overhead drawing goes through: the position getter and the height it adds before projecting.
+// Reported as image offsets so they can be looked up in the binary.
+std::string OverheadClassJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "{\"entities\":[]}";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "{\"entities\":[]}";
+    const std::uint64_t image = ps.mod_base;
+    auto deref = [&](std::optional<std::uint64_t> p, std::uint64_t off) -> std::optional<std::uint64_t> {
+        if (!p || *p <= 0x10000) return std::nullopt;
+        return rpm<std::uint64_t>(h, *p + off);
+    };
+    auto cont = deref(root, rtx::scn::kContainer);
+    auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
+    auto arr  = deref(cont, rtx::scn::kEntryArr);
+    std::optional<std::uint64_t> wv, worker, vbo, veo;
+    if (idx && *idx >= 0 && arr && *arr > 0x10000) {
+        wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + rtx::scn::kEntryWv);
+        if (wv && *wv > 0x10000) worker = scene_worker(h, pid, *wv, nullptr);
+        vbo = deref(worker, rtx::scn::kVecBegin);
+        veo = deref(worker, rtx::scn::kVecEnd);
+    }
+    if (!(vbo && veo && *vbo > 0x10000 && *veo >= *vbo)) return "{\"entities\":[]}";
+    const std::uint64_t vb = *vbo, ve = *veo;
+    std::string out = "{\"image\":\"0x" ;
+    { char b[32]; std::snprintf(b, sizeof(b), "%llx", (unsigned long long)image); out += b; }
+    out += "\",\"entities\":[";
+    bool first = true;
+    std::uint64_t n = (ve > vb) ? (ve - vb) / 8 : 0;
+    if (n > 30000) n = 30000;
+    for (std::uint64_t i = 0; i < n; ++i) {
+        auto ep = rpm<std::uint64_t>(h, vb + i * 8);
+        if (!ep || *ep <= 0x10000) continue;
+        auto sec = rpm<std::uint64_t>(h, *ep + rtx::scn::kSecPtr);
+        if (!sec || *sec <= 0x10000) continue;
+        auto vt = rpm<std::uint64_t>(h, *sec);
+        if (!vt || *vt <= 0x10000) continue;
+        auto pos = rpm<std::uint64_t>(h, *vt + 0xb0);
+        auto hgt = rpm<std::uint64_t>(h, *vt + 0x78);
+        if (!pos || !hgt) continue;
+        int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
+        int cfg  = rpm<std::int32_t>(h, *sec + rtx::scn::kUid).value_or(-1);
+        // The inputs those two class entries read, so the values can be checked against what the
+        // game draws instead of the offsets being taken on faith.
+        auto inner = rpm<std::uint64_t>(h, *sec + 0x18);
+        int  flags = -1, hraw = -1;
+        float px = 0, py = 0, pz = 0;
+        if (inner && *inner > 0x10000) {
+            flags = (int)rpm<std::uint8_t>(h, *inner + 0xfc).value_or(0);
+            if (auto f = rpm<float>(h, *inner + 0x74)) hraw = (int)*f;
+            px = rpm<float>(h, *inner + 0xd0).value_or(0.f);
+            py = rpm<float>(h, *inner + 0xd4).value_or(0.f);
+            pz = rpm<float>(h, *inner + 0xd8).value_or(0.f);
+        }
+        int amdl = -1;
+        if (auto mdl = rpm<std::uint64_t>(h, *sec + 0xc68))
+            if (*mdl > 0x10000) if (auto f = rpm<float>(h, *mdl + 0x24)) amdl = (int)*f;
+        int cfgId = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
+        char b[420];
+        std::snprintf(b, sizeof(b),
+            "%s{\"type\":%d,\"uid\":%d,\"cfg\":%d,\"vt\":\"0x%llx\",\"pos\":\"0x%llx\",\"height\":\"0x%llx\""
+            ",\"flags\":%d,\"h74\":%d,\"amdl\":%d,\"p\":[%.1f,%.1f,%.1f]}",
+            first ? "" : ",", type, cfg, cfgId,
+            (unsigned long long)(*vt  > image ? *vt  - image : *vt),
+            (unsigned long long)(*pos > image ? *pos - image : *pos),
+            (unsigned long long)(*hgt > image ? *hgt - image : *hgt),
+            flags, hraw, amdl, px, py, pz);
+        out += b; first = false;
+    }
+    out += "]}";
+    return out;
+}
+
 std::string SceneJson(std::uint32_t pid, int obj_range) {
     constexpr std::uint64_t kContainer = rtx::scn::kContainer;   // all from SceneOffsets.h --
     constexpr std::uint64_t kActiveIdx = rtx::scn::kActiveIdx;   // shared with the companion
