@@ -442,7 +442,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--overhead") {
             std::uint32_t pid = (std::uint32_t)_wtoi(argv[2]);
             rtx::reader::SampleAll();
-            std::string out = rtx::reader::OverheadClassJson(pid);
+            std::string out = rtx::reader::OverheadClassJson(pid) + "\n" + rtx::reader::LiveLocsJson(pid);
             { std::ofstream f("overhead.txt", std::ios::binary | std::ios::trunc); f << out; }
             LocalFree(argv);
             return 0;

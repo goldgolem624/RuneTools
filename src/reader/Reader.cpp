@@ -4021,6 +4021,148 @@ bool LiveCornerHeights(std::uint32_t pid, int wx, int wy, int plane, std::int32_
     return all;
 }
 
+// The height the game adds to an entity's origin before projecting an overhead, read through the
+// rule that entity's own class uses. src reports which branch answered, so a wrong reading is
+// visible rather than silent: 1 actor override A, 2 actor override B, 3 actor model, 4 loc model,
+// 0 none (the game draws at the origin).
+static int overhead_height(HANDLE h, std::uint64_t sec, int type, int* src) {
+    if (src) *src = 0;
+    if (type == 1 || type == 2) {
+        if (type == 1) {
+            if (auto a = rpm<std::uint64_t>(h, sec + 0x10a8))
+                if (*a > 0x10000)
+                    if (auto v = rpm<std::int32_t>(h, *a + 0x2a0))
+                        if (*v != -1) { if (src) *src = 1; return *v; }
+        }
+        if (auto b = rpm<std::uint64_t>(h, sec + 0xf58))
+            if (*b > 0x10000)
+                if (auto v = rpm<std::int32_t>(h, *b + 0xf4))
+                    if (*v != -1) { if (src) *src = 2; return *v; }
+        if (auto m = rpm<std::uint64_t>(h, sec + 0xc68))
+            if (*m > 0x10000)
+                if (auto f = rpm<float>(h, *m + 0x24)) { if (src) *src = 3; return (int)*f; }
+        return 0;
+    }
+    if (type == 10 || type == 4) {
+        auto d = rpm<std::uint64_t>(h, sec + 0x18);
+        if (!d || *d <= 0x10000) return 0;
+        auto fl = rpm<std::uint8_t>(h, *d + 0xfc);
+        if (!fl || !((*fl >> 3) & 1)) return 0;
+        if (auto f = rpm<float>(h, *d + 0x74)) { if (src) *src = 4; return (int)*f; }
+    }
+    return 0;
+}
+
+// The point that height is measured from: three floats (east, up, north), where the class keeps them.
+static bool overhead_origin(HANDLE h, std::uint64_t sec, int type, float& x, float& up, float& z) {
+    std::uint64_t at = 0;
+    if (type == 1 || type == 2) at = sec + 0x270;
+    else {
+        auto d = rpm<std::uint64_t>(h, sec + 0x18);
+        if (!d || *d <= 0x10000) return false;
+        at = *d + 0xd0;
+    }
+    auto fx = rpm<float>(h, at), fu = rpm<float>(h, at + 4), fz = rpm<float>(h, at + 8);
+    if (!fx || !fu || !fz) return false;
+    x = *fx; up = *fu; z = *fz;
+    return true;
+}
+
+// Live scenery, walked from the scene entity list the reader already resolves. Independent of the
+// companion's own loc tracking: this is the same list the game draws from, read directly.
+struct LiveLoc {
+    int   id = 0;                 // loc config id
+    int   plane = 0;
+    int   tx = 0, ty = 0;         // world tile of the model's centre
+    float cx = 0, cz = 0;         // world fine centre (east, north)
+    float ground = 0;             // foot of the model, world fine up
+    int   head = 0;               // what the game adds above `ground` to place an overhead
+};
+
+static int live_loc_config(HANDLE h, std::uint64_t sub) {
+    constexpr std::uint64_t kConfigId = 0xb0, kDefLocId = 0x28;
+    if (auto v = rpm<std::uint64_t>(h, sub + kConfigId))
+        if (*v > 0x10000 && *v < 0x00007FFFFFFFFFFFull)
+            if (auto id = rpm<std::int32_t>(h, *v + kDefLocId))
+                if (*id >= 1 && *id <= 200000) return *id;
+    if (auto lo = rpm<std::int32_t>(h, sub + kConfigId))
+        if (*lo >= 1 && *lo <= 200000) return *lo;
+    return 0;
+}
+
+bool ReadLiveLocs(std::uint32_t pid, std::vector<LiveLoc>& out) {
+    out.clear();
+    auto ps = snap_proc(pid);
+    if (!ps) return false;
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return false;
+    auto deref = [&](std::optional<std::uint64_t> p, std::uint64_t off) -> std::optional<std::uint64_t> {
+        if (!p || *p <= 0x10000) return std::nullopt;
+        return rpm<std::uint64_t>(h, *p + off);
+    };
+    auto cont = deref(root, rtx::scn::kContainer);
+    auto idx  = (cont && *cont > 0x10000) ? rpm<std::int32_t>(h, *cont + rtx::scn::kActiveIdx) : std::nullopt;
+    auto arr  = deref(cont, rtx::scn::kEntryArr);
+    if (!idx || *idx < 0 || !arr || *arr <= 0x10000) return false;
+    auto wv = rpm<std::uint64_t>(h, *arr + (std::uint64_t)*idx * 0x10 + rtx::scn::kEntryWv);
+    if (!wv || *wv <= 0x10000) return false;
+    // Scenery is not in the actor vector: the world view keeps per-zone entity vectors in a band of
+    // its own. Same band the client walks, matched by its entries being scenery subs.
+    out.reserve(512);
+    for (std::uint64_t wo = 0x10000; wo < 0x10400 && out.size() < 2000; wo += 8) {
+        auto vb = rpm<std::uint64_t>(h, *wv + wo + rtx::scn::kVecBegin);
+        auto ve = rpm<std::uint64_t>(h, *wv + wo + rtx::scn::kVecEnd);
+        if (!vb || !ve || *vb <= 0x10000 || *ve <= *vb || ((*ve - *vb) & 7)) continue;
+        std::uint64_t n = (*ve - *vb) / 8;
+        if (!n || n > 30000) continue;
+        for (std::uint64_t i = 0; i < n && out.size() < 2000; ++i) {
+            auto ep = rpm<std::uint64_t>(h, *vb + i * 8);
+            if (!ep || *ep <= 0x10000) continue;
+            auto sec = rpm<std::uint64_t>(h, *ep + rtx::scn::kSecPtr);
+            if (!sec || *sec <= 0x10000) continue;
+            const int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
+            if (type != 0 && type != 12) continue;
+            LiveLoc L;
+            L.id = live_loc_config(h, *sec);
+            if (!L.id) continue;
+            L.plane = rpm<std::int32_t>(h, *sec + rtx::scn::kPlane).value_or(0);
+            // Placement comes from the entity's world box; the class origin is kept in the world
+            // view's own space, so it says how tall the model is but not where it stands.
+            const float mnx = rpm<float>(h, *ep + 0x40).value_or(0.f);
+            const float mny = rpm<float>(h, *ep + 0x44).value_or(0.f);
+            const float mnz = rpm<float>(h, *ep + 0x48).value_or(0.f);
+            const float mxx = rpm<float>(h, *ep + 0x50).value_or(0.f);
+            const float mxz = rpm<float>(h, *ep + 0x58).value_or(0.f);
+            if (!(mxx > mnx && mxz > mnz)) continue;
+            L.cx = (mnx + mxx) * 0.5f;
+            L.cz = (mnz + mxz) * 0.5f;
+            L.ground = mny;
+            L.tx = (int)(L.cx / 512.f);
+            L.ty = (int)(L.cz / 512.f);
+            if (L.tx <= 0 || L.ty <= 0 || L.tx > 16384 || L.ty > 16384) continue;
+            L.head = overhead_height(h, *sec, 10, nullptr);
+            out.push_back(L);
+        }
+    }
+    return !out.empty();
+}
+
+std::string LiveLocsJson(std::uint32_t pid) {
+    std::vector<LiveLoc> v;
+    if (!ReadLiveLocs(pid, v)) return "{\"locs\":[]}";
+    std::string out = "{\"locs\":[";
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        char b[192];
+        std::snprintf(b, sizeof(b),
+                      "%s{\"id\":%d,\"plane\":%d,\"head\":%d,\"tile\":[%d,%d],\"ground\":%.1f}",
+                      i ? "," : "", v[i].id, v[i].plane, v[i].head, v[i].tx, v[i].ty, v[i].ground);
+        out += b;
+    }
+    out += "]}";
+    return out;
+}
+
 // Every entity in the scene with its class pointer and the two class entries the game's own
 // overhead drawing goes through: the position getter and the height it adds before projecting.
 // Reported as image offsets so they can be looked up in the binary.
@@ -4065,31 +4207,20 @@ std::string OverheadClassJson(std::uint32_t pid) {
         if (!pos || !hgt) continue;
         int type = rpm<std::uint8_t>(h, *sec + rtx::scn::kType).value_or(0xff);
         int cfg  = rpm<std::int32_t>(h, *sec + rtx::scn::kUid).value_or(-1);
-        // The inputs those two class entries read, so the values can be checked against what the
-        // game draws instead of the offsets being taken on faith.
-        auto inner = rpm<std::uint64_t>(h, *sec + 0x18);
-        int  flags = -1, hraw = -1;
-        float px = 0, py = 0, pz = 0;
-        if (inner && *inner > 0x10000) {
-            flags = (int)rpm<std::uint8_t>(h, *inner + 0xfc).value_or(0);
-            if (auto f = rpm<float>(h, *inner + 0x74)) hraw = (int)*f;
-            px = rpm<float>(h, *inner + 0xd0).value_or(0.f);
-            py = rpm<float>(h, *inner + 0xd4).value_or(0.f);
-            pz = rpm<float>(h, *inner + 0xd8).value_or(0.f);
-        }
-        int amdl = -1;
-        if (auto mdl = rpm<std::uint64_t>(h, *sec + 0xc68))
-            if (*mdl > 0x10000) if (auto f = rpm<float>(h, *mdl + 0x24)) amdl = (int)*f;
         int cfgId = rpm<std::int32_t>(h, *sec + rtx::scn::kConfig).value_or(-1);
+        int src = 0;
+        const int oh = overhead_height(h, *sec, type, &src);
+        float px = 0, up = 0, pz = 0;
+        overhead_origin(h, *sec, type, px, up, pz);
         char b[420];
         std::snprintf(b, sizeof(b),
             "%s{\"type\":%d,\"uid\":%d,\"cfg\":%d,\"vt\":\"0x%llx\",\"pos\":\"0x%llx\",\"height\":\"0x%llx\""
-            ",\"flags\":%d,\"h74\":%d,\"amdl\":%d,\"p\":[%.1f,%.1f,%.1f]}",
+            ",\"oh\":%d,\"src\":%d,\"p\":[%.1f,%.1f,%.1f]}",
             first ? "" : ",", type, cfg, cfgId,
             (unsigned long long)(*vt  > image ? *vt  - image : *vt),
             (unsigned long long)(*pos > image ? *pos - image : *pos),
             (unsigned long long)(*hgt > image ? *hgt - image : *hgt),
-            flags, hraw, amdl, px, py, pz);
+            oh, src, px, up, pz);
         out += b; first = false;
     }
     out += "]}";
@@ -7478,6 +7609,8 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         std::uint64_t groot = (root && *root > 0x10000) ? *root : 0;
         std::vector<RuntimeObj> gobjs;                    // live placements: true model AABBs
         ReadRuntimeObjects(pid, gobjs);
+        std::vector<LiveLoc> glocs;                       // scenery read straight from the world view
+        ReadLiveLocs(pid, glocs);
         auto fillTileOnGround = [&](OverlayPoint& op, int gx, int gy, int plane) {
             const int cx[4] = { gx, gx + 1, gx + 1, gx };
             const int cy[4] = { gy, gy, gy + 1, gy + 1 };
@@ -7653,34 +7786,29 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
             if (nameHidden) oname.erase(0, 1);
             bool found = false;
             if (gs.snap_obj) {
-                // With a loc id the caller has named the object, so only that id is considered and
-                // the mark's tile must fall inside its model footprint. Without one, the nearest
-                // live object within a tile of the mark: a caller that cannot name what it marked
-                // gets no room to pick up a neighbour.
-                // Named: the footprint test below is the gate, so distance only breaks a tie between
-                // two placements of the same loc. Unnamed: one tile of slack and no more.
-                int bestD2 = gs.snap_id ? 0x7fffffff : 2; const RuntimeObj* bestR = nullptr;
-                for (const auto& r : gobjs) {
-                    if (r.config_id <= 0 || r.plane != gs.plane) continue;
-                    if (gs.snap_id && r.config_id != gs.snap_id) continue;
-                    if (!(r.bmax[0] > r.bmin[0])) continue;       // need a real AABB
-                    if (gs.snap_id) {
-                        const float fx = (float)gs.gx * 512.f, fy = (float)gs.gy * 512.f;
-                        if (fx + 512.f <= r.bmin[0] || fx >= r.bmax[0] ||
-                            fy + 512.f <= r.bmin[1] || fy >= r.bmax[1]) continue;   // tile outside the model
-                    }
-                    int dx = r.x - gs.gx, dy = r.y - gs.gy;
+                // Anchor the label where the game anchors its own overheads for this object: the
+                // model's foot plus the height its class reports, which is what the game's bars and
+                // hitsplats stack up from. A bounding box is not that height and overstates it badly
+                // on some models.
+                const LiveLoc* bestL = nullptr;
+                int bestD2 = gs.snap_id ? 0x7fffffff : 2;
+                for (const auto& L : glocs) {
+                    if (L.plane != gs.plane) continue;
+                    if (gs.snap_id && L.id != gs.snap_id) continue;
+                    int dx = L.tx - gs.gx, dy = L.ty - gs.gy;
                     int d2 = dx * dx + dy * dy;
+                    if (gs.snap_id && d2 > 4) continue;       // the named loc, on or beside the marked tile
                     if (d2 >= bestD2) continue;
-                    bestD2 = d2; bestR = &r;
+                    bestD2 = d2; bestL = &L;
                 }
-                if (!bestR) continue;
+                if (!bestL) continue;
+                const float top = bestL->ground + (float)bestL->head;
                 op.has_box3d = true;
                 op.label_only = true;        // the caller marks the ground itself; this only lifts the label
-                for (int j = 0; j < 3; ++j) { op.bmin[j] = bestR->bmin[j]; op.bmax[j] = bestR->bmax[j]; }
-                op.wx = (bestR->bmin[0] + bestR->bmax[0]) * 0.5f;
-                op.wy = (bestR->bmin[1] + bestR->bmax[1]) * 0.5f;
-                op.wz = (bestR->bmin[2] + bestR->bmax[2]) * 0.5f;
+                op.bmin[0] = op.bmax[0] = bestL->cx;
+                op.bmin[1] = op.bmax[1] = bestL->cz;
+                op.bmin[2] = op.bmax[2] = top;
+                op.wx = bestL->cx; op.wy = bestL->cz; op.wz = top;
                 out.guides.push_back(std::move(op));
                 continue;
             }
