@@ -326,7 +326,9 @@
       addB.title = 'Keep this term and filter by another as well (any of them matches)';
       addB.addEventListener('click', addTerm);
       const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.id = 'sceneCnt'; cnt.textContent = '...';
-      srow.appendChild(srch); srow.appendChild(addB); srow.appendChild(cnt);
+      const lcnt = document.createElement('span'); lcnt.className = 'cnt'; lcnt.id = 'sceneLive';
+      lcnt.title = 'Objects the client is tracking live, of the objects listed. Only these know whether the game is showing them right now.';
+      srow.appendChild(srch); srow.appendChild(addB); srow.appendChild(lcnt); srow.appendChild(cnt);
       const chips = document.createElement('div'); chips.className = 'scene-chips'; chips.id = 'sceneChips';
       const rangeRow = document.createElement('div'); rangeRow.className = 'scene-range';
       const rlbl = document.createElement('span'); rlbl.className = 'lbl'; rlbl.textContent = 'Range';
@@ -388,6 +390,18 @@
     const items = sceneItems();
     $('sceneCnt').textContent = (items === null) ? '...'
       : (sceneAllTerms().length && items.length !== sceneTotal) ? items.length + ' / ' + sceneTotal : items.length;
+    // Live count: objects the client itself is tracking, as opposed to entries listed from the map
+    // cache. Only a live object carries its current state, so zero here means nothing can tell a
+    // standing tree from a stump.
+    {
+      const lc = $('sceneLive');
+      if (lc) {
+        const objs = (sceneData && Array.isArray(sceneData.objects)) ? sceneData.objects : null;
+        const live = objs ? objs.filter(o => o.rt).length : 0;
+        lc.textContent = (sceneShow.objects && objs) ? ('live ' + live + ' / ' + objs.length) : '';
+        lc.style.color = (sceneShow.objects && objs && !live) ? '#f4a15d' : 'var(--text-dim)';
+      }
+    }
 
     const st = 'st' + (lastSnap ? (lastSnap.status | 0) : -1) + ',' + sceneTotal + '|';
     const sig = (items === null) ? 'null' + st
