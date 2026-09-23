@@ -243,18 +243,20 @@ void DevComponent(std::uint8_t* root) {
         const bool z = CurSize(root, w, h, 0, 0);
         const bool c = CurColour(root, rgb);
         const bool v = CurHide(root, false);
-        SetPosition(root, group, s_comp, x, y, 0, 0);
-        SetSize(root, group, s_comp, w, h, 0, 0);
-        SetColour(root, group, s_comp, rgb);
-        SetHide(root, group, s_comp, false);
-        const void* after = rtx::engineops::CurrentComponent();
-        Say("check: made under %d:%d as index %d, selected %s, still %s, pos %d size %d colour %d shown %d",
-            group, parent, s_comp, sel ? "yes" : "no", after ? "yes" : "no",
-            (int)p, (int)z, (int)c, (int)v);
+        // Text only means anything on a text component, and it draws nothing without a font.
+        bool f = true, t = true;
+        if (type == kTypeText) {
+            f = CurTextFont(root, 494);
+            t = CurText(root, line);
+        }
+        Say("check: made under %d:%d as index %d, selected %s, pos %d size %d colour %d shown %d font %d text %d",
+            group, parent, s_comp, sel ? "yes" : "no",
+            (int)p, (int)z, (int)c, (int)v, (int)f, (int)t);
         return;
     }
-    // Later updates have to name it again: only the making leaves it current.
-    if (Create(root, group, parent, type, cat, id) >= 0) CurText(root, line);
+    // Later updates: making it again names it once more, and the client refuses the duplicate
+    // without disturbing what is there, so the text lands on the one that already exists.
+    if (type == kTypeText && Create(root, group, parent, type, cat, id) >= 0) CurText(root, line);
 
     // One table counted the same way, so the query side is checked on the same run.
     // Which table and which row window the operation will answer for is not settled, so a few are
