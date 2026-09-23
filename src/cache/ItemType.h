@@ -21,6 +21,10 @@ struct ItemDef {
     int         category    = -1;
     long long   value       = -1;   // opcode 181 (gp); drives high/low alch
     bool        augmented   = false; // "Disassemble" worn option or a destroy message naming "gizmos"
+    // Opcodes 203-208, each an item id in the same 24-bit form the noted link uses. These are the
+    // links between an item and its other forms, which is how a variant that the market does not
+    // know (augmented, charged, degraded) is traced back to the one it does. -1 = absent.
+    int         linked[6]   = { -1, -1, -1, -1, -1, -1 };
     // opcode-249 params, kept verbatim.
     std::map<int, int>         params_i;
     std::map<int, std::string> params_s;

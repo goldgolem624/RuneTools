@@ -24,6 +24,21 @@ bool ItemIsAugmented(int item_id);
 
 std::string ItemInfoJson(int item_id);
 
+// The items this one is linked to (item-definition opcodes 203-208), newest cache. Used to trace a
+// variant the Grand Exchange does not list (augmented, charged, degraded) back to the form it does.
+// Returns how many were filled into `out` (at most 6).
+int ItemLinkedForms(int item_id, int out[6]);
+// Everything the definition says about how this item relates to others, as text, for tracing.
+std::string ItemRelationsText(int item_id);
+
+// The form of this item the Grand Exchange lists. Augmented, charged and worn variants each carry
+// their own id that the market never sees, so a price looked up by the id in hand comes back empty
+// and the item looks worthless. The definitions link each variant to the form that is traded, and
+// this follows those links. Returns `item_id` unchanged when it is already that form.
+int ItemTradeableForm(int item_id);
+// Items whose name contains `needle`, case-insensitive: id and name, at most `cap`.
+int ItemsByName(const char* needle, int* ids, int cap);
+
 struct CacheParseRow {
     std::string name;              // surface label, e.g. "items"
     int  ok = 0, total = 0;        // clean / attempted

@@ -89,7 +89,7 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
         case 201: d.noted_unnoted = s.Read24BitInt();         return true;
         case 202: d.noted_template = s.Read24BitInt(); d.noted = true; return true;
         case 203: case 204: case 205: case 206: case 207: case 208:
-                 s.Read24BitInt();                            return true;
+                 d.linked[opcode - 203] = s.Read24BitInt();   return true;
         case 242: case 243: case 244: case 245: case 246: case 247: case 248:
                  s.ReadBigSmart();                            return true;
         case 249: {

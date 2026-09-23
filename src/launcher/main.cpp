@@ -31,6 +31,7 @@
 #include <sstream>
 #include <atomic>
 #include <string>
+#include <vector>
 #include <thread>
 
 using namespace ultralight;
@@ -427,6 +428,32 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             { std::ofstream f("loc-dump.txt", std::ios::binary | std::ios::trunc); f << rows; }
             LocalFree(argv);
             return rows >= 0 ? 0 : 1;
+        }
+        // --item-links <name substring>: every item whose name contains it, with the items its
+        // definition links to and their names, to item-links.txt. For tracing a variant the market
+        // does not list back to the form it does.
+        if (argv && argc >= 3 && std::wstring(argv[1]) == L"--item-links") {
+            std::wstring wp = argv[2];
+            const std::string needle(wp.begin(), wp.end());
+            std::vector<int> ids(400);
+            const int n = rtx::cache::ItemsByName(needle.c_str(), ids.data(), (int)ids.size());
+            std::ofstream f("item-links.txt", std::ios::binary | std::ios::trunc);
+            f << n << " items matching " << needle << "\n";
+            for (int i = 0; i < n; ++i) {
+                const int id = ids[i];
+                rtx::cache::ItemInfo info = rtx::cache::GetItem(id);
+                f << id << "\t" << info.name << "\tvalue=" << info.value
+                  << (info.augmented ? "\taugmented" : "");
+                int links[6];
+                const int ln = rtx::cache::ItemLinkedForms(id, links);
+                for (int k = 0; k < ln; ++k)
+                    f << "\t-> " << links[k] << " " << rtx::cache::ItemName(links[k]);
+                const int traded = rtx::cache::ItemTradeableForm(id);
+                if (traded != id) f << "\tTRADED=" << traded << " " << rtx::cache::ItemName(traded);
+                f << "\t|" << rtx::cache::ItemRelationsText(id) << "\n";
+            }
+            LocalFree(argv);
+            return 0;
         }
         // --item-extra <pid> <container> <slot>: the per-instance ints of one container slot (varobj keys) to item-extra.txt.
         if (argv && argc >= 5 && std::wstring(argv[1]) == L"--item-extra") {

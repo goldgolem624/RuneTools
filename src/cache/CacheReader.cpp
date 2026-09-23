@@ -465,6 +465,96 @@ bool ItemIsAugmented(int item_id) {
     return GetItem(item_id).augmented;
 }
 
+int ItemLinkedForms(int item_id, int out[6]) {
+    for (int i = 0; i < 6; ++i) out[i] = -1;
+    if (item_id < 0) return 0;
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+    if (!index) return 0;
+    auto bytes = index->ReadFile(item_id >> 8, item_id & 0xff);
+    if (bytes.empty()) return 0;
+    ItemDef def = DecodeItem(item_id, std::move(bytes));
+    int n = 0;
+    for (int i = 0; i < 6; ++i) if (def.linked[i] > 0) out[n++] = def.linked[i];
+    return n;
+}
+
+// Definition parameters that name another form of the same item:
+//   5525  an augmented item -> the item it was made from
+//   5200  a worn or charged form -> the form that is traded
+//   5527  an uncharged augmented item -> its charged twin (followed first, then 5525)
+//   3382  on a broken form, the form it is repaired back to (on a whole item this points the other
+//         way, at the worn form, so it is only followed when 3793 marks this one broken)
+constexpr int kParamAugmentedFrom = 5525, kParamTradedForm = 5200, kParamChargedTwin = 5527;
+//   4338  a dyed or ornamented form -> the plain item it was made from. Last resort: a dyed item is
+//         not traded itself, so the plain one is the nearest thing to a price it has.
+constexpr int kParamOtherState = 3382, kParamIsBroken = 3793, kParamPlainForm = 4338;
+
+int ItemTradeableForm(int item_id) {
+    if (item_id < 0) return item_id;
+    int at = item_id;
+    // Each step moves strictly closer to the traded form; the cap is only so a cache that links an
+    // item back to itself cannot spin here.
+    for (int step = 0; step < 6; ++step) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        EnsureInit();
+        auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+        if (!index) return at;
+        auto bytes = index->ReadFile(at >> 8, at & 0xff);
+        if (bytes.empty()) return at;
+        ItemDef def = DecodeItem(at, std::move(bytes));
+        if (def.tradeable) return at;
+        int next = -1;
+        if (def.noted && def.noted_unnoted > 0) next = def.noted_unnoted;
+        if (next < 0) { auto p = def.params_i.find(kParamChargedTwin); if (p != def.params_i.end()) next = p->second; }
+        if (next < 0) { auto p = def.params_i.find(kParamAugmentedFrom); if (p != def.params_i.end()) next = p->second; }
+        if (next < 0) { auto p = def.params_i.find(kParamTradedForm); if (p != def.params_i.end()) next = p->second; }
+        if (next < 0 && def.params_i.count(kParamIsBroken)) {
+            auto p = def.params_i.find(kParamOtherState); if (p != def.params_i.end()) next = p->second;
+        }
+        if (next < 0) { auto p = def.params_i.find(kParamPlainForm); if (p != def.params_i.end()) next = p->second; }
+        if (next <= 0 || next == at) return at;
+        at = next;
+    }
+    return at;
+}
+
+std::string ItemRelationsText(int item_id) {
+    if (item_id < 0) return {};
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* index = g_store ? g_store->Get(kIndexItems) : nullptr;
+    if (!index) return {};
+    auto bytes = index->ReadFile(item_id >> 8, item_id & 0xff);
+    if (bytes.empty()) return {};
+    ItemDef def = DecodeItem(item_id, std::move(bytes));
+    std::string s;
+    if (def.noted) s += " noted";
+    if (def.noted_unnoted > 0) s += " unnoted=" + std::to_string(def.noted_unnoted);
+    if (def.noted_template > 0) s += " template=" + std::to_string(def.noted_template);
+    if (def.tradeable) s += " tradeable";
+    for (int i = 0; i < 6; ++i)
+        if (def.linked[i] > 0) s += " op" + std::to_string(203 + i) + "=" + std::to_string(def.linked[i]);
+    for (const auto& kv : def.params_i)
+        if (kv.second > 0 && kv.second < 70000) s += " p" + std::to_string(kv.first) + "=" + std::to_string(kv.second);
+    return s;
+}
+
+int ItemsByName(const char* needle, int* ids, int cap) {
+    if (!needle || !ids || cap <= 0) return 0;
+    std::string want(needle);
+    for (char& c : want) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    int n = 0;
+    for (int id = 0; id < 70000 && n < cap; ++id) {
+        std::string nm = ItemName(id);
+        if (nm.empty()) continue;
+        for (char& c : nm) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (nm.find(want) != std::string::npos) ids[n++] = id;
+    }
+    return n;
+}
+
 std::string ItemInfoJson(int item_id) {
     ItemInfo info = GetItem(item_id);
     std::string esc;

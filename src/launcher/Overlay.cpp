@@ -832,7 +832,14 @@ HoverPick PickHover(const Config& cfg) {
     if (cfg.tooltip_values && hv.item_id >= 0) {
         const std::uint32_t comp = ((std::uint32_t)(hv.item_iface & 0xFFFF) << 16) | (std::uint32_t)(hv.item_comp & 0xFFFF);
         publish(hv.item_id, hv.item_slot, comp, [&](bool& settled) {
-            const long long ge = rtx::launcher::ItemGePrice(hv.item_id);
+            long long ge = rtx::launcher::ItemGePrice(hv.item_id);
+            // Augmented, charged and worn forms have their own ids that the market never lists, so
+            // a price looked up by the id in hand comes back empty and the item reads as worthless.
+            // Fall back to the form that is traded, which is what it would cost to replace.
+            if (ge <= 0) {
+                const int traded = rtx::cache::ItemTradeableForm(hv.item_id);
+                if (traded != hv.item_id) ge = rtx::launcher::ItemGePrice(traded);
+            }
             const long long value = rtx::cache::GetItem(hv.item_id).value;
             const long long alch = value > 0 ? (value * 6) / 10 : 0;
             std::string t;
