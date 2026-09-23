@@ -156,6 +156,24 @@
     });
     return out.join(',');
   }
+  // varp 11718 carries the game's Entity Highlight Mode in bits 0-3 and its Type in bits 8-10;
+  // varp 11721 is its border size. Confirmed by changing each setting and reading the varp back.
+  const OV_HL_MODES = ['Mouseover', 'Nearby', 'Always on', 'Off'];
+  let ovGameHlAt = 0;
+  async function ovGameHighlight() {
+    const el = $('ov_hovgame');
+    if (!el || !bridge() || !bridge().varps) return;
+    const now = Date.now();
+    if (now - ovGameHlAt < 1000) return;
+    ovGameHlAt = now;
+    try {
+      const vp = await rtxData.call('state.varps', '11718,11721');
+      const v = (vp && vp['11718']) | 0, size = (vp && vp['11721']) | 0;
+      const mode = OV_HL_MODES[v & 0xF] || String(v & 0xF);
+      const type = ((v >> 8) & 7) === 1 ? 'Silhouette' : 'Border';
+      el.textContent = mode + '  ·  ' + type + (((v >> 8) & 7) === 1 ? '' : '  ·  size ' + size);
+    } catch (e) {}
+  }
   function ovHex(rgb) { return '#' + ('000000' + ((rgb | 0) & 0xFFFFFF).toString(16)).slice(-6); }
   // A dropdown row in the same shape as a toggle row. The app's own dark dropdown is used rather
   // than a native select, which Ultralight draws with an OS-white popup.
@@ -270,6 +288,7 @@
       const own = row.querySelector('.ov-owncol');
       if (own) { own.classList.toggle('sel', !preset); own.style.background = preset ? 'transparent' : ovHex(cur); own.textContent = preset ? '+' : ''; }
     });
+    ovGameHighlight();
     const dim = !overlayState.enabled;
     ['ov_grid', 'ov_players', 'ov_npcs', 'ov_objects', 'ov_interactable', 'ov_specials', 'ov_walkonly', 'ov_truetile', 'ov_radius'].forEach(id => {
       const el = $(id); if (el) { const r = el.closest('.ov-row'); if (r) r.style.opacity = dim ? 0.45 : 1; }
@@ -289,11 +308,17 @@
     // entity instead of tracing it. The game sets up the frame for whichever it is, so there is no
     // control for it here. The border sizes below are ours, and apply while the game draws borders.
     {
+      // The game's own Entity Highlight settings, read from the varps that hold them, so the shape
+      // it is drawing is visible here rather than only on its settings page. Its type picks the
+      // render path, which is why there is no control for it: the colours below are used either
+      // way, and the sizes apply while it is drawing borders.
       const note = document.createElement('div'); note.className = 'ov-row';
       const l = document.createElement('div'); l.className = 'ov-l';
-      const s = document.createElement('div'); s.className = 'ov-sub';
-      s.textContent = 'Silhouette or border is the game’s own Entity Highlight Type. These colours are used either way; the sizes apply to borders.';
-      l.appendChild(s); note.appendChild(l); wrap.appendChild(note);
+      const n = document.createElement('div'); n.className = 'ov-name'; n.textContent = 'Game settings';
+      const s = document.createElement('div'); s.className = 'ov-sub'; s.id = 'ov_hovgame';
+      s.textContent = 'reading…';
+      l.appendChild(n); l.appendChild(s); note.appendChild(l); wrap.appendChild(note);
+      ovGameHighlight();
     }
     // outline colour per kind of target; the first swatch keeps the colour the game uses for it
     OV_HOVER_KINDS.forEach(([key, label, game, wKey]) => {
