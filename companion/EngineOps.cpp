@@ -137,6 +137,17 @@ bool Ready() {
     return false;
 }
 
+// Where the state keeps the component the interface operations act on, read straight out of the
+// routine that resolves it: the slot is chosen by the state's own form byte.
+constexpr std::size_t kCurCompIf = 0xBFC0;   // form byte at +0x20 is 0
+constexpr std::size_t kCurCompCc = 0xBFE0;   // form byte is anything else
+const void* CurrentComponent() {
+    if (!g_state) return nullptr;
+    std::lock_guard<std::mutex> lk(g_mu);
+    const std::size_t at = g_state[0x20] ? kCurCompCc : kCurCompIf;
+    return *reinterpret_cast<void**>(g_state + at);
+}
+
 const void* Handler(const char* name) {
     if (!Ready()) return nullptr;
     std::lock_guard<std::mutex> lk(g_mu);

@@ -20,6 +20,11 @@ int Call(std::uint8_t* root, const char* name, const std::int32_t* ints, int nIn
          const char* const* strs, int nStrs, std::int32_t* out, int cap);
 // Handler address for `name`, or null; for callers that need a routine rather than a call.
 const void* Handler(const char* name);
+// The component the engine is working on, as the interface operations find it: the state keeps it
+// in a slot of its own and the operations that act on "the current one" read it from there.
+// Null when nothing has been selected. The state is one buffer kept between calls, so a
+// selection made by one call is what the next one sees.
+const void* CurrentComponent();
 bool TakeLog(char* out, std::size_t cap);
 // The client's own world to screen answer, the one it uses for its own overlays: a position in the
 // game's fine units (512 to a tile) with a height offset above it, giving screen x, screen y and the

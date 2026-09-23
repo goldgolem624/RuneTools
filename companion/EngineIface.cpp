@@ -236,6 +236,9 @@ void DevComponent(std::uint8_t* root) {
         // Two ways of naming what was just made, reported separately: the operations that act on the
         // component the client left current, and the ones that take the component by its index. The
         // index is the one the client itself composes from the category and the id.
+        // Whether the making left anything selected at all, which is what every operation below
+        // depends on and what a silent no-op would look like.
+        const void* sel = rtx::engineops::CurrentComponent();
         const bool p = CurPosition(root, x, y, 0, 0);
         const bool z = CurSize(root, w, h, 0, 0);
         const bool c = CurColour(root, rgb);
@@ -244,8 +247,10 @@ void DevComponent(std::uint8_t* root) {
         SetSize(root, group, s_comp, w, h, 0, 0);
         SetColour(root, group, s_comp, rgb);
         SetHide(root, group, s_comp, false);
-        Say("check: made under %d:%d as index %d, current pos %d size %d colour %d shown %d",
-            group, parent, s_comp, (int)p, (int)z, (int)c, (int)v);
+        const void* after = rtx::engineops::CurrentComponent();
+        Say("check: made under %d:%d as index %d, selected %s, still %s, pos %d size %d colour %d shown %d",
+            group, parent, s_comp, sel ? "yes" : "no", after ? "yes" : "no",
+            (int)p, (int)z, (int)c, (int)v);
         return;
     }
     // Later updates have to name it again: only the making leaves it current.
