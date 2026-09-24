@@ -187,7 +187,9 @@ void poll_loop(unsigned gen, std::string device_code, int interval_s, long long 
                 rtx::log::Launcher("link: this PC is now linked to " + s.username);
                 return;
             }
-            if (status == "denied") {
+            if (status == "denied" && json_str(r.body, "reason") == "limit") {
+                g_st.state = State::Idle; g_st.note = "This account already has 3 linked PCs. Unlink one in Settings on runetools.io, then link again.";
+            } else if (status == "denied") {
                 g_st.state = State::Idle; g_st.note = "The code was cancelled on the website. Nothing was linked.";
             } else if (status == "expired") {
                 g_st.state = State::Idle; g_st.note = "The code expired before it was approved. Start again when you are ready.";
