@@ -119,6 +119,9 @@ struct Parser {
         ws();
         if (p >= end) return false;
         if (depth > 128) return false;
+        // Each level holds a table and a key on the stack; a C function is only promised LUA_MINSTACK slots
+        // and pushes are unchecked in this build, so make room before going deeper.
+        if (!lua_checkstack(L, 4)) return false;
         char c = *p;
         if (c == '{') {
             ++p; ++depth;
@@ -194,7 +197,12 @@ void esc(std::string& o, const char* s, std::size_t n) {
     o.push_back('"');
 }
 
+// Output past this size makes the whole value null. It also bounds the work: a table shared at every level
+// ({t, t} nested) is not a cycle and would otherwise expand exponentially.
+constexpr std::size_t kDumpMaxBytes = 8u << 20;
+
 void dump(lua_State* L, int idx, std::string& o, int depth, std::set<const void*>& seen) {
+    if (o.size() > kDumpMaxBytes) return;
     idx = lua_absindex(L, idx);
     switch (lua_type(L, idx)) {
     case LUA_TNIL: o += "null"; return;
@@ -208,7 +216,7 @@ void dump(lua_State* L, int idx, std::string& o, int depth, std::set<const void*
     case LUA_TSTRING: { std::size_t n = 0; const char* s = lua_tolstring(L, idx, &n); esc(o, s, n); return; }
     case LUA_TTABLE: {
         const void* ptr = lua_topointer(L, idx);
-        if (depth > 64 || seen.count(ptr)) { o += "null"; return; }
+        if (depth > 64 || seen.count(ptr) || !lua_checkstack(L, 4)) { o += "null"; return; }
         seen.insert(ptr);
         // Array test: every key is an integer in 1..n where n = number of keys.
         lua_Integer count = 0; bool arr = true; lua_Integer maxk = 0;
@@ -272,6 +280,7 @@ std::string Dump(lua_State* L, int idx) {
     std::string o;
     std::set<const void*> seen;
     dump(L, idx, o, 0, seen);
+    if (o.size() > kDumpMaxBytes) return "null";
     return o;
 }
 

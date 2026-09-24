@@ -20,8 +20,8 @@
     let args = [];
     try { args = JSON.parse(argsJson); } catch (e) { args = []; }
     if (!Array.isArray(args)) args = (args && typeof args === 'object' && Object.keys(args).length) ? [args] : [];   // {} is Lua's empty argument list
-    const def = PLUGIN_API[String(method)];
-    if (!def) return JSON.stringify({ ok: false, e: 'unknown method' });
+    if (typeof method !== 'string' || !Object.prototype.hasOwnProperty.call(PLUGIN_API, method)) return JSON.stringify({ ok: false, e: 'unknown method' });
+    const def = PLUGIN_API[method];
     if (def.scope && m.scopes.indexOf(def.scope) === -1) return JSON.stringify({ ok: false, e: 'scope not granted: ' + def.scope });
     if (!pluginRateOk(m.id, method)) return JSON.stringify({ ok: false, e: 'rate limited' });
     if (!bridge()) return JSON.stringify({ ok: false, e: 'host unavailable' });

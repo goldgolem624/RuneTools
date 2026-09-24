@@ -87,7 +87,13 @@
         return;
       }
       if (m.kind === 'kb') {
-        if (!!m.on !== !!mounted.kbFocus) { mounted.kbFocus = !!m.on; kbGrab(mounted.kbFocus); }
+        // Taking the game keyboard needs the frame to hold focus in a window that is showing; letting go is always allowed.
+        let on = !!m.on;
+        if (on) {
+          const h = pluginHolders.get(mounted.id);
+          if (document.activeElement !== mounted.frame || !h || h.el.hidden || pluginInBackground(mounted.id)) on = false;
+        }
+        if (on !== !!mounted.kbFocus) { mounted.kbFocus = on; kbGrab(on); }
         return;
       }
       if (m.kind !== 'call') return;
@@ -100,8 +106,10 @@
         } catch (e) {}
       };
       try {
+        // A method is a plain name the table owns: anything else (an array, 'constructor') would find an entry
+        // while missing every per-method rate limit.
+        if (typeof m.method !== 'string' || !Object.prototype.hasOwnProperty.call(PLUGIN_API, m.method)) return reply(false, 'unknown method');
         const def = PLUGIN_API[m.method];
-        if (!def) return reply(false, 'unknown method');
         if (def.scope && mounted.scopes.indexOf(def.scope) === -1) return reply(false, 'scope not granted: ' + def.scope);
         if (!pluginRateOk(mounted.id, m.method)) return reply(false, 'rate limited');
         if (!bridge()) return reply(false, 'host unavailable');
@@ -138,8 +146,14 @@
     pluginGrants = merged;
     pluginGrantsAcct = acct;
     if (first) pluginGrantsSaveSoon();
-    if (!first) for (const w of wm.wins.values())
-      if (String(w.tab).indexOf('plugin:') === 0) { pluginUnmount(w.tab.slice(7)); renderPaneFor(w); }
+    if (!first) {
+      // Every running plugin (showing, behind another tab or off-screen) ran on the last character's consent.
+      // Showing panes mount again on the new grants, hidden tabs when shown, and the sync below starts only the
+      // background plugins the new character has granted.
+      for (const id of Array.from(pluginMounts.keys())) pluginUnmount(id);
+      for (const w of wm.wins.values())
+        if (String(w.tab).indexOf('plugin:') === 0) renderPaneFor(w);
+    }
     try { pluginBackgroundSync(); } catch (e) {}
   }
   function pluginGrantsSaveSoon(delay) {

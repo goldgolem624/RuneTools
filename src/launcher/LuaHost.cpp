@@ -33,6 +33,7 @@ struct Plugin {
     lua_State* L = nullptr;
     std::size_t memUsed = 0;
     long long instrUsed = 0;
+    bool overBudget = false;              // this dispatch ran out; every further instruction raises
     std::chrono::steady_clock::time_point dispatchStart{};
     std::chrono::steady_clock::time_point started{};
     std::deque<std::string> log;          // kept history
@@ -68,10 +69,22 @@ void* l_alloc(void* ud, void* ptr, std::size_t osize, std::size_t nsize) {
 void l_hook(lua_State* L, lua_Debug*) {
     Plugin* p = t_active;
     if (!p) return;
-    p->instrUsed += kHookInterval;
-    if (p->instrUsed > kInstrBudget) luaL_error(L, "execution budget exceeded (%lld instructions in one tick)", (long long)kInstrBudget);
+    // Past the budget the hook fires on every instruction and raises each time, so code that catches the
+    // error (pcall, a coroutine) is thrown out again at its next instruction until the host has control.
+    if (p->overBudget) {
+        lua_sethook(L, l_hook, LUA_MASKCOUNT, 1);
+        luaL_error(L, "execution budget exceeded");
+    }
+    const int n = lua_gethookcount(L);
+    if (n != kHookInterval) lua_sethook(L, l_hook, LUA_MASKCOUNT, kHookInterval);   // a coroutine left on the per-instruction hook
+    p->instrUsed += n;
     auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p->dispatchStart).count();
-    if (ms > kWallBudgetMs) luaL_error(L, "execution budget exceeded (%.0f ms in one tick)", ms);
+    if (p->instrUsed > kInstrBudget || ms > kWallBudgetMs) {
+        p->overBudget = true;
+        lua_sethook(L, l_hook, LUA_MASKCOUNT, 1);
+        if (ms > kWallBudgetMs) luaL_error(L, "execution budget exceeded (%.0f ms in one tick)", ms);
+        luaL_error(L, "execution budget exceeded (%lld instructions in one tick)", (long long)kInstrBudget);
+    }
 }
 
 // Log records are JSON objects {"l":level,"t":text,"tag":tag}; the page feeds them to rtxConsole and
@@ -196,8 +209,15 @@ int h_memory(lua_State* L) {
 const char kPrelude[] = R"LUA(
 local host, PLUGIN_ID, SCOPES, METHODS, VERSION = ...
 local rawload, rawpcall, rawtype, rawpairs, rawipairs, rawtostring, rawselect = load, pcall, type, pairs, ipairs, tostring, select
-local rawerror, rawsetmt, rawnext = error, setmetatable, next
+local rawerror, rawsetmt, rawnext, rawgetf = error, setmetatable, next, rawget
 local tinsert, tconcat, tremove = table.insert, table.concat, table.remove
+
+-- Finalizers run whenever the collector gets to them, outside any dispatch and its budget, so a plugin
+-- may not register one. A metatable marks its table for finalization only if __gc is present when set.
+_G.setmetatable = function(t, mt)
+  if rawtype(mt) == "table" and rawgetf(mt, "__gc") ~= nil then rawerror("setmetatable: __gc is not available to plugins", 2) end
+  return rawsetmt(t, mt)
+end
 
 local rtx = {}
 _G.rtx = rtx
@@ -477,10 +497,14 @@ struct Active {
     explicit Active(Plugin* p) : prev(t_active) {
         t_active = p;
         p->instrUsed = 0;
+        p->overBudget = false;
         p->dispatchStart = std::chrono::steady_clock::now();
     }
     ~Active() {
-        if (t_active) t_active->cpuMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_active->dispatchStart).count();
+        if (t_active) {
+            t_active->cpuMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_active->dispatchStart).count();
+            if (t_active->overBudget && t_active->L) lua_sethook(t_active->L, l_hook, LUA_MASKCOUNT, kHookInterval);
+        }
         t_active = prev;
     }
 };

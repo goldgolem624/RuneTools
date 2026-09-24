@@ -17,7 +17,8 @@ inline bool Push(lua_State* L, const std::string& s) { return Push(L, s.data(), 
 
 // Serialises the Lua value at `idx`. A table whose keys are exactly 1..n is an array; any other
 // table is an object with its keys stringified. Functions, userdata, threads, NaN, infinities,
-// cycles and depth beyond 64 become null. Never throws; returns "null" for unsupported input.
+// cycles and depth beyond 64 become null. Never throws; returns "null" for unsupported input and for
+// a value whose text would pass 8 MB.
 std::string Dump(lua_State* L, int idx);
 
 }  // namespace rtx::launcher::luajson
