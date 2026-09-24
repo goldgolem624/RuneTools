@@ -12,9 +12,6 @@
 
 namespace rtx::enginecc {
 
-// Development probe, run once per frame on the game thread with the client's root. Reads
-// %TEMP%\rtx_cc.txt ("iface comp type slot x y w h argb") once and builds that component.
-void DevProbe(std::uint8_t* root);
 // The rectangles wanted (any thread); Apply, on the game thread each frame, makes the game's
 // component tree match: finds each by parent and slot, creates what is missing, updates what
 // changed, deletes what is no longer wanted. A parent whose interface is closed is left alone.

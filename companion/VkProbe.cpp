@@ -1022,40 +1022,19 @@ void OnOverlayCmd(VkCommandBuffer cmd) {
 
 void SetTimingEnabled(bool on) { g_timing.store(on); }
 
-// Development only, taken out before a release: a text file in the temp folder, "<where> <look>",
-// switches where the trial draws and what it shows (a depth view among them) without a restart.
-bool buf_probe_once(const char* switchPath) {
-    char path[MAX_PATH]; lstrcpyA(path, switchPath);
-    char* tail = path + lstrlenA(path) - lstrlenA("rtx_inframe.txt"); lstrcpyA(tail, "rtx_probe.txt");
-    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) return false;
-    DeleteFileA(path); return true;
-}
-void ReadTrialSwitch() {
-    char path[MAX_PATH]; const DWORD n = GetTempPathA(MAX_PATH, path);
-    if (!n || n > MAX_PATH - 24) return;
-    lstrcatA(path, "rtx_inframe.txt");
-    int where = 1; unsigned look = 0;
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h != INVALID_HANDLE_VALUE) {
-        char buf[16] = {}; DWORD got = 0;
-        if (ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr) && got >= 1) {
-            where = buf[0] == '0' ? 0 : buf[0] == '2' ? 2 : 1;
-            if (got >= 3 && buf[2] >= '0' && buf[2] <= '9') look = (unsigned)(buf[2] - '0');
-            else if (got >= 3 && buf[2] >= 'a' && buf[2] <= 'f') look = 10u + (unsigned)(buf[2] - 'a');
-        }
-        CloseHandle(h);
-    }
-    if (g_where.exchange(where) != where && g_log) g_log("in-frame: drawing %s", where == 1 ? "inside the interface pass" : where == 2 ? "at present time" : "into the finished scene");
+// The trial draws inside the interface pass with the normal view; nothing outside the module switches it.
+void ApplyTrialSettings() {
+    const int where = 1; const unsigned look = 0;
+    if (g_where.exchange(where) != where && g_log) g_log("in-frame: drawing inside the interface pass");
     g_look.store(look, std::memory_order_relaxed);
     if (g_passRecorder.trial) g_passRecorder.trial(where, look);
-    if (buf_probe_once(path)) g_probeNext.store(true);
 }
 
 // Present boundary: the frame just recorded becomes the current slot's completed list; the slot
 // presented two frames ago has its timestamps read and published; recording moves to the next slot.
 void FrameBegin() {
     const unsigned f = g_frame.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (f % 30 == 0 && g_inFrameTrial.load(std::memory_order_relaxed)) ReadTrialSwitch();
+    if (f % 30 == 0 && g_inFrameTrial.load(std::memory_order_relaxed)) ApplyTrialSettings();
     if (f % 1800 == 0 && g_inFrameTrial.load(std::memory_order_relaxed) && g_log)
         g_log("in-frame: last 1800 frames, interface pass found %u times, markers drawn in %u, drawn in the scene pass %u", g_statArmed.exchange(0), g_statDrew.exchange(0), g_statScene.exchange(0));
     if (fDestroyFramebuffer) {

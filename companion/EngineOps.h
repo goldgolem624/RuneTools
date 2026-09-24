@@ -44,8 +44,6 @@ bool ProjectSelf(std::uint8_t* root, int heightOffset, Point& out);
 // no character, or the operations are not recognised in this build.
 bool NpcOverheadHeight(std::uint8_t* root, int index, std::int32_t& lift);
 bool PlayerOverheadHeight(std::uint8_t* root, int index, std::int32_t& lift);
-// Reports that answer once a second while the check file is present; no cost otherwise.
-void DevProject(std::uint8_t* root);
 // The launcher's one-shot requests: queued from any thread, carried out by Pump on the game thread.
 void Queue(std::int32_t sound, std::int32_t zoom, std::int32_t fov);
 void Pump(std::uint8_t* root);

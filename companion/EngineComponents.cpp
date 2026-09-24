@@ -235,69 +235,9 @@ void* Call(int which, void* root) {
     __try { return g_ops[which].fn(root, g_state); } __except (EXCEPTION_EXECUTE_HANDLER) { return reinterpret_cast<void*>(~0ull); }
 }
 
-struct Probe { int iface, comp, type, slot, x, y, w, h; unsigned argb; };
-bool ReadProbe(Probe& p) {
-    char path[MAX_PATH]; const DWORD n = GetTempPathA(MAX_PATH, path);
-    if (!n || n > MAX_PATH - 16) return false;
-    lstrcatA(path, "rtx_cc.txt");
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    char buf[256] = {}; DWORD got = 0;
-    const bool ok = ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr) && got > 0;
-    CloseHandle(h);
-    DeleteFileA(path);
-    if (!ok) return false;
-    return std::sscanf(buf, "%d %d %d %d %d %d %d %d %x", &p.iface, &p.comp, &p.type, &p.slot, &p.x, &p.y, &p.w, &p.h, &p.argb) == 9;
-}
-
-void* g_madeControl = nullptr; void* g_madeComp = nullptr;   // the component the last probe made
 
 }  // namespace
 
-void DevProbe(std::uint8_t* root) {
-    static unsigned s_frame = 0;
-    if (++s_frame % 30 != 0 || !root) return;
-    Probe p;
-    if (!ReadProbe(p)) return;
-    if (!g_resolved) Resolve();
-    if (!g_usable) { Say("cc: not usable in this build"); return; }
-    char d1[64], d2[64];
-
-    if (p.type < 0) {
-        // a negative type deletes what the last probe made
-        if (!g_madeComp) { Say("cc: nothing to delete"); return; }
-        ResetStacks();
-        std::memcpy(g_state + kActive, &g_madeControl, 8); std::memcpy(g_state + kActive + 8, &g_madeComp, 8);
-        void* r = Call(kDelete, root);
-        Say("cc: delete -> %s", Describe(r, d1, sizeof(d1)));
-        g_madeControl = g_madeComp = nullptr;
-        std::memset(g_state + kActive, 0, 0x40);
-        return;
-    }
-
-    ResetStacks();
-    std::memset(g_state + kActive, 0, 0x40);
-    Push((p.iface << 16) | p.comp); Push(p.type); Push(p.slot);
-    void* r = Call(kCreate, root);
-    std::memcpy(&g_madeControl, g_state + kActive, 8); std::memcpy(&g_madeComp, g_state + kActive + 8, 8);
-    if (!g_madeComp) { Say("cc: create %d:%d type %d slot %d -> %s, no component", p.iface, p.comp, p.type, p.slot, Describe(r, d1, sizeof(d1))); return; }
-
-    ResetStacks(); Push(p.x); Push(p.y); Push(0); Push(0);
-    void* rp = Call(kSetPosition, root);
-    ResetStacks(); Push(p.w); Push(p.h); Push(0); Push(0);
-    void* rs = Call(kSetSize, root);
-    ResetStacks(); Push((std::int32_t)(p.argb & 0xFFFFFF));
-    Call(kSetColour, root);
-    ResetStacks(); Push(1);
-    Call(kSetFill, root);
-    ResetStacks(); Push((std::int32_t)(255 - ((p.argb >> 24) & 0xFF)));
-    Call(kSetTrans, root);
-    ResetStacks(); Push(0);
-    Call(kSetHide, root);
-    Say("cc: made %d:%d type %d slot %d at %d,%d %dx%d -> create %s, position %s, comp %p", p.iface, p.comp, p.type, p.slot, p.x, p.y, p.w, p.h,
-        Describe(r, d1, sizeof(d1)), Describe(rp, d2, sizeof(d2)), g_madeComp);
-    (void)rs;
-}
 
 namespace {
 std::mutex g_wantMu;

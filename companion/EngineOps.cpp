@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <map>
+#include <set>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -44,6 +45,7 @@ bool g_tried = false;
 std::atomic<bool> g_ready{false};   // read every frame, written once by the worker
 std::map<std::uint32_t, OpFn> g_byNumber;          // this build's number -> handler
 std::map<std::string, std::uint32_t> g_byName;     // name -> number
+std::set<std::string> g_faulted;                   // named operations that faulted (guarded by g_mu)
 std::uint8_t* g_state = nullptr;
 std::mutex g_logMu; char g_log[400] = {};
 
@@ -102,6 +104,45 @@ bool Names() {
     return g_byName.size() > 500;
 }
 
+// The running game's build from its own version resource ("950.1.0.0"), the same form the launcher
+// writes beside the operation table when it extracts it.
+std::string RunningBuild() {
+    HMODULE m = GetModuleHandleW(nullptr);
+    HRSRC r = FindResourceW(m, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16) /*RT_VERSION*/);
+    if (!r) return {};
+    const DWORD n = SizeofResource(m, r);
+    const auto* p = static_cast<const std::uint8_t*>(LockResource(LoadResource(m, r)));
+    if (!p) return {};
+    for (DWORD i = 0; i + sizeof(VS_FIXEDFILEINFO) <= n; i += 4) {
+        VS_FIXEDFILEINFO f; std::memcpy(&f, p + i, sizeof(f));
+        if (f.dwSignature != 0xFEEF04BD) continue;
+        char v[48];
+        std::snprintf(v, sizeof(v), "%u.%u.%u.%u", (unsigned)HIWORD(f.dwFileVersionMS), (unsigned)LOWORD(f.dwFileVersionMS),
+                      (unsigned)HIWORD(f.dwFileVersionLS), (unsigned)LOWORD(f.dwFileVersionLS));
+        return v;
+    }
+    return {};
+}
+
+// Operation numbers move between game builds, so names from another build's table would call the wrong
+// handlers. Only a table extracted from this build names anything; operations recognised by their own
+// code (projection, positions) do not depend on it.
+bool NamesMatchBuild() {
+    wchar_t up[MAX_PATH] = {};
+    if (!GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH)) return false;
+    const std::wstring path = std::wstring(up) + L"\\RuneToolsX\\cs2\\client_version.txt";
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    char buf[64] = {}; DWORD got = 0;
+    if (h != INVALID_HANDLE_VALUE) { ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr); CloseHandle(h); }
+    std::string table(buf, got);
+    while (!table.empty() && (table.back() == '\r' || table.back() == '\n' || table.back() == ' ')) table.pop_back();
+    const std::string running = RunningBuild();
+    if (!running.empty() && table == running) return true;
+    Say("engine ops: operation names are from game build %s, this is %s; named operations are off until the tables are extracted again",
+        table.empty() ? "(unknown)" : table.c_str(), running.empty() ? "(unknown)" : running.c_str());
+    return false;
+}
+
 bool ResolveGuarded(const Section& text) {
     __try { return Handlers(text); } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -112,6 +153,7 @@ void Resolve() {
     if (!base || !FindText(base, text)) return;
     if (!ResolveGuarded(text)) { Say("engine ops: registrar not recognised"); return; }
     if (!Names()) { Say("engine ops: operation table not readable"); return; }
+    if (!NamesMatchBuild()) g_byName.clear();
     g_state = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, kStateSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     g_ready = g_state != nullptr;
     Say("engine ops: %zu handlers, %zu names", g_byNumber.size(), g_byName.size());
@@ -159,6 +201,7 @@ int Call(std::uint8_t* root, const char* name, const std::int32_t* ints, int nIn
     const OpFn fn = reinterpret_cast<OpFn>(const_cast<void*>(Handler(name)));
     if (!fn || !root) return -1;
     std::lock_guard<std::mutex> lk(g_mu);
+    if (g_faulted.count(name)) return -1;   // faulted once: not called again, rather than faulting every frame
     std::uint32_t& isp = *reinterpret_cast<std::uint32_t*>(g_state + kIntSp);
     std::uint32_t& ssp = *reinterpret_cast<std::uint32_t*>(g_state + kStrSp);
     isp = 0; ssp = 0; g_state[0x20] = 0;
@@ -171,7 +214,7 @@ int Call(std::uint8_t* root, const char* name, const std::int32_t* ints, int nIn
         e[0x18] = 2; ssp = i + 1;
     }
     void* r = CallGuarded(fn, root);
-    if (r == reinterpret_cast<void*>(~0ull)) { Say("engine ops: %s faulted", name); return -1; }
+    if (r == reinterpret_cast<void*>(~0ull)) { g_faulted.insert(name); Say("engine ops: %s faulted, not called again", name); return -1; }
     int n = 0;
     for (std::uint32_t i = 0; i < isp && n < cap && i < 1000; ++i) out[n++] = *reinterpret_cast<std::int32_t*>(g_state + kIntStack + 4 * i);
     return n;
@@ -210,7 +253,6 @@ OpFn Projector() {
 
 // One fault is enough: everything here stays off afterwards rather than trying again every frame.
 bool g_poisoned = false;
-bool g_probeOn = false;      // the check file is present
 
 // The operation that puts the local player's position on the stack, recognised the same way: it
 // reads the account block, then the player registry, and leaves one position value.
@@ -392,44 +434,6 @@ void Pump(std::uint8_t* root) {
     if (fov > 0)   { const std::int32_t a[2] = { fov, fov }; const int r = Call(root, "VIEWPORT_SETFOV", a, 2, nullptr, 0, out, 4); Say("engine ops: fov %d -> %s", fov, r < 0 ? "failed" : "set"); }
 }
 
-// A check that can be run on the live game: with %TEMP%\rtx_project.txt present, the engine's own
-// screen point for the local player is reported once a second, so it can be held against where the
-// overlay puts the same point before anything moves over to it.
-void DevProject(std::uint8_t* root) {
-    static ULONGLONG s_next = 0, s_looked = 0; static bool s_on = false; static int s_left = 20;
-    if (g_poisoned || s_left <= 0) return;
-    const ULONGLONG now = GetTickCount64();
-    // Switchable while the game runs, so the file is looked at again every few seconds rather than
-    // once; nothing at all is done unless it is there.
-    if (now - s_looked > 4000) {
-        s_looked = now;
-        wchar_t tmp[MAX_PATH] = {}; GetTempPathW(MAX_PATH, tmp);
-        const std::wstring path = std::wstring(tmp) + L"rtx_project.txt";
-        s_on = GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-        g_probeOn = s_on;
-    }
-    if (!s_on || now < s_next) return;
-    s_next = now + 1000;
-    --s_left;
-    Point p{};
-    if (!ProjectSelf(root, 0, p)) { Say("projection: not available yet"); return; }
-    // Once per run, what a call actually costs, so the number of markers that can go through it
-    // each frame is a measurement rather than a guess.
-    static bool s_timed = false;
-    if (!s_timed) {
-        s_timed = true;
-        LARGE_INTEGER f{}, t0{}, t1{}; QueryPerformanceFrequency(&f);
-        Point q{};
-        constexpr int kRuns = 200;
-        QueryPerformanceCounter(&t0);
-        for (int i = 0; i < kRuns; ++i) Project(root, 0, (float)(1000 + i), 0.f, 2000.f, 0, false, q);
-        QueryPerformanceCounter(&t1);
-        const double us = f.QuadPart ? (double)(t1.QuadPart - t0.QuadPart) * 1e6 / (double)f.QuadPart / kRuns : 0.0;
-        Say("projection: own position on screen %d, %d depth %d, one call %.2f us", p.x, p.y, p.depth, us);
-        return;
-    }
-    Say("projection: own position on screen %d, %d depth %d", p.x, p.y, p.depth);
-}
 
 namespace {
 std::mutex g_aMu;
@@ -455,19 +459,12 @@ void PumpAnchors(std::uint8_t* root) {
     rtx::marker::Anchor want[rtx::marker::kMaxAnchors];
     int n = 0;
     { std::lock_guard<std::mutex> lk(g_aMu); n = g_aCount; if (n) std::memcpy(want, g_aWant, sizeof(rtx::marker::Anchor) * (std::size_t)n); }
-    // While the check file is present, say once every two seconds what came in and what went
-    // back, so a silent end of the chain can be told apart from a wrong answer.
-    static ULONGLONG s_say = 0;
-    const ULONGLONG nowMs = GetTickCount64();
-    const bool tell = g_probeOn && nowMs - s_say > 2000;
     if (!n || g_poisoned || !root) {
-        if (tell) { s_say = nowMs; Say("anchors: none wanted (poisoned %d)", g_poisoned ? 1 : 0); }
         rtx::present::PublishAnchors(nullptr, 0);
         return;
     }
-    if (!Ready()) { if (tell) { s_say = nowMs; Say("anchors: %d wanted, operations not resolved yet", n); } return; }
+    if (!Ready()) return;
     rtx::frame::Share::AnchorPoint out[rtx::marker::kMaxAnchors];
-    int named = 0, fromGame = 0, players = 0, playersOk = 0, noAnswer = 0, lastMiss = 0;
     for (int i = 0; i < n; ++i) {
         // A character named alongside a point means: keep the point where it is, and hang the answer
         // at the height the game hangs its own overheads at on that character. A positive value is
@@ -475,13 +472,10 @@ void PumpAnchors(std::uint8_t* root) {
         std::int32_t lift = want[i].lift;
         bool gameHeight = false;
         if (want[i].entity) {
-            ++named;
-            if (want[i].entity < 0) ++players;
             std::int32_t over = 0;
             const bool got = want[i].entity > 0 ? NpcOverheadHeight(root, want[i].entity, over)
                                                 : PlayerOverheadHeight(root, -want[i].entity - 1, over);
-            if (got) { lift = over; ++fromGame; if (want[i].entity < 0) ++playersOk; }
-            else { ++noAnswer; lastMiss = want[i].entity; }   // the lift given stays: the old placement
+            if (got) lift = over;   // otherwise the lift given stays: the old placement
             gameHeight = got;
         }
         Point p{};
@@ -493,18 +487,7 @@ void PumpAnchors(std::uint8_t* root) {
         out[i].ok = ok ? (gameHeight ? 2 : 1) : 0;
         out[i].tag = want[i].tag;
     }
-    const bool sent = rtx::present::PublishAnchors(out, n);
-    if (tell) {
-        s_say = nowMs;
-        if (sent) Say("anchors: %d wanted, %d named (%d players, %d answered), %d heights from the game, %d without, last miss %d",
-                      n, named, players, playersOk, fromGame, noAnswer, lastMiss);
-        else {
-            bool mapped = false; std::uint32_t mg = 0, ver = 0, wmg = 0, wver = 0;
-            rtx::present::FrameChannelState(mapped, mg, ver, wmg, wver);
-            Say("anchors: %d wanted, first %d,%d ok %d, not handed over: channel %s, mark %08x wanted %08x, version %u wanted %u",
-                n, out[0].x, out[0].y, out[0].ok, mapped ? "mapped" : "not mapped", mg, wmg, ver, wver);
-        }
-    }
+    rtx::present::PublishAnchors(out, n);
 }
 
 namespace {
@@ -603,7 +586,6 @@ void PumpAsks(std::uint8_t* root) {
         g_askDone = done;
         rtx::present::PublishAnswers(g_answer, g_askCount, g_askSeq, done);
     }
-    if (done && g_probeOn) Say("account questions: %d answered", count);
 }
 
 bool TakeLog(char* out, std::size_t cap) {

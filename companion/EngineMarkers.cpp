@@ -2,6 +2,7 @@
 #include "EngineComponents.h"
 #include "EngineOps.h"
 #include "EngineIface.h"
+#include "ScenePlayer.h"
 
 #include <windows.h>
 #include <detours.h>
@@ -404,16 +405,18 @@ void ApplyUnguarded(std::uint8_t* manager) {
 
     Want w;
     { std::lock_guard<std::mutex> lk(g_mu); w = g_want; }
-    // The game puts these on ground it has loaded and crashes on a tile it has not. The player's
-    // tile travels with every request (the near end of the path): a tile far from it is dropped here,
-    // whatever asked for it.
-    const auto inReach = [&w](std::int32_t x, std::int32_t y) {
-        const std::int32_t dx = x - w.path_x0, dy = y - w.path_y0;
-        return w.path_x0 > 0 && w.path_y0 > 0 && x > 0 && y > 0 && dx >= -kTileReach && dx <= kTileReach && dy >= -kTileReach && dy <= kTileReach;
+    // The game puts these on ground it has loaded and crashes on a tile it has not. Reach is measured
+    // from the player's tile as read from the game itself, never from the request (whose path starts at
+    // the tile the launcher believes the player is on), so a far tile is dropped whatever asked for it.
+    int px = 0, py = 0;
+    const bool havePlayer = rtx::sceneplayer::Tile(px, py);
+    const auto inReach = [&](std::int32_t x, std::int32_t y) {
+        const std::int32_t dx = x - px, dy = y - py;
+        return havePlayer && x > 0 && y > 0 && dx >= -kTileReach && dx <= kTileReach && dy >= -kTileReach && dy <= kTileReach;
     };
-    if (w.arrow_on && w.arrow_npc < 0 && !inReach(w.arrow_x, w.arrow_y)) w.arrow_on = false;
+    if (w.arrow_on && (w.arrow_npc < 0 ? !inReach(w.arrow_x, w.arrow_y) : w.arrow_npc > 0xFFFF)) w.arrow_on = false;
     if (w.tile_on && !inReach(w.tile_x, w.tile_y)) w.tile_on = false;
-    if (w.path_on && !inReach(w.path_x1, w.path_y1)) w.path_on = false;
+    if (w.path_on && (!inReach(w.path_x0, w.path_y0) || !inReach(w.path_x1, w.path_y1))) w.path_on = false;
     // a style the game does not have is refused outright: hold it to the ones there are
     if (const std::uint8_t* table = At(At(root, g_arrowDisp - sizeof(void*)), kStyleTable)) {
         std::int32_t count = 0;
@@ -497,13 +500,10 @@ void FrameHook(void* manager) {
     if (manager) Apply(static_cast<std::uint8_t*>(manager));
     if (manager) {
         std::uint8_t* root = *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(manager) + 8);
-        rtx::enginecc::DevProbe(root);
         rtx::enginecc::Apply(root);
         rtx::engineops::Pump(root);
         rtx::engineops::PumpAnchors(root);
         rtx::engineops::PumpAsks(root);
-        rtx::engineops::DevProject(root);
-        rtx::engineiface::DevComponent(root);
     }
     g_frame(manager);
 }

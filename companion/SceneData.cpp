@@ -14,6 +14,7 @@
 
 #include "SceneOffsets.h"
 #include "SceneHover.h"
+#include "ScenePlayer.h"
 #include "TooltipHook.h"
 #include "EngineMarkers.h"
 #include "EngineComponents.h"
@@ -192,7 +193,13 @@ std::uint64_t Root() {
         s_nextCheck = now + 2000;
         if (!RootGlobalValid(g_rootGlobal)) { g_rootGlobal = 0; g_rootMethod = 0; }
     }
-    if (!g_rootGlobal) g_rootGlobal = ScanRootGlobal();
+    // Not found yet: look again at most every 2 s. Without the anchor that look walks the whole image, and
+    // Root() is asked several times a tick.
+    static ULONGLONG s_nextScan = 0;
+    if (!g_rootGlobal && now >= s_nextScan) {
+        g_rootGlobal = ScanRootGlobal();
+        if (!g_rootGlobal) s_nextScan = now + 2000;
+    }
     return g_rootGlobal ? R64(g_rootGlobal) : 0;
 }
 
@@ -344,6 +351,8 @@ bool PlayerFine(float& px, float& py) {
 float g_lastPlayerX = 0.f, g_lastPlayerY = 0.f;
 bool  g_havePlayerPos = false;
 int   g_posSource = 0;             // 0 = none, 1 = live, 2 = remembered (diag[11])
+std::atomic<int> g_tileX{ 0 }, g_tileY{ 0 };        // the player's tile, last read live (ScenePlayer.h)
+std::atomic<ULONGLONG> g_tileAtMs{ 0 };
 
 bool PlayerFineOrLast(float& px, float& py) {
     if (PlayerFine(px, py)) {
@@ -1838,6 +1847,9 @@ DWORD WINAPI Worker(LPVOID) {
         if (!sh) { Sleep(250); continue; }
         float cpx = 0, cpy = 0;
         bool havePos = PlayerFineOrLast(cpx, cpy);
+        if (havePos && g_posSource == 1) {
+            g_tileX.store((int)(cpx / 512.f)); g_tileY.store((int)(cpy / 512.f)); g_tileAtMs.store(GetTickCount64());
+        }
         // Logged in with a root but no local player among the worker's entities for 10 s: the worker offset
         // or the root is wrong. Start both over rather than keep reading the wrong list for the session.
         if (g_posSource == 1 || !g_rootGlobal) noPosSinceMs = 0;
@@ -1855,9 +1867,14 @@ DWORD WINAPI Worker(LPVOID) {
         const float kMoveArm = 32.f * 512.f;
         const bool moved = havePos && haveScanPos &&
             (std::fabs(cpx - scanPx) > kMoveArm || std::fabs(cpy - scanPy) > kMoveArm);
-        bool stale = moved || GetTickCount64() - lastScanMs > rescanMs;
         FindContainersFromTracked();                     // spawn-tracked entities need no player position
-        if (havePos && (g_mgrCount == 0 || stale)) {
+        // The memory sweep is the fallback and costs about a second of a core, so it runs only while the player
+        // is seen live (a remembered position after logout would sweep the lobby forever) and backs off when it
+        // finds nothing, containers or not. A fresh sighting starts the cadence over, first sweep at once.
+        const bool livePos = havePos && g_posSource == 1;
+        if (!livePos) { lastScanMs = 0; rescanMs = kRescanMs; }
+        const bool due = lastScanMs == 0 || moved || GetTickCount64() - lastScanMs > rescanMs;
+        if (livePos && due) {
             const int before = g_mgrCount;
             FindContainers(true);
             lastScanMs = GetTickCount64();
@@ -1906,6 +1923,13 @@ DWORD WINAPI Worker(LPVOID) {
 }
 
 }  // namespace
+
+bool rtx::sceneplayer::Tile(int& x, int& y) {
+    const ULONGLONG at = g_tileAtMs.load();
+    if (!at || GetTickCount64() - at > 5000) return false;
+    x = g_tileX.load(); y = g_tileY.load();
+    return x > 0 && y > 0;
+}
 
 // The game keeps the same small interface on everything it can outline: slot 31 of the object's
 // method table is "hovered this frame", taking the frame number the highlight settings count in.

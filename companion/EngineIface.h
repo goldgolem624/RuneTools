@@ -57,9 +57,6 @@ bool DeleteAll(std::uint8_t* root, int group, int parentComp);
 // for every row. Returns -1 when the operation is not recognised or the call faulted.
 int DbRowCount(std::uint8_t* root, int table, int take, int skip, int* why = nullptr);
 
-// Drives one component from a file on the live game, so the whole life of one is visible.
-void DevComponent(std::uint8_t* root);
-
 bool TakeLog(char* out, std::size_t cap);
 
 }  // namespace rtx::engineiface
