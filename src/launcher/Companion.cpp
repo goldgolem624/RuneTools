@@ -52,13 +52,8 @@ bool ModuleListed(std::uint32_t pid) {
 // ---- Session handshake ----------------------------------------------
 // Each client is handed a random session value and both sides name their
 // channels with it, so the names cannot be predicted from the pid alone.
-//
-// Set RTX_NO_SESSION_KEY=1 to fall back to the previous pid-only naming
-// without a rebuild, for narrowing down a channel that fails to bind.
-bool SessionHandshakeEnabled() {
-    static const bool on = GetEnvironmentVariableW(L"RTX_NO_SESSION_KEY", nullptr, 0) == 0;
-    return on;
-}
+// There is no fallback to the old pid-only names: until a client has a
+// session none of its channels exist (see ShareName.h).
 
 // Each client gets its own random session value. The launcher keeps it, names
 // its channels with it, and hands the same value to the module by calling an
@@ -173,7 +168,13 @@ bool HandshakeSession(std::uint32_t pid, const std::wstring& dll) {
                     DWORD rc = 1;
                     GetExitCodeThread(th, &rc);
                     ok = (rc == 0);
-                    if (!ok)
+                    if (rc == 3) {
+                        // an older module still loaded in this client: it names channels the old way and
+                        // never will match, so it is not asked again every tick
+                        { std::lock_guard<std::mutex> lk2(g_noHandshakeMu); g_noHandshake.insert(pid); }
+                        rtx::log::Launcher("session: the module in pid " + std::to_string(pid) +
+                                           " is from an older build; restart the game to load the current one");
+                    } else if (!ok)
                         rtx::log::Launcher("session: module rejected the session for pid " +
                                            std::to_string(pid) + ", code " + std::to_string(rc));
                 } else {
@@ -234,9 +235,9 @@ bool EnsureLoaded(std::uint32_t pid) {
     if (!pid) return false;
 
     // A client we already hold a session for is live and correctly named.
-    if ((!SessionHandshakeEnabled() || rtx::ipc::HasSessionKey(pid) || CannotHandshake(pid)) &&
-        SectionLive(pid))
+    if (rtx::ipc::HasSessionKey(pid) && SectionLive(pid))
         return true;
+    if (CannotHandshake(pid)) return false;   // an older module: no channels until the game restarts
 
     ULONGLONG now = GetTickCount64();
     {
@@ -281,7 +282,7 @@ bool EnsureLoaded(std::uint32_t pid) {
 
     // Issue a session whether we just loaded the module or found it already
     // there, so a launcher restart against a live client rebinds both sides.
-    if (SessionHandshakeEnabled() && !rtx::ipc::HasSessionKey(pid)) {
+    if (!rtx::ipc::HasSessionKey(pid)) {
         // Gated on the module being alive rather than on ModuleListed: the
         // snapshot can come back empty while the loader is still settling, and
         // gating on it made a failed handshake indistinguishable from one that

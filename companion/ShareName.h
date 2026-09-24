@@ -23,8 +23,12 @@ inline constexpr std::size_t kNameChars = 128;
 // client pid, because the launcher serves several clients at once and each one
 // gets its own session: a single process-wide key would name every client's
 // channels with the same value. The module only ever holds the key for its own
-// pid. While no key is set for a pid the legacy pid-only name is produced,
-// which is what an older peer on the other side of that channel expects.
+// pid. While no key is set for a pid no name is produced at all: a name anyone
+// could work out from the pid is one another program could take first.
+//
+// The suffix is a keyed hash of the channel's own prefix, not the key itself,
+// so seeing one channel's name in the object directory says nothing about the
+// name of any other.
 
 namespace detail {
 
@@ -126,7 +130,7 @@ inline bool HasSessionKey(std::uint32_t pid) {
 
 // Layout the launcher writes into the module's address space when it hands
 // over a session. Both sides are built from this header so the layout matches.
-inline constexpr std::uint32_t kSessionBlobVersion = 1;
+inline constexpr std::uint32_t kSessionBlobVersion = 2;   // 2: names carry a per-channel keyed hash, not the key
 
 struct SessionBlob {
     std::uint32_t version;    // kSessionBlobVersion
@@ -160,9 +164,41 @@ inline bool RebindIfStale(std::uint32_t& boundGen, T*& view, H& map) {
     return true;
 }
 
-// Writes "<prefix><pid>" into out. On success returns true and out is NUL
-// terminated. If the buffer is too small out is set empty and false comes
-// back, so a truncated name can never reach CreateFileMapping or OpenFileMapping.
+namespace detail {
+
+// SipHash-2-4: a keyed pseudo-random function over bytes, 128-bit key, 64-bit result.
+inline std::uint64_t Rotl(std::uint64_t x, int b) { return (x << b) | (x >> (64 - b)); }
+inline std::uint64_t SipHash24(const std::uint8_t key[16], const std::uint8_t* in, std::size_t len) {
+    std::uint64_t k0 = 0, k1 = 0;
+    for (int i = 0; i < 8; ++i) { k0 |= (std::uint64_t)key[i] << (8 * i); k1 |= (std::uint64_t)key[8 + i] << (8 * i); }
+    std::uint64_t v0 = 0x736f6d6570736575ull ^ k0, v1 = 0x646f72616e646f6dull ^ k1;
+    std::uint64_t v2 = 0x6c7967656e657261ull ^ k0, v3 = 0x7465646279746573ull ^ k1;
+    auto round = [&] {
+        v0 += v1; v1 = Rotl(v1, 13); v1 ^= v0; v0 = Rotl(v0, 32);
+        v2 += v3; v3 = Rotl(v3, 16); v3 ^= v2;
+        v0 += v3; v3 = Rotl(v3, 21); v3 ^= v0;
+        v2 += v1; v1 = Rotl(v1, 17); v1 ^= v2; v2 = Rotl(v2, 32);
+    };
+    const std::size_t whole = len & ~(std::size_t)7;
+    for (std::size_t i = 0; i < whole; i += 8) {
+        std::uint64_t m = 0;
+        for (int b = 0; b < 8; ++b) m |= (std::uint64_t)in[i + b] << (8 * b);
+        v3 ^= m; round(); round(); v0 ^= m;
+    }
+    std::uint64_t last = (std::uint64_t)(len & 0xFF) << 56;
+    for (std::size_t b = 0; b < (len & 7); ++b) last |= (std::uint64_t)in[whole + b] << (8 * b);
+    v3 ^= last; round(); round(); v0 ^= last;
+    v2 ^= 0xFF; round(); round(); round(); round();
+    return v0 ^ v1 ^ v2 ^ v3;
+}
+
+}   // namespace detail
+
+// Writes "<prefix><pid>_<suffix>" into out, the suffix a keyed hash of the prefix
+// under this client's session. On success returns true and out is NUL terminated.
+// Without a session for the pid, or if the buffer is too small, out is set empty
+// and false comes back, so no guessable or truncated name can ever reach
+// CreateFileMapping or OpenFileMapping.
 inline bool BuildName(wchar_t* out, std::size_t cap, const wchar_t* prefix, std::uint32_t pid) {
     if (!out || cap == 0) return false;
     out[0] = 0;
@@ -185,19 +221,26 @@ inline bool BuildName(wchar_t* out, std::size_t cap, const wchar_t* prefix, std:
         out[i++] = digits[--n];
     }
 
-    // Per-session suffix, when one has been set for this pid.
+    // Per-session suffix: 128 bits of SipHash over the prefix (two domains), keyed by the session.
     {
         auto& st = detail::State();
         std::lock_guard<std::mutex> lk(st.mu);
         const detail::SessionEntry* e = detail::FindLocked(st, pidForKey);
-        if (e) {
-            static const wchar_t kHex[] = L"0123456789abcdef";
-            if (i + 1 >= cap) { out[0] = 0; return false; }
-            out[i++] = L'_';
-            for (std::size_t k = 0; k < sizeof(e->key); ++k) {
-                if (i + 2 >= cap) { out[0] = 0; return false; }
-                out[i++] = kHex[(e->key[k] >> 4) & 0xF];
-                out[i++] = kHex[e->key[k] & 0xF];
+        if (!e) { out[0] = 0; return false; }
+        std::uint8_t msg[160]; std::size_t mlen = 1;
+        for (const wchar_t* s = prefix; *s && mlen + 2 <= sizeof(msg); ++s) {
+            msg[mlen++] = (std::uint8_t)(*s & 0xFF);
+            msg[mlen++] = (std::uint8_t)((*s >> 8) & 0xFF);
+        }
+        std::uint64_t h[2];
+        for (int d = 0; d < 2; ++d) { msg[0] = (std::uint8_t)d; h[d] = detail::SipHash24(e->key, msg, mlen); }
+        static const wchar_t kHex[] = L"0123456789abcdef";
+        if (i + 1 >= cap) { out[0] = 0; return false; }
+        out[i++] = L'_';
+        for (int d = 0; d < 2; ++d) {
+            for (int b = 60; b >= 0; b -= 4) {
+                if (i + 1 >= cap) { out[0] = 0; return false; }
+                out[i++] = kHex[(h[d] >> b) & 0xF];
             }
         }
     }
