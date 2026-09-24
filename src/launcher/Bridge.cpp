@@ -1552,6 +1552,15 @@ JSValueRef InterfaceGroups(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, rtx::reader::InterfaceGroupsJson(pid));
 }
 
+// Open group ids, served from the background loop: the puzzle solvers poll this to know whether their
+// interface is up before reading anything heavier.
+JSValueRef InterfaceGroupIds(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                             size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "[]");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return served(ctx, "igids:" + std::to_string(pid), "[]", [pid]{ return rtx::reader::InterfaceGroupIdsJson(pid); });
+}
+
 JSValueRef InterfaceGroup(JSContextRef ctx, JSObjectRef, JSObjectRef,
                           size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 2) return utf8_to_js(ctx, "{\"widgets\":[]}");
@@ -5968,6 +5977,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "outlineObject",     OutlineObject);
     install_fn(ctx, ns, "nameplatePlayer",   NameplatePlayer);
     install_fn(ctx, ns, "interfaceGroups",   InterfaceGroups);
+    install_fn(ctx, ns, "interfaceGroupIds", InterfaceGroupIds);
     install_fn(ctx, ns, "interfaceGroup",     InterfaceGroup);
     install_fn(ctx, ns, "ifaceCompRects",     IfaceCompRects);
     install_fn(ctx, ns, "ifaceSpriteParent",  IfaceSpriteParent);

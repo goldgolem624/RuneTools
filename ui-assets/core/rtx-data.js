@@ -137,3 +137,18 @@ const rtxEvents = (function () {
   return { on: on, off: off, emit: emit };
 })();
 
+
+// Ids of the open interface groups, shared by every puzzle solver and read at most every 400 ms: a solver
+// whose interface is not among them has nothing to do. Null when the launcher has no such call (older build),
+// so a solver falls back to looking for itself.
+let _igIds = null, _igAt = 0;
+function openIfaceGroups() {
+  if (!bridge() || typeof bridge().interfaceGroupIds !== 'function') return null;
+  const now = Date.now();
+  if (_igIds && now - _igAt < 400) return _igIds;
+  _igAt = now;
+  let arr = [];
+  try { arr = JSON.parse(bridge().interfaceGroupIds(myPid()) || '[]'); } catch (e) { arr = []; }
+  _igIds = new Set(Array.isArray(arr) ? arr : []);
+  return _igIds;
+}

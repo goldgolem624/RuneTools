@@ -255,6 +255,7 @@ bool SkillsXp(std::uint32_t pid, int out[29]);
 std::string PerksJson(std::uint32_t pid);
 
 std::string InterfaceGroupsJson(std::uint32_t pid);
+std::string InterfaceGroupIdsJson(std::uint32_t pid);   // "[ids]" of the open groups only
 std::string InterfaceGroupJson(std::uint32_t pid, int groupId);
 std::string IfaceCompRectsJson(std::uint32_t pid, int group, const std::string& compsCsv, int mountComp);
 std::string IfaceSpriteParentRectJson(std::uint32_t pid, int group, int sprite);

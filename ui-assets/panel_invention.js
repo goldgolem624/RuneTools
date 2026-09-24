@@ -178,15 +178,17 @@
   function renderMachines() {
     const c = $('content');
     const h = mchHtml();
+    const inner = !mchVb
+      ? '<div class="bank-empty" style="display:flex"><div class="warn" style="background:rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)">Reading...</div></div>'
+      : !h ? '<div class="mch-card"><div class="mch-note">No machine data yet. Open a machine at an invention workbench in game once; the interface varbits (script 13676) transmit on interaction and this tab reads them.</div></div>'
+      : h;
+    // The same machines as last time, still on screen: leave the pane alone rather than rebuild (and repaint) it.
+    const was = $('mchBody');
+    if (was && was._sig === inner && c.contains(was)) return;
     c.innerHTML = '<div class="bank-wrap"><div class="mbank-body" id="mchBody"></div></div>';
     const body = $('mchBody');
-    if (!mchVb) {
-      body.innerHTML = '<div class="bank-empty" style="display:flex"><div class="warn" style="background:rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)">Reading...</div></div>';
-    } else if (!h) {
-      body.innerHTML = '<div class="mch-card"><div class="mch-note">No machine data yet. Open a machine at an invention workbench in game once; the interface varbits (script 13676) transmit on interaction and this tab reads them.</div></div>';
-    } else {
-      body.innerHTML = h;
-    }
+    body.innerHTML = inner;
+    body._sig = inner;
   }
   function attachCompIcon(el, sid) {
     const cached = SPRITES.get(sid);

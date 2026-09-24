@@ -48,6 +48,8 @@
     if (towersBusy || !bridge() || !bridge().interfaceGroup) return;
     towersBusy = true;
     try {
+      const ig = openIfaceGroups();   // the puzzle's group is not open: nothing to read
+      if (ig && !ig.has(1934)) { towersOwnsPanel = false; towersSupersede = false; towersDrawSig = ''; towersClearHl(); return; }
       let wj = null; wj = (await rtxData.call('state.interfaceGroup', 1934)) || {};
       const widgets = wj && wj.widgets;
       if (!widgets || !widgets.length) { towersOwnsPanel = false; towersSupersede = false; towersDrawSig = ''; towersClearHl(); return; }

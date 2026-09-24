@@ -159,12 +159,13 @@
     }
   }
 
-  function luaTickPlugin(m, batch) {
+  function luaTickPlugin(m, batch, snapJson) {
     if (!bridge() || typeof bridge().luaTick !== 'function') return;
     const canState = m.scopes.indexOf('state.read') !== -1;
     let ev = '', st = '';
     if (canState && batch && batch.length) { try { ev = JSON.stringify(batch); } catch (e) { ev = ''; } }
-    if (canState && m.wantsState && lastSnap) { try { st = JSON.stringify(lastSnap); } catch (e) { st = ''; } }
+    // the snapshot text comes serialised once from pluginPush, and only a changed one is handed over
+    if (canState && m.wantsState && snapJson && m.stateSent !== snapJson) { st = snapJson; m.stateSent = snapJson; }
     let r = null;
     try { r = JSON.parse(bridge().luaTick(m.id, ev, st)); } catch (e) { r = null; }
     if (r) luaApplyResult(m, r);

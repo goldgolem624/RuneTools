@@ -61,12 +61,16 @@
   const pluginEventQueue = [];
   function pluginPush() {
     const batch = pluginEventQueue.length ? pluginEventQueue.splice(0) : null;
+    // 'state' is the changed snapshot: serialised once per tick for every plugin, and handed to each only when it
+    // differs from what that plugin last got (a newly mounted one gets it at once).
+    let snapJson = '';
+    if (lastSnap && pluginMounts.size) { try { snapJson = JSON.stringify(lastSnap); } catch (e) { snapJson = ''; } }
     for (const m of pluginMounts.values()) {
-      if (m.lua) { luaTickPlugin(m, batch); continue; }   // the Lua runtime gets tick, events and state in one call
+      if (m.lua) { luaTickPlugin(m, batch, snapJson); continue; }   // the Lua runtime gets tick, events and state in one call
       if (!m.frame) continue;
       pluginSendEvent(m, 'tick', null);
       if (m.scopes.indexOf('state.read') !== -1) {
-        pluginSendEvent(m, 'state', lastSnap);
+        if (snapJson && m.stateSent !== snapJson) { m.stateSent = snapJson; pluginSendEvent(m, 'state', lastSnap); }
         if (batch) pluginSendEvent(m, 'events', batch);
       }
     }

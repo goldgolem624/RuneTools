@@ -50,6 +50,8 @@
     if (lockboxBusy || !bridge() || !bridge().ifaceCompRects) return;
     lockboxBusy = true;
     try {
+      const ig = openIfaceGroups();   // the lockbox group is not open: nothing to read
+      if (ig && !ig.has(1933)) { lockboxOwnsPanel = false; lockboxTarget = null; lockboxDrawSig = ''; lockboxClearHl(); return; }
       let cr = null;
       try { cr = JSON.parse(rtxData.sync('state.ifaceCompRects', 1933, LOCKBOX_IDS, 0) || '{}'); } catch (e) {}
       const open = cr && cr.comps && Object.keys(cr.comps).length > 0;

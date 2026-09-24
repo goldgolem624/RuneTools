@@ -13,7 +13,7 @@
     1002: { u: 17,  r: [[21, 22, 16], [23, 24, 16], [26, 25, 16]] },
     1003: { u: 204, r: [[10, 11, 16], [12, 13, 16], [15, 14, 16]] }
   };
-  let knotBusy = false, knotOpenGroup = -1, knotScanAt = 0;
+  let knotBusy = false, knotOpenGroup = -1, knotScanAt = 0, knotShown = true;
   async function knotGroupHasRing0(g) {
     try { const w = (JSON.parse(await rtxData.raw('state.interfaceGroup', g) || '{}').widgets) || []; return w.some(x => x.t && x.t[1] === CELTIC_KNOTS[g].r[0][0]); }
     catch (e) { return false; }
@@ -25,6 +25,14 @@
     try {
       const el = $('clueKnot');   // banner; absent when the clues tab isn't open
       const clearKnot = () => { try { if (bridge().knotCells) rtxData.sync('solver.knotCells', ''); } catch (e) {} };
+      const ig = openIfaceGroups();   // no knot group open: nothing to scan
+      if (ig && !Object.keys(CELTIC_KNOTS).some(k => ig.has(+k))) {
+        knotOpenGroup = -1;
+        if (el && el._h !== '') { el._h = ''; el.style.display = 'none'; }
+        if (knotShown) { knotShown = false; clearKnot(); }
+        return;
+      }
+      knotShown = true;
       let g = (knotOpenGroup > 0 && await knotGroupHasRing0(knotOpenGroup)) ? knotOpenGroup : -1;
       if (g < 0) {
         const now = Date.now();

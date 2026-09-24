@@ -5659,6 +5659,28 @@ std::string InterfaceGroupsJson(std::uint32_t pid) {
     return out;
 }
 
+// Just the ids of the open interface groups ("[1477,1430,...]"): what a solver needs to know whether its
+// puzzle is up, without the per-group mount and origin work InterfaceGroupsJson does.
+std::string InterfaceGroupIdsJson(std::uint32_t pid) {
+    auto ps = snap_proc(pid);
+    if (!ps) return "[]";
+    HANDLE h = ps.h;
+    auto root = rpm<std::uint64_t>(h, ps.mgva);
+    if (!root || *root <= 0x10000) return "[]";
+    std::uint64_t gs, ge; iface_groups_range(h, *root, gs, ge);
+    if (!gs) return "[]";
+    std::string out = "["; bool first = true;
+    for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
+        std::uint64_t ap2 = rpm<std::uint64_t>(h, g + 8).value_or(0);
+        if (ap2 <= 0x10000) continue;
+        int gid = rpm<std::int32_t>(h, ap2).value_or(0);
+        if (gid <= 0 || gid > 70000) continue;
+        out += first ? "" : ","; first = false;
+        out += std::to_string(gid);
+    }
+    return out + "]";
+}
+
 // Compass-clue needle: group 996 comp 5, rotation int32 at node+0x180, raw 0..~2092 (bearing = raw / 5.8127); -1 when not open.
 int CompassHeadingValue(std::uint32_t pid) {
     auto ps = snap_proc(pid);

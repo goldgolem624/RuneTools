@@ -3958,7 +3958,9 @@ async function dungSceneTick() {
   dungTickBusy = true;
   try {
     let inDung = false, party92 = false;
-    try { const gs = (JSON.parse(rtxData.sync('state.interfaceGroups') || '{}').groups) || [];
+    const ig = openIfaceGroups();   // ids only: the full group list also works out mounts and origins
+    if (ig) { inDung = ig.has(945); party92 = DUNG_PARTY_GROUPS.some(id => ig.has(id)); }
+    else try { const gs = (JSON.parse(rtxData.sync('state.interfaceGroups') || '{}').groups) || [];
           inDung = gs.some(g => g.id === 945); party92 = gs.some(g => DUNG_PARTY_GROUPS.indexOf(g.id) >= 0); } catch (e) {}
     if (!inDung) {
       if (party92) dungPumpPartyHiscores(true);
