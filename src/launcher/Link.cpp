@@ -341,6 +341,7 @@ void Verify() {
                 std::string code = json_str(r.body, "code");
                 rtx::log::Launcher("link: site rejected this PC's token (" + code + "); forgetting it");
                 forget_locked(code == "inactive" ? "Your RuneTools account is not active, so this PC was unlinked."
+                            : code == "expired"  ? "This PC's link lapsed after 90 days without use. Link it again when you like."
                                                  : "This PC was unlinked from your RuneTools account on the website.");
             }
         });
