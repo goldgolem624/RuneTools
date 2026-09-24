@@ -682,5 +682,6 @@
       if (wm.wins.get(d.dock.wid) === d.dock && wm.wins.get(w.wid) === w) wmDockInto(w, d.dock);
     }
     wmRectsSoon(); wmSaveSoon();
+    if (d.mode === 'size' && typeof sizeAllIcons === 'function') sizeAllIcons(true);   // boxes changed without the page changing
   });
 

@@ -68,7 +68,17 @@
     el.dataset.icoBox = bw + 'x' + bh;
     commit((nat.w > bw || nat.h > bh) ? 'contain' : (nat.w + 'px ' + nat.h + 'px'));
   }
-  function sizeAllIcons() {
+  // Sizing reads every icon's box, which forces a layout. The refresh calls this four times a second, so it
+  // only works after the page changed (nodes added, removed or retexted, an icon swapped) or on a resize.
+  let icoDirty = true;
+  try {
+    new MutationObserver(recs => {
+      for (const r of recs) if (r.type === 'childList' || r.attributeName === 'data-ico-url') { icoDirty = true; return; }
+    }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-ico-url'] });
+  } catch (e) {}
+  function sizeAllIcons(force) {
+    if (!icoDirty && !force) return;
+    icoDirty = false;
     document.querySelectorAll('[data-ico-url]').forEach(el => {
       const box = el.clientWidth + 'x' + el.clientHeight;
       if (el.dataset.icoSizedUrl === el.dataset.icoUrl && el.dataset.icoBox === box) return;
@@ -94,7 +104,7 @@
   let icoResizeQ = 0;
   window.addEventListener('resize', () => {
     if (icoResizeQ) return;
-    icoResizeQ = requestAnimationFrame(() => { icoResizeQ = 0; sizeAllIcons(); });
+    icoResizeQ = requestAnimationFrame(() => { icoResizeQ = 0; sizeAllIcons(true); });
   });
 
   function setHTML(el, html) {

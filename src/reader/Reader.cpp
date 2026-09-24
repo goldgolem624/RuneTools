@@ -4572,6 +4572,14 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
         std::unordered_set<long long> seen;
         HANDLE rh = h; std::uint64_t rroot = 0;
         if (h) { auto rv = rpm<std::uint64_t>(h, mgva); if (rv) rroot = *rv; }
+        // One resolve per definition per build: a scene repeats the same few ids hundreds of times, and each
+        // resolve reads the game's vars to pick the shown variant, which cannot change within one build.
+        std::unordered_map<int, rtx::cache::LocMeta> locMemo;
+        auto loc_meta = [&](int id) -> const rtx::cache::LocMeta& {
+            auto it = locMemo.find(id);
+            if (it == locMemo.end()) it = locMemo.emplace(id, resolve_loc(rh, rroot, id)).first;
+            return it->second;
+        };
         int rx0 = (player_x - obj_range) / 64, rx1 = (player_x + obj_range) / 64;
         int ry0 = (player_y - obj_range) / 64, ry1 = (player_y + obj_range) / 64;
         for (int rx = rx0; rx <= rx1 && (int)objs.size() < kCollectCap; ++rx) {
@@ -4586,7 +4594,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                     int dist = ax > ay ? ax : ay;        // Chebyshev (tiles away)
                     if (dist > obj_range) continue;       // range filter
                     if (p.plane != player_plane) continue;  // only the player's plane
-                    auto meta = resolve_loc(rh, rroot, p.id);   // varbit-aware (live morph state)
+                    const auto& meta = loc_meta(p.id);          // varbit-aware (live morph state)
                     if (meta.name.empty()) continue;
                     long long dk = ((long long)p.id << 40) | ((long long)wx << 20) | (unsigned)wy;
                     if (!seen.insert(dk).second) continue;   // same id+tile (other plane/type)
@@ -4601,6 +4609,11 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 }
             }
         }
+        // The cache entries by id and plane, so each live object is held against its own few candidates
+        // rather than the whole list.
+        std::unordered_map<long long, std::vector<std::size_t>> cacheById;
+        for (std::size_t i = 0; i < objs.size(); ++i)
+            cacheById[((long long)objs[i].id << 4) | (objs[i].plane & 15)].push_back(i);
         std::vector<RuntimeObj> runtime;
         const bool rt_ok = ReadRuntimeObjects(pid, runtime);
         rt_total = rt_ok ? (int)runtime.size() : -1;
@@ -4613,7 +4626,7 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 if (ay < 0) ay = -ay;
                 int dist = ax > ay ? ax : ay;
                 if (dist > obj_range) continue;
-                auto meta = resolve_loc(rh, rroot, r.config_id);
+                const auto& meta = loc_meta(r.config_id);
                 if (meta.name.empty()) continue;
                 long long dk = ((long long)r.config_id << 40) | ((long long)r.x << 20) | (unsigned)r.y;
                 int tol = std::max(meta.dim_x, meta.dim_y) - 1; if (tol < 0) tol = 0;
@@ -4621,13 +4634,16 @@ std::string SceneJson(std::uint32_t pid, int obj_range) {
                 // The cache lists a loc whether or not the game is showing it; the live entity knows.
                 // A depleted tree (and a stump waiting to be shown) carries the hidden flag, so the
                 // cache entry's vis follows the live flag. Match on id, plane and footprint tolerance.
-                for (auto& o : objs)
+                auto cand = cacheById.find(((long long)r.config_id << 4) | (r.plane & 15));
+                if (cand != cacheById.end()) for (std::size_t ci : cand->second) {
+                    auto& o = objs[ci];
                     if (!o.rt && o.id == r.config_id && o.plane == r.plane &&
                         std::abs(o.x - r.x) <= tol && std::abs(o.y - r.y) <= tol) {
                         dup = true;
                         if (r.hidden) o.vis = false;
                         if (r.bmax[2] > r.bmin[2]) o.mh = (int)(r.bmax[2] - r.bmin[2]);
                     }
+                }
                 if (dup) continue;
                 std::string acts;
                 for (const auto& a : meta.actions) {
