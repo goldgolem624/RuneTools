@@ -66,7 +66,8 @@ struct Ui : public LoadListener, public ViewListener {
     bool          hasPendingRects = false;
     std::string   lastRects;                 // last rects actually written, replayed after a rebind
     bool          lastVisible = false;
-    ULONGLONG     lastActivityMs = 0;        // last publish or input (pump pacing)
+    ULONGLONG     lastActivityMs = 0;        // last input or animating publish (pump pacing)
+    ULONGLONG     lastPublishMs = 0;
     bool          pumpTimerOn = false;
     std::uint32_t lastModSeq = 0;
     ULONGLONG     lastModChangeMs = 0;       // companion liveness
@@ -255,6 +256,26 @@ void Publish(Ui* u) {
     if (T < 0) T = 0;
     if (R > (int)w) R = (int)w;
     if (B > (int)h) B = (int)h;
+    // The engine marks whole repainted elements dirty, and a panel that re-renders the same markup every
+    // refresh repaints identical pixels. Held against what was last published, the rectangle shrinks to
+    // the rows and columns that really changed, and nothing is published at all when none did: the game
+    // uploads this rectangle on its own frame time.
+    if (!sized && R > L && B > T) {
+        int nT = -1, nB = -1, nL = R, nR = L;
+        for (int y = T; y < B; ++y) {
+            const auto* a = reinterpret_cast<const std::uint32_t*>(src + (std::size_t)y * rb);
+            const auto* d = reinterpret_cast<const std::uint32_t*>(f->pixels + (std::size_t)y * f->stride);
+            if (std::memcmp(a + L, d + L, (std::size_t)(R - L) * 4) == 0) continue;
+            int x0 = L; while (x0 < R && a[x0] == d[x0]) ++x0;
+            int x1 = R - 1; while (x1 > x0 && a[x1] == d[x1]) --x1;
+            if (nT < 0) nT = y;
+            nB = y;
+            if (x0 < nL) nL = x0;
+            if (x1 > nR) nR = x1;
+        }
+        if (nT < 0) { s->UnlockPixels(); s->ClearDirtyBounds(); return; }
+        T = nT; B = nB + 1; L = nL; R = nR + 1;
+    }
     if (R > L && B > T) {
         f->seq = f->seq + 1;            // odd: mid-write
         MemoryBarrier();
@@ -284,7 +305,11 @@ void Publish(Ui* u) {
     }
     s->UnlockPixels();
     s->ClearDirtyBounds();
-    u->lastActivityMs = GetTickCount64();
+    // Publishes on consecutive ticks (the base timer runs every 100 ms) mean something is animating: keep the
+    // 16 ms pump for it. The page's own refresh changes a few things every 250 ms and must not hold it open.
+    const ULONGLONG now = GetTickCount64();
+    if (u->lastPublishMs && now - u->lastPublishMs < 150) u->lastActivityMs = now;
+    u->lastPublishMs = now;
 }
 
 void WaiterThread(WaiterCtx* ctx) {

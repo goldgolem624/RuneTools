@@ -532,6 +532,10 @@ struct State {
 
     std::uint64_t  main_global_va   = 0;
     std::uint64_t  tick_owner_va    = 0;
+    ULONGLONG      resolve_retry_at = 0;   // next try at the globals after a miss (backs off)
+    int            resolve_misses   = 0;
+    ULONGLONG      name_retry_at    = 0;
+    ULONGLONG      gfx_retry_at     = 0;
 
     std::uint32_t  last_tick_value     = 0;
     double         last_tick_qpc_ms    = 0.0;
@@ -832,7 +836,10 @@ Snapshot sample_one(State& s) {
     snap.pid            = s.pid;
     snap.client_version = s.client_version;
     snap.display_name   = s.display_name;
-    if (s.gfx_mode.empty()) s.gfx_mode = detect_gfx_mode(s.proc);
+    if (s.gfx_mode.empty() && GetTickCount64() >= s.gfx_retry_at) {   // module walk + a settings file read: not every 200 ms
+        s.gfx_mode = detect_gfx_mode(s.proc);
+        if (s.gfx_mode.empty()) s.gfx_retry_at = GetTickCount64() + 5000;
+    }
     snap.gfx_mode       = s.gfx_mode;
 
     if (s.main_global_va) {
@@ -1123,20 +1130,31 @@ std::vector<Snapshot> SampleAll() {
         } else ++it;
     }
 
+    // Resolving walks the whole client image and runs under the lock every bridge call waits on, so after a
+    // miss (a game update moved a pattern) it is tried again at 1 s, doubling to 30 s, not every 200 ms.
+    const ULONGLONG nowMs = GetTickCount64();
     for (auto& [pid, s] : g_states) {
         if (!s.proc) continue;
-        if (s.display_name.empty()) {
+        if (s.display_name.empty() && nowMs >= s.name_retry_at) {
             s.display_name = read_target_env(s.proc, L"JX_DISPLAY_NAME");
             if (!s.display_name.empty())
                 rtx::log::Client(pid, "resolved display name: " + s.display_name);
+            else s.name_retry_at = nowMs + 5000;
         }
-        if (s.main_global_va == 0 && s.mod_base) {
-            s.main_global_va = resolve_main_global(s.proc, s.mod_base, s.mod_size);
-            if (s.main_global_va) rtx::log::Client(pid, "resolved MainData global");
-        }
-        if (s.tick_owner_va == 0 && s.mod_base) {
-            s.tick_owner_va = resolve_tick_owner_global(s.proc, s.mod_base, s.mod_size);
-            if (s.tick_owner_va) rtx::log::Client(pid, "resolved tick-owner global");
+        if ((s.main_global_va == 0 || s.tick_owner_va == 0) && s.mod_base && nowMs >= s.resolve_retry_at) {
+            if (s.main_global_va == 0) {
+                s.main_global_va = resolve_main_global(s.proc, s.mod_base, s.mod_size);
+                if (s.main_global_va) rtx::log::Client(pid, "resolved MainData global");
+            }
+            if (s.tick_owner_va == 0) {
+                s.tick_owner_va = resolve_tick_owner_global(s.proc, s.mod_base, s.mod_size);
+                if (s.tick_owner_va) rtx::log::Client(pid, "resolved tick-owner global");
+            }
+            if (s.main_global_va == 0 || s.tick_owner_va == 0) {
+                const int shift = s.resolve_misses < 5 ? s.resolve_misses : 5;
+                s.resolve_retry_at = nowMs + std::min<ULONGLONG>(30000, 1000ull << shift);
+                if (++s.resolve_misses == 1) rtx::log::Client(pid, "a client global did not resolve; retrying with backoff");
+            }
         }
     }
 
@@ -1376,6 +1394,7 @@ struct AsyncEntry {
     std::function<std::string()>          build;
     std::string                           value;
     bool                                  has_value = false;
+    bool                                  read_since_build = true;   // someone took the value since it was built
     std::chrono::steady_clock::time_point last_used;
 };
 std::mutex                                  s_async_mu;
@@ -1391,7 +1410,12 @@ void panel_loop() {
             auto now = steady_clock::now();
             for (auto it = s_async.begin(); it != s_async.end(); ) {
                 if (now - it->second.last_used > seconds(2)) { it = s_async.erase(it); continue; }   // a closed panel stops costing reads within 2 s
-                jobs.emplace_back(it->first, it->second.build);
+                // Only a value someone has taken since it was built is built again: a panel polling every
+                // 250 ms costs one build per poll, not the 2.5 a fixed 100 ms rebuild would.
+                if (it->second.read_since_build) {
+                    it->second.read_since_build = false;
+                    jobs.emplace_back(it->first, it->second.build);
+                }
                 ++it;
             }
         }
@@ -1402,7 +1426,9 @@ void panel_loop() {
             auto it = s_async.find(key);
             if (it != s_async.end()) { it->second.value = std::move(v); it->second.has_value = true; }
         }
-        Sleep(jobs.empty() ? 250 : 100);
+        bool any = false;
+        { std::lock_guard<std::mutex> lk(s_async_mu); any = !s_async.empty(); }
+        Sleep(!jobs.empty() ? 100 : any ? 50 : 250);   // with panels open, come back soon for the next read
     }
 }
 
@@ -1422,6 +1448,7 @@ std::string ReadAsync(const std::string& key, std::function<std::string()> build
         auto& e = s_async[key];
         e.build = build;
         e.last_used = std::chrono::steady_clock::now();
+        e.read_since_build = true;
         if (e.has_value) return e.value;
     }
     std::string v;
@@ -5080,14 +5107,46 @@ static void iface_groups_range(HANDLE h, std::uint64_t mainData,
 }
 
 // Companion-published var by (scope,id): 4 = varp/varbit, 5 = varc-int.
-static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
+// One mapped view of each client's var share, kept between calls: a panel-rect pass asks for dozens of
+// values at a time, and opening, mapping and unmapping 256 KB for each one cost far more than the read.
+// The name carries the session, so a rebind (new name) opens the new section and drops the old view.
+struct VarcView { std::wstring name; HANDLE h = nullptr; const rtx::varc::Share* sh = nullptr; };
+static std::mutex s_varcViewMu;
+static std::unordered_map<std::uint32_t, VarcView> s_varcViews;   // by pid, under s_varcViewMu
+
+static const rtx::varc::Share* varc_view_locked(std::uint32_t pid) {
     wchar_t name[rtx::ipc::kNameChars];
     rtx::varc::MakeSectionName(pid, name);
+    auto& v = s_varcViews[pid];
+    if (v.sh && v.name == name) return v.sh;
+    if (v.sh) UnmapViewOfFile(reinterpret_cast<LPCVOID>(v.sh));
+    if (v.h) CloseHandle(v.h);
+    v = VarcView{};
+    if (s_varcViews.size() > 16) {   // clients come and go; views of old ones are not kept for ever
+        for (auto& kv : s_varcViews) {
+            if (kv.first == pid) continue;
+            if (kv.second.sh) UnmapViewOfFile(reinterpret_cast<LPCVOID>(kv.second.sh));
+            if (kv.second.h) CloseHandle(kv.second.h);
+        }
+        VarcView keep = v; s_varcViews.clear(); s_varcViews[pid] = keep;
+    }
+    auto& w = s_varcViews[pid];
     HANDLE h = OpenFileMappingW(FILE_MAP_READ, FALSE, name);
-    if (!h) return false;
-    auto* sh = reinterpret_cast<const rtx::varc::Share*>(
-        MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(rtx::varc::Share)));
-    if (!sh) { CloseHandle(h); return false; }
+    if (!h) return nullptr;
+    auto* sh = reinterpret_cast<const rtx::varc::Share*>(MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(rtx::varc::Share)));
+    if (!sh) { CloseHandle(h); return nullptr; }
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(sh, &mbi, sizeof(mbi)) || mbi.RegionSize < sizeof(rtx::varc::Share)) {   // a short section is not ours
+        UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh)); CloseHandle(h); return nullptr;
+    }
+    w.name = name; w.h = h; w.sh = sh;
+    return sh;
+}
+
+static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
+    std::lock_guard<std::mutex> lk(s_varcViewMu);
+    const rtx::varc::Share* sh = varc_view_locked(pid);
+    if (!sh) return false;
     bool found = false;
     if (sh->magic == rtx::varc::kMagic && sh->version == rtx::varc::kVersion) {
         for (int attempt = 0; attempt < 8; ++attempt) {
@@ -5104,8 +5163,6 @@ static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
             if (s1 == s2 && !(s2 & 1u)) { out = val; found = hit; break; }
         }
     }
-    UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh));
-    CloseHandle(h);
     return found;
 }
 
