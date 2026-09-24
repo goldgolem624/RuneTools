@@ -28,6 +28,11 @@ struct LaunchResult {
     std::uint32_t pid;       // 0 when the process didn't start
 };
 
+// Closes the network of every page in this process (the launcher, the in-game UI and the plugin frames in
+// them) apart from the wiki pane's site. Call first thing in wWinMain, before the web engine loads. The
+// user's own proxy settings are remembered and are what the game is started with.
+void LockPageNetwork();
+
 LaunchResult LaunchClient(const std::wstring& rs_client_path);
 
 LaunchResult LaunchClientWithEnv(

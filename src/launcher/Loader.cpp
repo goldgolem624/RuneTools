@@ -193,8 +193,11 @@ SignerCheck VerifyGameSigner(const std::wstring& path) {
         return out;
     }
     out.signed_ = true;
+    // The organisation on a code-signing certificate is the validated legal name: only the company registered
+    // as Jagex Limited holds one that says so. A name that merely contains "jagex" proves nothing.
     std::string low = out.subject; for (auto& c : low) c = (char)tolower((unsigned char)c);
-    if (low.find("jagex") == std::string::npos) {
+    while (!low.empty() && low.back() == ' ') low.pop_back();
+    if (low != "jagex limited") {
         out.reason = "This file is signed by \"" + out.subject + "\", not by Jagex. The real RuneScape.exe is signed by Jagex Limited.";
         return out;
     }
@@ -264,8 +267,8 @@ std::wstring AutoRsClientPath() {
         L"Program Files\\Jagex\\RuneScape Launcher\\RuneScape.exe",
         L"ProgramData\\Jagex\\launcher\\RuneScape.exe",   // Jagex Launcher game cache
         L"Program Files (x86)\\Steam\\steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe",
-        L"Steam\\steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe",
-        L"SteamLibrary\\steamapps\\common\\RuneScape\\bin\\win64\\RuneScape.exe",
+        // No drive-root Steam or SteamLibrary guesses: any local user can create those folders and plant a
+        // signed copy beside DLLs of their own. Real Steam libraries come from Steam's own list above.
     };
     for (const auto& drive : fixed_drive_roots())
         for (const wchar_t* rel : kRel)
@@ -289,7 +292,42 @@ std::wstring AutoRsClientPath() {
 
 namespace {
 
-// Parent env minus JX_ entries, then overrides appended (double-NUL terminated wide block).
+// The pages' web engine fetches through a library that honours these variables, and its own request hook
+// never fires in this edition, so they are the gate: everything goes to a closed local port except the wiki
+// pane's site. The launcher's own requests (updates, news, linking) go through WinHTTP, which ignores them.
+const wchar_t* const kProxyVars[] = { L"ALL_PROXY", L"all_proxy", L"HTTPS_PROXY", L"https_proxy",
+                                      L"HTTP_PROXY", L"http_proxy", L"NO_PROXY", L"no_proxy" };
+constexpr wchar_t kClosedProxy[] = L"http://127.0.0.1:9";
+constexpr wchar_t kOpenHosts[]   = L"runescape.wiki";
+std::vector<std::wstring> g_userProxyEnv;   // "NAME=value" the user had before the lock, for the game
+
+bool is_proxy_var(const wchar_t* entry, std::size_t len) {
+    for (const wchar_t* k : kProxyVars) {
+        const std::size_t kl = wcslen(k);
+        if (len > kl && entry[kl] == L'=' && wcsncmp(entry, k, kl) == 0) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+void LockPageNetwork() {
+    for (const wchar_t* k : kProxyVars) {
+        wchar_t v[2048];
+        const DWORD n = GetEnvironmentVariableW(k, v, 2048);
+        // a launcher started by one of ours (the updater's relaunch) inherits the lock: that is not the user's
+        if (n && n < 2048 && wcscmp(v, kClosedProxy) != 0 && wcscmp(v, kOpenHosts) != 0)
+            g_userProxyEnv.push_back(std::wstring(k) + L"=" + v);
+        const bool hosts = k[0] == L'N' || k[0] == L'n';
+        SetEnvironmentVariableW(k, hosts ? kOpenHosts : kClosedProxy);
+        _wputenv_s(k, hosts ? kOpenHosts : kClosedProxy);   // the CRT keeps its own copy
+    }
+}
+
+namespace {
+
+// Parent env minus JX_ entries and the page-network lock (the user's own proxy settings go back in),
+// then overrides appended (double-NUL terminated wide block).
 std::wstring build_env_block(
     const std::unordered_map<std::string, std::string>& env_overrides) {
 
@@ -310,11 +348,12 @@ std::wstring build_env_block(
         while (*p) {
             size_t len = wcslen(p);
             bool is_jx = (len >= 3 && p[0] == L'J' && p[1] == L'X' && p[2] == L'_');
-            if (!is_jx) { base.append(p, len); base.push_back(L'\0'); }
+            if (!is_jx && !is_proxy_var(p, len)) { base.append(p, len); base.push_back(L'\0'); }
             p += len + 1;
         }
         FreeEnvironmentStringsW(cur);
     }
+    for (const auto& e : g_userProxyEnv) { base.append(e); base.push_back(L'\0'); }
     for (const auto& [k, v] : env_overrides) {
         if (k.empty()) continue;
         if (!(k.size() >= 3 && k[0] == 'J' && k[1] == 'X' && k[2] == '_')) continue;
@@ -339,20 +378,26 @@ LaunchResult launch_impl(
         rtx::log::Launcher("launch failed: " + r.detail);
         return r;
     }
+    // Held from the signature check until the process exists, sharing reads only: the file cannot be rewritten,
+    // replaced or renamed between being checked and being run.
+    struct HeldFile { HANDLE h; ~HeldFile() { if (h != INVALID_HANDLE_VALUE) CloseHandle(h); } };
+    HeldFile held{ CreateFileW(rs.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr) };
+    if (held.h == INVALID_HANDLE_VALUE) {
+        r.detail = "RuneScape.exe is in use (it may be updating); try again in a moment";
+        rtx::log::Launcher("launch refused: could not hold " + w2u(rs) + " (error " + std::to_string(GetLastError()) + ")");
+        return r;
+    }
     if (SignerCheck sc = VerifyGameSigner(rs); !sc.ok) {
         r.detail = "Launch refused: " + sc.reason;
         rtx::log::Launcher("launch refused: " + w2u(rs) + " signer=\"" + sc.subject + "\": " + sc.reason);
         return r;
     }
 
-    std::wstring env_block;
-    LPVOID env_ptr = nullptr;
-    DWORD  flags   = 0;
-    if (env_overrides) {
-        env_block = build_env_block(*env_overrides);
-        env_ptr   = (LPVOID)env_block.data();
-        flags    |= CREATE_UNICODE_ENVIRONMENT;
-    }
+    // Always an explicit block: the launcher's own environment carries the page-network lock.
+    const std::unordered_map<std::string, std::string> none;
+    std::wstring env_block = build_env_block(env_overrides ? *env_overrides : none);
+    LPVOID env_ptr = (LPVOID)env_block.data();
+    DWORD  flags   = CREATE_UNICODE_ENVIRONMENT;
 
     STARTUPINFOW         si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION  pi{};

@@ -6,6 +6,7 @@
 #include "Http.h"
 #include "IconCache.h"
 #include "LuaHost.h"
+#include "Loader.h"
 #include "Loot.h"
 #include "Music.h"
 #include "MonitorFix.h"
@@ -380,6 +381,7 @@ void DeclareDpiAwareness() {
 }
 
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+    rtx::launcher::loader::LockPageNetwork();   // before anything loads the web engine
     {   // Headless switches that must not touch the running launcher's logs (no rtx::log::Init).
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
