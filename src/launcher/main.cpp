@@ -93,6 +93,13 @@ bool preload_ultralight_dlls(const std::filesystem::path& self) {
 
 static WNDPROC g_launcherPrevProc = nullptr;
 
+// The launcher page animates its themed scene and CSS decoration on the CPU renderer. Behind the game or
+// minimised nobody sees it, so the page is told and holds still (window.rtxWindowMinimised). The call goes
+// through a posted message so the page is never re-entered from inside the engine's own message handling.
+static ultralight::View* g_launcherView = nullptr;
+constexpr UINT kMsgPageIdle = WM_APP + 0x51;
+static void QueuePageIdle(HWND h, bool idle) { PostMessageW(h, kMsgPageIdle, idle ? 1 : 0, 0); }
+
 // Started again by the installer after an update or a repair. The installer runs unseen, so
 // Windows hands the focus back to whatever was in front before it, and the launcher that has
 // just come back ends up behind that window: to the user it never reopened. It steps in front
@@ -120,6 +127,19 @@ static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         }
         break;
+    case kMsgPageIdle: {
+        static int s_last = -1;
+        const int idle = w ? 1 : 0;
+        if (g_launcherView && idle != s_last) {
+            s_last = idle;
+            g_launcherView->EvaluateScript(idle ? "window.rtxWindowMinimised && window.rtxWindowMinimised(true)"
+                                                : "window.rtxWindowMinimised && window.rtxWindowMinimised(false)");
+        }
+        return 0;
+    }
+    case WM_ACTIVATE:
+        QueuePageIdle(h, LOWORD(w) == WA_INACTIVE || HIWORD(w) != 0);   // HIWORD: activated while minimised
+        break;
     case WM_NCACTIVATE:
         return DefWindowProcW(h, m, w, (LPARAM)-1);
     case WM_NCCALCSIZE:
@@ -137,6 +157,7 @@ static LRESULT CALLBACK LauncherFrameProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_SIZE:
         // minimised: no music into an empty desktop. It comes back with the window.
         rtx::launcher::music::Minimised(w == SIZE_MINIMIZED);
+        QueuePageIdle(h, w == SIZE_MINIMIZED || GetActiveWindow() != h);
         break;
     case WM_GETMINMAXINFO: {
         LRESULT r0 = CallWindowProcW(g_launcherPrevProc, h, m, w, l);
@@ -299,6 +320,7 @@ public:
                                    window_->height(), 0, 0);
         if (!overlay_) { fatal("Overlay::Create returned null"); return; }
         overlay_->view()->set_load_listener(this);
+        g_launcherView = overlay_->view().get();
 
         auto html_path = self / "launcher.html";
         auto html = read_file_utf8(html_path);
@@ -318,7 +340,8 @@ public:
         boot_log("Run returned");
     }
 
-    void OnClose(Window*) override { app_->Quit(); }
+    ~LauncherApp() { g_launcherView = nullptr; }
+    void OnClose(Window*) override { g_launcherView = nullptr; app_->Quit(); }
     void OnResize(Window*, uint32_t w, uint32_t h) override {
         if (overlay_) overlay_->Resize(w, h);
     }

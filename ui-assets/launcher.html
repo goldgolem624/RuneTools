@@ -6,6 +6,8 @@
 <style>
   /* RuneToolsX launcher window, "Obsidian Aurora". A borderless glass card over an aurora
      ground. Every selector keeps its name: the script builds rows with these classes. */
+  /* the window is minimised or behind another (sceneSetHidden): hold every animation still */
+  html.rtx-idle *, html.rtx-idle *::before, html.rtx-idle *::after { animation-play-state: paused !important; }
   :root {
     --bg:           #07090f;
     --bg-elev:      #0e1119;
@@ -4106,9 +4108,20 @@
     scene.raf = requestAnimationFrame(sceneFrame);
   }
   window.addEventListener('resize', () => { if (scene.on) sceneResize(); });
-  document.addEventListener('visibilitychange', () => { scene.hidden = document.hidden; });
-  // the launcher tells us when it is minimised (same hook the music uses)
-  window.rtxWindowMinimised = function (on) { scene.hidden = !!on; };
+  // Nobody is looking (minimised, or another window such as the game is in front): the scene stops asking
+  // for frames and every CSS animation holds still, so the page is not repainted for no one. The data
+  // refresh keeps running; only the decoration waits.
+  function sceneSetHidden(on) {
+    on = !!on;
+    if (scene.hidden === on) return;
+    scene.hidden = on;
+    document.documentElement.classList.toggle('rtx-idle', on);
+    if (on) { if (scene.raf) cancelAnimationFrame(scene.raf); scene.raf = 0; }
+    else if (scene.on && !scene.raf) { scene.last = performance.now(); scene.raf = requestAnimationFrame(sceneFrame); }
+  }
+  document.addEventListener('visibilitychange', () => sceneSetHidden(document.hidden));
+  // the launcher tells us when its window is minimised or not the active one
+  window.rtxWindowMinimised = sceneSetHidden;
   function themeInit() {
     if (!bridge() || !bridge().uiTheme) { const r = $('theme-wrap'); if (r) r.closest('.set-row').style.display = 'none'; return; }
     themeLoad(); themeApply(); xmLights();
