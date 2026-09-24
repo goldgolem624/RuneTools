@@ -91,6 +91,7 @@ std::string resample_cover(const std::string& bytes, UINT width) {
     if (FAILED(dec->GetFrame(0, &frame))) return {};
     UINT w = 0, h = 0;
     if (FAILED(frame->GetSize(&w, &h)) || !w || !h) return {};
+    if ((unsigned long long)w * h > 40'000'000ull) return {};   // a cover is a few megapixels; refuse a decompression bomb
     ComPtr<IWICBitmapSource> src = frame;
     if (w > width) {
         UINT nh = (UINT)((unsigned long long)h * width / w);

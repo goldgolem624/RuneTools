@@ -104,6 +104,14 @@ void do_request(Response& out,
                                WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                WINHTTP_FLAG_SECURE);
     if (!req.h) { out.detail = format_winhttp_error(GetLastError()); return; }
+    // A request that carries credentials never follows a redirect: the header would go to whatever host the
+    // redirect names. A 3xx then simply comes back as the answer.
+    for (const auto& h : headers) {
+        if (_stricmp(h.name.c_str(), "Authorization") != 0) continue;
+        DWORD never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        WinHttpSetOption(req.h, WINHTTP_OPTION_REDIRECT_POLICY, &never, sizeof(never));
+        break;
+    }
     if (decompress) {
         // WinHTTP adds Accept-Encoding: gzip, deflate and inflates the body itself (Windows 8.1+; a no-op
         // where unsupported). The price relay's 536 KB latest becomes 121 KB on the wire.
@@ -253,13 +261,19 @@ Response Fetch(const std::wstring& host, const std::wstring& path,
 
 Response Download(const std::wstring& host, const std::wstring& path,
                   const std::vector<Header>& headers, const std::wstring& dest_path,
-                  const std::function<void(long long, long long)>& on_progress) {
+                  const std::function<void(long long, long long)>& on_progress, long long max_bytes) {
     Response out;
     HANDLE f = CreateFileW(dest_path.c_str(), GENERIC_WRITE, 0, nullptr,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) { out.detail = "cannot open destination file"; return out; }
     do_request(out, host, path, L"GET", headers, std::string(),
-        [f](const char* d, DWORD n) { DWORD w = 0; return WriteFile(f, d, n, &w, nullptr) && w == n; },
+        [f, max_bytes, &out, written = 0ll](const char* d, DWORD n) mutable {
+            if (max_bytes > 0 && written + (long long)n > max_bytes) { out.detail = "download larger than expected"; return false; }
+            DWORD w = 0;
+            if (!WriteFile(f, d, n, &w, nullptr) || w != n) return false;
+            written += n;
+            return true;
+        },
         on_progress);
     CloseHandle(f);
     if (!out.ok || out.status != 200) DeleteFileW(dest_path.c_str());   // no partial files

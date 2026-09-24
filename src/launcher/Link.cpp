@@ -89,11 +89,17 @@ std::string store_json(const Store& s) {
 bool save_store(const Store& s) {
     auto sealed = crypto::ProtectForCurrentUser(store_json(s));
     if (sealed.empty()) return false;
-    std::ofstream o(link_path(), std::ios::binary | std::ios::trunc);
-    if (!o) return false;
-    o.write(reinterpret_cast<const char*>(sealed.data()), (std::streamsize)sealed.size());
-    o.flush();
-    return (bool)o;
+    // Written beside and swapped in, so a crash mid-write never leaves a half token in place of a good one.
+    const auto dest = link_path();
+    auto tmp = dest; tmp += L".tmp";
+    {
+        std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
+        if (!o) return false;
+        o.write(reinterpret_cast<const char*>(sealed.data()), (std::streamsize)sealed.size());
+        o.flush();
+        if (!o) return false;
+    }
+    return MoveFileExW(tmp.c_str(), dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
 void erase_store() {

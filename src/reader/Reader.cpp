@@ -3016,13 +3016,17 @@ std::string EventsJson(std::uint32_t pid, std::uint64_t since) {
 bool EventsMaskSet(std::uint32_t pid, const std::uint32_t mask[8]) {
     wchar_t name[rtx::ipc::kNameChars];
     rtx::events::MakeSectionName(pid, name);
+    // The companion owns this section. Creating it here was never useful (it went away with the handle a
+    // moment later) and let the name be taken first; with no companion there is nothing to mask.
     HANDLE h = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, name);
-    if (!h) h = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
-                                   sizeof(rtx::events::Share), name);
     if (!h) return false;
     auto* sh = reinterpret_cast<rtx::events::Share*>(
         MapViewOfFile(h, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(rtx::events::Share)));
     if (!sh) { CloseHandle(h); return false; }
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(sh, &mbi, sizeof(mbi)) || mbi.RegionSize < sizeof(rtx::events::Share)) {   // a short section is not ours
+        UnmapViewOfFile(reinterpret_cast<LPCVOID>(sh)); CloseHandle(h); return false;
+    }
     for (int i = 0; i < 8; ++i) sh->mask[i] = mask[i];
     sh->mask[0] &= ~(1u << 0x15);                             // never message_game
     MemoryBarrier();

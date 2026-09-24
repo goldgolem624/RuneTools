@@ -1691,8 +1691,9 @@ void UploadUiLayer(const void* bgra, int w, int h, int stride, int dx, int dy, i
         if (!CreateTexture(t, VK_FORMAT_B8G8R8A8_UNORM, (std::uint32_t)w, (std::uint32_t)h, false)) return;
         dx = 0; dy = 0; dw = w; dh = h;
     }
-    if (dx < 0) { dw += dx; dx = 0; }
-    if (dy < 0) { dh += dy; dy = 0; }
+    // the rectangle comes from the launcher's share: anything outside the layer uploads the whole layer, and
+    // with every part held to the layer's own size the sums below cannot overflow
+    if (dx < 0 || dy < 0 || dx >= w || dy >= h || dw <= 0 || dh <= 0 || dw > w || dh > h) { dx = 0; dy = 0; dw = w; dh = h; }
     if (dx + dw > w) dw = w - dx;
     if (dy + dh > h) dh = h - dy;
     if (dw <= 0 || dh <= 0) return;

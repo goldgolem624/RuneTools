@@ -1055,6 +1055,9 @@ void PatchAssignSite() {
     std::memcpy(t + 2, &fn, 8);
     std::memcpy(g_siteTramp, t, sizeof(t));
     DWORD old = 0;
+    // written once: from here on it only runs, so it is not left writable
+    VirtualProtect(g_siteTramp, 64, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), g_siteTramp, sizeof(t));
     if (!VirtualProtect((void*)g_siteCall, 5, PAGE_EXECUTE_READWRITE, &old)) { Log("left-click site: protect failed"); return; }
     std::memcpy(&g_siteRel, (void*)(g_siteCall + 1), 4);
     const std::int32_t r32 = (std::int32_t)rel;

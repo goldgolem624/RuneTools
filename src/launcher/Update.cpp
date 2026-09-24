@@ -135,8 +135,8 @@ static void run_update() {
     if (ver.empty()) { log("abort: manifest has no version"); set_upd("error", 0, "No update available"); return; }
 
     // Signed manifest: rtx-client-update-v1\n<version>\n<hash>\n<size> under the pinned key.
+    std::string size;   // signed: also the most the download may be
     {
-        std::string size;
         {
             size_t k = man.body.find("\"size\"");
             size_t c = k == std::string::npos ? k : man.body.find(':', k);
@@ -188,10 +188,12 @@ static void run_update() {
     std::wstring dest = std::wstring(tmp) + L"RuneToolsXSetup" + rnd + L".exe";
 
     set_upd("downloading", 0, repair ? "Downloading the installer" : "Downloading v" + ver);
+    const long long signedSize = (!size.empty() && size.size() < 12) ? std::stoll(size) : 0;
     auto dl = http::Download(kUpdateHost, kDownloadPath, hdrs, dest,
         [](long long got, long long total) {
             set_upd("downloading", total > 0 ? (int)((got * 100) / total) : 0, "");
-        });
+        },
+        signedSize > 0 ? signedSize : 256ll * 1024 * 1024);
     log("download ok=" + std::to_string(dl.ok) + " status=" + std::to_string(dl.status) + " detail=" + dl.detail);
     if (!dl.ok || dl.status != 200) { log("abort: download failed"); set_upd("error", 0, "Download failed"); return; }
 

@@ -39,7 +39,8 @@ Response Download(const std::wstring& host,
                   const std::wstring& path,
                   const std::vector<Header>& headers,
                   const std::wstring& dest_path,
-                  const std::function<void(long long, long long)>& on_progress);
+                  const std::function<void(long long, long long)>& on_progress,
+                  long long max_bytes = 256ll * 1024 * 1024);   // larger is refused and deleted
 
 Response Stream(const std::wstring& host,
                 const std::wstring& path,

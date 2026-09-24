@@ -99,7 +99,12 @@ void plog(Plugin* p, const char* level, const std::string& msg, const std::strin
     while (p->log.size() > kLogKeep) p->log.pop_front();
     p->fresh.push_back(line);
     if (p->fresh.size() > kLogKeep) p->fresh.erase(p->fresh.begin());
-    if (std::strcmp(level, "error") == 0) rtx::log::Launcher("lua plugin " + p->id + ": " + msg);
+    if (std::strcmp(level, "error") == 0) {
+        // the capped text, on one line: one huge message would otherwise use up the log's size budget
+        std::string one = text.size() > 400 ? text.substr(0, 400) + "..." : text;
+        for (auto& c : one) if (c == '\r' || c == '\n') c = ' ';
+        rtx::log::Launcher("lua plugin " + p->id + ": " + one);
+    }
 }
 
 // Reads a file under the plugin root, refusing anything that escapes it.
@@ -151,7 +156,8 @@ int h_log(lua_State* L) {
     const char* tag = luaL_optstring(L, 3, "");
     const char* lv = (std::strcmp(level, "warn") == 0) ? "warn" : (std::strcmp(level, "error") == 0) ? "error"
                    : (std::strcmp(level, "debug") == 0) ? "debug" : "info";
-    plog(p, lv, std::string(s, n), tag);
+    // "host" marks the runtime's own notices (unthrottled, shown as the launcher's); a plugin may not use it
+    plog(p, lv, std::string(s, n), _stricmp(tag, "host") == 0 ? "plugin" : tag);
     return 0;
 }
 

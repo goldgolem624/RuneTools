@@ -290,7 +290,8 @@
     };
     for (const n of list) { const el = build(n, 1); if (el) m.body.appendChild(el); }
     if (focusId) {
-      const again = m.body.querySelector('[data-lua-id="' + focusId.replace(/"/g, '') + '"]');
+      let again = null;   // a plugin-chosen id: escaped, or a bad one would throw here and stop every plugin's push
+      try { again = m.body.querySelector('[data-lua-id="' + (window.CSS && CSS.escape ? CSS.escape(focusId) : focusId.replace(/[^A-Za-z0-9_:.-]/g, '')) + '"]'); } catch (e) {}
       if (again) { try { again.focus(); if (focusSel && again.setSelectionRange) again.setSelectionRange(focusSel[0], focusSel[1]); } catch (e) {} }
     }
   }

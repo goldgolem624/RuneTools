@@ -62,6 +62,11 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     return (typeof t === 'string' && t.length <= 65536) ? t + '\n' : null;
   };
   const pLogFail = e => JSON.stringify({ ok: false, error: e });
+  const pluginSays = (id, text) => {
+    const tab = (typeof pluginTabs !== 'undefined') ? pluginTabs.find(p => p.id === id) : null;
+    const who = String((tab && tab.manifest && tab.manifest.name) || id || 'Plugin').slice(0, 48);
+    return who + ': ' + pClampStr(text, 200);
+  };
   const pClampList = v => (Array.isArray(v) ? v : []).slice(0, 50).map(x => pClampStr(x, 40).replace(/[^A-Za-z0-9 _'\-]/g, '')).filter(Boolean).join(',');
 
   const PLUGIN_API = {
@@ -216,9 +221,10 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                               const st = mystStageVal(name, vb, vp);
                               return { site: g.site, name, points: pts, solved: mystDone(varp, bit, vp),
                                        stage: st ? { value: st[0], max: st[1] } : null }; })); } },
-    'overlay.toast':    { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: 5000 }) },
+    // A plugin's notice always says whose it is, so none can pass for the launcher's own.
+    'overlay.toast':    { scope: 'overlay',    json: false,   run: (a, pid, id) => uiNotify(pluginSays(id, a[0]), { ttl: 5000 }) },
     'overlay.hudAbilities': { scope: 'overlay', json: false, run: (a, pid, id) => { pluginHudSet(id, a[0]); return true; } },
-    'overlay.notify':   { scope: 'overlay',    json: false,   run: (a) => uiNotify(pClampStr(a[0], 200), { ttl: pClampNum(a[1], 0, 60000) }) },
+    'overlay.notify':   { scope: 'overlay',    json: false,   run: (a, pid, id) => uiNotify(pluginSays(id, a[0]), { ttl: pClampNum(a[1], 0, 60000) }) },
     'overlay.centerText':{ scope: 'overlay',   json: false,   run: (a, pid) => (bridge().centerText ? bridge().centerText(pid, pClampStr(a[0], 80), pClampNum(a[1], 0, 2), pClampNum(a[2], -1, 0xFFFFFF)) : null) },
     'notify.windows':   { scope: 'notify.os',  json: false,   run: (a) => (bridge().notifyWindows ? bridge().notifyWindows(pClampStr(a[0], 60), pClampStr(a[1], 200)) : null) },
     // The plugin never sees the webhook; the host prefixes the plugin id and strips pings.

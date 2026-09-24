@@ -255,7 +255,8 @@ bool read_header(const std::string& blob, Header& h) {
     size_t pos = 0;
     if (!get_u32(blob, pos, h.magic) || h.magic != kFileMagic)         return false;
     if (!get_u32(blob, pos, h.version) || h.version != kFileVersion)   return false;
-    if (!get_u32(blob, pos, h.iterations) || h.iterations < 50'000)    return false;
+    // a tampered count must not turn unlock into an hour of hashing (the default is 600k)
+    if (!get_u32(blob, pos, h.iterations) || h.iterations < 50'000 || h.iterations > 10'000'000) return false;
     std::memcpy(h.salt,  blob.data() + pos, crypto::kSaltBytes);  pos += crypto::kSaltBytes;
     std::memcpy(h.nonce, blob.data() + pos, crypto::kNonceBytes); pos += crypto::kNonceBytes;
     return true;
