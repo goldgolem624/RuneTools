@@ -14,6 +14,13 @@ struct ItemInfo {
     int         ge_limit  = -1;  // 4-hour buy limit; -1 = no limit / unknown
     long long   value     = -1;  // store value in gp
     bool        augmented = false; // Invention-augmented (holds item XP + gizmos)
+    std::string desc;            // examine text
+    int         category  = -1;
+    int         wearpos   = -1;  // worn slot, -1 = not wearable
+    int         wearpos2  = -1;
+    bool        members   = false;
+    int         unnoted   = -1;  // the unnoted form of a noted item, -1 otherwise
+    std::vector<int> varobjs;    // instance var keys the item carries (charges, xp, gizmos)
 };
 
 ItemInfo GetItem(int item_id);
@@ -162,7 +169,7 @@ int SkillGuideLevelByPrefix(int skill, const std::string& prefix, const std::vec
 std::vector<SkillReq> SkillGuideForName(const std::string& name); // entries named exactly this
 bool        SkillGuideReady();
 const char* SkillGuideSkillName(int skill);
-int         SkillGuideSkillSprite(int skill);                     // small inline icon, 0 = none
+int         SkillGuideSkillSprite(int skill);                     // the game's 25 px inline icon for a skill id, 0 until the cache is open
 // Single struct params (decoded once per struct and memoised). false when the struct or key is absent.
 bool StructIntParam(int structId, int key, int& out);
 bool StructStrParam(int structId, int key, std::string& out);

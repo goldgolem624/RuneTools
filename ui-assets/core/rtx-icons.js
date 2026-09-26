@@ -139,6 +139,48 @@
     return lines.join('\n');
   }
 
+  // The game's own tooltip lines for a hovered item cell, under an "In game:" heading at the end of
+  // the cell's tip. Works for every panel's item cells without their help: the item and slot are
+  // read from the tip's own "ID n" / "Slot n" lines, the container from data-ei (container:item:slot)
+  // when the panel gives one, which is what makes the instance lines (charges, augment level) possible.
+  // A panel that rewrites its tip asynchronously drops the block; the next hover puts it back.
+  const GAME_MARK = '\nIn game:\n';
+  const GAME_LINES = new Map();   // "item:container:slot" -> plain text ('' = none)
+  function gameLinesFor(cell) {
+    if (typeof gameText !== 'object' || !window.GAME_TEXT) return;
+    const tip = cell.dataset.tip || '';
+    let item = -1, slot = -1, container = -1;
+    if (cell.dataset.ei) { const p = cell.dataset.ei.split(':'); container = +p[0] | 0; item = +p[1] | 0; slot = p.length > 2 && p[2] !== '' ? (+p[2] | 0) : -1; }
+    if (item < 0) { const m = /\nID (\d+)/.exec(tip); if (m) item = +m[1]; }
+    if (slot < 0) { const m = /\nSlot (\d+)/.exec(tip); if (m) slot = +m[1]; }
+    if (item <= 0) return;
+    if (container < 0) slot = -1;
+    const key = item + ':' + container + ':' + slot;
+    const apply = txt => {
+      if (!txt) return;
+      const cur = cell.dataset.tip || '';
+      if (cur.includes(GAME_MARK)) return;
+      cell.dataset.tip = cur + GAME_MARK + txt;
+      if (cell.matches(':hover')) showTipFor(cell);
+    };
+    if (GAME_LINES.has(key)) { apply(GAME_LINES.get(key)); return; }
+    GAME_LINES.set(key, '');   // in flight: no second request while it runs
+    // the item script's declared order: item, tooltip style, layout, four component slots, then the lead text
+    gameText.text('item', [item, 27826, 27825, -1, -1, -1, -1, ""], { vc: { 5121: container, 5122: slot } })
+      .then(t => {
+        if (t === null) { GAME_LINES.delete(key); return; }   // never settled: asked again on the next hover
+        const p = gameText.plain(t || '').trim();
+        GAME_LINES.set(key, p); apply(p);
+        console.log('game text item ' + key + ': ' + (p ? p.split('\n').length + ' line(s)' : 'none'));
+      })
+      .catch(e => { GAME_LINES.delete(key); console.warn('game text item ' + key + ' failed: ' + (e && e.message)); });
+    if (GAME_LINES.size > 2000) GAME_LINES.clear();
+  }
+  document.addEventListener('mouseover', e => {
+    const cell = e.target.closest ? e.target.closest('[data-tip]') : null;
+    if (cell) gameLinesFor(cell);
+  });
+
   function attachInfo(cell, itemId, slotIndex, stateLabel) {
     const cached = INFO.get(itemId);
     cell.dataset.tip = tipText(cached, itemId, slotIndex, stateLabel);

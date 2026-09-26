@@ -1,4 +1,6 @@
-// RuneToolsX panel: Buffs (active buff/debuff timers from the buff-bar widgets).
+// RuneToolsX panel: Buffs (active buff/debuff timers from the buff-bar widgets), each with the
+// detail line the game itself shows for it, computed by the game's own tooltip script over live
+// vars and cache lookups (core/rtx-gametext.js + core/rtx-gametext-rt.js).
 (function () {
 
   buffsData = null; let buffsSig = ''; let buffsFetching = false; let _buffsAt = 0;
@@ -12,11 +14,15 @@
     catch (e) { /* keep previous */ }
     buffsFetching = false;
     paneRun('buffs', renderBuffs);
+    if (typeof gameText === 'object') gameText.refresh();   // vars behind the details move while a buff is up
   }
   function attachBuffIcon(el, b) {
     if (b.item) { const url = resolveIcon(b.item); if (url) { setIconBg(el, url); return; } }
-    if (!b.sprite) return;
-    const sid = b.sprite, cached = SPRITES.get(sid);
+    if (b.sprite) setSprite(el, b.sprite);
+  }
+  // Sprite by id onto an element's background, shared by the buff icon and inline text sprites.
+  function setSprite(el, sid) {
+    const cached = SPRITES.get(sid);
     if (cached) { setIconBg(el, cached); return; }
     el.dataset.spr = sid;
     if (!bridge() || !bridge().sprite || SPRITE_PENDING.has(sid)) return;
@@ -27,11 +33,39 @@
         SPRITE_PENDING.delete(sid);
         if (url) {
           SPRITES.set(sid, url);
-          document.querySelectorAll('.bf-icon[data-spr="' + sid + '"]').forEach(n => setIconBg(n, url));
+          document.querySelectorAll('.bf-icon[data-spr="' + sid + '"], .gt-spr[data-spr="' + sid + '"]').forEach(n => setIconBg(n, url));
         }
       } catch (e) { SPRITE_PENDING.delete(sid); }
     })();
   }
+
+  // The game's detail text for a buff: '' when the game has none, null while data is on its way.
+  function detailFor(b) {
+    if (typeof gameText !== 'object' || !b.struct) return '';
+    const r = gameText.evaluate('buff', [b.struct | 0], { count: (typeof b.count === 'number') ? b.count : 0 });
+    return r.pending ? null : r.text;
+  }
+
+  // Evaluate every row's detail against what is held now; rows still waiting keep their last text.
+  function paintDetails() {
+    const list = document.getElementById('bfList');
+    if (!list || !buffsData) return;
+    const all = (buffsData.buffs || []).concat(buffsData.debuffs || []);
+    const rows = list.querySelectorAll('.bf-row');
+    for (let i = 0; i < rows.length && i < all.length; i++) {
+      const b = all[i], row = rows[i], det = row.querySelector('.bf-detail');
+      if (!det) continue;
+      const text = detailFor(b);
+      if (text === null) continue;
+      if (row.dataset.detail === text) continue;
+      row.dataset.detail = text;
+      gameText.render(det, text, setSprite);
+      row.dataset.tip = row.dataset.tipBase + (text ? '\n\n' + gameText.plain(text) : '');
+    }
+    gameText.fill();
+  }
+  if (typeof gameText === 'object') gameText.onChange(() => { if (document.getElementById('bfList')) paintDetails(); });
+
   function renderBuffs() {
     const c = $('content');
     let w = document.getElementById('bfWrap');
@@ -74,19 +108,24 @@
         for (const b of arr) {
           const row = document.createElement('div'); row.className = 'bf-row';
           const ico = document.createElement('div'); ico.className = 'bf-icon'; attachBuffIcon(ico, b);
+          const txt = document.createElement('div'); txt.className = 'bf-text';
           const nm = document.createElement('div'); nm.className = 'bf-name';
           nm.textContent = b.name || (b.item ? ('Item ' + b.item) : ('Sprite ' + b.sprite));
+          const det = document.createElement('div'); det.className = 'bf-detail';
+          txt.appendChild(nm); txt.appendChild(det);
           const tm = document.createElement('div');
           tm.className = 'bf-time' + (b.kind && b.kind !== 'timer' ? ' bf-static' : '');
           tm.textContent = fmtTime(b);
-          row.dataset.tip = (b.name || '(unnamed)') + '\n' +
-                            (b.item ? ('item ' + b.item) : ('sprite ' + b.sprite)) +
-                            (b.struct ? ('\nstruct ' + b.struct + (b.exact ? ' (exact timer)' : '')) : '');
-          row.appendChild(ico); row.appendChild(nm); row.appendChild(tm); list.appendChild(row);
+          row.dataset.tipBase = (b.name || '(unnamed)') + '\n' +
+                                (b.item ? ('item ' + b.item) : ('sprite ' + b.sprite)) +
+                                (b.struct ? ('\nstruct ' + b.struct + (b.exact ? ' (exact timer)' : '')) : '');
+          row.dataset.tip = row.dataset.tipBase;
+          row.appendChild(ico); row.appendChild(txt); row.appendChild(tm); list.appendChild(row);
         }
       };
       section('Buffs', buffs);
       section('Debuffs', debuffs);
+      paintDetails();
     }
     if (buffs !== null) {
       const order = buffs.map(fmtTime)
@@ -94,6 +133,15 @@
       const timeEls = list.querySelectorAll('.bf-time');
       for (let i = 0; i < timeEls.length && i < order.length; i++)
         if (timeEls[i].textContent !== order[i]) timeEls[i].textContent = order[i];
+      // a stack count feeds some details
+      const rows = list.querySelectorAll('.bf-row');
+      const all = buffs.concat(debuffs);
+      let countMoved = false;
+      for (let i = 0; i < rows.length && i < all.length; i++) {
+        const cnt = String((typeof all[i].count === 'number') ? all[i].count : '');
+        if (rows[i].dataset.count !== cnt) { rows[i].dataset.count = cnt; countMoved = true; }
+      }
+      if (countMoved) paintDetails();
     }
   }
 

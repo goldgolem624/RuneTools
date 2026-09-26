@@ -231,7 +231,7 @@
               + (pct ? '\nCharge: ' + pct : '');
         } catch (e4) {}
       }
-      const base = cell.dataset.tip.split(/\n[A-Za-z ]+ filled: /)[0].split('\nItem charge:')[0].split('\nCharges remaining:')[0].split('\nEoF:')[0].split('\nInstance vars')[0].split('\nExtra_ints')[0];
+      const base = cell.dataset.tip.split('\nIn game:')[0].split(/\n[A-Za-z ]+ filled: /)[0].split('\nItem charge:')[0].split('\nCharges remaining:')[0].split('\nEoF:')[0].split('\nInstance vars')[0].split('\nExtra_ints')[0];
       cell.dataset.tip = base + charge + eof + '\n' + line;
       if (typeof showTipFor === 'function' && cell.matches(':hover')) showTipFor(cell);
     } catch (e2) {} finally { setTimeout(() => { cell._eiBusy = 0; }, 800); }

@@ -19,6 +19,10 @@ struct ItemDef {
     bool        noted       = false;
     int         ge_limit    = -1;
     int         category    = -1;
+    std::string desc;                // opcode 3: the examine text the client shows for the item
+    int         wearpos     = -1;    // opcode 13: worn slot; -1 = not wearable
+    int         wearpos2    = -1;    // opcode 14: second slot the item also occupies
+    bool        members     = false; // opcode 16
     long long   value       = -1;   // opcode 181 (gp); drives high/low alch
     bool        augmented   = false; // "Disassemble" worn option or a destroy message naming "gizmos"
     // Opcodes 203-208, each an item id in the same 24-bit form the noted link uses. These are the

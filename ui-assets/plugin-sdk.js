@@ -146,6 +146,12 @@
       clientState:  function () { return call('state.clientState', []); }
     },
 
+    // ---- scope: state.read: the game's own descriptive text over live state ----
+    text: {
+      buff: function (structId, count) { return call('text.buff', [structId, count || 0]); },
+      item: function (itemId, containerId, slot) { return call('text.item', [itemId, containerId, slot]); },
+    },
+
     cache: {
       itemInfo:  function (id) { return call('cache.itemInfo', [id]); },
       itemIcon:  function (id) { return call('cache.itemIcon', [id]); },

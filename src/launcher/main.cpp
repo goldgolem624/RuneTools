@@ -693,10 +693,9 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         }
         if (argv) LocalFree(argv);
     }
-    boot_log("=== RuneToolsX starting ===");
-    DeclareDpiAwareness();
-
     // Named mutex matching the installer's AppMutex (RuneToolsX.iss); held for the process lifetime.
+    // Taken before this run lays claim to the logs: a second instance appends its two lines to the
+    // running launcher's file and leaves it otherwise untouched.
     CreateMutexW(nullptr, FALSE, L"RuneToolsXLauncher");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         boot_log("another RuneToolsX launcher is already running; asking it to show itself and exiting");
@@ -711,6 +710,10 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         boot_log("single-instance: notified " + std::to_string(sent) + " tray window(s)");
         return 0;
     }
+
+    rtx::log::StartRun();
+    boot_log("=== RuneToolsX starting ===");
+    DeclareDpiAwareness();
 
     auto self = exe_dir();
     if (!preload_ultralight_dlls(self)) {

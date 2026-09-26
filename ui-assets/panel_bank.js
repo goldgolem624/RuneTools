@@ -936,6 +936,7 @@
         (stack === 0 ? ' (placeholder)' : '') + '\nSlot ' + slot + bankTabLine(slot) +
         bankGeLines(v, stack, name, slot, id, it) +
         '\nHA ' + (v.ha != null ? v.ha.toLocaleString() + ' ea' + (stack > 1 ? ' · ' + fmtGp(v.haTotal) + ' total' : '') : 'n/a');
+      cell.dataset.ei = '95:' + id + ':' + slot;   // the bank container, so the game's item lines can read instance vars
       grid.appendChild(cell);
     }
     // the grid is measured before the tools and pager settle; if the last row does not fit, drop it and repaint

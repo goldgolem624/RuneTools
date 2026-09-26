@@ -88,3 +88,7 @@ JadPrayerPluginX/
 PortsPluginX/
 ZygomitesPluginX/
 .edit-backups/
+
+# Live dumps written next to the repo by the reader switches
+/iface-dump.txt
+/pkttable_live.json

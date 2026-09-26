@@ -88,6 +88,8 @@ const char* const kCoreFiles[] = {
     "core/rtx-plugin-lua.js", // Lua plugin host: mount, widget tree renderer, __rtxLuaCall shim over PLUGIN_API
     "core/rtx-plugin-market.js", // in-client marketplace (browse / install)
     "core/rtx-data.js",       // rtxData: panels' data path over PLUGIN_API (per-tick coalescer)
+    "core/rtx-gametext.js",   // generated: the game's own text scripts (buff and item tooltips) as JS (GAME_TEXT)
+    "core/rtx-gametext-rt.js", // the runtime under them: vars, inventories, cache lookups, markup rendering (gameText)
 };
 const char* const kBootFiles[] = {
     "core/rtx-boot.js",       // refresh loop + attachBridge

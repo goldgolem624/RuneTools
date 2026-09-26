@@ -176,6 +176,13 @@ ItemInfo ResolveLocked(int item_id) {
             info.ge_limit  = def.ge_limit;
             info.value     = def.value;
             info.augmented = def.augmented;
+            info.desc      = def.desc;
+            info.category  = def.category;
+            info.wearpos   = def.wearpos;
+            info.wearpos2  = def.wearpos2;
+            info.members   = def.members;
+            info.unnoted   = def.noted ? def.noted_unnoted : -1;
+            info.varobjs   = def.varobjs;
 
             if (def.noted && def.noted_unnoted > 0) {
                 auto pb = index->ReadFile(def.noted_unnoted >> 8,
@@ -557,17 +564,25 @@ int ItemsByName(const char* needle, int* ids, int cap) {
 
 std::string ItemInfoJson(int item_id) {
     ItemInfo info = GetItem(item_id);
-    std::string esc;
-    esc.reserve(info.name.size() + 8);
-    for (char c : info.name) {
-        if (c == '"' || c == '\\') esc.push_back('\\');
-        esc.push_back(c);
-    }
-    char buf[256];
-    std::snprintf(buf, sizeof(buf),
-        "{\"name\":\"%s\",\"ge_limit\":%d,\"value\":%lld}",
-        esc.c_str(), info.ge_limit, info.value);
-    return buf;
+    auto jstr = [](const std::string& v) {
+        std::string r = "\"";
+        for (char c : v) { if (c == '"' || c == '\\') r += '\\';
+                           if ((unsigned char)c >= 0x20) r += c; }
+        r += '"'; return r;
+    };
+    std::string out = "{\"name\":" + jstr(info.name) +
+        ",\"ge_limit\":" + std::to_string(info.ge_limit) +
+        ",\"value\":" + std::to_string(info.value) +
+        ",\"desc\":" + jstr(info.desc) +
+        ",\"category\":" + std::to_string(info.category) +
+        ",\"wearpos\":" + std::to_string(info.wearpos) +
+        ",\"wearpos2\":" + std::to_string(info.wearpos2) +
+        ",\"members\":" + (info.members ? "true" : "false") +
+        ",\"unnoted\":" + std::to_string(info.unnoted) +
+        ",\"varobjs\":[";
+    for (std::size_t i = 0; i < info.varobjs.size(); ++i) { if (i) out += ','; out += std::to_string(info.varobjs[i]); }
+    out += "]}";
+    return out;
 }
 
 static const std::unordered_map<int, std::string> g_npc_name_overrides = {
@@ -3223,11 +3238,51 @@ const char* SkillGuideSkillName(int skill) {
     return (skill >= 1 && skill <= 29) ? kNames[skill] : "";
 }
 
-// The 25 pixel skill icons the game itself puts inline in text; 0 for the skills that have none there.
+// The 25 pixel skill icons the game itself puts inline in text, from the game's own table of them:
+// an enum keyed by skill id. Read once the cache is open and kept. Before that there is no guide
+// data to draw either, so 0 (no icon) is the right answer and the caller falls back to the name.
+namespace {
+constexpr int kSkillInlineIconEnum = 371;
+
+// g_mu must be held. The int-valued entries of an enum; empty when the enum is absent or the cache
+// is not open yet.
+std::map<int, int> EnumIntsLocked(int enum_id) {
+    std::map<int, int> out;
+    if (enum_id < 0) return out;
+    EnsureInit();
+    auto* index = g_store ? g_store->Get(kIndexEnums) : nullptr;
+    if (!index || !index->ready()) return out;
+    auto bytes = index->ReadFile(enum_id >> 8, enum_id & 0xff);
+    if (bytes.empty()) return out;
+    InputStream s(std::move(bytes));
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if      (op == 1 || op == 101) s.ReadUnsignedByte();
+        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        else if (op == 3) s.ReadString();
+        else if (op == 4) s.ReadInt();
+        else if (op == 5) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadString(); } }
+        else if (op == 6) { int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadInt(); out[k] = s.ReadInt(); } }
+        else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
+        else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort(); for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); out[k] = s.ReadInt(); } }
+        else if (op == 131 || op == 207 || op == 209) { }
+        else break;
+    }
+    return out;
+}
+}  // namespace
+
 int SkillGuideSkillSprite(int skill) {
-    static const int kSprites[] = { 0, 197, 198, 200, 202, 199, 203, 201, 204, 205, 206, 207, 215, 209, 210, 211, 212, 213,
-        214, 208, 216, 217, 221, 220, 222, 0, 0, 0, 0, 0 };
-    return (skill >= 1 && skill <= 29) ? kSprites[skill] : 0;
+    static std::map<int, int> s_icons;
+    static bool s_loaded = false;
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!s_loaded) {
+        s_icons = EnumIntsLocked(kSkillInlineIconEnum);
+        s_loaded = !s_icons.empty();
+    }
+    auto it = s_icons.find(skill);
+    return (it != s_icons.end() && it->second > 0) ? it->second : 0;
 }
 
 std::string StructParamsJson(int structId) {

@@ -3,6 +3,7 @@
 #include "GameUi.h"
 #include "Bridge.h"
 #include "Dock.h"
+#include "Companion.h"
 #include "../shared/Log.h"
 #include "IpcGuard.h"
 #include "../../companion/FrameShare.h"
@@ -667,13 +668,19 @@ void Tick() {
             dock::PublishGameClientSize(u->pid,
                                         live ? (int)u->frame->client_w : 0,
                                         live ? (int)u->frame->client_h : 0);
+            // No heartbeat means the module is not compositing this layer. The reason is whatever is
+            // holding the companion up for this client, so that is what goes in the log, and the
+            // moment the heartbeat does arrive is logged too, so the two lines bracket the gap.
             if (!u->moduleWarned && !u->lastModChangeMs && u->boundMs &&
                 now - u->boundMs > 5000) {
                 u->moduleWarned = true;
                 rtx::log::Client(u->pid,
-                    "in-game ui: the companion is NOT compositing this layer (no v2 module "
-                    "heartbeat 5s after bind). The in-game module is injected at client "
-                    "launch -- restart the game client to load the updated rtxscene.dll.");
+                    "in-game ui: no module heartbeat 5 s after bind, the layer is not being composited; companion: " +
+                    rtx::launcher::companion::Describe(u->pid));
+            } else if (u->moduleWarned && u->lastModChangeMs) {
+                u->moduleWarned = false;
+                rtx::log::Client(u->pid, "in-game ui: module heartbeat arrived " +
+                                             std::to_string((now - u->boundMs) / 1000) + " s after bind; compositing");
             }
         }
 

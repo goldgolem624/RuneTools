@@ -151,6 +151,20 @@ function state.pof() end
 ---@return boolean|nil
 function state.gameFocused() end
 
+---@class rtx.text
+local text = {}
+--- The game's own detail text for a buff, as its tooltip script computes it over live vars.
+---@param structId integer  # `struct` from state.buffs()
+---@param count? integer    # the buff's stack count when it has one
+---@return table|nil  # { text = <with the game's markup>, plain = <without> }
+function text.buff(structId, count) end
+--- The game's own tooltip lines for an item (charges, augment level, degradation, examine ...).
+---@param itemId integer
+---@param containerId? integer  # 93 backpack, 94 worn ...: the instance to read item vars from
+---@param slot? integer
+---@return table|nil  # { text, plain }
+function text.item(itemId, containerId, slot) end
+
 ---@class rtx.cache
 local cache = {}
 ---@param itemId integer
@@ -403,6 +417,7 @@ function json.decode(text) end
 ---@class rtx
 ---@field plugin rtx.plugin
 ---@field state rtx.state
+---@field text rtx.text
 ---@field cache rtx.cache
 ---@field overlay rtx.overlay
 ---@field notify rtx.notify

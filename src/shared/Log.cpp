@@ -178,6 +178,25 @@ void Init() {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
 
+    // Appending, never truncating: a second launcher instance or a headless switch runs this too,
+    // and the file may be the running launcher's record of what is going wrong right now.
+    g_launcher.open(dir / L"launcher.log", std::ios::out | std::ios::app);
+
+    SetUnhandledExceptionFilter(CrashFilter);
+    std::set_terminate(TerminateHandler);
+}
+
+void StartRun() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto dir = log_dir();
+    std::error_code ec;
+
+    // The previous run's log is kept under one name, so the last run's record survives the next
+    // start, and this run's file begins empty. A rename that fails leaves the file appended to.
+    if (g_launcher.is_open()) g_launcher.close();
+    std::filesystem::rename(dir / L"launcher.log", dir / L"launcher.prev.log", ec);
+    g_launcher.open(dir / L"launcher.log", std::ios::out | (ec ? std::ios::app : std::ios::trunc));
+
     if (std::filesystem::exists(dir, ec)) {
         const auto now = std::filesystem::file_time_type::clock::now();
         for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
@@ -194,11 +213,6 @@ void Init() {
             if (drop) std::filesystem::remove(e.path(), ec);
         }
     }
-
-    g_launcher.open(dir / L"launcher.log", std::ios::out | std::ios::trunc);
-
-    SetUnhandledExceptionFilter(CrashFilter);
-    std::set_terminate(TerminateHandler);
 }
 
 void Launcher(const std::string& msg) {

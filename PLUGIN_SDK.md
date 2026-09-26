@@ -462,6 +462,26 @@ await rtx.plugin.state.mysteries();
 //    null = a page/collection-driven mystery with no stage var.
 ```
 
+### text (scope: state.read)
+
+The game's own descriptive text, computed by the client's tooltip scripts over the live account:
+the same words and numbers the in-game tooltip shows, without hovering. Each call returns
+`{ text, plain }` where `text` keeps the game's markup (`<col=RRGGBB>`, `<br>`, `<sprite=N>`,
+`<nbsp>`) and `plain` is the same with the markup removed. An empty `text` means the game has no
+detail for that thing, or the script behind it uses something the host cannot supply (the host's
+generated table records which).
+
+```js
+await rtx.plugin.text.buff(structId, count);
+// -> { text, plain }   structId from state.buffs() (`struct`), count its stack count when it has one.
+//    e.g. Runic attuner: "Absorbed energy: <col=00ff00>0<br>Current attunement: <col=00ff00>Air altar"
+
+await rtx.plugin.text.item(itemId, containerId, slot);
+// -> { text, plain }   the item tooltip lines (charges, augment level, degradation, examine ...).
+//    containerId + slot name the instance to read item vars from (93 backpack, 94 worn, ...);
+//    leave them out for the item's static lines only.
+```
+
 ### cache.read (static game data)
 
 ```js

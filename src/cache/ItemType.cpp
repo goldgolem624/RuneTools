@@ -9,7 +9,7 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
     switch (opcode) {
         case 1:  d.inv_model_id = s.ReadBigSmart();           return true;
         case 2:  d.name         = s.ReadString();             return true;
-        case 3:  /* tooltip   */ (void)s.ReadString();        return true;
+        case 3:  d.desc         = s.ReadString();             return true;
         case 4: case 5: case 6: case 7: case 8: s.ReadUnsignedShort(); return true;
         case 10: s.ReadUnsignedShort();                       return true;
         case 11: d.stackable = true;                          return true;
@@ -19,8 +19,10 @@ bool ReadOne(InputStream& s, ItemDef& d, int opcode) {
             for (int i = 0; i < n; ++i) s.ReadBigSmart();
             return true;
         }
-        case 13: case 14: s.ReadUnsignedByte();               return true;
-        case 15: case 16:                                     return true;
+        case 13: d.wearpos  = s.ReadUnsignedByte();           return true;
+        case 14: d.wearpos2 = s.ReadUnsignedByte();           return true;
+        case 15:                                              return true;
+        case 16: d.members = true;                            return true;
         case 18: s.ReadUnsignedShort();                       return true;
         case 23: case 24: case 25: case 26: s.ReadBigSmart(); return true;
         case 27: s.ReadUnsignedByte();                        return true;

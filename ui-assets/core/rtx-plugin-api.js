@@ -95,6 +95,17 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     // Live text + screen rect of components of an open interface group, e.g. NPC chat (group 1184): comp 4 = NPC name, comp 10 = message, comp 15 = continue.
     'state.interface':  { scope: 'state.read', json: true,    run: (a, pid) => bridge().interfaceComps(pid, pClampId(a[0]), pClampStr(a[1], 200)) },
     'state.buffs':      { scope: 'state.read', json: true,    run: (a, pid) => bridge().buffs(pid) },
+    // The game's own descriptive text, computed by its tooltip scripts over live vars (core/rtx-gametext*).
+    // text: with the game's markup (<col=>, <br>, <sprite=>); plain: the same without it.
+    'text.buff':        { scope: 'state.read', json: false,   run: async (a) => {
+                            if (typeof gameText !== 'object') return null;
+                            const t = await gameText.text('buff', [pClampId(a[0])], { count: pClampNum(a[1], 0, 1000000) | 0 });
+                            return { text: t, plain: gameText.plain(t) }; } },
+    'text.item':        { scope: 'state.read', json: false,   run: async (a) => {
+                            if (typeof gameText !== 'object') return null;
+                            const container = a[1] == null ? -1 : (pClampId(a[1]) | 0), slot = a[2] == null ? -1 : (pClampNum(a[2], 0, 10000) | 0);
+                            const t = await gameText.text('item', [pClampId(a[0]), 27826, 27825, -1, -1, -1, -1, ""], { vc: { 5121: container, 5122: slot } });
+                            return { text: t, plain: gameText.plain(t) }; } },
     'state.cooldowns':  { scope: 'state.read', json: true,    run: (a, pid) => bridge().cooldowns(pid) },
     'state.perks':      { scope: 'state.read', json: true,    run: (a, pid) => bridge().perks(pid) },
     'state.actionBar':  { scope: 'state.read', json: true,    run: (a, pid) => bridge().actionBar(pid) },
