@@ -248,7 +248,7 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         char tip[sizeof(g_marker->tip_text)];
         std::memcpy(tip, g_marker->tip_text, sizeof(tip));
         tip[sizeof(tip) - 1] = 0;
-        rtx::tooltip::Update(g_marker->tip_on != 0, g_marker->tip_slot, g_marker->tip_comp, tip);
+        rtx::tooltip::Update(g_marker->tip_on != 0, g_marker->tip_slot, g_marker->tip_comp, g_marker->tip_ref, tip);
         rtx::enginemark::Want mk;
         mk.tile_on = g_marker->mark_tile_on != 0;
         mk.tile_x = g_marker->mark_tile_x; mk.tile_y = g_marker->mark_tile_y; mk.tile_model = g_marker->mark_tile_model;

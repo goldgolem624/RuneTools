@@ -273,6 +273,9 @@ struct HoverLocInfo {
     std::string verb;                   // the default action the game shows for it
     // an item in an interface slot instead of scenery: HoverLoc returns false and fills these
     int         item_id = -1, item_slot = -1, item_iface = 0, item_comp = 0;
+    // an NPC instead: HoverLoc returns false and fills its definition and its index in the scene,
+    // which is what the hover object keeps to say which NPC it is
+    int         npc_id = -1, npc_uid = -1;
     bool        in_scene = false;
     int         scene_x = 0, scene_y = 0, scene_id = 0;
 };

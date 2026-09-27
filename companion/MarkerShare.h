@@ -8,7 +8,7 @@ namespace rtx::marker {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMarker_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5254584D;   // 'RTXM'
-inline constexpr std::uint32_t kVersion = 31;
+inline constexpr std::uint32_t kVersion = 32;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
@@ -139,6 +139,7 @@ struct Share {
     volatile std::uint32_t tip_on;
     std::int32_t  tip_slot;       // interface slot of an item; tile x of scenery
     std::uint32_t tip_comp;       // interface id << 16 | component; tile y of scenery
+    std::int32_t  tip_ref;        // an NPC's index in the scene (slot and comp are 0 for every NPC); -1 = not compared
     char          tip_text[192];
     // The game's own entity highlight, per category (3 friendly NPCs, 4 enemies, 5 interactables).
     // -1 leaves the player's own setting alone; anything else is written while the feature is on and

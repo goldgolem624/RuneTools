@@ -43,7 +43,7 @@ constexpr std::size_t kStubLen = sizeof(kStubSig) / sizeof(kStubSig[0]);
 // the text is inline. The interface slot the hover is over sits after them.
 constexpr std::size_t kObjSize = 0x2E8;
 constexpr std::size_t kTarget = 0x00, kStrFlag = 0x17, kStrLen = 0x08, kStrCap = 0x10;
-constexpr std::size_t kSlot = 0x4C, kComp = 0x50;
+constexpr std::size_t kRef = 0x48, kSlot = 0x4C, kComp = 0x50;
 constexpr std::uint64_t kHeapFlag = 0x8000000000000000ull;
 
 using Pusher = void* (*)(void* ctx, void* entry, void* vm);
@@ -56,16 +56,17 @@ struct Wanted {
     bool          on = false;
     std::int32_t  slot = 0;
     std::uint32_t comp = 0;
+    std::int32_t  ref = -1;
     char          text[kTextMax + 1] = {};
 };
 Wanted g_want;
 
-bool ReadWanted(std::int32_t& slot, std::uint32_t& comp, char* text) {
+bool ReadWanted(std::int32_t& slot, std::uint32_t& comp, std::int32_t& ref, char* text) {
     for (int attempt = 0; attempt < 4; ++attempt) {
         const std::uint32_t s1 = g_want.seq.load();
         if (s1 & 1u) continue;
         const bool on = g_want.on;
-        slot = g_want.slot; comp = g_want.comp;
+        slot = g_want.slot; comp = g_want.comp; ref = g_want.ref;
         std::memcpy(text, g_want.text, sizeof(g_want.text));
         if (g_want.seq.load() != s1) continue;
         text[kTextMax] = 0;
@@ -84,12 +85,14 @@ bool BuildFake(void* entry, std::uint8_t* copy, char* joined, std::size_t joined
         const std::uint8_t* obj = *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(entry) + 8);
         if (!obj) return false;
 
-        std::int32_t slot; std::uint32_t comp; char text[kTextMax + 1];
-        if (!ReadWanted(slot, comp, text)) return false;
-        std::int32_t objSlot; std::uint32_t objComp;
+        std::int32_t slot, ref; std::uint32_t comp; char text[kTextMax + 1];
+        if (!ReadWanted(slot, comp, ref, text)) return false;
+        std::int32_t objSlot, objRef; std::uint32_t objComp;
         std::memcpy(&objSlot, obj + kSlot, 4);
         std::memcpy(&objComp, obj + kComp, 4);
-        if (objSlot != slot || objComp != comp) return false;      // the hover has moved on since the launcher looked
+        std::memcpy(&objRef, obj + kRef, 4);
+        if (objSlot != slot || objComp != comp) return false;
+        if (ref >= 0 && objRef != ref) return false;                 // another NPC: every NPC has slot and comp 0      // the hover has moved on since the launcher looked
 
         const char* target;
         std::size_t len;
@@ -185,12 +188,12 @@ void Uninstall() {
     g_installed = false;
 }
 
-void Update(bool on, std::int32_t slot, std::uint32_t comp, const char* text) {
+void Update(bool on, std::int32_t slot, std::uint32_t comp, std::int32_t ref, const char* text) {
     // nothing to do when it is what is already there, which is nearly every frame
-    if (g_want.on == on && g_want.slot == slot && g_want.comp == comp &&
+    if (g_want.on == on && g_want.slot == slot && g_want.comp == comp && g_want.ref == ref &&
         std::strncmp(g_want.text, text ? text : "", kTextMax) == 0) return;
     g_want.seq.fetch_add(1);
-    g_want.on = on; g_want.slot = slot; g_want.comp = comp;
+    g_want.on = on; g_want.slot = slot; g_want.comp = comp; g_want.ref = ref;
     std::strncpy(g_want.text, text ? text : "", kTextMax);
     g_want.text[kTextMax] = 0;
     g_want.seq.fetch_add(1);

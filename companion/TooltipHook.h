@@ -17,7 +17,8 @@ void Uninstall();
 
 // What to append, and to which hover. The hover object holds an item's interface slot and
 // (interface id << 16 | component) in the same two fields where it holds a loc's tile x and y,
-// so `slot` and `comp` key either. on = false appends nothing.
-void Update(bool on, std::int32_t slot, std::uint32_t comp, const char* text);
+// so `slot` and `comp` key either. For an NPC both are 0 and `ref`, its index in the scene, says
+// which; ref = -1 leaves it out. on = false appends nothing.
+void Update(bool on, std::int32_t slot, std::uint32_t comp, std::int32_t ref, const char* text);
 
 }  // namespace rtx::tooltip

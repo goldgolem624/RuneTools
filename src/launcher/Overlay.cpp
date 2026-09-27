@@ -7,6 +7,7 @@
 #include "Markers.h"
 #include "../reader/Reader.h"
 #include "../cache/CacheReader.h"           // terrain height for marker placement
+#include "../cache/ThievingLevels.h"
 #include "../shared/Log.h"
 #include "IpcGuard.h"
 #include "../../companion/MarkerShare.h"   // in-frame marker command channel
@@ -708,8 +709,16 @@ std::map<DWORD, std::vector<rtx::launcher::gameui::ModulePoint>> g_answers;
 // the values of an item in an interface slot, for the game's own tooltip.
 struct HoverPick {
     bool on = false; int x = 0, y = 0, id = 0;
-    bool tip = false; int tipSlot = 0; std::uint32_t tipComp = 0; char tipText[192] = {};
+    bool tip = false; int tipSlot = 0; std::uint32_t tipComp = 0; int tipRef = -1; char tipText[192] = {};
 };
+
+// The Thieving level a pickpocket target or a stall takes, 0 when the table does not have it.
+int ThievingLevel(const rtx::thieving::Entry* begin, const rtx::thieving::Entry* end, int id) {
+    const auto* it = std::lower_bound(begin, end, id, [](const rtx::thieving::Entry& e, int v) { return e.id < v; });
+    return (it != end && it->id == id) ? it->level : 0;
+}
+int NpcThievingLevel(int id) { return ThievingLevel(std::begin(rtx::thieving::kNpc), std::end(rtx::thieving::kNpc), id); }
+int LocThievingLevel(int id) { return ThievingLevel(std::begin(rtx::thieving::kLoc), std::end(rtx::thieving::kLoc), id); }
 
 // 1,234 up to six digits, then 1.23m / 4.5b: what fits beside an item name
 std::string ShortCoins(long long v) {
@@ -779,9 +788,11 @@ HoverPick PickHover(const Config& cfg) {
         }
         return t;
     };
-    // memoised: the price lookup scans the relay's whole answer. key = item id, or -(loc id) - 1
+    // memoised: the price lookup scans the relay's whole answer. key = item id, -(loc id) - 1, or
+    // kNpcKey | npc id
+    constexpr int kNpcKey = 0x40000000;
     static std::map<int, std::pair<std::string, ULONGLONG>> s_text;
-    auto publish = [&](int key, int slot, std::uint32_t comp, auto build) {
+    auto publish = [&](int key, int slot, std::uint32_t comp, int ref, auto build) {
         const ULONGLONG now = GetTickCount64();
         auto it = s_text.find(key);
         if (it == s_text.end() || now > it->second.second) {
@@ -792,12 +803,12 @@ HoverPick PickHover(const Config& cfg) {
             it = s_text.insert_or_assign(key, std::make_pair(t, now + (settled ? 60000 : 3000))).first;
         }
         if (it->second.first.empty()) return;
-        p.tip = true; p.tipSlot = slot; p.tipComp = comp;
+        p.tip = true; p.tipSlot = slot; p.tipComp = comp; p.tipRef = ref;
         std::snprintf(p.tipText, sizeof(p.tipText), "%s", it->second.first.c_str());
     };
     if (cfg.tooltip_values && hv.item_id >= 0) {
         const std::uint32_t comp = ((std::uint32_t)(hv.item_iface & 0xFFFF) << 16) | (std::uint32_t)(hv.item_comp & 0xFFFF);
-        publish(hv.item_id, hv.item_slot, comp, [&](bool& settled) {
+        publish(hv.item_id, hv.item_slot, comp, -1, [&](bool& settled) {
             long long ge = rtx::launcher::ItemGePrice(hv.item_id);
             // Augmented, charged and worn forms have their own ids that the market never lists, so
             // a price looked up by the id in hand comes back empty and the item reads as worthless.
@@ -837,7 +848,7 @@ HoverPick PickHover(const Config& cfg) {
         });
     } else if (cfg.tooltip_values && isLoc && !hv.verb.empty() && hv.verb != "Walk here" && hv.verb != "Cancel") {
         // the hover object keeps the tile where an item keeps its slot, so the same two fields key it
-        publish(-hv.id - 1, hv.x, (std::uint32_t)hv.y, [&](bool& settled) {
+        publish(-hv.id - 1, hv.x, (std::uint32_t)hv.y, -1, [&](bool& settled) {
             std::string name = rtx::cache::GetLoc(hv.id).name;
             if (name.empty() && hv.scene_id > 0) name = rtx::cache::GetLoc(hv.scene_id).name;
             // the guide does not always name a thing the way the scene does: "Yew" is its "Yew tree",
@@ -866,6 +877,11 @@ HoverPick PickHover(const Config& cfg) {
                 else if (starts("smelt") || starts("smith")) only = 14;
                 else if (starts("rake") || starts("harvest") || starts("pick") || starts("check-health") || starts("inspect")) only = 21;
             }
+            // stalls and cowbells: the table first, then the guide, which names a stall "Steal from <stall>"
+            int thieve = LocThievingLevel(hv.id);
+            if (!thieve && hv.scene_id > 0) thieve = LocThievingLevel(hv.scene_id);
+            if (thieve) return "<br><col=d0d0d0>" + reqLine({ rtx::cache::SkillReq{ 10, thieve } });
+            if (!name.empty()) tries.push_back("Steal from " + name);
             std::string reqs;
             for (const auto& t : tries) {
                 std::vector<rtx::cache::SkillReq> need = rtx::cache::SkillGuideForName(t);
@@ -879,6 +895,24 @@ HoverPick PickHover(const Config& cfg) {
             }
             settled = rtx::cache::SkillGuideReady();
             return reqs.empty() ? reqs : "<br><col=d0d0d0>" + reqs;
+        });
+    } else if (cfg.tooltip_values && hv.npc_id >= 0 && hv.npc_uid >= 0) {
+        // every NPC hover has slot and comp 0, the NPC's index in the scene tells them apart
+        publish(kNpcKey | hv.npc_id, 0, 0, hv.npc_uid, [&](bool& settled) {
+            settled = true;
+            int lv = NpcThievingLevel(hv.npc_id);
+            if (!lv) {
+                // not in the table (new content): the guide's own entry, while the NPC offers Pickpocket
+                const auto npc = rtx::cache::GetNpc(hv.npc_id);
+                bool picks = false;
+                for (const auto& a : npc.actions) if (a == "Pickpocket") picks = true;
+                if (!picks || npc.name.empty()) return std::string();
+                for (const std::string& t : { "Pickpocket " + npc.name, "Pickpocket " + npc.name + "s" })
+                    for (const auto& r : rtx::cache::SkillGuideForName(t))
+                        if (r.skill == 10 && !lv) lv = r.level;
+                settled = rtx::cache::SkillGuideReady();
+            }
+            return lv ? "<br><col=d0d0d0>" + reqLine({ rtx::cache::SkillReq{ 10, lv } }) : std::string();
         });
     }
     if (!cfg.hover_outline || !isLoc || !hv.in_scene) return p;
@@ -958,7 +992,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         sh->count = 0; sh->visible = 0; sh->cc_count = 0;
         sh->flags = (cfg.hover_outline ? marker::kFlagEngineHover : 0u) | (cfg.inframe_trial ? marker::kFlagInFrameTrial : 0u);   // honoured with nothing to draw
         { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
-          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = cfg.hover_scale[k]; sh->hover_mode[k] = cfg.hover_mode[k]; } FillEngineMarks(sh, cfg); }
+          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; sh->tip_ref = hp.tipRef; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = cfg.hover_scale[k]; sh->hover_mode[k] = cfg.hover_mode[k]; } FillEngineMarks(sh, cfg); }
         MemoryBarrier(); sh->seq = s + 1;
         return;
     }
@@ -2377,7 +2411,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
             }
         }
         { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
-          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = cfg.hover_scale[k]; sh->hover_mode[k] = cfg.hover_mode[k]; } FillEngineMarks(sh, cfg); }
+          sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; sh->tip_ref = hp.tipRef; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = cfg.hover_scale[k]; sh->hover_mode[k] = cfg.hover_mode[k]; } FillEngineMarks(sh, cfg); }
         sh->flags = mflags; sh->ref_x = rx; sh->ref_y = ry; sh->ref_z = rz; sh->ref_a = ra; sh->ref_b = rb;
         if (f && f->matrix_addr) { std::memcpy(sh->view_m, f->matrix, sizeof(sh->view_m)); sh->view_addr = f->matrix_addr; }
         else sh->view_addr = 0;

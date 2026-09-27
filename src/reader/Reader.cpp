@@ -5994,6 +5994,11 @@ bool HoverLoc(std::uint32_t pid, HoverLocInfo& out) {
             out.item_id = id;
         return false;
     }
+    if (j.find("\"kind\":\"npc\"") != std::string::npos) {
+        int id = -1, uid = -1;
+        if (num("\"id\":", id) && num("\"uid\":", uid) && id >= 0 && uid >= 0) { out.npc_id = id; out.npc_uid = uid; }
+        return false;
+    }
     if (j.find("\"kind\":\"loc\"") == std::string::npos) return false;
     {
         const char* key = "\"verb\":\"";
