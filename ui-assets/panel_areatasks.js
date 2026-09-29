@@ -17,9 +17,10 @@
     emptyMsg: 'No area tasks found in the cache.',
   };
 
+  let areaBuiltFor;                 // the evaluation the rows were built from
   async function fetchAreaTasks(force) {
     await fetchAchievements(force);
-    areaTasksData = buildCategoryTasks(AREA_CFG);
+    if (!areaTasksData || areaBuiltFor !== achState) { areaTasksData = buildCategoryTasks(AREA_CFG); areaBuiltFor = achState; }
     paneRun('areatasks', renderAreaTasks);
   }
   function renderAreaTasks() { renderTaskScaffold(AREA_CFG); }

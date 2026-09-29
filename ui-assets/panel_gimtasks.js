@@ -11,9 +11,10 @@
     emptyMsg: 'No Group Ironman tasks found in the cache.',
   };
 
+  let gimBuiltFor;                  // the evaluation the rows were built from
   async function fetchGimTasks(force) {
     await fetchAchievements(force);
-    gimTasksData = buildCategoryTasks(GIM_CFG);
+    if (!gimTasksData || gimBuiltFor !== achState) { gimTasksData = buildCategoryTasks(GIM_CFG); gimBuiltFor = achState; }
     paneRun('gimtasks', renderGimTasks);
   }
   function renderGimTasks() { renderTaskScaffold(GIM_CFG); }
