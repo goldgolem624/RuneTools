@@ -834,8 +834,11 @@ VkResult VKAPI_CALL HookCreateBuffer(VkDevice dev, const VkBufferCreateInfo* ci,
 // Only this thread is handed to the transaction. Suspending every other thread for it, as was done
 // here before, deadlocks: the transaction allocates, and a thread that was suspended while it held
 // the heap lock never lets go of it, so the game froze for good with most of its threads asleep.
-// Nothing is lost by it: these hooks go in while the device is being created or taken down, when no
-// other thread is inside the functions being patched.
+// What that leaves is a small window, not none. These hooks go in from the worker once it has seen
+// the device, when the game may already be drawing, so a game thread can be inside one of the
+// patched functions (a vkCmd* call, most likely) while its first bytes are rewritten. They come out
+// in vkDestroyDevice, when the game has stopped using the device, or from the worker when it moves
+// to another device.
 void UpdateThisThread() { DetourUpdateThread(GetCurrentThread()); }
 
 struct HookDef { void** real; void* hook; const char* name; bool required; };

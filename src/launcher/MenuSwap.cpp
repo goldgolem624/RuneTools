@@ -37,12 +37,41 @@ struct View {
     explicit operator bool() const { return sh != nullptr; }
 };
 
-void append_escaped(std::string& out, const char* s, std::size_t cap) {
-    for (std::size_t i = 0; i < cap && s[i]; ++i) {
+// Length of the well-formed UTF-8 sequence starting at s[i] and ending within cap, 0 if none.
+std::size_t utf8_len(const char* s, std::size_t i, std::size_t cap) {
+    const unsigned char c = (unsigned char)s[i];
+    std::size_t n = 0;
+    unsigned char lo = 0x80, hi = 0xBF;       // allowed range of the second byte
+    if (c < 0x80) return 1;
+    else if (c >= 0xC2 && c <= 0xDF) n = 2;
+    else if (c >= 0xE0 && c <= 0xEF) { n = 3; if (c == 0xE0) lo = 0xA0; if (c == 0xED) hi = 0x9F; }
+    else if (c >= 0xF0 && c <= 0xF4) { n = 4; if (c == 0xF0) lo = 0x90; if (c == 0xF4) hi = 0x8F; }
+    else return 0;
+    if (i + n > cap) return 0;
+    const unsigned char c1 = (unsigned char)s[i + 1];
+    if (c1 < lo || c1 > hi) return 0;
+    for (std::size_t k = 2; k < n; ++k)
+        if (((unsigned char)s[i + k] & 0xC0) != 0x80) return 0;
+    return n;
+}
+
+// The page gets this JSON as UTF-8, and one malformed byte empties the whole string there. So only
+// whole, well-formed characters are copied: a stray byte, or a character cut short by the fixed
+// field size, is left out.
+void append_escaped(std::string& out, const char* src, std::size_t cap) {
+    // The game side rewrites these fields while this runs: check and copy from one local snapshot,
+    // so a byte cannot change between being checked and being appended.
+    char s[rtx::menu::kTargetLen];
+    if (cap > sizeof(s)) cap = sizeof(s);
+    std::memcpy(s, src, cap);
+    for (std::size_t i = 0; i < cap && s[i];) {
+        const std::size_t n = utf8_len(s, i, cap);
+        if (n == 0) { ++i; continue; }
         const char c = s[i];
         if (c == '"' || c == '\\') { out.push_back('\\'); out.push_back(c); }
         else if ((unsigned char)c < 0x20)  out += ' ';      // menu text is plain; drop controls
-        else out.push_back(c);
+        else out.append(s + i, n);
+        i += n;
     }
 }
 

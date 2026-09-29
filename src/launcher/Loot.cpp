@@ -234,15 +234,19 @@ void sample_once() {
             if (p.have_kc) {
                 // Reads are a second apart: a real kill moves one boss by a kill or two. Several bosses
                 // moving at once, or a big jump, is the kill log loading in (after login counts read as 0
-                // first), so it only resets the baseline.
+                // first), so it only resets the baseline. So does any rise from a read where every count was 0:
+                // that read came before the kill log arrived, and a log of one boss at a few kills would
+                // otherwise look like a real kill on every login.
                 std::vector<std::pair<std::string, long long>> rises;
+                bool base_zero = true;
+                for (const auto& kv : p.kc) if (kv.second != 0) { base_zero = false; break; }
                 for (const auto& kv : totals) {
                     auto it = p.kc.find(kv.first);
                     if (it == p.kc.end()) continue;
                     const long long d = kv.second - it->second;
                     if (d > 0) rises.push_back({ kv.first, d });
                 }
-                bool resync = rises.size() > 1;
+                bool resync = rises.size() > 1 || (base_zero && !rises.empty());
                 for (const auto& r : rises) if (r.second > 3) resync = true;
                 if (resync) rtx::log::Launcher("loot: kill log re-read for " + s.display_name + " (" + std::to_string(rises.size()) + " bosses moved), not counted");
                 else if (!rises.empty()) {

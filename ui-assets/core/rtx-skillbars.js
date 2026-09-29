@@ -59,10 +59,11 @@
     const g = f < 0.5 ? Math.round(70 + 165 * (f / 0.5)) : 235;
     return (r << 16) | (g << 8) | 45;      // a little blue keeps it from going neon
   }
-  // Progress to the next level in tenths of a percent (caps 120, or 150 for Invention); maxed reads full.
+  // Progress to the next level in tenths of a percent (caps at the virtual level cap: 120 or 126, 150 for
+  // Invention); maxed reads full.
   function skBarPct(xp, elite) {
     if (!(xp >= 0)) return -1;
-    const t = xpTable(elite), cap = elite ? 150 : 120;
+    const t = xpTable(elite), cap = virtualCap(elite);
     let lv = levelFromXp(xp, elite);
     if (lv >= cap || lv + 1 >= t.length) return 1000;
     const a = t[lv], b = t[lv + 1];

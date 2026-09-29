@@ -137,6 +137,109 @@
     }
   }
 
+  // Patch list layout, by type or by location, kept per character (prefs map: character name -> 'loc').
+  // Before the character is known it lives only in this page.
+  let farmLayoutAnon = 'type';
+  function farmLayoutMap() {
+    try { const m = JSON.parse(prefGet('rtxFarmLayout', '{}') || '{}'); return (m && typeof m === 'object') ? m : {}; } catch (e) { return {}; }
+  }
+  function farmLayout() {
+    const nm = (lastSnap && lastSnap.display_name) || '';
+    if (!nm) return farmLayoutAnon;
+    return farmLayoutMap()[nm] === 'loc' ? 'loc' : 'type';
+  }
+  function farmSetLayout(v) {
+    v = (v === 'loc') ? 'loc' : 'type';
+    const nm = (lastSnap && lastSnap.display_name) || '';
+    if (!nm) farmLayoutAnon = v;
+    else {
+      const m = farmLayoutMap();
+      if (v === 'loc') m[nm] = 'loc'; else delete m[nm];
+      try { prefSet('rtxFarmLayout', JSON.stringify(m)); } catch (e) {}
+    }
+    farmSig = ''; paintFarming();
+  }
+  function paintFarmLayout(layout) {
+    const el = document.getElementById('fmLayout'); if (!el) return;
+    const own = farmOrder(layout).length > 0;
+    const key = layout + '|' + (own ? 1 : 0);
+    if (el._l === key) return;
+    el._l = key;
+    el.querySelectorAll('[data-fl]').forEach(b => b.classList.toggle('on', b.dataset.fl === layout));
+    const rs = el.querySelector('[data-flreset]'); if (rs) rs.style.display = own ? '' : 'none';
+  }
+  // Group order, per character and layout (prefs map: character name -> {type: [names], loc: [names]}).
+  // Groups missing from a saved order keep their default place after the saved ones.
+  let farmOrderAnon = {}, farmDrag = null;
+  function farmOrderMap() {
+    try { const m = JSON.parse(prefGet('rtxFarmOrder', '{}') || '{}'); return (m && typeof m === 'object') ? m : {}; } catch (e) { return {}; }
+  }
+  function farmOrder(layout) {
+    const nm = (lastSnap && lastSnap.display_name) || '';
+    const o = nm ? farmOrderMap()[nm] : farmOrderAnon;
+    const a = o && typeof o === 'object' ? o[layout] : null;
+    return Array.isArray(a) ? a.filter(x => typeof x === 'string') : [];
+  }
+  function farmSetOrder(layout, names) {
+    const nm = (lastSnap && lastSnap.display_name) || '';
+    const clean = (names && names.length) ? names.slice(0, 200).map(String) : null;
+    if (!nm) { if (clean) farmOrderAnon[layout] = clean; else delete farmOrderAnon[layout]; }
+    else {
+      const m = farmOrderMap();
+      const o = (m[nm] && typeof m[nm] === 'object') ? m[nm] : {};
+      if (clean) o[layout] = clean; else delete o[layout];
+      if (Object.keys(o).length) m[nm] = o; else delete m[nm];
+      try { prefSet('rtxFarmOrder', JSON.stringify(m)); } catch (e) {}
+    }
+    farmSig = ''; paintFarming();
+  }
+  function farmApplyOrder(groups, layout) {
+    const ord = farmOrder(layout); if (!ord.length) return groups;
+    const pos = {}; ord.forEach((k, i) => { if (!(k in pos)) pos[k] = i; });
+    const at = (g, i) => (g[0] in pos) ? pos[g[0]] : 1e6 + i;
+    return groups.map((g, i) => [g, at(g, i)]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+  }
+  function farmShownOrder() {
+    const list = document.getElementById('fmList');
+    return list ? Array.from(list.querySelectorAll('.fm-gblk')).map(b => b.dataset.g) : [];
+  }
+  function farmMoveGroup(name, dir) {
+    const ord = farmShownOrder(), i = ord.indexOf(name), j = i + dir;
+    if (i < 0 || j < 0 || j >= ord.length) return;
+    ord[i] = ord[j]; ord[j] = name;
+    farmSetOrder(farmLayout(), ord);
+  }
+  // Drag a group by its header: the block moves in the list as the pointer passes other groups, and the
+  // order is saved on release. Listeners live only for the drag.
+  function farmDragStart(blk) {
+    const list = blk.parentNode;
+    farmDrag = { blk: blk, moved: false, from: farmShownOrder().join('\n') };
+    const move = e => {
+      const d = farmDrag; if (!d) return;
+      const over = e.target && e.target.closest ? e.target.closest('.fm-gblk') : null;
+      if (!over || over === d.blk || over.parentNode !== list) return;
+      // The pointer's half of the block it is over picks the slot, so a short group passing a tall one
+      // does not flip back and forth. Rects inside a zoomed window body come back divided by the zoom.
+      const r = over.getBoundingClientRect(), y = e.clientY / (uiZoomOf(list) || 1);
+      const ref = (y > r.top + r.height / 2) ? over.nextSibling : over;
+      if (ref === d.blk || ref === d.blk.nextSibling) return;
+      if (!d.moved) { d.moved = true; d.blk.classList.add('fm-dragging'); }
+      list.insertBefore(d.blk, ref);
+    };
+    const up = () => {
+      document.removeEventListener('mousemove', move, true);
+      document.removeEventListener('mouseup', up, true);
+      const d = farmDrag; farmDrag = null;
+      if (!d) return;
+      d.blk.classList.remove('fm-dragging');
+      const live = d.blk.parentNode === document.getElementById('fmList');   // not rebuilt or closed meanwhile
+      const now = live ? farmShownOrder() : null;
+      if (d.moved && now && now.join('\n') !== d.from) farmSetOrder(farmLayout(), now);
+      else { farmSig = ''; paintFarming(); }       // no change, or a repaint held back during the press
+    };
+    document.addEventListener('mousemove', move, true);
+    document.addEventListener('mouseup', up, true);
+  }
   function renderFarming() {
     const c = $('content');
     let w = document.getElementById('fmWrap');
@@ -149,39 +252,83 @@
       hdr.appendChild(t); hdr.appendChild(cnt);
       const sum = document.createElement('div'); sum.id = 'fmSum'; sum.className = 'fm-sum';
       const lep = document.createElement('div'); lep.id = 'fmLep'; lep.className = 'fm-lep';
+      const lay = document.createElement('div'); lay.id = 'fmLayout'; lay.className = 'pet-chips';
+      lay.innerHTML = '<button class="pet-chip" data-fl="type">By type</button><button class="pet-chip" data-fl="loc">By location</button>'
+        + '<button class="pet-chip" data-flreset="1" style="display:none;margin-left:auto">Reset order</button>';
+      lay.addEventListener('click', e => {
+        if (e.target.closest('[data-flreset]')) { farmSetOrder(farmLayout(), null); return; }
+        const b = e.target.closest('[data-fl]'); if (b) farmSetLayout(b.dataset.fl);
+      });
       const list = document.createElement('div'); list.id = 'fmList'; list.className = 'fm-list';
-      w.appendChild(hdr); w.appendChild(sum); w.appendChild(lep); w.appendChild(list); c.appendChild(w); farmSig = ''; lepSig = '';
+      list.addEventListener('click', e => {
+        const b = e.target.closest('[data-mv]'); if (!b) return;
+        const blk = b.closest('.fm-gblk'); if (blk) farmMoveGroup(blk.dataset.g, +b.dataset.mv);
+      });
+      list.addEventListener('mousedown', e => {
+        if (e.button !== 0 || farmDrag || e.target.closest('[data-mv]')) return;
+        const gh = e.target.closest('.fm-grp'); const blk = gh && gh.closest('.fm-gblk'); if (!blk) return;
+        e.preventDefault(); farmDragStart(blk);
+      });
+      w.appendChild(hdr); w.appendChild(sum); w.appendChild(lep); w.appendChild(lay); w.appendChild(list); c.appendChild(w); farmSig = ''; lepSig = '';
     }
     paintLeprechaun();
     paintFarming();
   }
   function paintFarming() {
     const list = document.getElementById('fmList'); if (!list) return;
+    const layout = farmLayout();
+    paintFarmLayout(layout);
     if (!farmData) { list.innerHTML = '<div class="empty">Reading varps... (open in-world)</div>'; return; }
-    const groups = []; const counts = { 4: 0, 32: 0, 33: 0, 34: 0, 7: 0 }; let sig = '';
+    const counts = { 4: 0, 32: 0, 33: 0, 34: 0, 7: 0 }; let sig = layout + '|';
+    const byType = [];
     for (const tdef of FARM.types) {
       const name = tdef[0], enumId = tdef[1], vbids = tdef[2]; const rows = [];
       for (const vbid of vbids) {
         const p = farmPatch(vbid, enumId); if (!p) continue;
-        rows.push({ loc: FARM.loc[vbid] || ('vb' + vbid), p: p, vbid: vbid }); sig += vbid + ':' + p.key + ';';
+        const loc = FARM.loc[vbid] || ('vb' + vbid);
+        rows.push({ type: name, loc: loc, label: loc, p: p, vbid: vbid }); sig += vbid + ':' + p.key + ';';
         if (counts[p.code] != null) counts[p.code]++;
       }
-      groups.push([name, rows]);
+      byType.push([name, rows]);
     }
+    let groups = byType;
+    if (layout === 'loc') {                          // one group per place, rows named by patch type
+      const m = new Map();
+      for (const g of byType) for (const r of g[1]) { if (!m.has(r.loc)) m.set(r.loc, []); m.get(r.loc).push(r); }
+      groups = Array.from(m.entries()).sort(function (a, b) { return a[0].localeCompare(b[0]); });
+      for (const g of groups) {
+        const seen = {}, n = {};
+        for (const r of g[1]) n[r.type] = (n[r.type] || 0) + 1;
+        for (const r of g[1]) r.label = n[r.type] > 1 ? r.type + ' ' + (seen[r.type] = (seen[r.type] || 0) + 1) : r.type;
+      }
+    }
+    groups = farmApplyOrder(groups, layout);
+    sig += '|' + groups.map(g => g[0]).join('|');
     const total = groups.reduce(function (a, g) { return a + g[1].length; }, 0);
     const cnt = document.getElementById('fmCnt'); if (cnt) cnt.textContent = total;
+    if (farmDrag) { farmSig = ''; return; }          // never rebuild the list under a drag; the drop repaints
     if (sig === farmSig) return; farmSig = sig;
     const sum = document.getElementById('fmSum');
     const chips = [['Harvestable', counts[4] + counts[32], 'var(--ok)'], ['Diseased', counts[33], '#f0b03c'], ['Dead', counts[34], '#e0564e'], ['Needs water', counts[7], '#57c6e0']];
     if (sum) sum.innerHTML = chips.filter(function (x) { return x[1] > 0; }).map(function (x) { return '<span class="fm-chip"><b style="color:' + x[2] + '">' + x[1] + '</b> ' + x[0] + '</span>'; }).join('') || '<span class="fm-chip">Nothing needs attention</span>';
     list.innerHTML = '';
-    for (const g of groups) {
-      const name = g[0], rows = g[1]; if (!rows.length) continue;
-      rows.sort(function (a, b) { return (b.p.actionable - a.p.actionable) || (a.p.locked - b.p.locked); });
-      const gh = document.createElement('div'); gh.className = 'fm-grp'; gh.textContent = name; list.appendChild(gh);
+    const shown = groups.filter(g => g[1].length);
+    for (const g of shown) {
+      const name = g[0], rows = g[1];
+      const first = g === shown[0], last = g === shown[shown.length - 1];
+      if (layout === 'loc') rows.sort(function (a, b) { return a.label.localeCompare(b.label); });   // numbered siblings stay in order
+      else rows.sort(function (a, b) { return (b.p.actionable - a.p.actionable) || (a.p.locked - b.p.locked); });
+      const blk = document.createElement('div'); blk.className = 'fm-gblk'; blk.dataset.g = name; list.appendChild(blk);
+      const gh = document.createElement('div'); gh.className = 'fm-grp fm-grp-mv';
+      gh.innerHTML = '<span class="fm-gname">' + htmlEsc(name) + '</span>'
+        + '<span class="fm-gmv">'
+        + (first ? '<b class="off">&#9650;</b>' : '<b data-mv="-1" data-tip="Move up">&#9650;</b>')
+        + (last ? '<b class="off">&#9660;</b>' : '<b data-mv="1" data-tip="Move down">&#9660;</b>') + '</span>';
+      blk.appendChild(gh);
+      const cells = document.createElement('div'); cells.className = 'fm-cells'; blk.appendChild(cells);
       for (const r of rows) {
         const row = document.createElement('div'); row.className = 'fm-row' + (r.p.actionable ? ' is-actionable' : '') + (r.p.locked ? ' is-locked' : '');
-        row.dataset.tip = name + ' patch · ' + r.loc +
+        row.dataset.tip = r.type + ' patch · ' + r.loc +
           '\nStatus: ' + r.p.name +
           '\nSource: varbit ' + r.vbid + ' = varp ' + r.p.vp +
           (r.p.lo === r.p.hi ? ' bit ' + r.p.lo : ' bits ' + r.p.lo + '-' + r.p.hi) +
@@ -189,9 +336,9 @@
           (r.p.locked
             ? 'no entry in patch enum ' + r.p.enumId + ' (patch not built/unlocked)'
             : 'state ' + r.p.code + ' via enum ' + r.p.enumId);
-        const l = document.createElement('div'); l.className = 'fm-loc'; l.textContent = r.loc;
+        const l = document.createElement('div'); l.className = 'fm-loc'; l.textContent = r.label;
         const b = document.createElement('div'); b.className = 'fm-badge ' + r.p.badge; b.textContent = r.p.name;
-        row.appendChild(l); row.appendChild(b); list.appendChild(row);
+        row.appendChild(l); row.appendChild(b); cells.appendChild(row);
       }
     }
   }

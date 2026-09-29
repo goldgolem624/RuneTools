@@ -1,17 +1,27 @@
 // RuneToolsX panel: Counter (per-character, saved via bridge counterLoad/counterSave).
 (function () {
 
-  let counterVal = 0, counterLoadedPid = -1, counterStep = 1;
+  let counterVal = 0, counterLoadedPid = -1, counterStep = 1, counterStore = null;
+  // made on first use: the store helpers come from core/rtx-boot.js, spliced after the panels
+  function counterSt() {
+    return counterStore || (counterStore = acctStore(() => rtxData.sync('host.counterLoad'),
+                                                     t => rtxData.sync('act.counterSave', t), counterReload));
+  }
   function loadCounter() {
     if (counterLoadedPid === myPid()) return;
     counterLoadedPid = myPid(); counterVal = 0; counterStep = 1;
     try {
-      const o = JSON.parse((bridge() && bridge().counterLoad && rtxData.sync('host.counterLoad')) || '{}');
+      const o = JSON.parse(acctStoreRead(counterSt()) || '{}');
       if (o && typeof o.value === 'number') counterVal = o.value | 0;
       if (o && typeof o.step === 'number' && o.step > 0) counterStep = o.step | 0;
     } catch (e) {}
   }
-  function saveCounter() { try { rtxData.sync('act.counterSave', JSON.stringify({ value: counterVal, step: counterStep })); } catch (e) {} }
+  // The account behind this client changed (or became known) since the counter was read.
+  function counterReload() {
+    counterLoadedPid = -1; loadCounter();
+    const w = $('ctrWrap'); if (w) { w.remove(); paneRun('counter', renderCounter); }
+  }
+  function saveCounter() { try { acctStoreWrite(counterSt(), JSON.stringify({ value: counterVal, step: counterStep })); } catch (e) {} }
   function counterUpdate() { const v = $('ctrVal'); if (v) v.textContent = counterVal.toLocaleString(); }
   function counterInc(d) { counterVal += d; saveCounter(); counterUpdate(); }
   function counterReset() { counterVal = 0; saveCounter(); counterUpdate(); }

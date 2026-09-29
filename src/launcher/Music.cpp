@@ -103,6 +103,10 @@ void start_locked(const std::string& file, float volume) {
     if (g_pcm.empty() || g_file != file) {
         std::vector<BYTE> pcm;
         if (!decode(beside_exe(file), pcm, fmt)) { rtx::log::Launcher("music: could not decode " + file); return; }
+        // The old voice may still be reading the old buffer and was made for the old track's format.
+        // DestroyVoice waits until the audio thread has let go of it, so only then is the old buffer freed,
+        // and a voice for the new format is made below.
+        if (g_voice) { g_voice->DestroyVoice(); g_voice = nullptr; g_playing = false; }
         g_pcm.swap(pcm);
         g_file = file;
     } else {

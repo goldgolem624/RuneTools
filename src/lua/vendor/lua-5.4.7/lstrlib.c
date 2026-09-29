@@ -361,6 +361,7 @@ typedef struct MatchState {
   const char *p_end;  /* end ('\0') of pattern */
   lua_State *L;
   int matchdepth;  /* control for recursive depth (to avoid C stack overflow) */
+  size_t work;  /* work left for this call (to bound backtracking) */
   unsigned char level;  /* total number of captures (finished or unfinished) */
   struct {
     const char *init;
@@ -377,6 +378,40 @@ static const char *match (MatchState *ms, const char *s, const char *p);
 #if !defined(MAXCCALLS)
 #define MAXCCALLS	200
 #endif
+
+
+/*
+** Work allowed for one call of find, match or gsub, or one step of a
+** gmatch iterator: a fixed amount plus some for each character of the
+** subject and the pattern, so that an ordinary scan fits at any length
+** while runaway backtracking raises an error. A unit is about the cost
+** of one step of 'match'. Scanning a set costs a unit per three of its
+** characters, a class test (such as '%a') two units, and an escape in a
+** replacement string four, since it may add nothing to the result (an
+** empty capture).
+*/
+#if !defined(MAXMATCHWORK)
+#define MAXMATCHWORK	20000000
+#endif
+
+#if !defined(MATCHWORKPERCHAR)
+#define MATCHWORKPERCHAR	64
+#endif
+
+
+static size_t matchwork (size_t ls, size_t lp) {
+  size_t lim = (MAX_SIZET - MAXMATCHWORK) / MATCHWORKPERCHAR;
+  if (ls >= lim || lp >= lim - ls)  /* would overflow? */
+    return MAX_SIZET;
+  return MAXMATCHWORK + (ls + lp) * MATCHWORKPERCHAR;
+}
+
+
+static void spendwork (MatchState *ms, size_t n) {
+  if (l_unlikely(ms->work < n))
+    luaL_error(ms->L, "pattern too complex");
+  ms->work -= n;
+}
 
 
 #define L_ESC		'%'
@@ -401,6 +436,7 @@ static int capture_to_close (MatchState *ms) {
 
 
 static const char *classend (MatchState *ms, const char *p) {
+  spendwork(ms, 1);
   switch (*p++) {
     case L_ESC: {
       if (l_unlikely(p == ms->p_end))
@@ -408,6 +444,7 @@ static const char *classend (MatchState *ms, const char *p) {
       return p+1;
     }
     case '[': {
+      const char *init = p;
       if (*p == '^') p++;
       do {  /* look for a ']' */
         if (l_unlikely(p == ms->p_end))
@@ -415,6 +452,7 @@ static const char *classend (MatchState *ms, const char *p) {
         if (*(p++) == L_ESC && p < ms->p_end)
           p++;  /* skip escapes (e.g. '%]') */
       } while (*p != ']');
+      spendwork(ms, (p - init) / 3);  /* the scan above */
       return p+1;
     }
     default: {
@@ -444,8 +482,10 @@ static int match_class (int c, int cl) {
 }
 
 
-static int matchbracketclass (int c, const char *p, const char *ec) {
+static int matchbracketclass (MatchState *ms, int c, const char *p,
+                                                     const char *ec) {
   int sig = 1;
+  spendwork(ms, (ec - p) / 3);  /* the scan below */
   if (*(p+1) == '^') {
     sig = 0;
     p++;  /* skip the '^' */
@@ -453,6 +493,7 @@ static int matchbracketclass (int c, const char *p, const char *ec) {
   while (++p < ec) {
     if (*p == L_ESC) {
       p++;
+      spendwork(ms, 2);
       if (match_class(c, uchar(*p)))
         return sig;
     }
@@ -469,6 +510,8 @@ static int matchbracketclass (int c, const char *p, const char *ec) {
 
 static int singlematch (MatchState *ms, const char *s, const char *p,
                         const char *ep) {
+  /* one unit, or two for a class test; a set charges its own scan */
+  spendwork(ms, (*p == '[') ? 1 : ep - p);
   if (s >= ms->src_end)
     return 0;
   else {
@@ -476,7 +519,7 @@ static int singlematch (MatchState *ms, const char *s, const char *p,
     switch (*p) {
       case '.': return 1;  /* matches any char */
       case L_ESC: return match_class(c, uchar(*(p+1)));
-      case '[': return matchbracketclass(c, p, ep-1);
+      case '[': return matchbracketclass(ms, c, p, ep-1);
       default:  return (uchar(*p) == c);
     }
   }
@@ -493,6 +536,7 @@ static const char *matchbalance (MatchState *ms, const char *s,
     int e = *(p+1);
     int cont = 1;
     while (++s < ms->src_end) {
+      spendwork(ms, 1);
       if (*s == e) {
         if (--cont == 0) return s+1;
       }
@@ -560,8 +604,10 @@ static const char *match_capture (MatchState *ms, const char *s, int l) {
   size_t len;
   l = check_capture(ms, l);
   len = ms->capture[l].len;
-  if ((size_t)(ms->src_end-s) >= len &&
-      memcmp(ms->capture[l].init, s, len) == 0)
+  if ((size_t)(ms->src_end-s) < len)  /* no room? (or a position capture) */
+    return NULL;
+  spendwork(ms, len);
+  if (memcmp(ms->capture[l].init, s, len) == 0)
     return s+len;
   else return NULL;
 }
@@ -571,6 +617,7 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
   if (l_unlikely(ms->matchdepth-- == 0))
     luaL_error(ms->L, "pattern too complex");
   init: /* using goto to optimize tail recursion */
+  spendwork(ms, 1);
   if (p != ms->p_end) {  /* end of pattern? */
     switch (*p) {
       case '(': {  /* start capture */
@@ -606,8 +653,8 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
               luaL_error(ms->L, "missing '[' after '%%f' in pattern");
             ep = classend(ms, p);  /* points to what is next */
             previous = (s == ms->src_init) ? '\0' : *(s - 1);
-            if (!matchbracketclass(uchar(previous), p, ep - 1) &&
-               matchbracketclass(uchar(*s), p, ep - 1)) {
+            if (!matchbracketclass(ms, uchar(previous), p, ep - 1) &&
+               matchbracketclass(ms, uchar(*s), p, ep - 1)) {
               p = ep; goto init;  /* return match(ms, s, ep); */
             }
             s = NULL;  /* match failed */
@@ -758,6 +805,7 @@ static void prepstate (MatchState *ms, lua_State *L,
                        const char *s, size_t ls, const char *p, size_t lp) {
   ms->L = L;
   ms->matchdepth = MAXCCALLS;
+  ms->work = matchwork(ls, lp);
   ms->src_init = s;
   ms->src_end = s + ls;
   ms->p_end = p + lp;
@@ -839,6 +887,10 @@ static int gmatch_aux (lua_State *L) {
   GMatchState *gm = (GMatchState *)lua_touserdata(L, lua_upvalueindex(3));
   const char *src;
   gm->ms.L = L;
+  /* fresh limits for each step (a previous one may have ended in an error) */
+  gm->ms.matchdepth = MAXCCALLS;
+  gm->ms.work = matchwork(gm->ms.src_end - gm->ms.src_init,
+                          gm->ms.p_end - gm->p);
   for (src = gm->src; src <= gm->ms.src_end; src++) {
     const char *e;
     reprepstate(&gm->ms);
@@ -875,6 +927,7 @@ static void add_s (MatchState *ms, luaL_Buffer *b, const char *s,
   const char *news = lua_tolstring(L, 3, &l);
   const char *p;
   while ((p = (char *)memchr(news, L_ESC, l)) != NULL) {
+    spendwork(ms, 4);  /* an escape may add nothing (an empty capture) */
     luaL_addlstring(b, news, p - news);
     p++;  /* skip ESC */
     if (*p == L_ESC)  /* '%%' */

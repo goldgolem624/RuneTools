@@ -31,13 +31,15 @@
     for (const p of achDefs) {
       if (cfg.cats.indexOf(p.cat) < 0 || !p.subach || !p.subach.length) continue;
       const pg = cfg.parse(p.name || '');
+      if (cfg.tiers.length && pg.tierIdx < 0) continue;   // a rollup of sets (Task Master), not a set of tasks
       for (const cid of p.subach) {
         const ch = byId[cid]; if (!ch) continue;
         let nm = ch.name || ('#' + cid);
         if (p.name && nm.indexOf(p.name + ':') === 0) nm = nm.slice(p.name.length + 1).trim();
         out.push({ id: cid, name: nm, desc: (typeof ch.desc === 'string' ? ch.desc : ''),
                    group: pg.group, tierIdx: (pg.tierIdx != null ? pg.tierIdx : -1),
-                   done: st.done.has(cid), parent: p.name || '' });
+                   done: st.done.has(cid), parent: p.name || '',
+                   unknown: !st.done.has(cid) && (!(st.prog && st.prog[cid]) || !!(st.unknown && st.unknown.has(cid))) });
       }
     }
     return out;
@@ -95,7 +97,7 @@
     if (t.desc) tip.push(t.desc);
     if (t.group) tip.push(cfg.groupLabel + ': ' + t.group);
     if (cfg.tiers && cfg.tiers[t.tierIdx]) tip.push('Difficulty: ' + cfg.tiers[t.tierIdx]);
-    tip.push('Status: ' + (t.done ? 'complete' : 'incomplete'));
+    tip.push('Status: ' + (t.done ? 'complete' : t.unknown ? 'not known (its requirements cannot be read)' : 'incomplete'));
     row.dataset.tip = tip.join('\n');
     const info = document.createElement('div'); info.className = 'bs-info';
     const top = document.createElement('div'); top.className = 'bs-top';
@@ -110,8 +112,8 @@
     }
     row.appendChild(info);
     if (cfg.tiers && cfg.tiers[t.tierIdx]) { const tb = document.createElement('span'); tb.className = 'clue-tier t' + t.tierIdx; tb.textContent = cfg.tiers[t.tierIdx]; row.appendChild(tb); }
-    const st2 = document.createElement('div'); st2.className = 'pet-st task-st ' + (t.done ? 'pet-yes' : 'pet-no');
-    st2.textContent = t.done ? 'Complete' : 'Incomplete';
+    const st2 = document.createElement('div'); st2.className = 'pet-st task-st ' + (t.done ? 'pet-yes' : t.unknown ? 'pet-na' : 'pet-no');
+    st2.textContent = t.done ? 'Complete' : t.unknown ? 'Not known' : 'Incomplete';
     row.appendChild(st2);
     return row;
   }
@@ -132,11 +134,12 @@
     });
     items.sort((a, b) => (a.done ? 1 : 0) - (b.done ? 1 : 0) || (a.tierIdx - b.tierIdx) ||
       (a.group || '').localeCompare(b.group || '') || (a.name || '').localeCompare(b.name || ''));
-    const doneN = data.filter(t => t.done).length;
+    const doneN = data.filter(t => t.done).length, unkN = data.filter(t => t.unknown).length;
     if (cnt) cnt.textContent = doneN + ' / ' + data.length + ' complete' +
+      (unkN ? '  ·  ' + unkN + ' not known' : '') +
       (items.length !== data.length ? '  ·  ' + items.length + ' shown' : '');
     const sig = s.status + '|' + s.tier + '|' + s.group + '|' + s.search + '|' +
-      items.map(t => t.id + (t.done ? 'D' : '')).join(',');
+      items.map(t => t.id + (t.done ? 'D' : t.unknown ? 'U' : '')).join(',');
     if (sig === s.sig) return;
     s.sig = sig;
     list.innerHTML = '';

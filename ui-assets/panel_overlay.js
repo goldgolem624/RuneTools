@@ -46,8 +46,12 @@
   }
   OV_HOVER_KINDS.forEach(([, , , wKey]) => { overlayState[wKey] = overlayState[wKey] || overlayState.hover_width; });
   ovAdopt((function () { try { return localStorage.getItem('rtxOverlayCfg'); } catch (e) { return null; } })());
+  // The settings are shared by every client window, but what this window's arrow points at is its own:
+  // while that arrow is on, its target stays as it is here.
   function ovApplyDurablePrefs() {
+    const own = overlayState.mark_test ? { mark_test: true, mark_target: overlayState.mark_target, mark_query: overlayState.mark_query } : null;
     if (!ovAdopt(prefGet('rtxOverlayCfg', null))) return;
+    if (own) Object.assign(overlayState, own);
     try { pushOverlay(); } catch (e) {}
     try { paneRun('overlay', renderOverlay); } catch (e) {}
   }

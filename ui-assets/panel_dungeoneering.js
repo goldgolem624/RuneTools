@@ -136,6 +136,21 @@ function dungSyncAction(act, wrap) {
   } catch (e) {}
   dungSig = ''; renderDungeoneering();
 }
+// Writes the pane's markup. A code box being typed in is put back in place of the rebuilt one and focused
+// again with its cursor: the pane re-renders whenever the party or the floor changes, and a fresh box would
+// drop the focus mid-entry, sending the next keys to the game.
+function dungSetHtml(wrap, html) {
+  const box = wrap.querySelector('.dg-sync-in');
+  const typing = !!box && document.activeElement === box;
+  let s0 = 0, s1 = 0;
+  if (typing) { try { s0 = box.selectionStart; s1 = box.selectionEnd; } catch (e) {} }
+  wrap.innerHTML = html;
+  if (!typing) return;
+  const slot = wrap.querySelector('.dg-sync-in');
+  if (!slot) return;
+  slot.parentNode.replaceChild(box, slot);
+  try { box.focus(); box.setSelectionRange(s0, s1); } catch (e) {}
+}
 // skill sprites (cache js5-8), indexed by SKILL_NAMES order; same table the XP tracker uses
 const DUNG_SKILL_SPR = [
   16040, 16045, 16160, 16041, 16058, 16057, 16055, 16043, 16197, 16051,
@@ -2485,20 +2500,21 @@ function dungReachClosure(rooms, from, led, held) {
 }
 function dungFrontierArea(rooms, fronts, floor) {
   const area = {}, dist = {};
+  // an unread floor size still needs an edge, or the fill below never runs out of cells
+  const cols = (floor && floor.cols) || 8, rows = (floor && floor.rows) || 8;
   for (const f of fronts) {
     area[f] = 0;
     const p = f.split(',').map(Number), d = {}, q = [[p[0], p[1], 0]];
     for (let i = 0; i < q.length; i++) {
       for (const st of DUNG_DIRS) {
         const nx = q[i][0] + st[1], ny = q[i][1] + st[2], k = nx + ',' + ny;
-        if (nx < 0 || ny < 0 || (floor && (nx >= floor.cols || ny >= floor.rows))) continue;
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
         if (rooms[k] || d[k] !== undefined) continue;
         d[k] = q[i][2] + 1; q.push([nx, ny, q[i][2] + 1]);
       }
     }
     dist[f] = d;
   }
-  const cols = (floor && floor.cols) || 8, rows = (floor && floor.rows) || 8;
   for (const f of fronts) {
     const p = f.split(',').map(Number);
     const ray = (dx, dy) => {
@@ -3159,7 +3175,7 @@ async function fetchDungeoneering() {
     const inDung = groups.some(g => g.id === 945);
     const mapOpen = groups.some(g => g.id === 942);
     const party92 = groups.some(g => DUNG_PARTY_GROUPS.indexOf(g.id) >= 0);
-    if (!inDung) { dungDropMarks(); dungFloorSW = null; dungLastTimer = -1; dungKeyCache = {}; dungOpenedAt = {}; dungKeySrc = {}; dungKeyDoor = {}; dungKeyFillerVeto = {}; dungHeldSeen = {}; dungHeldInit = false; dungRoomRes = {}; dungCritKeys = {}; dungDerivedCritKeys = {}; dungCritKeyBlock = {}; dungCritKeyTouch = {}; dungDoorLevels = {}; dungTipLast = ''; dungStatues = null; dungMonoDone = {}; dungEmoteLast = -1; dungEmoteWatch = ''; dungManualNonCrit = {}; dungNonCritTouch = {}; dungManualCrit = {}; dungManualCritTouch = {}; dungNonCritSeen = {}; dungManualCritSeen = {}; dungStickyObj = ''; dungClearOverlays(); }   // left the dungeon -> drop anchor + keys + highlights (no party 'reset': the rest of the party may still be on the floor)
+    if (!inDung) { dungDropMarks(); dungFloorSW = null; dungLastTimer = -1; dungKeyCache = {}; dungOpenedAt = {}; dungKeySrc = {}; dungKeyDoor = {}; dungKeyFillerVeto = {}; dungHeldSeen = {}; dungHeldInit = false; dungRoomRes = {}; dungCritKeys = {}; dungDerivedCritKeys = {}; dungCritKeyBlock = {}; dungCritKeyTouch = {}; dungDoorLevels = {}; dungCritLatch = {}; dungRouteTarget = ''; dungTipLast = ''; dungStatues = null; dungMonoDone = {}; dungEmoteLast = -1; dungEmoteWatch = ''; dungManualNonCrit = {}; dungNonCritTouch = {}; dungManualCrit = {}; dungManualCritTouch = {}; dungNonCritSeen = {}; dungManualCritSeen = {}; dungStickyObj = ''; dungClearOverlays(); }   // left the dungeon -> drop anchor + keys + highlights (no party 'reset': the rest of the party may still be on the floor)
     if (!inDung && !party92) dungPartyRoster = {};
     dungPumpPartyHiscores(party92);
     const d = { in: inDung, mapOpen: mapOpen, party92: party92, keys: [], timer: '', deaths: '',
@@ -3601,8 +3617,8 @@ function renderDungeoneering() {
         + '|' + SKILL_NAMES.map((_, i) => { let b = null; for (const n in dungPartyStats) { if (dungPartyRoster[n] && typeof dungPartyStats[n][i] === 'number' && (b == null || dungPartyStats[n][i] > b)) b = dungPartyStats[n][i]; } return b || 0; }).join('.');
       if (fsig === dungSig) return;
       dungSig = fsig;
-      wrap.innerHTML = '<div class="dg-head"><div><div class="dg-title">Daemonheim</div>'
-        + '<div class="dg-sub">forming party</div></div></div>' + dungPartyBestHtml(d.party92, true);
+      dungSetHtml(wrap, '<div class="dg-head"><div><div class="dg-title">Daemonheim</div>'
+        + '<div class="dg-sub">forming party</div></div></div>' + dungPartyBestHtml(d.party92, true));
       wrap.querySelectorAll('.dg-rspr-mk').forEach(el => loadSpriteIcon(el, +el.dataset.spr, 40));
       dungStripTitles(wrap);
       return;
@@ -3939,7 +3955,7 @@ function renderDungeoneering() {
 
   html += dungPartyBestHtml(d.party92);
 
-  wrap.innerHTML = html;
+  dungSetHtml(wrap, html);
   wrap.querySelectorAll('.dg-rspr').forEach(el => loadSpriteIcon(el, +el.dataset.spr, 112));
   wrap.querySelectorAll('.dg-rspr-mk').forEach(el => loadSpriteIcon(el, +el.dataset.spr, 40));
   wrap.querySelectorAll('.dg-mini,.dg-keyico').forEach(el => { const u = resolveIcon(+el.dataset.item); if (u) el.style.backgroundImage = "url('" + u + "')"; });

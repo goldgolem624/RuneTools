@@ -137,7 +137,19 @@ bool NamesMatchBuild() {
     std::string table(buf, got);
     while (!table.empty() && (table.back() == '\r' || table.back() == '\n' || table.back() == ' ')) table.pop_back();
     const std::string running = RunningBuild();
-    if (!running.empty() && table == running) return true;
+    if (!running.empty() && table == running) {
+        // The launcher gives the label its table's write time. A label newer than the table was
+        // written for an extraction that never rewrote it (earlier launchers wrote it when the run
+        // started), so the table is still an earlier build's.
+        const std::wstring ops = std::wstring(up) + L"\\RuneToolsX\\cs2\\opcodes.json";
+        WIN32_FILE_ATTRIBUTE_DATA t{}, v{};
+        if (GetFileAttributesExW(ops.c_str(), GetFileExInfoStandard, &t) &&
+            GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &v) &&
+            CompareFileTime(&t.ftLastWriteTime, &v.ftLastWriteTime) >= 0) return true;
+        Say("engine ops: the operation table was not extracted from game build %s; named operations are off until the tables are extracted again",
+            running.c_str());
+        return false;
+    }
     Say("engine ops: operation names are from game build %s, this is %s; named operations are off until the tables are extracted again",
         table.empty() ? "(unknown)" : table.c_str(), running.empty() ? "(unknown)" : running.c_str());
     return false;
@@ -324,12 +336,16 @@ bool Project(std::uint8_t* root, int plane, float x, float height, float y, int 
 // releases a reference. So the slot can be filled in directly with any character the game has,
 // which is how a player is reached at all: the binding operation the scripts use goes through the
 // NPC registry alone. The state is ours, and a character cannot go away inside a frame on this
-// thread, so nothing is borrowed that has to be given back.
+// thread, so the character put in is only borrowed. What the slot held before is not: the binding
+// operation leaves a counted reference there, which the next binding gives back. So that pair is
+// set aside for the call and put back after it, rather than lost with its count still held.
 bool HeightHeld(std::uint8_t* root, std::uint8_t* entity, std::int32_t& lift) {
     const OpFn high = Verified(kOpOverlayHeight, kHeightHead, sizeof(kHeightHead));
     if (!high || !entity) return false;
     auto* slotObj = reinterpret_cast<std::uint8_t**>(g_state + kEntityObj);
     auto* slotRef = reinterpret_cast<std::uint8_t**>(g_state + kEntityRef);
+    std::uint8_t* const heldRef = *slotRef;
+    std::uint8_t* const heldObj = *slotObj;
     std::uint32_t& isp = *reinterpret_cast<std::uint32_t*>(g_state + kIntSp);
     auto* st = reinterpret_cast<std::int32_t*>(g_state + kIntStack);
     bool ok = false;
@@ -339,9 +355,9 @@ bool HeightHeld(std::uint8_t* root, std::uint8_t* entity, std::int32_t& lift) {
         *slotRef = nullptr; *slotObj = entity;
         isp = 0;
         if (high(root, g_state) != reinterpret_cast<void*>(~0ull) && isp >= 1) { lift = st[isp - 1]; ok = true; }
-        *slotObj = nullptr;
+        *slotRef = heldRef; *slotObj = heldObj;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        *slotObj = nullptr;
+        *slotRef = heldRef; *slotObj = heldObj;
         g_poisoned = true;
         Say("engine ops: overhead height faulted, stopped");
         return false;

@@ -189,7 +189,8 @@ std::filesystem::path next_screenshot_path() {
                         L"_" + pad(st.wHour, 2) + L"-" + pad(st.wMinute, 2) + L"-" + pad(st.wSecond, 2);
     std::filesystem::path dir = screenshots_dir();
     std::filesystem::path p = dir / (base + L".png");
-    for (int i = 2; std::filesystem::exists(p) && i < 1000; ++i)
+    std::error_code ec;
+    for (int i = 2; std::filesystem::exists(p, ec) && i < 1000; ++i)
         p = dir / (base + L"_" + std::to_wstring(i) + L".png");
     return p;
 }
@@ -671,7 +672,7 @@ JSValueRef SoundExport(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (_wfopen_s(&f, path.wstring().c_str(), L"wb") != 0 || !f) return utf8_to_js(ctx, "");
     std::fwrite(ogg.data(), 1, ogg.size(), f);
     std::fclose(f);
-    return utf8_to_js(ctx, path.string());
+    return utf8_to_js(ctx, wide_to_utf8(path.wstring()));
 }
 
 JSValueRef SoundPlay(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -1447,9 +1448,13 @@ JSValueRef Events(JSContextRef ctx, JSObjectRef, JSObjectRef,
                   size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, fail_json("noargs"));
     auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    std::uint64_t since = (argc >= 2)
-        ? (std::uint64_t)JSValueToNumber(ctx, argv[1], nullptr) : 0;
-    return served_obj(ctx, pid, "events:" + std::to_string(pid),
+    double s = (argc >= 2) ? JSValueToNumber(ctx, argv[1], nullptr) : 0;
+    if (!(s > 0)) s = 0;                                            // NaN and negatives
+    if (s > 9007199254740992.0) s = 9007199254740992.0;             // largest exact JS integer
+    const std::uint64_t since = (std::uint64_t)s;
+    // The cursor is part of the key: the host poll and any plugin polling on its own each get an answer
+    // built from their own cursor, never one built for another caller's.
+    return served_obj(ctx, pid, "events:" + std::to_string(pid) + ":" + std::to_string(since),
                       [pid, since] { return rtx::reader::EventsJson(pid, since); });
 }
 
@@ -2687,8 +2692,9 @@ JSValueRef OpenLog(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t, const JSValueRef[], JSValueRef*) {
     std::filesystem::path dir = rtx::log::LogDir();
     std::filesystem::path target;
-    if      (std::filesystem::exists(dir)) target = dir;
-    else if (std::filesystem::exists(dir.parent_path())) target = dir.parent_path();
+    std::error_code ec;
+    if      (std::filesystem::exists(dir, ec)) target = dir;
+    else if (std::filesystem::exists(dir.parent_path(), ec)) target = dir.parent_path();
     if (!target.empty()) {
         ShellExecuteW(nullptr, L"open", target.c_str(),
                       nullptr, nullptr, SW_SHOWNORMAL);
@@ -4099,10 +4105,22 @@ JSValueRef NotesLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, s.empty() ? std::string("[]") : s);
 }
 
+// "" while the account behind the client is not known yet and when its file is there but cannot be read:
+// the page asks again, instead of taking that for an account with no grants and saving over the file.
+// "{}" only when the account has no grants file.
 JSValueRef PluginGrantsLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t argc, const JSValueRef argv[], JSValueRef*) {
     std::uint32_t pid = (argc >= 1) ? (std::uint32_t)JSValueToNumber(ctx, argv[0], nullptr) : 0;
-    std::string s = alerts_read_file(account_store_path(pid, L"plugin-grants"));
+    auto p = account_store_path(pid, L"plugin-grants");
+    if (p.empty()) return utf8_to_js(ctx, std::string());
+    std::error_code ec;
+    if (std::filesystem::status(p, ec).type() == std::filesystem::file_type::not_found)
+        return utf8_to_js(ctx, std::string("{}"));
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return utf8_to_js(ctx, std::string());
+    std::stringstream ss; ss << f.rdbuf();
+    if (f.bad()) return utf8_to_js(ctx, std::string());
+    std::string s = ss.str();
     return utf8_to_js(ctx, s.empty() ? std::string("{}") : s);
 }
 
@@ -4857,8 +4875,8 @@ JSValueRef OverlayNotify(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, true);
 }
 
-void install_fn(JSContextRef ctx, JSObjectRef obj, const char* name,
-                JSObjectCallAsFunctionCallback fn) {
+void install_fn_raw(JSContextRef ctx, JSObjectRef obj, const char* name,
+                    JSObjectCallAsFunctionCallback fn) {
     JSStringRef key = JSStringCreateWithUTF8CString(name);
     JSObjectRef f = JSObjectMakeFunctionWithCallback(ctx, key, fn);
     JSObjectSetProperty(ctx, obj, key, f,
@@ -4866,16 +4884,51 @@ void install_fn(JSContextRef ctx, JSObjectRef obj, const char* name,
                         nullptr);
     JSStringRelease(key);
 }
+// Every bridge function is entered through js_guarded, so no C++ exception can leave a JS call.
+#define install_fn(ctx, obj, name, fn) install_fn_raw(ctx, obj, name, js_guarded<fn>)
 
 
+// CON, NUL, COM1.txt, lpt3.log, "aux .lua" ... can open a device instead of a file: Windows 10 matches
+// the part before the first dot, trailing spaces dropped, whatever the extension and folder.
+bool plugin_reserved_name(const std::string& name) {
+    std::string base = name.substr(0, name.find('.'));
+    while (!base.empty() && base.back() == ' ') base.pop_back();
+    for (auto& c : base) c = (char)std::tolower((unsigned char)c);
+    if (base == "con" || base == "prn" || base == "aux" || base == "nul" ||
+        base == "conin$" || base == "conout$") return true;
+    return base.size() == 4 && (base.compare(0, 3, "com") == 0 || base.compare(0, 3, "lpt") == 0) &&
+           base[3] >= '0' && base[3] <= '9';
+}
+
+// One file name inside a plugin folder: printable ASCII (so every code page reads it the same way),
+// nothing Windows takes as a drive, folder or wildcard, and not a device.
+bool plugin_bare_name_ok(const std::string& n) {
+    if (n.empty() || n.find("..") != std::string::npos) return false;
+    for (char c : n)
+        if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7E || std::strchr("<>:\"/\\|?*", c)) return false;
+    return !plugin_reserved_name(n);
+}
+
+// A name read from disk, as ASCII, or "" when it has anything else. Never throws, unlike
+// path::string(), which fails on names outside the system code page.
+std::string plugin_ascii_name(const std::filesystem::path& name) {
+    std::string a;
+    for (wchar_t c : name.native()) { if (c < 0x20 || c > 0x7E) return {}; a.push_back((char)c); }
+    return a;
+}
+
+// An id names the plugin's folders, and Windows matches folder names ignoring case and drops a trailing
+// dot. So the id is kept in lower case and one ending in a dot is refused: "Com.X.Tool" is then the same
+// plugin as "com.x.tool" (one tab, one set of grants), not a second one sharing its storage and logs.
 std::string sanitize_plugin_id(const std::string& id) {
     std::string out;
     for (char c : id) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') out.push_back(c);
+        if (c >= 'A' && c <= 'Z') out.push_back((char)(c - 'A' + 'a'));
+        else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                 c == '.' || c == '-' || c == '_') out.push_back(c);
     }
-    if (out.empty() || out.front() == '.') return {};
-    if (out.find("..") != std::string::npos) return {};
+    if (out.empty() || out.front() == '.' || out.back() == '.') return {};
+    if (out.find("..") != std::string::npos || plugin_reserved_name(out)) return {};
     return out;
 }
 
@@ -4885,7 +4938,7 @@ std::string sanitize_plugin_key(const std::string& key) {
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
             (c >= '0' && c <= '9') || c == '-' || c == '_') out.push_back(c);
     }
-    return out;
+    return plugin_reserved_name(out) ? std::string() : out;
 }
 
 std::filesystem::path plugin_store_dir(std::uint32_t pid, const std::string& pluginId) {
@@ -4910,6 +4963,40 @@ std::filesystem::path plugin_dev_root() {
 
 constexpr std::size_t kPluginStoreMaxBytes = 256 * 1024;
 constexpr std::size_t kPluginEntryMaxBytes = 2 * 1024 * 1024;
+// One plugin's store for one account. The bundled plugins keep under a dozen keys; the limits are there so
+// a plugin cannot fill the disk by writing new keys, not to squeeze ordinary use.
+constexpr std::size_t   kPluginStoreMaxKeys  = 1000;
+constexpr std::uint64_t kPluginStoreMaxTotal = 16ull * 1024 * 1024;
+
+// Whether writing `size` bytes under `key` keeps the store in `dir` within those limits. Every file in the
+// folder counts, the key's own file at its new size. A store already past a limit can still replace a key
+// with a value no larger than before, so data kept from before the limits stays usable.
+bool plugin_store_fits(const std::filesystem::path& dir, const std::string& id, const std::string& key,
+                       std::size_t size) {
+    const std::wstring name = std::wstring(key.begin(), key.end()) + L".json";
+    std::uint64_t total = 0, old = 0;
+    std::size_t files = 0;
+    bool exists = false;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code fe;
+        if (!it->is_regular_file(fe) || fe) continue;
+        std::uint64_t sz = it->file_size(fe); if (fe) sz = 0;
+        total += sz; ++files;
+        if (_wcsicmp(it->path().filename().c_str(), name.c_str()) == 0) { exists = true; old = sz; }
+    }
+    if (ec) return false;   // an unreadable folder cannot be measured
+    const bool keysOk  = exists || files < kPluginStoreMaxKeys;
+    const bool bytesOk = total - old + size <= kPluginStoreMaxTotal || size <= old;
+    if (keysOk && bytesOk) return true;
+    static std::unordered_set<std::string> warned;   // one line per plugin per run
+    const std::string sid = sanitize_plugin_id(id);
+    if (warned.insert(sid).second)
+        rtx::log::Launcher("plugin " + sid + ": storage full (" + std::to_string(files) + " keys, " +
+                           std::to_string(total) + " bytes; limits " + std::to_string(kPluginStoreMaxKeys) +
+                           " keys, " + std::to_string(kPluginStoreMaxTotal) + " bytes), write refused");
+    return false;
+}
 
 JSValueRef PluginStoreLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
                            size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -4934,6 +5021,7 @@ JSValueRef PluginStoreSave(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (val.size() > kPluginStoreMaxBytes) return JSValueMakeBoolean(ctx, false);
     auto dir = plugin_store_dir(pid, id);
     if (dir.empty()) return JSValueMakeBoolean(ctx, false);
+    if (!plugin_store_fits(dir, id, key, val.size())) return JSValueMakeBoolean(ctx, false);
     std::ofstream f(dir / (key + ".json"), std::ios::binary | std::ios::trunc);
     if (!f) return JSValueMakeBoolean(ctx, false);
     f.write(val.data(), (std::streamsize)val.size());
@@ -4949,11 +5037,12 @@ JSValueRef PluginStoreKeys(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string out = "[";
     if (!dir.empty()) {
         std::error_code ec; bool first = true;
-        for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
-            if (ec) break;
-            if (!e.is_regular_file()) continue;
+        for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto& e = *it;
+            std::error_code fe;
+            if (!e.is_regular_file(fe) || fe) continue;
             if (e.path().extension() != L".json") continue;
-            std::string stem = sanitize_plugin_key(e.path().stem().string());
+            std::string stem = sanitize_plugin_key(plugin_ascii_name(e.path().stem()));
             if (stem.empty()) continue;
             if (!first) out += ",";
             out += "\""; out += stem; out += "\""; first = false;
@@ -4976,15 +5065,6 @@ constexpr std::size_t   kPluginLogMaxFiles  = 200;
 
 std::map<std::string, std::uint64_t> g_pluginLogBytes;   // sanitized id -> bytes on disk (lazy)
 
-// CON, NUL, COM1.txt, lpt3.log ... open a device instead of a file.
-bool plugin_log_reserved(const std::string& name) {
-    std::string base = name.substr(0, name.find('.'));
-    for (auto& c : base) c = (char)std::tolower((unsigned char)c);
-    if (base == "con" || base == "prn" || base == "aux" || base == "nul") return true;
-    return base.size() == 4 && (base.compare(0, 3, "com") == 0 || base.compare(0, 3, "lpt") == 0) &&
-           base[3] >= '0' && base[3] <= '9';
-}
-
 bool plugin_log_plain_dir(const std::filesystem::path& p) {
     DWORD a = GetFileAttributesW(p.c_str());
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) && !(a & FILE_ATTRIBUTE_REPARSE_POINT);
@@ -4992,7 +5072,7 @@ bool plugin_log_plain_dir(const std::filesystem::path& p) {
 
 std::filesystem::path plugin_log_dir(const std::string& pluginId, std::string* idOut = nullptr) {
     std::string id = sanitize_plugin_id(pluginId);
-    if (id.empty() || id.size() > 80 || plugin_log_reserved(id) || id.back() == '.') return {};
+    if (id.empty() || id.size() > 80 || plugin_reserved_name(id) || id.back() == '.') return {};
     auto root = alerts_user_dir();
     if (root.empty()) return {};
     auto logs = root / L"plugin-logs";
@@ -5016,7 +5096,7 @@ std::string sanitize_plugin_log_name(const std::string& name) {
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
               c == '-' || c == '_' || c == '.')) return {};
     if (stem.front() == '.' || stem.back() == '.' || stem.find("..") != std::string::npos) return {};
-    if (plugin_log_reserved(stem)) return {};
+    if (plugin_reserved_name(stem)) return {};
     return stem + "." + ext;
 }
 
@@ -5188,10 +5268,11 @@ JSValueRef PluginDevList(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string out = "[";
     if (!root.empty()) {
         std::error_code ec; bool first = true;
-        for (auto& e : std::filesystem::directory_iterator(root, ec)) {
-            if (ec) break;
-            if (!e.is_directory()) continue;
-            std::string id = sanitize_plugin_id(e.path().filename().string());
+        for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto& e = *it;
+            std::error_code fe;
+            if (!e.is_directory(fe) || fe) continue;
+            std::string id = sanitize_plugin_id(plugin_ascii_name(e.path().filename()));
             if (id.empty()) continue;
             std::error_code ec2;
             if (!std::filesystem::exists(e.path() / "manifest.json", ec2)) continue;
@@ -5218,17 +5299,20 @@ JSValueRef PluginDevStamp(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string out;
     if (!root.empty()) {
         std::error_code ec;
-        for (auto& e : std::filesystem::directory_iterator(root, ec)) {
-            if (ec) break;
-            if (!e.is_directory()) continue;
-            std::string id = sanitize_plugin_id(e.path().filename().string());
+        for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto& e = *it;
+            std::error_code fe;
+            if (!e.is_directory(fe) || fe) continue;
+            std::string id = sanitize_plugin_id(plugin_ascii_name(e.path().filename()));
             if (id.empty()) continue;
             std::error_code ec2;
             if (!std::filesystem::exists(e.path() / "manifest.json", ec2)) continue;
             long long maxT = 0; int n = 0;
             std::error_code itEc;
-            for (auto& f : std::filesystem::recursive_directory_iterator(e.path(), itEc)) {
-                if (itEc) break;
+            for (std::filesystem::recursive_directory_iterator fi(e.path(),
+                     std::filesystem::directory_options::skip_permission_denied, itEc), fend;
+                 !itEc && fi != fend; fi.increment(itEc)) {
+                const auto& f = *fi;
                 if (++n > 512) break;
                 std::error_code fec;
                 if (!f.is_regular_file(fec) || fec) continue;
@@ -5250,9 +5334,7 @@ JSValueRef PluginDevEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
     std::string entry = js_to_utf8(ctx, argv[1]);
     auto root = plugin_dev_root();
-    if (id.empty() || root.empty() || entry.empty()) return utf8_to_js(ctx, std::string());
-    if (entry.find('/') != std::string::npos || entry.find('\\') != std::string::npos ||
-        entry.find("..") != std::string::npos) return utf8_to_js(ctx, std::string());
+    if (id.empty() || root.empty() || !plugin_bare_name_ok(entry)) return utf8_to_js(ctx, std::string());
     std::string s = alerts_read_file(root / id / entry);
     if (s.size() > kPluginEntryMaxBytes) return utf8_to_js(ctx, std::string());
     return utf8_to_js(ctx, s);
@@ -5262,7 +5344,7 @@ JSValueRef PluginDevEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
 constexpr wchar_t kPluginListPath[] = L"/api/plugins/client/list";
 
 }  // namespace
-// Pinned ECDSA P-256 public key (raw X||Y); signs plugin bundles and the update manifest.
+// Pinned ECDSA P-256 public key (raw X||Y); signs plugin bundles, the update manifest and the revocation list.
 const unsigned char kPluginPubKey[64] = {
     0x7e, 0x24, 0xd5, 0xaa, 0xd0, 0x72, 0x29, 0xf2, 0x11, 0xbf, 0x5a, 0x75,
     0x3b, 0x5a, 0xf0, 0xe7, 0xe0, 0xd8, 0xdf, 0xb7, 0x7a, 0x8b, 0x19, 0xe4,
@@ -5313,10 +5395,16 @@ std::string sha256_hex_buf(const std::uint8_t* d, std::size_t n) {
 // ---- Lua bundles: every allowed file in the zip is written under plugins\<id>\ (the runtime
 // reads modules and data files from disk; the JavaScript path only ever needed the entry HTML).
 bool lua_bundle_path_ok(const std::string& n) {
-    if (n.empty() || n.size() > 200 || n[0] == '/' || n.find("..") != std::string::npos ||
-        n.find('\\') != std::string::npos || n.find(':') != std::string::npos) return false;
-    int segs = 1;
-    for (char c : n) { if ((unsigned char)c < 0x20) return false; if (c == '/') ++segs; }
+    if (n.empty() || n.size() > 200) return false;
+    // Every folder and file name on the way must be a plain ASCII name: this also refuses a leading
+    // '/', a backslash, a colon, "..", and a device name such as com3.lua that would open a port.
+    int segs = 0;
+    for (std::size_t s = 0; s <= n.size(); ++segs) {
+        std::size_t e = n.find('/', s);
+        if (e == std::string::npos) e = n.size();
+        if (!plugin_bare_name_ok(n.substr(s, e - s))) return false;
+        s = e + 1;
+    }
     if (segs > 8) return false;
     auto dot = n.rfind('.');
     if (dot == std::string::npos || n.rfind('/') != std::string::npos && n.rfind('/') > dot) return false;
@@ -5330,8 +5418,7 @@ bool lua_bundle_path_ok(const std::string& n) {
 std::string install_lua_bundle(const std::uint8_t* body, std::size_t blen, const std::string& manStr, const std::string& id) {
     std::string mainFile = json_str(manStr, "main");
     if (mainFile.empty()) mainFile = "main.lua";
-    if (mainFile.find('/') != std::string::npos || mainFile.find('\\') != std::string::npos ||
-        mainFile.find("..") != std::string::npos || mainFile.size() < 5 ||
+    if (!plugin_bare_name_ok(mainFile) || mainFile.size() < 5 ||
         mainFile.compare(mainFile.size() - 4, 4, ".lua") != 0) return "Invalid main filename";
     std::vector<std::string> names;
     if (!zip::ListFiles(body, blen, names)) return "Bundle unreadable";
@@ -5397,8 +5484,8 @@ std::string install_plugin(const std::string& slug) {
     if (json_str(manStr, "runtime") == "lua") return install_lua_bundle(body, blen, manStr, id);
     std::string entryName = json_str(manStr, "entry");
     if (entryName.empty()) entryName = "index.html";
-    if (entryName.find('/') != std::string::npos || entryName.find('\\') != std::string::npos ||
-        entryName.find("..") != std::string::npos) return "Invalid entry filename";
+    // A bare name only: "D:index.html" would otherwise land on another drive.
+    if (!plugin_bare_name_ok(entryName)) return "Invalid entry filename";
     std::string entryHtml;
     if (!zip::ExtractFile(body, blen, entryName, entryHtml) || entryHtml.empty())
         return "Bundle missing entry file";
@@ -5426,11 +5513,8 @@ std::string  g_pluginListErr;               // "" = none
 bool         g_pluginListInFlight = false;
 ULONGLONG    g_pluginListAt = 0;            // tick of the last success
 
-void plugin_check_revocations(bool force);   // defined below, self-throttled to hourly
-
 JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
                             size_t, const JSValueRef[], JSValueRef*) {
-    plugin_check_revocations(false);
     std::string body, err;
     {
         std::lock_guard<std::mutex> lk(g_pluginListMu);
@@ -5465,7 +5549,10 @@ JSValueRef PluginMarketList(JSContextRef ctx, JSObjectRef, JSObjectRef,
 //
 // The list is signed with the same pinned key as bundles, over
 //   "rtx-plugin-revocation-v1" + issuedAt + sorted "id|version|hash" lines
-// and is only applied once that verifies. issuedAt is part of the signed
+// in the revocation list's signature domain ("signatureV2"), and is only
+// applied once that verifies. The bare "signature" beside it is only for
+// older launchers: a bundle's bytes are its author's choice, so a bare
+// signature from that key proves nothing here. issuedAt is part of the signed
 // message and the highest value seen is kept on disk, so the list only ever
 // moves forward.
 
@@ -5492,37 +5579,45 @@ void plugin_revocation_store(long long issuedAt) {
     if (f) f << issuedAt;
 }
 
-// Pull "id", "version" and "hash" out of each object of the "entries" array.
+// Installed plugins revoked during this run. Removing the folder does not stop a copy a page already
+// runs, so the pages are told (PluginRevoked) and the installed loaders refuse these ids until the
+// plugin is installed again, which also covers a folder that could not be removed.
+std::mutex                      g_revokedMu;
+std::unordered_set<std::string> g_revokedIds;        // refused by the installed loaders
+std::vector<std::string>        g_revokedList;       // every revocation of this run, in order, for the pages
+std::atomic<bool>               g_revokeChecked{false};   // the first check of this run has finished
+
+void plugin_revoked_mark(const std::string& id) {
+    std::lock_guard<std::mutex> lk(g_revokedMu);
+    if (g_revokedIds.insert(id).second) g_revokedList.push_back(id);
+}
+
+bool plugin_revoked(const std::string& id) {
+    std::lock_guard<std::mutex> lk(g_revokedMu);
+    return g_revokedIds.count(id) != 0;
+}
+
+// "id", "version" and "hash" of each object of the "entries" array, the signed part of an entry. Every
+// entry is kept, as the signature covers them all; the free text beside them is never looked at.
 struct RevokedEntry { std::string id, version, hash; };
 
-std::vector<RevokedEntry> plugin_parse_revocations(const std::string& body) {
+std::vector<RevokedEntry> plugin_parse_revocations(const JsonValue& list) {
     std::vector<RevokedEntry> out;
-    auto arr = body.find("\"entries\"");
-    if (arr == std::string::npos) return out;
-    arr = body.find('[', arr);
-    if (arr == std::string::npos) return out;
-
-    int depth = 0;
-    std::size_t objStart = std::string::npos;
-    for (std::size_t i = arr; i < body.size(); ++i) {
-        char c = body[i];
-        if (c == '[' && depth == 0) { depth = 1; continue; }
-        if (c == ']' && depth == 1) break;
-        if (c == '{') { if (depth == 1) objStart = i; ++depth; continue; }
-        if (c == '}') {
-            --depth;
-            if (depth == 1 && objStart != std::string::npos) {
-                std::string obj = body.substr(objStart, i - objStart + 1);
-                RevokedEntry e;
-                e.id      = json_str_field(obj, "id");
-                e.version = json_str_field(obj, "version");
-                e.hash    = json_str_field(obj, "hash");
-                if (!e.id.empty() && !e.version.empty()) out.push_back(e);
-                objStart = std::string::npos;
-            }
-        }
-    }
+    const JsonValue* arr = list.get("entries");
+    if (!arr || arr->kind != JsonValue::Array) return out;
+    for (const auto& item : arr->items)
+        out.push_back({ item.str("id"), item.str("version"), item.str("hash") });
     return out;
+}
+
+// Whether an installed manifest is the version a revocation names. Its top-level "version" is read as
+// JSON.parse reads it (a repeated name keeps its last value), which is the version the store recorded.
+// A manifest that does not parse counts as that version: the store only ships manifests that parse,
+// so the file is damaged or read here differently from the store, and it must not keep a revoked
+// copy in place.
+bool plugin_manifest_is_version(const std::string& man, const std::string& version) {
+    JsonValue m;
+    return !json_parse(man, m) || m.str("version") == version;
 }
 
 std::string plugin_revocation_message(long long issuedAt, const std::vector<RevokedEntry>& entries) {
@@ -5545,20 +5640,31 @@ std::string plugin_revocation_message(long long issuedAt, const std::vector<Revo
 
 // Returns the number of plugins removed, or -1 if the list was rejected.
 int plugin_apply_revocations(const std::string& body) {
-    long long issuedAt = json_num_field(body, "issuedAt");
+    JsonValue list;
+    if (!json_parse(body, list) || list.kind != JsonValue::Object) {
+        rtx::log::Launcher("revocations: list is not valid JSON, ignored");
+        return -1;
+    }
+    // Signed as the website prints it: plain digits.
+    const JsonValue* at = list.get("issuedAt");
+    long long issuedAt = 0;
+    if (at && at->kind == JsonValue::Number && at->text.size() <= 18 &&
+        at->text.find_first_not_of("0123456789") == std::string::npos)
+        issuedAt = std::atoll(at->text.c_str());
     if (issuedAt <= 0) return -1;
 
-    std::string sigB64 = json_str_field(body, "signature");
+    std::string sigB64 = list.str("signatureV2");
     std::vector<std::uint8_t> sig;
     if (!plugin_b64_decode(sigB64, sig) || sig.size() != 64) {
         rtx::log::Launcher("revocations: missing or malformed signature, list ignored");
         return -1;
     }
 
-    auto entries = plugin_parse_revocations(body);
+    auto entries = plugin_parse_revocations(list);
     std::string msg = plugin_revocation_message(issuedAt, entries);
-    if (!crypto::VerifyEcdsaP256(reinterpret_cast<const std::uint8_t*>(msg.data()), msg.size(),
-                                 sig.data(), sig.size(), kPluginPubKey, sizeof(kPluginPubKey))) {
+    if (!crypto::VerifyEcdsaP256Domain(crypto::SigDomain::RevocationList,
+                                       reinterpret_cast<const std::uint8_t*>(msg.data()), msg.size(),
+                                       sig.data(), sig.size(), kPluginPubKey, sizeof(kPluginPubKey))) {
         rtx::log::Launcher("revocations: signature verification failed, list ignored");
         return -1;
     }
@@ -5576,7 +5682,7 @@ int plugin_apply_revocations(const std::string& body) {
     if (!root.empty()) {
         for (const auto& e : entries) {
             std::string id = sanitize_plugin_id(e.id);
-            if (id.empty()) continue;
+            if (id.empty() || e.version.empty()) continue;
             auto dir = root / id;
             std::error_code ec;
             if (!std::filesystem::exists(dir, ec)) continue;
@@ -5584,8 +5690,9 @@ int plugin_apply_revocations(const std::string& body) {
             // Only the revoked version goes; a later fixed release may be installed.
             std::string man = alerts_read_file(dir / "manifest.json");
             if (man.empty()) continue;
-            if (json_str_field(man, "version") != e.version) continue;
+            if (!plugin_manifest_is_version(man, e.version)) continue;
 
+            plugin_revoked_mark(id);
             std::error_code rec;
             std::filesystem::remove_all(dir, rec);
             if (!rec) {
@@ -5601,35 +5708,49 @@ int plugin_apply_revocations(const std::string& body) {
     return removed;
 }
 
-// A deadline rather than a plain flag: http::Enqueue can drop a job (pool
-// stopping, or a full queue evicting the oldest), and a flag cleared only from
-// inside the job would then stay set and stop revocations for the whole run.
-std::atomic<ULONGLONG> g_revokeInFlightUntil{0};
-ULONGLONG              g_revokeAt = 0;
+// Fetches the list and applies it. False when it could not be fetched.
+bool plugin_check_revocations() {
+    auto r = http::Get(kUpdateHost, kPluginRevokePath, {});
+    if (!(r.ok && r.status == 200 && !r.body.empty())) {
+        rtx::log::Launcher("revocations: fetch failed, HTTP " + std::to_string(r.status));
+        return false;
+    }
+    int n = plugin_apply_revocations(r.body);
+    if (n > 0) rtx::log::Launcher("revocations: " + std::to_string(n) + " plugin(s) removed");
+    return true;
+}
 
-// Checked at startup and hourly thereafter.
-void plugin_check_revocations(bool force) {
-    ULONGLONG now = GetTickCount64();
-    if (!force && g_revokeAt && now - g_revokeAt < 3600000) return;
+// Runs on a thread of its own from the first page on: a check at once, then hourly for as long as the
+// launcher stays open, store visited or not. A fetch failure leaves the previous state in place and
+// is tried again after five minutes.
+std::atomic<bool> g_revokeLoopStarted{false};
 
-    ULONGLONG busy = g_revokeInFlightUntil.load(std::memory_order_relaxed);
-    if (busy > now) return;                       // one in flight, or its deadline has not passed
-    if (!g_revokeInFlightUntil.compare_exchange_strong(busy, now + 120000)) return;
-    g_revokeAt = now;
+void plugin_revocation_loop() {
+    for (;;) {
+        bool fetched = false;
+        guarded("plugin revocations", [&] { fetched = plugin_check_revocations(); });
+        g_revokeChecked.store(true);
+        const int waitMs = fetched ? 3600000 : 300000;
+        for (int slept = 0; slept < waitMs; slept += 1000)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
+}
 
-    http::Enqueue([] {
-        auto r = http::Get(kUpdateHost, kPluginRevokePath, {});
-        if (r.ok && r.status == 200 && !r.body.empty()) {
-            guarded("plugin revocations", [&] {
-                int n = plugin_apply_revocations(r.body);
-                if (n > 0) rtx::log::Launcher("revocations: " + std::to_string(n) + " plugin(s) removed");
-            });
-        } else {
-            // A fetch failure leaves the previous state in place and retries later.
-            rtx::log::Launcher("revocations: fetch failed, HTTP " + std::to_string(r.status));
+// {"checked":bool,"removed":[ids]}. "checked" turns true once the first check of this run has finished,
+// whatever its outcome, so a page can hold installed plugins back until then. "removed" lists every
+// installed plugin revoked during this run, oldest first, so a page stops any copy it still runs.
+JSValueRef PluginRevoked(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                         size_t, const JSValueRef[], JSValueRef*) {
+    std::string out = std::string("{\"checked\":") + (g_revokeChecked.load() ? "true" : "false") + ",\"removed\":[";
+    {
+        std::lock_guard<std::mutex> lk(g_revokedMu);
+        for (std::size_t i = 0; i < g_revokedList.size(); ++i) {
+            if (i) out += ",";
+            out += "\"" + json_escape(g_revokedList[i]) + "\"";
         }
-        g_revokeInFlightUntil.store(0, std::memory_order_relaxed);
-    });
+    }
+    out += "]}";
+    return utf8_to_js(ctx, out);
 }
 
 std::mutex   g_installMu;
@@ -5647,6 +5768,10 @@ JSValueRef PluginMarketInstall(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::thread([slug] {
         std::string err = "install failed";
         guarded("plugin install", [&] { err = install_plugin(slug); });
+        if (err.empty()) {   // the store serves no revoked version, so a fresh install may load again
+            std::lock_guard<std::mutex> rk(g_revokedMu);
+            g_revokedIds.erase(sanitize_plugin_id(slug));
+        }
         std::lock_guard<std::mutex> lk(g_installMu);
         g_installResult = err.empty() ? std::string("ok") : err;
         g_installInFlight = false;
@@ -5667,11 +5792,12 @@ JSValueRef PluginInstalledList(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string out = "[";
     if (!root.empty()) {
         std::error_code ec; bool first = true;
-        for (auto& e : std::filesystem::directory_iterator(root, ec)) {
-            if (ec) break;
-            if (!e.is_directory()) continue;
-            std::string id = sanitize_plugin_id(e.path().filename().string());
-            if (id.empty()) continue;
+        for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+            const auto& e = *it;
+            std::error_code fe;
+            if (!e.is_directory(fe) || fe) continue;
+            std::string id = sanitize_plugin_id(plugin_ascii_name(e.path().filename()));
+            if (id.empty() || plugin_revoked(id)) continue;
             std::error_code ec2;
             if (!std::filesystem::exists(e.path() / "manifest.json", ec2)) continue;
             if (!first) out += ","; out += "\""; out += id; out += "\""; first = false;
@@ -5686,7 +5812,7 @@ JSValueRef PluginInstalledManifest(JSContextRef ctx, JSObjectRef, JSObjectRef,
     if (argc < 1) return utf8_to_js(ctx, std::string());
     std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
     auto root = plugin_install_root();
-    if (id.empty() || root.empty()) return utf8_to_js(ctx, std::string());
+    if (id.empty() || root.empty() || plugin_revoked(id)) return utf8_to_js(ctx, std::string());
     return utf8_to_js(ctx, alerts_read_file(root / id / "manifest.json"));
 }
 
@@ -5696,9 +5822,7 @@ JSValueRef PluginInstalledEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
     std::string entry = js_to_utf8(ctx, argv[1]);
     auto root = plugin_install_root();
-    if (id.empty() || root.empty() || entry.empty()) return utf8_to_js(ctx, std::string());
-    if (entry.find('/') != std::string::npos || entry.find('\\') != std::string::npos ||
-        entry.find("..") != std::string::npos) return utf8_to_js(ctx, std::string());
+    if (id.empty() || root.empty() || !plugin_bare_name_ok(entry) || plugin_revoked(id)) return utf8_to_js(ctx, std::string());
     std::string s = alerts_read_file(root / id / entry);
     if (s.size() > kPluginEntryMaxBytes) return utf8_to_js(ctx, std::string());
     return utf8_to_js(ctx, s);
@@ -5728,7 +5852,8 @@ JSValueRef LuaLoad(JSContextRef ctx, JSObjectRef, JSObjectRef,
     std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
     std::string source = js_to_utf8(ctx, argv[1]);
     auto root = (source == "dev") ? plugin_dev_root() : plugin_install_root();
-    if (id.empty() || root.empty()) return utf8_to_js(ctx, std::string("{\"ok\":false,\"error\":\"unknown plugin\",\"failed\":true,\"log\":[]}"));
+    if (id.empty() || root.empty() || (source != "dev" && plugin_revoked(id)))
+        return utf8_to_js(ctx, std::string("{\"ok\":false,\"error\":\"unknown plugin\",\"failed\":true,\"log\":[]}"));
     rtx::launcher::lua::ScopedContext sc(ctx);
     return utf8_to_js(ctx, rtx::launcher::lua::Load(id, root / id, split_csv(js_to_utf8(ctx, argv[2])), js_to_utf8(ctx, argv[3])));
 }
@@ -5772,6 +5897,7 @@ JSValueRef LuaUiEvent(JSContextRef ctx, JSObjectRef, JSObjectRef,
 JSValueRef LuaInfo(JSContextRef ctx, JSObjectRef, JSObjectRef,
                    size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return utf8_to_js(ctx, std::string("{\"loaded\":false}"));
+    rtx::launcher::lua::ScopedContext sc(ctx);
     return utf8_to_js(ctx, rtx::launcher::lua::Info(sanitize_plugin_id(js_to_utf8(ctx, argv[0]))));
 }
 
@@ -6167,9 +6293,11 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pluginDevStamp",    PluginDevStamp);
 
     install_fn(ctx, ns, "pluginMarketList",        PluginMarketList);
-    // Runs once as soon as the bridge is up, then hourly, so a withdrawn
-    // plugin is removed before the UI can mount it.
-    plugin_check_revocations(false);
+    // Starts with the first page and keeps checking while the launcher runs.
+    bool revokeIdle = false;
+    if (g_revokeLoopStarted.compare_exchange_strong(revokeIdle, true))
+        std::thread(plugin_revocation_loop).detach();
+    install_fn(ctx, ns, "pluginRevoked",           PluginRevoked);
     install_fn(ctx, ns, "pluginMarketInstall",     PluginMarketInstall);
     install_fn(ctx, ns, "pluginInstallStatus",     PluginInstallStatus);
     install_fn(ctx, ns, "pluginInstalledList",     PluginInstalledList);

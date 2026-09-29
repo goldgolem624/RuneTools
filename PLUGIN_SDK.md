@@ -341,10 +341,12 @@ await rtx.plugin.state.ports();
 //    null until readable (not in-world / port not started).
 
 await rtx.plugin.state.buffs();
-// -> { cycles, buffs:[ { struct, name, sprite, item, kind, timer, secs, exact,
+// -> { cycles, buffs:[ { struct, name, desc?, sprite, item, kind, timer, secs, exact,
 //                        endCycle, remainMs, count }, ... ], debuffs:[ ... ] }
 //    One entry per buff-bar slot the game has bound to a buff STRUCT (`struct`, the
-//    definition the client drew the slot from; `name` is its display name). `exact` is
+//    definition the client drew the slot from; `name` is its display name as plain text).
+//    A few buffs are named by their whole description; `name` is then its first line and
+//    `desc` the lines after it, joined by "\n" (absent otherwise). `exact` is
 //    true when the countdown came from the game's own end-cycle variable: `endCycle` is
 //    in CLIENTCLOCK cycles (50/s, `cycles` = now), `remainMs` the exact time left, and
 //    `secs` matches the number the bar draws (1 + remaining/50). With `exact` false,
@@ -405,14 +407,16 @@ await rtx.plugin.state.hideyHoles();
 await rtx.plugin.state.achievements();
 // -> [ { id, name, description, reward, points, complete:bool, requirementsNeeded:int,
 //        combatMasteryTier:'Easy'|'Medium'|'Hard'|'Elite'|'Master'|'Grandmaster'|null,
-//        requirements:[ { description, current, target, complete, varbits:[...], varps? } ] }, ... ]
-//    complete = at least requirementsNeeded of the requirements are satisfied. combatMasteryTier
-//    is set only for combat achievements.
-//    Every trackable achievement from the live cache, with completion computed from the
-//    live vars: a requirement is complete when current >= target; the achievement is
-//    complete when all requirements are. `varbits` lists the source varbit ids. Bit-flag
-//    requirements (unlock checklists) read one bit of a varbit and report target 1;
-//    varp requirements sum the listed `varps` (varbits is [] for those).
+//        requirements:[ { description, current, target, complete, varbits:[...], varps?, achievement?, unlock? } ] }, ... ]
+//    combatMasteryTier is set only for combat achievements (the game's tier lists).
+//    Every trackable achievement from the live cache, judged as the game judges it: a
+//    requirement is complete when current >= target; requirements (and child achievements)
+//    sit in groups, a group is met when enough of its entries are, and the achievement is
+//    complete when enough groups are met. requirementsNeeded is the number of entries that
+//    takes. `varbits` lists the source varbit ids. Bit-flag requirements read one bit of a
+//    varbit and report target 1; varp requirements sum the listed `varps` (varbits is [] for
+//    those). A line with `achievement` is a child achievement (its id). Lines with unlock:true
+//    name an achievement that unlocks this one; they never count toward completion.
 
 await rtx.plugin.state.achievement(id);
 // -> the single achievement record above for `id`, or null if it isn't trackable.

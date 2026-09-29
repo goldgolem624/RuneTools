@@ -65,6 +65,66 @@
     } catch (e) {}
   }
 
+  // Per-account stores (alerts, notes, counter, quest and mystery progress, nameplates). The launcher picks
+  // the file from the account behind this client on every load and save, and that account can change under
+  // the page: at the login screen it is not known yet, so a load reads the same as an empty store, and a
+  // client without launcher variables follows the character across a relog. So each store keeps the text it
+  // last read or wrote, a save is refused (and the store read again) when the file holds anything else, and
+  // loaded stores are compared with their file every few seconds, and at once when the login state changes.
+  const _acctStores = [];
+  let _acctCheckAt = 0, _acctCheckSig = '';
+  function acctStore(load, save, reload) {
+    const st = { load: load, save: save, reload: reload, base: null };
+    _acctStores.push(st);
+    return st;
+  }
+  // null when there is no answer. An empty one counts as none: a load that returns "" for an account not
+  // known yet, or for a file that is there but cannot be read, has not read the store, so it never lets a
+  // save through. It replaces what was read only right after the login state changed (see the check).
+  function acctStoreText(st) {
+    try { const t = st.load(); return (typeof t === 'string' && t !== '') ? t : null; } catch (e) { return null; }
+  }
+  // The file's text for the account this client has now; later saves must still find it there.
+  function acctStoreRead(st) { st.base = acctStoreText(st); return st.base; }
+  function acctStoreReload(st) {
+    try { st.reload(); } catch (e) { console.error('rtx store reload: ' + (e && e.message ? e.message : e)); }
+  }
+  // true when saved, false when the write failed or the file could not be read to check it, null when
+  // refused: the store was never read, or its file no longer holds what was read (another account's file,
+  // or a load made before the account was known). A refused store has been read again, so the edit is
+  // dropped rather than written over that file.
+  function acctStoreWrite(st, text) {
+    if (st.base === null) return null;
+    const cur = acctStoreText(st);
+    if (cur === null) return false;
+    if (cur !== st.base) { acctStoreReload(st); return null; }
+    let ok = false;
+    try { ok = !!st.save(text); } catch (e) {}
+    if (ok) st.base = text;
+    return ok;
+  }
+  function acctStoresCheck() {
+    const s = lastSnap;
+    const sig = s ? s.status + '|' + (s.in_world ? 1 : 0) + '|' + (s.display_name || '') : '';
+    const now = Date.now();
+    if (sig === _acctCheckSig && now - _acctCheckAt < 2000) return;
+    const changed = sig !== _acctCheckSig;
+    _acctCheckSig = sig; _acctCheckAt = now;
+    for (const st of _acctStores) {
+      if (st.base === null) continue;
+      const cur = acctStoreText(st);
+      // No answer just after the login state changed: the account may be another one now, whose file could
+      // not be read, so what was read is dropped (and read again later) rather than kept for that account.
+      if (cur === null ? changed : cur !== st.base) acctStoreReload(st);
+    }
+  }
+  // The Scene panel reads and writes the nameplates itself; this makes it read them again once the file
+  // for this client's account holds something else. Its load only sets the pill when the file has one, so
+  // the pill goes back to off first and a file without one does not keep the previous account's setting.
+  const nameplatesStore = acctStore(() => bridge().nameplatesLoad(myPid()),
+                                    t => bridge().nameplatesSave(myPid(), t),
+                                    () => { nameplatesLoaded = false; sceneNameplates = false; });
+
   async function refresh() {
     if (!bridge()) { refreshFail('bridge missing: typeof window.rtx = ' + typeof window.rtx); return; }
     if (refresh._busy) return;      // 250 ms timer vs awaits: no overlapping passes
@@ -78,13 +138,14 @@
     if (!me) refreshFail('no snapshot for pid ' + myPid() + '; have [' + snaps.map(s => s.pid).join(',') + ']');
     else if (_refreshFailMsg) { _refreshFailMsg = ''; console.log('rtx refresh: snapshot for pid ' + myPid() + ' resumed'); }
     lastSnap = me || null;
+    try { acctStoresCheck(); } catch (e) {}
     try { if (typeof ovReflectRenderer === 'function') ovReflectRenderer(); } catch (e) {}   // rows that only apply to one renderer
     try { fullscreenPrefApply(); } catch (e) {}
     try { pluginGrantsEnsure(); } catch (e) {}
     if ((metroVisual() || metroAudio()) && myPid() !== _metroAppliedPid) applyMetroOverlay();
     if ((xpOn || _xpAppliedPid) && myPid() && myPid() !== _xpAppliedPid) applyXpOverlay();
     if (!alertCfg) loadAlertCfg();
-    if (typeof nameplatesLoaded !== 'undefined' && !nameplatesLoaded) loadNameplateNames();
+    if (typeof nameplatesLoaded !== 'undefined' && !nameplatesLoaded) { acctStoreRead(nameplatesStore); loadNameplateNames(); }
     if (lastSnap && lastSnap.in_world) fetchChat(false);
     if (lastSnap && lastSnap.in_world && typeof fetchCombatLog === 'function') fetchCombatLog();
     if ((alertsNeedScene() || (typeof nameplatesActive === 'function' && nameplatesActive())) && !paneVisible('scene')) fetchScene();
@@ -101,7 +162,7 @@
     if (alertsNeedBuffs() && !paneVisible('buffs')) fetchBuffs();
     if (alertsNeedFarming() && !paneVisible('farming')) fetchFarming();
     if (typeof alertsNeedGround === 'function' && alertsNeedGround()) fetchGround();
-    evalAlerts();
+    try { evalAlerts(); } catch (e) {}   // a rule that throws must not stop the rest of the pass
     syncOverlayHighlight();
     for (const _w of wmVisibleWins()) withPane(_w, refreshPaneTick);
     if (paneVisible('quests') || paneVisible('questfocus') ||

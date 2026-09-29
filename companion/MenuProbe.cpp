@@ -487,6 +487,13 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
         rowOk[i] = true;
         if (i == 0 || (anyTargeted && !tgt[0])) { fixedSlot[i] = true; continue; }
     }
+    // Rules only reorder the options of the object the game's top targeted row names, the one the
+    // left-click acts on. A rule for another object further down the same menu (a guard standing
+    // behind the door under the cursor) must not take the left-click over, and neither may a rule
+    // that names no object. A menu with no targeted row at all has no such object: no limit.
+    const char* topTgt = nullptr;
+    for (int i = n - 1; i >= 0 && !topTgt; --i)
+        if (rowOk[i] && rowTgt[i][0]) topTgt = rowTgt[i];
     // Pins arrive as rules separated by a group marker (verb "\x1d"). Objects that share a name
     // ("Fishing spot" npc 321 Harpoon/Cage, npc 322 Harpoon/Net) cannot be told apart by name, so a
     // rule only applies when every option the menu offers for that target is one the rule names: the
@@ -517,6 +524,7 @@ bool RankLane(std::uint64_t begin, int n, unsigned char recs[][kRecSize], int* r
     }
     for (int i = 0; i < n; ++i) {
         if (!rowOk[i] || fixedSlot[i]) continue;
+        if (topTgt && std::strncmp(rowTgt[i], topTgt, rtx::menu::kTargetLen) != 0) continue;
         for (std::uint32_t p = 0; p < pins; ++p) {
             if (pinGroup[p] < 0) continue;
             if (std::strncmp(rowVerb[i], pinsLocal[p].verb, rtx::menu::kVerbLen) != 0) continue;
@@ -704,6 +712,22 @@ std::uint64_t ScanCounterpart(std::uint64_t demoted, std::int32_t ord, std::int3
     return best;
 }
 
+// True when the top record is the row a rule chose, the one RuleOrder lifts: every row decoded,
+// and the top is a movable row holding the best rule rank of the list.
+bool TopIsRuleRow(std::uint64_t begin, int n) {
+    if (n < 2 || n > rtx::menu::kMaxEntries) return false;
+    unsigned char recs[rtx::menu::kMaxEntries][kRecSize];
+    int  rank[rtx::menu::kMaxEntries];
+    bool fixedSlot[rtx::menu::kMaxEntries];
+    int  decoded = 0;
+    if (!RankLane(begin, n, recs, rank, fixedSlot, &decoded) || decoded != n) return false;
+    const int top = n - 1;
+    if (fixedSlot[top] || rank[top] == 0x7FFFFFFF) return false;
+    for (int i = 0; i < top; ++i)
+        if (!fixedSlot[i] && rank[i] < rank[top]) return false;
+    return true;
+}
+
 void PromotePinnedEntry(std::uint64_t mgr) {
     if (!g_share) return;
     g_share->promoState = rtx::menu::kPromoIdle;
@@ -742,6 +766,11 @@ void PromotePinnedEntry(std::uint64_t mgr) {
         }
     }
     if (topPrio < kPromoted) {
+        g_share->promoState = rtx::menu::kPromoNotNeeded;
+        return;
+    }
+    // A demoted top row no rule asked for is the game's own default: its class stays as it is.
+    if (!TopIsRuleRow(begin, (int)count)) {
         g_share->promoState = rtx::menu::kPromoNotNeeded;
         return;
     }

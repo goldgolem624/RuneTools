@@ -44,6 +44,38 @@ https://www.sqlite.org/copyright.html. As the SQLite blessing puts it:
 
 ---
 
+## Lua
+
+- Bundled at: `src/lua/vendor/lua-5.4.7`
+- Project: Lua 5.4.7 - https://www.lua.org
+- Copyright (C) 1994-2024 Lua.org, PUC-Rio
+- License: **MIT License**
+
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in
+> all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+The launcher runs Lua plugins on this interpreter. The bundled copy is locally
+modified: the pattern matcher in `lstrlib.c` limits the work of one
+`string.find`, `match` or `gsub` call (or one `gmatch` step) in proportion to
+the subject and pattern length and raises "pattern too complex" past that limit.
+
+---
+
 ## Ultralight
 
 - Bundled at: `ThirdParty\Ultralight`

@@ -10,7 +10,9 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace rtx::launcher::companion {
 
@@ -196,6 +198,43 @@ enum class Step {
     Never       // positive evidence this module cannot take a session
 };
 
+// A thread started in a client that had not ended when we stopped waiting for it (the client's loader
+// lock held for a long time, a module that does not answer). The thread can still read what it was
+// given, so that buffer stays allocated until the thread is seen to have ended, and no further thread
+// is started in that client meanwhile: it would only queue up behind the first one.
+struct Outstanding {
+    std::uint32_t pid     = 0;
+    HANDLE        process = nullptr;   // kept open, so the pid cannot be handed to another process meanwhile
+    HANDLE        thread  = nullptr;
+    LPVOID        remote  = nullptr;
+};
+
+std::mutex g_outMu;
+std::vector<Outstanding> g_outstanding;   // under g_outMu
+
+void KeepUntilEnded(std::uint32_t pid, HANDLE process, HANDLE thread, LPVOID remote) {
+    std::lock_guard<std::mutex> lk(g_outMu);
+    g_outstanding.push_back(Outstanding{pid, process, thread, remote});
+}
+
+// Releases what the threads that have since ended were given. True while one in `pid` still runs.
+bool EarlierCallRunning(std::uint32_t pid) {
+    std::lock_guard<std::mutex> lk(g_outMu);
+    bool running = false;
+    for (auto it = g_outstanding.begin(); it != g_outstanding.end();) {
+        if (WaitForSingleObject(it->thread, 0) != WAIT_OBJECT_0) {
+            if (it->pid == pid) running = true;
+            ++it;
+            continue;
+        }
+        VirtualFreeEx(it->process, it->remote, 0, MEM_RELEASE);
+        CloseHandle(it->thread);
+        CloseHandle(it->process);
+        it = g_outstanding.erase(it);
+    }
+    return running;
+}
+
 bool LoadInto(std::uint32_t pid, const std::wstring& dll, std::string& why) {
     HANDLE h = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
                            PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
@@ -216,15 +255,22 @@ bool LoadInto(std::uint32_t pid, const std::wstring& dll, std::string& why) {
                 why = "cannot start the module load in the client, err " + std::to_string(GetLastError());
             } else {
                 DWORD w = WaitForSingleObject(th, 10000);
-                CloseHandle(th);
-                if (w == WAIT_TIMEOUT) why = "the module load in the client is still running after 10 s";
-                else ok = true;   // the exit code is only the low half of the handle; the caller looks for the module instead
+                if (w == WAIT_OBJECT_0) {
+                    CloseHandle(th);
+                    ok = true;   // the exit code is only the low half of the handle; the caller looks for the module instead
+                } else {
+                    why = w == WAIT_TIMEOUT ? "the module load in the client is still running after 10 s"
+                                            : "cannot wait for the module load in the client, err " + std::to_string(GetLastError());
+                    // The loader may not have read the path yet: it is released once the thread has ended.
+                    KeepUntilEnded(pid, h, th, remote);
+                    h = nullptr; remote = nullptr;
+                }
             }
         }
         // Freed only once the loader has finished with the path.
-        VirtualFreeEx(h, remote, 0, MEM_RELEASE);
+        if (remote) VirtualFreeEx(h, remote, 0, MEM_RELEASE);
     }
-    CloseHandle(h);
+    if (h) CloseHandle(h);
     return ok;
 }
 
@@ -267,28 +313,29 @@ Step PushSession(std::uint32_t pid, const RemoteModule& rm, const LocalImage& li
             HANDLE th = CreateRemoteThread(h, nullptr, 0, fn, remote, 0, nullptr);
             if (!th) {
                 why = "cannot start the session call in the client, err " + std::to_string(GetLastError());
+            } else if (WaitForSingleObject(th, 5000) != WAIT_OBJECT_0) {
+                why = "the module did not answer the session call within 5 s";
+                // The module may not have read the blob yet: it is released once the thread has ended.
+                KeepUntilEnded(pid, h, th, remote);
+                h = nullptr; remote = nullptr;
             } else {
-                if (WaitForSingleObject(th, 5000) != WAIT_OBJECT_0) {
-                    why = "the module did not answer the session call within 5 s";
+                DWORD rc = 1;
+                GetExitCodeThread(th, &rc);
+                if (rc == 0) {
+                    result = Step::Progress;
+                } else if (rc == 3) {
+                    why = "the module in the client is from an earlier build; restart the game to load the current one";
+                    result = Step::Never;
                 } else {
-                    DWORD rc = 1;
-                    GetExitCodeThread(th, &rc);
-                    if (rc == 0) {
-                        result = Step::Progress;
-                    } else if (rc == 3) {
-                        why = "the module in the client is from an earlier build; restart the game to load the current one";
-                        result = Step::Never;
-                    } else {
-                        why = "the module rejected the session, code " + std::to_string(rc);
-                    }
+                    why = "the module rejected the session, code " + std::to_string(rc);
                 }
                 CloseHandle(th);
             }
         }
         // Freed only once the module has finished reading it.
-        VirtualFreeEx(h, remote, 0, MEM_RELEASE);
+        if (remote) VirtualFreeEx(h, remote, 0, MEM_RELEASE);
     }
-    CloseHandle(h);
+    if (h) CloseHandle(h);
     SecureZeroMemory(&blob, sizeof(blob));
     return result;
 }
@@ -296,6 +343,10 @@ Step PushSession(std::uint32_t pid, const RemoteModule& rm, const LocalImage& li
 // One pass over a client: load the module if it is not there, hand it the session if it has none,
 // then look for the end state. Each pass reports what it saw, and the caller schedules the next.
 Step Attempt(std::uint32_t pid, ULONGLONG now, std::string& why) {
+    if (EarlierCallRunning(pid)) {
+        why = "a module load or session call started earlier is still running in the client";
+        return Step::Stall;
+    }
     {
         HANDLE probe = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!probe && GetLastError() == ERROR_ACCESS_DENIED) {
@@ -387,6 +438,47 @@ Step Attempt(std::uint32_t pid, ULONGLONG now, std::string& why) {
     return Step::Stall;
 }
 
+// One attempt and what it saw, recorded for the client; runs on a thread of its own (see EnsureLoaded).
+void RunAttempt(std::uint32_t pid, ULONGLONG now) {
+    std::string why;
+    Step step = Step::Stall;
+    try { step = Attempt(pid, now, why); }
+    catch (const std::exception& e) { why = std::string("attempt failed: ") + e.what(); }
+    catch (...) { why = "attempt failed"; }
+
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_clients.find(pid);
+    if (it == g_clients.end()) return;   // forgotten while the attempt ran: nothing to record
+    Client& c = it->second;
+    c.inFlight = false;
+    const ULONGLONG after = GetTickCount64();
+    switch (step) {
+        case Step::Live:
+            c.live = true; c.failures = 0; c.state.clear(); c.logged.clear();
+            rtx::log::Launcher("companion: pid " + std::to_string(pid) + " is live");
+            return;
+        case Step::Progress:
+            c.failures = 0; c.state.clear();
+            c.nextTryMs = after + 400;
+            return;
+        case Step::Never:
+            c.never = true; c.state = why;
+            rtx::log::Launcher("companion: pid " + std::to_string(pid) + ": " + why + " (no further attempts)");
+            return;
+        case Step::Stall:
+        default:
+            ++c.failures;
+            c.nextTryMs = after + Backoff(c.failures);
+            c.state = why;
+            if (c.logged != why) {
+                c.logged = why;
+                rtx::log::Launcher("companion: pid " + std::to_string(pid) + ": " + why +
+                                   " (retrying, next in " + std::to_string(Backoff(c.failures)) + " ms)");
+            }
+            return;
+    }
+}
+
 }  // namespace
 
 bool EnsureLoaded(std::uint32_t pid) {
@@ -426,43 +518,19 @@ bool EnsureLoaded(std::uint32_t pid) {
         }
     }
 
-    std::string why;
-    Step step = Step::Stall;
-    try { step = Attempt(pid, now, why); }
-    catch (const std::exception& e) { why = std::string("attempt failed: ") + e.what(); }
-    catch (...) { why = "attempt failed"; }
-
-    std::lock_guard<std::mutex> lk(g_mu);
-    auto it = g_clients.find(pid);
-    if (it == g_clients.end()) return false;   // forgotten while the attempt ran: nothing to record
-    Client& c = it->second;
-    c.inFlight = false;
-    const ULONGLONG after = GetTickCount64();
-    switch (step) {
-        case Step::Live:
-            c.live = true; c.failures = 0; c.state.clear(); c.logged.clear();
-            rtx::log::Launcher("companion: pid " + std::to_string(pid) + " is live");
-            return true;
-        case Step::Progress:
-            c.failures = 0; c.state.clear();
-            c.nextTryMs = after + 400;
-            return false;
-        case Step::Never:
-            c.never = true; c.state = why;
-            rtx::log::Launcher("companion: pid " + std::to_string(pid) + ": " + why + " (no further attempts)");
-            return false;
-        case Step::Stall:
-        default:
-            ++c.failures;
-            c.nextTryMs = after + Backoff(c.failures);
-            c.state = why;
-            if (c.logged != why) {
-                c.logged = why;
-                rtx::log::Launcher("companion: pid " + std::to_string(pid) + ": " + why +
-                                   " (retrying, next in " + std::to_string(Backoff(c.failures)) + " ms)");
-            }
-            return false;
+    // An attempt waits on threads inside the client (the module load, the session call), for seconds
+    // when the client is busy, and this is called from the UI thread and the overlay's render loop. So
+    // the attempt runs on a thread of its own and this call returns at once; a later call sees the result.
+    try {
+        std::thread([pid, now] {
+            try { RunAttempt(pid, now); } catch (...) {}
+        }).detach();
+    } catch (...) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        auto it = g_clients.find(pid);
+        if (it != g_clients.end()) it->second.inFlight = false;   // tried again after the floor interval
     }
+    return false;
 }
 
 std::string Describe(std::uint32_t pid) {
@@ -480,6 +548,7 @@ std::string Describe(std::uint32_t pid) {
 void Forget(std::uint32_t pid) {
     if (!pid) return;
     rtx::ipc::ClearSessionKey(pid);
+    EarlierCallRunning(pid);   // lets go of the handles kept for threads that have ended since
     std::lock_guard<std::mutex> lk(g_mu);
     g_clients.erase(pid);
 }

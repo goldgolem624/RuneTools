@@ -232,9 +232,10 @@
       for (const [id, name, isCd] of AB_TIMERS) {
         const v = d.vc['5:' + id];
         if (typeof v !== 'number' || v <= 0) continue;
-        const secs = (1 + (v - cyc) / 50) * 0.6;          // ticks are 0.6s
-        if (v - cyc <= 0 || secs > 3600) continue;         // expired, or a torn read
-        const t = secs >= 60 ? Math.floor(secs / 60) + ':' + ('0' + Math.round(secs % 60)).slice(-2) : Math.round(secs) + 's';
+        if (v - cyc <= 0) continue;                        // expired
+        const secs = 1 + Math.floor((v - cyc) / 50);       // end is in client cycles (50 a second), shown the way the game counts down
+        if (secs > 3600) continue;                         // a torn read
+        const t = fmtSec(secs);
         rows += '<span style="font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid '
           + (isCd ? 'rgba(224,108,108,.5)' : 'rgba(77,210,138,.5)') + ';color:' + (isCd ? '#e06c6c' : '#4dd28a') + '">'
           + name + ' ' + t + '</span>';

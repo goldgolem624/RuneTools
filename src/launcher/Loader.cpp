@@ -2,11 +2,14 @@
 #include "../shared/Log.h"
 
 #include <Windows.h>
+#include <AclAPI.h>
+#include <sddl.h>
 #include <SoftPub.h>
 #include <wincrypt.h>
 #include <wintrust.h>
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "crypt32.lib")
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -126,6 +129,48 @@ std::vector<std::wstring> fixed_drive_roots() {
         if (GetDriveTypeW(root.c_str()) == DRIVE_FIXED) out.push_back(root);
     }
     return out;
+}
+
+// SYSTEM, Administrators, TrustedInstaller or the user running the launcher: owners another standard
+// account cannot give a file or folder it creates.
+bool trusted_owner(const std::wstring& path) {
+    PSID owner = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                              &owner, nullptr, nullptr, nullptr, &sd) != ERROR_SUCCESS) return false;
+    bool ok = false;
+    if (owner && IsValidSid(owner)) {
+        ok = IsWellKnownSid(owner, WinLocalSystemSid) || IsWellKnownSid(owner, WinBuiltinAdministratorsSid);
+        PSID ti = nullptr;
+        if (!ok && ConvertStringSidToSidW(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", &ti)) {
+            ok = EqualSid(owner, ti) != FALSE;
+            LocalFree(ti);
+        }
+        HANDLE tok = nullptr;
+        if (!ok && OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) {
+            union { TOKEN_USER tu; BYTE raw[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE]; } u{};
+            DWORD len = 0;
+            if (GetTokenInformation(tok, TokenUser, &u, sizeof(u), &len)) ok = EqualSid(owner, u.tu.User.Sid) != FALSE;
+            CloseHandle(tok);
+        }
+    }
+    LocalFree(sd);
+    return ok;
+}
+
+// The exe and every folder above it, short of the drive root. Any local account can create folders at a
+// drive root or under ProgramData; such a folder is owned by whoever made it, so a signed RuneScape.exe
+// planted there beside DLLs of their own is not picked up for someone else.
+bool trusted_location(const std::wstring& exe) {
+    std::filesystem::path p(exe);
+    const auto root = p.root_path();
+    while (!p.empty() && p != root) {
+        if (!trusted_owner(p.wstring())) return false;
+        auto up = p.parent_path();
+        if (up == p) break;
+        p = std::move(up);
+    }
+    return true;
 }
 
 }  // namespace
@@ -270,6 +315,7 @@ std::wstring AutoRsClientPath() {
         // No drive-root Steam or SteamLibrary guesses: any local user can create those folders and plant a
         // signed copy beside DLLs of their own. Real Steam libraries come from Steam's own list above.
     };
+    const size_t scan_from = cands.size();
     for (const auto& drive : fixed_drive_roots())
         for (const wchar_t* rel : kRel)
             cands.push_back(drive + rel);
@@ -277,9 +323,19 @@ std::wstring AutoRsClientPath() {
     // Polled every few seconds; log only when the answer changes.
     static std::wstring s_last;
     static bool s_lastMissing = false;
+    static std::vector<std::wstring> s_refused;
     std::error_code ec;
-    for (const auto& p : cands) {
+    for (size_t i = 0; i < cands.size(); ++i) {
+        const auto& p = cands[i];
         if (std::filesystem::exists(p, ec)) {
+            // Guessed locations only: a copy there counts when no other account could have put it there.
+            if (i >= scan_from && !trusted_location(p)) {
+                if (std::find(s_refused.begin(), s_refused.end(), p) == s_refused.end()) {
+                    s_refused.push_back(p);
+                    rtx::log::Launcher("RuneScape.exe at " + w2u(p) + " skipped: it or a folder above it is not owned by this user or the system");
+                }
+                continue;
+            }
             if (p != s_last || s_lastMissing) rtx::log::Launcher("RuneScape.exe resolved: " + w2u(p));
             s_last = p; s_lastMissing = false;
             return p;
@@ -373,7 +429,8 @@ LaunchResult launch_impl(
     LaunchResult r{ false, {}, 0 };
 
     std::wstring rs = rs_in.empty() ? DefaultRsClientPath() : rs_in;
-    if (rs.empty() || !std::filesystem::exists(rs)) {
+    std::error_code ec;
+    if (rs.empty() || !std::filesystem::exists(rs, ec)) {
         r.detail = "Jagex Launcher (RuneScape.exe) not found";
         rtx::log::Launcher("launch failed: " + r.detail);
         return r;

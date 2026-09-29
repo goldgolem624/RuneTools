@@ -69,7 +69,7 @@
     varAchTried = true;
     (async () => {
       try {
-        if (!achDefs) { try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; } }
+        if (!achDefs) achDefs = (typeof achLoadDefs === 'function') ? await achLoadDefs() : null;
         await ensureVbMap();
         const vb = {}, vp = {}, bits = {}, vpbits = {};
         for (const a of (achDefs || [])) {

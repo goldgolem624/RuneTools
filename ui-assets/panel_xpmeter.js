@@ -22,6 +22,7 @@
     if (!(xp >= 0) || !(ph > 0) || typeof xpToNext !== 'function') return '';
     const nx = xpToNext(xp, elite);
     if (!nx || !(nx.next > 0)) return '';
+    if (typeof virtualCap === 'function' && nx.level > virtualCap(elite)) return '';   // past the virtual level cap
     let s = Math.ceil(nx.next / ph * 3600);
     if (s > 99 * 86400) return '99d+';
     const dd = Math.floor(s / 86400); s -= dd * 86400;

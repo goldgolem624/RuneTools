@@ -9,48 +9,196 @@
   const ACH_CM = { 13980: ['Easy', 0], 14042: ['Medium', 1], 14305: ['Hard', 2],
                    14313: ['Elite', 3], 14314: ['Master', 4], 14420: ['Grandmaster', 5] };
   const ACH_CM_TIERS = ['Easy', 'Medium', 'Hard', 'Elite', 'Master', 'Grandmaster'];
-  function achTier(a) { return (a.cm != null && ACH_CM[a.cm]) ? ACH_CM[a.cm] : null; }
+  // A task's tier is the game's tier rollup ("Combat Mastery - Hard" lists its tasks), which is what the game
+  // counts: two tasks carry a tier tag but sit in no rollup. The tag is used only when no rollup is known.
+  let _cmTierOf = null;
+  function cmTierOf() {
+    if (!_cmTierOf && achDefs) {
+      _cmTierOf = {};
+      const isRoll = p => /^Combat Mastery - (\w+)$/.exec(p.name || '');
+      const rolls = new Set(achDefs.filter(isRoll).map(p => p.id));   // each tier list also lists the one below it
+      for (const p of achDefs) {
+        const m = isRoll(p); if (!m || !p.subach) continue;
+        const i = ACH_CM_TIERS.indexOf(m[1]); if (i < 0) continue;
+        for (const c of p.subach) if (!rolls.has(c)) _cmTierOf[c] = [ACH_CM_TIERS[i], i];
+      }
+    }
+    return _cmTierOf || {};
+  }
+  function achTier(a) {
+    const r = cmTierOf();
+    if (Object.keys(r).length) return r[a.id] || null;
+    return (a.cm != null && ACH_CM[a.cm]) ? ACH_CM[a.cm] : null;
+  }
   // Leagues tasks ship as nameless, category-5619, hidden achievements (empty-name trackable
   // <=> cat 5619), not real account achievements. Excluded everywhere.
   const ACH_LEAGUES_CAT = 5619;
   function achIsLeagues(a) { return a.cat === ACH_LEAGUES_CAT || !(a.name && a.name.trim()); }
   function achBitReqs(a) {
     const vbits = [], vpbits = [];
-    for (const q of (a.reqs25 || [])) vbits.push({ vb: q.vb, bit: q.bit, n: q.n || '' });
-    for (const q of (a.reqsvpb || [])) vpbits.push({ vp: q.vp, bit: q.bit, n: q.n || '' });
+    for (const q of (a.reqs25 || [])) vbits.push({ vb: q.vb, bit: q.bit, n: q.n || '', g: q.g | 0 });
+    for (const q of (a.reqsvpb || [])) vpbits.push({ vp: q.vp, bit: q.bit, n: q.n || '', g: q.g | 0 });
     for (const q of (a.reqs23 || [])) {
       const r = storageVbMap && storageVbMap[q.vp];
-      if (r && q.bit <= r.msb - r.lsb) vbits.push({ vb: q.vp, bit: q.bit, n: q.n || '' });
-      else vpbits.push({ vp: q.vp, bit: q.bit, n: q.n || '' });
+      if (r && q.bit <= r.msb - r.lsb) vbits.push({ vb: q.vp, bit: q.bit, n: q.n || '', g: q.g | 0 });
+      else vpbits.push({ vp: q.vp, bit: q.bit, n: q.n || '', g: q.g | 0 });
     }
     return { vbits: vbits, vpbits: vpbits };
   }
   function achBitFromVbVal(vbId, vbVal, bit) { return ((vbVal || 0) >>> bit) & 1; }
   function achVarpReqs(a) {
     const out = [];
-    for (const q of (a.reqsvp || [])) out.push({ vps: q.vps || [q.vp], v: q.v, n: q.n || '' });
+    for (const q of (a.reqsvp || [])) out.push({ vps: q.vps || [q.vp], v: q.v, n: q.n || '', g: q.g | 0 });
     return out;
   }
+  // Something the game judges completion on. Retired achievements (disabled) are no longer judged.
   function achTrackable(a) {
+    if (a.disabled) return false;
     return !!((a.reqs && a.reqs.length) || (a.reqs23 && a.reqs23.length) ||
               (a.reqs25 && a.reqs25.length) || (a.reqsvpb && a.reqsvpb.length) ||
               (a.reqsvp && a.reqsvp.length) || (a.skills && a.skills.length) ||
-              (a.prev && a.prev.length));
+              (a.quests && a.quests.length) || (a.subach && a.subach.length));
   }
-  function achPool(a) {
-    return (a.reqs || []).length + (a.reqs23 || []).length + (a.reqs25 || []).length +
-           (a.reqsvpb || []).length + (a.reqsvp || []).length;
-  }
-  function achNeed(a) {
-    const pool = achPool(a);
-    if (a.needN && a.needN.length) return Math.min(pool, a.needN.reduce((s, x) => s + x, 0));
-    return pool;
-  }
-  function achGatesTotal(a) { return (a.skills || []).length + (a.prev || []).length; }
 
-  let _achDefById = null, _achLeafParent = null;
+  // Completion as the game judges it. Every requirement entry sits in a group: a group is met once needN[g]
+  // of its entries are (all of them when needN gives no count for it), child achievements count in their
+  // group, and the achievement is complete once needGroups of its groups are met (all of them without it).
+  // The achievements under prev only unlock one; they are listed but never part of completion.
+  function achLines(a, ctx) {
+    const lines = [];
+    const skName = sid => (typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid);
+    for (const q of (a.reqs || [])) {
+      let cur = 0; const srcs = [];
+      for (const vb of q.varbits) { cur += ctx.vb(vb); srcs.push(ctx.vbSrc(vb)); }
+      const lbl = q.desc || ((a.reqs.length === 1 && q.value > 1 && a.desc) ? a.desc : '');
+      lines.push({ g: q.g | 0, label: lbl, cur: cur, req: q.value, ok: cur >= q.value, src: srcs.join(' + '), varbits: q.varbits });
+    }
+    const br = achBitReqs(a);
+    for (const b of br.vbits) {                  // one bit of a varbit's value
+      const bv = achBitFromVbVal(b.vb, ctx.vb(b.vb), b.bit);
+      lines.push({ g: b.g, label: b.n, cur: bv, req: 1, ok: bv >= 1, src: 'varbit ' + b.vb + ' bit ' + b.bit, varbits: [b.vb] });
+    }
+    for (const b of br.vpbits) {                 // one bit of a varp
+      const bv = (ctx.vp(b.vp) >>> b.bit) & 1;
+      lines.push({ g: b.g, label: b.n, cur: bv, req: 1, ok: bv >= 1, src: 'varp ' + b.vp + ' bit ' + b.bit, varps: [b.vp] });
+    }
+    for (const q of achVarpReqs(a)) {            // sum of varps >= value
+      let cur = 0; for (const id of q.vps) cur += ctx.vp(id);
+      lines.push({ g: q.g, label: q.n, cur: cur, req: q.v, ok: cur >= q.v, src: 'varp ' + q.vps.join(' + '), varps: q.vps });
+    }
+    for (const sq of (a.skills || [])) {
+      const sid = sq[0] | 0, lvl = sq[1] | 0, cur = ctx.skill(sid);
+      lines.push({ g: sq[2] | 0, label: 'Level ' + lvl + ' ' + skName(sid), cur: cur, req: lvl, ok: cur >= lvl, src: 'live skill ' + sid });
+    }
+    (a.quests || []).forEach((qid, i) => {
+      const d = ctx.quest(qid);                  // true, false, or null when the quest state is not known yet
+      lines.push({ g: (a.questsG ? a.questsG[i] : 0) | 0, label: 'Quest: ' + ctx.questName(qid), cur: d ? 1 : 0, req: 1,
+                   ok: d === true, src: 'quest ' + qid, unsure: d == null });
+    });
+    return lines;
+  }
+  // -> { ok, met, need, groups, want, unsure, short } or null when there is nothing to judge
+  function achJudge(a, lines, done) {
+    const groups = {};
+    const grp = g => groups[g] || (groups[g] = { met: 0, n: 0, unsure: false });
+    for (const ln of lines) { if (ln.unlock) continue; const G = grp(ln.g); G.n++; if (ln.ok) G.met++; if (ln.unsure) G.unsure = true; }
+    (a.subach || []).forEach((cid, i) => { const G = grp((a.subachG ? a.subachG[i] : 0) | 0); G.n++; if (done.has(cid)) G.met++; });
+    let nG = a.needN ? a.needN.length : 0;
+    for (const k in groups) nG = Math.max(nG, (+k) + 1);
+    const list = [];
+    for (let g = 0; g < nG; g++) {
+      const G = groups[g] || { met: 0, n: 0, unsure: false };
+      const need = (a.needN && typeof a.needN[g] === 'number') ? a.needN[g] : G.n;
+      if (!G.n && !need) continue;
+      list.push({ met: Math.min(G.met, need), need: need, ok: G.met >= need, unsure: G.unsure, short: G.n < need });
+    }
+    if (!list.length) return null;
+    const want = (typeof a.needGroups === 'number' && a.needGroups > 0) ? Math.min(a.needGroups, list.length) : list.length;
+    const okN = list.filter(x => x.ok).length;
+    const best = list.slice().sort((x, y) => (y.met / Math.max(1, y.need)) - (x.met / Math.max(1, x.need))).slice(0, want);
+    return { ok: okN >= want, met: best.reduce((s, x) => s + x.met, 0), need: best.reduce((s, x) => s + x.need, 0),
+             groups: list.length, want: want, unsure: list.some(x => x.unsure),
+             short: list.filter(x => x.short).length > list.length - want };   // entries the data does not hold
+  }
+  // -> { done, prog, unknown, cnt } for every achievement except Leagues and retired ones
+  function achEvaluate(defs, ctx) {
+    const done = new Set(), unknown = new Set(), prog = {}, cnt = {};
+    const live = defs.filter(a => !achIsLeagues(a) && achTrackable(a));
+    for (const a of live) prog[a.id] = achLines(a, ctx);
+    for (let pass = 0, chg = true; chg && pass < 32; pass++) {
+      chg = false;
+      for (const a of live) {
+        if (done.has(a.id)) continue;
+        const r = achJudge(a, prog[a.id], done);
+        if (r && r.ok) { done.add(a.id); chg = true; }
+      }
+    }
+    const byId = {}; for (const a of defs) byId[a.id] = a;
+    for (const a of live) {
+      const r = achJudge(a, prog[a.id], done);
+      if (!r) { unknown.add(a.id); continue; }
+      cnt[a.id] = { met: r.met, need: r.need, groups: r.groups, want: r.want };
+      if (!done.has(a.id) && (r.unsure || r.short)) unknown.add(a.id);
+      for (const pid of (a.prev || [])) {        // shown, never judged
+        const p = byId[pid];
+        prog[a.id].push({ g: -1, unlock: true, label: 'Unlocked by: ' + ((p && p.name) || ('achievement ' + pid)),
+                          cur: done.has(pid) ? 1 : 0, req: 1, ok: done.has(pid), src: 'achievement ' + pid });
+      }
+    }
+    return { done: done, prog: prog, unknown: unknown, cnt: cnt };
+  }
+  // The live sources the evaluator reads, for one client.
+  function achCtx(vp, questSt) {
+    const liveSk = (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
+    return {
+      vb: vb => readVb(vb, vp) || 0,
+      vbSrc: vb => { const r = storageVbMap && storageVbMap[vb]; return r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb); },
+      vp: id => +vp[id] || 0,
+      skill: sid => (liveSk && liveSk[sid]) ? (liveSk[sid][0] | 0) : 0,
+      quest: qid => questSt ? (questSt[qid] === 2) : null,
+      questName: qid => { const q = (typeof QUEST_BY_ID !== 'undefined' && QUEST_BY_ID) ? QUEST_BY_ID.get(qid) : null; return (q && q.name) || ('#' + qid); },
+    };
+  }
+  // The decoded definitions, or null while the game cache is not open yet (an empty list is not kept, so the
+  // next call asks again).
+  async function achLoadDefs() {
+    try { const d = JSON.parse(await rtxData.raw('cache.achievements')); return (Array.isArray(d) && d.length) ? d : null; }
+    catch (e) { return null; }
+  }
+  // Every varp the evaluator will read.
+  function achVarps(defs) {
+    const vps = new Set();
+    for (const a of defs) {
+      if (achIsLeagues(a)) continue;
+      for (const q of (a.reqs || [])) for (const vb of q.varbits) { const r = storageVbMap && storageVbMap[vb]; if (r) vps.add(r.varp); }
+      const br = achBitReqs(a);
+      for (const b of br.vbits) { const r = storageVbMap && storageVbMap[b.vb]; if (r) vps.add(r.varp); }
+      for (const b of br.vpbits) vps.add(b.vp);
+      for (const q of achVarpReqs(a)) for (const id of q.vps) vps.add(id);
+    }
+    return vps;
+  }
+  // Quest states of the focused client (fetchQuests has its own throttle and keeps the last good read).
+  async function achQuestState() {
+    try {
+      if (typeof fetchQuests === 'function') await fetchQuests(false);
+      return (typeof questsData !== 'undefined' && questsData) ? questsData.st : null;
+    } catch (e) { return null; }
+  }
+  // Quest states read from one client's own varps, for a plugin that may run in another client.
+  async function achQuestStateFor(pid) {
+    try {
+      if (typeof questEnsureDefs !== 'function' || !(await questEnsureDefs())) return null;
+      if (typeof QUESTS === 'undefined' || !QUESTS || typeof QUEST_VARPS === 'undefined' || !bridge().varps) return null;
+      const qv = JSON.parse(await bridge().varps(pid, QUEST_VARPS.join(',')) || '{}');
+      if (!qv || !Object.keys(qv).length) return null;
+      const st = {}; for (const q of QUESTS) st[q.id] = questStatus(q, qv);
+      return st;
+    } catch (e) { return null; }
+  }
+
+  let _achDefById = null;
   function achDefById() { if (!_achDefById && achDefs) { _achDefById = {}; for (const a of achDefs) _achDefById[a.id] = a; } return _achDefById || {}; }
-  function achLeafParent() { if (!_achLeafParent && achDefs) { _achLeafParent = {}; for (const p of achDefs) if (p.subach) for (const c of p.subach) _achLeafParent[c] = p; } return _achLeafParent || {}; }
 
   function mkDropdown(value, onChange) {
     const dd = document.createElement('div'); dd.className = 'pet-dd';
@@ -81,210 +229,54 @@
   }
   if (!window._petDDClose) { window._petDDClose = true; document.addEventListener('click', () => document.querySelectorAll('.pet-dd.open').forEach(x => x.classList.remove('open'))); }
 
-  let _cmLeafBoss = null;
-  function cmLeafBoss() {
-    if (!_cmLeafBoss && achDefs) {
-      _cmLeafBoss = {};
-      for (const p of achDefs) {
-        if (!p.subach || /^Combat Mastery\b/i.test(p.name || '')) continue;
-        for (const c of p.subach) _cmLeafBoss[c] = p;
-      }
-    }
-    return _cmLeafBoss || {};
-  }
 
   async function fetchAchievements(force) {
     if (!bridge() || achFetching) return;
     const _t = Date.now(); if (!force && _t - achFetchAt < 2500) return; achFetchAt = _t;
     achFetching = true;
     try {
-      if (!achDefs) { try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; } }
+      if (!achDefs) achDefs = await achLoadDefs();
+      if (!achDefs) return;
       await ensureVbMap();
       // Leagues tasks are excluded here: they would add ~750 entries to the single varp read.
-      const vps = new Set();
-      for (const a of achDefs) {
-        if (achIsLeagues(a)) continue;
-        for (const q of (a.reqs || [])) for (const vb of q.varbits) {
-          const r = storageVbMap && storageVbMap[vb]; if (r) vps.add(r.varp);
-        }
-        const br = achBitReqs(a);
-        for (const b of br.vbits) { const r = storageVbMap && storageVbMap[b.vb]; if (r) vps.add(r.varp); }
-        for (const b of br.vpbits) vps.add(b.vp);
-        for (const q of achVarpReqs(a)) for (const id of q.vps) vps.add(id);
-      }
+      const vps = achVarps(achDefs);
       let vp = {};
       if (vps.size && bridge().varps) { try { vp = JSON.parse(await rtxData.raw('state.varps', [...vps].join(','))); } catch (e) {} }
-      const done = new Set(), prog = {}, baseSat = {}, baseGates = {};
-      for (const a of achDefs) {
-        if (!achTrackable(a) || achIsLeagues(a)) continue;
-        let sat = 0; const lines = [];
-        for (const q of (a.reqs || [])) {
-          let cur = 0; const srcs = [];
-          for (const vb of q.varbits) {
-            const r = storageVbMap && storageVbMap[vb];
-            cur += (readVb(vb, vp) || 0);
-            srcs.push(r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb));
-          }
-          const okq = cur >= q.value; if (okq) sat++;
-          const lbl = q.desc || ((a.reqs.length === 1 && q.value > 1 && a.desc) ? a.desc : '');
-          lines.push({ label: lbl, cur: cur, req: q.value, ok: okq, src: srcs.join(' + ') });
-        }
-        const br = achBitReqs(a);
-        for (const b of br.vbits) {               // op 25: one bit of a varbit's value
-          const bv = achBitFromVbVal(b.vb, readVb(b.vb, vp) || 0, b.bit);
-          const okq = bv >= 1; if (okq) sat++;
-          const r = storageVbMap && storageVbMap[b.vb];
-          lines.push({ label: b.n, cur: bv, req: 1, ok: okq,
-                       src: 'varbit ' + b.vb + ' bit ' + b.bit + (r ? ' (varp ' + r.varp + ')' : '') });
-        }
-        for (const b of br.vpbits) {              // op 23: one bit of a varp
-          const bv = ((+vp[b.vp] || 0) >>> b.bit) & 1;
-          const okq = bv >= 1; if (okq) sat++;
-          lines.push({ label: b.n, cur: bv, req: 1, ok: okq, src: 'varp ' + b.vp + ' bit ' + b.bit });
-        }
-        for (const q of achVarpReqs(a)) {         // op 13: sum of live varps >= value
-          let cur = 0; for (const id of q.vps) cur += (+vp[id] || 0);
-          const okq = cur >= q.v; if (okq) sat++;
-          lines.push({ label: q.n, cur: cur, req: q.v, ok: okq, src: 'varp ' + q.vps.join(' + ') });
-        }
-        const liveSk = (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
-        let gatesOk = true;
-        for (const sq of (a.skills || [])) {          // hard gate, never part of the n-of-M pool
-          const sid = sq[0] | 0, lvl = sq[1] | 0;
-          const cur = (liveSk && liveSk[sid]) ? (liveSk[sid][0] | 0) : 0;
-          const okq = cur >= lvl; if (!okq) gatesOk = false;
-          lines.push({ label: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
-                       cur: cur, req: lvl, ok: okq, src: 'live skill ' + sid, gate: true });
-        }
-        for (const pid2 of (a.prev || [])) lines.push({ label: '', cur: 0, req: 1, ok: false, src: 'achievement ' + pid2, prereqOf: pid2, gate: true });
-        baseSat[a.id] = sat; baseGates[a.id] = gatesOk;
-        const varNeed = achNeed(a);
-        const provable = varNeed > 0 || achGatesTotal(a) > 0;
-        if (provable && (varNeed === 0 || sat >= varNeed) && gatesOk && !(a.prev && a.prev.length) && varNeed + (a.skills || []).length > 0)
-          done.add(a.id);
-        prog[a.id] = lines;
-      }
-      const defsById = achDefById();
-      let chg = true, guard = 0;
-      while (chg && guard++ < 24) {
-        chg = false;
-        for (const p of achDefs) {
-          if (done.has(p.id) || achIsLeagues(p)) continue;
-          if (p.subach && p.subach.length) {
-            let sub = 0; for (const c of p.subach) if (done.has(c)) sub++;
-            const need = (p.needN && p.needN.length) ? p.needN.reduce((s, x) => s + x, 0) : p.subach.length;
-            if (sub >= need) { done.add(p.id); chg = true; continue; }
-          }
-          if (p.prev && p.prev.length && baseSat[p.id] !== undefined) {
-            let prevOk = true;
-            for (const ln of (prog[p.id] || [])) {
-              if (ln.prereqOf === undefined) continue;
-              if (!ln.label) ln.label = 'Requires achievement: ' + ((defsById[ln.prereqOf] && defsById[ln.prereqOf].name) || ('achievement #' + ln.prereqOf));
-              const ok = done.has(ln.prereqOf);
-              if (ok !== ln.ok) { ln.ok = ok; ln.cur = ok ? 1 : 0; }
-              if (!ln.ok) prevOk = false;
-            }
-            const varNeed = achNeed(p);
-            if (prevOk && baseGates[p.id] !== false && (varNeed === 0 || baseSat[p.id] >= varNeed)) { done.add(p.id); chg = true; }
-          }
-        }
-      }
-      const unknown = new Set();
-      for (const a of achDefs) {
-        if (done.has(a.id) || achIsLeagues(a)) continue;
-        if (achNeed(a) === 0 && !(a.subach && a.subach.length)) unknown.add(a.id);
-      }
-      achState = { done: done, prog: prog, unknown: unknown };
+      achState = achEvaluate(achDefs, achCtx(vp, await achQuestState()));
     } finally { achFetching = false; }
     paneRun('achievements', renderAchievements2);
     paneRun('combatmastery', renderCombatMastery);
   }
 
   async function pluginAchievements(pid) {
-    if (!achDefs) { try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; } }
+    if (!achDefs) achDefs = await achLoadDefs();
+    if (!achDefs) return [];
     await ensureVbMap();
-    const vps = new Set();
-    for (const a of achDefs) {
-      if (achIsLeagues(a)) continue;
-      for (const q of (a.reqs || [])) for (const vb of q.varbits) {
-        const r = storageVbMap && storageVbMap[vb]; if (r) vps.add(r.varp);
-      }
-      const br = achBitReqs(a);
-      for (const b of br.vbits) { const r = storageVbMap && storageVbMap[b.vb]; if (r) vps.add(r.varp); }
-      for (const b of br.vpbits) vps.add(b.vp);
-      for (const q of achVarpReqs(a)) for (const id of q.vps) vps.add(id);
-    }
+    const vps = achVarps(achDefs);
     let vp = {};
     if (vps.size && bridge().varps) { try { vp = JSON.parse(await bridge().varps(pid, [...vps].join(','))); } catch (e) {} }
+    const st = achEvaluate(achDefs, achCtx(vp, await achQuestStateFor(pid)));
+    const byId = achDefById();
     const out = [];
     for (const a of achDefs) {
-      if (!achTrackable(a) || achIsLeagues(a)) continue;
-      let sat = 0; const reqs = [];
-      for (const q of (a.reqs || [])) {
-        let cur = 0; for (const vb of q.varbits) cur += (readVb(vb, vp) || 0);
-        const ok = cur >= q.value; if (ok) sat++;
-        const dsc = q.desc || ((q.value > 1 && a.desc) ? a.desc
-                    : (q.value > 1 ? 'Counted by the game' : 'Marked complete by the game'));
-        reqs.push({ description: dsc, current: cur, target: q.value, complete: ok, varbits: q.varbits.slice() });
+      if (!st.prog[a.id]) continue;
+      const reqs = st.prog[a.id].map(ln => {
+        const dsc = ln.label || (ln.req > 1 ? (a.desc || 'Counted by the game') : 'Marked complete by the game');
+        const r = { description: dsc, current: ln.cur, target: ln.req, complete: !!ln.ok, varbits: (ln.varbits || []).slice() };
+        if (ln.varps) r.varps = ln.varps.slice();
+        if (ln.unlock) r.unlock = true;
+        return r;
+      });
+      for (const cid of (a.subach || [])) {      // child achievements count toward completion like any other entry
+        const ok = st.done.has(cid);
+        reqs.push({ description: (byId[cid] && byId[cid].name) || ('achievement ' + cid), current: ok ? 1 : 0, target: 1,
+                    complete: ok, varbits: [], achievement: cid });
       }
-      const br = achBitReqs(a);
-      for (const b of br.vbits) {               // op 25: one bit of a varbit's value
-        const bv = achBitFromVbVal(b.vb, readVb(b.vb, vp) || 0, b.bit);
-        const ok = bv >= 1; if (ok) sat++;
-        reqs.push({ description: b.n, current: bv, target: 1, complete: ok, varbits: [b.vb] });
-      }
-      for (const b of br.vpbits) {              // op 23: one bit of a varp
-        const bv = ((+vp[b.vp] || 0) >>> b.bit) & 1;
-        const ok = bv >= 1; if (ok) sat++;
-        reqs.push({ description: b.n, current: bv, target: 1, complete: ok, varbits: [], varps: [b.vp] });
-      }
-      for (const q of achVarpReqs(a)) {         // op 13: sum of live varps >= value
-        let cur = 0; for (const id of q.vps) cur += (+vp[id] || 0);
-        const ok = cur >= q.v; if (ok) sat++;
-        reqs.push({ description: q.n, current: cur, target: q.v, complete: ok, varbits: [], varps: q.vps.slice() });
-      }
-      const liveSk = (lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
-      let gatesOk = true;
-      for (const sq of (a.skills || [])) {
-        const sid = sq[0] | 0, lvl = sq[1] | 0;
-        const cur = (liveSk && liveSk[sid]) ? (liveSk[sid][0] | 0) : 0;
-        const ok = cur >= lvl; if (!ok) gatesOk = false;
-        reqs.push({ description: 'Level ' + lvl + ' ' + ((typeof SKILL_NAMES !== 'undefined' && SKILL_NAMES[sid]) || ('skill ' + sid)),
-                    current: cur, target: lvl, complete: ok, varbits: [], gate: true });
-      }
-      for (const pid2 of (a.prev || [])) {
-        reqs.push({ description: '', current: 0, target: 1, complete: false, varbits: [], prereqOf: pid2, gate: true });
-      }
-      const need = achNeed(a);
-      const tier = achTier(a);
+      const c = st.cnt[a.id], tier = achTier(a);
       out.push({ id: a.id, name: a.name || '', description: a.desc || '', reward: a.reward || '',
-                 points: a.points || 0, complete: (need === 0 || sat >= need) && gatesOk && !(a.prev && a.prev.length) && (need + (a.skills || []).length > 0),
-                 requirementsNeeded: need,
-                 combatMasteryTier: tier ? tier[0] : null, requirements: reqs, _sat: sat, _gates: gatesOk });
+                 points: a.points || 0, complete: st.done.has(a.id), requirementsNeeded: c ? c.need : 0,
+                 combatMasteryTier: tier ? tier[0] : null, requirements: reqs });
     }
-    const byId = {}; for (const r of out) byId[r.id] = r;
-    for (let pass = 0; pass < 8; pass++) {
-      let changed = false;
-      for (const r of out) {
-        let prevSeen = false, prevOk = true;
-        for (const q of r.requirements) {
-          if (q.prereqOf === undefined) continue;
-          prevSeen = true;
-          const dep = byId[q.prereqOf];
-          const defs = achDefById();
-          if (!q.description) q.description = 'Requires achievement: ' + ((defs[q.prereqOf] && defs[q.prereqOf].name) || ('achievement #' + q.prereqOf));
-          const ok = !!(dep && dep.complete);
-          if (ok !== q.complete) { q.complete = ok; q.current = ok ? 1 : 0; changed = true; }
-          if (!q.complete) prevOk = false;
-        }
-        if (!prevSeen) continue;
-        const varOk = r.requirementsNeeded === 0 || r._sat >= r.requirementsNeeded;
-        const nowDone = varOk && r._gates !== false && prevOk;
-        if (nowDone !== r.complete) { r.complete = nowDone; changed = true; }
-      }
-      if (!changed) break;
-    }
-    for (const r of out) { delete r._sat; delete r._gates; }
     return out;
   }
 
@@ -293,25 +285,41 @@
     const row = document.createElement('div'); row.className = 'pet-row' + (isDone ? '' : ' pet-locked');
     const tier = achTier(a);
     const lines = st.prog[a.id] || [];
-    const need = achNeed(a);
+    const c = (st.cnt && st.cnt[a.id]) || null;
+    const need = c ? c.need : 0;
     const tip = [a.name];
     if (a.desc) tip.push(a.desc);
-    if (tier) tip.push('Combat mastery: ' + tier[0] + ' (source: cache combat_mastery_category ' + a.cm + ')');
+    if (tier) tip.push('Combat mastery: ' + tier[0]);
     if (a.reward) tip.push('Reward: ' + a.reward);
     if (a.points) tip.push(a.points + ' achievement points');
-    const poolLines = lines.filter(ln => !ln.gate);
-    if (poolLines.length > 1) tip.push(need === 1 ? 'Do any one of these:'
-      : need >= poolLines.length ? 'Do all of these:' : ('Do any ' + need + ' of these:'));
-    if (lines.some(ln => ln.gate)) tip.push('Lines marked with a lock are required on top of that.');
-    for (const ln of lines) {
-      // Most requirements carry no text in the cache (the game's own builder, script 10988,
-      let head = ln.label;
-      if (!head) head = ln.req > 1 ? (a.desc || 'Counted by the game') : 'Marked complete by the game';
-      const count = ln.req > 1 ? ('  ' + ln.cur + ' of ' + ln.req) : '';
-      tip.push((ln.ok ? '✓ ' : ln.gate ? '• ' : '• ') + head + count);
-      if (ln.src) tip.push('    Source: ' + ln.src);
+    const judged = lines.filter(ln => !ln.unlock);
+    const kids = (a.subach || []).map((id, i) => ({ id: id, g: (a.subachG ? a.subachG[i] : 0) | 0 }));
+    const gs = [...new Set(judged.map(ln => ln.g).concat(kids.map(k => k.g)))].sort((x, y) => x - y);
+    const multi = gs.length > 1;
+    if (multi) tip.push('Complete ' + (c && c.want < c.groups ? ('any ' + c.want + ' of ' + c.groups + ' parts') : 'every part') + ':');
+    for (const g of gs) {
+      const gl = judged.filter(ln => ln.g === g), gk = kids.filter(k => k.g === g);
+      const n = gl.length + (gk.length ? 1 : 0), all = gl.length + gk.length;
+      const gNeed = (a.needN && typeof a.needN[g] === 'number') ? a.needN[g] : all;
+      const pick = gNeed >= all ? 'all' : gNeed <= 1 ? 'any one' : ('any ' + gNeed);
+      if (multi) tip.push('Part ' + (g + 1) + (all > 1 && pick !== 'all' ? ' (' + pick + ' of ' + all + ')' : '') + ':');
+      else if (n > 1 || gk.length > 1) tip.push(pick === 'all' ? 'Do all of these:' : ('Do ' + pick + ' of these:'));
+      for (const ln of gl) {
+        // Most requirements carry no text in the cache (the game's own builder, script 10988,
+        let head = ln.label;
+        if (!head) head = ln.req > 1 ? (a.desc || 'Counted by the game') : 'Marked complete by the game';
+        const count = ln.req > 1 ? ('  ' + ln.cur + ' of ' + ln.req) : '';
+        tip.push((ln.ok ? '✓ ' : '• ') + head + count);
+        if (ln.src) tip.push('    Source: ' + ln.src);
+      }
+      if (gk.length) {
+        const d = gk.filter(k => st.done.has(k.id)).length;
+        tip.push((d >= Math.min(gNeed, gk.length) ? '✓ ' : '• ') + 'Sub-achievements  ' + d + ' of ' + gk.length);
+      }
     }
-    tip.push('Status: ' + (isDone ? 'complete' : 'incomplete'));
+    for (const ln of lines) if (ln.unlock) tip.push((ln.ok ? '✓ ' : '• ') + ln.label);
+    const unsure = st.unknown && st.unknown.has(a.id);
+    tip.push('Status: ' + (isDone ? 'complete' : unsure ? 'not known (some of its requirements cannot be read yet)' : 'incomplete'));
     row.dataset.tip = tip.join('\n');
     const ico = document.createElement('div'); ico.className = 'pet-ico';
     if (a.sprite > 0) loadSpriteIcon(ico, a.sprite);
@@ -324,12 +332,10 @@
     info.appendChild(top);
     let chip = null;
     if (!isDone) {
-      if (need >= 2) {
-        const sat = lines.reduce((s, l) => s + (l.ok ? 1 : 0), 0);
-        chip = sat + ' / ' + need + ' done';
-      } else {
+      if (need >= 2) chip = c.met + ' / ' + need + ' done';
+      else {
         let best = null;
-        for (const ln of lines) if (ln.req > 1 && ln.cur > 0 && (!best || ln.cur / ln.req > best.cur / best.req)) best = ln;
+        for (const ln of judged) if (ln.req > 1 && ln.cur > 0 && (!best || ln.cur / ln.req > best.cur / best.req)) best = ln;
         if (best) chip = Math.min(best.cur, best.req) + ' / ' + best.req;
       }
     }
@@ -380,7 +386,7 @@
     if (!achDefs) { list.innerHTML = '<div class="empty">Reading achievement cache...</div>'; achListSig = ''; return; }
     const st = achState || { done: new Set(), prog: {} };
     const trackable = achDefs.filter(a => achTrackable(a) && !achIsLeagues(a) && !achTier(a));
-    const started = (a) => { const ls = st.prog[a.id] || []; for (const l of ls) if (l.cur > 0) return true; return false; };
+    const started = (a) => { const ls = st.prog[a.id] || []; for (const l of ls) if (!l.unlock && l.cur > 0) return true; return false; };
     const items = trackable.filter(a => {
       if (achFSearch && (a.name || '').toLowerCase().indexOf(achFSearch) < 0 &&
           (a.desc || '').toLowerCase().indexOf(achFSearch) < 0) return false;
@@ -452,8 +458,8 @@
     const segs = v.split(/<br\s*\/?>/i).map(x => x.trim()).filter(Boolean);
     return segs.length ? segs[segs.length - 1] : v.trim();
   }
+  // Bosses as the game groups them: each task's subcategory, named by enum 16086.
   function cmBosses() {
-    const lb = achLeafParent();
     const orphans = {};
     const byName = {};
     const addTo = (nm, a) => {
@@ -462,8 +468,6 @@
     };
     for (const a of (achDefs || [])) {
       if (!(achTier(a) && achTrackable(a) && !achIsLeagues(a))) continue;
-      const p = lb[a.id];
-      if (p) { addTo(p.name || ('#' + p.id), a); continue; }
       const key = (a.subcat != null) ? ('s' + a.subcat) : 'other';
       (orphans[key] = orphans[key] || []).push(a);
     }
@@ -545,9 +549,8 @@
     if (!achDefs) { list.innerHTML = '<div class="empty">Reading achievement cache...</div>'; cmListSig = ''; return; }
     const st = achState || { done: new Set(), prog: {} };
     const all = achDefs.filter(a => achTrackable(a) && !achIsLeagues(a) && achTier(a));
-    const started = (a) => { const ls = st.prog[a.id] || []; for (const l of ls) if (l.cur > 0) return true; return false; };
+    const started = (a) => { const ls = st.prog[a.id] || []; for (const l of ls) if (!l.unlock && l.cur > 0) return true; return false; };
     const inTier = (a) => { if (cmFTier < 0) return true; const t = achTier(a); return t && t[1] === cmFTier; };
-    const lb = cmLeafBoss();
     const bosses = cmBosses();
     const synthSel = (cmFBoss >= 0 && bosses[cmFBoss] && bosses[cmFBoss].ids)
                       ? new Set(bosses[cmFBoss].ids) : null;
@@ -594,7 +597,7 @@
     }
   }
 
-Object.assign(window, { achBitFromVbVal, achBitReqs, achDefById, achIsLeagues, achVarpReqs, fetchAchievements, mkDropdown, pluginAchievements });
+Object.assign(window, { achBitFromVbVal, achBitReqs, achDefById, achIsLeagues, achLoadDefs, achVarpReqs, fetchAchievements, mkDropdown, pluginAchievements });
 registerTab({ id: 'achievements', render: renderAchievements2, open: function () { achListSig = ''; fetchAchievements(true); } });
 registerTab({ id: 'combatmastery', render: renderCombatMastery, open: function () { cmListSig = ''; fetchAchievements(true); } });
 })();

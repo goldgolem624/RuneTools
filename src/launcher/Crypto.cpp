@@ -216,4 +216,25 @@ bool VerifyEcdsaP256(const std::uint8_t* msg, std::size_t msg_len,
                                             (PUCHAR)sig, (ULONG)sig_len, 0));
 }
 
+bool VerifyEcdsaP256Domain(SigDomain domain,
+                           const std::uint8_t* msg, std::size_t msg_len,
+                           const std::uint8_t* sig, std::size_t sig_len,
+                           const std::uint8_t* pubkey_xy, std::size_t pubkey_len) {
+    const char* name = nullptr;
+    switch (domain) {
+        case SigDomain::UpdateManifest: name = "update-manifest"; break;
+        case SigDomain::RevocationList: name = "revocation-list"; break;
+    }
+    if (!name || (!msg && msg_len)) return false;
+
+    // Built with explicit NULs: the separators are part of the signed bytes.
+    std::string signed_bytes = "RuneTools signature v2";
+    signed_bytes.push_back('\0');
+    signed_bytes += name;
+    signed_bytes.push_back('\0');
+    if (msg_len) signed_bytes.append(reinterpret_cast<const char*>(msg), msg_len);
+    return VerifyEcdsaP256(reinterpret_cast<const std::uint8_t*>(signed_bytes.data()), signed_bytes.size(),
+                           sig, sig_len, pubkey_xy, pubkey_len);
+}
+
 }  // namespace rtx::launcher::crypto

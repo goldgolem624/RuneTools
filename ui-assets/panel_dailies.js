@@ -13,6 +13,11 @@
   let dwNotify = {};
   try { dwNotify = JSON.parse(localStorage.getItem('rtxDwNotify') || '{}') || {}; } catch (e) {}
   function dwNotifySave() { try { prefSet('rtxDwNotify', JSON.stringify(dwNotify)); } catch (e) {} }   // durable pref
+  // Reads the bells again when the stored ones change (another window set one), so a later save here keeps them.
+  function dwNotifyReload() {
+    try { const v = JSON.parse(prefGet('rtxDwNotify', '{}') || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) dwNotify = v; } catch (e) { return; }
+    document.querySelectorAll('.dw-bell[data-bell]').forEach(b => b.classList.toggle('on', !!dwNotify[b.dataset.bell]));
+  }
   function dwNotifyAny() { for (const k in dwNotify) if (dwNotify[k]) return true; return false; }
   let dwPrev = null;
 
@@ -89,6 +94,7 @@
 
   function dwBell(key) {
     const b = document.createElement('button'); b.className = 'dw-bell' + (dwNotify[key] ? ' on' : '');
+    b.dataset.bell = key;
     b.dataset.tip = 'Notify when available';
     b.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 16v-5a6 6 0 1 0-12 0v5l-1.5 2h15z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>';
     b.addEventListener('click', () => {
@@ -925,6 +931,6 @@
     } catch (e) {}
   }
 
-Object.assign(window, { DW_IDS, dwAvail, dwNextResets, dwNotifyAny, dwVosState, fetchDailies, megAnswerTick });
+Object.assign(window, { DW_IDS, dwAvail, dwNextResets, dwNotifyAny, dwNotifyReload, dwVosState, fetchDailies, megAnswerTick });
 registerTab({ id: 'dailies', render: renderDailies, open: function () { fetchDailies(true); } });
 })();

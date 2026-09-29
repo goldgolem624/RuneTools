@@ -4,6 +4,7 @@
 #include <DbgHelp.h>
 #pragma comment(lib, "Dbghelp.lib")
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <typeinfo>
 #include <unordered_map>
+#include <vector>
 
 namespace rtx::log {
 
@@ -26,13 +28,15 @@ constexpr std::streamoff                       kFileByteCap = 16 * 1024 * 1024;
 std::mutex                                     g_mu;
 std::ofstream                                  g_launcher;
 std::unordered_map<std::uint32_t, std::ofstream> g_clients;
-std::string                                    g_userprofile_lc;   // lowercased, for redaction
+std::vector<std::string>                       g_userprofile_folded;   // UTF-8 and ANSI forms, for redaction
 bool                                           g_inited = false;
 std::atomic<bool>                              g_shutting_down{false};   // suppress teardown-race crash reports
 
-std::string to_lower_copy(const std::string& s) {
+// Lowercased, with forward slashes as backslashes, so a path matches however it was written. The
+// length never changes, so an offset found in the copy is the same offset in the original.
+std::string fold_path_text(const std::string& s) {
     std::string out(s);
-    for (auto& c : out) c = (char)std::tolower((unsigned char)c);
+    for (auto& c : out) c = c == '/' ? '\\' : (char)std::tolower((unsigned char)c);
     return out;
 }
 
@@ -143,18 +147,25 @@ void TerminateHandler() {
 }  // namespace
 
 std::string Redact(const std::string& msg) {
-    if (g_userprofile_lc.empty() || msg.empty()) return msg;
-    auto lc = to_lower_copy(msg);
-    if (lc.find(g_userprofile_lc) == std::string::npos) return msg;
-    std::string out; out.reserve(msg.size());
+    if (g_userprofile_folded.empty() || msg.empty()) return msg;
+    const auto lc = fold_path_text(msg);
+    std::string out;
     size_t pos = 0;
     while (pos < msg.size()) {
-        auto hit = lc.find(g_userprofile_lc, pos);
-        if (hit == std::string::npos) { out.append(msg, pos, std::string::npos); break; }
+        // The earliest match of any form, the longest one where two start together.
+        size_t hit = std::string::npos, len = 0;
+        for (const auto& form : g_userprofile_folded) {
+            const auto at = lc.find(form, pos);
+            if (at < hit || (at == hit && at != std::string::npos && form.size() > len)) { hit = at; len = form.size(); }
+        }
+        if (hit == std::string::npos) break;
+        if (out.empty()) out.reserve(msg.size());
         out.append(msg, pos, hit - pos);
         out.append("%USERPROFILE%");
-        pos = hit + g_userprofile_lc.size();
+        pos = hit + len;
     }
+    if (pos == 0) return msg;
+    out.append(msg, pos, std::string::npos);
     return out;
 }
 
@@ -167,11 +178,26 @@ void Init() {
     if (g_inited) return;
     g_inited = true;
 
-    char up[MAX_PATH] = {};
-    if (GetEnvironmentVariableA("USERPROFILE", up, MAX_PATH) > 0) {
-        std::string s = up;
-        while (!s.empty() && (s.back() == '\\' || s.back() == '/')) s.pop_back();
-        g_userprofile_lc = to_lower_copy(s);
+    // Log lines are UTF-8, but text from the system or the runtime (an error message naming a file)
+    // carries paths in the ANSI code page, so the profile path is matched in each form. The runtime's
+    // error messages write '?' for a character the code page lacks, where other conversions pick a
+    // look-alike letter, so the ANSI form is kept both ways. A code page that refuses the no-look-alike
+    // flag converts like the plain form, which is kept anyway.
+    wchar_t up[MAX_PATH] = {};
+    const DWORD up_len = GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH);
+    if (up_len > 0 && up_len < MAX_PATH) {
+        std::wstring w(up, up_len);
+        while (!w.empty() && (w.back() == L'\\' || w.back() == L'/')) w.pop_back();
+        struct Form { UINT cp; DWORD flags; };
+        for (const Form f : {Form{CP_UTF8, 0}, Form{CP_ACP, WC_NO_BEST_FIT_CHARS}, Form{CP_ACP, 0}}) {
+            const int n = WideCharToMultiByte(f.cp, f.flags, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+            if (n <= 0) continue;
+            std::string s(n, '\0');
+            WideCharToMultiByte(f.cp, f.flags, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+            s = fold_path_text(s);
+            if (std::find(g_userprofile_folded.begin(), g_userprofile_folded.end(), s) == g_userprofile_folded.end())
+                g_userprofile_folded.push_back(std::move(s));
+        }
     }
 
     auto dir = log_dir();
@@ -199,17 +225,24 @@ void StartRun() {
 
     if (std::filesystem::exists(dir, ec)) {
         const auto now = std::filesystem::file_time_type::clock::now();
-        for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        // Names stay wide and the iterator advances through the error_code overload: a narrow
+        // conversion throws on a name the code page cannot hold, and any file in this folder
+        // would then stop every start.
+        std::error_code it_ec;
+        for (std::filesystem::directory_iterator it(dir, it_ec), end; !it_ec && it != end;
+             it.increment(it_ec)) {
+            const auto& e = *it;
             if (!e.is_regular_file(ec)) continue;
-            const auto fn = e.path().filename().string();
-            const bool is_log = fn.size() > 4 && fn.compare(fn.size() - 4, 4, ".log") == 0;
-            const auto age = now - e.last_write_time(ec);
+            const std::wstring fn = e.path().filename().wstring();
+            const bool is_log = fn.size() > 4 && fn.compare(fn.size() - 4, 4, L".log") == 0;
+            const auto mtime = e.last_write_time(ec);
+            const auto age = ec ? std::filesystem::file_time_type::duration::zero() : now - mtime;
             // Previous sessions' client logs go immediately. Companion logs may still belong to a
             // game that outlived the launcher, so they wait an hour. Crash artefacts keep a fortnight.
             bool drop = false;
-            if (is_log && fn.rfind("client-", 0) == 0) drop = true;
-            else if (is_log && fn.rfind("companion-", 0) == 0) drop = age > std::chrono::hours(1);
-            else if (fn.rfind("crash-", 0) == 0) drop = age > std::chrono::hours(24 * 14);
+            if (is_log && fn.rfind(L"client-", 0) == 0) drop = true;
+            else if (is_log && fn.rfind(L"companion-", 0) == 0) drop = age > std::chrono::hours(1);
+            else if (fn.rfind(L"crash-", 0) == 0) drop = age > std::chrono::hours(24 * 14);
             if (drop) std::filesystem::remove(e.path(), ec);
         }
     }

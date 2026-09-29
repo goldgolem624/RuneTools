@@ -142,11 +142,18 @@
         + '<span class="fr-pill ' + (s.ok ? 'ok' : 'no') + '">' + (s.ok ? 'usable' : 'locked') + '</span>'
         + (co ? '<button class="fr-btn" data-fr-map="' + esc(r.key) + '">Map</button>' : '') + '</div>');
     });
-    let h = '<div class="fr-top"><input id="frSearch" class="bank-search" type="text" placeholder="Search code or destination..." value="' + esc(frSearch) + '" spellcheck="false">'
-      + ['all', 'usable', 'locked', 'unvisited'].map(f => '<button class="fr-btn' + (frFilter === f ? ' on' : '') + '" data-fr-f="' + f + '">' + f[0].toUpperCase() + f.slice(1) + '</button>').join('')
-      + '<span class="fr-cnt">' + usable + ' / ' + frRows.length + ' usable · ' + seen + ' visited' + (frUnused ? ' · ' + frUnused + ' unused codes' : '') + '</span></div>';
-    h += '<div class="fr-card">' + (rows.length ? rows.join('') : '<div class="fr-empty">Nothing matches.</div>') + '</div>';
-    wrap.innerHTML = h;
+    // The search bar is built once and only the list under it is replaced: rebuilding the input on each
+    // keystroke would drop its focus, and the next keys would go to the game.
+    let list = wrap.querySelector('.fr-card');
+    if (!list) {
+      wrap.innerHTML = '<div class="fr-top"><input id="frSearch" class="bank-search" type="text" placeholder="Search code or destination..." value="' + esc(frSearch) + '" spellcheck="false">'
+        + ['all', 'usable', 'locked', 'unvisited'].map(f => '<button class="fr-btn" data-fr-f="' + f + '">' + f[0].toUpperCase() + f.slice(1) + '</button>').join('')
+        + '<span class="fr-cnt"></span></div><div class="fr-card"></div>';
+      list = wrap.querySelector('.fr-card');
+    }
+    wrap.querySelectorAll('[data-fr-f]').forEach(b => { b.className = 'fr-btn' + (frFilter === b.dataset.frF ? ' on' : ''); });
+    wrap.querySelector('.fr-cnt').textContent = usable + ' / ' + frRows.length + ' usable · ' + seen + ' visited' + (frUnused ? ' · ' + frUnused + ' unused codes' : '');
+    list.innerHTML = rows.length ? rows.join('') : '<div class="fr-empty">Nothing matches.</div>';
   }
 
 Object.assign(window, { fetchFairyRings });

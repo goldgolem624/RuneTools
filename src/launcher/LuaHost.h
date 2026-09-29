@@ -6,8 +6,13 @@
 //
 // The JavaScriptCore wrappers (luaLoad, luaTick, ...) live in Bridge.cpp; this header is the plain
 // C++ API they call, which the --lua-selftest command line mode also drives without a page.
+//
+// Every docked client has its own page, so states are kept per client: the calls below that take a
+// plugin id act on the copy that belongs to the client of the page calling in (the game pid on its
+// window, read through ScopedContext), and on client 0 when there is no page (the self test).
 #include <JavaScriptCore/JavaScript.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -38,6 +43,8 @@ std::string Load(const std::string& id, const std::filesystem::path& root,
                  const std::vector<std::string>& scopes, const std::string& methodsJson);
 void Unload(const std::string& id);
 bool IsLoaded(const std::string& id);
+// Closes every state of one client (a game pid), for when its page goes away.
+void UnloadClient(std::uint32_t pid);
 
 // One host tick: fires timers and tick handlers, then the events batch (JSON array or "") and the
 // state snapshot (JSON object or ""). Returns the same result shape as Load plus "failed".
@@ -47,6 +54,7 @@ std::string Event(const std::string& id, const std::string& kind, const std::str
 // Delivers a widget interaction from the page (button click, toggle, input) to the plugin.
 std::string UiEvent(const std::string& id, const std::string& widget, const std::string& valueJson);
 // Diagnostics: {"loaded":bool,"memory":bytes,"dispatches":n,"cpuMs":x,"errors":n,"log":[last 200]}
+// Called without a page context it reports the first client's copy of the plugin.
 std::string Info(const std::string& id);
 
 // Runtime version string, "Lua 5.4.7".

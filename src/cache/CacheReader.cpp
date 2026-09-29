@@ -46,14 +46,21 @@ static const std::vector<LocPlacement>& RegionLocationsLocked(int region_x, int 
 
 namespace {
 
+// Per-region memo entry (key = rx<<8 | ry). `used` is the call that last handed it out (the LRU
+// clock); `retry` marks a result built from a read that came back empty although the reference
+// table lists the file, which is dropped and read again a few seconds later.
+template <class T> struct RegionMemo { T value; std::uint64_t used = 0; bool retry = false; };
+
 std::mutex                            g_mu;
-std::unique_ptr<Store>                g_store;
+// Shared so that a reader working outside g_mu (the skill-guide sweep, audio) keeps the Store and
+// its indexes alive through a cache reset, which only drops g_mu's reference.
+std::shared_ptr<Store>                g_store;
 std::unordered_map<int, ItemInfo>     g_item_cache;
 std::unordered_map<int, std::string>  g_sprite_cache;   // id -> data URL
 std::unordered_map<long long, std::string> g_sprite_scaled_cache;   // (id<<16|px) -> data URL
 std::unordered_map<int, NpcMeta>      g_npc_cache;
 std::unordered_map<int, LocMeta>      g_loc_cache;
-std::unordered_map<int, std::vector<LocPlacement>> g_region_cache;  // key = rx<<8 | ry
+std::unordered_map<int, RegionMemo<std::vector<LocPlacement>>> g_region_cache;  // key = rx<<8 | ry
 std::unordered_map<int, std::string>  g_perk_names;     // DBRows perk id -> name
 std::unordered_map<int, std::string>  g_perk_descs;     // DBRows perk id -> effect description (col 4)
 std::unordered_map<int, int>          g_perk_ranks;     // DBRows perk id -> rank count (rows of col 7)
@@ -65,10 +72,10 @@ std::unordered_map<int, bool>         g_buff_icon_item; // buff-bar icon id -> t
 bool                                  g_buffs_loaded   = false;
 bool                                  g_init_attempted = false;
 
-struct LocClip { bool no_clip = false; int dim_x = 1, dim_y = 1; };
+struct LocClip { bool no_clip = false; int dim_x = 1, dim_y = 1; bool retry = false; };   // retry: see LocClipLocked
 std::unordered_map<int, LocClip>      g_locclip_cache;
-std::unordered_map<int, std::vector<std::uint8_t>> g_blocked_cache;  // key = rx<<8 | ry
-std::unordered_map<int, MapTileData>  g_tiles_cache;                 // key = rx<<8 | ry
+std::unordered_map<int, RegionMemo<std::vector<std::uint8_t>>> g_blocked_cache;  // key = rx<<8 | ry
+std::unordered_map<int, RegionMemo<MapTileData>> g_tiles_cache;      // key = rx<<8 | ry; no arrays = no tile file
 
 // mapscene id -> sprite via the MAPSCENES config (index 2, archive 34, opcode 1 = sprite_id). Memoized.
 struct MapsceneIcon { int w = 0, h = 0; bool tried = false; std::vector<std::uint8_t> rgba; };
@@ -93,24 +100,39 @@ std::unordered_map<int, int>          g_loc_mapfunc;        // loc id -> mapFunc
 std::unordered_map<int, std::string>  g_loc_name;
 bool                                  g_maplabels_loaded = false;
 
+// Every index the cache view opens, with its default file count per archive (0 = from the ref table).
+// CheckCacheUpdate walks the same list to open one that was not there yet.
+struct CacheIndexSpec { int id; int files_per_archive; };
+constexpr CacheIndexSpec kCacheIndexes[] = {
+    { kIndexItems,        kDefaultFilesPerArchive_Items },
+    { kIndexNpcs,         kDefaultFilesPerArchive_Npcs },
+    { kIndexLocations,    kDefaultFilesPerArchive_Locations },
+    { kIndexMaps,         0 },   // region archives; file count from ref table
+    { kIndexSprites,      0 },   // one file per archive
+    { kIndexConfigs,      0 },   // DBRows (archive 41) for augment perk names
+    { kIndexStructs,      0 },   // structs (buff/debuff names)
+    { kIndexWorldMap,     0 },   // world-map area defs + the game's own composited map images
+    { kIndexEnums,        0 },   // enums (id->name rosters: slayer creatures, reaper bosses)
+    { kIndexAchievements, 0 },   // achievement defs (varbit-driven completion)
+    { kIndexInterfaces,   0 },   // static interface-component defs
+    { kIndexClientScript, 0 },   // CS2 scripts (script 6506 = ability cooldown varc pairs)
+    { kIndexSoundEffects, 0 },   // JAGA-wrapped Ogg Vorbis, archive id = sound id
+    { kIndexMusic,        0 },   // ditto, music streams
+};
+
 void EnsureInit() {
     if (g_init_attempted) return;
     g_init_attempted = true;
-    g_store = std::make_unique<Store>(ResolveCacheRoot());
-    g_store->Add(kIndexItems,     kDefaultFilesPerArchive_Items);
-    g_store->Add(kIndexNpcs,      kDefaultFilesPerArchive_Npcs);
-    g_store->Add(kIndexLocations, kDefaultFilesPerArchive_Locations);
-    g_store->Add(kIndexMaps,      0);   // region archives; file count from ref table
-    g_store->Add(kIndexSprites,   0);   // one file per archive
-    g_store->Add(kIndexConfigs,   0);   // DBRows (archive 41) for augment perk names
-    g_store->Add(kIndexStructs,   0);   // structs (buff/debuff names)
-    g_store->Add(kIndexWorldMap,  0);   // world-map area defs + the game's own composited map images
-    g_store->Add(kIndexEnums,     0);   // enums (id->name rosters: slayer creatures, reaper bosses)
-    g_store->Add(kIndexAchievements, 0); // achievement defs (varbit-driven completion)
-    g_store->Add(kIndexInterfaces, 0);  // static interface-component defs
-    g_store->Add(kIndexClientScript, 0); // CS2 scripts (script 6506 = ability cooldown varc pairs)
-    g_store->Add(kIndexSoundEffects, 0); // JAGA-wrapped Ogg Vorbis, archive id = sound id
-    g_store->Add(kIndexMusic,        0); // ditto, music streams
+    // Every public call lands here, many from script callbacks: a path the file system rejects
+    // leaves that index (or the whole cache) closed instead of throwing out of the caller.
+    try {
+        g_store = std::make_shared<Store>(ResolveCacheRoot());
+    } catch (...) {
+        return;
+    }
+    for (const auto& ix : kCacheIndexes) {
+        try { g_store->Add(ix.id, ix.files_per_archive); } catch (...) {}
+    }
 }
 
 // Audio (js5-14 effects, js5-40 music): JAGA header, big-endian: +0 'JAGA', +4 u32 0, +8 u32 total samples,
@@ -198,24 +220,6 @@ ItemInfo ResolveLocked(int item_id) {
     }
     g_item_cache[item_id] = info;
     return info;
-}
-
-LocClip LocClipLocked(int loc_id) {
-    auto hit = g_locclip_cache.find(loc_id);
-    if (hit != g_locclip_cache.end()) return hit->second;
-    LocClip clip;
-    auto* index = g_store ? g_store->Get(kIndexLocations) : nullptr;
-    if (index) {
-        auto bytes = index->ReadFile(loc_id >> 8, loc_id & 0xff);
-        if (!bytes.empty()) {
-            LocDef def = DecodeLoc(loc_id, std::move(bytes));
-            clip.no_clip = def.no_clip;
-            clip.dim_x = def.dim_x;
-            clip.dim_y = def.dim_y;
-        }
-    }
-    g_locclip_cache[loc_id] = clip;
-    return clip;
 }
 
 void EnsureMapscenesLocked() {
@@ -365,25 +369,133 @@ const MapsceneIcon& MaplabelIconLocked(int maplabel_id) {
     return ic;
 }
 
+// ReadFile answers empty both for a file that does not exist and for a jcache it could not read
+// just then (the game client holds it while it writes a download). A file the reference table
+// lists that still reads empty is the second kind, or a damaged archive: not an answer to keep.
+bool FileListed(SqliteIndexFile* idx, int archive, int file) {
+    if (!idx || !idx->ready() || archive < 0) return false;
+    const auto& entries = idx->ref().entries();
+    if ((std::size_t)archive >= entries.size()) return false;
+    const auto& ids = entries[archive].valid_file_ids;
+    return std::find(ids.begin(), ids.end(), file) != ids.end();
+}
+
+// The region memos are capped, since a zoomed-out world map walks thousands of regions, and are
+// trimmed only by RegionMemoBeginLocked at the start of a public call, so every reference the
+// Locked helpers hand out stays valid until that call returns. One call may run past the cap.
+constexpr std::size_t kRegionMemoCap  = 512;
+constexpr auto        kReadRetryDelay = std::chrono::seconds(5);   // also the panel-mount rebuild delay
+std::uint64_t                         g_region_call = 0;
+bool                                  g_region_retry_seen    = false;   // this call handed out an entry marked retry
+bool                                  g_region_retry_pending = false;   // some entry is marked retry
+std::chrono::steady_clock::time_point g_region_retry_at{};
+
+void RegionRetryLocked() {
+    g_region_retry_seen = true;
+    if (g_region_retry_pending) return;
+    g_region_retry_pending = true;
+    g_region_retry_at = std::chrono::steady_clock::now() + kReadRetryDelay;
+}
+
+template <class T>
+void RegionMemoTrimLocked(std::unordered_map<int, RegionMemo<T>>& memo, bool drop_retry) {
+    if (drop_retry)
+        for (auto it = memo.begin(); it != memo.end();) it = it->second.retry ? memo.erase(it) : std::next(it);
+    if (memo.size() <= kRegionMemoCap) return;
+    std::vector<std::pair<std::uint64_t, int>> age;   // (last use, key)
+    age.reserve(memo.size());
+    for (const auto& kv : memo) age.emplace_back(kv.second.used, kv.first);
+    const std::size_t drop = memo.size() - kRegionMemoCap * 3 / 4;   // leave room so this is not every call
+    std::nth_element(age.begin(), age.begin() + (std::ptrdiff_t)drop, age.end());
+    for (std::size_t i = 0; i < drop; ++i) memo.erase(age[i].second);
+}
+
+void RegionMemoBeginLocked() {
+    ++g_region_call;
+    g_region_retry_seen = false;
+    const bool retry_due = g_region_retry_pending && std::chrono::steady_clock::now() >= g_region_retry_at;
+    if (retry_due) g_region_retry_pending = false;
+    RegionMemoTrimLocked(g_tiles_cache, retry_due);
+    RegionMemoTrimLocked(g_region_cache, retry_due);
+    RegionMemoTrimLocked(g_blocked_cache, retry_due);
+    if (retry_due)
+        for (auto it = g_locclip_cache.begin(); it != g_locclip_cache.end();)
+            it = it->second.retry ? g_locclip_cache.erase(it) : std::next(it);
+}
+
+// Regions without a tile file (most of the 256x256 grid) share one blank grid instead of 128 KB each.
+const MapTileData& NoTilesLocked() {
+    static const MapTileData kNone = DecodeMapTiles({});
+    return kNone;
+}
+
 const MapTileData& RegionTilesLocked(int rx, int ry) {
     int key = (rx << 8) | ry;
     auto hit = g_tiles_cache.find(key);
-    if (hit != g_tiles_cache.end()) return hit->second;
-    auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
-    MapTileData td = DecodeMapTiles(index ? index->ReadFile(rx | (ry << 7), 3)
-                                          : std::vector<std::uint8_t>{});
-    g_tiles_cache[key] = std::move(td);
-    return g_tiles_cache[key];
+    if (hit == g_tiles_cache.end()) {
+        auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
+        const int archive = rx | (ry << 7);
+        auto bytes = index ? index->ReadFile(archive, 3) : std::vector<std::uint8_t>{};
+        RegionMemo<MapTileData> e;
+        if (!bytes.empty()) e.value = DecodeMapTiles(std::move(bytes));
+        else if (FileListed(index, archive, 3)) { e.retry = true; RegionRetryLocked(); }
+        hit = g_tiles_cache.emplace(key, std::move(e)).first;
+    }
+    hit->second.used = g_region_call;
+    if (hit->second.retry) g_region_retry_seen = true;
+    return hit->second.value.settings.empty() ? NoTilesLocked() : hit->second.value;
+}
+
+// A loc def the reference table lists that reads empty gets the default clip only until the region
+// retry, so a blocked grid or map window built with it is marked retry and rebuilt then too.
+LocClip LocClipLocked(int loc_id) {
+    auto hit = g_locclip_cache.find(loc_id);
+    if (hit != g_locclip_cache.end()) {
+        if (hit->second.retry) g_region_retry_seen = true;
+        return hit->second;
+    }
+    LocClip clip;
+    auto* index = g_store ? g_store->Get(kIndexLocations) : nullptr;
+    if (index) {
+        auto bytes = index->ReadFile(loc_id >> 8, loc_id & 0xff);
+        if (!bytes.empty()) {
+            LocDef def = DecodeLoc(loc_id, std::move(bytes));
+            clip.no_clip = def.no_clip;
+            clip.dim_x = def.dim_x;
+            clip.dim_y = def.dim_y;
+        } else if (FileListed(index, loc_id >> 8, loc_id & 0xff)) {
+            clip.retry = true;
+            RegionRetryLocked();
+        }
+    }
+    g_locclip_cache[loc_id] = clip;
+    return clip;
 }
 
 const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
     int key = (rx << 8) | ry;
     auto hit = g_blocked_cache.find(key);
-    if (hit != g_blocked_cache.end()) return hit->second;
+    if (hit != g_blocked_cache.end()) {
+        hit->second.used = g_region_call;
+        if (hit->second.retry) g_region_retry_seen = true;
+        return hit->second.value;
+    }
+    // The grid is built from the tiles and placements of this region and its neighbours and from
+    // their loc defs, so it is kept only as long as they are: marked retry when any of them was.
+    const bool seen_before = g_region_retry_seen;
+    g_region_retry_seen = false;
+    auto keep = [&](std::vector<std::uint8_t> grid) -> const std::vector<std::uint8_t>& {
+        auto& e = g_blocked_cache[key];
+        e.value = std::move(grid);
+        e.used  = g_region_call;
+        e.retry = g_region_retry_seen;
+        g_region_retry_seen = seen_before || e.retry;
+        return e.value;
+    };
 
     std::vector<std::uint8_t> blk(4 * 64 * 64, 0);
     auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
-    if (!index) { g_blocked_cache[key] = std::move(blk); return g_blocked_cache[key]; }
+    if (!index) return keep(std::move(blk));
 
     auto orFlag = [&](int plane, int x, int y, std::uint8_t bits) {
         if (x >= 0 && x < 64 && y >= 0 && y < 64 && plane >= 0 && plane < 4)
@@ -445,8 +557,7 @@ const std::vector<std::uint8_t>& RegionBlockedGridLocked(int rx, int ry) {
             }
         }
     }
-    g_blocked_cache[key] = std::move(blk);
-    return g_blocked_cache[key];
+    return keep(std::move(blk));
 }
 
 }  // namespace
@@ -2152,11 +2263,13 @@ static void WallLine(int ty, int rot, int size, std::vector<std::pair<int, int>>
 }
 
 std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id) {
+    std::shared_ptr<Store> store;           // keeps idx alive if a cache reset lands mid-read
     SqliteIndexFile* idx = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         EnsureInit();
-        idx = g_store ? g_store->Get(index_id) : nullptr;
+        store = g_store;
+        idx = store ? store->Get(index_id) : nullptr;
     }
     if (!idx) return {};
     auto raw = idx->ReadRawArchive(sound_id);
@@ -2181,11 +2294,13 @@ std::vector<std::vector<std::uint8_t>> SoundOggChunks(int index_id, int sound_id
 }
 
 std::vector<std::uint8_t> SoundOgg(int index_id, int sound_id) {
+    std::shared_ptr<Store> store;           // keeps idx alive if a cache reset lands mid-read
     SqliteIndexFile* idx = nullptr;          // same reasoning as SoundListJson: do not hold
     {                                        // g_mu across the read + inflate
         std::lock_guard<std::mutex> lk(g_mu);
         EnsureInit();
-        idx = g_store ? g_store->Get(index_id) : nullptr;
+        store = g_store;
+        idx = store ? store->Get(index_id) : nullptr;
     }
     if (!idx) return {};
     auto raw = idx->ReadRawArchive(sound_id);
@@ -2201,11 +2316,14 @@ std::string SoundListJson(int index_id, int start_id, int limit) {
     if (limit < 1) limit = 1;
     if (limit > 512) limit = 512;
     // Hold g_mu only to resolve the index: the scan inflates many archives and g_mu is shared with per-frame lookups.
+    // The Store reference keeps idx alive if a cache reset lands during the scan.
+    std::shared_ptr<Store> store;
     SqliteIndexFile* idx = nullptr;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         EnsureInit();
-        idx = g_store ? g_store->Get(index_id) : nullptr;
+        store = g_store;
+        idx = store ? store->Get(index_id) : nullptr;
     }
     if (!idx) return "[]";
     const auto ids = idx->ArchiveIdsFrom(start_id, limit);
@@ -2280,6 +2398,7 @@ std::string ClueSearchTargetJson(int x, int y, int plane) {
 std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want) {
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     if (want <= 0) want = 15;
     if (plane < 0 || plane > 3) plane = 0;
     if (half < 8 || half > 384) half = 40;       // tiles each side of the centre (panel-controlled zoom)
@@ -2703,8 +2822,10 @@ std::string MapWindowJson(int cx, int cy, int plane, int half, int ts, int want)
            "\",\"nomove\":\"" + ((want & 4) ? Base64Std(nomove) : std::string()) +
            "\",\"objs\":\"" + ((want & 8) ? Base64Std(objsOut) : std::string()) +
            "\",\"icons\":\"" + ((want & 2) ? Base64Std(iconsOut) : std::string()) + "\"}";
-    g_mapWinCache.push_front(MapWinCacheEntry{ cx, cy, plane, half, ts, want, out });
-    while (g_mapWinCache.size() > kMapWinCacheMax) g_mapWinCache.pop_back();
+    if (!g_region_retry_seen) {   // a region that could not be read just now is not drawn into the memo
+        g_mapWinCache.push_front(MapWinCacheEntry{ cx, cy, plane, half, ts, want, out });
+        while (g_mapWinCache.size() > kMapWinCacheMax) g_mapWinCache.pop_back();
+    }
     return out;
 }
 
@@ -3110,6 +3231,7 @@ std::unordered_map<int, std::vector<GuideEntry>>       g_guide_by_item;   // und
 std::vector<GuideEntry>                                g_guide_all;       // under g_mu
 std::unordered_map<std::string, std::vector<SkillReq>> g_guide_by_name;   // lower case
 int g_guide_state = 0;                                                     // 0 not built, 1 building, 2 ready
+std::atomic<std::uint64_t> g_guide_gen{ 0 };   // bumped by a cache reset: a sweep started before it is dropped
 
 std::string LowerAscii(std::string s) {
     for (char& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
@@ -3121,52 +3243,73 @@ void GuideAdd(std::vector<SkillReq>& list, int skill, int level) {
     list.push_back(SkillReq{ skill, level });
 }
 
+// The sweep itself. It reads through its own reference to the Store, so a cache reset meanwhile
+// cannot free the index under it, and it needs g_mu only to publish: nothing adds to a Store once
+// EnsureInit has filled it, and an index serialises its own reads. A reset bumps g_guide_gen, and
+// a sweep that sees that stops and publishes nothing; the next ask starts one on the new cache.
+void GuideSweep(const Store& store, std::uint64_t gen) {
+    std::unordered_map<int, std::vector<GuideEntry>> byItem;
+    std::vector<GuideEntry> all;
+    std::unordered_map<std::string, std::vector<SkillReq>> byName;
+    SqliteIndexFile* index = store.Get(kIndexStructs);
+    std::vector<std::pair<int, int>> ids;
+    if (index && index->ready()) {
+        const auto& entries = index->ref().entries();
+        for (int a = 0; a < (int)entries.size(); ++a)
+            for (int fid : entries[a].valid_file_ids) ids.emplace_back(a, fid);
+    }
+    for (const auto& id : ids) {
+        if (g_guide_gen.load() != gen) return;
+        DecodedStruct ds;
+        if (!DecodeStructFile(index->ReadFile(id.first, id.second), ds)) continue;
+        auto lv = ds.ints.find(2212), sk = ds.ints.find(2215);
+        if (lv == ds.ints.end() || sk == ds.ints.end()) continue;
+        if (sk->second < 1 || sk->second > 29 || lv->second < 1 || lv->second > 200) continue;
+        auto it = ds.ints.find(2213);
+        const int item = (it != ds.ints.end()) ? it->second : -1;
+        auto nm = ds.strs.find(2210);
+        GuideEntry e{ sk->second, lv->second, std::string(), nm != ds.strs.end() && !nm->second.empty() };
+        e.lname = LowerAscii(e.named ? nm->second : (item >= 0 ? ItemName(item) : std::string()));
+        if (item >= 0) byItem[item].push_back(e);
+        if (!e.lname.empty()) { GuideAdd(byName[e.lname], e.skill, e.level); all.push_back(e); }
+    }
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_guide_gen.load() != gen) return;
+    g_guide_by_item = std::move(byItem);
+    g_guide_by_name = std::move(byName);
+    g_guide_all = std::move(all);
+    g_guide_state = 2;
+}
+
 // A sweep over every struct takes a second or two, so it runs on its own thread and the
 // callers, which ask every frame, get nothing until it is done.
 void EnsureGuideIndex() {
+    std::shared_ptr<Store> store;
+    std::uint64_t gen = 0;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (g_guide_state != 0) return;
         EnsureInit();
         auto* index = g_store ? g_store->Get(kIndexStructs) : nullptr;
         if (!index || !index->ready()) return;       // cache not open yet: ask again later
+        store = g_store;
+        gen = g_guide_gen.load();
         g_guide_state = 1;
     }
-    std::thread([] {
-        std::unordered_map<int, std::vector<GuideEntry>> byItem;
-        std::vector<GuideEntry> all;
-        std::unordered_map<std::string, std::vector<SkillReq>> byName;
-        SqliteIndexFile* index = nullptr;
-        std::vector<std::pair<int, int>> ids;
-        {
+    // Out of memory, or no thread to be had: leave the index unbuilt so a later ask tries again.
+    auto unbuilt = [gen]() noexcept {
+        try {
             std::lock_guard<std::mutex> lk(g_mu);
-            index = g_store ? g_store->Get(kIndexStructs) : nullptr;
-            if (index) {
-                const auto& entries = index->ref().entries();
-                for (int a = 0; a < (int)entries.size(); ++a)
-                    for (int fid : entries[a].valid_file_ids) ids.emplace_back(a, fid);
-            }
-        }
-        for (const auto& id : ids) {
-            DecodedStruct ds;
-            if (!DecodeStructFile(index->ReadFile(id.first, id.second), ds)) continue;
-            auto lv = ds.ints.find(2212), sk = ds.ints.find(2215);
-            if (lv == ds.ints.end() || sk == ds.ints.end()) continue;
-            if (sk->second < 1 || sk->second > 29 || lv->second < 1 || lv->second > 200) continue;
-            auto it = ds.ints.find(2213);
-            const int item = (it != ds.ints.end()) ? it->second : -1;
-            auto nm = ds.strs.find(2210);
-            GuideEntry e{ sk->second, lv->second, std::string(), nm != ds.strs.end() && !nm->second.empty() };
-            e.lname = LowerAscii(e.named ? nm->second : (item >= 0 ? ItemName(item) : std::string()));
-            if (item >= 0) byItem[item].push_back(e);
-            if (!e.lname.empty()) { GuideAdd(byName[e.lname], e.skill, e.level); all.push_back(e); }
-        }
-        std::lock_guard<std::mutex> lk(g_mu);
-        g_guide_by_item = std::move(byItem);
-        g_guide_by_name = std::move(byName);
-        g_guide_all = std::move(all);
-        g_guide_state = 2;
-    }).detach();
+            if (g_guide_gen.load() == gen) g_guide_state = 0;
+        } catch (...) {}
+    };
+    try {
+        std::thread([store, gen, unbuilt] {
+            try { GuideSweep(*store, gen); } catch (...) { unbuilt(); }
+        }).detach();
+    } catch (...) {
+        unbuilt();
+    }
 }
 }  // namespace
 
@@ -3476,9 +3619,11 @@ namespace {
 // params 3514-3517 = content comps packed (group<<16)|sub, param 3503 = mount comp packed the same way (non-1477 skipped).
 std::unordered_map<int, int> g_panel_mounts;
 bool                         g_panel_mounts_built = false;
+std::chrono::steady_clock::time_point g_panel_mounts_retry_at{};   // a struct read missed: rebuild after this
 
 void BuildPanelMountsLocked() {
     if (g_panel_mounts_built) return;
+    if (std::chrono::steady_clock::now() < g_panel_mounts_retry_at) return;   // keep the partial table for now
     auto* enums   = g_store ? g_store->Get(kIndexEnums)   : nullptr;
     auto* structs = g_store ? g_store->Get(kIndexStructs) : nullptr;
     if (!enums || !enums->ready() || !structs || !structs->ready()) return;
@@ -3505,12 +3650,16 @@ void BuildPanelMountsLocked() {
         else break;
     }
     const auto& entries = structs->ref().entries();
+    g_panel_mounts.clear();                                  // first claim wins, so start over each pass
+    bool missed = false;
     for (auto& [slot, structId] : pairs) {
         if (structId < 0) continue;
         int a = structId >> 5, f = structId & 31;
         if (a < 0 || a >= (int)entries.size()) continue;
+        auto sb = structs->ReadFile(a, f);
+        if (sb.empty() && FileListed(structs, a, f)) { missed = true; continue; }
         DecodedStruct ds;
-        if (!DecodeStructFile(structs->ReadFile(a, f), ds)) continue;
+        if (!DecodeStructFile(std::move(sb), ds)) continue;
         auto it = ds.ints.find(3503);
         if (it == ds.ints.end() || (it->second >> 16) != 1477) continue;
         int mount_sub = it->second & 0xFFFF;
@@ -3522,6 +3671,7 @@ void BuildPanelMountsLocked() {
         }
         (void)slot;   // slot ids are registry-internal, not group ids
     }
+    if (missed) { g_panel_mounts_retry_at = std::chrono::steady_clock::now() + kReadRetryDelay; return; }
     g_panel_mounts_built = true;
 }
 }  // namespace
@@ -3597,6 +3747,19 @@ std::string LocFileHex(int loc_id) {
     auto* idx = g_store ? g_store->Get(kIndexLocations) : nullptr;
     if (!idx || !idx->ready()) return {};
     auto bytes = idx->ReadFile(loc_id >> 8, loc_id & 0xff);
+    static const char* hx = "0123456789abcdef";
+    std::string out; out.reserve(bytes.size() * 2);
+    for (auto b : bytes) { out.push_back(hx[b >> 4]); out.push_back(hx[b & 15]); }
+    return out;
+}
+
+std::string NpcFileHex(int npc_id) {   // raw definition bytes, 128 files per archive
+    if (npc_id < 0) return {};
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    auto* idx = g_store ? g_store->Get(kIndexNpcs) : nullptr;
+    if (!idx || !idx->ready()) return {};
+    auto bytes = idx->ReadFile(npc_id >> 7, npc_id & 0x7f);
     static const char* hx = "0123456789abcdef";
     std::string out; out.reserve(bytes.size() * 2);
     for (auto b : bytes) { out.push_back(hx[b >> 4]); out.push_back(hx[b & 15]); }
@@ -4059,27 +4222,31 @@ static const std::vector<LocPlacement>& RegionLocationsLocked(int region_x, int 
     if (region_x < 0 || region_x > 127 || region_y < 0 || region_y > 255) return kEmpty;
     int key = (region_x << 8) | region_y;
     auto hit = g_region_cache.find(key);
-    if (hit != g_region_cache.end()) return hit->second;
-
-    std::vector<LocPlacement> placements;
-    auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
-    if (index) {
-        int archive = region_x | (region_y << 7);
-        for (int file : {0, 1}) {   // 0 = land, 1 = water
-            auto bytes = index->ReadFile(archive, file);
-            if (bytes.empty()) continue;
-            auto part = DecodeMapLocations(std::move(bytes));
-            placements.insert(placements.end(), part.begin(), part.end());
+    if (hit == g_region_cache.end()) {
+        RegionMemo<std::vector<LocPlacement>> e;
+        auto* index = g_store ? g_store->Get(kIndexMaps) : nullptr;
+        if (index) {
+            int archive = region_x | (region_y << 7);
+            for (int file : {0, 1}) {   // 0 = land, 1 = water
+                auto bytes = index->ReadFile(archive, file);
+                if (bytes.empty()) { if (FileListed(index, archive, file)) e.retry = true; continue; }
+                auto part = DecodeMapLocations(std::move(bytes));
+                e.value.insert(e.value.end(), part.begin(), part.end());
+            }
         }
+        if (e.retry) RegionRetryLocked();
+        hit = g_region_cache.emplace(key, std::move(e)).first;
     }
-    g_region_cache[key] = std::move(placements);
-    return g_region_cache[key];
+    hit->second.used = g_region_call;
+    if (hit->second.retry) g_region_retry_seen = true;
+    return hit->second.value;
 }
 
 std::vector<LocPlacement> RegionLocations(int region_x, int region_y) {
     if (region_x < 0 || region_x > 127 || region_y < 0 || region_y > 255) return {};
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     return RegionLocationsLocked(region_x, region_y);
 }
 
@@ -4092,6 +4259,7 @@ void RegionBlockedFill(int player_x, int player_y, int plane, int radius,
 
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     for (int gx = 0; gx < T; ++gx) {
         for (int gy = 0; gy < T; ++gy) {
             int wx = player_x - radius + gx, wy = player_y - radius + gy;
@@ -4136,6 +4304,7 @@ int TileEffPlane(int wx, int wy, int plane) {
     if (rx > 127 || ry > 255) return plane;
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     return EffPlaneLocked(RegionTilesLocked(rx, ry), wx & 0x3f, wy & 0x3f, plane);
 }
 
@@ -4145,6 +4314,7 @@ std::int16_t TileHeightAtPlane(int wx, int wy, int eff_plane) {
     if (rx > 127 || ry > 255) return (std::int16_t)-32768;
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     return AbsSumLocked(RegionTilesLocked(rx, ry), wx & 0x3f, wy & 0x3f, eff_plane);
 }
 
@@ -4156,6 +4326,7 @@ void TileCornerHeights(int wx, int wy, int plane, std::int16_t out[4]) {
     if (rx > 127 || ry > 255) return;
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     const int ep = EffPlaneLocked(RegionTilesLocked(rx, ry), wx & 0x3f, wy & 0x3f, plane);
     static const int CX[4] = { 0, 1, 1, 0 }, CY[4] = { 0, 0, 1, 1 };
     for (int c = 0; c < 4; ++c) {
@@ -4173,6 +4344,7 @@ std::int16_t TileHeight(int wx, int wy, int plane) {
     if (rx > 127 || ry > 255) return (std::int16_t)-32768;
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     const auto& td = RegionTilesLocked(rx, ry);
     return AbsHeightLocked(td, wx & 0x3f, wy & 0x3f, plane);
 }
@@ -4187,6 +4359,7 @@ void RegionCornerHeightsFill(int player_x, int player_y, int plane, int radius,
 
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     for (int tx = 0; tx < T; ++tx) {
         for (int ty = 0; ty < T; ++ty) {
             const int wx = player_x - radius + tx, wy = player_y - radius + ty;
@@ -4214,6 +4387,7 @@ void RegionHeightsFill(int player_x, int player_y, int plane, int radius,
 
     std::lock_guard<std::mutex> lk(g_mu);
     EnsureInit();
+    RegionMemoBeginLocked();
     for (int gx = 0; gx < N; ++gx) {
         for (int gy = 0; gy < N; ++gy) {
             int wx = player_x - radius + gx, wy = player_y - radius + gy;
@@ -4262,8 +4436,10 @@ std::string MapAreasJson() {
         r += '"'; return r;
     };
     std::string out = "{"; bool first = true; int emitted = 0;
+    bool missed = false;                      // a listed file read empty: answer, but do not memoise
     for (int fid : ents[0].valid_file_ids) {
         auto d = idx->ReadFile(0, fid);
+        if (d.empty()) missed = true;
         if (d.size() < 14) continue;
         WmArea a; a.id = fid;
         std::size_t p = 0;
@@ -4281,6 +4457,7 @@ std::string MapAreasJson() {
             a.rects.push_back({ u16(p+1), u16(p+3), u16(p+5), u16(p+7), u16(p+9), u16(p+11), u16(p+13), u16(p+15) }); p += 17;
         }
         auto c = idx->ReadFile(1, fid);
+        if (c.empty() && FileListed(idx, 1, fid)) missed = true;
         if (c.size() >= 2) {
             int n = ((int)c[0] << 8) | c[1]; std::size_t q = 2;
             auto u16 = [&](std::size_t k) { return ((int)c[k] << 8) | c[k+1]; };
@@ -4304,6 +4481,7 @@ std::string MapAreasJson() {
             a.y0 = std::min(a.y0, z.dy); a.y1 = std::max(a.y1, z.dy);
         }
         auto img = idx->ReadFile(4, fid);
+        if (img.empty() && FileListed(idx, 4, fid)) missed = true;
         wm_read_png_size(img, a.imgW, a.imgH);
         if (a.zones.empty() && a.imgW == 0) continue;
         out += first ? "" : ","; first = false; ++emitted;
@@ -4328,7 +4506,7 @@ std::string MapAreasJson() {
         out += "]}";
     }
     out += "}";
-    if (emitted) g_wmAreasJson = out;
+    if (emitted && !missed) g_wmAreasJson = out;
     return out;
 }
 
@@ -4456,7 +4634,8 @@ std::string ItemIconCoverageJson(bool (*has)(int item_id)) {
            ",\"missing\":[" + missing + "]}";
 }
 
-// Big indexes are sampled (every Nth file). stop_op 256 = stream overrun, 257 = schema mismatch.
+// Big indexes are sampled (every Nth file). stop_op 256 = stream overrun, 257 = schema mismatch,
+// 258 = a record that ended with bytes unread.
 // Unknown-opcode probe (Probe.h): brute-force the payload size that lets each failing record parse cleanly. Holds g_mu.
 std::string CacheProbeUnknownOps() {
     std::lock_guard<std::mutex> lk(g_mu);
@@ -4688,8 +4867,10 @@ void ResetCacheStateLocked() {
     g_npc_cache.clear(); g_loc_cache.clear(); g_region_cache.clear();
     g_perk_names.clear(); g_perk_descs.clear(); g_perk_ranks.clear(); g_perks_loaded = false;
     g_buff_names.clear(); g_debuff_names.clear(); g_buff_kind.clear(); g_buff_icon_item.clear(); g_buffs_loaded = false;
-    g_locclip_cache.clear(); g_blocked_cache.clear(); g_tiles_cache.clear();
-    if (g_guide_state == 2) { g_guide_by_item.clear(); g_guide_by_name.clear(); g_guide_state = 0; }   // rebuilt on the next ask
+    g_locclip_cache.clear(); g_blocked_cache.clear(); g_tiles_cache.clear(); g_region_retry_pending = false;
+    // Rebuilt on the next ask. A sweep still running reads the old Store it holds, sees the new
+    // generation and drops its result.
+    g_guide_by_item.clear(); g_guide_by_name.clear(); g_guide_all.clear(); g_guide_state = 0; g_guide_gen.fetch_add(1);
     g_mapscene_sprite.clear(); g_mapscene_px.clear(); g_loc_mapscene.clear(); g_mapscenes_loaded = false;
     g_maplabel_def.clear(); g_maplabel_px.clear(); g_loc_mapfunc.clear(); g_loc_name.clear(); g_maplabels_loaded = false;
     for (int i = 0; i < 3; ++i) { g_name_index[i].clear(); g_name_index_built[i] = false; }
@@ -4702,11 +4883,26 @@ void ResetCacheStateLocked() {
     g_iface_defs_json.clear(); g_iface_defs_lite.clear();
     g_mapWinCache.clear();
     g_struct_memo.clear();
-    g_panel_mounts.clear(); g_panel_mounts_built = false;
+    g_panel_mounts.clear(); g_panel_mounts_built = false; g_panel_mounts_retry_at = {};
     g_wmAreasJson.clear();
     g_config_colour_cache.clear(); g_buff_catalog_json.clear(); g_ability_configs_json.clear(); g_map_symbols_json.clear();
     g_item_varobjs_cache.clear(); g_dbrows_memo.clear();
     AchievementsResetLocked();
+}
+
+// An index that was absent when the Store opened (the launcher started before the client wrote
+// its cache), or whose reference table could not be read then (the client held the file while
+// it wrote a download). True once a fresh open would get its reference table. Opened the same way
+// EnsureInit opens it, so an index that open can never reach does not reset the cache each time.
+bool IndexOpensNowLocked(const CacheIndexSpec& ix) {
+    try {
+        Store probe(ResolveCacheRoot());
+        if (!probe.Add(ix.id, ix.files_per_archive)) return false;
+        auto* f = probe.Get(ix.id);
+        return f && f->ready();
+    } catch (...) {
+        return false;
+    }
 }
 }  // namespace
 
@@ -4716,9 +4912,10 @@ bool CheckCacheUpdate() {
     const auto now = std::chrono::steady_clock::now();
     if (now < g_update_check_at) return false;
     g_update_check_at = now + std::chrono::seconds(10);
-    for (int id : g_store->Ids()) {
-        auto* f = g_store->Get(id);
-        if (!f || !f->RefTableChanged()) continue;
+    for (const auto& ix : kCacheIndexes) {
+        auto* f = g_store->Get(ix.id);
+        const bool changed = (f && f->ready()) ? f->RefTableChanged() : IndexOpensNowLocked(ix);
+        if (!changed) continue;
         ResetCacheStateLocked();
         g_cache_gen.fetch_add(1);
         return true;

@@ -28,15 +28,19 @@
     const s = cs2Status, box = $('cs2Meta');
     if (!box || !s) return;
     const m = s.meta, p = s.progress;
-    const outdated = !!(m && s.clientVer && s.extractVer && s.clientVer !== s.extractVer);
-    const sig = JSON.stringify([m && m.date, s.extractVer, s.clientVer, s.sidecar, outdated]);
+    // The launcher leaves the build label (client_version.txt) empty over a table from a failed run
+    // or one the game updated under, so a missing label is as stale as another build's. Without a
+    // known installed build no run can write a label, and a re-extract would not clear the warning.
+    const ver = (s.extractVer || '').trim();
+    const outdated = !!(m && s.clientVer && (!ver || s.clientVer !== ver));
+    const sig = JSON.stringify([m && m.date, ver, s.clientVer, s.sidecar, outdated]);
     if (box._sig !== sig) {
       box._sig = sig;
       box.innerHTML = '';
       if (m && m.date) {
         const d = new Date(m.date);
         cs2Pill(box, 'extracted', d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
-        cs2Pill(box, 'client', 'v' + (s.extractVer || '?'), outdated ? 'warn' : '',
+        cs2Pill(box, 'client', 'v' + (ver || '?'), outdated ? 'warn' : '',
           outdated ? 'Installed client is v' + s.clientVer + ' - re-extract to refresh' : 'Game revision at extraction time');
         cs2Pill(box, 'scripts', m.ok.toLocaleString(), '',
           m.ok.toLocaleString() + ' of ' + m.total.toLocaleString() + ' decompiled' +
@@ -46,7 +50,7 @@
         if (m.annotations && m.annotations.total)
           cs2Pill(box, 'annotations', m.annotations.total.toLocaleString(), '',
             'Inline /* name */ comments: items, npcs, locs, quests, stats, achievements, dbrows, structs, enum values');
-        if (outdated) cs2Pill(box, '', 'game updated - re-extract', 'warn');
+        if (outdated) cs2Pill(box, '', (ver ? 'game updated' : 'build unknown') + ' - re-extract', 'warn');
       } else {
         cs2Pill(box, '', 'No extraction yet', 'mut');
       }

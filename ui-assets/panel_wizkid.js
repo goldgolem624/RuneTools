@@ -118,7 +118,7 @@
     else if (v !== 20 && v !== 40 && v !== 60 && hudShown) hudSet(0, '', false);   // 20/40/60 manage the HUD themselves (cast prompts)
     if (v < 5) { await wizkidTalkNpc('Ben', 'Talk to Ben', 3562, 1479, 0); return; }   // not started -> Ben on Marigold Farm
     if (v === 5) {
-      if (wizkidTeachPick < 0) wizkidTeachPick = hosRand(WIZKID_TEACH_OPTS.length);
+      if (wizkidTeachPick < 0) wizkidTeachPick = qgRand(WIZKID_TEACH_OPTS.length);
       await wizkidTalkNpc('Ben', 'Talk to Ben', 3562, 1479, 0, WIZKID_TEACH_OPTS[wizkidTeachPick]);
       return;
     }

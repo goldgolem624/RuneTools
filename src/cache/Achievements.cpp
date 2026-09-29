@@ -52,31 +52,47 @@ struct Reader {
     }
 };
 
-struct Req { uint32_t value; std::string desc; std::vector<int> varbits; };
-struct SkillReq { int skill; int level; };
-struct BitReq { int id; int bit; std::string desc; };   // op 23: bit of VARP id; op 25: bit of VARBIT id's value
-struct VarpReq { std::vector<int> varps; uint32_t value = 0; std::string desc; };   // op 13: SUM of live VARPs >= value
+// Every completion entry starts with its requirement group byte. A group is met when op 30's count for it
+// is reached (all of its entries without op 30), child achievements count in their group, and op 31 says
+// how many groups are needed (all of them without it).
+struct Req { uint32_t value; std::string desc; std::vector<int> varbits; int group = 0; };
+struct SkillReq { int skill; int level; int group = 0; };
+struct BitReq { int id; int bit; std::string desc; int group = 0; };   // op 23: bit of VARP id; op 25/36: bit of VARBIT id's value
+struct VarpReq { std::vector<int> varps; uint32_t value = 0; std::string desc; int group = 0; };   // op 13: SUM of live VARPs >= value
+struct GroupId { int group; int id; };   // u24 = group byte + u16 id
 struct Ach {
     int id; std::string name, desc, reward;
     int cat = -1, subcat = -1, sprite = -1, points = 0, hidden = 0, combatMastery = -1;
+    int needGroups = -1, grace = -1;
     // op 19 present = free-to-play; absent = members.
-    bool members = true; bool named = false;
-    std::vector<Req> reqs; std::vector<int> subach; std::vector<int> prereqs;
+    bool members = true; bool named = false; bool disabled = false;
+    std::vector<Req> reqs;
+    std::vector<GroupId> subach;    // op 15: child achievements
+    std::vector<GroupId> prereqs;   // op 11: achievements that unlock this one (never part of completion)
+    std::vector<GroupId> quests;    // op 21: quests to complete
     std::vector<SkillReq> skills;   // op 12
     std::vector<BitReq> bitreqs23;  // op 23 (varp bits)
-    std::vector<BitReq> bitreqs25;  // op 25 (varbit bits)
+    std::vector<BitReq> bitreqs25;  // op 25 / 36 (varbit bits)
     std::vector<VarpReq> varpreqs;  // op 13
-    std::vector<int> subreqCount;   // op 30: how many subreqs must be satisfied (per group)
+    std::vector<int> subreqCount;   // op 30: entries needed, per group
 };
+GroupId group_id(uint32_t v) { return { (int)(v >> 16), (int)(v & 0xFFFF) }; }
+// Stop "opcodes" for a misread record: every record ends with op 0 exactly at its last byte.
+constexpr int kStopOverrun = 256;    // ran off the end before op 0 (a field read wider than it is)
+constexpr int kStopTrailing = 258;   // op 0 with bytes still to come (a field read narrower than it is)
 
 Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
     Ach a; a.id = id;
     if (stop_op) *stop_op = 0;
     Reader r{ b.data(), b.size() };
     for (;;) {
-        if (r.eof()) break;
+        if (r.eof()) { probe::g_stop = (int)r.p; if (stop_op) *stop_op = kStopOverrun; break; }
         int op = r.u8();
-        if (op == 0) break;
+        if (op == 0) {
+            // An end marker with bytes still to come means a field was read with the wrong shape.
+            if (r.p < r.n) { probe::g_stop = (int)r.p; if (stop_op) *stop_op = kStopTrailing; }
+            break;
+        }
         switch (op) {
             case 1: a.name = r.pstr(); a.named = true; break;
             case 2: { int cnt = r.u8(); if (cnt < 0) cnt = 0; if (cnt > 16) cnt = 16;
@@ -85,35 +101,34 @@ Ach decode_one(int id, const std::vector<uint8_t>& b, int* stop_op = nullptr) {
             case 3: a.cat = r.u16(); break;
             case 4: a.sprite = (int)r.smart32(); break;
             case 5: a.points = r.u8(); break;
-            case 6: r.u16(); break;
+            case 6: a.grace = r.u16(); break;   // day number until which the game still counts it for parents
             case 7: a.reward = r.pstr(); break;
             case 8: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); r.u8(); r.pstr(); r.u8(); r.u16(); } break; }  // skill req (ironman)
             case 9: case 10: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.smart32(); r.pstr(); r.u8(); r.u16(); } break; }
-            case 11: { int c = r.u8(); for (int i = 0; i < c; ++i) a.prereqs.push_back((int)r.u24()); break; }   // previous achievements (judged by the game's req walk)
-            case 12: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); int lvl = r.u8(); r.pstr(); r.u8(); int sk = r.u16(); a.skills.push_back({ sk, lvl }); } break; }
+            case 11: { int c = r.u8(); for (int i = 0; i < c; ++i) a.prereqs.push_back(group_id(r.u24())); break; }
+            case 12: { int c = r.usmart(); for (int i = 0; i < c; ++i) { int g = r.u8(); int lvl = r.u8(); r.pstr(); r.u8(); int sk = r.u16(); a.skills.push_back({ sk, lvl, g }); } break; }
             // op 13: op 14's shape but the u16 ids are VARP ids; multi-id entries SUM.
-            case 13: { int c = r.usmart(); for (int i = 0; i < c; ++i) { VarpReq q; r.u8(); q.value = r.smart32(); q.desc = r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) q.varps.push_back(r.u16()); a.varpreqs.push_back(std::move(q)); } break; }
-            case 14: { int c = r.usmart(); for (int i = 0; i < c; ++i) { Req q; r.u8(); q.value = r.smart32(); q.desc = r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) q.varbits.push_back(r.u16()); a.reqs.push_back(std::move(q)); } break; }
-            case 15: { int c = r.usmart(); for (int i = 0; i < c; ++i) a.subach.push_back((int)r.u24()); break; }
+            case 13: { int c = r.usmart(); for (int i = 0; i < c; ++i) { VarpReq q; q.group = r.u8(); q.value = r.smart32(); q.desc = r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) q.varps.push_back(r.u16()); a.varpreqs.push_back(std::move(q)); } break; }
+            // op 14 = varbit counters with u16 ids; op 35 (since 950-1) the same with u24 ids.
+            case 14: case 35: { int c = r.usmart(); for (int i = 0; i < c; ++i) { Req q; q.group = r.u8(); q.value = r.smart32(); q.desc = r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) q.varbits.push_back(op == 35 ? (int)r.u24() : (int)r.u16()); a.reqs.push_back(std::move(q)); } break; }
+            case 15: { int c = r.usmart(); for (int i = 0; i < c; ++i) a.subach.push_back(group_id(r.u24())); break; }
             case 16: a.subcat = r.u16(); break;
-            case 17: break;
+            case 17: a.disabled = true; break;   // retired: the game no longer judges it
             case 18: a.hidden = r.u8(); break;
             case 19: a.members = false; break;   // op 19 present = free-to-play
-            case 20: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }
-            case 21: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }
-            // op 23 = bit of VARP id; op 25 = bit of VARBIT id's value.
-            case 23: case 25: { int c = r.usmart(); for (int i = 0; i < c; ++i) { BitReq q; r.u8(); q.id = r.u16(); r.u8(); q.desc = r.pstr(); q.bit = r.u8(); (op == 23 ? a.bitreqs23 : a.bitreqs25).push_back(std::move(q)); } break; }
+            case 20: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u24(); break; }   // more unlocking achievements
+            case 21: { int c = r.u8(); for (int i = 0; i < c; ++i) a.quests.push_back(group_id(r.u24())); break; }
+            // op 23 = bit of VARP id; op 25 = bit of VARBIT id's value; op 36 (since 950-1) = op 25 with a u24 id.
+            case 23: case 25: case 36: { int c = r.usmart(); for (int i = 0; i < c; ++i) { BitReq q; q.group = r.u8(); q.id = (op == 36) ? (int)r.u24() : (int)r.u16(); r.u8(); q.desc = r.pstr(); q.bit = r.u8(); (op == 23 ? a.bitreqs23 : a.bitreqs25).push_back(std::move(q)); } break; }
             case 26: a.combatMastery = (int)r.u16(); r.u8(); a.name = r.pstr(); a.named = true; break;
             case 27: break;
             case 28: { int c = r.u8(); for (int i = 0; i < c; ++i) r.u8(); break; }
             case 29: r.u8(); break;
             case 30: { int c = r.u8(); for (int i = 0; i < c; ++i) a.subreqCount.push_back((int)r.usmart()); break; }  // how many subreqs needed
-            case 31: r.u8(); break;
+            case 31: a.needGroups = r.u8(); break;
             case 32: r.u8(); r.u8(); r.u8(); break;
-            // 950-1: 33/35 = count(u8) x { u8, smart32 value, padded desc, u8 m, m x u24 id }
-            //        36 = count(u8) x { u8, u24 id, u8, padded name, u8 bit }
-            case 33: case 35: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.smart32(); r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) r.u24(); } break; }
-            case 36: { int c = r.u8(); for (int i = 0; i < c; ++i) { r.u8(); r.u24(); r.u8(); r.pstr(); r.u8(); } break; }
+            // op 33 = what unlocks the achievement (varbit counters, u24 ids), never part of completion.
+            case 33: { int c = r.usmart(); for (int i = 0; i < c; ++i) { r.u8(); r.smart32(); r.pstr(); int m = r.u8(); for (int j = 0; j < m; ++j) r.u24(); } break; }
             case 37: r.u8(); break;
             case 38: r.u8(); break;
             default:
@@ -158,11 +173,12 @@ void AchievementsResetLocked() {
 const std::string& AchievementsJson() {
     std::lock_guard<std::mutex> lk(AchievementsMutex());
     if (g_ach_built) return g_ach_json;
-    g_ach_built = true;
     EnsureCacheInit();
 
     auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;
-    if (!idx) { g_ach_json = "[]"; return g_ach_json; }
+    // Not memoised: the index can still open, or its reference table become readable, later.
+    if (!idx || !idx->ready()) { g_ach_json = "[]"; return g_ach_json; }
+    g_ach_built = true;
 
     std::string out = "[";
     bool first = true;
@@ -188,6 +204,22 @@ const std::string& AchievementsJson() {
             if (a.hidden > 0)  out += ",\"hidden\":" + std::to_string(a.hidden);
             if (a.members)     out += ",\"members\":1";
             if (a.combatMastery >= 0) out += ",\"cm\":" + std::to_string(a.combatMastery);
+            if (a.disabled)           out += ",\"disabled\":1";
+            if (a.grace >= 0)         out += ",\"grace\":" + std::to_string(a.grace);
+            if (a.needGroups >= 0)    out += ",\"needGroups\":" + std::to_string(a.needGroups);
+            auto grp = [&](int g) { if (g) out += ",\"g\":" + std::to_string(g); };
+            // ids with a parallel group list, written only when some group is not 0
+            auto ids = [&](const char* key, const char* gkey, const std::vector<GroupId>& v) {
+                if (v.empty()) return;
+                out += std::string(",\"") + key + "\":[";
+                bool anyG = false;
+                for (std::size_t i = 0; i < v.size(); ++i) { if (i) out += ','; out += std::to_string(v[i].id); if (v[i].group) anyG = true; }
+                out += "]";
+                if (!anyG) return;
+                out += std::string(",\"") + gkey + "\":[";
+                for (std::size_t i = 0; i < v.size(); ++i) { if (i) out += ','; out += std::to_string(v[i].group); }
+                out += "]";
+            };
             if (!a.reqs.empty()) {
                 out += ",\"reqs\":[";
                 for (std::size_t i = 0; i < a.reqs.size(); ++i) {
@@ -199,7 +231,9 @@ const std::string& AchievementsJson() {
                         if (j) out += ',';
                         out += std::to_string(a.reqs[i].varbits[j]);
                     }
-                    out += "]}";
+                    out += "]";
+                    grp(a.reqs[i].group);
+                    out += "}";
                 }
                 out += "]";
             }
@@ -207,20 +241,15 @@ const std::string& AchievementsJson() {
                 out += ",\"skills\":[";
                 for (std::size_t i = 0; i < a.skills.size(); ++i) {
                     if (i) out += ',';
-                    out += "[" + std::to_string(a.skills[i].skill) + "," + std::to_string(a.skills[i].level) + "]";
+                    out += "[" + std::to_string(a.skills[i].skill) + "," + std::to_string(a.skills[i].level);
+                    if (a.skills[i].group) out += "," + std::to_string(a.skills[i].group);
+                    out += "]";
                 }
                 out += "]";
             }
-            if (!a.prereqs.empty()) {
-                out += ",\"prev\":[";
-                for (std::size_t i = 0; i < a.prereqs.size(); ++i) { if (i) out += ','; out += std::to_string(a.prereqs[i]); }
-                out += "]";
-            }
-            if (!a.subach.empty()) {
-                out += ",\"subach\":[";
-                for (std::size_t i = 0; i < a.subach.size(); ++i) { if (i) out += ','; out += std::to_string(a.subach[i]); }
-                out += "]";
-            }
+            ids("prev", "prevG", a.prereqs);
+            ids("subach", "subachG", a.subach);
+            ids("quests", "questsG", a.quests);
             if (!a.bitreqs23.empty()) {
                 out += ",\"reqsvpb\":[";
                 for (std::size_t i = 0; i < a.bitreqs23.size(); ++i) {
@@ -228,6 +257,7 @@ const std::string& AchievementsJson() {
                     out += "{\"vp\":" + std::to_string(a.bitreqs23[i].id) +
                            ",\"bit\":" + std::to_string(a.bitreqs23[i].bit) + ",\"n\":";
                     json_str(out, a.bitreqs23[i].desc);
+                    grp(a.bitreqs23[i].group);
                     out += "}";
                 }
                 out += "]";
@@ -239,6 +269,7 @@ const std::string& AchievementsJson() {
                     out += "{\"vb\":" + std::to_string(a.bitreqs25[i].id) +
                            ",\"bit\":" + std::to_string(a.bitreqs25[i].bit) + ",\"n\":";
                     json_str(out, a.bitreqs25[i].desc);
+                    grp(a.bitreqs25[i].group);
                     out += "}";
                 }
                 out += "]";
@@ -258,6 +289,7 @@ const std::string& AchievementsJson() {
                     }
                     out += ",\"v\":" + std::to_string(q.value);
                     if (!q.desc.empty()) { out += ",\"n\":"; json_str(out, q.desc); }
+                    grp(q.group);
                     out += "}";
                 }
                 out += "]";
@@ -278,7 +310,7 @@ const std::string& AchievementsJson() {
 void AchievementsProbeUnknown(std::string& log) {
     EnsureCacheInit();
     auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;
-    if (!idx) { log += "achievements: index not open\n"; return; }
+    if (!idx || !idx->ready()) { log += "achievements: index not open\n"; return; }
     std::vector<std::vector<uint8_t>> recs; int total = 0; std::unordered_map<int, int> stops;
     probe::g_op = -1;
     const auto& entries = idx->ref().entries();
@@ -303,6 +335,7 @@ void AchievementsProbeUnknown(std::string& log) {
             for (int k = 0; k < (int)mine[i]->size() && k < 400; ++k) { std::snprintf(hx, sizeof(hx), (k == from ? "|%02x " : "%02x "), (*mine[i])[k]); log += hx; }
             log += "\n";
         }
+        if (op > 255) continue;   // an overrun or trailing bytes, not an unknown opcode: no payload to size
         std::vector<std::pair<int, int>> res;
         for (int L = 0; L <= 200; ++L) {
             probe::g_op = op; probe::g_len = L; int okc = 0, okAny = 0;
@@ -320,7 +353,7 @@ void AchievementsParseHealth(int& ok, int& total, int& stop_op, int& stop_n) {
     ok = total = stop_n = 0; stop_op = -1;
     EnsureCacheInit();
     auto* idx = CacheStore() ? CacheStore()->Get(kIndexAchievements) : nullptr;
-    if (!idx) return;
+    if (!idx || !idx->ready()) return;
     std::unordered_map<int, int> stops;
     const auto& entries = idx->ref().entries();
     for (int arc = 0; arc < (int)entries.size(); ++arc) {
@@ -343,8 +376,8 @@ void QuestCapeQuestNames(std::vector<std::string>& out) {
     if (!idx) return;
     auto readAch = [&](int id) { return idx->ReadFile(id >> 7, id & 0x7f); };   // index 57 addressing
     Ach cape = decode_one(1, readAch(1));            // achievement id 1 = Quest Cape (category 4745)
-    for (int sub : cape.subach) {
-        Ach q = decode_one(sub, readAch(sub));
+    for (const auto& sub : cape.subach) {
+        Ach q = decode_one(sub.id, readAch(sub.id));
         if (q.named && !q.name.empty()) out.push_back(q.name);
     }
 }

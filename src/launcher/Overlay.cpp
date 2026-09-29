@@ -163,6 +163,14 @@ struct XpPanelState {
     double animMin = 0.0;                       // 0 = expanded, 1 = minimized
     double disp[29] = {};                       // eased displayed gain per skill
     double dispTotal = 0.0;
+};
+XpPanelState g_xp;                              // guarded by g_mu
+RECT g_xp_hit{0, 0, 0, 0};                      // last-frame bbox (guarded by g_mu)
+RECT g_xp_min{0, 0, 0, 0};                      // minimize-box rect (guarded by g_mu)
+// What the tracker has counted, one session per client: each client's page arms its own and reads
+// back its own numbers, so arming one never restarts another's.
+struct XpSession {
+    bool      on = false;
     bool      haveBase = false;
     long long startMs = 0;                      // first observed gain
     long long sampleMs = 0;
@@ -170,9 +178,7 @@ struct XpPanelState {
     int       cur[29]  = {};                    // -1 = unseen
     long long firstGain[29] = {};               // 0 = none
 };
-XpPanelState g_xp;                              // guarded by g_mu
-RECT g_xp_hit{0, 0, 0, 0};                      // last-frame bbox (guarded by g_mu)
-RECT g_xp_min{0, 0, 0, 0};                      // minimize-box rect (guarded by g_mu)
+std::map<DWORD, XpSession> g_xpSessions;        // guarded by g_mu
 
 // Transient per-pid channels below are all guarded by g_mu.
 std::map<DWORD, std::vector<GuideMark>> g_guides;
@@ -209,10 +215,20 @@ struct SkillBarsEntry { std::vector<SkillBar> bars; long long at_ms = 0; };
 constexpr long long kSkillBarsTtlMs = 5000;
 std::map<DWORD, SkillBarsEntry> g_skillBars;
 
-void ResetXpSession() {   // caller holds g_mu
-    g_xp.haveBase = false;
-    g_xp.startMs  = 0;
-    for (int i = 0; i < 29; ++i) { g_xp.base[i] = -1; g_xp.cur[i] = -1; g_xp.firstGain[i] = 0; }
+void ResetXpSession(XpSession& s) {   // caller holds g_mu
+    s.haveBase = false;
+    s.startMs  = 0;
+    for (int i = 0; i < 29; ++i) { s.base[i] = -1; s.cur[i] = -1; s.firstGain[i] = 0; }
+}
+
+// A client that has exited leaves its session behind, and Windows can give its pid to a new process.
+bool ProcessGone(DWORD pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return GetLastError() == ERROR_INVALID_PARAMETER;   // no process has this pid
+    DWORD code = 0;
+    const bool gone = GetExitCodeProcess(h, &code) && code != STILL_ACTIVE;
+    CloseHandle(h);
+    return gone;
 }
 
 std::wstring xp_path() {
@@ -697,6 +713,23 @@ struct MarkerOut {
 };
 std::map<DWORD, MarkerOut> g_marker_outs;   // one channel per client; render thread only
 
+// Turns off everything the module acts on in a client's channel: the draw list, the game's own
+// hover outline and highlight settings, the tooltip text, the game's arrow, tile and trail, the
+// interface components and the points and questions put to the game. The module reads most of
+// these whether or not the list is visible, so clearing the list alone leaves the rest running for
+// as long as the game does.
+void QuietShare(marker::Share* sh) {
+    const std::uint32_t s = sh->seq | 1u;       // odd: mid-write, also after a write that was cut short
+    sh->seq = s; MemoryBarrier();
+    sh->count = 0; sh->visible = 0; sh->flags = 0;
+    sh->hover_on = 0; sh->hover_x = 0; sh->hover_y = 0; sh->hover_id = 0;
+    sh->tip_on = 0; sh->tip_slot = 0; sh->tip_comp = 0; sh->tip_ref = -1; sh->tip_text[0] = 0;
+    for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = -1; sh->hover_mode[k] = -1; sh->hover_rgb[k] = 0; }
+    sh->mark_tile_on = 0; sh->mark_arrow_on = 0; sh->mark_path_on = 0;
+    sh->cc_count = 0; sh->anchor_count = 0; sh->ask_count = 0;
+    MemoryBarrier(); sh->seq = s + 1;            // even: done
+}
+
 // World points the overlay wants the game to project, per client: what this pass asked for, what
 // the pass before it asked for, and the answers that came back. Render thread only, like the
 // channel above.
@@ -857,6 +890,7 @@ HoverPick PickHover(const Config& cfg) {
             if (!name.empty()) {
                 tries.push_back(name);
                 tries.push_back(name + " tree");
+                tries.push_back(name + "s");   // the guide can use the plural: "Petrified Roots" for a "Petrified root"
                 if (name == "Tree") tries.push_back("Normal tree");
                 const std::string rock = " rock";
                 if (name.size() > rock.size() && name.compare(name.size() - rock.size(), rock.size(), rock) == 0) {
@@ -2729,35 +2763,42 @@ void RenderLoop() {
           metroPid = g_metro.pid; metroInterval = g_metro.interval < 1 ? 1 : g_metro.interval;
           xpOn = g_xp.on; xpPid = g_xp.pid; }
 
-        if (xpPid) {
+        {
+            // every client that armed the tracker is sampled once a second, into its own session
             long long t = now_ms();
-            bool due;
-            { std::lock_guard<std::mutex> lk(g_mu); due = (t - g_xp.sampleMs) >= 1000; }
-            if (due) {
+            std::vector<DWORD> due;
+            { std::lock_guard<std::mutex> lk(g_mu);
+              for (const auto& kv : g_xpSessions) if ((t - kv.second.sampleMs) >= 1000) due.push_back(kv.first); }
+            for (DWORD sp : due) {
                 int cur[29];
-                bool ok = rtx::reader::SkillsXp(xpPid, cur);
+                bool ok = rtx::reader::SkillsXp(sp, cur);
+                const bool gone = !ok && ProcessGone(sp);
                 std::lock_guard<std::mutex> lk(g_mu);
-                g_xp.sampleMs = t;
+                auto sit = g_xpSessions.find(sp);
+                if (sit == g_xpSessions.end()) continue;
+                if (gone) { g_xpSessions.erase(sit); continue; }
+                XpSession& xs = sit->second;
+                xs.sampleMs = t;
                 bool readable = ok && cur[3] > 0;
                 if (readable) for (int i = 0; i < 29 && readable; ++i)
-                    if (cur[i] == 0 && g_xp.cur[i] > 0) readable = false;
+                    if (cur[i] == 0 && xs.cur[i] > 0) readable = false;
                 if (readable) {
                     bool switched = false;
                     for (int i = 0; i < 29 && !switched; ++i)
-                        if (g_xp.cur[i] >= 0 && cur[i] >= 0 && cur[i] < g_xp.cur[i]) switched = true;
-                    if (switched || !g_xp.haveBase) {
-                        ResetXpSession();
-                        for (int i = 0; i < 29; ++i) { g_xp.base[i] = cur[i]; g_xp.cur[i] = cur[i]; }
-                        g_xp.haveBase = true;
+                        if (xs.cur[i] >= 0 && cur[i] >= 0 && cur[i] < xs.cur[i]) switched = true;
+                    if (switched || !xs.haveBase) {
+                        ResetXpSession(xs);
+                        for (int i = 0; i < 29; ++i) { xs.base[i] = cur[i]; xs.cur[i] = cur[i]; }
+                        xs.haveBase = true;
                     } else {
                         for (int i = 0; i < 29; ++i) {
                             if (cur[i] < 0) continue;
-                            if (g_xp.base[i] < 0) g_xp.base[i] = cur[i];   // record appeared mid-session
-                            if (g_xp.cur[i] >= 0 && cur[i] - g_xp.cur[i] > 5000000) g_xp.base[i] += cur[i] - g_xp.cur[i];
-                            if (g_xp.firstGain[i] == 0 && g_xp.cur[i] >= 0 && cur[i] > g_xp.base[i])
-                                g_xp.firstGain[i] = t;
-                            if (g_xp.startMs == 0 && g_xp.firstGain[i] != 0) g_xp.startMs = t;
-                            g_xp.cur[i] = cur[i];
+                            if (xs.base[i] < 0) xs.base[i] = cur[i];   // record appeared mid-session
+                            if (xs.cur[i] >= 0 && cur[i] - xs.cur[i] > 5000000) xs.base[i] += cur[i] - xs.cur[i];
+                            if (xs.firstGain[i] == 0 && xs.cur[i] >= 0 && cur[i] > xs.base[i])
+                                xs.firstGain[i] = t;
+                            if (xs.startMs == 0 && xs.firstGain[i] != 0) xs.startMs = t;
+                            xs.cur[i] = cur[i];
                         }
                     }
                 }
@@ -2888,7 +2929,12 @@ void RenderLoop() {
             if (cfgs.find(it->first) == cfgs.end()) it = held.erase(it);
             else ++it;
         for (auto it = g_marker_outs.begin(); it != g_marker_outs.end(); ) {
-            if (cfgs.find(it->first) == cfgs.end()) { it->second.close(); it = g_marker_outs.erase(it); }
+            if (cfgs.find(it->first) == cfgs.end()) {
+                // A publish from a pass that began before QuiesceMarkers can land after it cleared the
+                // channel, so the thread that publishes clears it once more before letting it go.
+                if (it->second.p) QuietShare(it->second.p);
+                it->second.close(); it = g_marker_outs.erase(it);
+            }
             else ++it;
         }
 
@@ -3079,7 +3125,11 @@ void XpPanel(std::uint32_t pid, bool visible, bool locked, bool total,
     {
         std::lock_guard<std::mutex> lk(g_mu);
         bool wasOn = g_xp.on;
-        if (g_xp.pid != (DWORD)pid) ResetXpSession();
+        if (pid) {
+            auto ins = g_xpSessions.try_emplace((DWORD)pid);
+            if (ins.second) ResetXpSession(ins.first->second);
+            ins.first->second.on = visible;
+        }
         g_xp.on         = visible;
         g_xp.locked     = locked;
         g_xp.showTotal  = total;
@@ -3097,31 +3147,35 @@ void XpPanel(std::uint32_t pid, bool visible, bool locked, bool total,
     if (pid) ensure_thread();   // the thread hosts the 1 Hz sampler even while hidden
 }
 
-void XpPanelReset(std::uint32_t) {
+void XpPanelReset(std::uint32_t pid) {
     std::lock_guard<std::mutex> lk(g_mu);
-    ResetXpSession();
+    auto it = g_xpSessions.find((DWORD)pid);
+    if (it != g_xpSessions.end()) ResetXpSession(it->second);
 }
 
-std::string XpPanelStateJson(std::uint32_t) {
+std::string XpPanelStateJson(std::uint32_t pid) {
     std::lock_guard<std::mutex> lk(g_mu);
+    static const XpSession kNone{};             // a client that has not armed the tracker
+    auto it = g_xpSessions.find((DWORD)pid);
+    const XpSession& xs = it != g_xpSessions.end() ? it->second : kNone;
     long long t = now_ms();
     std::string out = "{\"on\":";
-    out += g_xp.on ? "true" : "false";
-    out += ",\"elapsed\":" + std::to_string(g_xp.startMs > 0 ? t - g_xp.startMs : 0);
+    out += xs.on ? "true" : "false";
+    out += ",\"elapsed\":" + std::to_string(xs.startMs > 0 ? t - xs.startMs : 0);
     long long totalGained = 0;
     std::string rows;
     for (int i = 0; i < 29; ++i) {
-        long long gn = (g_xp.haveBase && g_xp.cur[i] >= 0 && g_xp.base[i] >= 0)
-                           ? (long long)g_xp.cur[i] - g_xp.base[i] : 0;
+        long long gn = (xs.haveBase && xs.cur[i] >= 0 && xs.base[i] >= 0)
+                           ? (long long)xs.cur[i] - xs.base[i] : 0;
         if (gn < 0) gn = 0;
         totalGained += gn;
         rows += (i ? "," : "");
-        rows += "{\"id\":" + std::to_string(i) + ",\"xp\":" + std::to_string(g_xp.cur[i]) +
+        rows += "{\"id\":" + std::to_string(i) + ",\"xp\":" + std::to_string(xs.cur[i]) +
                 ",\"gained\":" + std::to_string(gn) +
-                ",\"ph\":" + std::to_string(XpRatePerHour(gn, g_xp.firstGain[i], t)) + "}";
+                ",\"ph\":" + std::to_string(XpRatePerHour(gn, xs.firstGain[i], t)) + "}";
     }
     out += ",\"total\":{\"gained\":" + std::to_string(totalGained) +
-           ",\"ph\":" + std::to_string(XpRatePerHour(totalGained, g_xp.startMs, t)) + "}";
+           ",\"ph\":" + std::to_string(XpRatePerHour(totalGained, xs.startMs, t)) + "}";
     out += ",\"rows\":[" + rows + "]}";
     return out;
 }
@@ -3377,7 +3431,8 @@ void Stop() {
     }
 }
 
-// Synchronous seqlock write of visible=0 to the pid's section; safe from any thread. Must run
+// Synchronous seqlock write that turns the pid's section off (see QuietShare); safe from any thread.
+// Must run before the game destroys its GL context.
 void QuiesceMarkers(std::uint32_t pid) {
     if (!pid) return;
     {
@@ -3386,8 +3441,12 @@ void QuiesceMarkers(std::uint32_t pid) {
         g_flash_until.erase((DWORD)pid);
         g_guides.erase((DWORD)pid);
         g_uiHighlights.erase((DWORD)pid);
+        g_uiLabels.erase((DWORD)pid);
         g_centerTexts.erase((DWORD)pid);
         g_panelViz.erase((DWORD)pid);
+        g_puzzleCells.erase((DWORD)pid);
+        g_knotCells.erase((DWORD)pid);
+        g_skillBars.erase((DWORD)pid);
     }
     wchar_t name[rtx::ipc::kNameChars];
     marker::MakeSectionName(pid, name);
@@ -3396,10 +3455,7 @@ void QuiesceMarkers(std::uint32_t pid) {
     auto* sh = reinterpret_cast<marker::Share*>(
         MapViewOfFile(map, FILE_MAP_WRITE, 0, 0, sizeof(marker::Share)));
     if (sh) {
-        std::uint32_t s = sh->seq + 1;
-        sh->seq = s; MemoryBarrier();
-        sh->count = 0; sh->visible = 0;
-        MemoryBarrier(); sh->seq = s + 1;
+        QuietShare(sh);
         UnmapViewOfFile(sh);
     }
     CloseHandle(map);

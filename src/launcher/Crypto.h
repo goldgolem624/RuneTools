@@ -48,4 +48,15 @@ bool VerifyEcdsaP256(const std::uint8_t* msg, std::size_t msg_len,
                      const std::uint8_t* sig, std::size_t sig_len,
                      const std::uint8_t* pubkey_xy, std::size_t pubkey_len);
 
+// What a signature over one of the launcher's own structures was made for. It covers
+// "RuneTools signature v2\0" + domain name + "\0" + msg, so it can pass neither for another domain's
+// nor for a plugin bundle's, which covers the raw bundle bytes (the server never signs a bundle that
+// begins with that prefix).
+enum class SigDomain { UpdateManifest, RevocationList };
+
+bool VerifyEcdsaP256Domain(SigDomain domain,
+                           const std::uint8_t* msg, std::size_t msg_len,
+                           const std::uint8_t* sig, std::size_t sig_len,
+                           const std::uint8_t* pubkey_xy, std::size_t pubkey_len);
+
 }  // namespace rtx::launcher::crypto

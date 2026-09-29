@@ -249,6 +249,9 @@ void Publish(Ui* u) {
     if (!src) { s->UnlockPixels(); s->ClearDirtyBounds(); return; }   // never leave it locked
     std::uint32_t rb = s->row_bytes();
     rtx::frame::Share* f = u->frame;
+    // The row pitch is worked out here, never read back from the section: anything else that can
+    // open the section could change it and send both passes below past the end of the view.
+    const std::size_t stride = (std::size_t)w * 4;
 
     bool sized = (f->width != w || f->height != h);
     int L = db.left, T = db.top, R = db.right, B = db.bottom;
@@ -265,7 +268,7 @@ void Publish(Ui* u) {
         int nT = -1, nB = -1, nL = R, nR = L;
         for (int y = T; y < B; ++y) {
             const auto* a = reinterpret_cast<const std::uint32_t*>(src + (std::size_t)y * rb);
-            const auto* d = reinterpret_cast<const std::uint32_t*>(f->pixels + (std::size_t)y * f->stride);
+            const auto* d = reinterpret_cast<const std::uint32_t*>(f->pixels + (std::size_t)y * stride);
             if (std::memcmp(a + L, d + L, (std::size_t)(R - L) * 4) == 0) continue;
             int x0 = L; while (x0 < R && a[x0] == d[x0]) ++x0;
             int x1 = R - 1; while (x1 > x0 && a[x1] == d[x1]) --x1;
@@ -282,9 +285,9 @@ void Publish(Ui* u) {
         MemoryBarrier();
         f->width = w;
         f->height = h;
-        f->stride = w * 4;
+        f->stride = (std::uint32_t)stride;
         for (int y = T; y < B; ++y)
-            std::memcpy(f->pixels + (std::size_t)y * f->stride + (std::size_t)L * 4,
+            std::memcpy(f->pixels + (std::size_t)y * stride + (std::size_t)L * 4,
                         src + (std::size_t)y * rb + (std::size_t)L * 4,
                         (std::size_t)(R - L) * 4);
         f->dirty_x = L;
@@ -857,6 +860,9 @@ std::string ClientInfoJson(std::uint32_t pid) {
 void ReloadHtml(std::uint32_t pid, const std::string& html) {
     Ui* u = find(pid);
     if (!u || !u->view) return;
+    // The new page starts with nothing focused and only reports a change from that, so a capture
+    // left on by the old page would never be released and the game would get no keys.
+    SetKeyboardCapture(pid, false);
     u->view->LoadHTML(String(html.c_str()));
 }
 

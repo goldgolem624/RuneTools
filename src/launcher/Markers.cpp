@@ -30,6 +30,9 @@ struct Account {
     bool                    loaded  = false;
 };
 std::map<std::string, Account> g_accounts;   // keyed by sanitized account name (guarded by g_mu)
+// Every account's version is drawn from this one sequence, so when the account behind a client
+// changes the version the page sees changes too, and it fetches the new list (guarded by g_mu).
+std::uint64_t g_version_seq = 0;
 
 Keybinds g_kb;
 bool     g_kb_loaded = false;
@@ -60,16 +63,11 @@ std::string sanitize_account(const std::string& name) {
     return out;
 }
 
-std::mutex                              g_acct_mu;
-std::map<std::uint32_t, std::string>    g_pid_acct;
-
+// Asked on every call, never kept per pid: without a Jagex display name the key is the character
+// name, which changes when the player logs into another character, and Windows hands the pid of a
+// closed client to a new process. The reader answers from memory it already holds.
 std::string account_for(std::uint32_t pid) {
     if (!pid) return {};
-    {
-        std::lock_guard<std::mutex> lk(g_acct_mu);
-        auto it = g_pid_acct.find(pid);
-        if (it != g_pid_acct.end()) return it->second;
-    }
     // Reader::AccountKey, not the JX env var: the Steam client sets no JX_ vars.
     std::string acct = sanitize_account(rtx::reader::AccountKey(pid));
     if (acct.empty()) {                       // reader not attached yet
@@ -77,20 +75,41 @@ std::string account_for(std::uint32_t pid) {
         auto it = env.find("JX_DISPLAY_NAME");
         if (it != env.end()) acct = sanitize_account(it->second);
     }
-    if (!acct.empty()) {
-        std::lock_guard<std::mutex> lk(g_acct_mu);
-        g_pid_acct[pid] = acct;
-    }
     return acct;
 }
 
+// Length of the well-formed UTF-8 sequence starting at s[i], 0 if it is not one.
+std::size_t utf8_len(const std::string& s, std::size_t i) {
+    const unsigned char c = (unsigned char)s[i];
+    std::size_t n = 0;
+    unsigned char lo = 0x80, hi = 0xBF;       // allowed range of the second byte
+    if (c < 0x80) return 1;
+    else if (c >= 0xC2 && c <= 0xDF) n = 2;
+    else if (c >= 0xE0 && c <= 0xEF) { n = 3; if (c == 0xE0) lo = 0xA0; if (c == 0xED) hi = 0x9F; }
+    else if (c >= 0xF0 && c <= 0xF4) { n = 4; if (c == 0xF0) lo = 0x90; if (c == 0xF4) hi = 0x8F; }
+    else return 0;
+    if (i + n > s.size()) return 0;
+    const unsigned char c1 = (unsigned char)s[i + 1];
+    if (c1 < lo || c1 > hi) return 0;
+    for (std::size_t k = 2; k < n; ++k)
+        if (((unsigned char)s[i + k] & 0xC0) != 0x80) return 0;
+    return n;
+}
+
+// Labels reach the page as UTF-8, and one malformed byte makes the whole markers list unreadable
+// there. So bytes that are not well-formed UTF-8 are dropped, and the 64-byte cap ends on a whole
+// character. Labels already in a saved file are cleaned the same way when it is read.
 std::string clean_label(const std::string& s) {
-    std::string out; out.reserve(s.size());
-    for (char c : s) {
+    std::string out; out.reserve(s.size() < 64 ? s.size() : 64);
+    for (std::size_t i = 0; i < s.size();) {
+        const std::size_t n = utf8_len(s, i);
+        if (n == 0) { ++i; continue; }
+        if (out.size() + n > 64) break;
+        const char c = s[i];
         if (c == '\t' || c == '\n' || c == '\r') out.push_back(' ');
-        else if ((unsigned char)c >= 0x20) out.push_back(c);   // keep printable + UTF-8 high bytes
+        else if (n > 1 || (unsigned char)c >= 0x20) out.append(s, i, n);
+        i += n;
     }
-    if (out.size() > 64) out.resize(64);
     return out;
 }
 
@@ -134,6 +153,7 @@ Account& get_or_load(const std::string& acct) {   // caller holds g_mu
     Account& a = g_accounts[acct];
     if (a.loaded || acct.empty()) { a.loaded = true; return a; }
     a.loaded = true;
+    a.version = ++g_version_seq;
     auto dir = markers_dir();
     if (dir.empty()) return a;
     std::ifstream f(dir / (acct + ".tsv"), std::ios::binary);
@@ -260,7 +280,7 @@ bool Add(std::uint32_t pid, int region, int lx, int ly, int plane,
         m.color = color & 0xFFFFFF; m.label = clean_label(label);
         if (a.markers.size() < 4096) a.markers.push_back(std::move(m)); else return false;
     }
-    a.version++;
+    a.version = ++g_version_seq;
     save_locked(acct, a);
     return true;
 }
@@ -273,7 +293,7 @@ bool Remove(std::uint32_t pid, int region, int lx, int ly, int plane) {
     int idx = find_idx(a, region, lx, ly, plane);
     if (idx < 0) return false;
     a.markers.erase(a.markers.begin() + idx);
-    a.version++;
+    a.version = ++g_version_seq;
     save_locked(acct, a);
     return true;
 }
@@ -286,7 +306,7 @@ bool SetLabel(std::uint32_t pid, int region, int lx, int ly, int plane, const st
     int idx = find_idx(a, region, lx, ly, plane);
     if (idx < 0) return false;
     a.markers[idx].label = clean_label(label);
-    a.version++;
+    a.version = ++g_version_seq;
     save_locked(acct, a);
     return true;
 }
@@ -301,7 +321,7 @@ bool SetColor(std::uint32_t pid, int region, int lx, int ly, int plane, std::uin
     if (idx < 0) return false;
     a.markers[idx].color = color & 0xFFFFFF;
     a.markers[idx].color2 = color2 & 0xFFFFFF;   // 0 = back to single-colour
-    a.version++;
+    a.version = ++g_version_seq;
     save_locked(acct, a);
     return true;
 }
@@ -313,7 +333,7 @@ bool Clear(std::uint32_t pid) {
     Account& a = get_or_load(acct);
     if (a.markers.empty()) return false;
     a.markers.clear();
-    a.version++;
+    a.version = ++g_version_seq;
     save_locked(acct, a);
     return true;
 }

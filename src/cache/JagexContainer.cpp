@@ -33,12 +33,17 @@ std::vector<std::uint8_t> InflateImpl(const std::uint8_t* in, std::size_t in_len
         s.next_out  = out.data() + written;
         s.avail_out = (uInt)(out.size() - written);
         const std::size_t before = written;
+        const uInt in_before = s.avail_in;
         rc = inflate(&s, Z_NO_FLUSH);
         written = s.total_out;
-        if (rc == Z_STREAM_ERROR || rc == Z_DATA_ERROR || rc == Z_MEM_ERROR) {
+        // Anything but Z_OK / Z_STREAM_END is fatal here. Z_NEED_DICT in particular: cache
+        // streams never use a preset dictionary, and inflate keeps returning it without
+        // consuming input, so carrying on would spin forever.
+        if (rc != Z_OK && rc != Z_STREAM_END) {
             inflateEnd(&s); return {};
         }
-        if (rc == Z_BUF_ERROR || (rc != Z_STREAM_END && written == before && s.avail_in == 0)) {
+        // A call that wrote nothing and either had no input left or read none cannot finish.
+        if (rc == Z_OK && written == before && (s.avail_in == 0 || s.avail_in == in_before)) {
             inflateEnd(&s); return {};
         }
     } while (rc != Z_STREAM_END);

@@ -4,7 +4,9 @@
 #include <string>
 #include <vector>
 
-// Minimal in-memory ZIP reader: STORED (0) and DEFLATE (8) entries, bounds-checked.
+// Minimal in-memory ZIP reader: STORED (0) and DEFLATE (8) entries, bounds-checked. An archive that
+// another zip reader could list differently, or with two names for one file on disk, is refused whole,
+// by both calls.
 
 namespace rtx::launcher::zip {
 

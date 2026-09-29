@@ -40,10 +40,13 @@
   }
 
   // The game's detail text for a buff: '' when the game has none, null while data is on its way.
+  // A buff whose name is its whole description has the lines after the first in `desc`, which
+  // stand in when the tooltip script has nothing for it.
   function detailFor(b) {
-    if (typeof gameText !== 'object' || !b.struct) return '';
+    const own = b.desc ? String(b.desc).split('\n').join('<br>') : '';
+    if (typeof gameText !== 'object' || !b.struct) return own;
     const r = gameText.evaluate('buff', [b.struct | 0], { count: (typeof b.count === 'number') ? b.count : 0 });
-    return r.pending ? null : r.text;
+    return r.pending ? null : (r.text || own);
   }
 
   // Evaluate every row's detail against what is held now; rows still waiting keep their last text.

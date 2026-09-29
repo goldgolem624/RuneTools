@@ -159,7 +159,10 @@ void cache_write(const std::filesystem::path& p, const std::string& bytes) {
     if (p.empty() || bytes.empty()) return;
     std::error_code ec;
     std::filesystem::create_directories(p.parent_path(), ec);
-    const auto tmp = p.string() + ".part";
+    // Built as a path: a narrow string goes through the ANSI code page and throws on a user folder
+    // name outside it.
+    auto tmp = p;
+    tmp += L".part";
     { std::ofstream f(tmp, std::ios::binary | std::ios::trunc); if (!f) return; f.write(bytes.data(), (std::streamsize)bytes.size()); }
     std::filesystem::rename(tmp, p, ec);
     if (ec) std::filesystem::remove(tmp, ec);
@@ -276,21 +279,28 @@ void refresh_news() {
     // the document as each one lands, so the hero appears without waiting for the whole row.
     std::mutex mu; std::size_t next = 0; int landed = 0;
     auto worker = [&] {
-        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         for (;;) {
             std::size_t i;
             { std::lock_guard<std::mutex> lk(mu); if (next >= covers.size()) break; i = next++; }
             Cover local = covers[i];
-            resolve_cover(local);
+            // A cover that throws counts as failed and this thread goes on to the next one.
+            try { resolve_cover(local); }
+            catch (const std::exception& e) { local.note = std::string("threw: ") + e.what(); }
+            catch (...) { local.note = "threw (non-std)"; }
             std::lock_guard<std::mutex> lk(mu);
             covers[i] = std::move(local);
             if (!covers[i].data.empty()) { ++landed; publish(compose(doc, covers)); }
         }
-        CoUninitialize();
     };
     std::vector<std::thread> pool;
     const int n = (int)std::min<std::size_t>(kCoverThreads, covers.size());
-    for (int i = 0; i < n; ++i) pool.emplace_back(worker);
+    for (int i = 0; i < n; ++i)
+        pool.emplace_back([&] {
+            // Nothing may escape a thread body: an uncaught exception there ends the whole launcher.
+            CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            guarded("news: cover worker", worker);
+            CoUninitialize();
+        });
     for (auto& t : pool) t.join();
 
     int cached = 0, fetched = 0, failed = 0; std::size_t bytes = 0;

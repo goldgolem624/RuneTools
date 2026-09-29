@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!--
-    Vendored Lua 5.4.7 (src/lua/vendor/lua-5.4.7, MIT, unmodified upstream sources minus the
-    lua.c / luac.c standalone front ends). Compiled once into a static .lib the launcher links,
-    like CacheVendor: the interpreter never changes between launcher edits.
+    Vendored Lua 5.4.7 (src/lua/vendor/lua-5.4.7, MIT, upstream sources minus the lua.c / luac.c
+    standalone front ends). One file is patched: lstrlib.c bounds the work of one pattern match
+    (find, match, gmatch, gsub) and raises "pattern too complex" past it, because the host's
+    instruction budget never fires inside a C call. The rest is unmodified. Compiled once into a
+    static .lib the launcher links, like CacheVendor: the interpreter never changes between
+    launcher edits.
   -->
 
   <ItemGroup Label="ProjectConfigurations">

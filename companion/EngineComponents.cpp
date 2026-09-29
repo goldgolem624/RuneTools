@@ -235,6 +235,30 @@ void* Call(int which, void* root) {
     __try { return g_ops[which].fn(root, g_state); } __except (EXCEPTION_EXECUTE_HANDLER) { return reinterpret_cast<void*>(~0ull); }
 }
 
+// Each active slot holds two counted handles, {control block, object}: the component, then its
+// interface. The game's routines add a use when they fill one and give the old one back when they
+// replace it, so a slot is emptied the way the game empties it: one use fewer, and at the last
+// use the object is destroyed, then the control block once nothing watches it any more.
+void DropHandle(std::uint8_t* handle) {
+    std::uint8_t* block = nullptr;
+    std::memcpy(&block, handle, 8);
+    std::memset(handle, 0, 0x10);
+    if (!block) return;
+    using Method = void (*)(void* self);
+    __try {
+        if (InterlockedDecrement(reinterpret_cast<volatile LONG*>(block + 8)) != 0) return;
+        (*reinterpret_cast<Method* const*>(block))[1](block);          // destroy the object
+        if (InterlockedDecrement(reinterpret_cast<volatile LONG*>(block + 0xC)) != 0) return;
+        (*reinterpret_cast<Method* const*>(block))[2](block);          // free the control block
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+void ClearActive() {
+    DropHandle(g_state + kActive);
+    DropHandle(g_state + kActive + 0x10);
+    DropHandle(g_state + kActiveAlt);
+    DropHandle(g_state + kActiveAlt + 0x10);
+}
+
 
 }  // namespace
 
@@ -246,7 +270,7 @@ std::vector<Rect> g_have;                 // what the game tree holds, game thre
 std::uint32_t g_wantGen = 0, g_haveGen = ~0u;
 
 bool Find(void* root, std::int32_t parent, std::int32_t slot) {
-    ResetStacks(); std::memset(g_state + kActive, 0, 0x40);
+    ResetStacks(); ClearActive();
     Push(parent); Push(slot);
     Call(kFind, root);
     const std::uint32_t sp = *reinterpret_cast<std::uint32_t*>(g_state + kIntSp);
@@ -314,7 +338,7 @@ void Apply(std::uint8_t* root) {
             if (!old || !Same(*old, w)) Shape(root, w);
             have.push_back(w);
         } else {
-            ResetStacks(); std::memset(g_state + kActive, 0, 0x40);
+            ResetStacks(); ClearActive();
             Push(w.parent); Push(w.text[0] ? 4 : 3); Push(w.slot);   // 3 a rectangle, 4 text
             Call(kCreate, root);
             void* comp = nullptr; std::memcpy(&comp, g_state + kActive + 8, 8);
@@ -330,7 +354,7 @@ void Apply(std::uint8_t* root) {
             want.empty() ? "" : (have.empty() ? " (create returned no component: is the interface open?)" : ""));
     }
     g_have.swap(have);
-    std::memset(g_state + kActive, 0, 0x40);
+    ClearActive();
 }
 
 bool TakeLog(char* out, std::size_t cap) {

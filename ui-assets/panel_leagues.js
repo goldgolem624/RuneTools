@@ -177,7 +177,7 @@
   async function lgEnsureAch() {
     if (lgAchById) return;
     if (!achDefs && bridge() && bridge().achievements) {
-      try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; }
+      achDefs = (typeof achLoadDefs === 'function') ? await achLoadDefs() : null;
     }
     if (!achDefs || !achDefs.length) return;
     const map = {};
@@ -349,11 +349,12 @@
     const msg = lgTaskText(t)
       + (showN ? '\u00a0\u00a0' + st.v.toLocaleString() + ' / ' + st.tgt.toLocaleString() : '');
     let rec = lgPinToasts[t.f];
-    if (rec && rec.closing) {          // user hit the X: dismiss = untrack
+    if (rec && rec.closing) {
+      // Not the X (its handler drops the record first): the notifier closed the card to make room for a
+      // newer one. The pin stays, and its card comes back once there is room without pushing another out.
+      if (toasts.filter(x => !x.closing).length >= TOAST_MAX) return;
       delete lgPinToasts[t.f];
-      lgPinSet(t.f, false);
-      lgListDirty = true;
-      return;
+      rec = null;
     }
     if (!rec) {
       rec = uiNotify(msg, { sticky: true });

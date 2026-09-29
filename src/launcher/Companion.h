@@ -5,8 +5,9 @@
 namespace rtx::launcher::companion {
 
 // Bring the scene-data companion up in the client and keep it there. Idempotent and cheap to poll:
-// true once the module is live under this client's session. A call that finds it not live makes at
-// most one attempt, and attempts back off, so polling from a render path costs nothing between them.
+// true once the module is live under this client's session. A call that finds it not live starts at
+// most one attempt, on a thread of its own, and returns without waiting for it; attempts back off,
+// so polling from the UI thread or a render path never blocks on the client.
 bool EnsureLoaded(std::uint32_t pid);
 
 // Where a client stands, in words, for the logs: live, what is being waited on, or why it can no

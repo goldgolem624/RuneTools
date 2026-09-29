@@ -157,6 +157,11 @@
       const pz = document.createElement('div'); pz.id = 'cluePuzzle'; pz.style.cssText = 'display:none;font-size:12px;padding:8px 11px;margin:2px 0 6px;border-radius:8px;background:rgba(120,180,255,0.08);border:1px solid rgba(120,180,255,0.18);line-height:1.5'; wrap.appendChild(pz);
       const em = document.createElement('div'); em.id = 'clueEmote'; em.style.cssText = 'display:none;font-size:12px;padding:8px 11px;margin:2px 0 6px;border-radius:8px;background:rgba(120,180,255,0.06);border:1px solid rgba(120,180,255,0.16);line-height:1.55'; wrap.appendChild(em);
       const kn = document.createElement('div'); kn.id = 'clueKnot'; kn.style.cssText = 'display:none;font-size:12px;padding:8px 11px;margin:2px 0 6px;border-radius:8px;background:rgba(120,180,255,0.08);border:1px solid rgba(120,180,255,0.18);line-height:1.5'; wrap.appendChild(kn);
+      const fp = document.createElement('div'); fp.id = 'cluePaint'; fp.style.cssText = 'display:none;font-size:12px;padding:8px 11px;margin:2px 0 6px;border-radius:8px;background:rgba(120,180,255,0.08);border:1px solid rgba(120,180,255,0.18);line-height:1.5'; wrap.appendChild(fp);
+      fp.addEventListener('click', e => {
+        const p = e.target.closest('[data-fps]'); if (p) { fpPick(+p.dataset.fps); return; }
+        if (e.target.closest('[data-fpchange]')) fpPick(0);
+      });
       em.addEventListener('click', e => {
         if (e.target.closest('#emClear')) { clueDismissAuto(); return; }   // clear the sticky auto-identified clue
         const row = e.target.closest('[data-ei]'); if (row) { clueAuto = null; clueScrollSig = '-'; clueEmoteSel = +row.dataset.ei; renderEmotePanel(); return; }
@@ -216,13 +221,14 @@
     clueRenderFocus();
     compassTick();   // poll the compass needle while this page is open; drives the banner + dig tile
     tetraTick();     // powered tetracompass: shares the compass varc, marks its own dig tile
+    fpTick();        // Forgotten painting: the Inspect view names the painting, marks its dig tile
     puzzleTick();    // poll the puzzle-box board (interface 1931); drives the optimal-solver guide
     clueScrollTick();   // poll the open clue scroll (interface 345); auto-identifies emote/cryptic clues
   }
   function clueRenderFocus() {
     const tabs = $('clueTabs'), held = $('clueHeld'), tb = $('clueToolbar'), cnt = $('clueCnt'), list = $('clueList');
     if (!tabs) return;
-    const SOLVER = ['clueCompass', 'cluePuzzle', 'clueEmote', 'clueKnot', 'clueMapWrap'];
+    const SOLVER = ['clueCompass', 'cluePuzzle', 'clueEmote', 'clueKnot', 'cluePaint', 'clueMapWrap'];
     if (cluePuzzleOpen && !cluePuzzleWasOpen && !clueBrowse && cluePuzzleHeld.length) { activeClueId = cluePuzzleHeld[0].i; clueLiveTier = -1; }
     cluePuzzleWasOpen = cluePuzzleOpen;
     if (clueBrowse) {

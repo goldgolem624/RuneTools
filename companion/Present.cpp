@@ -34,6 +34,9 @@ bool          g_glInstalled = false;
 bool          g_vkInstalled = false;
 
 #define RTX_MARKER_SELFTEST 0
+// The outline trace (scenehover::Trace) is a development aid: on every present it looks through the
+// lit object's memory and writes to the log from the render thread, so it stays out of normal builds.
+#define RTX_HOVER_TRACE 0
 
 rtx::marker::Share* g_marker    = nullptr;
 HANDLE              g_markerMap = nullptr;
@@ -233,7 +236,9 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         if (wantHover && st == rtx::enginehl::kActive && g_latch.hover_on)
             rtx::scenehover::Mark(g_latch.hover_x, g_latch.hover_y, g_latch.hover_id);
         rtx::scenehover::SetPulseHold(wantHover && st == rtx::enginehl::kActive);
+#if RTX_HOVER_TRACE
         rtx::scenehover::Trace();
+#endif
         // the rectangles the game draws as components: handed to the game thread, which applies them
         rtx::enginecc::Want(g_latch.cc.data(), (std::uint32_t)g_latch.cc.size());
         static rtx::enginehl::Status s_said = rtx::enginehl::kUnknown;

@@ -33,21 +33,31 @@
     return guide(_qgByLower[name.toLowerCase()]) ||
            guide(_qgByLower[(name + ' (miniquest)').toLowerCase()]) || null;
   }
-  let qgLoadedPid = -1;
+  let qgLoadedPid = -1, qgStore = null;
+  // made on first use: the store helpers come from core/rtx-boot.js, spliced after the panels
+  function qgSt() {
+    return qgStore || (qgStore = acctStore(() => rtxData.sync('host.questLoad'),
+                                           t => rtxData.sync('act.questSave', t), qgReload));
+  }
   async function qgEnsureLoaded() {
     if ((questGSteps !== null && qgLoadedPid === myPid()) || qgFetching || !bridge() || !bridge().questLoad) return;
     qgFetching = true;
     qgLoadedPid = myPid();
-    try { const d = JSON.parse(await rtxData.raw('host.questLoad')); questGSteps = (d && typeof d === 'object') ? d : {}; }
+    try { const d = JSON.parse(acctStoreRead(qgSt())); questGSteps = (d && typeof d === 'object') ? d : {}; }
     catch (e) { questGSteps = {}; }
     qgFetching = false;
+    await null;   // repaint once the caller (often a render that asked for the data) has finished
     updateQuestHighlight();
     paneRun('questfocus', renderQuestFocus);
     if (paneVisible('quests')) { questDetailSig = ''; renderQuests(); }
   }
+  // The account behind this client changed (or became known) since the progress was read.
+  function qgReload() { qgLoadedPid = -1; qgSig = ''; qgEnsureLoaded(); }
   function qgSave() {
-    if (qgLoadedPid !== myPid()) return;   // never write one character's progress to another
-    try { rtxData.sync('act.questSave', JSON.stringify(questGSteps || {})); } catch (e) {}
+    if (qgLoadedPid !== myPid()) return;   // never read: nothing to save
+    // refused when the file is not the one this progress was read from, so one character's progress
+    // is never written over another's
+    try { acctStoreWrite(qgSt(), JSON.stringify(questGSteps || {})); } catch (e) {}
   }
   function qgFocusName() { return (questGSteps && typeof questGSteps.__focus === 'string') ? questGSteps.__focus : ''; }
   function setQuestFocus(nm) {
@@ -68,7 +78,9 @@
     return !!(q && questsData && questsData.st[q.id] === 2);
   }
   function updateQuestHighlight() {}
+  // idx: a whole step's number, or "step.sub" for a sub-point (the data-i text as rendered)
   function qgToggleStep(nm, idx) {
+    if (typeof idx === 'string') idx = idx.indexOf('.') >= 0 ? idx : +idx;
     if (questGSteps === null) questGSteps = {};
     const arr = (questGSteps[nm] = questGSteps[nm] || []);
     const p = arr.indexOf(idx);
@@ -97,6 +109,20 @@
       const e = line.indexOf('}', s);
       parts.push({ t: 'c', v: line.slice(s + 6, e < 0 ? line.length : e) });
       i = e < 0 ? line.length : e + 1;
+    }
+    // The pages put the options mid-sentence ("hand her the spine (Chat 1). She will..."): the
+    // punctuation that closes the sentence belongs before the options box, not alone after it.
+    for (let p = 1; p < parts.length; p++) {
+      if (parts[p].t !== 'x' || parts[p - 1].t !== 'c') continue;
+      const m = parts[p].v.match(/^\s*([.,;:!?]+)/);
+      if (!m) continue;
+      // a comma between two options boxes ("{A}, {B}") separates them and stays where it is
+      if (!parts[p].v.slice(m[0].length).trim() && parts.slice(p + 1).some(q => q.t === 'c')) continue;
+      parts[p].v = parts[p].v.slice(m[0].length);
+      // a comma only joined the box to the rest of the sentence; the box now does that
+      if (m[1][0] === ',') continue;
+      const prev = p >= 2 && parts[p - 2].t === 'x' ? parts[p - 2] : null;
+      if (prev && !/[.!?:;,]\s*$/.test(prev.v)) prev.v = prev.v.replace(/\s+$/, '') + m[1];
     }
     let h = '';
     for (let p = 0; p < parts.length; p++) {
@@ -134,11 +160,19 @@
   function qgApplyLiveNums(root) {
     const host = root || document;
     const opts = host.querySelectorAll ? host.querySelectorAll('.qg-copt') : [];
+    // Only the step being worked on, the first unticked row of each guide: the same option text
+    // ("Talk about <quest>") recurs through a guide and would light up everywhere.
+    const current = {};
+    if (host.querySelectorAll)
+      for (const row of host.querySelectorAll('.myst-step[data-qn]'))
+        if (!(row.dataset.qn in current) && !row.classList.contains('done')) current[row.dataset.qn] = row.dataset.i;
     for (const el of opts) {
       const num = el.querySelector('.qg-cnum'), txt = el.querySelector('.qg-ctxt');
       if (!num || !txt) continue;
       if (!num.dataset.qgBase) num.dataset.qgBase = num.textContent;
-      const k = qgOptKey(txt.textContent);
+      const row = el.closest('.myst-step[data-qn]');
+      const onStep = !!row && current[row.dataset.qn] === row.dataset.i;
+      const k = onStep ? qgOptKey(txt.textContent) : '';
       let hit = null;
       if (k) for (const o of qgDlgOpts) {
         if (o.key === k) { hit = o; break; }
@@ -239,9 +273,11 @@
     'Secrets of Amberfell': () => amberItems(''),
     'Wiz Kid': () => wizkidItems(),
     'Making History': () => mhItems(''),
+    'Heralds of Crimson': () => hocItems(''),
   };
   const QG_SEC_REQ = {
     'Secrets of Amberfell': sec => amberItems(sec),
+    'Heralds of Crimson': sec => hocItems(sec),
   };
   const QG_MON = {
     'Necromancy!': () => necroMonText(),
@@ -305,10 +341,26 @@
         }).filter(l => l.trim());
         if (!lines.length && !tbl) { i++; continue; }   // pure wiki markup -> hide it, keep the index stable
         const dn = done || manual.indexOf(i) >= 0 || (typeof qgAutoDone !== 'undefined' && qgAutoDone[nm] && qgAutoDone[nm].has(i));
+        // Sub-points ("- Zeke ...", "- South") are steps of their own. They are kept as "step.sub"
+        // strings so the numbers already saved for whole steps still mean the same steps.
+        const head = [lines[0]], subs = [];
+        for (const l of lines.slice(1)) {
+          const m = l.match(/^(\s*)-\s+(.*)$/);
+          if (m) subs.push({ depth: 1 + Math.floor(m[1].length / 2), txt: m[2] });
+          else if (subs.length) subs[subs.length - 1].txt += ' ' + l.trim();
+          else head.push(l);
+        }
         h += '<div class="myst-step' + (dn ? ' done' : '') + '" data-qn="' + qgEsc(nm) + '" data-i="' + i + '">' +
-             '<span class="myst-cb"></span><span class="tx">' + qgChatHtml(lines[0]) +
-             lines.slice(1).map(l => '<br><span style="opacity:.75;">' + qgChatHtml(l) + '</span>').join('') +
+             '<span class="myst-cb"></span><span class="tx">' + qgChatHtml(head[0]) +
+             head.slice(1).map(l => '<br><span style="opacity:.75;">' + qgChatHtml(l) + '</span>').join('') +
              tbl + '</span></div>';
+        subs.forEach((sb, j) => {
+          const key = i + '.' + (j + 1);
+          // a guide's automatic ticks may name sub-points too, by the same "step.sub" key
+          const sdn = done || manual.indexOf(key) >= 0 || (typeof qgAutoDone !== 'undefined' && qgAutoDone[nm] && qgAutoDone[nm].has(key));
+          h += '<div class="myst-step' + (sdn ? ' done' : '') + '" style="margin-left:' + (18 * sb.depth) + 'px;" data-qn="' + qgEsc(nm) + '" data-i="' + key + '">' +
+               '<span class="myst-cb"></span><span class="tx">' + qgChatHtml(sb.txt) + '</span></div>';
+        });
         i++;
       }
       h += '</div>';
@@ -330,7 +382,7 @@
         }
         const st = e.target.closest('.myst-step');
         if (st && st.dataset.qn !== undefined) {
-          qgToggleStep(st.dataset.qn, +st.dataset.i);
+          qgToggleStep(st.dataset.qn, st.dataset.i);
           qgSig = ''; renderQuestFocus();
           return;
         }

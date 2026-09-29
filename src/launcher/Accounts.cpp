@@ -42,6 +42,29 @@ std::filesystem::path accounts_path() {
     return L"runetoolsx-accounts.dat";
 }
 
+// Written beside and swapped in only once every byte is on the disk: a full disk or a crash mid-write
+// leaves the previous file in place instead of a short one.
+bool replace_file(const std::filesystem::path& path, const std::string& bytes) {
+    auto tmp = path; tmp += L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    bool ok = true;
+    for (size_t off = 0; ok && off < bytes.size(); ) {
+        const DWORD want = (DWORD)(std::min)(bytes.size() - off, (size_t)(1u << 20));
+        DWORD wrote = 0;
+        ok = WriteFile(h, bytes.data() + off, want, &wrote, nullptr) && wrote == want;
+        off += wrote;
+    }
+    ok = ok && FlushFileBuffers(h);
+    if (!CloseHandle(h)) ok = false;
+    if (!ok) { DeleteFileW(tmp.c_str()); return false; }
+    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::rename(tmp, path, ec);
+    return !ec;
+}
+
 // A removed account is kept out of auto-capture until its client is gone (PruneCaptureSuppressions).
 // Ids are stored hashed so the list does not leak account identifiers next to the vault.
 std::filesystem::path suppress_path() {
@@ -134,16 +157,9 @@ void suppress_load_locked() {
 void suppress_save_locked() {
     auto path = suppress_path();
     if (g_suppressed.empty()) { std::error_code ec; std::filesystem::remove(path, ec); return; }
-    auto tmp = path; tmp += L".tmp";
-    {
-        std::ofstream f(tmp, std::ios::trunc);
-        if (!f.is_open()) return;
-        f << kSuppressHeader << "\n";
-        for (const auto& h : g_suppressed) f << h << "\n";
-    }
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) { std::filesystem::remove(path, ec); std::filesystem::rename(tmp, path, ec); }
+    std::string text = std::string(kSuppressHeader) + "\n";
+    for (const auto& h : g_suppressed) text += h + "\n";
+    replace_file(path, text);
 }
 
 // ---- length-prefixed binary plaintext ----
@@ -299,20 +315,7 @@ bool save_with_cached_key() {
     file_bytes.append((const char*)aead.ciphertext.data(), aead.ciphertext.size());
     file_bytes.append((const char*)aead.tag.data(),        aead.tag.size());
 
-    auto path = accounts_path();
-    auto tmp  = path; tmp += L".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f.is_open()) return false;
-        f.write(file_bytes.data(), (std::streamsize)file_bytes.size());
-    }
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
-        std::filesystem::remove(path, ec);
-        std::filesystem::rename(tmp, path, ec);
-    }
-    return !ec;
+    return replace_file(accounts_path(), file_bytes);
 }
 
 std::string iso8601_now() {

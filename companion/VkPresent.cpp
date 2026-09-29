@@ -125,8 +125,11 @@ void Log(const char* fmt, ...) {
 // Only this thread is handed to the transaction. Suspending every other thread for it, as was done
 // here before, deadlocks: the transaction allocates, and a thread that was suspended while it held
 // the heap lock never lets go of it, so the game froze for good with most of its threads asleep.
-// Nothing is lost by it: these hooks go in while the device is being created or taken down, when no
-// other thread is inside the functions being patched.
+// What that leaves is a small window, not none. The device hooks go in from the worker up to a poll
+// after a device is first seen (and on a late attach), when the game may already be drawing, and the
+// loader export hooks go in from it at load, so a game thread can be inside one of the patched
+// functions while its first bytes are rewritten. The device hooks mostly come out in
+// vkDestroyDevice, when the game has stopped using the device.
 void UpdateThisThread() { DetourUpdateThread(GetCurrentThread()); }
 
 // ---- export hooks: handle capture only ----

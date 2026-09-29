@@ -172,6 +172,130 @@
     if (moved || mapHidden) drawClueMap({ x: t.x, y: t.y, p: t.p });   // stepping on/off needs no redraw
   }
 
+  // Forgotten painting (Havenhythe). The Inspect view (interface 1540) shows one of seven painting sprites,
+  // which is what tells the paintings apart. A painting without a known dig tile shows only what is known.
+  const FP_PAINTING = 63868;
+  const FP_IFACE = 1540;
+  const FP_GAP_MS = 300000;        // backpack unseen this long (Clues tab closed): the painting may have changed
+  const FP_SPOTS = [
+    { s: 36561, n: 'Spider mural (Hollow Hill)', x: 3579, y: 1649, p: 0 },
+    { s: 36565, n: 'Fenmoor', x: 3961, y: 1480, p: 0 },
+    { s: 36562, n: 'South of Exalted Quarry', x: 3868, y: 1598, p: 0 },
+    { s: 36564, n: 'South of Heathervein', x: 3863, y: 1661, p: 0 },
+    { s: 36560, n: 'East of Berylbrook', x: 3939, y: 1534, p: 0 },
+    { s: 36563, n: 'Moonrise waterfall', hint: 'East of Moonrise Dig Site, south of the waterfall, west of the Exalted Quarry' },
+    { s: 36559, n: 'Red city', hint: 'Location not known yet' },
+  ];
+  const FP_BY_SPRITE = {}; for (const sp of FP_SPOTS) FP_BY_SPRITE[sp.s] = sp;
+  let fpSprite = 0;                // the painting seen on Inspect or picked by hand this session; 0 = not known
+  let fpLast = null, fpReadAt = 0, fpBagAt = 0;
+  const fpThumbs = {};
+  const fpHeld = () => typeof clueHeldInv !== 'undefined' && clueHeldInv.has(FP_PAINTING);
+  const fpSpot = () => FP_BY_SPRITE[fpSprite] || null;
+  function fpSet(s) {
+    s = FP_BY_SPRITE[s] ? s : 0;
+    if (s === fpSprite) return;
+    fpSprite = s; fpLast = null;
+    const h = $('clueHeld'); if (h) h._hsig = '';   // the held row names the painting
+    try { clueRenderFocus(); } catch (e) {}
+  }
+  // A dig uses the painting up, so a backpack without it forgets which one it was, and so does a long spell
+  // with no backpack reads, when a new painting could have been made unseen. An empty read (logged out, not
+  // loaded yet) says nothing and is skipped.
+  function fpBackpackSeen(items) {
+    if (!Array.isArray(items) || !items.length) return;
+    const now = Date.now();
+    if (fpBagAt && now - fpBagAt > FP_GAP_MS) fpSet(0);
+    fpBagAt = now;
+    if (!items.some(x => Array.isArray(x) && x[1] === FP_PAINTING)) fpSet(0);
+  }
+  function fpInspectRead() {       // the painting on the open Inspect view, or 0
+    if (!bridge() || !bridge().interfaceGroup) return 0;
+    try {
+      const ws = (JSON.parse(bridge().interfaceGroup(myPid(), FP_IFACE) || '{}').widgets) || [];
+      for (const w of ws) if (w.v && FP_BY_SPRITE[w.s]) return w.s;
+    } catch (e) {}
+    return 0;
+  }
+  function fpThumb(s) {            // a miss is not kept, so a cache that is not ready yet is asked again
+    if (fpThumbs[s]) return fpThumbs[s];
+    let u = ''; try { u = bridge().sprite(s, 200) || ''; } catch (e) {}
+    if (u) fpThumbs[s] = u;
+    return u;
+  }
+  function fpPanel(show) {
+    const el = $('cluePaint'); if (!el) return;
+    if (!show) { if (el.style.display !== 'none') { el.style.display = 'none'; el._h = ''; } return; }
+    el.style.display = '';
+    const sp = fpSpot();
+    const shown = sp ? [sp] : FP_SPOTS;
+    const key = (sp ? sp.s : 0) + '|' + shown.map(z => fpThumb(z.s) ? 1 : 0).join('');   // asks again for any that missed
+    if (el._h === key) return;
+    const esc = htmlEsc;
+    let h;
+    if (sp) {
+      const img = fpThumb(sp.s);
+      h = '<div style="display:flex;gap:9px;align-items:center">'
+        + (img ? '<img src="' + img + '" style="width:96px;border-radius:4px;flex:none">' : '')
+        + '<div style="flex:1;min-width:0"><b>' + esc(sp.n) + '</b><br>'
+        + (sp.x ? 'Dig at (' + sp.x + ', ' + sp.y + ')' : esc(sp.hint)) + '</div>'
+        + '<button class="pet-chip" data-fpchange="1" style="flex:none">Change</button></div>';
+    } else {
+      h = '<div style="margin-bottom:6px">Inspect the painting, or pick the one it shows:</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:6px">';
+      for (const s of FP_SPOTS) {
+        const img = fpThumb(s.s);
+        h += '<div data-fps="' + s.s + '" style="cursor:pointer;text-align:center;font-size:11px;padding:4px;border-radius:6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08)">'
+          + (img ? '<img src="' + img + '" style="width:100%;border-radius:3px;display:block;margin-bottom:3px">' : '')
+          + esc(s.n) + '</div>';
+      }
+      h += '</div>';
+    }
+    el.innerHTML = h; el._h = key;
+  }
+  function fpActionText(c) {
+    const nm = c.nm || 'Forgotten painting', sp = fpSpot();
+    if (!sp) return nm + ' · Inspect it or pick the painting below';
+    return nm + ' · ' + sp.n + (sp.x ? ' · dig at (' + sp.x + ', ' + sp.y + ')' : '');
+  }
+  function fpPick(s) { fpSet(s); fpTick(); }
+  async function fpTick() {
+    // The Inspect view is read whenever the painting is carried, not only while its row is picked: opening
+    // it in game is the player asking about the painting, so its row takes over (as the tetracompass does).
+    const now = Date.now();
+    if (fpHeld() && !clueBrowse && now - fpReadAt > 500) {
+      fpReadAt = now;
+      const s = fpInspectRead();
+      if (s) {
+        fpSet(s);
+        if (activeClueId !== FP_PAINTING) {
+          clueLiveTier = -1; activeClueId = FP_PAINTING; clueMapZoom = 1; clueMapPin = null; compassMapSig = '';
+          selectClue(); clueRenderFocus(); return;         // selectClue runs this tick again for the painting
+        }
+      }
+    }
+    const active = activeClueId === FP_PAINTING && fpHeld();
+    fpPanel(active);
+    if (!active) { fpLast = null; return; }
+    const sp = fpSpot();
+    const mw = $('clueMapWrap');
+    const mapHidden = !mw || mw.style.display === 'none';
+    if (!sp || !sp.x) {                                    // not known yet, or no known tile: no dig mark anywhere
+      if (fpLast !== 'none') { fpLast = 'none'; clueGuide(null); drawClueMap(null); }
+      return;
+    }
+    const pos = await scanPlayerTile();
+    if (activeClueId !== FP_PAINTING || !fpHeld() || fpSpot() !== sp) return;   // picked something else meanwhile
+    const onSpot = !!pos && pos.x === sp.x && pos.y === sp.y && (pos.p | 0) === (sp.p | 0);
+    const tileSig = sp.x + ',' + sp.y + ',' + sp.p;
+    const sig = tileSig + (onSpot ? '|on' : '');
+    if (sig === fpLast && !mapHidden) return;
+    const moved = !fpLast || String(fpLast).split('|')[0] !== tileSig;
+    fpLast = sig;
+    clueGuide(sp, onSpot ? '' : 'FORGOTTEN PAINTING DIG HERE - (' + sp.x + ', ' + sp.y + ')');
+    if (moved || mapHidden) drawClueMap({ x: sp.x, y: sp.y, p: sp.p });
+  }
+
   function clueVarcPinned() {
     if (!bridge() || !bridge().compassTarget || !tetraOpen()) return -1;   // nothing open -> nothing pinned
     const t = tetraRead(); if (!t) return -1;
@@ -372,5 +496,5 @@
     }); }
   }
 
-Object.assign(window, { TETRA_POWERED, clueVarcIsPair, clueVarcPinned, clueVarcRoute, compassTick, tetraOpen, tetraTarget, tetraTick });
+Object.assign(window, { FP_PAINTING, TETRA_POWERED, clueVarcIsPair, clueVarcPinned, clueVarcRoute, compassTick, fpActionText, fpBackpackSeen, fpPick, fpTick, tetraOpen, tetraTarget, tetraTick });
 })();

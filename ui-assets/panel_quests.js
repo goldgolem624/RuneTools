@@ -41,7 +41,8 @@
     if (Object.keys(ln).length || Object.keys(ag).length || Object.keys(ar).length)
       QUEST_ENUMS = { ln, ag, ar };
   }
-  const QDIFF = ['Novice', 'Intermediate', 'Experienced', 'Master', 'Grandmaster', 'Special'];
+  // the game marks the Special quests (Recipe for Disaster and the like) with 250, not 5
+  const QDIFF = { 0: 'Novice', 1: 'Intermediate', 2: 'Experienced', 3: 'Master', 4: 'Grandmaster', 5: 'Special', 250: 'Special' };
   const QSTATUS = ['Not started', 'In progress', 'Completed'];
   function qBits(vp, varp, lsb, msb) {
     const w = msb - lsb + 1, m = w >= 31 ? 0x7FFFFFFF : ((1 << w) - 1);
@@ -483,7 +484,7 @@
       gbody.addEventListener('click', e => {
         const stp = e.target.closest('.myst-step');
         if (stp && stp.dataset.qn !== undefined) {
-          qgToggleStep(stp.dataset.qn, +stp.dataset.i);
+          qgToggleStep(stp.dataset.qn, stp.dataset.i);
           questDetailSig = ''; renderQuests();
           return;
         }

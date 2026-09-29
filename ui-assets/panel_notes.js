@@ -1,19 +1,36 @@
 // RuneToolsX panel: Notes (per-character, saved via bridge notesLoad/notesSave).
 (function () {
 
-  let notesData = null, notesLoadedPid = -1, _notesSaveT = 0;
+  let notesData = null, notesLoadedPid = -1, _notesSaveT = 0, notesStore = null;
+  // made on first use: the store helpers come from core/rtx-boot.js, spliced after the panels
+  function notesSt() {
+    return notesStore || (notesStore = acctStore(() => rtxData.sync('host.notesLoad'),
+                                                 t => rtxData.sync('act.notesSave', t), notesReload));
+  }
   function loadNotes() {
     if (notesLoadedPid === myPid() && notesData) return;
     notesLoadedPid = myPid(); notesData = [];
     try {
-      const a = JSON.parse((bridge() && bridge().notesLoad && rtxData.sync('host.notesLoad')) || '[]');
+      const a = JSON.parse(acctStoreRead(notesSt()) || '[]');
       if (Array.isArray(a)) notesData = a;
     } catch (e) { notesData = []; }
   }
-  function saveNotesNow() { try { rtxData.sync('act.notesSave', JSON.stringify(notesData)); } catch (e) {} }
+  // The account behind this client changed (or became known) since the notes were read: a pending
+  // save holds the old account's notes, so it goes too.
+  function notesReload() {
+    clearTimeout(_notesSaveT); _notesSaveT = 0;
+    notesLoadedPid = -1; loadNotes(); paintNotes(false);
+  }
+  function saveNotesNow() { try { acctStoreWrite(notesSt(), JSON.stringify(notesData)); } catch (e) {} }
   function saveNotes() { clearTimeout(_notesSaveT); _notesSaveT = setTimeout(saveNotesNow, 400); }
   function noteId() { return 'n' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); }
-  function addNote() { loadNotes(); notesData.unshift({ id: noteId(), title: '', body: '' }); saveNotesNow(); paintNotes(true); }
+  // A refused save reads the notes again, dropping the new one: focusing then would put the typing
+  // into another note's title.
+  function addNote() {
+    loadNotes();
+    const n = { id: noteId(), title: '', body: '' };
+    notesData.unshift(n); saveNotesNow(); paintNotes(notesData[0] === n);
+  }
   function delNote(id) { notesData = notesData.filter(n => n.id !== id); saveNotesNow(); paintNotes(false); }
   function renderNotes() {
     const c = $('content');

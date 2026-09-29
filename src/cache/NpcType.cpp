@@ -159,15 +159,16 @@ bool ReadOne(InputStream& s, NpcDef& d, int op) {
             return true;
         }
         case 187: case 188: {                        // 950-1: op 106/118's morph table, domain-tagged.
-            // u8 domain, u16 varbit, u16 varp, [bigsmart default on 188], usmart n, (n+1) x bigsmart.
-            // Ids widened from u16 to bigsmart; transform_to keeps the old "variants then default"
-            // order that GetNpcMorph reads.
+            // u8 domain, u16 varbit, u16 varp, [u16 default on 188], usmart n, (n+1) x u16 id, 0xFFFF = none.
+            // The ids stay plain u16 as in 106/118 (a bigsmart read breaks on 0xFFFF and on ids from
+            // 32768 up); transform_to keeps the old "variants then default" order that GetNpcMorph reads.
+            auto id16 = [&s] { int v = s.ReadUnsignedShort(); return v == 0xFFFF ? -1 : v; };
             int dom = s.ReadUnsignedByte();
             int vb = s.ReadUnsignedShort(); int vp = s.ReadUnsignedShort();
-            int def = (op == 188) ? s.ReadBigSmart() : -1;
+            int def = (op == 188) ? id16() : -1;
             int n = s.ReadUnsignedSmart();
             std::vector<int> variants;
-            for (int i = 0; i <= n; ++i) variants.push_back(s.ReadBigSmart());
+            for (int i = 0; i <= n; ++i) variants.push_back(id16());
             if (dom != 0) return true;               // only player-domain vars are readable here
             d.varbit = (vb == 0xFFFF) ? -1 : vb;
             d.varp   = (vp == 0xFFFF) ? -1 : vp;

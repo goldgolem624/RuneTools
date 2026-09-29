@@ -197,10 +197,16 @@
   // Handlers are booleans in the tree (the runtime keeps the functions); the page posts "<id>:<handler>" back.
   const LUA_STR = (v, n) => String(v == null ? '' : v).slice(0, n || 500);
   function luaRenderTree(m, tree) {
-    const focusId = (document.activeElement && document.activeElement.dataset) ? document.activeElement.dataset.luaId : null;
-    let focusSel = null;
-    if (focusId && document.activeElement.tagName === 'INPUT' && document.activeElement.type === 'text')
-      focusSel = [document.activeElement.selectionStart, document.activeElement.selectionEnd];
+    const ae = document.activeElement;
+    const own = !!(ae && ae.dataset && m.body.contains(ae));   // another plugin's field is left alone
+    const focusId = own ? ae.dataset.luaId : null;
+    const isText = !!(focusId && ae.tagName === 'INPUT' && ae.type === 'text');
+    let focusSel = null, typed = null;
+    if (isText) focusSel = [ae.selectionStart, ae.selectionEnd];
+    // The plugin hears a field's value only on change (blur or Enter): what is still being typed is kept
+    // across the rebuild, unless the plugin itself has since set another value for that field.
+    if ((isText || (focusId && ae.tagName === 'SELECT')) && ae.value !== ae.dataset.luaVal)
+      typed = { value: ae.value, was: ae.dataset.luaVal };
     m.body.innerHTML = '';
     const list = Array.isArray(tree) ? tree : [tree];
     let count = 0;
@@ -231,7 +237,20 @@
           if (node.label) { const l = document.createElement('span'); l.className = 'lua-label'; l.textContent = LUA_STR(node.label, 120); el.appendChild(l); }
           const inp = document.createElement('input'); inp.type = 'text'; inp.className = 'lua-input'; inp.spellcheck = false;
           inp.value = LUA_STR(node.value, 500); inp.placeholder = LUA_STR(node.placeholder, 80); inp.dataset.luaId = LUA_STR(node.id, 64);
-          if (node.onChange && node.id) inp.addEventListener('change', () => luaUiEvent(m, node.id, 'onChange', inp.value.slice(0, 500)));
+          inp.dataset.luaVal = inp.value;   // what the plugin last set or heard: typing that differs is not sent yet
+          if (node.onChange && node.id) {
+            // Text kept across a rebuild was put back by script, which the engine does not count as an edit, so
+            // no change event would follow it: Enter and leaving the field send it too, once per new value.
+            // A blur while the field keeps focus (the whole window lost it) sends nothing, like the change event.
+            const commit = () => {
+              if (inp.value === inp.dataset.luaVal) return;
+              inp.dataset.luaVal = inp.value;
+              luaUiEvent(m, node.id, 'onChange', inp.value.slice(0, 500));
+            };
+            inp.addEventListener('change', commit);
+            inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) commit(); });
+            inp.addEventListener('blur', () => { if (inp.isConnected && document.activeElement !== inp) commit(); });
+          }
           el.appendChild(inp); break;
         }
         case 'select': {
@@ -245,7 +264,8 @@
             if (String(v) === String(node.value)) op.selected = true;
             sel.appendChild(op);
           }
-          if (node.onChange && node.id) sel.addEventListener('change', () => luaUiEvent(m, node.id, 'onChange', sel.value));
+          sel.dataset.luaVal = sel.value;
+          if (node.onChange && node.id) sel.addEventListener('change', () => { sel.dataset.luaVal = sel.value; luaUiEvent(m, node.id, 'onChange', sel.value); });
           el.appendChild(sel); break;
         }
         case 'progress': {
@@ -293,6 +313,15 @@
     if (focusId) {
       let again = null;   // a plugin-chosen id: escaped, or a bad one would throw here and stop every plugin's push
       try { again = m.body.querySelector('[data-lua-id="' + (window.CSS && CSS.escape ? CSS.escape(focusId) : focusId.replace(/[^A-Za-z0-9_:.-]/g, '')) + '"]'); } catch (e) {}
-      if (again) { try { again.focus(); if (focusSel && again.setSelectionRange) again.setSelectionRange(focusSel[0], focusSel[1]); } catch (e) {} }
+      if (again) {
+        try {
+          if (typed && again.tagName === ae.tagName && again.dataset.luaVal === typed.was) {
+            again.value = typed.value;
+            if (again.value !== typed.value) again.value = typed.was;   // a choice the new list no longer has
+          }
+          again.focus();
+          if (focusSel && again.setSelectionRange) again.setSelectionRange(focusSel[0], focusSel[1]);
+        } catch (e) {}
+      }
     }
   }

@@ -85,6 +85,18 @@ constexpr float kOutlineAlpha = 0.85f;
 constexpr std::uint32_t kMaxWidth = 4;          // the game spreads an outline to one side: a wider one reads as a second copy beside the shape
 constexpr unsigned kKindNone = 0, kKindNpc = 1, kKindTile = 2;
 constexpr std::uint16_t kTrailNone = 0x7FFF;
+// The models the launcher offers, and nothing else: the game loads a marker's model later in its
+// own frame, where a bad one is not caught. The planes are the four the game keeps loaded.
+constexpr std::uint32_t kTileModels[] = { 140133 };     // the one frame that marks a tile
+constexpr std::uint32_t kPathModels[] = { 49207 };      // what the game itself lays along a path
+constexpr std::int32_t kPointerModels[] = { 92026 };    // the chevrons the game lays at the player's feet
+constexpr std::int32_t kPlanes = 4;
+
+template <typename T, std::size_t N>
+bool Offered(const T (&known)[N], T model) {
+    for (T k : known) if (k == model) return true;
+    return false;
+}
 
 // A trail tile's own draw method. It hands its render object to the renderer only in the pass
 // that carries bit 0x20, where characters and the arrow at the player's feet take part in every
@@ -417,6 +429,11 @@ void ApplyUnguarded(std::uint8_t* manager) {
     if (w.arrow_on && (w.arrow_npc < 0 ? !inReach(w.arrow_x, w.arrow_y) : w.arrow_npc > 0xFFFF)) w.arrow_on = false;
     if (w.tile_on && !inReach(w.tile_x, w.tile_y)) w.tile_on = false;
     if (w.path_on && (!inReach(w.path_x0, w.path_y0) || !inReach(w.path_x1, w.path_y1))) w.path_on = false;
+    // the same limits the launcher sets, held here too whatever wrote the request
+    if (w.arrow_on && w.arrow_npc < 0 && (w.arrow_plane < 0 || w.arrow_plane >= kPlanes)) w.arrow_on = false;
+    if (w.arrow_pointer != -1 && !Offered(kPointerModels, w.arrow_pointer)) w.arrow_pointer = -1;
+    if (w.tile_on && !Offered(kTileModels, w.tile_model)) w.tile_on = false;
+    if (w.path_on && !Offered(kPathModels, w.path_model)) w.path_on = false;
     // a style the game does not have is refused outright: hold it to the ones there are
     if (const std::uint8_t* table = At(At(root, g_arrowDisp - sizeof(void*)), kStyleTable)) {
         std::int32_t count = 0;

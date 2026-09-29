@@ -1,6 +1,7 @@
 #include "Calibrate.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -8,13 +9,15 @@
 #include <fstream>
 #include <sstream>
 
+#pragma comment(lib, "version.lib")
+
 namespace rtx::calib {
 namespace {
 
 // A rule: in the handler of `op`, the first instruction of the given shape whose displacement is
-// in [lo, hi) is the offset. `head` is the instruction's bytes up to the displacement (opcode and
-// ModRM with the root register as base and a 32-bit displacement); `nth` picks a later match when
-// the first is a different field.
+// in [lo, hi) is the offset, as long as no later one reads a different displacement. `head` is the
+// instruction's bytes up to the displacement (opcode and ModRM with the root register as base and a
+// 32-bit displacement); `nth` picks a later match when the first is a different field.
 struct Rule { const char* name; const char* op; const char* head; std::uint32_t lo, hi; int nth; };
 
 // Root register rcx is the first argument of every handler; rax after `mov rax,[rcx+disp]` holds
@@ -123,6 +126,54 @@ bool OpTable(const std::wstring& path, std::map<std::string, std::uint32_t>& out
     return out.size() > 500;
 }
 
+// The build in the exe's version resource ("950.1.0.0"), the form the launcher writes beside the
+// operation table when it extracts it.
+std::string ExeBuild(const std::wstring& path) {
+    DWORD ignored = 0;
+    const DWORD sz = GetFileVersionInfoSizeW(path.c_str(), &ignored);
+    if (!sz) return {};
+    std::vector<std::uint8_t> buf(sz);
+    if (!GetFileVersionInfoW(path.c_str(), 0, sz, buf.data())) return {};
+    VS_FIXEDFILEINFO* ffi = nullptr; UINT n = 0;
+    if (!VerQueryValueW(buf.data(), L"\\", reinterpret_cast<LPVOID*>(&ffi), &n) || !ffi || n < sizeof(*ffi)) return {};
+    char v[48];
+    std::snprintf(v, sizeof(v), "%u.%u.%u.%u",
+                  (unsigned)HIWORD(ffi->dwFileVersionMS), (unsigned)LOWORD(ffi->dwFileVersionMS),
+                  (unsigned)HIWORD(ffi->dwFileVersionLS), (unsigned)LOWORD(ffi->dwFileVersionLS));
+    return v;
+}
+
+// Operation numbers are reshuffled between game builds, so a table from another build names the
+// wrong handlers and every rule would read some other field. Only a table extracted from this build
+// is used. The launcher writes the build label when an extraction that rewrote the table ends: the
+// build when the run succeeded and the game did not update during it, else an empty label. It gives
+// a build label the table's write time. A label newer than its table was not written for that table
+// (older launchers wrote it when an extraction started), so the table also has to be at least as
+// new as its label. Empty when the table can be used, else why not.
+std::string TableBuildMismatch(const std::wstring& exePath, const std::wstring& opcodesJson, const std::wstring& buildTxt) {
+    std::vector<std::uint8_t> b;
+    std::string table;
+    if (ReadFile(buildTxt, b)) table.assign(b.begin(), b.end());
+    while (!table.empty() && (table.back() == '\r' || table.back() == '\n' || table.back() == ' ')) table.pop_back();
+    const std::string running = ExeBuild(exePath);
+    // worded "not found" like a rule that found nothing, so the health row reads it as a failure
+    char line[200];
+    if (running.empty() || table != running) {
+        std::snprintf(line, sizeof(line), "calibrate: operation table for build %s not found (cs2\\opcodes.json is from build %s)\n",
+                      running.empty() ? "(unknown)" : running.c_str(), table.empty() ? "(unknown)" : table.substr(0, 40).c_str());
+        return line;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA t{}, v{};
+    if (!GetFileAttributesExW(opcodesJson.c_str(), GetFileExInfoStandard, &t) ||
+        !GetFileAttributesExW(buildTxt.c_str(), GetFileExInfoStandard, &v) ||
+        CompareFileTime(&t.ftLastWriteTime, &v.ftLastWriteTime) < 0) {
+        std::snprintf(line, sizeof(line), "calibrate: operation table for build %s not found (the last extraction did not rewrite cs2\\opcodes.json)\n",
+                      running.c_str());
+        return line;
+    }
+    return {};
+}
+
 int ParseHex(const char* pat, std::uint8_t* out, int cap) {
     int n = 0;
     for (const char* p = pat; *p && n < cap; ) {
@@ -134,28 +185,42 @@ int ParseHex(const char* pat, std::uint8_t* out, int cap) {
     return n;
 }
 
-// The instruction of shape `head` + disp32 in the first 0x140 bytes of the handler, with the
-// displacement in range; `nth` skips earlier matches. 0 when absent or ambiguous beyond nth.
-std::uint32_t FindDisp(const Pe& pe, std::uint32_t handlerRva, const Rule& r) {
+// The instruction of shape `head` + disp32 in the first 0x140 bytes of the handler, never past
+// `endRva` (the next handler), with the displacement in range; `nth` skips earlier matches. 0 when
+// absent, or when a later match reads a different displacement (`ambiguous`): a guess would read
+// the wrong field with no sign of it, where a rule that finds nothing is reported and keeps the
+// compiled constant.
+std::uint32_t FindDisp(const Pe& pe, std::uint32_t handlerRva, std::uint32_t endRva, const Rule& r, bool& ambiguous) {
+    ambiguous = false;
     std::uint8_t head[8]; const int hn = ParseHex(r.head, head, 8);
+    const bool headRex = (head[0] & 0xF0) == 0x40;
     const std::uint8_t* p = pe.base + pe.textRaw + (handlerRva - pe.textRva);
-    const std::size_t room = pe.textSize - (handlerRva - pe.textRva);
-    const std::size_t len = room < 0x140 ? room : 0x140;
-    int seen = 0;
+    std::size_t len = pe.textSize - (handlerRva - pe.textRva);
+    if (len > 0x140) len = 0x140;
+    if (endRva > handlerRva && endRva - handlerRva < len) len = endRva - handlerRva;
+    int seen = 0; bool have = false; std::uint32_t got = 0;
     for (std::size_t i = 0; i + hn + 4 <= len; ++i) {
         if (std::memcmp(p + i, head, hn) != 0) continue;
+        // a head without its own REX byte also matches one byte into the REX form, which is
+        // another instruction (other register or width)
+        if (!headRex && i > 0 && (p[i - 1] & 0xF0) == 0x40) continue;
         std::uint32_t disp; std::memcpy(&disp, p + i + hn, 4);
         if (disp < r.lo || disp >= r.hi) continue;
-        if (seen++ == r.nth) return disp;
+        if (seen++ < r.nth) continue;
+        if (!have) { have = true; got = disp; continue; }
+        if (disp != got) { ambiguous = true; return 0; }   // the same field read again is fine
     }
-    return 0;
+    return have ? got : 0;
 }
 
 }  // namespace
 
 const std::vector<Found>& Run(const std::wstring& exePath, const std::wstring& opcodesJson) {
     std::lock_guard<std::mutex> lk(g_mu);
-    const std::wstring key = FileKey(exePath) + L"#" + FileKey(opcodesJson);
+    // the build label the launcher keeps beside the table
+    const std::size_t slash = opcodesJson.find_last_of(L"\\/");
+    const std::wstring buildTxt = (slash == std::wstring::npos ? std::wstring() : opcodesJson.substr(0, slash + 1)) + L"client_version.txt";
+    const std::wstring key = FileKey(exePath) + L"#" + FileKey(opcodesJson) + L"#" + FileKey(buildTxt);
     if (!g_cache.key.empty() && g_cache.key == key) return g_cache.found;
     g_cache = Cache{}; g_cache.key = key;
     std::ostringstream rep;
@@ -164,16 +229,26 @@ const std::vector<Found>& Run(const std::wstring& exePath, const std::wstring& o
     if (!ReadFile(exePath, f) || !ParsePe(f, pe)) { rep << "calibrate: client exe not readable\n"; g_cache.report = rep.str(); return g_cache.found; }
     if (!Handlers(pe, handlers)) { rep << "calibrate: operation registrar not recognised\n"; g_cache.report = rep.str(); return g_cache.found; }
     if (!OpTable(opcodesJson, ops)) { rep << "calibrate: operation table (cs2\\opcodes.json) not readable\n"; g_cache.report = rep.str(); return g_cache.found; }
+    const std::string mismatch = TableBuildMismatch(exePath, opcodesJson, buildTxt);
+    if (!mismatch.empty()) { g_cache.report = mismatch; return g_cache.found; }
     rep << "calibrate: " << handlers.size() << " handlers, " << ops.size() << " named operations\n";
+    // handler entry points in address order: a handler's scan stops where the next one begins
+    std::vector<std::uint32_t> starts;
+    for (const auto& kv : handlers) starts.push_back(kv.second);
+    std::sort(starts.begin(), starts.end());
     for (const Rule& r : kRules) {
         Found fd{ r.name, 0, 0, r.op };
         auto o = ops.find(r.op);
         if (o == ops.end()) { rep << "  " << r.name << ": operation " << r.op << " not in the table\n"; g_cache.found.push_back(fd); continue; }
         auto h = handlers.find(o->second);
         if (h == handlers.end()) { rep << "  " << r.name << ": no handler for " << r.op << " (number " << o->second << ")\n"; g_cache.found.push_back(fd); continue; }
-        fd.found = FindDisp(pe, h->second, r);
+        auto next = std::upper_bound(starts.begin(), starts.end(), h->second);
+        const std::uint32_t end = next != starts.end() ? *next : pe.textRva + pe.textSize;
+        bool ambiguous = false;
+        fd.found = FindDisp(pe, h->second, end, r, ambiguous);
         char line[160];
-        std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s)\n", r.name, fd.found ? "" : "not found, wanted ", fd.found, r.op);
+        if (ambiguous) std::snprintf(line, sizeof(line), "  %s: not found, more than one candidate (from %s)\n", r.name, r.op);
+        else std::snprintf(line, sizeof(line), "  %s: %s0x%X (from %s)\n", r.name, fd.found ? "" : "not found, wanted ", fd.found, r.op);
         rep << line;
         g_cache.found.push_back(fd);
     }

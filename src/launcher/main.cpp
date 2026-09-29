@@ -43,8 +43,12 @@ void boot_log(const std::string& msg) { rtx::log::Launcher(msg); }
 
 void fatal(const std::string& msg) {
     rtx::log::Launcher("FATAL: " + msg);
-    MessageBoxA(nullptr, rtx::log::Redact(msg).c_str(), "RuneTools",
-                MB_OK | MB_ICONERROR | MB_TOPMOST);
+    // Paths in the text are UTF-8; a system error message is in the ANSI code page.
+    const std::string shown = rtx::log::Redact(msg);
+    const UINT cp = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, shown.c_str(), -1, nullptr, 0) > 0 ? CP_UTF8 : CP_ACP;
+    std::wstring w(MultiByteToWideChar(cp, 0, shown.c_str(), -1, nullptr, 0), L'\0');
+    if (!w.empty()) MultiByteToWideChar(cp, 0, shown.c_str(), -1, w.data(), (int)w.size());
+    MessageBoxW(nullptr, w.c_str(), L"RuneTools", MB_OK | MB_ICONERROR | MB_TOPMOST);
 }
 
 std::filesystem::path exe_dir() {
@@ -58,6 +62,17 @@ std::string read_file_utf8(const std::filesystem::path& p) {
     if (!f.is_open()) return {};
     std::stringstream ss; ss << f.rdbuf();
     return ss.str();
+}
+
+// The docked client page is opened through the narrow file API, which reads the name in the ANSI code
+// page. A path that code page cannot hold goes as UTF-8 so startup carries on, but that page cannot load.
+std::string dock_page_path(const std::filesystem::path& p) {
+    try {
+        return p.string();
+    } catch (const std::system_error&) {
+        boot_log("client page path is outside the ANSI code page; the docked panels cannot load it");
+        return p.u8string();
+    }
 }
 
 // Must run before any Ultralight symbol is touched (delay-load misses the Ultralight\ subdir, c0000139).
@@ -86,7 +101,7 @@ bool preload_ultralight_dlls(const std::filesystem::path& self) {
             return false;
         }
         boot_log("Preloaded: " +
-                 std::filesystem::path(name).string());
+                 std::filesystem::path(name).u8string());
     }
     return true;
 }
@@ -195,11 +210,14 @@ public:
     bool ok = false;
 
     LauncherApp() {
+        // Paths for the web engine and the log go out as UTF-8: path::string() converts through the ANSI
+        // code page and throws on a name outside it (a user folder in another script), and the web engine
+        // reads its paths as UTF-8.
         auto self = exe_dir();
-        boot_log("exe dir: " + self.string());
+        boot_log("exe dir: " + self.u8string());
         SetCurrentDirectoryW(self.c_str());
 
-        auto resources = (self / "Ultralight" / "resources").string() + "/";
+        auto resources = (self / "Ultralight" / "resources").u8string() + "/";
         for (auto& c : resources) if (c == '\\') c = '/';
         boot_log("resource path: " + resources);
 
@@ -219,7 +237,7 @@ public:
                         : "renderer: CPU (default)");
 
         Config config;
-        config.resource_path_prefix = String(resources.c_str());
+        config.resource_path_prefix = String(resources.data(), resources.size());
         {
             std::filesystem::path cacheDir;
             wchar_t* lad = nullptr;
@@ -231,9 +249,9 @@ public:
             }
             std::error_code ec;
             std::filesystem::create_directories(cacheDir, ec);
-            std::string cp = cacheDir.string();
+            std::string cp = cacheDir.u8string();
             for (auto& c : cp) if (c == '\\') c = '/';
-            config.cache_path = String(cp.c_str());
+            config.cache_path = String(cp.data(), cp.size());
             boot_log("webcore cache path: " + cp);
         }
 
@@ -241,28 +259,34 @@ public:
         app_ = App::Create(settings, config);
         if (!app_) { fatal("App::Create returned null"); return; }
 
-        auto client_html = (self / "client.html").string();
-        // Panel UI dev override: RTX_UI_DIR env var, else the first line of rtx_ui_dev.txt next to the exe.
+        auto client_html = dock_page_path(self / "client.html");
+        // Panel UI dev override: RTX_UI_DIR env var, else the first line of rtx_ui_dev.txt (UTF-8) next to the exe.
         bool uiDev = false;
         {
-            std::string dir;
-            char buf[512] = {0};
-            DWORD n = GetEnvironmentVariableA("RTX_UI_DIR", buf, (DWORD)sizeof(buf));
-            if (n > 0 && n < sizeof(buf)) dir = buf;
+            std::wstring dir;
+            wchar_t buf[512] = {0};
+            DWORD n = GetEnvironmentVariableW(L"RTX_UI_DIR", buf, 512);
+            if (n > 0 && n < 512) dir = buf;
             if (dir.empty()) {
                 std::ifstream mk(self / "rtx_ui_dev.txt");
-                if (mk) { std::getline(mk, dir);
-                          while (!dir.empty() && (dir.back() == '\r' || dir.back() == ' ')) dir.pop_back(); }
+                std::string line;
+                if (mk && std::getline(mk, line)) {
+                    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+                    if (!line.empty()) {
+                        dir.resize(MultiByteToWideChar(CP_UTF8, 0, line.data(), (int)line.size(), nullptr, 0));
+                        MultiByteToWideChar(CP_UTF8, 0, line.data(), (int)line.size(), dir.data(), (int)dir.size());
+                    }
+                }
             }
             if (!dir.empty()) {
                 std::error_code ec;
                 std::filesystem::path dev(dir);
                 if (std::filesystem::exists(dev / "client.html", ec)) {
-                    client_html = (dev / "client.html").string();
+                    client_html = dock_page_path(dev / "client.html");
                     uiDev = true;
-                    boot_log("ui dev override: " + client_html);
+                    boot_log("ui dev override: " + (dev / "client.html").u8string());
                 } else {
-                    boot_log("ui dev dir set but no client.html at '" + dir + "'; using the exe dir");
+                    boot_log("ui dev dir set but no client.html at '" + dev.u8string() + "'; using the exe dir");
                 }
             }
         }
@@ -325,7 +349,7 @@ public:
         auto html_path = self / "launcher.html";
         auto html = read_file_utf8(html_path);
         if (html.empty()) {
-            fatal("launcher.html not found or empty:\n" + html_path.string());
+            fatal("launcher.html not found or empty:\n" + html_path.u8string());
             return;
         }
         boot_log("Loading " + std::to_string(html.size()) + " bytes of HTML");

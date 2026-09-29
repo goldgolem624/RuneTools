@@ -73,6 +73,11 @@
   let scNotify = {};
   try { scNotify = JSON.parse(localStorage.getItem('rtxWeNotify') || '{}') || {}; } catch (e) { scNotify = {}; }
   function scNotifySave() { try { prefSet('rtxWeNotify', JSON.stringify(scNotify)); } catch (e) {} }   // durable pref
+  // Reads the bells again when the stored ones change (another window set one), so a later save here keeps them.
+  function scNotifyReload() {
+    try { const v = JSON.parse(prefGet('rtxWeNotify', '{}') || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) scNotify = v; } catch (e) { return; }
+    document.querySelectorAll('.sc-bell[data-bell]').forEach(b => b.classList.toggle('on', !!scNotify[b.dataset.bell]));
+  }
   function scNotifyAny() { for (const k in scNotify) if (scNotify[k]) return true; return false; }
 
   const scNotifySeen = { scarabs: null, obelisks: null };
@@ -104,6 +109,7 @@
   }
   function scBell(key) {
     const b = document.createElement('button'); b.className = 'sc-bell' + (scNotify[key] ? ' on' : '');
+    b.dataset.bell = key;
     b.dataset.tip = 'Notify when a new world is reported';
     b.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 16v-5a6 6 0 1 0-12 0v5l-1.5 2h15z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>';
     b.addEventListener('click', () => {
@@ -290,6 +296,6 @@
     }
   }
 
-Object.assign(window, { renderScarabs, scBell, scCanVote, scCanVoteNo, scEnsureCss, scFmt, scInMenaphos, scMyWorld, scNear, scNotifyPoll, scRefreshSeen, scVoteBlock, scVoteFor, scVoteTick });
+Object.assign(window, { renderScarabs, scBell, scCanVote, scCanVoteNo, scEnsureCss, scFmt, scInMenaphos, scMyWorld, scNear, scNotifyPoll, scNotifyReload, scRefreshSeen, scVoteBlock, scVoteFor, scVoteTick });
 registerTab({ id: 'scarabs', render: renderScarabs });
 })();

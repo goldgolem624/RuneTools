@@ -133,6 +133,7 @@
     if (v === 40) {   // interviews: each NPC's own accumulator bits gate its step, so any order works
       let sv = {}; try { sv = await readVarbitValues([...AMBER_Q_ALL, AMBER_CHECKED]); } catch (e) {}
       const asked = ids => ids.every(id => (sv[id] | 0) === 1);
+      const P = qgP;
       const AMBER_INTERVIEWS = [
         ['Farmer Rowan', 'rowan',   ['are these your pumpkins', 'can you tell me where everyone was last night', 'bye']],
         ['Heather',      'heather', ["i'm looking for someone who contacted wendlewick", 'bye']],
@@ -201,7 +202,7 @@
     if (v === 62) {
       let t = 0; try { t = (await readVarbitValues([AMBER_TRUST]))[AMBER_TRUST] | 0; } catch (e) {}
       if (t === 0) {
-        if (amberTrustPick < 0) amberTrustPick = hosRand(AMBER_TRUST_OPTS.length);
+        if (amberTrustPick < 0) amberTrustPick = qgRand(AMBER_TRUST_OPTS.length);
         await amberInstanceStep('Anya', 'Talk to Anya', AMBER_TRUST_OPTS[amberTrustPick]);
       } else {
         await amberInstanceStep('Sorrel', 'Continue dialogue with Sorrel', 'secrets of amberfell');
@@ -295,7 +296,7 @@
       const LP = qgP;
       const near = (x, y, p, r) => !!(LP && (LP.p | 0) === p && Math.abs(LP.x - x) <= r && Math.abs(LP.y - y) <= r);
       if (near(3454, 1495, 1, 20)) {
-        if (amberEstherPick < 0) amberEstherPick = hosRand(AMBER_ESTHER_OPTS.length);
+        if (amberEstherPick < 0) amberEstherPick = qgRand(AMBER_ESTHER_OPTS.length);
         await amberTalkNpc('Esther', label, 3457, 1500, 1, AMBER_ESTHER_OPTS[amberEstherPick], "i'll get going on that");
         return;
       }
@@ -304,7 +305,7 @@
     };
     if (v === 140) { await amberEsther('Talk to Esther'); return; }
     if (v === 150) {
-      if (amberInanna150Pick < 0) amberInanna150Pick = hosRand(AMBER_INANNA150_OPTS.length);
+      if (amberInanna150Pick < 0) amberInanna150Pick = qgRand(AMBER_INANNA150_OPTS.length);
       await amberDenEntry('Talk to Inanna', [AMBER_INANNA150_OPTS[amberInanna150Pick], 'yes']);
       return;
     }
@@ -314,8 +315,8 @@
       try { const inv = JSON.parse(await rtxData.raw('state.inventory')); if (inv && Array.isArray(inv.items)) used = inv.items.filter(it => it[1] > 0).length; } catch (e) {}
       const free = used >= 0 ? 28 - used : -1;
       const warn = (free >= 0 && free < 6) ? ' - FREE UP ' + (6 - free) + ' BACKPACK SLOTS FIRST' : '';
-      if (amberSorrel160Pick < 0) amberSorrel160Pick = hosRand(AMBER_SORREL160_OPTS.length);
-      if (amberSorrel160bPick < 0) amberSorrel160bPick = hosRand(AMBER_SORREL160B_OPTS.length);
+      if (amberSorrel160Pick < 0) amberSorrel160Pick = qgRand(AMBER_SORREL160_OPTS.length);
+      if (amberSorrel160bPick < 0) amberSorrel160bPick = qgRand(AMBER_SORREL160B_OPTS.length);
       await amberTalkNpc('Sorrel', (v >= 160 ? 'Continue with Sorrel' : 'Talk to Sorrel in Amberfell (fairy ring DLP)') + warn, 3732, 1573, 0,
                          AMBER_SORREL160_OPTS[amberSorrel160Pick], AMBER_SORREL160B_OPTS[amberSorrel160bPick]);
       return;

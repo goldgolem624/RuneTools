@@ -144,7 +144,10 @@
     }
   }
 
-  function paneLeave(id) {
+  // switching: another tab of the same window comes to the front, so the tab is only hidden. A plugin keeps
+  // running behind it (its holder is hidden by the sync in wmSwitchTab) and keeps its overlays; it stops
+  // when its tab or window closes.
+  function paneLeave(id, switching) {
     if (id === 'metronome' && metroVisual()) {
       try { setMetroMode(metroAudio() ? 'audio' : 'off'); } catch (e) {}
     }
@@ -152,6 +155,15 @@
       try { xpOn = false; saveXpCfg(); paneRun('xptracker', () => { const wr = $('xpWrap'); if (wr) buildXpConfig(wr); }); } catch (e) {}
     }
     { const P = RTX.panels[id]; if (P && typeof P.close === 'function') { try { P.close(); } catch (e) {} } }
+    if (String(id).indexOf('plugin:') === 0 && switching) {
+      // a field of the plugin that keeps focus while hidden would keep the game keyboard
+      try {
+        const h = (typeof pluginHolders !== 'undefined') ? pluginHolders.get(id.slice(7)) : null;
+        const a = document.activeElement;
+        if (h && a && h.el.contains(a) && a.blur) a.blur();
+      } catch (e) {}
+      return;
+    }
     if (String(id).indexOf('plugin:') === 0) {
       try { if (bridge() && bridge().guideMarks) bridge().guideMarks(myPid(), ''); } catch (e) {}
       try { if (bridge() && bridge().uiHighlight) bridge().uiHighlight(myPid(), 0, 0, 0, 0); } catch (e) {}
@@ -161,6 +173,12 @@
       try { if (bridge() && bridge().centerText) bridge().centerText(myPid(), ''); } catch (e) {}
       if (typeof pluginRelease === 'function') pluginRelease(id.slice(7)); else pluginUnmount(id.slice(7));
     }
+  }
+  // A plugin tab behind the front tab of w, still running in its hidden holder in that window.
+  function wmHeldPlugin(w, id) {
+    if (String(id).indexOf('plugin:') !== 0 || id === w.tab || typeof pluginHolders === 'undefined') return false;
+    const h = pluginHolders.get(id.slice(7));
+    return !!(h && h.el.parentNode === w.body);
   }
 
   function wmClamp(w) {
@@ -432,11 +450,12 @@
   }
   function wmSwitchTab(w, t) {
     if (w.tab === t.id) return;
-    paneLeave(w.tab);
+    paneLeave(w.tab, true);
     delete __paneRoots[w.tab];
     w.tab = t.id;
     __paneRoots[w.tab] = w.pane;
     w.pane.innerHTML = '';
+    try { if (typeof pluginHoldersSync === 'function') pluginHoldersSync(w); } catch (e) {}   // a plugin left behind stays running, hidden
     if (wm.focused === w.wid) { activeTab = w.tab; try { localStorage.setItem('rtxDevTab', activeTab); } catch (e) {} }
     wmRenderTabs(w);
     renderPaneFor(w);
@@ -481,6 +500,7 @@
     try { if (typeof closeSoundMenu === 'function') closeSoundMenu(); } catch (e) {}
     wm.dirty = true;            // closing is a layout change; see the note in openTab
     paneLeave(w.tab);
+    for (const id of w.tabs) if (wmHeldPlugin(w, id)) paneLeave(id);   // plugins behind the front tab stop with their window
     delete __paneRoots[w.tab];
     wm.wins.delete(wid);
     try { const a = document.activeElement; if (a && w.el.contains(a)) a.blur(); } catch (e) {}
@@ -518,7 +538,7 @@
     w.tabs.splice(i, 1);
     const nx = wasShown ? wmNeighbourTab(w, i) : null;
     if (wasShown && !nx) { wmClose(w.wid); return; }   // only build-hidden leftovers: nothing to mount
-    if (wasShown) paneLeave(id);
+    if (wasShown || wmHeldPlugin(w, id)) paneLeave(id);
     delete __paneRoots[id];
     if (wasShown) wmMountTab(w, nx);
     else wmRenderTabs(w);
@@ -552,6 +572,9 @@
   }
   function wmDockInto(src, tgt) {
     const act = src.tab;
+    // A plugin running hidden behind act cannot take its frame to another window without the frame
+    // reloading: it stops here and starts again in tgt once shown there.
+    for (const id of src.tabs) if (wmHeldPlugin(src, id)) paneLeave(id);
     delete __paneRoots[act];
     for (const id of src.tabs) if (tgt.tabs.indexOf(id) < 0) tgt.tabs.push(id);
     wm.wins.delete(src.wid);
@@ -575,6 +598,7 @@
     w.tabs.splice(i, 1);
     const nx = wasShown ? wmNeighbourTab(w, i) : null;
     if (wasShown) delete __paneRoots[id];   // moving, not closing: no paneLeave
+    else if (wmHeldPlugin(w, id)) paneLeave(id);   // running hidden: starts again in the new window, as in wmDockInto
     if (wasShown && !nx) {
       wm.wins.delete(w.wid);
       if (w.el && w.el.parentNode) w.el.parentNode.removeChild(w.el);

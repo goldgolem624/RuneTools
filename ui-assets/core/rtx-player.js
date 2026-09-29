@@ -34,6 +34,9 @@
     try { const v = JSON.parse(await bridge().varbits(myPid(), PLAYER_VARBIT_IDS)); if (v && typeof v === 'object') playerVb = v; } catch (e) {}
   }
   function virtualLevelsOn() { return !!(playerVp && (((playerVp['458'] || 0) >>> 30) & 1)); }
+  // Highest virtual level. Past 120 the same XP curve runs to 126, the last level under 200M XP; the option
+  // turns that on. Invention (elite) has its own curve to 150.
+  function virtualCap(elite) { return elite ? 150 : (prefGet('rtxVirtual126', '0') === '1' ? 126 : 120); }
 
   const GOAL_STAT_SKILLID = [1,5,2,6,3,7,4,16,18,19,15,17,11,14,13,9,8,10,20,21,12,23,22,24,25,26,27,28,29];
   const GOAL_VAR_OVERRIDES = { 25: 3839, 26: 6095, 27: 9410, 28: 11204 };

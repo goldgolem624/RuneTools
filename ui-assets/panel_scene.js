@@ -163,30 +163,72 @@
     const k = sceneTileKey(x, y, plane);
     return ml.some(m => (m.region + '/' + m.lx + '/' + m.ly + '/' + (m.plane | 0)) === k);
   }
-  let sceneMarks = null;   // key -> { x, y, plane, id }
+  let sceneMarks = null;   // key -> { x, y, plane, id, w, h }
+  // A mark covers 1 to 8 tiles a side; every tile of it is one marker call when it is placed or removed.
+  const sceneMarkSpan = v => Math.max(1, Math.min(8, v | 0 || 1));
+  // The marks are a durable pref, so they can arrive edited or imported: keep only records on a real
+  // tile (whole coordinates, plane 0 to 3), with the footprint bounded as when a mark is placed. An id
+  // that is not a whole number matches no ground item, so the next sweep removes that mark as before.
+  function sceneMarkClean(r) {
+    if (!r || typeof r !== 'object') return null;
+    const tile = v => Number.isInteger(v) && v >= 0 && v < 16384;
+    const plane = r.plane == null ? 0 : r.plane;
+    if (!tile(r.x) || !tile(r.y) || !(Number.isInteger(plane) && plane >= 0 && plane <= 3)) return null;
+    return { x: r.x, y: r.y, plane: plane, id: Number.isInteger(r.id) ? r.id : null, w: sceneMarkSpan(r.w), h: sceneMarkSpan(r.h) };
+  }
+  // The list is shared by every client window, but a mark's markers are in the game of the window that
+  // placed it. So a window sweeps, clears and keeps only its own marks: those it placed, and those the
+  // list held when it first read it.
+  const sceneMarksOwn = new Set();
+  function sceneMarksRead() {
+    const out = {};
+    try {
+      const v = JSON.parse(prefGet('rtxSceneMarks', '{}'));
+      if (v && typeof v === 'object')
+        for (const k of Object.keys(v)) { const r = sceneMarkClean(v[k]); if (r) out[sceneTileKey(r.x, r.y, r.plane)] = r; }
+    } catch (e) {}
+    return out;
+  }
   function sceneMarksLoad() {
     if (sceneMarks) return sceneMarks;
-    sceneMarks = {};
-    try { const v = JSON.parse(prefGet('rtxSceneMarks', '{}')); if (v && typeof v === 'object') sceneMarks = v; } catch (e) {}
+    sceneMarks = sceneMarksRead();
+    for (const k in sceneMarks) sceneMarksOwn.add(k);
     return sceneMarks;
   }
+  // Another window changed the list: take it, but keep this window's own marks, whose markers are still
+  // in this game. Marks are keyed by tile, so where both windows marked the same tile this window keeps its
+  // own record (its item and footprint), not the other one's. One the other window dropped (its sweep or
+  // clear, or its write crossing this one's) goes back in, and the list is saved again once this read is done.
+  function sceneMarksReload() {
+    if (!sceneMarks) return;   // not read yet: the first read takes the list as it is then
+    const prev = sceneMarks, next = sceneMarksRead();
+    let back = false;
+    for (const k of sceneMarksOwn) {
+      if (!prev[k]) { sceneMarksOwn.delete(k); continue; }
+      if (!next[k]) back = true;
+      next[k] = prev[k];
+    }
+    sceneMarks = next;
+    if (back) setTimeout(sceneMarksSave, 0);
+  }
   function sceneMarksSave() { try { prefSet('rtxSceneMarks', JSON.stringify(sceneMarksLoad())); } catch (e) {} }
-  function sceneMarkCount() { return Object.keys(sceneMarksLoad()).length; }
+  function sceneMarkCount() { sceneMarksLoad(); return sceneMarksOwn.size; }
   function sceneMarksSweep() {
     const m = sceneMarksLoad(); const keys = Object.keys(m); if (!keys.length) return;
     const b = bridge(); if (!b || !b.markerRemove) return;
     let changed = false;
     keys.forEach(k => {
       const r = m[k];
+      if (!sceneMarksOwn.has(k)) return;   // another window's mark: its item is in that window's game
       if (r.id === -1) return;   // object footprint group: static, only removed by hand
       const still = sceneGround.some(g => g.id === r.id && g.x === r.x && g.y === r.y && ((g.plane | 0) === (r.plane | 0)));
       if (still) return;
-      const W = Math.max(1, r.w | 0 || 1), H = Math.max(1, r.h | 0 || 1);
+      const W = sceneMarkSpan(r.w), H = sceneMarkSpan(r.h);
       for (let dx = 0; dx < W; dx++) for (let dy = 0; dy < H; dy++) {
         const tx = r.x + dx, ty = r.y + dy;
         try { b.markerRemove(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, r.plane | 0); } catch (e) {}
       }
-      delete m[k]; changed = true;
+      delete m[k]; sceneMarksOwn.delete(k); changed = true;
     });
     if (changed) { sceneMarksSave(); try { if (typeof fetchMarkers === 'function') fetchMarkers(true); } catch (e) {} try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {} }
   }
@@ -194,13 +236,14 @@
     const b = bridge(); if (!b || !b.markerRemove) return;
     const m = sceneMarksLoad();
     for (const k in m) {
+      if (!sceneMarksOwn.has(k)) continue;   // another window's mark: its markers are in that window's game
       const r = m[k];
-      const W = Math.max(1, r.w | 0 || 1), H = Math.max(1, r.h | 0 || 1);
+      const W = sceneMarkSpan(r.w), H = sceneMarkSpan(r.h);
       for (let dx = 0; dx < W; dx++) for (let dy = 0; dy < H; dy++) {
         const tx = r.x + dx, ty = r.y + dy;
         try { b.markerRemove(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, r.plane | 0); } catch (e) {}
       }
-      delete m[k];
+      delete m[k]; sceneMarksOwn.delete(k);
     }
     sceneMarksSave();
     const ml = (typeof markerList !== 'undefined' && Array.isArray(markerList)) ? markerList : [];
@@ -214,16 +257,17 @@
     const b = bridge();
     if (!b || !b.markerAdd) return;
     const m = sceneMarksLoad(), k = sceneTileKey(x, y, plane);
-    const W = Math.max(1, Math.min(8, fw | 0 || 1)), H = Math.max(1, Math.min(8, fh | 0 || 1));
+    const W = sceneMarkSpan(fw), H = sceneMarkSpan(fh);
     const each = fn => { for (let dx = 0; dx < W; dx++) for (let dy = 0; dy < H; dy++) fn(x + dx, y + dy); };
     try {
       if (sceneTileMarked(x, y, plane)) {
         each((tx, ty) => { try { b.markerRemove(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, plane | 0); } catch (e) {} });
-        delete m[k]; sceneMarksSave();
+        delete m[k]; sceneMarksOwn.delete(k); sceneMarksSave();
       } else {
         each((tx, ty) => { try { b.markerAdd(myPid(), ((tx >> 6) << 8) | (ty >> 6), tx & 63, ty & 63, plane | 0, 0xFFC93A, (tx === x && ty === y) ? String(label || '').slice(0, 40) : ''); } catch (e) {} });
         if (itemId != null) m[k] = { x, y, plane: plane | 0, id: itemId, w: W, h: H };
         else m[k] = { x, y, plane: plane | 0, id: -1, w: W, h: H };   // object group: tracked for group removal only
+        sceneMarksOwn.add(k);
         sceneMarksSave();
         try { if (typeof overlayState !== 'undefined' && overlayState && !overlayState.markers) { overlayState.markers = true; if (typeof saveOverlayCfg === 'function') saveOverlayCfg(); } } catch (e) {}
       }
@@ -259,10 +303,12 @@
     try { if (typeof pushOverlay === 'function') pushOverlay(); } catch (e) {}
     if (nameplateNames.size || sceneNameplates) fetchScene();   // pull the scene so pinned players re-apply immediately
   }
+  // Goes through the per-account store check: after a relog this client's file can be another account's,
+  // and then the save is refused and the nameplates are read again rather than this list written over it.
   function saveNameplates() {
     const b = bridge();
     if (!b || !b.nameplatesSave || !myPid()) return;
-    try { b.nameplatesSave(myPid(), JSON.stringify({ pill: !!sceneNameplates, names: [...nameplateNames] })); } catch (e) {}
+    try { acctStoreWrite(nameplatesStore, JSON.stringify({ pill: !!sceneNameplates, names: [...nameplateNames] })); } catch (e) {}
   }
   function reconcileNameplates() {
     const b = bridge();
@@ -549,6 +595,6 @@
     list.scrollTop = keep || sceneScroll || 0;
   }
 
-Object.assign(window, { fetchScene, loadNameplateNames, nameplatesActive, renderScene, saveSceneView, sceneApplyDurablePrefs, sceneSelfPos });
+Object.assign(window, { fetchScene, loadNameplateNames, nameplatesActive, renderScene, saveSceneView, sceneApplyDurablePrefs, sceneMarksReload, sceneSelfPos });
 registerTab({ id: 'scene', render: renderScene, open: function () { fetchScene(); } });
 })();

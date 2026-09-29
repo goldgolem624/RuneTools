@@ -20,7 +20,14 @@ long long FileMtime(const std::string& path) {
     auto t = std::filesystem::last_write_time(std::filesystem::u8path(path), ec);
     return ec ? 0 : (long long)t.time_since_epoch().count();
 }
+// How long an archive whose row was missing is left before the db is asked again.
+constexpr auto kMissingRowRetry = std::chrono::seconds(2);
 }  // namespace
+
+const ReferenceTable& SqliteIndexFile::EmptyRefTable() {
+    static const ReferenceTable kEmpty(0, {}, 0);
+    return kEmpty;
+}
 
 
 bool SqliteIndexFile::EnsureDb() const {
@@ -114,7 +121,9 @@ SqliteIndexFile::SqliteIndexFile(int index_id, std::string jcache_path,
 }
 
 bool SqliteIndexFile::RefTableChanged() {
-    if (!ref_table_) return false;
+    // Built without a table (busy, unopenable or not written yet at the time): a table that reads
+    // now means a rebuild gives a ready index, where this object would stay unready for good.
+    if (!ref_table_) return !FetchReferenceTableBlob().empty();
     const long long m = FileMtime(jcache_path_);
     if (m == 0 || m == ref_mtime_) return false;
     auto blob = FetchReferenceTableBlob();
@@ -174,13 +183,18 @@ SqliteIndexFile::ReadFile(int archive_id, int file_id) {
     auto& slot = archive_cache_[archive_id];
     if (slot.state == SlotState::Failed) return {};
     if (slot.state == SlotState::NotLoaded) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < slot.retry_at) return {};
         // Failed decodes are sticky, but a db that could not be read at all is not a failed decode:
         // the game client writes js5-2.jcache while it downloads, and a BUSY/LOCKED there would
         // otherwise blank a whole archive (e.g. 69, every varbit def) for the life of the process.
         auto compressed = FetchArchiveBlob(archive_id);
         if (compressed.empty()) {
             if (LastReadFailed()) return {};                       // leave NotLoaded: retry later
-            slot.state = SlotState::Failed; ++failed_count_; return {};
+            // No row yet: the client downloads archives on demand, so it can still arrive this
+            // session. Leave NotLoaded and ask again after a pause rather than on every read.
+            slot.retry_at = now + kMissingRowRetry;
+            return {};
         }
         auto decompressed = Decompress(compressed);
         if (decompressed.empty()) { slot.state = SlotState::Failed; ++failed_count_; return {}; }

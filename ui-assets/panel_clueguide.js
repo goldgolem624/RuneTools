@@ -9,10 +9,11 @@
   clueBrowse = false; let clueFocusIdx = 0; clueFocusSig = ''; clueLiveTier = -1;   // clueLiveTier: live difficulty tab (-1 = all held)
   cluePuzzleHeld = [];
   tetraHeldEntry = null;   // synthetic held entry for a carried tetracompass (same idea as above)
+  fpHeldEntry = null;      // synthetic held entry for a carried Forgotten painting
   cluePuzzleOpen = false; cluePuzzleWasOpen = false;
   function clueHeldList() {   // held clues + held puzzle boxes, ordered by tier (easy -> master -> special)
     const base = clueData ? clueData.filter(c => clueHeld.has(c.i)) : [];
-    return base.concat(cluePuzzleHeld, tetraHeldEntry || []).sort((a, b) => a.t - b.t || a.i - b.i);
+    return base.concat(cluePuzzleHeld, tetraHeldEntry || [], fpHeldEntry || []).sort((a, b) => a.t - b.t || a.i - b.i);
   }
   activeClueId = -1;   // the clue whose tile is pinned on the map + highlighted in-world (-1 = none)
   clueEmoteSel = -1; clueEmoteSearch = ''; let clueEmoteTier = -1;
@@ -182,8 +183,8 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     return '<div style="margin-top:6px;padding:6px 8px;border-radius:6px;background:rgba(255,196,64,0.08);'
          + 'border:1px solid rgba(255,196,64,0.25)">'
          + '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;opacity:0.65">Challenge scroll</div>'
-         + (c.cq ? '<div style="font-size:12px;opacity:0.85;margin-top:2px">' + esc(c.cq) + '</div>' : '')
-         + '<div style="margin-top:3px;font-size:14px"><b style="color:#ffd479">' + esc(c.ca) + '</b></div>'
+         + (c.cq ? '<div style="font-size:12px;opacity:0.85;margin-top:2px">' + htmlEsc(c.cq) + '</div>' : '')
+         + '<div style="margin-top:3px;font-size:14px"><b style="color:#ffd479">' + htmlEsc(c.ca) + '</b></div>'
          + '</div>';
   }
   function clueSetNpc(name) { name = name || ''; if (name === clueHighlightNpc) return; clueHighlightNpc = name; try { syncOverlayHighlight(); } catch (e) {} }
@@ -307,8 +308,10 @@ const CLUE_SCAN_AREAS = {"the deepest levels of the wilderness":{"r":25,"t":"eli
     clueNoteCompassOpen();          // a live needle identifies an Eastern Lands compass clue
     const c = (activeClueId >= 0) ? CLUE_DATA.find(z => z.i === activeClueId) : null;
     const eel = $('clueEmote'); if (eel && !(c && c.a === 'emote')) { eel.style.display = 'none'; eel._h = ''; }
+    const pel = $('cluePaint'); if (pel && activeClueId !== FP_PAINTING) { pel.style.display = 'none'; pel._h = ''; }
     if (c && isCompassClue(c)) { compassTick(); return; }   // compass field: needle-driven; the compass owns the map + in-world tile
     if (activeClueId === TETRA_POWERED) { tetraTick(); return; }
+    if (activeClueId === FP_PAINTING) { fpTick(); return; }
     if (c && c.a === 'emote') {                                  // emote clue -> the hidey-hole reference + map
       if (clueEmoteTier !== c.t) { clueEmoteTier = c.t; clueEmoteSel = -1; clueEmoteSearch = ''; }
       renderEmotePanel(); return;

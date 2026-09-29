@@ -59,7 +59,8 @@ PrivilegesRequired=lowest
 ; Silent in-place update: the launcher holds the "RuneToolsXLauncher" mutex and runs this
 ; setup with /VERYSILENT. InitializeSetup (see [Code]) waits for that mutex to clear (the
 ; old launcher to exit) before proceeding; AppMutex is intentionally not used, as its prompt
-; aborts the install under /SUPPRESSMSGBOXES. CloseApplications is a backstop;
+; aborts the install under /SUPPRESSMSGBOXES. CloseApplications is a backstop there, and in an
+; install run by hand it is what asks the user to close a running launcher;
 ; RestartApplications=no because the [Run] entry relaunches the app.
 CloseApplications=yes
 RestartApplications=no
@@ -139,10 +140,17 @@ var
   i: Integer;
   rc: Integer;
 begin
+  Result := True;
+  { Only the auto-updater runs us silently, and it does so only once no game client is running.
+    Run by hand, setup can find a launcher in use with a game client docked in it, and closing
+    the launcher takes that client down too. There the Preparing to Install page (CloseApplications)
+    names what is running and lets the user decide, so nothing below is done. }
+  if not WizardSilent then
+    exit;
   { The auto-updater launches us (/VERYSILENT) while the old launcher is still running;
     it exits ~1.5s after kicking us off. Wait up to ~15s for its mutex to clear so its
     files are unlocked and we don't trip the running-app abort. Returns immediately when
-    no launcher is running (e.g. a fresh interactive install). }
+    no launcher is running. }
   for i := 1 to 75 do
   begin
     if not CheckForMutexes('RuneToolsXLauncher') then
@@ -176,5 +184,4 @@ begin
     "download, restart, still on the old version" bug distributed users hit. This margin used to
     run ONLY inside the force-kill branch; a launcher that terminated normally raced unguarded. }
   Sleep(1200);
-  Result := True;
 end;

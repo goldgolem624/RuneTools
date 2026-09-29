@@ -115,9 +115,15 @@
       also:    Array.isArray(w.also) ? w.also.map(normAnd).filter(Boolean).slice(0, AND_MAX) : [],
     };
   }
+  let alertsStore = null;
+  // made on first use: the store helpers come from core/rtx-boot.js, spliced after the panels
+  function alertsSt() {
+    return alertsStore || (alertsStore = acctStore(() => rtxData.sync('host.alertsLoad'),
+                                                   t => rtxData.sync('act.alertsSave', t), alertCfgReload));
+  }
   function loadAlertCfg() {
     let saved = {};
-    try { saved = JSON.parse((bridge() && bridge().alertsLoad && rtxData.sync('host.alertsLoad')) || '{}'); } catch (e) {}
+    try { saved = JSON.parse(acctStoreRead(alertsSt()) || '{}'); } catch (e) {}
     alertCfg = JSON.parse(JSON.stringify(ALERT_DEFAULTS));
     if (saved && typeof saved === 'object') {
       if (typeof saved.master === 'boolean') alertCfg.master = saved.master;
@@ -142,6 +148,13 @@
     }
   }
   let _alertSaveT = 0, _alertSaveTries = 0;
+  // The account behind this client changed (or became known) since the rules were read. A pending retry
+  // would save the old account's rules, and the open pane's controls hold the old rule objects.
+  function alertCfgReload() {
+    clearTimeout(_alertSaveT); _alertSaveT = 0; _alertSaveTries = 0;
+    loadAlertCfg();
+    const w = $('alertsWrap'); if (w) { w.remove(); paneRun('alerts', renderAlerts); }
+  }
   function saveAlertCfg() {
     if (!alertCfg) return;
     const out = { master: alertCfg.master, unfocusedOnly: !!alertCfg.unfocusedOnly, rules: {}, custom: [] };
@@ -157,10 +170,11 @@
       }
     }
     out.custom = (alertCfg.custom || []).map(w => ({ id: w.id, type: w.type, kind: w.kind, text: w.text, anim: w.anim, augItem: w.augItem, cond: w.cond, num: w.num, stat: w.stat, vb: w.vb, item: w.item, label: w.label, sound: w.sound, flash: w.flash, notify: w.notify, discord: !!w.discord, repeat: w.repeat, enabled: w.enabled,
-      also: (w.also || []).map(c => ({ type: c.type, kind: c.kind, text: c.text, anim: c.anim, cond: c.cond, num: c.num, stat: c.stat, item: c.item, not: c.not })) }));
+      also: (w.also || []).map(c => ({ type: c.type, kind: c.kind, text: c.text, anim: c.anim, cond: c.cond, num: c.num, stat: c.stat, item: c.item, not: c.not, op: c.op })) }));
     let ok = false;
-    try { ok = !!rtxData.sync('act.alertsSave', JSON.stringify(out)); } catch (e) {}
+    try { ok = acctStoreWrite(alertsSt(), JSON.stringify(out)); } catch (e) {}
     if (ok) { _alertSaveTries = 0; return; }
+    if (ok === null) return;   // not this account's rules: they were read again instead
     if (_alertSaveT || _alertSaveTries >= 10) return;
     _alertSaveTries++;
     _alertSaveT = setTimeout(() => { _alertSaveT = 0; saveAlertCfg(); }, 2000);
@@ -552,7 +566,7 @@
       } else if (!isIdle) { alertState.idleSince = null; alertState.idleFired = false; }
     } else { alertState.idleSince = null; alertState.idleFired = false; }
     if (en('logout')) {
-      const lr = alertCfg.rules.logout, warn = lr.val || 10;
+      const lr = alertCfg.rules.logout, warn = lr.val || 10, tnow = Date.now();
       const m = infoMember;
       const live = !!(m && m.resolved && typeof m.idleMs === 'number' && m.idleMs >= 0 &&
                       typeof m.idleLogoutSeconds === 'number' && m.idleLogoutSeconds > 0);

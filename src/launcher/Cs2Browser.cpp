@@ -9,6 +9,7 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 #pragma comment(lib, "version.lib")
@@ -56,6 +57,8 @@ HANDLE g_log = nullptr;    // sidecar stdout/stderr, owned under g_mu
 bool   g_started = false;  // an extraction ran this session
 bool   g_cancelled = false;   // the last run was stopped from the panel
 std::string g_exit;        // why the last run ended, empty while it is healthy
+std::string g_build;       // the game build when the last run started
+FILETIME    g_tableAt{};   // opcodes.json's write time when the last run started, zero if there was none
 
 fs::path log_path() {
     wchar_t buf[MAX_PATH]{};
@@ -81,6 +84,36 @@ std::string last_log_line() {
     return best;
 }
 
+std::string game_client_version();
+
+// client_version.txt names the build opcodes.json was extracted from, and the reader and the
+// companion use the table only when that is the running game's build. So it is written when a run
+// has ended, not when it starts. A run that did not rewrite the table, or was cancelled, leaves the
+// label as it was: the table's numbers are then still that build's, or the label names a build the
+// game has since left. A rewritten table gets the build when the run succeeded and the game did not
+// update under it, else an empty label, so nothing uses it. The label takes the table's write time:
+// a label newer than its table reads as one whose extraction never rewrote the table.
+void label_table_locked() {
+    const fs::path dir = OutDir();
+    WIN32_FILE_ATTRIBUTE_DATA t{};
+    if (!GetFileAttributesExW((dir / L"opcodes.json").c_str(), GetFileExInfoStandard, &t) ||
+        CompareFileTime(&t.ftLastWriteTime, &g_tableAt) == 0) return;
+    if (g_exit.empty() && !g_build.empty() && game_client_version() != g_build) g_exit = "game updated during extraction";
+    const bool vouched = g_exit.empty() && !g_build.empty();
+    const fs::path label = dir / L"client_version.txt";
+    {
+        std::ofstream vf(label, std::ios::binary | std::ios::trunc);
+        if (vouched) vf << g_build;
+    }
+    if (!vouched) return;
+    HANDLE h = CreateFileW(label.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        SetFileTime(h, nullptr, nullptr, &t.ftLastWriteTime);
+        CloseHandle(h);
+    }
+}
+
 bool proc_running_locked() {
     if (!g_proc) return false;
     if (WaitForSingleObject(g_proc, 0) == WAIT_TIMEOUT) return true;
@@ -97,6 +130,7 @@ bool proc_running_locked() {
         g_exit = tail;
     else if (code != 0) g_exit = "sidecar exited with code " + std::to_string((int)code);
     else if (!fs::exists(fs::path(OutDir()) / L"meta.json")) g_exit = "sidecar exited without writing anything";
+    label_table_locked();
     return false;
 }
 
@@ -154,6 +188,7 @@ std::wstring OutDir() {
 
 std::string StatusJson() {
     std::lock_guard<std::mutex> lk(g_mu);
+    const bool running = proc_running_locked();   // first: a run that just ended labels its table
     fs::path out = OutDir();
     std::string meta = read_file(out / L"meta.json");
     std::string prog = read_file(out / L"progress.json");
@@ -161,7 +196,6 @@ std::string StatusJson() {
     bool sidecar = fs::exists(fs::path(sidecar_dir()) / L"dist" / L"cs2export.js");
     std::string clientver = game_client_version();
     std::ostringstream os;
-    const bool running = proc_running_locked();
     os << "{\"running\":" << (running ? "true" : "false")
        << ",\"lastError\":\"" << json_escape(running || !g_started ? std::string() : g_exit) << "\""
        << ",\"sidecar\":" << (sidecar ? "true" : "false")
@@ -180,10 +214,14 @@ std::string StartExtract() {
         return "{\"err\":\"sidecar not found (set RTX_CS2_SIDECAR to the folder containing dist\\\\cs2export.js)\"}";
     std::error_code ec;
     fs::remove(fs::path(OutDir()) / L"progress.json", ec);
+    // The table's label is written when the run ends (label_table_locked), which needs the game
+    // build and the table as they are now.
+    g_build = game_client_version();
+    g_tableAt = {};
     {
-        std::ofstream vf(fs::path(OutDir()) / L"client_version.txt",
-                         std::ios::binary | std::ios::trunc);
-        vf << game_client_version();
+        WIN32_FILE_ATTRIBUTE_DATA t{};
+        if (GetFileAttributesExW((fs::path(OutDir()) / L"opcodes.json").c_str(), GetFileExInfoStandard, &t))
+            g_tableAt = t.ftLastWriteTime;
     }
 
     g_exit.clear();
@@ -220,6 +258,17 @@ std::string StartExtract() {
     CloseHandle(pi.hThread);
     g_proc = pi.hProcess;
     g_log = (logf == INVALID_HANDLE_VALUE) ? nullptr : logf;
+    // Watched to its end, so the table is labelled when the run finishes, not when the panel next
+    // asks. The watcher's own handle outlives a cancel, which closes g_proc.
+    HANDLE watch = nullptr;
+    if (DuplicateHandle(GetCurrentProcess(), pi.hProcess, GetCurrentProcess(), &watch, SYNCHRONIZE, FALSE, 0)) {
+        std::thread([watch] {
+            WaitForSingleObject(watch, INFINITE);
+            CloseHandle(watch);
+            std::lock_guard<std::mutex> lk(g_mu);
+            proc_running_locked();
+        }).detach();
+    }
     return "{\"ok\":true}";
 }
 

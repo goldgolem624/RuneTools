@@ -235,6 +235,8 @@ const gameText = (function () {
   function onChange(cb) { if (typeof cb === 'function') listeners.push(cb); }
   function changed() { for (const cb of listeners) { try { cb(); } catch (e) {} } }
   const parse = (t, dflt) => { try { const v = JSON.parse(t); return v == null ? dflt : v; } catch (e) { return dflt; } };
+  // Skills come from the game snapshot, one [base, boosted, xp] row per skill id: playerInfo carries none.
+  const snapSkills = () => (typeof lastSnap !== 'undefined' && lastSnap && Array.isArray(lastSnap.skills)) ? lastSnap.skills : [];
 
   // Fetch whatever the last evaluations asked for.
   let filling = false;
@@ -269,8 +271,9 @@ const gameText = (function () {
       each(take('inv'),        id => rtxData.raw('state.container', id).then(t => R.live.inv.set(id, parse(t, { items: [] }))));
       each(take('itemExtra'),  k => { const [c, i] = k.split(':').map(Number); return rtxData.raw('state.itemExtra', c, i).then(t => R.live.itemExtra.set(k, parse(t, {}))); });
       each(take('achievements'), id => rtxData.raw('state.achievement', id).then(a => R.live.achievements.set(id, (a && typeof a === 'object') ? a : parse(a, null))));
-      if (n.player) { n.player = false; jobs.push(rtxData.raw('state.player').then(t => { R.live.player = parse(t, {}); }).catch(() => {})); }
-      if (n.quests) { n.quests = false; jobs.push(rtxData.raw('state.quests').then(t => { R.live.quests = parse(t, []); }).catch(() => {})); }
+      if (n.player) { n.player = false; R.live.player = { skills: snapSkills() }; }
+      // the quest list arrives as an array already (null while the quest data is not readable yet)
+      if (n.quests) { n.quests = false; jobs.push(rtxData.raw('state.quests').then(q => { R.live.quests = Array.isArray(q) ? q : []; }).catch(() => {})); }
       if (n.clock)  { n.clock = false;  jobs.push(rtxData.raw('state.buffs').then(t => { const b = parse(t, {}); R.live.clock = (b && b.cycles) | 0; }).catch(() => {})); }
       if (n.varcStrings) { n.varcStrings = false; jobs.push(rtxData.raw('state.varcStringsAll').then(t => { R.live.varcStrings = parse(t, {}); }).catch(() => {})); }
       await Promise.all(jobs);
@@ -300,8 +303,12 @@ const gameText = (function () {
         if (JSON.stringify(nv.key) !== JSON.stringify((R.live.itemExtra.get(k) || {}).key)) { R.live.itemExtra.set(k, nv); moved = true; }
       }
       if (R.live.player !== null) {
-        const p = parse(await rtxData.raw('state.player'), {});
-        if (JSON.stringify(p.skills) !== JSON.stringify(R.live.player.skills)) { R.live.player = p; moved = true; }
+        const sk = snapSkills();
+        if (JSON.stringify(sk) !== JSON.stringify(R.live.player.skills)) { R.live.player = { skills: sk }; moved = true; }
+      }
+      if (R.live.quests !== null && !R.live.quests.length) {   // read before the quest data was readable: try again
+        const q = await rtxData.raw('state.quests');
+        if (Array.isArray(q) && q.length) { R.live.quests = q; moved = true; }
       }
       if (R.live.clock !== null) { const b = parse(await rtxData.raw('state.buffs'), {}); R.live.clock = (b && b.cycles) | 0; }
       if (R.live.varcStrings !== null) {

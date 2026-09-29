@@ -46,7 +46,11 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
   const pClampId   = v => { const n = parseInt(v, 10); return (isFinite(n) && n >= 0) ? n : 0; };
   const pClampNum  = (v, lo, hi) => { let n = Number(v); if (!isFinite(n)) n = lo; return Math.max(lo, Math.min(hi, n)); };
   const pClampStr  = (v, max) => String(v == null ? '' : v).slice(0, max);
-  const pArgs      = a => (Array.isArray(a) ? a : []).slice(0, 8).map(x => (typeof x === 'number' || typeof x === 'boolean' || x == null) ? x : pClampStr(x, 65536));
+  const pArgs      = (a, max) => (Array.isArray(a) ? a : []).slice(0, 8).map(x => (typeof x === 'number' || typeof x === 'boolean' || x == null) ? x : pClampStr(x, max || 65536));
+  // A store save hands over the whole file. The launcher's own pages call with no plugin id and send it
+  // uncut: a file cut at 64K no longer parses at its next load, and the launcher writes any length. A call
+  // made for a plugin keeps the cap.
+  const pSaveArgs  = (a, id) => pArgs(a, id == null ? Infinity : 65536);
   // Overlay-record clamp: keeps the \x1e-record / \x1f-field structure but bounds it (64 records, 16 fields, 256 chars each).
   const pOverlayArgs = a => (Array.isArray(a) ? a : []).slice(0, 8).map(x => {
     if (typeof x === 'number' || typeof x === 'boolean' || x == null) return x;
@@ -246,10 +250,11 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'overlay.highlightNpc':{ scope: 'overlay', json: false, run: (a, pid) => {
                             const name = pClampStr(a[0], 48).replace(/[|,]/g, '').replace(/\s+/g, ' ').trim();
                             if (!name) { try { bridge().overlayHighlight(pid, ''); } catch (e) {} return false; }
-                            const label = pClampStr(a[1] == null ? '' : a[1], 96).replace(/[|,]/g, '').replace(/\s+/g, ' ').trim();
+                            // spaces collapse, line breaks stay (the overlay draws up to 4 label lines)
+                            const label = pClampStr(a[1] == null ? '' : a[1], 96).replace(/[|,]/g, '').replace(/[^\S\n]+/g, ' ').replace(/ *\n+ */g, '\n').trim();
                             const tx = pClampNum(a[2], 0, 16383) | 0, ty = pClampNum(a[3], 0, 16383) | 0;   // optional: box the instance nearest THIS tile, not the player
                             let needle = (label || (tx > 0 && ty > 0)) ? (name + '|' + label) : name;
-                            if (tx > 0 && ty > 0) needle += '|' + tx + ',' + ty;
+                            if (tx > 0 && ty > 0) needle += '|' + tx + ';' + ty;   // ';' because the bridge splits the highlight list on commas
                             try { bridge().overlayHighlight(pid, needle); } catch (e) {} return true; } },
     'overlay.flashGame':{ scope: 'overlay',    json: false,   run: (a, pid) => bridge().flashGame(pid) },
     'overlay.highlightOption':{ scope: 'overlay', json: false, run: async (a, pid) => {
@@ -454,13 +459,13 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'host.iconCoverage':      { scope: 'host',        json: true,  run: () => bridge().iconCoverage() },
     'host.uiAsset':           { scope: 'host',        json: false, run: (a) => bridge().uiAsset(...pArgs(a)) },
     'host.hiscores':          { scope: 'host',        json: true,  run: (a) => bridge().hiscores(...pArgs(a)) },
-    'act.alertsSave':         { scope: 'actuator',    json: false, run: (a, pid) => bridge().alertsSave(pid, ...pArgs(a)) },
-    'act.counterSave':        { scope: 'actuator',    json: false, run: (a, pid) => bridge().counterSave(pid, ...pArgs(a)) },
-    'act.notesSave':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().notesSave(pid, ...pArgs(a)) },
-    'act.sidebarSave':        { scope: 'actuator',    json: false, run: (a, pid) => bridge().sidebarSave(pid, ...pArgs(a)) },
-    'act.mystSave':           { scope: 'actuator',    json: false, run: (a, pid) => bridge().mystSave(pid, ...pArgs(a)) },
-    'act.questSave':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().questSave(pid, ...pArgs(a)) },
-    'act.menuRulesSave':      { scope: 'actuator',    json: false, run: (a) => bridge().menuRulesSave(...pArgs(a)) },
+    'act.alertsSave':         { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().alertsSave(pid, ...pSaveArgs(a, id)) },
+    'act.counterSave':        { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().counterSave(pid, ...pSaveArgs(a, id)) },
+    'act.notesSave':          { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().notesSave(pid, ...pSaveArgs(a, id)) },
+    'act.sidebarSave':        { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().sidebarSave(pid, ...pSaveArgs(a, id)) },
+    'act.mystSave':           { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().mystSave(pid, ...pSaveArgs(a, id)) },
+    'act.questSave':          { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().questSave(pid, ...pSaveArgs(a, id)) },
+    'act.menuRulesSave':      { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().menuRulesSave(...pSaveArgs(a, id)) },
     'act.menuEnable':         { scope: 'actuator',    json: false, run: (a, pid) => bridge().menuEnable(pid, ...pArgs(a)) },
     'act.menuPins':           { scope: 'actuator',    json: false, run: (a, pid) => bridge().menuPins(pid, ...pArgs(a)) },
     'act.markerAdd':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().markerAdd(pid, ...pArgs(a)) },
@@ -484,11 +489,11 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'act.soundSeek':          { scope: 'actuator',    json: false, run: (a) => bridge().soundSeek(...pArgs(a)) },
     'act.soundStop':          { scope: 'actuator',    json: false, run: (a) => bridge().soundStop(...pArgs(a)) },
     'act.soundVolume':        { scope: 'actuator',    json: false, run: (a) => bridge().soundVolume(...pArgs(a)) },
-    'act.varPinsSave':        { scope: 'actuator',    json: false, run: (a) => bridge().varPinsSave(...pArgs(a)) },
+    'act.varPinsSave':        { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().varPinsSave(...pSaveArgs(a, id)) },
     'act.varsWatch':          { scope: 'actuator',    json: false, run: (a, pid) => bridge().varsWatch(pid, ...pArgs(a)) },
     'act.vosReport':          { scope: 'actuator',    json: false, run: (a) => bridge().vosReport(...pArgs(a)) },
     'act.worldEventVote':     { scope: 'actuator',    json: false, run: (a) => bridge().worldEventVote(...pArgs(a)) },
-    'act.cacheStoreSave':     { scope: 'actuator',    json: false, run: (a) => bridge().cacheStoreSave(...pArgs(a)) },
+    'act.cacheStoreSave':     { scope: 'actuator',    json: false, run: (a, pid, id) => bridge().cacheStoreSave(...pSaveArgs(a, id)) },
     'act.xpPanelReset':       { scope: 'actuator',    json: false, run: (a, pid) => bridge().xpPanelReset(pid, ...pArgs(a)) },
     'act.ifaceOffset':        { scope: 'actuator',    json: false, run: (a) => bridge().ifaceOffset(...pArgs(a)) },
     // Console: always available, write-only. The host stamps the plugin id and runtime; the text and

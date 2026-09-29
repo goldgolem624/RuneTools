@@ -50,9 +50,11 @@ const float kMark = 0.37;
 void main() {
     float fade = 1.0;
     if ((pc.mode & 1024) != 0) {
-        // the mark: where the marker's own coverage is at least half a pixel
+        // the mark: where the marker's own coverage is at least half a pixel. Anything with no depth of
+        // its own (a label, a glyph) sits at the near plane, so it is left out rather than writing that
+        // depth over the game's.
         float cov = (pc.mode & 64) != 0 ? clamp(v_uv.y + 0.5 - abs(v_uv.x), 0.0, 1.0) : 1.0;
-        if (cov < 0.5) discard;
+        if (v_z < 0.0 || cov < 0.5) discard;
         frag = vec4(0.0, 0.0, 0.0, kMark);
         return;
     }
@@ -84,7 +86,8 @@ void main() {
 #else
         vis = abs(texture(u_depth, at).a - kMark) < 0.02 ? 1.0 : 0.0;
 #endif
-        fade = vis;
+        // nothing with no depth of its own was marked, so it shows whole
+        fade = v_z >= 0.0 ? vis : 1.0;
     } else
     if ((pc.mode & 8) != 0) {
         // bands by view distance: every edge in the scene shows as a step

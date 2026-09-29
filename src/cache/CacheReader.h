@@ -59,8 +59,9 @@ std::vector<CacheParseRow> CacheParseHealth();
 // without telling us; every index read after that through the old reference tables is misaligned.
 // CheckCacheUpdate() compares each open index's stored reference table with the one on disk
 // (throttled, never blocks: skips when the cache lock is busy) and, on a change, drops every open
-// index and every memo so the next call rebuilds from the new cache. CacheGeneration() increments
-// on each rebuild so layers above can refresh what they derived from the old data.
+// index and every memo so the next call rebuilds from the new cache. An index that was missing or
+// unreadable when the cache opened counts as a change once it can be opened. CacheGeneration()
+// increments on each rebuild so layers above can refresh what they derived from the old data.
 bool          CheckCacheUpdate();
 std::uint64_t CacheGeneration();
 std::string CacheProbeUnknownOps();
@@ -198,6 +199,7 @@ std::vector<int> ItemVarobjs(int item_id);
 std::string ItemFileHex(int item_id);
 std::string ConfigFileHex(int archive, int file);
 std::string LocFileHex(int loc_id);
+std::string NpcFileHex(int npc_id);
 std::string ConfigArchiveInfo(int archive);
 std::string VarbitDomainsJson();
 std::string VarbitDomainMapJson();

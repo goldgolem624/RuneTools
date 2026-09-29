@@ -673,21 +673,43 @@ std::uint64_t resolve_tick_owner_global(HANDLE h,
 
 
 
+// The calibrated offsets with the values they were compiled with, taken at start-up before any
+// attach can change them.
+struct CalibratedOffset { const char* name; std::uint32_t* at; std::uint32_t compiled; };
+const CalibratedOffset kCalibrated[] = {
+    { "kOffClientClock", &kOffClientClock, kOffClientClock },
+    { "kOffWorld",       &kOffWorld,       kOffWorld },
+    { "kOffStatus",      &kOffStatus,      kOffStatus },
+    { "kOffStats",       &kOffStats,       kOffStats },
+    { "kStatsInner",     &kStatsInner,     kStatsInner },
+    { "kOffGE",          &kOffGE,          kOffGE },
+    { "kOffVarcStore",   &kOffVarcStore,   kOffVarcStore },
+    { "kOffAccount",     &kOffAccount,     kOffAccount },
+};
+
 // Ask the client itself for the offsets, once per attach. The exe on disk is read, not the process.
+// Each offset is the client's when it proved it, else the compiled value, never what an earlier
+// attach proved: that client may have been another build.
 void calibrate_offsets(HANDLE h) {
     wchar_t path[MAX_PATH] = {};
-    if (!GetModuleFileNameExW(h, nullptr, path, MAX_PATH)) return;
+    if (!GetModuleFileNameExW(h, nullptr, path, MAX_PATH)) {
+        for (const auto& c : kCalibrated) *c.at = c.compiled;
+        rtx::log::Client(GetProcessId(h), "calibrate: client exe not found, using the compiled offsets");
+        return;
+    }
     std::wstring opcodes;
     {
         wchar_t up[MAX_PATH] = {};
         if (GetEnvironmentVariableW(L"USERPROFILE", up, MAX_PATH))
             opcodes = std::wstring(up) + L"\\RuneToolsX\\cs2\\opcodes.json";
     }
-    const auto& found = rtx::calib::Run(path, opcodes);
-    if (found.empty()) return;
+    // nothing found (an operation table from another build among other reasons) gives every offset
+    // its compiled value
+    rtx::calib::Run(path, opcodes);
+    for (const auto& c : kCalibrated) *c.at = rtx::calib::Use(c.name, c.compiled);
     {
-        // what the client proved about itself, on the record at every attach; the report is one
-        // line per offset, and the log takes a line at a time
+        // what the client proved about itself, or why it proved nothing, on the record at every
+        // attach; the report is one line per offset, and the log takes a line at a time
         const std::string rep = rtx::calib::Report();
         const DWORD who = GetProcessId(h);
         std::size_t at = 0;
@@ -698,14 +720,6 @@ void calibrate_offsets(HANDLE h) {
             at = nl + 1;
         }
     }
-    kOffClientClock = rtx::calib::Use("kOffClientClock", kOffClientClock);
-    kOffWorld       = rtx::calib::Use("kOffWorld", kOffWorld);
-    kOffStatus      = rtx::calib::Use("kOffStatus", kOffStatus);
-    kOffStats       = rtx::calib::Use("kOffStats", kOffStats);
-    kStatsInner     = rtx::calib::Use("kStatsInner", kStatsInner);
-    kOffGE          = rtx::calib::Use("kOffGE", kOffGE);
-    kOffVarcStore   = rtx::calib::Use("kOffVarcStore", kOffVarcStore);
-    kOffAccount = rtx::calib::Use("kOffAccount", kOffAccount);
 }
 
 bool attach_state(State& s, DWORD pid) {
@@ -2628,6 +2642,31 @@ std::uint64_t resolve_optable(HANDLE h, std::uint64_t base, std::uint64_t size) 
     }
     return 0;
 }
+
+// The scan above reads the whole image, and the panel behind it refreshes several times a second.
+// The table is a module global, so a table the scan found is kept per client and module (and
+// checked again on use); a miss is kept for a few seconds before the image is scanned again.
+struct OpTableMemo { std::uint64_t base = 0, size = 0, tbl = 0, at = 0; };
+std::mutex g_optable_mu;
+std::unordered_map<std::uint32_t, OpTableMemo> g_optable;
+
+std::uint64_t cached_optable(std::uint32_t pid, HANDLE h, std::uint64_t base, std::uint64_t size) {
+    if (auto t = rpm<std::uint64_t>(h, base + kOpTableRva); t && optable_valid(h, *t))
+        return *t;
+    OpTableMemo m;
+    { std::lock_guard<std::mutex> lk(g_optable_mu);
+      auto it = g_optable.find(pid);
+      if (it != g_optable.end()) m = it->second; }
+    const std::uint64_t now = GetTickCount64();
+    if (m.base == base && m.size == size) {
+        if (m.tbl && optable_valid(h, m.tbl)) return m.tbl;
+        if (!m.tbl && now - m.at < 10000) return 0;
+    }
+    const std::uint64_t tbl = resolve_optable(h, base, size);
+    std::lock_guard<std::mutex> lk(g_optable_mu);
+    g_optable[pid] = { base, size, tbl, now };
+    return tbl;
+}
 }  // namespace
 
 std::string ServerPacketsJson(std::uint32_t pid) {
@@ -2640,7 +2679,7 @@ std::string ServerPacketsJson(std::uint32_t pid) {
       if (it != g_states.end()) size = it->second.mod_size; }
     if (!base || !size) return "{\"ok\":false,\"reason\":\"module not mapped\"}";
 
-    std::uint64_t tbl = resolve_optable(h, base, size);
+    std::uint64_t tbl = cached_optable(pid, h, base, size);
     if (!tbl) return "{\"ok\":false,\"reason\":\"opcode table not found (build may have moved it)\"}";
 
     std::string out = "{\"ok\":true,\"tableRva\":\"0x";
@@ -3285,24 +3324,28 @@ rtx::cache::NpcMeta resolve_npc(HANDLE h, std::uint64_t root, int base_id, bool*
     std::vector<int> variants;
     if (h && root && rtx::cache::GetNpcMorph(base_id, vb, vp, defc, variants) && !variants.empty()) {
         int value = -1;
+        bool known = false;                                       // the selector var was read
         if (vb >= 0) {                                            // varbit takes priority (engine order)
             int wvp = -1, lsb = -1, msb = -1;
             if (rtx::cache::GetVarbit(vb, wvp, lsb, msb) && wvp >= 0 && lsb >= 0 && msb >= lsb && msb < 32) {
-                int raw = 0;                                      // unreadable map -> value stays -1 (static fallback)
+                int raw = 0;
                 if (read_varp_found(h, root, wvp, raw)) {
                     int width = msb - lsb + 1;
                     unsigned mask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
                     value = (int)(((unsigned)raw >> lsb) & mask);
+                    known = true;
                 }
             }
         } else if (vp >= 0) {
             int v = 0;
-            if (read_varp_found(h, root, vp, v)) value = v;       // selector is a varp directly
+            if (read_varp_found(h, root, vp, v)) { value = v; known = true; }   // selector is a varp directly
         }
-        (void)defc;
-        if (value < 0 || value >= (int)variants.size()) { if (out_hidden) *out_hidden = true; return {}; }
-        int child = variants[value];
-        if (child < 0) { if (out_hidden) *out_hidden = true; return {}; }   // variant "none" -> hidden
+        // Unreadable selector: the live variant is unknown. No variant is guessed (a wrong one paints a
+        // phantom) and the NPC is not hidden either, so callers keep the name the game put on the actor.
+        if (!known) return {};
+        // As the game picks: the value's own variant when in range, else the default child; -1 is hidden.
+        int child = (value >= 0 && value < (int)variants.size()) ? variants[value] : defc;
+        if (child < 0) { if (out_hidden) *out_hidden = true; return {}; }
         return rtx::cache::GetNpc(child);
     }
     return rtx::cache::GetNpc(base_id);
@@ -3885,25 +3928,72 @@ struct TerrainRegion { std::int32_t h[66][66]; std::int16_t lift[64][64]; std::u
 struct TerrainSnap { std::uint32_t pid = 0; int plane = -1; int cx = 0, cy = 0; std::uint32_t stamp = 0; std::unordered_map<int, TerrainRegion> regions; };  // key (plane<<16)|(rx<<8)|ry
 std::mutex g_terr_mu;
 TerrainSnap g_terr;
-bool terrain_read_region(HANDLE h, std::uint64_t scene, int rx, int ry, int plane, TerrainRegion& out) {
-    out.ok = false;
+// Reads n blocks of `size` bytes, block i from addr[i] to dst + i * size. A grid's columns are small
+// allocations that usually sit side by side, so one read over their span replaces n small ones; a
+// span that is too wide or not wholly readable falls back to one read per block.
+bool rpm_blocks(HANDLE h, const std::uint64_t* addr, int n, std::size_t size, void* dst) {
+    std::uint8_t* d = static_cast<std::uint8_t*>(dst);
+    std::uint64_t lo = addr[0], hi = addr[0];
+    for (int i = 1; i < n; ++i) { if (addr[i] < lo) lo = addr[i]; if (addr[i] > hi) hi = addr[i]; }
+    const std::uint64_t span = hi - lo + size;
+    if (span <= 0x10000) {
+        thread_local std::vector<std::uint8_t> buf;
+        buf.resize((std::size_t)span);
+        if (rpm_bytes(h, lo, buf.data(), (SIZE_T)span)) {
+            for (int i = 0; i < n; ++i) std::memcpy(d + (std::size_t)i * size, buf.data() + (addr[i] - lo), size);
+            return true;
+        }
+    }
+    for (int i = 0; i < n; ++i)
+        if (!rpm_bytes(h, addr[i], d + (std::size_t)i * size, (SIZE_T)size)) return false;
+    return true;
+}
+// The terrain object of region (rx, ry), 0 when the region is not loaded. Every plane shares it.
+std::uint64_t terrain_object(HANDLE h, std::uint64_t scene, int rx, int ry) {
     auto mgr = rpm<std::uint64_t>(h, scene + 0x140C0);
-    if (!mgr || *mgr <= 0x10000) return false;
+    if (!mgr || *mgr <= 0x10000) return 0;
     auto minx = rpm<std::int32_t>(h, *mgr + 0x14034), miny = rpm<std::int32_t>(h, *mgr + 0x14038);
     auto maxx = rpm<std::int32_t>(h, *mgr + 0x1403C), maxy = rpm<std::int32_t>(h, *mgr + 0x14040);
-    if (!minx || !miny || !maxx || !maxy || rx < *minx || rx > *maxx || ry < *miny || ry > *maxy) return false;
+    if (!minx || !miny || !maxx || !maxy || rx < *minx || rx > *maxx || ry < *miny || ry > *maxy) return 0;
     auto rows = rpm<std::uint64_t>(h, *mgr + 0x14080);
-    if (!rows || *rows <= 0x10000) return false;
+    if (!rows || *rows <= 0x10000) return 0;
     auto col = rpm<std::uint64_t>(h, *rows + (std::uint64_t)(rx - *minx) * 0x18);
-    if (!col || *col <= 0x10000) return false;
+    if (!col || *col <= 0x10000) return 0;
     auto region = rpm<std::uint64_t>(h, *col + (std::uint64_t)(ry - *miny) * 0x18 + 8);
-    if (!region || *region <= 0x10000) return false;
+    if (!region || *region <= 0x10000) return 0;
     std::uint64_t terrain = 0;
     for (std::uint64_t off : { (std::uint64_t)0xA0, (std::uint64_t)0xEBB0 }) {
         auto t = rpm<std::uint64_t>(h, *region + off);
         if (t && *t > 0x10000 && rpm<std::uint8_t>(h, *t + 0x21).value_or(1) == rpm<std::uint8_t>(h, *t + 0x22).value_or(2)) { terrain = *t; break; }
     }
-    if (!terrain || rpm<std::uint8_t>(h, terrain + 0x169).value_or(1) != 0) return false;
+    if (!terrain || rpm<std::uint8_t>(h, terrain + 0x169).value_or(1) != 0) return 0;
+    return terrain;
+}
+// One plane's tile flag bytes, masked, into dst[x][y] (layout below, in terrain_read_plane).
+bool terrain_read_flags(HANDLE h, std::uint64_t terrain, int fplane, std::uint8_t dst[64][64], int mask) {
+    auto f0 = rpm<std::uint64_t>(h, terrain + 0x200), f1 = rpm<std::uint64_t>(h, terrain + 0x208);
+    if (!f0 || !f1 || *f1 < *f0 + (std::uint64_t)(fplane + 1) * 0x10) return false;
+    auto fcols = rpm<std::uint64_t>(h, *f0 + (std::uint64_t)fplane * 0x10 + 8);
+    if (!fcols || *fcols <= 0x10000) return false;
+    auto cb = rpm<std::uint64_t>(h, *fcols), ce = rpm<std::uint64_t>(h, *fcols + 8);
+    if (!cb || !ce || *ce < *cb + 66 * 0x18) return false;
+    std::uint64_t tab[64 * 3 - 1];                    // columns 1..64 as {begin, end, capacity}, the last capacity not needed
+    if (!rpm_bytes(h, *cb + 0x18, tab, sizeof(tab))) return false;
+    std::uint64_t colb[64];
+    for (int lx = 0; lx < 64; ++lx) {
+        colb[lx] = tab[lx * 3];
+        if (tab[lx * 3 + 1] < colb[lx] + 66) return false;
+    }
+    std::uint8_t fb[64][66];
+    if (!rpm_blocks(h, colb, 64, sizeof(fb[0]), fb)) return false;
+    for (int lx = 0; lx < 64; ++lx)
+        for (int ly = 0; ly < 64; ++ly) dst[lx][ly] = (std::uint8_t)(fb[lx][ly + 1] & mask);
+    return true;
+}
+// One plane of a region: heights, standing offsets and that plane's tile flags. The plane-1 bridge
+// flags are per region and filled in by the caller.
+bool terrain_read_plane(HANDLE h, std::uint64_t terrain, int plane, TerrainRegion& out) {
+    out.ok = false;
     auto p0 = rpm<std::uint64_t>(h, terrain + 0x170), p1 = rpm<std::uint64_t>(h, terrain + 0x178);
     if (!p0 || !p1 || *p1 < *p0) return false;
     const int nplanes = (int)((*p1 - *p0) / 16);
@@ -3913,14 +4003,14 @@ bool terrain_read_region(HANDLE h, std::uint64_t scene, int rx, int ry, int plan
     if (!grid || *grid <= 0x10000) return false;
     auto cols = rpm<std::uint64_t>(h, *grid);
     if (!cols || *cols <= 0x10000) return false;
+    std::uint64_t ctab[65 * 3 + 1];                   // 66 column entries of 0x18, pointer first
+    if (!rpm_bytes(h, *cols, ctab, sizeof(ctab))) return false;
     std::uint64_t colptr[66];
     for (int lx = 0; lx < 66; ++lx) {
-        auto c = rpm<std::uint64_t>(h, *cols + 0x18 * (std::uint64_t)lx);
-        if (!c || *c <= 0x10000) return false;
-        colptr[lx] = *c;
+        colptr[lx] = ctab[lx * 3];
+        if (colptr[lx] <= 0x10000) return false;
     }
-    for (int lx = 0; lx < 66; ++lx)
-        if (!rpm_bytes(h, colptr[lx], out.h[lx], sizeof(out.h[lx]))) return false;
+    if (!rpm_blocks(h, colptr, 66, sizeof(out.h[0]), out.h)) return false;
     out.ok = true;
     // Per-tile offsets (FUN_1403be920): [terrain+0x1E8] = planes x 64 x 64 cells of two i16, cell
     // (x, y) at ((x + plane*64)*64 + y)*4. Mode 1 (actors, spot animations) adds the first i16, the
@@ -3943,23 +4033,7 @@ bool terrain_read_region(HANDLE h, std::uint64_t scene, int rx, int ry, int plan
     // lowest plane); the cache builds its blocked grid from the same bit 0, so reading it live
     // gives the void tiles inside instances, where the cache has nothing.
     std::memset(out.bridge, 0, sizeof(out.bridge)); std::memset(out.flag, 0, sizeof(out.flag));
-    auto readFlags = [&](int fplane, std::uint8_t dst[64][64], int mask) -> bool {
-        auto f0 = rpm<std::uint64_t>(h, terrain + 0x200), f1 = rpm<std::uint64_t>(h, terrain + 0x208);
-        if (!f0 || !f1 || *f1 < *f0 + (std::uint64_t)(fplane + 1) * 0x10) return false;
-        auto fcols = rpm<std::uint64_t>(h, *f0 + (std::uint64_t)fplane * 0x10 + 8);
-        if (!fcols || *fcols <= 0x10000) return false;
-        auto cb = rpm<std::uint64_t>(h, *fcols), ce = rpm<std::uint64_t>(h, *fcols + 8);
-        if (!cb || !ce || *ce < *cb + 66 * 0x18) return false;
-        for (int lx = 0; lx < 64; ++lx) {
-            auto colb = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18), cole = rpm<std::uint64_t>(h, *cb + (std::uint64_t)(lx + 1) * 0x18 + 8);
-            std::uint8_t fb[66];
-            if (!colb || !cole || *cole < *colb + 66 || !rpm_bytes(h, *colb, fb, sizeof(fb))) return false;
-            for (int ly = 0; ly < 64; ++ly) dst[lx][ly] = (std::uint8_t)(fb[ly + 1] & mask);
-        }
-        return true;
-    };
-    out.flagsOk = readFlags(1, out.bridge, 2);
-    out.planeFlagsOk = readFlags(plane, out.flag, 0xFF);
+    out.planeFlagsOk = terrain_read_flags(h, terrain, plane, out.flag, 0xFF);
     return true;
 }
 }  // namespace
@@ -3980,16 +4054,30 @@ bool LiveTerrainSnapshot(std::uint32_t pid, int cx, int cy, int plane) {
     if (!scene || *scene <= 0x10000) return false;
     TerrainSnap snap; snap.pid = pid; snap.plane = plane; snap.cx = cx; snap.cy = cy; snap.stamp = (std::uint32_t)GetTickCount64();
     const int rx0 = cx >> 6, ry0 = cy >> 6;
+    int planes[3], np = 0;
     for (int pl : { plane, plane + 1, 0 }) {   // plane + 1: bridge tiles are sampled one plane up
-        if (pl < 0 || pl > 3) continue;
-        for (int rx = rx0 - 1; rx <= rx0 + 1; ++rx)
-            for (int ry = ry0 - 1; ry <= ry0 + 1; ++ry) {
-                const int key = (pl << 16) | (rx << 8) | ry;
-                if (snap.regions.count(key)) continue;
-                TerrainRegion r;
-                if (terrain_read_region(h, *scene, rx, ry, pl, r)) snap.regions.emplace(key, r);
-            }
+        if (pl < 0 || pl > 3 || std::find(planes, planes + np, pl) != planes + np) continue;
+        planes[np++] = pl;
     }
+    // This runs for every overlay frame, so each region's terrain object is found once and its
+    // plane-1 bridge flags read once, then shared by every plane entry of that region.
+    for (int rx = rx0 - 1; rx <= rx0 + 1; ++rx)
+        for (int ry = ry0 - 1; ry <= ry0 + 1; ++ry) {
+            const std::uint64_t terrain = terrain_object(h, *scene, rx, ry);
+            if (!terrain) continue;
+            std::uint8_t bridge[64][64]; int bridgeOk = -1;   // -1: not read yet
+            for (int i = 0; i < np; ++i) {
+                TerrainRegion r;
+                if (!terrain_read_plane(h, terrain, planes[i], r)) continue;
+                if (bridgeOk < 0) {
+                    std::memset(bridge, 0, sizeof(bridge));
+                    bridgeOk = terrain_read_flags(h, terrain, 1, bridge, 2) ? 1 : 0;
+                }
+                std::memcpy(r.bridge, bridge, sizeof(bridge));
+                r.flagsOk = bridgeOk == 1;
+                snap.regions.emplace((planes[i] << 16) | (rx << 8) | ry, r);
+            }
+        }
     std::lock_guard<std::mutex> lk(g_terr_mu);
     g_terr = std::move(snap);
     return !g_terr.regions.empty();
@@ -5449,10 +5537,11 @@ static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
         std::uint64_t ap2 = r64(g + 8);
         if (ap2 <= 0x10000 || r32(ap2) != 1477) continue;
         std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28), a = ws + 8, b = we + 8;
-        if (!ws || !we || a <= 0x10000 || b <= a) return false;
+        if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) return false;
         bool found = false;
+        int visited = 0;   // a tree read out of a freed interface can loop; the real one is far smaller
         std::function<void(std::uint64_t,int)> walk = [&](std::uint64_t node, int depth) {
-            if (found || depth > 16) return;
+            if (found || depth > 16 || visited++ > 30000) return;
             if (r32(node + 0x1a8) == sprite_id) { found = true; return; }
             { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
               for (const auto& kid_ : kids_) { if (!(true && !found && !found)) break; walk(kid_.addr, depth + 1); } }
@@ -6071,8 +6160,10 @@ std::string PuzzleStateJson(std::uint32_t pid) {
         }
     };
     std::uint64_t stack[4096]; int sp = 0;
-    std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
-    for (std::uint64_t w = ws + 8; w + 0x18 <= we + 8 && sp < 4096; w += 0x18) { std::uint64_t v = r64(w); if (v > 0x10000) stack[sp++] = v; }
+    std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28), a = ws + 8, b = we + 8;
+    // The box can close between the group match and this read, leaving garbage bounds behind.
+    if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) return kEmpty;
+    for (std::uint64_t w = a; w + 0x18 <= b && sp < 4096; w += 0x18) { std::uint64_t v = r64(w); if (v > 0x10000) stack[sp++] = v; }
     std::uint64_t grid = 0; int guard = 0;
     while (sp > 0 && guard++ < 8000) {
         std::uint64_t n = stack[--sp];
@@ -6114,16 +6205,18 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
     int ox = 0, oy = 0;
     bool haveAbs = iface_panel_origin(h, *root, pid, 1931, ox, oy);
     std::uint64_t grid = 0; int gx = 0, gy = 0;
+    int visited = 0;   // a tree read out of a freed interface can loop; the real one is far smaller
     std::function<void(std::uint64_t,int,int,int)> find =
         [&](std::uint64_t node, int bx, int by, int depth) {
-        if (grid || depth > 14) return;
+        if (grid || depth > 14 || visited++ > 30000) return;
         int ax = bx + r32(node + 0x98), ay = by + r32(node + 0x9c);
         if (r16s(node + 0x3a) == 18 && r16s(node + 0x3c) == -1) { grid = node; gx = ax; gy = ay; return; }
         { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
           for (const auto& kid_ : kids_) { if (!(true && !grid && !grid)) break; find(kid_.addr, ax, ay, depth + 1); } }
     };
-    std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28);
-    for (std::uint64_t w = ws + 8; w + 0x18 <= we + 8 && !grid; w += 0x18) { std::uint64_t nd = r64(w); if (nd > 0x10000) find(nd, ox, oy, 0); }
+    std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28), a = ws + 8, b = we + 8;
+    if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) return kEmpty;
+    for (std::uint64_t w = a; w + 0x18 <= b && !grid; w += 0x18) { std::uint64_t nd = r64(w); if (nd > 0x10000) find(nd, ox, oy, 0); }
     if (!grid) return kEmpty;
     int cx[25], cy[25], cw[25] = {0}, ch_[25];
     const std::uint64_t co[3] = { 0x1d0, 0x1b8, 0x200 };
@@ -6930,6 +7023,33 @@ static bool buff_var_value(HANDLE h, std::uint64_t root, const rtx::buffvars::En
     default: return false;
     }
 }
+// A buff's name is game text: <nbsp> for a space, colour tags, and for a buff whose struct has no
+// short name (52776 on 950-1) its whole description, lines joined by <br>. The first line is the
+// name and the lines after it the description, both plain.
+static void buff_name_lines(const std::string& s, std::string& name, std::string& desc) {
+    std::vector<std::string> lines(1);
+    for (std::size_t i = 0; i < s.size();) {
+        if (s[i] == '<') {
+            const std::size_t e = s.find('>', i);
+            if (e == std::string::npos) { lines.back() += s.substr(i); break; }
+            std::string tag = s.substr(i + 1, e - i - 1);
+            for (char& c : tag) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (tag == "br" || tag == "br/" || tag == "br /") lines.emplace_back();
+            else if (tag == "nbsp") lines.back() += ' ';
+            i = e + 1;
+            continue;
+        }
+        lines.back() += s[i++];
+    }
+    name.clear(); desc.clear();
+    for (auto& l : lines) {
+        const std::size_t a = l.find_first_not_of(' '), b = l.find_last_not_of(' ');
+        if (a == std::string::npos) continue;
+        const std::string t = l.substr(a, b - a + 1);
+        if (name.empty()) name = t;
+        else desc += (desc.empty() ? "" : "\n") + t;
+    }
+}
 std::string BuffsJson(std::uint32_t pid) {
     const char* kEmpty = "{\"buffs\":[],\"debuffs\":[]}";
     auto ps = snap_proc(pid);
@@ -7027,6 +7147,8 @@ std::string BuffsJson(std::uint32_t pid) {
             { std::string sn; if (rtx::cache::StructStrParam(structId, 2794, sn) && !sn.empty()) name = sn; }
             if (name.empty()) name = debuff ? rtx::cache::GetDebuffName(id) : rtx::cache::GetBuffName(id);
             if (name.empty() && itemBased) name = rtx::cache::ItemName(item);
+            std::string desc;
+            { const std::string raw = name; buff_name_lines(raw, name, desc); }
             int knd = 0;
             { int f = 0;
               if (rtx::cache::StructIntParam(structId, 8112, f) && f) knd |= 1;
@@ -7052,6 +7174,7 @@ std::string BuffsJson(std::uint32_t pid) {
             out += "{\"sprite\":" + std::to_string(itemBased ? 0 : sprite) +
                    ",\"item\":"   + std::to_string(itemBased ? item : 0) +
                    ",\"name\":\"" + json_escape(name) + "\"" +
+                   (desc.empty() ? std::string() : ",\"desc\":\"" + json_escape(desc) + "\"") +
                    ",\"timer\":\"" + json_escape(timer) + "\"" +
                    ",\"kind\":\"" + std::string(kindStr) + "\"" +
                    ",\"secs\":"   + std::to_string(sc) +
@@ -8139,13 +8262,28 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         struct RO { int id, x, y; };
         std::vector<RO> robjs;                                          // runtime placements (dedupe static)
         int oc = 0;
+        // This runs every overlay frame: each region's placements are copied out of the cache once
+        // and each loc id resolved once, not again for every object that shares them.
+        std::unordered_map<std::uint64_t, std::vector<rtx::cache::LocPlacement>> oregions;
+        auto regionLocs = [&](int rx, int ry) -> const std::vector<rtx::cache::LocPlacement>& {
+            const std::uint64_t k = ((std::uint64_t)(std::uint32_t)rx << 32) | (std::uint32_t)ry;
+            auto it = oregions.find(k);
+            if (it == oregions.end()) it = oregions.emplace(k, rtx::cache::RegionLocations(rx, ry)).first;
+            return it->second;
+        };
+        std::unordered_map<int, rtx::cache::LocMeta> omemo;
+        auto locOf = [&](int cfg) -> const rtx::cache::LocMeta& {
+            auto it = omemo.find(cfg);
+            if (it == omemo.end()) it = omemo.emplace(cfg, resolve_loc(h, rroot, cfg)).first;
+            return it->second;
+        };
 
         std::vector<RuntimeObj> runtime;
         if (ReadRuntimeObjects(pid, runtime)) {
             for (const auto& r : runtime) {
                 if (oc >= kMaxObjects) break;
                 if (r.config_id <= 0 || r.plane != out.plane) continue;
-                auto meta = resolve_loc(h, rroot, r.config_id);
+                const auto& meta = locOf(r.config_id);
                 if (meta.name.empty()) continue;
                 if (interactable && meta.actions.empty()) continue;
                 long long dk = ((long long)r.config_id << 40) | ((long long)r.x << 20) | (unsigned)r.y;
@@ -8158,7 +8296,7 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 bool placed = false;
                 {
                     const int tol = std::max(W, H);
-                    for (const auto& pl : rtx::cache::RegionLocations(r.x >> 6, r.y >> 6)) {
+                    for (const auto& pl : regionLocs(r.x >> 6, r.y >> 6)) {
                         if (pl.id != r.config_id || pl.plane != r.plane) continue;
                         int wx = ((r.x >> 6) << 6) + pl.x, wy = ((r.y >> 6) << 6) + pl.y;
                         if (std::abs(wx - r.x) > tol || std::abs(wy - r.y) > tol) continue;
@@ -8190,10 +8328,10 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
         for (int key : regions) {
             if (rn++ >= kMaxRegions || oc >= kMaxObjects) break;
             int rx = (key >> 8) & 0xff, ry = key & 0xff;
-            for (const auto& p : rtx::cache::RegionLocations(rx, ry)) {
+            for (const auto& p : regionLocs(rx, ry)) {
                 if (oc >= kMaxObjects) break;
                 if (p.plane != out.plane) continue;
-                auto meta = resolve_loc(h, rroot, p.id);              // varbit-aware
+                const auto& meta = locOf(p.id);                       // varbit-aware
                 if (meta.name.empty()) continue;
                 if (interactable && meta.actions.empty()) continue;
                 int wx = rx * 64 + p.x, wy = ry * 64 + p.y;
@@ -8859,7 +8997,7 @@ std::string ReaderHealthJson(std::uint32_t pid) {
     {   // Server opcodes: each ServerOps.h opcode must carry its recorded wire length in the packet table.
         std::uint64_t modSize = 0;
         { std::lock_guard<std::mutex> lk(g_mu); auto it = g_states.find((DWORD)pid); if (it != g_states.end()) modSize = it->second.mod_size; }
-        std::uint64_t tbl = (ps.mod_base && modSize) ? resolve_optable(h, ps.mod_base, modSize) : 0;
+        std::uint64_t tbl = (ps.mod_base && modSize) ? cached_optable(pid, h, ps.mod_base, modSize) : 0;
         int okc = 0, total = 0; std::string bad;
         for (const auto& e : rtx::sops::kExpected) {
             ++total;
@@ -9092,6 +9230,7 @@ std::string ReaderHealthJson(std::uint32_t pid) {
             if (r.stop_n > 0) {
                 if (r.stop_op == 256)      note += ", " + std::to_string(r.stop_n) + " overrun mid-record";
                 else if (r.stop_op == 257) note += ", " + std::to_string(r.stop_n) + " schema mismatch";
+                else if (r.stop_op == 258) note += ", " + std::to_string(r.stop_n) + " ended with bytes unread";
                 else                       note += ", " + std::to_string(r.stop_n) + " break at opcode " + std::to_string(r.stop_op);
             }
             status = (r.ok == r.total) ? 1 : (r.ok * 20 >= r.total * 19 ? 2 : 0);

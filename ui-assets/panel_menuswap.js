@@ -16,17 +16,18 @@
   const mnuKeyKind = k => (k === 0 ? 'item' : k === 1 ? 'loc' : 'npc');
   let mnuRules = {};        // target -> [verb, ...] desired order ('*' = any object)
   let mnuOrder = null;      // working order for the latched menu; null = as the game has it
-  try { const raw = localStorage.getItem('rtxMenuRules'); if (raw) mnuRules = JSON.parse(raw) || {}; } catch (e) {}
+  try { const raw = localStorage.getItem('rtxMenuRules'); if (raw) mnuAdopt(JSON.parse(raw)); } catch (e) {}
 
+  // Takes a saved blob (the versioned form or the older bare rule map) only when it holds rules, so an
+  // empty, missing or unreadable store never replaces the rules already loaded.
   function mnuAdopt(o) {
     if (!o || typeof o !== 'object') return false;
-    if (o.v && o.rules) {
-      mnuRules = o.rules || {};
-      mnuNames = o.names || {};
-      return !!Object.keys(mnuRules).length;
-    }
-    mnuRules = o;
-    return !!Object.keys(o).length;
+    const versioned = !!(o.v && o.rules);
+    const rules = versioned ? o.rules : o;
+    if (!rules || typeof rules !== 'object' || !Object.keys(rules).length) return false;
+    mnuRules = rules;
+    if (versioned) mnuNames = o.names || {};
+    return true;
   }
 
   async function mnuLoadRules() {
@@ -35,7 +36,7 @@
     let disk = null;
     try { disk = JSON.parse(await rtxData.raw('host.menuRulesLoad') || '{}'); } catch (e) { return; }
     const had = Object.keys(mnuRules).length;
-    if (!mnuAdopt(disk) && had) mnuSaveRules();   // first run after the fix: migrate the mirror
+    if (!mnuAdopt(disk) && had) mnuSaveRules();   // no rules on disk (first run, or file missing): write the mirror back
     mnuSig = ''; mnuListSig = '';
     renderMenuSwap();
   }

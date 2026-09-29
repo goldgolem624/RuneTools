@@ -52,6 +52,9 @@
   }
   function auraNewUid() { return 'a' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36); }
   function auraIsNum(v) { return typeof v === 'number' && isFinite(v); }
+  // Imported strings and stored prefs skip the editor, so their numbers are held to its ranges (a pips max becomes that many elements).
+  const AURA_NUM_RANGE = { w: [8, 8192], h: [8, 8192], alpha: [0, 1], fontSize: [8, 512], ringWidth: [2, 512], max: [1, 30],
+                           space: [0, 1024], limit: [0, 1000], gridCols: [1, 100], childW: [8, 8192], childH: [8, 8192] };
   function auraNormTrig(t) {
     const d = auraTrigDefaults();
     if (!t || typeof t !== 'object') return d;
@@ -76,11 +79,12 @@
       if (!(k in a)) continue;
       const v = a[k], dv = d[k];
       if (k === 'triggers' || k === 'conditions' || k === 'actions' || k === 'anim' || k === 'load' || k === 'children') continue;
-      if (typeof dv === 'number' && auraIsNum(v)) o[k] = v;
+      if (typeof dv === 'number' && auraIsNum(v)) { const r = AURA_NUM_RANGE[k]; o[k] = r ? Math.max(r[0], Math.min(r[1], v)) : v; }
       else if (typeof dv === 'string' && typeof v === 'string') o[k] = v;
       else if (typeof dv === 'boolean' && typeof v === 'boolean') o[k] = v;
       else if (dv === null && (v === null || typeof v === 'string')) o[k] = v;
     }
+    o.max = Math.round(o.max);
     o.uid = (typeof a.uid === 'string' && a.uid) ? a.uid : auraNewUid();
     o.winGeom = (a.winGeom && typeof a.winGeom === 'object' && auraIsNum(a.winGeom.w) && auraIsNum(a.winGeom.h))
       ? { x: a.winGeom.x | 0, y: a.winGeom.y | 0, w: a.winGeom.w | 0, h: a.winGeom.h | 0, lock: !!a.winGeom.lock } : null;
@@ -801,9 +805,9 @@
       const pt = textOv != null ? auraText(textOv, a, ev, st) : (st ? String(cnt) : '');
       tm.firstChild.textContent = pt;
       auraFitText(tm.firstChild, Math.min(parseFloat(el.style.width) || 56, parseFloat(el.style.height) || 56), pt);
-      tm.classList.toggle('au-full', cnt >= a.max);
+      const mx = Math.max(1, Math.min(30, Math.round(+a.max) || 1)); const perRow = mx > 10 ? Math.ceil(mx / 2) : mx;
+      tm.classList.toggle('au-full', cnt >= mx);
       const pp = auraSub(el, 'au-pips');
-      const mx = Math.max(1, a.max); const perRow = mx > 10 ? Math.ceil(mx / 2) : mx;
       pp.style.gridTemplateColumns = 'repeat(' + perRow + ', 1fr)';
       pp.style.setProperty('--pip', color || a.pipColor);
       if (pp.childNodes.length !== mx) { pp.textContent = ''; for (let i = 0; i < mx; i++) pp.appendChild(document.createElement('i')); }

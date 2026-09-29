@@ -431,7 +431,9 @@ void PruneInvalid() {
 
 constexpr std::uint64_t kVmVarId = 0x24;
 
-rtx::varc::Share* g_varcShare = nullptr;
+// Read by the var detours on the game's script thread and replaced by the worker on a session
+// rebind, so it is never null once set and each user loads it once.
+std::atomic<rtx::varc::Share*> g_varcShare{ nullptr };
 typedef void* (*VarOp_t)(std::uint64_t, std::uint64_t);
 VarOp_t g_origVarp = nullptr;     // type 4 handler (player var)
 VarOp_t g_origVarc = nullptr;     // type 5 handler (client var)
@@ -600,7 +602,7 @@ __declspec(noinline) void ResolveCurrentVarLive(std::uint64_t vm_ctx, std::uint1
     std::uint64_t e = FindEntry(ctx, var_id);
     std::uint64_t storage = e ? ResolveStorage(e, ctx) : 0;
     std::lock_guard<std::mutex> lk(g_varMu);
-    if (storage) { g_storageCache[key] = storage; g_walkAttempts.erase(key); if (g_varcShare) g_varcShare->diag[3]++; }
+    if (storage) { g_storageCache[key] = storage; g_walkAttempts.erase(key); if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[3]++; }
     else         { g_walkAttempts[key]++; }
 }
 
@@ -627,13 +629,13 @@ __declspec(noinline) void ResolvePanelGroupsFromLive(std::uint64_t vm_ctx) {
         g_storageCache[(4u << 16) | grp.x] = sx; g_storageCache[(4u << 16) | grp.y] = sy;
         if (sw) g_storageCache[(4u << 16) | grp.w] = sw;
         if (sh) g_storageCache[(4u << 16) | grp.h] = sh;
-        if (g_varcShare) g_varcShare->diag[3]++;
+        if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[3]++;
     }
 }
 
 // push_var capture (game thread, thousands/sec). Panel resolver is always on; per-var capture is gated.
 inline void* VarOpObserve(VarOp_t orig, std::uint64_t a, std::uint64_t vm_ctx, std::uint8_t scope_type) {
-    if (g_varcShare) {
+    if (auto* vs = g_varcShare.load(std::memory_order_acquire)) {
         std::uint64_t reg = 0; std::uint16_t var_id = 0; bool ok = false;
         __try { var_id = *(std::uint16_t*)(vm_ctx + kVmVarId); reg = *(std::uint64_t*)(vm_ctx + 0x10); ok = true; }
         __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -645,19 +647,19 @@ inline void* VarOpObserve(VarOp_t orig, std::uint64_t a, std::uint64_t vm_ctx, s
                 ResolvePanelGroupsFromLive(vm_ctx);
             }
         }
-        if (ok && g_varcShare->enable) ResolveCurrentVarLive(vm_ctx, var_id, scope_type); // id 0 is a real var
+        if (ok && vs->enable) ResolveCurrentVarLive(vm_ctx, var_id, scope_type); // id 0 is a real var
     }
     return orig(a, vm_ctx);
 }
-void* Detour_Varp(std::uint64_t a, std::uint64_t vm_ctx) { if (g_varcShare) g_varcShare->diag[0]++; return VarOpObserve(g_origVarp, a, vm_ctx, 4); }
-void* Detour_Varc(std::uint64_t a, std::uint64_t vm_ctx) { if (g_varcShare) g_varcShare->diag[1]++; return VarOpObserve(g_origVarc, a, vm_ctx, 5); }
+void* Detour_Varp(std::uint64_t a, std::uint64_t vm_ctx) { if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[0]++; return VarOpObserve(g_origVarp, a, vm_ctx, 4); }
+void* Detour_Varc(std::uint64_t a, std::uint64_t vm_ctx) { if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[1]++; return VarOpObserve(g_origVarc, a, vm_ctx, 5); }
 
 typedef void* (*CcOp_t)(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 CcOp_t g_origCcDrag = nullptr;
 
 void* Detour_CcIfSetDraggable(std::uint64_t p1, std::uint64_t p2, std::uint64_t p3, std::uint64_t p4) {
     void* r = g_origCcDrag(p1, p2, p3, p4);
-    if (g_varcShare) g_varcShare->diag[2]++;
+    if (auto* vs = g_varcShare.load(std::memory_order_acquire)) vs->diag[2]++;
     return r;
 }
 
@@ -1647,8 +1649,9 @@ std::uint32_t g_netProbeFramerRva    = 0;
 
 void EnsureProducers(Share*& sh) {
     static std::uint32_t s_gen = 0;
+    static bool s_varcStale = false;            // the var view in use still has the previous session's name
     if (rtx::ipc::SessionChanged(s_gen)) {
-        if (g_varcShare)   g_varcFlagsSticky      = g_varcShare->flags;
+        if (auto* vs = g_varcShare.load(std::memory_order_relaxed)) g_varcFlagsSticky = vs->flags;
         if (g_renderShare) g_renderInstalledStick = g_renderShare->installed;
         if (g_eventShare)  g_eventFlagsSticky     = g_eventShare->flags;
         if (g_netProbeShare) {
@@ -1658,7 +1661,7 @@ void EnsureProducers(Share*& sh) {
 
         sh                = nullptr;
         g_groundShare     = nullptr;
-        g_varcShare       = nullptr;
+        s_varcStale       = true;     // replaced below, never nulled: the var detours read it at any moment
         g_renderShare     = nullptr;
         g_specialShare    = nullptr;
         g_eventShare      = nullptr;
@@ -1687,14 +1690,15 @@ void EnsureProducers(Share*& sh) {
         }
     }
 
-    if (!g_varcShare) {
-        g_varcShare = MapVarcShare();
-        if (g_varcShare) {
-            g_varcShare->magic = rtx::varc::kMagic; g_varcShare->version = rtx::varc::kVersion;
-            g_varcShare->pid = pid; g_varcShare->count = 0; g_varcShare->strCount = 0;
-            g_varcShare->enable = 0; g_varcShare->seq = 0;
-            g_varcShare->flags = g_varcFlagsSticky;      // observers are still attached
-            for (int i = 0; i < 8; ++i) g_varcShare->diag[i] = 0;
+    if (s_varcStale || !g_varcShare.load(std::memory_order_relaxed)) {
+        if (auto* vs = MapVarcShare()) {
+            vs->magic = rtx::varc::kMagic; vs->version = rtx::varc::kVersion;
+            vs->pid = pid; vs->count = 0; vs->strCount = 0;
+            vs->enable = 0; vs->seq = 0;
+            vs->flags = g_varcFlagsSticky;               // observers are still attached
+            for (int i = 0; i < 8; ++i) vs->diag[i] = 0;
+            g_varcShare.store(vs, std::memory_order_release);   // published whole, in one store
+            s_varcStale = false;
         }
     }
 
@@ -1775,12 +1779,12 @@ DWORD WINAPI Worker(LPVOID) {
     }
 
     // Client-variable values: observe the varp and varc-int op handlers. flags bit0 = observers installed.
-    g_varcShare = MapVarcShare();
-    if (g_varcShare) {
-        g_varcShare->magic = rtx::varc::kMagic; g_varcShare->version = rtx::varc::kVersion;
-        g_varcShare->pid = GetCurrentProcessId(); g_varcShare->count = 0; g_varcShare->strCount = 0;
-        g_varcShare->enable = 0; g_varcShare->flags = 0; g_varcShare->seq = 0;
-        for (int i = 0; i < 8; ++i) g_varcShare->diag[i] = 0;
+    if (auto* vs = MapVarcShare()) {
+        vs->magic = rtx::varc::kMagic; vs->version = rtx::varc::kVersion;
+        vs->pid = GetCurrentProcessId(); vs->count = 0; vs->strCount = 0;
+        vs->enable = 0; vs->flags = 0; vs->seq = 0;
+        for (int i = 0; i < 8; ++i) vs->diag[i] = 0;
+        g_varcShare.store(vs, std::memory_order_release);
         // Same body up to the final bucket-load register: varp ends ...49 8B 0C C2, varc ...49 8B 04 C2.
         static const unsigned char kVarpBody[] = {0x4C,0x8B,0x4A,0x10,0x48,0x8B,0xDA,0x44,0x0F,0xB7,0x42,0x24,
             0x33,0xD2,0x41,0x8B,0xC0,0x41,0x8B,0x49,0x60,0x4D,0x8B,0x51,0x58,0x48,0xF7,0xF1,0x8B,0xC2,0x49,0x8B,0x0C,0xC2};
@@ -1793,7 +1797,7 @@ DWORD WINAPI Worker(LPVOID) {
             DetourUpdateThread(GetCurrentThread());
             if (pVarp) { g_origVarp = (VarOp_t)pVarp; DetourAttach(&(PVOID&)g_origVarp, (PVOID)Detour_Varp); }
             if (pVarc) { g_origVarc = (VarOp_t)pVarc; DetourAttach(&(PVOID&)g_origVarc, (PVOID)Detour_Varc); }
-            if (DetourTransactionCommit() == NO_ERROR) g_varcShare->flags = 1;
+            if (DetourTransactionCommit() == NO_ERROR) vs->flags = 1;
         }
         // cc_if_setdraggable body: add dword [r9+0x10A0],-2; mov rbp,rcx; mov eax,[r9+..]
         static const unsigned char kCcDragBody[] = {0x41,0x83,0x81,0xA0,0x10,0x00,0x00,0xFE,0x48,0x8B,0xE9,0x41,0x8B,0x81};
@@ -1802,7 +1806,7 @@ DWORD WINAPI Worker(LPVOID) {
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
             g_origCcDrag = (CcOp_t)pCc; DetourAttach(&(PVOID&)g_origCcDrag, (PVOID)Detour_CcIfSetDraggable);
-            if (DetourTransactionCommit() == NO_ERROR) g_varcShare->flags |= 2;   // bit1 = cc_if_setdraggable observed
+            if (DetourTransactionCommit() == NO_ERROR) vs->flags |= 2;   // bit1 = cc_if_setdraggable observed
         }
     }
 
@@ -1888,7 +1892,7 @@ DWORD WINAPI Worker(LPVOID) {
         } else if (++emptyTicks >= 8) {
             sh->seq++; MemoryBarrier(); sh->count = 0; MemoryBarrier(); sh->seq++;
         }
-        if (g_varcShare) PublishVarcs(g_varcShare);
+        if (auto* vs = g_varcShare.load(std::memory_order_acquire)) PublishVarcs(vs);
         std::uint64_t root = g_SceneWorkerRoot.load(std::memory_order_relaxed);
         int entN = WalkVecTrack(root);
         if (g_specialShare) {
@@ -1965,6 +1969,9 @@ bool LooksLikeHoverMethod(std::uint64_t fn) {
 // so a highlight that merely continues keeps its pulse where it is. A fresh hover still pulses.
 using HoverFn = void (*)(std::uint64_t, std::int32_t);
 HoverFn g_realHovered = nullptr;
+// The "hovered" method hooked below. Its first bytes are the hook's jump from then on, so it no
+// longer starts the way LooksLikeHoverMethod checks; it was checked before it was hooked.
+std::uint64_t g_hookedHover = 0;
 std::atomic<bool> g_pulseHold{ false };
 void HookHovered(std::uint64_t obj, std::int32_t frame) {
     if (g_pulseHold.load(std::memory_order_relaxed)) {
@@ -1990,6 +1997,7 @@ void InstallPulseHold(std::uint64_t hover) {
     const LONG rc = DetourTransactionCommit();
     RingLog("hover pulse: %s (method at exe+%llx)", rc == NO_ERROR ? "a continuing highlight keeps its pulse" : "hook failed", (unsigned long long)(hover - g_base));
     if (rc != NO_ERROR) g_realHovered = nullptr;
+    else g_hookedHover = hover;
 }
 
 bool MarkSub(std::uint64_t sub) {
@@ -2001,7 +2009,8 @@ bool MarkSub(std::uint64_t sub) {
         const std::uint64_t vt = R64(sub);
         if (!InModule(vt)) return false;
         const std::uint64_t hover = R64(vt + kHoverSlot), keep = R64(vt + kKeepSlot);
-        if (!LooksLikeHoverMethod(hover) || !LooksLikeHoverMethod(keep)) return false;
+        const bool hooked = g_hookedHover != 0 && hover == g_hookedHover;
+        if ((!hooked && !LooksLikeHoverMethod(hover)) || !LooksLikeHoverMethod(keep)) return false;
         InstallPulseHold(hover);
         const std::uint64_t owner = R64(sub + kHlOwner);
         const std::uint64_t settings = IsHeap(owner) ? R64(owner + kHlSettings) : 0;

@@ -33,7 +33,8 @@
   let sndLiveSeq = 0;            // highest companion sequence merged into sndLive
   const SND_HOT_MS = 1200;       // a chip pulses this long after its sound fires (wall clock)
   let sndFx = {};                // last soundFilterStatus payload
-  let sndFxOn = false;           // observation currently requested of the companion
+  let sndFxOn = false;           // filter (observation and muting) currently requested of the companion
+  let sndFxCheckAt = 0;          // last companion status check while the panel is hidden
   let sndScanRows = null;        // results of a whole-index scan, when one has been run
   let sndScanning = false, sndScanAt = 0, sndScanStop = false;
 
@@ -168,22 +169,50 @@
       if (raw) sndMuted = new Set(JSON.parse(raw).map(Number).filter(function (v) { return v > 0; }));
     } catch (e) {}
   }
+  sndLoadMuted();   // saved mutes apply from the start, before this panel is ever opened
+  // The stored list replaces this window's own, so a sound unmuted in another window is unmuted here too.
   function sndApplyDurablePrefs() {
     try {
       const raw = prefGet('rtxSoundMuted', null);
-      if (!raw) return;
-      let changed = false;
-      for (const v of JSON.parse(raw).map(Number)) if (v > 0 && !sndMuted.has(v)) { sndMuted.add(v); changed = true; }
-      if (!changed) return;
-      try { rtxData.sync('act.soundMute', Array.from(sndMuted).join(',')); } catch (e) {}
-      sndSig = ''; paneRun('sounds', renderSounds);
+      if (raw) {
+        const next = new Set(JSON.parse(raw).map(Number).filter(function (v) { return v > 0; }));
+        const same = next.size === sndMuted.size && Array.from(next).every(function (v) { return sndMuted.has(v); });
+        if (!same) {
+          sndMuted = next;
+          sndSendMuted();
+          sndSig = ''; paneRun('sounds', renderSounds);
+        }
+      }
     } catch (e) {}
-    try { const v = parseInt(prefGet('rtxSoundVol', ''), 10); if (v >= 0 && v <= 100) { sndVol = v; rtxData.sync('act.soundVolume', sndVol); } } catch (e) {}
+    try {
+      const v = parseInt(prefGet('rtxSoundVol', ''), 10);
+      if (v >= 0 && v <= 100) {
+        sndVol = v; rtxData.sync('act.soundVolume', sndVol);
+        const vin = $('sndVolIn'); if (vin) vin.value = String(sndVol);
+      }
+    } catch (e) {}
   }
 
+  function sndSendMuted() {
+    try { rtxData.sync('act.soundMute', Array.from(sndMuted).join(',')); } catch (e) {}
+  }
   function sndPushMuted() {
     prefSet('rtxSoundMuted', JSON.stringify(Array.from(sndMuted)));
-    try { rtxData.sync('act.soundMute', Array.from(sndMuted).join(',')); } catch (e) {}
+    sndSendMuted();
+  }
+  // The companion starts with its filter off and no mute list, and starts over when it loads after this
+  // page or opens its channel again: send both again when its status shows either one missing.
+  function sndFxResync(fx) {
+    if (!sndFxOn || !fx || !fx.ok) return false;
+    if (fx.enabled && (fx.muted || !sndMuted.size)) return false;
+    try { rtxData.sync('act.soundFilterEnable', true); } catch (e) {}
+    sndSendMuted();
+    return true;
+  }
+  // The companion's filter status, or null when this build or this client cannot give one.
+  async function sndFxStatus() {
+    if (!bridge().soundFilterStatus) return null;
+    try { return JSON.parse(await rtxData.raw('host.soundFilterStatus') || '{}') || {}; } catch (e) { return null; }
   }
 
   function sndToggleMute(key) {
@@ -194,18 +223,31 @@
 
   async function sndTick() {
     if (!bridge()) return;
-    const want = paneVisible('sounds');
+    const vis = paneVisible('sounds');
+    // The companion silences muted sounds only while its filter is on, so the filter stays on whenever
+    // something is muted, not only while this panel is open to watch.
+    const want = vis || sndMuted.size > 0;
     if (want !== sndFxOn && bridge().soundFilterEnable) {
       sndFxOn = want;
       try { await rtxData.raw('act.soundFilterEnable', want); } catch (e) {}
       if (want) sndPushMuted();
     }
-    if (!want || !bridge().soundStatus) return;
+    if (!vis) {
+      if (!sndFxOn || Date.now() - sndFxCheckAt < 2000) return;
+      sndFxCheckAt = Date.now();
+      const fx = await sndFxStatus();
+      if (!fx) return;
+      sndFxResync(fx);
+      if (fx.ok) sndLiveSeq = fx.seq | 0;   // plays while the panel is hidden are not listed as heard when it opens
+      return;
+    }
+    if (!bridge().soundStatus) return;
     try { sndSt = JSON.parse(await rtxData.raw('host.soundStatus') || '{}') || sndSt; } catch (e) { return; }
-    if (bridge().soundFilterStatus) {
+    const fx = await sndFxStatus();
+    if (fx) {
       try {
-        const fx = JSON.parse(await rtxData.raw('host.soundFilterStatus') || '{}') || {};
-        sndFx = fx;             // assign even when absent, so the strip reports a client that went away
+        sndFx = fx;            // assign even when absent, so the strip reports a client that went away
+        if (sndFxResync(fx)) sndLiveSeq = fx.seq | 0;   // a restarted channel counts its plays from zero again
         if (fx.ok) {
           const fresh = (fx.recent || []).filter(function (e2) { return e2.n >= sndLiveSeq; });
           if (fresh.length) {

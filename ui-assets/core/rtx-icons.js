@@ -70,7 +70,8 @@
     const lines = String(text).split('\n');
     const out = [];
     lines.forEach((l, i) => {
-      if (i > 0 && /^\s*(Source|Sources|ID|Note|Tip|Hint|Why|Because|Shown because|Diagnostic|Debug)\b/i.test(l)) return;
+      // an id line stays: it is one short line, and what a guide or a plugin needs to name the thing
+      if (i > 0 && /^\s*(Source|Sources|Note|Tip|Hint|Why|Because|Shown because|Diagnostic|Debug)\b/i.test(l)) return;
       if (i > 0) {
         const stripped = l.replace(/\s*\([^()]*\)/g, '').replace(/\s{2,}/g, ' ').trimEnd();
         if (stripped.replace(/[\s:;,.-]/g, '').length) l = stripped;

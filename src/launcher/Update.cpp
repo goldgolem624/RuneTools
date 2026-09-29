@@ -134,7 +134,10 @@ static void run_update() {
     log("manifest version=" + ver + " hash=" + hash);
     if (ver.empty()) { log("abort: manifest has no version"); set_upd("error", 0, "No update available"); return; }
 
-    // Signed manifest: rtx-client-update-v1\n<version>\n<hash>\n<size> under the pinned key.
+    // Signed manifest: rtx-client-update-v1\n<version>\n<hash>\n<size> under the pinned key, checked in
+    // the update manifest's signature domain ("sigV2"). The bare "sig" beside it is only for older
+    // launchers: the same key signs plugin bundles, whose bytes their authors choose, so a bare
+    // signature proves nothing here.
     std::string size;   // signed: also the most the download may be
     {
         {
@@ -147,8 +150,9 @@ static void run_update() {
         std::vector<std::uint8_t> sig;
         std::string lhash = hash; for (auto& ch : lhash) ch = (char)tolower((unsigned char)ch);
         std::string msg = "rtx-client-update-v1\n" + ver + "\n" + lhash + "\n" + (size.empty() ? "0" : size);
-        if (!plugin_b64_decode(json_str(man.body, "sig"), sig) || sig.size() != 64 ||
-            !crypto::VerifyEcdsaP256((const std::uint8_t*)msg.data(), msg.size(), sig.data(), sig.size(), kPluginPubKey, sizeof(kPluginPubKey))) {
+        if (!plugin_b64_decode(json_str(man.body, "sigV2"), sig) || sig.size() != 64 ||
+            !crypto::VerifyEcdsaP256Domain(crypto::SigDomain::UpdateManifest, (const std::uint8_t*)msg.data(), msg.size(),
+                                           sig.data(), sig.size(), kPluginPubKey, sizeof(kPluginPubKey))) {
             log("abort: manifest signature missing or invalid");
             set_upd("error", 0, "Update manifest failed verification");
             return;

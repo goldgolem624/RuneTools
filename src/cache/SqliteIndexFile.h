@@ -2,6 +2,7 @@
 
 #include "ReferenceTable.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -26,7 +27,8 @@ public:
 
     int                 index_id() const     { return index_id_; }
     bool                ready()    const     { return ref_table_ != nullptr; }
-    const ReferenceTable& ref()   const     { return *ref_table_; }
+    // Without a reference table (not ready) this is an empty table rather than a null dereference.
+    const ReferenceTable& ref()   const     { return ref_table_ ? *ref_table_ : EmptyRefTable(); }
 
     std::vector<std::uint8_t> ReadFile(int archive_id, int file_id);
 
@@ -34,6 +36,8 @@ public:
     // from, which happens when the game client downloads a cache update while we are running. The
     // file list per archive then no longer matches the archive data, so every read from this object
     // is suspect: the owner must rebuild it. Cheap when nothing changed (file mtime gate).
+    // Also true once a table can be read for an object built without one (the jcache was busy,
+    // could not be opened, or had no table yet), so the owner rebuilds it ready.
     bool RefTableChanged();
 
     std::vector<std::uint8_t> ReadRawArchive(int archive_id);
@@ -50,8 +54,10 @@ private:
         std::uint64_t                          last_use = 0;   // LRU touch counter
         std::size_t                            bytes = 0;
         std::vector<std::vector<std::uint8_t>> files;
+        std::chrono::steady_clock::time_point  retry_at{};     // NotLoaded after a missing row: no read before this
     };
 
+    static const ReferenceTable& EmptyRefTable();
     std::vector<std::uint8_t> FetchReferenceTableBlob();
     std::vector<std::uint8_t> FetchArchiveBlob(int archive_id);
     // True when the last FetchBlob could not read the db at all (locked/busy/io error, or the

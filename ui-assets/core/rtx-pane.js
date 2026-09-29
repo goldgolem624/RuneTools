@@ -41,7 +41,7 @@
     if (activeTab === 'player' && lastSnap) {
       fetchSkillBonus();   // async, self-throttled; re-renders when bonus XP changes
       const psig = JSON.stringify(lastSnap.skills || null) + '|' +
-                   (virtualLevelsOn() ? 1 : 0) + '|' + JSON.stringify(gameGoals) + '|' + skillBonusSig;
+                   (virtualLevelsOn() ? 1 : 0) + '|' + virtualCap(false) + '|' + JSON.stringify(gameGoals) + '|' + skillBonusSig;
       if (psig === _playerPaneSig && $('content').querySelector('.skill-grid')) return;
       _playerPaneSig = psig;
     }
@@ -73,6 +73,16 @@
         });
         wrap.appendChild(row);
       }
+      if (virtualLevelsOn()) {   // the pane shows virtual levels only while the game's own setting is on
+        const row = ovToggleRow('skVirtTgl', 'Virtual levels to 126', 'Past 120 on the same XP curve. Invention already goes to 150');
+        row.classList.toggle('on', virtualCap(false) > 120);
+        row.addEventListener('click', () => {
+          const now = virtualCap(false) > 120;
+          try { prefSet('rtxVirtual126', now ? '0' : '1'); } catch (e) {}
+          paneRun('player', renderPane);
+        });
+        wrap.appendChild(row);
+      }
       const grid = document.createElement('div'); grid.className = 'skill-grid';
       let totalLevel = 0, totalXp = 0, virtualTotal = 0, totalBonus = 0;
       SKILL_LAYOUT.forEach(i => {
@@ -80,9 +90,9 @@
         const real = t[0], boost = t[1], xp = (t[2] === undefined ? -1 : t[2]);
         totalLevel += real;
         if (xp >= 0) totalXp += xp;
-        // Virtual level: every skill up to 120, Invention (elite, idx 26) up to 150.
+        // Virtual level: every skill up to 120 (126 with the option), Invention (elite, idx 26) up to 150.
         let vlev = real;
-        if (xp >= 0) { const elite = (i === 26); vlev = Math.min(elite ? 150 : 120, levelFromXp(xp, elite)); if (vlev < real) vlev = real; }
+        if (xp >= 0) { const elite = (i === 26); vlev = Math.min(virtualCap(elite), levelFromXp(xp, elite)); if (vlev < real) vlev = real; }
         virtualTotal += vlev;
 
         const cell = document.createElement('div'); cell.className = 'skill-cell';
@@ -94,7 +104,9 @@
         ico.dataset.skill = String(i);
         attachSkillIcon(ico, i);
         const lvl  = document.createElement('span'); lvl.className = 'sk-val';
-        lvl.textContent = (boost !== real) ? (boost + '/' + real) : String(real);
+        // With virtual levels on the box shows the virtual level; a boost or drain is relative to the real level,
+        // so that case keeps showing boost/real.
+        lvl.textContent = (boost !== real) ? (boost + '/' + real) : String(virtualLevelsOn() ? vlev : real);
         cell.appendChild(ico);
         cell.appendChild(lvl);
 
@@ -103,11 +115,12 @@
           'ID ' + i,
           'Level ' + real + (boost !== real ? ' (boosted ' + boost + ')' : ''),
         ];
+        if (virtualLevelsOn() && vlev > real) lines.push('Virtual level ' + vlev);
         if (xp >= 0) {
           lines.push('XP ' + xp.toLocaleString());
           const nx = xpToNext(xp, i === 26);   // Invention uses the elite table
-          lines.push(nx.next > 0 ? (nx.next.toLocaleString() + ' to level ' + nx.level)
-                                 : 'Max XP');
+          if (nx.next <= 0) lines.push('Max XP');
+          else if (nx.level <= virtualCap(i === 26)) lines.push(nx.next.toLocaleString() + ' to level ' + nx.level);
         } else {
           lines.push('XP unavailable');
         }
@@ -156,7 +169,7 @@
                       '<span class="ss-virtual">' + virtualTotal.toLocaleString() + ' virtual</span>';
         d.dataset.tip = 'Total level: ' + totalLevel.toLocaleString() +
                         '\nVirtual total: ' + virtualTotal.toLocaleString() +
-                        ' (levels past 99/120 derived from XP; Invention to 150)' +
+                        ' (levels past 99 derived from XP, up to ' + virtualCap(false) + '; Invention to 150)' +
                         '\nShown because the in-game "virtual levels" setting is on' +
                         '\nSource: varbit 19007 = varp 458 bit 30';
         stats.appendChild(d);

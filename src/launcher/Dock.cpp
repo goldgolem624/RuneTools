@@ -5,6 +5,7 @@
 #include "Overlay.h"            // QuiesceMarkers (stop the in-frame layer before teardown)
 #include "WikiBrowser.h"        // in-client wiki pane (docked child window, wiki-locked)
 #include "Markers.h"            // configurable mark/remove-tile keybinds
+#include "LuaHost.h"            // UnloadClient (a client's Lua plugin states go with its page)
 #include "../reader/Reader.h"   // RenderToggle (keep-focused / embed flag channel)
 #include "../../companion/RenderShare.h"   // kMsgGameClicked (companion -> host click routing)
 #include "../shared/Log.h"
@@ -39,7 +40,7 @@ using namespace ultralight;
 namespace {
 
 App*        g_app = nullptr;
-std::string g_client_html_path;
+std::filesystem::path g_client_html_path;   // wide, see page_path
 HBRUSH      g_darkBrush = nullptr;   // dark erase brush (#0b0d12)
 
 bool      g_uiWatch = false;
@@ -55,11 +56,28 @@ constexpr UINT kMsgEmbedDone = 0x8000 + 0x53;   // WM_APP range, beside kMsgGame
 
 unsigned DpiForWindow(HWND h);
 
-std::string read_file(const std::string& path) {
+std::string read_file(const std::filesystem::path& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return {};
     std::stringstream ss; ss << f.rdbuf();
     return ss.str();
+}
+
+// The client page path arrives as narrow text: in the ANSI code page when that can hold it, as UTF-8
+// when it cannot. Opened as narrow text it would always be read in the ANSI code page, so it is kept
+// as a wide path. UTF-8 is taken when the text is valid UTF-8 and names a file that exists: a name in
+// a double-byte ANSI code page can also be valid UTF-8, and then names nothing.
+std::filesystem::path page_path(const std::string& s) {
+    auto widen = [&s](UINT cp, DWORD flags) {
+        std::wstring w;
+        int n = s.empty() ? 0 : MultiByteToWideChar(cp, flags, s.data(), (int)s.size(), nullptr, 0);
+        if (n > 0) { w.resize((std::size_t)n); MultiByteToWideChar(cp, flags, s.data(), (int)s.size(), w.data(), n); }
+        return std::filesystem::path(std::move(w));
+    };
+    std::error_code ec;
+    std::filesystem::path utf8 = widen(CP_UTF8, MB_ERR_INVALID_CHARS);
+    if (!utf8.empty() && std::filesystem::exists(utf8, ec)) return utf8;
+    return widen(CP_ACP, 0);
 }
 
 // Every script the client page is put together from, in load order. Also what an install is
@@ -127,6 +145,7 @@ const char* const kFiles[] = {
     "panel_newfoundations.js", // New Foundations quest guide
     "panel_noplacelikehome.js", // There's No Place Like Home... quest guide
     "panel_murderborder.js", // Murder on the Border quest guide
+    "panel_heralds.js",    // Heralds of Crimson quest guide
     "panel_interfaces.js", // Interfaces inspector
     "panel_invention.js",  // Invention components
     "panel_farming.js",    // Farming patch tracker + tool leprechaun
@@ -187,20 +206,19 @@ const char* const kFiles[] = {
     "panel_menuswap.js",   // Right-click menu inspector + reorder (Developer)
 };
 
-void inject_panel_scripts(std::string& html, const std::string& html_path) {
-    auto slash = html_path.find_last_of("\\/");
-    std::string dir = (slash == std::string::npos) ? std::string() : html_path.substr(0, slash + 1);
+void inject_panel_scripts(std::string& html, const std::filesystem::path& html_path) {
+    const std::filesystem::path dir = html_path.parent_path();
     static const char kCssMarker[] = "<!-- rtx:css -->";
     auto cpos = html.find(kCssMarker);
     if (cpos != std::string::npos) {
-        std::string css = read_file(dir + "core/rtx.css");
+        std::string css = read_file(dir / "core/rtx.css");
         html.replace(cpos, sizeof(kCssMarker) - 1, "<style>\n" + css + "\n</style>");
     }
     auto pos = html.find("<script>");
     if (pos == std::string::npos) return;
     std::string blob;
     auto splice = [&](const char* f) {
-        std::string js = read_file(dir + f);
+        std::string js = read_file(dir / f);
         if (js.empty()) { rtx::log::Launcher(std::string("ui: missing or empty ") + f); return; }
         blob += "<script>\n" + js + "\n</script>\n";
     };
@@ -217,9 +235,7 @@ std::string ReadUiAssetImpl(const std::string& name) {
     if (name.find("..") != std::string::npos) return {};
     for (char c : name)
         if (!(std::isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-')) return {};
-    auto slash = g_client_html_path.find_last_of("\\/");
-    std::string dir = (slash == std::string::npos) ? std::string() : g_client_html_path.substr(0, slash + 1);
-    return read_file(dir + name);
+    return read_file(g_client_html_path.parent_path() / name);
 }
 
 long long ui_dir_mtime() {
@@ -230,7 +246,7 @@ long long ui_dir_mtime() {
         auto t = fs::last_write_time(p, ec);
         if (!ec) m = (std::max)(m, (long long)t.time_since_epoch().count());
     };
-    fs::path html(g_client_html_path);
+    const fs::path& html = g_client_html_path;
     acc(html);
     for (const fs::path& d : { html.parent_path(), html.parent_path() / "core" }) {
         fs::directory_iterator it(d, ec), end;
@@ -869,6 +885,7 @@ void Detach(Dock* d, bool closeGame) {
 
     rtx::launcher::wiki::Close(d->pid);
     gameui::Destroy(d->pid);
+    rtx::launcher::lua::UnloadClient(d->pid);   // its page is gone: free the Lua plugin states it ran (Lua runs on this thread only)
     rtx::overlay::QuiesceMarkers(d->pid);
     SetEmbeddedGame(d->pid, nullptr);
     for (int which = 0; which <= 4; ++which) rtx::reader::RenderToggle(d->pid, which, false);
@@ -975,7 +992,7 @@ void PublishGameClientSize(std::uint32_t pid, int w, int h) {
 
 void Init(App* app, std::string client_html_path, bool uiDevWatch) {
     g_app = app;
-    g_client_html_path = std::move(client_html_path);
+    g_client_html_path = page_path(client_html_path);
     g_uiWatch = uiDevWatch;   // resolved in main.cpp (RTX_UI_DIR env var or rtx_ui_dev.txt marker)
     gameui::Init(app);
     rtx::launcher::wiki::Init(app);
@@ -1102,7 +1119,10 @@ void Tick() {
                     std::string h = BuildClientHtml();
                     auto sp = h.find("<script>");
                     if (sp != std::string::npos) h.insert(sp, "<script>window.__rtxDevReload=1;</script>\n");
-                    for (auto& kv : g_docks) gameui::ReloadHtml(kv.first, h);
+                    for (auto& kv : g_docks) {
+                        rtx::launcher::lua::UnloadClient(kv.first);   // the new page loads the plugins it mounts again
+                        gameui::ReloadHtml(kv.first, h);
+                    }
                     rtx::log::Launcher("cache: " + std::to_string(g_docks.size()) + " ui layer(s) reloaded for the new cache");
                 }
             }
@@ -1125,8 +1145,10 @@ void Tick() {
                     auto sp = h.find("<script>");
                     if (sp != std::string::npos)
                         h.insert(sp, "<script>window.__rtxDevReload=1;</script>\n");
-                    for (auto& kv : g_docks)
+                    for (auto& kv : g_docks) {
+                        rtx::launcher::lua::UnloadClient(kv.first);   // the new page loads the plugins it mounts again
                         gameui::ReloadHtml(kv.first, h);
+                    }
                     rtx::log::Launcher("ui hot-reload: " + std::to_string(g_docks.size()) + " ui layer(s) reloaded");
                 } else g_uiPending = m;
             }

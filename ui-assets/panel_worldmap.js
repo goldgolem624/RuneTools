@@ -34,8 +34,10 @@
   function wmLevel(z) { for (const L of WM_LEVELS) if (z <= L.upto) return L; return WM_LEVELS[WM_LEVELS.length - 1]; }
 
   const wmCache = new Map();    // "ts|plane|ix|iy" -> {cv: canvas | null (no map data)}
-  const wmQueued = new Map();   // same key -> {key, ts, plane, ix, iy, half, cx, cy, pri, busy}
+  const wmQueued = new Map();   // same key -> {key, ts, plane, ix, iy, half, cx, cy, pri, busy, seen}
   let wmInflight = 0, wmFailAt = 0;
+  let wmPollT = 0;              // the one retry timer while the native side is still building a chunk
+  let wmDrawSeq = 0;            // bumped per draw; queued jobs the latest draw did not ask for are dropped
   function wmKey(ts, plane, ix, iy) { return ts + '|' + plane + '|' + ix + '|' + iy; }
   function wmGet(ts, plane, ix, iy, peek) {
     const k = wmKey(ts, plane, ix, iy), r = wmCache.get(k);
@@ -50,9 +52,9 @@
     const k = wmKey(ts, plane, ix, iy);
     if (wmCache.has(k)) return;
     const j = wmQueued.get(k);
-    if (j) { if (pri < j.pri) j.pri = pri; return; }
+    if (j) { if (pri < j.pri) j.pri = pri; j.seen = wmDrawSeq; return; }
     const L = WM_LEVELS.find(v => v.ts === ts), ch = L.ch;
-    wmQueued.set(k, { key: k, ts: ts, plane: plane, ix: ix, iy: iy, half: ch / 2, cx: ix * ch + ch / 2, cy: iy * ch + ch / 2, pri: pri, busy: false });
+    wmQueued.set(k, { key: k, ts: ts, plane: plane, ix: ix, iy: iy, half: ch / 2, cx: ix * ch + ch / 2, cy: iy * ch + ch / 2, pri: pri, busy: false, seen: wmDrawSeq });
   }
   async function wmDecode(meta) {
     const W = meta.w | 0;
@@ -457,8 +459,11 @@
       try {
         const k = 'wmsym';
         if (bridge().cacheStoreLoad) {                       // persisted from a previous session
-          const raw = await rtxData.raw('host.cacheStoreLoad', k);
-          if (raw) { const j = JSON.parse(raw); if (j && j.v === wmBuild() && j.b) o = j; }
+          // A copy that does not parse (older builds saved it cut short) is a miss, so it is fetched and saved again.
+          try {
+            const raw = await rtxData.raw('host.cacheStoreLoad', k);
+            if (raw) { const j = JSON.parse(raw); if (j && j.v === wmBuild() && j.b) o = j; }
+          } catch (e) { o = null; }
         }
         if (!o) {
           o = JSON.parse((await rtxData.raw('cache.mapSymbols')) || 'null');
@@ -552,7 +557,8 @@
       const meta = JSON.parse((await bridge().mapWindow(best.cx, best.cy, best.plane, best.half, best.ts, 3)) || '{}');
       if (meta && meta.pending) {
         best.busy = false; wmInflight--;
-        setTimeout(wmPump, 45);
+        // Every draw also pumps, so a timer per pending reply would pile up into many parallel polls.
+        if (!wmPollT) wmPollT = setTimeout(function () { wmPollT = 0; wmPump(); }, 45);
         return;
       }
       rec = { cv: (meta && (meta.png || meta.b64)) ? await wmDecode(meta) : null,     // "{}" = genuinely no map data here
@@ -751,7 +757,7 @@
     box.style.display = '';
     box.innerHTML = es.map(function (e, i) {
       return '<div class="wm-res' + (i === wmResSel ? ' sel' : '') + '" data-i="' + i + '">'
-        + '<span class="ty">' + e.ty + '</span><span class="nm">' + htmlEsc(e.nm) + '</span>'
+        + '<span class="ty">' + htmlEsc(e.ty) + '</span><span class="nm">' + htmlEsc(e.nm) + '</span>'
         + (e.dt ? '<span class="dt">' + htmlEsc(e.dt) + '</span>' : '') + '</div>';
     }).join('');
   }
@@ -921,6 +927,7 @@
     const ccx = (vx0 + vx1) / 2, ccy = (vy0 + vy1) / 2;
     let drawn = 0, emptyKnown = 0, loading = 0;
     const imgMode = false;
+    wmDrawSeq++;
     for (let ix = ix0; ix <= ix1; ix++) {
       for (let iy = iy0; iy <= iy1; iy++) {
         const dx0 = Math.round(sx(ix * ch)), dx1 = Math.round(sx((ix + 1) * ch));
@@ -942,6 +949,8 @@
         }
       }
     }
+    // Chunks panned or zoomed out of view are no longer fetched (a job mid-decode is kept and still lands).
+    for (const [k, j] of wmQueued) if (!j.busy && j.seen !== wmDrawSeq) wmQueued.delete(k);
     wmPump();
     if (drawn === 0 && loading === 0 && emptyKnown > 0) {
       cx.save();

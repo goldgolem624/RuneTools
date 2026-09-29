@@ -44,8 +44,12 @@
     const a = byId.get(id); if (!a) return false;
     const lvl = questSkillLevels();
     let total = 0, ok = 0;
-    for (const q of (a.reqs || [])) { total++; if (q.varbits && q.varbits.length && ((mystReqVb && mystReqVb[q.varbits[0]]) || 0) >= q.value) ok++; }
-    for (const s of (a.skills || [])) { total++; if (lvl(s.s) >= s.l) ok++; }
+    for (const q of (a.reqs || [])) {                   // the listed varbits add up
+      total++;
+      let v = 0; for (const vb of (q.varbits || [])) v += (mystReqVb && mystReqVb[vb]) || 0;
+      if (q.varbits && q.varbits.length && v >= q.value) ok++;
+    }
+    for (const s of (a.skills || [])) { total++; if (lvl(s[0] | 0) >= (s[1] | 0)) ok++; }   // [skill, level, group]
     const br = achBitReqs(a);
     for (const b of br.vbits) {           // op 25: bit BIT of a VARBIT's value
       total++;
@@ -154,7 +158,7 @@
     if (now - _mystReqAt < 1500) return;
     _mystReqAt = now;
     if (!achDefs && bridge().achievements) {
-      try { achDefs = JSON.parse(await rtxData.raw('cache.achievements')) || []; } catch (e) { achDefs = []; }
+      achDefs = (typeof achLoadDefs === 'function') ? await achLoadDefs() : null;
       _achById = null;
     }
     await ensureVbMap();
@@ -255,11 +259,29 @@
       return mystEsc(tt);
     }).join(', ');
   }
-  let mystLoadedPid = -1;
+  let mystLoadedPid = -1, mystStore = null;
+  // made on first use: the store helpers come from core/rtx-boot.js, spliced after the panels
+  function mystSt() {
+    return mystStore || (mystStore = acctStore(() => rtxData.sync('host.mystLoad'),
+                                               t => rtxData.sync('act.mystSave', t), mystReload));
+  }
+  function mystLoadSteps() {
+    mystLoadedPid = myPid();
+    try { const d = JSON.parse(acctStoreRead(mystSt())); mystSteps = (d && typeof d === 'object') ? d : {}; }
+    catch (e) { mystSteps = {}; }
+  }
+  // The account behind this client changed (or became known) since the progress was read.
+  function mystReload() {
+    mystLoadSteps(); mystSig = ''; mfSig = '';
+    paneRun('archmysteries', renderArchMysteries);
+    paneRun('mystfocus', renderMystFocus);
+  }
   function mystSaveSteps() {
     if (mystSteps === null || !bridge() || !bridge().mystSave) return;
-    if (mystLoadedPid !== myPid()) return;   // never write one character's blob to another
-    try { rtxData.sync('act.mystSave', JSON.stringify(mystSteps)); } catch (e) {}
+    if (mystLoadedPid !== myPid()) return;   // never read: nothing to save
+    // refused when the file is not the one these steps were read from, so one character's blob is
+    // never written over another's
+    try { acctStoreWrite(mystSt(), JSON.stringify(mystSteps)); } catch (e) {}
   }
   let mfSig = '';
   function mystFocusName() { return (mystSteps && typeof mystSteps.__focus === 'string') ? mystSteps.__focus : ''; }
@@ -303,11 +325,7 @@
     if (!force && now - mystAt < 750) return;   // also polled in the background while in-world marking is on
     mystFetching = true; mystAt = now;
     try { if (typeof archResearchEnsure === 'function') await archResearchEnsure(); } catch (e) {}
-    if ((mystSteps === null || mystLoadedPid !== myPid()) && bridge().mystLoad) {
-      mystLoadedPid = myPid();
-      try { const d = JSON.parse(await rtxData.raw('host.mystLoad')); mystSteps = (d && typeof d === 'object') ? d : {}; }
-      catch (e) { mystSteps = {}; }
-    }
+    if ((mystSteps === null || mystLoadedPid !== myPid()) && bridge().mystLoad) mystLoadSteps();
     // 9302/9303 = mystery completion bits; 9205/9206/9207/9564/11732 = the global journal-page bank
     try { mystVp = JSON.parse(await rtxData.raw('state.varps', '9302,9303,9205,9206,9207,9564,11732,11733')); } catch (e) { /* keep previous */ }
     try { await mystReqPrefetch(); } catch (e) {}     // requirement-line live values
