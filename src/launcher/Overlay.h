@@ -129,6 +129,11 @@ void SetKnotCells(std::uint32_t pid, const std::vector<KnotCell>& cells);
 struct SkillBar { int x = 0, y = 0, w = 0, h = 0, pct = 0, rgb = 0; int cc_parent = 0, cc_sub = 0, cx = 0, cy = 0, cw = 0, ch = 0; };
 void SetSkillBars(std::uint32_t pid, const std::vector<SkillBar>& bars);
 
+// Text the game's own components show instead of theirs: the child `sub` of group:comp. The module
+// keeps the game's text and puts it back once the list drops an entry, or the list lapses (5 s).
+struct TextOverride { int group = 0, comp = 0, sub = -1; std::string text; };
+void SetTextOverrides(std::uint32_t pid, const std::vector<TextOverride>& list);
+
 struct PanelBox { int x = 0, y = 0, w = 0, h = 0; std::string label; };
 void SetPanelViz(std::uint32_t pid, const std::vector<PanelBox>& boxes);
 

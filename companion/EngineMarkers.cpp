@@ -518,6 +518,7 @@ void FrameHook(void* manager) {
     if (manager) {
         std::uint8_t* root = *reinterpret_cast<std::uint8_t**>(static_cast<std::uint8_t*>(manager) + 8);
         rtx::enginecc::Apply(root);
+        rtx::enginecc::ApplyText(root);
         rtx::engineops::Pump(root);
         rtx::engineops::PumpAnchors(root);
         rtx::engineops::PumpAsks(root);

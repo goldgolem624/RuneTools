@@ -8,7 +8,7 @@ namespace rtx::marker {
 
 inline constexpr wchar_t kSectionPrefix[] = L"Local\\RuneToolsXMarker_v1_";
 inline constexpr std::uint32_t kMagic   = 0x5254584D;   // 'RTXM'
-inline constexpr std::uint32_t kVersion = 32;
+inline constexpr std::uint32_t kVersion = 33;
 inline constexpr std::uint32_t kMaxCmds = 8192;
 inline constexpr int kTextMax = 95;                     // kText inline string capacity (chars, excl. NUL; '\n' = panel line break)
 
@@ -94,6 +94,13 @@ struct Ask {
 };
 
 inline constexpr int kCcSlotBase = 0xE00;   // dynamic ids from here are ours; the game's scripts stay far below
+
+// Text the game's own components should show instead of their own: parent = interface << 16 |
+// component, sub = the dynamic id of the game's child under it. The module keeps the game's text
+// and puts it back once an entry leaves the list. Kept short enough to sit inline on the string stack.
+inline constexpr int kMaxTextOv = 64;
+inline constexpr int kTextOvMax = 22;                 // chars, excl. NUL
+struct TextOverride { std::int32_t parent, sub; char text[kTextOvMax + 2]; };
 
 struct Command {
     std::uint16_t type;        // Type
@@ -185,6 +192,8 @@ struct Share {
     Ask           asks[kMaxAsks];
     std::uint32_t cc_count;
     CcRect        cc[kMaxCc];
+    std::uint32_t text_count;                // entries in text_ov[0..text_count)
+    TextOverride  text_ov[kMaxTextOv];
     Command cmds[kMaxCmds];
 };
 

@@ -72,8 +72,56 @@
     if (f < 0) f = 0; if (f > 1) f = 1;
     return Math.round(f * 1000);
   }
+  // The game's own panel caps virtual levels at 120 (150 for Invention). With the 126 option and the game's
+  // virtual levels both on, its cell numbers (comp 4 top-left, comp 5 bottom-right, sub = SKILL_LAYOUT slot)
+  // and the green virtual total (comp 11 sub 2) show the 126 curve. The module keeps the game's text and puts
+  // it back once the list goes empty or stops arriving.
+  const SK_TOP_COMP = 4, SK_BASE_COMP = 5, SK_TOTAL_COMP = 11, SK_TOTAL_SUB = 2;
+  let skVirtSent = '', skVirtPid = 0, skVirtAt = 0, skVirtVarpAt = 0, skVirtGame = false, skVirtBusy = false, skVirtGoodAt = 0;
+  async function skVirtualTick() {
+    const b = bridge();
+    if (!b || !b.textOverrides) return;
+    const pid = myPid(), now = Date.now();
+    const want126 = virtualCap(false) > 120;
+    if (want126 && b.varps && !skVirtBusy && now - skVirtVarpAt > 2000) {   // varp 458 bit 30 = the game's virtual levels
+      skVirtBusy = true; skVirtVarpAt = now;
+      try {
+        const d = JSON.parse(await b.varps(pid, '458') || '{}');
+        if (d && d['458'] !== undefined) skVirtGame = (((d['458'] || 0) >>> 30) & 1) === 1;
+      } catch (e) {}
+      skVirtBusy = false;
+    }
+    const sk = (lastSnap && lastSnap.in_world && Array.isArray(lastSnap.skills)) ? lastSnap.skills : null;
+    const segs = [];
+    if (want126 && skVirtGame && sk) {
+      let total = 0, extra = 0, complete = true;
+      for (let k = 0; k < SKILL_LAYOUT.length; k++) {
+        const i = SKILL_LAYOUT[k], t = sk[i];
+        if (!t || !(t[2] >= 0)) { complete = false; continue; }
+        const elite = i === 26, v = Math.min(virtualCap(elite), levelFromXp(t[2], elite));
+        total += v;
+        if (elite || v <= 120) continue;           // the game already shows these
+        extra += v - 120;
+        // boosted or drained: the top number is the game's current level, only the base shows virtual
+        if (t[0] === t[1]) segs.push(SK_GROUP + ',' + SK_TOP_COMP + ',' + k + ',' + v);
+        segs.push(SK_GROUP + ',' + SK_BASE_COMP + ',' + k + ',' + v);
+      }
+      if (complete && extra > 0) segs.push(SK_GROUP + ',' + SK_TOTAL_COMP + ',' + SK_TOTAL_SUB + ',' + total);
+    }
+    let msg = segs.join(';');
+    if (sk) skVirtGoodAt = now;
+    // a pass that missed its snapshot keeps the last list briefly; leaving the world or turning it off clears at once
+    else if (!lastSnap && want126 && skVirtGame && pid === skVirtPid && now - skVirtGoodAt < 2000) msg = skVirtSent;
+    if (pid === skVirtPid && msg === skVirtSent && (!msg || now - skVirtAt < 2000)) return;   // the launcher drops a list after 5 s
+    try {
+      if (skVirtPid && skVirtPid !== pid) b.textOverrides(skVirtPid, '');
+      if (pid) b.textOverrides(pid, msg);
+    } catch (e) {}
+    skVirtSent = msg; skVirtPid = pid; skVirtAt = now;
+  }
   async function skBarsTick() {
     skBarsLoad();
+    skVirtualTick();
     if (!bridge() || !bridge().skillBars || !bridge().interfaceGroup) return;
     if (!skBarsOn) {
       skBarsClear(!skBarsBootCleared);   // first off-tick wipes unconditionally

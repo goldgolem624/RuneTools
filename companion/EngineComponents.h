@@ -19,6 +19,12 @@ struct Rect { std::int32_t parent, slot, x, y, w, h; std::uint32_t argb; std::in
 void Want(const void* rects, std::uint32_t count);   // rtx::marker::CcRect, same layout as Rect
 void Apply(std::uint8_t* root);
 bool Usable();                                       // the routines were recognised in this client
+// Text the game's own components should show instead (any thread): rtx::marker::TextOverride.
+// ApplyText, on the game thread each frame, finds each component, keeps the game's text and writes
+// ours; writes again when the game rewrites it; puts the game's text back once an entry is gone.
+// Components the game has closed or rebuilt are forgotten and taken up again on reopening.
+void WantText(const void* list, std::uint32_t count);
+void ApplyText(std::uint8_t* root);
 // Lines for the ring log, one at a time.
 bool TakeLog(char* out, std::size_t cap);
 

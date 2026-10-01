@@ -214,6 +214,25 @@ std::map<DWORD, std::vector<KnotCell>> g_knotCells;
 struct SkillBarsEntry { std::vector<SkillBar> bars; long long at_ms = 0; };
 constexpr long long kSkillBarsTtlMs = 5000;
 std::map<DWORD, SkillBarsEntry> g_skillBars;
+// Text for the game's own components; lapses like the skill bars, so a page that stops sending
+// gives the game its own text back.
+struct TextOvEntry { std::vector<TextOverride> list; long long at_ms = 0; };
+std::map<DWORD, TextOvEntry> g_textOv;
+
+// Carried whether or not there is anything to draw, like the questions above. Caller holds the seqlock.
+void FillTextOverrides(marker::Share* sh, const std::vector<TextOverride>& list) {
+    std::uint32_t n = 0;
+    for (const TextOverride& t : list) {
+        if (n >= (std::uint32_t)marker::kMaxTextOv) break;
+        if (t.text.empty() || t.text.size() > (std::size_t)marker::kTextOvMax) continue;
+        marker::TextOverride& o = sh->text_ov[n++];
+        o.parent = (t.group << 16) | (t.comp & 0xFFFF);
+        o.sub = t.sub;
+        std::memset(o.text, 0, sizeof(o.text));
+        std::memcpy(o.text, t.text.data(), t.text.size());
+    }
+    sh->text_count = n;
+}
 
 void ResetXpSession(XpSession& s) {   // caller holds g_mu
     s.haveBase = false;
@@ -726,7 +745,7 @@ void QuietShare(marker::Share* sh) {
     sh->tip_on = 0; sh->tip_slot = 0; sh->tip_comp = 0; sh->tip_ref = -1; sh->tip_text[0] = 0;
     for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = -1; sh->hover_mode[k] = -1; sh->hover_rgb[k] = 0; }
     sh->mark_tile_on = 0; sh->mark_arrow_on = 0; sh->mark_path_on = 0;
-    sh->cc_count = 0; sh->anchor_count = 0; sh->ask_count = 0;
+    sh->cc_count = 0; sh->anchor_count = 0; sh->ask_count = 0; sh->text_count = 0;
     MemoryBarrier(); sh->seq = s + 1;            // even: done
 }
 
@@ -975,6 +994,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     std::vector<PuzzleCell> pcells;
     std::vector<KnotCell> kcells;
     std::vector<SkillBar> sbars;
+    std::vector<TextOverride> textOv;
     { std::lock_guard<std::mutex> lk(g_mu);
       auto git = g_guides.find(cfg.pid);
       hasGuides = (git != g_guides.end() && !git->second.empty());
@@ -994,7 +1014,10 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
       if (kcit != g_knotCells.end()) kcells = kcit->second;
       auto sbit = g_skillBars.find(cfg.pid);
       if (sbit != g_skillBars.end() && now_ms() - sbit->second.at_ms <= kSkillBarsTtlMs)
-          sbars = sbit->second.bars; }
+          sbars = sbit->second.bars;
+      auto toit = g_textOv.find(cfg.pid);
+      if (toit != g_textOv.end() && now_ms() - toit->second.at_ms <= kSkillBarsTtlMs)
+          textOv = toit->second.list; }
 
     std::vector<rtx::reader::OverlayPoint> hls;
     {
@@ -1024,6 +1047,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
         std::uint32_t s = sh->seq + 1;
         sh->seq = s; MemoryBarrier();
         sh->count = 0; sh->visible = 0; sh->cc_count = 0;
+        FillTextOverrides(sh, textOv);
         sh->flags = (cfg.hover_outline ? marker::kFlagEngineHover : 0u) | (cfg.inframe_trial ? marker::kFlagInFrameTrial : 0u);   // honoured with nothing to draw
         { const HoverPick hp = PickHover(cfg); sh->hover_x = hp.x; sh->hover_y = hp.y; sh->hover_id = hp.id; sh->hover_on = hp.on ? 1u : 0u;
           sh->tip_slot = hp.tipSlot; sh->tip_comp = hp.tipComp; sh->tip_ref = hp.tipRef; std::memcpy(sh->tip_text, hp.tipText, sizeof(sh->tip_text)); sh->tip_on = hp.tip ? 1u : 0u; for (int k = 0; k < 8; ++k) sh->hover_rgb[k] = cfg.hover_rgb[k]; for (int k = 0; k < 8; ++k) { sh->hover_scale[k] = cfg.hover_scale[k]; sh->hover_mode[k] = cfg.hover_mode[k]; } FillEngineMarks(sh, cfg); }
@@ -2468,6 +2492,7 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
     FillAccountAsks(sh, asksNow);
     sh->cc_count = (std::uint32_t)ccRects.size();
     for (std::uint32_t i = 0; i < sh->cc_count; ++i) sh->cc[i] = ccRects[i];
+    FillTextOverrides(sh, textOv);
     sh->count = n;
     sh->visible = 1;
     MemoryBarrier(); sh->seq = s + 1;                        // even: done
@@ -2835,7 +2860,7 @@ void RenderLoop() {
                 anyFlash = true;
             }
             std::vector<rtx::reader::GuideSite> gsites;
-            bool hasUiHl = false, hasPanelViz = false, hasCenter = false, hasSolverCells = false, hasSkillBars = false, hasUiLabels = false;
+            bool hasUiHl = false, hasPanelViz = false, hasCenter = false, hasSolverCells = false, hasSkillBars = false, hasUiLabels = false, hasTextOv = false;
             { std::lock_guard<std::mutex> lk(g_mu);
               auto git = g_guides.find(cpid);
               if (git != g_guides.end())
@@ -2855,7 +2880,9 @@ void RenderLoop() {
               auto knit = g_knotCells.find(cpid);
               hasSolverCells = hasSolverCells || (knit != g_knotCells.end() && !knit->second.empty());
               auto sbit2 = g_skillBars.find(cpid);
-              hasSkillBars = (sbit2 != g_skillBars.end() && !sbit2->second.bars.empty()); }
+              hasSkillBars = (sbit2 != g_skillBars.end() && !sbit2->second.bars.empty());
+              auto toit2 = g_textOv.find(cpid);
+              hasTextOv = (toit2 != g_textOv.end() && !toit2->second.list.empty()); }
             bool wantF = ccfg.enabled || ccfg.markers || ccfg.nameplates || !ccfg.highlight.empty() ||
                          !ccfg.outline.empty() || !ccfg.outlineLocs.empty() || !gsites.empty();
             bool wantWidgets = (toasting && g_toast_pid.load() == cpid) ||
@@ -2867,7 +2894,7 @@ void RenderLoop() {
             if (!wantF && !hasUiHl && !hasUiLabels && !hasPanelViz && !hasCenter && !hasSolverCells && !hasSkillBars &&
                 fa <= 0.0f && !wantWidgets) {
                 // the hover outline is drawn by the game, but it is the module that asks for it
-                if (ccfg.hover_outline || ccfg.tooltip_values || ccfg.mark_test || ccfg.inframe_trial) rtx::launcher::companion::EnsureLoaded(cpid);
+                if (ccfg.hover_outline || ccfg.tooltip_values || ccfg.mark_test || ccfg.inframe_trial || hasTextOv) rtx::launcher::companion::EnsureLoaded(cpid);
                 PublishMarkers(ccfg, nullptr, 0, 0);
                 continue;
             }
@@ -3319,6 +3346,20 @@ void SetSkillBars(std::uint32_t pid, const std::vector<SkillBar>& bars) {
     ensure_thread();
 }
 
+void SetTextOverrides(std::uint32_t pid, const std::vector<TextOverride>& list) {
+    if (!pid) return;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (list.empty()) g_textOv.erase((DWORD)pid);
+        else {
+            Config& dst = cfg_slot((DWORD)pid);
+            dst.pid = pid;
+            g_textOv[(DWORD)pid] = { list, now_ms() };
+        }
+    }
+    ensure_thread();
+}
+
 void SetKnotCells(std::uint32_t pid, const std::vector<KnotCell>& cells) {
     if (!pid) return;
     {
@@ -3447,6 +3488,7 @@ void QuiesceMarkers(std::uint32_t pid) {
         g_puzzleCells.erase((DWORD)pid);
         g_knotCells.erase((DWORD)pid);
         g_skillBars.erase((DWORD)pid);
+        g_textOv.erase((DWORD)pid);
     }
     wchar_t name[rtx::ipc::kNameChars];
     marker::MakeSectionName(pid, name);

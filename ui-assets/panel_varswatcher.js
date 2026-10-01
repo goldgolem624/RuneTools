@@ -59,8 +59,18 @@
       paneRun('vars', paintVars);
     } catch (e) { varNamesData = null; }
   }
+  // Names worked out in game for vars the extraction leaves unnamed. A trailing '?' marks a guess.
+  const VAR_KNOWN_NAMES = {
+    varbit: {
+      61968: 'totem deposit pile roots',
+      61969: 'totem deposit pile bark',
+      61970: 'totem deposit pile logs',
+    },
+  };
+  const VAR_KNOWN_LOWER = { varbit: {} };
+  for (const k in VAR_KNOWN_NAMES.varbit) VAR_KNOWN_LOWER.varbit[k] = VAR_KNOWN_NAMES.varbit[k].toLowerCase();
   function varpName(id)   { return (varNamesData && varNamesData.varp[id]) || (varAchData && varAchData.vp[id]) || ''; }
-  function varbitName(id) { return (varNamesData && varNamesData.varbit[id]) || (varAchData && varAchData.vb[id]) || ''; }
+  function varbitName(id) { return (varNamesData && varNamesData.varbit[id]) || VAR_KNOWN_NAMES.varbit[id] || (varAchData && varAchData.vb[id]) || ''; }
   function varcName(id)   { return (varNamesData && varNamesData.varc[id]) || ''; }
   // op-25 single bits WITHIN a varbit's value, op-23 single bits of a VARP, op-13 whole varps.
   let varAchData = null, varAchTried = false;   // { vb, vp, bits, vpbits, *L lowercased for search }
@@ -345,7 +355,7 @@
             const cn = varNamesLower.varc[id];
             if (cn && cn.indexOf(f.toLowerCase()) >= 0) m = true;
           }
-          if (!m && scope === 4 && (varNamesLower || varAchData)) {
+          if (!m && scope === 4) {
             const fl = f.toLowerCase();
             const pn = (varNamesLower && varNamesLower.varp[id]) || (varAchData && varAchData.vpL[id]);
             if (pn && pn.indexOf(fl) >= 0) m = true;
@@ -353,7 +363,7 @@
             if (!m && varbitMapData) {
               const defs = varbitMapData[id];
               if (defs && defs.some(d => {
-                const vn = (varNamesLower && varNamesLower.varbit[d[0]]) || (varAchData && varAchData.vbL[d[0]]);
+                const vn = (varNamesLower && varNamesLower.varbit[d[0]]) || VAR_KNOWN_LOWER.varbit[d[0]] || (varAchData && varAchData.vbL[d[0]]);
                 if (vn && vn.indexOf(fl) >= 0) return true;
                 const bl = varAchData && varAchData.bitsL[d[0]];   // named bits inside the varbit
                 return !!(bl && bl.indexOf(fl) >= 0);

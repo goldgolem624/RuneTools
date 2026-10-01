@@ -151,6 +151,7 @@ struct MarkerLatch {
     bool          hover_on = false;   // scenery under the cursor for the game to outline, see scenehover::Mark
     std::int32_t  hover_x = 0, hover_y = 0, hover_id = 0;
     std::vector<rtx::marker::CcRect> cc;
+    std::vector<rtx::marker::TextOverride> textOv;   // text for the game's own components
     std::uint32_t op_seq = 0; std::int32_t op_sound = 0, op_zoom = 0, op_fov = 0;
     bool          visible = false;
     unsigned      stale = 0;          // frames in a row without a complete read
@@ -159,7 +160,7 @@ MarkerLatch g_latch;
 
 bool LatchMarkers() {
     if (!g_marker || g_marker->magic != rtx::marker::kMagic || g_marker->version != rtx::marker::kVersion) {
-        g_latch.visible = false; g_latch.cmds.clear();
+        g_latch.visible = false; g_latch.cmds.clear(); g_latch.textOv.clear();
         return false;
     }
     bool got = false;
@@ -183,6 +184,9 @@ bool LatchMarkers() {
         static std::vector<rtx::marker::CcRect> ccScratch;
         std::uint32_t ccn = g_marker->cc_count; if (ccn > (std::uint32_t)rtx::marker::kMaxCc) ccn = 0;
         ccScratch.assign(g_marker->cc, g_marker->cc + ccn);
+        static std::vector<rtx::marker::TextOverride> textScratch;
+        std::uint32_t tn = g_marker->text_count; if (tn > (std::uint32_t)rtx::marker::kMaxTextOv) tn = 0;
+        textScratch.assign(g_marker->text_ov, g_marker->text_ov + tn);
         const std::uint32_t oseq = g_marker->op_seq; const std::int32_t osnd = g_marker->op_sound, ozoom = g_marker->op_zoom, ofov = g_marker->op_fov;
         static std::vector<rtx::marker::Anchor> anScratch;
         std::uint32_t ann = g_marker->anchor_count; if (ann > (std::uint32_t)rtx::marker::kMaxAnchors) ann = 0;
@@ -194,6 +198,7 @@ bool LatchMarkers() {
         if (g_marker->seq != s0) continue;                    // written to while it was read: not this one
         g_latch.hover_on = hon; g_latch.hover_x = hx; g_latch.hover_y = hy; g_latch.hover_id = hid;
         g_latch.cc.swap(ccScratch);
+        g_latch.textOv.swap(textScratch);
         if (oseq != g_latch.op_seq) { g_latch.op_seq = oseq; g_latch.op_sound = osnd; g_latch.op_zoom = ozoom; g_latch.op_fov = ofov; rtx::engineops::Queue(osnd, ozoom, ofov); }
         rtx::engineops::WantAnchors(anScratch.empty() ? nullptr : anScratch.data(), (int)anScratch.size());
         rtx::engineops::WantAsks(askScratch.empty() ? nullptr : askScratch.data(), (int)askScratch.size(), askSeq);
@@ -205,7 +210,7 @@ bool LatchMarkers() {
         got = true;
     }
     if (got) g_latch.stale = 0;
-    else if (++g_latch.stale > 120) { g_latch.visible = false; g_latch.hover_on = false; g_latch.cmds.clear(); }   // a launcher that stopped mid-write
+    else if (++g_latch.stale > 120) { g_latch.visible = false; g_latch.hover_on = false; g_latch.cmds.clear(); g_latch.textOv.clear(); }   // a launcher that stopped mid-write
     return g_latch.visible && !g_latch.cmds.empty();
 }
 
@@ -226,6 +231,8 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
     // The engine's own hover outline follows the launcher's flag whether or not there is anything
     // to draw this frame.
     const bool haveMarkers = LatchMarkers();
+    // the game's own text comes back when the launcher's list goes away, however it goes
+    rtx::enginecc::WantText(g_latch.textOv.data(), (std::uint32_t)g_latch.textOv.size());
     if (g_marker && g_marker->magic == rtx::marker::kMagic && g_marker->version == rtx::marker::kVersion) {
         const bool wantHover = (g_marker->flags & rtx::marker::kFlagEngineHover) != 0;
         rtx::vkpresent::SetInFrameTrial((g_marker->flags & rtx::marker::kFlagInFrameTrial) != 0);

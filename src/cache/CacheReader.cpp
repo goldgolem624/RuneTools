@@ -90,7 +90,7 @@ struct MaplabelSwitch { int varbit = -1, varp = -1; std::vector<int> kids; };
 struct MaplabelDef {
     int sprite = -1; int category = -1; std::string text;
     int bg_sprite = -1;                        // op 0x19: backing plate behind the icon
-    MaplabelSwitch sw;                         // op 0x1a
+    MaplabelSwitch sw;                         // op 0x1a, or 0xFC with a 3 byte varbit
     std::unordered_map<int, int>         pi;   // op 0xF9 int params (4147 db row, 4148 coord, ...)
     std::unordered_map<int, std::string> ps;   // op 0xF9 string params (4149 = tooltip body)
 };
@@ -239,7 +239,7 @@ void EnsureMapscenesLocked() {
             int op = s.ReadUnsignedByte();
             if (op == 0) break;
             if (op == 1) sprite = (int)s.ReadBigSmart();   // sprite_id (variable unsigned int)
-            else if (op == 2) s.ReadInt();
+            else if (op == 2) s.Read24BitInt();            // colour
             else if (op >= 3 && op <= 5) { /* bool flag, no payload */ }
             else break;                                    // unknown opcode -> stop (alignment lost)
         }
@@ -287,6 +287,49 @@ int LocMapFunctionLocked(int loc_id) {
     auto it = g_loc_mapfunc.find(loc_id);
     return it != g_loc_mapfunc.end() ? it->second : -1;
 }
+// One map element record. Returns 0 on a clean end, the opcode it could not read, or 256 when the
+// record ran out first.
+int DecodeMaplabel(std::vector<std::uint8_t> bytes, MaplabelDef& def) {
+    InputStream s(std::move(bytes));
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) return 0;
+        switch (op) {
+            case 0x01: def.sprite = s.ReadBigSmart(); break;             // icon sprite
+            case 0x02: s.ReadBigSmart(); break;                          // sprite_hover
+            case 0x03: def.text = s.ReadString(); break;                 // label text
+            case 0x04: case 0x05: s.skip(3); break;                      // colour tuples
+            case 0x06: case 0x07: case 0x08: case 0x1c: case 0x1e: s.skip(1); break;
+            case 0x09: case 0x14: s.skip(12); break;                     // toggle struct (ushort+ushort+uint+uint)
+            case 0xFA: case 0xFB: s.skip(13); break;                     // the same toggles with a 3 byte varbit
+            case 0x0a: case 0x0b: case 0x11: s.ReadString(); break;      // rightclick / unktext
+            case 0x0f: { int pc = s.ReadUnsignedByte(); s.skip(pc * 4); s.skip(4); s.skip(1); s.skip(4); s.skip(pc); break; }  // polygon
+            case 0x13: def.category = s.ReadUnsignedShort(); break;      // category
+            case 0x15: case 0x16: s.skip(4); break;
+            case 0x19: def.bg_sprite = s.ReadBigSmart(); break;          // backing plate behind the icon
+            case 0x1a: {                             // icon switch, see MaplabelDef
+                def.sw.varbit = s.ReadUnsignedShort();
+                def.sw.varp   = s.ReadUnsignedShort();
+                int n = s.ReadUnsignedByte();        // children = n + 1
+                def.sw.kids.reserve((std::size_t)n + 1);
+                for (int i = 0; i <= n; ++i) def.sw.kids.push_back(s.ReadUnsignedShort());
+                break;                               // n is 1 in every record today, which is
+            }                                        // the only reason a flat skip(9) stayed aligned.
+            case 0xFC: {                             // the same switch with a 3 byte varbit
+                def.sw.varbit = s.Read24BitInt();
+                def.sw.varp   = s.ReadUnsignedShort();
+                int n = s.ReadUnsignedByte();
+                def.sw.kids.reserve((std::size_t)n + 1);
+                for (int i = 0; i <= n; ++i) def.sw.kids.push_back(s.ReadUnsignedShort());
+                break;
+            }
+            case 0xF9: { int n = s.ReadUnsignedByte(); for (int i = 0; i < n; ++i) { bool str = s.ReadUnsignedByte() == 1; int k = s.Read24BitInt(); if (str) def.ps[k] = s.ReadString(); else def.pi[k] = s.ReadInt(); } break; }
+            default: return op;                                          // unknown -> stop (alignment lost)
+        }
+    }
+    return 256;                                                      // ran out before the end marker
+}
+
 void EnsureMaplabelsLocked() {
     if (g_maplabels_loaded) return;
     auto* cfg = g_store ? g_store->Get(kIndexConfigs) : nullptr;
@@ -298,36 +341,8 @@ void EnsureMaplabelsLocked() {
     for (int fid : entries[kMaplabelsArchive].valid_file_ids) {
         auto bytes = cfg->ReadFile(kMaplabelsArchive, fid);
         if (bytes.empty()) continue;
-        InputStream s(std::move(bytes));
         MaplabelDef def;
-        bool stop = false;
-        while (!stop && s.remaining() > 0) {
-            int op = s.ReadUnsignedByte();
-            if (op == 0) break;
-            switch (op) {
-                case 0x01: def.sprite = s.ReadBigSmart(); break;             // icon sprite
-                case 0x02: s.ReadBigSmart(); break;                          // sprite_hover
-                case 0x03: def.text = s.ReadString(); break;                 // label text
-                case 0x04: case 0x05: s.skip(3); break;                      // colour tuples
-                case 0x06: case 0x07: case 0x08: case 0x1c: case 0x1e: s.skip(1); break;
-                case 0x09: case 0x14: s.skip(12); break;                     // toggle struct (ushort+ushort+uint+uint)
-                case 0x0a: case 0x0b: case 0x11: s.ReadString(); break;      // rightclick / unktext
-                case 0x0f: { int pc = s.ReadUnsignedByte(); s.skip(pc * 4); s.skip(4); s.skip(1); s.skip(4); s.skip(pc); break; }  // polygon
-                case 0x13: def.category = s.ReadUnsignedShort(); break;      // category
-                case 0x15: case 0x16: s.skip(4); break;
-                case 0x19: def.bg_sprite = s.ReadBigSmart(); break;          // backing plate behind the icon
-                case 0x1a: {                             // icon switch, see MaplabelDef
-                    def.sw.varbit = s.ReadUnsignedShort();
-                    def.sw.varp   = s.ReadUnsignedShort();
-                    int n = s.ReadUnsignedByte();        // children = n + 1
-                    def.sw.kids.reserve((std::size_t)n + 1);
-                    for (int i = 0; i <= n; ++i) def.sw.kids.push_back(s.ReadUnsignedShort());
-                    break;                               // n is 1 in every record today, which is
-                }                                        // the only reason a flat skip(9) stayed aligned.
-                case 0xF9: { int n = s.ReadUnsignedByte(); for (int i = 0; i < n; ++i) { bool str = s.ReadUnsignedByte() == 1; int k = s.Read24BitInt(); if (str) def.ps[k] = s.ReadString(); else def.pi[k] = s.ReadInt(); } break; }
-                default: stop = true; break;                                 // unknown -> stop (alignment lost)
-            }
-        }
+        DecodeMaplabel(std::move(bytes), def);
         if (def.sprite >= 0 || !def.text.empty() || !def.sw.kids.empty()
             || def.category >= 0 || !def.pi.empty() || !def.ps.empty())
             g_maplabel_def[fid] = std::move(def);
@@ -4816,6 +4831,18 @@ std::vector<CacheParseRow> CacheParseHealth() {
         return DbRowSchemaCheckLocked(std::move(b)); });
     sweep("interfaces", kIndexInterfaces, -1, [](int, int, std::vector<std::uint8_t> b) {
         IfaceCompDef c; return DecodeIfaceComp(std::move(b), c); });
+    sweep("map elements", kIndexConfigs, 36, [](int, int, std::vector<std::uint8_t> b) {
+        MaplabelDef d; return DecodeMaplabel(std::move(b), d); });
+    sweep("map scenes", kIndexConfigs, 34, [](int, int, std::vector<std::uint8_t> b) {
+        InputStream s(std::move(b));
+        while (s.remaining() > 0) {
+            int op = s.ReadUnsignedByte();
+            if (op == 0) return 0;
+            if (op == 1) s.ReadBigSmart();
+            else if (op == 2) s.Read24BitInt();         // colour
+            else if (op < 3 || op > 5) return op;
+        }
+        return 256; });
     {   // achievements: full sweep via the decoder that owns the opcode table
         CacheParseRow row; row.name = "achievements";
         AchievementsParseHealth(row.ok, row.total, row.stop_op, row.stop_n);

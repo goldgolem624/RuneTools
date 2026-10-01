@@ -1,4 +1,6 @@
 #include "EngineComponents.h"
+#include "EngineOps.h"
+#include "MarkerShare.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -231,9 +233,11 @@ const char* Describe(void* r, char* buf, std::size_t cap) {
     return buf;
 }
 
-void* Call(int which, void* root) {
-    __try { return g_ops[which].fn(root, g_state); } __except (EXCEPTION_EXECUTE_HANDLER) { return reinterpret_cast<void*>(~0ull); }
+bool g_faulted = false;   // a routine faulted since the text overrides last looked
+void* CallFn(OpFn fn, void* root) {
+    __try { return fn(root, g_state); } __except (EXCEPTION_EXECUTE_HANDLER) { g_faulted = true; return reinterpret_cast<void*>(~0ull); }
 }
+void* Call(int which, void* root) { return CallFn(g_ops[which].fn, root); }
 
 // Each active slot holds two counted handles, {control block, object}: the component, then its
 // interface. The game's routines add a use when they fill one and give the old one back when they
@@ -355,6 +359,222 @@ void Apply(std::uint8_t* root) {
     }
     g_have.swap(have);
     ClearActive();
+}
+
+// Text on the game's own components. Only interfaces named here are ever written, and only the
+// game's own children under them (below our dynamic ids). The game's text is read back before the
+// first write, so it can always be put back.
+namespace {
+constexpr std::int32_t kTextGroups[] = { 1466 };   // the skills panel
+constexpr std::size_t kTextLen = sizeof(rtx::marker::TextOverride::text);
+struct TextWant { std::int32_t parent, sub; char text[kTextLen]; };
+struct TextHeld {
+    std::int32_t parent, sub;
+    char orig[kTextLen];      // the game's text, put back when the entry goes
+    char wrote[kTextLen];     // ours, as last written
+    bool foreign;             // the game's text is not one we can hold: never written
+    std::uint32_t waitGen;    // the game wrote a new value: hold off until the list changes...
+    ULONGLONG waitUntil;      // ...or this time passes
+};
+std::vector<TextWant> g_textWant;         // from the launcher, guarded by g_wantMu
+std::uint32_t g_textWantGen = 0;
+std::vector<TextWant> g_textUse;          // game thread only from here down
+std::uint32_t g_textUseGen = ~0u;
+std::vector<TextHeld> g_textHeld;
+std::size_t g_textNext = 0;               // where a pass cut short by its budget carries on
+std::uint32_t g_textQuiet = 0;            // frames since a pass last had anything to do
+OpFn g_getText = nullptr;
+bool g_textOff = false;
+constexpr ULONGLONG kTextWaitMs = 3000;   // the launcher sees a changed game state within this
+
+bool InWorld(const std::uint8_t* root) {
+    __try { return *reinterpret_cast<const std::int8_t*>(root + 0x19FA0) == 30; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool TextGroupAllowed(std::int32_t parent, std::int32_t sub) {
+    if (sub < 0 || sub >= rtx::marker::kCcSlotBase) return false;
+    for (std::int32_t g : kTextGroups) if ((parent >> 16) == g) return true;
+    return false;
+}
+// A short string pushed the way the game keeps one inline: the last byte holds the room left.
+void PushShort(const char* s) {
+    std::uint32_t& sp = *reinterpret_cast<std::uint32_t*>(g_state + kStrSp);
+    if (sp >= 1000) return;
+    std::uint8_t* e = g_state + kStrStack + (std::size_t)sp * 0x20;
+    std::memset(e, 0, 0x20);
+    std::size_t n = std::strlen(s);
+    if (n > 0x16) n = 0x16;
+    std::memcpy(e, s, n);
+    e[0x17] = (std::uint8_t)(0x17 - n);
+    e[0x18] = 2;
+    ++sp;
+}
+enum ReadResult { kReadFault, kReadOk, kReadSkip, kReadForeign };
+// The found component's text. The slot the answer lands in is laid out as an empty string first, so
+// the routine has nothing of ours to release. A text too long to sit inline, or longer than a write
+// can put back, is left alone; an answer that did not arrive is tried again on a later frame.
+ReadResult ReadText(void* root, char* out) {
+    ResetStacks();
+    std::uint8_t* e = g_state + kStrStack;
+    std::memset(e, 0, 0x20);
+    e[0x17] = 0x17; e[0x18] = 2;
+    if (CallFn(g_getText, root) == reinterpret_cast<void*>(~0ull)) return kReadFault;
+    const std::uint32_t ssp = *reinterpret_cast<std::uint32_t*>(g_state + kStrSp);
+    if (ssp != 1 || e[0x18] != 2) { ResetStacks(); return kReadSkip; }
+    if ((e[0x17] & 0x80) || e[0x17] > 0x17) { ResetStacks(); return kReadForeign; }
+    const std::size_t n = 0x17 - e[0x17];
+    if (n > 0x16) { ResetStacks(); return kReadForeign; }
+    std::memcpy(out, e, n); out[n] = 0;
+    ResetStacks();
+    return kReadOk;
+}
+// The shape check reads the handler's bytes and the routine it calls: a bad address switches the
+// feature off rather than taking the game down.
+const std::uint8_t* WrapperCallbackGuarded(const std::uint8_t* h) {
+    __try { return WrapperCallback(h); } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+bool WriteText(void* root, const char* s) {
+    ResetStacks(); PushShort(s);
+    return Call(kSetText, root) != reinterpret_cast<void*>(~0ull);
+}
+TextHeld* Held(std::int32_t parent, std::int32_t sub) {
+    for (TextHeld& h : g_textHeld) if (h.parent == parent && h.sub == sub) return &h;
+    return nullptr;
+}
+void TextOff(const char* why) {
+    g_textOff = true;
+    g_textHeld.clear();
+    Say("cc text: %s; off", why);
+}
+}  // namespace
+
+void WantText(const void* list, std::uint32_t count) {
+    std::lock_guard<std::mutex> lk(g_wantMu);
+    const auto* in = static_cast<const rtx::marker::TextOverride*>(list);
+    if (!in) count = 0;
+    if (count > (std::uint32_t)rtx::marker::kMaxTextOv) count = rtx::marker::kMaxTextOv;
+    // called every present: an unchanged list costs a compare, nothing more
+    bool same = count == g_textWant.size();
+    for (std::uint32_t i = 0; same && i < count; ++i)
+        same = in[i].parent == g_textWant[i].parent && in[i].sub == g_textWant[i].sub && std::strncmp(in[i].text, g_textWant[i].text, kTextLen - 1) == 0;
+    if (same) return;
+    g_textWant.clear();
+    for (std::uint32_t i = 0; i < count; ++i) {
+        TextWant w{ in[i].parent, in[i].sub, {} };
+        std::memcpy(w.text, in[i].text, kTextLen); w.text[kTextLen - 1] = 0;
+        g_textWant.push_back(w);
+    }
+    ++g_textWantGen;
+}
+
+void ApplyText(std::uint8_t* root) {
+    if (!root || g_textOff) return;
+    {
+        std::lock_guard<std::mutex> lk(g_wantMu);
+        if (g_textWantGen != g_textUseGen) { g_textUse = g_textWant; g_textUseGen = g_textWantGen; g_textNext = 0; g_textQuiet = 0; }
+    }
+    if (g_textUse.empty() && g_textHeld.empty()) return;
+    // a steady list that needed nothing last time is looked at every fourth frame
+    if (g_textQuiet && ++g_textQuiet % 4 != 0) return;
+    if (!g_resolved) Resolve();
+    if (!g_usable || !InWorld(root)) return;
+    if (!g_getText) {
+        if (!rtx::engineops::Ready()) return;              // still being looked up
+        const void* h = rtx::engineops::Handler("CC_GETTEXT");
+        // it must be the same shape as the setters: one that acts on the component a find made current
+        if (!h || !WrapperCallbackGuarded(static_cast<const std::uint8_t*>(h))) { TextOff("reading a component's text is not recognised in this build"); return; }
+        g_getText = reinterpret_cast<OpFn>(const_cast<void*>(h));
+    }
+    g_faulted = false;
+    LARGE_INTEGER freq, t0, t;
+    QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&t0);
+    const LONGLONG budget = freq.QuadPart / 1000;           // 1 ms a frame; the rest waits for the next one
+    const ULONGLONG now = GetTickCount64();
+    bool busy = false;                                      // anything done or left to do this pass
+
+    // entries gone from the list: the game's text goes back, unless the game has written its own since
+    for (std::size_t i = 0, k = 0; i < g_textHeld.size(); ++k) {
+        const TextHeld& h = g_textHeld[i];
+        bool still = false;
+        for (const TextWant& w : g_textUse) if (w.parent == h.parent && w.sub == h.sub) { still = true; break; }
+        if (still) { ++i; continue; }
+        QueryPerformanceCounter(&t);
+        if (k > 0 && t.QuadPart - t0.QuadPart > budget) { ClearActive(); g_textQuiet = 0; return; }
+        if (!h.foreign && h.wrote[0] && Find(root, h.parent, h.sub)) {
+            char cur[kTextLen];
+            if (ReadText(root, cur) == kReadOk && std::strcmp(cur, h.wrote) == 0) WriteText(root, h.orig);
+        }
+        g_textHeld.erase(g_textHeld.begin() + (std::ptrdiff_t)i);
+        busy = true;
+        if (g_faulted) { ClearActive(); TextOff("a call faulted"); return; }
+    }
+
+    std::int32_t missing[8]; int nMissing = 0;              // parents not open this frame
+    std::int32_t present[8]; int nPresent = 0;
+    const std::size_t n = g_textUse.size();
+    for (std::size_t k = 0; k < n; ++k) {
+        const std::size_t i = (g_textNext + k) % n;
+        QueryPerformanceCounter(&t);
+        if (k > 0 && t.QuadPart - t0.QuadPart > budget) { g_textNext = i; busy = true; break; }
+        const TextWant& w = g_textUse[i];
+        if (!w.text[0] || !TextGroupAllowed(w.parent, w.sub)) continue;
+        bool gone = false, known = false;
+        for (int m = 0; m < nMissing; ++m) if (missing[m] == w.parent) gone = true;
+        for (int m = 0; m < nPresent; ++m) if (present[m] == w.parent) known = true;
+        if (gone) continue;
+        TextHeld* h = Held(w.parent, w.sub);
+        if (!Find(root, w.parent, w.sub)) {
+            if (g_faulted) { ClearActive(); TextOff("a call faulted"); return; }
+            // closed, or built again: the game's own text comes with it, and is read again on return
+            if (h) { g_textHeld.erase(g_textHeld.begin() + (h - g_textHeld.data())); busy = true; }
+            if (!known && nMissing < 8) missing[nMissing++] = w.parent;
+            continue;
+        }
+        if (!known && nPresent < 8) present[nPresent++] = w.parent;
+        if (h && h->foreign) continue;
+        char cur[kTextLen];
+        const ReadResult rr = ReadText(root, cur);
+        if (rr == kReadFault) { ClearActive(); TextOff("a call faulted"); return; }
+        if (rr == kReadSkip) { busy = true; continue; }     // no answer this time: asked again later
+        if (rr == kReadForeign) {
+            if (!h) { g_textHeld.push_back(TextHeld{ w.parent, w.sub, {}, {}, true, 0, 0 }); busy = true; }
+            else h->foreign = true;
+            continue;
+        }
+        if (!h) {
+            // first sight: the game's text is kept to be put back
+            g_textHeld.push_back(TextHeld{ w.parent, w.sub, {}, {}, false, 0, 0 });
+            h = &g_textHeld.back();
+            std::memcpy(h->orig, cur, kTextLen);
+        } else if (std::strcmp(cur, h->wrote) == 0) {
+            if (std::strcmp(w.text, h->wrote) == 0) continue;    // ours, and still what is wanted
+        } else if (std::strcmp(cur, h->orig) != 0) {
+            // the game wrote a new value: its state may have changed (a boost, its own setting), so
+            // ours waits until the launcher's list has caught up with it
+            std::memcpy(h->orig, cur, kTextLen);
+            h->waitGen = g_textUseGen; h->waitUntil = now + kTextWaitMs;
+            busy = true;
+            continue;
+        } else if (h->waitUntil && h->waitGen == g_textUseGen && now < h->waitUntil) {
+            busy = true;                                    // the game's value, still waiting
+            continue;
+        }
+        // the game put its same value back, or ours changed: write
+        h->waitUntil = 0;
+        busy = true;
+        if (std::strcmp(cur, w.text) != 0 && !WriteText(root, w.text)) { ClearActive(); TextOff("a call faulted"); return; }
+        std::memcpy(h->wrote, w.text, kTextLen);
+        if (g_faulted) { ClearActive(); TextOff("a call faulted"); return; }
+    }
+    if (n == 0) g_textNext = 0;
+    ClearActive();
+    g_textQuiet = busy ? 0 : (g_textQuiet ? g_textQuiet : 1);
+
+    static std::size_t s_saidWant = ~(std::size_t)0, s_saidHeld = ~(std::size_t)0;
+    if (n != s_saidWant || g_textHeld.size() != s_saidHeld) {
+        s_saidWant = n; s_saidHeld = g_textHeld.size();
+        Say("cc text: %zu wanted, %zu held", n, g_textHeld.size());
+    }
 }
 
 bool TakeLog(char* out, std::size_t cap) {

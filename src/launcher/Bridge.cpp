@@ -24,6 +24,7 @@
 #include "MenuSwap.h"
 #include "../cache/Achievements.h"
 #include "../../companion/HudShare.h"
+#include "../../companion/MarkerShare.h"
 #include "../reader/Reader.h"
 #include "../shared/Log.h"
 #include "IpcGuard.h"
@@ -4828,6 +4829,41 @@ JSValueRef SkillBarsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return JSValueMakeBoolean(ctx, !bars.empty());
 }
 
+// textOverrides(pid, "group,comp,sub,text;...") : text the game's own components show instead of
+// theirs. Only the skills panel is accepted; an empty string gives the game its own text back.
+JSValueRef TextOverridesFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                           size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    std::vector<rtx::overlay::TextOverride> list;
+    if (argc >= 2) {
+        const std::string s = js_to_utf8(ctx, argv[1]);
+        std::size_t pos = 0;
+        while (pos < s.size() && list.size() < (std::size_t)rtx::marker::kMaxTextOv) {
+            std::size_t semi = s.find(';', pos);
+            const std::string seg = s.substr(pos, semi == std::string::npos ? std::string::npos : semi - pos);
+            pos = (semi == std::string::npos) ? s.size() : semi + 1;
+            int v[3] = {0}; std::size_t fp = 0; int fi = 0;
+            for (; fi < 3; ++fi) {
+                const std::size_t comma = seg.find(',', fp);
+                if (comma == std::string::npos) break;
+                v[fi] = std::atoi(seg.substr(fp, comma - fp).c_str());
+                fp = comma + 1;
+            }
+            if (fi < 3) continue;
+            std::string text = seg.substr(fp);
+            if (text.empty() || text.size() > (std::size_t)rtx::marker::kTextOvMax) continue;
+            bool plain = true;
+            for (char c : text) if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7E || c == '<' || c == '>') { plain = false; break; }
+            if (!plain || v[0] != 1466 || v[1] < 0 || v[1] > 0xFFFF || v[2] < 0 || v[2] >= rtx::marker::kCcSlotBase) continue;
+            rtx::overlay::TextOverride t; t.group = v[0]; t.comp = v[1]; t.sub = v[2]; t.text = std::move(text);
+            list.push_back(std::move(t));
+        }
+    }
+    rtx::overlay::SetTextOverrides(pid, list);
+    return JSValueMakeBoolean(ctx, !list.empty());
+}
+
 JSValueRef KnotCellsFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
                        size_t argc, const JSValueRef argv[], JSValueRef*) {
     if (argc < 1) return JSValueMakeBoolean(ctx, false);
@@ -6131,6 +6167,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "puzzleCells",        PuzzleCellsFn);
     install_fn(ctx, ns, "knotCells",          KnotCellsFn);
     install_fn(ctx, ns, "skillBars",          SkillBarsFn);
+    install_fn(ctx, ns, "textOverrides",      TextOverridesFn);
     install_fn(ctx, ns, "invSlotRect",       InvSlotRectFn);
     install_fn(ctx, ns, "chat",              Chat);
     install_fn(ctx, ns, "buffs",             Buffs);

@@ -68,7 +68,10 @@
     nexus:  { container: 953 },   // Necromancy nexus: Bone/Miasma/Flesh/Spirit rune + Ectoplasm (generic container read)
     brooch: { container: 891 },   // Brooch of the Gods: decorated/exquisite urns + effigies (generic container read)
     money:  { container: 623 },   // Money pouch: Coins (995) split across slots; total = remainder gp + billions*1e9
-    sandy:  { vb: [['Sandy Sand', 61090]] }   // Sandy Sand currency: count lives in varbit 61090 (no container; item 61835 is the icon)
+    sandy:  { vb: [['Sandy Sand', 61090]] },  // Sandy Sand currency: count lives in varbit 61090 (no container; item 61835 is the icon)
+    // Fenmoor totem deposit pile (varp 13668), confirmed in game.
+    totem:  { vb: [['Petrified roots', 61968, 63888, ''], ['Petrified bark', 61969, 63889, ''],
+                   ['Petrified logs', 61970, 63890, '']] }
   };
   const RUNE_NAMES = { 1: 'Air', 2: 'Water', 3: 'Earth', 4: 'Fire', 5: 'Dust', 6: 'Lava', 7: 'Mist', 8: 'Mud', 9: 'Smoke', 10: 'Steam', 11: 'Mind', 12: 'Body', 13: 'Cosmic', 14: 'Chaos', 15: 'Nature', 16: 'Law', 17: 'Death', 18: 'Astral', 19: 'Blood', 20: 'Soul', 21: 'Wrath', 22: 'Time' };
   const STOR_ICON = {
@@ -221,6 +224,7 @@
       STORAGE.soil.varp.forEach(x => varpSet.add(x[1]));
       STORAGE.clue.varp.forEach(x => varpSet.add(x[1]));
       STORAGE.sandy.vb.forEach(x => addVb(x[1]));
+      STORAGE.totem.vb.forEach(x => addVb(x[1]));
       let vp = {};
       if (varpSet.size) vp = await rtxData.call('state.varps', [...varpSet].join(','));
       const vbSrc = (vb) => { const r = storageVbMap && storageVbMap[vb]; return r ? ('varbit ' + vb + ' = varp ' + r.varp + ' bits ' + r.lsb + '-' + r.msb) : ('varbit ' + vb); };
@@ -351,6 +355,8 @@
       } catch (e) {}
       const sandyItems = fromVb(STORAGE.sandy.vb);
       if (sandyItems.length) out.sandy = { name: '', items: sandyItems };
+      const totemItems = STORAGE.totem.vb.map(x => [x[0], readVb(x[1], vp) || 0, x[2], vbSrc(x[1]), 0, x[3]]).filter(x => x[1] > 0);
+      if (totemItems.length) out.totem = { name: '', items: totemItems };
       out.passage = await readPassage(held);
       storageData = out;
     } finally { storageFetching = false; }
@@ -378,6 +384,7 @@
     add('Nexus', d && d.nexus); add('Brooch of the Gods', d && d.brooch); add('Money pouch', d && d.money);
     add('Currency pouch', d && d.currency);
     add('Sandy Sand', d && d.sandy);
+    add('Totem deposit pile', d && d.totem);
     add('Passage of the abyss', d && d.passage);
     const boxItems = (b) => b.items || [];
     const sig = storNoDecay() + '|' + list.map(([t, b]) => t + '|' + (b.name || '') + '|' + (b.cap || '') + '|' + boxItems(b).map(it => it[0] + ':' + it[1] + ':' + (it[2] || 0) + ':' + (it[5] || '')).join(',')).join(';');

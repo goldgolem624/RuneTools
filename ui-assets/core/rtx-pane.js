@@ -74,11 +74,12 @@
         wrap.appendChild(row);
       }
       if (virtualLevelsOn()) {   // the pane shows virtual levels only while the game's own setting is on
-        const row = ovToggleRow('skVirtTgl', 'Virtual levels to 126', 'Past 120 on the same XP curve. Invention already goes to 150');
+        const row = ovToggleRow('skVirtTgl', 'Virtual levels to 126', "Past 120 on the same XP curve, also in the game's skills panel. Invention already goes to 150");
         row.classList.toggle('on', virtualCap(false) > 120);
         row.addEventListener('click', () => {
           const now = virtualCap(false) > 120;
           try { prefSet('rtxVirtual126', now ? '0' : '1'); } catch (e) {}
+          if (typeof skVirtualTick === 'function') skVirtualTick();
           paneRun('player', renderPane);
         });
         wrap.appendChild(row);
