@@ -23,6 +23,14 @@
         return r.body;
     }
     function isLinked() { return !!(S.linked && S.linked.state === 'linked'); }
+    async function uploadIcons(ids) {
+        for (var i = 0; i < (Array.isArray(ids) ? ids.length : 0) && i < 20; i++) {
+            var id = ids[i], url = '';
+            try { url = await P.cache.itemIcon(id); } catch (e) { url = ''; }
+            if (!url || url.indexOf('data:image/png;base64,') !== 0 || url.length > 48000) continue;
+            try { await api('/icons', { id: id, png: url }); } catch (e) { break; }
+        }
+    }
     function killKey(l) { var a = S.actMap[l.activity]; var m = a && a.modes.filter(function (x) { return x.key === l.mode; })[0]; return m ? m.kills : ''; }
     function myKills(key) { return (S.me && S.me.kills && S.me.kills[key]) | 0; }
 
@@ -56,22 +64,22 @@
         var evs = [];
         try { evs = await G.events(); } catch (e) { return; }
         if (!Array.isArray(evs) || !evs.length) return;
-        var mineDirty = false, detailDirty = false, lobbyDirty = false;
+        var mineDirty = false, detailDirty = false, lobbyDirty = false, helloSeen = false;
         evs.forEach(function (ev) {
             var d = ev.data || {};
             if (ev.event === 'listing') { upsert(d); lobbyDirty = true; if (S.sel === d.id) detailDirty = true; }
             else if (ev.event === 'removed') { remove(d.id); lobbyDirty = true; if (S.sel === d.id) detailDirty = true; }
-            else if (ev.event === 'stream') { S.stream = !!d.connected; }
-            else if (ev.event === 'hello') { S.stream = true; mineDirty = true; lobbyDirty = true; }
+            else if (ev.event === 'stream') { if (!d.connected && S.stream) S.streamLostAt = Date.now(); S.stream = !!d.connected; lobbyDirty = true; }
+            else if (ev.event === 'hello') { S.stream = true; mineDirty = true; lobbyDirty = true; helloSeen = true; }
             else {
                 note(ev.event, d); mineDirty = true;
                 if (S.sel && d.listingId === S.sel) detailDirty = true;
             }
         });
         if (mineDirty) await loadMine();
-        if (lobbyDirty && S.stream) { try { await loadListings(); } catch (e) {} }
+        if (helloSeen) { try { await loadListings(); } catch (e) {} }
         if (detailDirty) await loadDetail(S.sel);
-        render();
+        if (mineDirty || lobbyDirty || detailDirty) render();
     }
     function note(k, d) {
         if (k === 'applicant') toast((d.rsn || 'Someone') + ' applied to your group', 'ok', true);
@@ -97,7 +105,7 @@
         var ids = [];
         if (S.mine.hosting && S.mine.hosting.status !== 'in_progress') ids.push(S.mine.hosting.id);
         (S.mine.applications || []).forEach(function (l) { if (l.status !== 'in_progress') ids.push(l.id); });
-        for (var i = 0; i < ids.length; i++) { try { await api('/listings/' + ids[i] + '/snapshot', { snapshot: S.me }); } catch (e) {} }
+        for (var i = 0; i < ids.length; i++) { try { var j = await api('/listings/' + ids[i] + '/snapshot', { snapshot: S.me }); uploadIcons(j.missingIcons); } catch (e) {} }
     }
     async function trackGroup() {
         var h = S.mine && S.mine.hosting;
@@ -130,7 +138,7 @@
         b.disabled = !isLinked();
         b.title = isLinked() ? '' : 'Link this PC to your RuneTools account in Settings';
         $('lobbyBtn').hidden = S.view === 'lobby';
-        $('streamWarn').hidden = S.stream;
+        $('streamWarn').hidden = S.stream || Date.now() - (S.streamLostAt || 0) < 8000;
     }
     function renderTiles() {
         var host = $('tiles'); host.innerHTML = '';
@@ -217,21 +225,22 @@
             if (l.status === 'open') { if (l.accepted > 0) acts.appendChild(btn('Form group', 'btn-primary', act('/form'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
             else if (l.status === 'forming') { acts.appendChild(btn('Reopen', '', act('/reopen'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
             else if (l.status === 'in_progress') acts.appendChild(btn('Close listing', 'btn-danger', act('/close')));
-            acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
+            acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); var j = await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); uploadIcons(j.missingIcons); await refreshDetail(); }));
         } else if (isLinked()) {
             if (v.status === 'applied') acts.appendChild(btn('Withdraw', 'btn-danger', act('/withdraw')));
             else if (v.status === 'accepted') {
                 if (l.status === 'forming') acts.appendChild(btn(v.ready ? 'Not ready' : 'Ready', v.ready ? '' : 'btn-primary', act('/ready', { ready: !v.ready })));
                 if (l.status !== 'in_progress') acts.appendChild(btn('Leave', 'btn-danger', act('/withdraw')));
-                acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
+                acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); var j = await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); uploadIcons(j.missingIcons); await refreshDetail(); }));
             } else if (l.status === 'open' && !v.status) {
                 var can = qualifies(l), hosting = S.mine && S.mine.hosting;
                 var ap = btn(hosting ? 'Close your listing to apply' : (can ? 'Apply' : 'Below the minimum kills'), 'btn-primary', async function () {
                     await loadMe();
                     var why = cardProblem();
                     if (why) throw new Error(why);
-                    await api('/listings/' + l.id + '/apply', { snapshot: S.me });
+                    var j = await api('/listings/' + l.id + '/apply', { snapshot: S.me });
                     toast('Applied. The host sees your card now.', 'ok');
+                    uploadIcons(j.missingIcons);
                     await loadMine(); await loadDetail(S.sel); render();
                 });
                 ap.disabled = !can || !!hosting;
@@ -389,6 +398,7 @@
             if (why) throw new Error(why);
             var j = await api('/listings', { activity: p.activity, mode: p.mode, size: p.size, minKills: p.minKills, tags: p.tags, snapshot: S.me });
             toast('Listing posted', 'ok');
+            uploadIcons(j.missingIcons);
             await loadMine(); S.sel = j.listing.id; S.view = 'detail'; await loadDetail(S.sel); render();
         });
         post.disabled = !!problem;
@@ -404,6 +414,7 @@
     async function boot() {
         await P.ready();
         GF.setIconSource(function (id) { return P.cache.itemIcon(id).then(function (u) { return u ? [u] : []; }, function () { return []; }); });
+        GF.setSkillIcon(function (name) { return (window.GF_SKILL_ICONS || {})[name] || ''; });
         try {
             await P.ui.settings([
                 { key: 'notify', type: 'toggle', label: 'Toasts over the game for group events', default: true },
@@ -435,7 +446,7 @@
         setInterval(trackGroup, 2000);
         setInterval(refreshSnapshots, 10 * 60000);
         setInterval(async function () { try { var ls = await G.linked(); var was = isLinked(); S.linked = ls; if (isLinked() !== was) { await loadMine(); render(); } } catch (e) {} }, 15000);
-        setInterval(function () { if (S.view === 'lobby') render(); }, 60000);
+        setInterval(function () { if (S.view === 'lobby') render(); else renderTop(); }, 10000);
     }
     boot();
 })();

@@ -2,10 +2,10 @@
 // snapshot shapes and an icon source (a URL or a Promise of one per item id) and builds DOM.
 (function () {
     'use strict';
-    var iconSource = function (id) { return ['/icons/items/' + id + '.png', '/icons/items/' + id + '.gif']; };
-    var SLOT_NAMES = { 0: 'Head', 1: 'Cape', 2: 'Neck', 3: 'Weapon', 4: 'Body', 5: 'Off-hand', 7: 'Legs', 9: 'Gloves', 10: 'Boots', 12: 'Ring', 13: 'Ammo', 14: 'Aura', 17: 'Pocket' };
-    var DOLL = [[null, 0, null], [1, 2, 13], [3, 4, 5], [null, 7, null], [9, 10, 12]];
-    var SIDE = [14, 17];
+    var iconSource = function (id) { return ['/icons/items/' + id + '.png']; };
+    var skillIcon = function (name) { return '/icons/skills/' + name + '.png'; };
+    var SLOT_NAMES = { 0: 'Head', 1: 'Cape', 2: 'Neck', 3: 'Weapon', 4: 'Body', 5: 'Off-hand', 7: 'Legs', 9: 'Gloves', 10: 'Boots', 12: 'Ring', 13: 'Ammo', 17: 'Pocket' };
+    var DOLL = [[null, 0, null], [1, 2, 13], [3, 4, 5], [null, 7, 17], [9, 10, 12]];
     var LEVELS = ['Attack', 'Strength', 'Defence', 'Ranged', 'Magic', 'Necromancy', 'Prayer', 'Constitution', 'Summoning', 'Herblore'];
     var SHORT = { Attack: 'Att', Strength: 'Str', Defence: 'Def', Ranged: 'Rng', Magic: 'Mag', Necromancy: 'Nec', Prayer: 'Pry', Constitution: 'HP', Summoning: 'Sum', Herblore: 'Hrb' };
     var CAP120 = { Herblore: 1, Necromancy: 1, Invention: 1, Archaeology: 1, Dungeoneering: 1, Farming: 1, Slayer: 1 };
@@ -56,9 +56,6 @@
             });
         });
         wrap.appendChild(grid);
-        var side = el('div', 'gf-doll-side');
-        SIDE.forEach(function (slot) { side.appendChild(slotCell(slot, bySlot[slot])); });
-        wrap.appendChild(side);
         return wrap;
     }
     function slotCell(slot, item) {
@@ -96,8 +93,13 @@
         LEVELS.forEach(function (k) {
             if (lv[k] == null) return;
             var v = lv[k] | 0, cls = v >= 120 ? ' l120' : (v >= 99 ? ' l99' : '');
-            if (CAP120[k] && v >= 120) cls = ' l120';
-            box.appendChild(el('span', 'gf-lv' + cls, '<small>' + SHORT[k] + '</small><b>' + v + '</b>'));
+            var pill = el('span', 'gf-lv' + cls);
+            pill.title = k + ' ' + v;
+            var src = skillIcon(k);
+            if (src) { var img = el('img', 'gf-skill'); img.alt = SHORT[k]; img.src = src; img.onerror = function () { img.replaceWith(el('small', null, SHORT[k])); }; pill.appendChild(img); }
+            else pill.appendChild(el('small', null, SHORT[k]));
+            pill.appendChild(el('b', null, String(v)));
+            box.appendChild(pill);
         });
         return box;
     }
@@ -186,6 +188,26 @@
         return card;
     }
 
+    function listingTile(l, act, o) {
+        o = o || {};
+        var card = el('div', 'gf-listing gf-tilecard' + (o.selected ? ' selected' : '') + (o.mine ? ' mine' : '') + ' st-' + l.status);
+        card.style.setProperty('--hue', String(act && act.hue != null ? act.hue : 200));
+        card.dataset.id = l.id;
+        var seats = seatsOf(l);
+        card.innerHTML =
+            '<div class="gf-tc-band"><div class="gf-art"><span>' + esc(initials(act ? act.name : l.activity)) + '</span></div>' +
+              '<div class="gf-tc-title"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span></div>' +
+              '<div class="gf-listing-ring">' + rosterRing(seats, l.size) + '</div></div>' +
+            '<div class="gf-tc-body">' +
+              '<div class="gf-tc-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) +
+                (l.status === 'forming' ? '<span class="gf-tag gf-tag-warn">Forming</span>' : '') + (o.mine ? '<span class="gf-tag gf-tag-ok">' + esc(o.mine) + '</span>' : '') + '</div>' +
+              '<div class="gf-tc-stats"><span><b>' + fmt(l.host.kills) + '</b> kills</span><span><b>' + l.slots + '</b> open of ' + l.size + '</span>' +
+                (l.minKills ? '<span>min <b>' + fmt(l.minKills) + '</b></span>' : '<span class="gf-dim">no minimum</span>') + '</div>' +
+              '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
+            '</div>';
+        return card;
+    }
+
     function initials(name) {
         var w = String(name || '').replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(function (x) { return x && !/^(the|of|and|lord|king)$/i.test(x); });
         return (w.length > 1 ? w[0][0] + w[1][0] : (w[0] || '??').slice(0, 2)).toUpperCase();
@@ -205,6 +227,8 @@
 
     window.GF = {
         setIconSource: function (fn) { if (typeof fn === 'function') iconSource = fn; },
+        setSkillIcon: function (fn) { if (typeof fn === 'function') skillIcon = fn; },
+        listingTile: listingTile,
         esc: esc, fmt: fmt, ago: ago, stale: stale, el: el,
         playerCard: playerCard, listingCard: listingCard, activityTile: activityTile,
         rosterRing: rosterRing, seatsOf: seatsOf, tagChips: tagChips, modeLabel: modeLabel, initials: initials, worldBadge: worldBadge,

@@ -89,7 +89,8 @@ void do_request(Response& out,
                 const std::function<bool(const char*, DWORD)>& sink,
                 const std::function<void(long long, long long)>& on_progress,
                 const std::function<bool(int)>& on_status = nullptr,
-                bool decompress = false) {
+                bool decompress = false,
+                int receive_timeout_ms = 0) {
     // One session for the whole launcher: WinHTTP keeps finished connections alive inside a session, so the
     // minute heartbeat, kill events and panel requests reuse an open TLS connection instead of a new handshake.
     HINTERNET session = shared_session();
@@ -112,6 +113,7 @@ void do_request(Response& out,
         WinHttpSetOption(req.h, WINHTTP_OPTION_REDIRECT_POLICY, &never, sizeof(never));
         break;
     }
+    if (receive_timeout_ms > 0) WinHttpSetTimeouts(req.h, 10000, 10000, 30000, receive_timeout_ms);
     if (decompress) {
         // WinHTTP adds Accept-Encoding: gzip, deflate and inflates the body itself (Windows 8.1+; a no-op
         // where unsupported). The price relay's 536 KB latest becomes 121 KB on the wire.
@@ -287,7 +289,7 @@ Response Stream(const std::wstring& host, const std::wstring& path,
     Response out;
     do_request(out, host, path, L"GET", headers, std::string(),
         [&on_data](const char* d, DWORD n) { return on_data ? on_data(d, (std::size_t)n) : true; }, nullptr,
-        on_status);
+        on_status, false, 180000);   // the server writes a comment every 25 s; a quiet stream is not a dead one
     return out;
 }
 

@@ -73,10 +73,11 @@ void events_loop(int epoch) {
     while (g_epoch.load() == epoch && g_want.load()) {
         auto hdrs = headers(false);
         for (auto& h : hdrs) if (h.name == "Accept") h.value = "text/event-stream";
-        std::string buf, cur_ev;
+        std::string buf, cur_ev; bool gotData = false;
         auto r = http::Stream(kUpdateHost, L"/api/groups/events", hdrs,
             [&](const char* d, std::size_t n) -> bool {
                 if (g_epoch.load() != epoch || !g_want.load()) return false;
+                gotData = true;
                 buf.append(d, n);
                 std::size_t nl;
                 while ((nl = buf.find('\n')) != std::string::npos) {
@@ -99,12 +100,15 @@ void events_loop(int epoch) {
             },
             [](int status) { return status == 200; });
         if (g_epoch.load() != epoch || !g_want.load()) break;
-        backoff = (r.ok && r.status == 200) ? 3000 : (backoff * 2 > 60000 ? 60000 : backoff * 2);
+        // a stream that carried data and ended is the normal case (idle cut by a proxy): back straight in
+        backoff = (gotData || (r.ok && r.status == 200)) ? 3000 : (backoff * 2 > 60000 ? 60000 : backoff * 2);
+        if (!gotData && !r.detail.empty()) rtx::log::Launcher("groups: event stream failed: " + r.detail + " (status " + std::to_string(r.status) + ")");
         push("{\"kind\":\"event\",\"event\":\"stream\",\"data\":{\"connected\":false}}");
         for (int slept = 0; slept < backoff && g_epoch.load() == epoch && g_want.load(); slept += 250)
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     g_streaming.store(false);
+    if (g_want.load() && g_epoch.load() != epoch) Subscribe(true);   // wanted again while this loop was winding down
 }
 
 // ---- snapshot ------------------------------------------------------------------------------------
@@ -198,6 +202,7 @@ std::string Take() {
     return out;
 }
 
+void Subscribe(bool on);
 void Subscribe(bool on) {
     g_want.store(on);
     if (!on) { ++g_epoch; return; }
