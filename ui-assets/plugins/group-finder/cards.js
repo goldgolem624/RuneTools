@@ -9,7 +9,6 @@
     var DOLL = [[null, 0, null], [1, 2, 13], [3, 4, 5], [null, 7, 17], [9, 10, 12]];
     var LEVELS = ['Attack', 'Strength', 'Defence', 'Ranged', 'Magic', 'Necromancy', 'Prayer', 'Constitution', 'Summoning', 'Herblore'];
     var SHORT = { Attack: 'Att', Strength: 'Str', Defence: 'Def', Ranged: 'Rng', Magic: 'Mag', Necromancy: 'Nec', Prayer: 'Pry', Constitution: 'HP', Summoning: 'Sum', Herblore: 'Hrb' };
-    var CAP120 = { Herblore: 1, Necromancy: 1, Invention: 1, Archaeology: 1, Dungeoneering: 1, Farming: 1, Slayer: 1 };
 
     function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
     function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
@@ -36,13 +35,6 @@
         };
         if (src && typeof src.then === 'function') src.then(apply, function () { img.classList.add('gf-noicon'); });
         else apply(src);
-    }
-
-    function pips(rank, ranks) {
-        if (!(ranks > 1)) return '';
-        var s = '<span class="gf-pips">';
-        for (var i = 1; i <= ranks; i++) s += '<i' + (i <= rank ? ' class="on"' : '') + '></i>';
-        return s + '</span>';
     }
 
     function paperdoll(snap) {
@@ -80,7 +72,11 @@
             var img = el('img', 'gf-icon gf-icon-sm'); img.alt = ''; setIcon(img, e.id);
             row.appendChild(img);
             var chips = el('div', 'gf-chips');
-            e.perks.forEach(function (p) { chips.appendChild(el('span', 'gf-chip', esc(p.name) + pips(p.rank, p.ranks))); });
+            e.perks.forEach(function (p) {
+                var chip = el('span', 'gf-chip', esc(p.name) + (p.ranks > 1 ? ' <b>' + (p.rank | 0) + '</b>' : ''));
+                chip.title = p.ranks > 1 ? p.name + ' rank ' + (p.rank | 0) + ' of ' + p.ranks : p.name;
+                chips.appendChild(chip);
+            });
             row.appendChild(chips);
             box.appendChild(row);
         });
@@ -113,8 +109,9 @@
     function killsBadge(kills, label, minKills, totalKills, reported) {
         var meets = minKills == null ? null : (kills >= minKills);
         return '<div class="gf-kills' + (meets === false ? ' short' : '') + '">' +
-            '<b>' + fmt(kills) + '</b><small>' + esc(label || 'kills') + (reported ? ' <i class="gf-rep" title="Entered by the player, not read from the game">reported</i>' : '') + '</small>' +
-            (meets === null ? '' : '<i class="gf-req ' + (meets ? 'ok' : 'no') + '" title="' + (meets ? 'Meets the minimum' : 'Below the minimum of ' + fmt(minKills)) + '"></i>') +
+            '<b>' + fmt(kills) + '</b><small>' + esc(label || 'kills') + '</small>' +
+            (reported ? '<span class="gf-tag gf-tag-warn" title="Entered by the player, not read from the game">reported</span>' : '') +
+            (meets === null ? '' : '<span class="gf-tag ' + (meets ? 'gf-tag-ok' : 'gf-tag-err') + '">' + (meets ? 'min ' + fmt(minKills) + ' met' : 'below min ' + fmt(minKills)) + '</span>') +
             (totalKills != null ? '<em>' + fmt(totalKills) + ' boss kills</em>' : '') + '</div>';
     }
 
@@ -125,13 +122,13 @@
         var web = snap.source === 'web';
         var head = el('div', 'gf-player-head');
         head.innerHTML = '<span class="gf-rsn">' + esc(snap.rsn || '?') + '</span>' + worldBadge(snap.world, o.viewerWorld) +
-            (web ? '<span class="gf-tag gf-src-web" title="Posted from the website: levels from the official hiscores, kills as reported, no gear">Browser card</span>'
-                 : '<span class="gf-tag gf-src-client" title="Read from the game by the RuneTools client">Verified</span>') +
+            (web ? '<span class="gf-tag gf-src-web" title="Posted from the website: levels from the official hiscores, kills as reported, no gear">Browser</span>'
+                 : '<span class="gf-tag gf-src-client" title="Read from the game by the RuneTools client">Client</span>') +
             (o.badge ? '<span class="gf-tag gf-tag-' + esc(o.badge.kind || 'muted') + '">' + esc(o.badge.text) + '</span>' : '') +
-            '<span class="gf-taken' + (stale(snap.takenAt) ? ' old' : '') + '" title="When the client read this">taken ' + ago(snap.takenAt) + '</span>';
+            '<span class="gf-taken' + (stale(snap.takenAt) ? ' old' : '') + '" title="When the card was read">taken ' + ago(snap.takenAt) + '</span>';
         card.appendChild(head);
         var body = el('div', 'gf-player-body');
-        if (web) body.appendChild(el('div', 'gf-webnote', '<b>No gear shown</b>Cards posted from the RuneTools client show worn items and perks read from the game.'));
+        if (web) body.appendChild(el('div', 'gf-webnote', '<b>No gear on a browser card</b>Cards posted from the client show worn items and perks read from the game.'));
         else body.appendChild(paperdoll(snap));
         var right = el('div', 'gf-player-right');
         right.innerHTML = killsBadge(snap.kills | 0, o.killLabel, o.minKills, web ? null : snap.totalKills, web);
@@ -165,8 +162,8 @@
         return seats.slice(0, listing.size);
     }
 
-    function srcDot(host) {
-        return host && host.source === 'web' ? '<i class="gf-dot web" title="Browser card"></i>' : '<i class="gf-dot ok" title="Verified by the RuneTools client"></i>';
+    function srcTag(host) {
+        return host && host.source !== 'web' ? '<span class="gf-tag gf-src-client" title="Read from the game by the RuneTools client">Client</span>' : '';
     }
 
     function tagChips(tags) {
@@ -181,40 +178,18 @@
 
     function listingCard(l, act, o) {
         o = o || {};
-        var card = el('div', 'gf-listing' + (o.selected ? ' selected' : '') + (o.mine ? ' mine' : '') + ' st-' + l.status);
-        card.style.setProperty('--hue', String(act && act.hue != null ? act.hue : 200));
+        var card = el('div', 'gf-listing' + (o.selected ? ' selected' : '') + ' st-' + l.status);
         card.dataset.id = l.id;
         card.innerHTML =
             artHtml() +
             '<div class="gf-listing-main">' +
               '<div class="gf-listing-top"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span>' +
                 (l.status === 'forming' ? '<span class="gf-tag gf-tag-warn">Forming</span>' : '') + (o.mine ? '<span class="gf-tag gf-tag-ok">' + esc(o.mine) + '</span>' : '') + '</div>' +
-              '<div class="gf-listing-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) + srcDot(l.host) +
-                '<span class="gf-k">' + fmt(l.host.kills) + ' kills</span>' + (l.minKills ? '<span class="gf-min">min ' + fmt(l.minKills) + '</span>' : '') + (l.verifiedOnly ? '<span class="gf-min" title="Takes RuneTools client cards only">client cards</span>' : '') + '</div>' +
+              '<div class="gf-listing-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) + srcTag(l.host) +
+                '<span class="gf-k">' + fmt(l.host.kills) + ' kills</span>' + (l.minKills ? '<span class="gf-min">min ' + fmt(l.minKills) + '</span>' : '') + (l.verifiedOnly ? '<span class="gf-min" title="Takes RuneTools client cards only">client cards only</span>' : '') + '</div>' +
               '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
             '</div>' +
             '<div class="gf-listing-ring">' + rosterRing(seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>';
-        mountArt(card, act, l.activity);
-        return card;
-    }
-
-    function listingTile(l, act, o) {
-        o = o || {};
-        var card = el('div', 'gf-listing gf-tilecard' + (o.selected ? ' selected' : '') + (o.mine ? ' mine' : '') + ' st-' + l.status);
-        card.style.setProperty('--hue', String(act && act.hue != null ? act.hue : 200));
-        card.dataset.id = l.id;
-        var seats = seatsOf(l);
-        card.innerHTML =
-            '<div class="gf-tc-band">' + artHtml() +
-              '<div class="gf-tc-title"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span></div>' +
-              '<div class="gf-listing-ring">' + rosterRing(seats, l.size) + '</div></div>' +
-            '<div class="gf-tc-body">' +
-              '<div class="gf-tc-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) + srcDot(l.host) +
-                (l.status === 'forming' ? '<span class="gf-tag gf-tag-warn">Forming</span>' : '') + (o.mine ? '<span class="gf-tag gf-tag-ok">' + esc(o.mine) + '</span>' : '') + '</div>' +
-              '<div class="gf-tc-stats"><span><b>' + fmt(l.host.kills) + '</b> kills</span><span><b>' + l.slots + '</b> open of ' + l.size + '</span>' +
-                (l.minKills ? '<span>min <b>' + fmt(l.minKills) + '</b></span>' : '<span class="gf-dim">no minimum</span>') + (l.verifiedOnly ? '<span title="Takes RuneTools client cards only">client cards only</span>' : '') + '</div>' +
-              '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
-            '</div>';
         mountArt(card, act, l.activity);
         return card;
     }
@@ -250,7 +225,6 @@
         o = o || {};
         var t = el('button', 'gf-tile' + (o.selected ? ' selected' : ''));
         t.type = 'button'; t.dataset.key = act.key;
-        t.style.setProperty('--hue', String(act.hue != null ? act.hue : 200));
         t.appendChild(artBlock(act));
         t.insertAdjacentHTML('beforeend', '<span class="gf-tile-name">' + esc(act.name) + '</span>' +
             '<span class="gf-tile-meta">' + (o.count ? '<b>' + o.count + '</b> open' : '<span class="gf-dim">no groups</span>') +
@@ -263,7 +237,6 @@
         setSkillIcon: function (fn) { if (typeof fn === 'function') skillIcon = fn; },
         setArtSource: function (fn) { if (typeof fn === 'function') artSource = fn; },
         artBlock: artBlock,
-        listingTile: listingTile,
         esc: esc, fmt: fmt, ago: ago, stale: stale, el: el,
         playerCard: playerCard, listingCard: listingCard, activityTile: activityTile,
         rosterRing: rosterRing, seatsOf: seatsOf, tagChips: tagChips, modeLabel: modeLabel, initials: initials, worldBadge: worldBadge,
