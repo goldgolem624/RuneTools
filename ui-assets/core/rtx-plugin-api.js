@@ -33,7 +33,7 @@ storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){retu
 telemetry:{append:function(n,r){return call('telemetry.append',[n,r]);},appendMany:function(n,l){return call('telemetry.appendMany',[n,l]);},export:function(n,d){return call('telemetry.export',[n,d]);},list:function(){return call('telemetry.list',[]);},remove:function(n){return call('telemetry.remove',[n]);},open:function(){return call('telemetry.open',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);},settings:function(schema){return call('ui.settings',[schema]);}},
 settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}},
-groups:{call:function(m,p,b){return call('groups.call',[m,p,b]);},events:function(){return call('groups.events',[]);},snapshot:function(){return call('groups.snapshot',[]);},subscribe:function(on){return call('groups.subscribe',[!!on]);},linked:function(){return call('groups.linked',[]);}},
+groups:{call:function(m,p,b){return call('groups.call',[m,p,b]);},events:function(){return call('groups.events',[]);},snapshot:function(){return call('groups.snapshot',[]);},subscribe:function(on){return call('groups.subscribe',[!!on]);},linked:function(){return call('groups.linked',[]);},asset:function(p){return call('groups.asset',[p]);}},
 prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);},item:function(ids){return call('prices.item',[ids]);}},
 console:(function(){function f(a){var o=[];for(var i=0;i<a.length;i++){var v=a[i];if(typeof v==='string')o.push(v);else if(v instanceof Error)o.push(v.stack||v.message||String(v));else if(v===undefined)o.push('undefined');else{try{o.push(JSON.stringify(v));}catch(e){o.push(String(v));}}}return o.join(' ');}
 function mk(tag){return{debug:function(){return call('console.debug',[f(arguments),tag]);},info:function(){return call('console.info',[f(arguments),tag]);},log:function(){return call('console.info',[f(arguments),tag]);},warn:function(){return call('console.warn',[f(arguments),tag]);},error:function(){return call('console.error',[f(arguments),tag]);}};}
@@ -476,6 +476,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'groups.snapshot':        { scope: 'groups',      json: true,  run: (a, pid) => bridge().groupsSnapshot(pid) },
     'groups.subscribe':       { scope: 'groups',      json: false, run: (a, pid, id) => gfSubscribe(id, !!a[0]) },
     'groups.linked':          { scope: 'groups',      json: true,  run: () => bridge().linkStatus() },
+    'groups.asset':           { scope: 'groups',      json: false, run: (a, pid, id) => (bridge().pluginBuiltinAsset ? bridge().pluginBuiltinAsset(id, pClampStr(a[0], 128)) : '') },
     'host.alertsLoad':        { scope: 'host',        json: false, run: (a, pid) => bridge().alertsLoad(pid, ...pArgs(a)) },
     'host.counterLoad':       { scope: 'host',        json: false, run: (a, pid) => bridge().counterLoad(pid, ...pArgs(a)) },
     'host.notesLoad':         { scope: 'host',        json: false, run: (a, pid) => bridge().notesLoad(pid, ...pArgs(a)) },

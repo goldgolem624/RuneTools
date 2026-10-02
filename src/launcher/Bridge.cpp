@@ -5446,6 +5446,46 @@ JSValueRef PluginBuiltinEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, s);
 }
 
+// An image file of a built-in plugin's own folder (one level of subfolder), as a data URL.
+JSValueRef PluginBuiltinAsset(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                              size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 2) return utf8_to_js(ctx, std::string());
+    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
+    std::string rel = js_to_utf8(ctx, argv[1]);
+    if (id.empty() || rel.empty() || rel.size() > 128) return utf8_to_js(ctx, std::string());
+    std::string dir, file;
+    auto slash = rel.find('/');
+    if (slash == std::string::npos) file = rel;
+    else { dir = rel.substr(0, slash); file = rel.substr(slash + 1); }
+    auto name_ok = [](const std::string& n) {
+        if (n.empty() || n.find("..") != std::string::npos) return false;
+        for (char c : n) if (!(std::isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.')) return false;
+        return true;
+    };
+    if ((!dir.empty() && !name_ok(dir)) || !plugin_bare_name_ok(file)) return utf8_to_js(ctx, std::string());
+    std::filesystem::path p = plugin_builtin_root() / id;
+    if (!dir.empty()) p /= dir;
+    p /= file;
+    std::string bytes = alerts_read_file(p);
+    if (bytes.empty() || bytes.size() > 512 * 1024) return utf8_to_js(ctx, std::string());
+    const char* mime = nullptr;
+    if (bytes.size() > 8 && (unsigned char)bytes[0] == 0x89 && bytes[1] == 'P') mime = "image/png";
+    else if (bytes.size() > 3 && (unsigned char)bytes[0] == 0xFF && (unsigned char)bytes[1] == 0xD8) mime = "image/jpeg";
+    else if (bytes.size() > 12 && bytes.compare(8, 4, "WEBP") == 0) mime = "image/webp";
+    if (!mime) return utf8_to_js(ctx, std::string());
+    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out = std::string("data:") + mime + ";base64,";
+    out.reserve(out.size() + (bytes.size() + 2) / 3 * 4);
+    std::size_t i = 0;
+    for (; i + 2 < bytes.size(); i += 3) {
+        unsigned v = ((unsigned char)bytes[i] << 16) | ((unsigned char)bytes[i + 1] << 8) | (unsigned char)bytes[i + 2];
+        out += tbl[(v >> 18) & 63]; out += tbl[(v >> 12) & 63]; out += tbl[(v >> 6) & 63]; out += tbl[v & 63];
+    }
+    if (i + 1 == bytes.size()) { unsigned v = (unsigned char)bytes[i] << 16; out += tbl[(v >> 18) & 63]; out += tbl[(v >> 12) & 63]; out += "=="; }
+    else if (i + 2 == bytes.size()) { unsigned v = ((unsigned char)bytes[i] << 16) | ((unsigned char)bytes[i + 1] << 8); out += tbl[(v >> 18) & 63]; out += tbl[(v >> 12) & 63]; out += tbl[(v >> 6) & 63]; out += '='; }
+    return utf8_to_js(ctx, out);
+}
+
 // ---- Group Finder ----
 JSValueRef GroupsCall(JSContextRef ctx, JSObjectRef, JSObjectRef,
                       size_t argc, const JSValueRef argv[], JSValueRef*) {
@@ -6433,6 +6473,7 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pluginBuiltinList",     PluginBuiltinList);
     install_fn(ctx, ns, "pluginBuiltinManifest", PluginBuiltinManifest);
     install_fn(ctx, ns, "pluginBuiltinEntry",    PluginBuiltinEntry);
+    install_fn(ctx, ns, "pluginBuiltinAsset",    PluginBuiltinAsset);
     install_fn(ctx, ns, "groupsCall",        GroupsCall);
     install_fn(ctx, ns, "groupsTake",        GroupsTake);
     install_fn(ctx, ns, "groupsSubscribe",   GroupsSubscribe);

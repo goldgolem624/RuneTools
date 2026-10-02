@@ -27,6 +27,17 @@
     background: radial-gradient(120% 100% at 20% 0%, hsl(var(--hue) 70% 55% / .85), hsl(var(--hue) 60% 22%) 70%), #0b0f17; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 6px 18px -10px hsl(var(--hue) 70% 50% / .8); }
 .gf-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(255, 255, 255, .18), transparent 45%, rgba(0, 0, 0, .25)); }
 .gf-art > span { position: relative; font: 800 17px/1 'Unbounded', 'Segoe UI', sans-serif; letter-spacing: -.02em; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
+.gf-art-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 20%; opacity: 0; transition: opacity .2s; }
+.gf-art.has-img > span { visibility: hidden; }
+.gf-art.has-img .gf-art-img { opacity: 1; }
+.gf-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--gf-dim); }
+.gf-dot.ok { background: var(--gf-ok); box-shadow: 0 0 6px var(--gf-ok); }
+.gf-dot.web { background: var(--gf-muted); }
+.gf-src-client { color: var(--gf-ok); border-color: rgba(77, 210, 138, .4); background: rgba(77, 210, 138, .08); }
+.gf-src-web { color: var(--gf-muted); }
+.gf-rep { font-style: normal; font-size: 10px; color: var(--gf-warn); margin-left: 4px; }
+.gf-webnote { flex: 0 0 136px; padding: 10px; border-radius: 7px; border: 1px dashed var(--gf-line-2); color: var(--gf-muted); font-size: 11.5px; line-height: 1.4; }
+.gf-webnote b { display: block; color: var(--gf-text); margin-bottom: 4px; font-size: 12px; }
 
 /* tiles */
 .gf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
@@ -109,14 +120,14 @@
 .gf-req.no { background: rgba(255, 97, 97, .2); box-shadow: inset 0 0 0 1px var(--gf-err); }
 .gf-req.no::before, .gf-req.no::after { content: ""; position: absolute; left: 7px; top: 3px; width: 2px; height: 10px; background: var(--gf-err); transform: rotate(45deg); }
 .gf-req.no::after { transform: rotate(-45deg); }
-.gf-levels { display: flex; flex-wrap: wrap; gap: 4px; align-items: stretch; }
-.gf-combat { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4px 9px; border-radius: 6px; background: rgba(255, 255, 255, .05); border: 1px solid var(--gf-line); min-width: 44px; }
-.gf-combat b { font: 800 16px/1.1 'Unbounded', 'Segoe UI', sans-serif; }
+.gf-levels { display: grid; grid-template-columns: repeat(auto-fill, 58px); grid-auto-rows: 30px; gap: 4px; }
+.gf-combat { grid-column: span 2; display: flex; align-items: baseline; justify-content: center; gap: 6px; border-radius: 6px; background: rgba(255, 255, 255, .05); border: 1px solid var(--gf-line); }
+.gf-combat b { font: 800 15px/1 'Unbounded', 'Segoe UI', sans-serif; }
 .gf-combat small, .gf-lv small { font-size: 9px; color: var(--gf-dim); text-transform: uppercase; letter-spacing: .06em; }
-.gf-lv { display: flex; flex-direction: column; align-items: center; padding: 3px 6px; border-radius: 6px; background: rgba(255, 255, 255, .03); border: 1px solid var(--gf-line); min-width: 34px; }
-.gf-lv b { font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.gf-lv { flex-direction: row; gap: 5px; padding: 4px 7px; }
-.gf-skill { width: 16px; height: 16px; object-fit: contain; }
+.gf-lv { display: grid; grid-template-columns: 18px 1fr; align-items: center; gap: 4px; padding: 0 6px 0 5px; border-radius: 6px; background: rgba(255, 255, 255, .03); border: 1px solid var(--gf-line); }
+.gf-lv b { font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; }
+.gf-lv small { text-align: center; }
+.gf-skill { width: 18px; height: 18px; object-fit: contain; display: block; }
 .gf-lv.l99 b { color: var(--gf-accent-hi); }
 .gf-lv.l120 b { color: var(--gf-cyan); }
 .gf-perks { display: flex; flex-direction: column; gap: 5px; }
@@ -221,6 +232,12 @@ select option { background: var(--rtx-bg-elev, #1a1b23); }
 .field label { display: block; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--rtx-text-dim, #9aa0ad); margin-bottom: 5px; }
 .field select, .field input { width: 100%; }
 .hint { font-size: 11px; color: var(--rtx-text-mute, #777); margin-top: 4px; }
+.check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--rtx-border, rgba(255,255,255,.1)); background: rgba(255,255,255,.02); font-size: 12px; color: var(--rtx-text-dim, #9aa0ad); line-height: 1.4; }
+.check b { color: var(--rtx-text); display: block; }
+.check i { flex: none; width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--rtx-border-hi, rgba(255,255,255,.25)); margin-top: 2px; position: relative; }
+.check.on i { background: var(--rtx-accent-hi, #7c6cff); border-color: var(--rtx-accent-hi, #7c6cff); }
+.check.on i::after { content: ""; position: absolute; left: 5px; top: 1px; width: 4px; height: 9px; border: solid #15120a; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.detail-head .gf-art { width: 52px; height: 52px; }
 .tagpick { display: flex; gap: 6px; flex-wrap: wrap; }
 .tagpick .gf-tag { padding: 5px 10px; font-size: 11.5px; }
 .tagpick .gf-tag { cursor: pointer; user-select: none; }
@@ -278,6 +295,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
     'use strict';
     var iconSource = function (id) { return ['/icons/items/' + id + '.png']; };
     var skillIcon = function (name) { return '/icons/skills/' + name + '.png'; };
+    var artSource = function (key) { return '/icons/bosses/' + key + '.png'; };
     var SLOT_NAMES = { 0: 'Head', 1: 'Cape', 2: 'Neck', 3: 'Weapon', 4: 'Body', 5: 'Off-hand', 7: 'Legs', 9: 'Gloves', 10: 'Boots', 12: 'Ring', 13: 'Ammo', 17: 'Pocket' };
     var DOLL = [[null, 0, null], [1, 2, 13], [3, 4, 5], [null, 7, 17], [9, 10, 12]];
     var LEVELS = ['Attack', 'Strength', 'Defence', 'Ranged', 'Magic', 'Necromancy', 'Prayer', 'Constitution', 'Summoning', 'Herblore'];
@@ -383,10 +401,10 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         return '<span class="gf-world' + (same ? ' same' : '') + '" title="' + (same ? 'Your world' : 'World') + '">W' + (world || '?') + '</span>';
     }
 
-    function killsBadge(kills, label, minKills, totalKills) {
+    function killsBadge(kills, label, minKills, totalKills, reported) {
         var meets = minKills == null ? null : (kills >= minKills);
         return '<div class="gf-kills' + (meets === false ? ' short' : '') + '">' +
-            '<b>' + fmt(kills) + '</b><small>' + esc(label || 'kills') + '</small>' +
+            '<b>' + fmt(kills) + '</b><small>' + esc(label || 'kills') + (reported ? ' <i class="gf-rep" title="Entered by the player, not read from the game">reported</i>' : '') + '</small>' +
             (meets === null ? '' : '<i class="gf-req ' + (meets ? 'ok' : 'no') + '" title="' + (meets ? 'Meets the minimum' : 'Below the minimum of ' + fmt(minKills)) + '"></i>') +
             (totalKills != null ? '<em>' + fmt(totalKills) + ' boss kills</em>' : '') + '</div>';
     }
@@ -395,19 +413,23 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
     function playerCard(snap, o) {
         o = o || {};
         var card = el('div', 'gf-player' + (o.compact ? ' compact' : ''));
+        var web = snap.source === 'web';
         var head = el('div', 'gf-player-head');
         head.innerHTML = '<span class="gf-rsn">' + esc(snap.rsn || '?') + '</span>' + worldBadge(snap.world, o.viewerWorld) +
+            (web ? '<span class="gf-tag gf-src-web" title="Posted from the website: levels from the official hiscores, kills as reported, no gear">Browser card</span>'
+                 : '<span class="gf-tag gf-src-client" title="Read from the game by the RuneTools client">Verified</span>') +
             (o.badge ? '<span class="gf-tag gf-tag-' + esc(o.badge.kind || 'muted') + '">' + esc(o.badge.text) + '</span>' : '') +
             '<span class="gf-taken' + (stale(snap.takenAt) ? ' old' : '') + '" title="When the client read this">taken ' + ago(snap.takenAt) + '</span>';
         card.appendChild(head);
         var body = el('div', 'gf-player-body');
-        body.appendChild(paperdoll(snap));
+        if (web) body.appendChild(el('div', 'gf-webnote', '<b>No gear shown</b>Cards posted from the RuneTools client show worn items and perks read from the game.'));
+        else body.appendChild(paperdoll(snap));
         var right = el('div', 'gf-player-right');
-        right.innerHTML = killsBadge(snap.kills | 0, o.killLabel, o.minKills, snap.totalKills);
+        right.innerHTML = killsBadge(snap.kills | 0, o.killLabel, o.minKills, web ? null : snap.totalKills, web);
         right.appendChild(levelStrip(snap));
         body.appendChild(right);
         card.appendChild(body);
-        card.appendChild(perkList(snap));
+        if (!web) card.appendChild(perkList(snap));
         if (o.actions) card.appendChild(o.actions);
         return card;
     }
@@ -434,6 +456,10 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         return seats.slice(0, listing.size);
     }
 
+    function srcDot(host) {
+        return host && host.source === 'web' ? '<i class="gf-dot web" title="Browser card"></i>' : '<i class="gf-dot ok" title="Verified by the RuneTools client"></i>';
+    }
+
     function tagChips(tags) {
         return (tags || []).map(function (t) { return '<span class="gf-tag">' + esc(t) + '</span>'; }).join('');
     }
@@ -450,12 +476,12 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         card.style.setProperty('--hue', String(act && act.hue != null ? act.hue : 200));
         card.dataset.id = l.id;
         card.innerHTML =
-            '<div class="gf-art"><span>' + esc(initials(act ? act.name : l.activity)) + '</span></div>' +
+            artHtml(act, l.activity) +
             '<div class="gf-listing-main">' +
               '<div class="gf-listing-top"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span>' +
                 (l.status === 'forming' ? '<span class="gf-tag gf-tag-warn">Forming</span>' : '') + (o.mine ? '<span class="gf-tag gf-tag-ok">' + esc(o.mine) + '</span>' : '') + '</div>' +
-              '<div class="gf-listing-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) +
-                '<span class="gf-k">' + fmt(l.host.kills) + ' kills</span>' + (l.minKills ? '<span class="gf-min">min ' + fmt(l.minKills) + '</span>' : '') + '</div>' +
+              '<div class="gf-listing-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) + srcDot(l.host) +
+                '<span class="gf-k">' + fmt(l.host.kills) + ' kills</span>' + (l.minKills ? '<span class="gf-min">min ' + fmt(l.minKills) + '</span>' : '') + (l.verifiedOnly ? '<span class="gf-min" title="Takes RuneTools client cards only">client cards</span>' : '') + '</div>' +
               '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
             '</div>' +
             '<div class="gf-listing-ring">' + rosterRing(seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>';
@@ -469,18 +495,35 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         card.dataset.id = l.id;
         var seats = seatsOf(l);
         card.innerHTML =
-            '<div class="gf-tc-band"><div class="gf-art"><span>' + esc(initials(act ? act.name : l.activity)) + '</span></div>' +
+            '<div class="gf-tc-band">' + artHtml(act, l.activity) +
               '<div class="gf-tc-title"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span></div>' +
               '<div class="gf-listing-ring">' + rosterRing(seats, l.size) + '</div></div>' +
             '<div class="gf-tc-body">' +
-              '<div class="gf-tc-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) +
+              '<div class="gf-tc-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) + srcDot(l.host) +
                 (l.status === 'forming' ? '<span class="gf-tag gf-tag-warn">Forming</span>' : '') + (o.mine ? '<span class="gf-tag gf-tag-ok">' + esc(o.mine) + '</span>' : '') + '</div>' +
               '<div class="gf-tc-stats"><span><b>' + fmt(l.host.kills) + '</b> kills</span><span><b>' + l.slots + '</b> open of ' + l.size + '</span>' +
-                (l.minKills ? '<span>min <b>' + fmt(l.minKills) + '</b></span>' : '<span class="gf-dim">no minimum</span>') + '</div>' +
+                (l.minKills ? '<span>min <b>' + fmt(l.minKills) + '</b></span>' : '<span class="gf-dim">no minimum</span>') + (l.verifiedOnly ? '<span title="Takes RuneTools client cards only">client cards only</span>' : '') + '</div>' +
               '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
             '</div>';
         return card;
     }
+
+    function artBlock(act, keyFallback) {
+        var key = act ? act.key : keyFallback, name = act ? act.name : keyFallback;
+        var wrap = el('div', 'gf-art');
+        wrap.appendChild(el('span', null, esc(initials(name))));
+        var src = key ? artSource(key) : '';
+        var put = function (u) {
+            if (!u) return;
+            var img = el('img', 'gf-art-img'); img.alt = ''; img.loading = 'lazy';
+            img.onload = function () { wrap.classList.add('has-img'); };
+            img.onerror = function () { img.remove(); };
+            img.src = u; wrap.appendChild(img);
+        };
+        if (src && typeof src.then === 'function') src.then(put, function () {}); else put(src);
+        return wrap;
+    }
+    function artHtml(act, keyFallback) { return artBlock(act, keyFallback).outerHTML; }
 
     function initials(name) {
         var w = String(name || '').replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(function (x) { return x && !/^(the|of|and|lord|king)$/i.test(x); });
@@ -492,16 +535,18 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         var t = el('button', 'gf-tile' + (o.selected ? ' selected' : ''));
         t.type = 'button'; t.dataset.key = act.key;
         t.style.setProperty('--hue', String(act.hue != null ? act.hue : 200));
-        t.innerHTML = '<span class="gf-art"><span>' + esc(initials(act.name)) + '</span></span>' +
-            '<span class="gf-tile-name">' + esc(act.name) + '</span>' +
+        t.appendChild(artBlock(act));
+        t.insertAdjacentHTML('beforeend', '<span class="gf-tile-name">' + esc(act.name) + '</span>' +
             '<span class="gf-tile-meta">' + (o.count ? '<b>' + o.count + '</b> open' : '<span class="gf-dim">no groups</span>') +
-            (o.myKills != null ? '<em>' + fmt(o.myKills) + ' kc</em>' : '') + '</span>';
+            (o.myKills != null ? '<em>' + fmt(o.myKills) + ' kc</em>' : '') + '</span>');
         return t;
     }
 
     window.GF = {
         setIconSource: function (fn) { if (typeof fn === 'function') iconSource = fn; },
         setSkillIcon: function (fn) { if (typeof fn === 'function') skillIcon = fn; },
+        setArtSource: function (fn) { if (typeof fn === 'function') artSource = fn; },
+        artBlock: artBlock,
         listingTile: listingTile,
         esc: esc, fmt: fmt, ago: ago, stale: stale, el: el,
         playerCard: playerCard, listingCard: listingCard, activityTile: activityTile,
@@ -515,7 +560,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
     var P = window.rtx.plugin, G = P.groups;
     var S = { acts: [], actMap: {}, tags: [], listings: [], counts: {}, mine: null, sel: null, selData: null, filter: null, q: '',
               view: 'lobby', linked: null, world: 0, me: null, cfg: { notify: true, sound: true, hideUnmet: false }, lastNames: '', lastJoinedAt: 0,
-              post: { activity: '', mode: '', size: 0, minKills: 0, tags: [] }, inGroup: null, stream: true };
+              post: { activity: '', mode: '', size: 0, minKills: 0, tags: [], verifiedOnly: false }, inGroup: null, stream: true };
     var $ = function (id) { return document.getElementById(id); };
     var esc = GF.esc;
     var KINDS = [['boss', 'Bosses'], ['raid', 'Raids'], ['dungeon', 'Dungeons']];
@@ -724,11 +769,14 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         var killLabel = a.name + ' kills';
         var d = GF.el('div', 'detail');
         var head = GF.el('div', 'detail-head');
-        head.innerHTML = '<div class="gf-art" style="--hue:' + (a.hue || 200) + '"><span>' + esc(GF.initials(a.name)) + '</span></div><div><h2>' + esc(a.name) + '</h2><span class="gf-mode">' + esc(GF.modeLabel(a, l.mode)) + '</span></div>' +
-            '<div class="gf-listing-ring" style="margin-left:auto">' + GF.rosterRing(GF.seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>';
+        head.style.setProperty('--hue', String(a.hue || 200));
+        head.appendChild(GF.artBlock(S.actMap[l.activity], l.activity));
+        head.insertAdjacentHTML('beforeend', '<div><h2>' + esc(a.name) + '</h2><span class="gf-mode">' + esc(GF.modeLabel(a, l.mode)) + '</span></div>' +
+            '<div class="gf-listing-ring" style="margin-left:auto">' + GF.rosterRing(GF.seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>');
         d.appendChild(head);
         var req = GF.el('div', 'req-row');
-        req.innerHTML = '<span class="gf-tag gf-tag-accent">Group of ' + l.size + '</span>' + (l.minKills ? '<span class="gf-tag">min ' + GF.fmt(l.minKills) + ' kills</span>' : '<span class="gf-tag">no minimum</span>') + GF.tagChips(l.tags) +
+        req.innerHTML = '<span class="gf-tag gf-tag-accent">Group of ' + l.size + '</span>' + (l.minKills ? '<span class="gf-tag">min ' + GF.fmt(l.minKills) + ' kills</span>' : '<span class="gf-tag">no minimum</span>') +
+            (l.verifiedOnly ? '<span class="gf-tag gf-src-client">Client cards only</span>' : '') + GF.tagChips(l.tags) +
             '<span class="gf-taken" style="margin-left:auto">posted ' + GF.ago(l.createdAt) + '</span>';
         d.appendChild(req);
         d.appendChild(statusBox(l));
@@ -737,7 +785,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         var acts = GF.el('div', 'actions');
         if (v.isHost) {
             if (l.status === 'open') { if (l.accepted > 0) acts.appendChild(btn('Form group', 'btn-primary', act('/form'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
-            else if (l.status === 'forming') { acts.appendChild(btn('Reopen', '', act('/reopen'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
+            else if (l.status === 'forming') { acts.appendChild(btn('Group formed', 'btn-primary', act('/start'))); acts.appendChild(btn('Reopen', '', act('/reopen'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
             else if (l.status === 'in_progress') acts.appendChild(btn('Close listing', 'btn-danger', act('/close')));
             acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); var j = await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); uploadIcons(j.missingIcons); await refreshDetail(); }));
         } else if (isLinked()) {
@@ -786,8 +834,12 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         roster.forEach(function (p) {
             var badge = p.joined ? { kind: 'ok', text: 'In group' } : (l.status === 'forming' ? (p.ready ? { kind: 'ok', text: 'Ready' } : { kind: 'warn', text: 'Not ready' }) : { kind: 'accent', text: 'Accepted' });
             var ra = null;
-            if (v.isHost && l.status !== 'in_progress') { ra = GF.el('div', 'rowacts'); ra.appendChild(btn('Remove', 'btn-danger', act('/decide', { userId: p.userId, action: 'remove' }))); }
-            d.appendChild(GF.playerCard(p, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world, badge: badge, actions: ra, compact: !p.equipment }));
+            if (v.isHost && l.status !== 'in_progress') {
+                ra = GF.el('div', 'rowacts');
+                if (l.status === 'forming') ra.appendChild(btn(p.joined ? 'Not in group' : 'Mark in group', '', act('/joined', { userId: p.userId, joined: !p.joined })));
+                ra.appendChild(btn('Remove', 'btn-danger', act('/decide', { userId: p.userId, action: 'remove' })));
+            }
+            d.appendChild(GF.playerCard(p, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world, badge: badge, actions: ra, compact: !p.equipment && p.source !== 'web' }));
         });
         r.appendChild(d);
     }
@@ -937,12 +989,16 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
             tp.appendChild(c);
         });
         ft.appendChild(tp); f.appendChild(ft);
+        var fv = GF.el('div', 'field full');
+        var vo = GF.el('label', 'check' + (p.verifiedOnly ? ' on' : ''), '<i></i><span><b>RuneTools client cards only</b> Applicants must post from the client, so every card shows gear and perks read from the game.</span>');
+        vo.addEventListener('click', function () { p.verifiedOnly = !p.verifiedOnly; renderPost(); });
+        fv.appendChild(vo); f.appendChild(fv);
         d.appendChild(f);
         d.appendChild(GF.el('div', 'sec', 'Your card'));
         var problem = cardProblem();
         if (problem) d.appendChild(GF.el('div', 'status warn', esc(problem)));
         if (S.me) {
-            var snap = Object.assign({}, S.me, { takenAt: Date.now(), kills: mine, totalKills: Object.keys(S.me.kills || {}).reduce(function (t, k) { return t + (S.me.kills[k] | 0); }, 0) });
+            var snap = Object.assign({}, S.me, { source: 'client', takenAt: Date.now(), kills: mine, totalKills: Object.keys(S.me.kills || {}).reduce(function (t, k) { return t + (S.me.kills[k] | 0); }, 0) });
             d.appendChild(GF.playerCard(snap, { killLabel: a.name + ' kills', viewerWorld: S.world }));
         }
         var row = GF.el('div', 'actions');
@@ -951,7 +1007,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
             await loadMe();
             var why = cardProblem();
             if (why) throw new Error(why);
-            var j = await api('/listings', { activity: p.activity, mode: p.mode, size: p.size, minKills: p.minKills, tags: p.tags, snapshot: S.me });
+            var j = await api('/listings', { activity: p.activity, mode: p.mode, size: p.size, minKills: p.minKills, tags: p.tags, verifiedOnly: p.verifiedOnly, snapshot: S.me });
             toast('Listing posted', 'ok');
             uploadIcons(j.missingIcons);
             await loadMine(); S.sel = j.listing.id; S.view = 'detail'; await loadDetail(S.sel); render();
@@ -970,6 +1026,11 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         await P.ready();
         GF.setIconSource(function (id) { return P.cache.itemIcon(id).then(function (u) { return u ? [u] : []; }, function () { return []; }); });
         GF.setSkillIcon(function (name) { return (window.GF_SKILL_ICONS || {})[name] || ''; });
+        var art = {};
+        GF.setArtSource(function (key) {
+            if (!art[key]) art[key] = G.asset('art/' + key + '.png').then(function (u) { return u || ''; }, function () { return ''; });
+            return art[key];
+        });
         try {
             await P.ui.settings([
                 { key: 'notify', type: 'toggle', label: 'Toasts over the game for group events', default: true },

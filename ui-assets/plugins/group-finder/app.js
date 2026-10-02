@@ -3,7 +3,7 @@
     var P = window.rtx.plugin, G = P.groups;
     var S = { acts: [], actMap: {}, tags: [], listings: [], counts: {}, mine: null, sel: null, selData: null, filter: null, q: '',
               view: 'lobby', linked: null, world: 0, me: null, cfg: { notify: true, sound: true, hideUnmet: false }, lastNames: '', lastJoinedAt: 0,
-              post: { activity: '', mode: '', size: 0, minKills: 0, tags: [] }, inGroup: null, stream: true };
+              post: { activity: '', mode: '', size: 0, minKills: 0, tags: [], verifiedOnly: false }, inGroup: null, stream: true };
     var $ = function (id) { return document.getElementById(id); };
     var esc = GF.esc;
     var KINDS = [['boss', 'Bosses'], ['raid', 'Raids'], ['dungeon', 'Dungeons']];
@@ -212,11 +212,14 @@
         var killLabel = a.name + ' kills';
         var d = GF.el('div', 'detail');
         var head = GF.el('div', 'detail-head');
-        head.innerHTML = '<div class="gf-art" style="--hue:' + (a.hue || 200) + '"><span>' + esc(GF.initials(a.name)) + '</span></div><div><h2>' + esc(a.name) + '</h2><span class="gf-mode">' + esc(GF.modeLabel(a, l.mode)) + '</span></div>' +
-            '<div class="gf-listing-ring" style="margin-left:auto">' + GF.rosterRing(GF.seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>';
+        head.style.setProperty('--hue', String(a.hue || 200));
+        head.appendChild(GF.artBlock(S.actMap[l.activity], l.activity));
+        head.insertAdjacentHTML('beforeend', '<div><h2>' + esc(a.name) + '</h2><span class="gf-mode">' + esc(GF.modeLabel(a, l.mode)) + '</span></div>' +
+            '<div class="gf-listing-ring" style="margin-left:auto">' + GF.rosterRing(GF.seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>');
         d.appendChild(head);
         var req = GF.el('div', 'req-row');
-        req.innerHTML = '<span class="gf-tag gf-tag-accent">Group of ' + l.size + '</span>' + (l.minKills ? '<span class="gf-tag">min ' + GF.fmt(l.minKills) + ' kills</span>' : '<span class="gf-tag">no minimum</span>') + GF.tagChips(l.tags) +
+        req.innerHTML = '<span class="gf-tag gf-tag-accent">Group of ' + l.size + '</span>' + (l.minKills ? '<span class="gf-tag">min ' + GF.fmt(l.minKills) + ' kills</span>' : '<span class="gf-tag">no minimum</span>') +
+            (l.verifiedOnly ? '<span class="gf-tag gf-src-client">Client cards only</span>' : '') + GF.tagChips(l.tags) +
             '<span class="gf-taken" style="margin-left:auto">posted ' + GF.ago(l.createdAt) + '</span>';
         d.appendChild(req);
         d.appendChild(statusBox(l));
@@ -225,7 +228,7 @@
         var acts = GF.el('div', 'actions');
         if (v.isHost) {
             if (l.status === 'open') { if (l.accepted > 0) acts.appendChild(btn('Form group', 'btn-primary', act('/form'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
-            else if (l.status === 'forming') { acts.appendChild(btn('Reopen', '', act('/reopen'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
+            else if (l.status === 'forming') { acts.appendChild(btn('Group formed', 'btn-primary', act('/start'))); acts.appendChild(btn('Reopen', '', act('/reopen'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
             else if (l.status === 'in_progress') acts.appendChild(btn('Close listing', 'btn-danger', act('/close')));
             acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); var j = await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); uploadIcons(j.missingIcons); await refreshDetail(); }));
         } else if (isLinked()) {
@@ -274,8 +277,12 @@
         roster.forEach(function (p) {
             var badge = p.joined ? { kind: 'ok', text: 'In group' } : (l.status === 'forming' ? (p.ready ? { kind: 'ok', text: 'Ready' } : { kind: 'warn', text: 'Not ready' }) : { kind: 'accent', text: 'Accepted' });
             var ra = null;
-            if (v.isHost && l.status !== 'in_progress') { ra = GF.el('div', 'rowacts'); ra.appendChild(btn('Remove', 'btn-danger', act('/decide', { userId: p.userId, action: 'remove' }))); }
-            d.appendChild(GF.playerCard(p, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world, badge: badge, actions: ra, compact: !p.equipment }));
+            if (v.isHost && l.status !== 'in_progress') {
+                ra = GF.el('div', 'rowacts');
+                if (l.status === 'forming') ra.appendChild(btn(p.joined ? 'Not in group' : 'Mark in group', '', act('/joined', { userId: p.userId, joined: !p.joined })));
+                ra.appendChild(btn('Remove', 'btn-danger', act('/decide', { userId: p.userId, action: 'remove' })));
+            }
+            d.appendChild(GF.playerCard(p, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world, badge: badge, actions: ra, compact: !p.equipment && p.source !== 'web' }));
         });
         r.appendChild(d);
     }
@@ -425,12 +432,16 @@
             tp.appendChild(c);
         });
         ft.appendChild(tp); f.appendChild(ft);
+        var fv = GF.el('div', 'field full');
+        var vo = GF.el('label', 'check' + (p.verifiedOnly ? ' on' : ''), '<i></i><span><b>RuneTools client cards only</b> Applicants must post from the client, so every card shows gear and perks read from the game.</span>');
+        vo.addEventListener('click', function () { p.verifiedOnly = !p.verifiedOnly; renderPost(); });
+        fv.appendChild(vo); f.appendChild(fv);
         d.appendChild(f);
         d.appendChild(GF.el('div', 'sec', 'Your card'));
         var problem = cardProblem();
         if (problem) d.appendChild(GF.el('div', 'status warn', esc(problem)));
         if (S.me) {
-            var snap = Object.assign({}, S.me, { takenAt: Date.now(), kills: mine, totalKills: Object.keys(S.me.kills || {}).reduce(function (t, k) { return t + (S.me.kills[k] | 0); }, 0) });
+            var snap = Object.assign({}, S.me, { source: 'client', takenAt: Date.now(), kills: mine, totalKills: Object.keys(S.me.kills || {}).reduce(function (t, k) { return t + (S.me.kills[k] | 0); }, 0) });
             d.appendChild(GF.playerCard(snap, { killLabel: a.name + ' kills', viewerWorld: S.world }));
         }
         var row = GF.el('div', 'actions');
@@ -439,7 +450,7 @@
             await loadMe();
             var why = cardProblem();
             if (why) throw new Error(why);
-            var j = await api('/listings', { activity: p.activity, mode: p.mode, size: p.size, minKills: p.minKills, tags: p.tags, snapshot: S.me });
+            var j = await api('/listings', { activity: p.activity, mode: p.mode, size: p.size, minKills: p.minKills, tags: p.tags, verifiedOnly: p.verifiedOnly, snapshot: S.me });
             toast('Listing posted', 'ok');
             uploadIcons(j.missingIcons);
             await loadMine(); S.sel = j.listing.id; S.view = 'detail'; await loadDetail(S.sel); render();
@@ -458,6 +469,11 @@
         await P.ready();
         GF.setIconSource(function (id) { return P.cache.itemIcon(id).then(function (u) { return u ? [u] : []; }, function () { return []; }); });
         GF.setSkillIcon(function (name) { return (window.GF_SKILL_ICONS || {})[name] || ''; });
+        var art = {};
+        GF.setArtSource(function (key) {
+            if (!art[key]) art[key] = G.asset('art/' + key + '.png').then(function (u) { return u || ''; }, function () { return ''; });
+            return art[key];
+        });
         try {
             await P.ui.settings([
                 { key: 'notify', type: 'toggle', label: 'Toasts over the game for group events', default: true },
