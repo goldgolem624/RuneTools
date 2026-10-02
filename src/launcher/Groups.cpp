@@ -225,10 +225,16 @@ std::string SnapshotJson(std::uint32_t pid) {
     json_parse(rtx::reader::PerksJson(pid), perks);
 
     long long world = num(social.get("world")); if (world < 0) world = 0;
-    long long combat = num(player.get("combat"));
+    long long combat = num(player.get("combat")); if (combat < 0) combat = 0;
+    const JsonValue* inv = player.get("in");
+    const bool inWorld = inv && inv->kind == JsonValue::Bool && inv->flag;
+    const JsonValue* eqp = equip.get("present");
+    const bool equipRead = eqp && eqp->kind == JsonValue::Bool && eqp->flag;
 
     std::string out = "{\"rsn\":\"" + json_escape(rsn) + "\",\"world\":" + std::to_string(world) +
-                      ",\"combat\":" + std::to_string(combat) + ",\"clientVersion\":\"" + json_escape(running_version()) + "\"";
+                      ",\"combat\":" + std::to_string(combat) + ",\"in\":" + (inWorld ? "true" : "false") +
+                      ",\"equipmentRead\":" + (equipRead ? "true" : "false") +
+                      ",\"clientVersion\":\"" + json_escape(running_version()) + "\"";
 
     out += ",\"levels\":{";
     if (haveXp) {

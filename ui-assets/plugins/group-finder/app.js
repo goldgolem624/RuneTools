@@ -93,7 +93,7 @@
     async function refreshSnapshots() {
         if (!isLinked() || !S.mine) return;
         await loadMe();
-        if (!S.me) return;
+        if (cardProblem()) return;
         var ids = [];
         if (S.mine.hosting && S.mine.hosting.status !== 'in_progress') ids.push(S.mine.hosting.id);
         (S.mine.applications || []).forEach(function (l) { if (l.status !== 'in_progress') ids.push(l.id); });
@@ -217,18 +217,19 @@
             if (l.status === 'open') { if (l.accepted > 0) acts.appendChild(btn('Form group', 'btn-primary', act('/form'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
             else if (l.status === 'forming') { acts.appendChild(btn('Reopen', '', act('/reopen'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
             else if (l.status === 'in_progress') acts.appendChild(btn('Close listing', 'btn-danger', act('/close')));
-            acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); if (!S.me) throw new Error('Could not read the game'); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
+            acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
         } else if (isLinked()) {
             if (v.status === 'applied') acts.appendChild(btn('Withdraw', 'btn-danger', act('/withdraw')));
             else if (v.status === 'accepted') {
                 if (l.status === 'forming') acts.appendChild(btn(v.ready ? 'Not ready' : 'Ready', v.ready ? '' : 'btn-primary', act('/ready', { ready: !v.ready })));
                 if (l.status !== 'in_progress') acts.appendChild(btn('Leave', 'btn-danger', act('/withdraw')));
-                acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); if (!S.me) throw new Error('Could not read the game'); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
+                acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); var why = cardProblem(); if (why) throw new Error(why); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
             } else if (l.status === 'open' && !v.status) {
                 var can = qualifies(l), hosting = S.mine && S.mine.hosting;
                 var ap = btn(hosting ? 'Close your listing to apply' : (can ? 'Apply' : 'Below the minimum kills'), 'btn-primary', async function () {
                     await loadMe();
-                    if (!S.me) throw new Error('Could not read your character. Are you logged in?');
+                    var why = cardProblem();
+                    if (why) throw new Error(why);
                     await api('/listings/' + l.id + '/apply', { snapshot: S.me });
                     toast('Applied. The host sees your card now.', 'ok');
                     await loadMine(); await loadDetail(S.sel); render();
@@ -300,6 +301,36 @@
     }
 
     // ---- post form
+    function dropdown(options, value, onChange) {
+        var dd = GF.el('div', 'dd');
+        var cur = options.filter(function (o) { return o.v === value; })[0];
+        var btn = GF.el('button', 'dd-btn', esc(cur ? cur.label : 'Choose')); btn.type = 'button';
+        var pop = GF.el('div', 'dd-pop');
+        var lastGroup = null;
+        options.forEach(function (o) {
+            if (o.group && o.group !== lastGroup) { pop.appendChild(GF.el('div', 'dd-group', esc(o.group))); lastGroup = o.group; }
+            var el = GF.el('div', 'dd-opt' + (o.v === value ? ' on' : ''), esc(o.label));
+            el.addEventListener('click', function (e) { e.stopPropagation(); dd.classList.remove('open'); if (o.v !== value) onChange(o.v); });
+            pop.appendChild(el);
+        });
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var open = dd.classList.contains('open');
+            document.querySelectorAll('.dd.open').forEach(function (x) { x.classList.remove('open'); });
+            if (!open) { dd.classList.add('open'); var on = pop.querySelector('.dd-opt.on'); if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' }); }
+        });
+        dd.appendChild(btn); dd.appendChild(pop);
+        return dd;
+    }
+    document.addEventListener('click', function () { document.querySelectorAll('.dd.open').forEach(function (x) { x.classList.remove('open'); }); });
+
+    function cardProblem() {
+        if (!S.me) return 'Could not read your character. Log in to the game first.';
+        if (S.me.in === false) return 'You are not in the game world yet. Log in, then refresh the card.';
+        if (!(S.me.equipment || []).length) return 'No worn items were read. Open your Worn Equipment once, then refresh the card.';
+        return '';
+    }
+
     function renderPost() {
         var r = $('right'); r.innerHTML = '';
         var hosting = S.mine && S.mine.hosting;
@@ -317,28 +348,24 @@
         d.appendChild(GF.el('div', 'bar', '<h2>Post a group</h2><span class="muted">Everyone sees the card below exactly as it is.</span>'));
         var f = GF.el('div', 'form');
         var fa = GF.el('div', 'field full', '<label>Activity</label>');
-        var sel = document.createElement('select');
-        KINDS.forEach(function (k) {
-            var og = document.createElement('optgroup'); og.label = k[1];
-            S.acts.filter(function (x) { return x.kind === k[0]; }).forEach(function (x) { var o = document.createElement('option'); o.value = x.key; o.textContent = x.name; o.selected = x.key === p.activity; og.appendChild(o); });
-            sel.appendChild(og);
-        });
-        sel.addEventListener('change', function () { p.activity = sel.value; p.mode = ''; p.size = 0; renderPost(); });
-        fa.appendChild(sel); f.appendChild(fa);
+        var actOpts = [];
+        KINDS.forEach(function (k) { S.acts.filter(function (x) { return x.kind === k[0]; }).forEach(function (x) { actOpts.push({ v: x.key, label: x.name, group: k[1] }); }); });
+        fa.appendChild(dropdown(actOpts, p.activity, function (v) { p.activity = v; p.mode = ''; p.size = 0; renderPost(); }));
+        f.appendChild(fa);
         var fm = GF.el('div', 'field', '<label>Mode</label>');
-        var ms = document.createElement('select');
-        a.modes.forEach(function (m) { var o = document.createElement('option'); o.value = m.key; o.textContent = m.label; o.selected = m.key === p.mode; ms.appendChild(o); });
-        ms.addEventListener('change', function () { p.mode = ms.value; renderPost(); });
-        fm.appendChild(ms); f.appendChild(fm);
+        fm.appendChild(dropdown(a.modes.map(function (m) { return { v: m.key, label: m.label }; }), p.mode, function (v) { p.mode = v; renderPost(); }));
+        f.appendChild(fm);
         var fs = GF.el('div', 'field', '<label>Group size</label>');
         var sz = GF.el('div', 'sizes');
         for (var n = 2; n <= a.maxSize; n++) (function (n) { var b = document.createElement('button'); b.type = 'button'; b.textContent = n; b.className = n === p.size ? 'on' : ''; b.addEventListener('click', function () { p.size = n; renderPost(); }); sz.appendChild(b); })(n);
         fs.appendChild(sz); f.appendChild(fs);
-        var fk = GF.el('div', 'field', '<label>Minimum kills</label>');
+        var fk = GF.el('div', 'field full', '<label>Minimum kills</label>');
+        var kr = GF.el('div', 'kills-row');
         var ki = document.createElement('input'); ki.type = 'number'; ki.min = 0; ki.max = 100000000; ki.value = p.minKills || 0;
         ki.addEventListener('input', function () { p.minKills = Math.max(0, parseInt(ki.value, 10) || 0); });
-        fk.appendChild(ki); fk.appendChild(GF.el('div', 'hint', 'You have ' + GF.fmt(mine) + ' for this mode. Applicants below the minimum cannot apply.')); f.appendChild(fk);
-        var ft = GF.el('div', 'field', '<label>Tags <span class="muted">(up to 3)</span></label>');
+        kr.appendChild(ki); kr.appendChild(GF.el('span', 'hint', 'You have ' + GF.fmt(mine) + ' for this mode. Applicants below the minimum cannot apply.'));
+        fk.appendChild(kr); f.appendChild(fk);
+        var ft = GF.el('div', 'field full', '<label>Tags <span class="muted">(up to 3)</span></label>');
         var tp = GF.el('div', 'tagpick');
         S.tags.forEach(function (t) {
             var c = GF.el('span', 'gf-tag' + (p.tags.indexOf(t) >= 0 ? ' on' : ''), esc(t));
@@ -348,20 +375,23 @@
         ft.appendChild(tp); f.appendChild(ft);
         d.appendChild(f);
         d.appendChild(GF.el('div', 'sec', 'Your card'));
+        var problem = cardProblem();
+        if (problem) d.appendChild(GF.el('div', 'status warn', esc(problem)));
         if (S.me) {
             var snap = Object.assign({}, S.me, { takenAt: Date.now(), kills: mine, totalKills: Object.keys(S.me.kills || {}).reduce(function (t, k) { return t + (S.me.kills[k] | 0); }, 0) });
             d.appendChild(GF.playerCard(snap, { killLabel: a.name + ' kills', viewerWorld: S.world }));
-        } else d.appendChild(GF.el('div', 'empty', 'Could not read your character. Log in to the game first.'));
+        }
         var row = GF.el('div', 'actions');
         row.appendChild(btn('Refresh card', '', async function () { await loadMe(); renderPost(); }));
         var post = btn('Post listing', 'btn-primary', async function () {
             await loadMe();
-            if (!S.me) throw new Error('Could not read your character. Are you logged in?');
+            var why = cardProblem();
+            if (why) throw new Error(why);
             var j = await api('/listings', { activity: p.activity, mode: p.mode, size: p.size, minKills: p.minKills, tags: p.tags, snapshot: S.me });
             toast('Listing posted', 'ok');
             await loadMine(); S.sel = j.listing.id; S.view = 'detail'; await loadDetail(S.sel); render();
         });
-        post.disabled = !S.me;
+        post.disabled = !!problem;
         row.appendChild(post);
         var back = btn('Back', '', async function () { S.view = 'lobby'; render(); });
         row.appendChild(back);
