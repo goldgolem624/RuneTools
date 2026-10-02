@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Group Finder</title>
+<style>
+/* Group Finder cards, shared by the website and the client plugin. Theme tokens fall back from the
+   site's palette to the plugin's and then to fixed colours. */
+:root {
+    --gf-accent: var(--gold, var(--rtx-accent, #e8c26a));
+    --gf-accent-hi: var(--gold-2, var(--rtx-accent-hi, #f6dfa0));
+    --gf-text: var(--text, var(--rtx-text, #f2efe6));
+    --gf-muted: var(--muted, var(--rtx-text-dim, #9aa0ad));
+    --gf-dim: var(--dim, var(--rtx-text-mute, #5f6572));
+    --gf-panel: var(--panel-2, var(--rtx-panel, #131826));
+    --gf-panel-2: var(--panel, var(--rtx-panel-2, #0e1119));
+    --gf-line: var(--line, var(--rtx-border, rgba(255, 255, 255, .09)));
+    --gf-line-2: var(--line-2, var(--rtx-border-hi, rgba(255, 255, 255, .16)));
+    --gf-ok: var(--ok, var(--rtx-ok, #4dd28a));
+    --gf-warn: var(--warn, var(--rtx-warn, #f5a524));
+    --gf-err: var(--err, var(--rtx-err, #ff6161));
+    --gf-cyan: var(--rune, #62e2ff);
+    --gf-radius: 8px;
+}
+.gf-dim { color: var(--gf-dim); font-size: 12px; }
+.gf-art { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 10px; flex: none; position: relative; overflow: hidden;
+    background: radial-gradient(120% 100% at 20% 0%, hsl(var(--hue) 70% 55% / .85), hsl(var(--hue) 60% 22%) 70%), #0b0f17; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 6px 18px -10px hsl(var(--hue) 70% 50% / .8); }
+.gf-art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(255, 255, 255, .18), transparent 45%, rgba(0, 0, 0, .25)); }
+.gf-art > span { position: relative; font: 800 17px/1 'Unbounded', 'Segoe UI', sans-serif; letter-spacing: -.02em; color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, .6); }
+
+/* tiles */
+.gf-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.gf-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px; border-radius: var(--gf-radius); border: 1px solid var(--gf-line); background: var(--gf-panel); color: var(--gf-text); cursor: pointer; text-align: left; transition: border-color .15s, transform .15s, background .15s; }
+.gf-tile .gf-art { width: 44px; height: 44px; }
+.gf-tile:hover { border-color: hsl(var(--hue) 70% 55% / .6); transform: translateY(-1px); }
+.gf-tile.selected { border-color: var(--gf-accent); background: linear-gradient(180deg, hsl(var(--hue) 50% 30% / .35), var(--gf-panel)); box-shadow: 0 0 0 1px var(--gf-accent) inset; }
+.gf-tile-name { font-weight: 700; font-size: 12.5px; line-height: 1.25; min-height: 2.5em; }
+.gf-tile-meta { display: flex; justify-content: space-between; width: 100%; font-size: 11px; color: var(--gf-muted); }
+.gf-tile-meta b { color: var(--gf-accent-hi); }
+.gf-tile-meta em { font-style: normal; color: var(--gf-dim); }
+.gf-kind { grid-column: 1 / -1; margin: 12px 0 2px; font: 700 10.5px/1 ui-monospace, 'Cascadia Code', Consolas, monospace; letter-spacing: .14em; text-transform: uppercase; color: var(--gf-accent); display: flex; align-items: center; gap: 10px; }
+.gf-kind::after { content: ""; flex: 1; height: 1px; background: var(--gf-line); }
+
+/* listing rows */
+.gf-listing { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--gf-radius); border: 1px solid var(--gf-line); background: var(--gf-panel); cursor: pointer; transition: border-color .15s, background .15s; }
+.gf-listing:hover { border-color: var(--gf-line-2); }
+.gf-listing.selected { border-color: var(--gf-accent); box-shadow: 0 0 0 1px var(--gf-accent) inset; }
+.gf-listing.mine { background: linear-gradient(90deg, rgba(77, 210, 138, .08), var(--gf-panel) 40%); }
+.gf-listing.st-forming .gf-art { animation: gf-pulse 1.6s ease-in-out infinite; }
+.gf-listing-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.gf-listing-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gf-act { font-weight: 700; font-size: 13.5px; }
+.gf-mode { color: var(--gf-muted); font-size: 12px; }
+.gf-listing-host { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--gf-muted); flex-wrap: wrap; }
+.gf-listing-host .gf-rsn { color: var(--gf-text); font-weight: 600; }
+.gf-k { color: var(--gf-accent-hi); font-weight: 600; }
+.gf-min { color: var(--gf-dim); }
+.gf-listing-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.gf-listing-tags .gf-taken { margin-left: auto; }
+.gf-listing-ring { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: none; }
+.gf-listing-ring small { font-size: 10.5px; color: var(--gf-muted); }
+.gf-tag { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; border: 1px solid var(--gf-line-2); color: var(--gf-muted); background: rgba(255, 255, 255, .03); }
+.gf-tag-ok { color: var(--gf-ok); border-color: rgba(77, 210, 138, .4); background: rgba(77, 210, 138, .08); }
+.gf-tag-warn { color: var(--gf-warn); border-color: rgba(245, 165, 36, .4); background: rgba(245, 165, 36, .08); }
+.gf-tag-err { color: var(--gf-err); border-color: rgba(255, 97, 97, .4); background: rgba(255, 97, 97, .08); }
+.gf-tag-accent { color: var(--gf-accent-hi); border-color: var(--gf-accent); background: rgba(232, 194, 106, .1); }
+.gf-taken { font-size: 11px; color: var(--gf-dim); }
+.gf-taken.old { color: var(--gf-warn); }
+.gf-world { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 5px; font: 700 10.5px/1 ui-monospace, Consolas, monospace; color: var(--gf-muted); background: rgba(255, 255, 255, .06); }
+.gf-world.same { color: var(--gf-ok); background: rgba(77, 210, 138, .12); }
+.gf-rsn { font-weight: 700; }
+
+/* ring */
+.gf-ring { display: block; }
+.gf-ring .seat { fill: none; stroke-width: 4; stroke: rgba(255, 255, 255, .1); stroke-linecap: butt; transition: stroke .3s; }
+.gf-ring .seat.host { stroke: var(--gf-accent); }
+.gf-ring .seat.accepted { stroke: var(--gf-cyan); }
+.gf-ring .seat.ready { stroke: var(--gf-warn); animation: gf-blink 1.2s ease-in-out infinite; }
+.gf-ring .seat.joined { stroke: var(--gf-ok); }
+.gf-ring text { fill: var(--gf-text); font: 700 10px ui-monospace, Consolas, monospace; }
+@keyframes gf-blink { 50% { opacity: .35; } }
+@keyframes gf-pulse { 50% { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 0 0 6px hsl(var(--hue) 70% 50% / .18); } }
+
+/* player card */
+.gf-player { border: 1px solid var(--gf-line); border-radius: var(--gf-radius); background: var(--gf-panel); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.gf-player-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gf-player-head .gf-rsn { font-size: 15px; }
+.gf-player-head .gf-taken { margin-left: auto; }
+.gf-player-body { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.gf-doll { display: flex; gap: 6px; }
+.gf-doll-grid { display: grid; grid-template-columns: repeat(3, 40px); grid-auto-rows: 40px; gap: 4px; }
+.gf-doll-side { display: flex; flex-direction: column; gap: 4px; }
+.gf-slot { width: 40px; height: 40px; border-radius: 7px; background: var(--gf-panel-2); border: 1px solid var(--gf-line); display: grid; place-items: center; position: relative; overflow: hidden; }
+.gf-slot-gap { visibility: hidden; }
+.gf-slot.filled { border-color: var(--gf-line-2); background: radial-gradient(60% 60% at 50% 40%, rgba(255, 255, 255, .08), transparent), var(--gf-panel-2); }
+.gf-slot-name { font-size: 8.5px; color: var(--gf-dim); text-transform: uppercase; letter-spacing: .04em; }
+.gf-icon { width: 32px; height: 32px; object-fit: contain; image-rendering: pixelated; }
+.gf-icon.gf-noicon { visibility: hidden; }
+.gf-icon-sm { width: 22px; height: 22px; }
+.gf-aug { position: absolute; right: 3px; bottom: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--gf-cyan); box-shadow: 0 0 6px var(--gf-cyan); }
+.gf-player-right { flex: 1; min-width: 160px; display: flex; flex-direction: column; gap: 10px; }
+.gf-kills { display: grid; grid-template-columns: auto 1fr auto; grid-template-areas: "n l r" "t t t"; align-items: baseline; gap: 2px 8px; padding: 8px 10px; border-radius: 7px; background: linear-gradient(180deg, rgba(232, 194, 106, .12), rgba(232, 194, 106, .03)); border: 1px solid rgba(232, 194, 106, .25); }
+.gf-kills b { grid-area: n; font: 800 24px/1 'Unbounded', 'Segoe UI', sans-serif; color: var(--gf-accent-hi); font-variant-numeric: tabular-nums; }
+.gf-kills small { grid-area: l; color: var(--gf-muted); font-size: 11.5px; }
+.gf-kills em { grid-area: t; font-style: normal; font-size: 11px; color: var(--gf-dim); }
+.gf-kills.short { border-color: rgba(255, 97, 97, .4); background: linear-gradient(180deg, rgba(255, 97, 97, .12), rgba(255, 97, 97, .03)); }
+.gf-req { grid-area: r; width: 16px; height: 16px; border-radius: 50%; display: inline-block; position: relative; }
+.gf-req.ok { background: rgba(77, 210, 138, .2); box-shadow: inset 0 0 0 1px var(--gf-ok); }
+.gf-req.ok::after { content: ""; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px; border: solid var(--gf-ok); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.gf-req.no { background: rgba(255, 97, 97, .2); box-shadow: inset 0 0 0 1px var(--gf-err); }
+.gf-req.no::before, .gf-req.no::after { content: ""; position: absolute; left: 7px; top: 3px; width: 2px; height: 10px; background: var(--gf-err); transform: rotate(45deg); }
+.gf-req.no::after { transform: rotate(-45deg); }
+.gf-levels { display: flex; flex-wrap: wrap; gap: 4px; align-items: stretch; }
+.gf-combat { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4px 9px; border-radius: 6px; background: rgba(255, 255, 255, .05); border: 1px solid var(--gf-line); min-width: 44px; }
+.gf-combat b { font: 800 16px/1.1 'Unbounded', 'Segoe UI', sans-serif; }
+.gf-combat small, .gf-lv small { font-size: 9px; color: var(--gf-dim); text-transform: uppercase; letter-spacing: .06em; }
+.gf-lv { display: flex; flex-direction: column; align-items: center; padding: 3px 6px; border-radius: 6px; background: rgba(255, 255, 255, .03); border: 1px solid var(--gf-line); min-width: 34px; }
+.gf-lv b { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.gf-lv.l99 b { color: var(--gf-accent-hi); }
+.gf-lv.l120 b { color: var(--gf-cyan); }
+.gf-perks { display: flex; flex-direction: column; gap: 5px; }
+.gf-perk-row { display: flex; align-items: center; gap: 8px; }
+.gf-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.gf-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 600; background: rgba(98, 226, 255, .08); border: 1px solid rgba(98, 226, 255, .25); color: var(--gf-text); }
+.gf-pips { display: inline-flex; gap: 2px; }
+.gf-pips i { width: 5px; height: 5px; border-radius: 50%; background: rgba(255, 255, 255, .15); }
+.gf-pips i.on { background: var(--gf-cyan); box-shadow: 0 0 4px var(--gf-cyan); }
+.gf-player.compact .gf-doll-grid { grid-template-columns: repeat(3, 32px); grid-auto-rows: 32px; }
+.gf-player.compact .gf-slot { width: 32px; height: 32px; }
+.gf-player.compact .gf-icon { width: 26px; height: 26px; }
+.gf-player.compact .gf-perks { display: none; }
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; font-size: 12.5px; }
+button { font: inherit; color: inherit; cursor: pointer; }
+input, select { font: inherit; color: var(--rtx-text); background: var(--rtx-bg-elev, #1a1b23); border: 1px solid var(--rtx-border, rgba(255,255,255,.1)); border-radius: 7px; padding: 6px 9px; outline: none; }
+input:focus, select:focus { border-color: var(--rtx-accent); }
+select option { background: var(--rtx-bg-elev, #1a1b23); }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--rtx-border, rgba(255,255,255,.1)); background: rgba(255,255,255,.06); font-weight: 600; font-size: 12px; transition: background .15s, border-color .15s; white-space: nowrap; }
+.btn:hover { border-color: var(--rtx-border-hi, rgba(255,255,255,.2)); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-primary { background: var(--rtx-accent-hi, #7c6cff); border-color: var(--rtx-accent-hi, #7c6cff); color: #fff; }
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-danger { color: #ff7b7b; border-color: rgba(255, 97, 97, .35); background: rgba(255, 97, 97, .08); }
+.btn-xs { padding: 5px 9px; font-size: 11px; }
+.top { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--rtx-border, rgba(255,255,255,.08)); flex: none; flex-wrap: wrap; }
+.top h1 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: .01em; }
+.top .spacer { flex: 1; }
+.top input[type=search] { width: 170px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--rtx-border, rgba(255,255,255,.1)); color: var(--rtx-text-dim, #9aa0ad); }
+.pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--rtx-text-mute, #666); }
+.pill.on i { background: var(--rtx-ok, #4dd28a); box-shadow: 0 0 6px var(--rtx-ok, #4dd28a); }
+.pill.off i { background: var(--rtx-err, #ff6161); }
+.main { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr); }
+.main.narrow { grid-template-columns: 1fr; }
+.main.narrow .tiles { display: none; }
+.main.narrow.showtiles .tiles { display: block; }
+.main.narrow.showtiles .right { display: none; }
+.tiles { overflow: auto; padding: 8px; border-right: 1px solid var(--rtx-border, rgba(255,255,255,.08)); }
+.tiles .gf-tiles { grid-template-columns: 1fr; gap: 6px; }
+.tiles .gf-tile { flex-direction: row; align-items: center; padding: 7px 8px; gap: 9px; }
+.tiles .gf-tile .gf-art { width: 34px; height: 34px; border-radius: 8px; }
+.tiles .gf-tile .gf-art > span { font-size: 12px; }
+.tiles .gf-tile-name { min-height: 0; flex: 1; font-size: 12px; }
+.tiles .gf-tile-meta { width: auto; flex-direction: column; align-items: flex-end; gap: 1px; }
+.tiles .gf-kind { margin: 8px 0 2px; }
+.right { overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bar h2 { margin: 0; font-size: 13.5px; }
+.bar .spacer { flex: 1; }
+.muted { color: var(--rtx-text-dim, #9aa0ad); }
+.list { display: flex; flex-direction: column; gap: 7px; }
+.mine { border: 1px solid rgba(77, 210, 138, .35); border-radius: 9px; padding: 8px; background: rgba(77, 210, 138, .05); display: flex; flex-direction: column; gap: 7px; }
+.mine h3 { margin: 0; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--rtx-ok, #4dd28a); }
+.empty { color: var(--rtx-text-dim, #9aa0ad); padding: 16px; text-align: center; border: 1px dashed var(--rtx-border, rgba(255,255,255,.1)); border-radius: 9px; }
+.detail { display: flex; flex-direction: column; gap: 10px; }
+.detail-head { display: flex; align-items: center; gap: 10px; }
+.detail-head h2 { margin: 0; font-size: 16px; line-height: 1.15; }
+.detail-head .gf-mode { display: block; }
+.req-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.status { padding: 8px 11px; border-radius: 8px; font-size: 12px; border: 1px solid var(--rtx-border, rgba(255,255,255,.1)); background: rgba(255,255,255,.03); line-height: 1.4; }
+.status.warn { border-color: rgba(245, 165, 36, .4); background: rgba(245, 165, 36, .08); color: #ffd58a; }
+.status.ok { border-color: rgba(77, 210, 138, .4); background: rgba(77, 210, 138, .08); color: #b9f0cf; }
+.status.err { border-color: rgba(255, 97, 97, .4); background: rgba(255, 97, 97, .08); color: #ffb3b3; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.sec { font: 700 10.5px/1 ui-monospace, Consolas, monospace; letter-spacing: .14em; text-transform: uppercase; color: var(--rtx-accent, #e8c26a); display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+.sec::after { content: ""; flex: 1; height: 1px; background: var(--rtx-border, rgba(255,255,255,.1)); }
+.sec small { color: var(--rtx-text-mute, #666); letter-spacing: 0; text-transform: none; font-weight: 500; }
+.rowacts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.names { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.name { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 7px; background: rgba(255,255,255,.05); border: 1px solid var(--rtx-border, rgba(255,255,255,.1)); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.name.in { border-color: rgba(77, 210, 138, .5); color: #b9f0cf; }
+.form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; align-items: start; }
+.form .full { grid-column: 1 / -1; }
+.field label { display: block; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--rtx-text-dim, #9aa0ad); margin-bottom: 5px; }
+.field select, .field input { width: 100%; }
+.hint { font-size: 11px; color: var(--rtx-text-mute, #777); margin-top: 4px; }
+.tagpick { display: flex; gap: 5px; flex-wrap: wrap; }
+.tagpick .gf-tag { cursor: pointer; user-select: none; }
+.tagpick .gf-tag.on { color: var(--rtx-accent-hi, #fff); border-color: var(--rtx-accent, #e8c26a); background: rgba(232, 194, 106, .12); }
+.sizes { display: flex; gap: 5px; flex-wrap: wrap; }
+.sizes button { width: 32px; height: 30px; border-radius: 7px; border: 1px solid var(--rtx-border, rgba(255,255,255,.1)); background: rgba(255,255,255,.04); font-weight: 700; }
+.sizes button.on { background: var(--rtx-accent-hi, #7c6cff); border-color: var(--rtx-accent-hi, #7c6cff); color: #fff; }
+.toastbox { position: fixed; right: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 6px; z-index: 5; pointer-events: none; }
+.toastbox div { background: var(--rtx-bg-elev, #1a1b23); border: 1px solid var(--rtx-border-hi, rgba(255,255,255,.2)); border-left: 3px solid var(--rtx-accent, #e8c26a); border-radius: 8px; padding: 8px 12px; font-size: 12px; box-shadow: 0 8px 24px -12px #000; animation: in .2s ease-out; }
+.toastbox div.err { border-left-color: var(--rtx-err, #ff6161); }
+.toastbox div.ok { border-left-color: var(--rtx-ok, #4dd28a); }
+@keyframes in { from { transform: translateY(6px); opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Group Finder</h1>
+  <span class="pill" id="link"><i></i>Checking link</span>
+  <span class="pill off" id="streamWarn" hidden title="Reconnecting to the live lobby"><i></i>Reconnecting</span>
+  <span class="spacer"></span>
+  <button class="btn btn-xs" id="tilesBtn">Activities</button>
+  <input type="search" id="q" placeholder="Search activities">
+  <button class="btn btn-xs" id="lobbyBtn" hidden>Lobby</button>
+  <button class="btn btn-xs btn-primary" id="postBtn">Post a group</button>
+</div>
+<div class="main" id="main">
+  <div class="tiles"><div class="gf-tiles" id="tiles"></div></div>
+  <div class="right" id="right"><div class="empty">Loading groups</div></div>
+</div>
+<div class="toastbox" id="toast"></div>
+<script>
+// Group Finder cards: one renderer for the website and the client plugin. Takes the API's listing and
+// snapshot shapes and an icon source (a URL or a Promise of one per item id) and builds DOM.
+(function () {
+    'use strict';
+    var iconSource = function (id) { return ['/icons/items/' + id + '.png', '/icons/items/' + id + '.gif']; };
+    var SLOT_NAMES = { 0: 'Head', 1: 'Cape', 2: 'Neck', 3: 'Weapon', 4: 'Body', 5: 'Off-hand', 7: 'Legs', 9: 'Gloves', 10: 'Boots', 12: 'Ring', 13: 'Ammo', 14: 'Aura', 17: 'Pocket' };
+    var DOLL = [[null, 0, null], [1, 2, 13], [3, 4, 5], [null, 7, null], [9, 10, 12]];
+    var SIDE = [14, 17];
+    var LEVELS = ['Attack', 'Strength', 'Defence', 'Ranged', 'Magic', 'Necromancy', 'Prayer', 'Constitution', 'Summoning', 'Herblore'];
+    var SHORT = { Attack: 'Att', Strength: 'Str', Defence: 'Def', Ranged: 'Rng', Magic: 'Mag', Necromancy: 'Nec', Prayer: 'Pry', Constitution: 'HP', Summoning: 'Sum', Herblore: 'Hrb' };
+    var CAP120 = { Herblore: 1, Necromancy: 1, Invention: 1, Archaeology: 1, Dungeoneering: 1, Farming: 1, Slayer: 1 };
+
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function el(tag, cls, html) { var e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+    function fmt(n) { n = Number(n) || 0; return n.toLocaleString('en-US'); }
+    function ago(ms) {
+        var d = Math.max(0, Date.now() - Number(ms || 0)) / 1000;
+        if (d < 50) return 'just now';
+        if (d < 3600) return Math.round(d / 60) + ' min ago';
+        if (d < 86400) return Math.round(d / 3600) + ' h ago';
+        return Math.round(d / 86400) + ' d ago';
+    }
+    function stale(ms) { return Date.now() - Number(ms || 0) > 15 * 60000; }
+
+    function setIcon(img, id) {
+        var src = iconSource(id);
+        var apply = function (v) {
+            var list = Array.isArray(v) ? v.slice() : [v];
+            var next = function () {
+                var u = list.shift();
+                if (!u) { img.classList.add('gf-noicon'); return; }
+                img.onerror = next; img.src = u;
+            };
+            next();
+        };
+        if (src && typeof src.then === 'function') src.then(apply, function () { img.classList.add('gf-noicon'); });
+        else apply(src);
+    }
+
+    function pips(rank, ranks) {
+        if (!(ranks > 1)) return '';
+        var s = '<span class="gf-pips">';
+        for (var i = 1; i <= ranks; i++) s += '<i' + (i <= rank ? ' class="on"' : '') + '></i>';
+        return s + '</span>';
+    }
+
+    function paperdoll(snap) {
+        var bySlot = {};
+        (snap.equipment || []).forEach(function (e) { bySlot[e.slot] = e; });
+        var wrap = el('div', 'gf-doll');
+        var grid = el('div', 'gf-doll-grid');
+        DOLL.forEach(function (row) {
+            row.forEach(function (slot) {
+                if (slot === null) { grid.appendChild(el('span', 'gf-slot gf-slot-gap')); return; }
+                grid.appendChild(slotCell(slot, bySlot[slot]));
+            });
+        });
+        wrap.appendChild(grid);
+        var side = el('div', 'gf-doll-side');
+        SIDE.forEach(function (slot) { side.appendChild(slotCell(slot, bySlot[slot])); });
+        wrap.appendChild(side);
+        return wrap;
+    }
+    function slotCell(slot, item) {
+        var c = el('span', 'gf-slot' + (item ? ' filled' : ''));
+        c.title = item ? (item.name || ('Item ' + item.id)) : (SLOT_NAMES[slot] || 'Slot');
+        if (item) {
+            var img = el('img', 'gf-icon'); img.alt = item.name || ''; img.loading = 'lazy';
+            setIcon(img, item.id);
+            c.appendChild(img);
+            if (item.perks && item.perks.length) c.appendChild(el('i', 'gf-aug'));
+        } else c.appendChild(el('span', 'gf-slot-name', esc(SLOT_NAMES[slot] || '')));
+        return c;
+    }
+
+    function perkList(snap) {
+        var items = (snap.equipment || []).filter(function (e) { return e.perks && e.perks.length; });
+        var box = el('div', 'gf-perks');
+        if (!items.length) { box.appendChild(el('div', 'gf-dim', 'No perks read')); return box; }
+        items.forEach(function (e) {
+            var row = el('div', 'gf-perk-row');
+            var img = el('img', 'gf-icon gf-icon-sm'); img.alt = ''; setIcon(img, e.id);
+            row.appendChild(img);
+            var chips = el('div', 'gf-chips');
+            e.perks.forEach(function (p) { chips.appendChild(el('span', 'gf-chip', esc(p.name) + pips(p.rank, p.ranks))); });
+            row.appendChild(chips);
+            box.appendChild(row);
+        });
+        return box;
+    }
+
+    function levelStrip(snap) {
+        var lv = snap.levels || {};
+        var box = el('div', 'gf-levels');
+        box.appendChild(el('span', 'gf-combat', '<b>' + (snap.combat | 0) + '</b><small>Combat</small>'));
+        LEVELS.forEach(function (k) {
+            if (lv[k] == null) return;
+            var v = lv[k] | 0, cls = v >= 120 ? ' l120' : (v >= 99 ? ' l99' : '');
+            if (CAP120[k] && v >= 120) cls = ' l120';
+            box.appendChild(el('span', 'gf-lv' + cls, '<small>' + SHORT[k] + '</small><b>' + v + '</b>'));
+        });
+        return box;
+    }
+
+    function worldBadge(world, viewerWorld) {
+        var same = viewerWorld && world && viewerWorld === world;
+        return '<span class="gf-world' + (same ? ' same' : '') + '" title="' + (same ? 'Your world' : 'World') + '">W' + (world || '?') + '</span>';
+    }
+
+    function killsBadge(kills, label, minKills, totalKills) {
+        var meets = minKills == null ? null : (kills >= minKills);
+        return '<div class="gf-kills' + (meets === false ? ' short' : '') + '">' +
+            '<b>' + fmt(kills) + '</b><small>' + esc(label || 'kills') + '</small>' +
+            (meets === null ? '' : '<i class="gf-req ' + (meets ? 'ok' : 'no') + '" title="' + (meets ? 'Meets the minimum' : 'Below the minimum of ' + fmt(minKills)) + '"></i>') +
+            (totalKills != null ? '<em>' + fmt(totalKills) + ' boss kills</em>' : '') + '</div>';
+    }
+
+    // host or applicant card: paperdoll, perks, kills, levels
+    function playerCard(snap, o) {
+        o = o || {};
+        var card = el('div', 'gf-player' + (o.compact ? ' compact' : ''));
+        var head = el('div', 'gf-player-head');
+        head.innerHTML = '<span class="gf-rsn">' + esc(snap.rsn || '?') + '</span>' + worldBadge(snap.world, o.viewerWorld) +
+            (o.badge ? '<span class="gf-tag gf-tag-' + esc(o.badge.kind || 'muted') + '">' + esc(o.badge.text) + '</span>' : '') +
+            '<span class="gf-taken' + (stale(snap.takenAt) ? ' old' : '') + '" title="When the client read this">taken ' + ago(snap.takenAt) + '</span>';
+        card.appendChild(head);
+        var body = el('div', 'gf-player-body');
+        body.appendChild(paperdoll(snap));
+        var right = el('div', 'gf-player-right');
+        right.innerHTML = killsBadge(snap.kills | 0, o.killLabel, o.minKills, snap.totalKills);
+        right.appendChild(levelStrip(snap));
+        body.appendChild(right);
+        card.appendChild(body);
+        card.appendChild(perkList(snap));
+        if (o.actions) card.appendChild(o.actions);
+        return card;
+    }
+
+    // one arc per seat: host, accepted, ready, joined, empty
+    function rosterRing(seats, size) {
+        var r = 16, c = 20, circ = 2 * Math.PI * r, n = Math.max(1, size | 0), gap = n > 1 ? 3 : 0;
+        var seg = circ / n, dash = Math.max(1, seg - gap);
+        var s = '<svg class="gf-ring" viewBox="0 0 40 40" width="40" height="40">';
+        for (var i = 0; i < n; i++) {
+            var st = seats[i] || 'empty';
+            s += '<circle class="seat ' + st + '" cx="' + c + '" cy="' + c + '" r="' + r + '" stroke-dasharray="' + dash.toFixed(2) + ' ' + (circ - dash).toFixed(2) +
+                 '" stroke-dashoffset="' + (-(i * seg) + circ / 4).toFixed(2) + '"/>';
+        }
+        var filled = seats.filter(function (x) { return x !== 'empty'; }).length;
+        s += '<text x="20" y="24" text-anchor="middle">' + filled + '/' + n + '</text></svg>';
+        return s;
+    }
+    function seatsOf(listing) {
+        var seats = ['host'];
+        (listing.applicants || []).forEach(function (a) { if (a.status === 'accepted') seats.push(a.joined ? 'joined' : (a.ready ? 'ready' : 'accepted')); });
+        if (!listing.applicants) for (var i = 0; i < (listing.accepted | 0); i++) seats.push('accepted');
+        while (seats.length < listing.size) seats.push('empty');
+        return seats.slice(0, listing.size);
+    }
+
+    function tagChips(tags) {
+        return (tags || []).map(function (t) { return '<span class="gf-tag">' + esc(t) + '</span>'; }).join('');
+    }
+
+    function modeLabel(act, modeKey) {
+        if (!act) return modeKey || '';
+        var m = (act.modes || []).filter(function (x) { return x.key === modeKey; })[0];
+        return m ? m.label : modeKey;
+    }
+
+    function listingCard(l, act, o) {
+        o = o || {};
+        var card = el('div', 'gf-listing' + (o.selected ? ' selected' : '') + (o.mine ? ' mine' : '') + ' st-' + l.status);
+        card.style.setProperty('--hue', String(act && act.hue != null ? act.hue : 200));
+        card.dataset.id = l.id;
+        card.innerHTML =
+            '<div class="gf-art"><span>' + esc(initials(act ? act.name : l.activity)) + '</span></div>' +
+            '<div class="gf-listing-main">' +
+              '<div class="gf-listing-top"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span>' +
+                (l.status === 'forming' ? '<span class="gf-tag gf-tag-warn">Forming</span>' : '') + (o.mine ? '<span class="gf-tag gf-tag-ok">' + esc(o.mine) + '</span>' : '') + '</div>' +
+              '<div class="gf-listing-host"><span class="gf-rsn">' + esc(l.host.rsn) + '</span>' + worldBadge(l.host.world, o.viewerWorld) +
+                '<span class="gf-k">' + fmt(l.host.kills) + ' kills</span>' + (l.minKills ? '<span class="gf-min">min ' + fmt(l.minKills) + '</span>' : '') + '</div>' +
+              '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
+            '</div>' +
+            '<div class="gf-listing-ring">' + rosterRing(seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>';
+        return card;
+    }
+
+    function initials(name) {
+        var w = String(name || '').replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(function (x) { return x && !/^(the|of|and|lord|king)$/i.test(x); });
+        return (w.length > 1 ? w[0][0] + w[1][0] : (w[0] || '??').slice(0, 2)).toUpperCase();
+    }
+
+    function activityTile(act, o) {
+        o = o || {};
+        var t = el('button', 'gf-tile' + (o.selected ? ' selected' : ''));
+        t.type = 'button'; t.dataset.key = act.key;
+        t.style.setProperty('--hue', String(act.hue != null ? act.hue : 200));
+        t.innerHTML = '<span class="gf-art"><span>' + esc(initials(act.name)) + '</span></span>' +
+            '<span class="gf-tile-name">' + esc(act.name) + '</span>' +
+            '<span class="gf-tile-meta">' + (o.count ? '<b>' + o.count + '</b> open' : '<span class="gf-dim">no groups</span>') +
+            (o.myKills != null ? '<em>' + fmt(o.myKills) + ' kc</em>' : '') + '</span>';
+        return t;
+    }
+
+    window.GF = {
+        setIconSource: function (fn) { if (typeof fn === 'function') iconSource = fn; },
+        esc: esc, fmt: fmt, ago: ago, stale: stale, el: el,
+        playerCard: playerCard, listingCard: listingCard, activityTile: activityTile,
+        rosterRing: rosterRing, seatsOf: seatsOf, tagChips: tagChips, modeLabel: modeLabel, initials: initials, worldBadge: worldBadge,
+    };
+})();
+</script>
+<script>
+(function () {
+    'use strict';
+    var P = window.rtx.plugin, G = P.groups;
+    var S = { acts: [], actMap: {}, tags: [], listings: [], counts: {}, mine: null, sel: null, selData: null, filter: null, q: '',
+              view: 'lobby', linked: null, world: 0, me: null, cfg: { notify: true, sound: true, hideUnmet: false }, lastNames: '', lastJoinedAt: 0,
+              post: { activity: '', mode: '', size: 0, minKills: 0, tags: [] }, inGroup: null, stream: true };
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = GF.esc;
+    var KINDS = [['boss', 'Bosses'], ['raid', 'Raids'], ['dungeon', 'Dungeons']];
+
+    function toast(msg, kind, loud) {
+        var box = $('toast'); var d = document.createElement('div'); d.className = kind || ''; d.textContent = msg; box.appendChild(d);
+        setTimeout(function () { d.remove(); }, 4500);
+        if (loud && S.cfg.notify) P.overlay.notify(msg, 6000).catch(function () {});
+        if (loud && S.cfg.sound) P.sound.play('alert3').catch(function () {});
+    }
+    async function api(path, body) {
+        var r = await G.call(body === undefined ? 'GET' : 'POST', '/api/groups' + path, body === undefined ? null : (body || {}));
+        if (!r || !r.ok || !r.body || !r.body.success) {
+            var msg = (r && r.body && r.body.error) || (r && r.text) || ('Request failed' + (r && r.status ? ' (' + r.status + ')' : ''));
+            var e = new Error(msg); e.code = r && r.body && r.body.code; e.status = r ? r.status : 0; throw e;
+        }
+        return r.body;
+    }
+    function isLinked() { return !!(S.linked && S.linked.state === 'linked'); }
+    function killKey(l) { var a = S.actMap[l.activity]; var m = a && a.modes.filter(function (x) { return x.key === l.mode; })[0]; return m ? m.kills : ''; }
+    function myKills(key) { return (S.me && S.me.kills && S.me.kills[key]) | 0; }
+
+    // ---- data
+    async function loadActivities() {
+        var cached = null;
+        try { cached = await P.storage.get('activities'); } catch (e) {}
+        if (cached && cached.at && Date.now() - cached.at < 6 * 3600000 && cached.activities) { S.acts = cached.activities; S.tags = cached.tags; }
+        else {
+            var j = await api('/activities');
+            S.acts = j.activities; S.tags = j.tags;
+            P.storage.set('activities', { at: Date.now(), activities: S.acts, tags: S.tags }).catch(function () {});
+        }
+        S.actMap = {}; S.acts.forEach(function (a) { S.actMap[a.key] = a; });
+    }
+    async function loadListings() { var j = await api('/listings'); S.listings = j.listings; S.counts = j.counts; }
+    async function loadMine() { if (!isLinked()) { S.mine = null; return; } try { S.mine = await api('/mine'); } catch (e) { S.mine = null; } }
+    async function loadDetail(id) {
+        if (!id) { S.selData = null; return; }
+        try { S.selData = (await api('/listings/' + id)).listing; }
+        catch (e) { S.selData = null; S.sel = null; toast(e.message, 'err'); }
+    }
+    async function loadMe() { try { S.me = await G.snapshot(); } catch (e) { S.me = null; } if (S.me) S.world = S.me.world | 0; }
+    function upsert(l) { var i = S.listings.findIndex(function (x) { return x.id === l.id; }); if (i < 0) S.listings.unshift(l); else S.listings[i] = l; recount(); }
+    function remove(id) { S.listings = S.listings.filter(function (x) { return x.id !== id; }); recount(); }
+    function recount() { S.counts = {}; S.listings.forEach(function (l) { S.counts[l.activity] = (S.counts[l.activity] || 0) + 1; }); }
+    async function refreshDetail() { await loadDetail(S.sel); render(); }
+    async function refreshMine() { await loadMine(); render(); }
+
+    async function pollEvents() {
+        var evs = [];
+        try { evs = await G.events(); } catch (e) { return; }
+        if (!Array.isArray(evs) || !evs.length) return;
+        var mineDirty = false, detailDirty = false, lobbyDirty = false;
+        evs.forEach(function (ev) {
+            var d = ev.data || {};
+            if (ev.event === 'listing') { upsert(d); lobbyDirty = true; if (S.sel === d.id) detailDirty = true; }
+            else if (ev.event === 'removed') { remove(d.id); lobbyDirty = true; if (S.sel === d.id) detailDirty = true; }
+            else if (ev.event === 'stream') { S.stream = !!d.connected; }
+            else if (ev.event === 'hello') { S.stream = true; mineDirty = true; lobbyDirty = true; }
+            else {
+                note(ev.event, d); mineDirty = true;
+                if (S.sel && d.listingId === S.sel) detailDirty = true;
+            }
+        });
+        if (mineDirty) await loadMine();
+        if (lobbyDirty && S.stream) { try { await loadListings(); } catch (e) {} }
+        if (detailDirty) await loadDetail(S.sel);
+        render();
+    }
+    function note(k, d) {
+        if (k === 'applicant') toast((d.rsn || 'Someone') + ' applied to your group', 'ok', true);
+        else if (k === 'decision') toast(d.status === 'accepted' ? 'You were accepted' : d.status === 'declined' ? 'The host declined' : d.status === 'removed' ? 'You were removed from the roster' : 'Application ' + d.status, d.status === 'accepted' ? 'ok' : '', true);
+        else if (k === 'form') toast('The group is forming. Ready up.', 'ok', true);
+        else if (k === 'reopen') toast('The host reopened the listing', '', true);
+        else if (k === 'ready' && d.all) toast('Everyone is ready', 'ok', true);
+        else if (k === 'ready' && d.userId) toast((d.ready ? 'A member is ready' : 'A member is no longer ready'), '', false);
+        else if (k === 'joined' && d.joined) toast('A member joined the in-game group', 'ok', false);
+        else if (k === 'closed') toast(d.status === 'in_progress' ? 'Everyone joined the in-game group' : 'The listing ' + (d.status === 'expired' ? 'expired' : 'closed'), '', true);
+    }
+
+    // ---- background duties: heartbeat, snapshot refresh, the joined tracker
+    async function heartbeat() {
+        var h = S.mine && S.mine.hosting;
+        if (!h || (h.status !== 'open' && h.status !== 'forming')) return;
+        try { await api('/listings/' + h.id + '/heartbeat', {}); } catch (e) {}
+    }
+    async function refreshSnapshots() {
+        if (!isLinked() || !S.mine) return;
+        await loadMe();
+        if (!S.me) return;
+        var ids = [];
+        if (S.mine.hosting && S.mine.hosting.status !== 'in_progress') ids.push(S.mine.hosting.id);
+        (S.mine.applications || []).forEach(function (l) { if (l.status !== 'in_progress') ids.push(l.id); });
+        for (var i = 0; i < ids.length; i++) { try { await api('/listings/' + ids[i] + '/snapshot', { snapshot: S.me }); } catch (e) {} }
+    }
+    async function trackGroup() {
+        var h = S.mine && S.mine.hosting;
+        var member = (S.mine && (S.mine.applications || []).filter(function (l) { return l.status === 'forming' && l.viewer.status === 'accepted'; })[0]) || null;
+        if (!h && !member) { S.inGroup = null; return; }
+        var g = null;
+        try { g = await P.state.playerGroup(); } catch (e) { g = null; }
+        S.inGroup = g && g.in ? g : null;
+        if (!h || h.status !== 'forming') return;
+        var names = S.inGroup ? S.inGroup.members.map(function (m) { return m.name; }) : [];
+        var sig = names.join('|');
+        var now = Date.now();
+        if (sig === S.lastNames && now - S.lastJoinedAt < 15000) return;
+        S.lastNames = sig; S.lastJoinedAt = now;
+        try {
+            var r = await api('/listings/' + h.id + '/joined', { names: names });
+            if (r.status === 'in_progress') { await loadMine(); await loadDetail(S.sel); render(); }
+        } catch (e) {}
+    }
+
+    // ---- render
+    function render() { renderTop(); renderTiles(); if (S.view === 'post') renderPost(); else if (S.view === 'detail') renderDetail(); else renderLobby(); }
+    function renderTop() {
+        var pill = $('link');
+        if (isLinked()) { pill.className = 'pill on'; pill.innerHTML = '<i></i>' + esc(S.linked.displayName || S.linked.username || 'Linked'); pill.title = 'Linked RuneTools account'; }
+        else { pill.className = 'pill off'; pill.innerHTML = '<i></i>Not linked'; pill.title = 'Link this PC in Settings to post and apply'; }
+        var hosting = S.mine && S.mine.hosting;
+        var b = $('postBtn');
+        b.textContent = hosting ? 'My listing' : 'Post a group';
+        b.disabled = !isLinked();
+        b.title = isLinked() ? '' : 'Link this PC to your RuneTools account in Settings';
+        $('lobbyBtn').hidden = S.view === 'lobby';
+        $('streamWarn').hidden = S.stream;
+    }
+    function renderTiles() {
+        var host = $('tiles'); host.innerHTML = '';
+        var q = S.q.toLowerCase();
+        KINDS.forEach(function (k) {
+            var acts = S.acts.filter(function (a) { return a.kind === k[0] && (!q || a.name.toLowerCase().indexOf(q) >= 0); });
+            if (!acts.length) return;
+            host.appendChild(GF.el('div', 'gf-kind', esc(k[1])));
+            acts.forEach(function (a) {
+                var t = GF.activityTile(a, { count: S.counts[a.key] || 0, selected: S.filter === a.key, myKills: S.me ? myKills(a.modes[0].kills) : null });
+                t.addEventListener('click', function () { S.filter = S.filter === a.key ? null : a.key; S.view = 'lobby'; $('main').classList.remove('showtiles'); render(); });
+                host.appendChild(t);
+            });
+        });
+    }
+    function myStatusFor(l) {
+        if (!S.mine) return '';
+        if (S.mine.hosting && S.mine.hosting.id === l.id) return 'Hosting';
+        var a = (S.mine.applications || []).filter(function (x) { return x.id === l.id; })[0];
+        return a ? (a.viewer.status === 'accepted' ? 'Accepted' : 'Applied') : '';
+    }
+    function qualifies(l) { return !l.minKills || myKills(killKey(l)) >= l.minKills; }
+    function renderLobby() {
+        var r = $('right'); r.innerHTML = '';
+        if (!isLinked()) r.appendChild(GF.el('div', 'status', '<b>Not linked.</b> Browse freely. Link this PC to your RuneTools account in Settings to post a group or apply.'));
+        if (S.mine && (S.mine.hosting || (S.mine.applications || []).length)) {
+            var box = GF.el('div', 'mine', '<h3>My groups</h3>');
+            var rows = [];
+            if (S.mine.hosting) rows.push([S.mine.hosting, 'Hosting']);
+            (S.mine.applications || []).forEach(function (l) { rows.push([l, l.viewer.status === 'accepted' ? 'Accepted' : 'Applied']); });
+            rows.forEach(function (row) {
+                var c = GF.listingCard(row[0], S.actMap[row[0].activity], { mine: row[1], viewerWorld: S.world });
+                c.addEventListener('click', function () { select(row[0].id); });
+                box.appendChild(c);
+            });
+            r.appendChild(box);
+        }
+        var list = S.listings.filter(function (l) { return (!S.filter || l.activity === S.filter) && (!S.cfg.hideUnmet || qualifies(l) || myStatusFor(l)); });
+        var bar = GF.el('div', 'bar', '<h2>' + esc(S.filter && S.actMap[S.filter] ? S.actMap[S.filter].name : 'All groups') + '</h2><span class="muted">' + (list.length ? list.length + (list.length === 1 ? ' group' : ' groups') : '') + '</span><span class="spacer"></span>');
+        if (S.filter) { var clr = GF.el('button', 'btn btn-xs', 'Show all'); clr.addEventListener('click', function () { S.filter = null; render(); }); bar.appendChild(clr); }
+        r.appendChild(bar);
+        var lst = GF.el('div', 'list');
+        if (!list.length) lst.appendChild(GF.el('div', 'empty', S.filter ? 'No groups for this activity right now.' : 'No groups right now. Post the first one.'));
+        list.forEach(function (l) {
+            var c = GF.listingCard(l, S.actMap[l.activity], { selected: S.sel === l.id, mine: myStatusFor(l), viewerWorld: S.world });
+            c.addEventListener('click', function () { select(l.id); });
+            lst.appendChild(c);
+        });
+        r.appendChild(lst);
+    }
+    async function select(id) { S.sel = id; S.view = 'detail'; await loadDetail(id); render(); }
+
+    function btn(label, cls, fn) {
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'btn btn-xs ' + (cls || ''); b.textContent = label;
+        b.addEventListener('click', async function () {
+            b.disabled = true;
+            try { await fn(); } catch (e) { toast(e.message, 'err'); }
+            b.disabled = false;
+        });
+        return b;
+    }
+    function act(path, body) { return async function () { await api('/listings/' + S.sel + path, body || {}); await loadMine(); await loadDetail(S.sel); render(); }; }
+
+    function renderDetail() {
+        var r = $('right'); r.innerHTML = '';
+        var l = S.selData;
+        if (!l) { r.appendChild(GF.el('div', 'empty', 'This group is gone.')); return; }
+        var a = S.actMap[l.activity] || { name: l.activity, modes: [] };
+        var killLabel = a.name + ' kills';
+        var d = GF.el('div', 'detail');
+        var head = GF.el('div', 'detail-head');
+        head.innerHTML = '<div class="gf-art" style="--hue:' + (a.hue || 200) + '"><span>' + esc(GF.initials(a.name)) + '</span></div><div><h2>' + esc(a.name) + '</h2><span class="gf-mode">' + esc(GF.modeLabel(a, l.mode)) + '</span></div>' +
+            '<div class="gf-listing-ring" style="margin-left:auto">' + GF.rosterRing(GF.seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>';
+        d.appendChild(head);
+        var req = GF.el('div', 'req-row');
+        req.innerHTML = '<span class="gf-tag gf-tag-accent">Group of ' + l.size + '</span>' + (l.minKills ? '<span class="gf-tag">min ' + GF.fmt(l.minKills) + ' kills</span>' : '<span class="gf-tag">no minimum</span>') + GF.tagChips(l.tags) +
+            '<span class="gf-taken" style="margin-left:auto">posted ' + GF.ago(l.createdAt) + '</span>';
+        d.appendChild(req);
+        d.appendChild(statusBox(l));
+
+        var v = l.viewer;
+        var acts = GF.el('div', 'actions');
+        if (v.isHost) {
+            if (l.status === 'open') { if (l.accepted > 0) acts.appendChild(btn('Form group', 'btn-primary', act('/form'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
+            else if (l.status === 'forming') { acts.appendChild(btn('Reopen', '', act('/reopen'))); acts.appendChild(btn('Close listing', 'btn-danger', act('/close'))); }
+            else if (l.status === 'in_progress') acts.appendChild(btn('Close listing', 'btn-danger', act('/close')));
+            acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); if (!S.me) throw new Error('Could not read the game'); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
+        } else if (isLinked()) {
+            if (v.status === 'applied') acts.appendChild(btn('Withdraw', 'btn-danger', act('/withdraw')));
+            else if (v.status === 'accepted') {
+                if (l.status === 'forming') acts.appendChild(btn(v.ready ? 'Not ready' : 'Ready', v.ready ? '' : 'btn-primary', act('/ready', { ready: !v.ready })));
+                if (l.status !== 'in_progress') acts.appendChild(btn('Leave', 'btn-danger', act('/withdraw')));
+                acts.appendChild(btn('Refresh my card', '', async function () { await loadMe(); if (!S.me) throw new Error('Could not read the game'); await api('/listings/' + l.id + '/snapshot', { snapshot: S.me }); await refreshDetail(); }));
+            } else if (l.status === 'open' && !v.status) {
+                var can = qualifies(l), hosting = S.mine && S.mine.hosting;
+                var ap = btn(hosting ? 'Close your listing to apply' : (can ? 'Apply' : 'Below the minimum kills'), 'btn-primary', async function () {
+                    await loadMe();
+                    if (!S.me) throw new Error('Could not read your character. Are you logged in?');
+                    await api('/listings/' + l.id + '/apply', { snapshot: S.me });
+                    toast('Applied. The host sees your card now.', 'ok');
+                    await loadMine(); await loadDetail(S.sel); render();
+                });
+                ap.disabled = !can || !!hosting;
+                acts.appendChild(ap);
+            }
+            acts.appendChild(btn('Block host', '', async function () { await api('/block', { userId: l.host.userId }); toast('Host blocked'); remove(l.id); S.sel = null; S.selData = null; S.view = 'lobby'; render(); }));
+            acts.appendChild(btn('Report', '', async function () { await api('/report', { listingId: l.id }); toast('Reported. Thank you.'); }));
+        }
+        d.appendChild(acts);
+
+        d.appendChild(GF.el('div', 'sec', 'Host'));
+        d.appendChild(GF.playerCard(l.host, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world }));
+
+        var pending = (l.applicants || []).filter(function (x) { return x.status === 'applied'; });
+        var roster = (l.applicants || []).filter(function (x) { return x.status === 'accepted'; });
+        if (v.isHost) {
+            d.appendChild(GF.el('div', 'sec', 'Applicants <small>' + pending.length + ' waiting</small>'));
+            if (!pending.length) d.appendChild(GF.el('div', 'empty', l.status === 'open' ? 'Nobody waiting. Applicants appear here live.' : 'The listing is not taking applications.'));
+            pending.forEach(function (p) {
+                var ra = GF.el('div', 'rowacts');
+                if (l.status === 'open' && l.slots > 0) ra.appendChild(btn('Accept', 'btn-primary', act('/decide', { userId: p.userId, action: 'accept' })));
+                ra.appendChild(btn('Decline', 'btn-danger', act('/decide', { userId: p.userId, action: 'decline' })));
+                ra.appendChild(btn('Block', '', async function () { await api('/block', { userId: p.userId }); await act('/decide', { userId: p.userId, action: 'decline' })(); }));
+                d.appendChild(GF.playerCard(p, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world, actions: ra }));
+            });
+        }
+        d.appendChild(GF.el('div', 'sec', 'Roster <small>' + (roster.length + 1) + ' of ' + l.size + '</small>'));
+        if (!roster.length) d.appendChild(GF.el('div', 'empty', 'No one accepted yet.'));
+        roster.forEach(function (p) {
+            var badge = p.joined ? { kind: 'ok', text: 'In group' } : (l.status === 'forming' ? (p.ready ? { kind: 'ok', text: 'Ready' } : { kind: 'warn', text: 'Not ready' }) : { kind: 'accent', text: 'Accepted' });
+            var ra = null;
+            if (v.isHost && l.status !== 'in_progress') { ra = GF.el('div', 'rowacts'); ra.appendChild(btn('Remove', 'btn-danger', act('/decide', { userId: p.userId, action: 'remove' }))); }
+            d.appendChild(GF.playerCard(p, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world, badge: badge, actions: ra, compact: !p.equipment }));
+        });
+        r.appendChild(d);
+    }
+    function statusBox(l) {
+        var v = l.viewer, cls = '', text = '';
+        if (l.status === 'open') { text = v.isHost ? 'Open. Accept applicants, then press Form group when the roster is right.' : (v.status === 'applied' ? 'Applied. The host is reviewing your card.' : v.status === 'accepted' ? 'Accepted. Waiting for the host to form the group.' : v.status === 'declined' ? 'The host declined your application.' : 'Open for applications.'); cls = v.status === 'declined' ? 'err' : (v.status === 'accepted' ? 'ok' : ''); }
+        else if (l.status === 'forming') {
+            var ready = (l.applicants || []).filter(function (x) { return x.status === 'accepted' && x.ready; }).length;
+            text = v.isHost ? 'Forming. ' + ready + ' of ' + l.accepted + ' ready. Create the group in the Grouping System and invite each name below; they tick as they join.' :
+                   (v.status === 'accepted' ? 'Forming. Press Ready, then accept ' + esc(l.host.rsn) + '\'s invite in the Grouping System' + (l.host.world ? ' on world ' + l.host.world : '') + '.' : 'Forming. The roster is set.');
+            cls = 'warn';
+        }
+        else if (l.status === 'in_progress') { text = 'Everyone is in the in-game group. Good luck.'; cls = 'ok'; }
+        else { text = l.status === 'expired' ? 'This listing expired.' : 'This listing is closed.'; cls = 'err'; }
+        var b = GF.el('div', 'status ' + cls, text);
+        if (l.status === 'forming' && v.isHost) {
+            var inNames = {};
+            if (S.inGroup) S.inGroup.members.forEach(function (m) { inNames[String(m.name).toLowerCase().replace(/[\s_ ]+/g, ' ').trim()] = 1; });
+            var row = GF.el('div', 'names');
+            (l.applicants || []).filter(function (x) { return x.status === 'accepted'; }).forEach(function (x) {
+                var key = String(x.rsn).toLowerCase().replace(/[\s_ ]+/g, ' ').trim();
+                var c = GF.el('span', 'name' + (x.joined || inNames[key] ? ' in' : ''), esc(x.rsn));
+                c.appendChild(btn('Copy', '', async function () { await P.clipboard.copy(x.rsn); toast('Copied ' + x.rsn); }));
+                row.appendChild(c);
+            });
+            b.appendChild(row);
+            if (!S.inGroup) b.appendChild(GF.el('div', 'hint', 'No in-game group found on this client yet.'));
+        }
+        if (l.status === 'forming' && v.status === 'accepted') {
+            var hostIn = S.inGroup && S.inGroup.members.some(function (m) { return String(m.name).toLowerCase().replace(/[\s_ ]+/g, ' ').trim() === String(l.host.rsn).toLowerCase().replace(/[\s_ ]+/g, ' ').trim(); });
+            b.appendChild(GF.el('div', 'hint', hostIn ? 'You are in the host\'s in-game group.' : (S.inGroup ? 'You are in a group, but not the host\'s.' : 'Not in an in-game group yet.')));
+        }
+        return b;
+    }
+
+    // ---- post form
+    function renderPost() {
+        var r = $('right'); r.innerHTML = '';
+        var hosting = S.mine && S.mine.hosting;
+        if (hosting) { S.sel = hosting.id; S.view = 'detail'; loadDetail(S.sel).then(render); return; }
+        if (!isLinked()) { r.appendChild(GF.el('div', 'status err', 'Link this PC to your RuneTools account in Settings to post a group.')); return; }
+        var p = S.post;
+        if (!p.activity || !S.actMap[p.activity]) { p.activity = S.filter || S.acts[0].key; p.mode = ''; p.size = 0; }
+        var a = S.actMap[p.activity];
+        if (!p.mode || !a.modes.some(function (m) { return m.key === p.mode; })) p.mode = a.modes[0].key;
+        if (!p.size || p.size > a.maxSize) p.size = Math.min(a.maxSize, Math.max(2, p.size || Math.min(a.maxSize, 3)));
+        var mode = a.modes.filter(function (m) { return m.key === p.mode; })[0];
+        var mine = myKills(mode.kills);
+
+        var d = GF.el('div', 'detail');
+        d.appendChild(GF.el('div', 'bar', '<h2>Post a group</h2><span class="muted">Everyone sees the card below exactly as it is.</span>'));
+        var f = GF.el('div', 'form');
+        var fa = GF.el('div', 'field full', '<label>Activity</label>');
+        var sel = document.createElement('select');
+        KINDS.forEach(function (k) {
+            var og = document.createElement('optgroup'); og.label = k[1];
+            S.acts.filter(function (x) { return x.kind === k[0]; }).forEach(function (x) { var o = document.createElement('option'); o.value = x.key; o.textContent = x.name; o.selected = x.key === p.activity; og.appendChild(o); });
+            sel.appendChild(og);
+        });
+        sel.addEventListener('change', function () { p.activity = sel.value; p.mode = ''; p.size = 0; renderPost(); });
+        fa.appendChild(sel); f.appendChild(fa);
+        var fm = GF.el('div', 'field', '<label>Mode</label>');
+        var ms = document.createElement('select');
+        a.modes.forEach(function (m) { var o = document.createElement('option'); o.value = m.key; o.textContent = m.label; o.selected = m.key === p.mode; ms.appendChild(o); });
+        ms.addEventListener('change', function () { p.mode = ms.value; renderPost(); });
+        fm.appendChild(ms); f.appendChild(fm);
+        var fs = GF.el('div', 'field', '<label>Group size</label>');
+        var sz = GF.el('div', 'sizes');
+        for (var n = 2; n <= a.maxSize; n++) (function (n) { var b = document.createElement('button'); b.type = 'button'; b.textContent = n; b.className = n === p.size ? 'on' : ''; b.addEventListener('click', function () { p.size = n; renderPost(); }); sz.appendChild(b); })(n);
+        fs.appendChild(sz); f.appendChild(fs);
+        var fk = GF.el('div', 'field', '<label>Minimum kills</label>');
+        var ki = document.createElement('input'); ki.type = 'number'; ki.min = 0; ki.max = 100000000; ki.value = p.minKills || 0;
+        ki.addEventListener('input', function () { p.minKills = Math.max(0, parseInt(ki.value, 10) || 0); });
+        fk.appendChild(ki); fk.appendChild(GF.el('div', 'hint', 'You have ' + GF.fmt(mine) + ' for this mode. Applicants below the minimum cannot apply.')); f.appendChild(fk);
+        var ft = GF.el('div', 'field', '<label>Tags <span class="muted">(up to 3)</span></label>');
+        var tp = GF.el('div', 'tagpick');
+        S.tags.forEach(function (t) {
+            var c = GF.el('span', 'gf-tag' + (p.tags.indexOf(t) >= 0 ? ' on' : ''), esc(t));
+            c.addEventListener('click', function () { var i = p.tags.indexOf(t); if (i >= 0) p.tags.splice(i, 1); else if (p.tags.length < 3) p.tags.push(t); renderPost(); });
+            tp.appendChild(c);
+        });
+        ft.appendChild(tp); f.appendChild(ft);
+        d.appendChild(f);
+        d.appendChild(GF.el('div', 'sec', 'Your card'));
+        if (S.me) {
+            var snap = Object.assign({}, S.me, { takenAt: Date.now(), kills: mine, totalKills: Object.keys(S.me.kills || {}).reduce(function (t, k) { return t + (S.me.kills[k] | 0); }, 0) });
+            d.appendChild(GF.playerCard(snap, { killLabel: a.name + ' kills', viewerWorld: S.world }));
+        } else d.appendChild(GF.el('div', 'empty', 'Could not read your character. Log in to the game first.'));
+        var row = GF.el('div', 'actions');
+        row.appendChild(btn('Refresh card', '', async function () { await loadMe(); renderPost(); }));
+        var post = btn('Post listing', 'btn-primary', async function () {
+            await loadMe();
+            if (!S.me) throw new Error('Could not read your character. Are you logged in?');
+            var j = await api('/listings', { activity: p.activity, mode: p.mode, size: p.size, minKills: p.minKills, tags: p.tags, snapshot: S.me });
+            toast('Listing posted', 'ok');
+            await loadMine(); S.sel = j.listing.id; S.view = 'detail'; await loadDetail(S.sel); render();
+        });
+        post.disabled = !S.me;
+        row.appendChild(post);
+        var back = btn('Back', '', async function () { S.view = 'lobby'; render(); });
+        row.appendChild(back);
+        d.appendChild(row);
+        r.appendChild(d);
+    }
+
+    // ---- boot
+    function layout() { var m = $('main'); if (window.innerWidth < 560) m.classList.add('narrow'); else { m.classList.remove('narrow'); m.classList.remove('showtiles'); } }
+    async function boot() {
+        await P.ready();
+        GF.setIconSource(function (id) { return P.cache.itemIcon(id).then(function (u) { return u ? [u] : []; }, function () { return []; }); });
+        try {
+            await P.ui.settings([
+                { key: 'notify', type: 'toggle', label: 'Toasts over the game for group events', default: true },
+                { key: 'sound', type: 'toggle', label: 'Sound on applicant, accept and ready', default: true },
+                { key: 'hideUnmet', type: 'toggle', label: 'Hide listings I do not qualify for', default: false },
+            ]);
+            var cfg = await P.settings.get(); if (cfg) Object.assign(S.cfg, cfg);
+            P.settings.on(function (c) { Object.assign(S.cfg, c || {}); render(); });
+        } catch (e) {}
+        $('q').addEventListener('input', function () { S.q = this.value.trim(); renderTiles(); });
+        $('postBtn').addEventListener('click', function () { S.view = 'post'; $('main').classList.remove('showtiles'); render(); });
+        $('lobbyBtn').addEventListener('click', function () { S.view = 'lobby'; render(); });
+        $('tilesBtn').addEventListener('click', function () { $('main').classList.toggle('showtiles'); });
+        window.addEventListener('resize', layout); layout();
+        try { S.linked = await G.linked(); } catch (e) { S.linked = null; }
+        try { await loadActivities(); } catch (e) { $('right').innerHTML = '<div class="empty">Could not reach runetools.io. Retrying.</div>'; setTimeout(boot2, 5000); return; }
+        await boot2();
+    }
+    async function boot2() {
+        if (!S.acts.length) { try { await loadActivities(); } catch (e) { setTimeout(boot2, 5000); return; } }
+        await loadMe();
+        try { await loadListings(); } catch (e) { toast('Could not load groups', 'err'); }
+        await loadMine();
+        if (S.mine && S.mine.hosting) { S.sel = S.mine.hosting.id; S.view = 'detail'; await loadDetail(S.sel); }
+        render();
+        try { await G.subscribe(true); } catch (e) {}
+        setInterval(pollEvents, 1000);
+        setInterval(heartbeat, 30000);
+        setInterval(trackGroup, 2000);
+        setInterval(refreshSnapshots, 10 * 60000);
+        setInterval(async function () { try { var ls = await G.linked(); var was = isLinked(); S.linked = ls; if (isLinked() !== was) { await loadMine(); render(); } } catch (e) {} }, 15000);
+        setInterval(function () { if (S.view === 'lobby') render(); }, 60000);
+    }
+    boot();
+})();
+</script>
+</body>
+</html>

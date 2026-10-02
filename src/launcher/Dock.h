@@ -2,6 +2,7 @@
 // Unified-window host: one host window per game client; all entry points run on the AppCore main thread.
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,8 @@ bool IsHostFullscreen(std::uint32_t pid);
 void SetKeepFocused(std::uint32_t pid, bool on);
 
 std::string ReadUiAsset(const std::string& name);
+// The folder the client page is served from (the exe folder, or the dev override).
+std::filesystem::path UiDir();
 
 // Every file the client page is assembled from, relative to the install folder.
 std::vector<std::string> UiAssetFiles();

@@ -147,6 +147,7 @@
     <ClInclude Include="..\src\launcher\BridgeUtil.h" />
     <ClInclude Include="..\src\launcher\Update.h" />
     <ClInclude Include="..\src\launcher\Link.h" />
+    <ClInclude Include="..\src\launcher\Groups.h" />
     <ClInclude Include="..\src\launcher\Loot.h" />
     <ClInclude Include="..\src\launcher\News.h" />
     <ClInclude Include="..\src\launcher\GameUi.h" />
@@ -198,6 +199,7 @@
     <ClCompile Include="..\src\launcher\BridgeUtil.cpp" />
     <ClCompile Include="..\src\launcher\Update.cpp" />
     <ClCompile Include="..\src\launcher\Link.cpp" />
+    <ClCompile Include="..\src\launcher\Groups.cpp" />
     <ClCompile Include="..\src\launcher\Loot.cpp" />
     <ClCompile Include="..\src\launcher\News.cpp" />
     <ClCompile Include="..\src\launcher\Bridge.cpp" />
@@ -230,6 +232,7 @@
     <None Include="..\ui-assets\rtx_vars.js" />
     <None Include="..\ui-assets\quest_guides.js" />
     <None Include="..\ui-assets\panel_*.js" />
+    <None Include="..\ui-assets\plugins\**\*" />
     <None Include="app.ico" />
   </ItemGroup>
   <ItemGroup>
@@ -251,6 +254,7 @@
       <AlertSounds    Include="$(ProjectDir)..\ui-assets\sounds\*" />
       <PanelScripts   Include="$(ProjectDir)..\ui-assets\panel_*.js;$(ProjectDir)..\ui-assets\rtx_vars.js" />
       <CoreScripts    Include="$(ProjectDir)..\ui-assets\core\*" />
+      <BuiltinPlugins Include="$(ProjectDir)..\ui-assets\plugins\**\*" />
     </ItemGroup>
     <MakeDir Directories="$(OutDir)Ultralight" />
     <MakeDir Directories="$(OutDir)Ultralight\resources" />
@@ -290,6 +294,11 @@
           SkipUnchangedFiles="false"
           OverwriteReadOnlyFiles="true"
           Condition="'@(CoreScripts)' != ''" />
+    <Copy SourceFiles="@(BuiltinPlugins)"
+          DestinationFiles="@(BuiltinPlugins->'$(OutDir)plugins\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="false"
+          OverwriteReadOnlyFiles="true"
+          Condition="'@(BuiltinPlugins)' != ''" />
     <MakeDir Directories="$(OutDir)sounds" />
     <Copy SourceFiles="@(AlertSounds)"
           DestinationFolder="$(OutDir)sounds"

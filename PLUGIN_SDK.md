@@ -202,6 +202,11 @@ await rtx.plugin.state.social();
 // -> { in:true, world:70, friendsLoaded:true, online:3, friends:[ { name, world }, ... ] }
 //    world 0 on a friend means offline. Names are display names.
 
+await rtx.plugin.state.playerGroup();
+// -> { in:true, name, max:5, ownerSlot:0, members:[ { name, online, status, team, owner }, ... ] }
+//    The Grouping System party this character is in; in:false outside one. status is the game's
+//    per-member state (1 = ready in its own UI).
+
 await rtx.plugin.state.walkable(3221, 3218, 0, 2);
 // -> { x, y, plane, r, rows:[ "00100", "00100", ... ] }   the (2r+1)^2 tiles around x,y, r 1..8;
 //    rows[i] is world row y-r+i, character j is column x-r+j; '0' walkable, '1' blocked (scenery

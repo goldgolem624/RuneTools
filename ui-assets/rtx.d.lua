@@ -55,6 +55,8 @@ function state.scene(range) end
 function state.groundItems() end
 ---@return table|nil
 function state.social() end
+---@return table|nil  # {in,name,max,ownerSlot,members:[{name,online,status,team,owner}]}
+function state.playerGroup() end
 ---@param since? integer
 ---@param max? integer
 ---@return table|nil
