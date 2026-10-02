@@ -312,10 +312,51 @@
     }
 
     // ---- post form
-    function dropdown(options, value, onChange) {
+    // A long list opens as a searchable sheet over the pane, so there is one scrollbar on screen, never two.
+    function picker(options, value, onChange, title) {
+        var root = GF.el('div', 'picker');
+        var scrim = GF.el('div', 'picker-scrim');
+        var panel = GF.el('div', 'picker-panel');
+        var head = GF.el('div', 'picker-head', '<b>' + esc(title || 'Choose') + '</b>');
+        var q = document.createElement('input'); q.type = 'search'; q.placeholder = 'Type to filter'; q.className = 'picker-q';
+        var list = GF.el('div', 'picker-list');
+        function close() { root.remove(); document.removeEventListener('keydown', onKey); }
+        function fill() {
+            list.innerHTML = '';
+            var t = q.value.trim().toLowerCase(), lastGroup = null, n = 0;
+            options.forEach(function (o) {
+                if (t && o.label.toLowerCase().indexOf(t) < 0) return;
+                if (o.group && o.group !== lastGroup) { list.appendChild(GF.el('div', 'dd-group', esc(o.group))); lastGroup = o.group; }
+                var row = GF.el('div', 'picker-row' + (o.v === value ? ' on' : ''), esc(o.label));
+                row.addEventListener('click', function () { close(); if (o.v !== value) onChange(o.v); });
+                list.appendChild(row); n++;
+            });
+            if (!n) list.appendChild(GF.el('div', 'empty', 'Nothing matches'));
+        }
+        function onKey(e) {
+            if (e.key === 'Escape') { close(); return; }
+            if (e.key === 'Enter') { var first = list.querySelector('.picker-row'); if (first) first.click(); }
+        }
+        q.addEventListener('input', fill);
+        scrim.addEventListener('click', close);
+        document.addEventListener('keydown', onKey);
+        head.appendChild(q);
+        panel.appendChild(head); panel.appendChild(list);
+        root.appendChild(scrim); root.appendChild(panel);
+        fill();
+        document.body.appendChild(root);
+        setTimeout(function () { q.focus(); }, 0);
+        var on = list.querySelector('.picker-row.on'); if (on && on.scrollIntoView) on.scrollIntoView({ block: 'center' });
+    }
+    function dropdown(options, value, onChange, title) {
         var dd = GF.el('div', 'dd');
         var cur = options.filter(function (o) { return o.v === value; })[0];
         var btn = GF.el('button', 'dd-btn', esc(cur ? cur.label : 'Choose')); btn.type = 'button';
+        if (options.length > 8) {
+            btn.addEventListener('click', function (e) { e.stopPropagation(); picker(options, value, onChange, title); });
+            dd.appendChild(btn);
+            return dd;
+        }
         var pop = GF.el('div', 'dd-pop');
         var lastGroup = null;
         options.forEach(function (o) {
@@ -361,7 +402,7 @@
         var fa = GF.el('div', 'field full', '<label>Activity</label>');
         var actOpts = [];
         KINDS.forEach(function (k) { S.acts.filter(function (x) { return x.kind === k[0]; }).forEach(function (x) { actOpts.push({ v: x.key, label: x.name, group: k[1] }); }); });
-        fa.appendChild(dropdown(actOpts, p.activity, function (v) { p.activity = v; p.mode = ''; p.size = 0; renderPost(); }));
+        fa.appendChild(dropdown(actOpts, p.activity, function (v) { p.activity = v; p.mode = ''; p.size = 0; renderPost(); }, 'Activity'));
         f.appendChild(fa);
         var fm = GF.el('div', 'field', '<label>Mode</label>');
         fm.appendChild(dropdown(a.modes.map(function (m) { return { v: m.key, label: m.label }; }), p.mode, function (v) { p.mode = v; renderPost(); }));
