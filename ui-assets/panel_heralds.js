@@ -15,6 +15,15 @@
   const HOC_SILVER_SPINES = 60338, HOC_SANGUINE_SPINES = 60339;
   // Anya in the Blighted Cave (the War's Retreat boss portal attuned to Silverquill lands next to her).
   const HOC_ANYA_X = 3421, HOC_ANYA_Y = 7899;
+  const HOC_CAVE_ENTRANCE = 136477, HOC_CAVE_X = 3639, HOC_CAVE_Y = 1477;   // the Blighted Cave entrance east of the farm
+  // Anya in the cave: talk to her there; from anywhere outside, the way in is marked instead
+  async function hocAnyaTalk(label, ...opts) {
+    const P = qgP;
+    const inCave = !!(P && Math.abs(P.x - HOC_ANYA_X) <= 200 && Math.abs(P.y - HOC_ANYA_Y) <= 200);
+    if (inCave) { await hocTalkNpc('Anya', label, HOC_ANYA_X, HOC_ANYA_Y, 0, ...opts); return; }
+    if (!(await qgObjectById(HOC_CAVE_ENTRANCE, 'Cave entrance\nEnter the Blighted Cave')))
+      qgTile(HOC_CAVE_X, HOC_CAVE_Y, 0, 'Go here, then enter the Blighted Cave');
+  }
   // Anya's "Do you trust Anya?" chooser: every option works, so one is picked at random.
   const HOC_ANYA_TRUST_OPTS = ['i trust you', 'you seem trustworthy', 'you do keep running off', 'i do not trust you'];
   let hocAnyaTrustPick = -1;
@@ -41,9 +50,33 @@
   const HOC_SUPER_ANTISANG = [64019, 64021, 64023, 64025];   // Super antisanguine (4) .. (1)
   const HOC_KWUARM_UNF = 105;
   const HOC_COLOSSAL_LEG = 63925;   // from the essence veins, while at the quarry
-  const HOC_VEINS = [140915, 140917, 140918, 140919, 140920, 140921,            // essence veins (not cracked)
-                     140923, 140925, 140926, 140927, 140928, 140929,            // essence deposits
-                     140931, 140933, 140934, 140935, 140936, 140937];           // large essence deposits
+  // the quarry's rocks by the Mining level they take (the skill guide's essence lump / chunk / slab)
+  // a rock cracks as it is mined, and only then gives essence: a cracked one is the one to mine
+  const HOC_VEIN_TIERS = [
+    { lv: 65,  ids: [140915, 140917, 140918, 140919, 140920, 140921], cracked: 140916 },   // essence veins
+    { lv: 85,  ids: [140923, 140925, 140926, 140927, 140928, 140929], cracked: 140924 },   // essence deposits
+    { lv: 105, ids: [140931, 140933, 140934, 140935, 140936, 140937], cracked: 140932 },   // large essence deposits
+  ];
+  const HOC_VEINS = HOC_VEIN_TIERS.flatMap(t => t.ids);
+  // the tiers your Mining level can work (boosts count); every tier while the level is not known
+  function hocTiers() {
+    let lv = 0;
+    try { if (lastSnap && Array.isArray(lastSnap.skills) && lastSnap.skills[14]) lv = lastSnap.skills[14][0] | 0; } catch (e) {}
+    if (!lv) return HOC_VEIN_TIERS;
+    const ok = HOC_VEIN_TIERS.filter(t => lv >= t.lv);
+    return ok.length ? ok : HOC_VEIN_TIERS.slice(0, 1);
+  }
+  // the rocks to mark: a cracked one you can mine if any is in view, else the nearest whole ones
+  // A rock cracks in place: the scene keeps its own id and only the name it shows turns "(cracked)".
+  function hocVeinMarks(objs, label) {
+    const tiers = hocTiers();
+    const ids = tiers.flatMap(t => [...t.ids, t.cracked]);
+    const P = qgP, d = o => P ? Math.max(Math.abs(o.x - P.x), Math.abs(o.y - P.y)) : 0;
+    const cracked = (objs || []).filter(o => o && ids.includes(o.id) && /\(cracked\)/i.test(String(o.name || '')))
+                                .sort((a, b) => d(a) - d(b)).slice(0, 1)
+                                .map(o => ({ x: o.x, y: o.y, plane: o.plane || 0, label: label.replace(/^Essence\n/, 'Cracked essence\n') }));
+    return cracked.length ? cracked : hocNearestMarks(objs, tiers.flatMap(t => t.ids), label, 3);
+  }
   const HOC_PROCESSOR = 140911, HOC_QUARRY_BOX = 140912, HOC_COLOSSUS = 140913;
   const HOC_PROCESSOR_X = 3854, HOC_PROCESSOR_Y = 1635, HOC_COLOSSUS_X = 3850, HOC_COLOSSUS_Y = 1627;
   const HOC_BANK_BOOTH = 137292, HOC_BANK_X = 3878, HOC_BANK_Y = 1680;   // north of the quarry
@@ -74,12 +107,11 @@
     return qgIdMarks(objs, ids, label).sort((a, b) => d(a) - d(b)).slice(0, max || 3);
   }
   async function hocQuarry() {
-    if ((await hocInvTotal(HOC_SUPER_ANTISANG)) > 0) { qgClearAll(); return; }   // Esther's hand-over is still to be mapped
     const sc = await qgScene();
     const exalted = await hocInvTotal(HOC_EXALTED_LUMPS);
     hocExaltedLeft = exalted;
     if (exalted === 1 && (await qgInvCount(HOC_COLOSSAL_LEG)) < 1) {
-      const marks = hocNearestMarks(sc.objects, HOC_VEINS, 'Essence\nMine until you get a colossal leg', 3);
+      const marks = hocVeinMarks(sc.objects, 'Essence\nMine until you get a colossal leg');
       qgClrNpc(); qgClrDlg(); qgClrItem();
       if (marks.length) qgOv('overlay.guideTiles', marks);
       else qgTile(HOC_AZUR_X, HOC_AZUR_Y, 0, 'Mine essence veins until you get a colossal leg');
@@ -88,28 +120,29 @@
     if (exalted === 1) {
       const kw = (await qgInvCount(HOC_KWUARM_UNF)) > 0 ? '' : ' (bring an unfinished Kwuarm potion)';
       if (!(await qgObjectById(HOC_BANK_BOOTH, 'Bank booth\nMix unf. Kwuarm + Exalted essence' + kw, sc.objects)))
-        qgTile(HOC_BANK_X, HOC_BANK_Y, 0, 'Bank north of the quarry: mix an unfinished Kwuarm potion with Exalted essence' + kw + '. Keep the exalted lump for Esther');
+        qgTile(HOC_BANK_X, HOC_BANK_Y, 0, 'Bank north of the quarry: mix an unfinished Kwuarm potion with Exalted essence' + kw + '. Keep one exalted lump, chunk or slab for Esther');
       return;
     }
     if (exalted > 1) {
-      if (!(await qgObjectById(HOC_PROCESSOR, 'Essence processor\nProcess all but one exalted lump', sc.objects)))
-        qgObject('Essence processor', 'Process all but one exalted lump', HOC_PROCESSOR_X, HOC_PROCESSOR_Y, 0);
+      if (!(await qgObjectById(HOC_PROCESSOR, 'Essence processor\nProcess all but one exalted lump, chunk or slab', sc.objects)))
+        qgObject('Essence processor', 'Process all but one exalted lump, chunk or slab', HOC_PROCESSOR_X, HOC_PROCESSOR_Y, 0);
       return;
     }
     if ((await hocInvTotal(HOC_LUMPS)) > 0) {
-      const marks = [...qgIdMarks(sc.objects, HOC_QUARRY_BOX, 'Deposit box\nDeposit 1 essence lump'),
+      const marks = [...qgIdMarks(sc.objects, HOC_QUARRY_BOX, 'Deposit box\nDeposit 1 lump, chunk or slab'),
                      ...qgIdMarks(sc.objects, HOC_COLOSSUS, 'Exalted colossus\nMine')];
       qgClrNpc(); qgClrDlg(); qgClrItem();
       if (marks.length) qgOv('overlay.guideTiles', marks);
-      else qgObject('Exalted colossus', 'Deposit 1 lump in the deposit box, then mine the colossus', HOC_COLOSSUS_X, HOC_COLOSSUS_Y, 0);
+      else qgObject('Exalted colossus', 'Deposit 1 lump, chunk or slab in the deposit box, then mine the colossus', HOC_COLOSSUS_X, HOC_COLOSSUS_Y, 0);
       return;
     }
-    const marks = hocNearestMarks(sc.objects, HOC_VEINS, 'Essence\nMine until you get lumps', 3);
+    const marks = hocVeinMarks(sc.objects, 'Essence\nMine until you get lumps, chunks or slabs');
     qgClrNpc(); qgClrDlg(); qgClrItem();
     if (marks.length) qgOv('overlay.guideTiles', marks);
     else qgTile(HOC_AZUR_X, HOC_AZUR_Y, 0, 'Mine essence veins in the Exalted Quarry');
   }
-  function hocEastOfBarricade() { const P = qgP; return !!(P && (P.p | 0) === 0 && P.x >= 3764 && P.y < 6400); }
+  // the barricade stands on x 3762; the jump lands on 3763,1560
+  function hocEastOfBarricade() { const P = qgP; return !!(P && (P.p | 0) === 0 && P.x >= HOC_BARRICADE_X + 1 && P.y < 6400); }
   // Steps with no var of their own tick from where you have been, latched until the stage changes.
   let hocExaltedLeft = -1;   // exalted lumps held at the last step, for the ticks
   let hocCrossed = false, hocAtQuarry = false, hocExaltedSeen = false, hocLegSeen = false, hocKeptOne = false, hocAtTraps = false;
@@ -179,7 +212,7 @@
   }
   const HOC_TRACK_CHAIN = [
     { doneAt: 1, id: 141032, alt: [141034], x: 3542, y: 1425, name: "Anya's parasol", act: 'Track', where: 'at the shrine' },
-    { vb: 62101, doneAt: 4, id: 141035, alt: [141037], x: 3615, y: 1433, name: 'Flower planter', act: 'Track', where: 'next to the building at Eastfold Farm' },
+    { vb: 62101, doneAt: 4, id: 141035, alt: [141037], x: 3615, y: 1433, name: 'Flower planter', act: 'Track', where: 'next to the building at Eastfold Farm', walkX: 3606, walkY: 1436 },
     { vb: 62102, doneAt: 7, id: 141042, alt: [141043], x: 3599, y: 1386, name: "Anya's chest", act: 'Track', where: "in Anya's tent" },
     { vb: 62104, doneAt: 8, id: 141049, alt: [141050], x: 3684, y: 1378, name: 'Bloodsplatter', act: 'Track', where: 'north-east of the Deserted Mine' },
   ];
@@ -197,6 +230,7 @@
   const HOC_BARRICADE = 141015, HOC_BARRICADE_X = 3762, HOC_BARRICADE_Y = 1559;
   // The Sanguine Sigma on the hill above Ash: npc 32851 (the quest's morph of 32850 at 35..40).
   const HOC_SIGMA = '#32851', HOC_SIGMA_X = 3760, HOC_SIGMA_Y = 1548;
+  const HOC_SIGMA_FIGHT = 32853;   // the Sigma you actually fight, in the fight's own area
   // Ash's "Any objections?" chooser at 15: every option works, so one is picked at random.
   const HOC_ASH_OPTS = ['like a date', 'i could use your help', 'i do need that potion', "i'd prefer not"];
   let hocAshPick = -1;
@@ -405,8 +439,12 @@
     const trackAt = HOC_WOOD_ROUTE.map((m, j) => hocWoodIsPath(m) ? -1 : j).filter(j => j >= 0);
     if (t >= 1) for (let j = 0; j <= trackAt[Math.min(t, trackAt.length) - 1]; j++) hocWoodMark(j);
     let i = hocWoodIndex();
-    const jumped = !!(P && hocWoodLastP && Math.max(Math.abs(P.x - hocWoodLastP.x), Math.abs(P.y - hocWoodLastP.y)) > 20);
-    if (P) hocWoodLastP = { x: P.x, y: P.y };
+    // the wood's paths around you: in a clearing of the wood, or not in the wood yet
+    const paths = (sc.objects || []).filter(o => o && /^path$/i.test(o.name || '') && P && Math.max(Math.abs(o.x - P.x), Math.abs(o.y - P.y)) <= 30);
+    // A path taken is a jump between clearings. The portal into the wood is a jump too, from outside it:
+    // only a jump that starts in a clearing counts, or entering ticked the first path.
+    const jumped = !!(P && hocWoodLastP && hocWoodLastP.inWood && Math.max(Math.abs(P.x - hocWoodLastP.x), Math.abs(P.y - hocWoodLastP.y)) > 20);
+    if (P) hocWoodLastP = { x: P.x, y: P.y, inWood: paths.length > 0 };
     if (i < N && hocWoodIsPath(HOC_WOOD_ROUTE[i]) && jumped) { hocWoodMark(i); i++; }
     // the next Track's target already in view while a path is still listed: that path is behind you
     if (i + 1 < N && hocWoodIsPath(HOC_WOOD_ROUTE[i]) && !hocWoodIsPath(HOC_WOOD_ROUTE[i + 1]) && hocWoodTarget(sc, HOC_WOOD_ROUTE[i + 1])) { hocWoodMark(i); i++; }
@@ -424,7 +462,6 @@
     }
     // a Path: the one lying furthest that way from the clearing's centre (the mean of its paths). Measured from
     // the centre, not from you: you may stand at an edge, and a move can go back out the way you came in.
-    const paths = (sc.objects || []).filter(o => o && /^path$/i.test(o.name || '') && P && Math.max(Math.abs(o.x - P.x), Math.abs(o.y - P.y)) <= 30);
     const C = paths.length ? { x: paths.reduce((a, o) => a + o.x, 0) / paths.length, y: paths.reduce((a, o) => a + o.y, 0) / paths.length } : P;
     const score = o => { const dx = o.x - C.x, dy = o.y - C.y, len = Math.hypot(dx, dy) || 1; return (dx * dir[0] + dy * dir[1]) / len; };
     let pick = null;
@@ -491,9 +528,10 @@
   //            (event 5), "Put those sanguine werewolves to rest before they breach the smithy!" (event 7)
   //   trapsGo: Inanna's "We will push these vyres back. Head to the ridge and trigger the traps!" (event 4)
   //   sorrelDone: your own "Okay, thank you. I'll head to the barrier." (ends Sorrel's talk at 120)
+  //   azurFrog: Azur's "Ask the frog." (his part is done, Aurora is next)
   const HOC_LINES = { zeke: /overcome my fear/i, ivar: /we got it for now/i, razAttack: /raz is under attack/i,
                       razLeave: /we should leave/i, militia: /aid the militia|put those sanguine werewolves to rest/i, trapsGo: /trigger the traps/i,
-                      sorrelDone: /head to the barrier/i };
+                      sorrelDone: /head to the barrier/i, azurFrog: /ask the frog/i };
   const hocSaid = {};
   // NPC lines sit in group 1184 comp 10; your own lines in group 1191, whose text comp is found by scanning.
   const HOC_PLAYER_COMPS = Array.from({ length: 24 }, (_, i) => i).join(',');
@@ -552,7 +590,14 @@
     }
     if (v === 25 || v === 30) { await hocBarricade(); return; }   // 30 = the dialogue the barricade starts
     // 35 = the Sigma is up, 40 = "Are you ready to fight?" (Yes.) on attacking it
-    if (v === 35 || v === 40) { await qgDialogNpc(HOC_SIGMA, 'Attack the Sanguine Sigma', HOC_SIGMA_X, HOC_SIGMA_Y, 0, 'yes'); return; }
+    if (v === 35 || v === 40) {
+      // the fight itself is another copy of the Sigma (32853) in its own area, far from the hill: box it where it stands
+      let fight = null;
+      try { const sc = JSON.parse((await PLUGIN_API['state.scene'].run([40], myPid())) || '{}');
+            if (sc && Array.isArray(sc.npcs)) fight = sc.npcs.find(n => n && n.id === HOC_SIGMA_FIGHT) || null; } catch (e) {}
+      if (fight) { await qgDialogNpc('#' + HOC_SIGMA_FIGHT, 'Attack the Sanguine Sigma', fight.x, fight.y, fight.plane || 0, 'yes'); return; }
+      await qgDialogNpc(HOC_SIGMA, 'Attack the Sanguine Sigma', HOC_SIGMA_X, HOC_SIGMA_Y, 0, 'yes'); return;
+    }
     if (v === 45) { await hocTalkNpc(HOC_ASH, 'Go back to the barricade and talk to Ash', HOC_ASH_X, HOC_ASH_Y, 0); return; }
     if (v === 50) { await hocTalkNpc(HOC_ASH, 'Continue the conversation with Ash', HOC_ASH_X, HOC_ASH_Y, 0); return; }
     if (v === 55) { await hocTalkNpc(HOC_ADAM, 'Report to Adam in Wendlewick', HOC_ADAM_X, HOC_ADAM_Y, 0); return; }
@@ -669,7 +714,10 @@
       const clue = HOC_TRACK_CHAIN[hocTrackTarget(vbm).next];
       if (!clue) { qgClearAll(); return; }
       // until Ash reaches it (its var still 0) the clue offers no Track: walk there with him first
-      const act = (clue.vb && !(vbm[clue.vb] | 0)) ? 'Walk here with Ash' : clue.act;
+      const walking = !!(clue.vb && !(vbm[clue.vb] | 0));
+      const act = walking ? 'Walk here with Ash' : clue.act;
+      // a clue with its own spot to walk to: that tile, until the clue can be tracked
+      if (walking && clue.walkX) { qgTile(clue.walkX, clue.walkY, 0, 'Walk here with Ash'); return; }
       const sc = await qgScene();
       if (!(await qgObjectById([clue.id, ...clue.alt], clue.name + '\n' + act, sc.objects)))
         qgObject(clue.name, act + ' (' + clue.where + ')', clue.x, clue.y, 0);
@@ -755,8 +803,8 @@
           return;
         }
         // all three armed: back to Esther with an exalted essence lump, chunk or slab
-        const bring = (await hocInvTotal(HOC_EXALTED_LUMPS)) < 1 ? '\nBRING AN EXALTED ESSENCE LUMP' : '';
-        await hocEsther('Talk to Esther with the exalted essence lump' + bring);
+        const bring = (await hocInvTotal(HOC_EXALTED_LUMPS)) < 1 ? '\nBRING AN EXALTED LUMP, CHUNK OR SLAB' : '';
+        await hocEsther('Talk to Esther with an exalted lump, chunk or slab' + bring);
         return;
       }
       if (talked >= 4) {
@@ -786,7 +834,10 @@
     // stand decides: west of the barricade near Ash it is the barricade, east of it Azur in the quarry.
     if (v === 60 && silverquill === 1 && cure >= 7) {
       if ((vbm[HOC_QUARRY] | 0) >= 1) { await hocQuarry(); return; }   // Azur and Aurora done
-      if (hocEastOfBarricade()) { await hocTalkNpc(HOC_AZUR, 'Talk to Azur, then Aurora, in the Exalted Quarry', HOC_AZUR_X, HOC_AZUR_Y, 0); return; }
+      if (hocEastOfBarricade()) {
+        if (await hocLineSeen('azurFrog')) { await hocTalkNpc('Aurora', 'Talk to Aurora (the frog)', HOC_AZUR_X, HOC_AZUR_Y, 0); return; }
+        await hocTalkNpc(HOC_AZUR, 'Talk to Azur, then Aurora, in the Exalted Quarry', HOC_AZUR_X, HOC_AZUR_Y, 0); return;
+      }
       await hocBarricade();
       return;
     }
@@ -807,11 +858,11 @@
             qgObject('Cave ventricle', 'Exit', HOC_VENTRICLE_EXIT_X, HOC_VENTRICLE_EXIT_Y, 0);
           return;
         }
-        await hocTalkNpc('Anya', 'Talk to Anya', HOC_ANYA_X, HOC_ANYA_Y, 0);
+        await hocAnyaTalk('Talk to Anya');
         return;
       }
-      if (cure === 5) { await hocTalkNpc('Anya', 'Get the empowered antisanguine (silverquill) from Anya', HOC_ANYA_X, HOC_ANYA_Y, 0); return; }
-      if (cure === 4) { await hocTalkNpc('Anya', 'Hand Anya the silver and sanguine spines' + bring, HOC_ANYA_X, HOC_ANYA_Y, 0, 'yes'); return; }
+      if (cure === 5) { await hocAnyaTalk('Get the empowered antisanguine (silverquill) from Anya'); return; }
+      if (cure === 4) { await hocAnyaTalk('Hand Anya the silver and sanguine spines' + bring, 'yes'); return; }
       const opts = ['yes'];
       if ((vbm[HOC_ANYA_TRUST] | 0) === 0) {   // the trust question is still to come
         if (hocAnyaTrustPick < 0) hocAnyaTrustPick = qgRand(HOC_ANYA_TRUST_OPTS.length);
@@ -820,7 +871,7 @@
         if (hocAnyaForgivePick < 0) hocAnyaForgivePick = qgRand(HOC_ANYA_FORGIVE_OPTS.length);
         opts.unshift(HOC_ANYA_FORGIVE_OPTS[hocAnyaForgivePick]);
       }
-      await hocTalkNpc('Anya', 'Talk to Anya in the Blighted Cave' + bring, HOC_ANYA_X, HOC_ANYA_Y, 0, ...opts);
+      await hocAnyaTalk('Talk to Anya in the Blighted Cave' + bring, ...opts);
       return;
     }
     if (v === 60) {
@@ -853,6 +904,7 @@
       if (cure >= 6) s.add(8);   // Pour the potion onto Silverquill in her den
       if (cure >= 7) s.add(9);   // Exit the den and talk to Anya
       if (!(v === 60 && cure >= 7)) { hocCrossed = false; hocAtQuarry = false; }
+      if (!(v === 60 && silverquill === 1 && cure >= 7 && !((vb[HOC_QUARRY] | 0) >= 1))) hocSaid.azurFrog = false;   // only between Azur and Aurora
       else {
         if (hocEastOfBarricade()) hocCrossed = true;
         const P = qgP;
@@ -873,7 +925,7 @@
       if (hocExaltedSeen) { s.add(14); s.add(15); }                  // deposited one, mined the colossus
       if (hocKeptOne) { s.add('15.1'); s.add('15.2'); }               // kept one for Esther, processed the rest
       if (hocLegSeen) s.add('15.3');                                  // mined a colossal leg
-      if (has(HOC_SUPER_ANTISANG) || silverquill >= 2) {   // super antisanguine mixed (62096 = 2)
+      if (silverquill >= 2) {   // super antisanguine mixed (62096 = 2); not the potion itself, which can come from outside the quest
         for (const k of [7, 8, 9, 10, 11, 12, 13, 14, 15, '15.1', '15.2', 16]) s.add(k);
       }
       if (has([HOC_COLOSSAL_LEG])) s.add('15.3');
@@ -979,6 +1031,7 @@
       case 'Curing Silverquill': return [silver, sanguine];
       case 'Create a super antisanguine potion for Esther (Heathervein)': return [kwuarm];
       case 'Create a havensilver halberd for Liat (Heathervein)': return [bars, maple];
+      case 'Set-up traps for Fox (Hollow Hill)': return [{ name: '6 free backpack spaces' }];
       case 'Return to Adam with the items':
         return [{ id: HOC_EXALTED_LUMPS[0], n: 1, name: 'Exalted essence lump (or chunk/slab)' },
                 { id: HOC_HALBERD, n: 1, name: 'Havensilver halberd' }];

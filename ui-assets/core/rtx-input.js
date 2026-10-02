@@ -52,6 +52,8 @@
     try { if (bridge() && bridge().uiKeyboard) bridge().uiKeyboard(myPid(), typing); } catch (e) {}
   }
   document.addEventListener('focusin', () => setTimeout(syncKbCapture, 0));
+  // a reload of this layer starts with no grabs: the client's own flag follows, in case one was left on
+  setTimeout(() => { try { if (!_kbCaptured && bridge() && bridge().uiKeyboard) bridge().uiKeyboard(myPid(), false); } catch (e) {} }, 1500);
   document.addEventListener('focusout', () => setTimeout(syncKbCapture, 0));
   setInterval(syncKbCapture, 1000);
   window.__rtxEditCmd = function (cmd) {

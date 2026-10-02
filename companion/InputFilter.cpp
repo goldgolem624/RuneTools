@@ -402,6 +402,16 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                         return TRUE;
                     }
                 }
+                // The game's own procedure leaves this to DefWindowProc, which for a child window first
+                // sends it to the parent and waits: the launcher's window, whose loop answers on its next
+                // tick, some 9 ms later, for every mouse move. Answered here instead, the way
+                // DefWindowProc does once the parent declines: the class cursor if there is one, else
+                // whatever the game set itself.
+                if (EmbeddedActive() && LOWORD(lparam) == HTCLIENT) {
+                    HCURSOR cls = reinterpret_cast<HCURSOR>(GetClassLongPtrW(hwnd, GCLP_HCURSOR));
+                    if (cls) SetCursor(cls);
+                    return TRUE;
+                }
                 break;
             }
             default:

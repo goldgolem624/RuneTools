@@ -3,6 +3,7 @@
 #include "MarkerShare.h"
 
 #include <windows.h>
+#include <detours.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -316,15 +317,33 @@ void Apply(std::uint8_t* root) {
     if (!root) return;
     if (!g_resolved) Resolve();
     if (!g_usable) return;
+    bool steady;
+    { std::lock_guard<std::mutex> lk(g_wantMu); steady = g_wantGen == g_haveGen; }
+    if (steady) {
+        // Nothing changed on the launcher's side: only what the game dropped needs making again.
+        // The game rebuilds a component's children whenever its script redraws it (the skills
+        // panel on every XP drop), and everything of ours under it goes with them, so each parent
+        // is looked at every frame through one of ours: a full pass every 15 frames alone left
+        // the skill bars blinking out for up to a quarter of a second.
+        static unsigned s_tick = 0;
+        if (++s_tick % 15 != 0) {
+            bool dropped = false;
+            std::int32_t seen[32]; int nSeen = 0;
+            for (const Rect& h : g_have) {
+                bool dup = false;
+                for (int i = 0; i < nSeen; ++i) if (seen[i] == h.parent) { dup = true; break; }
+                if (dup) continue;
+                if (nSeen == 32) break;
+                seen[nSeen++] = h.parent;
+                if (!Find(root, h.parent, h.slot)) { dropped = true; break; }
+            }
+            ClearActive();
+            if (!dropped) return;
+        }
+    }
     std::vector<Rect> want;
     {
         std::lock_guard<std::mutex> lk(g_wantMu);
-        if (g_wantGen == g_haveGen) {
-            // nothing changed on the launcher's side: only re-create what the game dropped (a
-            // panel closed and opened again), checked at a gentle rate
-            static unsigned s_tick = 0;
-            if (++s_tick % 15 != 0) return;
-        }
         want = g_want; g_haveGen = g_wantGen;
     }
     // what is no longer wanted goes first, so a slot can be reused in the same frame
@@ -370,6 +389,7 @@ constexpr std::size_t kTextLen = sizeof(rtx::marker::TextOverride::text);
 struct TextWant { std::int32_t parent, sub; char text[kTextLen]; };
 struct TextHeld {
     std::int32_t parent, sub;
+    void* comp;               // the component as last found, for the setter hook
     char orig[kTextLen];      // the game's text, put back when the entry goes
     char wrote[kTextLen];     // ours, as last written
     bool foreign;             // the game's text is not one we can hold: never written
@@ -385,6 +405,129 @@ std::size_t g_textNext = 0;               // where a pass cut short by its budge
 std::uint32_t g_textQuiet = 0;            // frames since a pass last had anything to do
 OpFn g_getText = nullptr;
 bool g_textOff = false;
+// The game's own cc_settext, hooked once the ops are resolved: a write to a held component gets
+// our text put in its place before the routine runs, so the game's redraw of a skill's cell on an
+// XP drop never shows the capped level, not even for a frame. Our own writes go to the original.
+OpFn g_setTextOrig = nullptr;
+bool g_setTextHooked = false;
+std::uint32_t g_textSwapped = 0;
+bool TextGroupAllowed(std::int32_t parent, std::int32_t sub);
+// No C++ objects in these: a fault in the game's state is caught and the write goes through
+// untouched. A component names itself at +0x38 (group), +0x3A (component) and +0x3C (sub), the
+// fields the launcher's interface walk reads, so a cell the game built again still matches.
+// The launcher measures those fields from the component's control block; the setter is handed the
+// object itself, 0x10 further in. Both bases are tried, and the one naming an interface we hold wins.
+bool ReadCompIds(const std::uint8_t* comp, std::int32_t* parent, std::int32_t* sub) {
+    __try {
+        const std::size_t bases[2] = { 0x28, 0x38 };
+        for (int k = 0; k < 2; ++k) {
+            const std::uint16_t group = *reinterpret_cast<const std::uint16_t*>(comp + bases[k]);
+            const std::int16_t  cm    = *reinterpret_cast<const std::int16_t*>(comp + bases[k] + 2);
+            const std::int16_t  sb    = *reinterpret_cast<const std::int16_t*>(comp + bases[k] + 4);
+            const std::int32_t par = ((std::int32_t)group << 16) | (std::int32_t)(std::uint16_t)cm;
+            if (TextGroupAllowed(par, sb)) { *parent = par; *sub = sb; return true; }
+        }
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+// Returns 1 when the string on the stack was replaced, 0 when not, -1 on a fault.
+int SwapStackText(std::uint8_t* state, const char* wrote, char* orig) {
+    __try {
+        const std::uint32_t sp = *reinterpret_cast<std::uint32_t*>(state + kStrSp);
+        if (sp == 0 || sp > 1000) return 0;
+        std::uint8_t* e = state + kStrStack + (std::size_t)(sp - 1) * 0x20;
+        // only a short string kept inline, as the setter leaves it for us to read back
+        if (e[0x18] != 2 || (e[0x17] & 0x80) || e[0x17] > 0x17) return 0;
+        const std::size_t n = 0x17 - e[0x17];
+        if (n == std::strlen(wrote) && std::memcmp(e, wrote, n) == 0) return 0;   // already ours
+        std::memcpy(orig, e, n); orig[n] = 0;                   // the game's newest value, for the restore
+        const std::size_t w = std::strlen(wrote);
+        std::memset(e, 0, 0x17); std::memcpy(e, wrote, w); e[0x17] = (std::uint8_t)(0x17 - w);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+void* ActiveComp(std::uint8_t* state, std::size_t slot) {
+    __try { void* c = nullptr; std::memcpy(&c, state + slot + 8, 8); return c; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+std::uint32_t g_textSeenWrites = 0;   // writes seen on a component of a held interface, matched or not
+void* Detour_SetText(void* root, std::uint8_t* state) {
+    if (!g_textOff && state && !g_textHeld.empty()) {
+        // the setter acts on whichever of the two slots the dispatcher chooses: both are looked at
+        const std::size_t slots[2] = { kActive, kActiveAlt };
+        for (int si = 0; si < 2; ++si) {
+            void* comp = ActiveComp(state, slots[si]);
+            if (!comp) continue;
+            std::int32_t parent = 0, sub = -1;
+            const bool ids = ReadCompIds(static_cast<const std::uint8_t*>(comp), &parent, &sub);
+            if (ids && TextGroupAllowed(parent, sub)) ++g_textSeenWrites;
+            for (std::size_t i = 0; i < g_textHeld.size(); ++i) {
+                TextHeld& h = g_textHeld[i];
+                if (!h.wrote[0]) continue;
+                if (h.comp != comp && !(ids && h.parent == parent && h.sub == sub)) continue;
+                h.comp = comp;
+                const int r = SwapStackText(state, h.wrote, h.orig);
+                if (r == 1) ++g_textSwapped;
+                si = 2; break;                                   // one write, one cell
+            }
+        }
+    }
+    return g_setTextOrig(root, state);
+}
+// The game's cc_create, hooked the same way: the skills panel script deletes every cell and makes
+// them again on each refresh, then writes the level into the new one. Its parent and slot are the
+// first and third of the three ints the routine takes, and the component it made is in the active
+// slot afterwards, so the new cell is known by pointer before its first write, without any
+// knowledge of the component's layout.
+OpFn g_createOrig = nullptr;
+std::uint32_t g_textCreated = 0;
+bool ReadCreateArgs(std::uint8_t* state, std::int32_t* parent, std::int32_t* slot) {
+    __try {
+        const std::uint32_t sp = *reinterpret_cast<std::uint32_t*>(state + kIntSp);
+        if (sp < 3 || sp > 1000) return false;
+        const std::int32_t* st = reinterpret_cast<const std::int32_t*>(state + kIntStack);
+        *parent = st[sp - 3]; *slot = st[sp - 1];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+void* Detour_Create(void* root, std::uint8_t* state) {
+    std::int32_t parent = 0, slot = -1;
+    const bool args = !g_textOff && state && !g_textUse.empty() && ReadCreateArgs(state, &parent, &slot) && TextGroupAllowed(parent, slot);
+    void* beforeA = args ? ActiveComp(state, kActive) : nullptr;
+    void* beforeB = args ? ActiveComp(state, kActiveAlt) : nullptr;
+    void* r = g_createOrig(root, state);
+    if (args) {
+        void* a = ActiveComp(state, kActive), * b = ActiveComp(state, kActiveAlt);
+        void* made = (a && a != beforeA) ? a : (b && b != beforeB) ? b : a;
+        if (made) {
+            // a cell made at the address a held one had: that pointer is this cell's now, not ours
+            for (TextHeld& x : g_textHeld) if (x.comp == made && !(x.parent == parent && x.sub == slot)) x.comp = nullptr;
+            for (const TextWant& w : g_textUse) {
+                if (w.parent != parent || w.sub != slot || !w.text[0]) continue;
+                TextHeld* h = nullptr;
+                for (TextHeld& x : g_textHeld) if (x.parent == parent && x.sub == slot) { h = &x; break; }
+                if (!h) { g_textHeld.push_back(TextHeld{ parent, slot, nullptr, {}, {}, false, 0, 0 }); h = &g_textHeld.back(); }
+                h->comp = made; h->foreign = false;
+                std::memcpy(h->wrote, w.text, kTextLen);        // the write that follows is swapped to this
+                ++g_textCreated;
+                break;
+            }
+        }
+    }
+    return r;
+}
+void HookSetText() {
+    if (g_setTextHooked || !g_usable) return;
+    g_setTextHooked = true;
+    g_setTextOrig = g_ops[kSetText].fn;
+    g_createOrig  = g_ops[kCreate].fn;
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(&reinterpret_cast<PVOID&>(g_setTextOrig), reinterpret_cast<PVOID>(Detour_SetText));
+    DetourAttach(&reinterpret_cast<PVOID&>(g_createOrig), reinterpret_cast<PVOID>(Detour_Create));
+    if (DetourTransactionCommit() == NO_ERROR) { g_ops[kSetText].fn = g_setTextOrig; g_ops[kCreate].fn = g_createOrig; Say("cc text: setter and create hooked"); }
+    else { g_setTextOrig = nullptr; g_createOrig = nullptr; Say("cc text: setter hook refused"); }
+}
 constexpr ULONGLONG kTextWaitMs = 3000;   // the launcher sees a changed game state within this
 
 bool InWorld(const std::uint8_t* root) {
@@ -474,10 +617,13 @@ void ApplyText(std::uint8_t* root) {
         if (g_textWantGen != g_textUseGen) { g_textUse = g_textWant; g_textUseGen = g_textWantGen; g_textNext = 0; g_textQuiet = 0; }
     }
     if (g_textUse.empty() && g_textHeld.empty()) return;
-    // a steady list that needed nothing last time is looked at every fourth frame
-    if (g_textQuiet && ++g_textQuiet % 4 != 0) return;
+    // Looked at every frame, steady or not: the game rewrites a skill's cell on each XP drop, and
+    // a pass every fourth frame left its 120 showing for up to four frames. The budget below keeps
+    // the cost of a pass bounded.
+    ++g_textQuiet;
     if (!g_resolved) Resolve();
     if (!g_usable || !InWorld(root)) return;
+    HookSetText();
     if (!g_getText) {
         if (!rtx::engineops::Ready()) return;              // still being looked up
         const void* h = rtx::engineops::Handler("CC_GETTEXT");
@@ -531,20 +677,22 @@ void ApplyText(std::uint8_t* root) {
             continue;
         }
         if (!known && nPresent < 8) present[nPresent++] = w.parent;
+        if (h) std::memcpy(&h->comp, g_state + kActive + 8, 8);
         if (h && h->foreign) continue;
         char cur[kTextLen];
         const ReadResult rr = ReadText(root, cur);
         if (rr == kReadFault) { ClearActive(); TextOff("a call faulted"); return; }
         if (rr == kReadSkip) { busy = true; continue; }     // no answer this time: asked again later
         if (rr == kReadForeign) {
-            if (!h) { g_textHeld.push_back(TextHeld{ w.parent, w.sub, {}, {}, true, 0, 0 }); busy = true; }
+            if (!h) { TextHeld f{ w.parent, w.sub, nullptr, {}, {}, true, 0, 0 }; std::memcpy(&f.comp, g_state + kActive + 8, 8); g_textHeld.push_back(f); busy = true; }
             else h->foreign = true;
             continue;
         }
         if (!h) {
             // first sight: the game's text is kept to be put back
-            g_textHeld.push_back(TextHeld{ w.parent, w.sub, {}, {}, false, 0, 0 });
+            g_textHeld.push_back(TextHeld{ w.parent, w.sub, nullptr, {}, {}, false, 0, 0 });
             h = &g_textHeld.back();
+            std::memcpy(&h->comp, g_state + kActive + 8, 8);
             std::memcpy(h->orig, cur, kTextLen);
         } else if (std::strcmp(cur, h->wrote) == 0) {
             if (std::strcmp(w.text, h->wrote) == 0) continue;    // ours, and still what is wanted
@@ -570,10 +718,10 @@ void ApplyText(std::uint8_t* root) {
     ClearActive();
     g_textQuiet = busy ? 0 : (g_textQuiet ? g_textQuiet : 1);
 
-    static std::size_t s_saidWant = ~(std::size_t)0, s_saidHeld = ~(std::size_t)0;
-    if (n != s_saidWant || g_textHeld.size() != s_saidHeld) {
-        s_saidWant = n; s_saidHeld = g_textHeld.size();
-        Say("cc text: %zu wanted, %zu held", n, g_textHeld.size());
+    static std::size_t s_saidWant = ~(std::size_t)0, s_saidHeld = ~(std::size_t)0; static std::uint32_t s_saidSeen = 0, s_saidSwap = 0, s_saidMade = 0;
+    if (n != s_saidWant || g_textHeld.size() != s_saidHeld || g_textSeenWrites != s_saidSeen || g_textSwapped != s_saidSwap || g_textCreated != s_saidMade) {
+        s_saidWant = n; s_saidHeld = g_textHeld.size(); s_saidSeen = g_textSeenWrites; s_saidSwap = g_textSwapped; s_saidMade = g_textCreated;
+        Say("cc text: %zu wanted, %zu held, %u cells made by the game, %u writes seen on the panel, %u swapped", n, g_textHeld.size(), g_textCreated, g_textSeenWrites, g_textSwapped);
     }
 }
 

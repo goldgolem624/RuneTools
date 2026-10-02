@@ -94,6 +94,7 @@
     <ClCompile Include="EngineComponents.cpp" />
     <ClCompile Include="EngineOps.cpp" />
     <ClCompile Include="SoundFilter.cpp" />
+    <ClCompile Include="ChatFilter.cpp" />
     <ClCompile Include="InputFilter.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -125,6 +126,8 @@
     <ClInclude Include="MenuShare.h" />
     <ClInclude Include="SoundFilter.h" />
     <ClInclude Include="SoundShare.h" />
+    <ClInclude Include="ChatFilter.h" />
+    <ClInclude Include="ChatShare.h" />
     <ClInclude Include="InputFilter.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -323,12 +323,39 @@
     const req = qgReqList(nm); if (!req) return '';
     return '<div class="stor-h" style="margin-top:8px;">Required items</div>' + qgItemsRow(req);
   }
+  // Folded guide sections: {"<quest>": [section index, ...]} in the shared prefs, so a section stays
+  // folded in the Focused tab, in All Quests and in every client window.
+  function qgFolded(nm) {
+    try { const m = JSON.parse(prefGet('rtxQgFolded', '{}') || '{}'); return Array.isArray(m[nm]) ? m[nm] : []; } catch (e) { return []; }
+  }
+  function qgSetFolded(nm, si, on) {
+    let m = {}; try { m = JSON.parse(prefGet('rtxQgFolded', '{}') || '{}') || {}; } catch (e) { m = {}; }
+    const cur = new Set(Array.isArray(m[nm]) ? m[nm] : []);
+    if (on) cur.add(si); else cur.delete(si);
+    if (cur.size) m[nm] = [...cur].sort((a, b) => a - b); else delete m[nm];
+    try { prefSet('rtxQgFolded', JSON.stringify(m)); } catch (e) {}
+  }
+  // one listener for every guide view: the header folds its own body in place, no re-render
+  document.addEventListener('click', e => {
+    const hd = e.target && e.target.closest ? e.target.closest('.qg-sec[data-qsn]') : null;
+    if (!hd) return;
+    e.stopPropagation();
+    const body = hd.nextElementSibling;
+    const on = !hd.classList.contains('folded');
+    hd.classList.toggle('folded', on);
+    if (body && body.classList.contains('qg-body')) body.style.display = on ? 'none' : '';
+    qgSetFolded(hd.dataset.qsn, hd.dataset.qsec | 0, on);
+  }, true);
   function qgGuideHtml(nm, g, done) {
     const manual = (questGSteps && questGSteps[nm]) || [];
-    let i = 0, h = qgReqHtml(nm) + qgMonHtml(nm);
+    const folded = qgFolded(nm);
+    let i = 0, si = 0, h = qgReqHtml(nm) + qgMonHtml(nm);
     for (const sec of g.sections) {
       const st = qgWiki(sec.t), sn = qgWiki(sec.n), sr = qgWiki(sec.r);
-      if (st) h += '<div class="stor-h" style="margin-top:8px;">' + qgEsc(st) + '</div>';
+      const fold = !!st && folded.indexOf(si) >= 0;
+      if (st) h += '<div class="qg-sec' + (fold ? ' folded' : '') + '" data-qsn="' + qgEsc(nm) + '" data-qsec="' + si + '"><span class="qg-chev"></span>' + qgEsc(st) + '</div>';
+      h += '<div class="qg-body"' + (fold ? ' style="display:none"' : '') + '>';
+      si++;
       const sireq = qgSecReqList(nm, st);
       if (sireq) h += '<div class="myst-tip">Needed:</div>' + qgItemsRow(sireq);
       else if (sn) h += '<div class="myst-tip">Needed: ' + qgEsc(sn) + '</div>';
@@ -357,13 +384,15 @@
         subs.forEach((sb, j) => {
           const key = i + '.' + (j + 1);
           // a guide's automatic ticks may name sub-points too, by the same "step.sub" key
-          const sdn = done || manual.indexOf(key) >= 0 || (typeof qgAutoDone !== 'undefined' && qgAutoDone[nm] && qgAutoDone[nm].has(key));
+          // ...and a note under a step is behind you once that step and the next are both ticked by the guide
+          const auto = (typeof qgAutoDone !== 'undefined') ? qgAutoDone[nm] : null;
+          const sdn = done || manual.indexOf(key) >= 0 || !!(auto && (auto.has(key) || (auto.has(i) && auto.has(i + 1))));
           h += '<div class="myst-step' + (sdn ? ' done' : '') + '" style="margin-left:' + (18 * sb.depth) + 'px;" data-qn="' + qgEsc(nm) + '" data-i="' + key + '">' +
                '<span class="myst-cb"></span><span class="tx">' + qgChatHtml(sb.txt) + '</span></div>';
         });
         i++;
       }
-      h += '</div>';
+      h += '</div></div>';
     }
     if (!done && manual.length) h += '<span class="myst-reset" data-qreset="' + qgEsc(nm) + '">Uncheck all</span>';
     return h;

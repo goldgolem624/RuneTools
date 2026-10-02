@@ -911,6 +911,17 @@ HoverPick PickHover(const Config& cfg) {
                 tries.push_back(name + " tree");
                 tries.push_back(name + "s");   // the guide can use the plural: "Petrified Roots" for a "Petrified root"
                 if (name == "Tree") tries.push_back("Normal tree");
+                // rocks the guide lists by what they give (Exalted Quarry, Heathervein)
+                static const char* const kByYield[][2] = {
+                    { "Large essence deposit", "Essence slab" },    // Mining 105
+                    { "Essence deposit",       "Essence chunk" },   // Mining 85
+                    { "Essence vein",          "Essence lump" },    // Mining 65
+                };
+                std::string base = name;   // "Essence deposit (cracked)" is still an essence deposit
+                const std::string cracked = " (cracked)";
+                if (base.size() > cracked.size() && base.compare(base.size() - cracked.size(), cracked.size(), cracked) == 0)
+                    base.resize(base.size() - cracked.size());
+                for (const auto& a : kByYield) if (base == a[0]) tries.push_back(a[1]);
                 const std::string rock = " rock";
                 if (name.size() > rock.size() && name.compare(name.size() - rock.size(), rock.size(), rock) == 0) {
                     const std::string stem = name.substr(0, name.size() - rock.size());
@@ -2414,15 +2425,16 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     // Logged when the projection changes past its frame-to-frame float noise (the
                     // near and far planes move with the view distance setting; camera zoom does not
                     // touch them), and otherwise every 30 seconds so the running accuracy is on record.
-                    static double s_lastA = 1e30, s_lastB = 1e30;
-                    static unsigned s_lastTick = 0;
-                    static int s_logs = 0;
+                    // per client: two clients with different view distances read as a change every pass
+                    struct DepthLog { double a = 1e30, b = 1e30; unsigned tick = 0; int logs = 0; };
+                    static std::map<DWORD, DepthLog> s_depthLog;
+                    DepthLog& dl = s_depthLog[cfg.pid];
                     const unsigned tick = GetTickCount();
-                    const bool moved = std::fabs(A - s_lastA) > 1e-5 * std::max(1.0, std::fabs(A)) ||
-                                       std::fabs(B - s_lastB) > 2e-3 * std::max(1.0, std::fabs(B));
-                    const bool due = s_lastTick == 0 || (tick - s_lastTick) > 30000;
-                    if ((moved || due) && s_logs < 400) {
-                        ++s_logs; s_lastA = A; s_lastB = B; s_lastTick = tick;
+                    const bool moved = std::fabs(A - dl.a) > 1e-5 * std::max(1.0, std::fabs(A)) ||
+                                       std::fabs(B - dl.b) > 2e-3 * std::max(1.0, std::fabs(B));
+                    const bool due = dl.tick == 0 || (tick - dl.tick) > 30000;
+                    if ((moved || due) && dl.logs < 400) {
+                        ++dl.logs; dl.a = A; dl.b = B; dl.tick = tick;
                         char lb[220];
                         {
                             char tb[160];
@@ -2454,10 +2466,11 @@ void PublishMarkers(const Config& cfg, const rtx::reader::OverlayFrame* f, int W
                     for (int k = 0; k < got && at < 0; ++k)
                         for (const auto& a : g_askThen[cfg.pid])
                             if (a.entity == 0 && a.tag == mp[k].tag && a.wx == f->player_fx && a.wy == f->player_fy) { at = k; break; }
-                    static unsigned s_cmpAt = 0; static int s_cmpLeft = 60;
+                    static std::map<DWORD, std::pair<unsigned, int>> s_cmp;   // per client: last check, checks left
+                    auto& cmp = s_cmp.try_emplace(cfg.pid, 0u, 60).first->second;
                     const unsigned nowTick = GetTickCount();
-                    if (at >= 0 && mp[at].ok && s_cmpLeft > 0 && (s_cmpAt == 0 || nowTick - s_cmpAt > 2000)) {
-                        s_cmpAt = nowTick; --s_cmpLeft;
+                    if (at >= 0 && mp[at].ok && cmp.second > 0 && (cmp.first == 0 || nowTick - cmp.first > 2000)) {
+                        cmp.first = nowTick; --cmp.second;
                         char cb[200];
                         std::snprintf(cb, sizeof(cb),
                                       "[ovl] projection check: ours %.1f,%.1f the game's %d,%d (off by %.1f,%.1f)",

@@ -55,6 +55,25 @@ void EnsureMarkerMapped() {
     OutputDebugStringA("RuneToolsX: marker channel mapped");
 }
 
+// The glyph widths as the backend built them, kept here too so text this file lays out can be measured.
+int g_glyphAdv[rtx::marker::kGlyphLast - rtx::marker::kGlyphFirst + 1] = {};
+int g_glyphPx = 0;
+// Width in pixels of one line drawn with DrawPlainText at text_px (same scale and letter spacing); -1 when
+// the widths are not known yet.
+float PlainTextWidth(const char* s, float text_px) {
+    if (g_glyphPx <= 0 || !s) return -1.0f;
+    if (text_px < 6.0f) text_px = 6.0f;
+    if (text_px > 40.0f) text_px = 40.0f;
+    const float scale = text_px / (float)g_glyphPx, track = 0.6f * scale;
+    float w = 0.0f; int n = 0;
+    for (const char* p = s; *p && *p != '\n'; ++p) {
+        const unsigned char ch = (unsigned char)*p;
+        if (ch < rtx::marker::kGlyphFirst || ch > rtx::marker::kGlyphLast) continue;
+        w += (float)g_glyphAdv[ch - rtx::marker::kGlyphFirst] * scale + track; ++n;
+    }
+    return n ? w - track : 0.0f;
+}
+
 rtx::hud::Share* g_hud    = nullptr;
 HANDLE           g_hudMap = nullptr;
 void EnsureHudMapped() {
@@ -337,7 +356,10 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
         const int sh = (g_hud->w > 0) ? (sw * g_hud->h / g_hud->w) : sw;
         const int pad = 10;
         const int capH = cap[0] ? 20 : 0;
-        const int cw = sw + pad * 2;
+        // as wide as the caption needs: a fixed card let a long caption run past both edges
+        const float capW = cap[0] ? PlainTextWidth(cap, 15.0f) : 0.0f;
+        const int capNeed = capW > 0.0f ? (int)(capW + 0.999f) + pad * 2 + 4 : 0;
+        const int cw = (sw + pad * 2) > capNeed ? (sw + pad * 2) : capNeed;
         const int ch = sh + capH + pad * 2;
         const int cx = (fbw - cw) / 2, cy = fbh / 3 - pad;
         b.DrawRoundRect((float)(cx + 2), (float)(cy + 3), (float)cw, (float)ch,
@@ -346,7 +368,7 @@ void RenderOverlayInner(const Backend& b, HWND hwnd, int fbw, int fbh) {
                         9.0f, 0.055f, 0.055f, 0.075f, 0.90f, fbw, fbh);
         b.DrawRoundRect((float)(cx + 8), (float)cy, (float)(cw - 16), 2.0f,
                         1.0f, 0.486f, 0.427f, 0.949f, 0.95f, fbw, fbh);
-        b.DrawHud(cx + pad, cy + pad, sw, sh, fbw, fbh);
+        b.DrawHud(cx + (cw - sw) / 2, cy + pad, sw, sh, fbw, fbh);
         if (cap[0])
             b.DrawPlainText(cap, (float)(fbw / 2),
                             (float)(cy + pad + sh + capH / 2 + 1),
@@ -501,6 +523,11 @@ void FrameChannelState(bool& mapped, std::uint32_t& magic, std::uint32_t& versio
 }
 
 void PublishGlyphWidths(const int* adv, int count, int px) {
+    if (adv && count > 0 && px > 0) {
+        const int keep = count < (int)(sizeof(g_glyphAdv) / sizeof(g_glyphAdv[0])) ? count : (int)(sizeof(g_glyphAdv) / sizeof(g_glyphAdv[0]));
+        for (int i = 0; i < keep; ++i) g_glyphAdv[i] = adv[i];
+        g_glyphPx = px;
+    }
     if (!g_frame || g_frame->magic != rtx::frame::kMagic || g_frame->version != rtx::frame::kVersion) return;
     if (!adv || count <= 0 || px <= 0) return;
     if (count > (int)sizeof(g_frame->glyph_adv)) count = (int)sizeof(g_frame->glyph_adv);

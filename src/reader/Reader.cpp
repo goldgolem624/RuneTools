@@ -6231,9 +6231,13 @@ std::string PuzzleCellRectsJson(std::uint32_t pid) {
         }
     }
     {
-        static std::uint32_t l_pid = 0; static int l_ox = -99999, l_oy = -99999, l_gx = -99999, l_gy = -99999;
-        if (l_pid != pid || ox != l_ox || oy != l_oy || gx != l_gx || gy != l_gy) {
-            l_pid = pid; l_ox = ox; l_oy = oy; l_gx = gx; l_gy = gy;
+        // per client, or two open puzzles log on every pass
+        static std::unordered_map<std::uint32_t, std::array<int, 4>> l_seen;
+        const std::array<int, 4> cur{ ox, oy, gx, gy };
+        auto seen = l_seen.find(pid);
+        if (seen == l_seen.end() || seen->second != cur) {
+            if (l_seen.size() > 32) l_seen.clear();
+            l_seen[pid] = cur;
             int c0x = cw[0] > 0 ? cx[0] : -1, c0y = cw[0] > 0 ? cy[0] : -1;
             rtx::log::Client(pid, "[pzr] abs=" + std::to_string(haveAbs ? 1 : 0) +
                 " origin=" + std::to_string(ox) + "," + std::to_string(oy) +
@@ -6820,12 +6824,13 @@ std::string chat_store_json(HANDLE h, std::uint64_t root, int want) {
     if (next <= 0 || buckets <= 0x10000 || nbuckets == 0 || nbuckets > 0x10000) return "[]";
 
     if (want <= 0 || want > 200) want = 200;
-    std::int32_t from = next - want; if (from < 1) from = 1;
+    // the newest record's key is next - 1 (the add takes the counter as the key, then advances it)
+    std::int32_t from = next - want; if (from < 0) from = 0;
 
     std::string a = "[";
     bool first = true;
-    for (std::int32_t id = next - 1; id >= from; --id) {
-        const std::uint32_t key = (std::uint32_t)(id - 1);
+    for (std::int32_t k = next - 1; k >= from; --k) {
+        const std::uint32_t key = (std::uint32_t)k;
         std::uint64_t node = r64(buckets + (std::uint64_t)(key % nbuckets) * 8);
         int guard = 0;
         while (node > 0x10000 && guard++ < 64) {
@@ -7510,49 +7515,49 @@ std::string AbilityCooldownsJson(std::uint32_t pid) {
 }
 
 static void fill_view_metrics(HANDLE h, std::uint64_t rootv, std::uint32_t pid, OverlayFrame& out) {
-    // Gameview rect from view-1000 varcs (x 3005, y 3006, w 3001, h 3002; physical pixels), cached ~2x/sec.
+    // Gameview rect from view-1000 varcs (x 3005, y 3006, w 3001, h 3002; physical pixels), cached ~2x/sec
+    // per client: one shared cache made every pass a miss with two clients docked.
     {
-        static std::uint32_t s_pid = 0; static unsigned long long s_ms = 0;
-        static int s_x = 0, s_y = 0, s_w = 0, s_h = 0; static float s_ui = 0.0f;
-        static int s_lcw = 0, s_lch = 0;
+        struct GvCache { unsigned long long ms = 0; int x = 0, y = 0, w = 0, h = 0, lcw = 0, lch = 0; float ui = 0.0f;
+                         std::array<int, 7> logged{ -99999, -99999, -99999, -99999, -99999, -99999, -99999 }; bool fresh = true; };
+        static std::mutex s_gvMu;   // the render thread and the click path both come here
+        std::lock_guard<std::mutex> lk(s_gvMu);
+        static std::unordered_map<std::uint32_t, GvCache> s_gv;
+        if (s_gv.size() > 32) s_gv.clear();
+        GvCache& c = s_gv[pid];
         unsigned long long nowms = GetTickCount64();
-        if (s_pid != pid || nowms - s_ms > 500) {
+        if (c.fresh || nowms - c.ms > 500) {
+            c.fresh = false;
             int gx = 0, gy = 0, gw = 0, gh = 0, lw = 0, lh = 0;
             const bool tree = (rootv && read_gameview_rect(h, rootv, gx, gy, gw, gh, &lw, &lh));
-            s_lcw = lw; s_lch = lh;
+            c.lcw = lw; c.lch = lh;
             int vx = 0, vy = 0, vw = 0, vh = 0;
             if (rootv) {
                 vx = read_varc(h, rootv, 3005); vy = read_varc(h, rootv, 3006);
                 vw = read_varc(h, rootv, 3001); vh = read_varc(h, rootv, 3002);
             }
-            if (vw > 0 && vh > 0)  { s_x = vx; s_y = vy; s_w = vw; s_h = vh; }
-            else if (tree)         { s_x = gx; s_y = gy; s_w = gw; s_h = gh; }
-            else                   { s_w = 0; s_h = 0; }
-            s_ui = 0.0f;
+            if (vw > 0 && vh > 0)  { c.x = vx; c.y = vy; c.w = vw; c.h = vh; }
+            else if (tree)         { c.x = gx; c.y = gy; c.w = gw; c.h = gh; }
+            else                   { c.w = 0; c.h = 0; }
+            c.ui = 0.0f;
             if (tree && gw > 0 && vw > 0) {
                 const float r = (float)vw / (float)gw;
-                if (r > 0.2f && r < 5.0f) s_ui = r;
+                if (r > 0.2f && r < 5.0f) c.ui = r;
             }
-            {
-                static int l_vx = -99999, l_vy = -99999, l_vw = -99999, l_vh = -99999,
-                           l_gx = -99999, l_gw = -99999, l_gh = -99999;
-                static std::uint32_t l_pid = 0;
-                if (l_pid != pid || vx != l_vx || vy != l_vy || vw != l_vw || vh != l_vh ||
-                    gx != l_gx || gw != l_gw || gh != l_gh) {
-                    l_pid = pid; l_vx = vx; l_vy = vy; l_vw = vw; l_vh = vh;
-                    l_gx = gx; l_gw = gw; l_gh = gh;
-                    char gb[224];
-                    std::snprintf(gb, sizeof(gb),
-                        "[gv] varc=%d,%d %dx%d tree=%d,%d %dx%d root=%dx%d ui=%.3f (varc wins when set)",
-                        vx, vy, vw, vh, gx, gy, gw, gh, lw, lh, (double)s_ui);
-                    rtx::log::Client(pid, gb);
-                }
+            const std::array<int, 7> cur{ vx, vy, vw, vh, gx, gw, gh };
+            if (cur != c.logged) {
+                c.logged = cur;
+                char gb[224];
+                std::snprintf(gb, sizeof(gb),
+                    "[gv] varc=%d,%d %dx%d tree=%d,%d %dx%d root=%dx%d ui=%.3f (varc wins when set)",
+                    vx, vy, vw, vh, gx, gy, gw, gh, lw, lh, (double)c.ui);
+                rtx::log::Client(pid, gb);
             }
-            s_pid = pid; s_ms = nowms;
+            c.ms = nowms;
         }
-        out.gv_x = s_x; out.gv_y = s_y; out.gv_w = s_w; out.gv_h = s_h;
-        out.lc_w = s_lcw; out.lc_h = s_lch;
-        out.ui_scale = s_ui;
+        out.gv_x = c.x; out.gv_y = c.y; out.gv_w = c.w; out.gv_h = c.h;
+        out.lc_w = c.lcw; out.lc_h = c.lch;
+        out.ui_scale = c.ui;
     }
 
 }
@@ -8104,8 +8109,11 @@ bool BuildOverlayFrame(std::uint32_t pid, bool want_players, bool want_npcs,
                 // A miss must not drop the label. The loc list is rebuilt every frame and a single
                 // frame without this entity would blink the label out and back; hold the last
                 // anchor for a moment instead, and only give up once it is really gone.
+                // per client: two clients on the same guide would otherwise keep each other's held anchor alive
                 struct Held { float p[3]; long long at; };
-                static std::unordered_map<long long, Held> s_hold;
+                static std::unordered_map<std::uint32_t, std::unordered_map<long long, Held>> s_holdBy;
+                if (s_holdBy.size() > 32) s_holdBy.clear();
+                auto& s_hold = s_holdBy[pid];
                 const long long hk = ((long long)gs.snap_id << 32) ^ ((long long)gs.gx << 16) ^ gs.gy;
                 const long long nowMs = (long long)GetTickCount64();
                 float ax = 0, ay = 0, top = 0;

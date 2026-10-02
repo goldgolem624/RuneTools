@@ -1729,6 +1729,13 @@
   .stor-box { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
   .stor-h { font-size: 12px; font-weight: 700; color: var(--text); padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
   .stor-h .stor-tier { color: var(--accent-hi); }
+  /* quest guide section titles: a tinted band with an accent edge, so each part of a guide is easy to find */
+  .qg-sec { margin: 14px 0 6px; padding: 6px 10px; font-size: 13px; font-weight: 700; color: var(--accent-hi); background: rgba(var(--accent-rgb),0.12); border-left: 3px solid var(--accent); border-radius: 4px; }
+  .qg-sec:first-child { margin-top: 4px; }
+  .qg-sec[data-qsn] { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px; }
+  .qg-sec[data-qsn]:hover { background: rgba(var(--accent-rgb),0.2); }
+  .qg-chev { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor; transition: transform 120ms ease; flex: none; }
+  .qg-sec.folded .qg-chev { transform: rotate(-90deg); }
   .stor-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 2px; font-size: 12px; }
   .stor-row .stor-n { color: var(--text-dim); }
   .stor-row .stor-c { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -1769,6 +1776,7 @@
   .stor-earrow { color: var(--text-mute); font-size: 13px; margin: 0 -1px; }
   .stor-ecap { font-size: 12px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; margin-left: 3px; }
   .stor-ecap .cap { color: var(--text-mute); font-weight: 600; }
+  .stor-rname { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stor-edur { font-size: 10px; font-weight: 600; color: var(--text-mute); background: var(--bg-elev);
                border-radius: 4px; padding: 1px 4px; margin-left: 2px; }
 
@@ -2327,3 +2335,11 @@
   .tc-num { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--accent-hi); line-height: 1; }
   .tc-reaper .tc-num { color: #e0697c; }
   .tc-rem { font-size: 12px; color: var(--text-mute); font-weight: 600; }
+  /* chat log: muted NPCs */
+  .chat-mute { margin-bottom: 8px; }
+  .chat-mute-st { float: right; font-weight: 500; color: var(--text-mute); }
+  .chat-mute-row { align-items: center; }
+  .chat-mute-in { width: 150px; margin-left: 4px; }
+  .chat-mute-x { opacity: 0.6; margin-left: 2px; }
+  .chat-mute-heard { margin-top: 6px; font-size: 12px; color: var(--text-mute); }
+  .chat-mute-heard .pet-chip { margin: 2px 2px 0 0; }

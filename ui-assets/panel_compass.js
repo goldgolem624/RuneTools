@@ -184,7 +184,7 @@
     { s: 36564, n: 'South of Heathervein', x: 3863, y: 1661, p: 0 },
     { s: 36560, n: 'East of Berylbrook', x: 3939, y: 1534, p: 0 },
     { s: 36563, n: 'Moonrise waterfall', hint: 'East of Moonrise Dig Site, south of the waterfall, west of the Exalted Quarry' },
-    { s: 36559, n: 'Red city', hint: 'Location not known yet' },
+    { s: 36559, n: 'Red city (Shuruk-Ba)', x: 4049, y: 1605, p: 0, act: 'Open the Strange casket' },   // loc 140825, opened, not dug
   ];
   const FP_BY_SPRITE = {}; for (const sp of FP_SPOTS) FP_BY_SPRITE[sp.s] = sp;
   let fpSprite = 0;                // the painting seen on Inspect or picked by hand this session; 0 = not known
@@ -238,7 +238,7 @@
       h = '<div style="display:flex;gap:9px;align-items:center">'
         + (img ? '<img src="' + img + '" style="width:96px;border-radius:4px;flex:none">' : '')
         + '<div style="flex:1;min-width:0"><b>' + esc(sp.n) + '</b><br>'
-        + (sp.x ? 'Dig at (' + sp.x + ', ' + sp.y + ')' : esc(sp.hint)) + '</div>'
+        + (sp.x ? esc(sp.act || 'Dig') + ' at (' + sp.x + ', ' + sp.y + ')' : esc(sp.hint)) + '</div>'
         + '<button class="pet-chip" data-fpchange="1" style="flex:none">Change</button></div>';
     } else {
       h = '<div style="margin-bottom:6px">Inspect the painting, or pick the one it shows:</div>'
@@ -256,7 +256,7 @@
   function fpActionText(c) {
     const nm = c.nm || 'Forgotten painting', sp = fpSpot();
     if (!sp) return nm + ' · Inspect it or pick the painting below';
-    return nm + ' · ' + sp.n + (sp.x ? ' · dig at (' + sp.x + ', ' + sp.y + ')' : '');
+    return nm + ' · ' + sp.n + (sp.x ? ' · ' + (sp.act ? sp.act.toLowerCase() : 'dig') + ' at (' + sp.x + ', ' + sp.y + ')' : '');
   }
   function fpPick(s) { fpSet(s); fpTick(); }
   async function fpTick() {
@@ -292,7 +292,7 @@
     if (sig === fpLast && !mapHidden) return;
     const moved = !fpLast || String(fpLast).split('|')[0] !== tileSig;
     fpLast = sig;
-    clueGuide(sp, onSpot ? '' : 'FORGOTTEN PAINTING DIG HERE - (' + sp.x + ', ' + sp.y + ')');
+    clueGuide(sp, onSpot ? '' : 'FORGOTTEN PAINTING ' + (sp.act ? sp.act.toUpperCase() : 'DIG HERE') + ' - (' + sp.x + ', ' + sp.y + ')');
     if (moved || mapHidden) drawClueMap({ x: sp.x, y: sp.y, p: sp.p });
   }
 

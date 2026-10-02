@@ -14,11 +14,20 @@
     if (!chatLogs[p]) chatLogs[p] = { seen: new Set(), pseq: 0, gid: 0, pkPlain: new Map(), ifPlain: new Map(), gmPlain: new Map(), lines: [] };
     return chatLogs[p];
   }
-  function chatMark(map, plain) { map.set(plain, Date.now()); if (map.size > 600) map.delete(map.keys().next().value); }
-  function chatConsume(map, plain) {
-    const t = map.get(plain);
-    if (t === undefined || Date.now() - t >= 6000) return false;
-    map.delete(plain);
+  // Lines are matched across the sources by body and sender. The packet carries the bare name and
+  // the store the display name with its title ("Xajek" and "Xajek the Druid"), so one sender name
+  // containing the other counts as the same sender.
+  const chatSameName = (a, b) => { a = (a || '').toLowerCase(); b = (b || '').toLowerCase(); return !a || !b || a === b || a.indexOf(b) >= 0 || b.indexOf(a) >= 0; };
+  function chatMark(map, body, name) {
+    const list = map.get(body) || []; list.push({ name: name || '', t: Date.now() }); map.set(body, list);
+    if (map.size > 600) map.delete(map.keys().next().value);
+  }
+  function chatConsume(map, body, name) {
+    const list = map.get(body); if (!list) return false;
+    const now = Date.now();
+    const i = list.findIndex(e => now - e.t < 6000 && chatSameName(e.name, name));
+    if (i < 0) return false;
+    list.splice(i, 1); if (!list.length) map.delete(body);
     return true;
   }
   // Channel from the wire type id. Verified live: 109 = game/spam, 138 = broadcast news,
@@ -49,7 +58,12 @@
   function chatNormSpace(s) { let o = ""; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); o += (c === 0xA0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200B) || c === 0x202F || c === 0x205F || c === 0x3000 || c === 0xFEFF) ? " " : s[i]; } return o; }
   function chatEsc(s) { return htmlEsc(s); }
   // colour (widget +0x80, the per-channel colour; `base` RGB int from the bridge), NOT to white.
+  // One line that cannot be parsed costs that line, never the fetch: it shows as its raw text.
   function chatParse(raw, base) {
+    try { return chatParseInner(String(raw == null ? '' : raw), base); }
+    catch (e) { const t = String(raw == null ? '' : raw); return { ts: '', plain: t.trim(), tokens: [{ text: t, color: null }] }; }
+  }
+  function chatParseInner(raw, base) {
     let ts = '';
     const baseHex = (typeof base === 'number' && base >= 0) ? '#' + ('000000' + base.toString(16)).slice(-6) : null;
     const tokens = []; let plain = ''; let curColor = baseHex;
@@ -88,10 +102,13 @@
     const m = plain.match(/^\s*\[(\d{1,2}:\d{2}:\d{2})\]\s*/);
     if (m) {
       ts = m[1];
-      let drop = m[0].length;
-      while (drop > 0 && tokens.length) {
-        const t = tokens[0];
-        if (t.text.length <= drop) { drop -= t.text.length; tokens.shift(); }
+      // the stamp's characters come off the leading text tokens; an icon token among them has no
+      // characters and stays (it used to stop the whole fetch with a throw)
+      let drop = m[0].length, ti = 0;
+      while (drop > 0 && ti < tokens.length) {
+        const t = tokens[ti];
+        if (typeof t.text !== 'string') { ti++; continue; }
+        if (t.text.length <= drop) { drop -= t.text.length; tokens.splice(ti, 1); }
         else { t.text = t.text.slice(drop); drop = 0; }
       }
       plain = plain.slice(m[0].length);
@@ -197,17 +214,22 @@
         const pr = chatParse(String(m.raw || ''), null);
         if (!pr.plain) continue;
         const nm = chatNormSpace(String(m.name || '').replace(/<[^>]*>/g, '')).trim();
+        const gbody = pr.plain;
         if (nm) {
           pr.tokens.unshift({ text: nm + ': ', color: null });
           pr.plain = nm + ': ' + pr.plain;
         }
-        if (bootPk) bootPk.add(pr.plain);
-        if (chatConsume(store.pkPlain, pr.plain)) continue;   // the packet capture already had it
-        if (chatConsume(store.ifPlain, pr.plain)) continue;   // the chatbox walk already had it
+        if (bootPk) bootPk.add(gbody);
+        if (chatConsume(store.pkPlain, gbody, nm)) {          // the packet capture already had it: this one has the title and the colours
+          const hit = fresh.concat(store.lines.slice(0, 300)).find(l => l.src === 'pk' && l.body === gbody && chatSameName(l.pkname, nm) && !l.gmDone);
+          if (hit) { hit.tokens = pr.tokens; hit.plain = pr.plain; hit.gmDone = true; hit.baseDone = true; chatSig = ''; }
+          continue;
+        }
+        if (chatConsume(store.ifPlain, gbody, nm)) continue;   // the chatbox walk already had it
         const gts = m.t ? chatFmtTime(m.t * 1000) : '';
         if (!keep(gts, pr.plain)) continue;
-        chatMark(store.gmPlain, pr.plain);
-        fresh.push({ raw: key, ts: gts, tokens: pr.tokens,
+        chatMark(store.gmPlain, gbody, nm);
+        fresh.push({ raw: key, ts: gts, tokens: pr.tokens, body: gbody,
                      plain: pr.plain, chan: chatClassifyPkt(m.type, nm, String(m.clan || '')), src: 'gm' });
         ++chatFromStore;
       }
@@ -216,17 +238,18 @@
         const p = chatParse(String(pk.raw || ''), null);
         if (!p.plain) continue;
         const name = chatNormSpace(String(pk.name || '').replace(/<[^>]*>/g, '')).trim();
+        const pbody = p.plain;
         if (name) {
           p.tokens.unshift({ text: name + ': ', color: null });
           p.plain = name + ': ' + p.plain;
         }
-        if (bootPk) bootPk.add(p.plain);
-        if (chatConsume(store.gmPlain, p.plain)) continue;  // the game's own log already delivered it
-        if (chatConsume(store.ifPlain, p.plain)) continue;  // chatbox walk already delivered it
+        if (bootPk) bootPk.add(pbody);
+        if (chatConsume(store.gmPlain, pbody, name)) continue;  // the game's own log already delivered it
+        if (chatConsume(store.ifPlain, pbody, name)) continue;  // chatbox walk already delivered it
         const pts = pk.t ? chatFmtTime(pk.t) : '';
         if (!keep(pts, p.plain)) continue;
-        chatMark(store.pkPlain, p.plain);
-        fresh.push({ raw: 'pk:' + pk.seq, ts: pts, tokens: p.tokens,
+        chatMark(store.pkPlain, pbody, name);
+        fresh.push({ raw: 'pk:' + pk.seq, ts: pts, tokens: p.tokens, body: pbody,
                      plain: p.plain, chan: chatClassifyPkt(pk.type, name, String(pk.chan || '')), src: 'pk',
                      pkraw: String(pk.raw || ''), pkname: name });
       }
@@ -235,19 +258,22 @@
         const raw = ln && ln.raw; if (!raw || store.seen.has(raw)) continue;
         store.seen.add(raw);
         const p = chatParse(raw, ln.base);
-        if (bootPk && bootPk.has(p.plain)) continue;        // first fill: packet backlog wins
-        if (chatConsume(store.pkPlain, p.plain)) {           // packet capture already delivered it:
-          if (typeof ln.base === 'number' && ln.base >= 0) {
-            const hit = fresh.concat(store.lines.slice(0, 300)).find(l => l.src === 'pk' && l.plain === p.plain && !l.baseDone);
-            if (hit) { const q = chatParse(hit.pkraw || '', ln.base); if (hit.pkname) q.tokens.unshift({ text: hit.pkname + ': ', color: null }); hit.tokens = q.tokens; hit.baseDone = true; chatSig = ""; }
-          }
+        const name = chatNormSpace(String(ln.name || '').replace(/<[^>]*>/g, '')).trim();
+        // the chat box writes the display name ("Arcs1, the H'oarder") while its sender field holds
+        // the bare name: the prefix before ": " is the sender when it names the same player
+        let ibody = p.plain, iname = name;
+        { const ci = p.plain.indexOf(': ');
+          if (ci > 0 && ci < 64) { const pre = p.plain.slice(0, ci); if (!name || chatSameName(pre, name)) { ibody = p.plain.slice(ci + 2); iname = pre; } } }
+        if (bootPk && bootPk.has(ibody)) continue;          // first fill: packet backlog wins
+        if (chatConsume(store.pkPlain, ibody, iname)) {      // packet capture already delivered it: this one has the display name, icons and colours
+          const hit = fresh.concat(store.lines.slice(0, 300)).find(l => l.src === 'pk' && l.body === ibody && chatSameName(l.pkname, iname) && !l.gmDone);
+          if (hit) { hit.tokens = p.tokens; hit.plain = p.plain; hit.baseDone = true; chatSig = ''; }
           continue;
         }
-        if (chatConsume(store.gmPlain, p.plain)) continue;   // the game's own log already delivered it
-        chatMark(store.ifPlain, p.plain);
-        const name = chatNormSpace(String(ln.name || '').replace(/<[^>]*>/g, '')).trim();
+        if (chatConsume(store.gmPlain, ibody, iname)) continue;  // the game's own log already delivered it
+        chatMark(store.ifPlain, ibody, iname);
         if (!keep(p.ts, p.plain)) continue;
-        fresh.push({ raw, ts: p.ts, tokens: p.tokens, plain: p.plain, chan: chatClassify(p.plain, name), src: 'if' });
+        fresh.push({ raw, ts: p.ts, tokens: p.tokens, body: ibody, plain: p.plain, chan: chatClassify(p.plain, name), src: 'if' });
       }
       if (fresh.length) {
         const gm = fresh.filter(l => l.src === 'gm').reverse();   // the store gave them oldest first
@@ -258,8 +284,71 @@
           for (const d of drop) store.seen.delete(d.raw);
         }
       }
-    } catch (e) {} finally { chatFetching = false; }
+    } catch (e) { try { console.log('[chatsrc] fetch failed: ' + (e && e.message) + ' | ' + String(e && e.stack || '').split('\n').join(' << ').slice(0, 400)); } catch (e2) {} } finally { chatFetching = false; }
     paneRun('chatlog', renderChatList);
+  }
+  // Muted NPCs: their chatter never reaches the chat window. Kept in the shared prefs; pushed to the
+  // client whenever it changes and every few seconds, so a client that starts later gets it too.
+  let chatMuteCfg = null, chatMutePushedAt = 0, chatMutePushedKey = '', chatMuteStatus = null;
+  // presets: the NPCs that chatter through an activity, muted or unmuted together
+  const CHAT_MUTE_PRESETS = { 'Petrified woodcutting': ['dampknees', 'slugtoes', 'moldfoot', 'bogolin woodcutter'] };
+  function chatMuteLoad() {
+    if (chatMuteCfg) return chatMuteCfg;
+    try { const o = JSON.parse(prefGet('rtxChatMute', '') || '{}'); chatMuteCfg = { names: Array.isArray(o.names) ? o.names : [], all: !!o.all }; }
+    catch (e) { chatMuteCfg = { names: [], all: false }; }
+    return chatMuteCfg;
+  }
+  function chatMuteSave() { try { prefSet('rtxChatMute', JSON.stringify(chatMuteLoad())); } catch (e) {} chatMutePushedKey = ''; chatMuteTick(); chatMuteRepaint(); }
+  function chatMuteTick() {
+    const pid = myPid(); if (!pid || !bridge() || !bridge().chatMute) return;
+    const cfg = chatMuteLoad(), now = Date.now();
+    const names = (cfg.all ? ['*'] : []).concat(cfg.names);
+    const key = pid + '|' + names.join('|');
+    if (key === chatMutePushedKey && now - chatMutePushedAt < 5000) return;
+    chatMutePushedKey = key; chatMutePushedAt = now;
+    try { rtxData.sync('act.chatMute', 2, names.join('|')); } catch (e) {}
+  }
+  // the box's status line follows the client: refreshed on the same tick
+  setInterval(() => { const b = $('chatMuteBox'); if (b) chatMutePaint(b); }, 2000);
+  setInterval(chatMuteTick, 1500);
+  function chatMuteRepaint() { paneRun('chatlog', () => { const b = $('chatMuteBox'); if (b) chatMutePaint(b); }); }
+  function chatMutePaint(box) {
+    const cfg = chatMuteLoad();
+    let st = null; try { st = JSON.parse(rtxData.sync('host.chatMuteStatus') || '{}'); } catch (e) {}
+    chatMuteStatus = st;
+    const esc = htmlEsc;
+    let h = '<div class="stor-h" style="margin-top:4px">Muted NPCs'
+      + (st && st.ok ? '<span class="chat-mute-st">' + (st.hooked ? (st.diag && st.diag[2] ? st.diag[2] + ' lines hidden' + (st.diag[5] ? ' (' + st.diag[5] + ' not removed)' : '') : 'ready') : 'not available in this client') + '</span>' : '')
+      + '</div>';
+    h += '<div class="pet-chips chat-mute-row">';
+    h += '<button class="pet-chip' + (cfg.all ? ' on' : '') + '" data-cmall="1">All NPC chatter</button>';
+    for (const pn in CHAT_MUTE_PRESETS) { const on = CHAT_MUTE_PRESETS[pn].every(n => cfg.names.indexOf(n) >= 0); h += '<button class="pet-chip' + (on ? ' on' : '') + '" data-cmpre="' + esc(pn) + '" title="' + esc(CHAT_MUTE_PRESETS[pn].join(', ')) + '">' + esc(pn) + '</button>'; }
+    for (const n of cfg.names) h += '<button class="pet-chip on" data-cmdel="' + esc(n) + '" title="Click to unmute">' + esc(n) + ' <span class="chat-mute-x">x</span></button>';
+    h += '<input class="pet-search chat-mute-in" id="chatMuteIn" placeholder="NPC name..." maxlength="38"><button class="pet-chip" data-cmadd="1">Mute</button>';
+    h += '</div>';
+    const heard = (st && Array.isArray(st.recent)) ? st.recent.filter(n => n && cfg.names.indexOf(n) < 0).reverse().slice(0, 12) : [];
+    if (heard.length) {
+      h += '<div class="chat-mute-heard">Heard: ' + heard.map(n => '<button class="pet-chip" data-cmadd="' + esc(n) + '">' + esc(n) + '</button>').join(' ') + '</div>';
+    }
+    if (box._h === h) return;
+    box._h = h; box.innerHTML = h;
+  }
+  function chatMuteClick(e) {
+    const t = e.target.closest('[data-cmall],[data-cmdel],[data-cmadd],[data-cmpre]'); if (!t) return;
+    const cfg = chatMuteLoad();
+    if (t.dataset.cmpre) {
+      const set = CHAT_MUTE_PRESETS[t.dataset.cmpre] || [];
+      const on = set.every(n => cfg.names.indexOf(n) >= 0);
+      cfg.names = on ? cfg.names.filter(n => set.indexOf(n) < 0) : cfg.names.concat(set.filter(n => cfg.names.indexOf(n) < 0));
+      chatMuteSave(); return;
+    }
+    if (t.dataset.cmall) { cfg.all = !cfg.all; chatMuteSave(); return; }
+    if (t.dataset.cmdel) { cfg.names = cfg.names.filter(n => n !== t.dataset.cmdel); chatMuteSave(); return; }
+    let name = t.dataset.cmadd;
+    if (name === '1') { const inp = $('chatMuteIn'); name = inp ? inp.value : ''; }
+    name = String(name || '').trim().toLowerCase().slice(0, 38);
+    if (!name || cfg.names.indexOf(name) >= 0) return;
+    cfg.names.push(name); chatMuteSave();
   }
   function renderChat() {
     const c = $('content');
@@ -273,6 +362,10 @@
       const clr = document.createElement('button'); clr.className = 'pet-chip'; clr.textContent = 'Clear log';
       clr.dataset.tip = 'Empties the captured log for this character (does not touch the game).';
       tb.appendChild(search); tb.appendChild(clr); wrap.appendChild(tb);
+      const mute = document.createElement('div'); mute.id = 'chatMuteBox'; mute.className = 'stor-box chat-mute'; wrap.appendChild(mute);
+      mute.addEventListener('click', chatMuteClick);
+      mute.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'chatMuteIn') { e.preventDefault(); chatMuteClick({ target: mute.querySelector('[data-cmadd="1"]') }); } });
+      chatMutePaint(mute);
       const chips = document.createElement('div'); chips.id = 'chatChips'; chips.className = 'pet-chips';
       chips.style.marginBottom = '6px'; wrap.appendChild(chips);
       const cnt = document.createElement('div'); cnt.id = 'chatCnt'; cnt.className = 'chat-count'; wrap.appendChild(cnt);
@@ -294,7 +387,7 @@
     }
     renderChatList();
   }
-  function chatRepaint() { chatSig = ''; paneRun('chatlog', renderChatList); }
+  function chatRepaint() { chatSig = ''; paneRun('chatlog', renderChatList); const b = $('chatMuteBox'); if (b) chatMutePaint(b); }
   function renderChatList() {
     const list = $('chatList'); if (!list) return;
     const store = chatStore();

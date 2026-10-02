@@ -38,6 +38,7 @@
 #include "Present.h"
 #include "VkPresent.h"
 #include "SoundFilter.h"
+#include "ChatFilter.h"
 #include "MenuProbe.h"
 
 namespace {
@@ -1751,6 +1752,7 @@ void EnsureProducers(Share*& sh) {
 
     rtx::menuprobe::Rebind();
     rtx::soundfilter::Rebind();
+    rtx::chatfilter::Rebind();
 }
 
 DWORD WINAPI Worker(LPVOID) {
@@ -1826,6 +1828,8 @@ DWORD WINAPI Worker(LPVOID) {
 
     RingLog(rtx::soundfilter::Install() ? "sound: mix hook ATTACHED"
                                         : "sound: mix fn not found (observation/mute off)");
+    RingLog(rtx::chatfilter::Install() ? "chat: message store hook attached"
+                                       : "chat: message store routine not recognised (mute off)");
 
     // Menu probe dump only runs with RTX_MENU_PROBE=1 set.
     RingLog(rtx::menuprobe::Install() ? "menu: probe installed"

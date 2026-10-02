@@ -43,17 +43,65 @@
     v.appendChild(g); r.appendChild(k); r.appendChild(v);
     return r;
   }
-  let uisHpVk = 0, uisHpCapturing = false, uisHpPaint = null;
-  function uisHpSave() { try { if (bridge().hidePanelsKeybindSet) bridge().hidePanelsKeybindSet(uisHpVk); } catch (e) {} }
+  // Hotkey rows: one capture at a time. Each binding brings its own get (may be async) and set; a
+  // binding that cannot be unbound shows "Default" instead of "Clear".
+  let uisKeyCapture = null;   // { set, paint } while a row waits for a key
   document.addEventListener('keydown', e => {
-    if (!uisHpCapturing) return;
+    if (!uisKeyCapture) return;
     e.preventDefault(); e.stopPropagation();
     const vk = e.keyCode || e.which || 0;
-    if (vk && vk !== 27) { uisHpVk = vk; uisHpSave(); }
-    uisHpCapturing = false;
-    if (typeof kbGrab === 'function') kbGrab(false);
-    if (uisHpPaint) uisHpPaint();
+    const c = uisKeyCapture; uisKeyCapture = null;
+    uisKeyGrab(false);
+    if (vk && vk !== 27) c.set(vk);
+    c.paint();
   }, true);
+  // one keyboard grab for the whole capture, however many rows it moves between
+  let uisKeyGrabbed = false;
+  function uisKeyGrab(on) { if (on === uisKeyGrabbed) return; uisKeyGrabbed = on; if (typeof kbGrab === 'function') kbGrab(on); }
+  function uisKeyRow(label, b) {
+    const r = document.createElement('div'); r.className = 'row';
+    const k = document.createElement('span'); k.className = 'k'; k.textContent = label;
+    const v = document.createElement('span'); v.className = 'v pf-full';
+    const g = document.createElement('div'); g.className = 'uis-chips';
+    const chip = document.createElement('button'); chip.type = 'button'; chip.className = 'uis-chip';
+    const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'uis-chip'; clr.textContent = b.def ? 'Default' : 'Clear';
+    let vk = 0;
+    const me = { set: (x) => { vk = x; try { b.set(x); } catch (e) {} }, paint: null };
+    const paint = () => {
+      const on = uisKeyCapture === me;
+      chip.textContent = on ? 'Press a key...' : (vk ? (typeof ssVkName === 'function' ? ssVkName(vk) : ('VK ' + vk)) : 'Set key');
+      chip.classList.toggle('on', on);
+    };
+    me.paint = paint;
+    chip.addEventListener('click', () => {
+      const prev = uisKeyCapture;
+      uisKeyCapture = prev === me ? null : me;
+      if (prev && prev !== me) prev.paint();
+      uisKeyGrab(!!uisKeyCapture);
+      paint();
+    });
+    clr.addEventListener('click', () => {
+      if (uisKeyCapture === me) { uisKeyCapture = null; uisKeyGrab(false); }
+      me.set(b.def || 0); paint();
+    });
+    if (!b.ok()) { chip.disabled = clr.disabled = true; chip.textContent = 'Needs updated launcher'; }
+    else (async () => { try { vk = (await b.get()) | 0; } catch (e) {} paint(); })();
+    g.appendChild(chip); g.appendChild(clr); v.appendChild(g); r.appendChild(k); r.appendChild(v);
+    return r;
+  }
+  function uisMarkerKb() {
+    try { const o = JSON.parse(rtxData.sync('host.markerKeybindsGet')); if (o) return { mark: (o.mark | 0) || 65, remove: (o.remove | 0) || 68, color: (o.color | 0) || 0x46E0C0 }; } catch (e) {}
+    return { mark: 65, remove: 68, color: 0x46E0C0 };
+  }
+  const UIS_KEYS = [
+    ['Hide / show all panels', { ok: () => !!(bridge() && bridge().hidePanelsKeybindGet), get: () => bridge().hidePanelsKeybindGet(), set: (v) => bridge().hidePanelsKeybindSet(v) }],
+    ['Screenshot', { ok: () => !!(bridge() && bridge().screenshotKeybindGet), get: () => rtxData.sync('host.screenshotKeybindGet'), set: (v) => rtxData.sync('act.screenshotKeybindSet', v | 0) }],
+    ['Wiki search', { ok: () => !!(bridge() && bridge().wikiKeybindGet), get: () => bridge().wikiKeybindGet(), set: (v) => bridge().wikiKeybindSet(v) }],
+    ['Mark tile', { def: 65, ok: () => !!(bridge() && bridge().markerKeybindsGet), get: () => uisMarkerKb().mark,
+                    set: (v) => { const k = uisMarkerKb(); rtxData.sync('act.markerKeybindsSet', v | 0, k.remove, k.color); } }],
+    ['Remove tile mark', { def: 68, ok: () => !!(bridge() && bridge().markerKeybindsGet), get: () => uisMarkerKb().remove,
+                           set: (v) => { const k = uisMarkerKb(); rtxData.sync('act.markerKeybindsSet', k.mark, v | 0, k.color); } }],
+  ];
   // Discord webhook: the URL as Discord copies it (discord.com only); the host validates, seals and
   // stores it, and hands back a masked hint. Copy puts the full URL on the clipboard from the host side.
   function uisDiscordRow() {
@@ -284,25 +332,8 @@
     ]));
 
     sec('Hotkeys');
-    uisNote(rows, 'Keys are read by the launcher while the game has focus, so they work without clicking a panel first. Screenshot and Wiki keys are set on their own panels.');
-    {
-      const r = document.createElement('div'); r.className = 'row';
-      const k = document.createElement('span'); k.className = 'k'; k.textContent = 'Hide / show all panels';
-      const v = document.createElement('span'); v.className = 'v pf-full';
-      const g = document.createElement('div'); g.className = 'uis-chips';
-      const chip = document.createElement('button'); chip.type = 'button'; chip.className = 'uis-chip'; chip.id = 'uis_hpKey';
-      const clr = document.createElement('button'); clr.type = 'button'; clr.className = 'uis-chip'; clr.textContent = 'Clear';
-      const paint = () => {
-        chip.textContent = uisHpCapturing ? 'Press a key...' : (uisHpVk ? (typeof ssVkName === 'function' ? ssVkName(uisHpVk) : ('VK ' + uisHpVk)) : 'Set key');
-        chip.classList.toggle('on', !!uisHpCapturing);
-      };
-      chip.addEventListener('click', () => { uisHpCapturing = !uisHpCapturing; if (typeof kbGrab === 'function') kbGrab(uisHpCapturing); paint(); });
-      clr.addEventListener('click', () => { uisHpVk = 0; if (uisHpCapturing && typeof kbGrab === 'function') kbGrab(false); uisHpCapturing = false; uisHpSave(); paint(); });
-      uisHpPaint = paint;
-      (async () => { try { if (bridge().hidePanelsKeybindGet) uisHpVk = (await bridge().hidePanelsKeybindGet()) | 0; } catch (e) {} paint(); })();
-      if (!(bridge() && bridge().hidePanelsKeybindGet)) { chip.disabled = true; chip.textContent = 'Needs updated launcher'; }
-      g.appendChild(chip); g.appendChild(clr); v.appendChild(g); r.appendChild(k); r.appendChild(v); rows.appendChild(r);
-    }
+    uisNote(rows, 'Read while the game has focus. Pick keys you do not type in game chat.');
+    for (const [label, b] of UIS_KEYS) rows.appendChild(uisKeyRow(label, b));
 
     {
       const card = document.createElement('div'); card.className = 'pf-card'; card.id = 'uisPluginsCard';

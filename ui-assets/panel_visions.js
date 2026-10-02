@@ -126,6 +126,8 @@
     const P = qgP;
     const far = !(P && Math.abs(P.x - lo.x) <= 60 && Math.abs(P.y - lo.y) <= 60);   // X/Y only -- the lighthouse sits on the lodestone but is plane 1
     hudSet(lo.sp, 'Teleport to the ' + name + ' lodestone', far);
+    // the teleport is the whole step: the last step's marks (an NPC box, a tile) would read as a second one
+    if (far) { qgClrNpc(); qgClrTiles(); qgClrDlg(); qgClrItem(); }
     return far;
   }
   async function qgInvCount(id) {
@@ -210,7 +212,7 @@
         if (at6(sub >= 2)) s.add(2);     // Inspect the dead bear
         if (at6(sub >= 3)) s.add(3);     // Talk to Raz
         if (at6(ale >= 1)) s.add(4);     // Talk to Bartender Gefen (Burnt Lobster)
-        if (at6(give >= 1)) s.add(5);    // Buy a Wendlewick ale
+        if (at6(give >= 1) || (v === 6 && ale >= 1 && inv.has(60512))) s.add(5);    // Buy a Wendlewick ale: bought (in the backpack) or already given
         if (at6(miriam >= 1)) s.add(6);  // Talk to Matthew (give him the ale)
         if (at6(jacob >= 1)) s.add(7);   // Talk to Miriam
         if (at6(gefen2 >= 1)) s.add(8);  // Talk to Jacob
@@ -222,7 +224,7 @@
         if (v >= 18) s.add(14);   // Talk to Anya
         if (v >= 21) s.add(15);   // Teleport, go to the lighthouse, talk to Esther
         const has = (id) => inv.has(id);
-        if (v >= 24 || has(60408)) s.add(16);   // pick poppies -> Wendlewick poppy
+        if (v >= 24 || has(60408)) { s.add(16); s.add('15.1'); }   // pick poppies -> Wendlewick poppy; by then Esther's second talk is done
         if (v >= 24 || has(60409)) s.add(17);   // kill a hedgehog, pick up the spines
         if (v >= 24 || has(60407)) s.add(18);   // pick wolf's tongue mushrooms
         if (v >= 24) s.add(19);                 // Return to Esther
@@ -327,6 +329,9 @@
       if (v >= 66 && v < 69 && boss && P && (P.p | 0) === 0 && P.x >= boss.x - 10 && P.x <= boss.x + 10 && P.y >= boss.y - 25 && P.y <= boss.y + 15) {
         if (tumours.length > hosTumourPhase) hosTumourPhase = tumours.length;   // phase = how many tumours spawned (1/2/3); latched as they are killed
         let buff = 0; try { buff = (await readVarbitValues([60615]))[60615] | 0; } catch (e) {}
+        // the buff bar is the real answer: the varbit can read 0 with "Antisanguine Active" up (struct 53002, item 60424)
+        if (!buff) { try { const d = JSON.parse(await rtxData.raw('state.buffs')); if (d && Array.isArray(d.buffs) && d.buffs.some(b => b && (b.struct === 53002 || b.item === HOS_ANTISANG))) buff = 1; } catch (e) {} }
+        if (buff) hosBuffDrunk = true;   // also ticks the drink step
         if (buff === 0) { qgItem(60424, 'Drink the Antisanguine'); return; }   
         if (tumours.length) { const t = tumours[0]; await qgNpc('Sanguine tumour', 'Attack the Sanguine tumour (Phase ' + hosTumourPhase + ')', t.x, t.y, 0); return; }
         await qgNpc('Sanguine heart', 'Attack the Sanguine heart', boss.x, boss.y, 0); return;   

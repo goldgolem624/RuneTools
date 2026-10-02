@@ -356,7 +356,7 @@
       const sandyItems = fromVb(STORAGE.sandy.vb);
       if (sandyItems.length) out.sandy = { name: '', items: sandyItems };
       const totemItems = STORAGE.totem.vb.map(x => [x[0], readVb(x[1], vp) || 0, x[2], vbSrc(x[1]), 0, x[3]]).filter(x => x[1] > 0);
-      if (totemItems.length) out.totem = { name: '', items: totemItems };
+      if (totemItems.length) out.totem = { name: '', cap: 100, rows: true, items: totemItems };   // 100 of each kind
       out.passage = await readPassage(held);
       storageData = out;
     } finally { storageFetching = false; }
@@ -423,6 +423,20 @@
       const dm = dur.match(/(\d+)%/); if (dm) { const db = document.createElement('span'); db.className = 'stor-edur'; db.textContent = dm[1] + '%'; cell.appendChild(db); }
       return cell;
     };
+    // a row per item with its count over the cap, for stores that hold a fixed number of each
+    const makeRowCell = (it, cap) => {
+      const name = it[0], count = it[1], id = it[2] || 0, src = it[3] || '', icap = it[4] || cap || 0;
+      const cell = document.createElement('div'); cell.className = 'stor-ecell';
+      cell.dataset.tip = name + '\n' + count.toLocaleString() + (icap ? ' / ' + icap : '') + (src ? '\n' + src : '');
+      const u = id ? resolveIcon(id) : '';
+      const ico = document.createElement('div'); ico.className = 'bank-icon stor-epouch'; if (u) { ico.dataset.itemId = String(id); setIconBg(ico, u); }
+      cell.appendChild(ico);
+      const nm = document.createElement('span'); nm.className = 'stor-rname'; nm.textContent = name; cell.appendChild(nm);
+      const cz = document.createElement('span'); cz.className = 'stor-ecap';
+      cz.innerHTML = count.toLocaleString() + (icap ? ' <span class="cap">/ ' + icap + '</span>' : '');
+      cell.appendChild(cz);
+      return cell;
+    };
     for (const [title, b] of list) {
       const sec = document.createElement('div'); sec.className = 'stor-box';
       const h = document.createElement('div'); h.className = 'stor-h';
@@ -432,6 +446,8 @@
         const e = document.createElement('div'); e.className = 'stor-empty'; e.textContent = 'empty'; sec.appendChild(e);
       } else if (b.essence) {
         const g = document.createElement('div'); g.className = 'stor-egrid'; b.items.forEach(it => g.appendChild(makeEssenceCell(it))); sec.appendChild(g);
+      } else if (b.rows) {
+        const g = document.createElement('div'); g.className = 'stor-egrid'; b.items.forEach(it => g.appendChild(makeRowCell(it, b.cap))); sec.appendChild(g);
       } else {
         sec.appendChild(gridOf(b.items, b.cap));
       }

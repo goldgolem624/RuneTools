@@ -525,6 +525,12 @@ void ArmInterfacePass(VkCommandBuffer cmd, VkImage passDepth) {
     t.inject = true;
     g_statArmed.fetch_add(1, std::memory_order_relaxed);
 }
+// The interface pass opens by painting the finished scene over the whole target: a strip of 4, or two
+// triangles of 6, depending on the game's graphics settings. Our markers go in after that, ahead of
+// the first real interface batch. Put in before it, the scene painted over them and let them through
+// only where their visibility mark left the scene partly see-through: labels vanished, the rest
+// came out washed white.
+constexpr std::uint32_t kSceneCopyMaxVerts = 6;
 // Ahead of the first interface batch (or of the end of the pass, if there is none): our markers.
 void InjectInPass(VkCommandBuffer cmd) {
     t.inject = false;
@@ -716,8 +722,8 @@ void VKAPI_CALL HookBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bp, Vk
     rBindPipeline(cmd, bp, pipe);
 }
 
-void VKAPI_CALL HookDraw(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::uint32_t e) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a != 4) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDraw(c, a, b, d, e); }
-void VKAPI_CALL HookDrawIndexed(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::int32_t e, std::uint32_t f) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a != 4) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDrawIndexed(c, a, b, d, e, f); }
+void VKAPI_CALL HookDraw(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::uint32_t e) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a > kSceneCopyMaxVerts) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDraw(c, a, b, d, e); }
+void VKAPI_CALL HookDrawIndexed(VkCommandBuffer c, std::uint32_t a, std::uint32_t b, std::uint32_t d, std::int32_t e, std::uint32_t f) { if (t.injectScene) InjectInScenePass(c); if (t.inject && a > kSceneCopyMaxVerts) InjectInPass(c); if (t.skip) { ++t.skipped; return; } ++t.draws; TallyDepth(a); rDrawIndexed(c, a, b, d, e, f); }
 void VKAPI_CALL HookDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, std::uint32_t n, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndirect(c, b, o, n, s); }
 void VKAPI_CALL HookDrawIndexedIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, std::uint32_t n, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndexedIndirect(c, b, o, n, s); }
 void VKAPI_CALL HookDrawIndirectCount(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, VkBuffer cb, VkDeviceSize co, std::uint32_t m, std::uint32_t s) { if (t.skip) { ++t.skipped; return; } ++t.indirect; TallyDepth(); rDrawIndirectCount(c, b, o, cb, co, m, s); }

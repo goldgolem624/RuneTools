@@ -2,7 +2,7 @@
   let _prefsReady = false, _prefsSaveT = 0, _prefsInitP = null;
   const PREF_DURABLE = ['rtxSoundMuted', 'rtxSoundVol', 'rtxOverlayCfg', 'rtxSceneView', 'rtxAuras', 'rtxAuraSeen', 'rtxAuraIcons',
                         'rtxUi', 'rtxHideName', 'rtxMetroLock', 'rtxWeNotify', 'rtxDwNotify', 'rtxResDungCoords', 'rtxSceneMarks',
-                        'rtxBankOverlay', 'rtxBankSort', 'rtxBankPriceBasis', 'rtxBankTabs', 'rtxVirtual126', 'rtxFarmLayout', 'rtxFarmOrder'];
+                        'rtxBankOverlay', 'rtxBankSort', 'rtxBankPriceBasis', 'rtxBankTabs', 'rtxVirtual126', 'rtxFarmLayout', 'rtxFarmOrder', 'rtxQgFolded', 'rtxChatMute'];
   // prefs.json is shared by every client window, and each page keeps its own copy. So a page writes only the
   // keys it changed, over what the file holds at that moment, and takes up the keys other windows wrote.
   // Every page runs on the launcher's one UI thread, so no other write can land between that read and write.
@@ -86,7 +86,7 @@
   }
   // Prefs holding a JSON map with one entry per character. A write keeps the entries another window changed
   // since this page read the map, so two windows changing different characters do not undo each other.
-  const PREF_MAPS = new Set(['rtxFarmLayout', 'rtxFarmOrder']);
+  const PREF_MAPS = new Set(['rtxFarmLayout', 'rtxFarmOrder', 'rtxQgFolded']);
   function prefMergeMap(disk, mine, base) {
     let d, m, b;
     try { d = JSON.parse(disk || '{}'); m = JSON.parse(mine || '{}'); b = JSON.parse(base || '{}'); } catch (e) { return mine; }

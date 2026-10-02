@@ -19,6 +19,7 @@
 #include "../cache/Constants.h"
 #include "Audio.h"
 #include "SoundFilter.h"
+#include "ChatFilter.h"
 #include "../../companion/FrameShare.h"
 #include "../../companion/NetProbeShare.h"
 #include "MenuSwap.h"
@@ -750,6 +751,32 @@ JSValueRef SoundMute(JSContextRef ctx, JSObjectRef, JSObjectRef,
         if (got) ids.push_back(v);
     }
     return JSValueMakeBoolean(ctx, rtx::launcher::soundfilter::SetMuted(pid, std::move(ids)));
+}
+
+// NPC chat mute: names separated by '|', mode 0 counts only, 1 mutes.
+JSValueRef ChatMute(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                    size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 3) return JSValueMakeBoolean(ctx, false);
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    const double m = JSValueToNumber(ctx, argv[1], nullptr);
+    const std::uint32_t mode = (m >= 2.0) ? 2u : (m >= 1.0) ? 1u : 0u;
+    std::string list = js_to_utf8(ctx, argv[2]);
+    std::vector<std::string> names;
+    std::size_t at = 0;
+    while (at <= list.size()) {
+        std::size_t bar = list.find('|', at);
+        if (bar == std::string::npos) bar = list.size();
+        if (bar > at) names.push_back(list.substr(at, bar - at));
+        at = bar + 1;
+    }
+    return JSValueMakeBoolean(ctx, rtx::launcher::chatfilter::SetMuted(pid, mode, std::move(names)));
+}
+
+JSValueRef ChatMuteStatus(JSContextRef ctx, JSObjectRef, JSObjectRef,
+                          size_t argc, const JSValueRef argv[], JSValueRef*) {
+    if (argc < 1) return utf8_to_js(ctx, "{}");
+    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
+    return utf8_to_js(ctx, rtx::launcher::chatfilter::StatusJson(pid));
 }
 
 JSValueRef ClueSearchTarget(JSContextRef ctx, JSObjectRef, JSObjectRef,
@@ -6055,6 +6082,8 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "soundFilterStatus", SoundFilterStatus);
     install_fn(ctx, ns, "soundFilterEnable", SoundFilterEnable);
     install_fn(ctx, ns, "soundMute",         SoundMute);
+    install_fn(ctx, ns, "chatMute",          ChatMute);
+    install_fn(ctx, ns, "chatMuteStatus",    ChatMuteStatus);
     install_fn(ctx, ns, "clueSearchTarget", ClueSearchTarget);
     install_fn(ctx, ns, "menuStatus",        MenuStatus);
     install_fn(ctx, ns, "menuEnable",        MenuEnable);
