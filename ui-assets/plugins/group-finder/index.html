@@ -476,7 +476,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         card.style.setProperty('--hue', String(act && act.hue != null ? act.hue : 200));
         card.dataset.id = l.id;
         card.innerHTML =
-            artHtml(act, l.activity) +
+            artHtml() +
             '<div class="gf-listing-main">' +
               '<div class="gf-listing-top"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span>' +
                 (l.status === 'forming' ? '<span class="gf-tag gf-tag-warn">Forming</span>' : '') + (o.mine ? '<span class="gf-tag gf-tag-ok">' + esc(o.mine) + '</span>' : '') + '</div>' +
@@ -485,6 +485,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
               '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
             '</div>' +
             '<div class="gf-listing-ring">' + rosterRing(seatsOf(l), l.size) + '<small>' + l.slots + ' open</small></div>';
+        mountArt(card, act, l.activity);
         return card;
     }
 
@@ -495,7 +496,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         card.dataset.id = l.id;
         var seats = seatsOf(l);
         card.innerHTML =
-            '<div class="gf-tc-band">' + artHtml(act, l.activity) +
+            '<div class="gf-tc-band">' + artHtml() +
               '<div class="gf-tc-title"><span class="gf-act">' + esc(act ? act.name : l.activity) + '</span><span class="gf-mode">' + esc(modeLabel(act, l.mode)) + '</span></div>' +
               '<div class="gf-listing-ring">' + rosterRing(seats, l.size) + '</div></div>' +
             '<div class="gf-tc-body">' +
@@ -505,6 +506,7 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
                 (l.minKills ? '<span>min <b>' + fmt(l.minKills) + '</b></span>' : '<span class="gf-dim">no minimum</span>') + (l.verifiedOnly ? '<span title="Takes RuneTools client cards only">client cards only</span>' : '') + '</div>' +
               '<div class="gf-listing-tags">' + tagChips(l.tags) + '<span class="gf-taken' + (stale(l.host.takenAt) ? ' old' : '') + '">' + ago(l.createdAt) + '</span></div>' +
             '</div>';
+        mountArt(card, act, l.activity);
         return card;
     }
 
@@ -523,7 +525,12 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         if (src && typeof src.then === 'function') src.then(put, function () {}); else put(src);
         return wrap;
     }
-    function artHtml(act, keyFallback) { return artBlock(act, keyFallback).outerHTML; }
+    // markup cannot carry the image's load handler, so cards hold a slot that mountArt fills with a live block
+    function artHtml() { return '<span class="gf-art-slot"></span>'; }
+    function mountArt(root, act, keyFallback) {
+        var slots = root.querySelectorAll('.gf-art-slot');
+        for (var i = 0; i < slots.length; i++) slots[i].replaceWith(artBlock(act, keyFallback));
+    }
 
     function initials(name) {
         var w = String(name || '').replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(function (x) { return x && !/^(the|of|and|lord|king)$/i.test(x); });
