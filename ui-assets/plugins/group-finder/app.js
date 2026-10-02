@@ -79,17 +79,18 @@
         if (mineDirty) await loadMine();
         if (helloSeen) { try { await loadListings(); } catch (e) {} }
         if (detailDirty) await loadDetail(S.sel);
-        if (mineDirty || lobbyDirty || detailDirty) render();
+        if (S.view === 'post') { renderTop(); renderTiles(); if (mineDirty && S.mine && S.mine.hosting) render(); }
+        else if (mineDirty || lobbyDirty || detailDirty) render();
     }
     function note(k, d) {
         if (k === 'applicant') toast((d.rsn || 'Someone') + ' applied to your group', 'ok', true);
         else if (k === 'decision') toast(d.status === 'accepted' ? 'You were accepted' : d.status === 'declined' ? 'The host declined' : d.status === 'removed' ? 'You were removed from the roster' : 'Application ' + d.status, d.status === 'accepted' ? 'ok' : '', true);
-        else if (k === 'form') toast('The group is forming. Ready up.', 'ok', true);
+        else if (k === 'form') { if (!(S.mine && S.mine.hosting && S.mine.hosting.id === d.listingId)) toast('The group is forming. Ready up.', 'ok', true); }
         else if (k === 'reopen') toast('The host reopened the listing', '', true);
         else if (k === 'ready' && d.all) toast('Everyone is ready', 'ok', true);
         else if (k === 'ready' && d.userId) toast((d.ready ? 'A member is ready' : 'A member is no longer ready'), '', false);
         else if (k === 'joined' && d.joined) toast('A member joined the in-game group', 'ok', false);
-        else if (k === 'closed') toast(d.status === 'in_progress' ? 'Everyone joined the in-game group' : 'The listing ' + (d.status === 'expired' ? 'expired' : 'closed'), '', true);
+        else if (k === 'closed') toast(d.status === 'in_progress' ? 'The group is formed' : 'The listing ' + (d.status === 'expired' ? 'expired' : 'closed'), '', true);
     }
 
     // ---- background duties: heartbeat, snapshot refresh, the joined tracker
@@ -114,8 +115,8 @@
         var g = null;
         try { g = await P.state.playerGroup(); } catch (e) { g = null; }
         S.inGroup = g && g.in ? g : null;
-        if (!h || h.status !== 'forming') return;
-        var names = S.inGroup ? S.inGroup.members.map(function (m) { return m.name; }) : [];
+        if (!h || h.status !== 'forming' || !S.inGroup) return;
+        var names = S.inGroup.members.map(function (m) { return m.name; });
         var sig = names.join('|');
         var now = Date.now();
         if (sig === S.lastNames && now - S.lastJoinedAt < 15000) return;
@@ -279,7 +280,7 @@
             var ra = null;
             if (v.isHost && l.status !== 'in_progress') {
                 ra = GF.el('div', 'rowacts');
-                if (l.status === 'forming') ra.appendChild(btn(p.joined ? 'Not in group' : 'Mark in group', '', act('/joined', { userId: p.userId, joined: !p.joined })));
+                if (l.status === 'forming' && !S.inGroup) ra.appendChild(btn(p.joined ? 'Not in group' : 'Mark in group', '', act('/joined', { userId: p.userId, joined: !p.joined })));
                 ra.appendChild(btn('Remove', 'btn-danger', act('/decide', { userId: p.userId, action: 'remove' })));
             }
             d.appendChild(GF.playerCard(p, { killLabel: killLabel, minKills: l.minKills || null, viewerWorld: S.world, badge: badge, actions: ra, compact: !p.equipment && p.source !== 'web' }));
@@ -295,7 +296,7 @@
                    (v.status === 'accepted' ? 'Forming. Press Ready, then accept ' + esc(l.host.rsn) + '\'s invite in the Grouping System' + (l.host.world ? ' on world ' + l.host.world : '') + '.' : 'Forming. The roster is set.');
             cls = 'warn';
         }
-        else if (l.status === 'in_progress') { text = 'Everyone is in the in-game group. Good luck.'; cls = 'ok'; }
+        else if (l.status === 'in_progress') { text = 'The group is formed. Good luck.'; cls = 'ok'; }
         else { text = l.status === 'expired' ? 'This listing expired.' : 'This listing is closed.'; cls = 'err'; }
         var b = GF.el('div', 'status ' + cls, text);
         if (l.status === 'forming' && v.isHost) {
@@ -471,7 +472,7 @@
         GF.setSkillIcon(function (name) { return (window.GF_SKILL_ICONS || {})[name] || ''; });
         var art = {};
         GF.setArtSource(function (key) {
-            if (!art[key]) art[key] = G.asset('art/' + key + '.png').then(function (u) { return u || ''; }, function () { return ''; });
+            if (!art[key]) art[key] = G.asset('art/' + key + '.png').then(function (u) { if (!u) delete art[key]; return u || ''; }, function () { delete art[key]; return ''; });
             return art[key];
         });
         try {

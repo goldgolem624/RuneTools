@@ -28,8 +28,23 @@ std::mutex g_mu;
 std::deque<std::string> g_out;
 std::atomic<std::uint32_t> g_nextId{ 1 };
 std::atomic<int> g_epoch{ 0 };
-std::atomic<bool> g_streaming{ false };
 std::atomic<bool> g_want{ false };
+
+// Drops invalid UTF-8 (and cuts a trailing partial sequence) so a line always parses as JSON text.
+std::string clean_utf8(const std::string& s) {
+    std::string out; out.reserve(s.size());
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = (unsigned char)s[i];
+        std::size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
+        if (!n || i + n > s.size()) { ++i; continue; }
+        bool ok = true;
+        for (std::size_t k = 1; k < n; ++k) if (((unsigned char)s[i + k] & 0xC0) != 0x80) { ok = false; break; }
+        if (ok) out.append(s, i, n);
+        i += ok ? n : 1;
+    }
+    return out;
+}
 
 void push(std::string line) {
     std::lock_guard<std::mutex> lk(g_mu);
@@ -63,7 +78,7 @@ void push_result(std::uint32_t id, const http::Response& r) {
                       ",\"ok\":" + (r.ok ? "true" : "false") + ",\"body\":";
     JsonValue v;
     if (r.body.size() <= kAnswerCap && json_parse(r.body, v) && (v.kind == JsonValue::Object || v.kind == JsonValue::Array)) out += r.body;
-    else { out += "null,\"text\":\"" + json_escape(r.body.substr(0, 300)) + "\""; if (!r.detail.empty()) out += ",\"detail\":\"" + json_escape(r.detail) + "\""; }
+    else { out += "null,\"text\":\"" + json_escape(clean_utf8(r.body.substr(0, 300))) + "\""; if (!r.detail.empty()) out += ",\"detail\":\"" + json_escape(clean_utf8(r.detail)) + "\""; }
     out += "}";
     push(std::move(out));
 }
@@ -75,10 +90,13 @@ void events_loop(int epoch) {
         for (auto& h : hdrs) if (h.name == "Accept") h.value = "text/event-stream";
         std::string buf, cur_ev; bool gotData = false; std::size_t bytes = 0; int events = 0;
         const auto t0 = std::chrono::steady_clock::now();
-        rtx::log::Launcher("groups: event stream opening (epoch " + std::to_string(epoch) + ", " + (link::AuthHeader().empty() ? "anonymous" : "linked") + ")");
+        // the channel is pinned to the account at connect: linking or unlinking drops the stream and the next one carries the new identity
+        const std::string openedAuth = link::AuthHeader();
+        rtx::log::Launcher("groups: event stream opening (epoch " + std::to_string(epoch) + ", " + (openedAuth.empty() ? "anonymous" : "linked") + ")");
         auto r = http::Stream(kUpdateHost, L"/api/groups/events", hdrs,
             [&](const char* d, std::size_t n) -> bool {
                 if (g_epoch.load() != epoch || !g_want.load()) return false;
+                if (link::AuthHeader() != openedAuth) return false;
                 gotData = true; bytes += n;
                 buf.append(d, n);
                 std::size_t nl;
@@ -105,16 +123,16 @@ void events_loop(int epoch) {
         const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
         rtx::log::Launcher("groups: event stream ended after " + std::to_string(ms) + " ms: " + std::to_string(bytes) + " bytes, " + std::to_string(events) +
                            " events, status " + std::to_string(r.status) + (r.ok ? ", ok" : ", not ok") + (r.detail.empty() ? "" : ", " + r.detail) +
-                           (g_epoch.load() != epoch ? ", superseded" : "") + (g_want.load() ? "" : ", unsubscribed"));
+                           (g_epoch.load() != epoch ? ", superseded" : "") + (g_want.load() ? "" : ", unsubscribed") +
+                           (link::AuthHeader() != openedAuth ? ", account changed" : ""));
         if (g_epoch.load() != epoch || !g_want.load()) break;
+        if (link::AuthHeader() != openedAuth) { backoff = 3000; }
         // a stream that carried data and ended is the normal case (idle cut by a proxy): back straight in
         backoff = (gotData || (r.ok && r.status == 200)) ? 3000 : (backoff * 2 > 60000 ? 60000 : backoff * 2);
         push("{\"kind\":\"event\",\"event\":\"stream\",\"data\":{\"connected\":false}}");
         for (int slept = 0; slept < backoff && g_epoch.load() == epoch && g_want.load(); slept += 250)
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
-    g_streaming.store(false);
-    if (g_want.load() && g_epoch.load() != epoch) Subscribe(true);   // wanted again while this loop was winding down
 }
 
 // ---- snapshot ------------------------------------------------------------------------------------
@@ -208,13 +226,10 @@ std::string Take() {
     return out;
 }
 
-void Subscribe(bool on);
 void Subscribe(bool on) {
     g_want.store(on);
-    if (!on) { ++g_epoch; return; }
-    bool expected = false;
-    if (!g_streaming.compare_exchange_strong(expected, true)) return;
-    const int epoch = ++g_epoch;
+    const int epoch = ++g_epoch;      // retires any loop still running
+    if (!on) return;
     std::thread([epoch] { guarded("groups events", [&] { events_loop(epoch); }); }).detach();
 }
 

@@ -610,6 +610,7 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                : method.indexOf('overlay.') === 0 ? 6
                : method.indexOf('notify.') === 0 ? 0.1     // OS toasts: 1 per 10s
                : method.indexOf('clipboard.') === 0 ? 1
+               : method === 'groups.asset' || method === 'cache.itemIcon' ? 200   // launcher-local file and pack reads, one per card slot
                : method === 'prices.item' ? 4             // tiny answers from a local parsed cache
                : method.indexOf('prices.') === 0 ? 0.5    // half-MB payloads; data changes every 90s anyway
                : method.indexOf('console.') === 0 ? 120   // rtxConsole applies its own 60/s budget with a burst
