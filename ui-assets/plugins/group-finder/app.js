@@ -166,9 +166,9 @@
     function qualifies(l) { return !l.minKills || myKills(killKey(l)) >= l.minKills; }
     function renderLobby() {
         var r = $('right'); r.innerHTML = '';
-        if (!isLinked()) r.appendChild(GF.el('div', 'status', '<b>Not linked.</b> Browse freely. Link this PC to your RuneTools account in Settings to post a group or apply.'));
+        if (!isLinked()) r.appendChild(GF.el('div', 'status', '<b>Browsing is open.</b> Link this PC to your RuneTools account in Settings to post a group or apply.'));
         if (S.mine && (S.mine.hosting || (S.mine.applications || []).length)) {
-            var box = GF.el('div', 'mine', '<h3>My groups</h3>');
+            var box = GF.el('div', 'mine', '<h3>Your groups</h3>');
             var rows = [];
             if (S.mine.hosting) rows.push([S.mine.hosting, 'Hosting']);
             (S.mine.applications || []).forEach(function (l) { rows.push([l, l.viewer.status === 'accepted' ? 'Accepted' : 'Applied']); });
