@@ -73,11 +73,13 @@ void events_loop(int epoch) {
     while (g_epoch.load() == epoch && g_want.load()) {
         auto hdrs = headers(false);
         for (auto& h : hdrs) if (h.name == "Accept") h.value = "text/event-stream";
-        std::string buf, cur_ev; bool gotData = false;
+        std::string buf, cur_ev; bool gotData = false; std::size_t bytes = 0; int events = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        rtx::log::Launcher("groups: event stream opening (epoch " + std::to_string(epoch) + ", " + (link::AuthHeader().empty() ? "anonymous" : "linked") + ")");
         auto r = http::Stream(kUpdateHost, L"/api/groups/events", hdrs,
             [&](const char* d, std::size_t n) -> bool {
                 if (g_epoch.load() != epoch || !g_want.load()) return false;
-                gotData = true;
+                gotData = true; bytes += n;
                 buf.append(d, n);
                 std::size_t nl;
                 while ((nl = buf.find('\n')) != std::string::npos) {
@@ -91,6 +93,7 @@ void events_loop(int epoch) {
                         if (!dat.empty() && dat.front() == ' ') dat.erase(dat.begin());
                         JsonValue v;
                         bool okJson = dat.size() < 65536 && json_parse(dat, v) && (v.kind == JsonValue::Object || v.kind == JsonValue::Array);
+                        if (!cur_ev.empty() && cur_ev.size() < 32) ++events;
                         if (!cur_ev.empty() && cur_ev.size() < 32)
                             push("{\"kind\":\"event\",\"event\":\"" + json_escape(cur_ev) + "\",\"data\":" + (okJson ? dat : std::string("null")) + "}");
                     } else if (line.empty()) cur_ev.clear();
@@ -99,10 +102,13 @@ void events_loop(int epoch) {
                 return true;
             },
             [](int status) { return status == 200; });
+        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        rtx::log::Launcher("groups: event stream ended after " + std::to_string(ms) + " ms: " + std::to_string(bytes) + " bytes, " + std::to_string(events) +
+                           " events, status " + std::to_string(r.status) + (r.ok ? ", ok" : ", not ok") + (r.detail.empty() ? "" : ", " + r.detail) +
+                           (g_epoch.load() != epoch ? ", superseded" : "") + (g_want.load() ? "" : ", unsubscribed"));
         if (g_epoch.load() != epoch || !g_want.load()) break;
         // a stream that carried data and ended is the normal case (idle cut by a proxy): back straight in
         backoff = (gotData || (r.ok && r.status == 200)) ? 3000 : (backoff * 2 > 60000 ? 60000 : backoff * 2);
-        if (!gotData && !r.detail.empty()) rtx::log::Launcher("groups: event stream failed: " + r.detail + " (status " + std::to_string(r.status) + ")");
         push("{\"kind\":\"event\",\"event\":\"stream\",\"data\":{\"connected\":false}}");
         for (int slept = 0; slept < backoff && g_epoch.load() == epoch && g_want.load(); slept += 250)
             std::this_thread::sleep_for(std::chrono::milliseconds(250));

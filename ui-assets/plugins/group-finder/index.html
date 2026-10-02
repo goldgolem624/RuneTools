@@ -563,8 +563,8 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
             var d = ev.data || {};
             if (ev.event === 'listing') { upsert(d); lobbyDirty = true; if (S.sel === d.id) detailDirty = true; }
             else if (ev.event === 'removed') { remove(d.id); lobbyDirty = true; if (S.sel === d.id) detailDirty = true; }
-            else if (ev.event === 'stream') { if (!d.connected && S.stream) S.streamLostAt = Date.now(); S.stream = !!d.connected; lobbyDirty = true; }
-            else if (ev.event === 'hello') { S.stream = true; mineDirty = true; lobbyDirty = true; helloSeen = true; }
+            else if (ev.event === 'stream') { if (!d.connected && S.stream) S.streamLostAt = Date.now(); S.stream = !!d.connected; S.streamDrops = (S.streamDrops | 0) + 1; S.streamAt = Date.now(); lobbyDirty = true; }
+            else if (ev.event === 'hello') { S.stream = true; S.streamHellos = (S.streamHellos | 0) + 1; S.streamAt = Date.now(); mineDirty = true; lobbyDirty = true; helloSeen = true; }
             else {
                 note(ev.event, d); mineDirty = true;
                 if (S.sel && d.listingId === S.sel) detailDirty = true;
@@ -633,6 +633,8 @@ window.GF_SKILL_ICONS = {"Agility": "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
         b.title = isLinked() ? '' : 'Link this PC to your RuneTools account in Settings';
         $('lobbyBtn').hidden = S.view === 'lobby';
         $('streamWarn').hidden = S.stream || Date.now() - (S.streamLostAt || 0) < 8000;
+        $('streamWarn').title = 'Live lobby stream dropped ' + (S.streamDrops | 0) + ' times, connected ' + (S.streamHellos | 0) + ' times' + (S.streamAt ? ', last change ' + GF.ago(S.streamAt) : '');
+        $('link').title = (isLinked() ? 'Linked RuneTools account' : 'Link this PC in Settings to post and apply') + '. Stream: ' + (S.stream ? 'connected' : 'down') + ', ' + (S.streamHellos | 0) + ' connects, ' + (S.streamDrops | 0) + ' drops';
     }
     function renderTiles() {
         var host = $('tiles'); host.innerHTML = '';
