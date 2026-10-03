@@ -127,9 +127,11 @@ void events_loop(int epoch) {
                            (link::AuthHeader() != openedAuth ? ", account changed" : ""));
         if (g_epoch.load() != epoch || !g_want.load()) break;
         if (link::AuthHeader() != openedAuth) { backoff = 3000; }
-        // a stream that carried data and ended is the normal case (idle cut by a proxy): back straight in
-        backoff = (gotData || (r.ok && r.status == 200)) ? 3000 : (backoff * 2 > 60000 ? 60000 : backoff * 2);
-        push("{\"kind\":\"event\",\"event\":\"stream\",\"data\":{\"connected\":false}}");
+        // The server ends every stream after 14 minutes (the edge would cut it at 15): a stream that carried data
+        // and closed cleanly is reopened at once, without telling the page it was ever down. Anything else backs off.
+        const bool rotated = gotData && r.ok && r.status == 200;
+        backoff = rotated ? 300 : (gotData || (r.ok && r.status == 200)) ? 3000 : (backoff * 2 > 60000 ? 60000 : backoff * 2);
+        if (!rotated) push("{\"kind\":\"event\",\"event\":\"stream\",\"data\":{\"connected\":false}}");
         for (int slept = 0; slept < backoff && g_epoch.load() == epoch && g_want.load(); slept += 250)
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
