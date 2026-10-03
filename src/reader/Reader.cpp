@@ -8636,43 +8636,6 @@ std::string SocialJson(std::uint32_t pid) {
            ",\"online\":" + std::to_string(online) + ",\"friends\":[" + friends + "]}";
 }
 
-// The group the Grouping System has this player in. The group record hangs off the group manager at
-// [MD+0x19948]+8 (null when not in a group): members are a vector at +0x60..+0x68 with a 0xB0 stride
-// holding the display name at +0x18, online byte +0x34, status +0x38 and team +0x3C; the group's max
-// size is at +0x22 and the owner's slot at +0x90.
-std::string PlayerGroupJson(std::uint32_t pid) {
-    auto ps = snap_proc(pid);
-    if (!ps) return "{\"in\":false}";
-    HANDLE h = ps.h;
-    auto root = rpm<std::uint64_t>(h, ps.mgva);
-    if (!root || *root <= 0x10000) return "{\"in\":false}";
-    auto mgr = rpm<std::uint64_t>(h, *root + 0x19948);
-    auto grp = (mgr && *mgr > 0x10000) ? rpm<std::uint64_t>(h, *mgr + 0x8) : std::nullopt;
-    if (!grp || *grp <= 0x10000) return "{\"in\":false}";
-    int maxSize = rpm<std::int16_t>(h, *grp + 0x22).value_or(0);
-    int owner   = rpm<std::int16_t>(h, *grp + 0x90).value_or(-1);
-    std::string gname = read_jagstring(h, *grp + 0x8, 40);
-    auto b0 = rpm<std::uint64_t>(h, *grp + 0x60), e0 = rpm<std::uint64_t>(h, *grp + 0x68);
-    std::string members; int n = 0;
-    if (b0 && e0 && *b0 > 0x10000 && *e0 >= *b0 && (*e0 - *b0) / 0xB0 <= 64) {
-        const int count = (int)((*e0 - *b0) / 0xB0);
-        for (int i = 0; i < count; ++i) {
-            std::uint64_t m = *b0 + (std::uint64_t)i * 0xB0;
-            std::string name = read_jagstring(h, m + 0x18, 40);
-            int online = rpm<std::uint8_t>(h, m + 0x34).value_or(0);
-            int status = rpm<std::int32_t>(h, m + 0x38).value_or(0);
-            int team   = rpm<std::uint8_t>(h, m + 0x3C).value_or(0);
-            if (n) members.push_back(',');
-            members += "{\"name\":\"" + json_escape(name) + "\",\"online\":" + (online ? "true" : "false") +
-                       ",\"status\":" + std::to_string(status) + ",\"team\":" + std::to_string(team) +
-                       ",\"owner\":" + (i == owner ? "true" : "false") + "}";
-            ++n;
-        }
-    }
-    return "{\"in\":true,\"name\":\"" + json_escape(gname) + "\",\"max\":" + std::to_string(maxSize) +
-           ",\"ownerSlot\":" + std::to_string(owner) + ",\"members\":[" + members + "]}";
-}
-
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane) {
     constexpr std::uint64_t kContainer = 0x199D0, kActiveIdx = 0x70, kEntryArr = 0x58,
                             kEntryWv = 0x8, kVecBegin = 0x138,

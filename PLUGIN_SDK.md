@@ -395,20 +395,6 @@ await rtx.plugin.state.social();
 - `world` 0 on a friend means offline.
 - Names are display names.
 
-#### state.playerGroup()
-
-| Scope | Arguments | Returns |
-|---|---|---|
-| `state.read` | none | object below; `null` when not in game |
-
-```js
-await rtx.plugin.state.playerGroup();
-// -> { in:true, name, max, ownerSlot, members:[ { name, online, status, team, owner }, ... ] }
-```
-
-- The Grouping System party this character is in; `in:false` outside one.
-- `status` is the game's per-member state; 1 means ready in its own UI.
-
 #### state.walkable(x, y, plane, r)
 
 | Scope | Arguments | Returns |

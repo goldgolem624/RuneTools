@@ -191,7 +191,6 @@ bool ReadViewMetrics(std::uint32_t pid, OverlayFrame& out);
 
 std::string PlayerInfoJson(std::uint32_t pid);
 std::string SocialJson(std::uint32_t pid);   // world id + friends list with worlds
-std::string PlayerGroupJson(std::uint32_t pid);   // the Grouping System party this client is in
 
 bool PlayerTile(std::uint32_t pid, int& tx, int& ty, int& plane);
 

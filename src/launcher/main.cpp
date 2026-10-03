@@ -8,7 +8,6 @@
 #include "LuaHost.h"
 #include "Loader.h"
 #include "Loot.h"
-#include "Groups.h"
 #include "Music.h"
 #include "MonitorFix.h"
 #include "Overlay.h"
@@ -776,7 +775,6 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         LauncherApp app;
         app.Run();
         rtx::launcher::loot::Shutdown();
-        rtx::launcher::groups::Shutdown();
         rtx::log::BeginShutdown();
         rtx::overlay::Stop();
         rtx::launcher::dock::Shutdown();

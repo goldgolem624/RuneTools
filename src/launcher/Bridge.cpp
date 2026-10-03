@@ -37,7 +37,6 @@
 #include "LuaHost.h"
 #include "Link.h"
 #include "Loot.h"
-#include "Groups.h"
 #include "Music.h"
 
 #include <Ultralight/Ultralight.h>
@@ -5404,118 +5403,6 @@ JSValueRef PluginDevEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
     return utf8_to_js(ctx, s);
 }
 
-// ---- built-in plugins: shipped under <ui dir>\plugins\<id>, read like a developer copy ----
-std::filesystem::path plugin_builtin_root() { return rtx::launcher::dock::UiDir() / "plugins"; }
-
-JSValueRef PluginBuiltinList(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                             size_t, const JSValueRef[], JSValueRef*) {
-    auto root = plugin_builtin_root();
-    std::string out = "[";
-    std::error_code ec; bool first = true;
-    for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
-        const auto& e = *it;
-        std::error_code fe;
-        if (!e.is_directory(fe) || fe) continue;
-        std::string id = sanitize_plugin_id(plugin_ascii_name(e.path().filename()));
-        if (id.empty()) continue;
-        std::error_code ec2;
-        if (!std::filesystem::exists(e.path() / "manifest.json", ec2)) continue;
-        if (!first) out += ",";
-        out += "\""; out += id; out += "\""; first = false;
-    }
-    out += "]";
-    return utf8_to_js(ctx, out);
-}
-
-JSValueRef PluginBuiltinManifest(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                                 size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, std::string());
-    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
-    if (id.empty()) return utf8_to_js(ctx, std::string());
-    return utf8_to_js(ctx, alerts_read_file(plugin_builtin_root() / id / "manifest.json"));
-}
-
-JSValueRef PluginBuiltinEntry(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                              size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 2) return utf8_to_js(ctx, std::string());
-    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
-    std::string entry = js_to_utf8(ctx, argv[1]);
-    if (id.empty() || !plugin_bare_name_ok(entry)) return utf8_to_js(ctx, std::string());
-    std::string s = alerts_read_file(plugin_builtin_root() / id / entry);
-    if (s.size() > kPluginEntryMaxBytes) return utf8_to_js(ctx, std::string());
-    return utf8_to_js(ctx, s);
-}
-
-// An image file of a built-in plugin's own folder (one level of subfolder), as a data URL.
-JSValueRef PluginBuiltinAsset(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                              size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 2) return utf8_to_js(ctx, std::string());
-    std::string id = sanitize_plugin_id(js_to_utf8(ctx, argv[0]));
-    std::string rel = js_to_utf8(ctx, argv[1]);
-    if (id.empty() || rel.empty() || rel.size() > 128) return utf8_to_js(ctx, std::string());
-    std::string dir, file;
-    auto slash = rel.find('/');
-    if (slash == std::string::npos) file = rel;
-    else { dir = rel.substr(0, slash); file = rel.substr(slash + 1); }
-    auto name_ok = [](const std::string& n) {
-        if (n.empty() || n.find("..") != std::string::npos) return false;
-        for (char c : n) if (!(std::isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.')) return false;
-        return true;
-    };
-    if ((!dir.empty() && !name_ok(dir)) || !plugin_bare_name_ok(file)) return utf8_to_js(ctx, std::string());
-    std::filesystem::path p = plugin_builtin_root() / id;
-    if (!dir.empty()) p /= dir;
-    p /= file;
-    std::string bytes = alerts_read_file(p);
-    if (bytes.empty() || bytes.size() > 512 * 1024) return utf8_to_js(ctx, std::string());
-    const char* mime = nullptr;
-    if (bytes.size() > 8 && (unsigned char)bytes[0] == 0x89 && bytes[1] == 'P') mime = "image/png";
-    else if (bytes.size() > 3 && (unsigned char)bytes[0] == 0xFF && (unsigned char)bytes[1] == 0xD8) mime = "image/jpeg";
-    else if (bytes.size() > 12 && bytes.compare(8, 4, "WEBP") == 0) mime = "image/webp";
-    if (!mime) return utf8_to_js(ctx, std::string());
-    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out = std::string("data:") + mime + ";base64,";
-    out.reserve(out.size() + (bytes.size() + 2) / 3 * 4);
-    std::size_t i = 0;
-    for (; i + 2 < bytes.size(); i += 3) {
-        unsigned v = ((unsigned char)bytes[i] << 16) | ((unsigned char)bytes[i + 1] << 8) | (unsigned char)bytes[i + 2];
-        out += tbl[(v >> 18) & 63]; out += tbl[(v >> 12) & 63]; out += tbl[(v >> 6) & 63]; out += tbl[v & 63];
-    }
-    if (i + 1 == bytes.size()) { unsigned v = (unsigned char)bytes[i] << 16; out += tbl[(v >> 18) & 63]; out += tbl[(v >> 12) & 63]; out += "=="; }
-    else if (i + 2 == bytes.size()) { unsigned v = ((unsigned char)bytes[i] << 16) | ((unsigned char)bytes[i + 1] << 8); out += tbl[(v >> 18) & 63]; out += tbl[(v >> 12) & 63]; out += tbl[(v >> 6) & 63]; out += '='; }
-    return utf8_to_js(ctx, out);
-}
-
-// ---- Group Finder ----
-JSValueRef GroupsCall(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                      size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 2) return JSValueMakeNumber(ctx, 0);
-    std::string method = js_to_utf8(ctx, argv[0]);
-    std::string path   = js_to_utf8(ctx, argv[1]);
-    std::string body   = (argc >= 3) ? js_to_utf8(ctx, argv[2]) : std::string();
-    return JSValueMakeNumber(ctx, (double)groups::Call(method, path, body));
-}
-JSValueRef GroupsTake(JSContextRef ctx, JSObjectRef, JSObjectRef, size_t, const JSValueRef[], JSValueRef*) {
-    return utf8_to_js(ctx, groups::Take());
-}
-JSValueRef GroupsSubscribe(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                           size_t argc, const JSValueRef argv[], JSValueRef*) {
-    groups::Subscribe(argc >= 1 && JSValueToBoolean(ctx, argv[0]));
-    return JSValueMakeBoolean(ctx, true);
-}
-JSValueRef GroupsSnapshot(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                          size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "null");
-    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return utf8_to_js(ctx, groups::SnapshotJson(pid));
-}
-JSValueRef PlayerGroupFn(JSContextRef ctx, JSObjectRef, JSObjectRef,
-                         size_t argc, const JSValueRef argv[], JSValueRef*) {
-    if (argc < 1) return utf8_to_js(ctx, "{\"in\":false}");
-    auto pid = static_cast<std::uint32_t>(JSValueToNumber(ctx, argv[0], nullptr));
-    return served(ctx, "pgroup:" + std::to_string(pid), "{\"in\":false}",
-                  [pid]{ return rtx::reader::PlayerGroupJson(pid); });
-}
 
 constexpr wchar_t kPluginListPath[] = L"/api/plugins/client/list";
 
@@ -6470,15 +6357,6 @@ void AttachBridge(ultralight::View* view) {
     install_fn(ctx, ns, "pluginDevManifest", PluginDevManifest);
     install_fn(ctx, ns, "pluginDevEntry",    PluginDevEntry);
     install_fn(ctx, ns, "pluginDevStamp",    PluginDevStamp);
-    install_fn(ctx, ns, "pluginBuiltinList",     PluginBuiltinList);
-    install_fn(ctx, ns, "pluginBuiltinManifest", PluginBuiltinManifest);
-    install_fn(ctx, ns, "pluginBuiltinEntry",    PluginBuiltinEntry);
-    install_fn(ctx, ns, "pluginBuiltinAsset",    PluginBuiltinAsset);
-    install_fn(ctx, ns, "groupsCall",        GroupsCall);
-    install_fn(ctx, ns, "groupsTake",        GroupsTake);
-    install_fn(ctx, ns, "groupsSubscribe",   GroupsSubscribe);
-    install_fn(ctx, ns, "groupsSnapshot",    GroupsSnapshot);
-    install_fn(ctx, ns, "playerGroup",       PlayerGroupFn);
 
     install_fn(ctx, ns, "pluginMarketList",        PluginMarketList);
     // Starts with the first page and keeps checking while the launcher runs.

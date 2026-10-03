@@ -1,7 +1,5 @@
   const PLUGIN_PROTO  = 'rtx.plugin/1';
   const PLUGIN_SCOPES = new Set(['state.read', 'cache.read', 'overlay', 'sound', 'storage', 'notify.os', 'notify.discord', 'clipboard', 'clipboard.read', 'telemetry']);
-  // Scopes only a plugin shipped with the launcher may hold: they act on runetools.io as the linked account.
-  const PLUGIN_SCOPES_BUILTIN = new Set([...PLUGIN_SCOPES, 'groups']);
   const pluginBuckets = {};     // "id|method" -> token bucket (pluginRateOk)
 
   const PLUGIN_SDK_SHIM = `(function(){'use strict';if(window.rtx&&window.rtx.plugin)return;
@@ -23,7 +21,7 @@ var api={apiVersion:function(){return S.apiVersion;},id:function(){return S.plug
 ready:function(cb){if(typeof cb!=='function'){return new Promise(function(r){S.ready?r():rcb.push(r);});}S.ready?cb():rcb.push(cb);},
 on:function(e,cb){if(L[e]&&typeof cb==='function')L[e].push(cb);},
 events:{on:function(k,cb){if(typeof cb!=='function')return;(EV[k]=EV[k]||[]).push(cb);},off:function(k,cb){var a=EV[k];if(!a)return;var i=a.indexOf(cb);if(i!==-1)a.splice(i,1);}},
-state:{varDomainStores:function(){return call('state.varDomainStores',[]);},player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varpsLong:function(i){return call('state.varpsLong',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},encounter:function(){return call('state.encounter',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},nexus:function(){return call('state.nexus',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);},interfaceGroup:function(g){return call('state.interfaceGroup',[g]);},varcs:function(ids){return call('state.varcs',[ids]);},ports:function(){return call('state.ports',[]);},gameTick:function(){return call('state.gameTick',[]);},clientState:function(){return call('state.clientState',[]);},social:function(){return call('state.social',[]);},playerGroup:function(){return call('state.playerGroup',[]);},walkable:function(x,y,plane,r){return call('state.walkable',[x,y,plane,r]);},combatLog:function(since,max){return call('state.combatLog',[since||0,max||500]);}},
+state:{varDomainStores:function(){return call('state.varDomainStores',[]);},player:function(){return call('state.player',[]);},info:function(){return call('state.info',[]);},inventory:function(){return call('state.inventory',[]);},equipment:function(){return call('state.equipment',[]);},bank:function(){return call('state.bank',[]);},scene:function(r){return call('state.scene',[r]);},varps:function(i){return call('state.varps',[i]);},varpsLong:function(i){return call('state.varpsLong',[i]);},varbits:function(ids){return call('state.varbits',[ids]);},interface:function(g,comps){return call('state.interface',[g,Array.isArray(comps)?comps.join(','):String(comps)]);},buffs:function(){return call('state.buffs',[]);},cooldowns:function(){return call('state.cooldowns',[]);},perks:function(){return call('state.perks',[]);},actionBar:function(){return call('state.actionBar',[]);},container:function(c){return call('state.container',[c]);},itemExtra:function(c,i){return call('state.itemExtra',[c,i]);},pets:function(){return call('state.pets',[]);},bosses:function(){return call('state.bosses',[]);},encounter:function(){return call('state.encounter',[]);},hideyHoles:function(){return call('state.hideyHoles',[]);},groupBank:function(){return call('state.groupBank',[]);},achievements:function(){return call('state.achievements',[]);},achievement:function(id){return call('state.achievement',[id]);},metalBank:function(){return call('state.metalBank',[]);},materials:function(){return call('state.materials',[]);},baitBox:function(){return call('state.baitBox',[]);},nexus:function(){return call('state.nexus',[]);},groundItems:function(){return call('state.groundItems',[]);},skillBonus:function(){return call('state.skillBonus',[]);},dailies:function(){return call('state.dailies',[]);},quests:function(){return call('state.quests',[]);},quest:function(id){return call('state.quest',[id]);},mysteries:function(){return call('state.mysteries',[]);},interfaceGroup:function(g){return call('state.interfaceGroup',[g]);},varcs:function(ids){return call('state.varcs',[ids]);},ports:function(){return call('state.ports',[]);},gameTick:function(){return call('state.gameTick',[]);},clientState:function(){return call('state.clientState',[]);},social:function(){return call('state.social',[]);},walkable:function(x,y,plane,r){return call('state.walkable',[x,y,plane,r]);},combatLog:function(since,max){return call('state.combatLog',[since||0,max||500]);}},
 cache:{itemInfo:function(i){return call('cache.itemInfo',[i]);},itemIcon:function(i){return call('cache.itemIcon',[i]);},modelIcon:function(i){return call('cache.modelIcon',[i]);},sprite:function(i){return call('cache.sprite',[i]);},varbitMap:function(){return call('cache.varbitMap',[]);},varbitDomainMap:function(){return call('cache.varbitDomainMap',[]);},varbitDomains:function(){return call('cache.varbitDomains',[]);},varDefs:function(a){return call('cache.varDefs',[a]);},enumInfo:function(i){return call('cache.enumInfo',[i]);},paramDef:function(i){return call('cache.paramDef',[i]);},structParams:function(i){return call('cache.structParams',[i]);},itemParams:function(i){return call('cache.itemParams',[i]);},mapWindow:function(cx,cy,p,half,ts){return call('cache.mapWindow',[cx,cy,p,half,ts]);},abilityConfigs:function(){return call('cache.abilityConfigs',[]);},abilityTips:function(){return call('cache.abilityTips',[]);}},
 notify:{windows:function(title,body){return call('notify.windows',[title,body]);},discord:function(text){return call('notify.discord',[text]);}},
 clipboard:{copy:function(t){return call('clipboard.copy',[t]);},paste:function(){return call('clipboard.paste',[]);}},
@@ -33,7 +31,6 @@ storage:{get:function(k){return call('storage.get',[k]);},set:function(k,v){retu
 telemetry:{append:function(n,r){return call('telemetry.append',[n,r]);},appendMany:function(n,l){return call('telemetry.appendMany',[n,l]);},export:function(n,d){return call('telemetry.export',[n,d]);},list:function(){return call('telemetry.list',[]);},remove:function(n){return call('telemetry.remove',[n]);},open:function(){return call('telemetry.open',[]);}},
 ui:{setHeight:function(px){return call('ui.setHeight',[px]);},setTitle:function(s){return call('ui.setTitle',[s]);},settings:function(schema){return call('ui.settings',[schema]);}},
 settings:{get:function(){return call('settings.get',[]);},on:function(cb){if(typeof cb==='function')L.settings.push(cb);}},
-groups:{call:function(m,p,b){return call('groups.call',[m,p,b]);},events:function(){return call('groups.events',[]);},snapshot:function(){return call('groups.snapshot',[]);},subscribe:function(on){return call('groups.subscribe',[!!on]);},linked:function(){return call('groups.linked',[]);},asset:function(p){return call('groups.asset',[p]);}},
 prices:{latest:function(){return call('prices.latest',[]);},mapping:function(){return call('prices.mapping',[]);},item:function(ids){return call('prices.item',[ids]);}},
 console:(function(){function f(a){var o=[];for(var i=0;i<a.length;i++){var v=a[i];if(typeof v==='string')o.push(v);else if(v instanceof Error)o.push(v.stack||v.message||String(v));else if(v===undefined)o.push('undefined');else{try{o.push(JSON.stringify(v));}catch(e){o.push(String(v));}}}return o.join(' ');}
 function mk(tag){return{debug:function(){return call('console.debug',[f(arguments),tag]);},info:function(){return call('console.info',[f(arguments),tag]);},log:function(){return call('console.info',[f(arguments),tag]);},warn:function(){return call('console.warn',[f(arguments),tag]);},error:function(){return call('console.error',[f(arguments),tag]);}};}
@@ -75,45 +72,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     return who + ': ' + pClampStr(text, 200);
   };
   const pClampList = v => (Array.isArray(v) ? v : []).slice(0, 50).map(x => pClampStr(x, 40).replace(/[^A-Za-z0-9 _'\-]/g, '')).filter(Boolean).join(',');
-
-  // Group Finder broker: a website call resolves when the launcher's answer comes back through
-  // groupsTake(); live stream events queue up per subscribed plugin until it asks for them.
-  const gfPending = new Map();   // request id -> settle(result)
-  const gfQueues  = new Map();   // plugin id -> queued events
-  let gfPollT = 0;
-  function gfPump() {
-    const b = bridge();
-    if (!b || typeof b.groupsTake !== 'function') return;
-    let items = [];
-    try { items = JSON.parse(b.groupsTake() || '[]'); } catch (e) { items = []; }
-    for (const it of (Array.isArray(items) ? items : [])) {
-      if (!it || typeof it !== 'object') continue;
-      if (it.kind === 'result') { const f = gfPending.get(it.id); if (f) { gfPending.delete(it.id); f(it); } }
-      else if (it.kind === 'event') for (const q of gfQueues.values()) if (q.length < 256) q.push({ event: it.event, data: it.data });
-    }
-    if (!gfPending.size && !gfQueues.size) { clearInterval(gfPollT); gfPollT = 0; }
-  }
-  function gfPumpOn() { if (!gfPollT) gfPollT = setInterval(gfPump, 300); }
-  function gfCall(method, path, body) {
-    return new Promise((resolve) => {
-      let text = '';
-      if (body !== undefined && body !== null) { try { text = JSON.stringify(body); } catch (e) { text = ''; } }
-      if (text.length > 65536) return resolve({ ok: false, status: 0, body: null, text: 'body too large' });
-      let id = 0;
-      try { id = bridge().groupsCall(String(method || 'GET'), String(path || ''), text) | 0; } catch (e) { id = 0; }
-      if (!id) return resolve({ ok: false, status: 0, body: null, text: 'request refused' });
-      const t = setTimeout(() => { if (gfPending.has(id)) { gfPending.delete(id); resolve({ ok: false, status: 0, body: null, text: 'timeout' }); } }, 25000);
-      gfPending.set(id, (r) => { clearTimeout(t); resolve(r); });
-      gfPumpOn();
-    });
-  }
-  function gfSubscribe(pluginId, on) {
-    if (on) { if (!gfQueues.has(pluginId)) gfQueues.set(pluginId, []); gfPumpOn(); }
-    else gfQueues.delete(pluginId);
-    try { bridge().groupsSubscribe(gfQueues.size > 0); } catch (e) {}
-    return gfQueues.size > 0;
-  }
-  function gfPluginGone(id) { if (gfQueues.has(id)) gfSubscribe(id, false); }
 
   const PLUGIN_API = {
     'state.player':     { scope: 'state.read', json: true,    run: (a, pid) => bridge().playerInfo(pid) },
@@ -470,13 +428,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
     'party.partyGetCode':     { scope: 'party',       json: false, run: (a) => bridge().partyGetCode(...pArgs(a)) },
     'party.partySetCode':     { scope: 'party',       json: false, run: (a) => bridge().partySetCode(...pArgs(a)) },
     'party.partyReport':      { scope: 'party',       json: false, run: (a) => bridge().partyReport(...pArgs(a)) },
-    'state.playerGroup':      { scope: 'state.read',  json: true,  run: (a, pid) => bridge().playerGroup(pid) },
-    'groups.call':            { scope: 'groups',      json: false, run: (a) => gfCall(pClampStr(a[0], 8), pClampStr(a[1], 512), a[2]) },
-    'groups.events':          { scope: 'groups',      json: false, run: (a, pid, id) => { const q = gfQueues.get(id); return q ? q.splice(0) : []; } },
-    'groups.snapshot':        { scope: 'groups',      json: true,  run: (a, pid) => bridge().groupsSnapshot(pid) },
-    'groups.subscribe':       { scope: 'groups',      json: false, run: (a, pid, id) => gfSubscribe(id, !!a[0]) },
-    'groups.linked':          { scope: 'groups',      json: true,  run: () => bridge().linkStatus() },
-    'groups.asset':           { scope: 'groups',      json: false, run: (a, pid, id) => (bridge().pluginBuiltinAsset ? bridge().pluginBuiltinAsset(id, pClampStr(a[0], 128)) : '') },
     'host.alertsLoad':        { scope: 'host',        json: false, run: (a, pid) => bridge().alertsLoad(pid, ...pArgs(a)) },
     'host.counterLoad':       { scope: 'host',        json: false, run: (a, pid) => bridge().counterLoad(pid, ...pArgs(a)) },
     'host.notesLoad':         { scope: 'host',        json: false, run: (a, pid) => bridge().notesLoad(pid, ...pArgs(a)) },
@@ -610,7 +561,6 @@ try{parent.postMessage({__rtxPlugin:P,kind:'hello'},'*');}catch(e){}})();`;
                : method.indexOf('overlay.') === 0 ? 6
                : method.indexOf('notify.') === 0 ? 0.1     // OS toasts: 1 per 10s
                : method.indexOf('clipboard.') === 0 ? 1
-               : method === 'groups.asset' || method === 'cache.itemIcon' ? 200   // launcher-local file and pack reads, one per card slot
                : method === 'prices.item' ? 4             // tiny answers from a local parsed cache
                : method.indexOf('prices.') === 0 ? 0.5    // half-MB payloads; data changes every 90s anyway
                : method.indexOf('console.') === 0 ? 120   // rtxConsole applies its own 60/s budget with a burst

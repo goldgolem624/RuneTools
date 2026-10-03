@@ -49,7 +49,6 @@
     if (m && m.lua) { try { bridge().luaUnload(id); } catch (e) {} }
     if (m && m.kbFocus) kbGrab(false);
     pluginMounts.delete(id);
-    try { gfPluginGone(id); } catch (e) {}
     if (!keepHolder && typeof pluginHolderDrop === 'function') pluginHolderDrop(id);
     if (typeof ovPointAt === 'function') { try { ovPointAt('plugin:' + id, '', ''); } catch (e) {} }   // its arrow goes with it
   }
@@ -277,8 +276,7 @@
     for (const tab of pluginTabs) {
       if (!tab.manifest.background) continue;
       const id = tab.id;
-      let granted = pluginGetGranted(id);
-      if (tab.source === 'builtin' && (!granted || !pluginGrantCovers(granted, tab.scopes))) { granted = tab.scopes.slice(); pluginGrants[id] = granted; pluginGrantsSaveSoon(); }
+      const granted = pluginGetGranted(id);
       if (!granted || !pluginGrantCovers(granted, tab.scopes)) continue;   // not enabled: nothing runs
       if (pluginMounts.get(id) || pluginFailed.has(id)) continue;          // already running, windowed or not; or stopped
       const w = wmWinOf('plugin:' + id);
@@ -409,13 +407,11 @@
     const card = document.createElement('div');
     card.dataset.pluginPerm = id;
     card.style.cssText = 'max-width:420px;margin:24px auto;background:#1a1b23;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:20px;';
-    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings', 'notify.os': 'Show Windows notifications', 'notify.discord': 'Post messages to your Discord webhook (it never sees the URL)', 'clipboard': 'Copy text to your clipboard', 'clipboard.read': 'Read your clipboard contents', 'telemetry': 'Write log files to its own folder (RuneToolsX\plugin-logs)', 'groups': 'Use the Group Finder on runetools.io as your linked account' };
+    const labels = { 'state.read': 'Read your live game state', 'cache.read': 'Read game cache data (items, sprites, enums)', 'overlay': 'Draw overlays on the game', 'sound': 'Play alert sounds', 'storage': 'Store its own settings', 'notify.os': 'Show Windows notifications', 'notify.discord': 'Post messages to your Discord webhook (it never sees the URL)', 'clipboard': 'Copy text to your clipboard', 'clipboard.read': 'Read your clipboard contents', 'telemetry': 'Write log files to its own folder (RuneToolsX\plugin-logs)' };
     let h = '<div style="font-size:1.1em;font-weight:600;">' + pluginEsc(m.name) + '</div>';
     h += '<div style="color:#8b8b9e;font-size:.85em;margin:2px 0 6px;">v' + pluginEsc(m.version) + (m.author ? (' - ' + pluginEsc(m.author)) : '') + '</div>';
     if (tab.source === 'dev')
         h += '<div style="color:#e0b000;font-size:.8em;margin-bottom:12px;">Unsigned developer plugin - only enable plugins you trust.</div>';
-    else if (tab.source === 'builtin')
-        h += '<div style="color:#34d399;font-size:.8em;margin-bottom:12px;">Built into RuneTools.</div>';
     else
         h += '<div style="color:#34d399;font-size:.8em;margin-bottom:12px;">Verified - signed by RuneTools.</div>';
     if (m.description) h += '<div style="font-size:.9em;margin-bottom:12px;">' + pluginEsc(m.description) + '</div>';
@@ -511,8 +507,7 @@
     const tab = pluginTabs.find(p => p.id === id);
     if (!tab) { c.innerHTML = '<div class="empty">Plugin not found.</div>'; pluginUnmount(id); return; }
     pluginGrantsEnsure();               // a store not readable yet just prompts once more
-    let granted = pluginGetGranted(id);
-    if (tab.source === 'builtin' && (!granted || !pluginGrantCovers(granted, tab.scopes))) { granted = tab.scopes.slice(); pluginGrants[id] = granted; pluginGrantsSaveSoon(); }
+    const granted = pluginGetGranted(id);
     if (!granted || !pluginGrantCovers(granted, tab.scopes)) {
       const cur = c.firstElementChild;
       if (cur && cur.dataset && cur.dataset.pluginPerm === id) return;   // build-once
@@ -559,7 +554,7 @@
     pluginMounts.set(id, mnt);
     (async () => {
       let entry = '';
-      const entryFn = (tab.source === 'installed') ? bridge().pluginInstalledEntry : (tab.source === 'builtin' ? bridge().pluginBuiltinEntry : bridge().pluginDevEntry);
+      const entryFn = (tab.source === 'installed') ? bridge().pluginInstalledEntry : bridge().pluginDevEntry;
       try { entry = await entryFn.call(bridge(), id, tab.manifest.entry); } catch (e) {}
       const m = pluginMounts.get(id);
       if (!m || m.frame !== fr) return;             // window closed / remounted while loading
@@ -577,8 +572,7 @@
       let man = null;
       try { man = JSON.parse(await manifestFn.call(bridge(), id)); } catch (e) {}
       if (!man || man.rtxPluginManifest !== 1) continue;
-      const allowed = source === 'builtin' ? PLUGIN_SCOPES_BUILTIN : PLUGIN_SCOPES;
-      const scopes = Array.isArray(man.scopes) ? man.scopes.filter(s => allowed.has(s)) : [];
+      const scopes = Array.isArray(man.scopes) ? man.scopes.filter(s => PLUGIN_SCOPES.has(s)) : [];
       const clean = s => String(s == null ? '' : s).replace(/[<>&"']/g, '');
       const entry = (typeof man.entry === 'string' && man.entry && !/[\\/]|\.\./.test(man.entry)) ? man.entry : 'index.html';
       // runtime "lua": the launcher runs <main> in its sandboxed Lua host instead of mounting <entry> in a frame
@@ -596,13 +590,9 @@
   async function loadPlugins() {
     if (!bridge()) return;
     const byId = {};
-    if (bridge().pluginBuiltinList) {   // shipped with the launcher: wins over any copy of the same id
-      const built = await readPluginSet(bridge().pluginBuiltinList, bridge().pluginBuiltinManifest, 'builtin');
-      built.forEach(p => { byId[p.id] = p; });
-    }
     if (bridge().pluginInstalledList) {
       const inst = await readPluginSet(bridge().pluginInstalledList, bridge().pluginInstalledManifest, 'installed');
-      inst.forEach(p => { if (!byId[p.id]) byId[p.id] = p; });
+      inst.forEach(p => { byId[p.id] = p; });
     }
     if (bridge().pluginDevList) {
       const dev = await readPluginSet(bridge().pluginDevList, bridge().pluginDevManifest, 'dev');

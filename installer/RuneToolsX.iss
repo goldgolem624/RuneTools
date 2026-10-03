@@ -89,8 +89,6 @@ Source: "{#SrcDir}\items_extra.pack"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcDir}\wd_table.bin";   DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\pdb_5554.bin";   DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\sounds\*";       DestDir: "{app}\sounds"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Built-in plugins (Group Finder), one folder per plugin id
-Source: "{#SrcDir}\plugins\*";      DestDir: "{app}\plugins"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 ; Ultralight runtime (DLLs + resources + its licence folder: EULA, LICENSE, NOTICES)
 Source: "{#SrcDir}\Ultralight\*";   DestDir: "{app}\Ultralight"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; RuneTools' own licence + third-party attributions, alongside the installed app

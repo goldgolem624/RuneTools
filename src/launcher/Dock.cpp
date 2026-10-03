@@ -1081,7 +1081,6 @@ void* GameWindowHandle(std::uint32_t pid) {
 }
 
 std::string ReadUiAsset(const std::string& name) { return ReadUiAssetImpl(name); }
-std::filesystem::path UiDir() { return g_client_html_path.parent_path(); }
 
 bool GameFocused(std::uint32_t pid) {
     HWND fg = GetForegroundWindow();

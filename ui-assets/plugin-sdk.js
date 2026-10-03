@@ -132,7 +132,6 @@
       nexus:        function () { return call('state.nexus', []); },
       groundItems:  function () { return call('state.groundItems', []); },
       social:       function () { return call('state.social', []); },
-      playerGroup:  function () { return call('state.playerGroup', []); },
       walkable:     function (x, y, plane, r) { return call('state.walkable', [x, y, plane, r]); },
       combatLog:    function (since, max) { return call('state.combatLog', [since || 0, max || 500]); },
       skillBonus:   function () { return call('state.skillBonus', []); },
