@@ -147,8 +147,21 @@
     return n;
   }
   // The two Barbarian Grand Hunt guides run inside their own plugins now, so only quests are driven here.
+  // Guide panels added after the launcher was built are read from the UI folder on the first tick, so a
+  // new quest guide runs without a rebuild; a file the launcher already spliced is skipped.
+  const QG_LATE = [{ file: 'panel_deathplateau.js', fn: 'dpStep' }];
+  let qgLateDone = false;
+  async function qgLoadLate() {
+    if (qgLateDone || !bridge().uiAsset) return;
+    qgLateDone = true;
+    for (const p of QG_LATE) {
+      if (typeof window[p.fn] === 'function') continue;
+      try { const txt = await rtxData.raw('host.uiAsset', p.file); if (txt) new Function(txt)(); } catch (e) {}
+    }
+  }
   async function questGuideTick() {
     if (!bridge() || typeof PLUGIN_API === 'undefined' || activeClueId >= 0) return;
+    await qgLoadLate();
     let focused = ''; try { focused = qgFocusName(); } catch (e) {}
     const step = QG_STEP_FNS[focused];
     if (!step) { if (qgOn) { qgClearAll(); qgOn = false; } return; }
@@ -654,8 +667,8 @@
   }
   // Not named QUEST_GUIDES: that is the page-wide table of guide text, and exporting this map
   // under that name replaced it, so every quest listed here lost its guide.
-  const QG_STEP_FNS = { 'Visions of Havenhythe': vohStep, 'Hearts of Sanguine': hosStep, 'Hermit Permits': hpStep, 'Secrets of Amberfell': () => amberStep(), 'Wiz Kid': () => wizkidStep(), 'Necromancy!': () => necroStep(), 'The Restless Ghost': () => rgStep(), 'Making History': () => mhStep(), 'New Foundations': () => nfStep(), "There's No Place Like Home...": () => tnpStep(), 'Murder on the Border': () => motbStep(), 'Heralds of Crimson': () => hocStep() };   // focused quest name -> step fn (later-spliced panels' steps are called via lazy arrows)
+  const QG_STEP_FNS = { 'Visions of Havenhythe': vohStep, 'Hearts of Sanguine': hosStep, 'Hermit Permits': hpStep, 'Secrets of Amberfell': () => amberStep(), 'Wiz Kid': () => wizkidStep(), 'Necromancy!': () => necroStep(), 'The Restless Ghost': () => rgStep(), 'Making History': () => mhStep(), 'New Foundations': () => nfStep(), "There's No Place Like Home...": () => tnpStep(), 'Murder on the Border': () => motbStep(), 'Heralds of Crimson': () => hocStep(), 'Death Plateau': () => dpStep() };   // focused quest name -> step fn (later-spliced panels' steps are called via lazy arrows)
   (function () { function guideLoop() { questGuideTick().catch(function () {}); setTimeout(guideLoop, 700); } setTimeout(guideLoop, 900); })();   // first tick deferred so PLUGIN_API (declared later) is ready
 
-Object.assign(window, { QG_AUTO, hudSet, qgClearAll, qgClrDlg, qgClrItem, qgClrNpc, qgClrTiles, qgDialogNpc, qgEquipCount, qgExtraAction, qgIdMarks, qgIfaceComp, qgInInstance, qgInvCount, qgItem, qgItems, qgNpc, qgObject, qgObjectById, qgOv, qgRand, qgScene, qgSceneNpc, qgTile });
+Object.assign(window, { QG_AUTO, hudSet, qgClearAll, qgClrDlg, qgClrItem, qgClrNpc, qgClrTiles, qgDialogNpc, qgEquipCount, qgExtraAction, qgIdMarks, qgIfaceComp, qgInInstance, qgInvCount, qgItem, qgItems, qgLodestone, qgNpc, qgObject, qgObjectById, qgOv, qgRand, qgScene, qgSceneNpc, qgTile });
 })();

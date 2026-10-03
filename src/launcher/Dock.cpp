@@ -146,6 +146,7 @@ const char* const kFiles[] = {
     "panel_noplacelikehome.js", // There's No Place Like Home... quest guide
     "panel_murderborder.js", // Murder on the Border quest guide
     "panel_heralds.js",    // Heralds of Crimson quest guide
+    "panel_deathplateau.js", // Death Plateau quest guide
     "panel_interfaces.js", // Interfaces inspector
     "panel_invention.js",  // Invention components
     "panel_farming.js",    // Farming patch tracker + tool leprechaun

@@ -286,6 +286,7 @@
     'New Foundations': () => nfMonText(),
     "There's No Place Like Home...": () => tnpMonText(),
     'Murder on the Border': () => motbMonText(),
+    'Death Plateau': () => dpMonText(),
   };
   function qgMonHtml(nm) {
     const f = QG_MON[nm]; if (!f) return '';
@@ -384,9 +385,9 @@
         subs.forEach((sb, j) => {
           const key = i + '.' + (j + 1);
           // a guide's automatic ticks may name sub-points too, by the same "step.sub" key
-          // ...and a note under a step is behind you once that step and the next are both ticked by the guide
+          // ...and a sub-point or note is done with its parent step
           const auto = (typeof qgAutoDone !== 'undefined') ? qgAutoDone[nm] : null;
-          const sdn = done || manual.indexOf(key) >= 0 || !!(auto && (auto.has(key) || (auto.has(i) && auto.has(i + 1))));
+          const sdn = done || manual.indexOf(key) >= 0 || manual.indexOf(i) >= 0 || !!(auto && (auto.has(key) || auto.has(i)));
           h += '<div class="myst-step' + (sdn ? ' done' : '') + '" style="margin-left:' + (18 * sb.depth) + 'px;" data-qn="' + qgEsc(nm) + '" data-i="' + key + '">' +
                '<span class="myst-cb"></span><span class="tx">' + qgChatHtml(sb.txt) + '</span></div>';
         });
