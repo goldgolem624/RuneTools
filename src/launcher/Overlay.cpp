@@ -965,18 +965,25 @@ HoverPick PickHover(const Config& cfg) {
         publish(kNpcKey | hv.npc_id, 0, 0, hv.npc_uid, [&](bool& settled) {
             settled = true;
             int lv = NpcThievingLevel(hv.npc_id);
-            if (!lv) {
-                // not in the table (new content): the guide's own entry, while the NPC offers Pickpocket
-                const auto npc = rtx::cache::GetNpc(hv.npc_id);
-                bool picks = false;
-                for (const auto& a : npc.actions) if (a == "Pickpocket") picks = true;
-                if (!picks || npc.name.empty()) return std::string();
+            if (lv) return "<br><col=d0d0d0>" + reqLine({ rtx::cache::SkillReq{ 10, lv } });
+            const auto npc = rtx::cache::GetNpc(hv.npc_id);
+            if (npc.name.empty()) return std::string();
+            bool picks = false, siphons = false;
+            for (const auto& a : npc.actions) { if (a == "Pickpocket") picks = true; else if (a == "Siphon") siphons = true; }
+            int skill = 0;
+            if (picks) {
+                // not in the table (new content): the guide's own entry
                 for (const std::string& t : { "Pickpocket " + npc.name, "Pickpocket " + npc.name + "s" })
                     for (const auto& r : rtx::cache::SkillGuideForName(t))
-                        if (r.skill == 10 && !lv) lv = r.level;
-                settled = rtx::cache::SkillGuideReady();
-            }
-            return lv ? "<br><col=d0d0d0>" + reqLine({ rtx::cache::SkillReq{ 10, lv } }) : std::string();
+                        if (r.skill == 10 && !lv) { skill = 10; lv = r.level; }
+            } else if (siphons) {
+                // Runespan creatures: the Runecrafting guide lists them under the plural name
+                for (const std::string& t : { npc.name + "s", npc.name })
+                    for (const auto& r : rtx::cache::SkillGuideForName(t))
+                        if (r.skill == 12 && !lv) { skill = 12; lv = r.level; }
+            } else return std::string();
+            settled = rtx::cache::SkillGuideReady();
+            return lv ? "<br><col=d0d0d0>" + reqLine({ rtx::cache::SkillReq{ skill, lv } }) : std::string();
         });
     }
     if (!cfg.hover_outline || !isLoc || !hv.in_scene) return p;
