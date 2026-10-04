@@ -3646,6 +3646,41 @@
     draw(c.getContext('2d'), size);
     return c;
   }
+  // This renderer draws an image at full strength whatever globalAlpha says (fills do honour it), so a glow
+  // meant at 20% lands at 100%. Where that is so, a sprite marked __rtxSprite drawn at reduced alpha is drawn
+  // from a copy with the alpha baked in, made once per step and kept.
+  (function () {
+    try {
+      const a = document.createElement('canvas'); a.width = a.height = 4;
+      const ag = a.getContext('2d'); ag.fillStyle = 'rgb(200,200,200)'; ag.fillRect(0, 0, 4, 4);
+      const b = document.createElement('canvas'); b.width = b.height = 4;
+      const bg = b.getContext('2d'); bg.fillStyle = '#000'; bg.fillRect(0, 0, 4, 4);
+      bg.globalAlpha = 0.25; bg.drawImage(a, 0, 0);
+      if (bg.getImageData(1, 1, 1, 1).data[0] < 120) return;
+    } catch (e) { return; }
+    const proto = CanvasRenderingContext2D.prototype, raw = proto.drawImage;
+    const STEPS = 48, baked = new WeakMap();
+    function bake(img, k) {
+      let m = baked.get(img);
+      if (!m) { m = []; baked.set(img, m); }
+      if (m[k]) return m[k];
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d');
+      raw.call(g, img, 0, 0);
+      g.globalCompositeOperation = 'destination-in'; g.fillStyle = 'rgba(0,0,0,' + (k / STEPS) + ')';
+      g.fillRect(0, 0, c.width, c.height);
+      return (m[k] = c);
+    }
+    proto.drawImage = function (img) {
+      const ga = this.globalAlpha;
+      if (ga >= 0.995 || !img || !img.__rtxSprite) return raw.apply(this, arguments);
+      const k = Math.round(ga * STEPS);
+      if (k <= 0) return;
+      const args = Array.prototype.slice.call(arguments);
+      args[0] = bake(img, k);
+      return raw.apply(this, args);
+    };
+  })();
   function makeSprites() {
     const glow = (colour) => (g, n) => {
       const r = n / 2, grd = g.createRadialGradient(r, r, 0, r, r, r);
@@ -3676,6 +3711,8 @@
       g.beginPath(); g.ellipse(r - r * 0.2, r * 0.75, r * 0.08, r * 0.12, 0, 0, 6.283); g.fill();
       g.beginPath(); g.ellipse(r + r * 0.2, r * 0.75, r * 0.08, r * 0.12, 0, 0, 6.283); g.fill();
     });
+    // the Halloween scene fades these three, so they take their alpha from a baked copy where needed
+    scene.sprites.fog.__rtxSprite = scene.sprites.fogWarm.__rtxSprite = scene.sprites.ghost.__rtxSprite = true;
     // a blossom petal, a heart, a clover leaf and a firefly: one small canvas each, then blitted
     scene.sprites.petal = sprite(32, (g, n) => {
       const grd = g.createLinearGradient(0, 0, n, n);
@@ -4170,6 +4207,7 @@
       g.fillStyle = '#fff'; g.fillRect(0, 0, 4, 4); g.restore();
       S.evenodd = g.getImageData(2, 2, 1, 1).data[3] === 0;
     } catch (e) {}
+    for (const k in S) for (const c of (Array.isArray(S[k]) ? S[k] : [S[k]])) if (c && c.getContext) c.__rtxSprite = true;
     scene.sprites.hw = S;
   }
 
@@ -4200,16 +4238,6 @@
       beat: null, nextBeat: 76, last: {}, prevKind: '', nextStorm: 1e9, side: 'B', clockAt: 0, tolledKey: -1, noClock: false,
       hud: false, frontDirty: false, frozen: false, stillDrawn: false, skyDirty: true, tmp: { x: 0, y: 0, a: 0 },
     };
-    const sp = scene.sprites.hw;
-    for (const k of ['mid', 'near']) {
-      const c = hw.cv[k];
-      if (!c || !c.getContext) continue;
-      try {
-        const g = c.getContext('2d'), set = k === 'mid' ? sp.rainFar : sp.rainNear;
-        const a = g.createPattern(set[0], 'repeat'), b = g.createPattern(set[1], 'repeat');
-        hw.pat[k] = a && b ? [a, b] : null;
-      } catch (e) { hw.pat[k] = null; }
-    }
     hwColdOpen(hw);
     return hw;
   }
@@ -5048,6 +5076,15 @@
     g.globalAlpha = hwClamp(L ? a : a * 0.6, 0, 1);
   }
   function hwSrc(g, a) { g.globalCompositeOperation = 'source-over'; g.globalAlpha = hwClamp(a == null ? 1 : a, 0, 1); }
+  // a repeating sheet over the stage, offset by (ox, oy) and scaled by k
+  function hwTile(g, img, st, ox, oy, k, a) {
+    const T = img.width * k;
+    if (T < 1 || !st) return;
+    g.save(); g.beginPath(); g.rect(st.x, st.y, st.w, st.h); g.clip(); hwSrc(g, a);
+    const x0 = ox + Math.floor((st.x - ox) / T) * T, y0 = oy + Math.floor((st.y - oy) / T) * T;
+    for (let y = y0; y < st.y + st.h; y += T) for (let x = x0; x < st.x + st.w; x += T) g.drawImage(img, x, y, T, T);
+    g.restore();
+  }
   function hwFeather(hw, g, gr, h, top) {
     const st = hw.stage, G = hw.g;
     g.save(); g.globalCompositeOperation = 'destination-out'; g.globalAlpha = 1;
@@ -5199,10 +5236,7 @@
       }
     }
     if (hw.towerDark > 0) { hwSrc(g, hw.towerDark); g.fillStyle = '#0c0817'; g.fillRect(tw.x, tw.y, tw.w, tw.h); }
-    if (hw.rain > 0.01 && hw.pat.mid) {
-      g.save(); hwSrc(g, 0.35 * hw.rain); g.translate(hw.oxF, hw.oyF); g.fillStyle = hw.pat.mid[hw.slant];
-      g.fillRect(st.x - hw.oxF, st.y - hw.oyF, st.w, st.h); g.restore();
-    }
+    if (hw.rain > 0.01) hwTile(g, scene.sprites.hw.rainFar[hw.slant], st, hw.oxF, hw.oyF, 1, 0.35 * hw.rain);
     for (const b of hw.far) hwFogDraw(hw, g, b, false);
     hwTreeDraw(hw, g);
     hwCrowDraw(hw, g);
@@ -5307,10 +5341,7 @@
     }
     if (!low) hwFogDraw(hw, g, hw.nearFog[0], true);
     if (hw.rain > 0.01) {
-      if (!low && hw.pat.near) {
-        g.save(); hwSrc(g, 0.5 * hw.rain); g.translate(hw.oxN, hw.oyN); g.scale(1.5, 1.5); g.fillStyle = hw.pat.near[hw.slant];
-        g.fillRect((st.x - hw.oxN) / 1.5, (st.y - hw.oyN) / 1.5, st.w / 1.5, st.h / 1.5); g.restore();
-      }
+      if (!low) hwTile(g, scene.sprites.hw.rainNear[hw.slant], st, hw.oxN, hw.oyN, 1.5, 0.5 * hw.rain);
       hwSrc(g); g.lineWidth = 1;
       for (const s of hw.splash) {
         if (s.age >= 0.15) continue;
@@ -5437,7 +5468,7 @@
     if (real < (hw.level === 0 ? 31 : 48)) return true;       // 30 fps, 20 fps when stepped down
     scene.last = now;
     const t0 = performance.now();
-    if (now - hw.measuredAt > 2000) { hw.measuredAt = now; hwLayout(); }
+    if (now - hw.measuredAt > 500) { hw.measuredAt = now; hwLayout(); }   // the side cards change height with their status text
     if (!hw.stage) return true;
     hwStep(Math.min(0.1, real / 1000));
     hwDraw(false);
