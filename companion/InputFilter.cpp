@@ -9,6 +9,8 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace rtx::winmsg {
 namespace {
@@ -180,22 +182,89 @@ bool           g_apiHooked         = false;
 
 // The game's own cursor: the last one its code set. The game sets it only when it changes, so a cursor
 // put up for a panel, or left by the launcher window around the game, would stay until the game next
-// changed it. It is shown over the panels too and put back whenever the pointer is over the game.
+// changed it. It is put back whenever the pointer is over the game.
 std::atomic<HCURSOR> g_gameCursor{ nullptr };
 std::atomic<bool>    g_gameCursorKnown{ false };
+
+// The panels show the game's plain pointer, not the last cursor, which follows what is under the pointer
+// (an axe over a tree). The plain one is the cursor the game switches back to after every hover, so it
+// is the image with the most switches into it, AFK on a tree included. Images are compared by content,
+// in case the game makes a fresh handle for the same picture.
+struct CursorStat { std::uint64_t hash; std::uint32_t switches; std::uint32_t order; HCURSOR latest; };
+std::mutex                                  g_curMu;
+std::vector<CursorStat>                     g_curStats;
+std::unordered_map<HCURSOR, std::uint64_t>  g_curHash;
+HCURSOR                                     g_curLast = nullptr;
+std::atomic<HCURSOR>                        g_plainCursor{ nullptr };
+
+std::uint64_t CursorImageHash(HCURSOR c) {
+    ICONINFO ii{};
+    if (!GetIconInfo(c, &ii)) return (std::uint64_t)(std::uintptr_t)c;
+    std::uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](HBITMAP b) {
+        if (!b) return;
+        BITMAP bm{};
+        if (GetObjectW(b, sizeof(bm), &bm)) {
+            const LONG n = bm.bmWidthBytes * bm.bmHeight;
+            if (n > 0 && n <= (1 << 20)) {
+                std::vector<BYTE> buf((size_t)n);
+                const LONG got = GetBitmapBits(b, n, buf.data());
+                for (LONG i = 0; i < got; ++i) { h ^= buf[(size_t)i]; h *= 1099511628211ull; }
+            }
+        }
+        DeleteObject(b);
+    };
+    mix(ii.hbmMask); mix(ii.hbmColor);
+    return h ^ ((std::uint64_t)ii.xHotspot << 32) ^ ii.yHotspot;
+}
+void NoteGameCursor(HCURSOR c) {
+    std::lock_guard<std::mutex> lk(g_curMu);
+    if (!c || c == g_curLast) { g_curLast = c; return; }
+    g_curLast = c;
+    auto hit = g_curHash.find(c);
+    std::uint64_t h;
+    if (hit != g_curHash.end()) h = hit->second;
+    else { h = CursorImageHash(c); if (g_curHash.size() < 512) g_curHash.emplace(c, h); }
+    CursorStat* st = nullptr;
+    for (auto& e : g_curStats) if (e.hash == h) { st = &e; break; }
+    if (!st) {
+        if (g_curStats.size() >= 64) return;
+        g_curStats.push_back(CursorStat{ h, 0, (std::uint32_t)g_curStats.size(), c });
+        st = &g_curStats.back();
+    }
+    st->switches++; st->latest = c;
+    const CursorStat* best = nullptr;   // most switches, the earliest seen on a tie
+    for (const auto& e : g_curStats)
+        if (!best || e.switches > best->switches || (e.switches == best->switches && e.order < best->order)) best = &e;
+    g_plainCursor.store(best ? best->latest : nullptr);
+}
 HCURSOR WINAPI SetCursor_hook(HCURSOR c) {
     g_gameCursor.store(c);
     g_gameCursorKnown.store(true);
+    NoteGameCursor(c);
     return g_origSetCursor ? g_origSetCursor(c) : nullptr;
 }
 // ours go straight to the original, so they are never taken for the game's
 void SetOwnCursor(HCURSOR c) { if (g_origSetCursor) g_origSetCursor(c); else SetCursor(c); }
-// Ultralight cursor ids 0 (pointer) and 2 (hand) are the plain pointer: the game's own cursor stands in
-// for them when it has a visible one. Text, resize and the rest keep the system shapes.
+// Ultralight cursor ids 0 (pointer) and 2 (hand) are the plain pointer: the game's plain pointer stands in
+// for them once it is known and still alive. Text, resize and the rest keep the system shapes.
+// a handle the game may have destroyed is checked again at most every 2 s (this runs on every mouse move)
+bool CursorAlive(HCURSOR c) {
+    static HCURSOR s_ok = nullptr;
+    static ULONGLONG s_at = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (c == s_ok && now - s_at < 2000) return true;
+    ICONINFO ii{};
+    if (!GetIconInfo(c, &ii)) return false;
+    if (ii.hbmMask) DeleteObject(ii.hbmMask);
+    if (ii.hbmColor) DeleteObject(ii.hbmColor);
+    s_ok = c; s_at = now;
+    return true;
+}
 HCURSOR UiCursorFor(std::uint32_t id) {
-    if ((id == 0 || id == 2) && g_gameCursorKnown.load()) {
-        HCURSOR g = g_gameCursor.load();
-        if (g) return g;
+    if (id == 0 || id == 2) {
+        HCURSOR g = g_plainCursor.load();
+        if (g && CursorAlive(g)) return g;
     }
     return LoadCursorW(nullptr, Win32CursorFor(id));
 }
