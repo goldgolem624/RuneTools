@@ -5,6 +5,7 @@
 #include "InputShare.h"
 
 #include <detours.h>
+#include <atomic>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -169,11 +170,41 @@ bool UiActive() {
 
 typedef HWND (WINAPI* GetWnd_t)();
 typedef BOOL (WINAPI* TranslateMsg_t)(const MSG*);
+typedef HCURSOR (WINAPI* SetCursor_t)(HCURSOR);
 GetWnd_t       g_origGetForeground = nullptr;
 GetWnd_t       g_origGetActive     = nullptr;
 GetWnd_t       g_origGetFocus      = nullptr;
 TranslateMsg_t g_origTranslate     = nullptr;
+SetCursor_t    g_origSetCursor     = nullptr;
 bool           g_apiHooked         = false;
+
+// The game's own cursor: the last one its code set. The game sets it only when it changes, so a cursor
+// put up for a panel, or left by the launcher window around the game, would stay until the game next
+// changed it. It is shown over the panels too and put back whenever the pointer is over the game.
+std::atomic<HCURSOR> g_gameCursor{ nullptr };
+std::atomic<bool>    g_gameCursorKnown{ false };
+HCURSOR WINAPI SetCursor_hook(HCURSOR c) {
+    g_gameCursor.store(c);
+    g_gameCursorKnown.store(true);
+    return g_origSetCursor ? g_origSetCursor(c) : nullptr;
+}
+// ours go straight to the original, so they are never taken for the game's
+void SetOwnCursor(HCURSOR c) { if (g_origSetCursor) g_origSetCursor(c); else SetCursor(c); }
+// Ultralight cursor ids 0 (pointer) and 2 (hand) are the plain pointer: the game's own cursor stands in
+// for them when it has a visible one. Text, resize and the rest keep the system shapes.
+HCURSOR UiCursorFor(std::uint32_t id) {
+    if ((id == 0 || id == 2) && g_gameCursorKnown.load()) {
+        HCURSOR g = g_gameCursor.load();
+        if (g) return g;
+    }
+    return LoadCursorW(nullptr, Win32CursorFor(id));
+}
+// Over the game: its own cursor, when it has set one. False when it has not, so the caller falls back.
+bool RestoreGameCursor() {
+    if (!g_gameCursorKnown.load()) return false;
+    SetOwnCursor(g_gameCursor.load());
+    return true;
+}
 
 HWND WINAPI GetForeground_hook() {
     if (g_gameWindow && KeepFocused()) return g_gameWindow;
@@ -202,13 +233,15 @@ void InstallApiHooks() {
     g_origGetActive     = reinterpret_cast<GetWnd_t>(GetProcAddress(u, "GetActiveWindow"));
     g_origGetFocus      = reinterpret_cast<GetWnd_t>(GetProcAddress(u, "GetFocus"));
     g_origTranslate     = reinterpret_cast<TranslateMsg_t>(GetProcAddress(u, "TranslateMessage"));
-    if (!g_origGetForeground || !g_origGetActive || !g_origGetFocus || !g_origTranslate) return;
+    g_origSetCursor     = reinterpret_cast<SetCursor_t>(GetProcAddress(u, "SetCursor"));
+    if (!g_origGetForeground || !g_origGetActive || !g_origGetFocus || !g_origTranslate || !g_origSetCursor) return;
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
     DetourAttach(&reinterpret_cast<PVOID&>(g_origGetForeground), reinterpret_cast<PVOID>(GetForeground_hook));
     DetourAttach(&reinterpret_cast<PVOID&>(g_origGetActive),     reinterpret_cast<PVOID>(GetActive_hook));
     DetourAttach(&reinterpret_cast<PVOID&>(g_origGetFocus),      reinterpret_cast<PVOID>(GetFocus_hook));
     DetourAttach(&reinterpret_cast<PVOID&>(g_origTranslate),     reinterpret_cast<PVOID>(Translate_hook));
+    DetourAttach(&reinterpret_cast<PVOID&>(g_origSetCursor),     reinterpret_cast<PVOID>(SetCursor_hook));
     if (DetourTransactionCommit() == NO_ERROR) g_apiHooked = true;
 }
 
@@ -398,10 +431,11 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                     ScreenToClient(hwnd, &p);
                     SnapshotRects();
                     if (g_uiButtons || PtInUi(p.x, p.y)) {
-                        SetCursor(LoadCursorW(nullptr, Win32CursorFor(g_input->cursor_id)));
+                        SetOwnCursor(UiCursorFor(g_input->cursor_id));
                         return TRUE;
                     }
                 }
+                if (LOWORD(lparam) == HTCLIENT && RestoreGameCursor()) return TRUE;
                 // The game's own procedure leaves this to DefWindowProc, which for a child window first
                 // sends it to the parent and waits: the launcher's window, whose loop answers on its next
                 // tick, some 9 ms later, for every mouse move. Answered here instead, the way
@@ -409,7 +443,7 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
                 // whatever the game set itself.
                 if (EmbeddedActive() && LOWORD(lparam) == HTCLIENT) {
                     HCURSOR cls = reinterpret_cast<HCURSOR>(GetClassLongPtrW(hwnd, GCLP_HCURSOR));
-                    if (cls) SetCursor(cls);
+                    if (cls) SetOwnCursor(cls);
                     return TRUE;
                 }
                 break;
@@ -421,6 +455,8 @@ LRESULT CALLBACK FilterProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         g_uiButtons = 0;
         g_gameButtons = 0;
         g_wasOverUi = false;
+        // no panels up, but the pointer may come in from the launcher around the game with its cursor
+        if (!g_closing && msg == WM_SETCURSOR && LOWORD(lparam) == HTCLIENT && RestoreGameCursor()) return TRUE;
     }
     return CallWindowProcW(g_orig, hwnd, msg, wparam, lparam);
 }
