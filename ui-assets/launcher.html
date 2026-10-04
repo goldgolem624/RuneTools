@@ -954,14 +954,14 @@
   .hw-stars i:nth-child(12) { left: 96.4%; top: 7.4%; width: 1.5px; height: 1.6px; opacity: 0.36; }
   .hw-cv { position: absolute; left: 0; top: 0; width: 0; height: 0; display: block; pointer-events: none; }
   .hw-manor { position: absolute; left: 0; right: 0; bottom: 98px; height: 260px; }
-  .hw-house { position: absolute; right: 139px; bottom: 172px; width: 167px; height: 137px; }
+  .hw-house { position: absolute; right: 139px; bottom: 184px; width: 167px; height: 137px; }
   .hw-graves { position: absolute; left: 0; right: 0; bottom: 78px; height: 190px; }
   .hw-ground { position: absolute; left: 0; right: 0; bottom: 38px; height: 112px; overflow: hidden;
     background: linear-gradient(180deg, rgba(6, 4, 9, 0) 0, rgba(6, 4, 9, 0.8) 20px, #060409 40px, #040307 62%, #020104); }
   .hw-ground::before { content: ""; position: absolute; right: -128px; bottom: -320px; width: 640px; height: 640px;
     background: radial-gradient(closest-side, rgba(255, 140, 58, 0.14), rgba(255, 140, 58, 0) 68%); transform: scaleY(0.45625); }
   .hw-tomb { position: absolute; right: 57px; bottom: 78px; width: 235px; height: 116px; }
-  .hw-gate { position: absolute; right: 21px; bottom: 64px; width: 240px; height: 172px; }
+  .hw-gate { position: absolute; right: 34px; bottom: 64px; width: 200px; height: 134px; }
   .hw-lanterns { position: absolute; right: 160px; bottom: 44px; width: 150px; height: 82px; }
   .hw-gate svg, .hw-lanterns svg { width: 100%; height: 100%; display: block; }
   .hw-rm-probe { position: absolute; left: 0; top: 0; width: 0; height: 0; }
@@ -4044,7 +4044,7 @@
   const HW_WIN = [[58, 92, 13, 18, 0.5], [88, 92, 13, 18, 1.1], [118, 92, 13, 18, 2.3], [164, 70, 13, 20, 2.9], [12, 114, 12, 16, 3.7]];
   const HW_CLIP = [110, 150, 110, 37.6, 118, 43.9, 118, -4, 125, -4, 125, 49.3, 142, 62.5, 142, 54, 168, 12, 174, -6, 180, 12, 206, 54, 198, 54, 198, 150];
   // the flock's flight out of the tower window, in px from the right and bottom edges
-  const HW_FLOCK = [167, 234, 196, 252, 266, 267, 321, 255, 350, 228, 266, 290, 186, 282, 86, 267, 36, 237, 66, 207, 116, 237, 91, 282, 66, 335];
+  const HW_FLOCK = [167, 246, 196, 264, 266, 279, 321, 267, 350, 240, 266, 302, 186, 294, 86, 279, 36, 249, 66, 219, 116, 249, 91, 294, 66, 347];
   const HW_STARS = [[22, 280, 1.6, 0.45], [70, 248, 1.4, 0.35], [118, 270, 1.8, 0.5], [50, 214, 1.3, 0.3], [352, 268, 1.5, 0.4]];
   // crow poses in a 36 x 30 cell, feet at (18, 28): body ellipse, head, beak, neck, tail, wing, legs, eye glints
   const HW_CROW = (() => {
@@ -4317,9 +4317,9 @@
   // every point the scene hangs on, in window px, from the static drawings' boxes (px from the right and bottom)
   function hwGeom(W, H) {
     const hw = scene.hw, st = hw.stage;
-    const hx = (v) => W - 306 + (v + 8) * 167 / 214, hy = (v) => H - 309 + (v + 6) * 137 / 156;
+    const hx = (v) => W - 306 + (v + 8) * 167 / 214, hy = (v) => H - 321 + (v + 6) * 137 / 156;
     const tx = (v) => W - 292 + (v - 872) * 235 / 264, ty = (v) => H - 194 + (v - 74);
-    const gx = (v) => W - 261 + 0.8 * v, gy = (v) => H - 224 + 0.8 * v;
+    const gx = (v) => W - 234 + v * 2 / 3, gy = (v) => H - 197.33 + v * 2 / 3;   // the gate box: 200 x 134 at right 34, bottom 64
     const lx = (v) => W - 309.55 + 0.74545 * v, ly = (v) => H - 126 + 0.74545 * v;
     const prev = hw.g, G = hw.g = { lx, ly, W, H };
     G.tree = { x: W - 342, y: H - 80 };
@@ -4333,7 +4333,7 @@
       cx: hx(w[0] + w[2] / 2), cy: hy(w[1] + w[3] / 2), ph: w[4] }));
     G.clip = []; for (let i = 0; i < HW_CLIP.length; i += 2) G.clip.push(hx(HW_CLIP[i]), hy(HW_CLIP[i + 1]));
     G.hook = { x: gx(150), y: gy(74) };
-    G.spire = { x: W - 164, y: H - 270 };
+    G.spire = { x: W - 164, y: H - 282 };
     G.belfry = { x: hx(174), y: hy(36) };
     G.caps = [gx(30), gy(68), gx(270), gy(68)];
     G.faceA = { x: lx(42), y: ly(90) }; G.faceB = { x: lx(126.24), y: ly(86.8) };
