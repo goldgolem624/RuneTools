@@ -936,7 +936,8 @@
   html[data-theme="halloween"] .hw-scene { display: block; }
   html[data-theme="halloween"] .fx-back { display: none; }
   .hw-sky { position: absolute; left: 0; right: 0; top: 0; bottom: 0;
-    background: linear-gradient(180deg, #020106 0%, #05040b 34%, #0a0612 64%, #0f0918 86%, #150c1d 100%); }
+    background: radial-gradient(circle 330px at calc(100% - 250px) calc(100% - 262px), rgba(72, 58, 118, 0.26), rgba(52, 40, 92, 0.10) 52%, rgba(40, 30, 70, 0) 100%),
+      linear-gradient(180deg, #020106 0%, #05040b 34%, #0a0612 64%, #0f0918 86%, #150c1d 100%); }
   .hw-stars { position: absolute; left: 0; right: 0; top: 0; bottom: 262px; }
   .hw-stars i { position: absolute; border-radius: 50%; background: #e6dcff; }
   .hw-stars i:nth-child(1) { left: 3.2%; top: 7.2%; width: 1.7px; height: 1.9px; opacity: 0.19; }
@@ -955,10 +956,10 @@
   .hw-manor { position: absolute; left: 0; right: 0; bottom: 98px; height: 260px; }
   .hw-house { position: absolute; right: 139px; bottom: 172px; width: 167px; height: 137px; }
   .hw-graves { position: absolute; left: 0; right: 0; bottom: 78px; height: 190px; }
-  .hw-ground { position: absolute; left: 0; right: 0; bottom: 38px; height: 112px;
-    background:
-      radial-gradient(320px 146px at calc(100% - 192px) 100%, rgba(255, 140, 58, 0.14), transparent 68%),
-      linear-gradient(180deg, #060409, #040307 60%, #020104); }
+  .hw-ground { position: absolute; left: 0; right: 0; bottom: 38px; height: 112px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(6, 4, 9, 0) 0, rgba(6, 4, 9, 0.8) 20px, #060409 40px, #040307 62%, #020104); }
+  .hw-ground::before { content: ""; position: absolute; right: -128px; bottom: -320px; width: 640px; height: 640px;
+    background: radial-gradient(closest-side, rgba(255, 140, 58, 0.14), rgba(255, 140, 58, 0) 68%); transform: scaleY(0.45625); }
   .hw-tomb { position: absolute; right: 57px; bottom: 78px; width: 235px; height: 116px; }
   .hw-gate { position: absolute; right: 21px; bottom: 64px; width: 240px; height: 172px; }
   .hw-lanterns { position: absolute; right: 160px; bottom: 44px; width: 150px; height: 82px; }
@@ -2360,7 +2361,7 @@
   <div class="hw-stars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
   <canvas class="hw-cv" id="hwSky"></canvas>
   <div class="hw-manor"><svg class="bd-art" viewBox="0 0 1200 260" preserveAspectRatio="none"><g fill="#171024"><path d="M0 260 L0 196 Q150 168 320 182 Q430 190 520 166 Q660 128 820 150 Q980 172 1200 150 L1200 260Z"/></g></svg></div>
-  <div class="hw-house"><svg class="bd-art" viewBox="-8 -6 214 156" preserveAspectRatio="none"><g fill="#100a1c"><path d="M40 150 L40 74 L150 74 L150 150Z"/><path d="M28 78 L95 26 L162 78Z"/><path d="M150 150 L150 52 L198 52 L198 150Z"/><path d="M142 54 L174 12 L206 54Z"/><path d="M0 150 L0 100 L40 100 L40 150Z"/><path d="M-8 102 L20 72 L48 102Z"/><rect x="58" y="4" width="7" height="28"/><rect x="118" y="-4" width="7" height="36"/><path d="M168 12 L174 -6 L180 12Z"/></g><g class="bd-win"><rect x="58" y="92" width="13" height="18" rx="2"/><rect x="88" y="92" width="13" height="18" rx="2"/><rect x="118" y="92" width="13" height="18" rx="2"/><rect x="164" y="70" width="13" height="20" rx="2"/><rect x="12" y="114" width="12" height="16" rx="2"/></g></svg></div>
+  <div class="hw-house"><svg class="bd-art" viewBox="-8 -6 214 156" preserveAspectRatio="none"><g fill="#0a0714"><path d="M40 150 L40 74 L150 74 L150 150Z"/><path d="M28 78 L95 26 L162 78Z"/><path d="M150 150 L150 52 L198 52 L198 150Z"/><path d="M142 54 L174 12 L206 54Z"/><path d="M0 150 L0 100 L40 100 L40 150Z"/><path d="M-8 102 L20 72 L48 102Z"/><rect x="58" y="4" width="7" height="28"/><rect x="118" y="-4" width="7" height="36"/><path d="M168 12 L174 -6 L180 12Z"/></g><g class="bd-win"><rect x="58" y="92" width="13" height="18" rx="2"/><rect x="88" y="92" width="13" height="18" rx="2"/><rect x="118" y="92" width="13" height="18" rx="2"/><rect x="164" y="70" width="13" height="20" rx="2"/><rect x="12" y="114" width="12" height="16" rx="2"/></g></svg></div>
   <div class="hw-graves"><svg class="bd-art" viewBox="0 0 1200 190" preserveAspectRatio="none"><g fill="#0c0816"><path d="M0 190 L0 150 Q180 132 380 146 Q580 160 780 140 Q960 122 1200 138 L1200 190Z"/></g><g fill="#0a0713"><g transform="translate(70 0) rotate(-3 0 150)"><path d="M-15 150 L-15 112 Q0 94 15 112 L15 150 Z"/></g><g transform="translate(150 0) rotate(2 0 150)"><path d="M-12 150 L-12 126 Q0 108 12 126 L12 150 Z"/></g><g transform="translate(250 0) rotate(-1 0 150)"><path d="M-17 150 L-17 102 Q0 84 17 102 L17 150 Z"/></g><g transform="translate(340 0) rotate(4 0 150)"><path d="M-11 150 L-11 130 Q0 112 11 130 L11 150 Z"/></g><g transform="translate(430 0) rotate(-2 0 150)"><path d="M-16 150 L-16 108 Q0 90 16 108 L16 150 Z"/></g><g transform="translate(520 0) rotate(1 0 150)"><path d="M-13 150 L-13 122 Q0 104 13 122 L13 150 Z"/></g><g transform="translate(640 0) rotate(-3 0 150)"><path d="M-18 150 L-18 98 Q0 80 18 98 L18 150 Z"/></g><g transform="translate(730 0) rotate(2 0 150)"><path d="M-12 150 L-12 126 Q0 108 12 126 L12 150 Z"/></g></g></svg></div>
   <div class="hw-ground"></div>
   <canvas class="hw-cv" id="hwMid"></canvas>
@@ -3659,11 +3660,15 @@
       if (bg.getImageData(1, 1, 1, 1).data[0] < 120) return;
     } catch (e) { return; }
     const proto = CanvasRenderingContext2D.prototype, raw = proto.drawImage;
-    const STEPS = 48, baked = new WeakMap();
+    // copies are dropped all at once past 24 MB and made again as they are needed
+    const STEPS = 48, BUDGET = 24e6;
+    let baked = new WeakMap(), bytes = 0;
     function bake(img, k) {
       let m = baked.get(img);
       if (!m) { m = []; baked.set(img, m); }
       if (m[k]) return m[k];
+      if (bytes > BUDGET) { baked = new WeakMap(); bytes = 0; m = []; baked.set(img, m); }
+      bytes += img.width * img.height * 4;
       const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
       const g = c.getContext('2d');
       raw.call(g, img, 0, 0);
@@ -3711,15 +3716,13 @@
       g.beginPath(); g.ellipse(r - r * 0.2, r * 0.75, r * 0.08, r * 0.12, 0, 0, 6.283); g.fill();
       g.beginPath(); g.ellipse(r + r * 0.2, r * 0.75, r * 0.08, r * 0.12, 0, 0, 6.283); g.fill();
     });
-    // the Halloween scene fades these three, so they take their alpha from a baked copy where needed
-    scene.sprites.fog.__rtxSprite = scene.sprites.fogWarm.__rtxSprite = scene.sprites.ghost.__rtxSprite = true;
     // a blossom petal, a heart, a clover leaf and a firefly: one small canvas each, then blitted
     scene.sprites.petal = sprite(32, (g, n) => {
       const grd = g.createLinearGradient(0, 0, n, n);
       grd.addColorStop(0, 'rgba(255, 228, 240, 0.95)');
       grd.addColorStop(1, 'rgba(255, 168, 205, 0.85)');
       g.fillStyle = grd;
-      g.beginPath(); g.ellipse(n / 2, n / 2, n * 0.44, n * 0.24, 0.5, 0, 6.283); g.fill();
+      g.beginPath(); g.save(); g.translate(n / 2, n / 2); g.rotate(0.5); g.ellipse(0, 0, n * 0.44, n * 0.24, 0, 0, 6.283); g.restore(); g.fill();
     });
     scene.sprites.heart = sprite(40, (g, n) => {
       const r = n / 2;
@@ -3730,14 +3733,14 @@
       g.bezierCurveTo(n * 0.78, n * 0.06, n * 1.08, n * 0.5, r, n * 0.86);
       g.fill();
       g.fillStyle = 'rgba(255, 210, 225, 0.55)';
-      g.beginPath(); g.ellipse(n * 0.36, n * 0.36, n * 0.08, n * 0.05, -0.5, 0, 6.283); g.fill();
+      g.beginPath(); g.save(); g.translate(n * 0.36, n * 0.36); g.rotate(-0.5); g.ellipse(0, 0, n * 0.08, n * 0.05, 0, 0, 6.283); g.restore(); g.fill();
     });
     scene.sprites.clover = sprite(36, (g, n) => {
       const r = n / 2;
       g.fillStyle = 'rgba(126, 206, 108, 0.92)';
       for (const a of [-2.094, 0, 2.094]) {                       // three leaves, 120 degrees apart
         g.beginPath();
-        g.ellipse(r + Math.sin(a) * n * 0.2, r - Math.cos(a) * n * 0.2, n * 0.19, n * 0.24, a, 0, 6.283);
+        g.save(); g.translate(r + Math.sin(a) * n * 0.2, r - Math.cos(a) * n * 0.2); g.rotate(a); g.ellipse(0, 0, n * 0.19, n * 0.24, 0, 0, 6.283); g.restore();
         g.fill();
       }
       g.strokeStyle = 'rgba(96, 166, 84, 0.9)'; g.lineWidth = 2;
@@ -3767,6 +3770,8 @@
         g.beginPath(); g.moveTo(0, -n / 2 + 10); g.lineTo(5, -n / 2 + 16); g.stroke();
       }
     });
+    // every sprite here is drawn faded, so each takes its alpha from a baked copy where needed
+    for (const k in scene.sprites) { const c = scene.sprites[k]; if (c && c.getContext) c.__rtxSprite = true; }
   }
   function sceneResize() {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -3998,11 +4003,12 @@
       if (st.life <= 0 || st.x > W + 80 || st.y > H * 0.6) scene.star = null;
       else {
         gb.globalAlpha = Math.max(0, Math.min(1, st.life));
-        const grd = gb.createLinearGradient(st.x, st.y, st.x - st.vx * 0.12, st.y - st.vy * 0.12);
-        grd.addColorStop(0, 'rgba(255,255,255,0.95)');
-        grd.addColorStop(1, 'rgba(180,220,255,0)');
-        gb.strokeStyle = grd; gb.lineWidth = 2; gb.lineCap = 'round';
-        gb.beginPath(); gb.moveTo(st.x, st.y); gb.lineTo(st.x - st.vx * 0.12, st.y - st.vy * 0.12); gb.stroke();
+        const dx = -st.vx * 0.024, dy = -st.vy * 0.024;   // the tail fades in five solid steps
+        gb.lineWidth = 2; gb.lineCap = 'butt';
+        for (let i = 0; i < 5; i++) {
+          gb.strokeStyle = 'rgba(' + (i ? '210,232,255' : '255,255,255') + ',' + (0.95 * (1 - i / 5)).toFixed(3) + ')';
+          gb.beginPath(); gb.moveTo(st.x + dx * i, st.y + dy * i); gb.lineTo(st.x + dx * (i + 1), st.y + dy * (i + 1)); gb.stroke();
+        }
       }
     }
     if (scene.theme === 'newyear' || scene.theme === 'lunar') fireworksStep(gb, dt, t, W, H);
@@ -4117,9 +4123,9 @@
       g.save(); g.translate(p[0], p[1] + dy); g.scale(k, k * p[3] / p[2]);
       const grd = g.createRadialGradient(0, 0, 0, 0, 0, p[2]);
       grd.addColorStop(0, 'rgba(' + col + ',' + a0 + ')'); grd.addColorStop(0.6, 'rgba(' + col + ',' + a1 + ')'); grd.addColorStop(1, 'rgba(' + col + ',0)');
-      g.fillStyle = grd; g.beginPath(); g.arc(0, 0, p[2], 0, HW_TAU); g.fill(); g.restore();
+      g.fillStyle = grd; g.fillRect(-p[2], -p[2], 2 * p[2], 2 * p[2]); g.restore();
     };
-    S.cloud = []; S.rim = []; S.under = [];
+    S.cloud = []; S.rim = []; S.under = []; S.glow = [];
     for (let i = 0; i < 3; i++) {
       const r = hwRng(101 + i), P = [];
       for (let k = 0; k < 8; k++) {
@@ -4127,13 +4133,14 @@
         P.push([hwClamp(cx, rx, 256 - rx), hwClamp(cy, ry, 80 - ry), rx, ry]);
       }
       S.cloud.push(cv(256, 80, (g) => { for (const p of P) puff(g, p, '40,32,60', 0.55, 0.35, 0, 1); }));
+      S.glow.push(cv(256, 80, (g) => { for (const p of P) puff(g, p, '160,140,235', 0.5, 0.3, 0, 1); }));
       S.rim.push(cv(256, 80, (g) => {
         for (const p of P) puff(g, p, '226,218,250', 0.55, 0.35, 0, 1);
-        g.globalCompositeOperation = 'destination-out'; for (const p of P) puff(g, p, '0,0,0', 1, 1, 6, 0.94);
+        g.globalCompositeOperation = 'destination-out'; for (const p of P) puff(g, p, '0,0,0', 1, 1, 7, 1);
       }));
       S.under.push(cv(256, 80, (g) => {
         for (const p of P) puff(g, p, '150,100,230', 0.55, 0.35, 0, 1);
-        g.globalCompositeOperation = 'destination-out'; for (const p of P) puff(g, p, '0,0,0', 1, 1, -6, 0.94);
+        g.globalCompositeOperation = 'destination-out'; for (const p of P) puff(g, p, '0,0,0', 1, 1, -7, 1);
       }));
     }
     // six wingbeats of a bat: moonlit membranes, a dark body, rimmed on top so it reads against the night
@@ -4154,7 +4161,7 @@
       g.scale(2, 2);
       HW_CROW.forEach((f, i) => {
         g.save(); g.translate(i * 36, 0);
-        const parts = [(c) => c.ellipse(f.b[0], f.b[1], f.b[2], f.b[3], f.b[4], 0, HW_TAU), (c) => c.arc(f.h[0], f.h[1], f.h[2], 0, HW_TAU)];
+        const parts = [(c) => { c.save(); c.translate(f.b[0], f.b[1]); c.rotate(f.b[4]); c.ellipse(0, 0, f.b[2], f.b[3], 0, 0, HW_TAU); c.restore(); }, (c) => c.arc(f.h[0], f.h[1], f.h[2], 0, HW_TAU)];
         for (const p of [f.k, f.n, f.t, f.w]) if (p) parts.push((c) => poly(c, p));
         g.strokeStyle = 'rgba(196,186,236,0.5)'; g.lineWidth = 0.8;
         for (const p of parts) { g.beginPath(); p(g); g.stroke(); }
@@ -4192,8 +4199,8 @@
       }
       g.stroke();
     });
-    S.rainFar = [rain(201, 22, 10, 6, 0.21, 1, 'rgba(190,190,232,0.55)'), rain(202, 22, 10, 6, 0.42, 1, 'rgba(190,190,232,0.55)')];
-    S.rainNear = [rain(203, 9, 18, 8, 0.21, 1.4, 'rgba(205,205,240,0.6)'), rain(204, 9, 18, 8, 0.42, 1.4, 'rgba(205,205,240,0.6)')];
+    S.rainFar = [rain(201, 22, 10, 6, 0.21, 1, 'rgba(190,190,232,0.55)'), rain(201, 22, 10, 6, 0.42, 1, 'rgba(190,190,232,0.55)')];
+    S.rainNear = [rain(203, 11, 14, 8, 0.21, 0.9, 'rgba(205,205,240,0.62)'), rain(203, 11, 14, 8, 0.42, 0.9, 'rgba(205,205,240,0.62)')];
     // what this renderer can do: additive blending, and even-odd clipping
     S.lighter = false; S.evenodd = false;
     try {
@@ -4218,7 +4225,7 @@
     const now = performance.now(), reduced = hwReducedMotion();
     const hw = scene.hw = {
       cv: { sky: $('hwSky'), mid: $('hwMid'), near: $('hwNear'), gut: $('hwGut') }, ctx: {}, sizes: {}, pat: {},
-      level: 0, okSince: now, measuredAt: now - 1500, slowSince: 0, cost: 0, gap: 33, k: 1, f: 1,
+      level: 0, okSince: now, measuredAt: now - 1500, slowSince: 0, cost: 0, gap: 33, k: 1, f: 1, tick: 16.7, prevNow: 0,
       reduced, rand: hwRng(seed != null ? seed : reduced ? 1 : (Date.now() & 0x7fffffff)),
       t: 0, frame: 0, q: [], seeded: false, stage: null, ui: null, g: null, W: 0, H: 0,
       weather: 'calm', wSince: 0, calmSince: -1e9, base: 8, gusts: [], nextGust: 9,
@@ -4314,12 +4321,14 @@
     const tx = (v) => W - 292 + (v - 872) * 235 / 264, ty = (v) => H - 194 + (v - 74);
     const gx = (v) => W - 261 + 0.8 * v, gy = (v) => H - 224 + 0.8 * v;
     const lx = (v) => W - 309.55 + 0.74545 * v, ly = (v) => H - 126 + 0.74545 * v;
-    const G = hw.g = { lx, ly };
+    const prev = hw.g, G = hw.g = { lx, ly, W, H };
     G.tree = { x: W - 342, y: H - 80 };
     G.tk = hwClamp(((H - 80) - (st.y + 52)) / 183.3, 0.5, 0.9);   // a short window gets a smaller tree, so the crow stays clear of the panels
     const perchY = G.tree.y + (56.7 - 240) * G.tk;
     G.moon = { x: W - 314, y: Math.max(hwClamp(st.y + 34, H - 255, H - 231), Math.min(st.y + 42, H - 205)) };
     G.moon.y = Math.max(st.y + 34, Math.min(G.moon.y, perchY - 10));
+    G.tkT = G.tk; G.moonYT = G.moon.y;          // a side card changing height moves these over a moment
+    if (prev && prev.W === W && prev.H === H) { G.tk = prev.tk; G.moon.y = prev.moon.y; }
     G.win = HW_WIN.map((w) => ({ x: hx(w[0]), y: hy(w[1]), w: hx(w[0] + w[2]) - hx(w[0]), h: hy(w[1] + w[3]) - hy(w[1]),
       cx: hx(w[0] + w[2] / 2), cy: hy(w[1] + w[3] / 2), ph: w[4] }));
     G.clip = []; for (let i = 0; i < HW_CLIP.length; i += 2) G.clip.push(hx(HW_CLIP[i]), hy(HW_CLIP[i + 1]));
@@ -4334,7 +4343,7 @@
     G.tomb = { x: tx(922), y0: ty(150), top: ty(74) };
     G.gateX = gx(150); G.gyA = gy(130); G.gyB0 = gy(140); G.gyB1 = gy(100); G.inGate = { x: gx(150), y: gy(128) };
     G.skyH = Math.max(40, (H - 150) - st.y);
-    G.ftH = hw.ui.openTop ? 56 : 24; G.flW = hw.ui.openLeft ? 48 : 16;
+    G.ftH = hw.ui.openTop ? 56 : 24; G.flW = hw.ui.openLeft ? 22 : 12;
     // the flock path: a Catmull-Rom curve through the anchors, sampled, with running lengths
     const A = []; for (let i = 0; i < HW_FLOCK.length; i += 2) A.push([W - HW_FLOCK[i], H - HW_FLOCK[i + 1]]);
     const fx = [], fy = [];
@@ -4351,16 +4360,8 @@
     for (const k of ['sky', 'mid', 'near']) {
       const g = hw.ctx[k]; if (!g) continue;
       const lin = (x0, y0, x1, y1, c0, c1) => { const d = g.createLinearGradient(x0, y0, x1, y1); d.addColorStop(0, c0); d.addColorStop(1, c1); return d; };
-      const o = G.gr[k] = { ft: lin(0, st.y, 0, st.y + G.ftH, 'rgba(0,0,0,1)', 'rgba(0,0,0,0)'), fl: lin(st.x, 0, st.x + G.flW, 0, 'rgba(0,0,0,1)', 'rgba(0,0,0,0)') };
-      if (k === 'mid') o.dark = lin(0, H - 150, 0, H - 130, 'rgba(3,2,6,1)', 'rgba(3,2,6,0)');
-      if (k === 'near') {
-        o.dark = lin(0, H - 150, 0, H - 126, 'rgba(3,2,6,0)', 'rgba(3,2,6,1)');
-        o.fade = lin(0, st.y, 0, st.y + 40, 'rgba(2,1,4,0)', 'rgba(2,1,4,1)');
-        o.cleft = lin(0, H - 300, 0, H - 160, 'rgba(255,170,90,0)', 'rgba(255,170,90,1)');
-        const c = g.createLinearGradient(G.hook.x - 140, 0, G.hook.x + 140, 0);
-        c.addColorStop(0, 'rgba(255,170,90,0)'); c.addColorStop(0.5, 'rgba(255,170,90,1)'); c.addColorStop(1, 'rgba(255,170,90,0)');
-        o.ctop = c;
-      }
+      G.gr[k] = { ft: lin(0, st.y, 0, st.y + G.ftH, 'rgba(0,0,0,1)', 'rgba(0,0,0,0)'), fl: lin(st.x, 0, st.x + G.flW, 0, 'rgba(0,0,0,1)', 'rgba(0,0,0,0)'),
+        ramp: lin(st.x, 0, st.x + 150, 0, 'rgba(0,0,0,1)', 'rgba(0,0,0,0)') };
     }
   }
   function hwSeedState(hw) {
@@ -4368,7 +4369,7 @@
     hw.clouds = [
       { x: G.moon.x - 380, y: G.moon.y + 4, s: 1.25, a: 0.8, i: 0, ph: -1, mode: 'park', t0: 0, end: 0 },
       { x: W - 120, y: H - 268, s: 1.05, a: 0.5, i: 1 },
-      { x: W - 300, y: H - 232, s: 0.85, a: 0.38, i: 2 }];
+      { x: W - 170, y: H - 232, s: 0.85, a: 0.38, i: 2 }];
     hw.far = [];
     for (let i = 0; i < 4; i++) {
       const w = hr(220, 300);
@@ -4462,7 +4463,7 @@
     else if (s === 'build') { for (const b of hw.spire) if (b.mode !== 'hid') { b.mode = 'in'; b.t0 = t; b.outAt = -1; } }
     else if (s === 'rain') hw.raining = true;
     else if (s === 'clear') {
-      hw.raining = false; hw.clouds[0].mode = 'clear';
+      hw.raining = false; hw.clouds[0].mode = 'clear'; hw.clouds[0].t0 = t;
       hw.spire.forEach((b, i) => { if (b.mode === 'hid' || b.mode === 'in') b.outAt = t + (i ? 5 : 2); });
     } else if (s === 'calm') { hw.calmSince = t; hw.nextBeat = Math.max(hw.nextBeat, t + hr(8, 16)); }
   }
@@ -4505,13 +4506,14 @@
   function hwStrike(hw, side, ghost) {
     const t = hw.t, st = hw.stage, W = hw.W, H = hw.H;
     hw.strikeT = t; hw.strikeGhost = !!ghost; hw.afterSet = false;
-    const xb = side === 'B' ? W - 70 : W - 330, x1 = xb + hr(-24, 24), y0 = st.y - 8, y1 = H - 190;
+    const low = hw.g.skyH < 110;            // a short window: the bolt falls right of the tower, in front of the hill
+    const xb = side === 'B' || low ? W - 70 : W - 252, x1 = xb + hr(-24, 24), y0 = st.y - 8, y1 = low ? H - 160 : H - 190;
     const len = Math.hypot(x1 - xb, y1 - y0), main = hwBolt(xb, y0, x1, y1, 6, 0.14 * len), forks = [];
     for (const k of [18, 34]) {
       const sx = main[k * 2], sy = main[k * 2 + 1], a = (hw.rand() < 0.5 ? -1 : 1) * hr(0.45, 0.70), l = hr(0.3, 0.5) * len;
       forks.push(hwBolt(sx, sy, sx + Math.sin(a) * l, sy + Math.cos(a) * l, 4, 0.14 * l));
     }
-    hw.bolt = { xb, main, forks };
+    hw.bolt = { xb, main, forks, low };
     hw.dipUntil = t + 0.3; hw.thV += 0.8; hw.towerDark = 1; hw.relightT = -1;
     hw.crowGoAt = t + 0.1; hw.burstAt = t + 0.4;
     if (hw.walk) hw.walk = null;
@@ -4584,7 +4586,7 @@
     if (k === 'swoop') return !hw.swoop;
     if (k === 'spider') return !hw.spider && hw.stage.y - hw.ui.tb >= 120;
     if (k === 'crow') return hw.crow.st === 'perch' && hw.t - hw.crow.landT >= 45;
-    if (k === 'passing') return hw.clouds[0].mode === 'park';
+    if (k === 'passing') return hw.clouds[0].mode === 'park' && hw.nextStorm - hw.t > 20;
     return true;
   }
   function hwBeatStart(hw, kind) {
@@ -4592,14 +4594,19 @@
     let dur = 1;
     if (kind === 'ghost') { hwGhostStart(hw, hw.ghostNext); dur = 14; }
     else if (kind === 'toll') { const n = Math.floor(hr(1, 4)); hwTollStart(hw, n, Math.floor(hr(6, 11))); dur = 0.9 * n + 8; }
-    else if (kind === 'walk') { hw.walk = { t0: t }; dur = 4.5; }
+    else if (kind === 'walk') { hw.walk = { t0: t }; dur = 5.8; }
     else if (kind === 'swoop') {
       hw.swoop = { t0: t, p: [st.x - 12, st.y + hr(30, 60), st.x + st.w / 2, st.y + hr(120, 170), hw.W + 12, st.y + hr(20, 50)], s: hr(14, 18), fph: hr(0, 1), x: 0, y: 0, rot: 0 };
       dur = 2.6;
     } else if (kind === 'spider') { hwSpiderStart(hw); dur = 16; }
     else if (kind === 'crow') { hwCrowGo(hw, t); dur = 3.5; }
     else if (kind === 'passing') { const c = hw.clouds[0]; c.mode = 'pass'; c.ph = -60 / 380; c.end = 90 / 380; c.t0 = t; c.a = 0; dur = 6; }
-    else if (kind === 'heat') { hwFlickStart(hw, 0.35, null); dur = 0.5; }
+    else if (kind === 'heat') {
+      hwFlickStart(hw, 0.35, null);
+      const f = hw.flicks[hw.flicks.length - 1];
+      if (f && f.t0 === t) hw.flicks.push({ t0: t + 0.32, D: 0.2, I: 0.25, c: f.c, v: 0 }, { t0: t + 0.75, D: 0.14, I: 0.4, c: f.c, v: 0 });
+      dur = 1.2;
+    }
     hw.beat = { kind, end: t + dur }; hw.last[kind] = t; hw.prevKind = kind;
   }
 
@@ -4677,20 +4684,22 @@
     hw.flickMax = fm;
     hw.fade = 1 - hwSmooth(0, 1.5, t);
     const a = hw.strikeT == null ? 1e9 : t - hw.strikeT;
-    hw.skyHot = hw.flicks.length > 0 || a < 1.5 || hw.after > 0.02 || hw.fade > 0;
+    hw.skyHot = hw.flicks.length > 0 || a < 1.5 || hw.after > 0.02 || hw.fade > 0 || (hw.clouds[0].mode === 'storm' && hw.clouds[0].ph < -0.05);
   }
   function hwCloudStep(hw, t, dt) {
-    const G = hw.g, st = hw.stage, mc = hw.clouds[0];
+    const G = hw.g, st = hw.stage, mc = hw.clouds[0], e = 1 - Math.exp(-dt / 0.7);
+    G.tk += (G.tkT - G.tk) * e; G.moon.y += (G.moonYT - G.moon.y) * e;
     mc.y = G.moon.y + 4;
-    if (mc.mode === 'storm') {
-      mc.ph = mc.ph < 0 ? Math.min(0, mc.ph + dt / 8) : Math.max(0, mc.ph - dt / 8);
+    if (mc.mode === 'storm') {                 // drawn over the moon, easing in, then heaving on the wind
+      const d = 0.035 * Math.sin(0.2 * t) - mc.ph;
+      mc.ph += Math.sign(d) * Math.min(Math.abs(d), dt * Math.min(1 / 6.5, 0.02 + 0.6 * Math.abs(d)));
       mc.a += (0.8 - mc.a) * Math.min(1, dt * 1.5);
     } else if (mc.mode === 'pass') {
       mc.ph += 10 / 380 * dt;
       mc.a = 0.45 * Math.max(0, Math.min(1, (t - mc.t0) / 2, (mc.end - mc.ph) * 380 / 30));
       if (mc.ph >= mc.end) { mc.mode = 'park'; mc.ph = -1; mc.a = 0.8; }
     } else if (mc.mode === 'clear') {
-      mc.ph += Math.max(22, 0.35 * hwWindAt(hw, mc.x)) / 380 * dt;
+      mc.ph += Math.min(Math.max(22, 0.35 * hwWindAt(hw, mc.x)), 3 + 9.5 * (t - mc.t0)) / 380 * dt;
       if (mc.ph >= 1.6) { mc.mode = 'park'; mc.ph = -1; }
     } else mc.ph = -1;
     mc.x = G.moon.x + mc.ph * 380;
@@ -4729,7 +4738,7 @@
     b.vy += (-4 * (b.oy - ty) - 3 * b.vy) * h; b.oy += b.vy * dt;
   }
   function hwTreeStep(hw, dt) {
-    const wT = hw.wT = hwWindAt(hw, hw.g.tree.x), tgt = (wT - 6) / 44, n = dt > 0.034 ? 2 : 1, h = dt / n;
+    const wT = hw.wT = hwWindAt(hw, hw.g.tree.x), tgt = (wT - 6) / 44 + 0.2 * Math.sin(0.5 * hw.t + 0.8 * Math.sin(0.17 * hw.t)), n = dt > 0.034 ? 2 : 1, h = dt / n;
     for (let i = 0; i < n; i++) { hw.SwV += (-18 * (hw.Sw - tgt) - 2.4 * hw.SwV) * h; hw.Sw = hwClamp(hw.Sw + hw.SwV * h, -0.4, 1.8); }
   }
   // the lantern swings from the gate's arch: a damped pendulum pushed by the wind, never quite still
@@ -4777,19 +4786,20 @@
     const pool = Math.round(8 * hw.f * low), extra = Math.round(12 * hw.f * low);
     const allowed = (w === 'calm' && t - hw.calmSince >= 20) || w === 'gather' || w === 'build';
     const L = hw.leaves;
+    const spot = () => hw.rand() < 0.5 ? [st.x + 20 + hw.rand() * (st.w - 20), st.y - 8] : [st.x - 10, st.y + 30 + hw.rand() * 0.55 * st.h];   // in over the card edge or from the left
     let base = 0, ext = 0;
     for (const l of L) if (l.extra) ext++; else base++;
     for (let i = L.length - 1; i >= 0; i--) {
       const l = L[i];
-      l.x += (hwWindAt(hw, l.x) + 12 * Math.sin(1.3 * t + l.ph)) * dt;
+      l.x += (hwWindAt(hw, l.x) + 6 + 12 * Math.sin(1.3 * t + l.ph)) * dt;
       l.y += (18 + 10 * Math.sin(2.1 * t + l.ph)) * dt;
       l.rot += l.spin * dt;
-      if (l.x > W + 12 || l.y > H - 44) {
-        if (!l.extra && allowed) { l.x = st.x - 10; l.y = st.y + 30 + hw.rand() * 0.55 * st.h; }
+      if (l.x > W + 12 || l.y > st.b + 8) {
+        if (!l.extra && allowed) { const p = spot(); l.x = p[0]; l.y = p[1]; }
         else { L.splice(i, 1); if (l.extra) ext--; else base--; }
       }
     }
-    const enter = (isExtra) => { L.push(hwLeaf(hw, st.x - 10, st.y + 30 + hw.rand() * 0.55 * st.h, isExtra)); if (isExtra) ext++; else base++; };
+    const enter = (isExtra) => { const p = spot(); L.push(hwLeaf(hw, p[0], p[1], isExtra)); if (isExtra) ext++; else base++; };
     if (allowed && base < pool && t >= hw.leafAt) { enter(false); hw.leafAt = t + 1.5; }
     if (w === 'build' && ext < extra && t >= hw.leafAt) { enter(true); hw.leafAt = t + 1; }      // the gale brings more
     const fl = hw.flurry;
@@ -4803,7 +4813,8 @@
     const st = hw.stage, G = hw.g, H = hw.H;
     hw.rain = hw.raining ? Math.min(1, hw.rain + dt / 3) : Math.max(0, hw.rain - dt / 4);
     if (hw.rain <= 0) { hw.glit.length = 0; for (const s of hw.splash) s.age += dt; return; }
-    hw.slant = hwWindAt(hw, st.x + st.w / 2) < 28 ? 0 : 1;
+    const wm = hwWindAt(hw, st.x + st.w / 2);
+    if ((hw.slant ? wm < 22 : wm > 34) && t - (hw.slantT || -1e9) > 3) { hw.slant = 1 - hw.slant; hw.slantT = t; }
     const tn = Math.tan(hw.slant ? 0.42 : 0.21);
     hw.oyF = (hw.oyF + 650 * dt) % 128; hw.oxF = (hw.oxF + 650 * tn * dt) % 128;
     hw.oyN = (hw.oyN + 1000 * dt) % 192; hw.oxN = (hw.oxN + 1000 * tn * dt) % 192;
@@ -4828,11 +4839,11 @@
   function hwFlockLaunch(hw, req) {
     const N = Math.min(req, Math.max(6, Math.round(12 * hw.f))), t = hw.t;
     for (let i = 0; i < N; i++) {
-      hw.flock.push({ t0: t + i * 1.2 / N + hr(0, 0.1), v: 120 * hr(0.88, 1.12), amp: hr(6, 14), s: hr(10, 15), hz: hr(8, 12), ph: hr(0, HW_TAU), fph: hr(0, 1),
+      hw.flock.push({ t0: t + i * 1.2 / N + hr(0, 0.1), v: 120 * hr(0.88, 1.12), amp: hr(6, 14), s: hr(10, 15), hz: hr(5.5, 7.5), ph: hr(0, HW_TAU), fph: hr(0, 1),
         x: 0, y: 0, rot: 0, sc: 0, on: false });
     }
     if (N >= 6) hw.stragAt = t + 15;
-    if (hw.rand() < 0.3) hwCrowGo(hw, t);
+    if (hw.rand() < 0.3 && !hw.q.some((e) => e[1] === 'strike')) hwCrowGo(hw, t);
   }
   function hwFlockAt(fl, L, out) {
     const c = fl.cum;
@@ -4908,7 +4919,7 @@
       b.vx -= 20 * dt; b.x += b.vx * dt; b.y += b.vy * dt;
       if (!b.front) {
         if (b.lead && b.y < st.y + 20) { b.front = true; b.ft = t; }
-        else if (!b.lead && b.y < st.y + 10) { hw.burst.splice(i, 1); continue; }
+        else if (!b.lead && b.y < st.y - 14) { hw.burst.splice(i, 1); continue; }
       }
       if (b.front && (t - b.ft > 1.5 || b.y < 30 || b.x < hw.ui.sideLeft - 40)) hw.burst.splice(i, 1);
     }
@@ -4943,8 +4954,8 @@
         done = gh.x <= end;
       }
     }
-    gh.hist.push(t, gh.x, gh.y);
-    if (gh.hist.length > 48) gh.hist.splice(0, 3);
+    if (!gh.hist.length || t - gh.hist[gh.hist.length - 3] >= 0.1) gh.hist.push(t, gh.x, gh.y);
+    if (gh.hist.length > 72) gh.hist.splice(0, 3);
     if (done) hw.ghost = null;
   }
   function hwGhostAt(gh, at) {
@@ -4980,9 +4991,9 @@
       const u = Math.min(1, (t - c.t0) / 3.0), p = Math.pow(u, 1.4);
       hwCubic(c, p, c.bx, c.by, c.bx + 40, c.by - 34, W - 220, H - 300, W + 30, H - 330);
       c.fr = 4 + Math.floor((t - c.t0) * 7) % 3; c.face = 1;
-      if (u >= 1) { c.st = 'away'; c.until = t + hr(25, 50); }
+      if (u >= 1) { c.st = 'away'; c.until = t + hr(12, 24); }
     } else if (c.st === 'away') {
-      if (t >= c.until && hw.weather === 'calm' && t - hw.calmSince >= 3) { c.st = 'back'; c.t0 = t; }
+      if (t >= c.until && (hw.weather === 'calm' || hw.weather === 'clear') && t - hw.wSince >= 3) { c.st = 'back'; c.t0 = t; }
     } else if (c.st === 'back') {
       const u = Math.min(1, (t - c.t0) / 3.2), p = 1 - (1 - u) * (1 - u);
       hwCubic(c, p, W + 30, H - 300, W - 150, H - 330, P.x + 60, P.y - 50, P.x, P.y);
@@ -5036,8 +5047,8 @@
       if (a >= s.hold) { s.ph = 'up'; s.t0 = t; s.from = s.y; s.glint = -1; }
     } else if (s.ph === 'up') {
       const mid = (s.from + s.top) / 2;
-      if (!s.half && s.y <= mid) { s.half = true; s.pause = t + 0.6; }
-      if (t >= s.pause) s.y -= 45 * dt;
+      if (!s.half && s.y <= mid) { s.half = true; s.pause = t + 0.9; }
+      if (t >= s.pause) s.y -= 80 * dt;
       s.tw = Math.sin(HW_TAU * 6 * t) > 0 ? 1 : -1;
       if (s.y < s.top - 10) {
         const c = hw.cv.gut;
@@ -5055,7 +5066,7 @@
     hw.last.toll = t;
   }
   function hwTowerStep(hw, t) {
-    if (hw.walk && t - hw.walk.t0 > 4.7) hw.walk = null;
+    if (hw.walk && t - hw.walk.t0 > 5.9) hw.walk = null;
     const T = hw.toll;
     if (T) {
       const last = T.t0 + 0.9 * (T.n - 1);
@@ -5113,6 +5124,13 @@
   function hwDrawSky(hw, g) {
     const st = hw.stage, G = hw.g, sp = scene.sprites.hw, W = hw.W, H = hw.H, t = hw.t, m = G.moon, S = hw.S;
     hwSrc(g); g.clearRect(st.x, st.y, st.w, G.skyH);
+    if (S > 0.003 && hw.bolt) {              // the strike lights the sky behind the house, the tree and the crow
+      const grd = g.createRadialGradient(hw.bolt.xb, H - 260, 0, hw.bolt.xb, H - 260, 260);
+      grd.addColorStop(0, 'rgba(214,200,255,' + (0.6 * S).toFixed(3) + ')'); grd.addColorStop(0.55, 'rgba(170,145,240,' + (0.22 * S).toFixed(3) + ')');
+      grd.addColorStop(1, 'rgba(150,120,230,' + (0.08 * S).toFixed(3) + ')');
+      hwSrc(g); g.fillStyle = grd; g.fillRect(st.x, st.y, st.w, G.skyH);
+      g.globalCompositeOperation = 'destination-out'; g.fillStyle = G.gr.sky.ramp; g.fillRect(st.x, st.y, 150, G.skyH); hwSrc(g);
+    }
     g.fillStyle = '#e6dcff';
     for (const s of hw.stars) {
       const x = W - s.r, y = H - s.b;
@@ -5125,11 +5143,6 @@
     g.drawImage(sp.halo, m.x - 90, m.y - 90, 180, 180);
     hwSrc(g, 0.8 * (0.45 + 0.55 * hw.moon));
     g.drawImage(sp.moon, m.x - 32, m.y - 32, 64, 64);
-    if (S > 0.003 && hw.bolt) {              // the strike lights the sky behind the house, the tree and the crow
-      const grd = g.createRadialGradient(hw.bolt.xb, H - 260, 0, hw.bolt.xb, H - 260, 260);
-      grd.addColorStop(0, 'rgba(214,200,255,' + (0.6 * S).toFixed(3) + ')'); grd.addColorStop(1, 'rgba(150,120,230,' + (0.25 * S).toFixed(3) + ')');
-      hwSrc(g); g.fillStyle = grd; g.fillRect(st.x, st.y, st.w, G.skyH);
-    }
     const vis = (c) => c.x + 128 * c.s > st.x && c.x - 128 * c.s < W && c.a > 0.004;
     for (const c of hw.clouds) {
       if (!vis(c)) continue;
@@ -5140,31 +5153,35 @@
       if (!vis(c)) continue;
       const a = 0.85 * hwClamp(1 - Math.hypot(c.x - m.x, c.y - m.y) / 170, 0, 1) * Math.min(1, c.a / 0.45) + (S > 0.003 ? 0.7 * S : 0);
       if (a > 0.004) { hwLit(g, a); g.drawImage(sp.rim[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s); }
+      if (S > 0.003) { hwLit(g, 0.4 * S); g.drawImage(sp.glow[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s); }
     }
     for (const f of hw.flicks) {
       if (f.v <= 0) continue;
       const c = hw.clouds[f.c];
+      hwLit(g, 0.4 * f.v); g.drawImage(sp.glow[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s);
       hwLit(g, 0.9 * f.v); g.drawImage(sp.rim[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s);
       hwLit(g, 0.6 * f.v); g.drawImage(sp.under[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s);
       hwSrc(g); g.fillStyle = 'rgba(140,120,200,' + (0.06 * f.v).toFixed(4) + ')'; g.fillRect(st.x, st.y, st.w, G.skyH);
     }
-    if (hw.after > 0.02) for (const c of hw.clouds) if (vis(c)) { hwLit(g, 0.5 * hw.after); g.drawImage(sp.under[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s); }
-    if (S > 0.3 && hw.bolt) {
-      const B = hw.bolt, path = (p) => { g.beginPath(); g.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]); };
-      g.lineJoin = 'round'; g.lineCap = 'round';
-      for (const L of [[7, 'rgba(150,120,255,0.22)'], [3, 'rgba(205,185,255,0.6)'], [1.5, 'rgba(255,255,255,0.95)']]) {
-        g.strokeStyle = L[1];
-        hwLit(g, S); g.lineWidth = L[0]; path(B.main); g.stroke();
-        hwLit(g, 0.7 * S); g.lineWidth = L[0] * 0.6; for (const f of B.forks) { path(f); g.stroke(); }
-      }
-    }
+    if (hw.after > 0.02) for (const c of hw.clouds) if (vis(c)) { hwLit(g, 0.5 * hw.after); g.drawImage(sp.under[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s); hwLit(g, 0.2 * hw.after); g.drawImage(sp.glow[c.i], c.x - 128 * c.s, c.y - 40 * c.s, 256 * c.s, 80 * c.s); }
+    if (S > 0.3 && hw.bolt && !hw.bolt.low) hwBoltDraw(hw, g);
     hwFeather(hw, g, G.gr.sky, G.skyH, true);
+  }
+  function hwBoltDraw(hw, g) {
+    const B = hw.bolt, S = hw.S, path = (p) => { g.beginPath(); g.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]); };
+    g.lineJoin = 'round'; g.lineCap = 'round';
+    for (const L of [[7, 'rgba(150,120,255,0.22)'], [3, 'rgba(205,185,255,0.6)'], [1.5, 'rgba(255,255,255,0.95)']]) {
+      g.strokeStyle = L[1];
+      hwLit(g, S); g.lineWidth = L[0]; path(B.main); g.stroke();
+      hwLit(g, 0.7 * S); g.lineWidth = L[0] * 0.6; for (const f of B.forks) { path(f); g.stroke(); }
+    }
+    hwSrc(g);
   }
   function hwTreeDraw(hw, g) {
     const B = hw.g.tree, tk = hw.g.tk, t = hw.t, Sw = hw.Sw, aSw = Math.abs(Sw), P = [0, 0, 0, 0, 0, 0, 0, 0];
     g.strokeStyle = '#0a0714'; g.lineCap = 'round'; hwSrc(g, 0.95);
     for (let i = 0; i < 8; i++) {
-      const s = HW_TREE[i], fl = i >= 4 ? 0.8 * Math.min(1, hw.wT / 30) * Math.sin(t * (5 + i) + 1.7 * i) : 0;
+      const s = HW_TREE[i], fl = i >= 4 ? Math.max(0.5, 0.8 * Math.min(1, hw.wT / 30)) * Math.sin(t * (5 + i) + 1.7 * i) : 0;
       for (let k = 0; k < 4; k++) {
         const lx = s[k * 2], ly = s[k * 2 + 1], h = (240 - ly) * tk, q = (h / 185) * (h / 185);
         P[k * 2] = B.x + (lx - 120) * tk + Sw * 6 * q + (k >= 2 ? fl : 0);
@@ -5190,14 +5207,22 @@
     const st = hw.stage, G = hw.g, sp = scene.sprites.hw, sp0 = scene.sprites, W = hw.W, H = hw.H, t = hw.t;
     hwSrc(g); g.clearRect(st.x, st.y, st.w, st.h);
     const lift = Math.max(hw.S, hw.flickMax);
+    if (hw.towerDark > 0) { const w = G.win[3]; hwSrc(g, hw.towerDark); g.fillStyle = '#0c0817'; g.fillRect(w.x, w.y, w.w, w.h); }
     if (hw.moon < 0.98) {                      // moonlight going under cloud darkens the sky band, the hill and the house
       const a = 0.4 * (1 - hw.moon) / 0.65 * (1 - lift), y1 = Math.max(st.y, H - 150);
-      if (a > 0.004) {
+      if (a > 0.004) {                         // a gradient fill here ignores globalAlpha, so its strength goes in the stops
         hwSrc(g, a);
         if (y1 > st.y) { g.fillStyle = '#030206'; g.fillRect(st.x, st.y, st.w, y1 - st.y); }
-        if (H - 130 > y1) { g.fillStyle = G.gr.mid.dark; g.fillRect(st.x, y1, st.w, H - 130 - y1); }
+        if (H - 130 > y1) {
+          const d = g.createLinearGradient(0, H - 150, 0, H - 130);
+          d.addColorStop(0, 'rgba(3,2,6,' + a.toFixed(3) + ')'); d.addColorStop(1, 'rgba(3,2,6,0)');
+          hwSrc(g); g.fillStyle = d; g.fillRect(st.x, y1, st.w, H - 130 - y1);
+        }
+        if (H - 130 > st.y) { g.globalCompositeOperation = 'destination-out'; g.globalAlpha = 1; g.fillStyle = G.gr.mid.ramp; g.fillRect(st.x, st.y, 150, H - 130 - st.y); }
+        hwSrc(g);
       }
     }
+    if (hw.S > 0.3 && hw.bolt && hw.bolt.low) hwBoltDraw(hw, g);
     for (let i = 0; i < 5; i++) {
       const w = G.win[i];
       if (i === 3 && hw.towerDark > 0.5) continue;
@@ -5209,22 +5234,22 @@
       let a = a0, x = 0, y = 0;
       for (let k = 0; k < 5; k++) {
         const w = G.win[order[k]];
-        if (a < 0.3 || k === 4) { x = w.cx; y = w.cy; break; }
-        a -= 0.3;
+        if (a < 0.6 || k === 4) { x = w.cx; y = w.cy; break; }
+        a -= 0.6;
         const n = G.win[order[k + 1]];
-        if (a < 0.8) { const u = hwSmooth(0, 1, a / 0.8); x = w.cx + (n.cx - w.cx) * u; y = w.cy + (n.cy - w.cy) * u; break; }
-        a -= 0.8;
+        if (a < 0.7) { const u = hwSmooth(0, 1, a / 0.7); x = w.cx + (n.cx - w.cx) * u; y = w.cy + (n.cy - w.cy) * u; break; }
+        a -= 0.7;
       }
       g.save(); g.beginPath();
       for (const w of G.win) g.rect(w.x, w.y, w.w, w.h);
       g.clip();
-      hwLit(g, 0.55 * Math.min(1, a0 / 0.2, Math.max(0, (4.7 - a0) / 0.3))); g.drawImage(sp.warm, x - 17, y - 17, 34, 34);
+      hwLit(g, 0.85 * Math.min(1, a0 / 0.2, Math.max(0, (5.9 - a0) / 0.3))); g.drawImage(sp.warm, x - 17, y - 17, 34, 34);
       g.restore();
     }
     const tw = G.win[3];
     for (const f of hw.flares) {               // the bell: the tower window flares and a ring of light goes out
       const tau = t - f.t0;
-      if (tau < 0) continue;
+      if (tau < 0 || hw.towerDark > 0.5) continue;
       const env = f.k * (tau < 0.15 ? tau / 0.15 : Math.exp(-(tau - 0.15) / 0.3));
       if (env < 0.01 && tau > 0.9) continue;
       hwLit(g, 0.9 * env); g.drawImage(sp.warm, tw.cx - 20, tw.cy - 20, 40, 40);
@@ -5235,7 +5260,6 @@
         g.beginPath(); g.ellipse(tw.cx, tw.cy, r, r * 0.55, 0, 0, HW_TAU); g.stroke();
       }
     }
-    if (hw.towerDark > 0) { hwSrc(g, hw.towerDark); g.fillStyle = '#0c0817'; g.fillRect(tw.x, tw.y, tw.w, tw.h); }
     if (hw.rain > 0.01) hwTile(g, scene.sprites.hw.rainFar[hw.slant], st, hw.oxF, hw.oyF, 1, 0.35 * hw.rain);
     for (const b of hw.far) hwFogDraw(hw, g, b, false);
     hwTreeDraw(hw, g);
@@ -5243,7 +5267,7 @@
     const gh = hw.ghost;
     if (gh && gh.a > 0.005) {
       const bob = 4 * Math.sin(1.1 * t), h = gh.hist;
-      for (const d of [[0.45, 0.10, 0.85], [0.30, 0.20, 0.90], [0.15, 0.35, 0.95]]) {
+      for (const d of [[1.6, 0.05, 0.85], [1.0, 0.10, 0.90], [0.5, 0.18, 0.95]]) {
         const i = hwGhostAt(gh, t - d[0]);
         if (i < 0) continue;
         const s = 46 * d[2];
@@ -5259,14 +5283,15 @@
       const ev = sp.evenodd, C = G.clip;
       g.save();
       if (ev) { g.beginPath(); g.rect(st.x, st.y, st.w, st.h); g.moveTo(C[0], C[1]); for (let i = 2; i < C.length; i += 2) g.lineTo(C[i], C[i + 1]); g.closePath(); g.clip('evenodd'); }
-      for (const b of hw.spire) if (b.far && b.sc > 0.01 && (ev || !hwInPoly(C, b.x, b.y))) hwBatDraw(g, b.x, b.y, b.s * 0.85 * b.sc, hwFrameOf(t, 10, b.fph), 0);
+      for (const b of hw.spire) if (b.far && b.sc > 0.01 && (ev || !hwInPoly(C, b.x, b.y))) hwBatDraw(g, b.x, b.y, b.s * 0.85 * b.sc, hwFrameOf(t, 6, b.fph), 0);
       g.restore();
     }
-    for (const b of hw.spire) if (!b.far && b.sc > 0.01) hwBatDraw(g, b.x, b.y, b.s * b.sc, hwFrameOf(t, 10, b.fph), 0);
-    if (hw.swoop) { const s = hw.swoop; hwBatDraw(g, s.x, s.y, s.s, hwFrameOf(t, 9, s.fph), s.rot); }
+    for (const b of hw.spire) if (!b.far && b.sc > 0.01) hwBatDraw(g, b.x, b.y, b.s * b.sc, hwFrameOf(t, 6, b.fph), 0);
+    if (hw.swoop) { const s = hw.swoop; hwBatDraw(g, s.x, s.y, s.s, hwFrameOf(t, 6.5, s.fph), s.rot); }
     for (const b of hw.flock) if (b.on) hwBatDraw(g, b.x, b.y, b.s * b.sc, hwFrameOf(t, b.hz, b.fph), b.rot);
-    for (const b of hw.strag) if (b.on) hwBatDraw(g, b.x, b.y, b.s * b.sc, hwFrameOf(t, 10, b.fph), 0);
-    for (const b of hw.burst) if (!b.front) hwBatDraw(g, b.x, b.y, b.s, hwFrameOf(t, 12, b.fph), 0);
+    for (const b of hw.strag) if (b.on) hwBatDraw(g, b.x, b.y, b.s * b.sc, hwFrameOf(t, 6, b.fph), 0);
+    for (const b of hw.burst) if (!b.front) { hwSrc(g, b.lead ? 0.3 + 0.7 * hwClamp((b.y - st.y - 20) / 50, 0, 1) : 1); hwBatDraw(g, b.x, b.y, b.s, hwFrameOf(t, 7, b.fph), 0); }
+    hwSrc(g);
     hwFeather(hw, g, G.gr.mid, st.h, hw.moon < 0.98 || hw.rain > 0.01 || hw.fade > 0);
   }
   function hwInPoly(C, x, y) {
@@ -5323,7 +5348,9 @@
     if (hw.moon < 0.98) {
       const a = 0.30 * (1 - hw.moon) / 0.65 * (1 - lift);
       if (a > 0.004) {
-        hwSrc(g, a); g.fillStyle = G.gr.near.dark; g.fillRect(st.x, H - 150, st.w, 24);
+        const d = g.createLinearGradient(0, H - 150, 0, H - 126);
+        d.addColorStop(0, 'rgba(3,2,6,0)'); d.addColorStop(1, 'rgba(3,2,6,' + a.toFixed(3) + ')');
+        hwSrc(g); g.fillStyle = d; g.fillRect(st.x, H - 150, st.w, 24); hwSrc(g, a);
         g.fillStyle = '#030206'; g.fillRect(st.x, H - 126, st.w, st.b - (H - 126));
       }
     }
@@ -5346,7 +5373,8 @@
       for (const s of hw.splash) {
         if (s.age >= 0.15) continue;
         g.strokeStyle = 'rgba(205,205,240,' + (0.5 * (1 - s.age / 0.15)).toFixed(3) + ')';
-        g.beginPath(); g.moveTo(s.x - 2, s.y - 3); g.lineTo(s.x, s.y); g.lineTo(s.x + 2, s.y - 3); g.stroke();
+        const e = 1 + 2 * s.age / 0.15;
+        g.beginPath(); g.moveTo(s.x - 1, s.y - 0.5); g.lineTo(s.x - 1 - e, s.y - 1 - e); g.moveTo(s.x + 1, s.y - 0.5); g.lineTo(s.x + 1 + e, s.y - 1 - e); g.stroke();
       }
       g.fillStyle = 'rgba(255,205,150,' + (0.65 * hw.rain).toFixed(3) + ')';
       for (let i = 0; i < hw.glit.length; i += 2) g.fillRect(hw.glit[i], hw.glit[i + 1] - 2.5, 1, 5);
@@ -5357,7 +5385,12 @@
       g.save(); g.translate(l.x, l.y); g.rotate(l.rot); g.scale(Math.max(0.15, Math.abs(c)) * (c < 0 ? -1 : 1), 1);
       g.drawImage(sp.leaf, -l.s / 2, -l.s / 2, l.s, l.s); g.restore();
     }
-    if (hw.S > 0.003) { hwLit(g, 1); g.fillStyle = 'rgba(150,130,220,' + (0.07 * hw.S).toFixed(4) + ')'; g.fillRect(st.x, st.y, st.w, st.h); }
+    if (hw.S > 0.003) {
+      const e = g.createLinearGradient(st.x, 0, st.x + 150, 0);
+      e.addColorStop(0, 'rgba(150,130,220,0)'); e.addColorStop(1, 'rgba(150,130,220,' + (0.07 * hw.S).toFixed(4) + ')');
+      hwLit(g, 1); g.fillStyle = e; g.fillRect(st.x, st.y, st.w, st.h);
+    }
+    if (hw.fade > 0) { hwSrc(g, hw.fade); g.fillStyle = '#020104'; g.fillRect(st.x, st.y, st.w, st.h); }   // the cold open fades up from black
     hwFeather(hw, g, G.gr.near, st.h, hw.moon < 0.98 || hw.rain > 0.01 || hw.fade > 0);
     // the two panel edges that border the corner catch the candlelight, or the lightning
     const ui = hw.ui, x0 = Math.max(st.x, ui.sideLeft), topW = Math.max(0, Math.min(W, ui.sideRight) - x0);
@@ -5366,12 +5399,18 @@
       if (!ui.openTop) g.fillRect(x0, st.y, topW, 1);
       if (!ui.openLeft) g.fillRect(st.x, H - 300, 1, 140);
     } else {
-      if (!ui.openTop) { hwSrc(g, 0.22 * hwLight(hw, 3.1, G.hook.x)); g.fillStyle = G.gr.near.ctop; g.fillRect(x0, st.y, topW, 1); }
-      if (!ui.openLeft) { hwSrc(g, 0.18 * hwLight(hw, 0, G.faceA.x)); g.fillStyle = G.gr.near.cleft; g.fillRect(st.x, H - 300, 1, 140); }
+      if (!ui.openTop) {
+        const a = (0.22 * hwLight(hw, 3.1, G.hook.x)).toFixed(3), c = g.createLinearGradient(G.hook.x - 140, 0, G.hook.x + 140, 0);
+        c.addColorStop(0, 'rgba(255,170,90,0)'); c.addColorStop(0.5, 'rgba(255,170,90,' + a + ')'); c.addColorStop(1, 'rgba(255,170,90,0)');
+        hwSrc(g); g.fillStyle = c; g.fillRect(x0, st.y, topW, 1);
+      }
+      if (!ui.openLeft) {
+        const c = g.createLinearGradient(0, H - 300, 0, H - 160);
+        c.addColorStop(0, 'rgba(255,170,90,0)'); c.addColorStop(1, 'rgba(255,170,90,' + (0.18 * hwLight(hw, 0, G.faceA.x)).toFixed(3) + ')');
+        hwSrc(g); g.fillStyle = c; g.fillRect(st.x, H - 300, 1, 140);
+      }
     }
-    if (hw.fade > 0) {                         // the cold open fades up from black with the candles already burning
-      hwSrc(g, hw.fade); g.fillStyle = G.gr.near.fade; g.fillRect(st.x, st.y, st.w, 40);
-      g.fillStyle = '#020104'; g.fillRect(st.x, st.y + 40, st.w, st.h - 40);
+    if (hw.fade > 0) {                         // the candles are already burning through the fade
       const am = Math.min(1, t / 0.4);
       hwPumpkinsDraw(hw, g, am);
       hwLanternDraw(hw, g, am);
@@ -5405,7 +5444,7 @@
       for (const r of ui.cards) g.fillRect(r.left, r.top, r.width, 2);
     }
     hwSrc(g, 0.3);
-    for (const b of hw.burst) if (b.front) hwBatDraw(g, b.x, b.y, b.s, hwFrameOf(hw.t, 12, b.fph), 0);
+    for (const b of hw.burst) if (b.front) hwBatDraw(g, b.x, b.y, b.s, hwFrameOf(hw.t, 7, b.fph), 0);
     hwSrc(g);
     hw.frontDirty = true;
   }
@@ -5447,6 +5486,7 @@
     if (!hw) return;
     if (!hw.stage || !hw.g) { hw.stillDrawn = true; return; }
     const mc = hw.clouds[0];
+    hw.g.tk = hw.g.tkT; hw.g.moon.y = hw.g.moonYT;
     hw.weather = 'calm'; hw.base = 0; hw.wcol.fill(0); hw.gusts = []; hw.q = []; hw.moon = 1;
     mc.mode = 'park'; mc.ph = -1; mc.x = hw.g.moon.x - 380; mc.a = 0.8;
     hw.fogD = 0.6; hw.fogRise = 0; hw.fade = 0; hw.th = 0; hw.thV = 0; hw.candleFixed = 0.9; hw.dip = 0;
@@ -5465,7 +5505,9 @@
     if (!hw || scene.hidden || hw.frozen) return false;
     if (hw.reduced) { if (!hw.stillDrawn) hwStill(); return false; }
     const real = now - scene.last;
-    if (real < (hw.level === 0 ? 31 : 48)) return true;       // 30 fps, 20 fps when stepped down
+    const tick = now - (hw.prevNow || now); hw.prevNow = now;
+    if (tick > 0 && tick < 100) hw.tick = hw.tick * 0.9 + tick * 0.1;
+    if (real < (hw.level === 0 ? 33.3 : 50) - 0.5 * hw.tick) return true;   // the tick nearest 30 fps, 20 fps when stepped down
     scene.last = now;
     const t0 = performance.now();
     if (now - hw.measuredAt > 500) { hw.measuredAt = now; hwLayout(); }   // the side cards change height with their status text
@@ -5473,7 +5515,7 @@
     hwStep(Math.min(0.1, real / 1000));
     hwDraw(false);
     const cost = performance.now() - t0;
-    hw.cost = hw.cost ? hw.cost * 0.9 + cost * 0.1 : cost;
+    hw.cost = hw.cost ? hw.cost * 0.9 + cost * 0.1 : Math.min(cost, 3);   // the first frame builds the sprites
     hw.gap = hw.gap * 0.9 + Math.min(real, 250) * 0.1;
     hwBudget(now);
     scene.cost = hw.cost;
@@ -5580,6 +5622,7 @@
     for (const c of [scene.back, scene.front]) if (c) c.getContext('2d').clearRect(0, 0, scene.w, scene.h);
     hwStop();
   }
+  const FX_CANVAS_THEMES = new Set(['halloween', 'christmas', 'newyear', 'classic']);   // the themes whose .fx-canvas is shown
   function sceneStart(theme) {
     scene.back = scene.back || $('fxBack');
     scene.front = scene.front || $('fxFront');
@@ -5587,6 +5630,7 @@
     sceneStop();
     scene.theme = theme;
     if (theme === 'default' || !themeDef(theme) || themeDef(theme).id !== theme) return;
+    if (!FX_CANVAS_THEMES.has(theme)) return;   // the other themes' canvases are hidden, so their particles would draw for no one
     if (!scene.sprites.snow) makeSprites();
     if (theme === 'halloween') hwStart();
     sceneResize();
