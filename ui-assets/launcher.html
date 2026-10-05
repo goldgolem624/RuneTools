@@ -3484,7 +3484,8 @@
   ];
   function themeDef(id) { return THEMES.filter(t => t.id === id)[0] || THEMES[0]; }
   const THEME_PREVIEW = false;   // set true only to preview locked themes during development
-  function themeUnlocked(id) { const t = themeDef(id); return THEME_PREVIEW || !t.unlock || Date.now() >= t.unlock; }
+  // a test machine can open every theme with "preview": true in its launcher_theme.json
+  function themeUnlocked(id) { const t = themeDef(id); return THEME_PREVIEW || themeCfg.preview === true || !t.unlock || Date.now() >= t.unlock; }
   function themeUnlockLabel(id) { return themeDef(id).when || ''; }
   function themeTrack() { return themeDef(themeCfg.theme).track || ''; }
   let themeCfg = { theme: 'default', music: true, volume: 35 };
