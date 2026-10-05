@@ -925,7 +925,7 @@
      launcher renders on the CPU, so a handful of blitted sprites is far cheaper than a stack of blurred,
      animated layers, and it keeps a steady frame rate. See sceneStart(). */
   .fx-canvas { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
-  html[data-theme="halloween"] .fx-canvas, html[data-theme="christmas"] .fx-canvas,
+  html[data-theme="halloween"] .fx-canvas,
   html[data-theme="newyear"] .fx-canvas, html[data-theme="classic"] .fx-canvas { display: block; }
   .fx-back { z-index: 0; }
   .fx-front { z-index: 6; }
@@ -971,9 +971,9 @@
   html[data-theme="halloween"] .brand-name::after { content: " \1F383"; font-size: 13px; }
 
   /* ===================== Christmas theme =====================
-     A village under the mountains on a clear, cold night: an aurora in the north, smoke going straight up from
-     the chimneys, a lit tree by the church. Measured up from the footer: the snow is 158px, the
-     mountains 300px. The snowfall itself is drawn on the canvas. */
+     Blue hour above a valley: a village on its terrace below the lane, a town and a viaduct in the valley, mountains
+     beyond. One camera (XM_CAM) places every plane; everything that moves is drawn by xmFrame() on small canvases
+     over the open corner. */
   html[data-theme="christmas"] {
     --bg:           #060b16;
     --bg-elev:      #0b1322;
@@ -1000,95 +1000,20 @@
     --warn:         #ffd479;
     --warn-soft:    rgba(255, 212, 121, 0.14);
   }
-  html[data-theme="christmas"] body::before {
-    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-    background:
-      radial-gradient(900px 420px at 80% -10%, rgba(120, 200, 255, 0.14), transparent 70%),
-      radial-gradient(700px 380px at 10% 108%, rgba(90, 140, 255, 0.16), transparent 70%);
-  }
   .xm-scene { position: fixed; inset: 0; z-index: 0; pointer-events: none; display: none; overflow: hidden; }
   html[data-theme="christmas"] .xm-scene { display: block; }
-  .xm-sky { position: absolute; left: 0; right: 0; top: 0; bottom: 0;
-    background: linear-gradient(180deg, #02060f 0%, #050d1c 30%, #0a1728 58%, #102133 80%, #16293d 100%); }
-  .xm-stars { position: absolute; left: 0; right: 0; top: 0; bottom: 300px; }
-  .xm-stars i { position: absolute; border-radius: 50%; background: #eaf4ff;
-    animation: xmStar ease-in-out infinite alternate; }
-  .xm-stars i:nth-child(1) { left: 38.6%; top: 12.2%; width: 1.5px; height: 2.3px; opacity: 0.49; animation-duration: 7.1s; animation-delay: -4.4s; }
-  .xm-stars i:nth-child(2) { left: 38.8%; top: 34.2%; width: 1.9px; height: 2.2px; opacity: 0.53; animation-duration: 8.0s; animation-delay: -3.5s; }
-  .xm-stars i:nth-child(3) { left: 16.9%; top: 8.6%; width: 2.1px; height: 1.5px; opacity: 0.53; animation-duration: 6.7s; animation-delay: -0.5s; }
-  .xm-stars i:nth-child(4) { left: 77.3%; top: 3.5%; width: 2.3px; height: 2.2px; opacity: 0.31; animation-duration: 7.4s; animation-delay: -5.9s; }
-  .xm-stars i:nth-child(5) { left: 14.0%; top: 31.5%; width: 1.4px; height: 2.3px; opacity: 0.54; animation-duration: 8.9s; animation-delay: -0.4s; }
-  .xm-stars i:nth-child(6) { left: 32.5%; top: 29.3%; width: 2.0px; height: 1.5px; opacity: 0.64; animation-duration: 8.1s; animation-delay: -2.4s; }
-  .xm-stars i:nth-child(7) { left: 16.0%; top: 31.4%; width: 1.7px; height: 2.0px; opacity: 0.45; animation-duration: 5.4s; animation-delay: -0.2s; }
-  .xm-stars i:nth-child(8) { left: 15.0%; top: 22.2%; width: 2.1px; height: 1.8px; opacity: 0.57; animation-duration: 6.2s; animation-delay: -7.0s; }
-  .xm-stars i:nth-child(9) { left: 64.9%; top: 16.2%; width: 1.5px; height: 1.4px; opacity: 0.22; animation-duration: 8.2s; animation-delay: -7.0s; }
-  .xm-stars i:nth-child(10) { left: 74.1%; top: 6.8%; width: 2.0px; height: 1.4px; opacity: 0.64; animation-duration: 6.9s; animation-delay: -6.0s; }
-  .xm-stars i:nth-child(11) { left: 60.5%; top: 20.4%; width: 2.2px; height: 2.4px; opacity: 0.32; animation-duration: 5.6s; animation-delay: -5.9s; }
-  .xm-stars i:nth-child(12) { left: 67.3%; top: 20.1%; width: 1.8px; height: 2.4px; opacity: 0.34; animation-duration: 4.3s; animation-delay: -5.5s; }
-  .xm-stars i:nth-child(13) { left: 28.6%; top: 41.5%; width: 1.7px; height: 2.3px; opacity: 0.39; animation-duration: 8.3s; animation-delay: -6.0s; }
-  .xm-stars i:nth-child(14) { left: 72.3%; top: 11.4%; width: 1.5px; height: 1.3px; opacity: 0.29; animation-duration: 7.0s; animation-delay: -0.5s; }
-  .xm-stars i:nth-child(15) { left: 24.8%; top: 26.9%; width: 1.5px; height: 1.7px; opacity: 0.31; animation-duration: 7.1s; animation-delay: -0.9s; }
-  .xm-stars i:nth-child(16) { left: 97.8%; top: 28.3%; width: 2.1px; height: 1.9px; opacity: 0.45; animation-duration: 8.8s; animation-delay: -7.1s; }
-  .xm-stars i:nth-child(17) { left: 80.9%; top: 3.3%; width: 1.9px; height: 2.3px; opacity: 0.52; animation-duration: 6.1s; animation-delay: -5.2s; }
-  .xm-stars i:nth-child(18) { left: 19.0%; top: 34.0%; width: 2.2px; height: 1.4px; opacity: 0.45; animation-duration: 6.6s; animation-delay: -2.8s; }
-  @keyframes xmStar { from { opacity: 0.12; } to { opacity: 0.9; } }
-  .xm-aurora { position: absolute; left: -20%; right: -20%; top: -8%; height: 56%; opacity: 0.42; }
-  .xm-aurora.a1 { background: radial-gradient(66% 88% at 32% 42%, rgba(120, 255, 214, 0.24), transparent 70%);
-    animation: xmAurora 42s ease-in-out infinite alternate; }
-  .xm-aurora.a2 { background: radial-gradient(60% 82% at 68% 30%, rgba(130, 160, 255, 0.20), transparent 70%);
-    animation: xmAurora 61s ease-in-out infinite alternate-reverse; }
-  @keyframes xmAurora { from { transform: translate3d(-4%, -8px, 0) skewY(-2deg); } to { transform: translate3d(4%, 10px, 0) skewY(2deg); } }
-  .xm-moon { position: absolute; right: 29%; bottom: 360px; width: 58px; height: 58px; border-radius: 50%;
-    background: radial-gradient(circle at 40% 36%, #eaf4ff 0 44%, #c3d6ea 64%, #9db1c8 82%, #7b8ea6 100%);
-    box-shadow: 0 0 54px 18px rgba(150, 200, 255, 0.12); opacity: 0.85; }
-  .xm-mtns { position: absolute; left: 0; right: 0; bottom: 118px; height: 260px; }
-  .xm-pines { position: absolute; left: 0; right: 0; bottom: 128px; height: 160px; }
-  /* the snow field, brightest where the windows and the tree light it */
-  .xm-drift { position: absolute; left: 0; right: 0; bottom: 18px; height: 200px; }
-  .xm-drift svg { width: 100%; height: 100%; display: block; }
-  .xm-snow-floor { position: absolute; left: 0; right: 0; bottom: 38px; height: 84px;
-    background:
-      radial-gradient(38% 130% at 80% 100%, rgba(255, 212, 121, 0.12), transparent 66%),
-      radial-gradient(60% 120% at 30% 100%, rgba(180, 216, 255, 0.10), transparent 70%),
-      linear-gradient(180deg, #16263a, #142234 40%, #101b2b); }
-  .xm-village { position: absolute; right: 2%; bottom: 88px; width: 360px; height: 180px; }
-  .xm-tree { position: absolute; right: 22%; bottom: 88px; width: 88px; height: 124px;
-    filter: drop-shadow(0 0 18px rgba(255, 212, 121, 0.28)); }
-  .xm-village svg, .xm-tree svg { width: 100%; height: 100%; display: block; }
-  /* smoke: one plume per chimney, three puffs each */
-  .xm-smoke { position: absolute; left: 0; right: 0; bottom: 202px; height: 150px; }
-  .xm-smoke i { position: absolute; bottom: 0; width: 8px; height: 8px; border-radius: 50%;
-    background: rgba(220, 234, 255, 0.10); animation: xmSmoke ease-out infinite; }
-  .xm-smoke i:nth-child(1) { left: 72.5%; animation-duration: 7.0s; animation-delay: -0.0s; }
-  .xm-smoke i:nth-child(2) { left: 72.9%; animation-duration: 7.0s; animation-delay: -2.6s; }
-  .xm-smoke i:nth-child(3) { left: 73.3%; animation-duration: 7.0s; animation-delay: -5.2s; }
-  .xm-smoke i:nth-child(4) { left: 79.0%; animation-duration: 8.4s; animation-delay: -0.0s; }
-  .xm-smoke i:nth-child(5) { left: 79.4%; animation-duration: 8.4s; animation-delay: -2.6s; }
-  .xm-smoke i:nth-child(6) { left: 79.8%; animation-duration: 8.4s; animation-delay: -5.2s; }
-  .xm-smoke i:nth-child(7) { left: 86.5%; animation-duration: 9.8s; animation-delay: -0.0s; }
-  .xm-smoke i:nth-child(8) { left: 86.9%; animation-duration: 9.8s; animation-delay: -2.6s; }
-  .xm-smoke i:nth-child(9) { left: 87.3%; animation-duration: 9.8s; animation-delay: -5.2s; }
-  @keyframes xmSmoke {
-    0% { transform: translate3d(0, 0, 0) scale(0.6); opacity: 0; }
-    18% { opacity: 0.5; }
-    100% { transform: translate3d(-14px, -130px, 0) scale(2.6); opacity: 0; }
-  }
-  .xm-bauble circle { animation: xmBauble 3.4s ease-in-out infinite; }
-  .xm-bauble circle:nth-child(2n) { animation-duration: 4.6s; animation-delay: -1.5s; }
-  .xm-bauble circle:nth-child(3n) { animation-duration: 2.8s; animation-delay: -0.8s; }
-  @keyframes xmBauble { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
-  .xm-star { transform-box: fill-box; transform-origin: 50% 50%; animation: xmTreeStar 5s ease-in-out infinite; }
-  @keyframes xmTreeStar { 0%, 100% { opacity: 0.7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.12); } }
-  /* frost creeping in from the corners */
-  .xm-frost { position: absolute; width: 260px; height: 190px; opacity: 0.4;
-    background: radial-gradient(120% 100% at 0% 0%, rgba(190, 230, 255, 0.30), transparent 62%);
-    -webkit-mask-image: radial-gradient(120% 100% at 0% 0%, #000 30%, transparent 70%);
-    mask-image: radial-gradient(120% 100% at 0% 0%, #000 30%, transparent 70%);
-    animation: xmFrost 12s ease-in-out infinite alternate; }
-  .xm-frost.tl { left: 0; top: var(--titlebar-h, 34px); }
-  .xm-frost.tr { right: 0; top: var(--titlebar-h, 34px); transform: scaleX(-1); }
-  .xm-frost.br { right: 0; bottom: 38px; transform: scale(-1, -1); }
-  @keyframes xmFrost { from { opacity: 0.26; } to { opacity: 0.5; } }
+  /* every box below is written by xmLayout() from the scene tables; nothing here moves on its own */
+  .xm-sky { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: #040912; }
+  .xm-glow, .xm-glow2 { position: absolute; width: 0; height: 0; border-radius: 50%; }
+  .xm-glow { transform: scaleY(0.35); background: radial-gradient(circle closest-side, rgba(236, 170, 160, 0.16), rgba(236, 170, 160, 0)); }
+  .xm-glow2 { transform: scaleY(0.45); background: radial-gradient(circle closest-side, rgba(110, 200, 200, 0.06), rgba(110, 200, 200, 0)); }
+  .xm-stars i { position: absolute; border-radius: 50%; background: #eaf4ff; }
+  .xm-l { position: absolute; display: block; overflow: visible; }
+  .xm-cv { position: absolute; left: 0; top: 0; width: 0; height: 0; display: block; pointer-events: none; }
+  .xm-veil { position: absolute; left: 0; top: 0; width: 0; height: 0; background: #31476a; opacity: 0; }
+  .xm-veil-c { background: none; opacity: 1; }
+  .xm-rm-probe { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+  @media (prefers-reduced-motion: reduce) { .xm-rm-probe { width: 1px; } }
   /* snow settles along the top edge of every panel */
   html[data-theme="christmas"] .card { position: relative; }
   html[data-theme="christmas"] .card::after {
@@ -1099,23 +1024,26 @@
   }
   /* the scenery stays behind the page: panels and news sit above it */
   html[data-theme] main, html[data-theme] .side, html[data-theme] header { position: relative; z-index: 2; }
-  /* string lights swagging across the top, each bulb twinkling on its own */
+  /* string lights swagging across the top; the frame loop dims and lifts bulbs by class */
   .xm-lights { position: absolute; left: 0; right: 0; top: var(--titlebar-h, 34px); height: 64px; }
   .xm-lights .wire { position: absolute; left: -2%; right: -2%; top: 0; height: 46px;
     border-bottom: 2px solid rgba(190, 215, 240, 0.22); border-radius: 0 0 50% 50% / 0 0 100% 100%; }
-  .xm-lights i { position: absolute; top: 34px; width: 9px; height: 13px; border-radius: 50% 50% 55% 55%;
-    background: currentColor; box-shadow: 0 0 12px 3px currentColor; animation: xmTwinkle 2.6s ease-in-out infinite; }
+  .xm-lights i { position: absolute; top: 34px; width: 9px; height: 13px; border-radius: 50% 50% 55% 55%; background: currentColor; }
   .xm-lights i::before { content: ""; position: absolute; left: 2px; top: -4px; width: 5px; height: 4px; border-radius: 2px; background: #223047; }
-  @keyframes xmTwinkle { 0%, 100% { opacity: 1; filter: brightness(1.1); } 50% { opacity: 0.35; filter: brightness(0.7); } }
+  .xm-lights i::after { content: ""; position: absolute; left: -8px; top: -6px; width: 25px; height: 25px; border-radius: 50%; }
+  .xm-lights i.c0::after { background: radial-gradient(circle closest-side, rgba(255, 95, 95, 0.5), rgba(255, 95, 95, 0)); }
+  .xm-lights i.c1::after { background: radial-gradient(circle closest-side, rgba(255, 212, 121, 0.5), rgba(255, 212, 121, 0)); }
+  .xm-lights i.c2::after { background: radial-gradient(circle closest-side, rgba(123, 255, 176, 0.5), rgba(123, 255, 176, 0)); }
+  .xm-lights i.c3::after { background: radial-gradient(circle closest-side, rgba(124, 196, 255, 0.5), rgba(124, 196, 255, 0)); }
+  .xm-lights i.c4::after { background: radial-gradient(circle closest-side, rgba(242, 140, 255, 0.5), rgba(242, 140, 255, 0)); }
+  .xm-lights i.dim1 { opacity: 0.7; }
+  .xm-lights i.dim { opacity: 0.38; }
   html[data-theme="christmas"] footer {
     position: relative; z-index: 4; color: #c7d8ee;
     background: linear-gradient(180deg, rgba(8, 14, 26, 0.9), rgba(5, 9, 18, 0.96));
     border-top: 1px solid rgba(255, 212, 121, 0.28);
   }
   html[data-theme="christmas"] .brand-name::after { content: " \2744"; font-size: 12px; color: #bfe6ff; }
-  @media (prefers-reduced-motion: reduce) {
-    .xm-stars i, .xm-aurora, .xm-smoke i, .xm-bauble circle, .xm-star, .xm-frost, .xm-lights i { animation: none !important; }
-  }
 
   /* ===================== Valentine theme =====================
      A walled rose garden at night. A low moon over the hills, a lantern-lit path running back to a rose arch,
@@ -2339,20 +2267,7 @@
   <div class="rs-near"><svg class="bd-art" viewBox="0 0 1200 210" preserveAspectRatio="none"><g fill="#15200f"><path d="M0 210 L0 122 Q150 96 320 110 Q470 122 620 100 Q790 74 960 96 Q1090 112 1200 98 L1200 210Z"/></g><g fill="#101a0b"><rect x="68" y="124" width="4" height="12"/><ellipse cx="70" cy="120" rx="15" ry="12"/><rect x="110" y="128" width="4" height="12"/><ellipse cx="112" cy="124" rx="11" ry="9"/><rect x="148" y="126" width="4" height="12"/><ellipse cx="150" cy="122" rx="13" ry="10"/><rect x="298" y="122" width="4" height="12"/><ellipse cx="300" cy="118" rx="16" ry="13"/><rect x="338" y="128" width="4" height="12"/><ellipse cx="340" cy="124" rx="11" ry="9"/><rect x="370" y="130" width="4" height="12"/><ellipse cx="372" cy="126" rx="12" ry="9"/><rect x="518" y="124" width="4" height="12"/><ellipse cx="520" cy="120" rx="14" ry="11"/><rect x="558" y="130" width="4" height="12"/><ellipse cx="560" cy="126" rx="10" ry="8"/><rect x="638" y="116" width="4" height="12"/><ellipse cx="640" cy="112" rx="13" ry="10"/><rect x="1148" y="114" width="4" height="12"/><ellipse cx="1150" cy="110" rx="15" ry="12"/><rect x="1184" y="120" width="4" height="12"/><ellipse cx="1186" cy="116" rx="11" ry="9"/></g><g fill="#0c1408" opacity="0.85"><path d="M0 210 L0 176 Q220 160 440 172 Q680 186 900 170 Q1060 158 1200 168 L1200 210Z"/></g><g transform="translate(838 22)"><g fill="#0e1509"><path d="M60 176 L60 74 L200 74 L200 176Z"/><path d="M60 74 L60 62 L72 62 L72 70 L84 70 L84 62 L96 62 L96 70 L108 70 L108 62 L120 62 L120 70 L132 70L132 62 L144 62 L144 70 L156 70 L156 62 L168 62 L168 70 L180 70 L180 62 L192 62 L192 70 L200 70 L200 74Z"/><path d="M22 176 L22 44 L70 44 L70 176Z"/><path d="M22 44 L22 32 L34 32 L34 40 L46 40 L46 32 L58 32 L58 40 L70 40 L70 44Z"/><path d="M190 176 L190 34 L240 34 L240 176Z"/><path d="M190 34 L190 22 L202 22 L202 30 L214 30 L214 22 L226 22 L226 30 L240 30 L240 34Z"/><path d="M108 176 L108 128 Q130 104 152 128 L152 176Z"/><rect x="44" y="6" width="3" height="28"/><rect x="212" y="-6" width="3" height="30"/></g><path class="rs-flag" d="M47 8 L86 16 L47 24 Z" fill="#b8892f"/><path class="rs-flag b" d="M215 -4 L252 4 L215 12 Z" fill="#b8892f"/><g class="bd-win"><rect x="38" y="64" width="11" height="15" rx="2"/><rect x="38" y="104" width="11" height="15" rx="2"/><rect x="206" y="58" width="11" height="15" rx="2"/><rect x="206" y="100" width="11" height="15" rx="2"/><rect x="90" y="96" width="11" height="15" rx="2"/><rect x="160" y="96" width="11" height="15" rx="2"/></g></g></svg></div>
   <div class="rs-folk" aria-hidden="true"><div class="rs-pete" title="Party Pete"><svg viewBox="0 0 60 92" preserveAspectRatio="xMidYMax meet"><g class="rs-dance"><g class="rs-arms" fill="none" stroke="#d8b48a" stroke-width="5" stroke-linecap="round"><path d="M22 52 L9 36"/><path d="M38 52 L51 36"/></g><path d="M22 86 L22 62 L26 62 L26 86Z" fill="#3a2a5c"/><path d="M34 86 L34 62 L38 62 L38 86Z" fill="#3a2a5c"/><path d="M18 62 L18 44 Q30 40 42 44 L42 62Z" fill="#c8455f"/><circle cx="30" cy="34" r="9" fill="#e8c39b"/><path d="M21 26 L30 4 L39 26Z" fill="#8d4fd0"/><circle cx="30" cy="4" r="2.6" fill="#ffd166"/><circle cx="27" cy="33" r="1.1" fill="#2a1a14"/><circle cx="33" cy="33" r="1.1" fill="#2a1a14"/><path d="M26 38 Q30 41 34 38" fill="none" stroke="#2a1a14" stroke-width="1.2" stroke-linecap="round"/></g></svg></div><div class="rs-wom" title="the Wise Old Man"><svg viewBox="0 0 60 98" preserveAspectRatio="xMidYMax meet"><g class="rs-sway"><path d="M46 20 L46 92" stroke="#6b4a2a" stroke-width="3.4" stroke-linecap="round"/><circle cx="46" cy="18" r="4" fill="#8cc4ff" opacity="0.9"/><path d="M16 92 Q16 52 30 46 Q44 52 44 92Z" fill="#2f4f8f"/><path d="M30 46 L30 92" stroke="#25406f" stroke-width="1.4"/><circle cx="30" cy="36" r="9" fill="#e8c39b"/><path d="M21 34 Q30 26 39 34 Q39 24 30 24 Q21 24 21 34Z" fill="#dfe6ef"/><path d="M22 40 Q30 62 38 40 Q30 48 22 40Z" fill="#eef3f8"/><circle cx="27" cy="36" r="1" fill="#2a1a14"/><circle cx="33" cy="36" r="1" fill="#2a1a14"/></g></svg></div></div>
 </div>
-<div class="xm-scene" aria-hidden="true">
-  <div class="xm-sky"></div>
-  <div class="xm-stars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-  <div class="xm-aurora a1"></div><div class="xm-aurora a2"></div>
-  <div class="xm-moon"></div>
-  <div class="xm-mtns"><svg class="bd-art" viewBox="0 0 1200 260" preserveAspectRatio="none"><g fill="#101d33" opacity="0.92"><path d="M0 260 L0 196 L110 118 L196 174 L286 96 L404 186 L500 140 L612 206 L730 128 L846 192L962 136 L1080 200 L1200 164 L1200 260Z"/></g><g fill="#dfeeff" opacity="0.4"><path d="M286 96 L308 114 L296 118 L284 110 L274 117 L266 112 Z"/><path d="M110 118 L132 136 L120 140 L108 132 L98 139 L90 134 Z"/><path d="M730 128 L752 146 L740 150 L728 142 L718 149 L710 144 Z"/><path d="M962 136 L984 154 L972 158 L960 150 L950 157 L942 152 Z"/></g><g fill="#0b1626"><path d="M0 260 L0 232 L90 186 L168 226 L250 180 L352 230 L448 196 L560 240L660 198 L772 238 L880 200 L990 242 L1090 206 L1200 236 L1200 260Z"/></g></svg></div>
-  <div class="xm-pines"><svg class="bd-art" viewBox="0 0 1200 160" preserveAspectRatio="none"><g fill="#050b14"><path d="M14 160 L26 148 L21 131 L29 118 L28 102 L33 89 L40 56 L47 89 L52 102 L51 118 L59 131 L54 148 L66 160 Z"/><path d="M100 160 L109 151 L105 138 L112 129 L111 116 L115 107 L120 82 L125 107 L129 116 L128 129 L135 138 L131 151 L140 160 Z"/><path d="M180 160 L194 146 L188 126 L198 112 L196 93 L202 78 L210 40 L218 78 L224 93 L222 112 L232 126 L226 146 L240 160 Z"/><path d="M282 160 L290 152 L287 140 L293 132 L292 121 L295 112 L300 90 L305 112 L308 121 L307 132 L313 140 L310 152 L318 160 Z"/><path d="M354 160 L366 148 L361 132 L369 120 L368 104 L373 92 L380 60 L387 92 L392 104 L391 120 L399 132 L394 148 L406 160 Z"/><path d="M448 160 L458 150 L454 136 L461 126 L460 113 L464 103 L470 76 L476 103 L480 113 L479 126 L486 136 L482 150 L492 160 Z"/><path d="M530 160 L544 146 L538 128 L548 114 L546 95 L552 81 L560 44 L568 81 L574 95 L572 114 L582 128 L576 146 L590 160 Z"/><path d="M632 160 L640 152 L637 141 L643 133 L642 122 L645 114 L650 92 L655 114 L658 122 L657 133 L663 141 L660 152 L668 160 Z"/><path d="M1104 160 L1116 148 L1111 133 L1119 122 L1118 106 L1123 95 L1130 64 L1137 95 L1142 106 L1141 122 L1149 133 L1144 148 L1156 160 Z"/><path d="M1170 160 L1179 151 L1175 139 L1182 130 L1181 117 L1185 108 L1190 84 L1195 108 L1199 117 L1198 130 L1205 139 L1201 151 L1210 160 Z"/></g></svg></div>
-  <div class="xm-drift"><svg class="bd-art" viewBox="0 0 1200 200" preserveAspectRatio="none"><path d="M0 64 Q140 40 320 58 Q520 78 700 50 Q880 24 1060 52 Q1140 64 1200 48 L1200 200 L0 200Z" fill="#1a2d44"/><path d="M0 64 Q140 40 320 58 Q520 78 700 50 Q880 24 1060 52 Q1140 64 1200 48" fill="none" stroke="rgba(226, 240, 255, 0.28)" stroke-width="3"/><path d="M0 96 Q200 74 420 90 Q660 108 880 82 Q1040 64 1200 80" fill="none" stroke="rgba(200, 226, 255, 0.10)" stroke-width="2"/></svg></div>
-  <div class="xm-snow-floor"></div>
-  <div class="xm-smoke"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-  <div class="xm-tree"><svg viewBox="0 0 140 190" preserveAspectRatio="xMidYMax meet"><rect x="62" y="162" width="14" height="24" fill="#1d1408"/><g fill="#0c2417"><path d="M69 14 L108 74 L92 74 L120 122 L100 122 L134 172 L4 172 L38 122 L18 122 L46 74 L30 74 Z"/></g><g class="xm-bauble"><circle cx="58" cy="60" r="4.0" fill="#ff6a6a"/><circle cx="84" cy="78" r="3.6" fill="#ffd479"/><circle cx="48" cy="98" r="4.2" fill="#78ffd6"/><circle cx="94" cy="110" r="3.8" fill="#8cb8ff"/><circle cx="66" cy="128" r="4.4" fill="#ff8ab0"/><circle cx="40" cy="146" r="4.0" fill="#ffd479"/><circle cx="100" cy="150" r="3.6" fill="#78ffd6"/><circle cx="72" cy="96" r="3.4" fill="#ffffff"/></g><path class="xm-star" d="M69 4 l5.4 12.6 13.6 1.2-10.3 9 3.1 13.3L69 32.9 56.2 40l3.1-13.3-10.3-9 13.6-1.2z" fill="#ffe9a8"/></svg></div>
-  <div class="xm-village"><svg viewBox="0 0 460 230" preserveAspectRatio="xMidYMax meet"><g fill="#0a1626"><path d="M20 230 L20 168 L96 168 L96 230Z"/><path d="M8 170 L58 128 L108 170Z"/><path d="M120 230 L120 186 L184 186 L184 230Z"/><path d="M110 188 L152 154 L194 188Z"/><path d="M300 230 L300 172 L372 172 L372 230Z"/><path d="M290 174 L336 136 L382 174Z"/><path d="M212 230 L212 118 L262 118 L262 230Z"/><path d="M204 120 L237 84 L270 120Z"/><rect x="233" y="52" width="8" height="34"/><rect x="226" y="62" width="22" height="7"/><rect x="46" y="112" width="8" height="22"/><rect x="330" y="120" width="8" height="22"/></g><g fill="#e8f2ff" opacity="0.5"><path d="M8 170 L58 128 L108 170 L100 170 L58 136 L16 170Z"/><path d="M110 188 L152 154 L194 188 L186 188 L152 162 L118 188Z"/><path d="M290 174 L336 136 L382 174 L374 174 L336 144 L298 174Z"/><path d="M204 120 L237 84 L270 120 L262 120 L237 92 L212 120Z"/></g><g class="bd-win warm"><rect x="36" y="182" width="13" height="16" rx="2"/><rect x="66" y="182" width="13" height="16" rx="2"/><rect x="136" y="198" width="12" height="15" rx="2"/><rect x="158" y="198" width="12" height="15" rx="2"/><rect x="316" y="186" width="13" height="16" rx="2"/><rect x="344" y="186" width="13" height="16" rx="2"/><rect x="230" y="140" width="14" height="20" rx="3"/></g></svg></div>
-  <div class="xm-frost tl"></div><div class="xm-frost tr"></div><div class="xm-frost br"></div>
-</div>
+<div class="xm-scene" id="xmScene" aria-hidden="true"></div>
 <div class="xm-deco" aria-hidden="true">
   <div class="xm-lights" id="xmLights"><div class="wire"></div></div>
 </div>
@@ -3611,7 +3526,7 @@
   }
   function musicVolumeLive() { try { if (bridge().launcherMusic) bridge().launcherMusic(musicWanted() ? 'play' : 'stop', musicLevel(), themeTrack()); } catch (e) {} }
 
-  // string lights: one bulb every ~54px, coloured in turn and hung along the sagging wire
+  // string lights: one bulb every ~54px, coloured in turn and hung along the sagging wire; the frame loop dims and lifts them
   function xmLights() {
     const host = $('xmLights'); if (!host) return;
     const wire = host.querySelector('.wire');
@@ -3625,9 +3540,10 @@
       b.style.left = (t * 100) + '%';
       b.style.color = colours[i % colours.length];
       b.style.top = (30 + Math.sin(t * Math.PI) * 16) + 'px';   // follows the sag of the wire
-      b.style.animationDelay = (-(i * 0.16)) + 's';   // a wave of light running along the wire
+      b.className = 'c' + (i % colours.length);
       host.appendChild(b);
     }
+    if (scene.xm) scene.xm.bulbs = host.querySelectorAll('i');
   }
 
   // ===================== scene canvas =====================
@@ -3646,6 +3562,27 @@
     c.width = c.height = size;
     draw(c.getContext('2d'), size);
     return c;
+  }
+  // what this renderer can do: additive blending, even-odd clipping, and drawing under what is already there
+  function sceneCaps() {
+    if (scene.caps) return scene.caps;
+    const r = scene.caps = { lighter: false, evenodd: false, destOver: false };
+    try {
+      const c = document.createElement('canvas'); c.width = c.height = 4;
+      const g = c.getContext('2d');
+      g.fillStyle = '#000'; g.fillRect(0, 0, 4, 4);
+      g.globalCompositeOperation = 'lighter'; g.fillStyle = 'rgba(255,0,0,0.5)'; g.fillRect(0, 0, 4, 4); g.fillRect(0, 0, 4, 4);
+      r.lighter = g.getImageData(1, 1, 1, 1).data[0] > 230;
+      g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, 4, 4);
+      g.save(); g.beginPath(); g.rect(0, 0, 4, 4); g.rect(1, 1, 2, 2); g.clip('evenodd');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, 4, 4); g.restore();
+      r.evenodd = g.getImageData(2, 2, 1, 1).data[3] === 0;
+      g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, 4, 4); g.fillStyle = '#f00'; g.fillRect(0, 0, 2, 4);
+      g.globalCompositeOperation = 'destination-over'; g.fillStyle = '#00f'; g.fillRect(0, 0, 4, 4);
+      r.destOver = g.getImageData(1, 1, 1, 1).data[0] > 200 && g.getImageData(3, 1, 1, 1).data[2] > 200;
+      g.globalCompositeOperation = 'source-over';
+    } catch (e) {}
+    return r;
   }
   // This renderer draws an image at full strength whatever globalAlpha says (fills do honour it), so a glow
   // meant at 20% lands at 100%. Where that is so, a sprite marked __rtxSprite drawn at reduced alpha is drawn
@@ -3778,7 +3715,7 @@
     scene.dpr = dpr; scene.w = window.innerWidth; scene.h = window.innerHeight;
     for (const c of [scene.back, scene.front]) {
       if (!c) continue;
-      const idle = c === scene.back && scene.theme === 'halloween';   // Halloween never draws behind the page
+      const idle = scene.theme === 'christmas' || (c === scene.back && scene.theme === 'halloween');   // these themes draw on their own small canvases
       c.width = idle ? 1 : Math.round(scene.w * dpr); c.height = idle ? 1 : Math.round(scene.h * dpr);
       c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
     }
@@ -3789,10 +3726,7 @@
     const W = scene.w, H = scene.h, area = W * H, parts = [];
     const n = (per, min, max) => Math.max(min, Math.min(max, Math.round(area / per)));
     if (scene.theme === 'christmas') {
-      for (let i = 0; i < n(12000, 32, 96); i++) parts.push({ k: 'snow', front: Math.random() < 0.35,
-        x: rnd(0, W), y: rnd(0, H), r: rnd(1, 2.6), v: rnd(14, 34), sw: rnd(6, 20), ph: rnd(0, 6.283), a: rnd(0.45, 0.95) });
-      for (let i = 0; i < n(90000, 4, 12); i++) parts.push({ k: 'flake', front: true,
-        x: rnd(0, W), y: rnd(0, H), r: rnd(7, 14), v: rnd(22, 44), sw: rnd(14, 34), ph: rnd(0, 6.283), rot: rnd(0, 6.283), spin: rnd(-0.5, 0.5), a: rnd(0.5, 0.9) });
+      xmLayout();
     } else if (scene.theme === 'newyear') {
       // a thin fall of snow under the fireworks, nothing more: the shells are the show
       for (let i = 0; i < n(26000, 14, 44); i++) parts.push({ k: 'snow', front: Math.random() < 0.3,
@@ -3932,6 +3866,7 @@
     if (!scene.on) return;
     scene.raf = requestAnimationFrame(sceneFrame);
     if (scene.theme === 'halloween') { if (!hwFrame(now)) { cancelAnimationFrame(scene.raf); scene.raf = 0; } return; }
+    if (scene.theme === 'christmas') { if (!xmFrame(now)) { cancelAnimationFrame(scene.raf); scene.raf = 0; } return; }
     if (now - scene.last < (scene.budget || 15)) return;   // 60 fps, easing to 30 if frames start running long
     const dt = Math.min(0.1, (now - scene.last) / 1000); scene.last = now;
     // watch our own cost: if drawing a frame takes more than a third of the budget, ease off to 30 fps
@@ -4201,19 +4136,7 @@
     });
     S.rainFar = [rain(201, 22, 10, 6, 0.21, 1, 'rgba(190,190,232,0.55)'), rain(201, 22, 10, 6, 0.42, 1, 'rgba(190,190,232,0.55)')];
     S.rainNear = [rain(203, 11, 14, 8, 0.21, 0.9, 'rgba(205,205,240,0.62)'), rain(203, 11, 14, 8, 0.42, 0.9, 'rgba(205,205,240,0.62)')];
-    // what this renderer can do: additive blending, and even-odd clipping
-    S.lighter = false; S.evenodd = false;
-    try {
-      const c = document.createElement('canvas'); c.width = c.height = 4;
-      const g = c.getContext('2d');
-      g.fillStyle = '#000'; g.fillRect(0, 0, 4, 4);
-      g.globalCompositeOperation = 'lighter'; g.fillStyle = 'rgba(255,0,0,0.5)'; g.fillRect(0, 0, 4, 4); g.fillRect(0, 0, 4, 4);
-      S.lighter = g.getImageData(1, 1, 1, 1).data[0] > 230;
-      g.globalCompositeOperation = 'source-over'; g.clearRect(0, 0, 4, 4);
-      g.save(); g.beginPath(); g.rect(0, 0, 4, 4); g.rect(1, 1, 2, 2); g.clip('evenodd');
-      g.fillStyle = '#fff'; g.fillRect(0, 0, 4, 4); g.restore();
-      S.evenodd = g.getImageData(2, 2, 1, 1).data[3] === 0;
-    } catch (e) {}
+    const cp = sceneCaps(); S.lighter = cp.lighter; S.evenodd = cp.evenodd;
     for (const k in S) for (const c of (Array.isArray(S[k]) ? S[k] : [S[k]])) if (c && c.getContext) c.__rtxSprite = true;
     scene.sprites.hw = S;
   }
@@ -5599,28 +5522,2189 @@
     el.textContent = Math.round(1000 / (hw.gap || 33)) + ' fps  ' + (hw.cost || 0).toFixed(1) + ' ms  L' + hw.level + '  ' + hw.weather
       + '  t ' + hw.t.toFixed(1) + '  ' + (st ? st.w + 'x' + st.h : 'no stage');
   }
-  // Ctrl+Shift+H shows the frame meter, Ctrl+Shift+L brings a storm in now
+  // Ctrl+Shift+H shows the frame meter, Ctrl+Shift+L brings the storm (or the squall) in now
   document.addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey && e.shiftKey) || scene.theme !== 'halloween' || !scene.hw) return;
+    if (!(e.ctrlKey && e.shiftKey)) return;
     const k = (e.key || '').toLowerCase();
-    if (k === 'h') { e.preventDefault(); hwHud(!scene.hw.hud); }
-    else if (k === 'l') { e.preventDefault(); hwForce('storm'); }
+    if (scene.theme === 'halloween' && scene.hw) {
+      if (k === 'h') { e.preventDefault(); hwHud(!scene.hw.hud); }
+      else if (k === 'l') { e.preventDefault(); hwForce('storm'); }
+    } else if (scene.theme === 'christmas' && scene.xm) {
+      if (k === 'h') { e.preventDefault(); xmHud(!scene.xm.hud); }
+      else if (k === 'l') { e.preventDefault(); xmForce('squall'); }
+    }
   });
   // the pumpkins look up at the Play button while it is hovered
   function hwHover(on) { const hw = scene.hw; if (hw && hw.playHover !== on) { hw.playHover = on; hw.hoverT = hw.t; } }
-  document.addEventListener('mouseover', (e) => { if (scene.hw) hwHover(!!(e.target && e.target.closest && e.target.closest('#play-btn:not(:disabled)'))); }, true);
-  document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) hwHover(false); });
-  document.documentElement.addEventListener('mouseleave', () => hwHover(false));
-  window.addEventListener('blur', () => hwHover(false));
+  document.addEventListener('mouseover', (e) => {
+    if (!scene.hw && !scene.xm) return;
+    const on = !!(e.target && e.target.closest && e.target.closest('#play-btn:not(:disabled)'));
+    if (scene.hw) hwHover(on);
+    if (scene.xm) xmHover(on);
+  }, true);
+  document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) { hwHover(false); xmHover(false); } });
+  document.documentElement.addEventListener('mouseleave', () => { hwHover(false); xmHover(false); });
+  window.addEventListener('blur', () => { hwHover(false); xmHover(false); });
+  // ===================== Christmas: lamplight above the valley =====================
+  // One camera places every plane, from the lamp on the lane to the mountains ten kilometres off: static SVG built once
+  // from the tables below, small canvases over the open corner for all that moves, and a veil per plane for the weather.
+  const XM_CAM = { f: 306, uh: 186, rv: 182, eLane: 8, eTerr: 17.6, eVal: 50 };
+  // r = rv - f*X/d ;  u = uh - f*(E - h)/d ;  px per metre = f/d
+  const XM_PLANE = {           // reference distance and eye height for each static layer; viewBox units are metres there
+    range:  { d: 10000, E: 50,   box: [2400, -20, 178, 262], fix: 1 },
+    hills:  { d: 4000,  E: 50,   box: [2400, -20, 176, 228], fix: 1 },
+    valley: { d: 520,   E: 50,   box: [2400, -20, 95, 198],  fix: 2 },
+    town:   { d: 375,   E: 50,   box: [270, 170, 143, 174],  fix: 2 },
+    vill:   { d: 50,    E: 17.6, box: [2400, -20, -4, 165],  fix: 3 },
+    near:   { d: 14,    E: 8,    box: [430, 60, -4, 236],    fix: 3 },
+  };
+  const S = (d) => XM_CAM.f / d;
+  const R = (X, d) => XM_CAM.rv - XM_CAM.f * X / d;
+  const U = (E, d, h) => XM_CAM.uh - XM_CAM.f * (E - (h || 0)) / d;
+  const XAT = (r, d) => (XM_CAM.rv - r) * d / XM_CAM.f;
+  for (const k in XM_PLANE) { const p = XM_PLANE[k]; p.s = S(p.d); p.u0 = U(p.E, p.d, 0); }
+  const xr = (a, b) => a + scene.xm.rand() * (b - a);
+  const xmInterp = (prof, r) => { for (let i = 0; i < prof.length - 2; i += 2) if (r >= prof[i] && r <= prof[i + 2]) { const q = (r - prof[i]) / (prof[i + 2] - prof[i]); return prof[i + 1] + (prof[i + 3] - prof[i + 1]) * q; } return prof[prof.length - 1]; };
+
+  // one moonlight for all the snow: flat snow brightest near and greying into the horizon haze with distance,
+  // roofs facing the eye a little under their ground, ridges and tops catching a rim
+  const XM_COL = {
+    range: '#283b5d', rangeSnow: '#395172', rangeRim: 'rgba(232,176,170,0.18)',
+    hills: '#1b2a45', hillsClear: '#2e4767',
+    floorNear: '#576f94', haze: '#34496c', forest: '#16233d', spur: '#2b3e60', spurRock: '#213157', crest: '#587092', portal: '#070d18',
+    viaduct: '#1a2945', river: '#3c5679', hedge: '#16233d', road: '#22324e',
+    townWall: '#121e33', townSnow: '#5f789c',
+    lane: '#7a92b7', slope: '#728ab0', terrace: '#6a82a9', street: '#627ba0', track: '#5b759a', scrub: '#202e49', groove: '#647e9f',
+    wall: '#0c1628', sideR: '#131d33', sideL: '#080f1d', roof: '#627a98', roofLip: '#4f6a8d', rim: '#95adcd', door: '#1a1410', pane: '#0e1526',
+    wreath: '#16341f', bow: '#e23b3b', tree: '#0b2016', treeSnow: '#7b93b1', starDim: '#6d6440',
+    near: '#050b14', iron: '#070c16', wood: '#0b0f17', cap: '#9db2ce', lump: '#98adc9', glassDim: '#2a2a2c', sled: '#6b2226',
+    veil: '#31476a',
+  };
+  const xmMix = (a, b, q) => { const c = (h, i) => parseInt(h.slice(1 + 2 * i, 3 + 2 * i), 16); return 'rgb(' + [0, 1, 2].map((i) => Math.round(c(a, i) + (c(b, i) - c(a, i)) * q)).join(',') + ')'; };
+  // terrain profiles: (r, u) pairs at k = 1; past r 600 they are coarse
+  const XM_RANGE = [-20, 236, 0, 240, 14, 246, 24, 238, 34, 231, 44, 228, 54, 231, 64, 240, 80, 250, 96, 257, 108, 251, 120, 243, 138, 236,
+    156, 240, 176, 252, 192, 246, 206, 236, 222, 238, 240, 242, 252, 236, 262, 220, 270, 204, 300, 199, 360, 197, 412, 201, 425, 228,
+    440, 240, 462, 249, 480, 244, 500, 236, 520, 246, 545, 253, 570, 241, 600, 234, 680, 248, 760, 236, 840, 252, 940, 238, 1040, 250,
+    1160, 232, 1280, 247, 1400, 236, 1550, 251, 1700, 238, 1850, 249, 2000, 234, 2200, 246, 2400, 238];
+  const XM_RANGE_SNOW = [[14, 246], [96, 257], [176, 252], [462, 249], [545, 253], [840, 252], [1040, 250], [1550, 251], [1850, 249]];
+  const XM_HILLS = [-20, 207, 0, 206, 16, 210, 34, 214, 50, 211, 70, 206, 88, 204, 104, 209, 122, 214, 140, 217, 158, 213, 178, 210,
+    196, 214, 214, 219, 234, 222, 254, 220, 272, 223, 290, 219, 310, 214, 330, 211, 356, 207, 385, 210, 410, 216, 440, 221, 470, 216,
+    500, 210, 540, 214, 580, 219, 620, 212, 700, 208, 800, 216, 900, 210, 1000, 218, 1150, 209, 1300, 215, 1500, 208, 1700, 217,
+    1900, 211, 2100, 216, 2400, 210];
+  // snowy meadows under the crest of the hills: r from, r to, depth px
+  const XM_MEADOWS = [[30, 61, 5], [127, 139, 3.5], [229, 266, 6], [318, 326, 3], [446, 487, 5.5], [604, 619, 4], [741, 798, 6], [1082, 1116, 4.5]];
+  // the wooded hill at 560 m: a long left flank, a rounded crown, its right flank running on behind the viaduct;
+  // the railway leaves it by a tunnel cut into that flank
+  const XM_SPUR = [168, 158.7, 162, 159.7, 156, 161.8, 150.5, 164.9, 145.5, 168.4, 141, 172.2, 137, 176.0, 133.5, 179.5, 130.5, 182.5, 127.5, 185.0,
+    124.5, 186.9, 121.5, 188.1, 119, 188.4, 116.5, 187.6, 114, 185.8, 111.5, 183.2, 109, 180.0, 106.5, 176.4, 104, 172.4, 101.5, 168.4, 99, 164.8,
+    96.5, 161.8, 94, 159.6, 91, 158.7];
+  // the valley floor between the terrace and the town: a road, hedgerows (X, d from, d to), clumps of trees (X, d, h)
+  const XM_ROAD = [[-95, 172], [-99, 205], [-100, 240], [-97, 272], [-96, 300], [-92, 330], [-90, 350], [-84, 372]];
+  const XM_HEDGES = [[-120, 176, 330], [-60, 196, 286]];
+  const XM_FIELDS = [[230, -150, -104], [300, -140, -101], [262, -89, -62]];
+  const XM_CLUMPS = [[-137, 262, 9], [-134.4, 256, 10], [-132.2, 265, 8], [-78, 206, 8], [-75.6, 203, 9.5], [68, 384, 9], [70.6, 380, 10.5],
+    [73.2, 388, 8], [118, 302, 9], [121, 298, 8]];
+  const XM_VIADUCT = { d: 520, r0: 118, r1: -24, deck: 28, pitch: 22.2, pier: 5.0, spring: 15.0, crown: 23.5 };
+  const XM_RIVER = [-8, 152.3, 18, 153.4, 40, 154.8, 56, 157.5, 64, 160.5, 60, 163.5, 74, 166.5, 98, 169, 116, 171.5, 140, 175];
+  // town: X left edge m, width m, eaves m, ridge m, row (0 front at 375 m, 1 back at 395 m), gable to the viewer
+  const XM_TOWN = [[-97, 8, 6.5, 9.5, 0, 1], [-88, 7, 6, 8.5, 0, 0], [-80, 9, 7.5, 12.5, 0, 1], [-70, 7.5, 6, 9, 0, 0], [-61, 8, 5.5, 8.5, 0, 1],
+    [-52, 8.5, 7.5, 10, 0, 0], [-16.5, 7, 6, 8.5, 0, 1], [-8.5, 8, 5.5, 8, 0, 0],
+    [-104, 6, 6.5, 9, 1, 0], [-93, 8, 8.5, 13.5, 1, 0], [-84, 9, 8, 11.5, 1, 1], [-66, 8, 7.5, 11, 1, 1], [-57, 7, 7, 10, 1, 0], [-14, 8, 9, 13, 1, 1], [-4, 7, 7, 10, 1, 0]];
+  // farms on the edge of the town: X, width, eaves, ridge, d, gable; and trees about it: X, d, h
+  const XM_TOWN_OUT = [[-128, 7, 5.5, 8, 418, 1], [-113, 6.5, 5, 8, 352, 0], [8, 6.5, 5, 7.5, 352, 1]];
+  const XM_TOWN_TREES = [[-106.5, 392, 10], [-103.8, 386, 12], [-120.5, 432, 9], [-134, 410, 10], [4.4, 368, 10], [7.4, 380, 11]];
+  const XM_CHURCH = { X: -39.2, tw: 6, tower: 22, spire: 8, nave: [-36.2, -18.2, 10, 14.5] };
+  // village (E 17.6): X0, X1 m, front d, depth D, eaves he, ridge hr, roof, visible side, stacks [X|null, d, top h], door [X, w, h], windows [X, sill, w, h]
+  const XM_HOUSES = [
+    { n: 'cottage', X0: XAT(246, 50), X1: XAT(206, 50), d: 50, D: 5, he: 4.2, hr: 5.8, roof: 'eave', side: 'sideR',
+      stacks: [[-8.6, 52.5, 6.9]], door: [-7.0, 1.0, 2.0], wreath: 1,
+      win: [[-9.3, 0.9, 1.0, 1.3], [-4.9, 0.9, 1.0, 1.3], [-5.6, 2.6, 0.8, 1.0]] },
+    { n: 'inn', X0: XAT(158, 50), X1: XAT(100, 50), d: 50, D: 9, he: 5.6, hr: 8.2, roof: 'eave', side: 'sideL',
+      stacks: [[6.2, 54.5, 9.3], [11.2, 54.5, 9.3]], door: [8.66, 1.2, 2.2], wreath: 1,
+      win: [[5.2, 0.9, 1.0, 1.3], [6.8, 0.9, 1.0, 1.3], [10.6, 0.9, 1.0, 1.3], [12.2, 0.9, 1.0, 1.3],
+            [5.2, 3.2, 1.0, 1.3], [7.4, 3.2, 1.0, 1.3], [9.9, 3.2, 1.0, 1.3], [12.2, 3.2, 1.0, 1.3]] },
+    { n: 'gable', X0: XAT(100, 50), X1: XAT(100, 50) + 5.2, d: 50, D: 5, he: 4.2, hr: 6.5, roof: 'gable', side: 'none',
+      stacks: [[null, 53.5, 7.4]], door: [17.4, 1.0, 2.0], wreath: 0,
+      win: [[14.7, 0.9, 1.0, 1.3], [16.0, 4.6, 0.6, 0.8]] },
+    { n: 'barn', X0: 24.0, X1: 31.5, d: 54, D: 4, he: 3.2, hr: 4.6, roof: 'eave', side: 'sideL',
+      stacks: [[29.9, 56, 5.5]], door: [30.1, 2.0, 2.2], wreath: 0,
+      win: [[25.1, 1.0, 0.8, 0.9], [26.7, 1.0, 0.8, 0.9]] },
+  ];
+  const XM_TREE = { X: XAT(178.5, 46), d: 46, h: 7.8, w: 3.16, star: 0.5, tiers: 5 };
+  const XM_EDGE = { d: 60 };            // the terrace's far edge
+  const XM_STREET = { d0: 41.6, d1: 44.6, tracks: [42.6, 43.6] };
+  const XM_SPRUCES_M = [[430, 52, 10.5], [446, 55, 8.5], [461, 50, 9.5], [560, 56, 9], [575, 53, 11], [593, 57, 7.5], [722, 50, 10], [737, 54, 8],
+    [862, 52, 11], [990, 55, 9], [1004, 51, 10.5], [1021, 57, 8], [1180, 53, 9.5], [1330, 50, 10], [1345, 55, 8.5], [1520, 52, 9], [1700, 56, 10],
+    [1716, 52, 11], [1900, 54, 9], [2100, 51, 10], [2280, 55, 9.5]];
+  // the lane: the lamp, the fence (A to B, five posts, the second bay is the gate gap) and the spruce
+  const XM_LAMP = { X: XAT(268, 14), d: 14 };
+  const XM_FENCE = { A: [-3.11, 13.98], B: [4.67, 15.53], n: 5, gate: 1, h: 1.1, rails: [0.45, 0.9] };
+  const XM_SPRUCE = { X: XAT(382, 13.8), d: 13.8, h: 10, w: 4.2, seed: 7 };
+  // town lights at 375 m: street lamps (d 368, h 4 m) and front-row windows; the belfry at h 19 m
+  const XM_TOWN_LAMPS = [-96, -85, -74, -63, -52, -16, -8, 0];
+  // square tree bulbs: [dx m from the trunk axis, h m]; colour XM_BULB[i % 4], group i % 2
+  const XM_TREE_BULBS = [[0.9, 0.9], [-0.9, 1.3], [1.03, 1.7], [-0.75, 2.1], [0.71, 2.5], [-0.69, 2.9], [0.48, 3.3], [-0.55, 3.7],
+    [0.53, 4.1], [-0.52, 4.5], [0.29, 4.9], [-0.29, 5.3], [0.21, 5.7], [-0.27, 6.1], [0.19, 6.5], [-0.09, 6.9]];
+  const XM_BULB = ['#ff5f5f', '#ffd479', '#7bffb0', '#7cc4ff'];
+  const XM_EAVE = ['#e23b3b', '#ffd479', '#78ffd6', '#7cc4ff'];
+  // stage stars: [r, u, size px, base alpha]
+  const XM_STARS = [[22, 262, 1, 0.4], [70, 280, 1, 0.3], [118, 276, 1.5, 0.5], [160, 266, 1, 0.35], [204, 284, 1, 0.45], [236, 258, 1, 0.3],
+    [262, 274, 1.5, 0.5], [300, 262, 1, 0.35], [330, 282, 1, 0.4], [348, 250, 1, 0.3], [140, 286, 1, 0.3], [30, 286, 1, 0.35]];
+  const XM_SKY = { moon: [138, 250, 7], star: [82, 268] };
+  // CSS stars in the margin: [left %, top %, size px, opacity]; and four in the open sky above the stage: [r, u, size, opacity]
+  const XM_CSS_STARS = [[56.0, 44.6, 1.9, 0.35], [10.7, 6.6, 1.8, 0.2], [12.5, 15.7, 1.3, 0.31], [26.2, 39.7, 1.8, 0.35], [29.5, 32.5, 1.7, 0.26],
+    [56.9, 45.8, 2.1, 0.37], [19.3, 15.2, 1.6, 0.2], [44.1, 22.0, 2.1, 0.28], [54.7, 39.9, 1.3, 0.24], [52.1, 24.8, 2.2, 0.29], [6.0, 31.2, 2.0, 0.25],
+    [6.8, 19.3, 2.2, 0.38], [8.5, 15.9, 1.4, 0.2], [45.8, 13.1, 1.8, 0.3]];
+  const XM_OPEN_STARS = [[60, 330, 1.6, 0.4], [150, 372, 1.4, 0.3], [230, 344, 1.8, 0.45], [318, 398, 1.5, 0.35]];
+  // the valley veil's rows: u, and the distance (km) whose haze that row shows
+  const XM_VROWS = [96, 110, 125, 140, 150, 158, 165, 171, 176, 179, 180.5, 182.5, 183.5, 196];
+  const XM_BEATS = [['sleigh', 3, 70], ['door', 3, 35], ['rooms', 3, 20], ['train', 2, 110], ['fox', 2, 120], ['shed', 2, 40], ['stoke', 1, 45], ['star', 1, 60]];
+  const XM_TAU = Math.PI * 2;
+  // the static planes: one SVG per plane, in that plane's metres, built once per page from the tables
+  function xmBuild() {
+    const host = $('xmScene');
+    if (!host || host.firstChild) return;
+    let PL = null;                                  // current plane while emitting
+    const fmt = (v) => (+v).toFixed(PL.fix);
+    const pt = (r, u) => fmt((XM_CAM.rv - r) / PL.s) + ' ' + fmt((PL.u0 - u) / PL.s);
+    const poly = (a) => { let s = 'M' + pt(a[0], a[1]); for (let i = 2; i < a.length; i += 2) s += 'L' + pt(a[i], a[i + 1]); return s + 'Z'; };
+    const line = (a) => { let s = 'M' + pt(a[0], a[1]); for (let i = 2; i < a.length; i += 2) s += 'L' + pt(a[i], a[i + 1]); return s; };
+    const rect = (r0, u0, r1, u1) => poly([r0, u0, r1, u0, r1, u1, r0, u1]);
+    const path = (d, fill, extra) => '<path d="' + d + '" fill="' + fill + '"' + (extra || '') + '/>';
+    const rng = (seed) => { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
+    const interp = (prof, r) => { for (let i = 0; i < prof.length - 2; i += 2) if (r >= prof[i] && r <= prof[i + 2]) { const q = (r - prof[i]) / (prof[i + 2] - prof[i]); return prof[i + 1] + (prof[i + 3] - prof[i + 1]) * q; } return prof[prof.length - 1]; };
+    const P3 = (E, X, d, h) => [R(X, d), U(E, d, h)];
+
+    function svgOpen(name) {
+      const p = PL = XM_PLANE[name], b = p.box;
+      const x0 = (XM_CAM.rv - b[0]) / p.s, w = (b[0] - b[1]) / p.s, y0 = (p.u0 - b[3]) / p.s, h = (b[3] - b[2]) / p.s;
+      p.vb = [x0, y0, w, h];
+      return '<svg class="xm-l xm-' + name + '" viewBox="' + [x0, y0, w, h].map((v) => v.toFixed(p.fix)).join(' ') + '" preserveAspectRatio="none">';
+    }
+    function buildRange() {
+      let s = svgOpen('range');
+      const prof = XM_RANGE.slice();
+      s += path(poly(prof.concat([2400, 178, -20, 178])), XM_COL.range);
+      // snowfields: the upper band of each peak, two or three lobes on the lower edge, nothing under 6 px
+      let sn = '';
+      XM_RANGE_SNOW.forEach(([rp, up], j) => {
+        const top = [], bot = [], g = rng(31 + j);
+        for (let r = rp - 12; r <= rp + 14; r += 2) {
+          const pu = interp(prof, r), f = 1 - Math.abs(r - rp) / (r < rp ? 12 : 14);
+          top.push(r, pu - 0.3);
+          bot.unshift(r, pu - 0.3 - Math.max(0.6, (3 + 6 * f) * (0.85 + 0.3 * Math.sin(r * 0.9 + j)) + (g() < 0.25 ? 2 : 0)));
+        }
+        sn += poly(top.concat(bot));
+      });
+      s += path(sn, XM_COL.rangeSnow);
+      // the afterglow catches the right-facing flanks
+      let rim = '';
+      for (let i = 0; i < prof.length - 2; i += 2) if (prof[i + 3] > prof[i + 1] + 3 && prof[i] < 700) rim += 'M' + pt(prof[i], prof[i + 1]) + 'L' + pt(prof[i + 2], prof[i + 3]);
+      s += '<path d="' + rim + '" fill="none" stroke="' + XM_COL.rangeRim + '" stroke-width="' + (1 / PL.s).toFixed(1) + '"/>';
+      return s + '</svg>';
+    }
+    function buildHills() {
+      let s = svgOpen('hills');
+      const a = [];
+      for (let i = 0; i < XM_HILLS.length - 2; i += 2) {           // a 2 px serrated spruce edge in the corner, plain past r 600
+        const r0 = XM_HILLS[i], u0 = XM_HILLS[i + 1], r1 = XM_HILLS[i + 2], u1 = XM_HILLS[i + 3];
+        if (r0 >= 600) { a.push(r0, u0); continue; }
+        const n = Math.max(1, Math.round((r1 - r0) / 2.5));
+        for (let k = 0; k < n; k++) { const q = k / n, r = r0 + (r1 - r0) * q, u = u0 + (u1 - u0) * q; a.push(r, u + (k % 2 ? -0.8 : 1.0)); }
+      }
+      a.push(2400, XM_HILLS[XM_HILLS.length - 1]);
+      const sil = poly(a.concat([2400, 176, -20, 176]));
+      s += path(sil, XM_COL.hills);
+      let cl = '';
+      XM_MEADOWS.forEach(([r0, r1, dep], j) => {          // meadows hanging from the crest's trees, ragged below, each its own shape
+        const g = rng(57 + j), top = [], bot = [], n = Math.max(4, Math.round((r1 - r0) / 2.5)), pk = 0.3 + 0.4 * g();
+        for (let i = 0; i <= n; i++) {
+          const q = i / n, r = r0 + (r1 - r0) * q, ridge = interp(XM_HILLS, r) - 1.6, w = q < pk ? q / pk : (1 - q) / (1 - pk);
+          top.push(r, ridge);
+          bot.unshift(r, ridge - Math.max(0.4, dep * Math.pow(w, 0.7) * (0.6 + 0.4 * g())));
+        }
+        cl += poly(top.concat(bot));
+      });
+      s += path(cl, XM_COL.hillsClear);
+      s += '<path class="xm-veil-b" d="' + sil + '" fill="' + XM_COL.veil + '" fill-opacity="0" stroke="' + XM_COL.veil + '" stroke-opacity="0" stroke-width="' + (1.2 / PL.s).toFixed(1) + '"/>';
+      return s + '</svg>';
+    }
+    function buildValley() {
+      let s = svgOpen('valley');
+      const E = XM_CAM.eVal, uEdge = U(XM_CAM.eTerr, XM_EDGE.d);
+      // the floor greys into the horizon haze with distance; the ramp is written in this plane's metres, since a ramp
+      // in box units renders here as a two-tone step
+      const uA = uEdge - 2, uB = 182, hz = (dd) => 1 - Math.exp(-(dd - 170) / 1100);
+      let stops = '';
+      for (const dd of [170, 210, 260, 330, 420, 560, 760, 1050, 1500, 2500]) stops += '<stop offset="' + ((U(E, dd) - uA) / (uB - uA)).toFixed(3) + '" stop-color="' + xmMix(XM_COL.floorNear, XM_COL.haze, hz(dd)) + '"/>';
+      s += '<defs><linearGradient id="xmFloor" gradientUnits="userSpaceOnUse" x1="0" y1="' + fmt((PL.u0 - uA) / PL.s) + '" x2="0" y2="' + fmt((PL.u0 - uB) / PL.s) + '">' + stops + '</linearGradient></defs>';
+      s += path(rect(2400, uA, -20, uB), 'url(#xmFloor)');
+      // the road down to the town, 5 m of trodden snow
+      const rl = [], rr = [];
+      XM_ROAD.forEach(([X, dd]) => { rl.push(R(X - 2.5, dd), U(E, dd)); rr.unshift(R(X + 2.5, dd), U(E, dd)); });
+      s += path(poly(rl.concat(rr)), XM_COL.road, ' fill-opacity="0.16"');
+      // hedgerows along the fields and across them, a stroke a pixel wide fading with distance
+      const hedge = (X0, d0, X1, d1) => {
+        let o = '';
+        for (let i = 0; i < 4; i++) {
+          const qa = i / 4, qb = (i + 1) / 4, da = d0 + (d1 - d0) * qa, db = d0 + (d1 - d0) * qb, Xa = X0 + (X1 - X0) * qa, Xb = X0 + (X1 - X0) * qb;
+          o += '<path d="M' + pt(R(Xa, da), U(E, da)) + 'L' + pt(R(Xb, db), U(E, db)) + '" fill="none" stroke="' + XM_COL.hedge + '" stroke-opacity="' + (0.5 * Math.exp(-((da + db) / 2 - 170) / 320)).toFixed(2) + '" stroke-width="' + (1 / PL.s).toFixed(2) + '"/>';
+        }
+        return o;
+      };
+      for (const [X, d0, d1] of XM_HEDGES) s += hedge(X, d0, X, d1);
+      for (const [dd, X0, X1] of XM_FIELDS) s += hedge(X0, dd, X1, dd);
+      // clumps of trees out on the floor
+      let cp = '';
+      for (const [X, dd, h] of XM_CLUMPS) { const b = U(E, dd), t = U(E, dd, h), r = R(X, dd), w = 0.22 * h * S(dd); cp += poly([r + w, b, r, t, r - w, b]); }
+      s += path(cp, XM_COL.hedge);
+      // river: centreline on the floor, 18 m wide, offset in the world and projected
+      const C = [];
+      for (let i = 0; i < XM_RIVER.length; i += 2) { const r = XM_RIVER[i], u = XM_RIVER[i + 1], d = XM_CAM.f * E / (XM_CAM.uh - u); C.push([XAT(r, d), d]); }
+      const L = [], Rt = [];
+      for (let i = 0; i < C.length; i++) {
+        const a = C[Math.max(0, i - 1)], b = C[Math.min(C.length - 1, i + 1)], dx = b[0] - a[0], dd = b[1] - a[1], n = Math.hypot(dx, dd) || 1;
+        const nx = -dd / n * 9, nd = dx / n * 9, q = C[i];
+        L.push(R(q[0] + nx, q[1] + nd), U(E, q[1] + nd)); Rt.push(R(q[0] - nx, q[1] - nd), U(E, q[1] - nd));
+      }
+      const back = []; for (let i = Rt.length - 2; i >= 0; i -= 2) back.push(Rt[i], Rt[i + 1]);
+      s += path(poly(L.concat(back)), XM_COL.river, ' data-xa="river"');
+      // the forest line at 2.5 km: 25 m trees, 3 px
+      const fa = [];
+      const ub = U(E, 2500), ut = U(E, 2500, 25);
+      for (let r = 2400; r >= -20; r -= (r > 600 ? 12 : 2)) fa.push(r, r > 600 ? ut : ((Math.round(r / 2) % 2) ? ut : ut - 1.4));
+      s += path(poly([2400, ub - 1].concat(fa).concat([-20, ub - 1])), XM_COL.forest);
+      // the wooded shoulder at 560 m: tree crowns of uneven size along its flank and crown, a short rock face with the portal
+      const sg = rng(77);
+      let sd = 'M' + pt(XM_SPUR[0], XM_SPUR[1]);
+      for (let i = 0; i < XM_SPUR.length - 2; i += 2) {
+        const r0 = XM_SPUR[i], u0 = XM_SPUR[i + 1], r1 = XM_SPUR[i + 2], u1 = XM_SPUR[i + 3], len = Math.hypot(r1 - r0, u1 - u0);
+        if (u0 < 160 || u1 < 160) { sd += 'L' + pt(r1, u1); continue; }
+        for (let q = 0; q < 1;) {
+          const qn = Math.min(1, q + (2 + 2.2 * sg()) / len), h = 0.6 + 1.4 * sg(), qm = (q + qn) / 2;
+          sd += 'Q' + pt(r0 + (r1 - r0) * qm, u0 + (u1 - u0) * qm + 2 * h) + ' ' + pt(r0 + (r1 - r0) * qn, u0 + (u1 - u0) * qn);
+          q = qn;
+        }
+      }
+      s += path(sd + 'Z', XM_COL.spur, ' data-xa="spur"');
+      s += path(poly([116.6, 171.6, 116.9, 176.4, 117.8, 179.0, 119.6, 179.8, 121.6, 179.1, 122.6, 176.6, 122.8, 171.6]), XM_COL.spurRock);
+      s += '<path d="' + line([122.0, 179.0, 119.6, 180.1, 117.3, 179.2]) + '" fill="none" stroke="' + XM_COL.crest + '" stroke-opacity="0.6" stroke-width="' + (1 / PL.s).toFixed(2) + '"/>';
+      const deck = U(E, XM_VIADUCT.d, XM_VIADUCT.deck);
+      s += path('M' + pt(117.4, deck) + 'L' + pt(117.4, deck + 2.6) + 'Q' + pt(119.6, deck + 4.6) + ' ' + pt(121.8, deck + 2.6) + 'L' + pt(121.8, deck) + 'Z', XM_COL.portal, ' data-xa="portal"');
+      // viaduct: deck, piers and arches, one even-odd path
+      const V = XM_VIADUCT, base = U(E, V.d), X0 = XAT(V.r0, V.d);
+      let vd = rect(V.r0, base, V.r1, deck);
+      for (let X = X0 + V.pier; R(X, V.d) > V.r1; X += V.pitch) {
+        const ra = R(X, V.d), rb = R(X + V.pitch - V.pier, V.d), sp = U(E, V.d, V.spring), cr = U(E, V.d, V.crown);
+        if (rb < V.r1 - 20) break;
+        const rm = (ra + rb) / 2;
+        vd += 'M' + pt(ra, base) + 'L' + pt(ra, sp) + 'Q' + pt(ra, cr) + ' ' + pt(rm, cr) + 'Q' + pt(rb, cr) + ' ' + pt(rb, sp) + 'L' + pt(rb, base) + 'Z';
+      }
+      s += path(vd, XM_COL.viaduct, ' fill-rule="evenodd" data-xa="viaduct"');
+      s += path(rect(V.r0, deck, V.r1, deck + 1), XM_COL.crest);
+      return s + '</svg>';
+    }
+    function buildTown() {
+      let s = svgOpen('town');
+      const E = XM_CAM.eVal;
+      let walls = '', snow = '';
+      const house = (X, w, he, hr, d, gable) => {
+        const b = U(E, d), e = U(E, d, he), t = U(E, d, hr), r0 = R(X, d), r1 = R(X + w, d), rm = (r0 + r1) / 2;
+        if (gable) { walls += poly([r0, b, r0, e, rm, t, r1, e, r1, b]); snow += line([r0 + 0.2, e + 0.3, rm, t, r1 - 0.2, e + 0.3]); }
+        else { const ri = r0 - 0.15 * (r0 - r1), ro = r1 + 0.15 * (r0 - r1); walls += poly([r0, b, r0, e, ri, t, ro, t, r1, e, r1, b]); snow += line([ri, t, ro, t]); }
+      };
+      for (const h of XM_TOWN) if (h[4] === 1) house(h[0], h[1], h[2], h[3], 395, h[5]);
+      s += path(walls, '#141f35'); s += '<path d="' + snow + '" fill="none" stroke="' + XM_COL.townSnow + '" stroke-opacity="0.8" stroke-width="' + (1 / PL.s).toFixed(2) + '"/>';
+      const back = walls; walls = ''; snow = '';
+      for (const h of XM_TOWN) if (h[4] === 0) house(h[0], h[1], h[2], h[3], 375, h[5]);
+      const c = XM_CHURCH, d = 375, b = U(E, d), n = c.nave;
+      walls += poly([R(n[0], d), b, R(n[0], d), U(E, d, n[2]), R(n[0] + 1, d), U(E, d, n[3]), R(n[1] - 1, d), U(E, d, n[3]), R(n[1], d), U(E, d, n[2]), R(n[1], d), b]);
+      snow += line([R(n[0] + 1, d), U(E, d, n[3]), R(n[1] - 1, d), U(E, d, n[3])]);
+      const t0 = R(c.X - c.tw / 2, d), t1 = R(c.X + c.tw / 2, d), tm = R(c.X, d);
+      walls += poly([t0, b, t0, U(E, d, c.tower), tm, U(E, d, c.tower + c.spire), t1, U(E, d, c.tower), t1, b]);
+      snow += line([t0, U(E, d, c.tower) + 0.4, tm, U(E, d, c.tower + c.spire)]);
+      for (const h of XM_TOWN_OUT) house(h[0], h[1], h[2], h[3], h[4], h[5]);
+      for (const [X, dd, h] of XM_TOWN_TREES) { const tb = U(E, dd), tt = U(E, dd, h), r = R(X, dd), w = 0.22 * h * S(dd); walls += poly([r + w, tb, r, tt, r - w, tb]); }
+      s += path(walls, XM_COL.townWall, ' data-xa="town"');
+      s += '<path d="' + snow + '" fill="none" stroke="' + XM_COL.townSnow + '" stroke-width="' + (1 / PL.s).toFixed(2) + '"/>';
+      // the town's own veil: every wall it drew, filled and outlined over its snow lines
+      s += '<path class="xm-veil-t" d="' + back + walls + '" fill="' + XM_COL.veil + '" fill-opacity="0" stroke="' + XM_COL.veil + '" stroke-opacity="0" stroke-width="' + (1.2 / PL.s).toFixed(2) + '"/>';
+      return s + '</svg>';
+    }
+    // thin edges are strokes: fills under 2 px drop out in this renderer, slanted ones first
+    const stroke = (dd, col, px, extra) => '<path d="' + dd + '" fill="none" stroke="' + col + '" stroke-width="' + (px / PL.s).toFixed(3) + '"' + (extra || '') + '/>';
+    function houseParts(H) {
+      const E = XM_CAM.eTerr, d0 = H.d, d1 = H.d + H.D, dR = H.d + H.D / 2, o = 0.3;   // eaves overhang the walls by 0.3 m
+      const p = (X, d, h) => P3(E, X, d, h);
+      let out = '';
+      const fb0 = p(H.X0, d0, 0), fb1 = p(H.X1, d0, 0), fe0 = p(H.X0, d0, H.he), fe1 = p(H.X1, d0, H.he);
+      // stacks first, drawn from 1.4 m under the ridge, so the roof cuts them and none can float
+      for (const st of H.stacks) {
+        const Xs = st[0] == null ? (H.X0 + H.X1) / 2 : st[0], ds = st[1], w = 0.3;
+        const a = p(Xs - w, ds - 0.3, H.hr - 1.4), b = p(Xs + w, ds - 0.3, st[2]);
+        out += path(poly([a[0], a[1], a[0], b[1], b[0], b[1], b[0], a[1]]), XM_COL.wall, ' data-xa="stack"');
+        out += stroke(line([a[0] + 0.3, b[1] + 0.5, b[0] - 0.3, b[1] + 0.5]), XM_COL.rim, 1);
+      }
+      // the visible side wall
+      if (H.side !== 'none') {
+        const Xs = H.side === 'sideL' ? H.X0 : H.X1;
+        const a = p(Xs, d0, 0), b = p(Xs, d1, 0), c = p(Xs, d1, H.he), e = p(Xs, d0, H.he);
+        const pts = [a[0], a[1], e[0], e[1]];
+        if (H.roof === 'eave') { const g = p(Xs, dR, H.hr); pts.push(g[0], g[1]); }
+        pts.push(c[0], c[1], b[0], b[1]);
+        out += path(poly(pts), XM_COL[H.side], ' data-xa="side"');
+      }
+      if (H.roof === 'eave') {
+        out += path(poly([fb0[0], fb0[1], fe0[0], fe0[1], fe1[0], fe1[1], fb1[0], fb1[1]]), XM_COL.wall, ' data-xa="front"');
+        const e0 = p(H.X0 - o, d0 - o, H.he - 0.25), e1 = p(H.X1 + o, d0 - o, H.he - 0.25), r0 = p(H.X0 - o, dR, H.hr), r1 = p(H.X1 + o, dR, H.hr);
+        out += path(poly([e0[0], e0[1], r0[0], r0[1], r1[0], r1[1], e1[0], e1[1]]), XM_COL.roof, ' data-xa="roof"');
+        out += stroke(line([e0[0], e0[1] - 0.6, e1[0], e1[1] - 0.6]), XM_COL.roofLip, 1.2);
+        out += stroke(line([r0[0], r0[1], r1[0], r1[1]]), XM_COL.rim, 1);
+      } else {
+        const Xc = (H.X0 + H.X1) / 2, ap = p(Xc, d0, H.hr);
+        out += path(poly([fb0[0], fb0[1], fe0[0], fe0[1], ap[0], ap[1], fe1[0], fe1[1], fb1[0], fb1[1]]), XM_COL.wall, ' data-xa="front"');
+        const q0 = p(H.X0 - o, d0 - o, H.he - 0.3), qa = p(Xc, d0 - o, H.hr + 0.05), qb = p(Xc, d1 + o, H.hr + 0.05), q1 = p(H.X0 - o, d1 + o, H.he - 0.3);
+        out += path(poly([q0[0], q0[1], qa[0], qa[1], qb[0], qb[1], q1[0], q1[1]]), XM_COL.roof, ' data-xa="roof"');
+        const s1 = p(H.X1 + o, d0 - o, H.he - 0.3);
+        out += stroke(line([qa[0], qa[1] - 0.65, s1[0], s1[1] - 0.6]), XM_COL.roofLip, 1.3);
+        out += stroke(line([q0[0], q0[1] - 0.6, qa[0], qa[1] - 0.65]), XM_COL.roofLip, 1.3);
+        out += stroke(line([qa[0], qa[1], qb[0], qb[1]]), XM_COL.rim, 1);
+      }
+      // door, wreath, panes
+      const dr = H.door, D0 = p(dr[0] - dr[1] / 2, d0, 0), D1 = p(dr[0] + dr[1] / 2, d0, dr[2]);
+      out += path(poly([D0[0], D0[1], D0[0], D1[1], D1[0], D1[1], D1[0], D0[1]]), XM_COL.door, ' data-xa="door"');
+      for (const w of H.win) { const a = p(w[0] - w[2] / 2, d0, w[1]), b = p(w[0] + w[2] / 2, d0, w[1] + w[3]); out += path(poly([a[0], a[1], a[0], b[1], b[0], b[1], b[0], a[1]]), XM_COL.pane, ' data-xa="win"'); }
+      if (H.wreath) { const c = p(dr[0], d0, dr[2] * 0.72), rr = 0.25 * S(d0); out += path(poly([c[0] - rr, c[1], c[0], c[1] + rr, c[0] + rr, c[1], c[0], c[1] - rr]), XM_COL.wreath); out += path(rect(c[0] - 0.6, c[1] + rr + 0.3, c[0] + 0.6, c[1] + rr - 0.7), XM_COL.bow); }
+      return out;
+    }
+    function treeParts() {
+      const T = XM_TREE, E = XM_CAM.eTerr, s = S(T.d), rc = R(T.X, T.d), b = U(E, T.d), top = U(E, T.d, T.h);
+      let out = path(rect(rc - 1, b, rc + 1, b + 0.6 * s), '#1a120c');
+      const n = T.tiers, hw = T.w / 2 * s;
+      let a = [], sn = '';
+      for (let i = 0; i < n; i++) {
+        const y0 = b + 0.5 * s + (top - b - 0.5 * s) * i / n, y1 = b + 0.5 * s + (top - b - 0.5 * s) * (i + 1.35) / n;
+        const w = hw * (1 - i / n) * (i === 0 ? 1 : 0.95);
+        const ya = Math.min(top, y1), yq = y0 + 0.45 * (ya - y0);
+        out += path(poly([rc - w, y0, rc, ya, rc + w, y0]), XM_COL.tree);
+        sn += 'M' + pt(rc - w, y0 + 0.4) + 'L' + pt(rc - 0.55 * w, yq + 0.4) + 'M' + pt(rc + w, y0 + 0.4) + 'L' + pt(rc + 0.55 * w, yq + 0.4);
+      }
+      out += stroke(sn, XM_COL.treeSnow, 1);
+      const st = U(E, T.d, T.h + T.star);
+      out += path(poly([rc, st + 1.2, rc + 1.2, st, rc, st - 1.2, rc - 1.2, st]), XM_COL.starDim, ' data-xa="star"');
+      return out;
+    }
+    // a snow-laden spruce: drooping tiers, each side its own length, snow in broken lumps on top of the boughs
+    function spruceSvg(rc, ub, hpx, wpx, seed, dark, lump, lumps) {
+      const g = rng(seed), n = Math.max(7, Math.round(hpx / 13)), T = [[], []];
+      for (let i = 0; i < n; i++) {
+        const q = Math.pow((i + 0.2 + 0.3 * g()) / n, 0.9), y = ub + 0.05 * hpx + q * 0.9 * hpx;
+        for (let s = 0; s < 2; s++) {
+          const w = Math.max(1.2, wpx / 2 * Math.pow(1 - q, 0.88) * (0.78 + 0.36 * g()));
+          T[s].push({ y, w, dr: w * (0.3 + 0.25 * (1 - q)) * (0.8 + 0.4 * g()) });
+        }
+      }
+      const tw = Math.max(1, 0.035 * wpx);
+      let d = 'M' + pt(rc + tw, ub) + 'L' + pt(rc + tw, ub + 0.05 * hpx), sn = '';
+      const side = (dir, list, up) => {
+        const idx = up ? list.map((_, i) => i) : list.map((_, i) => list.length - 1 - i);
+        for (const i of idx) {
+          const b = list[i], A = [rc + dir * 0.22 * b.w, b.y - Math.max(1, 0.12 * b.w)], tip = [rc + dir * b.w, b.y - b.dr], B = [rc + dir * 0.1 * b.w, b.y + Math.max(0.035 * hpx, 0.3 * b.w)];
+          const sag = [rc + dir * 0.78 * b.w, b.y - 0.34 * b.w - 0.4 * b.dr], arch = [rc + dir * 0.58 * b.w, b.y + 0.3 * b.w];
+          if (up) d += 'L' + pt(A[0], A[1]) + 'Q' + pt(sag[0], sag[1]) + ' ' + pt(tip[0], tip[1]) + 'Q' + pt(arch[0], arch[1]) + ' ' + pt(B[0], B[1]);
+          else d += 'L' + pt(B[0], B[1]) + 'Q' + pt(arch[0], arch[1]) + ' ' + pt(tip[0], tip[1]) + 'Q' + pt(sag[0], sag[1]) + ' ' + pt(A[0], A[1]);
+          if (lumps && b.w > 3) {
+            const cnt = 2 + Math.floor(g() * 3);
+            for (let k = 0; k < cnt; k++) {
+              // a point on the top arch: quadratic from the tip through the arch control to B
+              const f = 0.1 + 0.6 * (k + 0.2 + 0.6 * g()) / cnt, m = 1 - f;
+              const x = m * m * tip[0] + 2 * m * f * arch[0] + f * f * B[0], yy = m * m * tip[1] + 2 * m * f * arch[1] + f * f * B[1] - 0.2;
+              const sw = (1.5 + 1.7 * g()) * Math.max(0.5, hpx / 222), sh = sw * (0.5 + 0.25 * g());
+              sn += 'M' + pt(x - sw, yy - 0.4) + 'Q' + pt(x - sw * 0.9, yy + sh) + ' ' + pt(x, yy + sh) + 'Q' + pt(x + sw * 0.9, yy + sh) + ' ' + pt(x + sw, yy - 0.4) + 'Z';
+            }
+          }
+        }
+      };
+      side(1, T[0], true);
+      d += 'L' + pt(rc, ub + hpx);
+      side(-1, T[1], false);
+      d += 'L' + pt(rc - tw, ub + 0.05 * hpx) + 'L' + pt(rc - tw, ub) + 'Z';
+      let out = path(d, dark);
+      if (lumps) out += path(sn, lump);
+      return out;
+    }
+    function buildVill() {
+      let s = svgOpen('vill');
+      const Et = XM_CAM.eTerr, El = XM_CAM.eLane;
+      const uBrow = U(El, 16.5), uFront = U(Et, 40), uEdge = U(Et, XM_EDGE.d);
+      // ground bands: terrace, slope, lane, and the terrace edge catching the sky
+      const edge = [], brow = [];
+      for (let r = 2400; r >= -20; r -= (r > 600 ? 40 : 4)) {
+        edge.push(r, uEdge + (r > 380 ? 1.6 * Math.sin(r / 61) + 1.0 * Math.sin(r / 23) : 0));
+        brow.push(r, uBrow + (r > 380 ? 1.2 * Math.sin(r / 47 + 1) : 0) + ((r > 60 && r < 260) ? 1.0 * Math.max(0, Math.sin(r / 9)) : 0));
+      }
+      s += path(poly(edge.concat([-20, -4, 2400, -4])), XM_COL.terrace);
+      const eu = (r) => uEdge + (r > 380 ? 1.6 * Math.sin(r / 61) + 1.0 * Math.sin(r / 23) : 0), lg = rng(91);
+      let lip = '';
+      for (let r = 2400; r > -20;) {
+        const far = r > 600, run = far ? 40 + 80 * lg() : 5 + 30 * lg(), gap = far ? 30 + 60 * lg() : 2 + 18 * lg() * lg(), ph = lg() * 6, amp = 0.8 + 1.8 * lg(), fq = 0.3 + 0.5 * lg();
+        const top = [], bot = [];
+        for (let x = r; x >= Math.max(-20, r - run); x -= far ? 4 : 1) { top.push(x, eu(x) + 1.2 + amp * Math.abs(Math.sin(x * fq + ph)) * (0.75 + 0.25 * Math.sin(x * 1.7))); bot.unshift(x, eu(x) - 0.8); }
+        if (top.length >= 4 && (r - run > 250 || r < 0)) lip += poly(top.concat(bot));     // none along the village's frontage
+        r -= run + gap;
+      }
+      s += path(lip, XM_COL.scrub);
+      const us0 = U(Et, XM_STREET.d0), us1 = U(Et, XM_STREET.d1);
+      s += path(rect(2400, us0, -20, us1), XM_COL.street);
+      for (const dt of XM_STREET.tracks) { const u = U(Et, dt); s += path(rect(372, u - 0.5, -20, u + 0.5), XM_COL.track); }
+      s += path(poly([2400, uFront, -20, uFront, -20, -4, 2400, -4]), XM_COL.slope);
+      s += path(poly(brow.concat([-20, -4, 2400, -4])), XM_COL.lane);
+      // sled grooves from the gate gap down the slope toward the inn
+      s += '<path d="' + line([188, uBrow + 0.6, 176, uBrow + 4, 160, uBrow + 8.5, 146, uFront - 1]) + 'M' + pt(183, uBrow + 0.6) + 'L' + pt(171, uBrow + 4) + 'L' + pt(156, uBrow + 8.4) + 'L' + pt(143, uFront - 1) + '" fill="none" stroke="' + XM_COL.groove + '" stroke-width="' + (1 / PL.s).toFixed(3) + '"/>';
+      // spruces on the terrace in the margin
+      for (const [r, d, h] of XM_SPRUCES_M.slice().sort((a, b) => b[1] - a[1])) s += spruceSvg(r, U(Et, d), h * S(d), 0.42 * h * S(d), Math.round(r), '#0a1424', XM_COL.treeSnow, true);
+      for (const n of ['barn', 'gable', 'inn', 'cottage']) { const H = XM_HOUSES.find((h) => h.n === n); s += '<g data-xa="house" data-n="' + H.n + '">' + houseParts(H) + '</g>'; }
+      s += '<g data-xa="tree">' + treeParts() + '</g>';
+      return s + '</svg>';
+    }
+    function buildNear() {
+      let s = svgOpen('near');
+      const El = XM_CAM.eLane, F = XM_FENCE;
+      // the spruce, framing the left of the corner
+      const sp = XM_SPRUCE, sr = R(sp.X, sp.d), sb = U(El, sp.d);
+      s += '<g data-xa="spruce">' + spruceSvg(sr, sb, sp.h * S(sp.d), sp.w * S(sp.d), sp.seed, XM_COL.near, XM_COL.lump, true) + '</g>';
+      // fence: five posts from A to B, the gate gap in the second bay
+      const posts = [];
+      for (let i = 0; i < F.n; i++) { const q = i / (F.n - 1); posts.push([F.A[0] + (F.B[0] - F.A[0]) * q, F.A[1] + (F.B[1] - F.A[1]) * q]); }
+      const p = (X, d, h) => P3(El, X, d, h);
+      let rails = '', snow = '';
+      for (let i = 0; i < F.n - 1; i++) {
+        if (i === F.gate) continue;
+        const a = posts[i], b = posts[i + 1];
+        for (const h of F.rails) {
+          const a0 = p(a[0], a[1], h), b0 = p(b[0], b[1], h), a1 = p(a[0], a[1], h + 0.075), b1 = p(b[0], b[1], h + 0.075);
+          rails += 'M' + pt(a0[0], a0[1]) + 'L' + pt(b0[0], b0[1]);
+          snow += 'M' + pt(a1[0], a1[1]) + 'L' + pt(b1[0], b1[1]);
+        }
+      }
+      s += '<path d="' + rails + '" fill="none" stroke="' + XM_COL.wood + '" stroke-width="0.09" data-xa="rail"/>';
+      s += '<path d="' + snow + '" fill="none" stroke="' + XM_COL.cap + '" stroke-width="0.05"/>';
+      for (const q of posts) {
+        const a = p(q[0] - 0.07, q[1], 0), b = p(q[0] + 0.07, q[1], F.h), c0 = p(q[0] - 0.09, q[1], F.h), c1 = p(q[0] + 0.09, q[1], F.h + 0.08);
+        snow = poly([c0[0], c0[1], c0[0], c1[1], c1[0], c1[1], c1[0], c0[1]]);
+        s += path(poly([a[0], a[1], a[0], b[1], b[0], b[1], b[0], a[1]]), XM_COL.wood, ' data-xa="post"');
+        s += path(snow, XM_COL.cap);
+      }
+      // footprints from the gate down the lane toward the lamp, and a sled left in the snow by the fence
+      let fp = '';
+      for (let i = 0; i < 9; i++) {
+        const q = i / 8, X = -0.2 - 2.6 * q + 0.3 * Math.sin(q * 3), dd = 14.75 - 1.5 * q, o = (i % 2 ? 0.12 : -0.12), a = p(X + o - 0.06, dd, 0), b = p(X + o + 0.06, dd, 0);
+        fp += 'M' + pt(a[0], a[1]) + 'L' + pt(b[0], b[1]);
+      }
+      s += '<path d="' + fp + '" fill="none" stroke="' + XM_COL.track + '" stroke-opacity="0.75" stroke-width="0.07"/>';
+      // a sled 1 m long, side on: runners curling up at the front, three struts, a red deck with snow on it
+      const SX = -2.85, SD = 13.95, sl = (dx, h) => { const q = p(SX + dx, SD, h); return pt(q[0], q[1]); };
+      s += '<path d="M' + sl(0, 0.03) + 'L' + sl(0.9, 0.03) + 'Q' + sl(1.1, 0.03) + ' ' + sl(1.06, 0.2) + 'Q' + sl(1.03, 0.29) + ' ' + sl(0.93, 0.25) +
+        'M' + sl(0.12, 0.03) + 'L' + sl(0.12, 0.2) + 'M' + sl(0.47, 0.03) + 'L' + sl(0.47, 0.2) + 'M' + sl(0.82, 0.03) + 'L' + sl(0.82, 0.2) +
+        '" fill="none" stroke="' + XM_COL.iron + '" stroke-width="0.045" data-xa="sled"/>';
+      s += '<path d="M' + sl(-0.02, 0.22) + 'L' + sl(0.95, 0.22) + '" fill="none" stroke="' + XM_COL.sled + '" stroke-width="0.075"/>';
+      s += '<path d="M' + sl(0.05, 0.28) + 'L' + sl(0.88, 0.28) + '" fill="none" stroke="' + XM_COL.cap + '" stroke-width="0.04"/>';
+      // the gas lamp, its wreath and its lantern
+      const L = XM_LAMP, lp = (dx, h) => p(L.X + dx, L.d, h);
+      const box = (x0, h0, x1, h1, col, xa) => { const a = lp(x0, h0), b = lp(x1, h1); return path(poly([a[0], a[1], a[0], b[1], b[0], b[1], b[0], a[1]]), col, xa ? ' data-xa="' + xa + '"' : ''); };
+      s += '<g data-xa="lamp">';
+      s += box(-0.17, 0, 0.17, 0.45, XM_COL.iron) + box(-0.07, 0.45, 0.07, 2.74, XM_COL.iron, 'lamppost') + box(-0.32, 2.42, 0.32, 2.5, XM_COL.iron);
+      const wc = lp(0, 1.55), wr = 0.22 * S(L.d), wi = 0.1 * S(L.d);
+      s += '<path d="M' + pt(wc[0] - wr, wc[1]) + 'A' + (wr / PL.s).toFixed(3) + ' ' + (wr / PL.s).toFixed(3) + ' 0 1 0 ' + pt(wc[0] + wr, wc[1]) + 'A' + (wr / PL.s).toFixed(3) + ' ' + (wr / PL.s).toFixed(3) + ' 0 1 0 ' + pt(wc[0] - wr, wc[1]) + 'M' + pt(wc[0] - wi, wc[1]) + 'A' + (wi / PL.s).toFixed(3) + ' ' + (wi / PL.s).toFixed(3) + ' 0 1 1 ' + pt(wc[0] + wi, wc[1]) + 'A' + (wi / PL.s).toFixed(3) + ' ' + (wi / PL.s).toFixed(3) + ' 0 1 1 ' + pt(wc[0] - wi, wc[1]) + 'Z" fill="' + XM_COL.wreath + '" fill-rule="evenodd" data-xa="wreath"/>';
+      s += box(-0.12, 1.72, 0.12, 1.84, XM_COL.bow) + box(-0.05, 1.58, 0.0, 1.74, XM_COL.bow) + box(0.03, 1.6, 0.08, 1.74, XM_COL.bow);
+      s += box(-0.18, 2.72, 0.18, 2.79, XM_COL.iron) + box(-0.16, 2.79, 0.16, 3.16, XM_COL.iron, 'lantern') + box(-0.12, 2.82, 0.12, 3.13, XM_COL.glassDim, 'glass');
+      const r0 = lp(-0.22, 3.16), r1 = lp(0.22, 3.16), ra = lp(0, 3.4);
+      s += path(poly([r0[0], r0[1], ra[0], ra[1], r1[0], r1[1]]), XM_COL.iron);
+      const c0 = lp(-0.2, 3.2), ca = lp(0, 3.43), c1 = lp(0.2, 3.2);
+      s += path(poly([c0[0], c0[1], ca[0], ca[1], c1[0], c1[1], ca[0], ca[1] - 2.2]), XM_COL.cap);
+      s += box(-0.025, 3.4, 0.025, 3.5, XM_COL.iron);
+      s += '</g>';
+      return s + '</svg>';
+    }
+    let stars = '';
+    for (const s of XM_CSS_STARS) stars += '<i style="left:' + s[0] + '%;top:' + s[1] + '%;width:' + s[2] + 'px;height:' + s[2] + 'px;opacity:' + s[3] + '"></i>';
+    for (const s of XM_OPEN_STARS) stars += '<i class="o" style="width:' + s[2] + 'px;height:' + s[2] + 'px;opacity:' + s[3] + '"></i>';
+    host.innerHTML = '<div class="xm-sky"></div><div class="xm-glow"></div><div class="xm-glow2"></div><div class="xm-stars">' + stars + '</div>' +
+      '<canvas class="xm-cv" id="xmSky"></canvas>' + buildRange() + '<div class="xm-veil xm-veil-a"></div>' + buildHills() + buildValley() +
+      '<canvas class="xm-cv" id="xmVeil"></canvas><div class="xm-veil xm-veil-c"></div>' + buildTown() + buildVill() +
+      '<div class="xm-veil xm-veil-v"></div><canvas class="xm-cv" id="xmMid"></canvas>' + buildNear() +
+      '<div class="xm-veil xm-veil-n"></div><canvas class="xm-cv" id="xmNear"></canvas><i class="xm-rm-probe"></i>';
+    for (const k in XM_PLANE) { const p = XM_PLANE[k]; p.vb = p.vb.map((v) => +v.toFixed(p.fix)); }   // the viewBox exactly as written
+  }
+  function xmReducedMotion() {
+    try { if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return true; } catch (e) {}
+    try { const p = document.querySelector('.xm-rm-probe'); if (p && getComputedStyle(p).width === '1px') return true; } catch (e) {}
+    return false;
+  }
+  // every Christmas sprite, drawn once; each is faded by the baked copies, so each is marked
+  function xmSprites() {
+    const X = {};
+    const cv = (w, h, draw) => { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); return c; };
+    const radial = (n, col, stops) => cv(n, n, (g) => {
+      const r = n / 2, d = g.createRadialGradient(r, r, 0, r, r, r);
+      for (const s of stops) d.addColorStop(s[0], 'rgba(' + col + ',' + s[1] + ')');
+      g.fillStyle = d; g.fillRect(0, 0, n, n);
+    });
+    const flat = (w, h, col, stops) => cv(w, h, (g) => {        // a radial glow squashed to an ellipse
+      g.translate(w / 2, h / 2); g.scale(1, h / w);
+      const d = g.createRadialGradient(0, 0, 0, 0, 0, w / 2);
+      for (const s of stops) d.addColorStop(s[0], 'rgba(' + col + ',' + s[1] + ')');
+      g.fillStyle = d; g.fillRect(-w / 2, -w / 2, w, w);
+    });
+    X.warm = cv(64, 64, (g) => {
+      const d = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      d.addColorStop(0, 'rgba(255,200,120,1)'); d.addColorStop(0.4, 'rgba(255,170,90,0.45)'); d.addColorStop(1, 'rgba(255,160,80,0)');
+      g.fillStyle = d; g.fillRect(0, 0, 64, 64);
+    });
+    X.pool = cv(256, 64, (g) => {
+      g.translate(128, 32); g.scale(1, 0.25);
+      const d = g.createRadialGradient(0, 0, 0, 0, 0, 128);
+      d.addColorStop(0, 'rgba(255,190,120,0.9)'); d.addColorStop(0.5, 'rgba(255,160,90,0.35)'); d.addColorStop(1, 'rgba(255,150,80,0)');
+      g.fillStyle = d; g.fillRect(-128, -128, 256, 256);
+    });
+    X.cool = radial(32, '238,245,255', [[0, 1], [0.5, 0.5], [1, 0]]);
+    X.flakeWarm = radial(16, '255,227,184', [[0, 1], [0.5, 0.5], [1, 0]]);
+    X.puff = radial(32, '182,198,220', [[0, 0.9], [0.6, 0.35], [1, 0]]);
+    X.puffDark = radial(32, '141,155,178', [[0, 0.9], [0.6, 0.35], [1, 0]]);
+    X.puffWarm = radial(32, '236,186,140', [[0, 0.8], [0.6, 0.3], [1, 0]]);
+    X.steam = radial(16, '199,210,226', [[0, 0.85], [0.6, 0.3], [1, 0]]);
+    X.wisp = flat(64, 16, '210,228,245', [[0, 0.8], [0.5, 0.3], [1, 0]]);
+    X.starGlow = radial(16, '255,251,234', [[0, 1], [0.4, 0.4], [1, 0]]);
+    X.moonGlow = radial(72, '220,230,250', [[0, 0.12], [0.3, 0.06], [0.65, 0.02], [1, 0]]);
+    X.moon = cv(32, 32, (g) => {       // a young moon: the earthshine disc, its lit crescent on the lower right
+      const c = 16, r = 14;
+      g.fillStyle = '#34465f'; g.beginPath(); g.arc(c, c, r, 0, XM_TAU); g.fill();
+      g.save(); g.beginPath(); g.arc(c, c, r, 0, XM_TAU); g.clip();
+      g.fillStyle = '#eef2fa'; g.beginPath(); g.arc(c, c, r, 0, XM_TAU); g.fill();
+      g.fillStyle = '#34465f'; g.beginPath(); g.arc(c - 0.45 * r, c - 0.28 * r, 0.95 * r, 0, XM_TAU); g.fill();
+      g.restore();
+    });
+    // the aurora: a curtain sheet and a ray, bright at the lower border and fading up, soft at the sides
+    const strip = (w, h, stops) => cv(w, h, (g) => {
+      const d = g.createLinearGradient(0, 0, 0, h);
+      for (const s of stops) d.addColorStop(s[0], s[1]);
+      g.fillStyle = d; g.fillRect(0, 0, w, h);
+      const e = g.createLinearGradient(0, 0, w, 0);
+      e.addColorStop(0, 'rgba(0,0,0,1)'); e.addColorStop(0.5, 'rgba(0,0,0,0)'); e.addColorStop(1, 'rgba(0,0,0,1)');
+      g.globalCompositeOperation = 'destination-out'; g.fillStyle = e; g.fillRect(0, 0, w, h);
+    });
+    X.sheet = strip(48, 128, [[0, 'rgba(150,110,255,0)'], [0.35, 'rgba(140,120,255,0.10)'], [0.7, 'rgba(90,230,170,0.30)'],
+      [0.9, 'rgba(110,255,185,0.65)'], [0.96, 'rgba(190,255,215,0.9)'], [1, 'rgba(110,255,185,0)']]);
+    X.ray = strip(6, 128, [[0, 'rgba(160,120,255,0)'], [0.4, 'rgba(140,170,255,0.25)'], [0.82, 'rgba(120,255,190,0.7)'],
+      [0.95, 'rgba(200,255,225,1)'], [1, 'rgba(120,255,190,0)']]);
+    X.fox = cv(704, 32, (g) => { g.scale(2, 2); for (let i = 0; i < 11; i++) { g.save(); g.translate(i * 32, 0); xmFoxCell(g, i); g.restore(); } });
+    X.team = cv(384, 40, (g) => { g.scale(2, 2); for (let i = 0; i < 4; i++) { g.save(); g.translate(i * 48, 0); xmTeamCell(g, i); g.restore(); } });
+    X.walker = cv(48, 28, (g) => { g.scale(2, 2); for (let i = 0; i < 3; i++) { g.save(); g.translate(i * 8, 0); xmWalkerCell(g, i); g.restore(); } });
+    for (const k in X) X[k].__rtxSprite = true;
+    scene.sprites.xm = X;
+  }
+  // a fox in a 32 x 16 cell, facing right, feet on the bottom row: 0..5 trot, 6 listen, 7 crouch, 8 leap, 9 buried, 10 shake
+  function xmFoxCell(g, f) {
+    const body = '#8a4524', dark = '#3a2218', rim = '#c07040', tip = '#e8eef6';
+    let bx = 15.5, by = 9.4, rot = 0, hx = 22.6, hy = 6.9, tail = [10, 8.6, 6, 7.4, 2.4, 9.2, 2.6, 11.0, 6.4, 11.4, 10.2, 10.2];
+    let legs = [];                        // [hipX, hipY, kneeX, kneeY, footX, footY, near]
+    const leg = (hx0, hy0, fx, fy, bend, near) => legs.push([hx0, hy0, (hx0 + fx) / 2 + bend, (hy0 + fy) / 2, fx, fy, near]);
+    if (f < 6) {
+      const p = XM_TAU * f / 6;
+      for (const [hip, off, near] of [[19.2, 0, 1], [11.6, Math.PI, 1], [18.6, Math.PI, 0], [12.2, 0, 0]]) {
+        const s = Math.sin(p + off), lift = Math.max(0, -Math.cos(p + off));
+        leg(hip, 10.6, hip + 2.0 * s, 16 - 1.4 * lift, hip > 15 ? -0.5 * lift : 0.6 * lift, near);
+      }
+    } else if (f === 6 || f === 10) {
+      hy = f === 6 ? 5.8 : 7.6; hx = f === 6 ? 22.8 : 22.0;
+      if (f === 10) tail = [10, 8.4, 7, 5.4, 4.0, 4.6, 3.4, 6.2, 6.8, 7.6, 10.2, 10.0];
+      for (const [hip, fx, near] of [[19.2, 19.6, 1], [11.6, 11.2, 1], [18.6, 18.0, 0], [12.2, 12.6, 0]]) leg(hip, 10.6, fx, 16, 0, near);
+    } else if (f === 7) {
+      by = 10.6; rot = 0.08; hx = 23.4; hy = 9.6;
+      tail = [10, 9.8, 6, 9.6, 2.6, 10.6, 2.8, 12.2, 6.4, 12.6, 10.2, 11.4];
+      for (const [hip, fx, near, b] of [[19.2, 20.6, 1, -1.2], [11.4, 12.4, 1, 1.4], [18.6, 20.0, 0, -1.2], [12.0, 13.0, 0, 1.4]]) leg(hip, 11.6, fx, 16, b, near);
+    } else if (f === 8) {
+      bx = 15.2; by = 7.6; rot = 0.42; hx = 22.0; hy = 10.2;
+      tail = [9.4, 5.6, 6.4, 3.2, 3.0, 1.6, 2.6, 3.2, 6.0, 5.2, 9.8, 7.4];
+      leg(19.0, 9.6, 23.2, 13.2, 0, 1); leg(18.4, 9.8, 22.4, 13.8, 0, 0);
+      leg(11.0, 6.8, 7.0, 7.6, 0, 1); leg(11.6, 7.0, 7.6, 8.6, 0, 0);
+    } else {                              // buried to the shoulders: the hindquarters and the tail up out of the snow
+      bx = 16.6; by = 12.4; rot = 1.05; hx = -10;
+      tail = [13.6, 7.4, 13.0, 3.6, 14.4, 0.4, 15.6, 0.8, 15.0, 4.0, 15.2, 7.4];
+      leg(13.6, 9.8, 11.2, 13.4, -0.6, 1); leg(14.4, 9.4, 12.4, 12.6, -0.4, 0);
+    }
+    const strokeLegs = (near) => {
+      g.strokeStyle = dark; g.lineWidth = 1.2; g.lineCap = 'round'; g.beginPath();
+      for (const l of legs) if (l[6] === near) { g.moveTo(l[0], l[1]); g.lineTo(l[2], l[3]); g.lineTo(l[4], l[5]); }
+      g.stroke();
+    };
+    strokeLegs(0);
+    g.fillStyle = body; g.beginPath(); g.moveTo(tail[0], tail[1]);
+    g.quadraticCurveTo(tail[2], tail[3], tail[4], tail[5]); g.lineTo(tail[6], tail[7]); g.quadraticCurveTo(tail[8], tail[9], tail[10], tail[11]); g.closePath(); g.fill();
+    g.fillStyle = tip; g.beginPath(); g.arc((tail[4] + tail[6]) / 2, (tail[5] + tail[7]) / 2, 1.05, 0, XM_TAU); g.fill();
+    g.save(); g.translate(bx, by); g.rotate(rot);
+    g.fillStyle = body; g.beginPath(); g.ellipse(0, 0, 6.0, 2.1, 0, 0, XM_TAU); g.fill();
+    g.strokeStyle = rim; g.lineWidth = 0.8; g.beginPath(); g.ellipse(0, 0.35, 5.4, 2.1, 0, Math.PI + 0.45, XM_TAU - 0.45); g.stroke();
+    g.restore();
+    if (hx > 0) {
+      g.fillStyle = body; g.beginPath();
+      g.moveTo(bx + 3.6, by - 1.6); g.lineTo(hx - 0.6, hy - 1.0); g.lineTo(hx + 0.4, hy + 1.4); g.lineTo(bx + 4.2, by + 1.6); g.closePath(); g.fill();
+      g.beginPath(); g.arc(hx, hy, 1.7, 0, XM_TAU); g.fill();
+      const dn = f === 8 || f === 7 ? 1 : 0;
+      g.beginPath(); g.moveTo(hx + 1.0, hy - 0.8 + dn); g.lineTo(hx + 4.0, hy + 0.6 + 1.6 * dn); g.lineTo(hx + 0.8, hy + 1.3); g.closePath(); g.fill();
+      g.fillStyle = dark;
+      g.beginPath(); g.moveTo(hx - 1.3, hy - 1.0); g.lineTo(hx - 0.9, hy - 3.4); g.lineTo(hx - 0.1, hy - 1.4); g.closePath(); g.fill();
+      g.beginPath(); g.moveTo(hx - 0.1, hy - 1.4); g.lineTo(hx + 0.7, hy - 3.3); g.lineTo(hx + 1.2, hy - 1.0); g.closePath(); g.fill();
+      g.fillStyle = '#e2d6c8'; g.beginPath(); g.moveTo(hx - 0.8, hy + 1.2); g.lineTo(hx + 1.4, hy + 1.3); g.lineTo(hx - 0.6, hy + 2.6); g.closePath(); g.fill();
+    } else {
+      g.fillStyle = '#dfe9f6'; g.beginPath(); g.ellipse(18.6, 15.6, 5.2, 1.6, 0, Math.PI, XM_TAU); g.fill();
+    }
+    strokeLegs(1);
+  }
+  // the sleigh and its horse in a 48 x 20 cell, facing right, runners on the bottom row; 1 px is 1/7.1 m at the street
+  function xmTeamCell(g, f) {
+    const ink = '#0a0f19', rim = '#4a5d80';
+    const p = XM_TAU * f / 4;
+    g.lineCap = 'round';
+    const legs = (near) => {
+      g.strokeStyle = ink; g.lineWidth = 1.05; g.beginPath();
+      for (const [hip, off, isFront, nr] of [[38.8, 0, 1, 1], [30.2, Math.PI, 0, 1], [38.0, Math.PI, 1, 0], [31.0, 0, 0, 0]]) {
+        if (nr !== near) continue;
+        const s = Math.sin(p + off), lift = Math.max(0, Math.cos(p + off)), fx = hip + 1.8 * s, fy = 20 - 1.5 * lift;
+        const kx = hip + 0.9 * s + (isFront ? 0.6 * lift : -0.7), ky = 16.2 - 0.6 * lift;
+        g.moveTo(hip, 12.4); g.lineTo(kx, ky); g.lineTo(fx, fy);
+      }
+      g.stroke();
+    };
+    legs(0);
+    // traces and reins
+    g.strokeStyle = ink; g.lineWidth = 0.5; g.beginPath(); g.moveTo(21.2, 13.2); g.lineTo(39.6, 11.2); g.stroke();
+    g.lineWidth = 0.35; g.beginPath(); g.moveTo(12.2, 11.2); g.lineTo(43.4, 6.6); g.stroke();
+    // horse: back rim first, then the body over it
+    g.strokeStyle = rim; g.lineWidth = 1.6;
+    g.beginPath(); g.ellipse(34.4, 10.9, 6.5, 2.7, 0, Math.PI + 0.25, XM_TAU - 0.15); g.stroke();
+    g.beginPath(); g.moveTo(40.2, 8.8); g.lineTo(42.4, 5.8); g.lineTo(43.6, 4.9); g.stroke();
+    g.fillStyle = ink;
+    g.beginPath(); g.ellipse(34.4, 10.9, 6.5, 2.7, 0, 0, XM_TAU); g.fill();
+    g.beginPath(); g.moveTo(39.0, 9.0); g.lineTo(42.2, 5.6); g.lineTo(43.8, 5.0); g.lineTo(44.6, 6.8); g.lineTo(42.6, 9.6); g.lineTo(40.8, 12.8); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(42.4, 4.8); g.lineTo(44.2, 4.6); g.lineTo(47.0, 6.9); g.lineTo(46.6, 7.8); g.lineTo(45.2, 7.7); g.lineTo(43.2, 6.9); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(42.7, 4.9); g.lineTo(43.0, 3.6); g.lineTo(43.7, 4.8); g.closePath(); g.fill();
+    g.beginPath(); g.moveTo(28.4, 9.4); g.quadraticCurveTo(26.4, 10.6, 26.6, 14.8); g.lineTo(27.6, 14.6); g.quadraticCurveTo(27.6, 11.8, 28.8, 10.6); g.closePath(); g.fill();
+    legs(1);
+    // the sleigh: runners curling up at the front, struts, body with a high seat back, the driver and his lantern pole
+    g.strokeStyle = ink; g.lineWidth = 0.9; g.beginPath(); g.moveTo(1.4, 19.4); g.lineTo(20.8, 19.4); g.quadraticCurveTo(23.6, 19.4, 23.2, 16.2); g.stroke();
+    g.lineWidth = 0.6; g.beginPath(); for (const x of [4.2, 11.4, 18.2]) { g.moveTo(x, 19.4); g.lineTo(x, 17.4); } g.stroke();
+    g.fillStyle = '#241418';
+    g.beginPath(); g.moveTo(2.0, 17.6); g.lineTo(2.3, 10.8); g.lineTo(4.8, 10.5); g.lineTo(5.3, 13.6); g.lineTo(15.0, 13.8); g.lineTo(18.0, 12.6);
+    g.lineTo(20.6, 11.0); g.lineTo(21.5, 11.8); g.lineTo(20.2, 17.6); g.closePath(); g.fill();
+    g.fillStyle = '#4a2a30'; g.fillRect(2.3, 10.6, 2.4, 0.5); g.fillRect(5.4, 13.4, 9.6, 0.5);
+    g.fillStyle = ink;
+    g.beginPath(); g.moveTo(6.0, 13.8); g.lineTo(6.4, 8.9); g.lineTo(8.9, 8.5); g.lineTo(10.1, 13.8); g.closePath(); g.fill();
+    g.beginPath(); g.arc(7.9, 7.3, 1.15, 0, XM_TAU); g.fill();
+    g.strokeStyle = ink; g.lineWidth = 0.9; g.beginPath(); g.moveTo(8.8, 10.0); g.lineTo(12.3, 11.3); g.stroke();
+    g.fillStyle = '#e23b3b'; g.fillRect(6.3, 8.8, 2.7, 1.0); g.fillRect(4.6, 9.2, 1.8, 0.7);
+    g.fillStyle = ink; g.fillRect(20.0, 4.6, 0.6, 7.4); g.fillRect(19.6, 4.0, 1.4, 1.4);
+  }
+  // a villager in an 8 x 14 cell, facing right, three stride phases, a lantern held out in front
+  function xmWalkerCell(g, f) {
+    const ink = '#0a0f19', s = [-1.3, 0, 1.3][f];
+    g.strokeStyle = ink; g.lineCap = 'round'; g.lineWidth = 0.95;
+    g.beginPath(); g.moveTo(3.4, 9.6); g.lineTo(3.4 + s, 13.6); g.moveTo(3.9, 9.6); g.lineTo(3.9 - s, 13.6); g.stroke();
+    g.fillStyle = ink;
+    g.beginPath(); g.moveTo(2.7, 3.2); g.lineTo(4.7, 3.2); g.lineTo(5.6, 10.2); g.lineTo(1.7, 10.2); g.closePath(); g.fill();
+    g.beginPath(); g.arc(3.7, 1.8, 1.25, 0, XM_TAU); g.fill();
+    g.lineWidth = 0.8; g.beginPath(); g.moveTo(4.4, 4.2); g.lineTo(6.3, 7.4); g.stroke();
+    g.fillRect(6.0, 7.6, 1.2, 1.4);
+  }
+
+  function xmStart(seed) {
+    xmStop();
+    xmBuild();
+    if (!scene.sprites.snow) makeSprites();
+    if (!scene.sprites.xm) xmSprites();
+    sceneCaps();
+    const now = performance.now(), reduced = xmReducedMotion();
+    const sd = seed != null ? seed : reduced ? 1 : (Date.now() & 0x7fffffff);
+    const host = $('xmScene'), q = (s) => host.querySelector(s);
+    const el = { sky: q('.xm-sky'), glow: q('.xm-glow'), glow2: q('.xm-glow2'), open: host.querySelectorAll('.xm-stars i.o'),
+      va: q('.xm-veil-a'), vb: q('.xm-veil-b'), vc: q('.xm-veil-c'), vt: q('.xm-veil-t'), vv: q('.xm-veil-v'), vn: q('.xm-veil-n') };
+    for (const n in XM_PLANE) el[n] = q('.xm-' + n);
+    const xm = scene.xm = {
+      cv: { sky: $('xmSky'), veil: $('xmVeil'), mid: $('xmMid'), near: $('xmNear') }, ctx: {}, sizes: {}, el,
+      level: 0, okSince: now, measuredAt: now - 1500, slowSince: 0, cost: 0, gap: 33, bk: 1, tick: 16.7, prevNow: 0,
+      reduced, seed: sd, rand: hwRng(sd), prand: hwRng(sd ^ 0x2545f491), drand: hwRng(sd ^ 0x68e31da4),
+      t: 0, frame: 0, q: [], seeded: false, stage: null, ui: null, g: null, W: 0, H: 0, k: 1, kWH: '', boxKey: '', veilBoxKey: '', geoKey: '',
+      weather: 'clear', wSince: 0, wEnd: 1e9, Lt: 40, lnL: Math.log(40), L: 40, L0: 40, cold: true, nextSquall: 1e9, squallG: -1,
+      Aq: { range: 0, hills: 0, town: 0, vill: 0, near: 0, rows: XM_VROWS.map(() => 0) }, veilAt: -1, veilDirty: true, veilKey: '', veilDom: {},
+      base: 0.8, w: 0.8, gusts: [], nextGust: 6, rV: new Float32Array(64), rI: 0, rN: 0, rT0: 0, rNext: 0,
+      dens: 0.35, dens3: 0.25, densFrom: 0.35, f: 1, storm: 0, sway: 0, driftAt: 0,
+      lamp: 0, ignT: -1, bloom: 0.4, dip: 0, dipV: 0, dipUntil: -1, gustHigh: false, gustDipT: -1e9,
+      town: { lamp: new Float32Array(8), lampT: new Float32Array(8), win: new Float32Array(26), winT: new Float32Array(26), belfry: 0, belfryT: 0, toggleAt: 1e9 },
+      panes: [], paneToggleAt: 1e9, treeOn: 0, treeT: 0, eaves: new Float32Array(15), eavesT: new Float32Array(15), sag: 0.35, sagV: 0,
+      hv: 0, hvV: 0, hover: false, fixed: false, plain: false,
+      strokes: [], chaseT: -1e9, chaseEnd: -1e9, tolledKey: -1, clockAt: 0, noClock: false,
+      flues: [], s1: [], s2: [], s3: [],
+      sleigh: null, walker: null, train: null, fox: null, shedArm: null, shed: [], clouds: [], specks: [], wisps: [], tracks: [], steam: [],
+      au: { on: false, t0: 0, D: 0, env: 0, pulses: [], rays: [], cv: null, g: null, w: 0, h: 0 },
+      shoot: null, doors: [{ open: 0, tgt: 0 }, { open: 0, tgt: 0 }], rooms: null,
+      beat: null, nextBeat: 1e9, last: {}, prevKind: '', bulbs: document.querySelectorAll('#xmLights i'), deco: null, decoAt: 0,
+      hud: false, frozen: false, stillDrawn: false, skyDirty: true, tmp: { x: 0, y: 0 },
+    };
+    for (let i = 0; i < 15; i++) xm.panes.push({ lit: 0, tgt: 0, shAt: 0, shT: -1e9, shD: 0.6, ph: xm.prand() * XM_TAU });
+    xm.eaveF = []; xm.eaveP = [];
+    for (let i = 0; i < 15; i++) { xm.eaveF.push(XM_TAU * (2 + 2 * xm.prand())); xm.eaveP.push(xm.prand() * XM_TAU); }
+    xm.scint = {};                     // six town lights shimmer through the air over the valley
+    for (let i = 0; i < 6; i++) xm.scint[Math.floor(xm.prand() * 35)] = [XM_TAU * (3 + 4 * xm.prand()), xm.prand() * XM_TAU, XM_TAU * (3 + 4 * xm.prand()), xm.prand() * XM_TAU];
+    xmColdOpen(xm);
+    return xm;
+  }
+  function xmStop() {
+    const xm = scene.xm;
+    if (!xm) return;
+    xmClearAll();
+    const hud = $('xmHud'); if (hud) hud.remove();
+    for (const b of document.querySelectorAll('#xmLights i')) b.classList.remove('dim', 'dim1');
+    scene.xm = null;
+  }
+  function xmClearAll() {
+    const xm = scene.xm;
+    if (!xm) return;
+    for (const k in xm.cv) {
+      const c = xm.cv[k];
+      if (!c) continue;
+      c.style.width = '0px'; c.style.height = '0px'; c.width = 1; c.height = 1;
+    }
+    xm.sizes = {}; xm.ctx = {}; xm.geoKey = '';
+  }
+  // the open corner (the stage) by the same rules as Halloween's, then the picture scale and every box from the tables
+  function xmLayout() {
+    const xm = scene.xm; if (!xm) return;
+    const W = window.innerWidth, H = window.innerHeight;
+    let left = 0, top = 0, sideLeft = 0, sideRight = 0, newsBottom = 0;
+    const news = document.querySelector('.news');
+    if (news) for (const c of news.children) if (c.offsetWidth > 0 && c.offsetHeight > 0) {
+      const r = c.getBoundingClientRect(); left = Math.max(left, r.right); newsBottom = Math.max(newsBottom, r.bottom);
+    }
+    if (!left && news) left = news.getBoundingClientRect().right;
+    const side = document.querySelector('.side');
+    if (side) {
+      const sr = side.getBoundingClientRect(); sideLeft = sr.left; sideRight = sr.right;
+      for (const c of side.children) if (c.offsetHeight > 0) top = Math.max(top, xmCardBottom(c));
+      top = Math.min(top || sr.top, sr.bottom);
+    }
+    const foot = document.querySelector('footer'), fr = foot ? foot.getBoundingClientRect() : null;
+    const bottom = Math.round(fr && fr.height > 0 ? fr.top : H - 39);
+    const tb = $('titlebar'), tbB = tb && tb.offsetHeight ? Math.round(tb.getBoundingClientRect().bottom) : 0;
+    const newsR = Math.round(left || W * 0.64), cardB = Math.round(top);
+    left = Math.max(newsR, Math.round(W - 520));
+    top = Math.round(Math.max(top, bottom - 300));
+    xm.W = W; xm.H = H;
+    xm.ui = { tb: tbB, sideLeft: Math.round(sideLeft || left + 22), sideRight: Math.round(sideRight || W),
+      openTop: top > cardB + 4, openLeft: left > newsR + 4 || newsBottom < top + 40 };
+    if (W - left < 120 || bottom - top < 80) { xm.stage = null; xmClearAll(); return; }
+    const st = xm.stage = { x: left, y: top, w: W - left, h: bottom - top, b: bottom };
+    // in an open sky the far snow comes down from the cards while it snows (st.sy, where new flakes start), and the
+    // mid canvas reaches up there (st.wy) until the last of it has fallen past the stage's top
+    const wy = xm.ui.openTop ? Math.min(top, cardB + 2) : top;
+    if (!xm.ui.openTop) xm.openSnow = xm.openCv = false;
+    else if (xm.dens > 0.55 || xm.storm > 0.02) xm.openSnow = xm.openCv = true;
+    else if (xm.dens < 0.4) { xm.openSnow = false; if (xm.openCv && !xmSnowAbove(xm, top)) xm.openCv = false; }
+    st.wy = xm.openCv ? wy : top; st.sy = xm.openSnow ? wy : top;
+    xm.fMax = hwClamp(st.w * (bottom - wy) / 105560, 0.5, 1.6); xm.f = hwClamp(st.w * (bottom - st.sy) / 105560, 0.5, 1.6);
+    // the picture scale follows the window; at the same window size a card that changes height moves it only
+    // when the change has held for 2 s and the picture's top (the evening star, 268 px up) would go under the cards
+    const kNew = st.h >= 284 ? 1 : hwClamp(Math.floor(100 * st.h / 290) / 100, 0.77, 1), wh = W + 'x' + H, kWas = xm.k;
+    if (xm.kWH !== wh) { xm.k = kNew; xm.kWH = wh; xm.kPend = null; }
+    else if (Math.abs(kNew - xm.k) >= 0.015 && (kNew > xm.k || 270 * xm.k > st.h)) {
+      const now = performance.now();
+      if (!xm.kPend || xm.kPend.v !== kNew) xm.kPend = { v: kNew, at: now };
+      else if (now - xm.kPend.at >= 2000) { xm.k = kNew; xm.kPend = null; }
+    } else xm.kPend = null;
+    const k = xm.k, footH = H - bottom;
+    const boxKey = k + ',' + footH + ',' + W + ',' + H;
+    if (xm.boxKey !== boxKey) { xm.boxKey = boxKey; xmBoxes(xm, k, footH); if (k !== kWas) xm.seeded = false; }
+    const vKey = boxKey + ',' + st.x;
+    if (xm.veilBoxKey !== vKey) { xm.veilBoxKey = vKey; xmVeilBoxes(xm, k, st); }
+    xm.bk = xm.level >= 2 ? 1 : Math.min(1.5, window.devicePixelRatio || 1);
+    const skyH = Math.max(40, bottom - 182 * k - st.y);
+    xmPlace('sky', st.x, st.y, st.w, skyH);
+    xmPlace('veil', st.x, bottom - 196 * k, st.w, 100 * k);
+    xmPlace('mid', st.x, st.wy, st.w, st.b - st.wy);
+    xmPlace('near', st.x, st.y, st.w, st.h);
+    const gKey = vKey + ',' + st.y + ',' + st.wy + ',' + xm.bk + ',' + xm.ui.openTop + ',' + Object.keys(xm.ctx).length;
+    if (xm.geoKey !== gKey) { xm.geoKey = gKey; xmGeom(); }
+    if (!xm.seeded) { xmSeedState(xm); xm.seeded = true; }
+    xm.stillDrawn = false;
+    if (xm.reduced && scene.on && !scene.hidden && !scene.raf) scene.raf = requestAnimationFrame(sceneFrame);
+  }
+  function xmSnowAbove(xm, y) {
+    for (const P of [xm.s1, xm.s2]) for (const o of P) if (o.st !== 2 && !o.near && o.y < y) return true;
+    return false;
+  }
+  // a side card's bottom without its status line, which comes and goes with every launch
+  function xmCardBottom(c) {
+    let b = c.getBoundingClientRect().bottom;
+    for (const s of c.querySelectorAll('.status')) {
+      const cs = getComputedStyle(s);
+      b -= s.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+    }
+    return b;
+  }
+  // the static boxes: each plane's svg, the sky keyed to the horizon, the afterglow, the open-sky stars
+  function xmBoxes(xm, k, footH) {
+    const el = xm.el, px = (v) => v + 'px';
+    for (const n in XM_PLANE) {
+      const b = XM_PLANE[n].box, e = el[n];
+      if (!e) continue;
+      e.style.right = px(k * b[1]); e.style.bottom = px(footH + k * b[2]);
+      e.style.width = px(k * (b[0] - b[1])); e.style.height = px(k * (b[3] - b[2]));
+    }
+    const P = (u) => (footH + k * u) + 'px';
+    el.sky.style.background = 'linear-gradient(0deg, #34496c 0, #34496c ' + P(186) + ', #23385a ' + P(215) + ', #142645 ' + P(250) +
+      ', #0c1a35 ' + P(290) + ', #070f22 ' + P(420) + ', #040912 100%)';
+    const Rg = 240 * k, Rt = 300 * k;
+    el.glow.style.width = el.glow.style.height = px(2 * Rg); el.glow.style.right = px(70 * k - Rg); el.glow.style.bottom = px(footH + 205 * k - Rg);
+    el.glow2.style.width = el.glow2.style.height = px(2 * Rt); el.glow2.style.right = px(150 * k - Rt); el.glow2.style.bottom = px(footH + 245 * k - Rt);
+    XM_OPEN_STARS.forEach((s, i) => { const e = el.open[i]; if (e) { e.style.right = px(k * s[0] - 1); e.style.bottom = px(footH + k * s[1]); } });
+  }
+  function xmVeilBoxes(xm, k, st) {
+    const el = xm.el, px = (v) => v + 'px', foot = st.b;
+    const box = (e, x, y, w, h) => { e.style.left = px(x); e.style.top = px(y); e.style.width = px(w); e.style.height = px(Math.max(0, h)); };
+    box(el.va, 0, 0, xm.W, foot - 182 * k);
+    box(el.vc, 0, foot - 196 * k, st.x, 100 * k);
+    box(el.vv, 0, 0, st.x, foot - 37.6 * k);
+    box(el.vn, 0, 0, st.x, foot);
+    xm.veilKey = ''; xm.veilDirty = true;
+  }
+  function xmPlace(name, x, y, w, h) {    // touches the canvas only when its box or scale changed, since a resize clears it
+    const xm = scene.xm, c = xm.cv[name], k = xm.bk, key = x + ',' + y + ',' + w + ',' + h + ',' + k;
+    if (!c || xm.sizes[name] === key) return;
+    xm.sizes[name] = key;
+    c.style.left = x + 'px'; c.style.top = y + 'px'; c.style.width = w + 'px'; c.style.height = h + 'px';
+    c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+    const g = c.getContext('2d'); g.setTransform(k, 0, 0, k, -x * k, -y * k); g.xmO = [x, y, k];
+    xm.ctx[name] = g;
+    if (name === 'sky') {
+      xm.skyDirty = true;
+      const a = xm.au, aw = Math.ceil(w / 2), ah = Math.ceil(h / 2);
+      if (!a.cv) a.cv = document.createElement('canvas');
+      a.cv.width = aw; a.cv.height = ah; a.w = aw; a.h = ah; a.g = a.cv.getContext('2d');
+    }
+    if (name === 'veil') { xm.veilKey = ''; xm.veilDirty = true; }
+  }
+  // a point in the world (X m across, d m out, h m up from ground whose eye height is E) to window px, through
+  // the rendered box of a plane's svg and its viewBox: the static drawing and the canvases share one source
+  function xmWorld(n, X, d, E, h, out) {
+    const p = XM_PLANE[n], c = scene.xm.g.rc[n], o = out || { x: 0, y: 0 };
+    o.x = c.l + (X * p.d / d - c.x0) * c.sx;
+    o.y = c.t + ((p.u0 - U(E, d, h)) / p.s - c.y0) * c.sy;
+    return o;
+  }
+  function xmUy(u) { const p = XM_PLANE.vill, c = scene.xm.g.rc.vill; return c.t + ((p.u0 - u) / p.s - c.y0) * c.sy; }
+  function xmRx(r) { const p = XM_PLANE.vill, c = scene.xm.g.rc.vill; return c.l + ((XM_CAM.rv - r) / p.s - c.x0) * c.sx; }
+  function xmEye(d) { return d <= 16.5 ? XM_CAM.eLane : d < 40 ? XM_CAM.eLane + (XM_CAM.eTerr - XM_CAM.eLane) * (d - 16.5) / 23.5 : XM_CAM.eTerr; }
+  function xmGroundY(d) { return xmUy(d > 60 ? 96.2 : U(xmEye(d), d, 0)); }
+  // every point the scene hangs on, from the tables through the svg boxes; read once per layout
+  function xmGeom() {
+    const xm = scene.xm, st = xm.stage, k = xm.k, Et = XM_CAM.eTerr, El = XM_CAM.eLane, Ev = XM_CAM.eVal;
+    const G = xm.g = { rc: {} };
+    for (const n in XM_PLANE) {
+      const e = xm.el[n], vb = XM_PLANE[n].vb, r = e.getBoundingClientRect();
+      G.rc[n] = { l: r.left, t: r.top, sx: r.width / vb[2], sy: r.height / vb[3], x0: vb[0], y0: vb[1] };
+    }
+    const w = (n, X, d, E, h) => xmWorld(n, X, d, E, h);
+    G.skyH = Math.max(40, st.b - 182 * k - st.y);
+    G.at = (r, u) => ({ x: xm.W - k * r, y: st.b - k * u });        // the sky has no svg: the same affine map
+    G.moon = G.at(XM_SKY.moon[0], XM_SKY.moon[1]); G.estar = G.at(XM_SKY.star[0], XM_SKY.star[1]);
+    // village panes in table order, and the doors
+    G.panes = []; G.doors = {};
+    for (const H of XM_HOUSES) {
+      for (const v of H.win) {
+        const a = w('vill', v[0] - v[2] / 2, H.d, Et, v[1]), b = w('vill', v[0] + v[2] / 2, H.d, Et, v[1] + v[3]);
+        const sp = w('vill', v[0], H.d - 0.8, Et, 0);
+        G.panes.push({ x: a.x, y: b.y, w: b.x - a.x, h: a.y - b.y, cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, ground: v[1] < 1.5, sx: sp.x, sy: sp.y, n: H.n, fl: v[1] < 1.5 ? 0 : 1, candle: [1, 5, 9, 11].indexOf(G.panes.length) >= 0 });
+      }
+      const dr = H.door, a = w('vill', dr[0] - dr[1] / 2, H.d, Et, 0), b = w('vill', dr[0] + dr[1] / 2, H.d, Et, dr[2]), sp = w('vill', dr[0], H.d - 1.2, Et, 0);
+      G.doors[H.n] = { x: a.x, y: b.y, w: b.x - a.x, h: a.y - b.y, sx: sp.x, sy: sp.y };
+    }
+    // chimney flues: cottage, inn left, inn right, gable, barn
+    G.flues = [];
+    for (const H of XM_HOUSES) for (const s of H.stacks) {
+      const X = s[0] == null ? (H.X0 + H.X1) / 2 : s[0], p = w('vill', X, s[1], Et, s[2]);
+      G.flues.push({ x: p.x, y: p.y, d: s[1], m: S(s[1]) * k });
+    }
+    // the square tree, its bulbs and star; the inn's front eave
+    const T = XM_TREE;
+    G.bulbs = XM_TREE_BULBS.map((b) => w('vill', T.X + b[0], 45.8, Et, b[1]));
+    G.star = w('vill', T.X, T.d, Et, T.h + T.star);
+    G.treeC = w('vill', T.X, T.d, Et, 0.42 * T.h); G.treeC.fy = w('vill', T.X, T.d - 0.5, Et, 0).y;
+    const inn = XM_HOUSES[1];
+    G.eave = { X0: inn.X0 - 0.3, X1: inn.X1 + 0.3, x: w('vill', (inn.X0 + inn.X1) / 2, 50, Et, 0).x };
+    // the town: street lamps, front-row windows and the church's, the belfry
+    G.tlamps = XM_TOWN_LAMPS.map((X) => w('town', X, 368, Ev, 4));
+    G.twins = [];
+    for (const h of XM_TOWN) if (h[4] === 0) for (const v of [[0.28, 2.2], [0.72, 2.2], [0.5, 4.8]]) G.twins.push(w('town', h[0] + v[0] * h[1], 375, Ev, v[1]));
+    G.twins.push(w('town', -30, 375, Ev, 6), w('town', -24, 375, Ev, 6));
+    G.belfry = w('town', XM_CHURCH.X, 375, Ev, 19);
+    G.dome = { x: xmRx(222), y: xmUy(150) };
+    // the viaduct and the tunnel
+    G.portalX = w('valley', XAT(117.4, XM_VIADUCT.d), XM_VIADUCT.d, Ev, 0).x;
+    G.deckY = w('valley', 0, XM_VIADUCT.d, Ev, XM_VIADUCT.deck).y;
+    // the lamp on the lane
+    const L = XM_LAMP, ga = w('near', L.X - 0.12, L.d, El, 2.82), gb = w('near', L.X + 0.12, L.d, El, 3.13);
+    G.glass = { x: ga.x, y: gb.y, w: gb.x - ga.x, h: ga.y - gb.y };
+    G.glassC = w('near', L.X, L.d, El, 2.975);
+    G.lampBase = w('near', L.X, L.d, El, 0);
+    // the spruce: three bough tips on the stage side, at 35, 50 and 65 percent of its height
+    const SP = XM_SPRUCE;
+    G.boughs = [0.35, 0.5, 0.65].map((f) => { const q = (f - 0.05) / 0.9, hw = SP.w / 2 * Math.pow(1 - q, 0.88) * 0.96; return w('near', SP.X + 0.8 * hw, SP.d, El, f * SP.h); });
+    G.spruceX = w('near', SP.X, SP.d, El, 0).x;
+    G.posts = [];
+    for (let i = 0; i < XM_FENCE.n; i++) {
+      const q = i / (XM_FENCE.n - 1), X = XM_FENCE.A[0] + (XM_FENCE.B[0] - XM_FENCE.A[0]) * q, dd = XM_FENCE.A[1] + (XM_FENCE.B[1] - XM_FENCE.A[1]) * q;
+      const a = w('near', X - 0.07, dd, El, 0), b = w('near', X - 0.07, dd, El, XM_FENCE.h);
+      G.posts.push({ x: a.x, y: b.y, h: a.y - b.y, f: Math.exp(-Math.abs(X - XM_LAMP.X) * S(dd) * k / (70 * k)) });
+    }
+    // fence rail tops for the spindrift (not the gate bay)
+    const F = XM_FENCE; G.rails = [];
+    for (let i = 0; i < F.n - 1; i++) {
+      if (i === F.gate) continue;
+      const q0 = i / (F.n - 1), q1 = (i + 1) / (F.n - 1);
+      const a = w('near', F.A[0] + (F.B[0] - F.A[0]) * q0, F.A[1] + (F.B[1] - F.A[1]) * q0, El, F.h - 0.2);
+      const b = w('near', F.A[0] + (F.B[0] - F.A[0]) * q1, F.A[1] + (F.B[1] - F.A[1]) * q1, El, F.h - 0.2);
+      G.rails.push([a.x, a.y, b.x, b.y]);
+    }
+    G.streetY = w('vill', 0, 43, Et, 0).y;
+    G.laneY = w('near', 0, 13.8, El, 0).y;
+    G.ftH = xm.ui.openTop ? 56 : 24;
+    G.gr = {};
+    for (const n of ['sky', 'mid', 'near']) {
+      const g = xm.ctx[n]; if (!g) continue;
+      const lin = (x0, y0, x1, y1) => { const d = g.createLinearGradient(x0, y0, x1, y1); d.addColorStop(0, 'rgba(0,0,0,1)'); d.addColorStop(1, 'rgba(0,0,0,0)'); return d; };
+      const y0 = n === 'mid' ? st.wy : st.y;
+      G.gr[n] = { fl: lin(st.x, 0, st.x + 22, 0), ft: lin(0, y0, 0, y0 + 24), ft56: lin(0, y0, 0, y0 + 56) };
+    }
+  }
+  const xmRamp = (v, tgt, step) => (v < tgt ? Math.min(tgt, v + step) : Math.max(tgt, v - step));
+  function xmSeedState(xm) {
+    const st = xm.stage, P = xm.prand, G = xm.g;
+    xm.fn = hwClamp(st.w * st.h / 105560, 0.5, 1.6);
+    xm.s1 = []; xm.s2 = []; xm.s3 = [];
+    for (let i = 0; i < Math.round(70 * xm.fMax * 1.6); i++) xm.s1.push(i < Math.round(70 * xm.f * 1.6) ? xmFlake(xm, 1, {}, true) : { L: 1, st: 2, near: false });
+    for (let i = 0; i < Math.round(48 * xm.fMax * 1.6 * 2.4); i++) xm.s2.push(i < Math.round(48 * xm.f * 1.6) ? xmFlake(xm, 2, {}, true) : { L: 2, st: 2, near: false });
+    for (let i = 0; i < Math.round(12 * xm.fn * 2.5); i++) xm.s3.push(i < Math.round(12 * xm.fn) ? xmFlake(xm, 3, {}, true) : { L: 3, st: 2, near: true });
+    xm.stars = XM_STARS.map((s) => ({ r: s[0], u: s[1], s: s[2], a: s[3], P: 4 + 5 * P(), ph: P() * XM_TAU }));
+    // the fires are already lit: each flue starts with a standing plume
+    xm.flues = G.flues.map((fl) => {
+      const F = { puffs: [], next: P() * 1.2, extra: 0 };
+      for (let a = 5.2 - P() * 0.35; a > 0; a -= 0.35) {
+        const p = xmPuff(xm, fl, false), w = 0.8;
+        p.age = a; p.x += w * fl.m * a; p.y -= 0.8 * fl.m * a / (1 + 0.15 * w); p.vx = w * fl.m;
+        F.puffs.unshift(p);
+      }
+      return F;
+    });
+  }
+  // a snowflake at its own distance: far ones tiny and slow, near ones large, fast and soft
+  function xmFlake(xm, L, o, scatter) {
+    const P = xm.prand, st = xm.stage, k = xm.k;
+    o.L = L;
+    if (L === 1) { o.d = 25 + 55 * P(); o.v = 0.9 + 0.3 * P(); o.a = 0.35 + 0.2 * P(); }
+    else if (L === 2) {
+      o.d = 9 + 11 * P(); o.v = 0.95 + 0.1 * P(); o.a = 0.6 + 0.25 * P();
+      if (o.d < 13.5 && P() > st.h / (st.b - st.sy)) o.d = 13.5 + 6.5 * P();     // the near ones fall on the stage only
+    }
+    else { o.d = 2 + 3 * P(); o.v = 0.95 + 0.1 * P(); o.a = 0.25 + 0.2 * P(); }
+    o.m = S(o.d) * k;
+    o.vy = o.v * o.m; o.vx = 0;
+    o.sz = L === 1 ? 1 : L === 2 ? Math.max(1, (1.5 + (20 - o.d) / 11) * k) : (5 + 4 * P()) * k;
+    o.ph = P() * XM_TAU;
+    o.near = L === 3 || o.d < 13.5;
+    o.floor = o.near ? st.b + o.sz + 2 : xmGroundY(o.d);
+    o.st = 0; o.fade = 1;
+    const fallTo = Math.min(o.floor, st.b), y0 = o.near ? st.y : st.sy;
+    if (scatter) { o.x = st.x - 30 + (st.w + 40) * P(); o.y = y0 + (fallTo - y0) * P(); }
+    else if (xm.w * o.m > 0.5 * o.vy && P() < 0.5) { o.x = st.x - 4; o.y = y0 + (fallTo - y0) * P(); }
+    else { o.x = st.x - 30 + (xm.W + 10 - (st.x - 30)) * P(); o.y = y0 - 4; }
+    return o;
+  }
+  // puffs close enough to run together into a column, short lived, torn off sooner in a strong wind
+  function xmPuff(xm, fl, dark) {
+    return { x: fl.x, y: fl.y, vx: 0, age: 0, life: dark ? 6 : 5.5 / (1 + 0.06 * xm.w), ph: xm.prand() * XM_TAU, m: fl.m, dark, big: dark ? 1.5 : 1, a0: dark ? 0.3 : 0.13 };
+  }
+
+  // the first minute after every start: the valley lights up from the far town down to the lamp on the lane
+  function xmColdOpen(xm) {
+    const q = (t, k, a) => xmQueue(xm, t, k, a);
+    xm.weather = 'clear'; xm.wSince = 0; xm.Lt = 40; xm.lnL = Math.log(40); xm.L = 40; xm.wEnd = xr(180, 360);
+    xm.dens = 0.35; xm.dens3 = 0.25; xm.base = 0.8; xm.w = 0.8; xm.nextGust = xr(7, 22); xm.cold = true; xm.openSnow = xm.openCv = false;
+    for (let i = 0; i < 8; i++) q(1.5 + 0.5 * i, 'tlamp', i);
+    for (let i = 0; i < 26; i++) q(xr(5.5, 9), 'twin', i);
+    q(8.5, 'belfry');
+    const order = [];
+    for (let i = 0; i < 15; i++) order.splice(Math.floor(xm.rand() * (order.length + 1)), 0, i);
+    const times = []; for (let i = 0; i < 13; i++) times.push(xr(6, 14));
+    times.sort((a, b) => a - b);
+    for (let i = 0; i < 13; i++) q(times[i], 'pane', order[i]);
+    q(xr(60, 80), 'pane', order[13]); q(xr(80, 110), 'pane', order[14]);
+    q(12, 'ignite');
+    q(16, 'tree');
+    for (let i = 0; i < 15; i++) q(19 + 1.2 * i / 14, 'eave', i);
+    q(22, 'stoke', 1);
+    q(28, 'sleigh', -1);
+    q(40, 'gust', 3.5); q(40, 'shedArm');
+    q(55, 'director');
+    xm.nextSquall = xr(360, 540);
+  }
+  function xmQueue(xm, t, kind, arg) {
+    let i = xm.q.length;
+    while (i > 0 && xm.q[i - 1][0] > t) i--;
+    xm.q.splice(i, 0, [t, kind, arg]);
+  }
+  function xmEvent(xm, kind, arg) {
+    const t = xm.t, T = xm.town;
+    if (kind === 'tlamp') T.lampT[arg] = 1;
+    else if (kind === 'twin') T.winT[arg] = 1;
+    else if (kind === 'belfry') T.belfryT = 1;
+    else if (kind === 'pane') xm.panes[arg].tgt = 1;
+    else if (kind === 'ignite') xm.ignT = t;
+    else if (kind === 'tree') xm.treeT = 1;
+    else if (kind === 'eave') xm.eavesT[arg] = 1;
+    else if (kind === 'stoke') xmStoke(xm, arg);
+    else if (kind === 'sleigh') { if (!xm.sleigh) { xmSleighStart(xm, arg); xm.last.sleigh = t; } }
+    else if (kind === 'gust') xmGust(xm, arg);
+    else if (kind === 'shedArm') { if (!xm.shedArm) xm.shedArm = { t0: t, until: t + 10, forced: true }; }
+    else if (kind === 'shed') xmShedFire(xm);
+    else if (kind === 'weather') xmWeather(xm, arg);
+    else if (kind === 'aurora') xmAuroraStart(xm);
+    else if (kind === 'force') xmForce(arg);
+    else if (kind === 'director') {
+      xm.cold = false; xm.nextBeat = t + xr(10, 24);
+      T.toggleAt = t + xr(40, 120); xm.paneToggleAt = t + xr(60, 180);
+    }
+  }
+  function xmWeather(xm, s) {
+    const t = xm.t;
+    xm.weather = s; xm.wSince = t; xm.L0 = xm.L; xm.densFrom = xm.dens; xm.dens3From = xm.dens3;
+    if (s === 'clear') { xm.Lt = xr(25, 60); xm.wEnd = t + xr(180, 360); if (xm.squallG >= 0) { xm.squallG = -1; xm.nextSquall = t + xr(360, 540); } }
+    else if (s === 'snow') { xm.Lt = 8; xm.wEnd = t + xr(120, 240); }
+    else if (s === 'crystal') xm.Lt = 60;
+  }
+  // the set piece: a squall comes down the valley, swallows the far planes one by one, then gives them back
+  function xmSquall(G) {
+    const xm = scene.xm, q = (t, k, a) => xmQueue(xm, t, k, a), hold = xr(10, 16);
+    xm.squallG = G; xm.nextSquall = 1e9;
+    q(G, 'weather', 'gather');
+    q(G + 20, 'weather', 'squall');
+    q(G + 24, 'shed');
+    q(G + 28, 'weather', 'hold');
+    q(G + 28 + hold, 'weather', 'clearing');
+    q(G + 68 + hold, 'weather', 'crystal');
+    if (xm.rand() < 0.4) q(G + 73 + hold, 'aurora');
+    q(G + 128 + hold, 'weather', 'clear');
+  }
+  function xmGust(xm, amp) {
+    const t = xm.t;
+    xm.gusts.push({ t0: t, amp });
+    if (amp > 3 && xm.level < 2 && xm.stage) xmDriftStart(xm, amp);
+  }
+
+  function xmStep(dt) {
+    const xm = scene.xm;
+    if (!xm || !xm.stage || !xm.g) return;
+    xm.t += dt; xm.frame++;
+    const t = xm.t;
+    if (!xm.noClock && t >= xm.clockAt) { xm.clockAt = t + 1; xmHourToll(xm); }
+    while (xm.q.length && xm.q[0][0] <= t) { const e = xm.q.shift(); xmEvent(xm, e[1], e[2]); }
+    xmWeatherStep(xm, t);
+    xmDirector(xm, t);
+    xmWindStep(xm, t, dt);
+    xmVeilStep(xm, t, dt);
+    xmLightStep(xm, t, dt);
+    xmSmokeStep(xm, t, dt);
+    xmSnowStep(xm, t, dt);
+    xmSleighStep(xm, t, dt);
+    xmWalkStep(xm, t, dt);
+    xmTrainStep(xm, t, dt);
+    xmFoxStep(xm, t, dt);
+    xmShedStep(xm, t, dt);
+    xmDriftStep(xm, t, dt);
+    xmAuroraStep(xm, t, dt);
+    xmDecoStep(xm, t);
+  }
+  function xmWeatherStep(xm, t) {
+    const w = xm.weather;
+    if ((w === 'clear' || w === 'snow') && t >= xm.wEnd) xmWeather(xm, w === 'clear' && xm.rand() < 0.5 ? 'snow' : 'clear');
+    if (!xm.cold && xm.squallG < 0 && t >= xm.nextSquall && (xm.weather === 'clear' || xm.weather === 'snow')) {
+      const b = xm.beat;
+      if (!b || b.end - t <= 5 || t - xm.nextSquall >= 20) xmSquall(t);
+    }
+  }
+  // the church clock: the hour and the quarters ring from the town, and the lights answer
+  function xmHourToll(xm) {
+    const d = new Date(), m = d.getMinutes(), h = d.getHours();
+    if (m % 15 !== 0 || d.getSeconds() >= 3) return;
+    const key = h * 60 + m;
+    if (key === xm.tolledKey) return;
+    xm.tolledKey = key;
+    const w = xm.weather;
+    if ((w === 'clear' || w === 'snow' || w === 'crystal') && !xm.strokes.length) xmToll(xm, m === 0 ? ((h + 11) % 12) + 1 : m / 15);
+  }
+  function xmToll(xm, n) {
+    const t = xm.t;
+    xm.strokes = [];
+    for (let j = 0; j < n; j++) xm.strokes.push(t + 1.2 * j);
+    xm.chaseT = t; xm.chaseEnd = t + Math.max(6, 1.2 * (n - 1) + 2);
+  }
+  function xmDirector(xm, t) {
+    if (xm.beat && t >= xm.beat.end) { xm.beat = null; xm.nextBeat = t + xr(10, 24); }
+    const w = xm.weather;
+    if (xm.cold || xm.beat || t < xm.nextBeat || !(w === 'clear' || w === 'snow' || w === 'crystal')) return;
+    const ok = [];
+    let total = 0;
+    for (const b of XM_BEATS) {
+      const last = xm.last[b[0]] == null ? -1e9 : xm.last[b[0]];
+      if (b[0] === xm.prevKind || t - last < b[2] || !xmBeatReady(xm, b[0])) continue;
+      ok.push(b); total += b[1];
+    }
+    if (!ok.length) { xm.nextBeat = t + 5; return; }
+    let r = xm.rand() * total;
+    for (const b of ok) { r -= b[1]; if (r <= 0) { xmBeatStart(xm, b[0]); return; } }
+    xmBeatStart(xm, ok[ok.length - 1][0]);
+  }
+  function xmBeatReady(xm, k) {
+    if (k === 'sleigh') return !xm.sleigh;
+    if (k === 'door') return !xm.walker;
+    if (k === 'rooms') return !xm.rooms;
+    if (k === 'train') return !xm.train && xm.level < 2;
+    if (k === 'fox') return !xm.fox;
+    if (k === 'shed') return !xm.shedArm;
+    if (k === 'star') return !xm.au.on && !xm.shoot;
+    return true;
+  }
+  function xmBeatStart(xm, kind) {
+    const t = xm.t;
+    let dur = 1;
+    if (kind === 'sleigh') dur = xmSleighStart(xm, xm.rand() < 0.5 ? -1 : 1);
+    else if (kind === 'door') { xmWalkStart(xm); dur = 24; }
+    else if (kind === 'rooms') dur = xmRoomsStart(xm);
+    else if (kind === 'train') { xmTrainStart(xm); dur = 19; }
+    else if (kind === 'fox') dur = xmFoxStart(xm);
+    else if (kind === 'shed') { xm.shedArm = { t0: t, until: t + 10, forced: false }; dur = 18; }
+    else if (kind === 'stoke') { xmStoke(xm, Math.floor(xm.rand() * 5)); dur = 3; }
+    else if (kind === 'star') { xmShootStart(xm); dur = 1; }
+    xm.beat = { kind, end: t + dur }; xm.last[kind] = t; xm.prevKind = kind;
+  }
+
+  // one wind, always toward +x, in m/s; a gust front walks across the world at 5 m/s, so the lane feels it
+  // first and the village street ten seconds later, plume after plume
+  function xmWindStep(xm, t, dt) {
+    const w = xm.weather, a = t - xm.wSince;
+    const tgt = w === 'clear' ? 0.75 + 0.30 * Math.sin(0.09 * t) + 0.15 * Math.sin(0.23 * t)
+      : w === 'snow' ? 1.5 + 0.4 * Math.sin(0.07 * t)
+      : w === 'gather' ? 1.0 + 3.0 * hwSmooth(0, 20, a)
+      : w === 'squall' ? 7 + 0.8 * Math.sin(0.6 * t)
+      : w === 'hold' ? 5.5
+      : w === 'clearing' ? 4.0 - 3.4 * hwSmooth(0, 40, a) : 0.35;
+    xm.base += (tgt - xm.base) * (1 - Math.exp(-dt / 4));
+    if (t >= xm.nextGust) {
+      const rough = w === 'gather' || w === 'squall' || w === 'hold';
+      const amp = w === 'clear' ? xr(1.5, 3) : w === 'snow' ? xr(2, 3) : w === 'gather' ? xr(2, 4) : rough ? xr(1, 2.5) : w === 'clearing' ? xr(1, 2) : 0;
+      if (amp > 0) xmGust(xm, amp);
+      xm.nextGust = t + (w === 'clear' ? xr(7, 22) : rough ? xr(3, 6) : xr(6, 14));
+    }
+    let v = xm.base + xm.base / 12 * (0.6 * Math.sin(1.7 * t) + 0.4 * Math.sin(3.1 * t + 1));
+    for (let i = xm.gusts.length - 1; i >= 0; i--) {
+      const gs = xm.gusts[i], ga = t - gs.t0;
+      const e = ga < 0.6 ? hwSmooth(0, 0.6, ga) : ga < 1.8 ? 1 : Math.exp(-(ga - 1.8) / 1.5);
+      if (ga > 1.8 && e < 0.01) { xm.gusts.splice(i, 1); continue; }
+      v += gs.amp * e;
+    }
+    xm.w = Math.max(0, v);
+    if (!xm.rN) { xm.rV[0] = xm.w; xm.rI = 1; xm.rN = 1; xm.rT0 = t; xm.rNext = t + 0.25; }
+    while (t >= xm.rNext) { xm.rV[xm.rI] = xm.w; xm.rI = (xm.rI + 1) % 64; xm.rN = Math.min(64, xm.rN + 1); xm.rT0 = xm.rNext; xm.rNext += 0.25; }
+  }
+  function xmRingAt(xm, at) {
+    if (!xm.rN) return xm.w;
+    const newest = xm.rV[(xm.rI + 63) % 64];
+    if (at >= xm.rT0) { const span = xm.t - xm.rT0; return span > 1e-6 ? newest + (xm.w - newest) * Math.min(1, (at - xm.rT0) / span) : newest; }
+    const back = (xm.rT0 - at) / 0.25, j = Math.floor(back);
+    if (j >= xm.rN - 1) return xm.rV[(xm.rI + 64 - xm.rN) % 64];
+    const a = xm.rV[(xm.rI + 63 - j) % 64], b = xm.rV[(xm.rI + 62 - j) % 64];
+    return a + (b - a) * (back - j);
+  }
+  function xmWindAt(x, d) {
+    const xm = scene.xm, st = xm.stage;
+    return xmRingAt(xm, xm.t - hwClamp(((x - st.x) / xm.k) * d / (XM_CAM.f * 5), 0, 15.75));
+  }
+
+  // visibility: one extinction length L (km); each plane is veiled by the excess over a clear night at its distance
+  function xmA(dkm) { return 1 - Math.exp(-dkm * Math.max(0, 1 / scene.xm.L - 1 / 60)); }
+  function xmT(dkm) { return Math.exp(-dkm * Math.max(0, 1 / scene.xm.L - 1 / 60)); }
+  function xmVeilStep(xm, t, dt) {
+    const w = xm.weather, a = t - xm.wSince, ln = Math.log;
+    if (w === 'gather') xm.lnL = ln(xm.L0) + (ln(1.0) - ln(xm.L0)) * hwSmooth(0, 20, a);
+    else if (w === 'squall') xm.lnL = ln(1.0) + (ln(0.12) - ln(1.0)) * hwSmooth(0, 8, a);
+    else if (w === 'hold') xm.lnL = ln(0.12 * (1 + 0.4 * (0.5 + 0.5 * Math.sin(0.5 * a))));
+    else if (w === 'clearing') xm.lnL = ln(0.15) + (ln(60) - ln(0.15)) * hwSmooth(0, 40, a);
+    else xm.lnL += (ln(xm.Lt) - xm.lnL) * (1 - Math.exp(-dt / 12));
+    xm.L = Math.exp(xm.lnL);
+    // snow follows the weather
+    const dT = w === 'clear' ? 0.3 : w === 'snow' ? 1.0 : w === 'gather' ? xm.densFrom + (1.4 - xm.densFrom) * Math.min(1, a / 20)
+      : w === 'squall' ? 1.6 : w === 'hold' ? 1.4 : w === 'clearing' ? 1.4 + (0.08 - 1.4) * Math.min(1, a / 40) : 0.08;
+    const d3 = w === 'clear' ? 0.25 : w === 'snow' ? 0.6 : w === 'gather' ? xm.dens3From + (1.0 - xm.dens3From) * Math.min(1, a / 20)
+      : w === 'squall' ? 1.0 : w === 'hold' ? 0.9 : w === 'clearing' ? 0.9 * Math.max(0, 1 - a / 40) : 0;
+    const e = 1 - Math.exp(-dt / 4);
+    xm.dens += (dT - xm.dens) * e; xm.dens3 += (d3 - xm.dens3) * e;
+    const sT = w === 'gather' ? 0.6 * hwSmooth(0, 20, a) : w === 'squall' ? 1 : w === 'hold' ? 0.9 : w === 'clearing' ? 0.9 * Math.max(0, 1 - a / 25) : 0;
+    xm.storm += (sT - xm.storm) * e;
+    if (t - xm.veilAt < 0.25 && xm.veilAt >= 0) return;
+    xm.veilAt = t;
+    xmVeilQuant(xm);
+  }
+  function xmVeilQuant(xm) {
+    const q = (dkm) => Math.round(20 * xmA(dkm)) / 20, A = xm.Aq;
+    const rows = XM_VROWS.map((u) => q(u >= 183.5 ? 0.56 : u >= 180 ? 2.5 : XM_CAM.f * 50 / (186 - u) / 1000));
+    const n = { range: q(10), hills: q(4), town: q(0.375), vill: q(0.05), near: q(0.014) };
+    let changed = rows.join() !== A.rows.join();
+    for (const k in n) if (n[k] !== A[k]) changed = true;
+    if (!changed) return;
+    Object.assign(A, n); A.rows = rows;
+    xm.veilDirty = true;
+  }
+
+  function xmLightStep(xm, t, dt) {
+    const T = xm.town, h = Math.min(dt, 0.05);
+    for (let i = 0; i < 8; i++) T.lamp[i] = xmRamp(T.lamp[i], T.lampT[i], dt / 0.3);
+    for (let i = 0; i < 26; i++) T.win[i] = xmRamp(T.win[i], T.winT[i], dt / 0.4);
+    T.belfry = xmRamp(T.belfry, T.belfryT, dt / 0.4);
+    if (t >= T.toggleAt) {                     // the town keeps living: a window goes dark, another comes on
+      T.toggleAt = t + xr(40, 120);
+      let on = 0; for (let i = 0; i < 24; i++) if (T.winT[i] > 0.5) on++;
+      const want = on >= 24 ? 0 : on <= 20 ? 1 : (xm.rand() < 0.5 ? 0 : 1), list = [];
+      for (let i = 0; i < 24; i++) if ((T.winT[i] > 0.5 ? 1 : 0) !== want) list.push(i);
+      if (list.length) T.winT[list[Math.floor(xm.rand() * list.length)]] = want;
+    }
+    for (const p of xm.panes) {
+      p.lit = xmRamp(p.lit, p.tgt, dt / 0.4);
+      if (t >= p.shAt) { if (p.shAt > 0) { p.shT = t; p.shD = xr(0.5, 0.8); } p.shAt = t + xr(30, 90); }
+    }
+    if (t >= xm.paneToggleAt) {                // a room goes dark, another lights, over the minutes
+      xm.paneToggleAt = t + xr(60, 180);
+      let on = 0; for (const p of xm.panes) if (p.tgt > 0.5) on++;
+      const want = on >= 15 ? 0 : on <= 11 ? 1 : (xm.rand() < 0.5 ? 0 : 1), list = [];
+      xm.panes.forEach((p, i) => { if ((p.tgt > 0.5 ? 1 : 0) !== want) list.push(i); });
+      if (list.length) xm.panes[list[Math.floor(xm.rand() * list.length)]].tgt = want;
+    }
+    xm.treeOn = xmRamp(xm.treeOn, xm.treeT, dt / 0.2);
+    for (let i = 0; i < 15; i++) xm.eaves[i] = xmRamp(xm.eaves[i], xm.eavesT[i], dt / 0.08);
+    const n = dt > 0.034 ? 2 : 1, hh = dt / n, we = xmWindAt(xm.g.eave.x, 50);
+    for (let i = 0; i < n; i++) { xm.sagV += (-25 * (xm.sag - 0.35 - 0.06 * we) - 2.5 * xm.sagV) * hh; xm.sag += xm.sagV * hh; }
+    xm.sway = xm.fixed ? 0 : 0.28 * hwClamp((we - 2) / 5, 0, 1) * Math.sin(5.1 * t + 0.8 * Math.sin(1.7 * t));
+    if (xm.strokes.length && t > xm.strokes[xm.strokes.length - 1] + 2) xm.strokes = [];
+    if (xm.shoot && t - xm.shoot.t0 >= 0.7) { xm.shoot = null; xm.skyDirty = true; }
+    // the gas lamp: lit at 12 s with two catches, steady after with a faint flutter, ducking in a gust
+    if (xm.ignT >= 0) {
+      const a = t - xm.ignT;
+      xm.lamp = a < 0 ? 0 : a < 0.06 ? 0.7 : a < 0.15 ? 0.1 : a < 0.22 ? 0.9 : a < 0.34 ? 0.25 : 1;
+      xm.bloom = a < 0.34 ? 0.4 : 0.4 + 0.6 * hwSmooth(0.34, 0.94, a);
+    }
+    const gl = xmWindAt(xm.g.glassC.x, 14) - xm.base;
+    if (gl > 2.5 && !xm.gustHigh && t - xm.gustDipT >= 2) { xm.dipUntil = t + 0.25; xm.gustDipT = t; }
+    xm.gustHigh = gl > 2.5;
+    const tgt = t < xm.dipUntil ? 1 : 0;
+    for (let i = 0; i < n; i++) { xm.dipV += (-60 * (xm.dip - tgt) - 9 * xm.dipV) * hh; xm.dip += xm.dipV * hh; }
+    const ht = xm.hover ? 1 : 0;
+    for (let i = 0; i < n; i++) { xm.hvV += (-40 * (xm.hv - ht) - 12 * xm.hvV) * hh; xm.hv += xm.hvV * hh; }
+    for (const d of xm.doors) d.open = xmRamp(d.open, d.tgt, dt / 0.5);
+    if (xm.rooms && t >= xm.rooms.end) xm.rooms = null;
+  }
+  // a lamplit pane: lamplight steady, firelight wavering, a shadow passing now and then; written into o
+  function xmPaneLevel(xm, i, t, o) {
+    const p = xm.panes[i];
+    let g = xm.fixed ? 0.9 : (i === 0 || i === 6) ? 0.84 + 0.07 * Math.sin(2.3 * t + p.ph) + 0.045 * Math.sin(5.9 * t + 1.7 + p.ph) + 0.025 * Math.sin(13.1 * t + 0.4)
+      : 0.92 + 0.04 * Math.sin(0.2 * t + p.ph);
+    const s = t - p.shT;
+    if (!xm.fixed && s >= 0 && s < p.shD) g *= 1 - 0.5 * Math.min(1, s / 0.1, (p.shD - s) / 0.1);
+    const R = xm.rooms;
+    if (R) {                                   // the rooms walk: a pane left behind dims, the next one brightens
+      const P = xmRoomsPos(xm), moves = R.path.length - 1;
+      let v = g;
+      for (let j = 0; j < P.at; j++) if (R.path[j] === i) v = 0.55;
+      if (R.path[P.at] === i) v = 1 - 0.45 * P.u;
+      if (P.at < moves && R.path[P.at + 1] === i) v = Math.max(v, g + (1 - g) * P.u);
+      g += (v - g) * P.env;
+    }
+    o.lit = p.lit + (1 - p.lit) * xm.hv;
+    o.g = g + (1 - g) * xm.hv;
+    return o;
+  }
+  function xmRoomsPos(xm) {
+    const R = xm.rooms, a = xm.t - R.t0, moves = R.path.length - 1, P = R.pos || (R.pos = { at: 0, u: 0, env: 0 });
+    P.at = 0; P.u = 0;
+    if (a >= 0.6) { const s = a - 0.6, k = Math.floor(s / 1.4); if (k >= moves) P.at = moves; else { P.at = k; P.u = hwSmooth(0, 1, s - 1.4 * k); } }
+    P.env = hwClamp(Math.min(a / 0.3, (R.dur - a) / 0.8), 0, 1);
+    return P;
+  }
+  function xmRoomsStart(xm) {
+    const floors = [[0, 1], [3, 4, 5, 6], [7, 8, 9, 10], [13, 14]], f = floors[Math.floor(xm.rand() * floors.length)];
+    const moves = 3 + Math.floor(xm.rand() * 3), path = [f[Math.floor(xm.rand() * f.length)]];
+    for (let i = 0; i < moves; i++) {
+      const c = f.indexOf(path[path.length - 1]), nb = [];
+      if (c > 0) nb.push(f[c - 1]); if (c < f.length - 1) nb.push(f[c + 1]);
+      path.push(nb[Math.floor(xm.rand() * nb.length)]);
+    }
+    const dur = 0.6 + 1.4 * moves + 0.8;
+    xm.rooms = { t0: xm.t, path, floor: f, at: 0, u: 0, end: xm.t + dur, dur };
+    return dur;
+  }
+  function xmStoke(xm, i) {
+    const F = xm.flues[i], fl = xm.g && xm.g.flues[i];
+    if (!F || !fl) return;
+    F.puffs.push(xmPuff(xm, fl, true));
+    F.stoke = { until: xm.t + 2, next: xm.t + 0.5 };
+  }
+  function xmSmokeStep(xm, t, dt) {
+    const G = xm.g, low = xm.level >= 2, cap = low ? 10 : 18, every = low ? 0.7 : 0.35, P = xm.prand;
+    G.flues.forEach((fl, i) => {
+      const F = xm.flues[i];
+      if (!F) return;
+      if (t >= F.next) { if (F.puffs.length < cap) F.puffs.push(xmPuff(xm, fl, false)); F.next = t + every * (0.85 + 0.3 * P()); }
+      if (F.stoke && t >= F.stoke.next) {
+        if (t > F.stoke.until) F.stoke = null;
+        else { F.puffs.push(xmPuff(xm, fl, false)); F.stoke.next = t + 0.5; }
+      }
+      for (let j = F.puffs.length - 1; j >= 0; j--) {
+        const p = F.puffs[j];
+        p.age += dt;
+        if (p.age >= p.life) { F.puffs.splice(j, 1); continue; }
+        const w = xmWindAt(p.x, fl.d);
+        p.vx += (w * p.m - p.vx) * (1 - Math.exp(-dt / 0.8));
+        p.x += p.vx * dt;
+        p.y -= 0.8 * p.m / (1 + 0.15 * w) * dt;
+      }
+    });
+  }
+  function xmSnowStep(xm, t, dt) {
+    const low = xm.level >= 2, f = xm.f, sm = xm.storm;
+    xmSnowLayer(xm, xm.s1, Math.round(70 * f * xm.dens * (low ? 0.5 : 1)), t, dt);
+    xmSnowLayer(xm, xm.s2, Math.round(48 * f * xm.dens * (1 + 1.4 * sm) * (low ? 0.6 : 1)), t, dt);
+    xmSnowLayer(xm, xm.s3, low ? 0 : Math.round(12 * xm.fn * xm.dens3 * (1 + 1.5 * sm)), t, dt);
+  }
+  function xmSnowLayer(xm, pool, active, t, dt) {
+    const st = xm.stage, W = xm.W;
+    for (let i = 0; i < pool.length; i++) {
+      const o = pool[i];
+      if (o.st === 2) { if (i < active) xmFlake(xm, o.L, o, false); else continue; }
+      if (o.st === 1) { o.fade -= dt / 0.25; if (o.fade <= 0) o.st = 2; }
+      else {
+        o.vx = (xmWindAt(o.x, o.d) + 0.25 * Math.sin(1.1 * t + o.ph)) * o.m;
+        o.y += o.vy * dt; o.x += o.vx * dt;
+        if (o.y >= o.floor) { if (o.near) o.st = 2; else { o.st = 1; o.y = o.floor; } }
+        if (o.x > W + 10) o.st = 2;
+      }
+      if (o.st === 2 && i < active) xmFlake(xm, o.L, o, false);
+    }
+  }
+
+  // the sleigh on the street at 43 m: 3 m/s, a trot of 2.5 m strides, so the hooves never slide
+  function xmSleighStart(xm, dir) {
+    const st = xm.stage, m = S(43) * xm.k, pad = 60, sx = xm.g.spruceX;
+    const x0 = dir < 0 ? xm.W + pad : Math.max(st.x - pad, sx - 6 * xm.k), x1 = dir < 0 ? Math.max(st.x - pad, sx - 6 * xm.k) : xm.W + pad;
+    xm.sleigh = { dir, x: x0, x0, x1, v: 3.0 * m, ph: 0, fr: 0, spray: 0, park: false };
+    return Math.abs(x1 - x0) / (3.0 * m);
+  }
+  function xmSleighStep(xm, t, dt) {
+    const s = xm.sleigh, k = xm.k;
+    for (let i = xm.specks.length - 1; i >= 0; i--) {
+      const p = xm.specks[i];
+      p.age += dt;
+      if (p.age >= p.life) { xm.specks.splice(i, 1); continue; }
+      p.vy += 90 * k * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    }
+    if (!s || s.park) return;
+    s.x += s.dir * s.v * dt;
+    s.ph += dt * 3.0 / 2.5;
+    s.fr = Math.floor(s.ph * 4) % 4;
+    s.spray += 3 * dt;
+    while (s.spray >= 1) {
+      s.spray -= 1;
+      xm.specks.push({ x: s.x - s.dir * 9 * k, y: xm.g.streetY - 0.5, vx: -s.dir * (8 + 14 * xm.prand()) * k, vy: -(6 + 8 * xm.prand()) * k, age: 0, life: 0.4 });
+    }
+    if ((s.dir < 0 && s.x <= s.x1) || (s.dir > 0 && s.x >= s.x1)) xm.sleigh = null;
+  }
+  // someone carries a lantern from the cottage across the street to the inn
+  const XM_WALK = [[-7.0, 50], [-7.0, 44.5], [8.66, 44.5], [8.66, 50]];
+  function xmWalkStart(xm) {
+    let len = 0;
+    for (let i = 1; i < XM_WALK.length; i++) len += Math.hypot(XM_WALK[i][0] - XM_WALK[i - 1][0], XM_WALK[i][1] - XM_WALK[i - 1][1]);
+    xm.walker = { t0: xm.t, go: xm.t + 0.8, len, X: XM_WALK[0][0], d: XM_WALK[0][1], ph: 0, fr: 1, on: false, done: -1 };
+    xm.doors[0].tgt = 1;
+  }
+  function xmWalkStep(xm, t, dt) {
+    const w = xm.walker;
+    if (!w) return;
+    const s = (t - w.go) * 1.3;
+    w.on = s >= 0 && s < w.len;
+    if (s >= 2.6) xm.doors[0].tgt = 0;
+    if (s >= w.len - 1.3) xm.doors[1].tgt = 1;
+    if (s >= w.len) { if (w.done < 0) w.done = t; if (t - w.done >= 2) { xm.doors[1].tgt = 0; xm.walker = null; } return; }
+    if (s < 0) return;
+    let r = s;
+    for (let i = 1; i < XM_WALK.length; i++) {
+      const a = XM_WALK[i - 1], b = XM_WALK[i], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (r <= l || i === XM_WALK.length - 1) { const u = Math.min(1, r / l); w.X = a[0] + (b[0] - a[0]) * u; w.d = a[1] + (b[1] - a[1]) * u; break; }
+      r -= l;
+    }
+    w.ph += dt * 1.3 / 1.4;
+    w.fr = [0, 1, 2, 1][Math.floor(w.ph * 4) % 4];
+  }
+  // the evening train out of the tunnel and across the viaduct, 80 m long at 15 m/s
+  function xmTrainStart(xm) {
+    const m = S(XM_VIADUCT.d) * xm.k;
+    xm.train = { t0: xm.t, x: xm.g.portalX, v: 15 * m, len: 80 * m, steamAt: xm.t };
+    xm.steam = [];
+  }
+  function xmTrainStep(xm, t, dt) {
+    const tr = xm.train, k = xm.k;
+    for (let i = xm.steam.length - 1; i >= 0; i--) {
+      const p = xm.steam[i];
+      p.age += dt;
+      if (p.age >= 4) { xm.steam.splice(i, 1); continue; }
+      p.y -= 4 * k * dt; p.x += xmWindAt(p.x, XM_VIADUCT.d) * S(XM_VIADUCT.d) * k * dt;
+    }
+    if (!tr) return;
+    tr.x += tr.v * dt;
+    if (t >= tr.steamAt && xm.steam.length < 3 && tr.x < xm.W) { xm.steam.push({ x: tr.x - 2 * k, y: xm.g.deckY - 2.6 * k, age: 0 }); tr.steamAt = t + 1.5; }
+    if (tr.x - tr.len > xm.W + 2) xm.train = null;
+  }
+  // a fox comes along the lane, listens, pounces into the snow, shakes it off and trots away
+  function xmFoxStart(xm) {
+    const k = xm.k, m = S(13.8) * k, stopX = xmRx(140 + 70 * xm.rand());
+    xm.fox = { st: 'in', x: xm.W + 25, dir: -1, v: 1.5 * m, m, stopX, t0: xm.t, ph: 0, fr: 0, y: 0, rot: 0, dist: 0, hold: 0, burst: [], cloud: null };
+    return (xm.W + 25 - stopX) / (1.5 * m) * 2 + 4.5;
+  }
+  function xmFoxStep(xm, t, dt) {
+    const f = xm.fox, k = xm.k;
+    for (let i = xm.tracks.length - 1; i >= 0; i--) if (t - xm.tracks[i].t0 > xm.tracks[i].life) xm.tracks.splice(i, 1);
+    if (!f) return;
+    const a = t - f.t0, P = xm.prand;
+    for (let i = f.burst.length - 1; i >= 0; i--) {
+      const p = f.burst[i];
+      p.age += dt;
+      if (p.age >= p.life) { f.burst.splice(i, 1); continue; }
+      p.vy += 120 * k * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    }
+    if (f.cloud) { f.cloud.age += dt; if (f.cloud.age > f.cloud.life) f.cloud = null; }
+    f.y = 0;
+    const trot = () => {
+      f.x += f.dir * f.v * dt;
+      f.ph += dt * 1.5 / 0.9; f.fr = Math.floor(f.ph * 6) % 6;
+      f.dist += 1.5 * dt;
+      if (f.dist >= 0.45) { f.dist -= 0.45; xm.tracks.push({ x: f.x, t0: t, life: 60 + 30 * P() }); if (xm.tracks.length > 90) xm.tracks.shift(); }
+    };
+    if (f.st === 'in') { trot(); if (f.x <= f.stopX) { f.x = f.stopX; f.st = 'listen'; f.t0 = t; f.hold = 1.2 + 0.8 * P(); f.fr = 6; } }
+    else if (f.st === 'listen') { f.fr = 6; if (a >= f.hold) { f.st = 'crouch'; f.t0 = t; } }
+    else if (f.st === 'crouch') { f.fr = 7; if (a >= 0.6) { f.st = 'leap'; f.t0 = t; f.lx = f.x; } }
+    else if (f.st === 'leap') {
+      const u = Math.min(1, a / 0.6);
+      f.fr = 8; f.x = f.lx + f.dir * 0.8 * f.m * u; f.y = -20 * k * 4 * u * (1 - u);
+      f.rot = u < 0.5 ? -0.92 * (1 - u / 0.5) : 0.3 * (u - 0.5) / 0.5;
+      if (u >= 1) {
+        f.st = 'buried'; f.t0 = t; f.fr = 9; f.rot = 0;
+        for (let i = 0; i < 12; i++) f.burst.push({ x: f.x + f.dir * 6 * k + (P() - 0.5) * 6 * k, y: xm.g.laneY - 1, vx: (P() - 0.5) * 40 * k, vy: -(30 + 30 * P()) * k, s: (1 + 2 * P()) * k, age: 0, life: 0.8 });
+        f.cloud = { x: f.x + f.dir * 6 * k, y: xm.g.laneY - 4 * k, age: 0, life: 0.6, s0: 10, s1: 24 };
+      }
+    } else if (f.st === 'buried') { f.fr = 9; if (a >= 0.7) { f.st = 'shake'; f.t0 = t; for (let i = 0; i < 6; i++) f.burst.push({ x: f.x + (P() - 0.5) * 14 * k, y: xm.g.laneY - 6 * k, vx: (P() - 0.5) * 60 * k, vy: -(10 + 25 * P()) * k, s: (1 + P()) * k, age: 0, life: 0.6 }); } }
+    else if (f.st === 'shake') { f.fr = 10; if (a >= 0.8) { f.st = 'out'; f.t0 = t; f.dir = 1; } }
+    else if (f.st === 'out') { trot(); if (f.x > xm.W + 25) xm.fox = null; }
+  }
+  // a gust shakes the snow off a bough of the spruce
+  function xmShedStep(xm, t, dt) {
+    const k = xm.k;
+    for (let i = xm.shed.length - 1; i >= 0; i--) {
+      const p = xm.shed[i];
+      p.age += dt;
+      if (p.age >= p.life || p.y > xm.stage.b + 4) { xm.shed.splice(i, 1); continue; }
+      p.vy += 120 * k * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    }
+    for (let i = xm.clouds.length - 1; i >= 0; i--) { const c = xm.clouds[i]; c.age += dt; if (c.age >= c.life) xm.clouds.splice(i, 1); }
+    const A = xm.shedArm;
+    if (!A) return;
+    const g = xmWindAt(xm.g.spruceX, XM_SPRUCE.d) - xm.base;
+    if (g > 2.2) { xmShedFire(xm); return; }
+    if (t >= A.until && !A.pushed) { A.pushed = true; A.until = t + 8; xmGust(xm, 3.5); }
+    else if (t >= A.until) xm.shedArm = null;
+  }
+  function xmShedFire(xm) {
+    const k = xm.k, P = xm.prand, b = xm.g.boughs[Math.floor(P() * 3)], w = xmWindAt(b.x, XM_SPRUCE.d), m = S(XM_SPRUCE.d) * k;
+    const n = 20 + Math.floor(P() * 11);
+    for (let i = 0; i < n; i++) xm.shed.push({ x: b.x + (P() - 0.6) * 12 * k, y: b.y + (P() - 0.5) * 4 * k, vx: 0.4 * w * m * (0.6 + 0.8 * P()), vy: (10 + 20 * P()) * k, s: (1 + 2 * P()) * k, age: 0, life: 1.5 });
+    xm.clouds.push({ x: b.x + 6 * k, y: b.y + 6 * k, age: 0, life: 1.5, s0: 20, s1: 50, a: 0.25, vx: 0.3 * w * m });
+    xm.shedArm = null;
+    if (xm.beat && xm.beat.kind === 'shed') xm.beat.end = Math.min(xm.beat.end, xm.t + 2);
+  }
+  // spindrift: wisps lifted off the lane and the rails as a gust front crosses
+  function xmDriftStart(xm, amp) {
+    const st = xm.stage, k = xm.k, P = xm.prand, G = xm.g, n = 2 + Math.floor(P() * 3), sm = xm.storm;
+    for (let i = 0; i < n; i++) {
+      let x, y, d = 14;
+      const r = P();
+      if (r < 0.15 + 0.3 * sm) { d = 45; x = st.x + 10 + (st.w - 20) * P(); y = xmUy(52 + 40 * P()); }
+      else if (r < 0.75 || !G.rails.length) { x = st.x + 20 + (st.w - 40) * P(); y = st.b - (2 + 28 * P()) * k; }
+      else { const rl = G.rails[Math.floor(P() * G.rails.length)], u = P(); x = rl[0] + (rl[2] - rl[0]) * u; y = rl[1] + (rl[3] - rl[1]) * u - 1; }
+      const lag = ((x - st.x) / k) * d / (XM_CAM.f * 5), z = 14 / d, gs = 1 + 0.6 * sm;
+      xm.wisps.push({ x, y, d, at: xm.t + lag, age: -1, life: (0.8 + 0.6 * P()) * gs, len: (26 + 26 * P()) * k * z * gs, h: (6 + 4 * P()) * k * z, a: (0.10 + 0.08 * P()) * gs, rise: (2 + 6 * P()) * k * z });
+    }
+    if (xm.wisps.length > 16) xm.wisps.splice(0, xm.wisps.length - 16);
+  }
+  function xmDriftStep(xm, t, dt) {
+    const w = xm.weather, a = t - xm.wSince;
+    if (xm.level < 2 && (w === 'squall' || w === 'hold' || (w === 'gather' && a > 10)) && t >= xm.driftAt) { xm.driftAt = t + xr(0.4, 0.9); xmDriftStart(xm, 4); }
+    for (let i = xm.wisps.length - 1; i >= 0; i--) {
+      const p = xm.wisps[i];
+      if (t < p.at) continue;
+      if (p.age < 0) p.age = 0;
+      p.age += dt;
+      if (p.age >= p.life) { xm.wisps.splice(i, 1); continue; }
+      p.x += xmWindAt(p.x, p.d) * S(p.d) * xm.k * dt;
+    }
+  }
+  function xmShootStart(xm) {
+    const P = xm.rand;
+    xm.shoot = { t0: xm.t, r: 200 + 100 * P(), u: 275 + 10 * P(), vx: 130 + 70 * P(), vy: 28 + 17 * P() };
+  }
+  // the aurora: a calm curtain that swells in two or three pulses and fades
+  function xmAuroraStart(xm) {
+    const a = xm.au, P = xm.rand, D = 60 + 30 * P();
+    a.on = true; a.t0 = xm.t; a.D = D; a.env = 0; a.pulses = [];
+    const n = 2 + Math.floor(P() * 2);
+    for (let i = 0; i < n; i++) a.pulses.push([15 + (D - 35) * P(), 4 + 2 * P()]);
+    a.rays = [];
+    for (let i = 0; i < 60; i++) {
+      const back = i >= 44, j = back ? i - 44 : i, nn = back ? 16 : 44;
+      a.rays.push({ q: (j + 0.2 + 0.6 * P()) / nn, f: 2 + 5 * P(), p: P() * XM_TAU, back, w: 2.5 + 2 * P() });
+    }
+  }
+  function xmAuroraStep(xm, t) {
+    const a = xm.au;
+    if (!a.on) return;
+    const s = t - a.t0;
+    if (s >= a.D) { a.on = false; a.env = 0; xm.skyDirty = true; return; }
+    let e = 0.45 * hwSmooth(0, 12, s);
+    for (const p of a.pulses) { const u = (s - p[0]) / p[1]; if (u > 0 && u < 1) e = Math.max(e, 0.45 + 0.55 * Math.sin(Math.PI * u)); }
+    a.env = e * (1 - hwSmooth(a.D - 15, a.D, s));
+  }
+  // the light string over the window: a bulb dims or comes back now and then, and runs a chase on the bells
+  function xmDecoStep(xm, t) {
+    const B = xm.bulbs, n = B ? B.length : 0;
+    if (!n) return;
+    const chase = t >= xm.chaseT && t < xm.chaseEnd;
+    if (t < xm.decoAt) return;
+    xm.decoAt = t + (chase ? 0.125 : 0.25);
+    if (!xm.deco || xm.deco.n !== n || xm.deco.B !== B) xm.deco = { n, B, dim: new Uint8Array(n), want: new Uint8Array(n), since: new Float64Array(n).fill(-1e9), chase: false, next: t };
+    const D = xm.deco, P = xm.drand;
+    const set = (i, v) => { if (D.dim[i] !== v) { D.dim[i] = v; B[i].classList.toggle('dim1', v === 1); B[i].classList.toggle('dim', v === 2); } };
+    if (chase) {
+      const s = Math.floor(8 * (t - xm.chaseT));
+      for (let i = 0; i < n; i++) { const v = ((i - s) % 5 + 5) % 5 === 0 ? 0 : 2; set(i, v); D.want[i] = v; }
+      D.chase = true;
+      return;
+    }
+    if (D.chase) { D.chase = false; for (let i = 0; i < n; i++) { set(i, 0); D.want[i] = 0; } return; }
+    // a bulb on its way moves one step a tick, so it dims or comes back over half a second
+    for (let i = 0; i < n; i++) if (D.dim[i] !== D.want[i]) set(i, D.dim[i] + (D.want[i] > D.dim[i] ? 1 : -1));
+    if (t < D.next) return;
+    D.next = t + 0.6 + 0.9 * P();
+    let dims = 0; for (let i = 0; i < n; i++) dims += D.want[i] ? 1 : 0;
+    const want = dims < n / 4 ? 2 : 0;
+    for (let tries = 0; tries < 8; tries++) {
+      const i = Math.floor(P() * n);
+      if (D.want[i] === want || t - D.since[i] < 4) continue;
+      D.want[i] = want; D.since[i] = t; break;
+    }
+  }
+  // warm light: these canvases are clear but for the light itself, where a plain blend looks as an additive one
+  // would, and an additive blend here costs time in proportion to the whole canvas on every draw
+  function xmLit(g, a) {
+    g.globalCompositeOperation = 'source-over';
+    g.globalAlpha = hwClamp(a, 0, 1);
+  }
+  function xmFeather(xm, g, gr, y0, h, top) {
+    const st = xm.stage;
+    g.save(); g.globalCompositeOperation = 'destination-out'; g.globalAlpha = 1;
+    if (xm.ui.openTop) { g.fillStyle = gr.ft56; g.fillRect(st.x, y0, st.w, 56); }
+    else if (top) { g.fillStyle = gr.ft; g.fillRect(st.x, y0, st.w, 24); }
+    g.fillStyle = gr.fl; g.fillRect(st.x, y0, 22, h);
+    g.restore();
+  }
+  // a veil of falling snow in the air between the eye and a plane: slipped under what the canvas already holds
+  function xmVeilFill(g, a, x, y, w, h) {
+    if (a <= 0 || h <= 0) return;
+    g.globalCompositeOperation = scene.caps.destOver ? 'destination-over' : 'source-over'; g.globalAlpha = a;
+    g.fillStyle = 'rgb(49,71,106)'; g.fillRect(x, y, w, h);
+    hwSrc(g);
+  }
+  function xmDraw(force) {
+    const xm = scene.xm;
+    if (!xm || !xm.stage || !xm.g) return;
+    const c = xm.ctx, every = xm.au.on ? 2 : xm.level >= 2 ? 4 : 3;
+    if (c.sky && (force || xm.skyDirty || xm.shoot || xm.frame % every === 0)) { xm.skyDirty = false; xmDrawSky(xm, c.sky); }
+    if (force || xm.veilDirty) xmDrawVeil(xm);
+    if (c.mid) xmDrawMid(xm, c.mid);
+    if (c.near) xmDrawNear(xm, c.near);
+  }
+  function xmDrawSky(xm, g) {
+    const st = xm.stage, G = xm.g, sp = scene.sprites.xm, k = xm.k, t = xm.t, bk = xm.bk, snap = (v) => Math.round(v * bk) / bk;
+    hwSrc(g); g.clearRect(st.x, st.y, st.w, G.skyH);
+    const boost = xm.weather === 'crystal' ? 1.2 : 1;
+    g.fillStyle = '#eaf4ff';
+    for (const s of xm.stars) {
+      const y = st.b - k * s.u;
+      if (y < st.y) continue;
+      g.globalAlpha = hwClamp(s.a * boost * (xm.fixed ? 1 : 0.55 + 0.45 * Math.sin(XM_TAU * t / s.P + s.ph)), 0, 1);
+      g.fillRect(snap(xm.W - k * s.r), snap(y), s.s, s.s);
+    }
+    const m = G.moon;
+    hwSrc(g); g.drawImage(sp.moonGlow, m.x - 36 * k, m.y - 36 * k, 72 * k, 72 * k);
+    g.drawImage(sp.moon, m.x - 8 * k, m.y - 8 * k, 16 * k, 16 * k);
+    const e = G.estar, tw = xm.fixed ? 1 : 0.92 + 0.08 * Math.sin(XM_TAU * 0.6 * t);
+    xmLit(g, 0.22 * tw); g.drawImage(sp.starGlow, e.x - 5 * k, e.y - 5 * k, 10 * k, 10 * k);
+    hwSrc(g, tw); g.fillStyle = '#fffbea'; g.fillRect(snap(e.x) - 1, snap(e.y) - 1, 2, 2);
+    const sh = xm.shoot;
+    if (sh) {                                  // five solid steps of tail, never a gradient stroke
+      const a = t - sh.t0, x = xm.W - k * (sh.r - sh.vx * a), y = st.b - k * (sh.u - sh.vy * a);
+      const env = hwClamp(Math.min(a / 0.1, (0.7 - a) / 0.2), 0, 1), dx = -sh.vx * 0.03 * k, dy = -sh.vy * 0.03 * k;
+      hwSrc(g, env); g.lineWidth = 1; g.lineCap = 'butt';
+      for (let i = 0; i < 5; i++) {
+        g.strokeStyle = 'rgba(' + (i ? '210,232,255' : '255,255,255') + ',' + (0.95 * (1 - i / 5)).toFixed(3) + ')';
+        g.beginPath(); g.moveTo(x + dx * i, y + dy * i); g.lineTo(x + dx * (i + 1), y + dy * (i + 1)); g.stroke();
+      }
+    }
+    if (xm.au.on && xm.au.env > 0.003 && xm.au.cv) { xmDrawAurora(xm); hwSrc(g); g.drawImage(xm.au.cv, st.x, st.y, st.w, G.skyH); }
+    xmFeather(xm, g, G.gr.sky, st.y, G.skyH, true);
+    hwSrc(g);
+  }
+  // the aurora into its half-size buffer: sheets along the lower border, rays standing out of it, then the whole
+  // buffer scaled by the envelope with one solid fill, never by drawing it at an alpha
+  function xmDrawAurora(xm) {
+    const a = xm.au, b = a.g, st = xm.stage, k = xm.k, t = xm.t, sp = scene.sprites.xm, foot = st.b, low = xm.level >= 2;
+    if (!b) return;
+    b.setTransform(1, 0, 0, 1, 0, 0); b.globalCompositeOperation = 'source-over'; b.globalAlpha = 1; b.clearRect(0, 0, a.w, a.h);
+    b.setTransform(0.5, 0, 0, 0.5, -st.x * 0.5, -st.y * 0.5);
+    const L = scene.caps.lighter, m = L ? 1 : 0.6;
+    b.globalCompositeOperation = L ? 'lighter' : 'source-over';
+    const uB = (q) => 214 + 9 * Math.sin(4.4 * q - 0.3 * t) + 4 * Math.sin(11.3 * q + 0.5 * t) + 2 * Math.sin(23 * q - 1.1 * t);
+    for (let c = 1; c >= 0; c--) {
+      for (let x = st.x - 12; x < st.x + st.w + 24; x += 24) {
+        const q = (x - st.x) / st.w, u = uB(q) + 6 * c, h = Math.max(0, Math.min(70, 282 - u)) * k, wave = 0.5 + 0.5 * Math.sin(9 * q - 1.4 * t);
+        b.globalAlpha = hwClamp(m * (c ? 0.5 : 1) * (0.4 + 0.6 * wave), 0, 1);
+        b.drawImage(sp.sheet, x - 24 * k, foot - k * u - h, 48 * k, h);
+      }
+    }
+    for (let i = 0; i < a.rays.length; i++) {
+      if (low && i % 5 >= 3) continue;
+      const r = a.rays[i], u = uB(r.q) + (r.back ? 6 : 0), h = Math.max(0, Math.min(70, 282 - u)) * k;
+      const fl = 0.6 + 0.4 * Math.sin(r.f * t + r.p), wave = 0.5 + 0.5 * Math.sin(9 * r.q - 1.4 * t);
+      b.globalAlpha = hwClamp(m * (r.back ? 0.5 : 1) * fl * wave, 0, 1);
+      b.drawImage(sp.ray, st.x + r.q * st.w - r.w * k / 2, foot - k * u - h, r.w * k, h);
+    }
+    b.setTransform(1, 0, 0, 1, 0, 0); b.globalCompositeOperation = 'destination-in'; b.globalAlpha = 1;
+    b.fillStyle = 'rgba(0,0,0,' + hwClamp(a.env, 0, 1).toFixed(3) + ')'; b.fillRect(0, 0, a.w, a.h);
+    b.globalCompositeOperation = 'source-over';
+  }
+  // the stepped veil: the DOM bands and paths, and the valley rows on their own small canvas
+  function xmDrawVeil(xm) {
+    xm.veilDirty = false;
+    const A = xm.Aq, el = xm.el, D = xm.veilDom;
+    const op = (key, e, v) => { if (D[key] !== v) { D[key] = v; e.style.opacity = v; } };
+    const at = (key, e, name, v) => { if (D[key] !== v) { D[key] = v; e.setAttribute(name, v); } };
+    op('a', el.va, A.range); at('b', el.vb, 'fill-opacity', A.hills); at('bs', el.vb, 'stroke-opacity', A.hills);
+    at('tf', el.vt, 'fill-opacity', A.town); at('ts', el.vt, 'stroke-opacity', A.town);
+    op('v', el.vv, A.vill); op('n', el.vn, A.near);
+    const key = A.rows.join(',') + '|' + (xm.sizes.veil || '');
+    if (key === xm.veilKey) return;
+    xm.veilKey = key;
+    const g = xm.ctx.veil, st = xm.stage, k = xm.k, y0 = st.b - 96 * k, y1 = st.b - 196 * k;
+    let css = 'none';
+    if (g) { hwSrc(g); g.clearRect(st.x, y1, st.w, 100 * k); }
+    if (A.rows.some((v) => v > 0)) {
+      const grd = g ? g.createLinearGradient(0, y0, 0, y1) : null;
+      css = 'linear-gradient(0deg';
+      XM_VROWS.forEach((u, i) => {
+        const f = (u - 96) / 100, c = 'rgba(49,71,106,' + A.rows[i] + ')';
+        if (grd) grd.addColorStop(f, c);
+        css += ', ' + c + ' ' + (f * 100).toFixed(2) + '%';
+      });
+      css += ')';
+      if (g) { g.fillStyle = grd; g.fillRect(st.x, y1, st.w, 100 * k); }
+    }
+    if (D.c !== css) { D.c = css; el.vc.style.background = css; }
+  }
+  function xmDrawMid(xm, g) {
+    const st = xm.stage, G = xm.g, sp = scene.sprites.xm, k = xm.k, t = xm.t, bk = xm.bk, low = xm.level >= 2, snap = (v) => Math.round(v * bk) / bk;
+    hwSrc(g); g.clearRect(st.x, st.wy, st.w, st.b - st.wy);
+    const Tt = xmT(0.375), Tv = xmT(0.05), T = xm.town, chase = t >= xm.chaseT && t < xm.chaseEnd, plain = xm.plain;
+    const vH = st.b - 37.6 * k - st.y;
+    if (!scene.caps.destOver) xmVeilFill(g, xm.Aq.vill, st.x, st.y, st.w, vH);
+    // the town across the valley: its glow on the snow when the air thickens, then its lights, a pixel each
+    let mean = 0;
+    for (let i = 0; i < 8; i++) mean += T.lamp[i];
+    for (let i = 0; i < 26; i++) mean += T.win[i];
+    mean /= 34;
+    const At = 1 - Tt;
+    if (At > 0.05 && mean > 0.01) { xmLit(g, 0.14 * At * mean); g.drawImage(sp.pool, G.dome.x - 55 * k, G.dome.y - 17 * k, 110 * k, 34 * k); }
+    if (Tt > 0.01) {
+      g.fillStyle = '#ffd79a';
+      const light = (p, lv, i) => {
+        if (lv < 0.01) return;
+        let s = 1;
+        const sc = xm.scint[i];
+        if (sc && !xm.fixed) s = 1 + 0.1 * (0.6 * Math.sin(sc[0] * t + sc[1]) + 0.4 * Math.sin(sc[2] * t + sc[3]));
+        g.globalAlpha = hwClamp(0.85 * lv * Tt * s, 0, 1); g.fillRect(snap(p.x), snap(p.y), 1, 1);
+      };
+      hwSrc(g);
+      for (let i = 0; i < 8; i++) light(G.tlamps[i], T.lamp[i], i);
+      for (let i = 0; i < 26; i++) light(G.twins[i], T.win[i], 8 + i);
+      light(G.belfry, T.belfry, 34);
+      for (let i = 0; i < 8; i++) if (T.lamp[i] > 0.01) { const p = G.tlamps[i]; xmLit(g, 0.25 * T.lamp[i] * Tt); g.drawImage(sp.warm, p.x - 1.5 * k, p.y - 1.5 * k, 3 * k, 3 * k); }
+      if (T.belfry > 0.01) { xmLit(g, 0.25 * T.belfry * Tt); g.drawImage(sp.warm, G.belfry.x - 1.5 * k, G.belfry.y - 1.5 * k, 3 * k, 3 * k); }
+      for (const s0 of xm.strokes) {             // the bell: the belfry flares and a ring of light goes out over the roofs
+        const tau = t - s0;
+        if (tau < 0 || tau > 1.6) continue;
+        const env = tau < 0.15 ? tau / 0.15 : Math.exp(-(tau - 0.15) / 0.3), b = G.belfry;
+        xmLit(g, 0.5 * env * Tt); g.drawImage(sp.warm, b.x - 3 * k, b.y - 3 * k, 6 * k, 6 * k);
+        if (tau <= 1.5) {
+          const p = tau / 1.5, rx = (2 + 12 * p) * k;
+          hwSrc(g); g.strokeStyle = 'rgba(255,214,150,' + (0.3 * (1 - p) * Tt).toFixed(3) + ')'; g.lineWidth = 1;
+          g.beginPath(); g.ellipse(b.x, b.y, rx, 0.5 * rx, 0, 0, XM_TAU); g.stroke();
+        }
+      }
+    }
+    // the train on the viaduct, out of the tunnel mouth
+    const tr = xm.train, A52 = xmA(0.52), T52 = 1 - A52;
+    if (tr && !plain) {
+      const x0 = Math.max(G.portalX, tr.x - tr.len), x1 = Math.min(xm.W, tr.x), y = G.deckY, hh = 2.4 * k;
+      if (x1 > x0) {
+        const mix = (a, b) => Math.round(a + (b - a) * A52);
+        hwSrc(g); g.fillStyle = 'rgb(' + mix(14, 49) + ',' + mix(23, 71) + ',' + mix(41, 106) + ')'; g.fillRect(x0, y - hh, x1 - x0, hh);
+        hwSrc(g, T52); g.fillStyle = '#3d5274'; g.fillRect(x0, snap(y - hh), x1 - x0, 1);
+        g.fillStyle = '#ffd79a'; hwSrc(g, 0.8 * T52);
+        for (let x = tr.x - 4 * k; x > tr.x - tr.len + 2 * k; x -= 3 * k) if (x >= G.portalX && x < xm.W) g.fillRect(snap(x), snap(y - 1.5 * k), 1, 1);
+        if (tr.x >= G.portalX && tr.x < xm.W) { hwSrc(g, T52); g.fillStyle = '#fff3c4'; g.fillRect(snap(tr.x), snap(y - 1.2 * k), 1, 1); }
+      }
+    }
+    if (!plain) for (const p of xm.steam) {
+      const u = p.age / 4, s = (1 + 5 * u) * k;
+      hwSrc(g, 0.5 * (1 - u) * Math.min(1, p.age / 0.3) * T52); g.drawImage(sp.steam, p.x - s / 2, p.y - s / 2, s, s);
+    }
+    // the village: lamplit panes with their glow and spill, a lamp carried through a floor, open doors
+    const o = xm.paneOut || (xm.paneOut = { lit: 0, g: 0 });
+    for (let i = 0; i < 15; i++) {
+      xmPaneLevel(xm, i, t, o);
+      if (o.lit < 0.01) continue;
+      const P = G.panes[i], a = o.lit * o.g * Tv;
+      hwSrc(g, 0.92 * a); g.fillStyle = '#ffcf7a'; g.fillRect(P.x, P.y, P.w, P.h);
+      xmLit(g, 0.22 * a); g.drawImage(sp.warm, P.cx - 5 * k, P.cy - 5 * k, 10 * k, 10 * k);
+      if (P.ground) { xmLit(g, 0.3 * o.lit * Tv); g.drawImage(sp.pool, P.sx - 9 * k, P.sy - 3 * k, 18 * k, 6 * k); }
+      if (P.candle) { hwSrc(g, a * (xm.fixed ? 1 : 0.85 + 0.15 * Math.sin(9.3 * t + P.cx))); g.fillStyle = '#fff3cf'; g.fillRect(snap(P.cx), snap(P.y + P.h) - 1, 1, 1); g.fillStyle = '#ffcf7a'; }
+    }
+    if (xm.rooms) {
+      const R = xm.rooms, P = xmRoomsPos(xm), a0 = G.panes[R.path[P.at]], a1 = G.panes[R.path[Math.min(P.at + 1, R.path.length - 1)]];
+      const x = a0.cx + (a1.cx - a0.cx) * P.u, y = a0.cy + (a1.cy - a0.cy) * P.u;
+      g.save(); g.beginPath();
+      for (const i of R.floor) { const q = G.panes[i]; g.rect(q.x, q.y, q.w, q.h); }
+      g.clip();
+      xmLit(g, 0.85 * P.env * Tv); g.drawImage(sp.warm, x - 17 * k, y - 17 * k, 34 * k, 34 * k);
+      g.restore();
+    }
+    ['cottage', 'inn'].forEach((n, i) => {
+      const D = xm.doors[i];
+      if (D.open < 0.01) return;
+      const r = G.doors[n];
+      hwSrc(g, 0.85 * D.open * Tv); g.fillStyle = '#ffcf7a'; g.fillRect(r.x, r.y, r.w, r.h);
+      xmLit(g, 0.42 * D.open * Tv); g.drawImage(sp.pool, r.sx - 14 * k, r.sy - 4 * k, 28 * k, 8 * k);
+    });
+    // the inn's eave lights, swagging between four hooks and swinging in the wind
+    const E = G.eave, side = 0.25 * (xm.sag - 0.35), tp = xm.tmp;
+    for (let i = 0; i < 15; i++) {
+      const on = xm.eaves[i];
+      if (on < 0.01) continue;
+      const q = (i + 0.5) / 15, qs = q * 3 - Math.floor(q * 3), bow = 4 * qs * (1 - qs), sag = (xm.sag + 0.5 * Math.abs(xm.sway)) * bow;
+      const p = xmWorld('vill', E.X0 + (E.X1 - E.X0) * q + side + xm.sway * bow, 49.7, XM_CAM.eTerr, 5.6 - 0.35 - sag, tp);
+      let lv = on * (xm.fixed ? 1 : 0.85 + 0.15 * Math.sin(xm.eaveF[i] * t + xm.eaveP[i]));
+      if (chase) lv *= 0.4 + 0.6 * Math.max(0, Math.cos(XM_TAU * (2 * (t - xm.chaseT) - i / 5)));
+      hwSrc(g, lv * Tv); g.fillStyle = XM_EAVE[i % 4]; g.fillRect(snap(p.x), snap(p.y), 1, 1);
+      if (i % 2 === 0 && (!low || lv > 0.9)) { xmLit(g, 0.3 * lv * Tv); g.drawImage(sp.warm, p.x - 2 * k, p.y - 2 * k, 4 * k, 4 * k); }
+    }
+    // the square tree: two strings blinking in turn, a chase on the bells, the star
+    if (xm.treeOn > 0.01) {
+      const tc = G.treeC, ta = xm.treeOn * (1 + 0.5 * xm.hv) * Tv;
+      xmLit(g, 0.13 * ta); g.drawImage(sp.warm, tc.x - 34 * k, tc.y - 40 * k, 68 * k, 80 * k);
+      xmLit(g, 0.3 * ta); g.drawImage(sp.pool, tc.x - 22 * k, tc.fy - 5 * k, 44 * k, 10 * k);
+      const c = t / 1.3, n = Math.floor(c), f = (c - n) * 1.3;
+      for (let i = 0; i < 16; i++) {
+        let lv;
+        if (xm.fixed) lv = 0.85;
+        else if (chase) lv = 0.35 + 0.65 * Math.max(0, Math.cos(XM_TAU * (1.5 * (t - xm.chaseT) - XM_TREE_BULBS[i][1] / 8)));
+        else { const on = (n + i) % 2 === 0, tgt = on ? 1 : 0.35, from = on ? 0.35 : 1; lv = f < 0.15 ? from + (tgt - from) * f / 0.15 : tgt; }
+        lv += (1 - lv) * xm.hv;
+        const p = G.bulbs[i], a = lv * xm.treeOn * Tv;
+        hwSrc(g, a); g.fillStyle = XM_BULB[i % 4]; g.fillRect(snap(p.x), snap(p.y), 1, 1);
+        if (lv > (low ? 0.9 : 0.7)) { xmLit(g, 0.35 * lv * xm.treeOn * Tv); g.drawImage(sp.warm, p.x - 2 * k, p.y - 2 * k, 4 * k, 4 * k); }
+      }
+      const s = G.star, sx = snap(s.x), sy = snap(s.y), tw = xm.fixed ? 1 : 0.92 + 0.08 * Math.sin(4.4 * t);
+      xmLit(g, 0.45 * xm.treeOn * (1 + 0.6 * xm.hv) * tw * Tv); g.drawImage(sp.warm, s.x - 5 * k, s.y - 5 * k, 10 * k, 10 * k);
+      hwSrc(g, xm.treeOn * Tv); g.fillStyle = '#ffe9a8'; g.fillRect(sx - 1, sy, 3, 1); g.fillRect(sx, sy - 1, 1, 3);
+    }
+    if (!plain) {
+      // chimney smoke: a column of puffs that grow and thin as they rise, carried off by the wind at their own
+      // distance; the lowest catch a little of the fire's light
+      const turb = xm.w / 7;
+      for (let i = 0; i < xm.flues.length; i++) {
+        for (const p of xm.flues[i].puffs) {
+          const q = p.age / p.life, D = (0.8 + 2.0 * Math.pow(q, 0.7)) * p.m * p.big;
+          const a = p.a0 * Math.pow(1 - q, 1.1) * Math.min(1, p.age / 0.3) * Tv;
+          if (a < 0.004) continue;
+          const x = p.x + Math.sin(3 * t + p.ph) * 0.5 * p.m * turb;
+          hwSrc(g, a); g.drawImage(p.dark ? sp.puffDark : sp.puff, x - D / 2, p.y - D / 2, D, D);
+          if (!p.dark && p.age < 0.8) { hwSrc(g, 1.4 * a * (1 - p.age / 0.8)); g.drawImage(sp.puffWarm, x - D / 2, p.y - D / 2, D, D); }
+        }
+      }
+      // the sleigh, its lantern and the spray off its runners
+      const s = xm.sleigh;
+      if (s) {
+        const y = G.streetY;
+        // it comes out from behind the spruce and goes back behind it, faded over its last steps there
+        const fa = s.park ? 1 : hwClamp(Math.min(Math.abs(s.x - s.x0), Math.abs(s.x1 - s.x)) / (16 * k), 0, 1);
+        g.save(); g.translate(s.x, y); g.scale(s.dir, 1); hwSrc(g, fa); g.drawImage(sp.team, s.fr * 96, 0, 96, 40, -11.5 * k, -20 * k, 48 * k, 20 * k); g.restore();
+        const lx = s.x + s.dir * 8.8 * k, ly = y - 15.4 * k;
+        xmLit(g, 0.5 * Tv * fa); g.drawImage(sp.warm, lx - 6 * k, ly - 6 * k, 12 * k, 12 * k);
+        hwSrc(g, Tv * fa); g.fillStyle = '#ffe3a8'; g.fillRect(snap(lx), snap(ly), 1, 1);
+      }
+      g.fillStyle = '#dfe9f6';
+      for (const p of xm.specks) { hwSrc(g, 0.8 * (1 - p.age / p.life)); g.fillRect(p.x, p.y, 1, 1); }
+      const w = xm.walker;
+      if (w && w.on) {
+        const pf = xmWorld('vill', w.X, w.d, XM_CAM.eTerr, 0, tp), hpx = 1.7 * S(w.d) * k, wpx = hpx * 8 / 14;
+        hwSrc(g); g.drawImage(sp.walker, w.fr * 16, 0, 16, 28, pf.x - wpx / 2, pf.y - hpx, wpx, hpx);
+        const lx = pf.x - wpx / 2 + 6.6 * wpx / 8, ly = pf.y - hpx + 8.3 * hpx / 14;
+        xmLit(g, 0.4 * Tv); g.drawImage(sp.warm, lx - 2.5 * k, ly - 2.5 * k, 5 * k, 5 * k);
+        hwSrc(g, Tv); g.fillStyle = '#ffe3a8'; g.fillRect(snap(lx), snap(ly), 1, 1);
+      }
+      // far snow, in five batches by strength, and the focus layer behind the lamp
+      const ka = 0.6 + 0.4 * Tv, FB = xm.farB || (xm.farB = [[], [], [], [], []]);
+      for (const b of FB) b.length = 0;
+      for (const f of xm.s1) { if (f.st !== 2) FB[Math.floor(hwClamp(f.a * ka * f.fade, 0, 0.999) * 5)].push(snap(f.x), snap(f.y)); }
+      g.globalCompositeOperation = 'source-over'; g.fillStyle = '#c9d8ee';
+      for (let i = 0; i < 5; i++) { const P = FB[i]; if (!P.length) continue; g.globalAlpha = (i + 0.5) / 5; g.beginPath(); for (let j = 0; j < P.length; j += 2) g.rect(P[j], P[j + 1], 1, 1); g.fill(); }
+      xmFlakes(xm, g, xm.s2, false);
+    }
+    xmFeather(xm, g, G.gr.mid, st.wy, st.b - st.wy, false);
+    if (scene.caps.destOver) xmVeilFill(g, xm.Aq.vill, st.x, st.y, st.w, vH);
+  }
+  // the focus snow (1.5 to 2.5 px) and the near air (soft discs); inside the lamp's halo they catch its light.
+  // A flake that moves further than its own size in a frame is drawn as the streak it leaves, so none strobes
+  function xmFlakes(xm, g, pool, near) {
+    const sp = scene.sprites.xm, k = xm.k, c = xm.g.glassC, R2 = 44 * 44 * k * k, lamp = xm.lamp > 0.3;
+    const B = xm.streaks || (xm.streaks = [[], [], [], [], [], [], [], [], [], []]), Q = xm.squares || (xm.squares = [[], [], [], [], []]), O = g.xmO;
+    for (const b of B) b.length = 0;
+    for (const b of Q) b.length = 0;
+    g.fillStyle = '#eef5ff';
+    for (const f of pool) {
+      if (f.st === 2 || f.near !== near) continue;
+      const dx = f.x - c.x, dy = f.y - c.y, warm = lamp && dx * dx + dy * dy < R2, a = f.a * f.fade;
+      let ex = f.vx / 30, ey = f.vy / 30, len = Math.sqrt(ex * ex + ey * ey);
+      if (f.L === 3) {
+        const img = warm ? sp.flakeWarm : sp.cool, s = f.sz;
+        if (len > s) {
+          const L = Math.min(s + len, 4 * s), ca = O[2] * ex / len, sa = O[2] * ey / len;
+          hwSrc(g, a * Math.max(0.4, 1.5 * s / L));
+          g.setTransform(ca, sa, -sa, ca, O[2] * (f.x - ex / 2 - O[0]), O[2] * (f.y - ey / 2 - O[1])); g.drawImage(img, -L / 2, -s / 2, L, s);
+          g.setTransform(O[2], 0, 0, O[2], -O[0] * O[2], -O[1] * O[2]);
+        } else { hwSrc(g, a); g.drawImage(img, f.x - s / 2, f.y - s / 2, s, s); }
+      } else if (warm) {
+        const s = 1.5 * f.sz * 2;
+        hwSrc(g, a + 0.15); g.drawImage(sp.flakeWarm, f.x - s / 2, f.y - s / 2, s, s);
+      } else if (len > 1.2 * f.sz) {
+        if (len > 9 * k) { ex *= 9 * k / len; ey *= 9 * k / len; len = 9 * k; }
+        const q = hwClamp(a * Math.max(0.5, 1.6 * f.sz / len), 0, 0.999);
+        B[(f.sz < 2 * k ? 0 : 5) + Math.floor(q * 5)].push(f.x - ex, f.y - ey, f.x, f.y);
+      } else Q[Math.floor(hwClamp(a, 0, 0.999) * 5)].push(f.x - f.sz / 2, f.y - f.sz / 2, f.sz);
+    }
+    g.globalCompositeOperation = 'source-over'; g.fillStyle = '#eef5ff';
+    for (let i = 0; i < 5; i++) { const P = Q[i]; if (!P.length) continue; g.globalAlpha = (i + 0.5) / 5; g.beginPath(); for (let j = 0; j < P.length; j += 3) g.rect(P[j], P[j + 1], P[j + 2], P[j + 2]); g.fill(); }
+    g.strokeStyle = '#eef5ff'; g.lineCap = 'butt';
+    for (let i = 0; i < 10; i++) {
+      const P = B[i];
+      if (!P.length) continue;
+      g.globalAlpha = ((i % 5) + 0.5) / 5; g.lineWidth = (i < 5 ? 1.4 : 2.1) * k;
+      g.beginPath();
+      for (let j = 0; j < P.length; j += 4) { g.moveTo(P[j], P[j + 1]); g.lineTo(P[j + 2], P[j + 3]); }
+      g.stroke();
+    }
+    hwSrc(g);
+  }
+  function xmDrawNear(xm, g) {
+    const st = xm.stage, G = xm.g, sp = scene.sprites.xm, k = xm.k, t = xm.t, bk = xm.bk, snap = (v) => Math.round(v * bk) / bk, plain = xm.plain;
+    hwSrc(g); g.clearRect(st.x, st.y, st.w, st.h);
+    if (!scene.caps.destOver) xmVeilFill(g, xm.Aq.near, st.x, st.y, st.w, st.h);
+    const Tn = xmT(0.014), A5 = xmA(0.05);
+    // the gas lamp: halo, the pool at its foot, the lit glass and the mantle
+    if (xm.lamp > 0.001) {
+      const b = xm.lamp * (xm.fixed ? 1 : 1 + 0.03 * (Math.sin(7.3 * t) + 0.6 * Math.sin(13.1 * t + 1)) / 1.6 - 0.1 * xm.dip);
+      const c = G.glassC, D = 88 * k * (1 + 0.6 * A5) * xm.bloom;
+      xmLit(g, 0.32 * b * (1 + 0.5 * A5) * Tn); g.drawImage(sp.warm, c.x - D / 2, c.y - D / 2, D, D);
+      xmLit(g, 0.2 * b); g.drawImage(sp.pool, G.lampBase.x - 95 * k, G.lampBase.y - 22 * k, 190 * k, 44 * k);
+      hwSrc(g, Math.min(1, b)); g.fillStyle = '#ffe2a6'; g.fillRect(G.glass.x, G.glass.y, G.glass.w, G.glass.h);
+      g.fillStyle = '#fff6e0'; g.fillRect(snap(c.x), snap(c.y), 1, 1);
+      g.fillStyle = '#ffc787';
+      for (const p of G.posts) { xmLit(g, 0.55 * b * p.f); g.fillRect(snap(p.x), p.y, 1, p.h); }
+      hwSrc(g);
+    }
+    if (!plain) {
+      // fox tracks filling with snow, the fox, its powder
+      if (xm.tracks.length) {
+        g.fillStyle = 'rgb(98,122,158)';
+        const y = snap(G.laneY);
+        for (const r of xm.tracks) { g.globalAlpha = hwClamp(0.5 * (1 - (t - r.t0) / r.life), 0, 1); g.fillRect(snap(r.x), y, 1, 1); g.fillRect(snap(r.x + 2.5 * k), y + 1, 1, 1); }
+        hwSrc(g);
+      }
+      const f = xm.fox;
+      if (f) {
+        g.save(); g.translate(f.x, G.laneY + f.y); g.scale(f.dir, 1);
+        if (f.rot) { g.translate(-0.8 * k, -8.4 * k); g.rotate(f.rot); g.translate(0.8 * k, 8.4 * k); }
+        hwSrc(g); g.drawImage(sp.fox, f.fr * 64, 0, 64, 32, -16 * k, -16 * k, 32 * k, 16 * k); g.restore();
+        g.fillStyle = '#dfe9f6';
+        for (const p of f.burst) { hwSrc(g, 0.9 * (1 - p.age / p.life)); g.fillRect(p.x, p.y, p.s, p.s); }
+        if (f.cloud) { const c = f.cloud, u = c.age / c.life, s = (c.s0 + (c.s1 - c.s0) * u) * k; hwSrc(g, 0.35 * (1 - u)); g.drawImage(sp.cool, c.x - s / 2, c.y - s / 2, s, s); }
+      }
+      g.fillStyle = '#dfe9f6';
+      for (const p of xm.shed) { hwSrc(g, 0.7 * (1 - p.age / p.life)); g.fillRect(p.x, p.y, p.s, p.s); }
+      for (const c of xm.clouds) { const u = c.age / c.life, s = (c.s0 + (c.s1 - c.s0) * u) * k; hwSrc(g, c.a * (1 - u)); g.drawImage(sp.cool, c.x + c.vx * c.age - s / 2, c.y - s / 2, s, s); }
+      for (const p of xm.wisps) {
+        if (p.age < 0) continue;
+        const u = p.age / p.life;
+        hwSrc(g, p.a * Math.sin(Math.PI * u)); g.drawImage(sp.wisp, p.x - p.len / 2, p.y - p.h / 2 - p.rise * u, p.len, p.h);
+      }
+      xmFlakes(xm, g, xm.s2, true);
+      xmFlakes(xm, g, xm.s3, true);
+    }
+    xmFeather(xm, g, G.gr.near, st.y, st.h, false);
+    if (scene.caps.destOver) xmVeilFill(g, xm.Aq.near, st.x, st.y, st.w, st.h);
+    hwSrc(g);
+  }
+  // reduced motion: one still of a clear, quiet evening, drawn once per layout
+  function xmStillState(xm) {
+    const G = xm.g, T = xm.town;
+    xm.fixed = true; xm.q = []; xm.weather = 'clear'; xm.Lt = 60; xm.lnL = Math.log(60); xm.L = 60;
+    xm.base = 0; xm.w = 0; xm.gusts = []; xm.rN = 0; xm.storm = 0; xm.sway = 0;
+    xmVeilQuant(xm);
+    T.lamp.fill(1); T.lampT.fill(1); T.win.fill(1); T.winT.fill(1); T.belfry = T.belfryT = 1;
+    xm.panes.forEach((p, i) => { p.lit = p.tgt = i === 2 || i === 13 ? 0 : 1; p.shT = -1e9; p.shAt = 1e9; });
+    xm.treeOn = xm.treeT = 1; xm.eaves.fill(1); xm.eavesT.fill(1); xm.sag = 0.35; xm.sagV = 0;
+    xm.lamp = 1; xm.ignT = -1; xm.bloom = 1; xm.dip = 0; xm.dipV = 0; xm.hv = 0; xm.hvV = 0; xm.hover = false;
+    xm.strokes = []; xm.chaseEnd = -1e9; xm.rooms = null; for (const d of xm.doors) d.open = d.tgt = 0;
+    xm.walker = null; xm.train = null; xm.fox = null; xm.shedArm = null; xm.shed = []; xm.clouds = []; xm.specks = [];
+    xm.wisps = []; xm.tracks = []; xm.steam = []; xm.au.on = false; xm.au.env = 0; xm.shoot = null; xm.beat = null;
+    // the plumes lean 20 degrees in a 0.3 m/s air
+    xm.flues = G.flues.map((fl) => ({ puffs: [0.2, 0.55, 0.9, 1.25, 1.6, 1.95, 2.3, 2.65, 3, 3.35, 3.7, 4.05, 4.4, 4.75, 5.1].map((a) => {
+      const p = xmPuff(xm, fl, false);
+      p.age = a; p.x += 0.3 * fl.m * a; p.y -= 0.8 * fl.m * a / 1.045; p.ph = 0;
+      return p;
+    }), next: 1e9 }));
+    const keep = xm.prand;
+    xm.prand = hwRng(11);
+    xm.s1 = []; xm.s2 = []; xm.s3 = [];
+    for (let i = 0; i < 15; i++) xm.s1.push(xmFlake(xm, 1, {}, true));
+    for (let i = 0; i < 12; i++) xm.s2.push(xmFlake(xm, 2, {}, true));
+    for (let i = 0; i < 3; i++) xm.s3.push(xmFlake(xm, 3, {}, true));
+    xm.prand = keep;
+    xm.sleigh = { dir: -1, x: xmWorld('vill', 6.0, 43, XM_CAM.eTerr, 0).x, x1: 0, v: 0, ph: 0, fr: 1, spray: 0, park: true };
+    for (const b of xm.bulbs || []) b.classList.remove('dim', 'dim1');
+    xm.deco = null;
+  }
+  function xmStill() {
+    const xm = scene.xm;
+    if (!xm) return;
+    if (!xm.stage || !xm.g) { xm.stillDrawn = true; return; }
+    xmStillState(xm);
+    xmDraw(true);
+    xm.stillDrawn = true;
+  }
+  function xmFrame(now) {                 // returns false to stop the loop
+    const xm = scene.xm;
+    if (!xm || scene.hidden || xm.frozen) return false;
+    if (xm.reduced) { if (!xm.stillDrawn) xmStill(); return false; }
+    const real = now - scene.last;
+    const tick = now - (xm.prevNow || now); xm.prevNow = now;
+    if (tick > 0 && tick < 100) xm.tick = xm.tick * 0.9 + tick * 0.1;
+    if (real < (xm.level === 0 ? 33.3 : 50) - 0.5 * xm.tick) return true;   // the tick nearest 30 fps, 20 fps when stepped down
+    scene.last = now;
+    const t0 = performance.now();
+    if (now - xm.measuredAt > 500) { xm.measuredAt = now; xmLayout(); }   // the side cards change height with their status text
+    if (!xm.stage) return true;
+    xmStep(Math.min(0.1, real / 1000));
+    xmDraw(false);
+    const cost = performance.now() - t0;
+    xm.cost = xm.cost ? xm.cost * 0.9 + cost * 0.1 : Math.min(cost, 3);   // the first frame builds the sprites
+    xm.gap = xm.gap * 0.9 + Math.min(real, 250) * 0.1;
+    xmBudget(now);
+    scene.cost = xm.cost;
+    if (xm.hud && xm.frame % 15 === 0) xmHudText();
+    return true;
+  }
+  function xmBudget(now) {
+    const xm = scene.xm;
+    const want = xm.cost > 14 ? 2 : xm.cost > 9 ? 1 : 0;
+    if (want > xm.level) { xmSetLevel(want); xm.okSince = now; xm.slowSince = 0; return; }
+    if (xm.gap > (xm.level === 0 ? 45 : 70)) {                // frames arriving late: raster cost the timer above misses
+      if (!xm.slowSince) xm.slowSince = now;
+      else if (now - xm.slowSince > 2000 && xm.level < 2) { xmSetLevel(xm.level + 1); xm.slowSince = 0; xm.okSince = now; }
+      return;
+    }
+    xm.slowSince = 0;
+    if (xm.level > 0 && xm.cost < 5 && now - xm.okSince > 10000) { xmSetLevel(xm.level - 1); xm.okSince = now; }
+  }
+  function xmSetLevel(n) {
+    const xm = scene.xm, wasLow = xm.level >= 2;
+    xm.level = n; xm.gap = n === 0 ? 33 : 50;
+    if ((n >= 2) !== wasLow) { xm.sizes = {}; xm.geoKey = ''; xmLayout(); }   // level 2 draws at a backing scale of 1
+  }
+  // replays the evening from the start to scene time t with a fixed seed, draws that frame and holds it;
+  // opts.plan queues forced events ([[time, kind], ...]); opts.plain draws the still's lights with nothing moving;
+  // opts.bare keeps that moment's weather and lights but leaves out the snow, the smoke and the actors
+  function xmSeek(t, seed, opts) {
+    if (scene.theme !== 'christmas') return null;
+    opts = opts || {};
+    const xm = xmStart(seed == null ? 1 : seed);
+    xm.noClock = true; xm.reduced = false;
+    xmLayout();
+    if (!xm.stage) return null;
+    for (const p of opts.plan || []) xmQueue(xm, p[0], 'force', p[1]);
+    const n = Math.round(t * 30);
+    for (let i = 0; i < n; i++) { xmStep(1 / 30); if (i % 15 === 14) xmLayout(); }
+    if (opts.plain) { xmStillState(xm); xm.plain = true; } else if (opts.bare) xm.plain = true;
+    xmDraw(true);
+    xm.frozen = true;
+    return xmStats();
+  }
+  function xmForce(kind) {
+    const xm = scene.xm;
+    if (!xm || !xm.stage) return false;
+    if (kind === 'squall') {
+      if (xm.squallG >= 0) return false;
+      xm.q = xm.q.filter((e) => e[1] !== 'weather' && e[1] !== 'aurora');
+      xmSquall(xm.t);
+      return true;
+    }
+    if (kind === 'aurora') { xmAuroraStart(xm); return true; }
+    if (kind === 'snow' || kind === 'clear') { if (xm.squallG >= 0) return false; xmWeather(xm, kind); return true; }
+    if (kind === 'bells') { xmToll(xm, 3); return true; }
+    if (XM_BEATS.some((b) => b[0] === kind)) { xmBeatStart(xm, kind); return true; }
+    return false;
+  }
+  function xmStats() {
+    const xm = scene.xm;
+    if (!xm) return null;
+    const r = (v) => Math.round(v * 1000) / 1000, st = xm.stage, live = (P) => P.reduce((n, o) => n + (o.st !== 2 ? 1 : 0), 0);
+    let puffs = 0;
+    for (const F of xm.flues) puffs += F.puffs.length;
+    const sp = scene.sprites.xm || {}, caps = scene.caps || {};
+    return { t: r(xm.t), weather: xm.weather, L: r(xm.L),
+      A: { range: r(xmA(10)), hills: r(xmA(4)), valley: r(xmA(0.52)), town: r(xmA(0.375)), vill: r(xmA(0.05)), near: r(xmA(0.014)) },
+      Aq: { range: xm.Aq.range, hills: xm.Aq.hills, town: xm.Aq.town, vill: xm.Aq.vill, near: xm.Aq.near },
+      wind: r(xm.w), base: r(xm.base), level: xm.level, cost: r(xm.cost || 0), gap: r(xm.gap), fps: r(1000 / (xm.gap || 33)),
+      stage: st ? { x: st.x, y: st.y, w: st.w, h: st.h } : null, k: xm.k, bk: xm.bk,
+      counts: { s1: live(xm.s1), s2: live(xm.s2), s3: live(xm.s3), puffs, specks: xm.specks.length },
+      dens: r(xm.dens), beat: xm.beat ? xm.beat.kind : null, aurora: xm.au.on ? r(xm.au.env) : 0,
+      actors: { sleigh: !!xm.sleigh, walker: !!xm.walker, train: !!xm.train, fox: xm.fox ? xm.fox.st : null },
+      lighter: !!caps.lighter, evenodd: !!caps.evenodd, destOver: !!caps.destOver,
+      unmarked: Object.keys(sp).filter((k) => !sp[k].__rtxSprite), geo: st && xm.g ? xmGeo() : null };
+  }
+  // the depth checks, measured from what the page laid out (element boxes), not from the tables
+  function xmGeo() {
+    const xm = scene.xm, st = xm.stage, k = xm.k, out = { k, door: {}, checks: [] }, host = $('xmScene');
+    const box = (sel) => host.querySelector(sel).getBoundingClientRect();
+    const u = (y) => (st.b - y) / k;
+    const ok = (name, pass, val) => out.checks.push((pass ? 'PASS ' : 'FAIL ') + name + ' ' + val);
+    for (const n of ['near', 'vill', 'town', 'valley']) out.door[n] = +(2 * box('.xm-' + n).height / XM_PLANE[n].vb[3]).toFixed(2);
+    const want = { near: 43.71, vill: 12.24, town: 1.63, valley: 1.18 };
+    for (const n in want) ok('door px ' + n, Math.abs(out.door[n] - want[n] * k) <= 0.25 * k, out.door[n] + ' want ' + (want[n] * k).toFixed(2));
+    const cd = box('.xm-vill g[data-n="cottage"] [data-xa="door"]');
+    ok('cottage door element', Math.abs(cd.height - 12.24 * k) <= 0.6, cd.height.toFixed(2));
+    const top = (sel) => u(box(sel).top);
+    const tops = [['cottage', top('.xm-vill g[data-n="cottage"] [data-xa="roof"]')], ['tree', top('.xm-vill [data-xa="star"]')],
+      ['inn', top('.xm-vill g[data-n="inn"] [data-xa="roof"]')], ['gable', top('.xm-vill g[data-n="gable"] [data-xa="roof"]')], ['barn', top('.xm-vill g[data-n="barn"] [data-xa="roof"]')]];
+    for (let i = 0; i < tops.length - 1; i++) { const dlt = Math.abs(tops[i][1] - tops[i + 1][1]); ok('ridge delta ' + tops[i][0] + '/' + tops[i + 1][0], dlt >= 7, dlt.toFixed(1)); }
+    const sp = box('.xm-near [data-xa="spruce"]'), spR = (xm.W - (sp.left + sp.right) / 2) / k;
+    ok('spruce tip over foothills', u(sp.top) - xmInterp(XM_HILLS, spR) >= 16, (u(sp.top) - xmInterp(XM_HILLS, spR)).toFixed(1));
+    ok('range hidden behind spruce tip', xmInterp(XM_RANGE, spR) < xmInterp(XM_HILLS, spR), xmInterp(XM_RANGE, spR).toFixed(1));
+    const tw = box('.xm-town [data-xa="town"]');
+    ok('spire under forest line', 179.9 - u(tw.top) >= 8, (179.9 - u(tw.top)).toFixed(1));
+    const spur = box('.xm-valley [data-xa="spur"]');
+    ok('spur crest under foothills', xmInterp(XM_HILLS, 120) - u(spur.top) >= 8, (xmInterp(XM_HILLS, 120) - u(spur.top)).toFixed(1));
+    const cs = top('.xm-vill g[data-n="cottage"] [data-xa="stack"]');
+    ok('town over cottage stacks', u(tw.bottom) - cs >= 12, (u(tw.bottom) - cs).toFixed(1));
+    for (const g of host.querySelectorAll('.xm-vill g[data-xa="house"]')) {
+      const rf = g.querySelector('[data-xa="roof"]').getBoundingClientRect();
+      for (const s of g.querySelectorAll('[data-xa="stack"]')) { const sb = s.getBoundingClientRect(); ok('stack foot in roof ' + g.getAttribute('data-n'), sb.bottom > rf.top + 1, (u(rf.top) - u(sb.bottom)).toFixed(1)); }
+    }
+    const lp = box('.xm-near [data-xa="lamppost"]'), posts = Array.prototype.map.call(host.querySelectorAll('.xm-near [data-xa="post"]'), (e) => e.getBoundingClientRect());
+    const first = posts.reduce((a, b) => (b.left < a.left ? b : a));
+    ok('lamp post to first fence post', first.left - lp.right >= 10 * k, (first.left - lp.right).toFixed(1));
+    const ptop = Math.max.apply(null, posts.map((p) => u(p.top)));
+    ok('fence tops under street', U(XM_CAM.eTerr, 43) - ptop >= 10, (U(XM_CAM.eTerr, 43) - ptop).toFixed(1));
+    const side = (n, which) => { const g = host.querySelector('.xm-vill g[data-n="' + n + '"]'), e = g.querySelector('[data-xa="' + which + '"]'); return e.getBoundingClientRect(); };
+    const cr = side('cottage', 'side'), tr = box('.xm-vill [data-xa="tree"]');
+    ok('cottage side to tree', tr.left - cr.right >= 10 * k, (tr.left - cr.right).toFixed(1));
+    const gf = side('gable', 'front'), bs = side('barn', 'side');
+    ok('gable front to barn side', bs.left - gf.right >= 10 * k, (bs.left - gf.right).toFixed(1));
+    // actors stand on the ground at their own distance: the drawn foot row against the camera's ground row
+    const s = xm.sleigh;
+    if (s) { const y = xmGroundY(43); ok('sleigh on the street', Math.abs(xm.g.streetY - y) <= 1, (xm.g.streetY - y).toFixed(2)); }
+    const w = xm.walker;
+    if (w) { const y = xmGroundY(w.d), f = xmWorld('vill', w.X, w.d, XM_CAM.eTerr, 0).y; ok('walker on the ground', Math.abs(f - y) <= 1, (f - y).toFixed(2)); }
+    const f = xm.fox;
+    if (f) { const y = xmGroundY(13.8); ok('fox on the lane', Math.abs(xm.g.laneY - y) <= 1, (xm.g.laneY - y).toFixed(2)); }
+    const sx = scene.sprites.xm || {}, um = Object.keys(sx).filter((n) => !sx[n].__rtxSprite);
+    ok('unmarked sprites', !um.length, um.join(',') || 'none');
+    out.tops = tops.map((p) => p[0] + ' ' + p[1].toFixed(1));
+    out.fail = out.checks.filter((c) => c.indexOf('FAIL') === 0).length;
+    return out;
+  }
+  function xmHud(on) {
+    const xm = scene.xm;
+    let el = $('xmHud');
+    if (!on || !xm) { if (el) el.remove(); if (xm) xm.hud = false; return; }
+    xm.hud = true;
+    if (!el) {
+      el = document.createElement('div'); el.id = 'xmHud';
+      el.style.cssText = 'position:fixed;z-index:7;font:10px var(--font-mono);color:rgba(255,255,255,0.55);pointer-events:none;white-space:nowrap;';
+      document.body.appendChild(el);
+    }
+    xmHudText();
+  }
+  function xmHudText() {
+    const xm = scene.xm, el = $('xmHud');
+    if (!xm || !el) return;
+    const st = xm.stage;
+    if (st) { el.style.left = (st.x + 6) + 'px'; el.style.top = (st.b - 18) + 'px'; }
+    el.textContent = Math.round(1000 / (xm.gap || 33)) + ' fps  ' + (xm.cost || 0).toFixed(1) + ' ms  L' + xm.level + '  ' + xm.weather
+      + '  L ' + xm.L.toFixed(2) + ' km  w ' + xm.w.toFixed(1) + ' m/s  t ' + xm.t.toFixed(1) + '  ' + (st ? st.w + 'x' + st.h : 'no stage');
+  }
+  // the windows and the tree come up full while the Play button is hovered
+  function xmHover(on) { const xm = scene.xm; if (xm) xm.hover = !!on; }
   function sceneStop() {
     scene.on = false;
-    for (const sel of ['.hw-webs', '.xm-trees', '.xm-aurora.a1', '.xm-aurora.a2', '.xm-deco']) {
+    for (const sel of ['.hw-webs', '.xm-deco']) {
       const el = document.querySelector(sel); if (el) el.style.transform = '';
     }
     if (scene.raf) cancelAnimationFrame(scene.raf);
     scene.raf = 0;
     for (const c of [scene.back, scene.front]) if (c) c.getContext('2d').clearRect(0, 0, scene.w, scene.h);
     hwStop();
+    xmStop();
   }
   const FX_CANVAS_THEMES = new Set(['halloween', 'christmas', 'newyear', 'classic']);   // the themes whose .fx-canvas is shown
   function sceneStart(theme) {
@@ -5633,6 +7717,7 @@
     if (!FX_CANVAS_THEMES.has(theme)) return;   // the other themes' canvases are hidden, so their particles would draw for no one
     if (!scene.sprites.snow) makeSprites();
     if (theme === 'halloween') hwStart();
+    else if (theme === 'christmas') xmStart();
     sceneResize();
     scene.on = true; scene.last = performance.now();
     scene.raf = requestAnimationFrame(sceneFrame);
