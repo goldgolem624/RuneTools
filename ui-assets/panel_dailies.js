@@ -21,8 +21,8 @@
   function dwNotifyAny() { for (const k in dwNotify) if (dwNotify[k]) return true; return false; }
   let dwPrev = null;
 
-  const DW_IDS = '16574,16575,16576,16578,16579,16580,16582,16583,16584,' +
-                 '16586,16587,16588,16590,16591,16592,' +
+  const DW_IDS = '16572,16574,16575,16576,16578,16579,16580,16582,16583,16584,' +
+                 '16586,16587,16588,16590,16591,16592,24860,24861,24863,24864,24866,24867,24869,24870,24872,24873,' +
                  '25543,25548,25533,25534,25551,25552,52328,' +
                  '4164,4165,' + (typeof VB !== 'undefined' ? VB.PENGUIN_POINTS : 4163) + ',4882,20742,5479,5480,5481,15893,' +
                  '30084,30087,30088,30071,' +
@@ -236,6 +236,8 @@
 
   // ---- Daily challenges (CS2 18249/16319/16442) ----
   // Slot vars stride 4 from 16574: category / index / progress. Struct id = enum 17112[category] -> sub-enum[index] (script16318); name = param 1266 (+ ": " + 4940, script17039), target 2235, icon sprite 1271, description 1273.
+  // Varbit 16572 = runeday of the current set. An extended slot (24860 + 3 * slot) doubles its target; once its first half
+  // is done (24861 + 3 * slot) the shown progress is the target plus the slot's progress (script18251).
   let dwChalEnum17112 = null;            // category -> sub-enum id
   const dwChalSubEnums = {};             // sub-enum id -> { index: structId }
   const dwChalStructs = {};              // struct id -> {name, desc, target, icon}
@@ -250,9 +252,10 @@
     const slots = [];
     for (let i = 0; i < 5; i++) {
       const b = 16574 + i * 4;
-      slots.push({ cat: v(String(b)), idx: v(String(b + 1)), prog: v(String(b + 2)) });
+      slots.push({ cat: v(String(b)), idx: v(String(b + 1)), prog: v(String(b + 2)), ext: v(String(24860 + i * 3)), half: v(String(24861 + i * 3)) });
     }
-    const sig = slots.map(s => s.cat + '.' + s.idx + '.' + s.prog).join('|');
+    const day = v('16572');
+    const sig = slots.map(s => s.cat + '.' + s.idx + '.' + s.prog + '.' + s.ext + '.' + s.half).join('|') + '|' + day;
     if (box.dataset.chalSig === sig) return;
     dwChalBusy = true;
     try {
@@ -281,12 +284,17 @@
             icon: ints['1271'] | 0,
           };
         }
-        rows.push({ def: dwChalStructs[st], prog: s.prog, diag: 'cat ' + s.cat + ' · idx ' + s.idx + ' · struct ' + st });
+        const base = dwChalStructs[st].target, tgt = base * (s.ext ? 2 : 1);
+        rows.push({ def: dwChalStructs[st], target: tgt, prog: s.half ? Math.min(base + s.prog, tgt) : s.prog, diag: 'cat ' + s.cat + ' · idx ' + s.idx + ' · struct ' + st });
       }
       box.dataset.chalSig = sig;                      // resolved -> stamp AFTER the lookups succeed
       box.innerHTML = '';
       if (!rows.length) {
-        box.innerHTML = '<div class="dw-row"><div class="dw-nm">No active challenges<div class="dw-sub">Challenges appear here once assigned</div></div></div>';
+        // every slot empty while the set is current is the game's own "Challenges Completed!" (script18258)
+        const rd = Math.floor((Date.now() - Date.UTC(2002, 1, 27)) / 86400000);
+        const finished = day > 0 && day >= rd - 1;
+        box.innerHTML = '<div class="dw-row"><div class="dw-nm">' + (finished ? 'Challenges completed' : 'No active challenges') +
+          '<div class="dw-sub">' + (finished ? 'New set at the daily reset' : 'Challenges appear here once assigned') + '</div></div></div>';
         return;
       }
       for (const r0 of rows) {
@@ -298,7 +306,7 @@
         const nm = document.createElement('div'); nm.className = 'dw-nm';
         const t = document.createElement('div'); t.textContent = r0.def.name; nm.appendChild(t);
         row.appendChild(nm);
-        const target = Math.max(1, r0.def.target);
+        const target = Math.max(1, r0.target);
         const done = r0.prog >= target;
         const bar = document.createElement('div'); bar.className = 'dw-bar';
         const fill = document.createElement('div'); fill.className = 'dw-fill' + (done ? ' done' : '');
