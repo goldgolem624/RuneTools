@@ -81,7 +81,20 @@
       for (const n of sceneData.npcs) {
         if (sceneInteractable && !hasActs(n)) continue;
         const d = cheby(n.x, n.y); if (!inRange(d)) continue;
-        out.push({ type: 'npc', name: n.name, x: n.x, y: n.y, plane: n.plane, dist: d, id: n.id, uid: n.uid, combat: n.combat, anim: n.anim, actions: n.actions });
+        // The game hangs some object timers on a nameless NPC beside the object (config 31500 on each
+        // Eternal magic tree): such a row is named after the nearest object with actions.
+        let label = '';
+        if (!n.name) {
+          let host = null, best = 3;
+          if (Array.isArray(sceneData.objects))
+            for (const o of sceneData.objects) {
+              if (!o.name || !hasActs(o) || (o.plane | 0) !== (n.plane | 0)) continue;
+              const od = Math.max(Math.abs(o.x - n.x), Math.abs(o.y - n.y));
+              if (od < best) { best = od; host = o; }
+            }
+          label = host ? host.name + (n.bar >= 0 ? ' (timer)' : ' (helper)') : 'Unnamed NPC';
+        }
+        out.push({ type: 'npc', name: n.name, label, x: n.x, y: n.y, plane: n.plane, dist: d, id: n.id, uid: n.uid, combat: n.combat, anim: n.anim, actions: n.actions });
       }
     if (sceneShow.objects && Array.isArray(sceneData.objects))
       for (const o of sceneData.objects) {
@@ -113,13 +126,13 @@
       }
     out.sort((a, b) => {
       const ad = a.dist < 0 ? 1e9 : a.dist, bd = b.dist < 0 ? 1e9 : b.dist;
-      return ad !== bd ? ad - bd : (a.name || '').localeCompare(b.name || '');
+      return ad !== bd ? ad - bd : (a.name || a.label || '').localeCompare(b.name || b.label || '');
     });
     sceneTotal = out.length;
     const terms = sceneAllTerms();
     if (!terms.length) return out;
     return out.filter(n => {
-      const nm = (n.name || '').toLowerCase(), idv = String(n.id != null ? n.id : (n.uid != null ? n.uid : ''));
+      const nm = (n.name || n.label || '').toLowerCase(), idv = String(n.id != null ? n.id : (n.uid != null ? n.uid : ''));
       return terms.some(t => nm.indexOf(t) !== -1 || idv.indexOf(t) !== -1);
     });
   }
@@ -452,7 +465,7 @@
     const sig = (items === null) ? 'null' + st
       : st + items.length + '|q' + sceneAllTerms().join('|') + '|ol' + [...outlineSet].join(',') + '|np' + [...nameplateNames].join(',') + '|' +
         items.map(n => n.type + (n.id || 0) + ':' + (n.uid || 0) + ':' +
-          n.x + ',' + n.y + ':' + n.dist + ':' + (n.combat || 0) + ':' + (n.anim == null ? -1 : n.anim) + ':' + (n.name || '') + ':' + (n.actions || []).join('|')).join(';');
+          n.x + ',' + n.y + ':' + n.dist + ':' + (n.combat || 0) + ':' + (n.anim == null ? -1 : n.anim) + ':' + (n.name || n.label || '') + ':' + (n.actions || []).join('|')).join(';');
     if (sig === sceneSig) return;
     sceneSig = sig;
 
@@ -509,7 +522,7 @@
       const bd = document.createElement('span'); bd.className = 'scene-badge ' + bi[1]; bd.textContent = bi[0]; bd.title = n.type;
       const namec = document.createElement('div'); namec.className = 'namec';
       const nm = document.createElement('div'); nm.className = 'nm';
-      const dispName = n.name || (n.type === 'npc' ? 'NPC ' + n.uid : n.type === 'object' ? 'Object ' + n.id : n.type === 'ground' ? 'Item ' + n.id : n.type === 'special' ? 'Special' : 'Player ' + n.uid);
+      const dispName = n.name || n.label || (n.type === 'npc' ? 'NPC ' + n.uid : n.type === 'object' ? 'Object ' + n.id : n.type === 'ground' ? 'Item ' + n.id : n.type === 'special' ? 'Special' : 'Player ' + n.uid);
       nm.textContent = dispName;
       let nameRow = nm;
       if (n.type === 'npc' && n.uid) {
