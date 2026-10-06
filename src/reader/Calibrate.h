@@ -64,6 +64,10 @@ TableState Table();
 struct SpotCheck { std::string text, op; int number = -1; std::string owners; int ok = -1; };   // ok: 1 agrees, 0 disagrees, -1 not checkable
 std::vector<SpotCheck> SpotChecks();
 
+// Every handler the exe on disk registers, by this build's operation number: number -> handler RVA.
+// Read now, not cached. Empty when the exe or its registrar cannot be read.
+std::map<std::uint32_t, std::uint32_t> ExeHandlers(const std::wstring& exePath);
+
 // ---- PE helpers shared with the code check ----
 struct Section { std::string name; std::uint32_t rva = 0, vsize = 0, raw = 0, rawSize = 0, flags = 0; };
 struct Pe {

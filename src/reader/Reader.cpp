@@ -9208,12 +9208,48 @@ void health_build(HCtx& c, rtx::health::Run& run) {
         run.Fact("cs2.label", lab);
         const std::string ev = ef.version;
         if (!lab.empty() && lab.substr(0, lab.find(' ')) != ev) { k = kWarn; det += "; op table labelled " + lab + ", the exe is " + ev; }
-        WIN32_FILE_ATTRIBUTE_DATA a{}, b{};
-        if (GetFileAttributesExW((dir + L"opcode_handlers.json").c_str(), GetFileExInfoStandard, &a) &&
-            GetFileAttributesExW((dir + L"opcodes.json").c_str(), GetFileExInfoStandard, &b) &&
-            CompareFileTime(&a.ftLastWriteTime, &b.ftLastWriteTime) < 0) {
-            if (k == kPass) k = kWarn;
-            det += "; opcode_handlers.json is older than opcodes.json";
+        // the handler table the update tools diff against, entry by entry: its handler must be the one
+        // this exe registers under the entry's number, and its name the one opcodes.json gives that
+        // number (every export rewrites opcodes.json without changing either, so file times say nothing)
+        const std::string hj = read_small(dir + L"opcode_handlers.json");
+        wchar_t exe[MAX_PATH] = {};
+        if (!hj.empty() && c.h && GetModuleFileNameExW(c.h, nullptr, exe, MAX_PATH)) {
+            const auto live = rtx::calib::ExeHandlers(exe);
+            // each [{"op":N,...,"name":"X"}] record's number and name, up to its closing brace
+            auto records = [](const std::string& j, auto&& each) {
+                std::size_t at = 0;
+                while ((at = j.find("{\"op\":", at)) != std::string::npos) {
+                    const std::size_t end = j.find('}', at);
+                    if (end == std::string::npos) break;
+                    const std::string r = j.substr(at, end - at);
+                    std::string name;
+                    const std::size_t nm = r.find("\"name\":\"");
+                    if (nm != std::string::npos) { const std::size_t q = r.find('"', nm + 8); if (q != std::string::npos) name = r.substr(nm + 8, q - nm - 8); }
+                    each((std::uint32_t)std::strtoul(r.c_str() + 6, nullptr, 10), r, name);
+                    at = end;
+                }
+            };
+            std::map<std::uint32_t, std::string> named;
+            records(read_small(dir + L"opcodes.json"), [&](std::uint32_t op, const std::string&, const std::string& nm) { if (!nm.empty()) named[op] = nm; });
+            int n = 0, moved = 0, renamed = 0;
+            if (!live.empty()) records(hj, [&](std::uint32_t op, const std::string& r, const std::string& nm) {
+                const std::size_t hr = r.find("\"handlerRva\":");
+                if (hr == std::string::npos) return;
+                ++n;
+                const auto h = live.find(op);
+                if (h == live.end() || h->second != (std::uint32_t)std::strtoul(r.c_str() + hr + 13, nullptr, 10)) ++moved;
+                const auto t = named.find(op);
+                if (!nm.empty() && !named.empty() && (t == named.end() || t->second != nm)) ++renamed;
+            });
+            if (!live.empty()) {
+                run.Fact("cs2.handlers", std::to_string(n - moved) + "/" + std::to_string(n) + " match, " + std::to_string(renamed) + " renamed");
+                if (n == 0 || moved || renamed) {
+                    if (k == kPass) k = kWarn;
+                    det += n == 0 ? std::string("; opcode_handlers.json holds no handler")
+                         : moved ? "; opcode_handlers.json is from another build (" + std::to_string(moved) + "/" + std::to_string(n) + " handlers moved)"
+                                 : "; opcode_handlers.json names " + std::to_string(renamed) + (renamed == 1 ? " operation" : " operations") + " differently from opcodes.json: extract the handlers again";
+                }
+            }
         }
         run.Add(G, "build.cs2", "Script export", k, det, "Game text, buff timers, op table, generated tables", "", "", "build.game");
     }

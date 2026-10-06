@@ -405,4 +405,11 @@ std::vector<SpotCheck> SpotChecks() {
     return g_cache.spots;
 }
 
+std::map<std::uint32_t, std::uint32_t> ExeHandlers(const std::wstring& exePath) {
+    std::map<std::uint32_t, std::uint32_t> out;
+    std::vector<std::uint8_t> f; Pe pe{};
+    if (!ReadFile(exePath, f) || !ParsePe(f, pe) || !Handlers(pe, out)) out.clear();
+    return out;
+}
+
 }  // namespace rtx::calib
