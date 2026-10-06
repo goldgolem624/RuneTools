@@ -5300,9 +5300,11 @@ static bool read_companion_var(std::uint32_t pid, int scope, int id, int& out) {
 }
 
 // FALLBACK ONLY (see iface_panel_origin): origins now come from the engine's sub-interface table, which
-// gives the exact parent-component rect for every attached group. This manual varc / mount table is
-// consulted only for groups the engine has not attached; its offsets compensate varc-vs-content chrome.
-// Movable-panel origin table: a group's origin = its X/Y varc-ints (scope 5); dialogues share 9102/9103.
+// gives the exact parent-component rect for every attached group. This manual table is consulted only for
+// groups the engine has not attached. An entry whose X/Y varcs (scope 5) are a HUD window's gets that
+// window's content origin by the game's own rule (hud_window_content_origin); other entries take their vars
+// or mount comp as the origin. off_left / off_top are per-panel nudges on top of that origin (a group that
+// sits deeper than the window's content comp), never the window frame's inset.
 struct PanelOriginSpec { int group; int var_x; int var_y; int off_left; int off_top; int mount_comp; bool is_varc; int req_group; };
 static const PanelOriginSpec kPanelOrigins[] = {
     { 1477, -1, -1, 0, 0, 0 },    // HUD root / game frame: tree is screen-absolute, identity spec so "a" is emitted
@@ -5311,16 +5313,16 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 1191, 3082, 3083, 0, 0, 0, true },   // Player dialog
     { 1189, 3082, 3083, 0, 0, 0, true },   // Clue continue
     { 1186, 3082, 3083, 0, 0, 0, true },   // Server message dialog
-    { 1552, 3096, 3097, 0, 0, 0, true },   // Serenity posts pose-select; chrome inset (2,16) is applied by the Agility plugin
+    { 1552, 3096, 3097, 0, 0, 0, true },   // Serenity posts pose-select; the Agility plugin adds its own (2,16) on top
     { 1603, 9102, 9103, 0, 0 },   // Input text
-    { 1370, 3089, 3090, 0, -9, 0, true },  // Item Production content, always inside the 1371 frame (varcs 3089/3090)
-    { 13,   3089, 3090, 0, 31, 0, true },  // Bank pin -- window-frame varcs 3089/3090
+    { 1370, 3089, 3090, 0, 0, 0, true },   // Item Production content, always inside the 1371 frame (varcs 3089/3090)
+    { 13,   3089, 3090, 0, 40, 0, true },  // Bank pin -- window varcs 3089/3090; off_top 40 keeps the earlier frame-based placement (not yet seen live)
     { 1466, 3166, 3167, 0, 0, 0, true },   // Skills; varc 3165 == 1 while open (draw gate for the XP bars)
     { 1224, 3089, 3090, 0, 0, 0, true },   // Ritual selection (Necromancy! communion ritual) -- window-frame varcs 3089/3090
     { 533,  3089, 3090, 0, 0, 0, true },   // Display case -- window-frame varcs 3089/3090, content centred in the frame
     { 1286, 3089, 3090, 0, 0, 0, true },   // Discovered Ratings (Fish Flingers) -- window-frame varcs 3089/3090
     // House Controls 1665: frame slot comp varies with docking, so key off its own varcs 3096/3097.
-    { 1665, 3096, 3097, -4, -16, 0, true },
+    { 1665, 3096, 3097, 0, 0, 0, true },
     { 1223, 3096, 3097, 0, 0, 0, true },   // Active ritual (Necromancy!) -- position varcs 3096/3097
     { 923,  3096, 3097, 0, 0, 0, true },   // Fish Flingers competition results -- position varcs 3096/3097
     { 919,  3047, 3048, 0, 0, 0, true },   // Fish Flingers live scoreboard -- varcs 3047/3048
@@ -5330,7 +5332,7 @@ static const PanelOriginSpec kPanelOrigins[] = {
     { 691,  6463, 6464, 0, 0, 0, true },   // Relic power -- varcs 6463/6464 (central-overlay family)
     { 1594, 6463, 6464, 0, 0, 0, true },   // Shop (e.g. Ezreal's) -- varcs 6463/6464
     { 517,  5632, 5633, 0, 0, 0, true },   // Bank -- varcs 5632/5633
-    { 190,  5846, 5847, 0, -16, 0, true }, // Quest -- varcs 5846/5847; off_top -16 nudges widgets down 16px
+    { 190,  5846, 5847, 0, 0, 0, true },   // Quest -- varcs 5846/5847
     { 1092, 6463, 6464, 0, 0, 0, true },   // Lodestone network -- varcs 6463/6464
     { 584,  10071, 10072, 0, 0 }, // DXP timer -- UNVERIFIED varp path (flip to its varcs once live-checked)
     { 1473, 3040, 3041, 0, 0, 0, true },   // Inventory (backpack) -- varcs 3040/3041, read fresh from the hashmap each frame
@@ -5343,8 +5345,8 @@ static const PanelOriginSpec kPanelOrigins[] = {
     // Player-Owned Ports screens are slot-relative to the 800x600 central-large slot (1477:724) at varcs 6463/6464.
     { 916,  6463, 6464, 0, 0, 0, true },  // Ports ship view (shipyard / crew window / voyages)
     { 1276, 6463, 6464, 0, 0, 0, true },  // Ports Crew Roster
-    { 1933, 3089, 3090, 0, -8, 0, true },  // Lockbox (master clue) -- varcs 3089/3090, no mount fallback
-    { 1371, 3089, 3090, 0, -9, 0, true },  // Make-x / potion crafting -- varcs 3089/3090; off_top -9 nudges widgets down 9px
+    { 1933, 3089, 3090, 0, 0, 0, true },   // Lockbox (master clue) -- varcs 3089/3090, no mount fallback
+    { 1371, 3089, 3090, 0, 0, 0, true },   // Make-x / potion crafting -- varcs 3089/3090
     { 720,  0, 0, 0, 0, 735, false },      // Option-select window: central interface pre-centred for the 512x334 slot 1477:735
     { 743,  6423, 6424, 0, 0, 0, true },  // Extra action button -- varcs 6423/6424; box comp 7 (38x38 button), root is 150x56
     { 1512, 0, 0, 0, 0, 722 },    // Build-mode furniture sidebar: always open (gate on 1514), viewport-anchored via 1477:722;
@@ -5362,9 +5364,10 @@ void SetIfaceOffset(int gid, int dx, int dy) {
 }
 
 // Absolute (group-tree) positions of every top-level comp (sub == -1, non-empty rect) in group `gid`,
-// accumulated through the child vectors from the group's root widgets. One walk per group per 100 ms,
-// each node fetched as a single block, because the origin resolver asks for many game-frame slots a frame.
-struct IfaceGroupPos { unsigned long long ms = 0; std::unordered_map<int, std::pair<int,int>> pos; };
+// accumulated through the child vectors from the group's root widgets, and the own hide flag of every
+// top-level comp. One walk per group per 100 ms, each node fetched as a single block, because the origin
+// resolver asks for many game-frame slots a frame.
+struct IfaceGroupPos { unsigned long long ms = 0; std::unordered_map<int, std::pair<int,int>> pos; std::unordered_map<int, bool> hid; };
 static IfaceGroupPos iface_walk_positions(HANDLE h, std::uint64_t main_data, int gid) {
     IfaceGroupPos gp;
     auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
@@ -5379,8 +5382,8 @@ static IfaceGroupPos iface_walk_positions(HANDLE h, std::uint64_t main_data, int
         if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) break;
         int visited = 0;
         std::vector<std::uint8_t> vec;
-        std::function<void(std::uint64_t,int,int,int)> walk =
-            [&](std::uint64_t node, int bx, int by, int depth) {
+        std::function<void(std::uint64_t,int,int,int,bool)> walk =
+            [&](std::uint64_t node, int bx, int by, int depth, bool hidden) {
             if (depth > 14 || visited > 30000) return;
             std::uint8_t nb[0x210];
             if (!rpm_bytes(h, node, nb, sizeof(nb))) return;
@@ -5390,48 +5393,43 @@ static IfaceGroupPos iface_walk_positions(HANDLE h, std::uint64_t main_data, int
             auto u64 = [&](std::size_t o){ std::uint64_t v; std::memcpy(&v, nb + o, 8); return v; };
             const int ax = bx + i32(0x98), ay = by + i32(0x9c);
             if (i16(0x3c) == -1 && i32(0xa0) > 0 && i32(0xa4) > 0) gp.pos.emplace(i16(0x3a), std::make_pair(ax, ay));
+            if (i16(0x3c) == -1) gp.hid.emplace(i16(0x3a), hidden);
             const std::size_t co[3] = { 0x1d0, 0x1b8, 0x200 };
             for (int k = 0; k < 3; ++k) {
                 std::uint64_t cs = u64(co[k]), ce = u64(co[k] + 8);
-                std::uint64_t ca = cs + 8, cb = ce + 8;
-                if (!cs || !ce || ca <= 0x10000 || cb <= ca || (cb - ca) > 0x100000) continue;
-                vec.resize((std::size_t)(cb - ca));
-                if (!rpm_bytes(h, ca, vec.data(), vec.size())) continue;
-                std::vector<std::uint64_t> kids;
-                for (std::size_t o = 0; o + 8 <= vec.size(); o += 0x18) {
-                    std::uint64_t ch; std::memcpy(&ch, vec.data() + o, 8);
+                if (!cs || !ce || cs + 8 <= 0x10000 || ce <= cs || (ce - cs) > 0x100000) continue;
+                vec.resize((std::size_t)(ce - cs));
+                if (!rpm_bytes(h, cs, vec.data(), vec.size())) continue;
+                std::vector<std::pair<std::uint64_t, bool>> kids;   // entry: +0 tag (bit 0 = hidden), +8 node
+                for (std::size_t o = 0; o + 0x10 <= vec.size(); o += 0x18) {
+                    std::uint64_t tag, ch; std::memcpy(&tag, vec.data() + o, 8); std::memcpy(&ch, vec.data() + o + 8, 8);
                     if (ch <= 0x10000 || ch >= 0x7ff000000000ull) continue;   // nodes are heap objects; an image pointer here is a union payload
-                    std::int64_t d = (std::int64_t)(ca + o) - (std::int64_t)ch; if (d < 0) d = -d;
+                    std::int64_t d = (std::int64_t)(cs + o + 8) - (std::int64_t)ch; if (d < 0) d = -d;
                     if (d <= 0x3000) continue;                         // child lives in a separate alloc
-                    kids.push_back(ch);
+                    kids.push_back({ ch, (tag & 1) != 0 });
                 }
-                for (std::uint64_t ch : kids) walk(ch, ax, ay, depth + 1);   // vec is reused by the callee
+                for (const auto& kd : kids) walk(kd.first, ax, ay, depth + 1, kd.second);   // vec is reused by the callee
             }
         };
         for (std::uint64_t wn = a; wn + 0x18 <= b; wn += 0x18) {
             std::uint64_t nd = r64(wn);
-            if (nd > 0x10000) walk(nd, 0, 0, 0);
+            if (nd > 0x10000) walk(nd, 0, 0, 0, (r64(wn - 8) & 1) != 0);
         }
         break;
     }
     return gp;
 }
 
-static bool iface_comp_abs(HANDLE h, std::uint64_t main_data, int gid, int comp, int& ox, int& oy) {
+// The walked group, at most 100 ms old; `use` runs under the snapshot lock.
+static bool iface_group_pos(HANDLE h, std::uint64_t main_data, int gid, const std::function<bool(const IfaceGroupPos&)>& use) {
     static std::mutex mu;
     static std::unordered_map<std::uint64_t, IfaceGroupPos> cache;   // (main_data, gid) -> positions
     const std::uint64_t key = (main_data << 8) ^ (std::uint64_t)(std::uint32_t)gid;
     const unsigned long long now = GetTickCount64();
-    auto lookup = [&](const IfaceGroupPos& gp) {
-        auto it = gp.pos.find(comp);
-        if (it == gp.pos.end()) return false;
-        ox = it->second.first; oy = it->second.second;
-        return true;
-    };
     {
         std::lock_guard<std::mutex> lk(mu);
         auto it = cache.find(key);
-        if (it != cache.end() && now - it->second.ms < 100) return lookup(it->second);
+        if (it != cache.end() && now - it->second.ms < 100) return use(it->second);
     }
     IfaceGroupPos fresh = iface_walk_positions(h, main_data, gid);   // walk outside the lock
     fresh.ms = now;
@@ -5439,7 +5437,26 @@ static bool iface_comp_abs(HANDLE h, std::uint64_t main_data, int gid, int comp,
     if (cache.size() > 512) cache.clear();
     IfaceGroupPos& gp = cache[key];
     gp = std::move(fresh);
-    return lookup(gp);
+    return use(gp);
+}
+
+static bool iface_comp_abs(HANDLE h, std::uint64_t main_data, int gid, int comp, int& ox, int& oy) {
+    return iface_group_pos(h, main_data, gid, [&](const IfaceGroupPos& gp) {
+        auto it = gp.pos.find(comp);
+        if (it == gp.pos.end()) return false;
+        ox = it->second.first; oy = it->second.second;
+        return true;
+    });
+}
+
+// Own hide flag of a top-level comp (what IF_GETHIDE reads); false when the comp is not in the tree.
+static bool iface_comp_hidden(HANDLE h, std::uint64_t main_data, int gid, int comp, bool& hidden) {
+    return iface_group_pos(h, main_data, gid, [&](const IfaceGroupPos& gp) {
+        auto it = gp.hid.find(comp);
+        if (it == gp.hid.end()) return false;
+        hidden = it->second;
+        return true;
+    });
 }
 
 static bool read_iface_mount_origin(HANDLE h, std::uint64_t main_data, int mount_comp, int& ox, int& oy) {
@@ -5553,29 +5570,168 @@ static bool iface_group_open(HANDLE h, std::uint64_t main_data, int gid) {
     return false;
 }
 
-static bool iface_has_sprite(HANDLE h, std::uint64_t main_data, int sprite_id) {
-    auto r64 = [&](std::uint64_t a){ return rpm<std::uint64_t>(h, a).value_or(0); };
-    auto r32 = [&](std::uint64_t a){ return rpm<std::int32_t>(h, a).value_or(0); };
-    std::uint64_t gs, ge; iface_groups_range(h, main_data, gs, ge);
-    if (!gs) return false;
-    for (std::uint64_t g = gs; g + 0x10 <= ge; g += 0x10) {
-        std::uint64_t ap2 = r64(g + 8);
-        if (ap2 <= 0x10000 || r32(ap2) != 1477) continue;
-        std::uint64_t ws = r64(ap2 + 0x20), we = r64(ap2 + 0x28), a = ws + 8, b = we + 8;
-        if (!ws || !we || a <= 0x10000 || b <= a || (b - a) > 0x100000) return false;
-        bool found = false;
-        int visited = 0;   // a tree read out of a freed interface can loop; the real one is far smaller
-        std::function<void(std::uint64_t,int)> walk = [&](std::uint64_t node, int depth) {
-            if (found || depth > 16 || visited++ > 30000) return;
-            if (r32(node + 0x1a8) == sprite_id) { found = true; return; }
-            { std::vector<IfaceChildRef> kids_; iface_child_refs(h, node, kids_);
-              for (const auto& kid_ : kids_) { if (!(true && !found && !found)) break; walk(kid_.addr, depth + 1); } }
-        };
-        for (std::uint64_t w = a; w + 0x18 <= b && !found; w += 0x18) {
-            std::uint64_t nd = r64(w);
-            if (nd > 0x10000) walk(nd, 0);
+// HUD windows (the panel registry, enum 7716). In the custom layouts client script 8701 keeps eight varcs per
+// window: x, y, width, height first and transparency eighth. { slot, x, y, w, h, transparency } for every slot.
+struct HudWindowVarcs { int slot; int var_x; int var_y; int var_w; int var_h; int var_trans; };
+static const HudWindowVarcs kHudWindowVarcs[] = {
+    { 0, 3166, 3167, 3162, 3163, 5520 }, { 2, 3040, 3041, 3036, 3037, 5502 }, { 3, 3075, 3076, 3071, 3072, 5507 }, { 4, 3173, 3174, 3169, 3170, 5521 }, { 5, 3131, 3132, 3127, 3128, 5515 },
+    { 6, 3117, 3118, 3113, 3114, 5513 }, { 7, 3124, 3125, 3120, 3121, 5514 }, { 8, 3138, 3139, 3134, 3135, 5516 }, { 9, 3159, 3160, 3155, 3156, 5519 }, { 10, 3187, 3188, 3183, 3184, 5523 },
+    { 11, 3194, 3195, 3190, 3191, 5524 }, { 12, 3103, 3104, 3099, 3100, 5511 }, { 14, 3201, 3202, 3197, 3198, 5525 }, { 15, 5611, 5612, 5607, 5608, 5533 }, { 16, 3208, 3209, 3204, 3205, 5526 },
+    { 17, 3096, 3097, 3092, 3093, 5510 }, { 18, 3033, 3034, 3029, 3030, 5501 }, { 19, 3054, 3055, 3050, 3051, 5504 }, { 20, 3061, 3062, 3057, 3058, 5505 }, { 21, 3068, 3069, 3064, 3065, 5506 },
+    { 22, 3180, 3181, 3176, 3177, 5522 }, { 23, 5653, 5654, 5649, 5650, 5539 }, { 24, 5688, 5689, 5684, 5685, 5544 }, { 25, 5695, 5696, 5691, 5692, 5545 }, { 26, 5681, 5682, 5677, 5678, 5543 },
+    { 27, 5709, 5710, 5705, 5706, 5547 }, { 28, 5737, 5738, 5733, 5734, 5551 }, { 29, 5807, 5808, 5803, 5804, 5561 }, { 30, 5821, 5822, 5817, 5818, 5563 }, { 31, 5846, 5847, 5842, 5843, 5849 },
+    { 32, 6011, 6012, 6007, 6008, 6014 }, { 33, 6140, 6141, 6136, 6137, 6143 }, { 34, 6148, 6149, 6144, 6145, 6151 }, { 35, 6156, 6157, 6152, 6153, 6159 }, { 36, 6164, 6165, 6160, 6161, 6167 },
+    { 39, 6172, 6173, 6168, 6169, 6175 }, { 40, 6180, 6181, 6176, 6177, 6183 }, { 41, 6283, 6284, 6279, 6280, 6286 }, { 42, 7172, 7173, 7168, 7169, 7175 }, { 43, 7180, 7181, 7176, 7177, 7183 },
+    { 44, 7188, 7189, 7184, 7185, 7191 }, { 45, 8190, 8191, 8186, 8187, 8193 }, { 46, 8198, 8199, 8194, 8195, 8201 }, { 1000, 3005, 3006, 3001, 3002, 5497 }, { 1001, 5646, 5647, 5642, 5643, 5538 },
+    { 1002, 3012, 3013, 3008, 3009, 5498 }, { 1003, 3026, 3027, 3022, 3023, 5500 }, { 1004, 3019, 3020, 3015, 3016, 5499 }, { 1005, 3047, 3048, 3043, 3044, 5503 }, { 1006, 3082, 3083, 3078, 3079, 5508 },
+    { 1007, 3089, 3090, 3085, 3086, 5509 }, { 1008, 3152, 3153, 3148, 3149, 5518 }, { 1009, 5569, 5570, 5565, 5566, 5527 }, { 1010, 5576, 5577, 5572, 5573, 5528 }, { 1012, 5590, 5591, 5586, 5587, 5530 },
+    { 1013, 5597, 5598, 5593, 5594, 5531 }, { 1014, 5604, 5605, 5600, 5601, 5532 }, { 1015, 5618, 5619, 5614, 5615, 5534 }, { 1016, 5625, 5626, 5621, 5622, 5535 }, { 1017, 5632, 5633, 5628, 5629, 5536 },
+    { 1018, 5639, 5640, 5635, 5636, 5537 }, { 1019, 3110, 3111, 3106, 3107, 5512 }, { 1021, 5674, 5675, 5670, 5671, 5542 }, { 1023, 5702, 5703, 5698, 5699, 5546 }, { 1024, 5716, 5717, 5712, 5713, 5548 },
+    { 1025, 5723, 5724, 5719, 5720, 5549 }, { 1026, 5730, 5731, 5726, 5727, 5550 }, { 1027, 5744, 5745, 5740, 5741, 5552 }, { 1028, 5751, 5752, 5747, 5748, 5553 }, { 1029, 5758, 5759, 5754, 5755, 5554 },
+    { 1030, 5765, 5766, 5761, 5762, 5555 }, { 1031, 5772, 5773, 5768, 5769, 5556 }, { 1032, 5779, 5780, 5775, 5776, 5557 }, { 1033, 5786, 5787, 5782, 5783, 5558 }, { 1034, 5793, 5794, 5789, 5790, 5559 },
+    { 1035, 5800, 5801, 5796, 5797, 5560 }, { 1036, 5814, 5815, 5810, 5811, 5562 }, { 1037, 5828, 5829, 5824, 5825, 5564 }, { 1038, 5953, 5954, 5949, 5950, 5956 }, { 1039, 6052, 6053, 6048, 6049, 6055 },
+    { 1040, 6310, 6311, 6306, 6307, 6313 }, { 1041, 6329, 6330, 6325, 6326, 6332 }, { 1045, 6423, 6424, 6419, 6420, 6426 }, { 1047, 6463, 6464, 6459, 6460, 6466 }, { 1049, 6627, 6628, 6623, 6624, 6630 },
+    { 1050, 6939, 6940, 6935, 6936, 6942 }, { 1051, 7018, 7019, 7014, 7015, 7021 }, { 1052, 7369, 7370, 7365, 7366, 7372 }, { 1053, 7390, 7391, 7386, 7387, 7393 }, { 2008, 5667, 5668, 5663, 5664, 5541 },
+};
+
+static const HudWindowVarcs* hud_window_by_varcs(int var_x, int var_y) {
+    for (const auto& w : kHudWindowVarcs) if (w.var_x == var_x && w.var_y == var_y) return &w;
+    return nullptr;
+}
+
+static int read_player_varbit(HANDLE h, std::uint64_t root, int id) {
+    int vp = -1, lsb = -1, msb = -1, raw = 0;
+    if (!rtx::cache::GetVarbit(id, vp, lsb, msb) || vp < 0 || lsb < 0 || msb < lsb || msb >= 32) return 0;
+    if (!read_varp_found(h, root, vp, raw)) return 0;
+    const unsigned mask = (msb - lsb + 1 >= 32) ? 0xFFFFFFFFu : ((1u << (msb - lsb + 1)) - 1);
+    return (int)(((unsigned)raw >> lsb) & mask);
+}
+
+// Content origin of a HUD window, placed the way the game places it. Client script 8781 puts the window frame
+// (panel struct param 3503) at the window's x/y varcs, relative to the frame's parent, and client script 8391
+// puts the content comp (3505), where the window's group is mounted, at the inset client script 20543 takes
+// from the window style and from whether the border (3506) and the tab strip (3509) are shown:
+//   left = border ? 3550 : 0
+//   top  = (border ? 3547 : 0) + (strip, unless style 8296 is 2 ? 3577 + 3586 : border ? 3586 : 0)
+// The style is client script 8418's: param 3518, through the theme map (enum 9014 by varbit 22875), then its
+// 3795 form when title bars hide (varbit 19928 with the interface locked: varbit 19925 outside edit mode; or
+// a transparent window that allows it, param 5770), else its 3794 form for slim headers (varbit 19924).
+// The shown flags are the comps' live hide flags; unreadable ones are taken as drawn outside edit mode
+// (border unless param 3533, strip when the window takes tabs, param 3521). Client script 8391's exceptions:
+// the central interface (slot 1007) centres its content in the frame, a border-less panel (param 3533) puts it
+// at the frame's corner in edit mode, and All Chat (struct 21279) is placed by client script 20504 in the legacy
+// layout or with varbit 60441. The management window (slot 1001) is left out: the management interface it holds
+// places its content (client script 8288 centres a 742 x 450 box 10 px above the frame's bottom). The legacy
+// layout (varbit 27169) places frames by script, not from the varcs, so there the frame's live position stands in.
+// The alternate interface (varbit 38842) has styles of its own and is not covered. `contentComp` is set once the
+// panel is known, also when the origin is not.
+static bool hud_window_content_origin(HANDLE h, std::uint64_t md, std::uint32_t pid, const HudWindowVarcs& win,
+                                      int& ox, int& oy, int* contentComp = nullptr) {
+    if (win.slot == 1001 || read_player_varbit(h, md, 38842)) return false;
+    auto P = [](int st, int key, int dflt) { return rtx::cache::StructIntParamOr(st, key, dflt); };
+    int panel = rtx::cache::EnumIntValue(7716, win.slot, -1);                     // client script 10405
+    int swap = -1;
+    if (win.slot == 17 && read_varp_found(h, md, 11967, swap) && swap != -1) panel = swap;
+    if (panel < 0) return false;
+    if (contentComp) *contentComp = P(panel, 3505, -1);
+    const int frame = P(panel, 3503, -1);
+    if ((frame >> 16) != 1477) return false;
+    const bool legacy = read_player_varbit(h, md, 27169) != 0;
+    int fx = 0, fy = 0;
+    if (legacy) {
+        if (!iface_comp_abs(h, md, 1477, frame & 0xFFFF, fx, fy)) return false;
+    } else {
+        if (!read_panel_pos_var(h, md, pid, win.var_x, true, fx) || !read_panel_pos_var(h, md, pid, win.var_y, true, fy)) return false;
+        rtx::cache::IfaceCompDefLite def;
+        int px = 0, py = 0;
+        if (rtx::cache::IfaceCompDefLookup(1477, frame & 0xFFFF, def) && def.parent >= 0 &&
+            iface_comp_abs(h, md, 1477, def.parent, px, py)) { fx += px; fy += py; }
+    }
+    int edit = 0;
+    read_varc_found(h, md, 3477, edit);
+    int style = P(panel, 3518, -1);
+    if (panel == 21278 && read_player_varbit(h, md, 60446)) {
+        style = 28517;                                                             // the minimap's own frame
+    } else if (style >= 0) {
+        const int theme = read_player_varbit(h, md, 22875);
+        if (theme != 0) {
+            const int map = rtx::cache::EnumIntValue(9014, theme, -1);
+            const int themed = map >= 0 ? rtx::cache::EnumIntValue(map, style, -1) : -1;
+            if (themed >= 0) style = themed;
         }
-        return found;
+        int trans = 0;
+        const bool locked = read_player_varbit(h, md, 19925) && (edit == 0 || legacy);
+        const bool faded = P(panel, 5770, 0) && read_panel_pos_var(h, md, pid, win.var_trans, true, trans) && trans != 0;
+        const int bare = P(style, 3795, -1), slim = P(style, 3794, -1);
+        if ((read_player_varbit(h, md, 19928) && locked) || faded) { if (bare >= 0) style = bare; }
+        else if (read_player_varbit(h, md, 19924)) { if (slim >= 0) style = slim; }
+    }
+    if (style < 0) return false;
+    auto shown = [&](int comp, bool dflt) {
+        bool hid = false;
+        if ((comp >> 16) != 1477) return false;
+        return iface_comp_hidden(h, md, 1477, comp & 0xFFFF, hid) ? !hid : dflt;
+    };
+    const bool strip = shown(P(panel, 3509, -1), P(panel, 3521, 0) != 0);
+    int left = 0, top = 0;
+    if (win.slot == 1007) {
+        // content sized from enum 7720 by varc 3678 (512 x 334 while that is unset), frame from the w/h varcs
+        int cw = 512, ch = 334, fw = 0, fh = 0, key = 0;
+        if (read_varc_found(h, md, 3678, key)) {
+            const int sz = rtx::cache::EnumIntValue(7720, key, -1);
+            if (sz >= 0) { cw = P(sz, 3638, cw); ch = P(sz, 3639, ch); }
+        }
+        if (!read_panel_pos_var(h, md, pid, win.var_w, true, fw) || !read_panel_pos_var(h, md, pid, win.var_h, true, fh)) return false;
+        left = (fw - cw) / 2; top = (fh - ch) / 2;
+    } else if (edit != 0 && P(panel, 3533, 0)) {
+        // the frame's corner
+    } else if (panel == 21279 && (legacy || read_player_varbit(h, md, 60441))) {
+        // client script 20504: 4 px down in the legacy layout, else 4 px above the window's whole vertical inset
+        if (legacy) top = 4;
+        else {
+            const bool border = shown(P(panel, 3506, -1), true);
+            if (strip && P(style, 8296, 0) == 2) return false;   // that inset counts live comp heights
+            int total = border ? P(style, 3547, 0) + P(style, 3549, 0) : 0;
+            if (strip) total += P(style, 3577, 0) + P(style, 3586, 0);
+            else if (border) total += P(style, 3586, 0);
+            top = total - 4;
+        }
+    } else {
+        const bool border = shown(P(panel, 3506, -1), P(panel, 3533, 0) == 0);
+        if (border) { left = P(style, 3550, 0); top = P(style, 3547, 0); }
+        if (strip && P(style, 8296, 0) != 2) top += P(style, 3577, 0) + P(style, 3586, 0);
+        else if (border) top += P(style, 3586, 0);
+    }
+    ox = fx + left; oy = fy + top;
+    return true;
+}
+
+// Fallback origin of `gid` when the engine has not attached it: the manual table, then the cache's panel
+// mounts. No live calibration nudge.
+static bool panel_fallback_origin(HANDLE h, std::uint64_t main_data, std::uint32_t pid, int gid, int& ox, int& oy) {
+    for (const auto& s : kPanelOrigins) {
+        if (s.group != gid) continue;
+        if (s.req_group && !iface_group_open(h, main_data, s.req_group)) continue;   // variant gate
+        int bx = 0, by = 0; bool ok = false;
+        if (s.var_x < 0 && s.var_y < 0) {
+            ok = true;   // identity spec: the group's tree is already screen-absolute
+        } else if (const HudWindowVarcs* win = s.is_varc ? hud_window_by_varcs(s.var_x, s.var_y) : nullptr) {
+            ok = hud_window_content_origin(h, main_data, pid, *win, bx, by);
+        } else if (s.var_x > 0 && s.var_y > 0) {
+            ok = read_panel_pos_var(h, main_data, pid, s.var_x, s.is_varc, bx) &&
+                 read_panel_pos_var(h, main_data, pid, s.var_y, s.is_varc, by);
+        }
+        if (!ok && s.mount_comp) ok = read_iface_mount_origin(h, main_data, s.mount_comp, bx, by);
+        if (!ok) continue;   // this spec can't resolve -> try the group's next spec
+        ox = bx - s.off_left; oy = by - s.off_top;
+        return true;
+    }
+    // Cache-driven fallback: HUD panel registry (enum 7716) params 3514-3517 pack content comps as
+    // (group<<16)|sub and param 3503 the 1477 mount comp. Only runs when the table missed.
+    static constexpr bool kCachePanelMounts = true;
+    if (kCachePanelMounts) {
+        int mc = rtx::cache::PanelMountComp(gid);
+        if (mc > 0 && read_iface_mount_origin(h, main_data, mc, ox, oy)) return true;
     }
     return false;
 }
@@ -5596,52 +5752,12 @@ static bool iface_panel_origin(HANDLE h, std::uint64_t main_data, std::uint32_t 
             return true;
         }
     }
-    // 2. Fallback: manual varc / mount table (groups the engine did not attach as a sub-interface).
-    for (const auto& s : kPanelOrigins) {
-        if (s.group != gid) continue;
-        if (s.req_group && !iface_group_open(h, main_data, s.req_group)) continue;   // variant gate
-        int vx = 0, vy = 0; bool okx = false, oky = false;
-        if (s.var_x < 0 && s.var_y < 0) {
-            okx = oky = true;   // identity spec: the group's tree is already screen-absolute
-        } else {
-            if (s.var_x > 0) okx = read_panel_pos_var(h, main_data, pid, s.var_x, s.is_varc, vx);
-            if (s.var_y > 0) oky = read_panel_pos_var(h, main_data, pid, s.var_y, s.is_varc, vy);
-        }
-        if (okx && oky) {
-            ox = vx - s.off_left; oy = vy - s.off_top;
-        } else if (s.mount_comp) {
-            int cx, cy;
-            if (!read_iface_mount_origin(h, main_data, s.mount_comp, cx, cy)) continue;   // next spec
-            ox = cx - s.off_left; oy = cy - s.off_top;
-        } else {
-            continue;   // this spec can't resolve -> try the group's next spec
-        }
-        // House Controls (1665): classic interface (varbit 27169 = varp 3680 bit 21) -> -12;
-        // modern tabbed (tab icon sprite 18788 present) -> +28.
-        if (gid == 1665) {
-            if ((read_varp(h, main_data, 3680) >> 21) & 1) oy -= 12;
-            else if (iface_has_sprite(h, main_data, 18788)) oy += 28;
-        }
-        { std::lock_guard<std::mutex> lk(g_ifaceOffMu);   // live calibration nudge from the Interfaces tab
-          auto ov = g_ifaceOff.find(gid);
-          if (ov != g_ifaceOff.end()) { ox += ov->second.first; oy += ov->second.second; } }
-        return true;
-    }
-    // Cache-driven fallback: HUD panel registry (enum 7716) params 3514-3517 pack content comps as
-    // (group<<16)|sub and param 3503 the 1477 mount comp. Only runs when the table missed.
-    static constexpr bool kCachePanelMounts = true;
-    if (kCachePanelMounts) {
-        int mc = rtx::cache::PanelMountComp(gid);
-        int cx = 0, cy = 0;
-        if (mc > 0 && read_iface_mount_origin(h, main_data, mc, cx, cy)) {
-            ox = cx; oy = cy;
-            { std::lock_guard<std::mutex> lk(g_ifaceOffMu);
-              auto ov = g_ifaceOff.find(gid);
-              if (ov != g_ifaceOff.end()) { ox += ov->second.first; oy += ov->second.second; } }
-            return true;
-        }
-    }
-    return false;
+    // 2. Fallback: manual table, then the cache's panel mounts (groups the engine did not attach).
+    if (!panel_fallback_origin(h, main_data, pid, gid, ox, oy)) return false;
+    { std::lock_guard<std::mutex> lk(g_ifaceOffMu);   // live calibration nudge from the Interfaces tab
+      auto ov = g_ifaceOff.find(gid);
+      if (ov != g_ifaceOff.end()) { ox += ov->second.first; oy += ov->second.second; } }
+    return true;
 }
 
 static bool iface_live_frame_origin(HANDLE h, std::uint64_t gs, std::uint64_t ge,
@@ -6613,7 +6729,7 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
     int ox = 0, oy = 0; bool exactOrigin = false;
     bool originOk = iface_panel_origin(h, *root, pid, kGroup, ox, oy, &exactOrigin);
     if (!originOk) return "{}";   // panel position varc not resolved yet
-    int px = ox, py = oy;   // outer frame origin, before the chrome inset
+    int px = ox, py = oy;   // panel box origin: the content origin, or the frame once one is found by size
 
     int vpx0 = 0, vpy0 = 0, vpx1 = 0, vpy1 = 0; bool haveVp = false;
 
@@ -6639,10 +6755,11 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
         int contentH = (c0 > 0x10000) ? r32(c0 + 0xa4) : 0;
         int panelW = 0, panelH = 0;
         int frameX = 0, frameY = 0;
+        bool atFrame = false;
         if (!exactOrigin && contentW > 0 && contentH > 0 &&
             iface_live_frame_origin(h, gs, ge, px, py, contentW + 1, contentW + 119,
                                     contentH + 1, contentH + 299, frameX, frameY, &panelW, &panelH)) {
-            ox = frameX; oy = frameY; px = frameX; py = frameY;
+            ox = frameX; oy = frameY; px = frameX; py = frameY; atFrame = true;
         }
         if (!exactOrigin && panelW == 0) for (std::uint64_t g2 = gs; g2 + 0x10 <= ge; g2 += 0x10) {
             std::uint64_t ap = r64(g2 + 8);
@@ -6657,15 +6774,12 @@ std::string InvSlotRectJson(std::uint32_t pid, int slotIndex) {
             }
             break;
         }
-        int border, header;
-        if (exactOrigin) {
-            border = 0; header = 0;   // engine origin = content origin (the sub's parent component rect)
-        } else if (panelW > 0 && panelH > 0) {
+        // The engine and the window rule both give the content origin; only a frame found by size above needs
+        // its chrome added back.
+        int border = 0, header = 0;
+        if (atFrame) {
             border = (panelW - contentW) / 2;
             header = (panelH - contentH) - border;
-        } else {
-            // "Slim headers" varbit 19924 (varp 3814 bit 0): grid mounts at (4,44) slim / (4,64) full.
-            border = 4; header = (read_varp(h, *root, 3814) & 1) ? 44 : 64;
         }
         ox += border; oy += header;
         if (contentW > 0 && contentH > 0)      { vpx0 = ox; vpy0 = oy; vpx1 = ox + contentW; vpy1 = oy + contentH; haveVp = true; }
@@ -9919,27 +10033,44 @@ void health_interfaces(HCtx& c, rtx::health::Run& run) {
                 std::to_string(mounted) + "/" + std::to_string(n) + " open groups mounted, " + std::to_string(parentOk) + " on a live parent comp" + (bad.empty() ? "" : "; odd:" + bad),
                 "Panel positions (automatic origins)", "", "", "iface.groups");
     }
-    // the manual origin table against the engine's own answer, for groups that are open and attached
+    // the fallback origins against the engine's own answer: every open, attached group of the manual table,
+    // and the window rule for every window whose content comp holds an attached group. The fallback is meant
+    // to equal the engine, nudges included, so the tolerance only covers read skew.
     {
-        int compared = 0, agree = 0; std::string stale;
+        constexpr int kTol = 2;
+        int compared = 0, agree = 0, wins = 0, winsOk = 0; std::string stale;
+        auto note = [&](const std::string& tag, bool ok, int dx, int dy) {
+            if (stale.size() >= 100) return;
+            stale += " " + tag + (ok ? "(" + std::to_string(dx) + "," + std::to_string(dy) + ")" : std::string("(none)"));
+        };
+        std::set<int> seen;
         for (const auto& s : kPanelOrigins) {
-            if (s.group == 1477 || std::find(open.begin(), open.end(), s.group) == open.end()) continue;
-            int ax = 0, ay = 0;
+            if (s.group == 1477 || !seen.insert(s.group).second || std::find(open.begin(), open.end(), s.group) == open.end()) continue;
+            int ax = 0, ay = 0, fx = 0, fy = 0;
             if (!iface_auto_origin(h, c.root, s.group, ax, ay)) continue;
-            int vx = 0, vy = 0; bool okx = false, oky = false;
-            if (s.var_x > 0) okx = read_panel_pos_var(h, c.root, c.pid, s.var_x, s.is_varc, vx);
-            if (s.var_y > 0) oky = read_panel_pos_var(h, c.root, c.pid, s.var_y, s.is_varc, vy);
-            int fx = 0, fy = 0;
-            if (okx && oky) { fx = vx - s.off_left; fy = vy - s.off_top; }
-            else if (s.mount_comp && read_iface_mount_origin(h, c.root, s.mount_comp, fx, fy)) { fx -= s.off_left; fy -= s.off_top; }
-            else continue;
             ++compared;
-            const int tol = 4 + std::abs(s.off_left) + std::abs(s.off_top);
-            if (std::abs(fx - ax) <= tol && std::abs(fy - ay) <= tol) ++agree;
-            else if (stale.size() < 80) stale += " " + std::to_string(s.group) + "(" + std::to_string(fx - ax) + "," + std::to_string(fy - ay) + ")";
+            const bool ok = panel_fallback_origin(h, c.root, c.pid, s.group, fx, fy);
+            if (ok && std::abs(fx - ax) <= kTol && std::abs(fy - ay) <= kTol) ++agree;
+            else note(std::to_string(s.group), ok, fx - ax, fy - ay);
         }
-        run.Add(G, "iface.origins", "Manual panel origins", compared == 0 ? kUnchecked : (agree == compared ? kPass : kWarn),
-                compared == 0 ? "no listed panel open and attached" : std::to_string(agree) + "/" + std::to_string(compared) + " fallback origins match the engine" + (stale.empty() ? "" : "; stale:" + stale),
+        std::map<int, int> onComp;   // game frame comp -> an attached group mounted on it
+        for (int g : open) { IfaceSubParent p; if (g != 1477 && iface_sub_parent(h, c.root, g, p) && p.group == 1477) onComp.emplace(p.comp, g); }
+        for (const auto& w : kHudWindowVarcs) {
+            int fx = 0, fy = 0, content = -1;
+            const bool ok = hud_window_content_origin(h, c.root, c.pid, w, fx, fy, &content);
+            if ((content >> 16) != 1477) continue;
+            auto it = onComp.find(content & 0xFFFF);
+            int ax = 0, ay = 0;
+            if (it == onComp.end() || !iface_auto_origin(h, c.root, it->second, ax, ay)) continue;
+            ++wins;
+            if (ok && std::abs(fx - ax) <= kTol && std::abs(fy - ay) <= kTol) ++winsOk;
+            else note("w" + std::to_string(w.slot), ok, fx - ax, fy - ay);
+        }
+        const int n = compared + wins;
+        run.Add(G, "iface.origins", "Manual panel origins", n == 0 ? kUnchecked : (agree == compared && winsOk == wins ? kPass : kWarn),
+                n == 0 ? "no listed panel or window open and attached"
+                       : std::to_string(agree) + "/" + std::to_string(compared) + " fallback origins and " + std::to_string(winsOk) + "/" +
+                         std::to_string(wins) + " window content origins match the engine" + (stale.empty() ? "" : "; stale:" + stale),
                 "Panel positions (fallback)", "", "", "iface.mounts");
     }
     // backpack drawn against container 93

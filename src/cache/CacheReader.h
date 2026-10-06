@@ -186,6 +186,11 @@ int         SkillGuideSkillSprite(int skill);                     // the game's 
 // Single struct params (decoded once per struct and memoised). false when the struct or key is absent.
 bool StructIntParam(int structId, int key, int& out);
 bool StructStrParam(int structId, int key, std::string& out);
+// Struct int param, or the param's own default when the struct leaves it out; `fallback` when neither is
+// known or the cache is not open yet.
+int StructIntParamOr(int structId, int key, int fallback);
+// Value of an int-valued enum, or the enum's default when the key is absent; `fallback` when the enum is unknown.
+int EnumIntValue(int enumId, int key, int fallback);
 
 std::string MapLabelsJson();
 

@@ -3209,6 +3209,40 @@ const DecodedStruct* struct_memo_locked(int structId) {
     if (a >= 0 && a < (int)entries.size()) DecodeStructFile(index->ReadFile(a, f), ds);
     return &g_struct_memo.emplace(structId, std::move(ds)).first->second;
 }
+
+// Int-valued enums (js5-17; archive = id >> 8, file = id & 0xff), decoded once.
+struct EnumInts { bool has_default = false; int def = 0; std::unordered_map<int, int> map; };
+std::unordered_map<int, EnumInts> g_enum_int_memo;   // under g_mu
+const EnumInts* enum_ints_locked(int enumId) {
+    if (enumId < 0) return nullptr;
+    auto it = g_enum_int_memo.find(enumId);
+    if (it != g_enum_int_memo.end()) return &it->second;
+    auto* index = g_store ? g_store->Get(kIndexEnums) : nullptr;
+    if (!index || !index->ready()) return nullptr;            // not memoised: retry once the cache is open
+    auto bytes = index->ReadFile(enumId >> 8, enumId & 0xff);
+    if (bytes.empty()) return nullptr;
+    EnumInts e;
+    InputStream s(std::move(bytes));
+    while (s.remaining() > 0) {
+        int op = s.ReadUnsignedByte();
+        if (op == 0) break;
+        if      (op == 1 || op == 101) s.ReadUnsignedByte();
+        else if (op == 2 || op == 102) s.ReadUnsignedByte();
+        else if (op == 3) s.ReadString();
+        else if (op == 4) { e.def = s.ReadInt(); e.has_default = true; }
+        else if (op == 5) { int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { s.ReadInt(); s.ReadString(); } }
+        else if (op == 6) { int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { int k = s.ReadInt(); e.map[k] = s.ReadInt(); } }
+        else if (op == 7) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { s.ReadUnsignedShort(); s.ReadString(); } }
+        else if (op == 8) { s.ReadUnsignedShort(); int n = s.ReadUnsignedShort();
+                            for (int i = 0; i < n; ++i) { int k = s.ReadUnsignedShort(); e.map[k] = s.ReadInt(); } }
+        else if (op == 131 || op == 207 || op == 209) { }
+        else break;
+    }
+    return &g_enum_int_memo.emplace(enumId, std::move(e)).first->second;
+}
 }  // namespace
 
 bool StructIntParam(int structId, int key, int& out) {
@@ -3228,6 +3262,27 @@ bool StructStrParam(int structId, int key, std::string& out) {
     auto it = ds->strs.find(key);
     if (it == ds->strs.end()) return false;
     out = it->second; return true;
+}
+int StructIntParamOr(int structId, int key, int fallback) {
+    if (structId < 0) return fallback;
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    const DecodedStruct* ds = struct_memo_locked(structId);
+    if (!ds) return fallback;
+    auto it = ds->ints.find(key);
+    if (it != ds->ints.end()) return it->second;
+    LoadParamsLocked();
+    auto p = g_param_defs.find(key);
+    return (p != g_param_defs.end() && p->second.has_int) ? p->second.def_int : fallback;
+}
+int EnumIntValue(int enumId, int key, int fallback) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    EnsureInit();
+    const EnumInts* e = enum_ints_locked(enumId);
+    if (!e) return fallback;
+    auto it = e->map.find(key);
+    if (it != e->map.end()) return it->second;
+    return e->has_default ? e->def : fallback;
 }
 
 // The game's own skill guides: one struct per entry, with the level (2212), the skill as the
@@ -4909,7 +4964,7 @@ void ResetCacheStateLocked() {
     g_quests_json.clear(); g_quests_loaded = false;
     g_iface_defs_json.clear(); g_iface_defs_lite.clear();
     g_mapWinCache.clear();
-    g_struct_memo.clear();
+    g_struct_memo.clear(); g_enum_int_memo.clear();
     g_panel_mounts.clear(); g_panel_mounts_built = false; g_panel_mounts_retry_at = {};
     g_wmAreasJson.clear();
     g_config_colour_cache.clear(); g_buff_catalog_json.clear(); g_ability_configs_json.clear(); g_map_symbols_json.clear();
