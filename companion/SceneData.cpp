@@ -1638,6 +1638,9 @@ std::uint32_t g_renderInstalledStick = 0;
 std::uint32_t g_eventFlagsSticky     = 0;
 std::uint32_t g_netProbeFlagsSticky  = 0;
 std::uint32_t g_netProbeFramerRva    = 0;
+std::uint32_t g_specialFlagsSticky   = 0;
+std::uint32_t g_specialHookSticky    = 0;   // diag[3], installed marker
+std::uint32_t g_specialRvaSticky     = 0;   // diag[5], resolved fn RVA
 
 void EnsureProducers(Share*& sh) {
     static std::uint32_t s_gen = 0;
@@ -1646,6 +1649,11 @@ void EnsureProducers(Share*& sh) {
         if (auto* vs = g_varcShare.load(std::memory_order_relaxed)) g_varcFlagsSticky = vs->flags;
         if (g_renderShare) g_renderInstalledStick = g_renderShare->installed;
         if (g_eventShare)  g_eventFlagsSticky     = g_eventShare->flags;
+        if (g_specialShare) {
+            g_specialFlagsSticky = g_specialShare->flags;
+            g_specialHookSticky  = g_specialShare->diag[3];
+            g_specialRvaSticky   = g_specialShare->diag[5];
+        }
         if (g_netProbeShare) {
             g_netProbeFlagsSticky = g_netProbeShare->flags;
             g_netProbeFramerRva   = g_netProbeShare->framerRva;
@@ -1710,8 +1718,11 @@ void EnsureProducers(Share*& sh) {
         if (g_specialShare) {
             g_specialShare->magic = rtx::special::kMagic; g_specialShare->version = rtx::special::kVersion;
             g_specialShare->pid = pid;
-            g_specialShare->enable = 0; g_specialShare->count = 0; g_specialShare->seq = 0; g_specialShare->flags = 0;
+            g_specialShare->enable = 0; g_specialShare->count = 0; g_specialShare->seq = 0;
+            g_specialShare->flags = g_specialFlagsSticky;   // the spawn observer is still attached
             for (int i = 0; i < 12; ++i) g_specialShare->diag[i] = 0;
+            g_specialShare->diag[3] = g_specialHookSticky;
+            g_specialShare->diag[5] = g_specialRvaSticky;
         }
     }
 

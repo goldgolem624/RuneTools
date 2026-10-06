@@ -10361,6 +10361,10 @@ void health_companion(HCtx& c, rtx::health::Run& run) {
             const int sig = run.StatusOf("code.sig." + hk.name);
             std::string dd = hk.state + (hk.rva ? " at " + hx(hk.rva) : std::string()) + (hk.note.empty() || hk.rva ? std::string() : " " + hk.note);
             int ok = hk.state == "ATTACHED" ? kPass : hk.state == "REFUSED" ? kUnchecked : kFail;
+            if (hk.state != "ATTACHED" && c.flavour == "vulkan") {
+                for (const auto& sg : rtx::sig::kTable)
+                    if (sg.expect == rtx::sig::kOpenGlOnce && hk.name == sg.name) { ok = kPass; dd = "not used on Vulkan"; break; }
+            }
             if (ok == kFail && sig == kPass) dd += "; this build's signature finds it (the companion running now predates it; a companion built from this source attaches it)";
             if (ok == kPass && sig == kFail) { ok = kWarn; dd += "; its signature row fails for this exe (see Signature " + hk.name + ")"; }
             run.Fact("hook." + hk.name, hk.state + (hk.rva ? "@" + hx(hk.rva) : std::string()));
