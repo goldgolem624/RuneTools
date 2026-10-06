@@ -535,8 +535,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
                 out = rtx::reader::InterfaceGroupsJson(pid);
             }
             { std::ofstream f("iface-dump.txt", std::ios::binary | std::ios::trunc); f << diag << out; }
-            LocalFree(argv);
-            return 0;
+            return headless_exit(0);
         }
         // --scene-dump <pid> [range]: the scene as plugins receive it, to scene-dump.txt. For
         // checking what the objects around the player actually report before trusting a plugin rule.
@@ -551,8 +550,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             rtx::reader::SampleAll();
             std::string out = rtx::reader::SceneJson(pid, range);
             { std::ofstream f("scene-dump.txt", std::ios::binary | std::ios::trunc); f << out; }
-            LocalFree(argv);
-            return 0;
+            return headless_exit(0);
         }
         // --overhead <pid>: every scene entity with its class pointer and the class entries the
         // game's overhead drawing uses, to overhead.txt. For reading those back in the binary.
@@ -561,8 +559,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             rtx::reader::SampleAll();
             std::string out = rtx::reader::OverheadClassJson(pid) + "\n" + rtx::reader::LiveLocsJson(pid) + "\n" + rtx::reader::OverheadBarsJson(pid);
             { std::ofstream f("overhead.txt", std::ios::binary | std::ios::trunc); f << out; }
-            LocalFree(argv);
-            return 0;
+            return headless_exit(0);
         }
         // --loc-dump <out.tsv>: every loc definition (name, footprint, actions, models, morphs) for offline tooling.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--loc-dump") {
@@ -610,8 +607,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             if (at != std::string::npos) itemId = std::atoi(items.c_str() + at + key.size());
             std::string out = "{\"itemId\":" + std::to_string(itemId) + ",\"extra\":" + rtx::reader::ItemExtraIntsJson(pid, cont, itemId, slot) + "}";
             { std::ofstream f("item-extra.txt", std::ios::binary | std::ios::trunc); f << out; }
-            LocalFree(argv);
-            return 0;
+            return headless_exit(0);
         }
         // --enum-scan <keyA> <keyB>: every cache enum holding int values at both keys, with the item names those
         // values would be, to enum-scan.txt. Finds the table behind a per-item index (e.g. a stored special attack).
@@ -647,8 +643,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             rtx::reader::SampleAll();
             std::ofstream f("bank-dump.txt", std::ios::binary | std::ios::trunc);
             f << rtx::reader::BankJson(pid);
-            LocalFree(argv);
-            return 0;
+            f.close();
+            return headless_exit(0);
         }
         // --var-scan <pid> <lo> <hi>: every varp and varbit whose live value lies in [lo, hi], to var-scan.txt.
         // Finds the vars behind a number the game shows (rune counts in a nexus, charges, ...).
@@ -676,8 +672,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             };
             scan("varp",   20000, [&](const std::string& csv) { return rtx::reader::VarpsJson(pid, csv); });
             scan("varbit", 70000, [&](const std::string& csv) { return rtx::reader::VarbitsJson(pid, csv); });
-            LocalFree(argv);
-            return 0;
+            f.close();
+            return headless_exit(0);
         }
         // --var-block <pid> <lo> <hi>: player varps lo..hi with their cache type code, live int value and live long
         // value (long-typed varps keep a full i64), to var-block.txt. For mapping a family of related vars.
@@ -700,8 +696,8 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             f << "id\ttype\tint\tlong\n";
             for (int id = lo; id <= hi; ++id)
                 f << id << "\t" << field(types, id) << "\t" << field(ints, id) << "\t" << field(longs, id) << "\n";
-            LocalFree(argv);
-            return 0;
+            f.close();
+            return headless_exit(0);
         }
         // --enum-dump <id>: one cache enum as JSON to enum-<id>.txt.
         if (argv && argc >= 3 && std::wstring(argv[1]) == L"--enum-dump") {

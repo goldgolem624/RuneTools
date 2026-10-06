@@ -9852,7 +9852,9 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             fxN == 0 ? "none nearby" : std::to_string(fxOk) + "/" + std::to_string(fxN) + " near the player with a cache graphic" + (fxBad.empty() ? "" : ";" + fxBad),
             "Specials: graphic highlights|Clue scan ring|Projectiles", "", "", "scene.types");
     // movement route: every player and NPC carries a 21-entry route at sec+0x268, and a moving
-    // actor's newest entry (its true tile) sits within 2 tiles of where it is drawn
+    // actor's newest entry (its true tile) sits near where it is drawn. A runner covers 2 tiles a tick
+    // and is drawn up to 2 ticks behind, so 4 tiles; a moved layout reads tiles far off or none. Fewer
+    // than 3 moving actors are too few to hold to 90 %: one runner at the edge would fail the row.
     {
         int total = 0, routes = 0, moving = 0, close = 0;
         for (const auto& es : secs) {
@@ -9873,14 +9875,19 @@ void health_scene(HCtx& c, rtx::health::Run& run) {
             int ttx = tx, tty = ty;
             if (!actor_true_tile(h, sec, ttx, tty)) continue;
             ++moving;
-            if (std::abs(ttx - tx) <= 2 && std::abs(tty - ty) <= 2) ++close;
+            if (std::abs(ttx - tx) <= 4 && std::abs(tty - ty) <= 4) ++close;
         }
-        const bool ok = routes * 10 >= total * 9 && (moving == 0 || close * 10 >= moving * 9);
-        run.Add(G, "scene.route", "Actor true tile", total == 0 ? kUnchecked : (ok ? kPass : kFail),
+        const bool routesOk = routes * 10 >= total * 9;
+        const bool few = moving > 0 && moving < 3 && close < moving;
+        const bool ok = routesOk && (moving == 0 || few || close * 10 >= moving * 9);
+        const int st = total == 0 ? kUnchecked : !ok ? kFail : (routesOk && few) ? kUnchecked : kPass;
+        run.Add(G, "scene.route", "Actor true tile", st,
                 total == 0 ? std::string("no players or NPCs in the scene") :
                 std::to_string(routes) + "/" + std::to_string(total) + " actors carry a movement route at sec+" + hx(rtx::scn::kMoveMgr) + ", " +
-                std::to_string(close) + "/" + std::to_string(moving) + " moving within 2 tiles of where they are drawn" + (ok ? "" : " (route object or entry layout moved?)"),
-                "True tile overlay|Plugins scene API", "90 %", std::to_string(routes) + "/" + std::to_string(total), "scene.types");
+                std::to_string(close) + "/" + std::to_string(moving) + " moving within 4 tiles of where they are drawn" +
+                (few ? " (too few moving to judge)" : ok ? "" : " (route object or entry layout moved?)"),
+                "True tile overlay|Plugins scene API", "90 %",
+                std::to_string(routes) + "/" + std::to_string(total) + " routes, " + std::to_string(close) + "/" + std::to_string(moving) + " near", "scene.types");
     }
     // projection: the local player lands near the middle of the view
     {
